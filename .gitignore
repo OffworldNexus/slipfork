@@ -1,0 +1,26 @@
+# Rust & build outputs
+/target/
+/dist/
+/site/
+
+# Ephemeral agent & Slipfork worktrees / caches
+/.worktrees/
+/.slipfork/
+/.venv/
+/.pytest_cache/
+/.ruff_cache/
+/__pycache__/
+**/__pycache__/
+**/node_modules/
+/mutants*/
+
+# Secrets (never commit real .env files; commit .env.example or snow.yml)
+.env
+.env.*
+!.env.example
+
+# Temporary & editor files
+*.swp
+*~
+.DS_Store
+/poc/.bench-scratch/

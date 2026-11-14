@@ -1,0 +1,137 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  // Slipfork: DX-first + strict IoC/DI autonomous harness.
+  // Cheap model executes leaf work & narrow-lens smell reviews; Gemini 4 Carbon runs architecture/gates/hard rescues.
+  "model": "openrouter/deepseek/deepseek-v4.1-flash-1017",
+  "default_agent": "conductor",
+  "formatter": true,
+  "worktree": {
+    // Keep worktrees on the XFS disk (reflink-capable!), NEVER on /tmp (32 GiB RAM tmpfs).
+    "directory": ".worktrees"
+  },
+  "watcher": {
+    "ignore": [
+      "target/**",
+      "site/**",
+      "dist/**",
+      ".worktrees/**",
+      ".slipfork/**",
+      ".venv/**",
+      "poc/.bench-scratch/**",
+      "**/node_modules/**",
+      "**/__pycache__/**",
+      ".ruff_cache/**",
+      ".pytest_cache/**",
+      "mutants*/**"
+    ]
+  },
+  "compaction": {
+    "auto": true,
+    "keep": {
+      "tokens": 15000
+    },
+    "buffer": "15%"
+  },
+  "experimental": {
+    "todo": true,
+    "subagent_depth": 8,
+    "background_compaction": true,
+    "location_idle_timeout": false
+  },
+  "mcp": {
+    "servers": {
+      // Disable inherited parent-workspace MCPs (~/offworld-nexus/opencode.json)
+      // so background sessions never spam OAuth/transport errors or bloat tool catalogs.
+      "linear-offworld": { "type": "remote", "url": "https://mcp.linear.app/mcp", "disabled": true },
+      "fastmail": { "type": "remote", "url": "https://api.fastmail.com/mcp", "disabled": true },
+      "sheets": { "type": "remote", "url": "https://sheetsmcp.googleapis.com/mcp/v1", "disabled": true },
+      "docs": { "type": "remote", "url": "https://docsmcp.googleapis.com/mcp/v1", "disabled": true },
+      "slides": { "type": "remote", "url": "https://slidesmcp.googleapis.com/mcp/v1", "disabled": true }
+    }
+  },
+  "agents": {
+    // Hide generic built-ins so cheap orchestrators stay inside the plan/review hierarchy.
+    "build": { "hidden": true },
+    "plan": { "hidden": true }
+  },
+  "permissions": [
+    // 1. Secrets: agents never inspect real .env files or local secret vaults.
+    { "action": "read", "resource": "*.env", "effect": "deny" },
+    { "action": "read", "resource": "**/.env", "effect": "deny" },
+    { "action": "read", "resource": "*.env.*", "effect": "deny" },
+    { "action": "read", "resource": "**/.env.*", "effect": "deny" },
+    { "action": "read", "resource": "*.env.example", "effect": "allow" },
+    { "action": "read", "resource": "**/.env.example", "effect": "allow" },
+    { "action": "read", "resource": "~/.local/share/slipfork/vaults/*", "effect": "deny" },
+    { "action": "shell", "resource": "cat *.env*", "effect": "deny" },
+    { "action": "shell", "resource": "cat *.env.example", "effect": "allow" },
+
+    // 2. Autonomy: subagents never ask the human directly; only conductor may (overridden in conductor.md).
+    { "action": "question", "resource": "*", "effect": "deny" },
+
+    // 3. Git & PR safety: work on release/<version> branches; never push to develop, tag, or merge PRs.
+    { "action": "shell", "resource": "git push *", "effect": "deny" },
+    { "action": "shell", "resource": "git push", "effect": "deny" },
+    { "action": "shell", "resource": "git tag *", "effect": "deny" },
+    { "action": "shell", "resource": "git reset --hard *", "effect": "deny" },
+    { "action": "shell", "resource": "git rebase *", "effect": "deny" },
+    { "action": "shell", "resource": "git commit --amend *", "effect": "deny" },
+    { "action": "shell", "resource": "git checkout -- *", "effect": "deny" },
+    { "action": "shell", "resource": "git clean *", "effect": "deny" },
+    { "action": "shell", "resource": "git branch -D *", "effect": "deny" },
+    { "action": "shell", "resource": "gh pr *", "effect": "deny" },
+    { "action": "shell", "resource": "gh release *", "effect": "deny" },
+    { "action": "shell", "resource": "gh repo *", "effect": "deny" },
+
+    // 4. Filesystem & Python execution safety.
+    { "action": "shell", "resource": "rm -rf /*", "effect": "deny" },
+    { "action": "shell", "resource": "rm -rf ~*", "effect": "deny" },
+    { "action": "shell", "resource": "rm -rf /tmp/opencode/*", "effect": "allow" },
+    { "action": "shell", "resource": "sudo *", "effect": "ask" },
+    { "action": "shell", "resource": "pip *", "effect": "deny" },
+    { "action": "shell", "resource": "pip3 *", "effect": "deny" },
+    { "action": "shell", "resource": "python *", "effect": "deny" },
+    { "action": "shell", "resource": "python3 *", "effect": "deny" },
+
+    // 5. External directory confinement (repo + standard caches + /tmp/opencode + system read-only).
+    { "action": "external_directory", "resource": "*", "effect": "deny" },
+    { "action": "external_directory", "resource": "/tmp/opencode/*", "effect": "allow" },
+    { "action": "external_directory", "resource": "~/.cache/*", "effect": "allow" },
+    { "action": "external_directory", "resource": "~/.cargo/*", "effect": "allow" },
+    { "action": "external_directory", "resource": "~/.rustup/*", "effect": "allow" },
+    { "action": "external_directory", "resource": "~/.local/share/uv/*", "effect": "allow" },
+    { "action": "external_directory", "resource": "~/.local/share/opencode/tool-output/*", "effect": "allow" },
+    { "action": "external_directory", "resource": "~/.bun/*", "effect": "allow" },
+    { "action": "external_directory", "resource": "/sys/*", "effect": "allow" },
+    { "action": "external_directory", "resource": "/proc/*", "effect": "allow" },
+    { "action": "external_directory", "resource": "/usr/*", "effect": "allow" },
+    { "action": "external_directory", "resource": "/opt/*", "effect": "allow" },
+    { "action": "external_directory", "resource": "/etc/*", "effect": "allow" },
+    { "action": "external_directory", "resource": "/run/*", "effect": "allow" },
+    { "action": "external_directory", "resource": "/var/lib/incus/*", "effect": "allow" },
+    { "action": "edit", "resource": "/sys/*", "effect": "deny" },
+    { "action": "edit", "resource": "/proc/*", "effect": "deny" },
+    { "action": "edit", "resource": "/usr/*", "effect": "deny" },
+    { "action": "edit", "resource": "/opt/*", "effect": "deny" },
+    { "action": "edit", "resource": "/etc/*", "effect": "deny" },
+    { "action": "edit", "resource": "/run/*", "effect": "deny" },
+    { "action": "edit", "resource": "/var/*", "effect": "deny" },
+
+    // 6. Keep unrelated global MCPs/skills/subagents out of cheap agent loops.
+    { "action": "execute", "resource": "*", "effect": "deny" },
+    { "action": "chrome-devtools_*", "resource": "*", "effect": "deny" },
+    { "action": "computer-use-linux_*", "resource": "*", "effect": "deny" },
+    { "action": "playwright_*", "resource": "*", "effect": "deny" },
+    { "action": "plaud_*", "resource": "*", "effect": "deny" },
+    { "action": "fastmail_*", "resource": "*", "effect": "deny" },
+    { "action": "linear-offworld_*", "resource": "*", "effect": "deny" },
+    { "action": "docs_*", "resource": "*", "effect": "deny" },
+    { "action": "sheets_*", "resource": "*", "effect": "deny" },
+    { "action": "slides_*", "resource": "*", "effect": "deny" },
+    { "action": "skill", "resource": "model-w*", "effect": "deny" },
+    { "action": "skill", "resource": "email-routine", "effect": "deny" },
+    { "action": "skill", "resource": "chrome-attach", "effect": "deny" },
+    { "action": "subagent", "resource": "model-w*", "effect": "deny" },
+    { "action": "subagent", "resource": "doer", "effect": "deny" }
+  ]
+}

@@ -1,0 +1,5 @@
+# Explicit edition + style_edition prevents OpenCode's single-file `rustfmt <file>`
+# hook from diverging from `cargo fmt --all` or failing on Rust 2024 syntax.
+edition = "2024"
+style_edition = "2024"
+max_width = 100
