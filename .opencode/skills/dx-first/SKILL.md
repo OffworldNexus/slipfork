@@ -7,16 +7,18 @@ description: MANDATORY for every planner, doc-writer, designer, architect, revie
 
 Slipfork exists to make spinning up dev environments, forking agent worktrees, and running heavy polyglot test suites feel **instantaneous and invisible**. If adopting Slipfork requires rewriting tests, fixing root-owned files, juggling `.env` files, or teaching an LLM custom shell syntax, we failed.
 
-## 1. Docs Before Design, Design Before Code
+## 1. Docs Before Design, Design Before Code — Without Selling Vaporware!
 
 Before writing internal Rust/TypeScript code for any feature, hypervisor backend, or language test adapter:
 
-1. **Write the lean user-facing documentation FIRST (`docs/`):**
-   - **Local developer machine (`slipfork up`):** One `snow.yml` manifest -> instant shared-UID environment where Postgres, Redis, S3, and app components run with the developer's exact `$UID:$GID` on the shared source tree. Zero `root:root` files, zero `.env` drift, and auto-generated local secrets (`!! random_string(50)`).
-   - **Parallel tests (`slipfork test`):** One command builds frontend/static artifacts once (cached orthogonally by Merkle hash), materializes the fixture snapshot DAG (`migrate -> seed_*`), and runs every heavy browser/BDD/transactional test in its own millisecond CoW clone on canonical ports.
-   - **AI coding agents (`@slipfork/opencode`):** Creating a worktree (`worktree.create`) implicitly forks the running dev world in milliseconds, and standard `shell` commands route automatically to the right CoW world based on `cwd` — **zero custom tool names or flags for the LLM to remember**.
-2. **Critique with fresh eyes** (`critic` with `dx` and `ai-ergonomics` lenses). Every extra CLI flag, second config file, manual `chmod`, or wall of kernel prose is a defect.
-3. **Only after DX acceptance**, write the upward IoC/DI technical design (`docs/design/<slug>.md`) and implement the code so documented snippets work verbatim.
+1. **Draft the Target DX Blueprint FIRST in `docs/design/dx-<slug>.md` (excluded from public docs!):**
+   - Never publish documentation in `docs/` or `README.md` that advertises CLI commands, flags, or integrations that do not exist yet in the compiled `slipfork` binary!
+   - Instead, write the dream user workflow first as an **unpublished DX spec** (`docs/design/dx-<slug>.md` or `docs/design/target-dx.md`, excluded via `exclude_docs` in `zensical.toml`), covering:
+     * **Local developer machine:** `snow.yml` (`modes.all` + `modes.local`), shared `$UID:$GID` mounts, `.localhost` routing, and auto-generated `!!` secrets.
+     * **Parallel tests:** World-owned stack + orthogonal **Artifact Volumes** + **Fixture Snapshot DAG**.
+     * **AI coding agents (`@slipfork/opencode`):** Implicit worktree forks and `cwd`-based `shell` routing.
+2. **Critique the DX spec with fresh eyes** (`critic` with `dx` and `ai-ergonomics` lenses). Every extra CLI flag, second config file, manual `chmod`, or wall of kernel prose is a defect.
+3. **Promote to published `docs/` ONLY alongside the real working implementation:** Public `docs/` (`zensical.toml`) and `README.md` describe **strictly what runs today** (with future vision kept clearly in `docs/VISION.md` or a small explicitly labeled roadmap corner). Every CLI command and config block in published `docs/` must work against the current binary.
 
 ## 2. Ruthless Documentation Leanness
 

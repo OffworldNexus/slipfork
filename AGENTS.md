@@ -20,7 +20,7 @@ The project runs autonomously when `plan/AUTOPILOT` is `on`: a cheap model (`dee
    - When a required external input, credential, host daemon, or specification constraint is missing or unreachable: **STOP immediately** and return `STATUS: blocked` so `lead`/`conductor` files `plan.py human add --kind missing-input`.
 2. **Strict IoC / DI & Mandatory Upward Direction Challenge (`review-ioc`):**
    - **Zero global/mutable state**, zero singletons, and zero direct `std::env::var`, filesystem, clock, network, or subprocess calls outside thin adapter implementations wired at the **single Composition Root**.
-   - Collaborators depend strictly on small, honest capability traits (`WorldEngine`, `SecretProvider`, `ArtifactStore`, `TestAdapter`, `ObsCollector`) — never concrete cross-layer structs or `match backend_kind` ladders.
+   - Collaborators depend strictly on small, honest capability traits (`WorldEngine`, `SecretProvider`, `ArtifactStore`, `TestAdapter`, `TunnelRegistrar`, `VcsWorkspace`) — never concrete cross-layer structs or `match backend_kind` ladders.
    - **Think UPWARDS before coding downwards:** Integrating a new backend, language, or feature must challenge whether the global DI tree and specification cover all directions cleanly. **If you cannot draw a clean, non-leaky DI tree, there is a blind spot in the specification.** Do NOT build a parallel pipeline or hack around a leaky trait — stop and escalate a `direction-challenge` (`plan.py human add --kind direction-challenge`) for human architectural feedback.
 3. **SemVer Honesty: Zero Pre-`1.0` Backward Compatibility & Zero Fallback Cruft (`review-cruft`):**
    - Workspace version `< 1.0.0` carries **zero backward-compatibility promises** unless explicitly requested by the human.
@@ -28,7 +28,7 @@ The project runs autonomously when `plan/AUTOPILOT` is `on`: a cheap model (`dee
 
 ## Core workflow rules
 
-4. **Developer Experience First (Docs Before Design, Design Before Code).** Write and critique the lean user-facing documentation (`docs/`) for **(a) Local laptop** (zero root-owned files, shared `$UID`), **(b) CI/CD & Parallel Tests**, and **(c) Agentic Worktrees** *before* writing internal designs or Rust/TS code. Load skill `dx-first`.
+4. **Developer Experience First — Zero Vaporware in Published Docs.** Draft and critique target DX specs in `docs/design/dx-<slug>.md` (excluded from the public Zensical site) *before* writing internal designs or Rust/TS code; promote pages and commands into published `docs/` and `README.md` **only** when the real feature exists and runs. Load skill `dx-first`.
 5. **Mandatory Quad Review Gate on Code & Design Tasks.** Every implementation or design task must pass:
    - `reviewer` (fresh-context functional review: re-runs all `# Acceptance` commands + `make check` + `guard.py` + `critical_guard.py`), **plus**
    - the three narrow-context goldfish smell reviewers in parallel: **`review-legality`**, **`review-ioc`**, and **`review-cruft`**.

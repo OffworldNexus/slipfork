@@ -49,7 +49,7 @@ Given `<node id>` and `<base sha>`:
    - `make check`
 4. Check:
    - **Scope:** Any modified/untracked file outside `NODE.md` `paths` (excluding `plan/` and `docs/knowledge/LESSONS.md`) or unauthorized critical-test edit is a `BLOCKER`.
-   - **Correctness & Edge Cases:** Secret redaction in `Debug`/`Display`, deterministic error variants, resource/process cleanup on error paths, accurate documentation vs code.
+   - **Correctness & Edge Cases:** Secret redaction in `Debug`/`Display`, deterministic error variants, resource/process cleanup on error paths, and **100% honest published documentation** (any public `docs/` or `README.md` command/flag/config that does not actually exist in the current binary is an automatic `BLOCKER`; pre-implementation DX blueprints live exclusively in `docs/design/` and `docs/VISION.md`).
    - **Test Honesty:** Critical tests assert both positive behavior and fail-closed refusal without tautological assertions or `sleep()` flakes.
 
 Reply with:

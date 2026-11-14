@@ -37,6 +37,8 @@ Hunt for these exact smells and cite `file:line`:
    - Reading raw `std::env::var` / `process.env` / `os.environ` to bypass a typed config/resolver contract; mutating framework/library private internals; silencing warnings via `#[allow(...)]`, `# noqa`, `@ts-ignore`, or `unwrap_or_default()` on non-trivial errors.
 4. **Reinventing Declared Dependencies (`MAJOR`):**
    - Hand-rolling parsers, crypto/randomness, temp-dir management, or protocol helpers already present in `Cargo.toml`, `package.json`, or sibling workspace crates.
+5. **Vaporware in Published Docs (`BLOCKER`):**
+   - Documenting CLI subcommands, flags, config keys, or integrations in published `docs/` (`zensical.toml`) or `README.md` that do not actually exist and work in the current codebase. Pre-implementation DX specs belong strictly in `docs/design/dx-*.md` / `docs/VISION.md` (excluded from Zensical's public build) until the real feature ships!
 
 Do not praise. Do not report formatting nits. Reply in ≤ 20 lines:
 ```text

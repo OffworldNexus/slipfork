@@ -34,7 +34,7 @@ Hunt for these exact smells and cite `file:line`:
    - Direct calls to `std::env::var`, `std::fs`, `std::process::Command`, network sockets, or wall-clock `SystemTime::now()` outside dedicated adapter structs or the single Composition Root (`crates/slipfork/src/main.rs` / `packages/opencode-slipfork/src/index.ts`).
 2. **Broken DI & Parallel Implementations (`BLOCKER` / `MAJOR`):**
    - Structs constructing their own collaborators instead of receiving trait-bounded/injected dependencies.
-   - Concrete adapter types used in domain logic where a trait (`WorldEngine`, `SecretProvider`, `ArtifactStore`, `TestAdapter`, `ObsCollector`) belongs.
+   - Concrete adapter types used in domain logic where a trait (`WorldEngine`, `SecretProvider`, `ArtifactStore`, `TestAdapter`, `TunnelRegistrar`, `VcsWorkspace`) belongs.
    - `match backend_kind` / `if is_incus` ladders or a parallel implementation pipeline bolted next to an existing one instead of implementing the shared trait + shared conformance test suite.
 3. **Upward Specification Blind Spot (`SPEC_BLIND_SPOT`):**
    - `Any::downcast_ref`, untyped `extra: HashMap<String, Value>` escape hatches, boolean mode flags (`local_hack: bool`), or trait methods that make sense for only 1 of N implementations.

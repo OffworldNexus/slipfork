@@ -37,8 +37,9 @@ rs-test: ## Run all Rust unit, integration, critical, and doc tests
 	cargo test --workspace --all-targets
 	cargo test --workspace --doc
 
-docs-check: ## Build public Zensical documentation site in --strict mode
+docs-check: ## Build public Zensical documentation site in --strict mode and verify CLI honesty
 	uvx --offline zensical build --strict
+	uv run --no-project tools/check_docs_honesty.py
 
 docs-serve: ## Preview the Zensical documentation site locally
 	uvx --offline zensical serve
