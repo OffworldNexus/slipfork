@@ -1,0 +1,16 @@
+[package]
+name = "slipfork"
+description = "Slipfork CLI & Composition Root: copy-on-write dev worlds, worktree forks, and snapshot-DAG test orchestration"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+clap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+slipfork-dag = { path = "../slipfork-dag" }
+slipfork-engine = { path = "../slipfork-engine" }
+slipfork-snow = { path = "../slipfork-snow" }

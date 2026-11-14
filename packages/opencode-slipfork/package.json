@@ -1,0 +1,10 @@
+{
+  "name": "@slipfork/opencode",
+  "version": "0.1.0",
+  "description": "OpenCode V2 plugin for implicit CoW worktree forking and zero-confusion shell routing",
+  "license": "Apache-2.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  }
+}

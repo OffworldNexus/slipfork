@@ -1,0 +1,17 @@
+[package]
+name = "slipfork-engine"
+description = "WorldEngine IoC port with Incus REST (/1.0) and Linux FICLONE + unprivileged netns/userns drivers"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+libc.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

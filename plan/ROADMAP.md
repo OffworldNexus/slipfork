@@ -1,0 +1,10 @@
+# Slipfork Roadmap (`plan/ROADMAP.md`)
+
+Owned by `strategist`. Workspace version `< 1.0.0` carries **zero backward-compatibility cruft**: one canonical way, immediate deletion of superseded drafts, and mandatory human sign-off at architecture crossroads.
+
+| ID | Target | Title | Exit Criteria |
+|---|---|---|---|
+| **M1** | `0.1.0` | **Global Target DX/DI Design & Real CoW PoC** | 1. Public dream-tool Zensical docs (`docs/`, `make docs-check` strict clean).<br/>2. Global IoC/DI architecture (`ARCHITECTURE.md` + `ADR-0001..0004`) with upward `direction-challenge` items surfaced in `plan/HUMAN.md`.<br/>3. Working Rust workspace (`slipfork-snow`, `slipfork-dag`, `slipfork-engine`, `slipfork`) + `@slipfork/opencode` V2 plugin with shared conformance & protected critical suites (`make check` green).<br/>4. Real measured PoC benchmark (`poc/run_benchmark.py` -> `docs/research/m1-poc-benchmark.md`) against PostgreSQL 18 + XFS `FICLONE` + Linux `netns` + warm Python Zygote + headless Chromium.<br/>5. **Human validation gate** on M1 design & PoC metrics before M2 implementation starts. |
+| **M2** | `0.2.0` | **`snow.yml` v2, OSPP v1 & Live Dev/Worktree Worlds (`slipfork up` & `fork`)** | Full `slipforkd` world lifecycle manager, live `IncusEngine` (LXC + QEMU VM stateful snapshots, `shift=true`) + `ReflinkNetnsEngine`, local HTTP ingress router (`snow.yml` `ingresses`), `OSPP v1` HTTP client + Kerfufoo reference spec, and live `@slipfork/opencode` plugin e2e tests. |
+| **M3** | `0.3.0` | **Polyglot Parallel Snapshot-DAG Test Orchestrator (`slipfork test`)** | End-to-end `ArtifactStore` + `FixtureDag` materializer, `TestAdapter` implementations + shared conformance suite for `pytest` (with `pytest-slipfork` & warm Zygote fork), `Playwright`/`Vitest`, `PHPUnit`/`Pest`, and `cargo test`/`nextest`. |
+| **M4** | `0.4.0` | **Blastit Parallel Wire Learning, Remote Cache & Agent Ecosystem** | `BlastitObsCollector` parallel `--blastit-learn` / `--blastit-check` union, CI snapshot/artifact cache export/import, `llms.txt`, and turnkey agent skills for OpenCode, Claude Code, Codex, and Junie. |
