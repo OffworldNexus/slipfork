@@ -1,7 +1,7 @@
 # ADR-0004: Zero-Confusion OpenCode Worktree Worlds via Native `worktree` & `shell` Hooks
 
-- **Status:** Accepted
-- **Date:** 2026-11-14
+- **Status:** Accepted — amended for M2 (single env-resolution owner in `slipfork exec`)
+- **Date:** 2026-11-15
 
 ## Context
 
@@ -12,8 +12,8 @@ Replacing OpenCode's built-in `shell` tool with a custom tool (`slipfork_exec`) 
 `@slipfork/opencode` uses three native OpenCode V2 server plugin hooks without renaming or replacing `shell`:
 
 1. **`ctx.worktree.transform`:** Registers a `WorktreeDefinition` that creates git worktrees under `.worktrees/<name>` (on XFS disk, never `/tmp` `tmpfs`) and atomically calls `slipfork fork` to clone the canonical `local` world; `remove` destroys both the CoW world and the git worktree.
-2. **`ctx.shell.hook("create.before")`:** Intercepts every shell invocation, looks up the CoW world bound to `event.cwd`, injects resolved `snow.yml` (`modes.local`) environment variables, and wraps execution through `slipfork exec --cwd <cwd>` inside that world's isolated network/service namespace.
-3. **`ctx.session.hook("context")`:** Appends a 2-line `<context key="slipfork-world">` note stating that the session's directory has its own isolated services and `snow.yml` envs pre-injected.
+2. **`ctx.shell.hook("create.before")`:** Intercepts every shell invocation, resolves the world bound to `event.cwd` from explicit `SlipforkProjectState` (M2.18), and wraps execution through `slipfork exec --cwd <cwd> -- ...` inside that world's isolated network/service namespace. **Environment resolution has one owner:** the `slipfork` binary (`exec_in_world` `ExecEnv`) resolves and injects `snow.yml` (`modes.local`) environment variables; the OpenCode plugin only routes commands and never resolves or injects `snow.yml` envs itself.
+3. **`ctx.session.hook("context")`:** Appends a 2-line `<context key="slipfork-world">` note naming the bound world + single `WorldOrigin` URL, stating that `shell` runs inside the isolated world with `snow.yml` envs injected by `slipfork exec` (never connect to host `127.0.0.1:5432`/`:8000`).
 
 ## Consequences
 

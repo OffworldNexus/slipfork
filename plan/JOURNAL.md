@@ -173,3 +173,9 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-15T16:40 [M2.21] (planner) created (task) Isolated: live IncusEngine conformance and declared support promotion (gated on H-004)
 - 2026-11-15T16:40 [M2.22] (planner) created (task) Isolated: concrete WeavedRegistrar IPC adapter and declared support promotion (gated on H-006)
 - 2026-11-15T16:43 [M2.15] (strategist) edited fields
+- 2026-11-15T16:46 [M2.1] (lead) status ready -> active
+- 2026-11-15T16:46 [M2.1] (lead) attempt 1/3 started
+- 2026-11-15T16:46 ESCALATION #11 -> architect for M2.1 by lead: M2.1: author ADR-0008 and align ADR/ARCHITECTURE/target-DX (core DI tree lock)
+- 2026-11-15T16:46 [M2.1] (lead) base f5e2976e4d064984bd50b57506b4409419f48bdd
+- 2026-11-15T17:32 HUMAN H-010 [direction-challenge] opened by lead (node M2.1)
+- 2026-11-15T17:33 [M2.1] (lead) Quad gate R2: reviewer/legality/ioc/cruft PASS, 0 BLOCKER; 7 MAJOR + minors recorded in FOLLOWUPS.md; 3 cross-node blind spots escalated as H-010

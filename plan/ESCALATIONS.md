@@ -14,3 +14,4 @@ Every call to an expensive-tier agent (`strategist`, `architect`, `expert`) is r
 | 2026-11-15T10:39 | M1.8 | architect | lead | Owner review-gate corrections: single-origin invariant, support tiers, typed coverage + OSPP precedence clarification |
 | 2026-11-15T11:23 | M1 | strategist | conductor | final milestone gate for 0.1.0 after owning M1.8 design corrections and M1.9 code alignment |
 | 2026-11-15T16:24 | M2 | strategist | conductor | Amend ROADMAP M2/M3 for owner directives (WebSocket OSPP + tpmd auth + DB dump + ResourceStrategy, hook debugging, systemd user slipforkd, 31-byte service truncation, db/redis/forward CLI) and decompose M2 |
+| 2026-11-15T16:46 | M2.1 | architect | lead | M2.1: author ADR-0008 and align ADR/ARCHITECTURE/target-DX (core DI tree lock) |
