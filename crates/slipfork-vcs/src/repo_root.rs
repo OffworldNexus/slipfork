@@ -13,8 +13,8 @@ use std::sync::Arc;
 
 use slipfork_world::ProjectSlug;
 
-use crate::git_command::{GitOutput, run_git, run_git_checked};
 use crate::ports::{ProjectSlugOverride, RepoRoot, RepoRootResolver, VcsError};
+use crate::tool_command::{ToolOutput, run_git, run_git_checked};
 
 /// First line Git emits when `start` is outside any repository (`LC_ALL=C`).
 const NOT_A_REPOSITORY_PREFIX: &str = "fatal: not a git repository (or any ";
@@ -162,7 +162,7 @@ impl RepoRootResolver for GitRepoRootResolver {
 }
 
 /// `true` when Git reported that `start` is outside any repository.
-fn is_not_a_repository(output: &GitOutput) -> bool {
+fn is_not_a_repository(output: &ToolOutput) -> bool {
     output
         .stderr
         .trim_start()

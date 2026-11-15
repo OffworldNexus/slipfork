@@ -2,12 +2,18 @@
 //! and their `RepoRoot` / `WorkspaceRequest` / `WorkspaceRefs` / `WorkspaceChanges` value types.
 //!
 //! Zero subprocess spawning, zero environment reads, zero clock reads: adapters own all ambient
-//! access, and no `AdapterKind` discriminator exists outside `slipforkd`'s factory.
+//! access, and no backend-kind discriminator exists outside `slipforkd`'s factory.
 
 use std::path::{Path, PathBuf};
 
 use slipfork_world::{ProjectSlug, WorldError};
 use thiserror::Error;
+
+/// Repository-relative directory holding every fork checkout.
+///
+/// Shared by both adapters: a fork workspace always lives at `<vcs_root>/.worktrees/<fork>`, inside
+/// the repository and never on a tmpfs.
+pub const WORKTREES_DIRECTORY: &str = ".worktrees";
 
 /// Hard cap on the paths a single [`VcsWorkspace::changes`] call reports.
 ///
@@ -48,8 +54,8 @@ pub enum VcsError {
         "fork '{fork}' already exists (refs/heads/{fork}, refs/slipfork/{fork}/wip, or .worktrees/{fork}); refusing to overwrite it"
     )]
     WorkspaceExists { fork: String },
-    #[error("required tool '{tool}' was not found on PATH")]
-    ToolMissing { tool: String },
+    #[error("required tool '{tool}' was not found on PATH: {hint}")]
+    ToolMissing { tool: String, hint: String },
     #[error("failed to spawn `{command}`: {message}")]
     CommandSpawn { command: String, message: String },
     #[error("`{command}` failed ({status}): {stderr}")]
@@ -159,7 +165,24 @@ pub trait RepoRootResolver: Send + Sync {
 pub trait VcsWorkspace: Send + Sync {
     fn fork_name(&self) -> &str;
     fn path(&self) -> &Path;
-    fn refs(&self) -> WorkspaceRefs;
+    /// The two refs every adapter exposes for [`VcsWorkspace::fork_name`].
+    ///
+    /// `refs/heads/<fork>` is the committed branch; `refs/slipfork/<fork>/wip` is the dirty view,
+    /// which deliberately lives outside `refs/heads/*` because Git's D/F refname lock forbids it
+    /// from coexisting with `refs/heads/<fork>` (`ADR-0005` §3). Both adapters share this canonical
+    /// layout, so the mapping is defined once here instead of being re-implemented per backend.
+    fn refs(&self) -> WorkspaceRefs {
+        WorkspaceRefs {
+            base: fork_branch_ref(self.fork_name()),
+            wip: fork_snapshot_ref(self.fork_name()),
+        }
+    }
+    /// Resolve one of [`VcsWorkspace::refs`] to the commit object id consumers fetch.
+    ///
+    /// `git-remote-slipfork` advertises these ids from `list` and verifies every `fetch` request
+    /// against them, so the ids an adapter reports and the objects Git receives can never diverge.
+    fn resolve(&self, reference: &str) -> Result<String, VcsError>;
+    /// Live dirty view of the checkout relative to [`WorkspaceRefs::base`].
     fn changes(&self) -> Result<WorkspaceChanges, VcsError>;
     /// Idempotent teardown: removes the checkout, the fork branch, and the snapshot ref.
     fn forget(&self) -> Result<(), VcsError>;

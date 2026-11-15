@@ -1,23 +1,35 @@
 //! Protected critical tests for `slipfork-vcs` (`R17`): `RepoRootResolver` + `VcsWorkspace`
-//! conformance for `GitWorktreeAdapter`, the D/F-safe `refs/heads/<fork>` +
-//! `refs/slipfork/<fork>/wip` layout, the untouched live `.git/index`, and fail-closed paths.
+//! conformance for `GitWorktreeAdapter` and `JjWorkspaceAdapter`, the D/F-safe `refs/heads/<fork>` +
+//! `refs/slipfork/<fork>/wip` layout, the untouched live `.git/index`, the `git-remote-slipfork`
+//! line protocol end to end, and the fail-closed paths.
 
 mod support;
 
+// The matrix body lives in a protected `critical_*` file (see `tools/critical_guard.py`), so a
+// weakened assertion can never hide in an unprotected test helper.
+#[path = "critical_conformance_matrix.rs"]
+mod matrix;
+
 use std::fs;
+use std::io::Cursor;
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
 
+use slipfork_vcs::remote_helper::{self, MAX_FRAME_BYTES, RemoteHelperError};
 use slipfork_vcs::{
-    GitRepoRootResolver, GitWorktreeAdapter, MAX_WORKSPACE_CHANGES, NoProjectOverride, RepoRoot,
-    RepoRootResolver, VcsError, VcsWorkspace, VcsWorkspaceFactory, WorkspaceRequest,
+    GitRepoRootResolver, GitWorktreeAdapter, JjWorkspaceAdapter, MAX_WORKSPACE_CHANGES,
+    NoProjectOverride, RepoRoot, RepoRootResolver, VcsError, VcsWorkspace, VcsWorkspaceFactory,
+    WorkspaceRequest,
 };
-use slipfork_world::WorldError;
-use support::{FailingOverride, FixedOverride, assert_vcs_workspace_conformance, request};
+use slipfork_world::{ProjectSlug, WorldError};
+use support::{FailingOverride, FixedOverride, request, tool_missing_skip_line};
 
 /// Environment variable carrying the fixture root into the missing-`git` child probe.
 const MISSING_GIT_CHILD_ENV: &str = "SLIPFORK_VCS_MISSING_GIT_CHILD_ROOT";
+/// Environment variable carrying the scratch root into the missing-`jj` child probe.
+const MISSING_JJ_CHILD_ENV: &str = "SLIPFORK_VCS_MISSING_JJ_CHILD_ROOT";
 
 /// Extract a failed `create_workspace` error (`Box<dyn VcsWorkspace>` is not `Debug`).
 fn expect_create_error(result: Result<Box<dyn VcsWorkspace>, VcsError>, context: &str) -> VcsError {
@@ -29,7 +41,7 @@ fn expect_create_error(result: Result<Box<dyn VcsWorkspace>, VcsError>, context:
 
 #[test]
 fn git_conformance_matrix_satisfies_shared_suite() {
-    assert_vcs_workspace_conformance(&GitWorktreeAdapter::new());
+    matrix::assert_vcs_workspace_conformance(&GitWorktreeAdapter::new(), &support::GitRepos);
 }
 
 #[test]
@@ -279,12 +291,16 @@ fn fail_closed_child_probe_without_git_on_path() {
     let error = GitRepoRootResolver::new(Arc::new(NoProjectOverride))
         .resolve(Path::new(&root))
         .expect_err("git is absent from PATH");
-    assert_eq!(
-        error,
+    match error {
         VcsError::ToolMissing {
-            tool: "git".to_owned()
+            tool: ref seen,
+            ref hint,
+        } => {
+            assert_eq!(seen, "git");
+            assert!(hint.contains("install Git"), "{hint}");
         }
-    );
+        other => panic!("expected ToolMissing, got {other}"),
+    }
 }
 
 #[test]
@@ -508,4 +524,376 @@ fn repo_root_fails_closed_for_bare_submodule_and_separate_git_dir() {
         fs::canonicalize(&checkout).expect("canonicalize")
     );
     assert_eq!(rescued.project.as_str(), "sep-rescued");
+}
+
+#[test]
+fn jj_conformance_matrix_satisfies_shared_suite() {
+    let adapter = JjWorkspaceAdapter::new();
+    let probe_root = support::disk_tempdir("jj-detect");
+    match adapter.detect(probe_root.path()) {
+        // The identical matrix the Git adapter passes, run against a colocated Jujutsu repository.
+        Ok(()) => matrix::assert_vcs_workspace_conformance(&adapter, &support::JjRepos),
+        Err(error) => {
+            // A host without Jujutsu skips exactly once, and never silently.
+            let line = tool_missing_skip_line(&error)
+                .unwrap_or_else(|| panic!("the jj probe failed unexpectedly: {error}"));
+            assert_eq!(line, "skipped: ToolMissing(jj)");
+
+            // ... and the runtime path still fails closed, with no Git fallback and no artifacts.
+            let fixture = support::fixture("jj-absent-conformance");
+            let runtime = expect_create_error(
+                adapter.create_workspace(&request(&fixture.repo, "feat-absent")),
+                "create_workspace without jj fails closed",
+            );
+            assert!(
+                matches!(runtime, VcsError::ToolMissing { ref tool, .. } if tool == "jj"),
+                "{runtime}"
+            );
+            assert!(
+                !fixture.worktree("feat-absent").exists()
+                    && !fixture.ref_exists("refs/heads/feat-absent"),
+                "a refused Jujutsu fork leaves no artifacts behind"
+            );
+            println!("{line}");
+        }
+    }
+}
+
+#[test]
+fn jj_absent_fails_closed_with_the_project_override_hint() {
+    if std::env::var_os(MISSING_JJ_CHILD_ENV).is_some() {
+        return;
+    }
+    let empty_path = support::disk_tempdir("empty-path-jj");
+    let scratch = support::disk_tempdir("jj-absent-runtime");
+    let output = Command::new(std::env::current_exe().expect("current test binary"))
+        .args([
+            "--exact",
+            "jj_absent_child_probe_reports_tool_missing",
+            "--nocapture",
+        ])
+        .env("PATH", empty_path.path())
+        .env(MISSING_JJ_CHILD_ENV, scratch.path())
+        .output()
+        .expect("re-execute the test binary without jj on PATH");
+    assert!(
+        output.status.success(),
+        "child probe failed:\n{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        !String::from_utf8_lossy(&output.stdout).contains("skipped:"),
+        "a missing jj is a hard fail-closed path, never a skip"
+    );
+}
+
+#[test]
+fn jj_absent_child_probe_reports_tool_missing() {
+    let Some(root) = std::env::var_os(MISSING_JJ_CHILD_ENV) else {
+        return;
+    };
+    let root = Path::new(&root);
+    let adapter = JjWorkspaceAdapter::new();
+    let error = adapter.detect(root).expect_err("jj is absent from PATH");
+    match error {
+        VcsError::ToolMissing {
+            tool: ref seen,
+            ref hint,
+        } => {
+            assert_eq!(seen, "jj");
+            assert!(
+                hint.contains("project = \"<slug>\"") && hint.contains("slipfork.toml"),
+                "the jj diagnostic points at the project override, got: {hint}"
+            );
+        }
+        other => panic!("expected ToolMissing, got {other}"),
+    }
+
+    let root = fs::canonicalize(root).expect("canonicalize the scratch root");
+    let repo = RepoRoot {
+        vcs_root: root.clone(),
+        worktree_root: root,
+        project: ProjectSlug::parse("jj-absent").expect("valid scratch slug"),
+    };
+    let runtime = expect_create_error(
+        adapter.create_workspace(&WorkspaceRequest {
+            repo,
+            fork: "feat-jj".to_owned(),
+            base: None,
+        }),
+        "a fork request without jj fails closed",
+    );
+    assert!(
+        matches!(runtime, VcsError::ToolMissing { ref tool, .. } if tool == "jj"),
+        "{runtime}"
+    );
+}
+
+/// Commit id the protocol double advertises for `refs/heads/feat-billing`.
+const BASE_OID: &str = "1111111111111111111111111111111111111111";
+/// Commit id the protocol double advertises for `refs/slipfork/feat-billing/wip`.
+const WIP_OID: &str = "2222222222222222222222222222222222222222";
+
+/// Serve `requests` against `workspace`, returning the exact response bytes.
+fn serve(workspace: &dyn VcsWorkspace, requests: &str) -> String {
+    let mut output = Vec::new();
+    remote_helper::serve(workspace, Cursor::new(requests.as_bytes()), &mut output)
+        .expect("the helper serves the whole command stream");
+    String::from_utf8(output).expect("helper responses are UTF-8")
+}
+
+/// The byte-exact protocol double every `remote_helper_*` test drives.
+fn protocol_double() -> support::RefWorkspace {
+    support::RefWorkspace::new(BASE_OID, WIP_OID)
+}
+
+#[test]
+fn remote_helper_capabilities_are_byte_exact() {
+    assert_eq!(
+        serve(&protocol_double(), "capabilities\n"),
+        "fetch\npush\noption\n\n"
+    );
+}
+
+#[test]
+fn remote_helper_list_advertises_base_and_wip_refs() {
+    let response = serve(&protocol_double(), "capabilities\nlist\n\n");
+    assert_eq!(
+        response,
+        format!(
+            "fetch\npush\noption\n\n{BASE_OID} refs/heads/feat-billing\n{WIP_OID} refs/slipfork/feat-billing/wip\n\n"
+        ),
+        "list answers one '<sha> <refname>' line per fork ref, space separated, blank terminated"
+    );
+    assert!(
+        !response.contains("refs/heads/feat-billing/wip"),
+        "Git's D/F refname lock forbids refs/heads/<fork>/wip"
+    );
+}
+
+#[test]
+fn remote_helper_list_for_push_advertises_the_same_refs() {
+    assert_eq!(
+        serve(&protocol_double(), "list for-push\n"),
+        format!("{BASE_OID} refs/heads/feat-billing\n{WIP_OID} refs/slipfork/feat-billing/wip\n\n")
+    );
+}
+
+#[test]
+fn remote_helper_fetch_batch_verifies_the_advertised_ids() {
+    let workspace = protocol_double();
+    assert_eq!(
+        serve(
+            &workspace,
+            &format!("fetch {BASE_OID} refs/heads/feat-billing\n\n")
+        ),
+        "\n",
+        "a completed fetch batch is one blank line, with nothing left to transfer"
+    );
+    assert_eq!(
+        serve(
+            &workspace,
+            &format!(
+                "fetch {BASE_OID} refs/heads/feat-billing\nfetch {WIP_OID} refs/slipfork/feat-billing/wip\n\n"
+            )
+        ),
+        "\n"
+    );
+
+    let mut output = Vec::new();
+    let error = remote_helper::serve(
+        &workspace,
+        Cursor::new(format!("fetch {WIP_OID} refs/heads/feat-billing\n\n").as_bytes()),
+        &mut output,
+    )
+    .expect_err("a sha that does not match the advertised ref fails closed");
+    assert!(
+        matches!(error, RemoteHelperError::Malformed { .. }),
+        "{error}"
+    );
+    assert!(output.is_empty(), "nothing is written for a refused fetch");
+
+    let mut output = Vec::new();
+    let error = remote_helper::serve(
+        &workspace,
+        Cursor::new(format!("fetch {BASE_OID} refs/heads/unadvertised\n\n").as_bytes()),
+        &mut output,
+    )
+    .expect_err("an unadvertised ref fails closed");
+    assert!(
+        matches!(error, RemoteHelperError::Malformed { .. }),
+        "{error}"
+    );
+
+    let mut output = Vec::new();
+    let error = remote_helper::serve(
+        &workspace,
+        Cursor::new(format!("fetch {BASE_OID} refs/heads/feat-billing\n").as_bytes()),
+        &mut output,
+    )
+    .expect_err("an unterminated batch fails closed");
+    assert!(
+        matches!(error, RemoteHelperError::Malformed { .. }),
+        "{error}"
+    );
+}
+
+#[test]
+fn remote_helper_push_is_refused_for_every_ref() {
+    let response = serve(
+        &protocol_double(),
+        "push refs/heads/feat-billing:refs/heads/feat-billing\npush +HEAD:refs/heads/other\n\n",
+    );
+    assert_eq!(
+        response
+            .lines()
+            .filter(|line| line.starts_with("error "))
+            .count(),
+        2,
+        "every pushed ref is refused individually, got:\n{response}"
+    );
+    assert!(response.contains("error refs/heads/feat-billing "));
+    assert!(response.contains("error refs/heads/other "));
+    assert!(
+        response.ends_with("\n\n"),
+        "the status report is blank terminated, got:\n{response}"
+    );
+}
+
+#[test]
+fn remote_helper_unknown_verb_answers_unsupported_and_keeps_serving() {
+    assert_eq!(
+        serve(
+            &protocol_double(),
+            "export\nexport refs/heads/x\ncapabilities\n"
+        ),
+        "unsupported\nunsupported\nfetch\npush\noption\n\n",
+        "an unknown verb is answered, never fatal"
+    );
+}
+
+#[test]
+fn remote_helper_option_responses_follow_the_documented_vocabulary() {
+    assert_eq!(
+        serve(
+            &protocol_double(),
+            "option progress false\noption verbosity 2\noption depth 1\noption verbosity 9\n"
+        ),
+        "ok\nok\nunsupported\nerror unsupported verbosity value '9'\n"
+    );
+}
+
+#[test]
+fn remote_helper_rejects_oversized_frames() {
+    let oversized = "x".repeat(MAX_FRAME_BYTES + 8);
+    let mut output = Vec::new();
+    let error = remote_helper::serve(
+        &protocol_double(),
+        Cursor::new(oversized.as_bytes()),
+        &mut output,
+    )
+    .expect_err("an oversized frame fails closed");
+    assert!(
+        matches!(error, RemoteHelperError::FrameTooLarge { .. }),
+        "{error}"
+    );
+}
+
+#[test]
+fn remote_helper_git_fetch_round_trip_from_a_scratch_repository() {
+    let fixture = support::dirty_fixture("acme-app");
+    let workspace: Box<dyn VcsWorkspace> = GitWorktreeAdapter::new()
+        .create_workspace(&request(&fixture.repo, "feat-billing"))
+        .expect("dirty fork workspace");
+    let base = fixture.rev("refs/heads/feat-billing");
+    let wip = fixture.rev("refs/slipfork/feat-billing/wip");
+    assert_ne!(base, wip, "the dirty fork advertises two distinct commits");
+
+    // A real `git fetch` speaks to the real handler: `git-remote-slipfork` is a relay script that
+    // moves bytes between Git and two FIFOs, while the protocol itself runs in this process.
+    let scratch = support::disk_tempdir("remote-helper-round-trip");
+    let bin = scratch.path().join("bin");
+    fs::create_dir_all(&bin).expect("create the helper directory");
+    let requests = scratch.path().join("requests");
+    let responses = scratch.path().join("responses");
+    support::mkfifo(&requests);
+    support::mkfifo(&responses);
+    let helper = bin.join("git-remote-slipfork");
+    fs::write(
+        &helper,
+        format!(
+            "#!/bin/sh\nexec 3<&0\ncat <&3 > '{}' &\nexec cat '{}'\n",
+            requests.display(),
+            responses.display()
+        ),
+    )
+    .expect("write the relay helper");
+    let mut permissions = fs::metadata(&helper)
+        .expect("helper metadata")
+        .permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&helper, permissions).expect("make the helper executable");
+
+    let server = std::thread::spawn(move || {
+        let requests = fs::File::open(&requests).expect("open the request fifo");
+        let responses = fs::File::options()
+            .write(true)
+            .open(&responses)
+            .expect("open the response fifo");
+        remote_helper::serve(
+            workspace.as_ref(),
+            std::io::BufReader::new(requests),
+            responses,
+        )
+        .expect("serve the fork workspace to git");
+    });
+
+    support::git_ok_in(
+        fixture.root(),
+        &["remote", "add", "slipfork", "slipfork://test"],
+    );
+    let path = format!(
+        "{}:{}",
+        bin.display(),
+        std::env::var("PATH").expect("PATH is set for the test process")
+    );
+    let root = fixture.root().display().to_string();
+    let output = Command::new("timeout")
+        .args([
+            "--signal=KILL",
+            "120",
+            "git",
+            "-C",
+            &root,
+            "fetch",
+            "slipfork",
+        ])
+        .args([
+            "refs/heads/feat-billing:refs/remotes/slipfork/feat-billing",
+            "+refs/slipfork/feat-billing/wip:refs/slipfork/fetched/wip",
+        ])
+        .env("PATH", &path)
+        .env("LC_ALL", "C")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .output()
+        .expect("run a real git fetch through the remote helper");
+    assert!(
+        output.status.success(),
+        "git fetch slipfork failed:\n{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    server.join().expect("the helper session finishes");
+
+    assert_eq!(
+        fixture.rev("refs/remotes/slipfork/feat-billing"),
+        base,
+        "`git fetch slipfork <fork>` moved refs/heads/<fork> into the fetching repository"
+    );
+    assert_eq!(
+        fixture.rev("refs/slipfork/fetched/wip"),
+        wip,
+        "`git fetch slipfork '+refs/slipfork/<fork>/wip:...'` moved the snapshot ref"
+    );
 }

@@ -2,9 +2,9 @@
 //! the shared [`assert_vcs_workspace_conformance`] matrix every `VcsWorkspaceFactory` must pass.
 //!
 //! Compiled only into `tests/` targets. Every repository lives under
-//! `$HOME/.cache/slipfork-critical-tests` (never `/tmp` `tmpfs`), and every Git invocation scrubs
-//! the ambient `GIT_DIR` / `GIT_WORK_TREE` / `GIT_INDEX_FILE` / `GIT_COMMON_DIR` variables so the
-//! test process environment can never redirect a probe.
+//! `$HOME/.cache/slipfork-critical-tests` (never `/tmp` `tmpfs`), and every Git and Jujutsu
+//! invocation scrubs the ambient `GIT_DIR` / `GIT_WORK_TREE` / `GIT_INDEX_FILE` / `GIT_COMMON_DIR`
+//! variables so the test process environment can never redirect a probe.
 
 use std::ffi::OsStr;
 use std::fs;
@@ -14,8 +14,8 @@ use std::process::{Command, Output};
 use std::sync::{Arc, Mutex};
 
 use slipfork_vcs::{
-    GitRepoRootResolver, NoProjectOverride, ProjectSlugOverride, RepoRoot, RepoRootResolver,
-    VcsError, VcsWorkspaceFactory, WorkspaceChanges, WorkspaceRefs, WorkspaceRequest,
+    ProjectSlugOverride, RepoRoot, VcsError, VcsWorkspace, WorkspaceChanges, WorkspaceRefs,
+    WorkspaceRequest,
 };
 use slipfork_world::ProjectSlug;
 use tempfile::TempDir;
@@ -105,6 +105,28 @@ impl Fixture {
         let metadata = fs::metadata(&index).expect("live .git/index exists");
         (metadata.ino(), metadata.mtime(), metadata.mtime_nsec())
     }
+
+    /// Turn the clean working tree into the conformance matrix's dirty example.
+    ///
+    /// One modified, one deleted, and one untracked path is enough to exercise every bucket the
+    /// `WorkspaceChanges` port reports.
+    pub fn make_dirty(&self) {
+        self.write("tracked.txt", "v2\n");
+        self.remove("deleted.txt");
+        self.write("untracked.txt", "new\n");
+    }
+
+    /// Commit `.gitignore` entries for Slipfork's in-repo state directories.
+    ///
+    /// A fork checkout lives at `.worktrees/<fork>`, and Jujutsu snapshots every non-ignored path
+    /// into the working-copy commit, so a repository with in-repo forks must ignore them (exactly
+    /// like a Git repository that does not want its own fork checkouts in `git status`).
+    pub fn commit_state_gitignore(&mut self) {
+        self.write(".gitignore", ".worktrees/\n.slipfork/\n");
+        self.git_ok(&["add", "--", ".gitignore"]);
+        self.git_ok(&["commit", "-q", "-m", "ignore slipfork state"]);
+        self.base = self.git_ok(&["rev-parse", "HEAD"]);
+    }
 }
 
 /// Build a clean fixture repository with one modified, one deleted, and one untracked candidate.
@@ -139,10 +161,170 @@ pub fn fixture(name: &str) -> Fixture {
 /// Build a fixture whose working tree has one modified, one deleted, and one untracked file.
 pub fn dirty_fixture(name: &str) -> Fixture {
     let fixture = fixture(name);
-    fixture.write("tracked.txt", "v2\n");
-    fixture.remove("deleted.txt");
-    fixture.write("untracked.txt", "new\n");
+    fixture.make_dirty();
     fixture
+}
+
+/// Builds the repository flavours the shared conformance matrix runs against.
+///
+/// The matrix is identical for every adapter; only the repository a fork is created from differs
+/// (a plain Git checkout, or a Jujutsu checkout with a colocated Git store).
+pub trait ConformanceRepos {
+    /// A repository whose working tree has one modified, one deleted, and one untracked file.
+    fn dirty(&self, name: &str) -> Fixture;
+    /// A repository with a clean working tree.
+    fn clean(&self, name: &str) -> Fixture;
+}
+
+/// Git repository flavour: the matrix runs against an ordinary checkout.
+pub struct GitRepos;
+
+impl ConformanceRepos for GitRepos {
+    fn dirty(&self, name: &str) -> Fixture {
+        dirty_fixture(name)
+    }
+
+    fn clean(&self, name: &str) -> Fixture {
+        fixture(name)
+    }
+}
+
+/// Jujutsu repository flavour: a Git fixture with Slipfork's state directories ignored, then
+/// `jj git init --colocate` so fork refs are Git-fetchable.
+pub struct JjRepos;
+
+impl ConformanceRepos for JjRepos {
+    fn dirty(&self, name: &str) -> Fixture {
+        let fixture = jj_fixture(name);
+        fixture.make_dirty();
+        fixture
+    }
+
+    fn clean(&self, name: &str) -> Fixture {
+        jj_fixture(name)
+    }
+}
+
+/// Build a colocated Jujutsu repository from a Git fixture.
+fn jj_fixture(name: &str) -> Fixture {
+    let mut fixture = fixture(name);
+    fixture.commit_state_gitignore();
+    jj_ok_in(fixture.root(), &["git", "init", "--colocate"]);
+    fixture
+}
+
+/// One raw Jujutsu invocation inside `cwd` with a hermetic environment.
+pub fn jj_in(cwd: &Path, args: &[&str]) -> Output {
+    let mut command = Command::new("jj");
+    command
+        .current_dir(cwd)
+        .args(args)
+        .env("LC_ALL", "C")
+        .env("LANGUAGE", "C")
+        .env("JJ_USER", "Slipfork Test")
+        .env("JJ_EMAIL", "test@localhost");
+    for key in [
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_INDEX_FILE",
+        "GIT_COMMON_DIR",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_CEILING_DIRECTORIES",
+    ] {
+        command.env_remove(key);
+    }
+    command.output().expect("spawn jj")
+}
+
+/// [`jj_in`] asserting a zero exit, returning trimmed stdout.
+pub fn jj_ok_in(cwd: &Path, args: &[&str]) -> String {
+    let output = jj_in(cwd, args);
+    assert!(
+        output.status.success(),
+        "jj {:?} failed in {}: {}",
+        args,
+        cwd.display(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout)
+        .expect("jj stdout is UTF-8")
+        .trim()
+        .to_owned()
+}
+
+/// The one explicit line a hermetic conformance runner prints when an adapter's tool is absent.
+///
+/// A family whose tool is missing must skip **loudly** (`skipped: ToolMissing(jj)`), never pass
+/// silently: the caller still fails the run when the Git family itself cannot execute.
+pub fn tool_missing_skip_line(error: &VcsError) -> Option<String> {
+    match error {
+        VcsError::ToolMissing { tool, .. } => Some(format!("skipped: ToolMissing({tool})")),
+        _ => None,
+    }
+}
+
+/// Create a named FIFO, so a test can relay Git's helper protocol into an in-process handler.
+pub fn mkfifo(path: &Path) {
+    let status = Command::new("mkfifo")
+        .arg(path)
+        .status()
+        .expect("spawn mkfifo");
+    assert!(status.success(), "mkfifo {} failed", path.display());
+}
+
+/// [`VcsWorkspace`] double with fixed ref ids, for byte-exact protocol assertions.
+///
+/// `remote_helper` is pure over the port, so the protocol frames can be pinned exactly without a
+/// repository; the adapters that back the port in production are covered by the conformance matrix.
+pub struct RefWorkspace {
+    pub base: String,
+    pub wip: String,
+}
+
+impl RefWorkspace {
+    pub fn new(base: &str, wip: &str) -> Self {
+        Self {
+            base: base.to_owned(),
+            wip: wip.to_owned(),
+        }
+    }
+}
+
+impl VcsWorkspace for RefWorkspace {
+    fn fork_name(&self) -> &str {
+        "feat-billing"
+    }
+
+    fn path(&self) -> &Path {
+        Path::new("/repo/.worktrees/feat-billing")
+    }
+
+    fn refs(&self) -> WorkspaceRefs {
+        WorkspaceRefs {
+            base: "refs/heads/feat-billing".to_owned(),
+            wip: "refs/slipfork/feat-billing/wip".to_owned(),
+        }
+    }
+
+    fn resolve(&self, reference: &str) -> Result<String, VcsError> {
+        match reference {
+            "refs/heads/feat-billing" => Ok(self.base.clone()),
+            "refs/slipfork/feat-billing/wip" => Ok(self.wip.clone()),
+            other => Err(VcsError::UnexpectedOutput {
+                command: "resolve".to_owned(),
+                message: format!("the double has no ref '{other}'"),
+            }),
+        }
+    }
+
+    fn changes(&self) -> Result<WorkspaceChanges, VcsError> {
+        Ok(WorkspaceChanges::default())
+    }
+
+    fn forget(&self) -> Result<(), VcsError> {
+        Ok(())
+    }
 }
 
 /// One `create_workspace` request for `repo`; `None` forks the requesting checkout's `HEAD`.
@@ -190,185 +372,6 @@ impl ProjectSlugOverride for FailingOverride {
             message: "slipfork.toml is unreadable".to_owned(),
         })
     }
-}
-
-/// The shared `VcsWorkspace` conformance matrix (`M2.11` `NODE.md` #5, reused by `M2.12`).
-///
-/// Covered for every adapter: clean fork with `wip == base`, dirty fork with untracked + modified +
-/// deleted files whose two refs coexist as distinct commits, base ancestry, `.worktrees/<fork>`
-/// inside the repository, a second sibling fork staying clean, source `ProjectSlugOverride`
-/// precedence, repeated-create refusal, `forget()` idempotency, and an untouched live `.git/index`.
-pub fn assert_vcs_workspace_conformance(factory: &dyn VcsWorkspaceFactory) {
-    let fixture = dirty_fixture("acme-app");
-    let index_before = fixture.index_stat();
-
-    let dirty_request = request(&fixture.repo, "feat-dirty");
-    let dirty = factory
-        .create_workspace(&dirty_request)
-        .expect("dirty fork is created");
-    assert_eq!(dirty.fork_name(), "feat-dirty");
-    assert_eq!(dirty.path(), fixture.worktree("feat-dirty"));
-    assert!(
-        dirty.path().starts_with(fixture.root()),
-        ".worktrees/<fork> lives inside the repository, got {}",
-        dirty.path().display()
-    );
-    assert!(
-        !dirty.path().starts_with("/tmp"),
-        ".worktrees/<fork> must never live on /tmp tmpfs"
-    );
-    assert_eq!(
-        dirty.refs(),
-        WorkspaceRefs {
-            base: "refs/heads/feat-dirty".to_owned(),
-            wip: "refs/slipfork/feat-dirty/wip".to_owned(),
-        }
-    );
-    assert_eq!(
-        fixture.rev("refs/heads/feat-dirty"),
-        fixture.base,
-        "the fork branch starts at the requested base commit"
-    );
-    let wip = fixture.rev(&dirty.refs().wip);
-    assert_ne!(
-        wip, fixture.base,
-        "a dirty tree must produce a snapshot commit"
-    );
-    assert_eq!(
-        fixture.rev(&format!("{wip}^")),
-        fixture.base,
-        "the snapshot commit's parent is the fork base"
-    );
-    assert!(fixture.is_ancestor(&fixture.base, &wip));
-    assert_eq!(
-        fixture.git_ok(&["show", &format!("{wip}:tracked.txt")]),
-        "v2"
-    );
-    assert_eq!(
-        fixture.git_ok(&["show", &format!("{wip}:untracked.txt")]),
-        "new"
-    );
-    assert!(!fixture.object_exists(&format!("{wip}:deleted.txt")));
-
-    let status = git_stdout_in(dirty.path(), &["status", "--porcelain=v1"]);
-    for expected in [" M tracked.txt", " D deleted.txt", "?? untracked.txt"] {
-        assert!(
-            status.lines().any(|line| line == expected),
-            "expected '{expected}' in the fork's developer view, got:\n{status}"
-        );
-    }
-
-    let changes = dirty.changes().expect("dirty changes are readable");
-    assert!(!changes.truncated);
-    assert_eq!(
-        changes.untracked,
-        vec![PathBuf::from("untracked.txt")],
-        "untracked files are reported separately"
-    );
-    assert_eq!(
-        changes.tracked.len(),
-        2,
-        "one modification and one deletion"
-    );
-    assert!(changes.tracked.contains(&PathBuf::from("tracked.txt")));
-    assert!(changes.tracked.contains(&PathBuf::from("deleted.txt")));
-
-    assert_eq!(
-        fixture.index_stat(),
-        index_before,
-        "the live .git/index inode and mtime must be untouched by a dirty fork"
-    );
-    assert!(
-        matches!(
-            factory.create_workspace(&dirty_request),
-            Err(VcsError::WorkspaceExists { fork }) if fork == "feat-dirty"
-        ),
-        "a second create_workspace for the same fork is refused, never overwritten"
-    );
-
-    dirty.forget().expect("forget removes the dirty fork");
-    dirty.forget().expect("forget is idempotent");
-    assert!(!dirty.path().exists());
-    assert!(!fixture.ref_exists("refs/heads/feat-dirty"));
-    assert!(!fixture.ref_exists("refs/slipfork/feat-dirty/wip"));
-    assert!(!fixture.scratch_index("feat-dirty").exists());
-
-    fixture.git_ok(&["checkout", "--", "."]);
-    fixture.remove("untracked.txt");
-
-    let clean = factory
-        .create_workspace(&request(&fixture.repo, "feat-clean"))
-        .expect("clean fork is created");
-    assert_eq!(fixture.rev("refs/heads/feat-clean"), fixture.base);
-    assert_eq!(
-        fixture.rev(&clean.refs().wip),
-        fixture.base,
-        "a clean tree points refs/slipfork/<fork>/wip directly at the base commit"
-    );
-    assert_eq!(
-        clean.changes().expect("clean changes are readable"),
-        WorkspaceChanges::default()
-    );
-    assert!(
-        matches!(
-            factory.create_workspace(&request(&fixture.repo, "feat-clean")),
-            Err(VcsError::WorkspaceExists { fork }) if fork == "feat-clean"
-        ),
-        "repeated clean create is refused too"
-    );
-    clean.forget().expect("forget removes the clean fork");
-    clean.forget().expect("clean forget is idempotent");
-    assert!(!fixture.ref_exists("refs/heads/feat-clean"));
-    assert!(!fixture.ref_exists("refs/slipfork/feat-clean/wip"));
-
-    // A second fork of an otherwise clean tree must not embed the first fork's checkout: Git would
-    // stage `.worktrees/<first>` as a `160000 commit …/.worktrees/<first>` gitlink.
-    let first = factory
-        .create_workspace(&request(&fixture.repo, "feat-first"))
-        .expect("first sibling fork is created");
-    let second = factory
-        .create_workspace(&request(&fixture.repo, "feat-second"))
-        .expect("second sibling fork is created");
-    assert_eq!(
-        fixture.rev(&second.refs().wip),
-        fixture.base,
-        "a clean tree stays clean when a sibling checkout already exists"
-    );
-    let snapshot_paths = fixture.git_ok(&["ls-tree", "-r", "--name-only", &second.refs().wip]);
-    assert!(
-        !snapshot_paths
-            .lines()
-            .any(|path| path == ".worktrees" || path.starts_with(".worktrees/")),
-        "no sibling checkout may be embedded in the snapshot, got:\n{snapshot_paths}"
-    );
-    assert_eq!(
-        second.changes().expect("sibling changes are readable"),
-        WorkspaceChanges::default()
-    );
-    first.forget().expect("forget removes the first sibling");
-    second.forget().expect("forget removes the second sibling");
-
-    let plain = GitRepoRootResolver::new(Arc::new(NoProjectOverride))
-        .resolve(fixture.root())
-        .expect("fixture root resolves");
-    assert_eq!(plain.vcs_root, fixture.repo.vcs_root);
-    assert_eq!(plain.worktree_root, fixture.repo.vcs_root);
-    assert_eq!(plain.project.as_str(), "acme-app");
-
-    let (override_impl, seen) = FixedOverride::new("fixture-override");
-    let overridden = GitRepoRootResolver::new(Arc::new(override_impl))
-        .resolve(&fixture.path("src"))
-        .expect("override resolves");
-    assert_eq!(
-        overridden.project.as_str(),
-        "fixture-override",
-        "ProjectSlugOverride beats the directory basename"
-    );
-    assert_eq!(
-        seen.lock().expect("override lock").as_deref(),
-        Some(fixture.repo.vcs_root.as_path()),
-        "the override is asked about <vcs_root>, never a subdirectory"
-    );
 }
 
 /// Allocate a disk-backed temporary directory under `$HOME/.cache/slipfork-critical-tests`.

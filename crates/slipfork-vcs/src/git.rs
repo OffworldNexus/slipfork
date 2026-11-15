@@ -12,20 +12,18 @@
 
 use std::ffi::OsStr;
 use std::fs;
-use std::io;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
 use slipfork_world::validate_fork_name;
 
-use crate::git_command::{GitOutput, run_git, run_git_checked};
+use crate::git_store::{delete_ref, path_exists, ref_exists, remove_if_exists, resolve_commit};
 use crate::ports::{
-    MAX_WORKSPACE_CHANGES, RepoRoot, VcsError, VcsWorkspace, VcsWorkspaceFactory, WorkspaceChanges,
-    WorkspaceRefs, WorkspaceRequest, fork_branch_ref, fork_snapshot_ref,
+    MAX_WORKSPACE_CHANGES, RepoRoot, VcsError, VcsWorkspace, VcsWorkspaceFactory,
+    WORKTREES_DIRECTORY, WorkspaceChanges, WorkspaceRequest, fork_branch_ref, fork_snapshot_ref,
 };
+use crate::tool_command::{ToolOutput, run_git_checked};
 
-/// Repository-relative directory holding every fork checkout.
-const WORKTREES_DIRECTORY: &str = ".worktrees";
 /// Repository-relative Slipfork state directory (never `/tmp`: it sits beside the checkout).
 const STATE_DIRECTORY: &str = ".slipfork";
 /// Directory under [`STATE_DIRECTORY`] holding per-fork scratch indexes.
@@ -113,11 +111,8 @@ impl VcsWorkspace for GitWorkspace {
         &self.path
     }
 
-    fn refs(&self) -> WorkspaceRefs {
-        WorkspaceRefs {
-            base: fork_branch_ref(&self.fork),
-            wip: fork_snapshot_ref(&self.fork),
-        }
+    fn resolve(&self, reference: &str) -> Result<String, VcsError> {
+        resolve_commit(&self.vcs_root, reference)
     }
 
     fn changes(&self) -> Result<WorkspaceChanges, VcsError> {
@@ -146,22 +141,7 @@ struct Snapshot {
 
 /// Resolve a requested base commit-ish to a commit OID (`HEAD` by default).
 fn resolve_base(worktree_root: &Path, base: Option<&str>) -> Result<String, VcsError> {
-    let spec = format!("{}^{{commit}}", base.unwrap_or(DEFAULT_BASE));
-    let out = run_git_checked(
-        worktree_root,
-        &[
-            OsStr::new("rev-parse"),
-            OsStr::new("--verify"),
-            OsStr::new("--end-of-options"),
-            OsStr::new(&spec),
-        ],
-        None,
-    )?;
-    let oid = out.stdout_trimmed()?;
-    if oid.is_empty() {
-        return Err(out.unexpected("rev-parse returned an empty commit id"));
-    }
-    Ok(oid.to_owned())
+    resolve_commit(worktree_root, base.unwrap_or(DEFAULT_BASE))
 }
 
 /// Build the dirty view of `repo.worktree_root` against `base` in a scratch index.
@@ -332,7 +312,7 @@ fn rollback(repo: &RepoRoot, fork: &str, worktree: &Path) {
 }
 
 /// Parse `git status --porcelain=v1 -z` into tracked/untracked buckets.
-fn parse_workspace_changes(status: &GitOutput) -> Result<WorkspaceChanges, VcsError> {
+fn parse_workspace_changes(status: &ToolOutput) -> Result<WorkspaceChanges, VcsError> {
     let mut changes = WorkspaceChanges::default();
     let mut fields = status.stdout.split(|byte| *byte == 0);
     while let Some(record) = fields.next() {
@@ -373,55 +353,4 @@ pub fn scratch_index_path(vcs_root: &Path, fork: &str) -> PathBuf {
         .join(STATE_DIRECTORY)
         .join(SCRATCH_INDEX_DIRECTORY)
         .join(format!("index-{fork}"))
-}
-
-/// `true` when `reference` exists in `vcs_root`'s ref store.
-fn ref_exists(vcs_root: &Path, reference: &str) -> Result<bool, VcsError> {
-    let out = run_git(
-        vcs_root,
-        &[
-            OsStr::new("show-ref"),
-            OsStr::new("--verify"),
-            OsStr::new("--quiet"),
-            OsStr::new(reference),
-        ],
-        None,
-    )?;
-    match out.code {
-        Some(0) => Ok(true),
-        Some(1) => Ok(false),
-        _ => Err(out.failure()),
-    }
-}
-
-/// Delete `reference` (callers check [`ref_exists`] first, keeping teardown idempotent).
-fn delete_ref(vcs_root: &Path, reference: &str) -> Result<(), VcsError> {
-    run_git_checked(
-        vcs_root,
-        &[
-            OsStr::new("update-ref"),
-            OsStr::new("-d"),
-            OsStr::new(reference),
-        ],
-        None,
-    )?;
-    Ok(())
-}
-
-/// `true` when `path` exists (including broken symlinks).
-fn path_exists(path: &Path) -> Result<bool, VcsError> {
-    match fs::symlink_metadata(path) {
-        Ok(_) => Ok(true),
-        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(false),
-        Err(err) => Err(VcsError::io(path, &err)),
-    }
-}
-
-/// Remove `path`, tolerating an already-absent file.
-fn remove_if_exists(path: &Path) -> Result<(), VcsError> {
-    match fs::remove_file(path) {
-        Ok(()) => Ok(()),
-        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(()),
-        Err(err) => Err(VcsError::io(path, &err)),
-    }
 }

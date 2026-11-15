@@ -11,16 +11,24 @@
 //!   `VcsError::UnsupportedTopology`.
 //! - `VcsWorkspaceFactory` / `VcsWorkspace`: create and tear down `.worktrees/<fork>` checkouts that
 //!   expose `WorkspaceRefs` (`refs/heads/<fork>` plus the synthesized `refs/slipfork/<fork>/wip`
-//!   snapshot) and `WorkspaceChanges`.
+//!   snapshot) and `WorkspaceChanges`. Two adapters implement the identical contract:
+//!   `GitWorktreeAdapter` (linked Git worktree plus a scratch-index snapshot) and
+//!   `JjWorkspaceAdapter` (Jujutsu workspace projecting `@-` / `@` into the colocated Git store).
+//!   Fork repositories must keep `.worktrees/` and `.slipfork/` out of version control: Jujutsu
+//!   snapshots every non-ignored path into the working-copy commit, exactly like a Git fork
+//!   snapshot would otherwise fold sibling checkouts into itself.
+//! - `remote_helper`: the pure `git-remote-slipfork` line protocol (`capabilities`, `list`, `fetch`,
+//!   `push`, `option`) driven by the `git-remote-slipfork` executable in `crates/slipfork`.
 //!
-//! Adapter modules own every `std::process::Command` invocation; [`ports`] stays free of process,
-//! environment, and clock access. The crate ships **zero** `src/bin/*` targets: the
-//! `git-remote-slipfork` executable lives in `crates/slipfork` and drives the pure
+//! Adapter modules own every `std::process::Command` invocation; [`ports`] and [`remote_helper`]
+//! stay free of process, environment, and clock access. The crate ships **zero** `src/bin/*`
+//! targets: the `git-remote-slipfork` executable lives in `crates/slipfork` and drives the pure
 //! [`remote_helper`] line protocol.
 
 #![forbid(unsafe_code)]
 
-mod git_command;
+mod git_store;
+mod tool_command;
 
 pub mod git;
 pub mod jj;
@@ -29,8 +37,11 @@ pub mod remote_helper;
 pub mod repo_root;
 
 pub use git::GitWorktreeAdapter;
+pub use jj::JjWorkspaceAdapter;
 pub use ports::{
     MAX_WORKSPACE_CHANGES, NoProjectOverride, ProjectSlugOverride, RepoRoot, RepoRootResolver,
-    VcsError, VcsWorkspace, VcsWorkspaceFactory, WorkspaceChanges, WorkspaceRefs, WorkspaceRequest,
+    VcsError, VcsWorkspace, VcsWorkspaceFactory, WORKTREES_DIRECTORY, WorkspaceChanges,
+    WorkspaceRefs, WorkspaceRequest,
 };
+pub use remote_helper::{MAX_FRAME_BYTES, RemoteHelperError};
 pub use repo_root::GitRepoRootResolver;

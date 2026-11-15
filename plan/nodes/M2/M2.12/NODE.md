@@ -2,16 +2,16 @@
 id: M2.12
 title: "slipfork-vcs: JjWorkspaceAdapter plus git-remote-slipfork protocol handler"
 kind: task
-status: ready
+status: review
 owner: implementer
 priority: 3
 depends_on: [M2.11]
 paths: ["crates/slipfork-vcs/**"]
-attempts: 0
+attempts: 2
 max_attempts: 3
 escalation: none
 created: "2026-11-15T16:40"
-updated: "2026-11-15T19:20"
+updated: "2026-11-15T19:51"
 ---
 
 # Goal
@@ -30,7 +30,7 @@ Add the second `VcsWorkspace` adapter, `JjWorkspaceAdapter` (workspace add/forge
 1. **Jj mapping (`ADR-0005` §3).** `create_workspace`: `jj workspace add <repo>/.worktrees/<fork> --name <fork> --revision <base>`; inside that workspace `@-` is projected as `refs/heads/<fork>` and `@` (when non-empty, else `@-`) as `refs/slipfork/<fork>/wip` (materializing Git-fetchable objects on colocated/git-backed Jj stores without violating Git's `refs/heads/*` D/F lock). `forget()` runs `jj workspace forget <fork>` and cleans up `refs/slipfork/<fork>/wip` idempotently.
 2. **Ref projection** is one small function per adapter returning `WorkspaceRefs { base, wip }`. Neither the CLI nor the remote helper branches on adapter kind (`AdapterKind` matches outside the factory are rejected in review).
 3. **Missing-tool policy.** `JjWorkspaceAdapter::detect()` returns `VcsError::ToolMissing { tool: "jj" }`. The conformance runner prints exactly one explicit `skipped: ToolMissing(jj)` line for the Jj family and still fails the run if the Git family skipped; a runtime `create_workspace` call always fails closed, with no fallback to Git.
-4. **`git-remote-slipfork` handler** (pure library in `crates/slipfork-vcs/src/remote_helper.rs`): `capabilities` -> `fetch`, `push`, `option`; `list` -> one `<sha>\t<refname>` line per fork ref (`refs/heads/<fork>` and `refs/slipfork/<fork>/wip`, supporting both `git pull slipfork <fork>` and `git fetch slipfork '+refs/slipfork/<fork>/wip:refs/slipfork/<fork>/wip'`); `fetch <sha> <refname>` -> verifies/exports `<refname>` via `VcsWorkspace` and terminates the batch with a blank line; `push` -> `error <ref> <reason>` for every ref (worlds are fetched, not pushed over remote-helper in `0.2.0`). Frames are size-bounded and an unknown verb answers `unsupported` without panicking.
+4. **`git-remote-slipfork` handler** (pure library in `crates/slipfork-vcs/src/remote_helper.rs`): `capabilities` -> `fetch`, `push`, `option`; `list` -> one `<sha> <refname>` line per fork ref (a single ASCII space, as Git 2.47.3 requires; a tab is a `fatal: malformed response in ref list`) (`refs/heads/<fork>` and `refs/slipfork/<fork>/wip`, supporting both `git pull slipfork <fork>` and `git fetch slipfork '+refs/slipfork/<fork>/wip:refs/slipfork/<fork>/wip'`); `fetch <sha> <refname>` -> verifies/exports `<refname>` via `VcsWorkspace` and terminates the batch with a blank line; `push` -> `error <ref> <reason>` for every ref (worlds are fetched, not pushed over remote-helper in `0.2.0`). Frames are size-bounded and an unknown verb answers `unsupported` without panicking.
 5. **Single Composition Root preserved (`Engineering Law #2`, `H-010` #1):** `crates/slipfork-vcs` ships **zero** `src/bin/*` binaries; the `git-remote-slipfork` executable lives solely in `crates/slipfork` (`M2.17`) and delegates into `slipfork_vcs::remote_helper`.
 6. `#![forbid(unsafe_code)]`; the protocol handler takes injected `BufRead`/`Write` + `VcsWorkspace` port with zero direct filesystem or subprocess access.
 
