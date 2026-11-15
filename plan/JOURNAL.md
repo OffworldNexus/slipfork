@@ -227,3 +227,12 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-15T18:57 [M2.20] (lead) edited fields
 - 2026-11-15T18:58 [M2.2] (implementer) Round-1 Quad remediation: dag `default = []` (fs inert until M2.5; ARCHITECTURE.md contract so dag-at-defaults never grants filesystem), workspace rust-version 
 - 2026-11-15T18:58 [M2.2] (lead) R1 quad gate: reviewer PASS, legality PASS, ioc FAIL(dag default=['fs'] -> spec amended to default=[]), cruft PASS(MSRV). Remediation: dag default=[] , rust-ver
+- 2026-11-15T18:59 [M2.2] (lead) status active -> done
+- 2026-11-15T18:59 [M2.3] (lead) status ready -> active
+- 2026-11-15T18:59 [M2.3] (lead) attempt 1/3 started
+- 2026-11-15T18:59 [M2.3] (lead) base 8d51a749e3e790730098dd4c5a1a515be4fb6081
+- 2026-11-15T19:03 [M2.4] (lead) edited fields
+- 2026-11-15T19:03 [M2.3] (lead) R1 quad: all 4 PASS; cruft BLOCKER = pub variant fields (fixing: private payloads) + LocalHostRoute::url duplicate handoff to M2.4 (spec amended); MINORs (Wire 
+- 2026-11-15T19:03 [M2.3] (lead) edited fields
+- 2026-11-15T19:03 [M2.3] (lead) edited fields
+- 2026-11-15T19:04 [M2.3] (unknown) Round-1 Quad Gate remediation: WorldOrigin payloads are opaque LocalOrigin/SharedOrigin (only local()/shared() mint; struct-literal forgery impossible), serde s

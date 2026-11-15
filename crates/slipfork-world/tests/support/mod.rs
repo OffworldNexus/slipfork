@@ -1,14 +1,33 @@
-//! Shared conformance suite for every [`TunnelRegistrar`] implementation, plus an in-memory test
-//! double of the crate's own trait (never a mock of production code).
+//! Dev-only support for `slipfork-world` integration tests.
+//!
+//! This module is compiled only into `tests/` targets, never into the shipped library: an
+//! in-memory [`TunnelRegistrar`] double and the shared conformance suite for the crate's own
+//! domain trait.
 
 use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use crate::{
+use slipfork_world::{
     LocalHostRoute, ProjectSlug, TunnelError, TunnelLease, TunnelRegistrar, TunnelRequest,
     WorldTarget,
 };
+
+/// Single route builder shared by every `slipfork-world` integration test.
+pub fn route(project: &str, target: WorldTarget, snow_domain: Option<&str>) -> LocalHostRoute {
+    LocalHostRoute::new(
+        ProjectSlug::parse(project).expect("valid project slug"),
+        target,
+        snow_domain,
+        &["admin", "docs"],
+    )
+    .expect("valid route")
+}
+
+/// The canonical `acme.localhost` route used by most fixtures.
+pub fn canonical_route() -> LocalHostRoute {
+    route("acme", WorldTarget::Canonical, None)
+}
 
 /// Deterministic in-memory [`TunnelRegistrar`] used by tests and conformance runs.
 ///
@@ -89,13 +108,7 @@ where
         "revocation probe must return false for unknown lease ids"
     );
 
-    let canonical = LocalHostRoute::new(
-        ProjectSlug::parse("acme").expect("valid project slug"),
-        WorldTarget::Canonical,
-        None,
-        &[],
-    )
-    .expect("canonical route");
+    let canonical = canonical_route();
     let first = registrar
         .register(&TunnelRequest {
             route: &canonical,
@@ -115,13 +128,7 @@ where
         "newly registered canonical lease must be active"
     );
 
-    let slot = LocalHostRoute::new(
-        ProjectSlug::parse("acme").expect("valid project slug"),
-        WorldTarget::TestSlot(3),
-        Some("admin"),
-        &["admin"],
-    )
-    .expect("test-slot route");
+    let slot = route("acme", WorldTarget::TestSlot(3), Some("admin"));
     let second = registrar
         .register(&TunnelRequest {
             route: &slot,

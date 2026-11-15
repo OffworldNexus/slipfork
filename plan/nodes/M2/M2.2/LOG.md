@@ -39,3 +39,7 @@ Round-1 Quad remediation: dag `default = []` (fs inert until M2.5; ARCHITECTURE.
 ## 2026-11-15T18:58 [lead]
 
 R1 quad gate: reviewer PASS, legality PASS, ioc FAIL(dag default=['fs'] -> spec amended to default=[]), cruft PASS(MSRV). Remediation: dag default=[] , rust-version 1.94, SoftwareP256Key folded, vcs serde trim, stub tense; MSRV invariant added to M2.19/M2.20
+
+## 2026-11-15T18:59 [lead]
+
+status active -> done

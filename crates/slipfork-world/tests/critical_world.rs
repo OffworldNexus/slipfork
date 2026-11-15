@@ -1,18 +1,19 @@
-//! Protected critical tests for `slipfork-world` (`R17`: disjoint `.localhost` world namespace).
+//! Protected critical tests for `slipfork-world` (`R17`: disjoint `.localhost` world namespace,
+//! single-origin worlds, and deterministic `<= 31`-byte Tunnel Weaver service names).
 
-use slipfork_world::conformance::{InMemoryTunnelRegistrar, assert_tunnel_registrar_conformance};
+mod support;
+
+use serde_json::json;
 use slipfork_world::{
-    DNS_LABEL_REASON, LocalHostRoute, ProjectSlug, WorldError, WorldTarget,
-    is_reserved_test_slot_label, validate_fork_name,
+    DNS_LABEL_REASON, LocalHostRoute, ProjectSlug, SERVICE_NAME_MAX, WeaverServiceName, WorldError,
+    WorldOrigin, WorldTarget, derive_weaver_service_name, validate_fork_name,
+};
+use support::{
+    InMemoryTunnelRegistrar, assert_tunnel_registrar_conformance, canonical_route, route,
 };
 
 fn slug(project: &str) -> ProjectSlug {
     ProjectSlug::parse(project).expect("valid project slug")
-}
-
-fn route(project: &str, target: WorldTarget, snow_domain: Option<&str>) -> LocalHostRoute {
-    LocalHostRoute::new(slug(project), target, snow_domain, &["admin", "docs"])
-        .expect("valid route")
 }
 
 #[test]
@@ -69,6 +70,24 @@ fn one_two_three_label_routes_parse_and_format_round_trip() {
             "normalized spelling failed for {host}"
         );
     }
+
+    // Host normalization is case-insensitive and accepts the absolute `Host:port` spelling.
+    assert_eq!(
+        LocalHostRoute::parse(&slug("acme"), &domains, "ACME.localhost.:80"),
+        Some(route("acme", WorldTarget::Canonical, None))
+    );
+    assert_eq!(
+        LocalHostRoute::parse(
+            &slug("acme"),
+            &domains,
+            "ADMIN.FEAT-AUTH.ACME.localhost.:443"
+        ),
+        Some(route(
+            "acme",
+            WorldTarget::UserFork("feat-auth".to_owned()),
+            Some("admin")
+        ))
+    );
 }
 
 #[test]
@@ -110,7 +129,6 @@ fn admin_admin_collision_and_fork_domain_collisions_fail_closed() {
 #[test]
 fn test_slot_namespace_is_reserved_and_cannot_be_a_user_fork_or_domain() {
     let domains = ["admin"];
-    assert!(is_reserved_test_slot_label("test-3"));
     assert!(matches!(
         validate_fork_name("test-3", &domains),
         Err(WorldError::InvalidForkName { .. })
@@ -138,6 +156,16 @@ fn test_slot_namespace_is_reserved_and_cannot_be_a_user_fork_or_domain() {
     );
     assert_eq!(
         LocalHostRoute::parse(&slug("acme"), &domains, "admin.test-feat.acme.localhost"),
+        None
+    );
+
+    // An empty or `u32`-overflowing slot is rejected rather than wrapping or degrading to a fork.
+    assert_eq!(
+        LocalHostRoute::parse(&slug("acme"), &domains, "test-.acme.localhost"),
+        None
+    );
+    assert_eq!(
+        LocalHostRoute::parse(&slug("acme"), &domains, "test-99999999999.acme.localhost"),
         None
     );
 
@@ -250,4 +278,246 @@ fn ipv6_port_corrupted_foreign_and_malformed_hosts_are_rejected_cleanly() {
 fn tunnel_registrar_conformance_holds_for_the_in_memory_fake() {
     let registrar = InMemoryTunnelRegistrar::new();
     assert_tunnel_registrar_conformance(&registrar, |lease_id| registrar.is_lease_active(lease_id));
+}
+
+fn weaver(label: &str) -> String {
+    derive_weaver_service_name(label)
+        .expect("label must derive")
+        .to_string()
+}
+
+#[test]
+fn weaver_service_name_is_verbatim_up_to_the_31_byte_boundary() {
+    let boundary = "a".repeat(SERVICE_NAME_MAX);
+    assert_eq!(weaver(&boundary), boundary);
+    assert_eq!(weaver("acme"), "acme");
+    assert_eq!(weaver("acme-feat-auth"), "acme-feat-auth");
+
+    // One byte past the cap: exactly 18 prefix bytes + '-' + 12 hash bytes = 31.
+    let over = "a".repeat(SERVICE_NAME_MAX + 1);
+    let derived = weaver(&over);
+    assert_eq!(derived, format!("{}-3ba3f5f43b92", "a".repeat(18)));
+    assert_eq!(derived.len(), SERVICE_NAME_MAX);
+    assert_eq!(weaver(&over), derived, "derivation is stable across runs");
+    assert_eq!(
+        WeaverServiceName::parse(&derived)
+            .expect("derived name is valid")
+            .as_str(),
+        derived
+    );
+}
+
+#[test]
+fn weaver_service_name_is_deterministic_but_not_idempotent() {
+    let over = "a".repeat(SERVICE_NAME_MAX + 1);
+    let once = weaver(&over);
+    assert_eq!(
+        weaver(&over),
+        once,
+        "the same full label always derives the same name"
+    );
+
+    // The input is a raw full label, never a previous output: a truncated name re-enters the hash
+    // path by design (suffix-collision guard), so `f(f(x)) != f(x)`.
+    let twice = weaver(&once);
+    assert_ne!(twice, once);
+    assert_eq!(twice.len(), SERVICE_NAME_MAX);
+}
+
+#[test]
+fn weaver_service_name_truncation_strips_dashes_and_never_joins_bad_dashes() {
+    // The 18-byte cut lands on a dash: it is stripped before the hash suffix is joined.
+    let label = format!("{}-{}", "b".repeat(17), "c".repeat(20));
+    let derived = weaver(&label);
+    assert_eq!(derived, format!("{}-2a0052359bde", "b".repeat(17)));
+    assert_eq!(derived.len(), 17 + 1 + 12);
+    assert!(!derived.contains("--") && !derived.ends_with('-'));
+
+    // Normalization folds separators and case, so `a-` / `a--b` joins are impossible.
+    assert_eq!(weaver("a--b"), "a-b");
+    assert_eq!(weaver("  ACME  "), "acme");
+    assert_eq!(weaver("-a-"), "a");
+    for raw in ["a--b", "A__B", "-a-", "a___", "  a--b  ", "acme.feat/auth"] {
+        let name = weaver(raw);
+        WeaverServiceName::parse(&name).expect("every derived name satisfies the charset");
+        assert!(
+            !name.starts_with('-') && !name.ends_with('-') && !name.contains("--"),
+            "derived name '{name}' for '{raw}' must be dash-separated runs"
+        );
+    }
+
+    assert!(matches!(
+        derive_weaver_service_name(""),
+        Err(WorldError::InvalidWeaverServiceName { .. })
+    ));
+    assert!(matches!(
+        derive_weaver_service_name("---"),
+        Err(WorldError::InvalidWeaverServiceName { .. })
+    ));
+}
+
+#[test]
+fn weaver_collision_suffix_shaped_labels_are_hashed_not_used_verbatim() {
+    // A short label shaped like a truncated name must not be byte-identical to any truncation.
+    let collision = "foo-0123456789ab";
+    assert_eq!(collision.len(), 16);
+    assert_eq!(weaver(collision), "foo-0123456789ab-25dbe45e8a2f");
+
+    // The whole-label shape (exactly 12 lowercase hex bytes) is rewritten too.
+    assert_eq!(weaver("0123456789ab"), "0123456789ab-d407ad901895");
+
+    // The guard is the dash-delimited suffix shape, not "ends with hex": a 31-byte label whose
+    // last 12 bytes are hex but which has no separator there stays verbatim.
+    let not_shaped = format!("{}{}", "a".repeat(19), "0123456789ab");
+    assert_eq!(not_shaped.len(), SERVICE_NAME_MAX);
+    assert_eq!(weaver(&not_shaped), not_shaped);
+
+    // Two long labels sharing the first 18 bytes never share a suffix.
+    let first = weaver(&format!("{}-{}", "a".repeat(18), "x".repeat(20)));
+    let second = weaver(&format!("{}-{}", "a".repeat(18), "y".repeat(20)));
+    assert_eq!(first.len(), SERVICE_NAME_MAX);
+    assert_eq!(second.len(), SERVICE_NAME_MAX);
+    assert_eq!(&first[..18], &second[..18], "shared truncated prefix");
+    assert_ne!(first, second, "suffix must depend on the full label");
+}
+
+#[test]
+fn weaver_service_name_rejects_invalid_charset_and_length() {
+    for bad in [
+        "",
+        "A",
+        "Web",
+        "-leading",
+        "trailing-",
+        "a--b",
+        "with.dot",
+        "with_underscore",
+        "with/slash",
+        " with-space",
+        &"a".repeat(SERVICE_NAME_MAX + 1),
+    ] {
+        assert!(
+            matches!(
+                WeaverServiceName::parse(bad),
+                Err(WorldError::InvalidWeaverServiceName { .. })
+            ),
+            "service name '{bad}' must fail closed"
+        );
+    }
+    assert_eq!(
+        WeaverServiceName::parse(&"a".repeat(SERVICE_NAME_MAX))
+            .expect("31 bytes is the inclusive cap")
+            .as_str(),
+        "a".repeat(SERVICE_NAME_MAX)
+    );
+    assert_eq!(
+        WeaverServiceName::parse("app-2026")
+            .expect("valid name")
+            .to_string(),
+        "app-2026"
+    );
+
+    // Deserialization goes through the same sole constructor and fails closed.
+    assert_eq!(
+        serde_json::from_str::<WeaverServiceName>("\"app-2026\"")
+            .expect("valid service name")
+            .as_str(),
+        "app-2026"
+    );
+    for bad in ["\"\"", "\"Web\"", "\"a--b\"", "\"trailing-\""] {
+        assert!(
+            serde_json::from_str::<WeaverServiceName>(bad).is_err(),
+            "deserializing {bad} must fail closed"
+        );
+    }
+}
+
+#[test]
+fn world_origin_local_omits_port_80_and_renders_other_ports() {
+    let origin = WorldOrigin::local(&canonical_route(), 80).expect("port-80 origin");
+    assert!(matches!(origin, WorldOrigin::Local(_)));
+    assert_eq!(origin.url(), "http://acme.localhost");
+
+    let origin = WorldOrigin::local(&canonical_route(), 7080).expect("ephemeral ingress origin");
+    assert_eq!(origin.url(), "http://acme.localhost:7080");
+
+    let fork = route("acme", WorldTarget::UserFork("feat-auth".to_owned()), None);
+    assert_eq!(
+        WorldOrigin::local(&fork, 65_535)
+            .expect("fork origin")
+            .url(),
+        "http://feat-auth.acme.localhost:65535"
+    );
+
+    let slot = route("acme", WorldTarget::TestSlot(3), None);
+    assert_eq!(
+        WorldOrigin::local(&slot, 8000).expect("slot origin").url(),
+        "http://test-3.acme.localhost:8000"
+    );
+}
+
+#[test]
+fn world_origin_local_rejects_named_snow_domain_routes() {
+    let named = route("acme", WorldTarget::Canonical, Some("admin"));
+    match WorldOrigin::local(&named, 80) {
+        Err(WorldError::OriginNotDefaultIngress { domain }) => assert_eq!(domain, "admin"),
+        other => panic!("expected OriginNotDefaultIngress, got {other:?}"),
+    }
+
+    // The default-ingress route (snow_domain == None) is the only legal Local origin.
+    assert!(WorldOrigin::local(&canonical_route(), 80).is_ok());
+}
+
+#[test]
+fn world_origin_serializes_with_a_kind_tag_and_deserializes_fail_closed() {
+    let local = WorldOrigin::local(&canonical_route(), 7080).expect("local origin");
+    assert_eq!(
+        serde_json::to_value(&local).expect("serialize"),
+        json!({"kind": "local", "url": "http://acme.localhost:7080"})
+    );
+    let shared = WorldOrigin::shared("https://acme.tunnel.invalid").expect("shared origin");
+    assert_eq!(
+        serde_json::to_value(&shared).expect("serialize"),
+        json!({"kind": "shared", "url": "https://acme.tunnel.invalid"})
+    );
+
+    assert_eq!(
+        serde_json::from_str::<WorldOrigin>(r#"{"kind":"local","url":"http://acme.localhost"}"#)
+            .expect("valid local origin"),
+        WorldOrigin::local(&canonical_route(), 80).expect("port-80 origin")
+    );
+    assert_eq!(
+        serde_json::from_str::<WorldOrigin>(r#"{"kind":"shared","url":"https://acme.invalid"}"#)
+            .expect("valid shared origin"),
+        WorldOrigin::shared("https://acme.invalid").expect("shared origin")
+    );
+
+    for bad in [
+        r#"{"kind":"local","url":""}"#,
+        r#"{"kind":"local","url":"acme.localhost"}"#,
+        r#"{"kind":"local","url":"ftp://acme.localhost"}"#,
+        r#"{"kind":"shared","url":""}"#,
+        r#"{"kind":"shared","url":"http://"}"#,
+        r#"{"kind":"shared","url":"ws://acme.invalid"}"#,
+        r#"{"kind":"cloud","url":"https://acme.invalid"}"#,
+    ] {
+        assert!(
+            serde_json::from_str::<WorldOrigin>(bad).is_err(),
+            "deserializing {bad} must fail closed"
+        );
+    }
+
+    assert!(matches!(
+        WorldOrigin::shared(""),
+        Err(WorldError::InvalidOriginUrl { .. })
+    ));
+    assert!(matches!(
+        WorldOrigin::shared("http://"),
+        Err(WorldError::InvalidOriginUrl { .. })
+    ));
+    assert!(matches!(
+        WorldOrigin::shared("https://"),
+        Err(WorldError::InvalidOriginUrl { .. })
+    ));
+    assert!(WorldOrigin::shared("https://acme.invalid").is_ok());
 }

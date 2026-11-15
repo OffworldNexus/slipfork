@@ -2,7 +2,7 @@
 id: M2.2
 title: "Workspace wedge: scaffold slipfork-edge/slipfork-vcs/slipfork-ospp and declare M2 dependencies"
 kind: task
-status: active
+status: done
 owner: implementer
 priority: 3
 depends_on: [M2.1]
@@ -17,7 +17,7 @@ attempts: 1
 max_attempts: 3
 escalation: none
 created: "2026-11-15T16:40"
-updated: "2026-11-15T18:57"
+updated: "2026-11-15T18:59"
 ---
 
 # Goal

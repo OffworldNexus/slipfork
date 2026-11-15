@@ -11,7 +11,7 @@ attempts: 0
 max_attempts: 3
 escalation: none
 created: "2026-11-15T16:40"
-updated: "2026-11-15T18:38"
+updated: "2026-11-15T19:03"
 ---
 
 # Goal
@@ -21,6 +21,7 @@ Make `slipfork-snow`'s secret plumbing concurrency-safe and leak-free (`Send + S
 # Context
 
 - M2 resolves worlds and secrets from several threads, but `SecretProvider::ensure_secret` currently takes `&mut self`, which forces exclusive ownership of the vault.
+- **`LocalHostRoute::url()` removal (carried from M2.3, `H-010` #2):** `M2.3` could not delete the portless-only `LocalHostRoute::url()` because its only caller is `crates/slipfork-snow/src/model.rs:669` (`ResourceCoordinates::app_url`). In THIS node delete `LocalHostRoute::url()` from `crates/slipfork-world/src/lib.rs` (the crate is a `slipfork-snow` dependency; use the `slipfork-world` path dep that already exists) and migrate `app_url` to `WorldOrigin::local(&route, 80)`, updating `crates/slipfork-snow/tests/critical_snow.rs` expectations to the single canonical constructor. Zero portless-origin helper may remain outside `WorldOrigin::local`.
 - M1.6 follow-up #21 (highest-priority hygiene item): `ResourceCoordinates`/`S3Coordinates` derive `Debug` with a `pub secret_key`, and `RejectedKey` derives `Debug` over a raw `serde_json::Value`, so a literal secret inside a top-level `envs:` block would print on `{:?}`. Follow-up #7: `RejectedKey` has two divergent error shapes for the same forbidden key.
 - `H-001` (closed) approved mode-scoped component add/remove/override in `snow.yml`; `0.1.0` only parsed `run_command` overrides on existing components. `ADR-0008`/`ADR-0001` §1 fix the single canonical spelling for removal.
 - `crates/slipfork-snow` must stay free of ambient env/net/clock; the `0600` vault adapter is the only filesystem code.
