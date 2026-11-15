@@ -319,3 +319,8 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-15T19:57 [M2.14] (lead) status ready -> active
 - 2026-11-15T19:57 [M2.14] (lead) attempt 1/3 started
 - 2026-11-15T19:57 [M2.14] (lead) base 39651f748582e4491222fcac9ddcf51fe6e856b2
+- 2026-11-15T20:03 [M2.12] (lead) status review -> done
+- 2026-11-15T20:06 [M2.8] (lead) status active -> review
+- 2026-11-15T20:06 [M2.8] (lead) deviation accepted: WorldRegistry::new(engine) only; registrar/planned_port + EdgeError::NoForwardListener land with share_world in M2.9 (no dead private state)
+- 2026-11-15T20:11 [M2.24] (conductor) created (task) Design L0 world base image: Dockerfile-derived rootfs, 3-layer composition, World Image Contract (ADR-0009)
+- 2026-11-15T20:11 ESCALATION #12 -> architect for M2.24 by conductor: core architecture crossroads: L0 world base image strategy (Dockerfile-derived rootfs vs curated base), image contract, 

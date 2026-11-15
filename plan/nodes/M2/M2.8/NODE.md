@@ -2,16 +2,16 @@
 id: M2.8
 title: "slipfork-edge: systemd socket activation, LocalHostRoute dispatch, WorldRegistry"
 kind: task
-status: ready
+status: review
 owner: implementer
 priority: 3
 depends_on: [M2.3, M2.7]
 paths: ["crates/slipfork-edge/**"]
-attempts: 0
+attempts: 1
 max_attempts: 3
 escalation: none
 created: "2026-11-15T16:40"
-updated: "2026-11-15T19:36"
+updated: "2026-11-15T20:06"
 ---
 
 # Goal

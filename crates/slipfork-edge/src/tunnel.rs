@@ -1,3 +1,1 @@
-//! `TunnelRegistrar` adapters owned by the edge crate: `UnavailableTunnelRegistrar`, which fails
-//! closed with `EdgeError::TunnelUnavailable`, and the isolated `WeavedRegistrar` wire adapter that
-//! stays gated on `H-006`.
+//! `TunnelRegistrar` adapters (`UnavailableTunnelRegistrar`, `WeavedRegistrar`) — not implemented yet; lands in M2.9/M2.22.
