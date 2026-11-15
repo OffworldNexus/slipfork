@@ -61,7 +61,7 @@ Approved Defer wire spec: delete all invented `weaved` JSON wire payloads/socket
 
 - asked: 2026-11-15T02:32 by conductor
 
-Release 0.1.0 is ready on branch release/0.1.0 (head 7fbda1d, make check green, M1 gate passed by strategist, CHANGELOG 0.1.0 dated 2026-11-15). ACTION NEEDED: this repo has no git remote yet and agent shell policy denies 'gh repo *', so I cannot push or open the PR. Please either (a) create the GitHub repo OffworldNexus/slipfork and run 'git remote add origin git@github.com:OffworldNexus/slipfork.git && git push -u origin release/0.1.0 && git push -u origin develop' (I will open the PR into develop afterwards), or (b) tell me to run the remote setup if you grant the permission. Nothing else blocks the release.
+Release 0.1.0 is ready on branch release/0.1.0 (head 5630a1e, make check green, M1 final gate passed by strategist at 6ee3b7b, CHANGELOG 0.1.0 dated 2026-11-15). NOTE: the design of record was amended after the first gate pass to fold your four release-gate corrections (single canonical origin, support tiers, typed coverage with no shell recipes, mode-scoped components kept) plus the H-008 ingress ruling; M1.8/M1.9 carry those and both passed their gates. ACTION NEEDED: this repo has no git remote yet and agent shell policy denies 'gh repo *', so I cannot push or open the PR. Please either (a) create the GitHub repo OffworldNexus/slipfork and run 'git remote add origin git@github.com:OffworldNexus/slipfork.git && git push -u origin release/0.1.0 && git push -u origin develop' (I will open the PR into develop afterwards), or (b) tell me to run the remote setup if you grant the permission. Nothing else blocks the release.
 
 **Answer:**
 
