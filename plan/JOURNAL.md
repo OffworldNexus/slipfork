@@ -268,3 +268,37 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-15T19:18 [M2.23] (lead) edited fields
 - 2026-11-15T19:20 [M2.11] (lead) edited fields
 - 2026-11-15T19:20 [M2.12] (lead) edited fields
+- 2026-11-15T19:20 [M2.4] (lead) status review -> done
+- 2026-11-15T19:20 [M2.5] (lead) status review -> done
+- 2026-11-15T19:20 [M2.6] (lead) status review -> done
+- 2026-11-15T19:20 [M2.11] (lead) status blocked -> ready: spec amended (refs/slipfork/<fork>/wip + ProjectSlugOverride); resume attempt 2
+- 2026-11-15T19:20 [M2.11] (lead) status ready -> active
+- 2026-11-15T19:20 [M2.11] (lead) attempt 2/3 started
+- 2026-11-15T19:20 [M2.11] (lead) base 1b4cf79e326460e87f23bf9f4fc204e76a5e4523 attempt 2 on amended spec
+- 2026-11-15T19:25 HUMAN H-011 [direction-challenge] opened by lead (node M2.7)
+- 2026-11-15T19:25 [M2.7] (lead) status ready -> blocked: H-011: netns entry impossible from a multithreaded daemon; awaiting A re-exec-in-userns / B in-world agent+SCM_RIGHTS / C per-connectio
+- 2026-11-15T19:25 [M2.23] (lead) status ready -> active
+- 2026-11-15T19:25 [M2.23] (lead) attempt 1/3 started
+- 2026-11-15T19:25 [M2.23] (lead) base 1b4cf79e326460e87f23bf9f4fc204e76a5e4523
+- 2026-11-15T19:27 [M2.13] (lead) attempt 1/3 started
+- 2026-11-15T19:27 [M2.13] (lead) attempt 1 hit the step limit: library compiles (cargo check -p slipfork-ospp --all-targets OK) but tests/ has no test target (support/tpmd_server.rs + critical_
+- 2026-11-15T19:27 [M2.13] (lead) attempt 2/3 started
+- 2026-11-15T19:30 [M2.11] (lead) status active -> review
+- 2026-11-15T19:30 [M2.12] (lead) status ready -> active
+- 2026-11-15T19:30 [M2.12] (lead) attempt 1/3 started
+- 2026-11-15T19:30 [M2.12] (lead) base 1b4cf79e326460e87f23bf9f4fc204e76a5e4523
+- 2026-11-15T19:34 [M2.12] (lead) status active -> ready: released path lock to M2.11 for its blocker fix; no work started
+- 2026-11-15T19:34 [M2.11] (lead) status review -> active
+- 2026-11-15T19:34 [M2.11] (lead) attempt 3/3 started
+- 2026-11-15T19:34 [M2.11] (lead) R1 gate: legality/ioc/cruft PASS; functional BLOCKER: git add -A does not exclude .worktrees so a second fork embeds the first checkout as a gitlink. attempt 3 
+- 2026-11-15T19:34 [M2.13] (lead) status ready -> review
+- 2026-11-15T19:34 [M2.16] (lead) edited fields
+- 2026-11-15T19:36 [M2.7] (lead) edited fields
+- 2026-11-15T19:36 [M2.8] (lead) edited fields
+- 2026-11-15T19:36 [M2.10] (lead) edited fields
+- 2026-11-15T19:36 [M2.16] (lead) edited fields
+- 2026-11-15T19:36 HUMAN H-011 closed by lead
+- 2026-11-15T19:36 [M2.7] (lead) status blocked -> ready: H-011 ruled (conductor): in-world slipfork-world-init PID 1 + netns.sock SCM_RIGHTS dialer + AF_UNIX ingress socket; spec landed; resum
+- 2026-11-15T19:36 [M2.7] (lead) status ready -> active
+- 2026-11-15T19:36 [M2.7] (lead) attempt 1/3 started
+- 2026-11-15T19:36 [M2.7] (lead) H-011 ruling recorded: Option B + persistent world-init PID 1; netns.sock SCM_RIGHTS dialer in linux_cow.rs; AF_UNIX <state_root>/http-ingress.sock bridge; free

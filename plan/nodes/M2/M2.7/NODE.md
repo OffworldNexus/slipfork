@@ -2,57 +2,61 @@
 id: M2.7
 title: "slipfork-engine: spawn/stop_service with logs, streaming exec, dial_world_tcp"
 kind: task
-status: ready
+status: active
 owner: implementer
 priority: 3
 depends_on: [M2.6]
 paths: ["crates/slipfork-engine/**"]
-attempts: 0
+attempts: 1
 max_attempts: 3
 escalation: none
 created: "2026-11-15T16:40"
-updated: "2026-11-15T18:51"
+updated: "2026-11-15T19:36"
 ---
 
 # Goal
 
-Complete the `WorldEngine` service-supervision, direct CLI entry, in-netns loopback bridge, and transport half of the M2 contract on `ReflinkNetnsEngine`: `spawn_service`/`stop_service` with retained logs, live-streaming `exec_in_world`, `entry_command` -> `WorldEntryCommand` for direct CLI `Stdio::inherit()` entry (zero `SCM_RIGHTS`, zero `pty.rs` `unsafe`, `H-010` #1), `current_username` (`getpwuid_r(geteuid())` in `linux_cow.rs`), the `ReflinkNetnsEngine`-owned in-netns `127.0.0.1:<ingress_port>` loopback TCP bridge (`H-010` #2), and daemon-internal `dial_world_tcp`.
+Complete the `WorldEngine` persistent per-world PID 1 (`crates/slipfork-engine/src/bin/slipfork-world-init.rs`), service supervision, `<world_dir>/netns.sock` `SCM_RIGHTS` TCP dialer, `<state_root>/http-ingress.sock` in-netns `$BASE_URL` bridge, and direct CLI `entry_command` on `ReflinkNetnsEngine` (`H-010`, `H-011`).
 
 # Context
 
-- `M2.6` lands the world-spec types, redacted env, freeze lineage, and the conformance assertions; this node adds the pieces the CLI and `slipforkd` consume.
-- `slipforkd` must never inspect `engine.name()`: `dial_world_tcp(&world, port) -> Result<TcpStream, EngineError>` is the only world-transport capability (`H-008`, `ADR-0005` section 2), called exclusively inside `slipforkd`.
-- Per `H-010` #1 & #2, interactive TTY commands (`shell`, `db`, `redis`, `hook run`) enter the world directly from the thin `slipfork` CLI inheriting native `Stdio::inherit()` via `WorldEngine::entry_command` — **no `pty.rs` module** (`unsafe` remains confined strictly to `linux_cow.rs`, which also exposes `current_username() -> Result<String, EngineError>` via `getpwuid_r(geteuid())` with a `// SAFETY:` proof for `M2.16`'s `UserIdentity` port). Meanwhile `ReflinkNetnsEngine` owns the in-netns loopback TCP bridge booted via `WorldSpec.local_ingress_port` so `$BASE_URL` resolves identically inside the world and on the host.
-- Log capture is what makes `slipfork logs [--world <fork>] [<target>]` and failure diagnostics possible, and it must survive `stop_service` so a failed world stays inspectable.
+- `M2.6` landed multi-mount `WorldSpec`, redacted `ExecEnv`, opaque `WorldHandle`, and `freeze_world`; this node lands the persistent world-init process, service supervision with retained logs, `dial_world_tcp`, `entry_command`, and the in-netns `$BASE_URL` bridge.
+- **Kernel facts (`H-011`, `docs/knowledge/LESSONS.md`):** `setns(CLONE_NEWNET)` requires `CAP_SYS_ADMIN` in both the caller's and target's userns (`EPERM` from `slipforkd`), and `setns(CLONE_NEWUSER)` returns `EINVAL` in multithreaded processes. Therefore `ReflinkNetnsEngine::clone_world` spawns a persistent per-world PID 1 (`crates/slipfork-engine/src/bin/slipfork-world-init.rs`) inside `unshare --map-user=$UID --map-group=$GID --keep-caps --mount --net --pid --fork --mount-proc` (`H-011` #2).
+- `H-010`'s "zero `SCM_RIGHTS`" rule applies strictly to the CLI <-> `slipforkd` interactive-TTY boundary, never to `slipfork-engine` internals (`H-011` #1). `unsafe` across the entire workspace stays confined to **one** module (`crates/slipfork-engine/src/linux_cow.rs`), which owns `ioctl(FICLONE)`, `current_uid_gid`, `current_username` (`getpwuid_r(geteuid())`), and the **single** audited `sendmsg`/`recvmsg` `SCM_RIGHTS` FD-transfer helper (`H-011` #3; zero `pty.rs` module).
+- Log capture powers `slipfork logs [--world <fork>] [<target>]` and failure diagnostics, and must survive `stop_service` so failed worlds stay inspectable.
 
 # Design / Invariants
 
-1. **`spawn_service`** starts a world-owned process with the clean env, captures stdout and stderr into a world-scoped, size-capped log, and exposes `ServiceHandle { id, pid }` plus a `ServiceLogs` accessor (`snapshot()` and `follow(&mut dyn FnMut(StreamChunk))`); `stop_service` signals, waits with a bounded grace period, and **keeps the captured logs**.
-2. **Streaming exec:** `exec_in_world(&self, world, argv, cwd, overlay_env, on_output: &mut dyn FnMut(StreamChunk))` streams interleaved stdout/stderr chunks while accumulating the exit code and the full untruncated output; a convenience wrapper without a callback returns the aggregate.
-3. **Direct `entry_command` & Engine-Owned In-Netns `:80` Bridge (`H-010` #1 & #2, `ADR-0008` §3):** `entry_command(&self, world: &WorldHandle, cwd: &Path) -> Result<WorldEntryCommand, EngineError>` returns `{ program, args_prefix, cwd }` (`nsenter --target <init_pid> --user --preserve-credentials --net --mount --pid --wd=<cwd> --` on `ReflinkNetnsEngine`; `incus exec` on `IncusEngine`) so the CLI spawns interactive/non-interactive commands directly with `Stdio::inherit()` and zero `pty.rs` `unsafe`. When `WorldSpec.local_ingress_port` is `Some(port)`, `ReflinkNetnsEngine::clone_world` sets the per-netns sysctl `net.ipv4.ip_unprivileged_port_start=0` (`/proc/sys/net/ipv4/ip_unprivileged_port_start`) inside the fresh `netns` before binding `127.0.0.1:<port>` (including `:80`, probe-verified in `critical_engine.rs` by `in_netns_bridge_port_80`) and pipes accepted TCP streams to host `slipforkd`'s HTTP ingress so in-world `$BASE_URL` requests route identically to host requests.
-4. **`dial_world_tcp`:** one lazily started dialer worker per world that enters the world's network namespace via `setns` and connects to `127.0.0.1:<port>`; the worker is released on `destroy_world`, a dial to a destroyed world fails closed (`EngineError::WorldGone`), and concurrent dials are serialized per world without blocking other worlds.
-5. **Supervision semantics:** `spawn_service` before the world is fully up fails closed; an unexpected service exit is reported through `ServiceState` and never silently restarted; `stop_service` on an already-stopped handle is idempotent.
-6. No engine-kind ladders, no ambient env reads outside the adapters.
+1. **Persistent per-world PID 1 (`src/bin/slipfork-world-init.rs`) & `freeze_world` ordering (`H-011` #2):** `#![forbid(unsafe_code)]` `slipfork-world-init` is spawned by `clone_world` inside `unshare --map-user=$UID --map-group=$GID --keep-caps --mount --net --pid --fork --mount-proc`, bringing `lo` up, writing `0` to `/proc/sys/net/ipv4/ip_unprivileged_port_start`, binding `WorldSpec.mounts`, and recording a persistent `init_pid` that survives across calls until `destroy_world` signals/reaps the PID namespace cleanly. `freeze_world` stops any running services in `world` cleanly before reflinking `state_dir` so frozen snapshots are crash-consistent.
+2. **`spawn_service` / `stop_service` & retained `ServiceLogs`:** Starts world-owned processes inside `init_pid`'s namespaces (`nsenter --target <init_pid>` or via `slipfork-world-init`) with clean `ExecEnv`, capturing stdout/stderr into a world-scoped size-capped log (`ServiceLogs::snapshot()` + `follow(&mut dyn FnMut(StreamChunk))`); `stop_service` signals, waits with a bounded grace period, is idempotent on repeat calls, and **preserves captured logs**.
+3. **Streaming `exec_in_world` & Direct `entry_command` (`H-010` #1):** `exec_in_world(&self, world, argv, cwd, overlay_env, on_output)` enters `init_pid`'s namespaces and streams interleaved `StreamChunk`s while returning untruncated `ExecOutput`. `entry_command(&self, world: &WorldHandle, cwd: &Path) -> Result<WorldEntryCommand, EngineError>` returns `{ program, args_prefix, cwd }` (`nsenter --target <init_pid> --user --preserve-credentials --net --mount --pid --wd=<cwd> --` on `ReflinkNetnsEngine`; `incus exec` on `IncusEngine`) for direct CLI `Stdio::inherit()` entry.
+4. **`dial_world_tcp(port)` over `<world_dir>/netns.sock` (`H-011` #3):** `slipfork-world-init` binds a `0600` pathname `AF_UNIX` socket `<world_dir>/netns.sock` (never an `@` abstract socket). Callers connect, send `port: u16`, and `slipfork-world-init` connects `127.0.0.1:<port>` inside the world netns and hands the connected `TcpStream` back via `linux_cow.rs`'s single audited `sendmsg`/`recvmsg` `SCM_RIGHTS` helper (with per-call `// SAFETY:` proofs). Dialing a destroyed world returns `EngineError::WorldGone`.
+5. **In-netns `$BASE_URL` `:80` bridge via `<state_root>/http-ingress.sock` (`H-011` #4 Variant a):** When `WorldSpec.local_ingress` (`Option<LocalIngressBridge { port, host_ingress_sock }>`) is `Some`, `slipfork-world-init` binds `127.0.0.1:<port>` inside the world netns (including `:80`, enabled by in-userns `CAP_NET_BIND_SERVICE` + `ip_unprivileged_port_start=0`) and splices each accepted TCP stream bidirectionally to pathname `AF_UNIX` `host_ingress_sock` (`<state_root>/http-ingress.sock`).
+6. No engine-kind ladders; `unsafe` strictly confined to `crates/slipfork-engine/src/linux_cow.rs` alone.
 
 # Acceptance
 
 ```bash
-# 1. Full suites and conformance (service and transport assertions live there).
+# 1. Persistent init_pid survives across calls, services stop cleanly before freeze_world, and logs survive stop_service.
+cargo build -p slipfork-engine --bins
 cargo test -p slipfork-engine --all-targets
+cargo test -p slipfork-engine --test critical_engine -- --nocapture persistent_init
 cargo test -p slipfork-engine --test critical_engine -- --nocapture service
+
+# 2. dial_world_tcp reaches an in-world listener via netns.sock SCM_RIGHTS, and two worlds isolate the same port.
 cargo test -p slipfork-engine --test critical_engine -- --nocapture dial
+cargo test -p slipfork-engine --test critical_engine -- --nocapture same_port
 
-# 2. Unsafe stays confined to linux_cow.rs alone (zero pty.rs).
-! test -f crates/slipfork-engine/src/pty.rs
-cargo clippy -p slipfork-engine --all-targets -- -D warnings
-
-# 3. Direct WorldEntryCommand & probe-verified per-netns :80 loopback bridge.
+# 3. Direct entry_command and :80 bridge reachable both from host and in-netns via http-ingress.sock.
 cargo test -p slipfork-engine --test critical_engine -- --nocapture entry_command
 cargo test -p slipfork-engine --test critical_engine -- --nocapture in_netns_bridge_port_80
 
-# 4. Two worlds can bind the same port while each dial reaches its own namespace.
-cargo test -p slipfork-engine --test critical_engine -- --nocapture same_port
+# 4. Unsafe stays confined to linux_cow.rs alone (zero pty.rs, forbid(unsafe_code) on slipfork-world-init).
+! test -f crates/slipfork-engine/src/pty.rs
+rg -q 'forbid\(unsafe_code\)' crates/slipfork-engine/src/bin/slipfork-world-init.rs
+test "$(rg -l 'unsafe\s*\{' crates/slipfork-engine/src | wc -l)" -eq 1
+cargo clippy -p slipfork-engine --all-targets -- -D warnings
 make check
 ```
 
-All commands exit `0`. Adversarial assertions required: a dial after `destroy_world` fails with `WorldGone`, `stop_service` twice is idempotent, logs of a stopped service remain readable, the in-netns `:80` bridge binds unprivileged via `net.ipv4.ip_unprivileged_port_start=0`, and two worlds binding the same port stay isolated.
+All commands exit `0`. Adversarial assertions required: `init_pid` stays identical across consecutive `exec_in_world`/`entry_command` calls and is reaped on `destroy_world`, `dial_world_tcp` after `destroy_world` fails with `WorldGone`, `stop_service` twice is idempotent while its logs remain readable, `freeze_world` stops live services before reflinking `state_dir`, and `:80` is reachable both from host (`http-ingress.sock` -> `dial_world_tcp`) and from inside the world netns (`127.0.0.1:80` -> `slipfork-world-init` -> `http-ingress.sock` -> `dial_world_tcp`).

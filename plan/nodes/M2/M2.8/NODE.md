@@ -11,26 +11,26 @@ attempts: 0
 max_attempts: 3
 escalation: none
 created: "2026-11-15T16:40"
-updated: "2026-11-15T18:51"
+updated: "2026-11-15T19:36"
 ---
 
 # Goal
 
-Stand up `crates/slipfork-edge` part 1: unprivileged systemd socket activation for `slipforkd` (`LISTEN_PID`/`LISTEN_FDS`, `fd >= 3`, immediate non-blocking adoption, explicit `--listen` HTTP-only mode + optional `--forward-port`, fail-closed otherwise), the request dispatch skeleton over `LocalHostRoute` + `IngressRoute` prefix table, and the daemon-owned `WorldRegistry` (`mint_origin`, `attach_world`, `release_world`) returning the world's single `WorldOrigin`.
+Stand up `crates/slipfork-edge` part 1: unprivileged systemd socket activation for `slipforkd` (`LISTEN_PID`/`LISTEN_FDS`, `fd >= 3`, immediate non-blocking adoption, explicit `--listen` HTTP-only mode + optional `--forward-port`, fail-closed otherwise), the `0600` pathname `AF_UNIX` `<state_root>/http-ingress.sock` listener for in-netns `$BASE_URL` bridges (`H-011` #4 Variant a), the request dispatch skeleton over `LocalHostRoute` + `IngressRoute` prefix table, and the daemon-owned `WorldRegistry` (`mint_origin`, `attach_world`, `release_world`).
 
 # Context
 
-- `H-008` and `H-010` make `slipforkd` the sole ingress and in-process world owner for both `Local` and `Shared` worlds, and `ADR-0005` section 1 fixes local routing to `http://(<snow-domain>.)?(<fork>.)?<project>.localhost[:<port>]` with a `404` for unknown targets.
+- `H-008`, `H-010`, and `H-011` make `slipforkd` the sole ingress and in-process world owner for both `Local` and `Shared` worlds, serving HTTP/WS traffic on both its TCP HTTP listener(s) and `<state_root>/http-ingress.sock` (`0600` pathname `AF_UNIX` spliced from `slipfork-world-init`'s in-netns `127.0.0.1:<port>` bridge).
 - Measured host facts (`docs/research/tunnel-weaver-and-systemd-facts.md` section 5): activation sockets start at `fd 3`, `LISTEN_PID` equals the child pid, and inherited sockets are **blocking** — the daemon must set non-blocking itself. Binding port 80 unprivileged fails on this host (`ip_unprivileged_port_start = 1024`), which is why `--listen` exists.
 - The crate skeleton, `slipfork-world`/`slipfork-engine` dependencies, `listenfd`, `socket2`, and `httparse` are already declared by `M2.2`; this node must not touch `Cargo.toml`.
 
 # Design / Invariants
 
 1. **Explicit FD-order activation (`ADR-0008` §5):** `adopt_systemd_listener() -> Result<Option<ListenerSet>, EdgeError>` (`#![forbid(unsafe_code)]` via `listenfd`) checks `LISTEN_PID`/`LISTEN_FDS` once in `activation.rs`: requires `LISTEN_PID == getpid()`, calls `set_nonblocking(true)` **immediately** on every inherited socket (`fd >= 3`), and assigns roles without inspecting port numbers: `LISTEN_FDS == 1` sets `http_listeners = vec![fd3]` and `forward_listener = None` (enabling `systemd-socket-activate -l 127.0.0.1:0`); `LISTEN_FDS >= 2` assigns leading fds to `http_listeners` and the final fd to `Some(forward_listener)` matching `UnitSpec`'s emitted order; any other count/shape fails closed (`EdgeError::ActivationBroken`, or `EdgeError::ActivationMismatch` on PID mismatch — never a self-bind).
-2. **`--listen` listener selection (`ADR-0008` §5):** When both activation env vars are absent, `--listen <addr>` binds the HTTP ingress listener **only** (`forward_listener = None`); a forward listener exists in `--listen` mode **only** when `--forward-port <port>` is also passed (binding `127.0.0.1:<port>`), otherwise `share_world` fails closed with `EdgeError::NoForwardListener`. When neither activation nor `--listen` is provided, startup fails closed (`EdgeError::NoListener`).
+2. **`--listen` listener selection & `<state_root>/http-ingress.sock` (`ADR-0008` §3 & §5, `H-011` #4 Variant a):** When both activation env vars are absent, `--listen <addr>` binds the TCP HTTP ingress listener **only** (`forward_listener = None`); a forward listener exists in `--listen` mode **only** when `--forward-port <port>` is also passed (binding `127.0.0.1:<port>`), otherwise `share_world` fails closed with `EdgeError::NoForwardListener`. When neither activation nor `--listen` is provided, startup fails closed (`EdgeError::NoListener`). Alongside its TCP HTTP listener(s), `HttpIngress` binds a `0600` filesystem-pathname `UnixListener` at `<state_root>/http-ingress.sock` (removing any stale socket file after lock/liveness check) and feeds accepted `UnixStream`s into the exact same HTTP/1.1 + WebSocket dispatch handler used for TCP streams.
 3. **`LocalHostRoute` + `IngressRoute` prefix dispatch (`H-010` #1):** Parse `Host` (`*.localhost[:<port>]`) with `slipfork_world::LocalHostRoute::parse(&project, &snow_domains, host)` (`404` on unknown host/target) and resolve the target backend port inside the world via the world's `Vec<IngressRoute { prefix: String, port: u16 }>` longest-prefix table (`snow.yml` `ingresses`, falling back to first component `internal_ports[0]`).
-4. **Canonical `WorldRegistry` API (`ARCHITECTURE.md` §3.4, `H-010` #1 & #2):** Constructed inside `slipforkd` with `Arc<dyn WorldEngine>`, `Arc<dyn TunnelRegistrar>`, `http_ingress_port: u16`, and `planned_forward_port: Option<u16>`. Exposes `mint_origin(&self, route: &LocalHostRoute, ingress_port: u16) -> Result<WorldOrigin, EdgeError>` (rendering `WorldOrigin::local(route, ingress_port)` — `:80` omitted, `:<port>` formatted otherwise), `attach_world(&self, project: &ProjectSlug, target: &WorldTarget, snow_domains: Vec<String>, world: WorldHandle, ingresses: Vec<IngressRoute>) -> Result<(), EdgeError>` (rejecting duplicate active `(project, target)` with `EdgeError::WorldAlreadyRegistered`), and `release_world(&self, project: &ProjectSlug, target: &WorldTarget) -> Result<bool, EdgeError>` (destroying the in-process `WorldHandle` via `WorldEngine::destroy_world`).
-5. **Bounded `httparse` HTTP/1.1 loop:** `std::thread` per connection (zero async runtime), bounded read timeout, and `httparse` header parsing under a `<= 16 KiB` policy cap (rejecting unknown HTTP verbs with `405`).
+4. **Canonical `WorldRegistry` API (`ARCHITECTURE.md` §3.4, `H-010` #1 & #2):** Constructed inside `slipforkd` with `Arc<dyn WorldEngine>`, `Arc<dyn TunnelRegistrar>`, `http_ingress_port: u16`, and `planned_forward_port: Option<u16>`. Exposes `mint_origin(&self, route: &LocalHostRoute, ingress_port: u16) -> Result<WorldOrigin, EdgeError>` (`:80` omitted, `:<port>` formatted otherwise), `attach_world(&self, project: &ProjectSlug, target: &WorldTarget, snow_domains: Vec<String>, world: WorldHandle, ingresses: Vec<IngressRoute>) -> Result<(), EdgeError>` (rejecting duplicate active `(project, target)` with `EdgeError::WorldAlreadyRegistered`), and `release_world(&self, project: &ProjectSlug, target: &WorldTarget) -> Result<bool, EdgeError>` (destroying the in-process `WorldHandle` via `WorldEngine::destroy_world`).
+5. **Bounded `httparse` HTTP/1.1 loop:** `std::thread` per connection (zero async runtime), bounded read timeout, and `httparse` header parsing under a `<= 16 KiB` policy cap (rejecting unknown HTTP verbs with `405`) over a generic `Read + Write` stream abstraction shared by `TcpStream` and `<state_root>/http-ingress.sock` `UnixStream`.
 6. `#![forbid(unsafe_code)]`; zero `unwrap()` on I/O paths; every error carries the world id and the host header.
 
 # Acceptance
@@ -43,8 +43,9 @@ cargo test -p slipfork-edge --test critical_edge -- --nocapture activation
 # 2. Fail-closed paths: mismatched LISTEN_PID, broken fd, no listener at all.
 cargo test -p slipfork-edge --test critical_edge -- --nocapture fail_closed
 
-# 3. Routing skeleton answers 404 for unknown hosts and mints/attaches/releases one origin per world.
+# 3. Routing skeleton answers 404 on both TCP and http-ingress.sock, and mints/attaches/releases one origin per world.
 cargo test -p slipfork-edge --test critical_edge -- --nocapture registry
+cargo test -p slipfork-edge --test critical_edge -- --nocapture unix_ingress_sock
 
 # 4. Gates.
 ! rg -q 'std::env' crates/slipfork-edge/src --glob '!activation.rs'
@@ -52,4 +53,4 @@ cargo clippy -p slipfork-edge --all-targets -- -D warnings
 make check
 ```
 
-All commands exit `0`. Adversarial assertions required: an activation environment whose `LISTEN_PID` differs from the child pid is refused, an adopted socket is non-blocking (first `accept` without a pending connection returns `WouldBlock`), `--listen` without `--forward-port` leaves `forward_listener = None`, and duplicate `attach_world` for the same `(project, target)` is refused.
+All commands exit `0`. Adversarial assertions required: an activation environment whose `LISTEN_PID` differs from the child pid is refused, an adopted socket is non-blocking (first `accept` without a pending connection returns `WouldBlock`), `--listen` without `--forward-port` leaves `forward_listener = None`, `<state_root>/http-ingress.sock` is created `0600` and serves identical HTTP responses to TCP ingress, and duplicate `attach_world` for the same `(project, target)` is refused.
