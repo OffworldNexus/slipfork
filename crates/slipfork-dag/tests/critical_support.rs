@@ -62,6 +62,32 @@ fn assert_critical_test_symbol(symbol: &str) {
     );
 }
 
+const SIGNOFF_DOC: &str = "docs/decisions/ADR-0007-integration-support-tiers.md";
+
+/// One complete `none` record; tests mutate only the id/rationale they are exercising.
+fn none_record(id: &str, rationale: &str) -> String {
+    format!(
+        "[[integration]]\nid = \"{id}\"\ncategory = \"cli\"\ntier = \"none\"\n\n\
+         [integration.evidence]\nrationale = \"{rationale}\"\n\
+         signoff_doc = \"{SIGNOFF_DOC}\"\nsignoff_commit = \"{}\"\n",
+        "a".repeat(40)
+    )
+}
+
+fn assert_signoff_commit(commit: &str, id: &str) {
+    assert_eq!(
+        commit.len(),
+        40,
+        "integration '{id}' signoff_commit must be a 40-hex SHA"
+    );
+    assert!(
+        commit
+            .chars()
+            .all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c)),
+        "integration '{id}' signoff_commit '{commit}' must be lowercase 40-hex"
+    );
+}
+
 #[test]
 fn embedded_registry_parses_with_unique_ids_and_ordered_tiers() {
     let registry = SupportRegistry::embedded().expect("embedded support/integrations.toml parses");
@@ -85,10 +111,7 @@ fn embedded_registry_parses_with_unique_ids_and_ordered_tiers() {
         // The shared tier→evidence ladder is the only place the requirement table lives.
         for &field in entry.tier().required_evidence() {
             assert!(
-                entry
-                    .evidence()
-                    .field(field)
-                    .is_some_and(|value| !value.trim().is_empty()),
+                entry.evidence().is_present(field),
                 "integration '{}' (tier '{}') must carry a non-empty '{field}'",
                 entry.id(),
                 entry.tier()
@@ -98,17 +121,14 @@ fn embedded_registry_parses_with_unique_ids_and_ordered_tiers() {
 }
 
 #[test]
-fn embedded_registry_recipe_pages_signoff_docs_and_critical_test_symbols_exist() {
+fn embedded_registry_resolves_every_present_evidence_pointer() {
     let registry = SupportRegistry::embedded().expect("embedded support/integrations.toml parses");
     for entry in registry.entries() {
-        for &field in entry.tier().required_evidence() {
-            let pointer = entry.evidence().field(field).unwrap_or_else(|| {
-                panic!(
-                    "integration '{}' (tier '{}') must carry '{field}'",
-                    entry.id(),
-                    entry.tier()
-                )
-            });
+        for &field in EvidenceField::ALL {
+            if !entry.evidence().is_present(field) {
+                continue;
+            }
+            let pointer = entry.evidence().field(field).expect("present pointer");
             match field {
                 EvidenceField::Rationale => assert!(
                     !pointer.trim().is_empty(),
@@ -138,37 +158,19 @@ fn embedded_registry_recipe_pages_signoff_docs_and_critical_test_symbols_exist()
                         path.display()
                     );
                 }
-                // Format-only in `0.1.0`; see the dedicated test below.
-                EvidenceField::SignoffCommit => {}
+                // Format-only here; `git` commit existence is the M2 compliance tool's job.
+                EvidenceField::SignoffCommit => assert_signoff_commit(pointer, entry.id()),
             }
         }
     }
 }
 
 #[test]
-fn none_tier_signoff_commit_is_format_checked_not_verified_against_git() {
-    let registry = SupportRegistry::embedded().expect("embedded support/integrations.toml parses");
-    for entry in registry.entries() {
-        if entry.tier() != IntegrationTier::None {
-            continue;
-        }
-        let commit = entry
-            .evidence()
-            .field(EvidenceField::SignoffCommit)
-            .expect("none entries carry a signoff_commit");
-        assert_eq!(
-            commit.len(),
-            40,
-            "integration '{}' signoff_commit must be a 40-hex SHA",
-            entry.id()
-        );
-        assert!(
-            commit
-                .chars()
-                .all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c)),
-            "integration '{}' signoff_commit '{commit}' must be lowercase 40-hex",
-            entry.id()
-        );
+fn evidence_field_strings_are_the_single_display_and_json_source() {
+    let mut seen = BTreeSet::new();
+    for &field in EvidenceField::ALL {
+        assert_eq!(field.to_string(), field.as_str());
+        assert!(seen.insert(field.as_str()), "evidence names must be unique");
     }
 }
 
@@ -229,19 +231,9 @@ critical_test = "slipfork_engine::critical_engine::r10_tmpfs_fails_closed_withou
     );
 
     // Whitespace-only evidence is as absent as a missing pointer.
-    let blank_rationale = r#"
-[[integration]]
-id = "blank-rationale"
-category = "cli"
-tier = "none"
-
-[integration.evidence]
-rationale = "   "
-signoff_doc = "docs/decisions/ADR-0007-integration-support-tiers.md"
-signoff_commit = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-"#;
+    let blank_rationale = none_record("blank-rationale", "   ");
     let error =
-        SupportRegistry::parse_toml(blank_rationale).expect_err("blank rationale fails closed");
+        SupportRegistry::parse_toml(&blank_rationale).expect_err("blank rationale fails closed");
     assert!(
         matches!(
             error,
@@ -254,48 +246,21 @@ signoff_commit = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
     );
 
     // Duplicate ids are rejected even when both records are otherwise complete.
-    let duplicate = r#"
-[[integration]]
-id = "same-id"
-category = "cli"
-tier = "none"
-
-[integration.evidence]
-rationale = "first"
-signoff_doc = "docs/decisions/ADR-0007-integration-support-tiers.md"
-signoff_commit = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-
-[[integration]]
-id = "same-id"
-category = "cli"
-tier = "none"
-
-[integration.evidence]
-rationale = "second"
-signoff_doc = "docs/decisions/ADR-0007-integration-support-tiers.md"
-signoff_commit = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-"#;
-    let error = SupportRegistry::parse_toml(duplicate).expect_err("duplicate ids fail closed");
+    let duplicate = format!(
+        "{}{}",
+        none_record("same-id", "first"),
+        none_record("same-id", "second")
+    );
+    let error = SupportRegistry::parse_toml(&duplicate).expect_err("duplicate ids fail closed");
     assert!(
         matches!(error, RegistryError::DuplicateId(ref id) if id == "same-id"),
         "expected DuplicateId(same-id), got {error:?}"
     );
 
     // Unknown evidence fields and unknown tiers stay hard TOML errors (deny_unknown_fields).
-    let unknown_field = r#"
-[[integration]]
-id = "unknown-field"
-category = "cli"
-tier = "none"
-
-[integration.evidence]
-rationale = "x"
-signoff_doc = "docs/decisions/ADR-0007-integration-support-tiers.md"
-signoff_commit = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-ghost = "nope"
-"#;
+    let unknown_field = none_record("unknown-field", "x") + "ghost = \"nope\"\n";
     assert!(matches!(
-        SupportRegistry::parse_toml(unknown_field),
+        SupportRegistry::parse_toml(&unknown_field),
         Err(RegistryError::Toml(_))
     ));
 
@@ -311,17 +276,7 @@ tier = "battle-tested"
     ));
 
     // A complete `none` record is accepted.
-    let valid_none = r#"
-[[integration]]
-id = "valid-none"
-category = "cli"
-tier = "none"
-
-[integration.evidence]
-rationale = "nothing to integrate"
-signoff_doc = "docs/decisions/ADR-0007-integration-support-tiers.md"
-signoff_commit = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-"#;
-    let registry = SupportRegistry::parse_toml(valid_none).expect("valid none entry parses");
+    let valid_none = none_record("valid-none", "nothing to integrate");
+    let registry = SupportRegistry::parse_toml(&valid_none).expect("valid none entry parses");
     assert_eq!(registry.entries().len(), 1);
 }

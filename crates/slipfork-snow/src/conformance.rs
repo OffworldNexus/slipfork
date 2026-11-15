@@ -5,7 +5,7 @@ use crate::provider::{Namespace, SecretProvider};
 /// Verify that `make_provider` satisfies the full [`SecretProvider`] contract:
 /// isolated namespaces, `None` on missing keys, and write-once `ensure_secret` idempotence.
 pub fn assert_secret_provider_conformance<P: SecretProvider>(make_provider: impl Fn() -> P) {
-    let mut p = make_provider();
+    let p = make_provider();
     assert_eq!(
         p.get(Namespace::Secrets, "SECRET_KEY")
             .expect("get missing"),

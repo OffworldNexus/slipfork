@@ -27,16 +27,6 @@ recipe_page = "docs/snow-modes.md"
 critical_test = "slipfork_snow::critical_snow::r2_r4_r5_r8_modes_all_merge_write_once_secret_and_redaction"
 
 [[integration]]
-id = "incus-engine"
-category = "world-engine"
-tier = "none"
-
-[integration.evidence]
-rationale = "Conservatively reported at the lowest tier: `0.1.0` ships the Unix-socket REST /1.0 library adapter and it passes the shared `WorldEngine` conformance suite, but `declared` additionally requires a published recipe page, and live CLI/daemon wiring is gated on H-004 (no project-scoped incusd socket on this host). `signoff_commit` is d0b11e0, the M1.6 amendment that established the current ADR-0002 world-engine IoC, Incus, and reflink decision."
-signoff_doc = "docs/decisions/ADR-0002-world-engine-ioc-incus-and-reflink.md"
-signoff_commit = "d0b11e069ced52d0e03ebb3b251a1077d0c1bf39"
-
-[[integration]]
 id = "dag-config-cli"
 category = "cli"
 tier = "declared"

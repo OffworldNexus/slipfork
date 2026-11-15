@@ -1,7 +1,10 @@
-//! Incus `/1.0` REST API implementation of [`WorldEngine`] over Unix domain socket (`R12`, `ADR-0002`).
+//! Incus `/1.0` REST API implementation of [`WorldEngine`] over the Incus Unix domain socket
+//! (`R12`, `ADR-0002`).
 //!
-//! Supports both Incus System Containers (LXC) and Incus QEMU VMs with ZFS/Btrfs/LVM-thin/XFS CoW,
-//! stateful CRIU/QEMU RAM snapshots, and `shift=true` (`MOUNT_ATTR_IDMAP`) shared-UID host mounts.
+//! Supports Incus system containers (LXC) and QEMU VMs with ZFS/Btrfs/LVM-thin/XFS CoW, stateful
+//! CRIU/QEMU RAM snapshots, and `shift=true` (`MOUNT_ATTR_IDMAP`) shared-UID host mounts. Live
+//! daemon coverage is gated on open `H-004` (`M2.21`); this module is exercised by the shared
+//! conformance suite against an in-tree Unix-socket protocol harness.
 
 #![forbid(unsafe_code)]
 
@@ -9,17 +12,19 @@ use std::collections::BTreeMap;
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
+use crate::child_env;
+use crate::{
+    EngineError, ExecEnv, ExecOutput, MountMode, SnapshotId, SnapshotMode, StreamChunk,
+    StreamSource, WorldEngine, WorldHandle, WorldMount, WorldSpec, WorldStatus, target_slug,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::{
-    EngineCapabilities, EngineError, ExecOutput, ExecSpec, HostBindMount, SnapshotId, WorldEngine,
-    WorldHandle,
-};
-
-/// Incus hypervisor driver talking directly to `/var/lib/incus/unix.socket` (`HTTP/1.1` `/1.0`).
+/// Incus hypervisor driver talking directly to the Incus Unix socket (`HTTP/1.1` `/1.0`).
 #[derive(Debug, Clone)]
 pub struct IncusEngine {
     socket_path: PathBuf,
@@ -27,9 +32,32 @@ pub struct IncusEngine {
     base_instance: String,
     host_uid: u32,
     host_gid: u32,
+    shared: Arc<Shared>,
 }
 
-/// JSON payload sent to `POST /1.0/instances` for an instant CoW clone + shared-UID workspace mount.
+#[derive(Debug)]
+struct Shared {
+    worlds: Mutex<BTreeMap<u64, WorldRecord>>,
+    next_seq: AtomicU64,
+}
+
+impl Default for Shared {
+    fn default() -> Self {
+        Self {
+            worlds: Mutex::new(BTreeMap::new()),
+            next_seq: AtomicU64::new(0),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct WorldRecord {
+    instance: String,
+    base_env: ExecEnv,
+    status: WorldStatus,
+}
+
+/// JSON payload sent to `POST /1.0/instances` for an instant CoW clone with shared-UID mounts.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct IncusClonePayload {
     pub name: String,
@@ -63,34 +91,26 @@ impl IncusEngine {
             base_instance: base_instance.into(),
             host_uid,
             host_gid,
+            shared: Arc::new(Shared::default()),
         }
     }
 
-    /// Build the exact `POST /1.0/instances` CoW copy payload with `shift=true` host UID mount.
-    pub fn build_clone_payload(
-        &self,
-        snapshot: &SnapshotId,
-        world_name: &str,
-        bind: &HostBindMount,
-        stateful: bool,
-    ) -> IncusClonePayload {
-        let host_dir = bind.host_path.display().to_string();
-        let workspace_dev = BTreeMap::from([
-            ("type".to_owned(), "disk".to_owned()),
-            ("source".to_owned(), host_dir.clone()),
-            ("path".to_owned(), host_dir),
-            ("shift".to_owned(), "true".to_owned()),
-        ]);
+    /// Build the exact `POST /1.0/instances` CoW copy payload for `spec`'s mounts.
+    pub fn build_clone_payload(&self, spec: &WorldSpec, world_name: &str) -> IncusClonePayload {
+        let mut devices = BTreeMap::new();
+        for (index, mount) in spec.mounts.iter().enumerate() {
+            devices.insert(format!("mount-{index}"), incus_disk_device(mount));
+        }
         IncusClonePayload {
             name: world_name.to_owned(),
             ephemeral: false,
-            stateful,
+            stateful: false,
             source: IncusCloneSource {
                 source_type: "copy".to_owned(),
                 instance_only: true,
-                source: format!("{}/{}", self.base_instance, snapshot.0),
+                source: format!("{}/{}", self.base_instance, spec.snapshot.0),
             },
-            devices: BTreeMap::from([("workspace".to_owned(), workspace_dev)]),
+            devices,
         }
     }
 
@@ -145,6 +165,47 @@ impl IncusEngine {
             .map_err(|e| EngineError::Execution(format!("invalid Incus JSON: {e}")))?;
         Ok((status_code, parsed))
     }
+
+    fn lock(&self) -> Result<MutexGuard<'_, BTreeMap<u64, WorldRecord>>, EngineError> {
+        self.shared
+            .worlds
+            .lock()
+            .map_err(|_| EngineError::Execution("incus world registry lock is poisoned".to_owned()))
+    }
+
+    fn owned<'a>(
+        &self,
+        worlds: &'a mut BTreeMap<u64, WorldRecord>,
+        world: &WorldHandle,
+    ) -> Result<&'a mut WorldRecord, EngineError> {
+        if !world.belongs_to(self.name()) {
+            return Err(EngineError::WorldGone {
+                world: format!("{world:?}"),
+            });
+        }
+        worlds
+            .get_mut(&world.seq())
+            .ok_or_else(|| EngineError::WorldGone {
+                world: format!("{world:?}"),
+            })
+    }
+
+    fn instance_snapshot_request(
+        &self,
+        instance: &str,
+        id: &SnapshotId,
+        mode: SnapshotMode,
+    ) -> Result<(u16, Value), EngineError> {
+        let body = json!({
+            "name": id.validate()?,
+            "stateful": mode == SnapshotMode::StatefulRam,
+        });
+        self.request_json(
+            "POST",
+            &format!("/1.0/instances/{instance}/snapshots"),
+            Some(&body),
+        )
+    }
 }
 
 impl WorldEngine for IncusEngine {
@@ -152,72 +213,134 @@ impl WorldEngine for IncusEngine {
         "incus"
     }
 
-    fn capabilities(&self) -> EngineCapabilities {
-        EngineCapabilities {
-            disk_cow: true,
-            stateful_ram_snapshot: true,
-            isolated_netns: true,
-            uid_passthrough: true,
-        }
-    }
-
     fn create_snapshot(
         &self,
-        _source_state_dir: &Path,
-        label: &str,
-        stateful_ram: bool,
-    ) -> Result<SnapshotId, EngineError> {
-        let body = json!({
-            "name": label,
-            "stateful": stateful_ram,
-        });
-        let (status, resp) = self.request_json(
-            "POST",
-            &format!("/1.0/instances/{}/snapshots", self.base_instance),
-            Some(&body),
-        )?;
+        _source_dir: &Path,
+        id: &SnapshotId,
+        mode: SnapshotMode,
+    ) -> Result<(), EngineError> {
+        let (status, resp) = self.instance_snapshot_request(&self.base_instance, id, mode)?;
         if !(200..300).contains(&status) {
             return Err(EngineError::Execution(format!(
                 "Incus snapshot creation failed ({status}): {resp}"
             )));
         }
-        Ok(SnapshotId(label.to_owned()))
+        Ok(())
     }
 
-    fn clone_world(
+    fn freeze_world(
         &self,
-        snapshot: &SnapshotId,
-        world_name: &str,
-        bind: &HostBindMount,
-    ) -> Result<WorldHandle, EngineError> {
-        let payload = self.build_clone_payload(snapshot, world_name, bind, false);
-        let val =
+        world: &WorldHandle,
+        id: &SnapshotId,
+        mode: SnapshotMode,
+    ) -> Result<(), EngineError> {
+        let instance = {
+            let mut worlds = self.lock()?;
+            let record = self.owned(&mut worlds, world)?;
+            match record.status {
+                WorldStatus::Live => {
+                    record.status = WorldStatus::Freezing;
+                    record.instance.clone()
+                }
+                WorldStatus::Freezing | WorldStatus::Frozen | WorldStatus::Destroyed => {
+                    return Err(EngineError::WorldNotFreezable {
+                        world: format!("{world:?}"),
+                    });
+                }
+            }
+        };
+
+        let sealed = self
+            .instance_snapshot_request(&instance, id, mode)
+            .and_then(|(status, resp)| {
+                if (200..300).contains(&status) {
+                    Ok(())
+                } else {
+                    Err(EngineError::Execution(format!(
+                        "Incus world freeze failed ({status}): {resp}"
+                    )))
+                }
+            });
+        let mut worlds = self.lock()?;
+        let record = self.owned(&mut worlds, world)?;
+        match sealed {
+            Ok(()) if record.status == WorldStatus::Freezing => {
+                record.status = WorldStatus::Frozen;
+                Ok(())
+            }
+            Ok(()) => Err(EngineError::WorldNotFreezable {
+                world: format!("{world:?}"),
+            }),
+            Err(err) => {
+                if record.status == WorldStatus::Freezing {
+                    record.status = WorldStatus::Live;
+                }
+                Err(err)
+            }
+        }
+    }
+
+    fn clone_world(&self, spec: &WorldSpec) -> Result<WorldHandle, EngineError> {
+        spec.validate()?;
+        spec.snapshot.validate()?;
+        let seq = self.shared.next_seq.fetch_add(1, Ordering::Relaxed) + 1;
+        let world = WorldHandle::mint(self.name(), seq);
+        let instance = format!("{}-{seq}", target_slug(&spec.target));
+        let payload = self.build_clone_payload(spec, &instance);
+        let body =
             serde_json::to_value(&payload).map_err(|e| EngineError::Execution(e.to_string()))?;
-        let (status, resp) = self.request_json("POST", "/1.0/instances", Some(&val))?;
+        let (status, resp) = self.request_json("POST", "/1.0/instances", Some(&body))?;
         if status == 404 {
-            return Err(EngineError::SnapshotNotFound(snapshot.0.clone()));
+            return Err(EngineError::SnapshotNotFound(spec.snapshot.0.clone()));
         }
         if !(200..300).contains(&status) {
             return Err(EngineError::Execution(format!(
                 "Incus CoW clone failed ({status}): {resp}"
             )));
         }
-        Ok(WorldHandle {
-            id: world_name.to_owned(),
-            state_dir: PathBuf::from(format!("incus:{}/{}", self.project, world_name)),
-            workspace_dir: bind.host_path.clone(),
-        })
+        self.lock()?.insert(
+            seq,
+            WorldRecord {
+                instance,
+                base_env: spec.base_env.clone(),
+                status: WorldStatus::Live,
+            },
+        );
+        Ok(world)
     }
 
     fn exec_in_world(
         &self,
         world: &WorldHandle,
-        spec: &ExecSpec,
+        argv: &[String],
+        cwd: &Path,
+        overlay_env: &ExecEnv,
+        on_output: &mut dyn FnMut(StreamChunk),
     ) -> Result<ExecOutput, EngineError> {
+        if argv.is_empty() {
+            return Err(EngineError::Execution(
+                "exec argv must not be empty".to_owned(),
+            ));
+        }
+        let (instance, env) = {
+            let mut worlds = self.lock()?;
+            let record = self.owned(&mut worlds, world)?;
+            if record.status == WorldStatus::Destroyed {
+                return Err(EngineError::WorldGone {
+                    world: format!("{world:?}"),
+                });
+            }
+            (
+                record.instance.clone(),
+                child_env::materialize(&record.base_env, overlay_env, |var| {
+                    std::env::var(var.name()).ok()
+                }),
+            )
+        };
         let body = json!({
-            "command": spec.argv,
-            "cwd": spec.cwd.display().to_string(),
-            "environment": spec.env,
+            "command": argv,
+            "cwd": cwd.display().to_string(),
+            "environment": env,
             "user": self.host_uid,
             "group": self.host_gid,
             "wait-for-websocket": false,
@@ -225,7 +348,7 @@ impl WorldEngine for IncusEngine {
         });
         let (status, resp) = self.request_json(
             "POST",
-            &format!("/1.0/instances/{}/exec", world.id),
+            &format!("/1.0/instances/{instance}/exec"),
             Some(&body),
         )?;
         if !(200..300).contains(&status) {
@@ -247,6 +370,18 @@ impl WorldEngine for IncusEngine {
             .and_then(Value::as_str)
             .unwrap_or("")
             .to_owned();
+        if !stdout.is_empty() {
+            on_output(StreamChunk {
+                source: StreamSource::Stdout,
+                bytes: stdout.clone().into_bytes(),
+            });
+        }
+        if !stderr.is_empty() {
+            on_output(StreamChunk {
+                source: StreamSource::Stderr,
+                bytes: stderr.clone().into_bytes(),
+            });
+        }
         Ok(ExecOutput {
             exit_code,
             stdout,
@@ -255,8 +390,19 @@ impl WorldEngine for IncusEngine {
     }
 
     fn destroy_world(&self, world: WorldHandle) -> Result<(), EngineError> {
+        let instance = {
+            let mut worlds = self.lock()?;
+            let record = self.owned(&mut worlds, &world)?;
+            if record.status == WorldStatus::Destroyed {
+                return Err(EngineError::WorldGone {
+                    world: format!("{world:?}"),
+                });
+            }
+            record.status = WorldStatus::Destroyed;
+            record.instance.clone()
+        };
         let (status, resp) =
-            self.request_json("DELETE", &format!("/1.0/instances/{}", world.id), None)?;
+            self.request_json("DELETE", &format!("/1.0/instances/{instance}"), None)?;
         if !(200..300).contains(&status) && status != 404 {
             return Err(EngineError::Execution(format!(
                 "Incus delete failed ({status}): {resp}"
@@ -264,4 +410,17 @@ impl WorldEngine for IncusEngine {
         }
         Ok(())
     }
+}
+
+fn incus_disk_device(mount: &WorldMount) -> BTreeMap<String, String> {
+    let mut device = BTreeMap::from([
+        ("type".to_owned(), "disk".to_owned()),
+        ("source".to_owned(), mount.host_path.display().to_string()),
+        ("path".to_owned(), mount.guest_path.display().to_string()),
+        ("shift".to_owned(), "true".to_owned()),
+    ]);
+    if mount.mode == MountMode::ReadOnly {
+        device.insert("readonly".to_owned(), "true".to_owned());
+    }
+    device
 }

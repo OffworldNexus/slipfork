@@ -17,8 +17,7 @@ use clap::{Parser, Subcommand};
 use serde_json::json;
 use slipfork_dag::{DagPlanner, FsDigestCache, FsMerkleHasher, SlipforkConfig};
 use slipfork_engine::{
-    ExecSpec, HostBindMount, ReflinkNetnsEngine, SnapshotId, WorldEngine, WorldHandle,
-    current_uid_gid, probe_reflink_dir,
+    ReflinkNetnsEngine, SnapshotId, SnapshotMode, WorldEngine, current_uid_gid, probe_reflink_dir,
 };
 use slipfork_snow::{
     FileVaultProvider, OsCsprngEntropy, ResolvedEnvMap, ResourceCoordinates, SnowFile,
@@ -66,7 +65,7 @@ enum Commands {
         /// Snapshot label.
         label: String,
     },
-    /// Clone a CoW world in milliseconds and bind `--workspace` under host $UID:$GID.
+    /// Daemon-owned: world forking is served by slipforkd in 0.2.0 (`M2.17`).
     Fork {
         /// Name of the forked world.
         name: String,
@@ -77,7 +76,7 @@ enum Commands {
         #[arg(long)]
         workspace: Option<PathBuf>,
     },
-    /// Execute a command inside an isolated CoW world with `snow.yml` envs injected.
+    /// Daemon-owned: world execution is served by slipforkd in 0.2.0 (`M2.17`).
     Exec {
         /// Target world name.
         #[arg(long)]
@@ -92,7 +91,7 @@ enum Commands {
         #[arg(required = true, trailing_var_arg = true)]
         argv: Vec<String>,
     },
-    /// Destroy a cloned CoW world and free its state.
+    /// Daemon-owned: world teardown is served by slipforkd in 0.2.0 (`M2.17`).
     Drop {
         /// World name to destroy.
         name: String,
@@ -636,12 +635,11 @@ fn resolve_snow_file(
         fs::read_to_string(file).map_err(|e| format!("cannot read {}: {e}", file.display()))?;
     let snow = SnowFile::parse_yaml(&raw).map_err(|e| e.to_string())?;
     let slug = project_slug_for(&parent_dir(file))?;
-    let mut vault =
-        FileVaultProvider::open(default_vault_path(&slug)).map_err(|e| e.to_string())?;
+    let vault = FileVaultProvider::open(default_vault_path(&slug)).map_err(|e| e.to_string())?;
     let coords = ResourceCoordinates::local_for_world(&snow, &slug, &WorldTarget::Canonical)
         .map_err(|e| e.to_string())?;
-    let mut entropy = OsCsprngEntropy;
-    snow.resolve_mode(mode, component, &mut vault, &coords, &mut entropy)
+    let entropy = OsCsprngEntropy;
+    snow.resolve_mode(mode, component, &vault, &coords, &entropy)
         .map_err(|e| e.to_string())
 }
 
@@ -791,17 +789,18 @@ fn run_cli(json_out: bool, state_root: &Path, command: Commands) -> Result<ExitC
 
         Commands::Snap { source, label } => {
             let t0 = Instant::now();
-            let snap = engine
-                .create_snapshot(&source, &label, false)
+            let snapshot = SnapshotId(label);
+            engine
+                .create_snapshot(&source, &snapshot, SnapshotMode::DiskCow)
                 .map_err(|e| e.to_string())?;
             let ms = t0.elapsed().as_secs_f64() * 1000.0;
             if json_out {
                 println!(
                     "{}",
-                    json!({ "ok": true, "snapshot": snap.0, "elapsed_ms": ms })
+                    json!({ "ok": true, "snapshot": snapshot.0, "elapsed_ms": ms })
                 );
             } else {
-                println!("snapshot '{}' created in {ms:.2} ms", snap.0);
+                println!("snapshot '{}' created in {ms:.2} ms", snapshot.0);
             }
             Ok(ExitCode::SUCCESS)
         }
@@ -811,33 +810,21 @@ fn run_cli(json_out: bool, state_root: &Path, command: Commands) -> Result<ExitC
             from,
             workspace,
         } => {
-            let ws = workspace
-                .or_else(|| std::env::current_dir().ok())
-                .ok_or_else(|| "cannot resolve workspace directory".to_owned())?;
-            let t0 = Instant::now();
-            let handle = engine
-                .clone_world(&SnapshotId(from), &name, &HostBindMount { host_path: ws })
-                .map_err(|e| e.to_string())?;
-            let ms = t0.elapsed().as_secs_f64() * 1000.0;
-            if json_out {
-                println!(
-                    "{}",
-                    json!({
-                        "ok": true,
-                        "world": handle.id,
-                        "state_dir": handle.state_dir,
-                        "workspace_dir": handle.workspace_dir,
-                        "elapsed_ms": ms,
-                    })
-                );
-            } else {
-                println!(
-                    "forked world '{}' -> {} in {ms:.2} ms",
-                    handle.id,
-                    handle.state_dir.display()
-                );
+            // Transitional: the thin CLI still validates its flags (a bad `--from` snapshot id or a
+            // missing `--workspace` names the real flag and cause) before reporting that world
+            // creation is daemon-owned.
+            SnapshotId(from)
+                .validate()
+                .map_err(|e| format!("--from: {e}"))?;
+            if let Some(workspace) = workspace
+                && !workspace.is_dir()
+            {
+                return Err(format!(
+                    "--workspace '{}' is not an existing directory",
+                    workspace.display()
+                ));
             }
-            Ok(ExitCode::SUCCESS)
+            daemon_owned_surface_fails_closed(json_out, "fork", &name)
         }
 
         Commands::Exec {
@@ -846,53 +833,43 @@ fn run_cli(json_out: bool, state_root: &Path, command: Commands) -> Result<ExitC
             snow_file,
             argv,
         } => {
-            let cwd = cwd
-                .or_else(|| std::env::current_dir().ok())
-                .ok_or_else(|| "cannot resolve cwd".to_owned())?;
-            let mut env = BTreeMap::new();
-            if let Some(sf) = snow_file {
-                let resolved = resolve_snow_file(&sf, "local", None)?;
-                for (k, v) in resolved {
-                    env.insert(k, v.expose().to_owned());
-                }
+            // Transitional: the thin CLI still validates the flags the daemon will consume (an
+            // empty argv, a missing `--cwd`, or an unreadable/invalid `--snow-file` names the real
+            // flag and cause) before reporting that world execution is daemon-owned.
+            if argv.is_empty() {
+                return Err("exec requires a command after `--`".to_owned());
             }
-            let state_dir = state_root.join("worlds").join(&world).join("state");
-            if !state_dir.exists() {
+            if let Some(cwd) = cwd
+                && !cwd.is_dir()
+            {
                 return Err(format!(
-                    "world '{world}' does not exist under {}",
-                    state_root.display()
+                    "--cwd '{}' is not an existing directory",
+                    cwd.display()
                 ));
             }
-            let handle = WorldHandle {
-                id: world,
-                state_dir,
-                workspace_dir: cwd.clone(),
-            };
-            let out = engine
-                .exec_in_world(&handle, &ExecSpec { argv, cwd, env })
-                .map_err(|e| e.to_string())?;
-            if !out.stdout.is_empty() {
-                print!("{}", out.stdout);
+            if let Some(file) = snow_file {
+                resolve_snow_file(&file, "local", None)?;
             }
-            if !out.stderr.is_empty() {
-                eprint!("{}", out.stderr);
-            }
-            Ok(ExitCode::from(out.exit_code.clamp(0, 255) as u8))
+            daemon_owned_surface_fails_closed(json_out, "exec", &world)
         }
-
-        Commands::Drop { name } => {
-            let handle = WorldHandle {
-                id: name.clone(),
-                state_dir: state_root.join("worlds").join(&name).join("state"),
-                workspace_dir: PathBuf::new(),
-            };
-            engine.destroy_world(handle).map_err(|e| e.to_string())?;
-            if json_out {
-                println!("{}", json!({ "ok": true, "dropped": name }));
-            } else {
-                println!("dropped world '{name}'");
-            }
-            Ok(ExitCode::SUCCESS)
-        }
+        Commands::Drop { name } => daemon_owned_surface_fails_closed(json_out, "drop", &name),
     }
+}
+
+/// `fork`/`exec`/`drop` need a live daemon-owned `WorldHandle`; the thin CLI must never mint or
+/// reconstruct one (that is the cross-process `WorldEngine::open_world` capability `ADR-0008` §7
+/// rejects). This diverges: no caller may treat the surface as recoverable. Machine consumers get
+/// the same diagnostic as a parseable `{"ok":false,"error":...}` frame on stdout.
+fn daemon_owned_surface_fails_closed(json_out: bool, command: &str, target: &str) -> ! {
+    let diagnostic = format!(
+        "slipfork {command} is served by slipforkd in 0.2.0 (lands in M2.17); world '{target}' is \
+         daemon-owned and no cross-process world handle exists — run `slipfork doctor` to verify \
+         this host"
+    );
+    if json_out {
+        println!("{}", json!({ "ok": false, "error": diagnostic }));
+    } else {
+        eprintln!("{diagnostic}");
+    }
+    std::process::exit(2)
 }

@@ -4,8 +4,11 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use slipfork_dag::{
     CacheAction, CoverageConfig, CoverageReportFormat, CoverageThreshold, DagError, DagPlanner,
-    MapInputHasher, SetDigestCache, SlipforkConfig,
+    DumpPolicy, MapInputHasher, PgSeed, RemotePgDump, RemoteResourceOffer, RemoteS3Bucket,
+    ResourceMode, ResourcePlan, ResourceReason, ResourceStrategy, ResourceTarget, S3Resolution,
+    SetDigestCache, SlipforkConfig,
 };
+use slipfork_world::WorldTarget;
 
 const SAMPLE_TOML: &str = r#"
 [artifacts.front]
@@ -31,6 +34,20 @@ run = "uv run python manage.py seed --catalog"
 parent = "migrate"
 inputs = ["api/minimal/seed.py"]
 run = "uv run python manage.py seed --minimal"
+"#;
+
+const PER_WORLD_TOML: &str = r#"
+[fixtures.sites]
+per_world = true
+run = "python manage.py seed_sites"
+
+[fixtures.sites_child]
+parent = "sites"
+per_world = true
+run = "python manage.py seed_sites_child"
+
+[fixtures.shared]
+run = "python manage.py migrate"
 "#;
 
 #[test]
@@ -325,22 +342,7 @@ fn typed_test_coverage_is_single_way_and_fail_closed() {
 
 #[test]
 fn per_world_fixtures_are_typed_and_cannot_parent_origin_independent_nodes() {
-    let cfg = SlipforkConfig::parse_toml(
-        r#"
-[fixtures.sites]
-per_world = true
-run = "python manage.py seed_sites"
-
-[fixtures.sites_child]
-parent = "sites"
-per_world = true
-run = "python manage.py seed_sites_child"
-
-[fixtures.shared]
-run = "python manage.py migrate"
-"#,
-    )
-    .expect("per_world schema parses");
+    let cfg = SlipforkConfig::parse_toml(PER_WORLD_TOML).expect("per_world schema parses");
     assert!(cfg.fixtures["sites"].per_world);
     assert!(cfg.fixtures["sites_child"].per_world);
     assert!(!cfg.fixtures["shared"].per_world);
@@ -412,22 +414,7 @@ run = "python manage.py migrate"
 
 #[test]
 fn per_world_fixtures_are_never_served_from_the_shared_digest_cache() {
-    let cfg = SlipforkConfig::parse_toml(
-        r#"
-[fixtures.sites]
-per_world = true
-run = "python manage.py seed_sites"
-
-[fixtures.sites_child]
-parent = "sites"
-per_world = true
-run = "python manage.py seed_sites_child"
-
-[fixtures.shared]
-run = "python manage.py migrate"
-"#,
-    )
-    .expect("per_world schema parses");
+    let cfg = SlipforkConfig::parse_toml(PER_WORLD_TOML).expect("per_world schema parses");
 
     let hasher = MapInputHasher::default();
     let cold = DagPlanner::plan(
@@ -501,4 +488,344 @@ coverage = true
 ghost = "nope"
 "#;
     assert!(SlipforkConfig::parse_toml(bad_test).is_err());
+}
+
+#[test]
+fn resources_defaults_are_mode_aware_hermetic_and_overrideable() {
+    let cfg = SlipforkConfig::parse_toml(
+        r#"
+[resources.s3_buckets.media]
+local = "remote"
+
+[resources.pg_databases.main]
+test = "remote"
+"#,
+    )
+    .expect("[resources] schema parses");
+    assert!(!cfg.resources.is_empty());
+    assert_eq!(
+        cfg.resources.s3_buckets()["media"].local(),
+        Some(ResourceStrategy::Remote)
+    );
+    assert_eq!(cfg.resources.s3_buckets()["media"].test(), None);
+    assert_eq!(
+        cfg.resources.pg_databases()["main"].test(),
+        Some(ResourceStrategy::Remote)
+    );
+
+    assert_eq!(
+        ResourceMode::from(&WorldTarget::Canonical),
+        ResourceMode::Local
+    );
+    assert_eq!(
+        ResourceMode::from(&WorldTarget::UserFork("agent".to_owned())),
+        ResourceMode::Local
+    );
+    assert_eq!(
+        ResourceMode::from(&WorldTarget::TestSlot(3)),
+        ResourceMode::Test
+    );
+
+    let offer = RemoteResourceOffer::default()
+        .with_s3_bucket(
+            "media",
+            RemoteS3Bucket::new(
+                "https://s3.example",
+                "us-east-1",
+                "acme-media",
+                "access",
+                "secret",
+            ),
+        )
+        .with_s3_bucket(
+            "logs",
+            RemoteS3Bucket::new(
+                "https://s3.example",
+                "us-east-1",
+                "acme-logs",
+                "access",
+                "secret",
+            ),
+        )
+        .with_pg_dump("main", RemotePgDump::new("a".repeat(64), 100))
+        .with_pg_dump("analytics", RemotePgDump::new("b".repeat(64), 200));
+
+    // `local` worlds default to PreferRemote: offered resources resolve remotely.
+    let local = ResourcePlan::resolve(
+        &cfg.resources,
+        ResourceMode::Local,
+        DumpPolicy::Default,
+        Some(&offer),
+    )
+    .expect("local plan");
+    assert_eq!(
+        local.s3_bucket("media").expect("media").target(),
+        ResourceTarget::Remote
+    );
+    assert_eq!(
+        local.s3_bucket("logs").expect("logs").target(),
+        ResourceTarget::Remote
+    );
+    assert_eq!(
+        local.pg_database("main").expect("main").seed,
+        PgSeed::RemoteDump {
+            dump: RemotePgDump::new("a".repeat(64), 100),
+            refresh: false,
+        }
+    );
+    assert_eq!(
+        local.pg_database("analytics").expect("analytics").target(),
+        ResourceTarget::Remote
+    );
+
+    // `TestSlot` worlds are hermetically local by construction even when OSPP offers everything,
+    // unless the resource explicitly sets `test = "remote"`.
+    let test = ResourcePlan::resolve(
+        &cfg.resources,
+        ResourceMode::Test,
+        DumpPolicy::Default,
+        Some(&offer),
+    )
+    .expect("test plan");
+    assert_eq!(
+        test.s3_bucket("media").expect("media").resolution,
+        S3Resolution::Local
+    );
+    assert_eq!(
+        test.s3_bucket("logs").expect("logs").target(),
+        ResourceTarget::Local
+    );
+    assert_eq!(
+        test.pg_database("main").expect("main").seed,
+        PgSeed::RemoteDump {
+            dump: RemotePgDump::new("a".repeat(64), 100),
+            refresh: false,
+        }
+    );
+    assert_eq!(
+        test.pg_database("analytics").expect("analytics").seed,
+        PgSeed::CleanInitdb
+    );
+    let diagnostics = test.diagnostics();
+    let media = diagnostics
+        .iter()
+        .find(|row| row.id == "media")
+        .expect("media diagnostic");
+    assert_eq!(media.strategy, ResourceStrategy::Local);
+    assert_eq!(media.resolved, ResourceTarget::Local);
+    assert_eq!(media.reason, ResourceReason::ModeDefault);
+
+    // Offline `prefer_remote` falls back to local with the `NotOffered` diagnostic, never a
+    // silent third mode.
+    let fallback_spec = SlipforkConfig::parse_toml(
+        r#"
+[resources.s3_buckets.media]
+test = "local"
+
+[resources.pg_databases.main]
+test = "local"
+"#,
+    )
+    .expect("fallback spec");
+    let offline = ResourcePlan::resolve(
+        &fallback_spec.resources,
+        ResourceMode::Local,
+        DumpPolicy::Default,
+        None,
+    )
+    .expect("offline plan");
+    for (target, reason) in [
+        (
+            offline.s3_bucket("media").expect("media").target(),
+            offline.s3_bucket("media").expect("media").reason,
+        ),
+        (
+            offline.pg_database("main").expect("main").target(),
+            offline.pg_database("main").expect("main").reason,
+        ),
+    ] {
+        assert_eq!(target, ResourceTarget::Local);
+        assert_eq!(reason, ResourceReason::NotOffered);
+    }
+}
+
+#[test]
+fn resources_schema_rejects_unknown_keys_modes_and_empty_overrides() {
+    for raw in [
+        "[resources]\nghost = true\n",
+        "[resources.s3_buckets.media]\nghost = \"remote\"\n",
+        "[resources.s3_buckets.media]\nlocal = \"sometimes\"\n",
+        "[resources.s3_buckets.media]\nlocal = true\n",
+        "[resources.s3_buckets.media]\n",
+        "[resources.pg_databases.main]\n",
+    ] {
+        assert!(
+            SlipforkConfig::parse_toml(raw).is_err(),
+            "{raw:?} must fail closed"
+        );
+    }
+
+    let error =
+        SlipforkConfig::parse_toml("[resources.s3_buckets.media]\n").expect_err("empty override");
+    assert!(
+        matches!(
+            error,
+            DagError::EmptyResourceOverride {
+                kind: "s3_buckets",
+                ..
+            }
+        ),
+        "{error:?}"
+    );
+
+    let cfg = SlipforkConfig::parse_toml(
+        r#"
+[resources.s3_buckets.media]
+local = "local"
+
+[resources.pg_databases.main]
+local = "local"
+"#,
+    )
+    .expect("declared ids");
+    let error = cfg
+        .resources
+        .validate_declared_ids(&["logs"], &["analytics"])
+        .expect_err("unknown s3 id");
+    assert!(
+        matches!(error, DagError::UndeclaredResourceId { kind: "s3_buckets", ref id } if id == "media"),
+        "{error:?}"
+    );
+    let error = cfg
+        .resources
+        .validate_declared_ids(&["media"], &["analytics"])
+        .expect_err("unknown pg id");
+    assert!(
+        matches!(error, DagError::UndeclaredResourceId { kind: "pg_databases", ref id } if id == "main"),
+        "{error:?}"
+    );
+    cfg.resources
+        .validate_declared_ids(&["media"], &["main"])
+        .expect("declared ids resolve");
+}
+
+#[test]
+fn resources_single_resolve_enforces_remote_and_refresh_dump_policy() {
+    let pg_only = SlipforkConfig::parse_toml(
+        r#"
+[resources.pg_databases.main]
+local = "remote"
+"#,
+    )
+    .expect("remote pg spec");
+
+    let error = ResourcePlan::resolve(
+        &pg_only.resources,
+        ResourceMode::Local,
+        DumpPolicy::Default,
+        None,
+    )
+    .expect_err("remote pg requires an OSPP offer");
+    assert!(
+        matches!(
+            error,
+            DagError::RemoteResourceUnavailable {
+                kind: "pg_database",
+                ..
+            }
+        ),
+        "{error:?}"
+    );
+
+    let offer =
+        RemoteResourceOffer::default().with_pg_dump("main", RemotePgDump::new("a".repeat(64), 100));
+    let default = ResourcePlan::resolve(
+        &pg_only.resources,
+        ResourceMode::Local,
+        DumpPolicy::Default,
+        Some(&offer),
+    )
+    .expect("remote dump");
+    assert_eq!(
+        default.pg_database("main").expect("main").seed,
+        PgSeed::RemoteDump {
+            dump: RemotePgDump::new("a".repeat(64), 100),
+            refresh: false,
+        }
+    );
+
+    let refreshed = ResourcePlan::resolve(
+        &pg_only.resources,
+        ResourceMode::Local,
+        DumpPolicy::RefreshDump,
+        Some(&offer),
+    )
+    .expect("refresh dump");
+    assert_eq!(
+        refreshed.pg_database("main").expect("main").seed,
+        PgSeed::RemoteDump {
+            dump: RemotePgDump::new("a".repeat(64), 100),
+            refresh: true,
+        }
+    );
+
+    // `--no-dump` skips the dump and uses a clean initdb without requiring an offer.
+    let no_dump = ResourcePlan::resolve(
+        &pg_only.resources,
+        ResourceMode::Local,
+        DumpPolicy::NoDump,
+        None,
+    )
+    .expect("no dump");
+    let no_dump_main = no_dump.pg_database("main").expect("main");
+    assert_eq!(no_dump_main.seed, PgSeed::CleanInitdb);
+    assert_eq!(no_dump_main.reason, ResourceReason::NoDump);
+    // `NoDump` forces the effective strategy local even though `local = "remote"` is configured,
+    // so the plan's `strategy` and `target` never contradict each other.
+    assert_eq!(no_dump_main.strategy, ResourceStrategy::Local);
+    assert_eq!(no_dump_main.target(), ResourceTarget::Local);
+    let no_dump_diag = no_dump
+        .diagnostics()
+        .into_iter()
+        .find(|row| row.id == "main")
+        .expect("main diagnostic");
+    assert_eq!(no_dump_diag.strategy, ResourceStrategy::Local);
+    assert_eq!(no_dump_diag.resolved, ResourceTarget::Local);
+    assert_eq!(no_dump_diag.reason, ResourceReason::NoDump);
+
+    // `RefreshDump` is a configuration conflict with the hermetic `Test` default (`Local`).
+    let error = ResourcePlan::resolve(
+        &pg_only.resources,
+        ResourceMode::Test,
+        DumpPolicy::RefreshDump,
+        Some(&offer),
+    )
+    .expect_err("refresh dump requires a non-local strategy");
+    assert!(
+        matches!(error, DagError::RefreshDumpRequiresRemote { ref id } if id == "main"),
+        "{error:?}"
+    );
+
+    // An explicit `test = "remote"` override makes the same refresh legal.
+    let test_remote = SlipforkConfig::parse_toml(
+        r#"
+[resources.pg_databases.main]
+test = "remote"
+"#,
+    )
+    .expect("test remote spec");
+    let plan = ResourcePlan::resolve(
+        &test_remote.resources,
+        ResourceMode::Test,
+        DumpPolicy::RefreshDump,
+        Some(&offer),
+    )
+    .expect("explicit test remote refresh");
+    assert_eq!(
+        plan.pg_database("main").expect("main").seed,
+        PgSeed::RemoteDump {
+            dump: RemotePgDump::new("a".repeat(64), 100),
+            refresh: true,
+        }
+    );
 }

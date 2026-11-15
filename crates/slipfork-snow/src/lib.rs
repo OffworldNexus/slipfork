@@ -13,9 +13,10 @@ pub use faceless::{GeneratorSpec, parse_faceless, render_template};
 pub use model::{
     BuildImage, Component, Domain, Hook, HookPhase, Image, Ingress, IngressMatch, IngressTarget,
     MissingRef, ModeComponentOverride, ModeSpec, PgCluster, PgDatabase, RedisCluster,
-    ResolvedEnvMap, ResourceCoordinates, Resources, S3Bucket, SnowError, SnowFile,
+    ResolvedComponent, ResolvedComponents, ResolvedEnvMap, ResourceCoordinates, Resources,
+    S3Bucket, S3Coordinates, SnowError, SnowFile,
 };
 pub use provider::{
     EntropySource, FileVaultProvider, LayeredSecretProvider, MemorySecretProvider, Namespace,
-    OsCsprngEntropy, OsppBundle, ProviderError, SecretProvider, SecretValue,
+    OsCsprngEntropy, ProviderError, SecretProvider, SecretValue,
 };

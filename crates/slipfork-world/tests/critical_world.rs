@@ -52,7 +52,20 @@ fn one_two_three_label_routes_parse_and_format_round_trip() {
 
     for (expected, host) in cases {
         assert_eq!(expected.host(), host);
-        assert_eq!(expected.url(), format!("http://{host}"));
+        // `WorldOrigin::local` is the only portless-origin constructor: a default-ingress route
+        // renders `http://<host>` at port 80, while a named `domains[].id` route is never an origin.
+        match expected.snow_domain() {
+            None => assert_eq!(
+                WorldOrigin::local(&expected, 80)
+                    .expect("port-80 origin")
+                    .url(),
+                format!("http://{host}")
+            ),
+            Some(_) => assert!(matches!(
+                WorldOrigin::local(&expected, 80),
+                Err(WorldError::OriginNotDefaultIngress { .. })
+            )),
+        }
         assert_eq!(
             LocalHostRoute::parse(&slug("acme"), &domains, host),
             Some(expected.clone()),
@@ -437,23 +450,36 @@ fn world_origin_local_omits_port_80_and_renders_other_ports() {
     let origin = WorldOrigin::local(&canonical_route(), 80).expect("port-80 origin");
     assert!(matches!(origin, WorldOrigin::Local(_)));
     assert_eq!(origin.url(), "http://acme.localhost");
+    assert_eq!(origin.host(), "acme.localhost");
 
     let origin = WorldOrigin::local(&canonical_route(), 7080).expect("ephemeral ingress origin");
     assert_eq!(origin.url(), "http://acme.localhost:7080");
+    assert_eq!(origin.host(), "acme.localhost");
 
     let fork = route("acme", WorldTarget::UserFork("feat-auth".to_owned()), None);
-    assert_eq!(
-        WorldOrigin::local(&fork, 65_535)
-            .expect("fork origin")
-            .url(),
-        "http://feat-auth.acme.localhost:65535"
-    );
+    let fork_origin = WorldOrigin::local(&fork, 65_535).expect("fork origin");
+    assert_eq!(fork_origin.url(), "http://feat-auth.acme.localhost:65535");
+    assert_eq!(fork_origin.host(), "feat-auth.acme.localhost");
 
     let slot = route("acme", WorldTarget::TestSlot(3), None);
-    assert_eq!(
-        WorldOrigin::local(&slot, 8000).expect("slot origin").url(),
-        "http://test-3.acme.localhost:8000"
-    );
+    let slot_origin = WorldOrigin::local(&slot, 8000).expect("slot origin");
+    assert_eq!(slot_origin.url(), "http://test-3.acme.localhost:8000");
+    assert_eq!(slot_origin.host(), "test-3.acme.localhost");
+}
+
+#[test]
+fn world_origin_host_is_the_port_less_authority_for_shared_origins_too() {
+    let shared =
+        WorldOrigin::shared("https://acme.tunnel.example:8443/app").expect("shared origin");
+    assert_eq!(shared.host(), "acme.tunnel.example");
+    assert_eq!(shared.url(), "https://acme.tunnel.example:8443/app");
+
+    // A bracketed IPv6 literal keeps its brackets so `host()` stays a valid `Host` authority.
+    let v6 = WorldOrigin::shared("http://[::1]:8080").expect("ipv6 origin");
+    assert_eq!(v6.host(), "[::1]");
+
+    let bare = WorldOrigin::shared("http://acme.tunnel.example").expect("host-only origin");
+    assert_eq!(bare.host(), "acme.tunnel.example");
 }
 
 #[test]

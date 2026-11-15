@@ -2,7 +2,7 @@
 id: M2.3
 title: "slipfork-world: WorldOrigin plus deterministic <=31-byte WeaverServiceName derivation"
 kind: task
-status: active
+status: done
 owner: implementer
 priority: 3
 depends_on: [M2.2]
@@ -11,7 +11,7 @@ attempts: 1
 max_attempts: 3
 escalation: none
 created: "2026-11-15T16:40"
-updated: "2026-11-15T19:03"
+updated: "2026-11-15T19:04"
 ---
 
 # Goal

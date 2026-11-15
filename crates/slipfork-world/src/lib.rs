@@ -254,11 +254,6 @@ impl LocalHostRoute {
         labels.push(self.project.as_str().to_owned());
         format!("{}.localhost", labels.join("."))
     }
-
-    /// Render the canonical loopback URL `http://<host>`.
-    pub fn url(&self) -> String {
-        format!("http://{}", self.host())
-    }
 }
 
 /// The single public origin of one world (`ADR-0005` §1, `H-010` #2).
@@ -330,6 +325,24 @@ impl WorldOrigin {
             Self::Local(local) => &local.url,
             Self::Shared(shared) => &shared.url,
         }
+    }
+
+    /// Host authority of the origin URL: the **sole** host accessor (no scheme, port, or path).
+    ///
+    /// Bracketed IPv6 literals keep their brackets (`http://[::1]:8080` -> `[::1]`), so the value
+    /// is directly usable as a `Host` header or hostname comparison key.
+    pub fn host(&self) -> &str {
+        let url = self.url();
+        let authority = url.split_once("://").map_or(url, |(_, rest)| rest);
+        let authority = authority.split(['/', '?', '#']).next().unwrap_or(authority);
+        if authority.starts_with('[') {
+            return authority.split_once(']').map_or(authority, |(_, rest)| {
+                &authority[..authority.len() - rest.len()]
+            });
+        }
+        authority
+            .split_once(':')
+            .map_or(authority, |(host, _)| host)
     }
 }
 

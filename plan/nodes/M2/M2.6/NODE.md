@@ -2,16 +2,16 @@
 id: M2.6
 title: "slipfork-engine: multi-mount WorldSpec, redacted ExecEnv, opaque WorldHandle, freeze_world"
 kind: task
-status: ready
+status: review
 owner: implementer
 priority: 3
 depends_on: [M2.3]
-paths: ["crates/slipfork-engine/**"]
-attempts: 0
+paths: ["crates/slipfork-engine/**", crates/slipfork/src/main.rs]
+attempts: 2
 max_attempts: 3
 escalation: none
 created: "2026-11-15T16:40"
-updated: "2026-11-15T18:38"
+updated: "2026-11-15T19:15"
 ---
 
 # Goal

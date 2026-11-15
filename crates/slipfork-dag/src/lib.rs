@@ -3,26 +3,38 @@
 //! Separates stateless build outputs (`[artifacts.<id>]`) from stateful CoW service snapshots
 //! (`[fixtures.<id>]`) so frontend asset changes never invalidate seeded database snapshots
 //! and schema/seed changes never rebuild frontend bundles (`ADR-0003`). Also owns the typed
-//! `[test]` coverage schema (`ADR-0006` §5) and the embedded integration support registry
-//! (`support/integrations.toml`, `ADR-0007`).
+//! `[test]` coverage schema (`ADR-0006` §5), mode-aware `[resources]` resolution (`ADR-0008` §3),
+//! and the embedded integration support registry (`support/integrations.toml`, `ADR-0007`).
+//!
+//! The domain core is filesystem-free: concrete filesystem adapters live behind the `fs` feature.
 
 #![forbid(unsafe_code)]
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs;
-use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use slipfork_world::ProjectSlug;
 use thiserror::Error;
 
+mod resources;
 mod support;
 
+#[cfg(feature = "fs")]
+mod fs;
+
+pub use resources::{
+    DumpPolicy, PgSeed, PlannedPgDatabase, PlannedS3Bucket, RemotePgDump, RemoteResourceOffer,
+    RemoteS3Bucket, ResourceDiagnostic, ResourceKind, ResourceMode, ResourceOverride, ResourcePlan,
+    ResourceReason, ResourceStrategy, ResourceTarget, ResourcesSpec, S3Resolution,
+};
 pub use support::{
     Evidence, EvidenceField, IntegrationCategory, IntegrationEntry, IntegrationTier, RegistryError,
     SupportRegistry,
 };
+
+#[cfg(feature = "fs")]
+pub use fs::{FsDigestCache, FsMerkleHasher};
 
 /// Errors produced when parsing or planning a `slipfork.toml` DAG.
 #[derive(Debug, Error)]
@@ -43,6 +55,20 @@ pub enum DagError {
     EmptyCoverageReport,
     #[error("`coverage_fail_under` must be an integer in 0..=100, got {value}")]
     InvalidCoverageThreshold { value: String },
+    #[error("[resources.{kind}.{id}] must declare at least one of `local` or `test`")]
+    EmptyResourceOverride { kind: &'static str, id: String },
+    #[error("[resources] declares {kind} '{id}' which is absent from snow.yml")]
+    UndeclaredResourceId { kind: &'static str, id: String },
+    #[error(
+        "resource '{kind}.{id}' requires a remote OSPP offer in {mode:?} mode but none was provided"
+    )]
+    RemoteResourceUnavailable {
+        kind: &'static str,
+        id: String,
+        mode: ResourceMode,
+    },
+    #[error("`--refresh-dump` cannot be combined with a local strategy for pg_databases '{id}'")]
+    RefreshDumpRequiresRemote { id: String },
     #[error("input hashing I/O error at {path}: {message}")]
     Io { path: String, message: String },
 }
@@ -74,9 +100,7 @@ pub struct FixtureSpec {
 }
 
 /// One coverage report format requested through `[test].coverage_report` (`ADR-0006` §5).
-///
-/// Also a wire type in M3's `CoverageSummary.report_paths`, so it round-trips through JSON.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CoverageReportFormat {
     Html,
@@ -174,7 +198,8 @@ impl RawTestSpec {
     }
 }
 
-/// Root `<vcs_root>/slipfork.toml` manifest owning `project`, `[artifacts]`, `[fixtures]`, and `[test]`.
+/// Root `<vcs_root>/slipfork.toml` manifest owning `project`, `[artifacts]`, `[fixtures]`,
+/// `[test]`, and `[resources]`.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct SlipforkConfig {
     /// Optional canonical project slug override (defaults to the canonical git/jj root name).
@@ -182,6 +207,7 @@ pub struct SlipforkConfig {
     pub artifacts: BTreeMap<String, ArtifactSpec>,
     pub fixtures: BTreeMap<String, FixtureSpec>,
     pub test: TestSpec,
+    pub resources: ResourcesSpec,
 }
 
 /// Raw root wire document; validated into [`SlipforkConfig`] by [`SlipforkConfig::parse_toml`].
@@ -195,6 +221,8 @@ struct RawSlipforkConfig {
     fixtures: BTreeMap<String, FixtureSpec>,
     #[serde(default)]
     test: RawTestSpec,
+    #[serde(default)]
+    resources: resources::RawResourcesSpec,
 }
 
 impl SlipforkConfig {
@@ -207,6 +235,7 @@ impl SlipforkConfig {
             artifacts: raw.artifacts,
             fixtures: raw.fixtures,
             test: raw.test.into_test_spec()?,
+            resources: ResourcesSpec::from_raw(raw.resources)?,
         })
     }
 }
@@ -452,83 +481,6 @@ impl InputHasher for MapInputHasher {
     }
 }
 
-/// Filesystem [`InputHasher`] walking a repository root deterministically.
-#[derive(Debug, Clone)]
-pub struct FsMerkleHasher {
-    root: PathBuf,
-}
-
-impl FsMerkleHasher {
-    pub fn new(root: impl AsRef<Path>) -> Self {
-        Self {
-            root: root.as_ref().to_path_buf(),
-        }
-    }
-}
-
-impl InputHasher for FsMerkleHasher {
-    fn hash_globs(&self, globs: &[String]) -> Result<String, DagError> {
-        if globs.is_empty() {
-            return Ok(hex::encode(Sha256::digest(b"")));
-        }
-        let mut matched: BTreeMap<String, PathBuf> = BTreeMap::new();
-        collect_files(&self.root, &self.root, globs, &mut matched)?;
-        let mut h = Sha256::new();
-        for (rel, full) in matched {
-            let bytes = fs::read(&full).map_err(|e| DagError::Io {
-                path: full.display().to_string(),
-                message: e.to_string(),
-            })?;
-            h.update(rel.as_bytes());
-            h.update(b"\0");
-            h.update(Sha256::digest(&bytes));
-        }
-        Ok(hex::encode(h.finalize()))
-    }
-}
-
-fn collect_files(
-    root: &Path,
-    dir: &Path,
-    globs: &[String],
-    out: &mut BTreeMap<String, PathBuf>,
-) -> Result<(), DagError> {
-    let entries = fs::read_dir(dir).map_err(|e| DagError::Io {
-        path: dir.display().to_string(),
-        message: e.to_string(),
-    })?;
-    for entry in entries {
-        let entry = entry.map_err(|e| DagError::Io {
-            path: dir.display().to_string(),
-            message: e.to_string(),
-        })?;
-        let name = entry.file_name();
-        let name_str = name.to_string_lossy();
-        if matches!(
-            name_str.as_ref(),
-            ".git" | ".worktrees" | ".slipfork" | "target" | "node_modules" | ".venv"
-        ) {
-            continue;
-        }
-        let path = entry.path();
-        let ft = entry.file_type().map_err(|e| DagError::Io {
-            path: path.display().to_string(),
-            message: e.to_string(),
-        })?;
-        if ft.is_dir() {
-            collect_files(root, &path, globs, out)?;
-        } else if ft.is_file()
-            && let Ok(rel) = path.strip_prefix(root)
-        {
-            let rel_str = rel.to_string_lossy().replace('\\', "/");
-            if globs.iter().any(|g| matches_glob(g, &rel_str)) {
-                out.insert(rel_str, path);
-            }
-        }
-    }
-    Ok(())
-}
-
 /// Simple, dependency-free repo glob matcher supporting `**/`, `**`, `*`, and `?`.
 pub fn matches_glob(pattern: &str, path: &str) -> bool {
     let pat_segs: Vec<&str> = pattern
@@ -596,29 +548,5 @@ impl DigestCache for SetDigestCache {
 
     fn has_fixture(&self, digest: &str) -> bool {
         self.fixtures.contains(digest)
-    }
-}
-
-/// Directory-backed [`DigestCache`] checking `<cache_root>/artifacts/<digest>` and `<cache_root>/fixtures/<digest>`.
-#[derive(Debug, Clone)]
-pub struct FsDigestCache {
-    root: PathBuf,
-}
-
-impl FsDigestCache {
-    pub fn new(root: impl AsRef<Path>) -> Self {
-        Self {
-            root: root.as_ref().to_path_buf(),
-        }
-    }
-}
-
-impl DigestCache for FsDigestCache {
-    fn has_artifact(&self, digest: &str) -> bool {
-        self.root.join("artifacts").join(digest).exists()
-    }
-
-    fn has_fixture(&self, digest: &str) -> bool {
-        self.root.join("fixtures").join(digest).exists()
     }
 }

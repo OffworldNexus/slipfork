@@ -2,16 +2,20 @@
 id: M2.4
 title: "slipfork-snow: Send+Sync providers, redacted Debug, mode-scoped effective_components"
 kind: task
-status: ready
+status: review
 owner: implementer
 priority: 3
 depends_on: [M2.3]
-paths: ["crates/slipfork-snow/**"]
-attempts: 0
+paths:
+  - "crates/slipfork-snow/**"
+  - "crates/slipfork-world/src/lib.rs"
+  - "crates/slipfork-world/tests/critical_world.rs"
+  - crates/slipfork/src/main.rs
+attempts: 1
 max_attempts: 3
 escalation: none
 created: "2026-11-15T16:40"
-updated: "2026-11-15T19:03"
+updated: "2026-11-15T19:17"
 ---
 
 # Goal

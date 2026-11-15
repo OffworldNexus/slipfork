@@ -1,11 +1,17 @@
-//! Protected critical tests for `slipfork-snow` (`R1..R8`).
+//! Protected critical tests for `slipfork-snow` (`R1..R8`, M2.4 provider & mode contracts).
+
+use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicU8, Ordering};
 
 use slipfork_snow::conformance::assert_secret_provider_conformance;
 use slipfork_snow::{
     EntropySource, FileVaultProvider, LayeredSecretProvider, MemorySecretProvider, Namespace,
-    ProviderError, ResourceCoordinates, SecretProvider, SnowError, SnowFile,
+    ProviderError, ResourceCoordinates, S3Coordinates, SecretProvider, SecretValue, SnowError,
+    SnowFile,
 };
-use slipfork_world::{DNS_LABEL_REASON, ProjectSlug, WorldError, WorldTarget};
+use slipfork_world::{
+    DNS_LABEL_REASON, LocalHostRoute, ProjectSlug, WorldError, WorldOrigin, WorldTarget,
+};
 
 fn project_slug(slug: &str) -> ProjectSlug {
     ProjectSlug::parse(slug).expect("valid project slug")
@@ -16,16 +22,37 @@ fn canonical_coords(snow: &SnowFile) -> ResourceCoordinates {
         .expect("canonical coordinates")
 }
 
-struct FixedCounterEntropy(u8);
+/// Deterministic [`EntropySource`] adapter: `Sync`, so one instance can be shared by reference.
+struct FixedCounterEntropy(AtomicU8);
+
+impl FixedCounterEntropy {
+    fn new(seed: u8) -> Self {
+        Self(AtomicU8::new(seed))
+    }
+}
 
 impl EntropySource for FixedCounterEntropy {
-    fn fill_bytes(&mut self, buf: &mut [u8]) -> Result<(), ProviderError> {
+    fn fill_bytes(&self, buf: &mut [u8]) -> Result<(), ProviderError> {
         for b in buf {
-            *b = self.0;
-            self.0 = self.0.wrapping_add(7);
+            let next = self.0.load(Ordering::Relaxed);
+            self.0.store(next.wrapping_add(7), Ordering::Relaxed);
+            *b = next;
         }
         Ok(())
     }
+}
+
+/// Both DI ports and every shipped adapter are shareable across threads.
+#[test]
+fn providers_are_send_sync_and_usable_through_shared_references() {
+    fn assert_send_sync<T: Send + Sync + ?Sized>() {}
+    assert_send_sync::<dyn SecretProvider>();
+    assert_send_sync::<dyn EntropySource>();
+    assert_send_sync::<FileVaultProvider>();
+    assert_send_sync::<MemorySecretProvider>();
+    assert_send_sync::<LayeredSecretProvider<MemorySecretProvider, MemorySecretProvider>>();
+    assert_send_sync::<slipfork_snow::OsCsprngEntropy>();
+    assert_send_sync::<FixedCounterEntropy>();
 }
 
 #[test]
@@ -45,36 +72,114 @@ fn fastrand_u64() -> u64 {
 }
 
 #[test]
-fn top_level_envs_and_asterisk_mode_are_rejected() {
-    let both = r#"
+fn file_vault_ensure_secret_is_a_compare_and_set_under_contention() {
+    const RACERS: usize = 8;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let vault = FileVaultProvider::open(dir.path().join("acme.json")).expect("open vault");
+    let barrier = std::sync::Barrier::new(RACERS);
+    let proposals: Vec<String> = (0..RACERS).map(|i| format!("proposed-{i}")).collect();
+    let shared: &dyn SecretProvider = &vault;
+
+    let observed = std::thread::scope(|scope| {
+        let handles: Vec<_> = proposals
+            .iter()
+            .map(|proposed| {
+                let barrier = &barrier;
+                scope.spawn(move || {
+                    barrier.wait();
+                    shared
+                        .ensure_secret("SECRET_KEY", proposed)
+                        .expect("concurrent ensure_secret")
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|h| h.join().expect("racer thread"))
+            .collect::<Vec<_>>()
+    });
+
+    let winner = observed.first().expect("observed value").clone();
+    assert!(
+        observed.iter().all(|value| *value == winner),
+        "every racer must observe the same authoritative value, got {observed:?}"
+    );
+    assert!(
+        proposals.contains(&winner),
+        "the winner must be one generated proposal, got {winner:?}"
+    );
+    assert_eq!(
+        vault
+            .get(Namespace::Secrets, "SECRET_KEY")
+            .expect("read back"),
+        Some(winner.clone())
+    );
+    // Exactly one write: a re-opened provider sees the same single value and no temp file remains.
+    let reopened = FileVaultProvider::open(dir.path().join("acme.json")).expect("reopen vault");
+    assert_eq!(
+        reopened
+            .get(Namespace::Secrets, "SECRET_KEY")
+            .expect("read reopened"),
+        Some(winner)
+    );
+    let leftovers: Vec<_> = std::fs::read_dir(dir.path())
+        .expect("read dir")
+        .map(|e| e.expect("dir entry").file_name())
+        .collect();
+    assert_eq!(leftovers, vec![std::ffi::OsString::from("acme.json")]);
+}
+
+#[test]
+fn file_vault_recovers_from_a_crashed_writer_temp_file() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("acme.json");
+    std::fs::write(path.with_extension("json.tmp"), b"{ truncated").expect("stale temp");
+    let vault = FileVaultProvider::open(&path).expect("open vault");
+    assert_eq!(
+        vault.ensure_secret("SECRET_KEY", "first").expect("ensure"),
+        "first"
+    );
+    assert!(!path.with_extension("json.tmp").exists());
+}
+
+#[test]
+fn top_level_forbidden_keys_name_only_the_key_and_never_their_values() {
+    let with_secret = r#"
 envs:
   django:
-    A: "1"
+    SECRET_KEY: "literal-should-never-be-printed"
 modes:
   local:
     envs:
       django:
         B: "2"
 "#;
-    assert!(matches!(
-        SnowFile::parse_yaml(both),
-        Err(SnowError::TopLevelEnvsUnsupported)
-    ));
-
-    let top_level_envs_only = r#"
-envs:
-  django:
-    A: "1"
-"#;
-    assert!(matches!(
-        SnowFile::parse_yaml(top_level_envs_only),
-        Err(SnowError::TopLevelEnvsUnsupported)
-    ));
+    match SnowFile::parse_yaml(with_secret) {
+        Err(SnowError::ForbiddenTopLevelKey { key }) => assert_eq!(key, "envs"),
+        other => panic!("expected ForbiddenTopLevelKey, got {other:?}"),
+    }
+    let Err(err) = SnowFile::parse_yaml(with_secret) else {
+        panic!("top-level envs must fail closed");
+    };
+    assert!(format!("{err}").contains("envs"));
+    assert!(format!("{err:?}").contains("envs"));
+    assert!(!format!("{err:?}").contains("literal-should-never-be-printed"));
+    assert!(!format!("{err}").contains("literal-should-never-be-printed"));
 
     // An explicitly null top-level `envs:` is still a present forbidden key, not a missing one.
     assert!(matches!(
         SnowFile::parse_yaml("envs:\n"),
-        Err(SnowError::TopLevelEnvsUnsupported)
+        Err(SnowError::ForbiddenTopLevelKey { key }) if key == "envs"
+    ));
+
+    assert!(matches!(
+        SnowFile::parse_yaml("project: acme\nmodes:\n  local: {}\n"),
+        Err(SnowError::ForbiddenTopLevelKey { key }) if key == "project"
+    ));
+    // An explicitly null `project:` is still a present forbidden key.
+    assert!(matches!(
+        SnowFile::parse_yaml("project:\nmodes:\n  local: {}\n"),
+        Err(SnowError::ForbiddenTopLevelKey { key }) if key == "project"
     ));
 
     let star = r#"
@@ -127,11 +232,11 @@ modes:
     let coords = canonical_coords(&snow);
     let dir = tempfile::tempdir().expect("tempdir");
     let vault_path = dir.path().join("acme.json");
-    let mut vault = FileVaultProvider::open(&vault_path).expect("open vault");
-    let mut entropy = FixedCounterEntropy(1);
+    let vault = FileVaultProvider::open(&vault_path).expect("open vault");
+    let entropy = FixedCounterEntropy::new(1);
 
     let resolved1 = snow
-        .resolve_mode("local", Some("api"), &mut vault, &coords, &mut entropy)
+        .resolve_mode("local", Some("api"), &vault, &coords, &entropy)
         .expect("resolve local");
 
     let secret_key = resolved1.get("SECRET_KEY").expect("SECRET_KEY");
@@ -139,7 +244,7 @@ modes:
     assert!(secret_key.is_secret());
     // R8: Debug and Display MUST redact secrets!
     assert_eq!(format!("{secret_key}"), "[REDACTED]");
-    assert!(format!("{secret_key:?}").contains("[REDACTED]"));
+    assert_eq!(format!("{secret_key:?}"), "SecretValue([REDACTED])");
     assert!(!format!("{secret_key:?}").contains(secret_key.expose()));
 
     assert_eq!(resolved1["OVERRIDE_ME"].expose(), "from-local");
@@ -154,10 +259,10 @@ modes:
     );
 
     // Re-open vault from disk with a DIFFERENT entropy stream: SECRET_KEY stays identical!
-    let mut vault2 = FileVaultProvider::open(&vault_path).expect("reopen vault");
-    let mut entropy2 = FixedCounterEntropy(99);
+    let vault2 = FileVaultProvider::open(&vault_path).expect("reopen vault");
+    let entropy2 = FixedCounterEntropy::new(99);
     let resolved2 = snow
-        .resolve_mode("local", Some("api"), &mut vault2, &coords, &mut entropy2)
+        .resolve_mode("local", Some("api"), &vault2, &coords, &entropy2)
         .expect("re-resolve local");
     assert_eq!(resolved2["SECRET_KEY"].expose(), secret_key.expose());
 
@@ -175,6 +280,50 @@ modes:
 }
 
 #[test]
+fn coordinates_and_s3_debug_redact_every_secret() {
+    let s3 = S3Coordinates {
+        endpoint_url: "https://s3.example".to_owned(),
+        bucket: "media".to_owned(),
+        access_key: "access".to_owned(),
+        secret_key: "coord-secret-must-not-leak".to_owned(),
+        region: "us-east-1".to_owned(),
+    };
+    let s3_debug = format!("{s3:?}");
+    assert!(s3_debug.contains("[REDACTED]"));
+    assert!(!s3_debug.contains("coord-secret-must-not-leak"));
+
+    let coords = ResourceCoordinates {
+        app_url: "http://acme.localhost".to_owned(),
+        app_domain: "acme.localhost".to_owned(),
+        env_name: "local".to_owned(),
+        is_production: false,
+        pg_urls: BTreeMap::new(),
+        redis_urls: BTreeMap::new(),
+        s3_endpoints: BTreeMap::from([("media".to_owned(), s3)]),
+        component_urls: BTreeMap::new(),
+    };
+    let coords_debug = format!("{coords:?}");
+    assert!(coords_debug.contains("[REDACTED]"));
+    assert!(!coords_debug.contains("coord-secret-must-not-leak"));
+
+    let value = SecretValue::secret("value-secret-must-not-leak");
+    assert_eq!(format!("{value:?}"), "SecretValue([REDACTED])");
+    assert!(!format!("{value:?}").contains("value-secret-must-not-leak"));
+
+    // A provider's `Debug` must never expose the store: no `{:?}` path may print plaintext.
+    let provider = MemorySecretProvider::new();
+    provider.insert(
+        Namespace::Secrets,
+        "SECRET_KEY",
+        "provider-secret-must-not-leak",
+    );
+    assert_eq!(format!("{provider:?}"), "MemorySecretProvider(<redacted>)");
+    assert!(!format!("{provider:?}").contains("provider-secret-must-not-leak"));
+    let layered = LayeredSecretProvider::new(provider, MemorySecretProvider::new());
+    assert!(!format!("{layered:?}").contains("provider-secret-must-not-leak"));
+}
+
+#[test]
 fn r6_r7_rejects_non_secret_ensure_and_collects_all_missing_keys_at_once() {
     let bad_ensure = r#"
 modes:
@@ -185,10 +334,10 @@ modes:
 "#;
     let snow_bad = SnowFile::parse_yaml(bad_ensure).expect("parse");
     let coords = canonical_coords(&snow_bad);
-    let mut mem = MemorySecretProvider::default();
-    let mut rng = FixedCounterEntropy(1);
+    let mem = MemorySecretProvider::new();
+    let rng = FixedCounterEntropy::new(1);
     assert!(matches!(
-        snow_bad.resolve_mode("local", None, &mut mem, &coords, &mut rng),
+        snow_bad.resolve_mode("local", None, &mem, &coords, &rng),
         Err(SnowError::EnsureOnlyAllowedOnSecrets(_))
     ));
 
@@ -205,7 +354,7 @@ modes:
 "#;
     let snow_missing = SnowFile::parse_yaml(missing_yaml).expect("parse");
     let err = snow_missing
-        .resolve_mode("local", None, &mut mem, &coords, &mut rng)
+        .resolve_mode("local", None, &mem, &coords, &rng)
         .expect_err("must fail closed on missing values");
     match err {
         SnowError::MissingValues { missing, .. } => {
@@ -222,11 +371,11 @@ modes:
 }
 
 #[test]
-fn layered_provider_reads_remote_and_persists_generated_secrets_locally_only() {
-    let mut remote = MemorySecretProvider::default();
+fn layered_provider_reads_primary_then_fallback_and_writes_primary_only() {
+    let local = MemorySecretProvider::new();
+    let remote = MemorySecretProvider::new();
     remote.insert(Namespace::Secrets, "SHARED_API_KEY", "remote-shared-secret");
-    let local = MemorySecretProvider::default();
-    let mut layered = LayeredSecretProvider::new(remote.clone(), local);
+    let layered = LayeredSecretProvider::new(local, remote.clone());
 
     assert_eq!(
         layered
@@ -246,24 +395,26 @@ fn layered_provider_reads_remote_and_persists_generated_secrets_locally_only() {
             .expect("remote untouched"),
         None
     );
+
+    // A remote-only secret converges without writing anything locally.
+    let local = MemorySecretProvider::new();
+    let layered = LayeredSecretProvider::new(local.clone(), remote.clone());
+    assert_eq!(
+        layered
+            .ensure_secret("SHARED_API_KEY", "freshly-generated")
+            .expect("converge"),
+        "remote-shared-secret"
+    );
+    assert_eq!(
+        local
+            .get(Namespace::Secrets, "SHARED_API_KEY")
+            .expect("local untouched"),
+        None
+    );
 }
 
 #[test]
-fn top_level_project_in_snow_yml_is_rejected_in_favour_of_slipfork_toml() {
-    let yaml = "project: acme\nmodes:\n  local: {}\n";
-    assert!(matches!(
-        SnowFile::parse_yaml(yaml),
-        Err(SnowError::Validation(_))
-    ));
-    // An explicitly null `project:` is still a present forbidden key.
-    assert!(matches!(
-        SnowFile::parse_yaml("project:\nmodes:\n  local: {}\n"),
-        Err(SnowError::Validation(_))
-    ));
-}
-
-#[test]
-fn local_for_world_coordinates_world_error_propagation_and_domain_validation_hold() {
+fn local_for_world_and_for_world_coordinates_hold() {
     let yaml = r#"
 images:
   - id: api
@@ -274,6 +425,8 @@ components:
 domains:
   - id: admin
   - id: docs
+resources:
+  s3_buckets: [{ id: media }]
 modes:
   local: {}
 "#;
@@ -309,6 +462,66 @@ modes:
     assert_eq!(slot_coords.app_domain, "test-3.acme.localhost");
     assert_eq!(slot_coords.app_url, "http://test-3.acme.localhost");
 
+    // `for_world` renders `app_url`/`app_domain` strictly from the world's single `WorldOrigin`.
+    let target = WorldTarget::Canonical;
+    let route = LocalHostRoute::new(project.clone(), target.clone(), None, &snow.domain_ids())
+        .expect("canonical route");
+    let port_origin = WorldOrigin::local(&route, 8080).expect("port-qualified origin");
+    let port_coords =
+        ResourceCoordinates::for_world(&snow, &project, &target, &port_origin, &BTreeMap::new())
+            .expect("port-qualified coordinates");
+    assert_eq!(port_coords.app_url, "http://acme.localhost:8080");
+    assert_eq!(port_coords.app_domain, "acme.localhost");
+    assert_eq!(
+        port_coords.resolve("resources", &["app".to_owned(), "url".to_owned()]),
+        Some(("http://acme.localhost:8080".to_owned(), false))
+    );
+
+    let shared_origin = WorldOrigin::shared("https://acme.tunnel.example:8443").expect("shared");
+    let shared_coords =
+        ResourceCoordinates::for_world(&snow, &project, &target, &shared_origin, &BTreeMap::new())
+            .expect("shared coordinates");
+    assert_eq!(shared_coords.app_url, "https://acme.tunnel.example:8443");
+    assert_eq!(shared_coords.app_domain, "acme.tunnel.example");
+
+    // `ResourcePlan` overrides replace bucket coordinates; undeclared buckets fail closed.
+    let overrides = BTreeMap::from([(
+        "media".to_owned(),
+        S3Coordinates {
+            endpoint_url: "https://s3.example".to_owned(),
+            bucket: "acme-media".to_owned(),
+            access_key: "access".to_owned(),
+            secret_key: "override-secret".to_owned(),
+            region: "eu-west-1".to_owned(),
+        },
+    )]);
+    let override_coords =
+        ResourceCoordinates::for_world(&snow, &project, &target, &port_origin, &overrides)
+            .expect("override coordinates");
+    assert_eq!(
+        override_coords.s3_endpoints["media"].endpoint_url,
+        "https://s3.example"
+    );
+    assert!(matches!(
+        ResourceCoordinates::for_world(
+            &snow,
+            &project,
+            &target,
+            &port_origin,
+            &BTreeMap::from([(
+                "ghost".to_owned(),
+                S3Coordinates {
+                    endpoint_url: "https://ghost.example".to_owned(),
+                    bucket: "ghost".to_owned(),
+                    access_key: "a".to_owned(),
+                    secret_key: "b".to_owned(),
+                    region: "c".to_owned(),
+                },
+            )])
+        ),
+        Err(SnowError::UnknownS3Bucket(bucket)) if bucket == "ghost"
+    ));
+
     // `domains[].id` may never claim the reserved `test-*` namespace or violate DNS-label rules.
     let reserved_domain = r#"
 domains:
@@ -339,7 +552,7 @@ modes:
 }
 
 #[test]
-fn mode_component_run_command_overrides_and_unknown_component_refusal() {
+fn mode_component_add_remove_override_resolves_through_one_path() {
     let yaml = r#"
 images:
   - id: api
@@ -355,11 +568,16 @@ components:
     run_command: celery -A app worker --loglevel=info
 modes:
   all: {}
-  cloud: {}
+  cloud:
+    components:
+      worker:
+        disabled: true
   local:
     components:
       api:
         run_command: blastit dev -- uv run uvicorn app.asgi:application --port 8000
+      frontend:
+        run_command: pnpm dev
 "#;
     let snow = SnowFile::parse_yaml(yaml).expect("parse");
     assert_eq!(
@@ -377,6 +595,47 @@ modes:
             .expect("local worker inherits top-level components[]"),
         "celery -A app worker --loglevel=info"
     );
+    // Mode-only additions are additive per mode and ordered after the declared components.
+    assert_eq!(
+        snow.effective_run_command("local", "frontend")
+            .expect("mode-only addition"),
+        "pnpm dev"
+    );
+    let local = snow
+        .effective_components("local")
+        .expect("local components");
+    let ids: Vec<&str> = local.iter().map(|(id, _)| id.as_str()).collect();
+    assert_eq!(ids, vec!["api", "worker", "frontend"]);
+    assert!(!local.iter().any(|(_, comp)| comp.disabled));
+    assert!(
+        snow.effective_components("cloud")
+            .expect("cloud components")
+            .iter()
+            .all(|(id, _)| id != "frontend"),
+        "a mode-only addition must not leak into another mode"
+    );
+
+    // `disabled: true` is the sole removal spelling and keeps the entry visible as disabled.
+    let cloud = snow
+        .effective_components("cloud")
+        .expect("cloud components");
+    let (_, worker) = cloud
+        .iter()
+        .find(|(id, _)| id == "worker")
+        .expect("worker resolved");
+    assert!(worker.disabled);
+    assert!(matches!(
+        snow.effective_run_command("cloud", "worker"),
+        Err(SnowError::Validation(_))
+    ));
+    assert!(matches!(
+        snow.effective_run_command("cloud", "frontend"),
+        Err(SnowError::Validation(_))
+    ));
+    assert!(matches!(
+        snow.effective_components("staging"),
+        Err(SnowError::UnknownMode { .. })
+    ));
 
     let all_comp_forbidden = r#"
 images:
@@ -397,7 +656,28 @@ modes:
         Err(SnowError::Validation(_))
     ));
 
-    let bad_override = r#"
+    // `disabled: true` on `modes.all.components` is refused too: `all` never removes components.
+    let all_disabled_forbidden = r#"
+images:
+  - id: api
+    context: api
+components:
+  - id: api
+    image: api
+modes:
+  all:
+    components:
+      api:
+        disabled: true
+  local: {}
+"#;
+    assert!(matches!(
+        SnowFile::parse_yaml(all_disabled_forbidden),
+        Err(SnowError::Validation(_))
+    ));
+
+    // A mode-only id is an addition, so it must carry a non-empty `run_command` (fail closed).
+    let addition_without_command = r#"
 images:
   - id: api
     context: api
@@ -408,11 +688,30 @@ modes:
   local:
     components:
       ghost:
-        run_command: echo ghost
+        disabled: true
 "#;
     assert!(matches!(
-        SnowFile::parse_yaml(bad_override),
+        SnowFile::parse_yaml(addition_without_command),
         Err(SnowError::Validation(_))
+    ));
+
+    // Unknown override fields fail closed at deserialization (`deny_unknown_fields`).
+    let unknown_override_field = r#"
+images:
+  - id: api
+    context: api
+components:
+  - id: api
+    image: api
+modes:
+  local:
+    components:
+      api:
+        command: echo typo
+"#;
+    assert!(matches!(
+        SnowFile::parse_yaml(unknown_override_field),
+        Err(SnowError::Yaml(_))
     ));
 
     for removed_expr in [
@@ -441,11 +740,70 @@ modes:
         );
         let snow_alias = SnowFile::parse_yaml(&bad_alias).expect("parse");
         let coords = canonical_coords(&snow_alias);
-        let mut mem = MemorySecretProvider::default();
-        let mut rng = FixedCounterEntropy(1);
+        let mem = MemorySecretProvider::new();
+        let rng = FixedCounterEntropy::new(1);
         assert!(matches!(
-            snow_alias.resolve_mode("local", Some("api"), &mut mem, &coords, &mut rng),
+            snow_alias.resolve_mode("local", Some("api"), &mem, &coords, &rng),
             Err(SnowError::UnknownResourcePath(_))
         ));
     }
+}
+
+#[test]
+fn whole_mode_resolution_skips_disabled_component_env_groups() {
+    let yaml = r#"
+images:
+  - id: api
+    context: api
+  - id: worker
+    context: api
+components:
+  - id: api
+    image: api
+    envs: [app]
+  - id: worker
+    image: worker
+    envs: [jobs]
+modes:
+  all:
+    envs:
+      app:
+        API_KEY: 'api-value'
+      jobs:
+        WORKER_KEY: 'worker-value'
+      ops:
+        OPS_TOKEN: 'ops-value'
+  local: {}
+  cloud:
+    components:
+      worker:
+        disabled: true
+"#;
+    let snow = SnowFile::parse_yaml(yaml).expect("parse");
+    let coords = canonical_coords(&snow);
+    let mem = MemorySecretProvider::new();
+    let rng = FixedCounterEntropy::new(1);
+
+    let cloud = snow
+        .resolve_mode("cloud", None, &mem, &coords, &rng)
+        .expect("cloud sweep");
+    assert!(cloud.contains_key("API_KEY"));
+    assert!(
+        !cloud.contains_key("WORKER_KEY"),
+        "a disabled component's env groups must not resolve in a whole-mode sweep"
+    );
+    // Groups no component references (for example image build envs) still resolve.
+    assert!(cloud.contains_key("OPS_TOKEN"));
+
+    let local = snow
+        .resolve_mode("local", None, &mem, &coords, &rng)
+        .expect("local sweep");
+    assert!(local.contains_key("WORKER_KEY"));
+    assert!(local.contains_key("API_KEY"));
+
+    // Naming the disabled component explicitly still fails closed.
+    assert!(matches!(
+        snow.resolve_mode("cloud", Some("worker"), &mem, &coords, &rng),
+        Err(SnowError::Validation(_))
+    ));
 }

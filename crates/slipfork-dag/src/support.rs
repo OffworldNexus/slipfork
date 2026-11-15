@@ -10,7 +10,7 @@
 use std::collections::BTreeSet;
 use std::fmt;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize, Serializer};
 use thiserror::Error;
 
 /// Errors produced when parsing or validating `support/integrations.toml`.
@@ -138,7 +138,23 @@ pub enum EvidenceField {
 }
 
 impl EvidenceField {
-    fn as_str(self) -> &'static str {
+    /// Every evidence pointer kind, in the order the `[integration.evidence]` table documents.
+    ///
+    /// Consumers iterate this to verify **all present** pointers, not only the tier-required ones.
+    pub const ALL: &[EvidenceField] = &[
+        Self::Rationale,
+        Self::SignoffDoc,
+        Self::SignoffCommit,
+        Self::RecipePage,
+        Self::CriticalTest,
+        Self::CiJob,
+        Self::DeployRef,
+        Self::ProductionSuiteRef,
+        Self::TestAudit,
+    ];
+
+    /// Stable wire/display name; `Display`, serde, and `slipfork support --json` all use it.
+    pub fn as_str(self) -> &'static str {
         match self {
             Self::Rationale => "rationale",
             Self::SignoffDoc => "signoff_doc",
@@ -150,6 +166,15 @@ impl EvidenceField {
             Self::ProductionSuiteRef => "production_suite_ref",
             Self::TestAudit => "test_audit",
         }
+    }
+}
+
+impl Serialize for EvidenceField {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(self.as_str())
     }
 }
 
@@ -192,6 +217,12 @@ impl Evidence {
             EvidenceField::ProductionSuiteRef => self.production_suite_ref.as_deref(),
             EvidenceField::TestAudit => self.test_audit.as_deref(),
         }
+    }
+
+    /// `true` when `field` carries a non-whitespace pointer (the single presence predicate).
+    pub fn is_present(&self, field: EvidenceField) -> bool {
+        self.field(field)
+            .is_some_and(|value| !value.trim().is_empty())
     }
 }
 
@@ -325,11 +356,7 @@ impl SupportRegistry {
                 return Err(RegistryError::DuplicateId(entry.id.clone()));
             }
             for &field in entry.tier.required_evidence() {
-                let present = entry
-                    .evidence
-                    .field(field)
-                    .is_some_and(|value| !value.trim().is_empty());
-                if !present {
+                if !entry.evidence.is_present(field) {
                     return Err(RegistryError::MissingEvidence {
                         id: entry.id.clone(),
                         tier: entry.tier,

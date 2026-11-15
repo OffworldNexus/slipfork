@@ -45,7 +45,7 @@ impl GeneratorSpec {
     }
 
     /// Materialize a fresh random value using `entropy`.
-    pub fn generate(&self, entropy: &mut dyn EntropySource) -> Result<String, SnowError> {
+    pub fn generate(&self, entropy: &dyn EntropySource) -> Result<String, SnowError> {
         match *self {
             Self::RandomString(len) => {
                 // Rejection sampling avoids modulo bias across the 62-char alphabet (62 * 4 = 248).
@@ -197,9 +197,9 @@ fn parse_expr(inner: &str) -> Result<Token, SnowError> {
 pub fn render_template(
     template: &str,
     env_location: &str,
-    provider: &mut dyn SecretProvider,
+    provider: &dyn SecretProvider,
     resources: &ResourceCoordinates,
-    entropy: &mut dyn EntropySource,
+    entropy: &dyn EntropySource,
     missing_out: &mut Vec<MissingRef>,
 ) -> Result<Option<SecretValue>, SnowError> {
     let tokens = parse_faceless(template)?;
