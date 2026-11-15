@@ -15,3 +15,19 @@ scope widened: the transitional daemon-owned CLI surface (fork/exec/drop fail cl
 ## 2026-11-15T19:18 [lead]
 
 edited fields
+
+## 2026-11-15T19:25 [lead]
+
+status ready -> active
+
+## 2026-11-15T19:25 [lead]
+
+attempt 1/3 started
+
+## 2026-11-15T19:25 [lead]
+
+base 1b4cf79e326460e87f23bf9f4fc204e76a5e4523
+
+## 2026-11-15T19:51 [lead]
+
+status active -> review

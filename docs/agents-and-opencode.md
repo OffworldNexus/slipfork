@@ -1,12 +1,15 @@
 # OpenCode V2 Worktree Plugin (`0.1.0`)
 
-`packages/opencode-slipfork` (`@slipfork/opencode`) integrates Slipfork's `fork`, `exec`, and `drop` commands into OpenCode V2 so parallel sessions in git worktrees get isolated CoW services and `snow.yml` environment variables **without replacing or renaming the built-in `shell` tool**.
+`packages/opencode-slipfork` (`@slipfork/opencode`) is the OpenCode V2 Server plugin that binds a git worktree to a Slipfork CoW world, so parallel sessions get isolated PostgreSQL, Redis, S3, and ports **without replacing or renaming the built-in `shell` tool**.
+
+!!! warning "Do not enable it against a `0.1.0` binary"
+    The plugin drives `slipfork fork`, `exec`, and `drop`, which refuse to run until the `slipforkd` daemon lands in `0.2.0` (they exit `2`, see the [CLI reference](reference/cli.md#daemon-owned-commands-020)). Enabling the plugin today makes every OpenCode worktree creation fail — the plugin rolls the worktree back and surfaces the refusal. The configuration and hooks below are wired and tested; the end-to-end flow starts with `0.2.0`.
 
 ---
 
 ## Configuration in `.opencode/opencode.jsonc`
 
-Keep worktrees on a CoW-capable disk directory (`.worktrees`, never RAM-backed `/tmp` `tmpfs`) and load `@slipfork/opencode`:
+Keep worktrees on a CoW-capable disk directory (`.worktrees`, never RAM-backed `/tmp` `tmpfs`) and load the plugin:
 
 ```jsonc title=".opencode/opencode.jsonc"
 {
@@ -15,37 +18,29 @@ Keep worktrees on a CoW-capable disk directory (`.worktrees`, never RAM-backed `
     "directory": ".worktrees"
   },
   "plugins": [
-    "./packages/opencode-slipfork/src/index.ts"
+    { "package": "../packages/opencode-slipfork", "options": { "binary": "slipfork" } }
   ]
 }
 ```
 
-Optional plugin option: `{ "binary": "/custom/path/to/slipfork" }` (defaults to `"slipfork"` on `PATH`).
+Relative plugin paths resolve from the **config file's** directory (so `.opencode/opencode.jsonc` needs `../packages/...`), and a plugin entry must be a directory or package name — a single `.ts` file is skipped. `../packages/opencode-slipfork/package.json` exposes `./src/index.ts`. From a Slipfork checkout use that path (the npm package publishes in `0.2.0`); `options.binary` defaults to `slipfork` on `PATH`.
 
 ---
 
-## What `@slipfork/opencode` Wires Today
+## What the Plugin Wires
 
-```mermaid
-sequenceDiagram
-  participant OC as OpenCode Server
-  participant Plugin as @slipfork/opencode
-  participant Git as git worktree
-  participant SF as slipfork CLI
+| Hook | Behaviour |
+|---|---|
+| `ctx.worktree.transform` | On worktree create: `git worktree add`, then `slipfork fork wt-<slug> --workspace <worktree>`. On failure it removes the new worktree and re-raises the error. On remove: `slipfork drop wt-<slug>`, then `git worktree remove`. |
+| `ctx.shell.hook("create.before")` | Any shell command whose `cwd` is inside a registered worktree is rewritten to run through `slipfork exec --world wt-<slug> --cwd <cwd> -- <shell> -c <command>`, with `SLIPFORK_ACTIVE_WORLD` set. Commands outside a registered worktree pass through untouched. |
+| `ctx.session.hook("context")` | Appends a short `<context key="slipfork-world">` hint so the model knows its worktree owns an isolated world. |
 
-  OC->>Plugin: worktree.create({ directory: ".worktrees/feat-auth" })
-  Plugin->>Git: git worktree add .worktrees/feat-auth
-  Plugin->>SF: slipfork fork wt-feat-auth --workspace .worktrees/feat-auth
-  Plugin-->>OC: { directory: ".worktrees/feat-auth" }
+`--snow-file <worktree>/snow.yml` is added to the `exec` invocation when that file exists, so `modes.local` variables resolve inside the world instead of on the host.
 
-  OC->>Plugin: shell.hook("create.before", { cwd: ".../.worktrees/feat-auth", command: "pytest" })
-  Plugin->>SF: slipfork exec --world wt-feat-auth --cwd <cwd> [--snow-file <worktree>/snow.yml] -- <shell> -c "pytest"
+---
 
-  OC->>Plugin: worktree.remove({ directory: ".worktrees/feat-auth" })
-  Plugin->>SF: slipfork drop wt-feat-auth
-  Plugin->>Git: git worktree remove .worktrees/feat-auth
-```
+## Status and Roadmap
 
-1. **Rollback on fork failure:** If `slipfork fork` fails (for example when `canonical` snapshot is missing or the filesystem rejects `FICLONE`), the plugin automatically cleans up the newly created git worktree (`git worktree remove --force`) and surfaces the error cleanly (`coordinator.critical.test.ts`).
-2. **Implicit `cwd` routing:** Commands running inside `.worktrees/<slug>` (or any subdirectory) are wrapped into `slipfork exec --world wt-<slug>` with `SLIPFORK_ACTIVE_WORLD=wt-<slug>` (passing `--snow-file <worktree>/snow.yml` when `snow.yml` exists at the worktree root and omitting it otherwise), while commands outside registered worktrees pass through untouched.
-3. **2-line session context hint:** `ctx.session.hook("context")` appends `<context key="slipfork-world">` informing the model that its worktree owns an isolated CoW world.
+- Today: configuration, worktree rollback, `cwd` routing, and the session hint are implemented and covered by `packages/opencode-slipfork/tests`.
+- `0.2.0`: with `slipforkd` running, the three commands succeed and the plugin becomes end-to-end.
+- The plugin never resolves `snow.yml` itself — `slipforkd` is the sole owner of environment resolution, and the plugin only routes.
