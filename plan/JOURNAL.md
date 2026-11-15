@@ -148,3 +148,4 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-15T16:17 HUMAN H-009 closed by conductor
 - 2026-11-15T16:17 AUTOPILOT on by conductor owner approved M2 kickoff with 7 architectural additions
 - 2026-11-15T16:17 [M2] (conductor) OWNER M2/M3 DIRECTIVES: (1) OSPP v1 WebSocket protocol with tpmd/SSH-style challenge-response auth, streaming DB dumps (opt-in for local dev, skipped for hermet
+- 2026-11-15T16:24 ESCALATION #10 -> strategist for M2 by conductor: Amend ROADMAP M2/M3 for owner directives (WebSocket OSPP + tpmd auth + DB dump + ResourceStrategy, hook debugging, syste
