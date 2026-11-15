@@ -6,6 +6,7 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
+default-run = "slipfork"
 
 [dependencies]
 clap.workspace = true
@@ -14,7 +15,6 @@ serde_json.workspace = true
 slipfork-dag = { path = "../slipfork-dag", features = ["fs"] }
 slipfork-edge = { path = "../slipfork-edge" }
 slipfork-engine = { path = "../slipfork-engine" }
-slipfork-ospp = { path = "../slipfork-ospp" }
 slipfork-snow = { path = "../slipfork-snow" }
 slipfork-vcs = { path = "../slipfork-vcs" }
 slipfork-world = { path = "../slipfork-world" }

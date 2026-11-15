@@ -17,6 +17,7 @@ pub mod client;
 pub mod server;
 pub(crate) mod wire;
 
+use std::collections::BTreeMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
@@ -136,6 +137,28 @@ pub enum BootEvent {
         /// In-world port that became ready.
         port: u16,
     },
+}
+
+/// Request body of the local `slipfork snow resolve` diagnostic (daemon-owned vault access).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SnowResolveRequest {
+    /// Caller working directory; a relative `file` is resolved against it.
+    pub cwd: PathBuf,
+    /// Path to `snow.yml` (absolute, or relative to `cwd`).
+    pub file: PathBuf,
+    /// Mode to resolve (`local`, `cloud`, `all`, ...).
+    pub mode: String,
+    /// Optional component id whose environment groups are resolved.
+    pub component: Option<String>,
+    /// Return plaintext values instead of `[REDACTED]` (explicit caller request; `0600` socket).
+    pub expose_secrets: bool,
+}
+
+/// Reply body of `snow_resolve`: already-rendered variables (redacted unless requested).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SnowResolveSummary {
+    /// One `VAR=value` entry per resolved variable; secret values are `[REDACTED]` by default.
+    pub vars: BTreeMap<String, String>,
 }
 
 /// Endpoint selector shared by every world-scoped command (`--world <fork>` or explicit `cwd`).
@@ -389,6 +412,8 @@ impl From<EdgeError> for DaemonError {
 pub enum DaemonRequest {
     /// Daemon process status plus every world (each with exactly one origin).
     Status,
+    /// Validate/resolve `snow.yml` through the daemon-owned `0600` vault.
+    SnowResolve(SnowResolveRequest),
     /// Boot a world; [`DaemonReply::Event`] frames precede the [`DaemonReply::World`] reply.
     Up(UpRequest),
     /// Stop a world's services while keeping its worktree.
@@ -457,6 +482,11 @@ pub enum DaemonReply {
     Status {
         /// Daemon status.
         status: DaemonStatus,
+    },
+    /// Reply to [`DaemonRequest::SnowResolve`].
+    SnowResolved {
+        /// Resolved variables (redacted unless the request asked for plaintext).
+        summary: SnowResolveSummary,
     },
     /// A live boot event, streamed before the terminal [`DaemonReply::World`] reply.
     Event {
@@ -570,6 +600,16 @@ impl fmt::Debug for ControlSecret {
 pub trait DaemonControl: Send + Sync {
     /// Daemon status plus every world, each with exactly one origin URL.
     fn status(&self) -> Result<DaemonStatus, EdgeError>;
+
+    /// Validate/resolve `snow.yml` through the daemon-owned `0600` vault.
+    ///
+    /// The shipped daemon and client implement this; a control backend that does not own a vault
+    /// fails closed instead of pretending to resolve secrets.
+    fn snow_resolve(&self, _req: &SnowResolveRequest) -> Result<SnowResolveSummary, EdgeError> {
+        Err(EdgeError::ControlProtocol {
+            reason: "this control backend does not implement `snow resolve`".to_owned(),
+        })
+    }
 
     /// Boot (or idempotently confirm) the world selected by `req.cwd` / `req.world`.
     fn up(

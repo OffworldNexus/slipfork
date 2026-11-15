@@ -133,6 +133,16 @@ impl DaemonControl for DaemonControlClient {
         }
     }
 
+    fn snow_resolve(
+        &self,
+        req: &crate::daemon::SnowResolveRequest,
+    ) -> Result<crate::daemon::SnowResolveSummary, EdgeError> {
+        match self.call(&DaemonRequest::SnowResolve(req.clone()))? {
+            DaemonReply::SnowResolved { summary } => Ok(summary),
+            other => Err(unexpected_reply(&other)),
+        }
+    }
+
     fn up(
         &self,
         req: &UpRequest,

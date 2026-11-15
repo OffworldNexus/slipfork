@@ -120,6 +120,55 @@ impl ResourcesSpec {
         self.s3_buckets.is_empty() && self.pg_databases.is_empty()
     }
 
+    /// Extend this override table with every id declared by the manifest.
+    ///
+    /// `ResourcePlan::resolve` reports one decision per id in the spec or in the OSPP offer, so
+    /// `slipforkd` first covers the ids declared by `snow.yml`; an id without an explicit override
+    /// keeps [`ResourcesSpec::defaults_for`] precedence and reports `ResourceReason::ModeDefault`.
+    pub fn with_declared_ids(&self, s3_ids: &[&str], pg_ids: &[&str]) -> Self {
+        let mut spec = self.clone();
+        for id in s3_ids {
+            spec.s3_buckets
+                .entry((*id).to_owned())
+                .or_insert(ResourceOverride {
+                    local: None,
+                    test: None,
+                });
+        }
+        for id in pg_ids {
+            spec.pg_databases
+                .entry((*id).to_owned())
+                .or_insert(ResourceOverride {
+                    local: None,
+                    test: None,
+                });
+        }
+        spec
+    }
+
+    /// Force every declared resource to `strategy` for both modes.
+    ///
+    /// This is the typed `--resources local` per-invocation override (`ADR-0008` §3): it rewrites
+    /// only the effective overrides and keeps [`ResourcePlan::resolve`] the single decision point.
+    pub fn forced_strategy(&self, strategy: ResourceStrategy) -> Self {
+        let override_spec = ResourceOverride {
+            local: Some(strategy),
+            test: Some(strategy),
+        };
+        Self {
+            s3_buckets: self
+                .s3_buckets
+                .keys()
+                .map(|id| (id.clone(), override_spec))
+                .collect(),
+            pg_databases: self
+                .pg_databases
+                .keys()
+                .map(|id| (id.clone(), override_spec))
+                .collect(),
+        }
+    }
+
     /// The single mode-aware default (`ADR-0008` §3): local worlds prefer OSPP dev resources,
     /// while `TestSlot` worlds are hermetically local.
     pub fn defaults_for(mode: ResourceMode) -> ResourceStrategy {
@@ -669,4 +718,75 @@ fn required_pg_dump(
 
 fn offered_pg_dump(offer: Option<&RemoteResourceOffer>, id: &str) -> Option<RemotePgDump> {
     offer.and_then(|offer| offer.pg_dump(id)).cloned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn override_spec(local: ResourceStrategy) -> ResourceOverride {
+        ResourceOverride {
+            local: Some(local),
+            test: None,
+        }
+    }
+
+    fn spec() -> ResourcesSpec {
+        ResourcesSpec {
+            s3_buckets: BTreeMap::from([(
+                "media".to_owned(),
+                override_spec(ResourceStrategy::PreferRemote),
+            )]),
+            pg_databases: BTreeMap::from([(
+                "main".to_owned(),
+                override_spec(ResourceStrategy::PreferRemote),
+            )]),
+        }
+    }
+
+    #[test]
+    fn declared_ids_join_the_plan_with_mode_defaults() {
+        let spec = spec().with_declared_ids(&["media", "assets"], &["main", "audit"]);
+        assert_eq!(spec.s3_buckets().len(), 2);
+        assert_eq!(spec.pg_databases().len(), 2);
+
+        let plan = ResourcePlan::resolve(&spec, ResourceMode::Local, DumpPolicy::Default, None)
+            .expect("local plan");
+        assert_eq!(plan.s3_buckets.len(), 2);
+        let assets = plan.s3_bucket("assets").expect("declared bucket");
+        assert_eq!(assets.strategy, ResourceStrategy::PreferRemote);
+        assert_eq!(assets.reason, ResourceReason::NotOffered);
+        assert_eq!(assets.target(), ResourceTarget::Local);
+        assert_eq!(plan.pg_databases.len(), 2);
+        let audit = plan.pg_database("audit").expect("declared database");
+        assert_eq!(audit.reason, ResourceReason::NotOffered);
+        assert_eq!(audit.target(), ResourceTarget::Local);
+    }
+
+    #[test]
+    fn forced_strategy_wins_over_configured_remote_overrides() {
+        let spec = spec()
+            .with_declared_ids(&["media"], &["main"])
+            .forced_strategy(ResourceStrategy::Local);
+        let plan = ResourcePlan::resolve(&spec, ResourceMode::Local, DumpPolicy::Default, None)
+            .expect("forced local plan");
+        for bucket in &plan.s3_buckets {
+            assert_eq!(bucket.strategy, ResourceStrategy::Local);
+            assert_eq!(bucket.reason, ResourceReason::Configured);
+            assert_eq!(bucket.target(), ResourceTarget::Local);
+        }
+        for database in &plan.pg_databases {
+            assert_eq!(database.strategy, ResourceStrategy::Local);
+            assert_eq!(database.reason, ResourceReason::Configured);
+            assert_eq!(database.target(), ResourceTarget::Local);
+        }
+    }
+
+    #[test]
+    fn forcing_a_remote_strategy_still_fails_closed_without_an_offer() {
+        let spec = spec().forced_strategy(ResourceStrategy::Remote);
+        let err = ResourcePlan::resolve(&spec, ResourceMode::Local, DumpPolicy::Default, None)
+            .expect_err("remote without an offer must fail closed");
+        assert!(matches!(err, DagError::RemoteResourceUnavailable { .. }));
+    }
 }

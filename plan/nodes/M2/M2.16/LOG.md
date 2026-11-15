@@ -39,3 +39,47 @@ attempt 1/3 started
 ## 2026-11-15T20:53 [lead]
 
 base 0677c52045e7ac7c1b10262fad495bbdd8dd167a
+
+## 2026-11-15T21:03 [lead]
+
+attempt 2/3 started
+
+## 2026-11-15T21:03 [lead]
+
+edited fields
+
+## 2026-11-15T21:03 [lead]
+
+attempt 2 path widening (lead decisions): SecretProvider gains remove/keys (secret unset/list), ResourcesSpec gains the per-invocation Local override, ExecEnv gains a child-env iterator (thin CLI exec). No fail-closed holes in the shipped CLI.
+
+## 2026-11-15T21:03 [lead]
+
+edited fields
+
+## 2026-11-15T21:11 [lead]
+
+edited fields
+
+## 2026-11-15T21:11 [lead]
+
+attempt 3/5 started
+
+## 2026-11-15T21:19 [lead]
+
+status active -> review
+
+## 2026-11-15T21:23 [lead]
+
+edited fields
+
+## 2026-11-15T21:23 [lead]
+
+attempt 4/5 started
+
+## 2026-11-15T21:23 [lead]
+
+attempt 4 rulings: (a) inject ProjectVaults (project->Arc<dyn SecretProvider>) built in slipforkd, DomainService holds it and types collaborators as &dyn SecretProvider; (b) split MutableSecretStore (remove/keys) out of SecretProvider so no default-Unsupported port methods; (c) snow resolve becomes DaemonControl::snow_resolve (no CLI vault); (d) docs stop claiming the OpenCode plugin is wired (M2.18 owns the --snow-file/--workspace fix); (e) auto-spawn test must assert kill + refused connect.
+
+## 2026-11-15T21:32 [lead]
+
+attempt 5/5 started

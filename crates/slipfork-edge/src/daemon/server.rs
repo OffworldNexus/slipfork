@@ -146,6 +146,12 @@ fn dispatch(
                 status: control.status()?,
             },
         ),
+        DaemonRequest::SnowResolve(request) => write_reply(
+            writer,
+            &DaemonReply::SnowResolved {
+                summary: control.snow_resolve(&request)?,
+            },
+        ),
         DaemonRequest::Up(request) => {
             let summary = stream_events(writer, |on_event| control.up(&request, on_event))?;
             write_reply(writer, &DaemonReply::World { world: summary })

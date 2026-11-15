@@ -179,6 +179,22 @@ pub trait SecretProvider: Send + Sync {
     fn ensure_secret(&self, key: &str, proposed: &str) -> Result<String, ProviderError>;
 }
 
+/// A [`SecretProvider`] whose backend can also mutate and enumerate the local vault.
+///
+/// This capability is deliberately separate from [`SecretProvider`]: read-only remote backends
+/// (`OsppSecretProvider`) satisfy the read contract without pretending they can remove or list
+/// local keys. `slipforkd` injects this capability only where the CLI needs mutation.
+pub trait MutableSecretStore: SecretProvider {
+    /// Store or overwrite one explicit value in `namespace`.
+    fn put(&self, namespace: Namespace, key: &str, value: &str) -> Result<(), ProviderError>;
+
+    /// Remove `secrets::<key>`, returning `true` when a stored value was deleted.
+    fn remove(&self, key: &str) -> Result<bool, ProviderError>;
+
+    /// Every stored `secrets::<key>` name (never a value), sorted for deterministic output.
+    fn keys(&self) -> Result<Vec<String>, ProviderError>;
+}
+
 /// Port for cryptographic byte generation (injected so unit tests stay 100% deterministic).
 pub trait EntropySource: Send + Sync {
     /// Fill `buf` with cryptographically random bytes.
@@ -256,6 +272,30 @@ impl SecretProvider for MemorySecretProvider {
             .entry(key.to_owned())
             .or_insert_with(|| proposed.to_owned());
         Ok(entry.clone())
+    }
+}
+
+impl MutableSecretStore for MemorySecretProvider {
+    fn put(&self, namespace: Namespace, key: &str, value: &str) -> Result<(), ProviderError> {
+        self.insert(namespace, key, value);
+        Ok(())
+    }
+
+    fn remove(&self, key: &str) -> Result<bool, ProviderError> {
+        Ok(self
+            .write()
+            .map_mut(Namespace::Secrets)
+            .remove(key)
+            .is_some())
+    }
+
+    fn keys(&self) -> Result<Vec<String>, ProviderError> {
+        Ok(self
+            .read()
+            .map(Namespace::Secrets)
+            .keys()
+            .cloned()
+            .collect())
     }
 }
 
@@ -395,6 +435,25 @@ impl SecretProvider for FileVaultProvider {
     }
 }
 
+impl MutableSecretStore for FileVaultProvider {
+    fn put(&self, namespace: Namespace, key: &str, value: &str) -> Result<(), ProviderError> {
+        Self::put(self, namespace, key, value)
+    }
+
+    fn remove(&self, key: &str) -> Result<bool, ProviderError> {
+        // One locked read-modify-write: the vault is rewritten (0600, atomic rename) only when a
+        // value was actually removed.
+        self.update(|record| match record.secrets.remove(key) {
+            Some(_) => (true, true),
+            None => (false, false),
+        })
+    }
+
+    fn keys(&self) -> Result<Vec<String>, ProviderError> {
+        Ok(self.read_vault()?.secrets.keys().cloned().collect())
+    }
+}
+
 /// Layered [`SecretProvider`]: reads `primary` then `fallback`, and persists `!!` generated
 /// secrets exclusively into `primary` (`ADR-0001` §3, `ADR-0008` §2).
 ///
@@ -429,5 +488,126 @@ impl<Primary: SecretProvider, Fallback: SecretProvider> SecretProvider
             return Ok(existing);
         }
         self.primary.ensure_secret(key, proposed)
+    }
+}
+
+impl<Primary: MutableSecretStore, Fallback: SecretProvider> MutableSecretStore
+    for LayeredSecretProvider<Primary, Fallback>
+{
+    /// Explicit writes target the local write sink; the fallback is never mutated.
+    fn put(&self, namespace: Namespace, key: &str, value: &str) -> Result<(), ProviderError> {
+        self.primary.put(namespace, key, value)
+    }
+
+    /// Removal is a local write-sink operation: the fallback (read-only remote vault) is never
+    /// mutated, exactly as `!!` persistence never writes it.
+    fn remove(&self, key: &str) -> Result<bool, ProviderError> {
+        self.primary.remove(key)
+    }
+
+    /// Key enumeration is the local write-sink vault's list: remote-only keys are readable but not
+    /// listed, because the fallback never accepts writes and is not the local source of truth.
+    fn keys(&self) -> Result<Vec<String>, ProviderError> {
+        self.primary.keys()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn memory_provider_removes_and_lists_only_secret_keys() {
+        let provider = MemorySecretProvider::new();
+        provider
+            .ensure_secret("ALPHA", "one")
+            .expect("ensure alpha");
+        provider.ensure_secret("BETA", "two").expect("ensure beta");
+        provider.insert(Namespace::Vars, "PLAIN", "value");
+        assert_eq!(
+            provider.keys().expect("keys"),
+            vec!["ALPHA".to_owned(), "BETA".to_owned()]
+        );
+        assert!(provider.remove("ALPHA").expect("remove alpha"));
+        assert!(!provider.remove("ALPHA").expect("second remove"));
+        assert_eq!(provider.keys().expect("keys"), vec!["BETA".to_owned()]);
+        assert_eq!(
+            provider.get(Namespace::Vars, "PLAIN").expect("plain"),
+            Some("value".to_owned())
+        );
+    }
+
+    #[test]
+    fn file_vault_removes_and_lists_through_the_atomic_writer() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("vault.json");
+        let provider = FileVaultProvider::open(&path).expect("open");
+        provider
+            .ensure_secret("ALPHA", "one")
+            .expect("ensure alpha");
+        provider.ensure_secret("BETA", "two").expect("ensure beta");
+        provider
+            .put(Namespace::Vars, "PLAIN", "value")
+            .expect("plain var");
+        assert_eq!(
+            provider.keys().expect("keys"),
+            vec!["ALPHA".to_owned(), "BETA".to_owned()]
+        );
+
+        assert!(provider.remove("ALPHA").expect("remove alpha"));
+        assert!(!provider.remove("ALPHA").expect("second remove"));
+        assert_eq!(
+            provider.get(Namespace::Secrets, "ALPHA").expect("gone"),
+            None
+        );
+        assert_eq!(provider.keys().expect("keys"), vec!["BETA".to_owned()]);
+        assert_eq!(
+            provider.get(Namespace::Vars, "PLAIN").expect("plain"),
+            Some("value".to_owned())
+        );
+
+        // The rewrite stayed atomic and user-private.
+        let mode = std::os::unix::fs::PermissionsExt::mode(
+            &std::fs::metadata(&path).expect("metadata").permissions(),
+        );
+        assert_eq!(mode & 0o777, 0o600);
+    }
+
+    #[test]
+    fn layered_removal_only_touches_the_local_write_sink() {
+        let primary = MemorySecretProvider::new();
+        let fallback = MemorySecretProvider::new();
+        primary.ensure_secret("LOCAL", "one").expect("local");
+        fallback.ensure_secret("REMOTE", "two").expect("remote");
+        let layered = LayeredSecretProvider::new(primary, fallback);
+        assert_eq!(
+            layered
+                .get(Namespace::Secrets, "REMOTE")
+                .expect("remote read"),
+            Some("two".to_owned())
+        );
+        assert_eq!(layered.keys().expect("keys"), vec!["LOCAL".to_owned()]);
+        assert!(layered.remove("LOCAL").expect("remove local"));
+        assert!(!layered.remove("REMOTE").expect("remote is not removable"));
+        assert_eq!(
+            layered
+                .get(Namespace::Secrets, "REMOTE")
+                .expect("remote still readable"),
+            Some("two".to_owned())
+        );
+    }
+
+    #[test]
+    fn the_read_contract_does_not_require_mutation_capabilities() {
+        // A read-only remote backend satisfies `SecretProvider`; mutation is a separate capability
+        // (`MutableSecretStore`) that `slipforkd` injects only where the CLI mutates the vault.
+        fn assert_read_only<P: SecretProvider>(_provider: &P) {}
+        let provider = MemorySecretProvider::new();
+        provider.ensure_secret("KEY", "value").expect("ensure");
+        assert_read_only(&provider);
+        assert_eq!(
+            SecretProvider::get(&provider, Namespace::Secrets, "KEY").expect("get"),
+            Some("value".to_owned())
+        );
     }
 }

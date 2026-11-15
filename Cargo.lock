@@ -1164,7 +1164,6 @@ dependencies = [
  "slipfork-dag",
  "slipfork-edge",
  "slipfork-engine",
- "slipfork-ospp",
  "slipfork-snow",
  "slipfork-vcs",
  "slipfork-world",

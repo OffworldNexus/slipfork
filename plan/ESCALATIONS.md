@@ -15,3 +15,5 @@ Every call to an expensive-tier agent (`strategist`, `architect`, `expert`) is r
 | 2026-11-15T11:23 | M1 | strategist | conductor | final milestone gate for 0.1.0 after owning M1.8 design corrections and M1.9 code alignment |
 | 2026-11-15T16:24 | M2 | strategist | conductor | Amend ROADMAP M2/M3 for owner directives (WebSocket OSPP + tpmd auth + DB dump + ResourceStrategy, hook debugging, systemd user slipforkd, 31-byte service truncation, db/redis/forward CLI) and decompose M2 |
 | 2026-11-15T16:46 | M2.1 | architect | lead | M2.1: author ADR-0008 and align ADR/ARCHITECTURE/target-DX (core DI tree lock) |
+| 2026-11-15T20:11 | M2.24 | architect | conductor | core architecture crossroads: L0 world base image strategy (Dockerfile-derived rootfs vs curated base), image contract, cache/invalidation, DI port for two engines |
+| 2026-11-15T20:23 | M2.24 | architect | lead | M2.24: design ADR-0009 L0 world base image from the project's own Dockerfile + 3-layer composition + World Image Contract |

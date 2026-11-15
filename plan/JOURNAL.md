@@ -381,3 +381,11 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-15T21:03 [M2.26] (lead) status active -> review
 - 2026-11-15T21:03 [M2.16] (lead) edited fields
 - 2026-11-15T21:03 [M2.20] (lead) edited fields
+- 2026-11-15T21:04 [M2.26] (lead) status review -> done
+- 2026-11-15T21:11 [M2.16] (lead) edited fields
+- 2026-11-15T21:11 [M2.16] (lead) attempt 3/5 started
+- 2026-11-15T21:19 [M2.16] (lead) status active -> review
+- 2026-11-15T21:23 [M2.16] (lead) edited fields
+- 2026-11-15T21:23 [M2.16] (lead) attempt 4/5 started
+- 2026-11-15T21:23 [M2.16] (lead) attempt 4 rulings: (a) inject ProjectVaults (project->Arc<dyn SecretProvider>) built in slipforkd, DomainService holds it and types collaborators as &dyn Secret
+- 2026-11-15T21:32 [M2.16] (lead) attempt 5/5 started

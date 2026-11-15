@@ -59,7 +59,8 @@ pub use daemon::{
     AuthSummary, BootEvent, DaemonControl, DaemonError, DaemonErrorKind, DaemonStatus,
     DropForkRequest, DumpRequest, ExecTargetRequest, ForkRequest, ForwardRequest, ForwardSummary,
     ForwardTarget, HookRunRequest, LogsRequest, PruneReport, ResourceRequest, ResourceSummary,
-    UpRequest, WorldExecTarget, WorldSelector, WorldState, WorldSummary, WorldUpSummary,
+    SnowResolveRequest, SnowResolveSummary, UpRequest, WorldExecTarget, WorldSelector, WorldState,
+    WorldSummary, WorldUpSummary,
 };
 pub use forward::{ForwardBridge, ForwardTargetSpec};
 pub use ingress::HttpIngress;

@@ -165,16 +165,40 @@ impl ExecEnv {
     /// `pub(crate)` so only the engine's child-process spawners ([`crate::child_env`]) can reach
     /// it; every other consumer (including the `exec_target` IPC path) sees redacted `Debug` only.
     pub(crate) fn expose_to_child_process(&self) -> BTreeMap<String, String> {
-        let mut out = BTreeMap::new();
-        for (var, value) in &self.inherited {
-            out.insert(var.name().to_owned(), value.clone());
-        }
-        if let Some(home) = &self.home {
-            out.insert("HOME".to_owned(), home.display().to_string());
-        }
-        out.extend(self.plain.clone());
-        out.extend(self.secrets.clone());
-        out
+        self.iter()
+            .map(|(name, value)| (name.to_owned(), value.into_owned()))
+            .collect()
+    }
+
+    /// Iterate the effective child environment (`HOME`, inherited allowlist, plain, secrets).
+    ///
+    /// This is the sanctioned materialization surface for the **thin CLI's** direct world entry
+    /// (`nsenter` / `incus exec`): `slipfork` receives an [`ExecEnv`] inside
+    /// [`crate::WorldEntryCommand`]'s reply and must hand exactly these pairs to
+    /// `Command::env_clear().envs(..)`. Reserved names never collide (construction rejects them),
+    /// and `HOME` is rendered exactly as the engine's child-process materialization renders it. The
+    /// values are plaintext at this boundary and must never be logged or formatted.
+    pub fn iter(&self) -> impl Iterator<Item = (&str, std::borrow::Cow<'_, str>)> + '_ {
+        let home = self
+            .home
+            .as_ref()
+            .map(|home| ("HOME", std::borrow::Cow::Owned(home.display().to_string())));
+        home.into_iter()
+            .chain(
+                self.inherited
+                    .iter()
+                    .map(|(var, value)| (var.name(), std::borrow::Cow::Borrowed(value.as_str()))),
+            )
+            .chain(
+                self.plain.iter().map(|(name, value)| {
+                    (name.as_str(), std::borrow::Cow::Borrowed(value.as_str()))
+                }),
+            )
+            .chain(
+                self.secrets.iter().map(|(name, value)| {
+                    (name.as_str(), std::borrow::Cow::Borrowed(value.as_str()))
+                }),
+            )
     }
 }
 
@@ -269,5 +293,42 @@ impl TryFrom<ExecEnvWire> for ExecEnv {
             plain: wire.plain,
             secrets: wire.secrets,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn iter_matches_the_single_child_environment_materialization() {
+        let mut env = ExecEnv::world_scoped("/w/home");
+        env.inherit(InheritedVar::Path, "/usr/bin");
+        env.set("PLAIN", "value").expect("plain");
+        env.set_secret("SECRET_KEY", "s3cr3t").expect("secret");
+
+        let pairs: Vec<(String, String)> = env
+            .iter()
+            .map(|(name, value)| (name.to_owned(), value.into_owned()))
+            .collect();
+        assert_eq!(
+            pairs,
+            vec![
+                ("HOME".to_owned(), "/w/home".to_owned()),
+                ("PATH".to_owned(), "/usr/bin".to_owned()),
+                ("PLAIN".to_owned(), "value".to_owned()),
+                ("SECRET_KEY".to_owned(), "s3cr3t".to_owned()),
+            ]
+        );
+        let materialized = env.expose_to_child_process();
+        assert_eq!(
+            materialized.get("SECRET_KEY").map(String::as_str),
+            Some("s3cr3t")
+        );
+        assert_eq!(
+            materialized.get("HOME").map(String::as_str),
+            Some("/w/home")
+        );
+        assert!(!format!("{env:?}").contains("s3cr3t"));
     }
 }

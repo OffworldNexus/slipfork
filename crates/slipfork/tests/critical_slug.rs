@@ -1,12 +1,13 @@
 //! Protected end-to-end CLI critical tests for canonical VCS project identity (`H-005`),
-//! fail-closed Git/Jujutsu topologies (owner ruling), and `--snow-file` / `dag plan` diagnostics.
+//! fail-closed Git/Jujutsu topologies (owner ruling), and `snow resolve` / `dag plan` diagnostics.
 
 use std::ffi::OsStr;
 use std::fs::{self, File, Permissions};
 use std::io::Write;
 use std::os::unix::fs::{PermissionsExt, symlink};
+use std::os::unix::process::CommandExt as _;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
 
 use serde_json::Value;
 use tempfile::TempDir;
@@ -88,12 +89,28 @@ fn run_slipfork_with_env(
         .env("XDG_DATA_HOME", scratch.join("xdg-data"))
         .arg("--state-dir")
         .arg(scratch.join("state"))
+        .arg("--runtime-dir")
+        .arg(scratch.join("rt"))
         .args(args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        // Daemon-served diagnostics (`snow resolve`) auto-spawn `slipforkd` into this process
+        // group; reaping the group after the CLI exits keeps the test host clean.
+        .process_group(0)
         .current_dir(cwd);
     for &(key, val) in env_overrides {
         cmd.env(key, val);
     }
-    cmd.output().expect("spawn slipfork binary")
+    let child = cmd.spawn().expect("spawn slipfork binary");
+    let process_group = child.id();
+    let output = child.wait_with_output().expect("wait for slipfork binary");
+    let _ = Command::new("kill")
+        .arg("-TERM")
+        .arg("--")
+        .arg(format!("-{process_group}"))
+        .stderr(Stdio::null())
+        .status();
+    output
 }
 
 fn run_slipfork(scratch: &Path, cwd: &Path, args: &[&str]) -> Output {
@@ -624,143 +641,82 @@ fn git_submodule_bare_and_separate_git_dir_fail_closed_with_actionable_override_
 }
 
 #[test]
-fn jj_absent_fails_closed_and_fake_jj_executable_on_child_path_proves_thin_cli_adapter() {
+fn jj_workspace_uses_the_shared_git_resolver_and_never_shells_out_to_jj() {
     let tmp = disk_tempdir();
     let scratch = tmp.path();
 
-    // Workspace with `.jj` directory and a nested subdirectory (zero `.jj` internal pointer layout created!).
-    let jj_ws = scratch.join("jj-workspace-dir");
-    let jj_sub = jj_ws.join("nested").join("api");
-    fs::create_dir_all(jj_ws.join(".jj")).expect("create .jj dir");
-    fs::create_dir_all(&jj_sub).expect("create nested subdir");
-    let snow_path = jj_sub.join("snow.yml");
-    fs::write(&snow_path, MINIMAL_SNOW_YML).expect("write snow.yml");
-    let jj_ws_canonical = fs::canonicalize(&jj_ws).expect("canonicalize jj_ws");
+    // 1. A Jujutsu-only workspace (no colocated Git store) fails closed through the one shared
+    //    repository resolver: `slipfork-vcs` ships a Git resolver today, so no slug is invented and
+    //    no `jj root` subprocess is spawned by the thin CLI.
+    let jj_only = scratch.join("jj-only-workspace");
+    let jj_only_sub = jj_only.join("nested").join("api");
+    fs::create_dir_all(jj_only.join(".jj")).expect("create .jj dir");
+    fs::create_dir_all(&jj_only_sub).expect("create nested subdir");
+    fs::write(jj_only_sub.join("snow.yml"), MINIMAL_SNOW_YML).expect("write snow.yml");
 
-    // 1. Hermetic child PATH containing ONLY `git` (`jj` guaranteed absent without mutating process PATH).
-    let no_jj_bin = scratch.join("bin-no-jj");
-    fs::create_dir_all(&no_jj_bin).expect("create bin-no-jj");
-    symlink(find_host_executable("git"), no_jj_bin.join("git")).expect("symlink git");
-
-    let out_no_jj = run_slipfork_with_env(
+    let out_jj_only = run_slipfork(
         scratch,
-        &jj_sub,
-        &[("PATH", no_jj_bin.as_os_str())],
+        &jj_only_sub,
         &["snow", "resolve", "--file", "snow.yml", "--mode", "local"],
     );
     assert!(
-        !out_no_jj.status.success(),
-        ".jj workspace without jj on PATH and without override must fail closed"
+        !out_jj_only.status.success(),
+        "a jj-only workspace without a colocated Git store must fail closed"
     );
-    let no_jj_stderr = String::from_utf8_lossy(&out_no_jj.stderr);
+    let jj_only_stderr = String::from_utf8_lossy(&out_jj_only.stderr);
     assert!(
-        no_jj_stderr.contains("jj")
-            && no_jj_stderr.contains("workspace-scoped")
-            && no_jj_stderr.contains(".worktrees/<fork>")
-            && no_jj_stderr.contains("project =")
-            && no_jj_stderr.contains(
-                jj_ws_canonical
-                    .join("slipfork.toml")
-                    .to_str()
-                    .expect("utf8")
-            ),
-        "expected actionable jj-absent error naming jj + workspace-scoped override, got: {no_jj_stderr}"
+        jj_only_stderr.contains("not a git or jj repository")
+            && jj_only_stderr.contains("version-controlled checkout"),
+        "expected the shared resolver's fail-closed diagnostic, got: {jj_only_stderr}"
     );
 
-    // Explicit `project = "..."` in `<jj_ws>/slipfork.toml` rescues the workspace even without `jj`.
+    // 2. A colocated jj+git checkout resolves through `GitRepoRootResolver`; the fake `jj` on the
+    //    child PATH is never executed (it would create the marker file and fail).
+    let colocated = scratch.join("jj-colocated-workspace");
+    let colocated_sub = colocated.join("nested").join("api");
+    fs::create_dir_all(colocated.join(".jj")).expect("create .jj dir");
+    fs::create_dir_all(&colocated_sub).expect("create nested subdir");
+    fs::write(colocated_sub.join("snow.yml"), MINIMAL_SNOW_YML).expect("write snow.yml");
+    run_git(&colocated, &["init", "-q"]);
+    run_git(&colocated, &["add", "nested/api/snow.yml"]);
+    run_git(&colocated, &["commit", "-q", "-m", "init"]);
     fs::write(
-        jj_ws.join("slipfork.toml"),
-        "project = \"jj-toml-rescue\"\n",
+        colocated.join("slipfork.toml"),
+        "project = \"jj-colocated\"\n",
     )
-    .expect("write jj slipfork.toml");
-    let out_rescued = run_slipfork_with_env(
-        scratch,
-        &jj_sub,
-        &[("PATH", no_jj_bin.as_os_str())],
-        &["snow", "resolve", "--file", "snow.yml", "--mode", "local"],
-    );
-    assert!(
-        out_rescued.status.success(),
-        "jj workspace with explicit project override must succeed even when jj is absent: {}",
-        String::from_utf8_lossy(&out_rescued.stderr)
-    );
-    assert!(
-        String::from_utf8_lossy(&out_rescued.stdout)
-            .contains("APP_URL=http://jj-toml-rescue.localhost\n")
-    );
-    fs::remove_file(jj_ws.join("slipfork.toml")).expect("remove jj slipfork.toml");
+    .expect("write colocated slipfork.toml");
 
-    // 2. Fake `jj` executable on child-process PATH (process-local via `Command::env`, zero global leak):
-    //    reports a distinct `jj-reported-root` directory and records `pwd` to verify `jj root`
-    //    is invoked in `jj_ws` and its stdout drives the canonical slug.
-    let reported_root = scratch.join("jj-reported-root");
-    fs::create_dir_all(&reported_root).expect("create jj-reported-root");
-    let reported_canonical = fs::canonicalize(&reported_root).expect("canonicalize reported_root");
-    let cwd_log = scratch.join("fake-jj-cwd.txt");
-
-    let fake_jj_bin = scratch.join("bin-fake-jj");
-    fs::create_dir_all(&fake_jj_bin).expect("create bin-fake-jj");
-    let script = format!(
-        "#!/bin/sh\nset -eu\nif [ \"${{1:-}}\" = \"root\" ] && [ \"$#\" -eq 1 ]; then\n  pwd > '{}'\n  printf '%s\\n' '{}'\n  exit 0\nfi\necho \"unexpected jj invocation: $*\" >&2\nexit 2\n",
-        cwd_log.display(),
-        reported_canonical.display(),
-    );
-    write_executable_script(&fake_jj_bin.join("jj"), &script);
-
-    let mut path_entries = vec![fake_jj_bin.clone()];
-    if let Some(existing) = std::env::var_os("PATH") {
-        path_entries.extend(std::env::split_paths(&existing));
-    }
-    let joined_path = std::env::join_paths(path_entries).expect("join PATH");
-
-    let out_fake_jj = run_slipfork_with_env(
-        scratch,
-        &jj_sub,
-        &[("PATH", joined_path.as_os_str())],
-        &["snow", "resolve", "--file", "snow.yml", "--mode", "local"],
-    );
-    assert!(
-        out_fake_jj.status.success(),
-        "snow resolve with fake jj failed: {}",
-        String::from_utf8_lossy(&out_fake_jj.stderr)
-    );
-    let fake_stdout = String::from_utf8_lossy(&out_fake_jj.stdout);
-    assert!(
-        fake_stdout.contains("APP_URL=http://jj-reported-root.localhost\n"),
-        "expected slug from fake `jj root` stdout, got:\n{fake_stdout}"
-    );
-    let recorded_cwd = fs::canonicalize(
-        fs::read_to_string(&cwd_log)
-            .expect("read fake jj cwd log")
-            .trim(),
-    )
-    .expect("canonicalize recorded cwd");
-    assert_eq!(
-        recorded_cwd, jj_ws_canonical,
-        "expected `jj root` to execute in the `.jj`-containing ancestor directory"
-    );
-
-    // 3. Failing `jj root` command (without override) fails closed surfacing stderr + override hint.
-    let fail_jj_bin = scratch.join("bin-fail-jj");
-    fs::create_dir_all(&fail_jj_bin).expect("create bin-fail-jj");
-    symlink(find_host_executable("git"), fail_jj_bin.join("git")).expect("symlink git");
+    let jj_marker = scratch.join("jj-was-invoked.txt");
+    let fake_bin = scratch.join("bin-colocated");
+    fs::create_dir_all(&fake_bin).expect("create bin-colocated");
+    symlink(find_host_executable("git"), fake_bin.join("git")).expect("symlink git");
     write_executable_script(
-        &fail_jj_bin.join("jj"),
-        "#!/bin/sh\necho 'Error: corrupted jj op store' >&2\nexit 1\n",
+        &fake_bin.join("jj"),
+        &format!(
+            "#!/bin/sh\nprintf '%s' \"$*\" > '{}'\nexit 2\n",
+            jj_marker.display()
+        ),
     );
-    let out_fail_jj = run_slipfork_with_env(
+
+    let out_colocated = run_slipfork_with_env(
         scratch,
-        &jj_sub,
-        &[("PATH", fail_jj_bin.as_os_str())],
+        &colocated_sub,
+        &[("PATH", fake_bin.as_os_str())],
         &["snow", "resolve", "--file", "snow.yml", "--mode", "local"],
     );
-    assert!(!out_fail_jj.status.success());
-    let fail_jj_stderr = String::from_utf8_lossy(&out_fail_jj.stderr);
     assert!(
-        fail_jj_stderr.contains("corrupted jj op store")
-            && fail_jj_stderr.contains("project =")
-            && fail_jj_stderr.contains("slipfork.toml"),
-        "expected failing jj root to surface stderr + override hint, got: {fail_jj_stderr}"
+        out_colocated.status.success(),
+        "a colocated jj+git workspace must resolve through the Git resolver: {}",
+        String::from_utf8_lossy(&out_colocated.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&out_colocated.stdout)
+            .contains("APP_URL=http://jj-colocated.localhost\n"),
+        "expected the project override from <vcs_root>/slipfork.toml"
+    );
+    assert!(
+        !jj_marker.exists(),
+        "the thin CLI must never spawn `jj`; the shared resolver is Git-only (M2.12 followup)"
     );
 }
 
@@ -787,7 +743,8 @@ fn non_vcs_directory_fails_closed_and_corrupt_git_surfaces_real_git_stderr() {
     );
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        stderr.contains("not inside a git or jj repository") && stderr.contains("git init"),
+        stderr.contains("not a git or jj repository")
+            && stderr.contains("version-controlled checkout"),
         "expected actionable VCS init error, got: {stderr}"
     );
 
@@ -806,7 +763,7 @@ fn non_vcs_directory_fails_closed_and_corrupt_git_surfaces_real_git_stderr() {
     assert!(!out_broken.status.success());
     let broken_stderr = String::from_utf8_lossy(&out_broken.stderr);
     assert!(
-        broken_stderr.contains("git rev-parse failed")
+        broken_stderr.contains("git rev-parse")
             && broken_stderr.contains("/nonexistent/worktree/admin"),
         "expected real git stderr, got: {broken_stderr}"
     );
@@ -829,8 +786,8 @@ fn non_vcs_directory_fails_closed_and_corrupt_git_surfaces_real_git_stderr() {
     assert!(!out_no_git.status.success());
     let no_git_stderr = String::from_utf8_lossy(&out_no_git.stderr);
     assert!(
-        no_git_stderr.contains("'git' executable was not found on PATH")
-            && !no_git_stderr.contains("not inside a git or jj repository"),
+        no_git_stderr.contains("required tool 'git' was not found on PATH")
+            && !no_git_stderr.contains("not a git or jj repository"),
         "expected missing git binary diagnostic, got: {no_git_stderr}"
     );
 }
@@ -899,24 +856,16 @@ fn missing_snow_file_names_the_unreadable_path() {
     let missing = scratch.join("does-not-exist-snow.yml");
     let missing_str = missing.to_str().expect("utf8");
 
-    // `slipfork exec --snow-file <missing>` includes the exact path and OS error cause.
-    let exec_out = run_slipfork(
+    // `slipfork snow resolve --file <missing>` includes the exact path and OS error cause.
+    let resolve_out = run_slipfork(
         scratch,
         scratch,
-        &[
-            "exec",
-            "--world",
-            "exp",
-            "--snow-file",
-            missing_str,
-            "--",
-            "true",
-        ],
+        &["snow", "resolve", "--file", missing_str, "--mode", "local"],
     );
-    assert!(!exec_out.status.success());
-    let exec_stderr = String::from_utf8_lossy(&exec_out.stderr);
+    assert!(!resolve_out.status.success());
+    let resolve_stderr = String::from_utf8_lossy(&resolve_out.stderr);
     assert!(
-        exec_stderr.contains(&format!("cannot read {missing_str}:")),
-        "expected `cannot read <path>: <cause>`, got: {exec_stderr}"
+        resolve_stderr.contains(&format!("cannot read {missing_str}:")),
+        "expected `cannot read <path>: <cause>`, got: {resolve_stderr}"
     );
 }
