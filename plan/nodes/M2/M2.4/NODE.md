@@ -11,7 +11,7 @@ attempts: 0
 max_attempts: 3
 escalation: none
 created: "2026-11-15T16:40"
-updated: "2026-11-15T16:40"
+updated: "2026-11-15T18:38"
 ---
 
 # Goal
@@ -32,6 +32,7 @@ Make `slipfork-snow`'s secret plumbing concurrency-safe and leak-free (`Send + S
 3. **Redaction:** hand-written `Debug` impls for `ResourceCoordinates`, `S3Coordinates`, and `SecretValue` that print `SecretValue(<redacted>)`; `RejectedKey` collapses to a single `SnowError::ForbiddenTopLevelKey { key }` variant carrying only the **key name** (never the value), deleting the second error shape (M1.6 #7, #21).
 4. **Mode-scoped components:** `SnowFile::effective_components(&self, mode) -> Result<ResolvedComponents, SnowError>` returning the ordered set of `(id, ResolvedComponent { run_command, disabled })` produced by `components[]` ⊕ `modes.<mode>.components.<id>` with: override of an existing component, addition of a mode-only component (must carry `run_command`), and removal via the single spelling `disabled: true`. `modes.all.components` stays rejected; unknown ids fail closed; `effective_run_command` is re-expressed in terms of `effective_components` so there is exactly one resolution path (no second reader).
 5. `#![forbid(unsafe_code)]`, no ambient reads, `serde(deny_unknown_fields)` on every nested component struct so the "unknown fields" claim in `docs/reference/manifest.md` becomes true (M1.6 #16 follow-up evidence, docs themselves are out of scope here).
+6. **Delete M1 REST cruft & wire `WorldOrigin` into `ResourceCoordinates` (`ADR-0001` §3, `ADR-0008` §7):** Delete `pub struct OsppBundle` (and its retired `GET /v1/.../bundle` doc comment) and `MemorySecretProvider::from_bundle` from `crates/slipfork-snow` (`FileVaultProvider` uses a private `VaultRecord` struct; `MemorySecretProvider` constructs via `new()` / `insert()`). Add `ResourceCoordinates::for_world(snow, project, target, origin: &WorldOrigin, s3_overrides: &BTreeMap<String, S3Coordinates>)` setting `app_url`/`app_domain` from `origin` (with `local_for_world` delegating or superseded cleanly so only one coordinate builder path exists).
 
 # Acceptance
 
@@ -46,6 +47,7 @@ cargo test -p slipfork-snow --test critical_snow debug
 
 # 3. Mode-scoped add/remove/override resolves through one function.
 rg -q 'fn effective_components' crates/slipfork-snow/src/model.rs
+! rg -q 'OsppBundle|from_bundle' crates/slipfork-snow/src
 cargo clippy -p slipfork-snow --all-targets -- -D warnings
 make check
 ```

@@ -11,7 +11,7 @@ attempts: 0
 max_attempts: 3
 escalation: none
 created: "2026-11-15T16:40"
-updated: "2026-11-15T16:40"
+updated: "2026-11-15T18:38"
 ---
 
 # Goal
@@ -27,9 +27,10 @@ Land `slipfork-dag`'s M2 slice: the typed `[resources]` `ResourceStrategy` schem
 
 # Design / Invariants
 
-1. **`[resources]` schema (`ADR-0008` §4):** `SlipforkConfig.resources: ResourcesSpec` parsed from a `#[serde(deny_unknown_fields)]` wire table with the exact keys `ADR-0008` names (`s3_buckets.<id>`, `pg_databases.<id>`, and typed per-mode strategy enums). Parsed into typed domain values with **zero** boolean mode flags in domain structs:
-   - Mode-aware defaults (`ResourcesSpec::defaults_for(mode)` — single source of truth): `local` dev (`up`/`fork`) defaults to OSPP-offered remote dev S3 (when paired/available, else local S3) and pulling the remote dev DB dump into the `base` CoW snapshot; `test` (`slipfork test`) is **hermetic by default** (always ephemeral local S3 + clean `initdb -> migrate -> [fixtures.*]`, never mutating shared dev S3 or pulling drifting dev dumps unless explicitly configured in `[resources]`).
-   - `parse_toml` fails closed on unknown keys, invalid resource IDs, or malformed strategy variants.
+1. **`[resources]` schema & single `ResourcePlan::resolve` owner (`ADR-0008` §3):** `SlipforkConfig.resources: ResourcesSpec` parsed from a `#[serde(deny_unknown_fields)]` wire table (`[resources.s3_buckets.<id>]` and `[resources.pg_databases.<id>]` with optional `local` and `test` keys mapped to `ResourceStrategy { Local, PreferRemote, Remote }`; zero boolean mode flags; unknown keys, unknown modes, or empty override tables fail closed, plus `ResourcesSpec::validate_declared_ids(snow_s3_ids, snow_pg_ids)`):
+   - `ResourceMode { Local, Test }` derives `Serialize` only (**never** `Deserialize`) and is computed strictly from `WorldTarget` (`TestSlot(_) => Test`, `Canonical | UserFork(_) => Local`).
+   - `DumpPolicy { Default, NoDump, RefreshDump }` models mutually exclusive `--no-dump | --refresh-dump` (zero precedence ladder; under `Default`, effective `ResourceStrategy` decides, and `RefreshDump` with `Local` or offline OSPP fails closed).
+   - `ResourcePlan::resolve(spec: &ResourcesSpec, mode: ResourceMode, dump_policy: DumpPolicy, offer: Option<&RemoteResourceOffer>) -> Result<ResourcePlan, DagError>` is the **single** resolution owner consumed by `slipforkd`, `OsppClient`, and `TestCoordinator` (`Local` defaults to `PreferRemote`; `Test` defaults hermetically to `Local`).
 2. **`H-009` Option B cleanup (`support/integrations.toml`):** Remove the `0.1.0` `incus-engine` (`tier = "none"`) placeholder from `support/integrations.toml` so the 5-tier scale stays strictly scoped to user-reachable integrations (internal library adapters without user-reachable CLI + recipe stay omitted until `declared`, `ADR-0007` §1 & `H-009`).
 3. **`fs` feature (`M1.6` #11):** `FsMerkleHasher`/`FsDigestCache` move behind `#[cfg(feature = "fs")]` in a dedicated adapter module (`default = []` in `crates/slipfork-dag/Cargo.toml`); `cargo check -p slipfork-dag --no-default-features` must succeed (proving the domain core is filesystem-free), while `crates/slipfork` enables `features = ["fs"]`.
 4. **One ladder:** `IntegrationTier::required_evidence() -> &'static [EvidenceField]` stays the only tier-to-evidence table; `EvidenceField` gains `as_str()` used by `Display`, serde, and the `support --json` view (single source of strings). `Evidence` keeps private fields with `field()` only, and `critical_support.rs` checks **all present** `EvidenceField` file/symbol pointers (not only tier-required ones, closing `M1.9` minor).
@@ -53,6 +54,7 @@ cargo test -p slipfork-dag --test critical_dag resources
 ! rg -q 'incus-engine' support/integrations.toml
 ! rg -q 'std::fs' crates/slipfork-dag/src/lib.rs
 test "$(rg -c 'fn required_evidence' crates/slipfork-dag/src/support.rs)" = "1"
+rg -q 'pub struct ResourcePlan' crates/slipfork-dag/src
 
 # 4. Gates.
 cargo clippy -p slipfork-dag --all-targets -- -D warnings

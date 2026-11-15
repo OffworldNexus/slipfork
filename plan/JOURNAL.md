@@ -185,3 +185,34 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-15T18:25 HUMAN H-010 closed by conductor
 - 2026-11-15T18:25 [M2.1] (conductor) status blocked -> ready: H-010 answered by owner (unified user slipforkd + direct CLI TTY, A2 port-aware origin + netns bridge, OffworldNexus/tpmd git dep rev 9
 - 2026-11-15T18:25 AUTOPILOT on by conductor H-010 resolved; resuming M2 execution
+- 2026-11-15T18:25 [M2.1] (lead) status ready -> ready: H-010 closed with binding rulings; attempt 2 folds universe: slipforkd owns worlds/OSPP/secrets, A2 origin port, tpmd git deps
+- 2026-11-15T18:25 [M2.1] (lead) status ready -> active
+- 2026-11-15T18:25 [M2.1] (lead) attempt 2/3 started
+- 2026-11-15T18:25 [M2.1] (lead) base b949bcb11c8999c75a27b41d616babb8ddea2fad (H-010 closed: daemon-owned worlds, A2 ingress_port, tpmd git deps)
+- 2026-11-15T18:38 [M2.2] (planner) edited fields
+- 2026-11-15T18:38 [M2.3] (planner) edited fields
+- 2026-11-15T18:38 [M2.4] (planner) edited fields
+- 2026-11-15T18:38 [M2.5] (planner) edited fields
+- 2026-11-15T18:38 [M2.6] (planner) edited fields
+- 2026-11-15T18:38 [M2.7] (planner) edited fields
+- 2026-11-15T18:38 [M2.8] (planner) edited fields
+- 2026-11-15T18:38 [M2.9] (planner) edited fields
+- 2026-11-15T18:39 [M2.10] (planner) edited fields
+- 2026-11-15T18:39 [M2.11] (planner) edited fields
+- 2026-11-15T18:39 [M2.12] (planner) edited fields
+- 2026-11-15T18:39 [M2.13] (planner) edited fields
+- 2026-11-15T18:39 [M2.14] (planner) edited fields
+- 2026-11-15T18:39 [M2.15] (planner) edited fields
+- 2026-11-15T18:39 [M2.16] (planner) edited fields
+- 2026-11-15T18:39 [M2.17] (planner) edited fields
+- 2026-11-15T18:39 [M2.18] (planner) edited fields
+- 2026-11-15T18:39 [M2.7] (lead) edited fields
+- 2026-11-15T18:39 [M2.16] (lead) edited fields
+- 2026-11-15T18:51 [M2.7] (lead) edited fields
+- 2026-11-15T18:51 [M2.8] (lead) edited fields
+- 2026-11-15T18:51 [M2.9] (lead) edited fields
+- 2026-11-15T18:51 [M2.10] (lead) edited fields
+- 2026-11-15T18:51 [M2.14] (lead) edited fields
+- 2026-11-15T18:51 [M2.15] (lead) edited fields
+- 2026-11-15T18:51 [M2.16] (lead) edited fields
+- 2026-11-15T18:51 [M2.17] (lead) edited fields

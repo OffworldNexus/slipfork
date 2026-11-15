@@ -11,7 +11,7 @@ attempts: 0
 max_attempts: 3
 escalation: none
 created: "2026-11-15T16:40"
-updated: "2026-11-15T16:40"
+updated: "2026-11-15T18:38"
 ---
 
 # Goal
@@ -26,7 +26,7 @@ Promote `slipfork-engine` to the full M2 `WorldSpec` contract — multi-mount `W
 
 # Design / Invariants
 
-1. **Types:** `MountMode { ReadOnly, ReadWrite }`, `WorldMount { host_path, guest_path, mode }`, `WorldSpec { target: WorldTarget, snapshot: SnapshotId, mounts: Vec<WorldMount>, base_env: ExecEnv }`, `SnapshotMode { DiskCow, StatefulRam }`, opaque `WorldHandle` (no public fields, no public constructor, `Debug` prints a stable opaque id so callers cannot synthesize one), `ServiceSpec` (id, argv, cwd, overlay env, readiness port).
+1. **Types & `EngineCapabilities` deletion (`ADR-0008` §7):** Delete `0.1.0`'s `EngineCapabilities` boolean bag and `WorldEngine::capabilities()` (`SnapshotMode::StatefulRam` fails closed with `EngineError::StatefulRamUnsupported` on engines lacking RAM snapshots). Define `MountMode { ReadOnly, ReadWrite }`, `WorldMount { host_path, guest_path, mode }`, `WorldSpec { target: WorldTarget, snapshot: SnapshotId, mounts: Vec<WorldMount>, base_env: ExecEnv, local_ingress_port: Option<u16> }`, `SnapshotMode { DiskCow, StatefulRam }`, opaque in-process `WorldHandle` (owned exclusively inside `slipforkd`, `H-010` #1; private fields, stable opaque `Debug`), and `ServiceSpec` (id, argv, cwd, overlay env, readiness port). `ExecEnv` provides a restricted `0600`-IPC wire helper used solely by `DaemonControl::exec_target`.
 2. **Env redaction:** the effective env is the base env overlaid by the overlay env (overlay wins); the inherited allowlist is restricted to `PATH`/`TERM`/`LANG` plus a world-scoped `HOME`; a hand-written `Debug` redacts every secret value; the secret is exposed only at the child-process env boundary.
 3. **Mounts:** repo mount RW under host `$UID:$GID`, artifact volumes RO, and a validation that fails closed (`EngineError::OverlappingMounts`) for nested RW mounts.
 4. **`freeze_world`:** seals an origin-independent live world (`base -> migrate -> seed_*`) into an immutable child snapshot id; freezing an already-frozen or destroyed world fails closed (`EngineError::WorldNotFreezable`), and a clone of a frozen snapshot never sees writes from a sibling clone.
@@ -46,6 +46,7 @@ cargo test -p slipfork-engine --test critical_engine -- --nocapture freeze
 
 # 3. Handles are opaque and Debug never prints a secret.
 cargo test -p slipfork-engine --test critical_engine -- --nocapture redact
+! rg -q 'EngineCapabilities' crates/slipfork-engine/src
 
 # 4. Gates.
 cargo clippy -p slipfork-engine --all-targets -- -D warnings

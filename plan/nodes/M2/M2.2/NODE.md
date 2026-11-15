@@ -17,7 +17,7 @@ attempts: 0
 max_attempts: 3
 escalation: none
 created: "2026-11-15T16:40"
-updated: "2026-11-15T16:40"
+updated: "2026-11-15T18:38"
 ---
 
 # Goal
@@ -33,8 +33,14 @@ Create the three new M2 crates (`crates/slipfork-edge`, `crates/slipfork-vcs`, `
 # Design / Invariants
 
 1. **Skeletons only.** Each new crate ships `Cargo.toml`, `src/lib.rs` with `#![forbid(unsafe_code)]` plus `//!` docs naming the DI ports it will own (edge: sole ingress + `DaemonControl` + `WorldRegistry`; vcs: `VcsWorkspace`/`VcsWorkspaceFactory`/`RepoRootResolver`; ospp: `DeviceKeySigner` + OSPP v1 client + resource/dump ports), and empty module stubs. No behaviour, no `todo!()` graphs, no dead `pub` APIs beyond the documented stubs.
-2. **Dependency wedge.** Add to `[workspace.dependencies]` exactly the external crates `ADR-0008` names (expected minimal set: a sync WebSocket client/server, an ECDSA P-256 implementation, `zstd`, and a socket-activation helper; reuse the already-locked `serde`, `serde_json`, `sha2`, `hex`, `thiserror`, `libc`, `toml`, `tempfile`, `clap`). Resolve versions with `cargo add --workspace` — never hand-write or invent a version.
-3. **Crate-level edges.** Declare every dependency each crate will consume in this milestone exactly once here: `slipfork-world` (+`sha2`, `hex` for the service-label hash), `slipfork-engine` (+`slipfork-world` path dep, closing M1.6 #12), `slipfork-edge` (+`slipfork-world`, `slipfork-engine`, `serde`, `serde_json`, `thiserror`), `slipfork-vcs` (+`slipfork-world`, `serde`, `serde_json`, `thiserror`), `slipfork-ospp` (+`slipfork-world`, `slipfork-snow`, `slipfork-dag`, `serde`, `serde_json`, `sha2`, `hex`, `getrandom`, WebSocket + P-256 + `zstd` crates), and `crates/slipfork` (+`slipfork-edge`, `slipfork-vcs`, `slipfork-ospp` path deps, plus `slipfork-dag` with the `fs` feature that `M2.5` introduces).
+2. **Dependency wedge (`ADR-0008` §1 & §7, `H-010` #3).** Add to `[workspace.dependencies]` the exact M2 crates: `tungstenite`, `rustls`, `webpki-roots` (sync `wss://` WebSocket), `p256` (ECDSA P-256 + raw `r||s`), `zstd` (streaming seed dumps), `listenfd`, `socket2`, `httparse` (`slipforkd` activation & `<= 16 KiB` HTTP/1.1 header parser), plus the pinned upstream `tpmd` git crates matching `tunnel-weaver/crates/weave/Cargo.toml`:
+   ```toml
+   tpmd-client = { git = "https://github.com/OffworldNexus/tpmd", rev = "90cb2db45b3ea6bc065918f11c7e0fd23b4ce837" }
+   tpmd-ipc = { git = "https://github.com/OffworldNexus/tpmd", rev = "90cb2db45b3ea6bc065918f11c7e0fd23b4ce837" }
+   tokio = { version = "1", default-features = false, features = ["rt", "net", "time"] }
+   ```
+   (`tokio` is consumed strictly inside `crates/slipfork-ospp`'s private `TpmdDeviceKeySigner` `current_thread` runtime adapter; reuse already-locked `serde`, `serde_json`, `sha2`, `hex`, `getrandom`, `thiserror`, `libc`, `toml`, `tempfile`, `clap`). Resolve crates.io versions with `cargo add --workspace` — never hand-guess registry versions.
+3. **Crate-level edges.** Declare every dependency each crate consumes in M2 once here: `slipfork-world` (+`sha2`, `hex`), `slipfork-engine` (+`slipfork-world` path dep, closing M1.6 #12), `slipfork-edge` (+`slipfork-world`, `slipfork-engine`, `serde`, `serde_json`, `thiserror`, `listenfd`, `socket2`, `httparse`), `slipfork-vcs` (+`slipfork-world`, `serde`, `serde_json`, `thiserror`), `slipfork-ospp` (+`slipfork-world`, `slipfork-snow`, `slipfork-dag`, `serde`, `serde_json`, `sha2`, `hex`, `getrandom`, `thiserror`, `tungstenite`, `rustls`, `webpki-roots`, `p256`, `zstd`, `tpmd-client`, `tpmd-ipc`, `tokio`), and `crates/slipfork` (+`slipfork-edge`, `slipfork-vcs`, `slipfork-ospp`, plus `slipfork-dag` with `features = ["fs"]`).
 4. **Dependency wedge, feature seam, no cruft.** Delete the lone `publish = false` in `crates/slipfork-dag/Cargo.toml` so the workspace is symmetric (M1.9 minor). The one exception to the "no empty feature tables" rule: `crates/slipfork-dag/Cargo.toml` declares
 
    ```toml
@@ -64,6 +70,8 @@ cargo clippy --workspace --all-targets -- -D warnings
 rg -q 'slipfork-world' crates/slipfork-engine/Cargo.toml
 rg -q 'features = \["fs"\]' crates/slipfork/Cargo.toml
 ! rg -q 'publish = false' crates/*/Cargo.toml
+rg -q '90cb2db45b3ea6bc065918f11c7e0fd23b4ce837' Cargo.toml
+rg -q 'httparse' crates/slipfork-edge/Cargo.toml
 
 # 4. The dag feature seam exists so this node compiles before M2.5 gates the adapters.
 rg -c "^fs = " crates/slipfork-dag/Cargo.toml

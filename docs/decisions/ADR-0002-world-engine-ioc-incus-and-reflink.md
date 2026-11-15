@@ -1,7 +1,7 @@
 # ADR-0002: `WorldEngine` IoC Contract — Incus Primary Driver, Rootless Reflink+Netns Driver, and Shared `$UID` Mounts
 
-- **Status:** Accepted (`H-004` tracked for M2 live host `incusd` mount)
-- **Date:** 2026-11-14
+- **Status:** Accepted — amended for M2 (`H-004` tracked for M2 live host `incusd` mount; `EngineCapabilities` boolean bag deleted in favor of typed `EngineError::StatefulRamUnsupported`)
+- **Date:** 2026-11-15
 
 ## Context
 
@@ -12,8 +12,8 @@ Slipfork needs millisecond copy-on-write cloning of stateful services (PostgreSQ
 
 ## Decision
 
-1. **One `WorldEngine` Trait, Explicit Capabilities, Zero Unisolated Fallbacks:**
-   - All orchestration depends exclusively on `trait WorldEngine`. Every engine declares `EngineCapabilities` honestly and passes the shared `WorldEngine` conformance test suite.
+1. **One `WorldEngine` Trait, Fail-Closed Modes, Zero Unisolated Fallbacks:**
+   - All orchestration depends exclusively on `trait WorldEngine`. Every engine implements `WorldEngine` honestly — failing closed with `EngineError::StatefulRamUnsupported` when `SnapshotMode::StatefulRam` is unsupported (zero `EngineCapabilities` boolean bag) — and passes the shared `WorldEngine` conformance test suite.
    - If the configured engine is unavailable (e.g., `/var/lib/incus/unix.socket` missing), Slipfork fails closed — never falling back silently to unisolated host execution.
 2. **`IncusEngine` (Primary Workstation & Dedicated Server Driver):**
    - Communicates directly with the Incus `/1.0` REST API over Unix socket.

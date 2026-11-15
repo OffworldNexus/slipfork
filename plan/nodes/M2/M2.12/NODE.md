@@ -11,7 +11,7 @@ attempts: 0
 max_attempts: 3
 escalation: none
 created: "2026-11-15T16:40"
-updated: "2026-11-15T16:40"
+updated: "2026-11-15T18:39"
 ---
 
 # Goal
@@ -31,7 +31,7 @@ Add the second `VcsWorkspace` adapter, `JjWorkspaceAdapter` (workspace add/forge
 2. **Ref projection** is one small function per adapter returning `WorkspaceRefs { base, wip }`. Neither the CLI nor the remote helper branches on adapter kind (`AdapterKind` matches outside the factory are rejected in review).
 3. **Missing-tool policy.** `JjWorkspaceAdapter::detect()` returns `VcsError::ToolMissing { tool: "jj" }`. The conformance runner prints exactly one explicit `skipped: ToolMissing(jj)` line for the Jj family and still fails the run if the Git family skipped; a runtime `create_workspace` call always fails closed, with no fallback to Git.
 4. **`git-remote-slipfork` handler** (pure library in `crates/slipfork-vcs/src/remote_helper.rs`): `capabilities` -> `fetch`, `push`, `option`; `list` -> one `<sha>` TAB `<ref>` line per fork ref (`refs/heads/<fork>` and `refs/heads/<fork>/wip`); `fetch <sha> <name>` -> verifies/exports ref via `VcsWorkspace` and terminates batch with blank line; `push` -> `error <ref> <reason>` for every ref (worlds are fetched, not pushed over remote-helper in `0.2.0`). Frames are size-bounded and an unknown verb answers `unsupported` without panicking.
-5. **Single Composition Root preserved (`Engineering Law #2`):** `crates/slipfork-vcs` ships **zero** `src/bin/*` binaries; the `git-remote-slipfork` executable lives solely in `crates/slipfork` (`M2.17`) and delegates into `slipfork_vcs::remote_helper`.
+5. **Single Composition Root preserved (`Engineering Law #2`, `H-010` #1):** `crates/slipfork-vcs` ships **zero** `src/bin/*` binaries; the `git-remote-slipfork` executable lives solely in `crates/slipfork` (`M2.17`) and delegates into `slipfork_vcs::remote_helper`.
 6. `#![forbid(unsafe_code)]`; the protocol handler takes injected `BufRead`/`Write` + `VcsWorkspace` port with zero direct filesystem or subprocess access.
 
 # Acceptance

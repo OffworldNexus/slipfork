@@ -1,7 +1,7 @@
 # Milestone 1 Technical Design: Core IoC Architecture & Real CoW PoC
 
 - **Milestone:** `M1` (`0.1.0` — Global Target Design & Initial Measured PoC)
-- **Status:** Accepted — amended for M2 (`H-001`..`H-003`, `H-005`, `H-008`, `H-009` validated, `H-006` closed by deferral; `ADR-0001`..`ADR-0007` locked, `ADR-0008` proposed pending `H-010`)
+- **Status:** Accepted — amended for M2 (`H-001`..`H-003`, `H-005`, `H-008`, `H-009`, `H-010` validated, `H-006` closed by deferral; `ADR-0001`..`ADR-0008` locked)
 - **ADRs:** `ADR-0001`, `ADR-0002`, `ADR-0003`, `ADR-0004`, `ADR-0005`, `ADR-0006`, `ADR-0007`, `ADR-0008`
 
 ---

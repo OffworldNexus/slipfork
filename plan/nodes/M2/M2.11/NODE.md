@@ -11,7 +11,7 @@ attempts: 0
 max_attempts: 3
 escalation: none
 created: "2026-11-15T16:40"
-updated: "2026-11-15T16:40"
+updated: "2026-11-15T18:39"
 ---
 
 # Goal
@@ -20,7 +20,7 @@ Land the version-control ports in `crates/slipfork-vcs` (`RepoRootResolver`, `Vc
 
 # Context
 
-- `ADR-0008` (locked by `M2.1`) fixes the DI shape: domain code asks a `VcsWorkspaceFactory` for a `VcsWorkspace`; it never shells out, never reads `std::env`, and never branches on a backend kind.
+- `ADR-0008` and `H-010` #1 fix the DI shape: `slipforkd` (the unified user daemon Composition Root) wires `RepoRootResolver` and `VcsWorkspaceFactory`; domain code never shells out, never reads `std::env`, and never branches on a backend kind.
 - The problem being solved: an agent opens a worktree while the developer has uncommitted work. A plain `git worktree add` checks out `HEAD`, so the agent would not see that work. Slipfork snapshots the dirty tree into a throwaway `<fork>/wip` ref computed through a temporary `GIT_INDEX_FILE` under `.slipfork/`, leaving the developer index untouched.
 - `M2.2` already declared the crate manifest, the workspace dependencies, and the `slipfork-world` edge; this node touches only `crates/slipfork-vcs/**`.
 - Worktrees live on disk under `.worktrees/` inside the repository, never under `/tmp` (tmpfs).

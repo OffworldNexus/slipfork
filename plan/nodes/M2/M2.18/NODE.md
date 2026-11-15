@@ -11,7 +11,7 @@ attempts: 0
 max_attempts: 3
 escalation: none
 created: "2026-11-15T16:40"
-updated: "2026-11-15T16:40"
+updated: "2026-11-15T18:39"
 ---
 
 # Goal
@@ -28,10 +28,10 @@ Finish the `@slipfork/opencode` plugin slice of the milestone: replace the hidde
 
 1. **Explicit state, no ambient probe.** The gateway receives a typed `SlipforkProjectState { snowFile: string | null, repoRoot: string, configError?: string }` built by an explicit loader at session start. `existsSync` disappears from the plugin sources; a missing manifest produces a structured `no-manifest` result with a message, never a silent skip.
 2. **Worktree transform.** On fork: call the CLI, read the returned URL, and register the transform result `{ cwd, url, forkId }` into the session state so later hooks do not re-run discovery.
-3. **Shell routing.** Every `ctx.shell.hook` invocation runs in the registered `cwd` and exports the world URL for the session, so a dev server launched by the agent is reachable at exactly that one URL.
+3. **Shell routing — single env owner (`ADR-0004`, `H-010` #1 & #2):** `ctx.shell.hook("create.before")` wraps commands through `slipfork exec --cwd <cwd> -- ...` and **never** resolves or injects `snow.yml` env vars in TypeScript (`slipforkd` is the sole owner of `modes.local` env resolution, including port-qualified `$BASE_URL` backed by the in-netns loopback bridge). `ctx.session.hook("context")` injects the 2-line `<context key="slipfork-world">` note naming the fork world + single `WorldOrigin` URL and forbidding direct host `:5432`/`:8000` connections.
 4. **Drop.** `ctx.session.hook` teardown releases the world through the CLI, is idempotent, and never throws from a cleanup callback (it records a warning instead).
 5. **No duplicated copy of the CLI contract.** Argument names and JSON field names are declared once in the plugin and validated against a fixture recorded from the real binary, so a CLI rename fails the test instead of drifting silently.
-6. **Live end-to-end test (`bun test`).** `packages/opencode-slipfork/tests/e2e.critical.test.ts` drives the plugin API against compiled `slipfork` (`cargo build -p slipfork`) in a disk-backed temporary repository (under `.slipfork/` or `~/.cache/slipfork`, never `/tmp` tmpfs so XFS `FICLONE` works!), asserting implicit worktree fork, `cwd`-routed shell execution, and session teardown `drop`; it fails closed if the binary or CoW world fails.
+6. **Live end-to-end test (`bun test`):** `packages/opencode-slipfork/tests/e2e.critical.test.ts` drives the plugin against compiled `slipfork` + `slipforkd` (`cargo build -p slipfork --bins`) in a disk-backed XFS temp repo (never `/tmp` tmpfs), exercising zero-setup `slipforkd --listen 127.0.0.1:0` auto-spawn, implicit worktree fork (`http://<fork>.<project>.localhost:<port>`), `cwd`-routed `slipfork exec` (verifying `$BASE_URL` resolves inside the world `netns` via the loopback bridge and from the host), and idempotent session teardown `drop`.
 
 # Acceptance
 

@@ -11,7 +11,7 @@ attempts: 0
 max_attempts: 3
 escalation: none
 created: "2026-11-15T16:40"
-updated: "2026-11-15T16:40"
+updated: "2026-11-15T18:38"
 ---
 
 # Goal
@@ -26,7 +26,7 @@ Land `slipfork-world`'s M2 domain additions — the single-origin `WorldOrigin` 
 
 # Design / Invariants
 
-1. **`WorldOrigin` (ADR-0005 §1, `H-008`):** `enum WorldOrigin { Local { url }, Shared { url } }` with serde `#[serde(tag = "kind", rename_all = "snake_case")]`, `WorldOrigin::url(&self) -> &str`, and a fail-closed `Deserialize` that rejects empty/non-`http(s)` URLs. `WorldOrigin::local(&LocalHostRoute)` is the **only** constructor of the `Local` variant (no second renderer); `WorldOrigin::shared(url)` mints the `Shared` variant from a lease URL.
+1. **`WorldOrigin` (`ADR-0005` §1, `H-008`, `H-010` #2):** `enum WorldOrigin { Local { url }, Shared { url } }` with serde `#[serde(tag = "kind", rename_all = "snake_case")]`, `WorldOrigin::url(&self) -> &str`, and fail-closed `Deserialize` rejecting empty or non-`http(s)` URLs. `WorldOrigin::local(route: &LocalHostRoute, ingress_port: u16) -> Result<Self, WorldError>` (`route.snow_domain()` must be `None`) is the **sole** constructor of `Local`: it renders `http://<host>` when `ingress_port == 80` and `http://<host>:<ingress_port>` otherwise. `WorldOrigin::shared(url)` mints `Shared` from a validated lease URL.
 2. **`derive_weaver_service_name(full_label: &str) -> Result<WeaverServiceName, WorldError>`:** normalize to lowercase dash-separated runs; if the result is `<= 31` bytes it is used verbatim; otherwise `prefix` is truncated to `31 - 1 - HASH_LEN`, trailing dashes are stripped in a loop, an empty prefix drops the separator entirely, and the result is `<prefix>-<hash>` (or `<hash>`) with `HASH_LEN = 12` lowercase hex chars of SHA-256 over the **full** normalized label (so two different full labels never share a suffix by construction, and the function is idempotent/stable across runs and hosts).
    **Suffix-collision guard (mandatory):** a normalized label that is already `<= 31` bytes but whose tail matches the truncated-suffix shape `-[0-9a-f]{12}$` could be byte-identical to the output produced for some longer label, so it is routed through the same `<prefix>-<sha256_hex12>` path instead of being used verbatim. A short crafted input can therefore never collide with a truncated one, and the mapping stays a pure function of the full label alone.
 
@@ -55,4 +55,4 @@ cargo clippy -p slipfork-world --all-targets -- -D warnings
 make check
 ```
 
-All commands exit `0`. Adversarial assertions required: a 32-byte label truncates to exactly 31 bytes with a fixed suffix, `a-` / `a--b` style joins are impossible, and the derived name matches the 31/32-byte boundary cases pinned in `critical_world.rs`, and a 31-byte label shaped like `foo-0123456789ab` is rewritten through the hash path rather than used verbatim.
+All commands exit `0`. Adversarial assertions required: a 32-byte label truncates to exactly 31 bytes with a fixed suffix, `a-` / `a--b` style joins are impossible, and the derived name matches the 31/32-byte boundary cases pinned in `critical_world.rs`, and a 31-byte label shaped like `foo-0123456789ab` is rewritten through the hash path rather than used verbatim. `world_origin` critical tests assert both `ingress_port == 80` port omission and `ingress_port != 80` `:<port>` formatting.

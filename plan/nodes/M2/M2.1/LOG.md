@@ -31,3 +31,19 @@ status active -> blocked: docs committed dfe24e0+; blocked on H-010 direction-ch
 ## 2026-11-15T18:25 [conductor]
 
 status blocked -> ready: H-010 answered by owner (unified user slipforkd + direct CLI TTY, A2 port-aware origin + netns bridge, OffworldNexus/tpmd git dep rev 90cb2db)
+
+## 2026-11-15T18:25 [lead]
+
+status ready -> ready: H-010 closed with binding rulings; attempt 2 folds universe: slipforkd owns worlds/OSPP/secrets, A2 origin port, tpmd git deps
+
+## 2026-11-15T18:25 [lead]
+
+status ready -> active
+
+## 2026-11-15T18:25 [lead]
+
+attempt 2/3 started
+
+## 2026-11-15T18:25 [lead]
+
+base b949bcb11c8999c75a27b41d616babb8ddea2fad (H-010 closed: daemon-owned worlds, A2 ingress_port, tpmd git deps)

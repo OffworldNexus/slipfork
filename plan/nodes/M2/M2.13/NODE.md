@@ -11,7 +11,7 @@ attempts: 0
 max_attempts: 3
 escalation: none
 created: "2026-11-15T16:40"
-updated: "2026-11-15T16:40"
+updated: "2026-11-15T18:39"
 ---
 
 # Goal
@@ -26,9 +26,9 @@ Implement the `DeviceKeySigner` port with its `tpmd` and software P-256 adapters
 
 # Design / Invariants
 
-1. **Signer port.** `DeviceKeySigner { fn key_id(&self) -> KeyId; fn sign(&self, message: &[u8]) -> Result<DeviceSignature, OsppError> }`. `KeyId` and `DeviceSignature` are validated newtypes (`p256:` + 66 lowercase hex; exactly 64 bytes). No `Debug` impl prints private key material.
-2. **Adapters and selection.** `TpmdDeviceKeySigner` probes the two socket candidates in order over an injected `KeyStorePaths` value (no `std::env::var` in this crate), using a line-framed request and refusing any response that does not verify against the returned `key_id`. `SoftwareP256Signer` reads the `0600` key file from the vault. A single factory performs the fallback and emits exactly one diagnostic line naming the reason; the fallback is never silent and never fabricates a signature.
-3. **Handshake.** Subprotocol `ospp-v1`; server-first `CHALLENGE { nonce_s }`; client `HELLO { version: u16 = 1, key_id, nonce_c, sig }` over exactly the transcript bytes above, with `server_name` being the dialed hostname string identical on both sides; server `WELCOME { params }` or `REJECT { UnknownKey | BadSignature | UnsupportedVersion { min, max } }` mapped onto typed `OsppError` variants. Frames are capped at 16 KiB and the first server frame has a bounded deadline.
+1. **Signer port (`ADR-0008` §1):** `DeviceKeySigner: Send + Sync { fn key_id(&self) -> &KeyId; fn backend_label(&self) -> &'static str; fn sign(&self, message: &[u8]) -> Result<DeviceSignature, OsppError>; }`. `KeyId` (`p256:<66 lowercase hex>`) and `DeviceSignature` (raw 64-byte `r||s`, never DER) are validated newtypes; `SoftwareP256Key` zeroizes on `Drop`; no `Debug` prints private key material.
+2. **Pinned `tpmd` git crates & generic `FallbackDeviceKeySigner<P, F>` (`H-010` #3):** Do **NOT** hand-roll `tpmd` framing. `TpmdDeviceKeySigner` uses the workspace's pinned `tpmd-client` + `tpmd-ipc` crates (`rev = "90cb2db45b3ea6bc065918f11c7e0fd23b4ce837"`) over a private, instance-scoped `tokio::runtime::Builder::new_current_thread().enable_io().enable_time().build()` runtime, probing injected `KeyStorePaths` (`$XDG_RUNTIME_DIR/tpmd/tpmd.sock` when set, then `/run/tpmd/tpmd.sock`) in order under namespace `"slipfork"` with `ResumeOrCreate`, `min_security = Sealed`, `allow_below_floor = false`, and verifying every returned signature against `key_id`. `SoftwareP256Signer` loads/creates keys via injected `DeviceKeyStore` + `EntropySource`. Generic `FallbackDeviceKeySigner<P: DeviceKeySigner, F: DeviceKeySigner>` selects `F` **only** when `P` reports `tpmd` absent/unavailable across all candidates, emitting one explicit diagnostic line (locked stores wait; floor/verification errors fail closed).
+3. **Handshake (`tungstenite` + `rustls` + `webpki-roots`):** Subprotocol `ospp-v1`; server-first `CHALLENGE { nonce_s }`; client `HELLO { version: 1, key_id, nonce_c, sig }` signing `"ospp-v1" || nonce_s(32) || nonce_c(32) || server_name`; server `WELCOME` or `REJECT { UnknownKey | BadSignature | UnsupportedVersion { min, max } }`; 16 KiB text-frame cap and 10 s first-frame deadline; `"ospp-v1-pair"` pairing on `/_ospp/v1/pair`.
 4. **Replay and downgrade resistance.** `nonce_s` is single-use per connection, `nonce_c` must be 32 bytes of CSPRNG output from the injected entropy source, and a `REJECT` never retries with a weaker signature encoding. TLS exporter channel binding is documented as reserved, not silently assumed.
 5. **Pairing.** The URL fragment `#handle=<64 lowercase hex>` is the only delivery channel: the client parses it, sends it once, never logs it, and zeroizes it after use. A malformed handle or a handle-bearing URL handed to `--json` output is redacted. A pairing attempt without a fragment fails closed naming the missing handle.
 6. **Tests.** `tests/support/mock_server.rs` provides a deterministic clock, a seeded CSPRNG double, and an in-process WebSocket server; `crates/slipfork-ospp/tests/critical_ospp.rs` covers accept, bad signature, unknown key, version range rejection, stale nonce replay, fragment pairing, and the two-socket probe order.
@@ -45,7 +45,7 @@ cargo test -p slipfork-ospp --test critical_ospp -- --nocapture pairing
 # 2. Rejection paths are typed and fail closed.
 cargo test -p slipfork-ospp --test critical_ospp -- --nocapture reject_paths
 
-# 3. Purity and lint gates.
+# 3. Purity, live tpmd smoke (when /run/tpmd/tpmd.sock present), and lint gates.
 ! rg -q "std::env" crates/slipfork-ospp/src
 ! rg -q "der::" crates/slipfork-ospp/src
 cargo clippy -p slipfork-ospp --all-targets -- -D warnings
