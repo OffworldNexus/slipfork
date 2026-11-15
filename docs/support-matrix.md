@@ -10,6 +10,11 @@ Tiers, weakest to strongest: `none` < `declared` < `exercised` < `field-tested` 
 
 | Integration | Category | Tier | Required evidence | Present evidence |
 |---|---|---|---|---|
+| `dockerfile-l0-world-rootfs` | `world-engine` | `declared` | `recipe_page`, `critical_test` | `critical_test`, `recipe_page` |
 | `reflink-netns-world-engine` | `world-engine` | `declared` | `recipe_page`, `critical_test` | `critical_test`, `recipe_page` |
+| `crun-backing-service-containers` | `world-engine` | `declared` | `recipe_page`, `critical_test` | `critical_test`, `recipe_page` |
+| `host-toolchain-caches` | `world-engine` | `declared` | `recipe_page`, `critical_test` | `critical_test`, `recipe_page` |
 | `file-vault-secrets` | `secrets` | `declared` | `recipe_page`, `critical_test` | `critical_test`, `recipe_page` |
+| `slipforkd-world-lifecycle` | `cli` | `declared` | `recipe_page`, `critical_test` | `critical_test`, `recipe_page` |
 | `dag-config-cli` | `cli` | `declared` | `recipe_page`, `critical_test` | `critical_test`, `recipe_page` |
+| `git-remote-slipfork` | `vcs` | `declared` | `recipe_page`, `critical_test` | `critical_test`, `recipe_page` |

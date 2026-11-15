@@ -1,6 +1,6 @@
-# Manifest Reference (`0.1.0`)
+# Manifest Reference (`0.2.0`)
 
-The two files Slipfork reads: `snow.yml` (`crates/slipfork-snow`) and `slipfork.toml` (`crates/slipfork-dag`).
+Slipfork reads two files: `snow.yml` (`crates/slipfork-snow`) and `slipfork.toml` (`crates/slipfork-dag`).
 
 ## 1. `snow.yml` (`slipfork_snow::SnowFile`)
 
@@ -16,10 +16,6 @@ components:
     run_command: gunicorn app.main:app --bind 0.0.0.0:${{ components::api.private_port }}
     envs: [app]
     internal_ports: [8000]
-  - id: worker
-    image: api
-    run_command: celery -A app worker
-    envs: [app]
 
 ingresses:
   - match: { prefix: "/" }
@@ -29,9 +25,6 @@ hooks:
   - component: api
     when: pre-deploy # pre-deploy | post-deploy | failed-deploy
     run_command: uv run alembic upgrade head
-
-domains:
-  - id: admin # single lowercase DNS label, no '.'
 
 resources:
   pg_clusters: [{ id: psql, version: "18" }]
@@ -55,14 +48,16 @@ modes:
         DEBUG: 'True'
 ```
 
-`images[]` is either a build image (`id`, `context`, optional `dockerfile` — default `Dockerfile` — and optional `envs` build groups) or a registry image (`id`, `registry`, `repository`, optional `tag` — default `latest`).
+`images[]` is either a build image (`id`, `context`, optional `dockerfile` — default `Dockerfile` — and optional `envs` build groups) or a registry image (`id`, `registry`, `repository`, optional `tag` — default `latest`). Every world boots from a built `BuildImage` rootfs, so a project needs at least one build image (see [`[world]`](#2-slipforktoml-slipfork_dagslipforkconfig)).
+
+`domains: [{ id: admin }]` declares one local DNS label. `resources:` map to backing-service containers: `pg_clusters.version` → `docker.io/library/postgres:<version>`, `redis_clusters.version` → `docker.io/library/redis:<version>`, and a non-empty `s3_buckets` → SeaweedFS. `slipfork db` and `slipfork redis` open `psql`/`redis-cli` inside those containers.
 
 ### Validation rules
 
-- **Forbidden top-level keys fail closed.** `envs:` and `project:` raise `SnowError::ForbiddenTopLevelKey { key }`, which names the key and never echoes what it contained: `slipfork: top-level 'envs' is not supported in snow.yml; environment groups live under 'modes.all' / 'modes.<mode>' and project identity lives in slipfork.toml`. Environment groups live under `modes.all` / `modes.<mode>`; project identity lives in `<vcs_root>/slipfork.toml` (§2).
-- **`*` is not a mode.** `modes.*` fails with `SnowError::AsteriskModeForbidden`; the universal base mode is `all`.
+- **Forbidden top-level keys fail closed.** `envs:` and `project:` raise `SnowError::ForbiddenTopLevelKey { key }`, naming the key and never its contents. Environment groups live under `modes.all` / `modes.<mode>`; project identity lives in `slipfork.toml` (§2).
+- **`*` is not a mode** (`SnowError::AsteriskModeForbidden`); the universal base is `all`. `slipfork snow resolve --mode <mode>` renders any declared mode, but `up`/`fork` hardcode `local`, so a manifest without `modes.local` fails closed.
 - **Unknown keys fail closed** in every table (`#[serde(deny_unknown_fields)]`).
-- **Cross-references are checked in one pass.** Every `components[].image`, `ingresses[].target.component`, `hooks[].component`, `pg_databases[].cluster`, and `envs` group name must exist, and `domains[].id` must be a single unreserved lowercase DNS label; all violations are reported together in `SnowError::Validation`.
+- **Cross-references are checked in one pass.** Every `components[].image`, `ingresses[].target.component`, `hooks[].component`, `pg_databases[].cluster`, and `envs` group name must exist; all violations are reported together in `SnowError::Validation`.
 - **`modes.all.components` is rejected.** Universal defaults belong on top-level `components[]`.
 
 ### Mode-scoped components (`SnowFile::effective_components`)
@@ -71,11 +66,11 @@ modes:
 
 | Declaration | Effect in that mode |
 |---|---|
-| `run_command: <cmd>` on a declared id | resolves `<cmd>` instead of `components[].run_command` (supervision lands with `slipforkd` in `0.2.0`) |
+| `run_command: <cmd>` on a declared id | resolves `<cmd>` instead of `components[].run_command` |
 | `run_command: <cmd>` on an undeclared id | adds the component (non-empty `run_command` required) |
 | `disabled: true` | drops a top-level component (and its env groups) from the mode |
 
-A disabled component never resolves a command or an environment, and `disabled: true` cannot target a mode-only addition. [`snow.yml` modes & secrets](../snow-modes.md) walks through the same rules with a task-oriented example.
+A disabled component never resolves a command or environment, and `disabled: true` cannot target a mode-only addition. [`snow.yml` modes & secrets](../snow-modes.md) walks through the same rules with a task-oriented example.
 
 ### Expressions (`${{ ... }}`)
 
@@ -87,12 +82,12 @@ generator := "random_string(" 1..=512 ")" | "random_hex(" 1..=256 ")"
 
 | Namespace | Reads | `??` | `!!` |
 |---|---|---|---|
-| `secrets::<KEY>` | local vault `secrets`, then remote provider | yes | yes — `!!` is valid only here |
-| `vars::<KEY>` | local vault `vars`, then remote provider | yes | no |
-| `domains::<ID>` | provider `domains` | yes | no |
+| `secrets::<KEY>` | local vault `secrets` | yes | yes — `!!` is valid only here |
+| `vars::<KEY>` | local vault `vars` | yes | no |
+| `domains::<ID>` | no provider today — fails closed | yes | no |
 | `resources::…`, `components::…`, `deployment::…` | world coordinates (below) | yes | no |
 
-The local vault is `$XDG_DATA_HOME/slipfork/vaults/<project>.json` (default `~/.local/share/slipfork/vaults/`) mode `0600`; today it is the only provider `slipfork snow resolve` reads. Remote `vars`/`secrets`/`domains` arrive over the `OSPP v1` WebSocket `EnvBundle` (`ADR-0008` §2), wired by `slipforkd` in `0.2.0`.
+The local vault is `$XDG_DATA_HOME/slipfork/vaults/<project>.json` (default `~/.local/share/slipfork/vaults/`) mode `0600`, and it is the only `secrets`/`vars` provider wired today. `slipfork auth login` pairs an OSPP device key; remote `EnvBundle` resolution over `OSPP v1` is not wired yet, so a key the vault does not hold fails closed as a missing value.
 
 ### Coordinates (`ResourceCoordinates::for_world`)
 
@@ -106,7 +101,6 @@ The local vault is `$XDG_DATA_HOME/slipfork/vaults/<project>.json` (default `~/.
 | `resources::redis_clusters.<id>.url` | `redis://127.0.0.1:6379/<index>` |
 | `resources::s3_buckets.<id>.{endpoint_url,bucket,access_key,secret_key,region}` | world-local `http://127.0.0.1:9000` unless a resource plan supplies remote coordinates |
 | `components::<id>.{private_url,private_domain,private_port}` | from `ingresses`, else `internal_ports[0]`; `UnknownResourcePath` when neither is declared |
-| `deployment::env.name`, `deployment::is_production` | `local`, `false` |
 
 `LocalHostRoute::parse(&project, &snow.domain_ids(), host_header)` parses `(<domain>.)?(<fork>.)?<project>.localhost` and enforces the disjoint `domains[].id` / fork rules (`ADR-0005` §1).
 
@@ -115,11 +109,14 @@ The local vault is `$XDG_DATA_HOME/slipfork/vaults/<project>.json` (default `~/.
 ## 2. `slipfork.toml` (`slipfork_dag::SlipforkConfig`)
 
 ```toml title="slipfork.toml"
-# Optional canonical ProjectSlug override for http://<project>.localhost and the local vault
-# name. Defaults to <vcs_root>'s directory basename in standard Git repos (including linked
-# .worktrees/<fork>, never probing worktree-local files) and via `jj root` when `jj` is on
-# PATH. Required for Git submodules, `--separate-git-dir`, or when `jj` is absent from PATH.
+# Optional canonical ProjectSlug override; defaults to <vcs_root>'s directory basename in
+# standard Git repos (including .worktrees/<fork>) and via `jj root` when `jj` is on PATH.
 project = "acme"
+
+# Optional world-rootfs selector: two keys only, both inferred when unambiguous.
+[world]
+image = "api"    # snow.yml BuildImage id; mandatory iff snow.yml declares >= 2
+stage = "builder" # named `FROM ... AS <stage>`; a compiled stage keeps cargo/rustc in the world
 
 [artifacts.front]
 inputs = ["front/src/**", "front/package.json"]
@@ -130,26 +127,32 @@ mount = "front/dist"
 inputs = ["api/migrations/*.sql"]
 run = "psql -f api/migrations/0001_schema.sql"
 
-[fixtures.seed_catalog]
-parent = "migrate"
-inputs = ["api/migrations/seed_catalog.sql"]
-run = "psql -f api/migrations/seed_catalog.sql"
-
-# Writes absolute origin URLs into persistent state; never shared across worlds (ADR-0003 §1).
-[fixtures.seed_sites]
-parent = "seed_catalog"
-per_world = true
-run = "uv run python manage.py seed_sites"
-
 [test]
 coverage = true
 coverage_report = ["html", "xml"] # html | xml | json | lcov | text
 coverage_fail_under = 85          # optional integer 0..=100
 ```
 
+### `[world]`: which rootfs a world boots
+
+Every world's read-only rootfs is built from one `snow.yml` `BuildImage`, so `[world]` selects it and its Dockerfile stage. Both keys are optional and inferred when only one choice exists; `[world]` rejects any other key.
+
+| Key | Selects | Inferred when | Fails closed when |
+|---|---|---|---|
+| `image` | `snow.yml` `images[].id` used for the rootfs | exactly one `BuildImage` exists | no `BuildImage` exists, or `>= 2` exist and none is selected |
+| `stage` | named `FROM ... AS <stage>` inside that Dockerfile | the final `FROM` is named | the stage is unnamed or unknown |
+
+```console
+$ slipfork up
+slipfork: snow.yml declares 2 buildable images ('api', 'worker') and slipfork.toml does not select one
+  fix: add `world.image = "api"` under `[world]` in slipfork.toml
+```
+
+A project with two build images (say `api` and `worker`) must set `world.image`; a Rust/Go project that needs `cargo`/`rustc` at runtime sets `world.stage = "builder"`. A project with no build image fails closed with the 4-line `images:` snippet to add: it cannot be built into an image, so Slipfork cannot fork it.
+
 ### Validation rules
 
 - **Unknown keys fail closed** in every `slipfork.toml` table (`#[serde(deny_unknown_fields)]`).
-- **`[resources.<kind>.<id>]`** (`pg_databases` / `s3_buckets`, strategies `local` | `prefer_remote` | `remote`) parses and validates today; the plan that consumes it is wired by `slipforkd` in `0.2.0` (`ADR-0008` §3).
-- **`[test]` is typed fields only** — no hooks, shell pipelines, or path assembly (`ADR-0006` §1). `coverage = true` is the sole switch; `coverage_report` defaults to `["text"]`; either coverage option without `coverage = true` fails with `DagError::CoverageOptionsRequireEnabled`; an explicitly empty `coverage_report = []` fails with `DagError::EmptyCoverageReport`; `coverage_fail_under` must be an integer in `0..=100` (`DagError::InvalidCoverageThreshold`). Coverage execution itself lands in Milestone 3 (`crates/slipfork-test`).
-- **`[fixtures.<id>].per_world`** defaults to `false`. Fixture snapshots are shareable across worlds unless `per_world = true` marks a step that bakes this world's absolute origin URLs into persistent state (`ADR-0003` §1). A per-world fixture is never reported `CacheAction::Cached` and cannot be the `parent` of an origin-independent fixture (`DagError::OriginIndependentChildOfPerWorld`). Per-world snapshot execution lands in Milestone 3.
+- **`[resources.<kind>.<id>]`** (`pg_databases` / `s3_buckets`) takes `local` and `test` strategies (`local` | `prefer_remote` | `remote`), e.g. `[resources.pg_databases.appdb] local = "prefer_remote"`; `slipforkd` applies the plan when it boots the world (`ADR-0008` §3).
+- **`[test]` is typed fields only** — no hooks, shell pipelines, or path assembly (`ADR-0006` §1). `coverage = true` is the sole switch; `coverage_report` defaults to `["text"]`; either coverage option without `coverage = true` fails with `DagError::CoverageOptionsRequireEnabled`; `coverage_report = []` fails with `DagError::EmptyCoverageReport`; `coverage_fail_under` must be `0..=100` (`DagError::InvalidCoverageThreshold`). Coverage execution lands in Milestone 3.
+- **`[fixtures.<id>].per_world`** defaults to `false`. A per-world fixture is never reported `CacheAction::Cached` and cannot be the `parent` of an origin-independent fixture (`DagError::OriginIndependentChildOfPerWorld`). Per-world snapshot execution lands in Milestone 3.

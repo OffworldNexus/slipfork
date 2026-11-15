@@ -1,4 +1,4 @@
-# `snow.yml` Modes & Secrets (`0.1.0`)
+# `snow.yml` Modes & Secrets (`0.2.0`)
 
 `modes:` is the one place environment differences live. `modes.all` carries the wiring every environment shares; each named mode adds, overrides, or removes the rest. `slipfork snow resolve --mode <mode>` renders the result and persists `!!` secrets.
 
@@ -72,7 +72,7 @@ modes:
 
 | You write | You get |
 |---|---|
-| `run_command: <cmd>` on a declared component | that mode resolves `<cmd>` (supervision lands with `slipforkd` in `0.2.0`) |
+| `run_command: <cmd>` on a declared component | that mode resolves `<cmd>`; `slipforkd` starts it |
 | `run_command: <cmd>` on an undeclared component | a mode-only component (must be non-empty) |
 | `disabled: true` | the component is gone from that mode, including its environment groups |
 
@@ -87,7 +87,7 @@ modes:
 | **Fallback** | `${{ vars::LOG_LEVEL ?? "INFO" }}` | returns `"INFO"` for this render; **writes nothing** | every namespace |
 | **Ensure** | `${{ secrets::KEY !! random_string(50) }}` | generates once via the OS CSPRNG, **persists atomically**, and reuses it forever | single-key `secrets::<KEY>` only |
 
-Generators: `random_string(1..=512)` (alphanumeric), `random_hex(1..=256)` (2N lowercase hex characters), `random_base64(1..=256)` (URL-safe unpadded base64), `uuid4()`. A `??` fallback must be a JSON string literal, so `${{ vars::LOG_LEVEL ?? INFO }}` fails while `?? "INFO"` works.
+The generator grammar (`random_string`, `random_hex`, `random_base64`, `uuid4`) lives in the [manifest reference](reference/manifest.md). A `??` fallback must be a JSON string literal, so `${{ vars::LOG_LEVEL ?? INFO }}` fails while `?? "INFO"` works.
 
 Persisted secrets live in the local `0600` vault at `~/.local/share/slipfork/vaults/<project>.json` (`$XDG_DATA_HOME/slipfork/vaults/` when set) and print as `[REDACTED]` unless `--expose-secrets` is passed.
 
@@ -108,11 +108,11 @@ The command exits `1` and prints nothing on stdout; any `!!` secret already reac
 
 `ResourceCoordinates::for_world` is the sole coordinate builder, and a world has **one** public origin:
 
-- `${{ resources::app.url }}` is that origin's URL — `http://<host>` when the world origin is on port `80`, `http://<host>:<port>` otherwise (as `slipforkd` will render it when it binds an ephemeral port in `0.2.0`). `ingresses[].target.port` is a container port and never appears in `app.url`. `${{ resources::app.domain }}` is the origin host.
+- `${{ resources::app.url }}` is that origin's URL — `http://<host>` when the world origin is on port `80`, `http://<host>:<port>` otherwise, as `slipforkd` renders it when it binds an ephemeral port. `ingresses[].target.port` is a container port and never appears in `app.url`. `${{ resources::app.domain }}` is the origin host.
 - Slipfork assigns the origin when it materializes the world; a provider never supplies it, and it is never baked into a reusable snapshot (`ADR-0005` §1).
 - `slipfork snow resolve` renders canonical-world coordinates, so `resources::app.url` is `http://<project>.localhost` today.
 - Local hosts follow `(<domain>.)?(<fork>.)?<project>.localhost[:<port>]`, parsed by `LocalHostRoute::parse(&project, &snow.domain_ids(), host_header)`. `domains[].id` and fork names are disjoint single lowercase DNS labels, and fork names never start with `test-`.
-- `${{ domains::<ID> }}` is provider data only in `0.1.0` (remote `OSPP v1` `EnvBundle`, `0.2.0`); it fails closed as a missing value when no provider holds it. The single-origin edge will derive local `domains::<id>` values itself (`ADR-0005` §1).
+- `${{ domains::<ID> }}` has no provider in `0.2.0`; it fails closed as a missing value. The single-origin edge derives local `domains::<id>` values itself (`ADR-0005` §1).
 - `${{ components::<id>.private_port }}` comes from `ingresses`, else `internal_ports[0]`; a component that declares neither fails with `SnowError::UnknownResourcePath`.
 
 The full namespace and schema tables live in the [Manifest Reference](reference/manifest.md).

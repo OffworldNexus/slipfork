@@ -2,7 +2,7 @@
 id: M2.19
 title: "Publish 0.2.0 DX docs, generated support matrix, CHANGELOG, dx and ai-ergonomics critics"
 kind: task
-status: ready
+status: active
 owner: "doc-writer"
 priority: 3
 depends_on: [M2.15, M2.17, M2.18]
@@ -19,11 +19,11 @@ paths:
   - "docs/reference/**"
   - "docs/design/**"
   - support/integrations.toml
-attempts: 0
+attempts: 2
 max_attempts: 3
 escalation: none
 created: "2026-11-15T16:40"
-updated: "2026-11-15T20:53"
+updated: "2026-11-15T23:05"
 ---
 
 <!-- splice: replace everything after the frontmatter of plan/nodes/M2/M2.19/NODE.md with this file. Frontmatter requires `depends_on: [M2.15, M2.17, M2.18, M2.29]` (apply with `uv run --no-project tools/plan.py edit M2.19 --depends M2.15,M2.17,M2.18,M2.29`) so `[world]`/`--host-caches`/container-scoped `db`/`redis` are only published once `M2.29` ships them. Source of truth: ADR-0009 §1–§3 + docs/design/world-base-image.md (`M2.25`). -->

@@ -11,3 +11,19 @@ edited fields
 ## 2026-11-15T20:53 [lead]
 
 edited fields
+
+## 2026-11-15T22:55 [lead]
+
+status ready -> active
+
+## 2026-11-15T22:55 [lead]
+
+attempt 1/3 started
+
+## 2026-11-15T22:55 [lead]
+
+base a7b2a79efe40bcc48994bddb2842a03e0ef79f6b; note critical_slug flaked once under parallel make check, passes in isolation
+
+## 2026-11-15T23:05 [lead]
+
+attempt 2/3 started

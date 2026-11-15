@@ -418,3 +418,9 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-15T22:36 [M2.18] (lead) attempt 1/3 started
 - 2026-11-15T22:36 [M2.18] (lead) base e5ac58fe93cfb88fd9ee861ac9ab5f417d111aab
 - 2026-11-15T22:46 [M2.15] (lead) status active -> done
+- 2026-11-15T22:55 [M2.18] (lead) status active -> done
+- 2026-11-15T22:55 [M2.18] (lead) followups: docs/agents-and-opencode.md stale (M2.19); zero-setup auto-spawn with $XDG_RUNTIME_DIR set hits overlayfs mount EINVAL on this host (runtime on disk 
+- 2026-11-15T22:55 [M2.19] (lead) status ready -> active
+- 2026-11-15T22:55 [M2.19] (lead) attempt 1/3 started
+- 2026-11-15T22:55 [M2.19] (lead) base a7b2a79efe40bcc48994bddb2842a03e0ef79f6b; note critical_slug flaked once under parallel make check, passes in isolation
+- 2026-11-15T23:05 [M2.19] (lead) attempt 2/3 started

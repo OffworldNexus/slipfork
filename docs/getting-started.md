@@ -1,42 +1,45 @@
 # Getting Started (`0.2.0`)
 
-Build `slipfork`, prove your host can do copy-on-write and unprivileged namespaces, resolve a `snow.yml` manifest, plan a build/fixture DAG, and boot a live world through the zero-setup `slipforkd` daemon — with zero `sudo` and zero `root:root` files.
+Go from a repository to a running, isolated development world in four commands — zero `root:root` files.
 
 ```console
 $ cargo install --path crates/slipfork
 $ slipfork doctor
 $ slipfork snow resolve --file snow.yml --mode local
-$ slipfork dag plan --file slipfork.toml --repo .
 $ slipfork up
 $ slipfork list
 ```
 
-!!! info "World lifecycle is daemon-served"
-    `slipfork up`, `down`, `fork`, `drop`, `list`, `prune`, `share`, `secret`, `exec`, and `daemon unit` drive the unprivileged `slipforkd` daemon over a `0600` `<runtime_dir>/daemon.sock`; the CLI auto-spawns `slipforkd --listen 127.0.0.1:0` when the socket is absent. `doctor`, `snow resolve`, and `dag plan` run locally. Interactive `logs`, `shell`, `db`, `redis`, `forward`, `hook run`, `auth login`, `support`, and `git-remote-slipfork` land in the remainder of `0.2.0`.
+Every world boots from a read-only rootfs built from your own `Dockerfile`, so `snow.yml` must declare at least one build image:
 
----
+```yaml title="snow.yml"
+images:
+  - id: api
+    context: api
+    # Dockerfile: FROM python:3.13-slim AS app
 
-## 1. Build & Probe the Host
+modes:
+  local: {} # the only mode `slipforkd` boots
+```
+Both parts are required: a build image with a **named final Dockerfile stage**, and a `modes.local` entry. If `slipfork up` reports no buildable image, add the `images:` snippet; if it reports `mode 'local' is not defined`, add `modes: { local: {} }`. A project that cannot be built into an image cannot be forked; projects using an upstream image write a one-line `FROM <image> AS app` Dockerfile.
 
-Prerequisites: **Linux** (`x86_64` / `aarch64`), **Rust 1.94+** (`edition = "2024"`), a non-bare `git` repository (a colocated Jujutsu checkout resolves through its Git store), `unshare` / `ip` (`util-linux` + `iproute2`), and a CoW filesystem (`XFS` with `reflink=1`, `Btrfs`, or `ZFS`) under `~/.cache/slipfork` — never RAM-backed `/tmp` `tmpfs`.
+Prerequisites: **Linux** (`x86_64`/`aarch64`), **Rust 1.94+** (`edition = "2024"`), Docker with `buildx` (the rootfs is exported with `docker buildx build --output type=local`), a non-bare `git` repository (a colocated Jujutsu checkout resolves through its Git store), `unshare`/`ip`, and a CoW filesystem (`XFS` with `reflink=1`, `Btrfs`, or `ZFS`) under `~/.cache/slipfork` — never RAM-backed `/tmp` `tmpfs`.
+
+## 1. Probe the host
 
 ```console
-$ cargo install --path crates/slipfork
 $ slipfork doctor
 state_root: /home/acme/.cache/slipfork
 incus:      absent (using reflink-netns)
-reflink:    ok (64 KiB FICLONE in 447 us)
+reflink:    ok (64 KiB FICLONE in 414 us)
 netns:      ok (uid=1000:1000)
 ```
 
-`reflink` and `netns` must both report `ok`; `doctor` exits non-zero otherwise. Add `--json` before any command for structured output (`slipfork --json doctor`).
+`reflink` and `netns` must both report `ok`; `doctor` exits non-zero otherwise. `slipfork --json doctor` emits the same probe as one object.
 
-!!! note "Project slug"
-    `<project>` is your canonical `git` root's directory name (linked `.worktrees/<fork>` resolves back to the main repository through Git). Git submodules and `--separate-git-dir` layouts fail closed until you set `project = "<slug>"` in `slipfork.toml`, and a bare repository has no working tree to develop in — clone it first. Jujutsu-only workspaces without a colocated Git store fail closed today; a `jj git init --colocate` checkout resolves through its Git store, and jj-aware resolution lands later in `0.2.0`.
+## 2. Resolve `snow.yml`
 
-## 2. Author & Resolve `snow.yml`
-
-In a repository named after your project (here `acme`), write the manifest: top-level wiring plus `modes.all`, with per-mode differences in `modes.local`.
+Top-level wiring plus `modes.all` for shared values and `modes.local` for your machine:
 
 ```yaml title="snow.yml"
 images:
@@ -48,6 +51,12 @@ components:
     image: api
     run_command: gunicorn app.main:app --bind 0.0.0.0:${{ components::api.private_port }}
     envs: [app]
+    internal_ports: [8000]
+
+hooks:
+  - component: api
+    when: pre-deploy
+    run_command: uv run alembic upgrade head
 
 ingresses:
   - match: { prefix: "/" }
@@ -56,6 +65,7 @@ ingresses:
 resources:
   pg_clusters: [{ id: psql, version: "18" }]
   pg_databases: [{ id: appdb, cluster: psql }]
+  redis_clusters: [{ id: cache, version: "8" }]
 
 modes:
   all:
@@ -63,92 +73,88 @@ modes:
       app:
         SECRET_KEY: '${{ secrets::SECRET_KEY !! random_string(50) }}'
         DATABASE_URL: '${{ resources::pg_databases.appdb.url }}'
-        APP_URL: '${{ resources::app.url }}'
   local:
-    components:
-      api:
-        run_command: uv run uvicorn app.main:app --host 127.0.0.1 --port ${{ components::api.private_port }} --reload
     envs:
       app:
         DEBUG: 'True'
         LOG_LEVEL: '${{ vars::LOG_LEVEL ?? "INFO" }}'
 ```
 
-Resolve it: Slipfork validates the manifest, persists the generated `SECRET_KEY` into the local `0600` vault, and prints the resolved `local` mode.
-
 ```console
 $ slipfork snow resolve --file snow.yml --mode local
-APP_URL=http://acme.localhost
 DATABASE_URL=postgres://127.0.0.1:5432/appdb
 DEBUG=True
 LOG_LEVEL=INFO
 SECRET_KEY=[REDACTED]
 ```
 
-Change one character in `snow.yml` and re-run: `SECRET_KEY` keeps its value, because `!!` fills a missing secret exactly once. A top-level `envs:` or `project:` block is refused with the key name only.
+`!!` fills a missing secret once and persists it in a `0600` vault; re-running after a manifest edit keeps the value. A top-level `envs:` or `project:` block is refused by key name only. Details: [`snow.yml` modes & secrets](snow-modes.md).
 
-## 3. Plan the Artifact & Fixture DAG
-
-`slipfork.toml` describes stateless builds and stateful fixture lineages:
-
-```toml title="slipfork.toml"
-project = "acme"
-
-[artifacts.front]
-inputs = ["front/src/**", "front/package.json"]
-build = "pnpm --dir front build"
-mount = "front/dist"
-
-[fixtures.migrate]
-inputs = ["api/migrations/*.sql"]
-run = "psql -f api/migrations/0001_schema.sql"
-```
-
-```console
-$ slipfork dag plan --file slipfork.toml --repo .
-artifact front            Rebuild (5fe1ef1ecec6)
-wave 0 fixture migrate      Rebuild (cd305423c952)
-```
-
-`Rebuild` means the digest is not in `<STATE_DIR>` yet — and `dag plan` only reads the cache, so every node reports `Rebuild` until something materializes it (M3). Editing `front/src/**` changes only the `front` digest, and editing `api/migrations/**` changes only `migrate` and its descendants.
-
-## 4. Boot a World Through `slipforkd`
-
-`slipfork up` boots the canonical world for the current repository. The world is cloned from a CoW base snapshot, mounted over your checkout, attached to the daemon's `.localhost` ingress, and started as supervised `WorldProcess` components; the command prints exactly one origin URL.
+## 3. Boot the canonical world
 
 ```console
 $ slipfork up
 [resources] appdb: prefer_remote -> local (not_offered)
-[origin]    http://acme.localhost:41231
+[ready]     api (internal :8000 in world netns)
+[origin]    http://acme.localhost:41921
 
 $ slipfork list
-WORLD            STATE     ORIGIN                                 WORKTREE
-acme             running   http://acme.localhost:41231            /home/acme/acme
+WORLD            STATE     ORIGIN                                   WORKTREE
+acme             running   http://acme.localhost:41921              /home/acme/acme
 ```
 
-A fork is a second CoW world plus a `.worktrees/<fork>` checkout, created in one daemon call:
+The first `up` builds and caches the rootfs under `<state_dir>/cache/rootfs/<sha256>/app`, then starts one `crun` OCI container per declared resource (`postgres:<v>`, `redis:<v>`, SeaweedFS), all sharing the world's `127.0.0.1`, and your components as `$UID:$GID` processes on the read-only rootfs. Repeating `up` is an idempotent confirmation that prints the same single origin URL.
+
+- **Zero setup:** when `<runtime_dir>/daemon.sock` does not answer, `slipfork` starts `slipforkd --listen 127.0.0.1:0 --state-dir <state> --runtime-dir <runtime>` in the background (`<runtime_dir>/daemon.log`, `0600`); `HOME` must be set before any mutation.
+- **Host toolchain caches (optional):** `slipfork up --host-caches` mounts `~/.cargo`, `~/.rustup`, `~/.cache/uv`, `~/.local/share/uv`, and the pnpm store read-only — but only after the ELF/libc ABI probe passes, and never as a `slipfork.toml` key.
+
+## 4. Fork a second world
 
 ```console
 $ slipfork fork feat-billing
-[origin]    http://feat-billing.acme.localhost:41231
+[origin]    http://feat-billing.acme.localhost:41921
 
-$ slipfork exec --world feat-billing -- true
-$ slipfork down --world feat-billing      # stop services, keep .worktrees/feat-billing
-$ slipfork drop feat-billing              # destroy the world and the worktree
-$ slipfork prune --dry-run                # preview orphaned worlds; --yes reaps them
+$ slipfork exec --world feat-billing -- id
+$ slipfork down --world feat-billing   # stop services, keep .worktrees/feat-billing
+$ slipfork drop feat-billing           # destroy the world, worktree, branch, and snapshot ref
+$ slipfork prune --dry-run             # preview orphaned worlds; --yes reaps them
 ```
 
-- **Zero setup:** when `<runtime_dir>/daemon.sock` does not answer, `slipfork` starts `slipforkd --listen 127.0.0.1:0 --state-dir <state> --runtime-dir <runtime>` in the background and records its diagnostics in `<runtime_dir>/daemon.log` (`0600`). Set `--state-dir`/`--runtime-dir` (or `$XDG_CACHE_HOME`/`$XDG_RUNTIME_DIR`) to relocate them; `HOME` must be set before any mutation.
-- **One URL per world:** `list` prints one `WorldOrigin` per line (`http://<host>` on `:80`, otherwise `http://<host>:<port>`). `--json` emits the same rows as objects.
-- **Sharing fails closed:** `slipfork share` requires a bound forward listener and the `weaved` tunnel adapter; both are absent today, so it exits non-zero and tells you to use the world's `.localhost` origin. `slipfork share --stop` is an idempotent no-op.
-- **Secrets never echo:** pipe values on stdin (`printf '%s' "$VALUE" | slipfork secret set STRIPE_SECRET_KEY`), rotate with `--force`, list key names only, and remove with `slipfork secret unset STRIPE_SECRET_KEY`. The local vault is `0600` at `~/.local/share/slipfork/vaults/<project>.json`.
-- **Explicit systemd units (optional):** `slipfork daemon unit --only socket` and `--only service` render non-template units to stdout with `User=<your-account>` and the explicit `--state-dir`/`--runtime-dir`; the CLI writes no files. Without them, auto-spawn is enough for laptops, CI, and agents.
-- **Current component runtime:** `0.2.0` starts `WorldProcess` components from the host toolchain. The Dockerfile-derived read-only `L0` rootfs and `crun` backing-service containers land in the remainder of M2; the world lifecycle, single origin, and CoW state described here are already shipped.
+A fork is a Git worktree (`.worktrees/<fork>` + `refs/slipfork/<fork>/wip`) plus its own CoW world, created in one daemon call. `slipfork exec -- <cmd>` runs non-interactively in the world with the daemon-resolved environment; `slipfork shell` enters it interactively (TTY required).
 
----
+## 5. Work inside the running world
 
-## Where to Go Next
+All of these resolve the world from `cwd` or `--world`, and need the world running:
 
-- [`snow.yml` modes & secrets](snow-modes.md) — mode merge rules, `disabled: true`, and the single `WorldOrigin` coordinate model.
-- [Manifest reference](reference/manifest.md) — the two manifest schemas, their namespaces, and their validation rules.
-- [CLI reference](reference/cli.md) — flags, JSON output, daemon-served lifecycle, secrets, and systemd units.
+```console
+$ slipfork db appdb                          # psql inside the postgres:<v> container (TTY)
+$ slipfork redis cache                       # redis-cli inside the redis:<v> container (TTY)
+$ slipfork logs api                          # retained component/hook output; --follow streams
+$ slipfork hook run api:pre-deploy --no-tty  # re-run one hook; omit --no-tty for a native TTY
+$ slipfork forward pg_databases.appdb        # 127.0.0.1:<ephemeral> bridged into the world
+```
+
+`db`/`redis` fail closed with `ServiceNotRunning` when that container is stopped; non-interactive agents can run `slipfork forward pg_databases.appdb` and connect with host `psql` instead. `forward` prints its bind and holds until Ctrl-C:
+
+```console
+$ slipfork forward pg_databases.appdb
+[forward] pg_databases.appdb       postgres://127.0.0.1:33803/appdb (127.0.0.1:33803)
+```
+
+## 6. Optional: a systemd daemon
+
+```console
+$ slipfork daemon unit --only socket | sudo tee /etc/systemd/system/slipforkd.socket
+$ slipfork daemon unit --only service | sudo tee /etc/systemd/system/slipforkd.service
+$ sudo systemctl daemon-reload && sudo systemctl enable --now slipforkd.socket
+```
+
+The units are rendered to stdout with zero filesystem writes, resolve your account as `User=`, and bind `127.0.0.1:80`, `[::1]:80`, and `127.0.0.1:7080`. This optional setup is the one place that needs `sudo` (to install the units and bind port 80); the default auto-spawn path needs none. Without them, auto-spawn is enough for laptops, CI, and agents. Sharing (`slipfork share`) still fails closed until the `weaved` tunnel adapter lands; use each world's `.localhost` origin.
+
+
+## Where to go next
+
+- [`snow.yml` modes & secrets](snow-modes.md) — mode merge rules, `disabled: true`, and the single-origin coordinate model.
+- [Orthogonal DAG planner](testing-dag.md) — configure `slipfork.toml` and read Merkle rebuild waves.
+- [Manifest reference](reference/manifest.md) — both schemas, `[world]` selection, and validation rules.
+- [OpenCode V2 plugin](agents-and-opencode.md) — automatic worktree worlds for coding agents.

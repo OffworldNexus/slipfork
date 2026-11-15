@@ -1,4 +1,4 @@
-# Orthogonal Artifact & Fixture DAG Planner (`0.1.0`)
+# Orthogonal Artifact & Fixture DAG Planner (`0.2.0`)
 
 `crates/slipfork-dag` and `slipfork dag plan` separate **stateless build artifacts** (`[artifacts.<id>]`) from **stateful fixture snapshot lineages** (`[fixtures.<id>]`) so frontend asset edits never invalidate database snapshots and schema/seed edits never trigger frontend rebuilds.
 
@@ -53,7 +53,7 @@ wave 0 fixture migrate      Rebuild (48ab77c109e2)
 wave 1 fixture seed_catalog Rebuild (c019fe8823a1)
 ```
 
-`FsDigestCache` checks `<state_dir>/artifacts/<digest>` and `<state_dir>/fixtures/<digest>` (`~/.cache/slipfork` by default, override via `--state-dir`).
+`FsDigestCache` checks `<state_dir>/artifacts/<digest>` and `<state_dir>/fixtures/<digest>` (`~/.cache/slipfork` by default, override via `--state-dir`). Because nothing materializes those digests yet, every node reports `Rebuild`; `Cached` is only reachable once M3 writes them.
 
 !!! note "Upcoming in M3 (`0.3.0`)"
-    In `0.1.0`, `slipfork dag plan` computes and verifies the content-addressed plan (used in `poc/run_benchmark.py`); automated DAG materialization and polyglot `RunnerProtocol` test execution (`slipfork test`) land in Milestone 3 (`ADR-0006`).
+    `slipfork dag plan` computes and verifies the content-addressed plan (used in `poc/run_benchmark.py`); automated DAG materialization and polyglot `RunnerProtocol` test execution (`slipfork test`) land in Milestone 3 (`ADR-0006`).

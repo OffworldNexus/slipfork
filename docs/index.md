@@ -1,30 +1,39 @@
 # Slipfork (`0.2.0`)
 
-**Copy-on-write worlds, one `snow.yml` manifest, and orthogonal build/fixture planning — on Linux, with zero `sudo` and zero `root:root` files.**
+**Copy-on-write worlds, one `snow.yml` manifest, and orthogonal build/fixture planning — on Linux, with zero `root:root` files and zero `sudo` on the default path.**
+
+In a repository with a `snow.yml` from [getting started](getting-started.md):
 
 ```console
 $ slipfork doctor                                    # probe CoW reflink, Incus socket, and unprivileged netns
 $ slipfork snow resolve --file snow.yml --mode local  # validate modes, persist !! secrets (0600)
 $ slipfork dag plan --file slipfork.toml --repo .     # hash artifacts independently from fixture waves
-$ slipfork up                                        # boot the canonical world through zero-setup slipforkd
+$ slipfork up                                        # build the world rootfs from your Dockerfile, boot it
+$ slipfork fork feat-billing                         # second CoW world + .worktrees/feat-billing
 $ slipfork list                                      # one origin URL per world
 ```
 
-!!! info "World lifecycle is daemon-served"
-    `slipfork up`, `down`, `fork`, `drop`, `list`, `prune`, `share`, `secret`, `exec`, and `daemon unit` drive the unprivileged `slipforkd` daemon over a `0600` `<runtime_dir>/daemon.sock`; the CLI auto-spawns it with `--listen 127.0.0.1:0` when the socket is absent, so no systemd setup is required. `doctor`, `snow resolve`, and `dag plan` remain local diagnostics. Interactive `logs`, `shell`, `db`, `redis`, `forward`, `hook run`, `auth login`, `support`, and `git-remote-slipfork` land in the remainder of `0.2.0`.
+!!! info "One daemon, many thin clients"
+    `slipfork` auto-spawns the unprivileged `slipforkd` daemon when `<runtime_dir>/daemon.sock` does not answer, so no systemd setup is required. `doctor` and `dag plan` are local diagnostics; `snow resolve` and every world command run through the daemon.
 
 ---
 
-## What Runs Today
+## What runs today
 
 | Surface | Shipped behaviour |
 |---|---|
-| **`snow.yml` resolver** (`slipfork snow resolve`) | `modes.all` + `modes.<mode>` inheritance, mode-scoped component add/override/`disabled: true`, `??` fallbacks, write-once `!!` CSPRNG secrets in a `0600` vault, and one exhaustive missing-value report |
-| **Orthogonal DAG planner** (`slipfork dag plan`) | SHA-256 Merkle digests per `[artifacts.<id>]` and topological `[fixtures.<id>]` waves; frontend edits never invalidate database snapshots and migration edits never trigger frontend rebuilds |
-| **Daemon-served world lifecycle** (`slipfork up` / `fork` / `down` / `drop` / `list` / `prune` / `share` / `secret` / `exec`, `slipforkd`) | CoW worlds cloned with `ioctl(FICLONE)`, exactly one `WorldOrigin` URL per world, an in-netns `127.0.0.1` loopback bridge to the daemon ingress, `0600` Unix sockets, and zero-setup daemon auto-spawn |
-| **OpenCode V2 plugin** (`@slipfork/opencode`) | Worktree → world binding, `cwd`-based shell routing, and session hints — the gateway is updated to the daemon-served CLI in `M2.18` |
+| **World rootfs** (`slipfork up`) | Read-only `L0` rootfs built from your `snow.yml` `BuildImage` `Dockerfile`, content-addressed under `<state_dir>/cache/rootfs/<sha256>/app`, running as `$UID:$GID` |
+| **Backing services** | `postgres:<v>`, `redis:<v>`, and SeaweedFS run as daemonless `crun` OCI containers sharing the world's `127.0.0.1`; `slipfork db`/`redis` open their clients |
+| **World lifecycle** (`up`/`down`/`fork`/`drop`/`list`/`prune`) | CoW worlds cloned with `ioctl(FICLONE)`, one `WorldOrigin` URL per world, `--json` output, zero-setup daemon; `share` fails closed until tunnel sharing lands |
+| **Inside a world** (`exec`/`shell`/`logs`/`hook run`/`forward`) | Daemon-resolved environment, native terminal stdio, retained component/hook logs, daemon-owned forward listeners |
+| **`snow.yml` resolver** (`snow resolve`) | `modes.all` + `modes.<mode>`, mode-scoped components, `??` fallbacks, write-once `!!` CSPRNG secrets in a `0600` vault |
+| **DAG planner** (`dag plan`) | SHA-256 Merkle digests per `[artifacts.<id>]` and topological `[fixtures.<id>]` waves |
+| **OpenCode V2 plugin** (`@slipfork/opencode`) | Worktree → world binding, `cwd`-based shell routing through `slipfork exec`, session context hints |
+| **`git-remote-slipfork`** | `git fetch` a running fork's branch and `refs/slipfork/<fork>/wip` over `slipfork://<fork>` |
 
-## Measured M1 Benchmark
+Every claim above is graded in the [integration support matrix](support-matrix.md).
+
+## Measured M1 benchmark
 
 Recorded in `docs/research/m1-poc-benchmark.md` (PostgreSQL 18.7, XFS `FICLONE`, isolated `netns`, headless Chromium Playwright):
 
@@ -36,20 +45,17 @@ Recorded in `docs/research/m1-poc-benchmark.md` (PostgreSQL 18.7, XFS `FICLONE`,
 | Sequential `TRUNCATE` + re-seed baseline | `6.07 s` (`380 ms`/test) |
 | Pre-warmed CoW worlds (`-j 8`, `0 ms` SQL teardown) | **1.89 s** (`118 ms`/test, **3.21x** faster) |
 
----
+## Next steps
 
-## Next Steps
+- **[Getting started](getting-started.md)** — install, probe, boot, fork, and work inside a world.
+- **[`snow.yml` modes & secrets](snow-modes.md)** — mode resolution, `!!` generators, coordinates.
+- **[Orthogonal DAG planner](testing-dag.md)** — configure `slipfork.toml` and read rebuild waves.
+- **[OpenCode V2 plugin](agents-and-opencode.md)** — automatic worktree worlds for agents.
+- **[CLI](reference/cli.md)** & **[manifest reference](reference/manifest.md)** — commands, flags, schemas.
+- **[Support matrix](support-matrix.md)** — tiers, evidence, and what each integration guarantees.
 
-- **[Getting started](getting-started.md)** — build `slipfork`, probe the host, resolve `snow.yml`, plan the DAG, and boot a world through the zero-setup daemon.
-- **[`snow.yml` modes & secrets](snow-modes.md)** — mode resolution rules, `!!` generators, and the single-`WorldOrigin` coordinate model.
-- **[Orthogonal DAG planner](testing-dag.md)** — configure `slipfork.toml` and read Merkle rebuild waves.
-- **[OpenCode V2 plugin](agents-and-opencode.md)** — worktree worlds, `cwd` routing, and when to enable it.
-- **[CLI](reference/cli.md)** & **[Manifest reference](reference/manifest.md)** — the commands, flags, and manifest schemas shipped today.
+## Roadmap corner (not yet shipped)
 
----
-
-## Roadmap Corner (Not Yet Shipped)
-
-- **M2 (`0.2.0`):** daemon-served world lifecycle (shipped) plus the remaining CLI part 2 (`logs`, `shell`, `db`, `redis`, `forward`, `hook run`, `auth login`, `support`, `git-remote-slipfork`), `OSPP v1` WebSocket secrets and `[resources]` strategies (`ADR-0008`), Jujutsu workspaces, and the live `IncusEngine`.
-- **M3 (`0.3.0`):** polyglot parallel test orchestrator (`RunnerProtocol v1`, pre-warmed world pools, typed coverage, surviving `SLIPFORK_OUTPUT_DIR`).
+- **M2 (`0.2.0`, remainder):** tunnel sharing (`weaved` registrar, `H-006`), live `IncusEngine` (`H-004`), `OSPP v1` remote secret bundles, Jujutsu workspaces, and rootfs/OCI cache garbage collection in `prune`.
+- **M3 (`0.3.0`):** polyglot parallel test orchestrator (`RunnerProtocol v1`, pre-warmed world pools, typed coverage, `SLIPFORK_OUTPUT_DIR`).
 - **M4 (`0.4.0`):** remote content-addressed snapshot/artifact cache export and turnkey agent skills.
