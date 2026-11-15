@@ -182,3 +182,6 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-15T17:40 [M2.1] (lead) committed 242f16f: ADR-0008 + ADR-0001/0003/0004/0005/0007 + ARCHITECTURE + target-DX; blocked on H-010
 - 2026-11-15T17:40 [M2.1] (lead) status active -> blocked: docs committed dfe24e0+; blocked on H-010 direction-challenge (cross-process WorldEngine/WorldHandle ownership, WorldOrigin port vs un
 - 2026-11-15T17:43 AUTOPILOT off by conductor awaiting owner ruling on H-010 (M2.1 cross-node DI & wire check)
+- 2026-11-15T18:25 HUMAN H-010 closed by conductor
+- 2026-11-15T18:25 [M2.1] (conductor) status blocked -> ready: H-010 answered by owner (unified user slipforkd + direct CLI TTY, A2 port-aware origin + netns bridge, OffworldNexus/tpmd git dep rev 9
+- 2026-11-15T18:25 AUTOPILOT on by conductor H-010 resolved; resuming M2 execution

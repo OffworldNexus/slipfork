@@ -27,3 +27,7 @@ committed 242f16f: ADR-0008 + ADR-0001/0003/0004/0005/0007 + ARCHITECTURE + targ
 ## 2026-11-15T17:40 [lead]
 
 status active -> blocked: docs committed dfe24e0+; blocked on H-010 direction-challenge (cross-process WorldEngine/WorldHandle ownership, WorldOrigin port vs unprivileged --listen, tpmd u32be+postcard framing). Resume on answer: fold A1/A2/A3 into ADR-0008/ARCHITECTURE/target-DX, apply FOLLOWUPS.md, amend M2.2/M2.6/M2.8/M2.9/M2.13 NODE.md, then done.
+
+## 2026-11-15T18:25 [conductor]
+
+status blocked -> ready: H-010 answered by owner (unified user slipforkd + direct CLI TTY, A2 port-aware origin + netns bridge, OffworldNexus/tpmd git dep rev 90cb2db)
