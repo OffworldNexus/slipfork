@@ -1,0 +1,32 @@
+{
+  "schema": 1,
+  "source_report": "docs/research/m1-poc-benchmark.md",
+  "source_report_sha256": "cd28597a89851f4edd4992b2107cbbd56b63af0d90bd97d633b03ad0c52a0cb2",
+  "measured": "2026-11-15",
+  "topology": "m1-host-shared-usr",
+  "note": "Parsed, provenance-pinned projection of the committed M1 report. Only metrics whose measurement semantics did not change across the ADR-0009 pivot are pinned; new row metrics are informational until `make bench-update` re-pins them.",
+  "metrics": {
+    "reflink_64k_us": {
+      "value": 397,
+      "max_factor": 4.0
+    },
+    "pgdata_logical_mib": {
+      "value": 41.5,
+      "max_factor": 1.15,
+      "min_factor": 1.15
+    },
+    "pgdata_files": {
+      "value": 1000,
+      "max_factor": 1.5,
+      "min_factor": 1.5
+    },
+    "dag_warm_plan_ms": {
+      "value": 10.89,
+      "max_factor": 4.0
+    },
+    "dag_front_only_plan_ms": {
+      "value": 10.7,
+      "max_factor": 4.0
+    }
+  }
+}
