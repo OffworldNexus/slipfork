@@ -23,19 +23,20 @@ use std::time::{Duration, Instant};
 use clap::Parser;
 use serde_json::json;
 use slipfork::cli::{
-    Cli, Commands, DaemonAction, DagAction, DumpArgs, ResourceArgs, SecretAction, SnowAction,
-    UnitKind,
+    AuthAction, Cli, Commands, DaemonAction, DagAction, DumpArgs, HookAction, ResourceArgs,
+    SecretAction, SnowAction, UnitKind,
 };
 use slipfork::layout::{Layout, ensure_private_dir};
 use slipfork::project::{load_slipfork_config, repository_resolver};
 use slipfork::user::{AccountDatabaseIdentity, UserIdentity};
-use slipfork_dag::{DagPlanner, FsDigestCache, FsMerkleHasher};
+use slipfork_dag::{DagPlanner, EvidenceField, FsDigestCache, FsMerkleHasher, SupportRegistry};
 use slipfork_edge::{
     BootEvent, DaemonControl, DaemonControlClient, DropForkRequest, ExecTargetRequest, ForkRequest,
-    SnowResolveRequest, UnitSpec, UpRequest, WorldSelector, render_service_unit,
-    render_socket_unit,
+    ForwardRequest, ForwardSummary, HookRunRequest, LogsRequest, SnowResolveRequest, UnitSpec,
+    UpRequest, WorldSelector, render_service_unit, render_socket_unit,
 };
 use slipfork_engine::{current_uid_gid, probe_reflink_dir};
+use slipfork_snow::SnowFile;
 use slipfork_vcs::VcsError;
 
 /// Bound on waiting for a freshly spawned `slipforkd` to answer its control socket.
@@ -104,20 +105,45 @@ fn run(cli: Cli) -> Result<ExitCode, String> {
             world,
             dump,
             resources,
-        } => up(json, &layout, world, dump, resources),
+            host_caches,
+        } => up(json, &layout, world, dump, resources, host_caches),
         Commands::Down { world } => down(json, &layout, world),
         Commands::Fork {
             fork,
             base,
             dump,
             resources,
-        } => create_fork(json, &layout, fork, base, dump, resources),
+            host_caches,
+        } => create_fork(json, &layout, fork, base, dump, resources, host_caches),
         Commands::Drop { fork } => drop_fork(json, &layout, fork),
         Commands::List => list(json, &layout),
         Commands::Prune { dry_run, yes } => prune(json, &layout, dry_run, yes),
         Commands::Secret { action } => secret(json, &layout, action),
         Commands::Share { stop, world } => share(json, &layout, stop, world),
         Commands::Exec { world, cwd, argv } => exec(json, &layout, world, cwd, argv),
+        Commands::Shell { world } => shell(json, &layout, world),
+        Commands::Logs {
+            world,
+            target,
+            follow,
+            stderr,
+            lines,
+        } => logs(json, &layout, world, target, follow, stderr, lines),
+        Commands::Hook {
+            action:
+                HookAction::Run {
+                    hook,
+                    world,
+                    no_tty,
+                },
+        } => hook_run(json, &layout, hook, world, no_tty),
+        Commands::Db { db_id, world } => db(json, &layout, db_id, world),
+        Commands::Redis { cluster_id, world } => redis(json, &layout, cluster_id, world),
+        Commands::Forward { world, targets } => forward(json, &layout, world, targets),
+        Commands::Auth {
+            action: AuthAction::Login { url },
+        } => auth_login(json, &layout, url),
+        Commands::Support => support(json),
     }
 }
 
@@ -321,6 +347,7 @@ fn up(
     world: Option<String>,
     dump: DumpArgs,
     resources: ResourceArgs,
+    host_caches: bool,
 ) -> Result<ExitCode, String> {
     let client = connect_or_spawn(layout)?;
     let request = UpRequest {
@@ -328,12 +355,19 @@ fn up(
         world,
         dump: dump.request(),
         resources: resources.request(),
+        host_caches,
     };
-    let summary = client
-        .up(&request, &mut |event| print_event(json, event))
-        .map_err(|err| err.to_string())?;
-    print_world_up(json, &summary);
-    Ok(ExitCode::SUCCESS)
+    let mut failure = None;
+    match client.up(&request, &mut |event| {
+        note_hook_failure(&event, &mut failure);
+        print_event(json, event);
+    }) {
+        Ok(summary) => {
+            print_world_up(json, &summary);
+            Ok(ExitCode::SUCCESS)
+        }
+        Err(err) => fail_with_rescue(json, failure.as_ref(), err),
+    }
 }
 
 fn down(json: bool, layout: &Layout, world: Option<String>) -> Result<ExitCode, String> {
@@ -360,6 +394,7 @@ fn create_fork(
     base: Option<String>,
     dump: DumpArgs,
     resources: ResourceArgs,
+    host_caches: bool,
 ) -> Result<ExitCode, String> {
     let client = connect_or_spawn(layout)?;
     let request = ForkRequest {
@@ -368,12 +403,19 @@ fn create_fork(
         base,
         dump: dump.request(),
         resources: resources.request(),
+        host_caches,
     };
-    let summary = client
-        .fork(&request, &mut |event| print_event(json, event))
-        .map_err(|err| err.to_string())?;
-    print_world_up(json, &summary);
-    Ok(ExitCode::SUCCESS)
+    let mut failure = None;
+    match client.fork(&request, &mut |event| {
+        note_hook_failure(&event, &mut failure);
+        print_event(json, event);
+    }) {
+        Ok(summary) => {
+            print_world_up(json, &summary);
+            Ok(ExitCode::SUCCESS)
+        }
+        Err(err) => fail_with_rescue(json, failure.as_ref(), err),
+    }
 }
 
 fn drop_fork(json: bool, layout: &Layout, fork: String) -> Result<ExitCode, String> {
@@ -576,12 +618,33 @@ fn exec(
         .exec_target(&ExecTargetRequest {
             cwd,
             world,
+            service: None,
             argv: argv.clone(),
         })
         .map_err(|err| err.to_string())?;
+    let status = spawn_entry(&target)?;
+    if json {
+        println!(
+            "{}",
+            json!({ "ok": status.success(), "world": target.world, "exit_code": status.code() })
+        );
+    }
+    Ok(exit_code(&status))
+}
+
+/// Enter a world (or a backing-service container) with native terminal stdio.
+fn spawn_entry(
+    target: &slipfork_edge::WorldExecTarget,
+) -> Result<std::process::ExitStatus, String> {
+    // `crun exec` takes the command directly after the container id and does not strip a
+    // trailing `--` separator, so drop it before appending the interactive argv.
+    let mut args_prefix = target.entry.args_prefix.clone();
+    if args_prefix.last().map(String::as_str) == Some("--") {
+        args_prefix.pop();
+    }
     let mut command = Command::new(&target.entry.program);
     command
-        .args(&target.entry.args_prefix)
+        .args(&args_prefix)
         .args(&target.target_argv)
         .current_dir(&target.entry.cwd)
         .env_clear()
@@ -591,18 +654,487 @@ fn exec(
     for (name, value) in target.env.iter() {
         command.env(name, value.as_ref());
     }
-    let status = command
+    command
         .status()
-        .map_err(|err| format!("cannot enter world '{}': {err}", target.world))?;
+        .map_err(|err| format!("cannot enter world '{}': {err}", target.world))
+}
+
+fn exit_code(status: &std::process::ExitStatus) -> ExitCode {
+    ExitCode::from(u8::try_from(status.code().unwrap_or(1)).unwrap_or(1))
+}
+
+/// Fail closed when an interactive world entry has no terminal (`ADR-0008` §4).
+fn require_tty(command: &str, hint: &str) -> Result<(), String> {
+    if io::stdin().is_terminal() {
+        return Ok(());
+    }
+    Err(format!(
+        "`slipfork {command}` needs an interactive terminal; {hint}"
+    ))
+}
+
+fn shell(json: bool, layout: &Layout, world: Option<String>) -> Result<ExitCode, String> {
+    require_tty(
+        "shell",
+        "use `slipfork exec -- <cmd>` for non-interactive commands",
+    )?;
+    let shell = std::env::var("SHELL")
+        .ok()
+        .filter(|shell| !shell.trim().is_empty())
+        .ok_or_else(|| {
+            "SHELL is not set; `slipfork shell` enters the world with the developer's shell — set SHELL (for example /bin/sh) and retry".to_owned()
+        })?;
+    let client = connect_or_spawn(layout)?;
+    let target = client
+        .exec_target(&ExecTargetRequest {
+            cwd: current_dir()?,
+            world,
+            service: None,
+            argv: vec![shell],
+        })
+        .map_err(|err| err.to_string())?;
+    let status = spawn_entry(&target)?;
     if json {
         println!(
             "{}",
             json!({ "ok": status.success(), "world": target.world, "exit_code": status.code() })
         );
     }
-    Ok(ExitCode::from(
-        u8::try_from(status.code().unwrap_or(1)).unwrap_or(1),
-    ))
+    Ok(exit_code(&status))
+}
+
+fn logs(
+    json: bool,
+    layout: &Layout,
+    world: Option<String>,
+    target: Option<String>,
+    follow: bool,
+    stderr: bool,
+    lines: Option<usize>,
+) -> Result<ExitCode, String> {
+    let client = connect_or_spawn(layout)?;
+    let request = LogsRequest {
+        cwd: current_dir()?,
+        world,
+        target,
+        follow,
+        stderr,
+        lines,
+    };
+    let mut stdout = io::stdout();
+    let mut stderr_stream = io::stderr();
+    client
+        .logs(&request, &mut |chunk| {
+            if json {
+                let stream = match chunk.source {
+                    slipfork_engine::StreamSource::Stdout => "stdout",
+                    slipfork_engine::StreamSource::Stderr => "stderr",
+                };
+                println!(
+                    "{}",
+                    json!({ "stream": stream, "text": String::from_utf8_lossy(&chunk.bytes) })
+                );
+                return;
+            }
+            let stream: &mut dyn Write = match chunk.source {
+                slipfork_engine::StreamSource::Stdout => &mut stdout,
+                slipfork_engine::StreamSource::Stderr => &mut stderr_stream,
+            };
+            let _ = stream.write_all(&chunk.bytes);
+            let _ = stream.flush();
+        })
+        .map_err(|err| err.to_string())?;
+    Ok(ExitCode::SUCCESS)
+}
+
+fn hook_run(
+    json: bool,
+    layout: &Layout,
+    hook: String,
+    world: Option<String>,
+    no_tty: bool,
+) -> Result<ExitCode, String> {
+    let client = connect_or_spawn(layout)?;
+    let request = HookRunRequest {
+        cwd: current_dir()?,
+        world,
+        hook,
+    };
+    if no_tty {
+        let mut stdout = io::stdout();
+        let mut stderr_stream = io::stderr();
+        let code = client
+            .hook_run(&request, &mut |chunk| {
+                if json {
+                    return;
+                }
+                let stream: &mut dyn Write = match chunk.source {
+                    slipfork_engine::StreamSource::Stdout => &mut stdout,
+                    slipfork_engine::StreamSource::Stderr => &mut stderr_stream,
+                };
+                let _ = stream.write_all(&chunk.bytes);
+                let _ = stream.flush();
+            })
+            .map_err(|err| err.to_string())?;
+        if json {
+            println!("{}", json!({ "ok": code == 0, "exit_code": code }));
+        }
+        return Ok(ExitCode::from(u8::try_from(code).unwrap_or(1)));
+    }
+
+    require_tty(
+        &format!("hook run {}", request.hook),
+        "pass --no-tty (or use `slipfork exec`) in non-interactive shells",
+    )?;
+    let target = client
+        .hook_exec_target(&request)
+        .map_err(|err| err.to_string())?;
+    let status = spawn_entry(&target)?;
+    if json {
+        println!(
+            "{}",
+            json!({ "ok": status.success(), "world": target.world, "exit_code": status.code() })
+        );
+    }
+    Ok(exit_code(&status))
+}
+
+fn db(
+    json: bool,
+    layout: &Layout,
+    db_id: Option<String>,
+    world: Option<String>,
+) -> Result<ExitCode, String> {
+    let cwd = current_dir()?;
+    let service = match db_id {
+        Some(id) => format!("pg_databases.{id}"),
+        None => default_resource_id(&cwd, world.as_deref(), ResourceKind::PgDatabase)?,
+    };
+    service_entry(json, layout, cwd, world, service, vec!["psql".to_owned()])
+}
+
+fn redis(
+    json: bool,
+    layout: &Layout,
+    cluster_id: Option<String>,
+    world: Option<String>,
+) -> Result<ExitCode, String> {
+    let cwd = current_dir()?;
+    let service = match cluster_id {
+        Some(id) => format!("redis_clusters.{id}"),
+        None => default_resource_id(&cwd, world.as_deref(), ResourceKind::RedisCluster)?,
+    };
+    service_entry(
+        json,
+        layout,
+        cwd,
+        world,
+        service,
+        vec!["redis-cli".to_owned()],
+    )
+}
+
+fn service_entry(
+    json: bool,
+    layout: &Layout,
+    cwd: PathBuf,
+    world: Option<String>,
+    service: String,
+    argv: Vec<String>,
+) -> Result<ExitCode, String> {
+    let client = connect_or_spawn(layout)?;
+    // Ask the daemon first: a stopped service must surface `ServiceNotRunning` even when the
+    // caller has no TTY (the service refusal is the primary diagnostic).
+    let target = client
+        .exec_target(&ExecTargetRequest {
+            cwd,
+            world,
+            service: Some(service.clone()),
+            argv,
+        })
+        .map_err(|err| err.to_string())?;
+    require_tty(
+        &format!("{service} client"),
+        "`slipfork db` / `slipfork redis` need an interactive terminal",
+    )?;
+    let status = spawn_entry(&target)?;
+    if json {
+        println!(
+            "{}",
+            json!({
+                "ok": status.success(),
+                "world": target.world,
+                "service": service,
+                "exit_code": status.code(),
+            })
+        );
+    }
+    Ok(exit_code(&status))
+}
+
+/// The resource kinds `slipfork db` / `slipfork redis` infer when no id is passed.
+enum ResourceKind {
+    PgDatabase,
+    RedisCluster,
+}
+
+/// Infer the single declared resource id so `--world` alone remains sufficient on one-service worlds.
+fn default_resource_id(
+    cwd: &Path,
+    world: Option<&str>,
+    kind: ResourceKind,
+) -> Result<String, String> {
+    let repo = repository_resolver()
+        .resolve(cwd)
+        .map_err(|err| err.to_string())?;
+    let worktree = match world {
+        Some(fork) => repo
+            .vcs_root
+            .join(slipfork_vcs::WORKTREES_DIRECTORY)
+            .join(fork),
+        None => repo.worktree_root.clone(),
+    };
+    let path = worktree.join("snow.yml");
+    let raw = fs::read_to_string(&path)
+        .map_err(|err| format!("cannot read {}: {err}", path.display()))?;
+    let snow = SnowFile::parse_yaml(&raw).map_err(|err| format!("{}: {err}", path.display()))?;
+    let (prefix, ids) = match kind {
+        ResourceKind::PgDatabase => (
+            "pg_databases",
+            snow.resources
+                .pg_databases
+                .iter()
+                .map(|db| db.id.clone())
+                .collect::<Vec<_>>(),
+        ),
+        ResourceKind::RedisCluster => (
+            "redis_clusters",
+            snow.resources
+                .redis_clusters
+                .iter()
+                .map(|cluster| cluster.id.clone())
+                .collect::<Vec<_>>(),
+        ),
+    };
+    match ids.as_slice() {
+        [id] => Ok(format!("{prefix}.{id}")),
+        [] => Err(format!(
+            "snow.yml declares no {prefix} entry; add one before using this client"
+        )),
+        _ => Err(format!(
+            "snow.yml declares several {prefix} entries ({}); pass the id explicitly",
+            ids.join(", ")
+        )),
+    }
+}
+
+fn forward(
+    json: bool,
+    layout: &Layout,
+    world: Option<String>,
+    targets: Vec<String>,
+) -> Result<ExitCode, String> {
+    let client = connect_or_spawn(layout)?;
+    let request = ForwardRequest {
+        cwd: current_dir()?,
+        world,
+        targets,
+    };
+    client
+        .forward(&request, &mut |summary: ForwardSummary| {
+            print_forward(json, &summary);
+            // The open control connection *is* the bridge lifetime (`ADR-0008` §4): hold it until
+            // the process is interrupted, at which point the socket closes and `slipforkd` drops
+            // every host listener.
+            loop {
+                std::thread::park();
+            }
+        })
+        .map_err(|err| err.to_string())?;
+    Ok(ExitCode::SUCCESS)
+}
+
+fn print_forward(json: bool, summary: &ForwardSummary) {
+    if json {
+        println!(
+            "{}",
+            json!({
+                "world": &summary.world,
+                "targets": summary.targets.iter().map(|target| json!({
+                    "id": &target.id,
+                    "host_addr": &target.host_addr,
+                    "uri": &target.uri,
+                })).collect::<Vec<_>>(),
+            })
+        );
+    } else {
+        for target in &summary.targets {
+            println!(
+                "[forward] {:<24} {} ({})",
+                target.id, target.uri, target.host_addr
+            );
+        }
+    }
+    let _ = io::stdout().flush();
+}
+
+fn auth_login(json: bool, layout: &Layout, url: Option<String>) -> Result<ExitCode, String> {
+    let pairing_url = match url.as_deref() {
+        Some("-") => {
+            let mut buffer = String::new();
+            io::stdin()
+                .read_to_string(&mut buffer)
+                .map_err(|err| format!("cannot read the pairing URL from stdin: {err}"))?;
+            buffer.trim_end_matches(['\n', '\r']).to_owned()
+        }
+        Some(url) => url.to_owned(),
+        None => {
+            return Err(
+                "pass the pairing URL (`slipfork auth login '<url>#handle=<64 hex>'`) or read it from stdin with `slipfork auth login -`"
+                    .to_owned(),
+            );
+        }
+    };
+    let client = connect_or_spawn(layout)?;
+    let auth = client
+        .auth_login(&pairing_url)
+        .map_err(|err| err.to_string())?;
+    if json {
+        println!(
+            "{}",
+            json!({
+                "ok": true,
+                "key_id": auth.key_id,
+                "backend": auth.backend,
+                "account": auth.account,
+            })
+        );
+    } else {
+        println!(
+            "[auth] paired {} (backend={}){}",
+            auth.key_id,
+            auth.backend,
+            auth.account
+                .as_ref()
+                .map(|account| format!(" account={account}"))
+                .unwrap_or_default()
+        );
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn support(json: bool) -> Result<ExitCode, String> {
+    let registry = SupportRegistry::embedded().map_err(|err| err.to_string())?;
+    if json {
+        let rows: Vec<serde_json::Value> = registry
+            .entries()
+            .iter()
+            .map(|entry| {
+                let required: Vec<&str> = entry
+                    .tier()
+                    .required_evidence()
+                    .iter()
+                    .map(|field| field.as_str())
+                    .collect();
+                json!({
+                    "id": entry.id(),
+                    "category": category_label(entry.category()),
+                    "tier": entry.tier().to_string(),
+                    "evidence": evidence_json(entry.evidence()),
+                    "required_evidence": required,
+                })
+            })
+            .collect();
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&rows).unwrap_or_default()
+        );
+    } else {
+        println!(
+            "{:<28} {:<14} {:<12} EVIDENCE",
+            "INTEGRATION", "CATEGORY", "TIER"
+        );
+        for entry in registry.entries() {
+            let evidence = EvidenceField::ALL
+                .iter()
+                .filter(|field| entry.evidence().is_present(**field))
+                .map(|field| field.as_str())
+                .collect::<Vec<_>>()
+                .join(",");
+            println!(
+                "{:<28} {:<14} {:<12} {}",
+                entry.id(),
+                category_label(entry.category()),
+                entry.tier(),
+                evidence
+            );
+        }
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn category_label(category: slipfork_dag::IntegrationCategory) -> String {
+    serde_json::to_value(category)
+        .ok()
+        .and_then(|value| value.as_str().map(str::to_owned))
+        .unwrap_or_default()
+}
+
+fn evidence_json(evidence: &slipfork_dag::Evidence) -> serde_json::Value {
+    let mut map = serde_json::Map::new();
+    for field in EvidenceField::ALL {
+        if let Some(value) = evidence.field(*field)
+            && !value.trim().is_empty()
+        {
+            map.insert(field.as_str().to_owned(), json!(value));
+        }
+    }
+    serde_json::Value::Object(map)
+}
+
+/// Remember the last hook failure so a failed `up` / `fork` can print the rescue block.
+fn note_hook_failure(event: &BootEvent, failure: &mut Option<BootEvent>) {
+    if matches!(event, BootEvent::HookFailed { .. }) {
+        *failure = Some(event.clone());
+    }
+}
+
+/// Print the full hook failure and its one-line rescue commands, then exit non-zero.
+fn fail_with_rescue(
+    json: bool,
+    failure: Option<&BootEvent>,
+    error: slipfork_edge::EdgeError,
+) -> Result<ExitCode, String> {
+    let Some(BootEvent::HookFailed {
+        id,
+        argv,
+        exit_code,
+        world,
+        log_path,
+    }) = failure
+    else {
+        return Err(error.to_string());
+    };
+    if json {
+        return Err(error.to_string());
+    }
+    let world_selector = world
+        .split_once(':')
+        .map(|(_, fork)| format!(" --world {fork}"))
+        .unwrap_or_default();
+    eprintln!("error: hook '{id}' exited with code {exit_code} in world '{world}'");
+    eprintln!("  argv: {argv:?}");
+    eprintln!("  log:  {}", log_path.display());
+    eprintln!();
+    eprintln!("Rescue commands (world '{world}' kept alive for inspection):");
+    eprintln!(
+        "  slipfork hook run {id}{world_selector}          # add --no-tty in non-interactive shells"
+    );
+    eprintln!("  slipfork logs{world_selector} {id}");
+    eprintln!(
+        "  slipfork shell{world_selector}                            # or: slipfork exec{world_selector} -- <cmd>"
+    );
+    Ok(ExitCode::from(1))
 }
 
 /// Print one streamed boot event (never in `--json` mode, which writes only JSON).
@@ -633,6 +1165,9 @@ fn print_event(json: bool, event: BootEvent) {
             };
             let _ = stream.write_all(&chunk.bytes);
             let _ = stream.flush();
+        }
+        BootEvent::HookFailed { .. } => {
+            // `fail_with_rescue` renders the structured failure after the terminal daemon error.
         }
         BootEvent::Ready { component, port } => {
             println!("[ready]     {component} (internal :{port} in world netns)");

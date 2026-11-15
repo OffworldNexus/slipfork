@@ -9,23 +9,24 @@
 //! were not built by the current invocation, the test builds them once (the cargo build lock is
 //! free while a test binary runs).
 
-use std::fs::{self, OpenOptions};
+use std::fs;
 use std::io::Write;
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Output, Stdio};
+use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use serde_json::Value;
-use tempfile::TempDir;
+
+mod support;
+use support::{Daemon, assert_success, repo_with_manifest, stderr, stdout, wait_for_line};
 
 const SNOW_YML: &str = r#"
 images:
   - id: app
-    registry: docker.io
-    repository: library/alpine
-    tag: "3.20"
+    context: .
+    dockerfile: Dockerfile
 
 components:
   - id: api
@@ -49,202 +50,13 @@ modes:
 "#;
 
 /// Disk-backed scratch directory with a short path (AF_UNIX `sun_path` budget), never `/tmp`.
-fn disk_tempdir() -> TempDir {
-    let base = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .expect("HOME")
-        .join(".cache")
-        .join("slipfork-cli-tests");
-    fs::create_dir_all(&base).expect("create test cache base");
-    tempfile::Builder::new()
-        .prefix("c-")
-        .tempdir_in(base)
-        .expect("create disk tempdir")
-}
-
-fn run_git(cwd: &Path, args: &[&str]) {
-    let output = Command::new("git")
-        .args([
-            "-c",
-            "user.name=Slipfork Test",
-            "-c",
-            "user.email=test@localhost",
-            "-c",
-            "commit.gpgsign=false",
-        ])
-        .args(args)
-        .current_dir(cwd)
-        .output()
-        .expect("spawn git");
-    assert!(
-        output.status.success(),
-        "git {args:?} failed in {}: {}",
-        cwd.display(),
-        String::from_utf8_lossy(&output.stderr)
-    );
+fn disk_tempdir() -> tempfile::TempDir {
+    support::disk_tempdir("c-")
 }
 
 /// One git repository with the canonical `snow.yml` used by every test.
 fn repo_with_snow(scratch: &Path) -> PathBuf {
-    let repo = scratch.join("acme-app");
-    fs::create_dir_all(&repo).expect("create repo");
-    run_git(&repo, &["init", "-q"]);
-    fs::write(repo.join("snow.yml"), SNOW_YML).expect("write snow.yml");
-    fs::write(repo.join("slipfork.toml"), "project = \"acme-app\"\n").expect("write slipfork.toml");
-    run_git(&repo, &["add", "snow.yml", "slipfork.toml"]);
-    run_git(&repo, &["commit", "-q", "-m", "init"]);
-    repo
-}
-
-/// Locate (or build once) the engine's `slipfork-world-init` helper next to the test binaries.
-fn world_init_helper() -> PathBuf {
-    // `CARGO_BIN_EXE_slipforkd` is the canonical installed-daemon path for this test build;
-    // `current_exe()` may live in a build-script output directory, not `<target>/debug`.
-    let daemon = PathBuf::from(env!("CARGO_BIN_EXE_slipforkd"));
-    let helper = daemon
-        .parent()
-        .expect("daemon binary parent")
-        .join("slipfork-world-init");
-    if !helper.is_file() {
-        let status = Command::new(env!("CARGO"))
-            .args(["build", "-p", "slipfork-engine", "--bins"])
-            .status()
-            .expect("build slipfork-engine bins");
-        assert!(
-            status.success(),
-            "cargo build -p slipfork-engine --bins failed"
-        );
-    }
-    assert!(
-        helper.is_file(),
-        "expected the world-init helper at {}",
-        helper.display()
-    );
-    helper
-}
-
-/// A live `slipforkd` child plus the explicit roots it serves.
-struct Daemon {
-    child: Child,
-    state_dir: PathBuf,
-    runtime_dir: PathBuf,
-}
-
-impl Daemon {
-    fn start(scratch: &Path) -> Self {
-        let state_dir = scratch.join("state");
-        let runtime_dir = scratch.join("rt");
-        let log_path = scratch.join("daemon.log");
-        let log = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .mode(0o600)
-            .open(&log_path)
-            .expect("open daemon log");
-        let stderr = log.try_clone().expect("clone log");
-        let mut child = Command::new(env!("CARGO_BIN_EXE_slipforkd"))
-            .arg("--state-dir")
-            .arg(&state_dir)
-            .arg("--runtime-dir")
-            .arg(&runtime_dir)
-            .arg("--listen")
-            .arg("127.0.0.1:0")
-            .arg("--world-init")
-            .arg(world_init_helper())
-            .env("XDG_DATA_HOME", state_dir.join("xdg-data"))
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(stderr)
-            .spawn()
-            .expect("spawn slipforkd");
-        let socket = runtime_dir.join("daemon.sock");
-        let deadline = Instant::now() + Duration::from_secs(20);
-        while Instant::now() < deadline {
-            if UnixStream::connect(&socket).is_ok() {
-                return Self {
-                    child,
-                    state_dir,
-                    runtime_dir,
-                };
-            }
-            if let Ok(Some(status)) = child.try_wait() {
-                panic!(
-                    "slipforkd exited with {status} before serving {}:\n{}",
-                    socket.display(),
-                    fs::read_to_string(&log_path).unwrap_or_default()
-                );
-            }
-            std::thread::sleep(Duration::from_millis(25));
-        }
-        let _ = child.kill();
-        let _ = child.wait();
-        panic!(
-            "slipforkd did not serve {} within 20s:\n{}",
-            socket.display(),
-            fs::read_to_string(&log_path).unwrap_or_default()
-        );
-    }
-
-    fn cli(&self, cwd: &Path, args: &[&str]) -> Output {
-        Command::new(env!("CARGO_BIN_EXE_slipfork"))
-            .arg("--state-dir")
-            .arg(&self.state_dir)
-            .arg("--runtime-dir")
-            .arg(&self.runtime_dir)
-            .args(args)
-            .current_dir(cwd)
-            .env("XDG_DATA_HOME", self.state_dir.join("xdg-data"))
-            .output()
-            .expect("spawn slipfork")
-    }
-
-    fn cli_with_stdin(&self, cwd: &Path, args: &[&str], stdin: &str) -> Output {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_slipfork"))
-            .arg("--state-dir")
-            .arg(&self.state_dir)
-            .arg("--runtime-dir")
-            .arg(&self.runtime_dir)
-            .args(args)
-            .current_dir(cwd)
-            .env("XDG_DATA_HOME", self.state_dir.join("xdg-data"))
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .expect("spawn slipfork");
-        child
-            .stdin
-            .take()
-            .expect("stdin")
-            .write_all(stdin.as_bytes())
-            .expect("write stdin");
-        child.wait_with_output().expect("wait for slipfork")
-    }
-}
-
-impl Drop for Daemon {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
-}
-
-fn stderr(output: &Output) -> String {
-    String::from_utf8_lossy(&output.stderr).into_owned()
-}
-
-fn stdout(output: &Output) -> String {
-    String::from_utf8_lossy(&output.stdout).into_owned()
-}
-
-fn assert_success(output: &Output, what: &str) {
-    assert!(
-        output.status.success(),
-        "{what} failed with {}:\nstdout:\n{}\nstderr:\n{}",
-        output.status,
-        stdout(output),
-        stderr(output)
-    );
+    repo_with_manifest(scratch, "acme-app", SNOW_YML)
 }
 
 fn url_count(text: &str) -> usize {
@@ -629,5 +441,502 @@ fn zero_setup_auto_spawn_serves_up_without_a_prestarted_daemon() {
         UnixStream::connect(runtime_dir.join("daemon.sock")).is_err(),
         "the auto-spawned slipforkd must stop accepting on {} within 10s",
         runtime_dir.join("daemon.sock").display()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// M2.17: hook rescue UX, logs, shell, db/redis, forward, auth, support
+// ---------------------------------------------------------------------------
+
+const HOOK_SNOW: &str = r#"
+images:
+  - id: app
+    context: .
+    dockerfile: Dockerfile
+
+components:
+  - id: api
+    image: app
+    run_command: "exec sleep 300"
+
+ingresses:
+  - match:
+      prefix: "/"
+    target:
+      component: api
+      port: 8000
+
+hooks:
+  - component: api
+    when: pre-deploy
+    run_command: "echo HOOK-BOOM; echo HOOK-ERR >&2; exit 7"
+
+modes:
+  local:
+    envs:
+      app:
+        BASE_URL: '${{ resources::app.url }}'
+"#;
+
+const LOGS_SNOW: &str = r#"
+images:
+  - id: app
+    context: .
+    dockerfile: Dockerfile
+
+components:
+  - id: api
+    image: app
+    run_command: "while true; do echo tick-line; sleep 0.1; done"
+
+ingresses:
+  - match:
+      prefix: "/"
+    target:
+      component: api
+      port: 8000
+
+modes:
+  local:
+    envs:
+      app:
+        BASE_URL: '${{ resources::app.url }}'
+"#;
+
+const FORWARD_SNOW: &str = r#"
+images:
+  - id: app
+    context: .
+    dockerfile: Dockerfile
+
+components:
+  - id: api
+    image: app
+    internal_ports: [8000]
+    run_command: "exec python3 -m http.server 8000 --bind 127.0.0.1"
+
+  - id: idle
+    image: app
+    internal_ports: [8001]
+    # Accepts the readiness probe, then closes the listener: the forwarded target is dead by the
+    # time the test connects, without weakening the bridge-isolation assertion.
+    run_command: 'exec python3 -c "import socket,time; s=socket.socket(); s.bind((\"127.0.0.1\",8001)); s.listen(1); s.accept(); s.close(); time.sleep(300)"' 
+
+ingresses:
+  - match:
+      prefix: "/"
+    target:
+      component: api
+      port: 8000
+
+modes:
+  local:
+    envs:
+      app:
+        BASE_URL: '${{ resources::app.url }}'
+"#;
+
+const DB_SNOW: &str = r#"
+images:
+  - id: app
+    context: .
+    dockerfile: Dockerfile
+
+components:
+  - id: api
+    image: app
+    run_command: "exec sleep 300"
+
+ingresses:
+  - match:
+      prefix: "/"
+    target:
+      component: api
+      port: 8000
+
+resources:
+  pg_clusters:
+    - id: main
+      version: "18"
+  pg_databases:
+    - id: app
+      cluster: main
+  redis_clusters:
+    - id: cache
+      version: "8"
+
+modes:
+  local:
+    envs:
+      app:
+        BASE_URL: '${{ resources::app.url }}'
+"#;
+
+fn find_log_file(root: &Path, needle: &str) -> Option<PathBuf> {
+    let entries = fs::read_dir(root).ok()?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            if let Some(found) = find_log_file(&path, needle) {
+                return Some(found);
+            }
+        } else if path.extension().is_some_and(|ext| ext == "log")
+            && fs::read_to_string(&path)
+                .map(|body| body.contains(needle))
+                .unwrap_or(false)
+        {
+            return Some(path);
+        }
+    }
+    None
+}
+
+#[test]
+fn hook_failure_keeps_the_world_and_prints_the_full_diagnostic() {
+    let tmp = disk_tempdir();
+    let scratch = tmp.path();
+    let repo = repo_with_manifest(scratch, "acme-hook", HOOK_SNOW);
+    let daemon = Daemon::start(scratch);
+
+    let fork = daemon.cli(&repo, &["fork", "feat-bad"]);
+    assert!(!fork.status.success(), "a failing hook must fail `fork`");
+    let out = stdout(&fork);
+    let err = stderr(&fork);
+    assert!(
+        out.contains("HOOK-BOOM"),
+        "hook stdout must be streamed: {out}"
+    );
+    assert!(
+        err.contains("HOOK-ERR"),
+        "hook stderr must be streamed untruncated: {err}"
+    );
+    assert!(
+        err.contains("api:pre-deploy") && err.contains("exit") && err.contains("7"),
+        "the exact failing hook and exit code must be printed: {err}"
+    );
+    assert!(
+        err.contains("/logs/") && err.contains(".log"),
+        "the rescue block must point at a real log file: {err}"
+    );
+    assert!(
+        err.contains("Rescue commands") && err.contains("--world feat-bad"),
+        "the rescue block must name the kept fork: {err}"
+    );
+
+    let listed = daemon.cli(&repo, &["--json", "list"]);
+    assert_success(&listed, "list after a failed hook");
+    let worlds: Value = serde_json::from_str(&stdout(&listed)).expect("list json");
+    let failed = worlds
+        .as_array()
+        .expect("array")
+        .iter()
+        .find(|world| {
+            world["world"]
+                .as_str()
+                .is_some_and(|id| id.ends_with(":feat-bad"))
+        })
+        .expect("the failed fork must stay listed");
+    assert_eq!(failed["state"], "failed");
+
+    let log = find_log_file(&daemon.state_dir, "HOOK-BOOM")
+        .expect("the failed hook must retain a real log file with its output");
+    assert!(
+        fs::read_to_string(&log)
+            .expect("log body")
+            .contains("HOOK-ERR"),
+        "both streams must be retained in the log file"
+    );
+}
+
+#[test]
+fn rescue_commands_re_run_and_inspect_the_failed_world() {
+    let tmp = disk_tempdir();
+    let scratch = tmp.path();
+    let repo = repo_with_manifest(scratch, "acme-rescue", HOOK_SNOW);
+    let daemon = Daemon::start(scratch);
+
+    assert!(!daemon.cli(&repo, &["fork", "feat-bad"]).status.success());
+
+    let rerun = daemon.cli(
+        &repo,
+        &[
+            "hook",
+            "run",
+            "api:pre-deploy",
+            "--world",
+            "feat-bad",
+            "--no-tty",
+        ],
+    );
+    assert!(!rerun.status.success(), "the failing hook keeps failing");
+    assert!(
+        stdout(&rerun).contains("HOOK-BOOM"),
+        "hook run --no-tty must stream output: {}",
+        stdout(&rerun)
+    );
+
+    let hook_logs = daemon.cli(&repo, &["logs", "--world", "feat-bad", "api:pre-deploy"]);
+    assert_success(&hook_logs, "logs of a failed hook");
+    assert!(
+        stdout(&hook_logs).contains("HOOK-BOOM"),
+        "hook logs must be readable: {}",
+        stdout(&hook_logs)
+    );
+
+    let unknown = daemon.cli(&repo, &["logs", "--world", "feat-bad", "nope"]);
+    assert!(!unknown.status.success(), "an unknown log target must fail");
+    assert!(
+        stderr(&unknown).contains("known targets"),
+        "the diagnostic must list valid targets: {}",
+        stderr(&unknown)
+    );
+
+    let shell = daemon.cli(&repo, &["shell", "--world", "feat-bad"]);
+    assert!(
+        !shell.status.success(),
+        "shell without a TTY must fail closed"
+    );
+    assert!(
+        stderr(&shell).contains("interactive terminal"),
+        "the diagnostic must name the TTY requirement: {}",
+        stderr(&shell)
+    );
+
+    let interactive = daemon.cli(
+        &repo,
+        &["hook", "run", "api:pre-deploy", "--world", "feat-bad"],
+    );
+    assert!(
+        !interactive.status.success(),
+        "interactive hook run without a TTY must fail closed"
+    );
+    assert!(
+        stderr(&interactive).contains("--no-tty"),
+        "the failure must name `hook run --no-tty`: {}",
+        stderr(&interactive)
+    );
+}
+
+#[test]
+fn logs_follow_streams_new_component_output() {
+    let tmp = disk_tempdir();
+    let scratch = tmp.path();
+    let repo = repo_with_manifest(scratch, "acme-logs", LOGS_SNOW);
+    let daemon = Daemon::start(scratch);
+    assert_success(&daemon.cli(&repo, &["up"]), "up for logs");
+
+    let mut followed = daemon.cli_spawn(&repo, &["logs", "api", "--follow"]);
+    let line = wait_for_line(&mut followed, |line| line.contains("tick-line"));
+    assert!(line.contains("tick-line"));
+    let _ = followed.kill();
+    let _ = followed.wait();
+
+    let tail = daemon.cli(&repo, &["logs", "api", "--lines", "1"]);
+    assert_success(&tail, "logs --lines 1");
+    assert_eq!(
+        stdout(&tail)
+            .lines()
+            .filter(|line| !line.is_empty())
+            .count(),
+        1,
+        "the retained tail must be exactly one line: {}",
+        stdout(&tail)
+    );
+}
+
+#[test]
+fn forward_bridge_streams_a_real_request_and_closes_on_disconnect() {
+    use std::io::Read;
+    use std::net::TcpStream;
+
+    let tmp = disk_tempdir();
+    let scratch = tmp.path();
+    let repo = repo_with_manifest(scratch, "acme-forward", FORWARD_SNOW);
+    let daemon = Daemon::start(scratch);
+    assert_success(&daemon.cli(&repo, &["up"]), "up for forward");
+
+    let mut forward = daemon.cli_spawn(
+        &repo,
+        &["--json", "forward", "components.api", "components.idle"],
+    );
+    let line = wait_for_line(&mut forward, |line| line.contains("host_addr"));
+    let summary: Value = serde_json::from_str(&line).expect("forward json");
+    let targets = summary["targets"].as_array().expect("targets");
+    let api = targets
+        .iter()
+        .find(|target| target["id"] == "components.api")
+        .expect("components.api target");
+    let dead = targets
+        .iter()
+        .find(|target| target["id"] == "components.idle")
+        .expect("s3 target");
+    let api_addr = api["host_addr"].as_str().expect("api host addr");
+    let dead_addr = dead["host_addr"].as_str().expect("dead host addr");
+
+    let mut stream = TcpStream::connect(api_addr).expect("connect to the forwarded component");
+    stream
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .expect("read timeout");
+    stream
+        .write_all(b"GET / HTTP/1.0\r\nHost: slipfork\r\n\r\n")
+        .expect("write request");
+    let mut response = String::new();
+    stream.read_to_string(&mut response).expect("read response");
+    assert!(
+        response.contains("200 OK"),
+        "the daemon-owned bridge must reach the world listener: {response}"
+    );
+
+    // A target whose world port does not listen closes that one connection and nothing else.
+    let mut dead_stream = TcpStream::connect(dead_addr).expect("connect to the dead target");
+    dead_stream
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .expect("dead read timeout");
+    let mut sink = Vec::new();
+    let _ = dead_stream.read_to_end(&mut sink);
+    let mut still = TcpStream::connect(api_addr).expect("bridge survives a dead target");
+    still
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .expect("still read timeout");
+    still
+        .write_all(b"GET / HTTP/1.0\r\nHost: slipfork\r\n\r\n")
+        .expect("still write");
+    let mut again = String::new();
+    still.read_to_string(&mut again).expect("still read");
+    assert!(again.contains("200 OK"));
+
+    let _ = forward.kill();
+    let _ = forward.wait();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < deadline {
+        if TcpStream::connect(api_addr).is_err() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(
+        TcpStream::connect(api_addr).is_err(),
+        "the host listener must close when the CLI disconnects"
+    );
+}
+
+#[test]
+fn db_redis_exec_resolve_container_entries_and_require_a_tty() {
+    let tmp = disk_tempdir();
+    let scratch = tmp.path();
+    let repo = repo_with_manifest(scratch, "acme-db", DB_SNOW);
+    let daemon = Daemon::start(scratch);
+    assert_success(&daemon.cli(&repo, &["up"]), "up for db/redis");
+
+    // Both clients resolve through the running service container, then refuse without a TTY
+    // instead of ever falling back to the app rootfs.
+    let db = daemon.cli(&repo, &["db"]);
+    assert!(!db.status.success(), "a non-TTY db entry must fail closed");
+    let diagnostic = stderr(&db);
+    assert!(
+        diagnostic.contains("needs an interactive terminal"),
+        "the resolved container entry must require a TTY: {diagnostic}"
+    );
+    assert!(
+        !diagnostic.contains("ServiceNotRunning"),
+        "a running postgres container must not report ServiceNotRunning: {diagnostic}"
+    );
+    assert!(
+        stdout(&db).trim().is_empty(),
+        "a refused TTY entry must produce no output"
+    );
+
+    let redis = daemon.cli(&repo, &["redis"]);
+    assert!(!redis.status.success());
+    assert!(stderr(&redis).contains("needs an interactive terminal"));
+    assert!(!stderr(&redis).contains("ServiceNotRunning"));
+}
+
+#[test]
+fn auth_login_never_echoes_the_pairing_handle() {
+    let tmp = disk_tempdir();
+    let scratch = tmp.path();
+    let repo = repo_with_snow(scratch);
+    let daemon = Daemon::start(scratch);
+    let handle = "ab".repeat(32);
+    let url = format!("http://127.0.0.1:1/pair#handle={handle}");
+
+    let stdin_login = daemon.cli_with_stdin(&repo, &["auth", "login", "-"], &format!("{url}\n"));
+    assert!(
+        !stdin_login.status.success(),
+        "an unreachable pairing endpoint must fail closed offline"
+    );
+    let combined = format!("{}{}", stdout(&stdin_login), stderr(&stdin_login));
+    assert!(
+        daemon.browser_marker.is_file(),
+        "the injected BROWSER must open the pairing page"
+    );
+    assert!(
+        fs::read_to_string(&daemon.browser_marker)
+            .expect("browser marker")
+            .is_empty(),
+        "the browser stub must prove the opener ran without persisting the live URL"
+    );
+    assert!(
+        !combined.contains(&handle),
+        "the pairing handle must never be echoed: {combined}"
+    );
+    assert!(
+        !combined.contains("#handle=ab"),
+        "the fragment handle must never be rendered: {combined}"
+    );
+
+    let arg_login = daemon.cli(
+        &repo,
+        &[
+            "auth",
+            "login",
+            "https://127.0.0.1:1/pair#handle=not-a-handle",
+        ],
+    );
+    assert!(
+        !arg_login.status.success(),
+        "a malformed handle must fail closed"
+    );
+    assert!(
+        !stderr(&arg_login).contains("not-a-handle"),
+        "a rejected handle must not be echoed: {}",
+        stderr(&arg_login)
+    );
+}
+
+#[test]
+fn support_json_lists_required_evidence_for_every_integration() {
+    let tmp = disk_tempdir();
+    let scratch = tmp.path();
+    let repo = repo_with_snow(scratch);
+    let daemon = Daemon::start(scratch);
+
+    let output = daemon.cli(&repo, &["--json", "support"]);
+    assert_success(&output, "support --json");
+    let rows: Value = serde_json::from_str(&stdout(&output)).expect("support json");
+    let rows = rows.as_array().expect("support array");
+    assert!(!rows.is_empty(), "the support registry must not be empty");
+    for row in rows {
+        assert!(row["id"].as_str().is_some_and(|id| !id.is_empty()));
+        assert!(row["category"].as_str().is_some());
+        assert!(row["tier"].as_str().is_some());
+        let required = row["required_evidence"]
+            .as_array()
+            .unwrap_or_else(|| panic!("missing required_evidence for {}", row["id"]));
+        assert!(
+            !required.is_empty(),
+            "every integration must list required evidence: {}",
+            row["id"]
+        );
+        assert!(required.iter().all(|field| field.as_str().is_some()));
+    }
+
+    let human = daemon.cli(&repo, &["support"]);
+    assert_success(&human, "support");
+    assert!(
+        stdout(&human).contains("INTEGRATION") && stdout(&human).contains("TIER"),
+        "the human report must render the matrix: {}",
+        stdout(&human)
     );
 }

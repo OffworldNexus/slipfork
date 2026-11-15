@@ -130,6 +130,19 @@ pub enum BootEvent {
         /// Captured output chunk.
         chunk: StreamChunk,
     },
+    /// A hook exited non-zero; the world is kept alive for inspection (`ADR-0008` §4).
+    HookFailed {
+        /// Hook id (`api:pre-deploy`).
+        id: String,
+        /// Exact argv that failed.
+        argv: Vec<String>,
+        /// Process exit code.
+        exit_code: i32,
+        /// World id the hook ran in.
+        world: String,
+        /// Retained log file holding the full un-truncated output.
+        log_path: PathBuf,
+    },
     /// A component's `internal_ports` entry accepts connections.
     Ready {
         /// Component id.
@@ -203,6 +216,9 @@ pub struct UpRequest {
     pub dump: DumpRequest,
     /// Resource override flag.
     pub resources: ResourceRequest,
+    /// Mount the developer's host toolchain caches read-only after the ELF/libc ABI probe passes
+    /// (`--host-caches`, `ADR-0009` §2.3). Never a `slipfork.toml` key.
+    pub host_caches: bool,
 }
 
 /// Request body of `slipfork fork <fork>`.
@@ -218,6 +234,8 @@ pub struct ForkRequest {
     pub dump: DumpRequest,
     /// Resource override flag.
     pub resources: ResourceRequest,
+    /// Mount the developer's host toolchain caches read-only after the ABI probe passes.
+    pub host_caches: bool,
 }
 
 /// Request body of `slipfork drop <fork>`.
@@ -258,13 +276,21 @@ pub struct LogsRequest {
 }
 
 /// Request body of `slipfork exec` / `shell` / `db` / `redis`.
+///
+/// `service` is the single typed selector between the two entry surfaces (`ADR-0009` §3):
+/// `None` enters the world rootfs (`exec` / `shell`), while `Some("pg_databases.main")` enters
+/// that running backing-service container through `WorldEngine::service_entry_command` (`db` /
+/// `redis`). A stopped container fails closed with [`DaemonErrorKind::ServiceNotRunning`]; there
+/// is no app-rootfs fallback.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExecTargetRequest {
     /// Caller working directory; the daemon resolves the nearest world from it.
     pub cwd: PathBuf,
     /// Explicit `--world <fork>`.
     pub world: Option<String>,
-    /// Argv the caller wants to run inside the world.
+    /// Declared backing-service id (`pg_databases.main`, `redis_clusters.cache`) to enter, if any.
+    pub service: Option<String>,
+    /// Argv the caller wants to run inside the world or service container.
     pub argv: Vec<String>,
 }
 
@@ -277,6 +303,30 @@ pub struct HookRunRequest {
     pub world: Option<String>,
     /// `<component>:<phase>` hook id.
     pub hook: String,
+}
+
+/// Request body of `git-remote-slipfork` ref enumeration.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkspaceRefsRequest {
+    /// Caller working directory; the daemon resolves the repository from it.
+    pub cwd: PathBuf,
+    /// Fork whose two advertised refs are requested.
+    pub fork: String,
+}
+
+/// The two advertised refs of a live fork world plus their resolved commit ids.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkspaceRefsSummary {
+    /// Committed branch (`refs/heads/<fork>`).
+    pub base: String,
+    /// Synthesized dirty view (`refs/slipfork/<fork>/wip`).
+    pub wip: String,
+    /// Resolved base commit id.
+    pub base_oid: String,
+    /// Resolved dirty-view commit id.
+    pub wip_oid: String,
+    /// Host worktree backing the fork world.
+    pub worktree: PathBuf,
 }
 
 /// Request body of `slipfork forward`.
@@ -348,6 +398,8 @@ pub enum DaemonErrorKind {
     TunnelUnavailable,
     /// The requested world does not exist.
     UnknownWorld,
+    /// A requested backing service is not running as a container.
+    ServiceNotRunning,
     /// The caller sent a malformed request.
     BadRequest,
     /// The caller sent a request that does not fit the daemon's world model.
@@ -385,6 +437,9 @@ impl fmt::Display for DaemonError {
 
 impl From<&EdgeError> for DaemonError {
     fn from(err: &EdgeError) -> Self {
+        if let EdgeError::Control(error) = err {
+            return error.clone();
+        }
         let kind = match err {
             EdgeError::NoForwardListener => DaemonErrorKind::NoForwardListener,
             EdgeError::TunnelUnavailable { .. } => DaemonErrorKind::TunnelUnavailable,
@@ -461,8 +516,12 @@ pub enum DaemonRequest {
     },
     /// Read or follow retained component/hook logs ([`DaemonReply::Chunk`] frames).
     Logs(LogsRequest),
-    /// Fetch the direct-execution target for a world (the only `ExecEnv`-bearing reply).
+    /// Fetch the direct-execution target for a world (or a running backing-service container).
     ExecTarget(ExecTargetRequest),
+    /// Fetch the direct-execution target for an interactive `hook run` (native TTY).
+    HookExecTarget(HookRunRequest),
+    /// Enumerate a live fork world's two advertised refs and commit ids (`git-remote-slipfork`).
+    WorkspaceRefs(WorkspaceRefsRequest),
     /// Re-run a hook without a TTY ([`DaemonReply::Chunk`] frames, then the exit code).
     HookRun(HookRunRequest),
     /// Bind host listeners and bridge them into a world for this connection's lifetime.
@@ -551,6 +610,11 @@ pub enum DaemonReply {
     ExecTarget {
         /// The direct-execution target.
         target: WorldExecTarget,
+    },
+    /// Reply to [`DaemonRequest::WorkspaceRefs`].
+    WorkspaceRefs {
+        /// Advertised refs and their commit ids.
+        refs: WorkspaceRefsSummary,
     },
     /// Reply to [`DaemonRequest::Forward`]; the connection then stays open for the bridge.
     Forward {
@@ -666,7 +730,28 @@ pub trait DaemonControl: Send + Sync {
     ) -> Result<(), EdgeError>;
 
     /// Fetch the direct-execution target (the only `ExecEnv`-bearing reply).
+    ///
+    /// With `req.service = None` this enters the world rootfs; with `Some(id)` it returns the
+    /// `crun exec` entry for that running backing-service container and fails closed with
+    /// [`DaemonErrorKind::ServiceNotRunning`] instead of falling back to the app rootfs.
     fn exec_target(&self, req: &ExecTargetRequest) -> Result<WorldExecTarget, EdgeError>;
+
+    /// Fetch the direct-execution target for an interactive `hook run` (native TTY).
+    fn hook_exec_target(&self, _req: &HookRunRequest) -> Result<WorldExecTarget, EdgeError> {
+        Err(EdgeError::ControlProtocol {
+            reason: "this control backend does not implement interactive hook entry".to_owned(),
+        })
+    }
+
+    /// Enumerate a live fork world's refs (the read-only path `git-remote-slipfork` drives).
+    fn workspace_refs(
+        &self,
+        _req: &WorkspaceRefsRequest,
+    ) -> Result<WorkspaceRefsSummary, EdgeError> {
+        Err(EdgeError::ControlProtocol {
+            reason: "this control backend does not implement fork ref enumeration".to_owned(),
+        })
+    }
 
     /// Re-run a hook without a TTY, streaming chunks to `on_chunk`, returning its exit code.
     fn hook_run(

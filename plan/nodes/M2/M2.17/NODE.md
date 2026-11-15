@@ -2,16 +2,20 @@
 id: M2.17
 title: "CLI part 2: hook failure rescue UX, logs/shell/db/redis/forward, auth, support, git-remote-slipfork"
 kind: task
-status: ready
+status: review
 owner: implementer
 priority: 3
 depends_on: [M2.16]
-paths: ["crates/slipfork/**"]
-attempts: 0
+paths:
+  - "crates/slipfork/**"
+  - "crates/slipfork-edge/src/daemon/**"
+  - "crates/slipfork-edge/src/daemon.rs"
+  - "crates/slipfork-dag/src/support.rs"
+attempts: 3
 max_attempts: 3
 escalation: none
 created: "2026-11-15T16:40"
-updated: "2026-11-15T20:53"
+updated: "2026-11-15T22:14"
 ---
 
 <!-- splice: replace everything after the frontmatter of plan/nodes/M2/M2.17/NODE.md with this file. Frontmatter untouched. The `# Acceptance` command block stays byte-identical (the `db_redis_exec` case now asserts container entry, same test id); one adversarial assertion is added for the `ServiceNotRunning` refusal. Source of truth: ADR-0008 §4 + ADR-0009 §2–§3 + ARCHITECTURE.md §3.3/§3.4 (`M2.25`). -->
@@ -62,4 +66,4 @@ cargo clippy -p slipfork --all-targets -- -D warnings
 make check
 ```
 
-All commands exit `0`. Adversarial assertions required: a failing hook leaves the world listed by `slipfork list`, the rescue lines contain `--world <fork>` and the real hook id, `forward` bridges a real request end to end via `slipforkd`, survives a dead target, and closes its host listener on CLI disconnect, `hook run` without a TTY exits non-zero, `db`/`redis` against a stopped service exit non-zero with the `ServiceNotRunning` diagnostic (never silently entering the app rootfs), and `support --json` contains a `required_evidence` array for every listed integration.
+All commands exit `0`. Adversarial assertions required: a failing hook leaves the world listed by `slipfork list`, the rescue lines contain `--world <fork>` and the real hook id, `forward` bridges a real request end to end via `slipforkd`, survives a dead target, and closes its host listener on CLI disconnect, `hook run` without a TTY exits non-zero, `db`/`redis` against a stopped service exit non-zero with the `ServiceNotRunning` diagnostic (never silently entering the app rootfs); container entry itself (`service_entry_command` + `crun exec`) is delivered by `M2.29` — this node owns the CLI surface and the fail-closed contract only, and its test asserts both the typed refusal and that no app-rootfs entry is attempted, and `support --json` contains a `required_evidence` array for every listed integration.

@@ -11,27 +11,37 @@
 //! [`slipfork_engine::WorldEntryCommand`].
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs;
+use std::fs::{self, File, OpenOptions};
+use std::io::Write;
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 
 use slipfork_dag::{
     DumpPolicy, ResourceMode, ResourcePlan, ResourceStrategy, S3Resolution, SlipforkConfig,
 };
+use slipfork_edge::daemon::{WorkspaceRefsRequest, WorkspaceRefsSummary};
+use slipfork_edge::forward::ForwardTargetSpec;
 use slipfork_edge::{
     BootEvent, DaemonControl, DaemonError, DaemonErrorKind, DaemonStatus, DropForkRequest,
     EdgeError, ExecTargetRequest, ForkRequest, ForwardRequest, ForwardSummary, HookRunRequest,
     IngressRoute, LogsRequest, PruneReport, ResourceSummary, SharedWorldInfo, SnowResolveRequest,
-    SnowResolveSummary, UpRequest, WorldRegistry, WorldSelector, WorldState, WorldSummary,
-    WorldUpSummary, world_id,
+    SnowResolveSummary, UpRequest, WorldExecTarget, WorldRegistry, WorldSelector, WorldState,
+    WorldSummary, WorldUpSummary, world_id,
+};
+use slipfork_engine::rootfs::{
+    BackingServiceKey, BaseImageBuilder, BuildEnvVar, HostCacheRequest, RootfsBuildEvent,
+    RuntimeAssets, SnowPortContract, WorldRootfs, WorldRootfsRequest,
 };
 use slipfork_engine::{
-    ExecEnv, InheritedVar, LocalIngressBridge, MountMode, ServiceHandle, ServiceSpec, SnapshotId,
-    SnapshotMode, StreamChunk, WorldEngine, WorldHandle, WorldMount, WorldSpec,
+    EngineError, ExecEnv, InheritedVar, LocalIngressBridge, MountMode, ServiceHandle,
+    ServiceRuntime, ServiceSpec, SnapshotId, SnapshotMode, StateSubdirMount, StreamChunk,
+    WorldEngine, WorldHandle, WorldMount, WorldSpec,
 };
+use slipfork_ospp::{BrowserOpener, DeviceKeySigner, OsppTimeouts, PairingUrl, redeem_pairing_url};
 use slipfork_snow::{
-    HookPhase, Namespace, OsCsprngEntropy, ResolvedEnvMap, ResourceCoordinates, S3Coordinates,
-    SecretProvider, SnowFile,
+    EntropySource, HookPhase, Image, Namespace, OsCsprngEntropy, ResolvedEnvMap,
+    ResourceCoordinates, S3Coordinates, SecretProvider, SnowFile,
 };
 use slipfork_vcs::{
     RepoRoot, RepoRootResolver, VcsWorkspace, VcsWorkspaceFactory, WORKTREES_DIRECTORY,
@@ -46,13 +56,35 @@ use crate::vaults::ProjectVaults;
 /// The world mode this daemon supervises (`snow.yml` `modes.local`, `ADR-0001` §1).
 const WORLD_MODE: &str = "local";
 
+/// Host toolchain caches exposed read-only by `--host-caches` (`ADR-0009` §2.3).
+///
+/// Resolved once by the Composition Root from the developer's real `HOME`; the daemon only
+/// decides whether the per-invocation flag asks for them. Empty `mounts` means the host has no
+/// cache directory to share, so no ABI probe runs.
+#[derive(Debug, Clone, Default)]
+pub struct HostCaches {
+    /// Host ELF used as the ABI witness (`/bin/sh`).
+    pub witness: PathBuf,
+    /// Existing host cache directories, always [`MountMode::ReadOnly`].
+    pub mounts: Vec<WorldMount>,
+}
+
 /// Everything the daemon needs that the Composition Root resolved once.
-#[derive(Debug, Clone)]
 pub struct DaemonConfig {
     /// Explicit `--state-dir` / `--runtime-dir` roots and the project-vault data home.
     pub layout: Layout,
     /// `PATH`/`TERM`/`LANG` values the engine hands to world processes (never the whole env).
     pub inherited: Vec<(InheritedVar, String)>,
+    /// Host `crun` + `slipfork-world-init` payloads staged into every `L0` rootfs.
+    pub runtime: RuntimeAssets,
+    /// Target platform (`x86_64`, `aarch64`) for the rootfs Merkle key.
+    pub target_arch: String,
+    /// Invoking developer's account (World Image Contract #3 diagnostics).
+    pub uid: u32,
+    /// Invoking developer's group.
+    pub gid: u32,
+    /// Resolved host toolchain caches for `--host-caches`.
+    pub host_caches: HostCaches,
 }
 
 /// One live world owned by this daemon.
@@ -69,7 +101,83 @@ struct LiveWorld {
     snow: SnowFile,
     resources: Vec<ResourceSummary>,
     services: Vec<ServiceHandle>,
-    workspace: Option<Box<dyn VcsWorkspace>>,
+    /// Retained hook logs by `<component>:<phase>` (`slipfork logs <hook_id>`, `ADR-0008` §4).
+    hook_logs: BTreeMap<String, Arc<HookLog>>,
+    workspace: Option<Arc<dyn VcsWorkspace>>,
+}
+
+/// One `slipfork logs` target: an engine-retained service log or a daemon-retained hook log.
+enum RetainedTarget {
+    Service(String),
+    Hook(Arc<HookLog>),
+}
+
+/// Size-capped retained output plus its on-disk log for one hook run.
+///
+/// Mirrors the engine's `ServiceLogs` retention so `slipfork logs <hook_id> --follow` behaves like
+/// a service log, while [`HookLog::path`] gives the rescue block a real file to point at.
+struct HookLog {
+    path: PathBuf,
+    state: Mutex<HookLogState>,
+    changed: Condvar,
+}
+
+#[derive(Default)]
+struct HookLogState {
+    chunks: Vec<StreamChunk>,
+    closed: bool,
+}
+
+impl HookLog {
+    fn new(path: PathBuf) -> Self {
+        Self {
+            path,
+            state: Mutex::new(HookLogState::default()),
+            changed: Condvar::new(),
+        }
+    }
+
+    fn lock(&self) -> MutexGuard<'_, HookLogState> {
+        self.state.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn push(&self, chunk: StreamChunk) {
+        if chunk.bytes.is_empty() {
+            return;
+        }
+        self.lock().chunks.push(chunk);
+        self.changed.notify_all();
+    }
+
+    fn close(&self) {
+        self.lock().closed = true;
+        self.changed.notify_all();
+    }
+
+    fn snapshot(&self) -> Vec<StreamChunk> {
+        self.lock().chunks.clone()
+    }
+
+    fn follow(&self, on_chunk: &mut dyn FnMut(StreamChunk)) {
+        let mut state = self.lock();
+        let mut cursor = 0;
+        loop {
+            while cursor < state.chunks.len() {
+                let chunk = state.chunks[cursor].clone();
+                cursor += 1;
+                drop(state);
+                on_chunk(chunk);
+                state = self.lock();
+            }
+            if state.closed {
+                return;
+            }
+            state = self
+                .changed
+                .wait(state)
+                .unwrap_or_else(PoisonError::into_inner);
+        }
+    }
 }
 
 /// Mutable daemon index, mutated only in short critical sections (never across engine I/O).
@@ -92,6 +200,19 @@ impl DaemonState {
             .iter()
             .position(|world| world.project == *project && world.target == *target)
     }
+
+    fn world_mut(&mut self, project: &ProjectSlug, target: &WorldTarget) -> Option<&mut LiveWorld> {
+        self.worlds
+            .iter_mut()
+            .find(|world| world.project == *project && world.target == *target)
+    }
+}
+
+/// A hook resolved once for both interactive entry and non-interactive streaming.
+struct ResolvedHook {
+    argv: Vec<String>,
+    overlay: ExecEnv,
+    phase_label: &'static str,
 }
 
 /// A resolved world selection: repository identity, target, and the checkout its world mounts.
@@ -108,6 +229,7 @@ struct BootContext {
     worktree: PathBuf,
     dump: DumpPolicy,
     force_local_resources: bool,
+    host_caches: bool,
     workspace: Option<Box<dyn VcsWorkspace>>,
 }
 
@@ -124,6 +246,8 @@ struct BootFailure {
 pub struct DaemonPorts {
     /// CoW world engine.
     pub engine: std::sync::Arc<dyn WorldEngine>,
+    /// The single `L0` world-rootfs builder (`DockerfileStageBuilder` in production).
+    pub builder: std::sync::Arc<dyn BaseImageBuilder>,
     /// HTTP ingress registry and origin source.
     pub registry: std::sync::Arc<WorldRegistry>,
     /// Canonical repository resolver.
@@ -132,15 +256,28 @@ pub struct DaemonPorts {
     pub workspaces: std::sync::Arc<dyn VcsWorkspaceFactory>,
     /// Project-scoped `0600` vault factory.
     pub vaults: std::sync::Arc<dyn ProjectVaults>,
+    /// Persistent OSPP device-key signer (`tpmd:sealed` or the `0600` software fallback).
+    pub signer: Arc<dyn DeviceKeySigner>,
+    /// Injected browser opener for the pairing approval page (never logs the live handle).
+    pub browser: Arc<dyn BrowserOpener>,
+    /// CSPRNG injected into the pairing handshake nonce.
+    pub entropy: Arc<dyn EntropySource>,
+    /// Bounds for the pairing WebSocket handshake.
+    pub ospp_timeouts: OsppTimeouts,
 }
 
 /// The daemon-owned [`DaemonControl`] implementation.
 pub struct DaemonService {
     engine: std::sync::Arc<dyn WorldEngine>,
+    builder: std::sync::Arc<dyn BaseImageBuilder>,
     registry: std::sync::Arc<WorldRegistry>,
     repo_roots: std::sync::Arc<dyn RepoRootResolver>,
     workspaces: std::sync::Arc<dyn VcsWorkspaceFactory>,
     vaults: std::sync::Arc<dyn ProjectVaults>,
+    signer: Arc<dyn DeviceKeySigner>,
+    browser: Arc<dyn BrowserOpener>,
+    entropy: Arc<dyn EntropySource>,
+    ospp_timeouts: OsppTimeouts,
     config: DaemonConfig,
     http_ingress_port: u16,
     forward_port: Option<u16>,
@@ -168,10 +305,15 @@ impl DaemonService {
     ) -> Self {
         Self {
             engine: ports.engine,
+            builder: ports.builder,
             registry: ports.registry,
             repo_roots: ports.repo_roots,
             workspaces: ports.workspaces,
             vaults: ports.vaults,
+            signer: ports.signer,
+            browser: ports.browser,
+            entropy: ports.entropy,
+            ospp_timeouts: ports.ospp_timeouts,
             config,
             http_ingress_port,
             forward_port,
@@ -288,6 +430,114 @@ impl DaemonService {
         load_slipfork_config(&path).map_err(runtime_error)
     }
 
+    /// Materialize (or reuse) the selected `snow.yml` `Dockerfile` stage as the world's `L0`
+    /// rootfs (`ADR-0009` §1–§3), resolving `[world]` and every requested backing-service image.
+    fn materialize_rootfs(
+        &self,
+        worktree: &Path,
+        snow: &SnowFile,
+        config: &SlipforkConfig,
+        vault: &dyn SecretProvider,
+        coords: &ResourceCoordinates,
+        host_caches: bool,
+    ) -> Result<WorldRootfs, EdgeError> {
+        let build_images: Vec<&slipfork_snow::BuildImage> = snow
+            .images
+            .iter()
+            .filter_map(|image| match image {
+                Image::Build(build) => Some(build),
+                Image::DockerHub { .. } => None,
+            })
+            .collect();
+        let ids: Vec<String> = build_images.iter().map(|image| image.id.clone()).collect();
+        let image_id = config
+            .world
+            .select_image(&ids)
+            .map_err(|err| runtime_error(err.to_string()))?
+            .to_owned();
+        let image = build_images
+            .iter()
+            .find(|image| image.id == image_id)
+            .copied()
+            .ok_or_else(|| {
+                runtime_error(format!(
+                    "snow.yml images: selected image '{image_id}' is not a buildable Dockerfile image"
+                ))
+            })?;
+        let context_dir = worktree.join(&image.context);
+        let dockerfile = context_dir.join(&image.dockerfile);
+
+        let groups = snow
+            .effective_env_groups(WORLD_MODE)
+            .map_err(|err| runtime_error(err.to_string()))?;
+        let build_names: BTreeSet<String> = image
+            .envs
+            .iter()
+            .filter_map(|group| groups.get(group))
+            .flat_map(|vars| vars.keys().cloned())
+            .collect();
+        let resolved = snow
+            .resolve_mode(WORLD_MODE, None, vault, coords, &OsCsprngEntropy)
+            .map_err(|err| runtime_error(err.to_string()))?;
+        let build_envs: Vec<BuildEnvVar> = resolved
+            .iter()
+            .filter(|(name, _)| build_names.contains(*name))
+            .map(|(name, value)| BuildEnvVar {
+                name: name.clone(),
+                value: value.expose().to_owned(),
+            })
+            .collect();
+
+        let component = snow
+            .components
+            .iter()
+            .find(|component| component.image == image_id);
+        let ports = SnowPortContract {
+            component: component.map_or_else(|| image_id.clone(), |component| component.id.clone()),
+            internal_ports: component
+                .map(|component| component.internal_ports.clone())
+                .unwrap_or_default(),
+            ingress_ports: snow
+                .ingresses
+                .iter()
+                .filter(|ingress| {
+                    component.is_some_and(|component| ingress.target.component == component.id)
+                })
+                .map(|ingress| ingress.target.port)
+                .collect(),
+        };
+
+        let request = WorldRootfsRequest {
+            state_dir: self.config.layout.state_dir().to_path_buf(),
+            image_id,
+            context_dir,
+            context_label: image.context.clone(),
+            dockerfile,
+            target_stage: config.world.stage.clone(),
+            build_envs,
+            target_arch: self.config.target_arch.clone(),
+            services: requested_service_images(snow),
+            ports,
+            uid: self.config.uid,
+            gid: self.config.gid,
+            runtime: self.config.runtime.clone(),
+            host_caches: if host_caches {
+                HostCacheRequest {
+                    host_shell: self.config.host_caches.witness.clone(),
+                    mounts: self.config.host_caches.mounts.clone(),
+                }
+            } else {
+                HostCacheRequest::default()
+            },
+        };
+        self.builder
+            .materialize(&request, &mut |event: RootfsBuildEvent| {
+                // Progress reaches the CLI through `BootEvent`; a cache hit/miss is silent for now.
+                let _ = event;
+            })
+            .map_err(|err| runtime_error(err.to_string()))
+    }
+
     /// The single base-state snapshot per project for this daemon's lifetime.
     fn ensure_base_snapshot(&self, project: &ProjectSlug) -> Result<SnapshotId, EdgeError> {
         if let Some(snapshot) = self.lock().bases.get(project).cloned() {
@@ -355,6 +605,7 @@ impl DaemonService {
             worktree,
             dump,
             force_local_resources,
+            host_caches,
             mut workspace,
         } = context;
         let project = repo.project.clone();
@@ -466,6 +717,24 @@ impl DaemonService {
             }
         };
 
+        let rootfs = match self.materialize_rootfs(
+            &worktree,
+            &snow,
+            &config,
+            vault.as_ref(),
+            &coords,
+            host_caches,
+        ) {
+            Ok(rootfs) => rootfs,
+            Err(error) => {
+                return Err(BootFailure {
+                    error,
+                    world: None,
+                    workspace,
+                });
+            }
+        };
+
         let mut component_envs = BTreeMap::new();
         let mut enabled_components = BTreeSet::new();
         for (id, resolved) in &effective {
@@ -510,6 +779,7 @@ impl DaemonService {
         };
         let spec = WorldSpec {
             target: target.clone(),
+            rootfs: rootfs.clone(),
             snapshot,
             mounts: vec![WorldMount {
                 host_path: worktree.clone(),
@@ -562,8 +832,38 @@ impl DaemonService {
             snow: snow.clone(),
             resources,
             services: Vec::new(),
-            workspace: workspace.take(),
+            hook_logs: BTreeMap::new(),
+            workspace: workspace.take().map(Arc::from),
         };
+
+        let service_specs = match service_specs(&snow, &rootfs) {
+            Ok(specs) => specs,
+            Err(error) => {
+                live.state = WorldState::Failed;
+                return Err(BootFailure {
+                    error,
+                    world: Some(Box::new(live)),
+                    workspace: None,
+                });
+            }
+        };
+        for spec in service_specs {
+            match self.engine.spawn_service(&handle, &spec) {
+                Ok(service) => live.services.push(service),
+                Err(err) => {
+                    live.state = WorldState::Failed;
+                    return Err(BootFailure {
+                        error: runtime_error(format!(
+                            "cannot start backing service '{}' in world '{}': {err}",
+                            spec.id,
+                            world_id(&project, &target)
+                        )),
+                        world: Some(Box::new(live)),
+                        workspace: None,
+                    });
+                }
+            }
+        }
 
         for (id, resolved) in &effective {
             if resolved.disabled {
@@ -584,13 +884,15 @@ impl DaemonService {
                 declaration.and_then(|component| component.internal_ports.first().copied());
             let spec = ServiceSpec {
                 id: id.clone(),
-                argv: vec![
-                    "sh".to_owned(),
-                    "-eu".to_owned(),
-                    "-c".to_owned(),
-                    resolved.run_command.clone(),
-                ],
-                cwd: worktree.clone(),
+                runtime: slipfork_engine::ServiceRuntime::WorldProcess {
+                    argv: vec![
+                        "sh".to_owned(),
+                        "-eu".to_owned(),
+                        "-c".to_owned(),
+                        resolved.run_command.clone(),
+                    ],
+                    cwd: worktree.clone(),
+                },
                 env: live.component_envs.get(id).cloned().unwrap_or_default(),
                 readiness_port,
             };
@@ -618,7 +920,7 @@ impl DaemonService {
             }
         }
 
-        if let Err(error) = self.run_hooks(&live, HookPhase::PreDeploy, on_event) {
+        if let Err(error) = self.run_hooks(&mut live, HookPhase::PreDeploy, on_event) {
             live.state = WorldState::Failed;
             return Err(BootFailure {
                 error,
@@ -626,7 +928,7 @@ impl DaemonService {
                 workspace: None,
             });
         }
-        if let Err(error) = self.run_hooks(&live, HookPhase::PostDeploy, on_event) {
+        if let Err(error) = self.run_hooks(&mut live, HookPhase::PostDeploy, on_event) {
             live.state = WorldState::Failed;
             return Err(BootFailure {
                 error,
@@ -639,11 +941,12 @@ impl DaemonService {
 
     fn run_hooks(
         &self,
-        live: &LiveWorld,
+        live: &mut LiveWorld,
         phase: HookPhase,
         on_event: &mut dyn FnMut(BootEvent),
     ) -> Result<(), EdgeError> {
-        for hook in &live.snow.hooks {
+        let hooks = live.snow.hooks.clone();
+        for hook in hooks {
             if hook.when != phase || !live.enabled_components.contains(&hook.component) {
                 continue;
             }
@@ -670,6 +973,8 @@ impl DaemonService {
                 .get(&hook.component)
                 .cloned()
                 .unwrap_or_default();
+            let log = self.hook_log(live, &id, hook_phase_label(hook.when))?;
+            let mut file = open_hook_log(&log.path)?;
             let output = self
                 .engine
                 .exec_in_world(
@@ -678,6 +983,9 @@ impl DaemonService {
                     &live.worktree,
                     &overlay,
                     &mut |chunk| {
+                        let _ = file.write_all(&chunk.bytes);
+                        let _ = file.flush();
+                        log.push(chunk.clone());
                         on_event(BootEvent::HookOutput {
                             id: id.clone(),
                             chunk,
@@ -685,20 +993,55 @@ impl DaemonService {
                     },
                 )
                 .map_err(|err| {
+                    log.close();
                     runtime_error(format!(
                         "cannot run hook '{id}' in world '{}': {err}",
                         world_id(&live.project, &live.target)
                     ))
                 })?;
+            log.close();
             if output.exit_code != 0 {
+                let world = world_id(&live.project, &live.target);
+                on_event(BootEvent::HookFailed {
+                    id: id.clone(),
+                    argv,
+                    exit_code: output.exit_code,
+                    world: world.clone(),
+                    log_path: log.path.clone(),
+                });
                 return Err(runtime_error(format!(
-                    "hook '{id}' exited with code {} in world '{}' (the world is kept for inspection)",
+                    "hook '{id}' exited with code {} in world '{world}' (the world is kept for inspection; full output is in {})",
                     output.exit_code,
-                    world_id(&live.project, &live.target)
+                    log.path.display()
                 )));
             }
         }
         Ok(())
+    }
+
+    /// The retained log for one hook, created once per world and reused by `hook run`.
+    fn hook_log(
+        &self,
+        live: &mut LiveWorld,
+        id: &str,
+        phase: &str,
+    ) -> Result<Arc<HookLog>, EdgeError> {
+        if let Some(log) = live.hook_logs.get(id) {
+            return Ok(Arc::clone(log));
+        }
+        let directory = self
+            .config
+            .layout
+            .world_logs_dir(&live.project, &world_id(&live.project, &live.target));
+        ensure_private_dir(&directory).map_err(runtime_error)?;
+        let (component, _) = id
+            .rsplit_once(':')
+            .ok_or_else(|| rejected(format!("invalid hook id '{id}'")))?;
+        let log = Arc::new(HookLog::new(
+            directory.join(format!("{component}.{phase}.log")),
+        ));
+        live.hook_logs.insert(id.to_owned(), Arc::clone(&log));
+        Ok(log)
     }
 
     fn insert_world(&self, live: LiveWorld) {
@@ -806,6 +1149,7 @@ impl DaemonControl for DaemonService {
             worktree: selection.worktree.clone(),
             dump: dump_policy(req.dump),
             force_local_resources: matches!(req.resources, slipfork_edge::ResourceRequest::Local),
+            host_caches: req.host_caches,
             workspace: None,
         };
         match self.boot(context, on_event) {
@@ -857,6 +1201,7 @@ impl DaemonControl for DaemonService {
             worktree: selection.worktree.clone(),
             dump: dump_policy(req.dump),
             force_local_resources: matches!(req.resources, slipfork_edge::ResourceRequest::Local),
+            host_caches: req.host_caches,
             workspace: Some(workspace),
         };
         match self.boot(context, on_event) {
@@ -1038,7 +1383,8 @@ impl DaemonControl for DaemonService {
         on_chunk: &mut dyn FnMut(StreamChunk),
     ) -> Result<(), EdgeError> {
         let selection = self.select(&req.cwd, req.world.as_deref())?;
-        let world = {
+        let world_id_text = world_id(&selection.repo.project, &selection.target);
+        let (handle, service_ids, hook_logs) = {
             let state = self.lock();
             let Some(world) = state.world(&selection.repo.project, &selection.target) else {
                 return Err(Self::unknown_world(
@@ -1054,42 +1400,78 @@ impl DaemonControl for DaemonService {
                     .map(ServiceHandle::id)
                     .map(str::to_owned)
                     .collect::<Vec<_>>(),
+                world.hook_logs.clone(),
             )
         };
-        let (handle, service_ids) = world;
-        let targets: Vec<String> = match &req.target {
-            Some(target) if service_ids.iter().any(|id| id == target) => vec![target.clone()],
-            Some(target) => {
+
+        let mut retained: Vec<RetainedTarget> = Vec::new();
+        let requested: Vec<String> = match &req.target {
+            Some(target) => vec![target.clone()],
+            None => service_ids
+                .iter()
+                .cloned()
+                .chain(hook_logs.keys().cloned())
+                .collect(),
+        };
+        for target in requested {
+            if service_ids.iter().any(|id| id == &target) {
+                retained.push(RetainedTarget::Service(target));
+            } else if let Some(log) = hook_logs.get(&target) {
+                retained.push(RetainedTarget::Hook(Arc::clone(log)));
+            } else {
+                let mut known = service_ids.clone();
+                known.extend(hook_logs.keys().cloned());
                 return Err(rejected(format!(
-                    "world '{}' has no service '{target}' (known services: {})",
-                    world_id(&selection.repo.project, &selection.target),
-                    service_ids.join(", ")
+                    "world '{world_id_text}' has no log target '{target}' (known targets: {})",
+                    known.join(", ")
                 )));
             }
-            None => service_ids,
+        }
+
+        let wants = |chunk: &StreamChunk| {
+            req.stderr == matches!(chunk.source, slipfork_engine::StreamSource::Stderr)
         };
-        for target in targets {
-            let log = self
-                .engine
-                .service_logs(&handle, &target)
-                .map_err(|err| runtime_error(err.to_string()))?;
-            let wants = |chunk: &StreamChunk| {
-                req.stderr == matches!(chunk.source, slipfork_engine::StreamSource::Stderr)
-            };
-            if req.follow {
-                log.follow(&mut |chunk| {
-                    if wants(&chunk) {
-                        on_chunk(chunk);
+        for target in retained {
+            match target {
+                RetainedTarget::Service(id) => {
+                    let log = self
+                        .engine
+                        .service_logs(&handle, &id)
+                        .map_err(|err| runtime_error(err.to_string()))?;
+                    if req.follow {
+                        log.follow(&mut |chunk| {
+                            if wants(&chunk) {
+                                on_chunk(chunk);
+                            }
+                        });
+                    } else {
+                        let selected: Vec<StreamChunk> = log
+                            .snapshot()
+                            .into_iter()
+                            .filter(|chunk| wants(chunk))
+                            .collect();
+                        for chunk in tail_lines(selected, req.lines) {
+                            on_chunk(chunk);
+                        }
                     }
-                });
-            } else {
-                let selected: Vec<StreamChunk> = log
-                    .snapshot()
-                    .into_iter()
-                    .filter(|chunk| wants(chunk))
-                    .collect();
-                for chunk in tail_lines(selected, req.lines) {
-                    on_chunk(chunk);
+                }
+                RetainedTarget::Hook(log) => {
+                    if req.follow {
+                        log.follow(&mut |chunk| {
+                            if wants(&chunk) {
+                                on_chunk(chunk);
+                            }
+                        });
+                    } else {
+                        let selected: Vec<StreamChunk> = log
+                            .snapshot()
+                            .into_iter()
+                            .filter(|chunk| wants(chunk))
+                            .collect();
+                        for chunk in tail_lines(selected, req.lines) {
+                            on_chunk(chunk);
+                        }
+                    }
                 }
             }
         }
@@ -1101,7 +1483,8 @@ impl DaemonControl for DaemonService {
         req: &ExecTargetRequest,
     ) -> Result<slipfork_edge::WorldExecTarget, EdgeError> {
         let selection = self.select(&req.cwd, req.world.as_deref())?;
-        let (handle, base_env) = {
+        let world = world_id(&selection.repo.project, &selection.target);
+        let (handle, base_env, service) = {
             let state = self.lock();
             let Some(world) = state.world(&selection.repo.project, &selection.target) else {
                 return Err(Self::unknown_world(
@@ -1109,21 +1492,138 @@ impl DaemonControl for DaemonService {
                     &selection.target,
                 ));
             };
-            (world.handle.clone(), world.base_env.clone())
+            let service = match &req.service {
+                Some(requested) => {
+                    let (service_id, argv) =
+                        resolve_service_target(&world.snow, requested, &req.argv)?;
+                    let handle = world
+                        .services
+                        .iter()
+                        .find(|service| service.id() == service_id.as_str())
+                        .cloned()
+                        .ok_or_else(|| {
+                            service_not_running(
+                                &world_id(&world.project, &world.target),
+                                &service_id,
+                            )
+                        })?;
+                    Some((handle, argv))
+                }
+                None => None,
+            };
+            (world.handle.clone(), world.base_env.clone(), service)
         };
+        let origin = self
+            .registry
+            .origin(&selection.repo.project, &selection.target)?;
+        if let Some((service, argv)) = service {
+            let entry = self
+                .engine
+                .service_entry_command(&service)
+                .map_err(|err| service_engine_error(&world, service.id(), err))?;
+            return Ok(WorldExecTarget {
+                world,
+                origin,
+                entry,
+                // The container's own OCI environment is authoritative; never leak the app
+                // rootfs PATH into `crun exec` (that would hide the image's `psql`/`redis-cli`).
+                env: ExecEnv::default(),
+                target_argv: argv,
+            });
+        }
         let entry = self
             .engine
             .entry_command(&handle, &req.cwd)
             .map_err(|err| runtime_error(err.to_string()))?;
-        let origin = self
-            .registry
-            .origin(&selection.repo.project, &selection.target)?;
         Ok(slipfork_edge::WorldExecTarget {
-            world: world_id(&selection.repo.project, &selection.target),
+            world,
             origin,
             entry,
             env: base_env,
             target_argv: req.argv.clone(),
+        })
+    }
+
+    fn hook_exec_target(&self, req: &HookRunRequest) -> Result<WorldExecTarget, EdgeError> {
+        let selection = self.select(&req.cwd, req.world.as_deref())?;
+        let (handle, worktree, snow, component_envs, enabled, base_env) = {
+            let state = self.lock();
+            let Some(world) = state.world(&selection.repo.project, &selection.target) else {
+                return Err(Self::unknown_world(
+                    &selection.repo.project,
+                    &selection.target,
+                ));
+            };
+            (
+                world.handle.clone(),
+                world.worktree.clone(),
+                world.snow.clone(),
+                world.component_envs.clone(),
+                world.enabled_components.clone(),
+                world.base_env.clone(),
+            )
+        };
+        let resolved = resolve_hook(&snow, &enabled, &component_envs, &req.hook)?;
+        let entry = self
+            .engine
+            .entry_command(&handle, &worktree)
+            .map_err(|err| runtime_error(err.to_string()))?;
+        let origin = self
+            .registry
+            .origin(&selection.repo.project, &selection.target)?;
+        Ok(WorldExecTarget {
+            world: world_id(&selection.repo.project, &selection.target),
+            origin,
+            entry,
+            env: base_env.overlaid(&resolved.overlay),
+            target_argv: resolved.argv,
+        })
+    }
+
+    fn workspace_refs(
+        &self,
+        req: &WorkspaceRefsRequest,
+    ) -> Result<WorkspaceRefsSummary, EdgeError> {
+        let selection = self.select(&req.cwd, Some(&req.fork))?;
+        let world = {
+            let state = self.lock();
+            let Some(world) = state.world(&selection.repo.project, &selection.target) else {
+                return Err(Self::unknown_world(
+                    &selection.repo.project,
+                    &selection.target,
+                ));
+            };
+            if world.state != WorldState::Running && world.state != WorldState::Failed {
+                return Err(rejected(format!(
+                    "world '{}' is not live; run `slipfork up --world {}` first",
+                    world_id(&selection.repo.project, &selection.target),
+                    req.fork
+                )));
+            }
+            world
+                .workspace
+                .clone()
+                .map(|workspace| (workspace, world.worktree.clone()))
+        };
+        let (workspace, worktree) = world.ok_or_else(|| {
+            rejected(format!(
+                "fork '{}' has no materialized workspace in this slipforkd; create it with `slipfork fork {}`",
+                req.fork, req.fork
+            ))
+        })?;
+        let refs = workspace.refs();
+        let base_oid = workspace
+            .resolve(&refs.base)
+            .map_err(|err| runtime_error(err.to_string()))?;
+        let wip_oid = workspace
+            .resolve(&refs.wip)
+            .map_err(|err| runtime_error(err.to_string()))?;
+        Ok(WorkspaceRefsSummary {
+            base: refs.base,
+            wip: refs.wip,
+            base_oid,
+            wip_oid,
+            worktree,
         })
     }
 
@@ -1149,58 +1649,90 @@ impl DaemonControl for DaemonService {
                 world.enabled_components.clone(),
             )
         };
-        let (component, phase) = parse_hook_id(&req.hook).ok_or_else(|| {
-            rejected(format!(
-                "invalid hook id '{}' (expected <component>:<phase>)",
-                req.hook
-            ))
-        })?;
-        if !enabled.contains(component) {
-            return Err(rejected(format!(
-                "component '{component}' is not enabled in mode '{WORLD_MODE}'"
-            )));
-        }
-        let hook = snow
-            .hooks
-            .iter()
-            .find(|hook| hook.component == component && hook.when == phase)
-            .ok_or_else(|| rejected(format!("world has no hook '{}'", req.hook)))?;
-        if hook.run_command.trim().is_empty() {
-            return Err(rejected(format!(
-                "hook '{}' declares an empty run_command",
-                req.hook
-            )));
-        }
-        let argv = vec![
-            "sh".to_owned(),
-            "-eu".to_owned(),
-            "-c".to_owned(),
-            hook.run_command.clone(),
-        ];
-        let overlay = component_envs.get(component).cloned().unwrap_or_default();
+        let resolved = resolve_hook(&snow, &enabled, &component_envs, &req.hook)?;
+        let log = {
+            let mut state = self.lock();
+            let Some(world) = state.world_mut(&selection.repo.project, &selection.target) else {
+                return Err(Self::unknown_world(
+                    &selection.repo.project,
+                    &selection.target,
+                ));
+            };
+            self.hook_log(world, &req.hook, resolved.phase_label)?
+        };
+        let mut file = open_hook_log(&log.path)?;
         let output = self
             .engine
-            .exec_in_world(&handle, &argv, &worktree, &overlay, on_chunk)
-            .map_err(|err| runtime_error(err.to_string()))?;
+            .exec_in_world(
+                &handle,
+                &resolved.argv,
+                &worktree,
+                &resolved.overlay,
+                &mut |chunk| {
+                    let _ = file.write_all(&chunk.bytes);
+                    let _ = file.flush();
+                    log.push(chunk.clone());
+                    on_chunk(chunk);
+                },
+            )
+            .map_err(|err| {
+                log.close();
+                runtime_error(err.to_string())
+            })?;
+        log.close();
         Ok(output.exit_code)
     }
 
     fn forward(
         &self,
-        _req: &ForwardRequest,
-        _wait_disconnect: &mut dyn FnMut(ForwardSummary),
+        req: &ForwardRequest,
+        wait_disconnect: &mut dyn FnMut(ForwardSummary),
     ) -> Result<(), EdgeError> {
-        Err(rejected(
-            "`slipfork forward` ships with CLI part 2 (M2.17); the daemon already owns the \
-             registry bridge, but the CLI surface is not wired yet",
-        ))
+        let selection = self.select(&req.cwd, req.world.as_deref())?;
+        let world_id_text = world_id(&selection.repo.project, &selection.target);
+        let (snow, enabled) = {
+            let state = self.lock();
+            let Some(world) = state.world(&selection.repo.project, &selection.target) else {
+                return Err(Self::unknown_world(
+                    &selection.repo.project,
+                    &selection.target,
+                ));
+            };
+            (world.snow.clone(), world.enabled_components.clone())
+        };
+        let specs = forward_specs(&snow, &world_id_text, &enabled, &req.targets)?;
+        let bridge = self
+            .registry
+            .forward(&selection.repo.project, &selection.target, &specs)?;
+        wait_disconnect(bridge.summary());
+        // Dropping the bridge stops every accept loop and closes the host ports.
+        Ok(())
     }
 
-    fn auth_login(&self, _pairing_url: &str) -> Result<slipfork_edge::AuthSummary, EdgeError> {
-        Err(rejected(
-            "`slipfork auth login` ships with CLI part 2 (M2.17); no OSPP endpoint is configured \
-             for this daemon yet",
-        ))
+    fn auth_login(&self, pairing_url: &str) -> Result<slipfork_edge::AuthSummary, EdgeError> {
+        let url = PairingUrl::parse(pairing_url)
+            .map_err(|err| rejected(format!("invalid pairing URL: {err}")))?;
+        let browser_url = url
+            .browser_url()
+            .map_err(|err| rejected(format!("invalid pairing URL: {err}")))?;
+        self.browser
+            .open_pairing_url(browser_url)
+            .map_err(|err| runtime_error(format!("cannot open the pairing page: {err}")))?;
+        let approval = redeem_pairing_url(
+            url,
+            self.signer.as_ref(),
+            self.entropy.as_ref(),
+            self.ospp_timeouts,
+        )
+        .map_err(|err| {
+            // OSPP errors never embed the handle; the URL itself is never re-rendered here.
+            runtime_error(format!("OSPP pairing failed: {err}"))
+        })?;
+        Ok(slipfork_edge::AuthSummary {
+            key_id: self.signer.key_id().as_str().to_owned(),
+            backend: self.signer.backend_label().to_owned(),
+            account: Some(approval.account),
+        })
     }
 }
 
@@ -1238,9 +1770,200 @@ fn runtime_error(message: impl Into<String>) -> EdgeError {
     EdgeError::Control(DaemonError::new(DaemonErrorKind::Internal, message))
 }
 
+/// Open (truncate) one hook's `0600` retained log for a fresh run.
+fn open_hook_log(path: &Path) -> Result<File, EdgeError> {
+    OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .mode(0o600)
+        .open(path)
+        .map_err(|err| runtime_error(format!("cannot write {}: {err}", path.display())))
+}
+
+/// The `forward` targets a world exposes: declared resources plus enabled component ports.
+fn forward_specs(
+    snow: &SnowFile,
+    world: &str,
+    enabled: &BTreeSet<String>,
+    requested: &[String],
+) -> Result<Vec<ForwardTargetSpec>, EdgeError> {
+    let mut specs: Vec<ForwardTargetSpec> = Vec::new();
+    for db in &snow.resources.pg_databases {
+        specs.push(ForwardTargetSpec {
+            id: format!("pg_databases.{}", db.id),
+            port: 5432,
+            scheme: "postgres".to_owned(),
+            path: format!("/{}", db.id),
+        });
+    }
+    for cluster in &snow.resources.redis_clusters {
+        specs.push(ForwardTargetSpec {
+            id: format!("redis_clusters.{}", cluster.id),
+            port: 6379,
+            scheme: "redis".to_owned(),
+            path: String::new(),
+        });
+    }
+    for bucket in &snow.resources.s3_buckets {
+        specs.push(ForwardTargetSpec {
+            id: format!("s3_buckets.{}", bucket.id),
+            // `ADR-0009` §2 pins the SeaweedFS container to `-port=9000` on the world loopback;
+            // `snow.yml` carries no per-bucket S3 port to read.
+            port: 9000,
+            scheme: "http".to_owned(),
+            path: String::new(),
+        });
+    }
+    for component in &snow.components {
+        if !enabled.contains(&component.id) {
+            continue;
+        }
+        if let Some(port) = component.internal_ports.first() {
+            specs.push(ForwardTargetSpec {
+                id: format!("components.{}", component.id),
+                port: *port,
+                scheme: "http".to_owned(),
+                path: String::new(),
+            });
+        }
+    }
+    if requested.is_empty() {
+        if specs.is_empty() {
+            return Err(rejected(format!(
+                "world '{world}' has no forwardable target: declare snow.yml resources or component internal_ports"
+            )));
+        }
+        return Ok(specs);
+    }
+    let mut selected = Vec::with_capacity(requested.len());
+    for id in requested {
+        let spec = specs.iter().find(|spec| spec.id == *id).ok_or_else(|| {
+            let known = specs
+                .iter()
+                .map(|spec| spec.id.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            rejected(format!(
+                "world '{world}' has no forward target '{id}' (known targets: {known})"
+            ))
+        })?;
+        if !selected
+            .iter()
+            .any(|existing: &ForwardTargetSpec| existing.id == *id)
+        {
+            selected.push(spec.clone());
+        }
+    }
+    Ok(selected)
+}
+
 /// Map one invalid request to a typed rejection (the message is the whole diagnostic).
 fn rejected(message: impl Into<String>) -> EdgeError {
     EdgeError::Control(DaemonError::new(DaemonErrorKind::Rejected, message))
+}
+
+/// Resolve one `snow.yml` resource id to the running service handle id and the argv to run.
+///
+/// `pg_databases.main` selects the `pg_clusters.<cluster>` container and appends `-d main` to
+/// `psql`; `redis_clusters.cache` is its own service. Nothing ever falls back to the app rootfs.
+fn resolve_service_target(
+    snow: &SnowFile,
+    requested: &str,
+    argv: &[String],
+) -> Result<(String, Vec<String>), EdgeError> {
+    if requested.trim().is_empty() {
+        return Err(rejected("a backing-service id must not be empty"));
+    }
+    let (kind, id) = requested.split_once('.').ok_or_else(|| {
+        rejected(format!(
+            "invalid backing-service id '{requested}' (expected <kind>.<id>, for example pg_databases.main)"
+        ))
+    })?;
+    match kind {
+        "pg_databases" => {
+            let database = snow
+                .resources
+                .pg_databases
+                .iter()
+                .find(|database| database.id == id)
+                .ok_or_else(|| unknown_service(snow, requested))?;
+            let mut argv = argv.to_vec();
+            if argv.first().map(String::as_str) == Some("psql")
+                && !argv.iter().any(|arg| arg == "-d" || arg == "--dbname")
+            {
+                argv.push("-d".to_owned());
+                argv.push(database.id.clone());
+            }
+            Ok((format!("pg_clusters.{}", database.cluster), argv))
+        }
+        "redis_clusters" => {
+            if !snow
+                .resources
+                .redis_clusters
+                .iter()
+                .any(|cluster| cluster.id == id)
+            {
+                return Err(unknown_service(snow, requested));
+            }
+            Ok((requested.to_owned(), argv.to_vec()))
+        }
+        "pg_clusters" => {
+            if !snow
+                .resources
+                .pg_clusters
+                .iter()
+                .any(|cluster| cluster.id == id)
+            {
+                return Err(unknown_service(snow, requested));
+            }
+            Ok((requested.to_owned(), argv.to_vec()))
+        }
+        _ => Err(unknown_service(snow, requested)),
+    }
+}
+
+/// `ServiceNotRunning` diagnostic naming the world and the stopped container.
+fn service_not_running(world: &str, service: &str) -> EdgeError {
+    EdgeError::Control(DaemonError::new(
+        DaemonErrorKind::ServiceNotRunning,
+        format!(
+            "world '{world}' has no running service '{service}' (ServiceNotRunning): psql and \
+             redis-cli run only inside the service container — run `slipfork up` and retry"
+        ),
+    ))
+}
+
+/// `ServiceNotRunning` remains a typed daemon error; every other engine failure is internal.
+fn service_engine_error(world: &str, service: &str, error: EngineError) -> EdgeError {
+    match error {
+        EngineError::ServiceNotRunning { .. } => service_not_running(world, service),
+        other => runtime_error(other.to_string()),
+    }
+}
+
+fn unknown_service(snow: &SnowFile, requested: &str) -> EdgeError {
+    let mut known: Vec<String> = snow
+        .resources
+        .pg_databases
+        .iter()
+        .map(|database| format!("pg_databases.{}", database.id))
+        .chain(
+            snow.resources
+                .redis_clusters
+                .iter()
+                .map(|cluster| format!("redis_clusters.{}", cluster.id)),
+        )
+        .collect();
+    known.sort();
+    rejected(format!(
+        "world declares no backing service '{requested}' (known services: {})",
+        if known.is_empty() {
+            "none".to_owned()
+        } else {
+            known.join(", ")
+        }
+    ))
 }
 
 fn dump_policy(request: slipfork_edge::DumpRequest) -> DumpPolicy {
@@ -1316,6 +2039,176 @@ fn json_label<T: serde::Serialize>(value: &T) -> String {
         .ok()
         .and_then(|value| value.as_str().map(str::to_owned))
         .unwrap_or_default()
+}
+
+/// The backing-service OCI images `snow.yml` `resources:` requests (`ADR-0009` §2.2).
+fn requested_service_images(snow: &SnowFile) -> Vec<BackingServiceKey> {
+    let mut images = BTreeSet::new();
+    for cluster in &snow.resources.pg_clusters {
+        images.insert(BackingServiceKey::Postgres {
+            version: cluster.version.clone(),
+        });
+    }
+    for cluster in &snow.resources.redis_clusters {
+        images.insert(BackingServiceKey::Redis {
+            version: cluster.version.clone(),
+        });
+    }
+    if !snow.resources.s3_buckets.is_empty() {
+        images.insert(BackingServiceKey::SeaweedFs);
+    }
+    images.into_iter().collect()
+}
+
+/// One `ServiceSpec` per declared backing service, all on the single `WorldEngine` supervision
+/// surface (`ADR-0009` §2–§3).
+fn service_specs(snow: &SnowFile, rootfs: &WorldRootfs) -> Result<Vec<ServiceSpec>, EdgeError> {
+    let mut specs = Vec::new();
+    for cluster in &snow.resources.pg_clusters {
+        let image = BackingServiceKey::Postgres {
+            version: cluster.version.clone(),
+        };
+        require_image(rootfs, &image, &format!("pg_clusters.{}", cluster.id))?;
+        ensure_container_dirs(rootfs, &image, &["/var/lib/postgresql/data"])?;
+        specs.push(ServiceSpec {
+            id: format!("pg_clusters.{}", cluster.id),
+            runtime: ServiceRuntime::OciContainer {
+                image,
+                argv: vec!["docker-entrypoint.sh".to_owned(), "postgres".to_owned()],
+                state_mounts: vec![StateSubdirMount {
+                    host_subdir: PathBuf::from("pgdata").join(&cluster.id),
+                    container_path: PathBuf::from("/var/lib/postgresql/data"),
+                }],
+                readonly_mounts: Vec::new(),
+            },
+            env: container_env(
+                "/tmp",
+                &[
+                    ("LC_ALL", "C.UTF-8"),
+                    ("PGDATA", "/var/lib/postgresql/data"),
+                    ("POSTGRES_HOST_AUTH_METHOD", "trust"),
+                ],
+                &format!(
+                    "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/lib/postgresql/{}/bin",
+                    cluster.version
+                ),
+            )?,
+            readiness_port: Some(5432),
+        });
+    }
+    for cluster in &snow.resources.redis_clusters {
+        let image = BackingServiceKey::Redis {
+            version: cluster.version.clone(),
+        };
+        require_image(rootfs, &image, &format!("redis_clusters.{}", cluster.id))?;
+        ensure_container_dirs(rootfs, &image, &["/data"])?;
+        specs.push(ServiceSpec {
+            id: format!("redis_clusters.{}", cluster.id),
+            runtime: ServiceRuntime::OciContainer {
+                image,
+                argv: vec![
+                    "docker-entrypoint.sh".to_owned(),
+                    "redis-server".to_owned(),
+                    "--dir".to_owned(),
+                    "/data".to_owned(),
+                ],
+                state_mounts: vec![StateSubdirMount {
+                    host_subdir: PathBuf::from("redis").join(&cluster.id),
+                    container_path: PathBuf::from("/data"),
+                }],
+                readonly_mounts: Vec::new(),
+            },
+            env: container_env(
+                "/data",
+                &[("LC_ALL", "C")],
+                "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+            )?,
+            readiness_port: Some(6379),
+        });
+    }
+    if !snow.resources.s3_buckets.is_empty() {
+        let image = BackingServiceKey::SeaweedFs;
+        require_image(rootfs, &image, "s3_buckets")?;
+        ensure_container_dirs(rootfs, &image, &["/data"])?;
+        specs.push(ServiceSpec {
+            id: "s3_buckets".to_owned(),
+            runtime: ServiceRuntime::OciContainer {
+                image,
+                argv: vec![
+                    "weed".to_owned(),
+                    "server".to_owned(),
+                    "-dir=/data".to_owned(),
+                    "-s3".to_owned(),
+                    "-s3.port=9000".to_owned(),
+                    "-s3.ip.bind=127.0.0.1".to_owned(),
+                ],
+                state_mounts: vec![StateSubdirMount {
+                    host_subdir: PathBuf::from("s3"),
+                    container_path: PathBuf::from("/data"),
+                }],
+                readonly_mounts: Vec::new(),
+            },
+            env: container_env(
+                "/data",
+                &[],
+                "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+            )?,
+            readiness_port: Some(9000),
+        });
+    }
+    Ok(specs)
+}
+
+/// Create the bind-mount destinations a backing-service image declares as volumes.
+///
+/// `docker export` omits `VOLUME` contents, so the extracted read-only rootfs may lack the
+/// directory itself. The engine refuses to invent a destination; the Composition Root prepares it
+/// once in the content-addressed cache before the container starts.
+fn ensure_container_dirs(
+    rootfs: &WorldRootfs,
+    image: &BackingServiceKey,
+    paths: &[&str],
+) -> Result<(), EdgeError> {
+    let image = rootfs.service_images.get(image).ok_or_else(|| {
+        runtime_error(format!(
+            "backing-service image '{image}' is not materialized; re-run `slipfork up`"
+        ))
+    })?;
+    for path in paths {
+        let host = image.rootfs.join(path.trim_start_matches('/'));
+        std::fs::create_dir_all(&host)
+            .map_err(|err| runtime_error(format!("cannot create {}: {err}", host.display())))?;
+    }
+    Ok(())
+}
+
+fn require_image(
+    rootfs: &WorldRootfs,
+    image: &BackingServiceKey,
+    resource: &str,
+) -> Result<(), EdgeError> {
+    if rootfs.service_images.contains_key(image) {
+        return Ok(());
+    }
+    Err(runtime_error(format!(
+        "resource '{resource}' needs backing-service image '{image}', but the materialized rootfs \
+         carries no OCI image for it; re-run `slipfork up` so the L0 builder extracts it"
+    )))
+}
+
+fn container_env(home: &str, vars: &[(&str, &str)], path: &str) -> Result<ExecEnv, EdgeError> {
+    let mut env = ExecEnv::world_scoped(home);
+    env.inherit(InheritedVar::Path, path);
+    // `LANG` is a closed inherited variable, so an OCI image without the host locale gets `C`.
+    env.inherit(
+        InheritedVar::Lang,
+        if home == "/data" { "C" } else { "C.UTF-8" },
+    );
+    for (name, value) in vars {
+        env.set(name, *value)
+            .map_err(|err| runtime_error(err.to_string()))?;
+    }
+    Ok(env)
 }
 
 /// OSPP-offered S3 coordinates are the only ones that override the world-local endpoint.
@@ -1420,6 +2313,46 @@ fn hook_phase_label(phase: HookPhase) -> &'static str {
         HookPhase::PostDeploy => "post-deploy",
         HookPhase::FailedDeploy => "failed-deploy",
     }
+}
+
+/// Resolve one `<component>:<phase>` hook through the single validation path used by both
+/// interactive `hook run` (entry argv) and `--no-tty` streaming.
+fn resolve_hook(
+    snow: &SnowFile,
+    enabled: &BTreeSet<String>,
+    component_envs: &BTreeMap<String, ExecEnv>,
+    hook_id: &str,
+) -> Result<ResolvedHook, EdgeError> {
+    let (component, phase) = parse_hook_id(hook_id).ok_or_else(|| {
+        rejected(format!(
+            "invalid hook id '{hook_id}' (expected <component>:<phase>)"
+        ))
+    })?;
+    if !enabled.contains(component) {
+        return Err(rejected(format!(
+            "component '{component}' is not enabled in mode '{WORLD_MODE}'"
+        )));
+    }
+    let hook = snow
+        .hooks
+        .iter()
+        .find(|hook| hook.component == component && hook.when == phase)
+        .ok_or_else(|| rejected(format!("world has no hook '{hook_id}'")))?;
+    if hook.run_command.trim().is_empty() {
+        return Err(rejected(format!(
+            "hook '{hook_id}' declares an empty run_command"
+        )));
+    }
+    Ok(ResolvedHook {
+        argv: vec![
+            "sh".to_owned(),
+            "-eu".to_owned(),
+            "-c".to_owned(),
+            hook.run_command.clone(),
+        ],
+        overlay: component_envs.get(component).cloned().unwrap_or_default(),
+        phase_label: hook_phase_label(phase),
+    })
 }
 
 fn parse_hook_id(hook: &str) -> Option<(&str, HookPhase)> {

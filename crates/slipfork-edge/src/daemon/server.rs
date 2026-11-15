@@ -227,6 +227,18 @@ fn dispatch(
                 target: control.exec_target(&request)?,
             },
         ),
+        DaemonRequest::HookExecTarget(request) => write_reply(
+            writer,
+            &DaemonReply::ExecTarget {
+                target: control.hook_exec_target(&request)?,
+            },
+        ),
+        DaemonRequest::WorkspaceRefs(request) => write_reply(
+            writer,
+            &DaemonReply::WorkspaceRefs {
+                refs: control.workspace_refs(&request)?,
+            },
+        ),
         DaemonRequest::HookRun(request) => {
             let exit_code = stream_chunks(writer, |on_chunk| control.hook_run(&request, on_chunk))?;
             write_reply(writer, &DaemonReply::HookExit { exit_code })

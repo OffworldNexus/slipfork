@@ -13,6 +13,8 @@
 //!   `SlipforkConfig` loader/resolver constructor (no second TOML parser, no silent defaults).
 //! - [`user`]: the [`user::UserIdentity`] port and its `id -un` OS-account adapter.
 //! - [`vaults`]: the injected project-vault factory over the `0600` local vault.
+//! - [`oci_store`]: the injected [`slipfork_engine::rootfs::OciImageStore`] over the Docker CLI.
+//! - [`runtime`]: pinned `crun` + `slipfork-world-init` payload provisioning for every `L0` rootfs.
 //! - [`daemon`]: the in-process [`slipfork_edge::DaemonControl`] implementation `slipforkd` injects
 //!   into [`slipfork_edge::DaemonControlServer`].
 
@@ -21,6 +23,8 @@
 pub mod cli;
 pub mod daemon;
 pub mod layout;
+pub mod oci_store;
 pub mod project;
+pub mod runtime;
 pub mod user;
 pub mod vaults;

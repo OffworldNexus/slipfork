@@ -10,11 +10,14 @@ default-run = "slipfork"
 
 [dependencies]
 clap.workspace = true
+hex.workspace = true
+sha2.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 slipfork-dag = { path = "../slipfork-dag", features = ["fs"] }
 slipfork-edge = { path = "../slipfork-edge" }
 slipfork-engine = { path = "../slipfork-engine" }
+slipfork-ospp = { path = "../slipfork-ospp" }
 slipfork-snow = { path = "../slipfork-snow" }
 slipfork-vcs = { path = "../slipfork-vcs" }
 slipfork-world = { path = "../slipfork-world" }

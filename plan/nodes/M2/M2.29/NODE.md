@@ -2,16 +2,20 @@
 id: M2.29
 title: "slipforkd/CLI: container-scoped db/redis, --host-caches, container-aware up/down"
 kind: task
-status: ready
+status: active
 owner: implementer
 priority: 1
 depends_on: [M2.28, M2.17, M2.25]
-paths: ["crates/slipfork/**", "crates/slipfork-edge/src/daemon.rs"]
-attempts: 0
+paths:
+  - "crates/slipfork/**"
+  - "crates/slipfork-edge/src/daemon.rs"
+  - "crates/slipfork-edge/src/daemon/**"
+  - "crates/slipfork-edge/tests/critical_edge.rs"
+attempts: 1
 max_attempts: 3
 escalation: none
 created: "2026-11-15T20:40"
-updated: "2026-11-15T20:58"
+updated: "2026-11-15T22:31"
 ---
 
 # Goal

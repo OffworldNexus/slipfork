@@ -1159,8 +1159,10 @@ name = "slipfork"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "hex",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "slipfork-dag",
  "slipfork-edge",
  "slipfork-engine",

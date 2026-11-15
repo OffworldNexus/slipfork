@@ -97,7 +97,7 @@ impl fmt::Display for IntegrationTier {
 }
 
 /// Integration class an entry belongs to (`ADR-0007` §1).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum IntegrationCategory {
     /// Hypervisor / CoW world engine (e.g. `ReflinkNetnsEngine`, `IncusEngine`).

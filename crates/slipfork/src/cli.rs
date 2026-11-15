@@ -61,6 +61,10 @@ pub enum Commands {
         dump: DumpArgs,
         #[command(flatten)]
         resources: ResourceArgs,
+        /// Mount the developer's host toolchain caches read-only after the ELF/libc ABI probe
+        /// passes (`ADR-0009` §2.3; never a `slipfork.toml` key).
+        #[arg(long)]
+        host_caches: bool,
     },
 
     /// Stop a world's services while keeping its worktree (idempotent).
@@ -81,6 +85,10 @@ pub enum Commands {
         dump: DumpArgs,
         #[command(flatten)]
         resources: ResourceArgs,
+        /// Mount the developer's host toolchain caches read-only after the ELF/libc ABI probe
+        /// passes (`ADR-0009` §2.3; never a `slipfork.toml` key).
+        #[arg(long)]
+        host_caches: bool,
     },
 
     /// Destroy a fork world and remove its `.worktrees/<fork>` checkout.
@@ -135,6 +143,99 @@ pub enum Commands {
         /// Command and arguments to execute.
         #[arg(required = true, trailing_var_arg = true)]
         argv: Vec<String>,
+    },
+
+    /// Enter a world interactively with native terminal stdio (requires a TTY).
+    Shell {
+        /// World fork to enter; omit for the canonical world of `cwd`'s repository.
+        #[arg(long)]
+        world: Option<String>,
+    },
+
+    /// Read or follow retained component and hook logs from `slipforkd`.
+    Logs {
+        /// World fork to read; omit for the canonical world of `cwd`'s repository.
+        #[arg(long)]
+        world: Option<String>,
+        /// Component id, hook id (`api:pre-deploy`), or omit for every retained log.
+        target: Option<String>,
+        /// Keep streaming new output.
+        #[arg(long)]
+        follow: bool,
+        /// Read the stderr stream instead of stdout.
+        #[arg(long)]
+        stderr: bool,
+        /// Number of trailing lines to print.
+        #[arg(long)]
+        lines: Option<usize>,
+    },
+
+    /// Hook administration.
+    Hook {
+        #[command(subcommand)]
+        action: HookAction,
+    },
+
+    /// Open `psql` inside the world's running PostgreSQL service container (requires a TTY).
+    Db {
+        /// Declared `pg_databases.<id>` entry; inferred when exactly one is declared.
+        db_id: Option<String>,
+        /// World fork to enter; omit for the canonical world of `cwd`'s repository.
+        #[arg(long)]
+        world: Option<String>,
+    },
+
+    /// Open `redis-cli` inside the world's running Redis service container (requires a TTY).
+    Redis {
+        /// Declared `redis_clusters.<id>` entry; inferred when exactly one is declared.
+        cluster_id: Option<String>,
+        /// World fork to enter; omit for the canonical world of `cwd`'s repository.
+        #[arg(long)]
+        world: Option<String>,
+    },
+
+    /// Bind daemon-owned `127.0.0.1:0` listeners bridged into a world (held until Ctrl-C).
+    Forward {
+        /// World fork to forward; omit for the canonical world of `cwd`'s repository.
+        #[arg(long)]
+        world: Option<String>,
+        /// Target ids (`pg_databases.main`, `components.api`); empty forwards every target.
+        targets: Vec<String>,
+    },
+
+    /// OSPP device-key pairing.
+    Auth {
+        #[command(subcommand)]
+        action: AuthAction,
+    },
+
+    /// Report verified integration tiers and their required evidence (`ADR-0007`).
+    Support,
+}
+
+/// `slipfork hook` actions.
+#[derive(Debug, Subcommand)]
+pub enum HookAction {
+    /// Re-run one `<component>:<phase>` hook (direct native TTY unless `--no-tty`).
+    Run {
+        /// `<component>:<phase>` hook id.
+        hook: String,
+        /// World fork to use; omit for the canonical world of `cwd`'s repository.
+        #[arg(long)]
+        world: Option<String>,
+        /// Run non-interactively through `DaemonControl::hook_run`.
+        #[arg(long)]
+        no_tty: bool,
+    },
+}
+
+/// `slipfork auth` actions.
+#[derive(Debug, Subcommand)]
+pub enum AuthAction {
+    /// Pair a device key from a `#handle=` pairing URL (`-` reads it from stdin).
+    Login {
+        /// Pairing URL, or `-` to read it from stdin so the handle never enters `argv`.
+        url: Option<String>,
     },
 }
 

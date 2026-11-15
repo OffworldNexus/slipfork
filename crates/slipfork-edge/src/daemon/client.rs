@@ -264,6 +264,23 @@ impl DaemonControl for DaemonControlClient {
         }
     }
 
+    fn hook_exec_target(&self, req: &HookRunRequest) -> Result<WorldExecTarget, EdgeError> {
+        match self.call(&DaemonRequest::HookExecTarget(req.clone()))? {
+            DaemonReply::ExecTarget { target } => Ok(target),
+            other => Err(unexpected_reply(&other)),
+        }
+    }
+
+    fn workspace_refs(
+        &self,
+        req: &crate::daemon::WorkspaceRefsRequest,
+    ) -> Result<crate::daemon::WorkspaceRefsSummary, EdgeError> {
+        match self.call(&DaemonRequest::WorkspaceRefs(req.clone()))? {
+            DaemonReply::WorkspaceRefs { refs } => Ok(refs),
+            other => Err(unexpected_reply(&other)),
+        }
+    }
+
     fn hook_run(
         &self,
         req: &HookRunRequest,

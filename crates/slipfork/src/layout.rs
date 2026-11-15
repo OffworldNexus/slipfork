@@ -100,6 +100,22 @@ impl Layout {
     pub fn base_seed_dir(&self, project: &ProjectSlug) -> PathBuf {
         self.state_dir.join("base").join(project.as_str())
     }
+
+    /// Directory holding one world's retained hook logs (`ADR-0008` §4 rescue path).
+    pub fn world_logs_dir(&self, project: &ProjectSlug, world: &str) -> PathBuf {
+        self.state_dir
+            .join(project.as_str())
+            .join("worlds")
+            .join(world)
+            .join("logs")
+    }
+
+    /// `0600` software device key used by the OSPP pairing fallback.
+    pub fn device_key_path(&self) -> PathBuf {
+        self.data_home
+            .join("slipfork")
+            .join("device-key-software.json")
+    }
 }
 
 /// Create `path` (and parents) as a user-private `0700` directory when missing.

@@ -38,9 +38,12 @@ use slipfork_edge::{
     UnavailableTunnelRegistrar, UnitSpec, WorldRegistry, adopt_systemd_listener, bind_listen,
     render_service_unit, render_socket_unit, resolve_listener_set,
 };
+use slipfork_engine::rootfs::{
+    ElfAbi, ImageContractMetadata, LibcFamily, OsRelease, RootfsDigest, WorldRootfs,
+};
 use slipfork_engine::{
-    EngineError, ExecEnv, IncusEngine, SnapshotId, StreamChunk, StreamSource, WorldEngine,
-    WorldEntryCommand, WorldHandle, WorldSpec, current_uid_gid,
+    EngineError, ExecEnv, ExecOutput, IncusEngine, ServiceHandle, SnapshotId, StreamChunk,
+    StreamSource, WorldEngine, WorldEntryCommand, WorldHandle, WorldSpec, current_uid_gid,
 };
 use slipfork_world::{
     LocalHostRoute, ProjectSlug, TunnelError, TunnelLease, TunnelRegistrar, TunnelRequest,
@@ -670,9 +673,35 @@ impl FakeIncus {
     }
 }
 
+/// `IncusEngine` never inspects the rootfs in this protocol harness; only the provenance value is
+/// required by the `WorldSpec` contract.
+fn test_rootfs() -> WorldRootfs {
+    WorldRootfs {
+        digest: RootfsDigest::from_hex("e".repeat(64)).expect("valid digest"),
+        app_rootfs: PathBuf::from("/nonexistent/slipfork-edge-test/app"),
+        crun_bin: PathBuf::from("/.slipfork/bin/crun"),
+        service_images: std::collections::BTreeMap::new(),
+        metadata: ImageContractMetadata {
+            os_release: OsRelease {
+                id: "alpine".to_owned(),
+                version_id: "3.21".to_owned(),
+                version_codename: String::new(),
+            },
+            elf_abi: ElfAbi {
+                arch: "x86_64".to_owned(),
+                libc: LibcFamily::Musl,
+                libc_version: "1.2".to_owned(),
+            },
+            exposed_ports: std::collections::BTreeSet::new(),
+        },
+        host_caches: Vec::new(),
+    }
+}
+
 fn clone_test_world(engine: &dyn WorldEngine, state: &Path, target: WorldTarget) -> WorldHandle {
     let spec = WorldSpec {
         target,
+        rootfs: test_rootfs(),
         snapshot: SnapshotId("base".to_owned()),
         mounts: Vec::new(),
         base_env: ExecEnv::world_scoped(state.join("home")),
@@ -1201,6 +1230,24 @@ impl WorldEngine for DialEngine {
         id: &str,
     ) -> Result<slipfork_engine::ServiceLogs, EngineError> {
         self.inner.service_logs(world, id)
+    }
+
+    fn exec_in_service(
+        &self,
+        service: &ServiceHandle,
+        argv: &[String],
+        overlay_env: &ExecEnv,
+        on_output: &mut dyn FnMut(StreamChunk),
+    ) -> Result<ExecOutput, EngineError> {
+        self.inner
+            .exec_in_service(service, argv, overlay_env, on_output)
+    }
+
+    fn service_entry_command(
+        &self,
+        service: &ServiceHandle,
+    ) -> Result<WorldEntryCommand, EngineError> {
+        self.inner.service_entry_command(service)
     }
 
     fn exec_in_world(
@@ -2382,6 +2429,7 @@ fn daemon_control_round_trip_and_frame_cap() {
                 world: None,
                 dump: DumpRequest::NoDump,
                 resources: ResourceRequest::Local,
+                host_caches: false,
             },
             &mut |event| events.push(event),
         )
@@ -2420,6 +2468,7 @@ fn daemon_control_round_trip_and_frame_cap() {
                 base: None,
                 dump: DumpRequest::Default,
                 resources: ResourceRequest::Default,
+                host_caches: false,
             },
             &mut |_| {},
         )
@@ -2501,6 +2550,7 @@ fn daemon_control_round_trip_and_frame_cap() {
         .exec_target(&ExecTargetRequest {
             cwd: cwd.clone(),
             world: None,
+            service: None,
             argv: vec!["psql".to_owned()],
         })
         .expect("exec_target");

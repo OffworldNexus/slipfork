@@ -407,3 +407,5 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-15T22:14 [M2.29] (lead) status ready -> active
 - 2026-11-15T22:14 [M2.29] (lead) attempt 1/3 started
 - 2026-11-15T22:14 [M2.29] (lead) base b92c9aa98e8f156def422501491c0b098ad800bf; owns the WorldSpec.rootfs wiring that unblocks M2.17's compile
+- 2026-11-15T22:24 [M2.28] (lead) status ready -> done
+- 2026-11-15T22:31 [M2.29] (implementer) edited fields
