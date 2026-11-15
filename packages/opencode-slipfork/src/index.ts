@@ -1,123 +1,121 @@
 /**
  * `@slipfork/opencode` OpenCode V2 Server Plugin Composition Root.
  *
- * Wires real `git worktree` and `slipfork` CLI adapters into `SlipforkWorktreeCoordinator`
- * and registers:
+ * Wires the real `slipfork` CLI adapter and the one-shot manifest probe into
+ * `SlipforkWorktreeCoordinator`, then registers:
  *  1. `ctx.worktree.transform` (automatic CoW world fork on worktree create/remove)
- *  2. `ctx.shell.hook("create.before")` (implicit shell routing by session directory)
- *  3. `ctx.session.hook("context")` (2-line ambient world awareness)
+ *  2. `ctx.shell.hook("create.before")` (implicit routing through `slipfork exec`)
+ *  3. `ctx.session.hook("context")` (world + single-origin awareness)
+ *
+ * This module is the only place that touches the host filesystem, `process.env`, or child
+ * processes (`ADR-0004`, `H-010` #1/#2); the coordinator itself stays pure.
  */
 import { execFile } from "node:child_process";
-import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { statSync } from "node:fs";
 import { promisify } from "node:util";
 
 import {
-  type GitWorktreeGateway,
+  buildDropArgs,
+  buildExecCommandLine,
+  buildForkArgs,
+  buildListArgs,
+  type ForkedWorld,
+  parseForkedWorld,
+  parseWorldList,
+  type SlipforkWorldRow,
+} from "./cli.ts";
+import {
+  type ManifestProbe,
   type SessionContextEvent,
   type ShellCreateBeforeEvent,
   type SlipforkGateway,
   SlipforkWorktreeCoordinator,
+  loadSlipforkProjectState,
+  type WorktreeStrategy,
 } from "./coordinator.ts";
 
 const execFileAsync = promisify(execFile);
 
-function shellSingleQuote(text: string): string {
-  return `'${text.replaceAll("'", `'\\''`)}'`;
+/** The host filesystem adapter the explicit project-state loader needs (`M2.18`). */
+class StatManifestProbe implements ManifestProbe {
+  inspect(path: string): "present" | "missing" | { readonly error: string } {
+    try {
+      return statSync(path).isFile() ? "present" : { error: `${path} is not a regular file` };
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === "ENOENT") return "missing";
+      return { error: `cannot inspect ${path}: ${(err as Error).message}` };
+    }
+  }
 }
 
+export interface CliSlipforkGatewayOptions {
+  /** The `slipfork` executable (`options.binary`, defaulting to `PATH`). */
+  readonly binary: string;
+  /** Repository root every command runs from; the daemon resolves worlds from it. */
+  readonly repoRoot: string;
+}
+
+/** Thin `slipfork` CLI adapter: it only forwards argv and decodes JSON (`ADR-0004`). */
 export class CliSlipforkGateway implements SlipforkGateway {
-  constructor(
-    private readonly binary: string,
-    private readonly canonicalRoot: string,
-  ) {}
+  constructor(private readonly options: CliSlipforkGatewayOptions) {}
 
   async forkWorld(input: {
-    worldName: string;
-    workspaceDir: string;
+    fork: string;
+    base?: string;
     signal: AbortSignal;
-  }): Promise<void> {
-    await execFileAsync(
-      this.binary,
-      ["fork", input.worldName, "--workspace", input.workspaceDir],
-      { cwd: this.canonicalRoot, signal: input.signal },
-    );
+  }): Promise<ForkedWorld> {
+    const stdout = await this.run(buildForkArgs(input), input.signal, `fork '${input.fork}'`);
+    return parseForkedWorld(stdout, input.fork);
   }
 
-  async dropWorld(input: { worldName: string; signal: AbortSignal }): Promise<void> {
-    await execFileAsync(this.binary, ["drop", input.worldName], {
-      cwd: this.canonicalRoot,
-      signal: input.signal,
-    });
+  async dropWorld(input: { fork: string; signal: AbortSignal }): Promise<void> {
+    await this.run(buildDropArgs(input.fork), input.signal, `drop '${input.fork}'`);
+  }
+
+  async listWorlds(input: { signal: AbortSignal }): Promise<readonly SlipforkWorldRow[]> {
+    const stdout = await this.run(buildListArgs(), input.signal, "list");
+    return parseWorldList(stdout);
   }
 
   wrapShellCommand(input: {
-    worldName: string;
-    workspaceDir: string;
+    fork: string;
     cwd: string;
     shell: string;
     command: string;
   }): { shell: string; command: string; env: Record<string, string> } {
-    const snowPath = join(input.workspaceDir, "snow.yml");
-    const args = [
-      shellSingleQuote(this.binary),
-      "exec",
-      "--world",
-      shellSingleQuote(input.worldName),
-      "--cwd",
-      shellSingleQuote(input.cwd),
-    ];
-    if (existsSync(snowPath)) {
-      args.push("--snow-file", shellSingleQuote(snowPath));
-    }
-    args.push("--", shellSingleQuote(input.shell), "-c", shellSingleQuote(input.command));
+    // `slipforkd` is the sole owner of the world environment; the plugin only prepends the route
+    // and marks the host-side process with the active fork.
     return {
       shell: "/bin/sh",
-      command: args.join(" "),
-      env: { SLIPFORK_ACTIVE_WORLD: input.worldName },
+      command: buildExecCommandLine(this.options.binary, {
+        world: input.fork,
+        cwd: input.cwd,
+        shell: input.shell,
+        command: input.command,
+      }),
+      env: { SLIPFORK_ACTIVE_WORLD: input.fork },
     };
   }
-}
 
-class CliGitWorktreeGateway implements GitWorktreeGateway {
-  async add(input: {
-    sourceDirectory: string;
-    directory: string;
-    branch?: string;
-    signal: AbortSignal;
-  }): Promise<void> {
-    const args = ["worktree", "add", input.directory];
-    if (input.branch) args.push(input.branch);
-    await execFileAsync("git", args, { cwd: input.sourceDirectory, signal: input.signal });
-  }
-
-  async remove(input: { directory: string; force: boolean; signal: AbortSignal }): Promise<void> {
-    const args = ["worktree", "remove"];
-    if (input.force) args.push("--force");
-    args.push(input.directory);
-    await execFileAsync("git", args, { signal: input.signal });
-  }
-
-  async list(
-    sourceDirectory: string,
+  private async run(
+    args: readonly string[],
     signal: AbortSignal,
-  ): Promise<readonly { directory: string; type: "root" | "worktree" }[]> {
-    const { stdout } = await execFileAsync("git", ["worktree", "list", "--porcelain"], {
-      cwd: sourceDirectory,
-      signal,
-    });
-    const out: { directory: string; type: "root" | "worktree" }[] = [];
-    let idx = 0;
-    for (const line of stdout.split("\n")) {
-      if (line.startsWith("worktree ")) {
-        out.push({
-          directory: line.slice("worktree ".length).trim(),
-          type: idx === 0 ? "root" : "worktree",
-        });
-        idx += 1;
-      }
+    what: string,
+  ): Promise<string> {
+    try {
+      const { stdout } = await execFileAsync(this.options.binary, args, {
+        cwd: this.options.repoRoot,
+        signal,
+      });
+      return stdout;
+    } catch (err) {
+      const failure = err as Error & { stdout?: string | Buffer; stderr?: string | Buffer };
+      const asText = (value: string | Buffer | undefined): string =>
+        typeof value === "string" ? value.trim() : "";
+      const output = [asText(failure.stdout), asText(failure.stderr)].filter((part) => part !== "");
+      throw new Error(`slipfork ${what} failed: ${output.join("\n") || failure.message}`);
     }
-    return out;
   }
 }
 
@@ -135,7 +133,7 @@ interface OpenCodePluginContext {
     ): Promise<{ dispose(): Promise<void> }>;
   };
   worktree: {
-    transform(cb: (editor: { add(strategy: unknown): void }) => void): Promise<{
+    transform(cb: (editor: { add(strategy: WorktreeStrategy): void }) => void): Promise<{
       dispose(): Promise<void>;
     }>;
   };
@@ -153,16 +151,20 @@ export default {
   id: "slipfork.opencode",
   async setup(ctx: OpenCodePluginContext) {
     const canonical = String(
-      ctx.location.project?.canonical ??
-        ctx.location.project?.directory ??
-        ctx.location.directory,
+      ctx.location.project?.canonical ?? ctx.location.project?.directory ?? ctx.location.directory,
     );
     const binary = typeof ctx.options.binary === "string" ? ctx.options.binary : "slipfork";
+    const project = loadSlipforkProjectState({
+      repoRoot: canonical,
+      probe: new StatManifestProbe(),
+    });
     const coordinator = new SlipforkWorktreeCoordinator(
-      canonical,
-      new CliSlipforkGateway(binary, canonical),
-      new CliGitWorktreeGateway(),
+      project,
+      new CliSlipforkGateway({ binary, repoRoot: canonical }),
     );
+
+    const notice = coordinator.projectNotice();
+    if (notice !== undefined) console.warn(`slipfork: ${notice.message}`);
 
     const wtReg = await ctx.worktree.transform((editor) => {
       editor.add(coordinator.makeWorktreeStrategy());
@@ -173,15 +175,19 @@ export default {
     const ctxReg = await ctx.session.hook("context", async (event) => {
       const info = await ctx.session.get({ sessionID: event.sessionID });
       const dir = info.location?.directory;
-      if (!dir) return;
-      const hint = coordinator.buildContextHint(dir);
-      if (hint) event.system.push({ type: "text", text: hint });
+      if (dir === undefined) return;
+      const hint = coordinator.buildContextHint(dir) ?? coordinator.buildProjectNoticeHint();
+      if (hint !== undefined) event.system.push({ type: "text", text: hint });
     });
 
     return async () => {
       await ctxReg.dispose();
       await shellReg.dispose();
       await wtReg.dispose();
+      // Teardown never throws: failed releases are recorded as warnings for the operator.
+      for (const warning of await coordinator.releaseAllWorlds(new AbortController().signal)) {
+        console.warn(`slipfork: ${warning}`);
+      }
     };
   },
 };
