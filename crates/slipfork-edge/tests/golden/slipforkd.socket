@@ -1,0 +1,13 @@
+[Unit]
+Description=Slipfork daemon socket (systemd binds the ingress and forward ports as root, then hands them to the unprivileged user service)
+
+[Socket]
+ListenStream=127.0.0.1:80
+ListenStream=[::1]:80
+ListenStream=127.0.0.1:7080
+Backlog=1024
+NoDelay=true
+Service=slipforkd.service
+
+[Install]
+WantedBy=sockets.target

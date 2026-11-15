@@ -6,8 +6,8 @@
 //! `fd 3`, `LISTEN_PID` equals the child pid, and the inherited sockets are **blocking** — so the
 //! daemon must make them non-blocking itself.
 //!
-//! Role assignment never inspects port numbers. It follows the `.socket` order that `M2.10` will
-//! render exactly:
+//! Role assignment never inspects port numbers. It follows the `.socket` order
+//! [`crate::unit::render_socket_unit`] renders exactly:
 //!
 //! | `LISTEN_FDS` | `http_listeners` | `forward_listener` |
 //! |---|---|---|

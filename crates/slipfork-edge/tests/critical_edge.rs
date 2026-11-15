@@ -14,7 +14,7 @@
 #![forbid(unsafe_code)]
 
 use std::fs;
-use std::io::{Read, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{Ipv4Addr, Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::os::fd::OwnedFd;
 use std::os::unix::fs::PermissionsExt;
@@ -22,7 +22,7 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -35,8 +35,8 @@ use slipfork_edge::daemon::{
 use slipfork_edge::{
     DaemonControlClient, DaemonControlServer, EdgeError, ForwardTargetSpec, HttpIngress,
     IngressRoute, ListenConfig, RouteDecision, RoutedWorld, SharedWorldInfo,
-    UnavailableTunnelRegistrar, WorldRegistry, adopt_systemd_listener, bind_listen,
-    resolve_listener_set,
+    UnavailableTunnelRegistrar, UnitSpec, WorldRegistry, adopt_systemd_listener, bind_listen,
+    render_service_unit, render_socket_unit, resolve_listener_set,
 };
 use slipfork_engine::{
     EngineError, ExecEnv, IncusEngine, SnapshotId, StreamChunk, StreamSource, WorldEngine,
@@ -226,6 +226,7 @@ fn activation_probe_child() {
         "broken_descriptor" => probe_broken_descriptor(),
         "no_listener" => probe_no_listener(),
         "listen_mode" => probe_listen_mode(),
+        "systemd_socket_activate" => probe_systemd_socket_activate(),
         other => panic!("unknown probe mode '{other}'"),
     }
 }
@@ -249,6 +250,29 @@ fn assert_would_block(listener: &TcpListener, role: &str) {
         err.kind(),
         std::io::ErrorKind::WouldBlock,
         "adopted {role} must be non-blocking"
+    );
+}
+
+/// Assert the kernel reports `O_NONBLOCK` on an adopted descriptor.
+///
+/// The live `systemd-socket-activate` handover already has the triggering connection queued, so
+/// `accept` cannot probe blocking mode; `/proc/self/fdinfo` reports the real descriptor flags
+/// (`flags:` is octal, `O_NONBLOCK` is `0o4000` on Linux) without `unsafe` or a new dependency.
+fn assert_nonblocking(listener: &TcpListener, role: &str) {
+    use std::os::fd::AsRawFd as _;
+
+    let fd = listener.as_raw_fd();
+    let info = fs::read_to_string(format!("/proc/self/fdinfo/{fd}"))
+        .expect("read the descriptor flags from /proc/self/fdinfo");
+    let flags = info
+        .lines()
+        .find_map(|line| line.strip_prefix("flags:"))
+        .expect("fdinfo reports a flags line");
+    let bits = u32::from_str_radix(flags.trim(), 8).expect("fdinfo flags are octal");
+    assert_ne!(
+        bits & 0o4000,
+        0,
+        "adopted {role} must be O_NONBLOCK (fdinfo flags {bits:#o})"
     );
 }
 
@@ -390,6 +414,53 @@ fn probe_listen_mode() {
         with_forward.http_port().expect("http port"),
         forward.local_addr().expect("forward address").port()
     );
+}
+
+/// The child half of the **real** `systemd-socket-activate` handover: `LISTEN_PID` must name this
+/// process, exactly one descriptor (`fd 3`) must arrive, it must be adopted non-blocking, and it
+/// must serve the real HTTP dispatch for the parent's request.
+fn probe_systemd_socket_activate() {
+    let state = probe_state_dir();
+    let self_pid = std::process::id();
+    let listen_pid = std::env::var("LISTEN_PID").expect("systemd-socket-activate sets LISTEN_PID");
+    assert_eq!(
+        listen_pid.parse::<u32>().expect("numeric LISTEN_PID"),
+        self_pid,
+        "LISTEN_PID must name this child, never another process"
+    );
+    assert_eq!(
+        std::env::var("LISTEN_FDS").expect("systemd-socket-activate sets LISTEN_FDS"),
+        "1",
+        "the live test is the HTTP-only activation role"
+    );
+
+    let listeners = adopt_systemd_listener()
+        .expect("adoption succeeds")
+        .expect("activation is present");
+    assert_eq!(listeners.http_listeners.len(), 1);
+    assert!(
+        listeners.forward_listener.is_none(),
+        "LISTEN_FDS=1 must not invent a forward listener"
+    );
+    assert_nonblocking(
+        &listeners.http_listeners[0],
+        "systemd-activated HTTP ingress listener",
+    );
+
+    let registry = empty_registry(&state);
+    let ingress =
+        HttpIngress::bind(&state, listeners, registry).expect("bind the adopted listener + socket");
+    fs::write(state.join("probe.ready"), b"ready\n").expect("write the readiness marker");
+    thread::spawn(move || {
+        let _ = ingress.serve();
+    });
+
+    let done = state.join("probe.done");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while Instant::now() < deadline && !done.exists() {
+        thread::sleep(Duration::from_millis(10));
+    }
+    assert!(done.exists(), "the parent never finished its request");
 }
 
 #[test]
@@ -2588,5 +2659,359 @@ fn daemon_control_preserves_typed_errors() {
         .unshare(&WorldSelector { cwd, world: None })
         .expect("unshare stays an idempotent success");
     assert_eq!(origin.url(), "http://acme.localhost");
+    let _ = fs::remove_dir_all(&state);
+}
+
+// ---------------------------------------------------------------------------------------------
+// slipforkd.socket / slipforkd.service non-template units (M2.10, ADR-0008 §5)
+// ---------------------------------------------------------------------------------------------
+
+/// Fixed test account for the golden pair: any real account name renders identically, and this one
+/// can never be a systemd `%`-template.
+const GOLDEN_USER: &str = "slipforktest";
+
+fn golden_unit_spec() -> UnitSpec {
+    UnitSpec {
+        user: GOLDEN_USER.to_owned(),
+        listen_addrs: vec![
+            SocketAddr::from((Ipv4Addr::LOCALHOST, 80)),
+            SocketAddr::from((std::net::Ipv6Addr::LOCALHOST, 80)),
+        ],
+        forward_port: 7080,
+        executable: PathBuf::from("/usr/local/bin/slipforkd"),
+        state_dir: PathBuf::from("/home/slipforktest/.local/share/slipfork"),
+        runtime_dir: PathBuf::from("/run/user/1000/slipfork"),
+    }
+}
+
+#[test]
+fn unit_golden_renders_byte_exactly() {
+    let spec = golden_unit_spec();
+    spec.validate()
+        .expect("the shipped production pair (127.0.0.1:80 + [::1]:80 + forward 7080) validates");
+    let socket = render_socket_unit(&spec).expect("render slipforkd.socket");
+    let service = render_service_unit(&spec).expect("render slipforkd.service");
+
+    assert_eq!(
+        socket,
+        include_str!("golden/slipforkd.socket"),
+        "slipforkd.socket must render byte-exactly"
+    );
+    assert_eq!(
+        service,
+        include_str!("golden/slipforkd.service"),
+        "slipforkd.service must render byte-exactly"
+    );
+
+    // Exactly one service type, and it is the one the daemon actually implements.
+    assert_eq!(
+        service.matches("Type=").count(),
+        1,
+        "a unit must declare exactly one Type=:\n{service}"
+    );
+    assert!(service.contains("\nType=simple\n"), "got:\n{service}");
+
+    // Explicit account, never a template specifier.
+    assert!(
+        service.contains(&format!("\nUser={GOLDEN_USER}\n")),
+        "the service must name the resolved account:\n{service}"
+    );
+    assert!(
+        !service.contains('%') && !socket.contains('%'),
+        "non-template units must never contain a systemd %-specifier"
+    );
+
+    // Non-template hardening contract (ADR-0008 §5).
+    for directive in [
+        "\nCapabilityBoundingSet=\n",
+        "\nNoNewPrivileges=yes\n",
+        "\nProtectSystem=strict\n",
+        "\nPrivateTmp=yes\n",
+        "\nRestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX\n",
+        "\nLimitNOFILE=65536\n",
+    ] {
+        assert!(
+            service.contains(directive),
+            "missing {directive:?}:\n{service}"
+        );
+    }
+    assert!(
+        service.contains(&format!(
+            "\nExecStart={} --state-dir {} --runtime-dir {}\n",
+            spec.executable.display(),
+            spec.state_dir.display(),
+            spec.runtime_dir.display()
+        )),
+        "ExecStart must be the executable plus both explicit directories:\n{service}"
+    );
+    assert!(
+        service.contains(&format!(
+            "\nReadWritePaths={} {}\n",
+            spec.state_dir.display(),
+            spec.runtime_dir.display()
+        )),
+        "ReadWritePaths must cover exactly the state and runtime directories:\n{service}"
+    );
+
+    // Activation fd order is the M2.8 contract: ingress listeners first, forward listener last.
+    assert_eq!(
+        socket
+            .lines()
+            .filter(|line| line.starts_with("ListenStream="))
+            .collect::<Vec<_>>(),
+        vec![
+            "ListenStream=127.0.0.1:80",
+            "ListenStream=[::1]:80",
+            "ListenStream=127.0.0.1:7080",
+        ],
+        "ListenStream= order must match the activation fd order:\n{socket}"
+    );
+    assert!(socket.contains("\nBacklog=1024\n"), "got:\n{socket}");
+    assert!(socket.contains("\nNoDelay=true\n"), "got:\n{socket}");
+    assert!(
+        socket.contains("\nService=slipforkd.service\n"),
+        "the socket must name the service it activates:\n{socket}"
+    );
+}
+
+#[test]
+fn unit_validate_rejects_invalid_specs() {
+    let base = golden_unit_spec();
+
+    for user in ["", "   ", "%i", "%u", "dev user", "dev\tuser"] {
+        let mut spec = base.clone();
+        spec.user = user.to_owned();
+        match spec.validate() {
+            Err(EdgeError::UnitInvalidUser { user: refused }) => assert_eq!(refused, user),
+            other => panic!("user {user:?} must be refused with UnitInvalidUser, got {other:?}"),
+        }
+        assert!(
+            matches!(
+                render_socket_unit(&spec),
+                Err(EdgeError::UnitInvalidUser { .. })
+            ),
+            "an invalid user must never render a socket unit"
+        );
+        assert!(
+            matches!(
+                render_service_unit(&spec),
+                Err(EdgeError::UnitInvalidUser { .. })
+            ),
+            "an invalid user must never render a service unit"
+        );
+    }
+
+    let mut no_listener = base.clone();
+    no_listener.listen_addrs.clear();
+    assert!(matches!(
+        no_listener.validate(),
+        Err(EdgeError::UnitNoListener)
+    ));
+    assert!(matches!(
+        render_socket_unit(&no_listener),
+        Err(EdgeError::UnitNoListener)
+    ));
+
+    let mut colliding_v4 = base.clone();
+    colliding_v4.forward_port = 80;
+    match colliding_v4.validate() {
+        Err(EdgeError::UnitPortCollision {
+            forward_port,
+            listener,
+        }) => {
+            assert_eq!(forward_port, 80);
+            assert_eq!(listener, SocketAddr::from((Ipv4Addr::LOCALHOST, 80)));
+        }
+        other => panic!("a v4 forward/ingress collision must fail closed, got {other:?}"),
+    }
+    assert!(matches!(
+        render_socket_unit(&colliding_v4),
+        Err(EdgeError::UnitPortCollision { .. })
+    ));
+
+    let mut colliding_v6 = golden_unit_spec();
+    colliding_v6.listen_addrs = vec![SocketAddr::from((std::net::Ipv6Addr::LOCALHOST, 80))];
+    colliding_v6.forward_port = 80;
+    match colliding_v6.validate() {
+        Err(EdgeError::UnitPortCollision { listener, .. }) => {
+            assert_eq!(
+                listener,
+                SocketAddr::from((std::net::Ipv6Addr::LOCALHOST, 80))
+            );
+        }
+        other => panic!("a v6 forward/ingress collision must fail closed, got {other:?}"),
+    }
+
+    // A non-colliding forward port on an otherwise valid spec passes.
+    let mut fine = base.clone();
+    fine.forward_port = 7080;
+    fine.validate()
+        .expect("7080 does not collide with the :80 ingress");
+}
+
+#[test]
+fn unit_privileged_80_is_allowed_and_renders() {
+    // `systemd` (root, in the `.socket` unit) binds :80 and hands fd 3.. to the unprivileged
+    // service, so a privileged loopback listener is a legitimate spec, never a validation error.
+    let spec = golden_unit_spec();
+    spec.validate()
+        .expect(":80 on loopback must validate: systemd binds it, not slipforkd");
+    let socket = render_socket_unit(&spec).expect("render the :80 socket unit");
+    assert!(socket.contains("\nListenStream=127.0.0.1:80\n"), "{socket}");
+    assert!(socket.contains("\nListenStream=[::1]:80\n"), "{socket}");
+
+    // The "cannot bind unprivileged" hazard is a runtime diagnostic, never a spec rejection.
+    match resolve_listener_set(Some(&ListenConfig {
+        addr: SocketAddr::from((Ipv4Addr::LOCALHOST, 80)),
+        forward_port: None,
+    })) {
+        Ok(listeners) => {
+            // A privileged runner (root in CI) may bind :80; that is the successful path.
+            assert_eq!(listeners.http_port().expect("bound :80"), 80);
+        }
+        Err(EdgeError::BindListener { addr, message }) => {
+            assert_eq!(addr, "127.0.0.1:80");
+            assert!(
+                !message.is_empty(),
+                "the diagnostic must carry the OS error, got '{message}'"
+            );
+        }
+        Err(other) => panic!(
+            "an unprivileged bind of :80 must surface BindListener, not an unrelated error: {other:?}"
+        ),
+    }
+}
+
+/// Reserve one loopback port by binding `127.0.0.1:0` and releasing it for the real tool.
+///
+/// `systemd-socket-activate` 257 rejects `--listen=127.0.0.1:0`
+/// (`Failed to parse socket address "127.0.0.1:0": Invalid argument`), so the kernel picks the
+/// ephemeral port here and the tool binds that exact port a moment later.
+fn free_loopback_port() -> u16 {
+    TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+        .expect("bind an ephemeral loopback port")
+        .local_addr()
+        .expect("ephemeral loopback address")
+        .port()
+}
+
+#[test]
+fn socket_activate_systemd_handover() {
+    let state = cached_test_dir("socket-activate");
+    let executable = std::env::current_exe().expect("current test executable");
+    let port = free_loopback_port();
+
+    let mut command = Command::new("systemd-socket-activate");
+    command
+        .arg(format!("--listen=127.0.0.1:{port}"))
+        // The tool starts children from a minimal environment, so the probe selection crosses the
+        // handover explicitly (the same mechanism systemd uses for `Environment=`).
+        .arg(format!("--setenv={PROBE_MODE_ENV}=systemd_socket_activate"))
+        .arg(format!("--setenv={PROBE_STATE_ENV}={}", state.display()))
+        .arg(executable)
+        .args([
+            "--exact",
+            "activation_probe_child",
+            "--test-threads=1",
+            "--nocapture",
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = command.spawn().unwrap_or_else(|err| {
+        panic!(
+            "systemd-socket-activate is required for the live activation conformance test but could not be spawned: {err}; install systemd (this test fails closed instead of skipping)"
+        )
+    });
+
+    // The tool prints the listening socket on stderr and only execs the child on the first
+    // connection, exactly like a user manager (`facts.md` §5.2).
+    let stderr = child.stderr.take().expect("piped stderr");
+    let stderr_log = Arc::new(Mutex::new(String::new()));
+    let (ready_tx, ready_rx) = mpsc::channel();
+    let stderr_reader = {
+        let stderr_log = Arc::clone(&stderr_log);
+        thread::spawn(move || {
+            for line in BufReader::new(stderr).lines() {
+                let Ok(line) = line else { break };
+                if line.starts_with("Listening on ") {
+                    let _ = ready_tx.send(());
+                }
+                let mut log = stderr_log.lock().expect("tool stderr log");
+                log.push_str(&line);
+                log.push('\n');
+            }
+        })
+    };
+    let stdout = child.stdout.take().expect("piped stdout");
+    let stdout_log = Arc::new(Mutex::new(String::new()));
+    let stdout_reader = {
+        let stdout_log = Arc::clone(&stdout_log);
+        thread::spawn(move || {
+            let mut text = String::new();
+            let _ = BufReader::new(stdout).read_to_string(&mut text);
+            stdout_log.lock().expect("tool stdout log").push_str(&text);
+        })
+    };
+
+    let ready_deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        match ready_rx.recv_timeout(Duration::from_millis(100)) {
+            Ok(()) => break,
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                if let Some(status) = child.try_wait().expect("poll systemd-socket-activate") {
+                    let _ = stderr_reader.join();
+                    panic!(
+                        "systemd-socket-activate exited before listening ({status})\nstderr:\n{}",
+                        stderr_log.lock().expect("tool stderr log").as_str()
+                    );
+                }
+                if Instant::now() >= ready_deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    panic!(
+                        "systemd-socket-activate never reported a listening socket within 30s\nstderr:\n{}",
+                        stderr_log.lock().expect("tool stderr log").as_str()
+                    );
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                let _ = stderr_reader.join();
+                panic!(
+                    "systemd-socket-activate closed its stderr before listening\nstderr:\n{}",
+                    stderr_log.lock().expect("tool stderr log").as_str()
+                );
+            }
+        }
+    }
+
+    let response = tcp_request(port, "nope.localhost", "/");
+    assert!(
+        response.starts_with("HTTP/1.1 404 Not Found"),
+        "the socket-activated daemon must serve the real dispatch, got:\n{response}"
+    );
+    assert!(
+        response.contains("no world is attached for host 'nope.localhost'"),
+        "the 404 must name the Host, got:\n{response}"
+    );
+
+    fs::write(state.join("probe.done"), b"done\n").expect("signal probe completion");
+    let status = wait_for_exit(&mut child);
+    let _ = stderr_reader.join();
+    let _ = stdout_reader.join();
+    let stderr_text = stderr_log.lock().expect("tool stderr log").clone();
+    let stdout_text = stdout_log.lock().expect("tool stdout log").clone();
+    assert!(
+        status.success(),
+        "the socket-activated probe failed with {status}\nstdout:\n{stdout_text}\nstderr:\n{stderr_text}"
+    );
+    assert!(
+        stderr_text.contains("Communication attempt on fd 3."),
+        "the handover must come from the real tool, got:\n{stderr_text}"
+    );
+    assert!(
+        stdout_text.contains("activation_probe_child"),
+        "the child half of the probe must have run, got:\n{stdout_text}"
+    );
     let _ = fs::remove_dir_all(&state);
 }

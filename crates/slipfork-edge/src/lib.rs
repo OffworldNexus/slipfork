@@ -27,12 +27,16 @@
 //!   `0600` Unix-socket server/client (`ADR-0008` §4).
 //! - [`forward`]: daemon-owned `127.0.0.1:0` raw TCP bridges into a world (`H-010` #1).
 //! - [`unix_socket`]: the single `0600` pathname-socket binder shared by both listeners.
-//! - `unit`: placeholder for the `slipforkd.socket` / `.service` renderer (`M2.10`).
+//! - [`mod@unit`]: the pure non-template `slipforkd.socket` / `slipforkd.service` renderer (`M2.10`,
+//!   `ADR-0008` §5): typed [`unit::UnitSpec`], fail-closed [`unit::UnitSpec::validate`], and the two
+//!   byte-exact golden-tested renderers.
 //!
 //! Every module is synchronous (`std::thread`, zero async runtime), and the crate is
 //! `#![forbid(unsafe_code)]` (`listenfd` / `httparse` are both safe wrappers).
 
 #![forbid(unsafe_code)]
+
+use std::net::SocketAddr;
 
 use thiserror::Error;
 
@@ -63,6 +67,7 @@ pub use registry::{
     IngressRoute, RouteDecision, RoutedWorld, SharedWorldInfo, WorldRegistry, world_id,
 };
 pub use tunnel::UnavailableTunnelRegistrar;
+pub use unit::{UnitSpec, render_service_unit, render_socket_unit};
 
 /// Fail-closed errors produced by the edge crate.
 ///
@@ -288,6 +293,43 @@ pub enum EdgeError {
     ForwardSpec {
         /// What is wrong with the request.
         reason: String,
+    },
+
+    /// A `slipforkd.service` unit spec has no usable account name.
+    #[error(
+        "slipforkd.service needs an explicit developer account name, got '{user}': pass the resolved account (empty, whitespace, and systemd %-template values are refused)"
+    )]
+    UnitInvalidUser {
+        /// The offending `UnitSpec::user`.
+        user: String,
+    },
+
+    /// A `slipforkd.service` path cannot be written into a UTF-8 systemd unit line.
+    #[error(
+        "cannot write the {role} path '{path}' into slipforkd.service: unit files are UTF-8 text without control characters"
+    )]
+    UnitInvalidPath {
+        /// Which `ExecStart=` argument the path feeds (`ExecStart`, `--state-dir`, `--runtime-dir`).
+        role: &'static str,
+        /// The offending path.
+        path: String,
+    },
+
+    /// A `slipforkd.socket` unit spec has no `ListenStream=` address.
+    #[error(
+        "slipforkd.socket needs at least one ListenStream address: pass 127.0.0.1:80 (and [::1]:80) as the ingress listeners"
+    )]
+    UnitNoListener,
+
+    /// The planned forward port is also an ingress port, so the activation fd order is ambiguous.
+    #[error(
+        "the forward port {forward_port} collides with the ingress listener {listener}: the forward listener must use a different port so fd order stays unambiguous"
+    )]
+    UnitPortCollision {
+        /// The planned static forward port.
+        forward_port: u16,
+        /// The ingress listener that already uses that port.
+        listener: SocketAddr,
     },
 
     /// The control socket could not be read, written, or connected.

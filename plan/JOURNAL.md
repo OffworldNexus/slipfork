@@ -341,3 +341,21 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-15T20:28 [M2.9] (lead) status active -> review
 - 2026-11-15T20:36 [M2.24] (conductor) status active -> review: ADR-0009 + design authored with live crun probe
 - 2026-11-15T20:36 [M2.24] (conductor) status review -> done: Accepted ADR-0009, 6-rule contract, live probe: crun 1.20 static booted postgres:18+redis:8 inside unshare world, alpine container reache
+- 2026-11-15T20:37 [M2.9] (lead) status review -> done
+- 2026-11-15T20:37 [M2.10] (lead) status ready -> active
+- 2026-11-15T20:37 [M2.10] (lead) attempt 1/3 started
+- 2026-11-15T20:37 [M2.10] (lead) base ed975ce860cca892ef0a241f85a37af2bf482818
+- 2026-11-15T20:37 [M2.24] (lead) RECONCILE: M2.24 was dispatched in parallel by the conductor and closed done with the authoritative ADR-0009 (Accepted) + live crun/postgres18/redis8 probe. My 
+- 2026-11-15T20:37 [M2.24] (lead) M2.25 is the single writer of ARCHITECTURE.md + docs/decisions/**; any such edit needed by M2.8-M2.20 is deferred into M2.25's LOG.
+- 2026-11-15T20:39 [M2.24] (lead) duplicate-writer aborted cleanly: the local architect wrote zero files (confirmed by the session); conductor's ADR-0009/design/RESULT remain the sole on-disk ve
+- 2026-11-15T20:39 [M2.25] (lead) status ready -> active
+- 2026-11-15T20:39 [M2.25] (lead) attempt 1/3 started
+- 2026-11-15T20:39 [M2.25] (lead) base ed975ce860cca892ef0a241f85a37af2bf482818; single writer of ARCHITECTURE.md + docs/decisions/** until done
+- 2026-11-15T20:40 [M2.26] (planner) created (task) slipfork-dag: [world] config (world.image + world.stage only, fail-closed)
+- 2026-11-15T20:40 [M2.27] (planner) created (task) slipfork-engine::rootfs: WorldRootfs + BaseImageBuilder + DockerfileStageBuilder (6-rule contract)
+- 2026-11-15T20:40 [M2.28] (planner) created (task) slipfork-engine: ServiceRuntime::OciContainer over static crun + pivot_root rootfs + Incus provenance
+- 2026-11-15T20:40 [M2.29] (planner) created (task) slipforkd/CLI: container-scoped db/redis, --host-caches, container-aware up/down
+- 2026-11-15T20:45 [M2.25] (lead) attempt 2/3 started
+- 2026-11-15T20:45 [M2.26] (lead) status ready -> active
+- 2026-11-15T20:45 [M2.26] (lead) attempt 1/3 started
+- 2026-11-15T20:45 [M2.26] (lead) base ed975ce860cca892ef0a241f85a37af2bf482818
