@@ -145,3 +145,6 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-15T11:45 [M1] (strategist) status ready -> done: Final M1 (0.1.0) gate PASS at 6ee3b7b + accuracy polish: single-origin ADR-0005/H-008, per_world ADR-0003, typed coverage ADR-0006, suppor
 - 2026-11-15T11:46 [M2] (strategist) edited fields
 - 2026-11-15T11:48 AUTOPILOT off by conductor awaiting human release gate: no git remote for 0.1.0
+- 2026-11-15T16:17 HUMAN H-009 closed by conductor
+- 2026-11-15T16:17 AUTOPILOT on by conductor owner approved M2 kickoff with 7 architectural additions
+- 2026-11-15T16:17 [M2] (conductor) OWNER M2/M3 DIRECTIVES: (1) OSPP v1 WebSocket protocol with tpmd/SSH-style challenge-response auth, streaming DB dumps (opt-in for local dev, skipped for hermet
