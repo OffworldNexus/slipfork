@@ -3,11 +3,15 @@
 //! `slipforkd` wires these ports and passes them into world orchestration; domain crates never shell
 //! out, never read `std::env`, and never branch on a backend kind:
 //!
-//! - `RepoRootResolver`: resolves a start directory to `RepoRoot` (worktree root, VCS common dir,
-//!   canonical `ProjectSlug`), failing closed with `VcsError::NotARepository`.
+//! - `ProjectSlugOverride`: injected `<vcs_root>/slipfork.toml` `project = "<slug>"` reader,
+//!   implemented once at the composition root over `slipfork_dag::SlipforkConfig` (this crate
+//!   carries zero `slipfork-dag` dependency and zero second TOML parser).
+//! - `RepoRootResolver`: resolves a start directory to `RepoRoot` (worktree root, VCS root,
+//!   canonical `ProjectSlug`), failing closed with `VcsError::NotARepository` /
+//!   `VcsError::UnsupportedTopology`.
 //! - `VcsWorkspaceFactory` / `VcsWorkspace`: create and tear down `.worktrees/<fork>` checkouts that
-//!   expose `WorkspaceRefs` (`<fork>` plus the synthesized `<fork>/wip` snapshot) and
-//!   `WorkspaceChanges`.
+//!   expose `WorkspaceRefs` (`refs/heads/<fork>` plus the synthesized `refs/slipfork/<fork>/wip`
+//!   snapshot) and `WorkspaceChanges`.
 //!
 //! Adapter modules own every `std::process::Command` invocation; [`ports`] stays free of process,
 //! environment, and clock access. The crate ships **zero** `src/bin/*` targets: the
@@ -16,8 +20,17 @@
 
 #![forbid(unsafe_code)]
 
+mod git_command;
+
 pub mod git;
 pub mod jj;
 pub mod ports;
 pub mod remote_helper;
 pub mod repo_root;
+
+pub use git::GitWorktreeAdapter;
+pub use ports::{
+    MAX_WORKSPACE_CHANGES, NoProjectOverride, ProjectSlugOverride, RepoRoot, RepoRootResolver,
+    VcsError, VcsWorkspace, VcsWorkspaceFactory, WorkspaceChanges, WorkspaceRefs, WorkspaceRequest,
+};
+pub use repo_root::GitRepoRootResolver;

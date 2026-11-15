@@ -1224,10 +1224,12 @@ dependencies = [
  "slipfork-dag",
  "slipfork-snow",
  "slipfork-world",
+ "tempfile",
  "thiserror",
  "tokio",
  "tpmd-client",
  "tpmd-ipc",
+ "tpmd-proto",
  "tungstenite",
  "webpki-roots 1.0.12",
  "zstd",
@@ -1253,6 +1255,7 @@ name = "slipfork-vcs"
 version = "0.1.0"
 dependencies = [
  "slipfork-world",
+ "tempfile",
  "thiserror",
 ]
 

@@ -10,3 +10,6 @@ rust-version.workspace = true
 [dependencies]
 slipfork-world = { path = "../slipfork-world" }
 thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
