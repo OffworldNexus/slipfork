@@ -372,3 +372,12 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-15T20:53 [M2.16] (lead) attempt 1/3 started
 - 2026-11-15T20:53 [M2.16] (lead) base 0677c52045e7ac7c1b10262fad495bbdd8dd167a
 - 2026-11-15T20:58 [M2.29] (lead) edited fields
+- 2026-11-15T20:58 [M2.25] (lead) status active -> done
+- 2026-11-15T21:03 [M2.26] (lead) quad gate PASS (functional/ioc/cruft); dedupe + dead derive fixed before commit
+- 2026-11-15T21:03 [M2.16] (lead) attempt 2/3 started
+- 2026-11-15T21:03 [M2.16] (lead) edited fields
+- 2026-11-15T21:03 [M2.16] (lead) attempt 2 path widening (lead decisions): SecretProvider gains remove/keys (secret unset/list), ResourcesSpec gains the per-invocation Local override, ExecEnv g
+- 2026-11-15T21:03 [M2.20] (lead) edited fields
+- 2026-11-15T21:03 [M2.26] (lead) status active -> review
+- 2026-11-15T21:03 [M2.16] (lead) edited fields
+- 2026-11-15T21:03 [M2.20] (lead) edited fields

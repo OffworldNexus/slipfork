@@ -5,13 +5,13 @@ kind: task
 status: ready
 owner: implementer
 priority: 3
-depends_on: [M2.19]
+depends_on: [M2.19, M2.29]
 paths: [Cargo.toml, Cargo.lock, "packages/opencode-slipfork/package.json", zensical.toml, CHANGELOG.md]
 attempts: 0
 max_attempts: 3
 escalation: none
 created: "2026-11-15T16:40"
-updated: "2026-11-15T18:57"
+updated: "2026-11-15T21:03"
 ---
 
 # Goal

@@ -4,7 +4,8 @@
 //! (`[fixtures.<id>]`) so frontend asset changes never invalidate seeded database snapshots
 //! and schema/seed changes never rebuild frontend bundles (`ADR-0003`). Also owns the typed
 //! `[test]` coverage schema (`ADR-0006` §5), mode-aware `[resources]` resolution (`ADR-0008` §3),
-//! and the embedded integration support registry (`support/integrations.toml`, `ADR-0007`).
+//! the sole `[world]` `world.image` + `world.stage` selector (`ADR-0009`), and the embedded
+//! integration support registry (`support/integrations.toml`, `ADR-0007`).
 //!
 //! The domain core is filesystem-free: concrete filesystem adapters live behind the `fs` feature.
 
@@ -19,6 +20,7 @@ use thiserror::Error;
 
 mod resources;
 mod support;
+mod world;
 
 #[cfg(feature = "fs")]
 mod fs;
@@ -32,6 +34,7 @@ pub use support::{
     Evidence, EvidenceField, IntegrationCategory, IntegrationEntry, IntegrationTier, RegistryError,
     SupportRegistry,
 };
+pub use world::{WorldConfigError, WorldImageConfig};
 
 #[cfg(feature = "fs")]
 pub use fs::{FsDigestCache, FsMerkleHasher};
@@ -71,6 +74,8 @@ pub enum DagError {
     RefreshDumpRequiresRemote { id: String },
     #[error("input hashing I/O error at {path}: {message}")]
     Io { path: String, message: String },
+    #[error(transparent)]
+    WorldConfig(#[from] WorldConfigError),
 }
 
 /// One stateless build artifact specification (`[artifacts.<id>]`).
@@ -198,12 +203,14 @@ impl RawTestSpec {
     }
 }
 
-/// Root `<vcs_root>/slipfork.toml` manifest owning `project`, `[artifacts]`, `[fixtures]`,
-/// `[test]`, and `[resources]`.
+/// Root `<vcs_root>/slipfork.toml` manifest owning `project`, `[world]`, `[artifacts]`,
+/// `[fixtures]`, `[test]`, and `[resources]`.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct SlipforkConfig {
     /// Optional canonical project slug override (defaults to the canonical git/jj root name).
     pub project: Option<ProjectSlug>,
+    /// Sole `[world]` world-image selector (`ADR-0009`): `world.image` + `world.stage`.
+    pub world: WorldImageConfig,
     pub artifacts: BTreeMap<String, ArtifactSpec>,
     pub fixtures: BTreeMap<String, FixtureSpec>,
     pub test: TestSpec,
@@ -215,6 +222,7 @@ pub struct SlipforkConfig {
 #[serde(deny_unknown_fields)]
 struct RawSlipforkConfig {
     project: Option<ProjectSlug>,
+    world: Option<toml::Value>,
     #[serde(default)]
     artifacts: BTreeMap<String, ArtifactSpec>,
     #[serde(default)]
@@ -232,6 +240,7 @@ impl SlipforkConfig {
             toml::from_str(raw).map_err(|e| DagError::Toml(e.to_string()))?;
         Ok(Self {
             project: raw.project,
+            world: WorldImageConfig::from_toml(raw.world.as_ref())?,
             artifacts: raw.artifacts,
             fixtures: raw.fixtures,
             test: raw.test.into_test_spec()?,
