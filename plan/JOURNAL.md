@@ -149,3 +149,27 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-15T16:17 AUTOPILOT on by conductor owner approved M2 kickoff with 7 architectural additions
 - 2026-11-15T16:17 [M2] (conductor) OWNER M2/M3 DIRECTIVES: (1) OSPP v1 WebSocket protocol with tpmd/SSH-style challenge-response auth, streaming DB dumps (opt-in for local dev, skipped for hermet
 - 2026-11-15T16:24 ESCALATION #10 -> strategist for M2 by conductor: Amend ROADMAP M2/M3 for owner directives (WebSocket OSPP + tpmd auth + DB dump + ResourceStrategy, hook debugging, syste
+- 2026-11-15T16:29 [M2] (strategist) edited fields
+- 2026-11-15T16:40 [M2.1] (planner) created (task) Author ADR-0008 (OSPP v1 WebSocket, tpmd P-256, ResourceStrategy, world UX) and align ADRs/ARCHITECTURE/target-DX
+- 2026-11-15T16:40 [M2.2] (planner) created (task) Workspace wedge: scaffold slipfork-edge/slipfork-vcs/slipfork-ospp and declare M2 dependencies
+- 2026-11-15T16:40 [M2.3] (planner) created (task) slipfork-world: WorldOrigin plus deterministic <=31-byte WeaverServiceName derivation
+- 2026-11-15T16:40 [M2.4] (planner) created (task) slipfork-snow: Send+Sync providers, redacted Debug, mode-scoped effective_components
+- 2026-11-15T16:40 [M2.5] (planner) created (task) slipfork-dag: [resources] ResourceStrategy, fs feature gate, single evidence ladder, H-009 cleanup
+- 2026-11-15T16:40 [M2.6] (planner) created (task) slipfork-engine: multi-mount WorldSpec, redacted ExecEnv, opaque WorldHandle, freeze_world
+- 2026-11-15T16:40 [M2.7] (planner) created (task) slipfork-engine: spawn/stop_service with logs, streaming and PTY exec, dial_world_tcp
+- 2026-11-15T16:40 [M2.8] (planner) created (task) slipfork-edge: systemd socket activation, LocalHostRoute dispatch, WorldRegistry
+- 2026-11-15T16:40 [M2.9] (planner) created (task) slipfork-edge: shared_hosts proxy, 308/421 rules, share/unshare, DaemonControl IPC
+- 2026-11-15T16:40 [M2.10] (planner) created (task) slipfork-edge: .socket/.service unit generator plus live systemd-socket-activate test
+- 2026-11-15T16:40 [M2.11] (planner) created (task) slipfork-vcs: RepoRootResolver/VcsWorkspace ports plus GitWorktreeAdapter and conformance
+- 2026-11-15T16:40 [M2.12] (planner) created (task) slipfork-vcs: JjWorkspaceAdapter plus git-remote-slipfork protocol handler
+- 2026-11-15T16:40 [M2.13] (planner) created (task) slipfork-ospp: DeviceKeySigner plus OSPP v1 handshake and fragment pairing client
+- 2026-11-15T16:40 [M2.14] (planner) created (task) slipfork-ospp: vars/secrets/resources capabilities plus streaming seed dump and reference server
+- 2026-11-15T16:40 [M2.15] (planner) created (task) Benchmark and support-compliance tooling hardening (poc/run_benchmark.py, tools/check_support.py)
+- 2026-11-15T16:40 [M2.16] (planner) created (task) CLI part 1: composition root, slipforkd binary, up/down/list/prune/secret/share/daemon unit
+- 2026-11-15T16:40 [M2.17] (planner) created (task) CLI part 2: hook failure rescue UX, logs/shell/db/redis/forward, auth, support, git-remote-slipfork
+- 2026-11-15T16:40 [M2.18] (planner) created (task) opencode-slipfork: explicit project state, no ambient probe, live e2e against slipfork binaries
+- 2026-11-15T16:40 [M2.19] (planner) created (task) Publish 0.2.0 DX docs, generated support matrix, CHANGELOG, dx and ai-ergonomics critics
+- 2026-11-15T16:40 [M2.20] (planner) created (task) Release 0.2.0: version bump, unused-dependency audit, full make check and read-only make bench
+- 2026-11-15T16:40 [M2.21] (planner) created (task) Isolated: live IncusEngine conformance and declared support promotion (gated on H-004)
+- 2026-11-15T16:40 [M2.22] (planner) created (task) Isolated: concrete WeavedRegistrar IPC adapter and declared support promotion (gated on H-006)
+- 2026-11-15T16:43 [M2.15] (strategist) edited fields
