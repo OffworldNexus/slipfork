@@ -61,8 +61,8 @@ flowchart TD
   TestCoord --> WN
 
   VcsSvc --> VW["trait VcsWorkspaceFactory -&gt; VcsWorkspace"]
-  VW --- VW1["GitWorktreeAdapter (.worktrees/&lt;fork&gt; + .slipfork/git/ scratch index)"]
-  VW --- VW2["JjWorkspaceAdapter (jj workspace + @ / @- refs)"]
+  VW --- VW1["GitWorktreeAdapter (.worktrees/&lt;fork&gt; + refs/slipfork/&lt;fork&gt;/wip)"]
+  VW --- VW2["JjWorkspaceAdapter (jj workspace + @ / @- -&gt; refs/slipfork/&lt;fork&gt;/wip)"]
 
   TestCoord --> DagOrch
   TestCoord --> DC
@@ -84,7 +84,7 @@ flowchart TD
 | `crates/slipfork-ospp` | M2 (`M2.13`–`M2.14`) | `#![forbid(unsafe_code)]`; depends on `slipfork-world`, `slipfork-snow`, `slipfork-dag`, `tungstenite` + `rustls` + `webpki-roots` (sync), `p256`, `zstd`, pinned git `tpmd-client` + `tpmd-ipc` (`rev = "90cb2db..."`) + private `tokio` (`rt`/`net`/`time` confined to `TpmdDeviceKeySigner`); zero `std::env`, zero `slipfork-engine` dep | Slipfork-owned `OSPP v1` sync WebSocket client (`ospp-v1` subprotocol, 16 KiB text-frame cap, `"ospp-v1" \|\| nonce_s(32) \|\| nonce_c(32) \|\| server_name`), `DeviceKeySigner` (`KeyId` = `p256:<66 hex>`, 64-byte raw `r \|\| s` `DeviceSignature`; generic `FallbackDeviceKeySigner<P, F>`, `TpmdDeviceKeySigner` [`sealed` floor, `ResumeOrCreate` over `KeyStorePaths`], `SoftwareP256Signer` [`DeviceKeyStore` + `EntropySource`]), fragment-only `PairingUrl` + `BrowserOpener`, `OsppSecretProvider` (zero fs writes), `RemoteResourceBundle` + single `OsppClient::resource_offer() -> Option<slipfork_dag::RemoteResourceOffer>` mapper, and bounded-window `zstd` `DumpStreamer` over `SeedDumpStore` (`ADR-0008` §1–§3) |
 | `crates/slipfork-engine` | M1 (shipped) + M2 full spec (`M2.2`, `M2.6`–`M2.7`) | `unsafe` confined strictly to **one** Linux syscall module — **`linux_cow.rs`** (`ioctl(FICLONE)`, `geteuid`/`getegid`, `getpwuid_r` (`current_username`), `setns(CLONE_NEWNET)`, with per-call `// SAFETY:` proofs; **zero `pty.rs` module**, `H-010` #1); `M2.2` adds `slipfork-world` dep (zero `slipfork-snow`/`slipfork-ospp` dep) | `WorldEngine` (`create_snapshot`, `freeze_world`, `clone_world`, `spawn_service`, `stop_service`, `service_logs`, streaming `exec_in_world`, `entry_command` -> `WorldEntryCommand` for direct CLI `Stdio::inherit()` entry, `dial_world_tcp` [daemon-internal only], `destroy_world`; `EngineCapabilities` deleted in `M2.6`), `ReflinkNetnsEngine`-owned in-netns loopback TCP bridge (`net.ipv4.ip_unprivileged_port_start=0`, `H-010` #2), `WorldSpec` (`WorldMount` RO/RW + self-contained redacted `ExecEnv`), `SnapshotMode`, opaque in-process `WorldHandle`; adapters: `ReflinkNetnsEngine` and `IncusEngine` (live daemon gated on `H-004`) |
 | `crates/slipfork-edge` | M2 (`M2.8`–`M2.10`) | `#![forbid(unsafe_code)]` (uses safe `listenfd`, `socket2`, and `httparse`); depends on `slipfork-world`, `slipfork-engine`; `std::env` confined strictly to `activation.rs` (`LISTEN_PID` / `LISTEN_FDS`) | Unprivileged `slipforkd` HTTP/WS ingress (`adopt_systemd_listener` at `fd >= 3` with immediate `set_nonblocking(true)` + explicit fd-order `ListenerSet`, `--listen`, non-template `UnitSpec` `.socket`/`.service` renderer with `User=<developer-user>` & `ReadWritePaths=`, `httparse` with `<= 16 KiB` header cap, `ADR-0008` §5): `WorldRegistry` (`mint_origin`, `attach_world`, `release_world`, `share_world`, `unshare_world`) routing `*.localhost` and `shared_hosts` through `IngressRoute { prefix, port }` -> `dial_world_tcp`, enforcing `308`/`421` on `*.localhost` when `Shared` (`ADR-0005` §1, `H-008`); full `trait DaemonControl` (incl. daemon-owned `forward`) + `0600` `<runtime_dir>/daemon.sock` server/`DaemonControlClient` + `WorldExecTarget`; `UnavailableTunnelRegistrar` + `InMemoryTunnelRegistrar` (tests) + isolated `WeavedRegistrar` (`M2.22`) |
-| `crates/slipfork-vcs` | M2 (`M2.11`–`M2.12`) | `#![forbid(unsafe_code)]`; depends on `slipfork-world`, `serde`, `serde_json`, `thiserror`; zero `src/bin/*` targets | `RepoRootResolver` (`RepoRoot`), `VcsWorkspace` (`WorkspaceRefs`, `WorkspaceChanges`), `VcsWorkspaceFactory` (`WorkspaceRequest`), `GitWorktreeAdapter` (`.worktrees/<fork>` + scratch `GIT_INDEX_FILE` under `.slipfork/git/`), `JjWorkspaceAdapter` (`@` -> `<fork>/wip`, `@-` -> `<fork>`), and pure `remote_helper` (`git-remote-slipfork` line protocol over `BufRead`/`Write`) |
+| `crates/slipfork-vcs` | M2 (`M2.11`–`M2.12`) | `#![forbid(unsafe_code)]`; depends only on `slipfork-world`, `serde`, `serde_json`, `thiserror` (zero `slipfork-dag` dep); zero `src/bin/*` targets | `ProjectSlugOverride` (injected `<vcs_root>/slipfork.toml` `project` reader), `RepoRootResolver` (`RepoRoot`), `VcsWorkspace` (`WorkspaceRefs`, `WorkspaceChanges`), `VcsWorkspaceFactory` (`WorkspaceRequest`), `GitWorktreeAdapter` (`.worktrees/<fork>`, `refs/heads/<fork>`, and D/F-safe `refs/slipfork/<fork>/wip` via `.slipfork/git/index-<fork>`), `JjWorkspaceAdapter` (`@-` -> `refs/heads/<fork>`, `@` -> `refs/slipfork/<fork>/wip`), and pure `remote_helper` (`git-remote-slipfork` line protocol over `BufRead`/`Write`) |
 | `crates/slipfork-test` | M3 | `#![forbid(unsafe_code)]`; depends on `slipfork-world`, `slipfork-dag`, `slipfork-edge`; injected `EntropySource` | `TestCoordinator` (consumes `ResourcePlan::resolve` via `DaemonControl`), canonical `.slipfork/runs/<run_id>/<slot>/{runner.sock,coverage,output}` run tree, `RunnerProtocol v1` (`SocketRunnerAdapter` + `CommandTestAdapter`), typed `CoverageDriver` (`ADR-0006` §5), and pre-warmed `TestSlot` world pool |
 | `crates/slipfork` | M1..M4 (`M2.16`–`M2.17`) | `#![forbid(unsafe_code)]`; **`slipforkd` is sole stateful Rust Composition Root; `slipfork` is thin client** | Binaries `slipforkd` (`--state-dir` + `--runtime-dir` unified user daemon Composition Root assembling `DaemonService: DaemonControl`), `slipfork` (thin `clap` + `UserIdentity` + `DaemonControlClient` + auto-spawner + direct `WorldEntryCommand` `Stdio::inherit()` executor; `HOME`-unset fail-closed guard), and `git-remote-slipfork` |
 | `packages/opencode-slipfork` | M1 (shipped) + M2 e2e (`M2.18`) | Type-only `@opencode/plugin`; injected `SlipforkProjectState` + `SlipforkGateway` (zero `existsSync` inside gateway in M2) | OpenCode V2 `worktree.transform`, `shell.hook("create.before")` (routes to `slipfork exec --cwd <cwd>`, never injects `snow.yml` envs), and `session.hook("context")` |
@@ -379,7 +379,7 @@ pub trait DaemonControl: Send + Sync {
 }
 ```
 
-### 3.5 `RepoRootResolver`, `VcsWorkspace` (`Git` + `Jujutsu`) & `git-remote-slipfork` (`crates/slipfork-vcs`, `ADR-0005`, `ADR-0008`)
+### 3.5 `ProjectSlugOverride`, `RepoRootResolver`, `VcsWorkspace` (`Git` + `Jujutsu`) & `git-remote-slipfork` (`crates/slipfork-vcs`, `ADR-0005`, `ADR-0008`)
 
 ```rust
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -398,8 +398,8 @@ pub struct WorkspaceRequest {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkspaceRefs {
-    pub base: String, // refs/heads/<fork> in Git; @- in Jujutsu
-    pub wip: String,  // synthesized via scratch .slipfork/git/index-<fork> in Git; @ in Jujutsu
+    pub base: String, // refs/heads/<fork> in Git; @- projected as refs/heads/<fork> in Jujutsu
+    pub wip: String,  // refs/slipfork/<fork>/wip (equals base commit OID when clean; dirty snapshot via .slipfork/git/index-<fork> or @)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -407,6 +407,12 @@ pub struct WorkspaceChanges {
     pub tracked: Vec<PathBuf>,
     pub untracked: Vec<PathBuf>,
     pub truncated: bool,
+}
+
+/// Injected into `RepoRootResolver` from `slipforkd` (implemented once over `slipfork_dag::SlipforkConfig`)
+/// so `crates/slipfork-vcs` honors `<vcs_root>/slipfork.toml` `project` overrides with zero `slipfork-dag` dep.
+pub trait ProjectSlugOverride: Send + Sync {
+    fn project_override(&self, vcs_root: &Path) -> Result<Option<ProjectSlug>, VcsError>;
 }
 
 pub trait RepoRootResolver: Send + Sync {
@@ -426,7 +432,7 @@ pub trait VcsWorkspaceFactory: Send + Sync {
 }
 ```
 
-- Zero `AdapterKind` enum outside `slipforkd`'s factory (`JjWorkspaceAdapter` when `.jj/` detected, else `GitWorktreeAdapter`), zero mutation of the live `.git/index`, and zero binary targets in `crates/slipfork-vcs` (`git-remote-slipfork` lives in `crates/slipfork` and drives pure `slipfork_vcs::remote_helper` over `BufRead`/`Write`).
+- **D/F-Safe Ref Namespace & Single Parser:** Git forbids `refs/heads/<fork>` and `refs/heads/<fork>/wip` from coexisting; keeping the branch at `refs/heads/<fork>` and placing the dirty view at `refs/slipfork/<fork>/wip` (`git fetch slipfork '+refs/slipfork/<fork>/wip:refs/slipfork/<fork>/wip'`, pointing to `base` when clean) avoids all refname collisions. Zero `AdapterKind` enum outside `slipforkd`'s factory, zero mutation of the live `.git/index`, zero second `slipfork.toml` parser, and zero binary targets in `crates/slipfork-vcs`.
 
 ### 3.6 World-Owns-The-Stack, `RunnerProtocol v1`, Typed `CoverageDriver` & `SLIPFORK_OUTPUT_DIR` (`crates/slipfork-dag`, `crates/slipfork-test` M3, `ADR-0003`, `ADR-0006`)
 

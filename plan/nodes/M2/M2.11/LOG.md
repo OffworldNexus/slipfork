@@ -7,3 +7,27 @@ created (task) slipfork-vcs: RepoRootResolver/VcsWorkspace ports plus GitWorktre
 ## 2026-11-15T18:39 [planner]
 
 edited fields
+
+## 2026-11-15T19:11 [lead]
+
+status ready -> active
+
+## 2026-11-15T19:11 [lead]
+
+attempt 1/3 started
+
+## 2026-11-15T19:11 [lead]
+
+base 6e6a27638e3892127a3e3d4c085409507e82b41e
+
+## 2026-11-15T19:13 [lead]
+
+BLOCKED-PENDING-SPEC: git D/F refname rule makes refs/heads/<fork> and refs/heads/<fork>/wip impossible (proved). Lead adopted refs/slipfork/<fork>/wip + ProjectSlugOverride capability; architect amending ADR-0005 §3/ARCHITECTURE/target-dx and emitting splice-ready deltas. Resume when the spec lands.
+
+## 2026-11-15T19:13 [lead]
+
+status active -> blocked: spec amendment in flight: refs/slipfork/<fork>/wip (architect). No code written; no illegal fallback invented.
+
+## 2026-11-15T19:20 [lead]
+
+edited fields

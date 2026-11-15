@@ -77,8 +77,8 @@ $ slipfork redis --world feat-billing                              # Direct inte
 $ slipfork forward --world feat-billing --json                     # Daemon-owned 127.0.0.1:0 bridge (lives until Ctrl-C/disconnect):
 {"world":"feat-billing","targets":[{"id":"pg_databases.main","host_addr":"127.0.0.1:43182","uri":"postgres://127.0.0.1:43182/main"}]}
 
-$ git pull slipfork feat-billing                                   # Committed branch (@- in Jujutsu)
-$ git fetch slipfork feat-billing/wip                              # Dirty + untracked snapshot (@ in Jujutsu)
+$ git pull slipfork feat-billing                                                           # Committed branch refs/heads/feat-billing (@- in Jujutsu)
+$ git fetch slipfork '+refs/slipfork/feat-billing/wip:refs/slipfork/feat-billing/wip'     # Dirty + untracked snapshot (@ in Jujutsu; equals base when clean)
 
 $ printf '%s' "$STRIPE_KEY" | slipfork secret set STRIPE_SECRET_KEY          # --force to rotate existing key
 $ printf '%s\n' "$PAIR_URL_WITH_FRAGMENT" | slipfork auth login -            # Stdin keeps #handle= out of argv

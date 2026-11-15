@@ -236,3 +236,35 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-15T19:03 [M2.3] (lead) edited fields
 - 2026-11-15T19:03 [M2.3] (lead) edited fields
 - 2026-11-15T19:04 [M2.3] (unknown) Round-1 Quad Gate remediation: WorldOrigin payloads are opaque LocalOrigin/SharedOrigin (only local()/shared() mint; struct-literal forgery impossible), serde s
+- 2026-11-15T19:04 [M2.3] (lead) status active -> done
+- 2026-11-15T19:05 [M2.4] (lead) status ready -> active
+- 2026-11-15T19:05 [M2.4] (lead) attempt 1/3 started
+- 2026-11-15T19:05 [M2.4] (lead) base 6e6a27638e3892127a3e3d4c085409507e82b41e
+- 2026-11-15T19:05 [M2.5] (lead) status ready -> active
+- 2026-11-15T19:05 [M2.5] (lead) attempt 1/3 started
+- 2026-11-15T19:05 [M2.5] (lead) base 6e6a27638e3892127a3e3d4c085409507e82b41e
+- 2026-11-15T19:05 [M2.6] (lead) status ready -> active
+- 2026-11-15T19:05 [M2.6] (lead) attempt 1/3 started
+- 2026-11-15T19:05 [M2.6] (lead) base 6e6a27638e3892127a3e3d4c085409507e82b41e
+- 2026-11-15T19:11 [M2.11] (lead) status ready -> active
+- 2026-11-15T19:11 [M2.11] (lead) attempt 1/3 started
+- 2026-11-15T19:11 [M2.11] (lead) base 6e6a27638e3892127a3e3d4c085409507e82b41e
+- 2026-11-15T19:11 [M2.4] (lead) edited fields
+- 2026-11-15T19:11 [M2.4] (lead) path-lock amended: mechanical follow-through in slipfork-world critical test (url() removal) and slipfork/src/main.rs (unused_mut after &self providers)
+- 2026-11-15T19:11 [M2.4] (lead) followup: docs/reference/manifest.md + docs/snow-modes.md stale (OsppBundle/TopLevelEnvsUnsupported) -> tracked by new M2.23
+- 2026-11-15T19:11 [M2.23] (lead) created (task) Purge stale M1 manifest/snow-mode docs after M2.4/M2.5 deletions
+- 2026-11-15T19:13 [M2.6] (lead) edited fields
+- 2026-11-15T19:13 [M2.6] (lead) lead ruling: transitional CLI breakage is mechanical, not a direction challenge. H-010 already fixes the target architecture. Widen paths with crates/slipfork/s
+- 2026-11-15T19:13 [M2.6] (lead) attempt 2/3 started
+- 2026-11-15T19:13 [M2.11] (lead) BLOCKED-PENDING-SPEC: git D/F refname rule makes refs/heads/<fork> and refs/heads/<fork>/wip impossible (proved). Lead adopted refs/slipfork/<fork>/wip + Projec
+- 2026-11-15T19:13 [M2.11] (lead) status active -> blocked: spec amendment in flight: refs/slipfork/<fork>/wip (architect). No code written; no illegal fallback invented.
+- 2026-11-15T19:13 [M2.4] (lead) status active -> review
+- 2026-11-15T19:13 [M2.5] (lead) status active -> review
+- 2026-11-15T19:15 [M2.6] (lead) status active -> review
+- 2026-11-15T19:17 [M2.4] (lead) edited fields
+- 2026-11-15T19:17 [M2.4] (lead) gate follow-up: add WorldOrigin::host() and stop hand-parsing the authority in snow
+- 2026-11-15T19:18 [M2.23] (lead) edited fields
+- 2026-11-15T19:18 [M2.23] (lead) scope widened: the transitional daemon-owned CLI surface (fork/exec/drop fail closed until M2.16/M2.17) must be rendered as unavailable with the exact diagnosti
+- 2026-11-15T19:18 [M2.23] (lead) edited fields
+- 2026-11-15T19:20 [M2.11] (lead) edited fields
+- 2026-11-15T19:20 [M2.12] (lead) edited fields
