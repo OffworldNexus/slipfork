@@ -2,7 +2,7 @@
 id: M2.14
 title: "slipfork-ospp: vars/secrets/resources capabilities plus streaming seed dump and reference server"
 kind: task
-status: active
+status: done
 owner: implementer
 priority: 3
 depends_on: [M2.13]
@@ -11,7 +11,7 @@ attempts: 1
 max_attempts: 3
 escalation: none
 created: "2026-11-15T16:40"
-updated: "2026-11-15T19:57"
+updated: "2026-11-15T20:23"
 ---
 
 # Goal
@@ -28,7 +28,7 @@ Turn the authenticated `OSPP v1` channel into capabilities: `vars::`, `secrets::
 
 1. **`vars::`, `secrets::`, and zero-fs `OsppSecretProvider` (`ADR-0008` §2):** Requests dispatch through one typed capability enum over the daemon-held `OsppClient` session. `OsppSecretProvider` implements `SecretProvider` (`Send + Sync`, `&self`) strictly over WebSocket with **zero filesystem writes** (`FileVaultProvider` inside `LayeredSecretProvider` is the sole `0600` local vault writer, `H-003`).
 2. **Single bundle-to-offer mapper (`OsppClient::resource_offer`, `ADR-0008` §3):** `RemoteResourceBundle` (`s3_buckets.<id>` with redacted `Debug` + `pg_databases.<id>` `PgDumpMetadata`) is converted into `slipfork_dag::RemoteResourceOffer` exclusively via `OsppClient::resource_offer(&self, project: &ProjectSlug, mode: &str) -> Result<Option<slipfork_dag::RemoteResourceOffer>, OsppError>` (redacting secrets, zero second resolution logic in `slipfork-ospp`), which `slipforkd` passes straight into `slipfork_dag::ResourcePlan::resolve(spec, mode, dump_policy, offer.as_ref())`. `WorldOrigin` always overrides provider `domains::`.
-3. **Streaming `zstd` seed dumps via `SeedDumpStore::write_from`:** Streams binary WebSocket `zstd` frames (`<= 64 KiB`) with a bounded window + incremental SHA-256 over compressed bytes into `SeedDumpStore::write_from(&self, sha256_compressed, &mut dyn Read)` (aborting and unlinking `.part` before any DB mutation on truncation or digest mismatch). `--no-dump | --refresh-dump` map onto `DumpPolicy { Default, NoDump, RefreshDump }` (mutually exclusive, zero env-var side doors).
+3. **Streaming `zstd` seed dumps via `SeedDumpStore::write_from`:** Streams binary WebSocket `zstd` frames (`<= 64 KiB`) with a bounded window + incremental SHA-256 over compressed bytes into `SeedDumpStore::write_from(&self, sha256_compressed, compressed_bytes, &mut dyn DumpStream) -> Result<Box<dyn VerifiedDump>, OsppError>` — publication, verification and discard are capability methods, so the domain path has zero `std::fs` (aborting and unlinking `.part` before any DB mutation on truncation or digest mismatch). `--no-dump | --refresh-dump` map onto `DumpPolicy { Default, NoDump, RefreshDump }` (mutually exclusive, zero env-var side doors).
 4. **Reference server harness.** `tests/support/reference_server.rs` speaks the production client code path (same message types, same auth) and can serve every capability, so the suite proves the client against an independent implementation rather than against itself.
 5. **Failure semantics.** Every capability error carries the capability name and the world id but never a secret value; an unauthenticated channel serves no capability at all; `share`-style features are out of scope here (they belong to the edge crate and stay gated on closed-by-deferral `H-006`).
 6. `#![forbid(unsafe_code)]`; ambient env, network, and clock access confined to the WebSocket and dump adapter modules.

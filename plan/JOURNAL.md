@@ -331,3 +331,6 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-15T20:13 [M2.24] (conductor) OWNER CORRECTION (binding, supersedes the earlier fallback wording in NODE.md): ONE WAY ONLY. Delete the curated base (slipfork_base / CuratedBaseProvider) and 
 - 2026-11-15T20:15 [M2.24] (conductor) OWNER CORRECTION 2 (binding, supersedes apt-based capability layer): backing services (postgres/redis/seaweedfs) run as OCI CONTAINERS inside the world netns vi
 - 2026-11-15T20:17 [M2.25] (conductor) created (task) Whole-repo consistency sweep after L0 rootfs + OCI-container pivot (single writer: ARCHITECTURE.md + ADRs)
+- 2026-11-15T20:17 [M2.14] (lead) status active -> done
+- 2026-11-15T20:23 [M2.14] (lead) edited fields
+- 2026-11-15T20:23 [M2.14] (lead) edited fields
