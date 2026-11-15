@@ -2,7 +2,7 @@
 id: M1
 title: "Global Target DX/DI Design & Real CoW PoC (0.1.0)"
 kind: milestone
-status: done
+status: ready
 priority: 1
 depends_on: []
 paths: []
@@ -10,7 +10,7 @@ attempts: 0
 max_attempts: 3
 escalation: strategist
 created: "2026-11-14T22:03"
-updated: "2026-11-15T02:31"
+updated: "2026-11-15T10:38"
 ---
 
 # Goal

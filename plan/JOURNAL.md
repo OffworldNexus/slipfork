@@ -106,3 +106,24 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-15T02:31 [M1] (strategist) status ready -> done
 - 2026-11-15T02:32 HUMAN H-007 [release-gate] opened by conductor (node M1)
 - 2026-11-15T02:32 AUTOPILOT off by conductor awaiting human release gate for 0.1.0
+- 2026-11-15T10:38 [M1] (conductor) status done -> ready: owner sent 0.1.0 back at the release gate with 4 design corrections
+- 2026-11-15T10:38 [M1.8] (conductor) created (task) Fold owner review-gate corrections: single-origin invariant, support tiers, typed coverage (no shell recipes)
+- 2026-11-15T10:38 ESCALATION #7 -> architect for M1.8 by conductor: owner design corrections at release gate: single canonical origin per world, support tiers, typed coverage replacing aft
+- 2026-11-15T10:39 [M1.8] (lead) status ready -> active
+- 2026-11-15T10:39 [M1.8] (lead) attempt 1/3 started
+- 2026-11-15T10:39 [M1.8] (lead) base 05c85939f7514d9286691b6c8e01e10055bdba64
+- 2026-11-15T10:39 [M1.8] (lead) owner clarification (addendum): world origin is NOT an OSPP value; Slipfork-assigned origin wins over provider-supplied domains:: for local worlds; OSPP is NOT 
+- 2026-11-15T10:39 ESCALATION #8 -> architect for M1.8 by lead: Owner review-gate corrections: single-origin invariant, support tiers, typed coverage + OSPP precedence clarification
+- 2026-11-15T10:47 [M1.8] (architect) edited fields
+- 2026-11-15T10:58 [M1.8] (lead) status active -> review
+- 2026-11-15T11:00 [M1.8] (lead) GATE(1) partial: legality=PASS(0 BLOCKER, 4 MAJOR, 4 MINOR); cruft=FAIL(BLOCKER: crates/slipfork-dag TestSpec.after_suite dead field still parsed + docs call it
+- 2026-11-15T11:00 HUMAN H-008 [direction-challenge] opened by lead (node M1.8)
+- 2026-11-15T11:00 [M1.8] (lead) attempt 2/3 started
+- 2026-11-15T11:00 [M1.8] (lead) status review -> active
+- 2026-11-15T11:00 [M1.8] (lead) GATE(1) complete: reviewer=PASS, legality=PASS, ioc=FAIL SPEC_BLIND_SPOT (shared ingress/weaved target/308 loop -> H-008 filed, Option A recommended), cruft=FAI
+- 2026-11-15T11:00 HUMAN H-008 closed by conductor
+- 2026-11-15T11:09 [M1.8] (lead) status active -> review
+- 2026-11-15T11:11 [M1.9] (lead) created (task) Delete rejected [test] shell field, land typed coverage schema, per_world fixtures & support registry
+- 2026-11-15T11:11 [M1.8] (lead) GATE(2) FINAL: reviewer=PASS(0 BLOCKER), legality=PASS(0), ioc=PASS(0, round-1 SPEC_BLIND_SPOT dissolved by H-008), cruft=PASS(0, residual crate residue tracked
+- 2026-11-15T11:11 [M1.9] (lead) edited fields
+- 2026-11-15T11:11 [M1.8] (lead) status review -> done

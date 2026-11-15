@@ -53,6 +53,6 @@ Reproduce locally with `make bench`:
 
 ## Roadmap Corner (Upcoming Milestones — Not Yet in `0.1.0`)
 
-- **M2 (`0.2.0`):** `slipforkd` port-80 `*.localhost` edge proxy, `slipfork up/down/shell/share` (Tunnel Weaver `weaved` tunnel leases via the pure `TunnelRegistrar` trait; wire adapter gated on `weaved`'s IPC spec), `git-remote-slipfork` (`<fork>` + `<fork>/wip`), Jujutsu (`jj workspace`) adapter, and live `IncusEngine` LXC/QEMU integration.
-- **M3 (`0.3.0`):** Automated `slipfork test` orchestrator (`RunnerProtocol v1`, world-owned stacks for FastAPI/Flask/Hono/Symfony/Go/Rust + `pytest-slipfork`, pre-warmed CoW pools, and generic `$SLIPFORK_ARTIFACTS_DIR` + `after_suite` hooks for coverage, Allure, and Blastit).
+- **M2 (`0.2.0`):** Single-origin worlds (`WorldOrigin = Local | Shared` with `308` `.localhost` redirect when shared, running on `FileVaultProvider` without requiring OSPP), port-80 `slipforkd` edge proxy, Tunnel Weaver (`weaved`) leases (`H-006`), `git-remote-slipfork` (`<fork>` + `<fork>/wip`), Jujutsu (`jj workspace`) adapter, live `IncusEngine`, and evidence-backed integration support tiers (`ADR-0007`).
+- **M3 (`0.3.0`):** Automated polyglot test orchestrator (`RunnerProtocol v1`, world-owned stacks + `pytest-slipfork` tracked via `ADR-0007` support tiers, pre-warmed CoW pools, built-in typed multi-world coverage, and surviving `SLIPFORK_OUTPUT_DIR` for Blastit, Allure, and Playwright traces).
 - **M4 (`0.4.0`):** Remote CI/team content-addressed snapshot & artifact cache export/import and agent skills.

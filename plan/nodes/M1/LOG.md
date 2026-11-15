@@ -15,3 +15,7 @@ GATE PASSED (RELEASE_READY: 0.1.0): make check 0, make bench 0 (3.03x/1.91s live
 ## 2026-11-15T02:31 [strategist]
 
 status ready -> done
+
+## 2026-11-15T10:38 [conductor]
+
+status done -> ready: owner sent 0.1.0 back at the release gate with 4 design corrections

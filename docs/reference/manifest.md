@@ -96,10 +96,6 @@ run = "psql -f api/migrations/0001_schema.sql"
 parent = "migrate"
 inputs = ["api/migrations/seed_catalog.sql"]
 run = "psql -f api/migrations/seed_catalog.sql"
-
-[test]
-# Parsed and validated in 0.1.0; executed after test runs by slipfork-test in Milestone 3 (ADR-0006 §4).
-after_suite = "uv run coverage combine \"$SLIPFORK_RUN_ARTIFACTS_DIR\"/*/.coverage*"
 ```
 
 ---

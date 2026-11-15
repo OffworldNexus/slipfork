@@ -1,11 +1,11 @@
 # Slipfork M2–M4 Target Developer Experience Specification (`docs/design/target-dx.md`)
 
-- **Status:** Accepted Target DX Specification (`ADR-0001`..`ADR-0006`)
+- **Status:** Accepted Target DX Specification (`ADR-0001`..`ADR-0007`)
 - **Visibility:** Internal design spec (`exclude_docs` in `zensical.toml`). Per **Core Rule #4 (Zero Vaporware in Published Docs)**, sections here are promoted into published `docs/` and `README.md` **only** as each M2–M4 binary capability ships and passes conformance tests.
 
 ---
 
-## 1. Milestone 2 Target DX: `slipfork up`, Port-80 `*.localhost` Edge (`slipforkd`), `weaved` IPC & VCS Workspaces
+## 1. Milestone 2 Target DX: Single-Origin Worlds, `slipforkd`, `weaved` Leases & VCS Workspaces
 
 ### 1.1 Install & One-Time Port-80 Edge Grant
 
@@ -15,27 +15,27 @@ Installing the workspace places `slipfork`, `slipforkd`, and `git-remote-slipfor
 $ cargo install --git https://github.com/OffworldNexus/slipfork slipfork
 ```
 
-`slipforkd` binds loopback port `80` (`127.0.0.1:80` / `[::1]:80`) via either a systemd user/system socket unit (`slipforkd.socket` passing the bound FD) or a persistent sysctl drop-in (`/etc/sysctl.d/90-slipfork-port80.conf` with `net.ipv4.ip_unprivileged_port_start=80`). If port `80` is unavailable or already occupied, `slipfork doctor` and `slipfork up` fail closed with exact diagnostics — never falling back to random ports.
+`slipforkd` binds loopback port `80` (`127.0.0.1:80` / `[::1]:80`) via systemd socket activation (`slipforkd.socket`) or `/etc/sysctl.d/90-slipfork-port80.conf` (`net.ipv4.ip_unprivileged_port_start=80`), failing closed in `slipfork doctor` and `slipfork up` if unavailable. **OSPP is not required to run M2:** local worlds boot out of the box from `~/.local/share/slipfork/vaults/<project>.json` (`0600`) and derived `.localhost` origins (`ADR-0005` §1).
 
-### 1.2 `slipfork up`, `slipfork down` & `http://(<snow-domain>.)?(<fork>.)?<project>.localhost`
+### 1.2 `slipfork up`, Single-Origin World Cards & `.localhost` Routing
 
 ```console
 $ slipfork up
 [secrets] generated secrets::SECRET_KEY -> local vault (~/.local/share/slipfork/vaults/acme.json)
 [world]   psql:18 ready, redis:8 ready, seaweedfs:s3 ready (isolated netns)
 [hook]    pre-deploy (api-migrate): uv run python manage.py migrate (410 ms)
-[edge]    http://acme.localhost -> /:8000 (uid=1000:1000, git remote 'slipfork' configured)
+[origin]  http://acme.localhost (uid=1000:1000, git remote 'slipfork' configured)
 ```
 
-| URL | Routed Target (`LocalHostRoute`) |
+| Local URL (`WorldOrigin::Local`) | Routed Target (`LocalHostRoute`) |
 |---|---|
 | `http://acme.localhost` | Canonical world (`WorldTarget::Canonical`), default ingress |
 | `http://admin.acme.localhost` | Canonical world, `snow.yml` `domains: [{ id: admin }]` |
 | `http://feat-auth.acme.localhost` | Fork `feat-auth` (`WorldTarget::UserFork`), default ingress |
-| `http://admin.feat-auth.acme.localhost` | Fork `feat-auth`, domain `admin` |
+| `http://admin.feat-auth.acme.localhost` | Fork `feat-auth`, derived local domain `admin` |
 
-- **Disjoint Fork & Domain Rules:** Normatively specified once in `ADR-0005` §1 (`WorldTarget::validate` / `validate_fork_name`).
-- **Shell Semantics (`run_command`):** Component `run_command` strings execute via `sh -eu -c <run_command>` inside the component's working directory after `${{ ... }}` templates resolve and `ExecEnv` (`env_clear()` + `PATH`/`TERM`/`LANG` + world-scoped `HOME`) is applied.
+- **Single Canonical Origin & Precedence:** Every world has **at most one public origin** (`WorldOrigin = Local { url } | Shared { url }`), assigned at world materialization and supplied by Slipfork at boot (`modes.local` carries no hardcoded `BASE_URL` literal; local `domains::<id>` derives from `(project, target, id)` and always overrides provider domains — see `ADR-0005` §1).
+- **Mode-Scoped Components (`modes.<mode>.components.<id>`):** `snow.yml` supports mode-scoped component overrides (`run_command` override, local-only dev watchers/sandboxes, or disabling cloud-only workers per `ADR-0001` §1); `run_command` executes via `sh -eu -c` under clean `ExecEnv`.
 
 ### 1.3 Interactive Shells, `git-remote-slipfork` (`<fork>` + `<fork>/wip`) & Jujutsu (`jj workspace`)
 
@@ -45,21 +45,27 @@ $ slipfork shell feat-auth              # Enters interactive $SHELL directly ins
 
 # From the canonical checkout:
 $ git pull slipfork feat-auth           # Pull committed branch tip via git-remote-slipfork
-$ git fetch slipfork feat-auth/wip      # Fetch synthesized commit of uncommitted + untracked edits!
+$ git fetch slipfork feat-auth/wip      # Fetch synthesized commit of uncommitted + untracked edits
 $ git diff HEAD..FETCH_HEAD
 ```
 
-- Git worktree `<fork>/wip` scratch-index synthesis and Jujutsu `JjWorkspaceAdapter` mechanics are specified normatively in `ADR-0005` §3.
+- Git `<fork>/wip` scratch-index synthesis and Jujutsu `JjWorkspaceAdapter` mechanics live in `ADR-0005` §3.
 
-### 1.4 Public Sharing via Tunnel Weaver (`weaved`)
+### 1.4 Public Sharing via Tunnel Weaver (`weaved`) — Materialization-Time Single Origin
 
 ```console
 $ slipfork share feat-auth
-[weaved] https://feat-auth-acme.tunnel.example.com -> http://feat-auth.acme.localhost:80
+# Illustrative public URL only — weaved's hostname format & wire spec are owned by tunnel-weaver (H-006):
+[world]  re-materialized feat-auth from snapshot -> https://<illustrative-weaved-host>
+$ slipfork list
+WORLD       ORIGIN
+canonical   http://acme.localhost
+feat-auth   https://<illustrative-weaved-host>
 $ slipfork share --stop feat-auth
+[world]  re-materialized feat-auth from snapshot -> http://feat-auth.acme.localhost
 ```
 
-- Daemon-owned tunnel lease semantics are specified normatively in `ADR-0005` §2; the concrete `WeavedRegistrar` adapter is **M2 and gated on `tunnel-weaver` publishing `weaved`'s real IPC specification** (`H-006`).
+- `slipforkd` is the sole ingress for both `.localhost` and shared hostnames (`H-008`): sharing tears down and re-creates the world from its snapshot with the single new `WorldOrigin` (minted ahead of boot against `slipforkd`'s planned static port), prints **exactly one URL per world**, and answers `http://*.acme.localhost` requests targeting a shared world (including `snow_domain` ingresses) with `308 Permanent Redirect` (`421` on WebSocket/Upgrade; `ADR-0005` §1–§2). Concrete `WeavedRegistrar` wiring remains gated on `tunnel-weaver` publishing `weaved`'s IPC spec (`H-006`).
 
 ### 1.5 Planned M2–M3 CLI Additions
 
@@ -67,40 +73,63 @@ $ slipfork share --stop feat-auth
 |---|---|---|
 | `slipfork up` / `slipfork down` | M2 | Start/stop canonical local world & register routes in `slipforkd` |
 | `slipfork shell [<fork>]` | M2 | Interactive `$SHELL` inside `<fork>` (or `cwd`'s bound world) |
-| `slipfork share [--stop] [<fork>]` | M2 | Acquire/release a `weaved` tunnel lease (adapter gated on `weaved`'s IPC spec) |
-| `slipfork list` / `slipfork prune` | M2 | Inspect active worlds/leases; GC unreferenced snapshots & artifacts |
+| `slipfork share [--stop] [<fork>]` | M2 | Re-materialize world with/without a `weaved` tunnel origin (`H-006`) |
+| `slipfork list` / `slipfork prune` | M2 | Print active worlds (one canonical URL per world); GC unreferenced state |
 | `slipfork secret set <KEY>` | M2 | Write secret from `stdin` into `0600` local vault |
-| `slipfork auth login <url> --project <slug>` | M2 | Authenticate against a remote `OSPP v1` / Kerfufoo endpoint |
-| `slipfork test [-j N] [-- <runner...>]` | M3 | Materialize DAG, run tests across pre-warmed CoW worlds, run `after_suite` |
+| `slipfork auth login <url> --project <slug>` | M2 | Optional `OSPP v1` login for team/cloud secret parity |
+| `slipfork support [--json]` | M2/M3 | Inspect verified integration tiers & evidence (`support/integrations.toml`, `ADR-0007`) |
+| `slipfork test [-j N] [-- <runner...>]` | M3 | Materialize DAG, run tests across warm CoW worlds, collect typed coverage |
 
 ---
 
-## 2. Milestone 3 Target DX: World-Owns-The-Stack Polyglot Testing (`slipfork test`)
+## 2. Milestone 3 Target DX: World-Owns-The-Stack Testing & Per-World Fixtures (`slipfork test`)
 
-### 2.1 World-Owns-The-Stack Inversion
+### 2.1 World-Owns-The-Stack Inversion & Verified Support Tiers
 
-Because `snow.yml` (`resources`, `hooks: pre-deploy`, `components`, `ingresses`) already describes the entire stack, Slipfork boots and seals the migrated, seeded, routed stack **before** the test runner starts, handing every test shard `BASE_URL=http://test-<slot>.<project>.localhost` plus resolved `snow.yml` env vars (`DATABASE_URL`, `REDIS_URL`, `AWS_S3_ENDPOINT_URL`):
+`snow.yml` + `slipfork.toml` boot the migrated, seeded, routed stack before tests run, injecting Slipfork-resolved `BASE_URL=http://test-<slot>.<project>.localhost` plus `DATABASE_URL`, `REDIS_URL`, and `AWS_S3_ENDPOINT_URL` (`ADR-0006` §2–§4). Integration maturity for each target stack (Flask/FastAPI, Node/TS Playwright/Vitest, PHPUnit, Go, Rust `nextest`, and Django `pytest-slipfork` Adapter #1) is reported strictly from `support/integrations.toml` (`none`..`hardened`, `ADR-0007`).
 
-| Stack | Without Slipfork | With `slipfork test` (M3) |
-|---|---|---|
-| **Flask + Alembic / FastAPI** | Custom `testcontainers`, port-0 `uvicorn` threads, per-worker `alembic upgrade head` | **Zero boilerplate:** hit `$BASE_URL` and `$DATABASE_URL`; Alembic & background workers are already live |
-| **Node / TS (`Hono`, `SvelteKit`, `Next.js` + Drizzle/Prisma)** | Slow `globalSetup.ts` Docker scripts, port collisions across Vitest/Playwright workers | **Zero boilerplate:** Playwright & Vitest hit `$BASE_URL` against isolated CoW Postgres + S3 |
-| **PHP (`Slim`, `Symfony`, `Laravel`), Go, Rust (`axum` + `sqlx`)** | Hand-rolled shell wrappers or unisolated shared DBs | **Zero boilerplate:** standard `phpunit`, `go test`, or `cargo nextest` shards run in clean CoW worlds |
-| **Django (`pytest-slipfork`, Adapter #1)** | `CREATE DATABASE test_...`, slow `live_server`, and `serialized_rollback` after every test | **Pure subtraction:** `pytest-slipfork` disables `test_<db>` creation, `live_server`, and `serialized_rollback` |
+### 2.2 Reusable vs `per_world = true` Fixtures (`slipfork.toml`)
 
-- **Migration Precedence Rule:** When `slipfork.toml` defines `[fixtures.*]`, `[fixtures.*]` owns the stateful snapshot lineage directly; when `slipfork.toml` omits `[fixtures.*]`, `slipfork test` synthesizes `snap:migrate` once from `snow.yml`'s `pre-deploy` hooks (never running migrations twice).
+```toml title="slipfork.toml"
+project = "acme"
 
-### 2.2 Speed, Stability & Wire Contract
+[fixtures.migrate]
+inputs = ["api/migrations/*.sql"]
+run = "uv run python manage.py migrate"
 
-The 5 mandatory Speed & Stability Conditions and the `RunnerProtocol v1` NDJSON schema are specified **once**, normatively, in `ADR-0006` §2–§3. This page only documents the user-facing workflow.
+[fixtures.seed_catalog]
+parent = "migrate"
+inputs = ["api/fixtures/catalog.json"]
+run = "uv run python manage.py loaddata catalog" # Origin-independent -> reusable CoW snapshot
+
+[fixtures.seed_sites]
+parent = "seed_catalog"
+per_world = true                                  # Writes BASE_URL into DB -> runs at boot per world, never shared
+inputs = ["api/fixtures/configure_site.py"]
+run = "uv run python api/fixtures/configure_site.py"
+```
+
+- When `slipfork.toml` omits `[fixtures.*]`, `slipfork test` synthesizes `snap:migrate` once from `snow.yml`'s `pre-deploy` hooks. Normative `per_world` rules live in `ADR-0003` §1 and `ADR-0005` §1.
 
 ---
 
-## 3. Pure Tool Orthogonality: `$SLIPFORK_ARTIFACTS_DIR` + `[test].after_suite` (Coverage, Allure & Blastit)
+## 3. Built-In Typed Coverage & Tool-Owned `SLIPFORK_OUTPUT_DIR` (`ADR-0006` §5)
 
-Slipfork contains **zero** tool-specific flags, parsers, or collector traits; the normative `$SLIPFORK_ARTIFACTS_DIR` / `$SLIPFORK_RUN_ARTIFACTS_DIR` mount and `[test].after_suite` execution rules live in `ADR-0006` §4. User-facing recipes:
+Slipfork manifests contain **zero shell pipelines, manual path assembly, or tool-path interpolation** (`ADR-0006` §1):
 
-### Any Tool (Blastit, or your own report generator)
+### 3.1 Multi-World Coverage in 3 Lines (`[test]`)
+
+```toml title="slipfork.toml"
+[test]
+coverage = true
+coverage_report = ["html", "xml"]
+coverage_fail_under = 85        # optional
+```
+
+The active `TestAdapter` (`CoverageDriver`) injects per-world coverage env (`COVERAGE_FILE`, `NODE_V8_COVERAGE`, PHP clover path, or `LLVM_PROFILE_FILE`) into both `snow.yml` world services and test shards, then combines all `N` world shards in `TestCoordinator` without user shell scripts.
+
+### 3.2 Blastit, Playwright Traces & Allure (`SLIPFORK_OUTPUT_DIR`)
+
 ```yaml title="snow.yml"
 modes:
   local:
@@ -110,26 +139,5 @@ modes:
           blastit dev --
           uv run uvicorn app.main:app --host 127.0.0.1 --port ${{ components::api.private_port }}
 ```
-The tool writes anywhere under `$SLIPFORK_ARTIFACTS_DIR`; its own merge/check command, if any, runs through `[test].after_suite` (see below). Slipfork has no Blastit-specific flags or traits.
 
-### Python `coverage.py` Recipe
-```yaml title="snow.yml"
-modes:
-  local:
-    components:
-      api:
-        run_command: >-
-          COVERAGE_FILE="$SLIPFORK_ARTIFACTS_DIR/.coverage.api"
-          uv run coverage run --parallel-mode
-          -m uvicorn app.main:app --host 127.0.0.1 --port ${{ components::api.private_port }}
-```
-```toml title="slipfork.toml"
-[test]
-after_suite = "uv run coverage combine \"$SLIPFORK_RUN_ARTIFACTS_DIR\"/*/.coverage* && uv run coverage report"
-```
-
-### Playwright / Allure Recipe
-```toml title="slipfork.toml"
-[test]
-after_suite = "npx allure generate \"$SLIPFORK_RUN_ARTIFACTS_DIR\"/*/allure-results -o target/allure-report --clean"
-```
+Slipfork passes each world and test runner a documented, surviving directory in `SLIPFORK_OUTPUT_DIR` (`.slipfork/runs/<run_id>/<slot>/output`); Blastit, Playwright traces, and Allure write there directly through their own tooling and survive world teardown.

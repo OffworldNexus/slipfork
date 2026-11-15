@@ -28,7 +28,7 @@ $ cargo run -q -p slipfork -- drop exp
 
 - **Published `0.1.0` User Docs:** [`docs/index.md`](docs/index.md) & [`docs/reference/cli.md`](docs/reference/cli.md) (`make docs-check`)
 - **Measured PoC Benchmark:** [`docs/research/m1-poc-benchmark.md`](docs/research/m1-poc-benchmark.md) (`make bench`)
-- **Architecture, ADRs & Target M2–M4 DX Specs:** [`ARCHITECTURE.md`](ARCHITECTURE.md), [`docs/decisions/`](docs/decisions/) (`ADR-0001`..`ADR-0006`), [`docs/design/target-dx.md`](docs/design/target-dx.md), and [`docs/VISION.md`](docs/VISION.md)
+- **Architecture, ADRs & Target M2–M4 DX Specs:** [`ARCHITECTURE.md`](ARCHITECTURE.md), [`docs/decisions/`](docs/decisions/) (`ADR-0001`..`ADR-0007`), [`docs/design/target-dx.md`](docs/design/target-dx.md), and [`docs/VISION.md`](docs/VISION.md)
 
 ---
 
@@ -55,6 +55,6 @@ $ make bench   # run live PostgreSQL 18 + XFS reflink + netns parallel benchmark
 
 ## Where This Is Going (Upcoming Roadmap — Not Yet in `0.1.0`)
 
-- **M2 (`0.2.0`):** `slipforkd` port-80 `http://(<domain>.)?(<fork>.)?<project>.localhost` edge daemon, `slipfork up/down/shell/share` (Tunnel Weaver `weaved` tunnel leases via the pure `TunnelRegistrar` trait; wire adapter gated on `weaved`'s published IPC spec), `git-remote-slipfork` (`<fork>` + `<fork>/wip`), and Jujutsu (`jj workspace`) support.
-- **M3 (`0.3.0`):** `slipfork test` polyglot test coordinator (`RunnerProtocol v1`, world-owned stacks for FastAPI/Flask/Hono/Symfony/Go/Rust + `pytest-slipfork`, pre-warmed CoW pools, and `$SLIPFORK_ARTIFACTS_DIR` + `after_suite` hooks).
+- **M2 (`0.2.0`):** Single-origin worlds (`WorldOrigin = Local | Shared` with `308` `.localhost` redirect when shared, starting on `FileVaultProvider` without requiring OSPP), port-80 `slipforkd` edge daemon, Tunnel Weaver (`weaved`) leases (`H-006`), `git-remote-slipfork` (`<fork>` + `<fork>/wip`), Jujutsu (`jj workspace`) adapter, and evidence-backed integration support registry (`ADR-0007`).
+- **M3 (`0.3.0`):** Polyglot parallel test coordinator (`RunnerProtocol v1`, world-owned stacks + `pytest-slipfork` tracked via `ADR-0007` support tiers, pre-warmed CoW pools, built-in typed multi-world coverage, and surviving `SLIPFORK_OUTPUT_DIR` for Blastit, Allure, and Playwright traces).
 - **M4 (`0.4.0`):** Remote content-addressed CI/team snapshot & artifact cache export/import and turnkey agent skills.

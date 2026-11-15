@@ -65,3 +65,23 @@ Release 0.1.0 is ready on branch release/0.1.0 (head 7fbda1d, make check green, 
 
 **Answer:**
 
+## H-008 [closed] [direction-challenge] (node M1.8)
+
+- asked: 2026-11-15T11:00 by lead
+
+Single-origin invariant: who owns ingress for a Shared world (weaved forward target)? WorldOrigin::Shared{url} can only come from TunnelLease::public_url(), but TunnelLease is minted from TunnelRequest{route, local_port} against a live world port, while the origin is needed at boot (and before per_world fixture seeds). If weaved forwards to http://<fork>.<project>.localhost:80 the new 308 rule redirects it straight back to the shared URL (loop); if weaved forwards to the world port directly it needs setns/dial into the world, which is slipforkd's WorldEngine::dial_world_tcp capability, and LocalHostRoute::parse 404s non-.localhost Hosts. Nothing in the DI tree maps a shared hostname -> (ProjectSlug, WorldTarget). Recommended Option A: slipforkd is the sole shared ingress (shared-host map in WorldRegistry populated by share_world, proxying via dial_world_tcp with Host/X-Forwarded-* preserved); the 308/421 rule applies only to *.localhost; WorldOrigin::Shared is minted from the lease against a static planned port so origin precedes materialization. Option B (two-phase Local->Shared re-materialization) rejected: reopens a two-origin window that per_world seeds would bake in. Please confirm Option A / weaved forward target (H-006 related).
+
+**Answer:**
+RATIFIED BY CONDUCTOR on the owner's explicit directive at the 0.1.0 release gate ("a given environment is going to be either shared either not shared but will have at most one URL (and if you hit the local URL of a shared one you're just sent to the shared URL)").
+
+**Option A confirmed.** It is the only shape that satisfies that sentence, because:
+- the owner's sentence *prescribes* the 308 for the local URL of a shared world, so the redirect is correct behaviour, not a loop;
+- therefore the tunnel must never forward to `*.localhost:80` (that would loop), so `weaved` forwards to `slipforkd`, which is the **sole shared ingress** and proxies into the world via `WorldEngine::dial_world_tcp` preserving `Host` + `X-Forwarded-*`;
+- the 308/421 rule is scoped to `*.localhost` Hosts only; shared hostnames are proxied, never redirected;
+- `WorldOrigin::Shared` is minted from `TunnelLease::public_url()` against a **planned static port** decided before materialization, so an origin exists before any `per_world = true` fixture seed runs;
+- `WorldRegistry` owns the shared-hostname map (`shared hostname -> (ProjectSlug, WorldTarget)`), populated by `share_world` and cleared by `unshare_world`/lease drop.
+
+Option B (two-phase Local -> Shared re-materialization) stays rejected: it reopens the two-origin window the owner closed, and `per_world` seeds would bake a stale origin into persistent state.
+
+Cross-reference `H-006`: the concrete `weaved` forward target (shared hostname -> local ingress) is Slipfork's `slipforkd` endpoint; the wire contract for registering that lease remains deferred until `tunnel-weaver` publishes `weaved`'s IPC spec.
+

@@ -10,3 +10,5 @@ Every call to an expensive-tier agent (`strategist`, `architect`, `expert`) is r
 | 2026-11-15T01:03 | M1.6 | architect | lead | Final gate legality BLOCKER: git submodule/separate-git-dir root misidentification (fix spec) + jj canonical root unverifiable without owner-approved .jj/repo contract; rule fail-closed+defer vs documented pointer read |
 | 2026-11-15T02:01 | M1 | strategist | conductor | milestone gate |
 | 2026-11-15T02:28 | M1 | strategist | conductor | milestone gate re-run after M1.7 repaired make bench |
+| 2026-11-15T10:38 | M1.8 | architect | conductor | owner design corrections at release gate: single canonical origin per world, support tiers, typed coverage replacing after_suite shell recipes |
+| 2026-11-15T10:39 | M1.8 | architect | lead | Owner review-gate corrections: single-origin invariant, support tiers, typed coverage + OSPP precedence clarification |

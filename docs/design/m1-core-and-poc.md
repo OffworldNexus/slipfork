@@ -1,8 +1,8 @@
 # Milestone 1 Technical Design: Core IoC Architecture & Real CoW PoC
 
 - **Milestone:** `M1` (`0.1.0` — Global Target Design & Initial Measured PoC)
-- **Status:** Accepted (`H-001`..`H-003` validated; `ADR-0001`..`ADR-0006` locked)
-- **ADRs:** `ADR-0001`, `ADR-0002`, `ADR-0003`, `ADR-0004`, `ADR-0005`, `ADR-0006`
+- **Status:** Accepted (`H-001`..`H-003`, `H-005`, `H-006`, `H-008` validated; `ADR-0001`..`ADR-0007` locked)
+- **ADRs:** `ADR-0001`, `ADR-0002`, `ADR-0003`, `ADR-0004`, `ADR-0005`, `ADR-0006`, `ADR-0007`
 
 ---
 
@@ -10,17 +10,17 @@
 
 All crates obey strict constructor/parameter Dependency Injection with zero mutable globals and zero direct `std::env` / `std::process` calls outside adapters wired at the Composition Root (`crates/slipfork/src/main.rs` and `packages/opencode-slipfork/src/index.ts`).
 
-**M1 (`0.1.0`) Shipped Wiring:** `crates/slipfork/src/main.rs` wires `FileVaultProvider`, `OsCsprngEntropy`, `ResourceCoordinates::local_for_world`, `FsMerkleHasher`, `FsDigestCache`, and `ReflinkNetnsEngine`. `crates/slipfork-world` is the pure identity layer (`WorldTarget`, `LocalHostRoute`, `TunnelRegistrar`/`TunnelLease`) shared by `slipfork-snow` and future `slipfork-edge`/`slipfork-test`. M2 adds `crates/slipfork-edge` (`slipforkd`, `WorldRegistry`, `WeavedRegistrar` gated on `weaved`'s IPC spec) and `crates/slipfork-vcs` (`GitWorktreeAdapter`, `JjWorkspaceAdapter`, `git-remote-slipfork`); M3 adds `crates/slipfork-test` (`SocketRunnerAdapter`, `CommandTestAdapter`, `ShellSuiteHookRunner`).
+**M1 (`0.1.0`) Shipped Wiring:** `crates/slipfork/src/main.rs` wires `FileVaultProvider`, `OsCsprngEntropy`, `ResourceCoordinates::local_for_world`, `FsMerkleHasher`, `FsDigestCache`, and `ReflinkNetnsEngine`. `crates/slipfork-world` is the pure identity layer (`WorldTarget`, `LocalHostRoute`, `TunnelRegistrar`/`TunnelLease`, plus M2 `WorldOrigin`) shared by `slipfork-snow` and future `slipfork-edge`/`slipfork-test`. M2 adds `crates/slipfork-edge` (`slipforkd` with single-origin `308`/`421` enforcement, `WorldRegistry`, `WeavedRegistrar` gated on `weaved`'s IPC spec), `crates/slipfork-vcs` (`GitWorktreeAdapter`, `JjWorkspaceAdapter`, `git-remote-slipfork`), and `support/integrations.toml` (`slipfork support`, `ADR-0007`); M3 adds `crates/slipfork-test` (`SocketRunnerAdapter`, `CommandTestAdapter`, typed `CoverageDriver`).
 
 | Port (Trait) | Crate | Implementations | Shared Conformance / Critical Suite |
 |---|---|---|---|
-| `SecretProvider` & `EntropySource` | `slipfork-snow` | `MemorySecretProvider`, `FileVaultProvider` (`0600`), `LayeredSecretProvider`, `OsppHttpProvider` (M2); `OsCsprngEntropy` | `conformance::assert_secret_provider_conformance` + `critical_snow.rs` |
+| `SecretProvider` & `EntropySource` | `slipfork-snow` | `MemorySecretProvider`, `FileVaultProvider` (`0600` — M2 default, zero OSPP prereq), `LayeredSecretProvider`, `OsppHttpProvider` (later M2 leaf); `OsCsprngEntropy` | `conformance::assert_secret_provider_conformance` + `critical_snow.rs` |
 | `InputHasher`, `DigestCache` & `ArtifactStore` | `slipfork-dag` | `FsMerkleHasher`, `FsDigestCache`, `CowArtifactStore<C: VolumeCloner>` (M3) | `critical_dag.rs` |
 | `WorldEngine` & `VolumeCloner` | `slipfork-engine` | `ReflinkNetnsEngine` (`linux_cow.rs` `ioctl(FICLONE)` + unprivileged `CLONE_NEWUSER\|NEWNET\|NEWNS\|NEWPID`), `IncusEngine` (Unix-socket HTTP `/1.0`) | `conformance::assert_world_engine_conformance` + `critical_engine.rs` |
-| `WorldTarget` & `LocalHostRoute` | `slipfork-world` (M1) | `WorldTarget::{Canonical, UserFork, TestSlot}`, `LocalHostRoute` parser/formatter | `critical_world.rs` (`.localhost` namespace) |
-| `WorldRegistry` & `TunnelRegistrar` | `slipfork-edge` (M2) / `slipfork-world` trait | `InMemoryWorldRegistry` (`LocalHostRoute` + `dial_world_tcp`), `WeavedRegistrar` (wire adapter gated on `weaved`'s real IPC spec) | `conformance::assert_tunnel_registrar_conformance` + M2 IPC conformance |
+| `WorldTarget`, `LocalHostRoute` & `WorldOrigin` | `slipfork-world` (M1 + M2 `WorldOrigin`) | `WorldTarget::{Canonical, UserFork, TestSlot}`, `LocalHostRoute`, M2 `WorldOrigin::{Local, Shared}` | `critical_world.rs` (`.localhost` namespace) |
+| `WorldRegistry` & `TunnelRegistrar` | `slipfork-edge` (M2) / `slipfork-world` trait | `WorldRegistry` (`WorldOrigin` + `dial_world_tcp` + `308`/`421` shared-origin edge rules), `WeavedRegistrar` (gated on `weaved`'s IPC spec) | `conformance::assert_tunnel_registrar_conformance` + M2 IPC conformance |
 | `VcsWorkspaceFactory` & `VcsWorkspace` | `slipfork-vcs` (M2) | `GitWorktreeAdapter` (`git worktree` + scratch-index `<fork>/wip`), `JjWorkspaceAdapter` (`jj workspace` + `@` commit) | M2 `VcsWorkspace` conformance |
-| `TestAdapter` & `SuiteHookRunner` | `slipfork-test` (M3) | `SocketRunnerAdapter` (`RunnerProtocol v1`: `pytest-slipfork` #1, Playwright, PHPUnit, nextest), `CommandTestAdapter`; `ShellSuiteHookRunner` (`$SLIPFORK_RUN_ARTIFACTS_DIR`) | M3 `TestAdapter` conformance |
+| `TestAdapter` & `CoverageDriver` | `slipfork-test` (M3) | `SocketRunnerAdapter` (`RunnerProtocol v1`: `pytest-slipfork` #1, Playwright, PHPUnit, nextest), `CommandTestAdapter`; per-language `CoverageDriver` + surviving `SLIPFORK_OUTPUT_DIR` | M3 `TestAdapter` conformance |
 | `SlipforkGateway` | `packages/opencode-slipfork` | `CliSlipforkGateway`, `FakeSlipfork` (tests) | `tests/coordinator.critical.test.ts` |
 
 ---
@@ -42,4 +42,4 @@ All crates obey strict constructor/parameter Dependency Injection with zero muta
 - **`R13` (OpenCode V2 implicit routing):** `@slipfork/opencode` registers `worktree.transform`, `shell.hook("create.before")`, and `session.hook("context")` without replacing the `shell` tool.
 - **`R14` (Real M1 PoC Benchmark):** `poc/run_benchmark.py` measures real PostgreSQL 18.7 + XFS `FICLONE` + isolated `netns` + warm Python Zygote + headless Chromium Playwright across sequential/truncate baseline vs Slipfork Cold DAG vs Slipfork Pre-Warmed Pool (`3.12x` speedup, `123 ms`/test).
 - **`R15` (`.localhost` 1/2/3-label routing & fork disambiguation):** `ResourceCoordinates::local_for_world` emits `http://(<fork>|test-<slot>.)?<project>.localhost`; `slipfork_world::WorldTarget::validate` rejects dots, reserved `test-*` prefixes, and `domains[].id` collisions so `LocalHostRoute::parse` disambiguates `<project>.localhost`, `<domain>.<project>.localhost`, `<fork>.<project>.localhost`, and `<domain>.<fork>.<project>.localhost` unambiguously.
-- **`R16` (100% tool orthogonality & polyglot `RunnerProtocol v1`):** Slipfork contains zero Blastit- or `pytest`-hardwired core traits; `RunnerProtocol v1` (`ADR-0006`) coordinates any language over `AF_UNIX` NDJSON while per-world `$SLIPFORK_ARTIFACTS_DIR` + `[test].after_suite` (`$SLIPFORK_RUN_ARTIFACTS_DIR`) serves coverage, Allure, Playwright traces, and Blastit uniformly.
+- **`R16` (Polyglot `RunnerProtocol v1`, built-in `CoverageDriver` & `SLIPFORK_OUTPUT_DIR` orthogonality):** Slipfork contains zero Blastit- or `pytest`-hardwired core traits and zero user-authored shell-pipeline hooks (`ADR-0006` §1); `RunnerProtocol v1` coordinates any language over `AF_UNIX` NDJSON, `TestAdapter::coverage` (`CoverageDriver`) owns multi-world coverage paths and combination, and surviving `SLIPFORK_OUTPUT_DIR` serves Blastit, Allure, and Playwright traces uniformly.

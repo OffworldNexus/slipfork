@@ -11,14 +11,16 @@ Two naive topologies fail at scale for full-stack integration/browser test suite
 
 ## Decision
 
-1. **Split Stateless Build Artifacts from Stateful Fixture Snapshots:**
+1. **Split Stateless Build Artifacts from Origin-Classified Fixture Lineages:**
    - **`ArtifactStore` (`[artifacts.<id>]`):** Caches stateless build outputs (e.g., `front/build`, `staticfiles`) by SHA-256 Merkle digest of `(build_cmd, build_envs, input_files)`.
-   - **`FixtureDag` (`[fixtures.<id>]`):** Forms a tree of stateful CoW snapshots (`base -> migrate -> seed_*`), hashed independently by `(parent_digest, run_cmd, runtime_envs, input_files)`.
+   - **`FixtureDag` (`[fixtures.<id>]`):** Forms a tree of stateful steps (`base -> migrate -> seed_*`) where each node is explicitly either:
+     - **Origin-independent (`per_world = false`, default):** Reads only origin-free service coordinates (`DATABASE_URL`, `REDIS_URL`, `AWS_S3_ENDPOINT_URL`), hashes by `(parent_digest, run_cmd, origin_free_runtime_envs, input_files)`, and seals into a **reusable CoW snapshot** shared across forks and test slots. Origin-bearing values (`resources::app.*`, `domains::*`, `BASE_URL`) are withheld during reusable snapshot execution (`ADR-0005` §1).
+     - **Per-world (`per_world = true`, M2/M3 schema extension):** Writes absolute origin URLs into persistent state (e.g., `django.contrib.sites` or Wagtail `Site.root_url` rows). A `per_world = true` node is **never sealed into a shared snapshot**, cannot be the `parent` of an origin-independent node (`DagError::OriginIndependentChildOfPerWorld`), and executes inside each materialized world **after** its single `WorldOrigin` is assigned (`ADR-0005` §1).
 2. **One Unified Pod World per Cloned Test / Worktree:**
-   - Each test world clones **one** CoW instance from its target `FixtureNode` snapshot and bind-mounts all required `ArtifactVolume`s read-only alongside the shared-UID repo mount.
+   - Each world clones **one** CoW instance from its deepest origin-independent `FixtureNode` snapshot, assigns its single `WorldOrigin`, runs any downstream `per_world = true` fixture steps, and bind-mounts all required `ArtifactVolume`s read-only alongside the shared-UID repo mount.
 3. **Warm Runner Zygote (`fork()` RAM CoW):**
    - Language test adapters (`PytestAdapter`, `PlaywrightVitestAdapter`, `PhpUnitAdapter`) support a pre-imported runner zygote that forks per test via kernel `fork()` (`< 1 ms` page-table RAM CoW), eliminating repeated framework import overhead even when disk-only CoW snapshots are used.
 
 ## Consequences
 
-- CSS/TS edits rebuild only `artifact:front` (`0 ms` DB re-seed); migration/seed edits rebuild only downstream `FixtureNode`s (`0 ms` frontend rebuild); `N` parallel workers launch `N` lightweight CoW worlds on identical canonical ports with zero teardown cost.
+- CSS/TS edits rebuild only `artifact:front` (`0 ms` DB re-seed); migration/seed edits rebuild only downstream `FixtureNode`s (`0 ms` frontend rebuild); origin-independent snapshots share safely across worlds while `per_world = true` fixtures prevent stale baked-in URLs.
