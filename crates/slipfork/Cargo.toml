@@ -14,3 +14,7 @@ serde_json.workspace = true
 slipfork-dag = { path = "../slipfork-dag" }
 slipfork-engine = { path = "../slipfork-engine" }
 slipfork-snow = { path = "../slipfork-snow" }
+slipfork-world = { path = "../slipfork-world" }
+
+[dev-dependencies]
+tempfile.workspace = true

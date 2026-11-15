@@ -519,6 +519,8 @@ dependencies = [
  "slipfork-dag",
  "slipfork-engine",
  "slipfork-snow",
+ "slipfork-world",
+ "tempfile",
 ]
 
 [[package]]
@@ -528,6 +530,7 @@ dependencies = [
  "hex",
  "serde",
  "sha2",
+ "slipfork-world",
  "tempfile",
  "thiserror",
  "toml",
@@ -554,7 +557,16 @@ dependencies = [
  "serde",
  "serde-saphyr",
  "serde_json",
+ "slipfork-world",
  "tempfile",
+ "thiserror",
+]
+
+[[package]]
+name = "slipfork-world"
+version = "0.1.0"
+dependencies = [
+ "serde",
  "thiserror",
 ]
 

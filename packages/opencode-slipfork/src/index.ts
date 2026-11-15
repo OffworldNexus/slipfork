@@ -8,6 +8,7 @@
  *  3. `ctx.session.hook("context")` (2-line ambient world awareness)
  */
 import { execFile } from "node:child_process";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { promisify } from "node:util";
 
@@ -25,7 +26,7 @@ function shellSingleQuote(text: string): string {
   return `'${text.replaceAll("'", `'\\''`)}'`;
 }
 
-class CliSlipforkGateway implements SlipforkGateway {
+export class CliSlipforkGateway implements SlipforkGateway {
   constructor(
     private readonly binary: string,
     private readonly canonicalRoot: string,
@@ -52,28 +53,27 @@ class CliSlipforkGateway implements SlipforkGateway {
 
   wrapShellCommand(input: {
     worldName: string;
+    workspaceDir: string;
     cwd: string;
     shell: string;
     command: string;
   }): { shell: string; command: string; env: Record<string, string> } {
-    const snowPath = join(input.cwd, "snow.yml");
-    const wrappedCmd = [
+    const snowPath = join(input.workspaceDir, "snow.yml");
+    const args = [
       shellSingleQuote(this.binary),
       "exec",
       "--world",
       shellSingleQuote(input.worldName),
       "--cwd",
       shellSingleQuote(input.cwd),
-      "--snow-file",
-      shellSingleQuote(snowPath),
-      "--",
-      shellSingleQuote(input.shell),
-      "-c",
-      shellSingleQuote(input.command),
-    ].join(" ");
+    ];
+    if (existsSync(snowPath)) {
+      args.push("--snow-file", shellSingleQuote(snowPath));
+    }
+    args.push("--", shellSingleQuote(input.shell), "-c", shellSingleQuote(input.command));
     return {
       shell: "/bin/sh",
-      command: wrappedCmd,
+      command: args.join(" "),
       env: { SLIPFORK_ACTIVE_WORLD: input.worldName },
     };
   }

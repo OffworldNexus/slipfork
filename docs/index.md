@@ -1,81 +1,58 @@
-# Slipfork
+# Slipfork (`0.1.0`)
 
-**Fork a running full-stack environment in milliseconds. Run every heavy test in its own clean world.**
+**Copy-on-write world primitives, `snow.yml` v2 secret/mode resolution, orthogonal DAG planning, and OpenCode V2 worktree isolation.**
 
-Slipfork reads your [`snow.yml`](snow-modes.md) infrastructure manifest, boots a local environment where source files stay owned by your own user, and uses copy-on-write (CoW) snapshots to clone databases, caches, object buckets, and warm processes instantaneously.
+Slipfork `0.1.0` provides the core Rust CLI, domain crates, and OpenCode V2 plugin for snapshotting and cloning stateful service directories in milliseconds on Linux (`XFS` `reflink=1` / `Btrfs` + unprivileged user/network namespaces, zero `sudo`, zero `root:root` files):
 
 ```console
-$ slipfork up        # Boot Postgres, Redis, S3 & app from snow.yml (modes.local)
-$ slipfork test      # Build changed artifacts once; run each test in a CoW clone
-$ slipfork fork exp  # Clone the live environment into .worktrees/exp in ~30 ms
+$ slipfork doctor                                            # Probe CoW FICLONE latency & netns support
+$ slipfork snow resolve --file snow.yml --mode local         # Validate snow.yml & persist !! secrets (0600)
+$ slipfork dag plan --file slipfork.toml --repo .            # Compute orthogonal artifact & fixture waves
+$ slipfork snap --source ./state canonical                   # Capture a CoW snapshot via ioctl(FICLONE)
+$ slipfork fork exp --from canonical --workspace .           # Clone snapshot into an isolated CoW world
+$ slipfork exec --world exp --snow-file snow.yml -- pytest   # Run inside private netns under host $UID:$GID
+$ slipfork drop exp                                          # Destroy the cloned world in milliseconds
 ```
 
 ---
 
-## What Slipfork Eliminates
+## What `0.1.0` Solves Today
 
-| Pain today | With Slipfork |
+| Capability | Shipped in `0.1.0` |
 |---|---|
-| `pytest` builds the frontend inside a fixture, picks random ports, and pins browser tests to 1 worker | Frontend builds once as a cached **Artifact Volume**; every test clone runs on canonical ports (`:8000`, `:3000`, `:5432`) across all CPU cores |
-| `transactional_db` / `serialized_rollback` flushes and re-seeds Postgres 25 times per run | Migrations and seeds form a **Fixture Snapshot DAG**; each test clones its ancestor in milliseconds and discards it on exit — zero teardown |
-| Docker bind-mounts leave `root:root` migrations, lockfiles, and screenshots on your laptop | Source code mounts directly with your exact `$UID:$GID`; generated files are yours immediately |
-| `.env` files drift from cloud config, or agents monkey-patch `settings.py` around missing keys | `snow.yml` `modes.all` + `modes.local` resolves everything semantically, auto-generates `!!` secrets once, and halts cleanly on missing credentials |
-| Parallel AI agents in git worktrees fight over port `5432`, Redis `FLUSHDB`, and dev servers | [`@slipfork/opencode`](agents-and-opencode.md) forks the world on worktree creation and routes `shell` commands implicitly by directory |
+| **Single `snow.yml` v2 manifest** | `modes.all` + `modes.<mode>` inheritance, 2-level `components.<id>.run_command` override validation (M2 process supervision), `??` fallbacks, write-once `!! random_string(50)` secret persistence (`0600`), and exhaustive missing-key diagnostics |
+| **Orthogonal DAG planning** | `slipfork dag plan` hashes `[artifacts.*]` independently from `[fixtures.*]` (`1.4 ms` warm check): frontend edits never invalidate DB fixture digests, and migration edits never trigger frontend rebuilds |
+| **Rootless CoW cloning & private `netns`** | `slipfork snap`, `fork`, `exec`, and `drop` clone files via kernel `ioctl(FICLONE)` (failing closed on `tmpfs`), isolate `127.0.0.1` ports (`:5432`, `:8000`) per world, and preserve your exact `$UID:$GID` |
+| **Implicit OpenCode worktree worlds** | [`@slipfork/opencode`](agents-and-opencode.md) forks a CoW world when OpenCode creates a git worktree and wraps `shell` commands into `slipfork exec --world ...` automatically |
 
 ---
 
-## 30-Second Tour
+## Measured `0.1.0` Benchmark (PostgreSQL 18.7 + XFS `FICLONE` + Playwright)
 
-### 1. One manifest for Cloud and Local (`snow.yml`)
+Reproduce locally with `make bench`:
 
-```yaml
-resources:
-  pg_clusters: [{ id: psql, version: "18" }]
-  pg_databases: [{ id: psql, cluster: psql }]
-  redis_clusters: [{ id: redis, version: "8" }]
-  s3_buckets: [{ id: media }]
-
-modes:
-  all:
-    envs:
-      django:
-        SECRET_KEY: '${{ secrets::SECRET_KEY !! random_string(50) }}'
-        DATABASE_URL: '${{ resources::pg_databases.psql.url }}'
-        REDIS_URL: '${{ resources::redis_clusters.redis.url }}'
-  cloud:
-    envs:
-      django:
-        STORAGES_MODE: 'do'
-        AWS_STORAGE_BUCKET_NAME: '${{ vars::AWS_STORAGE_BUCKET_NAME }}'
-  local:
-    envs:
-      django:
-        DEBUG: 'True'
-        STORAGES_MODE: 's3'
-        AWS_S3_ENDPOINT_URL: '${{ resources::s3_buckets.media.endpoint_url }}'
-```
-
-### 2. Orthogonal Snapshot DAG for Tests
-
-```mermaid
-flowchart LR
-  Base["L0: base services<br/>(PG 18 + Redis + S3)"] --> Mig["L1: migrate"]
-  Front["Artifact: front build<br/>(Merkle-cached)"] -.->|read-only mount| T1
-  Front -.->|read-only mount| T2
-  Mig --> Seed["L2: seed:catalog"]
-  Mig --> T1["Clone #1: test_empty_state"]
-  Seed --> T2["Clone #2: test_checkout_flow"]
-```
-
-- Editing CSS rebuilds **only** `front build` — `migrate` and `seed:catalog` snapshots stay warm.
-- Adding a migration rebuilds **only** `migrate` -> `seed:catalog` — `front build` is untouched.
+| Operation / Suite (`16` full browser + committed SQL checkout tests) | Measured Result |
+|---|---:|
+| 64 KiB XFS `ioctl(FICLONE)` probe | **`447 us`** |
+| `slipfork fork` on a 41.5 MiB seeded PostgreSQL 18 cluster | **`194.5 ms`** |
+| 4 concurrent worlds binding `127.0.0.1:5432` in parallel | **`460.7 ms`** (`0` cross-world leaks) |
+| Traditional sequential `TRUNCATE` + re-seed baseline | `6.12 s` (`382 ms`/test) |
+| Pre-warmed Slipfork CoW worlds (`-j 8`, `0 ms` SQL teardown) | **`1.96 s` (`123 ms`/test, `3.12x` faster)** |
 
 ---
 
 ## Next Steps
 
-- **[Getting started](getting-started.md)** — Install Slipfork and boot your first project in 3 steps.
-- **[`snow.yml` modes & secrets](snow-modes.md)** — `modes.all`, `!!` secret generators, and Kerfufoo integration.
-- **[Parallel testing DAG](testing-dag.md)** — Multi-language test adapters (`pytest`, `Playwright`, `PHPUnit`, `cargo`).
-- **[AI agents & OpenCode](agents-and-opencode.md)** — Zero-confusion worktree worlds for autonomous coding agents.
-- **[Blastit integration](blastit.md)** — Single-pass parallel wire learning and zero-trust route verification.
+- **[Getting started](getting-started.md)** — Build `slipfork`, verify host CoW capabilities, resolve `snow.yml`, and fork/exec an isolated world.
+- **[`snow.yml` modes & secrets](snow-modes.md)** — `modes.all`, `!!` CSPRNG secret generators, `.localhost` coordinate rules, and `LayeredSecretProvider`.
+- **[Orthogonal DAG planner](testing-dag.md)** — Configure `slipfork.toml` and inspect Merkle rebuild waves with `slipfork dag plan`.
+- **[OpenCode V2 plugin](agents-and-opencode.md)** — Wire `@slipfork/opencode` for implicit per-worktree CoW worlds.
+- **[CLI (`0.1.0`)](reference/cli.md)** & **[Manifest reference](reference/manifest.md)** — Exact flags and schemas shipped today.
+
+---
+
+## Roadmap Corner (Upcoming Milestones — Not Yet in `0.1.0`)
+
+- **M2 (`0.2.0`):** `slipforkd` port-80 `*.localhost` edge proxy, `slipfork up/down/shell/share` (Tunnel Weaver `weaved` tunnel leases via the pure `TunnelRegistrar` trait; wire adapter gated on `weaved`'s IPC spec), `git-remote-slipfork` (`<fork>` + `<fork>/wip`), Jujutsu (`jj workspace`) adapter, and live `IncusEngine` LXC/QEMU integration.
+- **M3 (`0.3.0`):** Automated `slipfork test` orchestrator (`RunnerProtocol v1`, world-owned stacks for FastAPI/Flask/Hono/Symfony/Go/Rust + `pytest-slipfork`, pre-warmed CoW pools, and generic `$SLIPFORK_ARTIFACTS_DIR` + `after_suite` hooks for coverage, Allure, and Blastit).
+- **M4 (`0.4.0`):** Remote CI/team content-addressed snapshot & artifact cache export/import and agent skills.

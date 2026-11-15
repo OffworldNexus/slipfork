@@ -7,3 +7,7 @@ created (task) Human review & sign-off on M1 global design, snow.yml modes contr
 ## 2026-11-14T22:30 [lead]
 
 status ready -> blocked: Awaiting owner review of M1 design, ADRs, PoC benchmark, and H-001..H-004
+
+## 2026-11-14T23:16 [conductor]
+
+status blocked -> done: Owner validated proposals + added .localhost edge, weaved IPC, slipfork shell, git/jj remote, and polyglot-first test protocol

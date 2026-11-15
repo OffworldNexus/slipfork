@@ -12,8 +12,8 @@ pub mod provider;
 pub use faceless::{GeneratorSpec, parse_faceless, render_template};
 pub use model::{
     BuildImage, Component, Domain, Hook, HookPhase, Image, Ingress, IngressMatch, IngressTarget,
-    MissingRef, ModeSpec, PgCluster, PgDatabase, RedisCluster, ResolvedEnvMap, ResourceCoordinates,
-    Resources, S3Bucket, SnowError, SnowFile,
+    MissingRef, ModeComponentOverride, ModeSpec, PgCluster, PgDatabase, RedisCluster,
+    ResolvedEnvMap, ResourceCoordinates, Resources, S3Bucket, SnowError, SnowFile,
 };
 pub use provider::{
     EntropySource, FileVaultProvider, LayeredSecretProvider, MemorySecretProvider, Namespace,

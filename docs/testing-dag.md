@@ -1,126 +1,59 @@
-# Parallel Testing & Fixture Snapshot DAG
+# Orthogonal Artifact & Fixture DAG Planner (`0.1.0`)
 
-Heavy integration and browser tests are slow for three structural reasons:
-
-1. **Test runners do build work** (compiling frontend bundles inside `pytest` session fixtures and re-baking random `live_server` ports per worker).
-2. **Databases clean up by deleting rows** (`TRUNCATE` + `serialized_rollback` or re-running seeders 25 times).
-3. **Workers share `localhost`** (colliding on Redis `FLUSHDB`, S3 buckets, background workers, and ports).
-
-Slipfork fixes all three outside your application code by turning build steps into **Orthogonal Artifact Volumes** and test fixtures into a **Copy-on-Write Snapshot DAG**.
+`crates/slipfork-dag` and `slipfork dag plan` separate **stateless build artifacts** (`[artifacts.<id>]`) from **stateful fixture snapshot lineages** (`[fixtures.<id>]`) so frontend asset edits never invalidate database snapshots and schema/seed edits never trigger frontend rebuilds.
 
 ---
 
-## How the DAG Works
+## How Orthogonal Hashing Works
 
 ```mermaid
 flowchart TD
-  subgraph Artifacts["1. Orthogonal Artifact Volumes (Merkle-cached)"]
-    AFront["artifact:front<br/>inputs: front/src/**, pnpm-lock.yaml"]
-    AStatic["artifact:api-static<br/>inputs: api/static/**"]
+  subgraph Artifacts["1. Stateless Artifacts (hashed by build + build_envs + input globs)"]
+    AFront["artifact:front<br/>inputs: front/src/**, front/pnpm-lock.yaml"]
   end
 
-  subgraph Snapshots["2. Stateful CoW Snapshot Tree"]
-    S0["snap:base<br/>(PG 18 + Redis + SeaweedFS)"] --> S1["snap:migrate<br/>inputs: api/**/migrations/**"]
-    S1 --> S2a["snap:seed-minimal"]
-    S1 --> S2b["snap:seed-catalog"]
-    S2b --> S3["snap:seed-checkout"]
+  subgraph Fixtures["2. Stateful Fixture Waves (hashed by parent_digest + run + runtime_envs + input globs)"]
+    S1["wave 0: migrate<br/>inputs: api/migrations/**"] --> S2a["wave 1: seed_minimal"]
+    S1 --> S2b["wave 1: seed_catalog"]
   end
-
-  S2a ==>|"CoW clone (ms)"| W1["Test World #1 (:8000, :3000, :5432)"]
-  S3 ==>|"CoW clone (ms)"| W2["Test World #2 (:8000, :3000, :5432)"]
-  S3 ==>|"CoW clone (ms)"| W3["Test World #3 (:8000, :3000, :5432)"]
-  AFront -.->|"RO mount"| W1
-  AFront -.->|"RO mount"| W2
-  AFront -.->|"RO mount"| W3
 ```
 
-### Key Properties
-
-- **No change = Zero rebuild:** Every artifact and snapshot node hashes its declared input globs + resolved `snow.yml` envs. Unchanged nodes resolve in `< 1 ms`.
-- **Orthogonal invalidation:** Editing a Svelte/React component rebuilds **only** `artifact:front`; `snap:migrate` and `snap:seed-*` are reused as-is. Editing a migration rebuilds `snap:migrate` -> `snap:seed-*` without rebuilding `front`.
-- **Common ancestor sharing:** Ten tests needing `seed-checkout` all clone `snap:seed-checkout` in milliseconds. None of them run `migrate` or `seed` during the test!
-- **Canonical ports everywhere:** Every test world has its own private network stack (`127.0.0.1:5432`, `:6379`, `:8000`, `:3000`, `:9000`), so the frontend bundle is built **once** against fixed URLs and works across 32 parallel workers.
-- **Zero teardown cost:** Tests can commit real transactions (`transactional_db`), mutate Redis, and upload S3 files freely. When the test finishes, Slipfork destroys the ephemeral CoW clone — zero `TRUNCATE`, zero `DROP DATABASE` locks.
+- **Orthogonal invalidation (`critical_dag.rs`):** Modifying a file under `front/src/**` flips `artifact:front` to `Rebuild` while leaving `migrate`, `seed_minimal`, and `seed_catalog` digests bit-for-bit identical (`Cached`). Modifying `api/migrations/**` invalidates `migrate` and its descendants without touching `front`.
+- **Cycle & parent validation:** Unknown `parent` names or dependency cycles fail closed immediately (`DagError::UnknownParent` / `DagError::CycleDetected`).
 
 ---
 
-## Declaring Fixtures & Pipelines
-
-Zero extra config is needed for standard `pre-deploy` migrations in `snow.yml`. To declare multi-stage fixture snapshots or artifact builds, add a `test` block in `slipfork.toml` (or let framework adapters infer them):
+## Authoring `slipfork.toml` & Running `slipfork dag plan`
 
 ```toml title="slipfork.toml"
+# Optional canonical project slug (defaults to the canonical git/jj repository name).
+project = "acme"
+
 [artifacts.front]
-inputs = ["front/src/**", "front/package.json", "front/pnpm-lock.yaml"]
+inputs = ["front/src/**", "front/package.json"]
 build = "pnpm --dir front build"
-mount = "front/build"
+mount = "front/dist"
 
 [fixtures.migrate]
-inputs = ["api/**/migrations/*.py", "api/pyproject.toml"]
-run = "uv run --directory api python manage.py migrate"
+inputs = ["api/migrations/*.sql"]
+run = "psql -f api/migrations/0001_schema.sql"
 
-[fixtures.catalog]
+[fixtures.seed_catalog]
 parent = "migrate"
-inputs = ["api/catalog/seed.py"]
-run = "uv run --directory api python manage.py seed --profile catalog"
+inputs = ["api/migrations/seed_catalog.sql"]
+run = "psql -f api/migrations/seed_catalog.sql"
 ```
 
----
+Inspect the deterministic topological execution plan in human-readable or `--json` format:
 
-## Polyglot Test Adapters
+```console
+$ slipfork dag plan --file slipfork.toml --repo .
+artifact front            Rebuild (9f2c1a4e81b0)
+wave 0 fixture migrate      Rebuild (48ab77c109e2)
+wave 1 fixture seed_catalog Rebuild (c019fe8823a1)
+```
 
-`slipfork test` discovers tests, groups them by required fixture snapshot, warms a pre-imported runner zygote per snapshot where supported, and schedules each heavy test into a fresh CoW world:
+`FsDigestCache` checks `<state_dir>/artifacts/<digest>` and `<state_dir>/fixtures/<digest>` (`~/.cache/slipfork` by default, override via `--state-dir`).
 
-=== "Python (`pytest`)"
-
-    ```python
-    import pytest
-
-    @pytest.mark.slipfork_fixture("catalog")
-    def test_checkout_commits_order(page):
-        # Postgres, Redis, S3, API (:8000) & Front (:3000) are ALREADY running
-        # with the 'catalog' snapshot loaded!
-        page.goto("http://localhost:3000/products/espresso")
-        page.get_by_role("button", name="Buy now").click()
-        assert page.url.endswith("/orders/confirmed")
-    ```
-
-    ```console
-    $ slipfork test -- pytest api/tests/bdd
-    ```
-
-=== "TypeScript (`Playwright` / `Vitest`)"
-
-    ```ts
-    import { test, expect } from "@playwright/test";
-
-    test.describe("checkout @fixture:catalog", () => {
-      test("completes payment in isolated world", async ({ page }) => {
-        await page.goto("http://localhost:3000/cart");
-        await expect(page.getByTestId("cart-ready")).toBeVisible();
-      });
-    });
-    ```
-
-    ```console
-    $ slipfork test -- pnpm --dir front exec playwright test
-    ```
-
-=== "PHP (`PHPUnit` / `Pest`)"
-
-    ```php
-    #[Group('fixture:catalog')]
-    public function testInvoiceGeneration(): void {
-        $response = $this->postJson('/api/orders/1/invoice');
-        $response->assertCreated();
-    }
-    ```
-
-    ```console
-    $ slipfork test -- vendor/bin/phpunit
-    ```
-
-=== "Rust (`cargo test` / `nextest`)"
-
-    ```console
-    $ slipfork test -- cargo test --workspace --test "*e2e*"
-    ```
+!!! note "Upcoming in M3 (`0.3.0`)"
+    In `0.1.0`, `slipfork dag plan` computes and verifies the content-addressed plan (used in `poc/run_benchmark.py`); automated DAG materialization and polyglot `RunnerProtocol` test execution (`slipfork test`) land in Milestone 3 (`ADR-0006`).

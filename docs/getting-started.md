@@ -1,114 +1,102 @@
-# Getting Started
+# Getting Started (`0.1.0`)
 
-Boot a full-stack project locally and run its test suite in parallel CoW worlds in **three steps** — with zero `.env` copy-pasting and zero `root:root` files.
+Build `slipfork` from source, verify your Linux CoW filesystem and user/network namespaces, resolve a `snow.yml` v2 manifest, and run commands inside an isolated CoW world — with zero `sudo` and zero `root:root` files.
 
-## Prerequisites
+## 1. Build & Probe Host Capabilities
 
-- **Linux** (`x86_64` or `aarch64`) with either:
-  - **[Incus](https://linuxcontainers.org/incus/) (`incusd`)** for full system-container & QEMU VM copy-on-write (disk + stateful RAM snapshots), **or**
-  - **Rootless CoW filesystem** (`XFS` with `reflink=1`, `Btrfs`, or `ZFS`) + unprivileged user/network namespaces (works out of the box inside nested CI and LXC containers).
+Prerequisites: **Linux** (`x86_64` / `aarch64`), **Rust 1.88+** (`edition = "2024"`), a standard non-bare `git` repository (or `jj` on `PATH`; see note below), `unshare` / `ip` (`util-linux` + `iproute2`), and a CoW-capable filesystem (`XFS` with `reflink=1`, `Btrfs`, or `ZFS`) under `~/.cache/slipfork` (never RAM-backed `/tmp` `tmpfs`).
 
-Check your host in one command:
+!!! note "Project slug & Jujutsu (`jj`) workspaces in `0.1.0`"
+    Slipfork derives `<project>` from the canonical `git` root (`git rev-parse --show-toplevel`, resolving linked `.worktrees/<fork>` back to the main repo; bare repos fail closed, and submodules / `--separate-git-dir` require `project = "<slug>"` in `slipfork.toml`). For Jujutsu, Slipfork runs `jj root` when `jj` is on `PATH` (failing closed with a `project = "<slug>"` hint when `jj` is absent); because `jj root` is workspace-scoped, `.worktrees/<fork>` workspaces under `jj` require `project = "<slug>"` in `slipfork.toml` until Milestone 2's `JjWorkspaceAdapter` lands ([Manifest Reference](reference/manifest.md)).
 
 ```console
+$ cargo install --path crates/slipfork
 $ slipfork doctor
-engine: incus (/var/lib/incus/unix.socket, pool=default [zfs], shift=true)
-reflink: ok (/home/alice -> xfs FICLONE 16 MiB in 1.8 ms)
-netns:   ok (CLONE_NEWUSER | CLONE_NEWNET | CLONE_NEWPID)
+state_root: /home/alice/.cache/slipfork
+incus:      absent (using reflink-netns)
+reflink:    ok (64 KiB FICLONE in 447 us)
+netns:      ok (uid=1000:1000)
 ```
+
+Pass `--json` to any command for structured output (`slipfork --json doctor`).
 
 ---
 
-## 1. Switch `snow.yml` to `modes`
+## 2. Author & Resolve `snow.yml`
 
-Replace top-level `envs:` with `modes:` (`all` + `cloud` + `local`). Use `!! random_string(50)` for any secret that can be generated automatically on first boot:
+Inside a repository whose root directory is a lowercase DNS label (or sets `project = "acme"` in `slipfork.toml`), create a `snow.yml` file using `modes:` (`all` + `cloud` + `local`) and `!! random_string(50)` for write-once local secret generation:
+
+```console
+$ mkdir acme && cd acme && git init
+```
 
 ```yaml title="snow.yml"
 images:
   - id: api
     context: api
-  - id: front
-    context: front
 
 components:
   - id: api
     image: api
-    envs: [django]
-  - id: api-migrate
-    image: api
-    envs: [django]
-  - id: front
-    image: front
-    envs: [front]
+    run_command: gunicorn app.main:app --bind 0.0.0.0:${{ components::api.private_port }}
+    envs: [app]
 
 ingresses:
-  - match: { prefix: "/back" }
-    target: { component: api, port: 8000 }
   - match: { prefix: "/" }
-    target: { component: front, port: 3000 }
-
-hooks:
-  - when: pre-deploy
-    component: api-migrate
-    run_command: uv run python manage.py migrate
+    target: { component: api, port: 8000 }
 
 resources:
   pg_clusters: [{ id: psql, version: "18" }]
-  pg_databases: [{ id: psql, cluster: psql }]
-  redis_clusters: [{ id: redis, version: "8" }]
+  pg_databases: [{ id: appdb, cluster: psql }]
 
 modes:
   all:
     envs:
-      django:
+      app:
         SECRET_KEY: '${{ secrets::SECRET_KEY !! random_string(50) }}'
-        DATABASE_URL: '${{ resources::pg_databases.psql.url }}'
-        REDIS_URL: '${{ resources::redis_clusters.redis.url }}'
-      front:
-        API_URL: '${{ components::api.private_url }}'
+        DATABASE_URL: '${{ resources::pg_databases.appdb.url }}'
+        APP_URL: '${{ resources::app.url }}'
   cloud:
     envs:
-      django:
-        SENTRY_DSN: '${{ vars::API_SENTRY_DSN }}'
+      app:
+        LOG_LEVEL: '${{ vars::LOG_LEVEL ?? "INFO" }}'
   local:
+    components:
+      api:
+        # Validated in 0.1.0; process supervision ships in M2 (slipfork-edge)
+        run_command: uv run uvicorn app.main:app --host 127.0.0.1 --port ${{ components::api.private_port }} --reload
     envs:
-      django:
+      app:
         DEBUG: 'True'
 ```
 
-!!! note "Already have a legacy `snow.yml` with `envs:`?"
-    Run `slipfork init` to convert top-level `envs:` into `modes.all` + `modes.cloud` + `modes.local` automatically.
-
----
-
-## 2. Start your local world
+Validate `snow.yml` and persist auto-generated `!!` secrets into your `0600` local vault (`~/.local/share/slipfork/vaults/<project>.json` — secrets stay `[REDACTED]` unless `--expose-secrets` is passed):
 
 ```console
-$ slipfork up
-[secrets] generated secrets::SECRET_KEY -> local vault (~/.local/share/slipfork/vaults/acme.json)
-[world]   psql:18 ready (5432), redis:8 ready (6379)
-[hook]    pre-deploy (api-migrate): uv run python manage.py migrate (410 ms)
-[ingress] http://acme.localtest.me -> /back:8000, /:3000 (uid=1000:1000)
-```
-
-Run any command inside the live world — your working tree is mounted at the **exact same path** under your own UID:
-
-```console
-$ slipfork exec -- uv run python manage.py makemigrations
-Migrations for 'catalog':
-  api/catalog/migrations/0002_product_sku.py   # owned by alice:alice, never root:root
+$ slipfork snow resolve --file snow.yml --mode local
+APP_URL=http://acme.localhost
+DATABASE_URL=postgres://127.0.0.1:5432/appdb
+DEBUG=True
+SECRET_KEY=[REDACTED]
 ```
 
 ---
 
-## 3. Run the test suite in parallel CoW clones
+## 3. Snapshot, Fork, Execute & Drop a CoW World
+
+Capture a CoW snapshot of any stateful directory (on XFS/Btrfs disk, not `/tmp`), clone an isolated world in milliseconds, run a command inside its private network namespace (`127.0.0.1` isolated, `snow.yml` envs injected, host `$UID:$GID` preserved), and drop it when finished:
 
 ```console
-$ slipfork test
-[dag] artifact front:  cached (sha256:9f2c1a4e, 0 ms)
-[dag] snapshot migrate: cached (snap:mig-48ab, 0 ms)
-[dag] snapshot seed:    cached (snap:seed-c019, 0 ms)
-[run] 48 tests across 12 CoW worlds ... 48 passed in 3.4s
-```
+$ mkdir -p ./sample-state && echo "seeded" > ./sample-state/marker.txt
+$ slipfork snap --source ./sample-state canonical
+snapshot 'canonical' created in 1.12 ms
 
-Every test ran against its own isolated PostgreSQL, Redis, and HTTP stack on `:8000`/`:3000` — zero `serialized_rollback`, zero port collisions, and zero leftover state.
+$ slipfork fork exp --from canonical --workspace .
+forked world 'exp' -> /home/alice/.cache/slipfork/worlds/exp/state in 0.95 ms
+
+$ slipfork exec --world exp --snow-file snow.yml -- sh -c 'echo "$APP_URL ($DATABASE_URL) uid=$(id -u)"'
+http://acme.localhost (postgres://127.0.0.1:5432/appdb) uid=1000
+
+$ slipfork drop exp
+dropped world 'exp'
+```

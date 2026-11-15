@@ -2,7 +2,9 @@
 
 use std::collections::BTreeMap;
 
-use slipfork_dag::{CacheAction, DagConfig, DagError, DagPlanner, MapInputHasher, SetDigestCache};
+use slipfork_dag::{
+    CacheAction, DagError, DagPlanner, MapInputHasher, SetDigestCache, SlipforkConfig, TestSpec,
+};
 
 const SAMPLE_TOML: &str = r#"
 [artifacts.front]
@@ -32,7 +34,7 @@ run = "uv run python manage.py seed --minimal"
 
 #[test]
 fn r9_orthogonal_invalidation_front_edit_never_invalidates_db_snapshots_and_vice_versa() {
-    let cfg = DagConfig::parse_toml(SAMPLE_TOML).expect("valid slipfork.toml");
+    let cfg = SlipforkConfig::parse_toml(SAMPLE_TOML).expect("valid slipfork.toml");
     let build_envs = BTreeMap::from([("PUBLIC_API".to_owned(), "/back".to_owned())]);
     let runtime_envs = BTreeMap::from([(
         "DATABASE_URL".to_owned(),
@@ -152,7 +154,7 @@ fn r9_orthogonal_invalidation_front_edit_never_invalidates_db_snapshots_and_vice
 
 #[test]
 fn rejects_unknown_parent_and_cycles_closed() {
-    let bad_parent = DagConfig::parse_toml(
+    let bad_parent = SlipforkConfig::parse_toml(
         r#"
 [fixtures.a]
 parent = "missing"
@@ -170,7 +172,7 @@ run = "echo a"
     .expect_err("unknown parent");
     assert!(matches!(err, DagError::UnknownParent { .. }));
 
-    let cycle = DagConfig::parse_toml(
+    let cycle = SlipforkConfig::parse_toml(
         r#"
 [fixtures.a]
 parent = "b"
@@ -190,4 +192,87 @@ run = "echo b"
     )
     .expect_err("cycle");
     assert!(matches!(err2, DagError::CycleDetected(_)));
+}
+
+#[test]
+fn slipfork_toml_root_schema_owns_project_and_test_after_suite_without_invalidating_dag() {
+    let cfg = SlipforkConfig::parse_toml(
+        r#"
+project = "acme"
+
+[artifacts.front]
+inputs = ["front/src/**"]
+build = "pnpm --dir front build"
+mount = "front/build"
+
+[fixtures.migrate]
+inputs = ["api/migrations/*.sql"]
+run = "psql -f api/migrations/0001.sql"
+
+[test]
+after_suite = "uv run coverage combine \"$SLIPFORK_RUN_ARTIFACTS_DIR\"/*/.coverage*"
+"#,
+    )
+    .expect("valid slipfork.toml with project and [test].after_suite");
+    assert_eq!(
+        cfg.project
+            .as_ref()
+            .map(slipfork_world::ProjectSlug::as_str),
+        Some("acme")
+    );
+    assert_eq!(
+        cfg.test,
+        TestSpec {
+            after_suite: Some(
+                "uv run coverage combine \"$SLIPFORK_RUN_ARTIFACTS_DIR\"/*/.coverage*".to_owned()
+            ),
+        }
+    );
+    assert_eq!(cfg.artifacts.len(), 1);
+    assert_eq!(cfg.fixtures.len(), 1);
+
+    let hasher = MapInputHasher::default();
+    let cache = SetDigestCache::default();
+    let plan_a =
+        DagPlanner::plan(&cfg, &BTreeMap::new(), &BTreeMap::new(), &hasher, &cache).expect("plan");
+
+    let mut cfg_b = cfg.clone();
+    cfg_b.project = Some(slipfork_world::ProjectSlug::parse("other-slug").expect("slug"));
+    cfg_b.test.after_suite = Some("npx allure generate".to_owned());
+    let plan_b = DagPlanner::plan(&cfg_b, &BTreeMap::new(), &BTreeMap::new(), &hasher, &cache)
+        .expect("plan b");
+    assert_eq!(plan_a, plan_b);
+}
+
+#[test]
+fn project_override_must_be_a_validated_project_slug() {
+    let err = SlipforkConfig::parse_toml("project = \"My_Project\"\n")
+        .expect_err("invalid project slug must fail closed at parse time");
+    assert!(matches!(err, DagError::Toml(_)));
+    assert!(SlipforkConfig::parse_toml("project = \"acme\"\n").is_ok());
+}
+
+#[test]
+fn unknown_slipfork_toml_fields_fail_closed() {
+    assert!(SlipforkConfig::parse_toml("mystery = true\n").is_err());
+    let bad_artifact = r#"
+[artifacts.front]
+inputs = ["front/src/**"]
+build = "pnpm --dir front build"
+mount = "front/dist"
+ghost = "nope"
+"#;
+    assert!(SlipforkConfig::parse_toml(bad_artifact).is_err());
+    let bad_fixture = r#"
+[fixtures.migrate]
+run = "echo migrate"
+ghost = "nope"
+"#;
+    assert!(SlipforkConfig::parse_toml(bad_fixture).is_err());
+    let bad_test = r#"
+[test]
+after_suite = "echo ok"
+ghost = "nope"
+"#;
+    assert!(SlipforkConfig::parse_toml(bad_test).is_err());
 }

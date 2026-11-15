@@ -33,3 +33,60 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-14T22:30 HUMAN H-003 [direction-challenge] opened by architect (node M1.5)
 - 2026-11-14T22:30 HUMAN H-004 [missing-input] opened by architect (node M1.5)
 - 2026-11-14T22:30 [M1.5] (lead) status ready -> blocked: Awaiting owner review of M1 design, ADRs, PoC benchmark, and H-001..H-004
+- 2026-11-14T23:16 HUMAN H-001 closed by conductor
+- 2026-11-14T23:16 HUMAN H-002 closed by conductor
+- 2026-11-14T23:16 HUMAN H-003 closed by conductor
+- 2026-11-14T23:16 [M1.5] (conductor) status blocked -> done: Owner validated proposals + added .localhost edge, weaved IPC, slipfork shell, git/jj remote, and polyglot-first test protocol
+- 2026-11-14T23:16 [M1.6] (conductor) created (task) Fold validated .localhost edge, weaved IPC, git/jj remote & polyglot test protocol into M1 design/code
+- 2026-11-14T23:16 [M1.6] (conductor) status ready -> active
+- 2026-11-14T23:16 [M1.6] (conductor) attempt 1/3 started
+- 2026-11-14T23:16 [M1.6] (conductor) base 798b9972076c1d9024c2b41db3daef97522d8f65
+- 2026-11-14T23:16 ESCALATION #1 -> architect for M1.6 by conductor: Integrate owner M1 design decisions (.localhost daemon, weaved IPC, git/jj remote, language-agnostic RunnerProtocol)
+- 2026-11-14T23:17 [M1.6] (conductor) edited fields
+- 2026-11-14T23:17 [M1.6] (conductor) OWNER ADDENDUM: (5) 100% Blastit orthogonality — delete BlastitObsCollector / --blastit-learn coupling from Slipfork! Blastit is simply the component command in
+- 2026-11-14T23:55 [M1.6] (conductor) base 7413b98caea8539187d151d32cbfcbc9e9567455
+- 2026-11-14T23:55 [M1.6] (conductor) status active -> review
+- 2026-11-14T23:57 [M1.6] (lead) QUAD REVIEW GATE attempt 1 (base 7413b98) -> NO PASS. reviewer=fail, review-legality=FAIL, review-ioc=SPEC_BLIND_SPOT, review-cruft=MAJOR. Acceptance alone is g
+- 2026-11-14T23:57 HUMAN H-005 [direction-challenge] opened by lead (node M1.6)
+- 2026-11-14T23:57 HUMAN H-006 [missing-input] opened by lead (node M1.6)
+- 2026-11-14T23:57 [M1.6] (lead) status review -> blocked
+- 2026-11-15T00:18 HUMAN H-005 closed by conductor
+- 2026-11-15T00:18 HUMAN H-006 closed by conductor
+- 2026-11-15T00:18 [M1.6] (conductor) edited fields
+- 2026-11-15T00:18 [M1.6] (conductor) HUMAN ANSWERED H-005 & H-006 — Attempt 2 exact checklist (resolve ALL Quad Review Gate findings):
+- 2026-11-15T00:18 [M1.6] (conductor) status blocked -> ready: H-005 and H-006 answered by owner
+- 2026-11-15T00:19 [M1.6] (lead) status ready -> active
+- 2026-11-15T00:19 [M1.6] (lead) attempt 2/3 started
+- 2026-11-15T00:19 [M1.6] (lead) base 7413b98caea8539187d151d32cbfcbc9e9567455 (attempt 2: resolve all Quad Gate attempt-1 findings on working tree)
+- 2026-11-15T00:24 [M1.6] (lead) status active -> review
+- 2026-11-15T00:26 [M1.6] (lead) QUAD GATE attempt 2 (base 7413b98) -> NO PASS: reviewer=PASS(+5 MINOR), legality=PASS(+4 MINOR), ioc=SPEC_BLIND_SPOT(+1 MAJOR), cruft=FAIL(2 MAJOR). BLIND_SPOT:
+- 2026-11-15T00:26 ESCALATION #2 -> architect for M1.6 by lead: Quad gate attempt 2 SPEC_BLIND_SPOT: TunnelLease ownership (WorldRegistry/daemon vs CLI), slipforkd release_tunnel IPC p
+- 2026-11-15T00:26 [M1.6] (lead) status review -> active
+- 2026-11-15T00:37 [M1.6] (lead) ARCHITECT RULINGS (escalation #2) received: D1 daemon-owned TunnelLease (WorldRegistry::register_tunnel/release_tunnel + DaemonControl IPC, CLI holds no lease);
+- 2026-11-15T00:37 [M1.6] (lead) attempt 3/3 started
+- 2026-11-15T00:37 [M1.6] (lead) base 7413b98caea8539187d151d32cbfcbc9e9567455 (attempt 3: apply architect D1-D8 code edits + all gate MINORs)
+- 2026-11-15T00:40 [M1.6] (lead) status active -> review
+- 2026-11-15T00:42 [M1.6] (lead) QUAD GATE attempt 3 (base 7413b98) -> NO PASS: reviewer(report pending), legality=FAIL(2 BLOCKER+2 MAJOR+4 MINOR), ioc=FAIL(1 MAJOR+2 MINOR; SPEC_BLIND_SPOT RES
+- 2026-11-15T00:42 [M1.6] (lead) edited fields
+- 2026-11-15T00:42 ESCALATION #3 -> expert for M1.6 by lead: Quad gate attempt 3: legality BLOCKERs (plugin --snow-file regression + unactionable error), ioc MAJOR (slipfork.toml du
+- 2026-11-15T00:42 [M1.6] (lead) status review -> active
+- 2026-11-15T01:01 [M1.6] (lead) EXPERT ESCALATION REPAIR (escalation #3) complete: plugin --snow-file now conditional (existsSync), exec error names path, single SlipforkConfig root owning pro
+- 2026-11-15T01:01 [M1.6] (lead) status active -> review
+- 2026-11-15T01:03 [M1.6] (lead) FINAL GATE (4) PARTIAL: cruft=PASS(minors), ioc=PASS(minors; DI tree drawable, SlipforkConfig single owner, lease port single surface), legality=FAIL with 1 BLO
+- 2026-11-15T01:03 ESCALATION #4 -> architect for M1.6 by lead: Final gate legality BLOCKER: git submodule/separate-git-dir root misidentification (fix spec) + jj canonical root unveri
+- 2026-11-15T01:03 [M1.6] (lead) status review -> active
+- 2026-11-15T01:09 [M1.6] (lead) OWNER RULING (supersedes escalation #4 question): (1) git canonical root MUST use 'git rev-parse --show-toplevel', NEVER --git-common-dir basename; fail closed 
+- 2026-11-15T01:21 [M1.6] (lead) OWNER-RULED REPAIR COMPLETE: git root via --show-toplevel only (bare/submodule/separate-git-dir fail closed naming topology + project override; linked worktree 
+- 2026-11-15T01:21 [M1.6] (lead) status active -> review
+- 2026-11-15T01:23 [M1.6] (lead) FINAL GATE (5): legality=PASS(minors), cruft=FAIL(1 MAJOR doc triplication: target-dx.md:63-65 + ARCHITECTURE.md:220-221 verbatim-restate ADR-0005:29-31 lease l
+- 2026-11-15T01:23 [M1.6] (lead) status review -> active
+- 2026-11-15T01:38 [M1.6] (lead) GATE-5 REPAIRS COMPLETE: architect deduped lease lifecycle (ADR-0005 sole home) + VCS-root contract (ADR-0005 s3), DaemonControl takes &TunnelRequest, cli.md do
+- 2026-11-15T01:38 [M1.6] (lead) status active -> review
+- 2026-11-15T01:41 [M1.6] (lead) GATE (6): reviewer=PASS(2 minors), legality=PASS(0), ioc=PASS(5 minors), cruft=FAIL(1 MAJOR: critical_snow.rs:266-370 duplicates the full .localhost rule matrix
+- 2026-11-15T01:41 [M1.6] (lead) status review -> active
+- 2026-11-15T01:53 [M1.6] (lead) GATE-6 REPAIR COMPLETE: critical_snow rule matrix deduped (single suite in critical_world.rs; snow keeps local_for_world wiring/error propagation/domains[].id),
+- 2026-11-15T01:53 [M1.6] (lead) status active -> review
+- 2026-11-15T01:54 [M1.6] (lead) CONDUCTOR RULE (binding): Gate 8 is the FINAL gate for M1.6. Fix current cruft MAJOR (slipfork-snow::local_base double-renders canonical host/URL, local_for_wor
+- 2026-11-15T01:59 [M1.6] (lead) local_base double-renderer removed (LocalHostRoute sole host/URL renderer, app_domain/app_url populated once, dead overwrites gone, ResourceCoordinates shape un
+- 2026-11-15T01:59 [M1.6] (lead) status review -> review
+- 2026-11-15T02:01 [M1.6] (lead) status review -> done

@@ -2,7 +2,7 @@
 id: M1.5
 title: "Human review & sign-off on M1 global design, snow.yml modes contract, and PoC results"
 kind: task
-status: blocked
+status: done
 owner: human
 priority: 5
 depends_on: [M1.4]
@@ -11,7 +11,7 @@ attempts: 0
 max_attempts: 3
 escalation: none
 created: "2026-11-14T22:03"
-updated: "2026-11-14T22:30"
+updated: "2026-11-14T23:16"
 ---
 
 # Goal

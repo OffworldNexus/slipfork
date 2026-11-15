@@ -16,6 +16,7 @@ export interface SlipforkGateway {
   dropWorld(input: { worldName: string; signal: AbortSignal }): Promise<void>;
   wrapShellCommand(input: {
     worldName: string;
+    workspaceDir: string;
     cwd: string;
     shell: string;
     command: string;
@@ -64,13 +65,17 @@ export class SlipforkWorktreeCoordinator {
     private readonly git: GitWorktreeGateway,
   ) {}
 
-  worldForDirectory(cwd: string): string | undefined {
+  private bindingForDirectory(cwd: string): { workspaceDir: string; worldName: string } | undefined {
     for (const [dir, world] of this.directoryToWorld.entries()) {
       if (cwd === dir || cwd.startsWith(dir + "/")) {
-        return world;
+        return { workspaceDir: dir, worldName: world };
       }
     }
     return undefined;
+  }
+
+  private worldForDirectory(cwd: string): string | undefined {
+    return this.bindingForDirectory(cwd)?.worldName;
   }
 
   makeWorktreeStrategy() {
@@ -124,15 +129,12 @@ export class SlipforkWorktreeCoordinator {
   }
 
   handleShellBefore(event: ShellCreateBeforeEvent): void {
-    const worldName =
-      this.worldForDirectory(event.cwd) ??
-      (event.cwd === this.canonicalRoot || event.cwd.startsWith(this.canonicalRoot + "/")
-        ? undefined
-        : undefined);
-    if (!worldName) return;
+    const binding = this.bindingForDirectory(event.cwd);
+    if (!binding) return;
 
     const wrapped = this.slipfork.wrapShellCommand({
-      worldName,
+      worldName: binding.worldName,
+      workspaceDir: binding.workspaceDir,
       cwd: event.cwd,
       shell: event.shell,
       command: event.command,

@@ -16,12 +16,11 @@ nav = [
   { "Home" = "index.md" },
   { "Getting started" = "getting-started.md" },
   { "snow.yml modes & secrets" = "snow-modes.md" },
-  { "Parallel testing DAG" = "testing-dag.md" },
-  { "AI agents & OpenCode" = "agents-and-opencode.md" },
-  { "Blastit integration" = "blastit.md" },
+  { "Orthogonal DAG planner" = "testing-dag.md" },
+  { "OpenCode V2 plugin" = "agents-and-opencode.md" },
   { "Reference" = [
-    { "CLI" = "reference/cli.md" },
-    { "Manifest & secret protocol" = "reference/manifest.md" },
+    { "CLI (0.1.0)" = "reference/cli.md" },
+    { "Manifests (snow.yml & slipfork.toml)" = "reference/manifest.md" },
   ] },
 ]
 
@@ -33,7 +32,6 @@ exclude_docs = """
 /decisions/
 /research/
 /knowledge/
-/testing/
 """
 
 [project.theme]

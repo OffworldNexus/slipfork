@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use slipfork_world::ProjectSlug;
 use thiserror::Error;
 
 /// Errors produced when parsing or planning a `slipfork.toml` DAG.
@@ -29,6 +30,7 @@ pub enum DagError {
 
 /// One stateless build artifact specification (`[artifacts.<id>]`).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct ArtifactSpec {
     pub inputs: Vec<String>,
     pub build: String,
@@ -37,6 +39,7 @@ pub struct ArtifactSpec {
 
 /// One stateful CoW fixture snapshot specification (`[fixtures.<id>]`).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct FixtureSpec {
     #[serde(default)]
     pub parent: Option<String>,
@@ -45,17 +48,34 @@ pub struct FixtureSpec {
     pub run: String,
 }
 
-/// Parsed `slipfork.toml` DAG manifest.
+/// Suite-level test runner configuration (`[test]` in `<vcs_root>/slipfork.toml`, `ADR-0006` §4).
+///
+/// Parsed here as part of the single [`SlipforkConfig`] root schema; runtime hook execution ships
+/// in Milestone 3 (`crates/slipfork-test`).
 #[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct DagConfig {
+#[serde(deny_unknown_fields)]
+pub struct TestSpec {
+    #[serde(default)]
+    pub after_suite: Option<String>,
+}
+
+/// Root `<vcs_root>/slipfork.toml` manifest owning `project`, `[artifacts]`, `[fixtures]`, and `[test]`.
+#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct SlipforkConfig {
+    /// Optional canonical project slug override (defaults to the canonical git/jj root name).
+    #[serde(default)]
+    pub project: Option<ProjectSlug>,
     #[serde(default)]
     pub artifacts: BTreeMap<String, ArtifactSpec>,
     #[serde(default)]
     pub fixtures: BTreeMap<String, FixtureSpec>,
+    #[serde(default)]
+    pub test: TestSpec,
 }
 
-impl DagConfig {
-    /// Parse a `slipfork.toml` document.
+impl SlipforkConfig {
+    /// Parse and validate a `slipfork.toml` document.
     pub fn parse_toml(raw: &str) -> Result<Self, DagError> {
         toml::from_str(raw).map_err(|e| DagError::Toml(e.to_string()))
     }
@@ -130,7 +150,7 @@ pub struct DagPlanner;
 impl DagPlanner {
     /// Compute digests, cache hits/misses, and parallel topological waves.
     pub fn plan(
-        config: &DagConfig,
+        config: &SlipforkConfig,
         build_envs: &BTreeMap<String, String>,
         runtime_envs: &BTreeMap<String, String>,
         hasher: &dyn InputHasher,

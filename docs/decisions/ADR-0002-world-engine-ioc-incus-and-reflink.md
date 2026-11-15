@@ -1,6 +1,6 @@
 # ADR-0002: `WorldEngine` IoC Contract — Incus Primary Driver, Rootless Reflink+Netns Driver, and Shared `$UID` Mounts
 
-- **Status:** Proposed (awaiting M1 human validation: `H-004`)
+- **Status:** Accepted (`H-004` tracked for M2 live host `incusd` mount)
 - **Date:** 2026-11-14
 
 ## Context

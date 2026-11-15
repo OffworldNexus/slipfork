@@ -1,41 +1,60 @@
-# Slipfork
+# Slipfork (`0.1.0`)
 
-> **Instant copy-on-write dev worlds, OpenCode worktree forks, and parallel snapshot-DAG test orchestration from `snow.yml`.**
+> **Copy-on-write world primitives, `snow.yml` v2 mode/secret resolution, orthogonal DAG planning, and OpenCode V2 worktree isolation.**
 
-Slipfork turns your [`snow.yml`](docs/snow-modes.md) infrastructure manifest into:
+## What Ships Today in `0.1.0`
 
-1. **Shared-UID local development worlds (`slipfork up`):** Boots PostgreSQL, Redis, S3 (SeaweedFS), and application components with your host source tree mounted under your exact `$UID:$GID` — zero Docker `root:root` file pollution, zero `.env` drift, and automatic write-once `!! random_string(50)` secret generation.
-2. **Millisecond AI-agent worktree forks (`slipfork fork` & `@slipfork/opencode`):** Creating an OpenCode worktree implicitly CoW-clones your live database, caches, and services into an isolated network namespace and routes `shell` commands transparently by directory.
-3. **Parallel `xdist`-style heavy test orchestration (`slipfork test`):** Compiles frontend/static assets **once** into content-addressed **Artifact Volumes**, builds a **Fixture Snapshot DAG** (`migrate -> seed_*`), and runs every heavy browser/BDD/transactional test inside its own ephemeral CoW clone on canonical ports (`:8000`, `:3000`, `:5432`) — zero `serialized_rollback`, zero port collisions, and zero teardown cost.
+Every command and package below is implemented, tested, and runnable today:
+
+- **`snow.yml` v2 Resolver (`slipfork snow resolve` / `crates/slipfork-snow`):** Resolves `modes.all` + `modes.<mode>` (and validates per-mode `components.<id>.run_command` overrides for M2 process supervision), `??` read-only fallbacks, and `!!` write-once CSPRNG secrets persisted atomically into `~/.local/share/slipfork/vaults/<slug>.json` (`0600`), with exhaustive missing-key refusal and `.localhost` hostname/fork validation via `slipfork_world::LocalHostRoute`.
+- **Orthogonal Artifact + Fixture DAG Planner (`slipfork dag plan` / `crates/slipfork-dag`):** Hashes `[artifacts.<id>]` and `[fixtures.<id>]` in `slipfork.toml` into SHA-256 Merkle waves (`~1.4 ms`), keeping frontend build invalidation 100% orthogonal to database snapshot lineages.
+- **Rootless CoW World Engine (`slipfork doctor`, `snap`, `fork`, `exec`, `drop` / `crates/slipfork-engine`):** CLI commands run `ReflinkNetnsEngine`, cloning stateful service directories via Linux `ioctl(FICLONE)` (XFS/Btrfs reflink, failing closed on `tmpfs`) and executing commands inside unprivileged `CLONE_NEWUSER | CLONE_NEWNET | CLONE_NEWNS | CLONE_NEWPID` namespaces with host `$UID:$GID` preserved (`0` `root:root` files); `crates/slipfork-engine` also ships an `IncusEngine` Unix-socket REST `/1.0` library adapter awaiting M2 daemon/CLI wiring.
+- **OpenCode V2 Worktree Plugin (`packages/opencode-slipfork`):** Hooks `ctx.worktree.transform`, `ctx.shell.hook("create.before")`, and `ctx.session.hook("context")` so creating a git worktree forks a CoW world and routes standard `shell` commands implicitly by `cwd`.
+- **Measured Live Benchmark (`make bench`):** Real PostgreSQL 18.7 + XFS `FICLONE` + isolated `netns` + warm Python runner + headless Chromium Playwright achieving **`3.12x` speedup (`123 ms`/test)** with `0 ms` SQL teardown (`docs/research/m1-poc-benchmark.md`).
+
+```console
+$ cargo run -q -p slipfork -- doctor
+$ cargo run -q -p slipfork -- snow resolve --file snow.yml --mode local
+$ cargo run -q -p slipfork -- dag plan --file slipfork.toml --repo .
+$ cargo run -q -p slipfork -- snap --source ./pgdata canonical
+$ cargo run -q -p slipfork -- fork exp --from canonical --workspace .
+$ cargo run -q -p slipfork -- exec --world exp --snow-file snow.yml -- env
+$ cargo run -q -p slipfork -- drop exp
+```
 
 ---
 
-## Quick Links
+## Documentation & Architecture
 
-- **Dream-Tool User Docs:** [`docs/index.md`](docs/index.md) (`make docs-check` / `make docs-serve`)
-- **Vision & Roadmap:** [`docs/VISION.md`](docs/VISION.md) & [`plan/ROADMAP.md`](plan/ROADMAP.md)
-- **Global Target Architecture & DI Tree:** [`ARCHITECTURE.md`](ARCHITECTURE.md)
-- **Architecture Decisions:** [`docs/decisions/`](docs/decisions/) (`ADR-0001` .. `ADR-0004`)
-- **Milestone 1 Measured PoC Benchmark:** [`docs/research/m1-poc-benchmark.md`](docs/research/m1-poc-benchmark.md) (`make bench`)
-- **Human Validation Inbox:** [`plan/HUMAN.md`](plan/HUMAN.md)
+- **Published `0.1.0` User Docs:** [`docs/index.md`](docs/index.md) & [`docs/reference/cli.md`](docs/reference/cli.md) (`make docs-check`)
+- **Measured PoC Benchmark:** [`docs/research/m1-poc-benchmark.md`](docs/research/m1-poc-benchmark.md) (`make bench`)
+- **Architecture, ADRs & Target M2–M4 DX Specs:** [`ARCHITECTURE.md`](ARCHITECTURE.md), [`docs/decisions/`](docs/decisions/) (`ADR-0001`..`ADR-0006`), [`docs/design/target-dx.md`](docs/design/target-dx.md), and [`docs/VISION.md`](docs/VISION.md)
 
 ---
 
 ## Repository Layout
 
-| Path | Description |
+| Path | Shipped in `0.1.0` |
 |---|---|
-| `crates/slipfork-snow/` | `snow.yml` v2 parser (`modes.all` + `modes.<mode>`, mutual exclusion with `envs`), `Faceless` v2 template engine (`??` fallback & `!!` write-once secret generation), and `SecretProvider` DI port + adapters |
-| `crates/slipfork-dag/` | Orthogonal Merkle SHA-256 input hasher, `ArtifactStore`, and `FixtureDag` topological execution/invalidation planner |
-| `crates/slipfork-engine/` | `WorldEngine` DI port + `IncusEngine` (Incus Unix-socket REST API for LXC/QEMU CoW & `shift=true` UID mounts) + `ReflinkNetnsEngine` (Linux `FICLONE` + unprivileged `CLONE_NEWUSER\|NEWNET\|NEWNS\|NEWPID`) |
-| `crates/slipfork/` | Single Composition Root CLI (`slipfork doctor`, `snow resolve`, `dag plan`, `fork`, `bench`) |
-| `packages/opencode-slipfork/` | OpenCode V2 plugin (`ctx.worktree.transform` + `ctx.shell.hook("create.before")` + `ctx.session.hook("context")`) |
-| `poc/` | Real PostgreSQL 18 + XFS `FICLONE` + Linux `netns` + warm Python Zygote + Playwright M1 benchmark |
-| `.opencode/` & `tools/` | Autonomous DX-first + Quad-Review-Gate (`reviewer`, `review-legality`, `review-ioc`, `review-cruft`) OpenCode harness |
+| `crates/slipfork-world/` | Pure `WorldTarget` / `LocalHostRoute` `.localhost` identity, fork/project validation, and opaque `TunnelRegistrar`/`TunnelLease` DI traits |
+| `crates/slipfork-snow/` | `SnowFile` v2 parser (`modes`, `components.<id>.run_command` validation for M2), `Faceless` v2 (`??` & `!!`), `ResourceCoordinates` on `slipfork-world` types, `SecretProvider` + `FileVaultProvider` (`0600`) |
+| `crates/slipfork-dag/` | `SlipforkConfig` (`slipfork.toml`), SHA-256 `FsMerkleHasher`, `FsDigestCache`, and `DagPlanner` |
+| `crates/slipfork-engine/` | `WorldEngine` trait + CLI-wired `ReflinkNetnsEngine` (`ioctl(FICLONE)` + unprivileged `netns`) + `IncusEngine` REST `/1.0` library adapter (M2 CLI/live wiring) |
+| `crates/slipfork/` | Single Composition Root CLI (`doctor`, `snow resolve`, `dag plan`, `snap`, `fork`, `exec`, `drop`) |
+| `packages/opencode-slipfork/` | OpenCode V2 plugin (`worktree.transform` + `shell.hook` + `session.hook`) |
+| `poc/` | Live PostgreSQL 18 + XFS `FICLONE` + `netns` + Playwright benchmark (`make bench`) |
 
 ## Validation
 
 ```console
-$ make check   # plan validate + guard + ruff + pytest + cargo fmt/clippy/doc/test + zensical --strict
+$ make check   # plan validate + guard + ruff + pytest + bun test + cargo fmt/clippy/doc/test + zensical --strict
 $ make bench   # run live PostgreSQL 18 + XFS reflink + netns parallel benchmark
 ```
+
+---
+
+## Where This Is Going (Upcoming Roadmap — Not Yet in `0.1.0`)
+
+- **M2 (`0.2.0`):** `slipforkd` port-80 `http://(<domain>.)?(<fork>.)?<project>.localhost` edge daemon, `slipfork up/down/shell/share` (Tunnel Weaver `weaved` tunnel leases via the pure `TunnelRegistrar` trait; wire adapter gated on `weaved`'s published IPC spec), `git-remote-slipfork` (`<fork>` + `<fork>/wip`), and Jujutsu (`jj workspace`) support.
+- **M3 (`0.3.0`):** `slipfork test` polyglot test coordinator (`RunnerProtocol v1`, world-owned stacks for FastAPI/Flask/Hono/Symfony/Go/Rust + `pytest-slipfork`, pre-warmed CoW pools, and `$SLIPFORK_ARTIFACTS_DIR` + `after_suite` hooks).
+- **M4 (`0.4.0`):** Remote content-addressed CI/team snapshot & artifact cache export/import and turnkey agent skills.

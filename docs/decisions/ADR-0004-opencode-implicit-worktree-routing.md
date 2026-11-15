@@ -1,6 +1,6 @@
 # ADR-0004: Zero-Confusion OpenCode Worktree Worlds via Native `worktree` & `shell` Hooks
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-11-14
 
 ## Context

@@ -1,16 +1,12 @@
-# AI Agents & OpenCode Worktrees
+# OpenCode V2 Worktree Plugin (`0.1.0`)
 
-When autonomous coding agents work in parallel git worktrees, traditional setups fall apart immediately:
-
-- Two agents run `manage.py migrate` or `manage.py seed --reset` against the same `localhost:5432` database.
-- One agent starts `runserver` on `:8000` while another hits it expecting its own branch's code.
-- Teaching an LLM to prefix every command with `docker compose -p worktree_7 exec ...` wastes context tokens and fails constantly when subagents forget.
-
-Slipfork's OpenCode V2 plugin (`@slipfork/opencode`) makes isolated per-worktree environments **100% implicit and invisible to the LLM**.
+`packages/opencode-slipfork` (`@slipfork/opencode`) integrates Slipfork's `fork`, `exec`, and `drop` commands into OpenCode V2 so parallel sessions in git worktrees get isolated CoW services and `snow.yml` environment variables **without replacing or renaming the built-in `shell` tool**.
 
 ---
 
-## 1-Line Setup in `.opencode/opencode.jsonc`
+## Configuration in `.opencode/opencode.jsonc`
+
+Keep worktrees on a CoW-capable disk directory (`.worktrees`, never RAM-backed `/tmp` `tmpfs`) and load `@slipfork/opencode`:
 
 ```jsonc title=".opencode/opencode.jsonc"
 {
@@ -19,53 +15,37 @@ Slipfork's OpenCode V2 plugin (`@slipfork/opencode`) makes isolated per-worktree
     "directory": ".worktrees"
   },
   "plugins": [
-    "@slipfork/opencode"
+    "./packages/opencode-slipfork/src/index.ts"
   ]
 }
 ```
 
+Optional plugin option: `{ "binary": "/custom/path/to/slipfork" }` (defaults to `"slipfork"` on `PATH`).
+
 ---
 
-## What Happens Under the Hood
-
-`@slipfork/opencode` hooks into three native OpenCode V2 extension points — **without replacing or renaming the built-in `shell` tool**:
+## What `@slipfork/opencode` Wires Today
 
 ```mermaid
 sequenceDiagram
   participant OC as OpenCode Server
   participant Plugin as @slipfork/opencode
-  participant SF as slipfork daemon
-  participant World as CoW World (feat-auth)
+  participant Git as git worktree
+  participant SF as slipfork CLI
 
-  OC->>Plugin: worktree.create("feat-auth")
-  Plugin->>SF: git worktree add .worktrees/feat-auth + slipfork fork canonical
-  SF-->>World: CoW clone PG + Redis + S3 + mount .worktrees/feat-auth ($UID)
+  OC->>Plugin: worktree.create({ directory: ".worktrees/feat-auth" })
+  Plugin->>Git: git worktree add .worktrees/feat-auth
+  Plugin->>SF: slipfork fork wt-feat-auth --workspace .worktrees/feat-auth
   Plugin-->>OC: { directory: ".worktrees/feat-auth" }
 
   OC->>Plugin: shell.hook("create.before", { cwd: ".../.worktrees/feat-auth", command: "pytest" })
-  Plugin->>World: rewrites execution into World (snow.yml local envs + private :5432/:8000)
-  World-->>OC: stdout/stderr + exit code
+  Plugin->>SF: slipfork exec --world wt-feat-auth --cwd <cwd> [--snow-file <worktree>/snow.yml] -- <shell> -c "pytest"
 
-  OC->>Plugin: worktree.remove(".worktrees/feat-auth")
-  Plugin->>SF: destroy World + remove git worktree
+  OC->>Plugin: worktree.remove({ directory: ".worktrees/feat-auth" })
+  Plugin->>SF: slipfork drop wt-feat-auth
+  Plugin->>Git: git worktree remove .worktrees/feat-auth
 ```
 
-### Why the LLM Never Gets Confused
-
-1. **Standard `shell` tool stays untouched:** The agent still calls `shell` with normal commands (`pytest`, `pnpm check`, `curl http://localhost:8000/health`).
-2. **Exact same filesystem path & `$UID`:** `read`, `edit`, `glob`, and `grep` inspect `/path/to/repo/.worktrees/feat-auth` on the host, while `shell` executes inside the forked CoW world with `/path/to/repo/.worktrees/feat-auth` mounted at the identical path under `$UID:$GID`.
-3. **`snow.yml` secrets injected automatically:** Every variable from `modes.all` + `modes.local` is already present in the shell environment — agents never need `.env` files on disk.
-4. **2-line ambient context:** A `session.hook("context")` entry informs the model in two lines that its directory owns a private CoW world, preventing it from trying to kill or reconfigure host ports.
-
----
-
-## Standalone CLI Use (Any Agent Harness)
-
-Using Claude Code, Codex, Junie, or terminal tmux panes? The CLI exposes the exact same workflow directly:
-
-```console
-$ slipfork fork feat-billing            # Creates .worktrees/feat-billing + CoW world
-$ cd .worktrees/feat-billing
-$ slipfork shell                        # Interactive shell inside the forked world
-$ slipfork drop feat-billing            # Destroys the CoW world and cleans up
-```
+1. **Rollback on fork failure:** If `slipfork fork` fails (for example when `canonical` snapshot is missing or the filesystem rejects `FICLONE`), the plugin automatically cleans up the newly created git worktree (`git worktree remove --force`) and surfaces the error cleanly (`coordinator.critical.test.ts`).
+2. **Implicit `cwd` routing:** Commands running inside `.worktrees/<slug>` (or any subdirectory) are wrapped into `slipfork exec --world wt-<slug>` with `SLIPFORK_ACTIVE_WORLD=wt-<slug>` (passing `--snow-file <worktree>/snow.yml` when `snow.yml` exists at the worktree root and omitting it otherwise), while commands outside registered worktrees pass through untouched.
+3. **2-line session context hint:** `ctx.session.hook("context")` appends `<context key="slipfork-world">` informing the model that its worktree owns an isolated CoW world.

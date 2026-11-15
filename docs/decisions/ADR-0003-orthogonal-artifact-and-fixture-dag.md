@@ -1,6 +1,6 @@
 # ADR-0003: Orthogonal Build Artifact Volumes + Stateful Fixture Snapshot DAG + Runner Zygote
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-11-14
 
 ## Context

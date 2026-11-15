@@ -1,102 +1,82 @@
-# `snow.yml` Modes & Secrets
+# `snow.yml` Modes & Secrets (`0.1.0`)
 
-Slipfork shares the [`snow.yml`](https://delos-2.gitbook.io/kerfufoo/reference/snow-file) manifest with **Kerfufoo** so your cloud deployment and your local/test worlds never drift apart.
+`crates/slipfork-snow` and `slipfork snow resolve` implement `snow.yml` v2 parsing, structural validation, `modes` inheritance, and `!!` write-once CSPRNG secret generation.
 
 ---
 
 ## `modes` (`all`, `cloud`, `local`)
 
-Real applications share 80% of their wiring (`DATABASE_URL`, `REDIS_URL`, `API_URL`) across every environment while differing on the remaining 20% (cloud object storage & Sentry vs local SeaweedFS & `DEBUG`).
-
-`snow.yml` models this with top-level `modes`:
+Applications share ~80% of their wiring (`DATABASE_URL`, `REDIS_URL`) across every environment while differing on the remaining 20% (cloud storage & Sentry vs local S3 endpoints, `DEBUG`, and reload commands):
 
 ```yaml title="snow.yml"
+images:
+  - id: api
+    context: api
+
+components:
+  - id: api
+    image: api
+    run_command: gunicorn app.main:app --bind 0.0.0.0:${{ components::api.private_port }}
+    envs: [api]
+
+ingresses:
+  - match: { prefix: "/" }
+    target: { component: api, port: 8000 }
+
+resources:
+  pg_clusters: [{ id: psql, version: "18" }]
+  pg_databases: [{ id: psql, cluster: psql }]
+  redis_clusters: [{ id: redis, version: "8" }]
+  s3_buckets: [{ id: media }]
+
 modes:
   all:
     envs:
-      django:
+      api:
         SECRET_KEY: '${{ secrets::SECRET_KEY !! random_string(50) }}'
         DATABASE_URL: '${{ resources::pg_databases.psql.url }}'
         REDIS_URL: '${{ resources::redis_clusters.redis.url }}'
-
   cloud:
     envs:
-      django:
-        STORAGES_MODE: 'do'
+      api:
         AWS_STORAGE_BUCKET_NAME: '${{ vars::AWS_STORAGE_BUCKET_NAME }}'
         AWS_SECRET_ACCESS_KEY: '${{ secrets::AWS_SECRET_ACCESS_KEY }}'
-
   local:
+    components:
+      api:
+        run_command: uv run uvicorn app.main:app --host 127.0.0.1 --port ${{ components::api.private_port }} --reload
     envs:
-      django:
+      api:
         DEBUG: 'True'
-        STORAGES_MODE: 's3'
         AWS_S3_ENDPOINT_URL: '${{ resources::s3_buckets.media.endpoint_url }}'
 ```
 
 ### Resolution Rules
 
-1. **`modes` and top-level `envs` are mutually exclusive.** Defining both in the same `snow.yml` is a validation error.
-2. **`all` is the reserved universal mode.** For an active mode `<M>`, each env group `<G>` resolves by merging `modes.all.envs.<G>` first, then overlaying `modes.<M>.envs.<G>`.
-3. **Default mode selection:**
-   - **Slipfork (`slipfork up` / `slipfork test`):** defaults to `local` (override with `--mode <name>`).
-   - **Kerfufoo (`EnvGroup.mode`):** defaults to `cloud`; any `EnvGroup` in Kerfufoo can select a custom mode defined in `modes:` (for example `staging` or `sandbox`).
+1. **`modes` is the sole environment schema:** Top-level `envs:` is hard-rejected (`SnowError::TopLevelEnvsUnsupported`), as is top-level `project:` (see [Manifest Reference](reference/manifest.md#2-slipforktoml-slipfork_dagslipforkconfig) for `<vcs_root>/slipfork.toml` `ProjectSlug` rules).
+2. **`all` is the sole universal base mode** (`*` fails with `SnowError::AsteriskModeForbidden`):
+   - **Env groups:** `modes.all.envs.<G>` merges first, overlaid by `modes.<M>.envs.<G>`.
+   - **Two-level `run_command` override (`SnowFile::effective_run_command` — M2 process execution):** `modes.<M>.components.<id>.run_command` overrides top-level `components[].run_command` (`modes.all.components` is rejected). In `0.1.0`, `run_command` overrides are parsed and structurally validated; component process supervision lands in **Milestone 2** (`crates/slipfork-edge`).
 
 ---
 
-## Auto-Generated Secrets (`!!`)
-
-Some secrets (`SECRET_KEY`, internal HMAC tokens, webhook signing keys) do not come from a third-party vendor — they just need to be cryptographically random and stable across restarts.
-
-Use the **`!!` generate-and-persist operator** on `secrets::<KEY>`:
-
-```yaml
-modes:
-  all:
-    envs:
-      django:
-        SECRET_KEY: '${{ secrets::SECRET_KEY !! random_string(50) }}'
-        INTERNAL_HMAC: '${{ secrets::INTERNAL_HMAC !! random_hex(32) }}'
-        INSTANCE_UUID: '${{ secrets::INSTANCE_UUID !! uuid4() }}'
-```
-
-### `??` vs `!!`
+## Auto-Generated Secrets (`!!`) vs Fallbacks (`??`)
 
 | Operator | Syntax | Behavior when key is missing | Allowed namespaces |
 |---|---|---|---|
-| **Fallback (`??`)** | `${{ vars::LOG_LEVEL ?? "INFO" }}` | Returns `"INFO"` transiently; **never writes** to any store | Any (`vars`, `secrets`, `domains`) |
-| **Ensure (`!!`)** | `${{ secrets::KEY !! random_string(50) }}` | Generates once via CSPRNG, **persists atomically** (`put_if_absent`) into the active secret vault, and returns it on every subsequent run | `secrets` only |
+| **Fallback (`??`)** | `${{ vars::LOG_LEVEL ?? "INFO" }}` | Returns `"INFO"` transiently; **never writes** to any vault | `vars`, `secrets`, `domains` (`domains::<ID>` reads `OsppBundle.domains`, populated in **M2** `OSPP v1` cloud bundles) |
+| **Ensure (`!!`)** | `${{ secrets::KEY !! random_string(50) }}` | Generates once via CSPRNG (`random_string(1..=512)`, `random_hex(1..=256)`, `random_base64(1..=256)`, `uuid4()`), **persists atomically** (`0600` vault), and reuses it thereafter | `secrets` only |
 
-Built-in generators:
-
-- `random_string(N)` — `N` URL/env-safe alphanumeric characters (`A-Za-z0-9`, `1 <= N <= 512`).
-- `random_hex(N)` — `N` random bytes encoded as `2N` lowercase hex chars (`1 <= N <= 256`).
-- `random_base64(N)` — `N` random bytes encoded as URL-safe base64 (`1 <= N <= 256`).
-- `uuid4()` — RFC 4122 v4 random UUID.
-
----
-
-## Missing Required Values Fail Closed
-
-If an expression like `${{ secrets::STRIPE_API_KEY }}` has neither `??` nor `!!` and is absent from the active secret provider, Slipfork **refuses to boot** and prints **every** missing key in one shot:
+If any reference lacks `??` and `!!` and is absent from the active `SecretProvider`, `slipfork snow resolve` **fails closed** and reports **every** missing variable in a single pass:
 
 ```text
-slipfork: 2 required values missing for mode 'local':
-  - secrets::STRIPE_API_KEY   (referenced by modes.local.envs.django.STRIPE_API_KEY)
-  - vars::PUBLIC_MAP_STYLE    (referenced by modes.all.envs.front.PUBLIC_MAP_STYLE)
-Fix: run `slipfork secret set STRIPE_API_KEY` or connect a remote provider (`slipfork auth login`).
+slipfork: missing required values for mode 'local':
+  - vars::MAP_STYLE (referenced by modes.local.envs.api.MAP_STYLE)
+  - secrets::STRIPE_KEY (referenced by modes.local.envs.api.STRIPE_KEY)
 ```
 
 ---
 
-## Open Secret Provider Protocol (`OSPP v1`)
+## `.localhost` Coordinates & Fork Disambiguation (`slipfork-snow` + `slipfork-world`)
 
-Slipfork is not hardwired to a single cloud control plane. Any secret backend — **Kerfufoo**, Vault, 1Password, or team tooling — can serve variables, secrets, and domains over the open JSON protocol:
-
-```yaml title="snow.yml (optional provider hint) or ~/.config/slipfork/providers.toml"
-# Connect local mode to a Kerfufoo / OSPP v1 endpoint for shared team vars/secrets:
-# $ slipfork auth login https://kerfufoo.example.com --project acme-shop
-```
-
-- **Reads (`vars::*`, `secrets::*`, `domains::*`):** Local vault overrides -> Remote OSPP v1 bundle (`GET /v1/projects/{slug}/modes/{mode}/bundle`).
-- **`!!` Generations in `local` mode:** Saved into your local `0600` vault (`~/.local/share/slipfork/vaults/<project>.json`) so `slipfork up` works offline and never mutates shared cloud secrets. In `cloud` mode, Kerfufoo persists `!!` secrets directly into the `EnvGroup` store.
+`ResourceCoordinates::local_for_world(&snow, &ProjectSlug, &target)` is the sole local coordinate constructor: it validates `target` through `WorldTarget::validate(&snow.domain_ids())` (`slipfork_world::WorldError` wrapped via `SnowError::World`) and resolves `resources::app.url` to `http://(<fork>|test-<slot>.)?<project>.localhost`, while `LocalHostRoute::parse(&project, &snow.domain_ids(), host_header)` is the canonical 1/2/3-label `.localhost` `Host`-header parser (`ADR-0005` §1).

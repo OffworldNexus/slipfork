@@ -6,6 +6,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use slipfork_world::{LocalHostRoute, ProjectSlug, WorldTarget, validate_unreserved_dns_label};
+
 use crate::faceless::render_template;
 use crate::provider::{EntropySource, ProviderError, SecretProvider, SecretValue};
 
@@ -25,9 +27,9 @@ pub enum SnowError {
     #[error("invalid snow.yml YAML: {0}")]
     Yaml(String),
     #[error(
-        "snow.yml cannot define both top-level 'envs' and 'modes'; migrate 'envs' into 'modes.all' / 'modes.<mode>'"
+        "top-level 'envs' is not supported in snow.yml v2; declare environment groups under 'modes.all' and 'modes.<mode>'"
     )]
-    EnvsAndModesMutuallyExclusive,
+    TopLevelEnvsUnsupported,
     #[error("mode '*' is forbidden in snow.yml; use 'all' for the universal base mode")]
     AsteriskModeForbidden,
     #[error("mode '{requested}' is not defined in snow.yml (available modes: {available})")]
@@ -55,6 +57,8 @@ pub enum SnowError {
     EnsureOnlyAllowedOnSecrets(String),
     #[error("unknown resource/component/deployment path '${{{{ {0} }}}}'")]
     UnknownResourcePath(String),
+    #[error(transparent)]
+    World(#[from] slipfork_world::WorldError),
     #[error(
         "missing required values for mode '{mode}':\n{}",
         format_missing(missing)
@@ -220,15 +224,52 @@ pub struct Resources {
     pub s3_buckets: Vec<S3Bucket>,
 }
 
+/// Per-mode overrides for an existing top-level component (`modes.<mode>.components.<id>`).
+#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ModeComponentOverride {
+    /// Override `run_command` for this mode (for example local reload server or `blastit dev`).
+    #[serde(default)]
+    pub run_command: Option<String>,
+}
+
 /// One mode entry inside `modes:` (`all`, `local`, `cloud`, etc.).
 #[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct ModeSpec {
     #[serde(default)]
     pub envs: BTreeMap<String, BTreeMap<String, String>>,
+    #[serde(default)]
+    pub components: BTreeMap<String, ModeComponentOverride>,
+}
+
+/// Presence-aware marker for keys that `snow.yml` v2 forbids at the top level.
+///
+/// A plain `Option<Value>` cannot distinguish a missing key from an explicitly null one (serde
+/// maps both to `None`), which would let `envs:` / `project:` slip through by writing `envs:`.
+/// This field is not wrapped in `Option`: `#[serde(default)]` supplies the absent case while
+/// deserialization records presence for every value, including `null`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+struct RejectedKey(Option<serde_json::Value>);
+
+impl RejectedKey {
+    fn is_present(&self) -> bool {
+        self.0.is_some()
+    }
+}
+
+impl<'de> Deserialize<'de> for RejectedKey {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        Ok(Self(Some(serde_json::Value::deserialize(deserializer)?)))
+    }
 }
 
 /// Parsed `snow.yml` v2 document.
 #[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct SnowFile {
     #[serde(default)]
     pub images: Vec<Image>,
@@ -242,10 +283,12 @@ pub struct SnowFile {
     pub domains: Vec<Domain>,
     #[serde(default)]
     pub resources: Resources,
+    #[serde(default, rename = "envs", skip_serializing)]
+    rejected_top_level_envs: RejectedKey,
+    #[serde(default, rename = "project", skip_serializing)]
+    rejected_project: RejectedKey,
     #[serde(default)]
-    pub envs: Option<BTreeMap<String, BTreeMap<String, String>>>,
-    #[serde(default)]
-    pub modes: Option<BTreeMap<String, ModeSpec>>,
+    pub modes: BTreeMap<String, ModeSpec>,
 }
 
 impl SnowFile {
@@ -262,53 +305,48 @@ impl SnowFile {
         &self,
         mode: &str,
     ) -> Result<BTreeMap<String, BTreeMap<String, String>>, SnowError> {
-        if let Some(modes) = &self.modes {
-            if mode == "all" {
-                return Ok(modes.get("all").map(|m| m.envs.clone()).unwrap_or_default());
-            }
-            if !modes.contains_key(mode) {
-                let available = modes
-                    .keys()
-                    .filter(|k| k.as_str() != "all")
-                    .cloned()
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                return Err(SnowError::UnknownMode {
-                    requested: mode.to_owned(),
-                    available: if available.is_empty() {
-                        "(none)".to_owned()
-                    } else {
-                        available
-                    },
-                });
-            }
-            let mut merged = modes.get("all").map(|m| m.envs.clone()).unwrap_or_default();
-            if let Some(specific) = modes.get(mode) {
-                for (group_id, vars) in &specific.envs {
-                    let dst = merged.entry(group_id.clone()).or_default();
-                    for (k, v) in vars {
-                        dst.insert(k.clone(), v.clone());
-                    }
+        if mode == "all" {
+            return Ok(self
+                .modes
+                .get("all")
+                .map(|m| m.envs.clone())
+                .unwrap_or_default());
+        }
+        if !self.modes.contains_key(mode) {
+            return Err(self.unknown_mode(mode));
+        }
+        let mut merged = self
+            .modes
+            .get("all")
+            .map(|m| m.envs.clone())
+            .unwrap_or_default();
+        if let Some(specific) = self.modes.get(mode) {
+            for (group_id, vars) in &specific.envs {
+                let dst = merged.entry(group_id.clone()).or_default();
+                for (k, v) in vars {
+                    dst.insert(k.clone(), v.clone());
                 }
             }
-            Ok(merged)
-        } else {
-            Ok(self.envs.clone().unwrap_or_default())
         }
+        Ok(merged)
     }
 
-    /// Validate references, mutual exclusion (`envs` vs `modes`), and build/runtime conflicts.
+    /// Validate references, top-level `envs` rejection, and build/runtime conflicts.
     pub fn validate_structure(&self) -> Result<(), SnowError> {
-        if self.envs.is_some() && self.modes.is_some() {
-            return Err(SnowError::EnvsAndModesMutuallyExclusive);
+        if self.rejected_top_level_envs.is_present() {
+            return Err(SnowError::TopLevelEnvsUnsupported);
         }
-        if let Some(modes) = &self.modes
-            && modes.contains_key("*")
-        {
+        if self.modes.contains_key("*") {
             return Err(SnowError::AsteriskModeForbidden);
         }
 
         let mut errs = Vec::new();
+        if self.rejected_project.is_present() {
+            errs.push(
+                "top-level 'project' is not supported in snow.yml; set `project = \"<slug>\"` in slipfork.toml (defaults to the canonical git/jj repository directory name)"
+                    .to_owned(),
+            );
+        }
         let image_ids: BTreeSet<&str> = self.images.iter().map(Image::id).collect();
         let comp_ids: BTreeSet<&str> = self.components.iter().map(|c| c.id.as_str()).collect();
         let pg_clusters: BTreeSet<&str> = self
@@ -347,19 +385,41 @@ impl SnowFile {
                 errs.push(format!("hooks: unknown component '{}'", hook.component));
             }
         }
-
-        // Validate env group references and image/component template conflicts per concrete mode.
-        let modes_to_check: Vec<String> = match &self.modes {
-            Some(m) => {
-                let concrete: Vec<String> =
-                    m.keys().filter(|k| k.as_str() != "all").cloned().collect();
-                if concrete.is_empty() {
-                    vec!["all".to_owned()]
-                } else {
-                    concrete
+        for dom in &self.domains {
+            if let Err(reason) = validate_unreserved_dns_label(&dom.id) {
+                errs.push(format!("domains.{}: {reason}", dom.id));
+            }
+        }
+        for (mode_name, spec) in &self.modes {
+            if mode_name == "all" && !spec.components.is_empty() {
+                errs.push(
+                    "modes.all.components: universal component defaults belong on top-level 'components', not 'modes.all'".to_owned(),
+                );
+            }
+            for comp_id in spec.components.keys() {
+                if !comp_ids.contains(comp_id.as_str()) {
+                    errs.push(format!(
+                        "modes.{mode_name}.components.{comp_id}: unknown component '{comp_id}'"
+                    ));
                 }
             }
-            None => vec!["cloud".to_owned()],
+        }
+
+        // Validate env group references and image/component template conflicts per concrete mode.
+        let concrete_modes: Vec<String> = self
+            .modes
+            .keys()
+            .filter(|k| k.as_str() != "all")
+            .cloned()
+            .collect();
+        let modes_to_check: Vec<String> = if concrete_modes.is_empty() {
+            if self.modes.contains_key("all") {
+                vec!["all".to_owned()]
+            } else {
+                Vec::new()
+            }
+        } else {
+            concrete_modes
         };
 
         for mode_name in modes_to_check {
@@ -442,11 +502,7 @@ impl SnowFile {
                 continue;
             };
             for (var_name, tpl) in vars {
-                let loc = if self.modes.is_some() {
-                    format!("modes.{mode}.envs.{group_id}.{var_name}")
-                } else {
-                    format!("envs.{group_id}.{var_name}")
-                };
+                let loc = format!("modes.{mode}.envs.{group_id}.{var_name}");
                 if let Some(val) =
                     render_template(tpl, &loc, provider, resources, entropy, &mut missing)?
                 {
@@ -462,6 +518,56 @@ impl SnowFile {
             });
         }
         Ok(out)
+    }
+
+    /// Resolve the effective `run_command` for `component_id` in `mode`.
+    ///
+    /// Two-level precedence: `modes.<mode>.components.<id>.run_command` overrides top-level
+    /// `components[].run_command`.
+    pub fn effective_run_command(&self, mode: &str, component_id: &str) -> Result<&str, SnowError> {
+        let comp = self
+            .components
+            .iter()
+            .find(|c| c.id == component_id)
+            .ok_or_else(|| {
+                SnowError::Validation(vec![format!("component '{component_id}' not found")])
+            })?;
+        if mode != "all" && !self.modes.contains_key(mode) {
+            return Err(self.unknown_mode(mode));
+        }
+        if mode != "all"
+            && let Some(cmd) = self
+                .modes
+                .get(mode)
+                .and_then(|m| m.components.get(component_id))
+                .and_then(|o| o.run_command.as_deref())
+        {
+            return Ok(cmd);
+        }
+        Ok(&comp.run_command)
+    }
+
+    /// The manifest's declared `domains[].id` labels (used for disjoint fork/route validation).
+    pub fn domain_ids(&self) -> Vec<&str> {
+        self.domains.iter().map(|d| d.id.as_str()).collect()
+    }
+
+    fn unknown_mode(&self, mode: &str) -> SnowError {
+        let available = self
+            .modes
+            .keys()
+            .filter(|k| k.as_str() != "all")
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(", ");
+        SnowError::UnknownMode {
+            requested: mode.to_owned(),
+            available: if available.is_empty() {
+                "(none)".to_owned()
+            } else {
+                available
+            },
+        }
     }
 }
 
@@ -504,9 +610,19 @@ pub struct S3Coordinates {
 }
 
 impl ResourceCoordinates {
-    /// Construct canonical local-world coordinates (`127.0.0.1` inside the isolated CoW world)
-    /// from the resources and ingresses declared in `snow`.
-    pub fn local_defaults(snow: &SnowFile, project_slug: &str) -> Self {
+    /// Construct `.localhost` coordinates for any typed [`WorldTarget`] (`Canonical`, validated
+    /// `UserFork`, or coordinator-minted `TestSlot`).
+    ///
+    /// This is the **sole** local coordinate constructor: it validates `target` through
+    /// [`WorldTarget::validate`] against the manifest's `domains[].id` set, propagating
+    /// [`slipfork_world::WorldError`] via [`SnowError::World`], and renders `app_domain` /
+    /// `app_url` exclusively through [`LocalHostRoute`].
+    pub fn local_for_world(
+        snow: &SnowFile,
+        project: &ProjectSlug,
+        target: &WorldTarget,
+    ) -> Result<Self, SnowError> {
+        let route = LocalHostRoute::new(project.clone(), target.clone(), None, &snow.domain_ids())?;
         let mut pg_urls = BTreeMap::new();
         for db in &snow.resources.pg_databases {
             pg_urls.insert(
@@ -524,7 +640,7 @@ impl ResourceCoordinates {
                 b.id.clone(),
                 S3Coordinates {
                     endpoint_url: "http://127.0.0.1:9000".to_owned(),
-                    bucket: format!("{project_slug}-{}", b.id),
+                    bucket: format!("{project}-{}", b.id),
                     access_key: "slipfork-local".to_owned(),
                     secret_key: "slipfork-local-secret".to_owned(),
                     region: "us-east-1".to_owned(),
@@ -542,21 +658,22 @@ impl ResourceCoordinates {
             );
         }
         for comp in &snow.components {
-            if !component_urls.contains_key(&comp.id) {
-                let port = comp.internal_ports.first().copied().unwrap_or(8000);
+            if !component_urls.contains_key(&comp.id)
+                && let Some(&port) = comp.internal_ports.first()
+            {
                 component_urls.insert(comp.id.clone(), (format!("http://127.0.0.1:{port}"), port));
             }
         }
-        Self {
-            app_domain: format!("{project_slug}.localtest.me"),
-            app_url: format!("http://{project_slug}.localtest.me"),
+        Ok(Self {
+            app_domain: route.host(),
+            app_url: route.url(),
             env_name: "local".to_owned(),
             is_production: false,
             pg_urls,
             redis_urls,
             s3_endpoints,
             component_urls,
-        }
+        })
     }
 
     /// Resolve `(value, is_secret)` for `resources::*`, `components::*`, and `deployment::*`.
@@ -565,7 +682,7 @@ impl ResourceCoordinates {
         match (namespace, parts.as_slice()) {
             ("resources", ["app", "url"]) => Some((self.app_url.clone(), false)),
             ("resources", ["app", "domain"]) => Some((self.app_domain.clone(), false)),
-            ("resources", ["pg_databases" | "pg_cluster", id, "url"]) => {
+            ("resources", ["pg_databases", id, "url"]) => {
                 self.pg_urls.get(*id).map(|u| (u.clone(), false))
             }
             ("resources", ["redis_clusters", id, "url"]) => {
@@ -585,7 +702,7 @@ impl ResourceCoordinates {
             ("components", [id, prop]) => {
                 let (url, port) = self.component_urls.get(*id)?;
                 match *prop {
-                    "private_url" | "public_url" => Some((url.clone(), false)),
+                    "private_url" => Some((url.clone(), false)),
                     "private_domain" => Some(("127.0.0.1".to_owned(), false)),
                     "private_port" => Some((port.to_string(), false)),
                     _ => None,
