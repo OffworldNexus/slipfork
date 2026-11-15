@@ -29,11 +29,13 @@ import argparse
 import concurrent.futures
 import json
 import os
+import platform
 import shutil
 import subprocess
 import sys
 import time
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -43,6 +45,19 @@ CHROME_BIN = "/usr/bin/google-chrome"
 # Reuse the active Python interpreter already carrying `playwright` and `psycopg`
 # so benchmark timings measure PostgreSQL + CoW + Chromium, never `uv` package resolution!
 PYTHON_EXE = sys.executable
+
+# Ambient Git variables that can redirect repository discovery into the outer
+# Slipfork checkout instead of the hermetic sample project.
+STRIPPED_GIT_ENV = (
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_COMMON_DIR",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_NAMESPACE",
+    "GIT_PREFIX",
+)
 
 SCHEMA_SQL = """
 CREATE TABLE tenants (
@@ -230,6 +245,7 @@ subprocess.run(
 class BenchmarkMetrics:
     reflink_64k_us: int
     pgdata_logical_mib: float
+    pgdata_files: int
     snap_create_ms: float
     worktree_fork_ms: float
     worktree_boot_and_query_ms: float
@@ -248,15 +264,38 @@ class BenchmarkMetrics:
     warm_speedup_factor: float
 
 
+def bench_child_env(bench_root: Path) -> dict[str, str]:
+    """Build the sanitized environment shared by every benchmark subprocess.
+
+    `GIT_CEILING_DIRECTORIES` stops Git discovery at `bench_root`, so the sample
+    project can never resolve to the outer Slipfork repository, and
+    `XDG_DATA_HOME` keeps Slipfork's vault/state writes inside the bench root.
+    """
+    env = {
+        key: value for key, value in os.environ.items() if key not in STRIPPED_GIT_ENV
+    }
+    env["GIT_CEILING_DIRECTORIES"] = str(bench_root)
+    env["XDG_DATA_HOME"] = str(bench_root / "xdg-data")
+    return env
+
+
 def run_cmd(
-    argv: list[str], *, cwd: Path | None = None
+    argv: list[str],
+    *,
+    cwd: Path | None = None,
+    env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(argv, cwd=cwd, check=True, capture_output=True, text=True)
+    return subprocess.run(
+        argv, cwd=cwd, env=env, check=True, capture_output=True, text=True
+    )
 
 
-def setup_sample_project(proj_dir: Path) -> None:
+def setup_sample_project(proj_dir: Path, env: dict[str, str]) -> None:
     (proj_dir / "front" / "src").mkdir(parents=True, exist_ok=True)
     (proj_dir / "api" / "migrations").mkdir(parents=True, exist_ok=True)
+    # ADR-0005 §3 canonical `ProjectSlug` discovery fails closed outside a VCS
+    # repository, so the sample project must be a real (idempotent) Git repo.
+    run_cmd(["git", "init", "-q", str(proj_dir)], env=env)
     (proj_dir / "snow.yml").write_text(
         """images:
   - id: api
@@ -367,7 +406,7 @@ def build_front_bundle(proj_dir: Path, out_html: Path) -> float:
     return (time.perf_counter() - t0) * 1000.0
 
 
-def init_and_seed_postgres(state_src: Path) -> float:
+def init_and_seed_postgres(state_src: Path, env: dict[str, str]) -> tuple[float, int]:
     pgdata = state_src / "pgdata"
     sock = state_src / "pgsock"
     sock.mkdir(parents=True, exist_ok=True)
@@ -382,7 +421,8 @@ def init_and_seed_postgres(state_src: Path) -> float:
             "--locale=C",
             "-E",
             "UTF8",
-        ]
+        ],
+        env=env,
     )
     run_cmd(
         [
@@ -394,7 +434,8 @@ def init_and_seed_postgres(state_src: Path) -> float:
             "-o",
             f"-F -c unix_socket_directories={sock} -c listen_addresses=",
             "start",
-        ]
+        ],
+        env=env,
     )
     try:
         for sql in (SCHEMA_SQL, SEED_CORE_SQL, SEED_CATALOG_SQL, "CHECKPOINT;"):
@@ -409,16 +450,20 @@ def init_and_seed_postgres(state_src: Path) -> float:
                     "ON_ERROR_STOP=1",
                     "-c",
                     sql,
-                ]
+                ],
+                env=env,
             )
     finally:
-        run_cmd([str(PG_BIN / "pg_ctl"), "-D", str(pgdata), "-m", "fast", "stop"])
+        run_cmd(
+            [str(PG_BIN / "pg_ctl"), "-D", str(pgdata), "-m", "fast", "stop"], env=env
+        )
     total_bytes = sum(f.stat().st_size for f in pgdata.rglob("*") if f.is_file())
-    return total_bytes / (1024.0 * 1024.0)
+    total_files = sum(1 for f in pgdata.rglob("*") if f.is_file())
+    return total_bytes / (1024.0 * 1024.0), total_files
 
 
 def run_baseline_serial_suite(
-    proj_dir: Path, state_root: Path, num_tests: int
+    proj_dir: Path, state_root: Path, num_tests: int, env: dict[str, str]
 ) -> float:
     w_name = "baseline-shared"
     run_cmd(
@@ -432,7 +477,8 @@ def run_baseline_serial_suite(
             "seed-catalog",
             "--workspace",
             str(proj_dir),
-        ]
+        ],
+        env=env,
     )
     baseline_runner = proj_dir / "run_baseline.py"
     baseline_runner.write_text(
@@ -565,10 +611,13 @@ subprocess.run(
             str(baseline_runner),
             str(num_tests),
             str(proj_dir),
-        ]
+        ],
+        env=env,
     )
     elapsed = time.perf_counter() - t0
-    run_cmd([str(SLIPFORK_BIN), "--state-dir", str(state_root), "drop", w_name])
+    run_cmd(
+        [str(SLIPFORK_BIN), "--state-dir", str(state_root), "drop", w_name], env=env
+    )
     return elapsed
 
 
@@ -578,6 +627,7 @@ def run_slipfork_cold_parallel_suite(
     front_bundle: Path,
     num_tests: int,
     workers: int,
+    env: dict[str, str],
 ) -> float:
     """On-demand cold CoW clones: forks PGDATA + starts PG + starts Chrome per test across `workers`."""
     worker_script = proj_dir / "run_one_world_test.py"
@@ -596,7 +646,8 @@ def run_slipfork_cold_parallel_suite(
                 "seed-catalog",
                 "--workspace",
                 str(proj_dir),
-            ]
+            ],
+            env=env,
         )
         try:
             run_cmd(
@@ -617,10 +668,14 @@ def run_slipfork_cold_parallel_suite(
                     f"TEST_INDEX={idx}",
                     PYTHON_EXE,
                     str(worker_script),
-                ]
+                ],
+                env=env,
             )
         finally:
-            run_cmd([str(SLIPFORK_BIN), "--state-dir", str(state_root), "drop", w_name])
+            run_cmd(
+                [str(SLIPFORK_BIN), "--state-dir", str(state_root), "drop", w_name],
+                env=env,
+            )
 
     t0 = time.perf_counter()
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
@@ -634,6 +689,7 @@ def run_slipfork_warm_pool_suite(
     front_bundle: Path,
     num_tests: int,
     workers: int,
+    env: dict[str, str],
 ) -> float:
     """Pre-warmed CoW world pool (analogous to warm Incus VM / Zygote snapshot pool):
     CoW worlds are forked & warm in waves of `workers`, then execute the full Playwright +
@@ -664,7 +720,8 @@ def run_slipfork_warm_pool_suite(
                     "seed-catalog",
                     "--workspace",
                     str(proj_dir),
-                ]
+                ],
+                env=env,
             )
             p = subprocess.Popen(
                 [
@@ -690,6 +747,7 @@ def run_slipfork_warm_pool_suite(
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
+                env=env,
             )
             procs.append((idx, w_name, p, go_file))
 
@@ -715,7 +773,10 @@ def run_slipfork_warm_pool_suite(
         total_active_s += time.perf_counter() - t0
 
         for _, w_name, _, _ in procs:
-            run_cmd([str(SLIPFORK_BIN), "--state-dir", str(state_root), "drop", w_name])
+            run_cmd(
+                [str(SLIPFORK_BIN), "--state-dir", str(state_root), "drop", w_name],
+                env=env,
+            )
 
     return total_active_s
 
@@ -727,12 +788,14 @@ def measure_all(num_tests: int, workers: int) -> BenchmarkMetrics:
     proj_dir = bench_root / "acme-shop"
     state_root = bench_root / "state"
     src_pg = bench_root / "seed-src"
-    setup_sample_project(proj_dir)
+    env = bench_child_env(bench_root)
+    setup_sample_project(proj_dir, env)
 
     try:
         doc = json.loads(
             run_cmd(
-                [str(SLIPFORK_BIN), "--json", "--state-dir", str(state_root), "doctor"]
+                [str(SLIPFORK_BIN), "--json", "--state-dir", str(state_root), "doctor"],
+                env=env,
             ).stdout
         )
         assert doc["ok"] is True
@@ -751,12 +814,13 @@ def measure_all(num_tests: int, workers: int) -> BenchmarkMetrics:
                     str(proj_dir / "snow.yml"),
                     "--mode",
                     "local",
-                ]
+                ],
+                env=env,
             ).stdout
         )
         assert resolved["SECRET_KEY"] == "[REDACTED]"
 
-        pg_mib = init_and_seed_postgres(src_pg)
+        pg_mib, pg_files = init_and_seed_postgres(src_pg, env)
         snap_res = json.loads(
             run_cmd(
                 [
@@ -768,7 +832,8 @@ def measure_all(num_tests: int, workers: int) -> BenchmarkMetrics:
                     "--source",
                     str(src_pg),
                     "seed-catalog",
-                ]
+                ],
+                env=env,
             ).stdout
         )
         snap_ms = float(snap_res["elapsed_ms"])
@@ -786,7 +851,8 @@ def measure_all(num_tests: int, workers: int) -> BenchmarkMetrics:
                     "seed-catalog",
                     "--workspace",
                     str(proj_dir),
-                ]
+                ],
+                env=env,
             ).stdout
         )
         fork_ms = float(fork_res["elapsed_ms"])
@@ -814,11 +880,15 @@ def measure_all(num_tests: int, workers: int) -> BenchmarkMetrics:
                     "psql -h 127.0.0.1 -p 5432 -d postgres -tAc 'SELECT count(*) FROM products' && "
                     f'{PG_BIN}/pg_ctl -D "$SLIPFORK_WORLD_STATE/pgdata" -m immediate stop >/dev/null'
                 ),
-            ]
+            ],
+            env=env,
         ).stdout.strip()
         assert q_out == "10000"
         boot_query_ms = (time.perf_counter() - t_q0) * 1000.0
-        run_cmd([str(SLIPFORK_BIN), "--state-dir", str(state_root), "drop", "wt-probe"])
+        run_cmd(
+            [str(SLIPFORK_BIN), "--state-dir", str(state_root), "drop", "wt-probe"],
+            env=env,
+        )
 
         def agent_worktree_job(agent_idx: int) -> None:
             wt = f"wt-agent-{agent_idx}"
@@ -833,7 +903,8 @@ def measure_all(num_tests: int, workers: int) -> BenchmarkMetrics:
                     "seed-catalog",
                     "--workspace",
                     str(proj_dir),
-                ]
+                ],
+                env=env,
             )
             try:
                 out = (
@@ -857,14 +928,18 @@ def measure_all(num_tests: int, workers: int) -> BenchmarkMetrics:
                                 f"psql -h 127.0.0.1 -p 5432 -d postgres -tAc 'DELETE FROM products WHERE id <= {agent_idx * 100}; SELECT count(*) FROM products' && "
                                 f'{PG_BIN}/pg_ctl -D "$SLIPFORK_WORLD_STATE/pgdata" -m immediate stop >/dev/null'
                             ),
-                        ]
+                        ],
+                        env=env,
                     )
                     .stdout.strip()
                     .splitlines()[-1]
                 )
                 assert int(out) == 10000 - agent_idx * 100
             finally:
-                run_cmd([str(SLIPFORK_BIN), "--state-dir", str(state_root), "drop", wt])
+                run_cmd(
+                    [str(SLIPFORK_BIN), "--state-dir", str(state_root), "drop", wt],
+                    env=env,
+                )
 
         t_wt4 = time.perf_counter()
         with concurrent.futures.ThreadPoolExecutor(max_workers=4) as ex:
@@ -884,7 +959,8 @@ def measure_all(num_tests: int, workers: int) -> BenchmarkMetrics:
                     str(proj_dir / "slipfork.toml"),
                     "--repo",
                     str(proj_dir),
-                ]
+                ],
+                env=env,
             ).stdout
         )
         for a in plan0["artifacts"]:
@@ -909,7 +985,8 @@ def measure_all(num_tests: int, workers: int) -> BenchmarkMetrics:
                     str(proj_dir / "slipfork.toml"),
                     "--repo",
                     str(proj_dir),
-                ]
+                ],
+                env=env,
             ).stdout
         )
         dag_warm_ms = (time.perf_counter() - t_dag_warm) * 1000.0
@@ -934,7 +1011,8 @@ def measure_all(num_tests: int, workers: int) -> BenchmarkMetrics:
                     str(proj_dir / "slipfork.toml"),
                     "--repo",
                     str(proj_dir),
-                ]
+                ],
+                env=env,
             ).stdout
         )
         dag_front_ms = (time.perf_counter() - t_dag_front) * 1000.0
@@ -946,17 +1024,18 @@ def measure_all(num_tests: int, workers: int) -> BenchmarkMetrics:
         front_bundle = state_root / "artifacts-built" / "App.html"
         build_front_bundle(proj_dir, front_bundle)
 
-        baseline_s = run_baseline_serial_suite(proj_dir, state_root, num_tests)
+        baseline_s = run_baseline_serial_suite(proj_dir, state_root, num_tests, env)
         cold_s = run_slipfork_cold_parallel_suite(
-            proj_dir, state_root, front_bundle, num_tests, workers
+            proj_dir, state_root, front_bundle, num_tests, workers, env
         )
         warm_s = run_slipfork_warm_pool_suite(
-            proj_dir, state_root, front_bundle, num_tests, workers
+            proj_dir, state_root, front_bundle, num_tests, workers, env
         )
 
         return BenchmarkMetrics(
             reflink_64k_us=reflink_64k_us,
             pgdata_logical_mib=pg_mib,
+            pgdata_files=pg_files,
             snap_create_ms=snap_ms,
             worktree_fork_ms=fork_ms,
             worktree_boot_and_query_ms=boot_query_ms,
@@ -978,11 +1057,13 @@ def measure_all(num_tests: int, workers: int) -> BenchmarkMetrics:
         shutil.rmtree(bench_root, ignore_errors=True)
 
 
-def render_markdown_report(m: BenchmarkMetrics) -> str:
+def render_markdown_report(
+    m: BenchmarkMetrics, *, report_date: str, host_kernel: str, host_arch: str
+) -> str:
     return f"""# Milestone 1 PoC Benchmark Report (`docs/research/m1-poc-benchmark.md`)
 
-- **Date:** 2026-11-14
-- **Host:** Linux `6.12.116+deb13-amd64` (`x86_64`), XFS (`reflink=1`), PostgreSQL `18.7`, Chromium (`/usr/bin/google-chrome` via Playwright)
+- **Date:** {report_date}
+- **Host:** Linux `{host_kernel}` (`{host_arch}`), XFS (`reflink=1`), PostgreSQL `18.7`, Chromium (`/usr/bin/google-chrome` via Playwright)
 - **Driver:** `ReflinkNetnsEngine` (`ioctl(FICLONE)` + unprivileged `CLONE_NEWUSER | CLONE_NEWNET | CLONE_NEWPID`, zero `sudo`, exact host `$UID:$GID`)
 - **Reproduce:** `make bench` (`poc/run_benchmark.py`)
 
@@ -994,7 +1075,7 @@ def render_markdown_report(m: BenchmarkMetrics) -> str:
 |---|---:|---|
 | Single-file 64 KiB XFS `ioctl(FICLONE)` | **`{m.reflink_64k_us} us`** | Kernel block-extent CoW on `/home/remy` (`0` data bytes copied) |
 | Seeded PostgreSQL 18 cluster size (`PGDATA`) | **`{m.pgdata_logical_mib:.1f} MiB`** | 200 tenants + 10,000 products + 5,000 audit events + B-tree indexes |
-| `slipfork fork` (clone seeded PG 18 cluster for an agent worktree) | **`{m.worktree_fork_ms:.1f} ms`** | Clones ~950 PostgreSQL catalog/heap files via `FICLONE` |
+| `slipfork fork` (clone seeded PG 18 cluster for an agent worktree) | **`{m.worktree_fork_ms:.1f} ms`** | Clones {m.pgdata_files} PostgreSQL catalog/heap files via `FICLONE` |
 | Isolated `netns` PG 18 boot + SQL `count(*)` + stop | **`{m.worktree_boot_and_query_ms:.1f} ms`** | Private `127.0.0.1:5432` inside `CLONE_NEWNET`, verified `10,000` rows |
 | **4 parallel agent worktrees** mutating `:5432` concurrently | **`{m.parallel_4_worktrees_same_port_ms:.1f} ms` total** | All 4 bind `127.0.0.1:5432` simultaneously; `0` cross-world leaks |
 | `slipfork dag plan` (warm cache hit — zero changes) | **`{m.dag_warm_plan_ms:.2f} ms`** | SHA-256 Merkle check across `front` + `migrate` + `seed_*` -> `0` rebuilds |
@@ -1015,7 +1096,7 @@ Every test drives headless Chromium (`Playwright`) against an HTTP web server on
 ### Key Architectural Takeaway Proved by Numbers
 
 Compare Mode 2 (`{m.slipfork_cold_parallel_s:.2f} s`) vs Mode 3 (`{m.slipfork_warm_pool_s:.2f} s`):
-- Disk CoW cloning itself is nearly free (**`{m.worktree_fork_ms:.1f} ms`** for a 41.5 MiB PostgreSQL 18 cluster on XFS, and `~5–15 ms` on Incus ZFS/Btrfs).
+- Disk CoW cloning itself is nearly free (**`{m.worktree_fork_ms:.1f} ms`** for a {m.pgdata_logical_mib:.1f} MiB PostgreSQL 18 cluster on XFS, and `~5–15 ms` on Incus ZFS/Btrfs).
 - Cold process startup (`pg_ctl start` + `chromium.launch` + Python/framework imports) accounts for ~80% of per-test latency when worlds are booted from disk on demand.
 - **Keeping a rolling pre-warmed pool of `W` CoW worlds (or restoring stateful Incus VM RAM snapshots + Runner Zygotes!) delivers `{m.warm_speedup_factor:.2f}x` speedup (`{m.slipfork_warm_per_test_ms:.0f} ms` effective per full browser+DB checkout test!)** — and on real-world suites where frontend builds take `20–45 s` and `serialized_rollback` / S3 seeding takes `3–15 s` per test, the speedup jumps from `{m.warm_speedup_factor:.1f}x` to **15x–40x**.
 
@@ -1052,7 +1133,15 @@ def main() -> None:
     metrics = measure_all(num_tests=args.num_tests, workers=args.workers)
     report_path = REPO_ROOT / "docs" / "research" / "m1-poc-benchmark.md"
     report_path.parent.mkdir(parents=True, exist_ok=True)
-    report_path.write_text(render_markdown_report(metrics), encoding="utf-8")
+    report_path.write_text(
+        render_markdown_report(
+            metrics,
+            report_date=date.today().isoformat(),
+            host_kernel=platform.release(),
+            host_arch=platform.machine(),
+        ),
+        encoding="utf-8",
+    )
     print(json.dumps(metrics.__dict__, indent=2))
     print(f"Wrote benchmark report to {report_path}")
 

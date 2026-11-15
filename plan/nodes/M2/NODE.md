@@ -1,6 +1,6 @@
 ---
 id: M2
-title: "snow.yml v2, OSPP v1 & Live Dev/Worktree Worlds (0.2.0)"
+title: "snow.yml v2 Supervision, .localhost Edge (slipforkd), weaved Leases & VCS Worlds (0.2.0)"
 kind: milestone
 status: ready
 priority: 2
@@ -10,7 +10,7 @@ attempts: 0
 max_attempts: 3
 escalation: none
 created: "2026-11-14T22:03"
-updated: "2026-11-14T22:03"
+updated: "2026-11-15T02:16"
 ---
 
 # Goal

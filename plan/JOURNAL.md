@@ -90,3 +90,14 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-15T01:59 [M1.6] (lead) local_base double-renderer removed (LocalHostRoute sole host/URL renderer, app_domain/app_url populated once, dead overwrites gone, ResourceCoordinates shape un
 - 2026-11-15T01:59 [M1.6] (lead) status review -> review
 - 2026-11-15T02:01 [M1.6] (lead) status review -> done
+- 2026-11-15T02:01 ESCALATION #5 -> strategist for M1 by conductor: milestone gate
+- 2026-11-15T02:16 [M2] (strategist) edited fields
+- 2026-11-15T02:16 [M1.7] (strategist) created (task) Repair make bench VCS root setup, regenerate live PoC report & add CHANGELOG.md (0.1.0)
+- 2026-11-15T02:16 [M4] (strategist) edited fields
+- 2026-11-15T02:16 [M1] (strategist) GATE FAILED (BLOCKER - broken acceptance): make bench exits 2 at poc/run_benchmark.py:742 because setup_sample_project creates ~/.cache/slipfork-m1-bench/acme-s
+- 2026-11-15T02:17 [M1.7] (lead) status ready -> active
+- 2026-11-15T02:17 [M1.7] (lead) attempt 1/3 started
+- 2026-11-15T02:17 [M1.7] (lead) base d0b11e069ced52d0e03ebb3b251a1077d0c1bf39
+- 2026-11-15T02:22 [M1.7] (lead) status active -> review
+- 2026-11-15T02:26 [M1.7] (lead) GATE (Quad): reviewer=PASS(5 followups), legality=PASS(5), ioc=PASS(7, no blind spot), cruft=PASS(11); 0 BLOCKERs. Notable: gate reviewers re-ran make bench, wh
+- 2026-11-15T02:27 [M1.7] (lead) status review -> done

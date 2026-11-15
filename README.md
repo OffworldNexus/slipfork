@@ -7,10 +7,10 @@
 Every command and package below is implemented, tested, and runnable today:
 
 - **`snow.yml` v2 Resolver (`slipfork snow resolve` / `crates/slipfork-snow`):** Resolves `modes.all` + `modes.<mode>` (and validates per-mode `components.<id>.run_command` overrides for M2 process supervision), `??` read-only fallbacks, and `!!` write-once CSPRNG secrets persisted atomically into `~/.local/share/slipfork/vaults/<slug>.json` (`0600`), with exhaustive missing-key refusal and `.localhost` hostname/fork validation via `slipfork_world::LocalHostRoute`.
-- **Orthogonal Artifact + Fixture DAG Planner (`slipfork dag plan` / `crates/slipfork-dag`):** Hashes `[artifacts.<id>]` and `[fixtures.<id>]` in `slipfork.toml` into SHA-256 Merkle waves (`~1.4 ms`), keeping frontend build invalidation 100% orthogonal to database snapshot lineages.
+- **Orthogonal Artifact + Fixture DAG Planner (`slipfork dag plan` / `crates/slipfork-dag`):** Hashes `[artifacts.<id>]` and `[fixtures.<id>]` in `slipfork.toml` into SHA-256 Merkle waves (`~10.9 ms`), keeping frontend build invalidation 100% orthogonal to database snapshot lineages.
 - **Rootless CoW World Engine (`slipfork doctor`, `snap`, `fork`, `exec`, `drop` / `crates/slipfork-engine`):** CLI commands run `ReflinkNetnsEngine`, cloning stateful service directories via Linux `ioctl(FICLONE)` (XFS/Btrfs reflink, failing closed on `tmpfs`) and executing commands inside unprivileged `CLONE_NEWUSER | CLONE_NEWNET | CLONE_NEWNS | CLONE_NEWPID` namespaces with host `$UID:$GID` preserved (`0` `root:root` files); `crates/slipfork-engine` also ships an `IncusEngine` Unix-socket REST `/1.0` library adapter awaiting M2 daemon/CLI wiring.
 - **OpenCode V2 Worktree Plugin (`packages/opencode-slipfork`):** Hooks `ctx.worktree.transform`, `ctx.shell.hook("create.before")`, and `ctx.session.hook("context")` so creating a git worktree forks a CoW world and routes standard `shell` commands implicitly by `cwd`.
-- **Measured Live Benchmark (`make bench`):** Real PostgreSQL 18.7 + XFS `FICLONE` + isolated `netns` + warm Python runner + headless Chromium Playwright achieving **`3.12x` speedup (`123 ms`/test)** with `0 ms` SQL teardown (`docs/research/m1-poc-benchmark.md`).
+- **Measured Live Benchmark (`make bench`):** Real PostgreSQL 18.7 + XFS `FICLONE` + isolated `netns` + warm Python runner + headless Chromium Playwright achieving **`3.21x` speedup (`118 ms`/test)** with `0 ms` SQL teardown (`docs/research/m1-poc-benchmark.md`).
 
 ```console
 $ cargo run -q -p slipfork -- doctor

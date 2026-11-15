@@ -21,7 +21,7 @@ $ slipfork drop exp                                          # Destroy the clone
 | Capability | Shipped in `0.1.0` |
 |---|---|
 | **Single `snow.yml` v2 manifest** | `modes.all` + `modes.<mode>` inheritance, 2-level `components.<id>.run_command` override validation (M2 process supervision), `??` fallbacks, write-once `!! random_string(50)` secret persistence (`0600`), and exhaustive missing-key diagnostics |
-| **Orthogonal DAG planning** | `slipfork dag plan` hashes `[artifacts.*]` independently from `[fixtures.*]` (`1.4 ms` warm check): frontend edits never invalidate DB fixture digests, and migration edits never trigger frontend rebuilds |
+| **Orthogonal DAG planning** | `slipfork dag plan` hashes `[artifacts.*]` independently from `[fixtures.*]` (`10.9 ms` warm check): frontend edits never invalidate DB fixture digests, and migration edits never trigger frontend rebuilds |
 | **Rootless CoW cloning & private `netns`** | `slipfork snap`, `fork`, `exec`, and `drop` clone files via kernel `ioctl(FICLONE)` (failing closed on `tmpfs`), isolate `127.0.0.1` ports (`:5432`, `:8000`) per world, and preserve your exact `$UID:$GID` |
 | **Implicit OpenCode worktree worlds** | [`@slipfork/opencode`](agents-and-opencode.md) forks a CoW world when OpenCode creates a git worktree and wraps `shell` commands into `slipfork exec --world ...` automatically |
 
@@ -33,11 +33,11 @@ Reproduce locally with `make bench`:
 
 | Operation / Suite (`16` full browser + committed SQL checkout tests) | Measured Result |
 |---|---:|
-| 64 KiB XFS `ioctl(FICLONE)` probe | **`447 us`** |
-| `slipfork fork` on a 41.5 MiB seeded PostgreSQL 18 cluster | **`194.5 ms`** |
-| 4 concurrent worlds binding `127.0.0.1:5432` in parallel | **`460.7 ms`** (`0` cross-world leaks) |
-| Traditional sequential `TRUNCATE` + re-seed baseline | `6.12 s` (`382 ms`/test) |
-| Pre-warmed Slipfork CoW worlds (`-j 8`, `0 ms` SQL teardown) | **`1.96 s` (`123 ms`/test, `3.12x` faster)** |
+| 64 KiB XFS `ioctl(FICLONE)` probe | **`397 us`** |
+| `slipfork fork` on a 41.5 MiB seeded PostgreSQL 18 cluster | **`44.4 ms`** |
+| 4 concurrent worlds binding `127.0.0.1:5432` in parallel | **`413.6 ms`** (`0` cross-world leaks) |
+| Traditional sequential `TRUNCATE` + re-seed baseline | `6.07 s` (`380 ms`/test) |
+| Pre-warmed Slipfork CoW worlds (`-j 8`, `0 ms` SQL teardown) | **`1.89 s` (`118 ms`/test, `3.21x` faster)** |
 
 ---
 

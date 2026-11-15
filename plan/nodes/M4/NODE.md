@@ -1,6 +1,6 @@
 ---
 id: M4
-title: "Blastit Parallel Wire Learning, Remote Cache & Agent Ecosystem (0.4.0)"
+title: "Remote CI Snapshot/Artifact Cache & Agent Ecosystem (0.4.0)"
 kind: milestone
 status: ready
 priority: 4
@@ -10,7 +10,7 @@ attempts: 0
 max_attempts: 3
 escalation: none
 created: "2026-11-14T22:03"
-updated: "2026-11-14T22:03"
+updated: "2026-11-15T02:16"
 ---
 
 # Goal
