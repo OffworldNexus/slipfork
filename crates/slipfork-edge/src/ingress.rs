@@ -4,8 +4,9 @@
 //! [`crate::registry::WorldRegistry`]'s `IngressRoute` longest-prefix table into
 //! `WorldEngine::dial_world_tcp`, and relayed byte-for-byte back to the client. Unknown hosts and
 //! unmatched paths answer `404`; malformed requests, unknown methods, oversized heads, and
-//! unreachable backends answer `400`/`405`/`431`/`502` respectively — never a partial response and
-//! never a silent fallback.
+//! unreachable backends answer `400`/`405`/`431`/`502` respectively. A `*.localhost` host of a
+//! shared world answers `308 Permanent Redirect` (`421 Misdirected Request` for `Upgrade`) before
+//! any backend is dialed (`ADR-0005` §1) — never a partial response and never a silent fallback.
 //!
 //! Alongside its TCP listeners [`HttpIngress`] binds the `0600` pathname `AF_UNIX` socket
 //! `<state_dir>/http-ingress.sock` (`H-011` #4 Variant a). `slipfork-world-init` splices every
@@ -17,21 +18,19 @@
 //! (`ADR-0008` §5) and are normalized back to blocking here, so an idle listener sleeps in the
 //! kernel instead of spinning.
 
-use std::fs;
 use std::io::{self, Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
-use std::os::unix::fs::PermissionsExt;
-use std::os::unix::net::{UnixListener, UnixStream};
+use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
-use slipfork_engine::world_init::{UNIX_SOCKET_PATH_MAX, unix_socket_path_fits};
-
 use crate::EdgeError;
 use crate::activation::ListenerSet;
-use crate::registry::{RoutedWorld, WorldRegistry};
+use crate::registry::{RouteDecision, WorldRegistry};
+use crate::relay::{Duplex, pipe};
+use crate::unix_socket::{SocketRole, bind_private};
 
 /// Largest HTTP request head (request line + headers) the ingress accepts.
 pub const HEADER_CAP: usize = 16 * 1024;
@@ -45,25 +44,26 @@ const HEAD_READ_TIMEOUT: Duration = Duration::from_secs(10);
 /// Bound on one relay read, so an idle proxied connection is still reclaimed.
 const RELAY_TIMEOUT: Duration = Duration::from_secs(60);
 
-/// Chunk size for relayed request/response bytes in either direction.
-const RELAY_CAP: usize = 16 * 1024;
-
 /// Largest number of headers `httparse` may collect from one request head.
 const MAX_HEADERS: usize = 64;
 
 /// HTTP verbs the ingress dispatches. Everything else is `405 Method Not Allowed`.
 const ALLOWED_METHODS: &[&str] = &["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"];
 
-/// Hop-by-hop request headers the ingress replaces with its own `Connection: close`.
+/// Hop-by-hop request headers the ingress replaces with its own `Connection` framing.
 const CONNECTION_HEADERS: &[&str] = &["connection", "keep-alive", "proxy-connection"];
+
+/// Existing `X-Forwarded-For` values this hop appends to; host and proto are restated per hop.
+const FORWARDED_FOR: &str = "x-forwarded-for";
 
 /// The `slipforkd` HTTP/WS ingress: every TCP listener plus `<state_dir>/http-ingress.sock`.
 pub struct HttpIngress {
     registry: Arc<WorldRegistry>,
     http_listeners: Vec<TcpListener>,
     forward_listener: Option<TcpListener>,
-    unix_listener: UnixListener,
+    unix_listener: std::os::unix::net::UnixListener,
     unix_path: PathBuf,
+    relay_timeout: Duration,
 }
 
 impl std::fmt::Debug for HttpIngress {
@@ -80,35 +80,14 @@ impl HttpIngress {
     /// Take ownership of the resolved listeners and bind `<state_dir>/http-ingress.sock` (`0600`).
     ///
     /// A stale socket file is replaced, but a socket a running daemon still serves is refused with
-    /// [`EdgeError::IngressSocketInUse`] rather than silently stolen.
+    /// [`EdgeError::SocketInUse`] rather than silently stolen.
     pub fn bind(
         state_dir: &Path,
         listeners: ListenerSet,
         registry: Arc<WorldRegistry>,
     ) -> Result<Self, EdgeError> {
         let unix_path = state_dir.join(HTTP_INGRESS_SOCKET_FILE);
-        if !unix_socket_path_fits(&unix_path) {
-            return Err(EdgeError::IngressSocketPath {
-                path: unix_path.display().to_string(),
-                limit: UNIX_SOCKET_PATH_MAX,
-            });
-        }
-        fs::create_dir_all(state_dir).map_err(|err| EdgeError::IngressStateDir {
-            path: state_dir.display().to_string(),
-            message: err.to_string(),
-        })?;
-        replace_stale_socket(&unix_path)?;
-        let unix_listener =
-            UnixListener::bind(&unix_path).map_err(|err| EdgeError::IngressSocket {
-                path: unix_path.display().to_string(),
-                message: err.to_string(),
-            })?;
-        fs::set_permissions(&unix_path, fs::Permissions::from_mode(0o600)).map_err(|err| {
-            EdgeError::IngressSocket {
-                path: unix_path.display().to_string(),
-                message: format!("cannot restrict the socket to 0600: {err}"),
-            }
-        })?;
+        let unix_listener = bind_private(&unix_path, SocketRole::HttpIngress)?;
 
         let ListenerSet {
             http_listeners,
@@ -137,7 +116,17 @@ impl HttpIngress {
             forward_listener,
             unix_listener,
             unix_path,
+            relay_timeout: RELAY_TIMEOUT,
         })
+    }
+
+    /// Override the idle bound armed on a proxied connection (60 s by default).
+    ///
+    /// A successful `101 Switching Protocols` clears the bound for that connection, so an idle
+    /// WebSocket is never torn down; this setting bounds everything else (and the tests).
+    pub fn with_relay_timeout(mut self, timeout: Duration) -> Self {
+        self.relay_timeout = timeout;
+        self
     }
 
     /// Path of the `0600` `AF_UNIX` ingress socket (`H-011` #4 Variant a).
@@ -152,6 +141,7 @@ impl HttpIngress {
     /// this as fatal. Per-connection threads never affect the accept loops.
     pub fn serve(self) -> Result<(), EdgeError> {
         let registry = self.registry;
+        let relay_timeout = self.relay_timeout;
         // One monitor channel so a failure on *any* listener (not only the first joined one)
         // surfaces immediately instead of being masked by a healthy accept loop.
         let (failures, failure) = std::sync::mpsc::channel();
@@ -159,12 +149,14 @@ impl HttpIngress {
             spawn_accept_loop(
                 IngressListener::Tcp(listener),
                 Arc::clone(&registry),
+                relay_timeout,
                 &failures,
             );
         }
         spawn_accept_loop(
             IngressListener::Unix(self.unix_listener, self.unix_path.display().to_string()),
             registry,
+            relay_timeout,
             &failures,
         );
         drop(failures);
@@ -183,11 +175,12 @@ impl HttpIngress {
 fn spawn_accept_loop(
     listener: IngressListener,
     registry: Arc<WorldRegistry>,
+    relay_timeout: Duration,
     failures: &std::sync::mpsc::Sender<Result<(), EdgeError>>,
 ) {
     let failures = failures.clone();
     thread::spawn(move || {
-        let outcome = accept_loop(listener, &registry);
+        let outcome = accept_loop(listener, &registry, relay_timeout);
         let _ = failures.send(outcome);
     });
 }
@@ -195,7 +188,7 @@ fn spawn_accept_loop(
 /// Accept connections from one TCP listener or the `AF_UNIX` ingress socket.
 enum IngressListener {
     Tcp(TcpListener),
-    Unix(UnixListener, String),
+    Unix(std::os::unix::net::UnixListener, String),
 }
 
 impl IngressListener {
@@ -224,13 +217,17 @@ fn listener_label(listener: &TcpListener) -> String {
         .map_or_else(|_| "tcp".to_owned(), |addr| addr.to_string())
 }
 
-fn accept_loop(listener: IngressListener, registry: &Arc<WorldRegistry>) -> Result<(), EdgeError> {
+fn accept_loop(
+    listener: IngressListener,
+    registry: &Arc<WorldRegistry>,
+    relay_timeout: Duration,
+) -> Result<(), EdgeError> {
     let label = listener.label();
     loop {
         match listener.accept() {
             Ok(client) => {
                 let registry = Arc::clone(registry);
-                thread::spawn(move || handle_connection(&registry, client));
+                thread::spawn(move || handle_connection(&registry, client, relay_timeout));
             }
             Err(err) if err.kind() == io::ErrorKind::Interrupted => {}
             Err(err) => {
@@ -250,27 +247,38 @@ enum ClientStream {
 }
 
 impl ClientStream {
-    fn set_timeout(&self, timeout: Duration) -> io::Result<()> {
+    fn peer(&self) -> String {
         match self {
-            Self::Tcp(stream) => {
-                stream.set_read_timeout(Some(timeout))?;
-                stream.set_write_timeout(Some(timeout))
-            }
-            Self::Unix(stream) => {
-                stream.set_read_timeout(Some(timeout))?;
-                stream.set_write_timeout(Some(timeout))
-            }
+            Self::Tcp(stream) => stream
+                .peer_addr()
+                .map_or_else(|_| "tcp peer".to_owned(), |addr| addr.to_string()),
+            Self::Unix(_) => HTTP_INGRESS_SOCKET_FILE.to_owned(),
         }
     }
 
-    fn try_clone(&self) -> io::Result<Self> {
+    /// Address reported in `X-Forwarded-For`.
+    ///
+    /// An `http-ingress.sock` request originates from the in-world `$BASE_URL` bridge, which dials
+    /// the world's own loopback, so `127.0.0.1` is the honest value there.
+    fn forwarded_for(&self) -> String {
+        match self {
+            Self::Tcp(stream) => stream
+                .peer_addr()
+                .map_or_else(|_| "127.0.0.1".to_owned(), |addr| addr.ip().to_string()),
+            Self::Unix(_) => "127.0.0.1".to_owned(),
+        }
+    }
+}
+
+impl Duplex for ClientStream {
+    fn try_clone_duplex(&self) -> io::Result<Self> {
         match self {
             Self::Tcp(stream) => stream.try_clone().map(Self::Tcp),
             Self::Unix(stream) => stream.try_clone().map(Self::Unix),
         }
     }
 
-    fn shutdown_write(&self) {
+    fn shutdown_write_half(&self) {
         let _ = match self {
             Self::Tcp(stream) => stream.shutdown(Shutdown::Write),
             Self::Unix(stream) => stream.shutdown(Shutdown::Write),
@@ -284,12 +292,16 @@ impl ClientStream {
         };
     }
 
-    fn peer(&self) -> String {
+    fn set_timeout(&self, timeout: Option<Duration>) -> io::Result<()> {
         match self {
-            Self::Tcp(stream) => stream
-                .peer_addr()
-                .map_or_else(|_| "tcp peer".to_owned(), |addr| addr.to_string()),
-            Self::Unix(_) => HTTP_INGRESS_SOCKET_FILE.to_owned(),
+            Self::Tcp(stream) => {
+                stream.set_read_timeout(timeout)?;
+                stream.set_write_timeout(timeout)
+            }
+            Self::Unix(stream) => {
+                stream.set_read_timeout(timeout)?;
+                stream.set_write_timeout(timeout)
+            }
         }
     }
 }
@@ -320,15 +332,19 @@ impl Write for ClientStream {
 }
 
 /// Serve one accepted stream: every failure becomes an HTTP status, never a dropped connection.
-fn handle_connection(registry: &WorldRegistry, mut client: ClientStream) {
-    if let Err(refusal) = dispatch(registry, &mut client) {
+fn handle_connection(registry: &WorldRegistry, mut client: ClientStream, relay_timeout: Duration) {
+    if let Err(refusal) = dispatch(registry, &mut client, relay_timeout) {
         let _ = refusal.respond(&mut client);
     }
 }
 
-fn dispatch(registry: &WorldRegistry, client: &mut ClientStream) -> Result<(), Refusal> {
+fn dispatch(
+    registry: &WorldRegistry,
+    client: &mut ClientStream,
+    relay_timeout: Duration,
+) -> Result<(), Refusal> {
     let peer = client.peer();
-    client.set_timeout(HEAD_READ_TIMEOUT).map_err(|err| {
+    client.set_timeout(Some(HEAD_READ_TIMEOUT)).map_err(|err| {
         Refusal::Internal(format!("cannot bound the request read for {peer}: {err}"))
     })?;
 
@@ -360,28 +376,52 @@ fn dispatch(registry: &WorldRegistry, client: &mut ClientStream) -> Result<(), R
     let path = request
         .path
         .ok_or_else(|| Refusal::BadRequest(format!("request from {peer} has no target path")))?;
+    let host = host_header(&request, &peer)?;
+    let upgrade = is_upgrade(&request);
+
+    // The routing decision comes before the method allowlist so a shared world's `*.localhost`
+    // host answers `308`/`421` for *every* method and is never proxied (`ADR-0005` §1).
+    let routed = match registry
+        .resolve(&host, path, upgrade)
+        .map_err(|err| route_refusal(&host, err))?
+    {
+        RouteDecision::Redirect { location, .. } => {
+            return write_redirect(client, &location, method == "HEAD")
+                .map_err(|err| Refusal::Internal(format!("cannot redirect {peer}: {err}")));
+        }
+        RouteDecision::Misdirected { world, shared_url } => {
+            return write_misdirected(client, &world, &shared_url, method == "HEAD")
+                .map_err(|err| Refusal::Internal(format!("cannot refuse {peer}: {err}")));
+        }
+        RouteDecision::Forward(routed) => routed,
+    };
     if !ALLOWED_METHODS.contains(&method) {
         return Err(Refusal::MethodNotAllowed(format!(
             "method '{method}' from {peer} is not dispatched by slipforkd"
         )));
     }
-    let host = host_header(&request, &peer)?;
-    let routed = route_request(registry, &host, path)?;
 
     let mut upstream = registry
         .dial(&routed)
         .map_err(|err| Refusal::BadGateway(err.to_string()))?;
-    let relay_timeout = |stream: &TcpStream| -> io::Result<()> {
-        stream.set_read_timeout(Some(RELAY_TIMEOUT))?;
-        stream.set_write_timeout(Some(RELAY_TIMEOUT))
-    };
-    relay_timeout(&upstream)
+    upstream
+        .set_timeout(Some(relay_timeout))
         .map_err(|err| Refusal::Internal(format!("cannot bound the upstream relay: {err}")))?;
     client
-        .set_timeout(RELAY_TIMEOUT)
+        .set_timeout(Some(relay_timeout))
         .map_err(|err| Refusal::Internal(format!("cannot bound the client relay: {err}")))?;
 
-    write_upstream_request(&mut upstream, method, path, &request).map_err(|err| {
+    let forwarded_for = client.forwarded_for();
+    write_upstream_request(
+        &mut upstream,
+        method,
+        path,
+        &request,
+        &host,
+        &forwarded_for,
+        upgrade,
+    )
+    .map_err(|err| {
         Refusal::Internal(format!(
             "cannot forward the request to {}: {err}",
             routed.world_id()
@@ -394,17 +434,16 @@ fn dispatch(registry: &WorldRegistry, client: &mut ClientStream) -> Result<(), R
     relay(client, upstream)
 }
 
-/// Resolve `Host` + `path`, mapping routing failures to their HTTP status.
-fn route_request(registry: &WorldRegistry, host: &str, path: &str) -> Result<RoutedWorld, Refusal> {
-    match registry.route(host, path) {
-        Ok(routed) => Ok(routed),
-        Err(EdgeError::UnknownHost { host }) => Err(Refusal::NotFound(format!(
-            "no world is attached for host '{host}'"
-        ))),
-        Err(EdgeError::UnknownIngressPath { world, host, path }) => Err(Refusal::NotFound(
-            format!("world {world} has no ingress route for '{path}' (host '{host}')"),
+/// Map one routing failure to its HTTP status.
+fn route_refusal(host: &str, err: EdgeError) -> Refusal {
+    match err {
+        EdgeError::UnknownHost { host } => {
+            Refusal::NotFound(format!("no world is attached for host '{host}'"))
+        }
+        EdgeError::UnknownIngressPath { world, host, path } => Refusal::NotFound(format!(
+            "world {world} has no ingress route for '{path}' (host '{host}')"
         )),
-        Err(err) => Err(Refusal::Internal(err.to_string())),
+        other => Refusal::Internal(format!("cannot route host '{host}': {other}")),
     }
 }
 
@@ -481,13 +520,49 @@ fn host_header(request: &httparse::Request<'_, '_>, peer: &str) -> Result<String
     host.ok_or_else(|| Refusal::BadRequest(format!("request from {peer} has no Host header")))
 }
 
-/// Rewrite the request head for one backend exchange: hop-by-hop headers dropped, `Host` kept,
-/// `Connection: close` forced so the backend ends the stream after its response.
+/// `true` when the request asks for an HTTP `Upgrade` (`Connection` carries the `upgrade` token).
+fn is_upgrade(request: &httparse::Request<'_, '_>) -> bool {
+    request.headers.iter().any(|header| {
+        header.name.eq_ignore_ascii_case("connection") && header_has_token(header.value, "upgrade")
+    })
+}
+
+/// The single client-supplied `X-Forwarded-For` value this hop appends to, if any.
+fn existing_forwarded_for(request: &httparse::Request<'_, '_>) -> Option<String> {
+    request
+        .headers
+        .iter()
+        .find(|header| header.name.eq_ignore_ascii_case(FORWARDED_FOR))
+        .and_then(|header| std::str::from_utf8(header.value).ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+}
+
+/// `true` when a comma-separated header value carries `token` (ASCII case-insensitive).
+fn header_has_token(value: &[u8], token: &str) -> bool {
+    std::str::from_utf8(value).is_ok_and(|value| {
+        value
+            .split(',')
+            .any(|candidate| candidate.trim().eq_ignore_ascii_case(token))
+    })
+}
+
+/// Rewrite the request head for one backend exchange.
+///
+/// Hop-by-hop headers the ingress owns are dropped, `Host` is preserved verbatim,
+/// `X-Forwarded-Host`/`X-Forwarded-Proto` are restated from this hop, and the peer is appended to
+/// any incoming `X-Forwarded-For` chain. A plain exchange forces `Connection: close` so the backend
+/// ends the stream after its response; an `Upgrade` exchange preserves the `Connection: Upgrade`
+/// negotiation instead (`ADR-0005` §1, WebSocket proxying).
 fn write_upstream_request(
     upstream: &mut TcpStream,
     method: &str,
     path: &str,
     request: &httparse::Request<'_, '_>,
+    host: &str,
+    forwarded_for: &str,
+    upgrade: bool,
 ) -> io::Result<()> {
     let mut out = Vec::with_capacity(512);
     out.extend_from_slice(method.as_bytes());
@@ -501,58 +576,145 @@ fn write_upstream_request(
         {
             continue;
         }
+        if header.name.eq_ignore_ascii_case(FORWARDED_FOR)
+            || header.name.eq_ignore_ascii_case("x-forwarded-host")
+            || header.name.eq_ignore_ascii_case("x-forwarded-proto")
+        {
+            continue;
+        }
         out.extend_from_slice(header.name.as_bytes());
         out.extend_from_slice(b": ");
         out.extend_from_slice(header.value);
         out.extend_from_slice(b"\r\n");
     }
-    out.extend_from_slice(b"Connection: close\r\n\r\n");
+    if upgrade {
+        out.extend_from_slice(b"Connection: Upgrade\r\n");
+    } else {
+        out.extend_from_slice(b"Connection: close\r\n");
+    }
+    out.extend_from_slice(b"X-Forwarded-Host: ");
+    out.extend_from_slice(host.as_bytes());
+    out.extend_from_slice(b"\r\nX-Forwarded-For: ");
+    if let Some(existing) = existing_forwarded_for(request) {
+        out.extend_from_slice(existing.as_bytes());
+        out.extend_from_slice(b", ");
+    }
+    out.extend_from_slice(forwarded_for.as_bytes());
+    out.extend_from_slice(b"\r\nX-Forwarded-Proto: http\r\n\r\n");
     upstream.write_all(&out)
 }
 
-/// Relay the backend response to the client and the remaining client bytes to the backend.
-fn relay(client: &mut ClientStream, upstream: TcpStream) -> Result<(), Refusal> {
-    let mut upstream_read = upstream
-        .try_clone()
-        .map_err(|err| Refusal::Internal(format!("cannot clone the upstream stream: {err}")))?;
-    let upstream_control = upstream
-        .try_clone()
-        .map_err(|err| Refusal::Internal(format!("cannot clone the upstream stream: {err}")))?;
-    let mut client_read = client
-        .try_clone()
-        .map_err(|err| Refusal::Internal(format!("cannot clone the client stream: {err}")))?;
-    let client_control = client
-        .try_clone()
-        .map_err(|err| Refusal::Internal(format!("cannot clone the client stream: {err}")))?;
-
-    let mut upstream_writer = upstream;
-    let uplink = thread::spawn(move || {
-        copy(&mut client_read, &mut upstream_writer);
-        let _ = upstream_writer.shutdown(Shutdown::Write);
-    });
-    copy(&mut upstream_read, client);
-    client.shutdown_write();
-    // Neither direction may outlive the exchange: close both sockets so the uplink thread's
-    // pending read/write returns and the connection's threads are joined.
-    client_control.shutdown_both();
-    let _ = upstream_control.shutdown(Shutdown::Both);
-    let _ = uplink.join();
-    Ok(())
+/// Answer `308 Permanent Redirect` for a `*.localhost` request against a shared world.
+///
+/// The response is written immediately after the request head: an `Expect: 100-continue` body is
+/// never acknowledged with `100 Continue` and never read, and a `HEAD` request carries neither a
+/// body nor a `Content-Length` (`ADR-0005` §1, RFC 9110 §15.4.9/§9.3.2).
+fn write_redirect(client: &mut ClientStream, location: &str, head_only: bool) -> io::Result<()> {
+    let body = format!("Permanent Redirect: {location}\n");
+    write_status(
+        client,
+        308,
+        "Permanent Redirect",
+        Some(location),
+        &body,
+        head_only,
+    )
 }
 
-/// Copy until EOF or an error, flushing after every chunk.
-fn copy<R: Read, W: Write>(reader: &mut R, writer: &mut W) {
-    let mut buffer = [0_u8; RELAY_CAP];
+/// Answer `421 Misdirected Request` naming the shared origin (`ADR-0005` §1 rule 2).
+fn write_misdirected(
+    client: &mut ClientStream,
+    world: &str,
+    shared_url: &str,
+    head_only: bool,
+) -> io::Result<()> {
+    let body = format!(
+        "Misdirected Request: world {world} is shared at {shared_url}; connect to that origin instead\n"
+    );
+    write_status(client, 421, "Misdirected Request", None, &body, head_only)
+}
+
+/// Render one complete `text/plain` status response (the single status-head writer).
+///
+/// `head_only` answers a `HEAD` request: the status line, `Location`, and framing headers are
+/// preserved, but neither a body nor a `Content-Length` is emitted (RFC 9110 §9.3.2).
+fn write_status(
+    client: &mut ClientStream,
+    status: u16,
+    reason: &str,
+    location: Option<&str>,
+    body: &str,
+    head_only: bool,
+) -> io::Result<()> {
+    let mut head =
+        format!("HTTP/1.1 {status} {reason}\r\nContent-Type: text/plain; charset=utf-8\r\n");
+    if let Some(location) = location {
+        head.push_str(&format!("Location: {location}\r\n"));
+    }
+    if !head_only {
+        head.push_str(&format!("Content-Length: {}\r\n", body.len()));
+    }
+    head.push_str("Connection: close\r\n\r\n");
+    if !head_only {
+        head.push_str(body);
+    }
+    client.write_all(head.as_bytes())?;
+    client.flush()
+}
+
+/// Relay the backend response to the client and the remaining client bytes to the backend.
+///
+/// The response head is read first so a successful `101 Switching Protocols` clears the idle bound
+/// on both sockets: an upgraded WebSocket legitimately stays silent for minutes, while every other
+/// exchange keeps the default 60 s idle bound.
+fn relay(client: &mut ClientStream, mut upstream: TcpStream) -> Result<(), Refusal> {
+    let Some(head) = read_response_head(&mut upstream) else {
+        return Ok(());
+    };
+    client
+        .write_all(&head)
+        .and_then(|()| client.flush())
+        .map_err(|err| Refusal::Internal(format!("cannot relay the response head: {err}")))?;
+    if response_is_switching(&head) {
+        client.set_timeout(None).map_err(|err| {
+            Refusal::Internal(format!("cannot clear the client idle bound: {err}"))
+        })?;
+        upstream.set_timeout(None).map_err(|err| {
+            Refusal::Internal(format!("cannot clear the upstream idle bound: {err}"))
+        })?;
+    }
+    pipe(client, &mut upstream)
+        .map_err(|err| Refusal::Internal(format!("cannot relay the response: {err}")))
+}
+
+/// Read the backend response head (bounded by [`HEADER_CAP`]); `None` when the backend sent nothing.
+///
+/// Any bytes already read past the head are kept in the returned buffer and relayed verbatim.
+fn read_response_head(upstream: &mut TcpStream) -> Option<Vec<u8>> {
+    let mut head = Vec::with_capacity(1024);
+    let mut chunk = [0_u8; 1024];
     loop {
-        match reader.read(&mut buffer) {
-            Ok(0) | Err(_) => return,
-            Ok(read) => {
-                if writer.write_all(&buffer[..read]).is_err() || writer.flush().is_err() {
-                    return;
-                }
+        if head_end(&head).is_some() || head.len() >= HEADER_CAP {
+            return Some(head);
+        }
+        let want = (HEADER_CAP - head.len()).min(chunk.len());
+        match upstream.read(&mut chunk[..want]) {
+            Ok(0) | Err(_) => {
+                return if head.is_empty() { None } else { Some(head) };
             }
+            Ok(read) => head.extend_from_slice(&chunk[..read]),
         }
     }
+}
+
+/// `true` when the backend switched protocols (`101`), which permits an unbounded idle connection.
+fn response_is_switching(head: &[u8]) -> bool {
+    let line_end = head
+        .windows(2)
+        .position(|window| window == b"\r\n")
+        .unwrap_or(head.len());
+    let status_line = &head[..line_end];
+    status_line.starts_with(b"HTTP/1.1 101") || status_line.starts_with(b"HTTP/1.0 101")
 }
 
 /// One HTTP-level refusal, rendered to the client without leaking daemon internals.
@@ -606,20 +768,4 @@ impl Refusal {
         client.write_all(head.as_bytes())?;
         client.flush()
     }
-}
-
-/// Replace a stale socket file, but never steal one a live daemon still answers on.
-fn replace_stale_socket(path: &Path) -> Result<(), EdgeError> {
-    if !path.exists() {
-        return Ok(());
-    }
-    if UnixStream::connect(path).is_ok() {
-        return Err(EdgeError::IngressSocketInUse {
-            path: path.display().to_string(),
-        });
-    }
-    fs::remove_file(path).map_err(|err| EdgeError::IngressSocket {
-        path: path.display().to_string(),
-        message: format!("cannot remove the stale socket: {err}"),
-    })
 }

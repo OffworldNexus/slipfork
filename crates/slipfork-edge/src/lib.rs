@@ -1,9 +1,9 @@
-//! `slipfork-edge`: the sole `slipforkd` HTTP/WS ingress and the canonical world registry (the
-//! daemon control port lands in `M2.9`).
+//! `slipfork-edge`: the sole `slipforkd` HTTP/WS ingress, the canonical world registry, and the
+//! typed `DaemonControl` port the thin `slipfork` CLI drives over `<runtime_dir>/daemon.sock`.
 //!
-//! This crate will own the edge half of the DI tree assembled by the `slipforkd` Composition Root
-//! in `crates/slipfork`, and it is the **only** place in the workspace that speaks HTTP/WebSocket
-//! to world backends. Target contract of the crate:
+//! This crate owns the edge half of the DI tree assembled by the `slipforkd` Composition Root in
+//! `crates/slipfork`, and it is the **only** place in the workspace that speaks HTTP/WebSocket to
+//! world backends:
 //!
 //! ```text
 //! slipforkd  --injects-->  dyn DaemonControl   (thin CLI drives this over <runtime_dir>/daemon.sock)
@@ -16,14 +16,21 @@
 //! - [`ingress`]: bounded `httparse` HTTP/1.1 dispatch over `std::thread`-per-connection for both the
 //!   TCP ingress listeners and the `0600` pathname `AF_UNIX` `<state_dir>/http-ingress.sock` that
 //!   `slipfork-world-init` bridges in-netns `$BASE_URL` traffic to (`H-011` #4 Variant a).
-//! - [`registry`]: canonical owner of `(ProjectSlug, WorldTarget)` -> `WorldOrigin` routing,
-//!   resolving `*.localhost` requests through each world's [`registry::IngressRoute`]
-//!   longest-prefix table into `WorldEngine::dial_world_tcp`.
-//! - `daemon` / `tunnel` / `unit`: empty placeholders for the `<runtime_dir>/daemon.sock` control
-//!   port (`M2.9`), the `TunnelRegistrar` adapters (`M2.9`/`M2.22`), and the unit renderer (`M2.10`).
+//! - [`registry`]: canonical owner of `(ProjectSlug, WorldTarget)` -> `WorldOrigin` routing. It
+//!   resolves `*.localhost` requests through each world's [`registry::IngressRoute`]
+//!   longest-prefix table into `WorldEngine::dial_world_tcp`, proxies `shared_hosts` public
+//!   hostnames, enforces the `308`/`421` rules for shared worlds (`ADR-0005` §1), and owns
+//!   [`registry::WorldRegistry::share_world`] / [`registry::WorldRegistry::unshare_world`].
+//! - [`tunnel`]: [`tunnel::UnavailableTunnelRegistrar`], the fail-closed `TunnelRegistrar` wired
+//!   until `weaved` publishes its IPC specification (`H-006` / `M2.22`).
+//! - [`daemon`]: the complete typed `DaemonControl` port plus its bounded (64 KiB JSON-line)
+//!   `0600` Unix-socket server/client (`ADR-0008` §4).
+//! - [`forward`]: daemon-owned `127.0.0.1:0` raw TCP bridges into a world (`H-010` #1).
+//! - [`unix_socket`]: the single `0600` pathname-socket binder shared by both listeners.
+//! - `unit`: placeholder for the `slipforkd.socket` / `.service` renderer (`M2.10`).
 //!
 //! Every module is synchronous (`std::thread`, zero async runtime), and the crate is
-//! `#![forbid(unsafe_code)]` (`listenfd` / `socket2` / `httparse` are all safe wrappers).
+//! `#![forbid(unsafe_code)]` (`listenfd` / `httparse` are both safe wrappers).
 
 #![forbid(unsafe_code)]
 
@@ -31,16 +38,31 @@ use thiserror::Error;
 
 pub mod activation;
 pub mod daemon;
+pub mod forward;
 pub mod ingress;
 pub mod registry;
+pub(crate) mod relay;
 pub mod tunnel;
 pub mod unit;
+pub mod unix_socket;
 
 pub use activation::{
     ListenConfig, ListenerSet, adopt_systemd_listener, bind_listen, resolve_listener_set,
 };
+pub use daemon::client::DaemonControlClient;
+pub use daemon::server::DaemonControlServer;
+pub use daemon::{
+    AuthSummary, BootEvent, DaemonControl, DaemonError, DaemonErrorKind, DaemonStatus,
+    DropForkRequest, DumpRequest, ExecTargetRequest, ForkRequest, ForwardRequest, ForwardSummary,
+    ForwardTarget, HookRunRequest, LogsRequest, PruneReport, ResourceRequest, ResourceSummary,
+    UpRequest, WorldExecTarget, WorldSelector, WorldState, WorldSummary, WorldUpSummary,
+};
+pub use forward::{ForwardBridge, ForwardTargetSpec};
 pub use ingress::HttpIngress;
-pub use registry::{IngressRoute, RoutedWorld, WorldRegistry};
+pub use registry::{
+    IngressRoute, RouteDecision, RoutedWorld, SharedWorldInfo, WorldRegistry, world_id,
+};
+pub use tunnel::UnavailableTunnelRegistrar;
 
 /// Fail-closed errors produced by the edge crate.
 ///
@@ -88,39 +110,47 @@ pub enum EdgeError {
         message: String,
     },
 
-    /// `<state_dir>/http-ingress.sock` does not fit the kernel's `AF_UNIX` pathname budget.
+    /// A user-private pathname socket does not fit the kernel's `AF_UNIX` pathname budget.
     #[error(
-        "http ingress socket path '{path}' is longer than the {limit}-byte AF_UNIX limit; move --state-dir to a shorter path"
+        "{role} socket path '{path}' is longer than the {limit}-byte AF_UNIX limit; move the directory it lives in to a shorter path"
     )]
-    IngressSocketPath {
+    SocketPath {
+        /// Which daemon-owned socket (`http ingress` / `daemon control`).
+        role: &'static str,
         /// Full socket path.
         path: String,
         /// `sun_path` budget.
         limit: usize,
     },
 
-    /// A live `slipforkd` already serves `<state_dir>/http-ingress.sock`.
+    /// A live `slipforkd` already serves this socket path.
     #[error(
-        "http ingress socket '{path}' is already served by a running slipforkd; refusing to steal it"
+        "{role} socket '{path}' is already served by a running slipforkd; refusing to steal it"
     )]
-    IngressSocketInUse {
+    SocketInUse {
+        /// Which daemon-owned socket (`http ingress` / `daemon control`).
+        role: &'static str,
         /// Socket path.
         path: String,
     },
 
-    /// The `AF_UNIX` ingress socket could not be created, secured, or removed.
-    #[error("cannot prepare the http ingress socket '{path}': {message}")]
-    IngressSocket {
+    /// A pathname socket could not be created, secured, or removed.
+    #[error("cannot prepare the {role} socket '{path}': {message}")]
+    SocketBind {
+        /// Which daemon-owned socket (`http ingress` / `daemon control`).
+        role: &'static str,
         /// Socket path.
         path: String,
         /// Underlying OS error.
         message: String,
     },
 
-    /// The state directory holding the ingress socket could not be created.
-    #[error("cannot create the slipforkd state directory '{path}': {message}")]
-    IngressStateDir {
-        /// State directory.
+    /// The directory holding a pathname socket could not be created.
+    #[error("cannot create the {role} directory '{path}': {message}")]
+    SocketDir {
+        /// Which daemon-owned socket (`http ingress` / `daemon control`).
+        role: &'static str,
+        /// Directory.
         path: String,
         /// Underlying OS error.
         message: String,
@@ -169,6 +199,15 @@ pub enum EdgeError {
         reason: String,
     },
 
+    /// A `(project, target)` pair cannot be expressed as a `.localhost` route.
+    #[error("world {world} has no routable .localhost identity: {reason}")]
+    WorldRoute {
+        /// World id.
+        world: String,
+        /// Underlying world error.
+        reason: String,
+    },
+
     /// No attached world owns the requested `Host`.
     #[error("no world is attached for host '{host}'")]
     UnknownHost {
@@ -205,10 +244,34 @@ pub enum EdgeError {
     Origin {
         /// World id.
         world: String,
-        /// Route host.
+        /// Route host (or the rejected lease URL).
         host: String,
         /// Underlying world error.
         reason: String,
+    },
+
+    /// `slipforkd` has no planned static forward listener, so no tunnel can reach this world.
+    #[error(
+        "slipforkd has no forward listener, so it cannot share a world: start it from the slipforkd.socket unit, or pass --listen <addr> --forward-port <port>"
+    )]
+    NoForwardListener,
+
+    /// The tunnel registrar could not mint a public lease.
+    #[error("cannot share world {world}: {reason}")]
+    TunnelUnavailable {
+        /// World id.
+        world: String,
+        /// Underlying registrar error.
+        reason: String,
+    },
+
+    /// Two worlds claim the same public tunnel hostname.
+    #[error("cannot share world {world}: public host '{host}' is already owned by another world")]
+    SharedHostConflict {
+        /// World id.
+        world: String,
+        /// Public hostname returned by the registrar.
+        host: String,
     },
 
     /// Destroying a released world failed.
@@ -219,4 +282,38 @@ pub enum EdgeError {
         /// Underlying engine error.
         reason: String,
     },
+
+    /// A daemon-owned `forward` request cannot be served as specified.
+    #[error("cannot forward: {reason}")]
+    ForwardSpec {
+        /// What is wrong with the request.
+        reason: String,
+    },
+
+    /// The control socket could not be read, written, or connected.
+    #[error("{operation} failed on the daemon control socket: {message}")]
+    ControlIo {
+        /// What was attempted (`connect`, `read request`, `write reply`).
+        operation: &'static str,
+        /// Underlying OS error.
+        message: String,
+    },
+
+    /// A control frame exceeded the 64 KiB JSON-line cap or could not be encoded.
+    #[error("invalid daemon control frame: {reason}")]
+    ControlFrame {
+        /// What is wrong with the frame.
+        reason: String,
+    },
+
+    /// A control peer sent a frame that is not a valid `DaemonRequest`/`DaemonReply`.
+    #[error("daemon control protocol error: {reason}")]
+    ControlProtocol {
+        /// What is wrong with the message.
+        reason: String,
+    },
+
+    /// The daemon answered with a typed remote error.
+    #[error("{0}")]
+    Control(DaemonError),
 }

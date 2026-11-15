@@ -334,3 +334,10 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-15T20:17 [M2.14] (lead) status active -> done
 - 2026-11-15T20:23 [M2.14] (lead) edited fields
 - 2026-11-15T20:23 [M2.14] (lead) edited fields
+- 2026-11-15T20:23 [M2.24] (lead) status ready -> active
+- 2026-11-15T20:23 [M2.24] (lead) attempt 1/3 started
+- 2026-11-15T20:23 ESCALATION #13 -> architect for M2.24 by lead: M2.24: design ADR-0009 L0 world base image from the project's own Dockerfile + 3-layer composition + World Image Contrac
+- 2026-11-15T20:23 [M2.24] (lead) base 5943bbd24b511a6ae24f0e82f14c3bdfec6589fa
+- 2026-11-15T20:28 [M2.9] (lead) status active -> review
+- 2026-11-15T20:36 [M2.24] (conductor) status active -> review: ADR-0009 + design authored with live crun probe
+- 2026-11-15T20:36 [M2.24] (conductor) status review -> done: Accepted ADR-0009, 6-rule contract, live probe: crun 1.20 static booted postgres:18+redis:8 inside unshare world, alpine container reache

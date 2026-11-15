@@ -2,16 +2,16 @@
 id: M2.9
 title: "slipfork-edge: shared_hosts proxy, 308/421 rules, share/unshare, DaemonControl IPC"
 kind: task
-status: ready
+status: review
 owner: implementer
 priority: 3
 depends_on: [M2.8]
 paths: ["crates/slipfork-edge/**"]
-attempts: 0
+attempts: 1
 max_attempts: 3
 escalation: none
 created: "2026-11-15T16:40"
-updated: "2026-11-15T18:51"
+updated: "2026-11-15T20:28"
 ---
 
 # Goal
