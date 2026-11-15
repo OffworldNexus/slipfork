@@ -19,3 +19,7 @@ status ready -> done
 ## 2026-11-15T10:38 [conductor]
 
 status done -> ready: owner sent 0.1.0 back at the release gate with 4 design corrections
+
+## 2026-11-15T11:45 [strategist]
+
+status ready -> done: Final M1 (0.1.0) gate PASS at 6ee3b7b + accuracy polish: single-origin ADR-0005/H-008, per_world ADR-0003, typed coverage ADR-0006, support registry ADR-0007/H-009, make check + make bench verified

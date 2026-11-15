@@ -12,3 +12,4 @@ Every call to an expensive-tier agent (`strategist`, `architect`, `expert`) is r
 | 2026-11-15T02:28 | M1 | strategist | conductor | milestone gate re-run after M1.7 repaired make bench |
 | 2026-11-15T10:38 | M1.8 | architect | conductor | owner design corrections at release gate: single canonical origin per world, support tiers, typed coverage replacing after_suite shell recipes |
 | 2026-11-15T10:39 | M1.8 | architect | lead | Owner review-gate corrections: single-origin invariant, support tiers, typed coverage + OSPP precedence clarification |
+| 2026-11-15T11:23 | M1 | strategist | conductor | final milestone gate for 0.1.0 after owning M1.8 design corrections and M1.9 code alignment |

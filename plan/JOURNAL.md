@@ -140,3 +140,7 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-15T11:21 [M1.9] (lead) status active -> review
 - 2026-11-15T11:23 [M1.9] (lead) GATE(2) FINAL: reviewer=PASS(0 BLOCKER), legality=PASS(0, round-1 false signoff_commit fixed at d0b11e0), ioc=PASS(0, M2 tier-vocabulary gap recorded as directi
 - 2026-11-15T11:23 [M1.9] (lead) status review -> done
+- 2026-11-15T11:23 ESCALATION #9 -> strategist for M1 by conductor: final milestone gate for 0.1.0 after owning M1.8 design corrections and M1.9 code alignment
+- 2026-11-15T11:45 HUMAN H-009 [direction-challenge] opened by strategist (node M2)
+- 2026-11-15T11:45 [M1] (strategist) status ready -> done: Final M1 (0.1.0) gate PASS at 6ee3b7b + accuracy polish: single-origin ADR-0005/H-008, per_world ADR-0003, typed coverage ADR-0006, suppor
+- 2026-11-15T11:46 [M2] (strategist) edited fields

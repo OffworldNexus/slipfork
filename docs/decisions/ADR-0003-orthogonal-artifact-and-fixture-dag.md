@@ -1,7 +1,7 @@
 # ADR-0003: Orthogonal Build Artifact Volumes + Stateful Fixture Snapshot DAG + Runner Zygote
 
-- **Status:** Accepted
-- **Date:** 2026-11-14
+- **Status:** Accepted — amended at `0.1.0` release gate (origin-classified `per_world` schema, digest discriminator, and `DigestCache` non-sharing rules)
+- **Date:** 2026-11-15
 
 ## Context
 
@@ -14,8 +14,8 @@ Two naive topologies fail at scale for full-stack integration/browser test suite
 1. **Split Stateless Build Artifacts from Origin-Classified Fixture Lineages:**
    - **`ArtifactStore` (`[artifacts.<id>]`):** Caches stateless build outputs (e.g., `front/build`, `staticfiles`) by SHA-256 Merkle digest of `(build_cmd, build_envs, input_files)`.
    - **`FixtureDag` (`[fixtures.<id>]`):** Forms a tree of stateful steps (`base -> migrate -> seed_*`) where each node is explicitly either:
-     - **Origin-independent (`per_world = false`, default):** Reads only origin-free service coordinates (`DATABASE_URL`, `REDIS_URL`, `AWS_S3_ENDPOINT_URL`), hashes by `(parent_digest, run_cmd, origin_free_runtime_envs, input_files)`, and seals into a **reusable CoW snapshot** shared across forks and test slots. Origin-bearing values (`resources::app.*`, `domains::*`, `BASE_URL`) are withheld during reusable snapshot execution (`ADR-0005` §1).
-     - **Per-world (`per_world = true`, M2/M3 schema extension):** Writes absolute origin URLs into persistent state (e.g., `django.contrib.sites` or Wagtail `Site.root_url` rows). A `per_world = true` node is **never sealed into a shared snapshot**, cannot be the `parent` of an origin-independent node (`DagError::OriginIndependentChildOfPerWorld`), and executes inside each materialized world **after** its single `WorldOrigin` is assigned (`ADR-0005` §1).
+     - **Origin-independent (`per_world = false`, default):** Reads only origin-free service coordinates (`DATABASE_URL`, `REDIS_URL`, `AWS_S3_ENDPOINT_URL`), hashes by `(id, parent_digest, run_cmd, "shared", origin_free_runtime_envs, input_files)`, and seals into a **reusable CoW snapshot** shared across forks and test slots. Origin-bearing values (`resources::app.*`, `domains::*`, `BASE_URL`) are withheld during reusable snapshot execution (`ADR-0005` §1).
+     - **Per-world (`per_world = true`, schema & planner shipped in `0.1.0`; per-world execution in M2/M3):** Writes absolute origin URLs into persistent state (e.g., `django.contrib.sites` or Wagtail `Site.root_url` rows). A `per_world = true` node hashes with the `"per-world"` discriminator (so flipping `per_world` always changes the digest), is **never sealed into or served from the world-independent `DigestCache`** (`DagPlanner::plan` always emits `CacheAction::Rebuild` without consulting `DigestCache::has_fixture`, and M3's `TestCoordinator` MUST NEVER insert a `per_world = true` digest into `DigestCache`), cannot be the `parent` of an origin-independent node (`DagError::OriginIndependentChildOfPerWorld`), and executes inside each materialized world **after** its single `WorldOrigin` is assigned (`ADR-0005` §1).
 2. **One Unified Pod World per Cloned Test / Worktree:**
    - Each world clones **one** CoW instance from its deepest origin-independent `FixtureNode` snapshot, assigns its single `WorldOrigin`, runs any downstream `per_world = true` fixture steps, and bind-mounts all required `ArtifactVolume`s read-only alongside the shared-UID repo mount.
 3. **Warm Runner Zygote (`fork()` RAM CoW):**

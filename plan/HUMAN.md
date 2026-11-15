@@ -85,3 +85,11 @@ Option B (two-phase Local -> Shared re-materialization) stays rejected: it reope
 
 Cross-reference `H-006`: the concrete `weaved` forward target (shared hostname -> local ingress) is Slipfork's `slipforkd` endpoint; the wire contract for registering that lease remains deferred until `tunnel-weaver` publishes `weaved`'s IPC spec.
 
+## H-009 [open] [direction-challenge] (node M2)
+
+- asked: 2026-11-15T11:45 by strategist
+
+ADR-0007 tier classification for shipped, conformance-tested adapters lacking a published recipe page (e.g. incus-engine in 0.1.0): ADR-0007 §1 defines tier 'none' as 'No meaningful test surface; nothing to integrate (e.g. a pure CLI library)' and 'declared' as 'Manifest recipe written' (requiring recipe_page + critical_test). In 0.1.0, incus-engine ships as a Unix-socket REST /1.0 library adapter passing the shared WorldEngine conformance suite while CLI/live wiring awaits H-004 (so publishing a recipe_page would violate Zero Vaporware), forcing 0.1.0 to record it conservatively as tier = 'none' with a disclosure in rationale. Before M2 exposes 'slipfork support [--json]' and generates the public docs matrix: Option A — add an intermediate machine-verified rung 'harnessed' (none < harnessed < declared < exercised < field-tested < hardened) requiring design_doc + critical_test for in-tree adapters whose user CLI/recipe surface has not shipped yet. Option B (recommended) — keep the 5-tier scale strictly scoped to user-reachable integrations: omit pre-CLI internal library adapters from support/integrations.toml until wired + documented at 'declared', keeping 'none' reserved strictly for non-integrations / pure CLI libraries.
+
+**Answer:**
+
