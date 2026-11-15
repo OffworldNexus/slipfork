@@ -47,6 +47,7 @@ $ slipfork up --resources local         # Force hermetic world-local S3 + clean 
 
 - **Offline / Unpaired Transparency:** When unpaired or offline under default `prefer_remote`, `ResourcePlan::resolve` never degrades silently — it prints `[resources] pg_databases.main: prefer_remote -> local initdb (OSPP unpaired)` and exposes `{strategy, resolved, reason}` under `--json`.
 - **Port-Aware Single Origin & In-Netns Loopback Bridge (`H-010` #2):** `WorldOrigin::local(&route, ingress_port)` renders `http://acme.localhost` on `:80` and `http://acme.localhost:<port>` under auto-spawned `--listen`, while `ReflinkNetnsEngine` binds an **in-netns loopback TCP bridge** on `127.0.0.1:<ingress_port>` inside each world back to `slipforkd` so `$BASE_URL` resolves identically from host browsers and inside `slipfork exec` / `slipfork test` (`snow.yml` `ingresses` prefixes route `/api`, `/`, etc. to their target component ports). **Never connect to host `127.0.0.1:5432` or `:8000`**; use the printed `origin`, `slipfork exec`, or `slipfork forward --json`.
+- **World Rootfs & `--host-caches` (design of record: `docs/design/world-base-image.md` §1–§3, `ADR-0009`):** every world's `L0` rootfs is built once from the project's own `snow.yml` `images:` `Dockerfile` stage, selected by `[world]` in `slipfork.toml` (`world.image` when `images:` declares more than one `BuildImage`, `world.stage` for a compiled build stage) and reused read-only by every fork and test slot; `postgres:<v>`, `redis:<v>`, and SeaweedFS run as daemonless `crun` containers on the world's `127.0.0.1`. `--host-caches` adds the host toolchain caches **read-only** only when the ELF/libc ABI probe matches, failing closed with the measured mismatch otherwise — it is never a `slipfork.toml` key.
 
 ### 1.3 First-Class Hook Failure Rescue UX & Direct CLI TTY Entry (`hook run`, `logs`, `shell`, `exec`)
 
@@ -66,14 +67,14 @@ Rescue commands (world 'feat-billing' kept alive for inspection):
   slipfork shell --world feat-billing                            # or: slipfork exec --world feat-billing -- <cmd>
 ```
 
-- **Direct CLI World Entry — Zero `SCM_RIGHTS` (`H-010` #1):** `slipforkd` is the **sole owner** of `snow.yml` (`modes.local`) environment resolution (`@slipfork/opencode` only routes `shell` calls to `slipfork exec --cwd <cwd>`, `ADR-0004`). For `shell`, `db`, `redis`, interactive `hook run` (`pdb`), and `exec`, `slipforkd` returns `WorldExecTarget` (`nsenter` / `incus exec` argv + resolved `ExecEnv`) over `<runtime_dir>/daemon.sock` (`0600`) and the thin `slipfork` CLI enters the world directly inheriting its native terminal `stdin`/`stdout`/`stderr` (`shell`/`db`/`redis` and default `hook run` require a TTY, failing closed naming `hook run --no-tty` or `slipfork exec`).
+- **Direct CLI World Entry — Zero `SCM_RIGHTS` (`H-010` #1):** `slipforkd` is the **sole owner** of `snow.yml` (`modes.local`) environment resolution (`@slipfork/opencode` only routes `shell` calls to `slipfork exec --cwd <cwd>`, `ADR-0004`). For `shell`, interactive `hook run` (`pdb`), and `exec`, `slipforkd` returns `WorldExecTarget` (`nsenter` / `incus exec` world argv + resolved `ExecEnv`) over `<runtime_dir>/daemon.sock` (`0600`) and the thin `slipfork` CLI enters the world directly inheriting its native terminal `stdin`/`stdout`/`stderr`; for `db` and `redis` the same message carries the service-container entry (`WorldEngine::service_entry_command` -> `crun exec` into the running `postgres:<v>` / `redis:<v>` container, `ADR-0009` §3), so `psql`/`redis-cli` run from the container's own rootfs rather than the app image (`shell` and default `hook run` require a TTY, failing closed naming `hook run --no-tty` or `slipfork exec`; a stopped backing service fails closed `ServiceNotRunning`).
 
 ### 1.4 Service Clients (`db`, `redis`, `forward`), Secrets, VCS (`git` + `jj`) & `OSPP v1` Pairing
 
 ```console
 $ slipfork exec --world feat-billing -- uv run pytest -k billing   # Non-interactive agent/CI execution (daemon-resolved env)
-$ slipfork db --world feat-billing                                 # Direct interactive psql inheriting native TTY
-$ slipfork redis --world feat-billing                              # Direct interactive redis-cli inheriting native TTY
+$ slipfork db --world feat-billing                                 # Interactive psql INSIDE the postgres service container (crun exec, native TTY)
+$ slipfork redis --world feat-billing                              # Interactive redis-cli INSIDE the redis service container (crun exec, native TTY)
 $ slipfork forward --world feat-billing --json                     # Daemon-owned 127.0.0.1:0 bridge (lives until Ctrl-C/disconnect):
 {"world":"feat-billing","targets":[{"id":"pg_databases.main","host_addr":"127.0.0.1:43182","uri":"postgres://127.0.0.1:43182/main"}]}
 
@@ -84,6 +85,8 @@ $ printf '%s' "$STRIPE_KEY" | slipfork secret set STRIPE_SECRET_KEY          # -
 $ printf '%s\n' "$PAIR_URL_WITH_FRAGMENT" | slipfork auth login -            # Stdin keeps #handle= out of argv
 [auth] paired p256:02a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90 (backend=tpmd:sealed)
 ```
+
+- **`db` / `redis` Target the Service Container, Never the App Rootfs (`ADR-0009` §2–§3):** `slipforkd` answers `exec_target` with `WorldEngine::service_entry_command`, i.e. a `crun exec` entry into the world's running `postgres:<v>` / `redis:<v>` container, so `psql` and `redis-cli` come from the container's own rootfs and the project `Dockerfile` never needs DB client packages (and dump/restore versions can never skew). A stopped or absent backing service fails closed naming the service id (`ServiceNotRunning`) instead of silently entering the world. `slipfork forward` is unchanged: `slipforkd` binds a host `127.0.0.1:0` listener and bridges it with `dial_world_tcp` to the in-world port.
 
 ### 1.5 Canonical `--json` Contracts, Lifecycle (`list`, `down`, `prune`) & `share`
 
@@ -109,9 +112,9 @@ Every world-scoped command selects a fork exclusively via `--world <fork>` (zero
 
 | Command | Milestone | Behavior |
 |---|---|---|
-| `slipfork up [--world <fork>] [--no-dump \| --refresh-dump] [--resources local] [--json]` | M2 | Boot world in `slipforkd` (auto-spawning if needed), await readiness, print single `origin` |
+| `slipfork up [--world <fork>] [--no-dump \| --refresh-dump] [--resources local] [--host-caches] [--json]` | M2 | Boot world in `slipforkd` (auto-spawning if needed), materialize/validate the `Dockerfile` `L0` rootfs, start `crun` backing services, await readiness, print single `origin` |
 | `slipfork down [--world <fork>]` | M2 | Stop world services without deleting its worktree (idempotent) |
-| `slipfork fork <fork> [--no-dump \| --refresh-dump] [--resources local] [--json]` | M2 | Create `.worktrees/<fork>` (`git` or `jj`) + CoW world in `slipforkd` |
+| `slipfork fork <fork> [--no-dump \| --refresh-dump] [--resources local] [--host-caches] [--json]` | M2 | Create `.worktrees/<fork>` (`git` or `jj`) + CoW world in `slipforkd` (same `L0` rootfs digest, `0` rootfs copy) |
 | `slipfork drop <fork>` | M2 | Destroy fork world and remove `.worktrees/<fork>` |
 | `slipfork exec [--world <fork>] [--cwd <dir>] -- <argv>...` | M1 + M2 | Fetch `WorldExecTarget` from `slipforkd` and run non-interactively inside world |
 | `slipfork list [--json]` | M2 | List worlds with state, worktree path, and **exactly one** `origin` URL |
@@ -119,8 +122,8 @@ Every world-scoped command selects a fork exclusively via `--world <fork>` (zero
 | `slipfork shell [--world <fork>]` | M2 | Enter world directly inheriting native TTY `$SHELL` (requires TTY) |
 | `slipfork logs [--world <fork>] [<target>] [--follow] [--stderr] [--lines <n>]` | M2 | Read or follow retained component/hook logs from `slipforkd` |
 | `slipfork hook run <hook_id> [--world <fork>] [--no-tty]` | M2 | Re-run `<component>:<phase>` hook (direct native TTY `pdb` by default; `--no-tty` via daemon) |
-| `slipfork db [<db_id>] [--world <fork>]` | M2 | Enter world directly inheriting native TTY `psql` (requires TTY) |
-| `slipfork redis [<cluster_id>] [--world <fork>]` | M2 | Enter world directly inheriting native TTY `redis-cli` (requires TTY) |
+| `slipfork db [<db_id>] [--world <fork>]` | M2 | Interactive `psql` **inside the running `postgres:<v>` service container** (`crun exec` entry command from `service_entry_command`; requires TTY; fails closed `ServiceNotRunning`) |
+| `slipfork redis [<cluster_id>] [--world <fork>]` | M2 | Interactive `redis-cli` **inside the running `redis:<v>` service container** (`crun exec` entry command; requires TTY; fails closed `ServiceNotRunning`) |
 | `slipfork forward [--world <fork>] [--json] [<target>...]` | M2 | Ask `slipforkd` to bind `127.0.0.1:0` bridge(s) for host GUIs (held open until disconnect) |
 | `slipfork share [--stop] [--world <fork>]` | M2 (`M2.22`) | Re-materialize with/without `weaved` origin (`share` fails closed until `M2.22`; `--stop` no-ops when local) |
 | `slipfork secret set [--force] <KEY>` / `unset <KEY>` / `list` | M2 | Manage `0600` vault secrets via `slipforkd` (`stdin` input; `--force` rotates existing keys) |
@@ -128,7 +131,7 @@ Every world-scoped command selects a fork exclusively via `--world <fork>` (zero
 | `slipfork daemon unit [--only socket\|service] [--forward-port <u16>]` | M2 | Render non-template `slipforkd.socket` and/or `slipforkd.service` (`User=<developer-user>`) |
 | `slipfork doctor` / `snow resolve` / `dag plan` | M1 (shipped) | Verify host capabilities, inspect resolved `snow.yml` envs, and plan DAG waves |
 | `slipfork support [--json]` | M2 | Report verified integration tiers & `required_evidence` (`support/integrations.toml`) |
-| `slipfork test [-j N] [-- <runner...>]` | M3 | Materialize hermetic `TestSlot` DAG, run parallel tests, collect typed coverage |
+| `slipfork test [-j N] [--host-caches] [-- <runner...>]` | M3 | Materialize hermetic `TestSlot` DAG over the daemon-materialized `L0` rootfs, run parallel tests, collect typed coverage |
 
 ---
 

@@ -8,7 +8,7 @@
 
 | Severity | Finding | Resolution |
 |---|---|---|
-| BLOCKER | `snow-modes.md` example declared component `mailpit` with no `images[]` entry → `unknown image 'mailpit'` | added a prebuilt image (`registry`/`repository`/`tag`) and documented both `images[]` variants in the manifest reference |
+| BLOCKER | `snow-modes.md` example declared component `mailpit` with no `images[]` entry → `unknown image 'mailpit'` | added a registry image (`registry`/`repository`/`tag`) and documented both `images[]` variants in the manifest reference |
 | BLOCKER | `run_command` override described as "runs", but component supervision is daemon-owned | now says "resolves `<cmd>`; supervision lands with `slipforkd` in `0.2.0`" |
 | BLOCKER | `Rust 1.88+` contradicted `rust-version = "1.94"` | corrected to `1.94+` |
 | BLOCKER | bare repositories claimed to be fixable via `project = "<slug>"` | split: bare repos must be cloned; submodules/`--separate-git-dir` take the override |

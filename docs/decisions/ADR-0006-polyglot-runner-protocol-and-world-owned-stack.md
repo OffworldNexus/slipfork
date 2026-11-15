@@ -1,6 +1,6 @@
 # ADR-0006: World-Owns-The-Stack Inversion, Polyglot `RunnerProtocol v1`, and Built-In Typed Coverage
 
-- **Status:** Accepted — amended at `0.1.0` release gate (normative specification for the "no stringly plumbing" manifest law, world-owned-stack testing, `RunnerProtocol v1`, built-in typed coverage, and tool-owned `SLIPFORK_OUTPUT_DIR` orthogonality)
+- **Status:** Accepted — amended at `0.1.0` release gate (normative specification for the "no stringly plumbing" manifest law, world-owned-stack testing, `RunnerProtocol v1`, built-in typed coverage, and tool-owned `SLIPFORK_OUTPUT_DIR` orthogonality; amended by `ADR-0009` — `CHECKPOINT`/`initdb`/`pg_restore` execute inside the `crun` backing-service container)
 - **Date:** 2026-11-15
 
 ## Context
@@ -9,8 +9,8 @@
    - Frameworks such as **Flask + Alembic**, **FastAPI**, **Node/TS (Hono, Express, SvelteKit, Next.js + Drizzle/Prisma)**, **PHP (Slim, Symfony, Laravel)**, **Go**, and **Rust (`axum` + `sqlx`)** lack a built-in equivalent of `pytest-django`'s `live_server` + migrated DB, forcing teams onto slow `testcontainers` or port-colliding setup scripts. Conversely, `pytest-django` creates `test_<db>`, runs migrations, boots WSGI threads, and runs `TRUNCATE` / `serialized_rollback` — 100% redundant inside CoW worlds.
 2. **User-authored shell pipelines for coverage and artifacts violate DX-first ergonomics:**
    - Asking users to assemble shard paths manually via shell env interpolation in `snow.yml` and post-suite shell recipes in `slipfork.toml` leaks orchestrator plumbing into user manifests, invites fragile shell quoting bugs, and forces every project to re-implement multi-world coverage merging.
-3. **M1 benchmark proved cold process startup is the bottleneck (`429 ms` cold vs `118 ms` warm):**
-   - Disk CoW cloning is sub-50 ms, whereas cold `postgres` boot, cold browser launches, and per-file VFS copies dominate wall time unless engineered out of the critical path.
+3. **M1 benchmark proved cold process startup is the bottleneck (`352 ms` cold vs `118 ms` warm, host-shared-`/usr` M1 topology):**
+   - Disk CoW cloning is sub-50 ms, whereas cold `postgres` boot, cold browser launches, and per-file VFS copies dominate wall time unless engineered out of the critical path. (`0.2.0` replaces that M1 topology with the `Dockerfile`-derived `L0` rootfs and `crun` service containers, `ADR-0009`, so cold boot starts a container instead of a host `pg_ctl`.)
 
 ## Decision
 
@@ -34,7 +34,7 @@
    2. **Shared Host Browser + Per-Test `BrowserContext` over `http://test-<slot>.<project>.localhost`:** One warm host browser creates isolated `< 5 ms` `BrowserContext`s against port-80 `slipforkd` routes.
    3. **Two-Tier `batch` vs `world` Scheduling:** Read-only / SAVEPOINT tests share a warm world (`isolation = "batch"`); committed-SQL / browser / worker / S3 tests consume dedicated CoW worlds (`isolation = "world"`) with `0 ms` teardown.
    4. **O(1) Volume Cloning (`VolumeCloner`):** ZFS/Btrfs dataset clones (`IncusEngine`) or sparse loopback-XFS / `FICLONE` volume pools (`ReflinkNetnsEngine`).
-   5. **Hermetic `CHECKPOINT` + Readiness Sealing:** Every reusable `[fixtures.<id>]` snapshot flushes `CHECKPOINT;` cleanly before sealing so clones never replay crash-recovery WAL.
+   5. **Hermetic `CHECKPOINT` + Readiness Sealing:** Every reusable `[fixtures.<id>]` snapshot flushes `CHECKPOINT;` cleanly before sealing so clones never replay crash-recovery WAL; the statement runs inside the running `postgres:<v>` container before its service is stopped (`ADR-0009` §2).
 5. **Built-In Typed Coverage (`TestAdapter` Capability) & Surviving `SLIPFORK_OUTPUT_DIR` Orthogonality (M3):**
    - **Typed `[test]` Intent — One Canonical Activation Rule (`slipfork.toml`):**
      ```toml

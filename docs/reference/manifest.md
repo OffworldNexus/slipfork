@@ -55,7 +55,7 @@ modes:
         DEBUG: 'True'
 ```
 
-`images[]` is either a build image (`id`, `context`, optional `dockerfile` — default `Dockerfile` — and optional `envs` build groups) or a prebuilt image (`id`, `registry`, `repository`, optional `tag` — default `latest`).
+`images[]` is either a build image (`id`, `context`, optional `dockerfile` — default `Dockerfile` — and optional `envs` build groups) or a registry image (`id`, `registry`, `repository`, optional `tag` — default `latest`).
 
 ### Validation rules
 

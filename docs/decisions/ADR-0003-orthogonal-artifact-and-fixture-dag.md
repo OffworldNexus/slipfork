@@ -1,6 +1,6 @@
 # ADR-0003: Orthogonal Build Artifact Volumes + Stateful Fixture Snapshot DAG + Runner Zygote
 
-- **Status:** Accepted — amended for M2 (`per_world` schema & planner shipped in `0.1.0`, `"per-world"` vs `"shared"` hash discriminator, `DigestCache` read/write non-sharing rules, and `ADR-0008` `base` seed-dump boundary)
+- **Status:** Accepted — amended for M2 (`per_world` schema & planner shipped in `0.1.0`, `"per-world"` vs `"shared"` hash discriminator, `DigestCache` read/write non-sharing rules, and `ADR-0008` `base` seed-dump boundary; amended by `ADR-0009` — the mutable surface sealed by a snapshot is the container-written state set (`state_dir/pgdata/<id>`, `state_dir/redis/<id>`, `state_dir/s3`) over a read-only `L0` rootfs)
 - **Date:** 2026-11-15
 
 ## Context

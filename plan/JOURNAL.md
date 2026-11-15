@@ -359,3 +359,16 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-15T20:45 [M2.26] (lead) status ready -> active
 - 2026-11-15T20:45 [M2.26] (lead) attempt 1/3 started
 - 2026-11-15T20:45 [M2.26] (lead) base ed975ce860cca892ef0a241f85a37af2bf482818
+- 2026-11-15T20:49 [M2.10] (lead) status active -> done
+- 2026-11-15T20:49 [M2.10] (lead) followups recorded in RESULT: test-fixture dedupe, unit.rs writeln! expect (infallible), probe child not killed on assertion panic. socket2 unused dep -> M2.20.
+- 2026-11-15T20:53 [M2.7] (lead) edited fields
+- 2026-11-15T20:53 [M2.16] (lead) edited fields
+- 2026-11-15T20:53 [M2.17] (lead) edited fields
+- 2026-11-15T20:53 [M2.19] (lead) edited fields
+- 2026-11-15T20:53 [M2.21] (lead) edited fields
+- 2026-11-15T20:53 [M2.28] (lead) edited fields
+- 2026-11-15T20:53 [M2.29] (lead) edited fields
+- 2026-11-15T20:53 [M2.16] (lead) status ready -> active
+- 2026-11-15T20:53 [M2.16] (lead) attempt 1/3 started
+- 2026-11-15T20:53 [M2.16] (lead) base 0677c52045e7ac7c1b10262fad495bbdd8dd167a
+- 2026-11-15T20:58 [M2.29] (lead) edited fields

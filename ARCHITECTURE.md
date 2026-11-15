@@ -1,8 +1,8 @@
 # Slipfork Technical Architecture (`ARCHITECTURE.md`)
 
-This document is the authoritative specification of Slipfork's **Composition Root**, **Inversion of Control / Dependency Injection (IoC/DI) Tree**, crate boundaries, wire protocols, and execution invariants (`ADR-0001`..`ADR-0008`, `H-001`..`H-011`).
+This document is the authoritative specification of Slipfork's **Composition Root**, **Inversion of Control / Dependency Injection (IoC/DI) Tree**, crate boundaries, wire protocols, and execution invariants (`ADR-0001`..`ADR-0009`, `H-001`..`H-011`).
 
-Every hypervisor backend, secret store, OSPP capability/dump client, VCS workspace driver, tunnel registrar, or language test runner MUST plug into the trait tree below without global state, ambient OS/env reads, downcasts, opaque extras bags, `match kind` sprawl, or fallback hacks. **All domain traits are synchronous (`std::net`, `UnixStream`, synchronous `tungstenite` over `rustls` + `webpki-roots`, `std::thread`; only `TpmdDeviceKeySigner` encapsulates a private `current_thread` `tokio::runtime::Runtime` internally to drive upstream `tpmd-client`). If a feature cannot fit this DI tree cleanly, stop and file a `direction-challenge` in `plan/HUMAN.md`.**
+Every hypervisor backend, world base-image builder, secret store, OSPP capability/dump client, VCS workspace driver, tunnel registrar, or language test runner MUST plug into the trait tree below without global state, ambient OS/env reads, downcasts, opaque extras bags, `match kind` sprawl, or fallback hacks. **All domain traits are synchronous (`std::net`, `UnixStream`, synchronous `tungstenite` over `rustls` + `webpki-roots`, `std::thread`; only `TpmdDeviceKeySigner` encapsulates a private `current_thread` `tokio::runtime::Runtime` internally to drive upstream `tpmd-client`). If a feature cannot fit this DI tree cleanly, stop and file a `direction-challenge` in `plan/HUMAN.md`.**
 
 ---
 
@@ -10,7 +10,7 @@ Every hypervisor backend, secret store, OSPP capability/dump client, VCS workspa
 
 Only **two entrypoints** in the entire repository wire concrete adapters from ambient environment variables, wall clocks, OS sockets, or real filesystems:
 
-1. **Rust Unified User Daemon Composition Root (`slipforkd` in `crates/slipfork`):** Runs unprivileged as `User=<developer-user>` (`H-010`'s `%i` shorthand denotes the developer's own OS account, resolved once at the CLI composition boundary via `UserIdentity` into non-template `slipforkd.{socket,service}`, or `--listen 127.0.0.1:0 --state-dir <path> --runtime-dir <path>` auto-spawned by the CLI). `slipforkd` never guesses `$XDG_RUNTIME_DIR` or `current_dir()`, binds `<runtime_dir>/daemon.sock` (`0600`) plus `<state_dir>/http-ingress.sock` (`0600`), and owns **all** stateful adapters in-process (`WorldEngine`, `SecretProvider`, persistent `OsppClient`, `ResourcePlan`, `VcsWorkspaceFactory`, `WorldRegistry`, `TunnelRegistrar`). The `slipfork` CLI binary (`crates/slipfork/src/main.rs`) is a **thin client** (`clap` + `UserIdentity` + `DaemonControlClient` + auto-spawn + direct `Command` world entry inheriting `Stdio::inherit()` with zero `SCM_RIGHTS` FD passing at the CLI<->daemon boundary, plus compile-time `SupportRegistry::embedded()` and `UnitSpec` rendering; `ReflinkNetnsEngine` spawns its internal PID 1 helper `slipfork-world-init`, §3.3).
+1. **Rust Unified User Daemon Composition Root (`slipforkd` in `crates/slipfork`):** Runs unprivileged as `User=<developer-user>` (`H-010`'s `%i` shorthand denotes the developer's own OS account, resolved once at the CLI composition boundary via `UserIdentity` into non-template `slipforkd.{socket,service}`, or `--listen 127.0.0.1:0 --state-dir <path> --runtime-dir <path>` auto-spawned by the CLI). `slipforkd` never guesses `$XDG_RUNTIME_DIR` or `current_dir()`, binds `<runtime_dir>/daemon.sock` (`0600`) plus `<state_dir>/http-ingress.sock` (`0600`), and owns **all** stateful adapters in-process (`WorldEngine`, `BaseImageBuilder`, `SecretProvider`, persistent `OsppClient`, `ResourcePlan`, `VcsWorkspaceFactory`, `WorldRegistry`, `TunnelRegistrar`). The `slipfork` CLI binary (`crates/slipfork/src/main.rs`) is a **thin client** (`clap` + `UserIdentity` + `DaemonControlClient` + auto-spawn + direct `Command` world entry inheriting `Stdio::inherit()` with zero `SCM_RIGHTS` FD passing at the CLI<->daemon boundary, plus compile-time `SupportRegistry::embedded()` and `UnitSpec` rendering; `ReflinkNetnsEngine` spawns its internal PID 1 helper `slipfork-world-init`, §3.3).
 2. **OpenCode V2 Plugin Composition Root:** `packages/opencode-slipfork/src/index.ts` (injecting explicit `SlipforkProjectState` in `M2.18` and routing shell calls via `slipfork exec --cwd <cwd>` without resolving or injecting `snow.yml` env vars itself, `ADR-0004`).
 
 ```mermaid
@@ -27,6 +27,11 @@ flowchart TD
   CR -->|holds persistent session| OsppSvc["OsppClient (resource_offer) &amp; DumpStreamer<br/>(crates/slipfork-ospp, M2)"]
   CR -->|injects| VcsSvc["RepoRootResolver &amp; VcsWorkspaceFactory<br/>(crates/slipfork-vcs, M2)"]
   CR -->|injects M3| TestCoord["TestCoordinator<br/>(crates/slipfork-test, M3)"]
+
+  CR -->|parses world.image + world.stage, holds BuildImage| BIB["trait BaseImageBuilder<br/>(crates/slipfork-engine::rootfs)"]
+  BIB --- BIB1["DockerfileStageBuilder<br/>(BuildxExporter + OciImageStore + AbiProbe)"]
+  BIB --- BIB2["FakeBaseImageBuilder (conformance & unit tests)"]
+  BIB -->|WorldRootfs: digest, app_rootfs, crun_bin, service_images| WE
 
   SnowRes --> SP["trait SecretProvider (Send + Sync)"]
   SnowRes --> RG["trait EntropySource (Send + Sync)"]
@@ -47,8 +52,8 @@ flowchart TD
 
   Edge --> WE["trait WorldEngine<br/>(crates/slipfork-engine — in-process inside slipforkd)"]
   Edge --> TR["trait TunnelRegistrar -&gt; Box&lt;dyn TunnelLease&gt;<br/>(crates/slipfork-world)"]
-  WE --- WE1["ReflinkNetnsEngine (FICLONE + slipfork-world-init PID 1 + netns.sock SCM_RIGHTS dialer + http-ingress.sock bridge)"]
-  WE --- WE2["IncusEngine (Unix REST /1.0 + incus exec entry; live daemon gated on open H-004)"]
+  WE --- WE1["ReflinkNetnsEngine (RO userxattr overlay + pivot_root + slipfork-world-init PID 1 + crun OCI services over FICLONE world state_dir + netns.sock SCM_RIGHTS dialer + http-ingress.sock bridge)"]
+  WE --- WE2["IncusEngine (Unix REST /1.0; imports WorldRootfs as slipfork-l0-&lt;digest12&gt; + shift=true RO mounts + crun services; live daemon gated on open H-004)"]
   TR --- TR1["UnavailableTunnelRegistrar (share_world fails closed until M2.22; deleted when WeavedRegistrar ships)"]
   TR --- TR2["WeavedRegistrar (isolated leaf M2.22; gated on weaved IPC spec per closed H-006)"]
 
@@ -80,13 +85,13 @@ flowchart TD
 |---|---|---|---|
 | `crates/slipfork-world` | M1 (shipped) + M2 `WorldOrigin` & `WeaverServiceName` (`M2.3`) | `#![forbid(unsafe_code)]`; depends only on `serde`, `thiserror` (+ `sha2`, `hex` in `M2.2`); zero OS socket/FD/env/fs types | Validated `ProjectSlug`, `WorldTarget { Canonical, UserFork, TestSlot }`, `WorldError`, encapsulated `LocalHostRoute`, M2 `WorldOrigin { Local, Shared }` (`WorldOrigin::local(&LocalHostRoute, ingress_port)` + `WorldOrigin::shared(url)`, `H-010` #2), `WeaverServiceName` (`SERVICE_NAME_MAX = 31`, `derive_weaver_service_name`, `ADR-0008` §6), and pure `TunnelRequest` + `TunnelLease` + `TunnelRegistrar` |
 | `crates/slipfork-snow` | M1 (shipped) + M2 `Send + Sync` & `effective_components` (`M2.4`) | `#![forbid(unsafe_code)]`; depends on `slipfork-world` (zero `slipfork-dag` dep); zero ambient `env`/`net`/clock (`FileVaultProvider` `0600` is the sole vault filesystem writer; `M2.4` deletes M1 `OsppBundle` & `from_bundle`) | `SnowFile` v2 AST (`modes.all` + `modes.<m>`, `SnowFile::effective_components(mode)` per `ADR-0001` §1, `SnowError::ForbiddenTopLevelKey { key }` in `M2.4`), `Faceless` v2 (`??` vs `!!`), `ResourceCoordinates` (`WorldOrigin` precedence over `domains::`, redacted `Debug`), `SecretValue`, `SecretProvider: Send + Sync` (`&self`), `EntropySource: Send + Sync` (`&self`) |
-| `crates/slipfork-dag` | M1 (shipped) + M2 `[resources]` & `fs` gate (`M2.5`) + M3 | `#![forbid(unsafe_code)]`; depends on `slipfork-world` (zero `slipfork-snow`/`slipfork-engine`/`std::env`/clock dep); domain core is filesystem-free (`default = []`, `FsMerkleHasher`/`FsDigestCache` behind `#[cfg(feature = "fs")]`) | Root `SlipforkConfig` (`project`, `artifacts`, `fixtures`, `test: TestSpec`, M2 `resources: ResourcesSpec`), `FixtureSpec` (`per_world: bool`), `TestSpec` / `CoverageConfig` / `CoverageThreshold` (shipped in `0.1.0`), M2 `ResourceMode { Local, Test }`, `ResourceStrategy { Local, PreferRemote, Remote }`, `DumpPolicy`, `RemoteResourceOffer`, and single `ResourcePlan::resolve(...)` (`ADR-0008` §3), `SupportRegistry` + `IntegrationTier::required_evidence()` (`support/integrations.toml`, `ADR-0007`), `DagPlanner`, `InputHasher`, `DigestCache`, and M3 `ArtifactStore` + `VolumeCloner` |
+| `crates/slipfork-dag` | M1 (shipped) + M2 `[resources]` & `fs` gate (`M2.5`) + `WorldImageConfig` (`M2.26`) + M3 | `#![forbid(unsafe_code)]`; depends on `slipfork-world` (zero `slipfork-snow`/`slipfork-engine`/`std::env`/clock dep); domain core is filesystem-free (`default = []`, `FsMerkleHasher`/`FsDigestCache` behind `#[cfg(feature = "fs")]`) | Root `SlipforkConfig` (`project`, `artifacts`, `fixtures`, `test: TestSpec`, M2 `resources: ResourcesSpec`, M2 `world: WorldImageConfig { image, stage }` — two optional keys under `#[serde(deny_unknown_fields)]`, `ADR-0009` §1), `FixtureSpec` (`per_world: bool`), `TestSpec` / `CoverageConfig` / `CoverageThreshold` (shipped in `0.1.0`), M2 `ResourceMode { Local, Test }`, `ResourceStrategy { Local, PreferRemote, Remote }`, `DumpPolicy`, `RemoteResourceOffer`, and single `ResourcePlan::resolve(...)` (`ADR-0008` §3), `SupportRegistry` + `IntegrationTier::required_evidence()` (`support/integrations.toml`, `ADR-0007`), `DagPlanner`, `InputHasher`, `DigestCache`, and M3 `ArtifactStore` + `VolumeCloner` |
 | `crates/slipfork-ospp` | M2 (`M2.13`–`M2.14`) | `#![forbid(unsafe_code)]`; depends on `slipfork-world`, `slipfork-snow`, `slipfork-dag`, `tungstenite` + `rustls` + `webpki-roots` (sync), `p256`, `zstd`, pinned git `tpmd-client` + `tpmd-ipc` (`rev = "90cb2db..."`) + private `tokio` (`rt`/`net`/`time` confined to `TpmdDeviceKeySigner`); zero `std::env`, zero `slipfork-engine` dep | Slipfork-owned `OSPP v1` sync WebSocket client (`ospp-v1` subprotocol, 16 KiB text-frame cap, `"ospp-v1" \|\| nonce_s(32) \|\| nonce_c(32) \|\| server_name`), `DeviceKeySigner` (`KeyId` = `p256:<66 hex>`, 64-byte raw `r \|\| s` `DeviceSignature`; generic `FallbackDeviceKeySigner<P, F>`, `TpmdDeviceKeySigner` [`sealed` floor, `ResumeOrCreate` over `KeyStorePaths`], `SoftwareP256Signer` [`DeviceKeyStore` + `EntropySource`]), fragment-only `PairingUrl` + `BrowserOpener`, `OsppSecretProvider` (zero fs writes), `RemoteResourceBundle` + single `OsppClient::resource_offer() -> Option<slipfork_dag::RemoteResourceOffer>` mapper, and bounded-window `zstd` `DumpStreamer` over `SeedDumpStore` (`ADR-0008` §1–§3) |
-| `crates/slipfork-engine` | M1 (shipped) + M2 full spec (`M2.2`, `M2.6`–`M2.7`) | `unsafe` confined strictly to **one** module — **`src/linux_cow.rs`**: `ioctl(FICLONE)` (`reflink_file`), `geteuid`/`getegid` (`current_uid_gid`), `kill(2)` (`signal_process`), and the `sendmsg`/`recvmsg` `SCM_RIGHTS` pair (`send_fd`/`recv_fd`), each with a per-call `// SAFETY:` proof (zero `pty.rs`); `M2.2` adds `slipfork-world` dep (zero `slipfork-snow`/`slipfork-ospp` dep) | `WorldEngine`, `WorldSpec`, `SnapshotMode`, opaque `WorldHandle`, and `#![forbid(unsafe_code)]` `src/bin/slipfork-world-init.rs` (see §3.3 for `H-011` PID 1, `netns.sock`, and `http-ingress.sock` bridge contracts); adapters: `ReflinkNetnsEngine` and `IncusEngine` (live daemon gated on `H-004`) |
+| `crates/slipfork-engine` | M1 (shipped) + M2 full spec (`M2.2`, `M2.6`–`M2.7`, `M2.27`–`M2.28`) | `unsafe` confined strictly to **one** module — **`src/linux_cow.rs`**: `ioctl(FICLONE)` (`reflink_file`), `geteuid`/`getegid` (`current_uid_gid`), `kill(2)` (`signal_process`), and the `sendmsg`/`recvmsg` `SCM_RIGHTS` pair (`send_fd`/`recv_fd`), each with a per-call `// SAFETY:` proof (zero `pty.rs`); `M2.2` adds `slipfork-world` dep (zero `slipfork-snow`/`slipfork-ospp` dep); `M2.27` adds `#![forbid(unsafe_code)]` `src/rootfs/` | `WorldEngine`, `WorldSpec`, `ServiceSpec`/`ServiceRuntime`, `SnapshotMode`, opaque `WorldHandle`, `#![forbid(unsafe_code)]` `src/bin/slipfork-world-init.rs` (see §3.3 for `H-011` PID 1, `netns.sock`, and `http-ingress.sock` bridge contracts), `src/rootfs/` (`WorldRootfs`, `WorldRootfsRequest`, `trait BaseImageBuilder` + `DockerfileStageBuilder` [injected `BuildxExporter`, `OciImageStore`, `AbiProbe`, `InputHasher`] + `FakeBaseImageBuilder`, pure `Dockerfile` stage parser, `/etc/os-release` + ELF ABI probe, 6-rule World Image Contract diagnostics — `ADR-0009` §1–§3 is normative); adapters: `ReflinkNetnsEngine` and `IncusEngine` (live daemon gated on `H-004`) |
 | `crates/slipfork-edge` | M2 (`M2.8`–`M2.10`) | `#![forbid(unsafe_code)]` (uses safe `listenfd`, `socket2`, and `httparse`); depends on `slipfork-world`, `slipfork-engine`; `std::env` confined strictly to `activation.rs` (`LISTEN_PID` / `LISTEN_FDS`) | Unprivileged `slipforkd` HTTP/WS ingress (`adopt_systemd_listener`, `--listen`, `<state_root>/http-ingress.sock` [§3.3], non-template `UnitSpec` renderer with `User=<developer-user>` & `ReadWritePaths=`, `httparse` `<= 16 KiB` cap, `ADR-0008` §5): `WorldRegistry` (`mint_origin`, `attach_world`, `release_world`, `share_world`, `unshare_world`), `IngressRoute` -> `dial_world_tcp`, `308`/`421` rules (`ADR-0005` §1), `DaemonControl` (`<runtime_dir>/daemon.sock` `0600`), `UnavailableTunnelRegistrar` + `InMemoryTunnelRegistrar` (tests) + isolated `WeavedRegistrar` (`M2.22`) |
 | `crates/slipfork-vcs` | M2 (`M2.11`–`M2.12`) | `#![forbid(unsafe_code)]`; depends only on `slipfork-world`, `serde`, `serde_json`, `thiserror` (zero `slipfork-dag` dep); zero `src/bin/*` targets | `ProjectSlugOverride` (injected `<vcs_root>/slipfork.toml` `project` reader), `RepoRootResolver` (`RepoRoot`), `VcsWorkspace` (`WorkspaceRefs`, `WorkspaceChanges`), `VcsWorkspaceFactory` (`WorkspaceRequest`), `GitWorktreeAdapter` (`.worktrees/<fork>`, `refs/heads/<fork>`, and D/F-safe `refs/slipfork/<fork>/wip` via `.slipfork/git/index-<fork>`), `JjWorkspaceAdapter` (`@-` -> `refs/heads/<fork>`, `@` -> `refs/slipfork/<fork>/wip`), and pure `remote_helper` (`git-remote-slipfork` line protocol over `BufRead`/`Write`) |
 | `crates/slipfork-test` | M3 | `#![forbid(unsafe_code)]`; depends on `slipfork-world`, `slipfork-dag`, `slipfork-edge`; injected `EntropySource` | `TestCoordinator` (consumes `ResourcePlan::resolve` via `DaemonControl`), canonical `.slipfork/runs/<run_id>/<slot>/{runner.sock,coverage,output}` run tree, `RunnerProtocol v1` (`SocketRunnerAdapter` + `CommandTestAdapter`), typed `CoverageDriver` (`ADR-0006` §5), and pre-warmed `TestSlot` world pool |
-| `crates/slipfork` | M1..M4 (`M2.16`–`M2.17`) | `#![forbid(unsafe_code)]`; **`slipforkd` is sole stateful Rust Composition Root; `slipfork` is thin client** | Binaries `slipforkd` (`--state-dir` + `--runtime-dir` unified user daemon Composition Root assembling `DaemonService: DaemonControl`), `slipfork` (thin `clap` + `UserIdentity` + `DaemonControlClient` + auto-spawner + direct `WorldEntryCommand` `Stdio::inherit()` executor; `HOME`-unset fail-closed guard), and `git-remote-slipfork` |
+| `crates/slipfork` | M1..M4 (`M2.16`–`M2.17`) | `#![forbid(unsafe_code)]`; **`slipforkd` is sole stateful Rust Composition Root; `slipfork` is thin client** | Binaries `slipforkd` (`--state-dir` + `--runtime-dir` unified user daemon Composition Root assembling `DaemonService: DaemonControl`, wiring `DockerfileStageBuilder` -> `WorldRootfs` -> `dyn WorldEngine` with the per-invocation `--host-caches` opt-in and `BaseImageBuilder` failures surfaced before any world directory exists, `ADR-0009`), `slipfork` (thin `clap` + `UserIdentity` + `DaemonControlClient` + auto-spawner + direct `WorldEntryCommand` `Stdio::inherit()` executor; `HOME`-unset fail-closed guard), and `git-remote-slipfork` |
 | `packages/opencode-slipfork` | M1 (shipped) + M2 e2e (`M2.18`) | Type-only `@opencode/plugin`; injected `SlipforkProjectState` + `SlipforkGateway` (zero `existsSync` inside gateway in M2) | OpenCode V2 `worktree.transform`, `shell.hook("create.before")` (routes to `slipfork exec --cwd <cwd>`, never injects `snow.yml` envs), and `session.hook("context")` |
 
 ---
@@ -131,7 +136,7 @@ pub enum ResourceMode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ResourceStrategy {
-    Local,        // world-local ResourceCoordinates (127.0.0.1:9000 in world netns) / clean initdb
+    Local,        // world-local ResourceCoordinates (seaweedfs `crun` container on 127.0.0.1:9000 in the world netns, ADR-0009 §2) / clean initdb
     PreferRemote, // use OSPP S3 / seed dump when paired & offered, else Local with [resources] diagnostic
     Remote,       // require OSPP S3 / seed dump; fail closed if unpaired/offline/absent
 }
@@ -146,6 +151,9 @@ pub enum DumpPolicy {
 
 impl ResourcePlan {
     /// Sole owner of S3 + PG seed resolution consumed by `slipforkd` (`up`/`fork`), `OsppClient`, and `TestCoordinator`.
+    /// A resolved local target is a `crun` service container (`ADR-0009` §2): seed dumps are read-only
+    /// `readonly_mounts` on the `postgres:<v>` `ServiceRuntime::OciContainer` spec and are restored inside
+    /// that container (`ADR-0008` §2).
     pub fn resolve(
         spec: &ResourcesSpec,
         mode: ResourceMode,
@@ -232,6 +240,7 @@ pub struct ExecEnv { /* private allowlist + plain/secret entries; custom redacti
 
 pub struct WorldSpec {
     pub target: WorldTarget,                     // slipfork_world::WorldTarget (added in M2.2)
+    pub rootfs: WorldRootfs,                     // Dockerfile-derived L0 rootfs + crun binary + OCI service images (ADR-0009 §1–§3, M2.28)
     pub snapshot: SnapshotId,                    // content-addressed origin-independent fixture digest or base snapshot
     pub mounts: Vec<WorldMount>,                 // repo (RW) + ArtifactVolumes/SeedDump (RO) + M3 run dirs (RW)
     pub base_env: ExecEnv,                       // resolved at world boot from single WorldOrigin
@@ -257,15 +266,58 @@ pub struct WorldEntryCommand {
     pub cwd: PathBuf,
 }
 
+/// One world-owned service. `ADR-0009` §2–§3 is normative for container semantics.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServiceSpec {
+    pub id: String,                  // stable id: `api`, `postgres:<v>`, `redis:<v>`, `seaweedfs`
+    pub runtime: ServiceRuntime,     // never a boolean mode flag, never a second supervisor
+    pub env: ExecEnv,                // overlay on `WorldSpec.base_env`
+    pub readiness_port: Option<u16>, // must accept connections in the world netns before `ServiceState::Running`
+}
+
+/// Single supervision payload for BOTH service kinds — one `spawn_service` / `stop_service` / `service_logs` path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ServiceRuntime {
+    /// An `L0` app component running on the world rootfs as `$UID:$GID`.
+    WorldProcess { argv: Vec<String>, cwd: PathBuf },
+    /// A daemonless `crun` backing-service container (`ADR-0009` §2): read-only rootfs from
+    /// `WorldRootfs::service_images`, no `network` namespace so it shares the world `127.0.0.1`.
+    OciContainer {
+        image: BackingServiceKey,            // postgres:<v> | redis:<v> | seaweedfs
+        argv: Vec<String>,
+        state_mounts: Vec<StateSubdirMount>, // RW CoW state: <world_dir>/state/<host_subdir> -> <container_path>
+        readonly_mounts: Vec<WorldMount>,    // RO host -> container (e.g. the verified `<sha256>.pgdump`, ADR-0008 §2)
+    },
+}
+
+/// RW `$UID:$GID` state directory handed to one container, cloned by `ioctl(FICLONE)` with the world.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StateSubdirMount { pub host_subdir: PathBuf, pub container_path: PathBuf }
+
 pub trait WorldEngine: Send + Sync {
     fn name(&self) -> &'static str;
     fn create_snapshot(&self, source_dir: &Path, id: &SnapshotId, mode: SnapshotMode) -> Result<(), EngineError>;
-    /// Stops any running services cleanly first, then seals the world's `state_dir` into an immutable child snapshot (`H-011` #2).
+    /// Stops `WorldProcess` services, then `OciContainer` services cleanly (`SIGTERM` -> bounded grace),
+    /// then seals the world's `state_dir` into an immutable child snapshot (`H-011` #2, `ADR-0009` §3).
     fn freeze_world(&self, world: &WorldHandle, id: &SnapshotId, mode: SnapshotMode) -> Result<(), EngineError>;
     fn clone_world(&self, spec: &WorldSpec) -> Result<WorldHandle, EngineError>;
+    /// Single supervision surface for `WorldProcess` and `OciContainer` runtimes (`ADR-0009` §3).
     fn spawn_service(&self, world: &WorldHandle, spec: &ServiceSpec) -> Result<ServiceHandle, EngineError>;
     fn stop_service(&self, service: &ServiceHandle) -> Result<(), EngineError>;
     fn service_logs(&self, world: &WorldHandle, id: &str) -> Result<ServiceLogs, EngineError>;
+    /// Runs `argv` INSIDE a running service's own rootfs — never the app rootfs — e.g. `pg_restore` +
+    /// `CHECKPOINT;` inside `postgres:<v>` (`ADR-0008` §2, `ADR-0009` §2); fails closed with
+    /// `EngineError::ServiceNotRunning` when the container is not `ServiceState::Running`.
+    fn exec_in_service(
+        &self,
+        service: &ServiceHandle,
+        argv: &[String],
+        overlay_env: &ExecEnv,
+        on_output: &mut dyn FnMut(StreamChunk),
+    ) -> Result<ExecOutput, EngineError>;
+    /// `crun exec` entry (`WorldEntryCommand`) for interactive service clients: `slipfork db` -> `psql`,
+    /// `slipfork redis` -> `redis-cli` (`ADR-0009` §3); fails closed `EngineError::ServiceNotRunning`.
+    fn service_entry_command(&self, service: &ServiceHandle) -> Result<WorldEntryCommand, EngineError>;
     fn exec_in_world(
         &self,
         world: &WorldHandle,
@@ -282,7 +334,10 @@ pub trait WorldEngine: Send + Sync {
 }
 ```
 
-- **Persistent `slipfork-world-init` PID 1, Single `unsafe` Module (`linux_cow.rs`) & `<state_root>/http-ingress.sock` Bridge (`H-011`, normative):** Because multithreaded `setns` into an unprivileged userns/netns fails (`EINVAL`/`EPERM`), `ReflinkNetnsEngine::clone_world` spawns `#![forbid(unsafe_code)]` `crates/slipfork-engine/src/bin/slipfork-world-init.rs` inside `unshare --map-user=$UID --map-group=$GID --keep-caps --mount --net --pid --fork --mount-proc`, giving every world a persistent `init_pid` (`kill(2)` `SIGTERM`/`SIGKILL` via `signal_process` reaps the PID namespace on `destroy_world`, and `freeze_world` stops live services cleanly before reflinking `state_dir`). `slipfork-world-init` brings `lo` up, writes `0` to `/proc/sys/net/ipv4/ip_unprivileged_port_start`, binds `0600` pathname `AF_UNIX` `<world_dir>/netns.sock` to service `dial_world_tcp(port)` via the single audited `sendmsg`/`recvmsg` `SCM_RIGHTS` pair (`send_fd`/`recv_fd`, `MSG_CMSG_CLOEXEC`, rejecting >1 descriptors without leaking), and — when `WorldSpec.local_ingress` is `Some` — binds `127.0.0.1:<port>` (including `:80`) inside the world netns and splices accepted streams to `slipforkd`'s `0600` pathname `AF_UNIX` listener `<state_root>/http-ingress.sock`. Across the entire workspace, `unsafe` lives solely in `crates/slipfork-engine/src/linux_cow.rs` (`ioctl(FICLONE)`, `geteuid`/`getegid`, `kill(2)`, and `sendmsg`/`recvmsg` `SCM_RIGHTS`, each with per-call `// SAFETY:` proofs; `H-010`'s "zero `SCM_RIGHTS`" rule applies strictly to the CLI <-> `slipforkd` TTY boundary, never to `netns.sock`).
+- **`WorldRootfs` / `BaseImageBuilder` Ownership (`ADR-0009` §1–§3, `M2.27`):** `WorldRootfs { digest, app_rootfs, crun_bin, service_images, metadata, host_caches }`, `WorldRootfsRequest`, `BackingServiceKey`, `OciRootfs`, and `ImageContractMetadata` live in the `#![forbid(unsafe_code)]` `crates/slipfork-engine/src/rootfs/` module (zero `slipfork-snow`/`slipfork-dag` dependency: `slipforkd` resolves `world.image`/`world.stage` and the `snow.yml` `resources:` -> `BackingServiceKey` set, passes them in, and the engine returns a validated `WorldRootfs`). `ADR-0009` is the single home for the 6-rule World Image Contract, the distro table, the `RootfsDigest` formula, and the `crun` namespace/state-mount contract; this section specifies only the injected trait shape.
+- **Container Supervision Is the Same `WorldEngine` Surface, `crun` Is Not a Second Engine (`ADR-0009` §2–§3, normative):** `ServiceRuntime::OciContainer` specs flow through `spawn_service` / `stop_service` / `service_logs` exactly like `L0` app components; `crates/slipfork-engine` owns the single `match runtime` over `WorldProcess | OciContainer` — there is no `ContainerRuntime` trait, no `dockerd`, and no second supervisor anywhere else in the tree. Static `crun` runs as a child of the world supervisor (inside `slipfork-world-init`'s namespaces on `ReflinkNetnsEngine`, inside the instance on `IncusEngine`).
+- **`IncusEngine` Provenance — Same `WorldRootfs` Path, Never a Hand-Built Instance (`M2.28`):** `IncusEngine::clone_world` imports `WorldSpec.rootfs.app_rootfs` once per `rootfs.digest` as the immutable Incus image `slipfork-l0-<digest12>`, clones it with `POST /1.0/instances` (`source.type = "copy"`), and attaches `rootfs.host_caches` / `rootfs.service_images` read-only with `shift = "true"`. The `base_instance: String` parameter is deleted — no second rootfs mechanism exists behind any engine.
+- **Persistent `slipfork-world-init` PID 1, Single `unsafe` Module (`linux_cow.rs`) & `<state_root>/http-ingress.sock` Bridge (`H-011`, normative):** Because multithreaded `setns` into an unprivileged userns/netns fails (`EINVAL`/`EPERM`), `ReflinkNetnsEngine::clone_world` spawns `#![forbid(unsafe_code)]` `crates/slipfork-engine/src/bin/slipfork-world-init.rs` inside `unshare --map-user=$UID --map-group=$GID --keep-caps --mount --net --pid --fork --mount-proc`, giving every world a persistent `init_pid` (`kill(2)` `SIGTERM`/`SIGKILL` via `signal_process` reaps the PID namespace on `destroy_world`, and `freeze_world` stops live `WorldProcess` services, then `OciContainer` services, before reflinking `state_dir`). `slipfork-world-init` brings `lo` up, writes `0` to `/proc/sys/net/ipv4/ip_unprivileged_port_start`, mounts the read-only `userxattr` overlay (two lowerdirs: `<world_dir>/mountpoints:<rootfs.app_rootfs>`) and `pivot_root`s into it, binds `0600` pathname `AF_UNIX` `<world_dir>/netns.sock` to service `dial_world_tcp(port)` via the single audited `sendmsg`/`recvmsg` `SCM_RIGHTS` pair (`send_fd`/`recv_fd`, `MSG_CMSG_CLOEXEC`, rejecting >1 descriptors without leaking), and — when `WorldSpec.local_ingress` is `Some` — binds `127.0.0.1:<port>` (including `:80`) inside the world netns and splices accepted streams to `slipforkd`'s `0600` pathname `AF_UNIX` listener `<state_root>/http-ingress.sock`. Across the entire workspace, `unsafe` lives solely in `crates/slipfork-engine/src/linux_cow.rs` (`ioctl(FICLONE)`, `geteuid`/`getegid`, `kill(2)`, and `sendmsg`/`recvmsg` `SCM_RIGHTS`, each with per-call `// SAFETY:` proofs; `H-010`'s "zero `SCM_RIGHTS`" rule applies strictly to the CLI <-> `slipforkd` TTY boundary, never to `netns.sock`).
 
 ### 3.4 Port-Aware `WorldOrigin::local`, `WorldRegistry` & `DaemonControl` (`crates/slipfork-world`, `crates/slipfork-edge`, `ADR-0005`, `ADR-0008`, `H-010`)
 
@@ -359,7 +414,7 @@ pub struct UnitSpec {
 pub struct WorldExecTarget {
     pub world: String,
     pub origin: WorldOrigin,
-    pub entry: WorldEntryCommand,
+    pub entry: WorldEntryCommand,  // world entry (`nsenter` / `incus exec`) or a service-container entry (`crun exec`, ADR-0009 §3)
     pub env: ExecEnv,             // custom Debug redacts secrets; wire format restricted to 0600 <runtime_dir>/daemon.sock
     pub target_argv: Vec<String>,
 }
@@ -382,6 +437,10 @@ pub trait DaemonControl: Send + Sync {
     fn secret_list(&self, repo_root: &Path) -> Result<Vec<String>, EdgeError>;
     fn logs(&self, req: &LogsRequest, on_chunk: &mut dyn FnMut(StreamChunk)) -> Result<(), EdgeError>;       // req.cwd: PathBuf
     fn exec_target(&self, req: &ExecTargetRequest) -> Result<WorldExecTarget, EdgeError>;                    // req.cwd: PathBuf
+    // `ExecTargetRequest.service: Option<String>` selects a running backing-service container: `slipforkd`
+    // resolves it with `WorldEngine::service_entry_command` and returns `entry` = `crun exec` (`slipfork db` ->
+    // `psql`, `slipfork redis` -> `redis-cli`, ADR-0009 §3), failing closed `ServiceNotRunning` when stopped.
+    // `None` keeps world entry (`nsenter` / `incus exec`) with the daemon-resolved `ExecEnv`.
     fn hook_run(&self, req: &HookRunRequest, on_chunk: &mut dyn FnMut(StreamChunk)) -> Result<i32, EdgeError>; // req.cwd: PathBuf
     /// `slipforkd` binds host `127.0.0.1:0` listeners in-process and bridges each to `dial_world_tcp` for the
     /// lifetime of this control connection (client holds connection open; disconnect/Ctrl-C tears bridges down).
@@ -572,7 +631,7 @@ impl SupportRegistry {
 1. **`H-001` [Validated + Gate Confirmation]:** Mode-scoped components (`modes.<mode>.components.<id>` add/remove/override via `disabled: true`, `ADR-0001` §1) live in `snow.yml`, while `[artifacts]`, `[fixtures]` (`per_world`), `[resources]` (`ResourceStrategy`), and the typed `[test]` table (`coverage`, `coverage_report`, `coverage_fail_under`) live in `slipfork.toml` (`ADR-0006`, `ADR-0008`).
 2. **`H-002` [Validated]:** Locked `::` namespace separator, unquoted `all:` universal mode, and hard rejection of top-level `envs:` and `project:` (`SnowError::ForbiddenTopLevelKey` in `M2.4`).
 3. **`H-003` [Validated + Gate Addendum]:** `LayeredSecretProvider` persists newly generated `!!` secrets to the local `0600` vault in `local` mode and to cloud `EnvGroup` secrets in `cloud` mode; **OSPP is not a prerequisite for M2 or M3**, and Slipfork-assigned `WorldOrigin` always overrides provider `domains::` in local worlds (`ADR-0005` §1, `ADR-0008` §2–§3).
-4. **`H-004` [Open — Isolated Leaf `M2.21`]:** This container host runs XFS (`reflink=1`) + unprivileged `netns`/`userns` (`ReflinkNetnsEngine` proven live); live `IncusEngine` conformance and `declared` promotion stay isolated in `M2.21` awaiting a project-scoped `incusd` socket (`plan/HUMAN.md`).
+4. **`H-004` [Open — Isolated Leaf `M2.21`]:** This container host runs XFS (`reflink=1`) + unprivileged `netns`/`userns` (`ReflinkNetnsEngine` proven live); live `IncusEngine` conformance (which imports the same `Dockerfile`-derived `WorldRootfs` as `slipfork-l0-<digest12>`, §3.3, `ADR-0009`) and `declared` promotion stay isolated in `M2.21` awaiting a project-scoped `incusd` socket (`plan/HUMAN.md`).
 5. **`H-005` [Validated + Gate Amendment]:** Canonical VCS `ProjectSlug` resolution (`ADR-0005` §3), single `WorldOrigin = Local { url } | Shared { url }` per world, and reserved `test-*` prefix across forks and `domains[].id`.
 6. **`H-006` [Closed by Deferral — Isolated Leaf `M2.22`]:** `weaved`'s registration wire payload remains deferred until `tunnel-weaver` publishes `weaved`'s IPC specification; `UnavailableTunnelRegistrar` makes `share_world` fail closed in the meantime (while `unshare_world` is an idempotent no-op per `ADR-0005` §2, and `UnavailableTunnelRegistrar` is deleted once `WeavedRegistrar` lands in `M2.22`), `weaved` forwards to `slipforkd`'s planned static `forward_port`, and service names obey `SERVICE_NAME_MAX = 31` bytes (`ADR-0008` §6).
 7. **`H-008` [Validated]:** Unprivileged `LISTEN_FDS` `slipforkd` is the **sole local + shared ingress** (`shared_hosts` map + `snow.yml` `ingresses` prefixes -> `dial_world_tcp` with `Host` + `X-Forwarded-*` preserved; `*.localhost` -> `308`/`421` when `Shared`, `ADR-0005` §1–§2, `ADR-0008` §5).
