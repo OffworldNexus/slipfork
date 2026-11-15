@@ -1164,6 +1164,7 @@ dependencies = [
  "slipfork-dag",
  "slipfork-edge",
  "slipfork-engine",
+ "slipfork-ospp",
  "slipfork-snow",
  "slipfork-vcs",
  "slipfork-world",
@@ -1201,9 +1202,11 @@ dependencies = [
 name = "slipfork-engine"
 version = "0.1.0"
 dependencies = [
+ "hex",
  "libc",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "slipfork-world",
  "tempfile",
  "thiserror",

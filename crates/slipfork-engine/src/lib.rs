@@ -22,6 +22,7 @@ pub mod env;
 pub mod incus;
 pub mod linux_cow;
 pub mod reflink_netns;
+pub mod rootfs;
 pub mod service;
 pub mod world_init;
 

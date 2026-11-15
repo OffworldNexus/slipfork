@@ -31,7 +31,7 @@ use serde_json::{Value, json};
 pub struct IncusEngine {
     socket_path: PathBuf,
     project: String,
-    base_instance: String,
+    source_instance: String,
     host_uid: u32,
     host_gid: u32,
     shared: Arc<Shared>,
@@ -83,14 +83,14 @@ impl IncusEngine {
     pub fn new(
         socket_path: impl AsRef<Path>,
         project: impl Into<String>,
-        base_instance: impl Into<String>,
+        source_instance: impl Into<String>,
         host_uid: u32,
         host_gid: u32,
     ) -> Self {
         Self {
             socket_path: socket_path.as_ref().to_path_buf(),
             project: project.into(),
-            base_instance: base_instance.into(),
+            source_instance: source_instance.into(),
             host_uid,
             host_gid,
             shared: Arc::new(Shared::default()),
@@ -110,7 +110,7 @@ impl IncusEngine {
             source: IncusCloneSource {
                 source_type: "copy".to_owned(),
                 instance_only: true,
-                source: format!("{}/{}", self.base_instance, spec.snapshot.0),
+                source: format!("{}/{}", self.source_instance, spec.snapshot.0),
             },
             devices,
         }
@@ -221,7 +221,7 @@ impl WorldEngine for IncusEngine {
         id: &SnapshotId,
         mode: SnapshotMode,
     ) -> Result<(), EngineError> {
-        let (status, resp) = self.instance_snapshot_request(&self.base_instance, id, mode)?;
+        let (status, resp) = self.instance_snapshot_request(&self.source_instance, id, mode)?;
         if !(200..300).contains(&status) {
             return Err(EngineError::Execution(format!(
                 "Incus snapshot creation failed ({status}): {resp}"
