@@ -104,3 +104,5 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-15T02:28 ESCALATION #6 -> strategist for M1 by conductor: milestone gate re-run after M1.7 repaired make bench
 - 2026-11-15T02:31 [M1] (strategist) GATE PASSED (RELEASE_READY: 0.1.0): make check 0, make bench 0 (3.03x/1.91s live re-run; canonical 3.21x/1.89s report preserved), rg stale tokens 0, check_docs_
 - 2026-11-15T02:31 [M1] (strategist) status ready -> done
+- 2026-11-15T02:32 HUMAN H-007 [release-gate] opened by conductor (node M1)
+- 2026-11-15T02:32 AUTOPILOT off by conductor awaiting human release gate for 0.1.0
