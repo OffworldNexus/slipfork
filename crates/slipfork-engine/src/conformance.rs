@@ -68,7 +68,7 @@ pub fn assert_world_engine_conformance(engine: &dyn WorldEngine, scratch_dir: &P
         snapshot: SnapshotId("definitely-missing-snapshot".to_owned()),
         mounts: Vec::new(),
         base_env: base_env.clone(),
-        local_ingress_port: None,
+        local_ingress: None,
     };
     let spec_debug = format!("{missing:?}");
     assert!(
@@ -138,6 +138,62 @@ pub fn assert_world_engine_conformance(engine: &dyn WorldEngine, scratch_dir: &P
         engine.name()
     );
 
+    // 6. Entry commands name a real program, carry an argv prefix, and preserve the requested cwd.
+    let entry_cwd = scratch_dir.join("repo");
+    let entry = engine
+        .entry_command(&world, &entry_cwd)
+        .expect("every engine must supply an entry command for a live world");
+    assert!(
+        !entry.program.as_os_str().is_empty(),
+        "{} entry program must not be empty",
+        engine.name()
+    );
+    assert!(
+        !entry.args_prefix.is_empty(),
+        "{} entry command needs an argv prefix",
+        engine.name()
+    );
+    assert_eq!(
+        entry.cwd,
+        entry_cwd,
+        "{} entry command must preserve the requested cwd",
+        engine.name()
+    );
+
+    // 7. Dialing a live world either works, or fails closed with a typed error — never a
+    //    fabricated stream and never a hang.
+    match engine.dial_world_tcp(&world, 1) {
+        Ok(_) => panic!(
+            "{} must not report a live stream for closed port 1",
+            engine.name()
+        ),
+        Err(EngineError::Unsupported {
+            engine: reported, ..
+        }) => {
+            assert_eq!(reported, engine.name(), "Unsupported must name the engine");
+        }
+        Err(EngineError::DialFailed { .. }) => {}
+        Err(other) => panic!(
+            "{} must fail dial_world_tcp with a typed error, got {other:?}",
+            engine.name()
+        ),
+    }
+
+    // 8. Unknown services are typed; logs are never fabricated.
+    match engine.service_logs(&world, "conformance-missing-service") {
+        Ok(_) => panic!("{} must not fabricate service logs", engine.name()),
+        Err(EngineError::Unsupported {
+            engine: reported, ..
+        }) => {
+            assert_eq!(reported, engine.name(), "Unsupported must name the engine");
+        }
+        Err(EngineError::UnknownService { .. }) => {}
+        Err(other) => panic!(
+            "{} must fail service_logs with a typed error, got {other:?}",
+            engine.name()
+        ),
+    }
+
     engine
         .freeze_world(
             &world,
@@ -168,8 +224,8 @@ pub fn assert_world_engine_conformance(engine: &dyn WorldEngine, scratch_dir: &P
         )
         .expect_err("a destroyed world must fail closed");
     assert!(
-        matches!(err, EngineError::WorldNotFreezable { .. }),
-        "expected WorldNotFreezable for a destroyed world, got {err:?}"
+        matches!(err, EngineError::WorldGone { .. }),
+        "expected WorldGone for a destroyed world, got {err:?}"
     );
     let err = engine
         .destroy_world(opaque)

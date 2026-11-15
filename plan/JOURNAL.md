@@ -302,3 +302,11 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-15T19:36 [M2.7] (lead) status ready -> active
 - 2026-11-15T19:36 [M2.7] (lead) attempt 1/3 started
 - 2026-11-15T19:36 [M2.7] (lead) H-011 ruling recorded: Option B + persistent world-init PID 1; netns.sock SCM_RIGHTS dialer in linux_cow.rs; AF_UNIX <state_root>/http-ingress.sock bridge; free
+- 2026-11-15T19:37 [M2.11] (lead) status active -> done
+- 2026-11-15T19:37 [M2.12] (lead) status ready -> active
+- 2026-11-15T19:37 [M2.12] (lead) attempt 2/3 started
+- 2026-11-15T19:37 [M2.12] (lead) base 84fb017bfe362e6f080117d85ba93ddeafb7180e (vcs matrix now in tests/support, refs/slipfork/<fork>/wip)
+- 2026-11-15T19:45 [M2.7] (lead) status active -> review
+- 2026-11-15T19:51 [M2.12] (lead) status active -> review
+- 2026-11-15T19:51 [M2.23] (lead) status active -> review
+- 2026-11-15T19:51 [M2.12] (lead) edited fields

@@ -10,6 +10,7 @@
 
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
+use std::net::TcpStream;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -18,8 +19,9 @@ use std::time::Duration;
 
 use crate::child_env;
 use crate::{
-    EngineError, ExecEnv, ExecOutput, MountMode, SnapshotId, SnapshotMode, StreamChunk,
-    StreamSource, WorldEngine, WorldHandle, WorldMount, WorldSpec, WorldStatus, target_slug,
+    EngineError, ExecEnv, ExecOutput, MountMode, ServiceHandle, ServiceLogs, ServiceSpec,
+    SnapshotId, SnapshotMode, StreamChunk, StreamSource, WorldEngine, WorldEntryCommand,
+    WorldHandle, WorldMount, WorldSpec, WorldStatus, target_slug,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -234,6 +236,8 @@ impl WorldEngine for IncusEngine {
         id: &SnapshotId,
         mode: SnapshotMode,
     ) -> Result<(), EngineError> {
+        // No service supervision is implemented for Incus yet (live adapter gated on `H-004`,
+        // `M2.21`), so there is nothing to stop before sealing.
         let instance = {
             let mut worlds = self.lock()?;
             let record = self.owned(&mut worlds, world)?;
@@ -389,6 +393,66 @@ impl WorldEngine for IncusEngine {
         })
     }
 
+    fn spawn_service(
+        &self,
+        _world: &WorldHandle,
+        _spec: &ServiceSpec,
+    ) -> Result<ServiceHandle, EngineError> {
+        Err(EngineError::Unsupported {
+            engine: self.name(),
+            capability: "world service supervision (live Incus integration lands in M2.21)",
+        })
+    }
+
+    fn stop_service(&self, _service: &ServiceHandle) -> Result<(), EngineError> {
+        Err(EngineError::Unsupported {
+            engine: self.name(),
+            capability: "world service supervision (live Incus integration lands in M2.21)",
+        })
+    }
+
+    fn service_logs(&self, _world: &WorldHandle, _id: &str) -> Result<ServiceLogs, EngineError> {
+        Err(EngineError::Unsupported {
+            engine: self.name(),
+            capability: "world service log capture (live Incus integration lands in M2.21)",
+        })
+    }
+
+    fn entry_command(
+        &self,
+        world: &WorldHandle,
+        cwd: &Path,
+    ) -> Result<WorldEntryCommand, EngineError> {
+        let instance = {
+            let mut worlds = self.lock()?;
+            let record = self.owned(&mut worlds, world)?;
+            if record.status == WorldStatus::Destroyed {
+                return Err(EngineError::WorldGone {
+                    world: format!("{world:?}"),
+                });
+            }
+            record.instance.clone()
+        };
+        Ok(WorldEntryCommand {
+            program: PathBuf::from("incus"),
+            args_prefix: vec![
+                "exec".to_owned(),
+                instance,
+                "--cwd".to_owned(),
+                cwd.display().to_string(),
+                "--".to_owned(),
+            ],
+            cwd: cwd.to_path_buf(),
+        })
+    }
+
+    fn dial_world_tcp(&self, _world: &WorldHandle, _port: u16) -> Result<TcpStream, EngineError> {
+        Err(EngineError::Unsupported {
+            engine: self.name(),
+            capability: "dial_world_tcp over an Incus instance (live Incus integration lands in M2.21)",
+        })
+    }
+
     fn destroy_world(&self, world: WorldHandle) -> Result<(), EngineError> {
         let instance = {
             let mut worlds = self.lock()?;
@@ -408,6 +472,9 @@ impl WorldEngine for IncusEngine {
                 "Incus delete failed ({status}): {resp}"
             )));
         }
+        // The instance is gone, so the record goes too: a long-lived engine must not accumulate one
+        // entry per destroyed world, and the old handle now resolves to `WorldGone`.
+        self.lock()?.remove(&world.seq());
         Ok(())
     }
 }

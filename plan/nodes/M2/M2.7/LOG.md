@@ -39,3 +39,7 @@ attempt 1/3 started
 ## 2026-11-15T19:36 [lead]
 
 H-011 ruling recorded: Option B + persistent world-init PID 1; netns.sock SCM_RIGHTS dialer in linux_cow.rs; AF_UNIX <state_root>/http-ingress.sock bridge; freeze stops services first.
+
+## 2026-11-15T19:45 [lead]
+
+status active -> review
