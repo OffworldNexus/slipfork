@@ -1,0 +1,12 @@
+[package]
+name = "slipfork-vcs"
+description = "RepoRootResolver, VcsWorkspace and VcsWorkspaceFactory ports with Git worktree and Jujutsu workspace adapters"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+slipfork-world = { path = "../slipfork-world" }
+thiserror.workspace = true

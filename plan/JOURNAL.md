@@ -216,3 +216,14 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-15T18:51 [M2.15] (lead) edited fields
 - 2026-11-15T18:51 [M2.16] (lead) edited fields
 - 2026-11-15T18:51 [M2.17] (lead) edited fields
+- 2026-11-15T18:51 [M2.1] (lead) status active -> done
+- 2026-11-15T18:51 [M2.2] (lead) status ready -> active
+- 2026-11-15T18:51 [M2.2] (lead) attempt 1/3 started
+- 2026-11-15T18:51 [M2.2] (lead) base aa4c5246451c1cba78a9cd431f59406638cefc76
+- 2026-11-15T18:56 [M2.2] (implementer) dependency->leaf mapping (Design #5): workspace deps -- tungstenite+rustls+webpki-roots+p256+tpmd-client+tpmd-ipc+tokio -> M2.13 (ospp-v1 sync wss, DeviceKeySig
+- 2026-11-15T18:56 [M2.2] (implementer) observations (not fixed, outside docs paths): pinned tpmd crates declare rust-version 1.94 while workspace still promises 1.88 (verified build only with rustc 1
+- 2026-11-15T18:57 [M2.2] (lead) edited fields
+- 2026-11-15T18:57 [M2.19] (lead) edited fields
+- 2026-11-15T18:57 [M2.20] (lead) edited fields
+- 2026-11-15T18:58 [M2.2] (implementer) Round-1 Quad remediation: dag `default = []` (fs inert until M2.5; ARCHITECTURE.md contract so dag-at-defaults never grants filesystem), workspace rust-version 
+- 2026-11-15T18:58 [M2.2] (lead) R1 quad gate: reviewer PASS, legality PASS, ioc FAIL(dag default=['fs'] -> spec amended to default=[]), cruft PASS(MSRV). Remediation: dag default=[] , rust-ver

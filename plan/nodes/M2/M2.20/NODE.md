@@ -11,7 +11,7 @@ attempts: 0
 max_attempts: 3
 escalation: none
 created: "2026-11-15T16:40"
-updated: "2026-11-15T16:40"
+updated: "2026-11-15T18:57"
 ---
 
 # Goal
@@ -31,7 +31,8 @@ Cut the milestone release: bump the workspace and the `@slipfork/opencode` packa
 3. **Docs label.** `zensical.toml` shows `CLI (0.2.0)` so the published site cannot advertise a version that was not released.
 4. **Changelog.** `CHANGELOG.md` has exactly one `0.2.0` section, dated, listing additions and removals; no compatibility promises (the workspace is pre-`1.0`).
 5. **Unused-dependency audit.** For every dependency listed in each crate manifest, at least one source or test file in that crate references the crate name; the audit mapping is recorded in the node log. A dependency with no consumer is **deleted** from the manifest in this node (never parked for later).
-6. **Full gate.** `make check` (plan, hygiene, Python lint and unit tests, TypeScript tests, Rust fmt, clippy plus rustdoc, Rust tests, docs) and `make bench` (read-only mode) both exit `0`, and the working tree is clean afterwards.
+6. **MSRV gate.** `[workspace.package] rust-version = "1.94"` (forced by the pinned `tpmd` git crates) matches every published MSRV claim and the release notes; a stale `1.88` anywhere fails this node.
+7. **Full gate.** `make check` (plan, hygiene, Python lint and unit tests, TypeScript tests, Rust fmt, clippy plus rustdoc, Rust tests, docs) and `make bench` (read-only mode) both exit `0`, and the working tree is clean afterwards.
 
 # Acceptance
 

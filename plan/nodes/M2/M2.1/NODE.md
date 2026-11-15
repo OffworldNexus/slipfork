@@ -2,7 +2,7 @@
 id: M2.1
 title: "Author ADR-0008 (OSPP v1 WebSocket, tpmd P-256, ResourceStrategy, world UX) and align ADRs/ARCHITECTURE/target-DX"
 kind: task
-status: active
+status: done
 owner: architect
 priority: 3
 depends_on: []
@@ -11,7 +11,7 @@ attempts: 2
 max_attempts: 3
 escalation: architect
 created: "2026-11-15T16:40"
-updated: "2026-11-15T18:25"
+updated: "2026-11-15T18:51"
 ---
 
 # Goal

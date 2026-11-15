@@ -11,6 +11,7 @@ rust-version.workspace = true
 libc.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+slipfork-world = { path = "../slipfork-world" }
 thiserror.workspace = true
 
 [dev-dependencies]

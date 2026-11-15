@@ -2,7 +2,7 @@
 id: M2.2
 title: "Workspace wedge: scaffold slipfork-edge/slipfork-vcs/slipfork-ospp and declare M2 dependencies"
 kind: task
-status: ready
+status: active
 owner: implementer
 priority: 3
 depends_on: [M2.1]
@@ -13,11 +13,11 @@ paths:
   - "crates/slipfork-edge/**"
   - "crates/slipfork-vcs/**"
   - "crates/slipfork-ospp/**"
-attempts: 0
+attempts: 1
 max_attempts: 3
 escalation: none
 created: "2026-11-15T16:40"
-updated: "2026-11-15T18:38"
+updated: "2026-11-15T18:57"
 ---
 
 # Goal
@@ -45,11 +45,11 @@ Create the three new M2 crates (`crates/slipfork-edge`, `crates/slipfork-vcs`, `
 
    ```toml
    [features]
-   default = ["fs"]
+   default = []
    fs = []
    ```
 
-   in this node, so `M2.2` compiles cleanly while `FsMerkleHasher`/`FsDigestCache` are still unconditional. `M2.5` then flips `default = []` and moves those two adapters behind `#[cfg(feature = "fs")]`, which is exactly what makes the `features = ["fs"]` line that `crates/slipfork/Cargo.toml` already carries meaningful. No other crate gets a `[features]` table. **H-009 Option B is out of scope here:** the `tier = "none"` `incus-engine` removal from `support/integrations.toml` lives in `M2.5`, the only leaf that owns `support/**`; this node never touches `support/**`.
+   in this node. `default = []` is mandatory now (it is the end state in `ARCHITECTURE.md` §3): the feature is inert while `FsMerkleHasher`/`FsDigestCache` are still unconditional, so a domain crate that consumes `slipfork-dag` at defaults can never inherit the filesystem capability by accident. `M2.5` then moves those two adapters behind `#[cfg(feature = "fs")]`, which is exactly what makes the `features = ["fs"]` line that `crates/slipfork/Cargo.toml` already carries meaningful. No other crate gets a `[features]` table. **H-009 Option B is out of scope here:** the `tier = "none"` `incus-engine` removal from `support/integrations.toml` lives in `M2.5`, the only leaf that owns `support/**`; this node never touches `support/**`.
 
 5. **Unused-dependency discipline:** each declared dependency must be consumed by a named M2 leaf (record the mapping in the node log). The final milestone docs/cleanup gate re-checks that no declared dependency stayed unused.
 6. `make check` must be green at the end of this node (skeletons compile, clippy clean, docs untouched).

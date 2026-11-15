@@ -23,7 +23,7 @@ attempts: 0
 max_attempts: 3
 escalation: none
 created: "2026-11-15T16:40"
-updated: "2026-11-15T16:40"
+updated: "2026-11-15T18:57"
 ---
 
 # Goal
@@ -45,7 +45,8 @@ Promote every command and integration that actually shipped in `0.2.0` into lean
 4. **Generated matrix.** `docs/support-matrix.md` is produced by `make support-sync` and committed; a manual edit fails `tools/check_support.py --check`.
 5. **Changelog.** `CHANGELOG.md` gets one `0.2.0` section listing the added commands, the protocol and engine changes, and the removals (the deleted REST sketch), with no compatibility promises since the workspace is pre-`1.0`.
 6. **Critics.** Record `docs/design/m2-docs.review-dx.md` and `docs/design/m2-docs.review-ai-ergonomics.md`: every command must have a copy-pasteable invocation, an obvious failure mode, and no ambiguous target selection. Unresolved findings block this node.
-7. `make docs-check` runs Zensical in strict mode plus `tools/check_docs_honesty.py`; both must exit `0`.
+7. **MSRV honesty.** The pinned upstream `tpmd-client`/`tpmd-ipc`/`tpmd-proto` require Rust `1.94`, so the published install path must say `Rust 1.94+` (never `1.88+`) everywhere it is stated; do not vendor, patch, or downgrade the `tpmd` crates to regain the old MSRV.
+8. `make docs-check` runs Zensical in strict mode plus `tools/check_docs_honesty.py`; both must exit `0`.
 
 # Acceptance
 
