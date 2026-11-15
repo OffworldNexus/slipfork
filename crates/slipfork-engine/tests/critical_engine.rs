@@ -6,6 +6,8 @@
 //! exercised against an in-tree Unix-socket protocol harness only (live `incusd` is gated on
 //! `H-004`).
 
+mod support;
+
 use std::fs;
 use std::io::{Read, Write};
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
@@ -20,9 +22,9 @@ use std::time::{Duration, Instant};
 use slipfork_engine::conformance::assert_world_engine_conformance;
 use slipfork_engine::{
     EngineError, ExecEnv, ExecOutput, IncusEngine, InheritedVar, LocalIngressBridge, MountMode,
-    ReflinkNetnsEngine, ServiceHandle, ServiceLogs, ServiceSpec, ServiceState, SnapshotId,
-    SnapshotMode, StreamChunk, WorldEngine, WorldEntryCommand, WorldHandle, WorldMount, WorldSpec,
-    current_uid_gid, probe_reflink_dir,
+    ReflinkNetnsEngine, ServiceHandle, ServiceLogs, ServiceRuntime, ServiceSpec, ServiceState,
+    SnapshotId, SnapshotMode, StreamChunk, WorldEngine, WorldEntryCommand, WorldHandle, WorldMount,
+    WorldRootfs, WorldSpec, current_uid_gid, probe_reflink_dir,
 };
 use slipfork_world::WorldTarget;
 
@@ -107,6 +109,7 @@ fn wait_until(condition: impl Fn() -> bool, timeout: Duration) -> bool {
 struct WorldFixture {
     root: PathBuf,
     engine: ReflinkNetnsEngine,
+    rootfs: WorldRootfs,
     snapshot: SnapshotId,
     home: PathBuf,
     repo: PathBuf,
@@ -129,6 +132,7 @@ impl WorldFixture {
         Self {
             root,
             engine,
+            rootfs: support::fixture_rootfs(),
             snapshot,
             home,
             repo,
@@ -144,6 +148,7 @@ impl WorldFixture {
         self.engine
             .clone_world(&WorldSpec {
                 target,
+                rootfs: self.rootfs.clone(),
                 snapshot: snapshot.clone(),
                 mounts: vec![WorldMount {
                     host_path: self.repo.clone(),
@@ -174,8 +179,10 @@ impl WorldFixture {
 fn service_spec(id: &str, cwd: &Path, port: Option<u16>, script: &str) -> ServiceSpec {
     ServiceSpec {
         id: id.to_owned(),
-        argv: vec!["sh".to_owned(), "-c".to_owned(), script.to_owned()],
-        cwd: cwd.to_path_buf(),
+        runtime: ServiceRuntime::WorldProcess {
+            argv: vec!["sh".to_owned(), "-c".to_owned(), script.to_owned()],
+            cwd: cwd.to_path_buf(),
+        },
         env: ExecEnv::default(),
         readiness_port: port,
     }
@@ -204,7 +211,7 @@ fn r10_r11_reflink_netns_conformance_cow_isolation_uid_and_parallel_same_port() 
     let (uid, gid) = current_uid_gid();
 
     // 1. Shared WorldEngine contract (fail-closed errors, redaction, opaque handles, seal-once).
-    assert_world_engine_conformance(&fx.engine, &fx.root);
+    assert_world_engine_conformance(&fx.engine, &fx.root, &fx.rootfs);
 
     // 2. Two simultaneous clones of the same snapshot.
     let workspace_a = fx.repo.clone();
@@ -216,6 +223,7 @@ fn r10_r11_reflink_netns_conformance_cow_isolation_uid_and_parallel_same_port() 
         .engine
         .clone_world(&WorldSpec {
             target: WorldTarget::UserFork("b".to_owned()),
+            rootfs: fx.rootfs.clone(),
             snapshot: fx.snapshot.clone(),
             mounts: vec![WorldMount {
                 host_path: workspace_b.clone(),
@@ -278,14 +286,7 @@ fn r10_r11_reflink_netns_conformance_cow_isolation_uid_and_parallel_same_port() 
             engine
                 .exec_in_world(
                     &world,
-                    &[
-                        "uv".to_owned(),
-                        "run".to_owned(),
-                        "--no-project".to_owned(),
-                        "python".to_owned(),
-                        "-c".to_owned(),
-                        bind_py.to_owned(),
-                    ],
+                    &["python3".to_owned(), "-c".to_owned(), bind_py.to_owned()],
                     &cwd,
                     &ExecEnv::default(),
                     &mut |_| {},
@@ -335,6 +336,7 @@ fn multi_mount_repo_rw_and_readonly_artifact_volume_are_real_bind_mounts() {
         .engine
         .clone_world(&WorldSpec {
             target: WorldTarget::UserFork("mounts".to_owned()),
+            rootfs: fx.rootfs.clone(),
             snapshot: fx.snapshot.clone(),
             mounts: vec![
                 WorldMount {
@@ -389,6 +391,7 @@ fn multi_mount_repo_rw_and_readonly_artifact_volume_are_real_bind_mounts() {
     // Nested read-write mounts are refused before any world state is materialized.
     let nested = WorldSpec {
         target: WorldTarget::UserFork("nested".to_owned()),
+        rootfs: fx.rootfs.clone(),
         snapshot: fx.snapshot.clone(),
         mounts: vec![
             WorldMount {
@@ -520,6 +523,7 @@ fn redacted_exec_env_and_opaque_world_handles() {
     // A WorldSpec carrying secrets never renders them either.
     let full = WorldSpec {
         target: WorldTarget::Canonical,
+        rootfs: support::fixture_rootfs(),
         snapshot: snap("whatever"),
         mounts: vec![],
         base_env: env.clone(),
@@ -539,6 +543,7 @@ fn redacted_exec_env_and_opaque_world_handles() {
         .engine
         .clone_world(&WorldSpec {
             target: WorldTarget::Canonical,
+            rootfs: fx.rootfs.clone(),
             snapshot: fx.snapshot.clone(),
             mounts: vec![],
             base_env,
@@ -596,11 +601,12 @@ fn persistent_init_pid_stays_stable_across_calls_and_is_reaped_on_destroy() {
         "ReflinkNetnsEngine enters via a single-threaded nsenter child"
     );
     assert!(
-        entry
-            .args_prefix
-            .iter()
-            .any(|arg| arg == &format!("--wd={}", fx.repo.display())),
-        "entry must preserve the requested cwd: {:?}",
+        entry.args_prefix.iter().any(|arg| arg == "--wd=/")
+            && entry
+                .args_prefix
+                .iter()
+                .any(|arg| arg == &fx.repo.display().to_string()),
+        "entry must apply the requested cwd after entering the world mount namespace: {:?}",
         entry.args_prefix
     );
     assert!(
@@ -805,14 +811,10 @@ fn readiness_timeout_stops_the_supervisor_and_releases_the_service_id() {
          \x20   c, _ = s.accept()\n\
          \x20   c.close()\n";
     let mut retry = service_spec("stall", &fx.repo, Some(18098), "");
-    retry.argv = vec![
-        "uv".to_owned(),
-        "run".to_owned(),
-        "--no-project".to_owned(),
-        "python".to_owned(),
-        "-c".to_owned(),
-        server.to_owned(),
-    ];
+    retry.runtime = ServiceRuntime::WorldProcess {
+        argv: vec!["python3".to_owned(), "-c".to_owned(), server.to_owned()],
+        cwd: fx.repo.clone(),
+    };
     let handle = fx.service(&world, retry);
     assert_eq!(handle.state(), ServiceState::Running);
 
@@ -842,14 +844,10 @@ fn dial_world_tcp_reaches_in_world_listener_via_netns_sock_scm_rights() {
         port = 18080
     );
     let mut spec = service_spec("echo", &fx.repo, Some(18080), "");
-    spec.argv = vec![
-        "uv".to_owned(),
-        "run".to_owned(),
-        "--no-project".to_owned(),
-        "python".to_owned(),
-        "-c".to_owned(),
-        echo_server,
-    ];
+    spec.runtime = ServiceRuntime::WorldProcess {
+        argv: vec!["python3".to_owned(), "-c".to_owned(), echo_server],
+        cwd: fx.repo.clone(),
+    };
     // `spawn_service` only returns once the in-world port accepts connections through
     // `dial_world_tcp`, so readiness itself exercises the `SCM_RIGHTS` handoff.
     let echo = fx.service(&world, spec);
@@ -914,14 +912,10 @@ fn two_worlds_isolate_the_same_port_and_dial_independently() {
              \x20   c.close()\n"
         );
         let mut spec = service_spec("same-port", &fx.repo, Some(18432), "");
-        spec.argv = vec![
-            "uv".to_owned(),
-            "run".to_owned(),
-            "--no-project".to_owned(),
-            "python".to_owned(),
-            "-c".to_owned(),
-            server,
-        ];
+        spec.runtime = ServiceRuntime::WorldProcess {
+            argv: vec!["python3".to_owned(), "-c".to_owned(), server],
+            cwd: fx.repo.clone(),
+        };
         fx.service(world, spec);
     }
 
@@ -958,7 +952,7 @@ fn entry_command_enters_the_persistent_init_pid_with_native_stdio() {
         .args([
             "sh",
             "-c",
-            "printf 'entered|%s|%s|%s' \"$(id -u)\" \"$(stat -c %i /proc/1/ns/pid)\" \"$PWD\"",
+            "printf 'entered|%s|%s|%s' \"$(id -u)\" \"$(stat -c %i /proc/1/ns/pid)\" \"$(pwd)\"",
         ])
         .env_clear()
         .env("PATH", HELPER_PATH)
@@ -1027,14 +1021,10 @@ fn in_netns_bridge_port_80_reaches_host_ingress_and_dials_back_into_the_world() 
          \x20   c.sendall(b\"HTTP/1.1 200 OK\\r\\nContent-Length: 9\\r\\n\\r\\nbridge-ok\")\n\
          \x20   c.close()\n";
     let mut spec = service_spec("app", &fx.repo, Some(18081), "");
-    spec.argv = vec![
-        "uv".to_owned(),
-        "run".to_owned(),
-        "--no-project".to_owned(),
-        "python".to_owned(),
-        "-c".to_owned(),
-        app.to_owned(),
-    ];
+    spec.runtime = ServiceRuntime::WorldProcess {
+        argv: vec!["python3".to_owned(), "-c".to_owned(), app.to_owned()],
+        cwd: fx.repo.clone(),
+    };
     fx.service(&world, spec);
 
     // Host ingress stand-in for `slipforkd`: every request that arrives over the AF_UNIX socket is
@@ -1127,6 +1117,7 @@ fn world_init_fails_closed_when_the_helper_is_missing() {
     let err = engine
         .clone_world(&WorldSpec {
             target: WorldTarget::Canonical,
+            rootfs: support::fixture_rootfs(),
             snapshot: snap("base"),
             mounts: vec![],
             base_env: world_env(&root.join("home")),
@@ -1267,6 +1258,7 @@ fn r12_incus_engine_protocol_harness_matches_conformance_contract() {
     );
     let spec = WorldSpec {
         target: WorldTarget::Canonical,
+        rootfs: support::fixture_rootfs(),
         snapshot: snap("mig"),
         mounts: vec![],
         base_env: world_env(dir.path()),
@@ -1279,7 +1271,7 @@ fn r12_incus_engine_protocol_harness_matches_conformance_contract() {
 
     let fake = FakeIncus::start(socket.clone());
     let incus = IncusEngine::new(&socket, "default", "acme-base", 1000, 1000);
-    assert_world_engine_conformance(&incus, dir.path());
+    assert_world_engine_conformance(&incus, dir.path(), &support::fixture_rootfs());
 
     let repo = dir.path().join("repo");
     let volumes = dir.path().join("volumes");
@@ -1288,6 +1280,7 @@ fn r12_incus_engine_protocol_harness_matches_conformance_contract() {
     let world = incus
         .clone_world(&WorldSpec {
             target: WorldTarget::UserFork("incus".to_owned()),
+            rootfs: support::fixture_rootfs(),
             snapshot: snap("seed-catalog"),
             mounts: vec![
                 WorldMount {

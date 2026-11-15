@@ -418,6 +418,31 @@ impl WorldEngine for IncusEngine {
         })
     }
 
+    fn exec_in_service(
+        &self,
+        _service: &ServiceHandle,
+        _argv: &[String],
+        _overlay_env: &ExecEnv,
+        _on_output: &mut dyn FnMut(StreamChunk),
+    ) -> Result<ExecOutput, EngineError> {
+        // Incus service supervision (including `crun exec`) stays `Unsupported` until the live
+        // adapter lands in `M2.21`; there is no app-rootfs fallback client (`ADR-0009` §2–§3).
+        Err(EngineError::Unsupported {
+            engine: self.name(),
+            capability: "exec inside a backing-service container (live Incus integration lands in M2.21)",
+        })
+    }
+
+    fn service_entry_command(
+        &self,
+        _service: &ServiceHandle,
+    ) -> Result<WorldEntryCommand, EngineError> {
+        Err(EngineError::Unsupported {
+            engine: self.name(),
+            capability: "service container entry (live Incus integration lands in M2.21)",
+        })
+    }
+
     fn entry_command(
         &self,
         world: &WorldHandle,

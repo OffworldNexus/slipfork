@@ -21,6 +21,7 @@ pub mod conformance;
 pub mod env;
 pub mod incus;
 pub mod linux_cow;
+pub mod oci;
 pub mod reflink_netns;
 pub mod rootfs;
 pub mod service;
@@ -38,6 +39,7 @@ pub use env::{ExecEnv, InheritedVar};
 pub use incus::IncusEngine;
 pub use linux_cow::{ReflinkStats, current_uid_gid, probe_reflink_dir, reflink_tree};
 pub use reflink_netns::ReflinkNetnsEngine;
+pub use rootfs::{BackingServiceKey, OciRootfs, WorldRootfs};
 pub use service::ServiceLogs;
 
 use slipfork_world::WorldTarget;
@@ -127,6 +129,9 @@ pub struct LocalIngressBridge {
 pub struct WorldSpec {
     /// World identity (`slipfork_world::WorldTarget`).
     pub target: WorldTarget,
+    /// Dockerfile-derived `L0` rootfs, static `crun`, and backing-service OCI images
+    /// (`ADR-0009` §1–§3).
+    pub rootfs: WorldRootfs,
     /// Immutable base snapshot the world is cloned from.
     pub snapshot: SnapshotId,
     /// Repo worktree (`ReadWrite`) plus artifact volumes and seed dumps (`ReadOnly`).
@@ -140,6 +145,27 @@ pub struct WorldSpec {
 impl WorldSpec {
     /// Fail closed on a spec no engine may materialize.
     pub fn validate(&self) -> Result<(), EngineError> {
+        for path in [&self.rootfs.app_rootfs, &self.rootfs.crun_bin] {
+            if !path.is_absolute() {
+                return Err(EngineError::InvalidWorldSpec {
+                    reason: format!(
+                        "rootfs path '{}' must be absolute (WorldRootfs provenance)",
+                        path.display()
+                    ),
+                });
+            }
+        }
+        for image in self.rootfs.service_images.values() {
+            if !image.rootfs.is_absolute() || !image.config.is_absolute() {
+                return Err(EngineError::InvalidWorldSpec {
+                    reason: format!(
+                        "backing-service rootfs '{}' and config '{}' must be absolute",
+                        image.rootfs.display(),
+                        image.config.display()
+                    ),
+                });
+            }
+        }
         if self.base_env.home().is_none() {
             return Err(EngineError::InvalidWorldSpec {
                 reason: "base_env must carry a world-scoped HOME (ExecEnv::world_scoped)"
@@ -219,19 +245,55 @@ impl fmt::Debug for WorldHandle {
     }
 }
 
-/// One world-owned service.
+/// One world-owned service (`ADR-0009` §2–§3).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServiceSpec {
     /// Stable service id (`api`, `postgres`, `redis`).
     pub id: String,
-    /// Command and arguments.
-    pub argv: Vec<String>,
-    /// Working directory inside the world.
-    pub cwd: PathBuf,
+    /// Exactly one runtime: an `L0` world process or a daemonless `crun` container.
+    pub runtime: ServiceRuntime,
     /// Overlay environment applied on top of the world's base env.
     pub env: ExecEnv,
     /// Port that must accept connections before the service counts as ready.
     pub readiness_port: Option<u16>,
+}
+
+/// Where one supervised service executes (`ADR-0009` §3).
+///
+/// Both variants flow through the same `spawn_service` / `stop_service` / `service_logs`
+/// surface — there is no second supervisor and no boolean mode flag.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ServiceRuntime {
+    /// An `L0` app component running on the world rootfs as `$UID:$GID`.
+    WorldProcess {
+        /// Command and arguments.
+        argv: Vec<String>,
+        /// Working directory inside the world.
+        cwd: PathBuf,
+    },
+    /// A daemonless `crun` backing-service container (`ADR-0009` §2).
+    ///
+    /// The image rootfs is read-only, the container shares the world's `127.0.0.1` (no network
+    /// namespace), and every process runs as the invoking host `$UID:$GID`.
+    OciContainer {
+        /// `snow.yml` `resources:` key resolved to an [`OciRootfs`] in [`WorldRootfs`].
+        image: BackingServiceKey,
+        /// Container command and arguments.
+        argv: Vec<String>,
+        /// Read-write CoW state under `<world_dir>/state`.
+        state_mounts: Vec<StateSubdirMount>,
+        /// Read-only host mounts (for example the verified `<sha256>.pgdump`, `ADR-0008` §2).
+        readonly_mounts: Vec<WorldMount>,
+    },
+}
+
+/// One read-write CoW state directory handed to a [`ServiceRuntime::OciContainer`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StateSubdirMount {
+    /// Directory relative to the world's CoW `state_dir` (`pgdata/main`, `redis/cache`, `s3`).
+    pub host_subdir: PathBuf,
+    /// Absolute mount destination inside the container (`/var/lib/postgresql/data`, `/data`).
+    pub container_path: PathBuf,
 }
 
 /// Lifecycle state of one world-owned service.
@@ -384,6 +446,10 @@ pub enum EngineError {
     ServiceAlreadyRunning { world: String, id: String },
     #[error("world {world} has no supervised service '{id}'")]
     UnknownService { world: String, id: String },
+    #[error(
+        "world {world} service '{id}' is not running (ServiceNotRunning); start the backing service before executing inside it"
+    )]
+    ServiceNotRunning { world: String, id: String },
     #[error("cannot dial 127.0.0.1:{port} inside world {world} (errno {errno})")]
     DialFailed {
         world: String,
@@ -460,6 +526,29 @@ pub trait WorldEngine: Send + Sync {
 
     /// Retained (size-capped) output of the service `id` inside `world`.
     fn service_logs(&self, world: &WorldHandle, id: &str) -> Result<ServiceLogs, EngineError>;
+
+    /// Execute `argv` **inside a running service's own rootfs** — never the app rootfs — so
+    /// `pg_restore`, `CHECKPOINT;`, and `psql` match the backing-service image (`ADR-0008` §2).
+    ///
+    /// Fails closed with [`EngineError::ServiceNotRunning`] unless the service is
+    /// [`ServiceState::Running`].
+    fn exec_in_service(
+        &self,
+        service: &ServiceHandle,
+        argv: &[String],
+        overlay_env: &ExecEnv,
+        on_output: &mut dyn FnMut(StreamChunk),
+    ) -> Result<ExecOutput, EngineError>;
+
+    /// `crun exec` entry command for interactive service clients (`slipfork db` -> `psql`,
+    /// `slipfork redis` -> `redis-cli`, `ADR-0009` §3).
+    ///
+    /// Fails closed with [`EngineError::ServiceNotRunning`] unless the service is
+    /// [`ServiceState::Running`].
+    fn service_entry_command(
+        &self,
+        service: &ServiceHandle,
+    ) -> Result<WorldEntryCommand, EngineError>;
 
     /// Execute `argv` inside `world` under the effective environment
     /// (`world.base_env ⊕ overlay_env`), streaming interleaved output chunks to `on_output`.

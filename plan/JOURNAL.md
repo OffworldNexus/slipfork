@@ -399,3 +399,11 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-15T21:42 [M2.27] (lead) base b21eda3a421f3aaf0d0ae616675d12a1d2039b54
 - 2026-11-15T21:50 [M2.17] (lead) edited fields
 - 2026-11-15T21:50 [M2.17] (lead) attempt 2/3 started
+- 2026-11-15T22:04 [M2.27] (lead) status active -> done
+- 2026-11-15T22:04 [M2.17] (lead) edited fields
+- 2026-11-15T22:04 [M2.17] (lead) attempt 3/3 started
+- 2026-11-15T22:04 [M2.17] (lead) attempt 3 rulings: db/redis entry stays M2.29 (this node = CLI + fail-closed; acceptance amended); edge daemon.rs path explicitly owned; git-remote-slipfork mus
+- 2026-11-15T22:14 [M2.17] (lead) status active -> review: attempt 3 legality fixes on disk; tree compile blocked only by WorldSpec.rootfs which M2.29 wires
+- 2026-11-15T22:14 [M2.29] (lead) status ready -> active
+- 2026-11-15T22:14 [M2.29] (lead) attempt 1/3 started
+- 2026-11-15T22:14 [M2.29] (lead) base b92c9aa98e8f156def422501491c0b098ad800bf; owns the WorldSpec.rootfs wiring that unblocks M2.17's compile

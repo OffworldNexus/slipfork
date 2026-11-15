@@ -14,6 +14,7 @@ use std::path::Path;
 use slipfork_world::WorldTarget;
 
 use crate::env::InheritedVar;
+use crate::rootfs::WorldRootfs;
 use crate::{
     EngineError, ExecEnv, MountMode, SnapshotId, SnapshotMode, WorldEngine, WorldMount, WorldSpec,
 };
@@ -26,7 +27,11 @@ const SECRET_VALUE: &str = "conformance-secret-value";
 /// # Panics
 ///
 /// Panics with a precise diagnostic when `engine` violates the contract.
-pub fn assert_world_engine_conformance(engine: &dyn WorldEngine, scratch_dir: &Path) {
+pub fn assert_world_engine_conformance(
+    engine: &dyn WorldEngine,
+    scratch_dir: &Path,
+    rootfs: &WorldRootfs,
+) {
     assert!(!engine.name().is_empty(), "engine name must not be empty");
 
     // 1. Stateful RAM snapshots are either honestly supported or typed fail-closed. There is no
@@ -65,6 +70,7 @@ pub fn assert_world_engine_conformance(engine: &dyn WorldEngine, scratch_dir: &P
 
     let missing = WorldSpec {
         target: WorldTarget::Canonical,
+        rootfs: rootfs.clone(),
         snapshot: SnapshotId("definitely-missing-snapshot".to_owned()),
         mounts: Vec::new(),
         base_env: base_env.clone(),

@@ -33,21 +33,39 @@ use slipfork_world::WorldTarget;
 
 use crate::child_env;
 use crate::linux_cow::{self, ProcessSignal, reflink_tree};
+use crate::oci::{self, ContainerBundle, ContainerMount};
+use crate::rootfs::{OciRootfs, WorldRootfs};
 use crate::service::ServiceLogs;
 use crate::world_init::{
     WORLD_INIT_CONFIG_FILE, WORLD_INIT_SOCKET_FILE, WorldInitConfig, WorldInitIngress,
-    WorldInitMount,
+    WorldInitMount, WorldInitRootfs,
 };
 use crate::{
-    EngineError, ExecEnv, ExecOutput, MountMode, ServiceHandle, ServiceSpec, ServiceState,
-    SnapshotId, SnapshotMode, StreamChunk, StreamSource, WorldEngine, WorldEntryCommand,
-    WorldHandle, WorldSpec, WorldStatus, target_slug,
+    EngineError, ExecEnv, ExecOutput, MountMode, ServiceHandle, ServiceRuntime, ServiceSpec,
+    ServiceState, SnapshotId, SnapshotMode, StateSubdirMount, StreamChunk, StreamSource,
+    WorldEngine, WorldEntryCommand, WorldHandle, WorldMount, WorldSpec, WorldStatus, target_slug,
 };
 
 /// Installed file name of the per-world PID 1 helper.
 const WORLD_INIT_PROGRAM: &str = "slipfork-world-init";
 /// Fixed search path for helper subprocesses (`ip`, `mount`, `nsenter`); nothing is inherited.
 const HELPER_PATH: &str = "/usr/local/bin:/usr/bin:/bin";
+/// Guest mount of the world's CoW `state_dir`.
+const WORLD_STATE_GUEST: &str = "/.slipfork/state";
+/// Guest mount of the host `<world_dir>/oci` bundle directory.
+const OCI_BUNDLES_GUEST: &str = "/.slipfork/oci";
+/// Guest mount of the host `<world_dir>/oci-run` `crun` state root.
+const OCI_RUN_GUEST: &str = "/.slipfork/run";
+/// Guest mount prefix of extracted backing-service OCI rootfs trees.
+const OCI_IMAGES_GUEST: &str = "/.slipfork/images";
+/// Guest path of the synthesized `/etc/passwd`.
+const PASSWD_GUEST: &str = "/.slipfork/etc/passwd";
+/// Guest path of the synthesized `/etc/group`.
+const GROUP_GUEST: &str = "/.slipfork/etc/group";
+/// Guest path of `slipforkd`'s ingress socket after `pivot_root`.
+const INGRESS_GUEST: &str = "/.slipfork/http-ingress.sock";
+/// Bound on a backing-service container accepting connections (images can be slow on first boot).
+const OCI_SERVICE_READY_TIMEOUT: Duration = Duration::from_secs(60);
 /// Bound on booting a world (mounts, loopback, listeners, `netns.sock`).
 const WORLD_INIT_TIMEOUT: Duration = Duration::from_secs(20);
 /// Bound on one `dial_world_tcp` round trip.
@@ -103,12 +121,21 @@ struct WorldRecord {
     init_pid: u32,
     launcher: Option<Child>,
     base_env: ExecEnv,
+    rootfs: WorldRootfs,
+    mounts: Vec<WorldMount>,
     status: WorldStatus,
     services: BTreeMap<String, ServiceRecord>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ServiceKind {
+    WorldProcess,
+    OciContainer,
+}
+
 #[derive(Debug)]
 struct ServiceRecord {
+    kind: ServiceKind,
     log: ServiceLogs,
     state: Arc<AtomicU8>,
     process: Arc<Mutex<ServiceProcess>>,
@@ -118,6 +145,34 @@ struct ServiceRecord {
 struct ServiceProcess {
     supervisor: Option<Child>,
     inner_pid: Option<u32>,
+    container: Option<ContainerProcess>,
+}
+
+/// Everything a spawn path needs from the already-locked world record.
+struct ServiceSpawn<'a> {
+    world: &'a WorldHandle,
+    init_pid: u32,
+    state_dir: &'a Path,
+    rootfs: &'a WorldRootfs,
+    mounts: &'a [WorldMount],
+    env: &'a BTreeMap<String, String>,
+    spec: &'a ServiceSpec,
+    log: &'a ServiceLogs,
+    process: &'a Arc<Mutex<ServiceProcess>>,
+}
+
+/// The `crun` invocation coordinates of one running backing-service container.
+#[derive(Debug, Clone)]
+struct ContainerProcess {
+    id: String,
+    /// World PID 1 used to `nsenter` back into the world for `crun kill` / `exec`.
+    init_pid: u32,
+    /// Guest path of the pinned static `crun`.
+    crun_guest: PathBuf,
+    /// Guest path of the `crun` state root (`--root`).
+    crun_root_guest: PathBuf,
+    /// Host path of the synthesized bundle (removed after the container exits).
+    bundle_host: PathBuf,
 }
 
 impl ReflinkNetnsEngine {
@@ -222,7 +277,11 @@ impl ReflinkNetnsEngine {
         }
     }
 
-    /// `nsenter` arguments entering every namespace of `init_pid` with `cwd` as working directory.
+    /// `nsenter` arguments entering every namespace of `init_pid`.
+    ///
+    /// The working directory is applied by [`world_cwd_wrapper`] **after** the mount-namespace
+    /// entry: a path that lives on a bind mount (the repo, `<state_dir>`) has no reachable host
+    /// pathname after `pivot_root`, so entering `--wd=<host path>` leaves `getcwd(2)` failing.
     fn entry_prefix(&self, init_pid: u32, cwd: &Path) -> Vec<String> {
         vec![
             format!("--target={init_pid}"),
@@ -252,6 +311,7 @@ impl ReflinkNetnsEngine {
         &self,
         label: &str,
         world_root: &Path,
+        state_dir: &Path,
         spec: &WorldSpec,
     ) -> Result<(PathBuf, u32, Child), EngineError> {
         let program = self.world_init_program(label)?.to_path_buf();
@@ -267,21 +327,131 @@ impl ReflinkNetnsEngine {
                 ),
             });
         }
+        let home = spec
+            .base_env
+            .home()
+            .ok_or_else(|| EngineError::InvalidWorldSpec {
+                reason: "base_env must carry a world-scoped HOME".to_owned(),
+            })?
+            .to_path_buf();
+        let crun_guest = spec.rootfs.crun_bin.clone();
+        let crun_host = spec
+            .rootfs
+            .app_rootfs
+            .join(crun_guest.strip_prefix("/").unwrap_or(&crun_guest));
+        if !crun_host.is_file() {
+            return Err(EngineError::WorldInitFailed {
+                world: label.to_owned(),
+                reason: format!(
+                    "the world rootfs '{}' does not contain the pinned static crun at \
+                     '{}' ({})",
+                    spec.rootfs.app_rootfs.display(),
+                    crun_guest.display(),
+                    crun_host.display()
+                ),
+            });
+        }
+        let mountpoints = world_root.join("mountpoints");
+        let merged = world_root.join("merged");
+        let oci_dir = world_root.join("oci");
+        let oci_run = world_root.join("oci-run");
+        for dir in [&mountpoints, &merged, &oci_dir, &oci_run] {
+            fs::create_dir_all(dir).map_err(|err| EngineError::Io {
+                path: dir.display().to_string(),
+                message: err.to_string(),
+            })?;
+        }
+        let (passwd, group) = synthesize_identity_files(
+            world_root,
+            &spec.rootfs,
+            &home,
+            self.host_uid,
+            self.host_gid,
+        )?;
+
+        let mut mounts: Vec<WorldInitMount> = spec.mounts.iter().map(world_init_mount).collect();
+        mounts.extend(spec.rootfs.host_caches.iter().map(world_init_mount));
+        mounts.push(WorldInitMount {
+            host_path: home.clone(),
+            guest_path: home.clone(),
+            read_only: false,
+        });
+        mounts.push(WorldInitMount {
+            host_path: passwd.clone(),
+            guest_path: PathBuf::from("/etc/passwd"),
+            read_only: true,
+        });
+        mounts.push(WorldInitMount {
+            host_path: group.clone(),
+            guest_path: PathBuf::from("/etc/group"),
+            read_only: true,
+        });
+        mounts.push(WorldInitMount {
+            host_path: passwd,
+            guest_path: PathBuf::from(PASSWD_GUEST),
+            read_only: true,
+        });
+        mounts.push(WorldInitMount {
+            host_path: group,
+            guest_path: PathBuf::from(GROUP_GUEST),
+            read_only: true,
+        });
+        mounts.push(WorldInitMount {
+            host_path: state_dir.to_path_buf(),
+            guest_path: PathBuf::from(WORLD_STATE_GUEST),
+            read_only: false,
+        });
+        mounts.push(WorldInitMount {
+            host_path: oci_dir,
+            guest_path: PathBuf::from(OCI_BUNDLES_GUEST),
+            read_only: false,
+        });
+        mounts.push(WorldInitMount {
+            host_path: oci_run,
+            guest_path: PathBuf::from(OCI_RUN_GUEST),
+            read_only: false,
+        });
+        for image in spec.rootfs.service_images.values() {
+            mounts.push(WorldInitMount {
+                host_path: image.rootfs.clone(),
+                guest_path: image_guest_rootfs(&image.digest)?,
+                read_only: true,
+            });
+        }
+        let local_ingress = match &spec.local_ingress {
+            Some(bridge) => {
+                if !bridge.host_ingress_sock.exists() {
+                    return Err(EngineError::WorldInitFailed {
+                        world: label.to_owned(),
+                        reason: format!(
+                            "local ingress socket '{}' does not exist; bind it before booting a \
+                             world",
+                            bridge.host_ingress_sock.display()
+                        ),
+                    });
+                }
+                mounts.push(WorldInitMount {
+                    host_path: bridge.host_ingress_sock.clone(),
+                    guest_path: PathBuf::from(INGRESS_GUEST),
+                    read_only: true,
+                });
+                Some(WorldInitIngress {
+                    port: bridge.port,
+                    host_ingress_sock: bridge.host_ingress_sock.clone(),
+                    guest_ingress_sock: PathBuf::from(INGRESS_GUEST),
+                })
+            }
+            None => None,
+        };
         let config = WorldInitConfig {
             netns_sock: netns_sock.clone(),
-            mounts: spec
-                .mounts
-                .iter()
-                .map(|mount| WorldInitMount {
-                    host_path: mount.host_path.clone(),
-                    guest_path: mount.guest_path.clone(),
-                    read_only: mount.mode == MountMode::ReadOnly,
-                })
-                .collect(),
-            local_ingress: spec.local_ingress.as_ref().map(|bridge| WorldInitIngress {
-                port: bridge.port,
-                host_ingress_sock: bridge.host_ingress_sock.clone(),
-            }),
+            rootfs: WorldInitRootfs {
+                app_rootfs: spec.rootfs.app_rootfs.clone(),
+                mountpoints,
+                merged,
+            },
+            mounts,
+            local_ingress,
         };
         let config_path = world_root.join(WORLD_INIT_CONFIG_FILE);
         fs::write(
@@ -348,7 +518,7 @@ impl ReflinkNetnsEngine {
                 }
             }
             if let Some(pid) = init_pid
-                && config.ready_path().exists()
+                && fs::read_to_string(config.ready_path()).is_ok_and(|ready| ready == "ready\n")
                 && netns_sock.exists()
             {
                 break Ok(pid);
@@ -389,9 +559,272 @@ impl ReflinkNetnsEngine {
         }
     }
 
+    /// Start one `L0` app component (`ServiceRuntime::WorldProcess`) as `$UID:$GID`.
+    fn spawn_world_process(
+        &self,
+        spawn: &ServiceSpawn<'_>,
+        argv: &[String],
+        cwd: &Path,
+    ) -> Result<(), EngineError> {
+        let mut command = Command::new("nsenter");
+        command
+            .args(self.entry_prefix(spawn.init_pid, Path::new("/")))
+            .args(world_cwd_wrapper(cwd, argv))
+            .env_clear()
+            .envs(spawn.env)
+            .env("SLIPFORK_WORLD_STATE", WORLD_STATE_GUEST)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let mut child = command.spawn().map_err(|err| {
+            EngineError::Execution(format!(
+                "cannot start service '{}' ({}): {err}",
+                spawn.spec.id,
+                argv.join(" ")
+            ))
+        })?;
+        if let Some(stdout) = child.stdout.take() {
+            spawn_log_reader(stdout, StreamSource::Stdout, spawn.log.clone());
+        }
+        if let Some(stderr) = child.stderr.take() {
+            spawn_log_reader(stderr, StreamSource::Stderr, spawn.log.clone());
+        }
+        let supervisor_pid = child.id();
+        if let Ok(mut process) = spawn.process.lock() {
+            process.supervisor = Some(child);
+        }
+        // `nsenter --pid` forks: the service itself is the launcher's first child. `SIGTERM` must
+        // reach that in-world pid, never the launcher parent.
+        if let Some(inner_pid) = wait_for_inner_pid(supervisor_pid, SERVICE_STOP_GRACE)
+            && let Ok(mut process) = spawn.process.lock()
+        {
+            process.inner_pid = Some(inner_pid);
+        }
+        Ok(())
+    }
+
+    /// Start one daemonless `crun` backing-service container (`ServiceRuntime::OciContainer`).
+    fn spawn_oci_container(
+        &self,
+        spawn: &ServiceSpawn<'_>,
+        image: &crate::BackingServiceKey,
+        argv: &[String],
+        state_mounts: &[StateSubdirMount],
+        readonly_mounts: &[WorldMount],
+    ) -> Result<(), EngineError> {
+        let oci = spawn.rootfs.service_images.get(image).ok_or_else(|| {
+            EngineError::InvalidWorldSpec {
+                reason: format!(
+                    "service '{}' requests backing-service image {image}, but WorldSpec.rootfs \
+                     carries no materialized OCI rootfs for it; materialize it with \
+                     BaseImageBuilder before cloning the world",
+                    spawn.spec.id
+                ),
+            }
+        })?;
+        let image_guest = image_guest_rootfs(&oci.digest)?;
+        if !oci.rootfs.is_dir() {
+            return Err(EngineError::InvalidWorldSpec {
+                reason: format!(
+                    "backing-service image {image} rootfs '{}' does not exist",
+                    oci.rootfs.display()
+                ),
+            });
+        }
+        let container_id = container_id(spawn.world.seq(), &spawn.spec.id);
+        let bundle_host = spawn.state_dir.parent().map_or_else(
+            || spawn.state_dir.join("oci").join(&container_id),
+            |world_dir| world_dir.join("oci").join(&container_id),
+        );
+        fs::create_dir_all(&bundle_host).map_err(|err| EngineError::Io {
+            path: bundle_host.display().to_string(),
+            message: err.to_string(),
+        })?;
+        let bundle_guest = PathBuf::from(OCI_BUNDLES_GUEST).join(&container_id);
+
+        let mut mounts = Vec::with_capacity(state_mounts.len() + readonly_mounts.len());
+        for state in state_mounts {
+            oci::validate_state_subdir(&state.host_subdir)
+                .map_err(|reason| EngineError::InvalidWorldSpec { reason })?;
+            oci::validate_container_path(&state.container_path)
+                .map_err(|reason| EngineError::InvalidWorldSpec { reason })?;
+            let host = spawn.state_dir.join(&state.host_subdir);
+            fs::create_dir_all(&host).map_err(|err| EngineError::Io {
+                path: host.display().to_string(),
+                message: err.to_string(),
+            })?;
+            ensure_container_destination(oci, image, &state.container_path)?;
+            mounts.push(ContainerMount {
+                source: PathBuf::from(WORLD_STATE_GUEST).join(&state.host_subdir),
+                destination: state.container_path.clone(),
+                read_only: false,
+            });
+        }
+        for readonly in readonly_mounts {
+            if readonly.mode != MountMode::ReadOnly {
+                return Err(EngineError::InvalidWorldSpec {
+                    reason: format!(
+                        "service '{}' readonly mount '{}' must carry MountMode::ReadOnly",
+                        spawn.spec.id,
+                        readonly.host_path.display()
+                    ),
+                });
+            }
+            oci::validate_container_path(&readonly.guest_path)
+                .map_err(|reason| EngineError::InvalidWorldSpec { reason })?;
+            ensure_container_destination(oci, image, &readonly.guest_path)?;
+            let source =
+                world_guest_for_host(spawn.mounts, &readonly.host_path).ok_or_else(|| {
+                    EngineError::InvalidWorldSpec {
+                        reason: format!(
+                            "readonly mount '{}' is not visible inside the world; add it to \
+                         WorldSpec.mounts as MountMode::ReadOnly",
+                            readonly.host_path.display()
+                        ),
+                    }
+                })?;
+            for state in state_mounts {
+                if oci::paths_overlap(&readonly.guest_path, &state.container_path) {
+                    return Err(EngineError::InvalidWorldSpec {
+                        reason: format!(
+                            "readonly mount {} collides with state mount {} in service '{}'",
+                            readonly.guest_path.display(),
+                            state.container_path.display(),
+                            spawn.spec.id
+                        ),
+                    });
+                }
+            }
+            mounts.push(ContainerMount {
+                source,
+                destination: readonly.guest_path.clone(),
+                read_only: true,
+            });
+        }
+
+        oci::write_bundle(&ContainerBundle {
+            bundle_dir: &bundle_host,
+            image_rootfs: &oci.rootfs,
+            image_rootfs_guest: &image_guest,
+            argv,
+            env: spawn.env,
+            uid: self.host_uid,
+            gid: self.host_gid,
+            mounts: &mounts,
+            passwd_guest: Path::new(PASSWD_GUEST),
+            group_guest: Path::new(GROUP_GUEST),
+        })
+        .map_err(|err| EngineError::Io {
+            path: bundle_host.display().to_string(),
+            message: err.to_string(),
+        })?;
+
+        let mut command = self.crun_command(
+            spawn.init_pid,
+            &spawn.rootfs.crun_bin,
+            Path::new(OCI_RUN_GUEST),
+            spawn.env,
+        );
+        command
+            .args([
+                "run".to_owned(),
+                "-b".to_owned(),
+                bundle_guest.display().to_string(),
+                container_id.clone(),
+            ])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let mut child = command.spawn().map_err(|err| {
+            EngineError::Execution(format!(
+                "cannot start backing-service container '{}' ({image}): {err}",
+                spawn.spec.id
+            ))
+        })?;
+        if let Some(stdout) = child.stdout.take() {
+            spawn_log_reader(stdout, StreamSource::Stdout, spawn.log.clone());
+        }
+        if let Some(stderr) = child.stderr.take() {
+            spawn_log_reader(stderr, StreamSource::Stderr, spawn.log.clone());
+        }
+        if let Ok(mut process) = spawn.process.lock() {
+            process.supervisor = Some(child);
+            process.container = Some(ContainerProcess {
+                id: container_id,
+                init_pid: spawn.init_pid,
+                crun_guest: spawn.rootfs.crun_bin.clone(),
+                crun_root_guest: PathBuf::from(OCI_RUN_GUEST),
+                bundle_host,
+            });
+        }
+        Ok(())
+    }
+
+    /// Build a `crun` invocation that runs inside the world's mount/net/pid namespaces.
+    fn crun_command(
+        &self,
+        init_pid: u32,
+        crun_guest: &Path,
+        crun_root_guest: &Path,
+        env: &BTreeMap<String, String>,
+    ) -> Command {
+        let mut command = Command::new("nsenter");
+        command
+            .args(self.entry_prefix(init_pid, Path::new("/")))
+            .arg(crun_guest)
+            .args(["--cgroup-manager=disabled", "--root"])
+            .arg(crun_root_guest)
+            .env_clear()
+            .envs(env)
+            .env("SLIPFORK_WORLD_STATE", WORLD_STATE_GUEST);
+        command
+    }
+
+    fn container_for(
+        &self,
+        service: &ServiceHandle,
+    ) -> Result<(ContainerProcess, ExecEnv), EngineError> {
+        let mut worlds = self.lock()?;
+        let record = self.owned(&mut worlds, service.world())?;
+        if record.status == WorldStatus::Destroyed {
+            return Err(EngineError::WorldGone {
+                world: format!("{:?}", service.world()),
+            });
+        }
+        let running =
+            record
+                .services
+                .get(service.id())
+                .ok_or_else(|| EngineError::UnknownService {
+                    world: format!("{:?}", service.world()),
+                    id: service.id().to_owned(),
+                })?;
+        if ServiceState::from_bits(running.state.load(Ordering::Relaxed)) != ServiceState::Running {
+            return Err(EngineError::ServiceNotRunning {
+                world: format!("{:?}", service.world()),
+                id: service.id().to_owned(),
+            });
+        }
+        let process = running.process.lock().map_err(|_| {
+            EngineError::Execution(format!(
+                "service '{}' process state is poisoned",
+                service.id()
+            ))
+        })?;
+        let container =
+            process
+                .container
+                .clone()
+                .ok_or_else(|| EngineError::ServiceNotRunning {
+                    world: format!("{:?}", service.world()),
+                    id: service.id().to_owned(),
+                })?;
+        Ok((container, record.base_env.clone()))
+    }
+
     /// Stop every live service of `world` before its state is sealed or torn down.
     fn stop_live_services(&self, world: &WorldHandle) -> Result<(), EngineError> {
-        let running: Vec<String> = {
+        let running: Vec<(String, ServiceKind)> = {
             let mut worlds = self.lock()?;
             let record = self.owned(&mut worlds, world)?;
             record
@@ -401,11 +834,17 @@ impl ReflinkNetnsEngine {
                     ServiceState::from_bits(service.state.load(Ordering::Relaxed))
                         == ServiceState::Running
                 })
-                .map(|(id, _)| id.clone())
+                .map(|(id, service)| (id.clone(), service.kind))
                 .collect()
         };
-        for id in running {
-            self.stop_service_inner(world, &id)?;
+        // `ADR-0009` §3: app components stop first, then backing-service containers, so no app
+        // request can observe a half-shut-down database during the freeze.
+        for kind in [ServiceKind::WorldProcess, ServiceKind::OciContainer] {
+            for (id, running_kind) in &running {
+                if *running_kind == kind {
+                    self.stop_service_inner(world, id)?;
+                }
+            }
         }
         Ok(())
     }
@@ -440,13 +879,17 @@ impl ReflinkNetnsEngine {
             return Ok(());
         }
 
-        let (supervisor, inner_pid) = {
+        let (supervisor, inner_pid, container) = {
             let Ok(mut process) = process.lock() else {
                 return Err(EngineError::Execution(format!(
                     "service '{id}' process state is poisoned"
                 )));
             };
-            (process.supervisor.take(), process.inner_pid)
+            (
+                process.supervisor.take(),
+                process.inner_pid,
+                process.container.clone(),
+            )
         };
         let Some(mut supervisor) = supervisor else {
             state.store(ServiceState::Stopped.to_bits(), Ordering::Relaxed);
@@ -461,11 +904,15 @@ impl ReflinkNetnsEngine {
                 .and_then(|children| children.first().copied())
         });
 
-        if let Some(pid) = inner_pid {
+        if let Some(container) = &container {
+            signal_container(self, container, "TERM");
+        } else if let Some(pid) = inner_pid {
             let _ = linux_cow::signal_process(pid, ProcessSignal::Terminate);
         }
         if !wait_for_exit(&mut supervisor, SERVICE_STOP_GRACE) {
-            if let Some(pid) = inner_pid {
+            if let Some(container) = &container {
+                signal_container(self, container, "KILL");
+            } else if let Some(pid) = inner_pid {
                 let _ = linux_cow::signal_process(pid, ProcessSignal::Kill);
             }
             let _ = supervisor.kill();
@@ -477,6 +924,10 @@ impl ReflinkNetnsEngine {
                     SERVICE_STOP_GRACE.as_secs()
                 )));
             }
+        }
+        if let Some(container) = &container {
+            delete_container(self, container);
+            let _ = fs::remove_dir_all(&container.bundle_host);
         }
         state.store(ServiceState::Stopped.to_bits(), Ordering::Relaxed);
         log.close();
@@ -629,7 +1080,7 @@ impl WorldEngine for ReflinkNetnsEngine {
             let _ = fs::remove_dir_all(&world_root);
             return Err(err);
         }
-        let booted = self.boot_world(&label, &world_root, spec);
+        let booted = self.boot_world(&label, &world_root, &state_dir, spec);
         let (netns_sock, init_pid, launcher) = match booted {
             Ok(booted) => booted,
             Err(err) => {
@@ -647,6 +1098,8 @@ impl WorldEngine for ReflinkNetnsEngine {
                 init_pid,
                 launcher: Some(launcher),
                 base_env: spec.base_env.clone(),
+                rootfs: spec.rootfs.clone(),
+                mounts: spec.mounts.clone(),
                 status: WorldStatus::Live,
                 services: BTreeMap::new(),
             },
@@ -664,13 +1117,22 @@ impl WorldEngine for ReflinkNetnsEngine {
                 reason: "service id must not be empty".to_owned(),
             });
         }
-        if spec.argv.is_empty() {
-            return Err(EngineError::InvalidWorldSpec {
-                reason: format!("service '{}' argv must not be empty", spec.id),
-            });
+        match &spec.runtime {
+            ServiceRuntime::WorldProcess { argv, .. }
+            | ServiceRuntime::OciContainer { argv, .. } => {
+                if argv.is_empty() {
+                    return Err(EngineError::InvalidWorldSpec {
+                        reason: format!("service '{}' argv must not be empty", spec.id),
+                    });
+                }
+            }
         }
+        let kind = match spec.runtime {
+            ServiceRuntime::WorldProcess { .. } => ServiceKind::WorldProcess,
+            ServiceRuntime::OciContainer { .. } => ServiceKind::OciContainer,
+        };
 
-        let (init_pid, state_dir, env, log, state, process) = {
+        let (init_pid, state_dir, rootfs, mounts, env, log, state, process) = {
             let mut worlds = self.lock()?;
             let record = self.owned(&mut worlds, world)?;
             if record.status == WorldStatus::Destroyed {
@@ -689,6 +1151,8 @@ impl WorldEngine for ReflinkNetnsEngine {
             }
             let init_pid = record.init_pid;
             let state_dir = record.state_dir.clone();
+            let rootfs = record.rootfs.clone();
+            let mounts = record.mounts.clone();
             let env = child_env::materialize(&record.base_env, &spec.env, |var| {
                 std::env::var(var.name()).ok()
             });
@@ -698,64 +1162,59 @@ impl WorldEngine for ReflinkNetnsEngine {
             record.services.insert(
                 spec.id.clone(),
                 ServiceRecord {
+                    kind,
                     log: log.clone(),
                     state: Arc::clone(&state),
                     process: Arc::clone(&process),
                 },
             );
-            (init_pid, state_dir, env, log, state, process)
+            (
+                init_pid, state_dir, rootfs, mounts, env, log, state, process,
+            )
         };
 
-        let mut command = Command::new("nsenter");
-        command
-            .args(self.entry_prefix(init_pid, &spec.cwd))
-            .args(&spec.argv)
-            .env_clear()
-            .envs(&env)
-            .env("SLIPFORK_WORLD_STATE", &state_dir)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        let mut child = match command.spawn() {
-            Ok(child) => child,
-            Err(err) => {
-                state.store(ServiceState::Stopped.to_bits(), Ordering::Relaxed);
-                log.close();
-                return Err(EngineError::Execution(format!(
-                    "cannot start service '{}' ({}): {err}",
-                    spec.id,
-                    spec.argv.join(" ")
-                )));
+        let spawn = ServiceSpawn {
+            world,
+            init_pid,
+            state_dir: &state_dir,
+            rootfs: &rootfs,
+            mounts: &mounts,
+            env: &env,
+            spec,
+            log: &log,
+            process: &process,
+        };
+        let spawned = match &spec.runtime {
+            ServiceRuntime::WorldProcess { argv, cwd } => {
+                self.spawn_world_process(&spawn, argv, cwd)
             }
+            ServiceRuntime::OciContainer {
+                image,
+                argv,
+                state_mounts,
+                readonly_mounts,
+            } => self.spawn_oci_container(&spawn, image, argv, state_mounts, readonly_mounts),
         };
-
-        if let Some(stdout) = child.stdout.take() {
-            spawn_log_reader(stdout, StreamSource::Stdout, log.clone());
-        }
-        if let Some(stderr) = child.stderr.take() {
-            spawn_log_reader(stderr, StreamSource::Stderr, log.clone());
-        }
-        let supervisor_pid = child.id();
-        if let Ok(mut process) = process.lock() {
-            process.supervisor = Some(child);
-        }
-        // `nsenter --pid` forks: the service itself is the launcher's first child. `SIGTERM` must
-        // reach that in-world pid, never the launcher parent.
-        if let Some(inner_pid) = wait_for_inner_pid(supervisor_pid, SERVICE_STOP_GRACE)
-            && let Ok(mut process) = process.lock()
-        {
-            process.inner_pid = Some(inner_pid);
+        if let Err(err) = spawned {
+            state.store(ServiceState::Stopped.to_bits(), Ordering::Relaxed);
+            log.close();
+            return Err(err);
         }
         spawn_service_watcher(Arc::clone(&process), Arc::clone(&state), log.clone());
 
         if let Some(port) = spec.readiness_port {
-            let deadline = Instant::now() + SERVICE_READY_TIMEOUT;
+            let timeout = if kind == ServiceKind::OciContainer {
+                OCI_SERVICE_READY_TIMEOUT
+            } else {
+                SERVICE_READY_TIMEOUT
+            };
+            let deadline = Instant::now() + timeout;
             loop {
                 match self.dial_world_tcp(world, port) {
                     Ok(_probe) => break,
                     Err(EngineError::DialFailed { .. }) => {}
                     Err(err) => {
-                        abort_service(&process, &state, &log);
+                        abort_service(self, &process, &state, &log);
                         return Err(err);
                     }
                 }
@@ -763,7 +1222,8 @@ impl WorldEngine for ReflinkNetnsEngine {
                     // The watcher already reaped the process and closed the log; the record stays
                     // `Exited` so a corrected retry with the same id is not blocked.
                     return Err(EngineError::Execution(format!(
-                        "service '{}' exited before port {port} accepted connections",
+                        "service '{}' exited before port {port} accepted connections (captured \
+                         logs retained)",
                         spec.id
                     )));
                 }
@@ -771,12 +1231,12 @@ impl WorldEngine for ReflinkNetnsEngine {
                     // Never leave a half-started service running behind a failed spawn: kill and
                     // reap it, mark it `Stopped`, and keep its captured log for diagnosis so the
                     // caller can retry the same id.
-                    abort_service(&process, &state, &log);
+                    abort_service(self, &process, &state, &log);
                     return Err(EngineError::Execution(format!(
                         "service '{}' did not accept connections on port {port} within {}s; \
                          the process was stopped (captured logs retained)",
                         spec.id,
-                        SERVICE_READY_TIMEOUT.as_secs()
+                        timeout.as_secs()
                     )));
                 }
                 thread::sleep(POLL_INTERVAL);
@@ -803,6 +1263,62 @@ impl WorldEngine for ReflinkNetnsEngine {
             })
     }
 
+    fn exec_in_service(
+        &self,
+        service: &ServiceHandle,
+        argv: &[String],
+        overlay_env: &ExecEnv,
+        on_output: &mut dyn FnMut(StreamChunk),
+    ) -> Result<ExecOutput, EngineError> {
+        if argv.is_empty() {
+            return Err(EngineError::Execution(
+                "service exec argv must not be empty".to_owned(),
+            ));
+        }
+        let (container, base_env) = self.container_for(service)?;
+        let env =
+            child_env::materialize(&base_env, overlay_env, |var| std::env::var(var.name()).ok());
+        let mut command = self.crun_command(
+            container.init_pid,
+            &container.crun_guest,
+            &container.crun_root_guest,
+            &env,
+        );
+        command.arg("exec");
+        for (name, value) in &env {
+            command.args(["--env", &format!("{name}={value}")]);
+        }
+        command
+            .arg(&container.id)
+            .args(argv)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        run_streamed(command, on_output)
+    }
+
+    fn service_entry_command(
+        &self,
+        service: &ServiceHandle,
+    ) -> Result<WorldEntryCommand, EngineError> {
+        let (container, _env) = self.container_for(service)?;
+        let mut args_prefix = self.entry_prefix(container.init_pid, Path::new("/"));
+        args_prefix.push(container.crun_guest.display().to_string());
+        args_prefix.extend([
+            "--cgroup-manager=disabled".to_owned(),
+            "--root".to_owned(),
+            container.crun_root_guest.display().to_string(),
+            "exec".to_owned(),
+            container.id,
+            "--".to_owned(),
+        ]);
+        Ok(WorldEntryCommand {
+            program: PathBuf::from("nsenter"),
+            args_prefix,
+            cwd: PathBuf::from("/"),
+        })
+    }
+
     fn exec_in_world(
         &self,
         world: &WorldHandle,
@@ -816,7 +1332,7 @@ impl WorldEngine for ReflinkNetnsEngine {
                 "exec argv must not be empty".to_owned(),
             ));
         }
-        let (init_pid, state_dir, env) = {
+        let (init_pid, env) = {
             let mut worlds = self.lock()?;
             let record = self.owned(&mut worlds, world)?;
             if record.status == WorldStatus::Destroyed {
@@ -826,7 +1342,6 @@ impl WorldEngine for ReflinkNetnsEngine {
             }
             (
                 record.init_pid,
-                record.state_dir.clone(),
                 child_env::materialize(&record.base_env, overlay_env, |var| {
                     std::env::var(var.name()).ok()
                 }),
@@ -835,47 +1350,15 @@ impl WorldEngine for ReflinkNetnsEngine {
 
         let mut command = Command::new("nsenter");
         command
-            .args(self.entry_prefix(init_pid, cwd))
-            .args(argv)
+            .args(self.entry_prefix(init_pid, Path::new("/")))
+            .args(world_cwd_wrapper(cwd, argv))
             .env_clear()
             .envs(&env)
-            .env("SLIPFORK_WORLD_STATE", &state_dir)
+            .env("SLIPFORK_WORLD_STATE", WORLD_STATE_GUEST)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        let mut child = command
-            .spawn()
-            .map_err(|err| EngineError::Execution(format!("cannot enter world: {err}")))?;
-        let (sender, receiver) = mpsc::channel::<StreamChunk>();
-        let mut readers = Vec::with_capacity(2);
-        if let Some(stdout) = child.stdout.take() {
-            readers.push(spawn_reader(stdout, StreamSource::Stdout, sender.clone()));
-        }
-        if let Some(stderr) = child.stderr.take() {
-            readers.push(spawn_reader(stderr, StreamSource::Stderr, sender.clone()));
-        }
-        drop(sender);
-
-        let mut stdout = Vec::new();
-        let mut stderr = Vec::new();
-        for chunk in receiver {
-            match chunk.source {
-                StreamSource::Stdout => stdout.extend_from_slice(&chunk.bytes),
-                StreamSource::Stderr => stderr.extend_from_slice(&chunk.bytes),
-            }
-            on_output(chunk);
-        }
-        for reader in readers {
-            let _ = reader.join();
-        }
-        let status = child
-            .wait()
-            .map_err(|err| EngineError::Execution(err.to_string()))?;
-        Ok(ExecOutput {
-            exit_code: status.code().unwrap_or(1),
-            stdout: String::from_utf8_lossy(&stdout).into_owned(),
-            stderr: String::from_utf8_lossy(&stderr).into_owned(),
-        })
+        run_streamed(command, on_output)
     }
 
     fn entry_command(
@@ -893,9 +1376,11 @@ impl WorldEngine for ReflinkNetnsEngine {
             }
             record.init_pid
         };
+        let mut args_prefix = self.entry_prefix(init_pid, Path::new("/"));
+        args_prefix.extend(world_cwd_wrapper(cwd, &[]));
         Ok(WorldEntryCommand {
             program: PathBuf::from("nsenter"),
-            args_prefix: self.entry_prefix(init_pid, cwd),
+            args_prefix,
             cwd: cwd.to_path_buf(),
         })
     }
@@ -1016,6 +1501,231 @@ impl WorldEngine for ReflinkNetnsEngine {
     }
 }
 
+/// `sh -c 'cd -- "$1" && shift && exec "$@"' sh <cwd> [argv...]`.
+///
+/// The `cd` runs **inside** the entered mount namespace, so `getcwd(2)` resolves through the
+/// world's bind mounts instead of the hidden host path.
+fn world_cwd_wrapper(cwd: &Path, argv: &[String]) -> Vec<String> {
+    let mut wrapped = vec![
+        "sh".to_owned(),
+        "-c".to_owned(),
+        "cd -- \"$1\" && shift && exec \"$@\"".to_owned(),
+        "sh".to_owned(),
+        cwd.display().to_string(),
+    ];
+    wrapped.extend(argv.iter().cloned());
+    wrapped
+}
+
+fn world_init_mount(mount: &WorldMount) -> WorldInitMount {
+    WorldInitMount {
+        host_path: mount.host_path.clone(),
+        guest_path: mount.guest_path.clone(),
+        read_only: mount.mode == MountMode::ReadOnly,
+    }
+}
+
+/// Guest mount of one extracted OCI rootfs, keyed by its immutable image digest.
+fn image_guest_rootfs(digest: &str) -> Result<PathBuf, EngineError> {
+    let hex = digest
+        .strip_prefix("sha256:")
+        .filter(|hex| hex.len() == 64 && hex.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        .ok_or_else(|| EngineError::InvalidWorldSpec {
+            reason: format!(
+                "backing-service image digest '{digest}' must be `sha256:<64 lowercase hex>`"
+            ),
+        })?;
+    Ok(PathBuf::from(OCI_IMAGES_GUEST).join(hex).join("rootfs"))
+}
+
+/// Synthesize read-only `/etc/passwd` + `/etc/group` carrying the invoking `$UID:$GID`
+/// (`ADR-0009` §3.1 rule 2): `initdb` fails with `could not look up effective user ID` without it.
+fn synthesize_identity_files(
+    world_root: &Path,
+    rootfs: &WorldRootfs,
+    home: &Path,
+    uid: u32,
+    gid: u32,
+) -> Result<(PathBuf, PathBuf), EngineError> {
+    let etc = world_root.join("etc");
+    fs::create_dir_all(&etc).map_err(|err| EngineError::Io {
+        path: etc.display().to_string(),
+        message: err.to_string(),
+    })?;
+    let user = host_identity_name("/etc/passwd", uid, 2).unwrap_or_else(|| "slipfork".to_owned());
+    let group = host_identity_name("/etc/group", gid, 2).unwrap_or_else(|| "slipfork".to_owned());
+
+    let passwd = with_identity_line(
+        crate::rootfs::read_guest_file(&rootfs.app_rootfs, "/etc/passwd"),
+        uid,
+        &format!(
+            "{user}:x:{uid}:{gid}:slipfork world user:{}:/bin/sh",
+            home.display()
+        ),
+    );
+    let group_file = with_identity_line(
+        crate::rootfs::read_guest_file(&rootfs.app_rootfs, "/etc/group"),
+        gid,
+        &format!("{group}:x:{gid}:"),
+    );
+    let passwd_path = etc.join("passwd");
+    let group_path = etc.join("group");
+    fs::write(&passwd_path, passwd).map_err(|err| EngineError::Io {
+        path: passwd_path.display().to_string(),
+        message: err.to_string(),
+    })?;
+    fs::write(&group_path, group_file).map_err(|err| EngineError::Io {
+        path: group_path.display().to_string(),
+        message: err.to_string(),
+    })?;
+    Ok((passwd_path, group_path))
+}
+
+fn host_identity_name(path: &str, id: u32, field: usize) -> Option<String> {
+    let raw = fs::read_to_string(path).ok()?;
+    raw.lines().find_map(|line| {
+        let parts: Vec<&str> = line.split(':').collect();
+        (parts.get(field)?.parse::<u32>().ok()? == id).then(|| parts[0].to_owned())
+    })
+}
+
+fn with_identity_line(source: Option<Vec<u8>>, id: u32, line: &str) -> Vec<u8> {
+    let mut bytes = source.unwrap_or_default();
+    let present = std::str::from_utf8(&bytes).ok().is_some_and(|text| {
+        text.lines().any(|existing| {
+            existing
+                .split(':')
+                .nth(2)
+                .is_some_and(|field| field.parse::<u32>() == Ok(id))
+        })
+    });
+    if !present {
+        if !bytes.is_empty() && !bytes.ends_with(b"\n") {
+            bytes.push(b'\n');
+        }
+        bytes.extend_from_slice(line.as_bytes());
+        bytes.push(b'\n');
+    }
+    bytes
+}
+
+fn ensure_container_destination(
+    image: &OciRootfs,
+    image_key: &crate::BackingServiceKey,
+    container_path: &Path,
+) -> Result<(), EngineError> {
+    let relative = container_path
+        .strip_prefix("/")
+        .map_err(|_| EngineError::InvalidWorldSpec {
+            reason: format!(
+                "container path '{}' must be absolute",
+                container_path.display()
+            ),
+        })?;
+    if !image.rootfs.join(relative).exists() {
+        return Err(EngineError::InvalidWorldSpec {
+            reason: format!(
+                "container path '{}' does not exist in backing-service image {image_key}; \
+                 the image rootfs must carry the mount destination",
+                container_path.display()
+            ),
+        });
+    }
+    Ok(())
+}
+
+/// Translate one host path into the guest path the world sees after `pivot_root`.
+fn world_guest_for_host(mounts: &[WorldMount], host_path: &Path) -> Option<PathBuf> {
+    mounts.iter().find_map(|mount| {
+        host_path
+            .strip_prefix(&mount.host_path)
+            .ok()
+            .map(|relative| mount.guest_path.join(relative))
+    })
+}
+
+/// Stable OCI container id derived from the world sequence and service id.
+fn container_id(world_seq: u64, service_id: &str) -> String {
+    let slug: String = service_id
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, '-' | '_') {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let slug = slug.trim_matches('_');
+    let slug = if slug.is_empty() { "service" } else { slug };
+    format!("sf{world_seq}-{}", &slug[..slug.len().min(48)])
+}
+
+fn container_control(
+    engine: &ReflinkNetnsEngine,
+    container: &ContainerProcess,
+    args: &[&str],
+) -> Command {
+    let mut command = Command::new("nsenter");
+    command
+        .args(engine.entry_prefix(container.init_pid, Path::new("/")))
+        .arg(&container.crun_guest)
+        .args(["--cgroup-manager=disabled", "--root"])
+        .arg(&container.crun_root_guest)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    command
+}
+
+fn signal_container(engine: &ReflinkNetnsEngine, container: &ContainerProcess, signal: &str) {
+    let _ = container_control(engine, container, &["kill", &container.id, signal]).status();
+}
+
+fn delete_container(engine: &ReflinkNetnsEngine, container: &ContainerProcess) {
+    let _ = container_control(engine, container, &["delete", "--force", &container.id]).status();
+}
+
+fn run_streamed(
+    mut command: Command,
+    on_output: &mut dyn FnMut(StreamChunk),
+) -> Result<ExecOutput, EngineError> {
+    let mut child = command
+        .spawn()
+        .map_err(|err| EngineError::Execution(format!("cannot execute: {err}")))?;
+    let (sender, receiver) = mpsc::channel::<StreamChunk>();
+    let mut readers = Vec::with_capacity(2);
+    if let Some(stdout) = child.stdout.take() {
+        readers.push(spawn_reader(stdout, StreamSource::Stdout, sender.clone()));
+    }
+    if let Some(stderr) = child.stderr.take() {
+        readers.push(spawn_reader(stderr, StreamSource::Stderr, sender.clone()));
+    }
+    drop(sender);
+
+    let mut stdout = Vec::new();
+    let mut stderr = Vec::new();
+    for chunk in receiver {
+        match chunk.source {
+            StreamSource::Stdout => stdout.extend_from_slice(&chunk.bytes),
+            StreamSource::Stderr => stderr.extend_from_slice(&chunk.bytes),
+        }
+        on_output(chunk);
+    }
+    for reader in readers {
+        let _ = reader.join();
+    }
+    let status = child
+        .wait()
+        .map_err(|err| EngineError::Execution(err.to_string()))?;
+    Ok(ExecOutput {
+        exit_code: status.code().unwrap_or(1),
+        stdout: String::from_utf8_lossy(&stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&stderr).into_owned(),
+    })
+}
+
 fn spawn_reader<R: Read + Send + 'static>(
     mut source: R,
     kind: StreamSource,
@@ -1057,19 +1767,30 @@ fn spawn_log_reader<R: Read + Send + 'static>(mut source: R, kind: StreamSource,
 /// Used when `spawn_service` fails after the process exists (readiness timeout or a world-level
 /// error): leaving it alive would violate the typed failure and make a retry of the same id fail
 /// with `ServiceAlreadyRunning`.
-fn abort_service(process: &Arc<Mutex<ServiceProcess>>, state: &Arc<AtomicU8>, log: &ServiceLogs) {
-    let supervisor = process
+fn abort_service(
+    engine: &ReflinkNetnsEngine,
+    process: &Arc<Mutex<ServiceProcess>>,
+    state: &Arc<AtomicU8>,
+    log: &ServiceLogs,
+) {
+    let (supervisor, container) = process
         .lock()
-        .ok()
-        .and_then(|mut process| process.supervisor.take());
+        .map(|mut process| (process.supervisor.take(), process.container.clone()))
+        .unwrap_or((None, None));
     if let Some(mut supervisor) = supervisor {
-        if let Ok(children) = host_child_pids(supervisor.id())
+        if let Some(container) = &container {
+            signal_container(engine, container, "KILL");
+        } else if let Ok(children) = host_child_pids(supervisor.id())
             && let Some(inner_pid) = children.first()
         {
             let _ = linux_cow::signal_process(*inner_pid, ProcessSignal::Kill);
         }
         let _ = supervisor.kill();
         let _ = wait_for_exit(&mut supervisor, SERVICE_STOP_GRACE);
+    }
+    if let Some(container) = &container {
+        delete_container(engine, container);
+        let _ = fs::remove_dir_all(&container.bundle_host);
     }
     state.store(ServiceState::Stopped.to_bits(), Ordering::Relaxed);
     log.close();

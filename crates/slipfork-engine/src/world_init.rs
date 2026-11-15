@@ -52,6 +52,19 @@ pub struct WorldInitIngress {
     pub port: u16,
     /// Pathname `AF_UNIX` socket served by `slipforkd` (`<state_root>/http-ingress.sock`).
     pub host_ingress_sock: PathBuf,
+    /// Guest path the host ingress socket is bound at after `pivot_root`.
+    pub guest_ingress_sock: PathBuf,
+}
+
+/// Read-only `L0` rootfs the world PID 1 merges and pivots into (`ADR-0009` §3.1).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorldInitRootfs {
+    /// Extracted `slipfork-world` stage, shared read-only by every world.
+    pub app_rootfs: PathBuf,
+    /// Empty directory tree that contributes mount points to the overlay.
+    pub mountpoints: PathBuf,
+    /// Directory the two-lowerdir overlay is mounted at.
+    pub merged: PathBuf,
 }
 
 /// Complete boot configuration for one persistent world init process.
@@ -59,7 +72,9 @@ pub struct WorldInitIngress {
 pub struct WorldInitConfig {
     /// Pathname `AF_UNIX` socket answering `dial_world_tcp` requests (mode `0600`).
     pub netns_sock: PathBuf,
-    /// Bind mounts to establish before any listener is bound.
+    /// Read-only overlay + `pivot_root` inputs (`ADR-0009` §3.1).
+    pub rootfs: WorldInitRootfs,
+    /// Bind mounts to establish inside the merged root before `pivot_root`.
     pub mounts: Vec<WorldInitMount>,
     /// Optional in-netns `$BASE_URL` bridge.
     pub local_ingress: Option<WorldInitIngress>,

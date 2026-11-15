@@ -36,13 +36,34 @@ use std::thread;
 use std::time::Duration;
 
 use slipfork_engine::linux_cow::{STATUS_OK, send_fd};
-use slipfork_engine::world_init::{WorldInitConfig, WorldInitIngress, WorldInitMount};
+use slipfork_engine::world_init::{
+    WorldInitConfig, WorldInitIngress, WorldInitMount, WorldInitRootfs,
+};
 
 /// Environment every helper subprocess gets: a fixed search path, nothing inherited (`PATH` is
-/// needed to resolve `ip`/`mount`; no world or secret variable is ever exposed to them).
-const HELPER_PATH: &str = "/usr/local/bin:/usr/bin:/bin";
+/// needed to resolve `ip`/`mount`/`pivot_root`; no world or secret variable is ever exposed).
+const HELPER_PATH: &str = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
 /// Bound on the request read and the in-world connect, so one stuck caller cannot wedge the world.
 const IO_TIMEOUT: Duration = Duration::from_secs(10);
+/// Guest mount points every world provides regardless of the app rootfs.
+const STANDARD_MOUNTPOINTS: [&str; 10] = [
+    "proc",
+    "dev",
+    "dev/pts",
+    "dev/shm",
+    "sys",
+    "tmp",
+    "var/tmp",
+    "run",
+    ".old_root",
+    ".slipfork",
+];
+/// Read-write `tmpfs` paths (`ADR-0009` §3.1 writable-path table).
+const TMPFS_MOUNTPOINTS: [(&str, &str); 3] = [
+    ("tmp", "mode=1777"),
+    ("var/tmp", "mode=1777"),
+    ("run", "mode=755"),
+];
 
 fn main() {
     let Some(config_path) = env::args_os().nth(1) else {
@@ -63,22 +84,190 @@ fn run(config_path: &Path) -> Result<(), String> {
 
     bring_up_loopback()?;
     allow_unprivileged_ports()?;
-    bind_mounts(&config.mounts)?;
 
+    // Both listeners must exist before `pivot_root`: a bound `AF_UNIX` socket survives the root
+    // change even though its host pathname no longer resolves. The readiness marker is created
+    // empty (the engine waits for `ready\n`) and written through this handle after the pivot.
     let dialer = bind_netns_socket(&config.netns_sock)?;
-    thread::spawn(move || serve_dials(dialer));
+    let ingress = match &config.local_ingress {
+        Some(ingress) => Some((bind_ingress(ingress)?, ingress.clone())),
+        None => None,
+    };
+    let ready = fs::File::create(config.ready_path())
+        .map_err(|err| format!("cannot create world readiness marker: {err}"))?;
 
-    if let Some(ingress) = config.local_ingress.clone() {
-        let bridge = bind_ingress(&ingress)?;
-        thread::spawn(move || serve_ingress(bridge, ingress.host_ingress_sock));
+    prepare_rootfs(&config.rootfs, &config.mounts)?;
+
+    thread::spawn(move || serve_dials(dialer));
+    if let Some((bridge, ingress)) = ingress {
+        thread::spawn(move || serve_ingress(bridge, ingress.guest_ingress_sock));
     }
 
-    fs::write(config.ready_path(), b"ready\n")
+    let mut ready = ready;
+    ready
+        .write_all(b"ready\n")
+        .and_then(|()| ready.sync_all())
         .map_err(|err| format!("cannot write world readiness marker: {err}"))?;
 
     loop {
         thread::park();
     }
+}
+
+/// Merge the read-only `L0` rootfs with the world's mount-point tree and `pivot_root` into it.
+///
+/// Two lowerdirs and **zero** upperdir/workdir are deliberate: `/usr`, `/lib`, and `/etc` are
+/// genuinely `EROFS`, so no world can pollute the shared cache layer (`ADR-0009` §3.1). Every
+/// bind mount is established against `<merged>/<guest>` before the root change.
+fn prepare_rootfs(rootfs: &WorldInitRootfs, mounts: &[WorldInitMount]) -> Result<(), String> {
+    for guest in STANDARD_MOUNTPOINTS {
+        create_dir(&rootfs.mountpoints.join(guest))?;
+    }
+    for mount in mounts {
+        let target = rootfs.mountpoints.join(relative_guest(&mount.guest_path)?);
+        let parent = target
+            .parent()
+            .ok_or_else(|| format!("mount '{}' has no parent", target.display()))?;
+        create_dir(parent)?;
+        if fs::metadata(&mount.host_path)
+            .map(|metadata| metadata.is_dir())
+            .unwrap_or(false)
+        {
+            create_dir(&target)?;
+        } else {
+            fs::File::create(&target)
+                .map_err(|err| format!("cannot create mount target {}: {err}", target.display()))?;
+        }
+    }
+
+    helper("mount", &["--make-rprivate".to_owned(), "/".to_owned()])?;
+    let lower = format!(
+        "userxattr,lowerdir={}:{}",
+        rootfs.mountpoints.display(),
+        rootfs.app_rootfs.display()
+    );
+    helper(
+        "mount",
+        &[
+            "-t".to_owned(),
+            "overlay".to_owned(),
+            "overlay".to_owned(),
+            "-o".to_owned(),
+            lower,
+            rootfs.merged.display().to_string(),
+        ],
+    )?;
+
+    let merged = |guest: &str| rootfs.merged.join(guest);
+    helper(
+        "mount",
+        &[
+            "--rbind".to_owned(),
+            "/dev".to_owned(),
+            merged("dev").display().to_string(),
+        ],
+    )?;
+    helper(
+        "mount",
+        &[
+            "--rbind".to_owned(),
+            "/sys".to_owned(),
+            merged("sys").display().to_string(),
+        ],
+    )?;
+    helper(
+        "mount",
+        &[
+            "-t".to_owned(),
+            "proc".to_owned(),
+            "proc".to_owned(),
+            merged("proc").display().to_string(),
+        ],
+    )?;
+    for (guest, mode) in TMPFS_MOUNTPOINTS {
+        helper(
+            "mount",
+            &[
+                "-t".to_owned(),
+                "tmpfs".to_owned(),
+                "-o".to_owned(),
+                mode.to_owned(),
+                "tmpfs".to_owned(),
+                merged(guest).display().to_string(),
+            ],
+        )?;
+    }
+    helper(
+        "mount",
+        &[
+            "-t".to_owned(),
+            "tmpfs".to_owned(),
+            "-o".to_owned(),
+            "nosuid,noexec,nodev,mode=1777,size=65536k".to_owned(),
+            "tmpfs".to_owned(),
+            merged("dev/shm").display().to_string(),
+        ],
+    )?;
+
+    for mount in mounts {
+        let target = merged(&relative_guest(&mount.guest_path)?.display().to_string());
+        helper(
+            "mount",
+            &[
+                "--bind".to_owned(),
+                mount.host_path.display().to_string(),
+                target.display().to_string(),
+            ],
+        )?;
+        if mount.read_only {
+            // `remount,ro` on a bind mount of a directory reaches XFS as an unsupported
+            // `idmapped` reconfigure; `remount,bind,ro` is the verified form (§7.2).
+            helper(
+                "mount",
+                &[
+                    "-o".to_owned(),
+                    "remount,bind,ro".to_owned(),
+                    target.display().to_string(),
+                ],
+            )?;
+        }
+    }
+
+    helper(
+        "pivot_root",
+        &[
+            rootfs.merged.display().to_string(),
+            rootfs.merged.join(".old_root").display().to_string(),
+        ],
+    )?;
+    helper("umount", &["-l".to_owned(), "/.old_root".to_owned()])?;
+    Ok(())
+}
+
+/// Strip the leading `/` from a guest path and reject anything that could escape the merged root.
+fn relative_guest(guest: &Path) -> Result<PathBuf, String> {
+    let relative = guest
+        .strip_prefix("/")
+        .map_err(|_| format!("guest path '{}' must be absolute", guest.display()))?;
+    if relative.as_os_str().is_empty()
+        || relative.components().any(|component| {
+            !matches!(
+                component,
+                std::path::Component::Normal(_) | std::path::Component::CurDir
+            )
+        })
+    {
+        return Err(format!(
+            "guest path '{}' must be a plain path below the merged root",
+            guest.display()
+        ));
+    }
+    Ok(relative.to_path_buf())
+}
+
+fn create_dir(path: &Path) -> Result<(), String> {
+    fs::create_dir_all(path)
+        .map_err(|err| format!("cannot create mount point {}: {err}", path.display()))
 }
 
 fn helper(program: &str, args: &[String]) -> Result<(), String> {
@@ -117,31 +306,6 @@ fn bring_up_loopback() -> Result<(), String> {
 fn allow_unprivileged_ports() -> Result<(), String> {
     fs::write("/proc/sys/net/ipv4/ip_unprivileged_port_start", "0\n")
         .map_err(|err| format!("cannot lower ip_unprivileged_port_start in the world netns: {err}"))
-}
-
-/// Establish every `WorldSpec` mount once, so later `nsenter` entries share them.
-fn bind_mounts(mounts: &[WorldInitMount]) -> Result<(), String> {
-    for mount in mounts {
-        helper(
-            "mount",
-            &[
-                "--bind".to_owned(),
-                mount.host_path.display().to_string(),
-                mount.guest_path.display().to_string(),
-            ],
-        )?;
-        if mount.read_only {
-            helper(
-                "mount",
-                &[
-                    "-o".to_owned(),
-                    "remount,bind,ro".to_owned(),
-                    mount.guest_path.display().to_string(),
-                ],
-            )?;
-        }
-    }
-    Ok(())
 }
 
 fn bind_netns_socket(path: &Path) -> Result<UnixListener, String> {
