@@ -12,11 +12,12 @@ use serde::{Serialize, Serializer};
 use slipfork_snow::EntropySource;
 
 use crate::client::{
-    OSPP_SUBPROTOCOL, OsppConnection, OsppEndpoint, OsppTimeouts, PROTOCOL_VERSION, PairingFrame,
-    PairingHello,
+    OSPP_SUBPROTOCOL, OsppConnection, OsppEndpoint, OsppTimeouts, PROTOCOL_VERSION, PairingHello,
 };
 use crate::device_key::DeviceKeySigner;
 use crate::error::OsppError;
+use crate::hex::{encode_hex_into, hex_fixed, hex_str, is_lower_hex_digit};
+use crate::protocol::ServerFrame;
 
 /// Byte length of a single-use pairing handle.
 pub const HANDLE_BYTES: usize = 32;
@@ -59,7 +60,7 @@ impl PairingHandle {
     /// The caller is responsible for zeroizing the buffer after the single use. An owned `String`
     /// is deliberately not offered, because it cannot be reliably wiped.
     pub fn hex_into(&self, out: &mut [u8; HANDLE_HEX_LEN]) -> Result<(), OsppError> {
-        crate::client::encode_hex_into(&self.0, out, "pair_hello")
+        encode_hex_into(&self.0, out, "pair_hello")
     }
 }
 
@@ -234,7 +235,7 @@ impl PairingUrl {
     pub fn browser_url(&self) -> Result<LivePairingUrl, OsppError> {
         let mut handle_hex = [0u8; HANDLE_HEX_LEN];
         self.handle.hex_into(&mut handle_hex)?;
-        let handle = crate::client::hex_str(&handle_hex, "pairing_url")?;
+        let handle = crate::hex::hex_str(&handle_hex, "pairing_url")?;
         let rendered = format!(
             "{}://{}{}{}#handle={handle}",
             self.scheme.as_str(),
@@ -326,30 +327,31 @@ pub fn redeem_pairing_url(
 
     let mut handle_hex = [0u8; HANDLE_HEX_LEN];
     handle.hex_into(&mut handle_hex)?;
-    let nonce_hex = crate::client::hex_fixed::<64>(&nonce_c, "pair_hello")?;
-    let sig_hex = crate::client::hex_fixed::<128>(signature.as_bytes(), "pair_hello")?;
+    let nonce_hex = hex_fixed::<64>(&nonce_c, "pair_hello")?;
+    let sig_hex = hex_fixed::<128>(signature.as_bytes(), "pair_hello")?;
 
     let hello = PairingHello {
         kind: PairingHello::KIND,
         version: PROTOCOL_VERSION,
         key_id: signer.key_id().as_str(),
-        nonce_c: crate::client::hex_str(&nonce_hex, "pair_hello")?,
-        handle: crate::client::hex_str(&handle_hex, "pair_hello")?,
-        sig: crate::client::hex_str(&sig_hex, "pair_hello")?,
+        nonce_c: hex_str(&nonce_hex, "pair_hello")?,
+        handle: hex_str(&handle_hex, "pair_hello")?,
+        sig: hex_str(&sig_hex, "pair_hello")?,
     };
     let sent = connection.send_json("pair_hello", &hello);
     handle_hex.fill(0);
     sent?;
     drop(handle);
 
-    match connection.read_pairing_frame("pair_approved")? {
-        PairingFrame::PairApproved { account } => Ok(PairingApproval { account }),
-        PairingFrame::Reject { reason } => Err(OsppError::PairingRejected {
-            reason: reason.into(),
+    match connection.read_frame("pair_approved")? {
+        ServerFrame::PairApproved { account } => Ok(PairingApproval { account }),
+        ServerFrame::Reject { reason } => Err(match reason.into_pairing() {
+            Some(reason) => OsppError::PairingRejected { reason },
+            None => invalid_url("server sent a connect-only refusal during pair_hello"),
         }),
-        PairingFrame::Challenge { .. } => Err(OsppError::Protocol {
+        other => Err(OsppError::Protocol {
             phase: "pair_approved",
-            message: "server sent a second CHALLENGE after pair_hello".to_owned(),
+            message: format!("expected pair_approved, got `{}`", other.kind()),
         }),
     }
 }
@@ -402,10 +404,6 @@ fn display_host(host: &str) -> String {
     } else {
         host.to_owned()
     }
-}
-
-const fn is_lower_hex_digit(byte: u8) -> bool {
-    matches!(byte, b'0'..=b'9' | b'a'..=b'f')
 }
 
 fn invalid_url(reason: impl Into<String>) -> OsppError {

@@ -201,13 +201,57 @@ pub enum OsppError {
         limit: usize,
     },
 
-    /// A bounded handshake deadline elapsed.
+    /// A bounded handshake or capability deadline elapsed.
     #[error("ospp-v1 {phase} deadline of {millis} ms elapsed")]
     Deadline {
-        /// The handshake step that timed out.
+        /// The step that timed out.
         phase: &'static str,
-        /// The injected budget in milliseconds.
+        /// The budget actually armed for that phase, in milliseconds.
         millis: u64,
+    },
+
+    /// A capability request or response violated `ospp-v1` or carried an unusable coordinate.
+    #[error("ospp-v1 capability {capability} failed for {scope}: {message}")]
+    Capability {
+        /// Capability wire name (`env.bundle`, `secrets.ensure`, …).
+        capability: &'static str,
+        /// `"<project>:<mode>"`, the world scope the capability was requested for.
+        scope: String,
+        /// What was wrong; never a secret value.
+        message: String,
+    },
+
+    /// The server answered a capability request with a typed refusal.
+    #[error("ospp-v1 capability {capability} rejected for {scope}: {kind}")]
+    CapabilityRejected {
+        /// Capability wire name (`env.bundle`, `secrets.ensure`, …).
+        capability: &'static str,
+        /// `"<project>:<mode>"`, the world scope the capability was requested for.
+        scope: String,
+        /// The server's refusal class.
+        kind: String,
+    },
+
+    /// A streamed seed dump was truncated, mis-hashed, or not a valid archive.
+    #[error("ospp-v1 {capability} failed for {scope} ({db_id}): {message}")]
+    SeedDump {
+        /// Capability wire name (`dump.begin`).
+        capability: &'static str,
+        /// `"<project>:<mode>"`, the world scope the dump was requested for.
+        scope: String,
+        /// PostgreSQL database id the dump belongs to.
+        db_id: String,
+        /// What was wrong; never archive contents.
+        message: String,
+    },
+
+    /// The local seed-dump cache refused or failed an operation.
+    #[error("seed-dump store {path} failed: {message}")]
+    SeedDumpStore {
+        /// Offending path, for the operator.
+        path: String,
+        /// What the store reported.
+        message: String,
     },
 
     /// The server answered `REJECT` with a typed reason.

@@ -11,3 +11,15 @@ edited fields
 ## 2026-11-15T18:51 [lead]
 
 edited fields
+
+## 2026-11-15T19:57 [lead]
+
+status ready -> active
+
+## 2026-11-15T19:57 [lead]
+
+attempt 1/3 started
+
+## 2026-11-15T19:57 [lead]
+
+base 39651f748582e4491222fcac9ddcf51fe6e856b2

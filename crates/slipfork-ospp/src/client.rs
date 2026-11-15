@@ -1,6 +1,6 @@
 //! The Slipfork-owned `OSPP v1` synchronous WebSocket session: server-speaks-first
 //! `CHALLENGE -> HELLO -> WELCOME | REJECT`, the `ospp-v1` subprotocol, a 16 KiB control-frame cap,
-//! and a bounded first-frame deadline (`ADR-0008` §1).
+//! a 64 KiB binary-frame cap, and bounded deadlines (`ADR-0008` §1–§2).
 //!
 //! The transport is synchronous `tungstenite` over `rustls` + `webpki-roots`. Nonces come from the
 //! injected `EntropySource`; signatures come from the injected `DeviceKeySigner`. A `REJECT` is
@@ -8,14 +8,21 @@
 //! encoding. TLS exporter channel binding is **reserved, not assumed**: `ospp-v1` does not enable
 //! it, matching the `weaver-mux-v1` posture in `docs/research/tunnel-weaver-and-systemd-facts.md`
 //! §3, and a future binding would bump the protocol version.
+//!
+//! After `WELCOME` one authenticated session serves every capability ([`EnvBundle`],
+//! [`CAPABILITY_ENV_BUNDLE`], [`CAPABILITY_SECRETS_ENSURE`], [`CAPABILITY_RESOURCES_DESCRIBE`]):
+//! the daemon-held [`OsppClient`] serializes requests behind one interior mutex, so
+//! `SecretProvider`'s `&self` contract is satisfied without a global runtime or connection pool.
 
 use std::io;
 use std::net::{TcpStream, ToSocketAddrs};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use slipfork_snow::EntropySource;
+use slipfork_world::ProjectSlug;
 use tungstenite::client::IntoClientRequest;
 use tungstenite::http::{HeaderValue, Request, Uri};
 use tungstenite::protocol::WebSocketConfig;
@@ -23,7 +30,13 @@ use tungstenite::stream::MaybeTlsStream;
 use tungstenite::{Connector, Message, WebSocket, client_tls_with_config};
 
 use crate::device_key::{DeviceKeySigner, KeyId, SIGNATURE_HEX_LEN};
-use crate::error::{OsppError, PairingRejectReason, RejectReason};
+use crate::error::OsppError;
+use crate::hex::{hex_fixed, hex_str, is_lower_hex_digit};
+use crate::protocol::{
+    CAPABILITY_ENV_BUNDLE, CAPABILITY_RESOURCES_DESCRIBE, CAPABILITY_SECRETS_ENSURE,
+    CapabilityRequest, EnvBundle, ServerFrame, capability_error, validate_key, validate_mode,
+};
+use crate::resources::RemoteResourceBundle;
 
 /// The `ospp-v1` WebSocket subprotocol (`ADR-0008` §1).
 pub const OSPP_SUBPROTOCOL: &str = "ospp-v1";
@@ -45,6 +58,9 @@ pub const PROTOCOL_VERSION: u16 = 1;
 
 /// Hard cap on every control/RPC text frame (16 KiB).
 pub const MAX_CONTROL_FRAME: usize = 16_384;
+
+/// Hard cap on every seed-dump binary WebSocket frame (64 KiB).
+pub const MAX_DUMP_FRAME: usize = 65_536;
 
 /// Length of both `nonce_s` and `nonce_c`.
 pub const NONCE_BYTES: usize = 32;
@@ -193,36 +209,6 @@ pub fn random_nonce(entropy: &dyn EntropySource) -> Result<[u8; NONCE_BYTES], Os
     Ok(nonce)
 }
 
-/// Hex-encode `bytes` into a caller-owned fixed buffer.
-pub(crate) fn encode_hex_into(
-    bytes: &[u8],
-    out: &mut [u8],
-    phase: &'static str,
-) -> Result<(), OsppError> {
-    hex::encode_to_slice(bytes, out).map_err(|error| OsppError::Protocol {
-        phase,
-        message: format!("could not hex-encode {} bytes: {error}", bytes.len()),
-    })
-}
-
-/// Hex-encode `bytes` into a fixed-size array.
-pub(crate) fn hex_fixed<const N: usize>(
-    bytes: &[u8],
-    phase: &'static str,
-) -> Result<[u8; N], OsppError> {
-    let mut out = [0u8; N];
-    encode_hex_into(bytes, &mut out, phase)?;
-    Ok(out)
-}
-
-/// Borrow a hex encoding as `&str`; hex output is always ASCII.
-pub(crate) fn hex_str<'a>(bytes: &'a [u8], phase: &'static str) -> Result<&'a str, OsppError> {
-    std::str::from_utf8(bytes).map_err(|error| OsppError::Protocol {
-        phase,
-        message: format!("hex encoding was not UTF-8: {error}"),
-    })
-}
-
 /// The exact bytes signed by `HELLO`:
 /// `"ospp-v1" || nonce_s(32) || nonce_c(32) || server_name`.
 pub fn connect_transcript(
@@ -260,13 +246,15 @@ pub fn pairing_transcript(
 
 /// An authenticated, synchronous `ospp-v1` session.
 ///
-/// M2.14 adds the typed capability dispatch on top of this authenticated connection; the
-/// handshake itself is complete here.
+/// One instance is held by `slipforkd` and shared across capability callers: requests are
+/// serialized on the single authenticated WebSocket, and `Send + Sync` comes from the interior
+/// mutex rather than from a global runtime or connection pool.
 pub struct OsppClient {
-    connection: OsppConnection,
+    session: Mutex<OsppConnection>,
     key_id: KeyId,
     backend_label: &'static str,
     server_name: String,
+    next_request: AtomicU32,
 }
 
 impl OsppClient {
@@ -301,9 +289,9 @@ impl OsppClient {
         };
         connection.send_json("hello", &hello)?;
 
-        match connection.read_connect_frame("welcome")? {
-            ConnectFrame::Welcome { version } if version == PROTOCOL_VERSION => {}
-            ConnectFrame::Welcome { version } => {
+        match connection.read_frame("welcome")? {
+            ServerFrame::Welcome { version } if version == PROTOCOL_VERSION => {}
+            ServerFrame::Welcome { version } => {
                 return Err(OsppError::Protocol {
                     phase: "welcome",
                     message: format!(
@@ -311,24 +299,29 @@ impl OsppClient {
                     ),
                 });
             }
-            ConnectFrame::Reject { reason } => {
-                return Err(OsppError::Rejected {
-                    reason: reason.into(),
+            ServerFrame::Reject { reason } => {
+                return Err(match reason.into_connect() {
+                    Some(reason) => OsppError::Rejected { reason },
+                    None => OsppError::Protocol {
+                        phase: "welcome",
+                        message: "server sent a pairing-only refusal during HELLO".to_owned(),
+                    },
                 });
             }
-            ConnectFrame::Challenge { _nonce_s } => {
+            other => {
                 return Err(OsppError::Protocol {
                     phase: "welcome",
-                    message: "server sent a second CHALLENGE after HELLO".to_owned(),
+                    message: format!("expected WELCOME, got `{}`", other.kind()),
                 });
             }
         }
         connection.set_io_timeout();
         Ok(Self {
-            connection,
+            session: Mutex::new(connection),
             key_id: signer.key_id().clone(),
             backend_label: signer.backend_label(),
             server_name: endpoint.server_name().to_owned(),
+            next_request: AtomicU32::new(1),
         })
     }
 
@@ -346,13 +339,145 @@ impl OsppClient {
     pub fn server_name(&self) -> &str {
         &self.server_name
     }
+
+    /// Fetch the `vars` / `secrets` / (`cloud`-only) `domains` snapshot for one world scope.
+    pub fn env_bundle(&self, project: &ProjectSlug, mode: &str) -> Result<EnvBundle, OsppError> {
+        let capability = CAPABILITY_ENV_BUNDLE;
+        let scope = scope_label(project, mode);
+        validate_mode(mode).map_err(|message| capability_error(capability, &scope, message))?;
+        let request_id = self.request_id();
+        let mut session = self.lock();
+        session.send_json(
+            capability,
+            &CapabilityRequest::EnvBundle {
+                request_id,
+                project: project.as_str(),
+                mode,
+            },
+        )?;
+        match session.read_frame(capability)? {
+            ServerFrame::EnvBundle {
+                request_id: seen,
+                vars,
+                secrets,
+                domains,
+            } if seen == request_id => Ok(EnvBundle::new(vars, secrets, domains)),
+            other => Err(other.into_refusal(capability, &scope, request_id)),
+        }
+    }
+
+    /// Compare-and-set one `!!` secret (`put_if_absent`), returning the authoritative value.
+    pub fn ensure_secret(
+        &self,
+        project: &ProjectSlug,
+        mode: &str,
+        key: &str,
+        proposed: &str,
+    ) -> Result<String, OsppError> {
+        let capability = CAPABILITY_SECRETS_ENSURE;
+        let scope = scope_label(project, mode);
+        validate_scope(project, mode, key)?;
+        let request_id = self.request_id();
+        let mut session = self.lock();
+        session.send_json(
+            capability,
+            &CapabilityRequest::SecretsEnsure {
+                request_id,
+                project: project.as_str(),
+                mode,
+                key,
+                proposed,
+            },
+        )?;
+        match session.read_frame(capability)? {
+            ServerFrame::SecretsEnsure {
+                request_id: seen,
+                key: sent_key,
+                value,
+            } if seen == request_id => {
+                if sent_key != key || value.is_empty() {
+                    return Err(capability_error(
+                        capability,
+                        &scope,
+                        "server returned a different key or an empty stored value",
+                    ));
+                }
+                Ok(value)
+            }
+            other => Err(other.into_refusal(capability, &scope, request_id)),
+        }
+    }
+
+    /// The single conversion from the wire `resources.describe` body to
+    /// `slipfork_dag::RemoteResourceOffer` (`ADR-0008` §3).
+    ///
+    /// `slipforkd` passes the result straight into
+    /// `slipfork_dag::ResourcePlan::resolve(spec, mode, dump_policy, offer.as_ref())`; no
+    /// `ResourceStrategy` or `DumpPolicy` decision is made here.
+    pub fn resource_offer(
+        &self,
+        project: &ProjectSlug,
+        mode: &str,
+    ) -> Result<Option<slipfork_dag::RemoteResourceOffer>, OsppError> {
+        let bundle = self.resources_describe(project, mode)?;
+        if bundle.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(bundle.into_offer(&scope_label(project, mode))?))
+    }
+
+    fn resources_describe(
+        &self,
+        project: &ProjectSlug,
+        mode: &str,
+    ) -> Result<RemoteResourceBundle, OsppError> {
+        let capability = CAPABILITY_RESOURCES_DESCRIBE;
+        let scope = scope_label(project, mode);
+        validate_mode(mode).map_err(|message| capability_error(capability, &scope, message))?;
+        let request_id = self.request_id();
+        let mut session = self.lock();
+        session.send_json(
+            capability,
+            &CapabilityRequest::ResourcesDescribe {
+                request_id,
+                project: project.as_str(),
+                mode,
+            },
+        )?;
+        match session.read_frame(capability)? {
+            ServerFrame::ResourcesDescribe {
+                request_id: seen,
+                s3_buckets,
+                pg_databases,
+            } if seen == request_id => Ok(RemoteResourceBundle::new(s3_buckets, pg_databases)),
+            other => Err(other.into_refusal(capability, &scope, request_id)),
+        }
+    }
+
+    /// Next client-chosen request id; ids are per session, never global.
+    pub(crate) fn request_id(&self) -> u32 {
+        self.next_request.fetch_add(1, Ordering::Relaxed)
+    }
+
+    /// Borrow the authenticated connection; callers must not interleave frames manually.
+    pub(crate) fn session(&self) -> MutexGuard<'_, OsppConnection> {
+        self.lock()
+    }
+
+    fn lock(&self) -> MutexGuard<'_, OsppConnection> {
+        // Poisoning only means a capability caller panicked while holding the socket. The session
+        // is then unusable for anything but a clean close, which the next request surfaces as a
+        // typed error; recovering here keeps the other worlds' diagnostics flowing.
+        self.session.lock().unwrap_or_else(PoisonError::into_inner)
+    }
 }
 
 impl Drop for OsppClient {
     fn drop(&mut self) {
         // Best-effort clean close; a peer that already vanished is not an error worth surfacing.
-        let _ = self.connection.socket.close(None);
-        let _ = self.connection.socket.flush();
+        let mut session = self.lock();
+        let _ = session.socket.close(None);
+        let _ = session.socket.flush();
     }
 }
 
@@ -383,82 +508,21 @@ impl PairingHello<'_> {
     pub(crate) const KIND: &'static str = "pair_hello";
 }
 
-#[derive(Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-enum ConnectFrame {
-    Challenge {
-        #[serde(rename = "nonce_s")]
-        _nonce_s: String,
-    },
-    Welcome {
-        version: u16,
-    },
-    Reject {
-        reason: WireReject,
-    },
-}
-
-#[derive(Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub(crate) enum PairingFrame {
-    Challenge {
-        #[serde(rename = "nonce_s")]
-        _nonce_s: String,
-    },
-    PairApproved {
-        account: String,
-    },
-    Reject {
-        reason: WirePairingReject,
-    },
-}
-
-#[derive(Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-enum WireReject {
-    UnknownKey,
-    BadSignature,
-    UnsupportedVersion { min: u16, max: u16 },
-}
-
-impl From<WireReject> for RejectReason {
-    fn from(value: WireReject) -> Self {
-        match value {
-            WireReject::UnknownKey => Self::UnknownKey,
-            WireReject::BadSignature => Self::BadSignature,
-            WireReject::UnsupportedVersion { min, max } => Self::UnsupportedVersion { min, max },
-        }
-    }
-}
-
-#[derive(Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub(crate) enum WirePairingReject {
-    UnknownHandle,
-    ExpiredHandle,
-    AlreadyRedeemed,
-    BadSignature,
-    UnsupportedVersion { min: u16, max: u16 },
-}
-
-impl From<WirePairingReject> for PairingRejectReason {
-    fn from(value: WirePairingReject) -> Self {
-        match value {
-            WirePairingReject::UnknownHandle => Self::UnknownHandle,
-            WirePairingReject::ExpiredHandle => Self::ExpiredHandle,
-            WirePairingReject::AlreadyRedeemed => Self::AlreadyRedeemed,
-            WirePairingReject::BadSignature => Self::BadSignature,
-            WirePairingReject::UnsupportedVersion { min, max } => {
-                Self::UnsupportedVersion { min, max }
-            }
-        }
-    }
+/// One inbound WebSocket message, after liveness frames are handled.
+pub(crate) enum Inbound {
+    Text(String),
+    Binary(Vec<u8>),
+    Closed,
 }
 
 /// The live WebSocket, kept private to this module; only the state machine above may speak.
 pub(crate) struct OsppConnection {
     socket: WebSocket<MaybeTlsStream<TcpStream>>,
     timeouts: OsppTimeouts,
+    /// The read budget actually armed on the socket for the current phase.
+    budget: Duration,
+    /// Set when a streamed dump was abandoned mid-frame; the session must be re-established.
+    poisoned: Option<&'static str>,
 }
 
 impl OsppConnection {
@@ -495,9 +559,9 @@ impl OsppConnection {
             .map_err(|error| transport("connect", error))?;
 
         let config = WebSocketConfig::default()
-            .max_message_size(Some(MAX_CONTROL_FRAME))
-            .max_frame_size(Some(MAX_CONTROL_FRAME))
-            .write_buffer_size(MAX_CONTROL_FRAME);
+            .max_message_size(Some(MAX_DUMP_FRAME))
+            .max_frame_size(Some(MAX_DUMP_FRAME))
+            .write_buffer_size(MAX_DUMP_FRAME);
 
         let connector = if endpoint.uses_tls() {
             Connector::Rustls(Arc::new(tls_config()?))
@@ -526,7 +590,12 @@ impl OsppConnection {
                 ),
             });
         }
-        Ok(Self { socket, timeouts })
+        Ok(Self {
+            socket,
+            timeouts,
+            budget: timeouts.handshake,
+            poisoned: None,
+        })
     }
 
     /// Read the first frame and require it to be `CHALLENGE`.
@@ -534,17 +603,11 @@ impl OsppConnection {
         &mut self,
         phase: &'static str,
     ) -> Result<[u8; NONCE_BYTES], OsppError> {
-        let text = self.read_frame_text(phase)?;
-        #[derive(Deserialize)]
-        #[serde(tag = "type", rename_all = "snake_case")]
-        enum Frame {
-            Challenge { nonce_s: String },
-        }
-        match serde_json::from_str::<Frame>(&text) {
-            Ok(Frame::Challenge { nonce_s }) => parse_nonce(&nonce_s),
-            Err(error) => Err(OsppError::Protocol {
+        match self.read_frame(phase)? {
+            ServerFrame::Challenge { nonce_s } => parse_nonce(&nonce_s),
+            other => Err(OsppError::Protocol {
                 phase,
-                message: format!("expected a server CHALLENGE: {error}"),
+                message: format!("expected a server CHALLENGE, got `{}`", other.kind()),
             }),
         }
     }
@@ -554,6 +617,7 @@ impl OsppConnection {
         phase: &'static str,
         value: &T,
     ) -> Result<(), OsppError> {
+        self.ensure_live(phase)?;
         let text = serde_json::to_string(value).map_err(|error| OsppError::Protocol {
             phase,
             message: format!("could not encode {phase}: {error}"),
@@ -568,39 +632,54 @@ impl OsppConnection {
             .map_err(|error| transport(phase, error))
     }
 
-    fn read_connect_frame(&mut self, phase: &'static str) -> Result<ConnectFrame, OsppError> {
-        let text = self.read_frame_text(phase)?;
-        serde_json::from_str(&text).map_err(|error| OsppError::Protocol {
-            phase,
-            message: format!("malformed server frame: {error}"),
-        })
+    /// Read one typed server frame, rejecting binary frames on the control channel.
+    pub(crate) fn read_frame(&mut self, phase: &'static str) -> Result<ServerFrame, OsppError> {
+        match self.read_inbound(phase)? {
+            Inbound::Text(text) => {
+                serde_json::from_str(&text).map_err(|error| OsppError::Protocol {
+                    phase,
+                    message: format!("malformed server frame: {error}"),
+                })
+            }
+            Inbound::Binary(_) => Err(OsppError::Protocol {
+                phase,
+                message: "binary frame outside dump.begin..dump.end".to_owned(),
+            }),
+            Inbound::Closed => Err(OsppError::Transport {
+                phase,
+                message: "server closed the connection".to_owned(),
+            }),
+        }
     }
 
-    pub(crate) fn read_pairing_frame(
-        &mut self,
-        phase: &'static str,
-    ) -> Result<PairingFrame, OsppError> {
-        let text = self.read_frame_text(phase)?;
-        serde_json::from_str(&text).map_err(|error| OsppError::Protocol {
-            phase,
-            message: format!("malformed server frame: {error}"),
-        })
-    }
-
-    pub(crate) fn set_io_timeout(&mut self) {
-        let _ = set_stream_read_timeout(&self.socket, Some(self.timeouts.io));
-    }
-
-    fn read_frame_text(&mut self, phase: &'static str) -> Result<String, OsppError> {
+    /// Read one inbound message, enforcing both frame caps and liveness handling.
+    pub(crate) fn read_inbound(&mut self, phase: &'static str) -> Result<Inbound, OsppError> {
+        self.ensure_live(phase)?;
         loop {
             match self.socket.read() {
                 Ok(Message::Text(text)) => {
                     if text.len() > MAX_CONTROL_FRAME {
-                        return Err(OsppError::FrameTooLarge {
-                            limit: MAX_CONTROL_FRAME,
+                        return Err(OsppError::Protocol {
+                            phase,
+                            message: format!(
+                                "text frame of {} bytes exceeded the 16 KiB ({MAX_CONTROL_FRAME}-byte) cap",
+                                text.len()
+                            ),
                         });
                     }
-                    return Ok(text.to_string());
+                    return Ok(Inbound::Text(text.to_string()));
+                }
+                Ok(Message::Binary(bytes)) => {
+                    if bytes.len() > MAX_DUMP_FRAME {
+                        return Err(OsppError::Protocol {
+                            phase,
+                            message: format!(
+                                "binary frame of {} bytes exceeded the 64 KiB ({MAX_DUMP_FRAME}-byte) cap",
+                                bytes.len()
+                            ),
+                        });
+                    }
+                    return Ok(Inbound::Binary(bytes.to_vec()));
                 }
                 Ok(Message::Ping(_)) => {
                     // tungstenite queues the pong; flush it so the peer sees liveness.
@@ -609,34 +688,66 @@ impl OsppConnection {
                         .map_err(|error| transport(phase, error))?;
                 }
                 Ok(Message::Pong(_)) | Ok(Message::Frame(_)) => {}
-                Ok(Message::Binary(_)) => {
-                    return Err(OsppError::Protocol {
-                        phase,
-                        message: "binary frame on the control channel".to_owned(),
-                    });
-                }
-                Ok(Message::Close(_)) => {
-                    return Err(OsppError::Transport {
-                        phase,
-                        message: "server closed the connection".to_owned(),
-                    });
-                }
+                Ok(Message::Close(_)) => return Ok(Inbound::Closed),
                 Err(tungstenite::Error::Io(error)) if is_timeout(&error) => {
                     return Err(OsppError::Deadline {
                         phase,
-                        millis: self.timeouts.handshake.as_millis() as u64,
+                        millis: self.budget.as_millis() as u64,
                     });
                 }
                 Err(tungstenite::Error::Capacity(error)) => {
                     return Err(OsppError::Protocol {
                         phase,
-                        message: format!("control frame exceeded the 16 KiB cap: {error}"),
+                        message: format!(
+                            "wire frame exceeded the {MAX_DUMP_FRAME}-byte cap: {error}"
+                        ),
                     });
                 }
                 Err(error) => return Err(transport(phase, error)),
             }
         }
     }
+
+    pub(crate) fn set_io_timeout(&mut self) {
+        self.budget = self.timeouts.io;
+        let _ = set_stream_read_timeout(&self.socket, Some(self.timeouts.io));
+    }
+
+    /// Mark the session unusable; a streamed dump stopped between `dump.begin` and `dump.end`, so
+    /// the frame stream can no longer be trusted and `slipforkd` must reconnect.
+    pub(crate) fn poison(&mut self, why: &'static str) {
+        self.poisoned = Some(why);
+    }
+
+    fn ensure_live(&self, phase: &'static str) -> Result<(), OsppError> {
+        match self.poisoned {
+            None => Ok(()),
+            Some(why) => Err(OsppError::Transport {
+                phase,
+                message: format!("{why}; reconnect the ospp-v1 session"),
+            }),
+        }
+    }
+}
+
+/// `"<project>:<mode>"`, the world scope every capability diagnostic names.
+pub(crate) fn scope_label(project: &ProjectSlug, mode: &str) -> String {
+    format!("{project}:{mode}")
+}
+
+/// Validate the caller-owned part of a capability request before it reaches the wire.
+pub(crate) fn validate_scope(
+    project: &ProjectSlug,
+    mode: &str,
+    key: &str,
+) -> Result<(), OsppError> {
+    validate_mode(mode)
+        .and_then(|()| validate_key("key", key))
+        .map_err(|message| OsppError::Capability {
+            capability: CAPABILITY_SECRETS_ENSURE,
+            scope: format!("{project}:{mode}"),
+            message,
+        })
 }
 
 fn tcp_connect(host: &str, port: u16, timeout: Duration) -> Result<TcpStream, OsppError> {
@@ -698,8 +809,4 @@ fn is_timeout(error: &io::Error) -> bool {
 
 fn is_loopback_host(host: &str) -> bool {
     matches!(host, "127.0.0.1" | "::1" | "localhost")
-}
-
-const fn is_lower_hex_digit(byte: u8) -> bool {
-    matches!(byte, b'0'..=b'9' | b'a'..=b'f')
 }

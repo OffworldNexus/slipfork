@@ -12,6 +12,7 @@ use p256::ecdsa::signature::hazmat::PrehashVerifier;
 use sha2::{Digest, Sha256};
 
 use crate::error::OsppError;
+use crate::hex::is_lower_hex_digit;
 use crate::software_key::SoftwareP256Key;
 
 /// Byte length of a P-256 SEC1-compressed public key.
@@ -208,11 +209,6 @@ pub fn verify_device_signature(
             backend: "device-key",
             key_id: key_id.as_str().to_owned(),
         })
-}
-
-/// `true` for `0-9` and `a-f`, the only characters `ospp-v1` accepts in key ids and signatures.
-const fn is_lower_hex_digit(byte: u8) -> bool {
-    matches!(byte, b'0'..=b'9' | b'a'..=b'f')
 }
 
 fn invalid_key_id(reason: impl Into<String>) -> OsppError {

@@ -2,16 +2,16 @@
 id: M2.14
 title: "slipfork-ospp: vars/secrets/resources capabilities plus streaming seed dump and reference server"
 kind: task
-status: ready
+status: active
 owner: implementer
 priority: 3
 depends_on: [M2.13]
 paths: ["crates/slipfork-ospp/**"]
-attempts: 0
+attempts: 1
 max_attempts: 3
 escalation: none
 created: "2026-11-15T16:40"
-updated: "2026-11-15T18:51"
+updated: "2026-11-15T19:57"
 ---
 
 # Goal

@@ -324,3 +324,10 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-15T20:06 [M2.8] (lead) deviation accepted: WorldRegistry::new(engine) only; registrar/planned_port + EdgeError::NoForwardListener land with share_world in M2.9 (no dead private state)
 - 2026-11-15T20:11 [M2.24] (conductor) created (task) Design L0 world base image: Dockerfile-derived rootfs, 3-layer composition, World Image Contract (ADR-0009)
 - 2026-11-15T20:11 ESCALATION #12 -> architect for M2.24 by conductor: core architecture crossroads: L0 world base image strategy (Dockerfile-derived rootfs vs curated base), image contract, 
+- 2026-11-15T20:13 [M2.8] (lead) status review -> done
+- 2026-11-15T20:13 [M2.9] (lead) status ready -> active
+- 2026-11-15T20:13 [M2.9] (lead) attempt 1/3 started
+- 2026-11-15T20:13 [M2.9] (lead) base 592b5f0682c4463f3fbb629079c5c2fafa1e35ba
+- 2026-11-15T20:13 [M2.24] (conductor) OWNER CORRECTION (binding, supersedes the earlier fallback wording in NODE.md): ONE WAY ONLY. Delete the curated base (slipfork_base / CuratedBaseProvider) and 
+- 2026-11-15T20:15 [M2.24] (conductor) OWNER CORRECTION 2 (binding, supersedes apt-based capability layer): backing services (postgres/redis/seaweedfs) run as OCI CONTAINERS inside the world netns vi
+- 2026-11-15T20:17 [M2.25] (conductor) created (task) Whole-repo consistency sweep after L0 rootfs + OCI-container pivot (single writer: ARCHITECTURE.md + ADRs)
