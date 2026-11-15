@@ -1,9 +1,10 @@
 //! Protected critical tests for `slipfork-dag` (`R9`: orthogonal invalidation & cycle refusal).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use slipfork_dag::{
-    CacheAction, DagError, DagPlanner, MapInputHasher, SetDigestCache, SlipforkConfig, TestSpec,
+    CacheAction, CoverageConfig, CoverageReportFormat, CoverageThreshold, DagError, DagPlanner,
+    MapInputHasher, SetDigestCache, SlipforkConfig,
 };
 
 const SAMPLE_TOML: &str = r#"
@@ -195,7 +196,7 @@ run = "echo b"
 }
 
 #[test]
-fn slipfork_toml_root_schema_owns_project_and_test_after_suite_without_invalidating_dag() {
+fn slipfork_toml_root_schema_owns_project_and_typed_test_coverage_without_invalidating_dag() {
     let cfg = SlipforkConfig::parse_toml(
         r#"
 project = "acme"
@@ -210,23 +211,26 @@ inputs = ["api/migrations/*.sql"]
 run = "psql -f api/migrations/0001.sql"
 
 [test]
-after_suite = "uv run coverage combine \"$SLIPFORK_RUN_ARTIFACTS_DIR\"/*/.coverage*"
+coverage = true
+coverage_report = ["html", "xml"]
+coverage_fail_under = 85
 "#,
     )
-    .expect("valid slipfork.toml with project and [test].after_suite");
+    .expect("valid slipfork.toml with project and typed [test] coverage");
     assert_eq!(
         cfg.project
             .as_ref()
             .map(slipfork_world::ProjectSlug::as_str),
         Some("acme")
     );
+    let coverage = cfg.test.coverage.as_ref().expect("coverage enabled");
     assert_eq!(
-        cfg.test,
-        TestSpec {
-            after_suite: Some(
-                "uv run coverage combine \"$SLIPFORK_RUN_ARTIFACTS_DIR\"/*/.coverage*".to_owned()
-            ),
-        }
+        coverage.reports,
+        BTreeSet::from([CoverageReportFormat::Html, CoverageReportFormat::Xml])
+    );
+    assert_eq!(
+        coverage.fail_under.map(CoverageThreshold::percent),
+        Some(85)
     );
     assert_eq!(cfg.artifacts.len(), 1);
     assert_eq!(cfg.fixtures.len(), 1);
@@ -238,10 +242,232 @@ after_suite = "uv run coverage combine \"$SLIPFORK_RUN_ARTIFACTS_DIR\"/*/.covera
 
     let mut cfg_b = cfg.clone();
     cfg_b.project = Some(slipfork_world::ProjectSlug::parse("other-slug").expect("slug"));
-    cfg_b.test.after_suite = Some("npx allure generate".to_owned());
+    cfg_b.test.coverage = Some(CoverageConfig {
+        reports: BTreeSet::from([CoverageReportFormat::Text]),
+        fail_under: None,
+    });
     let plan_b = DagPlanner::plan(&cfg_b, &BTreeMap::new(), &BTreeMap::new(), &hasher, &cache)
         .expect("plan b");
     assert_eq!(plan_a, plan_b);
+}
+
+#[test]
+fn typed_test_coverage_is_single_way_and_fail_closed() {
+    // `coverage = true` alone defaults reports to `{text}` and no threshold.
+    let cfg = SlipforkConfig::parse_toml("[test]\ncoverage = true\n").expect("coverage defaults");
+    let coverage = cfg.test.coverage.expect("coverage enabled");
+    assert_eq!(
+        coverage.reports,
+        BTreeSet::from([CoverageReportFormat::Text])
+    );
+    assert!(coverage.fail_under.is_none());
+
+    // `coverage_report` / `coverage_fail_under` cannot exist without `coverage = true`.
+    for raw in [
+        "[test]\ncoverage_report = [\"html\"]\n",
+        "[test]\ncoverage_report = []\n",
+        "[test]\ncoverage_fail_under = 85\n",
+        "[test]\ncoverage = false\ncoverage_report = [\"html\"]\n",
+    ] {
+        let err = SlipforkConfig::parse_toml(raw)
+            .expect_err("coverage options require `coverage = true`");
+        assert!(
+            matches!(err, DagError::CoverageOptionsRequireEnabled),
+            "{raw}: {err:?}"
+        );
+    }
+
+    // An explicitly empty report list fails closed: coverage cannot be enabled with zero formats.
+    for raw in [
+        "[test]\ncoverage = true\ncoverage_report = []\n",
+        "[test]\ncoverage = true\ncoverage_report = []\ncoverage_fail_under = 85\n",
+    ] {
+        let err = SlipforkConfig::parse_toml(raw).expect_err("empty coverage_report fails closed");
+        assert!(
+            matches!(err, DagError::EmptyCoverageReport),
+            "{raw}: {err:?}"
+        );
+    }
+
+    // Out-of-range and non-integer thresholds fail closed with the typed error.
+    for raw in [
+        "[test]\ncoverage = true\ncoverage_fail_under = 101\n",
+        "[test]\ncoverage = true\ncoverage_fail_under = -1\n",
+        "[test]\ncoverage = true\ncoverage_fail_under = \"eighty\"\n",
+        "[test]\ncoverage = true\ncoverage_fail_under = 85.5\n",
+    ] {
+        let err = SlipforkConfig::parse_toml(raw).expect_err("invalid threshold fails closed");
+        assert!(
+            matches!(err, DagError::InvalidCoverageThreshold { .. }),
+            "{raw}: {err:?}"
+        );
+    }
+
+    // Boundary values are accepted.
+    for (raw, expected) in [
+        ("[test]\ncoverage = true\ncoverage_fail_under = 0\n", 0),
+        ("[test]\ncoverage = true\ncoverage_fail_under = 100\n", 100),
+    ] {
+        let cfg = SlipforkConfig::parse_toml(raw).expect("boundary threshold");
+        assert_eq!(
+            cfg.test
+                .coverage
+                .expect("coverage enabled")
+                .fail_under
+                .map(CoverageThreshold::percent),
+            Some(expected)
+        );
+    }
+
+    // `[test]` has no hook surface: unknown keys are rejected.
+    assert!(SlipforkConfig::parse_toml("[test]\ncoverage = true\nghost = \"nope\"\n").is_err());
+}
+
+#[test]
+fn per_world_fixtures_are_typed_and_cannot_parent_origin_independent_nodes() {
+    let cfg = SlipforkConfig::parse_toml(
+        r#"
+[fixtures.sites]
+per_world = true
+run = "python manage.py seed_sites"
+
+[fixtures.sites_child]
+parent = "sites"
+per_world = true
+run = "python manage.py seed_sites_child"
+
+[fixtures.shared]
+run = "python manage.py migrate"
+"#,
+    )
+    .expect("per_world schema parses");
+    assert!(cfg.fixtures["sites"].per_world);
+    assert!(cfg.fixtures["sites_child"].per_world);
+    assert!(!cfg.fixtures["shared"].per_world);
+
+    let plan = DagPlanner::plan(
+        &cfg,
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+        &MapInputHasher::default(),
+        &SetDigestCache::default(),
+    )
+    .expect("plan");
+    assert!(plan.fixture("sites").expect("sites").per_world);
+    assert!(plan.fixture("sites_child").expect("sites_child").per_world);
+    assert!(!plan.fixture("shared").expect("shared").per_world);
+
+    // An origin-independent child of a per-world parent is rejected (`ADR-0003` §1).
+    let illegal = SlipforkConfig::parse_toml(
+        r#"
+[fixtures.sites]
+per_world = true
+run = "python manage.py seed_sites"
+
+[fixtures.shared_child]
+parent = "sites"
+run = "python manage.py migrate"
+"#,
+    )
+    .expect("schema parses; the planner rejects the lineage");
+    let err = DagPlanner::plan(
+        &illegal,
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+        &MapInputHasher::default(),
+        &SetDigestCache::default(),
+    )
+    .expect_err("per-world parent of an origin-independent child");
+    assert!(
+        matches!(err, DagError::OriginIndependentChildOfPerWorld { .. }),
+        "{err:?}"
+    );
+
+    // Flipping `per_world` changes the digest (a per-world snapshot is never silently shared).
+    let shared = SlipforkConfig::parse_toml("[fixtures.seed]\nrun = \"seed\"\n").expect("shared");
+    let per_world =
+        SlipforkConfig::parse_toml("[fixtures.seed]\nper_world = true\nrun = \"seed\"\n")
+            .expect("per-world");
+    let shared_plan = DagPlanner::plan(
+        &shared,
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+        &MapInputHasher::default(),
+        &SetDigestCache::default(),
+    )
+    .expect("plan shared");
+    let per_world_plan = DagPlanner::plan(
+        &per_world,
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+        &MapInputHasher::default(),
+        &SetDigestCache::default(),
+    )
+    .expect("plan per-world");
+    assert_ne!(
+        shared_plan.fixture("seed").expect("seed").digest,
+        per_world_plan.fixture("seed").expect("seed").digest
+    );
+}
+
+#[test]
+fn per_world_fixtures_are_never_served_from_the_shared_digest_cache() {
+    let cfg = SlipforkConfig::parse_toml(
+        r#"
+[fixtures.sites]
+per_world = true
+run = "python manage.py seed_sites"
+
+[fixtures.sites_child]
+parent = "sites"
+per_world = true
+run = "python manage.py seed_sites_child"
+
+[fixtures.shared]
+run = "python manage.py migrate"
+"#,
+    )
+    .expect("per_world schema parses");
+
+    let hasher = MapInputHasher::default();
+    let cold = DagPlanner::plan(
+        &cfg,
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+        &hasher,
+        &SetDigestCache::default(),
+    )
+    .expect("cold plan");
+
+    // Simulate a world-independent cache that already holds every digest (e.g. world A sealed
+    // these snapshots). Only the shared node may be reused.
+    let mut cache = SetDigestCache::default();
+    for fixture in cold.fixture_waves.iter().flatten() {
+        cache.fixtures.insert(fixture.digest.clone());
+    }
+    let warm = DagPlanner::plan(&cfg, &BTreeMap::new(), &BTreeMap::new(), &hasher, &cache)
+        .expect("warm plan");
+    assert_eq!(
+        warm.fixture("sites").expect("sites").action,
+        CacheAction::Rebuild,
+        "a per-world snapshot bakes this world's origin URLs and must never be reused"
+    );
+    assert_eq!(
+        warm.fixture("sites_child").expect("sites_child").action,
+        CacheAction::Rebuild,
+        "a per-world child inherits the same origin-bearing snapshot"
+    );
+    assert_eq!(
+        warm.fixture("shared").expect("shared").action,
+        CacheAction::Cached,
+        "origin-independent snapshots stay cacheable across worlds"
+    );
+    // The digest is still world-independent (the `DigestCache` port has no world discriminator),
+    // which is exactly why the planner must refuse to consult it for per-world nodes.
+    assert_eq!(
+        warm.fixture("sites").expect("sites").digest,
+        cold.fixture("sites").expect("sites").digest
+    );
 }
 
 #[test]
@@ -271,7 +497,7 @@ ghost = "nope"
     assert!(SlipforkConfig::parse_toml(bad_fixture).is_err());
     let bad_test = r#"
 [test]
-after_suite = "echo ok"
+coverage = true
 ghost = "nope"
 "#;
     assert!(SlipforkConfig::parse_toml(bad_test).is_err());

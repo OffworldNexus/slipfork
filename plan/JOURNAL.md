@@ -127,3 +127,16 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-15T11:11 [M1.8] (lead) GATE(2) FINAL: reviewer=PASS(0 BLOCKER), legality=PASS(0), ioc=PASS(0, round-1 SPEC_BLIND_SPOT dissolved by H-008), cruft=PASS(0, residual crate residue tracked
 - 2026-11-15T11:11 [M1.9] (lead) edited fields
 - 2026-11-15T11:11 [M1.8] (lead) status review -> done
+- 2026-11-15T11:12 [M1.9] (lead) status ready -> active
+- 2026-11-15T11:12 [M1.9] (lead) attempt 1/3 started
+- 2026-11-15T11:12 [M1.9] (lead) base 09e83153c072221c7828a77de54722c607e92535
+- 2026-11-15T11:16 [M1.9] (lead) status active -> review
+- 2026-11-15T11:18 [M1.9] (lead) GATE(1) NO PASS: reviewer=FAIL(1 BLOCKER: integrations.toml signoff_commit 09e8315 does not touch cited ADR-0002; 4 MAJOR: empty coverage_report accepted, per_w
+- 2026-11-15T11:18 [M1.9] (lead) edited fields
+- 2026-11-15T11:18 [M1.9] (lead) status review -> ready: attempt 2: BLOCKER false signoff_commit + empty coverage_report + per_world cache + published manifest gap
+- 2026-11-15T11:18 [M1.9] (lead) status ready -> active
+- 2026-11-15T11:18 [M1.9] (lead) attempt 2/3 started
+- 2026-11-15T11:18 [M1.9] (lead) base 09e83153c072221c7828a77de54722c607e92535
+- 2026-11-15T11:21 [M1.9] (lead) status active -> review
+- 2026-11-15T11:23 [M1.9] (lead) GATE(2) FINAL: reviewer=PASS(0 BLOCKER), legality=PASS(0, round-1 false signoff_commit fixed at d0b11e0), ioc=PASS(0, M2 tier-vocabulary gap recorded as directi
+- 2026-11-15T11:23 [M1.9] (lead) status review -> done

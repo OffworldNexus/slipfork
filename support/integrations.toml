@@ -1,0 +1,46 @@
+# Slipfork integration support registry (`ADR-0007`).
+#
+# This file is the sole source of truth for integration support claims. `slipfork-dag` embeds it
+# at compile time (`SupportRegistry::embedded()`) and validates the in-record contract; the M2
+# compliance tool verifies every pointer on disk, in `git`, and in CI workflows.
+#
+# Tiers are ordered: none < declared < exercised < field-tested < hardened. Never claim a tier
+# above the evidence present in this repository. `0.1.0` ships only the entries below; M2/M3
+# integrations are added by dedicated promotion plan nodes.
+
+[[integration]]
+id = "reflink-netns-world-engine"
+category = "world-engine"
+tier = "declared"
+
+[integration.evidence]
+recipe_page = "docs/getting-started.md"
+critical_test = "slipfork_engine::critical_engine::r10_r11_reflink_netns_conformance_cow_isolation_uid_and_parallel_same_port"
+
+[[integration]]
+id = "file-vault-secrets"
+category = "secrets"
+tier = "declared"
+
+[integration.evidence]
+recipe_page = "docs/snow-modes.md"
+critical_test = "slipfork_snow::critical_snow::r2_r4_r5_r8_modes_all_merge_write_once_secret_and_redaction"
+
+[[integration]]
+id = "incus-engine"
+category = "world-engine"
+tier = "none"
+
+[integration.evidence]
+rationale = "Conservatively reported at the lowest tier: `0.1.0` ships the Unix-socket REST /1.0 library adapter and it passes the shared `WorldEngine` conformance suite, but `declared` additionally requires a published recipe page, and live CLI/daemon wiring is gated on H-004 (no project-scoped incusd socket on this host). `signoff_commit` is d0b11e0, the M1.6 amendment that established the current ADR-0002 world-engine IoC, Incus, and reflink decision."
+signoff_doc = "docs/decisions/ADR-0002-world-engine-ioc-incus-and-reflink.md"
+signoff_commit = "d0b11e069ced52d0e03ebb3b251a1077d0c1bf39"
+
+[[integration]]
+id = "dag-config-cli"
+category = "cli"
+tier = "declared"
+
+[integration.evidence]
+recipe_page = "docs/testing-dag.md"
+critical_test = "slipfork_dag::critical_dag::r9_orthogonal_invalidation_front_edit_never_invalidates_db_snapshots_and_vice_versa"

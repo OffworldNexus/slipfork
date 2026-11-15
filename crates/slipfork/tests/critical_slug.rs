@@ -163,12 +163,12 @@ fn worktree_resolves_to_canonical_repo_slug_and_honors_only_vcs_root_slipfork_to
         "vault must be keyed by canonical ProjectSlug"
     );
 
-    // (b) Setting `project = "custom-slug"`, `[artifacts.front]`, and `[test].after_suite` in
+    // (b) Setting `project = "custom-slug"`, `[artifacts.front]`, and typed `[test]` coverage in
     // `<vcs_root>/slipfork.toml` wins cleanly in both `snow resolve` and default `dag plan`
     // even when `.worktrees/<fork>/slipfork.toml` says `rogue-wt`.
     fs::write(
         repo.join("slipfork.toml"),
-        "project = \"custom-slug\"\n\n[artifacts.front]\ninputs = [\"src/**\"]\nbuild = \"echo ok\"\nmount = \"dist\"\n\n[test]\nafter_suite = \"echo done\"\n",
+        "project = \"custom-slug\"\n\n[artifacts.front]\ninputs = [\"src/**\"]\nbuild = \"echo ok\"\nmount = \"dist\"\n\n[test]\ncoverage = true\ncoverage_report = [\"text\"]\n",
     )
     .expect("write root slipfork.toml");
 

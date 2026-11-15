@@ -2,7 +2,9 @@
 //!
 //! Separates stateless build outputs (`[artifacts.<id>]`) from stateful CoW service snapshots
 //! (`[fixtures.<id>]`) so frontend asset changes never invalidate seeded database snapshots
-//! and schema/seed changes never rebuild frontend bundles (`ADR-0003`).
+//! and schema/seed changes never rebuild frontend bundles (`ADR-0003`). Also owns the typed
+//! `[test]` coverage schema (`ADR-0006` §5) and the embedded integration support registry
+//! (`support/integrations.toml`, `ADR-0007`).
 
 #![forbid(unsafe_code)]
 
@@ -15,6 +17,13 @@ use sha2::{Digest, Sha256};
 use slipfork_world::ProjectSlug;
 use thiserror::Error;
 
+mod support;
+
+pub use support::{
+    Evidence, EvidenceField, IntegrationCategory, IntegrationEntry, IntegrationTier, RegistryError,
+    SupportRegistry,
+};
+
 /// Errors produced when parsing or planning a `slipfork.toml` DAG.
 #[derive(Debug, Error)]
 pub enum DagError {
@@ -22,14 +31,24 @@ pub enum DagError {
     Toml(String),
     #[error("fixture '{fixture}' references unknown parent '{parent}'")]
     UnknownParent { fixture: String, parent: String },
+    #[error(
+        "fixture '{fixture}' is origin-independent but its parent '{parent}' is `per_world = true`"
+    )]
+    OriginIndependentChildOfPerWorld { fixture: String, parent: String },
     #[error("dependency cycle detected in fixtures involving '{0}'")]
     CycleDetected(String),
+    #[error("`coverage_report` / `coverage_fail_under` require `coverage = true` under [test]")]
+    CoverageOptionsRequireEnabled,
+    #[error("`coverage_report` must list at least one report format when `coverage = true`")]
+    EmptyCoverageReport,
+    #[error("`coverage_fail_under` must be an integer in 0..=100, got {value}")]
+    InvalidCoverageThreshold { value: String },
     #[error("input hashing I/O error at {path}: {message}")]
     Io { path: String, message: String },
 }
 
 /// One stateless build artifact specification (`[artifacts.<id>]`).
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct ArtifactSpec {
     pub inputs: Vec<String>,
@@ -38,46 +57,157 @@ pub struct ArtifactSpec {
 }
 
 /// One stateful CoW fixture snapshot specification (`[fixtures.<id>]`).
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct FixtureSpec {
-    #[serde(default)]
     pub parent: Option<String>,
     #[serde(default)]
     pub inputs: Vec<String>,
+    /// `true` when this step writes absolute origin URLs into persistent state (e.g. Django
+    /// `django.contrib.sites` rows), so it can never be sealed into a snapshot shared across
+    /// worlds. A `per_world = true` fixture cannot be the `parent` of an origin-independent one
+    /// (`DagError::OriginIndependentChildOfPerWorld`, `ADR-0003` §1), and the planner never reports
+    /// it `CacheAction::Cached` because the digest cache is world-independent.
+    #[serde(default)]
+    pub per_world: bool,
     pub run: String,
 }
 
-/// Suite-level test runner configuration (`[test]` in `<vcs_root>/slipfork.toml`, `ADR-0006` §4).
+/// One coverage report format requested through `[test].coverage_report` (`ADR-0006` §5).
 ///
-/// Parsed here as part of the single [`SlipforkConfig`] root schema; runtime hook execution ships
-/// in Milestone 3 (`crates/slipfork-test`).
-#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
+/// Also a wire type in M3's `CoverageSummary.report_paths`, so it round-trips through JSON.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CoverageReportFormat {
+    Html,
+    Xml,
+    Json,
+    Lcov,
+    Text,
+}
+
+/// Validated integer coverage percentage in `0..=100` (`DagError::InvalidCoverageThreshold`).
+///
+/// Constructed only by parse-time validation of `[test].coverage_fail_under`; the inner value is
+/// private so no caller can smuggle an out-of-range percentage into a plan.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CoverageThreshold(u8);
+
+impl CoverageThreshold {
+    /// Highest accepted percentage.
+    pub const MAX: u8 = 100;
+
+    /// The validated percentage.
+    pub fn percent(self) -> u8 {
+        self.0
+    }
+
+    fn parse(value: &toml::Value) -> Result<Self, DagError> {
+        let invalid = || DagError::InvalidCoverageThreshold {
+            value: value.to_string(),
+        };
+        let percent =
+            u8::try_from(value.as_integer().ok_or_else(invalid)?).map_err(|_| invalid())?;
+        if percent > Self::MAX {
+            return Err(invalid());
+        }
+        Ok(Self(percent))
+    }
+}
+
+/// Typed coverage intent parsed from `[test]` (`ADR-0006` §5).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CoverageConfig {
+    /// Requested report formats; defaults to `{Text}` when `coverage_report` is omitted.
+    pub reports: BTreeSet<CoverageReportFormat>,
+    /// Optional threshold enforced by `TestCoordinator` in M3.
+    pub fail_under: Option<CoverageThreshold>,
+}
+
+/// Suite-level test runner configuration (`[test]` in `<vcs_root>/slipfork.toml`, `ADR-0006` §5).
+///
+/// `coverage = true` is the sole TOML activation switch: it parses into `Some(CoverageConfig)`
+/// with `coverage_report` defaulting to `{text}`. `coverage_report` / `coverage_fail_under`
+/// without `coverage = true` fail parse-time validation
+/// (`DagError::CoverageOptionsRequireEnabled`), an explicitly empty `coverage_report` fails closed
+/// (`DagError::EmptyCoverageReport`), and `coverage_fail_under` is validated into
+/// [`CoverageThreshold`] (`DagError::InvalidCoverageThreshold`). Runtime execution ships in
+/// Milestone 3 (`crates/slipfork-test`).
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct TestSpec {
-    #[serde(default)]
-    pub after_suite: Option<String>,
+    pub coverage: Option<CoverageConfig>,
+}
+
+/// Raw `[test]` wire table; validated into [`TestSpec`] by [`SlipforkConfig::parse_toml`].
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawTestSpec {
+    coverage: Option<bool>,
+    coverage_report: Option<Vec<CoverageReportFormat>>,
+    coverage_fail_under: Option<toml::Value>,
+}
+
+impl RawTestSpec {
+    fn into_test_spec(self) -> Result<TestSpec, DagError> {
+        if self.coverage != Some(true) {
+            if self.coverage_report.is_some() || self.coverage_fail_under.is_some() {
+                return Err(DagError::CoverageOptionsRequireEnabled);
+            }
+            return Ok(TestSpec::default());
+        }
+        let reports = match self.coverage_report {
+            Some(reports) if reports.is_empty() => return Err(DagError::EmptyCoverageReport),
+            Some(reports) => reports.into_iter().collect(),
+            None => BTreeSet::from([CoverageReportFormat::Text]),
+        };
+        let fail_under = self
+            .coverage_fail_under
+            .as_ref()
+            .map(CoverageThreshold::parse)
+            .transpose()?;
+        Ok(TestSpec {
+            coverage: Some(CoverageConfig {
+                reports,
+                fail_under,
+            }),
+        })
+    }
 }
 
 /// Root `<vcs_root>/slipfork.toml` manifest owning `project`, `[artifacts]`, `[fixtures]`, and `[test]`.
-#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct SlipforkConfig {
     /// Optional canonical project slug override (defaults to the canonical git/jj root name).
-    #[serde(default)]
     pub project: Option<ProjectSlug>,
-    #[serde(default)]
     pub artifacts: BTreeMap<String, ArtifactSpec>,
-    #[serde(default)]
     pub fixtures: BTreeMap<String, FixtureSpec>,
-    #[serde(default)]
     pub test: TestSpec,
+}
+
+/// Raw root wire document; validated into [`SlipforkConfig`] by [`SlipforkConfig::parse_toml`].
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawSlipforkConfig {
+    project: Option<ProjectSlug>,
+    #[serde(default)]
+    artifacts: BTreeMap<String, ArtifactSpec>,
+    #[serde(default)]
+    fixtures: BTreeMap<String, FixtureSpec>,
+    #[serde(default)]
+    test: RawTestSpec,
 }
 
 impl SlipforkConfig {
     /// Parse and validate a `slipfork.toml` document.
     pub fn parse_toml(raw: &str) -> Result<Self, DagError> {
-        toml::from_str(raw).map_err(|e| DagError::Toml(e.to_string()))
+        let raw: RawSlipforkConfig =
+            toml::from_str(raw).map_err(|e| DagError::Toml(e.to_string()))?;
+        Ok(Self {
+            project: raw.project,
+            artifacts: raw.artifacts,
+            fixtures: raw.fixtures,
+            test: raw.test.into_test_spec()?,
+        })
     }
 }
 
@@ -122,6 +252,7 @@ pub struct PlannedFixture {
     pub digest: String,
     pub input_merkle: String,
     pub action: CacheAction,
+    pub per_world: bool,
     pub run: String,
 }
 
@@ -158,13 +289,19 @@ impl DagPlanner {
     ) -> Result<DagPlan, DagError> {
         // 1. Validate fixture parent links and compute topological waves.
         for (id, spec) in &config.fixtures {
-            if let Some(parent) = &spec.parent
-                && !config.fixtures.contains_key(parent)
-            {
-                return Err(DagError::UnknownParent {
-                    fixture: id.clone(),
-                    parent: parent.clone(),
-                });
+            if let Some(parent) = &spec.parent {
+                let Some(parent_spec) = config.fixtures.get(parent) else {
+                    return Err(DagError::UnknownParent {
+                        fixture: id.clone(),
+                        parent: parent.clone(),
+                    });
+                };
+                if parent_spec.per_world && !spec.per_world {
+                    return Err(DagError::OriginIndependentChildOfPerWorld {
+                        fixture: id.clone(),
+                        parent: parent.clone(),
+                    });
+                }
             }
         }
 
@@ -220,13 +357,22 @@ impl DagPlanner {
                 h.update(b"\0");
                 h.update(spec.run.as_bytes());
                 h.update(b"\0");
+                h.update(if spec.per_world {
+                    &b"per-world"[..]
+                } else {
+                    &b"shared"[..]
+                });
+                h.update(b"\0");
                 feed_env_map(&mut h, runtime_envs);
                 h.update(input_merkle.as_bytes());
                 let digest = hex::encode(h.finalize());
-                let action = if cache.has_fixture(&digest) {
-                    CacheAction::Cached
-                } else {
+                // `DigestCache` is world-independent by design (its port shape carries no world
+                // discriminator), so a `per_world = true` snapshot can never be served from it:
+                // it bakes this world's absolute origin URLs into persistent state (`ADR-0003` §1).
+                let action = if spec.per_world || !cache.has_fixture(&digest) {
                     CacheAction::Rebuild
+                } else {
+                    CacheAction::Cached
                 };
                 digests.insert(id.clone(), digest.clone());
                 wave.push(PlannedFixture {
@@ -235,6 +381,7 @@ impl DagPlanner {
                     digest,
                     input_merkle,
                     action,
+                    per_world: spec.per_world,
                     run: spec.run.clone(),
                 });
             }

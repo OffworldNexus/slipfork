@@ -2,7 +2,7 @@
 id: M1.9
 title: "Delete rejected [test] shell field, land typed coverage schema, per_world fixtures & support registry"
 kind: task
-status: ready
+status: done
 owner: implementer
 priority: 1
 depends_on: [M1.8]
@@ -12,11 +12,13 @@ paths:
   - "support/**"
   - ARCHITECTURE.md
   - "docs/decisions/ADR-0006*"
-attempts: 0
+  - docs/reference/manifest.md
+  - CHANGELOG.md
+attempts: 2
 max_attempts: 3
 escalation: none
 created: "2026-11-15T11:11"
-updated: "2026-11-15T11:11"
+updated: "2026-11-15T11:23"
 ---
 
 # Goal

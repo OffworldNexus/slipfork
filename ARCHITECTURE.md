@@ -10,7 +10,7 @@ Every hypervisor backend, secret store, VCS workspace driver, tunnel registrar, 
 
 Only **two entrypoints** in the entire repository may touch ambient environment variables, wall clocks, OS sockets, or real filesystems to wire concrete types:
 
-1. **Rust CLI / Daemon Composition Root:** `crates/slipfork/src/main.rs` (wires CLI commands, `slipforkd`, `SupportRegistry::embedded()` for M2/M3 `slipfork support`, and `git-remote-slipfork`)
+1. **Rust CLI / Daemon Composition Root:** `crates/slipfork/src/main.rs` (wires CLI commands, `slipforkd`, `SupportRegistry::embedded()` — schema embedded in `0.1.0`, `slipfork support` in M2 — and `git-remote-slipfork`)
 2. **OpenCode V2 Plugin Composition Root:** `packages/opencode-slipfork/src/index.ts`
 
 ```mermaid
@@ -24,7 +24,7 @@ flowchart TD
   CR -->|injects| VcsSvc["WorkspaceService<br/>(crates/slipfork-vcs, M2)"]
   CR -->|injects| TestCoord["TestCoordinator<br/>(crates/slipfork-test, M3)"]
 
-  CliCtl -->|compile-time include_str!| SR["SupportRegistry::embedded()<br/>(support/integrations.toml, M2/M3)"]
+  CliCtl -->|compile-time include_str!| SR["SupportRegistry::embedded()<br/>(support/integrations.toml, embedded in 0.1.0; CLI in M2)"]
   CliCtl -->|Slipfork internal IPC| DC["trait DaemonControl<br/>(crates/slipfork-edge, M2)"]
   DC --> WR
   EdgeDaemon --> WR["WorldRegistry (struct, M2)<br/>owns (WorldOrigin, Option&lt;TunnelLease&gt;) + shared_hosts map"]
@@ -72,7 +72,7 @@ flowchart TD
 |---|---|---|---|
 | `crates/slipfork-world` | M1 (shipped) + M2 `WorldOrigin` | `#![forbid(unsafe_code)]`; depends only on `serde` + `thiserror`, zero OS socket/FD types | Validated `ProjectSlug` newtype (`parse` / `as_str` / `Display` / `Serialize` / fail-closed `Deserialize`), `WorldTarget { Canonical, UserFork, TestSlot }` (`WorldTarget::validate(&[&str])` + `validate_fork_name`), `WorldError`, encapsulated `LocalHostRoute` (sole constructor of `WorldOrigin::Local`), M2 `WorldOrigin { Local { url }, Shared { url } }` (`ADR-0005` §1), and pure `TunnelLease` + `TunnelRegistrar` traits with shared conformance |
 | `crates/slipfork-snow` | M1 (shipped) + M2 component add/remove | `#![forbid(unsafe_code)]`; zero ambient `env`/`net`/clock | `SnowFile` v2 AST (`modes.all` + `modes.<m>`, mode-scoped `modes.<m>.components.<id>`: `run_command` override validated in M1, add/remove/override supervised in M2; `#[serde(deny_unknown_fields)]`; hard rejection of top-level `envs`/`project`), `Faceless` v2 (`??` vs `!!`), `ResourceCoordinates::local_for_world` (sole local coordinate/origin constructor; M2 resolves per-world boot coordinates from `WorldOrigin` with local precedence over `domains::`), `SecretValue`, `SecretProvider`, `EntropySource` |
-| `crates/slipfork-dag` | M1 (shipped) + pre-merge cleanup + M2/M3 | `#![forbid(unsafe_code)]`; depends on `slipfork-world`, zero `slipfork-engine` dep | Root `SlipforkConfig` (`project: Option<ProjectSlug>`, `artifacts`, `fixtures`, `test: TestSpec`, all `#[serde(deny_unknown_fields)]`), `ArtifactSpec`, `FixtureSpec`, wave planner, `InputHasher`, `DigestCache`, and M3 `ArtifactStore` + `VolumeCloner` ports. (`0.1.0`'s `TestSpec` currently holds one dead, never-executed string field pinned by M1 critical tests with zero CLI/doc surface; a mandatory pre-merge code node deletes it and lands typed `TestSpec { coverage: Option<CoverageConfig> }` + `FixtureSpec.per_world: bool`) |
+| `crates/slipfork-dag` | M1 (shipped) + pre-merge cleanup + M2/M3 | `#![forbid(unsafe_code)]`; depends on `slipfork-world`, zero `slipfork-engine` dep | Root `SlipforkConfig` (`project: Option<ProjectSlug>`, `artifacts`, `fixtures`, `test: TestSpec`, parse-time validation of the raw wire tables), `ArtifactSpec`, `FixtureSpec` (incl. `per_world: bool`), typed `TestSpec { coverage: Option<CoverageConfig> }` + `CoverageReportFormat`/`CoverageThreshold`, `SupportRegistry` + `IntegrationEntry`/`Evidence`/`IntegrationTier` (`support/integrations.toml`, `ADR-0007`), wave planner, `InputHasher`, `DigestCache`, and M3 `ArtifactStore` + `VolumeCloner` ports |
 | `crates/slipfork-engine` | M1 (shipped) + M2 full spec | `unsafe` confined strictly to `linux_cow.rs` (`ioctl(FICLONE)` with `// SAFETY:` proof) | `WorldEngine` (including M2 `spawn_service`, `freeze_world`, `dial_world_tcp`), `WorldSpec` (`WorldMount` RO/RW list + redacted `ExecEnv`), `SnapshotMode`, opaque `WorldHandle`; adapters: `IncusEngine` and `ReflinkNetnsEngine` |
 | `crates/slipfork-edge` | M2 | `#![forbid(unsafe_code)]`; pure of ambient env | Sole ingress reverse proxy (`slipforkd`, `H-008`): proxies shared hostnames via `WorldRegistry`'s `shared_hosts` map and `*.localhost` via `LocalHostRoute`, enforcing `308`/`421` strictly on `*.localhost` when a world is `Shared` (`ADR-0005` §1); internal `trait DaemonControl` (`register_world` / `release_world` + `share_world` / `unshare_world`); and `WeavedRegistrar` gated on `weaved`'s IPC spec (`H-006`) |
 | `crates/slipfork-vcs` | M2 | `#![forbid(unsafe_code)]`; injected `ScratchDir` | `VcsWorkspace`, `VcsWorkspaceFactory`, `GitWorktreeAdapter`, `JjWorkspaceAdapter`, and `git-remote-slipfork` protocol handler |
@@ -257,7 +257,7 @@ pub trait VcsWorkspaceFactory: Send + Sync {
 
 ### 3.5 World-Owns-The-Stack, `RunnerProtocol v1`, Typed `CoverageDriver` & `SLIPFORK_OUTPUT_DIR` (`crates/slipfork-dag`, `crates/slipfork-test` M3, `ADR-0006`)
 
-The CoW world — **never** the test runner — migrates PostgreSQL, seeds snapshots, assigns `WorldOrigin`, and boots services before tests run (`ADR-0006` §1–§5). A mandatory pre-merge code node deletes `0.1.0`'s dead, never-executed `slipfork_dag::TestSpec` string field (and its M1 critical-test assertions) and introduces `FixtureSpec.per_world: bool` plus the single-way typed `[test]` schema below (`coverage = true` is the sole TOML switch, parsed into `Option<CoverageConfig>` with zero boolean flag in domain structs):
+The CoW world — **never** the test runner — migrates PostgreSQL, seeds snapshots, assigns `WorldOrigin`, and boots services before tests run (`ADR-0006` §1–§5). `FixtureSpec.per_world: bool` plus the single-way typed `[test]` schema below are parsed by `SlipforkConfig::parse_toml` (`coverage = true` is the sole TOML switch, parsed into `Option<CoverageConfig>` with zero boolean flag in domain structs):
 
 ```rust
 // crates/slipfork-dag — target schemas for [fixtures.<id>] and [test] in slipfork.toml
@@ -272,24 +272,33 @@ pub enum CoverageReportFormat {
 }
 
 /// Validated integer percentage in `0..=100` (`DagError::InvalidCoverageThreshold` /
-/// `TestError::InvalidCoverageThreshold` on `101..=255`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+/// `TestError::InvalidCoverageThreshold` on `101..=255`), constructed only by parse-time
+/// validation of `coverage_fail_under`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CoverageThreshold(u8);
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+impl CoverageThreshold {
+    pub const MAX: u8 = 100;
+    pub fn percent(self) -> u8;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CoverageConfig {
     pub reports: BTreeSet<CoverageReportFormat>, // defaults to {Text} when coverage_report omitted
     pub fail_under: Option<CoverageThreshold>,
 }
 
-/// Custom Deserialize enforces `coverage = true` as the sole activation switch in TOML and
-/// rejects `coverage_report` / `coverage_fail_under` without `coverage = true`
-/// (`DagError::CoverageOptionsRequireEnabled`).
-#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize)]
+/// `SlipforkConfig::parse_toml` validates the raw `[test]` wire table: `coverage = true` is the
+/// sole activation switch and rejects `coverage_report` / `coverage_fail_under` without it
+/// (`DagError::CoverageOptionsRequireEnabled`) and an explicitly empty `coverage_report`
+/// (`DagError::EmptyCoverageReport`).
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct TestSpec {
     pub coverage: Option<CoverageConfig>,
 }
 ```
+
+- **`FixtureSpec.per_world` (`ADR-0003` §1):** a `per_world = true` fixture writes absolute origin URLs into persistent state, is never sealed into a snapshot shared across worlds, and cannot be the `parent` of an origin-independent fixture (`DagError::OriginIndependentChildOfPerWorld`); `per_world` is part of the fixture digest and is carried on every `PlannedFixture`. `DagPlanner::plan` never reports a `per_world = true` node as `CacheAction::Cached`: the `DigestCache` port carries no world discriminator, so a cache hit would reuse another world's snapshot with its baked-in URLs.
 
 ```rust
 // crates/slipfork-test (M3) — canonical .slipfork/runs/<run_id>/<slot>/{runner.sock,coverage,output}
@@ -352,10 +361,13 @@ pub trait TestAdapter: Send + Sync {
 
 - Every `TestAdapter` must pass the shared `TestAdapter` conformance suite (including fail-closed `TestError::CoverageUnsupported` when `TestSpec.coverage.is_some()` and `coverage()` is `None`, plus `TestCoordinator` threshold enforcement for `CoverageThreshold`).
 
-### 3.6 Integration Support Registry (`support/integrations.toml`, `ADR-0007`, M2/M3 Target)
+### 3.6 Integration Support Registry (`support/integrations.toml`, `crates/slipfork-dag`, `ADR-0007`)
+
+`0.1.0` lands the typed registry schema and the embedded registry file; `slipfork support [--json]` and the read-only `make check` ceiling land in M2/M3.
 
 ```rust
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+// crates/slipfork-dag/src/support.rs
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum IntegrationTier {
     None,
@@ -365,14 +377,80 @@ pub enum IntegrationTier {
     Hardened,
 }
 
+impl IntegrationTier {
+    /// Cumulative tier→evidence ladder shared by validation, the critical test, and the M2
+    /// compliance tool (the table lives here once, never restated).
+    pub fn required_evidence(self) -> &'static [EvidenceField];
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum IntegrationCategory {
+    WorldEngine,
+    Secrets,
+    Tunnel,
+    Vcs,
+    TestRunner,
+    Cli,
+}
+
+/// One evidence pointer kind (`ADR-0007` §1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EvidenceField {
+    Rationale,          // none
+    SignoffDoc,         // none: existing ADR/review path
+    SignoffCommit,      // none: 40-hex commit SHA
+    RecipePage,         // declared: existing published doc path
+    CriticalTest,       // declared: <crate>::<critical_file>::<test_fn>
+    CiJob,              // exercised: <workflow.yml>#<job_id>
+    DeployRef,          // field-tested: support/deployments/<id>.md
+    ProductionSuiteRef, // hardened: committed scale record
+    TestAudit,          // hardened: docs/testing/AUDIT-*.md
+}
+
+/// One flat record of optional evidence pointers (the "typed in-record fields" reading of
+/// `ADR-0007` §1). Fields are private and the type has no `Deserialize`, so
+/// `SupportRegistry::parse_toml` is the only constructor.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Evidence {
+    // rationale, signoff_doc, signoff_commit, recipe_page, critical_test, ci_job,
+    // deploy_ref, production_suite_ref, test_audit
+}
+
+impl Evidence {
+    pub fn field(&self, field: EvidenceField) -> Option<&str>;
+}
+
+/// One integration support claim; private fields + accessors, constructed only by `parse_toml`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IntegrationEntry {
+    // id, category, tier, evidence
+}
+
+impl IntegrationEntry {
+    pub fn id(&self) -> &str;
+    pub fn category(&self) -> IntegrationCategory;
+    pub fn tier(&self) -> IntegrationTier;
+    pub fn evidence(&self) -> &Evidence;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SupportRegistry {
+    entries: Vec<IntegrationEntry>,
+}
+
 impl SupportRegistry {
     /// Compile-time `include_str!("../../../support/integrations.toml")` — zero ambient cwd I/O.
     pub fn embedded() -> Result<Self, RegistryError>;
+    /// Sole parser and validating path (private `validate()`): rejects an empty registry, duplicate
+    /// ids, and any claimed tier whose required pointers are missing/empty.
     pub fn parse_toml(raw: &str) -> Result<Self, RegistryError>;
+    pub fn entries(&self) -> &[IntegrationEntry];
 }
 ```
 
-- Normative `IntegrationEntry.evidence` fields, the split between **machine-verified** (`declared`, `exercised`) and **attested + artifact** (`none`, `field-tested`, `hardened`) tiers, `slipfork support [--json]`, the read-only `make check` fail-closed ceiling, and explicit `make support-sync` demotion live in `ADR-0007` (landing in M2/M3; not in `0.1.0`).
+- **Evidence representation:** one flat optional-field record (not a per-tier sum type) so `make support-sync` can demote an entry in place without reshaping its TOML record; `IntegrationTier::required_evidence()` is the single tier→evidence ladder (`none`: `rationale`/`signoff_doc`/`signoff_commit`; `declared`: `recipe_page`/`critical_test`; `exercised`: +`ci_job`; `field-tested`: +`deploy_ref`; `hardened`: +`production_suite_ref`/`test_audit`), duplicate ids fail as `RegistryError::DuplicateId`, an empty registry fails as `RegistryError::EmptyRegistry`, and malformed TOML or unknown fields fail as `RegistryError::Toml`. Normative tier semantics, the split between **machine-verified** (`declared`, `exercised`) and **attested + artifact** (`none`, `field-tested`, `hardened`) tiers, `slipfork support [--json]`, the read-only `make check` fail-closed ceiling, and explicit `make support-sync` demotion live in `ADR-0007` §1–§3.
+- **`0.1.0` scope:** the file ships with the honest `0.1.0` surface only. `crates/slipfork-dag/tests/critical_support.rs` verifies that the registry parses and is non-empty, ids are unique, every tier's required pointers are present and non-empty, every `recipe_page`/`signoff_doc`/`deploy_ref`/`production_suite_ref`/`test_audit` path exists, and every `critical_test` symbol resolves — all via `env!("CARGO_MANIFEST_DIR")`-relative paths (no ambient cwd). `signoff_commit` is checked for lowercase 40-hex **shape only**: `0.1.0` does not verify that the commit exists or that it touches its `signoff_doc`. M2's compliance tool adds `git` commit existence/attestation, `.github/workflows` job-key verification (the test's `ci_job` branch stays dormant until an `exercised` entry ships), `slipfork support [--json]`, the fail-closed `make check` ceiling, and `make support-sync` demotion (`ADR-0007` §2–§3).
 
 ---
 

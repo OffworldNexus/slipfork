@@ -96,7 +96,24 @@ run = "psql -f api/migrations/0001_schema.sql"
 parent = "migrate"
 inputs = ["api/migrations/seed_catalog.sql"]
 run = "psql -f api/migrations/seed_catalog.sql"
+
+# Writes absolute origin URLs into persistent state; never shared across worlds (ADR-0003 §1).
+[fixtures.seed_sites]
+parent = "seed_catalog"
+per_world = true
+run = "uv run python manage.py seed_sites"
+
+[test]
+coverage = true
+coverage_report = ["html", "xml"] # html | xml | json | lcov | text
+coverage_fail_under = 85          # optional integer 0..=100
 ```
+
+### Validation rules (`0.1.0`)
+
+- **Unknown keys fail closed:** every `slipfork.toml` table rejects unknown fields (`#[serde(deny_unknown_fields)]`).
+- **`[test]` is typed fields only:** no hooks, shell pipelines, or path assembly (`ADR-0006` §1). `coverage = true` is the sole switch; `coverage_report` defaults to `["text"]` when omitted; `coverage_report` / `coverage_fail_under` without `coverage = true` fail with `DagError::CoverageOptionsRequireEnabled`; an explicitly empty `coverage_report = []` fails with `DagError::EmptyCoverageReport`; `coverage_fail_under` must be an integer in `0..=100` (`DagError::InvalidCoverageThreshold`). `0.1.0` parses and validates this schema; coverage execution and report generation land in **Milestone 3** (`crates/slipfork-test`).
+- **`[fixtures.<id>].per_world`** defaults to `false`. Fixture snapshots are shareable across worlds **unless** `per_world = true`, which marks a step that bakes this world's absolute origin URLs into persistent state (`ADR-0003` §1). A per-world fixture is never reported `CacheAction::Cached` and cannot be the `parent` of an origin-independent fixture (`DagError::OriginIndependentChildOfPerWorld`). `0.1.0` parses, validates, and plans the flag; per-world snapshot execution lands in **Milestone 3**.
 
 ---
 
