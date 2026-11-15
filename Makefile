@@ -51,9 +51,9 @@ docs-serve: ## Preview the Zensical documentation site locally
 	uvx --offline zensical serve
 
 bench: ## Re-measure the PoC benchmark read-only and fail on drift (opt-in, never writes)
-	cargo build --release -p slipfork
+	cargo build --release -p slipfork -p slipfork-engine --bins
 	uv run --no-project poc/run_benchmark.py --check
 
 bench-update: ## Re-measure the PoC benchmark and write the report + baseline (review before committing)
-	cargo build --release -p slipfork
+	cargo build --release -p slipfork -p slipfork-engine --bins
 	uv run --no-project poc/run_benchmark.py --write-report

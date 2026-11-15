@@ -1,7 +1,7 @@
 [project]
 site_name = "slipfork"
 site_url = "https://offworldnexus.github.io/slipfork/"
-site_description = "Instant copy-on-write dev worlds, OpenCode worktree forks, and parallel snapshot-DAG test orchestration from snow.yml."
+site_description = "Instant copy-on-write dev worlds, OpenCode worktree forks, and orthogonal build/fixture planning from snow.yml."
 site_author = "Offworld Nexus"
 copyright = "&copy; 2026 Offworld Nexus &middot; Apache 2.0"
 
@@ -18,8 +18,9 @@ nav = [
   { "snow.yml modes & secrets" = "snow-modes.md" },
   { "Orthogonal DAG planner" = "testing-dag.md" },
   { "OpenCode V2 plugin" = "agents-and-opencode.md" },
+  { "Integrations & support" = "support-matrix.md" },
   { "Reference" = [
-    { "CLI (0.1.0)" = "reference/cli.md" },
+    { "CLI (0.2.0)" = "reference/cli.md" },
     { "Manifests (snow.yml & slipfork.toml)" = "reference/manifest.md" },
   ] },
 ]

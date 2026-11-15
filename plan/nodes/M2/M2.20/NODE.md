@@ -2,16 +2,16 @@
 id: M2.20
 title: "Release 0.2.0: version bump, unused-dependency audit, full make check and read-only make bench"
 kind: task
-status: ready
+status: active
 owner: implementer
 priority: 3
 depends_on: [M2.19, M2.29]
 paths: [Cargo.toml, Cargo.lock, "packages/opencode-slipfork/package.json", zensical.toml, CHANGELOG.md]
-attempts: 0
+attempts: 1
 max_attempts: 3
 escalation: none
 created: "2026-11-15T16:40"
-updated: "2026-11-15T21:03"
+updated: "2026-11-15T23:16"
 ---
 
 # Goal

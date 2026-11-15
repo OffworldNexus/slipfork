@@ -8,7 +8,6 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-getrandom.workspace = true
 hex.workspace = true
 p256.workspace = true
 rustls.workspace = true
@@ -30,4 +29,4 @@ zstd.workspace = true
 tempfile.workspace = true
 # The real wire types for the in-process fake `tpmd` daemon. `tpmd-client` re-exports only the
 # consumer subset, so the test-only daemon links the protocol crate at the same pinned revision.
-tpmd-proto = { git = "https://github.com/OffworldNexus/tpmd", rev = "90cb2db45b3ea6bc065918f11c7e0fd23b4ce837" }
+tpmd-proto.workspace = true

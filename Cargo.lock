@@ -1156,7 +1156,7 @@ checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
 
 [[package]]
 name = "slipfork"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "clap",
  "hex",
@@ -1175,7 +1175,7 @@ dependencies = [
 
 [[package]]
 name = "slipfork-dag"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "hex",
  "serde",
@@ -1188,7 +1188,7 @@ dependencies = [
 
 [[package]]
 name = "slipfork-edge"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "httparse",
  "listenfd",
@@ -1196,13 +1196,12 @@ dependencies = [
  "serde_json",
  "slipfork-engine",
  "slipfork-world",
- "socket2",
  "thiserror",
 ]
 
 [[package]]
 name = "slipfork-engine"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "hex",
  "libc",
@@ -1216,9 +1215,8 @@ dependencies = [
 
 [[package]]
 name = "slipfork-ospp"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
- "getrandom 0.3.4",
  "hex",
  "p256",
  "rustls",
@@ -1241,7 +1239,7 @@ dependencies = [
 
 [[package]]
 name = "slipfork-snow"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "base64 0.22.1",
  "getrandom 0.3.4",
@@ -1256,7 +1254,7 @@ dependencies = [
 
 [[package]]
 name = "slipfork-vcs"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "slipfork-world",
  "tempfile",
@@ -1265,7 +1263,7 @@ dependencies = [
 
 [[package]]
 name = "slipfork-world"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "hex",
  "serde",

@@ -424,3 +424,8 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-15T22:55 [M2.19] (lead) attempt 1/3 started
 - 2026-11-15T22:55 [M2.19] (lead) base a7b2a79efe40bcc48994bddb2842a03e0ef79f6b; note critical_slug flaked once under parallel make check, passes in isolation
 - 2026-11-15T23:05 [M2.19] (lead) attempt 2/3 started
+- 2026-11-15T23:16 [M2.19] (lead) status active -> done
+- 2026-11-15T23:16 [M2.20] (lead) status ready -> active
+- 2026-11-15T23:16 [M2.20] (lead) attempt 1/3 started
+- 2026-11-15T23:16 [M2.20] (lead) base e08a85f153a794ab29c67a5fdac7726cf9329c43
+- 2026-11-15T23:51 [M2.20] (implementer) dependency audit (declared dep => first consumer): slipfork: clap=>src/bin/slipforkd.rs, hex=>src/main.rs, sha2=>src/runtime.rs, serde/serde_json=>src/daemon.rs

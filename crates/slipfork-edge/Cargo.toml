@@ -12,7 +12,6 @@ httparse.workspace = true
 listenfd.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-socket2.workspace = true
 slipfork-engine = { path = "../slipfork-engine" }
 slipfork-world = { path = "../slipfork-world" }
 thiserror.workspace = true

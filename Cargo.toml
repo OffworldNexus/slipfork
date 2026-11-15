@@ -12,7 +12,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 license = "Apache-2.0"
 repository = "https://github.com/OffworldNexus/slipfork"
@@ -32,13 +32,13 @@ serde = { version = "1.0.228", features = ["derive"] }
 serde-saphyr = "2.1.1"
 serde_json = "1.0.149"
 sha2 = "0.10.9"
-socket2 = "0.6.5"
 tempfile = "3.22.0"
 thiserror = "2.0.17"
 tokio = { version = "1", default-features = false, features = ["rt", "net", "time"] }
 toml = "1.1.2"
 tpmd-client = { git = "https://github.com/OffworldNexus/tpmd", rev = "90cb2db45b3ea6bc065918f11c7e0fd23b4ce837" }
 tpmd-ipc = { git = "https://github.com/OffworldNexus/tpmd", rev = "90cb2db45b3ea6bc065918f11c7e0fd23b4ce837" }
+tpmd-proto = { git = "https://github.com/OffworldNexus/tpmd", rev = "90cb2db45b3ea6bc065918f11c7e0fd23b4ce837" }
 tungstenite = { version = "0.30.0", features = ["rustls-tls-webpki-roots"] }
 webpki-roots = "1.0.12"
 zstd = "0.14.4"
