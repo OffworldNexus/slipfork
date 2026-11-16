@@ -2,7 +2,7 @@
 id: M3.3
 title: "Isolated: live IncusEngine conformance and declared support promotion (gated on H-004)"
 kind: task
-status: blocked
+status: superseded
 owner: implementer
 priority: 3
 depends_on: [M3.1]
@@ -17,7 +17,7 @@ attempts: 0
 max_attempts: 3
 escalation: none
 created: "2026-11-16T06:34"
-updated: "2026-11-16T06:34"
+updated: "2026-11-16T16:53"
 ---
 
 # Goal

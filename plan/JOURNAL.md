@@ -479,3 +479,10 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-16T13:00 [M3.5] (implementer) Round 2 gate fixes: SSH auth fail-fast + --ssh-key/--authorized-key guidance, summary-before-fingerprint billing safety, exact-tarred-list .env scan, --ssh-key 
 - 2026-11-16T13:26 [M3.5] (implementer) Final polish: single _poll retry ladder (only auth/host-key abort; last detail on timeout, SSH_TRANSIENT deleted), regions() payload validation, docs bounded SS
 - 2026-11-16T13:31 [M3.5] (lead) status review -> done
+- 2026-11-16T13:48 [M3.6] (conductor) LIVE MEASUREMENTS on the ams3 DO VM (Ubuntu 24.04, ams3, s-4vcpu-8gb, ZFS pool on a 100 GiB DO volume, Incus 6.x): (1) zfs clone of a full container dataset = 3
+- 2026-11-16T13:58 [M3.6] (conductor) OPTIMISATION INSIGHT from the ams3 numbers (incus copy 660-950 ms vs zfs clone 39 ms): the ~600-900 ms delta is daemon/DB bookkeeping, not storage. Because our 
+- 2026-11-16T16:53 HUMAN H-004 closed by conductor
+- 2026-11-16T16:53 [M3.3] (conductor) status blocked -> superseded: Owner ruling: delete Incus completely; Option A (Btrfs-only BtrfsEngine) is the sole engine
+- 2026-11-16T16:53 [M3.6] (conductor) status ready -> superseded: Superseded by total Option A Btrfs-only wipe (deleting Incus, XFS FICLONE, and KVM/QEMU completely)
+- 2026-11-16T16:53 [M3] (conductor) OWNER RULING (SCORCHED EARTH — OPTION A BTRFS-ONLY): (1) Option A (unified Btrfs subvolumes + Linux namespaces `userns+netns+ipcns+pidns+mntns` + `pivot_root` +
+- 2026-11-16T16:53 AUTOPILOT on by conductor All steam on Option A Btrfs-only wipe + M3 (0.3.0)
