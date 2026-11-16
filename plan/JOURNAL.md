@@ -429,3 +429,6 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-15T23:16 [M2.20] (lead) attempt 1/3 started
 - 2026-11-15T23:16 [M2.20] (lead) base e08a85f153a794ab29c67a5fdac7726cf9329c43
 - 2026-11-15T23:51 [M2.20] (implementer) dependency audit (declared dep => first consumer): slipfork: clap=>src/bin/slipforkd.rs, hex=>src/main.rs, sha2=>src/runtime.rs, serde/serde_json=>src/daemon.rs
+- 2026-11-16T00:26 [M2.21] (lead) status ready -> blocked: H-004 still open: /var/lib/incus/unix.socket absent (only /dev/incus/sock), no project-scoped incusd endpoint mounted. No live IncusEng
+- 2026-11-16T00:26 [M2.22] (lead) status ready -> blocked: H-006 closed by deferral: no weaved IPC wire specification exists, so WeavedRegistrar stays unimplemented and share stays fail-closed (
+- 2026-11-16T01:26 [M2.20] (lead) bench note: default 16x8 exceeds 50 min on this host (harness hangs after seeding under load); a bounded --num-tests 1 --workers 1 run exits 0, proving the pipe
