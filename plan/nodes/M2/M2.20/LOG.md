@@ -39,3 +39,7 @@ bench note: default 16x8 exceeds 50 min on this host (harness hangs after seedin
 ## 2026-11-16T01:52 [lead]
 
 conductor ruling applied: bounded 1x1 bench --check exit 0 as evidence; default 16x8 is host-time-bound and not gate evidence (follow-up filed); in-flight bench killed; M2.20 closed.
+
+## 2026-11-16T01:53 [lead]
+
+status active -> done

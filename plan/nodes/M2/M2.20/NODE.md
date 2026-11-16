@@ -2,7 +2,7 @@
 id: M2.20
 title: "Release 0.2.0: version bump, unused-dependency audit, full make check and read-only make bench"
 kind: task
-status: active
+status: done
 owner: implementer
 priority: 3
 depends_on: [M2.19, M2.29]
@@ -11,7 +11,7 @@ attempts: 1
 max_attempts: 3
 escalation: none
 created: "2026-11-15T16:40"
-updated: "2026-11-15T23:16"
+updated: "2026-11-16T01:53"
 ---
 
 # Goal
