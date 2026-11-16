@@ -35,3 +35,7 @@ CORRECTION (M3.9 attempt 2): doctor performs NO crun probe and emits NO crun fie
 ## 2026-11-16T21:45 [lead]
 
 M3.25 RULING: wire HostCheckOutcome (two-variant; NetnsCheck::Skipped synthesized only in doctor::run), DoctorReport declared once in crates/slipfork::doctor, resolve_world_selector(selector: &str, repo: &RepoRoot) -> Result<WorldTarget, WorldError> with raw world + cwd on the wire; no crun field in doctor.
+
+## 2026-11-16T22:50 [lead]
+
+M3.25 final ruling to consume: WorldId newtype (Display/FromStr/parse_selector, TestSlot never on wire), DropForkRequest { cwd, world: Option<WorldId> }, PruneReport declared once, WorldSpec.world, BaseKey fields promoted, DoctorReport.fixes order btrfs->unshare_userns->netns, EngineError world:String via WorldId::to_string().

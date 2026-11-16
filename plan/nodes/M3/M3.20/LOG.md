@@ -15,3 +15,7 @@ OWNER TERMINOLOGY RULE: no Option A/B or Spike A/B framing anywhere; describe th
 ## 2026-11-16T21:44 [lead]
 
 REQUIREMENT (M3.9 cruft gate): crates/slipfork-edge/src/daemon.rs:82 documents ResourceSummary.id as pg_databases.main while diagnostics() emits bare ids; align the doc comment with the shipped bare-id contract.
+
+## 2026-11-16T22:50 [lead]
+
+M3.25 final ruling to consume: WorldId newtype (Display/FromStr/parse_selector, TestSlot never on wire), DropForkRequest { cwd, world: Option<WorldId> }, PruneReport declared once, WorldSpec.world, BaseKey fields promoted, DoctorReport.fixes order btrfs->unshare_userns->netns, EngineError world:String via WorldId::to_string().

@@ -75,3 +75,7 @@ IOC GATE attempt 2 FAIL: MAJOR BaseSeedSpec.control_dir has two owners — doc s
 ## 2026-11-16T21:51 [lead]
 
 status active -> review
+
+## 2026-11-16T21:54 [lead]
+
+status review -> done

@@ -757,3 +757,40 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-16T21:52 [M3.10] (lead) status active -> done
 - 2026-11-16T21:53 [M3.23] (lead) ADD (M3.8 functional PASS): crates/slipfork-engine/src/rootfs/mod.rs:544 BaseImageError::CacheOnTmpfs message still says "XFS, Btrfs, or ext4" — must name Btrfs
 - 2026-11-16T21:53 [M3.25] (lead) ADD (M3.8 final): ARCHITECTURE.md §3.2 SeedDumpStore excerpt must list discard + materialize (port has lookup/write_from/discard/materialize; DiskSeedDumpStore 
+- 2026-11-16T21:54 [M3.8] (lead) status review -> done
+- 2026-11-16T21:55 [M3.23] (lead) CONFIDENTIALITY (owner Rule #10): tools/guard.py:12 contains a pre-existing sibling-repository name in a provenance aside ("learned from poc-orange"). Reword to
+- 2026-11-16T21:56 [M3.13] (lead) REQUIREMENTS (from M3.8 functional PASS, real findings): (1) seed-subvolume crash safety — a crash after seal but before destroying worlds/seed-<base_key_sha12>
+- 2026-11-16T21:56 [M3.23] (lead) DOC ACCURACY (from M3.8 functional PASS): docs/design/world-base-image.md — (a) line ~300 lists `seaweedfs` as a shipped ServiceSpec id; the shipped id is `s3_b
+- 2026-11-16T22:08 [M3.1] (lead) status active -> review
+- 2026-11-16T22:09 [M3.24] (lead) ADD (M3.1 ioc): (1) testkit DAEMON_STARTUP_DEADLINE/SHUTDOWN_DEADLINE re-encode production numbers as prose — once the product exports SPAWN_TIMEOUT/WORLD_STOP_
+- 2026-11-16T22:26 [M3.25] (lead) edited fields
+- 2026-11-16T22:26 [M3.25] (lead) attempt 3 done: base_key spelling, prune ports + CacheKeepSet, WorldId newtype, complete EngineError, DoctorReport flattening, CBOR §3. Re-running quad gate; AD
+- 2026-11-16T22:27 [M3.23] (lead) DOC POLISH from M3.25 cruft PASS (apply after commit): (1) ADR-0009:16 `slipforkd --crun <path>` is a second supply path for the compile-time-pinned crun — dele
+- 2026-11-16T22:27 [M3.25] (lead) attempt 3/4 started
+- 2026-11-16T22:27 [M3.25] (lead) status review -> active
+- 2026-11-16T22:27 [M3.25] (lead) IOC FINAL FAIL: MAJOR one --world contract has two spellings — ADR-0005:52 gives `drop` a private positional-<fork> parse path while ADR-0008:53 says every worl
+- 2026-11-16T22:29 [M3.23] (lead) DOC FIX (M3.25 functional gate, MAJOR): docs/design/target-dx.md §1.6 still says "<fork> equal to the project name is rejected" for <project>:<fork>, contradict
+- 2026-11-16T22:30 [M3.1] (lead) edited fields
+- 2026-11-16T22:30 [M3.1] (lead) attempt 7/7 started
+- 2026-11-16T22:30 [M3.1] (lead) FUNCTIONAL FINAL FAIL (attempt 6): BLOCKER — plain make rs-test red on the frozen tree (load 3.67) at critical_edge::socket_activate_systemd_handover: free_loop
+- 2026-11-16T22:46 [M3.1] (lead) status review -> review
+- 2026-11-16T22:49 [M3.25] (architect) attempt 4 final pass: DropForkRequest { cwd, world: Option<WorldId> } + single resolve_world_selector/WorldId::parse_selector (delegating :/canonical to FromStr
+- 2026-11-16T22:50 [M3.25] (lead) status active -> review
+- 2026-11-16T22:50 [M3.12] (lead) M3.25 final ruling to consume: WorldId newtype (Display/FromStr/parse_selector, TestSlot never on wire), DropForkRequest { cwd, world: Option<WorldId> }, PruneR
+- 2026-11-16T22:50 [M3.13] (lead) M3.25 final ruling to consume: WorldId newtype (Display/FromStr/parse_selector, TestSlot never on wire), DropForkRequest { cwd, world: Option<WorldId> }, PruneR
+- 2026-11-16T22:50 [M3.15] (lead) M3.25 final ruling to consume: WorldId newtype (Display/FromStr/parse_selector, TestSlot never on wire), DropForkRequest { cwd, world: Option<WorldId> }, PruneR
+- 2026-11-16T22:50 [M3.20] (lead) M3.25 final ruling to consume: WorldId newtype (Display/FromStr/parse_selector, TestSlot never on wire), DropForkRequest { cwd, world: Option<WorldId> }, PruneR
+- 2026-11-16T22:52 [M3.25] (lead) edited fields
+- 2026-11-16T22:52 [M3.25] (lead) attempt 4/5 started
+- 2026-11-16T22:52 [M3.25] (lead) status review -> active
+- 2026-11-16T22:52 [M3.25] (lead) CRUFT FINAL FAIL: MAJOR DropForkRequest { cwd, world: Option<WorldId> } is field-identical to WorldSelector (which already lists DropForkRequest as a consumer) 
+- 2026-11-16T23:03 [M3.1] (lead) LEAD: acceptance envelope added to NODE.md (green required at load average <=10 with zero in-repo builds; at extreme foreign load the pre-Btrfs fixed 10s WORLD_
+- 2026-11-16T23:19 [M3.25] (lead) status active -> review
+- 2026-11-16T23:20 [M3.12] (lead) ADD (M3.25 ioc minor): type EngineError::SnapshotNotFound(String) -> SnapshotId so snapshot identity is not stringly (ARCHITECTURE §3.3).
+- 2026-11-16T23:20 AUTOPILOT off by conductor User requested pause to regroup
+- 2026-11-16T23:20 [M3.25] (lead) POST-STOP review results (recorded for regroup; no work started): ioc PASS, cruft PASS, legality PASS — all with MINORs only. Outstanding one-line fixes before 
+- 2026-11-16T23:21 [M3.25] (lead) POST-STOP: functional sign-off PASS — all four lenses now PASS (ioc/legality/cruft/functional) with MINORs only. Diff is docs-only over exactly the 7 declared p
+- 2026-11-16T23:45 AUTOPILOT on by conductor Deliver 0.1.0 Btrfs Worlds + sync/deploy to remote DO VM for owner testing
+- 2026-11-16T23:48 [M3.25] (lead) LEAD POST-STOP: quad gate 4/4 PASS (ioc/legality/cruft/functional) at 23:19-23:21 with MINORs only, docs-only diff over the 7 declared paths. Committing per own
+- 2026-11-16T23:48 [M3.25] (lead) status review -> done
+- 2026-11-16T23:48 [M3.25] (lead) done: plan validate + guard.py + make docs-check (zensical --strict, check_docs_honesty OK) green; docs-only over exactly the 7 declared paths.

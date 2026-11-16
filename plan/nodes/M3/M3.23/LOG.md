@@ -47,3 +47,19 @@ OWNER DIRECTIVE (CBOR): purge every NDJSON/JSON-wire mention for STP v1 across A
 ## 2026-11-16T21:53 [lead]
 
 ADD (M3.8 functional PASS): crates/slipfork-engine/src/rootfs/mod.rs:544 BaseImageError::CacheOnTmpfs message still says "XFS, Btrfs, or ext4" — must name Btrfs with the mount options and no alternate filesystem. Also verify no NDJSON/CBOR regressions and purge the stale m1-core-and-poc RunnerProtocol row.
+
+## 2026-11-16T21:55 [lead]
+
+CONFIDENTIALITY (owner Rule #10): tools/guard.py:12 contains a pre-existing sibling-repository name in a provenance aside ("learned from poc-orange"). Reword to "learned from an unrelated external audit" and add to this gate an inverted grep for sibling/client names. Also scrub any host-observation prose in plan/ and node RESULT/LOG files to "unrelated ambient builds on the shared host".
+
+## 2026-11-16T21:56 [lead]
+
+DOC ACCURACY (from M3.8 functional PASS): docs/design/world-base-image.md — (a) line ~300 lists `seaweedfs` as a shipped ServiceSpec id; the shipped id is `s3_buckets` (`seaweedfs` is only BackingServiceKey Display) — fix the id list, keep the BackingServiceKey list; (b) `--appendonly yes` is not shipped (redis spec has no AOF flag) — drop or label M3.13 target state after M3.13 rules; (c) line ~148 says "length prefixes make the encoding injective" but only u32le list counts are prefixed and fields are NUL-delimited — restate accurately; (d) the §8 renumber orphaned `crates/slipfork-engine/src/rootfs/pin.rs:27` doc pointer (§7.1 -> §8.1) — fix the code comment (owned here, crates/** in paths).
+
+## 2026-11-16T22:27 [lead]
+
+DOC POLISH from M3.25 cruft PASS (apply after commit): (1) ADR-0009:16 `slipforkd --crun <path>` is a second supply path for the compile-time-pinned crun — delete or declare once in ARCHITECTURE §1; (2) the crun cache path literal appears in ADR-0009 §1 and ARCHITECTURE §3.3 — keep the path in ADR-0009, only the never-collect rule in §3.3; (3) ARCHITECTURE:423 cites `LiveWorld` (undefined there) — name the real registry/daemon type; (4) ARCHITECTURE:336/341 restate ADR-0010 §2 slots — point at §2; (5) ADR-0009:16 and ADR-0010:48 mutually restate "zero host crun probe in doctor" — keep in ADR-0010 §4; (6) ARCHITECTURE:576-582 restates WorldId grammar owned by ADR-0005 §3 — pointer only; (7) ARCHITECTURE:680 Phase-2 prune comment omits prune_cache.
+
+## 2026-11-16T22:29 [lead]
+
+DOC FIX (M3.25 functional gate, MAJOR): docs/design/target-dx.md §1.6 still says "<fork> equal to the project name is rejected" for <project>:<fork>, contradicting ADR-0005 §3 + ARCHITECTURE §3.4: <project>:<project> is ACCEPTED as UserFork(<project>) (only `slipfork fork <fork>` refuses creating such a fork). Rewrite that rule to "matched by case; <project>:<project> accepted (disambiguated by the colon); <fork> == project rejected only when creating via slipfork fork" so the printed id always round-trips.
