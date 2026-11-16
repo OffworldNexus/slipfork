@@ -67,3 +67,7 @@ IOC GATE attempt 2 PASS (minor: fstype label table duplicates ADR-0010 §4 -> ke
 ## 2026-11-16T21:45 [lead]
 
 LEGALITY GATE attempt 2 PASS (minors): auth p256 key abbreviated with an ellipsis is not reproducible output; `slipfork test [-j N]` needs an owner (M3.2) or must drop the flag; logs path must cite Layout::world_logs_dir not ADR-0010 §2; drop <project>:<fork> bullet needs its M3.15 target-state label.
+
+## 2026-11-16T21:45 [lead]
+
+status review -> done

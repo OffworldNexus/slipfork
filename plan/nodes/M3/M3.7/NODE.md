@@ -28,11 +28,11 @@ updated: "2026-11-16T20:48"
 
 # Goal
 
-Land the **single design of record** for Option A — a Btrfs-only `WorldEngine` — and scorched-earth wipe every non-Option-A concept from `ARCHITECTURE.md`, `docs/VISION.md`, and `ADR-0001`..`ADR-0009`, adding `ADR-0010` as the binding ruling.
+Land the **single design of record** for the Btrfs-only `WorldEngine` — and scorched-earth wipe every non-Option-A concept from `ARCHITECTURE.md`, `docs/VISION.md`, and `ADR-0001`..`ADR-0009`, adding `ADR-0010` as the binding ruling.
 
 # Context
 
-- Owner ruling (2026-11-16, `plan/nodes/M3/LOG.md`): Option A (one unified Btrfs subvolume per world + Linux `userns`/`netns`/`ipcns`/`pidns`/`mntns` + `pivot_root` + `crun`) is the **sole** engine. Incus, `incusd`, ZFS, XFS `FICLONE`, QEMU/KVM, curations, and every fallback are deleted with zero backward compatibility.
+- Owner ruling (2026-11-16, `plan/nodes/M3/LOG.md`): Owner ruling that the Btrfs world engine (one unified Btrfs subvolume per world + Linux `userns`/`netns`/`ipcns`/`pidns`/`mntns` + `pivot_root` + `crun`) is the **sole** engine. Incus, `incusd`, ZFS, XFS `FICLONE`, QEMU/KVM, curations, and every fallback are deleted with zero backward compatibility.
 - Measured basis (`M3.11` records `docs/research/btrfs-crun-benchmarks.md`): `19.5 ms` read-only snapshot, `11–24 ms` writable clone, `39 ms` to warm SQL, `6.3 MiB` RSS per world; `--ipc` (`CLONE_NEWIPC`) is required or parallel Postgres instances collide on SysV `shmget` key `90000`; a read-only subvolume must have `BTRFS_SUBVOL_RDONLY` cleared (`BTRFS_IOC_SUBVOL_SETFLAGS`) before `BTRFS_IOC_SNAP_DESTROY_V2`.
 - Design docs that consume this contract (`world-base-image.md`, `target-dx.md`, `do-vm-harness.md`) are separate designer nodes; this node owns only `ARCHITECTURE.md`, `docs/VISION.md`, and `docs/decisions/`.
 

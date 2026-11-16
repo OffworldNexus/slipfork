@@ -24,7 +24,7 @@ Add snapshot and cache garbage collection to `slipfork prune`: destroy unreferen
 
 # Context
 
-- `M3`'s roadmap exit criterion 1 pairs `M3.1` (deterministic `make check`) with snapshot + `cache/{rootfs,oci}` GC in `slipfork prune`. Option A makes this concrete: every world and fixture snapshot is one Btrfs subvolume.
+- `M3`'s roadmap exit criterion 1 pairs `M3.1` (deterministic `make check`) with snapshot + `cache/{rootfs,oci}` GC in `slipfork prune`. The Btrfs engine makes this concrete: every world and fixture snapshot is one Btrfs subvolume.
 - `DaemonControl::prune` already exists with `--dry-run`; today it reports orphaned worlds only.
 
 # Design / Invariants

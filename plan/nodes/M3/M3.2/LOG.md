@@ -27,3 +27,7 @@ PHASE 2 REWRITE MUST-DO (flagged by M3.7 legality review): this epic NODE.md tit
 ## 2026-11-16T21:45 [lead]
 
 REQUIREMENT (M3.9 legality): own the `slipfork test -j N` concurrency flag in the rewritten STP v1 epic — define its semantics (slot count) and document it; M3.9 target-dx references it as the Phase-2 concurrency knob.
+
+## 2026-11-16T21:52 [lead]
+
+OWNER WIRE-PROTOCOL DIRECTIVE: STP v1 frames are CBOR (RFC 8949) on the inherited SLIPFORK_PROTOCOL_FD socketpair — never NDJSON/JSON, never line-delimited framing. The Phase 2 replan must encode this in ADR-0006 §3 and the runner-protocol types, and delete every NDJSON mention.

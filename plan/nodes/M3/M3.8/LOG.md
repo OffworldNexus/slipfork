@@ -55,3 +55,23 @@ attempt 2/3 started
 ## 2026-11-16T21:35 [lead]
 
 base 7cf08b5202c58593b3f6c4031bebf200a8e24f97 (attempt 2)
+
+## 2026-11-16T21:45 [lead]
+
+status active -> review
+
+## 2026-11-16T21:48 [lead]
+
+attempt 3/3 started
+
+## 2026-11-16T21:48 [lead]
+
+status review -> active
+
+## 2026-11-16T21:48 [lead]
+
+IOC GATE attempt 2 FAIL: MAJOR BaseSeedSpec.control_dir has two owners — doc says injected by slipforkd (:162) yet ensure_base creates/removes <state_dir>/ctl/seed-<base_key>/ (:186, steps 3,5), contradicting "never re-derived inside the engine" (:117/:209). Ruling: daemon injects control_dir, engine never derives/creates it. Minors: make ensure_base a private inherent BtrfsEngine method (clone_world is the only caller) or declare it with its caller; keep seed-only payload out of WorldSpec by passing &BaseSeedSpec to ensure_base and leaving state_subdirs; drop the control-dir clause from the list_children exclusion (control dirs live under ctl/, ADR-0010 §3 excludes only seed-*/.seed.lock); name BtrfsEngine::new as the sole production constructor.
+
+## 2026-11-16T21:51 [lead]
+
+status active -> review

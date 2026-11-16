@@ -735,3 +735,22 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-16T21:45 [M3.10] (lead) attempt 3/3 started
 - 2026-11-16T21:45 [M3.10] (lead) status review -> active
 - 2026-11-16T21:45 [M3.10] (lead) CRUFT GATE attempt 2 FAIL (dedupe only): MAJOR the AppArmor body-equivalence preflight rule is stated twice near-verbatim (§1 step 5 vs §3) -> keep once in §3, 
+- 2026-11-16T21:45 [M3.9] (lead) status review -> done
+- 2026-11-16T21:45 [M3.25] (lead) edited fields
+- 2026-11-16T21:45 [M3.25] (lead) attempt 2/4 started
+- 2026-11-16T21:45 [M3.25] (lead) CRUFT GATE attempt 2 FAIL: (1) base slot spelling drift — ADR-0010:22-23 + ADR-0009:23 say <project>-base-<l0_sha12> while the design of record keys <base_key_s
+- 2026-11-16T21:45 [M3.8] (lead) status active -> review
+- 2026-11-16T21:46 [M3.2.13] (lead) REQUIREMENT (M3.10 ioc gate): the state-root GC must EXCLUDE ~/.cache/slipfork/do-vm/ (harness-owned persistent SSH identity + known_hosts). Never collect it, a
+- 2026-11-16T21:47 [M3] (lead) edited fields
+- 2026-11-16T21:48 [M3.8] (lead) attempt 3/3 started
+- 2026-11-16T21:48 [M3.8] (lead) status review -> active
+- 2026-11-16T21:48 [M3.8] (lead) IOC GATE attempt 2 FAIL: MAJOR BaseSeedSpec.control_dir has two owners — doc says injected by slipforkd (:162) yet ensure_base creates/removes <state_dir>/ctl/s
+- 2026-11-16T21:49 [M3.1] (lead) status review -> active
+- 2026-11-16T21:51 [M3.8] (lead) status active -> review
+- 2026-11-16T21:51 [M3.25] (lead) ADD (M3.8 attempt 3 followup): ARCHITECTURE.md §3.3 WorldSpec must carry state_subdirs (single author slipforkd); ensure_base stays an inherent BtrfsEngine meth
+- 2026-11-16T21:52 [M3] (lead) OWNER WIRE-PROTOCOL DIRECTIVE (2026-11-16): STP v1 wire serialization is STRICTLY CBOR (RFC 8949) over the inherited SLIPFORK_PROTOCOL_FD socketpair — NEVER NDJ
+- 2026-11-16T21:52 [M3.2] (lead) OWNER WIRE-PROTOCOL DIRECTIVE: STP v1 frames are CBOR (RFC 8949) on the inherited SLIPFORK_PROTOCOL_FD socketpair — never NDJSON/JSON, never line-delimited fram
+- 2026-11-16T21:52 [M3.23] (lead) OWNER DIRECTIVE (CBOR): purge every NDJSON/JSON-wire mention for STP v1 across ARCHITECTURE.md, README.md, docs/** (incl. docs/decisions/ADR-0006*) and replace 
+- 2026-11-16T21:52 [M3.18] (lead) OWNER DIRECTIVE (CBOR): docs/testing-dag.md must state the STP v1 wire is CBOR (RFC 8949) over the inherited SLIPFORK_PROTOCOL_FD socketpair — never NDJSON/JSON
+- 2026-11-16T21:52 [M3.25] (lead) ADD (M3.8 ioc): ARCHITECTURE.md §3.3 must carry WorldSpec.state_subdirs AND the BaseSeedSpec carrier (control_dir, state_subdirs, service_specs, databases, app_
+- 2026-11-16T21:52 [M3.16] (lead) REQUIREMENTS from M3.10 final IoC confirm (implement in do_vm.py): (1) drop the separate aa-status/control-unshare from `test` — the single `runuser -u slipfork

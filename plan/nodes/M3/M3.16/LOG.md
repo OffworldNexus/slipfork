@@ -27,3 +27,7 @@ edited fields
 ## 2026-11-16T21:45 [lead]
 
 BODY CORRECTION (M3.9 ioc gate): invariant 2 no longer says doctor reports world_rootfs_crun — doctor performs no crun probe and emits no crun field (ADR-0010 §4).
+
+## 2026-11-16T21:52 [lead]
+
+REQUIREMENTS from M3.10 final IoC confirm (implement in do_vm.py): (1) drop the separate aa-status/control-unshare from `test` — the single `runuser -u slipfork -- target/debug/slipfork doctor --json --state-dir /var/lib/slipfork` run is the only host-capability gate; (2) usage synopsis: --identity is repeatable on `up` only, single for status/test/ssh (reject 2nd, exit 2); (3) run the owner ssh envelope under `env -i HOME=… TMPDIR=… PATH=… exec bash --noprofile --norc` so ambient XDG_CACHE_HOME/XDG_DATA_HOME cannot change the resolved state dir and no rc file rewrites PATH; (4) fail closed if slipfork resolves to uid 0 — derive from doctor --json uid field, not a vacuous `id -u` echo; (5) pass a frozen config object into render_* helpers instead of reading/patching module globals.

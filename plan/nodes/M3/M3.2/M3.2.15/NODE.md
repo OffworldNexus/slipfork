@@ -20,7 +20,7 @@ Audit the `0.3.0` test surface and promote registry evidence: verify every adapt
 
 # Context
 
-- `ADR-0007`'s tier ladder is evidence-checked (`SupportRegistry::required_evidence`), and `H-009` Option B forbids claiming tiers without a recipe page and critical test.
+- `ADR-0007`'s tier ladder is evidence-checked (`SupportRegistry::required_evidence`), and the ratified `H-009` user-reachable scope rule forbids claiming tiers without a recipe page and critical test.
 - New adapters must not enter the registry at a tier they cannot support; anything unshipped stays omitted.
 
 # Design / Invariants

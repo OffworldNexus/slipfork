@@ -16,7 +16,7 @@ updated: "2026-11-16T16:59"
 
 # Goal
 
-Prepare the `0.3.0` release: workspace version bump, `CHANGELOG.md` entry describing the Option A wipe plus `slipfork test`, and the docs nav label — with everything still green and nothing published ahead of the code.
+Prepare the `0.3.0` release: workspace version bump, `CHANGELOG.md` entry describing the Btrfs-only wipe plus `slipfork test`, and the docs nav label — with everything still green and nothing published ahead of the code.
 
 # Context
 

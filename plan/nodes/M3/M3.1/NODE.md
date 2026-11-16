@@ -2,7 +2,7 @@
 id: M3.1
 title: "Deterministic make check: disk TMPDIR, CARGO_BUILD_JOBS=4, serialized world-booting suites"
 kind: task
-status: review
+status: active
 owner: implementer
 priority: 1
 depends_on: []
@@ -24,7 +24,7 @@ attempts: 6
 max_attempts: 6
 escalation: none
 created: "2026-11-16T06:34"
-updated: "2026-11-16T21:21"
+updated: "2026-11-16T21:49"
 ---
 
 # Goal

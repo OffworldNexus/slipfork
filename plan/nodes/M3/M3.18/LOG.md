@@ -23,3 +23,7 @@ edited fields
 ## 2026-11-16T21:01 [lead]
 
 PATH WIDENING: docs/testing-dag.md is a published page still describing RunnerProtocol v1 / CommandTestAdapter / per-language CoverageDriver (flagged twice by reviewers). Rewrite it as the STP v1 (Phase 2 M3.2) pointer plus the shipped [artifacts]/[fixtures] DAG surface, with zero promise of per-language Rust drivers or published plugins.
+
+## 2026-11-16T21:52 [lead]
+
+OWNER DIRECTIVE (CBOR): docs/testing-dag.md must state the STP v1 wire is CBOR (RFC 8949) over the inherited SLIPFORK_PROTOCOL_FD socketpair — never NDJSON/JSON — as Phase-2 M3.2 target state.

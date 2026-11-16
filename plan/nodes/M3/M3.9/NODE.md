@@ -2,7 +2,7 @@
 id: M3.9
 title: "Rewrite docs/design/target-dx.md for the Btrfs-only world (doctor, world entry)"
 kind: task
-status: review
+status: done
 owner: designer
 priority: 2
 depends_on: [M3.7, M3.25]
@@ -11,12 +11,12 @@ attempts: 2
 max_attempts: 3
 escalation: none
 created: "2026-11-16T16:58"
-updated: "2026-11-16T21:43"
+updated: "2026-11-16T21:45"
 ---
 
 # Goal
 
-Rewrite `docs/design/target-dx.md` (the internal target DX spec) so every command, `doctor` field, world-entry argv, and `slipfork test` example reflects the Btrfs-only Option A world — with zero `incus exec` entries and zero reflink/`IncusEngine` wording.
+Rewrite `docs/design/target-dx.md` (the internal target DX spec) so every command, `doctor` field, world-entry argv, and `slipfork test` example reflects the Btrfs-only world — with zero `incus exec` entries and zero reflink/`IncusEngine` wording.
 
 # Context
 

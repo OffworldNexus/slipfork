@@ -35,3 +35,11 @@ OWNER RULING (2026-11-16) — PHASE 2 = Slipfork Testing Protocol STP v1: standa
 ## 2026-11-16T19:16 [lead]
 
 PHASE 2 VOCABULARY (flagged by M3.7 ioc sign-off): this milestone NODE.md still describes TestCoordinator/RunnerProtocol v1/CoverageDriver/pytest-slipfork in its Phase 2 paragraph. The conductor/strategist M3.2 rewrite must update the M3 node text too, not only M3.2 children.
+
+## 2026-11-16T21:47 [lead]
+
+edited fields
+
+## 2026-11-16T21:52 [lead]
+
+OWNER WIRE-PROTOCOL DIRECTIVE (2026-11-16): STP v1 wire serialization is STRICTLY CBOR (RFC 8949) over the inherited SLIPFORK_PROTOCOL_FD socketpair — NEVER NDJSON/JSON. Binding for all Phase 2 design and docs; zero Phase 1 docs may say NDJSON for STP v1.

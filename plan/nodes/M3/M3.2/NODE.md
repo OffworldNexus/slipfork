@@ -15,7 +15,7 @@ updated: "2026-11-16T16:59"
 
 # Goal
 
-Deliver Slipfork `0.3.0` (`slipfork test`) on the **single** Option A engine — one unified Btrfs subvolume per world behind `BtrfsEngine` (`ADR-0010`) — with zero fallbacks:
+Deliver Slipfork `0.3.0` (`slipfork test`) on the **single** Btrfs world engine — one unified Btrfs subvolume per world behind `BtrfsEngine` (`ADR-0010`) — with zero fallbacks:
 
 1. **Snapshot & cache lifecycle:** content-addressed `[artifacts.*]` (`CowArtifactStore` + `VolumeCloner`) and `[fixtures.*]` materialization (origin-independent `DigestCache` lineages sealed via `freeze_world` vs `per_world = true` post-origin seeds that never enter `DigestCache`), plus unreferenced subvolume + `<state_dir>/cache/{rootfs,oci}` garbage collection in `slipfork prune`.
 2. **`crates/slipfork-test` (`TestCoordinator`, `RunnerProtocol v1`, warm pool, `CoverageDriver`):** wired into `slipforkd` over the canonical `.slipfork/runs/<run_id>/<slot>/{runner.sock,coverage,output}` tree; hermetic-by-default `ResourceMode::Test` via `ResourcePlan::resolve`; rolling single-use pre-warmed `TestSlot` worlds with slot-stable coverage mounts; two-tier `batch` vs `world` scheduling; `AF_UNIX` NDJSON `RunnerProtocol v1` (`SocketRunnerAdapter` + zero-plugin `CommandTestAdapter`); built-in typed `[test]` coverage (`coverage`, `coverage_report`, `coverage_fail_under`) through `TestAdapter::coverage`; surviving tool-owned `SLIPFORK_OUTPUT_DIR`.

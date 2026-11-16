@@ -24,7 +24,7 @@ Implement the rolling **single-use** warm Btrfs world pool: maintain `W` pre-boo
 
 # Context
 
-- `ADR-0006` §4 condition 1 and `M3.2.1`'s blueprint fix the semantics; `BtrfsEngine` (Option A) makes a slot a writable subvolume clone (~`11–24 ms`), so a pool of `W` worlds is cheap and a single-use slot guarantees hermetic isolation.
+- `ADR-0006` §4 condition 1 and `M3.2.1`'s blueprint fix the semantics; `BtrfsEngine` makes a slot a writable subvolume clone (~`11–24 ms`), so a pool of `W` worlds is cheap and a single-use slot guarantees hermetic isolation.
 - Coverage env must be applied at boot, not by replaying `spawn_service` (`+0 ms` adoption rule).
 
 # Design / Invariants

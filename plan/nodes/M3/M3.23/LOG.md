@@ -39,3 +39,7 @@ POLISH (M3.11 legality PASS minors): (1) docs/research/btrfs-crun-benchmarks.md:
 ## 2026-11-16T21:34 [lead]
 
 M3.25 RULING: align ADR-0008 §4 --world wording with ADR-0005 §3 (shared resolve_world_selector accepting <project>, <project>:<fork>, bare <fork>).
+
+## 2026-11-16T21:52 [lead]
+
+OWNER DIRECTIVE (CBOR): purge every NDJSON/JSON-wire mention for STP v1 across ARCHITECTURE.md, README.md, docs/** (incl. docs/decisions/ADR-0006*) and replace with "CBOR (RFC 8949) over the inherited SLIPFORK_PROTOCOL_FD AF_UNIX socketpair". Known offender: docs/design/m1-core-and-poc.md:45 (RunnerProtocol v1 NDJSON) — also delete the stale RunnerProtocol/TestAdapter/CoverageDriver row there. Verify ! grep -riE "ndjson|jsonl|line-delimited" ARCHITECTURE.md README.md docs/ crates/ tools/.
