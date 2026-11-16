@@ -116,6 +116,11 @@ impl Layout {
             .join("slipfork")
             .join("device-key-software.json")
     }
+
+    /// `0600` paired OSPP host coordinates (`<data_home>/slipfork/ospp-session.json`).
+    pub fn ospp_session_path(&self) -> PathBuf {
+        self.data_home.join("slipfork").join("ospp-session.json")
+    }
 }
 
 /// Create `path` (and parents) as a user-private `0700` directory when missing.

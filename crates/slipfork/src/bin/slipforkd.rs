@@ -2,10 +2,11 @@
 //!
 //! This binary is the only place that resolves `HOME`/`$XDG_DATA_HOME`, the developer's uid/gid,
 //! and the sibling `slipfork-world-init` helper, then wires every stateful adapter in-process:
-//! `ReflinkNetnsEngine`, `FileVaultProvider`, `ResourcePlan::resolve`, `GitRepoRootResolver` over
-//! the one `SlipforkConfig` `ProjectSlugOverride`, `GitWorktreeAdapter`, `WorldRegistry`, and
-//! `UnavailableTunnelRegistrar`. It serves the HTTP/WS ingress (`LISTEN_FDS` or `--listen`, plus
-//! `0600` `<state_dir>/http-ingress.sock`) and the typed `DaemonControl` socket
+//! `ReflinkNetnsEngine`, `FileVaultProvider` layered over a paired `OsppSecretProvider`,
+//! `ResourcePlan::resolve`, `GitRepoRootResolver` over the one `SlipforkConfig`
+//! `ProjectSlugOverride`, `RepositoryWorkspaces` (Git or Jujutsu by `.jj`), `DiskSeedDumpStore`,
+//! `WorldRegistry`, and `UnavailableTunnelRegistrar`. It serves the HTTP/WS ingress (`LISTEN_FDS`
+//! or `--listen`, plus `0600` `<state_dir>/http-ingress.sock`) and the typed `DaemonControl` socket
 //! (`0600` `<runtime_dir>/daemon.sock`).
 //!
 //! It never guesses `$XDG_RUNTIME_DIR` or the working directory: both roots are explicit
@@ -24,9 +25,11 @@ use clap::Parser;
 use slipfork::daemon::{DaemonConfig, DaemonPorts, DaemonService, HostCaches};
 use slipfork::layout::{Layout, ensure_private_dir};
 use slipfork::oci_store::DockerOciImageStore;
+use slipfork::ospp::FileOsppSessionStore;
 use slipfork::project::repository_resolver;
 use slipfork::runtime::{runtime_assets, target_arch};
 use slipfork::vaults::LayoutProjectVaults;
+use slipfork::vcs::RepositoryWorkspaces;
 use slipfork_edge::{
     DaemonControlServer, HttpIngress, ListenConfig, UnavailableTunnelRegistrar, WorldRegistry,
     resolve_listener_set,
@@ -36,11 +39,10 @@ use slipfork_engine::rootfs::{
 };
 use slipfork_engine::{InheritedVar, MountMode, ReflinkNetnsEngine, WorldMount, current_uid_gid};
 use slipfork_ospp::{
-    BrowserOpener, FallbackDeviceKeySigner, FileDeviceKeyStore, KeyStorePaths, LivePairingUrl,
-    OsppError, OsppTimeouts, SoftwareP256Signer, TpmdDeviceKeySigner,
+    BrowserOpener, DiskSeedDumpStore, FallbackDeviceKeySigner, FileDeviceKeyStore, KeyStorePaths,
+    LivePairingUrl, OsppError, OsppTimeouts, SoftwareP256Signer, TpmdDeviceKeySigner,
 };
 use slipfork_snow::OsCsprngEntropy;
-use slipfork_vcs::GitWorktreeAdapter;
 
 /// Unified unprivileged user daemon.
 #[derive(Debug, Parser)]
@@ -189,8 +191,13 @@ fn run(cli: DaemonCli) -> Result<(), String> {
         forward_port,
     ));
     let repo_roots = repository_resolver();
-    let workspaces = Arc::new(GitWorktreeAdapter::new());
+    let workspaces = Arc::new(RepositoryWorkspaces::new());
     let vaults = Arc::new(LayoutProjectVaults::new(layout.clone()));
+    let ospp_sessions = Arc::new(FileOsppSessionStore::new(layout.ospp_session_path()));
+    let seed_dumps = Arc::new(
+        DiskSeedDumpStore::open(layout.state_dir())
+            .map_err(|err| format!("cannot open the seed-dump cache: {err}"))?,
+    );
 
     // Persistent OSPP identity: `tpmd` when it serves, otherwise the `0600` software key. The
     // fallback is lazy inside `FallbackDeviceKeySigner`, so a tpmd-capable host never mints a file.
@@ -218,6 +225,8 @@ fn run(cli: DaemonCli) -> Result<(), String> {
             workspaces,
             vaults,
             signer,
+            ospp_sessions,
+            seed_dumps,
             browser: Arc::new(SystemBrowserOpener),
             entropy,
             ospp_timeouts: OsppTimeouts::default(),

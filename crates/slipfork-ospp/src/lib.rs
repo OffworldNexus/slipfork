@@ -27,6 +27,11 @@
 
 #![forbid(unsafe_code)]
 
+// The reference server lives in `tests/support/reference_server.rs` so the crate's own protected
+// suite drives it directly. `test-server` exposes that same file to downstream test harnesses
+// (`crates/slipfork`) without duplicating a single line of WebSocket server code.
+extern crate self as slipfork_ospp;
+
 pub mod client;
 pub mod device_key;
 pub mod dump;
@@ -36,6 +41,14 @@ pub mod resources;
 pub mod secret_provider;
 pub mod software_key;
 pub mod tpmd;
+
+#[cfg(feature = "test-server")]
+#[path = "../tests/support/reference_server.rs"]
+pub mod test_server;
+
+#[cfg(feature = "test-server")]
+#[path = "../tests/support/tpmd_server.rs"]
+pub mod test_server_tpmd;
 
 mod disk_dump;
 mod hex;
@@ -50,7 +63,7 @@ pub use device_key::{
     DeviceKeySigner, DeviceKeyStore, DeviceSignature, KEY_ID_BYTES, KEY_ID_HEX_LEN, KEY_ID_PREFIX,
     KeyId, SIGNATURE_BYTES, SIGNATURE_HEX_LEN, verify_device_signature,
 };
-pub use disk_dump::{DUMP_SUFFIX, DiskSeedDumpStore, PART_SUFFIX};
+pub use disk_dump::{DUMP_SUFFIX, DiskSeedDumpStore, PART_SUFFIX, PGCUSTOM_SUFFIX};
 pub use dump::{DumpStream, DumpStreamer, MAX_DUMP_WINDOW_LOG, SeedDumpStore, VerifiedDump};
 pub use error::{OsppError, PairingRejectReason, RejectReason};
 pub use pairing::{

@@ -93,6 +93,13 @@ impl SeedDumpStore for MemorySeedDumpStore {
         self.published().remove(sha256_compressed);
         Ok(())
     }
+
+    fn materialize(&self, _sha256_compressed: &str) -> Result<PathBuf, OsppError> {
+        Err(OsppError::SeedDumpStore {
+            path: "memory".to_owned(),
+            message: "an in-memory store has no filesystem to materialize into".to_owned(),
+        })
+    }
 }
 
 struct MemoryVerifiedDump {

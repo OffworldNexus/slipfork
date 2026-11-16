@@ -5,12 +5,17 @@
 //! (the `secret set|unset|list` CLI surface). The single `LayoutProjectVaults` instance is
 //! constructed once by the `slipforkd` Composition Root; each call opens the project's `0600`
 //! vault at the explicit `Layout::vault_path`.
+//!
+//! When a paired OSPP session exists, [`ProjectVaults::vault`] returns
+//! `LayeredSecretProvider<FileVaultProvider, OsppSecretProvider>`: the `0600` local vault stays the
+//! sole `!!` write sink and the remote vault is read second (`ADR-0008` §2, `H-003`).
 
 use std::sync::Arc;
 
 use slipfork_edge::{DaemonError, DaemonErrorKind, EdgeError};
+use slipfork_ospp::{OsppClient, OsppSecretProvider};
 use slipfork_snow::provider::MutableSecretStore;
-use slipfork_snow::{FileVaultProvider, SecretProvider};
+use slipfork_snow::{FileVaultProvider, LayeredSecretProvider, SecretProvider};
 use slipfork_world::ProjectSlug;
 
 use crate::layout::Layout;
@@ -18,7 +23,15 @@ use crate::layout::Layout;
 /// Project-scoped vault factory: the only way `DaemonService` reaches a secret backend.
 pub trait ProjectVaults: Send + Sync {
     /// Read/ensure capability for one project's vault (world environment resolution).
-    fn vault(&self, project: &ProjectSlug) -> Result<Arc<dyn SecretProvider>, EdgeError>;
+    ///
+    /// `remote` is the daemon's lazily connected OSPP session when this developer paired; it is
+    /// read second and never written.
+    fn vault(
+        &self,
+        project: &ProjectSlug,
+        remote: Option<Arc<OsppClient>>,
+        mode: &str,
+    ) -> Result<Arc<dyn SecretProvider>, EdgeError>;
 
     /// Local mutation capability for one project's vault (`secret set|unset|list`).
     ///
@@ -57,8 +70,28 @@ impl LayoutProjectVaults {
 }
 
 impl ProjectVaults for LayoutProjectVaults {
-    fn vault(&self, project: &ProjectSlug) -> Result<Arc<dyn SecretProvider>, EdgeError> {
-        Ok(Arc::new(self.open(project)?))
+    fn vault(
+        &self,
+        project: &ProjectSlug,
+        remote: Option<Arc<OsppClient>>,
+        mode: &str,
+    ) -> Result<Arc<dyn SecretProvider>, EdgeError> {
+        let local = self.open(project)?;
+        match remote {
+            Some(client) => {
+                let remote =
+                    OsppSecretProvider::new(client, project.clone(), mode).map_err(|err| {
+                        EdgeError::Control(DaemonError::new(
+                            DaemonErrorKind::Internal,
+                            format!(
+                                "cannot scope the OSPP secret provider to '{project}:{mode}': {err}"
+                            ),
+                        ))
+                    })?;
+                Ok(Arc::new(LayeredSecretProvider::new(local, remote)))
+            }
+            None => Ok(Arc::new(local)),
+        }
     }
 
     fn mutable_vault(
@@ -90,14 +123,14 @@ mod tests {
             .expect("put");
         assert_eq!(mutable.keys().expect("keys"), vec!["ALPHA".to_owned()]);
 
-        let read = vaults.vault(&project).expect("read vault");
+        let read = vaults.vault(&project, None, "local").expect("read vault");
         assert_eq!(
             read.get(Namespace::Secrets, "ALPHA").expect("get"),
             Some("one".to_owned())
         );
 
         assert!(mutable.remove("ALPHA").expect("remove"));
-        let read = vaults.vault(&project).expect("read vault");
+        let read = vaults.vault(&project, None, "local").expect("read vault");
         assert_eq!(read.get(Namespace::Secrets, "ALPHA").expect("get"), None);
         assert_eq!(mutable.keys().expect("keys"), Vec::<String>::new());
     }

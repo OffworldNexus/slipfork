@@ -435,3 +435,12 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-16T01:52 [M2.20] (lead) conductor ruling applied: bounded 1x1 bench --check exit 0 as evidence; default 16x8 is host-time-bound and not gate evidence (follow-up filed); in-flight bench
 - 2026-11-16T01:53 [M2.20] (lead) status active -> done
 - 2026-11-16T01:55 ESCALATION #14 -> strategist for M2 by conductor: milestone gate for 0.2.0 (36 leaves done; M2.21/M2.22 blocked on H-004/H-006 as designed)
+- 2026-11-16T03:04 [M2.30] (strategist) created (task) slipforkd completion: OSPP v1 session/secrets/dump restore, freeze_world base snapshot, Jj workspace routing & optional slipfork.toml
+- 2026-11-16T03:04 [M2.31] (strategist) created (task) Fix poc/run_benchmark.py for ADR-0009 host-browser/.localhost topology and seeded base snapshot; verify bounded 1x1 --check
+- 2026-11-16T03:04 [M2.32] (strategist) created (task) Align 0.2.0 docs, CHANGELOG, M1 benchmark topology label, and support matrix with completed M2 surface
+- 2026-11-16T03:04 [M2] (strategist) GATE FAILED (4 BLOCKERs; M2 sent back, M2.30..M2.32 filed): (1) bounded 1x1 poc/run_benchmark.py --check times out (RC=143; M2.20 bench2 dir has only incomplete
+- 2026-11-16T03:05 [M2.30] (lead) status ready -> active
+- 2026-11-16T03:05 [M2.30] (lead) attempt 1/3 started
+- 2026-11-16T03:05 [M2.30] (lead) base 6265eeb39f3d259b59bf281c717a317cc1c62266
+- 2026-11-16T03:21 [M2.30] (lead) attempt 2/3 started
+- 2026-11-16T04:08 [M2.30] (lead) status active -> review

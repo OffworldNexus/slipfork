@@ -24,6 +24,9 @@ pub const DUMP_SUFFIX: &str = ".pgdump";
 /// Suffix of a seed dump that is still being verified.
 pub const PART_SUFFIX: &str = ".part";
 
+/// Suffix of the uncompressed `pg_dump -Fc` archive a `postgres:<v>` container restores.
+pub const PGCUSTOM_SUFFIX: &str = ".pgcustom";
+
 /// Copy buffer for the store (64 KiB).
 const COPY_BUFFER: usize = 64 * 1024;
 
@@ -134,6 +137,39 @@ impl SeedDumpStore for DiskSeedDumpStore {
             }
         }
         Ok(())
+    }
+
+    fn materialize(&self, sha256_compressed: &str) -> Result<PathBuf, OsppError> {
+        if !is_sha256_hex(sha256_compressed) {
+            return Err(OsppError::SeedDumpStore {
+                path: self.dir.display().to_string(),
+                message: "expected a 64-character lowercase hex SHA-256".to_owned(),
+            });
+        }
+        let published = self.dir.join(format!("{sha256_compressed}{DUMP_SUFFIX}"));
+        if !published.is_file() {
+            return Err(OsppError::SeedDumpStore {
+                path: published.display().to_string(),
+                message: "the verified archive is not cached; fetch it before materializing"
+                    .to_owned(),
+            });
+        }
+        let target = self
+            .dir
+            .join(format!("{sha256_compressed}{PGCUSTOM_SUFFIX}"));
+        if target.is_file() {
+            return Ok(target);
+        }
+        let part = self
+            .dir
+            .join(format!("{sha256_compressed}{PGCUSTOM_SUFFIX}{PART_SUFFIX}"));
+        let _ = fs::remove_file(&part);
+        decompress_bounded(&published, &part)?;
+        if let Err(error) = fs::rename(&part, &target) {
+            let _ = fs::remove_file(&part);
+            return Err(store_io(&part, error));
+        }
+        Ok(target)
     }
 }
 
@@ -254,6 +290,33 @@ fn verify_archive(path: &Path, expected_bytes: u64) -> Result<(), OsppError> {
         path: path.display().to_string(),
         message: format!("archive is not a valid zstd stream: {error}"),
     })?;
+    Ok(())
+}
+
+/// Decompress `source` into `target` (`0600`, `create_new`) with a bounded zstd window.
+fn decompress_bounded(source: &Path, target: &Path) -> Result<(), OsppError> {
+    let file = File::open(source).map_err(|error| store_io(source, error))?;
+    let mut context = zstd::zstd_safe::DCtx::create();
+    context
+        .set_parameter(zstd::zstd_safe::DParameter::WindowLogMax(
+            MAX_DUMP_WINDOW_LOG,
+        ))
+        .map_err(|error| OsppError::SeedDumpStore {
+            path: target.display().to_string(),
+            message: format!("cannot bound the zstd window: {error}"),
+        })?;
+    let mut decoder = zstd::stream::read::Decoder::with_context(BufReader::new(file), &mut context);
+    let mut out = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(target)
+        .map_err(|error| store_io(target, error))?;
+    io::copy(&mut decoder, &mut out).map_err(|error| OsppError::SeedDumpStore {
+        path: target.display().to_string(),
+        message: format!("archive is not a valid zstd stream: {error}"),
+    })?;
+    out.sync_all().map_err(|error| store_io(target, error))?;
     Ok(())
 }
 

@@ -6,9 +6,9 @@
 //! socket does not answer, it auto-spawns `slipforkd --listen 127.0.0.1:0` in the background so
 //! `slipfork up` and CI work zero-setup without systemd.
 //!
-//! M1's local diagnostics (`doctor`, `snow resolve`, `dag plan`) stay CLI-local: they read host
-//! capabilities, the `0600` vault, and repository files without materializing a world, and are
-//! deliberately outside the daemon's typed control contract.
+//! `snow resolve` runs through `slipforkd` (`DaemonControl::snow_resolve`), so the daemon owns the
+//! `0600` local vault and any paired `OSPP v1` remote vault. Only `doctor` and `dag plan` stay
+//! CLI-local: they read host capabilities and repository files without materializing a world.
 
 #![forbid(unsafe_code)]
 

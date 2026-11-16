@@ -115,6 +115,12 @@ pub struct Daemon {
 
 impl Daemon {
     pub fn start(scratch: &Path) -> Self {
+        Self::start_with_path(scratch, None)
+    }
+
+    /// Start the daemon with an explicit `PATH` (used to prove `.jj` routing fails closed when
+    /// `jj` is absent, and succeeds when it is present).
+    pub fn start_with_path(scratch: &Path, path: Option<&Path>) -> Self {
         let state_dir = scratch.join("state");
         let xdg_runtime = scratch.join("xdg-runtime");
         let runtime_dir = xdg_runtime.join("slipfork");
@@ -128,7 +134,8 @@ impl Daemon {
             .expect("open daemon log");
         let stderr = log.try_clone().expect("clone log");
         let (browser, browser_marker) = browser_opener(scratch);
-        let mut child = Command::new(env!("CARGO_BIN_EXE_slipforkd"))
+        let mut command = Command::new(env!("CARGO_BIN_EXE_slipforkd"));
+        command
             .arg("--state-dir")
             .arg(&state_dir)
             .arg("--runtime-dir")
@@ -144,9 +151,11 @@ impl Daemon {
             .env("BROWSER", browser)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(stderr)
-            .spawn()
-            .expect("spawn slipforkd");
+            .stderr(stderr);
+        if let Some(path) = path {
+            command.env("PATH", path);
+        }
+        let mut child = command.spawn().expect("spawn slipforkd");
         let socket = runtime_dir.join("daemon.sock");
         let deadline = Instant::now() + Duration::from_secs(20);
         while Instant::now() < deadline {
@@ -332,4 +341,33 @@ fn verified(path: &Path) -> bool {
     };
     use sha2::{Digest, Sha256};
     hex::encode(Sha256::digest(bytes)) == CRUN_SHA256
+}
+
+/// Locate one executable on the current `PATH`.
+pub fn find_on_path(program: &str) -> Option<PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    std::env::split_paths(&path)
+        .map(|directory| directory.join(program))
+        .find(|candidate| candidate.is_file())
+}
+
+/// The Jujutsu binary: `jj` on `PATH`, else the developer cache used by this workspace.
+pub fn jj_binary() -> Option<PathBuf> {
+    find_on_path("jj").or_else(|| {
+        let cached = PathBuf::from(std::env::var_os("HOME")?)
+            .join(".cache")
+            .join("slipfork-tools")
+            .join("jj")
+            .join("jj");
+        cached.is_file().then_some(cached)
+    })
+}
+
+/// A directory exposing only `git` (so a `.jj` repository can be resolved while `jj` is absent).
+pub fn git_only_path(scratch: &Path) -> PathBuf {
+    let directory = scratch.join("git-only-bin");
+    fs::create_dir_all(&directory).expect("create git-only bin dir");
+    let git = find_on_path("git").expect("git must be on PATH for the .jj routing test");
+    std::os::unix::fs::symlink(&git, directory.join("git")).expect("symlink git");
+    directory
 }

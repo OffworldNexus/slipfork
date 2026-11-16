@@ -17,8 +17,11 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 
+use sha2::{Digest, Sha256};
+
 use slipfork_dag::{
-    DumpPolicy, ResourceMode, ResourcePlan, ResourceStrategy, S3Resolution, SlipforkConfig,
+    DumpPolicy, PgSeed, RemoteResourceOffer, ResourceMode, ResourcePlan, ResourceStrategy,
+    S3Resolution, SlipforkConfig,
 };
 use slipfork_edge::daemon::{WorkspaceRefsRequest, WorkspaceRefsSummary};
 use slipfork_edge::forward::ForwardTargetSpec;
@@ -34,11 +37,14 @@ use slipfork_engine::rootfs::{
     RuntimeAssets, SnowPortContract, WorldRootfs, WorldRootfsRequest,
 };
 use slipfork_engine::{
-    EngineError, ExecEnv, InheritedVar, LocalIngressBridge, MountMode, ServiceHandle,
+    EngineError, ExecEnv, ExecOutput, InheritedVar, LocalIngressBridge, MountMode, ServiceHandle,
     ServiceRuntime, ServiceSpec, SnapshotId, SnapshotMode, StateSubdirMount, StreamChunk,
     WorldEngine, WorldHandle, WorldMount, WorldSpec,
 };
-use slipfork_ospp::{BrowserOpener, DeviceKeySigner, OsppTimeouts, PairingUrl, redeem_pairing_url};
+use slipfork_ospp::{
+    BrowserOpener, DeviceKeySigner, DumpStreamer, OsppClient, OsppEndpoint, OsppError,
+    OsppTimeouts, PGCUSTOM_SUFFIX, PairingUrl, SeedDumpStore, redeem_pairing_url,
+};
 use slipfork_snow::{
     EntropySource, HookPhase, Image, Namespace, OsCsprngEntropy, ResolvedEnvMap,
     ResourceCoordinates, S3Coordinates, SecretProvider, SnowFile,
@@ -50,7 +56,8 @@ use slipfork_vcs::{
 use slipfork_world::{LocalHostRoute, ProjectSlug, WorldOrigin, WorldTarget, validate_fork_name};
 
 use crate::layout::{Layout, ensure_private_dir};
-use crate::project::load_slipfork_config;
+use crate::ospp::{OsppSessionCoordinates, OsppSessionStore};
+use crate::project::load_optional_slipfork_config;
 use crate::vaults::ProjectVaults;
 
 /// The world mode this daemon supervises (`snow.yml` `modes.local`, `ADR-0001` §1).
@@ -184,8 +191,10 @@ impl HookLog {
 #[derive(Default)]
 struct DaemonState {
     worlds: Vec<LiveWorld>,
-    /// Base state snapshot created on first use per project in this daemon's lifetime.
-    bases: BTreeMap<ProjectSlug, SnapshotId>,
+    /// Base state snapshot created on first use per `(project, base digest)` in this daemon's
+    /// lifetime. The digest covers backing-service versions and every resolved seed-dump digest, so
+    /// `--no-dump` and a restored dump never share a base.
+    bases: BTreeMap<(ProjectSlug, String), SnapshotId>,
 }
 
 impl DaemonState {
@@ -258,6 +267,10 @@ pub struct DaemonPorts {
     pub vaults: std::sync::Arc<dyn ProjectVaults>,
     /// Persistent OSPP device-key signer (`tpmd:sealed` or the `0600` software fallback).
     pub signer: Arc<dyn DeviceKeySigner>,
+    /// Paired OSPP host coordinates (`0600`, zero secrets), written by `auth login`.
+    pub ospp_sessions: Arc<dyn OsppSessionStore>,
+    /// Digest-pinned seed-dump cache (`DiskSeedDumpStore` in production).
+    pub seed_dumps: Arc<dyn SeedDumpStore>,
     /// Injected browser opener for the pairing approval page (never logs the live handle).
     pub browser: Arc<dyn BrowserOpener>,
     /// CSPRNG injected into the pairing handshake nonce.
@@ -275,6 +288,10 @@ pub struct DaemonService {
     workspaces: std::sync::Arc<dyn VcsWorkspaceFactory>,
     vaults: std::sync::Arc<dyn ProjectVaults>,
     signer: Arc<dyn DeviceKeySigner>,
+    ospp_sessions: Arc<dyn OsppSessionStore>,
+    seed_dumps: Arc<dyn SeedDumpStore>,
+    /// Lazily connected, daemon-held `ospp-v1` session (`None` while unpaired or offline).
+    ospp_client: Mutex<Option<Arc<OsppClient>>>,
     browser: Arc<dyn BrowserOpener>,
     entropy: Arc<dyn EntropySource>,
     ospp_timeouts: OsppTimeouts,
@@ -311,6 +328,9 @@ impl DaemonService {
             workspaces: ports.workspaces,
             vaults: ports.vaults,
             signer: ports.signer,
+            ospp_sessions: ports.ospp_sessions,
+            seed_dumps: ports.seed_dumps,
+            ospp_client: Mutex::new(None),
             browser: ports.browser,
             entropy: ports.entropy,
             ospp_timeouts: ports.ospp_timeouts,
@@ -330,6 +350,101 @@ impl DaemonService {
         self.boot_lock
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// The daemon-held `ospp-v1` session: lazily dial the persisted coordinates once, then reuse it.
+    ///
+    /// An unpaired developer, or a paired host whose OSPP server is unreachable
+    /// (`OsppError::Transport`), yields `None` so the `0600` local vault still serves every secret;
+    /// `ResourceStrategy::Remote` and `DumpPolicy::RefreshDump` then fail closed inside
+    /// `ResourcePlan::resolve`. Every other connect failure (a revoked key, bad signature, TLS or
+    /// protocol refusal) is a paired host rejecting us, so it propagates instead of silently
+    /// degrading to the local vault.
+    fn ospp_client(&self) -> Result<Option<Arc<OsppClient>>, EdgeError> {
+        let Some(coordinates) = self.ospp_sessions.load()? else {
+            return Ok(None);
+        };
+        {
+            let cache = self
+                .ospp_client
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            if let Some(client) = cache.as_ref() {
+                return Ok(Some(Arc::clone(client)));
+            }
+        }
+        let endpoint =
+            OsppEndpoint::connect(coordinates.host(), coordinates.port(), coordinates.tls())
+                .map_err(|error| {
+                    runtime_error(format!(
+                        "the paired OSPP endpoint '{}:{}' is invalid: {error}",
+                        coordinates.host(),
+                        coordinates.port()
+                    ))
+                })?;
+        let client = match OsppClient::connect(
+            &endpoint,
+            self.signer.as_ref(),
+            self.entropy.as_ref(),
+            self.ospp_timeouts,
+        ) {
+            Ok(client) => Arc::new(client),
+            Err(OsppError::Transport { .. }) => {
+                // A dead socket must never be reused; the next call dials afresh.
+                self.invalidate_ospp_client();
+                return Ok(None);
+            }
+            Err(error) => {
+                return Err(runtime_error(format!(
+                    "the paired OSPP server '{}:{}' refused the session: {error}",
+                    coordinates.host(),
+                    coordinates.port()
+                )));
+            }
+        };
+        let mut cache = self
+            .ospp_client
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        *cache = Some(Arc::clone(&client));
+        Ok(Some(client))
+    }
+
+    /// Drop the cached session so the next capability call reconnects from the persisted
+    /// coordinates instead of reusing a dead socket.
+    fn invalidate_ospp_client(&self) {
+        *self
+            .ospp_client
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = None;
+    }
+
+    /// The project's vault, layered over the paired remote vault when one is reachable.
+    fn vault_for(&self, project: &ProjectSlug) -> Result<Arc<dyn SecretProvider>, EdgeError> {
+        let client = self.ospp_client()?;
+        self.vaults.vault(project, client, WORLD_MODE)
+    }
+
+    /// The single `OsppClient::resource_offer` mapper, with offline transport failures treated as
+    /// "no offer" so `prefer_remote` falls back to world-local coordinates with a diagnostic.
+    fn resource_offer(
+        &self,
+        project: &ProjectSlug,
+        client: Option<&Arc<OsppClient>>,
+    ) -> Result<Option<RemoteResourceOffer>, EdgeError> {
+        let Some(client) = client else {
+            return Ok(None);
+        };
+        match client.resource_offer(project, WORLD_MODE) {
+            Ok(offer) => Ok(offer),
+            Err(OsppError::Transport { .. }) => {
+                self.invalidate_ospp_client();
+                Ok(None)
+            }
+            Err(error) => Err(runtime_error(format!(
+                "cannot describe OSPP resources for '{project}:{WORLD_MODE}': {error}"
+            ))),
+        }
     }
 
     /// Resolve the repository, target, and checkout for one `cwd` + `--world` request.
@@ -420,14 +535,9 @@ impl DaemonService {
     }
 
     fn load_config(&self, vcs_root: &Path) -> Result<SlipforkConfig, EdgeError> {
-        let path = vcs_root.join("slipfork.toml");
-        if !path.is_file() {
-            return Err(runtime_error(format!(
-                "cannot read {}: every world boot needs the project's slipfork.toml (the DAG/resources manifest); create it with `project = \"<slug>\"`",
-                path.display()
-            )));
-        }
-        load_slipfork_config(&path).map_err(runtime_error)
+        // `slipfork.toml` is optional (`VISION.md`, `docs/getting-started.md`): an absent manifest
+        // means the default DAG/resources spec, while a malformed or unreadable one fails closed.
+        load_optional_slipfork_config(&vcs_root.join("slipfork.toml")).map_err(runtime_error)
     }
 
     /// Materialize (or reuse) the selected `snow.yml` `Dockerfile` stage as the world's `L0`
@@ -538,21 +648,287 @@ impl DaemonService {
             .map_err(|err| runtime_error(err.to_string()))
     }
 
-    /// The single base-state snapshot per project for this daemon's lifetime.
-    fn ensure_base_snapshot(&self, project: &ProjectSlug) -> Result<SnapshotId, EdgeError> {
-        if let Some(snapshot) = self.lock().bases.get(project).cloned() {
+    /// Seal the real `<project>-base-<digest>` snapshot (`ADR-0008` §2, `ADR-0009` §2–§3).
+    ///
+    /// A short-lived seed world boots on an empty root snapshot, starts every backing-service
+    /// container (mounting each verified `<sha256>.pgcustom` read-only at `/dumps/...`), restores
+    /// the selected dumps with `pg_restore` + `CHECKPOINT;` **inside** the `postgres:<v>`
+    /// container, and is then frozen and destroyed. `up`/`fork` clone the sealed base and never
+    /// re-run `pg_restore`; `--no-dump` seals the clean `initdb` base through the same path.
+    fn ensure_base_snapshot(
+        &self,
+        project: &ProjectSlug,
+        snow: &SnowFile,
+        plan: &ResourcePlan,
+        rootfs: &WorldRootfs,
+        client: Option<&Arc<OsppClient>>,
+    ) -> Result<SnapshotId, EdgeError> {
+        let digest = base_digest(project, snow, plan);
+        let key = (project.clone(), digest.clone());
+        if let Some(snapshot) = self.lock().bases.get(&key).cloned() {
             return Ok(snapshot);
         }
+
+        let dumps = self.materialize_seed_dumps(project, snow, plan, client)?;
         let seed = self.config.layout.base_seed_dir(project);
         ensure_private_dir(&seed).map_err(runtime_error)?;
-        let snapshot = SnapshotId(format!("{project}-base"));
+        let empty = SnapshotId(format!("{project}-seed-empty"));
         self.engine
-            .create_snapshot(&seed, &snapshot, SnapshotMode::DiskCow)
+            .create_snapshot(&seed, &empty, SnapshotMode::DiskCow)
             .map_err(|err| {
-                runtime_error(format!("cannot create the base world snapshot: {err}"))
+                runtime_error(format!("cannot create the empty base seed snapshot: {err}"))
             })?;
-        self.lock().bases.insert(project.clone(), snapshot.clone());
+
+        let mut mounts = Vec::new();
+        if let Some(directory) = dumps
+            .values()
+            .next()
+            .and_then(|(_, path)| path.parent())
+            .map(Path::to_path_buf)
+        {
+            mounts.push(WorldMount {
+                host_path: directory.clone(),
+                guest_path: directory,
+                mode: MountMode::ReadOnly,
+            });
+        }
+        let spec = WorldSpec {
+            target: WorldTarget::TestSlot(0),
+            rootfs: rootfs.clone(),
+            snapshot: empty,
+            mounts,
+            base_env: ExecEnv::world_scoped(self.config.layout.world_home(project, "base-seed")),
+            local_ingress: None,
+        };
+        let handle = self.engine.clone_world(&spec).map_err(|err| {
+            runtime_error(format!(
+                "cannot boot the base seed world for '{project}': {err}"
+            ))
+        })?;
+
+        let restored = self.restore_base(&handle, snow, rootfs, &dumps);
+        let snapshot = SnapshotId(format!("{project}-base-{digest}"));
+        let sealed = restored.and_then(|()| {
+            self.engine
+                .freeze_world(&handle, &snapshot, SnapshotMode::DiskCow)
+                .map_err(|err| runtime_error(format!("cannot freeze the base seed world: {err}")))
+        });
+        if let Err(error) = sealed {
+            let _ = self.engine.destroy_world(handle);
+            return Err(error);
+        }
+        self.engine
+            .destroy_world(handle)
+            .map_err(|err| runtime_error(format!("cannot destroy the base seed world: {err}")))?;
+        self.lock().bases.insert(key, snapshot.clone());
         Ok(snapshot)
+    }
+
+    /// Fetch/materialize every dump the plan selected, keyed by `snow.yml` database id.
+    fn materialize_seed_dumps(
+        &self,
+        project: &ProjectSlug,
+        snow: &SnowFile,
+        plan: &ResourcePlan,
+        client: Option<&Arc<OsppClient>>,
+    ) -> Result<BTreeMap<String, (String, PathBuf)>, EdgeError> {
+        let mut dumps = BTreeMap::new();
+        for database in &plan.pg_databases {
+            let PgSeed::RemoteDump { dump, refresh } = &database.seed else {
+                continue;
+            };
+            if !snow
+                .resources
+                .pg_databases
+                .iter()
+                .any(|declared| declared.id == database.id)
+            {
+                continue;
+            }
+            let sha256 = dump.sha256_compressed().to_owned();
+            if self.seed_dumps.lookup(&sha256).is_none() || *refresh {
+                let client = client.ok_or_else(|| {
+                    runtime_error(format!(
+                        "the seed dump for '{}' requires a paired OSPP session; run `slipfork auth login`",
+                        database.id
+                    ))
+                })?;
+                DumpStreamer::new(client.as_ref())
+                    .fetch(project, WORLD_MODE, &database.id, self.seed_dumps.as_ref())
+                    .map_err(|err| {
+                        runtime_error(format!(
+                            "cannot stream the seed dump for '{}': {err}",
+                            database.id
+                        ))
+                    })?;
+            }
+            let pgcustom = self.seed_dumps.materialize(&sha256).map_err(|err| {
+                runtime_error(format!(
+                    "cannot materialize the seed dump for '{}': {err}",
+                    database.id
+                ))
+            })?;
+            dumps.insert(database.id.clone(), (sha256, pgcustom));
+        }
+        Ok(dumps)
+    }
+
+    /// Start every backing-service container in the seed world and restore the selected dumps.
+    fn restore_base(
+        &self,
+        handle: &WorldHandle,
+        snow: &SnowFile,
+        rootfs: &WorldRootfs,
+        dumps: &BTreeMap<String, (String, PathBuf)>,
+    ) -> Result<(), EdgeError> {
+        let mounts = dump_mounts(snow, dumps);
+        let mut services: BTreeMap<String, ServiceHandle> = BTreeMap::new();
+        for spec in service_specs(snow, rootfs, &mounts)? {
+            let service = match self.engine.spawn_service(handle, &spec) {
+                Ok(service) => service,
+                Err(err) => {
+                    let tail = self
+                        .engine
+                        .service_logs(handle, &spec.id)
+                        .map(|logs| {
+                            let bytes: Vec<u8> = logs
+                                .snapshot()
+                                .into_iter()
+                                .flat_map(|chunk| chunk.bytes)
+                                .collect();
+                            let text = String::from_utf8_lossy(&bytes);
+                            let lines: Vec<&str> = text.lines().collect();
+                            lines[lines.len().saturating_sub(20)..].join("\n")
+                        })
+                        .unwrap_or_default();
+                    return Err(runtime_error(format!(
+                        "cannot start backing service '{}' in the base seed world: {err}\n{tail}",
+                        spec.id
+                    )));
+                }
+            };
+            services.insert(spec.id.clone(), service);
+        }
+        for database in &snow.resources.pg_databases {
+            let Some(service) = services.get(&format!("pg_clusters.{}", database.cluster)) else {
+                continue;
+            };
+            self.ensure_database(service, &database.id)?;
+            let Some((sha256, _)) = dumps.get(&database.id) else {
+                continue;
+            };
+            let guest = format!("/dumps/{sha256}{PGCUSTOM_SUFFIX}");
+            self.exec_service_checked(
+                service,
+                &[
+                    "pg_restore".to_owned(),
+                    "--no-owner".to_owned(),
+                    "--no-privileges".to_owned(),
+                    "--clean".to_owned(),
+                    "--if-exists".to_owned(),
+                    "-U".to_owned(),
+                    "postgres".to_owned(),
+                    "-h".to_owned(),
+                    "127.0.0.1".to_owned(),
+                    "-d".to_owned(),
+                    database.id.clone(),
+                    guest,
+                ],
+                &format!("restoring database '{}'", database.id),
+            )?;
+            self.exec_service_checked(
+                service,
+                &[
+                    "psql".to_owned(),
+                    "-U".to_owned(),
+                    "postgres".to_owned(),
+                    "-h".to_owned(),
+                    "127.0.0.1".to_owned(),
+                    "-d".to_owned(),
+                    database.id.clone(),
+                    "-v".to_owned(),
+                    "ON_ERROR_STOP=1".to_owned(),
+                    "-c".to_owned(),
+                    "CHECKPOINT;".to_owned(),
+                ],
+                &format!("checkpointing database '{}'", database.id),
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Create one declared `snow.yml` database in a freshly `initdb`-ed cluster when absent.
+    fn ensure_database(&self, service: &ServiceHandle, database: &str) -> Result<(), EdgeError> {
+        validate_database_id(database)?;
+        let query = format!("SELECT 1 FROM pg_database WHERE datname = '{database}'");
+        let existing = self.exec_service_checked(
+            service,
+            &[
+                "psql".to_owned(),
+                "-U".to_owned(),
+                "postgres".to_owned(),
+                "-h".to_owned(),
+                "127.0.0.1".to_owned(),
+                "-d".to_owned(),
+                "postgres".to_owned(),
+                "-tAc".to_owned(),
+                query,
+            ],
+            &format!("checking database '{database}'"),
+        )?;
+        if existing.stdout.trim() == "1" {
+            return Ok(());
+        }
+        self.exec_service_checked(
+            service,
+            &[
+                "createdb".to_owned(),
+                "-U".to_owned(),
+                "postgres".to_owned(),
+                "-h".to_owned(),
+                "127.0.0.1".to_owned(),
+                database.to_owned(),
+            ],
+            &format!("creating database '{database}'"),
+        )?;
+        Ok(())
+    }
+
+    /// Run `argv` inside a running backing-service container, failing closed on a non-zero exit.
+    fn exec_service_checked(
+        &self,
+        service: &ServiceHandle,
+        argv: &[String],
+        what: &str,
+    ) -> Result<ExecOutput, EdgeError> {
+        let mut stderr = Vec::new();
+        let output = self
+            .engine
+            .exec_in_service(service, argv, &ExecEnv::default(), &mut |chunk| {
+                if chunk.source == slipfork_engine::StreamSource::Stderr {
+                    stderr.extend_from_slice(&chunk.bytes);
+                }
+            })
+            .map_err(|err| match err {
+                EngineError::ServiceNotRunning { .. } => runtime_error(format!(
+                    "the base seed world's backing service '{}' is not running (ServiceNotRunning); cannot {what}",
+                    service.id()
+                )),
+                other => runtime_error(format!("cannot {what}: {other}")),
+            })?;
+        if output.exit_code != 0 {
+            let detail = if output.stderr.trim().is_empty() {
+                String::from_utf8_lossy(&stderr).into_owned()
+            } else {
+                output.stderr.clone()
+            };
+            return Err(runtime_error(format!(
+                "{what} failed with exit code {}: {}",
+                output.exit_code,
+                detail.trim()
+            )));
+        }
+        Ok(output)
     }
 
     fn world_env(
@@ -663,7 +1039,34 @@ impl DaemonService {
                 });
             }
         };
-        let plan = match resolve_plan(&config, &snow, &target, dump, force_local_resources) {
+        let client = match self.ospp_client() {
+            Ok(client) => client,
+            Err(error) => {
+                return Err(BootFailure {
+                    error,
+                    world: None,
+                    workspace,
+                });
+            }
+        };
+        let offer = match self.resource_offer(&project, client.as_ref()) {
+            Ok(offer) => offer,
+            Err(error) => {
+                return Err(BootFailure {
+                    error,
+                    world: None,
+                    workspace,
+                });
+            }
+        };
+        let plan = match resolve_plan(
+            &config,
+            &snow,
+            &target,
+            dump,
+            force_local_resources,
+            offer.as_ref(),
+        ) {
             Ok(plan) => plan,
             Err(error) => {
                 return Err(BootFailure {
@@ -696,7 +1099,7 @@ impl DaemonService {
                 });
             }
         };
-        let vault = match self.vaults.vault(&project) {
+        let vault = match self.vault_for(&project) {
             Ok(vault) => vault,
             Err(error) => {
                 return Err(BootFailure {
@@ -767,16 +1170,17 @@ impl DaemonService {
             }
         };
 
-        let snapshot = match self.ensure_base_snapshot(&project) {
-            Ok(snapshot) => snapshot,
-            Err(error) => {
-                return Err(BootFailure {
-                    error,
-                    world: None,
-                    workspace,
-                });
-            }
-        };
+        let snapshot =
+            match self.ensure_base_snapshot(&project, &snow, &plan, &rootfs, client.as_ref()) {
+                Ok(snapshot) => snapshot,
+                Err(error) => {
+                    return Err(BootFailure {
+                        error,
+                        world: None,
+                        workspace,
+                    });
+                }
+            };
         let spec = WorldSpec {
             target: target.clone(),
             rootfs: rootfs.clone(),
@@ -836,7 +1240,7 @@ impl DaemonService {
             workspace: workspace.take().map(Arc::from),
         };
 
-        let service_specs = match service_specs(&snow, &rootfs) {
+        let service_specs = match service_specs(&snow, &rootfs, &BTreeMap::new()) {
             Ok(specs) => specs,
             Err(error) => {
                 live.state = WorldState::Failed;
@@ -1087,7 +1491,7 @@ impl DaemonControl for DaemonService {
             .resolve(&parent_dir(&file))
             .map_err(|err| runtime_error(err.to_string()))?;
         let project = repository.project;
-        let vault = self.vaults.vault(&project)?;
+        let vault = self.vault_for(&project)?;
         let coords = ResourceCoordinates::local_for_world(&snow, &project, &WorldTarget::Canonical)
             .map_err(|err| runtime_error(err.to_string()))?;
         let resolved = snow
@@ -1718,6 +2122,9 @@ impl DaemonControl for DaemonService {
         self.browser
             .open_pairing_url(browser_url)
             .map_err(|err| runtime_error(format!("cannot open the pairing page: {err}")))?;
+        let host = url.host().to_owned();
+        let port = url.port();
+        let tls = url.scheme().uses_tls();
         let approval = redeem_pairing_url(
             url,
             self.signer.as_ref(),
@@ -1728,6 +2135,14 @@ impl DaemonControl for DaemonService {
             // OSPP errors never embed the handle; the URL itself is never re-rendered here.
             runtime_error(format!("OSPP pairing failed: {err}"))
         })?;
+        self.ospp_sessions.save(&OsppSessionCoordinates::new(
+            host,
+            port,
+            tls,
+            approval.account.clone(),
+        ))?;
+        // The next capability call must dial the freshly paired host, never a stale session.
+        self.invalidate_ospp_client();
         Ok(slipfork_edge::AuthSummary {
             key_id: self.signer.key_id().as_str().to_owned(),
             backend: self.signer.backend_label().to_owned(),
@@ -1981,6 +2396,7 @@ fn resolve_plan(
     target: &WorldTarget,
     dump: DumpPolicy,
     force_local: bool,
+    offer: Option<&RemoteResourceOffer>,
 ) -> Result<ResourcePlan, EdgeError> {
     let s3_ids: Vec<&str> = snow
         .resources
@@ -2016,7 +2432,7 @@ fn resolve_plan(
     } else {
         (spec, dump)
     };
-    ResourcePlan::resolve(&spec, ResourceMode::from(target), dump, None)
+    ResourcePlan::resolve(&spec, ResourceMode::from(target), dump, offer)
         .map_err(|err| runtime_error(err.to_string()))
 }
 
@@ -2041,6 +2457,70 @@ fn json_label<T: serde::Serialize>(value: &T) -> String {
         .unwrap_or_default()
 }
 
+/// Content key of one base snapshot: backing-service versions plus every resolved dump digest.
+fn base_digest(project: &ProjectSlug, snow: &SnowFile, plan: &ResourcePlan) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"slipfork-base:v1\0");
+    hasher.update(project.as_str().as_bytes());
+    hasher.update(b"\0");
+    for image in requested_service_images(snow) {
+        hasher.update(image.to_string().as_bytes());
+        hasher.update(b"\0");
+    }
+    for database in &plan.pg_databases {
+        hasher.update(database.id.as_bytes());
+        hasher.update(b"=");
+        match &database.seed {
+            PgSeed::CleanInitdb => hasher.update(b"clean"),
+            PgSeed::RemoteDump { dump, .. } => hasher.update(dump.sha256_compressed().as_bytes()),
+        }
+        hasher.update(b"\0");
+    }
+    hex::encode(hasher.finalize())
+}
+
+/// The verified `<sha256>.pgcustom` files one `pg_clusters.<id>` container mounts read-only.
+fn dump_mounts(
+    snow: &SnowFile,
+    dumps: &BTreeMap<String, (String, PathBuf)>,
+) -> BTreeMap<String, Vec<WorldMount>> {
+    let mut mounts: BTreeMap<String, Vec<WorldMount>> = BTreeMap::new();
+    for (database_id, (sha256, pgcustom)) in dumps {
+        let Some(database) = snow
+            .resources
+            .pg_databases
+            .iter()
+            .find(|database| database.id == *database_id)
+        else {
+            continue;
+        };
+        mounts
+            .entry(format!("pg_clusters.{}", database.cluster))
+            .or_default()
+            .push(WorldMount {
+                host_path: pgcustom.clone(),
+                guest_path: PathBuf::from("/dumps").join(format!("{sha256}{PGCUSTOM_SUFFIX}")),
+                mode: MountMode::ReadOnly,
+            });
+    }
+    mounts
+}
+
+/// A `snow.yml` database id is interpolated into `psql` SQL, so it stays a plain identifier.
+fn validate_database_id(id: &str) -> Result<(), EdgeError> {
+    if id.is_empty()
+        || id.len() > 63
+        || !id
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '_' | '-'))
+    {
+        return Err(rejected(format!(
+            "invalid pg_databases id '{id}': expected 1..=63 [A-Za-z0-9_-] characters"
+        )));
+    }
+    Ok(())
+}
+
 /// The backing-service OCI images `snow.yml` `resources:` requests (`ADR-0009` §2.2).
 fn requested_service_images(snow: &SnowFile) -> Vec<BackingServiceKey> {
     let mut images = BTreeSet::new();
@@ -2062,16 +2542,28 @@ fn requested_service_images(snow: &SnowFile) -> Vec<BackingServiceKey> {
 
 /// One `ServiceSpec` per declared backing service, all on the single `WorldEngine` supervision
 /// surface (`ADR-0009` §2–§3).
-fn service_specs(snow: &SnowFile, rootfs: &WorldRootfs) -> Result<Vec<ServiceSpec>, EdgeError> {
+///
+/// `dump_mounts` maps a `pg_clusters.<id>` service id to the verified `<sha256>.pgcustom` files the
+/// base seed world must expose read-only at `/dumps/...`.
+fn service_specs(
+    snow: &SnowFile,
+    rootfs: &WorldRootfs,
+    dump_mounts: &BTreeMap<String, Vec<WorldMount>>,
+) -> Result<Vec<ServiceSpec>, EdgeError> {
     let mut specs = Vec::new();
     for cluster in &snow.resources.pg_clusters {
         let image = BackingServiceKey::Postgres {
             version: cluster.version.clone(),
         };
-        require_image(rootfs, &image, &format!("pg_clusters.{}", cluster.id))?;
+        let id = format!("pg_clusters.{}", cluster.id);
+        require_image(rootfs, &image, &id)?;
         ensure_container_dirs(rootfs, &image, &["/var/lib/postgresql/data"])?;
+        let readonly_mounts = dump_mounts.get(&id).cloned().unwrap_or_default();
+        for mount in &readonly_mounts {
+            ensure_container_file(rootfs, &image, &mount.guest_path)?;
+        }
         specs.push(ServiceSpec {
-            id: format!("pg_clusters.{}", cluster.id),
+            id: id.clone(),
             runtime: ServiceRuntime::OciContainer {
                 image,
                 argv: vec!["docker-entrypoint.sh".to_owned(), "postgres".to_owned()],
@@ -2079,7 +2571,7 @@ fn service_specs(snow: &SnowFile, rootfs: &WorldRootfs) -> Result<Vec<ServiceSpe
                     host_subdir: PathBuf::from("pgdata").join(&cluster.id),
                     container_path: PathBuf::from("/var/lib/postgresql/data"),
                 }],
-                readonly_mounts: Vec::new(),
+                readonly_mounts,
             },
             env: container_env(
                 "/tmp",
@@ -2138,6 +2630,10 @@ fn service_specs(snow: &SnowFile, rootfs: &WorldRootfs) -> Result<Vec<ServiceSpe
                     "weed".to_owned(),
                     "server".to_owned(),
                     "-dir=/data".to_owned(),
+                    // The world netns carries no DNS resolver, so `weed` must never resolve
+                    // `localhost` for its master/filer/S3 bind addresses.
+                    "-ip=127.0.0.1".to_owned(),
+                    "-ip.bind=127.0.0.1".to_owned(),
                     "-s3".to_owned(),
                     "-s3.port=9000".to_owned(),
                     "-s3.ip.bind=127.0.0.1".to_owned(),
@@ -2177,6 +2673,32 @@ fn ensure_container_dirs(
     for path in paths {
         let host = image.rootfs.join(path.trim_start_matches('/'));
         std::fs::create_dir_all(&host)
+            .map_err(|err| runtime_error(format!("cannot create {}: {err}", host.display())))?;
+    }
+    Ok(())
+}
+
+/// Create the parent directory and an empty destination file a read-only file mount needs.
+///
+/// `docker export` never carries the `/dumps/<sha256>.pgcustom` path, and `crun` requires the
+/// bind-mount destination to exist in the image rootfs.
+fn ensure_container_file(
+    rootfs: &WorldRootfs,
+    image: &BackingServiceKey,
+    path: &Path,
+) -> Result<(), EdgeError> {
+    let image = rootfs.service_images.get(image).ok_or_else(|| {
+        runtime_error(format!(
+            "backing-service image '{image}' is not materialized; re-run `slipfork up`"
+        ))
+    })?;
+    let host = image.rootfs.join(path.strip_prefix("/").unwrap_or(path));
+    if let Some(parent) = host.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|err| runtime_error(format!("cannot create {}: {err}", parent.display())))?;
+    }
+    if !host.exists() {
+        File::create(&host)
             .map_err(|err| runtime_error(format!("cannot create {}: {err}", host.display())))?;
     }
     Ok(())

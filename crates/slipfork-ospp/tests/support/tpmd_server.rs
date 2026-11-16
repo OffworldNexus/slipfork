@@ -81,6 +81,23 @@ impl FakeTpmd {
     pub fn start(behavior: TpmdBehavior) -> Self {
         let dir = tempfile::tempdir().expect("scratch tpmd dir");
         let socket_path = dir.path().join("tpmd.sock");
+        Self::start_inner(dir, socket_path, behavior)
+    }
+
+    /// Bind `socket_path` (creating its parent) and serve `behavior` until dropped.
+    ///
+    /// Used by downstream composition-root tests that must place the fake daemon exactly where
+    /// `KeyStorePaths::user_then_system($XDG_RUNTIME_DIR)` probes.
+    #[allow(dead_code)] // consumed by `crates/slipfork`'s protected suite, not this crate's tests
+    pub fn start_at(socket_path: PathBuf, behavior: TpmdBehavior) -> Self {
+        let dir = tempfile::tempdir().expect("scratch tpmd dir");
+        if let Some(parent) = socket_path.parent() {
+            std::fs::create_dir_all(parent).expect("create fake tpmd socket parent");
+        }
+        Self::start_inner(dir, socket_path, behavior)
+    }
+
+    fn start_inner(dir: tempfile::TempDir, socket_path: PathBuf, behavior: TpmdBehavior) -> Self {
         let signing_key = SigningKey::from_slice(&[0x42u8; 32]).expect("fixed P-256 scalar");
         let public = signing_key.verifying_key().to_sec1_point(true);
         let key_id = slipfork_ospp::KeyId::from_public_key_bytes(public.as_bytes())
@@ -115,6 +132,7 @@ impl FakeTpmd {
                                     &signing_key,
                                     tpmd_key_id,
                                     &observation,
+                                    &shutdown,
                                 )
                                 .await;
                             }
@@ -189,13 +207,20 @@ async fn serve(
     signing_key: &SigningKey,
     key_id: TpmdKeyId,
     observation: &Mutex<TpmdObservation>,
+    shutdown: &AtomicBool,
 ) {
     let mut opened = false;
     loop {
+        if shutdown.load(Ordering::SeqCst) {
+            return;
+        }
         let read =
             tokio::time::timeout(Duration::from_millis(100), read_message(&mut stream)).await;
-        let Ok(Ok(message)) = read else {
-            return;
+        let message = match read {
+            Ok(Ok(message)) => message,
+            Ok(Err(_)) => return,
+            // Idle between capability calls: keep the authenticated connection open.
+            Err(_) => continue,
         };
         match message {
             Message::Hello(hello) => {

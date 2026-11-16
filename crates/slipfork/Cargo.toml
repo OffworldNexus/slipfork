@@ -24,3 +24,6 @@ slipfork-world = { path = "../slipfork-world" }
 
 [dev-dependencies]
 tempfile.workspace = true
+# The in-tree `ospp-v1` reference server is shared, never copy-pasted: the feature is only ever
+# enabled for this crate's protected tests.
+slipfork-ospp = { path = "../slipfork-ospp", features = ["test-server"] }

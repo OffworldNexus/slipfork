@@ -18,11 +18,21 @@ pub fn repository_resolver() -> Arc<dyn RepoRootResolver> {
 }
 
 /// The one `slipfork.toml` loader. A missing or unreadable file is an error; callers that model
-/// an optional manifest must check presence explicitly instead of receiving a silent default.
+/// an optional manifest must use [`load_optional_slipfork_config`] instead.
 pub fn load_slipfork_config(path: &Path) -> Result<SlipforkConfig, String> {
     let raw =
         fs::read_to_string(path).map_err(|err| format!("cannot read {}: {err}", path.display()))?;
     SlipforkConfig::parse_toml(&raw).map_err(|err| format!("{}: {err}", path.display()))
+}
+
+/// Load an **optional** `<vcs_root>/slipfork.toml`: absent means [`SlipforkConfig::default`],
+/// while a malformed or unreadable file still fails closed.
+pub fn load_optional_slipfork_config(path: &Path) -> Result<SlipforkConfig, String> {
+    match fs::metadata(path) {
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(SlipforkConfig::default()),
+        Err(err) => Err(format!("cannot read {}: {err}", path.display())),
+        Ok(_) => load_slipfork_config(path),
+    }
 }
 
 /// Reads `<vcs_root>/slipfork.toml` through the one `SlipforkConfig` parser.

@@ -79,6 +79,13 @@ pub trait SeedDumpStore: Send + Sync {
 
     /// Remove any partial or published artifact for `sha256_compressed` (no-op when absent).
     fn discard(&self, sha256_compressed: &str) -> Result<(), OsppError>;
+
+    /// Materialize the verified archive as the uncompressed `pg_dump -Fc` file and return its path.
+    ///
+    /// The decoder is bounded by [`MAX_DUMP_WINDOW_LOG`], so a hostile archive cannot force an
+    /// unbounded allocation. The `postgres:<v>` container mounts the uncompressed file at
+    /// `/dumps/<sha256>.pgcustom`, so it never needs a `zstd` binary of its own (`ADR-0008` §2).
+    fn materialize(&self, sha256_compressed: &str) -> Result<PathBuf, OsppError>;
 }
 
 /// Streams one digest-pinned PostgreSQL seed dump into a [`SeedDumpStore`].
