@@ -466,3 +466,16 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-16T06:34 [M2] (strategist) status ready -> done: 0.2.0 milestone gate PASSED: M2.30-M2.32 seams verified in slipforkd/daemon.rs, critical_ospp_daemon green, bounded 1x1 bench --check 36.4
 - 2026-11-16T06:41 HUMAN H-012 [release-gate] opened by conductor (node M2)
 - 2026-11-16T06:41 AUTOPILOT off by conductor awaiting human release gate for 0.2.0 (no git remote)
+- 2026-11-16T12:31 [M3.5] (conductor) created (task) DigitalOcean dev-VM harness: droplet + ZFS volume + Incus pool, remote live IncusEngine tests (tools/do_vm.py)
+- 2026-11-16T12:31 [M3.5] (lead) status ready -> active
+- 2026-11-16T12:31 [M3.5] (lead) attempt 1/3 started
+- 2026-11-16T12:31 [M3.5] (lead) base dcc270e8a938ea26870549724061815b0dba6751
+- 2026-11-16T12:33 [M3.6] (conductor) created (task) Restrict IncusEngine to LXC containers only: delete QEMU path & stateful-RAM promise
+- 2026-11-16T12:33 [M3.6] (conductor) OWNER RULING: Slipfork targets Incus LXC system containers ONLY. QEMU/VM path and stateful-RAM snapshots are deleted from the design of record (untestable on ou
+- 2026-11-16T12:35 [M3.6] (conductor) ADDENDUM (owner question: can LXC give millisecond fork?): make the fork vocabulary precise in ADR-0002/ARCHITECTURE/VISION instead of a blanket 'fork in millis
+- 2026-11-16T12:49 [M3.5] (implementer) Implemented tools/do_vm.py (up/status/sync/test/ssh/down), idempotent by tag with droplet-only/volume-only reconciliation, ams3+s-4vcpu-8gb defaults, all-visibl
+- 2026-11-16T12:49 [M3.5] (lead) status active -> review
+- 2026-11-16T12:54 [M3.5] (lead) Quad Gate round 1: reviewer PASS, legality PASS, ioc FAIL (mutation-adapter/git-seam/state-machine smells + rust-toolchain blind spot), cruft FAIL (blocker clai
+- 2026-11-16T13:00 [M3.5] (implementer) Round 2 gate fixes: SSH auth fail-fast + --ssh-key/--authorized-key guidance, summary-before-fingerprint billing safety, exact-tarred-list .env scan, --ssh-key 
+- 2026-11-16T13:26 [M3.5] (implementer) Final polish: single _poll retry ladder (only auth/host-key abort; last detail on timeout, SSH_TRANSIENT deleted), regions() payload validation, docs bounded SS
+- 2026-11-16T13:31 [M3.5] (lead) status review -> done
