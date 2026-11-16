@@ -1,0 +1,17 @@
+[package]
+name = "slipfork-edge"
+description = "Unprivileged slipforkd HTTP/WS ingress, canonical WorldRegistry, and typed DaemonControl IPC over <runtime_dir>/daemon.sock"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+httparse.workspace = true
+listenfd.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+slipfork-engine = { path = "../slipfork-engine" }
+slipfork-world = { path = "../slipfork-world" }
+thiserror.workspace = true

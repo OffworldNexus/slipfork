@@ -1,0 +1,468 @@
+# Plan Journal
+
+Append-only one-line event log managed by `tools/plan.py`.
+
+- 2026-11-14T22:00 [bootstrap] Initialized Slipfork DX-first + Quad-Review-Gate autonomous harness
+- 2026-11-14T22:03 [M1] (strategist) created (milestone) Global Target DX/DI Design & Real CoW PoC (0.1.0)
+- 2026-11-14T22:03 [M1.1] (planner) created (task) Author dream-tool Zensical user documentation (modes, DAG, OpenCode, Blastit)
+- 2026-11-14T22:03 [M1.2] (planner) created (task) Design global IoC/DI architecture, crate seams, and ADR-0001..0004
+- 2026-11-14T22:03 [M1.3] (planner) created (task) Implement core IoC crates (slipfork-snow, slipfork-dag, slipfork-engine, slipfork) & @slipfork/opencode
+- 2026-11-14T22:03 [M1.4] (planner) created (task) Execute real PostgreSQL 18 + XFS FICLONE + netns + Playwright PoC benchmark
+- 2026-11-14T22:03 [M1.5] (planner) created (task) Human review & sign-off on M1 global design, snow.yml modes contract, and PoC results
+- 2026-11-14T22:03 [M2] (strategist) created (milestone) snow.yml v2, OSPP v1 & Live Dev/Worktree Worlds (0.2.0)
+- 2026-11-14T22:03 [M3] (strategist) created (milestone) Polyglot Parallel Snapshot-DAG Test Orchestrator (0.3.0)
+- 2026-11-14T22:03 [M4] (strategist) created (milestone) Blastit Parallel Wire Learning, Remote Cache & Agent Ecosystem (0.4.0)
+- 2026-11-14T22:30 [M1.1] (lead) status ready -> active
+- 2026-11-14T22:30 [M1.1] (lead) attempt 1/3 started
+- 2026-11-14T22:30 [M1.1] (lead) status active -> review
+- 2026-11-14T22:30 [M1.1] (lead) status review -> done: M1 bootstrap & PoC verified
+- 2026-11-14T22:30 [M1.2] (lead) status ready -> active
+- 2026-11-14T22:30 [M1.2] (lead) attempt 1/3 started
+- 2026-11-14T22:30 [M1.2] (lead) status active -> review
+- 2026-11-14T22:30 [M1.2] (lead) status review -> done: M1 bootstrap & PoC verified
+- 2026-11-14T22:30 [M1.3] (lead) status ready -> active
+- 2026-11-14T22:30 [M1.3] (lead) attempt 1/3 started
+- 2026-11-14T22:30 [M1.3] (lead) status active -> review
+- 2026-11-14T22:30 [M1.3] (lead) status review -> done: M1 bootstrap & PoC verified
+- 2026-11-14T22:30 [M1.4] (lead) status ready -> active
+- 2026-11-14T22:30 [M1.4] (lead) attempt 1/3 started
+- 2026-11-14T22:30 [M1.4] (lead) status active -> review
+- 2026-11-14T22:30 [M1.4] (lead) status review -> done: M1 bootstrap & PoC verified
+- 2026-11-14T22:30 HUMAN H-001 [direction-challenge] opened by architect (node M1.5)
+- 2026-11-14T22:30 HUMAN H-002 [direction-challenge] opened by architect (node M1.5)
+- 2026-11-14T22:30 HUMAN H-003 [direction-challenge] opened by architect (node M1.5)
+- 2026-11-14T22:30 HUMAN H-004 [missing-input] opened by architect (node M1.5)
+- 2026-11-14T22:30 [M1.5] (lead) status ready -> blocked: Awaiting owner review of M1 design, ADRs, PoC benchmark, and H-001..H-004
+- 2026-11-14T23:16 HUMAN H-001 closed by conductor
+- 2026-11-14T23:16 HUMAN H-002 closed by conductor
+- 2026-11-14T23:16 HUMAN H-003 closed by conductor
+- 2026-11-14T23:16 [M1.5] (conductor) status blocked -> done: Owner validated proposals + added .localhost edge, weaved IPC, slipfork shell, git/jj remote, and polyglot-first test protocol
+- 2026-11-14T23:16 [M1.6] (conductor) created (task) Fold validated .localhost edge, weaved IPC, git/jj remote & polyglot test protocol into M1 design/code
+- 2026-11-14T23:16 [M1.6] (conductor) status ready -> active
+- 2026-11-14T23:16 [M1.6] (conductor) attempt 1/3 started
+- 2026-11-14T23:16 [M1.6] (conductor) base 798b9972076c1d9024c2b41db3daef97522d8f65
+- 2026-11-14T23:16 ESCALATION #1 -> architect for M1.6 by conductor: Integrate owner M1 design decisions (.localhost daemon, weaved IPC, git/jj remote, language-agnostic RunnerProtocol)
+- 2026-11-14T23:17 [M1.6] (conductor) edited fields
+- 2026-11-14T23:17 [M1.6] (conductor) OWNER ADDENDUM: (5) 100% Blastit orthogonality — delete BlastitObsCollector / --blastit-learn coupling from Slipfork! Blastit is simply the component command in
+- 2026-11-14T23:55 [M1.6] (conductor) base 7413b98caea8539187d151d32cbfcbc9e9567455
+- 2026-11-14T23:55 [M1.6] (conductor) status active -> review
+- 2026-11-14T23:57 [M1.6] (lead) QUAD REVIEW GATE attempt 1 (base 7413b98) -> NO PASS. reviewer=fail, review-legality=FAIL, review-ioc=SPEC_BLIND_SPOT, review-cruft=MAJOR. Acceptance alone is g
+- 2026-11-14T23:57 HUMAN H-005 [direction-challenge] opened by lead (node M1.6)
+- 2026-11-14T23:57 HUMAN H-006 [missing-input] opened by lead (node M1.6)
+- 2026-11-14T23:57 [M1.6] (lead) status review -> blocked
+- 2026-11-15T00:18 HUMAN H-005 closed by conductor
+- 2026-11-15T00:18 HUMAN H-006 closed by conductor
+- 2026-11-15T00:18 [M1.6] (conductor) edited fields
+- 2026-11-15T00:18 [M1.6] (conductor) HUMAN ANSWERED H-005 & H-006 — Attempt 2 exact checklist (resolve ALL Quad Review Gate findings):
+- 2026-11-15T00:18 [M1.6] (conductor) status blocked -> ready: H-005 and H-006 answered by owner
+- 2026-11-15T00:19 [M1.6] (lead) status ready -> active
+- 2026-11-15T00:19 [M1.6] (lead) attempt 2/3 started
+- 2026-11-15T00:19 [M1.6] (lead) base 7413b98caea8539187d151d32cbfcbc9e9567455 (attempt 2: resolve all Quad Gate attempt-1 findings on working tree)
+- 2026-11-15T00:24 [M1.6] (lead) status active -> review
+- 2026-11-15T00:26 [M1.6] (lead) QUAD GATE attempt 2 (base 7413b98) -> NO PASS: reviewer=PASS(+5 MINOR), legality=PASS(+4 MINOR), ioc=SPEC_BLIND_SPOT(+1 MAJOR), cruft=FAIL(2 MAJOR). BLIND_SPOT:
+- 2026-11-15T00:26 ESCALATION #2 -> architect for M1.6 by lead: Quad gate attempt 2 SPEC_BLIND_SPOT: TunnelLease ownership (WorldRegistry/daemon vs CLI), slipforkd release_tunnel IPC p
+- 2026-11-15T00:26 [M1.6] (lead) status review -> active
+- 2026-11-15T00:37 [M1.6] (lead) ARCHITECT RULINGS (escalation #2) received: D1 daemon-owned TunnelLease (WorldRegistry::register_tunnel/release_tunnel + DaemonControl IPC, CLI holds no lease);
+- 2026-11-15T00:37 [M1.6] (lead) attempt 3/3 started
+- 2026-11-15T00:37 [M1.6] (lead) base 7413b98caea8539187d151d32cbfcbc9e9567455 (attempt 3: apply architect D1-D8 code edits + all gate MINORs)
+- 2026-11-15T00:40 [M1.6] (lead) status active -> review
+- 2026-11-15T00:42 [M1.6] (lead) QUAD GATE attempt 3 (base 7413b98) -> NO PASS: reviewer(report pending), legality=FAIL(2 BLOCKER+2 MAJOR+4 MINOR), ioc=FAIL(1 MAJOR+2 MINOR; SPEC_BLIND_SPOT RES
+- 2026-11-15T00:42 [M1.6] (lead) edited fields
+- 2026-11-15T00:42 ESCALATION #3 -> expert for M1.6 by lead: Quad gate attempt 3: legality BLOCKERs (plugin --snow-file regression + unactionable error), ioc MAJOR (slipfork.toml du
+- 2026-11-15T00:42 [M1.6] (lead) status review -> active
+- 2026-11-15T01:01 [M1.6] (lead) EXPERT ESCALATION REPAIR (escalation #3) complete: plugin --snow-file now conditional (existsSync), exec error names path, single SlipforkConfig root owning pro
+- 2026-11-15T01:01 [M1.6] (lead) status active -> review
+- 2026-11-15T01:03 [M1.6] (lead) FINAL GATE (4) PARTIAL: cruft=PASS(minors), ioc=PASS(minors; DI tree drawable, SlipforkConfig single owner, lease port single surface), legality=FAIL with 1 BLO
+- 2026-11-15T01:03 ESCALATION #4 -> architect for M1.6 by lead: Final gate legality BLOCKER: git submodule/separate-git-dir root misidentification (fix spec) + jj canonical root unveri
+- 2026-11-15T01:03 [M1.6] (lead) status review -> active
+- 2026-11-15T01:09 [M1.6] (lead) OWNER RULING (supersedes escalation #4 question): (1) git canonical root MUST use 'git rev-parse --show-toplevel', NEVER --git-common-dir basename; fail closed 
+- 2026-11-15T01:21 [M1.6] (lead) OWNER-RULED REPAIR COMPLETE: git root via --show-toplevel only (bare/submodule/separate-git-dir fail closed naming topology + project override; linked worktree 
+- 2026-11-15T01:21 [M1.6] (lead) status active -> review
+- 2026-11-15T01:23 [M1.6] (lead) FINAL GATE (5): legality=PASS(minors), cruft=FAIL(1 MAJOR doc triplication: target-dx.md:63-65 + ARCHITECTURE.md:220-221 verbatim-restate ADR-0005:29-31 lease l
+- 2026-11-15T01:23 [M1.6] (lead) status review -> active
+- 2026-11-15T01:38 [M1.6] (lead) GATE-5 REPAIRS COMPLETE: architect deduped lease lifecycle (ADR-0005 sole home) + VCS-root contract (ADR-0005 s3), DaemonControl takes &TunnelRequest, cli.md do
+- 2026-11-15T01:38 [M1.6] (lead) status active -> review
+- 2026-11-15T01:41 [M1.6] (lead) GATE (6): reviewer=PASS(2 minors), legality=PASS(0), ioc=PASS(5 minors), cruft=FAIL(1 MAJOR: critical_snow.rs:266-370 duplicates the full .localhost rule matrix
+- 2026-11-15T01:41 [M1.6] (lead) status review -> active
+- 2026-11-15T01:53 [M1.6] (lead) GATE-6 REPAIR COMPLETE: critical_snow rule matrix deduped (single suite in critical_world.rs; snow keeps local_for_world wiring/error propagation/domains[].id),
+- 2026-11-15T01:53 [M1.6] (lead) status active -> review
+- 2026-11-15T01:54 [M1.6] (lead) CONDUCTOR RULE (binding): Gate 8 is the FINAL gate for M1.6. Fix current cruft MAJOR (slipfork-snow::local_base double-renders canonical host/URL, local_for_wor
+- 2026-11-15T01:59 [M1.6] (lead) local_base double-renderer removed (LocalHostRoute sole host/URL renderer, app_domain/app_url populated once, dead overwrites gone, ResourceCoordinates shape un
+- 2026-11-15T01:59 [M1.6] (lead) status review -> review
+- 2026-11-15T02:01 [M1.6] (lead) status review -> done
+- 2026-11-15T02:01 ESCALATION #5 -> strategist for M1 by conductor: milestone gate
+- 2026-11-15T02:16 [M2] (strategist) edited fields
+- 2026-11-15T02:16 [M1.7] (strategist) created (task) Repair make bench VCS root setup, regenerate live PoC report & add CHANGELOG.md (0.1.0)
+- 2026-11-15T02:16 [M4] (strategist) edited fields
+- 2026-11-15T02:16 [M1] (strategist) GATE FAILED (BLOCKER - broken acceptance): make bench exits 2 at poc/run_benchmark.py:742 because setup_sample_project creates ~/.cache/slipfork-m1-bench/acme-s
+- 2026-11-15T02:17 [M1.7] (lead) status ready -> active
+- 2026-11-15T02:17 [M1.7] (lead) attempt 1/3 started
+- 2026-11-15T02:17 [M1.7] (lead) base d0b11e069ced52d0e03ebb3b251a1077d0c1bf39
+- 2026-11-15T02:22 [M1.7] (lead) status active -> review
+- 2026-11-15T02:26 [M1.7] (lead) GATE (Quad): reviewer=PASS(5 followups), legality=PASS(5), ioc=PASS(7, no blind spot), cruft=PASS(11); 0 BLOCKERs. Notable: gate reviewers re-ran make bench, wh
+- 2026-11-15T02:27 [M1.7] (lead) status review -> done
+- 2026-11-15T02:28 ESCALATION #6 -> strategist for M1 by conductor: milestone gate re-run after M1.7 repaired make bench
+- 2026-11-15T02:31 [M1] (strategist) GATE PASSED (RELEASE_READY: 0.1.0): make check 0, make bench 0 (3.03x/1.91s live re-run; canonical 3.21x/1.89s report preserved), rg stale tokens 0, check_docs_
+- 2026-11-15T02:31 [M1] (strategist) status ready -> done
+- 2026-11-15T02:32 HUMAN H-007 [release-gate] opened by conductor (node M1)
+- 2026-11-15T02:32 AUTOPILOT off by conductor awaiting human release gate for 0.1.0
+- 2026-11-15T10:38 [M1] (conductor) status done -> ready: owner sent 0.1.0 back at the release gate with 4 design corrections
+- 2026-11-15T10:38 [M1.8] (conductor) created (task) Fold owner review-gate corrections: single-origin invariant, support tiers, typed coverage (no shell recipes)
+- 2026-11-15T10:38 ESCALATION #7 -> architect for M1.8 by conductor: owner design corrections at release gate: single canonical origin per world, support tiers, typed coverage replacing aft
+- 2026-11-15T10:39 [M1.8] (lead) status ready -> active
+- 2026-11-15T10:39 [M1.8] (lead) attempt 1/3 started
+- 2026-11-15T10:39 [M1.8] (lead) base 05c85939f7514d9286691b6c8e01e10055bdba64
+- 2026-11-15T10:39 [M1.8] (lead) owner clarification (addendum): world origin is NOT an OSPP value; Slipfork-assigned origin wins over provider-supplied domains:: for local worlds; OSPP is NOT 
+- 2026-11-15T10:39 ESCALATION #8 -> architect for M1.8 by lead: Owner review-gate corrections: single-origin invariant, support tiers, typed coverage + OSPP precedence clarification
+- 2026-11-15T10:47 [M1.8] (architect) edited fields
+- 2026-11-15T10:58 [M1.8] (lead) status active -> review
+- 2026-11-15T11:00 [M1.8] (lead) GATE(1) partial: legality=PASS(0 BLOCKER, 4 MAJOR, 4 MINOR); cruft=FAIL(BLOCKER: crates/slipfork-dag TestSpec.after_suite dead field still parsed + docs call it
+- 2026-11-15T11:00 HUMAN H-008 [direction-challenge] opened by lead (node M1.8)
+- 2026-11-15T11:00 [M1.8] (lead) attempt 2/3 started
+- 2026-11-15T11:00 [M1.8] (lead) status review -> active
+- 2026-11-15T11:00 [M1.8] (lead) GATE(1) complete: reviewer=PASS, legality=PASS, ioc=FAIL SPEC_BLIND_SPOT (shared ingress/weaved target/308 loop -> H-008 filed, Option A recommended), cruft=FAI
+- 2026-11-15T11:00 HUMAN H-008 closed by conductor
+- 2026-11-15T11:09 [M1.8] (lead) status active -> review
+- 2026-11-15T11:11 [M1.9] (lead) created (task) Delete rejected [test] shell field, land typed coverage schema, per_world fixtures & support registry
+- 2026-11-15T11:11 [M1.8] (lead) GATE(2) FINAL: reviewer=PASS(0 BLOCKER), legality=PASS(0), ioc=PASS(0, round-1 SPEC_BLIND_SPOT dissolved by H-008), cruft=PASS(0, residual crate residue tracked
+- 2026-11-15T11:11 [M1.9] (lead) edited fields
+- 2026-11-15T11:11 [M1.8] (lead) status review -> done
+- 2026-11-15T11:12 [M1.9] (lead) status ready -> active
+- 2026-11-15T11:12 [M1.9] (lead) attempt 1/3 started
+- 2026-11-15T11:12 [M1.9] (lead) base 09e83153c072221c7828a77de54722c607e92535
+- 2026-11-15T11:16 [M1.9] (lead) status active -> review
+- 2026-11-15T11:18 [M1.9] (lead) GATE(1) NO PASS: reviewer=FAIL(1 BLOCKER: integrations.toml signoff_commit 09e8315 does not touch cited ADR-0002; 4 MAJOR: empty coverage_report accepted, per_w
+- 2026-11-15T11:18 [M1.9] (lead) edited fields
+- 2026-11-15T11:18 [M1.9] (lead) status review -> ready: attempt 2: BLOCKER false signoff_commit + empty coverage_report + per_world cache + published manifest gap
+- 2026-11-15T11:18 [M1.9] (lead) status ready -> active
+- 2026-11-15T11:18 [M1.9] (lead) attempt 2/3 started
+- 2026-11-15T11:18 [M1.9] (lead) base 09e83153c072221c7828a77de54722c607e92535
+- 2026-11-15T11:21 [M1.9] (lead) status active -> review
+- 2026-11-15T11:23 [M1.9] (lead) GATE(2) FINAL: reviewer=PASS(0 BLOCKER), legality=PASS(0, round-1 false signoff_commit fixed at d0b11e0), ioc=PASS(0, M2 tier-vocabulary gap recorded as directi
+- 2026-11-15T11:23 [M1.9] (lead) status review -> done
+- 2026-11-15T11:23 ESCALATION #9 -> strategist for M1 by conductor: final milestone gate for 0.1.0 after owning M1.8 design corrections and M1.9 code alignment
+- 2026-11-15T11:45 HUMAN H-009 [direction-challenge] opened by strategist (node M2)
+- 2026-11-15T11:45 [M1] (strategist) status ready -> done: Final M1 (0.1.0) gate PASS at 6ee3b7b + accuracy polish: single-origin ADR-0005/H-008, per_world ADR-0003, typed coverage ADR-0006, suppor
+- 2026-11-15T11:46 [M2] (strategist) edited fields
+- 2026-11-15T11:48 AUTOPILOT off by conductor awaiting human release gate: no git remote for 0.1.0
+- 2026-11-15T16:17 HUMAN H-009 closed by conductor
+- 2026-11-15T16:17 AUTOPILOT on by conductor owner approved M2 kickoff with 7 architectural additions
+- 2026-11-15T16:17 [M2] (conductor) OWNER M2/M3 DIRECTIVES: (1) OSPP v1 WebSocket protocol with tpmd/SSH-style challenge-response auth, streaming DB dumps (opt-in for local dev, skipped for hermet
+- 2026-11-15T16:24 ESCALATION #10 -> strategist for M2 by conductor: Amend ROADMAP M2/M3 for owner directives (WebSocket OSPP + tpmd auth + DB dump + ResourceStrategy, hook debugging, syste
+- 2026-11-15T16:29 [M2] (strategist) edited fields
+- 2026-11-15T16:40 [M2.1] (planner) created (task) Author ADR-0008 (OSPP v1 WebSocket, tpmd P-256, ResourceStrategy, world UX) and align ADRs/ARCHITECTURE/target-DX
+- 2026-11-15T16:40 [M2.2] (planner) created (task) Workspace wedge: scaffold slipfork-edge/slipfork-vcs/slipfork-ospp and declare M2 dependencies
+- 2026-11-15T16:40 [M2.3] (planner) created (task) slipfork-world: WorldOrigin plus deterministic <=31-byte WeaverServiceName derivation
+- 2026-11-15T16:40 [M2.4] (planner) created (task) slipfork-snow: Send+Sync providers, redacted Debug, mode-scoped effective_components
+- 2026-11-15T16:40 [M2.5] (planner) created (task) slipfork-dag: [resources] ResourceStrategy, fs feature gate, single evidence ladder, H-009 cleanup
+- 2026-11-15T16:40 [M2.6] (planner) created (task) slipfork-engine: multi-mount WorldSpec, redacted ExecEnv, opaque WorldHandle, freeze_world
+- 2026-11-15T16:40 [M2.7] (planner) created (task) slipfork-engine: spawn/stop_service with logs, streaming and PTY exec, dial_world_tcp
+- 2026-11-15T16:40 [M2.8] (planner) created (task) slipfork-edge: systemd socket activation, LocalHostRoute dispatch, WorldRegistry
+- 2026-11-15T16:40 [M2.9] (planner) created (task) slipfork-edge: shared_hosts proxy, 308/421 rules, share/unshare, DaemonControl IPC
+- 2026-11-15T16:40 [M2.10] (planner) created (task) slipfork-edge: .socket/.service unit generator plus live systemd-socket-activate test
+- 2026-11-15T16:40 [M2.11] (planner) created (task) slipfork-vcs: RepoRootResolver/VcsWorkspace ports plus GitWorktreeAdapter and conformance
+- 2026-11-15T16:40 [M2.12] (planner) created (task) slipfork-vcs: JjWorkspaceAdapter plus git-remote-slipfork protocol handler
+- 2026-11-15T16:40 [M2.13] (planner) created (task) slipfork-ospp: DeviceKeySigner plus OSPP v1 handshake and fragment pairing client
+- 2026-11-15T16:40 [M2.14] (planner) created (task) slipfork-ospp: vars/secrets/resources capabilities plus streaming seed dump and reference server
+- 2026-11-15T16:40 [M2.15] (planner) created (task) Benchmark and support-compliance tooling hardening (poc/run_benchmark.py, tools/check_support.py)
+- 2026-11-15T16:40 [M2.16] (planner) created (task) CLI part 1: composition root, slipforkd binary, up/down/list/prune/secret/share/daemon unit
+- 2026-11-15T16:40 [M2.17] (planner) created (task) CLI part 2: hook failure rescue UX, logs/shell/db/redis/forward, auth, support, git-remote-slipfork
+- 2026-11-15T16:40 [M2.18] (planner) created (task) opencode-slipfork: explicit project state, no ambient probe, live e2e against slipfork binaries
+- 2026-11-15T16:40 [M2.19] (planner) created (task) Publish 0.2.0 DX docs, generated support matrix, CHANGELOG, dx and ai-ergonomics critics
+- 2026-11-15T16:40 [M2.20] (planner) created (task) Release 0.2.0: version bump, unused-dependency audit, full make check and read-only make bench
+- 2026-11-15T16:40 [M2.21] (planner) created (task) Isolated: live IncusEngine conformance and declared support promotion (gated on H-004)
+- 2026-11-15T16:40 [M2.22] (planner) created (task) Isolated: concrete WeavedRegistrar IPC adapter and declared support promotion (gated on H-006)
+- 2026-11-15T16:43 [M2.15] (strategist) edited fields
+- 2026-11-15T16:46 [M2.1] (lead) status ready -> active
+- 2026-11-15T16:46 [M2.1] (lead) attempt 1/3 started
+- 2026-11-15T16:46 ESCALATION #11 -> architect for M2.1 by lead: M2.1: author ADR-0008 and align ADR/ARCHITECTURE/target-DX (core DI tree lock)
+- 2026-11-15T16:46 [M2.1] (lead) base f5e2976e4d064984bd50b57506b4409419f48bdd
+- 2026-11-15T17:32 HUMAN H-010 [direction-challenge] opened by lead (node M2.1)
+- 2026-11-15T17:33 [M2.1] (lead) Quad gate R2: reviewer/legality/ioc/cruft PASS, 0 BLOCKER; 7 MAJOR + minors recorded in FOLLOWUPS.md; 3 cross-node blind spots escalated as H-010
+- 2026-11-15T17:40 [M2.1] (lead) committed 242f16f: ADR-0008 + ADR-0001/0003/0004/0005/0007 + ARCHITECTURE + target-DX; blocked on H-010
+- 2026-11-15T17:40 [M2.1] (lead) status active -> blocked: docs committed dfe24e0+; blocked on H-010 direction-challenge (cross-process WorldEngine/WorldHandle ownership, WorldOrigin port vs un
+- 2026-11-15T17:43 AUTOPILOT off by conductor awaiting owner ruling on H-010 (M2.1 cross-node DI & wire check)
+- 2026-11-15T18:25 HUMAN H-010 closed by conductor
+- 2026-11-15T18:25 [M2.1] (conductor) status blocked -> ready: H-010 answered by owner (unified user slipforkd + direct CLI TTY, A2 port-aware origin + netns bridge, OffworldNexus/tpmd git dep rev 9
+- 2026-11-15T18:25 AUTOPILOT on by conductor H-010 resolved; resuming M2 execution
+- 2026-11-15T18:25 [M2.1] (lead) status ready -> ready: H-010 closed with binding rulings; attempt 2 folds universe: slipforkd owns worlds/OSPP/secrets, A2 origin port, tpmd git deps
+- 2026-11-15T18:25 [M2.1] (lead) status ready -> active
+- 2026-11-15T18:25 [M2.1] (lead) attempt 2/3 started
+- 2026-11-15T18:25 [M2.1] (lead) base b949bcb11c8999c75a27b41d616babb8ddea2fad (H-010 closed: daemon-owned worlds, A2 ingress_port, tpmd git deps)
+- 2026-11-15T18:38 [M2.2] (planner) edited fields
+- 2026-11-15T18:38 [M2.3] (planner) edited fields
+- 2026-11-15T18:38 [M2.4] (planner) edited fields
+- 2026-11-15T18:38 [M2.5] (planner) edited fields
+- 2026-11-15T18:38 [M2.6] (planner) edited fields
+- 2026-11-15T18:38 [M2.7] (planner) edited fields
+- 2026-11-15T18:38 [M2.8] (planner) edited fields
+- 2026-11-15T18:38 [M2.9] (planner) edited fields
+- 2026-11-15T18:39 [M2.10] (planner) edited fields
+- 2026-11-15T18:39 [M2.11] (planner) edited fields
+- 2026-11-15T18:39 [M2.12] (planner) edited fields
+- 2026-11-15T18:39 [M2.13] (planner) edited fields
+- 2026-11-15T18:39 [M2.14] (planner) edited fields
+- 2026-11-15T18:39 [M2.15] (planner) edited fields
+- 2026-11-15T18:39 [M2.16] (planner) edited fields
+- 2026-11-15T18:39 [M2.17] (planner) edited fields
+- 2026-11-15T18:39 [M2.18] (planner) edited fields
+- 2026-11-15T18:39 [M2.7] (lead) edited fields
+- 2026-11-15T18:39 [M2.16] (lead) edited fields
+- 2026-11-15T18:51 [M2.7] (lead) edited fields
+- 2026-11-15T18:51 [M2.8] (lead) edited fields
+- 2026-11-15T18:51 [M2.9] (lead) edited fields
+- 2026-11-15T18:51 [M2.10] (lead) edited fields
+- 2026-11-15T18:51 [M2.14] (lead) edited fields
+- 2026-11-15T18:51 [M2.15] (lead) edited fields
+- 2026-11-15T18:51 [M2.16] (lead) edited fields
+- 2026-11-15T18:51 [M2.17] (lead) edited fields
+- 2026-11-15T18:51 [M2.1] (lead) status active -> done
+- 2026-11-15T18:51 [M2.2] (lead) status ready -> active
+- 2026-11-15T18:51 [M2.2] (lead) attempt 1/3 started
+- 2026-11-15T18:51 [M2.2] (lead) base aa4c5246451c1cba78a9cd431f59406638cefc76
+- 2026-11-15T18:56 [M2.2] (implementer) dependency->leaf mapping (Design #5): workspace deps -- tungstenite+rustls+webpki-roots+p256+tpmd-client+tpmd-ipc+tokio -> M2.13 (ospp-v1 sync wss, DeviceKeySig
+- 2026-11-15T18:56 [M2.2] (implementer) observations (not fixed, outside docs paths): pinned tpmd crates declare rust-version 1.94 while workspace still promises 1.88 (verified build only with rustc 1
+- 2026-11-15T18:57 [M2.2] (lead) edited fields
+- 2026-11-15T18:57 [M2.19] (lead) edited fields
+- 2026-11-15T18:57 [M2.20] (lead) edited fields
+- 2026-11-15T18:58 [M2.2] (implementer) Round-1 Quad remediation: dag `default = []` (fs inert until M2.5; ARCHITECTURE.md contract so dag-at-defaults never grants filesystem), workspace rust-version 
+- 2026-11-15T18:58 [M2.2] (lead) R1 quad gate: reviewer PASS, legality PASS, ioc FAIL(dag default=['fs'] -> spec amended to default=[]), cruft PASS(MSRV). Remediation: dag default=[] , rust-ver
+- 2026-11-15T18:59 [M2.2] (lead) status active -> done
+- 2026-11-15T18:59 [M2.3] (lead) status ready -> active
+- 2026-11-15T18:59 [M2.3] (lead) attempt 1/3 started
+- 2026-11-15T18:59 [M2.3] (lead) base 8d51a749e3e790730098dd4c5a1a515be4fb6081
+- 2026-11-15T19:03 [M2.4] (lead) edited fields
+- 2026-11-15T19:03 [M2.3] (lead) R1 quad: all 4 PASS; cruft BLOCKER = pub variant fields (fixing: private payloads) + LocalHostRoute::url duplicate handoff to M2.4 (spec amended); MINORs (Wire 
+- 2026-11-15T19:03 [M2.3] (lead) edited fields
+- 2026-11-15T19:03 [M2.3] (lead) edited fields
+- 2026-11-15T19:04 [M2.3] (unknown) Round-1 Quad Gate remediation: WorldOrigin payloads are opaque LocalOrigin/SharedOrigin (only local()/shared() mint; struct-literal forgery impossible), serde s
+- 2026-11-15T19:04 [M2.3] (lead) status active -> done
+- 2026-11-15T19:05 [M2.4] (lead) status ready -> active
+- 2026-11-15T19:05 [M2.4] (lead) attempt 1/3 started
+- 2026-11-15T19:05 [M2.4] (lead) base 6e6a27638e3892127a3e3d4c085409507e82b41e
+- 2026-11-15T19:05 [M2.5] (lead) status ready -> active
+- 2026-11-15T19:05 [M2.5] (lead) attempt 1/3 started
+- 2026-11-15T19:05 [M2.5] (lead) base 6e6a27638e3892127a3e3d4c085409507e82b41e
+- 2026-11-15T19:05 [M2.6] (lead) status ready -> active
+- 2026-11-15T19:05 [M2.6] (lead) attempt 1/3 started
+- 2026-11-15T19:05 [M2.6] (lead) base 6e6a27638e3892127a3e3d4c085409507e82b41e
+- 2026-11-15T19:11 [M2.11] (lead) status ready -> active
+- 2026-11-15T19:11 [M2.11] (lead) attempt 1/3 started
+- 2026-11-15T19:11 [M2.11] (lead) base 6e6a27638e3892127a3e3d4c085409507e82b41e
+- 2026-11-15T19:11 [M2.4] (lead) edited fields
+- 2026-11-15T19:11 [M2.4] (lead) path-lock amended: mechanical follow-through in slipfork-world critical test (url() removal) and slipfork/src/main.rs (unused_mut after &self providers)
+- 2026-11-15T19:11 [M2.4] (lead) followup: docs/reference/manifest.md + docs/snow-modes.md stale (OsppBundle/TopLevelEnvsUnsupported) -> tracked by new M2.23
+- 2026-11-15T19:11 [M2.23] (lead) created (task) Purge stale M1 manifest/snow-mode docs after M2.4/M2.5 deletions
+- 2026-11-15T19:13 [M2.6] (lead) edited fields
+- 2026-11-15T19:13 [M2.6] (lead) lead ruling: transitional CLI breakage is mechanical, not a direction challenge. H-010 already fixes the target architecture. Widen paths with crates/slipfork/s
+- 2026-11-15T19:13 [M2.6] (lead) attempt 2/3 started
+- 2026-11-15T19:13 [M2.11] (lead) BLOCKED-PENDING-SPEC: git D/F refname rule makes refs/heads/<fork> and refs/heads/<fork>/wip impossible (proved). Lead adopted refs/slipfork/<fork>/wip + Projec
+- 2026-11-15T19:13 [M2.11] (lead) status active -> blocked: spec amendment in flight: refs/slipfork/<fork>/wip (architect). No code written; no illegal fallback invented.
+- 2026-11-15T19:13 [M2.4] (lead) status active -> review
+- 2026-11-15T19:13 [M2.5] (lead) status active -> review
+- 2026-11-15T19:15 [M2.6] (lead) status active -> review
+- 2026-11-15T19:17 [M2.4] (lead) edited fields
+- 2026-11-15T19:17 [M2.4] (lead) gate follow-up: add WorldOrigin::host() and stop hand-parsing the authority in snow
+- 2026-11-15T19:18 [M2.23] (lead) edited fields
+- 2026-11-15T19:18 [M2.23] (lead) scope widened: the transitional daemon-owned CLI surface (fork/exec/drop fail closed until M2.16/M2.17) must be rendered as unavailable with the exact diagnosti
+- 2026-11-15T19:18 [M2.23] (lead) edited fields
+- 2026-11-15T19:20 [M2.11] (lead) edited fields
+- 2026-11-15T19:20 [M2.12] (lead) edited fields
+- 2026-11-15T19:20 [M2.4] (lead) status review -> done
+- 2026-11-15T19:20 [M2.5] (lead) status review -> done
+- 2026-11-15T19:20 [M2.6] (lead) status review -> done
+- 2026-11-15T19:20 [M2.11] (lead) status blocked -> ready: spec amended (refs/slipfork/<fork>/wip + ProjectSlugOverride); resume attempt 2
+- 2026-11-15T19:20 [M2.11] (lead) status ready -> active
+- 2026-11-15T19:20 [M2.11] (lead) attempt 2/3 started
+- 2026-11-15T19:20 [M2.11] (lead) base 1b4cf79e326460e87f23bf9f4fc204e76a5e4523 attempt 2 on amended spec
+- 2026-11-15T19:25 HUMAN H-011 [direction-challenge] opened by lead (node M2.7)
+- 2026-11-15T19:25 [M2.7] (lead) status ready -> blocked: H-011: netns entry impossible from a multithreaded daemon; awaiting A re-exec-in-userns / B in-world agent+SCM_RIGHTS / C per-connectio
+- 2026-11-15T19:25 [M2.23] (lead) status ready -> active
+- 2026-11-15T19:25 [M2.23] (lead) attempt 1/3 started
+- 2026-11-15T19:25 [M2.23] (lead) base 1b4cf79e326460e87f23bf9f4fc204e76a5e4523
+- 2026-11-15T19:27 [M2.13] (lead) attempt 1/3 started
+- 2026-11-15T19:27 [M2.13] (lead) attempt 1 hit the step limit: library compiles (cargo check -p slipfork-ospp --all-targets OK) but tests/ has no test target (support/tpmd_server.rs + critical_
+- 2026-11-15T19:27 [M2.13] (lead) attempt 2/3 started
+- 2026-11-15T19:30 [M2.11] (lead) status active -> review
+- 2026-11-15T19:30 [M2.12] (lead) status ready -> active
+- 2026-11-15T19:30 [M2.12] (lead) attempt 1/3 started
+- 2026-11-15T19:30 [M2.12] (lead) base 1b4cf79e326460e87f23bf9f4fc204e76a5e4523
+- 2026-11-15T19:34 [M2.12] (lead) status active -> ready: released path lock to M2.11 for its blocker fix; no work started
+- 2026-11-15T19:34 [M2.11] (lead) status review -> active
+- 2026-11-15T19:34 [M2.11] (lead) attempt 3/3 started
+- 2026-11-15T19:34 [M2.11] (lead) R1 gate: legality/ioc/cruft PASS; functional BLOCKER: git add -A does not exclude .worktrees so a second fork embeds the first checkout as a gitlink. attempt 3 
+- 2026-11-15T19:34 [M2.13] (lead) status ready -> review
+- 2026-11-15T19:34 [M2.16] (lead) edited fields
+- 2026-11-15T19:36 [M2.7] (lead) edited fields
+- 2026-11-15T19:36 [M2.8] (lead) edited fields
+- 2026-11-15T19:36 [M2.10] (lead) edited fields
+- 2026-11-15T19:36 [M2.16] (lead) edited fields
+- 2026-11-15T19:36 HUMAN H-011 closed by lead
+- 2026-11-15T19:36 [M2.7] (lead) status blocked -> ready: H-011 ruled (conductor): in-world slipfork-world-init PID 1 + netns.sock SCM_RIGHTS dialer + AF_UNIX ingress socket; spec landed; resum
+- 2026-11-15T19:36 [M2.7] (lead) status ready -> active
+- 2026-11-15T19:36 [M2.7] (lead) attempt 1/3 started
+- 2026-11-15T19:36 [M2.7] (lead) H-011 ruling recorded: Option B + persistent world-init PID 1; netns.sock SCM_RIGHTS dialer in linux_cow.rs; AF_UNIX <state_root>/http-ingress.sock bridge; free
+- 2026-11-15T19:37 [M2.11] (lead) status active -> done
+- 2026-11-15T19:37 [M2.12] (lead) status ready -> active
+- 2026-11-15T19:37 [M2.12] (lead) attempt 2/3 started
+- 2026-11-15T19:37 [M2.12] (lead) base 84fb017bfe362e6f080117d85ba93ddeafb7180e (vcs matrix now in tests/support, refs/slipfork/<fork>/wip)
+- 2026-11-15T19:45 [M2.7] (lead) status active -> review
+- 2026-11-15T19:51 [M2.12] (lead) status active -> review
+- 2026-11-15T19:51 [M2.23] (lead) status active -> review
+- 2026-11-15T19:51 [M2.12] (lead) edited fields
+- 2026-11-15T19:56 [M2.7] (lead) status review -> done
+- 2026-11-15T19:56 [M2.23] (lead) status review -> done
+- 2026-11-15T19:57 [M2.13] (lead) status review -> done
+- 2026-11-15T19:57 [M2.8] (lead) status ready -> active
+- 2026-11-15T19:57 [M2.8] (lead) attempt 1/3 started
+- 2026-11-15T19:57 [M2.8] (lead) base 39651f748582e4491222fcac9ddcf51fe6e856b2
+- 2026-11-15T19:57 [M2.14] (lead) status ready -> active
+- 2026-11-15T19:57 [M2.14] (lead) attempt 1/3 started
+- 2026-11-15T19:57 [M2.14] (lead) base 39651f748582e4491222fcac9ddcf51fe6e856b2
+- 2026-11-15T20:03 [M2.12] (lead) status review -> done
+- 2026-11-15T20:06 [M2.8] (lead) status active -> review
+- 2026-11-15T20:06 [M2.8] (lead) deviation accepted: WorldRegistry::new(engine) only; registrar/planned_port + EdgeError::NoForwardListener land with share_world in M2.9 (no dead private state)
+- 2026-11-15T20:11 [M2.24] (conductor) created (task) Design L0 world base image: Dockerfile-derived rootfs, 3-layer composition, World Image Contract (ADR-0009)
+- 2026-11-15T20:11 ESCALATION #12 -> architect for M2.24 by conductor: core architecture crossroads: L0 world base image strategy (Dockerfile-derived rootfs vs curated base), image contract, 
+- 2026-11-15T20:13 [M2.8] (lead) status review -> done
+- 2026-11-15T20:13 [M2.9] (lead) status ready -> active
+- 2026-11-15T20:13 [M2.9] (lead) attempt 1/3 started
+- 2026-11-15T20:13 [M2.9] (lead) base 592b5f0682c4463f3fbb629079c5c2fafa1e35ba
+- 2026-11-15T20:13 [M2.24] (conductor) OWNER CORRECTION (binding, supersedes the earlier fallback wording in NODE.md): ONE WAY ONLY. Delete the curated base (slipfork_base / CuratedBaseProvider) and 
+- 2026-11-15T20:15 [M2.24] (conductor) OWNER CORRECTION 2 (binding, supersedes apt-based capability layer): backing services (postgres/redis/seaweedfs) run as OCI CONTAINERS inside the world netns vi
+- 2026-11-15T20:17 [M2.25] (conductor) created (task) Whole-repo consistency sweep after L0 rootfs + OCI-container pivot (single writer: ARCHITECTURE.md + ADRs)
+- 2026-11-15T20:17 [M2.14] (lead) status active -> done
+- 2026-11-15T20:23 [M2.14] (lead) edited fields
+- 2026-11-15T20:23 [M2.14] (lead) edited fields
+- 2026-11-15T20:23 [M2.24] (lead) status ready -> active
+- 2026-11-15T20:23 [M2.24] (lead) attempt 1/3 started
+- 2026-11-15T20:23 ESCALATION #13 -> architect for M2.24 by lead: M2.24: design ADR-0009 L0 world base image from the project's own Dockerfile + 3-layer composition + World Image Contrac
+- 2026-11-15T20:23 [M2.24] (lead) base 5943bbd24b511a6ae24f0e82f14c3bdfec6589fa
+- 2026-11-15T20:28 [M2.9] (lead) status active -> review
+- 2026-11-15T20:36 [M2.24] (conductor) status active -> review: ADR-0009 + design authored with live crun probe
+- 2026-11-15T20:36 [M2.24] (conductor) status review -> done: Accepted ADR-0009, 6-rule contract, live probe: crun 1.20 static booted postgres:18+redis:8 inside unshare world, alpine container reache
+- 2026-11-15T20:37 [M2.9] (lead) status review -> done
+- 2026-11-15T20:37 [M2.10] (lead) status ready -> active
+- 2026-11-15T20:37 [M2.10] (lead) attempt 1/3 started
+- 2026-11-15T20:37 [M2.10] (lead) base ed975ce860cca892ef0a241f85a37af2bf482818
+- 2026-11-15T20:37 [M2.24] (lead) RECONCILE: M2.24 was dispatched in parallel by the conductor and closed done with the authoritative ADR-0009 (Accepted) + live crun/postgres18/redis8 probe. My 
+- 2026-11-15T20:37 [M2.24] (lead) M2.25 is the single writer of ARCHITECTURE.md + docs/decisions/**; any such edit needed by M2.8-M2.20 is deferred into M2.25's LOG.
+- 2026-11-15T20:39 [M2.24] (lead) duplicate-writer aborted cleanly: the local architect wrote zero files (confirmed by the session); conductor's ADR-0009/design/RESULT remain the sole on-disk ve
+- 2026-11-15T20:39 [M2.25] (lead) status ready -> active
+- 2026-11-15T20:39 [M2.25] (lead) attempt 1/3 started
+- 2026-11-15T20:39 [M2.25] (lead) base ed975ce860cca892ef0a241f85a37af2bf482818; single writer of ARCHITECTURE.md + docs/decisions/** until done
+- 2026-11-15T20:40 [M2.26] (planner) created (task) slipfork-dag: [world] config (world.image + world.stage only, fail-closed)
+- 2026-11-15T20:40 [M2.27] (planner) created (task) slipfork-engine::rootfs: WorldRootfs + BaseImageBuilder + DockerfileStageBuilder (6-rule contract)
+- 2026-11-15T20:40 [M2.28] (planner) created (task) slipfork-engine: ServiceRuntime::OciContainer over static crun + pivot_root rootfs + Incus provenance
+- 2026-11-15T20:40 [M2.29] (planner) created (task) slipforkd/CLI: container-scoped db/redis, --host-caches, container-aware up/down
+- 2026-11-15T20:45 [M2.25] (lead) attempt 2/3 started
+- 2026-11-15T20:45 [M2.26] (lead) status ready -> active
+- 2026-11-15T20:45 [M2.26] (lead) attempt 1/3 started
+- 2026-11-15T20:45 [M2.26] (lead) base ed975ce860cca892ef0a241f85a37af2bf482818
+- 2026-11-15T20:49 [M2.10] (lead) status active -> done
+- 2026-11-15T20:49 [M2.10] (lead) followups recorded in RESULT: test-fixture dedupe, unit.rs writeln! expect (infallible), probe child not killed on assertion panic. socket2 unused dep -> M2.20.
+- 2026-11-15T20:53 [M2.7] (lead) edited fields
+- 2026-11-15T20:53 [M2.16] (lead) edited fields
+- 2026-11-15T20:53 [M2.17] (lead) edited fields
+- 2026-11-15T20:53 [M2.19] (lead) edited fields
+- 2026-11-15T20:53 [M2.21] (lead) edited fields
+- 2026-11-15T20:53 [M2.28] (lead) edited fields
+- 2026-11-15T20:53 [M2.29] (lead) edited fields
+- 2026-11-15T20:53 [M2.16] (lead) status ready -> active
+- 2026-11-15T20:53 [M2.16] (lead) attempt 1/3 started
+- 2026-11-15T20:53 [M2.16] (lead) base 0677c52045e7ac7c1b10262fad495bbdd8dd167a
+- 2026-11-15T20:58 [M2.29] (lead) edited fields
+- 2026-11-15T20:58 [M2.25] (lead) status active -> done
+- 2026-11-15T21:03 [M2.26] (lead) quad gate PASS (functional/ioc/cruft); dedupe + dead derive fixed before commit
+- 2026-11-15T21:03 [M2.16] (lead) attempt 2/3 started
+- 2026-11-15T21:03 [M2.16] (lead) edited fields
+- 2026-11-15T21:03 [M2.16] (lead) attempt 2 path widening (lead decisions): SecretProvider gains remove/keys (secret unset/list), ResourcesSpec gains the per-invocation Local override, ExecEnv g
+- 2026-11-15T21:03 [M2.20] (lead) edited fields
+- 2026-11-15T21:03 [M2.26] (lead) status active -> review
+- 2026-11-15T21:03 [M2.16] (lead) edited fields
+- 2026-11-15T21:03 [M2.20] (lead) edited fields
+- 2026-11-15T21:04 [M2.26] (lead) status review -> done
+- 2026-11-15T21:11 [M2.16] (lead) edited fields
+- 2026-11-15T21:11 [M2.16] (lead) attempt 3/5 started
+- 2026-11-15T21:19 [M2.16] (lead) status active -> review
+- 2026-11-15T21:23 [M2.16] (lead) edited fields
+- 2026-11-15T21:23 [M2.16] (lead) attempt 4/5 started
+- 2026-11-15T21:23 [M2.16] (lead) attempt 4 rulings: (a) inject ProjectVaults (project->Arc<dyn SecretProvider>) built in slipforkd, DomainService holds it and types collaborators as &dyn Secret
+- 2026-11-15T21:32 [M2.16] (lead) attempt 5/5 started
+- 2026-11-15T21:42 [M2.16] (lead) status review -> done
+- 2026-11-15T21:42 [M2.17] (lead) edited fields
+- 2026-11-15T21:42 [M2.17] (lead) status ready -> active
+- 2026-11-15T21:42 [M2.17] (lead) attempt 1/3 started
+- 2026-11-15T21:42 [M2.17] (lead) base b21eda3a421f3aaf0d0ae616675d12a1d2039b54
+- 2026-11-15T21:42 [M2.27] (lead) status ready -> active
+- 2026-11-15T21:42 [M2.27] (lead) attempt 1/3 started
+- 2026-11-15T21:42 [M2.27] (lead) base b21eda3a421f3aaf0d0ae616675d12a1d2039b54
+- 2026-11-15T21:50 [M2.17] (lead) edited fields
+- 2026-11-15T21:50 [M2.17] (lead) attempt 2/3 started
+- 2026-11-15T22:04 [M2.27] (lead) status active -> done
+- 2026-11-15T22:04 [M2.17] (lead) edited fields
+- 2026-11-15T22:04 [M2.17] (lead) attempt 3/3 started
+- 2026-11-15T22:04 [M2.17] (lead) attempt 3 rulings: db/redis entry stays M2.29 (this node = CLI + fail-closed; acceptance amended); edge daemon.rs path explicitly owned; git-remote-slipfork mus
+- 2026-11-15T22:14 [M2.17] (lead) status active -> review: attempt 3 legality fixes on disk; tree compile blocked only by WorldSpec.rootfs which M2.29 wires
+- 2026-11-15T22:14 [M2.29] (lead) status ready -> active
+- 2026-11-15T22:14 [M2.29] (lead) attempt 1/3 started
+- 2026-11-15T22:14 [M2.29] (lead) base b92c9aa98e8f156def422501491c0b098ad800bf; owns the WorldSpec.rootfs wiring that unblocks M2.17's compile
+- 2026-11-15T22:24 [M2.28] (lead) status ready -> done
+- 2026-11-15T22:31 [M2.29] (implementer) edited fields
+- 2026-11-15T22:36 [M2.17] (lead) status review -> done
+- 2026-11-15T22:36 [M2.29] (lead) status active -> done
+- 2026-11-15T22:36 [M2.15] (lead) status ready -> active
+- 2026-11-15T22:36 [M2.15] (lead) attempt 1/3 started
+- 2026-11-15T22:36 [M2.15] (lead) base e5ac58fe93cfb88fd9ee861ac9ab5f417d111aab
+- 2026-11-15T22:36 [M2.18] (lead) status ready -> active
+- 2026-11-15T22:36 [M2.18] (lead) attempt 1/3 started
+- 2026-11-15T22:36 [M2.18] (lead) base e5ac58fe93cfb88fd9ee861ac9ab5f417d111aab
+- 2026-11-15T22:46 [M2.15] (lead) status active -> done
+- 2026-11-15T22:55 [M2.18] (lead) status active -> done
+- 2026-11-15T22:55 [M2.18] (lead) followups: docs/agents-and-opencode.md stale (M2.19); zero-setup auto-spawn with $XDG_RUNTIME_DIR set hits overlayfs mount EINVAL on this host (runtime on disk 
+- 2026-11-15T22:55 [M2.19] (lead) status ready -> active
+- 2026-11-15T22:55 [M2.19] (lead) attempt 1/3 started
+- 2026-11-15T22:55 [M2.19] (lead) base a7b2a79efe40bcc48994bddb2842a03e0ef79f6b; note critical_slug flaked once under parallel make check, passes in isolation
+- 2026-11-15T23:05 [M2.19] (lead) attempt 2/3 started
+- 2026-11-15T23:16 [M2.19] (lead) status active -> done
+- 2026-11-15T23:16 [M2.20] (lead) status ready -> active
+- 2026-11-15T23:16 [M2.20] (lead) attempt 1/3 started
+- 2026-11-15T23:16 [M2.20] (lead) base e08a85f153a794ab29c67a5fdac7726cf9329c43
+- 2026-11-15T23:51 [M2.20] (implementer) dependency audit (declared dep => first consumer): slipfork: clap=>src/bin/slipforkd.rs, hex=>src/main.rs, sha2=>src/runtime.rs, serde/serde_json=>src/daemon.rs
+- 2026-11-16T00:26 [M2.21] (lead) status ready -> blocked: H-004 still open: /var/lib/incus/unix.socket absent (only /dev/incus/sock), no project-scoped incusd endpoint mounted. No live IncusEng
+- 2026-11-16T00:26 [M2.22] (lead) status ready -> blocked: H-006 closed by deferral: no weaved IPC wire specification exists, so WeavedRegistrar stays unimplemented and share stays fail-closed (
+- 2026-11-16T01:26 [M2.20] (lead) bench note: default 16x8 exceeds 50 min on this host (harness hangs after seeding under load); a bounded --num-tests 1 --workers 1 run exits 0, proving the pipe
+- 2026-11-16T01:52 [M2.20] (lead) conductor ruling applied: bounded 1x1 bench --check exit 0 as evidence; default 16x8 is host-time-bound and not gate evidence (follow-up filed); in-flight bench
+- 2026-11-16T01:53 [M2.20] (lead) status active -> done
+- 2026-11-16T01:55 ESCALATION #14 -> strategist for M2 by conductor: milestone gate for 0.2.0 (36 leaves done; M2.21/M2.22 blocked on H-004/H-006 as designed)
+- 2026-11-16T03:04 [M2.30] (strategist) created (task) slipforkd completion: OSPP v1 session/secrets/dump restore, freeze_world base snapshot, Jj workspace routing & optional slipfork.toml
+- 2026-11-16T03:04 [M2.31] (strategist) created (task) Fix poc/run_benchmark.py for ADR-0009 host-browser/.localhost topology and seeded base snapshot; verify bounded 1x1 --check
+- 2026-11-16T03:04 [M2.32] (strategist) created (task) Align 0.2.0 docs, CHANGELOG, M1 benchmark topology label, and support matrix with completed M2 surface
+- 2026-11-16T03:04 [M2] (strategist) GATE FAILED (4 BLOCKERs; M2 sent back, M2.30..M2.32 filed): (1) bounded 1x1 poc/run_benchmark.py --check times out (RC=143; M2.20 bench2 dir has only incomplete
+- 2026-11-16T03:05 [M2.30] (lead) status ready -> active
+- 2026-11-16T03:05 [M2.30] (lead) attempt 1/3 started
+- 2026-11-16T03:05 [M2.30] (lead) base 6265eeb39f3d259b59bf281c717a317cc1c62266
+- 2026-11-16T03:21 [M2.30] (lead) attempt 2/3 started
+- 2026-11-16T04:08 [M2.30] (lead) status active -> review
+- 2026-11-16T04:36 [M2.30] (lead) status review -> done
+- 2026-11-16T04:36 [M2.31] (lead) status ready -> active
+- 2026-11-16T04:36 [M2.31] (lead) attempt 1/3 started
+- 2026-11-16T04:36 [M2.31] (lead) base 0b760ba13a52c646313334972bac39106181b89d
+- 2026-11-16T05:07 [M2.31] (lead) status active -> review
+- 2026-11-16T05:38 [M2.31] (lead) status review -> done
+- 2026-11-16T05:38 [M2.32] (lead) status ready -> active
+- 2026-11-16T05:38 [M2.32] (lead) attempt 1/3 started
+- 2026-11-16T05:38 [M2.32] (lead) base 59a486b1464bdb3803ec2cd31007612dfce6981b
+- 2026-11-16T06:04 [M2.32] (lead) status active -> done
+- 2026-11-16T06:11 [M2] (lead) M2.30/M2.31/M2.32 committed (0b760ba/541ab37/d6968fc). make check scoped components green, but a full default-thread run is intermittently red on world-boot tim
+- 2026-11-16T06:19 [M2] (lead) Verified: RUST_TEST_THREADS=1 make check exit 0 with the full workspace + docs + support gates; the default-thread failure is contention between concurrently bo
+- 2026-11-16T06:19 ESCALATION #15 -> strategist for M2 by conductor: M2 gate re-run after M2.30/M2.31/M2.32 remediation
+- 2026-11-16T06:34 [M3.1] (strategist) created (task) Serialize world-booting Rust critical suites in Makefile rs-test
+- 2026-11-16T06:34 [M3.2] (strategist) created (epic) Polyglot Parallel Snapshot-DAG Test Orchestrator (slipfork test, RunnerProtocol v1, warm world pool & CoverageDriver)
+- 2026-11-16T06:34 [M3.3] (strategist) created (task) Isolated: live IncusEngine conformance and declared support promotion (gated on H-004)
+- 2026-11-16T06:34 [M3.4] (strategist) created (task) Isolated: concrete WeavedRegistrar IPC adapter and declared support promotion (gated on H-006)
+- 2026-11-16T06:34 [M2.21] (strategist) status blocked -> superseded: Carried forward post-0.2.0 to M3.3 (still gated on open H-004)
+- 2026-11-16T06:34 [M2.22] (strategist) status blocked -> superseded: Carried forward post-0.2.0 to M3.4 (still gated on deferred H-006 weaved IPC spec)
+- 2026-11-16T06:34 [M2] (strategist) status ready -> done: 0.2.0 milestone gate PASSED: M2.30-M2.32 seams verified in slipforkd/daemon.rs, critical_ospp_daemon green, bounded 1x1 bench --check 36.4
+- 2026-11-16T06:41 HUMAN H-012 [release-gate] opened by conductor (node M2)
+- 2026-11-16T06:41 AUTOPILOT off by conductor awaiting human release gate for 0.2.0 (no git remote)

@@ -1,0 +1,40 @@
+{
+  "recordedFrom": "slipfork 0.2.0 (release/0.2.0, e5ac58f)",
+  "topLevel": {
+    "argv": ["--help"],
+    "requiredTokens": ["Usage: slipfork", "fork", "drop", "exec", "list"]
+  },
+  "subcommands": {
+    "fork": {
+      "argv": ["fork", "--help"],
+      "requiredTokens": [
+        "Usage: slipfork fork",
+        "<FORK>",
+        "Fork name (a single lowercase DNS label)",
+        "--base <BASE>",
+        "--json"
+      ]
+    },
+    "drop": {
+      "argv": ["drop", "--help"],
+      "requiredTokens": ["Usage: slipfork drop", "<FORK>", "Fork name to destroy"]
+    },
+    "exec": {
+      "argv": ["exec", "--help"],
+      "requiredTokens": [
+        "Usage: slipfork exec",
+        "<ARGV>...",
+        "--world <WORLD>",
+        "--cwd <CWD>"
+      ]
+    },
+    "list": {
+      "argv": ["list", "--help"],
+      "requiredTokens": ["Usage: slipfork list", "--json", "exactly one origin URL"]
+    }
+  },
+  "jsonFields": {
+    "fork": ["world", "origin"],
+    "list": ["world", "state", "origin", "worktree"]
+  }
+}

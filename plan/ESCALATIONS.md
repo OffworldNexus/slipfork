@@ -1,0 +1,21 @@
+# Escalations to the expensive model
+
+Every call to an expensive-tier agent (`strategist`, `architect`, `expert`) is recorded here before spawning it, via `uv run --no-project tools/plan.py --agent <caller> escalate <node> --to <agent> --reason "..."`.
+
+| time | node | to | by | reason |
+|---|---|---|---|---|
+| 2026-11-14T23:16 | M1.6 | architect | conductor | Integrate owner M1 design decisions (.localhost daemon, weaved IPC, git/jj remote, language-agnostic RunnerProtocol) |
+| 2026-11-15T00:26 | M1.6 | architect | lead | Quad gate attempt 2 SPEC_BLIND_SPOT: TunnelLease ownership (WorldRegistry/daemon vs CLI), slipforkd release_tunnel IPC port, and WorldTarget/ProjectSlug single rule-table + project identity type ownership |
+| 2026-11-15T00:42 | M1.6 | expert | lead | Quad gate attempt 3: legality BLOCKERs (plugin --snow-file regression + unactionable error), ioc MAJOR (slipfork.toml dual ownership [test].after_suite vs DagConfig), jj/git root guessing, missing crates/slipfork e2e slug tests; attempts exhausted |
+| 2026-11-15T01:03 | M1.6 | architect | lead | Final gate legality BLOCKER: git submodule/separate-git-dir root misidentification (fix spec) + jj canonical root unverifiable without owner-approved .jj/repo contract; rule fail-closed+defer vs documented pointer read |
+| 2026-11-15T02:01 | M1 | strategist | conductor | milestone gate |
+| 2026-11-15T02:28 | M1 | strategist | conductor | milestone gate re-run after M1.7 repaired make bench |
+| 2026-11-15T10:38 | M1.8 | architect | conductor | owner design corrections at release gate: single canonical origin per world, support tiers, typed coverage replacing after_suite shell recipes |
+| 2026-11-15T10:39 | M1.8 | architect | lead | Owner review-gate corrections: single-origin invariant, support tiers, typed coverage + OSPP precedence clarification |
+| 2026-11-15T11:23 | M1 | strategist | conductor | final milestone gate for 0.1.0 after owning M1.8 design corrections and M1.9 code alignment |
+| 2026-11-15T16:24 | M2 | strategist | conductor | Amend ROADMAP M2/M3 for owner directives (WebSocket OSPP + tpmd auth + DB dump + ResourceStrategy, hook debugging, systemd user slipforkd, 31-byte service truncation, db/redis/forward CLI) and decompose M2 |
+| 2026-11-15T16:46 | M2.1 | architect | lead | M2.1: author ADR-0008 and align ADR/ARCHITECTURE/target-DX (core DI tree lock) |
+| 2026-11-15T20:11 | M2.24 | architect | conductor | core architecture crossroads: L0 world base image strategy (Dockerfile-derived rootfs vs curated base), image contract, cache/invalidation, DI port for two engines |
+| 2026-11-15T20:23 | M2.24 | architect | lead | M2.24: design ADR-0009 L0 world base image from the project's own Dockerfile + 3-layer composition + World Image Contract |
+| 2026-11-16T01:55 | M2 | strategist | conductor | milestone gate for 0.2.0 (36 leaves done; M2.21/M2.22 blocked on H-004/H-006 as designed) |
+| 2026-11-16T06:19 | M2 | strategist | conductor | M2 gate re-run after M2.30/M2.31/M2.32 remediation |
