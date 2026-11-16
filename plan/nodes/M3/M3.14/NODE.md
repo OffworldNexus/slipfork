@@ -51,3 +51,15 @@ make rs-test
 ```
 
 Expected: `cargo test --all-targets` and clippy exit 0 on this XFS host (fast suites pass; the live suite asserts the fail-closed contract); the three `grep`s find the magic value, the error, and the real `postgres:18` service spec; both inverted `grep`s print nothing; `make rs-test` exits 0.
+
+# Terminology Rule (OWNER, 2026-11-16 — binding)
+
+Never call the architecture "Option A" (or reference "Option B", "Spike A", "Spike B", or any "we chose X over Y" framing). There was only ever one design: **`BtrfsEngine` over one unified Btrfs subvolume per world + Linux `userns`/`netns`/`ipcns`/`pidns`/`mntns` + `pivot_root` + daemonless static `crun`**. Write it as what Slipfork is and does.
+
+Enforceable gate before Phase 1 completes (owner scope):
+
+```bash
+! grep -riE 'option [ab]|spike [ab]' ARCHITECTURE.md README.md docs/ crates/ tools/
+```
+
+If this node writes any file under `docs/`, `crates/`, or `tools/`, add that inverted grep (scoped to your paths) to your own verification and delete rather than reword any alternative-architecture history.

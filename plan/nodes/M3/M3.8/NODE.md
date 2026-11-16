@@ -28,7 +28,7 @@ Rewrite `docs/design/world-base-image.md` so the entire `L0` rootfs + backing-se
 1. Replace every `FICLONE`/reflink/Incus sentence with the single `BtrfsEngine` story: one subvolume per world (rootfs tree + `state/{pgdata,redis,s3}`), RO snapshot via `BTRFS_IOC_SNAP_CREATE_V2` + `BTRFS_SUBVOL_RDONLY`, writable clone via `BTRFS_IOC_SNAP_CREATE_V2`, destroy via `BTRFS_IOC_SUBVOL_SETFLAGS` (clear RO) + `BTRFS_IOC_SNAP_DESTROY_V2`.
 2. Require a Btrfs mount (`-o user_subvol_rm_allowed,noatime`) and state the fail-closed `statfs` magic check (`0x9123683e`) that runs before any world directory exists.
 3. Keep the `ADR-0009` three-layer execution, `crun` namespace/identity rules, `$UID:$GID` rule, 6-rule image contract, `RootfsDigest`, and `--host-caches` ABI probe intact — change only the storage/snapshot substrate.
-4. Keep the measured probe transcript section, re-labelled for the Btrfs host; do not invent measurements (refer to `docs/research/spike-option-a-btrfs-crun.md` for spike numbers).
+4. Keep the measured probe transcript section, re-labelled for the Btrfs host; do not invent measurements (refer to `docs/research/btrfs-crun-benchmarks.md` for the measured numbers).
 5. Keep the node-sequencing table at the end consistent with the actual `M3.7`–`M3.19` plan ids.
 
 # Acceptance
@@ -42,3 +42,15 @@ make docs-check
 ```
 
 Expected: the inverted `grep` prints nothing; the three `grep`s find the ioctl, the exact mount option string, and the magic constant; `make docs-check` exits 0.
+
+# Terminology Rule (OWNER, 2026-11-16 — binding)
+
+Never call the architecture "Option A" (or reference "Option B", "Spike A", "Spike B", or any "we chose X over Y" framing). There was only ever one design: **`BtrfsEngine` over one unified Btrfs subvolume per world + Linux `userns`/`netns`/`ipcns`/`pidns`/`mntns` + `pivot_root` + daemonless static `crun`**. Write it as what Slipfork is and does.
+
+Enforceable gate before Phase 1 completes (owner scope):
+
+```bash
+! grep -riE 'option [ab]|spike [ab]' ARCHITECTURE.md README.md docs/ crates/ tools/
+```
+
+If this node writes any file under `docs/`, `crates/`, or `tools/`, add that inverted grep (scoped to your paths) to your own verification and delete rather than reword any alternative-architecture history.

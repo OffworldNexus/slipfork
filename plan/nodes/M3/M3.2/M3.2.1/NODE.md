@@ -49,3 +49,22 @@ uv run --no-project tools/plan.py validate
 ```
 
 Expected: the blueprint exists and names the single daemon seam, the pool lifecycle, the canonical run tree, and the `per_world` non-sharing rule; `ARCHITECTURE.md` carries the locked trait/ seam names; the sequencing table references the real leaf ids; `make docs-check` and `plan.py validate` exit 0.
+
+# Mandatory `blastit` Post-Mortem Invariants (owner directive, 2026-11-16 — binding)
+
+A measured post-mortem of the external `blastit` orchestrator found four anti-cruft/language-modularity failures that this blueprint MUST prove it does not repeat:
+
+1. **Zero language tokens in the core.** In `blastit`, `Executor::Php(PhpPolicy)`, `Route.php`, and `ALL_KINDS` sat in the core manifest/domain model while `pytest -q`, Django `test_<db>`, and pytest exit codes (`SUITE_FAILURE=3`) were hardcoded in `check.rs`, coupling every language to every other and spawning PHP doc vaporware. In Slipfork, `slipfork-test` core (`TestCoordinator`, `WorldPool`, `RunnerProtocol v1`, `Materializer`) MUST contain **zero** language/framework enums, **zero** `match language` arms, **zero** tool exit-code assumptions, and **zero** DB-creation handshakes — the Btrfs world clone already owns the migrated, fixture-seeded database.
+2. **Modular registration at the Composition Root.** Every language adapter (`PytestAdapter`, later PHPUnit/Pest, Vitest/Playwright, Nextest) is an isolated, self-contained adapter module/crate implementing `TestAdapter` (+ optional `CoverageDriver`), wired into a runtime `AdapterRegistry` (`BTreeMap<String, Arc<dyn TestAdapter>>`) **exclusively at `crates/slipfork/src/main.rs`** (`slipforkd` Composition Root). Any future Cargo `[features]` in `crates/slipfork` are strictly **language/platform switches**, never test-scaffolding features (`test-support`, `test-server`); test doubles live in `#[cfg(test)]`, `tests/common/`/`tests/support/`, or an unpublished `publish = false` `[dev-dependencies]` testkit crate. (The leftover M2 `crates/slipfork-ospp` `test-server` feature is anti-pattern residue, deleted by `M3.22`.)
+3. **Design `TestAdapter` + `WorldSlotContext` for PHP, Python, JS, and Rust on day one** (only `pytest` + `CommandTestAdapter` ship in `0.3.0`):
+   - **Never parse child `stdout`/`stderr` for protocol frames or test results.** PHP deprecations, `die()`/`exit()`, SAPI output, and C-extension writes corrupt fd 1/2. Structured outcomes flow strictly over `AF_UNIX` `runner.sock` (`RunnerProtocol v1`) or adapter-owned report files under `slot.output_dir`; child stdout/stderr stay human diagnostics, so `slipfork test --json` owns CLI stdout with no fd-1 redirection hacks.
+   - **Explicit `cwd`, `argv`, and world-scoped `env` on `WorldSlotContext`.** PHP (`vendor/bin/phpunit`, `phpunit.xml`, `vendor/autoload.php`) is CWD-sensitive and NTS PHP runs one OS process per execution; a warm `os.fork()` Zygote is strictly an internal `pytest-slipfork` optimization and MUST NOT leak into `TestAdapter` or `WorldPool`.
+   - **Language-neutral `CoverageDriver` merge boundary.** Core receives only a language-neutral `CoverageSummary` and enforces `coverage_fail_under`; each driver owns its shard layout and dialect-explicit XML/JSON/HTML/LCOV generation (Python `.coverage.<slot>` sqlite + `coverage combine`; future PHP `pcov`/clover/cobertura, Node `NODE_V8_COVERAGE`, Rust `LLVM_PROFILE_FILE`).
+   - **Zero vaporware:** never document `phpunit`/`vitest`/`playwright` invocations in public `docs/` until that adapter's `support/integrations.toml` tier is backed by a real passing test (`tools/check_support.py`).
+
+# Acceptance (amended)
+
+- [ ] The blueprint's DI tree shows `AdapterRegistry` constructed only in `crates/slipfork/src/main.rs`, with no language token reachable from `TestCoordinator`/`WorldPool`/`RunnerProtocol`/`Materializer`.
+- [ ] `RunnerProtocol v1` frames flow only on `runner.sock` (or adapter report files under `slot.output_dir`); no core code reads child stdout/stderr to decide a test outcome.
+- [ ] `WorldSlotContext` carries explicit `cwd`, `argv`, `env`, `output_dir`, and typed `CoverageSummary`/`CoverageDriver` boundaries that are demonstrably PHP/JS/Rust-compatible without core changes.
+- [ ] The blueprint states the language-only feature policy and cites `M3.22` for the deleted `test-server` residue.

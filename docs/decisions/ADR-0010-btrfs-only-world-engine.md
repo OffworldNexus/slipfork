@@ -1,0 +1,62 @@
+# ADR-0010: Btrfs `WorldEngine` — Unified Per-World Subvolumes, `BTRFS_IOC_*` Lifecycle, `--ipc` Isolation, and AppArmor `userns`
+
+- **Status:** Accepted — M3 (`0.3.0`) target-state ruling (owner ruling 2026-11-16; closes `H-004`; `WorldEngine` IoC contract in `ADR-0002`; implemented across `M3.20`, `M3.12`–`M3.15`, and `M3.21`)
+- **Date:** 2026-11-16
+
+## Context
+
+1. **One atomic CoW substrate per world (`Iron Law #3`, `H-004` closed):** Each Slipfork world combines a `Dockerfile`-derived `L0` rootfs (`ADR-0009`) with mutable PostgreSQL, Redis, and S3 state that must snapshot into immutable DAG stages and clone into isolated worktree and test worlds atomically under the developer's unprivileged `$UID:$GID`, using a single `WorldEngine` (`BtrfsEngine`) with zero fallback paths.
+2. **Sub-25 ms unified-subvolume CoW with 6.3 MiB RSS per world:** Placing a world's `ADR-0009` `Dockerfile` `L0` rootfs tree and backing-service state directories inside **one unified Btrfs subvolume** — from owner-supplied measurements in `plan/nodes/M3/M3.11/NODE.md`, to be recorded in full by `M3.11` in `docs/research/btrfs-crun-benchmarks.md` — measures a **`19.5 ms`** read-only snapshot, an **`11–24 ms`** writable clone, **`39 ms`** to a warm-SQL world, and **`6.3 MiB`** RSS per world, with `$UID:$GID` host bind mounts working natively.
+3. **Three host and kernel invariants govern unprivileged execution:**
+   - Parallel PostgreSQL instances binding `:5432` across separate network namespaces still collide on System V shared memory (`shmget` key `90000` / port-derived keys) unless each world also enters a private IPC namespace (`--ipc` / `CLONE_NEWIPC`).
+   - Read-only Btrfs snapshots (`BTRFS_SUBVOL_RDONLY`) reject `BTRFS_IOC_SNAP_DESTROY_V2` until `BTRFS_SUBVOL_RDONLY` is cleared via `BTRFS_IOC_SUBVOL_SETFLAGS`, and unprivileged subvolume deletion requires `mount -o user_subvol_rm_allowed,noatime`.
+   - On Ubuntu 24.04 LTS (`noble`, Linux 6.8+, AppArmor 4.0) with `kernel.apparmor_restrict_unprivileged_userns=1`, unprofiled unprivileged `CLONE_NEWUSER` transitions strip capabilities (`EPERM` on `uid_map`/`mount`/`pivot_root`) unless `/etc/apparmor.d/slipfork` grants `userns,`.
+
+## Decision
+
+> This ADR is the single normative home for the unified-subvolume & control-directory layout (§2), `BTRFS_IOC_*` lifecycle (§3), fail-closed host contract & single probe owner (§4), `SubvolumeDriver` constructor-DI seam (§5), `--ipc` (`CLONE_NEWIPC`) isolation (§6), and Ubuntu 24.04 LTS AppArmor `userns` profile (§7). `ARCHITECTURE.md` keeps concise Rust port signatures and owns the Cargo Feature & Test-Scaffolding Rule (§1), `ADR-0002` owns the `WorldEngine` IoC + `ReadinessProbe` service contract, and other ADRs reference § pointers here instead of restating layout paths, ioctls, or namespace flags.
+
+1. **`BtrfsEngine` Is the Sole Production `WorldEngine` (`M3.20` -> `M3.12`–`M3.15` -> `M3.21`):**
+   - `BtrfsEngine` — one unified Btrfs subvolume per world + Linux `userns`/`netns`/`ipcns`/`pidns`/`mntns` + `pivot_root` + daemonless static `crun` — is Slipfork's **sole** production `WorldEngine`, with distinct read-only snapshot vs writable clone method signatures, zero capability boolean bags, zero snapshot-mode flags, and zero fallback paths (`H-004` closed by owner ruling). `M3.20` aligns `trait WorldEngine` ahead of `M3.12`–`M3.15`, and `M3.21` deletes all previously shipped engine adapters, their daemon/REST protocol, their storage pools, and every per-file extent-clone helper once `BtrfsEngine` lands (`M3.12`–`M3.15`); no fallback engine and no runtime engine selection exists.
+2. **Unified Single-Subvolume World Layout & Disjoint Control/Socket Directories:**
+   - Every materialized world and snapshot (`<project>-base`, origin-independent `[fixtures.*]` snapshots, `canonical`, `<fork>`, `test-<slot>`) is **exactly one Btrfs subvolume** (`<state_dir>/snapshots/<snapshot_id>` when sealed read-only; `<state_dir>/worlds/<world_id>` when live writable) holding **both** the `ADR-0009` `Dockerfile`-derived `L0` rootfs tree (`<subvol>/rootfs`, mounted read-only `EROFS` at `/`) **and** `/var/lib/slipfork/state/{pgdata,redis,s3}` (`<subvol>/state/{pgdata,redis,s3}`, mounted read-write into `crun` backing-service containers).
+   - **No nested child subvolumes inside a world:** Because `BTRFS_IOC_SNAP_CREATE_V2` does not snapshot nested subvolumes recursively, everything inside `<subvol>` is plain directories and CoW-shared extents within that single subvolume, so **one ioctl** snapshots or clones the entire world atomically.
+   - **Three non-overlapping control/socket paths (normative):**
+     1. **Daemon-wide control socket directory (`--runtime-dir` = `<runtime_dir>`):** passed explicitly to `slipforkd` (resolved once at the thin `slipfork` CLI composition boundary via `Layout::resolve`, `ARCHITECTURE.md` §1 / `ADR-0008` §4; `slipforkd` never defaults or guesses it), holding `<runtime_dir>/daemon.sock` (`0600`).
+     2. **Daemon-wide HTTP ingress Unix socket:** `<state_dir>/http-ingress.sock` (`0600`).
+     3. **Per-world ephemeral control directory (`WorldSpec.control_dir` = `<state_dir>/ctl/<world_id>`):** injected explicitly on `WorldSpec` by `slipforkd` (never re-derived inside `BtrfsEngine` and strictly disjoint from `<runtime_dir>`), holding `netns.sock` (`0600`), `world-init.json` (`0600`), `init.ready`, `oci/`, `oci-run/`, `mountpoints/`, and `merged/` **outside** `<subvol>` so `freeze_world` never captures ephemeral sockets or OCI runtime state.
+3. **Normative `BTRFS_IOC_*` Lifecycle (`<linux/btrfs.h>`, target state `M3.12`–`M3.13`):**
+   - **Base subvolume creation:** `BTRFS_IOC_SUBVOL_CREATE_V2` (`flags = 0`, `struct btrfs_ioctl_vol_args_v2`) on the parent directory descriptor (`O_RDONLY | O_DIRECTORY | O_CLOEXEC`).
+   - **Read-only snapshot (`create_snapshot` / `freeze_world`):** `freeze_world` stops `WorldProcess` services first, then `OciContainer` services (`SIGTERM` -> bounded grace), and seals `<subvol>` into `<state_dir>/snapshots/<id>` via `BTRFS_IOC_SNAP_CREATE_V2` with `flags = BTRFS_SUBVOL_RDONLY` (`1ULL << 1`).
+   - **Writable world clone (`clone_world`):** Clones `<state_dir>/snapshots/<id>` into `<state_dir>/worlds/<world_id>` via `BTRFS_IOC_SNAP_CREATE_V2` with `flags = 0`. Read-only snapshot and writable clone are distinct method signatures — no mode enum exists.
+   - **Teardown & snapshot GC (`destroy_world` / `slipfork prune`):** Reap the world's PID 1 namespace and remove `<control_dir>`; inside `SubvolumeDriver::destroy_subvolume`, read subvolume flags (`BTRFS_IOC_SUBVOL_GETFLAGS`), clear `BTRFS_SUBVOL_RDONLY` via `BTRFS_IOC_SUBVOL_SETFLAGS` (`flags & !BTRFS_SUBVOL_RDONLY`) when set, and remove the subvolume via `BTRFS_IOC_SNAP_DESTROY_V2` (clearing RO is owned internally by `destroy_subvolume`, with no separate boolean mode switch).
+4. **Fail-Closed Host Contract & Single Probe Owner (`BTRFS_SUPER_MAGIC = 0x9123683e`, target state `M3.12`/`M3.15`):**
+   - `crates/slipfork-engine::btrfs` is the **sole owner** of Btrfs host probing behind `SubvolumeDriver` (`SubvolumeDriver::probe(&self, path: &Path) -> Result<BtrfsProbeReport, EngineError>` and `SubvolumeDriver::ensure_supported(&self, path: &Path) -> Result<(), EngineError>`, implemented in production by `KernelBtrfsDriver`, plus injected helper `slipfork_engine::btrfs::probe_with(driver: &dyn SubvolumeDriver, state_dir: &Path) -> Result<BtrfsProbeReport, EngineError>` with zero internal `KernelBtrfsDriver` construction and zero duplicated `statfs` or ioctl code).
+   - **`BtrfsProbeReport` shape (normative, specified once here):**
+     - `state_dir: PathBuf` — probed state directory path;
+     - `fstype: i64` — raw `statfs(state_dir).f_type` filesystem type code;
+     - `btrfs_super_magic: bool` — magic-match evidence (`fstype == BTRFS_SUPER_MAGIC`, `0x9123683e`);
+     - `user_subvol_rm_allowed: Result<(), i32>` — live scratch subvolume create -> RO snapshot -> clear-RO -> `BTRFS_IOC_SNAP_DESTROY_V2` round-trip under `<state_dir>`, proving unprivileged `user_subvol_rm_allowed` (`Ok(())`) or recording the raw `errno` (`Err(errno)`, e.g. `EPERM`);
+     - `noatime: bool` — `statvfs` `ST_NOATIME` mount-option evidence reported by `slipfork doctor`.
+   - `BtrfsEngine` calls `driver.ensure_supported(&state_dir)` at construction (`slipforkd` boot, before any snapshot or world directory is created), while the thin `slipfork` CLI (`crates/slipfork/src/main.rs`) constructs `KernelBtrfsDriver` at its composition boundary and passes `&dyn SubvolumeDriver` into `slipfork doctor` -> `slipfork_engine::btrfs::probe_with(driver, state_dir)` as a pre-daemon check (holding **no** `WorldEngine` so `doctor` works when `slipforkd` refuses to boot on a non-Btrfs host, while keeping `doctor` conformance-testable against a test `SubvolumeDriver` supplied via `ARCHITECTURE.md` §1's test-only vehicles).
+   - Any filesystem whose `statfs(state_dir).f_type != BTRFS_SUPER_MAGIC` (`0x9123683e`) fails closed immediately with `EngineError::BtrfsRequired { path, actual_fstype, mount_hint }` naming the exact fix: `mount -o user_subvol_rm_allowed,noatime`. Unprivileged `BTRFS_IOC_SNAP_DESTROY_V2` `EPERM` (missing `user_subvol_rm_allowed`) surfaces the same hint. Zero probe-and-degrade paths exist.
+5. **Injected `SubvolumeDriver` Constructor-DI Seam (`M3.12`–`M3.15`):**
+   - `crates/slipfork-engine::btrfs` defines `pub trait SubvolumeDriver: Send + Sync` (`probe`, `ensure_supported`, `create_subvolume`, `snapshot_ro`, `snapshot_writable`, `destroy_subvolume`, `list_children`) as the **sole** CoW subvolume cloning seam across the workspace — shared via `Arc<dyn SubvolumeDriver>` by `BtrfsEngine` and M3 Phase 2's `BtrfsArtifactStore` (`crates/slipfork-test`, `M3.2`, `<state_dir>/artifacts/<digest>`), with no second artifact-cloning driver port alongside it.
+   - **`KernelBtrfsDriver`** is the **only** production implementation (all `statfs` and `BTRFS_IOC_*` `unsafe` calls live in `crates/slipfork-engine/src/btrfs.rs` with per-call `// SAFETY:` proofs). `BtrfsEngine::new(...)` wires `Arc::new(KernelBtrfsDriver)` into the explicit DI constructor `BtrfsEngine::with_driver(..., Arc<dyn SubvolumeDriver>) -> Result<Self, EngineError>`.
+   - **Test-only drivers (`TestTreeDriver`):** Governed by the single normative Cargo Feature & Test-Scaffolding Rule in `ARCHITECTURE.md` §1; real kernel verification runs in `critical_btrfs_live` (`M3.14`, `M3.15`, `M3.19`).
+6. **Normative `--ipc` (`CLONE_NEWIPC`) World Isolation (target state `M3.13`):**
+   - `slipfork-world-init` is spawned via `unshare --user --map-user=$UID --map-group=$GID --keep-caps --mount --net --ipc --pid --fork --mount-proc` (and `nsenter` enters `--ipc` alongside `--user --preserve-credentials --mount --net --pid`).
+   - `--ipc` (`CLONE_NEWIPC`) isolates System V shared memory (`shmget`) and POSIX message queues per world so parallel `postgres` containers never collide on SysV IPC key `90000` or port-derived keys.
+7. **Ubuntu 24.04 LTS AppArmor `userns` Profile (`slipfork daemon unit --only apparmor`, target state `M3.15`):**
+   - Alongside `slipforkd.socket` and `slipforkd.service`, `slipfork daemon unit` (`--only socket|service|apparmor`) renders the 4-line `/etc/apparmor.d/slipfork` profile required on Ubuntu 24.04 LTS (`noble`, Linux 6.8+, AppArmor 4.0) when sysctl `kernel.apparmor_restrict_unprivileged_userns=1` is enabled:
+     ```text
+     abi <abi/4.0>,
+     profile slipfork <bin_dir>/slipfork{,d} flags=(unconfined) {
+       userns,
+     }
+     ```
+   - `abi <abi/4.0>,` and `flags=(unconfined)` are mandatory alongside `userns,`; file and mount rules are deliberately omitted from the body so `apparmor_parser` keeps file/mount mediation inactive while unprofiled child executables spawned by `slipfork`/`slipforkd` (`unshare`, `slipfork-world-init`, `/.slipfork/bin/crun`) remain under the unconfined `slipfork` profile across `execve`. (In `M3.10`/`M3.16` target state, dedicated VM test harnesses running unlinked `cargo test` binaries under `kernel.apparmor_restrict_unprivileged_userns=1` explicitly permit `/usr/bin/unshare` and `slipfork-world-init` in their `/etc/apparmor.d/slipfork` `userns` profile.)
+
+## Consequences
+
+- Unifies world and artifact CoW storage, snapshotting, cloning, and GC on Btrfs subvolumes (Context §2) with one `WorldEngine`, one `SubvolumeDriver` seam, zero fallback branches, and pure constructor DI (`ARCHITECTURE.md` §1).

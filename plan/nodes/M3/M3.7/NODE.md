@@ -1,30 +1,29 @@
 ---
 id: M3.7
-title: "Option A design of record: ADR-0010, ARCHITECTURE.md DI tree, and ADR-0001..0009 scorched-earth wipe"
+title: "Design of record: ADR-0010 Btrfs-only WorldEngine, STP v1-ready DI tree, and ADR-0001..0009 consolidation"
 kind: task
-status: ready
+status: review
 owner: architect
 priority: 1
 depends_on: []
 paths:
   - "docs/decisions/ADR-0010-btrfs-only-world-engine.md"
   - "docs/decisions/ADR-0001-snow-modes-and-secret-protocol.md"
-  - "docs/decisions/ADR-0002-world-engine-ioc-incus-and-reflink.md"
   - "docs/decisions/ADR-0002-world-engine-ioc-btrfs.md"
   - "docs/decisions/ADR-0003-orthogonal-artifact-and-fixture-dag.md"
   - "docs/decisions/ADR-0004-opencode-implicit-worktree-routing.md"
   - "docs/decisions/ADR-0005-localhost-edge-weaved-ipc-and-vcs-remote.md"
-  - "docs/decisions/ADR-0006-polyglot-runner-protocol-and-world-owned-stack.md"
+  - "docs/decisions/ADR-0006-stp-v1-and-world-owned-stack.md"
   - "docs/decisions/ADR-0007-integration-support-tiers.md"
   - "docs/decisions/ADR-0008-ospp-v1-websocket-tpmd-resource-strategy-and-world-ux.md"
   - "docs/decisions/ADR-0009-world-base-image-and-image-contract.md"
   - ARCHITECTURE.md
   - docs/VISION.md
-attempts: 0
-max_attempts: 3
-escalation: none
+attempts: 4
+max_attempts: 4
+escalation: architect
 created: "2026-11-16T16:58"
-updated: "2026-11-16T16:58"
+updated: "2026-11-16T20:48"
 ---
 
 # Goal
@@ -34,7 +33,7 @@ Land the **single design of record** for Option A — a Btrfs-only `WorldEngine`
 # Context
 
 - Owner ruling (2026-11-16, `plan/nodes/M3/LOG.md`): Option A (one unified Btrfs subvolume per world + Linux `userns`/`netns`/`ipcns`/`pidns`/`mntns` + `pivot_root` + `crun`) is the **sole** engine. Incus, `incusd`, ZFS, XFS `FICLONE`, QEMU/KVM, curations, and every fallback are deleted with zero backward compatibility.
-- Measured basis (`M3.11` writes `docs/research/spike-option-a-btrfs-crun.md`): `19.5 ms` read-only snapshot, `11–24 ms` writable clone, `39 ms` to warm SQL, `6.3 MiB` RSS per world; `--ipc` (`CLONE_NEWIPC`) is required or parallel Postgres instances collide on SysV `shmget` key `90000`; a read-only subvolume must have `BTRFS_SUBVOL_RDONLY` cleared (`BTRFS_IOC_SUBVOL_SETFLAGS`) before `BTRFS_IOC_SNAP_DESTROY_V2`.
+- Measured basis (`M3.11` records `docs/research/btrfs-crun-benchmarks.md`): `19.5 ms` read-only snapshot, `11–24 ms` writable clone, `39 ms` to warm SQL, `6.3 MiB` RSS per world; `--ipc` (`CLONE_NEWIPC`) is required or parallel Postgres instances collide on SysV `shmget` key `90000`; a read-only subvolume must have `BTRFS_SUBVOL_RDONLY` cleared (`BTRFS_IOC_SUBVOL_SETFLAGS`) before `BTRFS_IOC_SNAP_DESTROY_V2`.
 - Design docs that consume this contract (`world-base-image.md`, `target-dx.md`, `do-vm-harness.md`) are separate designer nodes; this node owns only `ARCHITECTURE.md`, `docs/VISION.md`, and `docs/decisions/`.
 
 # Design / Invariants (must be encoded, not paraphrased away)

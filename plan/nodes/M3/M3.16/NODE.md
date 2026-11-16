@@ -16,7 +16,7 @@ updated: "2026-11-16T16:58"
 
 # Goal
 
-Rewrite `tools/do_vm.py` (and its unit tests) for Option A: provision the DO block volume with `mkfs.btrfs` at `/var/lib/slipfork` (`-o user_subvol_rm_allowed,noatime`), install `btrfs-progs` + `crun` + `docker.io`/`docker-buildx` + Rust, install the AppArmor `userns` profile, add a **persistent** `--identity` SSH key, and run the real Btrfs kernel suites remotely — with zero ZFS and zero Incus.
+Rewrite `tools/do_vm.py` (and its unit tests) for the Btrfs + `crun` substrate: provision the DO block volume with `mkfs.btrfs` at `/var/lib/slipfork` (`-o user_subvol_rm_allowed,noatime`), install `btrfs-progs` + `crun` + `docker.io`/`docker-buildx` + Rust, install the AppArmor `userns` profile, add a **persistent** `--identity` SSH key, and run the real Btrfs kernel suites remotely — with zero ZFS and zero Incus.
 
 # Context
 
@@ -49,3 +49,15 @@ uvx --offline ruff check tools && uvx --offline ruff format --check tools
 ```
 
 Expected: both `--help` invocations exit 0 and list the six commands plus `--identity`; the inverted `grep`s print nothing; the four `grep`s find `mkfs.btrfs`, the mount options, `identity`, and the AppArmor profile; `pytest -q tools/tests` and both `ruff` commands exit 0.
+
+# Terminology Rule (OWNER, 2026-11-16 — binding)
+
+Never call the architecture "Option A" (or reference "Option B", "Spike A", "Spike B", or any "we chose X over Y" framing). There was only ever one design: **`BtrfsEngine` over one unified Btrfs subvolume per world + Linux `userns`/`netns`/`ipcns`/`pidns`/`mntns` + `pivot_root` + daemonless static `crun`**. Write it as what Slipfork is and does.
+
+Enforceable gate before Phase 1 completes (owner scope):
+
+```bash
+! grep -riE 'option [ab]|spike [ab]' ARCHITECTURE.md README.md docs/ crates/ tools/
+```
+
+If this node writes any file under `docs/`, `crates/`, or `tools/`, add that inverted grep (scoped to your paths) to your own verification and delete rather than reword any alternative-architecture history.

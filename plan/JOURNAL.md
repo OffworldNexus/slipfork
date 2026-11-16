@@ -540,3 +540,110 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-16T17:25 [M3.2.8] (strategist) edited fields
 - 2026-11-16T17:25 [M3.2.10] (strategist) edited fields
 - 2026-11-16T17:25 [M3.2.12] (strategist) edited fields
+- 2026-11-16T17:28 [M3.1] (lead) status ready -> active
+- 2026-11-16T17:28 [M3.1] (lead) attempt 1/3 started
+- 2026-11-16T17:28 [M3.1] (lead) base 6736e08c62c5e58f89792711d8b20a6485c3c05c
+- 2026-11-16T17:28 [M3.7] (lead) status ready -> active
+- 2026-11-16T17:28 [M3.7] (lead) attempt 1/3 started
+- 2026-11-16T17:28 ESCALATION #16 -> architect for M3.7 by unknown: Option A Btrfs-only design of record: ADR-0010, ARCHITECTURE.md DI tree, ADR-0001..0009 wipe
+- 2026-11-16T17:28 [M3.7] (lead) base 6736e08c62c5e58f89792711d8b20a6485c3c05c
+- 2026-11-16T17:54 [M3.7] (lead) status active -> review
+- 2026-11-16T17:56 [M3.1] (lead) edited fields
+- 2026-11-16T17:56 [M3.1] (lead) LEAD SCOPE RULING (attempt 2): attempt-1 block is a plan-decomposition defect, not an upward direction question. 'plain make check exits 0' is unachievable from
+- 2026-11-16T17:56 [M3.1] (lead) attempt 2/3 started
+- 2026-11-16T17:57 [M3.7] (lead) status review -> active
+- 2026-11-16T17:57 [M3.7] (lead) attempt 2/3 started
+- 2026-11-16T17:57 ESCALATION #17 -> architect for M3.7 by unknown: Quad review attempt 1: SPEC_BLIND_SPOT SubvolumeDriver test-driver visibility (cfg(test) unreachable from crates/slipfor
+- 2026-11-16T18:09 [M3.1] (lead) status active -> review
+- 2026-11-16T18:10 [M3.1] (lead) edited fields
+- 2026-11-16T18:11 [M3.1] (lead) QUAD GATE (attempt 2) open findings logged: cruft MAJOR 3 duplicated poll loops + 2 readiness-assert styles + .PHONY lint/test + ts-test missing TMPDIR prereq +
+- 2026-11-16T18:11 [M3.7] (lead) ADDITIONAL FINDING M from sibling M3.1 quad gate: SPEC_BLIND_SPOT ServiceSpec::readiness_port (TCP accept != usable service); architect must encode one readines
+- 2026-11-16T18:11 [M3] (lead) OWNER ARCHITECTURAL DIRECTIVE (2026-11-16): (1) ZERO test-scaffolding Cargo features anywhere; features belong strictly to language/platform modularity (python/
+- 2026-11-16T18:11 [M3.7] (lead) OWNER DIRECTIVE: zero test-scaffolding Cargo features (no feature="test-support"). SubvolumeDriver seam uses pure constructor DI; test fakes only via #[cfg(test
+- 2026-11-16T18:11 [M3.8] (lead) OWNER DIRECTIVE: zero test-scaffolding Cargo features (no feature="test-support"). SubvolumeDriver seam uses pure constructor DI; test fakes only via #[cfg(test
+- 2026-11-16T18:11 [M3.9] (lead) OWNER DIRECTIVE: zero test-scaffolding Cargo features (no feature="test-support"). SubvolumeDriver seam uses pure constructor DI; test fakes only via #[cfg(test
+- 2026-11-16T18:11 [M3.10] (lead) OWNER DIRECTIVE: zero test-scaffolding Cargo features (no feature="test-support"). SubvolumeDriver seam uses pure constructor DI; test fakes only via #[cfg(test
+- 2026-11-16T18:11 [M3.11] (lead) OWNER DIRECTIVE: zero test-scaffolding Cargo features (no feature="test-support"). SubvolumeDriver seam uses pure constructor DI; test fakes only via #[cfg(test
+- 2026-11-16T18:11 [M3.12] (lead) OWNER DIRECTIVE: zero test-scaffolding Cargo features (no feature="test-support"). SubvolumeDriver seam uses pure constructor DI; test fakes only via #[cfg(test
+- 2026-11-16T18:11 [M3.14] (lead) OWNER DIRECTIVE: zero test-scaffolding Cargo features (no feature="test-support"). SubvolumeDriver seam uses pure constructor DI; test fakes only via #[cfg(test
+- 2026-11-16T18:11 [M3.15] (lead) OWNER DIRECTIVE: zero test-scaffolding Cargo features (no feature="test-support"). SubvolumeDriver seam uses pure constructor DI; test fakes only via #[cfg(test
+- 2026-11-16T18:11 [M3.20] (lead) OWNER DIRECTIVE: zero test-scaffolding Cargo features (no feature="test-support"). SubvolumeDriver seam uses pure constructor DI; test fakes only via #[cfg(test
+- 2026-11-16T18:11 [M3.2.1] (lead) OWNER DIRECTIVE: HOLD this node until explicitly released; the owner routes extra language/platform (Python/PHP) modularity lessons from the external blastit in
+- 2026-11-16T18:15 [M3.22] (lead) created (task) Delete leftover slipfork-ospp test-server Cargo feature; move reference OSPP server doubles into tests/support
+- 2026-11-16T18:15 [M3.2.1] (lead) HOLD RELEASED (owner, 2026-11-16): blueprint may start once its DAG predecessors (M3.1/M3.19 -> M3.2) complete. Mandatory blastit post-mortem invariants appende
+- 2026-11-16T18:15 [M3] (lead) OWNER (2026-11-16): blastit post-mortem invariants are mandatory for M3.2.1/M3.2 (zero language tokens in core; AdapterRegistry only at the slipforkd Compositio
+- 2026-11-16T18:15 [M3.2.1] (lead) HOLD RELEASED (owner, 2026-11-16): blueprint may start once DAG predecessors (M3.1/M3.19 -> M3.2) complete. Mandatory blastit post-mortem invariants appended to
+- 2026-11-16T18:15 [M3] (lead) OWNER (2026-11-16): blastit post-mortem invariants are mandatory for M3.2.1/M3.2 (zero language tokens in core; AdapterRegistry only at the slipforkd Compositio
+- 2026-11-16T18:16 [M3.2] (lead) OWNER HOLD (2026-11-16): M3.2 (M3.2.1..M3.2.18) is ON HOLD pending a conductor rewrite of this epic. Owner clarified Slipfork must NOT integrate deeply with lan
+- 2026-11-16T18:16 [M3.2.1] (lead) OWNER HOLD: do not start. M3.2 is being rewritten around a thin slipfork<->blastit boundary; Slipfork will not ship a second test runner (no pytest-slipfork Zyg
+- 2026-11-16T18:16 [M3] (lead) OWNER (2026-11-16): M3.2 epic ON HOLD pending conductor rewrite (thin slipfork<->blastit boundary; blastit is the test runner; no deep per-language integration,
+- 2026-11-16T18:32 [M3] (lead) OWNER RULING (2026-11-16) — PHASE 2 = Slipfork Testing Protocol STP v1: standardized protocol over an inherited shared fd (SLIPFORK_PROTOCOL_FD, AF_UNIX socketp
+- 2026-11-16T18:32 [M3.2] (lead) OWNER RULING (2026-11-16): rewrite pending conductor/strategist/planner. Phase 2 = STP v1 (inherited SLIPFORK_PROTOCOL_FD AF_UNIX socketpair); framework-exposed
+- 2026-11-16T18:32 [M3.9] (lead) OWNER TRUTHFULNESS CONSTRAINT: keep target-dx.md free of any promise of CommandTestAdapter, packages/pytest-slipfork, Rust-side CoverageDriver, runner.sock NDJS
+- 2026-11-16T18:32 [M3.18] (lead) OWNER TRUTHFULNESS CONSTRAINT: do not publish CommandTestAdapter, pytest-slipfork, per-language CoverageDriver, or any test-plugin package/CLI invocation. Phase
+- 2026-11-16T18:32 [M3.7] (lead) OWNER RULING while attempt 2 runs: Phase 2 becomes STP v1 (inherited SLIPFORK_PROTOCOL_FD AF_UNIX socketpair; framework-exposed DAG stage nodes incl. persistent
+- 2026-11-16T18:35 [M3.1] (lead) edited fields
+- 2026-11-16T18:35 [M3.1] (lead) attempt 3 follow-up: paths widened to crates/slipfork/tests/critical_cli.rs so the shared wait_daemon_teardown helper replaces the last duplicated in-file poll 
+- 2026-11-16T18:35 [M3.1] (lead) attempt 3/3 started
+- 2026-11-16T18:35 [M3.22] (lead) SCOPE ADD (lead): also replace the one-shot 60s S3 readiness wait in crates/slipfork/tests/critical_ospp_daemon.rs with bounded polling (the transient flake obs
+- 2026-11-16T18:38 [M3.7] (lead) status active -> review
+- 2026-11-16T18:39 [M3.7] (lead) QUAD attempt 2 findings (legality FAIL + ioc FAIL, no blind spot): (L1 BLOCKER) ADR-0006:32 and (L2 BLOCKER) ARCHITECTURE.md:578 claim crates/slipfork-test 'shi
+- 2026-11-16T18:39 [M3.7] (lead) status review -> active
+- 2026-11-16T18:39 [M3.7] (lead) attempt 3/3 started
+- 2026-11-16T18:39 ESCALATION #18 -> architect for M3.7 by unknown: attempt 3: final wording/contract fixes (Phase-2 sent-as-shipped fact x3, ADR-0008 second readiness mechanism, ADR-0009 
+- 2026-11-16T18:42 [M3.11] (lead) edited fields
+- 2026-11-16T18:42 [M3.11] (lead) OWNER TERMINOLOGY RULE: (1) write the report at docs/research/btrfs-crun-benchmarks.md (NOT spike-option-a-*), stating the Btrfs+crun architecture directly with
+- 2026-11-16T18:43 [M3.8] (lead) OWNER TERMINOLOGY RULE: no Option A/B or Spike A/B framing anywhere; describe the Btrfs+crun BtrfsEngine architecture directly. Gate before Phase 1 completes: !
+- 2026-11-16T18:43 [M3.9] (lead) OWNER TERMINOLOGY RULE: no Option A/B or Spike A/B framing anywhere; describe the Btrfs+crun BtrfsEngine architecture directly. Gate before Phase 1 completes: !
+- 2026-11-16T18:43 [M3.10] (lead) OWNER TERMINOLOGY RULE: no Option A/B or Spike A/B framing anywhere; describe the Btrfs+crun BtrfsEngine architecture directly. Gate before Phase 1 completes: !
+- 2026-11-16T18:43 [M3.12] (lead) OWNER TERMINOLOGY RULE: no Option A/B or Spike A/B framing anywhere; describe the Btrfs+crun BtrfsEngine architecture directly. Gate before Phase 1 completes: !
+- 2026-11-16T18:43 [M3.13] (lead) OWNER TERMINOLOGY RULE: no Option A/B or Spike A/B framing anywhere; describe the Btrfs+crun BtrfsEngine architecture directly. Gate before Phase 1 completes: !
+- 2026-11-16T18:43 [M3.14] (lead) OWNER TERMINOLOGY RULE: no Option A/B or Spike A/B framing anywhere; describe the Btrfs+crun BtrfsEngine architecture directly. Gate before Phase 1 completes: !
+- 2026-11-16T18:43 [M3.15] (lead) OWNER TERMINOLOGY RULE: no Option A/B or Spike A/B framing anywhere; describe the Btrfs+crun BtrfsEngine architecture directly. Gate before Phase 1 completes: !
+- 2026-11-16T18:43 [M3.16] (lead) OWNER TERMINOLOGY RULE: no Option A/B or Spike A/B framing anywhere; describe the Btrfs+crun BtrfsEngine architecture directly. Gate before Phase 1 completes: !
+- 2026-11-16T18:43 [M3.17] (lead) OWNER TERMINOLOGY RULE: no Option A/B or Spike A/B framing anywhere; describe the Btrfs+crun BtrfsEngine architecture directly. Gate before Phase 1 completes: !
+- 2026-11-16T18:43 [M3.18] (lead) OWNER TERMINOLOGY RULE: no Option A/B or Spike A/B framing anywhere; describe the Btrfs+crun BtrfsEngine architecture directly. Gate before Phase 1 completes: !
+- 2026-11-16T18:43 [M3.19] (lead) OWNER TERMINOLOGY RULE: no Option A/B or Spike A/B framing anywhere; describe the Btrfs+crun BtrfsEngine architecture directly. Gate before Phase 1 completes: !
+- 2026-11-16T18:43 [M3.20] (lead) OWNER TERMINOLOGY RULE: no Option A/B or Spike A/B framing anywhere; describe the Btrfs+crun BtrfsEngine architecture directly. Gate before Phase 1 completes: !
+- 2026-11-16T18:43 [M3.21] (lead) OWNER TERMINOLOGY RULE: no Option A/B or Spike A/B framing anywhere; describe the Btrfs+crun BtrfsEngine architecture directly. Gate before Phase 1 completes: !
+- 2026-11-16T18:43 [M3.22] (lead) OWNER TERMINOLOGY RULE: no Option A/B or Spike A/B framing anywhere; describe the Btrfs+crun BtrfsEngine architecture directly. Gate before Phase 1 completes: !
+- 2026-11-16T18:43 [M3.23] (lead) created (task) Terminology gate: purge Option A/B and Spike A/B framing from ARCHITECTURE.md, README.md, docs/, crates/, tools/
+- 2026-11-16T18:44 [M3.1] (lead) edited fields
+- 2026-11-16T18:44 [M3.1] (lead) attempt 4/4 started
+- 2026-11-16T18:44 [M3.1] (lead) max_attempts raised to 4 by lead: attempts 1-3 resolved scope, races and factorisation; the remaining Quad findings are mechanical test-helper dedupe + one Make
+- 2026-11-16T18:44 [M3.1] (lead) QUAD attempt 3/final findings: cruft FAIL (MAJOR Makefile guard comment overclaims vs enforcement; MAJOR duplicated local run_git/disk_tempdir in critical_slug 
+- 2026-11-16T18:58 [M3.7] (lead) edited fields
+- 2026-11-16T18:58 [M3.7] (lead) status active -> review
+- 2026-11-16T18:59 [M3.10] (lead) REQUIREMENT (from M3.7 legality review): the AppArmor userns profile section must state that the profile permits the world-init path to create user namespaces (
+- 2026-11-16T18:59 [M3.16] (lead) REQUIREMENT (from M3.7 legality review): /etc/apparmor.d/slipfork userns profile must explicitly allow /usr/bin/unshare (and slipfork-world-init) to create unpr
+- 2026-11-16T18:59 [M3.7] (lead) legality final PASS with 2 MINORs to fix in the follow-up: (1) ADR-0010:52 unlabeled VM-harness '/usr/bin/unshare in VM profile' claim -> label M3.16 target sta
+- 2026-11-16T18:59 [M3.23] (lead) edited fields
+- 2026-11-16T18:59 [M3.23] (lead) SCOPE ADD (from M3.7 ioc final pass): docs/design/m1-core-and-poc.md still carries stale VolumeCloner/IncusEngine/TestAdapter rows after the Btrfs-only pivot. T
+- 2026-11-16T18:59 [M3.7] (lead) edited fields
+- 2026-11-16T18:59 [M3.7] (lead) attempt 4/4 started
+- 2026-11-16T18:59 ESCALATION #19 -> architect for M3.7 by unknown: attempt 4 (budget raised): four one-line wording/contract clarifications after all three lenses PASS (VM-harness unshare
+- 2026-11-16T19:00 [M3.7] (lead) cruft final pass findings forwarded to the attempt-4 pass: X1 ADR-0003 dangling zygote clause + title, X2 VISION:16 zygote misattribution of subvolume CoW, X3 A
+- 2026-11-16T19:00 [M3.7] (lead) edited fields
+- 2026-11-16T19:07 [M3.23] (lead) ADDITIONAL SCOPE (M3.7 legality final pass): (1) ADR-0010:9 and ADR-0006:13-14 must phrase docs/research/btrfs-crun-benchmarks.md as 'to be recorded by M3.11' (
+- 2026-11-16T19:07 [M3.2] (lead) PHASE 2 REWRITE MUST-DO (flagged by M3.7 legality review): this epic's NODE.md title/body still say 'RunnerProtocol v1', 'CoverageDriver', 'CommandTestAdapter',
+- 2026-11-16T19:07 [M3.23] (lead) ADDITIONAL SCOPE (M3.7 legality final pass): (1) ADR-0010:9 and ADR-0006:13-14 must phrase docs/research/btrfs-crun-benchmarks.md as "to be recorded by M3.11" (
+- 2026-11-16T19:07 [M3.2] (lead) PHASE 2 REWRITE MUST-DO (flagged by M3.7 legality review): this epic NODE.md title/body still say RunnerProtocol v1, CoverageDriver, CommandTestAdapter, pytest-
+- 2026-11-16T19:08 [M3.7] (lead) ioc final pass FAIL with 2 MAJORs forwarded to the architect follow-up: E1 ADR-0010 must state the deletion ruling (all previously shipped engine adapters/proto
+- 2026-11-16T19:16 [M3.22] (lead) edited fields
+- 2026-11-16T19:16 [M3.22] (lead) depends_on widened to M3.1 + M3.15: M3.22 edits crates/slipfork/Cargo.toml and crates/slipfork/tests/support/mod.rs, which M3.15 also writes, so the path lock m
+- 2026-11-16T19:16 [M3] (lead) PHASE 2 VOCABULARY (flagged by M3.7 ioc sign-off): this milestone NODE.md still describes TestCoordinator/RunnerProtocol v1/CoverageDriver/pytest-slipfork in it
+- 2026-11-16T19:19 [M3.8] (lead) STALE VOCABULARY (M3.7 cruft sign-off): docs/design/world-base-image.md:364 still carries TestCoordinator/RunnerProtocol v1 wording; the rewrite must drop the d
+- 2026-11-16T19:19 [M3.23] (lead) FINAL POLISH (from M3.7 cruft sign-off, optional): (1) ADR-0009 Composition Root mermaid redraws the ARCHITECTURE §1 tree -> collapse to a §1 pointer; (2) ADR-0
+- 2026-11-16T20:44 [M3.24] (lead) created (task) Finish bounded-wait consolidation in world-booting suite harnesses and make rs-test-list comments match what the guard enforces
+- 2026-11-16T20:45 [M3.24] (lead) edited fields
+- 2026-11-16T20:45 [M3.24] (lead) SCOPE ADD (M3.1 cruft gate): also factor the duplicated kill -TERM -- -pgid block (critical_cli.rs:422 vs critical_slug.rs:66), the repeated "rt" runtime-dir li
+- 2026-11-16T20:45 [M3.1] (lead) LEGALITY GATE (attempt 4) FAIL: (a) MAJOR evidence honesty — RESULT.md claims "normal load (4-13)" while its own artifact a4-gate.status cycle 7 shows load 31.5
+- 2026-11-16T20:45 [M3.13] (lead) REQUIREMENT (M3.1 legality gate): the engine stop path must be bounded-but-abort-aware — do not carry a fixed grace (the current 10s WORLD_STOP_GRACE red-lines 
+- 2026-11-16T20:45 [M3.14] (lead) REQUIREMENT (M3.1 legality gate): engine conformance/critical suites must be deterministic at high host load; assert bounded teardown elapsed time rather than f
+- 2026-11-16T20:45 [M3.19] (lead) ADD (M3.1 legality gate): the live VM run must include one make check under deliberately elevated host load (e.g. parallel CPU burners) to prove the Btrfs engin
+- 2026-11-16T20:45 [M3.1] (lead) edited fields
+- 2026-11-16T20:45 [M3.1] (lead) attempt 5/5 started
+- 2026-11-16T20:45 [M3.1] (lead) status review -> active
+- 2026-11-16T20:48 [M3.7] (lead) edited fields
+- 2026-11-16T20:48 [M3.23] (lead) FINAL POLISH from M3.7 functional review: ADR-0010 Consequences should state the operational consequence (every non-Btrfs host hard-fails at slipforkd boot and 
+- 2026-11-16T20:48 [M3.15] (lead) REQUIREMENT (M3.7 functional review): the same 0.3.0 sweep must delete the stale doctor help text and JSON fields describing the old engine (crates/slipfork/src
