@@ -434,3 +434,4 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-16T01:26 [M2.20] (lead) bench note: default 16x8 exceeds 50 min on this host (harness hangs after seeding under load); a bounded --num-tests 1 --workers 1 run exits 0, proving the pipe
 - 2026-11-16T01:52 [M2.20] (lead) conductor ruling applied: bounded 1x1 bench --check exit 0 as evidence; default 16x8 is host-time-bound and not gate evidence (follow-up filed); in-flight bench
 - 2026-11-16T01:53 [M2.20] (lead) status active -> done
+- 2026-11-16T01:55 ESCALATION #14 -> strategist for M2 by conductor: milestone gate for 0.2.0 (36 leaves done; M2.21/M2.22 blocked on H-004/H-006 as designed)
