@@ -4,24 +4,26 @@ title: "Polyglot Parallel Snapshot-DAG Test Orchestrator (slipfork test, RunnerP
 kind: epic
 status: ready
 priority: 2
-depends_on: [M3.1]
+depends_on: [M3.1, M3.19]
 paths: []
 attempts: 0
 max_attempts: 3
 escalation: none
 created: "2026-11-16T06:34"
-updated: "2026-11-16T06:34"
+updated: "2026-11-16T16:59"
 ---
 
 # Goal
 
-Deliver Slipfork `0.3.0` (`slipfork test`):
-1. **Snapshot & Cache Lifecycle (`slipfork-engine`, `slipfork-dag`, `slipforkd`):** Content-addressed `[artifacts.*]` (`CowArtifactStore` + `VolumeCloner`) and `[fixtures.*]` materialization (origin-independent shared `DigestCache` CoW lineages sealed via `freeze_world` vs `per_world = true` post-origin world seeds that never enter `DigestCache`), plus snapshot and `<state_dir>/cache/{rootfs,oci}` garbage collection in `slipfork prune`.
-2. **`crates/slipfork-test` (`TestCoordinator`, `RunnerProtocol v1`, Warm Pool & `CoverageDriver`):** Wire `TestCoordinator` into `slipforkd` over canonical `.slipfork/runs/<run_id>/<slot>/{runner.sock,coverage,output}` on `ADR-0009` `Dockerfile` `L0` rootfs + `crun` backing-service worlds; enforce hermetic-by-default `ResourceMode::Test` (`ResourcePlan::resolve`: ephemeral local SeaweedFS S3 + clean `initdb -> migrate -> [fixtures.*]`); rolling pre-warmed `TestSlot` CoW world pool (with slot-stable coverage mounts) + shared host `BrowserContext`s over `http://test-<slot>.<project>.localhost`; two-tier `batch` vs `world` scheduling; universal `AF_UNIX` NDJSON `RunnerProtocol v1` (`SocketRunnerAdapter` + zero-plugin `CommandTestAdapter`); built-in typed `[test]` coverage (`coverage`, `coverage_report`, `coverage_fail_under` `0..=100`) via `TestAdapter::coverage` (`CoverageDriver`); and surviving tool-owned `SLIPFORK_OUTPUT_DIR`.
-3. **Polyglot `TestAdapter`s & `ADR-0007` Tier Promotion:** Ship and verify `pytest-slipfork` (Adapter #1 + warm Zygote), `Playwright`/`Vitest`, `PHPUnit`/`Pest`, `cargo nextest`, and `CommandTestAdapter` with protected critical suites, published Zensical recipes, and `support/integrations.toml` tier promotion (`tools/check_support.py --check`).
+Deliver Slipfork `0.3.0` (`slipfork test`) on the **single** Option A engine — one unified Btrfs subvolume per world behind `BtrfsEngine` (`ADR-0010`) — with zero fallbacks:
+
+1. **Snapshot & cache lifecycle:** content-addressed `[artifacts.*]` (`CowArtifactStore` + `VolumeCloner`) and `[fixtures.*]` materialization (origin-independent `DigestCache` lineages sealed via `freeze_world` vs `per_world = true` post-origin seeds that never enter `DigestCache`), plus unreferenced subvolume + `<state_dir>/cache/{rootfs,oci}` garbage collection in `slipfork prune`.
+2. **`crates/slipfork-test` (`TestCoordinator`, `RunnerProtocol v1`, warm pool, `CoverageDriver`):** wired into `slipforkd` over the canonical `.slipfork/runs/<run_id>/<slot>/{runner.sock,coverage,output}` tree; hermetic-by-default `ResourceMode::Test` via `ResourcePlan::resolve`; rolling single-use pre-warmed `TestSlot` worlds with slot-stable coverage mounts; two-tier `batch` vs `world` scheduling; `AF_UNIX` NDJSON `RunnerProtocol v1` (`SocketRunnerAdapter` + zero-plugin `CommandTestAdapter`); built-in typed `[test]` coverage (`coverage`, `coverage_report`, `coverage_fail_under`) through `TestAdapter::coverage`; surviving tool-owned `SLIPFORK_OUTPUT_DIR`.
+3. **Adapters & evidence:** `pytest-slipfork` (Adapter #1, warm Zygote `os.fork()` after app import) and `CommandTestAdapter` pass the shared `TestAdapter` conformance suite and protected critical tests; registry claims follow `ADR-0007` evidence only (`tools/check_support.py --check`).
+4. **Isolated tail:** `M3.4` (`WeavedRegistrar`, `H-006`) stays `blocked` until `weaved` publishes its IPC specification.
 
 # Acceptance
 
-- [ ] `slipfork test` executes real multi-slot parallel suites over `RunnerProtocol v1` (`SocketRunnerAdapter` + `CommandTestAdapter`) on `ADR-0009` `L0` rootfs + `crun` worlds with hermetic `ResourceMode::Test` defaults, orthogonal `[artifacts.*]` / `[fixtures.*]` (`per_world` non-sharing enforced), typed `[test]` coverage reports/thresholds, and surviving `SLIPFORK_OUTPUT_DIR`.
-- [ ] `pytest-slipfork`, `Playwright`/`Vitest`, `PHPUnit`/`Pest`, `cargo nextest`, and `CommandTestAdapter` pass shared `TestAdapter` conformance + protected critical tests and match `docs/support-matrix.md` (`check_support.py --check`).
-- [ ] `make check` (without env overrides) and bounded `make bench --check` exit 0 with zero published vaporware (`check_docs_honesty.py`).
+- [ ] `slipfork test -j N` executes real multi-slot parallel suites over `RunnerProtocol v1` on Btrfs `crun` worlds with hermetic `ResourceMode::Test` defaults, orthogonal `[artifacts.*]`/`[fixtures.*]` (`per_world` non-sharing enforced), typed coverage reports/thresholds, and surviving `SLIPFORK_OUTPUT_DIR`.
+- [ ] `pytest-slipfork` and `CommandTestAdapter` pass the shared `TestAdapter` conformance suite plus protected critical tests and match `docs/support-matrix.md` (`check_support.py --check`).
+- [ ] `make check` (zero environment overrides) and `make docs-check` exit 0 on a non-Btrfs dev host; the real kernel suites and a bounded `make bench --check` exit 0 on the Btrfs DO VM with zero published vaporware (`check_docs_honesty.py`).

@@ -486,3 +486,37 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-16T16:53 [M3.6] (conductor) status ready -> superseded: Superseded by total Option A Btrfs-only wipe (deleting Incus, XFS FICLONE, and KVM/QEMU completely)
 - 2026-11-16T16:53 [M3] (conductor) OWNER RULING (SCORCHED EARTH — OPTION A BTRFS-ONLY): (1) Option A (unified Btrfs subvolumes + Linux namespaces `userns+netns+ipcns+pidns+mntns` + `pivot_root` +
 - 2026-11-16T16:53 AUTOPILOT on by conductor All steam on Option A Btrfs-only wipe + M3 (0.3.0)
+- 2026-11-16T16:58 [M3.7] (planner) created (task) Option A design of record: ADR-0010, ARCHITECTURE.md DI tree, and ADR-0001..0009 scorched-earth wipe
+- 2026-11-16T16:58 [M3.8] (planner) created (task) Rewrite docs/design/world-base-image.md on unified Btrfs subvolumes
+- 2026-11-16T16:58 [M3.9] (planner) created (task) Rewrite docs/design/target-dx.md for the Btrfs-only world (doctor, world entry, zero incus)
+- 2026-11-16T16:58 [M3.10] (planner) created (task) Rewrite docs/design/do-vm-harness.md: Btrfs volume, crun, AppArmor userns, persistent --identity
+- 2026-11-16T16:58 [M3.11] (planner) created (task) Record Spike A measurements (Btrfs + crun) in docs/research and LESSONS
+- 2026-11-16T16:58 [M3.9] (planner) edited fields
+- 2026-11-16T16:58 [M3.12] (planner) created (task) SubvolumeDriver seam: KernelBtrfsDriver (statfs + BTRFS_IOC_*) and test-only tree driver
+- 2026-11-16T16:58 [M3.13] (planner) created (task) BtrfsEngine: sole production WorldEngine (unified per-world subvolume, RO snapshots, writable clones, --ipc); delete IncusEngine, ReflinkNetnsEng
+- 2026-11-16T16:58 [M3.14] (planner) created (task) Engine conformance + critical suites on BtrfsEngine (driver-injected fast suites, live kernel suite for the VM)
+- 2026-11-16T16:58 [M3.15] (planner) created (task) slipforkd BtrfsEngine wiring, slipfork doctor Btrfs probe, daemon unit --only apparmor userns profile
+- 2026-11-16T16:58 [M3.16] (planner) created (task) tools/do_vm.py: Btrfs volume, crun/docker/Rust, AppArmor userns, persistent --identity (zero ZFS/Incus)
+- 2026-11-16T16:58 [M3.17] (planner) created (task) poc benchmark + support registry on the Btrfs engine (fails closed off-Btrfs)
+- 2026-11-16T16:58 [M3.18] (planner) created (task) Published docs align with the shipped Btrfs-only surfaces (README, index, getting-started, CLI reference, AGENTS.md)
+- 2026-11-16T16:58 [M3.19] (planner) created (task) Live verification on the Btrfs DO VM: BtrfsEngine + crun + postgres:18 suites, measured numbers, reboot-safe SSH
+- 2026-11-16T16:59 [M3.1] (planner) edited fields
+- 2026-11-16T16:59 [M3.2.1] (planner) created (task) 0.3.0 test-orchestrator architecture blueprint: TestAdapter/CoverageDriver DI tree, RunnerProtocol v1, WorldPool, daemon seam
+- 2026-11-16T16:59 [M3.2.2] (planner) created (task) Cargo wedge: crates/slipfork-test crate skeleton, workspace member, full dependency set
+- 2026-11-16T16:59 [M3.2.3] (planner) created (task) RunnerProtocol v1 wire types, TestAdapter/CoverageDriver traits, shared conformance suite
+- 2026-11-16T16:59 [M3.2.4] (planner) created (task) SocketRunnerAdapter: AF_UNIX NDJSON over runner.sock
+- 2026-11-16T16:59 [M3.2.5] (planner) created (task) CommandTestAdapter: zero-plugin generic polyglot executable adapter
+- 2026-11-16T16:59 [M3.2.6] (planner) created (task) Typed CoverageDriver: coverage env/paths, report combination, coverage_fail_under
+- 2026-11-16T16:59 [M3.2.7] (planner) created (task) Artifact/fixture materializer: [artifacts.*], [fixtures.*], per_world post-origin, never in DigestCache
+- 2026-11-16T16:59 [M3.2.8] (planner) created (task) Rolling single-use warm Btrfs world pool (refill, timeout drain, slot-stable coverage/output mounts)
+- 2026-11-16T16:59 [M3.2.9] (planner) created (task) TestCoordinator: run tree, batch vs world scheduling, coverage enforcement, TestEvent stream
+- 2026-11-16T16:59 [M3.2.10] (planner) created (task) PytestAdapter (Rust): warm Zygote runner over RunnerProtocol v1 + Python coverage combine
+- 2026-11-16T16:59 [M3.2.11] (planner) created (task) packages/pytest-slipfork: zero-ceremony pytest plugin (RunnerProtocol v1, warm os.fork Zygote)
+- 2026-11-16T16:59 [M3.2.12] (planner) created (task) CLI slipfork test + DaemonControl::test streaming seam (typed exit codes, --json purity)
+- 2026-11-16T16:59 [M3.2.13] (planner) created (task) Snapshot + rootfs/OCI cache GC in slipfork prune (dry-run, live-world safe, idempotent)
+- 2026-11-16T16:59 [M3.2.14] (planner) created (task) Makefile: run pytest-slipfork tests in py-test and serialize new world-booting suites
+- 2026-11-16T16:59 [M3.2.15] (planner) created (task) 0.3.0 test-surface audit + conformance matrix + support registry promotion
+- 2026-11-16T16:59 [M3.2.16] (planner) created (task) Published 0.3.0 docs for slipfork test: CLI reference, testing DAG, README, getting-started recipe
+- 2026-11-16T16:59 [M3.2.17] (planner) created (task) 0.3.0 release prep: workspace version, CHANGELOG breaking note, docs nav label
+- 2026-11-16T16:59 [M3.2.18] (planner) created (task) Live end-to-end slipfork test -j 4 on the Btrfs DO VM (warm pool, typed coverage, output survival, prune)
+- 2026-11-16T16:59 [M3.2] (planner) edited fields
