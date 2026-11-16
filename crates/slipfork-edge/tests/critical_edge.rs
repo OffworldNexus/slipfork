@@ -2945,9 +2945,48 @@ fn free_loopback_port() -> u16 {
         .port()
 }
 
-#[test]
-fn socket_activate_systemd_handover() {
-    let state = cached_test_dir("socket-activate");
+/// Bounded attempts for the real handover, each on a freshly reserved loopback port.
+///
+/// The reservation and the tool's own `bind` are two separate syscalls, so any concurrent binder on
+/// the host (another case of this binary's parallel phase, another test binary, or an unrelated
+/// process) can take the port in between. Losing that race is a harness artefact, never a product
+/// defect, so the whole handover is re-run on a fresh port a bounded number of times instead of
+/// weakening any assertion or padding a wait.
+const HANDOVER_ATTEMPTS: u32 = 5;
+
+/// Bound on `systemd-socket-activate` reporting its listening socket.
+const HANDOVER_READY_DEADLINE: Duration = Duration::from_secs(30);
+
+/// Poll interval for the tool's `Listening on …` readiness line.
+const HANDOVER_READY_POLL: Duration = Duration::from_millis(100);
+
+/// One attempt of the real fd-3 handover.
+enum Handover {
+    /// The tool listened on the reserved port and the probe child served the real dispatch.
+    Served,
+    /// The tool could not bind the reserved port, carrying its captured stderr. Only
+    /// `Address already in use` is retryable; every other diagnostic stays fatal.
+    PortTaken(String),
+}
+
+/// Whether captured tool stderr reports the exact lost race: the reserved port was taken.
+///
+/// This English diagnostic is the **only** classification input: a different wording makes the
+/// helper return `false`, so the handover fails loudly with the tool's captured stderr instead of
+/// silently retrying something it did not understand.
+///
+/// `systemd-socket-activate` 257 prints
+/// `Failed to listen on 127.0.0.1:<port>: Address already in use` before exiting without ever
+/// printing `Listening on …`. Only that bind failure is retried, so a missing binary, an invalid
+/// address, or a permission error still fails closed with the real output quoted.
+fn lost_reserved_port(stderr: &str) -> bool {
+    stderr.lines().any(|line| {
+        line.starts_with("Failed to listen on ") && line.ends_with(": Address already in use")
+    })
+}
+
+/// Run the real `systemd-socket-activate` handover once on a freshly reserved loopback port.
+fn socket_activate_handover_once(state: &Path) -> Handover {
     let executable = std::env::current_exe().expect("current test executable");
     let port = free_loopback_port();
 
@@ -3004,32 +3043,45 @@ fn socket_activate_systemd_handover() {
         })
     };
 
-    let ready_deadline = Instant::now() + Duration::from_secs(30);
+    let ready_deadline = Instant::now() + HANDOVER_READY_DEADLINE;
     loop {
-        match ready_rx.recv_timeout(Duration::from_millis(100)) {
+        match ready_rx.recv_timeout(HANDOVER_READY_POLL) {
             Ok(()) => break,
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 if let Some(status) = child.try_wait().expect("poll systemd-socket-activate") {
                     let _ = stderr_reader.join();
+                    let _ = stdout_reader.join();
+                    let stderr_text = stderr_log.lock().expect("tool stderr log").clone();
+                    if lost_reserved_port(&stderr_text) {
+                        return Handover::PortTaken(stderr_text);
+                    }
                     panic!(
-                        "systemd-socket-activate exited before listening ({status})\nstderr:\n{}",
-                        stderr_log.lock().expect("tool stderr log").as_str()
+                        "systemd-socket-activate exited before listening ({status})\nstderr:\n{stderr_text}"
                     );
                 }
                 if Instant::now() >= ready_deadline {
                     let _ = child.kill();
                     let _ = child.wait();
                     panic!(
-                        "systemd-socket-activate never reported a listening socket within 30s\nstderr:\n{}",
+                        "systemd-socket-activate never reported a listening socket within {}s\nstderr:\n{}",
+                        HANDOVER_READY_DEADLINE.as_secs(),
                         stderr_log.lock().expect("tool stderr log").as_str()
                     );
                 }
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => {
                 let _ = stderr_reader.join();
+                let stderr_text = stderr_log.lock().expect("tool stderr log").clone();
+                // Reap the tool before joining the stdout reader: a descendant that still holds
+                // stdout would otherwise keep that join blocked past every deadline.
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = stdout_reader.join();
+                if lost_reserved_port(&stderr_text) {
+                    return Handover::PortTaken(stderr_text);
+                }
                 panic!(
-                    "systemd-socket-activate closed its stderr before listening\nstderr:\n{}",
-                    stderr_log.lock().expect("tool stderr log").as_str()
+                    "systemd-socket-activate closed its stderr before listening\nstderr:\n{stderr_text}"
                 );
             }
         }
@@ -3063,5 +3115,29 @@ fn socket_activate_systemd_handover() {
         stdout_text.contains("activation_probe_child"),
         "the child half of the probe must have run, got:\n{stdout_text}"
     );
+    Handover::Served
+}
+
+#[test]
+fn socket_activate_systemd_handover() {
+    let state = cached_test_dir("socket-activate");
+    let mut attempts = 0;
+    loop {
+        attempts += 1;
+        let attempt_state = state.join(format!("attempt-{attempts}"));
+        fs::create_dir_all(&attempt_state).expect("create the handover attempt state directory");
+        match socket_activate_handover_once(&attempt_state) {
+            Handover::Served => break,
+            Handover::PortTaken(stderr) => {
+                assert!(
+                    attempts < HANDOVER_ATTEMPTS,
+                    "the real socket handover lost its freshly reserved loopback port on all \
+                     {HANDOVER_ATTEMPTS} attempts: a concurrent binder kept taking the port between \
+                     the reservation and the tool's bind, so no live handover could be observed; \
+                     last stderr:\n{stderr}"
+                );
+            }
+        }
+    }
     let _ = fs::remove_dir_all(&state);
 }

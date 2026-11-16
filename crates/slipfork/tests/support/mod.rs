@@ -10,12 +10,13 @@
 use std::fs::{self, OpenOptions};
 use std::io::BufRead;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
+use slipfork_edge::DaemonControlClient;
+use slipfork_testkit::{DAEMON_STARTUP_DEADLINE, SHUTDOWN_DEADLINE, poll_until};
 use tempfile::TempDir;
 
 /// Disk-backed scratch directory with a short path (AF_UNIX `sun_path` budget), never `/tmp`.
@@ -41,6 +42,10 @@ pub fn run_git(cwd: &Path, args: &[&str]) {
             "user.email=test@localhost",
             "-c",
             "commit.gpgsign=false",
+            // The suites clone and add local repositories as submodules, which git's default
+            // `protocol.file` policy refuses; the fixtures are paths this test created itself.
+            "-c",
+            "protocol.file.allow=always",
         ])
         .args(args)
         .current_dir(cwd)
@@ -156,33 +161,42 @@ impl Daemon {
             command.env("PATH", path);
         }
         let mut child = command.spawn().expect("spawn slipforkd");
-        let socket = runtime_dir.join("daemon.sock");
-        let deadline = Instant::now() + Duration::from_secs(20);
-        while Instant::now() < deadline {
-            if UnixStream::connect(&socket).is_ok() {
-                return Self {
-                    child,
-                    state_dir,
-                    runtime_dir,
-                    browser_marker,
-                };
+        let client = DaemonControlClient::bind(&runtime_dir);
+        let served = poll_until(DAEMON_STARTUP_DEADLINE, || {
+            if client.is_served() {
+                return Ok(());
             }
+            // An exited child is terminal, not a retryable state: fail now with its log instead of
+            // sleeping through the whole deadline.
             if let Ok(Some(status)) = child.try_wait() {
                 panic!(
                     "slipforkd exited with {status} before serving {}:\n{}",
-                    socket.display(),
-                    fs::read_to_string(&log_path).unwrap_or_default()
+                    client.socket_path().display(),
+                    fs::read_to_string(&log_path)
+                        .unwrap_or_else(|error| format!("<logs unavailable: {error}>"))
                 );
             }
-            std::thread::sleep(Duration::from_millis(25));
+            Err(format!(
+                "{} is not served yet",
+                client.socket_path().display()
+            ))
+        });
+        if let Err(last) = served {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!(
+                "slipforkd did not serve {} within {DAEMON_STARTUP_DEADLINE:?} ({last}):\n{}",
+                client.socket_path().display(),
+                fs::read_to_string(&log_path)
+                    .unwrap_or_else(|error| format!("<logs unavailable: {error}>"))
+            );
         }
-        let _ = child.kill();
-        let _ = child.wait();
-        panic!(
-            "slipforkd did not serve {} within 20s:\n{}",
-            socket.display(),
-            fs::read_to_string(&log_path).unwrap_or_default()
-        );
+        Self {
+            child,
+            state_dir,
+            runtime_dir,
+            browser_marker,
+        }
     }
 
     pub fn cli(&self, cwd: &Path, args: &[&str]) -> Output {
@@ -273,6 +287,33 @@ pub fn assert_success(output: &Output, what: &str) {
     );
 }
 
+/// Wait until the daemon serving `runtime_dir` stops accepting on `<runtime_dir>/daemon.sock`.
+///
+/// Probes through the production [`DaemonControlClient::is_served`] the CLI's zero-setup auto-spawn
+/// uses, so this proof can never drift from the check a later invocation would really make.
+/// Returns the still-served socket description once [`SHUTDOWN_DEADLINE`] expires, so each caller
+/// panics with its own captured invocation output.
+pub fn wait_daemon_teardown(runtime_dir: &Path) -> Result<(), String> {
+    let client = DaemonControlClient::bind(runtime_dir);
+    let socket = client.socket_path().to_owned();
+    poll_until(SHUTDOWN_DEADLINE, || {
+        if client.is_served() {
+            Err(format!("{} still accepts connections", socket.display()))
+        } else {
+            Ok(())
+        }
+    })
+    .map_err(|last| format!("{last} after {SHUTDOWN_DEADLINE:?}"))
+}
+
+/// Bound on one streamed child line.
+///
+/// This is the one legitimate non-poll wait: the producer thread blocks on the child's stdout pipe
+/// and the consumer must block on the channel until the next line arrives, so a `poll_until` loop
+/// would only re-implement `recv_timeout` on the same channel. The blocking bound is therefore a
+/// named deadline, not a polling interval.
+const STREAM_LINE_DEADLINE: Duration = Duration::from_secs(30);
+
 /// Read lines from a child's stdout until `predicate` accepts one or the deadline expires.
 pub fn wait_for_line(child: &mut Child, predicate: impl Fn(&str) -> bool) -> String {
     let stdout = child.stdout.take().expect("child stdout");
@@ -285,13 +326,15 @@ pub fn wait_for_line(child: &mut Child, predicate: impl Fn(&str) -> bool) -> Str
             }
         }
     });
-    let deadline = Instant::now() + Duration::from_secs(30);
+    let deadline = Instant::now() + STREAM_LINE_DEADLINE;
     loop {
         let remaining = deadline.saturating_duration_since(Instant::now());
         match receiver.recv_timeout(remaining) {
             Ok(line) if predicate(&line) => return line,
             Ok(_) => {}
-            Err(error) => panic!("streaming command produced no matching line: {error}"),
+            Err(error) => panic!(
+                "streaming command produced no matching line within {STREAM_LINE_DEADLINE:?}: {error}"
+            ),
         }
     }
 }

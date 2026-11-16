@@ -6,6 +6,7 @@ members = [
   "crates/slipfork-dag",
   "crates/slipfork-engine",
   "crates/slipfork-edge",
+  "crates/slipfork-testkit",
   "crates/slipfork-vcs",
   "crates/slipfork-ospp",
   "crates/slipfork",

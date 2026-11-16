@@ -11,8 +11,7 @@ mod support;
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use slipfork_engine::rootfs::BackingServiceKey;
 use slipfork_engine::{
@@ -20,6 +19,7 @@ use slipfork_engine::{
     ServiceRuntime, ServiceSpec, ServiceState, SnapshotId, SnapshotMode, StateSubdirMount,
     WorldEngine, WorldHandle, WorldMount, WorldRootfs, WorldSpec, current_uid_gid,
 };
+use slipfork_testkit::poll_until;
 use slipfork_world::WorldTarget;
 
 const PG_PATH: &str =
@@ -27,6 +27,23 @@ const PG_PATH: &str =
 const REDIS_PATH: &str = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
 const PG_DATA: &str = "/var/lib/postgresql/data";
 const REDIS_DATA: &str = "/data";
+/// Bound on a container reaching the terminal state a test expects (`initdb` finishing).
+const SERVICE_STATE_TIMEOUT: Duration = Duration::from_secs(120);
+/// Bound on `crun exec` accepting a command after the container started.
+const EXEC_READY_TIMEOUT: Duration = Duration::from_secs(30);
+/// Follow-up bound on `postgres:18` answering a real query.
+///
+/// `spawn_service` waits up to the engine's 60 s `OCI_SERVICE_READY_TIMEOUT`
+/// (`crates/slipfork-engine/src/reflink_netns.rs`) for the `ServiceSpec::readiness_port` listener
+/// to accept, and a TCP-accepting postgres can still be finishing startup recovery. This 20 s
+/// caller-side follow-up therefore runs after that 60 s window, not inside it. It is a stopgap,
+/// not a second readiness contract.
+///
+/// This stopgap and `PG_READY_TIMEOUT` are removed when the engine-owned
+/// `ServiceSpec.readiness: ReadinessProbe` (`ADR-0002` §2) lands in `M3.13`–`M3.15`:
+/// `spawn_service` then returns only once in-container `psql`/`redis-cli` probes answer, so no
+/// caller polls a service itself.
+const PG_READY_TIMEOUT: Duration = Duration::from_secs(20);
 
 fn root_dir(label: &str) -> PathBuf {
     let home = std::env::var("HOME").expect("HOME");
@@ -178,23 +195,26 @@ impl Harness {
         }]
     }
 
-    fn wait_for_state(&self, handle: &ServiceHandle, expected: ServiceState, timeout: Duration) {
-        let deadline = Instant::now() + timeout;
-        while Instant::now() < deadline {
-            if handle.state() == expected {
-                return;
+    fn wait_for_state(&self, handle: &ServiceHandle, expected: ServiceState) {
+        let observed = poll_until(SERVICE_STATE_TIMEOUT, || {
+            let state = handle.state();
+            if state == expected {
+                Ok(())
+            } else {
+                Err(format!("last observed {state:?}"))
             }
-            thread::sleep(Duration::from_millis(50));
+        });
+        if let Err(last) = observed {
+            let logs = self
+                .engine
+                .service_logs(handle.world(), handle.id())
+                .map(|logs| log_text(&logs))
+                .unwrap_or_else(|error| format!("<logs unavailable: {error}>"));
+            panic!(
+                "service '{}' did not reach {expected:?} within {SERVICE_STATE_TIMEOUT:?} ({last}); logs:\n{logs}",
+                handle.id()
+            );
         }
-        let logs = self
-            .engine
-            .service_logs(handle.world(), handle.id())
-            .map(|logs| log_text(&logs))
-            .unwrap_or_default();
-        panic!(
-            "service '{}' did not reach {expected:?} within {timeout:?}; logs:\n{logs}",
-            handle.id()
-        );
     }
 
     fn init_postgres(&self, world: &WorldHandle) {
@@ -223,7 +243,7 @@ impl Harness {
             .engine
             .spawn_service(world, &spec)
             .expect("spawn initdb container");
-        self.wait_for_state(&init, ServiceState::Exited, Duration::from_secs(120));
+        self.wait_for_state(&init, ServiceState::Exited);
         let logs = log_text(
             &self
                 .engine
@@ -267,7 +287,7 @@ impl Harness {
                     .engine
                     .service_logs(world, "postgres")
                     .map(|logs| log_text(&logs))
-                    .unwrap_or_default();
+                    .unwrap_or_else(|error| format!("<logs unavailable: {error}>"));
                 panic!("spawn postgres container: {error}\nlogs:\n{logs}")
             })
     }
@@ -305,33 +325,58 @@ impl Harness {
                     .engine
                     .service_logs(world, "redis")
                     .map(|logs| log_text(&logs))
-                    .unwrap_or_default();
+                    .unwrap_or_else(|error| format!("<logs unavailable: {error}>"));
                 panic!("spawn redis container: {error}\nlogs:\n{logs}")
             })
     }
 
     /// Wait until `crun run` has written the container status that `crun exec` needs.
     fn wait_exec_ready(&self, service: &ServiceHandle) {
-        let deadline = Instant::now() + Duration::from_secs(30);
-        loop {
+        let ready = poll_until(EXEC_READY_TIMEOUT, || {
             match self.engine.exec_in_service(
                 service,
                 &["sleep".to_owned(), "0".to_owned()],
                 &ExecEnv::default(),
                 &mut |_| {},
             ) {
-                Ok(output) if output.exit_code == 0 => return,
-                Ok(output) if Instant::now() >= deadline => {
-                    panic!(
-                        "container '{}' never accepted exec: {output:?}",
-                        service.id()
-                    )
-                }
-                Err(error) if Instant::now() >= deadline => {
-                    panic!("container '{}' never accepted exec: {error}", service.id())
-                }
-                _ => thread::sleep(Duration::from_millis(50)),
+                Ok(output) if output.exit_code == 0 => Ok(()),
+                Ok(output) => Err(format!(
+                    "exec exited {}: {}",
+                    output.exit_code, output.stderr
+                )),
+                Err(error) => Err(error.to_string()),
             }
+        });
+        if let Err(last) = ready {
+            panic!(
+                "container '{}' never accepted exec within {EXEC_READY_TIMEOUT:?}: {last}",
+                service.id()
+            );
+        }
+    }
+
+    /// The one canonical postgres readiness proof: one real `select 1` per probe attempt.
+    ///
+    /// A container whose listener already accepts TCP connections can still be finishing postgres
+    /// startup recovery (`the database system is starting up`, psql exit 2), so poll boundedly and
+    /// report the last captured stderr on timeout.
+    fn wait_postgres_ready(&self, service: &ServiceHandle) {
+        let ready = poll_until(PG_READY_TIMEOUT, || {
+            let output = psql(self, service, "select 1");
+            if output.exit_code == 0 && output.stdout.trim() == "1" {
+                Ok(())
+            } else {
+                Err(format!(
+                    "psql exit {}, stderr:\n{}",
+                    output.exit_code, output.stderr
+                ))
+            }
+        });
+        if let Err(last) = ready {
+            panic!(
+                "postgres '{}' never answered `select 1` within {PG_READY_TIMEOUT:?}; last attempt: {last}",
+                service.id()
+            );
         }
     }
 
@@ -385,6 +430,7 @@ fn postgres_and_redis_share_the_world_netns_and_survive_a_reflink_clone() {
     let world = harness.clone_world(&harness.snapshot, WorldTarget::Canonical);
     harness.init_postgres(&world);
     let postgres = harness.start_postgres(&world);
+    harness.wait_postgres_ready(&postgres);
     let redis = harness.start_redis(&world);
     assert_eq!(postgres.state(), ServiceState::Running);
     assert_eq!(redis.state(), ServiceState::Running);
@@ -432,7 +478,6 @@ fn postgres_and_redis_share_the_world_netns_and_survive_a_reflink_clone() {
         "postgres:18 must report 18.x, got {}",
         server_version.stdout
     );
-    assert_eq!(psql(&harness, &postgres, "select 1").stdout.trim(), "1");
     assert_eq!(
         psql(&harness, &postgres, "create table t(v text)").exit_code,
         0
@@ -533,6 +578,7 @@ fn postgres_and_redis_share_the_world_netns_and_survive_a_reflink_clone() {
 
     let clone = harness.clone_world(&snap("sealed"), WorldTarget::UserFork("clone".to_owned()));
     let postgres_clone = harness.start_postgres(&clone);
+    harness.wait_postgres_ready(&postgres_clone);
     let redis_clone = harness.start_redis(&clone);
     assert_eq!(
         psql(&harness, &postgres_clone, "select v from t")
@@ -595,7 +641,7 @@ fn readonly_dump_mount_is_visible_read_only_and_collisions_fail_closed() {
         .expect("clone world with seed-dump mount");
     harness.init_postgres(&world);
     let postgres = harness.start_postgres(&world);
-    assert_eq!(psql(&harness, &postgres, "select 1").exit_code, 0);
+    harness.wait_postgres_ready(&postgres);
     assert_eq!(
         psql(&harness, &postgres, "create table seed(v text)").exit_code,
         0

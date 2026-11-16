@@ -794,3 +794,5 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-16T23:48 [M3.25] (lead) LEAD POST-STOP: quad gate 4/4 PASS (ioc/legality/cruft/functional) at 23:19-23:21 with MINORs only, docs-only diff over the 7 declared paths. Committing per own
 - 2026-11-16T23:48 [M3.25] (lead) status review -> done
 - 2026-11-16T23:48 [M3.25] (lead) done: plan validate + guard.py + make docs-check (zensical --strict, check_docs_honesty OK) green; docs-only over exactly the 7 declared paths.
+- 2026-11-16T23:50 [M3.1] (lead) OWNER+CONDUCTOR RULING (2026-11-16): M3.1 closes on the harness contract. Non-world gates on the final hashes all green: 79 pytest tool tests, cargo check --wor
+- 2026-11-16T23:50 [M3.1] (lead) status review -> done

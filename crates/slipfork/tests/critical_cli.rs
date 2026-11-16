@@ -12,12 +12,12 @@
 use std::fs;
 use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
-use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use serde_json::Value;
+use slipfork_testkit::{SHUTDOWN_DEADLINE, poll_until};
 
 mod support;
 use support::{Daemon, assert_success, repo_with_manifest, stderr, stdout, wait_for_line};
@@ -430,18 +430,8 @@ fn zero_setup_auto_spawn_serves_up_without_a_prestarted_daemon() {
         killed.success(),
         "kill -TERM -{process_group} must succeed to prove the test reaped its daemon"
     );
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while Instant::now() < deadline {
-        if UnixStream::connect(runtime_dir.join("daemon.sock")).is_err() {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(25));
-    }
-    assert!(
-        UnixStream::connect(runtime_dir.join("daemon.sock")).is_err(),
-        "the auto-spawned slipforkd must stop accepting on {} within 10s",
-        runtime_dir.join("daemon.sock").display()
-    );
+    support::wait_daemon_teardown(&runtime_dir)
+        .unwrap_or_else(|error| panic!("the auto-spawned slipforkd must stop accepting: {error}"));
 }
 
 // ---------------------------------------------------------------------------
@@ -807,17 +797,20 @@ fn forward_bridge_streams_a_real_request_and_closes_on_disconnect() {
 
     let _ = forward.kill();
     let _ = forward.wait();
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while Instant::now() < deadline {
+    // The daemon-owned listener closes only once the CLI process is gone; wait boundedly so the
+    // proof is deterministic instead of racing the disconnect.
+    poll_until(SHUTDOWN_DEADLINE, || {
         if TcpStream::connect(api_addr).is_err() {
-            break;
+            Ok(())
+        } else {
+            Err(format!("{api_addr} still accepts connections"))
         }
-        std::thread::sleep(Duration::from_millis(50));
-    }
-    assert!(
-        TcpStream::connect(api_addr).is_err(),
-        "the host listener must close when the CLI disconnects"
-    );
+    })
+    .unwrap_or_else(|last| {
+        panic!(
+            "the host listener must close within {SHUTDOWN_DEADLINE:?} when the CLI disconnects: {last}"
+        )
+    });
 }
 
 #[test]

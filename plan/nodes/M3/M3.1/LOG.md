@@ -111,3 +111,51 @@ LEGALITY GATE attempt 5 FAIL (evidence concurrency): RESULT claims the stale rev
 ## 2026-11-16T21:49 [lead]
 
 status review -> active
+
+## 2026-11-16T22:08 [lead]
+
+status active -> review
+
+## 2026-11-16T22:30 [lead]
+
+edited fields
+
+## 2026-11-16T22:30 [lead]
+
+attempt 7/7 started
+
+## 2026-11-16T22:30 [lead]
+
+FUNCTIONAL FINAL FAIL (attempt 6): BLOCKER — plain make rs-test red on the frozen tree (load 3.67) at critical_edge::socket_activate_systemd_handover: free_loopback_port binds 127.0.0.1:0, releases, then systemd-socket-activate re-binds and loses the race to a concurrently-bound ephemeral socket (Address already in use) in the unclassified parallel phase. paths widened to crates/slipfork-edge/tests/critical_edge.rs for a bounded retry with a fresh port (accept only the Listening line; fail closed on other stderr) — NOT serialization-only. Also: RESULT must cite the 22:11-hash-verified frozen sequence, not sequence 3; fix the --check wording; SHUTDOWN_DEADLINE strictly above WORLD_STOP_GRACE with rationale.
+
+## 2026-11-16T22:48 [implementer]
+
+attempt 7/7: fixed the flake at the source — `critical_edge::socket_activate_systemd_handover` is now a bounded fresh-port retry (`HANDOVER_ATTEMPTS = 5`) that retries only the tool's own `Failed to listen on …: Address already in use` line, fails closed with captured stderr on every other diagnostic, and keeps the `Listening on …` readiness signal plus all assertions unchanged (no sleep padding, no serialization). Proved both branches against the real tool with a temporary `free_loopback_port` sabotage (first-attempt steal → green on attempt 2; every-attempt steal → the 5-attempt cap panic), then reverted (hash 0d09bbd5…). `SHUTDOWN_DEADLINE = 15 s` with the strict-above-`WORLD_STOP_GRACE` rationale. RESULT re-cites the 22:11-hash-verified a6b sequence verbatim as superseded (reviewer rs-test on those hashes was red) and quotes the real `make rs-test-list` invocation (`--check` does not exist). Frozen sequence 22:33–22:45: all gates green, hashes identical before/after, in_repo=0 at every gate boundary; 1 world leaked and reaped (aborted launch), 0 left.
+
+## 2026-11-16T22:49 [implementer]
+
+Third stale attempt-6 driver (`i6z-gate.sh`, waiting in its preamble, zero gate records) was found alive against this tree and terminated after the sequence; the two `a6c` runs had already reverted `testkit/src/lib.rs` mid-flight, which is why one attempt-7 launch was aborted and its artifacts are not cited.
+
+## 2026-11-16T22:46 [lead]
+
+status review -> review
+
+## 2026-11-16T23:03 [lead]
+
+LEAD: acceptance envelope added to NODE.md (green required at load average <=10 with zero in-repo builds; at extreme foreign load the pre-Btrfs fixed 10s WORLD_STOP_GRACE red-lines and is owned by M3.13/M3.14/M3.21). Confidentiality scrub required in RESULT/LOG. Sequence: purge names -> fix Disconnected join -> regenerate attempt-7 record -> one frozen run with hashes.
+
+## 2026-11-16T23:45 [implementer]
+
+attempt 7 FINAL (owner hard stop): code settled — `critical_edge` fresh-port retry (`HANDOVER_ATTEMPTS = 5`, retry only `Failed to listen on …: Address already in use`, fail closed otherwise) with named `HANDOVER_READY_DEADLINE`/`HANDOVER_READY_POLL` and kill/wait before the stdout-reader join in the `Disconnected` branch; testkit `DAEMON_STARTUP_DEADLINE = 40 s` (15 s spawn budget + 10 s stop grace + margin) and `SHUTDOWN_DEADLINE = 15 s` (> 10 s grace). One frozen-hash sequence (23:28:43, hashes 637a635…/51b2614…, identical before/after) is RED and reported as red: `make rs-test` exit 2, `make check` A exit 2, `make check` B exit 2 (ts-test), all four failures `world init pid … is still alive 10s after SIGKILL`; load rose from 1.04 6.41 16.51 to 42.71 32.01 23.95 during the gates (foreign build storm). That is the pre-Btrfs fixed 10 s `WORLD_STOP_GRACE` residual owned by M3.13/M3.14/M3.21, not a harness defect, and was not retried. pytest 79 passed, rs-test-list/guard/critical-guard/plan-validate/proofs all exit 0. 12 worlds leaked and were reaped; 0 remain. Tree frozen and idle, uncommitted; no further code edits or runs.
+
+## 2026-11-16T23:46 [implementer]
+
+Correction of this node's earlier record: the attempt-7 sequence dated 22:33–22:45 was green but ran on an earlier hash set (testkit at 20 s before the 40 s/15 s settle), so it is NOT evidence for the final tree; the final-hash run is the red sequence above. The attempt-6 22:19–22:29 sequence is likewise historical. Confidentiality: no external repository/project name appears in RESULT.md, this log, or any file this node owns.
+
+## 2026-11-16T23:50 [lead]
+
+OWNER+CONDUCTOR RULING (2026-11-16): M3.1 closes on the harness contract. Non-world gates on the final hashes all green: 79 pytest tool tests, cargo check --workspace --all-targets, cargo clippy --workspace --all-targets -D warnings, make docs-check, guard.py (483 files), critical_guard.py --base 6736e08 --node M3.1 (95 changed). Only red is the pre-Btrfs fixed 10s WORLD_STOP_GRACE under unrelated foreign load (32-48), owned+deleted by M3.13/M3.14/M3.21; not re-measured. critical_edge port-steal fix proven 31/31 at load 32.58.
+
+## 2026-11-16T23:50 [lead]
+
+status review -> done

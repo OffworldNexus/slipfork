@@ -10,7 +10,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
 use serde_json::Value;
-use tempfile::TempDir;
+
+mod support;
+use support::{disk_tempdir, run_git};
 
 const MINIMAL_SNOW_YML: &str = r#"
 modes:
@@ -20,21 +22,6 @@ modes:
         APP_URL: '${{ resources::app.url }}'
         SECRET_KEY: '${{ secrets::SECRET_KEY !! random_string(32) }}'
 "#;
-
-/// Allocate a disk-backed temporary directory under `$HOME/.cache/slipfork-critical-tests`
-/// (never `/tmp` `tmpfs`), cleaned up automatically when `TempDir` drops.
-fn disk_tempdir() -> TempDir {
-    let base = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".cache")
-        .join("slipfork-critical-tests");
-    fs::create_dir_all(&base).expect("create disk test cache base");
-    tempfile::Builder::new()
-        .prefix("slug-e2e-")
-        .tempdir_in(base)
-        .expect("create disk tempdir")
-}
 
 fn find_host_executable(name: &str) -> PathBuf {
     let path_var = std::env::var_os("PATH").expect("PATH must be set");
@@ -51,31 +38,6 @@ fn write_executable_script(path: &Path, contents: &str) {
     file.set_permissions(Permissions::from_mode(0o755))
         .expect("chmod 0755 script");
     file.sync_all().expect("sync script");
-}
-
-fn run_git(cwd: &Path, args: &[&str]) {
-    let out = Command::new("git")
-        .args([
-            "-c",
-            "user.name=Slipfork Test",
-            "-c",
-            "user.email=test@localhost",
-            "-c",
-            "commit.gpgsign=false",
-            "-c",
-            "protocol.file.allow=always",
-        ])
-        .args(args)
-        .current_dir(cwd)
-        .output()
-        .expect("spawn git");
-    assert!(
-        out.status.success(),
-        "git {:?} failed in {}: {}",
-        args,
-        cwd.display(),
-        String::from_utf8_lossy(&out.stderr)
-    );
 }
 
 fn run_slipfork_with_env(
@@ -103,13 +65,44 @@ fn run_slipfork_with_env(
     }
     let child = cmd.spawn().expect("spawn slipfork binary");
     let process_group = child.id();
+    let group = format!("-{process_group}");
     let output = child.wait_with_output().expect("wait for slipfork binary");
-    let _ = Command::new("kill")
+    let killed = Command::new("kill")
         .arg("-TERM")
         .arg("--")
-        .arg(format!("-{process_group}"))
+        .arg(&group)
         .stderr(Stdio::null())
-        .status();
+        .status()
+        .expect("send SIGTERM to the slipfork process group");
+    let group_alive = Command::new("kill")
+        .arg("-0")
+        .arg("--")
+        .arg(&group)
+        .stderr(Stdio::null())
+        .status()
+        .expect("probe the slipfork process group")
+        .success();
+    // A diagnostic-only invocation (`dag plan`) never auto-spawns a daemon, so its group is already
+    // empty here and `kill` reports `ESRCH`; a failed TERM is only tolerated when nothing is left to
+    // reap, which the `kill -0` probe proves.
+    assert!(
+        killed.success() || !group_alive,
+        "kill -TERM {group} failed while the process group still had live members\n\
+         offending invocation: slipfork {args:?}\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    // The daemon auto-spawned by the CLI lives in this process group and only stops serving once
+    // its `SIGTERM` is serviced. A later invocation's `is_served()` only dials the socket, so it
+    // would otherwise reuse a daemon that is exiting and fail mid-request (ECONNRESET/EPIPE).
+    if let Err(error) = support::wait_daemon_teardown(&scratch.join("rt")) {
+        panic!(
+            "the auto-spawned slipforkd must stop accepting after the process-group SIGTERM: {error}\n\
+             offending invocation: slipfork {args:?}\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
     output
 }
 
@@ -119,7 +112,7 @@ fn run_slipfork(scratch: &Path, cwd: &Path, args: &[&str]) -> Output {
 
 #[test]
 fn worktree_resolves_to_canonical_repo_slug_and_honors_only_vcs_root_slipfork_toml() {
-    let tmp = disk_tempdir();
+    let tmp = disk_tempdir("slug-");
     let scratch = tmp.path();
     let repo = scratch.join("acme-app");
     fs::create_dir_all(repo.join("src")).expect("create repo/src");
@@ -456,7 +449,7 @@ fn worktree_resolves_to_canonical_repo_slug_and_honors_only_vcs_root_slipfork_to
 
 #[test]
 fn git_submodule_bare_and_separate_git_dir_fail_closed_with_actionable_override_hints() {
-    let tmp = disk_tempdir();
+    let tmp = disk_tempdir("slug-");
     let scratch = tmp.path();
 
     // 1. Bare repository (`git init --bare`) -> fail closed naming canonical bare path + clone hint.
@@ -642,7 +635,7 @@ fn git_submodule_bare_and_separate_git_dir_fail_closed_with_actionable_override_
 
 #[test]
 fn jj_workspace_uses_the_shared_git_resolver_and_never_shells_out_to_jj() {
-    let tmp = disk_tempdir();
+    let tmp = disk_tempdir("slug-");
     let scratch = tmp.path();
 
     // 1. A Jujutsu-only workspace (no colocated Git store) fails closed through the one shared
@@ -722,7 +715,7 @@ fn jj_workspace_uses_the_shared_git_resolver_and_never_shells_out_to_jj() {
 
 #[test]
 fn non_vcs_directory_fails_closed_and_corrupt_git_surfaces_real_git_stderr() {
-    let tmp = disk_tempdir();
+    let tmp = disk_tempdir("slug-");
     let scratch = tmp.path();
 
     // Non-git/non-jj directory fails closed even if a local `slipfork.toml` exists.
@@ -794,7 +787,7 @@ fn non_vcs_directory_fails_closed_and_corrupt_git_surfaces_real_git_stderr() {
 
 #[test]
 fn invalid_project_label_fails_closed_until_rescued_by_valid_slipfork_toml_override() {
-    let tmp = disk_tempdir();
+    let tmp = disk_tempdir("slug-");
     let scratch = tmp.path();
 
     // Repo basename `My_Project` is not a lowercase DNS label -> fails closed with actionable hint.
@@ -851,7 +844,7 @@ fn invalid_project_label_fails_closed_until_rescued_by_valid_slipfork_toml_overr
 
 #[test]
 fn missing_snow_file_names_the_unreadable_path() {
-    let tmp = disk_tempdir();
+    let tmp = disk_tempdir("slug-");
     let scratch = tmp.path();
     let missing = scratch.join("does-not-exist-snow.yml");
     let missing_str = missing.to_str().expect("utf8");

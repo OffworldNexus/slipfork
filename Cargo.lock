@@ -1168,6 +1168,7 @@ dependencies = [
  "slipfork-engine",
  "slipfork-ospp",
  "slipfork-snow",
+ "slipfork-testkit",
  "slipfork-vcs",
  "slipfork-world",
  "tempfile",
@@ -1208,6 +1209,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "slipfork-testkit",
  "slipfork-world",
  "tempfile",
  "thiserror",
@@ -1251,6 +1253,10 @@ dependencies = [
  "tempfile",
  "thiserror",
 ]
+
+[[package]]
+name = "slipfork-testkit"
+version = "0.2.0"
 
 [[package]]
 name = "slipfork-vcs"
