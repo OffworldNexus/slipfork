@@ -18,14 +18,18 @@ containers, the full CLI surface, and the released integration support matrix.
 - **`--host-caches`** — per-invocation, ABI-gated read-only mounts of `~/.cargo`, `~/.rustup`, `~/.cache/uv`, `~/.local/share/uv`, and the pnpm store; never a `slipfork.toml` key.
 - **Daemonless `crun` backing services** — `pg_clusters` → `postgres:<version>`, `redis_clusters` → `redis:<version>`, and non-empty `s3_buckets` → SeaweedFS run as OCI containers sharing the world's `127.0.0.1`; `slipfork db`/`redis` open `psql`/`redis-cli` inside them, and `hook run`/`logs`/`forward`/`shell` give interactive and retained-log access.
 - **`git-remote-slipfork`** — a `slipfork://<fork>` Git remote that lists and fetches a running fork's branch and `refs/slipfork/<fork>/wip`.
-- **`slipfork support`** and the generated **[integration support matrix](docs/support-matrix.md)** — eight integrations graded `declared` with verified recipe pages and protected critical tests, enforced by `tools/check_support.py`.
+- **`slipfork support`** and the generated **[integration support matrix](docs/support-matrix.md)** — ten integrations graded `declared` with verified recipe pages and protected critical tests, enforced by `tools/check_support.py`.
 - **`slipfork auth login`** — OSPP device-key pairing from a `#handle=` URL, read from `argv` or stdin.
+- **`LayeredSecretProvider`** — `slipforkd` resolves `secrets::`/`vars::` from the `0600` local vault first (the sole `!!` and `secret set|unset` write sink) and from a paired `OSPP v1` `env.bundle` second; an unreachable paired vault fails the render closed.
+- **Container-restored seed dumps and sealed bases** — a paired OSPP session can offer one PostgreSQL `pg_dump -Fc` archive per database; `up`/`fork` stream it into a verified `<state_dir>/dumps/<sha256>.pgdump`, restore it with `pg_restore` inside the `postgres:<v>` container, and `freeze_world` the result as `<project>-base-<digest>` so every later world clones the base instead of restoring again (`--no-dump` / `--refresh-dump`).
+- **Jujutsu workspaces** — a checkout carrying `.jj` forks through `JjWorkspaceAdapter` (`jj workspace add`, `@-`/`@` projected into the colocated Git store); `jj` is required on `PATH` and its absence fails closed with `ToolMissing`, never a Git fallback.
+- **Optional `slipfork.toml`** — `up`/`fork` boot with defaults when the file is absent; a malformed file still fails closed.
 
 ### Changed
 
 - **World execution:** worlds are no longer host-`/usr` clones. Every world boots from the validated read-only `L0` rootfs, with writable state confined to the worktree mount, `/.slipfork/home`, `tmpfs`, and `<state_dir>/{pgdata,redis,s3}`.
 - **Service runtime:** app components and `crun` containers share one `ServiceRuntime` supervision surface, so freeze, logs, entry commands, and `ServiceNotRunning` diagnostics behave identically for both.
-- **Secrets and modes:** `modes.all` / `modes.<mode>` resolution and the `0600` file vault remain the only providers wired; `snow.yml` modes now fully drive supervisory components.
+- **Secrets and modes:** `modes.all` / `modes.<mode>` resolution stays the only mode engine, and the `0600` file vault is now layer 1 of a `LayeredSecretProvider` whose second layer is the paired `OSPP v1` `env.bundle` (read-only); `snow.yml` modes fully drive supervisory components.
 - **OpenCode plugin:** `@slipfork/opencode` drives the daemon-served CLI (`fork`, `drop`, `list`, `exec`) with explicit project state and a live end-to-end test.
 
 ### Removed

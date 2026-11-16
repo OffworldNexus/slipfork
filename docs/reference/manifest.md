@@ -55,10 +55,8 @@ modes:
 ### Validation rules
 
 - **Forbidden top-level keys fail closed.** `envs:` and `project:` raise `SnowError::ForbiddenTopLevelKey { key }`, naming the key and never its contents. Environment groups live under `modes.all` / `modes.<mode>`; project identity lives in `slipfork.toml` (§2).
-- **`*` is not a mode** (`SnowError::AsteriskModeForbidden`); the universal base is `all`. `slipfork snow resolve --mode <mode>` renders any declared mode, but `up`/`fork` hardcode `local`, so a manifest without `modes.local` fails closed.
-- **Unknown keys fail closed** in every table (`#[serde(deny_unknown_fields)]`).
-- **Cross-references are checked in one pass.** Every `components[].image`, `ingresses[].target.component`, `hooks[].component`, `pg_databases[].cluster`, and `envs` group name must exist; all violations are reported together in `SnowError::Validation`.
-- **`modes.all.components` is rejected.** Universal defaults belong on top-level `components[]`.
+- **`*` is not a mode** (`SnowError::AsteriskModeForbidden`); the universal base is `all`, and unknown keys fail closed in every table (`#[serde(deny_unknown_fields)]`). `slipfork snow resolve --mode <mode>` renders any declared mode, but `up`/`fork` hardcode `local`, so a manifest without `modes.local` fails closed.
+- **Cross-references are checked in one pass.** Every `components[].image`, `ingresses[].target.component`, `hooks[].component`, `pg_databases[].cluster`, and `envs` group name must exist; all violations are reported together in `SnowError::Validation`. `modes.all.components` is rejected — universal defaults belong on top-level `components[]`.
 
 ### Mode-scoped components (`SnowFile::effective_components`)
 
@@ -87,7 +85,7 @@ generator := "random_string(" 1..=512 ")" | "random_hex(" 1..=256 ")"
 | `domains::<ID>` | no provider today — fails closed | yes | no |
 | `resources::…`, `components::…`, `deployment::…` | world coordinates (below) | yes | no |
 
-The local vault is `$XDG_DATA_HOME/slipfork/vaults/<project>.json` (default `~/.local/share/slipfork/vaults/`) mode `0600`, and it is the only `secrets`/`vars` provider wired today. `slipfork auth login` pairs an OSPP device key; remote `EnvBundle` resolution over `OSPP v1` is not wired yet, so a key the vault does not hold fails closed as a missing value.
+The local vault is `$XDG_DATA_HOME/slipfork/vaults/<project>.json` (default `~/.local/share/slipfork/vaults/`) mode `0600`, and it is layer 1 of `LayeredSecretProvider<FileVaultProvider, OsppSecretProvider>`: the only `!!` write sink. A session paired by `slipfork auth login` supplies `OSPP v1` `env.bundle` keys second, so an unpaired developer sees a key the vault lacks as a missing value ([modes & secrets](../snow-modes.md)).
 
 ### Coordinates (`ResourceCoordinates::for_world`)
 
@@ -109,8 +107,8 @@ The local vault is `$XDG_DATA_HOME/slipfork/vaults/<project>.json` (default `~/.
 ## 2. `slipfork.toml` (`slipfork_dag::SlipforkConfig`)
 
 ```toml title="slipfork.toml"
-# Optional canonical ProjectSlug override; defaults to <vcs_root>'s directory basename in
-# standard Git repos (including .worktrees/<fork>) and via `jj root` when `jj` is on PATH.
+# Optional canonical ProjectSlug override; defaults to the directory basename of the VCS
+# checkout, resolved through the Git store (a colocated Jujutsu checkout included).
 project = "acme"
 
 # Optional world-rootfs selector: two keys only, both inferred when unambiguous.
@@ -133,6 +131,8 @@ coverage_report = ["html", "xml"] # html | xml | json | lcov | text
 coverage_fail_under = 85          # optional integer 0..=100
 ```
 
+The whole file is optional: absent, `up`/`fork` boot with defaults. `dag plan` reads it explicitly (`--file`, default `<vcs_root>/slipfork.toml`), so a repository using artifacts or fixtures declares them there. A malformed file always fails closed.
+
 ### `[world]`: which rootfs a world boots
 
 Every world's read-only rootfs is built from one `snow.yml` `BuildImage`, so `[world]` selects it and its Dockerfile stage. Both keys are optional and inferred when only one choice exists; `[world]` rejects any other key.
@@ -153,6 +153,6 @@ A project with two build images (say `api` and `worker`) must set `world.image`;
 ### Validation rules
 
 - **Unknown keys fail closed** in every `slipfork.toml` table (`#[serde(deny_unknown_fields)]`).
-- **`[resources.<kind>.<id>]`** (`pg_databases` / `s3_buckets`) takes `local` and `test` strategies (`local` | `prefer_remote` | `remote`), e.g. `[resources.pg_databases.appdb] local = "prefer_remote"`; `slipforkd` applies the plan when it boots the world (`ADR-0008` §3).
-- **`[test]` is typed fields only** — no hooks, shell pipelines, or path assembly (`ADR-0006` §1). `coverage = true` is the sole switch; `coverage_report` defaults to `["text"]`; either coverage option without `coverage = true` fails with `DagError::CoverageOptionsRequireEnabled`; `coverage_report = []` fails with `DagError::EmptyCoverageReport`; `coverage_fail_under` must be `0..=100` (`DagError::InvalidCoverageThreshold`). Coverage execution lands in Milestone 3.
+- **`[resources.<kind>.<id>]`** (`pg_databases` / `s3_buckets`) takes `local` and `test` strategies (`local` | `prefer_remote` | `remote`), e.g. `[resources.pg_databases.appdb] local = "prefer_remote"`; `slipforkd` applies the plan when it boots the world (`ADR-0008` §3). `prefer_remote` degrades to world-local coordinates with a `not_offered` row; `remote` without a paired OSPP session fails closed naming the missing offer. Seed dumps, `--no-dump`, and `--refresh-dump`: [CLI reference](cli.md#seed-dumps-and-sealed-bases).
+- **`[test]` is typed fields only** (`ADR-0006` §1): `coverage = true` is the sole switch, `coverage_report` defaults to `["text"]`, options without it fail with `DagError::CoverageOptionsRequireEnabled`, `coverage_report = []` with `DagError::EmptyCoverageReport`, and `coverage_fail_under` outside `0..=100` with `DagError::InvalidCoverageThreshold`. Coverage execution lands in Milestone 3.
 - **`[fixtures.<id>].per_world`** defaults to `false`. A per-world fixture is never reported `CacheAction::Cached` and cannot be the `parent` of an origin-independent fixture (`DagError::OriginIndependentChildOfPerWorld`). Per-world snapshot execution lands in Milestone 3.

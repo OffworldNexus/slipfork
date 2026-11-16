@@ -1,6 +1,6 @@
 # Getting Started (`0.2.0`)
 
-Go from a repository to a running, isolated development world in four commands — zero `root:root` files.
+Go from a repository to a running, isolated development world in four commands after `cargo install` — zero `root:root` files.
 
 ```console
 $ cargo install --path crates/slipfork
@@ -117,10 +117,10 @@ $ slipfork fork feat-billing
 $ slipfork exec --world feat-billing -- id
 $ slipfork down --world feat-billing   # stop services, keep .worktrees/feat-billing
 $ slipfork drop feat-billing           # destroy the world, worktree, branch, and snapshot ref
-$ slipfork prune --dry-run             # preview orphaned worlds; --yes reaps them
+$ slipfork prune --dry-run             # preview orphaned worlds (no .worktrees/<fork> left)
 ```
 
-A fork is a Git worktree (`.worktrees/<fork>` + `refs/slipfork/<fork>/wip`) plus its own CoW world, created in one daemon call. `slipfork exec -- <cmd>` runs non-interactively in the world with the daemon-resolved environment; `slipfork shell` enters it interactively (TTY required).
+A fork is a Git worktree (`.worktrees/<fork>` + `refs/slipfork/<fork>/wip`) plus its own CoW world, created in one daemon call. If the checkout carries `.jj`, the fork is a Jujutsu workspace instead: `slipfork fork` runs `jj workspace add`, projects `@-`/`@` into the colocated Git store, and fails closed with `ToolMissing` when `jj` is not on `PATH` — never a silent Git fallback. Either way the project slug resolves through the Git store. `slipfork exec -- <cmd>` runs non-interactively in the world with the daemon-resolved environment; `slipfork shell` enters it interactively (TTY required).
 
 ## 5. Work inside the running world
 
@@ -150,7 +150,6 @@ $ sudo systemctl daemon-reload && sudo systemctl enable --now slipforkd.socket
 ```
 
 The units are rendered to stdout with zero filesystem writes, resolve your account as `User=`, and bind `127.0.0.1:80`, `[::1]:80`, and `127.0.0.1:7080`. This optional setup is the one place that needs `sudo` (to install the units and bind port 80); the default auto-spawn path needs none. Without them, auto-spawn is enough for laptops, CI, and agents. Sharing (`slipfork share`) still fails closed until the `weaved` tunnel adapter lands; use each world's `.localhost` origin.
-
 
 ## Where to go next
 

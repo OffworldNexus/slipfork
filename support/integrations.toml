@@ -80,3 +80,21 @@ tier = "declared"
 [integration.evidence]
 recipe_page = "docs/reference/cli.md"
 critical_test = "slipfork::critical_vcs_remote::git_fetch_lists_and_fetches_fork_and_wip_refs_through_the_real_binary"
+
+[[integration]]
+id = "ospp-v1-secrets-and-dumps"
+category = "secrets"
+tier = "declared"
+
+[integration.evidence]
+recipe_page = "docs/snow-modes.md"
+critical_test = "slipfork::critical_ospp_daemon::paired_ospp_resolves_remote_secrets_restores_a_real_dump_and_forks_rows"
+
+[[integration]]
+id = "jj-workspaces"
+category = "vcs"
+tier = "declared"
+
+[integration.evidence]
+recipe_page = "docs/getting-started.md"
+critical_test = "slipfork::critical_ospp_daemon::dot_jj_repository_routes_to_jujutsu_and_never_falls_back_to_git"

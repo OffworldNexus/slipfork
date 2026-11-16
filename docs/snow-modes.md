@@ -89,9 +89,18 @@ modes:
 
 The generator grammar (`random_string`, `random_hex`, `random_base64`, `uuid4`) lives in the [manifest reference](reference/manifest.md). A `??` fallback must be a JSON string literal, so `${{ vars::LOG_LEVEL ?? INFO }}` fails while `?? "INFO"` works.
 
-Persisted secrets live in the local `0600` vault at `~/.local/share/slipfork/vaults/<project>.json` (`$XDG_DATA_HOME/slipfork/vaults/` when set) and print as `[REDACTED]` unless `--expose-secrets` is passed.
+### Where a key is read from
 
-Any reference without `??` or `!!` that no provider can satisfy fails the whole render, listing **every** missing value in one pass:
+`slipforkd` resolves `secrets::` and `vars::` through one `LayeredSecretProvider`, in a fixed order:
+
+| Order | Source | Reads | Writes |
+|---|---|---|---|
+| 1 | local vault `~/.local/share/slipfork/vaults/<project>.json` (`$XDG_DATA_HOME/slipfork/vaults/`), mode `0600` | yes | **the only write sink** — `!!`, `secret set`, `secret unset` |
+| 2 | the cloud vault of a session paired with `slipfork auth login`, read over `OSPP v1` `env.bundle` | yes | never |
+
+Layer 2 exists only when this developer paired the daemon; it fills a key the local vault lacks and never shadows a local value. `slipfork secret list` lists local keys only, and a paired but unreachable cloud vault fails the render instead of silently dropping keys. `--state-dir`/`--runtime-dir` do not move this vault or the OSPP session — set `$XDG_DATA_HOME` for a hermetic run. Render values print as `[REDACTED]` unless `--expose-secrets` is passed.
+
+Any reference without `??` or `!!` that no layer can satisfy fails the whole render, listing **every** missing value in one pass:
 
 ```console
 $ slipfork snow resolve --file snow.yml --mode local

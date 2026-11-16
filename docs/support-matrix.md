@@ -18,3 +18,5 @@ Tiers, weakest to strongest: `none` < `declared` < `exercised` < `field-tested` 
 | `slipforkd-world-lifecycle` | `cli` | `declared` | `recipe_page`, `critical_test` | `critical_test`, `recipe_page` |
 | `dag-config-cli` | `cli` | `declared` | `recipe_page`, `critical_test` | `critical_test`, `recipe_page` |
 | `git-remote-slipfork` | `vcs` | `declared` | `recipe_page`, `critical_test` | `critical_test`, `recipe_page` |
+| `ospp-v1-secrets-and-dumps` | `secrets` | `declared` | `recipe_page`, `critical_test` | `critical_test`, `recipe_page` |
+| `jj-workspaces` | `vcs` | `declared` | `recipe_page`, `critical_test` | `critical_test`, `recipe_page` |

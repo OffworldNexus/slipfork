@@ -28,7 +28,7 @@ $ slipfork up
 
 ## Commands
 
-Every command below is in `slipfork --help`; each example is copied from a real run.
+Every command below is in `slipfork --help`; each example is a working invocation.
 
 | Command | Behaviour | Example |
 |---|---|---|
@@ -37,7 +37,7 @@ Every command below is in `slipfork --help`; each example is copied from a real 
 | `dag plan` | Merkle-hash inputs and print `Cached` / `Rebuild` per artifact and fixture wave | `slipfork dag plan --file slipfork.toml --repo .` |
 | `up` | Boot or confirm the world selected by `--world` or `cwd`; print one origin URL | `slipfork up` |
 | `down` | Stop a world's services, keep its worktree (idempotent) | `slipfork down --world feat-billing` |
-| `fork` | Create `.worktrees/<fork>` plus its CoW world and print its origin | `slipfork fork feat-billing` |
+| `fork` | Create `.worktrees/<fork>` — a Git worktree, or a Jujutsu workspace when the checkout carries `.jj` — plus its CoW world, print its origin | `slipfork fork feat-billing` |
 | `drop` | Destroy a fork world, its worktree, branch, and snapshot ref | `slipfork drop feat-billing` |
 | `list` | One row per world: state, exactly one origin URL, worktree | `slipfork list` |
 | `prune` | Preview (`--dry-run`, default) or reap (`--yes`) orphaned worlds | `slipfork prune --dry-run` |
@@ -49,7 +49,7 @@ Every command below is in `slipfork --help`; each example is copied from a real 
 | `exec` | Run a command non-interactively inside a world | `slipfork exec -- id` |
 | `shell` | Enter a world interactively (requires a TTY) | `slipfork shell` |
 | `logs` | Read or follow retained component/hook logs (`--follow`, `--lines`, `--stderr`) | `slipfork logs --lines 3 api` |
-| `hook run` | Re-run one `<component>:<phase>` hook (`--no-tty` when not interactive) | `slipfork hook run api:pre-deploy` |
+| `hook run` | Re-run one `<component>:<phase>` hook (`--no-tty` when not interactive) | `slipfork hook run api:pre-deploy --no-tty` |
 | `db` | Open `psql` inside the world's running `postgres:<v>` container (TTY) | `slipfork db appdb` |
 | `redis` | Open `redis-cli` inside the world's running `redis:<v>` container (TTY) | `slipfork redis cache` |
 | `forward` | Bind daemon-owned `127.0.0.1:0` listeners bridged into a world, held until Ctrl-C | `slipfork forward pg_databases.appdb` |
@@ -63,8 +63,8 @@ Every command below is in `slipfork --help`; each example is copied from a real 
 | Option | Applies to | Description |
 |---|---|---|
 | `--world <FORK>` | every world command | Explicit world fork |
-| `--base <REV>` | `fork` | Commit-ish to fork from (default: requesting checkout's `HEAD`) |
-| `--no-dump` / `--refresh-dump` | `up`, `fork` | Skip seed dumps and run a clean `initdb` / require a live dump check (fails closed offline) |
+| `--base <REV>` | `fork` | Git checkouts: commit-ish to fork from (default: requesting checkout's `HEAD`). A `.jj` checkout always forks the working-copy parent `@-` (`@` when dirty) and ignores `--base` |
+| `--no-dump` / `--refresh-dump` | `up`, `fork` | Seal a clean `initdb` base / re-stream every offered dump into a new base (fails closed unpaired or offline) |
 | `--resources local` | `up`, `fork` | Force hermetic world-local resources |
 | `--host-caches` | `up`, `fork` | Mount host toolchain caches read-only **after** the ELF/libc ABI probe passes; never a `slipfork.toml` key |
 | `--cwd <DIR>` | `exec` | Directory used to resolve and enter the world |
@@ -94,16 +94,35 @@ $ slipfork shell
 slipfork: `slipfork shell` needs an interactive terminal; use `slipfork exec -- <cmd>` for non-interactive commands
 ```
 
-- `share` fails closed until the `weaved` tunnel adapter lands (`H-006`/`M2.22`); `share --stop` on a local world is an idempotent success.
+- `share` fails closed until tunnel sharing lands, and a forward listener alone does not change that; `share --stop` on a local world is an idempotent success.
 - `db`/`redis` fail closed with `ServiceNotRunning` unless that service's container is running in the world.
 - `prune` reaps orphaned worlds; it does not garbage-collect `<state_dir>/cache/{rootfs,oci}` yet.
+
+## Seed dumps and sealed bases
+
+A paired OSPP session can offer one PostgreSQL seed dump per database. `up`/`fork` then:
+
+1. stream it once over `OSPP v1` `dump.begin`…`dump.end` into a verified zstd archive at `<state_dir>/dumps/<sha256>.pgdump`, decompressed to `<sha256>.pgcustom`;
+2. boot a short-lived seed world, start the `postgres:<v>` container, and run `pg_restore --no-owner --no-privileges --clean --if-exists` + `CHECKPOINT` inside it on the read-only `/dumps/<sha256>.pgcustom`;
+3. `freeze_world` the result as `<project>-base-<digest>`, keyed by the service versions and every dump digest.
+
+Every later `up`/`fork` clones that sealed base and never re-runs `pg_restore`; a deleted `.pgcustom` only means decompressing the cached `.pgdump` again.
+
+| Flag | Behaviour |
+|---|---|
+| *(default)* | Reuse a cached dump, else stream it once; restore into the sealed base |
+| `--no-dump` | Seal a clean `initdb` base and stream nothing; a dump-backed base is a distinct digest |
+| `--refresh-dump` | Re-stream every offered dump and seal a new base; fails closed without a live paired session |
+| `--resources local` | Force hermetic world-local resources; implies `--no-dump` and cannot combine with `--refresh-dump` |
+
+Unpaired, `local = "remote"` on a database and `--refresh-dump` both fail closed with `requires a remote OSPP offer`; `prefer_remote` degrades to local with a `not_offered` row.
 
 ## `slipforkd`
 
 `slipforkd` is the sole stateful Composition Root and runs unprivileged. It requires explicit paths and never guesses them:
 
 ```console
-$ slipforkd --state-dir ~/.cache/slipfork --runtime-dir ~/.local/state/slipfork --listen 127.0.0.1:0
+$ slipforkd --state-dir ~/.cache/slipfork --runtime-dir "$XDG_RUNTIME_DIR/slipfork" --listen 127.0.0.1:0
 ```
 
 It runs in the foreground and logs to stderr; `slipfork` starts the same binary for you when no daemon answers.

@@ -18,7 +18,7 @@ flowchart TD
   end
 ```
 
-- **Orthogonal invalidation (`critical_dag.rs`):** Modifying a file under `front/src/**` flips `artifact:front` to `Rebuild` while leaving `migrate`, `seed_minimal`, and `seed_catalog` digests bit-for-bit identical (`Cached`). Modifying `api/migrations/**` invalidates `migrate` and its descendants without touching `front`.
+- **Orthogonal invalidation (`critical_dag.rs`):** Modifying a file under `front/src/**` flips `artifact:front` to `Rebuild` while leaving the `migrate`, `seed_minimal`, and `seed_catalog` digests bit-for-bit identical (their digests do not change; they still report `Rebuild` until M3 materializes them). Modifying `api/migrations/**` invalidates `migrate` and its descendants without touching `front`.
 - **Cycle & parent validation:** Unknown `parent` names or dependency cycles fail closed immediately (`DagError::UnknownParent` / `DagError::CycleDetected`).
 
 ---
@@ -26,7 +26,7 @@ flowchart TD
 ## Authoring `slipfork.toml` & Running `slipfork dag plan`
 
 ```toml title="slipfork.toml"
-# Optional canonical project slug (defaults to the canonical git/jj repository name).
+# Optional canonical project slug (defaults to the Git store's repository name; colocated jj included).
 project = "acme"
 
 [artifacts.front]
