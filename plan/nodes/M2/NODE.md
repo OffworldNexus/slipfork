@@ -2,7 +2,7 @@
 id: M2
 title: "Single-Origin .localhost Edge (slipforkd), OSPP v1 WebSocket + ResourceStrategy, Live VCS Worlds & Service CLI (0.2.0)"
 kind: milestone
-status: ready
+status: done
 priority: 2
 depends_on: [M1]
 paths: []
@@ -10,7 +10,7 @@ attempts: 0
 max_attempts: 3
 escalation: strategist
 created: "2026-11-14T22:03"
-updated: "2026-11-15T16:29"
+updated: "2026-11-16T06:34"
 ---
 
 # Goal

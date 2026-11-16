@@ -2,7 +2,7 @@
 id: M2.21
 title: "Isolated: live IncusEngine conformance and declared support promotion (gated on H-004)"
 kind: task
-status: blocked
+status: superseded
 owner: implementer
 priority: 3
 depends_on: [M2.20]
@@ -17,7 +17,7 @@ attempts: 0
 max_attempts: 3
 escalation: none
 created: "2026-11-15T16:40"
-updated: "2026-11-16T00:26"
+updated: "2026-11-16T06:34"
 ---
 
 <!-- splice: replace everything after the frontmatter of plan/nodes/M2/M2.21/NODE.md with this file. Frontmatter requires `depends_on: [M2.20, M2.28]` (apply with `uv run --no-project tools/plan.py edit M2.21 --depends M2.20,M2.28`) because live conformance now exercises `WorldSpec.rootfs`. `M2.21` stays terminal: nothing may depend on it. Source of truth: ADR-0009 §3 + ARCHITECTURE.md §3.3 (`M2.25`). -->

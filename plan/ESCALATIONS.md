@@ -18,3 +18,4 @@ Every call to an expensive-tier agent (`strategist`, `architect`, `expert`) is r
 | 2026-11-15T20:11 | M2.24 | architect | conductor | core architecture crossroads: L0 world base image strategy (Dockerfile-derived rootfs vs curated base), image contract, cache/invalidation, DI port for two engines |
 | 2026-11-15T20:23 | M2.24 | architect | lead | M2.24: design ADR-0009 L0 world base image from the project's own Dockerfile + 3-layer composition + World Image Contract |
 | 2026-11-16T01:55 | M2 | strategist | conductor | milestone gate for 0.2.0 (36 leaves done; M2.21/M2.22 blocked on H-004/H-006 as designed) |
+| 2026-11-16T06:19 | M2 | strategist | conductor | M2 gate re-run after M2.30/M2.31/M2.32 remediation |

@@ -456,3 +456,11 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-16T06:04 [M2.32] (lead) status active -> done
 - 2026-11-16T06:11 [M2] (lead) M2.30/M2.31/M2.32 committed (0b760ba/541ab37/d6968fc). make check scoped components green, but a full default-thread run is intermittently red on world-boot tim
 - 2026-11-16T06:19 [M2] (lead) Verified: RUST_TEST_THREADS=1 make check exit 0 with the full workspace + docs + support gates; the default-thread failure is contention between concurrently bo
+- 2026-11-16T06:19 ESCALATION #15 -> strategist for M2 by conductor: M2 gate re-run after M2.30/M2.31/M2.32 remediation
+- 2026-11-16T06:34 [M3.1] (strategist) created (task) Serialize world-booting Rust critical suites in Makefile rs-test
+- 2026-11-16T06:34 [M3.2] (strategist) created (epic) Polyglot Parallel Snapshot-DAG Test Orchestrator (slipfork test, RunnerProtocol v1, warm world pool & CoverageDriver)
+- 2026-11-16T06:34 [M3.3] (strategist) created (task) Isolated: live IncusEngine conformance and declared support promotion (gated on H-004)
+- 2026-11-16T06:34 [M3.4] (strategist) created (task) Isolated: concrete WeavedRegistrar IPC adapter and declared support promotion (gated on H-006)
+- 2026-11-16T06:34 [M2.21] (strategist) status blocked -> superseded: Carried forward post-0.2.0 to M3.3 (still gated on open H-004)
+- 2026-11-16T06:34 [M2.22] (strategist) status blocked -> superseded: Carried forward post-0.2.0 to M3.4 (still gated on deferred H-006 weaved IPC spec)
+- 2026-11-16T06:34 [M2] (strategist) status ready -> done: 0.2.0 milestone gate PASSED: M2.30-M2.32 seams verified in slipforkd/daemon.rs, critical_ospp_daemon green, bounded 1x1 bench --check 36.4
