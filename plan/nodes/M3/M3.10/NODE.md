@@ -2,7 +2,7 @@
 id: M3.10
 title: "Rewrite docs/design/do-vm-harness.md: Btrfs volume, docker/Rust, AppArmor userns, persistent --identity"
 kind: task
-status: active
+status: done
 owner: designer
 priority: 2
 depends_on: [M3.7, M3.25]
@@ -11,7 +11,7 @@ attempts: 3
 max_attempts: 3
 escalation: none
 created: "2026-11-16T16:58"
-updated: "2026-11-16T21:45"
+updated: "2026-11-16T21:52"
 ---
 
 # Goal

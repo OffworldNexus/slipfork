@@ -43,3 +43,7 @@ M3.25 RULING: align ADR-0008 §4 --world wording with ADR-0005 §3 (shared resol
 ## 2026-11-16T21:52 [lead]
 
 OWNER DIRECTIVE (CBOR): purge every NDJSON/JSON-wire mention for STP v1 across ARCHITECTURE.md, README.md, docs/** (incl. docs/decisions/ADR-0006*) and replace with "CBOR (RFC 8949) over the inherited SLIPFORK_PROTOCOL_FD AF_UNIX socketpair". Known offender: docs/design/m1-core-and-poc.md:45 (RunnerProtocol v1 NDJSON) — also delete the stale RunnerProtocol/TestAdapter/CoverageDriver row there. Verify ! grep -riE "ndjson|jsonl|line-delimited" ARCHITECTURE.md README.md docs/ crates/ tools/.
+
+## 2026-11-16T21:53 [lead]
+
+ADD (M3.8 functional PASS): crates/slipfork-engine/src/rootfs/mod.rs:544 BaseImageError::CacheOnTmpfs message still says "XFS, Btrfs, or ext4" — must name Btrfs with the mount options and no alternate filesystem. Also verify no NDJSON/CBOR regressions and purge the stale m1-core-and-poc RunnerProtocol row.

@@ -754,3 +754,6 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-16T21:52 [M3.18] (lead) OWNER DIRECTIVE (CBOR): docs/testing-dag.md must state the STP v1 wire is CBOR (RFC 8949) over the inherited SLIPFORK_PROTOCOL_FD socketpair — never NDJSON/JSON
 - 2026-11-16T21:52 [M3.25] (lead) ADD (M3.8 ioc): ARCHITECTURE.md §3.3 must carry WorldSpec.state_subdirs AND the BaseSeedSpec carrier (control_dir, state_subdirs, service_specs, databases, app_
 - 2026-11-16T21:52 [M3.16] (lead) REQUIREMENTS from M3.10 final IoC confirm (implement in do_vm.py): (1) drop the separate aa-status/control-unshare from `test` — the single `runuser -u slipfork
+- 2026-11-16T21:52 [M3.10] (lead) status active -> done
+- 2026-11-16T21:53 [M3.23] (lead) ADD (M3.8 functional PASS): crates/slipfork-engine/src/rootfs/mod.rs:544 BaseImageError::CacheOnTmpfs message still says "XFS, Btrfs, or ext4" — must name Btrfs
+- 2026-11-16T21:53 [M3.25] (lead) ADD (M3.8 final): ARCHITECTURE.md §3.2 SeedDumpStore excerpt must list discard + materialize (port has lookup/write_from/discard/materialize; DiskSeedDumpStore 

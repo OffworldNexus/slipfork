@@ -71,3 +71,7 @@ status review -> active
 ## 2026-11-16T21:45 [lead]
 
 CRUFT GATE attempt 2 FAIL (dedupe only): MAJOR the AppArmor body-equivalence preflight rule is stated twice near-verbatim (§1 step 5 vs §3) -> keep once in §3, §1 points; MINOR define the suite prefix once (7-line runuser/env -i prefix pasted 3x), one "no host crun" statement, one marker statement, drop duplicated .pub-derivation and single-HOME rules from §4/§5 with pointers.
+
+## 2026-11-16T21:52 [lead]
+
+status active -> done
