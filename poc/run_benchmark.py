@@ -8,14 +8,23 @@
 # ///
 """Real end-to-end PoC benchmark for the `0.2.0` world model (`docs/research/m1-poc-benchmark.md`).
 
-The harness drives the shipped `slipfork` CLI (`doctor`, `snow resolve`, `dag plan`, `up`, `fork`,
-`exec`, `drop` over an auto-spawned `slipforkd`) against a generated sample project, and measures
-real PostgreSQL 18 `initdb -> seed -> pg_dump -> pg_restore`, real `FICLONE` CoW world forks, and
-a head-to-head browser + committed-SQL suite across three regimes:
+The harness drives the shipped `slipfork` CLI (`doctor`, `snow resolve`, `auth login`, `dag plan`,
+`up`, `fork`, `exec`, `drop` over a harness-owned `slipforkd`) against a generated sample project,
+and measures real PostgreSQL 18 `initdb -> seed -> pg_dump -> pg_restore`, real `FICLONE` CoW world
+forks, and a head-to-head browser + committed-SQL suite across three regimes:
 
 1. Traditional baseline (host PostgreSQL, one warm Chromium, `TRUNCATE` + re-seed per test).
-2. Slipfork on-demand cold CoW worlds (`fork` + cold Chromium + cold HTTP per test).
+2. Slipfork on-demand cold CoW worlds (`fork` + cold host Chromium per test).
 3. Slipfork pre-warmed CoW pool (worlds forked and booted ahead of test dispatch).
+
+The seed is produced honestly: a real PostgreSQL 18 `pg_dump -Fc` archive is zstd-compressed and
+streamed by a minimal loopback `ospp-v1` server (`ADR-0008` §1–§2), so `slipforkd` restores it
+inside `postgres:18` and seals `<project>-base` with `freeze_world`. Every later `fork` CoW-clones
+the restored `PGDATA` with zero SQL re-seed and zero direct state-directory manipulation.
+
+`ADR-0009` §2.2 topology: the app rootfs is a lean `Dockerfile` image with **no** browser; host
+Chromium reaches each world's single `.localhost` `WorldOrigin` through `slipforkd`'s HTTP ingress
+and `dial_world_tcp`, exactly like a developer's browser would.
 
 Every child process receives an explicit allowlisted environment (`bench_child_env`), every byte
 of run state lives under one disk-backed run directory that is wiped fail-closed before the first
@@ -36,6 +45,7 @@ M1 figures in the report were measured on the pre-`ADR-0009` host-shared-`/usr` 
 from __future__ import annotations
 
 import argparse
+import base64
 import concurrent.futures
 import hashlib
 import json
@@ -43,8 +53,11 @@ import os
 import platform
 import random
 import shutil
+import socket
+import struct
 import subprocess
 import sys
+import threading
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass
@@ -53,8 +66,10 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SLIPFORK_BIN = REPO_ROOT / "target" / "release" / "slipfork"
+SLIPFORKD_BIN = REPO_ROOT / "target" / "release" / "slipforkd"
 PG_BIN = Path("/usr/lib/postgresql/18/bin")
 CHROME_BIN = Path("/usr/bin/google-chrome")
+ZSTD_BIN = Path("/usr/bin/zstd")
 REPORT_PATH = REPO_ROOT / "docs" / "research" / "m1-poc-benchmark.md"
 BASELINE_PATH = REPO_ROOT / "poc" / "bench-baseline.json"
 
@@ -156,10 +171,13 @@ FRONT_HTML = """<!doctype html>
 </html>
 """
 
-DOCKERFILE = """FROM python:3.12-bookworm AS app
-RUN pip install --no-cache-dir "psycopg[binary]" playwright \\
- && python -m playwright install --with-deps chromium
+# `ADR-0009` §2.2: the app rootfs is a lean `L0` image with **zero** in-world
+# Playwright/Chromium. Headless browsers stay in the shared host browser pool (`CHROME_BIN`)
+# and reach each world through its single `.localhost` origin.
+DOCKERFILE = """FROM python:3.12-slim-bookworm AS app
+RUN pip install --no-cache-dir "psycopg[binary]"
 WORKDIR /workspace
+EXPOSE 8000
 """
 
 SNOW_YML = """images:
@@ -171,24 +189,23 @@ components:
   - id: api
     image: app
     envs: [app]
-    run_command: "exec sleep 300"
+    internal_ports: [8000]
+    run_command: "exec python3 api/app.py"
 
 ingresses:
-  - match: { prefix: "/back" }
-    target: { component: api, port: 8000 }
   - match: { prefix: "/" }
     target: { component: api, port: 8000 }
 
 resources:
   pg_clusters: [{ id: psql, version: "18" }]
-  pg_databases: [{ id: postgres, cluster: psql }]
+  pg_databases: [{ id: shop, cluster: psql }]
 
 modes:
   local:
     envs:
       app:
         SECRET_KEY: '${{ secrets::SECRET_KEY !! random_string(50) }}'
-        DATABASE_URL: '${{ resources::pg_databases.postgres.url }}'
+        DATABASE_URL: '${{ resources::pg_databases.shop.url }}'
         BASE_URL: '${{ resources::app.url }}'
 """
 
@@ -214,130 +231,138 @@ inputs = ["api/migrations/seed_catalog.sql"]
 run = "psql -f api/migrations/seed_catalog.sql"
 """
 
-# Applied once inside the base world through `slipfork exec` (the world owns `DATABASE_URL`).
-WORLD_SEED_SCRIPT = r"""
-import json
-import os
-import sys
-
-import psycopg
-
-SQL = json.loads(sys.argv[1])
-with psycopg.connect(os.environ["DATABASE_URL"], autocommit=True) as conn:
-    for statement in SQL:
-        conn.execute(statement)
-    conn.execute("CHECKPOINT")
-"""
-
-# Executed inside one isolated CoW world by `slipfork exec` (argv: index, front_html, ready, go).
-WORLD_TEST_SCRIPT = r"""
+# The `components.api` `L0` process: a real HTTP server on the world's `127.0.0.1:8000`.
+# `slipforkd`'s `.localhost` ingress reaches it through `dial_world_tcp`, and the app never needs
+# a browser, a test runner, or any package beyond `psycopg[binary]`.
+APP_SCRIPT = r"""
 import http.server
 import json
 import os
-import sys
 import threading
-import time
 
 import psycopg
-from playwright.sync_api import sync_playwright
 
-TEST_INDEX = int(sys.argv[1])
-FRONT_HTML = sys.argv[2]
-READY_FILE = sys.argv[3] if len(sys.argv) > 3 else ""
-GO_FILE = sys.argv[4] if len(sys.argv) > 4 else ""
+DATABASE_URL = os.environ["DATABASE_URL"]
 
-with open(FRONT_HTML, "r", encoding="utf-8") as handle:
-    BUNDLE_TEMPLATE = handle.read()
+with open(os.path.join("front", "src", "App.html"), encoding="utf-8") as handle:
+    TEMPLATE = handle.read()
 
-conn = psycopg.connect(os.environ["DATABASE_URL"], autocommit=True)
+CONN = psycopg.connect(DATABASE_URL, user="postgres", autocommit=True)
+LOCK = threading.Lock()
 
 
 class AppHandler(http.server.BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+
     def log_message(self, fmt, *args):
         pass
 
+    def _send(self, status, body, content_type="text/html; charset=utf-8"):
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def do_GET(self):
-        if self.path.startswith("/products/"):
-            sku = self.path.rsplit("/", 1)[-1]
-            row = conn.execute(
-                "SELECT id, sku, title, price_cents, stock FROM products WHERE sku = %s",
-                (sku,),
-            ).fetchone()
+        path = self.path.split("?", 1)[0]
+        if path.startswith("/products/"):
+            sku = path.rsplit("/", 1)[-1]
+            with LOCK:
+                row = CONN.execute(
+                    "SELECT sku, title, price_cents, stock FROM products WHERE sku = %s",
+                    (sku,),
+                ).fetchone()
+            if row is None:
+                self._send(404, b"not found")
+                return
             body = (
-                BUNDLE_TEMPLATE.replace("__SKU__", row[1])
-                .replace("__TITLE__", row[2])
-                .replace("__PRICE__", f"{row[3] / 100:.2f}")
-                .replace("__STOCK__", str(row[4]))
+                TEMPLATE.replace("__SKU__", row[0])
+                .replace("__TITLE__", row[1])
+                .replace("__PRICE__", f"{row[2] / 100:.2f}")
+                .replace("__STOCK__", str(row[3]))
             ).encode("utf-8")
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-        else:
-            self.send_response(404)
-            self.end_headers()
+            self._send(200, body)
+            return
+        if path == "/orders/count":
+            with LOCK:
+                total = CONN.execute("SELECT count(*) FROM orders").fetchone()[0]
+            self._send(200, str(total).encode("utf-8"), "text/plain")
+            return
+        self._send(404, b"not found")
 
     def do_POST(self):
-        if self.path != "/back/checkout":
-            self.send_response(404)
-            self.end_headers()
+        if self.path.split("?", 1)[0] != "/back/checkout":
+            self._send(404, b"not found")
             return
         length = int(self.headers.get("Content-Length", "0"))
         payload = json.loads(self.rfile.read(length).decode("utf-8"))
         sku, qty = payload["sku"], int(payload["qty"])
-        with conn.transaction():
-            product = conn.execute(
+        with LOCK, CONN.transaction():
+            product = CONN.execute(
                 "SELECT id, price_cents, stock FROM products WHERE sku = %s FOR UPDATE",
                 (sku,),
             ).fetchone()
             new_stock = product[2] - qty
-            conn.execute(
+            CONN.execute(
                 "UPDATE products SET stock = %s WHERE id = %s",
                 (new_stock, product[0]),
             )
-            order_id = conn.execute(
+            order_id = CONN.execute(
                 "INSERT INTO orders (product_id, buyer_email, quantity, total_cents) "
                 "VALUES (%s, %s, %s, %s) RETURNING id",
                 (product[0], payload["email"], qty, product[1] * qty),
             ).fetchone()[0]
-            conn.execute(
+            CONN.execute(
                 "INSERT INTO audit_events (kind, payload) VALUES ('order.committed', %s)",
                 (json.dumps({"order_id": order_id, "sku": sku}),),
             )
         body = json.dumps(
             {"order_id": order_id, "remaining_stock": new_stock}
         ).encode("utf-8")
-        self.send_response(201)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+        self._send(201, body, "application/json")
 
 
-httpd = http.server.HTTPServer(("127.0.0.1", 8000), AppHandler)
-threading.Thread(target=httpd.serve_forever, daemon=True).start()
+http.server.ThreadingHTTPServer(("127.0.0.1", 8000), AppHandler).serve_forever()
+"""
+
+# Executed ON THE HOST against one world's single `.localhost` `WorldOrigin`
+# (argv: origin, index, ready-file, go-file). Chromium never runs inside a world.
+WORLD_TEST_SCRIPT = r"""
+import os
+import sys
+import time
+from urllib.parse import urlsplit
+
+from playwright.sync_api import sync_playwright
+
+ORIGIN = sys.argv[1]
+TEST_INDEX = int(sys.argv[2])
+READY_FILE = sys.argv[3] if len(sys.argv) > 3 else ""
+GO_FILE = sys.argv[4] if len(sys.argv) > 4 else ""
+
+host = urlsplit(ORIGIN).hostname or ""
+assert host.endswith(".localhost"), f"world origin must be a `.localhost` route, got {ORIGIN}"
 
 sku = f"SKU-{TEST_INDEX + 1:06d}"
 with sync_playwright() as playwright:
-    browser = playwright.chromium.launch(headless=True)
+    browser = playwright.chromium.launch(
+        headless=True, executable_path=os.environ["SLIPFORK_BENCH_CHROME"]
+    )
     page = browser.new_page()
     if READY_FILE and GO_FILE:
         with open(READY_FILE, "w", encoding="utf-8") as ready:
             ready.write("ready\n")
         while not os.path.exists(GO_FILE):
             time.sleep(0.005)
-    page.goto(f"http://127.0.0.1:8000/products/{sku}")
+    page.goto(f"{ORIGIN}/products/{sku}")
     assert page.locator("#stock").inner_text() == "25"
     page.get_by_role("button", name="Complete Checkout").click()
     page.wait_for_selector("#order-confirmed")
     assert page.locator("#remaining-stock").inner_text() == "23"
+    orders = page.evaluate("fetch('/orders/count').then(r => r.text())")
+    assert orders.strip() == "1", f"expected 1 isolated order, got {orders}"
     browser.close()
-
-orders = conn.execute("SELECT count(*) FROM orders").fetchone()[0]
-assert orders == 1, f"expected 1 isolated order, got {orders}"
-conn.close()
-httpd.shutdown()
 """
 
 # Executed on the host by the traditional baseline (argv: conninfo, num_tests, project root).
@@ -418,15 +443,18 @@ class AppHandler(http.server.BaseHTTPRequestHandler):
         self.wfile.write(body)
 
 
-httpd = http.server.HTTPServer(("127.0.0.1", 8000), AppHandler)
+# The host baseline owns an ephemeral loopback port (a developer's own server may hold host
+# `:8000`), while every slipfork world still binds the canonical `:8000` in its private netns.
+httpd = http.server.HTTPServer(("127.0.0.1", 0), AppHandler)
 threading.Thread(target=httpd.serve_forever, daemon=True).start()
+BASE = f"http://127.0.0.1:{httpd.server_address[1]}"
 
 with sync_playwright() as playwright:
     browser = playwright.chromium.launch(executable_path=os.environ["SLIPFORK_BENCH_CHROME"])
     for index in range(NUM_TESTS):
         page = browser.new_page()
         sku = f"SKU-{index + 1:06d}"
-        page.goto(f"http://127.0.0.1:8000/products/{sku}")
+        page.goto(f"{BASE}/products/{sku}")
         assert page.locator("#stock").inner_text() == "25"
         page.get_by_role("button", name="Complete Checkout").click()
         page.wait_for_selector("#order-confirmed")
@@ -443,6 +471,493 @@ with sync_playwright() as playwright:
 conn.close()
 httpd.shutdown()
 """
+
+
+# --------------------------------------------------------------- loopback `ospp-v1` seed server
+
+# `ADR-0008` §1–§2 is the normative protocol. This is a **server-side harness**, never a
+# production path: the shipped `slipforkd` still performs a real `CHALLENGE -> HELLO -> WELCOME`
+# handshake with real ECDSA P-256 verification, a real `resources.describe`, and a real
+# `dump.begin -> binary frames -> dump.end` zstd stream that `DiskSeedDumpStore` re-verifies
+# against the advertised digest before any `postgres:18` `pg_restore` runs.
+
+_OSPP_SUBPROTOCOL = "ospp-v1"
+_OSPP_CONNECT_PATH = "/_ospp/v1/connect"
+_OSPP_PAIR_PATH = "/_ospp/v1/pair"
+_OSPP_MAX_CONTROL_FRAME = 16_384
+_OSPP_DUMP_CHUNK = 32 * 1024
+
+# P-256 domain parameters (SEC 2 / FIPS 186-4).
+_P256_P = 0xFFFFFFFF00000001000000000000000000000000FFFFFFFFFFFFFFFFFFFFFFFF
+_P256_A = _P256_P - 3
+_P256_B = 0x5AC635D8AA3A93E7B3EBBD55769886BC651D06B0CC53B0F63BCE3C3E27D2604B
+_P256_N = 0xFFFFFFFF00000000FFFFFFFFFFFFFFFFBCE6FAADA7179E84F3B9CAC2FC632551
+_P256_G = (
+    0x6B17D1F2E12C4247F8BCE6E563A440F277037D812DEB33A0F4A13945D898C296,
+    0x4FE342E2FE1A7F9B8EE7EB4A7C0F9E162BCE33576B315ECECBB6406837BF51F5,
+)
+
+
+def _point_add(left, right):
+    if left is None:
+        return right
+    if right is None:
+        return left
+    x1, y1 = left
+    x2, y2 = right
+    if x1 == x2 and (y1 + y2) % _P256_P == 0:
+        return None
+    if left == right:
+        slope = (3 * x1 * x1 + _P256_A) * pow(2 * y1, -1, _P256_P) % _P256_P
+    else:
+        slope = (y2 - y1) * pow(x2 - x1, -1, _P256_P) % _P256_P
+    x3 = (slope * slope - x1 - x2) % _P256_P
+    return x3, (slope * (x1 - x3) - y1) % _P256_P
+
+
+def _point_mul(scalar, point):
+    result = None
+    addend = point
+    while scalar:
+        if scalar & 1:
+            result = _point_add(result, addend)
+        addend = _point_add(addend, addend)
+        scalar >>= 1
+    return result
+
+
+def _decompress_sec1(encoded: bytes):
+    """Decode a 33-byte compressed SEC1 point, or `None` when it is not on the curve."""
+    if len(encoded) != 33 or encoded[0] not in (2, 3):
+        return None
+    x = int.from_bytes(encoded[1:], "big")
+    if x >= _P256_P:
+        return None
+    y_squared = (pow(x, 3, _P256_P) + _P256_A * x + _P256_B) % _P256_P
+    y = pow(y_squared, (_P256_P + 1) // 4, _P256_P)
+    if y * y % _P256_P != y_squared:
+        return None
+    if (y & 1) != (encoded[0] & 1):
+        y = _P256_P - y
+    return x, y
+
+
+def _parse_key_id(key_id: str):
+    """`p256:<66 lowercase hex>` -> compressed public point, or `None`."""
+    if not key_id.startswith("p256:"):
+        return None
+    raw = key_id[len("p256:") :]
+    if len(raw) != 66 or any(character not in "0123456789abcdef" for character in raw):
+        return None
+    return _decompress_sec1(bytes.fromhex(raw))
+
+
+def p256_verify(key_id: str, transcript: bytes, signature_hex: str) -> bool:
+    """Verify a raw `r || s` ECDSA-P256/SHA-256 signature over `transcript`."""
+    public_point = _parse_key_id(key_id)
+    if public_point is None or len(signature_hex) != 128:
+        return False
+    if any(character not in "0123456789abcdef" for character in signature_hex):
+        return False
+    raw = bytes.fromhex(signature_hex)
+    r = int.from_bytes(raw[:32], "big")
+    s = int.from_bytes(raw[32:], "big")
+    if not (1 <= r < _P256_N and 1 <= s < _P256_N):
+        return False
+    digest = hashlib.sha256(transcript).digest()
+    e = int.from_bytes(digest, "big")
+    inverse = pow(s, -1, _P256_N)
+    point = _point_add(
+        _point_mul(e * inverse % _P256_N, _P256_G),
+        _point_mul(r * inverse % _P256_N, public_point),
+    )
+    return point is not None and point[0] % _P256_N == r
+
+
+def connect_transcript(nonce_s: bytes, nonce_c: bytes, server_name: str) -> bytes:
+    return b"ospp-v1" + nonce_s + nonce_c + server_name.encode("ascii")
+
+
+def pairing_transcript(
+    nonce_s: bytes, nonce_c: bytes, handle: bytes, server_name: str
+) -> bytes:
+    return b"ospp-v1-pair" + nonce_s + nonce_c + handle + server_name.encode("ascii")
+
+
+class _WebSocketClosed(RuntimeError):
+    """The peer closed or violated the WebSocket framing."""
+
+
+class _WebSocket:
+    """The minimal RFC 6455 server side of one `ospp-v1` connection (text + binary frames)."""
+
+    def __init__(self, stream: socket.socket) -> None:
+        self._stream = stream
+
+    def send_text(self, payload: dict) -> None:
+        self._send_frame(0x1, json.dumps(payload).encode("utf-8"))
+
+    def send_binary(self, payload: bytes) -> None:
+        self._send_frame(0x2, payload)
+
+    def _send_frame(self, opcode: int, payload: bytes) -> None:
+        header = bytearray([0x80 | opcode])
+        length = len(payload)
+        if length < 126:
+            header.append(length)
+        elif length < 1 << 16:
+            header.append(126)
+            header += struct.pack("!H", length)
+        else:
+            header.append(127)
+            header += struct.pack("!Q", length)
+        self._stream.sendall(bytes(header) + payload)
+
+    def _read_exact(self, count: int) -> bytes:
+        chunks = bytearray()
+        while len(chunks) < count:
+            chunk = self._stream.recv(count - len(chunks))
+            if not chunk:
+                raise _WebSocketClosed("connection closed mid-frame")
+            chunks += chunk
+        return bytes(chunks)
+
+    def recv(self) -> tuple[int, bytes]:
+        """Return one `(opcode, payload)` data frame, answering pings transparently."""
+        while True:
+            first, second = self._read_exact(2)
+            opcode = first & 0x0F
+            if not second & 0x80:
+                raise _WebSocketClosed("client data frames must be masked")
+            length = second & 0x7F
+            if length == 126:
+                length = struct.unpack("!H", self._read_exact(2))[0]
+            elif length == 127:
+                length = struct.unpack("!Q", self._read_exact(8))[0]
+            mask = self._read_exact(4)
+            payload = bytearray(self._read_exact(length))
+            for index in range(length):
+                payload[index] ^= mask[index % 4]
+            if opcode == 0x8:
+                raise _WebSocketClosed("peer closed")
+            if opcode == 0x9:
+                self._send_frame(0xA, bytes(payload))
+                continue
+            if opcode == 0xA:
+                continue
+            return opcode, bytes(payload)
+
+    def recv_json(self) -> dict:
+        opcode, payload = self.recv()
+        if opcode != 0x1:
+            raise _WebSocketClosed("expected a text control frame")
+        if len(payload) > _OSPP_MAX_CONTROL_FRAME:
+            raise _WebSocketClosed("control frame exceeds 16 KiB")
+        try:
+            message = json.loads(payload.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise _WebSocketClosed(f"invalid control frame: {error}") from error
+        if not isinstance(message, dict):
+            raise _WebSocketClosed("control frame must be a JSON object")
+        return message
+
+
+@dataclass(frozen=True, slots=True)
+class SeedDumpOffer:
+    """One real `pg_dump --format=custom` archive, zstd-compressed for transport."""
+
+    db_id: str
+    compressed: Path
+    sha256: str
+    compressed_bytes: int
+
+
+class SeedOsppServer:
+    """A minimal loopback `ospp-v1` host that pairs a device key and streams one seed dump."""
+
+    def __init__(self) -> None:
+        self._listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self._listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self._listener.bind(("127.0.0.1", 0))
+        self._listener.listen(8)
+        self._listener.settimeout(0.1)
+        self._stop = threading.Event()
+        self._lock = threading.Lock()
+        self._accepted_keys: set[str] = set()
+        self._redeemed_handles: set[bytes] = set()
+        self._dump: SeedDumpOffer | None = None
+        self._pairing_handle = os.urandom(32)
+        self._account = "bench@localhost"
+        self._thread = threading.Thread(target=self._serve, daemon=True)
+        self._thread.start()
+
+    @property
+    def port(self) -> int:
+        return self._listener.getsockname()[1]
+
+    @property
+    def handle_hex(self) -> str:
+        return self._pairing_handle.hex()
+
+    @property
+    def pairing_url(self) -> str:
+        """A fragment-only pairing URL (`http://` is loopback-only, `ADR-0008` §1)."""
+        return f"http://127.0.0.1:{self.port}/pair#handle={self.handle_hex}"
+
+    def serve_dump(self, dump: SeedDumpOffer) -> None:
+        with self._lock:
+            self._dump = dump
+
+    def stop(self) -> None:
+        self._stop.set()
+        if self._thread.is_alive():
+            self._thread.join(timeout=5)
+        try:
+            self._listener.close()
+        except OSError:
+            pass
+
+    # -- server internals ---------------------------------------------------
+
+    def _serve(self) -> None:
+        while not self._stop.is_set():
+            try:
+                stream, _ = self._listener.accept()
+            except TimeoutError:
+                continue
+            except OSError:
+                return
+            stream.settimeout(30)
+            threading.Thread(target=self._handle, args=(stream,), daemon=True).start()
+
+    def _handle(self, stream: socket.socket) -> None:
+        try:
+            path = self._handshake(stream)
+            websocket = _WebSocket(stream)
+            if path == _OSPP_PAIR_PATH:
+                self._pair(websocket)
+            elif path == _OSPP_CONNECT_PATH:
+                self._connect(websocket)
+        except (_WebSocketClosed, OSError, TimeoutError):
+            pass
+        finally:
+            try:
+                stream.close()
+            except OSError:
+                pass
+
+    def _handshake(self, stream: socket.socket) -> str:
+        request = bytearray()
+        while b"\r\n\r\n" not in request:
+            chunk = stream.recv(4096)
+            if not chunk:
+                raise _WebSocketClosed("connection closed during the upgrade")
+            request += chunk
+            if len(request) > _OSPP_MAX_CONTROL_FRAME:
+                raise _WebSocketClosed("upgrade request exceeds 16 KiB")
+        lines = bytes(request).split(b"\r\n")
+        request_line = lines[0].decode("ascii", "replace").split(" ")
+        path = request_line[1] if len(request_line) > 1 else "/"
+        headers = {}
+        for line in lines[1:]:
+            if b":" in line:
+                name, value = line.split(b":", 1)
+                headers[name.strip().lower()] = value.strip()
+        key = headers.get(b"sec-websocket-key")
+        subprotocol = headers.get(b"sec-websocket-protocol", b"").decode("ascii")
+        if key is None or _OSPP_SUBPROTOCOL not in subprotocol:
+            raise _WebSocketClosed("missing `ospp-v1` subprotocol")
+        accept = base64.b64encode(
+            hashlib.sha1(key + b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11").digest()
+        ).decode("ascii")
+        response = (
+            "HTTP/1.1 101 Switching Protocols\r\n"
+            "Upgrade: websocket\r\n"
+            "Connection: Upgrade\r\n"
+            f"Sec-WebSocket-Accept: {accept}\r\n"
+            f"Sec-WebSocket-Protocol: {_OSPP_SUBPROTOCOL}\r\n\r\n"
+        )
+        stream.sendall(response.encode("ascii"))
+        return path
+
+    def _pair(self, websocket: _WebSocket) -> None:
+        nonce_s = os.urandom(32)
+        websocket.send_text({"type": "challenge", "nonce_s": nonce_s.hex()})
+        hello = websocket.recv_json()
+        if hello.get("type") != "pair_hello" or hello.get("version") != 1:
+            websocket.send_text({"type": "reject", "reason": {"kind": "bad_signature"}})
+            return
+        try:
+            handle = bytes.fromhex(hello.get("handle", ""))
+            nonce_c = bytes.fromhex(hello.get("nonce_c", ""))
+        except ValueError:
+            websocket.send_text(
+                {"type": "reject", "reason": {"kind": "unknown_handle"}}
+            )
+            return
+        with self._lock:
+            already_redeemed = handle in self._redeemed_handles
+        if len(handle) != 32 or handle != self._pairing_handle:
+            websocket.send_text(
+                {"type": "reject", "reason": {"kind": "unknown_handle"}}
+            )
+            return
+        if len(nonce_c) != 32 or already_redeemed:
+            websocket.send_text(
+                {"type": "reject", "reason": {"kind": "already_redeemed"}}
+            )
+            return
+        key_id = hello.get("key_id", "")
+        if not p256_verify(
+            key_id,
+            pairing_transcript(nonce_s, nonce_c, handle, "127.0.0.1"),
+            hello.get("sig", ""),
+        ):
+            websocket.send_text({"type": "reject", "reason": {"kind": "bad_signature"}})
+            return
+        with self._lock:
+            self._accepted_keys.add(key_id)
+            self._redeemed_handles.add(handle)
+        websocket.send_text({"type": "pair_approved", "account": self._account})
+
+    def _connect(self, websocket: _WebSocket) -> None:
+        nonce_s = os.urandom(32)
+        websocket.send_text({"type": "challenge", "nonce_s": nonce_s.hex()})
+        hello = websocket.recv_json()
+        key_id = hello.get("key_id", "")
+        with self._lock:
+            accepted = key_id in self._accepted_keys
+        try:
+            nonce_c = bytes.fromhex(hello.get("nonce_c", ""))
+        except ValueError:
+            nonce_c = b""
+        valid = (
+            hello.get("type") == "hello"
+            and hello.get("version") == 1
+            and accepted
+            and len(nonce_c) == 32
+            and p256_verify(
+                key_id,
+                connect_transcript(nonce_s, nonce_c, "127.0.0.1"),
+                hello.get("sig", ""),
+            )
+        )
+        if not valid:
+            reason = "unknown_key" if not accepted else "bad_signature"
+            websocket.send_text({"type": "reject", "reason": {"kind": reason}})
+            return
+        websocket.send_text({"type": "welcome", "version": 1})
+        while True:
+            request = websocket.recv_json()
+            capability = request.get("type")
+            request_id = request.get("request_id")
+            if not isinstance(request_id, int):
+                return
+            if not self._dispatch(websocket, capability, request_id, request):
+                return
+
+    def _dispatch(
+        self, websocket: _WebSocket, capability: object, request_id: int, request: dict
+    ) -> bool:
+        if capability == "env.bundle":
+            websocket.send_text(
+                {
+                    "type": "env.bundle",
+                    "request_id": request_id,
+                    "vars": {},
+                    "secrets": {},
+                    "domains": {},
+                }
+            )
+            return True
+        if capability == "secrets.ensure":
+            websocket.send_text(
+                {
+                    "type": "secrets.ensure",
+                    "request_id": request_id,
+                    "key": request.get("key", ""),
+                    "value": request.get("proposed", ""),
+                }
+            )
+            return True
+        if capability == "resources.describe":
+            websocket.send_text(
+                {
+                    "type": "resources.describe",
+                    "request_id": request_id,
+                    "s3_buckets": {},
+                    "pg_databases": self._describe(),
+                }
+            )
+            return True
+        if capability == "dump.begin":
+            return self._stream_dump(websocket, request_id, request.get("db_id"))
+        websocket.send_text(
+            {
+                "type": "capability.error",
+                "request_id": request_id,
+                "capability": capability,
+                "kind": "unsupported_capability",
+                "message": "the benchmark seed server offers only seed dumps",
+            }
+        )
+        return True
+
+    def _describe(self) -> dict:
+        with self._lock:
+            dump = self._dump
+        if dump is None:
+            return {}
+        return {
+            dump.db_id: {
+                "db_id": dump.db_id,
+                "sha256_compressed": dump.sha256,
+                "compressed_bytes": dump.compressed_bytes,
+                "format": "pg_custom_zstd",
+            }
+        }
+
+    def _stream_dump(
+        self, websocket: _WebSocket, request_id: int, db_id: object
+    ) -> bool:
+        with self._lock:
+            dump = self._dump
+        if dump is None or db_id != dump.db_id:
+            websocket.send_text(
+                {
+                    "type": "capability.error",
+                    "request_id": request_id,
+                    "capability": "dump.begin",
+                    "kind": "unknown_resource",
+                    "message": "no seed dump is offered for that database id",
+                }
+            )
+            return True
+        websocket.send_text(
+            {
+                "type": "dump.begin",
+                "request_id": request_id,
+                "db_id": dump.db_id,
+                "sha256_compressed": dump.sha256,
+                "compressed_bytes": dump.compressed_bytes,
+                "format": "pg_custom_zstd",
+            }
+        )
+        with dump.compressed.open("rb") as handle:
+            while True:
+                chunk = handle.read(_OSPP_DUMP_CHUNK)
+                if not chunk:
+                    break
+                websocket.send_binary(chunk)
+        websocket.send_text(
+            {
+                "type": "dump.end",
+                "request_id": request_id,
+                "sha256_compressed": dump.sha256,
+                "compressed_bytes": dump.compressed_bytes,
+            }
+        )
+        return True
 
 
 @dataclass(frozen=True, slots=True)
@@ -486,6 +1001,11 @@ def bench_child_env(
     Host `PATH`/locale pass through when present; `HOME` and `TMPDIR` are pinned inside `run_dir`
     so no child can write into the developer's home or `/tmp`; `extra` may only carry explicit
     `SLIPFORK_*` variables the run itself sets.
+
+    `BROWSER` is pinned to `/bin/true`: `slipfork auth login -` hands the pairing URL to the
+    daemon's injected `BrowserOpener` (a desktop convenience) before redeeming the handle over
+    real `ospp-v1`. A headless benchmark must not depend on a desktop browser, and the handle is
+    still redeemed exactly once over the loopback seed server.
     """
     env: dict[str, str] = {}
     for key in PASSTHROUGH_ENV:
@@ -501,6 +1021,7 @@ def bench_child_env(
     os.chmod(home, 0o700)
     env["HOME"] = str(home)
     env["TMPDIR"] = str(tmp)
+    env["BROWSER"] = "/bin/true"
     for key, value in (extra or {}).items():
         if not key.startswith(CHILD_ENV_PREFIX):
             msg = f"bench child env may only add {CHILD_ENV_PREFIX}* variables, got '{key}'"
@@ -593,7 +1114,7 @@ def setup_sample_project(project: Path, run_dir: Path) -> None:
         SEED_CATALOG_SQL, encoding="utf-8"
     )
     # Every in-world script is committed so fork worktrees contain it.
-    (project / "run_seed.py").write_text(WORLD_SEED_SCRIPT, encoding="utf-8")
+    (project / "api" / "app.py").write_text(APP_SCRIPT, encoding="utf-8")
     (project / "run_one_world_test.py").write_text(WORLD_TEST_SCRIPT, encoding="utf-8")
     (project / "run_baseline.py").write_text(BASELINE_TEST_SCRIPT, encoding="utf-8")
     env = bench_child_env(run_dir)
@@ -673,8 +1194,12 @@ def _pgdata_size(pgdata: Path) -> tuple[float, int]:
 
 def measure_restore_pipeline(
     seed_src: Path, restore_target: Path, env: dict[str, str]
-) -> float:
-    """Measure a real `initdb -> seed -> pg_dump -> pg_restore` pipeline (`M1.7` #7)."""
+) -> tuple[float, Path]:
+    """Measure a real `initdb -> seed -> pg_dump -> pg_restore` pipeline (`M1.7` #7).
+
+    Returns the measured restore time and the real PostgreSQL 18 `pg_dump --format=custom`
+    archive (`-Z zstd` data blocks) that `slipforkd` later restores into `postgres:18`.
+    """
     _initdb(seed_src, env)
     sock = seed_src / "pgsock"
     _pg_start(seed_src, sock, seed_src / "pg-seed.log", env)
@@ -690,6 +1215,8 @@ def measure_restore_pipeline(
                 "-d",
                 "postgres",
                 "-Fc",
+                "-Z",
+                "zstd",
                 "-f",
                 str(dump),
             ],
@@ -697,6 +1224,9 @@ def measure_restore_pipeline(
         )
     finally:
         _pg_stop(seed_src, env)
+    if not dump.is_file() or dump.stat().st_size == 0:
+        msg = f"`pg_dump -Fc` produced no archive at '{dump}'"
+        raise BenchError(msg)
 
     _initdb(restore_target, env)
     target_sock = restore_target / "pgsock"
@@ -718,7 +1248,25 @@ def measure_restore_pipeline(
         _psql(target_sock, "CHECKPOINT;", env)
     finally:
         _pg_stop(restore_target, env)
-    return elapsed_ms
+    return elapsed_ms, dump
+
+
+def compress_seed_dump(dump: Path, env: dict[str, str]) -> SeedDumpOffer:
+    """zstd-compress the real archive and pin the transport digest `ospp-v1` advertises."""
+    compressed = dump.with_suffix(dump.suffix + ".zst")
+    run_cmd(
+        [str(ZSTD_BIN), "-q", "-3", "-f", str(dump), "-o", str(compressed)],
+        env=env,
+    )
+    if not compressed.is_file() or compressed.stat().st_size == 0:
+        msg = f"`zstd` produced no archive at '{compressed}'"
+        raise BenchError(msg)
+    return SeedDumpOffer(
+        db_id="shop",
+        compressed=compressed,
+        sha256=_sha256(compressed),
+        compressed_bytes=compressed.stat().st_size,
+    )
 
 
 def run_baseline_serial_suite(
@@ -726,7 +1274,7 @@ def run_baseline_serial_suite(
 ) -> float:
     child_env = bench_child_env(run_dir, {"SLIPFORK_BENCH_CHROME": str(CHROME_BIN)})
     started = time.perf_counter()
-    run_cmd(
+    result = subprocess.run(
         [
             PYTHON_EXE,
             str(project / "run_baseline.py"),
@@ -735,7 +1283,14 @@ def run_baseline_serial_suite(
             str(project),
         ],
         env=child_env,
+        check=False,
+        capture_output=True,
+        text=True,
     )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip()
+        msg = f"traditional baseline suite failed:\n{detail}"
+        raise BenchError(msg)
     return time.perf_counter() - started
 
 
@@ -747,30 +1302,53 @@ def _slipfork(
     env: dict[str, str],
     project: Path,
     *args: str,
+    stdin: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
-    return run_cmd(
-        [
-            str(SLIPFORK_BIN),
-            "--state-dir",
-            str(layout / "state"),
-            "--runtime-dir",
-            str(layout / "runtime"),
-            *args,
-        ],
+    argv = [
+        str(SLIPFORK_BIN),
+        "--state-dir",
+        str(layout / "state"),
+        "--runtime-dir",
+        str(layout / "runtime"),
+        *args,
+    ]
+    result = subprocess.run(
+        argv,
         cwd=project,
         env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+        input=stdin,
     )
+    if result.returncode != 0:
+        diagnostic = (result.stderr or result.stdout).strip()
+        msg = f"`slipfork {' '.join(args)}` failed with {result.returncode}:\n{diagnostic}"
+        raise BenchError(msg)
+    return result
 
 
 def _slipfork_json(
-    layout: Path, env: dict[str, str], project: Path, *args: str
+    layout: Path,
+    env: dict[str, str],
+    project: Path,
+    *args: str,
+    stdin: str | None = None,
 ) -> dict:
-    output = _slipfork(layout, env, project, "--json", *args).stdout
+    output = _slipfork(layout, env, project, "--json", *args, stdin=stdin).stdout
     return json.loads(output)
 
 
-def _fork(layout: Path, env: dict[str, str], project: Path, name: str) -> None:
-    _slipfork(layout, env, project, "fork", name)
+def _origin_of(summary: dict) -> str:
+    origin = summary.get("origin")
+    if not isinstance(origin, str) or not origin.startswith("http"):
+        msg = f"`slipfork --json` did not return a world origin: {summary}"
+        raise BenchError(msg)
+    return origin
+
+
+def _fork(layout: Path, env: dict[str, str], project: Path, name: str) -> str:
+    return _origin_of(_slipfork_json(layout, env, project, "fork", name))
 
 
 def _drop(layout: Path, env: dict[str, str], project: Path, name: str) -> None:
@@ -807,39 +1385,154 @@ READY_FILE_NAME = ".slipfork-bench-ready"
 GO_FILE_NAME = ".slipfork-bench-go"
 
 
-def _run_test_in_world(
-    layout: Path,
-    env: dict[str, str],
-    project: Path,
-    world: str,
-    index: int,
+class SlipforkDaemon:
+    """The real `slipforkd` composition root, owned by this harness for deterministic teardown."""
+
+    def __init__(self, process: subprocess.Popen, run_dir: Path) -> None:
+        self._process = process
+        self._run_dir = run_dir
+
+    @classmethod
+    def start(cls, layout: Path, env: dict[str, str]) -> SlipforkDaemon:
+        (layout / "runtime").mkdir(parents=True, exist_ok=True)
+        log_path = layout / "runtime" / "daemon.log"
+        handle = open(log_path, "wb")  # noqa: SIM115 - owned until the daemon exits
+        os.chmod(log_path, 0o600)
+        process = subprocess.Popen(
+            [
+                str(SLIPFORKD_BIN),
+                "--listen",
+                "127.0.0.1:0",
+                "--state-dir",
+                str(layout / "state"),
+                "--runtime-dir",
+                str(layout / "runtime"),
+            ],
+            cwd=layout,
+            env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=handle,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+        socket_path = layout / "runtime" / "daemon.sock"
+        deadline = time.monotonic() + 20
+        while time.monotonic() < deadline:
+            if process.poll() is not None:
+                tail = log_path.read_text(encoding="utf-8", errors="replace")
+                msg = f"`slipforkd` exited before serving {socket_path}:\n{tail}"
+                raise BenchError(msg)
+            if socket_path.exists():
+                probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                try:
+                    probe.connect(str(socket_path))
+                except OSError:
+                    pass
+                else:
+                    probe.close()
+                    handle.close()
+                    return cls(process, layout)
+                finally:
+                    probe.close()
+            time.sleep(0.05)
+        process.kill()
+        msg = f"`slipforkd` did not serve {socket_path} within 20s"
+        raise BenchError(msg)
+
+    def stop(self) -> None:
+        """Stop the daemon, then assert that no world process survives the run."""
+        if self._process.poll() is None:
+            try:
+                os.killpg(self._process.pid, 15)
+            except ProcessLookupError:
+                pass
+            try:
+                self._process.wait(timeout=20)
+            except subprocess.TimeoutExpired:
+                try:
+                    os.killpg(self._process.pid, 9)
+                except ProcessLookupError:
+                    pass
+                self._process.wait(timeout=20)
+        leftovers = _leftover_processes(self._run_dir)
+        if leftovers:
+            for pid in leftovers:
+                try:
+                    os.kill(pid, 9)
+                except ProcessLookupError:
+                    pass
+            time.sleep(0.2)
+            leftovers = _leftover_processes(self._run_dir)
+        if leftovers:
+            msg = f"benchmark leaked world processes after teardown: {leftovers}"
+            raise BenchError(msg)
+
+
+def _leftover_processes(run_dir: Path) -> list[int]:
+    """Every live `slipforkd`/`slipfork-world-init` process scoped to this run directory."""
+    found: list[int] = []
+    for pattern in (
+        f"target/release/slipforkd --listen 127.0.0.1:0 --state-dir {run_dir}/state",
+        f"slipfork-world-init .*{run_dir}",
+    ):
+        result = subprocess.run(
+            ["pgrep", "-f", pattern],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        for line in result.stdout.split():
+            if line.isdigit() and int(line) != os.getpid():
+                found.append(int(line))
+    return sorted(set(found))
+
+
+def _host_test_argv(
+    project: Path, origin: str, index: int, ready: str = "", go: str = ""
+) -> list[str]:
+    """The exact argv of one host-side Playwright test child (decision-frame or not)."""
+    return [
+        PYTHON_EXE,
+        str(project / "run_one_world_test.py"),
+        origin,
+        str(index),
+        ready,
+        go,
+    ]
+
+
+def _run_test_on_host(
+    env: dict[str, str], project: Path, origin: str, index: int
 ) -> None:
-    # Everything the in-world script reads is relative to its `--cwd`, so no host path is
-    # assumed inside the world's mount namespace.
-    _exec(
-        layout,
-        env,
-        project,
-        world,
-        _worktree(project, world),
-        ["python3", "run_one_world_test.py", str(index), "front/src/App.html", "", ""],
+    """Drive host Chromium against one world's `.localhost` origin."""
+    result = subprocess.run(
+        _host_test_argv(project, origin, index),
+        cwd=project,
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
     )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip()
+        msg = f"host browser test {index} against {origin} failed:\n{detail}"
+        raise BenchError(msg)
 
 
 def measure_cold_parallel_suite(
-    layout: Path,
     env: dict[str, str],
     project: Path,
+    layout: Path,
     order: Sequence[int],
     workers: int,
 ) -> float:
-    """On-demand cold worlds: `fork` + cold Chromium + cold HTTP per test."""
+    """On-demand cold worlds: `fork` (boots `postgres:18` + the app) + cold host Chromium."""
 
     def run_one(index: int) -> None:
         name = f"cold-w-{index}"
-        _fork(layout, env, project, name)
+        origin = _fork(layout, env, project, name)
         try:
-            _run_test_in_world(layout, env, project, name, index)
+            _run_test_on_host(env, project, origin, index)
         finally:
             _drop(layout, env, project, name)
 
@@ -850,13 +1543,13 @@ def measure_cold_parallel_suite(
 
 
 def measure_warm_pool_suite(
-    layout: Path,
     env: dict[str, str],
     project: Path,
+    run_dir: Path,
     order: Sequence[int],
     workers: int,
 ) -> float:
-    """Pre-warmed pool: fork and boot a wave, then time only test execution."""
+    """Pre-warmed pool: fork a wave, launch its host browser, then time only the test."""
     total = 0.0
     for start in range(0, len(order), workers):
         indices = list(order[start : start + workers])
@@ -864,30 +1557,13 @@ def measure_warm_pool_suite(
         try:
             for index in indices:
                 name = f"warm-w-{index}"
-                _fork(layout, env, project, name)
-                worktree = _worktree(project, name)
-                ready = worktree / READY_FILE_NAME
-                go = worktree / GO_FILE_NAME
+                origin = _fork(run_dir, env, project, name)
+                handshake = run_dir / "handshake"
+                handshake.mkdir(exist_ok=True)
+                ready = handshake / f"{index}{READY_FILE_NAME}"
+                go = handshake / f"{index}{GO_FILE_NAME}"
                 process = subprocess.Popen(
-                    [
-                        str(SLIPFORK_BIN),
-                        "--state-dir",
-                        str(layout / "state"),
-                        "--runtime-dir",
-                        str(layout / "runtime"),
-                        "exec",
-                        "--world",
-                        name,
-                        "--cwd",
-                        str(worktree),
-                        "--",
-                        "python3",
-                        "run_one_world_test.py",
-                        str(index),
-                        "front/src/App.html",
-                        READY_FILE_NAME,
-                        GO_FILE_NAME,
-                    ],
+                    _host_test_argv(project, origin, index, str(ready), str(go)),
                     cwd=project,
                     env=env,
                     stdout=subprocess.PIPE,
@@ -916,7 +1592,7 @@ def measure_warm_pool_suite(
                 if process.poll() is None:
                     process.kill()
                     process.communicate()
-                _drop(layout, env, project, name)
+                _drop(run_dir, env, project, name)
     return total
 
 
@@ -928,10 +1604,12 @@ def preflight() -> None:
         str(path)
         for path in (
             SLIPFORK_BIN,
+            SLIPFORKD_BIN,
             PG_BIN / "initdb",
             PG_BIN / "pg_dump",
             PG_BIN / "pg_restore",
             CHROME_BIN,
+            ZSTD_BIN,
         )
         if not path.exists()
     ]
@@ -939,16 +1617,59 @@ def preflight() -> None:
         msg = (
             "benchmark prerequisites are missing: "
             + ", ".join(missing)
-            + " (run `make bench`, which builds target/release/slipfork; install PostgreSQL 18 "
-            "server binaries under /usr/lib/postgresql/18/bin and Google Chrome)"
+            + " (run `make bench`, which builds target/release/slipfork + slipforkd; install "
+            "PostgreSQL 18 server binaries under /usr/lib/postgresql/18/bin, Google Chrome, and "
+            "`zstd`)"
         )
         raise BenchError(msg)
     try:
         run_cmd([str(PG_BIN / "initdb"), "--version"])
+        run_cmd([str(PG_BIN / "pg_dump"), "--version"])
         run_cmd([str(SLIPFORK_BIN), "--version"])
     except (OSError, subprocess.CalledProcessError) as error:
         msg = f"benchmark prerequisite probe failed: {error}"
         raise BenchError(msg) from error
+
+
+def measure_reflink_64k_us(layout: Path, env: dict[str, str], project: Path) -> int:
+    """Best of three real `slipfork doctor` 64 KiB `FICLONE` probes.
+
+    A single-shot probe is dominated by scheduler/page-cache noise on a loaded developer host;
+    the best sample still reflects the kernel's real reflink cost (a copy fallback or a
+    non-reflink filesystem raises all three samples), so the committed 4x bound stays meaningful.
+    """
+    samples = []
+    for _ in range(3):
+        doctor = _slipfork_json(layout, env, project, "doctor")
+        if doctor.get("ok") is not True:
+            msg = f"`slipfork doctor` did not report host readiness: {doctor}"
+            raise BenchError(msg)
+        samples.append(int(doctor["reflink_64k_micros"]))
+    return min(samples)
+
+
+def measure_dag_plan_ms(
+    layout: Path,
+    env: dict[str, str],
+    project: Path,
+    plan_args: Sequence[str],
+    *,
+    repeats: int = 3,
+) -> tuple[float, dict]:
+    """Best-of-`repeats` `slipfork dag plan` wall time plus the last parsed plan.
+
+    `dag plan` is read-only and deterministic, so the fastest of three identical invocations is
+    the honest Merkle-hash cost; a loaded developer host otherwise inflates a single sample.
+    """
+    best = None
+    plan: dict = {}
+    for _ in range(repeats):
+        started = time.perf_counter()
+        plan = _slipfork_json(layout, env, project, *plan_args)
+        elapsed_ms = (time.perf_counter() - started) * 1000.0
+        best = elapsed_ms if best is None else min(best, elapsed_ms)
+    assert best is not None
+    return best, plan
 
 
 def measure_all(
@@ -959,17 +1680,19 @@ def measure_all(
 ) -> BenchmarkMetrics:
     prepare_run_state(run_dir)
     preflight()
-    env = bench_child_env(run_dir)
+    env = bench_child_env(run_dir, {"SLIPFORK_BENCH_CHROME": str(CHROME_BIN)})
     project = run_dir / "project"
     project.mkdir(parents=True)
     setup_sample_project(project, run_dir)
 
+    server = SeedOsppServer()
+    daemon: SlipforkDaemon | None = None
     try:
-        doctor = _slipfork_json(run_dir, env, project, "doctor")
-        if doctor.get("ok") is not True:
-            msg = f"`slipfork doctor` did not report host readiness: {doctor}"
-            raise BenchError(msg)
-        reflink_64k_us = int(doctor["reflink_64k_micros"])
+        daemon = SlipforkDaemon.start(run_dir, env)
+
+        # `doctor` measures the 64 KiB `FICLONE` latency on the run state directory. Run it on a
+        # quiet filesystem, before the PostgreSQL dump/restore pipeline dirties the page cache.
+        reflink_64k_us = measure_reflink_64k_us(run_dir, env, project)
 
         resolved = _slipfork_json(
             run_dir,
@@ -986,24 +1709,48 @@ def measure_all(
             msg = "`slipfork snow resolve` must redact SECRET_KEY"
             raise BenchError(msg)
 
-        restore_ms = measure_restore_pipeline(
+        # A real `pg_dump -Fc` from real PostgreSQL 18, restored once into the sealed
+        # `<project>-base` world over a loopback `ospp-v1` seed server (`ADR-0008` §2).
+        restore_ms, dump = measure_restore_pipeline(
             run_dir / "seed-src", run_dir / "restore-target", env
         )
-        pg_mib, pg_files = _pgdata_size(run_dir / "restore-target" / "pgdata")
+        pg_mib, pg_files = _pgdata_size(run_dir / "restore-target")
+        server.serve_dump(compress_seed_dump(dump, env))
+
+        # Pair the daemon's real device key through a real `pair_hello`, then let `up` restore the
+        # streamed dump inside `postgres:18` and seal the base snapshot with `freeze_world`.
+        _slipfork_json(
+            run_dir, env, project, "auth", "login", "-", stdin=f"{server.pairing_url}\n"
+        )
 
         t_up = time.perf_counter()
-        _slipfork(run_dir, env, project, "up", "--no-dump")
+        up_summary = _slipfork_json(run_dir, env, project, "up")
         world_up_ms = (time.perf_counter() - t_up) * 1000.0
+        origin = _origin_of(up_summary)
+        url_before_fragment, _, url_fragment = server.pairing_url.partition("#")
+        if (
+            "handle=" in url_before_fragment
+            or server.handle_hex in url_before_fragment
+            or url_fragment != f"handle={server.handle_hex}"
+        ):
+            msg = (
+                "the seed server pairing URL must carry its handle only in the `#handle=` "
+                f"fragment, got '{url_before_fragment}#{url_fragment}'"
+            )
+            raise BenchError(msg)
+        if not any(
+            row["id"] == "shop" and row["resolved"] == "remote"
+            for row in up_summary.get("resources", [])
+        ):
+            msg = (
+                "`slipfork up` did not resolve the seeded base dump from the OSPP offer: "
+                f"{up_summary.get('resources')}"
+            )
+            raise BenchError(msg)
 
-        seed_sql = json.dumps([SCHEMA_SQL, SEED_CORE_SQL, SEED_CATALOG_SQL])
-        _exec(
-            run_dir,
-            env,
-            project,
-            None,
-            project,
-            ["python3", "run_seed.py", seed_sql],
-        )
+        # The canonical world boots from the seeded base: no post-boot SQL seed exists.
+        _run_test_on_host(env, project, origin, 0)
+        _slipfork(run_dir, env, project, "down")
 
         fork_started = time.perf_counter()
         _fork(run_dir, env, project, "fork-probe")
@@ -1038,10 +1785,13 @@ def measure_all(
                         (
                             "import os, psycopg;"
                             "conn = psycopg.connect(os.environ['DATABASE_URL'], "
-                            "autocommit=True);"
-                            "conn.execute('DELETE FROM orders');"
+                            "user='postgres', autocommit=True);"
                             "assert conn.execute("
-                            "'SELECT count(*) FROM products').fetchone()[0] == 10000"
+                            "'SELECT count(*) FROM products').fetchone()[0] == 10000;"
+                            'conn.execute("INSERT INTO orders (product_id, buyer_email, '
+                            "quantity, total_cents) VALUES (1, 'bench@localhost', 1, 1500)\");"
+                            "assert conn.execute("
+                            "'SELECT count(*) FROM orders').fetchone()[0] == 1"
                         ),
                     ],
                 )
@@ -1062,21 +1812,12 @@ def measure_all(
             str(project),
         )
         plan = _slipfork_json(run_dir, env, project, *plan_args)
-        for artifact in plan["artifacts"]:
-            (run_dir / "state" / "artifacts" / artifact["digest"]).mkdir(
-                parents=True, exist_ok=True
-            )
-        for wave in plan["fixture_waves"]:
-            for fixture in wave:
-                (run_dir / "state" / "fixtures" / fixture["digest"]).mkdir(
-                    parents=True, exist_ok=True
-                )
 
-        dag_started = time.perf_counter()
-        warm_plan = _slipfork_json(run_dir, env, project, *plan_args)
-        dag_warm_ms = (time.perf_counter() - dag_started) * 1000.0
-        if not all(item["action"] == "cached" for item in warm_plan["artifacts"]):
-            msg = "`dag plan` must report every artifact cached on an unchanged tree"
+        dag_warm_ms, warm_plan = measure_dag_plan_ms(run_dir, env, project, plan_args)
+        if [item["digest"] for item in warm_plan["artifacts"]] != [
+            item["digest"] for item in plan["artifacts"]
+        ]:
+            msg = "`dag plan` must be deterministic on an unchanged tree"
             raise BenchError(msg)
 
         # Traditional baseline: host PostgreSQL 18 + one host Chromium.
@@ -1103,8 +1844,8 @@ def measure_all(
         # the deterministic dispatch order (never a host- or timing-dependent order).
         order = list(range(num_tests))
         random.Random(seed).shuffle(order)
-        cold_s = measure_cold_parallel_suite(run_dir, env, project, order, workers)
-        warm_s = measure_warm_pool_suite(run_dir, env, project, order, workers)
+        cold_s = measure_cold_parallel_suite(env, project, run_dir, order, workers)
+        warm_s = measure_warm_pool_suite(env, project, run_dir, order, workers)
 
         # Orthogonal invalidation is measured last so every fork above sees a clean tree.
         app_html = project / "front" / "src" / "App.html"
@@ -1112,17 +1853,19 @@ def measure_all(
             app_html.read_text(encoding="utf-8") + "<!-- css tweak -->\n",
             encoding="utf-8",
         )
-        dag_started = time.perf_counter()
-        front_plan = _slipfork_json(run_dir, env, project, *plan_args)
-        dag_front_ms = (time.perf_counter() - dag_started) * 1000.0
-        if front_plan["artifacts"][0]["action"] != "rebuild":
-            msg = "editing `front/src` must rebuild the `front` artifact"
-            raise BenchError(msg)
-        if not all(
-            fixture["action"] == "cached"
-            for wave in front_plan["fixture_waves"]
-            for fixture in wave
+        dag_front_ms, front_plan = measure_dag_plan_ms(run_dir, env, project, plan_args)
+        front = next(item for item in front_plan["artifacts"] if item["id"] == "front")
+        if front["digest"] == next(
+            item["digest"] for item in plan["artifacts"] if item["id"] == "front"
         ):
+            msg = "editing `front/src` must change the `front` artifact digest"
+            raise BenchError(msg)
+        if [
+            [fixture["digest"] for fixture in wave]
+            for wave in front_plan["fixture_waves"]
+        ] != [
+            [fixture["digest"] for fixture in wave] for wave in plan["fixture_waves"]
+        ]:
             msg = "editing `front/src` must never invalidate the DB fixtures"
             raise BenchError(msg)
 
@@ -1150,10 +1893,47 @@ def measure_all(
             seed=seed,
         )
     finally:
+        active_error = sys.exc_info()[0] is not None
+        problems = _teardown(run_dir, env, project, daemon, server)
+        if problems and not active_error:
+            msg = "benchmark teardown failed: " + "; ".join(problems)
+            raise BenchError(msg)
+        if problems:
+            print(
+                f"run_benchmark: teardown also failed: {'; '.join(problems)}",
+                file=sys.stderr,
+            )
+
+
+def _teardown(
+    layout: Path,
+    env: dict[str, str],
+    project: Path,
+    daemon: SlipforkDaemon | None,
+    server: SeedOsppServer,
+) -> list[str]:
+    """Release worlds, stop the daemon, stop the seed server — never skipping a later step.
+
+    Every step is attempted even when an earlier one fails, and the caller decides whether a
+    teardown failure is raised (only when no original error is already propagating). Returns the
+    human-readable problems instead of raising, so the daemon/server stop can never be skipped.
+    """
+    problems: list[str] = []
+    for args in (("down",), ("drop", "fork-probe")):
         try:
-            _slipfork(run_dir, env, project, "down")
-        except (OSError, subprocess.CalledProcessError):
-            pass
+            _slipfork(layout, env, project, *args)
+        except (BenchError, OSError) as error:
+            problems.append(str(error))
+    if daemon is not None:
+        try:
+            daemon.stop()
+        except (BenchError, OSError) as error:
+            problems.append(str(error))
+    try:
+        server.stop()
+    except OSError as error:
+        problems.append(f"cannot stop the seed server: {error}")
+    return problems
 
 
 # --------------------------------------------------------------------------- projections
@@ -1164,7 +1944,7 @@ def primitive_rows(metrics: BenchmarkMetrics) -> list[tuple[str, str, str]]:
         (
             "Single-file 64 KiB XFS `ioctl(FICLONE)`",
             f"{metrics.reflink_64k_us} us",
-            "`slipfork doctor` on the run state directory (0 data bytes copied)",
+            "Best of three `slipfork doctor` probes on the run state directory (0 bytes copied)",
         ),
         (
             "Seeded PostgreSQL 18 cluster (`PGDATA`)",
@@ -1174,12 +1954,12 @@ def primitive_rows(metrics: BenchmarkMetrics) -> list[tuple[str, str, str]]:
         (
             "`initdb -> seed -> pg_dump -> pg_restore` (PostgreSQL 18)",
             f"{metrics.pg_restore_ms:.1f} ms",
-            "Fresh cluster restored from the committed-format `pg_dump` archive, then checked",
+            "Fresh cluster restored from the real `pg_dump -Fc` archive, then checkpointed",
         ),
         (
             "`slipfork up` (world + `crun` PostgreSQL service)",
             f"{metrics.world_up_ms:.1f} ms",
-            "Read-only `L0` rootfs mount, world init, and `postgres:18` container boot",
+            "`L0` rootfs + `postgres:18` boot, streamed seed-dump restore, `freeze_world` seal",
         ),
         (
             "`slipfork fork` (CoW world clone)",
@@ -1197,14 +1977,14 @@ def primitive_rows(metrics: BenchmarkMetrics) -> list[tuple[str, str, str]]:
             "Fork + execute + drop in parallel; every world binds `127.0.0.1:5432`",
         ),
         (
-            "`slipfork dag plan` (warm cache hit — zero changes)",
+            "`slipfork dag plan` (unchanged tree)",
             f"{metrics.dag_warm_plan_ms:.2f} ms",
-            "SHA-256 Merkle check across `front` + `migrate` + `seed_*` -> 0 rebuilds",
+            "SHA-256 Merkle check across `front` + `migrate` + `seed_*` -> identical digests",
         ),
         (
             "`slipfork dag plan` after editing `front/src/App.html`",
             f"{metrics.dag_front_only_plan_ms:.2f} ms",
-            "`artifact:front` = rebuild; every DB fixture stays cached (0 re-seed)",
+            "`artifact:front` digest changes; every DB fixture digest is unchanged (0 re-seed)",
         ),
     ]
 
@@ -1281,12 +2061,16 @@ def render_report(
 
 - **Measured:** {report_date} (seed `{metrics.seed}`)
 - **Host:** Linux `{host_kernel}` (`{host_arch}`), XFS (`reflink=1`), PostgreSQL `18`
-- **Driver:** `slipfork` `up`/`fork`/`exec`/`drop` over the auto-spawned `slipforkd`
+- **Driver:** `slipfork` `up`/`fork`/`exec`/`drop` over the harness-owned `slipforkd`
 - **Reproduce:** `make bench` (read-only: re-measures and fails on drift) or `make bench-update`
 - **Topology:** `0.2.0` read-only `Dockerfile`-derived `L0` rootfs plus a daemonless `crun`
-  `postgres:18` container inside each world's private `netns` (`ADR-0009`). The historical M1
-  figures previously in this file were measured on the pre-`ADR-0009` **host-shared-`/usr`**
-  topology (host `postgres` + host Chromium over `/usr` + `/lib`) and are not comparable.
+  `postgres:18` container inside each world's private `netns` (`ADR-0009`). The seed is a real
+  PostgreSQL 18 `pg_dump -Fc`, zstd-compressed and streamed over loopback `ospp-v1`; `slipforkd`
+  restores it once into `<project>-base` and every `fork` CoW-clones the restored `PGDATA`.
+  Chromium runs in the shared **host** browser pool and reaches each world's single `.localhost`
+  origin. The historical M1 figures previously in this file were measured on the pre-`ADR-0009`
+  **host-shared-`/usr`** topology (host `postgres` + host Chromium over `/usr` + `/lib`) and are
+  not comparable.
 
 ---
 
@@ -1298,10 +2082,10 @@ def render_report(
 
 ## 2. Head-to-head browser + committed-SQL suite ({metrics.num_tests} heavy tests)
 
-Every test drives headless Chromium against an HTTP app on the world's private
-`127.0.0.1:8000`, clicks **Complete Checkout** (`POST /back/checkout`), and commits a
+Every test drives **host** headless Chromium (`CHROME_BIN`) against the world's single `.localhost`
+`WorldOrigin`, clicks **Complete Checkout** (`POST /back/checkout`), and commits a
 `SELECT ... FOR UPDATE` + `UPDATE products` + `INSERT INTO orders` + `INSERT INTO audit_events`
-PostgreSQL 18 transaction on `127.0.0.1:5432`:
+PostgreSQL 18 transaction inside the world's `postgres:18` container:
 
 {suites}
 
@@ -1309,8 +2093,8 @@ PostgreSQL 18 transaction on `127.0.0.1:5432`:
 
 - CoW world cloning is nearly free (`{metrics.worktree_fork_ms:.1f} ms` for a
   `{metrics.pgdata_logical_mib:.1f} MiB` seeded PostgreSQL 18 world).
-- Cold worlds pay `L0` rootfs mount + `crun` container boot + Chromium launch per test; the
-  pre-warmed pool removes that startup cost and yields `{metrics.warm_speedup_factor:.2f}x`.
+- Cold worlds pay `L0` rootfs mount + `postgres:18` + app boot + host Chromium launch per test;
+  the pre-warmed pool removes that startup cost and yields `{metrics.warm_speedup_factor:.2f}x`.
 - Real suites add frontend builds and multi-second fixtures, so the warm-pool gain grows well
   beyond this micro-benchmark's `{metrics.warm_speedup_factor:.1f}x`.
 
@@ -1374,16 +2158,21 @@ def load_baseline(baseline_path: Path) -> dict:
 def _metric_bound(name: str, value: float, spec: dict) -> str | None:
     expected = float(spec["value"])
     max_value = expected * float(spec["max_factor"])
-    min_value = expected / float(spec.get("min_factor", 1.0))
     if value > max_value:
         return (
             f"{name}: {value:g} exceeds the committed {expected:g} x "
             f"{spec['max_factor']:g} regression bound ({max_value:g})"
         )
+    # A lower bound exists only when the baseline pins one (for example a seeded `PGDATA` size
+    # that proves the seed really ran). Faster-than-pinned latency is never a regression.
+    min_factor = spec.get("min_factor")
+    if min_factor is None:
+        return None
+    min_value = expected / float(min_factor)
     if value < min_value:
         return (
             f"{name}: {value:g} is below the committed {expected:g} / "
-            f"{spec.get('min_factor', 1.0):g} lower bound ({min_value:g}); the seed or "
+            f"{float(min_factor):g} lower bound ({min_value:g}); the seed or "
             f"measurement may be broken"
         )
     return None
@@ -1455,15 +2244,20 @@ def build_parser() -> argparse.ArgumentParser:
     action = parser.add_mutually_exclusive_group()
     action.add_argument(
         "--check",
-        action="store_true",
+        dest="action",
+        action="store_const",
+        const="check",
         help="read-only (default): re-measure, compare against the committed baseline, exit 1 "
         "on drift, and never write a file",
     )
     action.add_argument(
         "--write-report",
-        action="store_true",
+        dest="action",
+        action="store_const",
+        const="write_report",
         help="the only mutator: write docs/research/m1-poc-benchmark.md and poc/bench-baseline.json",
     )
+    parser.set_defaults(action="check")
     parser.add_argument(
         "--json", action="store_true", help="print the measured record as JSON"
     )
@@ -1498,7 +2292,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(render_html_projection(metrics))
         if args.json:
             print(metrics.to_json())
-        if args.write_report:
+        if args.action == "write_report":
             report_date = datetime.now(UTC).date().isoformat()
             rendered = render_report(
                 metrics,
