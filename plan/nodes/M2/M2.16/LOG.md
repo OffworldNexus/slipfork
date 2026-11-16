@@ -83,3 +83,7 @@ attempt 4 rulings: (a) inject ProjectVaults (project->Arc<dyn SecretProvider>) b
 ## 2026-11-15T21:32 [lead]
 
 attempt 5/5 started
+
+## 2026-11-15T21:42 [lead]
+
+status review -> done

@@ -19,3 +19,11 @@ attempt 1/3 started
 ## 2026-11-15T22:36 [lead]
 
 base e5ac58fe93cfb88fd9ee861ac9ab5f417d111aab
+
+## 2026-11-15T22:55 [lead]
+
+status active -> done
+
+## 2026-11-15T22:55 [lead]
+
+followups: docs/agents-and-opencode.md stale (M2.19); zero-setup auto-spawn with $XDG_RUNTIME_DIR set hits overlayfs mount EINVAL on this host (runtime on disk works) -> needs a CLI/engine look in M2.20 triage.

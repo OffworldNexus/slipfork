@@ -47,3 +47,7 @@ edited fields
 ## 2026-11-15T19:17 [lead]
 
 gate follow-up: add WorldOrigin::host() and stop hand-parsing the authority in snow
+
+## 2026-11-15T19:20 [lead]
+
+status review -> done

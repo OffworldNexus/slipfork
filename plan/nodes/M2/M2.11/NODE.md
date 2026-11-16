@@ -2,7 +2,7 @@
 id: M2.11
 title: "slipfork-vcs: RepoRootResolver/VcsWorkspace ports plus GitWorktreeAdapter and conformance"
 kind: task
-status: active
+status: done
 owner: implementer
 priority: 3
 depends_on: [M2.3]
@@ -11,7 +11,7 @@ attempts: 3
 max_attempts: 3
 escalation: none
 created: "2026-11-15T16:40"
-updated: "2026-11-15T19:34"
+updated: "2026-11-15T19:37"
 ---
 
 # Goal

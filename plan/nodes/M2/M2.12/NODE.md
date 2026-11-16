@@ -2,7 +2,7 @@
 id: M2.12
 title: "slipfork-vcs: JjWorkspaceAdapter plus git-remote-slipfork protocol handler"
 kind: task
-status: review
+status: done
 owner: implementer
 priority: 3
 depends_on: [M2.11]
@@ -11,7 +11,7 @@ attempts: 2
 max_attempts: 3
 escalation: none
 created: "2026-11-15T16:40"
-updated: "2026-11-15T19:51"
+updated: "2026-11-15T20:03"
 ---
 
 # Goal

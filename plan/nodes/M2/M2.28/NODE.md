@@ -2,7 +2,7 @@
 id: M2.28
 title: "slipfork-engine: ServiceRuntime::OciContainer over static crun + pivot_root rootfs + Incus provenance"
 kind: task
-status: ready
+status: done
 owner: implementer
 priority: 1
 depends_on: [M2.27]
@@ -11,7 +11,7 @@ attempts: 0
 max_attempts: 3
 escalation: none
 created: "2026-11-15T20:40"
-updated: "2026-11-15T20:53"
+updated: "2026-11-15T22:24"
 ---
 
 <!-- splice (extra, beyond the five requested): replace everything after the frontmatter of plan/nodes/M2/M2.28/NODE.md with this file. Frontmatter unchanged. Required because `ADR-0009`'s `ServiceRuntime::OciContainer` now carries `readonly_mounts: Vec<WorldMount>` — without it `ADR-0008`'s container-scoped `pg_restore` cannot read the verified `<sha256>.pgdump`. Source of truth: ADR-0009 §2–§3 (`M2.25`). -->

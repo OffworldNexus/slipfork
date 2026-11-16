@@ -47,3 +47,7 @@ status active -> review
 ## 2026-11-15T19:51 [lead]
 
 edited fields
+
+## 2026-11-15T20:03 [lead]
+
+status review -> done

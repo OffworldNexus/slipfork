@@ -2,7 +2,7 @@
 id: M2.15
 title: "Benchmark and support-compliance tooling hardening (poc/run_benchmark.py, tools/check_support.py)"
 kind: task
-status: active
+status: done
 owner: implementer
 priority: 3
 depends_on: [M2.17]
@@ -11,7 +11,7 @@ attempts: 1
 max_attempts: 3
 escalation: none
 created: "2026-11-15T16:40"
-updated: "2026-11-15T22:36"
+updated: "2026-11-15T22:46"
 ---
 
 # Goal

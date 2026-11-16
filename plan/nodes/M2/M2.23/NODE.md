@@ -2,7 +2,7 @@
 id: M2.23
 title: "Purge stale M1 manifest/snow-mode docs after M2.4/M2.5 deletions"
 kind: task
-status: review
+status: done
 owner: "doc-writer"
 priority: 3
 depends_on: [M2.4, M2.5]
@@ -19,7 +19,7 @@ attempts: 1
 max_attempts: 3
 escalation: none
 created: "2026-11-15T19:11"
-updated: "2026-11-15T19:51"
+updated: "2026-11-15T19:56"
 ---
 
 # Goal

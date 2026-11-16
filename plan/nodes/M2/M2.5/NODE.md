@@ -2,7 +2,7 @@
 id: M2.5
 title: "slipfork-dag: [resources] ResourceStrategy, fs feature gate, single evidence ladder, H-009 cleanup"
 kind: task
-status: review
+status: done
 owner: implementer
 priority: 3
 depends_on: [M2.3]
@@ -11,7 +11,7 @@ attempts: 1
 max_attempts: 3
 escalation: none
 created: "2026-11-15T16:40"
-updated: "2026-11-15T19:13"
+updated: "2026-11-15T19:20"
 ---
 
 # Goal

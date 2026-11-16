@@ -7,3 +7,7 @@ created (task) slipfork-engine: ServiceRuntime::OciContainer over static crun + 
 ## 2026-11-15T20:53 [lead]
 
 edited fields
+
+## 2026-11-15T22:24 [lead]
+
+status ready -> done

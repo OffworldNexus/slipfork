@@ -2,7 +2,7 @@
 id: M2.18
 title: "opencode-slipfork: explicit project state, no ambient probe, live e2e against slipfork binaries"
 kind: task
-status: active
+status: done
 owner: implementer
 priority: 3
 depends_on: [M2.17]
@@ -11,7 +11,7 @@ attempts: 1
 max_attempts: 3
 escalation: none
 created: "2026-11-15T16:40"
-updated: "2026-11-15T22:36"
+updated: "2026-11-15T22:55"
 ---
 
 # Goal

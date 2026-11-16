@@ -35,3 +35,7 @@ status active -> review
 ## 2026-11-15T20:06 [lead]
 
 deviation accepted: WorldRegistry::new(engine) only; registrar/planned_port + EdgeError::NoForwardListener land with share_world in M2.9 (no dead private state). listenfd clears LISTEN_PID/FDS after adoption -> single-shot read.
+
+## 2026-11-15T20:13 [lead]
+
+status review -> done

@@ -27,3 +27,7 @@ base b92c9aa98e8f156def422501491c0b098ad800bf; owns the WorldSpec.rootfs wiring 
 ## 2026-11-15T22:31 [implementer]
 
 edited fields
+
+## 2026-11-15T22:36 [lead]
+
+status active -> done

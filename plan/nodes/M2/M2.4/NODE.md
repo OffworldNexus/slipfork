@@ -2,7 +2,7 @@
 id: M2.4
 title: "slipfork-snow: Send+Sync providers, redacted Debug, mode-scoped effective_components"
 kind: task
-status: review
+status: done
 owner: implementer
 priority: 3
 depends_on: [M2.3]
@@ -15,7 +15,7 @@ attempts: 1
 max_attempts: 3
 escalation: none
 created: "2026-11-15T16:40"
-updated: "2026-11-15T19:17"
+updated: "2026-11-15T19:20"
 ---
 
 # Goal

@@ -63,3 +63,7 @@ attempt 3/3 started
 ## 2026-11-15T19:34 [lead]
 
 R1 gate: legality/ioc/cruft PASS; functional BLOCKER: git add -A does not exclude .worktrees so a second fork embeds the first checkout as a gitlink. attempt 3 fixes it + cruft dedupe.
+
+## 2026-11-15T19:37 [lead]
+
+status active -> done

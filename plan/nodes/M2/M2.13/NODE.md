@@ -2,7 +2,7 @@
 id: M2.13
 title: "slipfork-ospp: DeviceKeySigner plus OSPP v1 handshake and fragment pairing client"
 kind: task
-status: review
+status: done
 owner: implementer
 priority: 3
 depends_on: [M2.4, M2.5]
@@ -11,7 +11,7 @@ attempts: 2
 max_attempts: 3
 escalation: none
 created: "2026-11-15T16:40"
-updated: "2026-11-15T19:34"
+updated: "2026-11-15T19:57"
 ---
 
 # Goal

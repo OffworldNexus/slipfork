@@ -2,7 +2,7 @@
 id: M2.22
 title: "Isolated: concrete WeavedRegistrar IPC adapter and declared support promotion (gated on H-006)"
 kind: task
-status: ready
+status: blocked
 owner: implementer
 priority: 3
 depends_on: [M2.20]
@@ -17,7 +17,7 @@ attempts: 0
 max_attempts: 3
 escalation: none
 created: "2026-11-15T16:40"
-updated: "2026-11-15T16:40"
+updated: "2026-11-16T00:26"
 ---
 
 # Goal

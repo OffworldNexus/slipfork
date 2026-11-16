@@ -23,3 +23,7 @@ base 6e6a27638e3892127a3e3d4c085409507e82b41e
 ## 2026-11-15T19:13 [lead]
 
 status active -> review
+
+## 2026-11-15T19:20 [lead]
+
+status review -> done

@@ -55,3 +55,7 @@ attempt 3 rulings: db/redis entry stays M2.29 (this node = CLI + fail-closed; ac
 ## 2026-11-15T22:14 [lead]
 
 status active -> review: attempt 3 legality fixes on disk; tree compile blocked only by WorldSpec.rootfs which M2.29 wires
+
+## 2026-11-15T22:36 [lead]
+
+status review -> done

@@ -2,7 +2,7 @@
 id: M2.17
 title: "CLI part 2: hook failure rescue UX, logs/shell/db/redis/forward, auth, support, git-remote-slipfork"
 kind: task
-status: review
+status: done
 owner: implementer
 priority: 3
 depends_on: [M2.16]
@@ -15,7 +15,7 @@ attempts: 3
 max_attempts: 3
 escalation: none
 created: "2026-11-15T16:40"
-updated: "2026-11-15T22:14"
+updated: "2026-11-15T22:36"
 ---
 
 <!-- splice: replace everything after the frontmatter of plan/nodes/M2/M2.17/NODE.md with this file. Frontmatter untouched. The `# Acceptance` command block stays byte-identical (the `db_redis_exec` case now asserts container entry, same test id); one adversarial assertion is added for the `ServiceNotRunning` refusal. Source of truth: ADR-0008 §4 + ADR-0009 §2–§3 + ARCHITECTURE.md §3.3/§3.4 (`M2.25`). -->

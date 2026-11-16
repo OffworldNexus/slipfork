@@ -27,3 +27,7 @@ base a7b2a79efe40bcc48994bddb2842a03e0ef79f6b; note critical_slug flaked once un
 ## 2026-11-15T23:05 [lead]
 
 attempt 2/3 started
+
+## 2026-11-15T23:16 [lead]
+
+status active -> done

@@ -2,7 +2,7 @@
 id: M2.16
 title: "CLI part 1: slipforkd daemon composition root, auto-spawn thin client, up/down/fork/drop/list/prune/secret/share/daemon unit"
 kind: task
-status: review
+status: done
 owner: implementer
 priority: 3
 depends_on: [M2.4, M2.5, M2.7, M2.10, M2.12, M2.14]
@@ -22,7 +22,7 @@ attempts: 5
 max_attempts: 5
 escalation: none
 created: "2026-11-15T16:40"
-updated: "2026-11-15T21:32"
+updated: "2026-11-15T21:42"
 ---
 
 <!-- splice: replace everything after the frontmatter of plan/nodes/M2/M2.16/NODE.md with this file. Frontmatter untouched (no `depends_on`/`paths` change). Source of truth: ADR-0009 §2–§3 + ARCHITECTURE.md §3.3/§3.4 (`M2.25`). -->

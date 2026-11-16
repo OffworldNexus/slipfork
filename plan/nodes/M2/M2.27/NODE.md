@@ -2,7 +2,7 @@
 id: M2.27
 title: "slipfork-engine::rootfs: WorldRootfs + BaseImageBuilder + DockerfileStageBuilder (6-rule contract)"
 kind: task
-status: active
+status: done
 owner: implementer
 priority: 1
 depends_on: [M2.26]
@@ -11,7 +11,7 @@ attempts: 1
 max_attempts: 3
 escalation: none
 created: "2026-11-15T20:40"
-updated: "2026-11-15T21:42"
+updated: "2026-11-15T22:04"
 ---
 
 # Goal

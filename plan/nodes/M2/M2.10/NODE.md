@@ -2,7 +2,7 @@
 id: M2.10
 title: "slipfork-edge: .socket/.service unit generator plus live systemd-socket-activate test"
 kind: task
-status: active
+status: done
 owner: implementer
 priority: 3
 depends_on: [M2.9]
@@ -11,7 +11,7 @@ attempts: 1
 max_attempts: 3
 escalation: none
 created: "2026-11-15T16:40"
-updated: "2026-11-15T20:37"
+updated: "2026-11-15T20:49"
 ---
 
 # Goal

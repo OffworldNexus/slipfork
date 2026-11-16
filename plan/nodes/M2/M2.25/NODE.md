@@ -2,7 +2,7 @@
 id: M2.25
 title: "Whole-repo consistency sweep after L0 rootfs + OCI-container pivot (single writer: ARCHITECTURE.md + ADRs)"
 kind: task
-status: active
+status: done
 owner: designer
 priority: 1
 depends_on: [M2.24]
@@ -24,7 +24,7 @@ attempts: 2
 max_attempts: 3
 escalation: none
 created: "2026-11-15T20:17"
-updated: "2026-11-15T20:45"
+updated: "2026-11-15T20:58"
 ---
 
 # Goal
