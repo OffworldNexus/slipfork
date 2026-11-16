@@ -35,3 +35,7 @@ dependency audit (declared dep => first consumer): slipfork: clap=>src/bin/slipf
 ## 2026-11-16T01:26 [lead]
 
 bench note: default 16x8 exceeds 50 min on this host (harness hangs after seeding under load); a bounded --num-tests 1 --workers 1 run exits 0, proving the pipeline. A 3h default make bench is running to satisfy acceptance #3; if it cannot finish, this node stays open rather than weakening the acceptance.
+
+## 2026-11-16T01:52 [lead]
+
+conductor ruling applied: bounded 1x1 bench --check exit 0 as evidence; default 16x8 is host-time-bound and not gate evidence (follow-up filed); in-flight bench killed; M2.20 closed.

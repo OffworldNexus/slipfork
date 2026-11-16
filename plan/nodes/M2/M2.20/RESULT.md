@@ -112,3 +112,10 @@ the release commit.
   slipfork` must also build `slipfork-engine`'s `slipfork-world-init` (Makefile / `M2.15` owner).
 - The live benchmark then stalls in the world/crun/Chromium phase on this host; needs a
   dedicated bench host or a wall-clock ceiling in `poc/run_benchmark.py` (outside this node).
+
+## Conductor ruling — bench evidence (bounded, not the 16x8 matrix)
+
+- `uv run --no-project poc/run_benchmark.py --check --num-tests 1 --workers 1 --run-dir ~/.cache/slipfork/bench2` -> exit `0` (pipeline proven end to end through the real rootfs/crun/postgres path).
+- `make bench --check` with the default `--num-tests 16 --workers 8` is **host-time-bound** here (>50 min; a 3 h ceiling did not complete). It was consciously **not** used as `0.2.0` gate evidence; the in-flight run was killed by conductor ruling.
+- Recorded as a follow-up (`plan/nodes/M2/M2.20/FOLLOWUPS.md`): add a `--scaled`/shorter matrix or an explicit wall-clock budget so CI can run the drift comparison.
+- `make check` green (plan, guard, ruff, pytest, support --check, bun, fmt, clippy, rustdoc, workspace tests, zensical `--strict`, docs honesty), dependency audit green, `CHANGELOG.md` has one dated `0.2.0` section, workspace/plugin/docs label `0.2.0`.

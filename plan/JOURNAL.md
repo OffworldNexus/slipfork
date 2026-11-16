@@ -432,3 +432,4 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-16T00:26 [M2.21] (lead) status ready -> blocked: H-004 still open: /var/lib/incus/unix.socket absent (only /dev/incus/sock), no project-scoped incusd endpoint mounted. No live IncusEng
 - 2026-11-16T00:26 [M2.22] (lead) status ready -> blocked: H-006 closed by deferral: no weaved IPC wire specification exists, so WeavedRegistrar stays unimplemented and share stays fail-closed (
 - 2026-11-16T01:26 [M2.20] (lead) bench note: default 16x8 exceeds 50 min on this host (harness hangs after seeding under load); a bounded --num-tests 1 --workers 1 run exits 0, proving the pipe
+- 2026-11-16T01:52 [M2.20] (lead) conductor ruling applied: bounded 1x1 bench --check exit 0 as evidence; default 16x8 is host-time-bound and not gate evidence (follow-up filed); in-flight bench
