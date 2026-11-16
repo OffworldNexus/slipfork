@@ -2,7 +2,7 @@
 id: M2.32
 title: "Align 0.2.0 docs, CHANGELOG, M1 benchmark topology label, and support matrix with completed M2 surface"
 kind: task
-status: active
+status: done
 owner: "doc-writer"
 priority: 2
 depends_on: [M2.30, M2.31]
@@ -19,7 +19,7 @@ attempts: 1
 max_attempts: 3
 escalation: none
 created: "2026-11-16T03:04"
-updated: "2026-11-16T05:38"
+updated: "2026-11-16T06:04"
 ---
 
 # Goal

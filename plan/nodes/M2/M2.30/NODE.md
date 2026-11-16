@@ -2,7 +2,7 @@
 id: M2.30
 title: "slipforkd completion: OSPP v1 session/secrets/dump restore, freeze_world base snapshot, Jj workspace routing & optional slipfork.toml"
 kind: task
-status: review
+status: done
 owner: implementer
 priority: 1
 depends_on: [M2.20]
@@ -11,7 +11,7 @@ attempts: 2
 max_attempts: 3
 escalation: none
 created: "2026-11-16T03:04"
-updated: "2026-11-16T04:08"
+updated: "2026-11-16T04:36"
 ---
 
 # Goal

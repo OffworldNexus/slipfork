@@ -2,7 +2,7 @@
 id: M2.31
 title: "Fix poc/run_benchmark.py for ADR-0009 host-browser/.localhost topology and seeded base snapshot; verify bounded 1x1 --check"
 kind: task
-status: review
+status: done
 owner: implementer
 priority: 1
 depends_on: [M2.30]
@@ -11,7 +11,7 @@ attempts: 1
 max_attempts: 3
 escalation: none
 created: "2026-11-16T03:04"
-updated: "2026-11-16T05:07"
+updated: "2026-11-16T05:38"
 ---
 
 # Goal

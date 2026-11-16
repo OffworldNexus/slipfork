@@ -453,3 +453,6 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-16T05:38 [M2.32] (lead) status ready -> active
 - 2026-11-16T05:38 [M2.32] (lead) attempt 1/3 started
 - 2026-11-16T05:38 [M2.32] (lead) base 59a486b1464bdb3803ec2cd31007612dfce6981b
+- 2026-11-16T06:04 [M2.32] (lead) status active -> done
+- 2026-11-16T06:11 [M2] (lead) M2.30/M2.31/M2.32 committed (0b760ba/541ab37/d6968fc). make check scoped components green, but a full default-thread run is intermittently red on world-boot tim
+- 2026-11-16T06:19 [M2] (lead) Verified: RUST_TEST_THREADS=1 make check exit 0 with the full workspace + docs + support gates; the default-thread failure is contention between concurrently bo
