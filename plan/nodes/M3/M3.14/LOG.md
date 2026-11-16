@@ -19,3 +19,7 @@ OWNER TERMINOLOGY RULE: no Option A/B or Spike A/B framing anywhere; describe th
 ## 2026-11-16T20:45 [lead]
 
 REQUIREMENT (M3.1 legality gate): engine conformance/critical suites must be deterministic at high host load; assert bounded teardown elapsed time rather than fixed-grace waits, and do not reintroduce fixed sleep windows.
+
+## 2026-11-16T21:21 [lead]
+
+REQUIREMENT (M3.1 ioc gate): when engine-owned ReadinessProbe lands, delete the temporary caller-side readiness shim — crates/slipfork-engine/tests/critical_oci_runtime.rs `wait_postgres_ready` + `PG_READY_TIMEOUT` must be removed in favor of asserting ReadinessProbe::Exec semantics; add to acceptance.

@@ -2,7 +2,7 @@
 id: M3.1
 title: "Deterministic make check: disk TMPDIR, CARGO_BUILD_JOBS=4, serialized world-booting suites"
 kind: task
-status: active
+status: review
 owner: implementer
 priority: 1
 depends_on: []
@@ -15,11 +15,16 @@ paths:
   - "crates/slipfork-engine/tests/support/mod.rs"
   - tools/rs_test_list.py
   - tools/tests/test_rs_test_list.py
-attempts: 5
-max_attempts: 5
+  - "crates/slipfork-testkit/**"
+  - crates/slipfork/Cargo.toml
+  - "crates/slipfork-engine/Cargo.toml"
+  - Cargo.toml
+  - Cargo.lock
+attempts: 6
+max_attempts: 6
 escalation: none
 created: "2026-11-16T06:34"
-updated: "2026-11-16T20:45"
+updated: "2026-11-16T21:21"
 ---
 
 # Goal

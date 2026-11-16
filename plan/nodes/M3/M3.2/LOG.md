@@ -23,3 +23,7 @@ PHASE 2 REWRITE MUST-DO (flagged by M3.7 legality review): this epic's NODE.md t
 ## 2026-11-16T19:07 [lead]
 
 PHASE 2 REWRITE MUST-DO (flagged by M3.7 legality review): this epic NODE.md title/body still say RunnerProtocol v1, CoverageDriver, CommandTestAdapter, pytest-slipfork and per-language adapters. The rewrite must replace them with STP v1 (inherited SLIPFORK_PROTOCOL_FD socketpair, framework-exposed DAG stage nodes incl. persistent fixture stages frozen to RO Btrfs snapshots, protocol-native coverage and mutants, language-blind crates/slipfork-test orchestrator, ad-hoc unpublished pytest/vitest/phpunit proofs) and delete every out-of-scope mention.
+
+## 2026-11-16T21:45 [lead]
+
+REQUIREMENT (M3.9 legality): own the `slipfork test -j N` concurrency flag in the rewritten STP v1 epic — define its semantics (slot count) and document it; M3.9 target-dx references it as the Phase-2 concurrency knob.

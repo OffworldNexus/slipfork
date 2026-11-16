@@ -87,3 +87,23 @@ attempt 5/5 started
 ## 2026-11-16T20:45 [lead]
 
 status review -> active
+
+## 2026-11-16T21:20 [lead]
+
+status active -> review
+
+## 2026-11-16T21:21 [lead]
+
+CRUFT GATE attempt 5 FAIL: MAJOR duplicated poll_until across the two test crates (verbatim, each claiming to be the one primitive) -> extract into an unpublished publish=false workspace testkit crate (ARCHITECTURE §1 sanctioned) consumed via [dev-dependencies]; MAJOR four separate uv run guard invocations + missing|duplicate|orphans|serialized|all mode matrix (all silently skips serialization) -> one `--check all --world-booting $(WORLD_BOOTING_TESTS)` call, delete per-invariant modes; MINOR delete unused --list, drop expected_pairs test wrapper, use a usage exit code for a missing classification, drop the always-constant deadline parameter, reuse one 10s constant instead of FORWARD_CLOSE_DEADLINE, keep invariant prose in the tool docstring only, and correct the TMPDIR comment (test scratch roots are hardcoded, not TMPDIR-dependent).
+
+## 2026-11-16T21:21 [lead]
+
+edited fields
+
+## 2026-11-16T21:21 [lead]
+
+attempt 6/6 started
+
+## 2026-11-16T21:21 [lead]
+
+LEGALITY GATE attempt 5 FAIL (evidence concurrency): RESULT claims the stale reviewer run finished before sequence 1, but retained artifacts overlap (check-C 20:57, rs-test-current 21:03, check-D 21:06 vs sequence-1 start 20:54); check-D is a second FAILING full make check (CHECK_D_EXIT=2, 4x critical_engine "still alive 10s after SIGKILL") never disclosed as failing, and it confounds the load attribution. Attempt 6 must quote the m31-review exits/timings verbatim, disclose the overlap, and run its acceptance sequence with nothing else on the host. Plus cruft MAJORs: shared publish=false testkit crate for poll_until; single `--check all --world-booting` guard invocation; minors: unwrap_or_else diagnostics, cite the real 60s OCI readiness window, drop unused --list/expected_pairs, usage exit code, drop constant deadline param, reuse one 10s constant, tool docstring as prose owner, correct TMPDIR comment.

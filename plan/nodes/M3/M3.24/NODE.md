@@ -1,6 +1,6 @@
 ---
 id: M3.24
-title: "Finish bounded-wait consolidation in world-booting suite harnesses and make rs-test-list comments match what the guard enforces"
+title: "Finish bounded-wait consolidation, reap orphaned world-init processes, and make rs-test-list comments match what the guard enforces"
 kind: task
 status: ready
 owner: implementer
@@ -18,7 +18,7 @@ attempts: 0
 max_attempts: 3
 escalation: none
 created: "2026-11-16T20:44"
-updated: "2026-11-16T20:45"
+updated: "2026-11-16T21:20"
 ---
 
 # Goal

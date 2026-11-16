@@ -2,7 +2,7 @@
 id: M3.11
 title: "Record Btrfs + crun benchmark measurements in docs/research (canonical name), delete the rejected-option report, and scrub Option/Spike naming from LESSONS"
 kind: task
-status: review
+status: done
 owner: researcher
 priority: 2
 depends_on: [M3.7]
@@ -14,7 +14,7 @@ attempts: 3
 max_attempts: 3
 escalation: none
 created: "2026-11-16T16:58"
-updated: "2026-11-16T21:10"
+updated: "2026-11-16T21:11"
 ---
 
 # Goal

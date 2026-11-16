@@ -42,11 +42,12 @@ uv run --no-project tools/do_vm.py ssh -- findmnt -no OPTIONS /var/lib/slipfork
 uv run --no-project tools/do_vm.py ssh -- stat -f -c %t /var/lib/slipfork
 uv run --no-project tools/do_vm.py ssh -- slipfork prune --yes
 uv run --no-project tools/do_vm.py ssh -- btrfs subvolume list /var/lib/slipfork | grep -v /snapshots/
-uv run --no-project tools/do_vm.py ssh -- crun --version
+uv run --no-project tools/do_vm.py ssh -- slipfork up
+uv run --no-project tools/do_vm.py ssh -- slipfork shell -- crun --version
 uv run --no-project tools/do_vm.py ssh -- docker buildx version
 ```
 
-Expected: `status`/`sync` exit 0; `test` exits 0 with both live suites green; `findmnt` prints options containing `user_subvol_rm_allowed,noatime`; `stat -f -c %t` prints `9123683e`; `slipfork prune --yes` then `btrfs subvolume list | grep -v /snapshots/` prints nothing (the digest-keyed base survives until the Phase-2 M3.2.13 GC); `crun --version` and `docker buildx version` both answer. `RESULT.md` records the measured numbers, the reboot check, and the teardown command.
+Expected: `status`/`sync` exit 0; `test` exits 0 with both live suites green; `findmnt` prints options containing `user_subvol_rm_allowed,noatime`; `stat -f -c %t` prints `9123683e`; `slipfork prune --yes` then `btrfs subvolume list | grep -v /snapshots/` prints nothing (the digest-keyed base survives until the Phase-2 M3.2.13 GC); the in-world `crun --version` (via `slipfork shell`) and the host `docker buildx version` both answer. `RESULT.md` records the measured numbers, the reboot check, and the teardown command.
 
 # Terminology Rule (OWNER, 2026-11-16 — binding)
 

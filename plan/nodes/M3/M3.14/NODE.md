@@ -47,6 +47,7 @@ grep -n 'BtrfsRequired' crates/slipfork-engine/tests/critical_btrfs_live.rs
 grep -n 'postgres:18' crates/slipfork-engine/tests/critical_btrfs_live.rs
 ! grep -rn 'ReflinkNetnsEngine\|IncusEngine' crates/slipfork-engine/tests/
 ! grep -rn '#\[ignore' crates/slipfork-engine/tests/
+! grep -rn 'wait_postgres_ready\|PG_READY_TIMEOUT' crates/slipfork-engine/tests/critical_oci_runtime.rs
 make rs-test
 ```
 

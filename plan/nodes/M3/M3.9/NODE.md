@@ -7,11 +7,11 @@ owner: designer
 priority: 2
 depends_on: [M3.7, M3.25]
 paths: ["docs/design/target-dx.md"]
-attempts: 1
+attempts: 2
 max_attempts: 3
 escalation: none
 created: "2026-11-16T16:58"
-updated: "2026-11-16T21:00"
+updated: "2026-11-16T21:43"
 ---
 
 # Goal

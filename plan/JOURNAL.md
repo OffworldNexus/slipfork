@@ -695,3 +695,43 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-16T21:09 [M3.23] (lead) POLISH (M3.11 legality PASS minors): (1) docs/research/btrfs-crun-benchmarks.md:67 asserts the per-world RSS figure counts init + service containers though the 
 - 2026-11-16T21:10 [M3.11] (lead) attempt 3/3 started
 - 2026-11-16T21:10 [M3.11] (lead) IOC CONFIRM FAIL (attempt 2): MAJOR report:53 invents a clock/process-stat DI port ARCHITECTURE §1 does not define and misstates the engine (adapters do read In
+- 2026-11-16T21:11 [M3.11] (lead) status review -> done
+- 2026-11-16T21:20 [M3.1] (lead) status active -> review
+- 2026-11-16T21:20 [M3.24] (lead) edited fields
+- 2026-11-16T21:20 [M3.24] (lead) SCOPE ADD (M3.1 attempt 5): both acceptance sequences leaked 46 orphaned unshare/slipfork-world-init worlds (92 ppid-1 processes) from ~/.cache/slipfork-cli-tes
+- 2026-11-16T21:21 [M3.1] (lead) CRUFT GATE attempt 5 FAIL: MAJOR duplicated poll_until across the two test crates (verbatim, each claiming to be the one primitive) -> extract into an unpublish
+- 2026-11-16T21:21 [M3.14] (lead) REQUIREMENT (M3.1 ioc gate): when engine-owned ReadinessProbe lands, delete the temporary caller-side readiness shim — crates/slipfork-engine/tests/critical_oci
+- 2026-11-16T21:21 [M3.1] (lead) edited fields
+- 2026-11-16T21:21 [M3.1] (lead) attempt 6/6 started
+- 2026-11-16T21:21 [M3.1] (lead) LEGALITY GATE attempt 5 FAIL (evidence concurrency): RESULT claims the stale reviewer run finished before sequence 1, but retained artifacts overlap (check-C 20
+- 2026-11-16T21:34 [M3.25] (lead) status active -> review
+- 2026-11-16T21:34 [M3.15] (lead) M3.25 RULING APPLIED to NODE.md: doctor reports BtrfsProbeReport fields via doctor::run(&dyn SubvolumeDriver, &dyn HostProbe, ...) + HostProbe netns/unshare_use
+- 2026-11-16T21:34 [M3.16] (lead) M3.25 RULING APPLIED: harness installs btrfs-progs + docker.io/docker-buildx + Rust, NO host crun (static crun ships inside the L0 world rootfs per ADR-0009).
+- 2026-11-16T21:34 [M3.19] (lead) M3.25 RULING APPLIED: host crun --version replaced by in-world slipfork shell -- crun --version.
+- 2026-11-16T21:34 [M3.23] (lead) M3.25 RULING: align ADR-0008 §4 --world wording with ADR-0005 §3 (shared resolve_world_selector accepting <project>, <project>:<fork>, bare <fork>).
+- 2026-11-16T21:35 [M3.8] (lead) status review -> active
+- 2026-11-16T21:35 [M3.8] (lead) attempt 2/3 started
+- 2026-11-16T21:35 [M3.8] (lead) base 7cf08b5202c58593b3f6c4031bebf200a8e24f97 (attempt 2)
+- 2026-11-16T21:35 [M3.9] (lead) status review -> active
+- 2026-11-16T21:35 [M3.9] (lead) attempt 2/3 started
+- 2026-11-16T21:35 [M3.9] (lead) base 7cf08b5202c58593b3f6c4031bebf200a8e24f97 (attempt 2)
+- 2026-11-16T21:35 [M3.10] (lead) status review -> active
+- 2026-11-16T21:35 [M3.10] (lead) attempt 2/3 started
+- 2026-11-16T21:35 [M3.10] (lead) base 7cf08b5202c58593b3f6c4031bebf200a8e24f97 (attempt 2)
+- 2026-11-16T21:43 [M3.15] (lead) CORRECTION (M3.9 attempt 2): doctor performs NO crun probe and emits NO crun field (ADR-0010 §4). world_rootfs_crun removed from the doctor contract; static cru
+- 2026-11-16T21:43 [M3.16] (lead) CORRECTION (M3.9 attempt 2): do not implement a world_rootfs_crun doctor field — doctor emits no crun field (ADR-0010 §4). Harness still installs no host crun; 
+- 2026-11-16T21:43 [M3.9] (lead) status active -> review
+- 2026-11-16T21:44 [M3.16] (lead) edited fields
+- 2026-11-16T21:44 [M3.20] (lead) REQUIREMENT (M3.9 cruft gate): crates/slipfork-edge/src/daemon.rs:82 documents ResourceSummary.id as pg_databases.main while diagnostics() emits bare ids; align
+- 2026-11-16T21:44 [M3.10] (lead) status active -> review
+- 2026-11-16T21:44 [M3.19] (lead) ACCEPTANCE ORDER: `slipfork up` precedes the in-world `slipfork shell -- crun --version` check (a world must exist for in-world verification).
+- 2026-11-16T21:45 [M3.12] (lead) M3.25 RULING: implement EngineError::SubvolumeDestroyDenied { path, errno, mount_hint } for the destroy-stage EPERM path alongside BtrfsRequired and BtrfsProbeR
+- 2026-11-16T21:45 [M3.15] (lead) M3.25 RULING: wire HostCheckOutcome (two-variant; NetnsCheck::Skipped synthesized only in doctor::run), DoctorReport declared once in crates/slipfork::doctor, r
+- 2026-11-16T21:45 [M3.25] (lead) status review -> review
+- 2026-11-16T21:45 [M3.16] (lead) BODY CORRECTION (M3.9 ioc gate): invariant 2 no longer says doctor reports world_rootfs_crun — doctor performs no crun probe and emits no crun field (ADR-0010 §
+- 2026-11-16T21:45 [M3.9] (lead) IOC GATE attempt 2 PASS (minor: fstype label table duplicates ADR-0010 §4 -> keep pointer; name both owners for <state_dir>/<project>/worlds/<world_id>/logs (La
+- 2026-11-16T21:45 [M3.9] (lead) LEGALITY GATE attempt 2 PASS (minors): auth p256 key abbreviated with an ellipsis is not reproducible output; `slipfork test [-j N]` needs an owner (M3.2) or mu
+- 2026-11-16T21:45 [M3.2] (lead) REQUIREMENT (M3.9 legality): own the `slipfork test -j N` concurrency flag in the rewritten STP v1 epic — define its semantics (slot count) and document it; M3.
+- 2026-11-16T21:45 [M3.10] (lead) attempt 3/3 started
+- 2026-11-16T21:45 [M3.10] (lead) status review -> active
+- 2026-11-16T21:45 [M3.10] (lead) CRUFT GATE attempt 2 FAIL (dedupe only): MAJOR the AppArmor body-equivalence preflight rule is stated twice near-verbatim (§1 step 5 vs §3) -> keep once in §3, 

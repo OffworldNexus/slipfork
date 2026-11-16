@@ -43,3 +43,31 @@ QUAD GATE attempt 1 (legality FAIL): BLOCKER silent destructive fallback — `bl
 ## 2026-11-16T21:03 [lead]
 
 IOC GATE attempt 1 (FAIL): MAJOR identity default lives inside the product cache root (<state_dir>/$XDG_CACHE_HOME) — keep the owner-specified absolute default ~/.cache/slipfork/do-vm/id_ed25519 but resolve it independently of Layout::resolve/--state-dir and document it as harness-owned, never product state; MAJOR two AppArmor profile writers (harness golden text vs `slipfork daemon unit --only apparmor`) — one renderer/owner + preflight equivalence check; MAJOR hardcoded world-init path — derive from the same build-resolved path or fail closed on test -x; MINOR explicit --state-dir/--runtime-dir injection instead of ambient HOME coupling; MINOR one HOME contract per command; MINOR --identity semantics per subcommand and per-worktree known_hosts caveat.
+
+## 2026-11-16T21:35 [lead]
+
+status review -> active
+
+## 2026-11-16T21:35 [lead]
+
+attempt 2/3 started
+
+## 2026-11-16T21:35 [lead]
+
+base 7cf08b5202c58593b3f6c4031bebf200a8e24f97 (attempt 2)
+
+## 2026-11-16T21:44 [lead]
+
+status active -> review
+
+## 2026-11-16T21:45 [lead]
+
+attempt 3/3 started
+
+## 2026-11-16T21:45 [lead]
+
+status review -> active
+
+## 2026-11-16T21:45 [lead]
+
+CRUFT GATE attempt 2 FAIL (dedupe only): MAJOR the AppArmor body-equivalence preflight rule is stated twice near-verbatim (§1 step 5 vs §3) -> keep once in §3, §1 points; MINOR define the suite prefix once (7-line runuser/env -i prefix pasted 3x), one "no host crun" statement, one marker statement, drop duplicated .pub-derivation and single-HOME rules from §4/§5 with pointers.

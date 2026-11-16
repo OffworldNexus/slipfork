@@ -43,3 +43,15 @@ QUAD GATE attempt 1 (ioc FAIL, SPEC_BLIND_SPOT escalated to M3.25): BLOCKER buil
 ## 2026-11-16T21:03 [lead]
 
 ADD (M3.11 cruft gate): docs/design/world-base-image.md becomes the CITATION of docs/research/btrfs-crun-benchmarks.md for the four numbers, not a second copy of them; the report owns the measurements.
+
+## 2026-11-16T21:35 [lead]
+
+status review -> active
+
+## 2026-11-16T21:35 [lead]
+
+attempt 2/3 started
+
+## 2026-11-16T21:35 [lead]
+
+base 7cf08b5202c58593b3f6c4031bebf200a8e24f97 (attempt 2)

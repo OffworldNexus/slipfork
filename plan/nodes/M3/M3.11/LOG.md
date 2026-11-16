@@ -59,3 +59,7 @@ attempt 3/3 started
 ## 2026-11-16T21:10 [lead]
 
 IOC CONFIRM FAIL (attempt 2): MAJOR report:53 invents a clock/process-stat DI port ARCHITECTURE §1 does not define and misstates the engine (adapters do read Instant::now()/proc directly) -> scope to "no /proc or clock reads from a domain crate; timing/RSS sampling lives in the poc/ or test harness that calls BtrfsEngine/SubvolumeDriver", no fabricated port; MINOR split the crun config.json ipc pointer to ADR-0009 §2 and add a pointer at :51; MINOR state whether metrics 1-2 time BtrfsEngine::{create_snapshot,clone_world} round-trips or host-level ioctls (ioctl-issuing poc/ would bypass the SubvolumeDriver seam).
+
+## 2026-11-16T21:11 [lead]
+
+status review -> done

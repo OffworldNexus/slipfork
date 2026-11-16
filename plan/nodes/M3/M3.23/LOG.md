@@ -35,3 +35,7 @@ SCOPE ADD (M3.11 cruft gate): now that docs/research/btrfs-crun-benchmarks.md ex
 ## 2026-11-16T21:09 [lead]
 
 POLISH (M3.11 legality PASS minors): (1) docs/research/btrfs-crun-benchmarks.md:67 asserts the per-world RSS figure counts init + service containers though the attribution method is recorded Unverified — reword as "presumably"; (2) line 29 should note RSS wording came from ADR-0010 §2, not the owner record.
+
+## 2026-11-16T21:34 [lead]
+
+M3.25 RULING: align ADR-0008 §4 --world wording with ADR-0005 §3 (shared resolve_world_selector accepting <project>, <project>:<fork>, bare <fork>).

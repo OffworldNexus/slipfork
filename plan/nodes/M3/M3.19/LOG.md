@@ -23,3 +23,11 @@ REQUIREMENT (M3.8): run `slipfork prune` before asserting an empty `btrfs subvol
 ## 2026-11-16T21:03 [lead]
 
 ACCEPTANCE REFINED: teardown asserts `slipfork prune --yes` then `btrfs subvolume list | grep -v /snapshots/` empty — the digest-keyed sealed base under <state_dir>/snapshots survives until the Phase-2 M3.2.13 GC, so a globally empty list is not assertable in Phase 1.
+
+## 2026-11-16T21:34 [lead]
+
+M3.25 RULING APPLIED: host crun --version replaced by in-world slipfork shell -- crun --version.
+
+## 2026-11-16T21:44 [lead]
+
+ACCEPTANCE ORDER: `slipfork up` precedes the in-world `slipfork shell -- crun --version` check (a world must exist for in-world verification).

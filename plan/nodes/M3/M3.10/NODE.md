@@ -1,22 +1,22 @@
 ---
 id: M3.10
-title: "Rewrite docs/design/do-vm-harness.md: Btrfs volume, crun, AppArmor userns, persistent --identity"
+title: "Rewrite docs/design/do-vm-harness.md: Btrfs volume, docker/Rust, AppArmor userns, persistent --identity"
 kind: task
-status: review
+status: active
 owner: designer
 priority: 2
 depends_on: [M3.7, M3.25]
 paths: ["docs/design/do-vm-harness.md"]
-attempts: 1
+attempts: 3
 max_attempts: 3
 escalation: none
 created: "2026-11-16T16:58"
-updated: "2026-11-16T21:02"
+updated: "2026-11-16T21:45"
 ---
 
 # Goal
 
-Rewrite `docs/design/do-vm-harness.md` for the Btrfs + `crun` harness: a DigitalOcean droplet + attached block volume formatted **Btrfs** at `/var/lib/slipfork` (`-o user_subvol_rm_allowed,noatime`), with `btrfs-progs`, `crun`, `docker.io`/`docker-buildx`, a Rust toolchain, and an AppArmor `userns` profile — plus a persistent SSH identity so a `/tmp` reboot never loses access.
+Rewrite `docs/design/do-vm-harness.md` for the Btrfs + `crun` harness: a DigitalOcean droplet + attached block volume formatted **Btrfs** at `/var/lib/slipfork` (`-o user_subvol_rm_allowed,noatime`), with `btrfs-progs`, `docker.io`/`docker-buildx`, a Rust toolchain, and an AppArmor `userns` profile — plus a persistent SSH identity so a `/tmp` reboot never loses access.
 
 # Context
 
@@ -26,7 +26,7 @@ Rewrite `docs/design/do-vm-harness.md` for the Btrfs + `crun` harness: a Digital
 # Design / Invariants
 
 1. Commands stay exactly `up | status | sync | test | ssh | down`, plus the new repeatable `--identity <path>` on `up`/`ssh`/`status`/`test` defaulting to a **persistent** `~/.cache/slipfork/do-vm/id_ed25519` (auto-generated + imported into the DO account when absent). State the failure mode that motivated it: a key under `/tmp` disappears on reboot, locking the owner out of a still-billing droplet.
-2. Cloud-init provisioning (idempotent, bounded): `apt-get install btrfs-progs crun docker.io docker-buildx openssh-server`; `mkfs.btrfs -f -L slipfork /dev/disk/by-id/scsi-0DO_Volume_*` when the device has no Btrfs signature; mount at `/var/lib/slipfork` with `user_subvol_rm_allowed,noatime` via `/etc/fstab`; verify `statfs` magic `0x9123683e`; install the Rust toolchain (rustup, edition 2024) so `do_vm.py test` never depends on a manual prerequisite; write `/etc/apparmor.d/slipfork` with the 4-line `userns` profile and reload it.
+2. Cloud-init provisioning (idempotent, bounded): `apt-get install btrfs-progs docker.io docker-buildx openssh-server` (no host `crun`: the static `crun` ships inside the `L0` world rootfs and is verified in-world); `mkfs.btrfs -f -L slipfork /dev/disk/by-id/scsi-0DO_Volume_*` when the device has no Btrfs signature; mount at `/var/lib/slipfork` with `user_subvol_rm_allowed,noatime` via `/etc/fstab`; verify `statfs` magic `0x9123683e`; install the Rust toolchain (rustup, edition 2024) so `do_vm.py test` never depends on a manual prerequisite; write `/etc/apparmor.d/slipfork` with the 4-line `userns` profile and reload it.
 3. Document that no nested KVM exists on DigitalOcean and that nothing here claims VM isolation.
 4. `test` streams the real-kernel suites: `cargo test -p slipfork-engine --test critical_btrfs_live -- --test-threads=1` and `cargo test -p slipfork --test critical_btrfs_live -- --test-threads=1`, failing closed naming the missing suite while it does not exist yet.
 5. Cost model and `up`-never-destroys behaviour unchanged; delete every ZFS/Incus statement and the `incus-ready` marker.

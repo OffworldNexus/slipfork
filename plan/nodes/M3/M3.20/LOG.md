@@ -11,3 +11,7 @@ OWNER DIRECTIVE: zero test-scaffolding Cargo features (no feature="test-support"
 ## 2026-11-16T18:43 [lead]
 
 OWNER TERMINOLOGY RULE: no Option A/B or Spike A/B framing anywhere; describe the Btrfs+crun BtrfsEngine architecture directly. Gate before Phase 1 completes: ! grep -riE 'option [ab]|spike [ab]' ARCHITECTURE.md README.md docs/ crates/ tools/. Delete alternatives rather than rewording them. See appended section in NODE.md.
+
+## 2026-11-16T21:44 [lead]
+
+REQUIREMENT (M3.9 cruft gate): crates/slipfork-edge/src/daemon.rs:82 documents ResourceSummary.id as pg_databases.main while diagnostics() emits bare ids; align the doc comment with the shipped bare-id contract.
