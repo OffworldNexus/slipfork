@@ -6,12 +6,17 @@ status: ready
 owner: implementer
 priority: 1
 depends_on: [M3.2.1]
-paths: [Cargo.toml, Cargo.lock, "crates/slipfork-test/Cargo.toml", "crates/slipfork-test/src/lib.rs"]
+paths:
+  - Cargo.toml
+  - Cargo.lock
+  - "crates/slipfork-test/Cargo.toml"
+  - "crates/slipfork-test/src/lib.rs"
+  - "crates/slipfork-test/src/error.rs"
 attempts: 0
 max_attempts: 3
 escalation: none
 created: "2026-11-16T16:59"
-updated: "2026-11-16T16:59"
+updated: "2026-11-16T17:25"
 ---
 
 # Goal

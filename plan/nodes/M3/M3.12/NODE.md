@@ -5,16 +5,17 @@ kind: task
 status: ready
 owner: implementer
 priority: 2
-depends_on: [M3.7]
+depends_on: [M3.8, M3.9, M3.20]
 paths:
   - "crates/slipfork-engine/src/btrfs.rs"
   - "crates/slipfork-engine/src/lib.rs"
   - "crates/slipfork-engine/Cargo.toml"
+  - Cargo.lock
 attempts: 0
 max_attempts: 3
 escalation: none
 created: "2026-11-16T16:58"
-updated: "2026-11-16T16:58"
+updated: "2026-11-16T17:25"
 ---
 
 # Goal

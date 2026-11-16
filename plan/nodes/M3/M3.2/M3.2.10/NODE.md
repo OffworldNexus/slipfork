@@ -5,7 +5,7 @@ kind: task
 status: ready
 owner: implementer
 priority: 3
-depends_on: [M3.2.9]
+depends_on: [M3.2.9, M3.2.11]
 paths:
   - "crates/slipfork-test/src/pytest.rs"
   - "crates/slipfork-test/src/lib.rs"
@@ -14,7 +14,7 @@ attempts: 0
 max_attempts: 3
 escalation: none
 created: "2026-11-16T16:59"
-updated: "2026-11-16T16:59"
+updated: "2026-11-16T17:25"
 ---
 
 # Goal

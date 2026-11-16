@@ -46,7 +46,7 @@ Land the **single design of record** for Option A — a Btrfs-only `WorldEngine`
 5. **World layout**: every world (`<project>-base`, fixtures, `canonical`, `<fork>`, `test-<slot>`) is exactly **one** Btrfs subvolume holding both the `L0` rootfs tree and `/var/lib/slipfork/state/{pgdata,redis,s3}`, so one ioctl snapshots the whole world atomically.
 6. **Process isolation**: `slipfork-world-init` is launched with `--user --map-user=$UID --map-group=$GID --keep-caps --mount --net --ipc --pid --fork --mount-proc`; the `--ipc` flag is normative and explained (SysV IPC per world).
 7. **Unprivileged Ubuntu 24.04**: `slipfork daemon unit` also renders the 4-line `/etc/apparmor.d/slipfork` `userns` profile (`--only apparmor`), required with `kernel.apparmor_restrict_unprivileged_userns=1`.
-8. `ARCHITECTURE.md` §1 DI tree, §2 crate table, §3.3 `WorldEngine`, §4 host items: `H-004` becomes "closed by owner ruling — Incus path deleted, superseded by `ADR-0010`" (no open item), and `H-006`/`M3.4` stays as-is.
+8. `ARCHITECTURE.md` §1 DI tree, §2 crate table, §3.3 `WorldEngine`, §4 host items: `H-004` becomes "closed by owner ruling — Incus path deleted, superseded by `ADR-0010`" (no open item), and `H-006` (`M4.1`) stays gated on `tunnel-weaver`'s IPC spec.
 
 # Acceptance
 

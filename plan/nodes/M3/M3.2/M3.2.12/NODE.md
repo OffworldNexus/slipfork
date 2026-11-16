@@ -9,13 +9,15 @@ depends_on: [M3.2.9, M3.2.10, M3.2.11]
 paths:
   - "crates/slipfork/src/**"
   - crates/slipfork/Cargo.toml
+  - Cargo.lock
   - "crates/slipfork-edge/src/**"
+  - "crates/slipfork-edge/tests/critical_edge.rs"
   - crates/slipfork/tests/critical_test_cmd.rs
 attempts: 0
 max_attempts: 3
 escalation: none
 created: "2026-11-16T16:59"
-updated: "2026-11-16T16:59"
+updated: "2026-11-16T17:25"
 ---
 
 # Goal

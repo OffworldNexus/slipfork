@@ -5,7 +5,7 @@ kind: task
 status: ready
 owner: implementer
 priority: 4
-depends_on: [M3.14]
+depends_on: [M3.21]
 paths:
   - poc/run_benchmark.py
   - tools/tests/test_run_benchmark.py
@@ -15,7 +15,7 @@ attempts: 0
 max_attempts: 3
 escalation: none
 created: "2026-11-16T16:58"
-updated: "2026-11-16T16:58"
+updated: "2026-11-16T17:25"
 ---
 
 # Goal

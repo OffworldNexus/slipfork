@@ -520,3 +520,23 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-16T16:59 [M3.2.17] (planner) created (task) 0.3.0 release prep: workspace version, CHANGELOG breaking note, docs nav label
 - 2026-11-16T16:59 [M3.2.18] (planner) created (task) Live end-to-end slipfork test -j 4 on the Btrfs DO VM (warm pool, typed coverage, output survival, prune)
 - 2026-11-16T16:59 [M3.2] (planner) edited fields
+- 2026-11-16T17:25 [M4.1] (strategist) created (task) Isolated: concrete WeavedRegistrar IPC adapter and declared support promotion (gated on H-006)
+- 2026-11-16T17:25 [M4.1] (strategist) status ready -> blocked: Awaiting H-006 weaved IPC spec
+- 2026-11-16T17:25 [M3.4] (strategist) status blocked -> superseded: Moved to M4.1 (externally gated on H-006) so M3 0.3.0 gates cleanly
+- 2026-11-16T17:25 [M3] (strategist) edited fields
+- 2026-11-16T17:25 [M4] (strategist) edited fields
+- 2026-11-16T17:25 [M3.20] (strategist) created (task) Workspace trait & test decoupling: drop SnapshotMode/StatefulRam and replace FakeIncus in slipfork-edge
+- 2026-11-16T17:25 [M3.21] (strategist) created (task) Atomic scorched-earth deletion: remove IncusEngine, ReflinkNetnsEngine, and FICLONE helpers
+- 2026-11-16T17:25 [M3.12] (strategist) edited fields
+- 2026-11-16T17:25 [M3.13] (strategist) edited fields
+- 2026-11-16T17:25 [M3.14] (strategist) edited fields
+- 2026-11-16T17:25 [M3.15] (strategist) edited fields
+- 2026-11-16T17:25 [M3.17] (strategist) edited fields
+- 2026-11-16T17:25 [M3.18] (strategist) edited fields
+- 2026-11-16T17:25 [M3.19] (strategist) edited fields
+- 2026-11-16T17:25 [M3.2.2] (strategist) edited fields
+- 2026-11-16T17:25 [M3.2.6] (strategist) edited fields
+- 2026-11-16T17:25 [M3.2.7] (strategist) edited fields
+- 2026-11-16T17:25 [M3.2.8] (strategist) edited fields
+- 2026-11-16T17:25 [M3.2.10] (strategist) edited fields
+- 2026-11-16T17:25 [M3.2.12] (strategist) edited fields

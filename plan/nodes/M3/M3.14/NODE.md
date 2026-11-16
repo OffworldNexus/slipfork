@@ -6,12 +6,16 @@ status: ready
 owner: implementer
 priority: 3
 depends_on: [M3.13]
-paths: ["crates/slipfork-engine/src/conformance.rs", "crates/slipfork-engine/tests/**"]
+paths:
+  - "crates/slipfork-engine/src/conformance.rs"
+  - "crates/slipfork-engine/tests/**"
+  - support/integrations.toml
+  - "docs/support-matrix.md"
 attempts: 0
 max_attempts: 3
 escalation: none
 created: "2026-11-16T16:58"
-updated: "2026-11-16T16:58"
+updated: "2026-11-16T17:25"
 ---
 
 # Goal
@@ -30,8 +34,8 @@ Re-home the `slipfork-engine` conformance and critical suites onto `BtrfsEngine`
 3. `tests/critical_btrfs_live.rs` (new) probes `statfs(<state_dir>).f_type == 0x9123683e` once:
    - **Btrfs host:** runs the real ioctl path — RO snapshot, two writable clones, `postgres:18` + `redis:8` `crun` services in both clones on the same in-world port, SysV-IPC isolation across clones (proves `--ipc`), and clear-RO-then-destroy teardown.
    - **Non-Btrfs host:** asserts `EngineError::BtrfsRequired` with the `mount -o user_subvol_rm_allowed,noatime` hint, and prints one diagnostic line that the real kernel suite runs on the DO VM. No `#[ignore]`, no early `return` before an assertion.
-4. `conformance.rs` drops `SnapshotMode`/`StatefulRam` from the shared contract and documents RO-snapshot-vs-writable-clone as distinct operations.
-5. Keep every existing invariant assertion; deleting an assertion requires a matching replacement in the same node.
+4. `conformance.rs` documents RO-snapshot-vs-writable-clone as distinct operations (`SnapshotMode` was removed in `M3.20`).
+5. Update any `slipfork_engine::*` `critical_test` function names in `support/integrations.toml` (renaming `reflink-netns-world-engine` -> `btrfs-world-engine`) and run `make support-sync` so `make support-check` / `make check` stays green. Keep every existing invariant assertion; deleting an assertion requires a matching replacement in the same node.
 
 # Acceptance
 

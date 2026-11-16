@@ -5,13 +5,13 @@ kind: task
 status: ready
 owner: implementer
 priority: 5
-depends_on: [M3.14, M3.15, M3.16]
+depends_on: [M3.11, M3.16, M3.18]
 paths: []
 attempts: 0
 max_attempts: 3
 escalation: none
 created: "2026-11-16T16:58"
-updated: "2026-11-16T16:58"
+updated: "2026-11-16T17:25"
 ---
 
 # Goal

@@ -8,13 +8,14 @@ priority: 2
 depends_on: [M3.2.6]
 paths:
   - "crates/slipfork-test/src/materialize.rs"
+  - "crates/slipfork-test/src/error.rs"
   - "crates/slipfork-test/src/lib.rs"
   - "crates/slipfork-test/tests/critical_materialize.rs"
 attempts: 0
 max_attempts: 3
 escalation: none
 created: "2026-11-16T16:59"
-updated: "2026-11-16T16:59"
+updated: "2026-11-16T17:25"
 ---
 
 # Goal

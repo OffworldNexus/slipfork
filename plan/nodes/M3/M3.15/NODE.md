@@ -5,13 +5,13 @@ kind: task
 status: ready
 owner: implementer
 priority: 3
-depends_on: [M3.13]
-paths: ["crates/slipfork/src/**", "crates/slipfork/tests/**", crates/slipfork/Cargo.toml]
+depends_on: [M3.14]
+paths: ["crates/slipfork/src/**", "crates/slipfork/tests/**", crates/slipfork/Cargo.toml, Cargo.lock]
 attempts: 0
 max_attempts: 3
 escalation: none
 created: "2026-11-16T16:58"
-updated: "2026-11-16T16:58"
+updated: "2026-11-16T17:25"
 ---
 
 # Goal
@@ -29,7 +29,7 @@ Wire `slipforkd` to the single `BtrfsEngine`, make `slipfork doctor` probe Btrfs
 1. `slipforkd` builds `KernelBtrfsDriver` + `BtrfsEngine` from explicit `--state-dir`, surfacing `EngineError::BtrfsRequired` (with the mount hint) at boot before any world directory exists. Zero `match engine`, zero `cfg`-selectable alternate engine, zero `incus` field in `DaemonStatus`/`doctor` JSON.
 2. `slipfork doctor` reports, from real probes: `filesystem` (from `statfs`), `btrfs_super_magic: ok|mismatch`, `subvolume_ioctl: ok|<errno>` (create, snapshot, clear-RO, destroy in a scratch subvolume under `<state_dir>`), `netns`, `crun`, and `unshare_userns` (including an AppArmor-restriction hint when `EPERM`). Non-Btrfs exits 1 with the exact `mount -o user_subvol_rm_allowed,noatime` fix and prints nothing that implies a fallback.
 3. `slipfork daemon unit --only socket|service|apparmor` renders the 4-line `/etc/apparmor.d/slipfork` profile (`userns,` plus the two required sub-rules per `ADR-0010`) alongside the existing non-template unit rendering; `--only apparmor` prints only the profile on stdout.
-4. `crates/slipfork/tests/`: `critical_l0_wiring.rs` and friends use a crate-local test driver through an injected engine for daemon-level assertions; `tests/critical_btrfs_live.rs` (new) runs the real `slipforkd` + Btrfs + `crun` + `postgres:18` path on a Btrfs host and asserts `BtrfsRequired` (exit 1 plus hint text) on a non-Btrfs host. No `#[ignore]`.
+4. `crates/slipfork/tests/`: in `tests/support/mod.rs`, serve `slipfork::daemon` on `<runtime_dir>/daemon.sock` in-process with `BtrfsEngine::with_driver(test_tree_driver)` on non-Btrfs hosts so `critical_l0_wiring.rs`, `critical_cli.rs`, `critical_ospp_daemon.rs`, `critical_slug.rs`, and `critical_vcs_remote.rs` keep driving the real `slipfork` / `git-remote-slipfork` CLI binaries over `daemon.sock`; `tests/critical_btrfs_live.rs` (new) spawns the real `CARGO_BIN_EXE_slipforkd` binary — running the full `slipforkd` + Btrfs + `crun` + `postgres:18` path on a Btrfs host and asserting `BtrfsRequired` (exit 1 plus hint text) on a non-Btrfs host. No `#[ignore]`.
 5. Published docs and `AGENTS.md` are **not** in this node (`M3.18`).
 
 # Acceptance
