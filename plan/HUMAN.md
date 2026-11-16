@@ -114,3 +114,11 @@ Netns entry from slipforkd is impossible as specified (proved on this host, deta
 
 **Answer:**
 
+## H-012 [open] [release-gate] (node M2)
+
+- asked: 2026-11-16T06:41 by conductor
+
+Releases 0.1.0 AND 0.2.0 are ready (they are one linear history on release/0.2.0 @ 12f0e83, both gated by strategist; 0.1.0 never had a remote so it was never pushed). ACTION NEEDED: still no git remote and 'gh repo *' is denied to agents. Please run: gh repo create OffworldNexus/slipfork --private --source=. --remote=origin && git push -u origin release/0.2.0 && git push -u origin develop   (or add the remote yourself). Then tell me and I will open the PR into develop. Everything else is green: RUST_TEST_THREADS=1 make check EXIT=0, bounded bench EXIT=0 in 36.45s, M2 milestone gate PASSED.
+
+**Answer:**
+

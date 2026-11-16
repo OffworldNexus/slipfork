@@ -464,3 +464,5 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-16T06:34 [M2.21] (strategist) status blocked -> superseded: Carried forward post-0.2.0 to M3.3 (still gated on open H-004)
 - 2026-11-16T06:34 [M2.22] (strategist) status blocked -> superseded: Carried forward post-0.2.0 to M3.4 (still gated on deferred H-006 weaved IPC spec)
 - 2026-11-16T06:34 [M2] (strategist) status ready -> done: 0.2.0 milestone gate PASSED: M2.30-M2.32 seams verified in slipforkd/daemon.rs, critical_ospp_daemon green, bounded 1x1 bench --check 36.4
+- 2026-11-16T06:41 HUMAN H-012 [release-gate] opened by conductor (node M2)
+- 2026-11-16T06:41 AUTOPILOT off by conductor awaiting human release gate for 0.2.0 (no git remote)
