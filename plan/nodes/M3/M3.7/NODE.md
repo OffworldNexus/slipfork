@@ -2,7 +2,7 @@
 id: M3.7
 title: "Design of record: ADR-0010 Btrfs-only WorldEngine, STP v1-ready DI tree, and ADR-0001..0009 consolidation"
 kind: task
-status: review
+status: done
 owner: architect
 priority: 1
 depends_on: []

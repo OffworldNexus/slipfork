@@ -647,3 +647,51 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-16T20:48 [M3.7] (lead) edited fields
 - 2026-11-16T20:48 [M3.23] (lead) FINAL POLISH from M3.7 functional review: ADR-0010 Consequences should state the operational consequence (every non-Btrfs host hard-fails at slipforkd boot and 
 - 2026-11-16T20:48 [M3.15] (lead) REQUIREMENT (M3.7 functional review): the same 0.3.0 sweep must delete the stale doctor help text and JSON fields describing the old engine (crates/slipfork/src
+- 2026-11-16T20:48 [M3.7] (lead) status review -> done
+- 2026-11-16T20:48 [M3.7] (lead) committed 4d5b02e
+- 2026-11-16T20:48 [M3.8] (lead) status ready -> active
+- 2026-11-16T20:48 [M3.8] (lead) attempt 1/3 started
+- 2026-11-16T20:48 [M3.8] (lead) base 4d5b02efd7444c3413a6d238271c2a700ed9fd5a
+- 2026-11-16T20:48 [M3.9] (lead) status ready -> active
+- 2026-11-16T20:48 [M3.9] (lead) attempt 1/3 started
+- 2026-11-16T20:48 [M3.9] (lead) base 4d5b02efd7444c3413a6d238271c2a700ed9fd5a
+- 2026-11-16T20:48 [M3.10] (lead) status ready -> active
+- 2026-11-16T20:48 [M3.10] (lead) attempt 1/3 started
+- 2026-11-16T20:48 [M3.10] (lead) base 4d5b02efd7444c3413a6d238271c2a700ed9fd5a
+- 2026-11-16T20:58 [M3.9] (lead) status active -> review
+- 2026-11-16T20:59 [M3.15] (lead) SPEC OWNERSHIP (from M3.9 legality review): doctor output fields need a normative owner — ADR-0010 §4 only defines BtrfsProbeReport (fstype/magic/probe evidence
+- 2026-11-16T20:59 [M3.8] (lead) status active -> review
+- 2026-11-16T20:59 [M3.19] (lead) REQUIREMENT (M3.8): run `slipfork prune` before asserting an empty `btrfs subvolume list` — the digest-keyed sealed base subvolume survives until GC (world-base
+- 2026-11-16T21:00 [M3.25] (lead) created (task) Close doctor host-probe DI gap and world-identity spelling split in the design of record
+- 2026-11-16T21:00 [M3.9] (lead) edited fields
+- 2026-11-16T21:00 [M3.25] (lead) status ready -> active
+- 2026-11-16T21:00 [M3.25] (lead) attempt 1/3 started
+- 2026-11-16T21:00 ESCALATION #20 -> architect for M3.25 by unknown: SPEC_BLIND_SPOT from M3.9 IoC gate: doctor netns/crun/unshare_userns probes have no DI port (M3.15 requires them) and wo
+- 2026-11-16T21:00 [M3.25] (lead) base 4d5b02efd7444c3413a6d238271c2a700ed9fd5a
+- 2026-11-16T21:01 [M3.8] (lead) edited fields
+- 2026-11-16T21:01 [M3.8] (lead) QUAD GATE attempt 1 (ioc FAIL, SPEC_BLIND_SPOT escalated to M3.25): BLOCKER builder credited with seed+seal (must stop at cache/rootfs/<digest>/app; seed+seal s
+- 2026-11-16T21:01 [M3.9] (lead) QUAD GATE attempt 1 (legality FAIL, cruft FAIL, ioc FAIL/SPEC_BLIND_SPOT escalated to M3.25): invented [resources] <kind>.<id> prefixes (shipped renderer emits 
+- 2026-11-16T21:01 [M3.10] (lead) status active -> review
+- 2026-11-16T21:01 [M3.11] (lead) status ready -> active
+- 2026-11-16T21:01 [M3.11] (lead) attempt 1/3 started
+- 2026-11-16T21:01 [M3.11] (lead) base 4d5b02efd7444c3413a6d238271c2a700ed9fd5a
+- 2026-11-16T21:01 [M3.18] (lead) edited fields
+- 2026-11-16T21:01 [M3.18] (lead) PATH WIDENING: docs/testing-dag.md is a published page still describing RunnerProtocol v1 / CommandTestAdapter / per-language CoverageDriver (flagged twice by r
+- 2026-11-16T21:01 [M3.25] (lead) edited fields
+- 2026-11-16T21:01 [M3.25] (lead) SCOPE ADD (M3.8 legality BLOCKER): rule on ADR-0009 §3 rule 3 (unreadable non-world-accessible files) — today the doc promises a pre-boot diagnostic naming the 
+- 2026-11-16T21:02 [M3.25] (lead) SCOPE ADD #2 (M3.8/M3.9/M3.19 consistency): rule whether crun is a HOST binary (harness apt installs it; M3.19 runs crun --version on the host) or a WORLD-ROOTF
+- 2026-11-16T21:02 [M3.10] (lead) edited fields
+- 2026-11-16T21:02 [M3.10] (lead) QUAD GATE attempt 1 (legality FAIL): BLOCKER silent destructive fallback — `blkid ... || true` coerces any blkid error (rc 4 = I/O error/unreadable/concurrently
+- 2026-11-16T21:02 [M3.11] (lead) status active -> review
+- 2026-11-16T21:03 [M3.19] (lead) ACCEPTANCE REFINED: teardown asserts `slipfork prune --yes` then `btrfs subvolume list | grep -v /snapshots/` empty — the digest-keyed sealed base under <state_
+- 2026-11-16T21:03 [M3.10] (lead) IOC GATE attempt 1 (FAIL): MAJOR identity default lives inside the product cache root (<state_dir>/$XDG_CACHE_HOME) — keep the owner-specified absolute default 
+- 2026-11-16T21:03 [M3.11] (lead) CRUFT GATE attempt 1 (FAIL): (1) MAJOR docs/knowledge/LESSONS.md:19,20,22 still carry microVM lessons (virtiofs snapshot/restore, Cloud Hypervisor kill times, F
+- 2026-11-16T21:03 [M3.23] (lead) SCOPE ADD (M3.11 cruft gate): now that docs/research/btrfs-crun-benchmarks.md exists, ADR-0010 Context §2 and docs/design/world-base-image.md must CITE it inste
+- 2026-11-16T21:03 [M3.8] (lead) ADD (M3.11 cruft gate): docs/design/world-base-image.md becomes the CITATION of docs/research/btrfs-crun-benchmarks.md for the four numbers, not a second copy o
+- 2026-11-16T21:03 [M3.11] (lead) IOC + LEGALITY GATE attempt 1 (both FAIL): de-normativize the report — it must not restate ADR-0010 §3/§5 (destroy_subvolume clears RO, no mode switch) or §6 (-
+- 2026-11-16T21:07 [M3.11] (lead) attempt 2/3 started
+- 2026-11-16T21:07 [M3.11] (lead) LEAD RULING (attempt 2): the owner "forget there was another option" directive SUPERSEDES invariant 4 "do not delete existing lessons" — delete the microVM less
+- 2026-11-16T21:08 [M3.11] (lead) attempt 2 done: scope-neutral de-normativized report, microVM lessons deleted, fabricated span removed, report sole figure owner. Re-running quad gate.
+- 2026-11-16T21:09 [M3.23] (lead) POLISH (M3.11 legality PASS minors): (1) docs/research/btrfs-crun-benchmarks.md:67 asserts the per-world RSS figure counts init + service containers though the 
+- 2026-11-16T21:10 [M3.11] (lead) attempt 3/3 started
+- 2026-11-16T21:10 [M3.11] (lead) IOC CONFIRM FAIL (attempt 2): MAJOR report:53 invents a clock/process-stat DI port ARCHITECTURE §1 does not define and misstates the engine (adapters do read In

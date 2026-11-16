@@ -2,16 +2,16 @@
 id: M3.9
 title: "Rewrite docs/design/target-dx.md for the Btrfs-only world (doctor, world entry)"
 kind: task
-status: ready
+status: review
 owner: designer
 priority: 2
-depends_on: [M3.7]
+depends_on: [M3.7, M3.25]
 paths: ["docs/design/target-dx.md"]
-attempts: 0
+attempts: 1
 max_attempts: 3
 escalation: none
 created: "2026-11-16T16:58"
-updated: "2026-11-16T16:58"
+updated: "2026-11-16T21:00"
 ---
 
 # Goal

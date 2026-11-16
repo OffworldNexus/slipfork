@@ -26,7 +26,7 @@ Prove the Btrfs + `crun` world engine live: on the Btrfs DO VM from `M3.16`, run
 # Design / Invariants
 
 1. Run, in order, keeping the full streamed output in `RESULT.md`: `tools/do_vm.py up`, `status`, `sync`, `test`; the remote suites are `critical_btrfs_live` for `slipfork-engine` and for `slipfork`, both serialized.
-2. Assert the real path is exercised: `statfs` magic `0x9123683e` on `/var/lib/slipfork`, a RO snapshot, two sibling writable clones with independent `postgres:18` state, both clones binding the same in-world port without SysV IPC collisions (`--ipc`), and clear-RO-then-destroy teardown leaving zero subvolumes behind (`btrfs subvolume list /var/lib/slipfork` empty afterwards).
+2. Assert the real path is exercised: `statfs` magic `0x9123683e` on `/var/lib/slipfork`, a RO snapshot, two sibling writable clones with independent `postgres:18` state, both clones binding the same in-world port without SysV IPC collisions (`--ipc`), and clear-RO-then-destroy teardown followed by `slipfork prune --yes`, leaving no subvolume for any world this scenario created (`btrfs subvolume list /var/lib/slipfork | grep -v '/snapshots/'` empty). The digest-keyed sealed base under `<state_dir>/snapshots/` legitimately survives until the Phase-2 `M3.2.13` GC lands — do not assert a globally empty list.
 3. Re-run the benchmark remotely (`uv run --no-project poc/run_benchmark.py --write-report`) and paste the measured snapshot/clone/warm-SQL/RSS numbers plus the host fingerprint into `RESULT.md`; cross-check them against `docs/research/btrfs-crun-benchmarks.md` and note any material deviation (do not edit the benchmark report here).
 4. Reboot check: reboot the droplet, then confirm `status`/`ssh` still authenticate with the persistent `--identity` key and that `/var/lib/slipfork` remounts with `user_subvol_rm_allowed,noatime`.
 5. This is a verification node: it writes no product code. Any failure returns `STATUS: blocked` naming the exact command and first failing assertion — never a workaround.
@@ -40,12 +40,13 @@ uv run --no-project tools/do_vm.py sync
 uv run --no-project tools/do_vm.py test
 uv run --no-project tools/do_vm.py ssh -- findmnt -no OPTIONS /var/lib/slipfork
 uv run --no-project tools/do_vm.py ssh -- stat -f -c %t /var/lib/slipfork
-uv run --no-project tools/do_vm.py ssh -- btrfs subvolume list /var/lib/slipfork
+uv run --no-project tools/do_vm.py ssh -- slipfork prune --yes
+uv run --no-project tools/do_vm.py ssh -- btrfs subvolume list /var/lib/slipfork | grep -v /snapshots/
 uv run --no-project tools/do_vm.py ssh -- crun --version
 uv run --no-project tools/do_vm.py ssh -- docker buildx version
 ```
 
-Expected: `status`/`sync` exit 0; `test` exits 0 with both live suites green; `findmnt` prints options containing `user_subvol_rm_allowed,noatime`; `stat -f -c %t` prints `9123683e`; `btrfs subvolume list` prints nothing after teardown; `crun --version` and `docker buildx version` both answer. `RESULT.md` records the measured numbers, the reboot check, and the teardown command.
+Expected: `status`/`sync` exit 0; `test` exits 0 with both live suites green; `findmnt` prints options containing `user_subvol_rm_allowed,noatime`; `stat -f -c %t` prints `9123683e`; `slipfork prune --yes` then `btrfs subvolume list | grep -v /snapshots/` prints nothing (the digest-keyed base survives until the Phase-2 M3.2.13 GC); `crun --version` and `docker buildx version` both answer. `RESULT.md` records the measured numbers, the reboot check, and the teardown command.
 
 # Terminology Rule (OWNER, 2026-11-16 — binding)
 

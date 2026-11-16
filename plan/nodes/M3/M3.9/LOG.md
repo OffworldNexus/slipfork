@@ -19,3 +19,27 @@ OWNER TRUTHFULNESS CONSTRAINT: keep target-dx.md free of any promise of CommandT
 ## 2026-11-16T18:43 [lead]
 
 OWNER TERMINOLOGY RULE: no Option A/B or Spike A/B framing anywhere; describe the Btrfs+crun BtrfsEngine architecture directly. Gate before Phase 1 completes: ! grep -riE 'option [ab]|spike [ab]' ARCHITECTURE.md README.md docs/ crates/ tools/. Delete alternatives rather than rewording them. See appended section in NODE.md.
+
+## 2026-11-16T20:48 [lead]
+
+status ready -> active
+
+## 2026-11-16T20:48 [lead]
+
+attempt 1/3 started
+
+## 2026-11-16T20:48 [lead]
+
+base 4d5b02efd7444c3413a6d238271c2a700ed9fd5a
+
+## 2026-11-16T20:58 [lead]
+
+status active -> review
+
+## 2026-11-16T21:00 [lead]
+
+edited fields
+
+## 2026-11-16T21:01 [lead]
+
+QUAD GATE attempt 1 (legality FAIL, cruft FAIL, ioc FAIL/SPEC_BLIND_SPOT escalated to M3.25): invented [resources] <kind>.<id> prefixes (shipped renderer emits [resources] {id}:), fabricated netns uid parenthetical, filesystem name vs fstype i64 (ownership filed on M3.15), dual world-id syntax in --json vs console (escalated), canonical naming residue, quadruplicated crun exec rule, --world selection rule has two homes.

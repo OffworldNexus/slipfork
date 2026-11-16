@@ -19,3 +19,7 @@ OWNER TERMINOLOGY RULE: no Option A/B or Spike A/B framing anywhere; describe th
 ## 2026-11-16T20:48 [lead]
 
 REQUIREMENT (M3.7 functional review): the same 0.3.0 sweep must delete the stale doctor help text and JSON fields describing the old engine (crates/slipfork/src/cli.rs:40, main.rs:173-180) so published docs and CLI agree with ADR-0010.
+
+## 2026-11-16T20:59 [lead]
+
+SPEC OWNERSHIP (from M3.9 legality review): doctor output fields need a normative owner — ADR-0010 §4 only defines BtrfsProbeReport (fstype/magic/probe evidence). M3.15 must own: (a) the fstype i64 -> filesystem name rendering table (btrfs shown as "btrfs"), (b) netns probe evidence (loopback bring-up), (c) crun probe evidence (version/exec), (d) unshare_userns probe evidence including the AppArmor EPERM hint, and (e) the exact JSON keys for all of them, so published docs can quote real output.

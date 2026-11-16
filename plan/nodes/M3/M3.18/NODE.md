@@ -6,12 +6,18 @@ status: ready
 owner: "doc-writer"
 priority: 4
 depends_on: [M3.17]
-paths: [README.md, docs/index.md, "docs/getting-started.md", docs/reference/cli.md, AGENTS.md]
+paths:
+  - README.md
+  - docs/index.md
+  - "docs/getting-started.md"
+  - docs/reference/cli.md
+  - AGENTS.md
+  - "docs/testing-dag.md"
 attempts: 0
 max_attempts: 3
 escalation: none
 created: "2026-11-16T16:58"
-updated: "2026-11-16T17:25"
+updated: "2026-11-16T21:01"
 ---
 
 # Goal
