@@ -8,6 +8,8 @@ Latest architect revision (**134 lines, 3 `sequenceDiagram`s**): `claims` are ID
 
 Current architect revision (**140 lines, 3 `sequenceDiagram`s**): uniform `claims` covering `vars` and `secrets`, `encryption_methods` advertised on `auth_ok`, `encryption: { method, public_key }` on `subscribe`, and RFC 4648 base64 `{ "encrypted": "<base64>" }` payloads. Content untouched; verified `plan.py validate` OK, `guard.py` OK (572 files), `zensical build --strict` clean.
 
+Newest architect revision (**195 lines, 4 `sequenceDiagram`s**): adds the JSON-level encryption safety rationale and a `## Device Pairing` section. Content untouched; verified `plan.py validate` OK, `guard.py` OK (572 files), `zensical build --strict` clean.
+
 ## Drift items
 
 | # | Location | Claim found | Verdict |

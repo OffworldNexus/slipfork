@@ -49,6 +49,59 @@ The server selects one supported method and issues its challenge, the client rep
 
 In `p256` authentication, the server sends a random 32-byte hex `nonce` inside `challenge`. The client replies with its compressed P-256 `public_key` (hex), a random 32-byte hex `client_nonce`, and an ECDSA P-256 SHA-256 `signature` (raw `r || s` hex) computed over `"ospp-v1" || server_nonce_bytes || client_nonce_bytes`.
 
+## Device Pairing
+
+```mermaid
+sequenceDiagram
+  participant C as Slipfork
+  participant S as Kerfufoo
+  participant B as Browser
+  C->>S: pair_hello { version: 1, key_methods: ["p256"] }
+  S->>C: pair_challenge { method: "p256", altcha, challenge }
+  C->>S: pair_begin { altcha, hostname, response }
+  S->>C: pair_handle { url: ".../pair#handle=<hex>" }
+  C->>B: open url
+  B->>S: POST lookup / accept { handle }
+  S->>C: pair_approved { account, machine }
+```
+
+When a machine's key is not yet enrolled, the client opens an `ospp-v1` WebSocket and initiates pairing instead of `hello`:
+
+```json
+{ "type": "pair_hello", "version": 1, "key_methods": ["p256"] }
+```
+
+The server picks a supported key method and returns `pair_challenge`, combining an ALTCHA proof-of-work challenge (rate-limiting unauthenticated pairing attempts without requiring prior credentials) and a random 32-byte hex `nonce` for key proof-of-possession:
+
+```json
+{ "type": "pair_challenge", "method": "p256", "altcha": { "...": "..." }, "challenge": { "nonce": "<32-byte hex>" } }
+```
+
+The client solves the proof-of-work and sends `pair_begin`, where `signature` signs `"ospp-v1-pair" || server_nonce_bytes || client_nonce_bytes` to prove possession of the private key being enrolled:
+
+```json
+{
+  "type": "pair_begin",
+  "altcha": "<altcha solution payload>",
+  "hostname": "dev-laptop",
+  "response": {
+    "public_key": "<compressed P-256 hex>",
+    "client_nonce": "<32-byte hex>",
+    "signature": "<raw r || s hex>"
+  }
+}
+```
+
+If valid, the server replies with a browser approval URL:
+
+```json
+{ "type": "pair_handle", "url": "https://ci.example.com/pair#handle=<32-byte hex>" }
+```
+
+- **Fragment-only capability:** The single-use 32-byte hex `handle` appears strictly in the URL `#fragment`, never in the path or query string, so HTTP access logs and `Referer` headers never record it; the browser page strips the fragment from the address bar immediately on load and submits the handle in authenticated JSON `POST` bodies (`lookup`, `accept`, `reject`).
+- **Socket-bound in-memory lifetime:** Pending pairings live purely in server memory for the lifetime of that open WebSocket (one pending pairing per public key; disconnecting, Ctrl-C, or restarting the server cancels it immediately, with no polling).
+- **Push verdict:** The browser shows the key fingerprint and proposed `hostname` (editable by the signed-in user). Once acted upon, the server pushes `pair_approved` (`{ "type": "pair_approved", "account": "alice", "machine": "dev-laptop" }`) or `error` (`rejected`, `already_paired`, `throttled`, `bad_proof`) over the waiting WebSocket and closes the pairing session, after which the client opens a normal authenticated `hello` session.
+
 ## Environment Resolution & Live Subscription
 
 ```mermaid
@@ -107,7 +160,9 @@ Slipfork decrypts `{ "encrypted": "<base64>" }` values in memory using the subsc
 
 ### `hpke-p256` Encryption
 
-In `hpke-p256` encryption, subscription secrets are encrypted end-to-end with RFC 9180 HPKE Base mode using `DHKEM(P-256, HKDF-SHA256)`, `HKDF-SHA256`, `AES-256-GCM`, and `info = "ospp-v1-secret"`. The client encodes its ephemeral recipient `public_key` as hex inside `encryption`, and the server seals each secret UTF-8 value with `SealBase(public_key, info, aad = "<component>:<env_key>", plaintext)`, encoding `enc || ciphertext` as standard RFC 4648 base64 in `{ "encrypted": "<base64>" }`. Binding `aad` to `<component>:<env_key>` prevents ciphertexts from being replayed or swapped across components or variable names.
+Encrypting secret values directly inside the JSON payload — even over `wss://` — prevents plaintext secrets from leaking into stack traces, debug logs, or copy-pasted wire messages (keeping protocol debugging safe), and protects secrets even if HTTPS/TLS is misconfigured or terminated prematurely along the path.
+
+In `hpke-p256` encryption, subscription secrets are sealed end-to-end with RFC 9180 HPKE Base mode using `DHKEM(P-256, HKDF-SHA256)`, `HKDF-SHA256`, `AES-256-GCM`, and `info = "ospp-v1-secret"`. The client encodes its ephemeral recipient `public_key` as hex inside `encryption`, and the server seals each secret UTF-8 value with `SealBase(public_key, info, aad = "<component>:<env_key>", plaintext)`, encoding `enc || ciphertext` as standard RFC 4648 base64 in `{ "encrypted": "<base64>" }`. Binding `aad` to `<component>:<env_key>` prevents ciphertexts from being replayed or swapped across components or variable names.
 
 ## Resource Dumps
 
@@ -133,7 +188,7 @@ If available and permitted, the server streams the dump on demand without cachin
 
 ## Errors
 
-Whenever the server cannot fulfill a request (unsupported version, auth method, or encryption method; unknown Git remote; unauthorized key; unfillable unclaimed entry; or unavailable dump), it replies with an `error` frame (`"id"` is included when correlated to a request) and closes the socket on handshake or authentication failures:
+Whenever the server cannot fulfill a request (unsupported version, auth method, or encryption method; unknown Git remote; unauthorized key; pairing rejection or proof failure; unfillable unclaimed entry; or unavailable dump), it replies with an `error` frame (`"id"` is included when correlated to a request) and closes the socket on handshake, pairing, or authentication failures:
 
 ```json
 { "type": "error", "id": "<optional correlation id>", "code": "<string>", "message": "<human explanation>" }
