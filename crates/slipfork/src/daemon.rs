@@ -38,8 +38,8 @@ use slipfork_engine::rootfs::{
 };
 use slipfork_engine::{
     EngineError, ExecEnv, ExecOutput, InheritedVar, LocalIngressBridge, MountMode, ServiceHandle,
-    ServiceRuntime, ServiceSpec, SnapshotId, SnapshotMode, StateSubdirMount, StreamChunk,
-    WorldEngine, WorldHandle, WorldMount, WorldSpec,
+    ServiceRuntime, ServiceSpec, SnapshotId, StateSubdirMount, StreamChunk, WorldEngine,
+    WorldHandle, WorldMount, WorldSpec,
 };
 use slipfork_ospp::{
     BrowserOpener, DeviceKeySigner, DumpStreamer, OsppClient, OsppEndpoint, OsppError,
@@ -673,11 +673,9 @@ impl DaemonService {
         let seed = self.config.layout.base_seed_dir(project);
         ensure_private_dir(&seed).map_err(runtime_error)?;
         let empty = SnapshotId(format!("{project}-seed-empty"));
-        self.engine
-            .create_snapshot(&seed, &empty, SnapshotMode::DiskCow)
-            .map_err(|err| {
-                runtime_error(format!("cannot create the empty base seed snapshot: {err}"))
-            })?;
+        self.engine.create_snapshot(&seed, &empty).map_err(|err| {
+            runtime_error(format!("cannot create the empty base seed snapshot: {err}"))
+        })?;
 
         let mut mounts = Vec::new();
         if let Some(directory) = dumps
@@ -710,7 +708,7 @@ impl DaemonService {
         let snapshot = SnapshotId(format!("{project}-base-{digest}"));
         let sealed = restored.and_then(|()| {
             self.engine
-                .freeze_world(&handle, &snapshot, SnapshotMode::DiskCow)
+                .freeze_world(&handle, &snapshot)
                 .map_err(|err| runtime_error(format!("cannot freeze the base seed world: {err}")))
         });
         if let Err(error) = sealed {

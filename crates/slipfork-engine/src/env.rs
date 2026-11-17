@@ -173,7 +173,7 @@ impl ExecEnv {
     /// Iterate the effective child environment (`HOME`, inherited allowlist, plain, secrets).
     ///
     /// This is the sanctioned materialization surface for the **thin CLI's** direct world entry
-    /// (`nsenter` / `incus exec`): `slipfork` receives an [`ExecEnv`] inside
+    /// (the engine's entry program, for example `nsenter`): `slipfork` receives an [`ExecEnv`] inside
     /// [`crate::WorldEntryCommand`]'s reply and must hand exactly these pairs to
     /// `Command::env_clear().envs(..)`. Reserved names never collide (construction rejects them),
     /// and `HOME` is rendered exactly as the engine's child-process materialization renders it. The

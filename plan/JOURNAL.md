@@ -842,3 +842,10 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-17T03:02 [M3.16] (lead) Gate policy from round 4: stop at the first round with no BLOCKER/MAJOR; remaining MINORs are logged as followups (M3.23 doc sweep / M3.15 byte-equivalence) ins
 - 2026-11-17T03:02 [M3.22] (lead) Gate policy: ioc PASS, legality PASS (both with record MINORs only), cruft fixes in flight. If the next cruft/functional round has no BLOCKER/MAJOR, accept and 
 - 2026-11-17T03:14 [M3.16] (lead) status review -> done
+- 2026-11-17T03:18 [M3.22] (lead) FINAL: functional PASS, ioc PASS, legality PASS, cruft PASS (record fixes verified). Committing.
+- 2026-11-17T03:18 [M3.22] (lead) status review -> done
+- 2026-11-17T03:21 ESCALATION #21 -> architect for M3.20 by lead: SPEC_BLIND_SPOT (legality BLOCKER): ARCHITECTURE §3.3 declares WorldHandle opaque with no constructor yet trait WorldEng
+- 2026-11-17T03:36 [M3.20] (lead) ARCHITECT RULING (escalation #21): provided Self:Sized mint_world_handle is the single sanctioned seam; WorldHandle is an in-process (engine,seq) lookup token w
+- 2026-11-17T03:42 [M3.20] (lead) edited fields
+- 2026-11-17T03:42 [M3.20] (lead) Paths widened: ARCHITECTURE.md (architect's escalation-#21 amendment lands with this node). Residuals: (a) pre-existing critical_engine r10_tmpfs assumes /tmp i
+- 2026-11-17T03:46 [M3.20] (lead) status review -> done

@@ -23,8 +23,8 @@ use slipfork_engine::conformance::assert_world_engine_conformance;
 use slipfork_engine::{
     EngineError, ExecEnv, ExecOutput, IncusEngine, InheritedVar, LocalIngressBridge, MountMode,
     ReflinkNetnsEngine, ServiceHandle, ServiceLogs, ServiceRuntime, ServiceSpec, ServiceState,
-    SnapshotId, SnapshotMode, StreamChunk, WorldEngine, WorldEntryCommand, WorldHandle, WorldMount,
-    WorldRootfs, WorldSpec, current_uid_gid, probe_reflink_dir,
+    SnapshotId, StreamChunk, WorldEngine, WorldEntryCommand, WorldHandle, WorldMount, WorldRootfs,
+    WorldSpec, current_uid_gid, probe_reflink_dir,
 };
 use slipfork_world::WorldTarget;
 
@@ -124,7 +124,7 @@ impl WorldFixture {
         fs::write(src.join("seed.txt"), b"ancestor\n").expect("seed");
         let snapshot = snap("base");
         engine
-            .create_snapshot(&src, &snapshot, SnapshotMode::DiskCow)
+            .create_snapshot(&src, &snapshot)
             .expect("base snapshot");
         let home = root.join("home");
         let repo = root.join("repo");
@@ -305,19 +305,6 @@ fn r10_r11_reflink_netns_conformance_cow_isolation_uid_and_parallel_same_port() 
     assert!(out_a.stdout.contains("BOUND_OK 18432"));
     assert!(out_b.stdout.contains("BOUND_OK 18432"));
 
-    // 5. Stateful RAM snapshots have no capability flag: the error type is the contract.
-    let src_state = fx.root.join("state-src");
-    let err = fx
-        .engine
-        .create_snapshot(&src_state, &snap("ram"), SnapshotMode::StatefulRam)
-        .expect_err("reflink engine cannot capture RAM state");
-    assert!(matches!(
-        err,
-        EngineError::StatefulRamUnsupported {
-            engine: "reflink-netns"
-        }
-    ));
-
     fx.engine.destroy_world(world_a).expect("destroy world a");
     fx.engine.destroy_world(world_b).expect("destroy world b");
     let _ = fs::remove_dir_all(&fx.root);
@@ -429,11 +416,11 @@ fn freeze_lineage_seals_once_and_sibling_clones_stay_isolated() {
     assert_eq!(out.exit_code, 0, "stderr: {}", out.stderr);
 
     fx.engine
-        .freeze_world(&origin, &snap("seed-frozen"), SnapshotMode::DiskCow)
+        .freeze_world(&origin, &snap("seed-frozen"))
         .expect("seal origin world");
     let err = fx
         .engine
-        .freeze_world(&origin, &snap("seed-frozen-again"), SnapshotMode::DiskCow)
+        .freeze_world(&origin, &snap("seed-frozen-again"))
         .expect_err("an already-frozen world must fail closed");
     assert!(matches!(err, EngineError::WorldNotFreezable { .. }));
 
@@ -460,7 +447,7 @@ fn freeze_lineage_seals_once_and_sibling_clones_stay_isolated() {
         .expect("destroy sibling a");
     let err = fx
         .engine
-        .freeze_world(&destroyed, &snap("never"), SnapshotMode::DiskCow)
+        .freeze_world(&destroyed, &snap("never"))
         .expect_err("a destroyed world cannot be frozen");
     assert!(matches!(err, EngineError::WorldGone { .. }));
     let err = fx
@@ -731,7 +718,7 @@ fn service_logs_survive_idempotent_stop_and_freeze_seals_only_after_stop() {
         "writer must produce state before the freeze"
     );
     fx.engine
-        .freeze_world(&world, &snap("sealed-after-stop"), SnapshotMode::DiskCow)
+        .freeze_world(&world, &snap("sealed-after-stop"))
         .expect("freeze with a live service");
     assert_eq!(
         writer.state(),
@@ -1112,7 +1099,7 @@ fn world_init_fails_closed_when_the_helper_is_missing() {
     fs::create_dir_all(&src).expect("state-src");
     fs::write(src.join("seed.txt"), b"ancestor\n").expect("seed");
     engine
-        .create_snapshot(&src, &snap("base"), SnapshotMode::DiskCow)
+        .create_snapshot(&src, &snap("base"))
         .expect("snapshot");
     let err = engine
         .clone_world(&WorldSpec {

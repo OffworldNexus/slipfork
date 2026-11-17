@@ -16,8 +16,8 @@ use std::time::Duration;
 use slipfork_engine::rootfs::BackingServiceKey;
 use slipfork_engine::{
     EngineError, ExecEnv, InheritedVar, MountMode, ReflinkNetnsEngine, ServiceHandle, ServiceLogs,
-    ServiceRuntime, ServiceSpec, ServiceState, SnapshotId, SnapshotMode, StateSubdirMount,
-    WorldEngine, WorldHandle, WorldMount, WorldRootfs, WorldSpec, current_uid_gid,
+    ServiceRuntime, ServiceSpec, ServiceState, SnapshotId, StateSubdirMount, WorldEngine,
+    WorldHandle, WorldMount, WorldRootfs, WorldSpec, current_uid_gid,
 };
 use slipfork_testkit::poll_until;
 use slipfork_world::WorldTarget;
@@ -106,7 +106,7 @@ impl Harness {
         fs::write(src.join("seed.txt"), b"ancestor\n").expect("seed");
         let snapshot = snap("base");
         engine
-            .create_snapshot(&src, &snapshot, SnapshotMode::DiskCow)
+            .create_snapshot(&src, &snapshot)
             .expect("base snapshot");
         let home = root.join("home");
         let repo = root.join("repo");
@@ -571,7 +571,7 @@ fn postgres_and_redis_share_the_world_netns_and_survive_a_reflink_clone() {
     let postgres = harness.start_postgres(&world);
     harness
         .engine
-        .freeze_world(&world, &snap("sealed"), SnapshotMode::DiskCow)
+        .freeze_world(&world, &snap("sealed"))
         .expect("freeze world with live containers");
     assert_eq!(postgres.state(), ServiceState::Stopped);
     assert_eq!(redis.state(), ServiceState::Stopped);

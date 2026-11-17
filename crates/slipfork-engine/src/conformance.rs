@@ -1,10 +1,10 @@
-//! Shared [`WorldEngine`] conformance checks executed against every hypervisor/CoW driver.
+//! Shared [`WorldEngine`] conformance checks executed against every world engine adapter.
 //!
-//! The suite asserts only what every engine must satisfy *without* a live hypervisor: honest
+//! The suite asserts only what every engine must satisfy *without* a live world: honest
 //! fail-closed error types, mount-spec validation, environment redaction, opaque handle stability,
 //! and seal-once freeze semantics. Real CoW lineage (frozen snapshot → independent sibling
 //! clones, `$UID` ownership, real bind mounts) is asserted by `tests/critical_engine.rs` against
-//! `ReflinkNetnsEngine`'s real `ioctl(FICLONE)` + namespace path — never mocked.
+//! the adapter's real snapshot and namespace path — never mocked.
 
 #![forbid(unsafe_code)]
 
@@ -15,9 +15,7 @@ use slipfork_world::WorldTarget;
 
 use crate::env::InheritedVar;
 use crate::rootfs::WorldRootfs;
-use crate::{
-    EngineError, ExecEnv, MountMode, SnapshotId, SnapshotMode, WorldEngine, WorldMount, WorldSpec,
-};
+use crate::{EngineError, ExecEnv, MountMode, SnapshotId, WorldEngine, WorldMount, WorldSpec};
 
 const SECRET_KEY: &str = "SLIPFORK_TEST_SECRET";
 const SECRET_VALUE: &str = "conformance-secret-value";
@@ -34,28 +32,7 @@ pub fn assert_world_engine_conformance(
 ) {
     assert!(!engine.name().is_empty(), "engine name must not be empty");
 
-    // 1. Stateful RAM snapshots are either honestly supported or typed fail-closed. There is no
-    //    capability boolean: the error variant itself is the contract.
-    match engine.create_snapshot(
-        scratch_dir,
-        &SnapshotId("conformance-ram".to_owned()),
-        SnapshotMode::StatefulRam,
-    ) {
-        Ok(()) => {}
-        Err(EngineError::StatefulRamUnsupported { engine: reported }) => {
-            assert_eq!(
-                reported,
-                engine.name(),
-                "StatefulRamUnsupported must name the implementing engine"
-            );
-        }
-        Err(other) => panic!(
-            "{} must support StatefulRam or fail closed with StatefulRamUnsupported, got {other:?}",
-            engine.name()
-        ),
-    }
-
-    // 2. Secrets never appear in Debug, including through a containing WorldSpec.
+    // 1. Secrets never appear in Debug, including through a containing WorldSpec.
     let mut base_env = ExecEnv::world_scoped(scratch_dir.join("conformance-home"));
     base_env.inherit(InheritedVar::Path, "/usr/local/bin:/usr/bin:/bin");
     base_env
@@ -83,7 +60,7 @@ pub fn assert_world_engine_conformance(
         engine.name()
     );
 
-    // 3. Unknown snapshots fail closed instead of degrading to an empty world.
+    // 2. Unknown snapshots fail closed instead of degrading to an empty world.
     let err = engine
         .clone_world(&missing)
         .expect_err("cloning an unknown snapshot must fail closed");
@@ -92,7 +69,7 @@ pub fn assert_world_engine_conformance(
         "expected SnapshotNotFound, got {err:?}"
     );
 
-    // 4. Nested read-write mounts are refused before any world state is materialized.
+    // 3. Nested read-write mounts are refused before any world state is materialized.
     let nested = WorldSpec {
         snapshot: SnapshotId("conformance-mounted".to_owned()),
         mounts: vec![
@@ -117,14 +94,14 @@ pub fn assert_world_engine_conformance(
         "expected OverlappingMounts, got {err:?}"
     );
 
-    // 5. Clone → opaque handle → seal-once freeze → destroy.
+    // 4. Clone → opaque handle → seal-once freeze → destroy.
     let source = scratch_dir.join("conformance-source");
     fs::create_dir_all(&source).expect("create conformance source");
     fs::write(source.join("seed.txt"), b"conformance\n").expect("write conformance seed");
     let snapshot = SnapshotId("conformance-base".to_owned());
     engine
-        .create_snapshot(&source, &snapshot, SnapshotMode::DiskCow)
-        .expect("disk CoW snapshot must succeed on the conformance scratch dir");
+        .create_snapshot(&source, &snapshot)
+        .expect("a read-only snapshot must succeed on the conformance scratch dir");
 
     let spec = WorldSpec {
         snapshot,
@@ -144,7 +121,7 @@ pub fn assert_world_engine_conformance(
         engine.name()
     );
 
-    // 6. Entry commands name a real program, carry an argv prefix, and preserve the requested cwd.
+    // 5. Entry commands name a real program, carry an argv prefix, and preserve the requested cwd.
     let entry_cwd = scratch_dir.join("repo");
     let entry = engine
         .entry_command(&world, &entry_cwd)
@@ -166,7 +143,7 @@ pub fn assert_world_engine_conformance(
         engine.name()
     );
 
-    // 7. Dialing a live world either works, or fails closed with a typed error — never a
+    // 6. Dialing a live world either works, or fails closed with a typed error — never a
     //    fabricated stream and never a hang.
     match engine.dial_world_tcp(&world, 1) {
         Ok(_) => panic!(
@@ -185,7 +162,7 @@ pub fn assert_world_engine_conformance(
         ),
     }
 
-    // 8. Unknown services are typed; logs are never fabricated.
+    // 7. Unknown services are typed; logs are never fabricated.
     match engine.service_logs(&world, "conformance-missing-service") {
         Ok(_) => panic!("{} must not fabricate service logs", engine.name()),
         Err(EngineError::Unsupported {
@@ -201,18 +178,10 @@ pub fn assert_world_engine_conformance(
     }
 
     engine
-        .freeze_world(
-            &world,
-            &SnapshotId("conformance-frozen".to_owned()),
-            SnapshotMode::DiskCow,
-        )
+        .freeze_world(&world, &SnapshotId("conformance-frozen".to_owned()))
         .expect("a live world must be freezable");
     let err = engine
-        .freeze_world(
-            &world,
-            &SnapshotId("conformance-frozen".to_owned()),
-            SnapshotMode::DiskCow,
-        )
+        .freeze_world(&world, &SnapshotId("conformance-frozen".to_owned()))
         .expect_err("an already-frozen world must fail closed");
     assert!(
         matches!(err, EngineError::WorldNotFreezable { .. }),
@@ -223,11 +192,7 @@ pub fn assert_world_engine_conformance(
         .destroy_world(world)
         .expect("destroy conformance world");
     let err = engine
-        .freeze_world(
-            &opaque,
-            &SnapshotId("conformance-frozen".to_owned()),
-            SnapshotMode::DiskCow,
-        )
+        .freeze_world(&opaque, &SnapshotId("conformance-frozen".to_owned()))
         .expect_err("a destroyed world must fail closed");
     assert!(
         matches!(err, EngineError::WorldGone { .. }),

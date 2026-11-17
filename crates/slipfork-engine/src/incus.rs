@@ -1,10 +1,10 @@
 //! Incus `/1.0` REST API implementation of [`WorldEngine`] over the Incus Unix domain socket
 //! (`R12`, `ADR-0002`).
 //!
-//! Supports Incus system containers (LXC) and QEMU VMs with ZFS/Btrfs/LVM-thin/XFS CoW, stateful
-//! CRIU/QEMU RAM snapshots, and `shift=true` (`MOUNT_ATTR_IDMAP`) shared-UID host mounts. Live
-//! daemon coverage is gated on open `H-004` (`M2.21`); this module is exercised by the shared
-//! conformance suite against an in-tree Unix-socket protocol harness.
+//! Supports Incus system containers (LXC) and QEMU VMs with ZFS/Btrfs/LVM-thin/XFS CoW and
+//! `shift=true` (`MOUNT_ATTR_IDMAP`) shared-UID host mounts. Live daemon coverage is gated on open
+//! `H-004` (`M2.21`); this module is exercised by the shared conformance suite against an in-tree
+//! Unix-socket protocol harness.
 
 #![forbid(unsafe_code)]
 
@@ -20,8 +20,8 @@ use std::time::Duration;
 use crate::child_env;
 use crate::{
     EngineError, ExecEnv, ExecOutput, MountMode, ServiceHandle, ServiceLogs, ServiceSpec,
-    SnapshotId, SnapshotMode, StreamChunk, StreamSource, WorldEngine, WorldEntryCommand,
-    WorldHandle, WorldMount, WorldSpec, WorldStatus, target_slug,
+    SnapshotId, StreamChunk, StreamSource, WorldEngine, WorldEntryCommand, WorldHandle, WorldMount,
+    WorldSpec, WorldStatus, target_slug,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -196,11 +196,9 @@ impl IncusEngine {
         &self,
         instance: &str,
         id: &SnapshotId,
-        mode: SnapshotMode,
     ) -> Result<(u16, Value), EngineError> {
         let body = json!({
             "name": id.validate()?,
-            "stateful": mode == SnapshotMode::StatefulRam,
         });
         self.request_json(
             "POST",
@@ -215,13 +213,8 @@ impl WorldEngine for IncusEngine {
         "incus"
     }
 
-    fn create_snapshot(
-        &self,
-        _source_dir: &Path,
-        id: &SnapshotId,
-        mode: SnapshotMode,
-    ) -> Result<(), EngineError> {
-        let (status, resp) = self.instance_snapshot_request(&self.source_instance, id, mode)?;
+    fn create_snapshot(&self, _source_dir: &Path, id: &SnapshotId) -> Result<(), EngineError> {
+        let (status, resp) = self.instance_snapshot_request(&self.source_instance, id)?;
         if !(200..300).contains(&status) {
             return Err(EngineError::Execution(format!(
                 "Incus snapshot creation failed ({status}): {resp}"
@@ -230,12 +223,7 @@ impl WorldEngine for IncusEngine {
         Ok(())
     }
 
-    fn freeze_world(
-        &self,
-        world: &WorldHandle,
-        id: &SnapshotId,
-        mode: SnapshotMode,
-    ) -> Result<(), EngineError> {
+    fn freeze_world(&self, world: &WorldHandle, id: &SnapshotId) -> Result<(), EngineError> {
         // No service supervision is implemented for Incus yet (live adapter gated on `H-004`,
         // `M2.21`), so there is nothing to stop before sealing.
         let instance = {
@@ -255,7 +243,7 @@ impl WorldEngine for IncusEngine {
         };
 
         let sealed = self
-            .instance_snapshot_request(&instance, id, mode)
+            .instance_snapshot_request(&instance, id)
             .and_then(|(status, resp)| {
                 if (200..300).contains(&status) {
                     Ok(())
@@ -288,7 +276,7 @@ impl WorldEngine for IncusEngine {
         spec.validate()?;
         spec.snapshot.validate()?;
         let seq = self.shared.next_seq.fetch_add(1, Ordering::Relaxed) + 1;
-        let world = WorldHandle::mint(self.name(), seq);
+        let world = self.mint_world_handle(seq);
         let instance = format!("{}-{seq}", target_slug(&spec.target));
         let payload = self.build_clone_payload(spec, &instance);
         let body =

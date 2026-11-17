@@ -1,20 +1,15 @@
-//! `slipfork-engine`: `WorldEngine` Dependency Injection port and concrete hypervisor/CoW drivers.
+//! `slipfork-engine`: the [`WorldEngine`] Dependency Injection port for copy-on-write worlds plus
+//! the adapters that implement it.
 //!
-//! Two production drivers implement [`WorldEngine`]:
-//! - [`IncusEngine`]: talks to the Incus `/1.0` REST API over its Unix socket (LXC containers +
-//!   QEMU VMs, ZFS/Btrfs/LVM-thin/XFS CoW, stateful RAM snapshots, `shift=true` host UID mounts).
-//! - [`ReflinkNetnsEngine`]: clones stateful directories via Linux `ioctl(FICLONE)` on XFS/Btrfs
-//!   and isolates execution inside unprivileged `CLONE_NEWUSER | CLONE_NEWNS | CLONE_NEWNET |
-//!   CLONE_NEWPID` namespaces preserving the exact host `$UID:$GID`. Each world owns a persistent
-//!   `slipfork-world-init` PID 1 (`src/bin/slipfork-world-init.rs`, `H-011`) that establishes the
-//!   world's bind mounts, answers `dial_world_tcp` over `<world_dir>/netns.sock` (`SCM_RIGHTS`),
-//!   and bridges `127.0.0.1:<port>` inside the world to `slipforkd`'s `AF_UNIX` ingress.
-//!
-//! Both drivers satisfy the one [`conformance::assert_world_engine_conformance`] contract: a
+//! Every adapter satisfies the one [`conformance::assert_world_engine_conformance`] contract: a
 //! world is materialized from an immutable [`SnapshotId`] plus a multi-mount [`WorldSpec`], its
 //! services are supervised and stopped before [`WorldEngine::freeze_world`] seals it, and it is
 //! referenced only through the opaque in-process [`WorldHandle`] (owned by `slipforkd`, never
 //! serialized, `H-010` #1).
+//!
+//! Read-only snapshot creation ([`WorldEngine::create_snapshot`], [`WorldEngine::freeze_world`])
+//! and writable world cloning ([`WorldEngine::clone_world`]) are distinct signatures: there is no
+//! snapshot-mode flag and no capability boolean to branch on (`ADR-0010` §3).
 
 pub mod child_env;
 pub mod conformance;
@@ -51,18 +46,6 @@ pub(crate) fn target_slug(target: &WorldTarget) -> String {
         WorldTarget::UserFork(fork) => format!("fork-{fork}"),
         WorldTarget::TestSlot(slot) => format!("slot-{slot}"),
     }
-}
-
-/// Snapshot flavor requested from a [`WorldEngine`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SnapshotMode {
-    /// Disk-only copy-on-write snapshot (reflink / hypervisor disk snapshot).
-    DiskCow,
-    /// Snapshot that also captures live process/VM memory.
-    ///
-    /// Engines that cannot capture memory state fail closed with
-    /// [`EngineError::StatefulRamUnsupported`] — there is no capability boolean to branch on.
-    StatefulRam,
 }
 
 /// Access mode of a [`WorldMount`].
@@ -214,11 +197,10 @@ impl WorldSpec {
     }
 }
 
-/// Opaque in-process handle to one live world.
-///
-/// Minted exclusively by an engine (never by callers, never deserialized), owned exclusively
-/// inside `slipforkd`, and never sent over IPC (`H-010` #1). Its [`fmt::Debug`] is stable and
-/// exposes no filesystem, environment, or secret state.
+/// In-process `(engine, seq)` lookup token owned inside `slipforkd` (never deserialized, never sent
+/// over IPC, `H-010` #1): an engine honours any handle whose engine tag matches `self.name()` and
+/// whose seq is live in its world table, failing closed with [`EngineError::WorldGone`] otherwise.
+/// Its [`fmt::Debug`] is stable and exposes no filesystem, environment, or secret state.
 #[derive(Clone, PartialEq, Eq)]
 pub struct WorldHandle {
     engine: &'static str,
@@ -378,7 +360,7 @@ impl fmt::Debug for ServiceHandle {
 /// cross the CLI <-> `slipforkd` boundary (`H-010` #1).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorldEntryCommand {
-    /// Executable to spawn (`nsenter`, `incus`).
+    /// Executable of the engine's entry program (for example `nsenter`).
     pub program: PathBuf,
     /// Arguments that must precede the target argv.
     pub args_prefix: Vec<String>,
@@ -424,8 +406,6 @@ pub enum EngineError {
         "filesystem at {path} does not support CoW FICLONE reflinks (errno {errno}); place state on XFS (reflink=1), Btrfs, or ZFS — never /tmp tmpfs"
     )]
     ReflinkUnsupported { path: String, errno: i32 },
-    #[error("stateful RAM snapshots are not supported by engine '{engine}'")]
-    StatefulRamUnsupported { engine: &'static str },
     #[error("snapshot '{0}' does not exist")]
     SnapshotNotFound(String),
     #[error("invalid snapshot id '{id}': must be a plain 1..=128 byte alphanumeric/-/_/. label")]
@@ -478,30 +458,36 @@ pub(crate) enum WorldStatus {
 
 /// Core Dependency Injection port for CoW world creation, cloning, execution, and teardown.
 pub trait WorldEngine: Send + Sync {
-    /// Short engine identifier (`"incus"` or `"reflink-netns"`).
+    /// Short engine identifier used in diagnostics and world-handle ownership checks.
     fn name(&self) -> &'static str;
 
-    /// Capture an immutable snapshot of `source_dir` under `id`.
+    /// `Self: Sized` excludes `dyn WorldEngine` so dynamic-port consumers obtain handles only from
+    /// [`WorldEngine::clone_world`], while out-of-crate adapters and test doubles can construct
+    /// their return token. Minting is an in-process lookup-token constructor, not an unforgeable
+    /// capability: minting a live seq exercises full authority on any engine with a matching
+    /// `name()`, and grants nothing across distinct engine tags or over IPC.
+    fn mint_world_handle(&self, seq: u64) -> WorldHandle
+    where
+        Self: Sized,
+    {
+        WorldHandle::mint(self.name(), seq)
+    }
+
+    /// Capture an immutable read-only snapshot of `source_dir` under `id`.
     fn create_snapshot(
         &self,
         source_dir: &std::path::Path,
         id: &SnapshotId,
-        mode: SnapshotMode,
     ) -> Result<(), EngineError>;
 
-    /// Seal the live world `world` into the immutable snapshot `id`.
+    /// Seal the live world `world` into the immutable read-only snapshot `id`.
     ///
     /// Every live world-owned service is stopped cleanly **before** the world's `state_dir` is
     /// sealed, so the snapshot is crash-consistent (`H-011` #2). Freezing an already-frozen world
     /// fails closed with [`EngineError::WorldNotFreezable`]; a destroyed world is gone and fails
     /// closed with [`EngineError::WorldGone`]. Clones of the sealed snapshot are independent:
     /// writes in one clone are never visible to a sibling clone.
-    fn freeze_world(
-        &self,
-        world: &WorldHandle,
-        id: &SnapshotId,
-        mode: SnapshotMode,
-    ) -> Result<(), EngineError>;
+    fn freeze_world(&self, world: &WorldHandle, id: &SnapshotId) -> Result<(), EngineError>;
 
     /// Instantaneously clone `spec.snapshot` into a fresh isolated world.
     fn clone_world(&self, spec: &WorldSpec) -> Result<WorldHandle, EngineError>;

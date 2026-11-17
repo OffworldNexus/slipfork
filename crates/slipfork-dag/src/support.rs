@@ -100,7 +100,7 @@ impl fmt::Display for IntegrationTier {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum IntegrationCategory {
-    /// Hypervisor / CoW world engine (e.g. `ReflinkNetnsEngine`, `IncusEngine`).
+    /// Copy-on-write world engine (e.g. `BtrfsEngine`).
     WorldEngine,
     /// Secret provider / vault integration (e.g. `FileVaultProvider`, `OSPP v1`).
     Secrets,

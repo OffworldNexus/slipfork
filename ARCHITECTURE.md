@@ -477,9 +477,11 @@ pub struct WorldSpec {
     pub local_ingress: Option<LocalIngressBridge>, // Some when WorldOrigin::Local (H-010 #2, H-011 #4)
 }
 
-/// Opaque in-process handle owned exclusively inside `slipforkd` (never serialized across processes, H-010 #1).
+/// In-process `(engine, seq)` lookup token owned inside `slipforkd` (never `Serialize`/`Deserialize`, H-010 #1; `WorldHandle::mint` is `pub(crate)`):
+/// an engine honours any handle whose engine tag matches and whose `seq` is live in its world table (failing closed `EngineError::WorldGone` otherwise);
+/// forgery is in-process via concrete `Self: Sized` `mint_world_handle` (authority over live `seq` on matching-tag engines only, zero cross-engine or IPC authority).
 #[derive(Clone, PartialEq, Eq)]
-pub struct WorldHandle(/* private engine-scoped token */);
+pub struct WorldHandle(/* private (engine, seq) lookup token; custom Debug exposes no paths/env/secrets */);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum StreamSource { Stdout, Stderr }
@@ -547,6 +549,8 @@ pub trait WorldEngine: Send + Sync {
     /// then seals the unified world subvolume into an immutable RO snapshot (`ADR-0010` §3).
     fn freeze_world(&self, world: &WorldHandle, id: &SnapshotId) -> Result<(), EngineError>;
     fn clone_world(&self, spec: &WorldSpec) -> Result<WorldHandle, EngineError>;
+    /// Provided handle constructor for `clone_world` impls & §1 test doubles (`Self: Sized` excludes `dyn WorldEngine`; minting a live `seq` yields authority on matching-tag engines).
+    fn mint_world_handle(&self, seq: u64) -> WorldHandle where Self: Sized { /* provided via pub(crate) WorldHandle::mint */ }
     /// Single supervision surface for `WorldProcess` and `OciContainer` runtimes (`ADR-0002` §2, `ADR-0009` §3).
     fn spawn_service(&self, world: &WorldHandle, spec: &ServiceSpec) -> Result<ServiceHandle, EngineError>;
     fn stop_service(&self, service: &ServiceHandle) -> Result<(), EngineError>;

@@ -79,7 +79,8 @@ pub struct WorldSummary {
 /// One `[resources]` diagnostic line (`docs/design/target-dx.md` §1.2).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResourceSummary {
-    /// Declared resource id (`pg_databases.main`).
+    /// Declared resource id (`main`, `media`) — the bare `ResourceDiagnostic::id`, never a
+    /// kind-qualified `pg_databases.<id>` service id.
     pub id: String,
     /// Effective `ResourceStrategy`.
     pub strategy: String,
@@ -380,7 +381,7 @@ pub struct WorldExecTarget {
     pub world: String,
     /// The world's single public origin.
     pub origin: WorldOrigin,
-    /// Child argv prefix (`nsenter` / `incus exec`) to spawn.
+    /// Child argv prefix of the engine's entry program (for example `nsenter`) to spawn.
     pub entry: WorldEntryCommand,
     /// Resolved world environment (redacted by `Debug`).
     pub env: ExecEnv,

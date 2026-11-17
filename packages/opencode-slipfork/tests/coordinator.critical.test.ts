@@ -30,7 +30,7 @@ class FakeSlipfork implements SlipforkGateway {
   async forkWorld(input: { fork: string; base?: string }): Promise<ForkedWorld> {
     if (this.failNextFork) {
       this.failNextFork = false;
-      throw new Error("slipfork fork 'feat-login' failed: FICLONE unsupported");
+      throw new Error("slipfork fork 'feat-login' failed: BtrfsRequired: state dir must be btrfs");
     }
     this.forked.push({ fork: input.fork, base: input.base });
     return { world: `acme-app:${input.fork}`, origin: ORIGIN };
@@ -142,7 +142,7 @@ describe("SlipforkWorktreeCoordinator (ADR-0004, M2.18)", () => {
         { sourceDirectory: REPO, directory: FORK },
         { signal: new AbortController().signal },
       ),
-    ).rejects.toThrow("FICLONE unsupported");
+    ).rejects.toThrow("BtrfsRequired: state dir must be btrfs");
     expect(coordinator.bindingForDirectory(FORK)).toBeUndefined();
     expect(slipfork.dropped).toEqual([]);
   });

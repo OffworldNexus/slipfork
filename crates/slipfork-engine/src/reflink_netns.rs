@@ -42,8 +42,8 @@ use crate::world_init::{
 };
 use crate::{
     EngineError, ExecEnv, ExecOutput, MountMode, ServiceHandle, ServiceRuntime, ServiceSpec,
-    ServiceState, SnapshotId, SnapshotMode, StateSubdirMount, StreamChunk, StreamSource,
-    WorldEngine, WorldEntryCommand, WorldHandle, WorldMount, WorldSpec, WorldStatus, target_slug,
+    ServiceState, SnapshotId, StateSubdirMount, StreamChunk, StreamSource, WorldEngine,
+    WorldEntryCommand, WorldHandle, WorldMount, WorldSpec, WorldStatus, target_slug,
 };
 
 /// Installed file name of the per-world PID 1 helper.
@@ -940,17 +940,7 @@ impl WorldEngine for ReflinkNetnsEngine {
         "reflink-netns"
     }
 
-    fn create_snapshot(
-        &self,
-        source_dir: &Path,
-        id: &SnapshotId,
-        mode: SnapshotMode,
-    ) -> Result<(), EngineError> {
-        if mode == SnapshotMode::StatefulRam {
-            return Err(EngineError::StatefulRamUnsupported {
-                engine: self.name(),
-            });
-        }
+    fn create_snapshot(&self, source_dir: &Path, id: &SnapshotId) -> Result<(), EngineError> {
         let dst = self.snapshot_dir(id)?;
         if dst.exists() {
             fs::remove_dir_all(&dst).map_err(|e| EngineError::Io {
@@ -962,17 +952,7 @@ impl WorldEngine for ReflinkNetnsEngine {
         Ok(())
     }
 
-    fn freeze_world(
-        &self,
-        world: &WorldHandle,
-        id: &SnapshotId,
-        mode: SnapshotMode,
-    ) -> Result<(), EngineError> {
-        if mode == SnapshotMode::StatefulRam {
-            return Err(EngineError::StatefulRamUnsupported {
-                engine: self.name(),
-            });
-        }
+    fn freeze_world(&self, world: &WorldHandle, id: &SnapshotId) -> Result<(), EngineError> {
         let dst = self.snapshot_dir(id)?;
 
         // Services are stopped while the world is still live so the sealed snapshot is
@@ -1072,7 +1052,7 @@ impl WorldEngine for ReflinkNetnsEngine {
         })?;
 
         let seq = self.shared.next_seq.fetch_add(1, Ordering::Relaxed) + 1;
-        let world = WorldHandle::mint(self.name(), seq);
+        let world = self.mint_world_handle(seq);
         let label = format!("{}#{seq}", target_slug(&spec.target));
         let world_root = self.world_dir(&spec.target, seq);
         let state_dir = world_root.join("state");

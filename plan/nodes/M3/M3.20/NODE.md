@@ -2,11 +2,12 @@
 id: M3.20
 title: "Workspace trait & test decoupling: drop SnapshotMode/StatefulRam and replace FakeIncus in slipfork-edge"
 kind: task
-status: ready
+status: done
 owner: implementer
 priority: 2
 depends_on: [M3.1, M3.7]
 paths:
+  - ARCHITECTURE.md
   - "crates/slipfork-engine/src/lib.rs"
   - "crates/slipfork-engine/src/conformance.rs"
   - "crates/slipfork-engine/src/incus.rs"
@@ -19,11 +20,11 @@ paths:
   - crates/slipfork/src/daemon.rs
   - "crates/slipfork-dag/src/support.rs"
   - "packages/opencode-slipfork/tests/coordinator.critical.test.ts"
-attempts: 0
+attempts: 1
 max_attempts: 3
-escalation: none
+escalation: architect
 created: "2026-11-16T17:25"
-updated: "2026-11-16T17:25"
+updated: "2026-11-17T03:46"
 ---
 
 # Goal
@@ -52,6 +53,10 @@ make check
 ```
 
 Expected: both inverted `grep`s print nothing; `bun test`, `slipfork-edge` tests, and full `make check` exit 0.
+
+## Load envelope (owner ruling 2026-11-16, binding)
+
+`make check` must be green at load average ≤ 10 with zero in-repo builds. The pre-`Btrfs` engines are still present until `M3.21`, and their fixed 10 s `WORLD_STOP_GRACE` red-lines world teardown under unrelated foreign load (≈ 40+). When that is the **only** red (`world init pid … is still alive 10s after SIGKILL`), record it verbatim as the deleted engine's residual owned by `M3.13`/`M3.14`/`M3.21` and verify the deterministic gate set instead: `uv run --no-project --with pytest pytest -q tools/tests`, `cargo check --workspace --all-targets`, `cargo clippy --workspace --all-targets -- -D warnings`, `make docs-check`, `guard.py`, `critical_guard.py`, `plan.py validate`, plus the suites this node owns. Never retry-until-green and never hide the red.
 
 # Terminology Rule (OWNER, 2026-11-16 — binding)
 

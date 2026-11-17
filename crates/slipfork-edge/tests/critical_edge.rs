@@ -7,9 +7,10 @@
 //! The child then proves the adopted descriptor is non-blocking and serves a real HTTP exchange
 //! through [`HttpIngress`]. No descriptor is mocked and no environment is faked in-process.
 //!
-//! The registry is exercised over the real `IncusEngine` adapter against an in-tree `/1.0`
-//! Unix-socket harness (the same pattern `slipfork-engine`'s critical suite uses; live `incusd`
-//! stays gated on `H-004`), so `WorldHandle`s are minted by a real engine implementation.
+//! The registry, ingress, proxy, forward, and share paths run against a registry-level
+//! [`WorldEngine`] double ([`StubWorldEngine`]) that models world handles, their lifecycle, and the
+//! snapshot set a clone may come from, while every proxied hop dials a real loopback `TcpStream` —
+//! no socket, filesystem, or namespace is faked.
 
 #![forbid(unsafe_code)]
 
@@ -21,7 +22,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -38,12 +39,13 @@ use slipfork_edge::{
     UnavailableTunnelRegistrar, UnitSpec, WorldRegistry, adopt_systemd_listener, bind_listen,
     render_service_unit, render_socket_unit, resolve_listener_set,
 };
+use slipfork_engine::conformance::assert_world_engine_conformance;
 use slipfork_engine::rootfs::{
     ElfAbi, ImageContractMetadata, LibcFamily, OsRelease, RootfsDigest, WorldRootfs,
 };
 use slipfork_engine::{
-    EngineError, ExecEnv, ExecOutput, IncusEngine, ServiceHandle, SnapshotId, StreamChunk,
-    StreamSource, WorldEngine, WorldEntryCommand, WorldHandle, WorldSpec, current_uid_gid,
+    EngineError, ExecEnv, ExecOutput, ServiceHandle, ServiceLogs, ServiceSpec, SnapshotId,
+    StreamChunk, StreamSource, WorldEngine, WorldEntryCommand, WorldHandle, WorldSpec,
 };
 use slipfork_world::{
     LocalHostRoute, ProjectSlug, TunnelError, TunnelLease, TunnelRegistrar, TunnelRequest,
@@ -77,21 +79,18 @@ fn acme() -> ProjectSlug {
     ProjectSlug::parse("acme").expect("valid project slug")
 }
 
-fn empty_registry(state: &Path) -> Arc<WorldRegistry> {
-    let (uid, gid) = current_uid_gid();
-    let engine = IncusEngine::new(
-        state.join("unused-incusd.sock"),
-        "default",
-        "base",
-        uid,
-        gid,
-    );
-    Arc::new(WorldRegistry::new(
-        Arc::new(engine),
-        Arc::new(UnavailableTunnelRegistrar::new()),
-        80,
-        None,
-    ))
+/// The one registry builder: ingress port 80, `registrar`, and an optional forward port.
+fn registry_over(
+    engine: Arc<StubWorldEngine>,
+    registrar: Arc<dyn TunnelRegistrar>,
+    forward_port: Option<u16>,
+) -> Arc<WorldRegistry> {
+    Arc::new(WorldRegistry::new(engine, registrar, 80, forward_port))
+}
+
+/// The registry the non-sharing suites use: no tunnel registrar, no forward port.
+fn stub_registry(engine: Arc<StubWorldEngine>) -> Arc<WorldRegistry> {
+    registry_over(engine, Arc::new(UnavailableTunnelRegistrar::new()), None)
 }
 
 fn listen_local() -> ListenConfig {
@@ -100,6 +99,21 @@ fn listen_local() -> ListenConfig {
         forward_port: None,
     }
 }
+
+/// A loopback port nothing listens on: bind an ephemeral listener, read its port, drop it.
+fn closed_loopback_port() -> u16 {
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind a throwaway listener");
+    let port = listener.local_addr().expect("throwaway address").port();
+    drop(listener);
+    port
+}
+
+/// Bounded attempts to observe a refused loopback dial.
+///
+/// A concurrent binder can take the freshly reserved port between [`closed_loopback_port`] and the
+/// dial, exactly like the reserved-port race `socket_activate_systemd_handover` re-runs on a fresh
+/// port. The world is re-attached on a new port instead of weakening the 502 assertion.
+const REFUSED_DIAL_ATTEMPTS: u32 = 5;
 
 // ---------------------------------------------------------------------------------------------
 // Real fd-3 activation handover
@@ -297,7 +311,7 @@ fn probe_one_http_listener() {
     );
     assert_would_block(&listeners.http_listeners[0], "HTTP ingress listener");
 
-    let registry = empty_registry(&state);
+    let registry = stub_registry(Arc::new(StubWorldEngine::new()));
     let ingress =
         HttpIngress::bind(&state, listeners, registry).expect("bind the adopted listener + socket");
     fs::write(state.join("probe.ready"), b"ready\n").expect("write the readiness marker");
@@ -450,7 +464,7 @@ fn probe_systemd_socket_activate() {
         "systemd-activated HTTP ingress listener",
     );
 
-    let registry = empty_registry(&state);
+    let registry = stub_registry(Arc::new(StubWorldEngine::new()));
     let ingress =
         HttpIngress::bind(&state, listeners, registry).expect("bind the adopted listener + socket");
     fs::write(state.join("probe.ready"), b"ready\n").expect("write the readiness marker");
@@ -568,7 +582,7 @@ fn fail_closed_no_listener_at_all() {
 #[test]
 fn registry_mints_one_origin_per_world() {
     let state = cached_test_dir("registry-origin");
-    let registry = empty_registry(&state);
+    let registry = stub_registry(Arc::new(StubWorldEngine::new()));
     let project = acme();
 
     let canonical = LocalHostRoute::new(project.clone(), WorldTarget::Canonical, None, &[])
@@ -620,61 +634,195 @@ fn registry_mints_one_origin_per_world() {
     let _ = fs::remove_dir_all(&state);
 }
 
-/// One in-tree `/1.0` Incus protocol harness: enough for `clone_world` and `destroy_world`.
-struct FakeIncus {
-    socket: PathBuf,
-    deletes: Arc<AtomicUsize>,
+/// Registry-level [`WorldEngine`] double for the `slipfork-edge` suites.
+///
+/// The registry, ingress, proxy, forward, and share paths under test are real; only the engine they
+/// are injected with is a double (`ARCHITECTURE.md` §1 test-scaffolding rule). It models world
+/// handles, their lifecycle, the snapshot set a clone may come from, and an entry command that runs
+/// the argv directly (a stub world has no namespaces to enter), and it dials a real loopback
+/// `TcpStream`. It passes the shared
+/// [`assert_world_engine_conformance`](slipfork_engine::conformance::assert_world_engine_conformance)
+/// matrix; the service capabilities it never exercises are typed `Unsupported` naming the engine.
+struct StubWorldEngine {
+    live: Mutex<Vec<WorldHandle>>,
+    frozen: Mutex<Vec<WorldHandle>>,
+    snapshots: Mutex<Vec<SnapshotId>>,
+    destroyed: AtomicUsize,
+    next_seq: AtomicU64,
 }
 
-impl FakeIncus {
-    fn start(state: &Path) -> Self {
-        let socket = state.join("fake-incusd.sock");
-        let listener = UnixListener::bind(&socket).expect("bind the fake incusd socket");
-        let deletes = Arc::new(AtomicUsize::new(0));
-        let counter = Arc::clone(&deletes);
-        thread::spawn(move || {
-            for stream in listener.incoming() {
-                let Ok(mut stream) = stream else { continue };
-                let counter = Arc::clone(&counter);
-                thread::spawn(move || {
-                    let mut head = Vec::new();
-                    let mut chunk = [0_u8; 4096];
-                    loop {
-                        match stream.read(&mut chunk) {
-                            Ok(0) | Err(_) => return,
-                            Ok(read) => {
-                                head.extend_from_slice(&chunk[..read]);
-                                if head.windows(4).any(|window| window == b"\r\n\r\n") {
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                    if head.starts_with(b"DELETE ") {
-                        counter.fetch_add(1, Ordering::SeqCst);
-                    }
-                    let body =
-                        r#"{"type":"sync","status":"Success","status_code":200,"metadata":{}}"#;
-                    let response = format!(
-                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                        body.len()
-                    );
-                    let _ = stream.write_all(response.as_bytes());
-                    let _ = stream.shutdown(Shutdown::Both);
-                });
-            }
-        });
-        Self { socket, deletes }
+impl StubWorldEngine {
+    fn new() -> Self {
+        Self {
+            live: Mutex::new(Vec::new()),
+            frozen: Mutex::new(Vec::new()),
+            snapshots: Mutex::new(Vec::new()),
+            destroyed: AtomicUsize::new(0),
+            next_seq: AtomicU64::new(0),
+        }
     }
 
-    fn engine(&self) -> Arc<dyn WorldEngine> {
-        let (uid, gid) = current_uid_gid();
-        Arc::new(IncusEngine::new(&self.socket, "default", "base", uid, gid))
+    /// Worlds destroyed through [`WorldEngine::destroy_world`] so far.
+    fn destroyed(&self) -> usize {
+        self.destroyed.load(Ordering::SeqCst)
+    }
+
+    /// Record `id` as a snapshot this engine can clone from (idempotent).
+    fn record_snapshot(&self, id: &SnapshotId) {
+        let mut snapshots = self.snapshots.lock().expect("stub snapshots");
+        if !snapshots.contains(id) {
+            snapshots.push(id.clone());
+        }
+    }
+
+    /// Whether `id` is a snapshot this engine can clone from.
+    fn has_snapshot(&self, id: &SnapshotId) -> bool {
+        self.snapshots.lock().expect("stub snapshots").contains(id)
+    }
+
+    fn live_world(&self, world: &WorldHandle) -> Result<(), EngineError> {
+        let live = self.live.lock().expect("stub live worlds");
+        if live.contains(world) {
+            Ok(())
+        } else {
+            Err(EngineError::WorldGone {
+                world: format!("{world:?}"),
+            })
+        }
+    }
+
+    fn unsupported<T>(&self, capability: &'static str) -> Result<T, EngineError> {
+        Err(EngineError::Unsupported {
+            engine: self.name(),
+            capability,
+        })
     }
 }
 
-/// `IncusEngine` never inspects the rootfs in this protocol harness; only the provenance value is
-/// required by the `WorldSpec` contract.
+impl WorldEngine for StubWorldEngine {
+    fn name(&self) -> &'static str {
+        "stub"
+    }
+
+    fn create_snapshot(&self, _source_dir: &Path, id: &SnapshotId) -> Result<(), EngineError> {
+        id.validate()?;
+        self.record_snapshot(id);
+        Ok(())
+    }
+
+    fn freeze_world(&self, world: &WorldHandle, id: &SnapshotId) -> Result<(), EngineError> {
+        self.live_world(world)?;
+        id.validate()?;
+        let mut frozen = self.frozen.lock().expect("stub frozen worlds");
+        if frozen.contains(world) {
+            return Err(EngineError::WorldNotFreezable {
+                world: format!("{world:?}"),
+            });
+        }
+        frozen.push(world.clone());
+        drop(frozen);
+        self.record_snapshot(id);
+        Ok(())
+    }
+
+    fn clone_world(&self, spec: &WorldSpec) -> Result<WorldHandle, EngineError> {
+        spec.validate()?;
+        if !self.has_snapshot(&spec.snapshot) {
+            return Err(EngineError::SnapshotNotFound(spec.snapshot.0.clone()));
+        }
+        let seq = self.next_seq.fetch_add(1, Ordering::SeqCst) + 1;
+        let world = self.mint_world_handle(seq);
+        self.live
+            .lock()
+            .expect("stub live worlds")
+            .push(world.clone());
+        Ok(world)
+    }
+
+    fn spawn_service(
+        &self,
+        _world: &WorldHandle,
+        _spec: &ServiceSpec,
+    ) -> Result<ServiceHandle, EngineError> {
+        self.unsupported("spawn_service")
+    }
+
+    fn stop_service(&self, _service: &ServiceHandle) -> Result<(), EngineError> {
+        self.unsupported("stop_service")
+    }
+
+    fn service_logs(&self, _world: &WorldHandle, _id: &str) -> Result<ServiceLogs, EngineError> {
+        self.unsupported("service_logs")
+    }
+
+    fn exec_in_service(
+        &self,
+        _service: &ServiceHandle,
+        _argv: &[String],
+        _overlay_env: &ExecEnv,
+        _on_output: &mut dyn FnMut(StreamChunk),
+    ) -> Result<ExecOutput, EngineError> {
+        self.unsupported("exec_in_service")
+    }
+
+    fn service_entry_command(
+        &self,
+        _service: &ServiceHandle,
+    ) -> Result<WorldEntryCommand, EngineError> {
+        self.unsupported("service_entry_command")
+    }
+
+    fn exec_in_world(
+        &self,
+        _world: &WorldHandle,
+        _argv: &[String],
+        _cwd: &Path,
+        _overlay_env: &ExecEnv,
+        _on_output: &mut dyn FnMut(StreamChunk),
+    ) -> Result<ExecOutput, EngineError> {
+        self.unsupported("exec_in_world")
+    }
+
+    fn entry_command(
+        &self,
+        world: &WorldHandle,
+        cwd: &Path,
+    ) -> Result<WorldEntryCommand, EngineError> {
+        self.live_world(world)?;
+        // A stub world has no namespaces to enter, so entering it runs the argv directly.
+        Ok(WorldEntryCommand {
+            program: PathBuf::from("env"),
+            args_prefix: vec!["--".to_owned()],
+            cwd: cwd.to_path_buf(),
+        })
+    }
+
+    fn dial_world_tcp(&self, world: &WorldHandle, port: u16) -> Result<TcpStream, EngineError> {
+        self.live_world(world)?;
+        TcpStream::connect((Ipv4Addr::LOCALHOST, port)).map_err(|err| EngineError::DialFailed {
+            world: format!("{world:?}"),
+            port,
+            errno: err.raw_os_error().unwrap_or(0),
+        })
+    }
+
+    fn destroy_world(&self, world: WorldHandle) -> Result<(), EngineError> {
+        let mut live = self.live.lock().expect("stub live worlds");
+        let index = live
+            .iter()
+            .position(|candidate| candidate == &world)
+            .ok_or_else(|| EngineError::WorldGone {
+                world: format!("{world:?}"),
+            })?;
+        live.remove(index);
+        drop(live);
+        self.destroyed.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+}
+
+/// The stub never inspects the rootfs; only the provenance value is required by the `WorldSpec`
+/// contract.
 fn test_rootfs() -> WorldRootfs {
     WorldRootfs {
         digest: RootfsDigest::from_hex("e".repeat(64)).expect("valid digest"),
@@ -698,11 +846,19 @@ fn test_rootfs() -> WorldRootfs {
     }
 }
 
+/// The one snapshot every test world is cloned from; `clone_test_world` creates it first.
+fn base_snapshot() -> SnapshotId {
+    SnapshotId("base".to_owned())
+}
+
 fn clone_test_world(engine: &dyn WorldEngine, state: &Path, target: WorldTarget) -> WorldHandle {
+    engine
+        .create_snapshot(state, &base_snapshot())
+        .expect("record the base snapshot");
     let spec = WorldSpec {
         target,
         rootfs: test_rootfs(),
-        snapshot: SnapshotId("base".to_owned()),
+        snapshot: base_snapshot(),
         mounts: Vec::new(),
         base_env: ExecEnv::world_scoped(state.join("home")),
         local_ingress: None,
@@ -711,16 +867,37 @@ fn clone_test_world(engine: &dyn WorldEngine, state: &Path, target: WorldTarget)
 }
 
 #[test]
+fn clone_world_refuses_an_unrecorded_snapshot() {
+    let engine = StubWorldEngine::new();
+    let spec = WorldSpec {
+        target: WorldTarget::Canonical,
+        rootfs: test_rootfs(),
+        snapshot: SnapshotId("missing".to_owned()),
+        mounts: Vec::new(),
+        base_env: ExecEnv::world_scoped(PathBuf::from("/nonexistent/slipfork-edge-test/home")),
+        local_ingress: None,
+    };
+    let err = engine
+        .clone_world(&spec)
+        .expect_err("an unrecorded snapshot must fail closed");
+    assert!(
+        matches!(&err, EngineError::SnapshotNotFound(id) if id == "missing"),
+        "expected SnapshotNotFound, got {err:?}"
+    );
+}
+
+#[test]
+fn stub_world_engine_passes_the_shared_conformance_matrix() {
+    let state = cached_test_dir("stub-conformance");
+    assert_world_engine_conformance(&StubWorldEngine::new(), &state, &test_rootfs());
+    let _ = fs::remove_dir_all(&state);
+}
+
+#[test]
 fn registry_attach_rejects_duplicates_and_resolves_prefixes() {
     let state = cached_test_dir("registry-attach");
-    let harness = FakeIncus::start(&state);
-    let engine = harness.engine();
-    let registry = WorldRegistry::new(
-        Arc::clone(&engine),
-        Arc::new(UnavailableTunnelRegistrar::new()),
-        80,
-        None,
-    );
+    let engine = Arc::new(StubWorldEngine::new());
+    let registry = stub_registry(Arc::clone(&engine));
     let project = acme();
     let target = WorldTarget::UserFork("feat".to_owned());
     let routes = vec![
@@ -788,7 +965,7 @@ fn registry_attach_rejects_duplicates_and_resolves_prefixes() {
             .expect("release the attached world")
     );
     assert_eq!(
-        harness.deletes.load(Ordering::SeqCst),
+        engine.destroyed(),
         1,
         "release must destroy the in-process handle through the engine"
     );
@@ -808,14 +985,8 @@ fn registry_attach_rejects_duplicates_and_resolves_prefixes() {
 #[test]
 fn registry_rejects_invalid_ingress_tables() {
     let state = cached_test_dir("registry-invalid");
-    let harness = FakeIncus::start(&state);
-    let engine = harness.engine();
-    let registry = WorldRegistry::new(
-        Arc::clone(&engine),
-        Arc::new(UnavailableTunnelRegistrar::new()),
-        80,
-        None,
-    );
+    let engine = Arc::new(StubWorldEngine::new());
+    let registry = stub_registry(Arc::clone(&engine));
     let project = acme();
     let target = WorldTarget::Canonical;
     let handle = clone_test_world(engine.as_ref(), &state, target.clone());
@@ -924,17 +1095,12 @@ fn send_raw(port: u16, request: &[u8]) -> String {
 #[test]
 fn unix_ingress_sock_is_0600_and_serves_identical_404() {
     let state = cached_test_dir("unix-ingress");
-    let harness = FakeIncus::start(&state);
-    let engine = harness.engine();
-    let registry = Arc::new(WorldRegistry::new(
-        Arc::clone(&engine),
-        Arc::new(UnavailableTunnelRegistrar::new()),
-        80,
-        None,
-    ));
+    let engine = Arc::new(StubWorldEngine::new());
+    let registry = stub_registry(Arc::clone(&engine));
     let project = acme();
     let target = WorldTarget::Canonical;
     let handle = clone_test_world(engine.as_ref(), &state, target.clone());
+    let mut unroutable_port = closed_loopback_port();
     registry
         .attach_world(
             &project,
@@ -943,7 +1109,7 @@ fn unix_ingress_sock_is_0600_and_serves_identical_404() {
             handle,
             vec![IngressRoute {
                 prefix: "/api".to_owned(),
-                port: 3000,
+                port: unroutable_port,
             }],
         )
         .expect("attach the canonical world");
@@ -988,13 +1154,52 @@ fn unix_ingress_sock_is_0600_and_serves_identical_404() {
         "the 404 must name the world id, host, and path, got:\n{unmatched}"
     );
 
-    let unroutable_backend = tcp_request(port, "acme.localhost", "/api/users");
+    // A resolved world whose backend cannot be dialed is a 502. The route points at a freshly
+    // reserved loopback port, re-checked at dial time: if a concurrent binder took it in between,
+    // the world is re-attached on a new port a bounded number of times (the reserved-port race
+    // `socket_activate_systemd_handover` mirrors) rather than weakening the assertion.
+    let mut attempts = 0;
+    let unroutable_backend = loop {
+        attempts += 1;
+        let response = tcp_request(port, "acme.localhost", "/api/users");
+        if response.starts_with("HTTP/1.1 502 Bad Gateway") {
+            break response;
+        }
+        assert!(
+            attempts < REFUSED_DIAL_ATTEMPTS,
+            "a resolved world whose backend cannot be dialed must be a 502 on all \
+             {REFUSED_DIAL_ATTEMPTS} attempts: a concurrent binder kept taking the freshly reserved \
+             port; last response:\n{response}"
+        );
+        assert!(
+            registry
+                .release_world(&project, &target)
+                .expect("release the raced world"),
+            "the raced attempt's world must still be attached"
+        );
+        unroutable_port = closed_loopback_port();
+        let handle = clone_test_world(engine.as_ref(), &state, target.clone());
+        registry
+            .attach_world(
+                &project,
+                &target,
+                Vec::new(),
+                handle,
+                vec![IngressRoute {
+                    prefix: "/api".to_owned(),
+                    port: unroutable_port,
+                }],
+            )
+            .expect("re-attach the world on a fresh port");
+    };
     assert!(
         unroutable_backend.starts_with("HTTP/1.1 502 Bad Gateway"),
         "a resolved world whose backend cannot be dialed must be a 502, got:\n{unroutable_backend}"
     );
     assert!(
-        unroutable_backend.contains("world acme cannot reach its backend on port 3000"),
+        unroutable_backend.contains(&format!(
+            "world acme cannot reach its backend on port {unroutable_port}"
+        )),
         "the 502 must name the world id, host, and port, got:\n{unroutable_backend}"
     );
     let _ = fs::remove_dir_all(&state);
@@ -1005,8 +1210,12 @@ fn unix_ingress_sock_refuses_live_socket() {
     let state = cached_test_dir("unix-live");
     let live = UnixListener::bind(state.join("http-ingress.sock")).expect("bind a live socket");
     let listeners = bind_listen(&listen_local()).expect("bind --listen");
-    let err = HttpIngress::bind(&state, listeners, empty_registry(&state))
-        .expect_err("a live ingress socket must not be stolen");
+    let err = HttpIngress::bind(
+        &state,
+        listeners,
+        stub_registry(Arc::new(StubWorldEngine::new())),
+    )
+    .expect_err("a live ingress socket must not be stolen");
     match err {
         EdgeError::SocketInUse { path, .. } => {
             assert!(path.ends_with("http-ingress.sock"), "got '{path}'");
@@ -1031,8 +1240,12 @@ fn unix_ingress_sock_replaces_stale_file() {
     );
 
     let listeners = bind_listen(&listen_local()).expect("bind --listen");
-    let ingress = HttpIngress::bind(&state, listeners, empty_registry(&state))
-        .expect("a stale socket is replaced");
+    let ingress = HttpIngress::bind(
+        &state,
+        listeners,
+        stub_registry(Arc::new(StubWorldEngine::new())),
+    )
+    .expect("a stale socket is replaced");
     let mode = fs::metadata(ingress.unix_socket_path())
         .expect("replacement socket exists")
         .permissions()
@@ -1045,17 +1258,11 @@ fn unix_ingress_sock_replaces_stale_file() {
 #[test]
 fn routing_skeleton_rejects_unknown_methods_and_oversized_heads() {
     let state = cached_test_dir("ingress-refusals");
-    let harness = FakeIncus::start(&state);
-    let engine = dial_engine(&harness);
+    let engine = Arc::new(StubWorldEngine::new());
     let registrar = Arc::new(InMemoryTunnelRegistrar::new(
         "https://acme-abc.weaved.example",
     ));
-    let registry = Arc::new(WorldRegistry::new(
-        Arc::clone(&engine) as Arc<dyn WorldEngine>,
-        registrar,
-        80,
-        None,
-    ));
+    let registry = registry_over(Arc::clone(&engine), registrar, None);
     attach_pointing_at(
         &registry,
         &engine,
@@ -1167,119 +1374,6 @@ impl TunnelLease for InMemoryLease {
 impl Drop for InMemoryLease {
     fn drop(&mut self) {
         self.revoked.fetch_add(1, Ordering::SeqCst);
-    }
-}
-
-/// A `WorldEngine` that delegates everything to the in-tree Incus harness but dials real loopback
-/// TCP backends for `dial_world_tcp` (live `incusd` dialing stays gated on `H-004`).
-struct DialEngine {
-    inner: IncusEngine,
-}
-
-impl DialEngine {
-    fn new(harness: &FakeIncus) -> Self {
-        let (uid, gid) = current_uid_gid();
-        Self {
-            inner: IncusEngine::new(&harness.socket, "default", "base", uid, gid),
-        }
-    }
-}
-
-impl WorldEngine for DialEngine {
-    fn name(&self) -> &'static str {
-        self.inner.name()
-    }
-
-    fn create_snapshot(
-        &self,
-        source_dir: &Path,
-        id: &SnapshotId,
-        mode: slipfork_engine::SnapshotMode,
-    ) -> Result<(), EngineError> {
-        self.inner.create_snapshot(source_dir, id, mode)
-    }
-
-    fn freeze_world(
-        &self,
-        world: &WorldHandle,
-        id: &SnapshotId,
-        mode: slipfork_engine::SnapshotMode,
-    ) -> Result<(), EngineError> {
-        self.inner.freeze_world(world, id, mode)
-    }
-
-    fn clone_world(&self, spec: &WorldSpec) -> Result<WorldHandle, EngineError> {
-        self.inner.clone_world(spec)
-    }
-
-    fn spawn_service(
-        &self,
-        world: &WorldHandle,
-        spec: &slipfork_engine::ServiceSpec,
-    ) -> Result<slipfork_engine::ServiceHandle, EngineError> {
-        self.inner.spawn_service(world, spec)
-    }
-
-    fn stop_service(&self, service: &slipfork_engine::ServiceHandle) -> Result<(), EngineError> {
-        self.inner.stop_service(service)
-    }
-
-    fn service_logs(
-        &self,
-        world: &WorldHandle,
-        id: &str,
-    ) -> Result<slipfork_engine::ServiceLogs, EngineError> {
-        self.inner.service_logs(world, id)
-    }
-
-    fn exec_in_service(
-        &self,
-        service: &ServiceHandle,
-        argv: &[String],
-        overlay_env: &ExecEnv,
-        on_output: &mut dyn FnMut(StreamChunk),
-    ) -> Result<ExecOutput, EngineError> {
-        self.inner
-            .exec_in_service(service, argv, overlay_env, on_output)
-    }
-
-    fn service_entry_command(
-        &self,
-        service: &ServiceHandle,
-    ) -> Result<WorldEntryCommand, EngineError> {
-        self.inner.service_entry_command(service)
-    }
-
-    fn exec_in_world(
-        &self,
-        world: &WorldHandle,
-        argv: &[String],
-        cwd: &Path,
-        overlay_env: &ExecEnv,
-        on_output: &mut dyn FnMut(StreamChunk),
-    ) -> Result<slipfork_engine::ExecOutput, EngineError> {
-        self.inner
-            .exec_in_world(world, argv, cwd, overlay_env, on_output)
-    }
-
-    fn entry_command(
-        &self,
-        world: &WorldHandle,
-        cwd: &Path,
-    ) -> Result<WorldEntryCommand, EngineError> {
-        self.inner.entry_command(world, cwd)
-    }
-
-    fn dial_world_tcp(&self, world: &WorldHandle, port: u16) -> Result<TcpStream, EngineError> {
-        TcpStream::connect((Ipv4Addr::LOCALHOST, port)).map_err(|err| EngineError::DialFailed {
-            world: format!("{world:?}"),
-            port,
-            errno: err.raw_os_error().unwrap_or(0),
-        })
-    }
-
-    fn destroy_world(&self, world: WorldHandle) -> Result<(), EngineError> {
-        self.inner.destroy_world(world)
     }
 }
 
@@ -1413,14 +1507,10 @@ fn drain_body(stream: &mut TcpStream, already_read: &[u8], length: usize) -> usi
     received
 }
 
-fn dial_engine(harness: &FakeIncus) -> Arc<DialEngine> {
-    Arc::new(DialEngine::new(harness))
-}
-
 /// Attach a live world whose catch-all route points at `backend_port`.
 fn attach_pointing_at(
     registry: &WorldRegistry,
-    engine: &Arc<DialEngine>,
+    engine: &Arc<StubWorldEngine>,
     state: &Path,
     project: &ProjectSlug,
     target: &WorldTarget,
@@ -1462,29 +1552,15 @@ fn start_ingress_with_timeout(
     port
 }
 
-fn shared_registry(
-    engine: Arc<DialEngine>,
-    registrar: Arc<InMemoryTunnelRegistrar>,
-    forward_port: Option<u16>,
-) -> Arc<WorldRegistry> {
-    Arc::new(WorldRegistry::new(
-        engine as Arc<dyn WorldEngine>,
-        registrar,
-        80,
-        forward_port,
-    ))
-}
-
 #[test]
 fn shared_proxy_preserves_host_and_forwarded_headers() {
     let state = cached_test_dir("shared-proxy");
-    let harness = FakeIncus::start(&state);
-    let engine = dial_engine(&harness);
+    let engine = Arc::new(StubWorldEngine::new());
     let backend = spawn_backend(BackendMode::Head);
     let registrar = Arc::new(InMemoryTunnelRegistrar::new(
         "https://acme-abc.weaved.example",
     ));
-    let registry = shared_registry(Arc::clone(&engine), Arc::clone(&registrar), Some(7080));
+    let registry = registry_over(Arc::clone(&engine), registrar.clone(), Some(7080));
     let project = acme();
     attach_pointing_at(
         &registry,
@@ -1548,13 +1624,12 @@ fn shared_proxy_preserves_host_and_forwarded_headers() {
 fn shared_proxy_streams_body_larger_than_buffer() {
     const BODY: usize = 2 * 1024 * 1024;
     let state = cached_test_dir("shared-stream");
-    let harness = FakeIncus::start(&state);
-    let engine = dial_engine(&harness);
+    let engine = Arc::new(StubWorldEngine::new());
     let backend = spawn_backend(BackendMode::Stream);
     let registrar = Arc::new(InMemoryTunnelRegistrar::new(
         "https://acme-abc.weaved.example",
     ));
-    let registry = shared_registry(Arc::clone(&engine), registrar, Some(7080));
+    let registry = registry_over(Arc::clone(&engine), registrar, Some(7080));
     let project = acme();
     attach_pointing_at(
         &registry,
@@ -1619,13 +1694,12 @@ fn shared_proxy_streams_body_larger_than_buffer() {
 #[test]
 fn redirect_308_for_every_method_and_before_100_continue() {
     let state = cached_test_dir("redirect");
-    let harness = FakeIncus::start(&state);
-    let engine = dial_engine(&harness);
+    let engine = Arc::new(StubWorldEngine::new());
     let backend = spawn_backend(BackendMode::Head);
     let registrar = Arc::new(InMemoryTunnelRegistrar::new(
         "https://acme-abc.weaved.example",
     ));
-    let registry = shared_registry(Arc::clone(&engine), registrar, Some(7080));
+    let registry = registry_over(Arc::clone(&engine), registrar, Some(7080));
     let project = acme();
     attach_pointing_at(
         &registry,
@@ -1725,13 +1799,12 @@ fn redirect_308_for_every_method_and_before_100_continue() {
 #[test]
 fn upgrade_refused_421_on_shared_localhost() {
     let state = cached_test_dir("upgrade-refused");
-    let harness = FakeIncus::start(&state);
-    let engine = dial_engine(&harness);
+    let engine = Arc::new(StubWorldEngine::new());
     let backend = spawn_backend(BackendMode::Head);
     let registrar = Arc::new(InMemoryTunnelRegistrar::new(
         "https://acme-abc.weaved.example",
     ));
-    let registry = shared_registry(Arc::clone(&engine), registrar, Some(7080));
+    let registry = registry_over(Arc::clone(&engine), registrar, Some(7080));
     let project = acme();
     attach_pointing_at(
         &registry,
@@ -1771,13 +1844,12 @@ fn upgrade_refused_421_on_shared_localhost() {
 fn websocket_pipe_survives_fragmentation() {
     const PAYLOAD: usize = 4096;
     let state = cached_test_dir("websocket-pipe");
-    let harness = FakeIncus::start(&state);
-    let engine = dial_engine(&harness);
+    let engine = Arc::new(StubWorldEngine::new());
     let backend = spawn_backend(BackendMode::UpgradeEcho);
     let registrar = Arc::new(InMemoryTunnelRegistrar::new(
         "https://acme-abc.weaved.example",
     ));
-    let registry = shared_registry(Arc::clone(&engine), registrar, Some(7080));
+    let registry = registry_over(Arc::clone(&engine), registrar, Some(7080));
     let project = acme();
     attach_pointing_at(
         &registry,
@@ -1839,13 +1911,12 @@ fn websocket_pipe_survives_an_idle_gap_longer_than_the_relay_timeout() {
     const RELAY_TIMEOUT: Duration = Duration::from_millis(200);
     const IDLE_GAP: Duration = Duration::from_millis(500);
     let state = cached_test_dir("websocket-idle");
-    let harness = FakeIncus::start(&state);
-    let engine = dial_engine(&harness);
+    let engine = Arc::new(StubWorldEngine::new());
     let backend = spawn_backend(BackendMode::UpgradeEcho);
     let registrar = Arc::new(InMemoryTunnelRegistrar::new(
         "https://acme-abc.weaved.example",
     ));
-    let registry = shared_registry(Arc::clone(&engine), registrar, Some(7080));
+    let registry = registry_over(Arc::clone(&engine), registrar, Some(7080));
     let project = acme();
     attach_pointing_at(
         &registry,
@@ -1901,13 +1972,12 @@ fn websocket_pipe_survives_an_idle_gap_longer_than_the_relay_timeout() {
 #[test]
 fn share_world_fails_closed_without_forward_listener_or_registrar() {
     let state = cached_test_dir("share-fail-closed");
-    let harness = FakeIncus::start(&state);
-    let engine = dial_engine(&harness);
+    let engine = Arc::new(StubWorldEngine::new());
     let project = acme();
     let target = WorldTarget::Canonical;
     let backend = spawn_backend(BackendMode::Head);
 
-    let no_forward = shared_registry(
+    let no_forward = registry_over(
         Arc::clone(&engine),
         Arc::new(InMemoryTunnelRegistrar::new(
             "https://acme-abc.weaved.example",
@@ -1928,12 +1998,11 @@ fn share_world_fails_closed_without_forward_listener_or_registrar() {
         .expect_err("sharing without a forward listener must fail closed");
     assert!(matches!(err, EdgeError::NoForwardListener), "got {err:?}");
 
-    let unavailable = Arc::new(WorldRegistry::new(
-        Arc::clone(&engine) as Arc<dyn WorldEngine>,
+    let unavailable = registry_over(
+        Arc::clone(&engine),
         Arc::new(UnavailableTunnelRegistrar::new()),
-        80,
         Some(7080),
-    ));
+    );
     attach_pointing_at(
         &unavailable,
         &engine,
@@ -1959,7 +2028,7 @@ fn share_world_fails_closed_without_forward_listener_or_registrar() {
     );
 
     // A lease URL inside `*.localhost` would redirect-loop back into this ingress (`H-008`).
-    let looping = shared_registry(
+    let looping = registry_over(
         Arc::clone(&engine),
         Arc::new(InMemoryTunnelRegistrar::new("http://acme.localhost")),
         Some(7080),
@@ -1986,8 +2055,7 @@ fn share_world_fails_closed_without_forward_listener_or_registrar() {
 #[test]
 fn unshare_world_is_idempotent_on_local_world() {
     let state = cached_test_dir("unshare-idempotent");
-    let harness = FakeIncus::start(&state);
-    let engine = dial_engine(&harness);
+    let engine = Arc::new(StubWorldEngine::new());
     let registrar = Arc::new(InMemoryTunnelRegistrar::new(
         "https://acme-abc.weaved.example",
     ));
@@ -2071,12 +2139,11 @@ fn unshare_world_is_idempotent_on_local_world() {
 #[test]
 fn release_world_clears_the_share_and_revokes_the_lease() {
     let state = cached_test_dir("release-share");
-    let harness = FakeIncus::start(&state);
-    let engine = dial_engine(&harness);
+    let engine = Arc::new(StubWorldEngine::new());
     let registrar = Arc::new(InMemoryTunnelRegistrar::new(
         "https://acme-abc.weaved.example",
     ));
-    let registry = shared_registry(Arc::clone(&engine), Arc::clone(&registrar), Some(7080));
+    let registry = registry_over(Arc::clone(&engine), registrar.clone(), Some(7080));
     let project = acme();
     let target = WorldTarget::Canonical;
     let backend = spawn_backend(BackendMode::Head);
@@ -2380,17 +2447,12 @@ fn spawn_tcp_echo() -> u16 {
     port
 }
 
-fn ready_registry(state: &Path, harness: &FakeIncus) -> (Arc<WorldRegistry>, Arc<DialEngine>) {
-    let engine = dial_engine(harness);
+fn ready_registry(state: &Path) -> Arc<WorldRegistry> {
+    let engine = Arc::new(StubWorldEngine::new());
     let registrar = Arc::new(InMemoryTunnelRegistrar::new(
         "https://acme-abc.weaved.example",
     ));
-    let registry = Arc::new(WorldRegistry::new(
-        Arc::clone(&engine) as Arc<dyn WorldEngine>,
-        registrar,
-        80,
-        Some(7080),
-    ));
+    let registry = registry_over(Arc::clone(&engine), registrar, Some(7080));
     let backend = spawn_backend(BackendMode::Head);
     attach_pointing_at(
         &registry,
@@ -2401,14 +2463,13 @@ fn ready_registry(state: &Path, harness: &FakeIncus) -> (Arc<WorldRegistry>, Arc
         Vec::new(),
         backend.port,
     );
-    (registry, engine)
+    registry
 }
 
 #[test]
 fn daemon_control_round_trip_and_frame_cap() {
     let state = cached_test_dir("control-round-trip");
-    let harness = FakeIncus::start(&state);
-    let (registry, _engine) = ready_registry(&state, &harness);
+    let registry = ready_registry(&state);
     let control = Arc::new(TestControl::new(registry, spawn_tcp_echo()));
     let socket = start_control_server(&state, Arc::clone(&control));
     let client = DaemonControlClient::bind(&state);
@@ -2601,8 +2662,7 @@ fn daemon_control_round_trip_and_frame_cap() {
 #[test]
 fn daemon_control_forward_lifetime_closes_host_listener() {
     let state = cached_test_dir("control-forward");
-    let harness = FakeIncus::start(&state);
-    let (registry, _engine) = ready_registry(&state, &harness);
+    let registry = ready_registry(&state);
     let echo = spawn_tcp_echo();
     let control = Arc::new(TestControl::new(registry, echo));
     let _socket = start_control_server(&state, Arc::clone(&control));
@@ -2665,15 +2725,9 @@ fn daemon_control_forward_lifetime_closes_host_listener() {
 #[test]
 fn daemon_control_preserves_typed_errors() {
     let state = cached_test_dir("control-errors");
-    let harness = FakeIncus::start(&state);
-    let engine = dial_engine(&harness);
+    let engine = Arc::new(StubWorldEngine::new());
     // No forward listener: `share` fails closed and the typed kind crosses the socket.
-    let registry = Arc::new(WorldRegistry::new(
-        Arc::clone(&engine) as Arc<dyn WorldEngine>,
-        Arc::new(UnavailableTunnelRegistrar::new()),
-        80,
-        None,
-    ));
+    let registry = stub_registry(Arc::clone(&engine));
     attach_pointing_at(
         &registry,
         &engine,
