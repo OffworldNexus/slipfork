@@ -1017,3 +1017,17 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-17T17:41 [M3.28.16] (planner) created (task) Guard rail: production composition roots may not wire stub adapters (tools/check_stub_adapters.py)
 - 2026-11-17T17:47 [M5] (strategist) created (milestone) Editor & IDE Integration (VS Code, JetBrains, Zed) (0.5.0)
 - 2026-11-17T17:47 [M5.1] (strategist) created (epic) Shared editor control substrate (DaemonControl typed editor RPC + slipfork-mcp) & per-editor DX intent
+- 2026-11-17T17:53 [M3.28.1] (lead) status active -> review
+- 2026-11-17T17:53 [M3.28.3] (lead) edited fields
+- 2026-11-17T17:53 [M3.28.6] (lead) edited fields
+- 2026-11-17T17:53 [M3.28.9] (lead) edited fields
+- 2026-11-17T17:53 [M3.28.11] (lead) edited fields
+- 2026-11-17T17:53 [M3.28.8] (lead) edited fields
+- 2026-11-17T17:56 [M3.28.9] (lead) edited fields
+- 2026-11-17T17:56 [M3.28.1] (lead) round 2 (quad gate): consolidated architect fix pass — one command table + one --json schema home (dx normative, target-dx links), one wire model (IngressInfo/W
+- 2026-11-17T18:14 [M3.28.6] (lead) edited fields
+- 2026-11-17T18:22 [M3.28.15] (lead) edited fields
+- 2026-11-17T18:22 [M3.28.1] (lead) round-2 confirmation: PASS (acceptance green, 10/10 blocker checks closed). Logged MINORs: ARCHITECTURE.md:560 stale WorldOrigin::Local comment -> fixed in a fo
+- 2026-11-17T18:22 [M3.28.15] (lead) added docs/decisions/ADR-0005-*.md to paths: the accepted ADR still describes WorldOrigin::{Local,Shared}/slipfork share/TunnelRegistrar in the present tense an
+- 2026-11-17T18:30 [M3.28.1] (lead) status review -> done
+- 2026-11-17T18:30 [M3.28.1] (lead) pre-commit gates green: plan.py validate, guard.py, critical_guard.py (no protected test touched), make check rc=0 (incl. docs-check + check_docs_honesty)

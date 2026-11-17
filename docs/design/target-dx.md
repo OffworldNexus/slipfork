@@ -1,53 +1,65 @@
 # Slipfork M2–M3 Target Developer Experience Specification
 
-- **Status:** Accepted Target DX Specification (`ADR-0001`..`ADR-0010`, `H-001`..`H-011`)
-- **Visibility:** Internal design spec (`exclude_docs` in `zensical.toml`). Per **Core Rule #4 (Zero Vaporware in Published Docs)**, sections here promote into published `docs/` and `README.md` **only** as each binary capability ships and passes conformance tests (`M2.19`, `M3.18`).
+- **Status:** Accepted Target DX Specification (`ADR-0001`..`ADR-0011`, `H-001`..`H-011`; `0.1.0` UX transcript of record in `docs/design/dx-0.1.0-ux.md`)
+- **Visibility:** Internal design spec (`exclude_docs` in `zensical.toml`). Per **Core Rule #4 (Zero Vaporware in Published Docs)**, sections here promote into published `docs/` and `README.md` **only** as each binary capability ships and passes conformance tests (`M2.19`, `M3.18`, `M3.28.14`).
 
 ---
 
-## 1. World Lifecycle DX (`slipforkd`, Zero-Setup Auto-Spawn, `OSPP v1`, Btrfs Preflight & Rescue Tooling)
+## 1. World Lifecycle DX (`slipforkd`, `:80` `daemon install`, Bare `status`, `restart`, `OSPP v1`, Btrfs Preflight & Rescue Tooling)
 
-### 1.1 Zero-Setup Auto-Spawn vs Optional Port-80 Systemd Socket Activation
+### 1.1 Port-80 System Socket Activation (`slipfork daemon install`) vs Rootless Auto-Spawn
 
-Installing the workspace places `slipfork`, `slipforkd`, and `git-remote-slipfork` onto `PATH` (source install today):
+Installing the workspace places `slipfork`, `slipforkd`, `slipfork-world-init`, and `git-remote-slipfork` onto `PATH` (source install today):
 
 ```console
-$ cargo install --git https://github.com/OffworldNexus/slipfork slipfork
+$ cargo install --git https://github.com/OffworldNexus/slipfork slipfork slipfork-engine
 
-# Zero-setup default (containers, CI, laptops without root):
-# Running `slipfork up` or `slipfork fork` automatically starts
-# `slipforkd --listen 127.0.0.1:0 --state-dir <state_dir> --runtime-dir <runtime_dir>`
-# on <runtime_dir>/daemon.sock (0600) and prints http://acme.localhost:<port>!
+# Recommended workstation / VM setup (PID 1 systemd binds 127.0.0.1:80 + [::1]:80 + 127.0.0.1:7080,
+# loads /etc/apparmor.d/slipfork userns profile, and starts slipforkd as User=<account>; ADR-0011):
+$ sudo slipfork daemon install --user <account>
 
-# Optional workstation port-80 setup (PID 1 systemd binds :80 + :7080; slipforkd runs as User=<developer-user>):
-$ slipfork daemon unit --only socket  | sudo tee /etc/systemd/system/slipforkd.socket > /dev/null
-$ slipfork daemon unit --only service | sudo tee /etc/systemd/system/slipforkd.service > /dev/null
-# Ubuntu 24.04 LTS (kernel.apparmor_restrict_unprivileged_userns=1): the 4-line `userns,` profile (`M3.15`)
-$ slipfork daemon unit --only apparmor | sudo tee /etc/apparmor.d/slipfork > /dev/null
-$ sudo systemctl daemon-reload && sudo systemctl enable --now slipforkd.socket
+# Zero-setup rootless fallback (containers & CI without root/systemd):
+# Running `slipfork`, `slipfork up`, or `slipfork fork` automatically starts
+# `slipforkd --listen 127.0.0.1:0 --state-dir <state_dir> --runtime-dir <state_dir>/run`
+# on <state_dir>/run/daemon.sock (0600), prints http://acme.localhost:<port>, and emits one
+# actionable stderr line naming `slipfork daemon install`!
 ```
 
-`slipforkd` runs **unprivileged as `User=<developer-user>`** (resolved once from the invoking account via `id -un` into non-template `slipforkd.service`) with an empty `CapabilityBoundingSet=` and acts as the single local authority (`H-010` #1): it holds the persistent `OSPP v1` WebSocket session, resolves `snow.yml` secrets/resources, supervises Btrfs subvolume worlds, and routes `.localhost` (via `snow.yml`'s `ingresses` longest-prefix table) + shared tunnel traffic. **OSPP is never required to boot local worlds:** offline laptops work out of the box from `snow.yml` + `~/.local/share/slipfork/vaults/<project>.json` (`0600`; `slipfork.toml` is optional).
+`slipforkd` runs **unprivileged as `User=<developer-user>`** (resolved via `crates/slipfork/src/user.rs` into non-template `slipforkd.service`, with `M3.28.6` adding `Requires=slipforkd.socket`, `After=slipforkd.socket`, and `WantedBy=multi-user.target` alongside its empty `CapabilityBoundingSet=`, `ADR-0011` §1) and acts as the single local authority (`H-010` #1): it binds `<state_dir>/run/daemon.sock` (`0600`; `$XDG_RUNTIME_DIR/slipfork` is deleted from `Layout::resolve` via `Layout::for_account` so login shells and `slipforkd.service` never disagree, `ADR-0011` §2), holds the persistent `OSPP v1` WebSocket session, resolves `snow.yml` secrets/resources, supervises Btrfs subvolume worlds, and routes `.localhost` traffic via `snow.yml`'s `ingresses` longest-prefix table (`0.1.0` has one origin type, `struct WorldOrigin(LocalOrigin)`; `M3.28.15`). **OSPP is never required to boot local worlds:** offline laptops work out of the box from `snow.yml` + `~/.local/share/slipfork/vaults/<project>.json` (`0600`; `slipfork.toml` is optional).
 
-### 1.2 `slipfork up`, Diagnostic `[resources]` Lines & Seed Dump Flags (`--no-dump | --refresh-dump`)
+### 1.2 `slipfork up` vs `slipfork restart`, Compact `lineage` Line, Verbose `-v` & Seed Dump Flags (`--no-dump | --refresh-dump`)
 
-`up` passes the caller's explicit `cwd` over `<runtime_dir>/daemon.sock` to boot the world selected by `--world` or by `cwd`'s nearest ancestor (§1.6 is the single selection rule), waits for declared component `internal_ports` readiness — `BtrfsEngine::spawn_service`'s injected `ReadinessProbe` (`ADR-0002` §2), never a daemon-side poller — before printing `[origin]`, and is idempotent when re-run (`down` stops services immediately without waiting for readiness):
+**One boot pipeline, two verbs:** `up` passes the caller's explicit `cwd` over `<state_dir>/run/daemon.sock` to run the world boot pipeline for an unbooted, `stopped`, or `failed` world selected by `--world` or `cwd` (§1.6) — waiting for `BtrfsEngine::spawn_service`'s injected `ReadinessProbe` (`ADR-0002` §2), printing the actionable world block plus **one** compact `lineage` line (`WorldLineage`), and returning idempotently (`changed: false`, touching nothing) when already `running`; **`slipfork restart`** (`up --watch` and `restart --watch` do not exist in `0.1.0`) stops components and `crun` backing services in place while keeping the worktree and CoW state subvolume, then runs that **exact same** boot pipeline (`changed: true`):
 
 ```console
-$ slipfork up                           # Paired laptop (:80 socket activation; :<port> when auto-spawned)
-[resources] media: remote -> remote (configured)
-[resources] main: prefer_remote -> remote (mode_default)
-[ready]     api (internal :8000 in world netns)
-[hook]      api:pre-deploy: sh -eu -c uv run python manage.py migrate
-[origin]    http://acme.localhost
+$ slipfork up                           # :80 socket activation -> port-less origin
+world     acme (running, changed)
+app       http://acme.localhost
+worktree  /repo
+db        slipfork db
+logs      slipfork logs
+next      slipfork open  |  slipfork restart
+lineage   rootfs a1b2c3d4e5f6 cached · postgres:18 hit · seed 9f8e7d6c5b4a rebuilt 2.1s · base 4570132bffb8 sealed 10ms
 
+$ slipfork restart                      # Re-reads snow.yml + worktree edits in place
+[restarted] pg_clusters.main, api
+world     acme (running, changed)
+app       http://acme.localhost
+worktree  /repo
+db        slipfork db
+logs      slipfork logs
+next      slipfork open  |  slipfork logs
+lineage   rootfs a1b2c3d4e5f6 cached · postgres:18 hit · seed 9f8e7d6c5b4a cached · base 4570132bffb8 -
+
+$ slipfork -v up                        # -v / --verbose adds per-node [lineage] + [resources] rows
 $ slipfork up --no-dump                 # Skip seed dump and run clean initdb -> pre-deploy migrations
 $ slipfork up --refresh-dump            # Require live OSPP dump check (mutually exclusive with --no-dump; fails closed if offline)
 $ slipfork up --resources local         # Force hermetic world-local S3 + clean initdb (safe for agent runs)
 ```
 
-- **One `[resources]` line per decision, bare ids:** each row is `[resources] <id>: <strategy> -> <resolved> (<reason>)` with the `snow.yml` resource id verbatim (`media`, `main`) and the `snake_case` labels of `ResourceStrategy` / resolved target / reason (`local|prefer_remote|remote`, `local|remote`, `configured|mode_default|not_offered|no_dump|refreshed_dump`).
-- **Offline / Unpaired Transparency:** When unpaired or offline under default `prefer_remote`, `ResourcePlan::resolve` never degrades silently: it returns the typed `{strategy, resolved, reason}` triple (`prefer_remote`, `local`, `not_offered`), which `slipforkd` streams as a boot event and the CLI renders as `[resources] main: prefer_remote -> local (not_offered)` (and in `--json`).
+- **Verbose-only `[resources]` lines (`-v` / `--verbose` or `--json`, `M3.28.11`):** healthy default boots print zero internal `[resources]` jargon; with `-v` / `--verbose`, each row prints `[resources] <id>: <strategy> -> <resolved> (<reason>)` with the `snow.yml` resource id verbatim (`media`, `main`) and the `snake_case` labels of `ResourceStrategy` / resolved target / reason (`local|prefer_remote|remote`, `local|remote`, `configured|mode_default|not_offered|no_dump|refreshed_dump`).
+- **Offline / Unpaired Transparency:** When unpaired or offline under default `prefer_remote`, `ResourcePlan::resolve` never degrades silently: it returns the typed `{strategy, resolved, reason}` triple (`prefer_remote`, `local`, `not_offered`), carried in `--json` `resources` and rendered under `-v` / `--verbose`.
+- **Loud One-Line Notice When Ingress Is Not `:80` (`ADR-0011` §3):** See `docs/design/dx-0.1.0-ux.md` §2 rule 4 (the single normative owner across `status`, `up`, `fork`, `restart`, `list`, and `open`).
 - **Port-Aware Single Origin & In-Netns Loopback Bridge (`H-010` #2, `H-011` #4):** `WorldOrigin::local(&route, ingress_port)` renders `http://acme.localhost` on `:80` and `http://acme.localhost:<port>` under auto-spawned `--listen`, while the world's PID 1 `slipfork-world-init` (spawned by `BtrfsEngine`, `M3.13`, `ADR-0010` §6) binds an **in-netns loopback TCP bridge** on `127.0.0.1:<ingress_port>` inside each world and splices accepted streams to `slipforkd`'s `0600` `<state_dir>/http-ingress.sock`, so `$BASE_URL` resolves identically from host browsers and inside `slipfork exec` (and, in `M3.2` Phase 2 target state, `slipfork test`) (`snow.yml` `ingresses` prefixes route `/api`, `/`, etc. to their target component ports). **Never connect to host `127.0.0.1:5432` or `:8000`**; use the printed `origin`, `slipfork exec`, or `slipfork forward --json`.
 - **World Rootfs & `--host-caches` (design of record: `ADR-0009` §1–§3; operational detail in `docs/design/world-base-image.md`):** every world's `L0` rootfs is built once from the project's own `snow.yml` `images:` `Dockerfile` stage, selected by `[world]` in `slipfork.toml` (`ADR-0009` §1: `world.image` / `world.stage`), seeded into the transient `<state_dir>/worlds/seed-<l0_sha12>` subvolume and sealed as the read-only base subvolume `<state_dir>/snapshots/<project>-base-<l0_sha12>`, whose `<subvol>/rootfs` tree is mounted read-only at `/`; every fork and test slot is then one `BTRFS_IOC_SNAP_CREATE_V2` clone of that base (`ADR-0010` §2–§3). `postgres:<v>`, `redis:<v>`, and SeaweedFS run as daemonless `crun` containers sharing the world's `127.0.0.1`. `--host-caches` adds the host toolchain caches **read-only** only when the ELF/libc ABI probe matches, failing closed with the measured mismatch otherwise — it is never a `slipfork.toml` key.
 
@@ -65,12 +77,13 @@ error: hook 'api:pre-deploy' exited with code 1 in world 'acme:billing'
 
 Rescue commands (world 'acme:billing' kept alive for inspection):
   slipfork hook run api:pre-deploy --world billing          # add --no-tty in non-interactive shells
+  slipfork restart --world billing                          # re-run full boot after editing
   slipfork logs --world billing api:pre-deploy
   slipfork shell --world billing                            # or: slipfork exec --world billing -- <cmd>
 ```
 
 - **Retained log paths join the world id (not the bare fork):** `slipforkd` writes `<state_dir>/<project>/worlds/<world_id>/logs/<component>.<phase>.log` — the shipped `Layout::world_logs_dir` join, a daemon-owned plain directory outside the world's CoW subvolume (`ADR-0010` §2), so a failed world's logs outlive the world they came from. Nothing reaps them automatically in Phase 1 (`prune` releases world records only), so delete the directory to reclaim space. The `log:` line above is the real path on disk and stays unambiguous when a project has both the `<project>` and `<project>:<fork>` worlds.
-- **Direct CLI World Entry (`H-010` #1):** `slipforkd` is the **sole owner** of `snow.yml` (`modes.local`) environment resolution (`@slipfork/opencode` only routes `shell` calls to `slipfork exec --cwd <cwd>`, `ADR-0004`). For `shell`, interactive `hook run` (`pdb`), and `exec`, the daemon returns the world's entry command — `nsenter --target <init_pid> --user --preserve-credentials --mount --net --ipc --pid` into the world's `slipfork-world-init` PID 1 (`ADR-0010` §6) — plus the resolved environment; the thin `slipfork` CLI then enters the world inheriting its native terminal `stdin`/`stdout`/`stderr`, so that CLI ↔ `slipforkd` boundary carries **zero file descriptors** (the in-daemon `netns.sock` bridge is a separate concern, `ADR-0010` §2). `db` / `redis` enter their service container instead (§1.4). `shell` and default `hook run` require a TTY, failing closed naming `hook run --no-tty` or `slipfork exec`.
+- **Direct CLI World Entry (`H-010` #1, `M3.28.11`):** `slipforkd` is the **sole owner** of `snow.yml` (`modes.local`) environment resolution (`@slipfork/opencode` only routes `shell` calls to `slipfork exec --cwd <cwd>`, `ADR-0004`). For `shell`, interactive `hook run` (`pdb`), and `exec`, the daemon returns the world's entry command — `nsenter --target <init_pid> --user --preserve-credentials --mount --net --ipc --pid --wd=...` into the world's `slipfork-world-init` PID 1 (`ADR-0010` §6; `WorldEntryCommand.cwd = "/"` so `sh: 0: getcwd() failed` never appears) — plus the resolved environment; the thin `slipfork` CLI then enters the world inheriting its native terminal `stdin`/`stdout`/`stderr`, so that CLI ↔ `slipforkd` boundary carries **zero file descriptors** (the in-daemon `netns.sock` bridge is a separate concern, `ADR-0010` §2). Interactive `slipfork shell` prints one orientation line (`world rootfs is the app stage (no host tools; use slipfork ps / logs / open)`), and `slipfork logs` prefixes multi-source output with `<source>: `. `db` / `redis` enter their service container instead (§1.4). `shell` and default `hook run` require a TTY, failing closed naming `hook run --no-tty` or `slipfork exec`.
 
 ### 1.4 Service Clients (`db`, `redis`, `forward`), Secrets, VCS (`git` + `jj`) & `OSPP v1` Pairing
 
@@ -90,7 +103,9 @@ $ printf '%s\n' "$PAIR_URL_WITH_FRAGMENT" | slipfork auth login -            # S
 
 - **Service clients enter the service container, never the app rootfs (`ADR-0009` §2–§3 — the single `crun exec` rule that the `db` / `redis` examples and table rows point at):** `slipforkd` answers `exec_target` with `WorldEngine::service_entry_command`, i.e. a `crun exec` entry into the world's running `postgres:<v>` / `redis:<v>` container, so `psql` and `redis-cli` come from the container's own rootfs and the project `Dockerfile` never needs DB client packages (and dump/restore versions can never skew). A stopped or absent backing service fails closed naming the service id (`ServiceNotRunning`) instead of silently entering the world. `slipfork forward` is unchanged: `slipforkd` binds a host `127.0.0.1:0` listener and bridges it with `dial_world_tcp` to the in-world port.
 
-### 1.5 Normative `--json` Contracts, Lifecycle (`list`, `down`, `prune`) & `share`
+### 1.5 Lifecycle (`status`, `list`, `down`, `prune`) & `--json` Contract Pointer
+
+`docs/design/dx-0.1.0-ux.md` is the **single normative home** for all `0.1.0` interactive transcripts (§§1–9), the CLI `--json` projection and per-command schemas (§3 & §10), and the `0.1.0` CLI command table (§10).
 
 ```console
 $ slipfork list
@@ -102,46 +117,18 @@ $ slipfork down --world billing            # Stop world services while keeping .
 $ slipfork prune                           # Preview orphaned worlds (--yes to delete)
 ```
 
-- **`--json` schemas (single normative home; `--json` writes only JSON to `stdout` and suppresses spinners/ANSI):**
-  - `slipfork list --json` -> `[{"world": "acme:billing", "state": "running|failed|stopped", "origin": "http://billing.acme.localhost", "worktree": "/repo/.worktrees/billing"}]` (**exactly one** `origin` URL per world, port-qualified when `ingress_port != 80`).
-  - `slipfork up --json` / `fork --json` -> `{"world": "acme:billing", "origin": "http://billing.acme.localhost", "resources": [{"id": "media", "strategy": "remote", "resolved": "remote", "reason": "configured"}]}`.
-  - `slipfork forward --json` -> `{"world": "acme:billing", "targets": [{"id": "pg_databases.main", "host_addr": "127.0.0.1:43182", "uri": "postgres://127.0.0.1:43182/main"}]}`.
-  - `slipfork support --json` -> `[{"id": "...", "category": "...", "tier": "...", "evidence": {...}, "required_evidence": [...]}]`.
-- **One world spelling:** every `--json` `"world"` field uses the same `world_id` as the `WORLD` column (§1.6); table columns are padded, never truncated, and `--json` carries the full values.
-- **Sharing (`slipfork share [--stop] [--world <world>]`, `ADR-0005` §2):** until `tunnel-weaver` publishes `weaved`'s IPC specification (closed `H-006`; the concrete `WeavedRegistrar` is the isolated leaf `M4.1`), `slipfork share` **fails closed** telling the caller to use the world's `.localhost` origin (or `EdgeError::NoForwardListener` when `slipforkd` runs without a forward listener). With a registrar wired, toggling sharing inside `slipforkd` tears down the live world and re-materializes it from its `base`/fixture snapshot with the single new `WorldOrigin` (discarding uncommitted post-snapshot DB mutations while preserving worktree files); `share --stop` on an unshared world is an idempotent no-op.
+- **One world spelling & single `Local` origin (`M3.28.15`):** every `--json` `"world"` field uses the same `world_id` as the `WORLD` column (§1.6); table columns are padded, never truncated, and `--json` carries the full values. `0.1.0` ships untagged `struct WorldOrigin(LocalOrigin)` exclusively (`Commands::Share`, `TunnelRegistrar`, and the `Shared` origin variant are deleted in `M3.28.15`).
 
-### 1.6 Complete M2–M3 CLI Command Table
+### 1.6 World Selection Rules & Command Surface Pointer
+
+The complete `0.1.0` CLI command table lives solely in **`docs/design/dx-0.1.0-ux.md` §10** (`M3.2` Phase 2 `0.2.0` adds `slipfork test [-j N] [--dry-run]` per §2 below).
 
 - **World selection — one rule (`M3.15`, `ADR-0005` §3):** every world-scoped command resolves its world against the request's `cwd` repository (`RepoRoot.project`) through the shipped private `daemon::resolve_world_selector` parser (the typed `WorldId` plus a shared `project::` location is `0.2.0` target state), so **every same-project id printed by `slipfork list` or any `--json` payload is accepted verbatim**:
   - `<project>:<fork>` (e.g. `acme:billing`) — must match the `cwd` repository's project; a cross-project id fails closed with a remedy (`cd` into the project via the `WORKTREE` column of `slipfork list`, or `slipfork exec --cwd <worktree> --world acme:billing`). Matching is by case, and `<project>:<project>` is accepted as the user fork `<project>` (the colon disambiguates it); a bare `<fork>` equal to the project name is rejected only when creating one via `slipfork fork`.
   - `<project>` (e.g. `acme`) — selects the project's own world even from inside `.worktrees/<fork>`.
-  - `<fork>` (e.g. `billing`) — repo-local shorthand for `<project>:<fork>`, validated by `validate_fork_name` (invalid DNS labels and reserved `test-*` slots fail closed). A bare label that is not this repository's project is always a fork name, never another project's world.
+  - `<fork>` (e.g. `billing`) — repo-local shorthand for `<project>:<fork>`, validated by `validate_fork_name` against the project's real `snow.yml` `domains[].id` slice (invalid DNS labels, `domains[].id` collisions, and reserved `test-*` slots fail closed). A bare label that is not this repository's project is always a fork name, never another project's world.
   - Omitting `--world` resolves `cwd`'s nearest ancestor: `<vcs_root>/.worktrees/<fork>[/...]` -> `<fork>`, repo root -> `<project>`, outside any repository -> fail closed naming `cd <repo>` or `slipfork exec --cwd <repo>`.
-- **Positional forms:** `slipfork fork <fork>` takes a bare `<fork>`, and `slipfork drop <fork>` also accepts the printed `<project>:<fork>` id.
-- **Milestone legend:** a `+` separates the shipped stage(s) from the node that completes the row's full surface (`M3.13` the `BtrfsEngine` behind it, `M3.15` `doctor` + the world selector + the `apparmor` profile, `M3.2` snapshot/cache GC). `M4.1` appears only on `share`, which ships but stays fail-closed until that leaf lands (§1.5).
-
-| Command | Milestone | Behavior |
-|---|---|---|
-| `slipfork up [--world <world>] [--no-dump \| --refresh-dump] [--resources local] [--host-caches] [--json]` | M2 + `M3.13` | Boot world in `slipforkd` (auto-spawning if needed), seed the `Dockerfile` `L0` rootfs and seal the read-only base subvolume, clone the world from it, start `crun` backing services, await readiness, print single `origin` |
-| `slipfork down [--world <world>]` | M2 + `M3.13` | Stop world services without deleting its worktree (idempotent) |
-| `slipfork fork <fork> [--base <rev>] [--no-dump \| --refresh-dump] [--resources local] [--host-caches] [--json]` | M2 + `M3.13` | Create `.worktrees/<fork>` (`git` or `jj`) + Btrfs subvolume world in `slipforkd` (one `BTRFS_IOC_SNAP_CREATE_V2` clone, same `L0` rootfs digest, `0` rootfs copy) |
-| `slipfork drop <fork>` | M2 + `M3.13` | Destroy fork world (clear read-only flags, `BTRFS_IOC_SNAP_DESTROY_V2`) and remove `.worktrees/<fork>` |
-| `slipfork exec [--world <world>] [--cwd <dir>] -- <argv>...` | M1 + M2 + `M3.13` | Fetch `WorldExecTarget` from `slipforkd` and run non-interactively inside the world's `slipfork-world-init` PID 1 (`nsenter --target <init_pid>`, §1.3) |
-| `slipfork list [--json]` | M2 | List worlds with state, worktree path, and the single `origin` URL (§1.5) |
-| `slipfork prune [--dry-run \| --yes] [--json]` | M2 + `M3.2` | Preview (default, or `--dry-run`) or reap worlds whose checkout directory is gone; unreferenced Btrfs snapshot and `cache/{rootfs,oci}` GC lands with `M3.2` |
-| `slipfork shell [--world <world>]` | M2 + `M3.13` | Enter the world on a native TTY (`nsenter --target <init_pid>`, §1.3; requires TTY) |
-| `slipfork logs [--world <world>] [<target>] [--follow] [--stderr] [--lines <n>]` | M2 | Read or follow retained component/hook logs from `slipforkd` (§1.3 log paths) |
-| `slipfork hook run <hook_id> [--world <world>] [--no-tty]` | M2 | Re-run `<component>:<phase>` hook (direct native TTY `pdb` by default; `--no-tty` via daemon) |
-| `slipfork db [<db_id>] [--world <world>]` | M2 | Interactive `psql` in the running `postgres:<v>` service container (§1.4); requires TTY |
-| `slipfork redis [<cluster_id>] [--world <world>]` | M2 | Interactive `redis-cli` in the running `redis:<v>` service container (§1.4); requires TTY |
-| `slipfork forward [--world <world>] [--json] [<target>...]` | M2 | Ask `slipforkd` to bind `127.0.0.1:0` bridge(s) for host GUIs (held open until disconnect) |
-| `slipfork share [--stop] [--world <world>]` | M2 + `M4.1` | Re-materialize with/without a `weaved` origin (fail-closed rule in §1.5) |
-| `slipfork secret set [--force] <KEY>` / `unset <KEY>` / `list` | M2 | Manage `0600` vault secrets via `slipforkd` (`stdin` input; `--force` rotates existing keys) |
-| `slipfork auth login [- \| '<url>#handle=<64-hex>']` | M2 | Pair `tpmd`/P-256 device key over the `ospp-v1` subprotocol (`-` reads URL from `stdin`) |
-| `slipfork daemon unit [--only socket\|service\|apparmor] [--forward-port <u16>]` | M2 + `M3.15` | Render non-template `slipforkd.socket`, `slipforkd.service` (`User=<developer-user>`), and the `/etc/apparmor.d/slipfork` `userns,` profile |
-| `slipfork doctor` / `snow resolve` / `dag plan` | M1 + `M3.15` | Probe the Btrfs host contract (§1.7), inspect resolved `snow.yml` envs, and plan DAG waves |
-| `slipfork support [--json]` | M2 | Report verified integration tiers & `required_evidence` (`support/integrations.toml`) |
-| `slipfork test [-j N]` | `M3.2` Phase 2 target | Orchestrate `STP v1` DAG stages across parallel hermetic Btrfs `TestSlot` worlds (`SLIPFORK_PROTOCOL_FD`, `§2`) |
+- **Positional forms:** `slipfork fork [fork]` takes an optional bare `<fork>` (omitting `[fork]` derives it from the current `git` branch or `jj` bookmark in `slipforkd`, failing closed on detached `HEAD` or inside `.worktrees/<fork>`; internal dirty snapshots pin `-c user.name=slipfork -c user.email=slipfork@localhost`, `M3.28.5`/`M3.28.10`), while `slipfork drop <fork>` requires `<fork>` and also accepts `<project>:<fork>`.
 
 ### 1.7 Host Preflight — `slipfork doctor` Btrfs Probe & Fail-Closed Mount Hint (`M3.15`)
 
@@ -156,14 +143,16 @@ subvolume_ioctl: ok
 noatime: ok
 unshare_userns: ok
 netns: ok
+ingress: :80 active (port-less origins)
 ```
 
 - **Field provenance — no invented values:** `state_dir` is the requested state root and `filesystem` is `doctor`'s own label for the report's raw `fstype` code (`0x9123683e` -> `btrfs`, `0x58465342` -> `xfs`, `0xef53` -> `ext4`, `0x01021994` -> `tmpfs`, `0x794c7630` -> `overlayfs`, else `unknown(0x<hex>)`); `--json` carries both the label and `fstype` as `"0x<lowercase-hex>"`. Line order, and probe values unrelated to a failure, are illustrative — the `--json` keys are the contract.
 - `filesystem` / `btrfs_super_magic` come from one `statfs` of `<state_dir>` (or its nearest existing ancestor, creating nothing on a non-Btrfs host); anything but `BTRFS_SUPER_MAGIC` (`0x9123683e`) is a hard failure.
 - `subvolume_ioctl` is a live scratch round-trip under `<state_dir>/.doctor-probe-<pid>` (create -> read-only snapshot -> clear read-only -> destroy), proving unprivileged `user_subvol_rm_allowed` instead of advertising a cached capability; it renders `ok`, `failed (errno <n>)` with the mount hint, or `skipped` when the filesystem is not Btrfs.
 - `noatime` reports the `ST_NOATIME` mount-option evidence behind the same mount hint; it is advisory only — the required checks are the Btrfs magic, the unprivileged subvolume round-trip, `unshare_userns`, and `netns` (`ADR-0010` §4).
-- `unshare_userns` reports the identity-mapping probe (`unshare --user --map-user=<uid> --map-group=<gid>`); `failed` under `kernel.apparmor_restrict_unprivileged_userns=1` carries the hint naming the missing `/etc/apparmor.d/slipfork` `userns,` profile (`slipfork daemon unit --only apparmor`).
+- `unshare_userns` reports the identity-mapping probe (`unshare --user --map-user=<uid> --map-group=<gid>`); `failed` under `kernel.apparmor_restrict_unprivileged_userns=1` carries the hint naming the missing `/etc/apparmor.d/slipfork` `userns,` profile (`sudo slipfork daemon install` / `slipfork daemon unit --only apparmor`).
 - `netns` proves the world network namespace can bring up loopback (`--net --ipc --pid`), and is `skipped` whenever `unshare_userns` is not `ok`.
+- `ingress` (`IngressProbe`, `M3.28.6`, `ADR-0011` §3) reports `:80 active (port-less origins)`, ``installed but inactive (run `sudo systemctl start slipforkd.socket`)``, or ``not installed (ephemeral port; run `slipfork daemon install`)`` (`"ingress"` object in `--json`); like `noatime`, it is advisory so `doctor` exits `0` on unprivileged hosts without systemd units.
 - **No `crun` line, because `crun` is not a host dependency:** static `crun` is a world-rootfs asset (`ADR-0009` §1) — `slipforkd` provisions the compile-time SHA-256-pinned release into `<state_dir>/cache/runtime/` and `BaseImageBuilder` stages it at `/.slipfork/bin/crun`, failing closed on a digest mismatch when the rootfs is materialized. A host `PATH` probe would test the wrong machine, so `doctor` performs none (`ADR-0010` §4).
 
 A non-Btrfs state dir fails closed (`exit 1`) with the one fix that matters and zero fallback (wording illustrative; the pinned string is `mount -o user_subvol_rm_allowed,noatime`):
@@ -177,6 +166,7 @@ subvolume_ioctl: skipped
 noatime: ok
 unshare_userns: ok
 netns: ok
+ingress: not installed (ephemeral port; run `slipfork daemon install`)
 slipfork: /home/acme/.cache/slipfork is not a Btrfs filesystem; Slipfork has no non-Btrfs mode
   fix: point --state-dir at a Btrfs mount made with mount -o user_subvol_rm_allowed,noatime
 ```

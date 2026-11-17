@@ -14,13 +14,20 @@ paths:
   - crates/slipfork/src/user.rs
   - crates/slipfork/src/doctor.rs
   - crates/slipfork/src/lib.rs
+  - crates/slipfork/src/layout.rs
+  - crates/slipfork/src/vaults.rs
+  - crates/slipfork/src/bin/slipforkd.rs
+  - "crates/slipfork/src/bin/git-remote-slipfork.rs"
   - crates/slipfork/tests/critical_cli.rs
+  - crates/slipfork/tests/support/mod.rs
+  - "crates/slipfork-edge/src/unit.rs"
+  - "crates/slipfork-edge/tests/golden/slipforkd.service"
   - docs/reference/cli.md
 attempts: 0
 max_attempts: 3
 escalation: none
 created: "2026-11-17T16:33"
-updated: "2026-11-17T16:33"
+updated: "2026-11-17T18:14"
 ---
 
 # Goal

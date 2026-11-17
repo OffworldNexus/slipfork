@@ -25,11 +25,12 @@ paths:
   - README.md
   - docs/reference/manifest.md
   - "docs/design/target-dx.md"
+  - "docs/decisions/ADR-0005-*.md"
 attempts: 0
 max_attempts: 3
 escalation: none
 created: "2026-11-17T17:40"
-updated: "2026-11-17T17:40"
+updated: "2026-11-17T18:22"
 ---
 
 # Goal
@@ -57,7 +58,7 @@ Verified by the conductor (re-check each file before you delete it; the line num
 4. **World capability:** delete `TunnelRegistrar`, `TunnelLease`, `TunnelError`, `TunnelRequest`, `InMemoryTunnelRegistrar`, `assert_tunnel_registrar_conformance` and the tests that only cover them. Do not leave an empty trait or an unused error module behind.
 5. **`WorldOrigin::Shared` is deleted; `0.1.0` has exactly one origin kind, `Local`.** Collapse the enum/type so a `Shared` case is unrepresentable, and delete every branch that exists only for it: the `308` redirect for shared `*.localhost`, the `421` on HTTP `Upgrade`, and `shared_hosts` in `crates/slipfork-edge/src/**`. Update every `match origin` site; a `match` arm that only handled `Shared` goes away, and no `_ =>` catch-all may be left to swallow it.
 6. **Support registry:** delete `IntegrationCategory::Tunnel` and the doc sentences that advertise an outbound registrar tier in `crates/slipfork-dag/src/support.rs`. `support/integrations.toml` has no tunnel entry to remove — verify and say so in `RESULT.md`; do not invent one to delete.
-7. **Docs truth in the same commit** (Zero Vaporware; `tools/check_docs_honesty.py` fails on any published subcommand the binary lacks): delete the `share` rows/sections from `docs/reference/cli.md`, `README.md`, `docs/index.md`, `docs/snow-modes.md`, `docs/reference/manifest.md`, and the sharing recipes from `docs/design/target-dx.md`. `docs/VISION.md` and `ADR-0005` keep the future intent but must read as **future**, not as a shipped `0.1.0` capability.
+7. **Docs truth in the same commit** (Zero Vaporware; `tools/check_docs_honesty.py` fails on any published subcommand the binary lacks): delete the `share` rows/sections from `docs/reference/cli.md`, `README.md`, `docs/index.md`, `docs/snow-modes.md`, `docs/reference/manifest.md`, and the sharing recipes from `docs/design/target-dx.md`. `docs/VISION.md` keeps the future intent but must read as **future**, not as a shipped `0.1.0` capability. **`ADR-0005` is currently "Accepted" and states `WorldOrigin::{Local,Shared}`, `slipfork share` and `TunnelRegistrar` in the present tense** — annotate it as superseded-for-`0.1.0` by `ADR-0011` and rewrite those sentences in the future tense; an accepted ADR describing a type that no longer exists is the same lie as a vaporware command.
 8. **Delete the tests of a deleted behaviour in the same commit.** Never weaken an unrelated assertion, never route around a failing protected critical test, never leave a `#[ignore]`.
 9. **Keep untouched** (all real, all have consumers): OSPP `auth`/`tpmd` pairing, `ResourceStrategy` fail-closed `not_offered`, `forward`, `secret`, `hook`, `db`, `redis`, `logs`.
 
@@ -91,6 +92,6 @@ $ git diff --shortstat <base_sha>
 ... deletion count recorded in RESULT.md
 ```
 
-- `no-tunnel-residue` and `no-share-docs` are the inverted-grep proofs: zero survivors outside `docs/VISION.md`, `docs/decisions/` and `plan/`.
-- `docs/VISION.md` and `ADR-0005` are allowed to keep the word "tunnel" **only** framed as future `0.2.0+` intent; a reader must not conclude `0.1.0` can share.
+- `no-tunnel-residue` and `no-share-docs` are the inverted-grep proofs: zero survivors outside `docs/VISION.md` and `plan/`.
+- `docs/VISION.md` may keep the word "tunnel" **only** framed as future `0.2.0+` intent; `ADR-0005` must be annotated superseded-for-`0.1.0` (by `ADR-0011`) with its `WorldOrigin::{Local,Shared}`/`share`/`TunnelRegistrar` sentences in the future tense. A reader must not conclude `0.1.0` can share.
 - `RESULT.md` records: the exact `git diff --shortstat` / deleted-line count, the removed symbol list, and the confirmation that `support/integrations.toml` carried no tunnel tier.

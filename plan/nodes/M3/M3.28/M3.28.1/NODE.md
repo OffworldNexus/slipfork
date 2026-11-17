@@ -2,7 +2,7 @@
 id: M3.28.1
 title: "DX of record for the 0.1.0 UX pass: bare status, restart, ps, open, fork naming, and the :80 ingress"
 kind: task
-status: active
+status: done
 owner: architect
 priority: 1
 depends_on: []
@@ -15,7 +15,7 @@ attempts: 1
 max_attempts: 3
 escalation: architect
 created: "2026-11-17T16:32"
-updated: "2026-11-17T16:34"
+updated: "2026-11-17T18:30"
 ---
 
 # Goal
