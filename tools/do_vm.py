@@ -227,13 +227,17 @@ class ProvisionConfig:
 def render_apparmor_body(remote_tree: str = REMOTE_TREE) -> str:
     """The four-line `userns` profile body from `ADR-0010` §7 (harness attachment list).
 
-    AppArmor's profile header takes one attachment expression; the two executables are matched
-    by a leading-slash alternation (`/{a,b}`), which the live parser accepts.
+    AppArmor's profile header takes one attachment expression, so every executable that performs
+    `CLONE_NEWUSER` for a world is matched by a single leading-slash alternation (`/{a,b}`): the
+    installed `/usr/local/bin` binaries, the Cargo `target/{debug,release}` binaries built by
+    `do_vm.py test`, host `/usr/bin/unshare`, and in-world `/.slipfork/bin/crun`.
     """
+    rel_tree = remote_tree.strip("/")
     return (
         "abi <abi/4.0>,\n"
-        "profile slipfork /{usr/bin/unshare,"
-        f"{remote_tree}/target/debug/slipfork-world-init}} flags=(unconfined) {{\n"
+        "profile slipfork /{usr/local/bin/slipfork{,d,-world-init},"
+        f"{rel_tree}/target/{{debug,release}}/slipfork{{,d,-world-init}},"
+        "usr/bin/unshare,.slipfork/bin/crun} flags=(unconfined) {\n"
         "  userns,\n"
         "}\n"
     )

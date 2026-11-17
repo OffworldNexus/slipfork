@@ -1,17 +1,16 @@
 ---
 id: M3.19
 title: "Live verification on the Btrfs DO VM: BtrfsEngine + crun + postgres:18 suites, measured numbers, reboot-safe SSH"
-kind: task
-status: ready
-owner: implementer
+kind: epic
+status: blocked
 priority: 5
 depends_on: [M3.11, M3.16, M3.18]
 paths: []
-attempts: 0
+attempts: 1
 max_attempts: 3
-escalation: none
+escalation: architect
 created: "2026-11-16T16:58"
-updated: "2026-11-16T17:25"
+updated: "2026-11-17T13:42"
 ---
 
 # Goal

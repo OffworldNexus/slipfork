@@ -43,16 +43,24 @@ use slipfork_world::WorldTarget;
 ///
 /// Shared by [`BtrfsEngine`]'s world boot and the CLI's host probe: it never calls `current_exe()`,
 /// so the composition root decides which binary directory the profile must name. The profile text
-/// is the one `slipfork daemon unit --only apparmor` prints, so this hint never drifts from it.
+/// is the one `slipfork daemon unit --only apparmor` prints, so this hint never drifts from it: one
+/// leading-slash brace expression naming every executable that performs `CLONE_NEWUSER` for a
+/// world — the `bin_dir` binaries, host `/usr/bin/unshare`, and in-world `/.slipfork/bin/crun`.
 pub fn userns_remediation_hint(bin_dir: &Path) -> String {
-    let dir = bin_dir.display();
+    let dir = bin_dir.display().to_string();
+    let rel_bin_dir = dir.trim_matches('/');
+    let bin_clause = if rel_bin_dir.is_empty() {
+        "slipfork{,d,-world-init}".to_owned()
+    } else {
+        format!("{rel_bin_dir}/slipfork{{,d,-world-init}}")
+    };
     format!(
         "unprivileged user namespaces are denied by AppArmor \
          (`kernel.apparmor_restrict_unprivileged_userns=1`); install the profile printed by \
          `slipfork daemon unit --only apparmor` at /etc/apparmor.d/slipfork \
-         (`abi <abi/4.0>,` plus `profile slipfork {dir}/slipfork{{,d}} flags=(unconfined) {{ \
-         userns, }}`), then reload it with \
-         `sudo apparmor_parser -r /etc/apparmor.d/slipfork`"
+         (`abi <abi/4.0>,` plus `profile slipfork \
+         /{{{bin_clause},usr/bin/unshare,.slipfork/bin/crun}} flags=(unconfined) {{ userns, }}`), \
+         then reload it with `sudo apparmor_parser -r /etc/apparmor.d/slipfork`"
     )
 }
 
@@ -606,4 +614,34 @@ pub trait WorldEngine: Send + Sync {
 
     /// Destroy `world`, reap its world init, and release its CoW state immediately.
     fn destroy_world(&self, world: WorldHandle) -> Result<(), EngineError>;
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use super::userns_remediation_hint;
+
+    #[test]
+    fn the_userns_hint_names_every_clone_newuser_executable_and_the_reload() {
+        let hint = userns_remediation_hint(Path::new("/usr/local/bin"));
+        for needle in [
+            "/{usr/local/bin/slipfork{,d,-world-init},usr/bin/unshare,.slipfork/bin/crun}",
+            "slipfork daemon unit --only apparmor",
+            "apparmor_parser -r /etc/apparmor.d/slipfork",
+        ] {
+            assert!(hint.contains(needle), "hint missing {needle}: {hint}");
+        }
+        assert!(!hint.contains("//"), "{hint}");
+    }
+
+    #[test]
+    fn the_userns_hint_renders_a_bare_clause_for_the_root_bin_dir() {
+        let hint = userns_remediation_hint(Path::new("/"));
+        assert!(
+            hint.contains("/{slipfork{,d,-world-init},usr/bin/unshare,.slipfork/bin/crun}"),
+            "{hint}"
+        );
+        assert!(!hint.contains("//"), "{hint}");
+    }
 }

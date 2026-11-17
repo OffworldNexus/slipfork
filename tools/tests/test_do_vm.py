@@ -1404,16 +1404,19 @@ exit 1
     assert "systemctl is broken" in failed.stderr
 
 
-def test_apparmor_body_attaches_both_executables() -> None:
-    body = do_vm_mod.render_apparmor_body("/home/slipfork/slipfork")
-    assert body.startswith("abi <abi/4.0>,\n")
-    assert (
-        "profile slipfork /{usr/bin/unshare,"
-        "/home/slipfork/slipfork/target/debug/slipfork-world-init} "
-        "flags=(unconfined) {" in body
+def test_apparmor_body_renders_the_ruling_exactly() -> None:
+    expected = (
+        "abi <abi/4.0>,\n"
+        "profile slipfork /{usr/local/bin/slipfork{,d,-world-init},"
+        "home/slipfork/slipfork/target/{debug,release}/slipfork{,d,-world-init},"
+        "usr/bin/unshare,.slipfork/bin/crun} flags=(unconfined) {\n"
+        "  userns,\n"
+        "}\n"
     )
-    assert body.endswith("  userns,\n}\n")
-    assert len(body.splitlines()) == 4
+    assert do_vm_mod.render_apparmor_body("/home/slipfork/slipfork") == expected
+    assert do_vm_mod.render_apparmor_body("/home/slipfork/slipfork/") == expected
+    assert len(expected.splitlines()) == 4
+    assert "//" not in expected
 
 
 def _built_slipfork() -> Path:
@@ -1462,14 +1465,26 @@ def _profile_attachment(header: str) -> tuple[str, str, str]:
     return prefix, header[len(prefix) : -len(suffix)], suffix
 
 
+_USERNS_TAIL = ",usr/bin/unshare,.slipfork/bin/crun}"
+
+
+def _split_attachment(attachment: str) -> str:
+    """Return the `<bin_dir>` clause of one leading-slash brace attachment expression."""
+    assert attachment.startswith("/{"), attachment
+    assert attachment.endswith(_USERNS_TAIL), attachment
+    bin_clause = attachment[len("/{") : -len(_USERNS_TAIL)]
+    assert bin_clause, attachment
+    return bin_clause
+
+
 def test_cli_rendered_apparmor_profile_matches_the_harness_skeleton() -> None:
     """One renderer owner: the harness copy must match `slipfork daemon unit --only apparmor`.
 
-    The two attachment lists differ for a documented reason: the harness runs `cargo test`
-    binaries whose executable is unlinked, so it attaches `/usr/bin/unshare` and the
-    `slipfork-world-init` helper, while the product profile attaches the installed
-    `<bin_dir>/slipfork{,d}` executables (both inherit `userns,` across `execve`). The four-line
-    body, the ABI header, and the profile flags are byte-identical, so neither copy can drift.
+    Both profiles attach every executable that performs `CLONE_NEWUSER` for a world under one
+    leading-slash brace expression. The harness expands only the `<bin_dir>` clause to cover
+    `/usr/local/bin` plus the Cargo `target/{debug,release}` binaries; the product names the one
+    `<bin_dir>`. The four-line body, the ABI header, the profile flags, and the
+    `,usr/bin/unshare,.slipfork/bin/crun}` tail are byte-identical, so neither copy can drift.
     """
     binary = _built_slipfork()
     rendered = subprocess.run(
@@ -1494,19 +1509,41 @@ def test_cli_rendered_apparmor_profile_matches_the_harness_skeleton() -> None:
         harness_lines[1].rstrip("\n")
     )
     assert (cli_prefix, cli_suffix) == (harness_prefix, harness_suffix)
-    assert cli_attachment == f"{binary.parent}/slipfork{{,d}}"
-    assert harness_attachment.startswith("/{usr/bin/unshare,"), harness_attachment
 
-    # Byte-equality of the whole profile once the one legitimate difference (the attachment
-    # expression) is normalised.
-    assert "".join(cli_lines).replace(cli_attachment, "<files>") == "".join(
-        harness_lines
-    ).replace(harness_attachment, "<files>")
+    rel_bin_dir = str(binary.parent).strip("/")
+    assert cli_attachment == (
+        f"/{{{rel_bin_dir}/slipfork{{,d,-world-init}},usr/bin/unshare,.slipfork/bin/crun}}"
+    )
+    rel_tree = do_vm_mod.REMOTE_TREE.strip("/")
+    assert harness_attachment == (
+        "/{usr/local/bin/slipfork{,d,-world-init},"
+        f"{rel_tree}/target/{{debug,release}}/slipfork{{,d,-world-init}},"
+        "usr/bin/unshare,.slipfork/bin/crun}"
+    )
+
+    cli_bin_clause = _split_attachment(cli_attachment)
+    harness_bin_clause = _split_attachment(harness_attachment)
+    assert cli_bin_clause == f"{rel_bin_dir}/slipfork{{,d,-world-init}}"
+    assert harness_bin_clause == (
+        "usr/local/bin/slipfork{,d,-world-init},"
+        f"{rel_tree}/target/{{debug,release}}/slipfork{{,d,-world-init}}"
+    )
+
+    # Byte-equality of the whole profile once only the `<bin_dir>` clause is normalised; the
+    # `,usr/bin/unshare,.slipfork/bin/crun}` tail is never rewritten, so it cannot drift.
+    assert cli_attachment.endswith(_USERNS_TAIL)
+    assert harness_attachment.endswith(_USERNS_TAIL)
+    cli_profile = "".join(cli_lines).replace(cli_bin_clause, "<bin_clause>")
+    harness_profile = "".join(harness_lines).replace(harness_bin_clause, "<bin_clause>")
+    assert cli_profile == harness_profile
 
 
 def test_provision_script_installs_no_host_crun_and_keeps_git() -> None:
     script = do_vm_mod.render_provision_script()
-    assert "crun" not in script
+    assert "crun" not in do_vm_mod.PACKAGES.split()
+    install = next(line for line in script.splitlines() if "apt-get install" in line)
+    assert "crun" not in install.split()
+    assert ".slipfork/bin/crun}" in script
     assert "zfs" not in script.lower()
     assert "incus" not in script.lower()
     assert "docker.io docker-buildx" in script

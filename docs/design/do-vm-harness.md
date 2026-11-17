@@ -414,68 +414,53 @@ step 7 (delete after mount verification) and step 11 (write last).
 
 ## 3. AppArmor `userns` profile
 
-Ubuntu 24.04 LTS ships `kernel.apparmor_restrict_unprivileged_userns=1`, which denies
-unprivileged `CLONE_NEWUSER` unless the caller's profile grants `userns,` (`ADR-0010` §7).
-
-**One renderer, one writer.** The normative four-line profile is rendered by `slipfork daemon
-unit --only apparmor` (`ADR-0010` §7) — **`M3.15` target state, not shipped when this design
-was written**. The harness carries an explicitly interim copy of that authoritative body; it
-introduces no second normative author: `render_provision_script`
-emits the production body verbatim, and its only
-permitted difference from the CLI rendering is the attachment list. Until `M3.15` lands, that
-embedded text is the interim copy of the `ADR-0010` §7 body; the live preflight
-below is what retires it.
+Ubuntu 24.04 LTS ships `kernel.apparmor_restrict_unprivileged_userns=1`, which transitions any
+unprivileged `CLONE_NEWUSER` from the built-in `unconfined` label into `unprivileged_userns`
+and denies `CAP_SYS_ADMIN` unless the binary's attached `flags=(unconfined)` profile grants
+`userns,` (`ADR-0010` §7).
 
 **Who writes `/etc/apparmor.d/slipfork` on this droplet.** The harness's provisioning script
-is the only writer, and it writes only when the file is absent or its body differs from the
-embedded text, so re-running `up` never clobbers a profile whose body already matches.
-Cloud-init necessarily writes the embedded text because the tree is synced only after `up`.
-`slipfork` here is the binary built in the synced tree (`target/debug/slipfork`), never an
-installed unit, so no other process on the VM renders that path and nothing redirects the CLI
-renderer's stdout into the file.
-
-**Body equivalence preflight (`test`).** After the synced tree is built, `test` runs
-`target/debug/slipfork daemon unit --only apparmor` and compares the header and rule body with
-the installed `/etc/apparmor.d/slipfork`, ignoring only the attachment list.
-A CLI that rejects `--only apparmor` (pre-`M3.15` tree), a non-zero exit, or a divergent body
-fails closed naming both texts. `test` never rewrites the profile: a divergence means the
-harness's interim body and the CLI renderer have drifted, so the fix is to correct both in one
-commit, delete the readiness marker
-(`ssh -- rm -f /var/lib/slipfork/.slipfork-ready`), and re-run `up` — `up` re-runs the
-provisioning script only when that marker is absent, so on a ready droplet it is otherwise a
-no-op; because a reachable droplet satisfies the readiness probe at the first attempt, the
-repair costs at most the 5-minute SSH gate (§1 `up` step 6), not the 15-minute bound.
-The same byte comparison runs in CI with no droplet (`tools/tests` builds the CLI and compares
-`render_provision_script()`'s embedded body with its `daemon unit --only apparmor` output), so
-drift fails a unit test rather than only the live preflight.
-The attachment path is checked separately (next bullets) and
-must equal the profile's attachment, not be patched at suite time.
+is the single writer on the VM, updating `/etc/apparmor.d/slipfork` only when absent or when
+its text differs from `render_apparmor_body(remote_tree)` (`up` re-runs provisioning once
+`/var/lib/slipfork/.slipfork-ready` is removed). AppArmor 4.0 permits only one attachment
+expression in a profile header — two space-separated bare paths are rejected by
+`apparmor_parser` — so every executable is combined under one leading-slash `{...}` brace
+alternation with `<rel_tree>` = `remote_tree.strip("/")` (`home/slipfork/slipfork`, zero `//`):
 
 ```text
 abi <abi/4.0>,
-profile slipfork /usr/bin/unshare /home/slipfork/slipfork/target/debug/slipfork-world-init flags=(unconfined) {
+profile slipfork /{usr/local/bin/slipfork{,d,-world-init},home/slipfork/slipfork/target/{debug,release}/slipfork{,d,-world-init},usr/bin/unshare,.slipfork/bin/crun} flags=(unconfined) {
   userns,
 }
 ```
 
-- `/usr/bin/unshare` performs the `CLONE_NEWUSER` transition `slipfork-world-init` runs
-  under (`unshare --user --map-user=$UID --map-group=$GID --keep-caps --mount --net --ipc
-  --pid --fork --mount-proc`). The suites start from a content-hashed `cargo test` executable
-  under `target/debug/deps/` whose path changes per build, so the permission is attached to
-  the executable that actually makes the syscall; without it `uid_map`/`mount`/`pivot_root`
-  return `EPERM`.
-- `slipfork-world-init` is a predicted default, not a hardcoded literal: the profile written at
-  `up` spells the deterministic `/home/slipfork/slipfork/target/debug/slipfork-world-init`
-  (the suites set no `CARGO_TARGET_DIR`; `sync` preserves `target/`), and `test` proves the
-  prediction by requiring `test -x` on, and equality with, the
-  `compiler-artifact.executable` Cargo reports for
-  `-p slipfork-engine --bin slipfork-world-init` in the synced tree — the same path the engine
-  suite gets from `env!("CARGO_BIN_EXE_slipfork-world-init")` and the CLI suite resolves next
-  to `env!("CARGO_BIN_EXE_slipforkd")` (building it if absent). A mismatch fails closed naming
-  both paths. Because the tree arrives after `up`, this attachment
-  is only provable at the first live suite (`M3.19`), never during provisioning.
-- `abi <abi/4.0>` and `flags=(unconfined)` are mandatory and the body is `userns,` only, per
-  `ADR-0010` §7; no file or mount mediation is introduced.
+- `usr/local/bin/slipfork{,d,-world-init}` and
+  `home/slipfork/slipfork/target/{debug,release}/slipfork{,d,-world-init}` cover the installed
+  owner-demo binaries, the debug binaries built by `do_vm.py test`, and the release binaries
+  built by `poc/run_benchmark.py`.
+- `usr/bin/unshare` (`/usr/bin/unshare`) executes the outer world `CLONE_NEWUSER` transition
+  for `BtrfsEngine::clone_world`, `slipfork doctor`, and §2 step 10's control check, including
+  when spawned directly by a content-hashed `target/debug/deps/<suite>-<hash>` test executable
+  that has no `slipforkd` parent.
+- `.slipfork/bin/crun` (`/.slipfork/bin/crun`) executes the inner OCI `CLONE_NEWUSER` inside
+  every world's `pivot_root`ed mount namespace: `BtrfsEngine::spawn_service` enters the world
+  via `nsenter` (`setns(2)` preserves the caller's AppArmor `cred` label rather than inheriting
+  `slipfork-world-init`'s) and `execve`s `/.slipfork/bin/crun`, which `aa_path_name` resolves
+  against the world mount namespace's root (`ADR-0010` §7).
+- `abi <abi/4.0>,` and `flags=(unconfined)` are mandatory and the body is `userns,` only, per
+  `ADR-0010` §7; no file, mount, or network mediation is introduced.
+
+**Product-vs-harness byte-equivalence rule (`tools/tests/test_do_vm.py`).** The product
+renderer (`slipfork daemon unit --only apparmor`) emits
+`profile slipfork /{<rel_bin_dir>/slipfork{,d,-world-init},usr/bin/unshare,.slipfork/bin/crun} flags=(unconfined) {`,
+differing from `render_apparmor_body(remote_tree)` **solely** in the `<bin_dir>` prefix clause
+(`usr/local/bin/slipfork{,d,-world-init},<rel_tree>/target/{debug,release}/slipfork{,d,-world-init}`
+on the VM vs `<rel_bin_dir>/slipfork{,d,-world-init}` in the product). `test_do_vm.py` builds
+`target/debug/slipfork`, asserts exact 4-line output on each side, and enforces full-profile
+byte-equality after replacing **only** that `<bin_dir>` clause with `<bin_clause>` — never
+normalising the whole attachment expression to `<files>` — so `abi <abi/4.0>,`,
+`,usr/bin/unshare,.slipfork/bin/crun}`, `flags=(unconfined)`, and `userns,` cannot drift
+between Rust and Python.
 
 ---
 
@@ -623,16 +608,16 @@ proved on a real droplet by `M3.19`; `M3.16`'s own acceptance is unit-only.
 | `test` preflights doctor, cargo, docker | one `doctor --json --state-dir /var/lib/slipfork` argv under the suite prefix (fake ssh prints XFS magic `58465342`, then Btrfs `9123683e`, uid 0, no cargo); raw `stat`/`id` echoed only when `doctor` exits non-zero; `docker info` argv carries `HOME=/var/lib/slipfork/home` | streamed `test` output |
 | one `HOME` on the volume for every remote command | fetch, build, both suites, and the `docker info` probe (all under the suite prefix) carry `HOME=/var/lib/slipfork/home` and `TMPDIR=/var/lib/slipfork/home/tmp` | suites' roots under `/var/lib/slipfork/home/.cache` |
 | owner `ssh` commands resolve state on the volume | interactive wrapper argv carries `cd /home/slipfork/slipfork`, owner `PATH` with `target/debug` first, `HOME`/`TMPDIR=/var/lib/slipfork/root-home[/tmp]`, and the `command -v slipfork` assertion; forwarded command argv carries the same envelope with that command | `ssh -- pwd` and `ssh -- slipfork doctor` |
-| `slipfork-world-init` path comes from Cargo, `test -x` enforced | fake artifact JSON -> profile attachment; missing executable or path mismatch -> exit 2; build argv carries the `runuser` + `env -i` prefix | `grep '^profile' /etc/apparmor.d/slipfork` shows the attachment |
-| AppArmor body equals the CLI renderer, attachments excepted | `compare_profile_body()` accepts an attachment-only difference and rejects a rule/flag difference; renderer-rejected -> exit 2 naming both texts | live `test` preflight against the built CLI |
-| embedded profile body equals the CLI renderer offline (no droplet) | CI builds `target/debug/slipfork` and compares `render_provision_script()`'s body with `daemon unit --only apparmor`; a mismatch fails naming both texts | - |
+| `slipfork-world-init` path comes from Cargo, `test -x` enforced | fake artifact JSON -> profile attachment; missing executable or path mismatch -> exit 2; build argv carries the `runuser` + `env -i` prefix | `grep '^profile' /etc/apparmor.d/slipfork` shows the single `{...}` attachment |
+| AppArmor profile matches CLI renderer up to `<bin_clause>` | unit test asserts exact attachment clauses and byte-equality after normalising only the `<bin_dir>` prefix clause (retaining `,usr/bin/unshare,.slipfork/bin/crun}` verbatim) | live `test` runs green under loaded `/etc/apparmor.d/slipfork` |
+| embedded profile equals CLI renderer offline (no droplet) | CI builds `target/debug/slipfork` and enforces `<bin_clause>`-normalised byte-equality between `render_apparmor_body()` and `daemon unit --only apparmor` | - |
 | `cargo fetch` failure is a toolchain/network error | fake ssh fetch exit 1 -> zero suite invocations | - |
 | host-key change and publickey denial name the fix | fake ssh stderr variants | - |
 | suite order, serialization, fail-fast | fake ssh exit 101 -> CLI suite never invoked; tool exits 101 | streamed `test` output |
 | droplet run takes the Btrfs branch, not `BtrfsRequired` | - | non-empty `btrfs subvolume list` mid-run; `grep -v '/snapshots/'` empty after teardown |
 | readiness marker is inside the mount and deleted after mount | fake ssh `test -f /var/lib/slipfork/.slipfork-ready`; rendered script deletes it only after the `9123683e` check | reboot re-check (`M3.19`) |
 | provisioning script embeds verbatim in cloud-init | `render_provision_script() in cloud_init()` and both snippets embedded verbatim; pinned `rustup-init` URL and SHA-256 constant present | cloud-init log |
-| no host `crun` is installed or probed; `git` is | rendered `apt-get install` package list contains `git` and no `crun`; zero `crun` probes in any argv | `slipfork shell -- crun --version` (`M3.19`) |
+| no host `crun` is installed or probed; `git` is | `PACKAGES` / `apt-get install` list contains `git` and no `crun` package (only `/etc/apparmor.d/slipfork` names guest `.slipfork/bin/crun`); zero host `crun` probes | in-world `crun --version` (`M3.19`) |
 | DigitalOcean automount teardown is conditional and complete | bash-run teardown snippet, fake `findmnt`/`systemctl`/`umount`/`udevadm`: blank volume -> zero removals; pre-formatted -> `systemctl disable --now` the unit, then udev rule + `udevadm control --reload-rules`, mount unit, and fstab line | `systemctl list-units --all 'mnt-volume_*.mount'` empty, `test ! -e /etc/udev/rules.d/99-digitalocean-automount.rules`, `findmnt /mnt/volume_*` empty |
 | cost from doctl, absent price fails closed | fake size list `$1.00` -> `$11.00/month` printed as an estimate; `null` -> exit 2 | `up` summary line |
 | secrets and key bodies never logged | needles: private-key body and `.env` sentinel; haystacks: argv, stdout, stderr, rendered cloud-init | - |

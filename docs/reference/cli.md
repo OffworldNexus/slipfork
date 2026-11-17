@@ -144,7 +144,16 @@ $ slipfork daemon unit --only apparmor | sudo tee /etc/apparmor.d/slipfork
 $ sudo apparmor_parser -r /etc/apparmor.d/slipfork
 ```
 
-The profile is four lines — `abi <abi/4.0>,`, the `profile slipfork <bin_dir>/slipfork{,d} flags=(unconfined)` header, `userns,`, and the closing brace — so file and mount mediation stay inactive and child executables (`unshare`, `slipfork-world-init`, `/.slipfork/bin/crun`) remain usable. `<bin_dir>` is baked in; reload after moving the binaries.
+The profile is four lines. For `slipfork` in `/usr/local/bin` it prints exactly:
+
+```text
+abi <abi/4.0>,
+profile slipfork /{usr/local/bin/slipfork{,d,-world-init},usr/bin/unshare,.slipfork/bin/crun} flags=(unconfined) {
+  userns,
+}
+```
+
+AppArmor 4.0 accepts one attachment expression per profile header, so that single leading-slash brace expression names every executable that performs `CLONE_NEWUSER` for a world: `<bin_dir>/slipfork`, `<bin_dir>/slipforkd`, `<bin_dir>/slipfork-world-init`, host `/usr/bin/unshare` (outer world namespaces and `doctor`), and in-world `/.slipfork/bin/crun` (inner OCI namespaces). The body is `userns,` only, so file and mount mediation stay inactive. `<bin_dir>` is baked in; reload after moving the binaries.
 
 ## `git-remote-slipfork`
 

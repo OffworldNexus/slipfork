@@ -956,3 +956,5 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-17T13:42 HUMAN H-006 closed by lead
 - 2026-11-17T13:42 [M3.19] (lead) edited fields
 - 2026-11-17T13:42 [M3.19] (lead) OWNER APPROVED H-006: 'Approve profile list (Recommended)'. Ruling applied by M3.19.1 (apparmor.rs + engine hint + do_vm.py harness clause + cli.md + byte-equiv
+- 2026-11-17T13:42 [M3.24] (lead) Gate passed: Quad reviewer PASS after attempts 2-3 (hollow daemon-unit assertion, three poll_until copies, fail-open /proc scan, over-claiming Makefile comments
+- 2026-11-17T13:42 [M3.24] (lead) status active -> done
