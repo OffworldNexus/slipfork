@@ -59,3 +59,15 @@ Gate: docs critics (dx, ai-ergonomics, cruft) applied in RESULT; acceptance grep
 ## 2026-11-17T12:45 [lead]
 
 status active -> review
+
+## 2026-11-17T12:45 [lead]
+
+status review -> done
+
+## 2026-11-17T13:09 [lead]
+
+FINAL: functional PASS, cruft findings fixed in-path (AGENTS 0.1.0 split, doctor fix-per-check, sudo/AppArmor required, --repo undocumented+deleted, FsDigestCache ship status, README dedupe); out-of-path version/sibling-page items on M3.23. docs-check/guard/plan green.
+
+## 2026-11-17T13:09 [lead]
+
+status done -> done

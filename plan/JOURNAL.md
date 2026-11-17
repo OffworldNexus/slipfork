@@ -934,3 +934,12 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-17T12:45 [M3.17] (lead) status active -> done
 - 2026-11-17T12:45 [M3.18] (lead) Gate: docs critics (dx, ai-ergonomics, cruft) applied in RESULT; acceptance greps + make docs-check exit 0; --world placeholder aligned to <WORLD> after M3.15 s
 - 2026-11-17T12:45 [M3.18] (lead) status active -> review
+- 2026-11-17T12:45 [M3.18] (lead) status review -> done
+- 2026-11-17T12:45 ESCALATION #22 -> architect for M3.19 by lead: H-006: AppArmor attachment set for world launchers; ADR-0010 §7 mechanism is false (children execve out of the profile),
+- 2026-11-17T12:45 [M4.1] (lead) NOTE: the 'gated on H-006' reference predates H-006's actual filing; H-006 is now the M3.19 AppArmor direction-challenge, not the WeavedRegistrar request. Re-fi
+- 2026-11-17T12:58 [M3.23] (lead) edited fields
+- 2026-11-17T12:58 [M3.23] (lead) DEPENDENCY EDIT (lead): removed M3.19. M3.19 is blocked on the owner's H-006 AppArmor direction-challenge (a live-host decision), while this node's work — the 0
+- 2026-11-17T13:08 [M3.24] (lead) edited fields
+- 2026-11-17T13:08 [M3.24] (lead) SCOPE WIDENED (lead): the working tree also carries two product cleanups that appeared while this node was active and are adopted here because they are exactly 
+- 2026-11-17T13:09 [M3.18] (lead) FINAL: functional PASS, cruft findings fixed in-path (AGENTS 0.1.0 split, doctor fix-per-check, sudo/AppArmor required, --repo undocumented+deleted, FsDigestCac
+- 2026-11-17T13:09 [M3.18] (lead) status done -> done
