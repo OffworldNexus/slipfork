@@ -2,7 +2,7 @@
 
 ## Deliverables
 
-- `docs/reference/ospp.md` (new): **19 lines**, **0 diagrams**. Four sections — what OSPP v1 is; what ships in `0.1.0`; that the wire format is not published and a paired session supplies remote secrets and seed dumps; the two moments a user will touch it. No Mermaid, no handshake/capability/refusal/failure tables, no link to a file that does not exist.
+- `docs/reference/ospp.md` (new): **18 lines**, **0 diagrams**. Four sections — what OSPP v1 is; what ships in `0.1.0`; the draft wire spec pointer (`docs/design/ospp.md`, inline code) with “describes only what ships”; the two moments a user will touch it. No Mermaid, no handshake/capability/refusal/failure tables.
 - `zensical.toml`: one `Reference` nav row `{ "OSPP v1 (secret provider)" = "reference/ospp.md" }` after the CLI entry. The `testing-dag.md` row is untouched.
 - `docs/decisions/ADR-0008-…md`: one line under the H1, `> User-facing documentation: [OSPP v1](../reference/ospp.md).` Body unchanged.
 - `docs/snow-modes.md`: `snow.yml` syntax only. The `!!` ensure row states generation + local persistence with no provider clause. The read subsection restores the vault fact (`$XDG_DATA_HOME/slipfork/vaults/<project>.json`, mode `0600`, `--state-dir`/`--runtime-dir` do not move it) and points remote providers at `ospp.md` without a provider claim.
@@ -18,9 +18,9 @@
 3. **Client/provider split stated in one sentence** (round-2 IoC delta): “Nothing in `0.1.0` requires a provider: the OSPP v1 client ships, but no provider implements the protocol yet.” This is the owner-accepted split, not a claim that remote reads work.
 4. **`slipfork auth login <url>` stays, one bullet.** It is the real command path. The page gives it no walkthrough and no diagram. `docs/reference/cli.md`'s `auth login` row is untouched.
 5. **One home for the “no provider” claim.** It appears only in the page's two `0.1.0` sentences and, per the owner's instruction, once at the end of `cli.md`'s seed-dumps section. `snow-modes.md`, `manifest.md`, `index.md`, and `README.md` no longer carry it.
-6. **`docs/design/ospp.md` is not referenced at all.** The file does not exist and `design/` is excluded from the site, so the page says only “The OSPP v1 wire format is not published” — no inline code, no link.
+6. **`docs/design/ospp.md` is named in inline code, never linked.** The file now exists as the architect's `0.2.0` draft (landed by `M3.28.19`); `design/` is excluded from the published site, so a markdown link would fail `invalid_links` and add a nav-dead page. The page therefore carries the pointer as code only.
 7. **Kerfufoo is not named on the page.** It is recorded here only, as the provider implementer.
-8. **Final micro-pass.** §The protocol now states the client capability conditionally — “A paired session would supply remote secrets and seed dumps” — without naming a wire format or promising a provider. `snow-modes.md` says “Remote provider protocol” and `manifest.md` says the `remote` strategy “fails closed without a provider”. The `auth login` bullet is unchanged.
+8. **Final micro-pass and functional-gate fix.** §The protocol carries the owner-mandated draft pointer — “The wire specification is being written in `docs/design/ospp.md`; no provider implements it yet, so this page describes only what ships.” — and ends there; the earlier conditional “A paired session would supply remote secrets and seed dumps.” line was deleted because it re-introduced an unshipped dump capability. `snow-modes.md` says “Remote provider protocol” and `manifest.md` says the `remote` strategy “fails closed without a provider”. The `auth login` bullet is unchanged. `NODE.md` acceptance now asserts the pointer positively (`grep -qF 'docs/design/ospp.md'`) instead of forbidding it.
 
 ## Auth evidence (owner-verified, retained in RESULT, not on the page)
 
@@ -56,7 +56,8 @@
 | `tools/guard.py` | PASS |
 | banned-pattern grep | no match |
 | `! grep -n 'mermaid\|sequenceDiagram\|docs/design/ospp' docs/reference/ospp.md` | no match |
-| `wc -l docs/reference/ospp.md` | 19 (≤ 60) |
+| `wc -l docs/reference/ospp.md` | 18 (≤ 60) |
+| `grep -qF 'docs/design/ospp.md' docs/reference/ospp.md` | match (draft pointer present, inline code only) |
 | nav + ADR pointer grep | wired |
 | `make check` | blocked by environment only: `bun` is absent (`ts-test` 127). Every other target passes: `plan-check`, `guard`, `py-lint`, `py-test`, `support-check`, `rs-fmt`, `rs-lint`, `rs-test` (exit 0, full workspace), `docs-check`. |
 

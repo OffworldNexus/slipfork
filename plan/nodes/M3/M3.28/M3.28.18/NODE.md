@@ -68,7 +68,7 @@ $ make docs-check
 ... exit 0
 $ test "$(wc -l < docs/reference/ospp.md)" -le 60
 $ ! grep -qE 'mermaid|sequenceDiagram|flowchart' docs/reference/ospp.md
-$ ! grep -qF 'docs/design/ospp.md' docs/reference/ospp.md
+$ grep -qF 'docs/design/ospp.md' docs/reference/ospp.md
 $ ! grep -inE 'we (decided|considered)|alternativ|trade-off|target state|ADR-0|M3\.[0-9]|Spike|Option [AB]|eventually|TBD|should' docs/reference/ospp.md
 $ ! grep -nE 'env\.bundle|dump\.begin|challenge|hello|tpmd|p256|not_offered|refresh-dump' docs/reference/ospp.md
 $ uv run --no-project python tools/check_docs_honesty.py

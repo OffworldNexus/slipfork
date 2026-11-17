@@ -10,8 +10,7 @@ OSPP v1 is a protocol for obtaining the secrets and values a local world needs f
 
 ## The protocol
 
-The OSPP v1 wire format is not published.
-A paired session would supply remote secrets and seed dumps.
+The wire specification is being written in `docs/design/ospp.md`; no provider implements it yet, so this page describes only what ships.
 
 ## When you'll touch it
 

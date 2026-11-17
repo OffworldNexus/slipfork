@@ -1126,3 +1126,11 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-17T21:41 [M3.28.18] (lead) edited fields
 - 2026-11-17T21:43 [M3.28.18] (lead) quad round 2: legality PASS; cruft FAIL(minors only; owner-mandated auth line kept); ioc SPEC_BLIND_SPOT resolved by owner ruling (client ships, provider is 0.2
 - 2026-11-17T21:43 [M3.28.18] (lead) status review -> done
+- 2026-11-17T21:44 [M3.28.19] (lead) created (task) OSPP v1 protocol draft for Kerfufoo integration (0.2.0)
+- 2026-11-17T21:44 [M3.28.19] (lead) status ready -> active
+- 2026-11-17T21:44 [M3.28.19] (lead) attempt 1/3 started
+- 2026-11-17T21:44 [M3.28.19] (lead) base 735a724ac6d37a40ca70882be122e6c1564d6839
+- 2026-11-17T21:44 [M3.28.11] (lead) From M3.28.18 RESULT (route): BootEvent::Secrets is rendered by crates/slipfork/src/main.rs:1110-1115 but never emitted by slipforkd (ensure path emits nothing)
+- 2026-11-17T21:44 [M3.28.14] (lead) From M3.28.18 RESULT (route, docs): docs/getting-started.md:119 still explains 'not_offered' as 'no paired OSPP session offered a remote database' although no p
+- 2026-11-17T21:44 [M3.2] (lead) OSPP remote path gaps (from M3.28.18 RESULT, recorded here because 0.1.0 ships no provider and this epic owns the remote path): (1) resources::pg_databases.<id>
+- 2026-11-17T21:46 [M3.28.18] (lead) functional gate found 2 post-commit items; fixed in follow-up: restored owner-mandated docs/design/ospp.md pointer (inline code, site-excluded) and deleted the 

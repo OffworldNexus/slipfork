@@ -51,3 +51,7 @@ quad round 2: legality PASS; cruft FAIL(minors only; owner-mandated auth line ke
 ## 2026-11-17T21:43 [lead]
 
 status review -> done
+
+## 2026-11-17T21:46 [lead]
+
+functional gate found 2 post-commit items; fixed in follow-up: restored owner-mandated docs/design/ospp.md pointer (inline code, site-excluded) and deleted the conditional 'paired session would supply remote secrets and seed dumps' line. Page 18 lines, 0 diagrams. NODE acceptance pointer check flipped positive.
