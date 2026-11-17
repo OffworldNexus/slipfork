@@ -43,3 +43,7 @@ architect revision: 195 lines, 4 sequenceDiagrams, JSON-level encryption safety 
 ## 2026-11-18T00:02 [lead]
 
 architect tweak: pair_handle { url, handle } (server-supplied URL + handle). Verified plan OK, guard 572, zensical strict.
+
+## 2026-11-18T00:04 [lead]
+
+architect revision: 203 lines, 100% JSON WebSocket frames + out-of-band short-lived dump_ready { id, url } encrypted with stateful HPKE for the subscription public_key. Verified plan OK, guard 572, zensical strict.

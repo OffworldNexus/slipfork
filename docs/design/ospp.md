@@ -4,7 +4,7 @@ Slipfork is a local "cloud in a box"; CI (Kerfufoo) creates and manages the real
 
 ## Transport & Framing
 
-OSPP v1 runs over a persistent WebSocket connection negotiated with `Sec-WebSocket-Protocol: ospp-v1`. Control messages are UTF-8 JSON text frames carrying a `"type"` string field; raw binary WebSocket frames are used exclusively for streaming dump chunks between `dump_start` and `dump_end`.
+OSPP v1 runs over a persistent WebSocket connection negotiated with `Sec-WebSocket-Protocol: ospp-v1`. Every WebSocket frame is a UTF-8 JSON text message carrying a `"type"` string field; resource dumps are downloaded out-of-band over HTTPS so large transfers never head-of-line block live `env_updated` messages.
 
 ## Handshake & Authentication
 
@@ -174,21 +174,25 @@ In `hpke-p256` encryption, subscription secrets are sealed end-to-end with RFC 9
 sequenceDiagram
   participant C as Slipfork
   participant S as Kerfufoo
-  C->>S: dump_request { id, remote, resource }
-  S->>C: dump_start { id, content_type }
-  loop Binary chunks
-    S-->>C: binary WebSocket frame
-  end
-  S->>C: dump_end { id }
+  C->>S: dump_request { id, subscription_id, resource }
+  S->>C: dump_ready { id, url }
+  C->>S: HTTPS GET url (encrypted stream)
+  S-->>C: HPKE-sealed dump stream
 ```
 
-To seed a local resource, the client sends `dump_request`:
+To seed a local resource, the client sends `dump_request` referencing an active `subscription_id` (which already binds both the Git `remote` and the subscription's `encryption` `{ method, public_key }`):
 
 ```json
-{ "type": "dump_request", "id": "dump-1", "remote": "git@github.com:acme/web.git", "resource": "pg_databases.main" }
+{ "type": "dump_request", "id": "dump-1", "subscription_id": "sub-1", "resource": "pg_databases.main" }
 ```
 
-If available and permitted, the server streams the dump on demand without caching it server-side: it sends `dump_start` (`{ "type": "dump_start", "id": "dump-1", "content_type": "application/zstd" }`), streams raw binary WebSocket frames, and finishes with `dump_end` (`{ "type": "dump_end", "id": "dump-1" }`). Otherwise, it replies with `error`.
+If available and permitted, the server replies with a short-lived download URL (otherwise `error`), and the client streams the dump via an out-of-band `HTTPS GET` without the server caching whole dumps in memory or on disk:
+
+```json
+{ "type": "dump_ready", "id": "dump-1", "url": "https://ci.example.com/dumps/<token>" }
+```
+
+Under `hpke-p256`, the HTTP response body is encrypted end-to-end to the subscription's `public_key` using RFC 9180's stateful sender context (`SetupBaseS(public_key, info = "ospp-v1-dump")`): the stream begins with the 65-byte uncompressed P-256 `enc` header, followed by sequential frames of `4-byte big-endian plaintext length` + `ctx.Seal(aad = "<subscription_id>:<resource>", chunk)`, and ends with a final empty sealed chunk (`len = 0`) so truncation is detected before completion. Even if the short-lived URL is logged or intercepted, the payload is unreadable without Slipfork's in-memory subscription private key, and Slipfork decrypts and pipes the stream directly into the local service without writing plaintext to disk.
 
 ## Errors
 
