@@ -27,7 +27,9 @@ use clap::Parser;
 use slipfork::daemon::{DaemonWiring, compose_daemon, host_caches};
 use slipfork::layout::{Layout, ensure_private_dir};
 use slipfork::runtime::{runtime_assets, target_arch};
-use slipfork_edge::{DaemonControlServer, HttpIngress, ListenConfig, resolve_listener_set};
+use slipfork_edge::{
+    DaemonControlServer, HttpIngress, IngressInfo, ListenConfig, resolve_listener_set,
+};
 use slipfork_engine::btrfs::KernelBtrfsDriver;
 use slipfork_engine::{InheritedVar, current_uid_gid};
 use slipfork_ospp::{BrowserOpener, LivePairingUrl, OsppError};
@@ -154,9 +156,12 @@ fn run(cli: DaemonCli) -> Result<(), String> {
 
     let listeners = resolve_listener_set(listener_config.as_ref())
         .map_err(|err| format!("cannot resolve the ingress listeners: {err}"))?;
-    let http_ingress_port = listeners
-        .http_port()
-        .map_err(|err| format!("cannot read the bound HTTP ingress port: {err}"))?;
+    let ingress = IngressInfo::new(
+        listeners
+            .http_addrs()
+            .map_err(|err| format!("cannot read the bound HTTP ingress addresses: {err}"))?,
+    )
+    .map_err(|err| format!("cannot describe the bound HTTP ingress: {err}"))?;
     let forward_port = listeners
         .forward_listener
         .as_ref()
@@ -179,7 +184,7 @@ fn run(cli: DaemonCli) -> Result<(), String> {
         layout,
         driver: Arc::new(KernelBtrfsDriver::new()),
         browser: Arc::new(SystemBrowserOpener),
-        http_ingress_port,
+        ingress,
         forward_port,
         host_caches: host_caches(&home),
         inherited,

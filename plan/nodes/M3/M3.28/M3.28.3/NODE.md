@@ -2,16 +2,24 @@
 id: M3.28.3
 title: "DaemonControl truth: bound ingress addresses, resolved origin port, world state, and the per-world component tree"
 kind: task
-status: ready
+status: done
 owner: implementer
 priority: 3
 depends_on: [M3.28.2]
-paths: ["crates/slipfork-edge/src/**", "crates/slipfork-edge/tests/**", crates/slipfork/src/daemon.rs]
-attempts: 0
+paths:
+  - "crates/slipfork-edge/src/**"
+  - "crates/slipfork-edge/tests/**"
+  - "crates/slipfork-engine/src/**"
+  - crates/slipfork/src/daemon.rs
+  - crates/slipfork/src/bin/slipforkd.rs
+  - crates/slipfork/tests/support/mod.rs
+  - "docs/design/dx-0.1.0-ux.md"
+  - ARCHITECTURE.md
+attempts: 3
 max_attempts: 3
 escalation: none
 created: "2026-11-17T16:32"
-updated: "2026-11-17T17:53"
+updated: "2026-11-17T19:39"
 ---
 
 # Goal

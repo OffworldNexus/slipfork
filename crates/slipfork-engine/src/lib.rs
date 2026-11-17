@@ -17,6 +17,7 @@ pub mod btrfs_engine;
 pub mod child_env;
 pub mod conformance;
 pub mod env;
+pub mod lineage;
 pub mod linux_cow;
 pub mod oci;
 pub mod rootfs;
@@ -33,6 +34,10 @@ use thiserror::Error;
 
 pub use btrfs_engine::BtrfsEngine;
 pub use env::{ExecEnv, InheritedVar};
+pub use lineage::{
+    BaseLineage, LineageCache, RootfsLineage, SeedLineage, ServiceCache, ServiceImageLineage,
+    ServiceKind, WorldLineage, WorldServiceInfo,
+};
 pub use linux_cow::current_uid_gid;
 pub use rootfs::{BackingServiceKey, OciRootfs, WorldRootfs};
 pub use service::ServiceLogs;
@@ -304,7 +309,8 @@ pub struct StateSubdirMount {
 }
 
 /// Lifecycle state of one world-owned service.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ServiceState {
     /// The service process is alive.
     Running,

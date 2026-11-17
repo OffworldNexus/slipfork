@@ -90,7 +90,7 @@ flowchart TD
 
 | Crate / Package | Milestone | Purity & `unsafe` Policy | Owned Domain Ports (Traits) & Responsibilities |
 |---|---|---|---|
-| `crates/slipfork-world` | M1 (shipped) + M2 `WorldOrigin` & `WeaverServiceName` (`M2.3`) + **M3 `WorldId` (`M3.25`, `ADR-0005` §3) + `M3.28.15` untagged `struct WorldOrigin`** | `#![forbid(unsafe_code)]`; depends only on `serde`, `thiserror` (+ `sha2`, `hex` in `M2.2`); zero OS socket/FD/env/fs types | Validated `ProjectSlug`, `WorldTarget { Canonical, UserFork, TestSlot }`, M3 `WorldId` (`Display` + `FromStr` + `WorldId::parse_selector`, single owner of `<project>` / `<project>:<fork>` grammar, `ADR-0005` §3), `WorldError`, encapsulated `LocalHostRoute`, untagged `struct WorldOrigin(LocalOrigin)` (`WorldOrigin::local(&LocalHostRoute, ingress_port)`, `H-010` #2; one origin kind — tombstone in `ADR-0011`), and `WeaverServiceName` (`SERVICE_NAME_MAX = 31`, `derive_weaver_service_name`, `ADR-0008` §6) |
+| `crates/slipfork-world` | M1 (shipped) + M2 `WorldOrigin` & `WeaverServiceName` (`M2.3`) + **`M3.28.15` untagged `struct WorldOrigin`** (typed `WorldId` is `0.2.0` target state) | `#![forbid(unsafe_code)]`; depends only on `serde`, `thiserror` (+ `sha2`, `hex` in `M2.2`); zero OS socket/FD/env/fs types | Validated `ProjectSlug`, `WorldTarget { Canonical, UserFork, TestSlot }`, `0.1.0` world ids as the canonical `<project>` / `<project>:<fork>` strings (`crates/slipfork-edge/src/registry.rs::world_id`; typed `WorldId` `Display` + `FromStr` + `WorldId::parse_selector` is `0.2.0`, `ADR-0005` §3), `WorldError`, encapsulated `LocalHostRoute`, untagged `struct WorldOrigin(LocalOrigin)` (`WorldOrigin::local(&LocalHostRoute, ingress_port)`, `H-010` #2; one origin kind — tombstone in `ADR-0011`), and `WeaverServiceName` (`SERVICE_NAME_MAX = 31`, `derive_weaver_service_name`, `ADR-0008` §6) |
 | `crates/slipfork-snow` | M1 (shipped) + M2 `Send + Sync` & `effective_components` (`M2.4`) | `#![forbid(unsafe_code)]`; depends on `slipfork-world` (zero `slipfork-dag` dep); zero ambient `env`/`net`/clock (`FileVaultProvider` `0600` is the sole vault filesystem writer; `M2.4` deletes M1 `OsppBundle` & `from_bundle`) | `SnowFile` v2 AST (`modes.all` + `modes.<m>`, `SnowFile::effective_components(mode)` per `ADR-0001` §1, `SnowError::ForbiddenTopLevelKey { key }` in `M2.4`), `Faceless` v2 (`??` vs `!!`), `ResourceCoordinates` (`WorldOrigin` precedence over `domains::`, redacted `Debug`), `SecretValue`, `SecretProvider: Send + Sync` (`&self`), `EntropySource: Send + Sync` (`&self`) |
 | `crates/slipfork-dag` | M1 (shipped) + M2 `[resources]` (`M2.5`) + `WorldImageConfig` (`M2.26`, shipped in `0.1.0`) + `M3.28.11` `fs` sweep | `#![forbid(unsafe_code)]`; depends on `slipfork-world` (zero `slipfork-snow`/`slipfork-engine`/`std::env`/`std::fs`/clock dep; `M3.28.11` deletes `src/fs.rs` `FsMerkleHasher`/`FsDigestCache` and the `fs` feature alongside `slipfork dag`) | Root `SlipforkConfig` (`project`, `artifacts`, `fixtures`, `test: TestSpec`, M2 `resources: ResourcesSpec`, M2 `world: WorldImageConfig { image, stage }` — two optional keys under `#[serde(deny_unknown_fields)]`, `ADR-0009` §1), `ArtifactSpec` + `FixtureSpec` (`per_world: bool`), `TestSpec` / `CoverageConfig` / `CoverageThreshold` (shipped in `0.1.0`), M2 `ResourceMode { Local, Test }`, `ResourceStrategy { Local, PreferRemote, Remote }`, `DumpPolicy`, `RemoteResourceOffer`, and single `ResourcePlan::resolve(...)` (`ADR-0008` §3); `DagPlanner`/`InputHasher`/`DigestCache` and `SupportRegistry` are not wired into the `0.1.0` composition root (retained because protected `critical_dag.rs` / `critical_support.rs` pin them and `0.2.0`'s `slipfork test` consumes the planner) |
 | `crates/slipfork-ospp` | M2 (`M2.13`–`M2.14`) + `0.1.0` `open_origin` (`M3.28.9`) | `#![forbid(unsafe_code)]`; depends on `slipfork-world`, `slipfork-snow`, `slipfork-dag`, `tungstenite` + `rustls` + `webpki-roots` (sync), `p256`, `zstd`, pinned git `tpmd-client` + `tpmd-ipc` (`rev = "90cb2db..."`) + private `tokio` (`rt`/`net`/`time` confined to `TpmdDeviceKeySigner`); zero `std::env`, zero `slipfork-engine` dep | Slipfork-owned `OSPP v1` sync WebSocket client (`ospp-v1` subprotocol, 16 KiB text-frame cap, `"ospp-v1" \|\| nonce_s(32) \|\| nonce_c(32) \|\| server_name`), `DeviceKeySigner` (`KeyId` = `p256:<66 hex>`, 64-byte raw `r \|\| s` `DeviceSignature`; generic `FallbackDeviceKeySigner<P, F>`, `TpmdDeviceKeySigner` [`sealed` floor, `ResumeOrCreate` over `KeyStorePaths`], `SoftwareP256Signer` [`DeviceKeyStore` + `EntropySource`]), fragment-only `PairingUrl` + zeroizing `LivePairingUrl` + env-free `BrowserOpener` (`open_pairing_url` + `open_origin`; sole prod adapter `SystemBrowserOpener` in `crates/slipfork/src/browser.rs`), `OsppSecretProvider` (zero fs writes), `RemoteResourceBundle` + single `OsppClient::resource_offer() -> Option<slipfork_dag::RemoteResourceOffer>` mapper, and bounded-window `zstd` `DumpStreamer` over `SeedDumpStore` (`ADR-0008` §1–§3) |
@@ -665,12 +665,18 @@ pub struct ServiceImageLineage { pub id: String, pub cache: ServiceCache, pub mi
 /// Per-world boot lineage recorded on that world's handle from `WorldSpec.rootfs` (`WorldRootfs` + `OciRootfs`) and
 /// `ensure_base` / `clone_world` measurements on the engine's injected monotonic clock (`M3.28.3`–`M3.28.4`,
 /// `docs/design/dx-0.1.0-ux.md` §8.2; unknown facts stay `None` / JSON `null` and render `-` in human output, never `0`).
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorldLineage {
     pub rootfs: Option<RootfsLineage>,
     pub base: Option<BaseLineage>,
     pub seed: Option<SeedLineage>,
     pub services: Vec<ServiceImageLineage>,
+}
+
+impl WorldLineage {
+    /// Interim constructor: no engine facts recorded yet (`M3.28.4` fills them); every optional
+    /// fact is `None` and `services` is empty, so a renderer prints `-`, never `0`.
+    pub fn unknown() -> Self;
 }
 
 /// Distinct signatures separate RO snapshot creation (`create_snapshot`, `freeze_world`) from writable
@@ -815,16 +821,29 @@ pub struct UnitSpec {
 } // render_socket_unit(&UnitSpec) -> String (WantedBy=sockets.target);
   // render_service_unit(&UnitSpec) -> String (`M3.28.6` adds Requires=slipforkd.socket, After=slipforkd.socket, WantedBy=multi-user.target; ADR-0011 §1)
 
+/// Actually bound / `LISTEN_FDS`-adopted HTTP listeners plus the one origin port (`M3.28.3`).
+/// Fields are private: `IngressInfo::new(addrs)` derives `port` from the listeners and fails closed
+/// (`EdgeError::IngressMissing` / `IngressPortInvalid`) on an empty set, an unbound `:0`, or
+/// listeners that disagree on the port; `#[serde(try_from = "IngressInfoFrame")]` re-validates a
+/// forged frame, so a daemon can never report a guessed `:0`. `addrs` order is non-semantic.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "IngressInfoFrame")]
 pub struct IngressInfo {
-    pub addrs: Vec<std::net::SocketAddr>, // actually bound / LISTEN_FDS-adopted HTTP listeners; order is non-semantic (`M3.28.3`)
-    pub port: u16,                        // validated present in `addrs` (`addrs.iter().any(|a| a.port() == port)`), else fail closed
+    addrs: Vec<std::net::SocketAddr>,
+    port: u16,
+}
+
+impl IngressInfo {
+    pub fn new(addrs: Vec<std::net::SocketAddr>) -> Result<Self, EdgeError>;
+    pub fn addrs(&self) -> &[std::net::SocketAddr];
+    pub fn port(&self) -> u16;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorldSummary {
-    pub world: WorldId,
-    pub parent: Option<WorldId>, // canonical: `None`; fork: `Some(<project>)`
+    pub world: String,           // canonical `<project>` / `<project>:<fork>` (`registry::world_id`);
+                                 // the typed `WorldId` newtype is `0.2.0` target state (`ADR-0005` §3)
+    pub parent: Option<String>,  // canonical: `None`; fork: `Some(<project>)` (`registry::parent_world`)
     pub state: WorldState,
     pub origin: WorldOrigin,
     pub worktree: PathBuf,
@@ -841,14 +860,16 @@ pub struct DaemonStatus {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorldServiceSummary {
-    pub world: WorldId,
-    pub id: String,
-    pub kind: ServiceKind,
-    pub state: ServiceState,     // engine's `ServiceState` enum (`Serialize`/`Deserialize` snake_case), never `String`
-    pub pid: Option<u32>,        // `None` renders `-` in human `ps`, never `0`
-    pub port: Option<u16>,
-    pub uptime_secs: Option<u64>, // stamped by the engine from its injected monotonic clock
+    pub world: String,                  // canonical world id the row belongs to
+    #[serde(flatten)]
+    pub info: WorldServiceInfo,         // the engine's own row (`slipfork-engine::lineage`), flattened into the same JSON object
 }
+
+// `slipfork-engine` (single model; `slipfork-edge` re-exports it for the wire):
+//   pub struct WorldServiceInfo { id: String, kind: ServiceKind, state: ServiceState,
+//                                 pid: Option<u32>, port: Option<u16>, uptime_secs: Option<u64> }
+// `state` is the engine's `ServiceState` (`Serialize`/`Deserialize` snake_case), never `String`;
+// `pid`/`port`/`uptime_secs` are `None` while the engine has no such record and render `-`, never `0`.
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorldProcessReport {
@@ -874,7 +895,7 @@ pub struct WorldUpSummary {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorldSelector {
     pub cwd: PathBuf,
-    pub world: Option<WorldId>, // M3 target state (`ADR-0005` §3): `None` resolves nearest world from `cwd`
+    pub world: Option<String>,  // canonical world id; `None` resolves the nearest world from `cwd` (`ADR-0005` §3)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -962,8 +983,11 @@ pub struct WorldExecTarget {
 }
 
 /// Canonical display, `--json`, & wire world identifier (`crates/slipfork-edge/src/registry.rs`, `ADR-0005` §3):
-/// delegates to `WorldId::from_parts` — zero second formatter.
-pub fn world_id(project: &ProjectSlug, target: &WorldTarget) -> WorldId;
+/// the single `0.1.0` formatter (`<project>` / `<project>:<fork>`); zero second formatter.
+pub fn world_id(project: &ProjectSlug, target: &WorldTarget) -> String;
+
+/// the single target -> parent relation (`None` canonical, `Some(<project>)` fork).
+pub fn parent_world(project: &ProjectSlug, target: &WorldTarget) -> Option<String>;
 
 /// Single CLI `--world` selector entry point (`crates/slipfork::project`, M3.15 target state; `ADR-0005` §3):
 /// callers resolve `cwd` via `RepoRootResolver` first, then delegate here (`WorldId::parse_selector(selector, &repo.project)`).

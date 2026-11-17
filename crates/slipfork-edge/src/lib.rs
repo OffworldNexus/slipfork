@@ -58,14 +58,20 @@ pub use daemon::server::DaemonControlServer;
 pub use daemon::{
     AuthSummary, BootEvent, DaemonControl, DaemonError, DaemonErrorKind, DaemonStatus,
     DropForkRequest, DumpRequest, ExecTargetRequest, ForkRequest, ForwardRequest, ForwardSummary,
-    ForwardTarget, HookRunRequest, LogsRequest, PruneReport, ResourceRequest, ResourceSummary,
-    SnowResolveRequest, SnowResolveSummary, UpRequest, WorldExecTarget, WorldSelector, WorldState,
-    WorldSummary, WorldUpSummary,
+    ForwardTarget, HookRunRequest, IngressInfo, LogsRequest, PruneReport, ResourceRequest,
+    ResourceSummary, SnowResolveRequest, SnowResolveSummary, UpRequest, WorldExecTarget,
+    WorldProcessReport, WorldSelector, WorldServiceSummary, WorldState, WorldSummary,
+    WorldUpSummary,
 };
 pub use forward::{ForwardBridge, ForwardTargetSpec};
 pub use ingress::HttpIngress;
 pub use registry::{
-    IngressRoute, RouteDecision, RoutedWorld, SharedWorldInfo, WorldRegistry, world_id,
+    IngressRoute, RouteDecision, RoutedWorld, SharedWorldInfo, WorldRegistry, parent_world,
+    world_id,
+};
+pub use slipfork_engine::{
+    BaseLineage, LineageCache, RootfsLineage, SeedLineage, ServiceCache, ServiceImageLineage,
+    ServiceKind, WorldLineage, WorldServiceInfo,
 };
 pub use tunnel::UnavailableTunnelRegistrar;
 pub use unit::{UnitSpec, render_service_unit, render_socket_unit};
@@ -114,6 +120,21 @@ pub enum EdgeError {
     ListenerAddress {
         /// Underlying OS error.
         message: String,
+    },
+
+    /// The daemon reported no bound HTTP ingress listener at all.
+    #[error(
+        "the daemon reported no bound HTTP ingress listener, so no origin can be named: start it with `slipfork up` (or from the slipforkd.socket unit) so a real port is bound"
+    )]
+    IngressMissing,
+
+    /// The daemon's ingress report does not carry one real, bound origin port.
+    #[error(
+        "the daemon reported an unusable HTTP ingress: {reason}; every origin needs one bound port, never `:0`"
+    )]
+    IngressPortInvalid {
+        /// What is wrong with the reported listener set.
+        reason: String,
     },
 
     /// A user-private pathname socket does not fit the kernel's `AF_UNIX` pathname budget.

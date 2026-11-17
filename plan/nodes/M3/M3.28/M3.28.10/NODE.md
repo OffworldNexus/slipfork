@@ -6,12 +6,17 @@ status: ready
 owner: implementer
 priority: 3
 depends_on: [M3.28.9]
-paths: [crates/slipfork/src/cli.rs, crates/slipfork/src/main.rs, crates/slipfork/tests/critical_cli.rs]
+paths:
+  - crates/slipfork/src/cli.rs
+  - crates/slipfork/src/main.rs
+  - crates/slipfork/src/vcs.rs
+  - crates/slipfork/src/daemon.rs
+  - crates/slipfork/tests/critical_cli.rs
 attempts: 0
 max_attempts: 3
 escalation: none
 created: "2026-11-17T16:33"
-updated: "2026-11-17T16:33"
+updated: "2026-11-17T18:55"
 ---
 
 # Goal
@@ -41,6 +46,8 @@ $ cargo test -p slipfork --test critical_cli -- --test-threads=1
 ... test result: ok
 $ ! grep -rn 'commit-tree\|rev-parse' crates/slipfork/src && echo no-git-in-cli
 no-git-in-cli
+$ grep -rq 'current_branch' crates/slipfork/src/vcs.rs && echo vcs-branch-wired
+vcs-branch-wired
 $ cargo clippy --workspace --all-targets -- -D warnings
     Finished
 ```

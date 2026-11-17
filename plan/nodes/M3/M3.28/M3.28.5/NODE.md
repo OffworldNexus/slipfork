@@ -2,16 +2,23 @@
 id: M3.28.5
 title: "VCS: branch-named fork source, pinned slipfork snapshot identity, and one-line git errors"
 kind: task
-status: ready
+status: active
 owner: implementer
 priority: 3
 depends_on: [M3.28.2]
-paths: ["crates/slipfork-vcs/src/**", "crates/slipfork-vcs/tests/**"]
-attempts: 0
-max_attempts: 3
+paths:
+  - "crates/slipfork-vcs/src/**"
+  - "crates/slipfork-vcs/tests/**"
+  - "crates/slipfork-vcs/Cargo.toml"
+  - crates/slipfork/src/vcs.rs
+  - "crates/slipfork-world/src/**"
+  - Makefile
+  - tools/rs_test_list.py
+attempts: 4
+max_attempts: 4
 escalation: none
 created: "2026-11-17T16:32"
-updated: "2026-11-17T16:32"
+updated: "2026-11-17T19:12"
 ---
 
 # Goal

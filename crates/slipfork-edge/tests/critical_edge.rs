@@ -28,10 +28,12 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use slipfork_edge::daemon::{
-    AuthSummary, BootEvent, DaemonControl, DaemonErrorKind, DaemonStatus, DropForkRequest,
-    DumpRequest, ExecTargetRequest, ForkRequest, ForwardRequest, ForwardSummary, HookRunRequest,
-    LogsRequest, PruneReport, ResourceRequest, ResourceSummary, UpRequest, WorldExecTarget,
-    WorldSelector, WorldState, WorldSummary, WorldUpSummary,
+    AuthSummary, BaseLineage, BootEvent, DaemonControl, DaemonError, DaemonErrorKind, DaemonStatus,
+    DropForkRequest, DumpRequest, ExecTargetRequest, ForkRequest, ForwardRequest, ForwardSummary,
+    HookRunRequest, IngressInfo, LineageCache, LogsRequest, PruneReport, ResourceRequest,
+    ResourceSummary, RootfsLineage, SeedLineage, ServiceCache, ServiceImageLineage, ServiceKind,
+    UpRequest, WorldExecTarget, WorldLineage, WorldProcessReport, WorldSelector,
+    WorldServiceSummary, WorldState, WorldSummary, WorldUpSummary,
 };
 use slipfork_edge::{
     DaemonControlClient, DaemonControlServer, EdgeError, ForwardTargetSpec, HttpIngress,
@@ -44,8 +46,9 @@ use slipfork_engine::rootfs::{
     ElfAbi, ImageContractMetadata, LibcFamily, OsRelease, RootfsDigest, WorldRootfs,
 };
 use slipfork_engine::{
-    EngineError, ExecEnv, ExecOutput, ServiceHandle, ServiceLogs, ServiceSpec, SnapshotId,
-    StreamChunk, StreamSource, WorldEngine, WorldEntryCommand, WorldHandle, WorldSpec,
+    EngineError, ExecEnv, ExecOutput, ServiceHandle, ServiceLogs, ServiceSpec, ServiceState,
+    SnapshotId, StreamChunk, StreamSource, WorldEngine, WorldEntryCommand, WorldHandle,
+    WorldServiceInfo, WorldSpec,
 };
 use slipfork_world::{
     LocalHostRoute, ProjectSlug, TunnelError, TunnelLease, TunnelRegistrar, TunnelRequest,
@@ -305,7 +308,7 @@ fn probe_one_http_listener() {
         "LISTEN_FDS=1 must not invent a forward listener"
     );
     assert_eq!(
-        listeners.http_port().expect("bound port"),
+        listeners.http_addrs().expect("bound port")[0].port(),
         expected_port,
         "the adopted fd 3 must be the parent's listening socket"
     );
@@ -345,7 +348,10 @@ fn probe_descriptor_order() {
         .as_ref()
         .expect("the trailing LISTEN_FDS=3 descriptor is the forward listener");
     assert_would_block(forward, "forward listener");
-    assert_eq!(listeners.http_port().expect("bound port"), expected_port);
+    assert_eq!(
+        listeners.http_addrs().expect("bound port")[0].port(),
+        expected_port
+    );
     assert_eq!(
         forward.local_addr().expect("forward address").port(),
         expected_port
@@ -407,7 +413,10 @@ fn probe_listen_mode() {
         without_forward.forward_listener.is_none(),
         "--listen without --forward-port must not bind a forward listener"
     );
-    assert_ne!(without_forward.http_port().expect("bound port"), 0);
+    assert_ne!(
+        without_forward.http_addrs().expect("bound port")[0].port(),
+        0
+    );
     assert_would_block(
         &without_forward.http_listeners[0],
         "--listen HTTP ingress listener",
@@ -428,7 +437,7 @@ fn probe_listen_mode() {
         "the planned forward listener is loopback-only"
     );
     assert_ne!(
-        with_forward.http_port().expect("http port"),
+        with_forward.http_addrs().expect("http port")[0].port(),
         forward.local_addr().expect("forward address").port()
     );
 }
@@ -1115,7 +1124,7 @@ fn unix_ingress_sock_is_0600_and_serves_identical_404() {
         .expect("attach the canonical world");
 
     let listeners = bind_listen(&listen_local()).expect("bind --listen 127.0.0.1:0");
-    let port = listeners.http_port().expect("bound ingress port");
+    let port = listeners.http_addrs().expect("bound ingress port")[0].port();
     let ingress =
         HttpIngress::bind(&state, listeners, Arc::clone(&registry)).expect("bind the ingress");
     let socket = ingress.unix_socket_path().to_path_buf();
@@ -1542,7 +1551,7 @@ fn start_ingress_with_timeout(
     relay_timeout: Duration,
 ) -> u16 {
     let listeners = bind_listen(&listen_local()).expect("bind --listen 127.0.0.1:0");
-    let port = listeners.http_port().expect("bound ingress port");
+    let port = listeners.http_addrs().expect("bound ingress port")[0].port();
     let ingress = HttpIngress::bind(state, listeners, registry)
         .expect("bind the ingress")
         .with_relay_timeout(relay_timeout);
@@ -2183,17 +2192,21 @@ struct TestControl {
     project: ProjectSlug,
     target: WorldTarget,
     forward_port: u16,
+    ingress: IngressInfo,
     last_cwd: Mutex<Option<PathBuf>>,
     secret_values: Mutex<Vec<String>>,
 }
 
 impl TestControl {
     fn new(registry: Arc<WorldRegistry>, forward_port: u16) -> Self {
+        // `registry_over` models a `:80` ingress, so the status report mirrors that bind.
+        let ingress = ingress_info(80);
         Self {
             registry,
             project: acme(),
             target: WorldTarget::Canonical,
             forward_port,
+            ingress,
             last_cwd: Mutex::new(None),
             secret_values: Mutex::new(Vec::new()),
         }
@@ -2203,12 +2216,18 @@ impl TestControl {
         *self.last_cwd.lock().expect("last cwd") = Some(cwd.to_path_buf());
     }
 
+    fn world_text(&self) -> String {
+        slipfork_edge::world_id(&self.project, &self.target)
+    }
+
     fn summary(&self) -> Result<WorldSummary, EdgeError> {
         Ok(WorldSummary {
-            world: slipfork_edge::world_id(&self.project, &self.target),
+            world: self.world_text(),
+            parent: None,
             state: WorldState::Running,
             origin: self.registry.origin(&self.project, &self.target)?,
             worktree: PathBuf::from("/repo"),
+            lineage: WorldLineage::unknown(),
         })
     }
 
@@ -2230,7 +2249,7 @@ impl DaemonControl for TestControl {
     fn status(&self) -> Result<DaemonStatus, EdgeError> {
         Ok(DaemonStatus {
             pid: std::process::id(),
-            http_ingress_port: self.registry.http_ingress_port(),
+            ingress: self.ingress.clone(),
             forward_port: self.registry.planned_forward_port(),
             worlds: vec![self.summary()?],
         })
@@ -2280,6 +2299,36 @@ impl DaemonControl for TestControl {
 
     fn list(&self, _repo_root: Option<&Path>) -> Result<Vec<WorldSummary>, EdgeError> {
         Ok(vec![self.summary()?])
+    }
+
+    fn world_processes(&self, req: &WorldSelector) -> Result<WorldProcessReport, EdgeError> {
+        self.record_cwd(&req.cwd);
+        let world = self.world_text();
+        match req.world.as_deref() {
+            // The only world this control holds; anything else is unknown, never an empty report.
+            None => {}
+            Some(selected) if selected == world => {}
+            Some(selected) => {
+                return Err(EdgeError::Control(DaemonError::new(
+                    DaemonErrorKind::UnknownWorld,
+                    format!("no world '{selected}' here; boot it with `slipfork up`"),
+                )));
+            }
+        }
+        // One running component and one stopped backing service: a stopped row keeps its row.
+        WorldProcessReport::new(
+            WorldState::Running,
+            WorldLineage::unknown(),
+            vec![
+                service_row(
+                    &world,
+                    "pg_databases.main",
+                    ServiceKind::BackingService,
+                    ServiceState::Stopped,
+                ),
+                service_row(&world, "api", ServiceKind::Component, ServiceState::Running),
+            ],
+        )
     }
 
     fn prune(&self, dry_run: bool) -> Result<PruneReport, EdgeError> {
@@ -2971,7 +3020,7 @@ fn unit_privileged_80_is_allowed_and_renders() {
     })) {
         Ok(listeners) => {
             // A privileged runner (root in CI) may bind :80; that is the successful path.
-            assert_eq!(listeners.http_port().expect("bound :80"), 80);
+            assert_eq!(listeners.http_addrs().expect("bound :80")[0].port(), 80);
         }
         Err(EdgeError::BindListener { addr, message }) => {
             assert_eq!(addr, "127.0.0.1:80");
@@ -3194,4 +3243,393 @@ fn socket_activate_systemd_handover() {
         }
     }
     let _ = fs::remove_dir_all(&state);
+}
+
+// ---------------------------------------------------------------------------------------------
+// M3.28.3 daemon truth: bound ingress, world parent, per-world lineage & process rows
+// ---------------------------------------------------------------------------------------------
+
+/// One `*.localhost` origin for the wire-shape tests (`:80` renders port-less).
+fn test_origin(project: &str, port: u16) -> WorldOrigin {
+    let project = ProjectSlug::parse(project).expect("valid project slug");
+    let route = LocalHostRoute::new(project, WorldTarget::Canonical, None, &[])
+        .expect("default-ingress route");
+    WorldOrigin::local(&route, port).expect("local origin")
+}
+
+/// The one ingress fixture: the `:80` model bind `registry_over` builds.
+fn ingress_info(port: u16) -> IngressInfo {
+    IngressInfo::new(vec![SocketAddr::from((Ipv4Addr::LOCALHOST, port))]).expect("valid ingress")
+}
+
+/// The one service-row fixture: a wire row with no engine-measured facts yet.
+fn service_row(
+    world: &str,
+    id: &str,
+    kind: ServiceKind,
+    state: ServiceState,
+) -> WorldServiceSummary {
+    WorldServiceSummary {
+        world: world.to_owned(),
+        info: WorldServiceInfo {
+            id: id.to_owned(),
+            kind,
+            state,
+            pid: None,
+            port: None,
+            uptime_secs: None,
+        },
+    }
+}
+
+const FULL_DIGEST: &str = "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90";
+
+#[test]
+fn ingress_info_round_trips_port_80_and_ephemeral_binds() {
+    // Socket activation: `127.0.0.1:80` and `[::1]:80`; the order of `addrs` is non-semantic.
+    let eighty: Vec<SocketAddr> = vec![
+        "127.0.0.1:80".parse().expect("v4 port 80"),
+        "[::1]:80".parse().expect("v6 port 80"),
+    ];
+    let info = IngressInfo::new(eighty.clone()).expect("a real :80 listener set");
+    assert_eq!(info.port(), 80);
+    assert_eq!(info.addrs(), eighty.as_slice());
+    let mut reversed = eighty.clone();
+    reversed.reverse();
+    assert_eq!(
+        IngressInfo::new(reversed)
+            .expect("order is non-semantic")
+            .port(),
+        info.port()
+    );
+    let json = serde_json::to_value(&info).expect("serialize ingress info");
+    assert_eq!(
+        json,
+        serde_json::json!({ "addrs": ["127.0.0.1:80", "[::1]:80"], "port": 80 })
+    );
+    assert_eq!(
+        serde_json::from_value::<IngressInfo>(json).expect("round-trip ingress info"),
+        info
+    );
+
+    // Ephemeral `--listen 127.0.0.1:0`: the bound port (never `0`) is the origin port.
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind an ephemeral listener");
+    let bound = listener.local_addr().expect("bound address");
+    assert_ne!(bound.port(), 0, "a bound listener never reports :0");
+    let ephemeral = IngressInfo::new(vec![bound]).expect("a real ephemeral bind");
+    assert_eq!(ephemeral.port(), bound.port());
+    assert!(
+        ephemeral
+            .addrs()
+            .iter()
+            .any(|addr| addr.port() == ephemeral.port())
+    );
+    let ephemeral_json = serde_json::to_value(&ephemeral).expect("serialize ephemeral ingress");
+    assert_eq!(
+        serde_json::from_value::<IngressInfo>(ephemeral_json).expect("ephemeral round-trip"),
+        ephemeral
+    );
+
+    // Fail closed: no listener, an unbound `:0`, or listeners that disagree on the port.
+    assert!(matches!(
+        IngressInfo::new(Vec::new()),
+        Err(EdgeError::IngressMissing)
+    ));
+    assert!(matches!(
+        IngressInfo::new(vec!["127.0.0.1:0".parse().expect("port 0")]),
+        Err(EdgeError::IngressPortInvalid { .. })
+    ));
+    assert!(matches!(
+        IngressInfo::new(vec![
+            "127.0.0.1:80".parse().expect("port 80"),
+            "[::1]:8080".parse().expect("port 8080"),
+        ]),
+        Err(EdgeError::IngressPortInvalid { .. })
+    ));
+    // A forged frame whose `port` is not carried by `addrs` is a typed error, never a silent pass.
+    let forged = serde_json::json!({ "addrs": ["127.0.0.1:80"], "port": 81 });
+    let err = serde_json::from_value::<IngressInfo>(forged)
+        .expect_err("an origin port absent from addrs must fail closed");
+    assert!(
+        err.to_string()
+            .contains("not carried by any bound listener"),
+        "the refusal must name the unbound port, got: {err}"
+    );
+}
+
+#[test]
+fn world_summary_parent_and_lineage_survive_serde() {
+    let canonical = WorldSummary {
+        world: "acme".to_owned(),
+        parent: None,
+        state: WorldState::Running,
+        origin: test_origin("acme", 80),
+        worktree: PathBuf::from("/repo"),
+        lineage: WorldLineage::unknown(),
+    };
+    let fork = WorldSummary {
+        world: "acme:feat-ux".to_owned(),
+        parent: Some("acme".to_owned()),
+        state: WorldState::Stopped,
+        origin: test_origin("acme", 80),
+        worktree: PathBuf::from("/repo/.worktrees/feat-ux"),
+        lineage: WorldLineage::unknown(),
+    };
+
+    let canonical_json = serde_json::to_value(&canonical).expect("serialize canonical summary");
+    assert_eq!(
+        canonical_json.get("parent"),
+        Some(&serde_json::Value::Null),
+        "the canonical world's parent must be present and null, never omitted"
+    );
+    assert_eq!(
+        canonical_json.get("lineage"),
+        Some(&serde_json::json!({
+            "rootfs": null,
+            "services": [],
+            "seed": null,
+            "base": null,
+        })),
+        "an unknown lineage must carry every key with null/[] and no zeroed fact"
+    );
+    let fork_json = serde_json::to_value(&fork).expect("serialize fork summary");
+    assert_eq!(
+        fork_json.get("parent"),
+        Some(&serde_json::Value::String("acme".to_owned()))
+    );
+    assert_eq!(
+        serde_json::from_value::<WorldSummary>(fork_json).expect("fork summary round-trip"),
+        fork
+    );
+
+    // Every `Option` fact present: nulls stay null, a measured 0 stays 0, enums keep their spelling.
+    let measured = WorldLineage {
+        rootfs: Some(RootfsLineage {
+            digest: FULL_DIGEST.to_owned(),
+            cache: LineageCache::Hit,
+            millis: None,
+        }),
+        services: vec![ServiceImageLineage {
+            id: "postgres:18".to_owned(),
+            cache: ServiceCache::MissOffline,
+            millis: Some(12),
+        }],
+        seed: Some(SeedLineage {
+            digest: None,
+            rebuilt: Some(false),
+            millis: None,
+        }),
+        base: Some(BaseLineage {
+            key: FULL_DIGEST.to_owned(),
+            millis: Some(0),
+        }),
+    };
+    let measured_json = serde_json::to_value(&measured).expect("serialize measured lineage");
+    assert_eq!(measured_json["rootfs"]["cache"], serde_json::json!("hit"));
+    assert_eq!(measured_json["rootfs"]["millis"], serde_json::Value::Null);
+    assert_eq!(
+        measured_json["services"][0]["cache"],
+        serde_json::json!("miss_offline")
+    );
+    assert_eq!(
+        measured_json["services"][0]["millis"],
+        serde_json::json!(12)
+    );
+    assert_eq!(measured_json["seed"]["digest"], serde_json::Value::Null);
+    assert_eq!(measured_json["seed"]["rebuilt"], serde_json::json!(false));
+    assert_eq!(measured_json["base"]["millis"], serde_json::json!(0));
+    assert_eq!(
+        serde_json::from_value::<WorldLineage>(measured_json).expect("lineage round-trip"),
+        measured
+    );
+
+    // `DaemonStatus` carries `ingress` and never a daemon-wide lineage or the retired port field.
+    let status = DaemonStatus {
+        pid: 1420,
+        ingress: ingress_info(80),
+        forward_port: Some(7080),
+        worlds: vec![canonical, fork],
+    };
+    let status_json = serde_json::to_value(&status).expect("serialize daemon status");
+    assert_eq!(status_json["ingress"]["port"], serde_json::json!(80));
+    assert_eq!(
+        status_json["ingress"]["addrs"],
+        serde_json::json!(["127.0.0.1:80"])
+    );
+    assert!(
+        status_json.get("lineage").is_none(),
+        "there is no daemon-wide lineage: a world's facts live on its own summary"
+    );
+    assert!(
+        status_json.get("http_ingress_port").is_none(),
+        "the retired scalar port must not reappear beside the typed ingress"
+    );
+    assert_eq!(
+        serde_json::from_value::<DaemonStatus>(status_json).expect("status round-trip"),
+        status
+    );
+}
+
+#[test]
+fn world_process_reports_are_world_scoped_and_keep_stopped_rows() {
+    let canonical = WorldProcessReport::new(
+        WorldState::Running,
+        WorldLineage::unknown(),
+        vec![
+            service_row("acme", "api", ServiceKind::Component, ServiceState::Running),
+            service_row(
+                "acme",
+                "pg_databases.main",
+                ServiceKind::BackingService,
+                ServiceState::Stopped,
+            ),
+        ],
+    )
+    .expect("unique ids");
+    let fork = WorldProcessReport::new(
+        WorldState::Stopped,
+        WorldLineage::unknown(),
+        vec![service_row(
+            "acme:feat",
+            "api",
+            ServiceKind::Component,
+            ServiceState::Exited,
+        )],
+    )
+    .expect("unique ids");
+
+    // Two worlds never share a row: every row carries its own world id.
+    assert!(
+        canonical
+            .services
+            .iter()
+            .all(|service| service.world == "acme")
+    );
+    assert!(
+        fork.services
+            .iter()
+            .all(|service| service.world == "acme:feat")
+    );
+    for left in &canonical.services {
+        assert!(
+            !fork
+                .services
+                .iter()
+                .any(|right| right.world == left.world && right.info.id == left.info.id),
+            "a row may never appear in two worlds"
+        );
+    }
+
+    // A stopped service keeps its row; its unknown facts stay `None` (rendered `-`, never `0`).
+    let stopped = canonical
+        .services
+        .iter()
+        .find(|service| service.info.id == "pg_databases.main")
+        .expect("the stopped backing service keeps its row");
+    assert_eq!(stopped.info.state, ServiceState::Stopped);
+    assert_eq!(stopped.info.kind, ServiceKind::BackingService);
+    assert_eq!(stopped.info.pid, None);
+    assert_eq!(stopped.info.port, None);
+    assert_eq!(stopped.info.uptime_secs, None);
+
+    // The engine's `ServiceState` crosses the wire as its snake_case spelling, fail-closed.
+    let json = serde_json::to_value(&canonical).expect("serialize the process report");
+    assert_eq!(json["state"], serde_json::json!("running"));
+    assert_eq!(json["services"][1]["state"], serde_json::json!("stopped"));
+    assert_eq!(
+        json["services"][1]["kind"],
+        serde_json::json!("backing_service")
+    );
+    assert_eq!(json["services"][1]["pid"], serde_json::Value::Null);
+    assert_eq!(
+        serde_json::from_value::<WorldProcessReport>(json).expect("process report round-trip"),
+        canonical
+    );
+    let mut unknown_state = serde_json::to_value(&canonical).expect("serialize the process report");
+    unknown_state["services"][0]["state"] = serde_json::json!("zombie");
+    assert!(
+        serde_json::from_value::<WorldProcessReport>(unknown_state).is_err(),
+        "an unknown service state must fail closed, never default"
+    );
+
+    // Duplicate ids are refused: `services[].id` stays a 1:1 join key.
+    let duplicate = WorldProcessReport::new(
+        WorldState::Running,
+        WorldLineage::unknown(),
+        vec![
+            service_row("acme", "api", ServiceKind::Component, ServiceState::Running),
+            service_row(
+                "acme",
+                "api",
+                ServiceKind::BackingService,
+                ServiceState::Running,
+            ),
+        ],
+    )
+    .expect_err("two rows with one id must fail closed");
+    assert!(
+        duplicate.to_string().contains("unique ids"),
+        "the refusal must name the id-uniqueness rule, got: {duplicate}"
+    );
+}
+
+#[test]
+fn daemon_control_reports_world_processes_over_the_socket() {
+    let state = cached_test_dir("world-processes");
+    let registry = ready_registry(&state);
+    let control = Arc::new(TestControl::new(registry, spawn_tcp_echo()));
+    start_control_server(&state, Arc::clone(&control));
+    let client = DaemonControlClient::bind(&state);
+    let cwd = PathBuf::from("/tmp/opencode/project");
+
+    let report = client
+        .world_processes(&WorldSelector {
+            cwd: cwd.clone(),
+            world: None,
+        })
+        .expect("world_processes");
+    assert_eq!(report.state, WorldState::Running);
+    // The interim lineage is the shape the CLI renders: every fact null, no service-image rows.
+    assert_eq!(
+        serde_json::to_value(&report.lineage).expect("serialize the interim lineage"),
+        serde_json::json!({
+            "rootfs": null,
+            "services": [],
+            "seed": null,
+            "base": null,
+        })
+    );
+    assert_eq!(report.services.len(), 2);
+    assert!(
+        report
+            .services
+            .iter()
+            .all(|service| service.world == "acme")
+    );
+    assert!(
+        report
+            .services
+            .iter()
+            .any(|service| service.info.state == ServiceState::Stopped),
+        "a stopped service keeps its row"
+    );
+
+    // An unknown world is a typed error across the wire, never an empty report.
+    let unknown = client
+        .world_processes(&WorldSelector {
+            cwd: cwd.clone(),
+            world: Some("acme:ghost".to_owned()),
+        })
+        .expect_err("an unknown world must fail closed");
+    match unknown {
+        EdgeError::Control(error) => {
+            assert_eq!(error.kind, DaemonErrorKind::UnknownWorld);
+            assert!(
+                error.message.contains("acme:ghost"),
+                "the refusal must name the world, got: {}",
+                error.message
+            );
+        }
+        other => panic!("expected a typed UnknownWorld error, got {other:?}"),
+    }
 }

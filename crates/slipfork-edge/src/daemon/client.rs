@@ -18,7 +18,7 @@ use crate::daemon::{
     AuthSummary, BootEvent, DaemonControl, DaemonReply, DaemonRequest, DaemonStatus,
     DropForkRequest, ExecTargetRequest, ForkRequest, ForwardRequest, ForwardSummary,
     HookRunRequest, LogsRequest, MAX_CONTROL_FRAME, PruneReport, SharedWorldInfo, UpRequest,
-    WorldExecTarget, WorldSelector, WorldSummary, WorldUpSummary,
+    WorldExecTarget, WorldProcessReport, WorldSelector, WorldSummary, WorldUpSummary,
 };
 
 /// A client bound to `<runtime_dir>/daemon.sock` (never guessing `$XDG_RUNTIME_DIR`).
@@ -184,6 +184,13 @@ impl DaemonControl for DaemonControlClient {
             repo_root: repo_root.map(Path::to_path_buf),
         })? {
             DaemonReply::Worlds { worlds } => Ok(worlds),
+            other => Err(unexpected_reply(&other)),
+        }
+    }
+
+    fn world_processes(&self, req: &WorldSelector) -> Result<WorldProcessReport, EdgeError> {
+        match self.call(&DaemonRequest::WorldProcesses(req.clone()))? {
+            DaemonReply::Processes { report } => Ok(report),
             other => Err(unexpected_reply(&other)),
         }
     }

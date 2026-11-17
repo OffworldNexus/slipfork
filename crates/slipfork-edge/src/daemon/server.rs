@@ -178,6 +178,12 @@ fn dispatch(
                 worlds: control.list(repo_root.as_deref())?,
             },
         ),
+        DaemonRequest::WorldProcesses(request) => write_reply(
+            writer,
+            &DaemonReply::Processes {
+                report: control.world_processes(&request)?,
+            },
+        ),
         DaemonRequest::Prune { dry_run } => write_reply(
             writer,
             &DaemonReply::Prune {

@@ -23,7 +23,9 @@ use std::time::{Duration, Instant};
 use slipfork::daemon::{DaemonWiring, compose_daemon, host_caches};
 use slipfork::layout::{Layout, ensure_private_dir};
 use slipfork::runtime::{runtime_assets, target_arch};
-use slipfork_edge::{DaemonControlClient, DaemonControlServer, HttpIngress, ListenerSet};
+use slipfork_edge::{
+    DaemonControlClient, DaemonControlServer, HttpIngress, IngressInfo, ListenerSet,
+};
 use slipfork_engine::btrfs::{BTRFS_SUPER_MAGIC, KernelBtrfsDriver, SubvolumeDriver};
 use slipfork_engine::{InheritedVar, current_uid_gid};
 use slipfork_ospp::{BrowserOpener, LivePairingUrl, OsppError};
@@ -474,10 +476,12 @@ impl Daemon {
         // real without serving HTTP from the test process.
         let http_listener =
             std::net::TcpListener::bind(("127.0.0.1", 0)).expect("bind the ingress listener");
-        let http_ingress_port = http_listener
-            .local_addr()
-            .expect("ingress listener address")
-            .port();
+        let ingress = IngressInfo::new(vec![
+            http_listener
+                .local_addr()
+                .expect("ingress listener address"),
+        ])
+        .expect("describe the bound ingress");
         let inherited = InheritedVar::ALL
             .into_iter()
             .filter_map(|var| std::env::var(var.name()).ok().map(|value| (var, value)))
@@ -487,7 +491,7 @@ impl Daemon {
             layout,
             driver: Arc::new(TestTreeDriver::btrfs()),
             browser: Arc::new(MarkerBrowserOpener::new(browser_marker.clone())),
-            http_ingress_port,
+            ingress,
             forward_port: None,
             host_caches: host_caches(&home),
             inherited,

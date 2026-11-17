@@ -46,15 +46,22 @@ pub struct ListenerSet {
 }
 
 impl ListenerSet {
-    /// Port the TCP HTTP ingress is bound to (minted into `WorldOrigin::local`).
-    pub fn http_port(&self) -> Result<u16, EdgeError> {
-        let listener = self.http_listeners.first().ok_or(EdgeError::NoListener)?;
-        listener
-            .local_addr()
-            .map(|addr| addr.port())
-            .map_err(|err| EdgeError::ListenerAddress {
-                message: err.to_string(),
+    /// Addresses the TCP HTTP ingress is bound to (`127.0.0.1:80` and `[::1]:80` under socket
+    /// activation, or the single ephemeral `--listen` address), in descriptor order.
+    pub fn http_addrs(&self) -> Result<Vec<SocketAddr>, EdgeError> {
+        if self.http_listeners.is_empty() {
+            return Err(EdgeError::NoListener);
+        }
+        self.http_listeners
+            .iter()
+            .map(|listener| {
+                listener
+                    .local_addr()
+                    .map_err(|err| EdgeError::ListenerAddress {
+                        message: err.to_string(),
+                    })
             })
+            .collect()
     }
 }
 

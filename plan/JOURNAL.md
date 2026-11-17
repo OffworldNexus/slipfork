@@ -1044,3 +1044,35 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-17T18:47 [M3.28.2] (lead) attempt 4/4 started
 - 2026-11-17T18:52 [M3.28.2] (lead) status review -> done
 - 2026-11-17T18:52 [M3.28.2] (lead) pre-commit gates green after attempt 4 (S1-S7): plan.py validate, guard.py, critical_guard.py (no protected test), make check rc=0
+- 2026-11-17T18:52 [M3.28.3] (lead) status ready -> active
+- 2026-11-17T18:52 [M3.28.3] (lead) attempt 1/3 started
+- 2026-11-17T18:52 [M3.28.3] (lead) base f291377108292a04dfe5efe0e7627955466b889f
+- 2026-11-17T18:52 [M3.28.5] (lead) status ready -> active
+- 2026-11-17T18:52 [M3.28.5] (lead) attempt 1/3 started
+- 2026-11-17T18:52 [M3.28.5] (lead) base f291377108292a04dfe5efe0e7627955466b889f
+- 2026-11-17T18:55 [M3.28.5] (lead) edited fields
+- 2026-11-17T18:55 [M3.28.10] (lead) edited fields
+- 2026-11-17T18:55 [M3.28.5] (lead) lead ruling on the direction challenge: paths widened with crates/slipfork/src/vcs.rs (the router forward is a 7-line delegation, no fallback, no match ladder).
+- 2026-11-17T18:55 [M3.28.5] (lead) attempt 2/3 started
+- 2026-11-17T18:55 [M3.28.5] (lead) base f291377108292a04dfe5efe0e7627955466b889f
+- 2026-11-17T18:58 [M3.28.3] (lead) edited fields
+- 2026-11-17T18:58 [M3.28.3] (lead) lead rulings after attempt 1 (step cap, WIP on disk): (1) Wire uses canonical strings — world: String, parent: Option<String> carrying slipfork-edge registry::w
+- 2026-11-17T18:58 [M3.28.3] (lead) attempt 2/3 started
+- 2026-11-17T18:58 [M3.28.3] (lead) base f291377108292a04dfe5efe0e7627955466b889f
+- 2026-11-17T19:03 [M3.28.5] (lead) attempt 2 landed on disk but the worker returned no report and RESULT.md is still the attempt-1 text (treat it as stale). LEAD-VERIFIED acceptance evidence on t
+- 2026-11-17T19:03 [M3.28.5] (lead) status active -> review
+- 2026-11-17T19:07 [M3.28.5] (lead) edited fields
+- 2026-11-17T19:07 [M3.28.5] (lead) status review -> active
+- 2026-11-17T19:07 [M3.28.5] (lead) attempt 3/3 started
+- 2026-11-17T19:07 [M3.28.3] (lead) status active -> review
+- 2026-11-17T19:08 [M3.28.3] (lead) quad round 1 (cruft): FAIL — (a) http_port() and registry::http_ingress_port() dead accessors; (b) doc claims advertise data the node does not have (WorldUpSumm
+- 2026-11-17T19:09 [M3.28.3] (lead) IoC SPEC_BLIND_SPOT resolved (option A, matches ARCHITECTURE §2): the service taxonomy and the lineage record have ONE owner — crates/slipfork-engine. .3 moves 
+- 2026-11-17T19:09 [M3.28.5] (lead) quad round 1 rulings: (1) current_branch takes &RepoRoot (reverses my earlier &Path call — the newtype is what makes 'never cwd' structural); (2) kill the secon
+- 2026-11-17T19:09 [M3.28.5] (lead) edited fields
+- 2026-11-17T19:09 [M3.28.5] (lead) edited fields
+- 2026-11-17T19:11 [M3.28.3] (lead) edited fields
+- 2026-11-17T19:11 [M3.28.3] (lead) attempt 3/3 started
+- 2026-11-17T19:11 [M3.28.5] (lead) attempt 4/4 started
+- 2026-11-17T19:12 [M3.28.5] (lead) edited fields
+- 2026-11-17T19:39 [M3.28.3] (lead) status review -> done
+- 2026-11-17T19:39 [M3.28.3] (lead) quad gate round 3 closed all 8 findings (types moved to slipfork-engine/src/lineage.rs, shutdown removed, dead accessors removed, ARCHITECTURE 3.4 String wire, 

@@ -17,12 +17,17 @@ pub mod client;
 pub mod server;
 pub(crate) mod wire;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+pub use slipfork_engine::{
+    BaseLineage, LineageCache, RootfsLineage, SeedLineage, ServiceCache, ServiceImageLineage,
+    ServiceKind, WorldLineage, WorldServiceInfo,
+};
 use slipfork_engine::{ExecEnv, StreamChunk, WorldEntryCommand};
 use slipfork_world::WorldOrigin;
 
@@ -38,13 +43,93 @@ pub const MAX_CONTROL_FRAME: usize = 64 * 1024;
 /// Largest `StreamChunk` payload emitted per frame, so JSON escaping stays under the frame cap.
 pub const MAX_STREAM_CHUNK: usize = 8 * 1024;
 
+/// The HTTP ingress listeners `slipforkd` actually serves, plus the one port every minted
+/// `WorldOrigin` carries (`docs/design/dx-0.1.0-ux.md` §3).
+///
+/// `addrs` is the bound (or `LISTEN_FDS`-adopted) listener set — `127.0.0.1:80` **and**
+/// `[::1]:80` under socket activation, or one ephemeral `127.0.0.1:<port>` under
+/// `--listen 127.0.0.1:0`. Its order is **non-semantic**. `port` is never stored independently:
+/// [`IngressInfo::new`] derives it from the listeners and refuses an empty set, an unbound `:0`,
+/// or listeners that disagree on the port, so a daemon can never report a guessed `:0`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "IngressInfoFrame")]
+pub struct IngressInfo {
+    addrs: Vec<SocketAddr>,
+    port: u16,
+}
+
+/// Wire shape [`IngressInfo`] deserializes through, so a forged frame is re-validated.
+#[derive(Deserialize)]
+struct IngressInfoFrame {
+    addrs: Vec<SocketAddr>,
+    port: u16,
+}
+
+impl IngressInfo {
+    /// Derive the single ingress port from the bound listener addresses.
+    pub fn new(addrs: Vec<SocketAddr>) -> Result<Self, EdgeError> {
+        let mut listeners = addrs.iter();
+        let Some(first) = listeners.next() else {
+            return Err(EdgeError::IngressMissing);
+        };
+        let port = first.port();
+        if port == 0 {
+            return Err(EdgeError::IngressPortInvalid {
+                reason: format!("the HTTP listener {first} carries the unassigned port :0"),
+            });
+        }
+        for addr in listeners {
+            if addr.port() != port {
+                return Err(EdgeError::IngressPortInvalid {
+                    reason: format!(
+                        "the HTTP listeners {first} and {addr} disagree on the ingress port"
+                    ),
+                });
+            }
+        }
+        Ok(Self { addrs, port })
+    }
+
+    /// Bound HTTP ingress listeners (order is non-semantic).
+    pub fn addrs(&self) -> &[SocketAddr] {
+        &self.addrs
+    }
+
+    /// The single port every `WorldOrigin` minted by this daemon carries.
+    pub fn port(&self) -> u16 {
+        self.port
+    }
+}
+
+impl TryFrom<IngressInfoFrame> for IngressInfo {
+    type Error = EdgeError;
+
+    fn try_from(frame: IngressInfoFrame) -> Result<Self, Self::Error> {
+        let info = Self::new(frame.addrs)?;
+        if info.port != frame.port {
+            return Err(EdgeError::IngressPortInvalid {
+                reason: format!(
+                    "the reported origin port {} is not carried by any bound listener ({})",
+                    frame.port,
+                    info.addrs
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            });
+        }
+        Ok(info)
+    }
+}
+
 /// Process-level view of `slipforkd` and its live worlds.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DaemonStatus {
     /// Pid of the daemon answering the control socket.
     pub pid: u32,
-    /// Port the TCP HTTP ingress is bound to.
-    pub http_ingress_port: u16,
+    /// Bound HTTP ingress listeners and the single origin port they serve.
+    pub ingress: IngressInfo,
     /// Planned static forward port, when a forward listener is bound.
     pub forward_port: Option<u16>,
     /// Every world the daemon currently knows about, each with exactly one origin URL.
@@ -63,17 +148,25 @@ pub enum WorldState {
     Stopped,
 }
 
-/// One row of `slipfork list` (`docs/design/target-dx.md` §1.5).
+/// One row of `slipfork list` / `slipfork status` (`docs/design/dx-0.1.0-ux.md` §3).
+///
+/// `world` is the canonical `<project>` / `<project>:<fork>` id printed by every command and
+/// pasteable back into `--world`; the typed `WorldId` newtype is the `0.2.0` target state
+/// (`ADR-0005` §3), so `0.1.0` carries the `registry::world_id` string form.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorldSummary {
-    /// World id (`<project>` or `<project>:<fork>`).
+    /// Canonical world id (`<project>` or `<project>:<fork>`).
     pub world: String,
+    /// Canonical world: `None`; fork: `Some(<project>)`. Never derived by splitting `world`.
+    pub parent: Option<String>,
     /// Lifecycle state.
     pub state: WorldState,
     /// The world's single public origin.
     pub origin: WorldOrigin,
     /// Host worktree backing the world.
     pub worktree: PathBuf,
+    /// This world's own build lineage — never another world's facts.
+    pub lineage: WorldLineage,
 }
 
 /// One `[resources]` diagnostic line (`docs/design/target-dx.md` §1.2).
@@ -101,6 +194,58 @@ pub struct WorldUpSummary {
     pub resources: Vec<ResourceSummary>,
 }
 
+/// One row of the per-world process table `slipfork ps` renders (`docs/design/dx-0.1.0-ux.md` §5).
+///
+/// The engine's [`WorldServiceInfo`] carries the row's identity, kind, lifecycle state, and
+/// measured facts; `world` names the world the row belongs to, so one report can never mix worlds.
+/// `info.id` is unique within one world's row set.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorldServiceSummary {
+    /// Canonical world id the row belongs to.
+    pub world: String,
+    /// The engine's record for this service, flattened into the same JSON object.
+    #[serde(flatten)]
+    pub info: WorldServiceInfo,
+}
+
+/// One world's process view: the world state, its lineage, and every service row — read once.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorldProcessReport {
+    /// The world's own lifecycle state, read by the same call that read the rows.
+    pub state: WorldState,
+    /// This world's build lineage.
+    pub lineage: WorldLineage,
+    /// Every component and backing-service row of this world, ids unique.
+    pub services: Vec<WorldServiceSummary>,
+}
+
+impl WorldProcessReport {
+    /// Assemble one world's report, refusing a row set with a duplicated service id so
+    /// `services[].id` can never stop being a 1:1 join key.
+    pub fn new(
+        state: WorldState,
+        lineage: WorldLineage,
+        services: Vec<WorldServiceSummary>,
+    ) -> Result<Self, EdgeError> {
+        let mut seen = BTreeSet::new();
+        for service in &services {
+            if !seen.insert(service.info.id.as_str()) {
+                return Err(EdgeError::Control(DaemonError::new(
+                    DaemonErrorKind::Internal,
+                    format!(
+                        "world '{}' reported two services with the id '{}'; process rows must have unique ids",
+                        service.world, service.info.id
+                    ),
+                )));
+            }
+        }
+        Ok(Self {
+            state,
+            lineage,
+            services,
+        })
+    }
+}
 /// One live boot event streamed before [`WorldUpSummary`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
@@ -397,6 +542,10 @@ pub enum DaemonErrorKind {
     NoForwardListener,
     /// No tunnel registrar adapter is wired (`H-006`).
     TunnelUnavailable,
+    /// A request that would need the HTTP ingress cannot name one bound port.
+    IngressMissing,
+    /// The daemon's ingress report has no single real, bound origin port.
+    IngressPortInvalid,
     /// The requested world does not exist.
     UnknownWorld,
     /// A requested backing service is not running as a container.
@@ -444,6 +593,8 @@ impl From<&EdgeError> for DaemonError {
         let kind = match err {
             EdgeError::NoForwardListener => DaemonErrorKind::NoForwardListener,
             EdgeError::TunnelUnavailable { .. } => DaemonErrorKind::TunnelUnavailable,
+            EdgeError::IngressMissing => DaemonErrorKind::IngressMissing,
+            EdgeError::IngressPortInvalid { .. } => DaemonErrorKind::IngressPortInvalid,
             EdgeError::UnknownHost { .. } | EdgeError::UnknownIngressPath { .. } => {
                 DaemonErrorKind::UnknownWorld
             }
@@ -483,6 +634,8 @@ pub enum DaemonRequest {
         /// Repository root to scope the listing to; `None` lists every world.
         repo_root: Option<PathBuf>,
     },
+    /// Read one world's state, lineage, and process rows in a single call (`slipfork ps`).
+    WorldProcesses(WorldSelector),
     /// Preview or reap orphaned worlds and snapshots.
     Prune {
         /// `true` for `--dry-run`.
@@ -567,6 +720,11 @@ pub enum DaemonReply {
     Worlds {
         /// Every matching world.
         worlds: Vec<WorldSummary>,
+    },
+    /// Reply to [`DaemonRequest::WorldProcesses`].
+    Processes {
+        /// The world's state, lineage, and process rows.
+        report: WorldProcessReport,
     },
     /// Reply to [`DaemonRequest::Prune`].
     Prune {
@@ -698,6 +856,13 @@ pub trait DaemonControl: Send + Sync {
 
     /// List worlds, optionally scoped to one repository root.
     fn list(&self, repo_root: Option<&Path>) -> Result<Vec<WorldSummary>, EdgeError>;
+
+    /// Read one world's lifecycle state, build lineage, and every service row in one call.
+    ///
+    /// The world's `state` comes from the same read as the rows, so `slipfork ps` never needs a
+    /// second status call. An unknown or never-booted world fails closed with a typed
+    /// `UnknownWorld` error — never an empty report.
+    fn world_processes(&self, req: &WorldSelector) -> Result<WorldProcessReport, EdgeError>;
 
     /// Preview or reap orphaned worlds and snapshots.
     fn prune(&self, dry_run: bool) -> Result<PruneReport, EdgeError>;

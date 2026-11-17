@@ -260,11 +260,6 @@ impl WorldRegistry {
         }
     }
 
-    /// Port the TCP HTTP ingress is bound to (minted into `WorldOrigin::local`).
-    pub fn http_ingress_port(&self) -> u16 {
-        self.http_ingress_port
-    }
-
     /// Planned static forward port `weaved` forwards shared hostnames to, when bound (`H-008`).
     pub fn planned_forward_port(&self) -> Option<u16> {
         self.planned_forward_port
@@ -616,6 +611,18 @@ pub fn world_id(project: &ProjectSlug, target: &WorldTarget) -> String {
         WorldTarget::Canonical => project.to_string(),
         WorldTarget::UserFork(fork) => format!("{project}:{fork}"),
         WorldTarget::TestSlot(slot) => format!("{project}:test-{slot}"),
+    }
+}
+
+/// Canonical parent world id of `target`: `None` for the canonical world, `Some(<project>)` for a
+/// fork (and for an internal test slot).
+///
+/// The single owner of the target -> parent relation: `slipfork status` draws its tree from this
+/// value and never splits a world id to find the project.
+pub fn parent_world(project: &ProjectSlug, target: &WorldTarget) -> Option<String> {
+    match target {
+        WorldTarget::Canonical => None,
+        WorldTarget::UserFork(_) | WorldTarget::TestSlot(_) => Some(project.to_string()),
     }
 }
 

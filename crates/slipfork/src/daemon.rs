@@ -30,9 +30,11 @@ use slipfork_edge::forward::ForwardTargetSpec;
 use slipfork_edge::{
     BootEvent, DaemonControl, DaemonError, DaemonErrorKind, DaemonStatus, DropForkRequest,
     EdgeError, ExecTargetRequest, ForkRequest, ForwardRequest, ForwardSummary, HookRunRequest,
-    IngressRoute, LogsRequest, PruneReport, ResourceSummary, SharedWorldInfo, SnowResolveRequest,
-    SnowResolveSummary, UnavailableTunnelRegistrar, UpRequest, WorldExecTarget, WorldRegistry,
-    WorldSelector, WorldState, WorldSummary, WorldUpSummary, world_id,
+    IngressInfo, IngressRoute, LogsRequest, PruneReport, ResourceSummary, ServiceKind,
+    SharedWorldInfo, SnowResolveRequest, SnowResolveSummary, UnavailableTunnelRegistrar, UpRequest,
+    WorldExecTarget, WorldLineage, WorldProcessReport, WorldRegistry, WorldSelector,
+    WorldServiceInfo, WorldServiceSummary, WorldState, WorldSummary, WorldUpSummary, parent_world,
+    world_id,
 };
 use slipfork_engine::btrfs::SubvolumeDriver;
 use slipfork_engine::rootfs::{
@@ -187,10 +189,20 @@ struct LiveWorld {
     enabled_components: BTreeSet<String>,
     snow: SnowFile,
     resources: Vec<ResourceSummary>,
-    services: Vec<ServiceHandle>,
+    services: Vec<LiveService>,
     /// Retained hook logs by `<component>:<phase>` (`slipfork logs <hook_id>`, `ADR-0008` §4).
     hook_logs: BTreeMap<String, Arc<HookLog>>,
     workspace: Option<Arc<dyn VcsWorkspace>>,
+}
+
+/// One service this daemon spawned in a world, with the row kind it was spawned as.
+///
+/// The engine's [`ServiceHandle`] carries the id and lifecycle state; the daemon knows whether the
+/// handle came from a `snow.yml` component or a `crun` backing service, because it is the caller
+/// that chose the `ServiceSpec` runtime. No engine-name inspection is involved.
+struct LiveService {
+    handle: ServiceHandle,
+    kind: ServiceKind,
 }
 
 /// One `slipfork logs` target: an engine-retained service log or a daemon-retained hook log.
@@ -416,8 +428,9 @@ pub struct DaemonWiring {
     pub driver: Arc<dyn SubvolumeDriver>,
     /// Browser opener for the pairing approval page.
     pub browser: Arc<dyn BrowserOpener>,
-    /// Bound HTTP ingress port (`--listen`, `LISTEN_FDS`, or a test-bound listener).
-    pub http_ingress_port: u16,
+    /// Bound HTTP ingress listeners (`--listen`, `LISTEN_FDS`, or a test-bound listener) and the
+    /// single port every minted origin carries.
+    pub ingress: IngressInfo,
     /// Bound static forward listener port, when one is bound.
     pub forward_port: Option<u16>,
     /// Resolved host toolchain caches for `--host-caches`.
@@ -454,7 +467,7 @@ pub fn compose_daemon(wiring: DaemonWiring) -> Result<DaemonGraph, String> {
         layout,
         driver,
         browser,
-        http_ingress_port,
+        ingress,
         forward_port,
         host_caches,
         inherited,
@@ -487,7 +500,7 @@ pub fn compose_daemon(wiring: DaemonWiring) -> Result<DaemonGraph, String> {
     let registry = Arc::new(WorldRegistry::new(
         Arc::clone(&engine),
         Arc::new(UnavailableTunnelRegistrar::new()),
-        http_ingress_port,
+        ingress.port(),
         forward_port,
     ));
 
@@ -532,7 +545,7 @@ pub fn compose_daemon(wiring: DaemonWiring) -> Result<DaemonGraph, String> {
             host_caches,
             postgres_ready: PostgresReady::production(),
         },
-        http_ingress_port,
+        ingress,
         forward_port,
     ));
     Ok(DaemonGraph { service, registry })
@@ -555,7 +568,7 @@ pub struct DaemonService {
     entropy: Arc<dyn EntropySource>,
     ospp_timeouts: OsppTimeouts,
     config: DaemonConfig,
-    http_ingress_port: u16,
+    ingress: IngressInfo,
     forward_port: Option<u16>,
     state: Mutex<DaemonState>,
     /// Serializes world materialization so one project's base snapshot is minted exactly once.
@@ -565,7 +578,7 @@ pub struct DaemonService {
 impl std::fmt::Debug for DaemonService {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("DaemonService")
-            .field("http_ingress_port", &self.http_ingress_port)
+            .field("ingress", &self.ingress)
             .field("forward_port", &self.forward_port)
             .finish_non_exhaustive()
     }
@@ -576,7 +589,7 @@ impl DaemonService {
     fn new(
         ports: DaemonPorts,
         config: DaemonConfig,
-        http_ingress_port: u16,
+        ingress: IngressInfo,
         forward_port: Option<u16>,
     ) -> Self {
         Self {
@@ -594,7 +607,7 @@ impl DaemonService {
             entropy: ports.entropy,
             ospp_timeouts: ports.ospp_timeouts,
             config,
-            http_ingress_port,
+            ingress,
             forward_port,
             state: Mutex::new(DaemonState::default()),
             boot_lock: Mutex::new(()),
@@ -1341,7 +1354,7 @@ impl DaemonService {
                     });
                 }
             };
-        let origin = match self.registry.mint_origin(&route, self.http_ingress_port) {
+        let origin = match self.registry.mint_origin(&route, self.ingress.port()) {
             Ok(origin) => origin,
             Err(error) => {
                 return Err(BootFailure {
@@ -1515,7 +1528,7 @@ impl DaemonService {
             }],
             base_env: base_env.clone(),
             local_ingress: Some(LocalIngressBridge {
-                port: self.http_ingress_port,
+                port: self.ingress.port(),
                 host_ingress_sock: self.config.layout.http_ingress_socket(),
             }),
         };
@@ -1576,7 +1589,10 @@ impl DaemonService {
         };
         for spec in service_specs {
             match self.engine.spawn_service(&handle, &spec) {
-                Ok(service) => live.services.push(service),
+                Ok(service) => live.services.push(LiveService {
+                    handle: service,
+                    kind: ServiceKind::BackingService,
+                }),
                 Err(err) => {
                     live.state = WorldState::Failed;
                     return Err(BootFailure {
@@ -1625,7 +1641,10 @@ impl DaemonService {
             };
             match self.engine.spawn_service(&handle, &spec) {
                 Ok(service) => {
-                    live.services.push(service);
+                    live.services.push(LiveService {
+                        handle: service,
+                        kind: ServiceKind::Component,
+                    });
                     if let Some(port) = readiness_port {
                         on_event(BootEvent::Ready {
                             component: id.clone(),
@@ -1793,7 +1812,7 @@ impl DaemonControl for DaemonService {
         let worlds = self.list(None)?;
         Ok(DaemonStatus {
             pid: std::process::id(),
-            http_ingress_port: self.http_ingress_port,
+            ingress: self.ingress.clone(),
             forward_port: self.forward_port,
             worlds,
         })
@@ -2014,13 +2033,52 @@ impl DaemonControl for DaemonService {
         for (project, target, state, worktree) in entries {
             summaries.push(WorldSummary {
                 world: world_id(&project, &target),
+                parent: parent_world(&project, &target),
                 state,
                 origin: self.registry.origin(&project, &target)?,
                 worktree,
+                // No engine build facts are recorded for a world yet, so every fact is unknown
+                // and renders `-`, never a `0` or another world's value.
+                lineage: WorldLineage::unknown(),
             });
         }
         summaries.sort_by(|a, b| a.world.cmp(&b.world));
         Ok(summaries)
+    }
+
+    fn world_processes(&self, req: &WorldSelector) -> Result<WorldProcessReport, EdgeError> {
+        let selection = self.select(&req.cwd, req.world.as_deref())?;
+        let (state, services) = {
+            let world_state = self.lock();
+            let Some(world) = world_state.world(&selection.repo.project, &selection.target) else {
+                return Err(Self::unknown_world(
+                    &selection.repo.project,
+                    &selection.target,
+                ));
+            };
+            let world_text = world_id(&world.project, &world.target);
+            let services = world
+                .services
+                .iter()
+                .map(|service| WorldServiceSummary {
+                    world: world_text.clone(),
+                    info: WorldServiceInfo {
+                        id: service.handle.id().to_owned(),
+                        kind: service.kind,
+                        state: service.handle.state(),
+                        // The engine records no pid, serving port, or uptime for a service yet,
+                        // so these stay `None` and render `-`, never `0`.
+                        pid: None,
+                        port: None,
+                        uptime_secs: None,
+                    },
+                })
+                .collect();
+            // `WorldState::Stopped` is not produced yet: no daemon path records it, because the
+            // world record's lifetime (stop vs release) is not owned here.
+            (world.state, services)
+        };
+        WorldProcessReport::new(state, WorldLineage::unknown(), services)
     }
 
     fn prune(&self, dry_run: bool) -> Result<PruneReport, EdgeError> {
@@ -2139,7 +2197,7 @@ impl DaemonControl for DaemonService {
                 world
                     .services
                     .iter()
-                    .map(ServiceHandle::id)
+                    .map(|service| service.handle.id())
                     .map(str::to_owned)
                     .collect::<Vec<_>>(),
                 world.hook_logs.clone(),
@@ -2241,8 +2299,8 @@ impl DaemonControl for DaemonService {
                     let handle = world
                         .services
                         .iter()
-                        .find(|service| service.id() == service_id.as_str())
-                        .cloned()
+                        .find(|service| service.handle.id() == service_id.as_str())
+                        .map(|service| service.handle.clone())
                         .ok_or_else(|| {
                             service_not_running(
                                 &world_id(&world.project, &world.target),
@@ -2509,11 +2567,14 @@ impl DaemonService {
             .map(|(released, _)| released)
     }
 
-    /// Reject a request for a world this daemon does not hold.
+    /// Reject a request for a world this daemon does not hold (`code: unknown_world`).
     fn unknown_world(project: &ProjectSlug, target: &WorldTarget) -> EdgeError {
-        rejected(format!(
-            "world '{}' is not running in this slipforkd; run `slipfork up` first",
-            world_id(project, target)
+        EdgeError::Control(DaemonError::new(
+            DaemonErrorKind::UnknownWorld,
+            format!(
+                "no world '{}' here; boot it with `slipfork up` or list worlds with `slipfork list`",
+                world_id(project, target)
+            ),
         ))
     }
 }
