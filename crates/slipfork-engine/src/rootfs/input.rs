@@ -214,7 +214,6 @@ fn match_segment(pattern: &str, candidate: &str) -> bool {
 }
 
 /// Lowercase hex SHA-256 helper shared by the tests.
-#[cfg_attr(not(test), allow(dead_code))]
 #[cfg(test)]
 mod tests {
     use super::DockerIgnore;

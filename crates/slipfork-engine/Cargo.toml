@@ -1,6 +1,6 @@
 [package]
 name = "slipfork-engine"
-description = "WorldEngine IoC port with Incus REST (/1.0) and Linux FICLONE + unprivileged netns/userns drivers"
+description = "WorldEngine IoC port with the BtrfsEngine adapter: one Btrfs subvolume per world through the injected SubvolumeDriver"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

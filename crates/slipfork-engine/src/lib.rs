@@ -1,7 +1,8 @@
-//! `slipfork-engine`: the [`WorldEngine`] Dependency Injection port for copy-on-write worlds plus
-//! the adapters that implement it.
+//! `slipfork-engine`: the [`WorldEngine`] Dependency Injection port for copy-on-write worlds and
+//! its single shipped implementation, [`BtrfsEngine`], over an injected `SubvolumeDriver` (one
+//! unified Btrfs subvolume per world, `ADR-0010`).
 //!
-//! Every adapter satisfies the one [`conformance::assert_world_engine_conformance`] contract: a
+//! [`BtrfsEngine`] satisfies the one [`conformance::assert_world_engine_conformance`] contract: a
 //! world is materialized from an immutable [`SnapshotId`] plus a multi-mount [`WorldSpec`], its
 //! services are supervised and stopped before [`WorldEngine::freeze_world`] seals it, and it is
 //! referenced only through the opaque in-process [`WorldHandle`] (owned by `slipforkd`, never
@@ -16,10 +17,8 @@ pub mod btrfs_engine;
 pub mod child_env;
 pub mod conformance;
 pub mod env;
-pub mod incus;
 pub mod linux_cow;
 pub mod oci;
-pub mod reflink_netns;
 pub mod rootfs;
 pub mod service;
 pub mod world_init;
@@ -34,9 +33,7 @@ use thiserror::Error;
 
 pub use btrfs_engine::BtrfsEngine;
 pub use env::{ExecEnv, InheritedVar};
-pub use incus::IncusEngine;
-pub use linux_cow::{ReflinkStats, current_uid_gid, probe_reflink_dir, reflink_tree};
-pub use reflink_netns::ReflinkNetnsEngine;
+pub use linux_cow::current_uid_gid;
 pub use rootfs::{BackingServiceKey, OciRootfs, WorldRootfs};
 pub use service::ServiceLogs;
 
@@ -444,12 +441,6 @@ pub enum EngineError {
     },
     #[error("unprivileged user namespace denied: {detail}; fix: {hint}")]
     UsernsDenied { detail: String, hint: String },
-    #[error("hypervisor daemon unavailable at {socket}: {reason}")]
-    DaemonUnavailable { socket: String, reason: String },
-    #[error(
-        "filesystem at {path} does not support CoW FICLONE reflinks (errno {errno}); place state on XFS (reflink=1), Btrfs, or ZFS — never /tmp tmpfs"
-    )]
-    ReflinkUnsupported { path: String, errno: i32 },
     #[error("snapshot '{0}' does not exist")]
     SnapshotNotFound(String),
     #[error(

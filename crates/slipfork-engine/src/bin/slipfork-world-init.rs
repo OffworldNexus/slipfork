@@ -11,9 +11,9 @@
 //!
 //! 1. `netns.sock` — a `0600` pathname `AF_UNIX` socket inside the world's control directory. A
 //!    caller sends `port: u16` (big endian) and receives the connected in-world
-//!    `127.0.0.1:<port>` stream as an `SCM_RIGHTS` descriptor (`linux_cow.rs` is the only `unsafe`
-//!    module in the workspace). Pathname `AF_UNIX` sockets live in the filesystem, so they cross
-//!    `CLONE_NEWNET` natively.
+//!    `127.0.0.1:<port>` stream as an `SCM_RIGHTS` descriptor (`linux_cow.rs` and `btrfs.rs` are
+//!    the two audited `unsafe` modules in the workspace). Pathname `AF_UNIX` sockets live in the
+//!    filesystem, so they cross `CLONE_NEWNET` natively.
 //! 2. `$BASE_URL` bridge — when the world spec carries a [`slipfork_engine::LocalIngressBridge`],
 //!    bind `127.0.0.1:<port>` (including `:80`, allowed by in-userns `CAP_NET_BIND_SERVICE` and
 //!    `net.ipv4.ip_unprivileged_port_start=0`) and splice every accepted stream to `slipforkd`'s

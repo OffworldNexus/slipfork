@@ -918,3 +918,6 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-17T12:29 [M3.17] (lead) Quad gate 1/2: ioc BLOCKER (ctypes/statfs re-implements the shipped doctor seam; duplicate BTRFS_MOUNT_HINT makes the hint assertion drift-blind) + cruft MAJOR 
 - 2026-11-17T12:34 [M3.17] (lead) edited fields
 - 2026-11-17T12:34 [M3.15] (lead) make check gate 1: RED only at rs-lint — rustdoc private_intra_doc_links on doctor.rs:8 [filesystem_name] after the cruft fix made it private. Fixing (plain cod
+- 2026-11-17T12:36 [M3.15] (lead) Gate passed: make check gate 1 green except rs-lint (private_intra_doc_links); fixed → RUSTDOCFLAGS=-D warnings cargo doc -p slipfork exit 0, make rs-lint exit 
+- 2026-11-17T12:36 [M3.15] (lead) status review -> done
+- 2026-11-17T12:36 [M3.21] (lead) Gate passed: acceptance grep is 2 hits, both NEGATIVE assertions that a Btrfs refusal never advertises a reflink fallback (crates/slipfork/tests/support/mod.rs:

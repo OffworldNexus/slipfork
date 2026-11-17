@@ -79,7 +79,8 @@ impl RootfsDigest {
         &self.0
     }
 
-    /// First 12 hex characters (`slipfork-l0-<digest12>` Incus image name, `ADR-0009` §3).
+    /// First 12 hex characters of the digest — a compact label for diagnostics; the cache
+    /// directory itself is named by the full [`Self::hex`] (`ADR-0009` §3).
     pub fn short(&self) -> &str {
         &self.0[..12]
     }

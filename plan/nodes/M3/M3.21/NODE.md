@@ -2,7 +2,7 @@
 id: M3.21
 title: "Atomic scorched-earth deletion: remove IncusEngine, ReflinkNetnsEngine, and FICLONE helpers"
 kind: task
-status: ready
+status: active
 owner: implementer
 priority: 3
 depends_on: [M3.14, M3.15]
@@ -11,13 +11,17 @@ paths:
   - "crates/slipfork-engine/src/reflink_netns.rs"
   - "crates/slipfork-engine/src/linux_cow.rs"
   - "crates/slipfork-engine/src/lib.rs"
+  - "crates/slipfork-engine/src/rootfs/mod.rs"
+  - "crates/slipfork-engine/src/bin/slipfork-world-init.rs"
+  - "crates/slipfork-engine/src/rootfs/dockerfile.rs"
+  - "crates/slipfork-engine/src/rootfs/input.rs"
   - "crates/slipfork-engine/Cargo.toml"
   - Cargo.lock
-attempts: 0
+attempts: 1
 max_attempts: 3
 escalation: none
 created: "2026-11-16T17:25"
-updated: "2026-11-16T17:25"
+updated: "2026-11-17T12:17"
 ---
 
 # Goal

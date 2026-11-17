@@ -138,15 +138,6 @@ impl Dockerfile {
             }
         }
     }
-
-    /// Stage names in declaration order (NULL-free, needed by the Composition Root / tests).
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub fn stage_names(&self) -> Vec<String> {
-        self.stages
-            .iter()
-            .filter_map(|stage| stage.name.clone())
-            .collect()
-    }
 }
 
 fn parse_instruction(stages: &mut Vec<Stage>, line: u32, raw: &str) -> Result<(), BaseImageError> {
@@ -277,7 +268,14 @@ mod tests {
             b"ARG BASE=python:3.14-slim-trixie\nFROM ${BASE} AS builder\nRUN echo one \\\n  two\nFROM builder AS runtime\nEXPOSE 8000\n",
         )
         .expect("valid Dockerfile");
-        assert_eq!(dockerfile.stage_names(), ["builder", "runtime"]);
+        assert_eq!(
+            dockerfile
+                .stages
+                .iter()
+                .map(|stage| stage.name.as_deref())
+                .collect::<Vec<_>>(),
+            [Some("builder"), Some("runtime")]
+        );
         assert_eq!(dockerfile.stages[1].from, "builder");
         assert_eq!(dockerfile.stages[1].instruction("EXPOSE"), Some("8000"));
         assert_eq!(
