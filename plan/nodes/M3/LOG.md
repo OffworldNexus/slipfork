@@ -63,3 +63,15 @@ LEAD SCOPE RULING (0.1.0 shipping decision, 2026-11-17): M3.13 implements BtrfsE
 ## 2026-11-17T14:01 [lead]
 
 MILESTONE GATE (lead-side): make check EXIT=0 (zero env overrides; every suite green incl. slipfork:critical_cli 14 @62s, critical_ospp_daemon 4 @111s, both critical_btrfs_live 1) and make docs-check EXIT=0 (zensical --strict 'No issues found'; check_docs_honesty OK 9 pages) on the committed 0.1.0 tree 2db6c8f. Live VM evidence pending M3.19 attempt 2. NOTE for conductor/strategist: plan/ROADMAP.md's M3 row is still 0.3.0/Option-A framed with the STP v1 checklist; it must be rewritten to 0.1.0 (Btrfs worlds shipped, STP v1 parked to 0.2.0) before this milestone can be marked done.
+
+## 2026-11-17T15:05 [lead]
+
+status ready -> active
+
+## 2026-11-17T15:05 [lead]
+
+ARG: eligible lead exception: M3.27 (test-only world-subvolume leak) remains ready by conductor decision; it does not change the shipped product and is recorded as a follow-up.
+
+## 2026-11-17T15:05 [lead]
+
+GATE PASSED (0.1.0, Btrfs Worlds): plain make check exit 0 (5m32s, 43 suites, 335+ tests, ts 16/16, both critical_btrfs_live 1/1, zensical --strict, docs-honesty OK) and make docs-check exit 0 on this non-Btrfs XFS host; LIVE DO VM 165.232.86.174 (droplet 620073485, Btrfs 9123683e, sysctl=1) ran engine critical_btrfs_live + slipfork critical_btrfs_live + critical_cli 14 + critical_slug 7 + critical_ospp_daemon 4 GREEN TWICE (warm 301s) after the M3.19.1 AppArmor attachment fix; sealed base RO + two sibling clones on :5432 in separate netns; 0.1.0 binaries installed for root+slipfork; demo up/curl/fork/logs/db/drop/down verified incl. a fork row; reboot-safe. Residuals accepted: (a) benchmark numbers not produced on the dev VM (no PG18 client/Chrome/uv installed; M3.17 harness fails closed and no numbers were faked); (b) M3.27 test-suite world-subvolume leak (test-only); (c) M3.2/STP v1 parked to 0.2.0; (d) WorldId/control_dir/ensure_base deferred to 0.2.0 and ARCHITECTURE relabeled; (e) sh getcwd cosmetic line in slipfork exec.

@@ -2,7 +2,7 @@
 id: M3
 title: "Btrfs-Only WorldEngine (ADR-0010) — Slipfork 0.1.0 (STP v1 parked to 0.2.0)"
 kind: milestone
-status: ready
+status: active
 priority: 3
 depends_on: [M2]
 paths: []
@@ -10,7 +10,7 @@ attempts: 0
 max_attempts: 3
 escalation: none
 created: "2026-11-14T22:03"
-updated: "2026-11-16T23:50"
+updated: "2026-11-17T15:05"
 ---
 
 # Goal

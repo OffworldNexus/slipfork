@@ -986,3 +986,21 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-17T14:39 [M3.26] (lead) status active -> done
 - 2026-11-17T14:39 [M3.2] (lead) status ready -> blocked
 - 2026-11-17T14:39 [M3.2] (lead) STATUS blocked = PARKED, not a missing input: owner ruling 2026-11-16 parks STP v1 to 0.2.0. Reactivating M3.2.* requires the strategist to rewrite the 0.3.0/Op
+- 2026-11-17T15:05 [M3] (lead) status ready -> active
+- 2026-11-17T15:05 [M3] (lead) ARG: eligible lead exception: M3.27 (test-only world-subvolume leak) remains ready by conductor decision; it does not change the shipped product and is recorded
+- 2026-11-17T15:05 [M3] (lead) GATE PASSED (0.1.0, Btrfs Worlds): plain make check exit 0 (5m32s, 43 suites, 335+ tests, ts 16/16, both critical_btrfs_live 1/1, zensical --strict, docs-honest
+- 2026-11-17T16:32 [M3.28] (planner) created (epic) 0.1.0 UX pre-release pass (owner hands-on findings): :80 ingress, bare status, restart/ps/open, fork identity
+- 2026-11-17T16:32 [M3.28.1] (planner) created (task) DX of record for the 0.1.0 UX pass: bare status, restart, ps, open, fork naming, and the :80 ingress
+- 2026-11-17T16:32 [M3.28.2] (planner) created (task) Critic pass (dx + ai-ergonomics) on the 0.1.0 UX DX spec, applied in place
+- 2026-11-17T16:32 [M3.28.3] (planner) created (task) DaemonControl truth: bound ingress addresses, resolved origin port, world state, and the per-world component tree
+- 2026-11-17T16:32 [M3.28.4] (planner) created (task) Restart vs up semantics, the port-less origin renderer, and the engine process-tree accessor
+- 2026-11-17T16:32 [M3.28.5] (planner) created (task) VCS: branch-named fork source, pinned slipfork snapshot identity, and one-line git errors
+- 2026-11-17T16:33 [M3.28.6] (planner) created (task) slipfork daemon install: :80 socket activation, AppArmor profile, idempotent and fail-closed
+- 2026-11-17T16:33 [M3.28.7] (planner) created (task) Bare slipfork = status dashboard plus slipfork status (world tree, port-less origin, next-step hints)
+- 2026-11-17T16:33 [M3.28.8] (planner) created (task) slipfork restart [--watch] and the actionable up block with the loud :80 line
+- 2026-11-17T16:33 [M3.28.9] (planner) created (task) slipfork ps [--json] and slipfork open [--remote] [--json]
+- 2026-11-17T16:33 [M3.28.10] (planner) created (task) slipfork fork with no argument: branch-derived name, worktree/origin/cd output, one-line git errors
+- 2026-11-17T16:33 [M3.28.11] (planner) created (task) Polish: dag plan never silent, quiet world entry, per-component log prefixes, [resources] behind -v
+- 2026-11-17T16:33 [M3.28.12] (planner) created (task) VM harness: :80 bound via daemon install, tracked support/demo template, login quickstart banner
+- 2026-11-17T16:33 [M3.28.13] (planner) created (task) Live re-verification of the 0.1.0 UX pass on the Btrfs DO VM (port-less :80, status, restart, ps, fork)
+- 2026-11-17T16:34 [M3.28.14] (planner) created (task) Publish the 0.1.0 UX surface: CLI reference, getting started, index, README, CHANGELOG
