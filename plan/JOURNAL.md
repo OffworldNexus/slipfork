@@ -1134,3 +1134,7 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-17T21:44 [M3.28.14] (lead) From M3.28.18 RESULT (route, docs): docs/getting-started.md:119 still explains 'not_offered' as 'no paired OSPP session offered a remote database' although no p
 - 2026-11-17T21:44 [M3.2] (lead) OSPP remote path gaps (from M3.28.18 RESULT, recorded here because 0.1.0 ships no provider and this epic owns the remote path): (1) resources::pg_databases.<id>
 - 2026-11-17T21:46 [M3.28.18] (lead) functional gate found 2 post-commit items; fixed in follow-up: restored owner-mandated docs/design/ospp.md pointer (inline code, site-excluded) and deleted the 
+- 2026-11-17T21:48 [M3.28.17] (lead) attempt 2: rulings 1-4 applied (one resolve_world used by boot AND reboot; registry.replace_world re-attaches routes/domains; stop over &live.services with clea
+- 2026-11-17T21:48 [M3.28.13] (lead) end-to-end restart proof added to evidence: edit an app file AND a snow.yml hook, run slipfork restart, show the old behaviour gone (M3.28.17 could only prove t
+- 2026-11-17T21:48 [M3.28.19] (lead) verified against shipped client: 10 factual-drift items fixed (kept the deliberate 0.2.0 shape: hello/auth_challenge/auth_proof, repo+digest ProjectIdentity, re
+- 2026-11-17T21:48 [M3.28.19] (lead) status active -> done
