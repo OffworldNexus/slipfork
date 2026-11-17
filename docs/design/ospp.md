@@ -1,6 +1,6 @@
 # Open Secret Provider Protocol (OSPP v1)
 
-Slipfork is a local "cloud in a box"; CI (Kerfufoo) creates and manages the real cloud environments and holds their authoritative variables, secrets, and managed infrastructure. OSPP v1 is the persistent WebSocket protocol Slipfork uses as a clutch to configure a local world from CI: the client sends its `snow.yml`, the IDs of resources it owns locally, and an ephemeral encryption public key; receives per-component environment variables with secrets encrypted end-to-end (decrypted and finalized in memory, injected directly into managed processes, and never stored on disk); stays subscribed over the open WebSocket so upstream secret or configuration changes push live updates (allowing Slipfork to restart affected services); and requests on-demand resource dumps.
+Slipfork is a local "cloud in a box"; CI (Kerfufoo) creates and manages the real cloud environments and holds their authoritative variables, secrets, and managed infrastructure. OSPP v1 is the persistent WebSocket protocol Slipfork uses as a clutch to configure a local world from CI: the client sends its `snow.yml`, the names/IDs of entries it claims locally, and an ephemeral encryption public key; receives per-component environment variables with server-resolved secrets encrypted end-to-end (decrypted and finalized in memory, injected directly into managed processes, and never stored on disk); stays subscribed over the open WebSocket so upstream secret or configuration changes push live updates (allowing Slipfork to restart affected services); and requests on-demand resource dumps.
 
 ## Transport & Framing
 
@@ -15,7 +15,7 @@ sequenceDiagram
   C->>S: hello { version: 1, auth_methods: ["p256"] }
   S->>C: auth_challenge { method: "p256", challenge }
   C->>S: auth_response { response }
-  S->>C: auth_ok
+  S->>C: auth_ok { encryption_methods }
 ```
 
 On connect, the client announces protocol `"version": 1` and the list of authentication method names it supports:
@@ -24,7 +24,7 @@ On connect, the client announces protocol `"version": 1` and the list of authent
 { "type": "hello", "version": 1, "auth_methods": ["p256"] }
 ```
 
-The server selects one supported method and issues its challenge, the client replies with its proof, and the server confirms the authenticated session:
+The server selects one supported method and issues its challenge, the client replies with its proof, and the server confirms the authenticated session alongside the list of secret-encryption method names it supports:
 
 ```json
 { "type": "auth_challenge", "method": "p256", "challenge": { "nonce": "<32-byte hex>" } }
@@ -42,7 +42,7 @@ The server selects one supported method and issues its challenge, the client rep
 ```
 
 ```json
-{ "type": "auth_ok" }
+{ "type": "auth_ok", "encryption_methods": ["hpke-p256"] }
 ```
 
 ### `p256` Authentication
@@ -55,24 +55,29 @@ In `p256` authentication, the server sends a random 32-byte hex `nonce` inside `
 sequenceDiagram
   participant C as Slipfork
   participant S as Kerfufoo
-  C->>S: subscribe { id, remote, public_key, snow, claims }
+  C->>S: subscribe { id, remote, encryption, snow, claims }
   S->>C: env_resolved { id, components }
   S-->>C: env_updated { id, components }
-  C->>S: subscribe { id, remote, public_key, snow, claims }
+  C->>S: subscribe { id, remote, encryption, snow, claims }
   S->>C: env_resolved { id, components }
   C->>S: unsubscribe { id }
 ```
 
-Project identity is the Git remote string and only the Git remote string (`"remote": "git@github.com:acme/web.git"`), sent verbatim with no client-side slug, hash, mode, or canonicalization rules; Kerfufoo resolves the remote internally at its discretion. For each subscription, the client generates an ephemeral encryption keypair in memory (never stored on disk) and sends `subscribe` with `public_key`, `snow`, and ID-only `claims`:
+Project identity is the Git remote string and only the Git remote string (`"remote": "git@github.com:acme/web.git"`), sent verbatim with no client-side slug, hash, mode, or canonicalization rules; Kerfufoo resolves the remote internally at its discretion. For each subscription, the client picks one method from `encryption_methods`, generates an ephemeral encryption keypair in memory (never stored on disk), and sends `subscribe`:
 
 ```json
 {
   "type": "subscribe",
   "id": "sub-1",
   "remote": "git@github.com:acme/web.git",
-  "public_key": "<hex>",
+  "encryption": {
+    "method": "hpke-p256",
+    "public_key": "<hex>"
+  },
   "snow": "<raw snow.yml content>",
   "claims": {
+    "vars": ["DEBUG"],
+    "secrets": ["LOCAL_DEV_KEY"],
     "resources": {
       "pg_databases": ["main"]
     },
@@ -81,7 +86,7 @@ Project identity is the Git remote string and only the Git remote string (`"remo
 }
 ```
 
-`claims` lists only the IDs of resources and domains (and components, if needed) that Slipfork provisions locally — never local addresses or credentials. When evaluating `snow.yml`, the server resolves `vars::`, `secrets::`, `deployment::`, and any unclaimed `resources::` it provisions (or refuses if an unclaimed resource cannot be provisioned), while leaving `${{ ... }}` expressions that reference a claimed resource or domain untouched in the output string without failing on them. In `env_resolved` and `env_updated`, plain non-secret values are strings, whereas any variable whose evaluation touched `secrets::` or a sensitive server-resolved resource credential ("secrets contaminate") is returned as `{ "encrypted": "<hex>" }`:
+`claims` follows one uniform rule across all `snow.yml` namespaces (`vars`, `secrets`, `resources.<kind>`, `domains`, and `components`): any claimed entry tells the server not to resolve it and to leave its `${{ ... }}` expression untouched in the output string without failing on it, while everything not in `claims` is resolved by the server (or refused if missing). This lets a local world own local services, override a variable such as `vars::DEBUG`, or introduce a new `secrets::` key on a feature branch before it exists in CI, without ever sending local values or credentials to the server. In `env_resolved` and `env_updated`, plain non-secret values are strings, whereas any variable whose server evaluation touched an unclaimed `secrets::` key or a sensitive server-resolved resource credential ("secrets contaminate") is returned as `{ "encrypted": "<base64>" }`:
 
 ```json
 {
@@ -89,19 +94,20 @@ Project identity is the Git remote string and only the Git remote string (`"remo
   "id": "sub-1",
   "components": {
     "api": {
-      "DEBUG": "false",
+      "LOG_LEVEL": "info",
+      "DEBUG": "${{ vars::DEBUG }}",
       "DATABASE_URL": "${{ resources::pg_databases.main.url }}",
-      "SECRET_KEY": { "encrypted": "<hex>" }
+      "SECRET_KEY": { "encrypted": "<base64>" }
     }
   }
 }
 ```
 
-Slipfork decrypts `{ "encrypted": "..." }` values in memory using the subscription's ephemeral private key, substitutes local values for any remaining claimed `${{ ... }}` expressions, and injects the resulting plaintext strings directly into child process environments (never writing them to disk). The WebSocket stays open while worlds run: whenever secrets or variables change upstream, the server pushes `env_updated` (`{ "type": "env_updated", "id": "sub-1", "components": { ... } }`), and Slipfork restarts affected services with the updated environment. Updating `snow.yml` or local claims re-sends `subscribe` with the same `id`; stopping the world sends `unsubscribe` (`{ "type": "unsubscribe", "id": "sub-1" }`).
+Slipfork decrypts `{ "encrypted": "<base64>" }` values in memory using the subscription's ephemeral private key, substitutes local values for any remaining claimed `${{ ... }}` expressions, and injects the resulting plaintext strings directly into child process environments (never writing them to disk). The WebSocket stays open while worlds run: whenever secrets or variables change upstream, the server pushes `env_updated` (`{ "type": "env_updated", "id": "sub-1", "components": { ... } }`), and Slipfork restarts affected services with the updated environment. Updating `snow.yml` or local claims re-sends `subscribe` with the same `id`; stopping the world sends `unsubscribe` (`{ "type": "unsubscribe", "id": "sub-1" }`).
 
-### Secret Encryption
+### `hpke-p256` Encryption
 
-Subscription secrets are encrypted end-to-end with RFC 9180 HPKE Base mode using `DHKEM(P-256, HKDF-SHA256)`, `HKDF-SHA256`, `AES-256-GCM`, and `info = "ospp-v1-secret"`. The client encodes its ephemeral recipient `public_key` as hex in `subscribe`, and the server seals each secret UTF-8 value with `SealBase(public_key, info, aad = "<component>:<env_key>", plaintext)`, encoding `enc || ciphertext` as lowercase hex. Binding `aad` to `<component>:<env_key>` prevents ciphertexts from being replayed or swapped across components or variable names.
+In `hpke-p256` encryption, subscription secrets are encrypted end-to-end with RFC 9180 HPKE Base mode using `DHKEM(P-256, HKDF-SHA256)`, `HKDF-SHA256`, `AES-256-GCM`, and `info = "ospp-v1-secret"`. The client encodes its ephemeral recipient `public_key` as hex inside `encryption`, and the server seals each secret UTF-8 value with `SealBase(public_key, info, aad = "<component>:<env_key>", plaintext)`, encoding `enc || ciphertext` as standard RFC 4648 base64 in `{ "encrypted": "<base64>" }`. Binding `aad` to `<component>:<env_key>` prevents ciphertexts from being replayed or swapped across components or variable names.
 
 ## Resource Dumps
 
@@ -127,7 +133,7 @@ If available and permitted, the server streams the dump on demand without cachin
 
 ## Errors
 
-Whenever the server cannot fulfill a request (unsupported version or auth method, unknown Git remote, unauthorized key, unfillable unclaimed resource, or unavailable dump), it replies with an `error` frame (`"id"` is included when correlated to a request) and closes the socket on handshake or authentication failures:
+Whenever the server cannot fulfill a request (unsupported version, auth method, or encryption method; unknown Git remote; unauthorized key; unfillable unclaimed entry; or unavailable dump), it replies with an `error` frame (`"id"` is included when correlated to a request) and closes the socket on handshake or authentication failures:
 
 ```json
 { "type": "error", "id": "<optional correlation id>", "code": "<string>", "message": "<human explanation>" }
