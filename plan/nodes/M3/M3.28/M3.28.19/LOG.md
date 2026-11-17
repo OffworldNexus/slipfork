@@ -23,3 +23,7 @@ verified against shipped client: 10 factual-drift items fixed (kept the delibera
 ## 2026-11-17T21:48 [lead]
 
 status active -> done
+
+## 2026-11-17T22:39 [lead]
+
+architect clean rewrite: 136 lines, 3 sequenceDiagrams; verified plan OK + guard 562 + zensical strict; content untouched.

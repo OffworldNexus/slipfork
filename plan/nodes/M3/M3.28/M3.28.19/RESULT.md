@@ -1,6 +1,8 @@
 # M3.28.19 — OSPP v1 draft factual-drift audit
 
-Verified `docs/design/ospp.md` against `crates/slipfork-ospp/src/{protocol,client}.rs`, `crates/slipfork/src/daemon.rs`, `crates/slipfork-dag/src/resources.rs`, and `docs/reference/ospp.md`. 168 lines, 2 `sequenceDiagram`s kept; no target behaviour replaced.
+Verified `docs/design/ospp.md` against `crates/slipfork-ospp/src/{protocol,client}.rs`, `crates/slipfork/src/daemon.rs`, `crates/slipfork-dag/src/resources.rs`, and `docs/reference/ospp.md`. 136 lines, 3 `sequenceDiagram`s; no target behaviour replaced.
+
+The architect then rewrote the draft from scratch to the owner's OSPP v1 spec (**136 lines, 3 `sequenceDiagram`s**). Content is the architect's; this node only verifies and commits it (`plan.py validate` OK, `guard.py` OK 562 files, `zensical build --strict` clean).
 
 ## Drift items
 

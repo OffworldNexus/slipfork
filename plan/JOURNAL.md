@@ -1145,3 +1145,10 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-17T21:49 [M3.2] (lead) ADR-0008 wire supersession (from M3.28.19): this epic implements docs/design/ospp.md, which supersedes ADR-0008's wire specification at 0.2.0. ADR-0008 status g
 - 2026-11-17T22:13 [M3.28.17] (lead) status review -> done
 - 2026-11-17T22:13 [M3.28.17] (lead) pre-commit: make check rc=0 (load 10), engine lib 66, slipfork lib restart 4, critical_edge 40, clippy clean, fmt-ok, critical_guard OK, guard OK.
+- 2026-11-17T22:13 [M3.28.6] (lead) status ready -> active
+- 2026-11-17T22:13 [M3.28.6] (lead) attempt 1/3 started
+- 2026-11-17T22:13 [M3.28.6] (lead) base 501acf63690013fe6a16ca73c656f9723304dd1d
+- 2026-11-17T22:21 [M3.28.6] (lead) edited fields
+- 2026-11-17T22:21 [M3.28.6] (lead) attempt 2/3 started
+- 2026-11-17T22:21 [M3.28.6] (lead) attempt 1 cap-out after the bulk of the work; cargo check -p slipfork --all-targets is CLEAN on the tree. Paths widened to crates/slipfork/tests/** (removing th
+- 2026-11-17T22:39 [M3.28.19] (lead) architect clean rewrite: 136 lines, 3 sequenceDiagrams; verified plan OK + guard 562 + zensical strict; content untouched.
