@@ -17,5 +17,6 @@ slipfork-world = { path = "../slipfork-world" }
 thiserror.workspace = true
 
 [dev-dependencies]
+base64.workspace = true
 slipfork-testkit = { path = "../slipfork-testkit" }
 tempfile.workspace = true

@@ -2,20 +2,22 @@
 id: M3.14
 title: "Engine conformance + critical suites on BtrfsEngine (driver-injected fast suites, live kernel suite for the VM)"
 kind: task
-status: ready
+status: done
 owner: implementer
 priority: 3
 depends_on: [M3.13]
 paths:
   - "crates/slipfork-engine/src/conformance.rs"
   - "crates/slipfork-engine/tests/**"
+  - "crates/slipfork-engine/Cargo.toml"
   - support/integrations.toml
   - "docs/support-matrix.md"
-attempts: 0
+  - Cargo.lock
+attempts: 1
 max_attempts: 3
 escalation: none
 created: "2026-11-16T16:58"
-updated: "2026-11-16T17:25"
+updated: "2026-11-17T11:37"
 ---
 
 # Goal

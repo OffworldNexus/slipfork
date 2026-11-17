@@ -888,3 +888,13 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-17T09:15 [M3.13] (lead) Expert round 2 applied all legality corrections: accurate pid_namespaces(7) wording, kill_and_reap_child error propagation, ProcessIdentity (/proc ns/pid + star
 - 2026-11-17T09:15 [M3.14] (lead) status active -> review
 - 2026-11-17T10:16 [M3.13] (lead) status active -> done
+- 2026-11-17T10:36 [M3.18] (lead) status ready -> active
+- 2026-11-17T10:36 [M3.18] (lead) attempt 1/3 started
+- 2026-11-17T10:36 [M3.18] (lead) base a602f1e5a66f6b3800dbce14894546611075fb2a
+- 2026-11-17T10:56 [M3.18] (lead) attempt 2/3 started
+- 2026-11-17T10:56 [M3.18] (lead) attempt 1 hit the step limit after rewriting README/index/getting-started/cli/AGENTS. Attempt 2 finishes testing-dag, runs the gates + critics, writes RESULT.
+- 2026-11-17T11:17 [M3.21] (lead) ADD (flake, pre-existing): crates/slipfork-engine/src/linux_cow.rs:386-408 tests compare a process-wide /proc/self/fd COUNT, so parallel lib tests race (seen: '
+- 2026-11-17T11:17 [M3.24] (lead) ADD: the linux_cow fd-count flake is assigned to M3.21 (owner of linux_cow.rs). Your Makefile/test scope remains bounded-wait consolidation + orphan reaping.
+- 2026-11-17T11:17 [M3.14] (lead) FINAL fixes applied (3): post-stop container fail-closed assertions restored with a real client log line; base64 crate replaces the silent hand-rolled decoder; 
+- 2026-11-17T11:37 [M3.14] (lead) edited fields
+- 2026-11-17T11:37 [M3.14] (lead) status review -> done

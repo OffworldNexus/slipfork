@@ -5,7 +5,7 @@
 //! extracted directory tree produced by an injected exporter — never a mocked validator. No Docker
 //! daemon is touched here.
 
-mod support;
+pub mod support;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

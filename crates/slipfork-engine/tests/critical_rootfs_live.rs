@@ -5,7 +5,7 @@
 //! When `docker`/`buildx` is absent the test **fails closed** with the actionable diagnostic — it
 //! never skips silently.
 
-mod support;
+pub mod support;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -81,7 +81,6 @@ impl LiveHarness {
 }
 
 #[test]
-#[ignore = "requires docker buildx and the pinned static crun (real local export)"]
 fn live_buildx_export_validates_and_caches_the_world_stage() {
     let harness = LiveHarness::new();
     let builder = harness.builder("docker");
@@ -165,7 +164,6 @@ fn live_buildx_export_validates_and_caches_the_world_stage() {
 }
 
 #[test]
-#[ignore = "requires docker buildx and the pinned static crun (real local export)"]
 fn missing_docker_fails_closed_with_the_actionable_diagnostic() {
     let harness = LiveHarness::new();
     let builder = harness.builder("/nonexistent/slipfork-test-docker");

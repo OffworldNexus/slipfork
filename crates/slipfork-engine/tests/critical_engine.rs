@@ -1,179 +1,59 @@
-//! Protected critical tests for `slipfork-engine` (`R10`, `R11`, `R12`, `H-011`).
+//! Protected critical tests for `BtrfsEngine` (`R10`, `R11`, `H-011`).
 //!
-//! The reflink tests run against the real filesystem (`ioctl(FICLONE)` on XFS `reflink=1`), real
-//! unprivileged mount/net/pid namespaces, a real persistent `slipfork-world-init` PID 1, and real
-//! `AF_UNIX` / `SCM_RIGHTS` descriptor handoff — never a mocked CoW engine. The Incus adapter is
-//! exercised against an in-tree Unix-socket protocol harness only (live `incusd` is gated on
-//! `H-004`).
+//! Every suite drives `BtrfsEngine::with_driver` over the shared
+//! [`slipfork_testkit::btrfs::TestTreeDriver`], which emulates the [`SubvolumeDriver`] contract in
+//! real directories (`ARCHITECTURE.md` §1), so the CoW substrate runs unchanged on any host. What
+//! stays real is everything above that seam: the unprivileged
+//! `userns`/`netns`/`ipcns`/`pidns`/`mntns` world PID 1 (`slipfork-world-init`), `nsenter` entry,
+//! `pivot_root` mount plumbing, service supervision, and the `AF_UNIX` / `SCM_RIGHTS` descriptor
+//! handoff — never a mocked engine and never a fixed sleep as a readiness proof.
+//!
+//! The real `BTRFS_IOC_*` kernel path (read-only snapshots, writable clones, `--ipc` isolation
+//! across parallel containers) is `critical_btrfs_live.rs`, which runs on the Btrfs host.
 
-mod support;
+pub mod support;
 
 use std::fs;
 use std::io::{Read, Write};
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
-use std::os::unix::net::{UnixListener, UnixStream};
+use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
+use slipfork_engine::btrfs::SubvolumeDriver;
 use slipfork_engine::conformance::assert_world_engine_conformance;
 use slipfork_engine::{
-    EngineError, ExecEnv, ExecOutput, IncusEngine, InheritedVar, LocalIngressBridge, MountMode,
-    ReflinkNetnsEngine, ServiceHandle, ServiceLogs, ServiceRuntime, ServiceSpec, ServiceState,
-    SnapshotId, StreamChunk, WorldEngine, WorldEntryCommand, WorldHandle, WorldMount, WorldRootfs,
-    WorldSpec, current_uid_gid, probe_reflink_dir,
+    BtrfsEngine, EngineError, ExecEnv, InheritedVar, LocalIngressBridge, MountMode, ServiceRuntime,
+    ServiceSpec, ServiceState, SnapshotId, StreamChunk, WorldEngine, WorldEntryCommand,
+    WorldHandle, WorldMount, WorldSpec, current_uid_gid,
 };
+use slipfork_testkit::btrfs::{SubvolumeOp, TestTreeDriver};
+use slipfork_testkit::poll_until;
 use slipfork_world::WorldTarget;
+use support::{WorldFixture, engine_test_dir, log_text, world_env};
 
 const HELPER_PATH: &str = "/usr/local/bin:/usr/bin:/bin";
+const XFS_SUPER_MAGIC: i64 = 0x5846_5342;
 
-fn xfs_test_dir(label: &str) -> PathBuf {
-    let home = std::env::var("HOME").expect("HOME");
-    // Keep the root short and unique: `<world_dir>/netns.sock` must fit the 107-byte AF_UNIX
-    // path limit, and parallel tests must not share a directory.
-    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
-    for byte in label.as_bytes() {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(0x0100_0000_01b3);
-    }
-    let dir = PathBuf::from(home)
-        .join(".cache")
-        .join("sfct")
-        .join(format!("{:08x}-{}", hash & 0xffff_ffff, std::process::id()));
-    let _ = fs::remove_dir_all(&dir);
-    fs::create_dir_all(&dir).expect("create xfs test dir");
-    dir
-}
+/// Observation window for "a stopped writer never grows its state again" (an absence assertion
+/// needs a window; it is never used as a readiness proof).
+const QUIET_WINDOW: Duration = Duration::from_millis(150);
 
 fn snap(label: &str) -> SnapshotId {
     SnapshotId(label.to_owned())
 }
 
-/// World environment with the inherited allowlist and a world-scoped `HOME`.
-fn world_env(home: &Path) -> ExecEnv {
-    let mut env = ExecEnv::world_scoped(home);
-    env.inherit(
-        InheritedVar::Path,
-        std::env::var("PATH").unwrap_or_else(|_| HELPER_PATH.to_owned()),
-    );
-    env
-}
-
-fn engine_at(root: &Path) -> ReflinkNetnsEngine {
-    let (uid, gid) = current_uid_gid();
-    ReflinkNetnsEngine::with_world_init_program(
-        root.join("engine"),
-        uid,
-        gid,
-        env!("CARGO_BIN_EXE_slipfork-world-init"),
-    )
-}
-
-fn run(engine: &ReflinkNetnsEngine, world: &WorldHandle, cwd: &Path, script: &str) -> ExecOutput {
-    let mut chunks: Vec<StreamChunk> = Vec::new();
-    engine
-        .exec_in_world(
-            world,
-            &["sh".to_owned(), "-c".to_owned(), script.to_owned()],
-            cwd,
-            &ExecEnv::default(),
-            &mut |chunk| chunks.push(chunk),
-        )
-        .expect("exec inside world")
-}
-
 fn target_pid(entry: &WorldEntryCommand) -> u32 {
+    // `entry_command` names the world's persistent PID 1 in `nsenter --target=<init_pid>`.
     entry
         .args_prefix
         .iter()
         .find_map(|arg| arg.strip_prefix("--target="))
         .and_then(|pid| pid.parse().ok())
         .expect("entry command must carry nsenter --target=<init_pid>")
-}
-
-fn wait_until(condition: impl Fn() -> bool, timeout: Duration) -> bool {
-    let deadline = Instant::now() + timeout;
-    while Instant::now() < deadline {
-        if condition() {
-            return true;
-        }
-        thread::sleep(Duration::from_millis(20));
-    }
-    condition()
-}
-
-/// One real XFS snapshot plus a repo mount and world-scoped `HOME` shared by a test's worlds.
-struct WorldFixture {
-    root: PathBuf,
-    engine: ReflinkNetnsEngine,
-    rootfs: WorldRootfs,
-    snapshot: SnapshotId,
-    home: PathBuf,
-    repo: PathBuf,
-}
-
-impl WorldFixture {
-    fn new(label: &str) -> Self {
-        let root = xfs_test_dir(label);
-        let engine = engine_at(&root);
-        let src = root.join("state-src");
-        fs::create_dir_all(&src).expect("state-src");
-        fs::write(src.join("seed.txt"), b"ancestor\n").expect("seed");
-        let snapshot = snap("base");
-        engine
-            .create_snapshot(&src, &snapshot)
-            .expect("base snapshot");
-        let home = root.join("home");
-        let repo = root.join("repo");
-        fs::create_dir_all(&repo).expect("repo");
-        Self {
-            root,
-            engine,
-            rootfs: support::fixture_rootfs(),
-            snapshot,
-            home,
-            repo,
-        }
-    }
-
-    fn clone_world(
-        &self,
-        target: WorldTarget,
-        ingress: Option<LocalIngressBridge>,
-        snapshot: &SnapshotId,
-    ) -> WorldHandle {
-        self.engine
-            .clone_world(&WorldSpec {
-                target,
-                rootfs: self.rootfs.clone(),
-                snapshot: snapshot.clone(),
-                mounts: vec![WorldMount {
-                    host_path: self.repo.clone(),
-                    guest_path: self.repo.clone(),
-                    mode: MountMode::ReadWrite,
-                }],
-                base_env: world_env(&self.home),
-                local_ingress: ingress,
-            })
-            .expect("clone world")
-    }
-
-    fn world(&self, target: WorldTarget) -> WorldHandle {
-        self.clone_world(target, None, &self.snapshot)
-    }
-
-    fn exec(&self, world: &WorldHandle, script: &str) -> ExecOutput {
-        run(&self.engine, world, &self.repo, script)
-    }
-
-    fn service(&self, world: &WorldHandle, spec: ServiceSpec) -> ServiceHandle {
-        self.engine
-            .spawn_service(world, &spec)
-            .unwrap_or_else(|err| panic!("spawn service '{}': {err}", spec.id))
-    }
 }
 
 fn service_spec(id: &str, cwd: &Path, port: Option<u16>, script: &str) -> ServiceSpec {
@@ -188,30 +68,52 @@ fn service_spec(id: &str, cwd: &Path, port: Option<u16>, script: &str) -> Servic
     }
 }
 
-fn log_text(logs: &ServiceLogs) -> String {
-    logs.snapshot()
-        .iter()
-        .map(|chunk| String::from_utf8_lossy(&chunk.bytes).into_owned())
-        .collect()
+#[test]
+fn r10_a_non_btrfs_state_dir_fails_closed_without_a_silent_fallback() {
+    let root = engine_test_dir("non-btrfs");
+    let state_dir = root.join("state");
+    let (uid, gid) = current_uid_gid();
+    let err = BtrfsEngine::with_driver(
+        &state_dir,
+        uid,
+        gid,
+        env!("CARGO_BIN_EXE_slipfork-world-init"),
+        Arc::new(TestTreeDriver::non_btrfs(XFS_SUPER_MAGIC)) as Arc<dyn SubvolumeDriver>,
+    )
+    .expect_err("a non-Btrfs state dir must fail the boot gate closed");
+    match err {
+        EngineError::BtrfsRequired {
+            path,
+            actual_fstype,
+            mount_hint,
+        } => {
+            assert_eq!(path, state_dir);
+            assert_eq!(
+                actual_fstype, XFS_SUPER_MAGIC,
+                "the refusal must report the probed f_type"
+            );
+            assert_eq!(mount_hint, slipfork_engine::btrfs::BTRFS_MOUNT_HINT);
+            assert!(
+                mount_hint.contains("user_subvol_rm_allowed,noatime"),
+                "the refusal names the exact mount remediation: {mount_hint}"
+            );
+        }
+        other => panic!("expected BtrfsRequired, got {other:?}"),
+    }
+    assert!(
+        !state_dir.exists(),
+        "a refused engine creates no state directory at all"
+    );
+    let _ = fs::remove_dir_all(&root);
 }
 
 #[test]
-fn r10_tmpfs_fails_closed_without_silent_byte_copy_fallback() {
-    let tmp_dir =
-        PathBuf::from("/tmp/opencode").join(format!("slipfork-tmpfs-{}", std::process::id()));
-    let _ = fs::remove_dir_all(&tmp_dir);
-    let err = probe_reflink_dir(&tmp_dir).expect_err("/tmp tmpfs must fail FICLONE closed");
-    let _ = fs::remove_dir_all(&tmp_dir);
-    assert!(matches!(err, EngineError::ReflinkUnsupported { .. }));
-}
-
-#[test]
-fn r10_r11_reflink_netns_conformance_cow_isolation_uid_and_parallel_same_port() {
-    let fx = WorldFixture::new("reflink-netns");
+fn r10_r11_btrfs_conformance_cow_isolation_uid_and_parallel_same_port() {
+    let fx = WorldFixture::new("cow-isolation");
     let (uid, gid) = current_uid_gid();
 
     // 1. Shared WorldEngine contract (fail-closed errors, redaction, opaque handles, seal-once).
-    assert_world_engine_conformance(&fx.engine, &fx.root, &fx.rootfs);
+    assert_world_engine_conformance(fx.engine.as_ref(), &fx.root, &fx.rootfs);
 
     // 2. Two simultaneous clones of the same snapshot.
     let workspace_a = fx.repo.clone();
@@ -262,8 +164,7 @@ fn r10_r11_reflink_netns_conformance_cow_isolation_uid_and_parallel_same_port() 
     let generated = fs::metadata(workspace_a.join("generated.txt")).expect("generated.txt");
     assert_eq!(generated.uid(), uid, "files must stay host-owned");
     assert_eq!(generated.gid(), gid, "files must stay host-owned");
-    let out = run(
-        &fx.engine,
+    let out = fx.exec_in(
         &world_b,
         &workspace_b,
         "cat \"$SLIPFORK_WORLD_STATE/seed.txt\"",
@@ -281,7 +182,7 @@ fn r10_r11_reflink_netns_conformance_cow_isolation_uid_and_parallel_same_port() 
                    time.sleep(0.15)\n\
                    print(\"BOUND_OK\", s.getsockname()[1])\n";
     let bind_in_world = |world: WorldHandle, cwd: PathBuf| {
-        let engine = fx.engine.clone();
+        let engine = Arc::clone(&fx.engine);
         thread::spawn(move || {
             engine
                 .exec_in_world(
@@ -311,8 +212,230 @@ fn r10_r11_reflink_netns_conformance_cow_isolation_uid_and_parallel_same_port() 
 }
 
 #[test]
+fn one_writable_subvolume_per_world_with_ro_snapshot_lineage_and_host_ownership() {
+    let driver = Arc::new(TestTreeDriver::btrfs());
+    let fx = WorldFixture::with_driver("layout", Arc::clone(&driver));
+    let (uid, gid) = current_uid_gid();
+    let snapshots = fx.state_dir.join("snapshots");
+    let worlds = fx.state_dir.join("worlds");
+
+    // 1. A snapshot is one sealed subvolume; the plain import directory left no staging tree.
+    assert_eq!(
+        driver.list_children(&snapshots).expect("snapshots"),
+        vec![snapshots.join("base")],
+        "one sealed snapshot subvolume, no staging residue"
+    );
+    assert_eq!(
+        fs::metadata(snapshots.join("base"))
+            .expect("snapshot metadata")
+            .permissions()
+            .mode()
+            & 0o200,
+        0,
+        "a read-only snapshot carries no owner-write bit"
+    );
+    assert!(
+        fs::write(snapshots.join("base/new-file"), b"nope").is_err(),
+        "a new entry at the sealed snapshot root fails"
+    );
+
+    let world_a = fx.world(WorldTarget::Canonical);
+    let after_a = driver.list_children(&worlds).expect("worlds after a");
+    assert_eq!(after_a, vec![worlds.join("canonical-1")]);
+    let world_b = fx.world(WorldTarget::UserFork("sib".to_owned()));
+    let after_b = driver.list_children(&worlds).expect("worlds after b");
+    assert_eq!(after_b.len(), 2, "each world is exactly one subvolume");
+
+    // 2. One `snapshot_writable` per world, always from the same read-only snapshot.
+    let writable: Vec<(PathBuf, PathBuf)> = driver
+        .journal()
+        .iter()
+        .filter_map(|op| match op {
+            SubvolumeOp::SnapshotWritable { source, dest } => Some((source.clone(), dest.clone())),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(writable.len(), 2, "one writable clone per world");
+    for (source, dest) in &writable {
+        assert_eq!(*source, snapshots.join("base"));
+        assert_eq!(
+            dest.parent(),
+            Some(worlds.as_path()),
+            "a world subvolume only ever lives under worlds/"
+        );
+    }
+
+    // 3. The unified layout inside the one subvolume, plus disjoint control state.
+    for world_dir in &after_b {
+        let rootfs = world_dir.join("rootfs");
+        assert!(
+            fs::symlink_metadata(&rootfs)
+                .expect("rootfs reference")
+                .file_type()
+                .is_symlink(),
+            "the rootfs is a reference, never a second copy of the image"
+        );
+        assert_eq!(
+            fs::read_link(&rootfs).expect("rootfs link target"),
+            fx.rootfs.app_rootfs
+        );
+        for category in ["pgdata", "redis", "s3"] {
+            let dir = world_dir.join("state").join(category);
+            assert!(
+                dir.is_dir(),
+                "state lineage directory missing: {}",
+                dir.display()
+            );
+        }
+        assert!(
+            driver
+                .list_children(world_dir)
+                .expect("nested subvolumes")
+                .is_empty(),
+            "one world is one subvolume: no nested subvolumes"
+        );
+        assert!(
+            !world_dir.join("netns.sock").exists(),
+            "the dial socket lives in ctl/, so a seal never captures it"
+        );
+        for path in [world_dir.clone(), world_dir.join("state")] {
+            let metadata = fs::metadata(&path).expect("world tree metadata");
+            assert_eq!(
+                (metadata.uid(), metadata.gid()),
+                (uid, gid),
+                "world trees are $UID:$GID-owned: {}",
+                path.display()
+            );
+        }
+    }
+    let ctl_entries = fs::read_dir(fx.state_dir.join("ctl")).expect("ctl dir");
+    let mut sockets = Vec::new();
+    for entry in ctl_entries {
+        let socket = entry.expect("ctl entry").path().join("netns.sock");
+        assert!(
+            socket.exists(),
+            "every world owns a ctl socket: {}",
+            socket.display()
+        );
+        sockets.push(socket);
+    }
+    assert_eq!(sockets.len(), 2);
+
+    // 4. Sibling clones of one read-only snapshot share nothing writable (state-subdir lineage).
+    let world_a_dir = after_b
+        .iter()
+        .find(|path| path.ends_with("canonical-1"))
+        .expect("world a subvolume")
+        .clone();
+    let world_b_dir = after_b
+        .iter()
+        .find(|path| path.ends_with("fork-sib-2"))
+        .expect("world b subvolume")
+        .clone();
+    let leaf = world_a_dir.join("state/pgdata/main");
+    fs::create_dir_all(&leaf).expect("state leaf");
+    fs::write(leaf.join("tuple"), b"a-row\n").expect("state leaf row");
+    assert!(
+        !world_b_dir.join("state/pgdata/main/tuple").exists(),
+        "a sibling clone never sees another clone's state leaf"
+    );
+    assert!(
+        !snapshots.join("base/state/pgdata/main/tuple").exists(),
+        "the sealed snapshot never sees a clone's writes"
+    );
+
+    // 5. Seal-once freeze: the frozen world becomes the parent of a new lineage.
+    fx.engine
+        .freeze_world(&world_a, &snap("sealed"))
+        .expect("seal world a");
+    assert_eq!(
+        driver
+            .list_children(&snapshots)
+            .expect("snapshots after seal"),
+        vec![snapshots.join("base"), snapshots.join("sealed")]
+    );
+    let world_c = fx.clone_world(
+        WorldTarget::UserFork("sealed".to_owned()),
+        None,
+        &snap("sealed"),
+    );
+    let out = fx.exec(&world_c, "cat \"$SLIPFORK_WORLD_STATE/pgdata/main/tuple\"");
+    assert_eq!(out.exit_code, 0, "stderr: {}", out.stderr);
+    assert_eq!(
+        out.stdout, "a-row\n",
+        "a clone of the sealed world inherits its state lineage"
+    );
+    let err = fx
+        .engine
+        .freeze_world(&world_a, &snap("sealed-again"))
+        .expect_err("seal-once: an already-frozen world must fail closed");
+    assert!(matches!(err, EngineError::WorldNotFreezable { .. }));
+
+    // 6. Teardown: writable worlds go, then a sealed snapshot is cleared read-only before destroy.
+    fx.engine.destroy_world(world_c).expect("destroy world c");
+    fx.engine.destroy_world(world_b).expect("destroy world b");
+    fx.engine.destroy_world(world_a).expect("destroy world a");
+    assert!(
+        driver
+            .list_children(&worlds)
+            .expect("worlds after destroy")
+            .is_empty(),
+        "no world subvolume survives its destroy_world"
+    );
+    driver
+        .destroy_subvolume(&snapshots, "sealed")
+        .expect("destroy a sealed snapshot");
+    let journal = driver.journal();
+    let cleared = journal
+        .iter()
+        .position(|op| matches!(op, SubvolumeOp::ClearReadonly { path } if path == &snapshots.join("sealed")))
+        .expect("the read-only flag is cleared before destroy");
+    let destroyed = journal
+        .iter()
+        .position(|op| matches!(op, SubvolumeOp::DestroySubvolume { path } if path == &snapshots.join("sealed")))
+        .expect("the sealed snapshot is destroyed");
+    assert!(
+        cleared < destroyed,
+        "clear read-only must precede destroy: {journal:?}"
+    );
+    assert!(!snapshots.join("sealed").exists());
+    let _ = fs::remove_dir_all(&fx.root);
+}
+
+#[test]
+fn a_rootfs_outside_the_content_addressed_cache_is_refused_before_a_subvolume_exists() {
+    let driver = Arc::new(TestTreeDriver::btrfs());
+    let fx = WorldFixture::with_driver("rootfs-cache", Arc::clone(&driver));
+    let mut rootfs = fx.rootfs.clone();
+    rootfs.app_rootfs = fx.root.join("somewhere-else/app");
+    let err = fx
+        .engine
+        .clone_world(&WorldSpec {
+            target: WorldTarget::Canonical,
+            rootfs,
+            snapshot: fx.snapshot.clone(),
+            mounts: Vec::new(),
+            base_env: world_env(&fx.home),
+            local_ingress: None,
+        })
+        .expect_err("a rootfs outside the content-addressed cache must fail closed");
+    assert!(
+        matches!(err, EngineError::InvalidWorldSpec { .. }),
+        "expected InvalidWorldSpec, got {err:?}"
+    );
+    assert!(
+        driver
+            .list_children(&fx.state_dir.join("worlds"))
+            .expect("worlds")
+            .is_empty(),
+        "a refused spec creates no world subvolume"
+    );
+    let _ = fs::remove_dir_all(&fx.root);
+}
+
+#[test]
 fn multi_mount_repo_rw_and_readonly_artifact_volume_are_real_bind_mounts() {
-    let fx = WorldFixture::new("reflink-netns-mounts");
+    let fx = WorldFixture::new("mounts");
     let (uid, gid) = current_uid_gid();
     let artifacts = fx.root.join("artifacts");
     fs::create_dir_all(&artifacts).expect("artifacts");
@@ -407,7 +530,7 @@ fn multi_mount_repo_rw_and_readonly_artifact_volume_are_real_bind_mounts() {
 
 #[test]
 fn freeze_lineage_seals_once_and_sibling_clones_stay_isolated() {
-    let fx = WorldFixture::new("reflink-netns-freeze");
+    let fx = WorldFixture::new("freeze");
     let origin = fx.world(WorldTarget::Canonical);
     let out = fx.exec(
         &origin,
@@ -508,9 +631,10 @@ fn redacted_exec_env_and_opaque_world_handles() {
     assert!(serde_json::from_str::<ExecEnv>(both_bindings).is_err());
 
     // A WorldSpec carrying secrets never renders them either.
+    let fx = WorldFixture::new("redact");
     let full = WorldSpec {
         target: WorldTarget::Canonical,
-        rootfs: support::fixture_rootfs(),
+        rootfs: fx.rootfs.clone(),
         snapshot: snap("whatever"),
         mounts: vec![],
         base_env: env.clone(),
@@ -520,7 +644,6 @@ fn redacted_exec_env_and_opaque_world_handles() {
 
     // Handles are opaque (stable Debug across clones, no filesystem/env payload) and the real
     // child-process boundary is the only place the effective `base ⊕ overlay` values materialize.
-    let fx = WorldFixture::new("reflink-netns-redact");
     let mut base_env = world_env(&fx.home);
     base_env.set_secret("API_TOKEN", SECRET).expect("secret");
     base_env
@@ -585,7 +708,7 @@ fn persistent_init_pid_stays_stable_across_calls_and_is_reaped_on_destroy() {
     assert_eq!(
         entry.program,
         PathBuf::from("nsenter"),
-        "ReflinkNetnsEngine enters via a single-threaded nsenter child"
+        "BtrfsEngine enters via a single-threaded nsenter child"
     );
     assert!(
         entry.args_prefix.iter().any(|arg| arg == "--wd=/")
@@ -627,12 +750,16 @@ fn persistent_init_pid_stays_stable_across_calls_and_is_reaped_on_destroy() {
     }
 
     fx.engine.destroy_world(world.clone()).expect("destroy");
+    let reaped = poll_until(Duration::from_secs(10), || {
+        if Path::new(&format!("/proc/{init_pid}")).exists() {
+            Err(format!("world init pid {init_pid} is still alive"))
+        } else {
+            Ok(())
+        }
+    });
     assert!(
-        wait_until(
-            || !Path::new(&format!("/proc/{init_pid}")).exists(),
-            Duration::from_secs(10)
-        ),
-        "destroy_world must reap the world PID 1 (pid {init_pid})"
+        reaped.is_ok(),
+        "destroy_world must reap the world PID 1: {reaped:?}"
     );
     let err = fx
         .engine
@@ -658,13 +785,16 @@ fn service_logs_survive_idempotent_stop_and_freeze_seals_only_after_stop() {
     );
     assert_eq!(greeter.state(), ServiceState::Running);
     let logs = fx.engine.service_logs(&world, "greeter").expect("logs");
+    let captured = poll_until(Duration::from_secs(10), || {
+        if log_text(&logs).contains("service-hello") {
+            Ok(())
+        } else {
+            Err(format!("captured so far: {:?}", log_text(&logs)))
+        }
+    });
     assert!(
-        wait_until(
-            || log_text(&logs).contains("service-hello"),
-            Duration::from_secs(10)
-        ),
-        "service stdout must be captured: {:?}",
-        log_text(&logs)
+        captured.is_ok(),
+        "service stdout must be captured: {captured:?}"
     );
 
     // `follow` replays retained output and returns once the service stops.
@@ -696,7 +826,7 @@ fn service_logs_survive_idempotent_stop_and_freeze_seals_only_after_stop() {
     );
     assert!(logs.is_closed());
 
-    // A live writer is stopped before `state_dir` is sealed, so the snapshot is consistent.
+    // A live writer is stopped before `state` is sealed, so the snapshot is consistent.
     let writer = fx.service(
         &world,
         service_spec(
@@ -706,16 +836,20 @@ fn service_logs_survive_idempotent_stop_and_freeze_seals_only_after_stop() {
             "while :; do echo tick >> \"$SLIPFORK_WORLD_STATE/live.log\"; sleep 0.01; done",
         ),
     );
+    let produced = poll_until(Duration::from_secs(10), || {
+        if fx
+            .exec(&world, "test -s \"$SLIPFORK_WORLD_STATE/live.log\"")
+            .exit_code
+            == 0
+        {
+            Ok(())
+        } else {
+            Err("writer has not produced state yet".to_owned())
+        }
+    });
     assert!(
-        wait_until(
-            || {
-                fx.exec(&world, "test -s \"$SLIPFORK_WORLD_STATE/live.log\"")
-                    .exit_code
-                    == 0
-            },
-            Duration::from_secs(10)
-        ),
-        "writer must produce state before the freeze"
+        produced.is_ok(),
+        "writer must produce state before the freeze: {produced:?}"
     );
     fx.engine
         .freeze_world(&world, &snap("sealed-after-stop"))
@@ -723,7 +857,7 @@ fn service_logs_survive_idempotent_stop_and_freeze_seals_only_after_stop() {
     assert_eq!(
         writer.state(),
         ServiceState::Stopped,
-        "freeze_world must stop live services before reflinking"
+        "freeze_world must stop live services before sealing the subvolume"
     );
 
     let size_at_freeze = fx
@@ -731,7 +865,7 @@ fn service_logs_survive_idempotent_stop_and_freeze_seals_only_after_stop() {
         .stdout
         .trim()
         .to_owned();
-    thread::sleep(Duration::from_millis(150));
+    thread::sleep(QUIET_WINDOW);
     let size_after = fx
         .exec(&world, "wc -c < \"$SLIPFORK_WORLD_STATE/live.log\"")
         .stdout
@@ -760,7 +894,6 @@ fn service_logs_survive_idempotent_stop_and_freeze_seals_only_after_stop() {
         "the sealed snapshot must equal the state observed after the stop"
     );
 
-    // A second service with the same id after a stop is a fresh, independently logged run.
     fx.engine.destroy_world(sealed).expect("destroy clone");
     fx.engine.destroy_world(world).expect("destroy world");
     let _ = fs::remove_dir_all(&fx.root);
@@ -849,14 +982,20 @@ fn dial_world_tcp_reaches_in_world_listener_via_netns_sock_scm_rights() {
     stream.read_exact(&mut reply).expect("read reply");
     assert_eq!(&reply, b"PONG", "the handed-off stream must be live");
 
-    // The dial socket is a `0600` pathname AF_UNIX socket inside the world directory.
-    let worlds_dir = fx.root.join("engine").join("worlds");
-    let sockets: Vec<PathBuf> = fs::read_dir(&worlds_dir)
-        .expect("worlds dir")
+    // The dial socket is a `0600` pathname AF_UNIX socket in the control directory, outside the
+    // world subvolume (a seal could never capture it).
+    let ctl_dir = fx.state_dir.join("ctl");
+    let sockets: Vec<PathBuf> = fs::read_dir(&ctl_dir)
+        .expect("ctl dir")
         .filter_map(|entry| entry.ok().map(|entry| entry.path().join("netns.sock")))
         .filter(|path| path.exists())
         .collect();
     assert_eq!(sockets.len(), 1, "exactly one world dial socket");
+    assert!(
+        !sockets[0].starts_with(fx.state_dir.join("worlds")),
+        "the dial socket must live outside the sealed subvolume: {}",
+        sockets[0].display()
+    );
     let mode = fs::metadata(&sockets[0]).expect("netns.sock").mode() & 0o777;
     assert_eq!(mode, 0o600, "netns.sock must be 0600");
 
@@ -1017,7 +1156,7 @@ fn in_netns_bridge_port_80_reaches_host_ingress_and_dials_back_into_the_world() 
     // Host ingress stand-in for `slipforkd`: every request that arrives over the AF_UNIX socket is
     // routed back into the world through `dial_world_tcp` (exactly the `ingresses` prefix path).
     let ingress = {
-        let engine = fx.engine.clone();
+        let engine = Arc::clone(&fx.engine);
         let world = world.clone();
         thread::spawn(move || {
             for stream in listener.incoming() {
@@ -1087,24 +1226,28 @@ fn in_netns_bridge_port_80_reaches_host_ingress_and_dials_back_into_the_world() 
 
 #[test]
 fn world_init_fails_closed_when_the_helper_is_missing() {
-    let root = xfs_test_dir("missing-world-init");
+    let root = engine_test_dir("missing-world-init");
+    let state_dir = root.join("state");
     let (uid, gid) = current_uid_gid();
-    let engine = ReflinkNetnsEngine::with_world_init_program(
-        root.join("engine"),
+    let engine = BtrfsEngine::with_driver(
+        &state_dir,
         uid,
         gid,
         root.join("no-such-slipfork-world-init"),
-    );
+        Arc::new(TestTreeDriver::btrfs()) as Arc<dyn SubvolumeDriver>,
+    )
+    .expect("engine construction");
+    let rootfs = support::engine_rootfs(&state_dir);
     let src = root.join("state-src");
-    fs::create_dir_all(&src).expect("state-src");
-    fs::write(src.join("seed.txt"), b"ancestor\n").expect("seed");
+    fs::create_dir_all(src.join("state")).expect("state-src");
+    fs::write(src.join("state/seed.txt"), b"ancestor\n").expect("seed");
     engine
         .create_snapshot(&src, &snap("base"))
         .expect("snapshot");
     let err = engine
         .clone_world(&WorldSpec {
             target: WorldTarget::Canonical,
-            rootfs: support::fixture_rootfs(),
+            rootfs,
             snapshot: snap("base"),
             mounts: vec![],
             base_env: world_env(&root.join("home")),
@@ -1116,242 +1259,12 @@ fn world_init_fails_closed_when_the_helper_is_missing() {
         "expected WorldInitFailed, got {err:?}"
     );
     assert!(
-        !root.join("engine").join("worlds").exists()
-            || fs::read_dir(root.join("engine").join("worlds"))
-                .map(|mut entries| entries.next().is_none())
-                .unwrap_or(true),
+        !state_dir.join("worlds").exists()
+            || fs::read_dir(state_dir.join("worlds"))
+                .expect("read_dir worlds")
+                .next()
+                .is_none(),
         "a failed world boot must leave no half-materialized world behind"
     );
     let _ = fs::remove_dir_all(&root);
-}
-
-/// Minimal Incus `/1.0` Unix-socket protocol harness: records requests, answers like `incusd`.
-struct FakeIncus {
-    socket: PathBuf,
-    requests: Arc<Mutex<Vec<String>>>,
-    stop: Arc<AtomicBool>,
-    thread: Option<thread::JoinHandle<()>>,
-}
-
-impl FakeIncus {
-    fn start(socket: PathBuf) -> Self {
-        let listener = UnixListener::bind(&socket).expect("bind fake incus socket");
-        listener
-            .set_nonblocking(true)
-            .expect("non-blocking fake incus listener");
-        let requests = Arc::new(Mutex::new(Vec::new()));
-        let stop = Arc::new(AtomicBool::new(false));
-        let thread = {
-            let requests = Arc::clone(&requests);
-            let stop = Arc::clone(&stop);
-            thread::spawn(move || {
-                while !stop.load(Ordering::Relaxed) {
-                    match listener.accept() {
-                        Ok((mut stream, _)) => {
-                            let request = read_http_request(&mut stream);
-                            requests.lock().expect("requests").push(request.clone());
-                            let response = incus_response(&request);
-                            let _ = stream.write_all(response.as_bytes());
-                        }
-                        Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
-                            thread::sleep(Duration::from_millis(2));
-                        }
-                        Err(_) => break,
-                    }
-                }
-            })
-        };
-        Self {
-            socket,
-            requests,
-            stop,
-            thread: Some(thread),
-        }
-    }
-
-    fn requests(&self) -> Vec<String> {
-        self.requests.lock().expect("requests").clone()
-    }
-}
-
-impl Drop for FakeIncus {
-    fn drop(&mut self) {
-        self.stop.store(true, Ordering::Relaxed);
-        let _ = UnixStream::connect(&self.socket);
-        if let Some(thread) = self.thread.take() {
-            let _ = thread.join();
-        }
-    }
-}
-
-fn read_http_request(stream: &mut UnixStream) -> String {
-    let mut raw = Vec::new();
-    let mut chunk = [0_u8; 4096];
-    loop {
-        let read = stream.read(&mut chunk).expect("read fake incus request");
-        if read == 0 {
-            break;
-        }
-        raw.extend_from_slice(&chunk[..read]);
-        let text = String::from_utf8_lossy(&raw);
-        if let Some((head, body)) = text.split_once("\r\n\r\n") {
-            let content_length = head
-                .lines()
-                .find_map(|line| line.strip_prefix("Content-Length: "))
-                .and_then(|value| value.trim().parse::<usize>().ok())
-                .unwrap_or(0);
-            if body.len() >= content_length {
-                break;
-            }
-        }
-    }
-    String::from_utf8_lossy(&raw).into_owned()
-}
-
-fn incus_response(request: &str) -> String {
-    let status_line = request.lines().next().unwrap_or_default();
-    let (status, body) = if request.contains("definitely-missing") {
-        (
-            "404 Not Found",
-            r#"{"error":"snapshot not found","error_code":404}"#,
-        )
-    } else if status_line.contains("/exec") {
-        (
-            "200 OK",
-            r#"{"type":"sync","status":"Success","status_code":200,"metadata":{"metadata":{"return":0,"stdout":"world-ok\n","stderr":""}}}"#,
-        )
-    } else {
-        (
-            "200 OK",
-            r#"{"type":"sync","status":"Success","status_code":200,"metadata":{}}"#,
-        )
-    };
-    format!(
-        "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
-        body.len()
-    )
-}
-
-#[test]
-fn r12_incus_engine_protocol_harness_matches_conformance_contract() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let socket = dir.path().join("incus.socket");
-    let missing = IncusEngine::new(
-        dir.path().join("missing.socket"),
-        "default",
-        "acme-base",
-        1000,
-        1000,
-    );
-    let spec = WorldSpec {
-        target: WorldTarget::Canonical,
-        rootfs: support::fixture_rootfs(),
-        snapshot: snap("mig"),
-        mounts: vec![],
-        base_env: world_env(dir.path()),
-        local_ingress: None,
-    };
-    let err = missing
-        .clone_world(&spec)
-        .expect_err("must fail closed when the incusd socket is absent");
-    assert!(matches!(err, EngineError::DaemonUnavailable { .. }));
-
-    let fake = FakeIncus::start(socket.clone());
-    let incus = IncusEngine::new(&socket, "default", "acme-base", 1000, 1000);
-    assert_world_engine_conformance(&incus, dir.path(), &support::fixture_rootfs());
-
-    let repo = dir.path().join("repo");
-    let volumes = dir.path().join("volumes");
-    fs::create_dir_all(&repo).expect("repo");
-    fs::create_dir_all(&volumes).expect("volumes");
-    let world = incus
-        .clone_world(&WorldSpec {
-            target: WorldTarget::UserFork("incus".to_owned()),
-            rootfs: support::fixture_rootfs(),
-            snapshot: snap("seed-catalog"),
-            mounts: vec![
-                WorldMount {
-                    host_path: repo.clone(),
-                    guest_path: repo.clone(),
-                    mode: MountMode::ReadWrite,
-                },
-                WorldMount {
-                    host_path: volumes.clone(),
-                    guest_path: volumes.clone(),
-                    mode: MountMode::ReadOnly,
-                },
-            ],
-            base_env: world_env(&dir.path().join("home")),
-            local_ingress: None,
-        })
-        .expect("incus clone");
-
-    // Direct CLI entry is engine-supplied; service supervision and in-world dialing honestly
-    // report `Unsupported` until the live adapter lands in `M2.21`.
-    let entry = incus.entry_command(&world, &repo).expect("incus entry");
-    assert_eq!(entry.program, PathBuf::from("incus"));
-    assert_eq!(entry.args_prefix[0], "exec");
-    assert!(
-        entry.args_prefix[1].starts_with("fork-incus-"),
-        "incus entry must name the cloned instance: {:?}",
-        entry.args_prefix
-    );
-    assert_eq!(entry.args_prefix[2], "--cwd");
-    assert_eq!(entry.args_prefix[3], repo.display().to_string());
-    assert_eq!(entry.args_prefix[4], "--");
-    assert_eq!(entry.cwd, repo);
-    let err = incus
-        .dial_world_tcp(&world, 8080)
-        .expect_err("live Incus dialing is not implemented");
-    assert!(matches!(
-        err,
-        EngineError::Unsupported {
-            engine: "incus",
-            ..
-        }
-    ));
-    let err = incus
-        .spawn_service(&world, &service_spec("api", &repo, None, "echo hi"))
-        .expect_err("live Incus supervision is not implemented");
-    assert!(matches!(
-        err,
-        EngineError::Unsupported {
-            engine: "incus",
-            ..
-        }
-    ));
-
-    let mut overlay = ExecEnv::default();
-    overlay
-        .set_secret("DB_PASSWORD", "incus-secret")
-        .expect("secret overlay");
-    let mut chunks = Vec::new();
-    let out = incus
-        .exec_in_world(
-            &world,
-            &["cat".to_owned(), "rows.txt".to_owned()],
-            &repo,
-            &overlay,
-            &mut |chunk| chunks.push(chunk),
-        )
-        .expect("incus exec");
-    assert_eq!(out.stdout, "world-ok\n");
-    assert!(!chunks.is_empty(), "incus exec forwards stdout as a chunk");
-
-    let requests = fake.requests();
-    let clone_request = requests
-        .iter()
-        .find(|request| request.contains(r#""name":"fork-incus-"#))
-        .expect("instance clone request");
-    assert!(clone_request.contains(r#""shift":"true""#));
-    assert!(clone_request.contains(r#""readonly":"true""#));
-    assert!(clone_request.contains(r#""type":"copy""#));
-    let exec_request = requests
-        .iter()
-        .find(|request| request.contains("/exec"))
-        .expect("exec request");
-    assert!(exec_request.contains(r#""DB_PASSWORD":"incus-secret""#));
-    assert!(exec_request.contains(&repo.display().to_string()));
-
-    incus.destroy_world(world).expect("incus destroy");
 }

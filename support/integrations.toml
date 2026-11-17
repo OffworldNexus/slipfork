@@ -7,7 +7,7 @@
 # Tiers are ordered: none < declared < exercised < field-tested < hardened. Never claim a tier
 # above the evidence present in this repository. `0.2.0` promotes every user-reachable surface
 # that ships with a recipe page and a protected critical test; unshipped surfaces stay omitted
-# (`H-009` Option B).
+# (`H-009`).
 
 [[integration]]
 id = "dockerfile-l0-world-rootfs"
@@ -19,13 +19,13 @@ recipe_page = "docs/getting-started.md"
 critical_test = "slipfork::critical_l0_wiring::container_backed_world_boots_and_redis_targets_the_container"
 
 [[integration]]
-id = "reflink-netns-world-engine"
+id = "btrfs-world-engine"
 category = "world-engine"
 tier = "declared"
 
 [integration.evidence]
 recipe_page = "docs/getting-started.md"
-critical_test = "slipfork_engine::critical_engine::r10_r11_reflink_netns_conformance_cow_isolation_uid_and_parallel_same_port"
+critical_test = "slipfork_engine::critical_engine::r10_r11_btrfs_conformance_cow_isolation_uid_and_parallel_same_port"
 
 [[integration]]
 id = "crun-backing-service-containers"
@@ -34,7 +34,8 @@ tier = "declared"
 
 [integration.evidence]
 recipe_page = "docs/reference/cli.md"
-critical_test = "slipfork_engine::critical_oci_runtime::postgres_and_redis_share_the_world_netns_and_survive_a_reflink_clone"
+# The real `crun` assertions execute on the Btrfs DO VM; a non-Btrfs host asserts `BtrfsRequired`.
+critical_test = "slipfork_engine::critical_btrfs_live::btrfs_kernel_ro_snapshot_two_clones_same_port_services_and_ipc_isolation"
 
 [[integration]]
 id = "host-toolchain-caches"
