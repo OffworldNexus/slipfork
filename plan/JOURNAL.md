@@ -930,3 +930,7 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-17T12:45 HUMAN H-006 [direction-challenge] opened by lead (node M3.19)
 - 2026-11-17T12:45 [M3.19] (lead) status active -> blocked
 - 2026-11-17T12:45 [M3.19] (lead) BLOCKED: direction-challenge filed (H-0xx) — AppArmor unprivileged_userns denies the in-world crun; ADR-0010 §7 mechanism is false. Do not retry until the human
+- 2026-11-17T12:45 [M3.17] (lead) Gate passed: Quad functional PASS, legality PASS, ioc PASS after the attempt-2 rewrite through doctor; cruft MAJOR (gate re-decided doctor's verdict and kept a 
+- 2026-11-17T12:45 [M3.17] (lead) status active -> done
+- 2026-11-17T12:45 [M3.18] (lead) Gate: docs critics (dx, ai-ergonomics, cruft) applied in RESULT; acceptance greps + make docs-check exit 0; --world placeholder aligned to <WORLD> after M3.15 s
+- 2026-11-17T12:45 [M3.18] (lead) status active -> review

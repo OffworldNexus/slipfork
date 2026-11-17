@@ -2,7 +2,7 @@
 id: M3.18
 title: "Published docs align with the shipped Btrfs-only surfaces (README, index, getting-started, CLI reference, AGENTS.md)"
 kind: task
-status: ready
+status: review
 owner: "doc-writer"
 priority: 4
 depends_on: [M3.17]
@@ -13,11 +13,11 @@ paths:
   - docs/reference/cli.md
   - AGENTS.md
   - "docs/testing-dag.md"
-attempts: 0
+attempts: 2
 max_attempts: 3
 escalation: none
 created: "2026-11-16T16:58"
-updated: "2026-11-16T21:01"
+updated: "2026-11-17T12:45"
 ---
 
 # Goal

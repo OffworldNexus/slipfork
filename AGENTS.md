@@ -1,6 +1,6 @@
 # Slipfork (`slipfork`): rules for every agent
 
-Slipfork is a **DX-first copy-on-write environment & parallel test orchestrator** for modern polyglot applications and AI coding agents. From a single `snow.yml` manifest (`modes.all`, `modes.local`, `modes.cloud` + `!!` auto-generated secrets via an open Secret Provider Protocol), Slipfork builds shared-UID local development worlds, forks running worlds in milliseconds when agents open worktrees, and runs heavy multi-component tests (`pytest`, `Playwright`/`Vitest`, `PHPUnit`, `cargo test`, `blastit check`) in parallel across a content-addressed **Artifact + Fixture Snapshot DAG**.
+Slipfork is a **DX-first copy-on-write environment** for modern polyglot applications and AI coding agents. From a single `snow.yml` manifest (`modes.all`, `modes.local`, `modes.cloud` + `!!` auto-generated secrets via an open Secret Provider Protocol), Slipfork builds shared-UID local development worlds and forks running worlds in milliseconds as Btrfs subvolume snapshots when agents open worktrees. `0.1.0` ships Btrfs worlds plus the `snow.yml` resolver and the `dag plan` planner. The parallel test orchestrator is `0.2.0`: it targets heavy multi-component suites (`pytest`, `Playwright`/`Vitest`, `PHPUnit`, `cargo test`, `blastit check`) across a content-addressed **Artifact + Fixture Snapshot DAG**.
 
 The project runs autonomously when `plan/AUTOPILOT` is `on`: a cheap model (`deepseek-v4.1-flash`) executes leaf tasks and narrow-lens goldfish reviews; an expensive model (`gemini-4-carbon`) runs architecture crossroads, upward direction checks, milestone gates, and hard rescues.
 
@@ -15,7 +15,7 @@ The project runs autonomously when `plan/AUTOPILOT` is `on`: a cheap model (`dee
 
 1. **Zero "Illegal" Solutions — Block on Missing Inputs (`review-legality`):**
    - Initiative is good **only** when the resulting code is genuinely useful and clean afterwards.
-   - **NEVER** invent specs, designs, `[derived]`/`[guessed]` placeholders, fake/in-memory production fallbacks, `os.environ` side-doors, or monkey-patches around missing credentials, missing host capabilities (`incusd` socket, missing secret key), or upstream library contracts.
+   - **NEVER** invent specs, designs, `[derived]`/`[guessed]` placeholders, fake/in-memory production fallbacks, `os.environ` side-doors, or monkey-patches around missing credentials, missing host capabilities (a non-Btrfs state directory, a missing secret key), or upstream library contracts.
    - Check `Cargo.toml`, `pyproject.toml`, and `package.json` before coding: never hand-roll what a workspace crate or declared dependency already provides.
    - When a required external input, credential, host daemon, or specification constraint is missing or unreachable: **STOP immediately** and return `STATUS: blocked` so `lead`/`conductor` files `plan.py human add --kind missing-input`.
 2. **Strict IoC / DI & Mandatory Upward Direction Challenge (`review-ioc`):**
@@ -24,7 +24,7 @@ The project runs autonomously when `plan/AUTOPILOT` is `on`: a cheap model (`dee
    - **Think UPWARDS before coding downwards:** Integrating a new backend, language, or feature must challenge whether the global DI tree and specification cover all directions cleanly. **If you cannot draw a clean, non-leaky DI tree, there is a blind spot in the specification.** Do NOT build a parallel pipeline or hack around a leaky trait — stop and escalate a `direction-challenge` (`plan.py human add --kind direction-challenge`) for human architectural feedback.
 3. **SemVer Honesty: Zero Pre-`1.0` Backward Compatibility & Zero Fallback Cruft (`review-cruft`):**
    - Workspace version `< 1.0.0` carries **zero backward-compatibility promises** unless explicitly requested by the human.
-   - **One Canonical Way, No Fallbacks:** When an idea or syntax is superseded, **delete** the old code, config keys, tests, docs, and plan nodes in the same sweep. Never preserve legacy aliases, dual syntaxes, deprecated shims, or degraded fallback modes ("try Incus, else silently run unisolated on host"). In doubt about breaking an already-used `0.x` contract, **ask the human** — never add a compatibility shim preemptively.
+   - **One Canonical Way, No Fallbacks:** When an idea or syntax is superseded, **delete** the old code, config keys, tests, docs, and plan nodes in the same sweep. Never preserve legacy aliases, dual syntaxes, deprecated shims, or degraded fallback modes ("try Btrfs, else silently fall back to a plain host directory"). In doubt about breaking an already-used `0.x` contract, **ask the human** — never add a compatibility shim preemptively.
 
 ## Core workflow rules
 
@@ -51,10 +51,10 @@ The project runs autonomously when `plan/AUTOPILOT` is `on`: a cheap model (`dee
 | `docs/design/` | Technical design docs (`*.md`) + goldfish critic artifacts (`*.review-<lens>.md`) |
 | `docs/decisions/` | Architecture Decision Records (`ADR-NNNN-<slug>.md`) |
 | `docs/research/` | Cited hypervisor/CoW/framework research & measured benchmark reports (`m1-poc-benchmark.md`) |
-| `docs/knowledge/` | `LESSONS.md` — concise host, Rust, Linux namespace, Incus, XFS, and OpenCode facts |
-| `crates/` | Rust workspace (`slipfork-snow`, `slipfork-engine`, `slipfork-dag`, `slipfork`) |
+| `docs/knowledge/` | `LESSONS.md` — concise host, Rust, Linux namespace, Btrfs subvolume, AppArmor, and OpenCode facts |
+| `crates/` | Rust workspace (`slipfork-world`, `slipfork-snow`, `slipfork-dag`, the `BtrfsEngine` in `slipfork-engine`, `slipfork-edge`, `slipfork-vcs`, `slipfork-ospp`, `slipfork`): one unified Btrfs subvolume per world, snapshotted and cloned through `SubvolumeDriver`; `slipfork-testkit`/`slipfork-ospp-testkit` are test-only scaffolding |
 | `packages/opencode-slipfork/` | OpenCode V2 plugin (`ctx.worktree.transform` + `ctx.shell.hook` + `ctx.session.hook`) |
-| `poc/` | Real PostgreSQL 18 + XFS `FICLONE` + Linux `netns` + Playwright M1 PoC benchmark harness |
+| `poc/` | Real PostgreSQL 18 + Linux `netns` + Playwright M1 PoC benchmark harness |
 | `tools/` | Stdlib-only harness tools (`plan.py`, `guard.py`, `critical_guard.py`) + `tools/tests/` |
 
 ## Skills index (load with `skill`)

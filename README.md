@@ -1,31 +1,40 @@
-# Slipfork (`0.2.0`)
+# Slipfork (`0.1.0`)
 
-> **Copy-on-write worlds, one `snow.yml` manifest, and orthogonal build/fixture planning — on Linux, with zero `root:root` files and zero `sudo` on the default path.**
+> **Copy-on-write worlds, one `snow.yml` manifest, and orthogonal build/fixture planning — on Linux, with zero `root:root` files and no `sudo` for day-to-day worlds. Root is needed only for the one-time Btrfs mount and the Ubuntu 24.04 AppArmor `userns` profile.**
 
 ```console
-$ cargo install --path crates/slipfork
-$ slipfork doctor                                    # probe CoW reflink, Incus socket, and unprivileged netns
+$ git clone https://github.com/OffworldNexus/slipfork && cd slipfork
+$ cargo install --path crates/slipfork-engine    # installs `slipfork-world-init`
+$ cargo install --path crates/slipfork           # `slipfork` + `slipforkd` + `git-remote-slipfork`
+$ cd /path/to/your/project
+$ slipfork doctor                                # probe the Btrfs substrate, the live subvolume round-trip, and unprivileged namespaces
 $ slipfork snow resolve --file snow.yml --mode local  # validate modes, persist !! secrets (0600)
-$ slipfork dag plan --file slipfork.toml --repo .     # optional: only after you add slipfork.toml
-$ slipfork up                                        # build the world rootfs from your Dockerfile, boot it
-$ slipfork fork feat-billing                         # second CoW world + .worktrees/feat-billing
-$ slipfork list                                      # one origin URL per world
+$ slipfork up                                    # build the world rootfs from your Dockerfile, boot it
+$ slipfork fork feat-billing                     # second CoW world + .worktrees/feat-billing
+$ slipfork list                                  # one origin URL per world
 ```
 
-In a repository with a `snow.yml` that declares a build image and `modes.local` ([getting started](docs/getting-started.md)); a `slipfork.toml` is optional.
+In a repository with a `snow.yml` that declares a build image and `modes.local` ([getting started](docs/getting-started.md)); a `slipfork.toml` is optional. Run the `slipfork` commands after the one-time Btrfs mount below. Once you have written a `slipfork.toml`, `slipfork dag plan` previews the artifact/fixture waves ([DAG planner](docs/testing-dag.md)).
 
-Requires **Linux**, **Rust 1.94+**, Docker with `buildx`, `unshare`/`ip`, and a CoW filesystem (`XFS` `reflink=1`, `Btrfs`, or `ZFS`) under `~/.cache/slipfork`. Every world boots from a read-only rootfs built from a `snow.yml` `images:` `Dockerfile`.
+Slipfork needs Linux `x86_64` and Rust 1.94+; everything else — the never-use-`tmpfs` warning, your `--state-dir` path, and the Ubuntu 24.04 AppArmor `userns` step — is in [getting started › Prerequisites](docs/getting-started.md#prerequisites). The state directory must be **Btrfs** mounted `user_subvol_rm_allowed,noatime` and owned by you; `mkfs.btrfs` erases that device:
+
+```console
+$ mkdir -p ~/.cache/slipfork && sudo mkfs.btrfs -L slipfork /dev/<device> && sudo mount -o user_subvol_rm_allowed,noatime /dev/<device> ~/.cache/slipfork && sudo chown "$(id -u):$(id -g)" ~/.cache/slipfork
+```
+
+Every world and sealed snapshot is one unprivileged Btrfs subvolume, so any other filesystem fails closed: `slipfork doctor` prints an equivalent `sudo mount -o user_subvol_rm_allowed,noatime` line and exits `1`. Static `crun` is **not** a host prerequisite: `slipforkd` downloads the pinned binary once (sha256-verified) into `<state_dir>/cache/runtime/` and stages it inside the world rootfs.
 
 `slipfork` auto-spawns the unprivileged `slipforkd` daemon over a `0600` `<runtime_dir>/daemon.sock` when nothing answers, so no systemd setup is required. `doctor` and `dag plan` stay local; `snow resolve` and every world command run through the daemon.
 
-## What ships in `0.2.0`
+## What ships in `0.1.0`
 
 - **`Dockerfile`-derived `L0` world rootfs** — content-addressed under `<state_dir>/cache/rootfs/<sha256>/app`, mounted read-only, executed as `$UID:$GID`, with `[world]` selecting the image and stage.
+- **One Btrfs subvolume per world** — the read-only rootfs tree and `postgres`/`redis`/S3 state live inside it, so sealing a snapshot and cloning a world are single metadata operations with zero file copies.
 - **Daemonless `crun` backing services** — `postgres:<v>`, `redis:<v>`, and SeaweedFS in OCI containers sharing the world's `127.0.0.1`; a paired OSPP seed dump is `pg_restore`d into a sealed base that later worlds clone, and `slipfork db`/`redis` run their clients inside the containers.
 - **Daemon-served world lifecycle** — `up`, `down`, `fork`, `drop`, `list`, `prune`, `secret` (`share` fails closed until tunnel sharing lands), plus local `daemon unit` rendering and `exec`, `shell`, `logs`, `hook run`, `forward`, `auth login`, `support`, `git-remote-slipfork`; `fork` creates a Git worktree or, when the checkout carries `.jj`, a Jujutsu workspace with zero Git fallback.
 - **`snow.yml` resolver and DAG planner** — mode-scoped components, write-once `!!` secrets in a `0600` vault read first, a paired `OSPP v1` `env.bundle` read second, Merkle artifact/fixture waves.
 - **OpenCode V2 plugin** — worktrees become CoW worlds; shell commands route through `slipfork exec`.
-- **Measured M1 benchmark (historical)** — `3.21x` faster than a sequential `TRUNCATE` baseline in the **pre-`ADR-0009` host-shared-`/usr` topology** (`docs/research/m1-poc-benchmark.md`); current worlds boot a `Dockerfile`-derived rootfs, so read it as a baseline only.
+- **Measured cost model** — `19.5 ms` read-only snapshot, `11–24 ms` writable clone, `39 ms` to a warm-SQL world, `6.3 MiB` RSS per world (owner-recorded; [`docs/research/btrfs-crun-benchmarks.md`](docs/research/btrfs-crun-benchmarks.md)).
 
 All supported integrations are graded against their evidence in the [support matrix](docs/support-matrix.md).
 
@@ -46,6 +55,6 @@ $ make check   # plan, hygiene, Python, TS, Rust fmt/clippy/doc/test, support re
 
 ## Where this is going (not yet shipped)
 
-- **M2 leftovers (post-`0.2.0`):** tunnel sharing (`weaved`), live `IncusEngine`, rootfs/OCI cache GC in `prune`.
-- **M3 (`0.3.0`):** polyglot parallel test orchestrator (`RunnerProtocol v1`, pre-warmed CoW pools, typed coverage, `SLIPFORK_OUTPUT_DIR`).
-- **M4 (`0.4.0`):** remote content-addressed snapshot/artifact cache export and turnkey agent skills.
+- **Planned:** tunnel sharing (`weaved` registrar), and unreferenced snapshot plus rootfs/OCI cache garbage collection in `prune`.
+- **`0.2.0`:** polyglot parallel test orchestrator (`STP v1`, artifact/fixture snapshot materialization, pre-warmed Btrfs world slots, typed coverage, `SLIPFORK_OUTPUT_DIR`).
+- **Later:** remote content-addressed snapshot/artifact cache export and turnkey agent skills.
