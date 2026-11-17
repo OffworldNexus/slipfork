@@ -898,3 +898,23 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-17T11:17 [M3.14] (lead) FINAL fixes applied (3): post-stop container fail-closed assertions restored with a real client log line; base64 crate replaces the silent hand-rolled decoder; 
 - 2026-11-17T11:37 [M3.14] (lead) edited fields
 - 2026-11-17T11:37 [M3.14] (lead) status review -> done
+- 2026-11-17T11:37 [M3.23] (lead) ADD (M3.18 cruft gate, all OUT of M3.18 paths): (1) Cargo.toml version 0.2.0 -> 0.1.0 + Cargo.lock; (2) CHANGELOG.md restructure to one 0.1.0 entry; (3) zensica
+- 2026-11-17T11:37 [M3.21] (lead) ADD: crates/slipfork-engine/Cargo.toml package description still reads 'Incus REST (/1.0) and Linux FICLONE + unprivileged netns/userns drivers' — update it to 
+- 2026-11-17T11:37 [M3.21] (lead) status ready -> active
+- 2026-11-17T11:37 [M3.21] (lead) attempt 1/3 started
+- 2026-11-17T11:37 [M3.21] (lead) base 053596ee33193d5e947e933bf2c0506f366ff3f8
+- 2026-11-17T12:17 [M3.17] (lead) status ready -> active
+- 2026-11-17T12:17 [M3.17] (lead) attempt 1/3 started
+- 2026-11-17T12:17 [M3.17] (lead) base 053596ee33193d5e947e933bf2c0506f366ff3f8
+- 2026-11-17T12:17 [M3.15] (lead) Quad Review Gate re-run (reviewer+legality+ioc+cruft) on the 053596e working tree, scoped diff /tmp/opencode/lead/m3.15.diff
+- 2026-11-17T12:17 [M3.21] (lead) edited fields
+- 2026-11-17T12:17 [M3.21] (lead) SCOPE WIDENED (Quad gate cruft MAJOR + legality/ioc MINORs): also fix the stale 'Incus image name' doc phrase in rootfs/mod.rs:82, the 'only unsafe module' clai
+- 2026-11-17T12:18 [M3.15] (lead) Quad gate 1/2 results: legality PASS (3 MINOR: critical_slug git-only branch asserts inverted contract off-Btrfs — loud+VM-listed; critical_ospp_daemon early-re
+- 2026-11-17T12:18 [M3.21] (lead) Quad gate 1/2 results: ioc PASS (1 MINOR: missing SAFETY comment on test-only mem::zeroed; verified descriptors_aliasing is #[cfg(test)], only impl WorldEngine 
+- 2026-11-17T12:22 [M3.23] (lead) ADD (from M3.18 RESULT followups + lead verification): (1) docs/reference/manifest.md:16,44 and docs/snow-modes.md:17,51 put ${{ components::api.private_port }}
+- 2026-11-17T12:28 [M3.19] (lead) status ready -> active
+- 2026-11-17T12:28 [M3.19] (lead) attempt 1/3 started
+- 2026-11-17T12:28 [M3.19] (lead) base 053596ee33193d5e947e933bf2c0506f366ff3f8
+- 2026-11-17T12:29 [M3.17] (lead) Quad gate 1/2: ioc BLOCKER (ctypes/statfs re-implements the shipped doctor seam; duplicate BTRFS_MOUNT_HINT makes the hint assertion drift-blind) + cruft MAJOR 
+- 2026-11-17T12:34 [M3.17] (lead) edited fields
+- 2026-11-17T12:34 [M3.15] (lead) make check gate 1: RED only at rs-lint — rustdoc private_intra_doc_links on doctor.rs:8 [filesystem_name] after the cruft fix made it private. Fixing (plain cod

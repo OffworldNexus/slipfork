@@ -95,10 +95,40 @@ RUSTUP_INIT_URL = (
 )
 RUSTUP_INIT_SHA256 = "b1c8cb14e30889e7e2999e6b69e62d9e9b9ffc0f4df8180564d306d9680e6c55"
 RUST_MIN_VERSION = "1.94.0"
-SUITE_NAME = "critical_btrfs_live"
+# Every entry is `(cargo package, integration test binary, repo-relative file, owning node)`.
+# The list runs one at a time (`--test-threads=1`): each suite boots real worlds through the
+# production `slipforkd`, so the VM exercises the Btrfs-only positive halves of the CLI suites too.
 SUITES = (
-    ("slipfork-engine", f"crates/slipfork-engine/tests/{SUITE_NAME}.rs", "M3.14"),
-    ("slipfork", f"crates/slipfork/tests/{SUITE_NAME}.rs", "M3.15"),
+    (
+        "slipfork-engine",
+        "critical_btrfs_live",
+        "crates/slipfork-engine/tests/critical_btrfs_live.rs",
+        "M3.14",
+    ),
+    (
+        "slipfork",
+        "critical_btrfs_live",
+        "crates/slipfork/tests/critical_btrfs_live.rs",
+        "M3.15",
+    ),
+    (
+        "slipfork",
+        "critical_cli",
+        "crates/slipfork/tests/critical_cli.rs",
+        "M3.15",
+    ),
+    (
+        "slipfork",
+        "critical_slug",
+        "crates/slipfork/tests/critical_slug.rs",
+        "M3.15",
+    ),
+    (
+        "slipfork",
+        "critical_ospp_daemon",
+        "crates/slipfork/tests/critical_ospp_daemon.rs",
+        "M3.15",
+    ),
 )
 AUTHORIZED_KEY_USERS = ("root", REMOTE_USER)
 EXCLUDED_TOP_LEVEL = frozenset({"target", "site", ".worktrees"})
@@ -1769,13 +1799,13 @@ def cmd_test(args: argparse.Namespace) -> int:
     raw_identity = args.identity[0] if args.identity else None
     root = args.root
     missing = [
-        f"{path} ({node})" for _, path, node in SUITES if not (root / path).is_file()
+        f"{path} ({node})" for _, _, path, node in SUITES if not (root / path).is_file()
     ]
     if missing:
         raise HarnessError(
             "missing live Btrfs conformance suite(s): "
             + ", ".join(missing)
-            + f"; `{SUITE_NAME}` cannot run yet"
+            + "; the VM suites cannot run yet"
         )
     identity = load_identity(raw_identity, home=args.home)
     droplet = _single_droplet(args.doctl)
@@ -1788,7 +1818,7 @@ def cmd_test(args: argparse.Namespace) -> int:
         raise HarnessError(
             f"the droplet is not provisioned: {MARKER} is absent; run `tools/do_vm.py up`"
         )
-    for _, path, _ in SUITES:
+    for _, _, path, _ in SUITES:
         remote = f"{REMOTE_TREE}/{path}"
         probe = _run(
             ssh_argv(droplet, known_hosts, identity, f"test -f {remote}"), check=False
@@ -1832,8 +1862,8 @@ def cmd_test(args: argparse.Namespace) -> int:
             f"docker did not answer `docker info` as {REMOTE_USER}: {_detail(docker)}"
         )
 
-    for package, _, _ in SUITES:
-        command = f"cargo test -p {package} --test {SUITE_NAME} -- --test-threads=1"
+    for package, test, _, _ in SUITES:
+        command = f"cargo test -p {package} --test {test} -- --test-threads=1"
         result = _run(
             ssh_argv(droplet, known_hosts, identity, suite_command(command)),
             capture=False,

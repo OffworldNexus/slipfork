@@ -63,11 +63,13 @@ WORLD_BOOTING_TESTS := \
 	slipfork-engine:critical_rootfs_live \
 	slipfork-engine:critical_engine \
 	slipfork-engine:critical_oci_runtime \
+	slipfork-engine:critical_btrfs_live \
 	slipfork:critical_slug \
 	slipfork:critical_vcs_remote \
 	slipfork:critical_cli \
 	slipfork:critical_l0_wiring \
-	slipfork:critical_ospp_daemon
+	slipfork:critical_ospp_daemon \
+	slipfork:critical_btrfs_live
 
 rs-test-list: | $(TMPDIR) ## Guard the rs-test binary list, its package pairs, and world-booting serialization
 	@uv run --no-project tools/rs_test_list.py --world-booting $(WORLD_BOOTING_TESTS)
@@ -87,11 +89,13 @@ rs-test: rs-test-list | $(TMPDIR) ## Run all Rust unit, integration, critical, a
 	cargo test -p slipfork-engine --test critical_rootfs_live -- --test-threads=1
 	cargo test -p slipfork-engine --test critical_engine -- --test-threads=1
 	cargo test -p slipfork-engine --test critical_oci_runtime -- --test-threads=1
+	cargo test -p slipfork-engine --test critical_btrfs_live -- --test-threads=1
 	cargo test -p slipfork --test critical_slug -- --test-threads=1
 	cargo test -p slipfork --test critical_vcs_remote -- --test-threads=1
 	cargo test -p slipfork --test critical_cli -- --test-threads=1
 	cargo test -p slipfork --test critical_l0_wiring -- --test-threads=1
 	cargo test -p slipfork --test critical_ospp_daemon -- --test-threads=1
+	cargo test -p slipfork --test critical_btrfs_live -- --test-threads=1
 
 docs-check: | $(TMPDIR) ## Build public Zensical documentation site in --strict mode and verify CLI honesty
 	uvx --offline zensical build --strict

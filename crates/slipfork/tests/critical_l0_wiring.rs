@@ -1,7 +1,8 @@
 //! Protected `L0` wiring tests (`M2.29`, `ADR-0009` §1–§3).
 //!
-//! These tests boot real `ReflinkNetnsEngine` worlds through a real `slipforkd`, extract the real
-//! pinned `crun` + `redis:8` OCI image, and assert the container-scoped CLI contract: `db`/`redis`
+//! These tests boot real `BtrfsEngine` worlds through the harness `slipforkd` composition root
+//! (the real child on a Btrfs host, the in-process `TestTreeDriver` backend elsewhere), extract the
+//! real pinned `crun` + `redis:8` OCI image, and assert the container-scoped CLI contract: `db`/`redis`
 //! resolve only through `WorldEngine::service_entry_command`, a stopped container fails closed with
 //! `ServiceNotRunning`, and `--host-caches` refuses on the measured ELF/libc ABI mismatch while
 //! passing on a matching glibc world. No test skips: a missing Docker/crun dependency fails loudly.
@@ -13,7 +14,7 @@ use std::time::{Duration, Instant};
 use slipfork_edge::daemon::ExecTargetRequest;
 use slipfork_edge::{DaemonControl, DaemonControlClient, DaemonErrorKind, EdgeError};
 
-mod support;
+pub mod support;
 use support::{Daemon, assert_success, repo_with_manifest, stderr, stdout};
 
 const ALPINE_SNOW: &str = r#"

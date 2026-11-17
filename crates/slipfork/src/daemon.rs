@@ -1,7 +1,8 @@
 //! The in-process [`DaemonControl`] implementation `slipforkd` injects into its server.
 //!
-//! Every collaborator is injected by the `slipforkd` Composition Root: the CoW engine, the HTTP
-//! ingress `WorldRegistry`, the VCS repository resolver and workspace factory, the explicit
+//! Every collaborator is wired by [`compose_daemon`], the one composition function `slipforkd` and
+//! the integration harness both call: the CoW engine over the injected [`SubvolumeDriver`], the
+//! HTTP ingress `WorldRegistry`, the VCS repository resolver and workspace factory, the explicit
 //! state/data roots, and the inherited allowlist the engine hands to world processes. This module
 //! never reads `std::env`, never calls `current_dir()`, and never guesses a path: every request
 //! carries its explicit `cwd`.
@@ -16,6 +17,8 @@ use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use sha2::{Digest, Sha256};
 
@@ -29,21 +32,25 @@ use slipfork_edge::{
     BootEvent, DaemonControl, DaemonError, DaemonErrorKind, DaemonStatus, DropForkRequest,
     EdgeError, ExecTargetRequest, ForkRequest, ForwardRequest, ForwardSummary, HookRunRequest,
     IngressRoute, LogsRequest, PruneReport, ResourceSummary, SharedWorldInfo, SnowResolveRequest,
-    SnowResolveSummary, UpRequest, WorldExecTarget, WorldRegistry, WorldSelector, WorldState,
-    WorldSummary, WorldUpSummary, world_id,
+    SnowResolveSummary, UnavailableTunnelRegistrar, UpRequest, WorldExecTarget, WorldRegistry,
+    WorldSelector, WorldState, WorldSummary, WorldUpSummary, world_id,
 };
+use slipfork_engine::btrfs::SubvolumeDriver;
 use slipfork_engine::rootfs::{
-    BackingServiceKey, BaseImageBuilder, BuildEnvVar, HostCacheRequest, RootfsBuildEvent,
-    RuntimeAssets, SnowPortContract, WorldRootfs, WorldRootfsRequest,
+    BackingServiceKey, BaseImageBuilder, BuildEnvVar, CliBuildxExporter, DockerfileStageBuilder,
+    ElfAbiProbe, FsInputHasher, HostCacheRequest, RootfsBuildEvent, RuntimeAssets,
+    SnowPortContract, WorldRootfs, WorldRootfsRequest,
 };
 use slipfork_engine::{
-    EngineError, ExecEnv, ExecOutput, InheritedVar, LocalIngressBridge, MountMode, ServiceHandle,
-    ServiceRuntime, ServiceSpec, SnapshotId, StateSubdirMount, StreamChunk, WorldEngine,
-    WorldHandle, WorldMount, WorldSpec,
+    BtrfsEngine, EngineError, ExecEnv, ExecOutput, InheritedVar, LocalIngressBridge, MountMode,
+    ServiceHandle, ServiceRuntime, ServiceSpec, SnapshotId, StateSubdirMount, StreamChunk,
+    WorldEngine, WorldHandle, WorldMount, WorldSpec,
 };
 use slipfork_ospp::{
-    BrowserOpener, DeviceKeySigner, DumpStreamer, OsppClient, OsppEndpoint, OsppError,
-    OsppTimeouts, PGCUSTOM_SUFFIX, PairingUrl, SeedDumpStore, redeem_pairing_url,
+    BrowserOpener, DeviceKeySigner, DiskSeedDumpStore, DumpStreamer, FallbackDeviceKeySigner,
+    FileDeviceKeyStore, KeyStorePaths, OsppClient, OsppEndpoint, OsppError, OsppTimeouts,
+    PGCUSTOM_SUFFIX, PairingUrl, SeedDumpStore, SoftwareP256Signer, TpmdDeviceKeySigner,
+    redeem_pairing_url,
 };
 use slipfork_snow::{
     EntropySource, HookPhase, Image, Namespace, OsCsprngEntropy, ResolvedEnvMap,
@@ -56,12 +63,23 @@ use slipfork_vcs::{
 use slipfork_world::{LocalHostRoute, ProjectSlug, WorldOrigin, WorldTarget, validate_fork_name};
 
 use crate::layout::{Layout, ensure_private_dir};
-use crate::ospp::{OsppSessionCoordinates, OsppSessionStore};
-use crate::project::load_optional_slipfork_config;
-use crate::vaults::ProjectVaults;
+use crate::oci_store::DockerOciImageStore;
+use crate::ospp::{FileOsppSessionStore, OsppSessionCoordinates, OsppSessionStore};
+use crate::project::{load_optional_slipfork_config, repository_resolver};
+use crate::vaults::{LayoutProjectVaults, ProjectVaults};
+use crate::vcs::RepositoryWorkspaces;
 
 /// The world mode this daemon supervises (`snow.yml` `modes.local`, `ADR-0001` §1).
 const WORLD_MODE: &str = "local";
+
+/// Bound on the postmaster answering `pg_isready` after its container accepts `:5432`.
+///
+/// `postgres:18` binds the port milliseconds before postmaster leaves `PM_STARTUP`, so the
+/// engine's TCP-accept readiness probe is not server readiness: the first `psql` must wait for
+/// this server-side gate instead of racing crash recovery.
+const POSTGRES_READY_DEADLINE: Duration = Duration::from_secs(30);
+/// Interval between `pg_isready` probes while the postmaster finishes startup.
+const POSTGRES_READY_POLL: Duration = Duration::from_millis(100);
 
 /// Host toolchain caches exposed read-only by `--host-caches` (`ADR-0009` §2.3).
 ///
@@ -77,7 +95,7 @@ pub struct HostCaches {
 }
 
 /// Everything the daemon needs that the Composition Root resolved once.
-pub struct DaemonConfig {
+struct DaemonConfig {
     /// Explicit `--state-dir` / `--runtime-dir` roots and the project-vault data home.
     pub layout: Layout,
     /// `PATH`/`TERM`/`LANG` values the engine hands to world processes (never the whole env).
@@ -92,6 +110,39 @@ pub struct DaemonConfig {
     pub gid: u32,
     /// Resolved host toolchain caches for `--host-caches`.
     pub host_caches: HostCaches,
+}
+
+/// Existing developer toolchain caches shared read-only by `--host-caches` (`ADR-0009` §2.3).
+///
+/// Resolved by each Composition Root (`slipforkd` and the in-process integration harness) from the
+/// developer's real `HOME`; the daemon only decides whether the per-invocation flag asks for them.
+/// Empty `mounts` means the host has no cache directory to share, so no ABI probe runs.
+pub fn host_caches(home: &Path) -> HostCaches {
+    let candidates = [
+        home.join(".cargo").join("registry"),
+        home.join(".cargo").join("git"),
+        home.join(".cargo").join("bin"),
+        home.join(".rustup"),
+        home.join(".cache").join("uv"),
+        home.join(".local").join("share").join("uv"),
+        home.join(".local").join("share").join("pnpm").join("store"),
+        home.join(".cargo"),
+    ];
+    let mut seen = BTreeSet::new();
+    let mounts = candidates
+        .into_iter()
+        .filter(|path| path.is_dir())
+        .filter(|path| seen.insert(path.clone()))
+        .map(|path| WorldMount {
+            guest_path: path.clone(),
+            host_path: path,
+            mode: MountMode::ReadOnly,
+        })
+        .collect();
+    HostCaches {
+        witness: PathBuf::from("/bin/sh"),
+        mounts,
+    }
 }
 
 /// One live world owned by this daemon.
@@ -231,6 +282,49 @@ struct WorldSelection {
     worktree: PathBuf,
 }
 
+/// The minimal world-id round trip (`ADR-0005` §3, 0.1.0 subset; the typed `WorldId` lands in
+/// 0.2.0): accept exactly the forms `slipfork list` prints.
+///
+/// - `<project>` selects the canonical world of `repo`.
+/// - `<project>:<fork>` selects that fork, and the project must be `repo.project`.
+/// - bare `<fork>` selects the fork in `repo` (repo-local CLI ergonomics).
+///
+/// A foreign project prefix, more than one `':'`, an empty half, or an invalid fork label fails
+/// closed with a typed `Rejected` diagnostic.
+fn resolve_world_selector(raw: &str, repo: &RepoRoot) -> Result<WorldTarget, EdgeError> {
+    let selector = raw.trim();
+    if selector.is_empty() {
+        return Err(rejected(
+            "a world selector must not be empty; pass `<fork>`, `<project>:<fork>`, or `<project>`",
+        ));
+    }
+    match selector.split_once(':') {
+        Some((project, fork)) => {
+            if fork.contains(':') {
+                return Err(rejected(format!(
+                    "invalid world selector '{raw}': expected at most one ':' (`<project>:<fork>`)"
+                )));
+            }
+            let project = ProjectSlug::parse(project).map_err(|err| rejected(err.to_string()))?;
+            if project != repo.project {
+                return Err(rejected(format!(
+                    "world '{raw}' belongs to project '{project}', while '{}' belongs to project '{}'; cd into '{project}' or pass a world id printed by `slipfork list` for '{}'",
+                    repo.worktree_root.display(),
+                    repo.project,
+                    repo.project
+                )));
+            }
+            validate_fork_name(fork, &[]).map_err(|err| rejected(err.to_string()))?;
+            Ok(WorldTarget::UserFork(fork.to_owned()))
+        }
+        None if selector == repo.project.as_str() => Ok(WorldTarget::Canonical),
+        None => {
+            validate_fork_name(selector, &[]).map_err(|err| rejected(err.to_string()))?;
+            Ok(WorldTarget::UserFork(selector.to_owned()))
+        }
+    }
+}
+
 /// Inputs to one world materialization.
 struct BootContext {
     repo: RepoRoot,
@@ -252,31 +346,164 @@ struct BootFailure {
 }
 
 /// The composition root's already-constructed ports, injected as one value.
-pub struct DaemonPorts {
+struct DaemonPorts {
     /// CoW world engine.
-    pub engine: std::sync::Arc<dyn WorldEngine>,
+    engine: std::sync::Arc<dyn WorldEngine>,
     /// The single `L0` world-rootfs builder (`DockerfileStageBuilder` in production).
-    pub builder: std::sync::Arc<dyn BaseImageBuilder>,
+    builder: std::sync::Arc<dyn BaseImageBuilder>,
     /// HTTP ingress registry and origin source.
-    pub registry: std::sync::Arc<WorldRegistry>,
+    registry: std::sync::Arc<WorldRegistry>,
     /// Canonical repository resolver.
-    pub repo_roots: std::sync::Arc<dyn RepoRootResolver>,
+    repo_roots: std::sync::Arc<dyn RepoRootResolver>,
     /// Fork workspace factory.
-    pub workspaces: std::sync::Arc<dyn VcsWorkspaceFactory>,
+    workspaces: std::sync::Arc<dyn VcsWorkspaceFactory>,
     /// Project-scoped `0600` vault factory.
-    pub vaults: std::sync::Arc<dyn ProjectVaults>,
+    vaults: std::sync::Arc<dyn ProjectVaults>,
     /// Persistent OSPP device-key signer (`tpmd:sealed` or the `0600` software fallback).
-    pub signer: Arc<dyn DeviceKeySigner>,
+    signer: Arc<dyn DeviceKeySigner>,
     /// Paired OSPP host coordinates (`0600`, zero secrets), written by `auth login`.
-    pub ospp_sessions: Arc<dyn OsppSessionStore>,
+    ospp_sessions: Arc<dyn OsppSessionStore>,
     /// Digest-pinned seed-dump cache (`DiskSeedDumpStore` in production).
-    pub seed_dumps: Arc<dyn SeedDumpStore>,
+    seed_dumps: Arc<dyn SeedDumpStore>,
     /// Injected browser opener for the pairing approval page (never logs the live handle).
-    pub browser: Arc<dyn BrowserOpener>,
+    browser: Arc<dyn BrowserOpener>,
     /// CSPRNG injected into the pairing handshake nonce.
-    pub entropy: Arc<dyn EntropySource>,
+    entropy: Arc<dyn EntropySource>,
     /// Bounds for the pairing WebSocket handshake.
-    pub ospp_timeouts: OsppTimeouts,
+    ospp_timeouts: OsppTimeouts,
+}
+
+/// Everything a Composition Root resolves before [`compose_daemon`] wires the daemon graph.
+///
+/// `slipforkd` and the in-process integration harness pass the same already-resolved values and
+/// differ only in the injected [`SubvolumeDriver`] and [`BrowserOpener`]; neither builds a second
+/// graph. Nothing in [`compose_daemon`] reads the environment, the working directory, or the clock.
+pub struct DaemonWiring {
+    /// Explicit `--state-dir` / `--runtime-dir` roots and the project-vault data home.
+    pub layout: Layout,
+    /// CoW subvolume driver: `KernelBtrfsDriver` in `slipforkd`, the test tree driver in tests.
+    pub driver: Arc<dyn SubvolumeDriver>,
+    /// Browser opener for the pairing approval page.
+    pub browser: Arc<dyn BrowserOpener>,
+    /// Bound HTTP ingress port (`--listen`, `LISTEN_FDS`, or a test-bound listener).
+    pub http_ingress_port: u16,
+    /// Bound static forward listener port, when one is bound.
+    pub forward_port: Option<u16>,
+    /// Resolved host toolchain caches for `--host-caches`.
+    pub host_caches: HostCaches,
+    /// `PATH`/`TERM`/`LANG` values the engine hands to world processes (never the whole env).
+    pub inherited: Vec<(InheritedVar, String)>,
+    /// Host `crun` + `slipfork-world-init` payloads staged into every `L0` rootfs.
+    pub runtime: RuntimeAssets,
+    /// Target platform (`x86_64`, `aarch64`) for the rootfs Merkle key.
+    pub target_arch: String,
+    /// Invoking developer's account (World Image Contract #3 diagnostics).
+    pub uid: u32,
+    /// Invoking developer's group.
+    pub gid: u32,
+    /// Already-resolved `$XDG_RUNTIME_DIR` holding the `tpmd` device-key socket.
+    pub xdg_runtime_dir: Option<PathBuf>,
+}
+
+/// The wired daemon graph: the control service and the ingress registry over one engine.
+pub struct DaemonGraph {
+    /// In-process [`DaemonControl`] implementation the control socket serves.
+    pub service: Arc<DaemonService>,
+    /// HTTP ingress registry the ingress server binds over the same engine.
+    pub registry: Arc<WorldRegistry>,
+}
+
+/// Wire the one daemon composition graph from already-resolved inputs.
+///
+/// `slipforkd` and the in-process integration harness call this; the only differences are the
+/// injected [`SubvolumeDriver`] and [`BrowserOpener`]. Every path, port, account id, and
+/// environment value arrives through [`DaemonWiring`].
+pub fn compose_daemon(wiring: DaemonWiring) -> Result<DaemonGraph, String> {
+    let DaemonWiring {
+        layout,
+        driver,
+        browser,
+        http_ingress_port,
+        forward_port,
+        host_caches,
+        inherited,
+        runtime,
+        target_arch,
+        uid,
+        gid,
+        xdg_runtime_dir,
+    } = wiring;
+
+    let builder: Arc<dyn BaseImageBuilder> = Arc::new(DockerfileStageBuilder::new(
+        Arc::new(CliBuildxExporter::default()),
+        Arc::new(FsInputHasher),
+        Arc::new(DockerOciImageStore::new(layout.state_dir())),
+        Arc::new(ElfAbiProbe),
+    ));
+    // The sole world engine: one unified Btrfs subvolume per world over the injected driver.
+    // Construction fails closed with `EngineError::BtrfsRequired` before any snapshot or world
+    // directory exists (`ADR-0010` §4), so a non-Btrfs `--state-dir` never reaches a degraded mode.
+    let engine: Arc<dyn WorldEngine> = Arc::new(
+        BtrfsEngine::with_driver(
+            layout.state_dir(),
+            uid,
+            gid,
+            runtime.world_init.clone(),
+            driver,
+        )
+        .map_err(|err| format!("cannot start the Btrfs world engine: {err}"))?,
+    );
+    let registry = Arc::new(WorldRegistry::new(
+        Arc::clone(&engine),
+        Arc::new(UnavailableTunnelRegistrar::new()),
+        http_ingress_port,
+        forward_port,
+    ));
+
+    // Persistent OSPP identity: `tpmd` when it serves, otherwise the `0600` software key. The
+    // fallback is lazy inside `FallbackDeviceKeySigner`, so a tpmd-capable host never mints a file.
+    let entropy = Arc::new(OsCsprngEntropy);
+    let key_store_paths = KeyStorePaths::user_then_system(xdg_runtime_dir.as_deref());
+    let signer =
+        FallbackDeviceKeySigner::new(TpmdDeviceKeySigner::connect(&key_store_paths, None), || {
+            let store = FileDeviceKeyStore::new(layout.device_key_path());
+            SoftwareP256Signer::open(&store, entropy.as_ref())
+        })
+        .map_err(|err| format!("cannot initialize the OSPP device key: {err}"))?;
+    let signer: Arc<dyn DeviceKeySigner> = Arc::new(signer);
+    let seed_dumps = Arc::new(
+        DiskSeedDumpStore::open(layout.state_dir())
+            .map_err(|err| format!("cannot open the seed-dump cache: {err}"))?,
+    );
+
+    let service = Arc::new(DaemonService::new(
+        DaemonPorts {
+            engine,
+            builder,
+            registry: Arc::clone(&registry),
+            repo_roots: repository_resolver(),
+            workspaces: Arc::new(RepositoryWorkspaces::new()),
+            vaults: Arc::new(LayoutProjectVaults::new(layout.clone())),
+            signer,
+            ospp_sessions: Arc::new(FileOsppSessionStore::new(layout.ospp_session_path())),
+            seed_dumps,
+            browser,
+            entropy,
+            ospp_timeouts: OsppTimeouts::default(),
+        },
+        DaemonConfig {
+            layout,
+            inherited,
+            runtime,
+            target_arch,
+            uid,
+            gid,
+            host_caches,
+        },
+        http_ingress_port,
+        forward_port,
+    ));
+    Ok(DaemonGraph { service, registry })
 }
 
 /// The daemon-owned [`DaemonControl`] implementation.
@@ -314,7 +541,7 @@ impl std::fmt::Debug for DaemonService {
 
 impl DaemonService {
     /// Assemble the service over the composition root's already-constructed adapters.
-    pub fn new(
+    fn new(
         ports: DaemonPorts,
         config: DaemonConfig,
         http_ingress_port: u16,
@@ -454,12 +681,22 @@ impl DaemonService {
             .resolve(cwd)
             .map_err(|err| runtime_error(err.to_string()))?;
         match world {
-            Some(fork) => {
-                validate_fork_name(fork, &[]).map_err(|err| rejected(err.to_string()))?;
-                let worktree = repo.vcs_root.join(WORKTREES_DIRECTORY).join(fork);
+            Some(raw) => {
+                let target = resolve_world_selector(raw, &repo)?;
+                let worktree = match &target {
+                    WorldTarget::Canonical => repo.vcs_root.clone(),
+                    WorldTarget::UserFork(fork) => {
+                        repo.vcs_root.join(WORKTREES_DIRECTORY).join(fork)
+                    }
+                    WorldTarget::TestSlot(_) => {
+                        return Err(rejected(format!(
+                            "world selector '{raw}' names a test slot; `--world` accepts only `<project>`, `<project>:<fork>`, or `<fork>`"
+                        )));
+                    }
+                };
                 Ok(WorldSelection {
                     repo,
-                    target: WorldTarget::UserFork(fork.to_owned()),
+                    target,
                     worktree,
                 })
             }
@@ -673,9 +910,15 @@ impl DaemonService {
         let seed = self.config.layout.base_seed_dir(project);
         ensure_private_dir(&seed).map_err(runtime_error)?;
         let empty = SnapshotId(format!("{project}-seed-empty"));
-        self.engine.create_snapshot(&seed, &empty).map_err(|err| {
-            runtime_error(format!("cannot create the empty base seed snapshot: {err}"))
-        })?;
+        // A sealed snapshot is immutable: an existing empty seed is reused as-is, never re-sealed.
+        match self.engine.create_snapshot(&seed, &empty) {
+            Ok(()) | Err(EngineError::SnapshotExists { .. }) => {}
+            Err(err) => {
+                return Err(runtime_error(format!(
+                    "cannot create the empty base seed snapshot: {err}"
+                )));
+            }
+        }
 
         let mut mounts = Vec::new();
         if let Some(directory) = dumps
@@ -707,9 +950,14 @@ impl DaemonService {
         let restored = self.restore_base(&handle, snow, rootfs, &dumps);
         let snapshot = SnapshotId(format!("{project}-base-{digest}"));
         let sealed = restored.and_then(|()| {
-            self.engine
-                .freeze_world(&handle, &snapshot)
-                .map_err(|err| runtime_error(format!("cannot freeze the base seed world: {err}")))
+            match self.engine.freeze_world(&handle, &snapshot) {
+                Ok(()) => Ok(()),
+                // The base is already sealed: clone it as-is instead of ever re-sealing it.
+                Err(EngineError::SnapshotExists { .. }) => Ok(()),
+                Err(err) => Err(runtime_error(format!(
+                    "cannot freeze the base seed world: {err}"
+                ))),
+            }
         });
         if let Err(error) = sealed {
             let _ = self.engine.destroy_world(handle);
@@ -858,6 +1106,7 @@ impl DaemonService {
     /// Create one declared `snow.yml` database in a freshly `initdb`-ed cluster when absent.
     fn ensure_database(&self, service: &ServiceHandle, database: &str) -> Result<(), EdgeError> {
         validate_database_id(database)?;
+        self.wait_for_postgres_ready(service)?;
         let query = format!("SELECT 1 FROM pg_database WHERE datname = '{database}'");
         let existing = self.exec_service_checked(
             service,
@@ -892,6 +1141,45 @@ impl DaemonService {
         Ok(())
     }
 
+    /// Block until the world's postmaster accepts queries, bounded by [`POSTGRES_READY_DEADLINE`].
+    ///
+    /// The engine's `readiness_port` probe only proves the container accepts TCP; `postgres:18`
+    /// binds `:5432` milliseconds before postmaster leaves `PM_STARTUP`, so a `psql` issued right
+    /// after it intermittently dies with `FATAL: the database system is starting up`. `pg_isready`
+    /// runs inside the service container through the same [`WorldEngine::exec_in_service`] path as
+    /// every later client, and the last server-side diagnostic is surfaced on timeout.
+    fn wait_for_postgres_ready(&self, service: &ServiceHandle) -> Result<(), EdgeError> {
+        let argv = [
+            "pg_isready",
+            "-U",
+            "postgres",
+            "-h",
+            "127.0.0.1",
+            "-d",
+            "postgres",
+        ]
+        .map(str::to_owned)
+        .to_vec();
+        let what = "probing the base seed world's postgres readiness";
+        let deadline = Instant::now() + POSTGRES_READY_DEADLINE;
+        loop {
+            let (output, stderr) = self.exec_service(service, &argv, what)?;
+            if output.exit_code == 0 {
+                return Ok(());
+            }
+            if Instant::now() >= deadline {
+                let detail = readiness_detail(&output.stdout, &stderr);
+                return Err(runtime_error(format!(
+                    "the base seed world's postgres server did not accept queries within {}s \
+                     (pg_isready exit code {}): {detail}",
+                    POSTGRES_READY_DEADLINE.as_secs(),
+                    output.exit_code,
+                )));
+            }
+            thread::sleep(POSTGRES_READY_POLL);
+        }
+    }
+
     /// Run `argv` inside a running backing-service container, failing closed on a non-zero exit.
     fn exec_service_checked(
         &self,
@@ -899,6 +1187,27 @@ impl DaemonService {
         argv: &[String],
         what: &str,
     ) -> Result<ExecOutput, EdgeError> {
+        let (output, detail) = self.exec_service(service, argv, what)?;
+        if output.exit_code != 0 {
+            return Err(runtime_error(format!(
+                "{what} failed with exit code {}: {}",
+                output.exit_code,
+                detail.trim()
+            )));
+        }
+        Ok(output)
+    }
+
+    /// Run `argv` inside a running backing-service container, whatever the exit code.
+    ///
+    /// Returns the captured output plus the stderr the caller must surface (the process's own
+    /// `stderr`, or the streamed chunks when the engine reports none).
+    fn exec_service(
+        &self,
+        service: &ServiceHandle,
+        argv: &[String],
+        what: &str,
+    ) -> Result<(ExecOutput, String), EdgeError> {
         let mut stderr = Vec::new();
         let output = self
             .engine
@@ -914,19 +1223,12 @@ impl DaemonService {
                 )),
                 other => runtime_error(format!("cannot {what}: {other}")),
             })?;
-        if output.exit_code != 0 {
-            let detail = if output.stderr.trim().is_empty() {
-                String::from_utf8_lossy(&stderr).into_owned()
-            } else {
-                output.stderr.clone()
-            };
-            return Err(runtime_error(format!(
-                "{what} failed with exit code {}: {}",
-                output.exit_code,
-                detail.trim()
-            )));
-        }
-        Ok(output)
+        let detail = if output.stderr.trim().is_empty() {
+            String::from_utf8_lossy(&stderr).into_owned()
+        } else {
+            output.stderr.clone()
+        };
+        Ok((output, detail))
     }
 
     fn world_env(
@@ -1579,21 +1881,28 @@ impl DaemonControl for DaemonService {
         req: &ForkRequest,
         on_event: &mut dyn FnMut(BootEvent),
     ) -> Result<WorldUpSummary, EdgeError> {
-        let selection = self.select(&req.cwd, Some(&req.fork))?;
+        let fork = req.fork.trim();
+        validate_fork_name(fork, &[]).map_err(|err| rejected(err.to_string()))?;
+        let selection = self.select(&req.cwd, Some(fork))?;
+        if !matches!(&selection.target, WorldTarget::UserFork(selected) if selected == fork) {
+            return Err(rejected(format!(
+                "cannot create a fork named '{fork}', which is the project's canonical world id; pass a distinct bare <fork>"
+            )));
+        }
         let _guard = self.boot_guard();
         if self.world_state(&selection).is_some() {
             return Err(rejected(format!(
                 "world '{}' already exists; run `slipfork down --world {}` or `slipfork drop {}` first",
                 world_id(&selection.repo.project, &selection.target),
-                req.fork,
-                req.fork
+                fork,
+                fork
             )));
         }
         let workspace = self
             .workspaces
             .create_workspace(&WorkspaceRequest {
                 repo: selection.repo.clone(),
-                fork: req.fork.clone(),
+                fork: fork.to_owned(),
                 base: req.base.clone(),
             })
             .map_err(|err| runtime_error(err.to_string()))?;
@@ -1627,6 +1936,14 @@ impl DaemonControl for DaemonService {
 
     fn drop_fork(&self, req: &DropForkRequest) -> Result<bool, EdgeError> {
         let selection = self.select(&req.cwd, Some(&req.fork))?;
+        if selection.target == WorldTarget::Canonical {
+            return Err(rejected(format!(
+                "'{}' is the canonical world of '{}'; `slipfork drop` destroys a fork world — use `slipfork down --world {}` instead",
+                world_id(&selection.repo.project, &selection.target),
+                selection.repo.vcs_root.display(),
+                world_id(&selection.repo.project, &selection.target)
+            )));
+        }
         let project = selection.repo.project.clone();
         let target = selection.target.clone();
         let (released, world) = self.release_world(&project, &target)?;
@@ -2519,6 +2836,18 @@ fn validate_database_id(id: &str) -> Result<(), EdgeError> {
     Ok(())
 }
 
+/// The last server-side diagnostic a failed postgres readiness probe produced.
+///
+/// `pg_isready` reports "rejecting connections"/"no response" on stdout; a `psql`-style `FATAL`
+/// lands on stderr. Prefer stderr, fall back to stdout, and never invent text.
+fn readiness_detail<'a>(stdout: &'a str, stderr: &'a str) -> &'a str {
+    if stderr.trim().is_empty() {
+        stdout.trim()
+    } else {
+        stderr.trim()
+    }
+}
+
 /// The backing-service OCI images `snow.yml` `resources:` requests (`ADR-0009` §2.2).
 fn requested_service_images(snow: &SnowFile) -> Vec<BackingServiceKey> {
     let mut images = BTreeSet::new();
@@ -2943,6 +3272,22 @@ mod tests {
         assert!(validate_secret_key("").is_err());
         assert!(validate_secret_key("A=B").is_err());
         assert!(validate_secret_key("A\nB").is_err());
+    }
+
+    #[test]
+    fn readiness_detail_prefers_stderr_and_falls_back_to_stdout() {
+        assert_eq!(
+            readiness_detail(
+                "127.0.0.1:5432 - rejecting connections\n",
+                "FATAL:  the database system is starting up\n",
+            ),
+            "FATAL:  the database system is starting up"
+        );
+        assert_eq!(
+            readiness_detail("127.0.0.1:5432 - rejecting connections\n", ""),
+            "127.0.0.1:5432 - rejecting connections"
+        );
+        assert_eq!(readiness_detail("", "  \n"), "");
     }
 
     #[test]

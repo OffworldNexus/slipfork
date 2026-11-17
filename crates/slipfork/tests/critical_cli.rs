@@ -1,8 +1,9 @@
 //! Protected end-to-end CLI + `slipforkd` critical tests (`H-010` #1, `ADR-0008` §4).
 //!
-//! These tests boot real `ReflinkNetnsEngine` worlds through a real `slipforkd` child process,
-//! drive the thin `slipfork` binary over the `0600` `<runtime_dir>/daemon.sock`, and assert the
-//! adversarial contracts: fail-closed `HOME`, exactly one URL per world, idempotent `down`, the
+//! These tests boot real `BtrfsEngine` worlds through the harness `slipforkd` composition root
+//! (the real child on a Btrfs host, the in-process `TestTreeDriver` backend elsewhere), drive the
+//! thin `slipfork` binary over the `0600` `<runtime_dir>/daemon.sock`, and assert the adversarial
+//! contracts: fail-closed `HOME`, exactly one URL per world, idempotent `down`, the
 //! `share`/`unshare` asymmetry, secret overwrite refusal, and non-template unit rendering.
 //!
 //! The `slipfork-world-init` helper is located in Cargo's target directory; when the engine's bins
@@ -19,7 +20,7 @@ use std::time::Duration;
 use serde_json::Value;
 use slipfork_testkit::{SHUTDOWN_DEADLINE, poll_until};
 
-mod support;
+pub mod support;
 use support::{Daemon, assert_success, repo_with_manifest, stderr, stdout, wait_for_line};
 
 const SNOW_YML: &str = r#"
@@ -147,6 +148,21 @@ fn one_url_per_world_holds_for_canonical_and_fork() {
         );
         assert!(world["worktree"].as_str().is_some(), "worktree path");
     }
+    let canonical_id = worlds
+        .iter()
+        .find(|world| world["worktree"].as_str() == Some(repo.to_string_lossy().as_ref()))
+        .and_then(|world| world["world"].as_str())
+        .expect("canonical world row")
+        .to_owned();
+    let fork_worktree = repo.join(".worktrees/feat-x");
+    let fork_id = worlds
+        .iter()
+        .find(|world| world["worktree"].as_str() == Some(fork_worktree.to_string_lossy().as_ref()))
+        .and_then(|world| world["world"].as_str())
+        .expect("fork world row")
+        .to_owned();
+    assert_eq!(canonical_id, "acme-app");
+    assert_eq!(fork_id, "acme-app:feat-x");
 
     let human_list = daemon.cli(&repo, &["list"]);
     assert_success(&human_list, "list");
@@ -156,9 +172,50 @@ fn one_url_per_world_holds_for_canonical_and_fork() {
         "one URL per world, asserted by line/URL count:\n{}",
         stdout(&human_list)
     );
+    assert!(
+        stdout(&human_list).contains(&fork_id) && stdout(&human_list).contains(&canonical_id),
+        "the console prints the same ids `--world` accepts:\n{}",
+        stdout(&human_list)
+    );
 
-    let drop = daemon.cli(&repo, &["drop", "feat-x"]);
-    assert_success(&drop, "drop feat-x");
+    // The exact strings `list` prints round-trip through `--world` (0.1.0 minimal selector).
+    let exec_world = |selector: &str| -> Value {
+        let output = daemon.cli(
+            &repo,
+            &["--json", "exec", "--world", selector, "--", "true"],
+        );
+        assert_success(&output, &format!("exec --world {selector}"));
+        serde_json::from_str(&stdout(&output)).expect("exec json")
+    };
+    assert_eq!(exec_world(&canonical_id)["world"], canonical_id);
+    assert_eq!(exec_world(&fork_id)["world"], fork_id);
+    assert_eq!(exec_world("feat-x")["world"], fork_id);
+
+    // A foreign project prefix and more than one `:` fail closed with a typed diagnostic.
+    let foreign = daemon.cli(
+        &repo,
+        &["--json", "exec", "--world", "other:feat-x", "--", "true"],
+    );
+    assert!(!foreign.status.success(), "a foreign project must fail");
+    let foreign = stdout(&foreign);
+    assert!(
+        foreign.contains("belongs to project 'other'") && foreign.contains("acme-app"),
+        "the foreign-project refusal must name both projects: {foreign}"
+    );
+    let multi = daemon.cli(
+        &repo,
+        &["--json", "exec", "--world", "acme-app:feat:x", "--", "true"],
+    );
+    assert!(!multi.status.success(), "two separators must fail");
+    assert!(
+        stdout(&multi).contains("at most one ':'"),
+        "the multi-separator refusal must name the grammar: {}",
+        stdout(&multi)
+    );
+
+    // `drop` accepts the same printed id.
+    let drop = daemon.cli(&repo, &["drop", fork_id.as_str()]);
+    assert_success(&drop, "drop the printed fork id");
     assert!(
         !repo.join(".worktrees/feat-x").exists(),
         "drop must remove the fork worktree"
@@ -390,6 +447,7 @@ fn zero_setup_auto_spawn_serves_up_without_a_prestarted_daemon() {
     let state_dir = scratch.join("auto-state");
     let runtime_dir = scratch.join("auto-rt");
     let daemon_log = runtime_dir.join("daemon.log");
+    fs::create_dir_all(&runtime_dir).expect("create runtime dir");
 
     let child = Command::new(env!("CARGO_BIN_EXE_slipfork"))
         .arg("--state-dir")
@@ -408,6 +466,38 @@ fn zero_setup_auto_spawn_serves_up_without_a_prestarted_daemon() {
         .expect("spawn slipfork (auto-spawn)");
     let process_group = child.id();
     let output = child.wait_with_output().expect("wait for auto-spawned up");
+
+    if !support::host_is_btrfs(&state_dir) {
+        // Off Btrfs the production daemon refuses this state root before any world exists: the
+        // zero-setup path must surface that refusal, never a degraded unisolated world
+        // (`ADR-0010` §4). The full auto-spawn happy path runs on the Btrfs VM.
+        assert!(
+            !output.status.success(),
+            "a non-Btrfs state root must refuse the world boot:\n{}",
+            stdout(&output)
+        );
+        let diagnostic = stderr(&output);
+        assert!(
+            diagnostic.contains("slipforkd exited with exit status: 1 before serving"),
+            "the CLI must report the refused zero-setup daemon: {diagnostic}"
+        );
+        assert!(
+            diagnostic.contains(daemon_log.to_string_lossy().as_ref()),
+            "the CLI must point at the daemon log: {diagnostic}"
+        );
+        assert!(
+            daemon_log.is_file(),
+            "the auto-spawn must still record the daemon log"
+        );
+        let log = fs::read_to_string(&daemon_log).expect("daemon log");
+        support::assert_btrfs_refusal(&log);
+        assert!(
+            !runtime_dir.join("daemon.sock").exists(),
+            "a refused daemon never binds its control socket"
+        );
+        return;
+    }
+
     assert_success(&output, "auto-spawned slipfork up");
     assert_eq!(url_count(&stdout(&output)), 1);
 

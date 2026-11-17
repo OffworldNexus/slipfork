@@ -13,7 +13,7 @@ use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::Path;
 use std::process::{Command, Output};
 
-mod support;
+pub mod support;
 
 use support::{Daemon, disk_tempdir, repo_with_manifest, stderr, stdout};
 
@@ -161,8 +161,7 @@ fn git_fetch_lists_and_fetches_fork_and_wip_refs_through_the_real_binary() {
 
     // The local Git objects are untouched, but the helper refuses without its daemon: a raw ref is
     // not a warrant to advertise a world that does not exist.
-    let _ = daemon.child.kill();
-    let _ = daemon.child.wait();
+    daemon.shutdown();
     let refused = git_with_helper(&repo, &daemon, &["ls-remote", "slipfork"]);
     assert!(
         !refused.status.success(),

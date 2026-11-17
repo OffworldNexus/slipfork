@@ -11,8 +11,8 @@ use std::process::{Command, Output, Stdio};
 
 use serde_json::Value;
 
-mod support;
-use support::{disk_tempdir, run_git};
+pub mod support;
+use support::{DaemonLayout, disk_tempdir, run_git};
 
 const MINIMAL_SNOW_YML: &str = r#"
 modes:
@@ -46,13 +46,15 @@ fn run_slipfork_with_env(
     env_overrides: &[(&str, &OsStr)],
     args: &[&str],
 ) -> Output {
+    let layout = DaemonLayout::under(scratch);
+    support::ensure_daemon(scratch, &layout);
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_slipfork"));
     cmd.env("GIT_CEILING_DIRECTORIES", scratch)
-        .env("XDG_DATA_HOME", scratch.join("xdg-data"))
+        .env("XDG_DATA_HOME", &layout.data_home)
         .arg("--state-dir")
-        .arg(scratch.join("state"))
+        .arg(&layout.state_dir)
         .arg("--runtime-dir")
-        .arg(scratch.join("rt"))
+        .arg(&layout.runtime_dir)
         .args(args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -95,7 +97,12 @@ fn run_slipfork_with_env(
     // The daemon auto-spawned by the CLI lives in this process group and only stops serving once
     // its `SIGTERM` is serviced. A later invocation's `is_served()` only dials the socket, so it
     // would otherwise reuse a daemon that is exiting and fail mid-request (ECONNRESET/EPIPE).
-    if let Err(error) = support::wait_daemon_teardown(&scratch.join("rt")) {
+    //
+    // On a non-Btrfs host the harness serves the daemon in-process (it outlives every CLI child by
+    // design), so there is no auto-spawned child to reap here.
+    if support::host_is_btrfs(&layout.state_dir)
+        && let Err(error) = support::wait_daemon_teardown(&layout.runtime_dir)
+    {
         panic!(
             "the auto-spawned slipforkd must stop accepting after the process-group SIGTERM: {error}\n\
              offending invocation: slipfork {args:?}\nstdout:\n{}\nstderr:\n{}",
@@ -168,7 +175,7 @@ fn worktree_resolves_to_canonical_repo_slug_and_honors_only_vcs_root_slipfork_to
     );
     assert!(
         scratch
-            .join("xdg-data/slipfork/vaults/acme-app.json")
+            .join("state/xdg-data/slipfork/vaults/acme-app.json")
             .is_file(),
         "vault must be keyed by canonical ProjectSlug"
     );
@@ -776,13 +783,34 @@ fn non_vcs_directory_fails_closed_and_corrupt_git_surfaces_real_git_stderr() {
         &[("PATH", empty_bin.as_os_str())],
         &["snow", "resolve", "--file", "snow.yml", "--mode", "local"],
     );
-    assert!(!out_no_git.status.success());
-    let no_git_stderr = String::from_utf8_lossy(&out_no_git.stderr);
-    assert!(
-        no_git_stderr.contains("required tool 'git' was not found on PATH")
-            && !no_git_stderr.contains("not a git or jj repository"),
-        "expected missing git binary diagnostic, got: {no_git_stderr}"
-    );
+    if support::host_is_btrfs(&scratch.join("state")) {
+        assert!(!out_no_git.status.success());
+        let no_git_stderr = String::from_utf8_lossy(&out_no_git.stderr);
+        assert!(
+            no_git_stderr.contains("required tool 'git' was not found on PATH")
+                && !no_git_stderr.contains("not a git or jj repository"),
+            "expected missing git binary diagnostic, got: {no_git_stderr}"
+        );
+    } else {
+        // The missing-`git` diagnostic comes from the daemon-side `RepoRootResolver`, and the
+        // daemon inherits the CLI's `PATH` only through a real auto-spawned `slipforkd`. On a
+        // non-Btrfs host the harness serves the daemon in-process (this suite boots no world), so
+        // the ambient `PATH` resolves the real repository through the typed control socket; the
+        // invocation must therefore succeed and never emit the misleading non-repository refusal.
+        // The missing-`git` PATH isolation runs on the Btrfs VM.
+        let stderr = String::from_utf8_lossy(&out_no_git.stderr);
+        let stdout = String::from_utf8_lossy(&out_no_git.stdout);
+        assert!(
+            out_no_git.status.success(),
+            "the in-process daemon must resolve the real repository: {stderr}"
+        );
+        assert!(stdout.contains("APP_URL="), "resolved env: {stdout}");
+        assert!(
+            !stderr.contains("not a git or jj repository"),
+            "a real repository must never be reported as a non-repository: {stderr}"
+        );
+        eprintln!("non-Btrfs host: the missing-`git` PATH isolation runs on the Btrfs VM");
+    }
 }
 
 #[test]

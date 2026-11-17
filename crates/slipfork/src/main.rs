@@ -22,10 +22,12 @@ use std::time::{Duration, Instant};
 
 use clap::Parser;
 use serde_json::json;
+use slipfork::apparmor::render_userns_profile;
 use slipfork::cli::{
     AuthAction, Cli, Commands, DaemonAction, DagAction, DumpArgs, HookAction, ResourceArgs,
     SecretAction, SnowAction, UnitKind,
 };
+use slipfork::doctor::{self, OsHostProbe};
 use slipfork::layout::{Layout, ensure_private_dir};
 use slipfork::project::{load_slipfork_config, repository_resolver};
 use slipfork::user::{AccountDatabaseIdentity, UserIdentity};
@@ -35,7 +37,8 @@ use slipfork_edge::{
     ForwardRequest, ForwardSummary, HookRunRequest, LogsRequest, SnowResolveRequest, UnitSpec,
     UpRequest, WorldSelector, render_service_unit, render_socket_unit,
 };
-use slipfork_engine::{current_uid_gid, probe_reflink_dir};
+use slipfork_engine::btrfs::KernelBtrfsDriver;
+use slipfork_engine::current_uid_gid;
 use slipfork_snow::SnowFile;
 use slipfork_vcs::VcsError;
 
@@ -170,56 +173,32 @@ fn current_dir() -> Result<PathBuf, String> {
     std::env::current_dir().map_err(|err| format!("cannot read the current directory: {err}"))
 }
 
+/// Render one `--json` payload, propagating a serializer failure instead of printing nothing.
+fn render_json<T: serde::Serialize>(value: &T) -> Result<String, String> {
+    serde_json::to_string_pretty(value)
+        .map_err(|err| format!("cannot render the JSON response: {err}"))
+}
+
+/// `slipfork doctor`: probe the Btrfs substrate and the unprivileged namespaces without a daemon.
+///
+/// The CLI is the only place that constructs the production probes (`KernelBtrfsDriver` +
+/// `OsHostProbe`); [`doctor::run`] holds no `WorldEngine`, so this works on a host where
+/// `slipforkd` refuses to boot. The report renders `state_dir`, `filesystem`,
+/// `btrfs_super_magic: ok|mismatch`, `subvolume_ioctl: ok|skipped|failed`, advisory `noatime`,
+/// `unshare_userns`, `netns`, and the deterministic `fixes` list (`btrfs` -> `unshare_userns` ->
+/// `netns`); `--json` projects the same fields, and the exit status is 0 iff the report is `ok`.
 fn doctor(json: bool, layout: &Layout) -> Result<ExitCode, String> {
     let (uid, gid) = current_uid_gid();
-    let incus_sock = Path::new("/var/lib/incus/unix.socket").exists();
-    let reflink_us = probe_reflink_dir(layout.state_dir()).map_err(|err| err.to_string())?;
-    let netns_ok = Command::new("unshare")
-        .args([
-            &format!("--map-user={uid}"),
-            &format!("--map-group={gid}"),
-            "--keep-caps",
-            "--net",
-            "--pid",
-            "--fork",
-            "sh",
-            "-c",
-            "ip link set lo up",
-        ])
-        .output()
-        .map(|output| output.status.success())
-        .unwrap_or(false);
-
+    let driver = KernelBtrfsDriver::new();
+    let host = OsHostProbe::new(exe_dir()?);
+    let report =
+        doctor::run(&driver, &host, layout.state_dir(), uid, gid).map_err(|err| err.to_string())?;
     if json {
-        println!(
-            "{}",
-            json!({
-                "ok": netns_ok,
-                "uid": uid,
-                "gid": gid,
-                "state_root": layout.state_dir(),
-                "incus_daemon_socket": incus_sock,
-                "reflink_64k_micros": reflink_us,
-                "isolated_netns": netns_ok,
-            })
-        );
+        println!("{}", render_json(&report.to_json())?);
     } else {
-        println!("state_root: {}", layout.state_dir().display());
-        println!(
-            "incus:      {}",
-            if incus_sock {
-                "available"
-            } else {
-                "absent (using reflink-netns)"
-            }
-        );
-        println!("reflink:    ok (64 KiB FICLONE in {reflink_us} us)");
-        println!(
-            "netns:      {} (uid={uid}:{gid})",
-            if netns_ok { "ok" } else { "FAILED" }
-        );
+        print!("{}", report.render_text());
     }
-    Ok(if netns_ok {
+    Ok(if report.ok {
         ExitCode::SUCCESS
     } else {
         ExitCode::from(1)
@@ -245,10 +224,7 @@ fn resolve_snow(
         })
         .map_err(|err| err.to_string())?;
     if json {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&summary.vars).unwrap_or_default()
-        );
+        println!("{}", render_json(&summary.vars)?);
     } else {
         for (key, value) in &summary.vars {
             println!("{key}={value}");
@@ -270,10 +246,7 @@ fn dag_plan(
     let plan = DagPlanner::plan(&config, &BTreeMap::new(), &BTreeMap::new(), &hasher, &cache)
         .map_err(|err| err.to_string())?;
     if json {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&plan).unwrap_or_default()
-        );
+        println!("{}", render_json(&plan)?);
     } else {
         for artifact in &plan.artifacts {
             println!(
@@ -305,6 +278,7 @@ fn daemon_unit(
 ) -> Result<ExitCode, String> {
     let user = AccountDatabaseIdentity.username()?;
     let executable = daemon_executable()?;
+    let bin_dir = exe_dir()?;
     let spec = UnitSpec {
         user,
         listen_addrs: vec![
@@ -322,17 +296,25 @@ fn daemon_unit(
     };
     let socket = || render_socket_unit(&spec).map_err(|err| err.to_string());
     let service = || render_service_unit(&spec).map_err(|err| err.to_string());
-    let text = match only {
-        Some(UnitKind::Socket) => socket()?,
-        Some(UnitKind::Service) => service()?,
-        None => format!("{}\n{}", socket()?, service()?),
+    let apparmor = || render_userns_profile(&bin_dir);
+    let (text, wants_socket, wants_service, wants_apparmor) = match only {
+        Some(UnitKind::Socket) => (socket()?, true, false, false),
+        Some(UnitKind::Service) => (service()?, false, true, false),
+        Some(UnitKind::Apparmor) => (apparmor(), false, false, true),
+        None => (
+            format!("{}\n{}\n{}", socket()?, service()?, apparmor()),
+            true,
+            true,
+            true,
+        ),
     };
     if json {
         println!(
             "{}",
             json!({
-                "socket": match only { Some(UnitKind::Service) => serde_json::Value::Null, _ => serde_json::Value::String(socket()?) },
-                "service": match only { Some(UnitKind::Socket) => serde_json::Value::Null, _ => serde_json::Value::String(service()?) },
+                "socket": if wants_socket { serde_json::Value::String(socket()?) } else { serde_json::Value::Null },
+                "service": if wants_service { serde_json::Value::String(service()?) } else { serde_json::Value::Null },
+                "apparmor": if wants_apparmor { serde_json::Value::String(apparmor()) } else { serde_json::Value::Null },
             })
         );
     } else {
@@ -450,10 +432,7 @@ fn list(json: bool, layout: &Layout) -> Result<ExitCode, String> {
                 })
             })
             .collect();
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&rows).unwrap_or_default()
-        );
+        println!("{}", render_json(&rows)?);
     } else {
         println!("{:<16} {:<9} {:<40} WORKTREE", "WORLD", "STATE", "ORIGIN");
         for world in &worlds {
@@ -474,10 +453,7 @@ fn prune(json: bool, layout: &Layout, dry_run: bool, yes: bool) -> Result<ExitCo
     let dry_run = dry_run || !yes;
     let report = client.prune(dry_run).map_err(|err| err.to_string())?;
     if json {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&report).unwrap_or_default()
-        );
+        println!("{}", render_json(&report)?);
     } else {
         let prefix = if report.dry_run {
             "[dry-run]"
@@ -534,10 +510,7 @@ fn secret(json: bool, layout: &Layout, action: SecretAction) -> Result<ExitCode,
         SecretAction::List => {
             let keys = client.secret_list(&cwd).map_err(|err| err.to_string())?;
             if json {
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(&keys).unwrap_or_default()
-                );
+                println!("{}", render_json(&keys)?);
             } else {
                 for key in keys {
                     println!("{key}");
@@ -1045,10 +1018,7 @@ fn support(json: bool) -> Result<ExitCode, String> {
                 })
             })
             .collect();
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&rows).unwrap_or_default()
-        );
+        println!("{}", render_json(&rows)?);
     } else {
         println!(
             "{:<28} {:<14} {:<12} EVIDENCE",
@@ -1268,23 +1238,28 @@ fn connect_or_spawn(layout: &Layout) -> Result<DaemonControlClient, String> {
     }
 }
 
-/// The `slipforkd` executable installed next to this CLI (never a `PATH` guess).
-fn daemon_executable() -> Result<PathBuf, String> {
+/// Directory of this `slipfork` executable (never a `PATH` guess, never a `/usr/bin` fallback).
+///
+/// The single fail-closed resolution used by `doctor` (the AppArmor hint attachment) and
+/// `daemon unit` (the printed profile attachment), so both name the same executable directory.
+fn exe_dir() -> Result<PathBuf, String> {
     let executable =
         std::env::current_exe().map_err(|err| format!("cannot resolve this executable: {err}"))?;
-    let candidate = executable
-        .parent()
-        .ok_or_else(|| {
-            format!(
-                "this executable {} has no parent directory",
-                executable.display()
-            )
-        })?
-        .join("slipforkd");
+    executable.parent().map(Path::to_path_buf).ok_or_else(|| {
+        format!(
+            "this executable {} has no parent directory",
+            executable.display()
+        )
+    })
+}
+
+/// The `slipforkd` executable installed next to this CLI (never a `PATH` guess).
+fn daemon_executable() -> Result<PathBuf, String> {
+    let candidate = exe_dir()?.join("slipforkd");
     if !candidate.is_file() {
         return Err(format!(
-            "cannot find slipforkd next to {}; build or install the slipforkd binary",
-            executable.display()
+            "cannot find slipforkd at {}; build or install the slipforkd binary next to slipfork",
+            candidate.display()
         ));
     }
     Ok(candidate)

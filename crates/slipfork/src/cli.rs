@@ -1,13 +1,20 @@
 //! The single `clap` command surface shared by `slipfork` and `slipforkd`.
 //!
-//! Every world-scoped command selects a non-default world exclusively through `--world <fork>`
-//! (`ADR-0008` §4); `fork` and `drop` name their fork positionally because they create/destroy it.
-//! `/M2.16` deleted M1's `snap` subcommand: worlds and forks are the only snapshot producers.
+//! Every world-scoped command selects a non-default world exclusively through `--world <WORLD>`,
+//! which accepts exactly the ids `slipfork list` prints: the canonical `<project>`,
+//! `<project>:<fork>`, or the repo-local bare `<fork>` (`ADR-0008` §4). `fork` and `drop` name
+//! their fork positionally because they create/destroy it. `/M2.16` deleted M1's `snap`
+//! subcommand: worlds and forks are the only snapshot producers.
 
 use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use slipfork_edge::{DumpRequest, ResourceRequest};
+
+/// Shared `--world` help text for every world-scoped command. Carries no trailing period because
+/// `clap` strips the one it derives from a doc comment; the rendered help stays byte-identical.
+const WORLD_HELP: &str =
+    "World id (`<fork>`, `<project>:<fork>`, or canonical `<project>`); omit for `cwd`'s world";
 
 /// `slipfork` thin client.
 #[derive(Debug, Parser)]
@@ -37,7 +44,7 @@ pub struct Cli {
 /// Top-level `slipfork` commands.
 #[derive(Debug, Subcommand)]
 pub enum Commands {
-    /// Probe host CoW reflink latency, Incus socket availability, and unprivileged netns support.
+    /// Probe the Btrfs substrate, the live subvolume ioctl round-trip, and unprivileged namespaces.
     Doctor,
 
     /// Validate and resolve `snow.yml` modes & `!!` auto-generated secrets.
@@ -54,8 +61,7 @@ pub enum Commands {
 
     /// Boot the world selected by `--world` (or `cwd`) through `slipforkd`.
     Up {
-        /// World fork to boot; omit for the canonical world of `cwd`'s repository.
-        #[arg(long)]
+        #[arg(long, value_name = "WORLD", help = WORLD_HELP)]
         world: Option<String>,
         #[command(flatten)]
         dump: DumpArgs,
@@ -69,8 +75,7 @@ pub enum Commands {
 
     /// Stop a world's services while keeping its worktree (idempotent).
     Down {
-        /// World fork to stop; omit for the canonical world of `cwd`'s repository.
-        #[arg(long)]
+        #[arg(long, value_name = "WORLD", help = WORLD_HELP)]
         world: Option<String>,
     },
 
@@ -121,8 +126,7 @@ pub enum Commands {
         /// Drop the world's tunnel lease instead of minting one.
         #[arg(long)]
         stop: bool,
-        /// World fork to share; omit for the canonical world of `cwd`'s repository.
-        #[arg(long)]
+        #[arg(long, value_name = "WORLD", help = WORLD_HELP)]
         world: Option<String>,
     },
 
@@ -134,8 +138,7 @@ pub enum Commands {
 
     /// Run a command non-interactively inside a world (daemon-resolved environment).
     Exec {
-        /// World fork to enter; omit for the canonical world of `cwd`'s repository.
-        #[arg(long)]
+        #[arg(long, value_name = "WORLD", help = WORLD_HELP)]
         world: Option<String>,
         /// Working directory used to resolve the world and to enter it.
         #[arg(long)]
@@ -147,15 +150,13 @@ pub enum Commands {
 
     /// Enter a world interactively with native terminal stdio (requires a TTY).
     Shell {
-        /// World fork to enter; omit for the canonical world of `cwd`'s repository.
-        #[arg(long)]
+        #[arg(long, value_name = "WORLD", help = WORLD_HELP)]
         world: Option<String>,
     },
 
     /// Read or follow retained component and hook logs from `slipforkd`.
     Logs {
-        /// World fork to read; omit for the canonical world of `cwd`'s repository.
-        #[arg(long)]
+        #[arg(long, value_name = "WORLD", help = WORLD_HELP)]
         world: Option<String>,
         /// Component id, hook id (`api:pre-deploy`), or omit for every retained log.
         target: Option<String>,
@@ -180,8 +181,7 @@ pub enum Commands {
     Db {
         /// Declared `pg_databases.<id>` entry; inferred when exactly one is declared.
         db_id: Option<String>,
-        /// World fork to enter; omit for the canonical world of `cwd`'s repository.
-        #[arg(long)]
+        #[arg(long, value_name = "WORLD", help = WORLD_HELP)]
         world: Option<String>,
     },
 
@@ -189,15 +189,13 @@ pub enum Commands {
     Redis {
         /// Declared `redis_clusters.<id>` entry; inferred when exactly one is declared.
         cluster_id: Option<String>,
-        /// World fork to enter; omit for the canonical world of `cwd`'s repository.
-        #[arg(long)]
+        #[arg(long, value_name = "WORLD", help = WORLD_HELP)]
         world: Option<String>,
     },
 
     /// Bind daemon-owned `127.0.0.1:0` listeners bridged into a world (held until Ctrl-C).
     Forward {
-        /// World fork to forward; omit for the canonical world of `cwd`'s repository.
-        #[arg(long)]
+        #[arg(long, value_name = "WORLD", help = WORLD_HELP)]
         world: Option<String>,
         /// Target ids (`pg_databases.main`, `components.api`); empty forwards every target.
         targets: Vec<String>,
@@ -220,8 +218,7 @@ pub enum HookAction {
     Run {
         /// `<component>:<phase>` hook id.
         hook: String,
-        /// World fork to use; omit for the canonical world of `cwd`'s repository.
-        #[arg(long)]
+        #[arg(long, value_name = "WORLD", help = WORLD_HELP)]
         world: Option<String>,
         /// Run non-interactively through `DaemonControl::hook_run`.
         #[arg(long)]
@@ -296,9 +293,10 @@ pub enum SecretAction {
 /// `slipfork daemon` actions.
 #[derive(Debug, Subcommand)]
 pub enum DaemonAction {
-    /// Render the non-template `slipforkd.socket` / `slipforkd.service` units on stdout.
+    /// Render the non-template `slipforkd.socket` / `slipforkd.service` units and the
+    /// `/etc/apparmor.d/slipfork` `userns` profile on stdout.
     Unit {
-        /// Render only one unit instead of both.
+        /// Render only one unit/profile instead of all three.
         #[arg(long, value_enum)]
         only: Option<UnitKind>,
         /// Planned static forward port emitted as the trailing `ListenStream=`.
@@ -307,13 +305,15 @@ pub enum DaemonAction {
     },
 }
 
-/// Which systemd unit `daemon unit --only` renders.
+/// Which unit/profile `daemon unit --only` renders.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum UnitKind {
     /// `slipforkd.socket`.
     Socket,
     /// `slipforkd.service`.
     Service,
+    /// `/etc/apparmor.d/slipfork` unprivileged `userns` profile (`ADR-0010` §7).
+    Apparmor,
 }
 
 /// Default planned static forward port rendered into the systemd socket unit (`ADR-0008` §5).

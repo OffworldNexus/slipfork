@@ -8,6 +8,9 @@
 //! contains no ambient environment access.
 //!
 //! - [`cli`]: the single `clap` surface shared by both binaries.
+//! - [`doctor`]: the pre-daemon `slipfork doctor` seam (`ADR-0010` §4): `HostProbe` + report
+//!   rendering over an injected `SubvolumeDriver` (the CLI owns no `WorldEngine`).
+//! - [`apparmor`]: the Ubuntu 24.04 `/etc/apparmor.d/slipfork` `userns` profile body.
 //! - [`layout`]: pure paths derived from already-resolved roots (`state`, `runtime`, data/vaults).
 //! - [`project`]: the injected [`slipfork_vcs::ProjectSlugOverride`] and the one
 //!   `SlipforkConfig` loader/resolver constructor (no second TOML parser, no silent defaults).
@@ -22,8 +25,10 @@
 
 #![forbid(unsafe_code)]
 
+pub mod apparmor;
 pub mod cli;
 pub mod daemon;
+pub mod doctor;
 pub mod layout;
 pub mod oci_store;
 pub mod ospp;

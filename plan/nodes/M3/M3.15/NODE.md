@@ -2,16 +2,25 @@
 id: M3.15
 title: "slipforkd BtrfsEngine wiring, slipfork doctor Btrfs probe, daemon unit --only apparmor userns profile"
 kind: task
-status: ready
+status: review
 owner: implementer
 priority: 3
 depends_on: [M3.14]
-paths: ["crates/slipfork/src/**", "crates/slipfork/tests/**", crates/slipfork/Cargo.toml, Cargo.lock]
-attempts: 0
+paths:
+  - Makefile
+  - "crates/slipfork/src/**"
+  - "crates/slipfork/tests/**"
+  - crates/slipfork/Cargo.toml
+  - Cargo.lock
+  - "crates/slipfork-engine/src/lib.rs"
+  - tools/do_vm.py
+  - tools/tests/test_do_vm.py
+  - "packages/opencode-slipfork/tests/**"
+attempts: 1
 max_attempts: 3
 escalation: none
 created: "2026-11-16T16:58"
-updated: "2026-11-16T17:25"
+updated: "2026-11-17T06:40"
 ---
 
 # Goal

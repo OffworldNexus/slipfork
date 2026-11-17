@@ -22,7 +22,7 @@ use slipfork_ospp_testkit::{
     TpmdBehavior,
 };
 
-mod support;
+pub mod support;
 use support::{
     Daemon, assert_success, git_only_path, jj_binary, repo_with_manifest, stderr, stdout,
 };
@@ -261,7 +261,7 @@ fn paired_ospp_resolves_remote_secrets_restores_a_real_dump_and_forks_rows() {
     );
     let clean_base = base_snapshot(&daemon, "acme-ospp");
     assert!(
-        clean_base.join("pgdata/main/PG_VERSION").is_file(),
+        clean_base.join("state/pgdata/main/PG_VERSION").is_file(),
         "freeze_world must seal a real initdb PGDATA, got {}",
         clean_base.display()
     );
@@ -337,7 +337,7 @@ fn paired_ospp_resolves_remote_secrets_restores_a_real_dump_and_forks_rows() {
     );
     let restored_base = base_snapshot(&daemon, "acme-ospp");
     assert!(
-        restored_base.join("pgdata/main/PG_VERSION").is_file(),
+        restored_base.join("state/pgdata/main/PG_VERSION").is_file(),
         "freeze_world must seal the restored PGDATA, got {}",
         restored_base.display()
     );
@@ -494,6 +494,27 @@ fn optional_slipfork_toml_boots_and_malformed_config_fails_closed() {
     );
 }
 
+/// Start the real daemon with an explicit `PATH`, or assert its fail-closed non-Btrfs refusal.
+///
+/// `PATH` isolation (the `.jj` adapter probes the ambient `PATH`) requires a daemon process, so
+/// this suite keeps the real `slipforkd` child. On a non-Btrfs host the production daemon refuses
+/// the state root before serving; asserting that refusal here keeps the suite honest while the
+/// live routing assertions run on the Btrfs VM.
+fn daemon_with_path(scratch: &Path, path: &Path) -> Option<Daemon> {
+    match Daemon::try_start_with_path(scratch, Some(path)) {
+        Ok(daemon) => Some(daemon),
+        Err(log) => {
+            assert!(
+                !support::host_is_btrfs(&scratch.join("state")),
+                "the real daemon refused a Btrfs host: {log}"
+            );
+            support::assert_btrfs_refusal(&log);
+            eprintln!("non-Btrfs host: `.jj` routing runs on the Btrfs VM");
+            None
+        }
+    }
+}
+
 #[test]
 fn dot_jj_repository_routes_to_jujutsu_and_never_falls_back_to_git() {
     let jj = jj_binary().unwrap_or_else(|| {
@@ -510,7 +531,9 @@ fn dot_jj_repository_routes_to_jujutsu_and_never_falls_back_to_git() {
     let repo = repo_with_manifest(scratch, "acme-jj-absent", PLAIN_SNOW);
     fs::create_dir(repo.join(".jj")).expect("create .jj marker");
     let git_only = git_only_path(scratch);
-    let daemon = Daemon::start_with_path(scratch, Some(&git_only));
+    let Some(daemon) = daemon_with_path(scratch, &git_only) else {
+        return;
+    };
     let refused = daemon.cli(&repo, &["fork", "feat-jj"]);
     assert!(
         !refused.status.success(),
@@ -550,7 +573,9 @@ fn dot_jj_repository_routes_to_jujutsu_and_never_falls_back_to_git() {
     let mut path = std::ffi::OsString::from(jj_dir);
     path.push(":");
     path.push(std::env::var_os("PATH").expect("PATH"));
-    let daemon = Daemon::start_with_path(scratch, Some(Path::new(&path)));
+    let Some(daemon) = daemon_with_path(scratch, Path::new(&path)) else {
+        return;
+    };
     assert_success(&daemon.cli(&repo, &["fork", "feat-jj"]), "fork feat-jj");
     assert!(
         repo.join(".worktrees/feat-jj").is_dir(),

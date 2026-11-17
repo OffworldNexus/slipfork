@@ -24,6 +24,7 @@ from unittest import mock
 import pytest
 
 TOOLS_DIR = Path(__file__).resolve().parent.parent
+REPO_ROOT = TOOLS_DIR.parent
 TOOL = TOOLS_DIR / "do_vm.py"
 
 sys.path.insert(0, str(TOOLS_DIR))
@@ -286,7 +287,7 @@ class Harness:
         return do_vm_mod.load_identity(None, materialize=True).path
 
     def suite_files(self) -> None:
-        for _, relative, _ in do_vm_mod.SUITES:
+        for _, _, relative, _ in do_vm_mod.SUITES:
             path = self.root / relative
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text("#[test]\nfn live() {}\n", encoding="utf-8")
@@ -854,7 +855,7 @@ def test_test_names_missing_suites_and_nodes(harness: Harness) -> None:
     assert harness.ssh_calls() == []
 
 
-def test_test_streams_both_suites_serialized_and_stops_at_first_failure(
+def test_test_streams_every_suite_serialized_and_stops_at_first_failure(
     harness: Harness,
 ) -> None:
     harness.suite_files()
@@ -876,9 +877,16 @@ def test_test_streams_both_suites_serialized_and_stops_at_first_failure(
     ok = harness.run("test")
     assert ok.code == 0, ok.stderr
     suites = _lines(harness.state / "suites.log")
-    assert len(suites) == 2
-    assert "slipfork-engine" in suites[0]
-    assert "cargo test -p slipfork --test critical_btrfs_live" in suites[1]
+    assert len(suites) == len(do_vm_mod.SUITES)
+    assert [entry[1] for entry in do_vm_mod.SUITES] == [
+        "critical_btrfs_live",
+        "critical_btrfs_live",
+        "critical_cli",
+        "critical_slug",
+        "critical_ospp_daemon",
+    ]
+    for command, (package, test, _, _) in zip(suites, do_vm_mod.SUITES, strict=True):
+        assert f"cargo test -p {package} --test {test} -- --test-threads=1" in command
 
 
 def test_test_fails_closed_when_remote_suite_is_missing(harness: Harness) -> None:
@@ -1406,6 +1414,94 @@ def test_apparmor_body_attaches_both_executables() -> None:
     )
     assert body.endswith("  userns,\n}\n")
     assert len(body.splitlines()) == 4
+
+
+def _built_slipfork() -> Path:
+    """The built `slipfork` binary; build it when absent and fail closed if it cannot be built.
+
+    The AppArmor byte-equivalence contract must run on every `make check`; it never skips just
+    because `target/debug/slipfork` was not built by an earlier step.
+    """
+    override = os.environ.get("SLIPFORK_BIN")
+    if override:
+        binary = Path(override)
+    else:
+        metadata = subprocess.run(
+            ["cargo", "metadata", "--format-version", "1", "--no-deps"],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        target_dir = Path(json.loads(metadata.stdout)["target_directory"])
+        binary = target_dir / "debug" / "slipfork"
+    if not binary.is_file():
+        built = subprocess.run(
+            ["cargo", "build", "-q", "-p", "slipfork", "--bin", "slipfork"],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert built.returncode == 0, (
+            f"`cargo build -q -p slipfork` failed; the AppArmor contract cannot run: "
+            f"{built.stderr}"
+        )
+    assert binary.is_file(), (
+        f"`slipfork` is not built at {binary}; the AppArmor contract cannot run"
+    )
+    return binary
+
+
+def _profile_attachment(header: str) -> tuple[str, str, str]:
+    """Split `profile slipfork <attachment> flags=(unconfined) {` into its three parts."""
+    prefix = "profile slipfork "
+    suffix = " flags=(unconfined) {"
+    assert header.startswith(prefix), header
+    assert header.endswith(suffix), header
+    return prefix, header[len(prefix) : -len(suffix)], suffix
+
+
+def test_cli_rendered_apparmor_profile_matches_the_harness_skeleton() -> None:
+    """One renderer owner: the harness copy must match `slipfork daemon unit --only apparmor`.
+
+    The two attachment lists differ for a documented reason: the harness runs `cargo test`
+    binaries whose executable is unlinked, so it attaches `/usr/bin/unshare` and the
+    `slipfork-world-init` helper, while the product profile attaches the installed
+    `<bin_dir>/slipfork{,d}` executables (both inherit `userns,` across `execve`). The four-line
+    body, the ABI header, and the profile flags are byte-identical, so neither copy can drift.
+    """
+    binary = _built_slipfork()
+    rendered = subprocess.run(
+        [str(binary), "daemon", "unit", "--only", "apparmor"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    cli_lines = rendered.stdout.splitlines(keepends=True)
+    harness_lines = do_vm_mod.render_apparmor_body().splitlines(keepends=True)
+
+    assert len(cli_lines) == 4, rendered.stdout
+    assert len(harness_lines) == 4
+    assert cli_lines[0] == harness_lines[0] == "abi <abi/4.0>,\n"
+    assert cli_lines[2] == harness_lines[2] == "  userns,\n"
+    assert cli_lines[3] == harness_lines[3] == "}\n"
+
+    cli_prefix, cli_attachment, cli_suffix = _profile_attachment(
+        cli_lines[1].rstrip("\n")
+    )
+    harness_prefix, harness_attachment, harness_suffix = _profile_attachment(
+        harness_lines[1].rstrip("\n")
+    )
+    assert (cli_prefix, cli_suffix) == (harness_prefix, harness_suffix)
+    assert cli_attachment == f"{binary.parent}/slipfork{{,d}}"
+    assert harness_attachment.startswith("/{usr/bin/unshare,"), harness_attachment
+
+    # Byte-equality of the whole profile once the one legitimate difference (the attachment
+    # expression) is normalised.
+    assert "".join(cli_lines).replace(cli_attachment, "<files>") == "".join(
+        harness_lines
+    ).replace(harness_attachment, "<files>")
 
 
 def test_provision_script_installs_no_host_crun_and_keeps_git() -> None:
