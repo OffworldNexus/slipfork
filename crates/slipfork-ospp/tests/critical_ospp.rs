@@ -2,10 +2,8 @@
 //! device-key signers, and pairing.
 //!
 //! Every test drives the production code path. The WebSocket server, the seeded CSPRNG, and the
-//! fake `tpmd` daemon are dev-only doubles in `tests/support/`; the signatures, transcripts,
-//! frames, compare-and-set secret stores, and zstd archives are real.
-
-mod support;
+//! fake `tpmd` daemon are dev-only doubles in the unpublished `slipfork-ospp-testkit` crate; the
+//! signatures, transcripts, frames, compare-and-set secret stores, and zstd archives are real.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -14,12 +12,6 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
-
-use support::{
-    DumpRecord, FakeTpmd, FixedEntropy, HandleRecord, MemorySeedDumpStore, MisSigningSigner,
-    ReferenceOsppServer, ReferenceServerConfig, S3BucketRecord, SeededEntropy, TpmdBehavior,
-    known_software_key, software_signer,
-};
 
 use slipfork_dag::{
     DagError, DumpPolicy, PgSeed, ResourceMode, ResourcePlan, ResourceTarget, ResourcesSpec,
@@ -31,6 +23,11 @@ use slipfork_ospp::{
     PairingRejectReason, PairingScheme, PairingUrl, RejectReason, SeedDumpStore,
     SoftwareP256Signer, TpmdDeviceKeySigner, connect_transcript, pairing_transcript,
     redeem_pairing_url, verify_device_signature,
+};
+use slipfork_ospp_testkit::{
+    DumpRecord, FakeTpmd, FixedEntropy, HandleRecord, MemorySeedDumpStore, MisSigningSigner,
+    ReferenceOsppServer, ReferenceServerConfig, S3BucketRecord, SeededEntropy, TpmdBehavior,
+    known_software_key, software_signer,
 };
 use slipfork_snow::{
     FileVaultProvider, LayeredSecretProvider, Namespace, ProviderError, SecretProvider,

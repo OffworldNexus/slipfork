@@ -1167,6 +1167,7 @@ dependencies = [
  "slipfork-edge",
  "slipfork-engine",
  "slipfork-ospp",
+ "slipfork-ospp-testkit",
  "slipfork-snow",
  "slipfork-testkit",
  "slipfork-vcs",
@@ -1226,6 +1227,7 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "slipfork-dag",
+ "slipfork-ospp-testkit",
  "slipfork-snow",
  "slipfork-world",
  "tempfile",
@@ -1236,6 +1238,25 @@ dependencies = [
  "tpmd-proto",
  "tungstenite",
  "webpki-roots 1.0.12",
+ "zstd",
+]
+
+[[package]]
+name = "slipfork-ospp-testkit"
+version = "0.2.0"
+dependencies = [
+ "hex",
+ "p256",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "slipfork-ospp",
+ "slipfork-snow",
+ "tempfile",
+ "tokio",
+ "tpmd-ipc",
+ "tpmd-proto",
+ "tungstenite",
  "zstd",
 ]
 

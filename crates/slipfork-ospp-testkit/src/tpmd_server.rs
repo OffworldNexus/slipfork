@@ -88,7 +88,6 @@ impl FakeTpmd {
     ///
     /// Used by downstream composition-root tests that must place the fake daemon exactly where
     /// `KeyStorePaths::user_then_system($XDG_RUNTIME_DIR)` probes.
-    #[allow(dead_code)] // consumed by `crates/slipfork`'s protected suite, not this crate's tests
     pub fn start_at(socket_path: PathBuf, behavior: TpmdBehavior) -> Self {
         let dir = tempfile::tempdir().expect("scratch tpmd dir");
         if let Some(parent) = socket_path.parent() {

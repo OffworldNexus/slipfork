@@ -1,0 +1,24 @@
+[package]
+name = "slipfork-ospp-testkit"
+description = "Unpublished OSPP v1 reference server and fake tpmd daemon doubles for Slipfork's protected test suites"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+hex.workspace = true
+p256.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+slipfork-ospp = { path = "../slipfork-ospp" }
+slipfork-snow = { path = "../slipfork-snow" }
+tempfile.workspace = true
+tokio.workspace = true
+tpmd-ipc.workspace = true
+tpmd-proto.workspace = true
+tungstenite.workspace = true
+zstd.workspace = true

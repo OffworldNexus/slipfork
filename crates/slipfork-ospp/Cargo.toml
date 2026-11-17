@@ -17,25 +17,17 @@ sha2.workspace = true
 slipfork-dag = { path = "../slipfork-dag" }
 slipfork-snow = { path = "../slipfork-snow" }
 slipfork-world = { path = "../slipfork-world" }
-tempfile = { workspace = true, optional = true }
 thiserror.workspace = true
 tokio.workspace = true
 tpmd-client.workspace = true
 tpmd-ipc.workspace = true
-tpmd-proto = { workspace = true, optional = true }
 tungstenite.workspace = true
 webpki-roots.workspace = true
 zstd.workspace = true
 
 [dev-dependencies]
+slipfork-ospp-testkit = { path = "../slipfork-ospp-testkit" }
 tempfile.workspace = true
-# The real wire types for the in-process fake `tpmd` daemon. `tpmd-client` re-exports only the
-# consumer subset, so the test-only daemon links the protocol crate at the same pinned revision.
+# `critical_ospp` asserts on the fake daemon's typed reject codes; the daemon itself lives in
+# `slipfork-ospp-testkit` at the same pinned revision.
 tpmd-proto.workspace = true
-
-[features]
-default = []
-# Exposes `tests/support/reference_server.rs` and `tests/support/tpmd_server.rs` as
-# `slipfork_ospp::test_server*` for downstream protected suites (`crates/slipfork`); never enabled
-# by the shipped library.
-test-server = ["dep:tempfile", "dep:tpmd-proto"]

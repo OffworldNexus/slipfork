@@ -9,6 +9,7 @@ members = [
   "crates/slipfork-testkit",
   "crates/slipfork-vcs",
   "crates/slipfork-ospp",
+  "crates/slipfork-ospp-testkit",
   "crates/slipfork",
 ]
 

@@ -2,10 +2,11 @@
 //! (`M2.30`, `ADR-0008` §1–§3, `ADR-0009` §2–§3).
 //!
 //! Every test drives the real `slipfork` + `slipforkd` binaries. The OSPP host is the in-tree
-//! `ospp-v1` reference server exposed by the `test-server` feature (never a production fallback):
-//! pairing, `env.bundle`, `resources.describe`, and `dump.begin..dump.end` all run over a real
-//! loopback WebSocket. `postgres:18` and the pinned static `crun` are real; a missing Docker/crun/jj
-//! dependency fails loudly instead of weakening an assertion.
+//! `ospp-v1` reference server from the unpublished `slipfork-ospp-testkit` crate (a test double,
+//! never a production fallback): pairing, `env.bundle`, `resources.describe`, and
+//! `dump.begin..dump.end` all run over a real loopback WebSocket. `postgres:18` and the pinned
+//! static `crun` are real; a missing Docker/crun/jj dependency fails loudly instead of weakening an
+//! assertion.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -16,10 +17,10 @@ use std::process::{Command, Output, Stdio};
 use slipfork_edge::daemon::ExecTargetRequest;
 use slipfork_edge::{DaemonControl, DaemonControlClient};
 use slipfork_ospp::KeyId;
-use slipfork_ospp::test_server::{
-    DumpRecord, HandleRecord, ReferenceOsppServer, ReferenceServerConfig, S3BucketRecord,
+use slipfork_ospp_testkit::{
+    DumpRecord, FakeTpmd, HandleRecord, ReferenceOsppServer, ReferenceServerConfig, S3BucketRecord,
+    TpmdBehavior,
 };
-use slipfork_ospp::test_server_tpmd::{FakeTpmd, TpmdBehavior};
 
 mod support;
 use support::{
