@@ -102,6 +102,57 @@ fn dirty_fork_snapshot_reproduces_modified_deleted_untracked_view() {
 }
 
 #[test]
+fn fork_succeeds_when_gitignore_ignores_the_state_directories() {
+    // The recommended setup for a repository that uses Git worktrees: `.worktrees/` and
+    // `.slipfork/` are ignored, so `git add` refuses an explicitly named pathspec for them
+    // (`fatal: Pathspec '.worktrees' is in .gitignore`) — the live `M3.26` failure.
+    let mut fixture = support::fixture("acme-ignored-state");
+    fixture.commit_state_gitignore();
+    fixture.make_dirty();
+    let sibling = fixture.worktree("feat-sibling");
+    fs::create_dir_all(sibling.parent().expect("worktrees parent")).expect("create .worktrees");
+    fixture.git_ok(&[
+        "worktree",
+        "add",
+        "-q",
+        &sibling.to_string_lossy(),
+        "-b",
+        "feat-sibling",
+        &fixture.base,
+    ]);
+
+    let workspace = GitWorktreeAdapter::new()
+        .create_workspace(&request(&fixture.repo, "feat-ignored"))
+        .expect("a repository that ignores .worktrees/ and .slipfork/ must still fork");
+    let wip = fixture.rev("refs/slipfork/feat-ignored/wip");
+    assert_eq!(
+        fixture.git_ok(&["show", &format!("{wip}:tracked.txt")]),
+        "v2",
+        "the snapshot still carries the developer's dirty tree"
+    );
+    let snapshot_paths = fixture.git_ok(&["ls-tree", "-r", "--name-only", &wip]);
+    assert_eq!(
+        snapshot_paths.lines().collect::<Vec<_>>(),
+        [".gitignore", "src/lib.txt", "tracked.txt", "untracked.txt"],
+        "the snapshot holds the tracked tree plus the untracked file, never .worktrees/ or .slipfork/"
+    );
+
+    // A second fork of the same repository must work too, now that a sibling checkout exists.
+    let second = GitWorktreeAdapter::new()
+        .create_workspace(&request(&fixture.repo, "feat-second"))
+        .expect("a second fork of the same repository still forks");
+    let second_paths = fixture.git_ok(&["ls-tree", "-r", "--name-only", &second.refs().wip]);
+    assert_eq!(
+        second_paths.lines().collect::<Vec<_>>(),
+        [".gitignore", "src/lib.txt", "tracked.txt", "untracked.txt"],
+        "sibling checkouts stay out of the second snapshot as well"
+    );
+
+    workspace.forget().expect("forget the first fork");
+    second.forget().expect("forget the second fork");
+}
+
+#[test]
 fn index_untouched_by_dirty_fork_snapshot() {
     let fixture = support::dirty_fixture("acme-app");
     let before = fixture.index_stat();

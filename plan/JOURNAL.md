@@ -976,3 +976,11 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-17T14:21 [M3.27] (lead) created (task) CLI critical suites leak one Btrfs world subvolume per test; reap worlds as well as processes
 - 2026-11-17T14:26 [M3.19] (lead) GATE PASSED (attempt 2): 5 live suites green twice on 165.232.86.174 (engine btrfs_live 1, slipfork btrfs_live 1, critical_cli 14, critical_slug 7, critical_osp
 - 2026-11-17T14:26 [M3.19] (lead) status active -> done
+- 2026-11-17T14:26 [M3.2] (lead) PARKED (owner ruling 2026-11-16, binding): STP v1 is 0.2.0. Do NOT activate M3.2 or any M3.2.* child in the 0.1.0 release; its ROADMAP row still says 0.3.0 and 
+- 2026-11-17T14:26 [M3.26] (lead) edited fields
+- 2026-11-17T14:26 [M3.26] (lead) status ready -> active
+- 2026-11-17T14:26 [M3.26] (lead) attempt 1/3 started
+- 2026-11-17T14:26 [M3.26] (lead) base 775776f161844e34cddec1c46cff7f8d3dfbe792
+- 2026-11-17T14:26 [M3.26] (lead) Live-verified owner path (clean env as uid 1000): 'slipfork doctor' exit 0 (filesystem btrfs, subvolume_ioctl ok, unshare_userns ok, netns ok) and 'slipfork lis
+- 2026-11-17T14:39 [M3.26] (lead) Gate passed: one canonical staging path (bare 'git add -A -- .' then 'git rm -r -f --cached --ignore-unmatch .slipfork .worktrees'), dead pathspec constants del
+- 2026-11-17T14:39 [M3.26] (lead) status active -> done

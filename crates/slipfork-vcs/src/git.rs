@@ -28,13 +28,6 @@ use crate::tool_command::{ToolOutput, run_git_checked};
 const STATE_DIRECTORY: &str = ".slipfork";
 /// Directory under [`STATE_DIRECTORY`] holding per-fork scratch indexes.
 const SCRATCH_INDEX_DIRECTORY: &str = "git";
-/// Git pathspec keeping Slipfork's own scratch state out of every fork snapshot.
-const SLIPFORK_PATHSPEC_EXCLUDE: &str = ":(exclude).slipfork";
-/// Git pathspec keeping sibling fork checkouts out of every fork snapshot.
-///
-/// Without it, `.worktrees/<other-fork>` is staged as an embedded-repository gitlink and a second
-/// fork of an otherwise clean tree would synthesize a bogus dirty snapshot.
-const WORKTREES_PATHSPEC_EXCLUDE: &str = ":(exclude).worktrees";
 /// Message of every synthesized dirty-view commit.
 const SNAPSHOT_MESSAGE: &str = "slipfork: fork snapshot";
 /// Commit-ish used when [`WorkspaceRequest::base`] is `None`.
@@ -163,18 +156,7 @@ fn synthesize_snapshot(repo: &RepoRoot, fork: &str, base: &str) -> Result<Snapsh
         &[OsStr::new("read-tree"), OsStr::new(base)],
         Some(&index),
     )?;
-    run_git_checked(
-        worktree,
-        &[
-            OsStr::new("add"),
-            OsStr::new("-A"),
-            OsStr::new("--"),
-            OsStr::new("."),
-            OsStr::new(SLIPFORK_PATHSPEC_EXCLUDE),
-            OsStr::new(WORKTREES_PATHSPEC_EXCLUDE),
-        ],
-        Some(&index),
-    )?;
+    stage_snapshot_index(worktree, &index)?;
     let tree = run_git_checked(worktree, &[OsStr::new("write-tree")], Some(&index))?
         .stdout_trimmed()?
         .to_owned();
@@ -212,6 +194,46 @@ fn synthesize_snapshot(repo: &RepoRoot, fork: &str, base: &str) -> Result<Snapsh
     .stdout_trimmed()?
     .to_owned();
     Ok(Snapshot { commit })
+}
+
+/// Stage the whole requesting worktree into the scratch index, minus Slipfork's own directories.
+///
+/// The `git add` pathspec is a bare `.` on purpose: naming `.slipfork` or `.worktrees` explicitly
+/// makes Git fail closed (`fatal: Pathspec '.worktrees' is in .gitignore`) in the recommended setup
+/// where a repository ignores its own fork checkouts, so Git's own ignore rules decide what is
+/// staged. The two Slipfork-owned directories are dropped from the scratch index afterwards
+/// instead: a sibling `.worktrees/<other-fork>` must never become an embedded-repository gitlink,
+/// and `.slipfork` scratch state must never enter the snapshot. `--cached` never touches the
+/// working tree, `--ignore-unmatch` keeps the drop a no-op when nothing was staged there, and `-f`
+/// is required because the scratch index file itself lives under `.slipfork/git/` and its bytes
+/// change while it is staged.
+fn stage_snapshot_index(worktree: &Path, index: &Path) -> Result<(), VcsError> {
+    run_git_checked(
+        worktree,
+        &[
+            OsStr::new("add"),
+            OsStr::new("-A"),
+            OsStr::new("--"),
+            OsStr::new("."),
+        ],
+        Some(index),
+    )?;
+    run_git_checked(
+        worktree,
+        &[
+            OsStr::new("rm"),
+            OsStr::new("-r"),
+            OsStr::new("-f"),
+            OsStr::new("--cached"),
+            OsStr::new("--ignore-unmatch"),
+            OsStr::new("-q"),
+            OsStr::new("--"),
+            OsStr::new(STATE_DIRECTORY),
+            OsStr::new(WORKTREES_DIRECTORY),
+        ],
+        Some(index),
+    )?;
+    Ok(())
 }
 
 /// Create `.worktrees/<fork>` on `refs/heads/<fork>`, publish `refs/slipfork/<fork>/wip`, and

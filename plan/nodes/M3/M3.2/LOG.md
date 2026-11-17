@@ -35,3 +35,7 @@ OWNER WIRE-PROTOCOL DIRECTIVE: STP v1 frames are CBOR (RFC 8949) on the inherite
 ## 2026-11-16T23:50 [lead]
 
 OWNER REGROUP RULING (2026-11-16, binding): M3.2 (STP v1) and every M3.2.* child are PARKED for 0.2.0. Do not activate any of them in this run. The 0.1.0 release ships Btrfs Worlds (up, fork, list, shell, service, logs, forward, drop, prune, doctor, OSPP v1, .localhost edge) only; the owner tests 0.1.0 hands-on on the DO Btrfs VM first.
+
+## 2026-11-17T14:26 [lead]
+
+PARKED (owner ruling 2026-11-16, binding): STP v1 is 0.2.0. Do NOT activate M3.2 or any M3.2.* child in the 0.1.0 release; its ROADMAP row still says 0.3.0 and must be rewritten by the strategist before 0.2.0 starts.

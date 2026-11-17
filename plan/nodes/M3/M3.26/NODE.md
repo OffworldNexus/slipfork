@@ -2,16 +2,16 @@
 id: M3.26
 title: slipfork fork fails closed when .gitignore ignores .worktrees/.slipfork
 kind: task
-status: ready
+status: done
 owner: implementer
 priority: 2
 depends_on: [M3.19]
-paths: ["crates/slipfork/**"]
-attempts: 0
+paths: ["crates/slipfork-vcs/src/**", "crates/slipfork-vcs/tests/**", "crates/slipfork/tests/**"]
+attempts: 1
 max_attempts: 3
 escalation: none
 created: "2026-11-17T14:21"
-updated: "2026-11-17T14:21"
+updated: "2026-11-17T14:39"
 ---
 
 # Goal

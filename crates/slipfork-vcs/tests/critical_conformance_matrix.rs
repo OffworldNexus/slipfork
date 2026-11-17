@@ -88,6 +88,13 @@ pub fn assert_vcs_workspace_conformance(
         "new"
     );
     assert!(!fixture.object_exists(&format!("{wip}:deleted.txt")));
+    let snapshot_paths = fixture.git_ok(&["ls-tree", "-r", "--name-only", &wip]);
+    assert!(
+        !snapshot_paths
+            .lines()
+            .any(|path| path == ".slipfork" || path.starts_with(".slipfork/")),
+        "Slipfork scratch state may never enter a fork snapshot, got:\n{snapshot_paths}"
+    );
 
     let changes = dirty.changes().expect("dirty changes are readable");
     assert!(!changes.truncated);
@@ -170,6 +177,11 @@ pub fn assert_vcs_workspace_conformance(
             .lines()
             .any(|path| path == ".worktrees" || path.starts_with(".worktrees/")),
         "no sibling checkout may be embedded in the snapshot, got:\n{snapshot_paths}"
+    );
+    let snapshot_tree = fixture.git_ok(&["ls-tree", "-r", &second.refs().wip]);
+    assert!(
+        !snapshot_tree.lines().any(|line| line.starts_with("160000")),
+        "a sibling checkout must never be staged as an embedded-repository gitlink, got:\n{snapshot_tree}"
     );
     assert_eq!(
         second.changes().expect("sibling changes are readable"),
