@@ -20,8 +20,8 @@ use std::path::{Path, PathBuf};
 
 use slipfork_engine::rootfs::OciRootfs;
 use slipfork_engine::{
-    BackingServiceKey, EngineError, ExecEnv, MountMode, ServiceRuntime, ServiceSpec,
-    StateSubdirMount, WorldEngine, WorldMount, WorldSpec,
+    BackingServiceKey, BootLineage, CacheOutcome, EngineError, ExecEnv, MountMode, ServiceKind,
+    ServiceRuntime, ServiceSpec, StateSubdirMount, WorldEngine, WorldMount, WorldSpec,
 };
 use slipfork_world::WorldTarget;
 use support::{PG_DATA, WorldFixture, pg_state};
@@ -50,6 +50,8 @@ fn stub_image(root: &Path, name: &str, digest_byte: char, entries: &[&str]) -> O
         digest: format!("sha256:{}", digest_byte.to_string().repeat(64)),
         rootfs: tree,
         config,
+        cache: CacheOutcome::Hit,
+        millis: None,
     }
 }
 
@@ -94,6 +96,7 @@ fn oci_service(
 ) -> ServiceSpec {
     ServiceSpec {
         id: id.to_owned(),
+        kind: ServiceKind::BackingService,
         runtime: ServiceRuntime::OciContainer {
             image,
             argv: vec!["sleep".to_owned(), "infinity".to_owned()],
@@ -157,6 +160,7 @@ fn container_requests_fail_closed_before_crun_is_executed() {
             mounts: Vec::new(),
             base_env: support::world_env(&fixture.home),
             local_ingress: None,
+            boot: BootLineage::default(),
         })
         .expect("clone world without backing images");
     let missing = oci_service("pg", postgres_image(), pg_state(), Vec::new());
@@ -187,6 +191,7 @@ fn container_requests_fail_closed_before_crun_is_executed() {
             mounts: Vec::new(),
             base_env: support::world_env(&fixture.home),
             local_ingress: None,
+            boot: BootLineage::default(),
         })
         .expect("clone world with a materialized image rootfs");
     fs::remove_dir_all(&pg_rootfs).expect("remove the materialized image rootfs");
@@ -376,6 +381,7 @@ fn service_handles_and_logs_are_typed_and_never_fabricated() {
             &world,
             &ServiceSpec {
                 id: "app".to_owned(),
+                kind: ServiceKind::Component,
                 runtime: ServiceRuntime::WorldProcess {
                     argv: vec![
                         "sh".to_owned(),

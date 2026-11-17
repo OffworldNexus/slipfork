@@ -13,25 +13,29 @@
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::Arc;
 
 use slipfork_engine::rootfs::{BackingServiceKey, BaseImageError, OciImageStore, OciRootfs};
+use slipfork_engine::{CacheOutcome, MonotonicClock, elapsed_millis};
 
 /// File recording the tag -> digest resolution so later boots use the same bytes (`tags.json`).
 const TAGS_FILE: &str = "tags.json";
 
 /// Docker-CLI-backed [`OciImageStore`] rooted at one explicit Slipfork state directory.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct DockerOciImageStore {
     state_dir: PathBuf,
     docker: PathBuf,
+    clock: Arc<dyn MonotonicClock>,
 }
 
 impl DockerOciImageStore {
-    /// Root the content-addressed cache under `<state_dir>/cache/oci`.
-    pub fn new(state_dir: impl Into<PathBuf>) -> Self {
+    /// Root the content-addressed cache under `<state_dir>/cache/oci` over the one injected clock.
+    pub fn new(state_dir: impl Into<PathBuf>, clock: Arc<dyn MonotonicClock>) -> Self {
         Self {
             state_dir: state_dir.into(),
             docker: PathBuf::from("docker"),
+            clock,
         }
     }
 
@@ -144,13 +148,25 @@ impl OciImageStore for DockerOciImageStore {
             message: error.to_string(),
         })?;
         if !rootfs.is_dir() || !config.is_file() {
+            let started = self.clock.now();
             self.export(&reference, &digest, &rootfs, &config)?;
+            self.record_tag(&reference, &digest);
+            return Ok(OciRootfs {
+                digest,
+                rootfs,
+                config,
+                cache: CacheOutcome::Miss,
+                millis: Some(elapsed_millis(started, self.clock.now())),
+            });
         }
         self.record_tag(&reference, &digest);
+        // The cached tree was reused: no export ran, so no duration is recorded (`None`, never `0`).
         Ok(OciRootfs {
             digest,
             rootfs,
             config,
+            cache: CacheOutcome::Hit,
+            millis: None,
         })
     }
 }

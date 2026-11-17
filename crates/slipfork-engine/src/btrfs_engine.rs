@@ -41,8 +41,9 @@ use std::time::{Duration, Instant};
 
 use slipfork_world::WorldTarget;
 
-use crate::btrfs::{KernelBtrfsDriver, SubvolumeDriver};
+use crate::btrfs::SubvolumeDriver;
 use crate::child_env;
+use crate::clock::MonotonicClock;
 use crate::linux_cow::{self, ProcessSignal};
 use crate::oci::{self, ContainerBundle, ContainerMount};
 use crate::service::{
@@ -57,9 +58,10 @@ use crate::world_init::{
     synthesize_identity_files, unix_socket_path_fits, world_init_mount,
 };
 use crate::{
-    BackingServiceKey, EngineError, ExecEnv, ExecOutput, MountMode, ServiceHandle, ServiceRuntime,
-    ServiceSpec, ServiceState, SnapshotId, StateSubdirMount, StreamChunk, WorldEngine,
-    WorldEntryCommand, WorldHandle, WorldMount, WorldRootfs, WorldSpec, WorldStatus, target_slug,
+    BackingServiceKey, EngineError, ExecEnv, ExecOutput, MountMode, RootfsLineage, ServiceHandle,
+    ServiceImageLineage, ServiceKind, ServiceRuntime, ServiceSpec, ServiceState, SnapshotId,
+    StateSubdirMount, StreamChunk, WorldEngine, WorldEntryCommand, WorldHandle, WorldLineage,
+    WorldMount, WorldRootfs, WorldServiceInfo, WorldSpec, WorldStatus, target_slug,
     userns_remediation_hint,
 };
 
@@ -99,6 +101,7 @@ pub struct BtrfsEngine {
     host_gid: u32,
     world_init_bin: PathBuf,
     driver: Arc<dyn SubvolumeDriver>,
+    clock: Arc<dyn MonotonicClock>,
     shared: Arc<Shared>,
 }
 
@@ -195,6 +198,8 @@ struct WorldRecord {
     /// [`WorldEngine::destroy_world`] re-enters where the previous attempt stopped.
     destroying: bool,
     services: BTreeMap<String, ServiceRecord>,
+    /// This world's own boot lineage, recorded when [`WorldEngine::clone_world`] materialized it.
+    lineage: WorldLineage,
 }
 
 impl WorldRecord {
@@ -204,15 +209,24 @@ impl WorldRecord {
     }
 }
 
+/// Which spawn path produced a supervised service — the engine's private teardown/readiness
+/// discriminator. The wire-facing classification is [`ServiceKind`] (component vs backing service).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ServiceKind {
+enum RuntimeKind {
     WorldProcess,
     OciContainer,
 }
 
 #[derive(Debug)]
 struct ServiceRecord {
+    /// Which spawn path produced it (teardown/readiness discriminator).
+    runtime_kind: RuntimeKind,
+    /// The caller-declared row classification (`ServiceSpec::kind`).
     kind: ServiceKind,
+    /// In-world serving/readiness port the caller asked for, recorded at spawn.
+    port: Option<u16>,
+    /// Injected-clock instant the service was spawned; `uptime_secs` is measured from it.
+    started_at: Instant,
     log: ServiceLogs,
     state: Arc<AtomicU8>,
     process: Arc<Mutex<ServiceProcess>>,
@@ -228,7 +242,7 @@ struct ServiceProcess {
 /// One service's teardown handles, taken out of the world record before `destroy_world` releases
 /// the world's processes and storage.
 struct ServiceTeardown {
-    kind: ServiceKind,
+    runtime_kind: RuntimeKind,
     id: String,
     state: Arc<AtomicU8>,
     log: ServiceLogs,
@@ -238,7 +252,7 @@ struct ServiceTeardown {
 impl ServiceTeardown {
     fn from_record(id: &str, service: &ServiceRecord) -> Self {
         Self {
-            kind: service.kind,
+            runtime_kind: service.runtime_kind,
             id: id.to_owned(),
             state: Arc::clone(&service.state),
             log: service.log.clone(),
@@ -276,37 +290,24 @@ struct ContainerProcess {
 }
 
 impl BtrfsEngine {
-    /// Construct the production engine over [`KernelBtrfsDriver`], storing snapshots, world
-    /// subvolumes, and control directories under `state_dir`.
+    /// Construct the engine over an injected [`SubvolumeDriver`] and [`MonotonicClock`] — the two
+    /// dependency-injection seams for the CoW substrate (`ADR-0010` §5) and for every measured
+    /// fact.
     ///
-    /// The composition root creates `<state_dir>` first; the driver then fails closed with
-    /// [`EngineError::BtrfsRequired`] when its mount is not Btrfs (`ADR-0010` §4).
-    pub fn new(
-        state_dir: impl Into<PathBuf>,
-        host_uid: u32,
-        host_gid: u32,
-        world_init_bin: impl Into<PathBuf>,
-    ) -> Result<Self, EngineError> {
-        Self::with_driver(
-            state_dir,
-            host_uid,
-            host_gid,
-            world_init_bin,
-            Arc::new(KernelBtrfsDriver::new()),
-        )
-    }
-
-    /// Construct the engine over an injected [`SubvolumeDriver`] — the only dependency-injection
-    /// seam for the CoW substrate (`ADR-0010` §5).
-    ///
-    /// Construction probes `statfs(<state_dir>)` through the driver and fails closed **before**
-    /// creating a snapshot, world subvolume, or control directory.
-    pub fn with_driver(
+    /// This is the **only** constructor: the clock is required, so a composition root that forgets
+    /// to wire the one clock cannot compile into a second time source. `slipforkd` injects the one
+    /// clock instance it also hands to the rootfs builder, the OCI image store, and its own
+    /// base-seed measurement, so `uptime_secs` and every lineage `millis` are stamped from a single
+    /// time source; tests inject a deterministic fake. Construction probes `statfs(<state_dir>)`
+    /// through the driver and fails closed **before** creating a snapshot, world subvolume, or
+    /// control directory.
+    pub fn with_driver_and_clock(
         state_dir: impl Into<PathBuf>,
         host_uid: u32,
         host_gid: u32,
         world_init_bin: impl Into<PathBuf>,
         driver: Arc<dyn SubvolumeDriver>,
+        clock: Arc<dyn MonotonicClock>,
     ) -> Result<Self, EngineError> {
         let state_dir = state_dir.into();
         let world_init_bin = world_init_bin.into();
@@ -329,6 +330,7 @@ impl BtrfsEngine {
             host_gid,
             world_init_bin,
             driver,
+            clock,
             shared: Arc::new(Shared::default()),
         })
     }
@@ -1076,8 +1078,11 @@ impl BtrfsEngine {
         services: &[ServiceTeardown],
         grace: Duration,
     ) -> Result<(), EngineError> {
-        for kind in [ServiceKind::WorldProcess, ServiceKind::OciContainer] {
-            for service in services.iter().filter(|service| service.kind == kind) {
+        for kind in [RuntimeKind::WorldProcess, RuntimeKind::OciContainer] {
+            for service in services
+                .iter()
+                .filter(|service| service.runtime_kind == kind)
+            {
                 self.stop_service_process(
                     &service.id,
                     &service.state,
@@ -1403,6 +1408,11 @@ impl WorldEngine for BtrfsEngine {
         "btrfs"
     }
 
+    fn snapshot_exists(&self, id: &SnapshotId) -> Result<bool, EngineError> {
+        let name = id.validate()?;
+        Ok(self.snapshots_dir().join(name).is_dir())
+    }
+
     fn create_snapshot(&self, source_dir: &Path, id: &SnapshotId) -> Result<(), EngineError> {
         let name = id.validate()?;
         let snapshots = self.snapshots_dir();
@@ -1595,6 +1605,7 @@ impl WorldEngine for BtrfsEngine {
                 status: WorldStatus::Live,
                 destroying: false,
                 services: BTreeMap::new(),
+                lineage: boot_lineage(spec),
             },
         );
         Ok(world)
@@ -1620,9 +1631,9 @@ impl WorldEngine for BtrfsEngine {
                 }
             }
         }
-        let kind = match spec.runtime {
-            ServiceRuntime::WorldProcess { .. } => ServiceKind::WorldProcess,
-            ServiceRuntime::OciContainer { .. } => ServiceKind::OciContainer,
+        let runtime_kind = match spec.runtime {
+            ServiceRuntime::WorldProcess { .. } => RuntimeKind::WorldProcess,
+            ServiceRuntime::OciContainer { .. } => RuntimeKind::OciContainer,
         };
 
         let (init_pid, ctl_dir, state_dir, rootfs, mounts, env, log, state, process) = {
@@ -1651,7 +1662,10 @@ impl WorldEngine for BtrfsEngine {
             record.services.insert(
                 spec.id.clone(),
                 ServiceRecord {
-                    kind,
+                    runtime_kind,
+                    kind: spec.kind,
+                    port: spec.readiness_port,
+                    started_at: self.clock.now(),
                     log: log.clone(),
                     state: Arc::clone(&state),
                     process: Arc::clone(&process),
@@ -1693,7 +1707,7 @@ impl WorldEngine for BtrfsEngine {
         spawn_service_watcher(Arc::clone(&process), Arc::clone(&state), log.clone());
 
         if let Some(port) = spec.readiness_port {
-            let timeout = if kind == ServiceKind::OciContainer {
+            let timeout = if runtime_kind == RuntimeKind::OciContainer {
                 OCI_SERVICE_READY_TIMEOUT
             } else {
                 SERVICE_READY_TIMEOUT
@@ -1758,6 +1772,50 @@ impl WorldEngine for BtrfsEngine {
                 world: format!("{world:?}"),
                 id: id.to_owned(),
             })
+    }
+
+    fn world_processes(&self, world: &WorldHandle) -> Result<Vec<WorldServiceInfo>, EngineError> {
+        let mut worlds = self.lock()?;
+        let record = self.live_record(&mut worlds, world)?;
+        let now = self.clock.now();
+        let mut rows = Vec::with_capacity(record.services.len());
+        for (id, service) in &record.services {
+            let state = ServiceState::from_bits(service.state.load(Ordering::Relaxed));
+            let running = state == ServiceState::Running;
+            // A stopped or self-exited service keeps its row but reports no live facts: `None`
+            // renders `-`, never a stale pid or an uptime that keeps growing.
+            let pid = if running {
+                let process = service.process.lock().map_err(|_| {
+                    // A poisoned supervision record cannot say whether the row is live: fail
+                    // closed instead of reporting `Running` with a missing pid.
+                    EngineError::Execution(format!(
+                        "service '{id}' supervision record in world {world:?} is poisoned"
+                    ))
+                })?;
+                match service.runtime_kind {
+                    RuntimeKind::WorldProcess => process.inner.as_ref().map(|inner| inner.pid),
+                    RuntimeKind::OciContainer => process.supervisor.as_ref().map(Child::id),
+                }
+            } else {
+                None
+            };
+            rows.push(WorldServiceInfo {
+                id: id.clone(),
+                kind: service.kind,
+                state,
+                pid,
+                port: running.then_some(service.port).flatten(),
+                uptime_secs: running
+                    .then(|| now.saturating_duration_since(service.started_at).as_secs()),
+            });
+        }
+        Ok(rows)
+    }
+
+    fn world_lineage(&self, world: &WorldHandle) -> Result<WorldLineage, EngineError> {
+        let mut worlds = self.lock()?;
+        let record = self.live_record(&mut worlds, world)?;
+        Ok(record.lineage.clone())
     }
 
     fn exec_in_service(
@@ -2006,6 +2064,32 @@ fn copy_tree(from: &Path, to: &Path) -> Result<(), EngineError> {
     Ok(())
 }
 
+/// The lineage facts a fresh clone records, taken verbatim from the spec it booted from.
+///
+/// Rootfs/service facts are the materialized trees' own cache outcome and measured `millis`; the
+/// base/seed facts are the seeder's measurements. Nothing is estimated here.
+fn boot_lineage(spec: &WorldSpec) -> WorldLineage {
+    WorldLineage {
+        rootfs: Some(RootfsLineage {
+            digest: spec.rootfs.digest.hex().to_owned(),
+            cache: spec.rootfs.cache,
+            millis: spec.rootfs.millis,
+        }),
+        services: spec
+            .rootfs
+            .service_images
+            .iter()
+            .map(|(image, oci)| ServiceImageLineage {
+                id: image.to_string(),
+                cache: oci.cache,
+                millis: oci.millis,
+            })
+            .collect(),
+        seed: spec.boot.seed.clone(),
+        base: spec.boot.base.clone(),
+    }
+}
+
 fn io_error(path: &Path, err: &std::io::Error) -> EngineError {
     EngineError::Io {
         path: path.display().to_string(),
@@ -2045,9 +2129,13 @@ mod tests {
     use crate::btrfs::{BTRFS_MOUNT_HINT, ProbeFacts};
     use crate::rootfs::{ElfAbi, ImageContractMetadata, LibcFamily, OsRelease, RootfsDigest};
     use crate::service::ServiceLogs;
-    use crate::{BackingServiceKey, ExecEnv, ServiceSpec, StateSubdirMount, WorldRootfs};
+    use crate::{
+        BackingServiceKey, BaseLineage, BootLineage, CacheOutcome, ExecEnv, SeedLineage,
+        ServiceSpec, StateSubdirMount, WorldRootfs,
+    };
     use std::collections::BTreeMap;
     use std::sync::Mutex;
+    use std::time::{Duration, Instant, SystemTime};
 
     const XFS_SUPER_MAGIC: i64 = 0x5846_5342;
 
@@ -2280,16 +2368,65 @@ mod tests {
                 exposed_ports: std::collections::BTreeSet::new(),
             },
             host_caches: Vec::new(),
+            cache: CacheOutcome::Hit,
+            millis: None,
         }
     }
 
     fn engine_at(state_dir: &Path, driver: Arc<RecordingDriver>) -> BtrfsEngine {
-        BtrfsEngine::with_driver(
+        BtrfsEngine::with_driver_and_clock(
             state_dir,
             1000,
             1000,
             state_dir.join("slipfork-world-init"),
             driver,
+            Arc::new(crate::SystemClock),
+        )
+        .expect("engine construction")
+    }
+
+    /// A deterministic [`MonotonicClock`]: a fixed base instant advanced only by the test.
+    #[derive(Clone)]
+    struct FakeClock {
+        base: Instant,
+        secs: Arc<AtomicU64>,
+    }
+
+    impl FakeClock {
+        fn new() -> Self {
+            Self {
+                base: Instant::now(),
+                secs: Arc::new(AtomicU64::new(0)),
+            }
+        }
+
+        fn advance(&self, secs: u64) {
+            self.secs.fetch_add(secs, Ordering::SeqCst);
+        }
+    }
+
+    impl MonotonicClock for FakeClock {
+        fn now(&self) -> Instant {
+            self.base + Duration::from_secs(self.secs.load(Ordering::SeqCst))
+        }
+
+        fn now_wall(&self) -> SystemTime {
+            SystemTime::UNIX_EPOCH + Duration::from_secs(self.secs.load(Ordering::SeqCst))
+        }
+    }
+
+    fn engine_with_clock(
+        state_dir: &Path,
+        driver: Arc<RecordingDriver>,
+        clock: Arc<dyn MonotonicClock>,
+    ) -> BtrfsEngine {
+        BtrfsEngine::with_driver_and_clock(
+            state_dir,
+            1000,
+            1000,
+            state_dir.join("slipfork-world-init"),
+            driver,
+            clock,
         )
         .expect("engine construction")
     }
@@ -2325,6 +2462,15 @@ mod tests {
             status: WorldStatus::Live,
             destroying: false,
             services: BTreeMap::new(),
+            lineage: boot_lineage(&WorldSpec {
+                target: WorldTarget::Canonical,
+                rootfs: rootfs(engine),
+                snapshot: SnapshotId("base".to_owned()),
+                mounts: Vec::new(),
+                base_env: ExecEnv::world_scoped(engine.state_dir.join("homes/test")),
+                local_ingress: None,
+                boot: BootLineage::default(),
+            }),
         }
     }
 
@@ -2340,7 +2486,11 @@ mod tests {
     }
 
     /// A supervisor that exits as soon as its in-world child is signalled, plus that child's pid.
-    fn running_world_process(record: &mut WorldRecord, id: &str) -> (Arc<AtomicU8>, u32) {
+    fn running_world_process(
+        record: &mut WorldRecord,
+        id: &str,
+        started_at: Instant,
+    ) -> (Arc<AtomicU8>, u32) {
         let supervisor = Command::new("sh")
             .args(["-c", "sleep 30 & wait"])
             .spawn()
@@ -2358,7 +2508,10 @@ mod tests {
         record.services.insert(
             id.to_owned(),
             ServiceRecord {
-                kind: ServiceKind::WorldProcess,
+                runtime_kind: RuntimeKind::WorldProcess,
+                kind: ServiceKind::Component,
+                port: None,
+                started_at,
                 log,
                 state: Arc::clone(&state),
                 process,
@@ -2367,17 +2520,254 @@ mod tests {
         (state, inner_pid)
     }
 
+    fn stopped_record(kind: ServiceKind, started_at: Instant) -> ServiceRecord {
+        ServiceRecord {
+            runtime_kind: RuntimeKind::WorldProcess,
+            kind,
+            port: Some(5432),
+            started_at,
+            log: ServiceLogs::new(),
+            state: Arc::new(AtomicU8::new(ServiceState::Stopped.to_bits())),
+            process: Arc::new(Mutex::new(ServiceProcess::default())),
+        }
+    }
+
+    #[test]
+    fn world_processes_keeps_stopped_rows_and_stamps_uptime_from_the_injected_clock() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let state_dir = tmp.path().join("state");
+        let driver = Arc::new(RecordingDriver::btrfs());
+        let clock = Arc::new(FakeClock::new());
+        let engine = engine_with_clock(&state_dir, driver, clock.clone());
+
+        let mut record = world_record(&engine, "canonical-1", None);
+        let now = clock.now();
+        record.services.insert(
+            "pg".to_owned(),
+            stopped_record(ServiceKind::BackingService, now),
+        );
+        // Two running services started 5s apart: uptime is measured from each own `started_at`.
+        let (_, _) = running_world_process(&mut record, "api", now);
+        clock.advance(5);
+        let (_, _) = running_world_process(&mut record, "worker", now + Duration::from_secs(5));
+        clock.advance(5);
+        let handle = insert(&engine, record);
+
+        let rows = engine.world_processes(&handle).expect("process rows");
+        let ids: Vec<&str> = rows.iter().map(|row| row.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            ["api", "pg", "worker"],
+            "rows are ordered by service id"
+        );
+
+        let pg = rows.iter().find(|row| row.id == "pg").expect("pg row");
+        assert_eq!(pg.kind, ServiceKind::BackingService);
+        assert_eq!(pg.state, ServiceState::Stopped);
+        assert_eq!(pg.pid, None, "a stopped service reports no live pid");
+        assert_eq!(pg.uptime_secs, None, "a stopped service has no uptime");
+        assert_eq!(pg.port, None, "a stopped service serves no port");
+
+        let api = rows.iter().find(|row| row.id == "api").expect("api row");
+        let worker = rows
+            .iter()
+            .find(|row| row.id == "worker")
+            .expect("worker row");
+        assert_eq!(api.kind, ServiceKind::Component);
+        assert_eq!(api.state, ServiceState::Running);
+        assert!(
+            api.pid.is_some(),
+            "a running component reports its in-world pid"
+        );
+        assert_eq!(api.uptime_secs, Some(10));
+        assert_eq!(worker.uptime_secs, Some(5));
+
+        // A sibling world reports only its own row set: one world never shows another's rows.
+        let mut sibling = world_record(&engine, "fork-a-2", None);
+        running_world_process(&mut sibling, "other", Instant::now());
+        let sibling_world = insert(&engine, sibling);
+        let sibling_rows = engine
+            .world_processes(&sibling_world)
+            .expect("sibling rows");
+        assert_eq!(
+            sibling_rows
+                .iter()
+                .map(|row| row.id.as_str())
+                .collect::<Vec<_>>(),
+            ["other"]
+        );
+
+        // A foreign engine tag is gone, exactly like a destroyed handle.
+        let foreign = engine.mint_world_handle(999);
+        let err = engine
+            .world_processes(&foreign)
+            .expect_err("an unknown handle must fail closed");
+        assert!(matches!(err, EngineError::WorldGone { .. }), "got {err:?}");
+
+        engine.destroy_world(handle.clone()).expect("destroy");
+        let err = engine
+            .world_processes(&handle)
+            .expect_err("a destroyed world must fail closed");
+        assert!(matches!(err, EngineError::WorldGone { .. }), "got {err:?}");
+    }
+
+    /// The lineage a clone records comes only from the spec it booted from: cache outcomes are the
+    /// materialized trees' own verdicts, measured durations are present only when one was measured,
+    /// and two worlds never share a fact.
+    #[test]
+    fn world_lineage_records_each_world_own_boot_facts() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let state_dir = tmp.path().join("state");
+        let driver = Arc::new(RecordingDriver::btrfs());
+        let clock = Arc::new(FakeClock::new());
+        let engine = engine_with_clock(&state_dir, driver, clock);
+
+        let rebuilt = engine_spec(
+            &engine,
+            "rebuilt",
+            (CacheOutcome::Miss, Some(2104)),
+            (CacheOutcome::Miss, Some(55)),
+            BootLineage {
+                base: Some(BaseLineage {
+                    key: "a".repeat(64),
+                    millis: Some(10),
+                }),
+                seed: Some(SeedLineage {
+                    digest: Some("b".repeat(64)),
+                    rebuilt: Some(true),
+                    millis: Some(2104),
+                }),
+            },
+        );
+        let cached = engine_spec(
+            &engine,
+            "cached",
+            (CacheOutcome::Hit, None),
+            (CacheOutcome::Hit, None),
+            BootLineage {
+                base: Some(BaseLineage {
+                    key: "c".repeat(64),
+                    millis: None,
+                }),
+                seed: None,
+            },
+        );
+
+        let mut rebuilt_record = world_record(&engine, "canonical-1", None);
+        rebuilt_record.lineage = boot_lineage(&rebuilt);
+        let rebuilt_world = insert(&engine, rebuilt_record);
+
+        let mut cached_record = world_record(&engine, "fork-a-2", None);
+        cached_record.lineage = boot_lineage(&cached);
+        let cached_world = insert(&engine, cached_record);
+
+        let first = engine.world_lineage(&rebuilt_world).expect("lineage");
+        assert_eq!(
+            first.rootfs,
+            Some(RootfsLineage {
+                digest: rebuilt.rootfs.digest.hex().to_owned(),
+                cache: CacheOutcome::Miss,
+                millis: Some(2104),
+            })
+        );
+        // A miss is a measured fact (`Some`); a hit ran no build and records `None`, never `0`.
+        let second = engine.world_lineage(&cached_world).expect("lineage");
+        let second_rootfs = second.rootfs.as_ref().expect("rootfs facts");
+        assert_eq!(second_rootfs.cache, CacheOutcome::Hit);
+        assert_eq!(second_rootfs.millis, None);
+        assert_eq!(
+            second_rootfs.digest,
+            cached.rootfs.digest.hex().to_owned(),
+            "each world reports its own rootfs digest"
+        );
+
+        // The backing-service row is this world's own image verdict, not the sibling's.
+        assert_eq!(
+            first.services,
+            vec![ServiceImageLineage {
+                id: "postgres:18".to_owned(),
+                cache: CacheOutcome::Miss,
+                millis: Some(55),
+            }]
+        );
+        assert_eq!(
+            second.services,
+            vec![ServiceImageLineage {
+                id: "postgres:18".to_owned(),
+                cache: CacheOutcome::Hit,
+                millis: None,
+            }]
+        );
+        assert_eq!(first.base.as_ref().map(|base| base.millis), Some(Some(10)));
+        assert_eq!(second.base.as_ref().map(|base| base.millis), Some(None));
+        assert_ne!(first.base, second.base, "no fact is shared between worlds");
+        assert_eq!(
+            first.seed.as_ref().and_then(|seed| seed.rebuilt),
+            Some(true)
+        );
+        assert_eq!(
+            second.seed, None,
+            "a world that recorded no seed reports none"
+        );
+
+        // A destroyed handle is gone, never a zeroed lineage.
+        engine
+            .destroy_world(rebuilt_world.clone())
+            .expect("destroy");
+        let err = engine
+            .world_lineage(&rebuilt_world)
+            .expect_err("a destroyed world must fail closed");
+        assert!(matches!(err, EngineError::WorldGone { .. }), "got {err:?}");
+    }
+
+    /// A spec carrying the materialized rootfs facts a boot would have measured.
+    fn engine_spec(
+        engine: &BtrfsEngine,
+        label: &str,
+        rootfs_facts: (CacheOutcome, Option<u64>),
+        service_facts: (CacheOutcome, Option<u64>),
+        boot: BootLineage,
+    ) -> WorldSpec {
+        let (rootfs_cache, rootfs_millis) = rootfs_facts;
+        let (service_cache, service_millis) = service_facts;
+        let mut rootfs = rootfs(engine);
+        rootfs.cache = rootfs_cache;
+        rootfs.millis = rootfs_millis;
+        rootfs.service_images.insert(
+            BackingServiceKey::Postgres {
+                version: "18".to_owned(),
+            },
+            crate::OciRootfs {
+                digest: format!("sha256:{}", "d".repeat(64)),
+                rootfs: engine.state_dir.join("cache/oci/probe/rootfs"),
+                config: engine.state_dir.join("cache/oci/probe/config.json"),
+                cache: service_cache,
+                millis: service_millis,
+            },
+        );
+        WorldSpec {
+            target: WorldTarget::UserFork(label.to_owned()),
+            rootfs,
+            snapshot: SnapshotId("base".to_owned()),
+            mounts: Vec::new(),
+            base_env: ExecEnv::world_scoped(engine.state_dir.join("homes/test")),
+            local_ingress: None,
+            boot,
+        }
+    }
+
     #[test]
     fn construction_fails_closed_off_btrfs_before_creating_anything() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let state_dir = tmp.path().join("state");
         let driver = Arc::new(RecordingDriver::non_btrfs());
-        match BtrfsEngine::with_driver(
+        match BtrfsEngine::with_driver_and_clock(
             &state_dir,
             1000,
             1000,
             tmp.path().join("slipfork-world-init"),
             Arc::clone(&driver) as Arc<dyn SubvolumeDriver>,
+            Arc::new(crate::SystemClock),
         ) {
             Err(EngineError::BtrfsRequired {
                 path,
@@ -2409,12 +2799,13 @@ mod tests {
     #[test]
     fn relative_paths_are_rejected_without_touching_the_cwd() {
         let driver = Arc::new(RecordingDriver::btrfs());
-        match BtrfsEngine::with_driver(
+        match BtrfsEngine::with_driver_and_clock(
             Path::new("state"),
             1000,
             1000,
             Path::new("/usr/libexec/slipfork-world-init"),
             Arc::clone(&driver) as Arc<dyn SubvolumeDriver>,
+            Arc::new(crate::SystemClock),
         ) {
             Err(EngineError::Io { path, message }) => {
                 assert_eq!(path, "state");
@@ -2517,7 +2908,7 @@ mod tests {
         let driver = Arc::new(RecordingDriver::btrfs());
         let engine = engine_at(tmp.path(), Arc::clone(&driver) as Arc<RecordingDriver>);
         let mut record = world_record(&engine, "slot-0-1", None);
-        let (state, inner_pid) = running_world_process(&mut record, "api");
+        let (state, inner_pid) = running_world_process(&mut record, "api", Instant::now());
         let world = insert(&engine, record);
         driver.watch(format!("/proc/{inner_pid}"));
 
@@ -2581,7 +2972,7 @@ mod tests {
         let init_pid =
             wait_for_inner_pid(launcher.id(), Duration::from_secs(5)).expect("world init pid");
         let mut record = world_record(&engine, "slot-0-2", Some((launcher, init_pid)));
-        let (state, _inner) = running_world_process(&mut record, "api");
+        let (state, _inner) = running_world_process(&mut record, "api", Instant::now());
         let ctl_dir = record.ctl_dir.clone();
         fs::write(ctl_dir.join(WORLD_INIT_CONFIG_FILE), b"{}").expect("control marker");
         let world = insert(&engine, record);
@@ -2731,6 +3122,7 @@ mod tests {
             mounts: Vec::new(),
             base_env: ExecEnv::world_scoped(tmp.path().join("home")),
             local_ingress: None,
+            boot: BootLineage::default(),
         };
 
         match engine.clone_world(&spec) {
@@ -2769,6 +3161,7 @@ mod tests {
             mounts: Vec::new(),
             base_env: ExecEnv::world_scoped(tmp.path().join("home")),
             local_ingress: None,
+            boot: BootLineage::default(),
         };
 
         engine
@@ -2817,6 +3210,7 @@ mod tests {
             mounts: Vec::new(),
             base_env: ExecEnv::world_scoped(tmp.path().join("home")),
             local_ingress: None,
+            boot: BootLineage::default(),
         };
         driver.clear_journal();
 
@@ -2866,7 +3260,7 @@ mod tests {
         let init_pid =
             wait_for_inner_pid(launcher.id(), Duration::from_secs(5)).expect("world init pid");
         let mut record = world_record(&engine, "slot-0-7", Some((launcher, init_pid)));
-        let (state, _inner) = running_world_process(&mut record, "api");
+        let (state, _inner) = running_world_process(&mut record, "api", Instant::now());
         let ctl_dir = record.ctl_dir.clone();
         let world_dir = record.world_dir.clone();
         fs::write(ctl_dir.join(WORLD_INIT_CONFIG_FILE), b"{}").expect("control marker");
@@ -2984,7 +3378,7 @@ mod tests {
         );
 
         let mut record = world_record(&engine, "slot-0-8", None);
-        let _ = running_world_process(&mut record, "api");
+        let _ = running_world_process(&mut record, "api", Instant::now());
         let world = insert(&engine, record);
         match engine.freeze_world(&world, &SnapshotId("taken".to_owned())) {
             Err(EngineError::SnapshotExists { id }) => assert_eq!(id, "taken"),
@@ -3018,6 +3412,7 @@ mod tests {
         let world = insert(&engine, world_record(&engine, "slot-0-3", None));
         let spec = ServiceSpec {
             id: "api".to_owned(),
+            kind: ServiceKind::BackingService,
             runtime: ServiceRuntime::OciContainer {
                 image: BackingServiceKey::Postgres {
                     version: "18".to_owned(),
@@ -3103,7 +3498,7 @@ mod tests {
         let init_pid =
             wait_for_inner_pid(launcher.id(), Duration::from_secs(5)).expect("world init pid");
         let mut record = world_record(&engine, "slot-0-stop-retry", Some((launcher, init_pid)));
-        let (state, inner_pid) = running_world_process(&mut record, "api");
+        let (state, inner_pid) = running_world_process(&mut record, "api", Instant::now());
         let log = record
             .services
             .get("api")
@@ -3255,7 +3650,7 @@ mod tests {
         let ctl_dir = record.ctl_dir.clone();
         let world_dir = record.world_dir.clone();
         fs::write(ctl_dir.join(WORLD_INIT_CONFIG_FILE), b"{}").expect("control marker");
-        let (_state, service_pid) = running_world_process(&mut record, "api");
+        let (_state, service_pid) = running_world_process(&mut record, "api", Instant::now());
         let service_identity = ProcessIdentity::capture(service_pid).expect("service identity");
         let _world = insert(&engine, record);
         driver.clear_journal();

@@ -19,6 +19,7 @@ use slipfork_engine::rootfs::{
     WorldRootfs, WorldRootfsRequest, conformance::assert_world_rootfs_conformance,
 };
 use slipfork_engine::rootfs::{CRUN_GUEST_PATH, WORLD_INIT_GUEST_PATH};
+use slipfork_engine::{CacheOutcome, SystemClock};
 use tempfile::TempDir;
 
 const ALPINE_OS_RELEASE: &str = "ID=alpine\nVERSION_ID=3.21\n";
@@ -67,6 +68,7 @@ fn builder(template: &Path) -> (DockerfileStageBuilder, Arc<AtomicUsize>) {
         Arc::new(FixedHasher),
         Arc::new(NoOciStore),
         Arc::new(ElfAbiProbe),
+        Arc::new(SystemClock),
     );
     (builder, calls)
 }
@@ -394,6 +396,9 @@ impl BaseImageBuilder for FakeBaseImageBuilder {
                     digest,
                     rootfs: request.state_dir.join("fake/oci/rootfs"),
                     config: request.state_dir.join("fake/oci/config.json"),
+                    // The fake store always serves its own tree; it measures no export duration.
+                    cache: CacheOutcome::Hit,
+                    millis: None,
                 },
             );
         }
@@ -422,6 +427,9 @@ impl BaseImageBuilder for FakeBaseImageBuilder {
                 exposed_ports: [8000].into_iter().collect(),
             },
             host_caches: request.host_caches.mounts.clone(),
+            // This fixture installs its tree directly and reports the outcome it produced.
+            cache: CacheOutcome::Miss,
+            millis: None,
         })
     }
 }

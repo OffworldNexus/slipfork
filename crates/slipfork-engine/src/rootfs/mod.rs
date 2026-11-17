@@ -179,6 +179,10 @@ pub struct OciRootfs {
     pub rootfs: PathBuf,
     /// Upstream image `config.json` (`ENV`/`PATH` metadata).
     pub config: PathBuf,
+    /// Cache outcome the [`OciImageStore`] observed for this digest.
+    pub cache: crate::CacheOutcome,
+    /// Measured export/extract milliseconds (`None` when the image was already cached).
+    pub millis: Option<u64>,
 }
 
 /// Stable identity of one backing service requested by `snow.yml` `resources:`.
@@ -382,6 +386,10 @@ pub struct WorldRootfs {
     pub metadata: ImageContractMetadata,
     /// Read-only host caches, empty unless `--host-caches` was requested and the ABI probe passed.
     pub host_caches: Vec<WorldMount>,
+    /// Cache outcome the builder observed for `digest` (`hit` served from cache, `miss` rebuilt).
+    pub cache: crate::CacheOutcome,
+    /// Measured build milliseconds (`None` when the digest was already cached and no build ran).
+    pub millis: Option<u64>,
 }
 
 /// Host capability: run `docker buildx build` with a local (`type=local`) exporter.
@@ -717,12 +725,16 @@ pub(crate) fn quoted(items: &[String]) -> String {
         .join(", ")
 }
 
-/// Monotonic staging suffix so two builders never share a temporary directory.
-pub(crate) fn unique_suffix() -> String {
+/// Staging suffix so two builders never share a temporary directory.
+///
+/// Wall time comes from the injected [`crate::MonotonicClock`], never from a direct
+/// `SystemTime::now()`, so the clock port stays the one time source.
+pub(crate) fn unique_suffix(clock: &dyn crate::MonotonicClock) -> String {
     use std::sync::atomic::{AtomicU64, Ordering};
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::time::UNIX_EPOCH;
     static COUNTER: AtomicU64 = AtomicU64::new(0);
-    let nanos = SystemTime::now()
+    let nanos = clock
+        .now_wall()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or_default();

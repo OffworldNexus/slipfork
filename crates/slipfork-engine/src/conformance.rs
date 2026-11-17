@@ -79,6 +79,7 @@ pub fn assert_world_engine_conformance(
         mounts: Vec::new(),
         base_env: base_env.clone(),
         local_ingress: None,
+        boot: crate::BootLineage::default(),
     };
     let spec_debug = format!("{missing:?}");
     assert!(
@@ -189,7 +190,58 @@ pub fn assert_world_engine_conformance(
         ),
     }
 
-    // 7. Unknown services are typed; logs are never fabricated.
+    // 7. The engine.s own process and lineage records are honest: unique ids, no live fact on a
+    //    non-running row, and a cache `hit` never claims a measured duration.
+    let rows = engine
+        .world_processes(&world)
+        .expect("a live world must report its row set");
+    let mut ids: Vec<&str> = rows.iter().map(|row| row.id.as_str()).collect();
+    ids.sort_unstable();
+    let unique = ids.len();
+    ids.dedup();
+    assert_eq!(
+        unique,
+        ids.len(),
+        "{} reported a duplicate service id",
+        engine.name()
+    );
+    for row in &rows {
+        if row.state != crate::ServiceState::Running {
+            assert!(
+                row.pid.is_none() && row.port.is_none() && row.uptime_secs.is_none(),
+                "{} reported live facts on the non-running row '{}': {row:?}",
+                engine.name(),
+                row.id
+            );
+        }
+    }
+    assert!(
+        rows.is_empty(),
+        "{} fabricated rows for a world with no spawned service",
+        engine.name()
+    );
+    let lineage = engine
+        .world_lineage(&world)
+        .expect("a live world must report its lineage");
+    if let Some(lineage_rootfs) = &lineage.rootfs {
+        assert_eq!(
+            lineage_rootfs.digest,
+            rootfs.digest.hex(),
+            "{} lineage digest must be the materialized rootfs Merkle key",
+            engine.name()
+        );
+        assert_lineage_cache_is_honest(
+            engine,
+            "rootfs",
+            lineage_rootfs.cache,
+            lineage_rootfs.millis,
+        );
+    }
+    for service in &lineage.services {
+        assert_lineage_cache_is_honest(engine, &service.id, service.cache, service.millis);
+    }
+
+    // 8. Unknown services are typed; logs are never fabricated.
     match engine.service_logs(&world, "conformance-missing-service") {
         Ok(_) => panic!("{} must not fabricate service logs", engine.name()),
         Err(EngineError::Unsupported {
@@ -225,6 +277,21 @@ pub fn assert_world_engine_conformance(
         matches!(err, EngineError::WorldGone { .. }),
         "expected WorldGone for a destroyed world, got {err:?}"
     );
+    for (method, err) in [
+        (
+            "world_processes",
+            engine.world_processes(&opaque).map(|_| ()),
+        ),
+        ("world_lineage", engine.world_lineage(&opaque).map(|_| ())),
+    ] {
+        match err {
+            Err(EngineError::WorldGone { .. }) => {}
+            other => panic!(
+                "{} {method} on a destroyed world must fail closed with WorldGone, got {other:?}",
+                engine.name()
+            ),
+        }
+    }
     let err = engine
         .destroy_world(opaque)
         .expect_err("destroying a world twice must fail closed");
@@ -232,4 +299,22 @@ pub fn assert_world_engine_conformance(
         matches!(err, EngineError::WorldGone { .. }),
         "expected WorldGone for a double destroy, got {err:?}"
     );
+}
+
+/// A recorded cache outcome must match its duration: a `hit` ran no work, so it reports `None`
+/// (never `0`), while a `miss` may report a measured `Some(millis)`.
+fn assert_lineage_cache_is_honest(
+    engine: &dyn WorldEngine,
+    node: &str,
+    cache: crate::CacheOutcome,
+    millis: Option<u64>,
+) {
+    if cache == crate::CacheOutcome::Hit {
+        assert_eq!(
+            millis,
+            None,
+            "{} reported `hit` with a duration for {node}; a cache hit measured nothing",
+            engine.name()
+        );
+    }
 }

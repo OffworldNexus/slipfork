@@ -21,9 +21,9 @@ use slipfork_engine::rootfs::{
     WorldRootfs, WorldRootfsRequest,
 };
 use slipfork_engine::{
-    BtrfsEngine, ExecEnv, ExecOutput, InheritedVar, LocalIngressBridge, MountMode, ServiceHandle,
-    ServiceLogs, ServiceSpec, SnapshotId, StateSubdirMount, StreamChunk, WorldEngine, WorldHandle,
-    WorldMount, WorldSpec, current_uid_gid,
+    BootLineage, BtrfsEngine, CacheOutcome, ExecEnv, ExecOutput, InheritedVar, LocalIngressBridge,
+    MountMode, ServiceHandle, ServiceLogs, ServiceSpec, SnapshotId, StateSubdirMount, StreamChunk,
+    SystemClock, WorldEngine, WorldHandle, WorldMount, WorldSpec, current_uid_gid,
 };
 use slipfork_testkit::btrfs::TestTreeDriver;
 // The one bounded-wait shape and its named deadlines come from the shared testkit, so no suite in
@@ -193,6 +193,7 @@ fn fixture_rootfs() -> WorldRootfs {
                 std::sync::Arc::new(FsInputHasher),
                 std::sync::Arc::new(NoServices),
                 std::sync::Arc::new(ElfAbiProbe),
+                std::sync::Arc::new(SystemClock),
             );
             let mut events = Vec::new();
             let rootfs = builder
@@ -326,12 +327,13 @@ impl WorldFixture {
         let state_dir = root.join("state");
         let (uid, gid) = current_uid_gid();
         let engine = Arc::new(
-            BtrfsEngine::with_driver(
+            BtrfsEngine::with_driver_and_clock(
                 &state_dir,
                 uid,
                 gid,
                 env!("CARGO_BIN_EXE_slipfork-world-init"),
                 driver as Arc<dyn SubvolumeDriver>,
+                Arc::new(SystemClock),
             )
             .expect("BtrfsEngine over the shared TestTreeDriver"),
         );
@@ -419,6 +421,7 @@ impl WorldFixture {
                 mounts,
                 base_env: world_env(&self.home),
                 local_ingress: ingress,
+                boot: BootLineage::default(),
             })
             .expect("clone world")
     }
@@ -544,6 +547,8 @@ pub fn oci_rootfs(image_ref: &str, extra_paths: &[&str]) -> OciRootfs {
         digest,
         rootfs,
         config: cache.join("config.json"),
+        cache: CacheOutcome::Hit,
+        millis: None,
     }
 }
 

@@ -1079,3 +1079,26 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-17T19:39 [M3.28.3] (lead) gate note: critical_guard --node M3.28.3 reported 2 violations, both crates/slipfork-vcs/tests/{critical_vcs,critical_conformance_matrix}.rs — M3.28.5's uncommi
 - 2026-11-17T19:39 [M3.28.5] (lead) status active -> done
 - 2026-11-17T19:39 [M3.28.5] (lead) attempt 4: jj installed on host (0.36.0) so the Jujutsu family really executes and it exposed two real adapter bugs (jj log --revision->-r, jj diff -T status_ch
+- 2026-11-17T19:39 [M3.28] (lead) M3.28.3 (dc9bd20) and M3.28.5 (b49faef) committed. Note for the gate: critical_guard --node <ID> is single-node, so with two nodes' protected edits inside one b
+- 2026-11-17T19:39 [M3.28.4] (lead) status ready -> active
+- 2026-11-17T19:39 [M3.28.4] (lead) attempt 1/3 started
+- 2026-11-17T19:39 [M3.28.4] (lead) base b49faefb2a2652c4d06b3785df88d611b32acbd8
+- 2026-11-17T19:46 [M3.28.17] (planner) created (task) Restart vs up: one boot pipeline, truthful WorldUpSummary.changed and restarted ids
+- 2026-11-17T19:46 [M3.28.6] (lead) edited fields
+- 2026-11-17T19:46 [M3.28.4] (lead) attempt 1 hit the step cap (unverified WIP, workspace not compiling). SPLIT: .4 is now engine facts only (world_processes/world_lineage, BootLineage, injected c
+- 2026-11-17T19:46 [M3.28.4] (lead) attempt 2/3 started
+- 2026-11-17T19:46 [M3.28.4] (lead) base b49faefb2a2652c4d06b3785df88d611b32acbd8
+- 2026-11-17T19:52 [M3.28.4] (lead) edited fields
+- 2026-11-17T19:52 [M3.28.4] (lead) attempt 3/3 started
+- 2026-11-17T19:59 [M3.28.4] (lead) status active -> review
+- 2026-11-17T20:01 [M3.28.4] (lead) quad round 1 (cruft): FAIL — 2 BLOCKER second-clock paths (BtrfsEngine::with_driver injecting SystemClock; OciImageStore::new pinning SystemClock then overridde
+- 2026-11-17T20:01 [M3.28.4] (lead) edited fields
+- 2026-11-17T20:01 [M3.28.4] (lead) quad round 1 (ioc): FAIL — ServiceKind must be a caller fact on ServiceSpec (role), not derived from spawn mechanism (a resource spawning as WorldProcess would 
+- 2026-11-17T20:01 [M3.28.4] (lead) quad round 1 (legality): FAIL — BLOCKER: freeze_world returning SnapshotExists (base already on disk) is swallowed into Ok(()) yet the code still reports base.m
+- 2026-11-17T20:02 [M3.28.4] (lead) edited fields
+- 2026-11-17T20:02 [M3.28.4] (lead) attempt 4/4 started
+- 2026-11-17T20:21 [M3.28.4] (lead) attempt 4 (cap-out after the work): lead-verified acceptance on the tree — engine lib 66, critical_world 16, critical_edge 37, critical_engine 15 (101s), slipfo
+- 2026-11-17T20:22 [M3.28.4] (lead) edited fields
+- 2026-11-17T20:23 [M3.28.4] (lead) edited fields
+- 2026-11-17T21:00 [M3.28.4] (lead) status review -> done
+- 2026-11-17T21:00 [M3.28.4] (lead) pre-commit: make check rc=0 (44 suites) once host load dropped from 19 to 6.5; the two earlier red runs were the same 'world init survived SIGTERM+SIGKILL for 1

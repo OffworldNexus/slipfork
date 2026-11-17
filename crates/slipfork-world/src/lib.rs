@@ -63,6 +63,10 @@ pub enum WorldError {
         "world origin requires the default `.localhost` ingress: route is scoped to snow.yml domains[].id '{domain}'"
     )]
     OriginNotDefaultIngress { domain: String },
+    #[error(
+        "invalid world origin ingress port 0: `slipforkd` must report the port it actually bound (1..=65535)"
+    )]
+    OriginPortZero,
     #[error("invalid Tunnel Weaver service name '{label}': {reason}")]
     InvalidWeaverServiceName { label: String, reason: String },
 }
@@ -293,6 +297,11 @@ pub struct SharedOrigin {
 impl WorldOrigin {
     /// Mint the sole `Local` origin for a default-ingress `.localhost` route.
     ///
+    /// This is the **only** renderer of a world origin URL: port 80 renders port-less
+    /// (`http://acme.localhost`) because `slipforkd`'s systemd socket binds `:80`, every other
+    /// `1..=65535` renders `:<port>` so an ephemeral `--listen 127.0.0.1:0` deployment hands out a
+    /// reachable URL, and port 0 fails closed — the daemon reports the port it actually bound.
+    ///
     /// Fails closed for a route scoped to a `snow.yml` `domains[].id`: named-domain ingresses keep
     /// their own host and are never the world's single public origin.
     pub fn local(route: &LocalHostRoute, ingress_port: u16) -> Result<Self, WorldError> {
@@ -300,6 +309,9 @@ impl WorldOrigin {
             return Err(WorldError::OriginNotDefaultIngress {
                 domain: domain.to_owned(),
             });
+        }
+        if ingress_port == 0 {
+            return Err(WorldError::OriginPortZero);
         }
         let port = if ingress_port == 80 {
             String::new()

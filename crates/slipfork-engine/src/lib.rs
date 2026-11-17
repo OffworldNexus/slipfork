@@ -15,6 +15,7 @@
 pub mod btrfs;
 pub mod btrfs_engine;
 pub mod child_env;
+pub mod clock;
 pub mod conformance;
 pub mod env;
 pub mod lineage;
@@ -33,9 +34,10 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 pub use btrfs_engine::BtrfsEngine;
+pub use clock::{MonotonicClock, SystemClock, elapsed_millis};
 pub use env::{ExecEnv, InheritedVar};
 pub use lineage::{
-    BaseLineage, LineageCache, RootfsLineage, SeedLineage, ServiceCache, ServiceImageLineage,
+    BaseLineage, BootLineage, CacheOutcome, RootfsLineage, SeedLineage, ServiceImageLineage,
     ServiceKind, WorldLineage, WorldServiceInfo,
 };
 pub use linux_cow::current_uid_gid;
@@ -153,6 +155,10 @@ pub struct WorldSpec {
     pub base_env: ExecEnv,
     /// `Some(..)` asks the engine to bridge `127.0.0.1:<port>` inside the world `netns`.
     pub local_ingress: Option<LocalIngressBridge>,
+    /// Base-snapshot and seed facts the seeder measured for this world's boot.
+    ///
+    /// Recorded verbatim in the cloned world's [`WorldLineage`]; the engine never estimates them.
+    pub boot: BootLineage,
 }
 
 impl WorldSpec {
@@ -262,6 +268,8 @@ impl fmt::Debug for WorldHandle {
 pub struct ServiceSpec {
     /// Stable service id (`api`, `postgres`, `redis`).
     pub id: String,
+    /// The caller's classification of this row (`snow.yml` component vs backing service).
+    pub kind: ServiceKind,
     /// Exactly one runtime: an `L0` world process or a daemonless `crun` container.
     pub runtime: ServiceRuntime,
     /// Overlay environment applied on top of the world's base env.
@@ -534,6 +542,12 @@ pub trait WorldEngine: Send + Sync {
         id: &SnapshotId,
     ) -> Result<(), EngineError>;
 
+    /// Whether the sealed snapshot `id` already exists on this engine's own substrate.
+    ///
+    /// A read-only lookup: it never creates, seals, or clones anything. The daemon uses it to skip
+    /// a seeding pipeline whose only possible outcome is "the base already exists".
+    fn snapshot_exists(&self, id: &SnapshotId) -> Result<bool, EngineError>;
+
     /// Seal the live world `world` into the immutable read-only snapshot `id`.
     ///
     /// Every live world-owned service is stopped cleanly **before** the world's `state_dir` is
@@ -566,6 +580,31 @@ pub trait WorldEngine: Send + Sync {
 
     /// Retained (size-capped) output of the service `id` inside `world`.
     fn service_logs(&self, world: &WorldHandle, id: &str) -> Result<ServiceLogs, EngineError>;
+
+    /// Every service this engine supervises in `world`, ordered by service id.
+    ///
+    /// Rows come from the engine's own supervision records (`ServiceProcess` /
+    /// `ContainerProcess`), never from a caller-side list: a service that exited or was stopped
+    /// **keeps its row** with [`ServiceState::Exited`] / [`ServiceState::Stopped`] and `pid: None`,
+    /// and two worlds never share a row. `uptime_secs` is stamped from the engine's injected
+    /// [`MonotonicClock`] (zero `Instant` on the wire, zero second clock in the daemon); a service
+    /// whose serving port the engine does not know reports `port: None` rather than `0`.
+    ///
+    /// A destroyed, teardown-in-progress, or foreign `world` fails closed with
+    /// [`EngineError::WorldGone`] — never an empty row set.
+    fn world_processes(&self, world: &WorldHandle) -> Result<Vec<WorldServiceInfo>, EngineError>;
+
+    /// This world's own [`WorldLineage`], recorded on its handle when it booted.
+    ///
+    /// Rootfs and per-service image facts are the materialized [`WorldRootfs`] the clone was
+    /// handed (cache outcome and `millis` measured on the same injected clock); base/seed facts
+    /// are the [`BootLineage`] the seeder measured. A fact the engine did not record is `None` —
+    /// there is no placeholder lineage and no daemon-wide "latest build" cell, so one world can
+    /// never report another world's facts.
+    ///
+    /// A destroyed, teardown-in-progress, or foreign `world` fails closed with
+    /// [`EngineError::WorldGone`] — never an all-`None` lineage.
+    fn world_lineage(&self, world: &WorldHandle) -> Result<WorldLineage, EngineError>;
 
     /// Execute `argv` **inside a running service's own rootfs** — never the app rootfs — so
     /// `pg_restore`, `CHECKPOINT;`, and `psql` match the backing-service image (`ADR-0008` §2).

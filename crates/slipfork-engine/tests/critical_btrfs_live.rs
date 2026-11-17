@@ -31,9 +31,9 @@ use slipfork_engine::btrfs::{
 };
 use slipfork_engine::rootfs::BackingServiceKey;
 use slipfork_engine::{
-    BtrfsEngine, EngineError, ExecEnv, ExecOutput, MountMode, ServiceHandle, ServiceRuntime,
-    ServiceSpec, ServiceState, SnapshotId, StateSubdirMount, WorldEngine, WorldHandle, WorldMount,
-    WorldRootfs, WorldSpec, current_uid_gid,
+    BootLineage, BtrfsEngine, EngineError, ExecEnv, ExecOutput, MountMode, ServiceHandle,
+    ServiceKind, ServiceRuntime, ServiceSpec, ServiceState, SnapshotId, StateSubdirMount,
+    SystemClock, WorldEngine, WorldHandle, WorldMount, WorldRootfs, WorldSpec, current_uid_gid,
 };
 use slipfork_testkit::poll_until;
 use slipfork_world::WorldTarget;
@@ -85,11 +85,13 @@ fn btrfs_kernel_ro_snapshot_two_clones_same_port_services_and_ipc_isolation() {
 fn assert_fail_closed_contract(state_dir: &Path, probe: &ProbeFacts) {
     let actual_fstype = probe.fstype;
     let (uid, gid) = current_uid_gid();
-    let err = BtrfsEngine::new(
+    let err = BtrfsEngine::with_driver_and_clock(
         state_dir,
         uid,
         gid,
         env!("CARGO_BIN_EXE_slipfork-world-init"),
+        Arc::new(KernelBtrfsDriver::new()),
+        Arc::new(SystemClock),
     )
     .expect_err("a non-Btrfs state dir must refuse the engine");
     match err {
@@ -133,12 +135,13 @@ fn run_kernel_suite(root: &Path, state_dir: &Path, driver: Arc<dyn SubvolumeDriv
         "the pinned static crun is a real input of the live suite (sha256-pinned, downloaded once)"
     );
     let (uid, gid) = current_uid_gid();
-    let engine = BtrfsEngine::with_driver(
+    let engine = BtrfsEngine::with_driver_and_clock(
         state_dir,
         uid,
         gid,
         env!("CARGO_BIN_EXE_slipfork-world-init"),
         Arc::clone(&driver),
+        Arc::new(SystemClock),
     )
     .expect("BtrfsEngine over KernelBtrfsDriver");
     let rootfs = backing_service_rootfs(state_dir);
@@ -628,6 +631,7 @@ fn world_spec(
         ],
         base_env: world_env(&home),
         local_ingress: None,
+        boot: BootLineage::default(),
     }
 }
 
@@ -642,6 +646,7 @@ fn oci_service(
 ) -> ServiceSpec {
     ServiceSpec {
         id: id.to_owned(),
+        kind: ServiceKind::BackingService,
         runtime: ServiceRuntime::OciContainer {
             image,
             argv: argv.iter().map(|arg| (*arg).to_owned()).collect(),

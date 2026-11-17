@@ -17,7 +17,7 @@ use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use sha2::{Digest, Sha256};
 
@@ -30,11 +30,10 @@ use slipfork_edge::forward::ForwardTargetSpec;
 use slipfork_edge::{
     BootEvent, DaemonControl, DaemonError, DaemonErrorKind, DaemonStatus, DropForkRequest,
     EdgeError, ExecTargetRequest, ForkRequest, ForwardRequest, ForwardSummary, HookRunRequest,
-    IngressInfo, IngressRoute, LogsRequest, PruneReport, ResourceSummary, ServiceKind,
-    SharedWorldInfo, SnowResolveRequest, SnowResolveSummary, UnavailableTunnelRegistrar, UpRequest,
-    WorldExecTarget, WorldLineage, WorldProcessReport, WorldRegistry, WorldSelector,
-    WorldServiceInfo, WorldServiceSummary, WorldState, WorldSummary, WorldUpSummary, parent_world,
-    world_id,
+    IngressInfo, IngressRoute, LogsRequest, PruneReport, ResourceSummary, SharedWorldInfo,
+    SnowResolveRequest, SnowResolveSummary, UnavailableTunnelRegistrar, UpRequest, WorldExecTarget,
+    WorldProcessReport, WorldRegistry, WorldSelector, WorldServiceSummary, WorldState,
+    WorldSummary, WorldUpSummary, parent_world, world_id,
 };
 use slipfork_engine::btrfs::SubvolumeDriver;
 use slipfork_engine::rootfs::{
@@ -43,9 +42,10 @@ use slipfork_engine::rootfs::{
     SnowPortContract, WorldRootfs, WorldRootfsRequest,
 };
 use slipfork_engine::{
-    BtrfsEngine, EngineError, ExecEnv, ExecOutput, InheritedVar, LocalIngressBridge, MountMode,
-    ServiceHandle, ServiceRuntime, ServiceSpec, SnapshotId, StateSubdirMount, StreamChunk,
-    WorldEngine, WorldHandle, WorldMount, WorldSpec,
+    BaseLineage, BootLineage, BtrfsEngine, EngineError, ExecEnv, ExecOutput, InheritedVar,
+    LocalIngressBridge, MonotonicClock, MountMode, SeedLineage, ServiceHandle, ServiceKind,
+    ServiceRuntime, ServiceSpec, SnapshotId, StateSubdirMount, StreamChunk, SystemClock,
+    WorldEngine, WorldHandle, WorldMount, WorldSpec, elapsed_millis,
 };
 use slipfork_ospp::{
     BrowserOpener, DeviceKeySigner, DiskSeedDumpStore, DumpStreamer, FallbackDeviceKeySigner,
@@ -92,19 +92,19 @@ struct PostgresReady {
     deadline: Duration,
     /// Interval between probes while the postmaster finishes startup.
     poll: Duration,
-    /// Monotonic instant source the deadline check reads.
-    clock: Arc<dyn Fn() -> Instant + Send + Sync>,
+    /// The one monotonic clock the deadline check reads.
+    clock: Arc<dyn MonotonicClock>,
     /// How the gate waits between probes.
     sleeper: Arc<dyn Fn(Duration) + Send + Sync>,
 }
 
 impl PostgresReady {
-    /// Production policy: the monotonic `Instant` clock and a real `thread::sleep`.
-    fn production() -> Self {
+    /// Production bounds and sleeper over the composition root.s one injected clock.
+    fn production(clock: Arc<dyn MonotonicClock>) -> Self {
         Self {
             deadline: POSTGRES_READY_DEADLINE,
             poll: POSTGRES_READY_POLL,
-            clock: Arc::new(Instant::now),
+            clock,
             sleeper: Arc::new(std::thread::sleep),
         }
     }
@@ -189,20 +189,10 @@ struct LiveWorld {
     enabled_components: BTreeSet<String>,
     snow: SnowFile,
     resources: Vec<ResourceSummary>,
-    services: Vec<LiveService>,
+    services: Vec<ServiceHandle>,
     /// Retained hook logs by `<component>:<phase>` (`slipfork logs <hook_id>`, `ADR-0008` §4).
     hook_logs: BTreeMap<String, Arc<HookLog>>,
     workspace: Option<Arc<dyn VcsWorkspace>>,
-}
-
-/// One service this daemon spawned in a world, with the row kind it was spawned as.
-///
-/// The engine's [`ServiceHandle`] carries the id and lifecycle state; the daemon knows whether the
-/// handle came from a `snow.yml` component or a `crun` backing service, because it is the caller
-/// that chose the `ServiceSpec` runtime. No engine-name inspection is involved.
-struct LiveService {
-    handle: ServiceHandle,
-    kind: ServiceKind,
 }
 
 /// One `slipfork logs` target: an engine-retained service log or a daemon-retained hook log.
@@ -279,14 +269,25 @@ impl HookLog {
     }
 }
 
+/// One sealed base: the snapshot a world clones from plus the lineage a later world reuses.
+///
+/// `lineage` carries the **reuse** facts (base `millis: None`, seed `rebuilt: Some(false)`): the
+/// seal duration belongs only to the world whose boot actually performed the seal.
+#[derive(Debug, Clone)]
+struct SealedBase {
+    snapshot: SnapshotId,
+    lineage: BootLineage,
+}
+
 /// Mutable daemon index, mutated only in short critical sections (never across engine I/O).
 #[derive(Default)]
 struct DaemonState {
     worlds: Vec<LiveWorld>,
-    /// Base state snapshot created on first use per `(project, base digest)` in this daemon's
-    /// lifetime. The digest covers backing-service versions and every resolved seed-dump digest, so
-    /// `--no-dump` and a restored dump never share a base.
-    bases: BTreeMap<(ProjectSlug, String), SnapshotId>,
+    /// Base state snapshot created on first use per `(project, base digest)` in this daemon.s
+    /// lifetime, with the `BootLineage` a later world reuses (base `reused`, seed `cached`). The
+    /// digest covers backing-service versions and every resolved seed-dump digest, so `--no-dump`
+    /// and a restored dump never share a base.
+    bases: BTreeMap<(ProjectSlug, String), SealedBase>,
 }
 
 impl DaemonState {
@@ -412,6 +413,8 @@ struct DaemonPorts {
     entropy: Arc<dyn EntropySource>,
     /// Bounds for the pairing WebSocket handshake.
     ospp_timeouts: OsppTimeouts,
+    /// The one monotonic clock, shared with the engine/builder/OCI store that stamp measured facts.
+    clock: Arc<dyn MonotonicClock>,
 }
 
 /// Everything a Composition Root resolves before [`compose_daemon`] wires the daemon graph.
@@ -478,22 +481,31 @@ pub fn compose_daemon(wiring: DaemonWiring) -> Result<DaemonGraph, String> {
         xdg_runtime_dir,
     } = wiring;
 
+    // The one monotonic clock every measuring adapter shares: the rootfs builder, the OCI image
+    // store, the world engine (`uptime_secs` + lineage `millis`), and the daemon's base-seed
+    // measurement. There is no second time source anywhere in the graph.
+    let clock: Arc<dyn MonotonicClock> = Arc::new(SystemClock);
     let builder: Arc<dyn BaseImageBuilder> = Arc::new(DockerfileStageBuilder::new(
         Arc::new(CliBuildxExporter::default()),
         Arc::new(FsInputHasher),
-        Arc::new(DockerOciImageStore::new(layout.state_dir())),
+        Arc::new(DockerOciImageStore::new(
+            layout.state_dir(),
+            Arc::clone(&clock),
+        )),
         Arc::new(ElfAbiProbe),
+        Arc::clone(&clock),
     ));
     // The sole world engine: one unified Btrfs subvolume per world over the injected driver.
     // Construction fails closed with `EngineError::BtrfsRequired` before any snapshot or world
     // directory exists (`ADR-0010` §4), so a non-Btrfs `--state-dir` never reaches a degraded mode.
     let engine: Arc<dyn WorldEngine> = Arc::new(
-        BtrfsEngine::with_driver(
+        BtrfsEngine::with_driver_and_clock(
             layout.state_dir(),
             uid,
             gid,
             runtime.world_init.clone(),
             driver,
+            Arc::clone(&clock),
         )
         .map_err(|err| format!("cannot start the Btrfs world engine: {err}"))?,
     );
@@ -534,6 +546,7 @@ pub fn compose_daemon(wiring: DaemonWiring) -> Result<DaemonGraph, String> {
             browser,
             entropy,
             ospp_timeouts: OsppTimeouts::default(),
+            clock: Arc::clone(&clock),
         },
         DaemonConfig {
             layout,
@@ -543,7 +556,7 @@ pub fn compose_daemon(wiring: DaemonWiring) -> Result<DaemonGraph, String> {
             uid,
             gid,
             host_caches,
-            postgres_ready: PostgresReady::production(),
+            postgres_ready: PostgresReady::production(Arc::clone(&clock)),
         },
         ingress,
         forward_port,
@@ -571,6 +584,7 @@ pub struct DaemonService {
     ingress: IngressInfo,
     forward_port: Option<u16>,
     state: Mutex<DaemonState>,
+    clock: Arc<dyn MonotonicClock>,
     /// Serializes world materialization so one project's base snapshot is minted exactly once.
     boot_lock: Mutex<()>,
 }
@@ -606,6 +620,7 @@ impl DaemonService {
             browser: ports.browser,
             entropy: ports.entropy,
             ospp_timeouts: ports.ospp_timeouts,
+            clock: ports.clock,
             config,
             ingress,
             forward_port,
@@ -937,6 +952,12 @@ impl DaemonService {
     /// the selected dumps with `pg_restore` + `CHECKPOINT;` **inside** the `postgres:<v>`
     /// container, and is then frozen and destroyed. `up`/`fork` clone the sealed base and never
     /// re-run `pg_restore`; `--no-dump` seals the clean `initdb` base through the same path.
+    ///
+    /// Returns the snapshot plus the [`BootLineage`] the clone records on its own handle: a seal
+    /// performed by this call reports its measured duration and seed rebuild verdict, while a base
+    /// that already existed reports `base.millis: None` (rendered `reused`) and
+    /// `seed.rebuilt: Some(false)` (rendered `cached`). Every duration comes from the daemon's one
+    /// injected [`MonotonicClock`]; nothing is estimated.
     fn ensure_base_snapshot(
         &self,
         project: &ProjectSlug,
@@ -944,11 +965,31 @@ impl DaemonService {
         plan: &ResourcePlan,
         rootfs: &WorldRootfs,
         client: Option<&Arc<OsppClient>>,
-    ) -> Result<SnapshotId, EdgeError> {
+    ) -> Result<(SnapshotId, BootLineage), EdgeError> {
         let digest = base_digest(project, snow, plan);
         let key = (project.clone(), digest.clone());
-        if let Some(snapshot) = self.lock().bases.get(&key).cloned() {
-            return Ok(snapshot);
+        if let Some(sealed) = self.lock().bases.get(&key).cloned() {
+            return Ok((sealed.snapshot, sealed.lineage));
+        }
+
+        // Pre-flight: a base snapshot already on disk is reused as-is, so the seeding pipeline (seed
+        // world boot, `pg_restore`, seal) never runs only to be discarded by `SnapshotExists`.
+        let snapshot = SnapshotId(format!("{project}-base-{digest}"));
+        let reused = self
+            .engine
+            .snapshot_exists(&snapshot)
+            .map_err(|err| runtime_error(format!("cannot look up the base snapshot: {err}")))?;
+        if reused {
+            let (has_seed, digest_hex) = selected_seed(snow, plan);
+            let lineage = reused_base_lineage(&digest, has_seed, digest_hex);
+            self.lock().bases.insert(
+                key,
+                SealedBase {
+                    snapshot: snapshot.clone(),
+                    lineage: lineage.clone(),
+                },
+            );
+            return Ok((snapshot, lineage));
         }
 
         let dumps = self.materialize_seed_dumps(project, snow, plan, client)?;
@@ -985,6 +1026,7 @@ impl DaemonService {
             mounts,
             base_env: ExecEnv::world_scoped(self.config.layout.world_home(project, "base-seed")),
             local_ingress: None,
+            boot: BootLineage::default(),
         };
         let handle = self.engine.clone_world(&spec).map_err(|err| {
             runtime_error(format!(
@@ -992,27 +1034,62 @@ impl DaemonService {
             ))
         })?;
 
+        let restore_started = self.clock.now();
         let restored = self.restore_base(&handle, snow, rootfs, &dumps);
-        let snapshot = SnapshotId(format!("{project}-base-{digest}"));
+        let restore_millis = restored
+            .as_ref()
+            .ok()
+            .map(|()| elapsed_millis(restore_started, self.clock.now()));
+        // The seal outcome decides the facts: only a seal performed here may claim a duration.
+        let seal_started = self.clock.now();
         let sealed = restored.and_then(|()| {
             match self.engine.freeze_world(&handle, &snapshot) {
-                Ok(()) => Ok(()),
-                // The base is already sealed: clone it as-is instead of ever re-sealing it.
-                Err(EngineError::SnapshotExists { .. }) => Ok(()),
+                Ok(()) => Ok(true),
+                // The base is already sealed on disk: the world reuses it and claims no seal time.
+                Err(EngineError::SnapshotExists { .. }) => Ok(false),
                 Err(err) => Err(runtime_error(format!(
                     "cannot freeze the base seed world: {err}"
                 ))),
             }
         });
-        if let Err(error) = sealed {
-            let _ = self.engine.destroy_world(handle);
-            return Err(error);
-        }
+        let sealed_now = match sealed {
+            Ok(sealed_now) => sealed_now,
+            Err(error) => {
+                let _ = self.engine.destroy_world(handle);
+                return Err(error);
+            }
+        };
+        let seal_millis = sealed_now.then(|| elapsed_millis(seal_started, self.clock.now()));
         self.engine
             .destroy_world(handle)
             .map_err(|err| runtime_error(format!("cannot destroy the base seed world: {err}")))?;
-        self.lock().bases.insert(key, snapshot.clone());
-        Ok(snapshot)
+        // A seed exists only when a dump was restored; several dumps have no single digest.
+        let (has_seed, digest_hex) = selected_seed(snow, plan);
+        let seed = has_seed.then_some(SeedLineage {
+            digest: digest_hex,
+            rebuilt: Some(sealed_now),
+            millis: if sealed_now { restore_millis } else { None },
+        });
+        let facts = BootLineage {
+            base: Some(BaseLineage {
+                key: digest.clone(),
+                millis: seal_millis,
+            }),
+            seed,
+        };
+        let reused_facts = reused_base_lineage(
+            &digest,
+            has_seed,
+            facts.seed.as_ref().and_then(|seed| seed.digest.clone()),
+        );
+        self.lock().bases.insert(
+            key,
+            SealedBase {
+                snapshot: snapshot.clone(),
+                lineage: reused_facts,
+            },
+        );
+        Ok((snapshot, facts))
     }
 
     /// Fetch/materialize every dump the plan selected, keyed by `snow.yml` database id.
@@ -1506,9 +1583,9 @@ impl DaemonService {
             }
         };
 
-        let snapshot =
+        let (snapshot, boot) =
             match self.ensure_base_snapshot(&project, &snow, &plan, &rootfs, client.as_ref()) {
-                Ok(snapshot) => snapshot,
+                Ok(base) => base,
                 Err(error) => {
                     return Err(BootFailure {
                         error,
@@ -1531,6 +1608,7 @@ impl DaemonService {
                 port: self.ingress.port(),
                 host_ingress_sock: self.config.layout.http_ingress_socket(),
             }),
+            boot,
         };
         let handle = match self.engine.clone_world(&spec) {
             Ok(handle) => handle,
@@ -1589,10 +1667,7 @@ impl DaemonService {
         };
         for spec in service_specs {
             match self.engine.spawn_service(&handle, &spec) {
-                Ok(service) => live.services.push(LiveService {
-                    handle: service,
-                    kind: ServiceKind::BackingService,
-                }),
+                Ok(service) => live.services.push(service),
                 Err(err) => {
                     live.state = WorldState::Failed;
                     return Err(BootFailure {
@@ -1626,6 +1701,7 @@ impl DaemonService {
             let readiness_port =
                 declaration.and_then(|component| component.internal_ports.first().copied());
             let spec = ServiceSpec {
+                kind: ServiceKind::Component,
                 id: id.clone(),
                 runtime: slipfork_engine::ServiceRuntime::WorldProcess {
                     argv: vec![
@@ -1641,10 +1717,7 @@ impl DaemonService {
             };
             match self.engine.spawn_service(&handle, &spec) {
                 Ok(service) => {
-                    live.services.push(LiveService {
-                        handle: service,
-                        kind: ServiceKind::Component,
-                    });
+                    live.services.push(service);
                     if let Some(port) = readiness_port {
                         on_event(BootEvent::Ready {
                             component: id.clone(),
@@ -2010,7 +2083,7 @@ impl DaemonControl for DaemonService {
             ),
             None => None,
         };
-        let entries: Vec<(ProjectSlug, WorldTarget, WorldState, PathBuf)> = {
+        let entries: Vec<(ProjectSlug, WorldTarget, WorldState, PathBuf, WorldHandle)> = {
             let state = self.lock();
             state
                 .worlds
@@ -2025,21 +2098,27 @@ impl DaemonControl for DaemonService {
                         world.target.clone(),
                         world.state,
                         world.worktree.clone(),
+                        world.handle.clone(),
                     )
                 })
                 .collect()
         };
         let mut summaries = Vec::with_capacity(entries.len());
-        for (project, target, state, worktree) in entries {
+        for (project, target, state, worktree, handle) in entries {
             summaries.push(WorldSummary {
                 world: world_id(&project, &target),
                 parent: parent_world(&project, &target),
                 state,
                 origin: self.registry.origin(&project, &target)?,
                 worktree,
-                // No engine build facts are recorded for a world yet, so every fact is unknown
-                // and renders `-`, never a `0` or another world's value.
-                lineage: WorldLineage::unknown(),
+                // Recorded on this world's own engine handle at boot: an unrecorded fact is `None`
+                // and renders `-`, never `0` and never another world's value.
+                lineage: self.engine.world_lineage(&handle).map_err(|err| {
+                    runtime_error(format!(
+                        "world '{}' is attached but its engine handle is gone: {err}",
+                        world_id(&project, &target)
+                    ))
+                })?,
             });
         }
         summaries.sort_by(|a, b| a.world.cmp(&b.world));
@@ -2048,7 +2127,7 @@ impl DaemonControl for DaemonService {
 
     fn world_processes(&self, req: &WorldSelector) -> Result<WorldProcessReport, EdgeError> {
         let selection = self.select(&req.cwd, req.world.as_deref())?;
-        let (state, services) = {
+        let (state, handle) = {
             let world_state = self.lock();
             let Some(world) = world_state.world(&selection.repo.project, &selection.target) else {
                 return Err(Self::unknown_world(
@@ -2056,29 +2135,26 @@ impl DaemonControl for DaemonService {
                     &selection.target,
                 ));
             };
-            let world_text = world_id(&world.project, &world.target);
-            let services = world
-                .services
-                .iter()
-                .map(|service| WorldServiceSummary {
-                    world: world_text.clone(),
-                    info: WorldServiceInfo {
-                        id: service.handle.id().to_owned(),
-                        kind: service.kind,
-                        state: service.handle.state(),
-                        // The engine records no pid, serving port, or uptime for a service yet,
-                        // so these stay `None` and render `-`, never `0`.
-                        pid: None,
-                        port: None,
-                        uptime_secs: None,
-                    },
-                })
-                .collect();
-            // `WorldState::Stopped` is not produced yet: no daemon path records it, because the
-            // world record's lifetime (stop vs release) is not owned here.
-            (world.state, services)
+            (world.state, world.handle.clone())
         };
-        WorldProcessReport::new(state, WorldLineage::unknown(), services)
+        let world_text = world_id(&selection.repo.project, &selection.target);
+        let gone = |err: EngineError| {
+            runtime_error(format!(
+                "world '{world_text}' is attached but its engine handle is gone: {err}"
+            ))
+        };
+        let lineage = self.engine.world_lineage(&handle).map_err(gone)?;
+        let services = self
+            .engine
+            .world_processes(&handle)
+            .map_err(gone)?
+            .into_iter()
+            .map(|info| WorldServiceSummary {
+                world: world_text.clone(),
+                info,
+            })
+            .collect();
+        WorldProcessReport::new(state, lineage, services)
     }
 
     fn prune(&self, dry_run: bool) -> Result<PruneReport, EdgeError> {
@@ -2197,7 +2273,7 @@ impl DaemonControl for DaemonService {
                 world
                     .services
                     .iter()
-                    .map(|service| service.handle.id())
+                    .map(ServiceHandle::id)
                     .map(str::to_owned)
                     .collect::<Vec<_>>(),
                 world.hook_logs.clone(),
@@ -2299,8 +2375,8 @@ impl DaemonControl for DaemonService {
                     let handle = world
                         .services
                         .iter()
-                        .find(|service| service.handle.id() == service_id.as_str())
-                        .map(|service| service.handle.clone())
+                        .find(|service| service.id() == service_id.as_str())
+                        .cloned()
                         .ok_or_else(|| {
                             service_not_running(
                                 &world_id(&world.project, &world.target),
@@ -2857,6 +2933,50 @@ fn json_label<T: serde::Serialize>(value: &T) -> String {
 }
 
 /// Content key of one base snapshot: backing-service versions plus every resolved dump digest.
+/// The seed dumps the plan selected: `(any_seed, single_digest)`.
+///
+/// `false` means the plan restores no dump (a clean `initdb` base); several dumps are a seed with
+/// no single digest, so the digest stays `None` rather than naming one database arbitrarily.
+fn selected_seed(snow: &SnowFile, plan: &ResourcePlan) -> (bool, Option<String>) {
+    let digests: Vec<&str> = plan
+        .pg_databases
+        .iter()
+        .filter(|database| {
+            snow.resources
+                .pg_databases
+                .iter()
+                .any(|declared| declared.id == database.id)
+        })
+        .filter_map(|database| match &database.seed {
+            PgSeed::RemoteDump { dump, .. } => Some(dump.sha256_compressed()),
+            PgSeed::CleanInitdb => None,
+        })
+        .collect();
+    match digests.as_slice() {
+        [] => (false, None),
+        [digest] => (true, Some((*digest).to_owned())),
+        _ => (true, None),
+    }
+}
+
+/// The facts a world reuses when the base snapshot already existed on disk.
+///
+/// No seal ran for this world (`base.millis: None`) and no seed was rebuilt
+/// (`seed.rebuilt: Some(false)`), so a restarted daemon never claims another boot's duration.
+fn reused_base_lineage(key: &str, has_seed: bool, digest_hex: Option<String>) -> BootLineage {
+    BootLineage {
+        base: Some(BaseLineage {
+            key: key.to_owned(),
+            millis: None,
+        }),
+        seed: has_seed.then_some(SeedLineage {
+            digest: digest_hex,
+            rebuilt: Some(false),
+            millis: None,
+        }),
+    }
+}
+
 fn base_digest(project: &ProjectSlug, snow: &SnowFile, plan: &ResourcePlan) -> String {
     let mut hasher = Sha256::new();
     hasher.update(b"slipfork-base:v1\0");
@@ -2941,13 +3061,13 @@ fn await_postgres_ready(
     policy: &PostgresReady,
     mut probe: impl FnMut() -> Result<(i32, String), EdgeError>,
 ) -> Result<(), EdgeError> {
-    let deadline = (policy.clock)() + policy.deadline;
+    let deadline = policy.clock.now() + policy.deadline;
     loop {
         let (exit_code, detail) = probe()?;
         if exit_code == 0 {
             return Ok(());
         }
-        if (policy.clock)() >= deadline {
+        if policy.clock.now() >= deadline {
             return Err(runtime_error(format!(
                 "the base seed world's postgres server did not accept queries within {}s \
                  (pg_isready exit code {exit_code}): {detail}",
@@ -3000,6 +3120,7 @@ fn service_specs(
             ensure_container_file(rootfs, &image, &mount.guest_path)?;
         }
         specs.push(ServiceSpec {
+            kind: ServiceKind::BackingService,
             id: id.clone(),
             runtime: ServiceRuntime::OciContainer {
                 image,
@@ -3032,6 +3153,7 @@ fn service_specs(
         require_image(rootfs, &image, &format!("redis_clusters.{}", cluster.id))?;
         ensure_container_dirs(rootfs, &image, &["/data"])?;
         specs.push(ServiceSpec {
+            kind: ServiceKind::BackingService,
             id: format!("redis_clusters.{}", cluster.id),
             runtime: ServiceRuntime::OciContainer {
                 image,
@@ -3060,6 +3182,7 @@ fn service_specs(
         require_image(rootfs, &image, "s3_buckets")?;
         ensure_container_dirs(rootfs, &image, &["/data"])?;
         specs.push(ServiceSpec {
+            kind: ServiceKind::BackingService,
             id: "s3_buckets".to_owned(),
             runtime: ServiceRuntime::OciContainer {
                 image,
@@ -3356,6 +3479,7 @@ fn tail_lines(chunks: Vec<StreamChunk>, lines: Option<usize>) -> Vec<StreamChunk
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Instant;
 
     #[test]
     fn hook_ids_round_trip_every_phase() {
@@ -3388,6 +3512,22 @@ mod tests {
     fn postgres_readiness_gate_drives_the_injected_clock_and_sleeper() {
         use std::sync::atomic::{AtomicU64, Ordering};
 
+        /// A monotonic instant advanced only by the test's injected sleeper.
+        struct FakeClock {
+            base: Instant,
+            millis: Arc<AtomicU64>,
+        }
+
+        impl MonotonicClock for FakeClock {
+            fn now(&self) -> Instant {
+                self.base + Duration::from_millis(self.millis.load(Ordering::SeqCst))
+            }
+
+            fn now_wall(&self) -> std::time::SystemTime {
+                std::time::SystemTime::UNIX_EPOCH
+            }
+        }
+
         let start = Instant::now();
         let elapsed = Arc::new(AtomicU64::new(0));
         // A non-production deadline/poll pair: reverting the gate to the hardcoded
@@ -3397,7 +3537,10 @@ mod tests {
             poll: Duration::from_millis(10),
             clock: {
                 let elapsed = Arc::clone(&elapsed);
-                Arc::new(move || start + Duration::from_millis(elapsed.load(Ordering::SeqCst)))
+                Arc::new(FakeClock {
+                    base: start,
+                    millis: elapsed,
+                })
             },
             sleeper: {
                 let elapsed = Arc::clone(&elapsed);

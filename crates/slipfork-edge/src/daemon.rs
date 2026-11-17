@@ -25,8 +25,8 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 pub use slipfork_engine::{
-    BaseLineage, LineageCache, RootfsLineage, SeedLineage, ServiceCache, ServiceImageLineage,
-    ServiceKind, WorldLineage, WorldServiceInfo,
+    BaseLineage, CacheOutcome, RootfsLineage, SeedLineage, ServiceImageLineage, ServiceKind,
+    WorldLineage, WorldServiceInfo,
 };
 use slipfork_engine::{ExecEnv, StreamChunk, WorldEntryCommand};
 use slipfork_world::WorldOrigin;

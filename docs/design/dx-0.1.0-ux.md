@@ -260,18 +260,17 @@ lineage   rootfs a1b2c3d4e5f6 cached · postgres:18 cached · seed 9f8e7d6c5b4a 
 
 Rootfs and OCI service-image cache outcomes + elapsed `millis: Option<u64>` are returned on `WorldRootfs` and `OciRootfs` (which already observe `RootfsBuildEvent::{CacheHit, CacheMiss}` via the injected monotonic clock) and recorded on each world's handle alongside `ensure_base` / `clone_world` measurements (`WorldEngine::world_lineage(&WorldHandle) -> Result<WorldLineage, EngineError>`). `WorldLineage` travels on `WorldUpSummary.lineage`, `WorldSummary.lineage`, and `WorldProcessReport.lineage` (never on `DaemonStatus`):
 
-- `rootfs: Option<RootfsLineage>` — `{ digest: String /* full 64-hex */, cache: LineageCache /* wire: hit|miss */, millis: Option<u64> }`
-- `services: Vec<ServiceImageLineage>` — `{ id: String /* image ref, document key "image" */, cache: ServiceCache /* wire: hit|miss|miss_offline */, millis: Option<u64> }`
+- `rootfs: Option<RootfsLineage>` — `{ digest: String /* full 64-hex */, cache: CacheOutcome /* wire: hit|miss */, millis: Option<u64> }`
+- `services: Vec<ServiceImageLineage>` — `{ id: String /* image ref, document key "image" */, cache: CacheOutcome /* wire: hit|miss */, millis: Option<u64> }`
 - `seed: Option<SeedLineage>` — `{ digest: Option<String /* full 64-hex */>, rebuilt: Option<bool>, millis: Option<u64> }`
 - `base: Option<BaseLineage>` — `{ key: String /* full 64-hex */, millis: Option<u64> }`
 
-**Human outcome vocabulary (four words, never a wire enum):** `cached`, `rebuilt <dur>`, `reused`, `sealed <dur>`. The JSON enums `hit` / `miss` / `miss_offline` never appear in human output.
+**Human outcome vocabulary (four words, never a wire enum):** `cached`, `rebuilt <dur>`, `reused`, `sealed <dur>`. The JSON enum `hit` / `miss` never appears in human output. `M3.28.4` collapsed the former `LineageCache`/`ServiceCache` pair into one `CacheOutcome { Hit, Miss }` and deleted `miss_offline`: no production path ever emitted it (an offline host fails closed rather than recording a third verdict), so no `services[]` row promises it.
 
 | Node | Human text | When |
 |---|---|---|
 | `rootfs` | `cached` / `rebuilt <dur>` | `hit` / `miss` |
 | `services[]` | `cached` / `rebuilt <dur>` | `hit` / `miss` |
-| `services[]` (offline) | `-` | `miss_offline`: neither cached nor rebuilt; the document carries the enum |
 | `seed` | `cached` / `rebuilt <dur>` | `rebuilt == Some(false)` / `Some(true)` |
 | `base` | `reused` / `sealed <dur>` | `millis == None` (the snapshot already existed) / `Some(ms)` |
 

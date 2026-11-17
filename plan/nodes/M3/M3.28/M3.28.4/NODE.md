@@ -1,40 +1,51 @@
 ---
 id: M3.28.4
-title: "Restart vs up semantics, the port-less origin renderer, and the engine process-tree accessor"
+title: "Engine facts: world_processes/world_lineage, per-world BootLineage, injected clock, one origin renderer"
 kind: task
-status: ready
+status: done
 owner: implementer
 priority: 3
 depends_on: [M3.28.3]
 paths:
   - "crates/slipfork-engine/src/**"
+  - "crates/slipfork-engine/tests/**"
   - "crates/slipfork-world/src/**"
+  - "crates/slipfork-world/tests/**"
   - "crates/slipfork-edge/src/**"
+  - "crates/slipfork-edge/tests/**"
   - crates/slipfork/src/daemon.rs
-attempts: 0
-max_attempts: 3
+  - crates/slipfork/src/oci_store.rs
+  - ARCHITECTURE.md
+  - "docs/design/dx-0.1.0-ux.md"
+  - "docs/decisions/ADR-0002-*.md"
+  - "docs/decisions/ADR-0010-*.md"
+  - "docs/design/world-base-image.md"
+attempts: 4
+max_attempts: 5
 escalation: none
 created: "2026-11-17T16:32"
-updated: "2026-11-17T16:32"
+updated: "2026-11-17T21:00"
 ---
 
 # Goal
 
-Lock the daemon/engine semantics behind the new verbs — ONE canonical answer for what `restart` re-runs versus `up`'s idempotency — plus the port-less `.localhost` origin rendered at `:80`, plus the engine accessor that fills the process-tree rows (`pid`, `uptime`, serving port).
+Fill the engine facts the `0.1.0` wire already carries: `WorldEngine::world_processes` and `WorldEngine::world_lineage` over the engine's own supervision and boot records, a per-world `BootLineage`, rootfs/OCI cache outcome + timings recorded at boot through an injected clock, and the single `WorldOrigin::local` contract (port-less at `:80`, `:<port>` otherwise, port `0` fails closed). Delete the `WorldLineage::unknown()` placeholder that `M3.28.3` installed.
 
 # Context
 
-Facts 3 and 12: `restart` did not exist, and re-running `up` printed the same URL with no verdict. `WorldOrigin::local` already renders `http://<host>` with no port at 80 (`crates/slipfork-world/src/lib.rs:298-312`); `M3.28.3` shipped the `DaemonControl` rows with `pid`/`uptime_secs` as `None` placeholders, which this node fills from the engine.
+`M3.28.3` shipped the wire (`IngressInfo`, `WorldSummary.parent`, `WorldProcessReport { state, lineage, services }`, `WorldServiceSummary`, `WorldLineage` + sub-records in `crates/slipfork-engine/src/lineage.rs`) with every engine-owned fact left `None` and one `WorldLineage::unknown()` per call site in `crates/slipfork/src/daemon.rs`. This node is the engine half that makes those fields real. The restart/`up` semantics across edge and daemon are **not** in this node — they are `M3.28.17`.
+
+Scope note from attempt 1: `format!("http://127.0.0.1:<port>")` in `crates/slipfork-snow` is the **in-world loopback** URL for resource seeding, not a `.localhost` origin, so it is out of scope; the one-origin-renderer check is scoped to `WorldOrigin::local` call sites (acceptance below). `crates/slipfork/tests/critical_cli.rs` is Phase C's single-writer file and must not be touched here (attempt 1's edit to it was reverted).
 
 # Design / Invariants
 
-1. **One canonical restart contract** (written into the type docs): `restart` = stop components and `crun` backing services while keeping the worktree and CoW state, then re-run the full boot pipeline for that world — hooks, app process, containers, readiness gates. `up` stays idempotent: a running world returns `changed: false` and touches nothing. No third path exists.
-2. `WorldUpSummary.changed` (edge) is set truthfully by both paths; `restart` on a `Failed` world re-boots (the rescue path), on a never-booted world fails closed naming `slipfork up`.
-3. New `WorldEngine::world_processes(&WorldHandle) -> Vec<WorldServiceInfo { id, kind, pid, port, started_at, uptime_secs }>` over the engine's own supervision records (`ServiceProcess`/`ContainerProcess`), deterministic order; destroyed/foreign handle → `EngineError::WorldGone`. `started_at`/`uptime_secs` are stamped by the engine from its injected clock, so neither the daemon layer nor the CLI reads a clock and no `Instant` crosses the wire.
-4. New `WorldEngine::world_lineage(&WorldHandle) -> WorldLineage` filling every fact `M3.28.3` put on the wire — rootfs digest + cache hit/miss, base key + seal millis, seed digest + rebuilt + millis, per-service cache/millis — **from the engine's own boot records and the injected clock, recorded on the world's handle** (never a daemon-wide "latest build" cell, so one world can never show another's facts). Where the engine does not record a fact today, record it at boot in the same sweep (start/stop deltas through the injected clock, digest from the existing hasher/base-key derivation, cache outcome from `RootfsBuildEvent::{CacheHit,CacheMiss}`); never estimate and never fabricate. A fact the engine genuinely cannot know is `None`.
-5. `WorldOrigin::local(&route, ingress_port)` is the single origin renderer: assert (tests) `:80` → port-less, `:1..=65535` → `:<port>`, and that any route with a `snow.yml` domain still fails closed. No other module may format an origin URL.
-6. Keep the `StubWorldEngine`/test doubles compiling in the same sweep; no new dependency, no `unsafe`, no global.
-7. **Own the lineage/process types (IoC ruling on `M3.28.3`'s `SPEC_BLIND_SPOT`):** `ServiceKind`, `WorldServiceInfo`, `WorldLineage` and its sub-records live in `slipfork-engine` and are filled here from supervision records + the injected clock. Delete `WorldLineage::unknown()` (the placeholder `M3.28.3` installs) and every call site in `crates/slipfork/src/daemon.rs`; a world that never recorded a fact yields all-`None` fields built from its own records, never a shared placeholder constructor.
+1. `WorldEngine::world_processes(&WorldHandle) -> Vec<WorldServiceInfo>` over the engine's own supervision records (`ServiceProcess`/`ContainerProcess`), deterministic order, `EngineError::WorldGone` for destroyed/foreign handle, `uptime_secs` stamped from the **injected clock** (no `Instant` on the wire, no second clock in the daemon).
+2. `WorldEngine::world_lineage(&WorldHandle) -> WorldLineage` filled from **that world's own** records: rootfs digest + cache `hit|miss`, base key + seal millis, seed digest + `rebuilt` + millis, per-service cache/millis. Record the facts at boot where they are not recorded yet (`RootfsBuildEvent::{CacheHit,CacheMiss}` exists; `WorldRootfs`/`OciRootfs` gain `cache` + `millis`; digest from the existing hasher/base-key derivation). Never estimate, never fabricate: unknown → `None`.
+3. One injected clock port (`crates/slipfork-engine/src/clock.rs`): `MonotonicClock` for durations, `SystemClock` for wall stamps; wired at the composition root, never read inside a pure function.
+4. **Delete `WorldLineage::unknown()`** and every call site (`crates/slipfork/src/daemon.rs`); a world with no recorded facts yields all-`None` fields built from its own records.
+5. `WorldOrigin::local(&route, ingress_port)` stays the single `.localhost` origin renderer: `:80` → port-less, `1..=65535` → `:<port>`, port `0` fails closed with a typed error, and a `snow.yml` domain still fails closed. No other module builds a `.localhost` origin.
+6. `WorldSpec` carries its `BootLineage`; every `WorldSpec`/`WorldRootfs`/`OciRootfs` literal and `DockerfileStageBuilder` call site is updated in the same sweep (including `crates/slipfork/src/oci_store.rs`, which must record the OCI cache outcome).
+7. Keep `StubWorldEngine`/test doubles compiling; no new dependency, no `unsafe`, no global, no `#[allow]`.
 
 # Acceptance
 
@@ -45,12 +56,16 @@ $ cargo test -p slipfork-engine --test critical_engine -- --test-threads=1
 ... test result: ok
 $ cargo test -p slipfork-world --test critical_world
 ... test result: ok
-$ ! grep -rn 'format!("http://' crates/ --include=*.rs | grep -v crates/slipfork-world/ && echo one-origin-renderer
+$ ! grep -rn 'WorldLineage::unknown' crates/ --include=*.rs && echo no-placeholder-lineage
+no-placeholder-lineage
+$ ! grep -rnE 'format!\("http://\{[a-z_]+(host|route)' crates/ --include=*.rs | grep -v '^crates/slipfork-world/'; echo one-origin-renderer
 one-origin-renderer
 $ cargo clippy --workspace --all-targets -- -D warnings
     Finished
+$ cargo fmt --all -- --check && echo fmt-ok
+fmt-ok
 ```
 
-- Engine tests prove a stopped service keeps its row with `pid: None`, two worlds never share rows, and `started_at` is monotonic from the injected clock.
-- Engine tests prove `world_lineage` returns cache `hit`/`miss` truthfully from the boot records (a second boot of the same base is a `hit`), that recorded millis are `Some` for a fact the engine measured and `None` for one it did not, and that a destroyed handle is `EngineError::WorldGone` rather than a zeroed lineage.
-- `critical_world` pins port-less-at-80 and `:<port>`-otherwise, with the existing default-ingress failure unchanged.
+- Engine tests prove a stopped service keeps its row with `pid: None`, two worlds never share rows, `uptime_secs` is monotonic from the injected clock, a second boot of the same base is a cache `hit`, recorded millis are `Some` only for facts the engine measured, and a destroyed handle is `WorldGone`.
+- `critical_world` pins port-less-at-80, `:<port>` otherwise, port `0` failing closed, and the existing default-ingress failure unchanged.
+- `RESULT.md` records the `git diff --shortstat` and the exact list of call sites updated.

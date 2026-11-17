@@ -468,6 +468,16 @@ fn world_origin_local_omits_port_80_and_renders_other_ports() {
 }
 
 #[test]
+fn world_origin_local_never_renders_port_zero() {
+    // Port 0 is an unbound `--listen` wildcard, not an origin: the daemon must report the port it
+    // actually bound, so the renderer fails closed instead of printing `:0` or a port-less URL.
+    match WorldOrigin::local(&canonical_route(), 0) {
+        Err(WorldError::OriginPortZero) => {}
+        other => panic!("expected OriginPortZero, got {other:?}"),
+    }
+}
+
+#[test]
 fn world_origin_host_is_the_port_less_authority_for_shared_origins_too() {
     let shared =
         WorldOrigin::shared("https://acme.tunnel.example:8443/app").expect("shared origin");

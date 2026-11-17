@@ -16,6 +16,9 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use crate::CacheOutcome;
+use crate::clock::MonotonicClock;
+use crate::clock::elapsed_millis;
 use crate::rootfs::abi::AbiProbe;
 use crate::rootfs::buildx::{BuildxRequest, SLIPFORK_RUNTIME_CONTEXT};
 use crate::rootfs::cache::{self, CacheLayout};
@@ -35,21 +38,28 @@ pub struct DockerfileStageBuilder {
     input_hasher: Arc<dyn InputHasher>,
     oci_store: Arc<dyn OciImageStore>,
     abi_probe: Arc<dyn AbiProbe>,
+    clock: Arc<dyn MonotonicClock>,
 }
 
 impl DockerfileStageBuilder {
     /// Wire the builder with every host capability it needs (`ADR-0009` Composition Root).
+    ///
+    /// `clock` is the composition root's single [`MonotonicClock`]: the builder stamps the measured
+    /// rootfs build duration with it, so the value it returns on [`WorldRootfs::millis`] needs no
+    /// second time source downstream.
     pub fn new(
         exporter: Arc<dyn BuildxExporter>,
         input_hasher: Arc<dyn InputHasher>,
         oci_store: Arc<dyn OciImageStore>,
         abi_probe: Arc<dyn AbiProbe>,
+        clock: Arc<dyn MonotonicClock>,
     ) -> Self {
         Self {
             exporter,
             input_hasher,
             oci_store,
             abi_probe,
+            clock,
         }
     }
 
@@ -86,8 +96,10 @@ impl DockerfileStageBuilder {
     ) -> Result<ImageContractMetadata, BaseImageError> {
         let final_dir = layout.rootfs_dir(digest);
         std::fs::create_dir_all(&final_dir).map_err(|error| io_error(&final_dir, &error))?;
-        let staging = final_dir.join(format!(".staging-{}", unique_suffix()));
-        let scratch = layout.tmp_dir().join(format!("build-{}", unique_suffix()));
+        let staging = final_dir.join(format!(".staging-{}", unique_suffix(self.clock.as_ref())));
+        let scratch = layout
+            .tmp_dir()
+            .join(format!("build-{}", unique_suffix(self.clock.as_ref())));
         let runtime_context = scratch.join("runtime");
         let _scratch_guard = Scratch::new(scratch.clone());
         std::fs::create_dir_all(&runtime_context)
@@ -137,7 +149,7 @@ impl DockerfileStageBuilder {
                 return Err(io_error(&app, &error));
             }
         }
-        cache::write_manifest(&final_dir, &metadata)?;
+        cache::write_manifest(&final_dir, &metadata, self.clock.as_ref())?;
         Ok(metadata)
     }
 }
@@ -185,29 +197,38 @@ impl BaseImageBuilder for DockerfileStageBuilder {
         });
 
         let final_app = layout.app_rootfs(&digest);
-        let metadata = match cache::read_manifest(&layout.rootfs_dir(&digest)) {
+        let started = self.clock.now();
+        let (metadata, cache) = match cache::read_manifest(&layout.rootfs_dir(&digest)) {
             Some(metadata) if final_app.is_dir() => {
                 on_event(RootfsBuildEvent::CacheHit {
                     digest: digest.clone(),
                 });
-                metadata
+                (metadata, CacheOutcome::Hit)
             }
             _ => {
                 on_event(RootfsBuildEvent::CacheMiss {
                     digest: digest.clone(),
                 });
-                self.build_app(
-                    request,
-                    &dockerfile_bytes,
-                    stage,
-                    &stage_name,
-                    &digest,
-                    &layout,
-                    &crun_bytes,
-                    &world_init_bytes,
-                    on_event,
-                )?
+                (
+                    self.build_app(
+                        request,
+                        &dockerfile_bytes,
+                        stage,
+                        &stage_name,
+                        &digest,
+                        &layout,
+                        &crun_bytes,
+                        &world_init_bytes,
+                        on_event,
+                    )?,
+                    CacheOutcome::Miss,
+                )
             }
+        };
+        // A cache hit ran no build, so it records no duration: `None` is "not measured", never `0`.
+        let millis = match cache {
+            CacheOutcome::Hit => None,
+            CacheOutcome::Miss => Some(elapsed_millis(started, self.clock.now())),
         };
 
         let host_caches = contract::validate_host_caches(
@@ -230,6 +251,8 @@ impl BaseImageBuilder for DockerfileStageBuilder {
             service_images,
             metadata,
             host_caches,
+            cache,
+            millis,
         })
     }
 }

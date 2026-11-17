@@ -1,6 +1,6 @@
 //! Protected critical tests for `BtrfsEngine` (`R10`, `R11`, `H-011`).
 //!
-//! Every suite drives `BtrfsEngine::with_driver` over the shared
+//! Every suite drives `BtrfsEngine::with_driver_and_clock` over the shared
 //! [`slipfork_testkit::btrfs::TestTreeDriver`], which emulates the [`SubvolumeDriver`] contract in
 //! real directories (`ARCHITECTURE.md` §1), so the CoW substrate runs unchanged on any host. What
 //! stays real is everything above that seam: the unprivileged
@@ -26,9 +26,9 @@ use std::time::Duration;
 use slipfork_engine::btrfs::SubvolumeDriver;
 use slipfork_engine::conformance::assert_world_engine_conformance;
 use slipfork_engine::{
-    BtrfsEngine, EngineError, ExecEnv, InheritedVar, LocalIngressBridge, MountMode, ServiceRuntime,
-    ServiceSpec, ServiceState, SnapshotId, StreamChunk, WorldEngine, WorldEntryCommand,
-    WorldHandle, WorldMount, WorldSpec, current_uid_gid,
+    BootLineage, BtrfsEngine, EngineError, ExecEnv, InheritedVar, LocalIngressBridge, MountMode,
+    ServiceKind, ServiceRuntime, ServiceSpec, ServiceState, SnapshotId, StreamChunk, SystemClock,
+    WorldEngine, WorldEntryCommand, WorldHandle, WorldMount, WorldSpec, current_uid_gid,
 };
 use slipfork_testkit::btrfs::{SubvolumeOp, TestTreeDriver};
 use slipfork_world::WorldTarget;
@@ -64,6 +64,7 @@ fn target_pid(entry: &WorldEntryCommand) -> u32 {
 fn service_spec(id: &str, cwd: &Path, port: Option<u16>, script: &str) -> ServiceSpec {
     ServiceSpec {
         id: id.to_owned(),
+        kind: ServiceKind::Component,
         runtime: ServiceRuntime::WorldProcess {
             argv: vec!["sh".to_owned(), "-c".to_owned(), script.to_owned()],
             cwd: cwd.to_path_buf(),
@@ -78,12 +79,13 @@ fn r10_a_non_btrfs_state_dir_fails_closed_without_a_silent_fallback() {
     let root = engine_test_dir("non-btrfs");
     let state_dir = root.join("state");
     let (uid, gid) = current_uid_gid();
-    let err = BtrfsEngine::with_driver(
+    let err = BtrfsEngine::with_driver_and_clock(
         &state_dir,
         uid,
         gid,
         env!("CARGO_BIN_EXE_slipfork-world-init"),
         Arc::new(TestTreeDriver::non_btrfs(XFS_SUPER_MAGIC)) as Arc<dyn SubvolumeDriver>,
+        Arc::new(SystemClock),
     )
     .expect_err("a non-Btrfs state dir must fail the boot gate closed");
     match err {
@@ -139,6 +141,7 @@ fn r10_r11_btrfs_conformance_cow_isolation_uid_and_parallel_same_port() {
             }],
             base_env: world_env(&home_b),
             local_ingress: None,
+            boot: BootLineage::default(),
         })
         .expect("clone world b");
 
@@ -422,6 +425,7 @@ fn a_rootfs_outside_the_content_addressed_cache_is_refused_before_a_subvolume_ex
             mounts: Vec::new(),
             base_env: world_env(&fx.home),
             local_ingress: None,
+            boot: BootLineage::default(),
         })
         .expect_err("a rootfs outside the content-addressed cache must fail closed");
     assert!(
@@ -467,6 +471,7 @@ fn multi_mount_repo_rw_and_readonly_artifact_volume_are_real_bind_mounts() {
             ],
             base_env: world_env(&home),
             local_ingress: None,
+            boot: BootLineage::default(),
         })
         .expect("clone multi-mount world");
 
@@ -522,6 +527,7 @@ fn multi_mount_repo_rw_and_readonly_artifact_volume_are_real_bind_mounts() {
         ],
         base_env: world_env(&home),
         local_ingress: None,
+        boot: BootLineage::default(),
     };
     let err = fx
         .engine
@@ -644,6 +650,7 @@ fn redacted_exec_env_and_opaque_world_handles() {
         mounts: vec![],
         base_env: env.clone(),
         local_ingress: None,
+        boot: BootLineage::default(),
     };
     assert!(!format!("{full:?}").contains(SECRET));
 
@@ -663,6 +670,7 @@ fn redacted_exec_env_and_opaque_world_handles() {
             mounts: vec![],
             base_env,
             local_ingress: None,
+            boot: BootLineage::default(),
         })
         .expect("clone");
     let mut chunks = Vec::new();
@@ -1234,12 +1242,13 @@ fn world_init_fails_closed_when_the_helper_is_missing() {
     let root = engine_test_dir("missing-world-init");
     let state_dir = root.join("state");
     let (uid, gid) = current_uid_gid();
-    let engine = BtrfsEngine::with_driver(
+    let engine = BtrfsEngine::with_driver_and_clock(
         &state_dir,
         uid,
         gid,
         root.join("no-such-slipfork-world-init"),
         Arc::new(TestTreeDriver::btrfs()) as Arc<dyn SubvolumeDriver>,
+        Arc::new(SystemClock),
     )
     .expect("engine construction");
     let rootfs = support::engine_rootfs(&state_dir);
@@ -1257,6 +1266,7 @@ fn world_init_fails_closed_when_the_helper_is_missing() {
             mounts: vec![],
             base_env: world_env(&root.join("home")),
             local_ingress: None,
+            boot: BootLineage::default(),
         })
         .expect_err("a missing world init helper must fail closed");
     assert!(

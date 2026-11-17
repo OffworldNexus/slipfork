@@ -12,8 +12,13 @@ use crate::ServiceState;
 
 /// One world's build lineage.
 ///
-/// Every fact is recorded on **that world's** engine handle; an unknown fact is `None` and renders
-/// `-` in human output, never `0` and never an invented value.
+/// Every fact is recorded on **that world's** engine handle when the world boots: the rootfs and
+/// per-service image facts come from the [`crate::WorldSpec`]'s materialized
+/// [`crate::WorldRootfs`] (cache outcome and build `millis` measured on the shared injected
+/// clock), and the base/seed facts come from [`BootLineage`], which the seeder measured. An
+/// unknown fact is `None` and renders `-` in human output, never `0` and never an invented value;
+/// there is no placeholder constructor, so a world with no recorded fact is the all-`None` value
+/// built from its own (empty) records.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorldLineage {
     /// Rootfs digest plus its cache outcome, when the world's boot measured one.
@@ -26,17 +31,19 @@ pub struct WorldLineage {
     pub base: Option<BaseLineage>,
 }
 
-impl WorldLineage {
-    /// No engine facts recorded yet (`M3.28.4` fills them): every optional fact is `None` and
-    /// `services` is empty, so a renderer prints `-` instead of a zeroed value.
-    pub fn unknown() -> Self {
-        Self {
-            rootfs: None,
-            services: Vec::new(),
-            seed: None,
-            base: None,
-        }
-    }
+/// The base-snapshot and seed facts a world boots from, recorded on that world's handle.
+///
+/// `WorldEngine::clone_world` copies them verbatim into the cloned world's [`WorldLineage`]; it
+/// never estimates a seal duration or a seed verdict. The seeder fills them: `base.millis` is
+/// `Some(ms)` when it sealed the base for this world and `None` when the sealed snapshot already
+/// existed, and `seed.rebuilt` is `Some(true)` when it restored a dump into the base, `Some(false)`
+/// when it reused an already-sealed base, and `None` when the world ships no seed dump at all.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BootLineage {
+    /// Base snapshot key (full 64-hex) and its seal duration.
+    pub base: Option<BaseLineage>,
+    /// Seed dump digest, rebuild verdict, and measured duration.
+    pub seed: Option<SeedLineage>,
 }
 
 /// The world rootfs build's digest, cache outcome, and measured duration.
@@ -45,18 +52,21 @@ pub struct RootfsLineage {
     /// Full 64-hex rootfs digest.
     pub digest: String,
     /// Whether the rootfs came from cache or was rebuilt.
-    pub cache: LineageCache,
+    pub cache: CacheOutcome,
     /// Measured build milliseconds (`None` when the boot recorded no duration).
     pub millis: Option<u64>,
 }
 
-/// Rootfs cache outcome (`hit` — served from cache; `miss` — rebuilt).
+/// Cache outcome of one materialized tree (`hit` served from the content-addressed cache,
+/// `miss` rebuilt it). One enum for the rootfs and for every backing-service image, because the
+/// store observes exactly one outcome per tree; a host that cannot fetch or build fails closed
+/// instead of recording a third verdict.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum LineageCache {
-    /// The rootfs was already cached.
+pub enum CacheOutcome {
+    /// The tree was already cached.
     Hit,
-    /// The rootfs was rebuilt.
+    /// The tree was rebuilt or fetched.
     Miss,
 }
 
@@ -65,22 +75,10 @@ pub enum LineageCache {
 pub struct ServiceImageLineage {
     /// Image reference (`postgres:18`).
     pub id: String,
-    /// Whether the image was cached, fetched, or unavailable offline.
-    pub cache: ServiceCache,
+    /// Whether the image was already cached or fetched/extracted.
+    pub cache: CacheOutcome,
     /// Measured resolution milliseconds (`None` when the boot recorded no duration).
     pub millis: Option<u64>,
-}
-
-/// Service-image cache outcome (`hit` / `miss` / `miss_offline`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ServiceCache {
-    /// The image was already cached.
-    Hit,
-    /// The image was fetched or rebuilt.
-    Miss,
-    /// Neither cached nor fetched: the host was offline.
-    MissOffline,
 }
 
 /// The seed dump's digest and rebuild verdict.

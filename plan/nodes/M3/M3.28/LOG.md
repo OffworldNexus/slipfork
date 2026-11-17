@@ -3,3 +3,7 @@
 ## 2026-11-17T16:32 [planner]
 
 created (epic) 0.1.0 UX pre-release pass (owner hands-on findings): :80 ingress, bare status, restart/ps/open, fork identity
+
+## 2026-11-17T19:39 [lead]
+
+M3.28.3 (dc9bd20) and M3.28.5 (b49faef) committed. Note for the gate: critical_guard --node <ID> is single-node, so with two nodes' protected edits inside one base..tree range each run flags the sibling's file. Each node's own changes are authorized by its own paths (verified), and the epic gate uses the no-node report form, which is OK.

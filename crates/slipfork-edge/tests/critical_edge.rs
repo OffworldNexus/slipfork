@@ -28,12 +28,12 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use slipfork_edge::daemon::{
-    AuthSummary, BaseLineage, BootEvent, DaemonControl, DaemonError, DaemonErrorKind, DaemonStatus,
-    DropForkRequest, DumpRequest, ExecTargetRequest, ForkRequest, ForwardRequest, ForwardSummary,
-    HookRunRequest, IngressInfo, LineageCache, LogsRequest, PruneReport, ResourceRequest,
-    ResourceSummary, RootfsLineage, SeedLineage, ServiceCache, ServiceImageLineage, ServiceKind,
-    UpRequest, WorldExecTarget, WorldLineage, WorldProcessReport, WorldSelector,
-    WorldServiceSummary, WorldState, WorldSummary, WorldUpSummary,
+    AuthSummary, BaseLineage, BootEvent, CacheOutcome, DaemonControl, DaemonError, DaemonErrorKind,
+    DaemonStatus, DropForkRequest, DumpRequest, ExecTargetRequest, ForkRequest, ForwardRequest,
+    ForwardSummary, HookRunRequest, IngressInfo, LogsRequest, PruneReport, ResourceRequest,
+    ResourceSummary, RootfsLineage, SeedLineage, ServiceImageLineage, ServiceKind, UpRequest,
+    WorldExecTarget, WorldLineage, WorldProcessReport, WorldSelector, WorldServiceSummary,
+    WorldState, WorldSummary, WorldUpSummary,
 };
 use slipfork_edge::{
     DaemonControlClient, DaemonControlServer, EdgeError, ForwardTargetSpec, HttpIngress,
@@ -46,9 +46,9 @@ use slipfork_engine::rootfs::{
     ElfAbi, ImageContractMetadata, LibcFamily, OsRelease, RootfsDigest, WorldRootfs,
 };
 use slipfork_engine::{
-    EngineError, ExecEnv, ExecOutput, ServiceHandle, ServiceLogs, ServiceSpec, ServiceState,
-    SnapshotId, StreamChunk, StreamSource, WorldEngine, WorldEntryCommand, WorldHandle,
-    WorldServiceInfo, WorldSpec,
+    BootLineage, EngineError, ExecEnv, ExecOutput, ServiceHandle, ServiceLogs, ServiceSpec,
+    ServiceState, SnapshotId, StreamChunk, StreamSource, WorldEngine, WorldEntryCommand,
+    WorldHandle, WorldServiceInfo, WorldSpec,
 };
 use slipfork_world::{
     LocalHostRoute, ProjectSlug, TunnelError, TunnelLease, TunnelRegistrar, TunnelRequest,
@@ -719,6 +719,11 @@ impl WorldEngine for StubWorldEngine {
         Ok(())
     }
 
+    fn snapshot_exists(&self, id: &SnapshotId) -> Result<bool, EngineError> {
+        id.validate()?;
+        Ok(self.has_snapshot(id))
+    }
+
     fn freeze_world(&self, world: &WorldHandle, id: &SnapshotId) -> Result<(), EngineError> {
         self.live_world(world)?;
         id.validate()?;
@@ -762,6 +767,19 @@ impl WorldEngine for StubWorldEngine {
 
     fn service_logs(&self, _world: &WorldHandle, _id: &str) -> Result<ServiceLogs, EngineError> {
         self.unsupported("service_logs")
+    }
+
+    fn world_processes(&self, world: &WorldHandle) -> Result<Vec<WorldServiceInfo>, EngineError> {
+        // The double spawns no service (`spawn_service` is `Unsupported`), so a live world has an
+        // empty row set; a destroyed or unknown handle is gone, exactly like the real engine.
+        self.live_world(world)?;
+        Ok(Vec::new())
+    }
+
+    fn world_lineage(&self, world: &WorldHandle) -> Result<WorldLineage, EngineError> {
+        // A stub world records no boot fact: every field is `None`/empty, never a fabricated value.
+        self.live_world(world)?;
+        Ok(empty_lineage())
     }
 
     fn exec_in_service(
@@ -852,12 +870,27 @@ fn test_rootfs() -> WorldRootfs {
             exposed_ports: std::collections::BTreeSet::new(),
         },
         host_caches: Vec::new(),
+        // The double never builds a rootfs; the fresh test tree is a miss with no measured build.
+        cache: CacheOutcome::Miss,
+        millis: None,
     }
 }
 
 /// The one snapshot every test world is cloned from; `clone_test_world` creates it first.
 fn base_snapshot() -> SnapshotId {
     SnapshotId("base".to_owned())
+}
+
+/// The lineage of a stub world that recorded no boot fact: every fact is `None`, `services` is
+/// empty, so a renderer prints `-`. This is a test fixture's own record set — production code
+/// records its facts on the world's engine handle.
+fn empty_lineage() -> WorldLineage {
+    WorldLineage {
+        rootfs: None,
+        services: Vec::new(),
+        seed: None,
+        base: None,
+    }
 }
 
 fn clone_test_world(engine: &dyn WorldEngine, state: &Path, target: WorldTarget) -> WorldHandle {
@@ -871,6 +904,8 @@ fn clone_test_world(engine: &dyn WorldEngine, state: &Path, target: WorldTarget)
         mounts: Vec::new(),
         base_env: ExecEnv::world_scoped(state.join("home")),
         local_ingress: None,
+        // The spec is synthetic: it seeds no base and restores no dump.
+        boot: BootLineage::default(),
     };
     engine.clone_world(&spec).expect("clone a test world")
 }
@@ -885,6 +920,8 @@ fn clone_world_refuses_an_unrecorded_snapshot() {
         mounts: Vec::new(),
         base_env: ExecEnv::world_scoped(PathBuf::from("/nonexistent/slipfork-edge-test/home")),
         local_ingress: None,
+        // The spec is synthetic: it seeds no base and restores no dump.
+        boot: BootLineage::default(),
     };
     let err = engine
         .clone_world(&spec)
@@ -2227,7 +2264,7 @@ impl TestControl {
             state: WorldState::Running,
             origin: self.registry.origin(&self.project, &self.target)?,
             worktree: PathBuf::from("/repo"),
-            lineage: WorldLineage::unknown(),
+            lineage: empty_lineage(),
         })
     }
 
@@ -2318,7 +2355,7 @@ impl DaemonControl for TestControl {
         // One running component and one stopped backing service: a stopped row keeps its row.
         WorldProcessReport::new(
             WorldState::Running,
-            WorldLineage::unknown(),
+            empty_lineage(),
             vec![
                 service_row(
                     &world,
@@ -3365,7 +3402,7 @@ fn world_summary_parent_and_lineage_survive_serde() {
         state: WorldState::Running,
         origin: test_origin("acme", 80),
         worktree: PathBuf::from("/repo"),
-        lineage: WorldLineage::unknown(),
+        lineage: empty_lineage(),
     };
     let fork = WorldSummary {
         world: "acme:feat-ux".to_owned(),
@@ -3373,7 +3410,7 @@ fn world_summary_parent_and_lineage_survive_serde() {
         state: WorldState::Stopped,
         origin: test_origin("acme", 80),
         worktree: PathBuf::from("/repo/.worktrees/feat-ux"),
-        lineage: WorldLineage::unknown(),
+        lineage: empty_lineage(),
     };
 
     let canonical_json = serde_json::to_value(&canonical).expect("serialize canonical summary");
@@ -3406,12 +3443,12 @@ fn world_summary_parent_and_lineage_survive_serde() {
     let measured = WorldLineage {
         rootfs: Some(RootfsLineage {
             digest: FULL_DIGEST.to_owned(),
-            cache: LineageCache::Hit,
+            cache: CacheOutcome::Hit,
             millis: None,
         }),
         services: vec![ServiceImageLineage {
             id: "postgres:18".to_owned(),
-            cache: ServiceCache::MissOffline,
+            cache: CacheOutcome::Miss,
             millis: Some(12),
         }],
         seed: Some(SeedLineage {
@@ -3429,7 +3466,7 @@ fn world_summary_parent_and_lineage_survive_serde() {
     assert_eq!(measured_json["rootfs"]["millis"], serde_json::Value::Null);
     assert_eq!(
         measured_json["services"][0]["cache"],
-        serde_json::json!("miss_offline")
+        serde_json::json!("miss")
     );
     assert_eq!(
         measured_json["services"][0]["millis"],
@@ -3474,7 +3511,7 @@ fn world_summary_parent_and_lineage_survive_serde() {
 fn world_process_reports_are_world_scoped_and_keep_stopped_rows() {
     let canonical = WorldProcessReport::new(
         WorldState::Running,
-        WorldLineage::unknown(),
+        empty_lineage(),
         vec![
             service_row("acme", "api", ServiceKind::Component, ServiceState::Running),
             service_row(
@@ -3488,7 +3525,7 @@ fn world_process_reports_are_world_scoped_and_keep_stopped_rows() {
     .expect("unique ids");
     let fork = WorldProcessReport::new(
         WorldState::Stopped,
-        WorldLineage::unknown(),
+        empty_lineage(),
         vec![service_row(
             "acme:feat",
             "api",
@@ -3555,7 +3592,7 @@ fn world_process_reports_are_world_scoped_and_keep_stopped_rows() {
     // Duplicate ids are refused: `services[].id` stays a 1:1 join key.
     let duplicate = WorldProcessReport::new(
         WorldState::Running,
-        WorldLineage::unknown(),
+        empty_lineage(),
         vec![
             service_row("acme", "api", ServiceKind::Component, ServiceState::Running),
             service_row(

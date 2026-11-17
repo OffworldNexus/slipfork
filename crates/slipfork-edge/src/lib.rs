@@ -70,8 +70,8 @@ pub use registry::{
     world_id,
 };
 pub use slipfork_engine::{
-    BaseLineage, LineageCache, RootfsLineage, SeedLineage, ServiceCache, ServiceImageLineage,
-    ServiceKind, WorldLineage, WorldServiceInfo,
+    BaseLineage, CacheOutcome, RootfsLineage, SeedLineage, ServiceImageLineage, ServiceKind,
+    WorldLineage, WorldServiceInfo,
 };
 pub use tunnel::UnavailableTunnelRegistrar;
 pub use unit::{UnitSpec, render_service_unit, render_socket_unit};

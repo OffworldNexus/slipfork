@@ -5,7 +5,7 @@ kind: task
 status: ready
 owner: implementer
 priority: 2
-depends_on: [M3.28.3, M3.28.4]
+depends_on: [M3.28.3, M3.28.4, M3.28.17]
 paths:
   - crates/slipfork/src/main.rs
   - crates/slipfork/src/daemon_unit_install.rs
@@ -27,7 +27,7 @@ attempts: 0
 max_attempts: 3
 escalation: none
 created: "2026-11-17T16:33"
-updated: "2026-11-17T18:14"
+updated: "2026-11-17T19:46"
 ---
 
 # Goal
