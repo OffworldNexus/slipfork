@@ -55,3 +55,7 @@ OWNER RULING (2026-11-17): the plan view is the sanctioned home for plan output,
 ## 2026-11-17T21:44 [lead]
 
 OSPP remote path gaps (from M3.28.18 RESULT, recorded here because 0.1.0 ships no provider and this epic owns the remote path): (1) resources::pg_databases.<id>.url is never remote - ResourceCoordinates always renders postgres://127.0.0.1:5432/<id>; a PostgreSQL offer is only a seed dump. (2) ADR-0008 §2 claims env.bundle 'domains' applies strictly to cloud mode; there is no mode guard in protocol.rs/OsppSecretProvider. (3) ADR-0008 §1 claims a 5-minute pairing-handle TTL; no client-side TTL/expiry field exists. (4) BootEvent::Secrets is never emitted (renderer exists in main.rs). (5) slipforkd never calls the remote secrets.ensure: LayeredSecretProvider::ensure_secret only calls its primary, so the wire capability is unexercised by the client. (6) A real provider (Kerfufoo) is 0.2.0; the client/daemon path is tested 4/4 by critical_ospp_daemon against the loopback reference server.
+
+## 2026-11-17T21:49 [lead]
+
+ADR-0008 wire supersession (from M3.28.19): this epic implements docs/design/ospp.md, which supersedes ADR-0008's wire specification at 0.2.0. ADR-0008 status gains: 'Superseded for the wire specification by docs/design/ospp.md (0.2.0); the resource-strategy and world-UX decisions below remain in force.' Same one-line pointer must appear wherever ADR-0001 calls ADR-0008 the sole normative wire spec. Routed to M3.23 for the edit.

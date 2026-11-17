@@ -119,3 +119,7 @@ Gate passed: acceptance greps all green, slipfork --version == 0.1.0, cargo buil
 ## 2026-11-17T13:56 [lead]
 
 status active -> done
+
+## 2026-11-17T21:49 [lead]
+
+ADR status hygiene (from M3.28.19): ADR-0008 must gain one line under its status - 'Superseded for the wire specification by docs/design/ospp.md (0.2.0); the resource-strategy and world-UX decisions below remain in force.' - and the same one-line pointer wherever ADR-0001 calls ADR-0008 the sole normative wire spec. The architect's 0.2.0 draft now supersedes the wire portion; the resource-strategy and world-UX decisions remain current.
