@@ -183,15 +183,52 @@ pub struct ResourceSummary {
     pub reason: String,
 }
 
-/// Result of `slipfork up` / `slipfork fork`.
+/// Result of `slipfork up` / `slipfork restart` / `slipfork fork` (`docs/design/dx-0.1.0-ux.md` §4).
+///
+/// `changed` and `restarted` are the two facts that tell the caller whether anything happened:
+/// an idempotent `up` of a `Running` world is `changed: false` with nothing touched; every boot is
+/// `changed: true`; `restart` is `changed: true` only when it started a service or ran a hook.
+/// `restarted` names only the ids this run brought to `Running` — each one is a `services[].id` of
+/// this same world, so the join is sound — and is empty when `changed` is false.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorldUpSummary {
     /// World id (`<project>` or `<project>:<fork>`).
     pub world: String,
+    /// The world's lifecycle state after the call.
+    pub state: WorldState,
+    /// `false` only when the world was already `Running` and nothing was rebuilt or restarted.
+    pub changed: bool,
+    /// Ids of this world's services this call started, unique, empty when `changed: false`.
+    pub restarted: Vec<String>,
+    /// Host worktree backing the world.
+    pub worktree: PathBuf,
     /// The world's single public origin.
     pub origin: WorldOrigin,
+    /// This world's own build lineage.
+    pub lineage: WorldLineage,
+    /// Every component and backing-service row of the world, so no second call is needed.
+    pub services: Vec<WorldServiceSummary>,
     /// One diagnostic line per resolved resource.
     pub resources: Vec<ResourceSummary>,
+    /// This world state's `next` commands (`docs/design/dx-0.1.0-ux.md` §1).
+    pub next: Vec<String>,
+}
+
+/// The `next` commands of one world state (`docs/design/dx-0.1.0-ux.md` §1 is the only table).
+///
+/// Rows are the bare `<verb>` commands of the state; a client that renders a world other than the
+/// cwd-selected one appends its own `--world <WORLD>`, so the daemon never guesses a selector.
+#[must_use]
+pub fn world_next_commands(state: WorldState) -> Vec<String> {
+    let verbs: &[&str] = match state {
+        WorldState::Running => &["open", "db", "logs", "restart", "down"],
+        WorldState::Failed => &["logs", "restart", "down"],
+        WorldState::Stopped => &["up", "logs", "down"],
+    };
+    verbs
+        .iter()
+        .map(|verb| format!("slipfork {verb}"))
+        .collect()
 }
 
 /// One row of the per-world process table `slipfork ps` renders (`docs/design/dx-0.1.0-ux.md` §5).
@@ -548,6 +585,8 @@ pub enum DaemonErrorKind {
     IngressPortInvalid,
     /// The requested world does not exist.
     UnknownWorld,
+    /// `restart` was asked for a world this daemon never booted (or already stopped).
+    NotRunning,
     /// A requested backing service is not running as a container.
     ServiceNotRunning,
     /// The caller sent a malformed request.
@@ -623,6 +662,9 @@ pub enum DaemonRequest {
     SnowResolve(SnowResolveRequest),
     /// Boot a world; [`DaemonReply::Event`] frames precede the [`DaemonReply::World`] reply.
     Up(UpRequest),
+    /// Stop the selected world's components and `crun` services in place, then boot it again;
+    /// [`DaemonReply::Event`] frames precede the terminal [`DaemonReply::World`] reply.
+    Restart(WorldSelector),
     /// Stop a world's services while keeping its worktree.
     Down(WorldSelector),
     /// Create a fork worktree plus its CoW world.
@@ -706,7 +748,8 @@ pub enum DaemonReply {
         /// The boot event.
         event: BootEvent,
     },
-    /// Terminal reply to [`DaemonRequest::Up`] / [`DaemonRequest::Fork`].
+    /// Terminal reply to [`DaemonRequest::Up`] / [`DaemonRequest::Restart`] /
+    /// [`DaemonRequest::Fork`].
     World {
         /// The booted world.
         world: WorldUpSummary,
@@ -838,6 +881,18 @@ pub trait DaemonControl: Send + Sync {
     fn up(
         &self,
         req: &UpRequest,
+        on_event: &mut dyn FnMut(BootEvent),
+    ) -> Result<WorldUpSummary, EdgeError>;
+
+    /// Stop the selected world's components + `crun` backing services in place — keeping the
+    /// worktree and the world's CoW state — then run the exact same boot pipeline as
+    /// [`DaemonControl::up`] (`changed: true`, `restarted` naming what came back).
+    ///
+    /// A `Failed` world re-boots (the rescue path); a world this daemon never booted fails closed
+    /// with [`DaemonErrorKind::NotRunning`] and one line naming `slipfork up`.
+    fn restart(
+        &self,
+        req: &WorldSelector,
         on_event: &mut dyn FnMut(BootEvent),
     ) -> Result<WorldUpSummary, EdgeError>;
 

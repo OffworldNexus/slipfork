@@ -1095,24 +1095,6 @@ impl BtrfsEngine {
         Ok(())
     }
 
-    /// Stop every live service of `world` before its subvolume is sealed.
-    fn stop_live_services(&self, world: &WorldHandle) -> Result<(), EngineError> {
-        let services: Vec<ServiceTeardown> = {
-            let mut worlds = self.lock()?;
-            let record = self.live_record(&mut worlds, world)?;
-            record
-                .services
-                .iter()
-                .filter(|(_, service)| {
-                    ServiceState::from_bits(service.state.load(Ordering::Relaxed))
-                        == ServiceState::Running
-                })
-                .map(|(id, service)| ServiceTeardown::from_record(id, service))
-                .collect()
-        };
-        self.stop_services_with_grace(&services, SERVICE_STOP_GRACE)
-    }
-
     fn stop_service_inner(&self, world: &WorldHandle, id: &str) -> Result<(), EngineError> {
         let (state, log, process) = {
             let mut worlds = self.lock()?;
@@ -1484,7 +1466,7 @@ impl WorldEngine for BtrfsEngine {
             let mut worlds = self.lock()?;
             Self::sealable(self.owned(&mut worlds, world)?, world)?;
         }
-        self.stop_live_services(world)?;
+        self.stop_world_services(world)?;
 
         let world_dir = {
             let mut worlds = self.lock()?;
@@ -1759,6 +1741,24 @@ impl WorldEngine for BtrfsEngine {
 
     fn stop_service(&self, service: &ServiceHandle) -> Result<(), EngineError> {
         self.stop_service_inner(service.world(), service.id())
+    }
+
+    fn stop_world_services(&self, world: &WorldHandle) -> Result<(), EngineError> {
+        let services: Vec<ServiceTeardown> = {
+            let mut worlds = self.lock()?;
+            let record = self.live_record(&mut worlds, world)?;
+            record
+                .services
+                .iter()
+                .filter(|(_, service)| {
+                    ServiceState::from_bits(service.state.load(Ordering::Relaxed))
+                        == ServiceState::Running
+                })
+                .map(|(id, service)| ServiceTeardown::from_record(id, service))
+                .collect()
+        };
+        // The one stop path: components first, then containers (`ADR-0009` §3).
+        self.stop_services_with_grace(&services, SERVICE_STOP_GRACE)
     }
 
     fn service_logs(&self, world: &WorldHandle, id: &str) -> Result<ServiceLogs, EngineError> {

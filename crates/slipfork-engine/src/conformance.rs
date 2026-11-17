@@ -256,6 +256,11 @@ pub fn assert_world_engine_conformance(
         ),
     }
 
+    // A live world's services can be stopped as one ordered set; the call is idempotent.
+    engine
+        .stop_world_services(&world)
+        .expect("stopping a live world's services is idempotent");
+
     engine
         .freeze_world(&world, &SnapshotId("conformance-frozen".to_owned()))
         .expect("a live world must be freezable");
@@ -283,6 +288,7 @@ pub fn assert_world_engine_conformance(
             engine.world_processes(&opaque).map(|_| ()),
         ),
         ("world_lineage", engine.world_lineage(&opaque).map(|_| ())),
+        ("stop_world_services", engine.stop_world_services(&opaque)),
     ] {
         match err {
             Err(EngineError::WorldGone { .. }) => {}

@@ -1,7 +1,8 @@
 //! `<runtime_dir>/daemon.sock` client: the thin `slipfork` CLI's only view of `slipforkd`.
 //!
 //! [`DaemonControlClient`] implements the same [`DaemonControl`] trait the daemon implements
-//! in-process, one fresh connection per call. Streaming replies (`up`/`fork` events, log chunks)
+//! in-process, one fresh connection per call. Streaming replies (`up`/`restart`/`fork` events, log
+//! chunks)
 //! are dispatched to the caller's callback until the terminal frame arrives.
 
 use std::io::Write;
@@ -149,6 +150,17 @@ impl DaemonControl for DaemonControlClient {
         on_event: &mut dyn FnMut(BootEvent),
     ) -> Result<WorldUpSummary, EdgeError> {
         match self.exchange(&DaemonRequest::Up(req.clone()), on_event, &mut |_| {})? {
+            DaemonReply::World { world } => Ok(world),
+            other => Err(unexpected_reply(&other)),
+        }
+    }
+
+    fn restart(
+        &self,
+        req: &WorldSelector,
+        on_event: &mut dyn FnMut(BootEvent),
+    ) -> Result<WorldUpSummary, EdgeError> {
+        match self.exchange(&DaemonRequest::Restart(req.clone()), on_event, &mut |_| {})? {
             DaemonReply::World { world } => Ok(world),
             other => Err(unexpected_reply(&other)),
         }

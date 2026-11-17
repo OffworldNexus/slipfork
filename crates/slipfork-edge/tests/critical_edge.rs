@@ -765,6 +765,12 @@ impl WorldEngine for StubWorldEngine {
         self.unsupported("stop_service")
     }
 
+    fn stop_world_services(&self, world: &WorldHandle) -> Result<(), EngineError> {
+        // The double spawns no service, so a live world has nothing to stop; an unknown or
+        // destroyed handle still fails closed like the real engine.
+        self.live_world(world)
+    }
+
     fn service_logs(&self, _world: &WorldHandle, _id: &str) -> Result<ServiceLogs, EngineError> {
         self.unsupported("service_logs")
     }
@@ -936,6 +942,104 @@ fn clone_world_refuses_an_unrecorded_snapshot() {
 fn stub_world_engine_passes_the_shared_conformance_matrix() {
     let state = cached_test_dir("stub-conformance");
     assert_world_engine_conformance(&StubWorldEngine::new(), &state, &test_rootfs());
+    let _ = fs::remove_dir_all(&state);
+}
+
+#[test]
+fn registry_replace_world_swaps_routes_without_touching_the_handle() {
+    let state = cached_test_dir("registry-replace");
+    let engine = Arc::new(StubWorldEngine::new());
+    let registry = stub_registry(Arc::clone(&engine));
+    let project = acme();
+    let target = WorldTarget::Canonical;
+    let handle = clone_test_world(engine.as_ref(), &state, target.clone());
+
+    let unknown = registry
+        .replace_world(
+            &project,
+            &target,
+            Vec::new(),
+            vec![IngressRoute {
+                prefix: String::new(),
+                port: 8000,
+            }],
+        )
+        .expect_err("an unattached world's routes cannot be replaced");
+    assert!(
+        matches!(&unknown, EdgeError::WorldNotAttached { world } if world == "acme"),
+        "got {unknown:?}"
+    );
+
+    registry
+        .attach_world(
+            &project,
+            &target,
+            vec!["apps.acme.localhost".to_owned()],
+            handle.clone(),
+            vec![IngressRoute {
+                prefix: String::new(),
+                port: 8000,
+            }],
+        )
+        .expect("attach the world");
+
+    // The new `snow.yml` table: a longer prefix at a new port, plus a new domain.
+    registry
+        .replace_world(
+            &project,
+            &target,
+            vec!["api.acme.localhost".to_owned()],
+            vec![
+                IngressRoute {
+                    prefix: "/api".to_owned(),
+                    port: 9000,
+                },
+                IngressRoute {
+                    prefix: String::new(),
+                    port: 9100,
+                },
+            ],
+        )
+        .expect("replace the routes of an attached world");
+    let api = forward_decision(
+        registry
+            .resolve("acme.localhost", "/api/users", false)
+            .expect("the edited prefix serves"),
+    );
+    assert_eq!(api.port(), 9000);
+    let root = forward_decision(
+        registry
+            .resolve("acme.localhost", "/", false)
+            .expect("the edited catch-all serves"),
+    );
+    assert_eq!(root.port(), 9100);
+    assert_eq!(
+        engine.destroyed(),
+        0,
+        "replacing routes must never destroy the live handle"
+    );
+
+    // The old table is gone, and the world's origin stays its `.localhost` origin.
+    assert_eq!(
+        registry.origin(&project, &target).expect("origin").url(),
+        "http://acme.localhost"
+    );
+    // Invalid replacement tables still fail closed.
+    let invalid = registry
+        .replace_world(
+            &project,
+            &target,
+            Vec::new(),
+            vec![IngressRoute {
+                prefix: "api".to_owned(),
+                port: 9000,
+            }],
+        )
+        .expect_err("a prefix without a leading '/' is refused");
+    assert!(
+        matches!(invalid, EdgeError::InvalidIngressRoute { .. }),
+        "got {invalid:?}"
+    );
     let _ = fs::remove_dir_all(&state);
 }
 
@@ -2268,16 +2372,36 @@ impl TestControl {
         })
     }
 
-    fn up_summary(&self) -> Result<WorldUpSummary, EdgeError> {
+    fn up_summary(
+        &self,
+        changed: bool,
+        restarted: Vec<String>,
+    ) -> Result<WorldUpSummary, EdgeError> {
+        let world = self.world_text();
         Ok(WorldUpSummary {
-            world: slipfork_edge::world_id(&self.project, &self.target),
+            world: world.clone(),
+            state: WorldState::Running,
+            changed,
+            restarted,
+            worktree: PathBuf::from("/repo"),
             origin: self.registry.origin(&self.project, &self.target)?,
+            lineage: empty_lineage(),
+            services: vec![
+                service_row(
+                    &world,
+                    "pg_databases.main",
+                    ServiceKind::BackingService,
+                    ServiceState::Running,
+                ),
+                service_row(&world, "api", ServiceKind::Component, ServiceState::Running),
+            ],
             resources: vec![ResourceSummary {
                 id: "pg_databases.main".to_owned(),
                 strategy: "prefer_remote".to_owned(),
                 resolved: "local".to_owned(),
                 reason: "OSPP unpaired".to_owned(),
             }],
+            next: slipfork_edge::world_next_commands(WorldState::Running),
         })
     }
 }
@@ -2300,7 +2424,9 @@ impl DaemonControl for TestControl {
         assert_eq!(req.dump, DumpRequest::NoDump);
         assert_eq!(req.resources, ResourceRequest::Local);
         self.record_cwd(&req.cwd);
-        let summary = self.up_summary()?;
+        // The world is already running: the idempotent `up` reports `changed: false` and names
+        // nothing it restarted.
+        let summary = self.up_summary(false, Vec::new())?;
         on_event(BootEvent::Resources {
             resource: summary.resources[0].clone(),
         });
@@ -2309,6 +2435,31 @@ impl DaemonControl for TestControl {
             port: 8000,
         });
         Ok(summary)
+    }
+
+    fn restart(
+        &self,
+        req: &WorldSelector,
+        on_event: &mut dyn FnMut(BootEvent),
+    ) -> Result<WorldUpSummary, EdgeError> {
+        self.record_cwd(&req.cwd);
+        if req
+            .world
+            .as_deref()
+            .is_some_and(|selected| selected != self.world_text())
+        {
+            // A world this control does not hold is never booted by `restart`.
+            let selected = req.world.as_deref().unwrap_or_default();
+            return Err(EdgeError::Control(DaemonError::new(
+                DaemonErrorKind::NotRunning,
+                format!("world '{selected}' is not running; boot it with `slipfork up`"),
+            )));
+        }
+        on_event(BootEvent::Hook {
+            id: "api:pre-deploy".to_owned(),
+            argv: vec!["migrate".to_owned()],
+        });
+        self.up_summary(true, vec!["pg_databases.main".to_owned(), "api".to_owned()])
     }
 
     fn down(&self, req: &WorldSelector) -> Result<bool, EdgeError> {
@@ -2326,7 +2477,7 @@ impl DaemonControl for TestControl {
             id: "api:pre-deploy".to_owned(),
             argv: vec!["migrate".to_owned()],
         });
-        self.up_summary()
+        self.up_summary(true, vec!["api".to_owned()])
     }
 
     fn drop_fork(&self, req: &DropForkRequest) -> Result<bool, EdgeError> {
@@ -2582,6 +2733,26 @@ fn daemon_control_round_trip_and_frame_cap() {
         )
         .expect("up");
     assert_eq!(up.world, "acme");
+    assert_eq!(up.state, WorldState::Running);
+    assert!(
+        !up.changed,
+        "the second `up` of a running world must report `changed: false`"
+    );
+    assert!(
+        up.restarted.is_empty(),
+        "an unchanged `up` must not claim it restarted anything"
+    );
+    assert_eq!(
+        up.next,
+        vec![
+            "slipfork open".to_owned(),
+            "slipfork db".to_owned(),
+            "slipfork logs".to_owned(),
+            "slipfork restart".to_owned(),
+            "slipfork down".to_owned(),
+        ]
+    );
+    assert_eq!(up.worktree, PathBuf::from("/repo"));
     assert_eq!(up.resources[0].id, "pg_databases.main");
     assert_eq!(
         events.len(),
@@ -2592,6 +2763,52 @@ fn daemon_control_round_trip_and_frame_cap() {
         *control.last_cwd.lock().expect("last cwd"),
         Some(cwd.clone())
     );
+
+    // `restart` reaches the socket and streams its events before the terminal summary. The
+    // fixture is a double, so only the wire contract is asserted here; the real restart semantics
+    // are proven against `DaemonService` in `slipfork::daemon`'s own tests.
+    let mut restart_events = Vec::new();
+    let restarted = client
+        .restart(
+            &WorldSelector {
+                cwd: cwd.clone(),
+                world: None,
+            },
+            &mut |event| restart_events.push(event),
+        )
+        .expect("restart");
+    assert_eq!(restarted.world, "acme");
+    assert_eq!(
+        restart_events.len(),
+        1,
+        "restart streams its boot events before the summary"
+    );
+    assert_eq!(
+        *control.last_cwd.lock().expect("last cwd"),
+        Some(cwd.clone())
+    );
+
+    // `restart` never boots a world it does not hold: the refusal crosses the wire typed.
+    let refusal = client
+        .restart(
+            &WorldSelector {
+                cwd: cwd.clone(),
+                world: Some("acme:gone".to_owned()),
+            },
+            &mut |_| {},
+        )
+        .expect_err("restart of a world this daemon never booted must fail closed");
+    match refusal {
+        EdgeError::Control(error) => {
+            assert_eq!(error.kind, DaemonErrorKind::NotRunning);
+            assert!(
+                error.message.contains("boot it with `slipfork up`"),
+                "the refusal must name `slipfork up`, got: {}",
+                error.message
+            );
+        }
+        other => panic!("expected a typed control refusal, got {other:?}"),
+    }
 
     assert!(
         client
@@ -2743,6 +2960,105 @@ fn daemon_control_round_trip_and_frame_cap() {
         "an oversized frame must be refused with a typed error, got:\n{refusal}"
     );
     let _ = fs::remove_dir_all(&state);
+}
+
+#[test]
+fn world_next_commands_follow_the_one_state_table() {
+    let verbs = |state| -> Vec<String> { slipfork_edge::world_next_commands(state) };
+    assert_eq!(
+        verbs(WorldState::Running),
+        vec![
+            "slipfork open".to_owned(),
+            "slipfork db".to_owned(),
+            "slipfork logs".to_owned(),
+            "slipfork restart".to_owned(),
+            "slipfork down".to_owned(),
+        ]
+    );
+    assert_eq!(
+        verbs(WorldState::Failed),
+        vec![
+            "slipfork logs".to_owned(),
+            "slipfork restart".to_owned(),
+            "slipfork down".to_owned(),
+        ]
+    );
+    assert_eq!(
+        verbs(WorldState::Stopped),
+        vec![
+            "slipfork up".to_owned(),
+            "slipfork logs".to_owned(),
+            "slipfork down".to_owned(),
+        ]
+    );
+}
+
+#[test]
+fn world_up_summary_carries_the_documented_fields_and_joins_restarted_ids() {
+    let summary = WorldUpSummary {
+        world: "acme".to_owned(),
+        state: WorldState::Running,
+        changed: true,
+        restarted: vec!["pg_databases.main".to_owned(), "api".to_owned()],
+        worktree: PathBuf::from("/repo"),
+        origin: test_origin("acme", 80),
+        lineage: empty_lineage(),
+        services: vec![
+            service_row(
+                "acme",
+                "pg_databases.main",
+                ServiceKind::BackingService,
+                ServiceState::Running,
+            ),
+            service_row("acme", "api", ServiceKind::Component, ServiceState::Running),
+        ],
+        resources: Vec::new(),
+        next: slipfork_edge::world_next_commands(WorldState::Running),
+    };
+    let json = serde_json::to_value(&summary).expect("serialize the up summary");
+    let mut keys: Vec<&str> = json
+        .as_object()
+        .expect("the summary is one object")
+        .keys()
+        .map(String::as_str)
+        .collect();
+    keys.sort_unstable();
+    assert_eq!(
+        keys,
+        vec![
+            "changed",
+            "lineage",
+            "next",
+            "origin",
+            "resources",
+            "restarted",
+            "services",
+            "state",
+            "worktree",
+            "world",
+        ],
+        "the up/restart/fork document carries exactly its documented keys"
+    );
+    assert_eq!(json["state"], serde_json::json!("running"));
+    assert_eq!(json["changed"], serde_json::json!(true));
+    assert!(
+        json.get("origin").is_some(),
+        "the world's origin is present"
+    );
+    assert_eq!(
+        serde_json::from_value::<WorldUpSummary>(json).expect("the summary round-trips"),
+        summary
+    );
+    for id in &summary.restarted {
+        assert!(
+            summary.services.iter().any(|row| row.info.id == *id),
+            "restarted ids must join services[].id: {id}"
+        );
+    }
+    let mut unique = summary.restarted.clone();
+    unique.sort_unstable();
+    unique.dedup();
+    assert_eq!(unique.len(), summary.restarted.len(), "ids are unique");
 }
 
 #[test]

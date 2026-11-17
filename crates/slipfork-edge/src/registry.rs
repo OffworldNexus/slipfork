@@ -313,6 +313,35 @@ impl WorldRegistry {
         Ok(())
     }
 
+    /// Replace an attached world's `snow.yml`-derived domains and ingress table **in place**.
+    ///
+    /// `slipfork restart` re-reads `ingresses:`/`domains:`/`internal_ports` and applies them to the
+    /// live world without touching its engine handle (the CoW state must survive). The world must
+    /// already be attached: an unknown `(project, target)` fails closed with
+    /// [`EdgeError::WorldNotAttached`] rather than silently creating a route table for a world this
+    /// daemon does not hold. The world's share (if any) is left untouched.
+    pub fn replace_world(
+        &self,
+        project: &ProjectSlug,
+        target: &WorldTarget,
+        snow_domains: Vec<String>,
+        ingresses: Vec<IngressRoute>,
+    ) -> Result<(), EdgeError> {
+        let id = world_id(project, target);
+        validate_ingresses(&id, &ingresses)?;
+        let mut state = self.lock("replace_world")?;
+        let Some(entry) = state
+            .worlds
+            .iter_mut()
+            .find(|entry| entry.project == *project && entry.target == *target)
+        else {
+            return Err(EdgeError::WorldNotAttached { world: id });
+        };
+        entry.snow_domains = snow_domains;
+        entry.ingresses = ingresses;
+        Ok(())
+    }
+
     /// The world's single public origin: its share when shared, otherwise its `.localhost` origin.
     pub fn origin(
         &self,

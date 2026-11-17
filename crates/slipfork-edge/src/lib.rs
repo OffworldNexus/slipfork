@@ -61,7 +61,7 @@ pub use daemon::{
     ForwardTarget, HookRunRequest, IngressInfo, LogsRequest, PruneReport, ResourceRequest,
     ResourceSummary, SnowResolveRequest, SnowResolveSummary, UpRequest, WorldExecTarget,
     WorldProcessReport, WorldSelector, WorldServiceSummary, WorldState, WorldSummary,
-    WorldUpSummary,
+    WorldUpSummary, world_next_commands,
 };
 pub use forward::{ForwardBridge, ForwardTargetSpec};
 pub use ingress::HttpIngress;
@@ -213,6 +213,15 @@ pub enum EdgeError {
         "world {world} is already registered; release it before attaching another handle for the same project and target"
     )]
     WorldAlreadyRegistered {
+        /// World id.
+        world: String,
+    },
+
+    /// Replacing a world's routes was asked for a world this registry does not hold.
+    #[error(
+        "world {world} is not attached; only an attached world's ingress table can be replaced"
+    )]
+    WorldNotAttached {
         /// World id.
         world: String,
     },

@@ -1,7 +1,7 @@
 //! `<runtime_dir>/daemon.sock` server: bounded JSON-line framing over a `0600` Unix socket.
 //!
 //! One connection carries exactly one request. Most calls answer with a single terminal frame;
-//! `up`/`fork`, `logs`, and `hook_run` may stream [`DaemonReply::Event`] / [`DaemonReply::Chunk`]
+//! `up`/`restart`/`fork`, `logs`, and `hook_run` may stream [`DaemonReply::Event`] / [`DaemonReply::Chunk`]
 //! frames first, and `forward` keeps the connection open until the client disconnects.
 
 use std::io::Write;
@@ -154,6 +154,10 @@ fn dispatch(
         ),
         DaemonRequest::Up(request) => {
             let summary = stream_events(writer, |on_event| control.up(&request, on_event))?;
+            write_reply(writer, &DaemonReply::World { world: summary })
+        }
+        DaemonRequest::Restart(request) => {
+            let summary = stream_events(writer, |on_event| control.restart(&request, on_event))?;
             write_reply(writer, &DaemonReply::World { world: summary })
         }
         DaemonRequest::Down(request) => write_reply(

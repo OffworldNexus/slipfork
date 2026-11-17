@@ -1138,3 +1138,10 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-17T21:48 [M3.28.13] (lead) end-to-end restart proof added to evidence: edit an app file AND a snow.yml hook, run slipfork restart, show the old behaviour gone (M3.28.17 could only prove t
 - 2026-11-17T21:48 [M3.28.19] (lead) verified against shipped client: 10 factual-drift items fixed (kept the deliberate 0.2.0 shape: hello/auth_challenge/auth_proof, repo+digest ProjectIdentity, re
 - 2026-11-17T21:48 [M3.28.19] (lead) status active -> done
+- 2026-11-17T21:49 [M3.28.17] (lead) edited fields
+- 2026-11-17T21:49 [M3.28.17] (lead) attempt 3/4 started
+- 2026-11-17T21:49 [M3.28.17] (lead) round 2 (ioc) FAIL: two BLOCKERs left, both about ownership of 'what this world runs' — teardown is still a caller-side loop (no WorldEngine::stop_world_service
+- 2026-11-17T21:49 [M3.23] (lead) ADR status hygiene (from M3.28.19): ADR-0008 must gain one line under its status - 'Superseded for the wire specification by docs/design/ospp.md (0.2.0); the re
+- 2026-11-17T21:49 [M3.2] (lead) ADR-0008 wire supersession (from M3.28.19): this epic implements docs/design/ospp.md, which supersedes ADR-0008's wire specification at 0.2.0. ADR-0008 status g
+- 2026-11-17T22:13 [M3.28.17] (lead) status review -> done
+- 2026-11-17T22:13 [M3.28.17] (lead) pre-commit: make check rc=0 (load 10), engine lib 66, slipfork lib restart 4, critical_edge 40, clippy clean, fmt-ok, critical_guard OK, guard OK.

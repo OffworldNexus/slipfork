@@ -329,7 +329,9 @@ pub enum ServiceState {
 }
 
 impl ServiceState {
-    pub(crate) fn to_bits(self) -> u8 {
+    /// The bit representation an out-of-crate [`WorldEngine`] adapter stores in the supervision
+    /// cell it mints [`ServiceHandle`]s over.
+    pub fn to_bits(self) -> u8 {
         match self {
             Self::Running => 0,
             Self::Exited => 1,
@@ -535,6 +537,25 @@ pub trait WorldEngine: Send + Sync {
         WorldHandle::mint(self.name(), seq)
     }
 
+    /// Mint the handle an out-of-crate adapter returns from [`WorldEngine::spawn_service`].
+    ///
+    /// `state` is the adapter's **own** supervision cell: the adapter stores
+    /// [`ServiceState::Exited`] / [`ServiceState::Stopped`] when it reaps the service, and
+    /// [`ServiceHandle::state`] reads that cell back. `Self: Sized` excludes `dyn WorldEngine`,
+    /// mirroring [`WorldEngine::mint_world_handle`]: minting is an in-process lookup token, not an
+    /// unforgeable capability, and grants nothing across engines or over IPC.
+    fn mint_service_handle(
+        &self,
+        world: &WorldHandle,
+        id: &str,
+        state: std::sync::Arc<std::sync::atomic::AtomicU8>,
+    ) -> ServiceHandle
+    where
+        Self: Sized,
+    {
+        ServiceHandle::mint(world.clone(), id, state)
+    }
+
     /// Capture an immutable read-only snapshot of `source_dir` under `id`.
     fn create_snapshot(
         &self,
@@ -577,6 +598,20 @@ pub trait WorldEngine: Send + Sync {
     /// Idempotent: stopping an already-stopped or self-exited service succeeds, and the captured
     /// logs stay readable afterwards.
     fn stop_service(&self, service: &ServiceHandle) -> Result<(), EngineError>;
+
+    /// Stop every service this engine supervises in `world`.
+    ///
+    /// The engine's own supervision record is the single owner of "what this world runs", so a
+    /// caller that wants a world's services stopped (a `restart`, a rescue) asks here instead of
+    /// replaying the handles it happens to hold: a partial spawn failure can never leave a running
+    /// service behind. Services are stopped in `ADR-0009` §3 order — app components first, then
+    /// backing-service containers — with the engine's bounded `SIGTERM` → `SIGKILL` grace.
+    ///
+    /// Idempotent: already-stopped and self-exited services stay stopped and keep their retained
+    /// logs, and rows remain readable through [`WorldEngine::world_processes`]. A destroyed,
+    /// foreign, or teardown-in-progress `world` fails closed with [`EngineError::WorldGone`] —
+    /// never a silent no-op.
+    fn stop_world_services(&self, world: &WorldHandle) -> Result<(), EngineError>;
 
     /// Retained (size-capped) output of the service `id` inside `world`.
     fn service_logs(&self, world: &WorldHandle, id: &str) -> Result<ServiceLogs, EngineError>;

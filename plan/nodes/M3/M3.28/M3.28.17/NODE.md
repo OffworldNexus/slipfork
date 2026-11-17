@@ -2,16 +2,22 @@
 id: M3.28.17
 title: "Restart vs up: one boot pipeline, truthful WorldUpSummary.changed and restarted ids"
 kind: task
-status: ready
+status: done
 owner: implementer
 priority: 3
 depends_on: [M3.28.4]
-paths: ["crates/slipfork-edge/src/**", "crates/slipfork-edge/tests/**", crates/slipfork/src/daemon.rs]
-attempts: 0
-max_attempts: 3
+paths:
+  - "crates/slipfork-edge/src/**"
+  - "crates/slipfork-edge/tests/**"
+  - "crates/slipfork-engine/src/**"
+  - "crates/slipfork-engine/tests/**"
+  - crates/slipfork/src/daemon.rs
+  - ARCHITECTURE.md
+attempts: 3
+max_attempts: 4
 escalation: none
 created: "2026-11-17T19:46"
-updated: "2026-11-17T19:46"
+updated: "2026-11-17T22:13"
 ---
 
 # Goal

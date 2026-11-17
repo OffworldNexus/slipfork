@@ -3,7 +3,7 @@
 //! Every helper is real: a disk-backed scratch directory (never tmpfs), a real Git repository, and
 //! the actual `slipfork` binary. A Btrfs host drives a real `slipforkd` child; every other host
 //! serves the same `slipfork::daemon` in-process over the one
-//! [`slipfork::daemon::compose_daemon`] graph with `BtrfsEngine::with_driver(TestTreeDriver)`.
+//! [`slipfork::daemon::compose_daemon`] graph over `BtrfsEngine::with_driver_and_clock(TestTreeDriver, clock)`.
 //! The daemon's runtime directory lives under `$XDG_RUNTIME_DIR/slipfork` (or the explicit
 //! `--runtime-dir`) so the `git-remote-slipfork` helper resolves exactly the same control socket.
 //!
@@ -343,7 +343,7 @@ pub struct Daemon {
 enum Backend {
     /// Real `slipforkd` child process (Btrfs hosts and every explicit-`PATH` daemon).
     Child(Child),
-    /// In-process `slipfork::daemon` over `BtrfsEngine::with_driver(TestTreeDriver)`.
+    /// In-process `slipfork::daemon` over `BtrfsEngine::with_driver_and_clock(TestTreeDriver, clock)`.
     InProcess {
         /// The bound `<state_dir>/http-ingress.sock` (`0600`) ingress server.
         _ingress: HttpIngress,

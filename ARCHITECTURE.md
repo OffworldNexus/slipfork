@@ -695,7 +695,14 @@ pub trait WorldEngine: Send + Sync {
     fn mint_world_handle(&self, seq: u64) -> WorldHandle where Self: Sized { /* provided via pub(crate) WorldHandle::mint */ }
     /// Single supervision surface for `WorldProcess` and `OciContainer` runtimes (`ADR-0002` §2, `ADR-0009` §3).
     fn spawn_service(&self, world: &WorldHandle, spec: &ServiceSpec) -> Result<ServiceHandle, EngineError>;
+    /// Provided handle constructor for out-of-crate `spawn_service` impls (`Self: Sized` excludes
+    /// `dyn WorldEngine`); `state` is the adapter's own supervision cell, read back by `ServiceHandle::state`.
+    fn mint_service_handle(&self, world: &WorldHandle, id: &str, state: Arc<AtomicU8>) -> ServiceHandle where Self: Sized { /* provided via pub(crate) ServiceHandle::mint */ }
     fn stop_service(&self, service: &ServiceHandle) -> Result<(), EngineError>;
+    /// Stop EVERY service the engine supervises in `world` (components first, then containers) with the
+    /// engine's bounded grace — the one owner of "what this world runs", so a `restart` never replays
+    /// caller-held handles. Idempotent; destroyed/foreign `world` returns `EngineError::WorldGone`.
+    fn stop_world_services(&self, world: &WorldHandle) -> Result<(), EngineError>;
     fn service_logs(&self, world: &WorldHandle, id: &str) -> Result<ServiceLogs, EngineError>;
     /// Snapshot of the world's supervised components and `crun` backing services (`M3.28.4`);
     /// destroyed or foreign `world` returns `EngineError::WorldGone`.
@@ -800,12 +807,26 @@ pub struct IngressRoute { pub prefix: String, pub port: u16 }
 
 impl WorldRegistry {
     pub fn mint_origin(&self, route: &LocalHostRoute, ingress_port: u16) -> Result<WorldOrigin, EdgeError>;
+    /// A second attach for an already-registered world fails closed with
+    /// `EdgeError::WorldAlreadyRegistered`; it never replaces or leaks the previous handle.
     pub fn attach_world(
         &self,
         project: &ProjectSlug,
         target: &WorldTarget,
         snow_domains: Vec<String>,
         world: WorldHandle,
+        ingresses: Vec<IngressRoute>,
+    ) -> Result<(), EdgeError>;
+    /// Swap an attached world's `snow.yml`-derived domains and ingress table **in place** — no
+    /// handle is touched, so a `restart` re-reading `ingresses:`/`domains:`/`internal_ports` keeps
+    /// the world's CoW state. The table is re-validated (`EdgeError::InvalidIngressRoute`) and an
+    /// unknown world fails closed with `EdgeError::WorldNotAttached`; the world's share is
+    /// untouched.
+    pub fn replace_world(
+        &self,
+        project: &ProjectSlug,
+        target: &WorldTarget,
+        snow_domains: Vec<String>,
         ingresses: Vec<IngressRoute>,
     ) -> Result<(), EdgeError>;
     pub fn release_world(&self, project: &ProjectSlug, target: &WorldTarget) -> Result<bool, EdgeError>;
@@ -916,12 +937,6 @@ pub struct UpRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RestartRequest {
-    #[serde(flatten)]
-    pub selector: WorldSelector,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ForkRequest {
     pub cwd: PathBuf,
     pub fork: Option<String>,   // `None` derives via `VcsWorkspaceFactory::current_branch` + `sanitize_fork_name`, then validates `!= repo.project` and `validate_fork_name(&fork, &snow_domains)` with the checkout's real `snow.yml` `domains[].id` (`M3.28.5` / `M3.28.10`)
@@ -1003,8 +1018,9 @@ pub trait DaemonControl: Send + Sync {
     /// Runs the world boot pipeline when unbooted, `Stopped`, or `Failed`; idempotent when `Running` (`changed: false`).
     fn up(&self, req: &UpRequest, on_event: &mut dyn FnMut(BootEvent)) -> Result<WorldUpSummary, EdgeError>;
     /// Stops components + `crun` backing services in place while keeping worktree & CoW state, then runs the exact
-    /// same boot pipeline as `up` (`changed: true`; `Failed` rescues, unbooted/`Stopped` fails closed naming `slipfork up`).
-    fn restart(&self, req: &RestartRequest, on_event: &mut dyn FnMut(BootEvent)) -> Result<WorldUpSummary, EdgeError>;
+    /// same boot pipeline as `up`; `changed` is observed (true only when a service started or a hook ran), `Failed`
+    /// rescues, and an unbooted/`Stopped` world fails closed naming `slipfork up`.
+    fn restart(&self, req: &WorldSelector, on_event: &mut dyn FnMut(BootEvent)) -> Result<WorldUpSummary, EdgeError>;
     fn down(&self, req: &WorldSelector) -> Result<bool, EdgeError>;
     fn fork(&self, req: &ForkRequest, on_event: &mut dyn FnMut(BootEvent)) -> Result<WorldUpSummary, EdgeError>;
     fn drop_fork(&self, req: &WorldSelector) -> Result<bool, EdgeError>;

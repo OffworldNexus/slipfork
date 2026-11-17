@@ -33,7 +33,7 @@ use slipfork_edge::{
     IngressInfo, IngressRoute, LogsRequest, PruneReport, ResourceSummary, SharedWorldInfo,
     SnowResolveRequest, SnowResolveSummary, UnavailableTunnelRegistrar, UpRequest, WorldExecTarget,
     WorldProcessReport, WorldRegistry, WorldSelector, WorldServiceSummary, WorldState,
-    WorldSummary, WorldUpSummary, parent_world, world_id,
+    WorldSummary, WorldUpSummary, parent_world, world_id, world_next_commands,
 };
 use slipfork_engine::btrfs::SubvolumeDriver;
 use slipfork_engine::rootfs::{
@@ -44,8 +44,8 @@ use slipfork_engine::rootfs::{
 use slipfork_engine::{
     BaseLineage, BootLineage, BtrfsEngine, EngineError, ExecEnv, ExecOutput, InheritedVar,
     LocalIngressBridge, MonotonicClock, MountMode, SeedLineage, ServiceHandle, ServiceKind,
-    ServiceRuntime, ServiceSpec, SnapshotId, StateSubdirMount, StreamChunk, SystemClock,
-    WorldEngine, WorldHandle, WorldMount, WorldSpec, elapsed_millis,
+    ServiceRuntime, ServiceSpec, ServiceState, SnapshotId, StateSubdirMount, StreamChunk,
+    SystemClock, WorldEngine, WorldHandle, WorldMount, WorldSpec, elapsed_millis,
 };
 use slipfork_ospp::{
     BrowserOpener, DeviceKeySigner, DiskSeedDumpStore, DumpStreamer, FallbackDeviceKeySigner,
@@ -177,6 +177,18 @@ pub fn host_caches(home: &Path) -> HostCaches {
 }
 
 /// One live world owned by this daemon.
+///
+/// Two groups of fields, and only the first is frozen at boot:
+///
+/// - **Frozen while the handle lives:** `worktree`, `handle` (and the CoW state behind it),
+///   `rootfs`, `policy`, `workspace`, `hook_logs`, and `project`/`target`/`repo`. A `restart`
+///   never re-clones, never rebuilds the rootfs, and never discards the worktree.
+/// - **Re-derived by every pipeline run** (`resolve_world`): `snow`, `resources`, `coords`,
+///   `base_env`, `components`, and the registry's ingress/domain table, so an edited `snow.yml` is
+///   what the world actually runs after a `restart`.
+///
+/// `services` holds the spawn handles this daemon needs for the entry/log paths only; the engine's
+/// `world_processes` rows remain the authoritative record of what is running.
 struct LiveWorld {
     project: ProjectSlug,
     target: WorldTarget,
@@ -184,15 +196,45 @@ struct LiveWorld {
     worktree: PathBuf,
     handle: WorldHandle,
     state: WorldState,
+    /// Resolved world environment (re-derived by `resolve_world`).
     base_env: ExecEnv,
-    component_envs: BTreeMap<String, ExecEnv>,
-    enabled_components: BTreeSet<String>,
+    /// The one enabled-component list: id, run command, readiness port, and environment
+    /// (re-derived by `resolve_world`; `start_world` and the hook paths never re-resolve it).
+    components: Vec<ResolvedComponent>,
+    /// The policy this world was booted (or last re-run) with; a later `up` may not silently ask
+    /// for a different dump policy or rootfs build on top of the retained CoW state.
+    policy: BootPolicy,
+    /// Resources coordinates for `resources::*`/`deployment::*` values, re-derived with the plan.
+    coords: ResourceCoordinates,
     snow: SnowFile,
+    /// The `L0` rootfs this world was cloned from: `restart` reuses it, so the world's own CoW
+    /// state (backing-service data included) is never discarded.
+    rootfs: WorldRootfs,
     resources: Vec<ResourceSummary>,
     services: Vec<ServiceHandle>,
     /// Retained hook logs by `<component>:<phase>` (`slipfork logs <hook_id>`, `ADR-0008` §4).
     hook_logs: BTreeMap<String, Arc<HookLog>>,
     workspace: Option<Arc<dyn VcsWorkspace>>,
+}
+
+/// The daemon's own record of one held world, copied out of the index so engine reads never run
+/// under the state mutex.
+struct WorldFacts {
+    state: WorldState,
+    worktree: PathBuf,
+    resources: Vec<ResourceSummary>,
+    handle: WorldHandle,
+}
+
+impl WorldFacts {
+    fn of(world: &LiveWorld) -> Self {
+        Self {
+            state: world.state,
+            worktree: world.worktree.clone(),
+            resources: world.resources.clone(),
+            handle: world.handle.clone(),
+        }
+    }
 }
 
 /// One `slipfork logs` target: an engine-retained service log or a daemon-retained hook log.
@@ -367,14 +409,191 @@ fn resolve_world_selector(raw: &str, repo: &RepoRoot) -> Result<WorldTarget, Edg
     }
 }
 
+/// The two verbs that run the one boot pipeline (`docs/design/dx-0.1.0-ux.md` §4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BootCommand {
+    /// `slipfork up`: boot an absent world, confirm a `Running` one, rescue a held one in place.
+    Up,
+    /// `slipfork restart`: re-run a world this daemon holds; never boot what was not running.
+    Restart,
+}
+
+/// What one verb must do to the selected world (`docs/design/dx-0.1.0-ux.md` §4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BootVerb {
+    /// Already `Running`: report it, touching nothing (`changed: false`).
+    Confirm,
+    /// No world here: run the boot pipeline from scratch (`changed: true`).
+    Boot,
+    /// A world this daemon holds: stop its services, then run the same pipeline over its handle
+    /// (the `restart` path and the `up` rescue path, `changed: true`).
+    Rerun,
+}
+
+/// The single verb decision `up` and `restart` obey; `None` means the verb refuses the request.
+///
+/// `up` boots an absent world and confirms a `Running` one without touching it, while `restart`
+/// only ever re-runs a world this daemon already holds — a never-booted or stopped world has no
+/// components or `crun` services to stop, so `restart` refuses rather than silently booting it.
+fn boot_verb(command: BootCommand, state: Option<WorldState>) -> Option<BootVerb> {
+    match (command, state) {
+        (BootCommand::Up, None) => Some(BootVerb::Boot),
+        (BootCommand::Up, Some(WorldState::Running)) => Some(BootVerb::Confirm),
+        (BootCommand::Up, Some(_)) => Some(BootVerb::Rerun),
+        // A held, running or failed world is re-run in place (`Failed` is the rescue path); a
+        // stopped world has nothing to stop and is refused, exactly like a never-booted one (§4).
+        (BootCommand::Restart, Some(WorldState::Running | WorldState::Failed)) => {
+            Some(BootVerb::Rerun)
+        }
+        (BootCommand::Restart, Some(WorldState::Stopped) | None) => None,
+    }
+}
+
+/// Reject `restart` of a world this daemon never booted (`code: not_running`, §4).
+fn not_running(project: &ProjectSlug, target: &WorldTarget) -> EdgeError {
+    EdgeError::Control(DaemonError::new(
+        DaemonErrorKind::NotRunning,
+        format!(
+            "world '{}' is not running; boot it with `slipfork up`",
+            world_id(project, target)
+        ),
+    ))
+}
+
+/// The service ids one pipeline run brought to `Running`: the engine's rows after the run, minus
+/// the rows that were already `Running` in the snapshot taken when the run began.
+///
+/// Both guarantees are structural: only [`ServiceState::Running`] rows can be named, and an id is
+/// reported once even if the engine ever returns a duplicated row. `restarted` therefore never
+/// contradicts `services[]` (an `exited`/`stopped` row is never called restarted) and is empty when
+/// the run started nothing.
+fn restarted_service_ids(
+    before: &[WorldServiceSummary],
+    after: &[WorldServiceSummary],
+) -> Vec<String> {
+    let mut restarted: Vec<String> = Vec::new();
+    for row in after
+        .iter()
+        .filter(|row| row.info.state == ServiceState::Running)
+    {
+        let was_running = before.iter().any(|previous| {
+            previous.info.id == row.info.id && previous.info.state == ServiceState::Running
+        });
+        if was_running || restarted.contains(&row.info.id) {
+            continue;
+        }
+        restarted.push(row.info.id.clone());
+    }
+    restarted
+}
+
+/// The per-invocation boot policy (`--no-dump | --refresh-dump`, `--resources local`,
+/// `--host-caches`), threaded into whichever verb runs the pipeline.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct BootPolicy {
+    dump: DumpPolicy,
+    force_local_resources: bool,
+    host_caches: bool,
+}
+
+/// Every `snow.yml`- and flag-derived fact one pipeline run resolves before it starts anything.
+///
+/// `boot` and `reboot` build this through the same resolver, so a `restart` re-derives the
+/// resource plan, coordinates, environments, enabled components, and ingress/domain table from the
+/// edited file. `config`, `client`, and `vault` are the inputs only a fresh `boot` needs (rootfs
+/// build and base seal); a rerun reuses the world's own rootfs and base.
+struct ResolvedWorld {
+    snow: SnowFile,
+    config: SlipforkConfig,
+    client: Option<Arc<OsppClient>>,
+    vault: Arc<dyn SecretProvider>,
+    plan: ResourcePlan,
+    resources: Vec<ResourceSummary>,
+    coords: ResourceCoordinates,
+    base_env: ExecEnv,
+    /// The one enabled-component list this run resolved; `start_world` iterates exactly this.
+    components: Vec<ResolvedComponent>,
+    ingresses: Vec<IngressRoute>,
+    domains: Vec<String>,
+}
+
+/// One enabled component of the world: everything `start_world` needs, resolved once.
+#[derive(Debug, Clone)]
+struct ResolvedComponent {
+    id: String,
+    run_command: String,
+    readiness_port: Option<u16>,
+    env: ExecEnv,
+}
+
+/// A world a fresh `boot` produced, plus what that boot observably did.
+struct BootedWorld {
+    live: LiveWorld,
+    /// The engine's rows read after the pipeline ran; the summary reports these, not a second read.
+    rows: Vec<WorldServiceSummary>,
+    changed: bool,
+    restarted: Vec<String>,
+}
+
+/// Refuse a rerun that asks for a fact only a fresh boot can produce (`docs/design/dx-0.1.0-ux.md`
+/// §4): dump policy and `--host-caches` are inputs of the sealed base and the built rootfs, which a
+/// `restart`/in-place `up` deliberately keeps.
+fn check_rerun_policy(world: &str, held: BootPolicy, policy: BootPolicy) -> Result<(), EdgeError> {
+    if policy.dump != held.dump {
+        return Err(rejected(format!(
+            "world '{world}' keeps its CoW state and its base snapshot; the dump policy re-seals the base, so run `slipfork down --world {world}` first"
+        )));
+    }
+    if policy.host_caches != held.host_caches {
+        return Err(rejected(format!(
+            "world '{world}' keeps its built rootfs; `--host-caches` rebuilds it, so run `slipfork down --world {world}` first"
+        )));
+    }
+    Ok(())
+}
+
+/// The policy one `up`/`fork` request asks for from scratch.
+fn request_policy(
+    dump: slipfork_edge::DumpRequest,
+    resources: slipfork_edge::ResourceRequest,
+    host_caches: bool,
+) -> BootPolicy {
+    BootPolicy {
+        dump: dump_policy(dump),
+        force_local_resources: matches!(resources, slipfork_edge::ResourceRequest::Local),
+        host_caches,
+    }
+}
+
+/// Merge one `up` request into the policy a held world already runs.
+///
+/// An absent `--no-dump`/`--refresh-dump` and an absent `--host-caches` keep what the world booted
+/// with (a bare `up` of a failed world never silently changes a fresh-boot-only fact), while an
+/// explicit flag that a rerun cannot apply is carried through so [`check_rerun_policy`] refuses it
+/// with one actionable line instead of dropping it.
+fn rerun_policy(
+    held: BootPolicy,
+    dump: slipfork_edge::DumpRequest,
+    resources: slipfork_edge::ResourceRequest,
+    host_caches: bool,
+) -> BootPolicy {
+    BootPolicy {
+        dump: match dump {
+            slipfork_edge::DumpRequest::Default => held.dump,
+            explicit => dump_policy(explicit),
+        },
+        force_local_resources: matches!(resources, slipfork_edge::ResourceRequest::Local)
+            || held.force_local_resources,
+        host_caches: host_caches || held.host_caches,
+    }
+}
+
 /// Inputs to one world materialization.
 struct BootContext {
     repo: RepoRoot,
     target: WorldTarget,
     worktree: PathBuf,
-    dump: DumpPolicy,
-    force_local_resources: bool,
-    host_caches: bool,
+    policy: BootPolicy,
     workspace: Option<Box<dyn VcsWorkspace>>,
 }
 
@@ -799,24 +1018,66 @@ impl DaemonService {
             .map(|world| world.state)
     }
 
-    fn world_resources(&self, selection: &WorldSelection) -> Option<Vec<ResourceSummary>> {
-        self.lock()
-            .world(&selection.repo.project, &selection.target)
-            .map(|world| world.resources.clone())
+    /// The daemon's own record of one held world, copied out of the index so no engine I/O runs
+    /// under the state mutex.
+    fn world_facts(&self, project: &ProjectSlug, target: &WorldTarget) -> Option<WorldFacts> {
+        self.lock().world(project, target).map(WorldFacts::of)
     }
 
+    /// The one `WorldUpSummary` builder: every field is read back from the world's own record, its
+    /// engine handle, and the engine's service rows, so only `changed` and `restarted` (both
+    /// observed by the pipeline run) are caller-supplied facts.
     fn summary(
         &self,
         project: &ProjectSlug,
         target: &WorldTarget,
-        resources: Vec<ResourceSummary>,
+        facts: &WorldFacts,
+        services: Vec<WorldServiceSummary>,
+        changed: bool,
+        restarted: Vec<String>,
     ) -> Result<WorldUpSummary, EdgeError> {
-        let origin = self.registry.origin(project, target)?;
+        let world = world_id(project, target);
+        let lineage = self.engine.world_lineage(&facts.handle).map_err(|err| {
+            runtime_error(format!(
+                "world '{world}' is attached but its engine handle is gone: {err}"
+            ))
+        })?;
         Ok(WorldUpSummary {
-            world: world_id(project, target),
-            origin,
-            resources,
+            world,
+            state: facts.state,
+            changed,
+            restarted,
+            worktree: facts.worktree.clone(),
+            origin: self.registry.origin(project, target)?,
+            lineage,
+            services,
+            resources: facts.resources.clone(),
+            next: world_next_commands(facts.state),
         })
+    }
+
+    /// The engine's own service rows for one world (`world_processes` is the supervision record).
+    fn service_rows(
+        &self,
+        project: &ProjectSlug,
+        target: &WorldTarget,
+        handle: &WorldHandle,
+    ) -> Result<Vec<WorldServiceSummary>, EdgeError> {
+        let world = world_id(project, target);
+        Ok(self
+            .engine
+            .world_processes(handle)
+            .map_err(|err| {
+                runtime_error(format!(
+                    "world '{world}' is attached but its engine handle is gone: {err}"
+                ))
+            })?
+            .into_iter()
+            .map(|info| WorldServiceSummary {
+                world: world.clone(),
+                info,
+            })
+            .collect())
     }
 
     fn load_snow(&self, worktree: &Path) -> Result<SnowFile, EdgeError> {
@@ -1382,218 +1643,129 @@ impl DaemonService {
         Ok(env)
     }
 
-    /// Materialize, attach, and start one world.
-    fn boot(
+    /// Resolve every `snow.yml`- and flag-derived fact one pipeline run needs, before anything is
+    /// materialized or started.
+    ///
+    /// `boot` and `reboot` call this same resolver, so a `restart` re-derives the resource plan,
+    /// resource coordinates, origin, environments, enabled components, and ingress/domain table
+    /// from the edited file instead of reusing boot-time values.
+    fn resolve_world(
         &self,
-        context: BootContext,
+        repo: &RepoRoot,
+        target: &WorldTarget,
+        worktree: &Path,
+        policy: BootPolicy,
         on_event: &mut dyn FnMut(BootEvent),
-    ) -> Result<LiveWorld, BootFailure> {
-        let BootContext {
-            repo,
-            target,
-            worktree,
-            dump,
-            force_local_resources,
-            host_caches,
-            mut workspace,
-        } = context;
-        let project = repo.project.clone();
-
-        let snow = match self.load_snow(&worktree) {
-            Ok(snow) => snow,
-            Err(error) => {
-                return Err(BootFailure {
-                    error,
-                    world: None,
-                    workspace,
-                });
-            }
-        };
-        let effective = match snow.effective_components(WORLD_MODE) {
-            Ok(effective) => effective,
-            Err(err) => {
-                return Err(BootFailure {
-                    error: runtime_error(err.to_string()),
-                    world: None,
-                    workspace,
-                });
-            }
-        };
-
-        let route =
-            match LocalHostRoute::new(project.clone(), target.clone(), None, &snow.domain_ids()) {
-                Ok(route) => route,
-                Err(err) => {
-                    return Err(BootFailure {
-                        error: runtime_error(err.to_string()),
-                        world: None,
-                        workspace,
-                    });
-                }
-            };
-        let origin = match self.registry.mint_origin(&route, self.ingress.port()) {
-            Ok(origin) => origin,
-            Err(error) => {
-                return Err(BootFailure {
-                    error,
-                    world: None,
-                    workspace,
-                });
-            }
-        };
-
-        let config = match self.load_config(&repo.vcs_root) {
-            Ok(config) => config,
-            Err(error) => {
-                return Err(BootFailure {
-                    error,
-                    world: None,
-                    workspace,
-                });
-            }
-        };
-        let client = match self.ospp_client() {
-            Ok(client) => client,
-            Err(error) => {
-                return Err(BootFailure {
-                    error,
-                    world: None,
-                    workspace,
-                });
-            }
-        };
-        let offer = match self.resource_offer(&project, client.as_ref()) {
-            Ok(offer) => offer,
-            Err(error) => {
-                return Err(BootFailure {
-                    error,
-                    world: None,
-                    workspace,
-                });
-            }
-        };
-        let plan = match resolve_plan(
+    ) -> Result<ResolvedWorld, EdgeError> {
+        let project = &repo.project;
+        let snow = self.load_snow(worktree)?;
+        let effective = snow
+            .effective_components(WORLD_MODE)
+            .map_err(|err| runtime_error(err.to_string()))?;
+        let route = LocalHostRoute::new(project.clone(), target.clone(), None, &snow.domain_ids())
+            .map_err(|err| runtime_error(err.to_string()))?;
+        let origin = self.registry.mint_origin(&route, self.ingress.port())?;
+        let config = self.load_config(&repo.vcs_root)?;
+        let client = self.ospp_client()?;
+        let offer = self.resource_offer(project, client.as_ref())?;
+        let plan = resolve_plan(
             &config,
             &snow,
-            &target,
-            dump,
-            force_local_resources,
+            target,
+            policy.dump,
+            policy.force_local_resources,
             offer.as_ref(),
-        ) {
-            Ok(plan) => plan,
-            Err(error) => {
-                return Err(BootFailure {
-                    error,
-                    world: None,
-                    workspace,
-                });
-            }
-        };
+        )?;
         let resources = plan_summaries(&plan);
         for resource in &resources {
             on_event(BootEvent::Resources {
                 resource: resource.clone(),
             });
         }
-
-        let coords = match ResourceCoordinates::for_world(
-            &snow,
-            &project,
-            &target,
-            &origin,
-            &s3_overrides(&plan),
-        ) {
-            Ok(coords) => coords,
-            Err(err) => {
-                return Err(BootFailure {
-                    error: runtime_error(err.to_string()),
-                    world: None,
-                    workspace,
-                });
-            }
-        };
-        let vault = match self.vault_for(&project) {
-            Ok(vault) => vault,
-            Err(error) => {
-                return Err(BootFailure {
-                    error,
-                    world: None,
-                    workspace,
-                });
-            }
-        };
-        let base_env = match self.world_env(&snow, vault.as_ref(), &coords, &project, &target) {
-            Ok(env) => env,
-            Err(error) => {
-                return Err(BootFailure {
-                    error,
-                    world: None,
-                    workspace,
-                });
-            }
-        };
-
-        let rootfs = match self.materialize_rootfs(
-            &worktree,
-            &snow,
-            &config,
-            vault.as_ref(),
-            &coords,
-            host_caches,
-        ) {
-            Ok(rootfs) => rootfs,
-            Err(error) => {
-                return Err(BootFailure {
-                    error,
-                    world: None,
-                    workspace,
-                });
-            }
-        };
-
-        let mut component_envs = BTreeMap::new();
-        let mut enabled_components = BTreeSet::new();
+        let coords =
+            ResourceCoordinates::for_world(&snow, project, target, &origin, &s3_overrides(&plan))
+                .map_err(|err| runtime_error(err.to_string()))?;
+        let vault = self.vault_for(project)?;
+        let base_env = self.world_env(&snow, vault.as_ref(), &coords, project, target)?;
+        let mut components = Vec::new();
         for (id, resolved) in &effective {
             if resolved.disabled {
                 continue;
             }
-            enabled_components.insert(id.clone());
-            match self.component_env(&snow, vault.as_ref(), &coords, id) {
-                Ok(env) => {
-                    component_envs.insert(id.clone(), env);
-                }
-                Err(error) => {
-                    return Err(BootFailure {
-                        error,
-                        world: None,
-                        workspace,
-                    });
-                }
-            }
+            let readiness_port = snow
+                .components
+                .iter()
+                .find(|component| component.id == *id)
+                .and_then(|component| component.internal_ports.first().copied());
+            components.push(ResolvedComponent {
+                id: id.clone(),
+                run_command: resolved.run_command.clone(),
+                readiness_port,
+                env: self.component_env(&snow, vault.as_ref(), &coords, id)?,
+            });
         }
+        let ingresses = ingress_routes(&snow, &effective)?;
+        let domains = snow.domain_ids().into_iter().map(str::to_owned).collect();
+        Ok(ResolvedWorld {
+            snow,
+            config,
+            client,
+            vault,
+            plan,
+            resources,
+            coords,
+            base_env,
+            components,
+            ingresses,
+            domains,
+        })
+    }
 
-        let ingresses = match ingress_routes(&snow, &effective) {
-            Ok(ingresses) => ingresses,
-            Err(error) => {
-                return Err(BootFailure {
-                    error,
-                    world: None,
-                    workspace,
-                });
-            }
+    /// Materialize, attach, and start one world.
+    fn boot(
+        &self,
+        context: BootContext,
+        on_event: &mut dyn FnMut(BootEvent),
+    ) -> Result<BootedWorld, BootFailure> {
+        let BootContext {
+            repo,
+            target,
+            worktree,
+            policy,
+            mut workspace,
+        } = context;
+        let project = repo.project.clone();
+        let fail = |error: EdgeError, workspace: Option<Box<dyn VcsWorkspace>>| BootFailure {
+            error,
+            world: None,
+            workspace,
         };
 
-        let (snapshot, boot) =
-            match self.ensure_base_snapshot(&project, &snow, &plan, &rootfs, client.as_ref()) {
-                Ok(base) => base,
-                Err(error) => {
-                    return Err(BootFailure {
-                        error,
-                        world: None,
-                        workspace,
-                    });
-                }
-            };
+        let resolved = match self.resolve_world(&repo, &target, &worktree, policy, on_event) {
+            Ok(resolved) => resolved,
+            Err(error) => return Err(fail(error, workspace)),
+        };
+        let rootfs = match self.materialize_rootfs(
+            &worktree,
+            &resolved.snow,
+            &resolved.config,
+            resolved.vault.as_ref(),
+            &resolved.coords,
+            policy.host_caches,
+        ) {
+            Ok(rootfs) => rootfs,
+            Err(error) => return Err(fail(error, workspace)),
+        };
+        let (snapshot, boot) = match self.ensure_base_snapshot(
+            &project,
+            &resolved.snow,
+            &resolved.plan,
+            &rootfs,
+            resolved.client.as_ref(),
+        ) {
+            Ok(base) => base,
+            Err(error) => return Err(fail(error, workspace)),
+        };
         let spec = WorldSpec {
             target: target.clone(),
             rootfs: rootfs.clone(),
@@ -1603,7 +1775,7 @@ impl DaemonService {
                 guest_path: worktree.clone(),
                 mode: MountMode::ReadWrite,
             }],
-            base_env: base_env.clone(),
+            base_env: resolved.base_env.clone(),
             local_ingress: Some(LocalIngressBridge {
                 port: self.ingress.port(),
                 host_ingress_sock: self.config.layout.http_ingress_socket(),
@@ -1613,28 +1785,25 @@ impl DaemonService {
         let handle = match self.engine.clone_world(&spec) {
             Ok(handle) => handle,
             Err(err) => {
-                return Err(BootFailure {
-                    error: runtime_error(format!(
+                return Err(fail(
+                    runtime_error(format!(
                         "cannot materialize world '{}': {err}",
                         world_id(&project, &target)
                     )),
-                    world: None,
                     workspace,
-                });
+                ));
             }
         };
 
-        let domains: Vec<String> = snow.domain_ids().into_iter().map(str::to_owned).collect();
-        if let Err(error) =
-            self.registry
-                .attach_world(&project, &target, domains, handle.clone(), ingresses)
-        {
+        if let Err(error) = self.registry.attach_world(
+            &project,
+            &target,
+            resolved.domains.clone(),
+            handle.clone(),
+            resolved.ingresses.clone(),
+        ) {
             let _ = self.engine.destroy_world(handle);
-            return Err(BootFailure {
-                error,
-                world: None,
-                workspace,
-            });
+            return Err(fail(error, workspace));
         }
 
         let mut live = LiveWorld {
@@ -1644,18 +1813,20 @@ impl DaemonService {
             worktree: worktree.clone(),
             handle: handle.clone(),
             state: WorldState::Running,
-            base_env,
-            component_envs,
-            enabled_components,
-            snow: snow.clone(),
-            resources,
+            base_env: resolved.base_env,
+            components: resolved.components,
+            policy,
+            coords: resolved.coords,
+            snow: resolved.snow,
+            rootfs: rootfs.clone(),
+            resources: resolved.resources,
             services: Vec::new(),
             hook_logs: BTreeMap::new(),
             workspace: workspace.take().map(Arc::from),
         };
 
-        let service_specs = match service_specs(&snow, &rootfs, &BTreeMap::new()) {
-            Ok(specs) => specs,
+        let rows_before = match self.service_rows(&project, &target, &live.handle) {
+            Ok(rows) => rows,
             Err(error) => {
                 live.state = WorldState::Failed;
                 return Err(BootFailure {
@@ -1665,41 +1836,71 @@ impl DaemonService {
                 });
             }
         };
-        for spec in service_specs {
-            match self.engine.spawn_service(&handle, &spec) {
-                Ok(service) => live.services.push(service),
-                Err(err) => {
-                    live.state = WorldState::Failed;
-                    return Err(BootFailure {
-                        error: runtime_error(format!(
-                            "cannot start backing service '{}' in world '{}': {err}",
-                            spec.id,
-                            world_id(&project, &target)
-                        )),
-                        world: Some(Box::new(live)),
-                        workspace: None,
-                    });
-                }
-            }
+        // A fresh boot always changed something: it created the world, so the hook count is not
+        // needed here (only `restart` derives `changed` from it).
+        if let Err(error) = self.start_world(&mut live, on_event) {
+            live.state = WorldState::Failed;
+            return Err(BootFailure {
+                error,
+                world: Some(Box::new(live)),
+                workspace: None,
+            });
         }
-
-        for (id, resolved) in &effective {
-            if resolved.disabled {
-                continue;
-            }
-            if resolved.run_command.trim().is_empty() {
+        let rows_after = match self.service_rows(&project, &target, &live.handle) {
+            Ok(rows) => rows,
+            Err(error) => {
                 live.state = WorldState::Failed;
                 return Err(BootFailure {
-                    error: rejected(format!(
-                        "component '{id}' declares an empty run_command in mode '{WORLD_MODE}'"
-                    )),
+                    error,
                     world: Some(Box::new(live)),
                     workspace: None,
                 });
             }
-            let declaration = snow.components.iter().find(|component| component.id == *id);
-            let readiness_port =
-                declaration.and_then(|component| component.internal_ports.first().copied());
+        };
+        let restarted = restarted_service_ids(&rows_before, &rows_after);
+        Ok(BootedWorld {
+            live,
+            rows: rows_after,
+            changed: true,
+            restarted,
+        })
+    }
+
+    /// Start one world's backing services, its components, and its deploy hooks — the single
+    /// pipeline tail `up`, `fork`, and `restart` all run.
+    ///
+    /// `live` already carries the world's handle (and therefore its CoW state), worktree, resolved
+    /// environments, and `snow.yml`; this call owns only what happens *inside* that world. The
+    /// services it starts are recorded on `live`, so `restarted` is read back from that record
+    /// instead of being counted a second time. Returns the number of hooks that actually ran.
+    fn start_world(
+        &self,
+        live: &mut LiveWorld,
+        on_event: &mut dyn FnMut(BootEvent),
+    ) -> Result<usize, EdgeError> {
+        let world = world_id(&live.project, &live.target);
+
+        let service_specs = service_specs(&live.snow, &live.rootfs, &BTreeMap::new())?;
+        for spec in service_specs {
+            match self.engine.spawn_service(&live.handle, &spec) {
+                Ok(service) => live.services.push(service),
+                Err(err) => {
+                    return Err(runtime_error(format!(
+                        "cannot start backing service '{}' in world '{world}': {err}",
+                        spec.id
+                    )));
+                }
+            }
+        }
+
+        let components = live.components.clone();
+        for component in &components {
+            let id = &component.id;
+            if component.run_command.trim().is_empty() {
+                return Err(rejected(format!(
+                    "component '{id}' declares an empty run_command in mode '{WORLD_MODE}'"
+                )));
+            }
             let spec = ServiceSpec {
                 kind: ServiceKind::Component,
                 id: id.clone(),
@@ -1708,17 +1909,17 @@ impl DaemonService {
                         "sh".to_owned(),
                         "-eu".to_owned(),
                         "-c".to_owned(),
-                        resolved.run_command.clone(),
+                        component.run_command.clone(),
                     ],
-                    cwd: worktree.clone(),
+                    cwd: live.worktree.clone(),
                 },
-                env: live.component_envs.get(id).cloned().unwrap_or_default(),
-                readiness_port,
+                env: component.env.clone(),
+                readiness_port: component.readiness_port,
             };
-            match self.engine.spawn_service(&handle, &spec) {
+            match self.engine.spawn_service(&live.handle, &spec) {
                 Ok(service) => {
                     live.services.push(service);
-                    if let Some(port) = readiness_port {
+                    if let Some(port) = component.readiness_port {
                         on_event(BootEvent::Ready {
                             component: id.clone(),
                             port,
@@ -1726,47 +1927,36 @@ impl DaemonService {
                     }
                 }
                 Err(err) => {
-                    live.state = WorldState::Failed;
-                    return Err(BootFailure {
-                        error: runtime_error(format!(
-                            "cannot start component '{id}' in world '{}': {err}",
-                            world_id(&project, &target)
-                        )),
-                        world: Some(Box::new(live)),
-                        workspace: None,
-                    });
+                    return Err(runtime_error(format!(
+                        "cannot start component '{id}' in world '{world}': {err}"
+                    )));
                 }
             }
         }
 
-        if let Err(error) = self.run_hooks(&mut live, HookPhase::PreDeploy, on_event) {
-            live.state = WorldState::Failed;
-            return Err(BootFailure {
-                error,
-                world: Some(Box::new(live)),
-                workspace: None,
-            });
-        }
-        if let Err(error) = self.run_hooks(&mut live, HookPhase::PostDeploy, on_event) {
-            live.state = WorldState::Failed;
-            return Err(BootFailure {
-                error,
-                world: Some(Box::new(live)),
-                workspace: None,
-            });
-        }
-        Ok(live)
+        let mut ran = self.run_hooks(live, HookPhase::PreDeploy, on_event)?;
+        ran += self.run_hooks(live, HookPhase::PostDeploy, on_event)?;
+        Ok(ran)
     }
 
+    /// Run one deploy phase's hooks, returning how many ran.
     fn run_hooks(
         &self,
         live: &mut LiveWorld,
         phase: HookPhase,
         on_event: &mut dyn FnMut(BootEvent),
-    ) -> Result<(), EdgeError> {
+    ) -> Result<usize, EdgeError> {
         let hooks = live.snow.hooks.clone();
+        let mut ran = 0;
         for hook in hooks {
-            if hook.when != phase || !live.enabled_components.contains(&hook.component) {
+            let Some(component) = live
+                .components
+                .iter()
+                .find(|component| component.id == hook.component)
+            else {
+                continue;
+            };
+            if hook.when != phase {
                 continue;
             }
             if hook.run_command.trim().is_empty() {
@@ -1787,11 +1977,7 @@ impl DaemonService {
                 id: id.clone(),
                 argv: argv.clone(),
             });
-            let overlay = live
-                .component_envs
-                .get(&hook.component)
-                .cloned()
-                .unwrap_or_default();
+            let overlay = component.env.clone();
             let log = self.hook_log(live, &id, hook_phase_label(hook.when))?;
             let mut file = open_hook_log(&log.path)?;
             let output = self
@@ -1834,8 +2020,9 @@ impl DaemonService {
                     log.path.display()
                 )));
             }
+            ran += 1;
         }
-        Ok(())
+        Ok(ran)
     }
 
     /// The retained log for one hook, created once per world and reused by `hook run`.
@@ -1938,51 +2125,89 @@ impl DaemonControl for DaemonService {
         on_event: &mut dyn FnMut(BootEvent),
     ) -> Result<WorldUpSummary, EdgeError> {
         let selection = self.select(&req.cwd, req.world.as_deref())?;
+        let project = selection.repo.project.clone();
+        let target = selection.target.clone();
         let _guard = self.boot_guard();
 
-        if let Some(state) = self.world_state(&selection) {
-            if state == WorldState::Running {
-                return self.summary(
-                    &selection.repo.project,
-                    &selection.target,
-                    self.world_resources(&selection).unwrap_or_default(),
-                );
+        let verb = boot_verb(BootCommand::Up, self.world_state(&selection))
+            .ok_or_else(|| not_running(&project, &target))?;
+        match verb {
+            BootVerb::Confirm => {
+                // Idempotent `up`: the world already runs, so nothing is touched and only its
+                // recorded facts are read back (`changed: false`, nothing restarted).
+                let facts = self
+                    .world_facts(&project, &target)
+                    .ok_or_else(|| Self::unknown_world(&project, &target))?;
+                let rows = self.service_rows(&project, &target, &facts.handle)?;
+                self.summary(&project, &target, &facts, rows, false, Vec::new())
             }
-            // A failed world is preserved for inspection, but an explicit `up` retries it.
-            self.release_world(&selection.repo.project, &selection.target)?;
-        }
-        if !selection.worktree.is_dir() {
-            return Err(rejected(format!(
-                "world worktree '{}' does not exist; run `slipfork fork {}` first",
-                selection.worktree.display(),
-                match &selection.target {
-                    WorldTarget::UserFork(fork) => fork.as_str(),
-                    _ => "<fork>",
+            BootVerb::Rerun => {
+                let live = self
+                    .take_world(&project, &target)
+                    .ok_or_else(|| Self::unknown_world(&project, &target))?;
+                // The same in-place pipeline as `restart`, honouring this invocation's flags: an
+                // absent flag keeps the world's policy, an explicit one a rerun cannot apply is
+                // refused rather than dropped.
+                let policy = rerun_policy(live.policy, req.dump, req.resources, req.host_caches);
+                self.reboot(live, policy, on_event)
+            }
+            BootVerb::Boot => {
+                if !selection.worktree.is_dir() {
+                    return Err(rejected(format!(
+                        "world worktree '{}' does not exist; run `slipfork fork {}` first",
+                        selection.worktree.display(),
+                        match &selection.target {
+                            WorldTarget::UserFork(fork) => fork.as_str(),
+                            _ => "<fork>",
+                        }
+                    )));
                 }
-            )));
+                let context = BootContext {
+                    repo: selection.repo.clone(),
+                    target: selection.target.clone(),
+                    worktree: selection.worktree.clone(),
+                    policy: request_policy(req.dump, req.resources, req.host_caches),
+                    workspace: None,
+                };
+                match self.boot(context, on_event) {
+                    Ok(booted) => self.record_world(
+                        booted.live,
+                        booted.rows,
+                        booted.changed,
+                        booted.restarted,
+                    ),
+                    Err(failure) => {
+                        if let Some(live) = failure.world {
+                            self.insert_world(*live);
+                        }
+                        Err(failure.error)
+                    }
+                }
+            }
         }
+    }
 
-        let context = BootContext {
-            repo: selection.repo.clone(),
-            target: selection.target.clone(),
-            worktree: selection.worktree.clone(),
-            dump: dump_policy(req.dump),
-            force_local_resources: matches!(req.resources, slipfork_edge::ResourceRequest::Local),
-            host_caches: req.host_caches,
-            workspace: None,
-        };
-        match self.boot(context, on_event) {
-            Ok(live) => {
-                let summary = self.summary(&live.project, &live.target, live.resources.clone())?;
-                self.insert_world(live);
-                Ok(summary)
+    fn restart(
+        &self,
+        req: &WorldSelector,
+        on_event: &mut dyn FnMut(BootEvent),
+    ) -> Result<WorldUpSummary, EdgeError> {
+        let selection = self.select(&req.cwd, req.world.as_deref())?;
+        let project = selection.repo.project.clone();
+        let target = selection.target.clone();
+        let _guard = self.boot_guard();
+
+        match boot_verb(BootCommand::Restart, self.world_state(&selection)) {
+            Some(BootVerb::Rerun) => {
+                let live = self
+                    .take_world(&project, &target)
+                    .ok_or_else(|| not_running(&project, &target))?;
+                // `restart` carries no flags: it re-runs the policy the world already holds.
+                let policy = live.policy;
+                self.reboot(live, policy, on_event)
             }
-            Err(failure) => {
-                if let Some(live) = failure.world {
-                    self.insert_world(*live);
-                }
-                Err(failure.error)
-            }
+            // `restart` never boots a world the caller believed was running.
+            Some(BootVerb::Confirm | BootVerb::Boot) | None => Err(not_running(&project, &target)),
         }
     }
 
@@ -2025,16 +2250,12 @@ impl DaemonControl for DaemonService {
             repo: selection.repo.clone(),
             target: selection.target.clone(),
             worktree: selection.worktree.clone(),
-            dump: dump_policy(req.dump),
-            force_local_resources: matches!(req.resources, slipfork_edge::ResourceRequest::Local),
-            host_caches: req.host_caches,
+            policy: request_policy(req.dump, req.resources, req.host_caches),
             workspace: Some(workspace),
         };
         match self.boot(context, on_event) {
-            Ok(live) => {
-                let summary = self.summary(&live.project, &live.target, live.resources.clone())?;
-                self.insert_world(live);
-                Ok(summary)
+            Ok(booted) => {
+                self.record_world(booted.live, booted.rows, booted.changed, booted.restarted)
             }
             Err(failure) => {
                 if let Some(live) = failure.world {
@@ -2422,7 +2643,7 @@ impl DaemonControl for DaemonService {
 
     fn hook_exec_target(&self, req: &HookRunRequest) -> Result<WorldExecTarget, EdgeError> {
         let selection = self.select(&req.cwd, req.world.as_deref())?;
-        let (handle, worktree, snow, component_envs, enabled, base_env) = {
+        let (handle, worktree, snow, components, base_env) = {
             let state = self.lock();
             let Some(world) = state.world(&selection.repo.project, &selection.target) else {
                 return Err(Self::unknown_world(
@@ -2434,12 +2655,11 @@ impl DaemonControl for DaemonService {
                 world.handle.clone(),
                 world.worktree.clone(),
                 world.snow.clone(),
-                world.component_envs.clone(),
-                world.enabled_components.clone(),
+                world.components.clone(),
                 world.base_env.clone(),
             )
         };
-        let resolved = resolve_hook(&snow, &enabled, &component_envs, &req.hook)?;
+        let resolved = resolve_hook(&snow, &components, &req.hook)?;
         let entry = self
             .engine
             .entry_command(&handle, &worktree)
@@ -2509,7 +2729,7 @@ impl DaemonControl for DaemonService {
         on_chunk: &mut dyn FnMut(StreamChunk),
     ) -> Result<i32, EdgeError> {
         let selection = self.select(&req.cwd, req.world.as_deref())?;
-        let (handle, worktree, snow, component_envs, enabled) = {
+        let (handle, worktree, snow, components) = {
             let state = self.lock();
             let Some(world) = state.world(&selection.repo.project, &selection.target) else {
                 return Err(Self::unknown_world(
@@ -2521,11 +2741,10 @@ impl DaemonControl for DaemonService {
                 world.handle.clone(),
                 world.worktree.clone(),
                 world.snow.clone(),
-                world.component_envs.clone(),
-                world.enabled_components.clone(),
+                world.components.clone(),
             )
         };
-        let resolved = resolve_hook(&snow, &enabled, &component_envs, &req.hook)?;
+        let resolved = resolve_hook(&snow, &components, &req.hook)?;
         let log = {
             let mut state = self.lock();
             let Some(world) = state.world_mut(&selection.repo.project, &selection.target) else {
@@ -2566,7 +2785,7 @@ impl DaemonControl for DaemonService {
     ) -> Result<(), EdgeError> {
         let selection = self.select(&req.cwd, req.world.as_deref())?;
         let world_id_text = world_id(&selection.repo.project, &selection.target);
-        let (snow, enabled) = {
+        let (snow, components) = {
             let state = self.lock();
             let Some(world) = state.world(&selection.repo.project, &selection.target) else {
                 return Err(Self::unknown_world(
@@ -2574,9 +2793,9 @@ impl DaemonControl for DaemonService {
                     &selection.target,
                 ));
             };
-            (world.snow.clone(), world.enabled_components.clone())
+            (world.snow.clone(), world.components.clone())
         };
-        let specs = forward_specs(&snow, &world_id_text, &enabled, &req.targets)?;
+        let specs = forward_specs(&snow, &world_id_text, &components, &req.targets)?;
         let bridge = self
             .registry
             .forward(&selection.repo.project, &selection.target, &specs)?;
@@ -2624,6 +2843,123 @@ impl DaemonControl for DaemonService {
 }
 
 impl DaemonService {
+    /// Record a world a pipeline run just produced and return its truthful summary.
+    ///
+    /// The world is inserted **before** the summary is read, so an engine-read failure can never
+    /// drop a live world and make the next `restart` report `not_running`.
+    fn record_world(
+        &self,
+        live: LiveWorld,
+        rows: Vec<WorldServiceSummary>,
+        changed: bool,
+        restarted: Vec<String>,
+    ) -> Result<WorldUpSummary, EdgeError> {
+        let facts = WorldFacts::of(&live);
+        let project = live.project.clone();
+        let target = live.target.clone();
+        self.insert_world(live);
+        self.summary(&project, &target, &facts, rows, changed, restarted)
+    }
+
+    /// Stop one held world's components and `crun` services **in place**, then run the shared boot
+    /// pipeline over the same engine handle (`slipfork restart`, and `up`'s rescue path, §4).
+    ///
+    /// The worktree and the world's CoW state subvolume are kept: the handle is never destroyed and
+    /// nothing is re-cloned, so backing-service data survives. Every boot-scope fact is re-derived
+    /// through [`DaemonService::resolve_world`] — resource plan and coordinates, origin, environments,
+    /// components, and the registry's ingress/domain table — so an edited `snow.yml` is what the
+    /// world actually runs. `changed` and `restarted` are observed from the engine's own rows: the
+    /// run changed the world only when a service came back `Running` or a hook ran.
+    fn reboot(
+        &self,
+        mut live: LiveWorld,
+        policy: BootPolicy,
+        on_event: &mut dyn FnMut(BootEvent),
+    ) -> Result<WorldUpSummary, EdgeError> {
+        let world = world_id(&live.project, &live.target);
+
+        // Refuse before touching anything; the world goes back into the index so the refusal never
+        // loses a live world.
+        if let Some(error) = check_rerun_policy(&world, live.policy, policy).err() {
+            self.insert_world(live);
+            return Err(error);
+        }
+
+        // The engine's supervision record is the one owner of "what this world runs": stop every
+        // service through it, never by replaying the handles this daemon happens to hold.
+        if let Err(err) = self.engine.stop_world_services(&live.handle) {
+            live.state = WorldState::Failed;
+            self.insert_world(live);
+            return Err(runtime_error(format!(
+                "cannot stop the services of world '{world}': {err}"
+            )));
+        }
+        live.services.clear();
+
+        let repo = live.repo.clone();
+        let target = live.target.clone();
+        let resolved = match self.resolve_world(&repo, &target, &live.worktree, policy, on_event) {
+            Ok(resolved) => resolved,
+            Err(error) => {
+                live.state = WorldState::Failed;
+                self.insert_world(live);
+                return Err(error);
+            }
+        };
+
+        // The registry serves the world's routes: swap them for the re-resolved table without
+        // touching the engine handle, so an edited `ingresses:`/`domains:` takes effect.
+        if let Err(error) = self.registry.replace_world(
+            &live.project,
+            &target,
+            resolved.domains.clone(),
+            resolved.ingresses.clone(),
+        ) {
+            live.state = WorldState::Failed;
+            self.insert_world(live);
+            return Err(error);
+        }
+
+        live.snow = resolved.snow;
+        live.resources = resolved.resources;
+        live.coords = resolved.coords;
+        live.base_env = resolved.base_env;
+        live.components = resolved.components;
+        live.policy = policy;
+
+        // The rows as they stand after the stop (every service `Stopped`) and before the pipeline:
+        // whatever is `Running` afterwards and was not `Running` here is what this run restarted.
+        let rows_before = match self.service_rows(&live.project, &target, &live.handle) {
+            Ok(rows) => rows,
+            Err(error) => {
+                live.state = WorldState::Failed;
+                self.insert_world(live);
+                return Err(error);
+            }
+        };
+        let hooks = match self.start_world(&mut live, on_event) {
+            Ok(hooks) => hooks,
+            Err(error) => {
+                live.state = WorldState::Failed;
+                self.insert_world(live);
+                return Err(error);
+            }
+        };
+        let rows_after = match self.service_rows(&live.project, &target, &live.handle) {
+            Ok(rows) => rows,
+            Err(error) => {
+                live.state = WorldState::Failed;
+                self.insert_world(live);
+                return Err(error);
+            }
+        };
+
+        let restarted = restarted_service_ids(&rows_before, &rows_after);
+        let changed = !restarted.is_empty() || hooks > 0;
+        live.state = WorldState::Running;
+        self.record_world(live, rows_after, changed, restarted)
+    }
+
     /// Release one world from the registry and the daemon index (idempotent).
     ///
     /// Returns the registry's `released` flag plus the removed in-process record, so `drop` can
@@ -2675,7 +3011,7 @@ fn open_hook_log(path: &Path) -> Result<File, EdgeError> {
 fn forward_specs(
     snow: &SnowFile,
     world: &str,
-    enabled: &BTreeSet<String>,
+    components: &[ResolvedComponent],
     requested: &[String],
 ) -> Result<Vec<ForwardTargetSpec>, EdgeError> {
     let mut specs: Vec<ForwardTargetSpec> = Vec::new();
@@ -2706,7 +3042,7 @@ fn forward_specs(
         });
     }
     for component in &snow.components {
-        if !enabled.contains(&component.id) {
+        if !components.iter().any(|enabled| enabled.id == component.id) {
             continue;
         }
         if let Some(port) = component.internal_ports.first() {
@@ -3401,8 +3737,7 @@ fn hook_phase_label(phase: HookPhase) -> &'static str {
 /// interactive `hook run` (entry argv) and `--no-tty` streaming.
 fn resolve_hook(
     snow: &SnowFile,
-    enabled: &BTreeSet<String>,
-    component_envs: &BTreeMap<String, ExecEnv>,
+    components: &[ResolvedComponent],
     hook_id: &str,
 ) -> Result<ResolvedHook, EdgeError> {
     let (component, phase) = parse_hook_id(hook_id).ok_or_else(|| {
@@ -3410,11 +3745,14 @@ fn resolve_hook(
             "invalid hook id '{hook_id}' (expected <component>:<phase>)"
         ))
     })?;
-    if !enabled.contains(component) {
+    let Some(enabled) = components
+        .iter()
+        .find(|candidate| candidate.id == component)
+    else {
         return Err(rejected(format!(
             "component '{component}' is not enabled in mode '{WORLD_MODE}'"
         )));
-    }
+    };
     let hook = snow
         .hooks
         .iter()
@@ -3432,7 +3770,7 @@ fn resolve_hook(
             "-c".to_owned(),
             hook.run_command.clone(),
         ],
-        overlay: component_envs.get(component).cloned().unwrap_or_default(),
+        overlay: enabled.env.clone(),
         phase_label: hook_phase_label(phase),
     })
 }
@@ -3479,7 +3817,199 @@ fn tail_lines(chunks: Vec<StreamChunk>, lines: Option<usize>) -> Vec<StreamChunk
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::net::SocketAddr;
+    use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
     use std::time::Instant;
+
+    #[test]
+    fn up_twice_on_a_running_world_confirms_without_touching_it() {
+        assert_eq!(
+            boot_verb(BootCommand::Up, Some(WorldState::Running)),
+            Some(BootVerb::Confirm),
+            "an `up` of a running world reports `changed: false` and performs no work"
+        );
+    }
+
+    #[test]
+    fn up_boots_an_absent_world_and_rescues_a_failed_one_in_place() {
+        assert_eq!(boot_verb(BootCommand::Up, None), Some(BootVerb::Boot));
+        assert_eq!(
+            boot_verb(BootCommand::Up, Some(WorldState::Failed)),
+            Some(BootVerb::Rerun),
+            "a failed world is rescued through the same in-place pipeline as `restart`"
+        );
+        assert_eq!(
+            boot_verb(BootCommand::Up, Some(WorldState::Failed)),
+            boot_verb(BootCommand::Restart, Some(WorldState::Failed)),
+        );
+    }
+
+    #[test]
+    fn restart_rescues_a_failed_world_and_reruns_a_running_one() {
+        assert_eq!(
+            boot_verb(BootCommand::Restart, Some(WorldState::Failed)),
+            Some(BootVerb::Rerun)
+        );
+        assert_eq!(
+            boot_verb(BootCommand::Restart, Some(WorldState::Running)),
+            Some(BootVerb::Rerun)
+        );
+        assert_eq!(
+            boot_verb(BootCommand::Restart, Some(WorldState::Stopped)),
+            None,
+            "a stopped world has nothing to stop: `restart` refuses it (§4)"
+        );
+    }
+
+    #[test]
+    fn a_rerun_refuses_a_policy_only_a_fresh_boot_can_produce() {
+        let held = BootPolicy {
+            dump: DumpPolicy::Default,
+            force_local_resources: false,
+            host_caches: false,
+        };
+        assert!(check_rerun_policy("acme", held, held).is_ok());
+        assert!(
+            check_rerun_policy(
+                "acme",
+                held,
+                BootPolicy {
+                    force_local_resources: true,
+                    ..held
+                }
+            )
+            .is_ok(),
+            "`--resources local` re-resolves in place"
+        );
+
+        // A bare `up` of a held world keeps the policy it booted with.
+        let booted = BootPolicy {
+            dump: DumpPolicy::NoDump,
+            force_local_resources: true,
+            host_caches: true,
+        };
+        let bare = rerun_policy(
+            booted,
+            slipfork_edge::DumpRequest::Default,
+            slipfork_edge::ResourceRequest::Default,
+            false,
+        );
+        assert_eq!(bare, booted);
+        assert!(check_rerun_policy("acme", booted, bare).is_ok());
+
+        // An explicit flag a rerun cannot apply is carried through and refused, never dropped.
+        let explicit = rerun_policy(
+            held,
+            slipfork_edge::DumpRequest::NoDump,
+            slipfork_edge::ResourceRequest::Local,
+            true,
+        );
+        assert_eq!(explicit.dump, DumpPolicy::NoDump);
+        assert!(explicit.force_local_resources);
+        for (policy, needle) in [
+            (
+                BootPolicy {
+                    dump: DumpPolicy::RefreshDump,
+                    ..held
+                },
+                "dump policy re-seals the base",
+            ),
+            (
+                BootPolicy {
+                    host_caches: true,
+                    ..held
+                },
+                "--host-caches` rebuilds it",
+            ),
+        ] {
+            let error = check_rerun_policy("acme", held, policy)
+                .expect_err("a fresh-boot-only fact is refused in place");
+            let message = error.to_string();
+            assert!(message.contains(needle), "got: {message}");
+            assert!(
+                message.contains("run `slipfork down --world acme` first"),
+                "the refusal must name the next command, got: {message}"
+            );
+        }
+    }
+
+    #[test]
+    fn restart_on_a_never_booted_world_fails_closed_naming_up() {
+        assert_eq!(
+            boot_verb(BootCommand::Restart, None),
+            None,
+            "`restart` never boots a world the caller believed was running"
+        );
+        let project = ProjectSlug::parse("acme").expect("valid project slug");
+        match not_running(&project, &WorldTarget::Canonical) {
+            EdgeError::Control(error) => {
+                assert_eq!(error.kind, DaemonErrorKind::NotRunning);
+                assert_eq!(
+                    error.message,
+                    "world 'acme' is not running; boot it with `slipfork up`"
+                );
+            }
+            other => panic!("expected a typed `not_running` refusal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn restarted_ids_are_the_engine_rows_this_run_brought_to_running() {
+        fn row(world: &str, id: &str, state: slipfork_engine::ServiceState) -> WorldServiceSummary {
+            WorldServiceSummary {
+                world: world.to_owned(),
+                info: slipfork_edge::WorldServiceInfo {
+                    id: id.to_owned(),
+                    kind: ServiceKind::Component,
+                    state,
+                    pid: None,
+                    port: None,
+                    uptime_secs: None,
+                },
+            }
+        }
+        use slipfork_engine::ServiceState;
+
+        let stopped = vec![
+            row("acme", "pg_databases.main", ServiceState::Stopped),
+            row("acme", "api", ServiceState::Stopped),
+        ];
+        let running = vec![
+            row("acme", "pg_databases.main", ServiceState::Running),
+            row("acme", "api", ServiceState::Running),
+        ];
+
+        // After the stop every row is `Stopped`; what is `Running` afterwards is what restarted.
+        assert_eq!(
+            restarted_service_ids(&stopped, &running),
+            vec!["pg_databases.main", "api"]
+        );
+        // An idempotent run changes nothing.
+        assert!(restarted_service_ids(&running, &running).is_empty());
+        // An `exited` row is never named beside `restarted`.
+        let mut half = running.clone();
+        half[1].info.state = ServiceState::Exited;
+        assert_eq!(
+            restarted_service_ids(&stopped, &half),
+            vec!["pg_databases.main"]
+        );
+        // A service that had crashed before the run and came back counts as restarted.
+        let crashed = vec![
+            row("acme", "pg_databases.main", ServiceState::Exited),
+            row("acme", "api", ServiceState::Stopped),
+        ];
+        assert_eq!(
+            restarted_service_ids(&crashed, &running),
+            vec!["pg_databases.main", "api"]
+        );
+        // Duplicate rows never duplicate an id.
+        let mut doubled = running.clone();
+        doubled.push(row("acme", "api", ServiceState::Running));
+        assert_eq!(
+            restarted_service_ids(&stopped, &doubled),
+            vec!["pg_databases.main", "api"]
+        );
+    }
 
     #[test]
     fn hook_ids_round_trip_every_phase() {
@@ -3599,5 +4129,575 @@ mod tests {
         let out = tail_lines(vec![chunk], Some(2));
         assert_eq!(out.len(), 1);
         assert_eq!(String::from_utf8_lossy(&out[0].bytes), "two\nthree\n");
+    }
+
+    /// The world every restart test boots: one enabled component, one pre-deploy hook, one
+    /// ingress, and one `modes.local` env value — each editable between runs.
+    fn restart_snow(port: u16, hook: &str, greeting: &str) -> String {
+        format!(
+            r#"
+images:
+  - id: app
+    context: .
+    dockerfile: Dockerfile
+
+components:
+  - id: api
+    image: app
+    envs: [app]
+    run_command: "exec sleep 300"
+
+ingresses:
+  - match:
+      prefix: "/"
+    target:
+      component: api
+      port: {port}
+
+hooks:
+  - component: api
+    when: pre-deploy
+    run_command: "{hook}"
+
+modes:
+  local:
+    envs:
+      app:
+        GREETING: '{greeting}'
+"#
+        )
+    }
+
+    /// A short, disk-backed scratch root.
+    ///
+    /// Never `/tmp` (tmpfs: the seed-dump store refuses it) and never the repository path (the
+    /// daemon's ingress socket must stay under the 107-byte `AF_UNIX` budget).
+    fn disk_scratch(label: &str) -> PathBuf {
+        static COUNTER: AtomicUsize = AtomicUsize::new(0);
+        let root = PathBuf::from("/var/tmp").join("sf-m32817").join(format!(
+            "{label}-{}-{}",
+            std::process::id(),
+            COUNTER.fetch_add(1, Ordering::SeqCst)
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).expect("scratch dir");
+        root
+    }
+
+    /// An engine double that models handles, the supervision rows, and every call the daemon makes.
+    ///
+    /// It returns handles through the public `WorldEngine::mint_service_handle` seam and keeps its
+    /// own `WorldServiceInfo` rows, so `world_processes` is the record the daemon reads back (never
+    /// the daemon's own handle list). It records the spawn environments and hook argv, which is how
+    /// the test proves an edited `snow.yml` is what the world runs.
+    struct RecordingEngine {
+        live: Mutex<Vec<WorldHandle>>,
+        snapshots: Mutex<Vec<SnapshotId>>,
+        next_seq: AtomicU64,
+        spawns: AtomicUsize,
+        world_stops: AtomicUsize,
+        destroyed: AtomicUsize,
+        hooks: Mutex<Vec<Vec<String>>>,
+        greetings: Mutex<Vec<Option<String>>>,
+        rows: Mutex<Vec<RecordedRow>>,
+    }
+
+    struct RecordedRow {
+        world: WorldHandle,
+        id: String,
+        state: ServiceState,
+    }
+
+    /// One environment value an `ExecEnv` resolves to (`None` when the name is absent).
+    fn env_value(env: &ExecEnv, name: &str) -> Option<String> {
+        env.iter()
+            .find(|(key, _)| *key == name)
+            .map(|(_, value)| value.into_owned())
+    }
+
+    impl RecordingEngine {
+        fn new() -> Self {
+            Self {
+                live: Mutex::new(Vec::new()),
+                snapshots: Mutex::new(Vec::new()),
+                next_seq: AtomicU64::new(0),
+                spawns: AtomicUsize::new(0),
+                world_stops: AtomicUsize::new(0),
+                destroyed: AtomicUsize::new(0),
+                hooks: Mutex::new(Vec::new()),
+                greetings: Mutex::new(Vec::new()),
+                rows: Mutex::new(Vec::new()),
+            }
+        }
+
+        /// `(spawn_service, stop_world_services, hooks run)` — the daemon's supervision footprint.
+        fn counts(&self) -> (usize, usize, usize) {
+            (
+                self.spawns.load(Ordering::SeqCst),
+                self.world_stops.load(Ordering::SeqCst),
+                self.hooks.lock().expect("hook records").len(),
+            )
+        }
+
+        fn live_world(&self, world: &WorldHandle) -> Result<(), EngineError> {
+            let live = self.live.lock().expect("live worlds");
+            if live.contains(world) {
+                Ok(())
+            } else {
+                Err(EngineError::WorldGone {
+                    world: format!("{world:?}"),
+                })
+            }
+        }
+    }
+
+    impl WorldEngine for RecordingEngine {
+        fn name(&self) -> &'static str {
+            "recording"
+        }
+
+        fn create_snapshot(&self, _source_dir: &Path, id: &SnapshotId) -> Result<(), EngineError> {
+            self.snapshots.lock().expect("snapshots").push(id.clone());
+            Ok(())
+        }
+
+        fn snapshot_exists(&self, _id: &SnapshotId) -> Result<bool, EngineError> {
+            // Every base is already sealed: the seeding pipeline is never entered by this double.
+            Ok(true)
+        }
+
+        fn freeze_world(&self, _world: &WorldHandle, _id: &SnapshotId) -> Result<(), EngineError> {
+            Err(EngineError::Unsupported {
+                engine: self.name(),
+                capability: "freeze_world",
+            })
+        }
+
+        fn clone_world(&self, spec: &WorldSpec) -> Result<WorldHandle, EngineError> {
+            spec.validate()?;
+            let seq = self.next_seq.fetch_add(1, Ordering::SeqCst) + 1;
+            let handle = self.mint_world_handle(seq);
+            self.live.lock().expect("live worlds").push(handle.clone());
+            Ok(handle)
+        }
+
+        fn spawn_service(
+            &self,
+            world: &WorldHandle,
+            spec: &ServiceSpec,
+        ) -> Result<ServiceHandle, EngineError> {
+            self.live_world(world)?;
+            self.spawns.fetch_add(1, Ordering::SeqCst);
+            self.greetings
+                .lock()
+                .expect("spawn envs")
+                .push(env_value(&spec.env, "GREETING"));
+            {
+                let mut rows = self.rows.lock().expect("rows");
+                rows.retain(|row| !(row.world == *world && row.id == spec.id));
+                rows.push(RecordedRow {
+                    world: world.clone(),
+                    id: spec.id.clone(),
+                    state: ServiceState::Running,
+                });
+            }
+            Ok(self.mint_service_handle(
+                world,
+                &spec.id,
+                Arc::new(std::sync::atomic::AtomicU8::new(
+                    ServiceState::Running.to_bits(),
+                )),
+            ))
+        }
+
+        fn stop_service(&self, _service: &ServiceHandle) -> Result<(), EngineError> {
+            Err(EngineError::Unsupported {
+                engine: self.name(),
+                capability: "stop_service",
+            })
+        }
+
+        fn stop_world_services(&self, world: &WorldHandle) -> Result<(), EngineError> {
+            self.live_world(world)?;
+            self.world_stops.fetch_add(1, Ordering::SeqCst);
+            for row in self.rows.lock().expect("rows").iter_mut() {
+                if row.world == *world {
+                    row.state = ServiceState::Stopped;
+                }
+            }
+            Ok(())
+        }
+
+        fn service_logs(
+            &self,
+            _world: &WorldHandle,
+            _id: &str,
+        ) -> Result<slipfork_engine::ServiceLogs, EngineError> {
+            Err(EngineError::Unsupported {
+                engine: self.name(),
+                capability: "service_logs",
+            })
+        }
+
+        fn world_processes(
+            &self,
+            world: &WorldHandle,
+        ) -> Result<Vec<slipfork_engine::WorldServiceInfo>, EngineError> {
+            self.live_world(world)?;
+            Ok(self
+                .rows
+                .lock()
+                .expect("rows")
+                .iter()
+                .filter(|row| row.world == *world)
+                .map(|row| slipfork_engine::WorldServiceInfo {
+                    id: row.id.clone(),
+                    kind: ServiceKind::Component,
+                    state: row.state,
+                    pid: None,
+                    port: None,
+                    uptime_secs: None,
+                })
+                .collect())
+        }
+
+        fn world_lineage(
+            &self,
+            world: &WorldHandle,
+        ) -> Result<slipfork_engine::WorldLineage, EngineError> {
+            self.live_world(world)?;
+            Ok(slipfork_engine::WorldLineage {
+                rootfs: None,
+                services: Vec::new(),
+                seed: None,
+                base: None,
+            })
+        }
+
+        fn exec_in_service(
+            &self,
+            _service: &ServiceHandle,
+            _argv: &[String],
+            _overlay_env: &ExecEnv,
+            _on_output: &mut dyn FnMut(StreamChunk),
+        ) -> Result<ExecOutput, EngineError> {
+            Err(EngineError::Unsupported {
+                engine: self.name(),
+                capability: "exec_in_service",
+            })
+        }
+
+        fn service_entry_command(
+            &self,
+            _service: &ServiceHandle,
+        ) -> Result<slipfork_engine::WorldEntryCommand, EngineError> {
+            Err(EngineError::Unsupported {
+                engine: self.name(),
+                capability: "service_entry_command",
+            })
+        }
+
+        fn exec_in_world(
+            &self,
+            world: &WorldHandle,
+            argv: &[String],
+            _cwd: &Path,
+            _overlay_env: &ExecEnv,
+            _on_output: &mut dyn FnMut(StreamChunk),
+        ) -> Result<ExecOutput, EngineError> {
+            self.live_world(world)?;
+            self.hooks.lock().expect("hook records").push(argv.to_vec());
+            Ok(ExecOutput {
+                exit_code: 0,
+                stdout: String::new(),
+                stderr: String::new(),
+            })
+        }
+
+        fn entry_command(
+            &self,
+            _world: &WorldHandle,
+            _cwd: &Path,
+        ) -> Result<slipfork_engine::WorldEntryCommand, EngineError> {
+            Err(EngineError::Unsupported {
+                engine: self.name(),
+                capability: "entry_command",
+            })
+        }
+
+        fn dial_world_tcp(
+            &self,
+            world: &WorldHandle,
+            port: u16,
+        ) -> Result<std::net::TcpStream, EngineError> {
+            Err(EngineError::DialFailed {
+                world: format!("{world:?}"),
+                port,
+                errno: 111,
+            })
+        }
+
+        fn destroy_world(&self, world: WorldHandle) -> Result<(), EngineError> {
+            let mut live = self.live.lock().expect("live worlds");
+            let index = live
+                .iter()
+                .position(|candidate| candidate == &world)
+                .ok_or_else(|| EngineError::WorldGone {
+                    world: format!("{world:?}"),
+                })?;
+            live.remove(index);
+            self.rows
+                .lock()
+                .expect("rows")
+                .retain(|row| row.world != world);
+            self.destroyed.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    /// A rootfs builder double: the pipeline never shells out to Docker in a unit test.
+    struct StubRootfs;
+
+    impl BaseImageBuilder for StubRootfs {
+        fn materialize(
+            &self,
+            _req: &slipfork_engine::rootfs::WorldRootfsRequest,
+            _on_event: &mut dyn FnMut(slipfork_engine::rootfs::RootfsBuildEvent),
+        ) -> Result<WorldRootfs, slipfork_engine::rootfs::BaseImageError> {
+            Ok(WorldRootfs {
+                digest: slipfork_engine::rootfs::RootfsDigest::from_hex("e".repeat(64))
+                    .expect("valid digest"),
+                app_rootfs: PathBuf::from("/nonexistent/m3-28-17/app"),
+                crun_bin: PathBuf::from("/.slipfork/bin/crun"),
+                service_images: BTreeMap::new(),
+                metadata: slipfork_engine::rootfs::ImageContractMetadata {
+                    os_release: slipfork_engine::rootfs::OsRelease {
+                        id: "alpine".to_owned(),
+                        version_id: "3.21".to_owned(),
+                        version_codename: String::new(),
+                    },
+                    elf_abi: slipfork_engine::rootfs::ElfAbi {
+                        arch: "x86_64".to_owned(),
+                        libc: slipfork_engine::rootfs::LibcFamily::Musl,
+                        libc_version: "1.2".to_owned(),
+                    },
+                    exposed_ports: BTreeSet::new(),
+                },
+                host_caches: Vec::new(),
+                cache: slipfork_engine::CacheOutcome::Miss,
+                millis: None,
+            })
+        }
+    }
+
+    /// One fixed repository: the daemon's `cwd`-resolution seam without shelling out to `git`.
+    struct FixedRepo {
+        repo: RepoRoot,
+    }
+
+    impl RepoRootResolver for FixedRepo {
+        fn resolve(&self, _start: &Path) -> Result<RepoRoot, slipfork_vcs::VcsError> {
+            Ok(self.repo.clone())
+        }
+    }
+
+    struct NoBrowser;
+
+    impl BrowserOpener for NoBrowser {
+        fn open_pairing_url(
+            &self,
+            _url: slipfork_ospp::LivePairingUrl,
+        ) -> Result<(), slipfork_ospp::OsppError> {
+            Ok(())
+        }
+    }
+
+    /// Build the real `DaemonService` over doubled engine/rootfs/repository, the real registry,
+    /// vault, and workspace factory.
+    fn test_service(
+        scratch: &Path,
+        worktree: &Path,
+    ) -> (Arc<DaemonService>, Arc<WorldRegistry>, Arc<RecordingEngine>) {
+        let layout = Layout::resolve(
+            Some(scratch.join("state")),
+            Some(scratch.join("run")),
+            scratch,
+            None,
+            None,
+            None,
+        );
+        let engine = Arc::new(RecordingEngine::new());
+        let registry = Arc::new(WorldRegistry::new(
+            engine.clone(),
+            Arc::new(slipfork_edge::UnavailableTunnelRegistrar::new()),
+            80,
+            None,
+        ));
+        let clock: Arc<dyn MonotonicClock> = Arc::new(SystemClock);
+        let service = DaemonService::new(
+            DaemonPorts {
+                engine: engine.clone(),
+                builder: Arc::new(StubRootfs),
+                registry: registry.clone(),
+                repo_roots: Arc::new(FixedRepo {
+                    repo: RepoRoot {
+                        vcs_root: worktree.to_path_buf(),
+                        worktree_root: worktree.to_path_buf(),
+                        project: ProjectSlug::parse("acme").expect("valid project slug"),
+                    },
+                }),
+                workspaces: Arc::new(RepositoryWorkspaces::new()),
+                vaults: Arc::new(LayoutProjectVaults::new(layout.clone())),
+                signer: Arc::new(slipfork_ospp_testkit::signers::software_signer()),
+                ospp_sessions: Arc::new(FileOsppSessionStore::new(layout.ospp_session_path())),
+                seed_dumps: Arc::new(
+                    DiskSeedDumpStore::open(layout.state_dir()).expect("disk-backed dumps"),
+                ),
+                browser: Arc::new(NoBrowser),
+                entropy: Arc::new(OsCsprngEntropy),
+                ospp_timeouts: OsppTimeouts::default(),
+                clock: clock.clone(),
+            },
+            DaemonConfig {
+                layout,
+                inherited: Vec::new(),
+                runtime: RuntimeAssets {
+                    crun: PathBuf::from("/nonexistent/crun"),
+                    world_init: PathBuf::from("/nonexistent/slipfork-world-init"),
+                },
+                target_arch: "x86_64".to_owned(),
+                uid: 1000,
+                gid: 1000,
+                host_caches: HostCaches::default(),
+                postgres_ready: PostgresReady::production(clock),
+            },
+            IngressInfo::new(vec![SocketAddr::from(([127, 0, 0, 1], 80))]).expect("ingress"),
+            None,
+        );
+        (Arc::new(service), registry, engine)
+    }
+
+    #[test]
+    fn restart_applies_an_edited_snow_file_and_a_second_up_touches_nothing() {
+        let scratch = disk_scratch("restart");
+        let worktree = scratch.join("worktree");
+        fs::create_dir_all(&worktree).expect("worktree");
+        fs::write(
+            worktree.join("snow.yml"),
+            restart_snow(7000, "echo one", "one"),
+        )
+        .expect("snow.yml");
+        let (service, registry, engine) = test_service(&scratch, &worktree);
+
+        let request = UpRequest {
+            cwd: worktree.clone(),
+            world: None,
+            dump: slipfork_edge::DumpRequest::Default,
+            resources: slipfork_edge::ResourceRequest::Default,
+            host_caches: false,
+        };
+        let up = service.up(&request, &mut |_| {}).expect("boot the world");
+        assert_eq!(up.world, "acme");
+        assert_eq!(up.state, WorldState::Running);
+        assert!(up.changed, "a fresh boot created the world");
+        assert_eq!(
+            up.restarted,
+            vec!["api".to_owned()],
+            "the boot started `api`, read back from the engine's rows"
+        );
+        assert_eq!(
+            engine.counts(),
+            (1, 0, 1),
+            "one spawn and one pre-deploy hook, no world stop"
+        );
+        assert_eq!(route_port(&registry, "acme.localhost"), 7000);
+
+        // A second `up` on the running world reports no change and performs no engine work.
+        let again = service.up(&request, &mut |_| {}).expect("idempotent up");
+        assert!(!again.changed);
+        assert!(again.restarted.is_empty());
+        assert_eq!(
+            engine.counts(),
+            (1, 0, 1),
+            "the idempotent `up` must issue no spawn, stop, or hook call"
+        );
+
+        // The edit a `restart` must apply: a new ingress port, a new hook body, a new env value.
+        fs::write(
+            worktree.join("snow.yml"),
+            restart_snow(7100, "echo two", "two"),
+        )
+        .expect("edited snow.yml");
+        let restarted = service
+            .restart(
+                &WorldSelector {
+                    cwd: worktree.clone(),
+                    world: None,
+                },
+                &mut |_| {},
+            )
+            .expect("restart");
+        assert_eq!(restarted.state, WorldState::Running);
+        assert!(
+            restarted.changed,
+            "`api` came back and the hook ran: the restart changed the world"
+        );
+        let running: Vec<String> = restarted
+            .services
+            .iter()
+            .filter(|row| row.info.state == ServiceState::Running)
+            .map(|row| row.info.id.clone())
+            .collect();
+        assert_eq!(
+            restarted.restarted, running,
+            "`restarted` is exactly the engine's post-reboot `Running` set"
+        );
+        assert_eq!(restarted.restarted, vec!["api".to_owned()]);
+        assert_eq!(
+            route_port(&registry, "acme.localhost"),
+            7100,
+            "restart must re-attach the edited `ingresses:` table"
+        );
+        assert_eq!(
+            engine.counts(),
+            (2, 1, 2),
+            "one world stop, one respawn, and the hook ran again"
+        );
+        assert_eq!(
+            engine.hooks.lock().expect("hook records")[1].last(),
+            Some(&"echo two".to_owned()),
+            "the edited hook body is what ran on restart"
+        );
+        assert_eq!(
+            engine.greetings.lock().expect("spawn envs")[1],
+            Some("two".to_owned()),
+            "the edited env value reached the respawned component"
+        );
+        assert_eq!(
+            engine.destroyed.load(Ordering::SeqCst),
+            0,
+            "restart never destroys the world handle (the CoW state survives)"
+        );
+        assert_eq!(
+            engine.spawns.load(Ordering::SeqCst),
+            2,
+            "the daemon never stopped `api` through its own handle"
+        );
+
+        service
+            .down(&WorldSelector {
+                cwd: worktree,
+                world: None,
+            })
+            .expect("down");
+        let _ = fs::remove_dir_all(&scratch);
+    }
+
+    /// The port the registry serves for one `*.localhost` host at `/`.
+    fn route_port(registry: &WorldRegistry, host: &str) -> u16 {
+        match registry.resolve(host, "/", false).expect("attached route") {
+            slipfork_edge::RouteDecision::Forward(world) => world.port(),
+            other => panic!("expected a forwarded route, got {other:?}"),
+        }
     }
 }
