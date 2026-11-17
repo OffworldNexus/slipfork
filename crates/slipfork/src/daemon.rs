@@ -17,7 +17,6 @@ use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
-use std::thread;
 use std::time::{Duration, Instant};
 
 use sha2::{Digest, Sha256};
@@ -81,6 +80,34 @@ const POSTGRES_READY_DEADLINE: Duration = Duration::from_secs(30);
 /// Interval between `pg_isready` probes while the postmaster finishes startup.
 const POSTGRES_READY_POLL: Duration = Duration::from_millis(100);
 
+/// Injected postmaster-readiness policy for the base seed world's `postgres:18` server.
+///
+/// [`compose_daemon`] defaults it once from [`POSTGRES_READY_DEADLINE`]/[`POSTGRES_READY_POLL`];
+/// the readiness gate reads time only through these closures, so a unit test drives the whole
+/// poll loop with a fake clock and sleeper instead of waiting 30 real seconds.
+struct PostgresReady {
+    /// Total time the postmaster gets to accept `pg_isready`.
+    deadline: Duration,
+    /// Interval between probes while the postmaster finishes startup.
+    poll: Duration,
+    /// Monotonic instant source the deadline check reads.
+    clock: Arc<dyn Fn() -> Instant + Send + Sync>,
+    /// How the gate waits between probes.
+    sleeper: Arc<dyn Fn(Duration) + Send + Sync>,
+}
+
+impl PostgresReady {
+    /// Production policy: the monotonic `Instant` clock and a real `thread::sleep`.
+    fn production() -> Self {
+        Self {
+            deadline: POSTGRES_READY_DEADLINE,
+            poll: POSTGRES_READY_POLL,
+            clock: Arc::new(Instant::now),
+            sleeper: Arc::new(std::thread::sleep),
+        }
+    }
+}
+
 /// Host toolchain caches exposed read-only by `--host-caches` (`ADR-0009` §2.3).
 ///
 /// Resolved once by the Composition Root from the developer's real `HOME`; the daemon only
@@ -110,6 +137,8 @@ struct DaemonConfig {
     pub gid: u32,
     /// Resolved host toolchain caches for `--host-caches`.
     pub host_caches: HostCaches,
+    /// Postmaster-readiness gate for the base seed world's `postgres:18` server.
+    pub postgres_ready: PostgresReady,
 }
 
 /// Existing developer toolchain caches shared read-only by `--host-caches` (`ADR-0009` §2.3).
@@ -377,7 +406,9 @@ struct DaemonPorts {
 ///
 /// `slipforkd` and the in-process integration harness pass the same already-resolved values and
 /// differ only in the injected [`SubvolumeDriver`] and [`BrowserOpener`]; neither builds a second
-/// graph. Nothing in [`compose_daemon`] reads the environment, the working directory, or the clock.
+/// graph. Nothing in [`compose_daemon`] reads the environment or the working directory, and the
+/// only ambient collaborator it installs is the postmaster-readiness clock
+/// (`PostgresReady::production`).
 pub struct DaemonWiring {
     /// Explicit `--state-dir` / `--runtime-dir` roots and the project-vault data home.
     pub layout: Layout,
@@ -499,6 +530,7 @@ pub fn compose_daemon(wiring: DaemonWiring) -> Result<DaemonGraph, String> {
             uid,
             gid,
             host_caches,
+            postgres_ready: PostgresReady::production(),
         },
         http_ingress_port,
         forward_port,
@@ -1141,7 +1173,8 @@ impl DaemonService {
         Ok(())
     }
 
-    /// Block until the world's postmaster accepts queries, bounded by [`POSTGRES_READY_DEADLINE`].
+    /// Block until the world's postmaster accepts queries, bounded by the injected
+    /// [`PostgresReady`] policy.
     ///
     /// The engine's `readiness_port` probe only proves the container accepts TCP; `postgres:18`
     /// binds `:5432` milliseconds before postmaster leaves `PM_STARTUP`, so a `psql` issued right
@@ -1161,23 +1194,13 @@ impl DaemonService {
         .map(str::to_owned)
         .to_vec();
         let what = "probing the base seed world's postgres readiness";
-        let deadline = Instant::now() + POSTGRES_READY_DEADLINE;
-        loop {
+        await_postgres_ready(&self.config.postgres_ready, || {
             let (output, stderr) = self.exec_service(service, &argv, what)?;
-            if output.exit_code == 0 {
-                return Ok(());
-            }
-            if Instant::now() >= deadline {
-                let detail = readiness_detail(&output.stdout, &stderr);
-                return Err(runtime_error(format!(
-                    "the base seed world's postgres server did not accept queries within {}s \
-                     (pg_isready exit code {}): {detail}",
-                    POSTGRES_READY_DEADLINE.as_secs(),
-                    output.exit_code,
-                )));
-            }
-            thread::sleep(POSTGRES_READY_POLL);
-        }
+            Ok((
+                output.exit_code,
+                readiness_detail(&output.stdout, &stderr).to_owned(),
+            ))
+        })
     }
 
     /// Run `argv` inside a running backing-service container, failing closed on a non-zero exit.
@@ -2848,6 +2871,32 @@ fn readiness_detail<'a>(stdout: &'a str, stderr: &'a str) -> &'a str {
     }
 }
 
+/// Poll `probe` until it reports exit code `0`, bounded by the injected [`PostgresReady`] policy.
+///
+/// `probe` yields the `pg_isready` exit code plus the last server-side diagnostic. Time passes only
+/// through the policy's clock and sleeper, so a unit test exercises the deadline and poll cadence
+/// without a real 30 s wait.
+fn await_postgres_ready(
+    policy: &PostgresReady,
+    mut probe: impl FnMut() -> Result<(i32, String), EdgeError>,
+) -> Result<(), EdgeError> {
+    let deadline = (policy.clock)() + policy.deadline;
+    loop {
+        let (exit_code, detail) = probe()?;
+        if exit_code == 0 {
+            return Ok(());
+        }
+        if (policy.clock)() >= deadline {
+            return Err(runtime_error(format!(
+                "the base seed world's postgres server did not accept queries within {}s \
+                 (pg_isready exit code {exit_code}): {detail}",
+                policy.deadline.as_secs(),
+            )));
+        }
+        (policy.sleeper)(policy.poll);
+    }
+}
+
 /// The backing-service OCI images `snow.yml` `resources:` requests (`ADR-0009` §2.2).
 fn requested_service_images(snow: &SnowFile) -> Vec<BackingServiceKey> {
     let mut images = BTreeSet::new();
@@ -3272,6 +3321,51 @@ mod tests {
         assert!(validate_secret_key("").is_err());
         assert!(validate_secret_key("A=B").is_err());
         assert!(validate_secret_key("A\nB").is_err());
+    }
+
+    #[test]
+    fn postgres_readiness_gate_drives_the_injected_clock_and_sleeper() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        let start = Instant::now();
+        let elapsed = Arc::new(AtomicU64::new(0));
+        let policy = PostgresReady {
+            deadline: Duration::from_secs(30),
+            poll: Duration::from_millis(100),
+            clock: {
+                let elapsed = Arc::clone(&elapsed);
+                Arc::new(move || start + Duration::from_millis(elapsed.load(Ordering::SeqCst)))
+            },
+            sleeper: {
+                let elapsed = Arc::clone(&elapsed);
+                Arc::new(move |poll| {
+                    elapsed.fetch_add(poll.as_millis() as u64, Ordering::SeqCst);
+                })
+            },
+        };
+
+        // Three rejections then acceptance: the gate waits one injected poll between probes.
+        let mut probes = 0;
+        await_postgres_ready(&policy, || {
+            probes += 1;
+            Ok((if probes < 4 { 2 } else { 0 }, "starting up".to_owned()))
+        })
+        .expect("the fourth probe accepts queries");
+        assert_eq!(probes, 4);
+        assert_eq!(elapsed.load(Ordering::SeqCst), 300);
+
+        // A postmaster that never accepts fails at the injected deadline, not after a real wait.
+        elapsed.store(0, Ordering::SeqCst);
+        let mut probes = 0;
+        let error = await_postgres_ready(&policy, || {
+            probes += 1;
+            Ok((2, "FATAL:  the database system is starting up".to_owned()))
+        })
+        .expect_err("a postmaster that never accepts must fail closed");
+        assert_eq!(probes, 301, "30 s deadline at a 100 ms poll, inclusive");
+        let message = error.to_string();
+        assert!(message.contains("within 30s"), "got: {message}");
+        assert!(message.contains("starting up"), "got: {message}");
     }
 
     #[test]

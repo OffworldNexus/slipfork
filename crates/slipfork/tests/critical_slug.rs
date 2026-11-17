@@ -67,29 +67,14 @@ fn run_slipfork_with_env(
     }
     let child = cmd.spawn().expect("spawn slipfork binary");
     let process_group = child.id();
-    let group = format!("-{process_group}");
     let output = child.wait_with_output().expect("wait for slipfork binary");
-    let killed = Command::new("kill")
-        .arg("-TERM")
-        .arg("--")
-        .arg(&group)
-        .stderr(Stdio::null())
-        .status()
-        .expect("send SIGTERM to the slipfork process group");
-    let group_alive = Command::new("kill")
-        .arg("-0")
-        .arg("--")
-        .arg(&group)
-        .stderr(Stdio::null())
-        .status()
-        .expect("probe the slipfork process group")
-        .success();
+    let termination = support::terminate_process_group(process_group);
     // A diagnostic-only invocation (`dag plan`) never auto-spawns a daemon, so its group is already
     // empty here and `kill` reports `ESRCH`; a failed TERM is only tolerated when nothing is left to
     // reap, which the `kill -0` probe proves.
     assert!(
-        killed.success() || !group_alive,
-        "kill -TERM {group} failed while the process group still had live members\n\
+        termination.term_delivered || !termination.members_alive,
+        "kill -TERM -{process_group} failed while the process group still had live members\n\
          offending invocation: slipfork {args:?}\nstdout:\n{}\nstderr:\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
@@ -106,6 +91,17 @@ fn run_slipfork_with_env(
         panic!(
             "the auto-spawned slipforkd must stop accepting after the process-group SIGTERM: {error}\n\
              offending invocation: slipfork {args:?}\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    // A world PID 1 ignores `SIGTERM` and outlives a supervisor that was killed before it could
+    // forward `--kill-child`, so the group signal alone is not a leak proof. This suite boots no
+    // world, so the reap is a no-op today; it is the suite-exit proof that the auto-spawned daemon
+    // group never leaves one behind.
+    if let Err(survivors) = support::reap_world_init_processes(scratch) {
+        panic!(
+            "{survivors}\noffending invocation: slipfork {args:?}\nstdout:\n{}\nstderr:\n{}",
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         );
@@ -226,88 +222,37 @@ fn worktree_resolves_to_canonical_repo_slug_and_honors_only_vcs_root_slipfork_to
         "expected default `dag plan` to read <vcs_root>/slipfork.toml, got:\n{dag_stdout}"
     );
 
-    // (c) Explicit `--file` + `--repo` divergence must fail closed (both inside a VCS repo and
-    // outside any VCS repo), whereas a consistent explicit pair outside any VCS repo works cleanly.
-    let repo_canonical = fs::canonicalize(&repo).expect("canonicalize repo");
+    // (c) Explicit `--file` resolves its own VCS root: a config outside any repository fails
+    // closed, and a standalone repository whose `inputs = ["src/**"]` match nothing plans cleanly
+    // with the empty-input digest the cache-poisoning check below needs.
     let repo_toml = repo.join("slipfork.toml");
-    let empty_dir = scratch.join("empty-input-dir");
-    fs::create_dir_all(&empty_dir).expect("create empty-input-dir");
+    let standalone = scratch.join("standalone");
+    fs::create_dir_all(&standalone).expect("create standalone");
+    let standalone_toml = standalone.join("slipfork.toml");
+    fs::copy(&repo_toml, &standalone_toml).expect("copy slipfork.toml into standalone");
 
-    let divergent_out = run_slipfork(
-        scratch,
-        scratch,
-        &[
-            "--json",
-            "dag",
-            "plan",
-            "--file",
-            repo_toml.to_str().expect("utf8"),
-            "--repo",
-            empty_dir.to_str().expect("utf8"),
-        ],
-    );
-    assert!(
-        !divergent_out.status.success(),
-        "divergent --file (in repo) and --repo (outside repo) must fail closed"
-    );
-    let divergent_json: Value =
-        serde_json::from_slice(&divergent_out.stdout).expect("divergent error json");
-    let divergent_err = divergent_json["error"].as_str().expect("error string");
-    assert!(
-        divergent_err.contains(empty_dir.to_str().expect("utf8"))
-            && divergent_err.contains(repo_toml.to_str().expect("utf8"))
-            && divergent_err.contains(repo_canonical.to_str().expect("utf8"))
-            && divergent_err.contains("VCS root"),
-        "expected actionable divergence refusal naming both paths and VCS-root rule, got: {divergent_err}"
-    );
-
-    // Consistent explicit pair outside any VCS repository (`--file <dir>/slipfork.toml --repo <dir>`)
-    // succeeds, while mismatched directories outside any VCS repository or cross-boundary pairs fail closed.
-    let empty_toml = empty_dir.join("slipfork.toml");
-    fs::copy(&repo_toml, &empty_toml).expect("copy slipfork.toml into standalone empty_dir");
-
-    let other_standalone = scratch.join("other-standalone");
-    fs::create_dir_all(&other_standalone).expect("create other-standalone");
-    let inconsistent_outside_out = run_slipfork(
+    let outside_out = run_slipfork(
         scratch,
         scratch,
         &[
             "dag",
             "plan",
             "--file",
-            empty_toml.to_str().expect("utf8"),
-            "--repo",
-            other_standalone.to_str().expect("utf8"),
+            standalone_toml.to_str().expect("utf8"),
         ],
     );
     assert!(
-        !inconsistent_outside_out.status.success(),
-        "mismatched --file and --repo outside any VCS repo must fail closed"
+        !outside_out.status.success(),
+        "--file outside any VCS repository must fail closed"
     );
-    let inconsistent_outside_stderr = String::from_utf8_lossy(&inconsistent_outside_out.stderr);
+    let outside_stderr = String::from_utf8_lossy(&outside_out.stderr);
     assert!(
-        inconsistent_outside_stderr.contains(other_standalone.to_str().expect("utf8"))
-            && inconsistent_outside_stderr.contains(empty_toml.to_str().expect("utf8")),
-        "expected both paths in outside-repo mismatch refusal, got: {inconsistent_outside_stderr}"
+        outside_stderr.contains(standalone.to_str().expect("utf8"))
+            && outside_stderr.contains("not a git or jj repository"),
+        "expected the outside-repo refusal to name the config's directory, got: {outside_stderr}"
     );
 
-    let cross_boundary_out = run_slipfork(
-        scratch,
-        scratch,
-        &[
-            "dag",
-            "plan",
-            "--file",
-            empty_toml.to_str().expect("utf8"),
-            "--repo",
-            repo.to_str().expect("utf8"),
-        ],
-    );
-    assert!(
-        !cross_boundary_out.status.success(),
-        "--file outside VCS paired with --repo inside VCS must fail closed"
-    );
-
+    run_git(&standalone, &["init", "-q"]);
     let empty_plan_out = run_slipfork(
         scratch,
         scratch,
@@ -316,14 +261,12 @@ fn worktree_resolves_to_canonical_repo_slug_and_honors_only_vcs_root_slipfork_to
             "dag",
             "plan",
             "--file",
-            empty_toml.to_str().expect("utf8"),
-            "--repo",
-            empty_dir.to_str().expect("utf8"),
+            standalone_toml.to_str().expect("utf8"),
         ],
     );
     assert!(
         empty_plan_out.status.success(),
-        "consistent explicit --file + --repo outside any VCS repo must succeed: {}",
+        "dag plan over a standalone VCS repository must succeed: {}",
         String::from_utf8_lossy(&empty_plan_out.stderr)
     );
     let empty_plan: Value = serde_json::from_slice(&empty_plan_out.stdout).expect("empty json");
@@ -352,7 +295,7 @@ fn worktree_resolves_to_canonical_repo_slug_and_honors_only_vcs_root_slipfork_to
     assert!(root_plan_out.status.success());
     let root_plan: Value = serde_json::from_slice(&root_plan_out.stdout).expect("root plan json");
 
-    let explicit_consistent_repo_out = run_slipfork(
+    let explicit_file_out = run_slipfork(
         scratch,
         &subdir,
         &[
@@ -361,15 +304,12 @@ fn worktree_resolves_to_canonical_repo_slug_and_honors_only_vcs_root_slipfork_to
             "plan",
             "--file",
             repo_toml.to_str().expect("utf8"),
-            "--repo",
-            repo.to_str().expect("utf8"),
         ],
     );
-    assert!(explicit_consistent_repo_out.status.success());
-    let explicit_consistent_plan: Value =
-        serde_json::from_slice(&explicit_consistent_repo_out.stdout)
-            .expect("explicit consistent plan json");
-    assert_eq!(explicit_consistent_plan, root_plan);
+    assert!(explicit_file_out.status.success());
+    let explicit_file_plan: Value =
+        serde_json::from_slice(&explicit_file_out.stdout).expect("explicit --file plan json");
+    assert_eq!(explicit_file_plan, root_plan);
 
     let sub_plan_out = run_slipfork(scratch, &subdir, &["--json", "dag", "plan"]);
     assert!(
@@ -406,19 +346,6 @@ fn worktree_resolves_to_canonical_repo_slug_and_honors_only_vcs_root_slipfork_to
     assert_ne!(
         sub_plan_v2["artifacts"][0]["digest"], sub_plan["artifacts"][0]["digest"],
         "editing <vcs_root>/src/lib.txt must change the digest observed from a subdirectory"
-    );
-
-    // Passing `--repo .` explicitly in a subdirectory without `--file` must fail closed.
-    let narrow_repo_out = run_slipfork(scratch, &subdir, &["dag", "plan", "--repo", "."]);
-    assert!(
-        !narrow_repo_out.status.success(),
-        "explicit narrower --repo without --file must fail closed"
-    );
-    let narrow_stderr = String::from_utf8_lossy(&narrow_repo_out.stderr);
-    assert!(
-        narrow_stderr.contains("narrower than VCS root")
-            && narrow_stderr.contains(repo_canonical.to_str().expect("utf8")),
-        "expected actionable narrower --repo refusal, got: {narrow_stderr}"
     );
 
     // (d) Ambient `GIT_DIR` / `GIT_WORK_TREE` / `GIT_COMMON_DIR` in parent env must be scrubbed by

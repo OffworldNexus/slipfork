@@ -9,13 +9,17 @@
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use slipfork_edge::daemon::ExecTargetRequest;
 use slipfork_edge::{DaemonControl, DaemonControlClient, DaemonErrorKind, EdgeError};
 
 pub mod support;
 use support::{Daemon, assert_success, repo_with_manifest, stderr, stdout};
+
+/// Bound on the daemon noticing a stopped container: `redis-cli shutdown` stops the container's
+/// PID 1, and the daemon must then answer the next entry with the typed `ServiceNotRunning`.
+const REDIS_STOP_DEADLINE: Duration = Duration::from_secs(20);
 
 const ALPINE_SNOW: &str = r#"
 images:
@@ -170,33 +174,30 @@ fn redis_entry_fails_closed_with_service_not_running_after_the_container_stops()
     // reaped with it; the observable contract is the typed `ServiceNotRunning` below.
     let _status = run_entry(&target, &["redis-cli", "shutdown", "nosave"]);
 
-    let deadline = Instant::now() + Duration::from_secs(20);
-    loop {
-        match client.exec_target(&request) {
-            Err(EdgeError::Control(error)) if error.kind == DaemonErrorKind::ServiceNotRunning => {
-                assert!(
-                    error.message.contains("redis_clusters.cache")
-                        && error.message.contains("ServiceNotRunning"),
-                    "the refusal must name the stopped service: {}",
-                    error.message
-                );
-                assert!(
-                    !error.message.contains("rootfs"),
-                    "a stopped container never falls back to the app rootfs: {}",
-                    error.message
-                );
-                break;
-            }
-            Err(_) if Instant::now() < deadline => {
-                std::thread::sleep(Duration::from_millis(50));
-            }
-            Err(other) => panic!("expected ServiceNotRunning after shutdown, got: {other}"),
-            Ok(_) if Instant::now() < deadline => {
-                std::thread::sleep(Duration::from_millis(50));
-            }
-            Ok(_) => panic!("the stopped redis container must never be re-entered"),
+    let stopped = support::poll_until(REDIS_STOP_DEADLINE, support::POLL_INTERVAL, || match client
+        .exec_target(&request)
+    {
+        Err(EdgeError::Control(error)) if error.kind == DaemonErrorKind::ServiceNotRunning => {
+            assert!(
+                error.message.contains("redis_clusters.cache")
+                    && error.message.contains("ServiceNotRunning"),
+                "the refusal must name the stopped service: {}",
+                error.message
+            );
+            assert!(
+                !error.message.contains("rootfs"),
+                "a stopped container never falls back to the app rootfs: {}",
+                error.message
+            );
+            Ok(())
         }
-    }
+        Err(other) => panic!("expected ServiceNotRunning after shutdown, got: {other}"),
+        Ok(_) => Err("the stopped redis container must never be re-entered".to_owned()),
+    });
+    assert!(
+        stopped.is_ok(),
+        "the stopped redis container must never be re-entered: {stopped:?}"
+    );
 
     let cli = daemon.cli(&repo, &["redis"]);
     assert!(

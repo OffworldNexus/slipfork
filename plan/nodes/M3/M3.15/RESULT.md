@@ -473,3 +473,71 @@ documented `project::` location are what is deferred; `crates/slipfork/src/daemo
 **private** `fn resolve_world_selector(raw, repo)` that accepts `<project>`, `<project>:<fork>`, and a bare
 `<fork>`, and fails closed on a foreign project prefix and on more than one `:` separator.
 `critical_cli` exercises all of it (`other:feat-x`, `acme-app:feat:x`, the printed `acme-app:feat-x`).
+
+## 15. Final-gate fixes (1 BLOCKER + 1 `review-ioc` MAJOR + 1 `review-cruft` MAJOR)
+
+Scope: `crates/slipfork/src/**`, plus the one protected suite the `--repo` deletion invalidates
+(`crates/slipfork/tests/critical_slug.rs`, authorized by this node's `crates/slipfork/tests/**`).
+
+### 15.1 BLOCKER — private intra-doc link in `doctor.rs` (already green in the tree)
+
+`crates/slipfork/src/doctor.rs:8` is a plain code span (`` `filesystem_name` ``), not an intra-doc
+link; the fix landed with the gate-1 `rs-lint` repair (`94831c1`) before this dispatch. Verified, not
+re-edited: `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` exits 0.
+
+### 15.2 `review-ioc` MAJOR — the postmaster-readiness gate no longer reads the ambient clock
+
+`crates/slipfork/src/daemon.rs` had zero clock reads before §11 added `Instant::now()` +
+`thread::sleep` inside `wait_for_postgres_ready`. The policy is now injected:
+
+- `struct PostgresReady { deadline, poll, clock: Arc<dyn Fn() -> Instant + Send + Sync>, sleeper:
+  Arc<dyn Fn(Duration) + Send + Sync> }` with `PostgresReady::production()` as the **single**
+  ambient adapter (`Instant::now` + `std::thread::sleep`) built from the unchanged
+  `POSTGRES_READY_DEADLINE` (30 s) / `POSTGRES_READY_POLL` (100 ms) constants.
+- `compose_daemon` installs it once into `DaemonConfig::postgres_ready`; `DaemonWiring`'s doc now
+  states that this is the only ambient collaborator the composer installs.
+- The loop is the free `fn await_postgres_ready(policy, probe)`; `wait_for_postgres_ready` only
+  supplies the `pg_isready` probe over `exec_service`, so the deadline check and the wait both read
+  the policy. `use std::thread;` is gone (no other user).
+- Unit test `postgres_readiness_gate_drives_the_injected_clock_and_sleeper` drives a fake monotonic
+  clock + fake sleeper: three rejections then acceptance (`4` probes, `300 ms` elapsed) and a
+  never-ready postmaster failing at the injected deadline (`301` probes) with the `within 30s` plus
+  last-diagnostic message — no real 30 s wait.
+
+### 15.3 `review-cruft` MAJOR — `dag plan --repo` deleted
+
+`--repo` could only restate the derived VCS root (or fail), and the published docs already dropped
+it. Deleted: the `DagAction::Plan::repo` field (`cli.rs`), the `dag_plan(..., repo)` parameter, the
+four rejection arms, `probe_repo_root`, and the now-unused `slipfork_vcs::VcsError` import
+(`main.rs`). `resolve_dag_paths(file)` keeps exactly two arms:
+
+- `None` → `<vcs_root>/slipfork.toml` + that root (unchanged);
+- `Some(file)` → metadata check, then the VCS root of the file's parent (unchanged).
+
+`crates/slipfork/tests/critical_slug.rs` (protected; authorized by `crates/slipfork/tests/**`) had
+its `--repo` assertions replaced by the equivalent `--file`-only coverage, never weakened:
+`--file` outside any VCS repository still fails closed (asserts the refusal names the config's
+directory and `not a git or jj repository`); a standalone `git init` repository whose `inputs =
+["src/**"]` match nothing still yields the `EMPTY_SHA256` merkle used by the cache-poisoning check;
+and `--file <vcs_root>/slipfork.toml` from `repo/nested/sub` still equals the root plan byte for
+byte. The `--repo` narrower/divergent/mismatched arms are gone with the flag.
+
+### 15.4 Acceptance evidence (this XFS host, `release/0.1.0`, `PATH` + `~/.cargo/bin`, `~/.local/bin`, `~/.bun/bin`)
+
+| # | Command | Result |
+|---|---|---|
+| 1 | `cargo test -p slipfork --all-targets` | **exit 0** — lib 31, `critical_btrfs_live` 1, `critical_cli` 14, `critical_l0_wiring` 4, `critical_ospp_daemon` 4, `critical_slug` 6, `critical_vcs_remote` 1; 0 failed, 0 ignored |
+| 2 | `cargo clippy -p slipfork --all-targets -- -D warnings` | **exit 0** — `Finished dev profile` |
+| 3 | `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` | **exit 0** — 0 warnings |
+| 4 | `cargo test -p slipfork --test critical_cli -- --test-threads=1` | **exit 0** — `14 passed; 0 failed` (run inside `make rs-test`) |
+| 5 | `cargo fmt --all -- --check` | **exit 0** |
+| 6 | `uv run --no-project tools/guard.py` | **exit 0** — `guard: OK (500 file(s) checked)` |
+| 7 | `uv run --no-project tools/plan.py validate` | **exit 0** — `plan OK` |
+| 8 | `make check` | **exit 0** — `plan OK`; `guard: OK (500 file(s))`; ruff `All checks passed!` / `13 files already formatted`; `pytest 126 passed`; `check_support: OK (10 integration(s))`; `ts-test 16 pass / 0 fail`; fmt; clippy + rustdoc; full `rs-test` (all suites 0 failed, incl. `slipfork:critical_cli` 14 and `slipfork:critical_slug` 6); zensical `--strict` `No issues found`; `check_docs_honesty: OK (9 published doc(s))` |
+
+One transient red, not from this dispatch: the first `make check` stopped at `rs-fmt` on
+`crates/slipfork/tests/support/mod.rs` (the concurrently active `M3.24`'s in-flight debug
+instrumentation). The file was formatted by its owner and the re-run is the exit-0 row above.
+
+Files changed by this dispatch: `crates/slipfork/src/daemon.rs`, `crates/slipfork/src/cli.rs`,
+`crates/slipfork/src/main.rs`, `crates/slipfork/tests/critical_slug.rs`, plus this `RESULT.md`.

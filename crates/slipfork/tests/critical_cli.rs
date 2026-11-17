@@ -18,10 +18,12 @@ use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use serde_json::Value;
-use slipfork_testkit::{SHUTDOWN_DEADLINE, poll_until};
 
 pub mod support;
-use support::{Daemon, assert_success, repo_with_manifest, stderr, stdout, wait_for_line};
+use support::{
+    Daemon, POLL_INTERVAL, SHUTDOWN_DEADLINE, assert_success, poll_until, repo_with_manifest,
+    stderr, stdout, wait_for_line,
+};
 
 const SNOW_YML: &str = r#"
 images:
@@ -431,8 +433,9 @@ fn daemon_unit_renders_the_resolved_user_and_never_a_template_specifier() {
     );
 
     // Rendering units is a pure stdout operation: no state or runtime directory is created.
+    let layout = support::DaemonLayout::under(scratch);
     assert!(
-        !scratch.join("state").exists() && !scratch.join("rt").exists(),
+        !layout.state_dir.exists() && !layout.runtime_dir.exists(),
         "daemon unit must not write any files"
     );
 }
@@ -495,6 +498,7 @@ fn zero_setup_auto_spawn_serves_up_without_a_prestarted_daemon() {
             !runtime_dir.join("daemon.sock").exists(),
             "a refused daemon never binds its control socket"
         );
+        support::assert_no_world_init_processes(scratch);
         return;
     }
 
@@ -510,18 +514,16 @@ fn zero_setup_auto_spawn_serves_up_without_a_prestarted_daemon() {
     assert_eq!(mode, 0o600, "daemon.sock must be 0600");
     assert!(daemon_log.is_file(), "auto-spawn must record its log");
 
-    let killed = Command::new("kill")
-        .arg("-TERM")
-        .arg("--")
-        .arg(format!("-{process_group}"))
-        .status()
-        .expect("send SIGTERM to the auto-spawn process group");
+    let termination = support::terminate_process_group(process_group);
     assert!(
-        killed.success(),
-        "kill -TERM -{process_group} must succeed to prove the test reaped its daemon"
+        termination.term_delivered,
+        "kill -TERM -{process_group} must succeed to prove the test reaped its daemon \
+         (live members: {})",
+        termination.members_alive
     );
     support::wait_daemon_teardown(&runtime_dir)
         .unwrap_or_else(|error| panic!("the auto-spawned slipforkd must stop accepting: {error}"));
+    support::assert_no_world_init_processes(scratch);
 }
 
 // ---------------------------------------------------------------------------
@@ -889,7 +891,7 @@ fn forward_bridge_streams_a_real_request_and_closes_on_disconnect() {
     let _ = forward.wait();
     // The daemon-owned listener closes only once the CLI process is gone; wait boundedly so the
     // proof is deterministic instead of racing the disconnect.
-    poll_until(SHUTDOWN_DEADLINE, || {
+    poll_until(SHUTDOWN_DEADLINE, POLL_INTERVAL, || {
         if TcpStream::connect(api_addr).is_err() {
             Ok(())
         } else {

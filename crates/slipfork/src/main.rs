@@ -40,7 +40,6 @@ use slipfork_edge::{
 use slipfork_engine::btrfs::KernelBtrfsDriver;
 use slipfork_engine::current_uid_gid;
 use slipfork_snow::SnowFile;
-use slipfork_vcs::VcsError;
 
 /// Bound on waiting for a freshly spawned `slipforkd` to answer its control socket.
 const SPAWN_TIMEOUT: Duration = Duration::from_secs(15);
@@ -99,8 +98,8 @@ fn run(cli: Cli) -> Result<ExitCode, String> {
             expose_secrets,
         ),
         Commands::Dag {
-            action: DagAction::Plan { file, repo },
-        } => dag_plan(json, &layout, file, repo),
+            action: DagAction::Plan { file },
+        } => dag_plan(json, &layout, file),
         Commands::Daemon {
             action: DaemonAction::Unit { only, forward_port },
         } => daemon_unit(json, &layout, only, forward_port),
@@ -233,13 +232,8 @@ fn resolve_snow(
     Ok(ExitCode::SUCCESS)
 }
 
-fn dag_plan(
-    json: bool,
-    layout: &Layout,
-    file: Option<PathBuf>,
-    repo: Option<PathBuf>,
-) -> Result<ExitCode, String> {
-    let (config_path, repo_root) = resolve_dag_paths(file, repo)?;
+fn dag_plan(json: bool, layout: &Layout, file: Option<PathBuf>) -> Result<ExitCode, String> {
+    let (config_path, repo_root) = resolve_dag_paths(file)?;
     let config = load_slipfork_config(&config_path)?;
     let hasher = FsMerkleHasher::new(&repo_root);
     let cache = FsDigestCache::new(layout.state_dir());
@@ -1271,14 +1265,6 @@ fn repo_root(start: &Path) -> Result<slipfork_vcs::RepoRoot, String> {
         .map_err(|err| err.to_string())
 }
 
-fn probe_repo_root(start: &Path) -> Result<Option<PathBuf>, String> {
-    match repository_resolver().resolve(start) {
-        Ok(repository) => Ok(Some(repository.vcs_root)),
-        Err(VcsError::NotARepository { .. }) => Ok(None),
-        Err(err) => Err(err.to_string()),
-    }
-}
-
 fn parent_dir(path: &Path) -> PathBuf {
     match path.parent() {
         Some(parent) if !parent.as_os_str().is_empty() => parent.to_path_buf(),
@@ -1286,91 +1272,23 @@ fn parent_dir(path: &Path) -> PathBuf {
     }
 }
 
-/// Resolve the DAG planner's `--file`/`--repo` pair through the shared repository resolver.
-fn resolve_dag_paths(
-    file: Option<PathBuf>,
-    repo: Option<PathBuf>,
-) -> Result<(PathBuf, PathBuf), String> {
-    match (file, repo) {
-        (None, None) => {
+/// Resolve the DAG planner's `--file` (default `<vcs_root>/slipfork.toml`) through the shared
+/// repository resolver, so the config and its input globs always share one VCS root.
+fn resolve_dag_paths(file: Option<PathBuf>) -> Result<(PathBuf, PathBuf), String> {
+    match file {
+        None => {
             let repository = repo_root(Path::new("."))?;
             Ok((
                 repository.vcs_root.join("slipfork.toml"),
                 repository.vcs_root,
             ))
         }
-        (None, Some(explicit_repo)) => {
-            let canonical_repo = fs::canonicalize(&explicit_repo).map_err(|err| {
-                format!("cannot access --repo {}: {err}", explicit_repo.display())
-            })?;
-            let vcs_root = repo_root(&canonical_repo)?.vcs_root;
-            if canonical_repo != vcs_root {
-                let relation = if canonical_repo.starts_with(&vcs_root) {
-                    "is narrower than"
-                } else {
-                    "diverges from"
-                };
-                return Err(format!(
-                    "--repo {} {relation} VCS root {} (which owns {}); omit --repo (or pass --repo {}) so config and input globs share the VCS root",
-                    explicit_repo.display(),
-                    vcs_root.display(),
-                    vcs_root.join("slipfork.toml").display(),
-                    vcs_root.display(),
-                ));
-            }
-            Ok((vcs_root.join("slipfork.toml"), vcs_root))
-        }
-        (Some(explicit_file), None) => {
+        Some(explicit_file) => {
             if let Err(err) = fs::metadata(&explicit_file) {
                 return Err(format!("cannot read {}: {err}", explicit_file.display()));
             }
             let vcs_root = repo_root(&parent_dir(&explicit_file))?.vcs_root;
             Ok((explicit_file, vcs_root))
-        }
-        (Some(explicit_file), Some(explicit_repo)) => {
-            if let Err(err) = fs::metadata(&explicit_file) {
-                return Err(format!("cannot read {}: {err}", explicit_file.display()));
-            }
-            let canonical_file_dir = fs::canonicalize(parent_dir(&explicit_file))
-                .map_err(|err| format!("cannot access {}: {err}", explicit_file.display()))?;
-            let canonical_repo = fs::canonicalize(&explicit_repo).map_err(|err| {
-                format!("cannot access --repo {}: {err}", explicit_repo.display())
-            })?;
-
-            match (
-                probe_repo_root(&canonical_file_dir)?,
-                probe_repo_root(&canonical_repo)?,
-            ) {
-                (Some(file_vcs_root), _) => {
-                    if canonical_repo != file_vcs_root {
-                        return Err(format!(
-                            "--repo {} is not the VCS root ({}) of --file {} (rule: --repo must match the canonical VCS root of --file so config and input globs share one root); pass --repo {} or omit --repo",
-                            explicit_repo.display(),
-                            file_vcs_root.display(),
-                            explicit_file.display(),
-                            file_vcs_root.display(),
-                        ));
-                    }
-                    Ok((explicit_file, canonical_repo))
-                }
-                (None, Some(repo_vcs_root)) => Err(format!(
-                    "--file {} is outside any git or jj repository while --repo {} belongs to VCS root {} (rule: --repo must match the VCS root of --file so config and input globs share one root)",
-                    explicit_file.display(),
-                    explicit_repo.display(),
-                    repo_vcs_root.display(),
-                )),
-                (None, None) => {
-                    if canonical_repo != canonical_file_dir {
-                        return Err(format!(
-                            "--repo {} does not match the directory ({}) of --file {} outside any git or jj repository (rule: outside a VCS repository, --repo must match the parent directory of --file so config and input globs share one root)",
-                            explicit_repo.display(),
-                            canonical_file_dir.display(),
-                            explicit_file.display(),
-                        ));
-                    }
-                    Ok((explicit_file, canonical_repo))
-                }
-            }
         }
     }
 }

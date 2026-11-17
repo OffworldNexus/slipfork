@@ -264,9 +264,6 @@ pub enum DagAction {
         /// Path to `slipfork.toml` (defaults to `<vcs_root>/slipfork.toml`).
         #[arg(long)]
         file: Option<PathBuf>,
-        /// Repository root directory walked for input globs (defaults to `<vcs_root>`).
-        #[arg(long)]
-        repo: Option<PathBuf>,
     },
 }
 

@@ -95,3 +95,11 @@ Quad gate 1/2 results: legality PASS (3 MINOR: critical_slug git-only branch ass
 ## 2026-11-17T12:34 [lead]
 
 make check gate 1: RED only at rs-lint — rustdoc private_intra_doc_links on doctor.rs:8 [filesystem_name] after the cruft fix made it private. Fixing (plain code span) + RESULT §6 addendum for the shipped private resolve_world_selector. Everything before rs-lint was green (plan/guard/ruff/pytest 122/ts-test 16/fmt/clippy).
+
+## 2026-11-17T12:36 [lead]
+
+Gate passed: make check gate 1 green except rs-lint (private_intra_doc_links); fixed → RUSTDOCFLAGS=-D warnings cargo doc -p slipfork exit 0, make rs-lint exit 0. Quad: reviewer PASS after fix, legality PASS, ioc MAJORs adjudicated/deferred to 0.2.0, cruft MINORs applied. critical_guard --base 053596e --node M3.15 OK.
+
+## 2026-11-17T12:36 [lead]
+
+status review -> done
