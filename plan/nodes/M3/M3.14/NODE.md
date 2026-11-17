@@ -29,7 +29,7 @@ Re-home the `slipfork-engine` conformance and critical suites onto `BtrfsEngine`
 
 # Design / Invariants
 
-1. `tests/support/test_tree_driver.rs` implements the public `SubvolumeDriver` over real scratch directories (fixture material, no kernel ioctl) and is shared by every fast suite. It is test-only code; production binaries contain no reference to it.
+1. Every fast suite uses the single shared `slipfork_testkit::btrfs::TestTreeDriver` (the `publish = false` dev-dependency; `ARCHITECTURE.md` §1 owns the dev-dep double-compile rule) passed as `&TestTreeDriver as &dyn SubvolumeDriver`; no per-crate test driver file is created. It is test-only code; production binaries contain no reference to it.
 2. Fast suites (`critical_engine.rs`, `critical_oci_runtime.rs` where kernel-independent) construct `BtrfsEngine::with_driver(test_tree_driver)` and assert: unified single-subvolume layout, RO snapshot isolation between sibling clones, state-subdir lineage, mount-spec validation, opaque-handle stability, seal-once freeze, `$UID:$GID` ownership of world trees, and fail-closed errors.
 3. `tests/critical_btrfs_live.rs` (new) probes `statfs(<state_dir>).f_type == 0x9123683e` once:
    - **Btrfs host:** runs the real ioctl path — RO snapshot, two writable clones, `postgres:18` + `redis:8` `crun` services in both clones on the same in-world port, SysV-IPC isolation across clones (proves `--ipc`), and clear-RO-then-destroy teardown.

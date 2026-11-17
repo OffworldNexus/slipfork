@@ -1278,6 +1278,11 @@ dependencies = [
 [[package]]
 name = "slipfork-testkit"
 version = "0.2.0"
+dependencies = [
+ "libc",
+ "slipfork-engine",
+ "tempfile",
+]
 
 [[package]]
 name = "slipfork-vcs"

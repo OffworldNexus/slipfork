@@ -1,10 +1,13 @@
-//! Shared bounded-wait primitives for Slipfork's real-process integration suites.
+//! Shared bounded-wait primitives and the test-only [`TestTreeDriver`](btrfs::TestTreeDriver) for
+//! Slipfork's real-process integration suites.
 //!
 //! This crate is test scaffolding only: it is `publish = false` and carries no Cargo features. The
 //! `publish = false` workspace test-crate rule is owned by `ARCHITECTURE.md` §1 as landed by node
 //! `M3.25`; this crate is consumed through `[dev-dependencies]` by `slipfork` and `slipfork-engine`.
 
 #![forbid(unsafe_code)]
+
+pub mod btrfs;
 
 use std::time::{Duration, Instant};
 

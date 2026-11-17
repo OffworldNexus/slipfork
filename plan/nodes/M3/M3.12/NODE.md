@@ -2,20 +2,22 @@
 id: M3.12
 title: "SubvolumeDriver seam: KernelBtrfsDriver (statfs + BTRFS_IOC_*) and test-only tree driver"
 kind: task
-status: ready
+status: done
 owner: implementer
 priority: 2
 depends_on: [M3.8, M3.9, M3.20]
 paths:
+  - ARCHITECTURE.md
   - "crates/slipfork-engine/src/btrfs.rs"
   - "crates/slipfork-engine/src/lib.rs"
   - "crates/slipfork-engine/Cargo.toml"
+  - "crates/slipfork-testkit/**"
   - Cargo.lock
-attempts: 0
+attempts: 1
 max_attempts: 3
 escalation: none
 created: "2026-11-16T16:58"
-updated: "2026-11-16T17:25"
+updated: "2026-11-17T04:43"
 ---
 
 # Goal

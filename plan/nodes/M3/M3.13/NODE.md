@@ -39,7 +39,7 @@ Implement `BtrfsEngine` against the `SnapshotMode`-free `WorldEngine` trait (`M3
    - `destroy_world` = stop services, SIGTERM/SIGKILL the persistent init, then `destroy_subvolume` (which clears `BTRFS_SUBVOL_RDONLY` internally via `BTRFS_IOC_SUBVOL_SETFLAGS` before `BTRFS_IOC_SNAP_DESTROY_V2`);
    - the ported supervision methods, `netns.sock` `dial_world_tcp`, and the in-netns `http-ingress.sock` bridge.
 2. The `unshare` argv gains `--ipc` next to `--mount --net --pid --fork --mount-proc --user --map-user=$UID --map-group=$GID --keep-caps`, with a comment stating the SysV `shmget` key collision it prevents. `src/bin/slipfork-world-init.rs`'s header doc matches the new argv.
-3. Re-export `BtrfsEngine` from `src/lib.rs` with unit tests exercising `BtrfsEngine::with_driver` over `TestTreeDriver` (layout, RO freeze, sibling clone isolation, clear-RO-before-destroy, and `BtrfsRequired` refusal).
+3. Re-export `BtrfsEngine` from `src/lib.rs`; the driver-injected layout/RO-freeze/sibling-clone/clear-RO-before-destroy/`BtrfsRequired` suites live in `crates/slipfork-engine/tests/` (integration) over `slipfork_testkit::btrfs::TestTreeDriver` passed as `&dyn SubvolumeDriver` — `--lib` unit tests use a crate-internal fake, because `ARCHITECTURE.md` §1's dev-dep double-compile rule makes a testkit double a different trait instance inside `--lib`. `M3.14` owns the suite re-homing.
 4. Zero non-Btrfs production path: no `cfg(feature)` selectable engine, no `match filesystem`, no "try X then Y".
 
 # Acceptance

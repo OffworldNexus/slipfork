@@ -8,7 +8,7 @@ The single Btrfs world engine (and its injected `SubvolumeDriver` seam, `ADR-001
 
 ## 1. Composition Root & DI Tree (`H-010` Unified User Daemon & M3 Target-State `ADR-0010` Btrfs Engine)
 
-> **Cargo Feature & Test-Scaffolding Rule (normative):** Cargo features are reserved for language/platform modularity; test scaffolding (such as `TestTreeDriver`, `FakeHostProbe`, `FakeBaseImageBuilder`, `MemorySecretProvider`, and `InMemoryTunnelRegistrar`) lives strictly in `#[cfg(test)]` (crate-internal unit tests), `tests/support/` (per-crate integration suites, e.g. `crates/slipfork/tests/support/` supplying a test `SubvolumeDriver` to `doctor` and in-process `slipforkd`, plus `FakeHostProbe` to `doctor`, in `M3.15`), or an optional `publish = false` workspace testkit crate in `[dev-dependencies]` — never behind a Cargo `[features]` flag on a production crate. (The M2 residue — `crates/slipfork-ospp`'s `test-server` feature enabled from `crates/slipfork/Cargo.toml` — was deleted in `M3.22`: those reference-server doubles now live in the unpublished `crates/slipfork-ospp-testkit` crate (`publish = false`), consumed as a `[dev-dependencies]` entry by both protected test suites.)
+> **Cargo Feature & Test-Scaffolding Rule (normative):** Cargo features are reserved for language/platform modularity; test scaffolding (such as `TestTreeDriver`, `FakeHostProbe`, `FakeBaseImageBuilder`, `MemorySecretProvider`, and `InMemoryTunnelRegistrar`) lives strictly in `#[cfg(test)]` (crate-internal unit tests), `tests/support/` (per-crate integration suites, e.g. `crates/slipfork/tests/support/` supplying a test `SubvolumeDriver` to `doctor` and in-process `slipforkd`, plus `FakeHostProbe` to `doctor`, in `M3.15`), or an optional `publish = false` workspace testkit crate in `[dev-dependencies]` — never behind a Cargo `[features]` flag on a production crate. (The M2 residue — `crates/slipfork-ospp`'s `test-server` feature enabled from `crates/slipfork/Cargo.toml` — was deleted in `M3.22`: those reference-server doubles now live in the unpublished `crates/slipfork-ospp-testkit` crate (`publish = false`), consumed as a `[dev-dependencies]` entry by both protected test suites.) **Dev-dependency double-compile rule (normative):** a `publish = false` testkit crate that itself depends on the crate under test (`slipfork-engine` →dev→ `slipfork-testkit` →normal→ `slipfork-engine`) makes Cargo compile that crate **twice**, so a testkit double implements a different copy of the crate's traits than its own `--lib` unit tests see — such doubles are consumed from integration suites (`tests/`), which link the normal library and can pass `&TestTreeDriver as &dyn SubvolumeDriver`, while `--lib` unit tests use crate-internal fakes.
 
 Only **two entrypoints** in the entire repository wire concrete adapters from ambient environment variables, wall clocks, OS sockets, or real filesystems:
 
@@ -231,11 +231,23 @@ pub const BTRFS_MOUNT_HINT: &'static str = "sudo mount -o user_subvol_rm_allowed
 /// shared by `BtrfsEngine` (`EngineError::UsernsDenied`, `world_init_bin` parent, `M3.13`) and `OsHostProbe::probe_userns` (`M3.15`, `ADR-0010` §§4, 7).
 pub fn userns_remediation_hint(bin_dir: &Path) -> String;
 
+/// `statfs`/`statvfs` evidence for `path` (or its nearest existing ancestor): the only kernel-specific
+/// input to the single `BtrfsProbeReport` producer (`M3.12` lead-ruled refinement).
+pub struct ProbeFacts { pub probed_path: PathBuf, pub fstype: i64, pub noatime: bool }
+
+/// The single `BTRFS_SUPER_MAGIC` gate shared by `ensure_supported`, `list_children`, and the test driver
+/// (`ADR-0010` §4): returns `EngineError::BtrfsRequired { path, actual_fstype, mount_hint: BTRFS_MOUNT_HINT }`.
+pub fn require_btrfs(fstype: i64, path: &Path) -> Result<(), EngineError>;
+
 pub trait SubvolumeDriver: Send + Sync {
-    /// Pre-daemon `doctor` probe (`BtrfsProbeReport` fields specified once in `ADR-0010` §4): inspects
-    /// `statfs`/`statvfs` on `path` (or nearest existing ancestor, creating nothing on non-Btrfs) and runs
-    /// the scratch-subvolume `user_subvol_rm_allowed` round-trip (`Option<Result<(), i32>>`) iff Btrfs.
-    fn probe(&self, path: &Path) -> Result<BtrfsProbeReport, EngineError>;
+    /// Required (`M3.12` lead-ruled refinement): inspect `statfs`/`statvfs` on `path` (or nearest existing
+    /// ancestor); a driver supplies facts only, never a report.
+    fn probe_facts(&self, path: &Path) -> Result<ProbeFacts, EngineError>;
+    /// Provided (`M3.12` lead-ruled refinement): rejects a non-absolute `path`, then builds the one
+    /// `BtrfsProbeReport` from `probe_facts`, creating nothing on non-Btrfs and running the scratch-subvolume
+    /// `user_subvol_rm_allowed` round-trip (`Option<Result<(), i32>>`) iff Btrfs
+    /// (`BtrfsProbeReport` fields specified once in `ADR-0010` §4).
+    fn probe(&self, path: &Path) -> Result<BtrfsProbeReport, EngineError> { /* default body */ }
     /// Magic-only `slipforkd` boot gate (`ADR-0010` §4): fails closed with `EngineError::BtrfsRequired`
     /// unless `statfs` reports `BTRFS_SUPER_MAGIC` (does NOT run the scratch round-trip; missing
     /// `user_subvol_rm_allowed` is caught by `probe` in `doctor` or by `destroy_subvolume` ->

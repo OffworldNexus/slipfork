@@ -849,3 +849,13 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-17T03:42 [M3.20] (lead) edited fields
 - 2026-11-17T03:42 [M3.20] (lead) Paths widened: ARCHITECTURE.md (architect's escalation-#21 amendment lands with this node). Residuals: (a) pre-existing critical_engine r10_tmpfs assumes /tmp i
 - 2026-11-17T03:46 [M3.20] (lead) status review -> done
+- 2026-11-17T03:47 [M3.12] (lead) status ready -> active
+- 2026-11-17T03:47 [M3.12] (lead) attempt 1/3 started
+- 2026-11-17T03:47 [M3.12] (lead) base 6827c5117e4c8b12a10ab546f997105cc5e527c5
+- 2026-11-17T04:11 [M3.12] (lead) status active -> review
+- 2026-11-17T04:11 [M3.12] (lead) worker done: btrfs.rs + TestTreeDriver in testkit, 11 lib tests, SAFETY 10>=9, clippy/check/fmt/workspace green. Quad gate starting. Notes: dev-dep cycle makes 
+- 2026-11-17T04:20 [M3.12] (lead) edited fields
+- 2026-11-17T04:20 [M3.14] (lead) LEAD AMENDMENT (M3.12 ioc finding): do NOT create crates/slipfork-engine/tests/support/test_tree_driver.rs. The single SubvolumeDriver double is crates/slipfork
+- 2026-11-17T04:20 [M3.12] (lead) LEAD RULING (ioc/cruft MAJORs): (1) one require_btrfs gate; (2) ProbeFacts becomes a required trait method and probe a provided trait method (single probe body,
+- 2026-11-17T04:43 [M3.12] (lead) FINAL: legality PASS, functional PASS, cruft PASS, ioc PASS after lead plan amendments (M3.14 invariant 1 now consumes the testkit TestTreeDriver; M3.13 invaria
+- 2026-11-17T04:43 [M3.12] (lead) status review -> done

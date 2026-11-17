@@ -11,6 +11,7 @@
 //! and writable world cloning ([`WorldEngine::clone_world`]) are distinct signatures: there is no
 //! snapshot-mode flag and no capability boolean to branch on (`ADR-0010` §3).
 
+pub mod btrfs;
 pub mod child_env;
 pub mod conformance;
 pub mod env;
@@ -400,6 +401,28 @@ pub struct ExecOutput {
 /// Fail-closed errors returned by [`WorldEngine`] implementations (never silently degraded).
 #[derive(Debug, Error)]
 pub enum EngineError {
+    #[error(
+        "{path} is not on Btrfs: statfs reports f_type {actual_fstype:#x}, not BTRFS_SUPER_MAGIC 0x9123683e; fix: {mount_hint}"
+    )]
+    BtrfsRequired {
+        path: PathBuf,
+        actual_fstype: i64,
+        mount_hint: &'static str,
+    },
+    #[error(
+        "cannot destroy subvolume {path}: permission denied (errno {errno}); unprivileged subvolume deletion requires: {mount_hint}"
+    )]
+    SubvolumeDestroyDenied {
+        path: PathBuf,
+        errno: i32,
+        mount_hint: &'static str,
+    },
+    #[error("btrfs {op} failed at {path} (errno {errno})")]
+    Ioctl {
+        op: &'static str,
+        path: PathBuf,
+        errno: i32,
+    },
     #[error("hypervisor daemon unavailable at {socket}: {reason}")]
     DaemonUnavailable { socket: String, reason: String },
     #[error(
