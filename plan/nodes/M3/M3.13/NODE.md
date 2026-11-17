@@ -7,6 +7,7 @@ owner: implementer
 priority: 2
 depends_on: [M3.12]
 paths:
+  - docs/knowledge/LESSONS.md
   - "crates/slipfork-engine/src/btrfs_engine.rs"
   - "crates/slipfork-engine/src/lib.rs"
   - "crates/slipfork-engine/src/service.rs"
@@ -18,7 +19,7 @@ attempts: 1
 max_attempts: 3
 escalation: none
 created: "2026-11-16T16:58"
-updated: "2026-11-17T05:32"
+updated: "2026-11-17T10:16"
 ---
 
 # Goal
@@ -36,9 +37,9 @@ Implement `BtrfsEngine` against the `SnapshotMode`-free `WorldEngine` trait (`M3
    - construction (`BtrfsEngine::new` with `KernelBtrfsDriver` and `BtrfsEngine::with_driver` for injected `SubvolumeDriver`) that probes `statfs` on `<state_dir>` through the driver and fails closed `EngineError::BtrfsRequired` (naming `mount -o user_subvol_rm_allowed,noatime`) before creating anything;
    - `clone_world` creating one writable world subvolume from the RO fixture/base snapshot, materialising `<subvol>/rootfs` (from `WorldSpec.rootfs.app_rootfs`, still read-only cached) and `<subvol>/state/{pgdata,redis,s3}` inside that same subvolume;
    - `create_snapshot`/`freeze_world` sealing the whole world subvolume RO via `SubvolumeDriver::snapshot_ro` (`BTRFS_IOC_SNAP_CREATE_V2` + `BTRFS_SUBVOL_RDONLY`; freeze stops `WorldProcess` services first, then `OciContainer` services, then seals);
-   - `destroy_world` = stop services, SIGTERM/SIGKILL the persistent init, then `destroy_subvolume` (which clears `BTRFS_SUBVOL_RDONLY` internally via `BTRFS_IOC_SUBVOL_SETFLAGS` before `BTRFS_IOC_SNAP_DESTROY_V2`);
+   - `destroy_world` (and best-effort `BtrfsEngine::Drop`, which logs leaked world paths) = stop services, close the persistent init's `stdin` lifeline pipe and reap the `unshare` launcher before polling `/proc/<init_pid>` (escalating to `SIGKILL` with `/proc/<pid>/ns/pid` identity verification and bounded waits), remove `<ctl>/<id>`, then `destroy_subvolume` (which clears `BTRFS_SUBVOL_RDONLY` internally via `BTRFS_IOC_SUBVOL_SETFLAGS` before `BTRFS_IOC_SNAP_DESTROY_V2`);
    - the ported supervision methods, `netns.sock` `dial_world_tcp`, and the in-netns `http-ingress.sock` bridge.
-2. The `unshare` argv gains `--ipc` next to `--mount --net --pid --fork --mount-proc --user --map-user=$UID --map-group=$GID --keep-caps`, with a comment stating the SysV `shmget` key collision it prevents. `src/bin/slipfork-world-init.rs`'s header doc matches the new argv.
+2. The `unshare` argv (`ADR-0010` §6) gains `--ipc` and `--kill-child=SIGKILL` (`unshare --user --map-user=$UID --map-group=$GID --keep-caps --mount --net --ipc --pid --fork --kill-child=SIGKILL --mount-proc`) plus a piped `stdin` lifeline on `slipfork-world-init` (exiting `0` on `EOF`), with a comment stating the SysV `shmget` key collision `--ipc` prevents. `src/bin/slipfork-world-init.rs`'s header doc matches the shipped argv and lifeline.
 3. Re-export `BtrfsEngine` from `src/lib.rs`; the driver-injected layout/RO-freeze/sibling-clone/clear-RO-before-destroy/`BtrfsRequired` suites live in `crates/slipfork-engine/tests/` (integration) over `slipfork_testkit::btrfs::TestTreeDriver` passed as `&dyn SubvolumeDriver` — `--lib` unit tests use a crate-internal fake, because `ARCHITECTURE.md` §1's dev-dep double-compile rule makes a testkit double a different trait instance inside `--lib`. `M3.14` owns the suite re-homing.
 4. Zero non-Btrfs production path: no `cfg(feature)` selectable engine, no `match filesystem`, no "try X then Y".
 

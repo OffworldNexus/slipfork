@@ -51,3 +51,27 @@ FINAL: functional PASS, legality PASS, ioc PASS (blind spot deferred by ruling +
 ## 2026-11-17T05:32 [lead]
 
 status review -> done
+
+## 2026-11-17T07:14 [lead]
+
+BLOCKER (expert escalation #22): plain make check at load 6 reds 3 critical_cli tests with 'world init pid … survived SIGTERM and SIGKILL for 15.0s'; 30 orphan unshare supervisors (ppid 1, do_nowait) accumulated. Suspect PID-namespace init signal semantics (kill target/recorded pid/reap ordering) diverged from reflink_netns. Expert diagnosing + fixing; blocks M3.14/M3.15 gates.
+
+## 2026-11-17T08:20 [lead]
+
+status done -> active
+
+## 2026-11-17T08:20 [lead]
+
+edited fields
+
+## 2026-11-17T08:20 [lead]
+
+REOPENED: expert escalation #22 fixed the PID-namespace reap bug (world-init parks as namespace PID 1 ignoring ancestor SIGTERM; engine polled /proc/<init> before reaping the unshare launcher; no Drop reap). Fix: stdin lifeline pipe + EOF shutdown, unshare --kill-child=SIGKILL, reap launcher before polling, SIGKILL escalation, Shared::Drop. critical_cli 14/14 in 64s, critical_engine 15/15 in 45s, make check green 5m28s, orphan unshare 0. Adding the LESSONS entry + committing.
+
+## 2026-11-17T09:15 [lead]
+
+Expert round 2 applied all legality corrections: accurate pid_namespaces(7) wording, kill_and_reap_child error propagation, ProcessIdentity (/proc ns/pid + starttime) before signalling, shared teardown_world used by destroy + Drop with bounded waits + leak diagnostics, poisoned-lock fixes, ADR-0010 §6 argv updated. 21 lib tests, critical_engine 15, critical_cli 14, clippy/doc/fmt/docs-check green, orphan unshare 0. Final legality confirm + commit.
+
+## 2026-11-17T10:16 [lead]
+
+status active -> done

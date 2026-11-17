@@ -2,8 +2,8 @@
 //!
 //! Spawned by [`slipfork_engine::WorldEngine::clone_world`] on
 //! `BtrfsEngine` inside
-//! `unshare --map-user=$UID --map-group=$GID --keep-caps --mount --net --ipc --pid --fork
-//! --mount-proc`,
+//! `unshare --user --map-user=$UID --map-group=$GID --keep-caps --mount --net --ipc --pid --fork
+//! --kill-child=SIGKILL --mount-proc`,
 //! so every world owns a **stable** `init_pid` for its whole lifetime. A daemon thread of
 //! `slipforkd` can never `setns(CLONE_NEWNET)` into an unprivileged descendant user namespace
 //! (`EPERM`) and `setns(CLONE_NEWUSER)` is `EINVAL` in a multithreaded process, so the world's own
@@ -24,8 +24,11 @@
 //! `90000` or port-derived keys (`ADR-0010` §6); every `nsenter` entry joins it with `--ipc`.
 //!
 //! The process also establishes the world's bind mounts once, so `nsenter --target <init_pid>`
-//! entry, exec, and services all observe the same mount/net/ipc namespace. `SIGKILL` to this PID 1
-//! tears the whole PID namespace down atomically; `BtrfsEngine::destroy_world` reaps it.
+//! entry, exec, and services all observe the same mount/net/ipc namespace. PID 1 of a child PID
+//! namespace carries `SIGNAL_UNKILLABLE` (`pid_namespaces(7)`), so clean shutdown is driven by a
+//! supervisor lifeline pipe on `stdin`: when `BtrfsEngine::destroy_world`, `Drop`, or `slipforkd`
+//! exit closes the write end, this PID 1 observes `EOF` and exits `0`, causing the kernel to tear
+//! down the entire PID namespace atomically without leaving orphaned `unshare` supervisors.
 
 #![forbid(unsafe_code)]
 
@@ -114,9 +117,26 @@ fn run(config_path: &Path) -> Result<(), String> {
         .write_all(b"ready\n")
         .and_then(|()| ready.sync_all())
         .map_err(|err| format!("cannot write world readiness marker: {err}"))?;
+    drop(ready);
 
+    wait_for_supervisor_eof();
+    Ok(())
+}
+
+/// Block until the engine closes its supervisor lifeline pipe on `stdin` (`destroy_world`, engine
+/// `Drop`, or `slipforkd` exit/crash). Returning from PID 1 makes the kernel terminate every
+/// remaining process in the world PID namespace (`pid_namespaces(7)`), and the outer `unshare`
+/// supervisor reaps PID 1 and exits `0`.
+fn wait_for_supervisor_eof() {
+    let mut stdin = std::io::stdin().lock();
+    let mut scratch = [0_u8; 64];
     loop {
-        thread::park();
+        match stdin.read(&mut scratch) {
+            Ok(0) => return,
+            Ok(_) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(_) => return,
+        }
     }
 }
 

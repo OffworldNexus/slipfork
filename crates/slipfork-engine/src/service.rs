@@ -22,6 +22,7 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use crate::linux_cow::{self, ProcessSignal};
 use crate::rootfs::{BackingServiceKey, OciRootfs};
 use crate::{EngineError, ExecOutput, StreamChunk, StreamSource, WorldMount};
 
@@ -256,12 +257,94 @@ pub(crate) fn wait_for_exit(child: &mut Child, grace: Duration) -> bool {
     }) == Some(true)
 }
 
-/// Wait (bounded) until `/proc/<pid>` disappears (the PID namespace is gone).
-pub(crate) fn wait_for_path_gone(pid: u32, grace: Duration) -> bool {
-    poll_until(grace, || {
-        (!Path::new(&format!("/proc/{pid}")).exists()).then_some(())
-    })
-    .is_some()
+/// Kernel identity of one spawned process, pinning its `/proc/<pid>/ns/pid` namespace link and
+/// `/proc/<pid>/stat` start ticks so a recycled host PID is never signalled.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ProcessIdentity {
+    pub(crate) pid: u32,
+    pub(crate) pid_ns: PathBuf,
+    pub(crate) start_ticks: u64,
+}
+
+impl ProcessIdentity {
+    pub(crate) fn capture(pid: u32) -> Option<Self> {
+        if pid <= 1 {
+            return None;
+        }
+        let pid_ns = std::fs::read_link(format!("/proc/{pid}/ns/pid")).ok()?;
+        let start_ticks = proc_start_ticks(pid)?;
+        Some(Self {
+            pid,
+            pid_ns,
+            start_ticks,
+        })
+    }
+
+    pub(crate) fn matches_live(&self) -> bool {
+        std::fs::read_link(format!("/proc/{}/ns/pid", self.pid))
+            .ok()
+            .as_deref()
+            == Some(self.pid_ns.as_path())
+            && proc_start_ticks(self.pid) == Some(self.start_ticks)
+    }
+
+    pub(crate) fn signal(&self, signal: ProcessSignal) -> io::Result<()> {
+        if !self.matches_live() {
+            return Ok(());
+        }
+        linux_cow::signal_process(self.pid, signal)
+    }
+
+    pub(crate) fn wait_gone(&self, grace: Duration) -> bool {
+        poll_until(grace, || (!self.matches_live()).then_some(())).is_some()
+    }
+}
+
+/// Field 22 (`starttime`) of `/proc/<pid>/stat`, parsed past the final `)` of `comm`.
+fn proc_start_ticks(pid: u32) -> Option<u64> {
+    let raw = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let after_comm = raw.get(raw.rfind(')')? + 1..)?;
+    after_comm.split_whitespace().nth(19)?.parse().ok()
+}
+
+/// `SIGKILL` `child` (if still running) and reap it within `grace`, surfacing any `try_wait`,
+/// `kill`, or timeout failure as a typed [`EngineError::Execution`] naming `label`.
+pub(crate) fn kill_and_reap_child(
+    child: &mut Child,
+    grace: Duration,
+    label: &str,
+) -> Result<(), EngineError> {
+    match child.try_wait() {
+        Ok(Some(_)) => return Ok(()),
+        Ok(None) => {}
+        Err(err) => {
+            return Err(EngineError::Execution(format!(
+                "cannot observe {label}: {err}"
+            )));
+        }
+    }
+    if let Err(err) = child.kill() {
+        match child.try_wait() {
+            Ok(Some(_)) => return Ok(()),
+            Ok(None) => {
+                return Err(EngineError::Execution(format!(
+                    "cannot SIGKILL {label}: {err}"
+                )));
+            }
+            Err(wait_err) => {
+                return Err(EngineError::Execution(format!(
+                    "cannot SIGKILL {label} ({err}); try_wait failed: {wait_err}"
+                )));
+            }
+        }
+    }
+    if !wait_for_exit(child, grace) {
+        return Err(EngineError::Execution(format!(
+            "{label} did not exit within {}s of SIGKILL",
+            grace.as_secs()
+        )));
+    }
+    Ok(())
 }
 
 /// Run `command` to completion, streaming interleaved stdout/stderr chunks to `on_output`.

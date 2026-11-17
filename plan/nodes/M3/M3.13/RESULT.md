@@ -45,13 +45,14 @@ Moved out of the ported body into shared modules and consumed by `btrfs_engine.r
 
 | Helper | New home |
 |---|---|
-| `poll_until` (one bounded-wait loop), `wait_for_inner_pid`, `wait_for_exit`, `wait_for_path_gone`, `pump` (one reader loop), `spawn_log_reader`, `world_cwd_wrapper`, `container_id`, `host_child_pids`, `run_streamed`, `drain_stderr`, `ensure_container_destination`, `world_guest_for_host`, `POLL_INTERVAL` | `service.rs` (`pub(crate)`, next to `ServiceLogs`) |
+| `poll_until` (one bounded-wait loop), `wait_for_inner_pid`, `wait_for_exit`, `ProcessIdentity`, `kill_and_reap_child`, `pump` (one reader loop), `spawn_log_reader`, `world_cwd_wrapper`, `container_id`, `host_child_pids`, `run_streamed`, `drain_stderr`, `ensure_container_destination`, `world_guest_for_host`, `POLL_INTERVAL` | `service.rs` (`pub(crate)`, next to `ServiceLogs`) |
 | `world_init_mount`, `image_guest_rootfs`, `synthesize_identity_files` (+ private `host_identity_name`, `with_identity_line`), guest-path constants `WORLD_STATE_GUEST`, `OCI_BUNDLES_GUEST`, `OCI_RUN_GUEST`, `OCI_IMAGES_GUEST`, `PASSWD_GUEST`, `GROUP_GUEST`, `INGRESS_GUEST` | `world_init.rs` (`pub(crate)`) |
 
 Stays in `btrfs_engine.rs` (engine-owned, no second copy): `BtrfsEngine`/`Shared`/`WorldRecord`,
 `entry_prefix`, `world_init_argv`, `crun_prefix`, `boot_world`, `materialize_world`,
 `validate_rootfs_reference`, `spawn_world_process`, `spawn_oci_container`, `crun_command`,
-`container_for`, `stop_services_in_order`, `stop_live_services`, `stop_service_process`,
+`container_for`, `stop_services_with_grace`, `stop_live_services`, `stop_service_process`,
+`finish_service_stop`,
 `reap_world_init`, `is_managed_subvolume`, `seal_snapshot`, `allocate_world_id`, `live_record`,
 `sealable`, `container_control`, `signal_container`, `delete_container`, `spawn_service_watcher`,
 `copy_tree`, `io_error`, `userns_denied`, and the whole `impl WorldEngine`.
@@ -70,32 +71,41 @@ protocol; only the state/control paths moved.
 world whose teardown started mid-seal drops the half-claimed snapshot and fails closed with
 `WorldGone`.
 
-**`destroy_world`** (re-enterable): fence `destroying` → stop services (app components first, then
-containers) → `reap_world_init` (`SIGTERM`, poll `/proc/<pid>` up to 5 s, `SIGKILL`, poll up to
-10 s; the elapsed time is reported in the failure diagnostic, no fixed wait) → reap the `unshare`
-launcher → remove `<state_dir>/ctl/<id>` → `driver.destroy_subvolume(<worlds>, <id>)` (driver
-clears `BTRFS_SUBVOL_RDONLY` first) → drop the world record. A service or init that survives its
-bound aborts teardown **before** storage is removed, so no subvolume is destroyed under a live
-process, and a retry resumes from the failed step.
+**`destroy_world` & `BtrfsEngine::Drop`** (re-enterable, shared `teardown_world` helper): fence
+`destroying` → stop services (app components first, then containers; a stop whose bounded
+`kill_and_reap_child` fails keeps `ServiceState::Running`, its log open, and the supervisor in the
+record so the retry re-enters the stop path, while only `finish_service_stop(Ok)` stores `Stopped`)
+→ `reap_world_init` (close the
+`stdin` lifeline pipe so `slipfork-world-init` observes `EOF` and exits `0` without hitting
+unhandled-`SIGTERM` `SIGNAL_UNKILLABLE` drops, bounded-wait the `unshare` launcher up to 5 s, else
+escalate to `SIGKILL` on `/proc/<pid>/ns/pid`-verified `init_pid` and `launcher` with bounded
+10 s `WORLD_STOP_KILL_GRACE` **before** polling `/proc/<init_pid>`, propagating any `kill`/wait
+failure with the launcher PID while keeping `launcher` in the record for retry) → remove
+`<state_dir>/ctl/<id>` → `driver.destroy_subvolume(<worlds>, <id>)` (driver clears
+`BTRFS_SUBVOL_RDONLY` first) → drop the world record. `BtrfsEngine::Drop` runs the same
+`teardown_world` helper (`Duration::ZERO` service grace, bounded by `WORLD_STOP_KILL_GRACE`) and
+emits one `stderr` diagnostic naming the leaked `ctl` and `subvolume` paths per world.
 
 **`create_snapshot`**: existing id → `SnapshotExists`; a managed subvolume under `worlds/` or
 `snapshots/` → one `snapshot_ro` (no copy); a non-subvolume under either → fail closed naming both
 legal sources; any other plain directory (the daemon's empty base-seed dir) → import once into
 `worlds/stage-<id>`, seal, destroy the staging subvolume.
 
-## 4. `--ipc` argv (`ADR-0010` §6)
+## 4. `--ipc` & supervisor-lifeline argv (`ADR-0010` §6)
 
 ```
-unshare --map-user=$UID --map-group=$GID --keep-caps --mount --net --ipc --pid --fork --mount-proc \
-        <world_init_bin> <ctl>/world-init.json
+unshare --user --map-user=$UID --map-group=$GID --keep-caps --mount --net --ipc --pid --fork \
+        --kill-child=SIGKILL --mount-proc <world_init_bin> <ctl>/world-init.json
 nsenter --target=<init_pid> --user --preserve-credentials --mount --net --ipc --pid --wd=/ -- …
 ```
 
 Comment in `world_init_argv`/`entry_prefix` states the reason: a private SysV shared-memory and
 POSIX message-queue namespace per world, so parallel `postgres` containers never collide on
-`shmget` key `90000` or port-derived keys. `bin/slipfork-world-init.rs`'s header doc matches.
+`shmget` key `90000` or port-derived keys, plus `--kill-child=SIGKILL` and an `O_CLOEXEC` `stdin`
+lifeline so `slipfork-world-init` exits `0` on `EOF` without leaving orphaned `unshare` supervisors.
+`bin/slipfork-world-init.rs`'s header doc matches.
 
-## 5. Unit tests (`cargo test -p slipfork-engine --lib btrfs_engine` → 18 passed)
+## 5. Unit tests (`cargo test -p slipfork-engine --lib btrfs_engine` → 22 passed)
 
 1. `construction_fails_closed_off_btrfs_before_creating_anything` — injected non-Btrfs driver →
    `BtrfsRequired { path, actual_fstype, mount_hint }`, nothing created, only `ensure_supported` ran.
@@ -124,6 +134,14 @@ POSIX message-queue namespace per world, so parallel `postgres` containers never
 16. **C** `an_unmanaged_directory_under_snapshots_is_refused_as_a_source`.
 17. **D** `sealing_an_existing_snapshot_id_fails_closed` (`create_snapshot` **and** `freeze_world`).
 18. **G** `world_ids_skip_names_a_previous_daemon_left_behind`.
+19. `reap_world_init_closes_stdin_lifeline_without_stalling_on_sigterm_immune_init`.
+20. `reap_world_init_escalates_to_sigkill_and_reaps_launcher_when_init_ignores_eof_and_sigterm`.
+21. `a_failed_service_stop_keeps_the_service_running_so_a_retried_teardown_reaps_it` — an injected
+    `kill_and_reap_child` failure leaves `ServiceState::Running`, the log open, and the supervisor
+    recorded, so the retried teardown re-enters `kill_and_reap_child`, reaps the service process, and
+    only then reports `Stopped` with a closed log (`finish_service_stop` is the one success gate).
+22. `dropping_the_engine_reaps_live_world_launchers_and_services` (including subvolume/ctl GC and
+    `/proc/<pid>/ns/pid` PID-recycling refusal).
 
 The `#[cfg(test)]` `RecordingDriver` journals `EnsureSupported`/`CreateSubvolume`/`SnapshotRo`/
 `SnapshotWritable`/`DestroySubvolume`/`ListChildren`, tracks subvolume identity, reports whether a
@@ -137,8 +155,8 @@ deliberately **not** a second behavioural double: the read-only-seal/marker/clea
 | # | Command | Exit |
 |---|---|---|
 | 1 | `cargo check --workspace --all-targets` | **0** |
-| 2 | `cargo test -p slipfork-engine --lib btrfs_engine` | **0** (`18 passed; 0 failed … finished in 0.04s`) |
-| 3 | `cargo test -p slipfork-engine --lib` | **0** (`58 passed; 0 failed`) |
+| 2 | `cargo test -p slipfork-engine --lib btrfs_engine` | **0** (`22 passed; 0 failed`) |
+| 3 | `cargo test -p slipfork-engine --lib` | **0** (`61 passed; 0 failed`) |
 | 4 | `cargo clippy --workspace --all-targets -- -D warnings` | **0** |
 | 5 | `! grep -rn 'FICLONE\|reflink_tree\|reflink_file\|IncusEngine\|ReflinkNetnsEngine\|StatefulRam' crates/slipfork-engine/src/btrfs_engine.rs` | **0** (no output) |
 | 6 | `grep -n -- '"--ipc"' crates/slipfork-engine/src/btrfs_engine.rs` | **0** (lines 386, 408 + 2 test assertions) |

@@ -868,3 +868,23 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-17T05:13 [M3.23] (lead) ADD from M3.13 gate (docs of record must match 0.1.0 reality): (1) ARCHITECTURE §1/§2 + ADR-0010 §2 currently say WorldSpec.control_dir/state_subdirs are inject
 - 2026-11-17T05:32 [M3.13] (lead) FINAL: functional PASS, legality PASS, ioc PASS (blind spot deferred by ruling + M3.23 relabel), cruft PASS — minors logged: create_snapshot should reject a liv
 - 2026-11-17T05:32 [M3.13] (lead) status review -> done
+- 2026-11-17T05:32 [M3.14] (lead) status ready -> active
+- 2026-11-17T05:32 [M3.14] (lead) attempt 1/3 started
+- 2026-11-17T05:32 [M3.14] (lead) base 3bc93e3ef6be13ce9d5c2e8e2326565960483686
+- 2026-11-17T05:32 [M3.15] (lead) status ready -> active
+- 2026-11-17T05:32 [M3.15] (lead) attempt 1/3 started
+- 2026-11-17T05:32 [M3.15] (lead) base 3bc93e3ef6be13ce9d5c2e8e2326565960483686
+- 2026-11-17T06:02 [M3.15] (lead) edited fields
+- 2026-11-17T06:02 [M3.15] (lead) Paths widened by lead for two reds the node exposed: (1) Makefile must classify + serialize slipfork-engine:critical_btrfs_live and slipfork:critical_btrfs_live
+- 2026-11-17T06:18 [M3.15] (lead) status active -> review
+- 2026-11-17T06:18 [M3.15] (lead) worker: slipforkd wired to BtrfsEngine, doctor seam + JSON shape, --only apparmor, in-process test harness, dual-mode live suites, Makefile classification, TS e
+- 2026-11-17T06:40 [M3.15] (lead) edited fields
+- 2026-11-17T06:40 [M3.15] (lead) LEAD RULING (ioc blind spot, 0.1.0 subset): implement the minimal round-trip selector — accept bare <fork>, <project>:<fork>, and canonical <project> in select/
+- 2026-11-17T07:14 [M3.13] (lead) BLOCKER (expert escalation #22): plain make check at load 6 reds 3 critical_cli tests with 'world init pid … survived SIGTERM and SIGKILL for 15.0s'; 30 orphan 
+- 2026-11-17T07:14 [M3.24] (lead) EVIDENCE for your scope: after hours of world-booting suites the host had 30 orphaned 'unshare' supervisors (ppid 1, SN, do_wait) and critical_cli reds with wor
+- 2026-11-17T08:20 [M3.13] (lead) status done -> active
+- 2026-11-17T08:20 [M3.13] (lead) edited fields
+- 2026-11-17T08:20 [M3.13] (lead) REOPENED: expert escalation #22 fixed the PID-namespace reap bug (world-init parks as namespace PID 1 ignoring ancestor SIGTERM; engine polled /proc/<init> befo
+- 2026-11-17T09:15 [M3.13] (lead) Expert round 2 applied all legality corrections: accurate pid_namespaces(7) wording, kill_and_reap_child error propagation, ProcessIdentity (/proc ns/pid + star
+- 2026-11-17T09:15 [M3.14] (lead) status active -> review
+- 2026-11-17T10:16 [M3.13] (lead) status active -> done

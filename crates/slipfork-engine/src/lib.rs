@@ -44,18 +44,18 @@ use slipfork_world::WorldTarget;
 
 /// Single AppArmor/user-namespace remediation formatter (`ADR-0010` §4, §7).
 ///
-/// Shared by [`BtrfsEngine`]'s world boot and, once it ships, the CLI's host probe: it never calls
-/// `current_exe()`, so the composition root decides which binary directory the profile must name.
-/// It names no CLI command, because no Slipfork command installs an AppArmor profile yet; `M3.15`
-/// re-adds the `--only apparmor` command to this hint when the flag ships.
+/// Shared by [`BtrfsEngine`]'s world boot and the CLI's host probe: it never calls `current_exe()`,
+/// so the composition root decides which binary directory the profile must name. The profile text
+/// is the one `slipfork daemon unit --only apparmor` prints, so this hint never drifts from it.
 pub fn userns_remediation_hint(bin_dir: &Path) -> String {
     let dir = bin_dir.display();
     format!(
         "unprivileged user namespaces are denied by AppArmor \
-         (`kernel.apparmor_restrict_unprivileged_userns=1`); install an AppArmor profile granting \
-         `userns,` for {dir}/slipfork and {dir}/slipforkd, for example /etc/apparmor.d/slipfork: \
-         `abi <abi/4.0>,` and `profile slipfork {dir}/slipfork{{,d}} flags=(unconfined) {{ \
-         userns, }}`"
+         (`kernel.apparmor_restrict_unprivileged_userns=1`); install the profile printed by \
+         `slipfork daemon unit --only apparmor` at /etc/apparmor.d/slipfork \
+         (`abi <abi/4.0>,` plus `profile slipfork {dir}/slipfork{{,d}} flags=(unconfined) {{ \
+         userns, }}`), then reload it with \
+         `sudo apparmor_parser -r /etc/apparmor.d/slipfork`"
     )
 }
 

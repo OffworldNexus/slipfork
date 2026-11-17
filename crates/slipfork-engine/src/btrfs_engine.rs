@@ -15,11 +15,12 @@
 //! subvolume, so a seal never captures a socket or `crun` runtime state (`ADR-0010` §2).
 //!
 //! Supervision is the persistent per-world PID 1 (`src/bin/slipfork-world-init.rs`) spawned inside
-//! `unshare --map-user=$UID --map-group=$GID --keep-caps --mount --net --ipc --pid --fork
-//! --mount-proc`. `--ipc` gives every world a private System V IPC namespace, so parallel
-//! `postgres` containers never collide on `shmget` key `90000` or port-derived keys (`ADR-0010`
-//! §6). No `unsafe` code lives here: `statfs`/`BTRFS_IOC_*` are confined to [`crate::btrfs`] and
-//! `SCM_RIGHTS`/`kill(2)` to [`crate::linux_cow`].
+//! `unshare --user --map-user=$UID --map-group=$GID --keep-caps --mount --net --ipc --pid --fork
+//! --kill-child=SIGKILL --mount-proc` with a piped `stdin` lifeline. `--ipc` gives every world a
+//! private System V IPC namespace, so parallel `postgres` containers never collide on `shmget` key
+//! `90000` or port-derived keys (`ADR-0010` §6). No `unsafe` code lives here:
+//! `statfs`/`BTRFS_IOC_*` are confined to [`crate::btrfs`] and `SCM_RIGHTS`/`kill(2)` to
+//! [`crate::linux_cow`].
 
 #![forbid(unsafe_code)]
 
@@ -45,9 +46,9 @@ use crate::child_env;
 use crate::linux_cow::{self, ProcessSignal};
 use crate::oci::{self, ContainerBundle, ContainerMount};
 use crate::service::{
-    POLL_INTERVAL, ServiceLogs, container_id, drain_stderr, ensure_container_destination,
-    host_child_pids, run_streamed, spawn_log_reader, wait_for_exit, wait_for_inner_pid,
-    wait_for_path_gone, world_cwd_wrapper, world_guest_for_host,
+    POLL_INTERVAL, ProcessIdentity, ServiceLogs, container_id, drain_stderr,
+    ensure_container_destination, host_child_pids, kill_and_reap_child, run_streamed,
+    spawn_log_reader, wait_for_exit, wait_for_inner_pid, world_cwd_wrapper, world_guest_for_host,
 };
 use crate::world_init::{
     GROUP_GUEST, INGRESS_GUEST, OCI_BUNDLES_GUEST, OCI_RUN_GUEST, PASSWD_GUEST,
@@ -83,9 +84,11 @@ const DIAL_TIMEOUT: Duration = Duration::from_secs(10);
 const SERVICE_READY_TIMEOUT: Duration = Duration::from_secs(20);
 /// Grace period between `SIGTERM` and `SIGKILL` when stopping a service.
 const SERVICE_STOP_GRACE: Duration = Duration::from_secs(5);
-/// Grace period for the world PID 1 to exit after `SIGTERM`.
+/// Grace period for the world PID 1 to exit after closing its `stdin` lifeline / `SIGTERM`.
 const WORLD_STOP_TERM_GRACE: Duration = Duration::from_secs(5);
-/// Grace period for the world PID namespace to disappear after `SIGKILL`.
+/// Brief `stdin`-EOF window during [`Drop`] before escalating to `SIGKILL`.
+const WORLD_DROP_TERM_GRACE: Duration = Duration::from_millis(100);
+/// Grace period for the world `unshare` launcher and PID namespace to disappear after `SIGKILL`.
 const WORLD_STOP_KILL_GRACE: Duration = Duration::from_secs(10);
 
 /// The only Btrfs-backed [`WorldEngine`] (`ADR-0010` §1): one unified subvolume per world plus an
@@ -125,6 +128,50 @@ impl Default for Shared {
     }
 }
 
+impl Drop for BtrfsEngine {
+    fn drop(&mut self) {
+        self.shared.worlds.clear_poison();
+        let leaked: Vec<(u64, String, PathBuf, PathBuf)> = match self.lock() {
+            Ok(worlds) => worlds
+                .iter()
+                .map(|(&seq, record)| {
+                    (
+                        seq,
+                        record.world_id.clone(),
+                        record.ctl_dir.clone(),
+                        record.world_dir.clone(),
+                    )
+                })
+                .collect(),
+            Err(_) => return,
+        };
+        for (seq, world_id, ctl_dir, world_dir) in leaked {
+            let handle = self.mint_world_handle(seq);
+            match self.teardown_world(&handle, Duration::ZERO, WORLD_DROP_TERM_GRACE) {
+                Ok(()) => {
+                    eprintln!(
+                        "slipfork-engine: leaked world '{world_id}' reclaimed on BtrfsEngine drop \
+                         (ctl={}, subvolume={})",
+                        ctl_dir.display(),
+                        world_dir.display()
+                    );
+                }
+                Err(err) => {
+                    // Even if a service survived its stop bound, still reap the world launcher/init
+                    // so no `unshare` supervisor outlives the dropped engine.
+                    let _ = self.reap_world_init(&handle, Duration::ZERO);
+                    eprintln!(
+                        "slipfork-engine: failed to reclaim leaked world '{world_id}' on \
+                         BtrfsEngine drop (ctl={}, subvolume={}): {err}",
+                        ctl_dir.display(),
+                        world_dir.display()
+                    );
+                }
+            }
+        }
+    }
+}
+
 #[derive(Debug)]
 struct WorldRecord {
     /// Subvolume name: `<state_dir>/worlds/<world_id>` and `<state_dir>/ctl/<world_id>`.
@@ -138,6 +185,7 @@ struct WorldRecord {
     /// `<ctl_dir>/netns.sock`, the `SCM_RIGHTS` dial socket.
     netns_sock: PathBuf,
     init_pid: u32,
+    init_identity: Option<ProcessIdentity>,
     launcher: Option<Child>,
     base_env: ExecEnv,
     rootfs: WorldRootfs,
@@ -173,7 +221,7 @@ struct ServiceRecord {
 #[derive(Debug, Default)]
 struct ServiceProcess {
     supervisor: Option<Child>,
-    inner_pid: Option<u32>,
+    inner: Option<ProcessIdentity>,
     container: Option<ContainerProcess>,
 }
 
@@ -400,6 +448,7 @@ impl BtrfsEngine {
     /// and port-derived keys.
     fn world_init_argv(&self, config_path: &Path) -> Vec<String> {
         vec![
+            "--user".to_owned(),
             format!("--map-user={}", self.host_uid),
             format!("--map-group={}", self.host_gid),
             "--keep-caps".to_owned(),
@@ -408,6 +457,7 @@ impl BtrfsEngine {
             "--ipc".to_owned(),
             "--pid".to_owned(),
             "--fork".to_owned(),
+            "--kill-child=SIGKILL".to_owned(),
             "--mount-proc".to_owned(),
             self.world_init_bin.display().to_string(),
             config_path.display().to_string(),
@@ -495,14 +545,14 @@ impl BtrfsEngine {
     }
 
     /// Materialize the world's control directory, boot the PID 1, and wait until its listeners are
-    /// ready. Returns the dial socket path, the PID 1 host pid, and its launcher.
+    /// ready. Returns the dial socket path, the verified PID 1 identity, and its launcher.
     fn boot_world(
         &self,
         world_id: &str,
         world_dir: &Path,
         ctl_dir: &Path,
         spec: &WorldSpec,
-    ) -> Result<(PathBuf, u32, Child), EngineError> {
+    ) -> Result<(PathBuf, ProcessIdentity, Child), EngineError> {
         let label = world_id;
         let netns_sock = ctl_dir.join(WORLD_INIT_SOCKET_FILE);
         if !unix_socket_path_fits(&netns_sock) {
@@ -657,11 +707,15 @@ impl BtrfsEngine {
             }
         })?;
 
+        // `stdin` is a process-scoped lifeline pipe (`O_CLOEXEC` in the engine, inherited as fd 0
+        // by `slipfork-world-init`): unlike `PR_SET_PDEATHSIG` (which Linux fires on creating
+        // *thread* exit, breaking RPC thread-per-connection servers), the pipe write end closes
+        // only on `destroy_world`, engine `Drop`, or daemon exit/crash.
         let mut launcher = Command::new("unshare")
             .args(self.world_init_argv(&config_path))
             .env_clear()
             .env("PATH", HELPER_PATH)
-            .stdin(Stdio::null())
+            .stdin(Stdio::piped())
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
             .spawn()
@@ -674,14 +728,16 @@ impl BtrfsEngine {
             })?;
 
         let deadline = Instant::now() + WORLD_INIT_TIMEOUT;
-        let mut init_pid = None;
+        let mut init: Option<ProcessIdentity> = None;
         // `true` once the `unshare` launcher itself exited before the world was ready: only that
         // failure is classified as a host user-namespace refusal (`ADR-0010` §7).
         let mut unshare_failed = false;
-        let outcome: Result<u32, String> = loop {
-            if init_pid.is_none() {
+        let outcome: Result<ProcessIdentity, String> = loop {
+            if init.is_none() {
                 match host_child_pids(launcher.id()) {
-                    Ok(children) => init_pid = children.first().copied(),
+                    Ok(children) => {
+                        init = children.first().copied().and_then(ProcessIdentity::capture);
+                    }
                     Err(err) => {
                         break Err(format!(
                             "cannot read /proc/{}/task/{}/children to discover the world PID 1 \
@@ -692,14 +748,15 @@ impl BtrfsEngine {
                     }
                 }
             }
-            if let Some(pid) = init_pid
+            if let Some(identity) = &init
+                && identity.matches_live()
                 && fs::read_to_string(config.ready_path()).is_ok_and(|ready| ready == "ready\n")
                 && netns_sock.exists()
                 // The marker alone is not proof: a listener that cannot accept a connection is
                 // not ready, so probe the dial socket before declaring the world up.
                 && UnixStream::connect(&netns_sock).is_ok()
             {
-                break Ok(pid);
+                break Ok(identity.clone());
             }
             match launcher.try_wait() {
                 Ok(Some(status)) => {
@@ -712,6 +769,7 @@ impl BtrfsEngine {
                 Err(err) => break Err(format!("cannot observe the world init process: {err}")),
             }
             if Instant::now() >= deadline {
+                let init_pid = init.as_ref().map(|identity| identity.pid);
                 break Err(format!(
                     "timed out after {}s waiting for {} (init pid {init_pid:?})",
                     WORLD_INIT_TIMEOUT.as_secs(),
@@ -722,14 +780,15 @@ impl BtrfsEngine {
         };
 
         match outcome {
-            Ok(init_pid) => Ok((netns_sock, init_pid, launcher)),
+            Ok(init) => Ok((netns_sock, init, launcher)),
             Err(reason) => {
-                if let Some(pid) = init_pid {
-                    let _ = linux_cow::signal_process(pid, ProcessSignal::Kill);
+                drop(launcher.stdin.take());
+                if let Some(identity) = &init {
+                    let _ = identity.signal(ProcessSignal::Kill);
                 }
                 let _ = launcher.kill();
                 let stderr = drain_stderr(&mut launcher);
-                let _ = launcher.wait();
+                let _ = wait_for_exit(&mut launcher, WORLD_STOP_KILL_GRACE);
                 let reason = format!("{reason}; helper stderr: {stderr}");
                 // `ADR-0010` §7: an unprivileged `CLONE_NEWUSER` refusal (AppArmor
                 // `kernel.apparmor_restrict_unprivileged_userns=1`) is a host-profile problem, not
@@ -786,10 +845,11 @@ impl BtrfsEngine {
         }
         // `nsenter --pid` forks: the service itself is the launcher's first child. `SIGTERM` must
         // reach that in-world pid, never the launcher parent.
-        if let Some(inner_pid) = wait_for_inner_pid(supervisor_pid, SERVICE_STOP_GRACE)
+        if let Some(inner) = wait_for_inner_pid(supervisor_pid, SERVICE_STOP_GRACE)
+            .and_then(ProcessIdentity::capture)
             && let Ok(mut process) = spawn.process.lock()
         {
-            process.inner_pid = Some(inner_pid);
+            process.inner = Some(inner);
         }
         Ok(())
     }
@@ -1011,7 +1071,11 @@ impl BtrfsEngine {
 
     /// Stop `services` in `ADR-0009` §3 order: app components first, then backing-service
     /// containers, so no app request observes a half-shut-down database.
-    fn stop_services_in_order(&self, services: &[ServiceTeardown]) -> Result<(), EngineError> {
+    fn stop_services_with_grace(
+        &self,
+        services: &[ServiceTeardown],
+        grace: Duration,
+    ) -> Result<(), EngineError> {
         for kind in [ServiceKind::WorldProcess, ServiceKind::OciContainer] {
             for service in services.iter().filter(|service| service.kind == kind) {
                 self.stop_service_process(
@@ -1019,7 +1083,7 @@ impl BtrfsEngine {
                     &service.state,
                     &service.log,
                     &service.process,
-                    SERVICE_STOP_GRACE,
+                    grace,
                 )?;
             }
         }
@@ -1041,7 +1105,7 @@ impl BtrfsEngine {
                 .map(|(id, service)| ServiceTeardown::from_record(id, service))
                 .collect()
         };
-        self.stop_services_in_order(&services)
+        self.stop_services_with_grace(&services, SERVICE_STOP_GRACE)
     }
 
     fn stop_service_inner(&self, world: &WorldHandle, id: &str) -> Result<(), EngineError> {
@@ -1084,7 +1148,7 @@ impl BtrfsEngine {
             return Ok(());
         }
 
-        let (supervisor, inner_pid, container) = {
+        let (supervisor, inner, container) = {
             let Ok(mut process) = process.lock() else {
                 return Err(EngineError::Execution(format!(
                     "service '{id}' process state is poisoned"
@@ -1092,7 +1156,7 @@ impl BtrfsEngine {
             };
             (
                 process.supervisor.take(),
-                process.inner_pid,
+                process.inner.clone(),
                 process.container.clone(),
             )
         };
@@ -1103,65 +1167,188 @@ impl BtrfsEngine {
         };
         // Re-resolve the in-world pid if it was not observed at spawn time: `SIGTERM` must reach
         // the forked service, not only the `nsenter` launcher.
-        let inner_pid = inner_pid.or_else(|| {
+        let inner = inner.or_else(|| {
             host_child_pids(supervisor.id())
                 .ok()
                 .and_then(|children| children.first().copied())
+                .and_then(ProcessIdentity::capture)
         });
 
-        if let Some(container) = &container {
-            signal_container(self, container, "TERM");
-        } else if let Some(pid) = inner_pid {
-            let _ = linux_cow::signal_process(pid, ProcessSignal::Terminate);
+        if grace > Duration::ZERO {
+            if let Some(container) = &container {
+                signal_container(self, container, "TERM");
+            } else if let Some(inner) = &inner {
+                let _ = inner.signal(ProcessSignal::Terminate);
+            }
         }
-        if !wait_for_exit(&mut supervisor, grace) {
+        if grace.is_zero() || !wait_for_exit(&mut supervisor, grace) {
             if let Some(container) = &container {
                 signal_container(self, container, "KILL");
-            } else if let Some(pid) = inner_pid {
-                let _ = linux_cow::signal_process(pid, ProcessSignal::Kill);
+            } else if let Some(inner) = &inner {
+                let _ = inner.signal(ProcessSignal::Kill);
             }
-            let _ = supervisor.kill();
-            if !wait_for_exit(&mut supervisor, SERVICE_STOP_GRACE) {
-                state.store(ServiceState::Stopped.to_bits(), Ordering::Relaxed);
-                log.close();
-                return Err(EngineError::Execution(format!(
-                    "service '{id}' did not exit within {}s of SIGKILL",
-                    SERVICE_STOP_GRACE.as_secs()
-                )));
+            if let Err(err) = kill_and_reap_child(
+                &mut supervisor,
+                SERVICE_STOP_GRACE,
+                &format!("service '{id}'"),
+            ) {
+                // The supervisor is restored so a retry can still signal it, and the service stays
+                // `Running` with its log open: marking it `Stopped` here would make a retried
+                // `teardown_world` short-circuit at the "not Running" guard above while the
+                // supervisor still lives, and report a clean destroy over a leaked process.
+                if let Ok(mut guard) = process.lock() {
+                    guard.supervisor = Some(supervisor);
+                }
+                return finish_service_stop(state, log, Err(err));
             }
         }
         if let Some(container) = &container {
             delete_container(self, container);
             let _ = fs::remove_dir_all(&container.bundle_host);
         }
-        state.store(ServiceState::Stopped.to_bits(), Ordering::Relaxed);
-        log.close();
-        Ok(())
+        finish_service_stop(state, log, Ok(()))
     }
 
-    /// `SIGTERM` the persistent world PID 1 and escalate to `SIGKILL` after a bounded grace.
+    fn restore_launcher(&self, world: &WorldHandle, launcher: Child) {
+        if let Ok(mut worlds) = self.lock()
+            && let Ok(record) = self.owned(&mut worlds, world)
+        {
+            record.launcher = Some(launcher);
+        }
+    }
+
+    /// Shut down the persistent world PID 1 over its `stdin` lifeline pipe and reap its `unshare`
+    /// launcher, escalating to `SIGKILL` after `term_grace`.
     ///
-    /// `SIGKILL` to the world PID 1 makes the kernel destroy the whole PID namespace, so no
-    /// world-owned process (service, hook, or exec) can outlive its world. The elapsed time is
-    /// reported in the failure diagnostic instead of waiting a fixed window: a healthy world is
-    /// gone within one poll interval. The launcher stays in the record until this succeeds, so a
-    /// retried teardown can still reap it.
-    fn reap_world_init(&self, init_pid: u32) -> Result<(), EngineError> {
+    /// PID 1 of a child PID namespace carries `SIGNAL_UNKILLABLE` (`pid_namespaces(7)`): the
+    /// kernel silently drops unhandled `SIGTERM` from an ancestor namespace, whereas `SIGKILL` is
+    /// forcibly delivered. Closing `launcher.stdin` makes `slipfork-world-init` observe `EOF` and
+    /// exit `0` voluntarily so `unshare` reaps it immediately; `SIGTERM` is also sent (after
+    /// `/proc/<pid>/ns/pid` identity verification) for un-namespaced unit-test doubles. If either
+    /// process survives `term_grace`, `SIGKILL` is sent to the verified `init` and `launcher`
+    /// (`--kill-child=SIGKILL`), and `launcher` is bounded-reaped **before** polling
+    /// `/proc/<init_pid>`. Any `kill` or bounded-wait failure restores `launcher` into the record
+    /// and returns a typed [`EngineError::Execution`] naming the launcher pid before storage is
+    /// touched.
+    fn reap_world_init(
+        &self,
+        world: &WorldHandle,
+        term_grace: Duration,
+    ) -> Result<(), EngineError> {
+        let (mut launcher, init_pid, init_identity) = {
+            let mut worlds = self.lock()?;
+            let record = self.owned(&mut worlds, world)?;
+            (
+                record.launcher.take(),
+                record.init_pid,
+                record.init_identity.clone(),
+            )
+        };
+        if launcher.is_none() && init_pid <= 1 && init_identity.is_none() {
+            return Ok(());
+        }
+        if launcher.is_none() && init_identity.is_none() {
+            return Err(EngineError::Execution(format!(
+                "cannot reap world init pid {init_pid}: missing /proc/{init_pid}/ns/pid identity"
+            )));
+        }
+
         let started = Instant::now();
-        // `kill(2)` with pid 0 addresses the caller's whole process group and pid 1 is init, so a
-        // record that never booted a PID 1 must not reach the syscall.
-        if init_pid > 1 {
-            let _ = linux_cow::signal_process(init_pid, ProcessSignal::Terminate);
-            if !wait_for_path_gone(init_pid, WORLD_STOP_TERM_GRACE) {
-                let _ = linux_cow::signal_process(init_pid, ProcessSignal::Kill);
-                if !wait_for_path_gone(init_pid, WORLD_STOP_KILL_GRACE) {
+        if let Some(child) = launcher.as_mut() {
+            drop(child.stdin.take());
+        }
+        if term_grace > Duration::ZERO
+            && let Some(identity) = &init_identity
+        {
+            let _ = identity.signal(ProcessSignal::Terminate);
+        }
+
+        let term_deadline = started + term_grace;
+        if let Some(mut child) = launcher.take() {
+            let exited_on_term =
+                term_grace > Duration::ZERO && wait_for_exit(&mut child, term_grace);
+            if !exited_on_term {
+                if let Some(identity) = &init_identity {
+                    let _ = identity.signal(ProcessSignal::Kill);
+                }
+                let label = format!("world init launcher pid {}", child.id());
+                if let Err(err) = kill_and_reap_child(&mut child, WORLD_STOP_KILL_GRACE, &label) {
+                    self.restore_launcher(world, child);
+                    return Err(err);
+                }
+            }
+        }
+
+        if let Some(identity) = &init_identity {
+            let remaining_term = term_deadline.saturating_duration_since(Instant::now());
+            if !identity.wait_gone(remaining_term) {
+                if let Err(err) = identity.signal(ProcessSignal::Kill)
+                    && identity.matches_live()
+                {
                     return Err(EngineError::Execution(format!(
-                        "world init pid {init_pid} survived SIGTERM and SIGKILL for {:?}",
+                        "cannot SIGKILL world init pid {}: {err}",
+                        identity.pid
+                    )));
+                }
+                if !identity.wait_gone(WORLD_STOP_KILL_GRACE) {
+                    return Err(EngineError::Execution(format!(
+                        "world init pid {} survived SIGTERM and SIGKILL for {:?}",
+                        identity.pid,
                         started.elapsed()
                     )));
                 }
             }
         }
+
+        let mut worlds = self.lock()?;
+        let record = self.owned(&mut worlds, world)?;
+        record.init_pid = 0;
+        record.init_identity = None;
+        Ok(())
+    }
+
+    /// Tear down one world's services, persistent PID 1 + `unshare` launcher, control directory,
+    /// and world subvolume in `ADR-0010` §3 order, removing the world record once complete.
+    ///
+    /// Shared by [`WorldEngine::destroy_world`] and [`Drop`]: any failed process or storage step
+    /// aborts before removing the record so a retried `destroy_world` resumes where it stopped.
+    fn teardown_world(
+        &self,
+        world: &WorldHandle,
+        service_grace: Duration,
+        init_term_grace: Duration,
+    ) -> Result<(), EngineError> {
+        let (world_id, ctl_dir, services) = {
+            let mut worlds = self.lock()?;
+            let record = self.owned(&mut worlds, world)?;
+            // Fence the record: every later operation on this handle fails closed with `WorldGone`
+            // while teardown releases the world's processes and storage. A record already fenced is
+            // re-entered, so a failed teardown is always retryable instead of leaking the world.
+            record.destroying = true;
+            let services: Vec<ServiceTeardown> = record
+                .services
+                .iter()
+                .map(|(id, service)| ServiceTeardown::from_record(id, service))
+                .collect();
+            (record.world_id.clone(), record.ctl_dir.clone(), services)
+        };
+
+        // 1. Stop services (app components first, then backing-service containers).
+        self.stop_services_with_grace(&services, service_grace)?;
+        // 2. Reap the persistent PID 1 (and with it the whole PID namespace) and its launcher.
+        self.reap_world_init(world, init_term_grace)?;
+        // 3. Drop the ephemeral control directory (sockets, config, OCI runtime state).
+        if ctl_dir.exists() {
+            fs::remove_dir_all(&ctl_dir).map_err(|err| io_error(&ctl_dir, &err))?;
+        }
+        // 4. Destroy the world subvolume; the driver clears `BTRFS_SUBVOL_RDONLY` first.
+        self.driver
+            .destroy_subvolume(&self.worlds_dir(), &world_id)?;
+
+        // The world subvolume is gone, so the record must go too: a long-lived daemon creates and
+        // destroys worlds forever, and the old handle now resolves to `EngineError::WorldGone`
+        // exactly like every other operation on a destroyed world.
+        self.lock()?.remove(&world.seq());
         Ok(())
     }
 
@@ -1369,7 +1556,7 @@ impl WorldEngine for BtrfsEngine {
         let booted = self
             .materialize_world(&world_dir, spec)
             .and_then(|()| self.boot_world(&world_id, &world_dir, &ctl_dir, spec));
-        let (netns_sock, init_pid, launcher) = match booted {
+        let (netns_sock, init, mut launcher) = match booted {
             Ok(booted) => booted,
             Err(err) => {
                 let _ = self.driver.destroy_subvolume(&worlds, &world_id);
@@ -1378,7 +1565,20 @@ impl WorldEngine for BtrfsEngine {
             }
         };
 
-        self.lock()?.insert(
+        let mut locked = match self.lock() {
+            Ok(locked) => locked,
+            Err(err) => {
+                drop(launcher.stdin.take());
+                let _ = init.signal(ProcessSignal::Kill);
+                let _ = launcher.kill();
+                let _ = wait_for_exit(&mut launcher, WORLD_STOP_KILL_GRACE);
+                let _ = fs::remove_dir_all(&ctl_dir);
+                let _ = self.driver.destroy_subvolume(&worlds, &world_id);
+                return Err(err);
+            }
+        };
+        let init_pid = init.pid;
+        locked.insert(
             seq,
             WorldRecord {
                 world_id,
@@ -1387,6 +1587,7 @@ impl WorldEngine for BtrfsEngine {
                 state_dir: world_dir.join(WORLD_STATE_DIR),
                 netns_sock,
                 init_pid,
+                init_identity: Some(init),
                 launcher: Some(launcher),
                 base_env: spec.base_env.clone(),
                 rootfs: spec.rootfs.clone(),
@@ -1713,52 +1914,7 @@ impl WorldEngine for BtrfsEngine {
     }
 
     fn destroy_world(&self, world: WorldHandle) -> Result<(), EngineError> {
-        let (world_id, ctl_dir, init_pid, services) = {
-            let mut worlds = self.lock()?;
-            let record = self.owned(&mut worlds, &world)?;
-            // Fence the record: every later operation on this handle fails closed with
-            // `WorldGone` while the teardown below releases the world's processes and storage. A
-            // record already fenced is re-entered (a previous attempt stopped short), so a failed
-            // teardown is always retryable instead of leaking the world.
-            record.destroying = true;
-            let services: Vec<ServiceTeardown> = record
-                .services
-                .iter()
-                .map(|(id, service)| ServiceTeardown::from_record(id, service))
-                .collect();
-            (
-                record.world_id.clone(),
-                record.ctl_dir.clone(),
-                record.init_pid,
-                services,
-            )
-        };
-
-        // 1. Stop services (app components first, then backing-service containers).
-        self.stop_services_in_order(&services)?;
-        // 2. Reap the persistent PID 1 (and with it the whole PID namespace), then its launcher.
-        self.reap_world_init(init_pid)?;
-        let launcher = {
-            let mut worlds = self.lock()?;
-            self.owned(&mut worlds, &world)?.launcher.take()
-        };
-        if let Some(mut launcher) = launcher {
-            let _ = launcher.kill();
-            let _ = launcher.wait();
-        }
-        // 3. Drop the ephemeral control directory (sockets, config, OCI runtime state).
-        if ctl_dir.exists() {
-            fs::remove_dir_all(&ctl_dir).map_err(|err| io_error(&ctl_dir, &err))?;
-        }
-        // 4. Destroy the world subvolume; the driver clears `BTRFS_SUBVOL_RDONLY` first.
-        self.driver
-            .destroy_subvolume(&self.worlds_dir(), &world_id)?;
-
-        // The world subvolume is gone, so the record must go too: a long-lived daemon creates and
-        // destroys worlds forever, and the old handle now resolves to `EngineError::WorldGone`
-        // exactly like every other operation on a destroyed world.
-        self.lock()?.remove(&world.seq());
-        Ok(())
+        self.teardown_world(&world, SERVICE_STOP_GRACE, WORLD_STOP_TERM_GRACE)
     }
 }
 
@@ -1855,6 +2011,24 @@ fn io_error(path: &Path, err: &std::io::Error) -> EngineError {
         path: path.display().to_string(),
         message: err.to_string(),
     }
+}
+
+/// Apply the terminal state of one service-stop attempt.
+///
+/// Only a fully reaped supervisor becomes [`ServiceState::Stopped`] with a closed log; a failed
+/// `kill`/reap keeps the service [`ServiceState::Running`] and its log open so a retried
+/// teardown re-enters `kill_and_reap_child` instead of short-circuiting on `Stopped` while a
+/// supervisor process still lives.
+fn finish_service_stop(
+    state: &Arc<AtomicU8>,
+    log: &ServiceLogs,
+    outcome: Result<(), EngineError>,
+) -> Result<(), EngineError> {
+    if outcome.is_ok() {
+        state.store(ServiceState::Stopped.to_bits(), Ordering::Relaxed);
+        log.close();
+    }
+    outcome
 }
 
 /// `true` when a failed `unshare` invocation reports a denied user namespace (`EPERM`).
@@ -2129,9 +2303,12 @@ mod tests {
         let ctl_dir = engine.ctl_dir(world_id);
         fs::create_dir_all(world_dir.join(WORLD_STATE_DIR)).expect("world state dir");
         fs::create_dir_all(&ctl_dir).expect("control dir");
-        let (launcher, init_pid) = match init {
-            Some((launcher, init_pid)) => (Some(launcher), init_pid),
-            None => (None, 0),
+        let (launcher, init_pid, init_identity) = match init {
+            Some((launcher, init_pid)) => {
+                let identity = ProcessIdentity::capture(init_pid);
+                (Some(launcher), init_pid, identity)
+            }
+            None => (None, 0, None),
         };
         WorldRecord {
             world_id: world_id.to_owned(),
@@ -2140,6 +2317,7 @@ mod tests {
             state_dir: world_dir.join(WORLD_STATE_DIR),
             netns_sock: ctl_dir.join(WORLD_INIT_SOCKET_FILE),
             init_pid,
+            init_identity,
             launcher,
             base_env: ExecEnv::world_scoped(engine.state_dir.join("homes/test")),
             rootfs: rootfs(engine),
@@ -2151,7 +2329,7 @@ mod tests {
     }
 
     fn insert(engine: &BtrfsEngine, record: WorldRecord) -> WorldHandle {
-        let seq = 1;
+        let seq = engine.shared.next_seq.fetch_add(1, Ordering::Relaxed) + 1;
         engine
             .shared
             .worlds
@@ -2167,13 +2345,14 @@ mod tests {
             .args(["-c", "sleep 30 & wait"])
             .spawn()
             .expect("service supervisor");
-        let inner =
+        let inner_pid =
             wait_for_inner_pid(supervisor.id(), Duration::from_secs(5)).expect("service inner pid");
+        let inner = ProcessIdentity::capture(inner_pid);
         let state = Arc::new(AtomicU8::new(ServiceState::Running.to_bits()));
         let log = ServiceLogs::new();
         let process = Arc::new(Mutex::new(ServiceProcess {
             supervisor: Some(supervisor),
-            inner_pid: Some(inner),
+            inner,
             container: None,
         }));
         record.services.insert(
@@ -2185,7 +2364,7 @@ mod tests {
                 process,
             },
         );
-        (state, inner)
+        (state, inner_pid)
     }
 
     #[test]
@@ -2295,10 +2474,12 @@ mod tests {
             "the world PID 1 must enter a private IPC namespace: {argv:?}"
         );
         for flag in [
+            "--user",
             "--mount",
             "--net",
             "--pid",
             "--fork",
+            "--kill-child=SIGKILL",
             "--mount-proc",
             "--keep-caps",
         ] {
@@ -2863,5 +3044,248 @@ mod tests {
                 .is_err_and(|err| matches!(err, EngineError::UnknownService { .. })),
             "a rejected spawn registers no service"
         );
+    }
+
+    #[test]
+    fn reap_world_init_closes_stdin_lifeline_without_stalling_on_sigterm_immune_init() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let driver = Arc::new(RecordingDriver::btrfs());
+        let engine = engine_at(tmp.path(), Arc::clone(&driver) as Arc<RecordingDriver>);
+        // `trap "" TERM` reproduces kernel `SIGNAL_UNKILLABLE` on a child PID-namespace init:
+        // `SIGTERM` is ignored, so teardown must wake the init via EOF on `launcher.stdin` and
+        // complete immediately instead of stalling for `WORLD_STOP_TERM_GRACE` (5s).
+        let launcher = Command::new("sh")
+            .args([
+                "-c",
+                "exec 3<&0; trap '' TERM; (trap '' TERM; IFS= read -r _ <&3 || exit 0) & exec 3<&-; wait",
+            ])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("lifeline launcher");
+        let launcher_pid = launcher.id();
+        let init_pid =
+            wait_for_inner_pid(launcher_pid, Duration::from_secs(5)).expect("lifeline init pid");
+        let record = world_record(&engine, "slot-0-lifeline", Some((launcher, init_pid)));
+        let world = insert(&engine, record);
+
+        let started = Instant::now();
+        engine.destroy_world(world).expect("destroy lifeline world");
+        let elapsed = started.elapsed();
+
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "lifeline EOF teardown must not stall on WORLD_STOP_TERM_GRACE: {elapsed:?}"
+        );
+        assert!(
+            !Path::new(&format!("/proc/{init_pid}")).exists(),
+            "init_pid must be reaped"
+        );
+        assert!(
+            !Path::new(&format!("/proc/{launcher_pid}")).exists(),
+            "launcher must be reaped"
+        );
+    }
+
+    #[test]
+    fn a_failed_service_stop_keeps_the_service_running_so_a_retried_teardown_reaps_it() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let driver = Arc::new(RecordingDriver::btrfs());
+        let engine = engine_at(tmp.path(), Arc::clone(&driver) as Arc<RecordingDriver>);
+        let launcher = Command::new("sh")
+            .args(["-c", "sleep 60 & wait"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("world launcher");
+        let init_pid =
+            wait_for_inner_pid(launcher.id(), Duration::from_secs(5)).expect("world init pid");
+        let mut record = world_record(&engine, "slot-0-stop-retry", Some((launcher, init_pid)));
+        let (state, inner_pid) = running_world_process(&mut record, "api");
+        let log = record
+            .services
+            .get("api")
+            .expect("recorded service")
+            .log
+            .clone();
+        let service_process = Arc::clone(&record.services["api"].process);
+        let inner = ProcessIdentity::capture(inner_pid).expect("service identity");
+        let world = insert(&engine, record);
+
+        // Inject a failed `kill_and_reap_child` at the exact decision seam production uses. A real
+        // `Child::kill`/`try_wait` failure cannot be provoked deterministically from a live child
+        // (SIGKILL always terminates it), so the failure is supplied as the outcome the engine's own
+        // `finish_service_stop` receives when the bounded reap fails.
+        let failed = finish_service_stop(
+            &state,
+            &log,
+            Err(EngineError::Execution(format!(
+                "service 'api' did not exit within {}s of SIGKILL",
+                SERVICE_STOP_GRACE.as_secs()
+            ))),
+        );
+        assert!(failed.is_err(), "a failed stop must report the error");
+        assert_eq!(
+            state.load(Ordering::Relaxed),
+            ServiceState::Running.to_bits(),
+            "a failed stop must leave the service Running so a retry re-enters the stop path"
+        );
+        assert!(
+            !log.is_closed(),
+            "a failed stop must keep the captured log open"
+        );
+        assert!(
+            service_process
+                .lock()
+                .expect("service process")
+                .supervisor
+                .is_some(),
+            "the un-reaped supervisor must stay recorded for the retry"
+        );
+
+        // The retried teardown short-circuits nothing: it signals and reaps the supervisor.
+        engine
+            .destroy_world(world)
+            .expect("a retried teardown reaps the surviving supervisor");
+        assert_eq!(
+            state.load(Ordering::Relaxed),
+            ServiceState::Stopped.to_bits(),
+            "the retried stop reports Stopped"
+        );
+        assert!(
+            inner.wait_gone(Duration::from_secs(5)),
+            "the retried teardown must reap the service process"
+        );
+        assert!(log.is_closed(), "a successful retry closes the log");
+    }
+
+    #[test]
+    fn reap_world_init_escalates_to_sigkill_and_reaps_launcher_when_init_ignores_eof_and_sigterm() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let driver = Arc::new(RecordingDriver::btrfs());
+        let engine = engine_at(tmp.path(), Arc::clone(&driver) as Arc<RecordingDriver>);
+        let launcher = Command::new("sh")
+            .args([
+                "-c",
+                "trap '' TERM; (trap '' TERM; sleep 60) </dev/null & wait",
+            ])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("wedged launcher");
+        let launcher_pid = launcher.id();
+        let init_pid =
+            wait_for_inner_pid(launcher_pid, Duration::from_secs(5)).expect("wedged init pid");
+        let record = world_record(&engine, "slot-0-wedged", Some((launcher, init_pid)));
+        let world = insert(&engine, record);
+
+        engine
+            .destroy_world(world)
+            .expect("SIGKILL escalation reaps wedged world");
+
+        assert!(
+            !Path::new(&format!("/proc/{init_pid}")).exists(),
+            "SIGKILL escalation must reap init_pid"
+        );
+        assert!(
+            !Path::new(&format!("/proc/{launcher_pid}")).exists(),
+            "SIGKILL escalation must reap launcher"
+        );
+    }
+
+    #[test]
+    fn dropping_the_engine_reaps_live_world_launchers_and_services() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let driver = Arc::new(RecordingDriver::btrfs());
+        let engine = engine_at(tmp.path(), Arc::clone(&driver));
+
+        // 1. A raw `init_pid` lacking `/proc/<pid>/ns/pid` identity fails closed without signalling
+        //    a potentially recycled PID, and a mismatched `/proc/<pid>/ns/pid` identity never kills
+        //    a bystander process on either `destroy_world` or `Drop`.
+        let mut bystander = Command::new("sleep")
+            .arg("60")
+            .spawn()
+            .expect("bystander process");
+        let bystander_pid = bystander.id();
+        let mut unverified = world_record(&engine, "slot-0-unverified", None);
+        unverified.init_pid = bystander_pid;
+        let unverified_handle = insert(&engine, unverified);
+        match engine.destroy_world(unverified_handle.clone()) {
+            Err(EngineError::Execution(message)) => {
+                assert!(message.contains("/proc/"), "{message}");
+            }
+            other => panic!("unverified raw init_pid must fail closed: {other:?}"),
+        }
+        assert!(
+            bystander.try_wait().expect("observe bystander").is_none(),
+            "an unverified raw init_pid must never signal the bystander"
+        );
+        engine
+            .lock()
+            .expect("world registry")
+            .remove(&unverified_handle.seq());
+
+        let mut recycled = world_record(&engine, "slot-0-recycled", None);
+        recycled.init_pid = bystander_pid;
+        recycled.init_identity = Some(ProcessIdentity {
+            pid: bystander_pid,
+            pid_ns: PathBuf::from("pid:[1]"),
+            start_ticks: 0,
+        });
+        let _recycled_handle = insert(&engine, recycled);
+
+        // 2. A live leaked world has its launcher + init + service reaped AND its control dir +
+        //    world subvolume reclaimed via the shared teardown path when `BtrfsEngine` drops.
+        let launcher = Command::new("sh")
+            .args(["-c", "trap '' TERM; sleep 60 & wait"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("world launcher");
+        let launcher_pid = launcher.id();
+        let init_pid =
+            wait_for_inner_pid(launcher_pid, Duration::from_secs(5)).expect("world init pid");
+        let launcher_identity = ProcessIdentity::capture(launcher_pid).expect("launcher identity");
+        let init_identity = ProcessIdentity::capture(init_pid).expect("init identity");
+        let mut record = world_record(&engine, "slot-0-drop", Some((launcher, init_pid)));
+        let ctl_dir = record.ctl_dir.clone();
+        let world_dir = record.world_dir.clone();
+        fs::write(ctl_dir.join(WORLD_INIT_CONFIG_FILE), b"{}").expect("control marker");
+        let (_state, service_pid) = running_world_process(&mut record, "api");
+        let service_identity = ProcessIdentity::capture(service_pid).expect("service identity");
+        let _world = insert(&engine, record);
+        driver.clear_journal();
+
+        drop(engine);
+
+        for identity in [launcher_identity, init_identity, service_identity] {
+            assert!(
+                identity.wait_gone(Duration::from_secs(5)),
+                "Drop for BtrfsEngine must kill and reap pid {}",
+                identity.pid
+            );
+        }
+        assert!(
+            !ctl_dir.exists() && !world_dir.exists(),
+            "Drop must reclaim both the control directory and the world subvolume"
+        );
+        assert!(
+            driver.journal().iter().any(|op| matches!(
+                op,
+                DriverOp::DestroySubvolume { path, .. } if path == &world_dir
+            )),
+            "Drop must destroy the leaked world subvolume through the driver: {:?}",
+            driver.journal()
+        );
+        assert!(
+            bystander.try_wait().expect("observe bystander").is_none(),
+            "Drop must never signal a PID whose /proc/<pid>/ns/pid does not match"
+        );
+        let _ = bystander.kill();
+        let _ = bystander.wait();
     }
 }

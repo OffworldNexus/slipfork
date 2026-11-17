@@ -4,7 +4,26 @@
 //! fail-closed error types, mount-spec validation, environment redaction, opaque handle stability,
 //! and seal-once freeze semantics. Real CoW lineage (frozen snapshot → independent sibling
 //! clones, `$UID` ownership, real bind mounts) is asserted by `tests/critical_engine.rs` against
-//! the adapter's real snapshot and namespace path — never mocked.
+//! `BtrfsEngine` over the injected [`crate::btrfs::SubvolumeDriver`] — never mocked — and by
+//! `tests/critical_btrfs_live.rs` against the real kernel ioctl path.
+//!
+//! # Read-only snapshot vs writable clone
+//!
+//! [`WorldEngine`] keeps them as two distinct operations with distinct signatures:
+//! [`WorldEngine::create_snapshot`] and [`WorldEngine::freeze_world`] produce an immutable
+//! read-only snapshot, while [`WorldEngine::clone_world`] materializes a writable world from one.
+//! There is no mode flag and no capability boolean to branch on (`ADR-0010` §3), so this suite
+//! never passes one: it creates a read-only snapshot, clones a writable world from it, seals that
+//! world once, and then proves the sealed result is still frozen.
+//!
+//! This shared matrix covers the `&dyn WorldEngine` behaviour only; driver-level teardown
+//! invariants (clearing `BTRFS_SUBVOL_RDONLY` before `destroy_subvolume`) are asserted by the
+//! driver-injected suite in `tests/critical_engine.rs`, which inspects the injected driver's
+//! journal.
+//!
+//! [`assert_world_engine_conformance`] is `pub` on purpose: out-of-crate suites
+//! (`crates/slipfork-engine/tests/critical_engine.rs`, and any future adapter suite) call it with
+//! the adapter under test plus a scratch directory the adapter may write.
 
 #![forbid(unsafe_code)]
 
@@ -21,6 +40,14 @@ const SECRET_KEY: &str = "SLIPFORK_TEST_SECRET";
 const SECRET_VALUE: &str = "conformance-secret-value";
 
 /// Verify the shared fail-closed [`WorldEngine`] contract across any implementation.
+///
+/// The engine is borrowed as `&dyn WorldEngine` so an out-of-crate suite can pass its adapter
+/// directly. `scratch_dir` must be a writable directory on the engine's own CoW substrate
+/// (`BtrfsEngine` seeds its content-addressed rootfs there); `rootfs` is the contract-valid
+/// [`WorldRootfs`] the adapter materializes worlds from.
+///
+/// Read-only snapshots and writable clones stay separate calls throughout: the suite never selects
+/// a snapshot mode, it creates one read-only snapshot and clones writable worlds from it.
 ///
 /// # Panics
 ///
