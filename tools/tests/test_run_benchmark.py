@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+import io
 import json
 import os
 import socket
+import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from pathlib import Path
 from types import ModuleType
 from unittest import mock
@@ -19,13 +22,22 @@ BASELINE = {
     "source_report": "docs/research/m1-poc-benchmark.md",
     "source_report_sha256": "0" * 64,
     "metrics": {
-        "reflink_64k_us": {"value": 397, "max_factor": 4.0},
         "pgdata_logical_mib": {"value": 41.5, "max_factor": 1.15, "min_factor": 1.15},
         "pgdata_files": {"value": 1000, "max_factor": 1.5, "min_factor": 1.5},
         "dag_warm_plan_ms": {"value": 10.89, "max_factor": 4.0},
         "dag_front_only_plan_ms": {"value": 10.7, "max_factor": 4.0},
     },
 }
+
+# The off-Btrfs `fixes` line is *the shipped binary's output*, faked at the subprocess boundary.
+# A distinctive device/state pair proves the harness prints whatever `doctor` emits verbatim
+# instead of a local copy of the mount hint.
+DOCTOR_FIXES = (
+    "sudo mount -o user_subvol_rm_allowed,noatime /dev/bench-device /bench-state",
+    "install util-linux (`unshare`) and retry",
+)
+NAMESPACE_FIX = "install the userns AppArmor profile and retry"
+XFS_FSTYPE = "0x58465342"
 
 
 def _load() -> ModuleType:
@@ -43,10 +55,10 @@ bench = _load()
 
 def _metrics(**overrides: object) -> object:
     values: dict[str, object] = {
-        "reflink_64k_us": 397,
+        "first_up_ms": 1200.0,
         "pgdata_logical_mib": 41.5,
         "pgdata_files": 1000,
-        "world_up_ms": 1200.0,
+        "world_up_ms": 800.0,
         "worktree_fork_ms": 44.4,
         "worktree_exec_ms": 20.0,
         "parallel_4_forks_ms": 400.0,
@@ -69,6 +81,80 @@ def _metrics(**overrides: object) -> object:
     return bench.BenchmarkMetrics(**values)
 
 
+def _doctor_report(**overrides: object) -> dict:
+    """The shipped `slipfork doctor --json` shape (`crates/slipfork/src/doctor.rs`)."""
+    report: dict[str, object] = {
+        "ok": False,
+        "uid": 1000,
+        "gid": 1000,
+        "state_dir": "/bench/state",
+        "probed_path": "/bench",
+        "fstype": XFS_FSTYPE,
+        "filesystem": "xfs",
+        "btrfs_super_magic": False,
+        "subvolume_ioctl": {"status": "skipped"},
+        "noatime": False,
+        "unshare_userns": {"status": "ok"},
+        "netns": {"status": "ok"},
+        "fixes": list(DOCTOR_FIXES),
+    }
+    report.update(overrides)
+    return report
+
+
+def _btrfs_report(**overrides: object) -> dict:
+    base: dict[str, object] = {
+        "ok": True,
+        "filesystem": "btrfs",
+        "fstype": "0x9123683e",
+        "btrfs_super_magic": True,
+        "subvolume_ioctl": {"status": "ok"},
+        "fixes": [],
+    }
+    base.update(overrides)
+    return _doctor_report(**base)
+
+
+@contextmanager
+def _doctor(report: dict, returncode: int = 1):
+    """Fake the shipped `slipfork doctor --json` at the subprocess boundary."""
+    result = subprocess.CompletedProcess(
+        args=["slipfork", "doctor", "--json"],
+        returncode=returncode,
+        stdout=json.dumps(report),
+        stderr="",
+    )
+    with mock.patch.object(bench.subprocess, "run", return_value=result) as run:
+        yield run
+
+
+@contextmanager
+def _off_btrfs():
+    """Fake an XFS host's fail-closed `slipfork doctor --json` report."""
+    with _doctor(_doctor_report()) as run:
+        yield run
+
+
+@contextmanager
+def _no_run_state():
+    """Prove the host gate runs before the pre-run wipe and before preflight."""
+    with (
+        mock.patch.object(
+            bench,
+            "prepare_run_state",
+            side_effect=AssertionError(
+                "the run state must not be wiped on a rejected host"
+            ),
+        ),
+        mock.patch.object(
+            bench,
+            "preflight",
+            side_effect=AssertionError("preflight must not run on a rejected host"),
+        ),
+    ):
+        yield
+
+
 class BenchTestCase(unittest.TestCase):
     def setUp(self) -> None:
         # Unit tests keep their scratch trees under the system temp directory; the dedicated
@@ -76,6 +162,14 @@ class BenchTestCase(unittest.TestCase):
         patcher = mock.patch.object(bench, "TOPMOST_MOUNT_FORBIDDEN", ())
         patcher.start()
         self.addCleanup(patcher.stop)
+
+    def gate_fails_closed(self, report: dict) -> tuple[str, mock.Mock]:
+        """Run the host gate against a faked `doctor` report; return its message and the call."""
+        with tempfile.TemporaryDirectory() as tmp:
+            layout = Path(tmp) / "bench"
+            with _doctor(report) as run, self.assertRaises(bench.BenchError) as raised:
+                bench.require_btrfs(layout, {}, Path(tmp))
+        return str(raised.exception), run
 
 
 class ChildEnvTests(BenchTestCase):
@@ -102,7 +196,12 @@ class ChildEnvTests(BenchTestCase):
             self.assertNotIn("LANG", env, "a missing allowlisted variable is omitted")
             self.assertEqual(env["HOME"], str(run / "home"))
             self.assertEqual(env["TMPDIR"], str(run / "tmp"))
-            self.assertTrue((run / "home").is_dir())
+            self.assertFalse(
+                (run / "home").exists(),
+                "building the env must write nothing before the host gate",
+            )
+            bench.prepare_run_state(run)
+            self.assertEqual((run / "home").stat().st_mode & 0o777, 0o700)
             self.assertTrue((run / "tmp").is_dir())
 
     def test_extras_must_be_explicit_slipfork_variables(self) -> None:
@@ -129,7 +228,11 @@ class RunStateTests(BenchTestCase):
             (run / "stale").mkdir(parents=True)
             (run / "stale" / "pgdata").write_text("leftover", encoding="utf-8")
             bench.prepare_run_state(run)
-            self.assertEqual(list(run.iterdir()), [])
+            self.assertEqual(
+                sorted(path.name for path in run.iterdir()), ["home", "tmp"]
+            )
+            self.assertEqual(list((run / "home").iterdir()), [])
+            self.assertEqual(list((run / "tmp").iterdir()), [])
 
     def test_wipe_failure_aborts_before_any_timing(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -154,6 +257,166 @@ class RunStateTests(BenchTestCase):
 
             with self.assertRaises(bench.BenchError):
                 bench.prepare_run_state(run, remover=noop)
+
+
+class BtrfsProbeTests(BenchTestCase):
+    def test_doctor_gate_probes_the_state_directory_the_harness_measures(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            layout = Path(tmp) / "bench"
+            with _doctor(_btrfs_report()) as run:
+                bench.require_btrfs(layout, {}, Path(tmp))
+            self.assertEqual(
+                run.call_args.args[0],
+                [
+                    str(bench.SLIPFORK_BIN),
+                    "--state-dir",
+                    str(layout / "state"),
+                    "doctor",
+                    "--json",
+                ],
+            )
+            self.assertEqual(run.call_args.kwargs["timeout"], bench.DOCTOR_TIMEOUT_S)
+
+    def test_non_btrfs_doctor_report_fails_closed_with_its_verbatim_fixes(self) -> None:
+        message, _ = self.gate_fails_closed(_doctor_report())
+        lines = message.splitlines()
+        for fix in DOCTOR_FIXES:
+            self.assertIn(fix, lines, "every `doctor` fix is printed verbatim")
+        self.assertIn("filesystem 'xfs'", message)
+        self.assertFalse(
+            hasattr(bench, "BTRFS_MOUNT_HINT"),
+            "the mount hint belongs to the shipped binary, never to this harness",
+        )
+
+    def test_the_gate_decides_on_doctor_ok_alone(self) -> None:
+        message, _ = self.gate_fails_closed(
+            _btrfs_report(ok=False, fixes=[DOCTOR_FIXES[0]])
+        )
+        self.assertIn(DOCTOR_FIXES[0], message.splitlines())
+
+    def test_namespace_failure_fails_closed_like_any_other_doctor_failure(self) -> None:
+        # Every measured `up`/`fork`/`exec` boots a world through userns/netns, so `doctor`'s
+        # `ok: false` for a broken namespace must stop the run, never warn and continue.
+        report = _btrfs_report(
+            ok=False,
+            unshare_userns={
+                "status": "failed",
+                "detail": "unshare: Operation not permitted",
+            },
+            netns={"status": "skipped"},
+            fixes=[NAMESPACE_FIX],
+        )
+        message, _ = self.gate_fails_closed(report)
+        self.assertIn(NAMESPACE_FIX, message.splitlines())
+        self.assertIn("unshare_userns 'failed'", message)
+        self.assertIn("netns 'skipped'", message)
+
+    def test_btrfs_host_with_a_failed_subvolume_ioctl_fails_closed(self) -> None:
+        report = _btrfs_report(
+            ok=False,
+            subvolume_ioctl={"status": "failed", "errno": 1, "hint": DOCTOR_FIXES[0]},
+            fixes=[DOCTOR_FIXES[0]],
+        )
+        message, _ = self.gate_fails_closed(report)
+        self.assertIn("subvolume_ioctl 'failed'", message)
+        self.assertIn(DOCTOR_FIXES[0], message)
+
+    def test_wedged_doctor_times_out_instead_of_hanging_the_harness(self) -> None:
+        expired = subprocess.TimeoutExpired(
+            cmd=["slipfork", "doctor", "--json"], timeout=bench.DOCTOR_TIMEOUT_S
+        )
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            mock.patch.object(bench.subprocess, "run", side_effect=expired) as run,
+            self.assertRaises(bench.BenchError) as raised,
+        ):
+            bench.require_btrfs(Path(tmp) / "bench", {}, Path(tmp))
+        self.assertEqual(run.call_args.kwargs["timeout"], bench.DOCTOR_TIMEOUT_S)
+        self.assertIn("did not answer within", str(raised.exception))
+
+    def test_doctor_without_json_is_fatal(self) -> None:
+        result = subprocess.CompletedProcess(
+            args=["slipfork", "doctor", "--json"],
+            returncode=1,
+            stdout="",
+            stderr="state dir must be absolute",
+        )
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            mock.patch.object(bench.subprocess, "run", return_value=result),
+            self.assertRaises(bench.BenchError) as raised,
+        ):
+            bench.require_btrfs(Path(tmp) / "bench", {}, Path(tmp))
+        self.assertIn("state dir must be absolute", str(raised.exception))
+
+    def test_check_exits_non_zero_with_the_doctor_fixes_and_prints_no_metric(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp) / "bench"
+            stdout, stderr = io.StringIO(), io.StringIO()
+            with (
+                _off_btrfs(),
+                _no_run_state(),
+                redirect_stdout(stdout),
+                redirect_stderr(stderr),
+            ):
+                code = bench.main(["--check", "--run-dir", str(run_dir)])
+        self.assertNotEqual(code, 0)
+        self.assertEqual(stdout.getvalue(), "", "no fabricated metric may be printed")
+        for fix in DOCTOR_FIXES:
+            self.assertIn(fix, stderr.getvalue().splitlines())
+        self.assertFalse(run_dir.exists(), "the fail-closed run creates nothing")
+
+
+class BtrfsMeasurementTests(BenchTestCase):
+    def test_first_up_is_the_composite_seal_and_boot_window(self) -> None:
+        summary = {"origin": "http://acme.localhost", "resources": []}
+        with mock.patch.object(bench, "_slipfork_json", return_value=summary) as fake:
+            elapsed, measured = bench.measure_up_ms(
+                Path("/run"), {}, Path("/run/project")
+            )
+        fake.assert_called_once_with(Path("/run"), {}, Path("/run/project"), "up")
+        self.assertEqual(measured, summary)
+        self.assertGreaterEqual(elapsed, 0.0)
+
+    def test_fork_is_the_writable_clone_window(self) -> None:
+        with mock.patch.object(
+            bench, "_fork", return_value="http://acme.localhost"
+        ) as fake:
+            elapsed = bench.measure_fork_ms(
+                Path("/run"), {}, Path("/run/project"), "fork-probe"
+            )
+        fake.assert_called_once_with(
+            Path("/run"), {}, Path("/run/project"), "fork-probe"
+        )
+        self.assertGreaterEqual(elapsed, 0.0)
+
+    def test_measure_all_fails_closed_before_any_measurement_off_btrfs(self) -> None:
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            _off_btrfs(),
+            _no_run_state(),
+            mock.patch.object(
+                bench,
+                "_slipfork_json",
+                side_effect=AssertionError("no CLI call may run off Btrfs"),
+            ),
+            self.assertRaises(bench.BenchError),
+        ):
+            bench.measure_all(1, 1, 20261115, Path(tmp) / "bench")
+
+    def test_refresh_baseline_drops_retired_metrics_and_updates_values(self) -> None:
+        baseline = {
+            "metrics": {
+                "first_up_ms": {"value": 1.0, "max_factor": 4.0},
+                "retired_metric": {"value": 2.0, "max_factor": 4.0},
+            }
+        }
+        refreshed = bench.refresh_baseline(baseline, _metrics(first_up_ms=9.0))
+        self.assertEqual(set(refreshed["metrics"]), {"first_up_ms"})
+        self.assertEqual(refreshed["metrics"]["first_up_ms"]["value"], 9.0)
+        self.assertEqual(refreshed["metrics"]["first_up_ms"]["max_factor"], 4.0)
 
 
 class ReadOnlyCheckTests(BenchTestCase):
@@ -219,8 +482,8 @@ class ReadOnlyCheckTests(BenchTestCase):
         self,
     ) -> None:
         self.assertEqual(bench.compare_to_baseline(_metrics(), BASELINE), [])
-        drift = bench.compare_to_baseline(_metrics(reflink_64k_us=99_999), BASELINE)
-        self.assertTrue(any("reflink_64k_us" in problem for problem in drift))
+        drift = bench.compare_to_baseline(_metrics(dag_warm_plan_ms=99_999.0), BASELINE)
+        self.assertTrue(any("dag_warm_plan_ms" in problem for problem in drift))
 
     def test_compare_to_baseline_flags_a_broken_seed(self) -> None:
         drift = bench.compare_to_baseline(_metrics(pgdata_files=5), BASELINE)
@@ -253,9 +516,24 @@ class ProjectionTests(BenchTestCase):
         self.assertIn("host** headless Chromium (`CHROME_BIN`)", report)
         self.assertIn("shared **host** browser pool", report)
 
+    def test_report_names_the_btrfs_snapshot_and_clone_rows(self) -> None:
+        report = bench.render_report(
+            _metrics(), report_date="2026-11-17", host_kernel="6.12", host_arch="x86_64"
+        )
+        self.assertIn("Btrfs (`slipfork doctor`: `filesystem: btrfs`", report)
+        self.assertIn(
+            "first `up` — seals the read-only base snapshot and boots (composite)",
+            report,
+        )
+        self.assertIn("writable clone", report)
+        self.assertIn("`BtrfsEngine`", report)
+        self.assertNotIn("FICLONE", report)
+
     def test_json_record_round_trips_every_metric(self) -> None:
         record = json.loads(_metrics().to_json())
         self.assertEqual(record["pg_restore_ms"], 100.0)
+        self.assertEqual(record["first_up_ms"], 1200.0)
+        self.assertEqual(record["world_up_ms"], 800.0)
         self.assertEqual(record["seed"], 20261115)
 
 
@@ -329,11 +607,11 @@ class TopologyTests(BenchTestCase):
         self,
     ) -> None:
         baseline = {
-            "reflink_64k_us": {"value": 397, "max_factor": 4.0},
+            "first_up_ms": {"value": 1200.0, "max_factor": 4.0},
             "pgdata_files": {"value": 1000, "max_factor": 1.5, "min_factor": 1.5},
         }
         self.assertIsNone(
-            bench._metric_bound("reflink_64k_us", 1.0, baseline["reflink_64k_us"])
+            bench._metric_bound("first_up_ms", 1.0, baseline["first_up_ms"])
         )
         self.assertIsNotNone(
             bench._metric_bound("pgdata_files", 5, baseline["pgdata_files"])

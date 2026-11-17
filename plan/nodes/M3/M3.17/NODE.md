@@ -2,20 +2,21 @@
 id: M3.17
 title: "poc benchmark + support registry on the Btrfs engine (fails closed off-Btrfs)"
 kind: task
-status: ready
+status: active
 owner: implementer
 priority: 4
 depends_on: [M3.21]
 paths:
   - poc/run_benchmark.py
+  - "poc/bench-baseline.json"
   - tools/tests/test_run_benchmark.py
   - support/integrations.toml
   - "docs/support-matrix.md"
-attempts: 0
+attempts: 1
 max_attempts: 3
 escalation: none
 created: "2026-11-16T16:58"
-updated: "2026-11-16T17:25"
+updated: "2026-11-17T12:34"
 ---
 
 # Goal

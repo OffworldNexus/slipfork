@@ -48,3 +48,11 @@ DESTRUCTIVE-ACTION AUTHORIZATION NEEDED: DO volume 131a2765-e1ba-11f1-b67b-d6114
 
 **Answer:**
 
+## H-006 [open] [direction-challenge] (node M3.19)
+
+- asked: 2026-11-17T12:45 by lead
+
+Live VM blocks on AppArmor: every world boot dies at the first crun backing service. Ubuntu 24.04 transitions the in-world /.slipfork/bin/crun into the unprivileged_userns domain on execve, so userns_create is DENIED and postgres:18 exits with 'unshare: Operation not permitted'. ADR-0010 §7's claim that unprofiled children stay under the slipfork profile across execve is false, and the shipped profile (apparmor.rs + tools/do_vm.py) attaches only <bin_dir>/slipfork{,d}. Options: (A, recommended) extend the profile attachment set to the whole world launcher stack — <bin_dir>/slipfork{,d}, <bin_dir>/slipfork-world-init (and the cargo target path used by the harness), /usr/bin/unshare and /.slipfork/bin/crun — and correct ADR-0010 §7 to describe the real mechanism (the profile must name every executable that calls unshare(CLONE_NEWUSER), not just the entry point); (B) stage crun at one stable host path and attach the profile there (does not remove the need to name unshare/world-init); (C) drop the OCI user namespace for worlds (changes the isolation model). Consequence today: slipfork engine+CLI live suites, the benchmark, and the /home/slipfork/demo flow on 165.232.86.174 cannot boot a world until the profile is extended; the droplet is UP and the demo repo is staged. Recommendation: A. This blocks the 0.1.0 live-verification claim (M3.19).
+
+**Answer:**
+

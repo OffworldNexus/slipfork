@@ -921,3 +921,12 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-17T12:36 [M3.15] (lead) Gate passed: make check gate 1 green except rs-lint (private_intra_doc_links); fixed → RUSTDOCFLAGS=-D warnings cargo doc -p slipfork exit 0, make rs-lint exit 
 - 2026-11-17T12:36 [M3.15] (lead) status review -> done
 - 2026-11-17T12:36 [M3.21] (lead) Gate passed: acceptance grep is 2 hits, both NEGATIVE assertions that a Btrfs refusal never advertises a reflink fallback (crates/slipfork/tests/support/mod.rs:
+- 2026-11-17T12:36 [M3.21] (lead) status active -> done
+- 2026-11-17T12:36 [M3.24] (lead) status ready -> active
+- 2026-11-17T12:36 [M3.24] (lead) attempt 1/3 started
+- 2026-11-17T12:36 [M3.24] (lead) base 94831c119233adac1d573cf401ddfe653d923254
+- 2026-11-17T12:38 [M3.21] (lead) FINAL: functional PASS, legality PASS (minors: RESULT inventory understates 9 files; the rootfs/mod.rs 'Incus image name' residual is already fixed; the 2 remai
+- 2026-11-17T12:38 [M3.21] (lead) status done -> done
+- 2026-11-17T12:45 HUMAN H-006 [direction-challenge] opened by lead (node M3.19)
+- 2026-11-17T12:45 [M3.19] (lead) status active -> blocked
+- 2026-11-17T12:45 [M3.19] (lead) BLOCKED: direction-challenge filed (H-0xx) — AppArmor unprivileged_userns denies the in-world crun; ADR-0010 §7 mechanism is false. Do not retry until the human

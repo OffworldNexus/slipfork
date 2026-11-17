@@ -8,10 +8,11 @@
 # ///
 """Real end-to-end PoC benchmark for the `0.2.0` world model (`docs/research/m1-poc-benchmark.md`).
 
-The harness drives the shipped `slipfork` CLI (`doctor`, `snow resolve`, `auth login`, `dag plan`,
-`up`, `fork`, `exec`, `drop` over a harness-owned `slipforkd`) against a generated sample project,
-and measures real PostgreSQL 18 `initdb -> seed -> pg_dump -> pg_restore`, real `FICLONE` CoW world
-forks, and a head-to-head browser + committed-SQL suite across three regimes:
+`slipfork doctor --json` gates the host, then `snow resolve` / `auth login` / `dag plan` / `up` /
+`down` / `fork` / `exec` / `drop` drive a harness-owned `slipforkd` against a generated sample
+project. The harness measures real PostgreSQL 18 `initdb -> seed -> pg_dump -> pg_restore`, the real
+`BtrfsEngine` subvolume snapshot/clone path (`KernelBtrfsDriver`), and a head-to-head browser +
+committed-SQL suite across three regimes:
 
 1. Traditional baseline (host PostgreSQL, one warm Chromium, `TRUNCATE` + re-seed per test).
 2. Slipfork on-demand cold CoW worlds (`fork` + cold host Chromium per test).
@@ -19,8 +20,8 @@ forks, and a head-to-head browser + committed-SQL suite across three regimes:
 
 The seed is produced honestly: a real PostgreSQL 18 `pg_dump -Fc` archive is zstd-compressed and
 streamed by a minimal loopback `ospp-v1` server (`ADR-0008` §1–§2), so `slipforkd` restores it
-inside `postgres:18` and seals `<project>-base` with `freeze_world`. Every later `fork` CoW-clones
-the restored `PGDATA` with zero SQL re-seed and zero direct state-directory manipulation.
+inside `postgres:18` and seals `<project>-base` with `freeze_world`. Every later `fork` clones that
+sealed subvolume with zero SQL re-seed and zero direct state-directory manipulation.
 
 `ADR-0009` §2.2 topology: the app rootfs is a lean `Dockerfile` image with **no** browser; host
 Chromium reaches each world's single `.localhost` `WorldOrigin` through `slipforkd`'s HTTP ingress
@@ -31,14 +32,25 @@ of run state lives under one disk-backed run directory that is wiped fail-closed
 measurement (`prepare_run_state`), and every measurement's dispatch order is derived from one
 explicit seed.
 
+`slipfork doctor --json` on `<run_dir>/state` — the exact `--state-dir` every later CLI call
+receives — must report `ok: true` before any measurement starts; that single verdict is the host
+gate, and the harness never re-derives a host fact the shipped CLI already owns. When it is not
+`ok` the harness prints the report's `fixes` lines verbatim and exits non-zero, producing no metric
+at all — never zeros and never a degraded fallback (`ADR-0010` §4). Every snapshot/clone number is
+taken through the shipped `slipfork` binary, i.e. the `BtrfsEngine`/`KernelBtrfsDriver` seam; the
+harness never issues `BTRFS_IOC_*` itself.
+
+**Host honesty:** this checkout's host runs XFS, so it only exercises the fail-closed branch above.
+The measured report is regenerated on the Btrfs DO VM by `M3.19`.
+
 `--check` is the default and strictly read-only: it re-measures, compares the run against
-`poc/bench-baseline.json` (the parsed, provenance-pinned projection of the committed report), and
-exits non-zero on drift without writing a file. `--write-report` is the only mutator; review and
-commit the report it writes.
+`poc/bench-baseline.json` (the parsed projection of the committed report), and exits non-zero on
+drift without writing a file. `--write-report` is the only mutator; review and commit the report it
+writes.
 
 **Topology honesty:** `0.2.0` worlds boot from a read-only `Dockerfile`-derived `L0` rootfs and run
-backing services as daemonless `crun` containers in the world `netns` (`ADR-0009`). The committed
-M1 figures in the report were measured on the pre-`ADR-0009` host-shared-`/usr` topology (host
+backing services as daemonless `crun` containers in the world `netns` (`ADR-0009`). Earlier M1
+figures in the report were measured on the pre-`ADR-0009` host-shared-`/usr` topology (host
 `postgres`/Chromium over the host `/usr` + `/lib`) and are not comparable to fresh runs.
 """
 
@@ -89,6 +101,12 @@ PINNED_ENV = ("HOME", "TMPDIR")
 CHILD_ENV_PREFIX = "SLIPFORK_"
 
 TOPMOST_MOUNT_FORBIDDEN = ("/tmp/", "/dev/shm/")
+
+# `doctor` is a fast host probe; a wedged one must surface as a diagnostic, never as a hung
+# harness. The measured CLI calls (`up`/`fork`/`exec`/...) get a far larger cap because their
+# duration is the measurement itself.
+DOCTOR_TIMEOUT_S = 60.0
+CLI_TIMEOUT_S = 900.0
 
 
 class BenchError(RuntimeError):
@@ -964,7 +982,7 @@ class SeedOsppServer:
 class BenchmarkMetrics:
     """One measured record; both report tables and the JSON block render from this."""
 
-    reflink_64k_us: int
+    first_up_ms: float
     pgdata_logical_mib: float
     pgdata_files: int
     world_up_ms: float
@@ -1002,6 +1020,9 @@ def bench_child_env(
     so no child can write into the developer's home or `/tmp`; `extra` may only carry explicit
     `SLIPFORK_*` variables the run itself sets.
 
+    Pure mapping: the pinned `HOME`/`TMPDIR` directories are created by `prepare_run_state`, so the
+    host gate can run against the shipped `slipfork doctor` before anything is written.
+
     `BROWSER` is pinned to `/bin/true`: `slipfork auth login -` hands the pairing URL to the
     daemon's injected `BrowserOpener` (a desktop convenience) before redeeming the handle over
     real `ospp-v1`. A headless benchmark must not depend on a desktop browser, and the handle is
@@ -1014,13 +1035,8 @@ def bench_child_env(
             env[key] = value
     for key in PINNED_ENV:
         env.pop(key, None)
-    home = run_dir / "home"
-    tmp = run_dir / "tmp"
-    home.mkdir(parents=True, exist_ok=True)
-    tmp.mkdir(parents=True, exist_ok=True)
-    os.chmod(home, 0o700)
-    env["HOME"] = str(home)
-    env["TMPDIR"] = str(tmp)
+    env["HOME"] = str(run_dir / "home")
+    env["TMPDIR"] = str(run_dir / "tmp")
     env["BROWSER"] = "/bin/true"
     for key, value in (extra or {}).items():
         if not key.startswith(CHILD_ENV_PREFIX):
@@ -1041,10 +1057,112 @@ def _reject_tmpfs(run_dir: Path) -> None:
             raise BenchError(msg)
 
 
+def _run_doctor(layout: Path, env: dict[str, str], project: Path) -> dict:
+    """Run the shipped `slipfork doctor --json` against the state directory this run measures."""
+    state_dir = layout / "state"
+    try:
+        result = subprocess.run(
+            [str(SLIPFORK_BIN), "--state-dir", str(state_dir), "doctor", "--json"],
+            cwd=project,
+            env=env,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=DOCTOR_TIMEOUT_S,
+        )
+    except subprocess.TimeoutExpired as error:
+        msg = (
+            f"`slipfork doctor --json` on '{state_dir}' did not answer within "
+            f"{DOCTOR_TIMEOUT_S:.0f}s; the host probe is wedged"
+        )
+        raise BenchError(msg) from error
+    except OSError as error:
+        msg = (
+            f"cannot run '{SLIPFORK_BIN} doctor --json' to probe '{state_dir}': {error} "
+            f"(run `make bench`, which builds target/release/slipfork)"
+        )
+        raise BenchError(msg) from error
+    try:
+        report = json.loads(result.stdout)
+    except json.JSONDecodeError as error:
+        detail = (result.stderr or result.stdout).strip()
+        msg = (
+            f"`slipfork doctor --json` on '{state_dir}' produced no report "
+            f"({error}):\n{detail}"
+        )
+        raise BenchError(msg) from error
+    if not isinstance(report, dict):
+        msg = f"`slipfork doctor --json` on '{state_dir}' did not return a JSON object"
+        raise BenchError(msg)
+    return report
+
+
+def _failed_doctor_checks(report: dict) -> str:
+    """Name the `doctor` checks that are not `ok`, for the diagnostic line only.
+
+    The gate's decision is `report["ok"]` alone; this helper decides nothing. It only renders the
+    report's own fields so a failure says which host fact is missing.
+    """
+    failed: list[str] = []
+    filesystem = report.get("filesystem")
+    if filesystem != "btrfs":
+        failed.append(f"filesystem {filesystem!r}")
+    if report.get("btrfs_super_magic") is not True:
+        failed.append("btrfs_super_magic")
+    for check in ("subvolume_ioctl", "unshare_userns", "netns"):
+        outcome = report.get(check)
+        status = outcome.get("status") if isinstance(outcome, dict) else None
+        if status != "ok":
+            failed.append(f"{check} {status!r}")
+    return ", ".join(failed) if failed else "no individual check named a failure"
+
+
+def require_btrfs(layout: Path, env: dict[str, str], project: Path) -> None:
+    """Fail closed unless `slipfork doctor` reports `ok` at the state directory this run measures.
+
+    The probe is the shipped `slipfork doctor --json` (`slipfork_engine::btrfs` +
+    `crates/slipfork/src/doctor.rs`) run against `<layout>/state` — exactly the `--state-dir` every
+    later `slipfork` call receives — so the harness never re-derives a host fact the CLI already
+    owns. `project` is only the subprocess working directory and must already exist; `doctor`
+    resolves nothing against it, and the run's own sample project does not exist yet because the
+    gate runs before the pre-run wipe and before any measurement.
+
+    The gate is the report's own canonical verdict: proceed only when `ok` is `True`. `doctor`
+    already folds the Btrfs superblock, the live subvolume ioctl, and real `unshare_userns`/`netns`
+    probes into that one verdict — and every measured `up`/`fork`/`exec` boots a world through
+    those namespaces, so a namespace failure must stop the run exactly like a non-Btrfs one. Any
+    other verdict prints the report's `fixes` verbatim, one per line, and raises: no metric is
+    produced and nothing is written (`ADR-0010` §4). The failing fields only shape the diagnostic
+    text; the decision is `ok` alone.
+    """
+    state_dir = layout / "state"
+    report = _run_doctor(layout, env, project)
+    fixes = report.get("fixes")
+    if not isinstance(fixes, list) or not all(isinstance(fix, str) for fix in fixes):
+        msg = f"`slipfork doctor --json` on '{state_dir}' did not report a `fixes` list: {report}"
+        raise BenchError(msg)
+    if report.get("ok") is True:
+        return
+    msg = "\n".join(
+        [
+            (
+                f"bench state directory '{state_dir}' failed `slipfork doctor` "
+                f"({_failed_doctor_checks(report)})"
+            ),
+            *fixes,
+        ]
+    )
+    raise BenchError(msg)
+
+
 def prepare_run_state(
     run_dir: Path, *, remover: Callable[[Path], None] = shutil.rmtree
 ) -> None:
-    """Wipe and re-create the run directory fail-closed, before the first measurement."""
+    """Wipe and re-create the run directory fail-closed, before the first measurement.
+
+    The pinned `HOME`/`TMPDIR` scratch directories `bench_child_env` names are created here (and
+    only here), so nothing exists under `run_dir` until the host gate has passed.
+    """
     _reject_tmpfs(run_dir)
     if run_dir.exists() or run_dir.is_symlink():
         try:
@@ -1063,6 +1181,10 @@ def prepare_run_state(
     if leftovers:
         msg = f"bench run directory '{run_dir}' is not empty before timing: {leftovers}"
         raise BenchError(msg)
+    home = run_dir / "home"
+    home.mkdir()
+    os.chmod(home, 0o700)
+    (run_dir / "tmp").mkdir()
 
 
 # --------------------------------------------------------------------------- sample project
@@ -1312,15 +1434,23 @@ def _slipfork(
         str(layout / "runtime"),
         *args,
     ]
-    result = subprocess.run(
-        argv,
-        cwd=project,
-        env=env,
-        check=False,
-        capture_output=True,
-        text=True,
-        input=stdin,
-    )
+    try:
+        result = subprocess.run(
+            argv,
+            cwd=project,
+            env=env,
+            check=False,
+            capture_output=True,
+            text=True,
+            input=stdin,
+            timeout=CLI_TIMEOUT_S,
+        )
+    except subprocess.TimeoutExpired as error:
+        msg = (
+            f"`slipfork {' '.join(args)}` did not finish within {CLI_TIMEOUT_S:.0f}s; "
+            f"the world engine is wedged"
+        )
+        raise BenchError(msg) from error
     if result.returncode != 0:
         diagnostic = (result.stderr or result.stdout).strip()
         msg = f"`slipfork {' '.join(args)}` failed with {result.returncode}:\n{diagnostic}"
@@ -1631,21 +1761,28 @@ def preflight() -> None:
         raise BenchError(msg) from error
 
 
-def measure_reflink_64k_us(layout: Path, env: dict[str, str], project: Path) -> int:
-    """Best of three real `slipfork doctor` 64 KiB `FICLONE` probes.
+def measure_up_ms(
+    layout: Path, env: dict[str, str], project: Path
+) -> tuple[float, dict]:
+    """Time one real `slipfork up` and return its parsed summary.
 
-    A single-shot probe is dominated by scheduler/page-cache noise on a loaded developer host;
-    the best sample still reflects the kernel's real reflink cost (a copy fallback or a
-    non-reflink filesystem raises all three samples), so the committed 4x bound stays meaningful.
+    The first `up` on a fresh state directory is the only CLI operation that seals the seeded
+    world into its read-only base snapshot (`BtrfsEngine::create_snapshot` + `freeze_world`); the
+    CLI exposes no isolated seal command, so the reported window is the whole `up`. A later `up`
+    from the already-sealed base clones it writably and boots its services.
     """
-    samples = []
-    for _ in range(3):
-        doctor = _slipfork_json(layout, env, project, "doctor")
-        if doctor.get("ok") is not True:
-            msg = f"`slipfork doctor` did not report host readiness: {doctor}"
-            raise BenchError(msg)
-        samples.append(int(doctor["reflink_64k_micros"]))
-    return min(samples)
+    started = time.perf_counter()
+    summary = _slipfork_json(layout, env, project, "up")
+    return (time.perf_counter() - started) * 1000.0, summary
+
+
+def measure_fork_ms(
+    layout: Path, env: dict[str, str], project: Path, name: str
+) -> float:
+    """Time one `slipfork fork`: worktree plus a writable clone of the sealed base subvolume."""
+    started = time.perf_counter()
+    _fork(layout, env, project, name)
+    return (time.perf_counter() - started) * 1000.0
 
 
 def measure_dag_plan_ms(
@@ -1678,9 +1815,15 @@ def measure_all(
     seed: int,
     run_dir: Path,
 ) -> BenchmarkMetrics:
+    # The host gate is the shipped `slipfork doctor --json` on the state directory this run
+    # measures. It runs before the pre-run wipe, before preflight, and before any measurement, so a
+    # host `doctor` rejects prints the report's fixes and no metric at all (`ADR-0010` §4). The
+    # gate's working directory is the repository root: `doctor` resolves nothing against it and the
+    # run's sample project is created only after the gate passes.
+    env = bench_child_env(run_dir, {"SLIPFORK_BENCH_CHROME": str(CHROME_BIN)})
+    require_btrfs(run_dir, env, REPO_ROOT)
     prepare_run_state(run_dir)
     preflight()
-    env = bench_child_env(run_dir, {"SLIPFORK_BENCH_CHROME": str(CHROME_BIN)})
     project = run_dir / "project"
     project.mkdir(parents=True)
     setup_sample_project(project, run_dir)
@@ -1689,10 +1832,6 @@ def measure_all(
     daemon: SlipforkDaemon | None = None
     try:
         daemon = SlipforkDaemon.start(run_dir, env)
-
-        # `doctor` measures the 64 KiB `FICLONE` latency on the run state directory. Run it on a
-        # quiet filesystem, before the PostgreSQL dump/restore pipeline dirties the page cache.
-        reflink_64k_us = measure_reflink_64k_us(run_dir, env, project)
 
         resolved = _slipfork_json(
             run_dir,
@@ -1723,9 +1862,10 @@ def measure_all(
             run_dir, env, project, "auth", "login", "-", stdin=f"{server.pairing_url}\n"
         )
 
-        t_up = time.perf_counter()
-        up_summary = _slipfork_json(run_dir, env, project, "up")
-        world_up_ms = (time.perf_counter() - t_up) * 1000.0
+        # The first `up` on a fresh state directory seals the seeded world's read-only base
+        # snapshot and boots; the CLI exposes no isolated seal command, so the measured window is
+        # this whole composite `up`.
+        first_up_ms, up_summary = measure_up_ms(run_dir, env, project)
         origin = _origin_of(up_summary)
         url_before_fragment, _, url_fragment = server.pairing_url.partition("#")
         if (
@@ -1752,9 +1892,12 @@ def measure_all(
         _run_test_on_host(env, project, origin, 0)
         _slipfork(run_dir, env, project, "down")
 
-        fork_started = time.perf_counter()
-        _fork(run_dir, env, project, "fork-probe")
-        fork_ms = (time.perf_counter() - fork_started) * 1000.0
+        # A second `up` from the already-sealed base clones it writably and boots its
+        # `postgres:18` + app services: the warm-SQL window.
+        world_up_ms, _ = measure_up_ms(run_dir, env, project)
+        _slipfork(run_dir, env, project, "down")
+
+        fork_ms = measure_fork_ms(run_dir, env, project, "fork-probe")
         try:
             exec_started = time.perf_counter()
             _exec(
@@ -1870,7 +2013,7 @@ def measure_all(
             raise BenchError(msg)
 
         return BenchmarkMetrics(
-            reflink_64k_us=reflink_64k_us,
+            first_up_ms=first_up_ms,
             pgdata_logical_mib=pg_mib,
             pgdata_files=pg_files,
             world_up_ms=world_up_ms,
@@ -1942,9 +2085,13 @@ def _teardown(
 def primitive_rows(metrics: BenchmarkMetrics) -> list[tuple[str, str, str]]:
     return [
         (
-            "Single-file 64 KiB XFS `ioctl(FICLONE)`",
-            f"{metrics.reflink_64k_us} us",
-            "Best of three `slipfork doctor` probes on the run state directory (0 bytes copied)",
+            "first `up` — seals the read-only base snapshot and boots (composite)",
+            f"{metrics.first_up_ms:.1f} ms",
+            (
+                "Window: the whole first `up` on a fresh state directory — `L0` rootfs "
+                "materialization, streamed seed restore, `freeze_world` seal, writable clone, "
+                "service boot (the CLI exposes no isolated seal command)"
+            ),
         ),
         (
             "Seeded PostgreSQL 18 cluster (`PGDATA`)",
@@ -1957,14 +2104,20 @@ def primitive_rows(metrics: BenchmarkMetrics) -> list[tuple[str, str, str]]:
             "Fresh cluster restored from the real `pg_dump -Fc` archive, then checkpointed",
         ),
         (
-            "`slipfork up` (world + `crun` PostgreSQL service)",
+            "`slipfork up` from the sealed base (writable clone + `crun` PostgreSQL service)",
             f"{metrics.world_up_ms:.1f} ms",
-            "`L0` rootfs + `postgres:18` boot, streamed seed-dump restore, `freeze_world` seal",
+            (
+                "Writable clone of the sealed base subvolume, then `postgres:18` + app readiness "
+                "(the warm-SQL window)"
+            ),
         ),
         (
-            "`slipfork fork` (CoW world clone)",
+            "`slipfork fork` (worktree + writable clone)",
             f"{metrics.worktree_fork_ms:.1f} ms",
-            "Worktree + `FICLONE` clone of the seeded world state directory",
+            (
+                "Worktree plus a writable clone of the sealed base subvolume "
+                "(`BtrfsEngine::clone_world`)"
+            ),
         ),
         (
             "`slipfork exec` (warm world, `sh -c true`)",
@@ -2060,15 +2213,17 @@ def render_report(
     return f"""# PoC Benchmark Report (`docs/research/m1-poc-benchmark.md`)
 
 - **Measured:** {report_date} (seed `{metrics.seed}`)
-- **Host:** Linux `{host_kernel}` (`{host_arch}`), XFS (`reflink=1`), PostgreSQL `18`
-- **Driver:** `slipfork` `up`/`fork`/`exec`/`drop` over the harness-owned `slipforkd`
+- **Host:** Linux `{host_kernel}` (`{host_arch}`), Btrfs (`slipfork doctor`: `filesystem: btrfs`,
+  `btrfs_super_magic: ok`), PostgreSQL `18`
+- **Driver:** `BtrfsEngine` over one Btrfs subvolume per world (`KernelBtrfsDriver`), driven by
+  `slipfork` `up`/`fork`/`exec`/`drop` over the harness-owned `slipforkd`
 - **Reproduce:** `make bench` (read-only: re-measures and fails on drift) or `make bench-update`
 - **Topology:** `0.2.0` read-only `Dockerfile`-derived `L0` rootfs plus a daemonless `crun`
   `postgres:18` container inside each world's private `netns` (`ADR-0009`). The seed is a real
   PostgreSQL 18 `pg_dump -Fc`, zstd-compressed and streamed over loopback `ospp-v1`; `slipforkd`
-  restores it once into `<project>-base` and every `fork` CoW-clones the restored `PGDATA`.
-  Chromium runs in the shared **host** browser pool and reaches each world's single `.localhost`
-  origin. The historical M1 figures previously in this file were measured on the pre-`ADR-0009`
+  restores it once into `<project>-base`, seals that subvolume read-only, and every `fork` clones
+  the sealed subvolume. Chromium runs in the shared **host** browser pool and reaches each world's
+  single `.localhost` origin. Earlier M1 figures in this file were measured on the pre-`ADR-0009`
   **host-shared-`/usr`** topology (host `postgres` + host Chromium over `/usr` + `/lib`) and are
   not comparable.
 
@@ -2091,8 +2246,12 @@ PostgreSQL 18 transaction inside the world's `postgres:18` container:
 
 ### What the numbers mean
 
-- CoW world cloning is nearly free (`{metrics.worktree_fork_ms:.1f} ms` for a
+- Btrfs subvolume cloning is nearly free (`{metrics.worktree_fork_ms:.1f} ms` for a
   `{metrics.pgdata_logical_mib:.1f} MiB` seeded PostgreSQL 18 world).
+- The **first `up` — seals the read-only base snapshot and boots (composite)** row is not the bare
+  `BTRFS_IOC_SNAP_CREATE_V2` cost: the shipped CLI exposes no isolated seal command, so the row
+  times the whole first `up` (rootfs materialization, seed restore, `freeze_world` seal, clone,
+  service boot).
 - Cold worlds pay `L0` rootfs mount + `postgres:18` + app boot + host Chromium launch per test;
   the pre-warmed pool removes that startup cost and yields `{metrics.warm_speedup_factor:.2f}x`.
 - Real suites add frontend builds and multi-second fixtures, so the warm-pool gain grows well
@@ -2195,6 +2354,21 @@ def compare_to_baseline(metrics: BenchmarkMetrics, baseline: dict) -> list[str]:
     return drift
 
 
+def refresh_baseline(baseline: dict, metrics: BenchmarkMetrics) -> dict:
+    """Project the measured record onto the pinned baseline.
+
+    A metric the harness no longer measures is deleted, never kept as a stale pin: a regenerated
+    baseline can therefore never leave `--check` comparing against a metric that does not exist.
+    """
+    measured = asdict(metrics)
+    baseline["metrics"] = {
+        name: {**spec, "value": measured[name]}
+        for name, spec in baseline["metrics"].items()
+        if name in measured
+    }
+    return baseline
+
+
 def check_report(repo: Path, baseline: dict) -> list[str]:
     """Prove the baseline still describes the committed report; read-only by construction."""
     report = repo / REPORT_PATH.relative_to(REPO_ROOT)
@@ -2287,7 +2461,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         print("--workers must be positive", file=sys.stderr)
         return 2
     try:
-        metrics = measure_all(args.num_tests, args.workers, args.seed, args.run_dir)
+        # One absolute run directory: `slipfork doctor` rejects a relative `--state-dir`, and every
+        # later CLI call must receive exactly the state directory the gate probed.
+        run_dir = args.run_dir.expanduser().resolve()
+        metrics = measure_all(args.num_tests, args.workers, args.seed, run_dir)
         if args.html:
             print(render_html_projection(metrics))
         if args.json:
@@ -2302,12 +2479,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             REPORT_PATH.parent.mkdir(parents=True, exist_ok=True)
             REPORT_PATH.write_text(rendered, encoding="utf-8")
-            baseline = json.loads(BASELINE_PATH.read_text(encoding="utf-8"))
+            baseline = refresh_baseline(
+                json.loads(BASELINE_PATH.read_text(encoding="utf-8")), metrics
+            )
             baseline["source_report_sha256"] = _sha256(REPORT_PATH)
             baseline["measured"] = report_date
-            for name, entry in baseline["metrics"].items():
-                if hasattr(metrics, name):
-                    entry["value"] = getattr(metrics, name)
             BASELINE_PATH.write_text(
                 json.dumps(baseline, indent=2, sort_keys=True) + "\n", encoding="utf-8"
             )
