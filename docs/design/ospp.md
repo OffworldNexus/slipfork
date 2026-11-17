@@ -59,8 +59,8 @@ sequenceDiagram
   C->>S: pair_hello { version: 1, key_methods: ["p256"] }
   S->>C: pair_challenge { method: "p256", altcha, challenge }
   C->>S: pair_begin { altcha, hostname, response }
-  S->>C: pair_handle { url: ".../pair#handle=<hex>" }
-  C->>B: open url
+  S->>C: pair_handle { url, handle }
+  C->>B: open url + "#handle=" + handle
   B->>S: POST lookup / accept { handle }
   S->>C: pair_approved { account, machine }
 ```
@@ -92,10 +92,14 @@ The client solves the proof-of-work and sends `pair_begin`, where `signature` si
 }
 ```
 
-If valid, the server replies with a browser approval URL:
+If valid, the server supplies the full browser pairing URL (without `#`, since the UI origin or path may differ from the WebSocket host) alongside `handle`, and the client appends `#handle=<handle>` rather than computing the URL from the hostname:
 
 ```json
-{ "type": "pair_handle", "url": "https://ci.example.com/pair#handle=<32-byte hex>" }
+{
+  "type": "pair_handle",
+  "url": "https://ci.example.com/pair",
+  "handle": "<32-byte hex>"
+}
 ```
 
 - **Fragment-only capability:** The single-use 32-byte hex `handle` appears strictly in the URL `#fragment`, never in the path or query string, so HTTP access logs and `Referer` headers never record it; the browser page strips the fragment from the address bar immediately on load and submits the handle in authenticated JSON `POST` bodies (`lookup`, `accept`, `reject`).

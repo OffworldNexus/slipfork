@@ -39,3 +39,7 @@ architect revision: 140 lines, uniform claims (vars+secrets), encryption_methods
 ## 2026-11-18T00:00 [lead]
 
 architect revision: 195 lines, 4 sequenceDiagrams, JSON-level encryption safety rationale + Device Pairing section. Verified plan OK, guard 572, zensical strict; content untouched.
+
+## 2026-11-18T00:02 [lead]
+
+architect tweak: pair_handle { url, handle } (server-supplied URL + handle). Verified plan OK, guard 572, zensical strict.
