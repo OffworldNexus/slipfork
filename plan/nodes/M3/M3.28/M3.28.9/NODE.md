@@ -35,7 +35,7 @@ Facts 4 (`ps` typed at the host shell), 7 (no `ps` in the app rootfs) and 9 (the
 
 # Design / Invariants
 
-1. `ps` renders one row per component and `crun` backing service: kind, id, state, pid, port, uptime, plus a header line with the world's lineage digests (`rootfs`, `base` key, `seed`). `--world` selects like every other command. `--json`: `{"lineage": {"rootfs","base","seed"}, "services": [{"world","id","kind","state","pid","port","uptime_secs"}]}`, stdout only, `null` preserved for unknown facts.
+1. `ps` renders one row per component and `crun` backing service: kind, id, state, pid, port, uptime, plus a header line with the world's `state` and lineage digests (`rootfs`, `base` key, `seed`) — all from the **single** `WorldProcessReport` (`M3.28.3`), never a second `status` call. `--world` selects like every other command. `--json`: `{"state", "lineage": {"rootfs","base","seed"}, "services": [{"world","id","kind","state","pid","port","uptime_secs"}]}`, stdout only, every key always present, `null` preserved for unknown facts.
 2. Zero `/proc`, `/sys`, or log-directory reads in the CLI — every field comes from the daemon. A `None` pid/port renders `-`, never `0`.
 3. `open` resolves the world, takes its typed origin, and hands it to the single `BrowserOpener` (`crates/slipfork/src/browser.rs`); headless (no browser capability) fails closed naming `slipfork open --remote`.
 4. `open --remote` prints the verified recipe from the daemon's real ingress port — `127.0.0.1:<ingress.port>`, never a literal `80` — with the documented constant local port `8080`: `ssh -N -L 8080:127.0.0.1:<ingress.port> <account>@<this-host>` then `http://<route>.localhost:8080`. `--json`: `{"world","origin","recipe":{"ssh","url"}}`. No `--local-port` flag.

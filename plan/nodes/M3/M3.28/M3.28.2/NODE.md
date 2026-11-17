@@ -2,7 +2,7 @@
 id: M3.28.2
 title: "Critic pass (dx + ai-ergonomics) on the 0.1.0 UX DX spec, applied in place"
 kind: task
-status: ready
+status: done
 owner: "doc-writer"
 priority: 2
 depends_on: [M3.28.1]
@@ -10,11 +10,14 @@ paths:
   - "docs/design/dx-0.1.0-ux.md"
   - "docs/design/dx-0.1.0-ux.review-dx.md"
   - "docs/design/dx-0.1.0-ux.review-ai-ergonomics.md"
-attempts: 0
-max_attempts: 3
+  - "docs/design/target-dx.md"
+  - ARCHITECTURE.md
+  - "docs/decisions/ADR-0011-*.md"
+attempts: 4
+max_attempts: 4
 escalation: none
 created: "2026-11-17T16:32"
-updated: "2026-11-17T16:32"
+updated: "2026-11-17T18:52"
 ---
 
 # Goal

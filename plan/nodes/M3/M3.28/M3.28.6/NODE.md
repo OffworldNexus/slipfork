@@ -47,7 +47,9 @@ Fact 1: the daemon auto-spawns `--listen 127.0.0.1:0`, so `http://demo.localhost
 5. `daemon unit --bin-dir` is repeatable (default: this executable's dir); the AppArmor profile names every dir in one leading-slash brace expression and stays exactly four lines.
 6. `doctor` gains an ingress line through a new `IngressProbe` capability (subprocess adapter over `systemctl is-active`/`show -p Listen`, wired only in `main.rs`, recording double in tests): `:80 active (port-less origins)` / `not installed (ephemeral port; run `slipfork daemon install`)` / `installed but inactive (run `sudo systemctl start slipforkd.socket`)`. `--json` carries the typed fields; `doctor` still exits correctly with no daemon and no unit.
 7. All effects live in `crates/slipfork/src/daemon_unit_install.rs` behind a `UnitInstaller` trait (`write_file`, `read_file`, `run`) with `OsUnitInstaller` built in `main.rs`; no `std::fs`/`Command` in dispatch arms, no `unsafe`, no new dependency.
-8. `docs/reference/cli.md` documents `daemon install` and `daemon unit --bin-dir`; the old three-step `| sudo tee` recipe is deleted in the same edit.
+8. **One runtime dir, no client override** (`M3.28.1` R4): `--runtime-dir` is a `slipforkd`-only flag and the install writes units pinned to `<state_dir>/run`; delete it from the CLI's global options so a client can never point at a different `daemon.sock` than the installed unit. `--state-dir` stays global because both sides derive from it.
+9. **Only `up`/`fork` may auto-spawn** (`M3.28.1` R5); the auto-spawn passes `--listen 127.0.0.1:0 --state-dir <state_dir> --runtime-dir <state_dir>/run`, so the spawned daemon and the installed unit agree on the socket path.
+10. `docs/reference/cli.md` documents `daemon install` and `daemon unit --bin-dir`; the old three-step `| sudo tee` recipe is deleted in the same edit.
 
 # Acceptance
 

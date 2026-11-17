@@ -1031,3 +1031,16 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-17T18:22 [M3.28.15] (lead) added docs/decisions/ADR-0005-*.md to paths: the accepted ADR still describes WorldOrigin::{Local,Shared}/slipfork share/TunnelRegistrar in the present tense an
 - 2026-11-17T18:30 [M3.28.1] (lead) status review -> done
 - 2026-11-17T18:30 [M3.28.1] (lead) pre-commit gates green: plan.py validate, guard.py, critical_guard.py (no protected test touched), make check rc=0 (incl. docs-check + check_docs_honesty)
+- 2026-11-17T18:30 [M3.28.2] (lead) status ready -> active
+- 2026-11-17T18:30 [M3.28.2] (lead) attempt 1/3 started
+- 2026-11-17T18:30 [M3.28.2] (lead) base eb15d1f5804770fb515c6b9a6f823692cf5bc730
+- 2026-11-17T18:35 [M3.28.2] (lead) attempt 2/3 started
+- 2026-11-17T18:35 [M3.28.2] (lead) edited fields
+- 2026-11-17T18:38 [M3.28.2] (lead) status active -> review
+- 2026-11-17T18:40 [M3.28.2] (lead) round 3 rulings (from quad gate): R1 open failure doc with per-code extras; R2 per-verb --json documents, no shared projection, no compat framing; R3 WorldProce
+- 2026-11-17T18:44 [M3.28.2] (lead) attempt 3/3 started
+- 2026-11-17T18:44 [M3.28.2] (lead) edited fields
+- 2026-11-17T18:47 [M3.28.2] (lead) edited fields
+- 2026-11-17T18:47 [M3.28.2] (lead) attempt 4/4 started
+- 2026-11-17T18:52 [M3.28.2] (lead) status review -> done
+- 2026-11-17T18:52 [M3.28.2] (lead) pre-commit gates green after attempt 4 (S1-S7): plan.py validate, guard.py, critical_guard.py (no protected test), make check rc=0
