@@ -11,7 +11,9 @@
 //!   `VcsError::UnsupportedTopology`.
 //! - `VcsWorkspaceFactory` / `VcsWorkspace`: create and tear down `.worktrees/<fork>` checkouts that
 //!   expose `WorkspaceRefs` (`refs/heads/<fork>` plus the synthesized `refs/slipfork/<fork>/wip`
-//!   snapshot) and `WorkspaceChanges`. Two adapters implement the identical contract:
+//!   snapshot), report their `WorkspaceChanges`, and answer `current_branch` for zero-argument
+//!   `slipfork fork` (whose branch name is turned into a fork name by [`sanitize_fork_name`]). Two
+//!   adapters implement the identical contract:
 //!   `GitWorktreeAdapter` (linked Git worktree plus a scratch-index snapshot) and
 //!   `JjWorkspaceAdapter` (Jujutsu workspace projecting `@-` / `@` into the colocated Git store).
 //!   Fork repositories must keep `.worktrees/` and `.slipfork/` out of version control: Jujutsu
@@ -41,7 +43,7 @@ pub use jj::JjWorkspaceAdapter;
 pub use ports::{
     MAX_WORKSPACE_CHANGES, NoProjectOverride, ProjectSlugOverride, RepoRoot, RepoRootResolver,
     VcsError, VcsWorkspace, VcsWorkspaceFactory, WORKTREES_DIRECTORY, WorkspaceChanges,
-    WorkspaceRefs, WorkspaceRequest,
+    WorkspaceRefs, WorkspaceRequest, sanitize_fork_name,
 };
 pub use remote_helper::{MAX_FRAME_BYTES, RemoteHelperError};
 pub use repo_root::GitRepoRootResolver;

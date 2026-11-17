@@ -1,8 +1,11 @@
 //! Domain ports: `ProjectSlugOverride`, `RepoRootResolver`, `VcsWorkspaceFactory`, `VcsWorkspace`,
-//! and their `RepoRoot` / `WorkspaceRequest` / `WorkspaceRefs` / `WorkspaceChanges` value types.
+//! and their `RepoRoot` / `WorkspaceRequest` / `WorkspaceRefs` / `WorkspaceChanges` value types,
+//! plus the single branch-to-fork-name rule ([`sanitize_fork_name`]).
 //!
 //! Zero subprocess spawning, zero environment reads, zero clock reads: adapters own all ambient
-//! access, and no backend-kind discriminator exists outside `slipforkd`'s factory.
+//! access, and no backend-kind discriminator exists outside `slipforkd`'s factory. The factory is
+//! therefore also where "which branch is this checkout on" is asked, so zero-argument
+//! `slipfork fork` never needs a second VCS path.
 
 use std::path::{Path, PathBuf};
 
@@ -25,7 +28,9 @@ pub const MAX_WORKSPACE_CHANGES: usize = 500;
 /// Errors produced by VCS ports and their Git / Jujutsu adapters.
 ///
 /// Every variant is fail-closed and actionable: there is no "not a repository, falling back to the
-/// current directory" arm, and no adapter swallows a Git diagnostic.
+/// current directory" arm, and no adapter swallows a Git diagnostic. A non-zero tool exit is one
+/// line — the failing subcommand plus the tool's last stderr line (`docs/design/dx-0.1.0-ux.md`
+/// §7.4) — never a raw multi-line advice dump.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum VcsError {
     #[error(
@@ -58,7 +63,7 @@ pub enum VcsError {
     ToolMissing { tool: String, hint: String },
     #[error("failed to spawn `{command}`: {message}")]
     CommandSpawn { command: String, message: String },
-    #[error("`{command}` failed ({status}): {stderr}")]
+    #[error("{command} failed (exit {status}): {stderr}")]
     CommandFailed {
         command: String,
         status: String,
@@ -124,6 +129,49 @@ pub fn fork_branch_ref(fork: &str) -> String {
 /// Canonical dirty-view refname (`refs/slipfork/<fork>/wip`).
 pub fn fork_snapshot_ref(fork: &str) -> String {
     format!("refs/slipfork/{fork}/wip")
+}
+
+/// Turn a branch name into the one fork name Slipfork derives from it.
+///
+/// Sanitisation owns exactly two things (`docs/design/dx-0.1.0-ux.md` §7.1): mapping a branch string
+/// (`/` -> `-`, ASCII lowercase, repeated `-` collapsed, edge `-` stripped) and rejecting a branch
+/// that leaves nothing behind. The label grammar itself — the `[a-z0-9-]` alphabet, the 63-byte
+/// limit, and the no-edge-`-` rule — is [`slipfork_world::is_valid_dns_label`]'s, so there is one
+/// charset table in the workspace; a branch that cannot be a label (for example one longer than 63
+/// bytes) yields `None` rather than being truncated into a *different* fork. Reserved `test-*`
+/// names, the project name, and `domains[].id` collisions stay
+/// [`slipfork_world::validate_fork_name`]'s job in `slipforkd`, which reports them as collisions
+/// instead of as a missing branch.
+pub fn sanitize_fork_name(branch: &str) -> Option<String> {
+    let mut candidate = String::with_capacity(branch.len());
+    for byte in branch.bytes() {
+        let mapped = char::from(if byte == b'/' {
+            b'-'
+        } else {
+            byte.to_ascii_lowercase()
+        });
+        if !is_label_byte(mapped) {
+            continue;
+        }
+        if mapped == '-' && (candidate.is_empty() || candidate.ends_with('-')) {
+            continue;
+        }
+        candidate.push(mapped);
+    }
+    while candidate.ends_with('-') {
+        candidate.pop();
+    }
+    slipfork_world::is_valid_dns_label(&candidate).then_some(candidate)
+}
+
+/// `true` when `byte` belongs to the label alphabet, asked of the alphabet's owner.
+///
+/// A label of the form `a<byte>a` satisfies the grammar exactly when `byte` is a lowercase letter, a
+/// digit, or `-`; uppercase, `.`, `_`, and non-ASCII bytes all break it. Asking
+/// [`slipfork_world::is_valid_dns_label`] this way keeps the charset in one crate instead of
+/// restating it here.
+fn is_label_byte(byte: char) -> bool {
+    slipfork_world::is_valid_dns_label(&format!("a{byte}a"))
 }
 
 /// The dirty view of one workspace relative to its fork branch.
@@ -194,4 +242,76 @@ pub trait VcsWorkspaceFactory: Send + Sync {
         &self,
         request: &WorkspaceRequest,
     ) -> Result<Box<dyn VcsWorkspace>, VcsError>;
+
+    /// The branch `repo` is on, for zero-argument `slipfork fork`.
+    ///
+    /// Taking the resolved [`RepoRoot`] makes the contract structural rather than prose: the backend
+    /// is chosen from `repo.vcs_root` (the same field [`VcsWorkspaceFactory::create_workspace`] routes
+    /// on) and the probe runs in `repo.worktree_root`, so the process working directory and a
+    /// subdirectory of the repository are both unrepresentable here. The caller sanitises the answer
+    /// through [`sanitize_fork_name`].
+    ///
+    /// `Some(branch)` is a Git branch checkout or a Jujutsu working copy carrying exactly one local
+    /// bookmark; `None` is a detached `HEAD` or a bookmark-less Jujutsu working copy, which the caller
+    /// must render as a fail-closed `slipfork fork <name>` request — never as a generated name.
+    fn current_branch(&self, repo: &RepoRoot) -> Result<Option<String>, VcsError>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sanitisation_maps_a_branch_name_to_one_dns_label() {
+        for (branch, expected) in [
+            ("main", Some("main")),
+            ("feat/ux-pass", Some("feat-ux-pass")),
+            ("FEAT/UX-PASS", Some("feat-ux-pass")),
+            ("feat//ux---pass", Some("feat-ux-pass")),
+            ("-feat-ux-", Some("feat-ux")),
+            ("fix/hot_fix", Some("fix-hotfix")),
+            ("release/1.2", Some("release-12")),
+        ] {
+            assert_eq!(
+                sanitize_fork_name(branch).as_deref(),
+                expected,
+                "branch {branch:?} sanitises to {expected:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn sanitisation_rejects_a_branch_that_leaves_no_label() {
+        for branch in ["", "/", "///", "---", "!!!", ".."] {
+            assert_eq!(
+                sanitize_fork_name(branch),
+                None,
+                "branch {branch:?} cannot name a fork; the caller fails closed"
+            );
+        }
+    }
+
+    #[test]
+    fn sanitisation_leaves_the_label_grammar_to_slipfork_world() {
+        // 63 bytes is a label; 64 is not. Sanitisation never truncates into a different fork, and it
+        // never restates the length rule — `slipfork_world::is_valid_dns_label` decides.
+        let longest = "a".repeat(63);
+        assert_eq!(
+            sanitize_fork_name(&longest).as_deref(),
+            Some(longest.as_str())
+        );
+        assert_eq!(
+            sanitize_fork_name(&"a".repeat(64)),
+            None,
+            "an over-long branch is rejected by the label grammar, not silently shortened"
+        );
+
+        // Reserved names are shaped like labels, so sanitisation keeps them: reporting the collision
+        // is `validate_fork_name`'s job in `slipforkd`, never a silent rename.
+        assert_eq!(
+            sanitize_fork_name("test-7").as_deref(),
+            Some("test-7"),
+            "the reserved test-* prefix is a collision, not a sanitisation failure"
+        );
+    }
 }

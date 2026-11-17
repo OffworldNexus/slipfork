@@ -63,3 +63,7 @@ status review -> done
 ## 2026-11-17T19:39 [lead]
 
 quad gate round 3 closed all 8 findings (types moved to slipfork-engine/src/lineage.rs, shutdown removed, dead accessors removed, ARCHITECTURE 3.4 String wire, dx trimmed, IngressPortInvalid kind, shape assertions). Pre-commit: make check rc=0 on retry (first run hit a world-init straggler flake = M3.27's bug class), guard OK, plan OK.
+
+## 2026-11-17T19:39 [lead]
+
+gate note: critical_guard --node M3.28.3 reported 2 violations, both crates/slipfork-vcs/tests/{critical_vcs,critical_conformance_matrix}.rs — M3.28.5's uncommitted protected edits in the shared worktree, authorized under its own node. The M3.28.3 commit stages only its own paths, so the gate is clean for this node's diff and is re-run at the epic gate once M3.28.5 is committed.

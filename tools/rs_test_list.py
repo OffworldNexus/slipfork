@@ -15,8 +15,9 @@ mechanical guard for that hand-maintained list and is consumed by the `rs-test-l
 - each `<member>/tests/*.rs` and `<member>/tests/<name>/main.rs` maps to
   `<package.name>:<test-name>`, keeping two crates that own the same test name distinct;
 - `[package] autotests = false` means Cargo only builds the member's `[[test]]` declarations, so
-  a `#[path = "..."]` module pulled into a declared target (e.g. `slipfork-vcs`'s
-  `critical_conformance_matrix.rs`, declared by `[[test]] path = "tests/critical_vcs.rs"`) is
+  each declared `[[test]]` is its own target and must be listed (e.g. `slipfork-vcs` declares
+  `[[test]] name = "critical_vcs"` and `[[test]] name = "critical_conformance_matrix"`, and
+  `make rs-test` lists both), while a `#[path = "..."]` module pulled into a declared target is
   never listed as a separate target. Under `autotests = true` Cargo autodiscovers every
   `tests/*.rs` regardless of `#[path]`, so such a file is listed as its own target;
 - in an `autotests = false` member every `tests/*.rs` must be either a declared `[[test]]` path or

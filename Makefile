@@ -94,6 +94,7 @@ rs-test: rs-test-list | $(TMPDIR) ## Run all Rust unit, integration, critical, a
 	cargo test -p slipfork-ospp --test critical_ospp
 	cargo test -p slipfork-snow --test critical_snow
 	cargo test -p slipfork-vcs --test critical_vcs
+	cargo test -p slipfork-vcs --test critical_conformance_matrix
 	cargo test -p slipfork-world --test critical_world
 	cargo test -p slipfork-engine --test critical_rootfs_live -- --test-threads=1
 	cargo test -p slipfork-engine --test critical_engine -- --test-threads=1

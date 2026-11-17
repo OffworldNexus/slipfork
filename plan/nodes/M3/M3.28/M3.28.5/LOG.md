@@ -71,3 +71,11 @@ attempt 4/4 started
 ## 2026-11-17T19:12 [lead]
 
 edited fields
+
+## 2026-11-17T19:39 [lead]
+
+status active -> done
+
+## 2026-11-17T19:39 [lead]
+
+attempt 4: jj installed on host (0.36.0) so the Jujutsu family really executes and it exposed two real adapter bugs (jj log --revision->-r, jj diff -T status_char->status); &RepoRoot restored; one backend() ladder; alphabet delegated to slipfork_world::is_valid_dns_label. critical_guard for this node is clean except crates/slipfork-edge/tests/critical_edge.rs, which was already committed under M3.28.3 (dc9bd20) — the guard compares the *unstaged* working tree against base, so a committed sibling change still shows up; re-run at the epic gate on a clean tree.

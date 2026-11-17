@@ -22,7 +22,7 @@ use crate::ports::{
     MAX_WORKSPACE_CHANGES, RepoRoot, VcsError, VcsWorkspace, VcsWorkspaceFactory,
     WORKTREES_DIRECTORY, WorkspaceChanges, WorkspaceRequest, fork_branch_ref, fork_snapshot_ref,
 };
-use crate::tool_command::{ToolOutput, run_git_checked};
+use crate::tool_command::{ToolOutput, run_git, run_git_checked, run_git_with_pinned_identity};
 
 /// Repository-relative Slipfork state directory (never `/tmp`: it sits beside the checkout).
 const STATE_DIRECTORY: &str = ".slipfork";
@@ -86,6 +86,35 @@ impl VcsWorkspaceFactory for GitWorktreeAdapter {
             fork: fork.to_owned(),
         }))
     }
+
+    fn current_branch(&self, repo: &RepoRoot) -> Result<Option<String>, VcsError> {
+        // The requesting checkout's own `HEAD`, so a linked `.worktrees/<fork>` reports its branch.
+        let out = run_git(
+            &repo.worktree_root,
+            &[
+                OsStr::new("symbolic-ref"),
+                OsStr::new("--short"),
+                OsStr::new("--quiet"),
+                OsStr::new("HEAD"),
+            ],
+            None,
+        )?;
+        match out.code {
+            // A branch checkout: `HEAD` is a symref to `refs/heads/<branch>`.
+            Some(0) => {
+                let branch = out.stdout_trimmed()?;
+                if branch.is_empty() {
+                    return Err(out.unexpected("symbolic-ref returned an empty branch name"));
+                }
+                Ok(Some(branch.to_owned()))
+            }
+            // `symbolic-ref --quiet HEAD` exits 1 exactly when `HEAD` is not a symbolic ref, i.e. a
+            // detached `HEAD`, and prints nothing. Any other exit 1 — a diagnostic on stderr — is a
+            // real failure and must never be read as "detached".
+            Some(1) if out.stderr.trim().is_empty() => Ok(None),
+            _ => Err(out.failure()),
+        }
+    }
 }
 
 /// One materialized `.worktrees/<fork>` checkout.
@@ -139,8 +168,11 @@ fn resolve_base(worktree_root: &Path, base: Option<&str>) -> Result<String, VcsE
 
 /// Build the dirty view of `repo.worktree_root` against `base` in a scratch index.
 ///
-/// Returns the base commit itself when the staged tree equals the base tree, so a clean fork's
-/// `refs/slipfork/<fork>/wip` is byte-identical to `refs/heads/<fork>`.
+/// The snapshot commit is authored by Slipfork: `-c user.name=slipfork -c user.email=slipfork@localhost`
+/// are passed as Git global options before `commit-tree`, so a host without a configured
+/// `user.email` never blocks a fork and the developer's Git config is never read, written, or
+/// required. Returns the base commit itself when the staged tree equals the base tree, so a clean
+/// fork's `refs/slipfork/<fork>/wip` is byte-identical to `refs/heads/<fork>`.
 fn synthesize_snapshot(repo: &RepoRoot, fork: &str, base: &str) -> Result<Snapshot, VcsError> {
     let scratch_directory = repo
         .vcs_root
@@ -179,7 +211,7 @@ fn synthesize_snapshot(repo: &RepoRoot, fork: &str, base: &str) -> Result<Snapsh
         });
     }
 
-    let commit = run_git_checked(
+    let commit = run_git_with_pinned_identity(
         worktree,
         &[
             OsStr::new("commit-tree"),
@@ -191,6 +223,7 @@ fn synthesize_snapshot(repo: &RepoRoot, fork: &str, base: &str) -> Result<Snapsh
         ],
         None,
     )?
+    .ensure_success()?
     .stdout_trimmed()?
     .to_owned();
     Ok(Snapshot { commit })

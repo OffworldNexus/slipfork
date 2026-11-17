@@ -2,7 +2,7 @@
 id: M3.28.5
 title: "VCS: branch-named fork source, pinned slipfork snapshot identity, and one-line git errors"
 kind: task
-status: active
+status: done
 owner: implementer
 priority: 3
 depends_on: [M3.28.2]
@@ -18,7 +18,7 @@ attempts: 4
 max_attempts: 4
 escalation: none
 created: "2026-11-17T16:32"
-updated: "2026-11-17T19:12"
+updated: "2026-11-17T19:39"
 ---
 
 # Goal

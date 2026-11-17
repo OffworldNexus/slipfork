@@ -1076,3 +1076,6 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-17T19:12 [M3.28.5] (lead) edited fields
 - 2026-11-17T19:39 [M3.28.3] (lead) status review -> done
 - 2026-11-17T19:39 [M3.28.3] (lead) quad gate round 3 closed all 8 findings (types moved to slipfork-engine/src/lineage.rs, shutdown removed, dead accessors removed, ARCHITECTURE 3.4 String wire, 
+- 2026-11-17T19:39 [M3.28.3] (lead) gate note: critical_guard --node M3.28.3 reported 2 violations, both crates/slipfork-vcs/tests/{critical_vcs,critical_conformance_matrix}.rs — M3.28.5's uncommi
+- 2026-11-17T19:39 [M3.28.5] (lead) status active -> done
+- 2026-11-17T19:39 [M3.28.5] (lead) attempt 4: jj installed on host (0.36.0) so the Jujutsu family really executes and it exposed two real adapter bugs (jj log --revision->-r, jj diff -T status_ch

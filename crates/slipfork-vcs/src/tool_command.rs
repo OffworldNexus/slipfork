@@ -5,6 +5,11 @@
 //! `GIT_OBJECT_DIRECTORY` / `GIT_ALTERNATE_OBJECT_DIRECTORIES` environment, so an ambient Git
 //! environment can never hijack repository discovery, index selection, or the Git store Jujutsu
 //! projects its fork refs into.
+//!
+//! The author of every Slipfork-authored snapshot commit is pinned here, as tool *global* options
+//! before the subcommand (`git -c …`, `jj --config …`), so a host without a `user.name` /
+//! `user.email` never blocks a fork and the developer's own configuration is never read, written,
+//! or required (`docs/design/dx-0.1.0-ux.md` §7.3).
 
 use std::ffi::OsStr;
 use std::io;
@@ -22,6 +27,11 @@ const SCRUBBED_ENV: [&str; 6] = [
     "GIT_OBJECT_DIRECTORY",
     "GIT_ALTERNATE_OBJECT_DIRECTORIES",
 ];
+
+/// Author name every Slipfork-authored snapshot commit carries.
+const SNAPSHOT_AUTHOR_NAME: &str = "slipfork";
+/// Author email every Slipfork-authored snapshot commit carries.
+const SNAPSHOT_AUTHOR_EMAIL: &str = "slipfork@localhost";
 
 /// One external version-control tool driven by the adapters.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -54,7 +64,10 @@ impl Tool {
 
 /// Captured outcome of one tool invocation.
 pub(crate) struct ToolOutput {
+    /// Full `<tool> <args…> (in <cwd>)` label, carried by spawn and unexpected-output diagnostics.
     pub(crate) command: String,
+    /// `<tool> <subcommand>` label carried by [`VcsError::CommandFailed`].
+    pub(crate) subcommand: String,
     pub(crate) success: bool,
     pub(crate) code: Option<i32>,
     pub(crate) stdout: Vec<u8>,
@@ -83,15 +96,19 @@ impl ToolOutput {
         }
     }
 
-    /// Turn a non-zero exit into [`VcsError::CommandFailed`], surfacing the tool's own diagnostic.
+    /// Turn a non-zero exit into one line: the failing subcommand plus the tool's last stderr line.
+    ///
+    /// `git` prints multi-line advice blocks after a fatal error; the owner-facing contract is a
+    /// single `slipfork:` line, so only the final non-blank stderr line is kept
+    /// (`docs/design/dx-0.1.0-ux.md` §7.4).
     pub(crate) fn failure(self) -> VcsError {
         VcsError::CommandFailed {
             status: self.code.map_or_else(
                 || "terminated by signal".to_owned(),
                 |code| code.to_string(),
             ),
-            command: self.command,
-            stderr: self.stderr.trim().to_owned(),
+            command: self.subcommand,
+            stderr: last_stderr_line(&self.stderr),
         }
     }
 
@@ -107,10 +124,13 @@ impl ToolOutput {
 
 /// Spawn `tool` in `cwd` and capture its output without interpreting the exit status.
 ///
-/// `env` carries the few variables an adapter legitimately adds (Git's scratch `GIT_INDEX_FILE`).
+/// `globals` are tool *global* options, placed before the subcommand (`git -c key=value …`,
+/// `jj --config key=value …`); `env` carries the few variables an adapter legitimately adds (Git's
+/// scratch `GIT_INDEX_FILE`).
 fn run(
     tool: Tool,
     cwd: &Path,
+    globals: &[String],
     args: &[&OsStr],
     env: &[(&str, &OsStr)],
 ) -> Result<ToolOutput, VcsError> {
@@ -132,6 +152,7 @@ fn run(
             cmd.current_dir(cwd);
         }
     }
+    cmd.args(globals);
     cmd.env("LC_ALL", "C").env("LANGUAGE", "C").args(args);
     for key in SCRUBBED_ENV {
         cmd.env_remove(key);
@@ -144,6 +165,7 @@ fn run(
         .map_err(|err| spawn_error(tool, command.clone(), err))?;
     Ok(ToolOutput {
         command,
+        subcommand: subcommand_label(tool, args),
         success: output.status.success(),
         code: output.status.code(),
         stdout: output.stdout,
@@ -160,15 +182,7 @@ pub(crate) fn run_git(
     args: &[&OsStr],
     index_file: Option<&Path>,
 ) -> Result<ToolOutput, VcsError> {
-    match index_file {
-        Some(index) => run(
-            Tool::Git,
-            cwd,
-            args,
-            &[("GIT_INDEX_FILE", index.as_os_str())],
-        ),
-        None => run(Tool::Git, cwd, args, &[]),
-    }
+    run_git_with(cwd, &[], args, index_file)
 }
 
 /// Spawn Git and fail closed on any non-zero exit.
@@ -180,14 +194,82 @@ pub(crate) fn run_git_checked(
     run_git(cwd, args, index_file)?.ensure_success()
 }
 
-/// Spawn `jj` in `cwd` without interpreting the exit status.
-pub(crate) fn run_jj(cwd: &Path, args: &[&OsStr]) -> Result<ToolOutput, VcsError> {
-    run(Tool::Jj, cwd, args, &[])
+/// Spawn Git with Slipfork's pinned snapshot author as global `-c` options before the subcommand.
+///
+/// Only the snapshot commit uses this: every other Git call is a read, a checkout, or a ref update
+/// that must neither depend on nor override the developer's `user.name` / `user.email`.
+pub(crate) fn run_git_with_pinned_identity(
+    cwd: &Path,
+    args: &[&OsStr],
+    index_file: Option<&Path>,
+) -> Result<ToolOutput, VcsError> {
+    run_git_with(cwd, &identity_globals(Tool::Git), args, index_file)
 }
 
-/// Spawn `jj` and fail closed on any non-zero exit.
+/// Combined [`run_git`] body: one place owns the scratch-index environment.
+fn run_git_with(
+    cwd: &Path,
+    globals: &[String],
+    args: &[&OsStr],
+    index_file: Option<&Path>,
+) -> Result<ToolOutput, VcsError> {
+    match index_file {
+        Some(index) => run(
+            Tool::Git,
+            cwd,
+            globals,
+            args,
+            &[("GIT_INDEX_FILE", index.as_os_str())],
+        ),
+        None => run(Tool::Git, cwd, globals, args, &[]),
+    }
+}
+
+/// Spawn `jj` with Slipfork's pinned identity and fail closed on any non-zero exit.
+///
+/// Every Jujutsu command snapshots the working copy it runs in, so the author is pinned for all of
+/// them; `jj`'s equivalent of `git -c` is the `--config` global option.
 pub(crate) fn run_jj_checked(cwd: &Path, args: &[&OsStr]) -> Result<ToolOutput, VcsError> {
-    run_jj(cwd, args)?.ensure_success()
+    run(Tool::Jj, cwd, &identity_globals(Tool::Jj), args, &[])?.ensure_success()
+}
+
+/// Probe `jj` on `PATH`; a missing binary maps to [`VcsError::ToolMissing`].
+///
+/// The version probe carries no configuration overrides: it must answer "is `jj` installed?" even
+/// before any repository or identity is known.
+pub(crate) fn probe_jj(cwd: &Path) -> Result<(), VcsError> {
+    run(Tool::Jj, cwd, &[], &[OsStr::new("--version")], &[])?.ensure_success()?;
+    Ok(())
+}
+
+/// Identity global options for `tool`, single-sourced from the snapshot author constants.
+pub(crate) fn identity_globals(tool: Tool) -> [String; 4] {
+    match tool {
+        Tool::Git => [
+            "-c".to_owned(),
+            format!("user.name={SNAPSHOT_AUTHOR_NAME}"),
+            "-c".to_owned(),
+            format!("user.email={SNAPSHOT_AUTHOR_EMAIL}"),
+        ],
+        Tool::Jj => [
+            "--config".to_owned(),
+            format!("user.name={SNAPSHOT_AUTHOR_NAME}"),
+            "--config".to_owned(),
+            format!("user.email={SNAPSHOT_AUTHOR_EMAIL}"),
+        ],
+    }
+}
+
+/// Last non-blank stderr line, or an explicit placeholder when the tool said nothing.
+fn last_stderr_line(stderr: &str) -> String {
+    stderr
+        .lines()
+        .rev()
+        .find(|line| !line.trim().is_empty())
+        .map_or_else(
+            || "no stderr output".to_owned(),
+            |line| line.trim().to_owned(),
+        )
 }
 
 /// Map a failed spawn: a missing executable is a distinct, actionable `ToolMissing`.
@@ -205,7 +287,7 @@ fn spawn_error(tool: Tool, command: String, err: io::Error) -> VcsError {
     }
 }
 
-/// Human-readable `<tool> <args> (in <cwd>)` label carried by every [`VcsError`].
+/// Human-readable `<tool> <args> (in <cwd>)` label carried by every spawn / output diagnostic.
 fn describe(tool: Tool, cwd: &Path, args: &[&OsStr]) -> String {
     let mut command = tool.binary().to_owned();
     for arg in args {
@@ -216,6 +298,20 @@ fn describe(tool: Tool, cwd: &Path, args: &[&OsStr]) -> String {
     command.push_str(&cwd.display().to_string());
     command.push(')');
     command
+}
+
+/// `<tool> <subcommand>` label carried by [`VcsError::CommandFailed`].
+///
+/// The subcommand is the first non-flag argument (`git commit-tree`; Jujutsu reports its two-word
+/// commands as `jj workspace`), so the owner-facing line names what failed without dumping argv.
+fn subcommand_label(tool: Tool, args: &[&OsStr]) -> String {
+    match args
+        .iter()
+        .find(|arg| !arg.to_string_lossy().starts_with('-'))
+    {
+        Some(subcommand) => format!("{} {}", tool.binary(), subcommand.to_string_lossy()),
+        None => tool.binary().to_owned(),
+    }
 }
 
 #[cfg(test)]
@@ -273,5 +369,61 @@ mod tests {
             err,
             VcsError::CommandSpawn { command, .. } if command == "git status (in /repo)"
         ));
+    }
+
+    #[test]
+    fn failures_are_one_line_naming_the_subcommand_and_the_last_stderr_line() {
+        let failed = ToolOutput {
+            command: "git -C /repo commit-tree abc -p def -m msg (in /repo)".to_owned(),
+            subcommand: "git commit-tree".to_owned(),
+            success: false,
+            code: Some(128),
+            stdout: Vec::new(),
+            stderr: "Author identity unknown\n\n*** Please tell me who you are.\n\nRun\n\n  git config --global user.email \"you@example.com\"\nfatal: unable to auto-detect email address\n\n".to_owned(),
+        };
+        let message = failed.failure().to_string();
+        assert_eq!(
+            message,
+            "git commit-tree failed (exit 128): fatal: unable to auto-detect email address"
+        );
+        assert!(
+            !message.contains('\n'),
+            "a VCS failure is exactly one line, got: {message}"
+        );
+    }
+
+    #[test]
+    fn identity_globals_use_each_tool_own_syntax() {
+        assert_eq!(
+            identity_globals(Tool::Git),
+            [
+                "-c",
+                "user.name=slipfork",
+                "-c",
+                "user.email=slipfork@localhost"
+            ]
+        );
+        assert_eq!(
+            identity_globals(Tool::Jj),
+            [
+                "--config",
+                "user.name=slipfork",
+                "--config",
+                "user.email=slipfork@localhost"
+            ]
+        );
+    }
+
+    #[test]
+    fn subcommand_labels_skip_global_flags_and_operands() {
+        let jj_args = [
+            OsStr::new("--ignore-working-copy"),
+            OsStr::new("log"),
+            OsStr::new("--no-graph"),
+        ];
+        assert_eq!(subcommand_label(Tool::Jj, &jj_args), "jj log");
+        let git_args = [OsStr::new("commit-tree"), OsStr::new("abc123")];
+        assert_eq!(subcommand_label(Tool::Git, &git_args), "git commit-tree");
+        assert_eq!(subcommand_label(Tool::Git, &[]), "git");
     }
 }

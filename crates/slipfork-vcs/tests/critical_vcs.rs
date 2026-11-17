@@ -1,18 +1,14 @@
 //! Protected critical tests for `slipfork-vcs` (`R17`): `RepoRootResolver` + `VcsWorkspace`
 //! conformance for `GitWorktreeAdapter` and `JjWorkspaceAdapter`, the D/F-safe `refs/heads/<fork>` +
-//! `refs/slipfork/<fork>/wip` layout, the untouched live `.git/index`, the `git-remote-slipfork`
-//! line protocol end to end, and the fail-closed paths.
+//! `refs/slipfork/<fork>/wip` layout, the untouched live `.git/index`, the branch probe, the pinned
+//! snapshot identity, one-line VCS errors, the `git-remote-slipfork` line protocol end to end, and
+//! the fail-closed paths.
 
 mod support;
 
-// The matrix body lives in a protected `critical_*` file (see `tools/critical_guard.py`), so a
-// weakened assertion can never hide in an unprotected test helper.
-#[path = "critical_conformance_matrix.rs"]
-mod matrix;
-
 use std::fs;
 use std::io::Cursor;
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
@@ -20,28 +16,184 @@ use std::sync::Arc;
 use slipfork_vcs::remote_helper::{self, MAX_FRAME_BYTES, RemoteHelperError};
 use slipfork_vcs::{
     GitRepoRootResolver, GitWorktreeAdapter, JjWorkspaceAdapter, MAX_WORKSPACE_CHANGES,
-    NoProjectOverride, RepoRoot, RepoRootResolver, VcsError, VcsWorkspace, VcsWorkspaceFactory,
-    WorkspaceRequest,
+    NoProjectOverride, ProjectSlugOverride, RepoRoot, RepoRootResolver, VcsError, VcsWorkspace,
+    VcsWorkspaceFactory, WorkspaceChanges, WorkspaceRefs, WorkspaceRequest, sanitize_fork_name,
 };
 use slipfork_world::{ProjectSlug, WorldError};
-use support::{FailingOverride, FixedOverride, request, tool_missing_skip_line};
+use support::{FixedOverride, expect_create_error, request};
+
+/// `(inode, mtime seconds, mtime nanoseconds)` of the live `.git/index`.
+///
+/// The fork synthesizer must never open, rename, or lock this file, so these values are the
+/// protected invariant for a dirty fork of a large working tree.
+impl support::Fixture {
+    fn index_stat(&self) -> (u64, i64, i64) {
+        let index = self.root().join(".git").join("index");
+        let metadata = fs::metadata(&index).expect("live .git/index exists");
+        (metadata.ino(), metadata.mtime(), metadata.mtime_nsec())
+    }
+}
+
+/// Create a named FIFO, so a test can relay Git's helper protocol into an in-process handler.
+fn mkfifo(path: &Path) {
+    let status = Command::new("mkfifo")
+        .arg(path)
+        .status()
+        .expect("spawn mkfifo");
+    assert!(status.success(), "mkfifo {} failed", path.display());
+}
+
+/// [`VcsWorkspace`] double with fixed ref ids, for byte-exact protocol assertions.
+///
+/// `remote_helper` is pure over the port, so the protocol frames can be pinned exactly without a
+/// repository; the adapters that back the port in production are covered by the conformance matrix.
+struct RefWorkspace {
+    base: String,
+    wip: String,
+}
+
+impl RefWorkspace {
+    fn new(base: &str, wip: &str) -> Self {
+        Self {
+            base: base.to_owned(),
+            wip: wip.to_owned(),
+        }
+    }
+}
+
+impl VcsWorkspace for RefWorkspace {
+    fn fork_name(&self) -> &str {
+        "feat-billing"
+    }
+
+    fn path(&self) -> &Path {
+        Path::new("/repo/.worktrees/feat-billing")
+    }
+
+    fn refs(&self) -> WorkspaceRefs {
+        WorkspaceRefs {
+            base: "refs/heads/feat-billing".to_owned(),
+            wip: "refs/slipfork/feat-billing/wip".to_owned(),
+        }
+    }
+
+    fn resolve(&self, reference: &str) -> Result<String, VcsError> {
+        match reference {
+            "refs/heads/feat-billing" => Ok(self.base.clone()),
+            "refs/slipfork/feat-billing/wip" => Ok(self.wip.clone()),
+            other => Err(VcsError::UnexpectedOutput {
+                command: "resolve".to_owned(),
+                message: format!("the double has no ref '{other}'"),
+            }),
+        }
+    }
+
+    fn changes(&self) -> Result<WorkspaceChanges, VcsError> {
+        Ok(WorkspaceChanges::default())
+    }
+
+    fn forget(&self) -> Result<(), VcsError> {
+        Ok(())
+    }
+}
+
+/// [`ProjectSlugOverride`] double proving adapter errors are propagated verbatim.
+struct FailingOverride;
+
+impl ProjectSlugOverride for FailingOverride {
+    fn project_override(&self, vcs_root: &Path) -> Result<Option<ProjectSlug>, VcsError> {
+        Err(VcsError::Io {
+            path: vcs_root.to_path_buf(),
+            message: "slipfork.toml is unreadable".to_owned(),
+        })
+    }
+}
 
 /// Environment variable carrying the fixture root into the missing-`git` child probe.
 const MISSING_GIT_CHILD_ENV: &str = "SLIPFORK_VCS_MISSING_GIT_CHILD_ROOT";
 /// Environment variable carrying the scratch root into the missing-`jj` child probe.
 const MISSING_JJ_CHILD_ENV: &str = "SLIPFORK_VCS_MISSING_JJ_CHILD_ROOT";
 
-/// Extract a failed `create_workspace` error (`Box<dyn VcsWorkspace>` is not `Debug`).
-fn expect_create_error(result: Result<Box<dyn VcsWorkspace>, VcsError>, context: &str) -> VcsError {
-    match result {
-        Ok(_) => panic!("{context}: expected an error, got a workspace"),
-        Err(error) => error,
-    }
+#[test]
+fn git_current_branch_reports_none_when_detached() {
+    // The branch case is covered by the shared matrix; here only the detached half, because a
+    // detached `HEAD` is what makes zero-argument `fork` fail closed.
+    let fixture = support::fixture("branch-probe");
+    fixture.git_ok(&["checkout", "-q", "--detach", &fixture.base]);
+    assert_eq!(
+        GitWorktreeAdapter::new()
+            .current_branch(&fixture.repo)
+            .expect("a detached HEAD still answers the probe"),
+        None,
+        "a detached HEAD answers None so the caller fails closed with `slipfork fork <name>`"
+    );
 }
 
 #[test]
-fn git_conformance_matrix_satisfies_shared_suite() {
-    matrix::assert_vcs_workspace_conformance(&GitWorktreeAdapter::new(), &support::GitRepos);
+fn vcs_failures_render_as_one_line() {
+    // `git rev-parse` on an unknown base is a real non-zero exit; the owner must see one line, not
+    // Git's multi-line advice block (`docs/design/dx-0.1.0-ux.md` §7.4).
+    let fixture = support::fixture("one-line-error");
+    let error = expect_create_error(
+        GitWorktreeAdapter::new().create_workspace(&WorkspaceRequest {
+            repo: fixture.repo.clone(),
+            fork: "feat-missing-base".to_owned(),
+            base: Some("no-such-revision".to_owned()),
+        }),
+        "an unknown base fails closed",
+    );
+    assert!(
+        matches!(error, VcsError::CommandFailed { ref command, .. } if command == "git rev-parse"),
+        "the failing subcommand is named, got: {error}"
+    );
+    let message = error.to_string();
+    assert!(
+        !message.contains('\n'),
+        "a VCS failure is exactly one line, got:\n{message}"
+    );
+    assert!(
+        message.starts_with("git rev-parse failed (exit ") && message.contains("fatal:"),
+        "the one line carries the exit status and the last stderr line, got: {message}"
+    );
+}
+
+#[test]
+fn sanitised_branch_forks_once_and_a_second_identical_fork_fails_closed() {
+    let fixture = support::dirty_fixture("sanitised-branch");
+    let fork = sanitize_fork_name("feat/ux-pass").expect("a branch always sanitises to one label");
+    assert_eq!(fork, "feat-ux-pass");
+
+    let adapter = GitWorktreeAdapter::new();
+    let workspace = adapter
+        .create_workspace(&request(&fixture.repo, &fork))
+        .expect("the sanitised branch names a fork");
+    assert_eq!(workspace.fork_name(), "feat-ux-pass");
+    assert!(fixture.ref_exists("refs/heads/feat-ux-pass"));
+
+    let error = expect_create_error(
+        adapter.create_workspace(&request(&fixture.repo, &fork)),
+        "the same branch never forks twice",
+    );
+    assert!(
+        matches!(error, VcsError::WorkspaceExists { ref fork } if fork == "feat-ux-pass"),
+        "{error}"
+    );
+    workspace.forget().expect("forget the sanitised fork");
+}
+
+#[test]
+fn snapshot_commit_carries_the_pinned_slipfork_identity() {
+    let fixture = support::dirty_fixture("identity");
+    let workspace = GitWorktreeAdapter::new()
+        .create_workspace(&request(&fixture.repo, "feat-identity"))
+        .expect("dirty fork");
+    let wip = fixture.rev(&workspace.refs().wip);
+    assert_eq!(
+        fixture.git_ok(&["log", "-1", "--format=%an <%ae>|%cn <%ce>", &wip]),
+        "slipfork <slipfork@localhost>|slipfork <slipfork@localhost>",
+        "the snapshot commit is authored and committed by slipfork, never by the developer's git config"
+    );
+    workspace.forget().expect("forget");
 }
 
 #[test]
@@ -578,39 +730,6 @@ fn repo_root_fails_closed_for_bare_submodule_and_separate_git_dir() {
 }
 
 #[test]
-fn jj_conformance_matrix_satisfies_shared_suite() {
-    let adapter = JjWorkspaceAdapter::new();
-    let probe_root = support::disk_tempdir("jj-detect");
-    match adapter.detect(probe_root.path()) {
-        // The identical matrix the Git adapter passes, run against a colocated Jujutsu repository.
-        Ok(()) => matrix::assert_vcs_workspace_conformance(&adapter, &support::JjRepos),
-        Err(error) => {
-            // A host without Jujutsu skips exactly once, and never silently.
-            let line = tool_missing_skip_line(&error)
-                .unwrap_or_else(|| panic!("the jj probe failed unexpectedly: {error}"));
-            assert_eq!(line, "skipped: ToolMissing(jj)");
-
-            // ... and the runtime path still fails closed, with no Git fallback and no artifacts.
-            let fixture = support::fixture("jj-absent-conformance");
-            let runtime = expect_create_error(
-                adapter.create_workspace(&request(&fixture.repo, "feat-absent")),
-                "create_workspace without jj fails closed",
-            );
-            assert!(
-                matches!(runtime, VcsError::ToolMissing { ref tool, .. } if tool == "jj"),
-                "{runtime}"
-            );
-            assert!(
-                !fixture.worktree("feat-absent").exists()
-                    && !fixture.ref_exists("refs/heads/feat-absent"),
-                "a refused Jujutsu fork leaves no artifacts behind"
-            );
-            println!("{line}");
-        }
-    }
-}
-
-#[test]
 fn jj_absent_fails_closed_with_the_project_override_hint() {
     if std::env::var_os(MISSING_JJ_CHILD_ENV).is_some() {
         return;
@@ -695,8 +814,8 @@ fn serve(workspace: &dyn VcsWorkspace, requests: &str) -> String {
 }
 
 /// The byte-exact protocol double every `remote_helper_*` test drives.
-fn protocol_double() -> support::RefWorkspace {
-    support::RefWorkspace::new(BASE_OID, WIP_OID)
+fn protocol_double() -> RefWorkspace {
+    RefWorkspace::new(BASE_OID, WIP_OID)
 }
 
 #[test]
@@ -868,8 +987,8 @@ fn remote_helper_git_fetch_round_trip_from_a_scratch_repository() {
     fs::create_dir_all(&bin).expect("create the helper directory");
     let requests = scratch.path().join("requests");
     let responses = scratch.path().join("responses");
-    support::mkfifo(&requests);
-    support::mkfifo(&responses);
+    mkfifo(&requests);
+    mkfifo(&responses);
     let helper = bin.join("git-remote-slipfork");
     fs::write(
         &helper,

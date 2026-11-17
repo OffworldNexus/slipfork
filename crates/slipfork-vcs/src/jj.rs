@@ -18,6 +18,12 @@
 //! `jj` may be absent from a host: every entry point fails closed with
 //! [`VcsError::ToolMissing`] (never falling back to Git), and
 //! [`JjWorkspaceAdapter::detect`] exposes the same probe to callers that must skip loudly.
+//!
+//! Every repository-touching Jujutsu invocation carries Slipfork's pinned identity as `--config
+//! user.name=slipfork --config user.email=slipfork@localhost` global options, `jj`'s equivalent of
+//! `git -c`, so a host without a configured `user.email` never blocks a fork
+//! (`docs/design/dx-0.1.0-ux.md` §7.3). The `jj --version` probe is the one exception: it must answer
+//! "is `jj` installed?" before any repository or identity exists.
 
 use std::ffi::OsStr;
 use std::fs;
@@ -27,10 +33,10 @@ use slipfork_world::validate_fork_name;
 
 use crate::git_store::{delete_ref, path_exists, ref_exists, resolve_commit};
 use crate::ports::{
-    MAX_WORKSPACE_CHANGES, VcsError, VcsWorkspace, VcsWorkspaceFactory, WORKTREES_DIRECTORY,
-    WorkspaceChanges, WorkspaceRequest, fork_branch_ref, fork_snapshot_ref,
+    MAX_WORKSPACE_CHANGES, RepoRoot, VcsError, VcsWorkspace, VcsWorkspaceFactory,
+    WORKTREES_DIRECTORY, WorkspaceChanges, WorkspaceRequest, fork_branch_ref, fork_snapshot_ref,
 };
-use crate::tool_command::{ToolOutput, run_git_checked, run_jj_checked};
+use crate::tool_command::{ToolOutput, probe_jj, run_git_checked, run_jj_checked};
 
 /// Jujutsu revset of the working-copy commit.
 const WORKING_COPY: &str = "@";
@@ -40,10 +46,18 @@ const WORKING_COPY_PARENT: &str = "@-";
 const COMMIT_ID_TEMPLATE: &str = "commit_id";
 /// `jj workspace list` template printing one workspace name per line.
 const WORKSPACE_NAME_TEMPLATE: &str = "name ++ \"\\n\"";
+/// `jj log` template printing one local bookmark name per line for the working-copy commit.
+///
+/// Local bookmarks are what "a branch" means in Jujutsu: a tracked remote bookmark is not a local
+/// branch, so it never names a fork.
+const LOCAL_BOOKMARK_TEMPLATE: &str =
+    "local_bookmarks.map(|bookmark| bookmark.name()).join(\"\\n\")";
 /// `jj diff` template printing `<status> <path>` per changed entry.
 ///
+/// `status` is Jujutsu's own word (`added`, `modified`, `removed`, `copied`, `renamed`); the
+/// single-letter `status_char` keyword only exists in newer Jujutsu releases.
 /// `path` is the target of a copy or rename, so one line always names the path the fork holds.
-const DIFF_TEMPLATE: &str = "status_char ++ \" \" ++ path ++ \"\\n\"";
+const DIFF_TEMPLATE: &str = "status ++ \" \" ++ path ++ \"\\n\"";
 
 /// Jujutsu [`VcsWorkspaceFactory`]: creates `.worktrees/<fork>` Jujutsu workspaces and projects
 /// their `@-` / `@` pair into the repository's colocated Git store.
@@ -123,6 +137,45 @@ impl VcsWorkspaceFactory for JjWorkspaceAdapter {
             fork: fork.to_owned(),
         }))
     }
+
+    fn current_branch(&self, repo: &RepoRoot) -> Result<Option<String>, VcsError> {
+        // `--ignore-working-copy` keeps this probe read-only: naming a fork must never snapshot the
+        // developer's checkout just to read a bookmark. The requesting workspace is the one whose
+        // working-copy commit is asked about.
+        let out = run_jj_checked(
+            &repo.worktree_root,
+            &[
+                OsStr::new("--ignore-working-copy"),
+                OsStr::new("log"),
+                OsStr::new("--no-graph"),
+                OsStr::new("-r"),
+                OsStr::new(WORKING_COPY),
+                OsStr::new("--template"),
+                OsStr::new(LOCAL_BOOKMARK_TEMPLATE),
+            ],
+        )?;
+        parse_local_bookmarks(&out)
+    }
+}
+
+/// Read exactly one local bookmark from [`LOCAL_BOOKMARK_TEMPLATE`] output.
+///
+/// Empty output is a bookmark-less working copy — Jujutsu's detached `HEAD` — and several bookmarks
+/// are ambiguous: both fail closed instead of guessing which one names the fork.
+fn parse_local_bookmarks(out: &ToolOutput) -> Result<Option<String>, VcsError> {
+    let mut bookmarks = out
+        .stdout_str()?
+        .lines()
+        .filter(|bookmark| !bookmark.is_empty());
+    let Some(bookmark) = bookmarks.next() else {
+        return Ok(None);
+    };
+    if let Some(second) = bookmarks.next() {
+        return Err(out.unexpected(format!(
+            "the working-copy commit carries several local bookmarks ('{bookmark}', '{second}'); a fork name is never guessed between them"
+        )));
+    }
+    Ok(Some(bookmark.to_owned()))
 }
 
 /// One materialized `.worktrees/<fork>` Jujutsu workspace.
@@ -292,7 +345,7 @@ fn commit_id(cwd: &Path, revset: &str) -> Result<String, VcsError> {
         &[
             OsStr::new("log"),
             OsStr::new("--no-graph"),
-            OsStr::new("--revision"),
+            OsStr::new("-r"),
             OsStr::new(revset),
             OsStr::new("--template"),
             OsStr::new(COMMIT_ID_TEMPLATE),
@@ -339,12 +392,7 @@ fn require_colocated_git_store(vcs_root: &Path) -> Result<(), VcsError> {
     })
 }
 
-/// Probe `jj` on `PATH` (a missing binary maps to [`VcsError::ToolMissing`]).
-fn probe_jj(start: &Path) -> Result<(), VcsError> {
-    run_jj_checked(start, &[OsStr::new("--version")]).map(|_| ())
-}
-
-/// Parse `jj diff --template 'status_char ++ " " ++ path'` into tracked/untracked buckets.
+/// Parse `jj diff --template 'status ++ " " ++ path'` into tracked/untracked buckets.
 fn parse_workspace_changes(diff: &ToolOutput) -> Result<WorkspaceChanges, VcsError> {
     let mut changes = WorkspaceChanges::default();
     for line in diff.stdout_str()?.lines() {
@@ -362,8 +410,8 @@ fn parse_workspace_changes(diff: &ToolOutput) -> Result<WorkspaceChanges, VcsErr
         match status {
             // Jujutsu tracks every file, so a path that the fork branch does not have is the only
             // thing "untracked" can mean for the branch-scoped view this port reports.
-            "A" => changes.untracked.push(path),
-            "M" | "D" | "R" | "C" => changes.tracked.push(path),
+            "added" => changes.untracked.push(path),
+            "modified" | "removed" | "renamed" | "copied" => changes.tracked.push(path),
             other => return Err(diff.unexpected(format!("unknown diff status '{other}'"))),
         }
     }
@@ -378,6 +426,7 @@ mod tests {
     fn output(stdout: &str) -> ToolOutput {
         ToolOutput {
             command: "jj diff (in /repo/.worktrees/feat)".to_owned(),
+            subcommand: "jj diff".to_owned(),
             success: true,
             code: Some(0),
             stdout: stdout.as_bytes().to_vec(),
@@ -386,9 +435,32 @@ mod tests {
     }
 
     #[test]
+    fn local_bookmarks_yield_one_branch_or_none_or_a_fail_closed_error() {
+        assert_eq!(
+            parse_local_bookmarks(&output("main\n")).expect("one local bookmark"),
+            Some("main".to_owned())
+        );
+        assert_eq!(
+            parse_local_bookmarks(&output("")).expect("a bookmark-less working copy"),
+            None,
+            "Jujutsu's detached `HEAD` answers None, never a generated name"
+        );
+        assert_eq!(
+            parse_local_bookmarks(&output("\n")).expect("blank template output"),
+            None
+        );
+        let error = parse_local_bookmarks(&output("main\nfeat-ux-pass\n"))
+            .expect_err("two local bookmarks are ambiguous");
+        assert!(
+            matches!(error, VcsError::UnexpectedOutput { ref message, .. } if message.contains("several local bookmarks")),
+            "{error}"
+        );
+    }
+
+    #[test]
     fn diff_entries_map_added_paths_to_untracked_and_others_to_tracked() {
         let changes = parse_workspace_changes(&output(
-            "M tracked.txt\nD deleted.txt\nA untracked.txt\nR old.txt\n",
+            "modified tracked.txt\nremoved deleted.txt\nadded untracked.txt\nrenamed old.txt\ncopied new.txt\n",
         ))
         .expect("parse diff");
         assert_eq!(
@@ -397,6 +469,7 @@ mod tests {
                 PathBuf::from("tracked.txt"),
                 PathBuf::from("deleted.txt"),
                 PathBuf::from("old.txt"),
+                PathBuf::from("new.txt"),
             ]
         );
         assert_eq!(changes.untracked, vec![PathBuf::from("untracked.txt")]);
@@ -407,7 +480,7 @@ mod tests {
     fn diff_parsing_truncates_at_the_port_limit() {
         let mut stdout = String::new();
         for index in 0..=MAX_WORKSPACE_CHANGES {
-            stdout.push_str(&format!("M path-{index:04}.txt\n"));
+            stdout.push_str(&format!("modified path-{index:04}.txt\n"));
         }
         let changes = parse_workspace_changes(&output(&stdout)).expect("parse large diff");
         assert!(changes.truncated);
@@ -416,7 +489,7 @@ mod tests {
 
     #[test]
     fn unknown_diff_status_fails_closed() {
-        let error = parse_workspace_changes(&output("Z strange.txt\n"))
+        let error = parse_workspace_changes(&output("conflicted strange.txt\n"))
             .expect_err("unknown statuses are never guessed");
         assert!(
             matches!(error, VcsError::UnexpectedOutput { ref message, .. } if message.contains("unknown diff status")),

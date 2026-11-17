@@ -559,7 +559,13 @@ pub fn validate_unreserved_dns_label(label: &str) -> Result<(), &'static str> {
 }
 
 /// `true` when `label` is a single lowercase DNS label (`[a-z0-9-]`, 1..=63, no edge `-`).
-fn is_valid_dns_label(label: &str) -> bool {
+///
+/// This is the one owner of the `.localhost` label grammar: project slugs, `domains[].id`, fork
+/// names, and `slipfork-vcs`'s branch-to-fork-name mapping all ask this predicate instead of
+/// re-encoding the alphabet. It says nothing about reserved names — `test-*` and
+/// `domains[].id` collisions belong to [`validate_unreserved_dns_label`] and
+/// [`validate_fork_name`].
+pub fn is_valid_dns_label(label: &str) -> bool {
     !label.is_empty()
         && label.len() <= 63
         && !label.starts_with('-')

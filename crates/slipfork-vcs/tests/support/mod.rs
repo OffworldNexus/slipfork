@@ -1,24 +1,36 @@
-//! Dev-only support for `slipfork-vcs` integration tests: hermetic, disk-backed Git fixtures plus
-//! the shared [`assert_vcs_workspace_conformance`] matrix every `VcsWorkspaceFactory` must pass.
+//! Dev-only support shared by both `slipfork-vcs` integration-test targets: hermetic, disk-backed
+//! Git fixtures plus the request/override/runtime helpers each critical suite uses.
 //!
 //! Compiled only into `tests/` targets. Every repository lives under
-//! `$HOME/.cache/slipfork-critical-tests` (never `/tmp` `tmpfs`), and every Git and Jujutsu
-//! invocation scrubs the ambient `GIT_DIR` / `GIT_WORK_TREE` / `GIT_INDEX_FILE` / `GIT_COMMON_DIR`
-//! variables so the test process environment can never redirect a probe.
+//! `$HOME/.cache/slipfork-critical-tests` (never `/tmp` `tmpfs`), and every Git invocation scrubs the
+//! ambient `GIT_DIR` / `GIT_WORK_TREE` / `GIT_INDEX_FILE` / `GIT_COMMON_DIR` variables so the test
+//! process environment can never redirect a probe.
+//!
+//! Helpers that only one target needs live there, not here: the conformance matrix's repository
+//! flavours are declared in `tests/critical_conformance_matrix.rs`, and the remote-helper doubles plus
+//! `index_stat` in `tests/critical_vcs.rs`. That keeps each target's build free of dead helpers
+//! without weakening a lint.
 
 use std::ffi::OsStr;
 use std::fs;
-use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::{Arc, Mutex};
 
-use slipfork_vcs::{
-    ProjectSlugOverride, RepoRoot, VcsError, VcsWorkspace, WorkspaceChanges, WorkspaceRefs,
-    WorkspaceRequest,
-};
+use slipfork_vcs::{ProjectSlugOverride, RepoRoot, VcsError, VcsWorkspace, WorkspaceRequest};
 use slipfork_world::ProjectSlug;
 use tempfile::TempDir;
+
+/// Extract a failed `create_workspace` error (`Box<dyn VcsWorkspace>` is not `Debug`).
+pub fn expect_create_error(
+    result: Result<Box<dyn VcsWorkspace>, VcsError>,
+    context: &str,
+) -> VcsError {
+    match result {
+        Ok(_) => panic!("{context}: expected an error, got a workspace"),
+        Err(error) => error,
+    }
+}
 
 /// One hermetic Git repository plus the base commit every fork starts from.
 pub struct Fixture {
@@ -74,18 +86,6 @@ impl Fixture {
             .success()
     }
 
-    /// `true` when `ancestor` is an ancestor of `descendant`.
-    pub fn is_ancestor(&self, ancestor: &str, descendant: &str) -> bool {
-        self.git(&["merge-base", "--is-ancestor", ancestor, descendant])
-            .status
-            .success()
-    }
-
-    /// `true` when `rev:path` resolves to a blob/tree inside the repository.
-    pub fn object_exists(&self, object: &str) -> bool {
-        self.git(&["cat-file", "-e", object]).status.success()
-    }
-
     /// Path of the fork checkout (`.worktrees/<fork>`).
     pub fn worktree(&self, fork: &str) -> PathBuf {
         self.root().join(".worktrees").join(fork)
@@ -94,16 +94,6 @@ impl Fixture {
     /// Path of the scratch index the adapter uses to synthesize `fork`'s dirty view.
     pub fn scratch_index(&self, fork: &str) -> PathBuf {
         slipfork_vcs::git::scratch_index_path(self.root(), fork)
-    }
-
-    /// `(inode, mtime seconds, mtime nanoseconds)` of the live `.git/index`.
-    ///
-    /// The fork synthesizer must never open, rename, or lock this file, so these values are the
-    /// protected invariant for a dirty fork of a large working tree.
-    pub fn index_stat(&self) -> (u64, i64, i64) {
-        let index = self.root().join(".git").join("index");
-        let metadata = fs::metadata(&index).expect("live .git/index exists");
-        (metadata.ino(), metadata.mtime(), metadata.mtime_nsec())
     }
 
     /// Turn the clean working tree into the conformance matrix's dirty example.
@@ -165,168 +155,6 @@ pub fn dirty_fixture(name: &str) -> Fixture {
     fixture
 }
 
-/// Builds the repository flavours the shared conformance matrix runs against.
-///
-/// The matrix is identical for every adapter; only the repository a fork is created from differs
-/// (a plain Git checkout, or a Jujutsu checkout with a colocated Git store).
-pub trait ConformanceRepos {
-    /// A repository whose working tree has one modified, one deleted, and one untracked file.
-    fn dirty(&self, name: &str) -> Fixture;
-    /// A repository with a clean working tree.
-    fn clean(&self, name: &str) -> Fixture;
-}
-
-/// Git repository flavour: the matrix runs against an ordinary checkout.
-pub struct GitRepos;
-
-impl ConformanceRepos for GitRepos {
-    fn dirty(&self, name: &str) -> Fixture {
-        dirty_fixture(name)
-    }
-
-    fn clean(&self, name: &str) -> Fixture {
-        fixture(name)
-    }
-}
-
-/// Jujutsu repository flavour: a Git fixture with Slipfork's state directories ignored, then
-/// `jj git init --colocate` so fork refs are Git-fetchable.
-pub struct JjRepos;
-
-impl ConformanceRepos for JjRepos {
-    fn dirty(&self, name: &str) -> Fixture {
-        let fixture = jj_fixture(name);
-        fixture.make_dirty();
-        fixture
-    }
-
-    fn clean(&self, name: &str) -> Fixture {
-        jj_fixture(name)
-    }
-}
-
-/// Build a colocated Jujutsu repository from a Git fixture.
-fn jj_fixture(name: &str) -> Fixture {
-    let mut fixture = fixture(name);
-    fixture.commit_state_gitignore();
-    jj_ok_in(fixture.root(), &["git", "init", "--colocate"]);
-    fixture
-}
-
-/// One raw Jujutsu invocation inside `cwd` with a hermetic environment.
-pub fn jj_in(cwd: &Path, args: &[&str]) -> Output {
-    let mut command = Command::new("jj");
-    command
-        .current_dir(cwd)
-        .args(args)
-        .env("LC_ALL", "C")
-        .env("LANGUAGE", "C")
-        .env("JJ_USER", "Slipfork Test")
-        .env("JJ_EMAIL", "test@localhost");
-    for key in [
-        "GIT_DIR",
-        "GIT_WORK_TREE",
-        "GIT_INDEX_FILE",
-        "GIT_COMMON_DIR",
-        "GIT_OBJECT_DIRECTORY",
-        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
-        "GIT_CEILING_DIRECTORIES",
-    ] {
-        command.env_remove(key);
-    }
-    command.output().expect("spawn jj")
-}
-
-/// [`jj_in`] asserting a zero exit, returning trimmed stdout.
-pub fn jj_ok_in(cwd: &Path, args: &[&str]) -> String {
-    let output = jj_in(cwd, args);
-    assert!(
-        output.status.success(),
-        "jj {:?} failed in {}: {}",
-        args,
-        cwd.display(),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    String::from_utf8(output.stdout)
-        .expect("jj stdout is UTF-8")
-        .trim()
-        .to_owned()
-}
-
-/// The one explicit line a hermetic conformance runner prints when an adapter's tool is absent.
-///
-/// A family whose tool is missing must skip **loudly** (`skipped: ToolMissing(jj)`), never pass
-/// silently: the caller still fails the run when the Git family itself cannot execute.
-pub fn tool_missing_skip_line(error: &VcsError) -> Option<String> {
-    match error {
-        VcsError::ToolMissing { tool, .. } => Some(format!("skipped: ToolMissing({tool})")),
-        _ => None,
-    }
-}
-
-/// Create a named FIFO, so a test can relay Git's helper protocol into an in-process handler.
-pub fn mkfifo(path: &Path) {
-    let status = Command::new("mkfifo")
-        .arg(path)
-        .status()
-        .expect("spawn mkfifo");
-    assert!(status.success(), "mkfifo {} failed", path.display());
-}
-
-/// [`VcsWorkspace`] double with fixed ref ids, for byte-exact protocol assertions.
-///
-/// `remote_helper` is pure over the port, so the protocol frames can be pinned exactly without a
-/// repository; the adapters that back the port in production are covered by the conformance matrix.
-pub struct RefWorkspace {
-    pub base: String,
-    pub wip: String,
-}
-
-impl RefWorkspace {
-    pub fn new(base: &str, wip: &str) -> Self {
-        Self {
-            base: base.to_owned(),
-            wip: wip.to_owned(),
-        }
-    }
-}
-
-impl VcsWorkspace for RefWorkspace {
-    fn fork_name(&self) -> &str {
-        "feat-billing"
-    }
-
-    fn path(&self) -> &Path {
-        Path::new("/repo/.worktrees/feat-billing")
-    }
-
-    fn refs(&self) -> WorkspaceRefs {
-        WorkspaceRefs {
-            base: "refs/heads/feat-billing".to_owned(),
-            wip: "refs/slipfork/feat-billing/wip".to_owned(),
-        }
-    }
-
-    fn resolve(&self, reference: &str) -> Result<String, VcsError> {
-        match reference {
-            "refs/heads/feat-billing" => Ok(self.base.clone()),
-            "refs/slipfork/feat-billing/wip" => Ok(self.wip.clone()),
-            other => Err(VcsError::UnexpectedOutput {
-                command: "resolve".to_owned(),
-                message: format!("the double has no ref '{other}'"),
-            }),
-        }
-    }
-
-    fn changes(&self) -> Result<WorkspaceChanges, VcsError> {
-        Ok(WorkspaceChanges::default())
-    }
-
-    fn forget(&self) -> Result<(), VcsError> {
-        Ok(())
-    }
-}
-
 /// One `create_workspace` request for `repo`; `None` forks the requesting checkout's `HEAD`.
 pub fn request(repo: &RepoRoot, fork: &str) -> WorkspaceRequest {
     WorkspaceRequest {
@@ -359,18 +187,6 @@ impl ProjectSlugOverride for FixedOverride {
     fn project_override(&self, vcs_root: &Path) -> Result<Option<ProjectSlug>, VcsError> {
         *self.seen.lock().expect("override lock") = Some(vcs_root.to_path_buf());
         Ok(Some(self.slug.clone()))
-    }
-}
-
-/// [`ProjectSlugOverride`] double proving adapter errors are propagated verbatim.
-pub struct FailingOverride;
-
-impl ProjectSlugOverride for FailingOverride {
-    fn project_override(&self, vcs_root: &Path) -> Result<Option<ProjectSlug>, VcsError> {
-        Err(VcsError::Io {
-            path: vcs_root.to_path_buf(),
-            message: "slipfork.toml is unreadable".to_owned(),
-        })
     }
 }
 

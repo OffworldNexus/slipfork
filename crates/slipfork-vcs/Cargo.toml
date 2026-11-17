@@ -7,13 +7,16 @@ license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 # The conformance matrix lives in `tests/critical_conformance_matrix.rs` so `tools/critical_guard.py`
-# protects its assertions; it is compiled only as a module of the `critical_vcs` suite below, never
-# as a standalone test target.
+# protects its assertions; it is its own test target (see below), never compiled twice.
 autotests = false
 
 [[test]]
 name = "critical_vcs"
 path = "tests/critical_vcs.rs"
+
+[[test]]
+name = "critical_conformance_matrix"
+path = "tests/critical_conformance_matrix.rs"
 
 [dependencies]
 slipfork-world = { path = "../slipfork-world" }
