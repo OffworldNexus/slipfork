@@ -3,22 +3,31 @@
 # requires-python = ">=3.12"
 # dependencies = []
 # ///
-"""DigitalOcean dev-VM harness: droplet + ZFS volume + Incus pool (`M3.5`).
+"""DigitalOcean dev-VM harness: Btrfs volume, docker/Rust, AppArmor `userns` (`M3.16`).
 
-Provisions a throwaway Ubuntu 24.04 droplet, attaches a 100 GiB block-storage volume, formats it
-as a ZFS pool, installs Incus, and registers that pool as Incus storage `default`. The VM runs
-Incus **system containers (LXC)** only: DigitalOcean droplets expose no nested KVM.
+Boots one disposable Ubuntu 24.04 droplet, attaches a 100 GiB block-storage volume formatted
+**Btrfs** at `/var/lib/slipfork` (`user_subvol_rm_allowed,noatime`), provisions `btrfs-progs`,
+`docker.io`/`docker-buildx`, a Rust toolchain, and the `/etc/apparmor.d/slipfork` `userns`
+profile, syncs the working tree, and streams the real-kernel Btrfs suites. No host `crun` is
+installed: the pinned static binary ships inside the `L0` world rootfs.
 
-The harness is deliberately two-phase: `up` never destroys anything, so a human can log in and
-try the VM; `down --yes` is the only destructive command.
+`up` is idempotent by the tag `slipfork-dev-vm` and never reformats a device that carries a
+filesystem. A volume this invocation creates is formatted Btrfs; a pre-existing blank volume is
+only formatted when the operator passes `--format-blank`, and only after the first 8 MiB read
+back as all zeros (a filesystem can keep label copies at 0..4 MiB). A detected foreign
+filesystem always fails closed, even with `--format-blank`. When the tagged droplet exists but
+the harness identity cannot open it, `up` detaches the volume, destroys the droplet, and
+recreates it on the same volume. `down --yes` is the only command that deletes the volume; it
+keeps it unless `--delete-volume` is given.
 
   tools/do_vm.py up      [--region ams3] [--size s-4vcpu-8gb] [--volume-gb 100]
-                         [--ssh-key NAME_OR_ID ...] [--authorized-key PATH ...] [--yes]
-  tools/do_vm.py status
+                         [--identity PATH ...] [--authorized-key PATH ...]
+                         [--format-blank] [--yes]
+  tools/do_vm.py status  [--identity PATH ...]
   tools/do_vm.py sync
-  tools/do_vm.py test    [-- <extra cargo args>]
-  tools/do_vm.py ssh
-  tools/do_vm.py down    [--yes]
+  tools/do_vm.py test    [--identity PATH ...]
+  tools/do_vm.py ssh     [--identity PATH ...] [-- <remote command> ...]
+  tools/do_vm.py down    [--yes] [--delete-volume]
 
 Design notes: `docs/design/do-vm-harness.md`. This is a test harness, never a supported
 deployment path.
@@ -27,6 +36,7 @@ deployment path.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import shlex
@@ -48,16 +58,50 @@ IMAGE_SLUG = "ubuntu-24-04-x64"
 DEFAULT_REGION = "ams3"
 DEFAULT_SIZE = "s-4vcpu-8gb"
 DEFAULT_VOLUME_GB = 100
+MIN_VOLUME_GB = 10
 # DigitalOcean vendor list price as of 2026-11-16 — re-verify before relying on the cost line.
 VOLUME_USD_PER_GIB_MONTH = 0.10
 READY_TIMEOUT_SECONDS = 15 * 60
 READY_POLL_SECONDS = 5
 SSH_WAIT_TIMEOUT_SECONDS = 5 * 60
-REMOTE_ROOT = "/root/slipfork"
-SUITE = "critical_incus_live"
-SUITE_PATH = PurePosixPath(f"crates/slipfork-engine/tests/{SUITE}.rs")
+COLD_BOOT_GRACE_SECONDS = 90
+DETACH_TIMEOUT_SECONDS = 5 * 60
+DROPLET_DELETE_TIMEOUT_SECONDS = 2 * 60
+ACCOUNT_KEY_TIMEOUT_SECONDS = 60
+DOWN_POLL_TIMEOUT_SECONDS = 60
+REMOTE_USER = "slipfork"
+REMOTE_HOME = "/home/slipfork"
+REMOTE_TREE = f"{REMOTE_HOME}/slipfork"
+REMOTE_STAGING = f"{REMOTE_HOME}/.sync"
+STATE_DIR = "/var/lib/slipfork"
+SUITE_HOME = f"{STATE_DIR}/home"
+OWNER_HOME = f"{STATE_DIR}/root-home"
+MOUNT_OPTIONS = "user_subvol_rm_allowed,noatime,nofail"
+BTRFS_MAGIC = "9123683e"
+MARKER = f"{STATE_DIR}/.slipfork-ready"
+VOLUME_GLOB = "/dev/disk/by-id/scsi-0DO_Volume_*"
+APPARMOR_PROFILE = "/etc/apparmor.d/slipfork"
+FSTAB = "/etc/fstab"
+UDEV_AUTOMOUNT_RULE = "/etc/udev/rules.d/99-digitalocean-automount.rules"
+UNIT_DIRS = ("/etc/systemd/system", "/run/systemd/system")
+PACKAGES = (
+    "btrfs-progs docker.io docker-buildx openssh-server apparmor curl "
+    "ca-certificates build-essential git"
+)
+RUSTUP_VERSION = "1.29.3"
+RUSTUP_INIT_URL = (
+    "https://static.rust-lang.org/rustup/archive/"
+    f"{RUSTUP_VERSION}/x86_64-unknown-linux-gnu/rustup-init"
+)
+RUSTUP_INIT_SHA256 = "b1c8cb14e30889e7e2999e6b69e62d9e9b9ffc0f4df8180564d306d9680e6c55"
+RUST_MIN_VERSION = "1.94.0"
+SUITE_NAME = "critical_btrfs_live"
+SUITES = (
+    ("slipfork-engine", f"crates/slipfork-engine/tests/{SUITE_NAME}.rs", "M3.14"),
+    ("slipfork", f"crates/slipfork/tests/{SUITE_NAME}.rs", "M3.15"),
+)
+AUTHORIZED_KEY_USERS = ("root", REMOTE_USER)
 EXCLUDED_TOP_LEVEL = frozenset({"target", "site", ".worktrees"})
-AUTHORIZED_KEYS = "/root/.ssh/authorized_keys"
 SSH_AUTH_FAILURE = (
     "Permission denied (publickey",
     "Too many authentication failures",
@@ -68,8 +112,21 @@ SSH_HOST_KEY_FAILURE = (
 )
 
 
+def authorized_keys_paths(remote_home: str = REMOTE_HOME) -> tuple[str, ...]:
+    """The one canonical root + suite-user `authorized_keys` enumeration."""
+    return ("/root/.ssh/authorized_keys", f"{remote_home}/.ssh/authorized_keys")
+
+
 class HarnessError(RuntimeError):
     """A fail-closed harness precondition, API call, or remote step failed."""
+
+
+class ProvisioningError(HarnessError):
+    """The remote provisioning script refused; carry its exit status to the caller."""
+
+    def __init__(self, message: str, returncode: int) -> None:
+        super().__init__(message)
+        self.returncode = returncode
 
 
 @dataclass(frozen=True, slots=True)
@@ -88,6 +145,7 @@ class Volume:
     name: str
     region: str
     size_gb: int
+    droplet_ids: frozenset[int]
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,63 +155,410 @@ class Size:
     memory_mib: int | None
     disk_gib: int | None
     price_monthly: float | None
+    regions: tuple[str, ...]
 
 
-PROVISION_SCRIPT = """\
-set -euo pipefail
-export DEBIAN_FRONTEND=noninteractive
-apt-get update
-candidate="$(apt-cache policy incus | awk '/Candidate:/ {print $2}')"
-if [ -z "$candidate" ] || [ "$candidate" = "(none)" ]; then
-  echo 'slipfork: the `incus` package is unavailable in this image; apt-cache policy incus:' >&2
-  apt-cache policy incus >&2
-  exit 1
-fi
-if ! apt-get install -y --no-install-recommends zfsutils-linux incus; then
-  echo 'slipfork: installing zfsutils-linux/incus failed; apt-cache policy incus:' >&2
-  apt-cache policy incus >&2
-  exit 1
-fi
-if zpool list -H -o name incuspool >/dev/null 2>&1; then
-  echo 'slipfork: ZFS pool incuspool already exists'
-else
-  for _attempt in $(seq 1 30); do
-    set -- /dev/disk/by-id/scsi-0DO_Volume_*
-    if [ "$#" -eq 1 ] && [ -e "$1" ]; then
-      break
+@dataclass(frozen=True, slots=True)
+class Identity:
+    path: Path
+    public_key: str
+    public_key_file: Path
+
+
+@dataclass(frozen=True, slots=True)
+class ProvisionConfig:
+    """Everything the provisioning script interpolates, so renderers never read globals."""
+
+    volume_glob: str = VOLUME_GLOB
+    mountpoint: str = STATE_DIR
+    fstab: str = FSTAB
+    profile_path: str = APPARMOR_PROFILE
+    udev_rule: str = UDEV_AUTOMOUNT_RULE
+    unit_dirs: tuple[str, ...] = UNIT_DIRS
+    marker: str = MARKER
+    suite_home: str = SUITE_HOME
+    owner_home: str = OWNER_HOME
+    remote_home: str = REMOTE_HOME
+    remote_tree: str = REMOTE_TREE
+    remote_user: str = REMOTE_USER
+    mount_options: str = MOUNT_OPTIONS
+    btrfs_magic: str = BTRFS_MAGIC
+    packages: str = PACKAGES
+    rustup_url: str = RUSTUP_INIT_URL
+    rustup_sha256: str = RUSTUP_INIT_SHA256
+    rust_min: str = RUST_MIN_VERSION
+    apt_wait_attempts: int = 30
+    apt_wait_seconds: int = 5
+    device_wait_attempts: int = 30
+    device_wait_seconds: int = 2
+    allow_format: bool = False
+
+
+def render_apparmor_body(remote_tree: str = REMOTE_TREE) -> str:
+    """The four-line `userns` profile body from `ADR-0010` §7 (harness attachment list).
+
+    AppArmor's profile header takes one attachment expression; the two executables are matched
+    by a leading-slash alternation (`/{a,b}`), which the live parser accepts.
+    """
+    return (
+        "abi <abi/4.0>,\n"
+        "profile slipfork /{usr/bin/unshare,"
+        f"{remote_tree}/target/debug/slipfork-world-init}} flags=(unconfined) {{\n"
+        "  userns,\n"
+        "}\n"
+    )
+
+
+PROVISION = ProvisionConfig()
+
+
+def render_volume_discovery(config: ProvisionConfig = PROVISION) -> str:
+    """Select the one attached volume *disk*, ignoring its `-partN` partition symlinks."""
+    return f"""\
+volume_device=""
+for _attempt in $(seq 1 {config.device_wait_attempts}); do
+  _candidates=""
+  for _candidate in {config.volume_glob}; do
+    case "$_candidate" in
+      *-part[0-9]*) continue ;;
+    esac
+    if [ -e "$_candidate" ]; then
+      _candidates="$_candidates $_candidate"
     fi
-    sleep 2
   done
-  if [ "$#" -ne 1 ] || [ ! -e "$1" ]; then
-    echo "slipfork: expected exactly one attached DO volume (/dev/disk/by-id/scsi-0DO_Volume_*), found: $*" >&2
-    exit 1
-  fi
-  zpool create -o ashift=12 -O mountpoint=/var/lib/incus/disks/pool incuspool /dev/disk/by-id/scsi-0DO_Volume_*
-fi
-systemctl enable --now incus
-for _attempt in $(seq 1 60); do
-  if incus info >/dev/null 2>&1; then
+  set -- $_candidates
+  if [ "$#" -eq 1 ]; then
+    volume_device="$1"
     break
   fi
-  sleep 2
+  sleep {config.device_wait_seconds}
 done
-if ! incus info >/dev/null 2>&1; then
-  echo 'slipfork: incusd did not answer `incus info` within 120s' >&2
-  journalctl -u incus --no-pager -n 80 >&2
+if [ -z "$volume_device" ]; then
+  _found=""
+  for _candidate in {config.volume_glob}; do
+    if [ -e "$_candidate" ]; then
+      _found="$_found $_candidate"
+    fi
+  done
+  echo "slipfork: expected exactly one attached DO volume disk ({config.volume_glob}, partitions excluded), found:${{_found:- none}}" >&2
   exit 1
 fi
-if incus storage show default >/dev/null 2>&1; then
-  echo 'slipfork: Incus storage pool `default` already exists'
-else
-  incus storage create default zfs source=incuspool
-fi
-echo 'slipfork ready' > /root/incus-ready
 """
 
 
-def cloud_init() -> str:
+def render_automount_teardown(config: ProvisionConfig = PROVISION) -> str:
+    """Stop and delete DigitalOcean's optional "Automatically Format & Mount" wiring."""
+    unit_removals = "\n".join(
+        f"rm -f {directory}/mnt-volume_*.mount" for directory in config.unit_dirs
+    )
+    return f"""\
+_units_err=$(mktemp)
+if _units_raw=$(systemctl list-units --all --plain --no-legend 'mnt-volume_*.mount' 2>"$_units_err"); then
+  _units=$(printf '%s\n' "$_units_raw" | awk '{{print $1}}')
+  for _unit in $_units; do
+    case "$_unit" in
+      *.mount) systemctl disable --now "$_unit" ;;
+    esac
+  done
+else
+  _units_rc=$?
+  echo "slipfork: systemctl list-units failed (rc $_units_rc); cannot prove no DigitalOcean automount unit exists: $(cat "$_units_err")" >&2
+  rm -f "$_units_err"
+  exit 1
+fi
+rm -f "$_units_err"
+if _targets=$(findmnt -rn -S "$volume_device" -o TARGET); then
+  for _target in $_targets; do
+    case "$_target" in
+      /mnt/*) umount "$_target" ;;
+    esac
+  done
+fi
+rm -f {config.udev_rule}
+udevadm control --reload-rules
+{unit_removals}
+systemctl daemon-reload
+if [ -f {config.fstab} ]; then
+  _volume_name=$(basename "$volume_device")
+  awk -v dev="$volume_device" -v name="$_volume_name" '
+    $2 ~ /^\\/mnt\\// && ($1 == dev || index($1, name) > 0) {{ next }}
+    {{ print }}
+  ' {config.fstab} > {config.fstab}.slipfork
+  mv {config.fstab}.slipfork {config.fstab}
+fi
+"""
+
+
+def render_volume_signature_step(config: ProvisionConfig = PROVISION) -> str:
+    """Branch on `blkid`'s exit status; only a proven-empty device is formatted.
+
+    A blank device is formatted only when this invocation created the volume or the operator
+    passed `--format-blank`. The emptiness proof reads 8 MiB, because a filesystem can keep label copies at
+    0..4 MiB and a 1 MiB probe was proven to miss one. A detected foreign filesystem always
+    fails closed, flag or not.
+    """
+    format_allowed = 1 if config.allow_format else 0
+    return f"""\
+_format_allowed={format_allowed}
+_blkid_err=$(mktemp)
+if _type=$(blkid -p -s TYPE -o value "$volume_device" 2>"$_blkid_err"); then
+  _type_rc=0
+else
+  _type_rc=$?
+fi
+_type_err=$(cat "$_blkid_err")
+rm -f "$_blkid_err"
+case "$_type_rc" in
+  0)
+    if [ -z "$_type" ]; then
+      echo "slipfork: blkid reported success but no filesystem type for $volume_device; wipefs -n says:" >&2
+      wipefs -n "$volume_device" >&2
+      exit 1
+    fi
+    if [ "$_type" != "btrfs" ]; then
+      echo "slipfork: $volume_device carries filesystem type '$_type', not btrfs; refusing to format (a detected foreign filesystem needs an operator wipe)" >&2
+      exit 1
+    fi
+    ;;
+  2)
+    if [ -n "$_type" ]; then
+      echo "slipfork: blkid exited 2 but reported type '$_type' for $volume_device; refusing to format" >&2
+      exit 1
+    fi
+    if [ "$_format_allowed" -ne 1 ]; then
+      echo "slipfork: blank volume detected; re-run with --format-blank after confirming it holds no data" >&2
+      exit 1
+    fi
+    if _wipefs=$(wipefs -n "$volume_device"); then
+      _wipefs_rc=0
+    else
+      _wipefs_rc=$?
+    fi
+    if [ "$_wipefs_rc" -ne 0 ]; then
+      echo "slipfork: wipefs -n $volume_device failed (rc $_wipefs_rc); refusing to format" >&2
+      exit 1
+    fi
+    if [ -n "$(printf '%s' "$_wipefs" | tr -d '[:space:]')" ]; then
+      echo "slipfork: wipefs -n reports signatures on $volume_device; refusing to format" >&2
+      exit 1
+    fi
+    # A filesystem can keep label copies at 0..4 MiB; this session proved a 1 MiB probe misses one, so
+    # the emptiness proof reads the first 8 MiB and requires every byte to be zero.
+    _dd_err=$(mktemp)
+    if dd if="$volume_device" of=/dev/null bs=1M count=8 2>"$_dd_err"; then
+      _dd_rc=0
+    else
+      _dd_rc=$?
+    fi
+    _dd_err_text=$(cat "$_dd_err")
+    rm -f "$_dd_err"
+    if [ "$_dd_rc" -ne 0 ]; then
+      echo "slipfork: reading the first 8 MiB of $volume_device failed (rc $_dd_rc): ${{_dd_err_text:-no stderr}}; refusing to format" >&2
+      exit 1
+    fi
+    if ! cmp -s <(head -c 8388608 "$volume_device") <(head -c 8388608 /dev/zero); then
+      echo "slipfork: $volume_device has non-zero data in its first 8 MiB; refusing to format" >&2
+      exit 1
+    fi
+    echo "slipfork: blank volume evidence for $volume_device: blkid TYPE=<none> (rc 2); wipefs -n=<no signatures>; first 8 MiB=all zero"
+    mkfs.btrfs -f -L slipfork "$volume_device"
+    ;;
+  *)
+    echo "slipfork: blkid failed for $volume_device (rc $_type_rc): ${{_type_err:-no stderr}}" >&2
+    exit 1
+    ;;
+esac
+if _uuid=$(blkid -p -s UUID -o value "$volume_device"); then
+  _uuid_rc=0
+else
+  _uuid_rc=$?
+fi
+if [ "$_uuid_rc" -ne 0 ] || [ -z "$_uuid" ]; then
+  echo "slipfork: could not read the filesystem UUID of $volume_device (rc $_uuid_rc)" >&2
+  exit 1
+fi
+"""
+
+
+def render_install_authorized_keys(config: ProvisionConfig = PROVISION) -> str:
+    """Install the key blob on stdin for root and the suite user (one canonical enumeration)."""
+    users = " ".join(AUTHORIZED_KEY_USERS)
+    return f"""\
+set -euo pipefail
+_key_blob=$(mktemp)
+cat > "$_key_blob"
+for _user in {users}; do
+  _home=$(getent passwd "$_user" | cut -d: -f6)
+  if [ -z "$_home" ]; then
+    echo "slipfork: no home directory for $_user" >&2
+    exit 1
+  fi
+  install -d -m 700 -o "$_user" -g "$_user" "$_home/.ssh"
+  touch "$_home/.ssh/authorized_keys"
+  chmod 600 "$_home/.ssh/authorized_keys"
+  chown "$_user:$_user" "$_home/.ssh/authorized_keys"
+  cat "$_key_blob" >> "$_home/.ssh/authorized_keys"
+  sort -u -o "$_home/.ssh/authorized_keys" "$_home/.ssh/authorized_keys"
+done
+rm -f "$_key_blob"
+"""
+
+
+def render_provision_script(config: ProvisionConfig = PROVISION) -> str:
+    """One idempotent provisioning script, embedded verbatim in cloud-init and re-run over SSH."""
+    apparmor_body = render_apparmor_body(config.remote_tree)
+    return f"""\
+set -euo pipefail
+export DEBIAN_FRONTEND=noninteractive
+
+_apt_ok=0
+for _attempt in $(seq 1 {config.apt_wait_attempts}); do
+  if apt-get update; then
+    _apt_ok=1
+    break
+  fi
+  sleep {config.apt_wait_seconds}
+done
+if [ "$_apt_ok" -ne 1 ]; then
+  echo 'slipfork: apt-get update failed after {config.apt_wait_attempts} attempts' >&2
+  exit 1
+fi
+_apt_ok=0
+for _attempt in $(seq 1 {config.apt_wait_attempts}); do
+  if apt-get install -y --no-install-recommends {config.packages}; then
+    _apt_ok=1
+    break
+  fi
+  sleep {config.apt_wait_seconds}
+done
+if [ "$_apt_ok" -ne 1 ]; then
+  echo 'slipfork: package installation failed; apt-cache policy:' >&2
+  apt-cache policy {config.packages} >&2
+  exit 1
+fi
+
+if ! getent passwd {config.remote_user} >/dev/null; then
+  useradd --create-home --shell /bin/bash {config.remote_user}
+fi
+usermod -aG docker {config.remote_user}
+
+{render_volume_discovery(config)}
+{render_automount_teardown(config)}
+{render_volume_signature_step(config)}
+mkdir -p {config.mountpoint}
+if [ -f {config.fstab} ]; then
+  awk '$2 != "{config.mountpoint}"' {config.fstab} > {config.fstab}.slipfork
+  mv {config.fstab}.slipfork {config.fstab}
+fi
+printf 'UUID=%s {config.mountpoint} btrfs %s 0 0\\n' "$_uuid" "{config.mount_options}" >> {config.fstab}
+if _mount_options=$(findmnt -no OPTIONS {config.mountpoint}); then
+  if ! printf ',%s,' "$_mount_options" | grep -q ',user_subvol_rm_allowed,' ||
+     ! printf ',%s,' "$_mount_options" | grep -q ',noatime,'; then
+    mount -o remount,user_subvol_rm_allowed,noatime {config.mountpoint}
+  fi
+else
+  mount {config.mountpoint}
+fi
+
+_verify_options=$(findmnt -no OPTIONS {config.mountpoint})
+case ",$_verify_options," in
+  *,user_subvol_rm_allowed,*) ;;
+  *)
+    echo "slipfork: {config.mountpoint} is mounted without user_subvol_rm_allowed: $_verify_options" >&2
+    exit 1
+    ;;
+esac
+case ",$_verify_options," in
+  *,noatime,*) ;;
+  *)
+    echo "slipfork: {config.mountpoint} is mounted without noatime: $_verify_options" >&2
+    exit 1
+    ;;
+esac
+_magic=$(stat -f -c %t {config.mountpoint})
+if [ "$_magic" != "{config.btrfs_magic}" ]; then
+  echo "slipfork: statfs({config.mountpoint}) f_type is 0x$_magic, not 0x{config.btrfs_magic} (btrfs)" >&2
+  exit 1
+fi
+rm -f {config.marker}
+
+install -d -o {config.remote_user} -g {config.remote_user} {config.suite_home}
+install -d -o {config.remote_user} -g {config.remote_user} -m 700 {config.suite_home}/tmp
+install -d -o root -g root -m 700 {config.owner_home}
+install -d -o root -g root -m 700 {config.owner_home}/tmp
+chown {config.remote_user}:{config.remote_user} {config.mountpoint}
+
+if [ "$(uname -m)" != "x86_64" ]; then
+  echo "slipfork: the pinned rustup-init asset targets x86_64, not $(uname -m)" >&2
+  exit 1
+fi
+_rustup_dir=$(mktemp -d)
+chmod 755 "$_rustup_dir"
+_rustup_init="$_rustup_dir/rustup-init"
+curl -fsSL --retry 3 -o "$_rustup_init" "{config.rustup_url}"
+_rustup_sha=$(sha256sum "$_rustup_init" | awk '{{print $1}}')
+if [ "$_rustup_sha" != "{config.rustup_sha256}" ]; then
+  echo "slipfork: rustup-init digest mismatch for {config.rustup_url}: expected {config.rustup_sha256}, got $_rustup_sha" >&2
+  rm -rf "$_rustup_dir"
+  exit 1
+fi
+chmod 755 "$_rustup_init"
+runuser -u {config.remote_user} -- env HOME={config.remote_home} \\
+  CARGO_HOME={config.remote_home}/.cargo \\
+  RUSTUP_HOME={config.remote_home}/.rustup \\
+  "$_rustup_init" -y --profile minimal --default-toolchain {config.rust_min} --no-modify-path
+rm -rf "$_rustup_dir"
+_cargo_version=$(runuser -u {config.remote_user} -- {config.remote_home}/.cargo/bin/cargo --version)
+_cargo_number=$(printf '%s' "$_cargo_version" | awk '{{print $2}}')
+if [ "$(printf '%s\\n%s\\n' "{config.rust_min}" "$_cargo_number" | sort -V | head -n 1)" != "{config.rust_min}" ]; then
+  echo "slipfork: cargo $_cargo_number is older than {config.rust_min}: $_cargo_version" >&2
+  exit 1
+fi
+
+systemctl enable --now docker
+docker buildx version
+apparmor_parser --version
+
+_profile_body='{apparmor_body.rstrip()}'
+if [ ! -f {config.profile_path} ] || [ "$(cat {config.profile_path})" != "$_profile_body" ]; then
+  printf '%s\\n' "$_profile_body" > {config.profile_path}
+fi
+apparmor_parser -Q {config.profile_path}
+apparmor_parser -r {config.profile_path}
+if _aa_status=$(aa-status); then
+  _aa_rc=0
+else
+  _aa_rc=$?
+fi
+if [ "$_aa_rc" -ne 0 ]; then
+  echo "slipfork: aa-status failed (rc $_aa_rc): $_aa_status" >&2
+  exit 1
+fi
+case "$_aa_status" in
+  *slipfork*) ;;
+  *)
+    echo "slipfork: {config.profile_path} is not loaded (aa-status has no slipfork profile):" >&2
+    printf '%s\\n' "$_aa_status" >&2
+    exit 1
+    ;;
+esac
+if ! runuser -u {config.remote_user} -- unshare --user \\
+  --map-user="$(id -u {config.remote_user})" \\
+  --map-group="$(id -g {config.remote_user})" -- true; then
+  echo "slipfork: unprivileged userns creation is still denied for {config.remote_user}" >&2
+  exit 1
+fi
+
+printf 'ready\\n' > {config.marker}
+chown {config.remote_user}:{config.remote_user} {config.marker}
+"""
+
+
+def cloud_init(config: ProvisionConfig = PROVISION) -> str:
     """Wrap the idempotent provisioning script in a single cloud-init `runcmd` chain."""
-    body = "\n".join(f"      {line}" for line in PROVISION_SCRIPT.splitlines())
+    body = "\n".join(
+        f"      {line}" for line in render_provision_script(config).splitlines()
+    )
     return f"#cloud-config\nruncmd:\n  - - bash\n    - -lc\n    - |-\n{body}\n"
 
 
@@ -190,6 +595,14 @@ def _run(
             f"command failed ({result.returncode}): {_short(argv)}: {_detail(result)}"
         )
     return result
+
+
+def _run_stream(argv: list[str]) -> subprocess.Popen[bytes]:
+    """The single streaming-process seam (stdin/stdout pipes owned by the caller)."""
+    try:
+        return subprocess.Popen(argv, stdin=subprocess.PIPE, stderr=subprocess.PIPE)
+    except OSError as error:
+        raise HarnessError(f"could not execute `{argv[0]}`: {error}") from error
 
 
 def _json_list(value: Any, what: str) -> list[Any]:
@@ -267,6 +680,7 @@ class Doctl:
                     name=str(item.get("name", TAG)),
                     region=_slug(item.get("region")),
                     size_gb=int(item.get("size_gigabytes", 0)),
+                    droplet_ids=_int_set(item.get("droplet_ids", []), "droplet_ids"),
                 )
             )
         return volumes
@@ -296,6 +710,7 @@ class Doctl:
                     price_monthly=float(price)
                     if isinstance(price, (int, float))
                     else None,
+                    regions=_str_tuple(item.get("regions", []), "regions"),
                 )
         return None
 
@@ -311,6 +726,26 @@ class Doctl:
 
 def _optional_int(value: Any) -> int | None:
     return int(value) if isinstance(value, int) else None
+
+
+def _str_set(value: Any, what: str) -> frozenset[str]:
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        raise HarnessError(f"doctl returned malformed {what}: {value!r}")
+    return frozenset(value)
+
+
+def _int_set(value: Any, what: str) -> frozenset[int]:
+    if not isinstance(value, list) or not all(
+        isinstance(item, int) and not isinstance(item, bool) for item in value
+    ):
+        raise HarnessError(f"doctl returned malformed {what}: {value!r}")
+    return frozenset(value)
+
+
+def _str_tuple(value: Any, what: str) -> tuple[str, ...]:
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        raise HarnessError(f"doctl returned malformed {what}: {value!r}")
+    return tuple(value)
 
 
 def _public_ipv4(item: dict[str, Any]) -> str | None:
@@ -338,12 +773,7 @@ def _public_ipv4(item: dict[str, Any]) -> str | None:
 
 
 def _volume_ids(item: dict[str, Any]) -> frozenset[str]:
-    raw = item.get("volume_ids", [])
-    if not isinstance(raw, list) or not all(isinstance(value, str) for value in raw):
-        raise HarnessError(
-            f"doctl droplet {item.get('id')} returned malformed volume_ids: {raw!r}"
-        )
-    return frozenset(raw)
+    return _str_set(item.get("volume_ids", []), "volume_ids")
 
 
 def repo_root() -> Path:
@@ -355,31 +785,275 @@ def repo_root() -> Path:
 
 def known_hosts_for(root: Path, droplet: Droplet) -> Path:
     directory = root / ".slipfork" / "do-vm"
-    directory.mkdir(parents=True, exist_ok=True)
+    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
     return directory / f"known_hosts-{droplet.id}"
 
 
 def ssh_argv(
-    droplet: Droplet, known_hosts: Path, remote: str | None, *, batch: bool = True
+    droplet: Droplet,
+    known_hosts: Path,
+    identity: Identity,
+    remote: str | None,
+    *,
+    batch: bool = True,
+    tty: bool = False,
 ) -> list[str]:
-    # `remote` is a shell string sent as one SSH argv operand. It is safe without quoting because
-    # every interpolated operand in this harness is a module constant (REMOTE_ROOT, AUTHORIZED_KEYS,
-    # SUITE_PATH) or a `shlex.quote`-escaped extra; no unescaped user input reaches it.
+    # `remote` is a shell string sent as one SSH argv operand. Every interpolated operand is a
+    # module constant, a `shlex.quote`-escaped extra, or a fixed path; no ambient state leaks in.
     argv = [
         "ssh",
+        "-F",
+        "/dev/null",
         "-o",
-        "ConnectTimeout=10",
+        "IdentitiesOnly=yes",
+        "-o",
+        "IdentityAgent=none",
+        "-o",
+        "ControlMaster=no",
+        "-o",
+        "ControlPath=none",
         "-o",
         "StrictHostKeyChecking=accept-new",
         "-o",
         f"UserKnownHostsFile={known_hosts}",
+        "-o",
+        "ConnectTimeout=10",
+        "-i",
+        str(identity.path),
     ]
     if batch:
-        argv.extend(["-o", "BatchMode=yes"])
+        argv.extend(
+            [
+                "-o",
+                "BatchMode=yes",
+                "-o",
+                "ServerAliveInterval=30",
+                "-o",
+                "ServerAliveCountMax=4",
+            ]
+        )
+    if tty:
+        argv.append("-t")
     argv.append(f"root@{droplet.ip}")
     if remote is not None:
         argv.append(remote)
     return argv
+
+
+def default_identity_path(home: Path | None = None) -> Path:
+    """Owner-specified durable path: `$HOME/.cache/slipfork/do-vm/id_ed25519` and nothing else."""
+    base = Path.home() if home is None else home
+    return base / ".cache" / "slipfork" / "do-vm" / "id_ed25519"
+
+
+def identity_path(raw: str | Path | None, home: Path | None = None) -> Path:
+    return default_identity_path(home) if raw is None else Path(raw).expanduser()
+
+
+def _key_body(public_key: str) -> str:
+    fields = public_key.split()
+    if len(fields) < 2:
+        raise HarnessError(f"not a public key: {public_key!r}")
+    return fields[1]
+
+
+def _materialize_identity(path: Path) -> None:
+    parent = path.parent
+    parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    os.chmod(parent, 0o700)
+    if path.exists():
+        os.chmod(path, 0o600)
+        return
+    _run(
+        [
+            "ssh-keygen",
+            "-t",
+            "ed25519",
+            "-N",
+            "",
+            "-C",
+            "slipfork-do-vm",
+            "-f",
+            str(path),
+        ]
+    )
+    os.chmod(path, 0o600)
+
+
+def load_identity(
+    raw: str | Path | None,
+    *,
+    materialize: bool = False,
+    home: Path | None = None,
+) -> Identity:
+    path = identity_path(raw, home)
+    if materialize:
+        _materialize_identity(path)
+    if not path.is_file():
+        raise HarnessError(
+            f"identity {path} does not exist; run `tools/do_vm.py up` to materialize it"
+        )
+    os.chmod(path, 0o600)
+    derived = _run(["ssh-keygen", "-y", "-P", "", "-f", str(path)], check=False)
+    if derived.returncode != 0:
+        raise HarnessError(
+            f"cannot use identity {path} without a passphrase: {_detail(derived)}; the "
+            "harness SSH calls run with IdentityAgent=none and BatchMode=yes"
+        )
+    public_key = derived.stdout.strip()
+    if not public_key:
+        raise HarnessError(f"ssh-keygen -y returned no public key for {path}")
+    public_key_file = Path(f"{path}.pub")
+    if public_key_file.is_file():
+        text = public_key_file.read_text(encoding="utf-8")
+        if _key_body(text) != _key_body(public_key):
+            raise HarnessError(
+                f"{public_key_file} does not match the private key {path}; delete the stale "
+                ".pub file and re-run `tools/do_vm.py up`"
+            )
+    else:
+        public_key_file.write_text(f"{public_key}\n", encoding="utf-8")
+        os.chmod(public_key_file, 0o644)
+    return Identity(path=path, public_key=public_key, public_key_file=public_key_file)
+
+
+def _visible_key_id(keys: list[dict[str, Any]], body: str) -> str | None:
+    for key in keys:
+        public_key = key.get("public_key")
+        if not isinstance(public_key, str):
+            continue
+        try:
+            if _key_body(public_key) == body:
+                return str(key["id"])
+        except HarnessError:
+            continue
+    return None
+
+
+def _wait_until(
+    probe: Callable[[], T | None],
+    *,
+    timeout_seconds: int,
+    on_timeout: Callable[[], HarnessError],
+) -> T:
+    """Poll `probe` until it returns a value; raise `on_timeout()` at the deadline."""
+    deadline = time.monotonic() + timeout_seconds
+    while True:
+        value = probe()
+        if value is not None:
+            return value
+        if time.monotonic() >= deadline:
+            raise on_timeout()
+        time.sleep(READY_POLL_SECONDS)
+
+
+def _wait_for_account_key(doctl: Doctl, identity: Identity, body: str) -> str:
+    """Bound the registry's propagation lag after a successful import."""
+
+    def on_timeout() -> HarnessError:
+        return HarnessError(
+            f"doctl reported a successful import of {identity.public_key_file} but the key "
+            f"is not visible after {ACCOUNT_KEY_TIMEOUT_SECONDS} seconds; re-run "
+            "`tools/do_vm.py up` once the account registry catches up"
+        )
+
+    return _wait_until(
+        lambda: _visible_key_id(doctl.ssh_keys(), body),
+        timeout_seconds=ACCOUNT_KEY_TIMEOUT_SECONDS,
+        on_timeout=on_timeout,
+    )
+
+
+def ensure_account_key(doctl: Doctl, identity: Identity) -> str:
+    """Resolve the bootstrap key against the account, importing it when `doctl` cannot see it."""
+    body = _key_body(identity.public_key)
+    keys = doctl.ssh_keys()
+    key_id = _visible_key_id(keys, body)
+    if key_id is not None:
+        return key_id
+    name = f"slipfork-{hashlib.sha256(body.encode()).hexdigest()[:16]}"
+    imported = _run(
+        [
+            "doctl",
+            "compute",
+            "ssh-key",
+            "import",
+            name,
+            "--public-key-file",
+            str(identity.public_key_file),
+        ],
+        check=False,
+    )
+    if imported.returncode == 0:
+        return _wait_for_account_key(doctl, identity, body)
+    keys = doctl.ssh_keys()
+    key_id = _visible_key_id(keys, body)
+    if key_id is not None:
+        return key_id
+    visible = (
+        ", ".join(f"{key.get('name')} (id={key.get('id')})" for key in keys) or "none"
+    )
+    detail = _detail(imported) or "the import failed without stderr"
+    raise HarnessError(
+        f"the identity {identity.path} is not visible to this doctl context and could not be "
+        f"imported ({detail}); visible keys: {visible}"
+    )
+
+
+def _read_authorized_keys(paths: list[str]) -> list[str]:
+    chunks: list[str] = []
+    for raw in paths:
+        path = Path(raw)
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError as error:
+            raise HarnessError(
+                f"cannot read --authorized-key {raw}: {error}"
+            ) from error
+        if not text.strip():
+            raise HarnessError(f"--authorized-key {raw} is empty")
+        chunks.append(text if text.endswith("\n") else f"{text}\n")
+    return chunks
+
+
+def _authorized_keys_blob(
+    identity: Identity, extra_identities: list[Identity], extra_chunks: list[str]
+) -> str:
+    chunks = [f"{identity.public_key.strip()}\n"]
+    for other in extra_identities:
+        chunks.append(f"{other.public_key.strip()}\n")
+    chunks.extend(extra_chunks)
+    return "".join(chunks)
+
+
+def _install_authorized_keys(
+    blob: str, droplet: Droplet, known_hosts: Path, identity: Identity
+) -> None:
+    remote = f"bash -c {shlex.quote(render_install_authorized_keys())}"
+    _run(
+        ssh_argv(droplet, known_hosts, identity, remote),
+        input_text=blob,
+    )
+
+
+def _print_fingerprints(
+    droplet: Droplet, known_hosts: Path, identity: Identity
+) -> None:
+    files = " ".join(authorized_keys_paths())
+    remote = (
+        f"for _file in {files}; do "
+        'printf "== %s\\n" "$_file"; '
+        'ssh-keygen -lf "$_file"; done'
+    )
+    result = _run(ssh_argv(droplet, known_hosts, identity, remote), check=False)
+    if result.returncode != 0:
+        raise HarnessError(
+            f"could not read authorized-key fingerprints from {droplet.ip}: "
+            f"{_detail(result)}"
+        )
+    print("keys     authorized_keys fingerprints:")
+    for line in result.stdout.splitlines():
+        print(f"         {line}")
 
 
 def _confirm(question: str, assume_yes: bool) -> None:
@@ -387,7 +1061,8 @@ def _confirm(question: str, assume_yes: bool) -> None:
         return
     if not sys.stdin.isatty():
         raise HarnessError(
-            f"{question}: refusing without confirmation in a non-interactive shell; re-run with --yes"
+            f"{question}: refusing without confirmation in a non-interactive shell; "
+            "re-run with --yes"
         )
     if input(f"{question} [y/N] ").strip().lower() not in {"y", "yes"}:
         raise HarnessError("aborted by user")
@@ -412,100 +1087,20 @@ def _exactly_one(label: str, items: list[T]) -> T:
 def _single_droplet(doctl: Doctl) -> Droplet:
     droplet = _at_most_one("droplet", doctl.tagged_droplets())
     if droplet is None:
-        raise HarnessError("no droplet tagged slipfork-dev-vm; run `tools/do_vm.py up`")
+        raise HarnessError(f"no droplet tagged {TAG}; run `tools/do_vm.py up`")
     return droplet
 
 
-def _resolve_ssh_keys(doctl: Doctl, overrides: list[str]) -> list[str]:
-    """Resolve ids embedded at create time: every visible key, or the requested subset."""
-    keys = doctl.ssh_keys()
-    if not keys:
-        raise HarnessError(
-            "the current doctl context reports no SSH keys; add one with "
-            "`doctl compute ssh-key import` before `up`"
-        )
-    available = ", ".join(f"{key.get('name')} (id={key.get('id')})" for key in keys)
-    if not overrides:
-        return [str(key["id"]) for key in keys]
-    selected: list[str] = []
-    for override in overrides:
-        matches = [
-            key
-            for key in keys
-            if override in {str(key.get("id")), str(key.get("name"))}
-        ]
-        if not matches:
-            raise HarnessError(
-                f"--ssh-key '{override}' matches no key visible to this doctl context; "
-                f"available: {available}"
-            )
-        if len(matches) > 1:
-            raise HarnessError(
-                f"--ssh-key '{override}' is ambiguous; use a key id: {available}"
-            )
-        key_id = str(matches[0]["id"])
-        if key_id not in selected:
-            selected.append(key_id)
-    return selected
-
-
-def _read_authorized_keys(paths: list[str]) -> str:
-    chunks: list[str] = []
-    for raw in paths:
-        path = Path(raw)
-        try:
-            text = path.read_text(encoding="utf-8")
-        except OSError as error:
-            raise HarnessError(
-                f"cannot read --authorized-key {raw}: {error}"
-            ) from error
-        if not text.strip():
-            raise HarnessError(f"--authorized-key {raw} is empty")
-        chunks.append(text if text.endswith("\n") else f"{text}\n")
-    return "".join(chunks)
-
-
-def _install_authorized_keys(content: str, droplet: Droplet, known_hosts: Path) -> None:
-    remote = (
-        "umask 077 && install -d -m 700 /root/.ssh && "
-        f"touch {AUTHORIZED_KEYS} && chmod 600 {AUTHORIZED_KEYS} && "
-        f"cat >> {AUTHORIZED_KEYS} && "
-        f"sort -u -o {AUTHORIZED_KEYS} {AUTHORIZED_KEYS}"
-    )
-    _run(ssh_argv(droplet, known_hosts, remote), input_text=content)
-
-
-def _print_fingerprints(droplet: Droplet, known_hosts: Path) -> None:
-    result = _run(
-        ssh_argv(droplet, known_hosts, f"ssh-keygen -lf {AUTHORIZED_KEYS}"),
-        check=False,
-    )
-    if result.returncode != 0:
-        detail = _detail(result)
-        raise HarnessError(
-            f"could not read authorized-key fingerprints from {droplet.ip}: {detail}"
-        )
-    print("keys     authorized_keys fingerprints:")
-    for line in result.stdout.splitlines():
-        print(f"         {line}")
-
-
-def _warn_missing_authorized_keys() -> None:
-    print(
-        "warning: no --authorized-key given; the droplet trusts only keys visible to the "
-        "current doctl context, so a key registered on the account but omitted from "
-        "`doctl compute ssh-key list` will not be able to log in",
-        file=sys.stderr,
-    )
-
-
 def _cost_line(size: Size, region: str, volume_gb: int) -> str:
-    volume_cost = VOLUME_USD_PER_GIB_MONTH * volume_gb
-    volume = f"${volume_cost:.2f}/month volume ({volume_gb} GiB)"
     if size.price_monthly is None:
-        return f"droplet {size.slug} ({region}): price not reported by doctl; {volume}"
+        raise HarnessError(
+            f"doctl reports no monthly price for size '{size.slug}'; refusing to create a "
+            "droplet whose cost cannot be shown"
+        )
+    volume_cost = VOLUME_USD_PER_GIB_MONTH * volume_gb
+    volume = f"${volume_cost:.2f}/month volume ({volume_gb} GiB, estimate)"
     droplet = f"${size.price_monthly:.2f}/month droplet ({size.slug}, {region})"
-    total = f"${size.price_monthly + volume_cost:.2f}/month"
+    total = f"${size.price_monthly + volume_cost:.2f}/month (estimate)"
     return f"{droplet} + {volume} = {total}"
 
 
@@ -522,7 +1117,7 @@ def _create_volume(doctl: Doctl, region: str, volume_gb: int) -> Volume:
             "--size",
             f"{volume_gb}GiB",
             "--desc",
-            "Slipfork dev VM ZFS pool (disposable; tools/do_vm.py down --yes)",
+            "Slipfork dev VM Btrfs volume (disposable; tools/do_vm.py down --delete-volume)",
             "--tag",
             TAG,
         ]
@@ -532,7 +1127,13 @@ def _create_volume(doctl: Doctl, region: str, volume_gb: int) -> Volume:
 
 
 def _create_droplet(
-    doctl: Doctl, region: str, size: str, ssh_keys: list[str], volume: Volume
+    doctl: Doctl,
+    region: str,
+    size: str,
+    key_id: str,
+    volume: Volume,
+    *,
+    allow_format: bool,
 ) -> Droplet:
     _run(
         [
@@ -548,13 +1149,13 @@ def _create_droplet(
             "--region",
             region,
             "--ssh-keys",
-            ",".join(ssh_keys),
+            key_id,
             "--tag-name",
             TAG,
             "--volumes",
             volume.id,
             "--user-data",
-            cloud_init(),
+            cloud_init(ProvisionConfig(allow_format=allow_format)),
             "--wait",
             "--wait-timeout",
             "10m",
@@ -580,147 +1181,279 @@ def _attach_volume(droplet: Droplet, volume: Volume) -> None:
     )
 
 
-def _ready_probe(
-    droplet: Droplet, known_hosts: Path
-) -> subprocess.CompletedProcess[str]:
-    return _run(
-        ssh_argv(droplet, known_hosts, "test -f /root/incus-ready"), check=False
+def _wait_volume_detached(doctl: Doctl, volume_id: str) -> None:
+    def probe() -> bool | None:
+        current = next(
+            (item for item in doctl.tagged_volumes() if item.id == volume_id), None
+        )
+        if current is None:
+            raise HarnessError(f"volume {volume_id} disappeared while detaching")
+        return True if not current.droplet_ids else None
+
+    def on_timeout() -> HarnessError:
+        current = next(
+            (item for item in doctl.tagged_volumes() if item.id == volume_id), None
+        )
+        attached = (
+            ", ".join(str(item) for item in sorted(current.droplet_ids))
+            if current is not None
+            else "unknown"
+        )
+        return HarnessError(
+            f"volume {volume_id} is still attached to {attached} after "
+            f"{DETACH_TIMEOUT_SECONDS // 60} minutes; refusing to destroy the droplet"
+        )
+
+    _wait_until(probe, timeout_seconds=DETACH_TIMEOUT_SECONDS, on_timeout=on_timeout)
+
+
+def _wait_no_tagged_droplet(doctl: Doctl) -> None:
+    _wait_until(
+        lambda: True if not doctl.tagged_droplets() else None,
+        timeout_seconds=DROPLET_DELETE_TIMEOUT_SECONDS,
+        on_timeout=lambda: HarnessError(
+            f"a droplet tagged {TAG} survived deletion; run `tools/do_vm.py status`"
+        ),
     )
 
 
-def _ssh_failure(
+def _recreate_droplet(
+    doctl: Doctl,
+    droplet: Droplet,
+    volume: Volume,
+    size: str,
+    key_id: str,
+    root: Path,
+    *,
+    allow_format: bool,
+) -> Droplet:
+    print(
+        f"recreate droplet {droplet.id}: the identity cannot open it; volume {volume.id} is "
+        "preserved and the droplet is replaced"
+    )
+    if volume.id in droplet.volume_ids:
+        print(f"detach   volume {volume.id} from droplet {droplet.id}")
+        _run(
+            [
+                "doctl",
+                "compute",
+                "volume-action",
+                "detach",
+                volume.id,
+                str(droplet.id),
+                "--wait",
+                "--wait-timeout",
+                "10m",
+            ]
+        )
+        _wait_volume_detached(doctl, volume.id)
+    _run(["doctl", "compute", "droplet", "delete", str(droplet.id), "--force"])
+    known_hosts_for(root, droplet).unlink(missing_ok=True)
+    _wait_no_tagged_droplet(doctl)
+    return _create_droplet(
+        doctl, droplet.region, size, key_id, volume, allow_format=allow_format
+    )
+
+
+def _is_auth_failure(detail: str) -> bool:
+    return any(marker in detail for marker in SSH_AUTH_FAILURE)
+
+
+def _is_host_key_failure(detail: str) -> bool:
+    return any(marker in detail for marker in SSH_HOST_KEY_FAILURE)
+
+
+def _raise_on_host_key(
     probe: subprocess.CompletedProcess[str], droplet: Droplet, known_hosts: Path
 ) -> None:
     detail = _detail(probe)
-    if any(marker in detail for marker in SSH_AUTH_FAILURE):
+    if _is_host_key_failure(detail):
         raise HarnessError(
-            f"SSH authentication to {droplet.ip} was rejected: {detail}; fix the key "
-            "embedded at create time with `--ssh-key`, or install your key after boot "
-            "with `--authorized-key <path>`"
-        )
-    if any(marker in detail for marker in SSH_HOST_KEY_FAILURE):
-        raise HarnessError(
-            f"SSH host-key check failed for {droplet.ip}; delete {known_hosts} only if the "
-            "droplet was recreated at the same address"
+            f"SSH host-key check failed for {droplet.ip}; inspect {known_hosts} and delete it "
+            "only if the droplet was recreated at the same address"
         )
 
 
-def _cloud_init_running(droplet: Droplet, known_hosts: Path) -> bool:
-    probe = _run(ssh_argv(droplet, known_hosts, "cloud-init status"), check=False)
+def _transport_failure(
+    probe: subprocess.CompletedProcess[str], droplet: Droplet, known_hosts: Path
+) -> None:
+    _raise_on_host_key(probe, droplet, known_hosts)
+    detail = _detail(probe)
+    if _is_auth_failure(detail):
+        raise HarnessError(f"SSH authentication to {droplet.ip} was rejected: {detail}")
+    raise HarnessError(f"cannot reach {droplet.ip} over SSH: {detail or 'no stderr'}")
+
+
+def _ready_probe(
+    droplet: Droplet, known_hosts: Path, identity: Identity
+) -> subprocess.CompletedProcess[str]:
+    return _run(
+        ssh_argv(droplet, known_hosts, identity, f"test -f {MARKER}"), check=False
+    )
+
+
+def _cloud_init_running(
+    droplet: Droplet, known_hosts: Path, identity: Identity
+) -> bool:
+    probe = _run(
+        ssh_argv(droplet, known_hosts, identity, "cloud-init status"), check=False
+    )
     return probe.returncode == 0 and "status: running" in (probe.stdout or "")
 
 
-def _provision(droplet: Droplet, known_hosts: Path) -> None:
+def _provision(
+    droplet: Droplet,
+    known_hosts: Path,
+    identity: Identity,
+    *,
+    allow_format: bool,
+) -> None:
     probe = _run(
-        ssh_argv(droplet, known_hosts, "bash -s"),
-        input_text=PROVISION_SCRIPT,
+        ssh_argv(droplet, known_hosts, identity, "bash -s"),
+        input_text=render_provision_script(ProvisionConfig(allow_format=allow_format)),
         check=False,
     )
     if probe.returncode != 0:
-        _ssh_failure(probe, droplet, known_hosts)
-        raise HarnessError(
-            f"provisioning {droplet.ip} failed ({probe.returncode}): {_detail(probe)}"
+        detail = _detail(probe)
+        if (
+            probe.returncode == 255
+            or _is_host_key_failure(detail)
+            or _is_auth_failure(detail)
+        ):
+            _transport_failure(probe, droplet, known_hosts)
+        raise ProvisioningError(
+            f"provisioning on {droplet.ip} failed ({probe.returncode}): {detail}",
+            probe.returncode,
         )
+    for line in (probe.stdout or "").splitlines():
+        if line.startswith("slipfork: "):
+            print(line)
 
 
-def _poll(
+def _poll_or_raise(
     probe: Callable[[], subprocess.CompletedProcess[str]],
     *,
     droplet: Droplet,
     known_hosts: Path,
     timeout_seconds: int,
-) -> str | None:
-    """Poll until ready (`None`) or timeout (`last probe detail`).
+    message: Callable[[str], str],
+    auth_grace_seconds: int = 0,
+) -> None:
+    """Poll until the probe succeeds; raise `message(last_detail)` at the deadline.
 
-    Only `_ssh_failure` (auth/host-key) may abort early. Every other SSH failure is treated as
-    not-yet-up and keeps polling until the caller's bounded timeout.
+    Host-key changes abort immediately. Authentication rejections abort once the cold-boot
+    grace has elapsed; before that they are treated as "sshd is not up yet".
     """
-    deadline = time.monotonic() + timeout_seconds
-    last_detail = ""
-    while time.monotonic() < deadline:
+    start = time.monotonic()
+    last = {"detail": ""}
+
+    def attempt() -> bool | None:
         result = probe()
         if result.returncode == 0:
-            return None
-        _ssh_failure(result, droplet, known_hosts)
-        last_detail = _detail(result)
-        time.sleep(READY_POLL_SECONDS)
-    return last_detail
+            return True
+        detail = _detail(result)
+        _raise_on_host_key(result, droplet, known_hosts)
+        if _is_auth_failure(detail) and time.monotonic() - start >= auth_grace_seconds:
+            _transport_failure(result, droplet, known_hosts)
+        last["detail"] = detail
+        return None
+
+    _wait_until(
+        attempt,
+        timeout_seconds=timeout_seconds,
+        on_timeout=lambda: HarnessError(message(last["detail"] or "no stderr")),
+    )
 
 
-def _wait_ssh(droplet: Droplet, known_hosts: Path) -> None:
-    detail = _poll(
-        lambda: _run(ssh_argv(droplet, known_hosts, "true"), check=False),
+def _wait_ssh(droplet: Droplet, known_hosts: Path, identity: Identity) -> None:
+    _poll_or_raise(
+        lambda: _run(ssh_argv(droplet, known_hosts, identity, "true"), check=False),
         droplet=droplet,
         known_hosts=known_hosts,
         timeout_seconds=SSH_WAIT_TIMEOUT_SECONDS,
-    )
-    if detail is None:
-        return
-    raise HarnessError(
-        f"SSH did not become reachable at {droplet.ip} within "
-        f"{SSH_WAIT_TIMEOUT_SECONDS // 60} minutes; last probe: {detail or 'no stderr'}"
+        auth_grace_seconds=COLD_BOOT_GRACE_SECONDS,
+        message=lambda detail: (
+            f"SSH did not become reachable at {droplet.ip} within "
+            f"{SSH_WAIT_TIMEOUT_SECONDS // 60} minutes; last probe: {detail}"
+        ),
     )
 
 
-def _wait_ready(root: Path, droplet: Droplet) -> None:
+def _wait_ready(root: Path, droplet: Droplet, identity: Identity) -> None:
     known_hosts = known_hosts_for(root, droplet)
-    detail = _poll(
-        lambda: _ready_probe(droplet, known_hosts),
+
+    def on_timeout(detail: str) -> str:
+        print(
+            f"error: cloud-init did not write {MARKER} within "
+            f"{READY_TIMEOUT_SECONDS // 60} minutes; last cloud-init output:",
+            file=sys.stderr,
+        )
+        for remote in (
+            "tail -n 100 /var/log/cloud-init-output.log",
+            "journalctl -u cloud-init --no-pager -n 80",
+        ):
+            logs = _run(ssh_argv(droplet, known_hosts, identity, remote), check=False)
+            print(f"$ ssh root@{droplet.ip} {remote}", file=sys.stderr)
+            print((logs.stdout or "") + (logs.stderr or ""), file=sys.stderr)
+        return (
+            f"cloud-init provisioning on {droplet.ip} did not finish; last probe: "
+            f"{detail}; inspect the log above; "
+            "run `tools/do_vm.py down --yes` to stop billing now"
+        )
+
+    _poll_or_raise(
+        lambda: _ready_probe(droplet, known_hosts, identity),
         droplet=droplet,
         known_hosts=known_hosts,
         timeout_seconds=READY_TIMEOUT_SECONDS,
-    )
-    if detail is None:
-        return
-
-    print(
-        f"error: cloud-init did not write /root/incus-ready within "
-        f"{READY_TIMEOUT_SECONDS // 60} minutes; last cloud-init output:",
-        file=sys.stderr,
-    )
-    for remote in (
-        "tail -n 100 /var/log/cloud-init-output.log",
-        "journalctl -u cloud-init --no-pager -n 80",
-    ):
-        logs = _run(ssh_argv(droplet, known_hosts, remote), check=False)
-        print(f"$ ssh root@{droplet.ip} {remote}", file=sys.stderr)
-        print((logs.stdout or "") + (logs.stderr or ""), file=sys.stderr)
-    raise HarnessError(
-        f"cloud-init provisioning on {droplet.ip} did not finish; last probe: "
-        f"{detail or 'no stderr'}; inspect the log above; "
-        "run `tools/do_vm.py down --yes` to stop billing now"
+        auth_grace_seconds=COLD_BOOT_GRACE_SECONDS,
+        message=on_timeout,
     )
 
 
-def _print_summary(droplet: Droplet, volume: Volume, cost: str) -> None:
+def _print_summary(
+    droplet: Droplet, volume: Volume, cost: str, identity: Identity
+) -> None:
     print(
         f"droplet  {droplet.name}  id={droplet.id}  region={droplet.region}  ip={droplet.ip}"
     )
     print(
-        f"volume   {volume.name}  id={volume.id}  region={volume.region}  {volume.size_gb} GiB"
+        f"volume   {volume.name}  id={volume.id}  region={volume.region}  "
+        f"{volume.size_gb} GiB"
     )
-    print(
-        "ready    /root/incus-ready written (Incus system containers only, no nested KVM; "
-        "ZFS pool `incuspool`, storage pool `default`)"
-    )
-    print(f"ssh      ssh root@{droplet.ip}")
+    print(f"btrfs    {STATE_DIR} mounted with {MOUNT_OPTIONS}; marker {MARKER}")
+    print(f"identity {identity.path}")
+    print(f"ssh      ssh -i {identity.path} root@{droplet.ip}")
     print(f"cost     {cost}")
-    print(
-        "prereq   install Rust >= 1.85 (rustup) on the VM before `tools/do_vm.py test`; "
-        "cloud-init provisions ZFS + Incus only"
-    )
     print("next     tools/do_vm.py sync && tools/do_vm.py test")
-    print("down     tools/do_vm.py down --yes")
+    print(
+        "down     tools/do_vm.py down --yes   "
+        "(keeps the volume; add --delete-volume to drop it)"
+    )
+
+
+def _resolve_size(doctl: Doctl, slug: str, region: str) -> Size:
+    size = doctl.size(slug)
+    if size is None:
+        raise HarnessError(
+            f"size '{slug}' is not offered; run `doctl compute size list`"
+        )
+    if size.regions and region not in size.regions:
+        raise HarnessError(
+            f"size '{slug}' is not offered in region '{region}'; offered in: "
+            + ", ".join(size.regions)
+        )
+    return size
 
 
 def cmd_up(args: argparse.Namespace) -> int:
-    if args.volume_gb < 1:
-        raise HarnessError("--volume-gb must be a positive integer")
-    root = repo_root()
-    authorized_keys = (
-        _read_authorized_keys(args.authorized_key) if args.authorized_key else None
-    )
-    doctl = Doctl()
+    if args.volume_gb < MIN_VOLUME_GB:
+        raise HarnessError(f"--volume-gb must be at least {MIN_VOLUME_GB}")
+    root = args.root
+    bootstrap = load_identity(None, materialize=True, home=args.home)
+    additions = [load_identity(item, home=args.home) for item in args.identity]
+    extra_chunks = _read_authorized_keys(args.authorized_key)
+    doctl = args.doctl
     droplets = doctl.tagged_droplets()
     volumes = doctl.tagged_volumes()
     droplet = _at_most_one("droplet", droplets)
@@ -738,28 +1471,11 @@ def cmd_up(args: argparse.Namespace) -> int:
             + ", ".join(regions)
         )
 
-    requested_size = droplet.size if droplet is not None else args.size
-    size = doctl.size(requested_size)
-    if size is None and droplet is None:
-        raise HarnessError(
-            f"size '{args.size}' is not offered; run `doctl compute size list`"
-        )
-    if size is None:
-        size = Size(
-            slug=requested_size,
-            vcpus=None,
-            memory_mib=None,
-            disk_gib=None,
-            price_monthly=None,
-        )
+    size = _resolve_size(
+        doctl, droplet.size if droplet is not None else args.size, args.region
+    )
     volume_gb = volume.size_gb if volume is not None else args.volume_gb
     cost = _cost_line(size, args.region, volume_gb)
-
-    if droplet is not None or volume is not None:
-        print(
-            "note: existing tagged droplet/volume win; --size and --volume-gb apply only "
-            "to newly created resources"
-        )
 
     need_droplet = droplet is None
     need_volume = volume is None
@@ -767,17 +1483,27 @@ def cmd_up(args: argparse.Namespace) -> int:
         droplet is not None and volume is not None and volume.id in droplet.volume_ids
     )
     need_attach = droplet is not None and volume is not None and not already_attached
+    recreate = False
+    if droplet is not None:
+        known_hosts = known_hosts_for(root, droplet)
+        probe = _ready_probe(droplet, known_hosts, bootstrap)
+        if probe.returncode != 0:
+            _raise_on_host_key(probe, droplet, known_hosts)
+            recreate = _is_auth_failure(_detail(probe))
 
-    if need_droplet:
-        key_ids = _resolve_ssh_keys(doctl, args.ssh_key)
-
-    if not need_droplet and not need_volume and not need_attach:
-        if droplet is None or volume is None:
-            raise HarnessError("reuse branch lost its tagged droplet/volume")
+    if droplet is not None or volume is not None:
+        print(
+            "note: existing tagged droplet/volume win; --size and --volume-gb apply only "
+            "to newly created resources"
+        )
+    if recreate:
+        print(
+            f"note: identity {bootstrap.path} cannot open droplet {droplet.id}; `up` will "
+            "detach the volume, destroy the droplet, and recreate it on the same volume"
+        )
+    elif droplet is not None and not need_volume and not need_attach:
         print(f"reusing droplet {droplet.id} ({droplet.ip}) and volume {volume.id}")
-    elif not need_droplet and not need_volume:
-        if droplet is None or volume is None:
-            raise HarnessError("attach branch lost its tagged droplet/volume")
+    elif droplet is not None and not need_volume:
         print(
             f"reusing droplet {droplet.id} ({droplet.ip}) and volume {volume.id}; "
             "the volume is not attached"
@@ -785,8 +1511,8 @@ def cmd_up(args: argparse.Namespace) -> int:
     else:
         print(f"region   {args.region}")
         print(
-            f"size     {size.slug} ({size.vcpus or '?'} vCPU, {size.memory_mib or '?'} MiB RAM, "
-            f"{size.disk_gib or '?'} GiB SSD)"
+            f"size     {size.slug} ({size.vcpus or '?'} vCPU, "
+            f"{size.memory_mib or '?'} MiB RAM, {size.disk_gib or '?'} GiB SSD)"
         )
         if need_volume:
             print(f"volume   create {args.volume_gb} GiB, tag {TAG}")
@@ -796,18 +1522,20 @@ def cmd_up(args: argparse.Namespace) -> int:
             print(f"volume   reuse {volume.id} ({volume.size_gb} GiB)")
         if need_droplet:
             print(f"image    {IMAGE_SLUG}")
-            scope = (
-                "restricted by --ssh-key"
-                if args.ssh_key
-                else "all keys visible to this doctl context"
-            )
-            print(f"keys     {', '.join(key_ids)} ({scope})")
+            print(f"key      bootstrap identity {bootstrap.path}")
         print(f"cost     {cost}")
         print("down     tools/do_vm.py down --yes")
-        _confirm(
-            f"create the missing tagged droplet/volume in {args.region} for this cost?",
-            args.yes,
+
+    if need_droplet or need_volume or need_attach or recreate:
+        action = (
+            "destroy and recreate the tagged droplet on its volume"
+            if recreate
+            else "create/attach the missing tagged resources"
         )
+        _confirm(f"{action} in {args.region} for this cost?", args.yes)
+
+    key_id = ensure_account_key(doctl, bootstrap)
+    allow_format = args.format_blank
 
     created_droplet = False
     created_volume = False
@@ -816,10 +1544,32 @@ def cmd_up(args: argparse.Namespace) -> int:
         if need_volume:
             volume = _create_volume(doctl, args.region, args.volume_gb)
             created_volume = True
+            # A volume this invocation created cannot hold foreign data.
+            allow_format = True
         if volume is None:
             raise HarnessError("no tagged volume available after create/reuse")
-        if need_droplet:
-            droplet = _create_droplet(doctl, args.region, args.size, key_ids, volume)
+        if recreate:
+            if droplet is None:
+                raise HarnessError("recreate branch lost its tagged droplet")
+            droplet = _recreate_droplet(
+                doctl,
+                droplet,
+                volume,
+                size.slug,
+                key_id,
+                root,
+                allow_format=allow_format,
+            )
+            created_droplet = True
+        elif need_droplet:
+            droplet = _create_droplet(
+                doctl,
+                args.region,
+                size.slug,
+                key_id,
+                volume,
+                allow_format=allow_format,
+            )
             created_droplet = True
         elif not already_attached:
             _attach_volume(droplet, volume)
@@ -827,36 +1577,35 @@ def cmd_up(args: argparse.Namespace) -> int:
     except HarnessError as error:
         raise HarnessError(
             f"{error}\nnote: a partially created tagged resource may exist; "
-            "run `tools/do_vm.py down --yes` to clean up"
+            "run `tools/do_vm.py status` and `tools/do_vm.py down --yes` to clean up"
         ) from error
 
     if droplet is None:
         raise HarnessError("no tagged droplet available after create/reuse")
     known_hosts = known_hosts_for(root, droplet)
-    reprovision = not created_droplet and (created_volume or attached_volume)
-    if (
-        not created_droplet
-        and not reprovision
-        and (probe := _ready_probe(droplet, known_hosts)).returncode != 0
-    ):
-        _ssh_failure(probe, droplet, known_hosts)
-        reprovision = not _cloud_init_running(droplet, known_hosts)
-    if reprovision:
-        _wait_ssh(droplet, known_hosts)
-        _provision(droplet, known_hosts)
-    _wait_ready(root, droplet)
-    if authorized_keys is not None:
-        try:
-            _install_authorized_keys(authorized_keys, droplet, known_hosts)
-        except HarnessError as error:
-            raise HarnessError(
-                f"{error}\nrun `tools/do_vm.py down --yes` to stop billing now"
-            ) from error
-    else:
-        _warn_missing_authorized_keys()
-    _print_summary(droplet, volume, cost)
+    if not created_droplet:
+        probe = _ready_probe(droplet, known_hosts, bootstrap)
+        if probe.returncode != 0:
+            _raise_on_host_key(probe, droplet, known_hosts)
+            if _is_auth_failure(_detail(probe)):
+                _transport_failure(probe, droplet, known_hosts)
+            if (created_volume or attached_volume) or not _cloud_init_running(
+                droplet, known_hosts, bootstrap
+            ):
+                _wait_ssh(droplet, known_hosts, bootstrap)
+                _provision(droplet, known_hosts, bootstrap, allow_format=allow_format)
+    _wait_ready(root, droplet, bootstrap)
+
+    blob = _authorized_keys_blob(bootstrap, additions, extra_chunks)
     try:
-        _print_fingerprints(droplet, known_hosts)
+        _install_authorized_keys(blob, droplet, known_hosts, bootstrap)
+    except HarnessError as error:
+        raise HarnessError(
+            f"{error}\nrun `tools/do_vm.py down --yes` to stop billing now"
+        ) from error
+    _print_summary(droplet, volume, cost, bootstrap)
+    try:
+        _print_fingerprints(droplet, known_hosts, bootstrap)
     except HarnessError as error:
         raise HarnessError(
             f"{error}\nrun `tools/do_vm.py down --yes` to stop billing now"
@@ -865,8 +1614,11 @@ def cmd_up(args: argparse.Namespace) -> int:
 
 
 def cmd_status(args: argparse.Namespace) -> int:
-    root = repo_root()
-    doctl = Doctl()
+    root = args.root
+    identity = load_identity(
+        args.identity[0] if args.identity else None, home=args.home
+    )
+    doctl = args.doctl
     droplets = doctl.tagged_droplets()
     volumes = doctl.tagged_volumes()
     if not droplets:
@@ -884,9 +1636,9 @@ def cmd_status(args: argparse.Namespace) -> int:
             f"{volume.size_gb} GiB"
         )
     for droplet in droplets:
-        _print_fingerprints(droplet, known_hosts_for(root, droplet))
+        _print_fingerprints(droplet, known_hosts_for(root, droplet), identity)
     if len(droplets) == 1:
-        print(f"ssh      ssh root@{droplets[0].ip}")
+        print(f"ssh      ssh -i {identity.path} root@{droplets[0].ip}")
         print("sync     tools/do_vm.py sync")
         print("down     tools/do_vm.py down --yes")
     return 0
@@ -914,7 +1666,7 @@ def _refuse_secrets(paths: list[PurePosixPath]) -> None:
 
 
 def _stream_tar(root: Path, paths: list[PurePosixPath], ssh: list[str]) -> None:
-    process = subprocess.Popen(ssh, stdin=subprocess.PIPE, stderr=subprocess.PIPE)
+    process = _run_stream(ssh)
     if process.stdin is None or process.stderr is None:
         raise HarnessError("could not open SSH stdin/stderr pipes")
     failure: OSError | tarfile.TarError | None = None
@@ -936,65 +1688,184 @@ def _stream_tar(root: Path, paths: list[PurePosixPath], ssh: list[str]) -> None:
     if returncode != 0 or failure is not None:
         detail = str(failure) if failure is not None else stderr or "no stderr"
         raise HarnessError(
-            f"`ssh` tar-pipe into {REMOTE_ROOT} failed ({returncode}): {detail}"
+            f"`ssh` tar-pipe into {REMOTE_STAGING} failed ({returncode}): {detail}"
         )
 
 
 def cmd_sync(args: argparse.Namespace) -> int:
-    root = repo_root()
-    droplet = _single_droplet(Doctl())
+    root = args.root
+    identity = load_identity(None, home=args.home)
+    droplet = _single_droplet(args.doctl)
     sync_paths = _pruned(_git_files(root, "--cached", "--others", "--exclude-standard"))
     _refuse_secrets(sync_paths)
     known_hosts = known_hosts_for(root, droplet)
-    _run(ssh_argv(droplet, known_hosts, f"mkdir -p {REMOTE_ROOT}"))
-    _stream_tar(
-        root, sync_paths, ssh_argv(droplet, known_hosts, f"tar -x -C {REMOTE_ROOT}")
+    _run(
+        ssh_argv(
+            droplet,
+            known_hosts,
+            identity,
+            f"rm -rf {REMOTE_STAGING} && mkdir -p {REMOTE_STAGING}",
+        )
     )
-    print(f"synced {len(sync_paths)} file(s) to {REMOTE_ROOT} on {droplet.ip}")
+    _stream_tar(
+        root,
+        sync_paths,
+        ssh_argv(droplet, known_hosts, identity, f"tar -x -C {REMOTE_STAGING}"),
+    )
+    replace = (
+        f"set -e; "
+        f"if [ -d {REMOTE_TREE}/target ]; then "
+        f"mv {REMOTE_TREE}/target {REMOTE_STAGING}/target; fi; "
+        f"rm -rf {REMOTE_TREE}; mv {REMOTE_STAGING} {REMOTE_TREE}; "
+        f"chown -R {REMOTE_USER}:{REMOTE_USER} {REMOTE_TREE}"
+    )
+    _run(ssh_argv(droplet, known_hosts, identity, replace))
+    print(f"synced {len(sync_paths)} file(s) to {REMOTE_TREE} on {droplet.ip}")
     return 0
 
 
+def suite_command(command: str) -> str:
+    """One fixed envelope for every unprivileged remote suite command."""
+    inner = (
+        f"cd {REMOTE_TREE} && exec env -i "
+        f"HOME={SUITE_HOME} TMPDIR={SUITE_HOME}/tmp "
+        f"CARGO_HOME={REMOTE_HOME}/.cargo RUSTUP_HOME={REMOTE_HOME}/.rustup "
+        f"PATH={REMOTE_HOME}/.cargo/bin:/usr/local/bin:/usr/bin:/bin "
+    ) + command
+    return f"/usr/sbin/runuser -u {REMOTE_USER} -- bash -c {shlex.quote(inner)}"
+
+
+def owner_envelope(command: str) -> str:
+    """Owner SSH envelope for forwarded commands: state on the volume, no login shell."""
+    return (
+        f"if [ -d {REMOTE_TREE} ]; then cd {REMOTE_TREE}; fi; "
+        f"export HOME={OWNER_HOME} TMPDIR={OWNER_HOME}/tmp; "
+        f"export CARGO_HOME={REMOTE_HOME}/.cargo RUSTUP_HOME={REMOTE_HOME}/.rustup; "
+        f"export PATH={REMOTE_TREE}/target/debug:{REMOTE_HOME}/.cargo/bin:"
+        "/usr/local/bin:/usr/bin:/bin; "
+        f"{command}"
+    )
+
+
+def owner_shell_envelope() -> str:
+    """Interactive owner shell: the same envelope plus the built-CLI assertion."""
+    return owner_envelope(
+        "command -v slipfork >/dev/null || "
+        "{ echo 'target/debug/slipfork missing; run tools/do_vm.py test first' >&2; "
+        "exit 1; }; "
+        "exec bash --noprofile --norc"
+    )
+
+
+def _parse_cargo_version(output: str) -> tuple[int, ...]:
+    for token in output.split():
+        parts = token.split(".")
+        if len(parts) == 3 and all(part.isdigit() for part in parts):
+            return tuple(int(part) for part in parts)
+    raise HarnessError(f"cannot parse a cargo version from: {output.strip()!r}")
+
+
 def cmd_test(args: argparse.Namespace) -> int:
-    root = repo_root()
-    if not (root / SUITE_PATH).is_file():
+    raw_identity = args.identity[0] if args.identity else None
+    root = args.root
+    missing = [
+        f"{path} ({node})" for _, path, node in SUITES if not (root / path).is_file()
+    ]
+    if missing:
         raise HarnessError(
-            f"missing live Incus conformance suite {SUITE_PATH} (delivered by M3.3); "
-            f"`{SUITE}` cannot run yet"
+            "missing live Btrfs conformance suite(s): "
+            + ", ".join(missing)
+            + f"; `{SUITE_NAME}` cannot run yet"
         )
-    droplet = _single_droplet(Doctl())
+    identity = load_identity(raw_identity, home=args.home)
+    droplet = _single_droplet(args.doctl)
     known_hosts = known_hosts_for(root, droplet)
-    remote_suite = f"{REMOTE_ROOT}/{SUITE_PATH}"
-    probe = _run(ssh_argv(droplet, known_hosts, f"test -f {remote_suite}"), check=False)
-    if probe.returncode != 0:
-        if probe.returncode == 255:
-            _ssh_failure(probe, droplet, known_hosts)
-            raise HarnessError(f"cannot reach {droplet.ip} over SSH: {_detail(probe)}")
+
+    marker = _ready_probe(droplet, known_hosts, identity)
+    if marker.returncode != 0:
+        if marker.returncode == 255:
+            _transport_failure(marker, droplet, known_hosts)
         raise HarnessError(
-            f"missing live Incus conformance suite {remote_suite} on the VM (M3.3); "
-            "run `tools/do_vm.py sync` first"
+            f"the droplet is not provisioned: {MARKER} is absent; run `tools/do_vm.py up`"
         )
-    cargo = _run(ssh_argv(droplet, known_hosts, "command -v cargo"), check=False)
+    for _, path, _ in SUITES:
+        remote = f"{REMOTE_TREE}/{path}"
+        probe = _run(
+            ssh_argv(droplet, known_hosts, identity, f"test -f {remote}"), check=False
+        )
+        if probe.returncode != 0:
+            if probe.returncode == 255:
+                _transport_failure(probe, droplet, known_hosts)
+            raise HarnessError(
+                f"missing live Btrfs conformance suite {remote} on the VM; "
+                "run `tools/do_vm.py sync` first"
+            )
+
+    cargo = _run(
+        ssh_argv(
+            droplet,
+            known_hosts,
+            identity,
+            f"{REMOTE_HOME}/.cargo/bin/cargo --version",
+        ),
+        check=False,
+    )
     if cargo.returncode != 0:
         raise HarnessError(
-            "cargo is not installed on the VM; this harness provisions ZFS + Incus only — "
-            "install Rust >= 1.85 (edition 2024) there before `test`"
+            "cargo is not installed on the VM; provisioning is incomplete — re-run "
+            "`tools/do_vm.py up`"
         )
-    command = (
-        f"cd {REMOTE_ROOT} && cargo test -p slipfork-engine --test {SUITE} "
-        "-- --test-threads=1"
+    version = _parse_cargo_version(cargo.stdout)
+    required = tuple(int(part) for part in RUST_MIN_VERSION.split("."))
+    if version < required:
+        raise HarnessError(
+            f"cargo {'.'.join(map(str, version))} is older than {RUST_MIN_VERSION}; "
+            "provisioning is incomplete — re-run `tools/do_vm.py up`"
+        )
+
+    docker = _run(
+        ssh_argv(droplet, known_hosts, identity, suite_command("docker info")),
+        check=False,
     )
-    extras = [arg for arg in args.cargo_args if arg != "--"]
-    if extras:
-        command += " " + " ".join(shlex.quote(arg) for arg in extras)
-    return _run(
-        ssh_argv(droplet, known_hosts, command), capture=False, check=False
-    ).returncode
+    if docker.returncode != 0:
+        raise HarnessError(
+            f"docker did not answer `docker info` as {REMOTE_USER}: {_detail(docker)}"
+        )
+
+    for package, _, _ in SUITES:
+        command = f"cargo test -p {package} --test {SUITE_NAME} -- --test-threads=1"
+        result = _run(
+            ssh_argv(droplet, known_hosts, identity, suite_command(command)),
+            capture=False,
+            check=False,
+        )
+        if result.returncode != 0:
+            return result.returncode
+    return 0
 
 
 def cmd_ssh(args: argparse.Namespace) -> int:
-    root = repo_root()
-    droplet = _single_droplet(Doctl())
-    argv = ssh_argv(droplet, known_hosts_for(root, droplet), None, batch=False)
+    root = args.root
+    identity = load_identity(
+        args.identity[0] if args.identity else None, home=args.home
+    )
+    droplet = _single_droplet(args.doctl)
+    forwarded = list(args.remote)
+    if forwarded and forwarded[0] == "--":
+        forwarded = forwarded[1:]
+    known_hosts = known_hosts_for(root, droplet)
+    if forwarded:
+        remote = owner_envelope(" ".join(shlex.quote(arg) for arg in forwarded))
+        argv = ssh_argv(droplet, known_hosts, identity, remote, batch=False)
+    else:
+        argv = ssh_argv(
+            droplet,
+            known_hosts,
+            identity,
+            owner_shell_envelope(),
+            batch=False,
+            tty=True,
+        )
     try:
         os.execvp("ssh", argv)
     except OSError as error:
@@ -1003,40 +1874,98 @@ def cmd_ssh(args: argparse.Namespace) -> int:
 
 
 def cmd_down(args: argparse.Namespace) -> int:
-    root = repo_root()
-    doctl = Doctl()
+    root = args.root
+    doctl = args.doctl
     droplets = doctl.tagged_droplets()
     volumes = doctl.tagged_volumes()
     if not droplets and not volumes:
         print(f"nothing to destroy: no resources tagged {TAG}")
         return 0
     print(
-        f"destroying {len(droplets)} droplet(s) and {len(volumes)} volume(s) tagged {TAG}:"
+        f"destroying {len(droplets)} droplet(s) tagged {TAG} and "
+        f"{len(volumes) if args.delete_volume else 0} volume(s):"
     )
     for droplet in droplets:
         print(f"  droplet {droplet.name} id={droplet.id} ip={droplet.ip}")
-    for volume in volumes:
-        print(f"  volume  {volume.name} id={volume.id} {volume.size_gb} GiB")
+    if args.delete_volume:
+        for volume in volumes:
+            print(f"  volume  {volume.name} id={volume.id} {volume.size_gb} GiB")
+    else:
+        for volume in volumes:
+            print(
+                f"  volume  {volume.name} id={volume.id} {volume.size_gb} GiB (kept; "
+                "pass --delete-volume to destroy it)"
+            )
     _confirm("destroy these tagged resources permanently?", args.yes)
     for droplet in droplets:
         _run(["doctl", "compute", "droplet", "delete", str(droplet.id), "--force"])
         known_hosts_for(root, droplet).unlink(missing_ok=True)
-    for volume in volumes:
-        _run(["doctl", "compute", "volume", "delete", volume.id, "--force"])
-    print(f"destroyed {len(droplets)} droplet(s) and {len(volumes)} volume(s)")
+    if args.delete_volume:
+        for volume in volumes:
+            _run(["doctl", "compute", "volume", "delete", volume.id, "--force"])
+
+    def probe() -> bool | None:
+        remaining_droplets = doctl.tagged_droplets()
+        remaining_volumes = doctl.tagged_volumes() if args.delete_volume else []
+        return True if not remaining_droplets and not remaining_volumes else None
+
+    def on_timeout() -> HarnessError:
+        remaining_droplets = doctl.tagged_droplets()
+        remaining_volumes = doctl.tagged_volumes() if args.delete_volume else []
+        survivors = [
+            *(f"droplet {item.id}" for item in remaining_droplets),
+            *(f"volume {item.id}" for item in remaining_volumes),
+        ]
+        return HarnessError(
+            f"resources tagged {TAG} survived deletion after "
+            f"{DOWN_POLL_TIMEOUT_SECONDS} seconds: {', '.join(survivors)}"
+        )
+
+    _wait_until(probe, timeout_seconds=DOWN_POLL_TIMEOUT_SECONDS, on_timeout=on_timeout)
+    print(
+        f"destroyed {len(droplets)} droplet(s) and "
+        f"{len(volumes) if args.delete_volume else 0} volume(s)"
+    )
+    if not args.delete_volume and volumes:
+        print(
+            f"volume   kept {len(volumes)} tagged volume(s); they still bill until "
+            "`tools/do_vm.py down --yes --delete-volume`"
+        )
     return 0
 
 
-def build_parser() -> argparse.ArgumentParser:
+def _add_identity(
+    parser: argparse.ArgumentParser, *, home: Path, for_up: bool = False
+) -> None:
+    default = default_identity_path(home)
+    if for_up:
+        help_text = (
+            "additional SSH public key installed for root and slipfork (repeatable); the "
+            f"default {default} is always the transport identity"
+        )
+    else:
+        help_text = f"SSH private key (default: {default}); repeatable, the first listed path is used"
+    parser.add_argument(
+        "--identity",
+        action="append",
+        default=[],
+        metavar="PATH",
+        help=help_text,
+    )
+
+
+def build_parser(home: Path) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="tools/do_vm.py",
-        description="DigitalOcean dev-VM harness for live IncusEngine tests.",
+        description=(
+            "DigitalOcean dev-VM harness: Btrfs volume, docker/Rust, AppArmor userns."
+        ),
         epilog="See docs/design/do-vm-harness.md.",
     )
     commands = parser.add_subparsers(dest="command", required=True, metavar="command")
 
     up = commands.add_parser(
-        "up", help="create the tagged droplet + ZFS volume and wait for Incus"
+        "up", help="create or reconcile the tagged droplet + Btrfs volume"
     )
     up.add_argument(
         "--region",
@@ -1054,21 +1983,23 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_VOLUME_GB,
         help=f"block-storage volume size in GiB (default: {DEFAULT_VOLUME_GB})",
     )
-    up.add_argument(
-        "--ssh-key",
-        action="append",
-        default=[],
-        metavar="NAME_OR_ID",
-        help="restrict the droplet to this visible key (repeatable); default: every visible key",
-    )
+    _add_identity(up, home=home, for_up=True)
     up.add_argument(
         "--authorized-key",
         action="append",
         default=[],
         metavar="PATH",
         help=(
-            "append this public-key file to /root/.ssh/authorized_keys after cloud-init "
-            "(repeatable; idempotent via sort -u)"
+            "install this public-key file for root and slipfork after boot (repeatable; "
+            "idempotent via sort -u)"
+        ),
+    )
+    up.add_argument(
+        "--format-blank",
+        action="store_true",
+        help=(
+            "format a pre-existing blank volume after proving its first 8 MiB are all zero; "
+            "DESTROYS any data on the volume; never overrides a detected foreign signature"
         ),
     )
     up.add_argument(
@@ -1079,39 +2010,56 @@ def build_parser() -> argparse.ArgumentParser:
     status = commands.add_parser(
         "status", help="report tagged droplet and volume state"
     )
+    _add_identity(status, home=home)
     status.set_defaults(handler=cmd_status)
 
     sync = commands.add_parser(
-        "sync", help="tar-pipe the working tree to /root/slipfork"
+        "sync", help=f"tar-pipe the working tree to {REMOTE_TREE}"
     )
     sync.set_defaults(handler=cmd_sync)
 
     test = commands.add_parser(
-        "test", help="stream the live IncusEngine conformance suite"
+        "test", help="stream the live Btrfs kernel conformance suites"
     )
-    test.add_argument(
-        "cargo_args",
-        nargs=argparse.REMAINDER,
-        metavar="-- <cargo args>",
-        help="extra arguments forwarded to `cargo test` after `--test-threads=1`",
-    )
+    _add_identity(test, home=home)
     test.set_defaults(handler=cmd_test)
 
     ssh = commands.add_parser("ssh", help="open an interactive root SSH session")
+    _add_identity(ssh, home=home)
+    ssh.add_argument(
+        "remote",
+        nargs=argparse.REMAINDER,
+        metavar="-- <remote command>",
+        help="run this command in the owner envelope instead of an interactive shell",
+    )
     ssh.set_defaults(handler=cmd_ssh)
 
-    down = commands.add_parser("down", help="destroy the tagged droplet and volume")
+    down = commands.add_parser(
+        "down", help="destroy the tagged droplet (keeps the volume by default)"
+    )
     down.add_argument(
         "--yes", action="store_true", help="skip the destructive confirmation prompt"
+    )
+    down.add_argument(
+        "--delete-volume",
+        action="store_true",
+        help="also destroy the tagged Btrfs volume and its worlds",
     )
     down.set_defaults(handler=cmd_down)
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+    home = Path.home()
+    args = build_parser(home).parse_args(argv)
     try:
+        args.doctl = Doctl()
+        args.root = repo_root()
+        args.home = home
         return int(args.handler(args))
+    except ProvisioningError as error:
+        print(f"error: {error}", file=sys.stderr)
+        return error.returncode
     except HarnessError as error:
         print(f"error: {error}", file=sys.stderr)
         return 2

@@ -43,3 +43,15 @@ edited fields
 ## 2026-11-16T21:52 [lead]
 
 OWNER WIRE-PROTOCOL DIRECTIVE (2026-11-16): STP v1 wire serialization is STRICTLY CBOR (RFC 8949) over the inherited SLIPFORK_PROTOCOL_FD socketpair — NEVER NDJSON/JSON. Binding for all Phase 2 design and docs; zero Phase 1 docs may say NDJSON for STP v1.
+
+## 2026-11-16T23:50 [lead]
+
+edited fields
+
+## 2026-11-16T23:50 [lead]
+
+OWNER REGROUP RULING (2026-11-16, binding): this subtree ships as 0.1.0 on release/0.1.0 (nothing merged to develop yet). M3.25 and M3.1 are committed done. M3.2 (STP v1) and all M3.2.* children are PARKED for 0.2.0 — do not activate. Chain: M3.20 -> M3.12 -> M3.13 -> M3.14/M3.15 -> M3.21 -> M3.16/M3.17/M3.18 -> M3.19 -> M3.22/M3.23/M3.24; hard stop before M3.2, return live 0.1.0 DO VM demo details to conductor. Version 0.1.0 in Cargo.toml/package.json/CHANGELOG/zensical.toml/docs.
+
+## 2026-11-17T00:42 [lead]
+
+BLOCKER (H-005): the tagged DO volume 131a2765 is ZFS (incuspool), not Btrfs; M3.16 is blocked pending owner authorization to wipe it (A) or create a fresh Btrfs volume (B). Droplet currently absent, volume unattached. M3.12+ code work continues independently; M3.19 live verification waits on H-005.

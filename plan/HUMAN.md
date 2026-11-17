@@ -40,3 +40,11 @@ Host `incusd` exposure for M2 live hypervisor integration (`ADR-0002`): This Ope
 **Answer:**
 SUPERSEDED BY OWNER RULING (2026-11-16): Incus is permanently deleted from Slipfork. Option A (unified Btrfs subvolumes + Linux namespaces / `crun`, `BtrfsEngine`) is the sole `WorldEngine` with zero backward compatibility and zero fallbacks.
 
+## H-005 [closed] [missing-input] (node M3.16)
+
+- asked: 2026-11-17T00:40 by lead
+
+DESTRUCTIVE-ACTION AUTHORIZATION NEEDED: DO volume 131a2765-e1ba-11f1-b67b-d6114774f516 (slipfork-dev-vm, ams3, 100 GiB) is NOT Btrfs as believed — blkid reports GPT+PMBR with /dev/sda1 TYPE="zfs_member" LABEL="incuspool" (the deleted M3.5 Incus/ZFS substrate). M3.16's fail-closed rule forbids formatting it without your word. Droplet 619867764 was recreated then destroyed by the harness's down --yes; the volume is now unattached and no droplet exists. Options: (A) RECOMMENDED — authorize `wipefs -a` + `mkfs.btrfs -f` on this tagged dev volume (its only content is the obsolete Incus ZFS pool; the engine is deleted by M3.21) so do_vm.py up provisions it and M3.19 can run live; (B) create a fresh 100 GiB Btrfs volume in ams3 and retag it slipfork-dev-vm, leaving the ZFS volume for you to delete (extra ~$10/mo until removed). Reply A or B (or say 'wipe the volume').
+
+**Answer:**
+

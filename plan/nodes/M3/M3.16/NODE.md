@@ -2,16 +2,16 @@
 id: M3.16
 title: "tools/do_vm.py: Btrfs volume, docker/Rust, AppArmor userns, persistent --identity (zero ZFS/Incus)"
 kind: task
-status: ready
+status: done
 owner: implementer
 priority: 3
 depends_on: [M3.10, M3.15]
 paths: [tools/do_vm.py, tools/tests/test_do_vm.py]
-attempts: 0
+attempts: 1
 max_attempts: 3
 escalation: none
 created: "2026-11-16T16:58"
-updated: "2026-11-16T21:44"
+updated: "2026-11-17T03:14"
 ---
 
 # Goal
@@ -49,6 +49,15 @@ uvx --offline ruff check tools && uvx --offline ruff format --check tools
 ```
 
 Expected: both `--help` invocations exit 0 and list the six commands plus `--identity`; the inverted `grep`s print nothing; the four `grep`s find `mkfs.btrfs`, the mount options, `identity`, and the AppArmor profile; `pytest -q tools/tests` and both `ruff` commands exit 0.
+
+## Lead ruling — live VM access (owner regroup, 2026-11-16, binding)
+
+Live state to design against: droplet `619867764` (`slipfork-dev-vm`, `209.38.107.207`, `ams3`, tag `slipfork-dev-vm`) is running with the 100 GiB volume `131a2765-e1ba-11f1-b67b-d6114774f516` attached and already formatted Btrfs; the old `~/.cache/slipfork/do-vm/` identity was lost, so **no local key opens the droplet today**.
+
+1. `up` generates `<identity>` (`~/.cache/slipfork/do-vm/id_ed25519`, `0600`, `ed25519`, no passphrase), imports `<identity>.pub` into the DO account when `doctl` cannot see it, and installs the union of `<identity>.pub` **and every `--authorized-key <PATH>`** (repeatable; the owner's key path is `~/.cache/slipfork/remy-doc.pub`) into `authorized_keys` for **both `root` and the `slipfork` user** (create `slipfork` with a home and the AppArmor/userns-capable environment; no passwordless sudo requirement).
+2. When the tagged droplet exists but the generated or declared keys cannot open it, `up` **detaches the volume, destroys the droplet, and recreates it on the same volume** — never reformats a volume whose `blkid` reports `TYPE="btrfs"`. Confirm detach completion before destroy and fail closed naming the device/rc/stderr otherwise.
+3. `down` keeps the volume by default (`--delete-volume` to drop it) so the Btrfs filesystem and any built images survive.
+4. No account-specific literals, no third-party repository names, no `shell=True`.
 
 # Terminology Rule (OWNER, 2026-11-16 — binding)
 

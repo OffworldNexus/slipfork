@@ -796,3 +796,49 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-16T23:48 [M3.25] (lead) done: plan validate + guard.py + make docs-check (zensical --strict, check_docs_honesty OK) green; docs-only over exactly the 7 declared paths.
 - 2026-11-16T23:50 [M3.1] (lead) OWNER+CONDUCTOR RULING (2026-11-16): M3.1 closes on the harness contract. Non-world gates on the final hashes all green: 79 pytest tool tests, cargo check --wor
 - 2026-11-16T23:50 [M3.1] (lead) status review -> done
+- 2026-11-16T23:50 [M3] (lead) edited fields
+- 2026-11-16T23:50 [M3] (lead) OWNER REGROUP RULING (2026-11-16, binding): this subtree ships as 0.1.0 on release/0.1.0 (nothing merged to develop yet). M3.25 and M3.1 are committed done. M3.
+- 2026-11-16T23:50 [M3.2] (lead) OWNER REGROUP RULING (2026-11-16, binding): M3.2 (STP v1) and every M3.2.* child are PARKED for 0.2.0. Do not activate any of them in this run. The 0.1.0 releas
+- 2026-11-16T23:50 [M3.20] (lead) status ready -> active
+- 2026-11-16T23:51 [M3.20] (lead) attempt 1/3 started
+- 2026-11-16T23:51 [M3.20] (lead) base ca5b19175d139a0b042b6477268c89d231a10a2a
+- 2026-11-16T23:51 [M3.18] (lead) OWNER REGROUP RULING (binding): shipped version is 0.1.0 on release/0.1.0, NOT 0.3.0/0.2.0. Every published page you touch (README.md, docs/index.md, docs/getti
+- 2026-11-16T23:51 [M3.23] (lead) OWNER REGROUP RULING (binding): final shipped version is 0.1.0. In this hygiene gate set Cargo.toml workspace version, crates/* Cargo.toml package versions, pac
+- 2026-11-16T23:51 [M3.23] (lead) edited fields
+- 2026-11-16T23:52 [M3.12] (lead) edited fields
+- 2026-11-16T23:52 [M3.12] (lead) LEAD RULING on the test-driver seam (verified by experiment): the shared TestTreeDriver lives in the publish=false crates/slipfork-testkit crate (absolute dev-d
+- 2026-11-16T23:52 [M3.16] (lead) status ready -> active
+- 2026-11-16T23:53 [M3.16] (lead) attempt 1/3 started
+- 2026-11-16T23:53 [M3.16] (lead) base ca5b19175d139a0b042b6477268c89d231a10a2a
+- 2026-11-17T00:28 [M3.20] (lead) worker report: SnapshotMode/StatefulRam gone, StubWorldEngine replaces FakeIncus, all 31 edge tests green, 20/20 bun at its run, workspace check/clippy/docs-che
+- 2026-11-17T00:28 [M3.20] (lead) status active -> review
+- 2026-11-17T00:40 HUMAN H-005 [missing-input] opened by lead (node M3.16)
+- 2026-11-17T00:40 [M3.16] (lead) status active -> blocked
+- 2026-11-17T00:40 [M3.16] (lead) BLOCKED (missing-input): volume carries ZFS incuspool, not Btrfs. Static acceptance green (104 pytest, ruff, guard, help, greps). Live proof fails closed at blk
+- 2026-11-17T00:42 [M3] (lead) BLOCKER (H-005): the tagged DO volume 131a2765 is ZFS (incuspool), not Btrfs; M3.16 is blocked pending owner authorization to wipe it (A) or create a fresh Btrf
+- 2026-11-17T00:44 [M3.22] (lead) status ready -> active
+- 2026-11-17T00:44 [M3.22] (lead) attempt 1/3 started
+- 2026-11-17T00:44 [M3.22] (lead) base ca5b19175d139a0b042b6477268c89d231a10a2a
+- 2026-11-17T00:44 [M3.22] (lead) LEAD: started ahead of M3.15 (paths disjoint from the active M3.20 fix and from M3.15's src/**). M3.15 will consume the moved tests/support doubles afterwards. 
+- 2026-11-17T00:52 [M3.16] (lead) OWNER ANSWER (H-005, verbatim): 'Wipe ZFS & format Btrfs (Recommended)'. One-time authorized wipe of volume 131a2765-e1ba-11f1-b67b-d6114774f516 (/dev/sda): wip
+- 2026-11-17T00:52 HUMAN H-005 closed by lead
+- 2026-11-17T00:54 [M3.16] (lead) status blocked -> ready
+- 2026-11-17T00:54 [M3.16] (lead) status ready -> active
+- 2026-11-17T00:54 [M3.16] (lead) H-005 closed by owner: wipe authorized. Resuming attempt 1 (no bump).
+- 2026-11-17T01:29 [M3.22] (lead) status active -> review
+- 2026-11-17T01:29 [M3.22] (lead) worker: feature table + optional deps deleted, doubles in slipfork/tests/support shared by #[path] with slipfork-ospp tests, owned suite 2/4 green (2 reds = leg
+- 2026-11-17T01:32 [M3.16] (lead) status active -> review
+- 2026-11-17T01:32 [M3.16] (lead) LIVE GREEN after owner-authorized H-005 wipe: /dev/sda Btrfs LABEL=slipfork UUID=c3b7822d-…, findmnt rw,noatime,user_subvol_rm_allowed, statfs 9123683e, marker 
+- 2026-11-17T01:32 [M3.23] (lead) ADD from M3.16 live proof: docs/design/do-vm-harness.md must record (a) the AppArmor userns profile header requires both bare paths in one rule set /{a,b} (two 
+- 2026-11-17T01:33 [M3.22] (lead) edited fields
+- 2026-11-17T01:33 [M3.22] (lead) LEAD RULING after quad gate (ioc+cruft+legality MAJOR converge): the #path cross-package include is rejected. Create publish=false workspace crate crates/slipfo
+- 2026-11-17T01:34 [M3.19] (lead) LIVE VM READY (from M3.16, owner-authorized H-005 wipe): droplet 620073485 'slipfork-dev-vm' ams3, IPv4 165.232.86.174, LEFT UP. Volume 131a2765 Btrfs LABEL=sli
+- 2026-11-17T01:40 [M3.15] (lead) ADD (cross-node ruling from M3.16 ioc gate): your 'daemon unit --only apparmor' output must byte-match tools/do_vm.py's render_apparmor_body() text (the harness
+- 2026-11-17T01:40 [M3.16] (lead) LEAD RULING (legality BLOCKER, owner-safety): pre-existing-volume formatting now requires explicit --format-blank + proof (blkid rc2, wipefs -n clean, first 8 M
+- 2026-11-17T01:40 [M3.15] (lead) edited fields
+- 2026-11-17T02:44 [M3.22] (lead) edited fields
+- 2026-11-17T02:44 [M3.22] (lead) Paths widened by lead: ARCHITECTURE.md (its M2 residue sentence names the wrong destination and must be corrected in this node).
+- 2026-11-17T02:47 [M3.22] (lead) LEAD record corrections from legality gate: base had the test-server selector in [dev-dependencies] (not production [dependencies]); invariants 1/4 rewritten to
+- 2026-11-17T03:02 [M3.16] (lead) Gate policy from round 4: stop at the first round with no BLOCKER/MAJOR; remaining MINORs are logged as followups (M3.23 doc sweep / M3.15 byte-equivalence) ins
+- 2026-11-17T03:02 [M3.22] (lead) Gate policy: ioc PASS, legality PASS (both with record MINORs only), cruft fixes in flight. If the next cruft/functional round has no BLOCKER/MAJOR, accept and 
+- 2026-11-17T03:14 [M3.16] (lead) status review -> done
