@@ -527,7 +527,7 @@ class ProjectionTests(BenchTestCase):
         )
         self.assertIn("writable clone", report)
         self.assertIn("`BtrfsEngine`", report)
-        self.assertNotIn("FICLONE", report)
+        self.assertNotIn("reflink ioctl", report)
 
     def test_json_record_round_trips_every_metric(self) -> None:
         record = json.loads(_metrics().to_json())

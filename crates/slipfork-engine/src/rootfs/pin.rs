@@ -24,7 +24,7 @@ pub struct CrunPin {
     pub release_url: &'static str,
 }
 
-/// The only measured pin (`docs/design/world-base-image.md` §7.1).
+/// The only measured pin (`docs/design/world-base-image.md` §8.1).
 pub const CRUN_PIN_X86_64: CrunPin = CrunPin {
     version: "1.20",
     arch: "x86_64",

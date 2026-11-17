@@ -105,9 +105,11 @@ pub enum Commands {
     /// List worlds with state, worktree path, and exactly one origin URL.
     List,
 
-    /// Preview or reap orphaned worlds and snapshots.
+    /// Preview (default) or reap worlds whose checkout directory is gone.
+    ///
+    /// Sealed snapshot bases and the rootfs/OCI caches are retained, not collected.
     Prune {
-        /// Preview only; delete nothing.
+        /// Preview only; delete nothing (the default when `--yes` is absent).
         #[arg(long, conflicts_with = "yes")]
         dry_run: bool,
         /// Reap what the preview reports.
@@ -378,6 +380,9 @@ mod tests {
 
     #[test]
     fn prune_flags_are_mutually_exclusive() {
+        assert!(Cli::try_parse_from(["slipfork", "prune"]).is_ok());
+        assert!(Cli::try_parse_from(["slipfork", "prune", "--yes"]).is_ok());
+        assert!(Cli::try_parse_from(["slipfork", "prune", "--dry-run"]).is_ok());
         assert!(Cli::try_parse_from(["slipfork", "prune", "--dry-run", "--yes"]).is_err());
     }
 

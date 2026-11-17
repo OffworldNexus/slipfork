@@ -9,7 +9,8 @@ Inspects tracked + staged + untracked non-ignored files and refuses:
 1. Any `.env` or `.env.*` secret file (only `.env.example` allowed).
 2. Any file > 5 MiB or compiled archive/binary artefact outside `tests/golden/`.
 3. Any `[derived]`, `[guessed]`, or `[hallucinated]` marker inside `docs/` specs/designs/research
-   (learned from poc-orange: missing external facts must halt in `HUMAN.md`, never be invented!).
+   (learned from an unrelated external audit: missing external facts must halt in `HUMAN.md`,
+   never be invented!).
 """
 
 from __future__ import annotations

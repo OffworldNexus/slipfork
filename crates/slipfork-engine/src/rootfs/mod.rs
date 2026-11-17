@@ -547,7 +547,7 @@ pub enum BaseImageError {
     },
     /// The cache would live on `tmpfs`, where extracted rootfs trees may never be stored.
     #[error(
-        "error: Slipfork's rootfs cache root '{path}' is on tmpfs (mount '{mount_point}'); extracted world root filesystems must live on disk\n  fix: point --state-dir at an XFS, Btrfs, or ext4 filesystem — never /tmp or /dev/shm"
+        "error: Slipfork's rootfs cache root '{path}' is on tmpfs (mount '{mount_point}'); extracted world root filesystems must live on disk\n  fix: point --state-dir at a Btrfs filesystem mounted with -o user_subvol_rm_allowed,noatime — never /tmp or /dev/shm"
     )]
     CacheOnTmpfs {
         /// Cache root path.

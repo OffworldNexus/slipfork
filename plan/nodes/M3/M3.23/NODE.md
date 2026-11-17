@@ -2,16 +2,26 @@
 id: M3.23
 title: "Docs hygiene gate: purge Option A/B and Spike A/B framing plus stale post-pivot engine residue from ARCHITECTURE.md, README.md, docs/, crates/, tools/"
 kind: task
-status: ready
+status: active
 owner: implementer
 priority: 5
-depends_on: [M3.11, M3.18, M3.19, M3.21, M3.22]
-paths: [ARCHITECTURE.md, README.md, "docs/**", "crates/**", "tools/**", "packages/**"]
-attempts: 0
+depends_on: [M3.11, M3.18, M3.21, M3.22]
+paths:
+  - ARCHITECTURE.md
+  - README.md
+  - "docs/**"
+  - "crates/**"
+  - "tools/**"
+  - "packages/**"
+  - Cargo.toml
+  - Cargo.lock
+  - CHANGELOG.md
+  - zensical.toml
+attempts: 1
 max_attempts: 3
 escalation: none
 created: "2026-11-16T18:43"
-updated: "2026-11-16T18:59"
+updated: "2026-11-17T13:42"
 ---
 
 # Goal

@@ -270,7 +270,6 @@ Service=weaver-server.service
 | `weed` / `seaweedfs` | — | absent |
 | `socat` | — | absent |
 | `caddy`, `nginx` | — | absent |
-| `incus`, `incusd` | — | absent; `/var/lib/incus/unix.socket` does not exist |
 | `docker` | `/usr/bin/docker` | daemon socket `/var/run/docker.sock` present (`root:docker`, `srw-rw----`); user `remy` is in group `docker` |
 | `nft`, `iptables`, `ip`, `unshare`, `nsenter` | `/usr/sbin`, `/usr/bin` | present |
 | `nc`, `jq`, `curl` | `/usr/bin` | present |

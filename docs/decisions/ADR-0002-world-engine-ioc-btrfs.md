@@ -1,6 +1,6 @@
 # ADR-0002: `WorldEngine` IoC Contract — `BtrfsEngine` Constructor DI, Engine-Owned `ReadinessProbe`, and Shared `$UID:$GID` Mounts
 
-- **Status:** Accepted — rewritten in place for M3 (`0.3.0`) `BtrfsEngine` target state (`ADR-0010`; `H-004` closed; `ADR-0009` `Dockerfile` `L0` rootfs + daemonless `crun` OCI backing services; implemented across `M3.20`, `M3.12`–`M3.15`, and `M3.21`)
+- **Status:** Accepted — rewritten in place for M3 (`0.1.0`) `BtrfsEngine` target state (`ADR-0010`; `H-004` closed; `ADR-0009` `Dockerfile` `L0` rootfs + daemonless `crun` OCI backing services; implemented across `M3.20`, `M3.12`–`M3.15`, and `M3.21`)
 - **Date:** 2026-11-16
 
 ## Context

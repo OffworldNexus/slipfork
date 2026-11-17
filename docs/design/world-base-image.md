@@ -94,7 +94,7 @@ There is **no** probe-and-degrade path, no alternate filesystem, and no fallback
 ├── worlds/<world_id>/                        # ONE writable Btrfs subvolume per live world
 │   ├── rootfs/                               # $UID:$GID-owned L0 tree, read-only at `/` in the world
 │   ├── state/pgdata/<id>/                    # bind source for /var/lib/postgresql/data in postgres:<v>
-│   ├── state/redis/<id>/                     # bind source for /data in redis:<v> (--appendonly yes)
+│   ├── state/redis/<id>/                     # bind source for /data in redis:<v>
 │   ├── state/s3/                             # bind source for /data in the seaweedfs container
 │   └── home/                                 # world $HOME (/.slipfork/home)
 ├── worlds/seed-<base_key_sha12>/             # TRANSIENT seed subvolume (sealed, then destroyed, §2.3)
@@ -290,14 +290,14 @@ The builder's work ends here: it caches the extracted tree immutably at `<state_
 | `snow.yml` Declaration | Resolved OCI Image | In-World Loopback Bind | State Subdir in World Subvolume (RW) | Container Path | `OciRootfs.readiness` (`M3.13`/`M3.15` target state) |
 |---|---|---|---|---|---|
 | `resources.pg_clusters: [{ id, version: "<v>" }]` | `docker.io/library/postgres:<v>` (e.g. `postgres:18`) | `127.0.0.1:5432` (one cluster per world) | `<subvol>/state/pgdata/<id>` → `/var/lib/slipfork/state/pgdata/<id>` | `/var/lib/postgresql/data` | `Exec { port: 5432, argv: ["psql", "-U", "postgres", "-Atc", "SELECT 1"], timeout }` |
-| `resources.redis_clusters: [{ id, version: "<v>" }]` | `docker.io/library/redis:<v>` (e.g. `redis:8`) | `127.0.0.1:6379` (one cluster per world) | `<subvol>/state/redis/<id>` → `/var/lib/slipfork/state/redis/<id>` | `/data` (`--appendonly yes`) | `Exec { port: 6379, argv: ["redis-cli", "PING"], timeout }` |
+| `resources.redis_clusters: [{ id, version: "<v>" }]` | `docker.io/library/redis:<v>` (e.g. `redis:8`) | `127.0.0.1:6379` (one cluster per world) | `<subvol>/state/redis/<id>` → `/var/lib/slipfork/state/redis/<id>` | `/data` | `Exec { port: 6379, argv: ["redis-cli", "PING"], timeout }` |
 | `resources.s3_buckets: [...]` (when non-empty & local S3 active) | `docker.io/chrislusf/seaweedfs:<PINNED_VER>@sha256:<PINNED_HEX>` | `127.0.0.1:9000` | `<subvol>/state/s3` → `/var/lib/slipfork/state/s3` | `/data` | `TcpPort { port: 9000, timeout }` |
 
 The shipped SeaweedFS argv never resolves DNS: `weed server -dir=/data -ip=127.0.0.1 -ip.bind=127.0.0.1 -s3 -s3.port=9000 -s3.ip.bind=127.0.0.1`.
 
 One cluster per world is the supported shape in this design: the shipped service specs give every `pg_clusters` / `redis_clusters` entry the same in-world port (`5432` / `6379`) inside the one shared `netns`, so a second cluster needs its own loopback port, which no node currently assigns.
 
-Each `OciRootfs` materialized into `WorldRootfs::service_images` carries `{ digest, rootfs, config, readiness }`. `readiness` has exactly one author — `BaseImageBuilder`, at materialization — and `slipforkd`'s service-spec builder passes `oci_rootfs.readiness` through to `ServiceSpec.readiness` unchanged, with **zero `match BackingServiceKey` ladder** (`ADR-0002` §2, `ADR-0009` §2). That builder owns the manifest mapping above: the `ServiceSpec.id` (`pg_clusters.<cluster>`, `redis_clusters.<id>`, `seaweedfs` — the shipped ids, one per declared cluster), per-service `argv` such as `--appendonly yes` or the `weed server` line below, and `StateSubdirMount`; `BackingServiceKey` (`postgres:<v>`, `redis:<v>`, `seaweedfs`) stays the image identity used to look the container rootfs up in `WorldRootfs::service_images`. `BtrfsEngine` synthesizes the container's runtime bundle from the spec (§4.1 #5).
+Each `OciRootfs` materialized into `WorldRootfs::service_images` carries `{ digest, rootfs, config, readiness }`. `readiness` has exactly one author — `BaseImageBuilder`, at materialization — and `slipforkd`'s service-spec builder passes `oci_rootfs.readiness` through to `ServiceSpec.readiness` unchanged, with **zero `match BackingServiceKey` ladder** (`ADR-0002` §2, `ADR-0009` §2). That builder owns the manifest mapping above: the `ServiceSpec.id` (`pg_clusters.<cluster>`, `redis_clusters.<id>`, `s3_buckets` — the shipped ids; one PostgreSQL/Redis service per declared cluster and one SeaweedFS service when any bucket is declared), per-service `argv` such as the `weed server` line below, and `StateSubdirMount`; `BackingServiceKey` (`postgres:<v>`, `redis:<v>`, `seaweedfs`) stays the image identity used to look the container rootfs up in `WorldRootfs::service_images`. `BtrfsEngine` synthesizes the container's runtime bundle from the spec (§4.1 #5).
 
 `postgres:<v>` starts through its own `docker-entrypoint.sh postgres`, whose superuser comes from `POSTGRES_USER` (default `postgres`), so the readiness probe's `-U postgres` resolves whether `$UID` maps to `remy` or `runner`; the cluster never depends on the OS user name that owns the state directory. Each container's OCI runtime bundle is synthesized per service by `BtrfsEngine::spawn_service` (`M3.13` target state) at `<control_dir>/oci/<service_id>/config.json` (namespaces, identity maps, `readonly: true` rootfs, state and readiness mounts), and `crun --root <control_dir>/oci-run` keeps all runtime state inside the world's control directory.
 
@@ -599,7 +599,7 @@ Missing tooling on the VM (`docker`, `btrfs-progs`, and the SHA-256-pinned `crun
 
 ## 9. Implementation Sequencing (`M3.7`–`M3.25`)
 
-The `L0` / backing-service surfaces described here shipped in `0.2.0` by `M2.26`–`M2.29` (`WorldImageConfig`, `WorldRootfs` + `DockerfileStageBuilder`, `ServiceRuntime::OciContainer`, daemon wiring); `OciRootfs.readiness`, the unified subvolume, and the Btrfs lifecycle are `M3.13`/`M3.15` target state. Every row below owns a disjoint path set recorded in `plan/nodes/M3/<id>/NODE.md` — that file, not this table, is the authority on paths.
+The `L0` / backing-service surfaces described here shipped in `0.1.0` by `M2.26`–`M2.29` (`WorldImageConfig`, `WorldRootfs` + `DockerfileStageBuilder`, `ServiceRuntime::OciContainer`, daemon wiring); `OciRootfs.readiness`, the unified subvolume, and the Btrfs lifecycle are `M3.13`/`M3.15` target state. Every row below owns a disjoint path set recorded in `plan/nodes/M3/<id>/NODE.md` — that file, not this table, is the authority on paths.
 
 | Node | `depends_on` | Scope |
 |---|---|---|
@@ -608,7 +608,7 @@ The `L0` / backing-service surfaces described here shipped in `0.2.0` by `M2.26`
 | **`M3.9`** *(done)* | `[M3.7, M3.25]` | Target DX: `slipfork doctor` Btrfs fields, `nsenter` world entry, `crun exec` service entry. |
 | **`M3.10`** *(done)* | `[M3.7, M3.25]` | Btrfs volume + `crun` + AppArmor `userns` + persistent `--identity` harness design. |
 | **`M3.11`** *(done)* | `[M3.7]` | Records the snapshot / clone / warm-SQL / RSS measurements in `docs/research/btrfs-crun-benchmarks.md`, which this document cites. |
-| **`M3.20`** | `[M3.1, M3.7]` | Aligns `trait WorldEngine` (distinct RO-snapshot vs writable-clone signatures, no `SnapshotMode`). |
+| **`M3.20`** | `[M3.1, M3.7]` | Aligns `trait WorldEngine` (distinct RO-snapshot vs writable-clone signatures, no snapshot-mode flags). |
 | **`M3.23`** | `[M3.11, M3.18, M3.19, M3.21, M3.22]` | Docs hygiene gate: purge alternative-architecture framing and stale post-pivot engine residue from `ARCHITECTURE.md`, `README.md`, `docs/`, `crates/`, `tools/`. |
 | **`M3.24`** | `[M3.1]` | Bounded-wait consolidation, orphaned `world-init` reaping, and `rs-test-list` comment accuracy. |
 | **`M3.25`** | `[M3.7]` | Design-of-record corrections: `doctor` host-probe DI seam, `ensure_supported` vs `probe` split, Rule 3 static-only check, staged `prune` GC, world-identity spelling. |

@@ -1,4 +1,4 @@
-# `snow.yml` Modes & Secrets (`0.2.0`)
+# `snow.yml` Modes & Secrets (`0.1.0`)
 
 `modes:` is the one place environment differences live. `modes.all` carries the wiring every environment shares; each named mode adds, overrides, or removes the rest. `slipfork snow resolve --mode <mode>` renders the result and persists `!!` secrets.
 
@@ -14,7 +14,7 @@ images:
 components:
   - id: api
     image: api
-    run_command: gunicorn app.main:app --bind 0.0.0.0:${{ components::api.private_port }}
+    run_command: gunicorn app.main:app --bind 0.0.0.0:8000
     envs: [api]
   - id: mailpit
     image: mailpit
@@ -48,12 +48,14 @@ modes:
   local:
     components:
       api:
-        run_command: uv run uvicorn app.main:app --host 127.0.0.1 --port ${{ components::api.private_port }} --reload
+        run_command: uv run uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
     envs:
       api:
         DEBUG: 'True'
         AWS_S3_ENDPOINT_URL: '${{ resources::s3_buckets.media.endpoint_url }}'
 ```
+
+`run_command` is passed verbatim to `sh -eu -c`, so it is **not** expression-templated: name the same literal port you declared in `ingresses`/`internal_ports` (here `8000`). `${{ ... }}` expressions belong in `envs` values, not in commands.
 
 ---
 
@@ -121,7 +123,7 @@ The command exits `1` and prints nothing on stdout; any `!!` secret already reac
 - Slipfork assigns the origin when it materializes the world; a provider never supplies it, and it is never baked into a reusable snapshot (`ADR-0005` §1).
 - `slipfork snow resolve` renders canonical-world coordinates, so `resources::app.url` is `http://<project>.localhost` today.
 - Local hosts follow `(<domain>.)?(<fork>.)?<project>.localhost[:<port>]`, parsed by `LocalHostRoute::parse(&project, &snow.domain_ids(), host_header)`. `domains[].id` and fork names are disjoint single lowercase DNS labels, and fork names never start with `test-`.
-- `${{ domains::<ID> }}` has no provider in `0.2.0`; it fails closed as a missing value. The single-origin edge derives local `domains::<id>` values itself (`ADR-0005` §1).
+- `${{ domains::<ID> }}` has no provider in `0.1.0`; it fails closed as a missing value. The single-origin edge derives local `domains::<id>` values itself (`ADR-0005` §1).
 - `${{ components::<id>.private_port }}` comes from `ingresses`, else `internal_ports[0]`; a component that declares neither fails with `SnowError::UnknownResourcePath`.
 
 The full namespace and schema tables live in the [Manifest Reference](reference/manifest.md).

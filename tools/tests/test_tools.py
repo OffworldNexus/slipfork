@@ -134,7 +134,7 @@ def test_typed_human_inbox_lifecycle(tmp_path: Path) -> None:
     # Simulate human writing an answer
     human_md = tree.root / "HUMAN.md"
     human_md.write_text(
-        human_md.read_text(encoding="utf-8") + "Use Option A.\n", encoding="utf-8"
+        human_md.read_text(encoding="utf-8") + "Use local mode.\n", encoding="utf-8"
     )
     assert tree.human_answered() == ["H-001"]
 

@@ -63,3 +63,51 @@ DOC POLISH from M3.25 cruft PASS (apply after commit): (1) ADR-0009:16 `slipfork
 ## 2026-11-16T22:29 [lead]
 
 DOC FIX (M3.25 functional gate, MAJOR): docs/design/target-dx.md §1.6 still says "<fork> equal to the project name is rejected" for <project>:<fork>, contradicting ADR-0005 §3 + ARCHITECTURE §3.4: <project>:<project> is ACCEPTED as UserFork(<project>) (only `slipfork fork <fork>` refuses creating such a fork). Rewrite that rule to "matched by case; <project>:<project> accepted (disambiguated by the colon); <fork> == project rejected only when creating via slipfork fork" so the printed id always round-trips.
+
+## 2026-11-16T23:51 [lead]
+
+OWNER REGROUP RULING (binding): final shipped version is 0.1.0. In this hygiene gate set Cargo.toml workspace version, crates/* Cargo.toml package versions, packages/opencode-slipfork/package.json, CHANGELOG.md (fold 0.2.0 into one 0.1.0 entry describing the shipped Btrfs Worlds surface), zensical.toml and docs version labels to 0.1.0. Also carry the M3.25 record MINORs: WorldHandle Debug, BaseSeedSpec carrying BaseKey, retention/prose dedupe, phantom DropFork request naming drop_fork(WorldSelector), WorldId grammar restatement, undeclared WorldTarget. M3.2/STP v1 is parked to 0.2.0: no STP v1 shipped claims.
+
+## 2026-11-16T23:51 [lead]
+
+edited fields
+
+## 2026-11-17T01:32 [lead]
+
+ADD from M3.16 live proof: docs/design/do-vm-harness.md must record (a) the AppArmor userns profile header requires both bare paths in one rule set /{a,b} (two separate bare-path rules are invalid), (b) 'do_vm.py ssh -- <cmd>' must not require a built CLI and must export CARGO_HOME/RUSTUP_HOME, (c) volume discovery ignores /dev/disk/by-id -partN symlinks, (d) the live Btrfs volume is /dev/sda (no partition) LABEL=slipfork.
+
+## 2026-11-17T05:13 [lead]
+
+ADD from M3.13 gate (docs of record must match 0.1.0 reality): (1) ARCHITECTURE §1/§2 + ADR-0010 §2 currently say WorldSpec.control_dir/state_subdirs are injected and <subvol>/rootfs holds the rootfs tree — Phase 1 derives ctl/<slug>-<seq> in the engine and <subvol>/rootfs is a symlink to cache/rootfs/<digest>/app (snapshots are not self-contained; the cache is a retention root). Relabel those as 0.2.0 (ensure_base) and state the Phase-1 symlink reality. (2) M3.25 target-state items WorldId/resolve_world_selector, WorldSpec.world/control_dir/state_subdirs, BaseKey/BaseSeedSpec/ensure_base, ReadinessProbe, prune_snapshots are 0.2.0. (3) README.md:17 and docs/getting-started.md:26 still advertise XFS/ZFS as supported CoW filesystems and must drop them once BtrfsEngine is the sole engine. (4) crates/slipfork-engine/src/linux_cow.rs doc claims it is the only unsafe module (btrfs.rs also owns unsafe) — fix after M3.21. (5) M3.15 must re-add the daemon unit --only apparmor command to userns_remediation_hint when the flag ships.
+
+## 2026-11-17T11:37 [lead]
+
+ADD (M3.18 cruft gate, all OUT of M3.18 paths): (1) Cargo.toml version 0.2.0 -> 0.1.0 + Cargo.lock; (2) CHANGELOG.md restructure to one 0.1.0 entry; (3) zensical.toml nav label; (4) sibling pages still 0.2.0: docs/snow-modes.md:1,124, docs/reference/manifest.md:1,157-158 (also 'Milestone 3' labels), docs/agents-and-opencode.md:1; (5) packages/opencode-slipfork/package.json version; (6) README/getting-started duplicated Btrfs prerequisite block — keep one and link; (7) crates/slipfork-engine/Cargo.toml description still says 'Incus REST (/1.0) and Linux FICLONE' (M3.21 owns, do it there).
+
+## 2026-11-17T12:22 [lead]
+
+ADD (from M3.18 RESULT followups + lead verification): (1) docs/reference/manifest.md:16,44 and docs/snow-modes.md:17,51 put ${{ components::api.private_port }} inside run_command. run_command is passed verbatim to 'sh -eu -c' (daemon.rs:1590-1600), so it is NOT expression-templated and the published primary example fails at boot with 'Bad substitution'. Fix the docs to name the literal port matching internal_ports:[8000] and add one sentence stating run_command is not templated (the shipped getting-started.md:79 already hardcodes 0.0.0.0:8000 — that is the honest pattern). (2) ARCHITECTURE.md:101 still says project::resolve_world_selector -> WorldId while the shipped code is daemon::resolve_world_selector -> WorldTarget (WorldId is 0.2.0 target state). (3) crates/slipfork/tests/critical_slug.rs git-only branch asserts an inverted contract off-Btrfs (legality MINOR) — either assert the real-child BtrfsRequired refusal or split the harness check out. (4) docs/snow-modes.md:1,124, docs/reference/manifest.md:1,157-158, docs/agents-and-opencode.md:1 still say 0.2.0/'Milestone 3'. (5) docs/design/adr-0008.review-cruft.md and .review-ioc-upward.md are adjudicated critic artifacts still carrying Option A/B framing, and tools/tests/test_tools.py has a 'Use Option A.' fixture string. (6) crates/slipfork-engine/src/rootfs/mod.rs:82 already fixed in M3.21.
+
+## 2026-11-17T12:58 [lead]
+
+edited fields
+
+## 2026-11-17T12:58 [lead]
+
+DEPENDENCY EDIT (lead): removed M3.19. M3.19 is blocked on the owner's H-006 AppArmor direction-challenge (a live-host decision), while this node's work — the 0.1.0 version single-source, CHANGELOG, zensical labels, and the terminology/hygiene greps — is entirely local and must not be held hostage by a remote kernel-security ruling. M3.19's measured numbers land in its own RESULT.md; nothing here depends on them.
+
+## 2026-11-17T13:11 [lead]
+
+ADD (H-006 impact): docs must not claim the 4-line profile alone suffices on stock Ubuntu 24.04. Document BOTH: the AppArmor profile must name every executable that calls unshare(CLONE_NEWUSER) (entrypoint, slipfork-world-init, /usr/bin/unshare, in-world crun) — pending H-006 — and, for a dedicated dev VM, kernel.apparmor_restrict_unprivileged_userns=0 is a verified alternative (persist via /etc/sysctl.d). M3.18's getting-started/cli pages need the correction.
+
+## 2026-11-17T13:42 [lead]
+
+status ready -> active
+
+## 2026-11-17T13:42 [lead]
+
+attempt 1/3 started
+
+## 2026-11-17T13:42 [lead]
+
+base 8417868066bb3af9448dd1aba650b57e25960740

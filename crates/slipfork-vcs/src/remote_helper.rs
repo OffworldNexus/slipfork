@@ -39,7 +39,7 @@ const SUPPORTED_OPTIONS: [&str; 2] = ["progress", "verbosity"];
 
 /// Reason reported for every refused `push`.
 ///
-/// Worlds are fetched, not pushed over the remote helper in `0.2.0`; the developer commits inside
+/// Worlds are fetched, not pushed over the remote helper in `0.1.0`; the developer commits inside
 /// the world's checkout and the fork refs follow.
 const PUSH_REFUSAL: &str =
     "fork worlds are fetched, not pushed: commit inside the world and re-fetch its fork refs";

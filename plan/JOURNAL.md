@@ -958,3 +958,10 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-17T13:42 [M3.19] (lead) OWNER APPROVED H-006: 'Approve profile list (Recommended)'. Ruling applied by M3.19.1 (apparmor.rs + engine hint + do_vm.py harness clause + cli.md + byte-equiv
 - 2026-11-17T13:42 [M3.24] (lead) Gate passed: Quad reviewer PASS after attempts 2-3 (hollow daemon-unit assertion, three poll_until copies, fail-open /proc scan, over-claiming Makefile comments
 - 2026-11-17T13:42 [M3.24] (lead) status active -> done
+- 2026-11-17T13:42 [M3.19.1] (lead) Gate: owner approved H-006; clippy/fmt/docs-check/pytest 60/test_do_vm + apparmor unit tests 5 green; guard OK. Committed with the architect's ADR/design correc
+- 2026-11-17T13:42 [M3.19.1] (lead) status active -> done
+- 2026-11-17T13:42 [M3.19] (lead) M3.19.1 committed (8417868). Re-verification authorized: profile now covers /usr/local/bin/slipfork{,d,-world-init}, /usr/bin/unshare and /.slipfork/bin/crun.
+- 2026-11-17T13:42 [M3.23] (lead) status ready -> active
+- 2026-11-17T13:42 [M3.23] (lead) attempt 1/3 started
+- 2026-11-17T13:42 [M3.23] (lead) base 8417868066bb3af9448dd1aba650b57e25960740
+- 2026-11-17T13:51 [M3.19] (lead) LIVE RE-VERIFICATION (owner-approved H-006 profile applied by hand on 165.232.86.174 at 12:48): engine critical_btrfs_live 1 passed (29.86s); slipfork:critical_

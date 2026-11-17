@@ -112,8 +112,8 @@ $ slipfork prune                           # Preview orphaned worlds (--yes to d
 
 ### 1.6 Complete M2–M3 CLI Command Table
 
-- **World selection — one rule (`M3.15`, `ADR-0005` §3):** every world-scoped command resolves its world against the request's `cwd` repository (`RepoRoot.project`) through the single `project::resolve_world_selector` parser, so **every same-project id printed by `slipfork list` or any `--json` payload is accepted verbatim**:
-  - `<project>:<fork>` (e.g. `acme:billing`) — must match the `cwd` repository's project; a cross-project id fails closed with a remedy (`cd` into the project via the `WORKTREE` column of `slipfork list`, or `slipfork exec --cwd <worktree> --world acme:billing`), and `<fork>` equal to the project name is rejected.
+- **World selection — one rule (`M3.15`, `ADR-0005` §3):** every world-scoped command resolves its world against the request's `cwd` repository (`RepoRoot.project`) through the shipped private `daemon::resolve_world_selector` parser (the typed `WorldId` plus a shared `project::` location is `0.2.0` target state), so **every same-project id printed by `slipfork list` or any `--json` payload is accepted verbatim**:
+  - `<project>:<fork>` (e.g. `acme:billing`) — must match the `cwd` repository's project; a cross-project id fails closed with a remedy (`cd` into the project via the `WORKTREE` column of `slipfork list`, or `slipfork exec --cwd <worktree> --world acme:billing`). Matching is by case, and `<project>:<project>` is accepted as the user fork `<project>` (the colon disambiguates it); a bare `<fork>` equal to the project name is rejected only when creating one via `slipfork fork`.
   - `<project>` (e.g. `acme`) — selects the project's own world even from inside `.worktrees/<fork>`.
   - `<fork>` (e.g. `billing`) — repo-local shorthand for `<project>:<fork>`, validated by `validate_fork_name` (invalid DNS labels and reserved `test-*` slots fail closed). A bare label that is not this repository's project is always a fork name, never another project's world.
   - Omitting `--world` resolves `cwd`'s nearest ancestor: `<vcs_root>/.worktrees/<fork>[/...]` -> `<fork>`, repo root -> `<project>`, outside any repository -> fail closed naming `cd <repo>` or `slipfork exec --cwd <repo>`.
@@ -128,7 +128,7 @@ $ slipfork prune                           # Preview orphaned worlds (--yes to d
 | `slipfork drop <fork>` | M2 + `M3.13` | Destroy fork world (clear read-only flags, `BTRFS_IOC_SNAP_DESTROY_V2`) and remove `.worktrees/<fork>` |
 | `slipfork exec [--world <world>] [--cwd <dir>] -- <argv>...` | M1 + M2 + `M3.13` | Fetch `WorldExecTarget` from `slipforkd` and run non-interactively inside the world's `slipfork-world-init` PID 1 (`nsenter --target <init_pid>`, §1.3) |
 | `slipfork list [--json]` | M2 | List worlds with state, worktree path, and the single `origin` URL (§1.5) |
-| `slipfork prune [--dry-run \| --yes] [--json]` | M2 + `M3.2` | Preview or garbage-collect orphaned worlds now; unreferenced Btrfs snapshot and `cache/{rootfs,oci}` GC lands with `M3.2` |
+| `slipfork prune [--dry-run \| --yes] [--json]` | M2 + `M3.2` | Preview (default, or `--dry-run`) or reap worlds whose checkout directory is gone; unreferenced Btrfs snapshot and `cache/{rootfs,oci}` GC lands with `M3.2` |
 | `slipfork shell [--world <world>]` | M2 + `M3.13` | Enter the world on a native TTY (`nsenter --target <init_pid>`, §1.3; requires TTY) |
 | `slipfork logs [--world <world>] [<target>] [--follow] [--stderr] [--lines <n>]` | M2 | Read or follow retained component/hook logs from `slipforkd` (§1.3 log paths) |
 | `slipfork hook run <hook_id> [--world <world>] [--no-tty]` | M2 | Re-run `<component>:<phase>` hook (direct native TTY `pdb` by default; `--no-tty` via daemon) |

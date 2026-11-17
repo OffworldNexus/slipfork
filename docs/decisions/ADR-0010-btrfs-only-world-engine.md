@@ -1,12 +1,12 @@
 # ADR-0010: Btrfs `WorldEngine` — Unified Per-World Subvolumes, `BTRFS_IOC_*` Lifecycle, `--ipc` Isolation, and AppArmor `userns`
 
-- **Status:** Accepted — M3 (`0.3.0`) target-state ruling (owner ruling 2026-11-16; closes `H-004`; `WorldEngine` IoC contract in `ADR-0002`; implemented across `M3.20`, `M3.12`–`M3.15`, and `M3.21`)
+- **Status:** Accepted — M3 (`0.1.0`) target-state ruling (owner ruling 2026-11-16; closes `H-004`; `WorldEngine` IoC contract in `ADR-0002`; implemented across `M3.20`, `M3.12`–`M3.15`, and `M3.21`)
 - **Date:** 2026-11-16
 
 ## Context
 
 1. **One atomic CoW substrate per world (`Iron Law #3`, `H-004` closed):** Each Slipfork world combines a `Dockerfile`-derived `L0` rootfs (`ADR-0009`) with mutable PostgreSQL, Redis, and S3 state that must snapshot into immutable DAG stages and clone into isolated worktree and test worlds atomically under the developer's unprivileged `$UID:$GID`, using a single `WorldEngine` (`BtrfsEngine`) with zero fallback paths.
-2. **Sub-25 ms unified-subvolume CoW with 6.3 MiB RSS per world:** Placing a world's `ADR-0009` `Dockerfile` `L0` rootfs tree and backing-service state directories inside **one unified Btrfs subvolume** — from owner-supplied measurements in `plan/nodes/M3/M3.11/NODE.md`, to be recorded in full by `M3.11` in `docs/research/btrfs-crun-benchmarks.md` — measures a **`19.5 ms`** read-only snapshot, an **`11–24 ms`** writable clone, **`39 ms`** to a warm-SQL world, and **`6.3 MiB`** RSS per world, with `$UID:$GID` host bind mounts working natively.
+2. **Unified-subvolume CoW in milliseconds with a small per-world RSS:** Placing a world's `ADR-0009` `Dockerfile` `L0` rootfs tree and backing-service state directories inside **one unified Btrfs subvolume** keeps read-only snapshots, writable clones, and warm-SQL boots in milliseconds at a small per-world RSS, with `$UID:$GID` host bind mounts working natively. `docs/research/btrfs-crun-benchmarks.md` is the sole owner of the measured figures.
 3. **Three host and kernel invariants govern unprivileged execution:**
    - Parallel PostgreSQL instances binding `:5432` across separate network namespaces still collide on System V shared memory (`shmget` key `90000` / port-derived keys) unless each world also enters a private IPC namespace (`--ipc` / `CLONE_NEWIPC`).
    - Read-only Btrfs snapshots (`BTRFS_SUBVOL_RDONLY`) reject `BTRFS_IOC_SNAP_DESTROY_V2` until `BTRFS_SUBVOL_RDONLY` is cleared via `BTRFS_IOC_SUBVOL_SETFLAGS`, and unprivileged subvolume deletion requires `mount -o user_subvol_rm_allowed,noatime`.

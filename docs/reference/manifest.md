@@ -1,4 +1,4 @@
-# Manifest Reference (`0.2.0`)
+# Manifest Reference (`0.1.0`)
 
 Slipfork reads two files: `snow.yml` (`crates/slipfork-snow`) and `slipfork.toml` (`crates/slipfork-dag`).
 
@@ -13,7 +13,7 @@ images:
 components:
   - id: api
     image: api
-    run_command: gunicorn app.main:app --bind 0.0.0.0:${{ components::api.private_port }}
+    run_command: gunicorn app.main:app --bind 0.0.0.0:8000
     envs: [app]
     internal_ports: [8000]
 
@@ -41,12 +41,14 @@ modes:
   local:
     components:
       api:
-        run_command: uv run uvicorn app.main:app --host 127.0.0.1 --port ${{ components::api.private_port }} --reload
+        run_command: uv run uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
       worker: { disabled: true }
     envs:
       app:
         DEBUG: 'True'
 ```
+
+`run_command` is passed verbatim to `sh -eu -c`, so it is **not** expression-templated: name the same literal port you declared in `ingresses`/`internal_ports` (here `8000`). `${{ ... }}` expressions belong in `envs` values, not in commands.
 
 `images[]` is either a build image (`id`, `context`, optional `dockerfile` — default `Dockerfile` — and optional `envs` build groups) or a registry image (`id`, `registry`, `repository`, optional `tag` — default `latest`). Every world boots from a built `BuildImage` rootfs, so a project needs at least one build image (see [`[world]`](#2-slipforktoml-slipfork_dagslipforkconfig)).
 
@@ -154,5 +156,5 @@ A project with two build images (say `api` and `worker`) must set `world.image`;
 
 - **Unknown keys fail closed** in every `slipfork.toml` table (`#[serde(deny_unknown_fields)]`).
 - **`[resources.<kind>.<id>]`** (`pg_databases` / `s3_buckets`) takes `local` and `test` strategies (`local` | `prefer_remote` | `remote`), e.g. `[resources.pg_databases.appdb] local = "prefer_remote"`; `slipforkd` applies the plan when it boots the world (`ADR-0008` §3). `prefer_remote` degrades to world-local coordinates with a `not_offered` row; `remote` without a paired OSPP session fails closed naming the missing offer. Seed dumps, `--no-dump`, and `--refresh-dump`: [CLI reference](cli.md#seed-dumps-and-sealed-bases).
-- **`[test]` is typed fields only** (`ADR-0006` §1): `coverage = true` is the sole switch, `coverage_report` defaults to `["text"]`, options without it fail with `DagError::CoverageOptionsRequireEnabled`, `coverage_report = []` with `DagError::EmptyCoverageReport`, and `coverage_fail_under` outside `0..=100` with `DagError::InvalidCoverageThreshold`. Coverage execution lands in Milestone 3.
-- **`[fixtures.<id>].per_world`** defaults to `false`. A per-world fixture is never reported `CacheAction::Cached` and cannot be the `parent` of an origin-independent fixture (`DagError::OriginIndependentChildOfPerWorld`). Per-world snapshot execution lands in Milestone 3.
+- **`[test]` is typed fields only** (`ADR-0006` §1): `coverage = true` is the sole switch, `coverage_report` defaults to `["text"]`, options without it fail with `DagError::CoverageOptionsRequireEnabled`, `coverage_report = []` with `DagError::EmptyCoverageReport`, and `coverage_fail_under` outside `0..=100` with `DagError::InvalidCoverageThreshold`. Coverage execution is not shipped in `0.1.0`; it lands with `STP v1` in `0.2.0`.
+- **`[fixtures.<id>].per_world`** defaults to `false`. A per-world fixture is never reported `CacheAction::Cached` and cannot be the `parent` of an origin-independent fixture (`DagError::OriginIndependentChildOfPerWorld`). Per-world snapshot execution is not shipped in `0.1.0`; it lands with `STP v1` in `0.2.0`.

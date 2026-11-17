@@ -1,4 +1,4 @@
-# OpenCode V2 Worktree Plugin (`0.2.0`)
+# OpenCode V2 Worktree Plugin (`0.1.0`)
 
 `packages/opencode-slipfork` (`@slipfork/opencode`) is the OpenCode V2 Server plugin that binds a git worktree to a Slipfork CoW world, so parallel sessions get isolated PostgreSQL, Redis, S3, and ports **without replacing or renaming the built-in `shell` tool**.
 

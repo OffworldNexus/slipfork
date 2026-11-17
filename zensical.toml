@@ -20,7 +20,7 @@ nav = [
   { "OpenCode V2 plugin" = "agents-and-opencode.md" },
   { "Integrations & support" = "support-matrix.md" },
   { "Reference" = [
-    { "CLI (0.2.0)" = "reference/cli.md" },
+    { "CLI (0.1.0)" = "reference/cli.md" },
     { "Manifests (snow.yml & slipfork.toml)" = "reference/manifest.md" },
   ] },
 ]

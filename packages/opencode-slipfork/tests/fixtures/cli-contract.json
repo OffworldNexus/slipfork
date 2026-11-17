@@ -1,5 +1,5 @@
 {
-  "recordedFrom": "slipfork 0.2.0 (release/0.2.0, e5ac58f)",
+  "recordedFrom": "slipfork --help (commit e5ac58f)",
   "topLevel": {
     "argv": ["--help"],
     "requiredTokens": ["Usage: slipfork", "fork", "drop", "exec", "list"]

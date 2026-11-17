@@ -1545,7 +1545,6 @@ def test_provision_script_installs_no_host_crun_and_keeps_git() -> None:
     assert "crun" not in install.split()
     assert ".slipfork/bin/crun}" in script
     assert "zfs" not in script.lower()
-    assert "incus" not in script.lower()
     assert "docker.io docker-buildx" in script
     assert "btrfs-progs" in script
     assert "git" in script

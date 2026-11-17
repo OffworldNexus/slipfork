@@ -52,7 +52,7 @@ fix: sudo mount -o user_subvol_rm_allowed,noatime /dev/<device> <state_dir>
 | `fork` | Create `.worktrees/<fork>` — a Git worktree, or a Jujutsu workspace when the checkout carries `.jj` — plus its Btrfs world subvolume | `slipfork fork feat-billing` |
 | `drop` | Destroy a fork world's subvolume, its worktree, branch, and snapshot ref | `slipfork drop feat-billing` |
 | `list` | One row per world: state (`running`/`stopped`/`failed`), exactly one origin URL, worktree | `slipfork list` |
-| `prune` | Preview orphaned worlds by default; `--yes` reaps them | `slipfork prune` |
+| `prune` | Preview worlds whose checkout directory is gone (default, or `--dry-run`); `--yes` reaps them. Sealed snapshots and caches are retained | `slipfork prune` |
 | `secret set` / `unset` | Store a value read from **stdin** (`--force` rotates it) or remove one key | `printf '%s' "$V" \| slipfork secret set STRIPE_SECRET_KEY` |
 | `secret list` | Print key names only, never values | `slipfork secret list` |
 | `share` | Tunnel sharing is unavailable in this release and fails closed; `--stop` releases a lease | `slipfork share` |
