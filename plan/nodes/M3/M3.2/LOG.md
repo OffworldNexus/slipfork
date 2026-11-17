@@ -39,3 +39,11 @@ OWNER REGROUP RULING (2026-11-16, binding): M3.2 (STP v1) and every M3.2.* child
 ## 2026-11-17T14:26 [lead]
 
 PARKED (owner ruling 2026-11-16, binding): STP v1 is 0.2.0. Do NOT activate M3.2 or any M3.2.* child in the 0.1.0 release; its ROADMAP row still says 0.3.0 and must be rewritten by the strategist before 0.2.0 starts.
+
+## 2026-11-17T14:39 [lead]
+
+status ready -> blocked
+
+## 2026-11-17T14:39 [lead]
+
+STATUS blocked = PARKED, not a missing input: owner ruling 2026-11-16 parks STP v1 to 0.2.0. Reactivating M3.2.* requires the strategist to rewrite the 0.3.0/Option-A ROADMAP row and a fresh milestone plan.

@@ -2,7 +2,7 @@
 id: M3.2
 title: "Polyglot Parallel Snapshot-DAG Test Orchestrator (slipfork test, RunnerProtocol v1, warm world pool & CoverageDriver)"
 kind: epic
-status: ready
+status: blocked
 priority: 2
 depends_on: [M3.1, M3.19]
 paths: []
@@ -10,7 +10,7 @@ attempts: 0
 max_attempts: 3
 escalation: none
 created: "2026-11-16T06:34"
-updated: "2026-11-16T16:59"
+updated: "2026-11-17T14:39"
 ---
 
 # Goal

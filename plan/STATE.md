@@ -3,7 +3,7 @@
 - generated: 2026-11-17T14:39
 - autopilot: on
 - current milestone: M3 Btrfs-Only WorldEngine (ADR-0010) — Slipfork 0.1.0 (STP v1 parked to 0.2.0) [ready]
-- tasks: ready=19, active=1, done=60, blocked=1, superseded=5
+- tasks: ready=19, done=61, blocked=1, superseded=5
 - open human requests: 0 (answered, awaiting pickup: 0)
 - escalations to expensive model so far: 22; expensive spent: $165.60 of $240.00 cap (69%)
 
@@ -29,8 +29,6 @@
 
 ## Recent journal
 
-- 2026-11-17T13:56 [M3.19] (lead) attempt 2/3 started
-- 2026-11-17T13:56 [M3.19] (lead) status blocked -> active
 - 2026-11-17T13:56 [M3.19] (lead) attempt 2/3 start: owner approved H-006; M3.19.1 landed the profile; 0.1.0 tree committed at 2db6c8f. Live re-verification + 0.1.0 binary install + demo walkthr
 - 2026-11-17T14:01 [M3] (lead) MILESTONE GATE (lead-side): make check EXIT=0 (zero env overrides; every suite green incl. slipfork:critical_cli 14 @62s, critical_ospp_daemon 4 @111s, both cri
 - 2026-11-17T14:07 [M3.19] (lead) LEAD NOTE for the live re-run: the sysctl workaround I used earlier (kernel.apparmor_restrict_unprivileged_userns=0 in /etc/sysctl.d/99-slipfork-devvm.conf) is 
@@ -44,3 +42,5 @@
 - 2026-11-17T14:26 [M3.26] (lead) attempt 1/3 started
 - 2026-11-17T14:26 [M3.26] (lead) base 775776f161844e34cddec1c46cff7f8d3dfbe792
 - 2026-11-17T14:26 [M3.26] (lead) Live-verified owner path (clean env as uid 1000): 'slipfork doctor' exit 0 (filesystem btrfs, subvolume_ioctl ok, unshare_userns ok, netns ok) and 'slipfork lis
+- 2026-11-17T14:39 [M3.26] (lead) Gate passed: one canonical staging path (bare 'git add -A -- .' then 'git rm -r -f --cached --ignore-unmatch .slipfork .worktrees'), dead pathspec constants del
+- 2026-11-17T14:39 [M3.26] (lead) status active -> done

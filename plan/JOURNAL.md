@@ -984,3 +984,5 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-17T14:26 [M3.26] (lead) Live-verified owner path (clean env as uid 1000): 'slipfork doctor' exit 0 (filesystem btrfs, subvolume_ioctl ok, unshare_userns ok, netns ok) and 'slipfork lis
 - 2026-11-17T14:39 [M3.26] (lead) Gate passed: one canonical staging path (bare 'git add -A -- .' then 'git rm -r -f --cached --ignore-unmatch .slipfork .worktrees'), dead pathspec constants del
 - 2026-11-17T14:39 [M3.26] (lead) status active -> done
+- 2026-11-17T14:39 [M3.2] (lead) status ready -> blocked
+- 2026-11-17T14:39 [M3.2] (lead) STATUS blocked = PARKED, not a missing input: owner ruling 2026-11-16 parks STP v1 to 0.2.0. Reactivating M3.2.* requires the strategist to rewrite the 0.3.0/Op
