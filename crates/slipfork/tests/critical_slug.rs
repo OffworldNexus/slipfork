@@ -12,7 +12,7 @@ use std::process::{Command, Output, Stdio};
 use serde_json::Value;
 
 pub mod support;
-use support::{DaemonLayout, disk_tempdir, run_git};
+use support::{Daemon, DaemonLayout, disk_tempdir, run_git};
 
 const MINIMAL_SNOW_YML: &str = r#"
 modes:
@@ -40,6 +40,17 @@ fn write_executable_script(path: &Path, contents: &str) {
     file.sync_all().expect("sync script");
 }
 
+/// Own the harness daemon for one test.
+///
+/// Every invocation in this suite is daemon-served (`snow resolve`, and the diagnostics built on the
+/// same layout), so the test starts the daemon once and binds the handle in its own scope:
+/// `let _daemon = harness_daemon(scratch);`. `Drop` → [`support::Daemon::shutdown`] then kills a real
+/// `slipforkd` child, waits for it, and reaps the worlds it booted. The in-process backend returns
+/// `None`; `support::ensure_daemon` documents why that server is leaked.
+fn harness_daemon(scratch: &Path) -> Option<Daemon> {
+    support::ensure_daemon(scratch, &DaemonLayout::under(scratch), "snow resolve")
+}
+
 fn run_slipfork_with_env(
     scratch: &Path,
     cwd: &Path,
@@ -47,7 +58,14 @@ fn run_slipfork_with_env(
     args: &[&str],
 ) -> Output {
     let layout = DaemonLayout::under(scratch);
-    support::ensure_daemon(scratch, &layout);
+    // The daemon must already be owned by the test (`harness_daemon`), so this invocation can never
+    // silently start a daemon whose lifetime nobody supervises.
+    assert!(
+        support::daemon_is_served(&layout.runtime_dir),
+        "the test must own the harness daemon (`let _daemon = harness_daemon(scratch);`) before \
+         invoking `slipfork {}`",
+        args.join(" ")
+    );
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_slipfork"));
     cmd.env("GIT_CEILING_DIRECTORIES", scratch)
         .env("XDG_DATA_HOME", &layout.data_home)
@@ -56,8 +74,9 @@ fn run_slipfork_with_env(
         .args(args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        // Daemon-served diagnostics (`snow resolve`) auto-spawn `slipforkd` into this process
-        // group; reaping the group after the CLI exits keeps the test host clean.
+        // The CLI never auto-spawns a read/diagnostic verb (`M3.28.1` R5), so this group carries the
+        // CLI alone; reaping it after the CLI exits is the leak proof that the invocation left no
+        // process of its own behind.
         .process_group(0)
         .current_dir(cwd);
     for &(key, val) in env_overrides {
@@ -67,9 +86,9 @@ fn run_slipfork_with_env(
     let process_group = child.id();
     let output = child.wait_with_output().expect("wait for slipfork binary");
     let termination = support::terminate_process_group(process_group);
-    // A diagnostic-only invocation (`dag plan`) never auto-spawns a daemon, so its group is already
-    // empty here and `kill` reports `ESRCH`; a failed TERM is only tolerated when nothing is left to
-    // reap, which the `kill -0` probe proves.
+    // A diagnostic-only invocation (`dag plan`) never spawns a daemon, so its group is already empty
+    // here and `kill` reports `ESRCH`; a failed TERM is only tolerated when nothing is left to reap,
+    // which the `kill -0` probe proves.
     assert!(
         termination.term_delivered || !termination.members_alive,
         "kill -TERM -{process_group} failed while the process group still had live members\n\
@@ -77,26 +96,22 @@ fn run_slipfork_with_env(
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-    // The daemon auto-spawned by the CLI lives in this process group and only stops serving once
-    // its `SIGTERM` is serviced. A later invocation's `is_served()` only dials the socket, so it
-    // would otherwise reuse a daemon that is exiting and fail mid-request (ECONNRESET/EPIPE).
-    //
-    // On a non-Btrfs host the harness serves the daemon in-process (it outlives every CLI child by
-    // design), so there is no auto-spawned child to reap here.
-    if support::host_is_btrfs(&layout.state_dir)
-        && let Err(error) = support::wait_daemon_teardown(&layout.runtime_dir)
-    {
-        panic!(
-            "the auto-spawned slipforkd must stop accepting after the process-group SIGTERM: {error}\n\
-             offending invocation: slipfork {args:?}\nstdout:\n{}\nstderr:\n{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
+    // The daemon is the harness's own (`ensure_daemon`), so it is not a member of the invocation's
+    // process group and every later invocation reuses it: the group `SIGTERM` must leave it serving
+    // rather than take it down with the CLI (a reused, dying daemon would fail mid-request with
+    // ECONNRESET/EPIPE). `wait_daemon_teardown`'s "socket stops accepting" poll has no subject here
+    // and is only used by the `critical_cli` zero-setup auto-spawn proof.
+    assert!(
+        support::daemon_is_served(&layout.runtime_dir),
+        "the harness daemon must outlive the invocation's process-group SIGTERM\n\
+         offending invocation: slipfork {args:?}\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
     // A world PID 1 ignores `SIGTERM` and outlives a supervisor that was killed before it could
     // forward `--kill-child`, so the group signal alone is not a leak proof. This suite boots no
-    // world, so the reap is a no-op today; it is the suite-exit proof that the auto-spawned daemon
-    // group never leaves one behind.
+    // world, so the reap is a no-op today; it is the suite-exit proof that no invocation leaves a
+    // world init behind.
     support::assert_no_world_init_processes(
         scratch,
         &format!(
@@ -116,6 +131,7 @@ fn run_slipfork(scratch: &Path, cwd: &Path, args: &[&str]) -> Output {
 fn worktree_resolves_to_canonical_repo_slug_and_honors_only_vcs_root_slipfork_toml() {
     let tmp = disk_tempdir("slug-");
     let scratch = tmp.path();
+    let _daemon = harness_daemon(scratch);
     let repo = scratch.join("acme-app");
     fs::create_dir_all(repo.join("src")).expect("create repo/src");
     fs::write(repo.join("src/lib.txt"), "v1\n").expect("write input");
@@ -385,6 +401,7 @@ fn worktree_resolves_to_canonical_repo_slug_and_honors_only_vcs_root_slipfork_to
 fn git_submodule_bare_and_separate_git_dir_fail_closed_with_actionable_override_hints() {
     let tmp = disk_tempdir("slug-");
     let scratch = tmp.path();
+    let _daemon = harness_daemon(scratch);
 
     // 1. Bare repository (`git init --bare`) -> fail closed naming canonical bare path + clone hint.
     let bare = scratch.join("bare-origin.git");
@@ -571,6 +588,7 @@ fn git_submodule_bare_and_separate_git_dir_fail_closed_with_actionable_override_
 fn jj_workspace_uses_the_shared_git_resolver_and_never_shells_out_to_jj() {
     let tmp = disk_tempdir("slug-");
     let scratch = tmp.path();
+    let _daemon = harness_daemon(scratch);
 
     // 1. A Jujutsu-only workspace (no colocated Git store) fails closed through the one shared
     //    repository resolver: `slipfork-vcs` ships a Git resolver today, so no slug is invented and
@@ -651,6 +669,7 @@ fn jj_workspace_uses_the_shared_git_resolver_and_never_shells_out_to_jj() {
 fn non_vcs_directory_fails_closed_and_corrupt_git_surfaces_real_git_stderr() {
     let tmp = disk_tempdir("slug-");
     let scratch = tmp.path();
+    let _daemon = harness_daemon(scratch);
 
     // Non-git/non-jj directory fails closed even if a local `slipfork.toml` exists.
     let plain = scratch.join("plain-dir");
@@ -695,13 +714,23 @@ fn non_vcs_directory_fails_closed_and_corrupt_git_surfaces_real_git_stderr() {
         "expected real git stderr, got: {broken_stderr}"
     );
 
-    // Missing `git` binary on PATH must produce a distinct, actionable diagnostic naming `git`
-    // rather than falsely claiming the directory is not a git or jj repository.
+    // A daemon-served request carries no environment (`SnowResolveRequest` is `{ cwd, file, mode,
+    // component, expose_secrets }`), so the *client's* `PATH` cannot influence repository
+    // resolution: `snow resolve` sends the cwd and the daemon resolves the VCS root with its own
+    // `PATH` (`M3.28.1` R5 removed the CLI auto-spawn that used to forward it). An empty client
+    // `PATH` therefore changes nothing — the daemon still finds `git`, still derives the canonical
+    // slug, and never invents either the "not a git or jj repository" claim or a `git` refusal.
     let real_git_repo = scratch.join("git-missing-bin-repo");
     fs::create_dir_all(&real_git_repo).expect("create git-missing-bin-repo");
     run_git(&real_git_repo, &["init", "-q"]);
     fs::write(real_git_repo.join("snow.yml"), MINIMAL_SNOW_YML).expect("write snow.yml");
 
+    let ambient = run_slipfork(
+        scratch,
+        &real_git_repo,
+        &["snow", "resolve", "--file", "snow.yml", "--mode", "local"],
+    );
+    support::assert_success(&ambient, "snow resolve with the ambient client PATH");
     let empty_bin = scratch.join("bin-empty");
     fs::create_dir_all(&empty_bin).expect("create bin-empty");
     let out_no_git = run_slipfork_with_env(
@@ -710,28 +739,31 @@ fn non_vcs_directory_fails_closed_and_corrupt_git_surfaces_real_git_stderr() {
         &[("PATH", empty_bin.as_os_str())],
         &["snow", "resolve", "--file", "snow.yml", "--mode", "local"],
     );
-    if support::host_is_btrfs(&scratch.join("state")) {
-        assert!(!out_no_git.status.success());
-        let no_git_stderr = String::from_utf8_lossy(&out_no_git.stderr);
-        assert!(
-            no_git_stderr.contains("required tool 'git' was not found on PATH")
-                && !no_git_stderr.contains("not a git or jj repository"),
-            "expected missing git binary diagnostic, got: {no_git_stderr}"
-        );
-    } else {
-        // The missing-`git` diagnostic comes from the daemon-side `RepoRootResolver`, and the
-        // daemon inherits the CLI's `PATH` only through a real auto-spawned `slipforkd`. On a
-        // non-Btrfs host the harness serves the daemon in-process (this suite boots no world), so
-        // the ambient `PATH` resolves the real repository. The PATH isolation is a Btrfs-VM-only
-        // check and makes no product claim here.
-        eprintln!("non-Btrfs host: the missing-`git` PATH isolation runs on the Btrfs VM");
-    }
+    support::assert_success(
+        &out_no_git,
+        "snow resolve must not need any tool on the client's PATH: the daemon owns resolution",
+    );
+    let resolved = support::stdout(&out_no_git);
+    assert_eq!(
+        resolved,
+        support::stdout(&ambient),
+        "the client's PATH must not influence daemon-side resolution:\n{resolved}"
+    );
+    assert!(
+        resolved.contains("APP_URL=http://git-missing-bin-repo.localhost\n"),
+        "the daemon's own tool lookup must still derive the canonical slug from `git`, got:\n{resolved}"
+    );
+    assert!(
+        !resolved.contains("required tool") && !resolved.contains("not a git or jj repository"),
+        "a resolve the daemon completed must never surface a tool or topology refusal:\n{resolved}"
+    );
 }
 
 #[test]
 fn invalid_project_label_fails_closed_until_rescued_by_valid_slipfork_toml_override() {
     let tmp = disk_tempdir("slug-");
     let scratch = tmp.path();
+    let _daemon = harness_daemon(scratch);
 
     // Repo basename `My_Project` is not a lowercase DNS label -> fails closed with actionable hint.
     let bad_repo = scratch.join("My_Project");
@@ -789,6 +821,7 @@ fn invalid_project_label_fails_closed_until_rescued_by_valid_slipfork_toml_overr
 fn dag_plan_repo_flag_is_gone_and_rejected_by_the_parser() {
     let tmp = disk_tempdir("slug-");
     let scratch = tmp.path();
+    let _daemon = harness_daemon(scratch);
     let repo = scratch.join("plain");
     fs::create_dir_all(&repo).expect("create plain dir");
     let repo_arg = repo.to_str().expect("utf8");
@@ -814,6 +847,7 @@ fn dag_plan_repo_flag_is_gone_and_rejected_by_the_parser() {
 fn missing_snow_file_names_the_unreadable_path() {
     let tmp = disk_tempdir("slug-");
     let scratch = tmp.path();
+    let _daemon = harness_daemon(scratch);
     let missing = scratch.join("does-not-exist-snow.yml");
     let missing_str = missing.to_str().expect("utf8");
 

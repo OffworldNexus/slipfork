@@ -3227,13 +3227,14 @@ fn unit_golden_renders_byte_exactly() {
         "non-template units must never contain a systemd %-specifier"
     );
 
-    // Non-template hardening contract (ADR-0008 §5).
+    // Non-template hardening contract (ADR-0008 §5). The emitted `RestrictAddressFamilies=` line is
+    // pinned by the golden fixture compared byte-exactly above, and its `AF_NETLINK` requirement is
+    // pinned by name in `unit_service_sandbox_allows_the_netlink_family_world_init_needs`.
     for directive in [
         "\nCapabilityBoundingSet=\n",
         "\nNoNewPrivileges=yes\n",
         "\nProtectSystem=strict\n",
         "\nPrivateTmp=yes\n",
-        "\nRestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX\n",
         "\nLimitNOFILE=65536\n",
     ] {
         assert!(
@@ -3277,6 +3278,31 @@ fn unit_golden_renders_byte_exactly() {
     assert!(
         socket.contains("\nService=slipforkd.service\n"),
         "the socket must name the service it activates:\n{socket}"
+    );
+}
+
+/// The service sandbox must keep `AF_NETLINK`, or no world can boot through the installed unit.
+///
+/// `slipfork-world-init` brings loopback up with `ip link set lo up`, which opens an
+/// `AF_NETLINK`/`NETLINK_ROUTE` socket. `M3.28.12` proved the failure live on the DO VM: with
+/// `RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX` the installed `slipforkd.service` reported
+/// "slipfork-world-init: `ip link set lo up` failed with exit status: 1: Cannot open netlink
+/// socket: Address family not supported by protocol" and every boot died, while the same engine
+/// outside the unit (and with `AF_NETLINK` added via a `systemd-run` scope) returned `rc 0`.
+/// This assertion names the family, so trimming it back fails here and not only on a VM; the exact
+/// list and its order stay pinned by the golden fixture through `unit_golden_renders_byte_exactly`.
+#[test]
+fn unit_service_sandbox_allows_the_netlink_family_world_init_needs() {
+    let service = render_service_unit(&golden_unit_spec()).expect("render slipforkd.service");
+    let families = service
+        .lines()
+        .find_map(|line| line.strip_prefix("RestrictAddressFamilies="))
+        .expect("the service must restrict address families");
+    assert!(
+        families
+            .split_whitespace()
+            .any(|family| family == "AF_NETLINK"),
+        "the service sandbox must allow AF_NETLINK for `ip link set lo up`:\n{service}"
     );
 }
 

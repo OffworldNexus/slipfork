@@ -15,9 +15,14 @@
 //!
 //! Measured host facts (`docs/research/tunnel-weaver-and-systemd-facts.md` §5): descriptors start at
 //! `fd 3`, `LISTEN_PID` names the child, and the inherited sockets are blocking. The unit shape
-//! (empty `CapabilityBoundingSet=`, `NoNewPrivileges=yes`, `ProtectSystem=strict`,
-//! `RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX`) mirrors the reference implementation's
-//! golden units: the service itself never needs a capability because `systemd` owns the binds.
+//! (empty `CapabilityBoundingSet=`, `NoNewPrivileges=yes`, `ProtectSystem=strict`, and the
+//! `RestrictAddressFamilies=` allow-list in [`SERVICE_RESTRICT_ADDRESS_FAMILIES`]) mirrors the
+//! reference implementation's golden units: the service itself never needs a capability because
+//! `systemd` owns the binds.
+//!
+//! The address-family list is a sandbox contract, not a style choice: read
+//! [`SERVICE_RESTRICT_ADDRESS_FAMILIES`] before touching it — trimming one family silently breaks
+//! world boot inside the installed unit.
 
 use std::fmt::Write as _;
 use std::net::SocketAddr;
@@ -30,6 +35,17 @@ pub const INGRESS_ADDRS: [&str; 2] = ["127.0.0.1:80", "[::1]:80"];
 
 /// The single port every world origin omits (`http://<project>.localhost`).
 pub const INGRESS_PORT: u16 = 80;
+
+/// The exact `RestrictAddressFamilies=` value `slipforkd.service` is rendered with.
+///
+/// `AF_INET`/`AF_INET6`/`AF_UNIX` cover the socket-activated listeners, the ingress socket, and the
+/// daemon control socket. `AF_NETLINK` is **required**, not an extra: the `slipfork-world-init` this
+/// service spawns brings loopback up with `ip link set lo up`, and `ip` opens an
+/// `AF_NETLINK`/`NETLINK_ROUTE` socket. Without it every boot inside the installed unit dies with
+/// `EAFNOSUPPORT` (`Cannot open netlink socket: Address family not supported by protocol`). The list
+/// stays an explicit allow-list — never a `~` wildcard, never trimmed back to the three inet
+/// families — and it is emitted from this one constant, never re-typed by a test.
+pub const SERVICE_RESTRICT_ADDRESS_FAMILIES: &str = "AF_INET AF_INET6 AF_UNIX AF_NETLINK";
 
 /// Every value needed to render the non-template `slipforkd.socket` / `slipforkd.service` pair.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -154,6 +170,10 @@ pub fn render_socket_unit(spec: &UnitSpec) -> Result<String, EdgeError> {
 /// slipforkd.socket slipforkd.service` start it immediately. Exactly one `Type=` line is emitted
 /// (`simple`); the daemon does not implement the `sd_notify` protocol, so `Type=notify` would
 /// leave the unit stuck activating forever.
+///
+/// `RestrictAddressFamilies=` carries the allow-list in
+/// [`SERVICE_RESTRICT_ADDRESS_FAMILIES`], whose doc comment explains why every family in it (notably
+/// `AF_NETLINK`) is required for a world to boot inside the installed unit.
 pub fn render_service_unit(spec: &UnitSpec) -> Result<String, EdgeError> {
     spec.validate()?;
     let executable = quote_argument(&spec.executable);
@@ -181,10 +201,14 @@ pub fn render_service_unit(spec: &UnitSpec) -> Result<String, EdgeError> {
     );
     writeln!(unit, "ReadWritePaths={state_dir} {runtime_dir}")
         .expect("writing into a String cannot fail");
+    unit.push_str("PrivateTmp=yes\n");
+    writeln!(
+        unit,
+        "RestrictAddressFamilies={SERVICE_RESTRICT_ADDRESS_FAMILIES}"
+    )
+    .expect("writing into a String cannot fail");
     unit.push_str(
-        "PrivateTmp=yes\n\
-         RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX\n\
-         LimitNOFILE=65536\n\
+        "LimitNOFILE=65536\n\
          \n\
          [Install]\n\
          WantedBy=multi-user.target\n",

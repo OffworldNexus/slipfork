@@ -15,3 +15,7 @@ edited fields
 ## 2026-11-17T22:43 [lead]
 
 quad finding from M3.28.6 folded in: getting-started.md:65,153-164, index.md:18, README.md:27 and snow-modes.md:96 still teach the superseded 'daemon unit | sudo tee' + manual apparmor_parser + $XDG_RUNTIME_DIR/slipfork paths and a --runtime-dir client flag that no longer parses. The single canonical install is now 'slipfork daemon install'. Delete them here (snow-modes.md added to paths) — do not document a second install path.
+
+## 2026-11-18T00:08 [lead]
+
+edited fields

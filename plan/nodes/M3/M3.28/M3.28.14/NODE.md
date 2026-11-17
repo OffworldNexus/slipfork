@@ -5,7 +5,7 @@ kind: task
 status: ready
 owner: "doc-writer"
 priority: 2
-depends_on: [M3.28.13]
+depends_on: [M3.28.13, M3.29.4]
 paths:
   - docs/reference/cli.md
   - "docs/getting-started.md"
@@ -17,7 +17,7 @@ attempts: 0
 max_attempts: 3
 escalation: none
 created: "2026-11-17T16:34"
-updated: "2026-11-17T22:43"
+updated: "2026-11-18T00:08"
 ---
 
 # Goal

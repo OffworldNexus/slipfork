@@ -2,7 +2,7 @@
 id: M3.28.7
 title: "Bare slipfork = status dashboard plus slipfork status (world tree, port-less origin, next-step hints)"
 kind: task
-status: ready
+status: review
 owner: implementer
 priority: 2
 depends_on: [M3.28.6]
@@ -12,11 +12,11 @@ paths:
   - crates/slipfork/src/lib.rs
   - crates/slipfork/src/main.rs
   - crates/slipfork/tests/critical_cli.rs
-attempts: 0
+attempts: 1
 max_attempts: 3
 escalation: none
 created: "2026-11-17T16:33"
-updated: "2026-11-17T16:33"
+updated: "2026-11-17T23:50"
 ---
 
 # Goal

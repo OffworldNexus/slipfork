@@ -1168,3 +1168,61 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-17T23:16 [M3.28.6] (lead) round 2 (functional): FAIL only on scope — the Shutdown plumbing touched edge/src/{lib,daemon,daemon/client,daemon/server}.rs, which I have now authorized (path
 - 2026-11-17T23:36 [M3.28.6] (lead) status review -> done
 - 2026-11-17T23:36 [M3.28.6] (lead) pre-commit verified: lib 61, %-specifier rejected for service+socket with one line (apparmor legitimately unaffected: that profile never interpolates --state-di
+- 2026-11-17T23:36 [M3.28.7] (lead) status ready -> active
+- 2026-11-17T23:36 [M3.28.7] (lead) attempt 1/3 started
+- 2026-11-17T23:36 [M3.28.7] (lead) base 19658f88820d5b636850e012fe60b0fd2f96dba2
+- 2026-11-17T23:36 [M3.28.12] (lead) status ready -> active
+- 2026-11-17T23:36 [M3.28.12] (lead) attempt 1/3 started
+- 2026-11-17T23:36 [M3.28.12] (lead) base 19658f88820d5b636850e012fe60b0fd2f96dba2
+- 2026-11-17T23:36 [M3.28] (lead) note: docs/design/ospp.md is dirty in the worktree from outside this epic (OSPP e2e public_key rewrite) — NOT ours, never staged by M3.28 commits. Leave it alon
+- 2026-11-17T23:37 [M3.28.19] (lead) architect revision: 134 lines, ID-only claims + per-subscription public_key HPKE secret encryption. Verified plan OK, guard 563, zensical strict; content untouc
+- 2026-11-17T23:49 [M3.28.12] (lead) attempt 1 cap-out after the work; lead-ran verification: pytest tools/tests 138 passed, ruff check+format clean. First live sync revealed a REAL upgrade-path bu
+- 2026-11-17T23:49 [M3.28.12] (lead) attempt 2/3 started
+- 2026-11-17T23:50 [M3.28.7] (lead) status active -> review
+- 2026-11-17T23:50 [M3.28.7] (lead) attempt 1 done: bare slipfork == status, pure status renderer with lineage + parent grouping + one next line, per-verb --json, no auto-spawn with the exact one-
+- 2026-11-17T23:56 [M3.28.19] (lead) architect revision: 140 lines, uniform claims (vars+secrets), encryption_methods on auth_ok, encryption{method,public_key} on subscribe, RFC4648 base64 payloads
+- 2026-11-18T00:00 [M3.28.19] (lead) architect revision: 195 lines, 4 sequenceDiagrams, JSON-level encryption safety rationale + Device Pairing section. Verified plan OK, guard 572, zensical strict
+- 2026-11-18T00:02 [M3.28.19] (lead) architect tweak: pair_handle { url, handle } (server-supplied URL + handle). Verified plan OK, guard 572, zensical strict.
+- 2026-11-18T00:04 [M3.28.19] (lead) architect revision: 203 lines, 100% JSON WebSocket frames + out-of-band short-lived dump_ready { id, url } encrypted with stateful HPKE for the subscription pub
+- 2026-11-18T00:08 [M3.29] (planner) created (epic) Implement OSPP v1 (docs/design/ospp.md): live subscriptions, HPKE end-to-end secrets, and the zero-disk-secret lifecycle in 0.1.0
+- 2026-11-18T00:08 [M3.29.1] (planner) created (task) Ripple the OSPP v1 spec through ARCHITECTURE, ADR-0001/0008, VISION and the DX specs; delete the obsolete wire and disk vaults
+- 2026-11-18T00:08 [M3.29.2] (planner) created (task) Implement OSPP v1 wire, p256 pairing, ID-only claims, hpke-p256 per-variable encryption and encrypted dump streaming
+- 2026-11-18T00:08 [M3.29.2] (lead) edited fields
+- 2026-11-18T00:08 [M3.29.3] (planner) created (task) Delete the disk secret vault: in-memory session secrets, live slipforkd OSPP subscriptions, streaming HPKE dump restore and auth pairing
+- 2026-11-18T00:08 [M3.29.4] (planner) created (task) Publish docs/reference/ospp.md and purge every secret/vault/old-wire claim from the public pages
+- 2026-11-18T00:08 [M3.28.20] (planner) created (task) Sandbox fix: RestrictAddressFamilies must allow AF_NETLINK so a world boots through the installed unit (+ ensure_daemon on Btrfs hosts)
+- 2026-11-18T00:08 [M3.28.12] (lead) edited fields
+- 2026-11-18T00:08 [M3.28.13] (lead) edited fields
+- 2026-11-18T00:08 [M3.28.12] (lead) edited fields
+- 2026-11-18T00:08 [M3.28.13] (lead) edited fields
+- 2026-11-18T00:08 [M3.28.14] (lead) edited fields
+- 2026-11-18T00:08 [M3.28.16] (lead) edited fields
+- 2026-11-18T00:09 [M3.29] (lead) OWNER DIRECTIVE 2026-11-18: docs/design/ospp.md (9098b20) is the sole normative OSPP v1 spec and its implementation is 0.1.0, not 0.2.0. DAG: M3.29.1 architect 
+- 2026-11-18T00:09 [M3.28.12] (lead) attempt 2 blocked on two real product bugs, both reproduced outside the harness: (1) slipforkd.service's RestrictAddressFamilies lacks AF_NETLINK so slipfork-wo
+- 2026-11-18T00:09 [M3.28.20] (lead) status ready -> active
+- 2026-11-18T00:09 [M3.28.20] (lead) attempt 1/3 started
+- 2026-11-18T00:09 [M3.28.20] (lead) base 9098b204b338c53a676d8b77052e8434fba45675
+- 2026-11-18T00:09 [M3.29.1] (lead) status ready -> active
+- 2026-11-18T00:09 [M3.29.1] (lead) attempt 1/3 started
+- 2026-11-18T00:09 [M3.29.1] (lead) base 9098b204b338c53a676d8b77052e8434fba45675
+- 2026-11-18T00:09 ESCALATION #24 -> architect for M3.29.1 by lead: OSPP v1 spec ripple across ARCHITECTURE/ADRs/DX (epic-sanctioned)
+- 2026-11-18T00:14 [M3.28.20] (lead) edited fields
+- 2026-11-18T00:14 [M3.28.20] (lead) attempt 2/3 started
+- 2026-11-18T00:14 [M3.28.20] (lead) attempt 1: invariants 1-2 done and verified (AF_NETLINK rendered + golden + critical_edge pin 41 passed, netlink-in-unit, clippy/fmt/guard/plan OK). Attempt 1 b
+- 2026-11-18T00:18 [M3.28.20] (lead) status active -> review
+- 2026-11-18T00:18 [M3.28.12] (lead) attempt 3/3 started
+- 2026-11-18T00:18 [M3.28.12] (lead) attempt 2 blocked (real product bugs) -> M3.28.20 fixed AF_NETLINK + ensure_daemon, both verified. attempt 3 = re-run the live proof now that a world can boot t
+- 2026-11-18T00:18 [M3.28.20] (lead) quad round 1 (cruft): FAIL — MAJOR: the family list is spelled 7 times (unit.rs doc x2, source, golden, critical_edge x3) and will drift -> one const used by th
+- 2026-11-18T00:19 [M3.28.20] (lead) round 1 (legality): PASS — only AF_NETLINK appended, list still explicit, CapabilityBoundingSet/ProtectSystem/PrivateTmp/ReadWritePaths untouched; the PATH=bin-
+- 2026-11-18T00:19 [M3.28.20] (lead) edited fields
+- 2026-11-18T00:19 [M3.28.20] (lead) attempt 3/4 started
+- 2026-11-18T00:19 [M3.28.20] (lead) round 1 (ioc): FAIL — MAJOR: std::mem::forget(daemon) is now applied to Backend::Child, so on a Btrfs host ensure_daemon spawns a real slipforkd and never reaps
+- 2026-11-18T00:19 [M3.27] (lead) followup from M3.28.20: on a Btrfs host ensure_daemon spawns a real slipforkd child that currently outlives the test binary (no Drop guard). Teardown must also 
+- 2026-11-18T00:30 [M3.29] (lead) OWNER CLARIFICATION (2026-11-18) — supersedes the 'delete the file vault' part of the M3.29 brief: KEEP FileVaultProvider (0600 local vault) + 'slipfork secret'
+- 2026-11-18T00:30 [M3.29.3] (lead) RESCOPE (owner clarification 2026-11-18): do NOT delete FileVaultProvider/vaults.rs/'slipfork secret'. Scope them to LOCAL credentials only (locally-provisioned
+- 2026-11-18T00:30 [M3.29.4] (lead) RESCOPE (owner clarification 2026-11-18): docs/reference/ospp.md must state the two-tier model (local 0600 vault for local credentials/overrides; remote secrets
+- 2026-11-18T00:30 [M3.29.3] (lead) edited fields
+- 2026-11-18T00:30 [M3.29.4] (lead) edited fields
+- 2026-11-18T00:31 [M3.28.12] (lead) attempt 3 LIVE PROOF COMPLETE (the milestone acceptance): sync wrote slipforkd.service with AF_NETLINK; systemctl is-active slipforkd.socket => active; slipfork
+- 2026-11-18T00:36 [M3.28.20] (lead) status review -> done
+- 2026-11-18T00:36 [M3.28.20] (lead) quad: functional PASS, legality PASS, cruft/ioc quality items closed in attempt 3 (one const SERVICE_RESTRICT_ADDRESS_FAMILIES used by renderer+golden; redundan

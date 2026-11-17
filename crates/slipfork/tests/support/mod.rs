@@ -283,29 +283,48 @@ fn await_daemon_served(
     Ok(())
 }
 
-/// Ensure a daemon serves `layout`'s `<runtime_dir>/daemon.sock` for this test process.
+/// Ensure a daemon serves `layout`'s `<runtime_dir>/daemon.sock` for the calling test.
 ///
-/// On a Btrfs host the CLI auto-spawns the real child, so this is a no-op. Everywhere else the
-/// in-process composition starts once and lives until the test process exits.
+/// `command` names the `slipfork` invocation that needs it (for example `snow resolve`), so a host
+/// that genuinely cannot serve a daemon fails closed naming the command instead of letting the CLI
+/// print its own "no slipforkd on … — run `slipfork up`" line in a later assertion. The daemon is
+/// started on **every** host: the filesystem decides only *which* backend serves it — the real
+/// `slipforkd` child on a Btrfs host, the same `slipfork::daemon` composition over the shared
+/// `TestTreeDriver` elsewhere — because a daemon-served command needs one either way. The CLI still
+/// never auto-spawns a read/diagnostic verb (`M3.28.1` R5, `ADR-0011` §2–§3); the harness starts the
+/// daemon explicitly.
 ///
-/// The in-process daemon is deliberately forgotten, so its [`Daemon::shutdown`] (and therefore its
-/// teardown reap) never runs: reaping the worlds it boots is the caller's per-invocation duty, and
-/// the zero-survivor proof here runs before the handle is leaked.
-pub fn ensure_daemon(scratch: &Path, layout: &DaemonLayout) {
-    if host_is_btrfs(&layout.state_dir) {
-        return;
+/// The caller binds the returned handle in the **test** scope (`let _daemon = …`), never in a
+/// per-invocation helper: a real [`Backend::Child`] is a process, so its [`Daemon::shutdown`] must
+/// run (kill, wait, reap its worlds) when the test ends. `None` means a daemon already served the
+/// layout (the earlier call's handle owns it) or the in-process backend was started, which cannot be
+/// un-wound and is therefore forgotten.
+pub fn ensure_daemon(scratch: &Path, layout: &DaemonLayout, command: &str) -> Option<Daemon> {
+    if daemon_is_served(&layout.runtime_dir) {
+        return None;
     }
-    if DaemonControlClient::bind(&layout.runtime_dir).is_served() {
-        return;
+    let daemon = Daemon::start_in(scratch, layout).unwrap_or_else(|log| {
+        panic!(
+            "the test harness cannot serve `slipfork {command}`, which needs a daemon on {}: {log}",
+            layout.runtime_dir.display()
+        )
+    });
+    if daemon.is_in_process() {
+        // An in-process control server cannot be un-wound, so its handle is dropped on the floor:
+        // the zero-survivor proof runs here, before the only owner of that server is leaked.
+        assert_no_world_init_processes(
+            scratch,
+            "before the in-process daemon outlives this helper (its Drop never reaps)",
+        );
+        std::mem::forget(daemon);
+        return None;
     }
-    let daemon = Daemon::start_in(scratch, layout).expect("start the test daemon in-process");
-    // An in-process control server cannot be un-wound and a child daemon must outlive this
-    // helper, so the test process itself owns the daemon until it exits: never run `Drop`.
-    assert_no_world_init_processes(
-        scratch,
-        "before the in-process daemon outlives this helper (its Drop never reaps)",
-    );
-    std::mem::forget(daemon);
+    Some(daemon)
+}
+
+/// `true` when a daemon is serving `<runtime_dir>/daemon.sock` right now (the production probe).
+pub fn daemon_is_served(runtime_dir: &Path) -> bool {
+    DaemonControlClient::bind(runtime_dir).is_served()
 }
 
 /// The single `EngineError::BtrfsRequired` diagnostic contract every critical suite asserts.

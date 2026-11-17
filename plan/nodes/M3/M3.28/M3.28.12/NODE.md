@@ -2,16 +2,16 @@
 id: M3.28.12
 title: "VM harness: :80 bound via daemon install, tracked support/demo template, login quickstart banner"
 kind: task
-status: ready
+status: active
 owner: implementer
 priority: 2
-depends_on: [M3.28.6]
+depends_on: [M3.28.6, M3.28.20]
 paths: [tools/do_vm.py, tools/tests/test_do_vm.py, "support/demo/**"]
-attempts: 0
+attempts: 3
 max_attempts: 3
 escalation: none
 created: "2026-11-17T16:33"
-updated: "2026-11-17T16:33"
+updated: "2026-11-18T00:18"
 ---
 
 # Goal

@@ -5,7 +5,7 @@ kind: task
 status: ready
 owner: implementer
 priority: 2
-depends_on: [M3.28.15]
+depends_on: [M3.28.15, M3.29.3]
 paths:
   - tools/check_stub_adapters.py
   - tools/tests/test_check_stub_adapters.py
@@ -15,7 +15,7 @@ attempts: 0
 max_attempts: 3
 escalation: none
 created: "2026-11-17T17:41"
-updated: "2026-11-17T17:41"
+updated: "2026-11-18T00:08"
 ---
 
 # Goal

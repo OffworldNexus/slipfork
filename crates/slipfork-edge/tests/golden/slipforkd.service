@@ -12,7 +12,7 @@ NoNewPrivileges=yes
 ProtectSystem=strict
 ReadWritePaths=/home/slipforktest/.local/share/slipfork /run/user/1000/slipfork
 PrivateTmp=yes
-RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
 LimitNOFILE=65536
 
 [Install]
