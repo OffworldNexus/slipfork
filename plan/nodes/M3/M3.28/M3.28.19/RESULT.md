@@ -4,6 +4,8 @@ Verified `docs/design/ospp.md` against `crates/slipfork-ospp/src/{protocol,clien
 
 The architect then rewrote the draft from scratch to the owner's OSPP v1 spec (**136 lines, 3 `sequenceDiagram`s**). Content is the architect's; this node only verifies and commits it (`plan.py validate` OK, `guard.py` OK 562 files, `zensical build --strict` clean).
 
+Latest architect revision (**134 lines, 3 `sequenceDiagram`s**): `claims` are ID-only and secret values are encrypted per subscription with a `public_key` HPKE envelope. Content untouched; verified `plan.py validate` OK, `guard.py` OK (563 files), `zensical build --strict` clean.
+
 ## Drift items
 
 | # | Location | Claim found | Verdict |

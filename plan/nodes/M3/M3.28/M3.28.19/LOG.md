@@ -27,3 +27,7 @@ status active -> done
 ## 2026-11-17T22:39 [lead]
 
 architect clean rewrite: 136 lines, 3 sequenceDiagrams; verified plan OK + guard 562 + zensical strict; content untouched.
+
+## 2026-11-17T23:37 [lead]
+
+architect revision: 134 lines, ID-only claims + per-subscription public_key HPKE secret encryption. Verified plan OK, guard 563, zensical strict; content untouched.

@@ -1,6 +1,6 @@
 # Open Secret Provider Protocol (OSPP v1)
 
-Slipfork is a local "cloud in a box"; CI (Kerfufoo) creates and manages the real cloud environments and holds their authoritative variables, secrets, and managed infrastructure. OSPP v1 is the persistent WebSocket protocol Slipfork uses as a clutch to configure a local world from CI: the client sends its `snow.yml` and local resource claims, receives flat resolved environment variables per component (injected directly into managed processes and never stored on disk), stays subscribed over the open WebSocket so upstream secret or configuration changes push live updates (allowing Slipfork to restart affected services), and requests on-demand resource dumps.
+Slipfork is a local "cloud in a box"; CI (Kerfufoo) creates and manages the real cloud environments and holds their authoritative variables, secrets, and managed infrastructure. OSPP v1 is the persistent WebSocket protocol Slipfork uses as a clutch to configure a local world from CI: the client sends its `snow.yml`, the IDs of resources it owns locally, and an ephemeral encryption public key; receives per-component environment variables with secrets encrypted end-to-end (decrypted and finalized in memory, injected directly into managed processes, and never stored on disk); stays subscribed over the open WebSocket so upstream secret or configuration changes push live updates (allowing Slipfork to restart affected services); and requests on-demand resource dumps.
 
 ## Transport & Framing
 
@@ -55,55 +55,53 @@ In `p256` authentication, the server sends a random 32-byte hex `nonce` inside `
 sequenceDiagram
   participant C as Slipfork
   participant S as Kerfufoo
-  C->>S: subscribe { id, remote, snow, claims }
+  C->>S: subscribe { id, remote, public_key, snow, claims }
   S->>C: env_resolved { id, components }
   S-->>C: env_updated { id, components }
-  C->>S: subscribe { id, remote, snow, claims }
+  C->>S: subscribe { id, remote, public_key, snow, claims }
   S->>C: env_resolved { id, components }
   C->>S: unsubscribe { id }
 ```
 
-Project identity is the Git remote string and only the Git remote string (`"remote": "git@github.com:acme/web.git"`), sent verbatim with no client-side slug, hash, mode, or canonicalization rules; Kerfufoo resolves the remote internally at its discretion. To configure a world, the client sends `subscribe`:
+Project identity is the Git remote string and only the Git remote string (`"remote": "git@github.com:acme/web.git"`), sent verbatim with no client-side slug, hash, mode, or canonicalization rules; Kerfufoo resolves the remote internally at its discretion. For each subscription, the client generates an ephemeral encryption keypair in memory (never stored on disk) and sends `subscribe` with `public_key`, `snow`, and ID-only `claims`:
 
 ```json
 {
   "type": "subscribe",
   "id": "sub-1",
   "remote": "git@github.com:acme/web.git",
+  "public_key": "<hex>",
   "snow": "<raw snow.yml content>",
   "claims": {
     "resources": {
-      "pg_databases": {
-        "main": {
-          "host": "127.0.0.1",
-          "port": "5432",
-          "user": "postgres",
-          "password": "",
-          "db_name": "app",
-          "url": "postgres://postgres@127.0.0.1:5432/app"
-        }
-      }
+      "pg_databases": ["main"]
     },
-    "domains": {
-      "main": { "name": "web.localhost", "leader_name": "web.localhost" }
-    }
+    "domains": ["main"]
   }
 }
 ```
 
-Because `snow.yml` templates can combine `secrets::`, `vars::`, `resources::`, `domains::`, `components::`, and `deployment::` inside a single string (with `??` defaults), resolution happens in one pass on the server. `claims` declares the exact resources and domains (and component URLs, if needed) that Slipfork provisions locally along with their local values. For unclaimed resources in `snow.yml` (such as cloud object storage, Sentry, or shared databases), the server decides whether to fill them with cloud coordinates or refuse. The server evaluates `snow.yml` and replies with flat environment maps per component:
+`claims` lists only the IDs of resources and domains (and components, if needed) that Slipfork provisions locally — never local addresses or credentials. When evaluating `snow.yml`, the server resolves `vars::`, `secrets::`, `deployment::`, and any unclaimed `resources::` it provisions (or refuses if an unclaimed resource cannot be provisioned), while leaving `${{ ... }}` expressions that reference a claimed resource or domain untouched in the output string without failing on them. In `env_resolved` and `env_updated`, plain non-secret values are strings, whereas any variable whose evaluation touched `secrets::` or a sensitive server-resolved resource credential ("secrets contaminate") is returned as `{ "encrypted": "<hex>" }`:
 
 ```json
 {
   "type": "env_resolved",
   "id": "sub-1",
   "components": {
-    "api": { "DATABASE_URL": "...", "SECRET_KEY": "..." }
+    "api": {
+      "DEBUG": "false",
+      "DATABASE_URL": "${{ resources::pg_databases.main.url }}",
+      "SECRET_KEY": { "encrypted": "<hex>" }
+    }
   }
 }
 ```
 
-Secrets are never persisted by Slipfork; they live only in memory and are passed as process environment variables. The WebSocket stays open while worlds run: whenever secrets or variables change upstream, the server pushes `env_updated` (`{ "type": "env_updated", "id": "sub-1", "components": { ... } }`), and Slipfork restarts affected services with the updated environment. Updating `snow.yml` or local claims re-sends `subscribe` with the same `id`; stopping the world sends `unsubscribe` (`{ "type": "unsubscribe", "id": "sub-1" }`).
+Slipfork decrypts `{ "encrypted": "..." }` values in memory using the subscription's ephemeral private key, substitutes local values for any remaining claimed `${{ ... }}` expressions, and injects the resulting plaintext strings directly into child process environments (never writing them to disk). The WebSocket stays open while worlds run: whenever secrets or variables change upstream, the server pushes `env_updated` (`{ "type": "env_updated", "id": "sub-1", "components": { ... } }`), and Slipfork restarts affected services with the updated environment. Updating `snow.yml` or local claims re-sends `subscribe` with the same `id`; stopping the world sends `unsubscribe` (`{ "type": "unsubscribe", "id": "sub-1" }`).
+
+### Secret Encryption
+
+Subscription secrets are encrypted end-to-end with RFC 9180 HPKE Base mode using `DHKEM(P-256, HKDF-SHA256)`, `HKDF-SHA256`, `AES-256-GCM`, and `info = "ospp-v1-secret"`. The client encodes its ephemeral recipient `public_key` as hex in `subscribe`, and the server seals each secret UTF-8 value with `SealBase(public_key, info, aad = "<component>:<env_key>", plaintext)`, encoding `enc || ciphertext` as lowercase hex. Binding `aad` to `<component>:<env_key>` prevents ciphertexts from being replayed or swapped across components or variable names.
 
 ## Resource Dumps
 
