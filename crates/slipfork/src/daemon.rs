@@ -3329,9 +3329,11 @@ mod tests {
 
         let start = Instant::now();
         let elapsed = Arc::new(AtomicU64::new(0));
+        // A non-production deadline/poll pair: reverting the gate to the hardcoded
+        // `POSTGRES_READY_DEADLINE`/`POSTGRES_READY_POLL` constants fails these exact counts.
         let policy = PostgresReady {
-            deadline: Duration::from_secs(30),
-            poll: Duration::from_millis(100),
+            deadline: Duration::from_secs(3),
+            poll: Duration::from_millis(10),
             clock: {
                 let elapsed = Arc::clone(&elapsed);
                 Arc::new(move || start + Duration::from_millis(elapsed.load(Ordering::SeqCst)))
@@ -3352,7 +3354,7 @@ mod tests {
         })
         .expect("the fourth probe accepts queries");
         assert_eq!(probes, 4);
-        assert_eq!(elapsed.load(Ordering::SeqCst), 300);
+        assert_eq!(elapsed.load(Ordering::SeqCst), 30);
 
         // A postmaster that never accepts fails at the injected deadline, not after a real wait.
         elapsed.store(0, Ordering::SeqCst);
@@ -3362,9 +3364,9 @@ mod tests {
             Ok((2, "FATAL:  the database system is starting up".to_owned()))
         })
         .expect_err("a postmaster that never accepts must fail closed");
-        assert_eq!(probes, 301, "30 s deadline at a 100 ms poll, inclusive");
+        assert_eq!(probes, 301, "3 s deadline at a 10 ms poll, inclusive");
         let message = error.to_string();
-        assert!(message.contains("within 30s"), "got: {message}");
+        assert!(message.contains("within 3s"), "got: {message}");
         assert!(message.contains("starting up"), "got: {message}");
     }
 

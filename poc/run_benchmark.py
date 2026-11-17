@@ -1951,8 +1951,6 @@ def measure_all(
             "plan",
             "--file",
             str(project / "slipfork.toml"),
-            "--repo",
-            str(project),
         )
         plan = _slipfork_json(run_dir, env, project, *plan_args)
 

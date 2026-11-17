@@ -34,6 +34,19 @@ pub const SHUTDOWN_DEADLINE: Duration = Duration::from_secs(15);
 /// engine's own readiness contract (`ADR-0002` §2), never to this helper.
 pub fn poll_until(
     bound: Duration,
+    probe: impl FnMut() -> Result<(), String>,
+) -> Result<(), String> {
+    poll_until_with_interval(bound, POLL_INTERVAL, probe)
+}
+
+/// Poll `probe` every `interval` until it reports `Ok` or `bound` elapses.
+///
+/// The one bounded-wait implementation in the workspace: [`poll_until`] is this function with
+/// [`POLL_INTERVAL`], and every crate harness re-exports it (never a per-crate copy). The last
+/// probe error is returned on timeout; the bound is soft and checked between probes only.
+pub fn poll_until_with_interval(
+    bound: Duration,
+    interval: Duration,
     mut probe: impl FnMut() -> Result<(), String>,
 ) -> Result<(), String> {
     let deadline = Instant::now() + bound;
@@ -41,14 +54,14 @@ pub fn poll_until(
         match probe() {
             Ok(()) => return Ok(()),
             Err(error) if Instant::now() >= deadline => return Err(error),
-            Err(_) => std::thread::sleep(POLL_INTERVAL),
+            Err(_) => std::thread::sleep(interval),
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::poll_until;
+    use super::{poll_until, poll_until_with_interval};
     use std::time::Duration;
 
     #[test]
@@ -74,6 +87,17 @@ mod tests {
             Err("still not ready".to_owned())
         });
         assert_eq!(result.unwrap_err(), "still not ready");
+        assert_eq!(attempts, 1);
+    }
+
+    #[test]
+    fn explicit_interval_form_is_the_same_bounded_wait() {
+        let mut attempts = 0;
+        let result = poll_until_with_interval(Duration::ZERO, Duration::from_millis(1), || {
+            attempts += 1;
+            Err("custom interval".to_owned())
+        });
+        assert_eq!(result.unwrap_err(), "custom interval");
         assert_eq!(attempts, 1);
     }
 }

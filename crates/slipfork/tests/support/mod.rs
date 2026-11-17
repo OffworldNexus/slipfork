@@ -28,7 +28,12 @@ use slipfork_engine::btrfs::{BTRFS_SUPER_MAGIC, KernelBtrfsDriver, SubvolumeDriv
 use slipfork_engine::{InheritedVar, current_uid_gid};
 use slipfork_ospp::{BrowserOpener, LivePairingUrl, OsppError};
 use slipfork_testkit::btrfs::TestTreeDriver;
-use slipfork_testkit::{DAEMON_STARTUP_DEADLINE, SHUTDOWN_DEADLINE, poll_until};
+// The one bounded-wait shape and its named deadlines come from the shared testkit, so no suite in
+// this crate can drift into a second copy of the poll loop.
+pub use slipfork_testkit::{
+    DAEMON_STARTUP_DEADLINE, POLL_INTERVAL, SHUTDOWN_DEADLINE,
+    poll_until_with_interval as poll_until,
+};
 use tempfile::TempDir;
 
 /// Disk-backed scratch directory with a short path (AF_UNIX `sun_path` budget), never `/tmp`.
@@ -241,7 +246,7 @@ fn await_daemon_served(
     log_path: &Path,
 ) -> Result<(), String> {
     let client = DaemonControlClient::bind(runtime_dir);
-    let served = poll_until(DAEMON_STARTUP_DEADLINE, || {
+    let served = poll_until(DAEMON_STARTUP_DEADLINE, POLL_INTERVAL, || {
         if client.is_served() {
             return Ok(());
         }
@@ -277,6 +282,10 @@ fn await_daemon_served(
 ///
 /// On a Btrfs host the CLI auto-spawns the real child, so this is a no-op. Everywhere else the
 /// in-process composition starts once and lives until the test process exits.
+///
+/// The in-process daemon is deliberately forgotten, so its [`Daemon::shutdown`] (and therefore its
+/// teardown reap) never runs: reaping the worlds it boots is the caller's per-invocation duty, and
+/// the zero-survivor proof here runs before the handle is leaked.
 pub fn ensure_daemon(scratch: &Path, layout: &DaemonLayout) {
     if host_is_btrfs(&layout.state_dir) {
         return;
@@ -287,6 +296,10 @@ pub fn ensure_daemon(scratch: &Path, layout: &DaemonLayout) {
     let daemon = Daemon::start_in(scratch, layout).expect("start the test daemon in-process");
     // An in-process control server cannot be un-wound and a child daemon must outlive this
     // helper, so the test process itself owns the daemon until it exits: never run `Drop`.
+    assert_no_world_init_processes(
+        scratch,
+        "before the in-process daemon outlives this helper (its Drop never reaps)",
+    );
     std::mem::forget(daemon);
 }
 
@@ -320,6 +333,8 @@ pub struct Daemon {
     pub state_dir: PathBuf,
     pub runtime_dir: PathBuf,
     pub browser_marker: PathBuf,
+    /// The suite scratch root this daemon's worlds are booted from (the reaping scope).
+    scratch: PathBuf,
     backend: Backend,
 }
 
@@ -370,10 +385,12 @@ impl Daemon {
         matches!(self.backend, Backend::InProcess { .. })
     }
 
-    /// Stop serving `<runtime_dir>/daemon.sock` (idempotent).
+    /// Stop serving `<runtime_dir>/daemon.sock` (idempotent) and reap every world it booted.
     ///
     /// An in-process server cannot be un-wound, so its socket path is unlinked: every client then
-    /// observes a dead daemon exactly like a killed child. A child is killed and reaped.
+    /// observes a dead daemon exactly like a killed child. A child is killed and reaped. Either
+    /// way the worlds the daemon booted are real `slipfork-world-init` processes that can outlive
+    /// their supervisor, so they are reaped here and their survival fails the test.
     pub fn shutdown(&mut self) {
         match &mut self.backend {
             Backend::Child(child) => {
@@ -385,6 +402,15 @@ impl Daemon {
                     let _ = fs::remove_file(self.runtime_dir.join("daemon.sock"));
                     *closed = true;
                 }
+            }
+        }
+        if let Err(survivors) = reap_world_init_processes(&self.scratch) {
+            // A panic while the test is already unwinding would abort the whole test binary and
+            // hide the real failure, so that one case reports the leak instead of re-panicking.
+            if std::thread::panicking() {
+                eprintln!("slipfork test harness: {survivors}");
+            } else {
+                panic!("{survivors}");
             }
         }
     }
@@ -415,6 +441,7 @@ impl Daemon {
             state_dir: layout.state_dir.clone(),
             runtime_dir: layout.runtime_dir.clone(),
             browser_marker,
+            scratch: scratch.to_path_buf(),
             backend: Backend::Child(child),
         })
     }
@@ -490,6 +517,7 @@ impl Daemon {
             state_dir: spec.state_dir.clone(),
             runtime_dir: spec.runtime_dir.clone(),
             browser_marker,
+            scratch: scratch.to_path_buf(),
             backend: Backend::InProcess {
                 _ingress: ingress,
                 closed: false,
@@ -633,7 +661,7 @@ pub fn assert_success(output: &Output, what: &str) {
 pub fn wait_daemon_teardown(runtime_dir: &Path) -> Result<(), String> {
     let client = DaemonControlClient::bind(runtime_dir);
     let socket = client.socket_path().to_owned();
-    poll_until(SHUTDOWN_DEADLINE, || {
+    poll_until(SHUTDOWN_DEADLINE, POLL_INTERVAL, || {
         if client.is_served() {
             Err(format!("{} still accepts connections", socket.display()))
         } else {
@@ -643,12 +671,231 @@ pub fn wait_daemon_teardown(runtime_dir: &Path) -> Result<(), String> {
     .map_err(|last| format!("{last} after {SHUTDOWN_DEADLINE:?}"))
 }
 
+/// The observable outcome of `SIGTERM`-ing one CLI child's process group.
+pub struct ProcessGroupTermination {
+    /// `true` when `kill -TERM -- -<pgid>` was delivered to at least one member.
+    pub term_delivered: bool,
+    /// `true` when a `kill -0 -- -<pgid>` probe still finds a live member.
+    pub members_alive: bool,
+}
+
+/// `SIGTERM` the process group `process_group` and probe whether it is gone.
+///
+/// A CLI child spawned with `process_group(0)` owns a group that also carries the `slipforkd` it
+/// auto-spawned and every world that daemon booted, so one group signal reaches all of them. A
+/// diagnostic-only invocation never spawns a daemon, so its group is already empty and `kill`
+/// reports `ESRCH`; [`ProcessGroupTermination`] lets each caller assert its own policy.
+pub fn terminate_process_group(process_group: u32) -> ProcessGroupTermination {
+    let group = format!("-{process_group}");
+    ProcessGroupTermination {
+        term_delivered: kill(&["-TERM", "--", &group]),
+        members_alive: kill(&["-0", "--", &group]),
+    }
+}
+
+/// How long a world-init process group gets to exit after `SIGTERM` before `SIGKILL`.
+///
+/// A world PID 1 ignores `SIGTERM` (`pid_namespaces(7)`), so this window exists for the `unshare`
+/// supervisor, which can forward `--kill-child`; it only has to outlast one scheduling round trip.
+const REAP_TERM_GRACE: Duration = Duration::from_secs(1);
+
+/// How long a world-init process group gets to exit after `SIGKILL` before it is reported.
+///
+/// `SIGKILL` is not maskable, so the only wait is the kernel tearing the PID namespace down; a
+/// loaded host can starve a dying process, so this is generous and the poll returns as soon as the
+/// last process is gone.
+const REAP_KILL_GRACE: Duration = Duration::from_secs(10);
+
+/// One `slipfork-world-init` PID 1 or its `unshare` supervisor, matched by a suite's scratch root.
+struct WorldInitProcess {
+    pid: u32,
+    /// `None` when `/proc/<pid>/stat` could not be read: the process is still reported (and
+    /// signalled directly) instead of being silently dropped as "no survivor".
+    pgid: Option<u32>,
+    cmdline: String,
+}
+
+impl std::fmt::Display for WorldInitProcess {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.pgid {
+            Some(pgid) => write!(
+                formatter,
+                "pid {} (pgid {pgid}): {}",
+                self.pid, self.cmdline
+            ),
+            None => write!(
+                formatter,
+                "pid {} (pgid unknown): {}",
+                self.pid, self.cmdline
+            ),
+        }
+    }
+}
+
+/// Boundedly reap every `slipfork-world-init` and `unshare` supervisor whose cmdline names
+/// `scratch`, returning the survivors when any outlive the `SIGTERM` → `SIGKILL` window.
+///
+/// A world PID 1 is `SIGNAL_UNKILLABLE` to `SIGTERM` (`pid_namespaces(7)`), and a supervisor that
+/// is `SIGKILL`ed can no longer forward `--kill-child`, so a world can outlive both its daemon and
+/// the `SIGTERM` that killed the daemon's process group. Every *wait* is a [`poll_until`] probe
+/// that re-scans `/proc` by cmdline, so no wait trusts a stale pid; the initial `SIGTERM` pass
+/// signals the first scan, and every later pass re-scans before signalling. The error names every
+/// survivor.
+pub fn reap_world_init_processes(scratch: &Path) -> Result<(), String> {
+    let targets = world_init_processes(scratch);
+    if targets.is_empty() {
+        return Ok(());
+    }
+    signal_world_init(&targets, "-TERM");
+    if poll_until(REAP_TERM_GRACE, POLL_INTERVAL, || no_world_init(scratch)).is_ok() {
+        return Ok(());
+    }
+    poll_until(REAP_KILL_GRACE, POLL_INTERVAL, || {
+        match no_world_init(scratch) {
+            Ok(()) => Ok(()),
+            Err(survivors) => {
+                // A signal can be lost to a process that is momentarily unsignalable (an
+                // uninterruptible syscall), so every probe re-signals the survivors it just
+                // re-scanned by cmdline.
+                signal_world_init(&world_init_processes(scratch), "-KILL");
+                Err(survivors)
+            }
+        }
+    })
+    .map_err(|last| {
+        format!(
+            "world init processes for {} survived SIGTERM + SIGKILL: {last}",
+            scratch.display()
+        )
+    })
+}
+
+/// Assert that no world-init process for `scratch` survives, reaping first.
+///
+/// The one suite-exit proof for a suite that boots worlds without a harness [`Daemon`];
+/// `context` is appended to the failure so a caller can name the offending invocation.
+pub fn assert_no_world_init_processes(scratch: &Path, context: &str) {
+    if let Err(survivors) = reap_world_init_processes(scratch) {
+        panic!("{survivors}\n{context}");
+    }
+}
+
+/// `Ok` when no `slipfork-world-init`/`unshare` process names `scratch` (`/proc` re-scanned).
+fn no_world_init(scratch: &Path) -> Result<(), String> {
+    let alive = world_init_processes(scratch);
+    if alive.is_empty() {
+        Ok(())
+    } else {
+        Err(describe_world_init(&alive))
+    }
+}
+
+/// Every `slipfork-world-init`/`unshare` process whose argv names `scratch`.
+fn world_init_processes(scratch: &Path) -> Vec<WorldInitProcess> {
+    let mut found = Vec::new();
+    // A reap helper may never report "no survivors" on ignorance: an unreadable `/proc` is a
+    // failed inspection, not an empty process table.
+    let entries =
+        fs::read_dir("/proc").expect("/proc must be readable to reap world init processes");
+    for entry in entries.flatten() {
+        let Some(pid) = entry
+            .file_name()
+            .to_str()
+            .and_then(|name| name.parse::<u32>().ok())
+        else {
+            continue;
+        };
+        let Ok(raw) = fs::read(entry.path().join("cmdline")) else {
+            continue;
+        };
+        let argv: Vec<String> = raw
+            .split(|byte| *byte == 0)
+            .filter(|arg| !arg.is_empty())
+            .map(|arg| String::from_utf8_lossy(arg).into_owned())
+            .collect();
+        let Some(program) = argv.first() else {
+            continue;
+        };
+        let supervised = program.ends_with("slipfork-world-init") || program.ends_with("unshare");
+        if !supervised || !argv.iter().any(|arg| Path::new(arg).starts_with(scratch)) {
+            continue;
+        }
+        // A matched process whose stat is unreadable is still a survivor: report it (with an
+        // unknown process group) instead of dropping it from the proof.
+        found.push(WorldInitProcess {
+            pid,
+            pgid: process_group(pid),
+            cmdline: argv.join(" "),
+        });
+    }
+    found.sort_by_key(|process| process.pid);
+    found
+}
+
+/// Signal every matched process: its whole process group unless that group is the test's own.
+///
+/// A world init inherits its spawner's process group, and the harness daemon boots worlds from
+/// this test process, so the test's own group is never signalled: each matched pid is signalled
+/// directly instead (killing the namespace's PID 1 tears the whole namespace down). A group owned
+/// by a CLI child (`process_group(0)`) or an earlier run is signalled as a group, so the PID 1 and
+/// its supervisor both receive the signal. A process whose group could not be read is signalled by
+/// pid only, because signalling an unknown group could hit the test runner.
+fn signal_world_init(processes: &[WorldInitProcess], signal: &str) {
+    // Without the test's own group, a group signal could kill the test runner: fail closed rather
+    // than guess (the reaper may never act on ignorance).
+    let own_group = process_group(std::process::id())
+        .expect("/proc/self/stat must be readable to avoid signalling the test's own group");
+    let mut signalled: Vec<u32> = Vec::new();
+    for process in processes {
+        match process.pgid {
+            Some(pgid) if pgid != own_group => {
+                if !signalled.contains(&pgid) {
+                    signalled.push(pgid);
+                    kill(&[signal, "--", &format!("-{pgid}")]);
+                }
+            }
+            _ => {
+                kill(&[signal, &process.pid.to_string()]);
+            }
+        }
+    }
+}
+
+/// The process group of `pid` (`/proc/<pid>/stat` field 5).
+fn process_group(pid: u32) -> Option<u32> {
+    let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    // `comm` (field 2) is parenthesized and may itself contain spaces or `)`, so split after its
+    // last `)`; the remaining fields start with `state ppid pgrp …`.
+    let mut fields = stat.rsplit_once(')')?.1.split_whitespace();
+    fields.next()?; // state
+    fields.next()?; // ppid
+    fields.next()?.parse().ok()
+}
+
+fn describe_world_init(processes: &[WorldInitProcess]) -> String {
+    processes
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+/// `true` when `kill <args>` reported success (a missing pid or group reports `ESRCH`).
+fn kill(args: &[&str]) -> bool {
+    Command::new("kill")
+        .args(args)
+        .stderr(Stdio::null())
+        .status()
+        .expect("run kill")
+        .success()
+}
+
 /// Bound on one streamed child line.
 ///
-/// This is the one legitimate non-poll wait: the producer thread blocks on the child's stdout pipe
-/// and the consumer must block on the channel until the next line arrives, so a `poll_until` loop
-/// would only re-implement `recv_timeout` on the same channel. The blocking bound is therefore a
-/// named deadline, not a polling interval.
+/// This is the one remaining blocking `recv_timeout` wait in this harness: the producer thread
+/// blocks on the child's stdout pipe and the consumer must block on the channel until the next
+/// line arrives, so a `poll_until` loop would only re-implement `recv_timeout` on the same
+/// channel. The blocking bound is therefore a named deadline, not a polling interval.
 const STREAM_LINE_DEADLINE: Duration = Duration::from_secs(30);
 
 /// Read lines from a child's stdout until `predicate` accepts one or the deadline expires.

@@ -12,6 +12,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, OnceLock};
+use std::time::Duration;
 
 use slipfork_engine::btrfs::SubvolumeDriver;
 use slipfork_engine::rootfs::{
@@ -25,6 +26,9 @@ use slipfork_engine::{
     WorldMount, WorldSpec, current_uid_gid,
 };
 use slipfork_testkit::btrfs::TestTreeDriver;
+// The one bounded-wait shape and its named deadlines come from the shared testkit, so no suite in
+// this crate can drift into a second copy of the poll loop.
+pub use slipfork_testkit::{POLL_INTERVAL, poll_until_with_interval as poll_until};
 use slipfork_world::WorldTarget;
 
 /// Compile-time pin mirrored for the tests (the crate's `pin` module is the source of truth).
@@ -37,6 +41,15 @@ const CRUN_URL: &str = "https://github.com/containers/crun/releases/download/1.2
 const HELPER_PATH: &str = "/usr/local/bin:/usr/bin:/bin";
 /// In-image postgres data directory used by every service suite.
 pub const PG_DATA: &str = "/var/lib/postgresql/data";
+
+/// Block for `window` without polling: the suite's named quiet-window primitive.
+///
+/// An absence assertion ("a stopped writer never grows its state again") needs a window in which
+/// nothing is expected to happen, so there is no state to poll for. It is never a readiness proof
+/// and never a poll: every readiness proof in these suites goes through [`poll_until`] instead.
+pub fn observe_for(window: Duration) {
+    std::thread::sleep(window);
+}
 
 /// Local cache holding the pinned `crun` between test runs.
 fn runtime_cache_dir() -> PathBuf {

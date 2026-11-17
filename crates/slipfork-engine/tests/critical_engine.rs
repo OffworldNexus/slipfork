@@ -31,9 +31,10 @@ use slipfork_engine::{
     WorldHandle, WorldMount, WorldSpec, current_uid_gid,
 };
 use slipfork_testkit::btrfs::{SubvolumeOp, TestTreeDriver};
-use slipfork_testkit::poll_until;
 use slipfork_world::WorldTarget;
-use support::{WorldFixture, engine_test_dir, log_text, world_env};
+use support::{
+    POLL_INTERVAL, WorldFixture, engine_test_dir, log_text, observe_for, poll_until, world_env,
+};
 
 const HELPER_PATH: &str = "/usr/local/bin:/usr/bin:/bin";
 const XFS_SUPER_MAGIC: i64 = 0x5846_5342;
@@ -41,6 +42,10 @@ const XFS_SUPER_MAGIC: i64 = 0x5846_5342;
 /// Observation window for "a stopped writer never grows its state again" (an absence assertion
 /// needs a window; it is never used as a readiness proof).
 const QUIET_WINDOW: Duration = Duration::from_millis(150);
+
+/// Bound on the engine's own asynchronous state transitions: `destroy_world` reaping the world
+/// PID 1, a service's retained stdout, and a writer's first state write.
+const ENGINE_SETTLE_DEADLINE: Duration = Duration::from_secs(10);
 
 fn snap(label: &str) -> SnapshotId {
     SnapshotId(label.to_owned())
@@ -750,7 +755,7 @@ fn persistent_init_pid_stays_stable_across_calls_and_is_reaped_on_destroy() {
     }
 
     fx.engine.destroy_world(world.clone()).expect("destroy");
-    let reaped = poll_until(Duration::from_secs(10), || {
+    let reaped = poll_until(ENGINE_SETTLE_DEADLINE, POLL_INTERVAL, || {
         if Path::new(&format!("/proc/{init_pid}")).exists() {
             Err(format!("world init pid {init_pid} is still alive"))
         } else {
@@ -785,7 +790,7 @@ fn service_logs_survive_idempotent_stop_and_freeze_seals_only_after_stop() {
     );
     assert_eq!(greeter.state(), ServiceState::Running);
     let logs = fx.engine.service_logs(&world, "greeter").expect("logs");
-    let captured = poll_until(Duration::from_secs(10), || {
+    let captured = poll_until(ENGINE_SETTLE_DEADLINE, POLL_INTERVAL, || {
         if log_text(&logs).contains("service-hello") {
             Ok(())
         } else {
@@ -836,7 +841,7 @@ fn service_logs_survive_idempotent_stop_and_freeze_seals_only_after_stop() {
             "while :; do echo tick >> \"$SLIPFORK_WORLD_STATE/live.log\"; sleep 0.01; done",
         ),
     );
-    let produced = poll_until(Duration::from_secs(10), || {
+    let produced = poll_until(ENGINE_SETTLE_DEADLINE, POLL_INTERVAL, || {
         if fx
             .exec(&world, "test -s \"$SLIPFORK_WORLD_STATE/live.log\"")
             .exit_code
@@ -865,7 +870,7 @@ fn service_logs_survive_idempotent_stop_and_freeze_seals_only_after_stop() {
         .stdout
         .trim()
         .to_owned();
-    thread::sleep(QUIET_WINDOW);
+    observe_for(QUIET_WINDOW);
     let size_after = fx
         .exec(&world, "wc -c < \"$SLIPFORK_WORLD_STATE/live.log\"")
         .stdout

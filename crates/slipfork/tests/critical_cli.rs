@@ -380,12 +380,28 @@ fn daemon_unit_renders_the_resolved_user_and_never_a_template_specifier() {
     let expected_user = expected_user.trim();
     assert!(!expected_user.is_empty());
 
-    let service = Command::new(env!("CARGO_BIN_EXE_slipfork"))
-        .args(["daemon", "unit", "--only", "service"])
-        .current_dir(&repo)
-        .env("XDG_DATA_HOME", scratch.join("xdg-data"))
-        .output()
-        .expect("daemon unit --only service");
+    // The roots the command really resolves: the explicit layout plus the XDG defaults it would
+    // otherwise fall back to. Both are watched below, so "daemon unit writes no files" can fail.
+    let layout = support::DaemonLayout::under(scratch);
+    let xdg_cache_home = scratch.join("xdg-cache");
+    let xdg_runtime_dir = scratch.join("xdg-default-runtime");
+    let xdg_data_home = scratch.join("xdg-data");
+    let unit = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_slipfork"))
+            .arg("--state-dir")
+            .arg(&layout.state_dir)
+            .arg("--runtime-dir")
+            .arg(&layout.runtime_dir)
+            .args(args)
+            .current_dir(&repo)
+            .env("XDG_CACHE_HOME", &xdg_cache_home)
+            .env("XDG_RUNTIME_DIR", &xdg_runtime_dir)
+            .env("XDG_DATA_HOME", &xdg_data_home)
+            .output()
+            .expect("daemon unit invocation")
+    };
+
+    let service = unit(&["daemon", "unit", "--only", "service"]);
     assert_success(&service, "daemon unit --only service");
     let service_text = stdout(&service);
     assert!(
@@ -399,12 +415,7 @@ fn daemon_unit_renders_the_resolved_user_and_never_a_template_specifier() {
         "systemd template/empty users are forbidden:\n{service_text}"
     );
 
-    let socket = Command::new(env!("CARGO_BIN_EXE_slipfork"))
-        .args(["daemon", "unit", "--only", "socket"])
-        .current_dir(&repo)
-        .env("XDG_DATA_HOME", scratch.join("xdg-data"))
-        .output()
-        .expect("daemon unit --only socket");
+    let socket = unit(&["daemon", "unit", "--only", "socket"]);
     assert_success(&socket, "daemon unit --only socket");
     assert_eq!(
         stdout(&socket)
@@ -416,12 +427,7 @@ fn daemon_unit_renders_the_resolved_user_and_never_a_template_specifier() {
         stdout(&socket)
     );
 
-    let collision = Command::new(env!("CARGO_BIN_EXE_slipfork"))
-        .args(["daemon", "unit", "--only", "socket", "--forward-port", "80"])
-        .current_dir(&repo)
-        .env("XDG_DATA_HOME", scratch.join("xdg-data"))
-        .output()
-        .expect("daemon unit collision");
+    let collision = unit(&["daemon", "unit", "--only", "socket", "--forward-port", "80"]);
     assert!(
         !collision.status.success(),
         "a forward port colliding with :80 must fail closed"
@@ -432,12 +438,21 @@ fn daemon_unit_renders_the_resolved_user_and_never_a_template_specifier() {
         stderr(&collision)
     );
 
-    // Rendering units is a pure stdout operation: no state or runtime directory is created.
-    let layout = support::DaemonLayout::under(scratch);
-    assert!(
-        !layout.state_dir.exists() && !layout.runtime_dir.exists(),
-        "daemon unit must not write any files"
-    );
+    // Rendering units is a pure stdout operation: neither the explicit layout roots nor the
+    // default XDG roots the command would otherwise resolve may be created.
+    for path in [
+        &layout.state_dir,
+        &layout.runtime_dir,
+        &xdg_cache_home.join("slipfork"),
+        &xdg_runtime_dir.join("slipfork"),
+        &xdg_data_home,
+    ] {
+        assert!(
+            !path.exists(),
+            "daemon unit must not create {}",
+            path.display()
+        );
+    }
 }
 
 #[test]
@@ -498,7 +513,10 @@ fn zero_setup_auto_spawn_serves_up_without_a_prestarted_daemon() {
             !runtime_dir.join("daemon.sock").exists(),
             "a refused daemon never binds its control socket"
         );
-        support::assert_no_world_init_processes(scratch);
+        support::assert_no_world_init_processes(
+            scratch,
+            "after the refused zero-setup `up` (non-Btrfs state root)",
+        );
         return;
     }
 
@@ -523,7 +541,10 @@ fn zero_setup_auto_spawn_serves_up_without_a_prestarted_daemon() {
     );
     support::wait_daemon_teardown(&runtime_dir)
         .unwrap_or_else(|error| panic!("the auto-spawned slipforkd must stop accepting: {error}"));
-    support::assert_no_world_init_processes(scratch);
+    support::assert_no_world_init_processes(
+        scratch,
+        "after the auto-spawned slipforkd was SIGTERMed and stopped accepting",
+    );
 }
 
 // ---------------------------------------------------------------------------

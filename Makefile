@@ -1,9 +1,11 @@
 # Slipfork Makefile: one deterministic gate (`make check`) for humans, CI, and agents.
 
 # Compiler and `uv` scratch stays on the XFS disk under `$HOME/.cache`, never the RAM-backed `/tmp`
-# tmpfs (`docs/knowledge/LESSONS.md`). `:=` deliberately pins `TMPDIR`, so an inherited tmpfs
-# `TMPDIR` cannot put compiler or `uv` scratch back on tmpfs. The integration suites' own scratch
-# roots are hardcoded under `$HOME/.cache` and never read `TMPDIR`.
+# tmpfs (`docs/knowledge/LESSONS.md`). `:=` deliberately pins the gate's scratch root, so an
+# inherited tmpfs `TMPDIR` cannot put compiler or `uv` scratch back on tmpfs. A caller can still
+# override it on the command line (`make TMPDIR=/x …`): command-line variables win over a makefile
+# `:=`. The world-booting suites pin their own scratch roots under `$HOME/.cache` and never read
+# `TMPDIR`; other suites may use `tempfile`.
 TMPDIR := $(HOME)/.cache/slipfork-tmp
 export TMPDIR
 
@@ -54,11 +56,18 @@ rs-lint: | $(TMPDIR) ## Run Clippy (-D warnings) and rustdoc (-D warnings) acros
 	RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
 
 # Integration binaries are listed explicitly (never one `--workspace --all-targets` sweep) so the
-# parallel and serialized phases stay auditable. Every `WORLD_BOOTING_TESTS` binary boots a real
-# world, runs a real `docker buildx` build, or spawns a real `slipforkd`, and runs alone, one case
-# at a time. `rs-test-list` mechanically enforces the list and every serialization pair; the
-# invariants and the explicit human-maintained classification rule live in the
-# `tools/rs_test_list.py` module docstring.
+# parallel and serialized phases stay auditable. `tools/rs_test_list.py` enforces exactly four
+# rules:
+#   1. every `tests/*.rs` is part of a declared test target — a `[[test]]` path or a `#[path]`
+#      module of one — so no protected file is compiled by nothing;
+#   2. the list names test targets only (a `#[path]`-inlined file is never its own entry), and
+#      every declared target is listed (a missing pair fails);
+#   3. every `<package>:<test>` pair appears exactly once;
+#   4. every pair in `WORLD_BOOTING_TESTS` is listed with `-- --test-threads=1`.
+# `WORLD_BOOTING_TESTS` itself is explicit and human-maintained: the guard cannot discover which
+# suites boot a real world, run a real `docker buildx` build, or spawn a real `slipforkd`, so a new
+# world-booting suite must be classified here by hand. The invariants live in
+# `tools/rs_test_list.py`.
 WORLD_BOOTING_TESTS := \
 	slipfork-engine:critical_rootfs_live \
 	slipfork-engine:critical_engine \

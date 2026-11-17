@@ -2,23 +2,28 @@
 id: M3.24
 title: "Finish bounded-wait consolidation, reap orphaned world-init processes, and make rs-test-list comments match what the guard enforces"
 kind: task
-status: ready
+status: active
 owner: implementer
 priority: 4
 depends_on: [M3.1]
 paths:
   - Makefile
+  - poc/run_benchmark.py
   - crates/slipfork/tests/critical_l0_wiring.rs
   - crates/slipfork/tests/critical_slug.rs
   - crates/slipfork/tests/critical_cli.rs
   - "crates/slipfork-engine/tests/critical_engine.rs"
   - crates/slipfork/tests/support/mod.rs
   - "crates/slipfork-engine/tests/support/mod.rs"
-attempts: 0
+  - "crates/slipfork-testkit/src/lib.rs"
+  - crates/slipfork/src/daemon.rs
+  - crates/slipfork/src/cli.rs
+  - crates/slipfork/src/main.rs
+attempts: 1
 max_attempts: 3
 escalation: none
 created: "2026-11-16T20:44"
-updated: "2026-11-16T21:20"
+updated: "2026-11-17T13:32"
 ---
 
 # Goal

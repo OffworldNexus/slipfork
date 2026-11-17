@@ -99,13 +99,14 @@ fn run_slipfork_with_env(
     // forward `--kill-child`, so the group signal alone is not a leak proof. This suite boots no
     // world, so the reap is a no-op today; it is the suite-exit proof that the auto-spawned daemon
     // group never leaves one behind.
-    if let Err(survivors) = support::reap_world_init_processes(scratch) {
-        panic!(
-            "{survivors}\noffending invocation: slipfork {args:?}\nstdout:\n{}\nstderr:\n{}",
+    support::assert_no_world_init_processes(
+        scratch,
+        &format!(
+            "offending invocation: slipfork {args:?}\nstdout:\n{}\nstderr:\n{}",
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
-        );
-    }
+        ),
+    );
     output
 }
 
@@ -794,6 +795,31 @@ fn invalid_project_label_fails_closed_until_rescued_by_valid_slipfork_toml_overr
     assert!(
         String::from_utf8_lossy(&out_rescued.stdout)
             .contains("APP_URL=http://my-project.localhost\n")
+    );
+}
+
+#[test]
+fn dag_plan_repo_flag_is_gone_and_rejected_by_the_parser() {
+    let tmp = disk_tempdir("slug-");
+    let scratch = tmp.path();
+    let repo = scratch.join("plain");
+    fs::create_dir_all(&repo).expect("create plain dir");
+    let repo_arg = repo.to_str().expect("utf8");
+
+    // `dag plan --repo` was deleted (the plan is always rooted at the VCS toplevel): the removed
+    // flag must stay a typed usage error, never a silently ignored no-op.
+    let out = run_slipfork(scratch, &repo, &["dag", "plan", "--repo", repo_arg]);
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "an unknown `--repo` must exit 2, got {}:\nstderr:\n{}",
+        out.status,
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("--repo"),
+        "the usage error must name the removed flag: {stderr}"
     );
 }
 

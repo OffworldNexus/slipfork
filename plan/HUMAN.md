@@ -48,7 +48,7 @@ DESTRUCTIVE-ACTION AUTHORIZATION NEEDED: DO volume 131a2765-e1ba-11f1-b67b-d6114
 
 **Answer:**
 
-## H-006 [open] [direction-challenge] (node M3.19)
+## H-006 [closed] [direction-challenge] (node M3.19)
 
 - asked: 2026-11-17T12:45 by lead
 

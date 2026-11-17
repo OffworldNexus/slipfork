@@ -943,3 +943,16 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-17T13:08 [M3.24] (lead) SCOPE WIDENED (lead): the working tree also carries two product cleanups that appeared while this node was active and are adopted here because they are exactly 
 - 2026-11-17T13:09 [M3.18] (lead) FINAL: functional PASS, cruft findings fixed in-path (AGENTS 0.1.0 split, doctor fix-per-check, sudo/AppArmor required, --repo undocumented+deleted, FsDigestCac
 - 2026-11-17T13:09 [M3.18] (lead) status done -> done
+- 2026-11-17T13:11 [M3.19] (lead) LEAD LIVE EVIDENCE (H-006 pending): with the current profile (unshare+debug world-init) and sysctl=1, crun hits unprivileged_userns: dmesg 'profile=unprivileged
+- 2026-11-17T13:11 [M3.23] (lead) ADD (H-006 impact): docs must not claim the 4-line profile alone suffices on stock Ubuntu 24.04. Document BOTH: the AppArmor profile must name every executable 
+- 2026-11-17T13:13 [M3.24] (lead) edited fields
+- 2026-11-17T13:13 [M3.24] (lead) Quad gate 1/2: legality MAJOR (the 'daemon unit writes no files' assertion checks paths the command never touches — it cannot fail), cruft MAJOR x2 (three poll_
+- 2026-11-17T13:32 [M3.24] (lead) edited fields
+- 2026-11-17T13:37 [M3.19.1] (lead) created (task) Apply the H-006 AppArmor attachment set: profile covers every CLONE_NEWUSER executable
+- 2026-11-17T13:37 [M3.19.1] (lead) status ready -> active
+- 2026-11-17T13:37 [M3.19.1] (lead) attempt 1/3 started
+- 2026-11-17T13:37 [M3.19.1] (lead) base 1605c31666d2ab2db5db343a6b960235e57ee554
+- 2026-11-17T13:37 [M3.19] (lead) ARCHITECT RULING (escalation #22, H-006) received and recorded in ADR-0010 §7 + docs/design/do-vm-harness.md + RESULT §8; M3.19.1 applies it. H-006 stays open i
+- 2026-11-17T13:42 HUMAN H-006 closed by lead
+- 2026-11-17T13:42 [M3.19] (lead) edited fields
+- 2026-11-17T13:42 [M3.19] (lead) OWNER APPROVED H-006: 'Approve profile list (Recommended)'. Ruling applied by M3.19.1 (apparmor.rs + engine hint + do_vm.py harness clause + cli.md + byte-equiv

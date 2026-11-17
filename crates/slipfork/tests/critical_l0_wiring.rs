@@ -191,13 +191,14 @@ fn redis_entry_fails_closed_with_service_not_running_after_the_container_stops()
             );
             Ok(())
         }
-        Err(other) => panic!("expected ServiceNotRunning after shutdown, got: {other}"),
+        Err(other) => Err(format!(
+            "expected ServiceNotRunning after shutdown, got: {other}"
+        )),
         Ok(_) => Err("the stopped redis container must never be re-entered".to_owned()),
     });
-    assert!(
-        stopped.is_ok(),
-        "the stopped redis container must never be re-entered: {stopped:?}"
-    );
+    if let Err(last) = stopped {
+        panic!("{last}");
+    }
 
     let cli = daemon.cli(&repo, &["redis"]);
     assert!(
