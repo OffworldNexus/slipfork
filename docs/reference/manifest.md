@@ -87,7 +87,7 @@ generator := "random_string(" 1..=512 ")" | "random_hex(" 1..=256 ")"
 | `domains::<ID>` | no provider today — fails closed | yes | no |
 | `resources::…`, `components::…`, `deployment::…` | world coordinates (below) | yes | no |
 
-The local vault is `$XDG_DATA_HOME/slipfork/vaults/<project>.json` (default `~/.local/share/slipfork/vaults/`) mode `0600`, and it is layer 1 of `LayeredSecretProvider<FileVaultProvider, OsppSecretProvider>`: the only `!!` write sink. A session paired by `slipfork auth login` supplies `OSPP v1` `env.bundle` keys second, so an unpaired developer sees a key the vault lacks as a missing value ([modes & secrets](../snow-modes.md)).
+`!!` values persist for reuse in the local vault ([`snow.yml` modes & secrets](../snow-modes.md)).
 
 ### Coordinates (`ResourceCoordinates::for_world`)
 
@@ -155,6 +155,6 @@ A project with two build images (say `api` and `worker`) must set `world.image`;
 ### Validation rules
 
 - **Unknown keys fail closed** in every `slipfork.toml` table (`#[serde(deny_unknown_fields)]`).
-- **`[resources.<kind>.<id>]`** (`pg_databases` / `s3_buckets`) takes `local` and `test` strategies (`local` | `prefer_remote` | `remote`), e.g. `[resources.pg_databases.appdb] local = "prefer_remote"`; `slipforkd` applies the plan when it boots the world (`ADR-0008` §3). `prefer_remote` degrades to world-local coordinates with a `not_offered` row; `remote` without a paired OSPP session fails closed naming the missing offer. Seed dumps, `--no-dump`, and `--refresh-dump`: [CLI reference](cli.md#seed-dumps-and-sealed-bases).
+- **`[resources.<kind>.<id>]`** (`pg_databases` / `s3_buckets`) takes `local` and `test` strategies (`local` | `prefer_remote` | `remote`), e.g. `[resources.pg_databases.appdb] local = "prefer_remote"`; `slipforkd` applies the plan when it boots the world. The `remote` strategy fails closed without a provider; seed dumps and `--no-dump`/`--refresh-dump`: [CLI reference](cli.md#seed-dumps-and-sealed-bases).
 - **`[test]` is typed fields only** (`ADR-0006` §1): `coverage = true` is the sole switch, `coverage_report` defaults to `["text"]`, options without it fail with `DagError::CoverageOptionsRequireEnabled`, `coverage_report = []` with `DagError::EmptyCoverageReport`, and `coverage_fail_under` outside `0..=100` with `DagError::InvalidCoverageThreshold`. Coverage execution is not shipped in `0.1.0`; it lands with `STP v1` in `0.2.0`.
 - **`[fixtures.<id>].per_world`** defaults to `false`. A per-world fixture is never reported `CacheAction::Cached` and cannot be the `parent` of an origin-independent fixture (`DagError::OriginIndependentChildOfPerWorld`). Per-world snapshot execution is not shipped in `0.1.0`; it lands with `STP v1` in `0.2.0`.

@@ -1102,3 +1102,27 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-17T20:23 [M3.28.4] (lead) edited fields
 - 2026-11-17T21:00 [M3.28.4] (lead) status review -> done
 - 2026-11-17T21:00 [M3.28.4] (lead) pre-commit: make check rc=0 (44 suites) once host load dropped from 19 to 6.5; the two earlier red runs were the same 'world init survived SIGTERM+SIGKILL for 1
+- 2026-11-17T21:00 [M3.27] (lead) Field evidence from the M3.28 epic (2026-11-17): under host load 16-19 (a foreign cargo test in D state), 'make check' fails non-deterministically with 'world i
+- 2026-11-17T21:00 [M3.28.17] (lead) status ready -> active
+- 2026-11-17T21:00 [M3.28.17] (lead) attempt 1/3 started
+- 2026-11-17T21:00 [M3.28.17] (lead) base ae71c454a0bb3c5c9fd594b627ff020cfd0daa15
+- 2026-11-17T21:18 [M3.28.17] (lead) status active -> review
+- 2026-11-17T21:20 [M3.28.17] (lead) quad round 1 (cruft): FAIL — (a) restarted_service_ids has two owners (LiveWorld bookkeeping vs engine rows) + guards for states that cannot occur, and a servic
+- 2026-11-17T21:20 [M3.28.17] (lead) edited fields
+- 2026-11-17T21:20 [M3.28.17] (lead) quad round 1 (legality): FAIL — MAJOR: reboot never re-runs the registry attach step, and the registry has no update verb (re-attach fails WorldAlreadyRegistere
+- 2026-11-17T21:21 [M3.28.17] (lead) quad round 1 (ioc): FAIL — SPEC_BLIND_SPOT resolved by the lead, not escalated: restart MUST re-derive every boot-scope fact (resources plan, origin/coords, reg
+- 2026-11-17T21:24 [M3.28.18] (planner) created (task) OSPP v1: one human-readable reference page (3 sequence diagrams), nav entry, ADR pointer, cross-links
+- 2026-11-17T21:24 [M3.28.18] (lead) status ready -> active
+- 2026-11-17T21:24 [M3.28.18] (lead) attempt 1/3 started
+- 2026-11-17T21:24 [M3.28.18] (lead) base ae71c454a0bb3c5c9fd594b627ff020cfd0daa15
+- 2026-11-17T21:28 [M3.28.17] (lead) attempt 2/3 started
+- 2026-11-17T21:28 [M3.28.17] (lead) quad round 1 (functional): FAIL — MAJOR: up's Rerun path silently drops req.dump/resources/host_caches (up --refresh-dump on a held Failed world exits 0 having 
+- 2026-11-17T21:34 [M3.28.18] (lead) status active -> review
+- 2026-11-17T21:34 [M3.28.18] (lead) attempt 1: page landed at 135 lines / 3 sequenceDiagram (6/4/4 participants); docs-only; quad gate dispatched (path-scoped). Code wins over ADR: backend=tpmd:se
+- 2026-11-17T21:38 [M3.28.18] (lead) OWNER CORRECTION supersedes NODE.md acceptance: page = OSPP v1 identity + 0.1.0 local reality + 'no provider ships' + draft pointer; <=60 lines, ZERO mermaid. H
+- 2026-11-17T21:38 [M3.28.18] (lead) followups outside lock for M3.28.14: README.md:33/35 and docs/getting-started.md:119 still present the paired OSPP read/seed dump as shipped; support/integratio
+- 2026-11-17T21:39 [M3.28.18] (lead) edited fields
+- 2026-11-17T21:39 [M3.28.18] (lead) paths widened (owner same-sweep correctness): README.md + docs/reference/cli.md, both currently claim a paired OSPP read/dump as shipped. Serialize .11/.14 on t
+- 2026-11-17T21:41 [M3.28.18] (lead) edited fields
+- 2026-11-17T21:43 [M3.28.18] (lead) quad round 2: legality PASS; cruft FAIL(minors only; owner-mandated auth line kept); ioc SPEC_BLIND_SPOT resolved by owner ruling (client ships, provider is 0.2
+- 2026-11-17T21:43 [M3.28.18] (lead) status review -> done

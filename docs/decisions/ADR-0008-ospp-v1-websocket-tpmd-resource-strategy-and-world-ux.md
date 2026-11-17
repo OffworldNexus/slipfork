@@ -1,5 +1,7 @@
 # ADR-0008: `OSPP v1` WebSocket Protocol, `tpmd` P-256 Device Keys, Mode-Aware `ResourceStrategy`, Unified Unprivileged `slipforkd` (`LISTEN_FDS`), `<= 31`-Byte Service Labels, and World Rescue UX
 
+> User-facing documentation: [OSPP v1](../reference/ospp.md).
+
 - **Status:** Accepted (`H-003`, `H-008`, `H-009`, `H-010`, `H-011` ratified; `H-006` closed by deferral; `H-004` closed by owner ruling in `ADR-0010`; supersedes `ADR-0001` §3's M1 REST sketch; amended by `ADR-0009` — seed restore and `psql`/`redis-cli` execute inside the `crun` service container; amended by M3 target-state `ADR-0010` [`M3.20`, `M3.12`–`M3.15`, `M3.21`] — `BtrfsEngine` is the sole `WorldEngine`, with namespace and AppArmor `userns` unit rules in `ADR-0010` §§6–7)
 - **Date:** 2026-11-15
 

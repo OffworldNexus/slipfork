@@ -117,7 +117,7 @@ Every later `up`/`fork` clones that sealed base and never re-runs `pg_restore`; 
 | `--refresh-dump` | Re-stream every offered dump and seal a new base; fails closed without a live paired session |
 | `--resources local` | Force hermetic world-local resources; implies `--no-dump` and cannot combine with `--refresh-dump` |
 
-Unpaired, `local = "remote"` on a database and `--refresh-dump` both fail closed with `requires a remote OSPP offer`; `prefer_remote` degrades to local with a `not_offered` row.
+Unpaired, `local = "remote"` on a database and `--refresh-dump` both fail closed with `requires a remote OSPP offer`; `prefer_remote` degrades to local with a `not_offered` row. No OSPP v1 provider ships in `0.1.0`; this flow requires a compatible provider.
 
 ## `slipforkd`
 

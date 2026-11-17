@@ -87,22 +87,15 @@ modes:
 | Operator | Syntax | When the key is missing | Allowed on |
 |---|---|---|---|
 | **Fallback** | `${{ vars::LOG_LEVEL ?? "INFO" }}` | returns `"INFO"` for this render; **writes nothing** | every namespace |
-| **Ensure** | `${{ secrets::KEY !! random_string(50) }}` | generates once via the OS CSPRNG, **persists atomically**, and reuses it forever | single-key `secrets::<KEY>` only |
+| **Ensure** | `${{ secrets::KEY !! random_string(50) }}` | generates once and persists it in the local vault | single-key `secrets::<KEY>` only |
 
 The generator grammar (`random_string`, `random_hex`, `random_base64`, `uuid4`) lives in the [manifest reference](reference/manifest.md). A `??` fallback must be a JSON string literal, so `${{ vars::LOG_LEVEL ?? INFO }}` fails while `?? "INFO"` works.
 
 ### Where a key is read from
 
-`slipforkd` resolves `secrets::` and `vars::` through one `LayeredSecretProvider`, in a fixed order:
+The local vault is `$XDG_DATA_HOME/slipfork/vaults/<project>.json` (default `~/.local/share/slipfork/vaults/`), mode `0600`; `--state-dir`/`--runtime-dir` do not move it, so set `$XDG_DATA_HOME` for a hermetic run. `secrets::` and `vars::` resolve there. Remote provider protocol: [OSPP v1](reference/ospp.md).
 
-| Order | Source | Reads | Writes |
-|---|---|---|---|
-| 1 | local vault `~/.local/share/slipfork/vaults/<project>.json` (`$XDG_DATA_HOME/slipfork/vaults/`), mode `0600` | yes | **the only write sink** — `!!`, `secret set`, `secret unset` |
-| 2 | the cloud vault of a session paired with `slipfork auth login`, read over `OSPP v1` `env.bundle` | yes | never |
-
-Layer 2 exists only when this developer paired the daemon; it fills a key the local vault lacks and never shadows a local value. `slipfork secret list` lists local keys only, and a paired but unreachable cloud vault fails the render instead of silently dropping keys. `--state-dir`/`--runtime-dir` do not move this vault or the OSPP session — set `$XDG_DATA_HOME` for a hermetic run. Render values print as `[REDACTED]` unless `--expose-secrets` is passed.
-
-Any reference without `??` or `!!` that no layer can satisfy fails the whole render, listing **every** missing value in one pass:
+Any reference without `??` or `!!` that the vault cannot satisfy fails the whole render, listing **every** missing value in one pass:
 
 ```console
 $ slipfork snow resolve --file snow.yml --mode local
@@ -111,7 +104,7 @@ slipfork: missing required values for mode 'local':
   - secrets::STRIPE_KEY (referenced by modes.local.envs.api.STRIPE_KEY)
 ```
 
-The command exits `1` and prints nothing on stdout; any `!!` secret already reached earlier in the render is persisted, so re-running only fills what is still missing.
+The command exits `1` and prints nothing on stdout.
 
 ---
 

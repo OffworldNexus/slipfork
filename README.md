@@ -30,9 +30,9 @@ Every world and sealed snapshot is one unprivileged Btrfs subvolume, so any othe
 
 - **`Dockerfile`-derived `L0` world rootfs** — content-addressed under `<state_dir>/cache/rootfs/<sha256>/app`, mounted read-only, executed as `$UID:$GID`, with `[world]` selecting the image and stage.
 - **One Btrfs subvolume per world** — the read-only rootfs tree and `postgres`/`redis`/S3 state live inside it, so sealing a snapshot and cloning a world are single metadata operations with zero file copies.
-- **Daemonless `crun` backing services** — `postgres:<v>`, `redis:<v>`, and SeaweedFS in OCI containers sharing the world's `127.0.0.1`; a paired OSPP seed dump is `pg_restore`d into a sealed base that later worlds clone, and `slipfork db`/`redis` run their clients inside the containers.
+- **Daemonless `crun` backing services** — `postgres:<v>`, `redis:<v>`, and SeaweedFS in OCI containers sharing the world's `127.0.0.1`, and `slipfork db`/`redis` run their clients inside the containers.
 - **Daemon-served world lifecycle** — `up`, `down`, `fork`, `drop`, `list`, `prune`, `secret` (`share` fails closed until tunnel sharing lands), plus local `daemon unit` rendering and `exec`, `shell`, `logs`, `hook run`, `forward`, `auth login`, `support`, `git-remote-slipfork`; `fork` creates a Git worktree or, when the checkout carries `.jj`, a Jujutsu workspace with zero Git fallback.
-- **`snow.yml` resolver and DAG planner** — mode-scoped components, write-once `!!` secrets in a `0600` vault read first, a paired `OSPP v1` `env.bundle` read second, Merkle artifact/fixture waves.
+- **`snow.yml` resolver and DAG planner** — mode-scoped components, write-once `!!` secrets in a local `0600` vault, Merkle artifact/fixture waves.
 - **OpenCode V2 plugin** — worktrees become CoW worlds; shell commands route through `slipfork exec`.
 - **Measured cost model** — `19.5 ms` read-only snapshot, `11–24 ms` writable clone, `39 ms` to a warm-SQL world, `6.3 MiB` RSS per world (owner-recorded; [`docs/research/btrfs-crun-benchmarks.md`](docs/research/btrfs-crun-benchmarks.md)).
 

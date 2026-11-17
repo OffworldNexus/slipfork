@@ -21,6 +21,7 @@ nav = [
   { "Integrations & support" = "support-matrix.md" },
   { "Reference" = [
     { "CLI (0.1.0)" = "reference/cli.md" },
+    { "OSPP v1 (secret provider)" = "reference/ospp.md" },
     { "Manifests (snow.yml & slipfork.toml)" = "reference/manifest.md" },
   ] },
 ]
