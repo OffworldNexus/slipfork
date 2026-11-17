@@ -31,9 +31,10 @@ Fact 2 (four bare invocations → the 25-command help wall; `status` was `unreco
 
 1. `Commands.command: Option<Commands>`; `None` runs the same function as `Commands::Status`. `slipfork --help` still lists every command (tools/check_docs_honesty.py parses it) and `slipfork help` still works. No alias shim, no second help mode.
 2. Human render: header `slipforkd <pid>, ingress <addr>:<port>`; per project the canonical world then indented `:fork` children, each with state, origin URL, worktree; then one hint line per world naming real commands (`slipfork logs`, `slipfork restart`, `slipfork open`, `slipfork down`). Zero worlds → one line plus `slipfork up`.
-3. `--json`: `{"ok": true, "ingress": {"addrs": [...], "port": 80}, "worlds": [{"world", "parent", "state", "origin", "worktree", "processes": [...]}]}` on stdout only — no human text, no ANSI.
-4. When the ingress port is not 80, `status` prints exactly one actionable line to **stderr** (never stdout, never under `--json`) naming `slipfork daemon install`. Never a silent mystery port.
-5. Everything comes from `DaemonControl`; zero `/proc`, `/sys`, `std::env`, or log-directory reads. New rendering lives in `crates/slipfork/src/status.rs` (pure functions over the daemon payload), tested without a daemon.
+3. `--json`: `{"ok": true, "ingress": {"addrs": [...], "port": 80}, "worlds": [{"world", "parent", "state", "origin", "worktree", "lineage": {"rootfs", "base", "seed"}, "processes": [...]}]}` on stdout only — no human text, no ANSI. `lineage` is the daemon's `WorldLineage`; a `null` fact is `null`, never `0`/`""`.
+4. The running world's lineage digests (`rootfs`, `base` key, `seed`) render on its line, short (`<digest12>` / `<key12>`), with `-` for an unknown fact; `up -v` owns the per-node detail, not this dashboard.
+5. When the ingress port is not 80, `status` prints exactly one actionable line to **stderr** (never stdout, never under `--json`) naming `slipfork daemon install`. Never a silent mystery port.
+6. Everything comes from `DaemonControl`; zero `/proc`, `/sys`, `std::env`, or log-directory reads. New rendering lives in `crates/slipfork/src/status.rs` (pure functions over the daemon payload), tested without a daemon.
 
 # Acceptance
 
@@ -52,4 +53,4 @@ $ cargo clippy --workspace --all-targets -- -D warnings
     Finished
 ```
 
-- Renderer tests: canonical + two forks (indentation), zero worlds, `:80` vs `:<port>`, the exact stderr line, and `--json` producing zero human text.
+- Renderer tests: canonical + two forks (indentation), zero worlds, `:80` vs `:<port>`, the exact stderr line, lineage digests with `-` for a missing fact, and `--json` producing zero human text.

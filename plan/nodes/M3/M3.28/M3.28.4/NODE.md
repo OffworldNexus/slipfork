@@ -31,8 +31,9 @@ Facts 3 and 12: `restart` did not exist, and re-running `up` printed the same UR
 1. **One canonical restart contract** (written into the type docs): `restart` = stop components and `crun` backing services while keeping the worktree and CoW state, then re-run the full boot pipeline for that world — hooks, app process, containers, readiness gates. `up` stays idempotent: a running world returns `changed: false` and touches nothing. No third path exists.
 2. `WorldUpSummary.changed` (edge) is set truthfully by both paths; `restart` on a `Failed` world re-boots (the rescue path), on a never-booted world fails closed naming `slipfork up`.
 3. New `WorldEngine::world_processes(&WorldHandle) -> Vec<WorldServiceInfo { id, kind, pid, readiness_port, started_at }>` over the engine's own supervision records (`ServiceProcess`/`ContainerProcess`), deterministic order; destroyed/foreign handle → `EngineError::WorldGone`. `started_at` is an injected-clock timestamp so uptime is computed without a second clock read.
-4. `WorldOrigin::local(&route, ingress_port)` is the single origin renderer: assert (tests) `:80` → port-less, `:1..=65535` → `:<port>`, and that any route with a `snow.yml` domain still fails closed. No other module may format an origin URL.
-5. Keep the `StubWorldEngine`/test doubles compiling in the same sweep; no new dependency, no `unsafe`, no global.
+4. New `WorldEngine::world_lineage(&WorldHandle) -> WorldLineage` filling every fact `M3.28.3` put on the wire — rootfs digest + cache hit/miss, base key + seal millis, seed digest + rebuilt + millis, per-service cache/millis — **from the engine's own boot records and the injected clock**. Where the engine does not record a fact today, record it at boot in the same sweep (start/stop `Instant` deltas through the injected clock, digest from the existing hasher/base-key derivation); never estimate and never fabricate. A fact the engine genuinely cannot know is `None`.
+5. `WorldOrigin::local(&route, ingress_port)` is the single origin renderer: assert (tests) `:80` → port-less, `:1..=65535` → `:<port>`, and that any route with a `snow.yml` domain still fails closed. No other module may format an origin URL.
+6. Keep the `StubWorldEngine`/test doubles compiling in the same sweep; no new dependency, no `unsafe`, no global.
 
 # Acceptance
 
@@ -50,4 +51,5 @@ $ cargo clippy --workspace --all-targets -- -D warnings
 ```
 
 - Engine tests prove a stopped service keeps its row with `pid: None`, two worlds never share rows, and `started_at` is monotonic from the injected clock.
+- Engine tests prove `world_lineage` returns cache `hit`/`miss` truthfully from the boot records (a second boot of the same base is a `hit`), that recorded millis are `Some` for a fact the engine measured and `None` for one it did not, and that a destroyed handle is `EngineError::WorldGone` rather than a zeroed lineage.
 - `critical_world` pins port-less-at-80 and `:<port>`-otherwise, with the existing default-ingress failure unchanged.

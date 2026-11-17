@@ -5,13 +5,13 @@ kind: task
 status: ready
 owner: implementer
 priority: 2
-depends_on: [M3.28.11, M3.28.12]
+depends_on: [M3.28.11, M3.28.12, M3.28.15]
 paths: []
 attempts: 0
 max_attempts: 3
 escalation: none
 created: "2026-11-17T16:33"
-updated: "2026-11-17T16:33"
+updated: "2026-11-17T17:40"
 ---
 
 # Goal
@@ -25,7 +25,7 @@ The findings are listed in the milestone Context; `plan/nodes/M3/M3.19/RESULT.md
 # Design / Invariants
 
 1. Use the existing droplet, volume and identity from `M3.19` §1/§11; do not recreate it. Every claim in `RESULT.md` is a verbatim transcript with its exit code.
-2. Evidence per finding: `:80` origin (no port) → 200; bare `slipfork` = status; `slipfork --help` still lists commands; `restart` applies an edited app response; `ps` shows the component + `postgres` rows; `fork` no-arg on a branch with `git config --global user.email` unset; `dag plan` one honest line; `shell` without `getcwd()` noise; `up` without `[resources]` lines (`-v` restores them); `open --remote` recipe pasted from the owner's laptop; login banner instead of `getent passwd`; re-run `up` reports `unchanged`.
+2. Evidence per finding: `:80` origin (no port) → 200; bare `slipfork` = status; `slipfork --help` still lists commands and **no longer lists `dag` or `share`** (`slipfork dag plan` and `slipfork share` each exit `2`); `up` prints exactly one `lineage` line with a real digest/cache fact and no `[resources]` jargon; `ps` shows the component + `postgres` rows plus the lineage digests; `restart` applies an edited app response; `fork` no-arg on a branch with `git config --global user.email` unset; `shell` without `getcwd()` noise; `-v` restores the `[resources]` and per-node lineage detail; `open --remote` recipe pasted from the owner's laptop; login banner instead of `getent passwd`; re-run `up` reports `unchanged`.
 3. Regressions: `logs`, `db`, `drop`, `down`, `git fetch slipfork <fork>` and `uv run --no-project tools/do_vm.py test` (five live suites) stay green; teardown leaves no world subvolume outside `/snapshots/`; `slipfork --version` prints `0.1.0`.
 4. The final walkthrough is at most four commands for a fresh user.
 

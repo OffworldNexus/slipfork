@@ -1004,3 +1004,16 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-17T16:33 [M3.28.12] (planner) created (task) VM harness: :80 bound via daemon install, tracked support/demo template, login quickstart banner
 - 2026-11-17T16:33 [M3.28.13] (planner) created (task) Live re-verification of the 0.1.0 UX pass on the Btrfs DO VM (port-less :80, status, restart, ps, fork)
 - 2026-11-17T16:34 [M3.28.14] (planner) created (task) Publish the 0.1.0 UX surface: CLI reference, getting started, index, README, CHANGELOG
+- 2026-11-17T16:34 [M3.28.1] (lead) status ready -> active
+- 2026-11-17T16:34 [M3.28.1] (lead) attempt 1/3 started
+- 2026-11-17T16:34 [M3.28.1] (lead) base 1d4c08e7ee38e5df2b631daf9c62bd345b854a52
+- 2026-11-17T16:34 ESCALATION #23 -> architect for M3.28.1 by lead: DX of record for the 0.1.0 UX pass (epic-sactioned single architect escalation)
+- 2026-11-17T17:32 [M3.28.11] (lead) edited fields
+- 2026-11-17T17:32 [M3.2] (lead) OWNER RULING (2026-11-17): the plan view is the sanctioned home for plan output, in 0.2.0, because that is the first moment planning is a decision. Target surfa
+- 2026-11-17T17:40 [M3.28.15] (planner) created (task) Delete the unimplemented tunnel-sharing surface (slipfork share, TunnelRegistrar, WorldOrigin::Shared, support tier)
+- 2026-11-17T17:40 [M4.1] (lead) RE-ENTRY GATE for tunnel sharing (owner ruling, M3.28.15): 'slipfork share' was deleted from 0.1.0 as vaporware (UnavailableTunnelRegistrar::register always ret
+- 2026-11-17T17:40 [M3] (lead) Surface shrink (M3.28.15): 0.1.0 drops the unimplemented tunnel-sharing surface entirely — 'slipfork share', DaemonControl::share/unshare, UnavailableTunnelRegi
+- 2026-11-17T17:40 [M3.28.13] (lead) edited fields
+- 2026-11-17T17:41 [M3.28.16] (planner) created (task) Guard rail: production composition roots may not wire stub adapters (tools/check_stub_adapters.py)
+- 2026-11-17T17:47 [M5] (strategist) created (milestone) Editor & IDE Integration (VS Code, JetBrains, Zed) (0.5.0)
+- 2026-11-17T17:47 [M5.1] (strategist) created (epic) Shared editor control substrate (DaemonControl typed editor RPC + slipfork-mcp) & per-editor DX intent

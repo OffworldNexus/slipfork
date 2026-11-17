@@ -28,7 +28,8 @@ The owner saw `[origin] http://demo.localhost:40645` and had no way to learn whi
 2. New `DaemonControl::world_processes(&WorldSelector)` returning `WorldServiceSummary { world, id, kind, state, pid: Option<u32>, readiness_port: Option<u16>, uptime_secs: Option<u64> }`, for components and `crun` backing services; unknown/destroyed world → typed error, never an empty list.
 3. Wire types are `serde` snake_case and additive; `--json` purity (stdout only) is the CLI's job, not the daemon's.
 4. `crates/slipfork/src/daemon.rs` implements both over existing records/registry; no new filesystem, `/proc`, env, or clock read in the control path (the injectable clock is fine).
-5. No globals, no `match engine_name`, no downcast, no new dependency.
+5. New `WorldLineage` on the wire: `pub lineage: WorldLineage` on `DaemonStatus` (daemon-wide rootfs) and per-world on the status/world payload, carrying `rootfs {digest, cache: hit|miss, millis: Option<u64>}`, `base {key, millis: Option<u64>}`, `seed {digest, rebuilt: bool, millis: Option<u64>}` and `services: Vec<{id, cache: hit|miss|miss_offline, millis: Option<u64>}>`. This is the ONLY source of the `up` lineage line, the `ps`/`status` digests and `up -v` per-node detail (locked decision 8 in `docs/design/dx-0.1.0-ux.md`); unknown facts are `None` and render `-`, never `0` and never an invented value.
+6. No globals, no `match engine_name`, no downcast, no new dependency.
 
 # Acceptance
 
@@ -46,7 +47,8 @@ $ cargo clippy --workspace --all-targets -- -D warnings
 ```
 
 - `critical_edge` proves two worlds never share rows, a stopped service keeps its row, and `ingress_addrs` round-trips a `:80` and an ephemeral bind.
+- `critical_edge` also proves `WorldLineage` round-trips with every `Option` fact present and absent (`null` stays `null` through serde; no `0`/empty-string coercion).
 
 # Split with `M3.28.4` (binding)
 
-This node owns the **wire shape and the daemon method**: `DaemonStatus.ingress_addrs`, `WorldServiceSummary`, and `DaemonControl::world_processes` implemented over the daemon's own world registry and `ServiceHandle` states. The `pid`, `uptime_secs`, and serving-port **values** are filled by `M3.28.4`'s `WorldEngine::world_processes` accessor (engine paths belong to that node); until it lands they are `None` and render as `-`, never `0`. Both nodes ship inside `M3.28`, so no placeholder survives the epic gate.
+This node owns the **wire shape and the daemon method**: `DaemonStatus.ingress_addrs`, `WorldServiceSummary`, `WorldLineage`, and `DaemonControl::world_processes` implemented over the daemon's own world registry and `ServiceHandle` states. The `pid`, `uptime_secs`, serving-port and every `WorldLineage` **value** are filled by `M3.28.4`'s `WorldEngine::world_processes`/`world_lineage` accessors (engine paths belong to that node); until then they are `None` and render as `-`, never `0`. Both nodes ship inside `M3.28`, so no placeholder survives the epic gate.

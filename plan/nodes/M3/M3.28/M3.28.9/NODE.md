@@ -31,7 +31,7 @@ Facts 4 (`ps` typed at the host shell), 7 (no `ps` in the app rootfs) and 9 (the
 
 # Design / Invariants
 
-1. `ps` renders one row per component and `crun` backing service: kind, id, state, pid, port, uptime. `--world` selects like every other command. `--json`: `[{"world","id","kind","state","pid","port","uptime_secs"}]`, stdout only.
+1. `ps` renders one row per component and `crun` backing service: kind, id, state, pid, port, uptime, plus a header line with the world's lineage digests (`rootfs`, `base` key, `seed`). `--world` selects like every other command. `--json`: `{"lineage": {"rootfs","base","seed"}, "services": [{"world","id","kind","state","pid","port","uptime_secs"}]}`, stdout only, `null` preserved for unknown facts.
 2. Zero `/proc`, `/sys`, or log-directory reads in the CLI — every field comes from the daemon. A `None` pid/port renders `-`, never `0`.
 3. `open` resolves the world, takes its single origin, and hands it to the existing `BrowserOpener`; headless (no browser capability) fails closed naming `slipfork open --remote`.
 4. `open --remote` prints the verified recipe from the daemon's ingress port: `ssh -N -L 8080:127.0.0.1:<ingress> <account>@<this-host>` then `http://<route>.localhost:8080`. `--json`: `{"world","origin","recipe":{"ssh","url"}}`.

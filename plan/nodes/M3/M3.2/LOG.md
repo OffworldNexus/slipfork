@@ -47,3 +47,7 @@ status ready -> blocked
 ## 2026-11-17T14:39 [lead]
 
 STATUS blocked = PARKED, not a missing input: owner ruling 2026-11-16 parks STP v1 to 0.2.0. Reactivating M3.2.* requires the strategist to rewrite the 0.3.0/Option-A ROADMAP row and a fresh milestone plan.
+
+## 2026-11-17T17:32 [lead]
+
+OWNER RULING (2026-11-17): the plan view is the sanctioned home for plan output, in 0.2.0, because that is the first moment planning is a decision. Target surface: slipfork test --dry-run / plan view reporting e.g. '31 cached - 9 rebuild across 8 worlds'. slipfork-dag's DagPlanner/FsDigestCache/FsMerkleHasher were deleted from 0.1.0 with the 'dag plan' subcommand (M3.28.11); only the ResourcePlan/ResourceStrategy/SlipforkConfig/TestSpec model survived. Do NOT ship a bare 'dag plan' CLI in 0.2.0: plan output belongs behind the test DAG, not as a standalone command.

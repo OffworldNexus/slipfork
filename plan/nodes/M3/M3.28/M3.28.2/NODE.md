@@ -36,6 +36,7 @@ The owner's real transcripts (milestone Context, facts 1–12) are the acceptanc
    - a step that requires reading a man page, `/etc/passwd`, or `/proc` to proceed (facts 4, 9, 10).
 3. **AI-ergonomics lens:** can an agent (and a tired human) predict the output from the verb? Is every failure self-describing enough to act on without a second command? Are `--json` payloads sufficient for a program (world id, state, port-less origin, ingress, process tree) with stdout purity?
 4. Apply corrections directly in `docs/design/dx-0.1.0-ux.md` (single spec). If a seam sentence in `ARCHITECTURE.md` becomes wrong, fix that sentence too.
+5. **Owner ruling to police:** `dag` is deleted from `0.1.0` — no `slipfork dag plan` transcript may survive as a shipped verb, no rename to `slipfork plan`, no `0.2.0` promise dressed up as `0.1.0`. The lineage facts (`up` one-line, `ps`/`status` digests, `up -v` detail) must be facts the daemon really returns; flag any lineage field with no owning daemon response field as a defect, not a wording nit.
 5. Each lens file is short (`<= 60` lines), lists concrete findings, and ends with a single line `VERDICT: pass` or `VERDICT: changes-applied`.
 
 # Acceptance
@@ -45,7 +46,7 @@ $ test -s docs/design/dx-0.1.0-ux.review-dx.md && test -s docs/design/dx-0.1.0-u
 both
 $ grep -q '^VERDICT: \(pass\|changes-applied\)' docs/design/dx-0.1.0-ux.review-dx.md && grep -q '^VERDICT: \(pass\|changes-applied\)' docs/design/dx-0.1.0-ux.review-ai-ergonomics.md && echo verdicts
 verdicts
-$ for t in 'slipfork status' 'slipfork restart' 'slipfork ps' 'slipfork open --remote' 'user.name=slipfork' 'slipfork daemon install'; do grep -qF "$t" docs/design/dx-0.1.0-ux.md || { echo "lost: $t"; exit 1; }; done; echo still-ok
+$ for t in 'slipfork status' 'slipfork restart' 'slipfork ps' 'slipfork open --remote' 'user.name=slipfork' 'slipfork daemon install' 'lineage'; do grep -qF "$t" docs/design/dx-0.1.0-ux.md || { echo "lost: $t"; exit 1; }; done; echo still-ok
 still-ok
 $ ! grep -qE '\[(derived|guessed)\]|TODO|TBD' docs/design/dx-0.1.0-ux*.md && echo clean
 clean
