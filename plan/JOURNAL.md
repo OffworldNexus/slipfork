@@ -859,3 +859,12 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-17T04:20 [M3.12] (lead) LEAD RULING (ioc/cruft MAJORs): (1) one require_btrfs gate; (2) ProbeFacts becomes a required trait method and probe a provided trait method (single probe body,
 - 2026-11-17T04:43 [M3.12] (lead) FINAL: legality PASS, functional PASS, cruft PASS, ioc PASS after lead plan amendments (M3.14 invariant 1 now consumes the testkit TestTreeDriver; M3.13 invaria
 - 2026-11-17T04:43 [M3.12] (lead) status review -> done
+- 2026-11-17T04:44 [M3.13] (lead) status ready -> active
+- 2026-11-17T04:44 [M3.13] (lead) attempt 1/3 started
+- 2026-11-17T04:44 [M3.13] (lead) base a06100dd9acfc7c05fe91227f01bec04b6a0eba6
+- 2026-11-17T04:44 [M3] (lead) LEAD SCOPE RULING (0.1.0 shipping decision, 2026-11-17): M3.13 implements BtrfsEngine against the CURRENT trait surface (WorldSpec unchanged: target/rootfs/snap
+- 2026-11-17T05:02 [M3.13] (lead) status active -> review
+- 2026-11-17T05:02 [M3.13] (lead) worker done: btrfs_engine.rs 2556 lines, 12 unit tests, clippy/fmt/check/docs green; rs-test red only on legacy critical_engine (10s grace + /tmp XFS assumption
+- 2026-11-17T05:13 [M3.23] (lead) ADD from M3.13 gate (docs of record must match 0.1.0 reality): (1) ARCHITECTURE §1/§2 + ADR-0010 §2 currently say WorldSpec.control_dir/state_subdirs are inject
+- 2026-11-17T05:32 [M3.13] (lead) FINAL: functional PASS, legality PASS, ioc PASS (blind spot deferred by ruling + M3.23 relabel), cruft PASS — minors logged: create_snapshot should reject a liv
+- 2026-11-17T05:32 [M3.13] (lead) status review -> done

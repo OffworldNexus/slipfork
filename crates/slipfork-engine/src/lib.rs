@@ -12,6 +12,7 @@
 //! snapshot-mode flag and no capability boolean to branch on (`ADR-0010` §3).
 
 pub mod btrfs;
+pub mod btrfs_engine;
 pub mod child_env;
 pub mod conformance;
 pub mod env;
@@ -24,13 +25,14 @@ pub mod service;
 pub mod world_init;
 
 use std::fmt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+pub use btrfs_engine::BtrfsEngine;
 pub use env::{ExecEnv, InheritedVar};
 pub use incus::IncusEngine;
 pub use linux_cow::{ReflinkStats, current_uid_gid, probe_reflink_dir, reflink_tree};
@@ -39,6 +41,23 @@ pub use rootfs::{BackingServiceKey, OciRootfs, WorldRootfs};
 pub use service::ServiceLogs;
 
 use slipfork_world::WorldTarget;
+
+/// Single AppArmor/user-namespace remediation formatter (`ADR-0010` §4, §7).
+///
+/// Shared by [`BtrfsEngine`]'s world boot and, once it ships, the CLI's host probe: it never calls
+/// `current_exe()`, so the composition root decides which binary directory the profile must name.
+/// It names no CLI command, because no Slipfork command installs an AppArmor profile yet; `M3.15`
+/// re-adds the `--only apparmor` command to this hint when the flag ships.
+pub fn userns_remediation_hint(bin_dir: &Path) -> String {
+    let dir = bin_dir.display();
+    format!(
+        "unprivileged user namespaces are denied by AppArmor \
+         (`kernel.apparmor_restrict_unprivileged_userns=1`); install an AppArmor profile granting \
+         `userns,` for {dir}/slipfork and {dir}/slipforkd, for example /etc/apparmor.d/slipfork: \
+         `abi <abi/4.0>,` and `profile slipfork {dir}/slipfork{{,d}} flags=(unconfined) {{ \
+         userns, }}`"
+    )
+}
 
 /// Stable filesystem label for a world target (fork/slot names are already validated DNS labels).
 pub(crate) fn target_slug(target: &WorldTarget) -> String {
@@ -423,6 +442,8 @@ pub enum EngineError {
         path: PathBuf,
         errno: i32,
     },
+    #[error("unprivileged user namespace denied: {detail}; fix: {hint}")]
+    UsernsDenied { detail: String, hint: String },
     #[error("hypervisor daemon unavailable at {socket}: {reason}")]
     DaemonUnavailable { socket: String, reason: String },
     #[error(
@@ -431,6 +452,11 @@ pub enum EngineError {
     ReflinkUnsupported { path: String, errno: i32 },
     #[error("snapshot '{0}' does not exist")]
     SnapshotNotFound(String),
+    #[error(
+        "snapshot '{id}' already exists and a sealed snapshot is immutable; destroy it explicitly \
+         before sealing a new snapshot under the same id"
+    )]
+    SnapshotExists { id: String },
     #[error("invalid snapshot id '{id}': must be a plain 1..=128 byte alphanumeric/-/_/. label")]
     InvalidSnapshotId { id: String },
     #[error("invalid WorldSpec: {reason}")]

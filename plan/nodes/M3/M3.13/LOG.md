@@ -23,3 +23,31 @@ REQUIREMENTS (from M3.8 functional PASS, real findings): (1) seed-subvolume cras
 ## 2026-11-16T22:50 [lead]
 
 M3.25 final ruling to consume: WorldId newtype (Display/FromStr/parse_selector, TestSlot never on wire), DropForkRequest { cwd, world: Option<WorldId> }, PruneReport declared once, WorldSpec.world, BaseKey fields promoted, DoctorReport.fixes order btrfs->unshare_userns->netns, EngineError world:String via WorldId::to_string().
+
+## 2026-11-17T04:44 [lead]
+
+status ready -> active
+
+## 2026-11-17T04:44 [lead]
+
+attempt 1/3 started
+
+## 2026-11-17T04:44 [lead]
+
+base a06100dd9acfc7c05fe91227f01bec04b6a0eba6
+
+## 2026-11-17T05:02 [lead]
+
+status active -> review
+
+## 2026-11-17T05:02 [lead]
+
+worker done: btrfs_engine.rs 2556 lines, 12 unit tests, clippy/fmt/check/docs green; rs-test red only on legacy critical_engine (10s grace + /tmp XFS assumption). Quad gate starting. Rootfs is a symlink reference to the content-addressed cache (deviation from ADR-0010 wording) -> reviewers must judge; M3.23 to reconcile.
+
+## 2026-11-17T05:32 [lead]
+
+FINAL: functional PASS, legality PASS, ioc PASS (blind spot deferred by ruling + M3.23 relabel), cruft PASS — minors logged: create_snapshot should reject a live world's dir (point at freeze_world); SnapshotExists message; treat driver ENOENT as already-destroyed on retry; pre-existing linux_cow fd-count race. Committing.
+
+## 2026-11-17T05:32 [lead]
+
+status review -> done

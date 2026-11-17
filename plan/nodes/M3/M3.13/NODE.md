@@ -2,7 +2,7 @@
 id: M3.13
 title: "BtrfsEngine implementation: unified per-world Btrfs subvolume, RO snapshots, writable clones, --ipc"
 kind: task
-status: ready
+status: done
 owner: implementer
 priority: 2
 depends_on: [M3.12]
@@ -14,11 +14,11 @@ paths:
   - "crates/slipfork-engine/src/bin/slipfork-world-init.rs"
   - "crates/slipfork-engine/Cargo.toml"
   - Cargo.lock
-attempts: 0
+attempts: 1
 max_attempts: 3
 escalation: none
 created: "2026-11-16T16:58"
-updated: "2026-11-16T17:25"
+updated: "2026-11-17T05:32"
 ---
 
 # Goal

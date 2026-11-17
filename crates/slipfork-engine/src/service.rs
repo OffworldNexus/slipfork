@@ -1,19 +1,35 @@
-//! World-scoped, size-capped service log retention (`M2.7`).
+//! World-scoped, size-capped service log retention (`M2.7`) plus the pure process-supervision
+//! helpers every world engine shares.
 //!
 //! A [`ServiceLogs`] handle is minted by an engine when a service starts and stays readable after
 //! [`crate::WorldEngine::stop_service`] or a failed hook — failed worlds must remain inspectable
 //! (`ADR-0008` §4). Output is captured per service, never per call, so no consumer can grow memory
 //! without bound: the retained window keeps the newest [`SERVICE_LOG_CAP_BYTES`] bytes.
+//!
+//! The supervision helpers below are engine-independent: they build the `sh -c 'cd … && exec …'`
+//! wrapper, name a `crun` container, poll `/proc` for a bounded teardown, stream a child's output,
+//! and translate a host mount into the guest path the world sees. They carry no engine state, so
+//! every adapter shares one implementation instead of forking its own copy.
 
 #![forbid(unsafe_code)]
 
 use std::collections::VecDeque;
+use std::io::{self, Read};
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command};
+use std::sync::mpsc;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
+use std::thread;
+use std::time::{Duration, Instant};
 
-use crate::{StreamChunk, StreamSource};
+use crate::rootfs::{BackingServiceKey, OciRootfs};
+use crate::{EngineError, ExecOutput, StreamChunk, StreamSource, WorldMount};
 
 /// Bytes of service output retained per service (oldest chunks are evicted first).
 pub const SERVICE_LOG_CAP_BYTES: usize = 64 * 1024;
+
+/// Poll interval for every bounded wait (`/proc` disappearance, child reaping, readiness probes).
+pub(crate) const POLL_INTERVAL: Duration = Duration::from_millis(10);
 
 /// Size-capped retained output of one world-owned service.
 ///
@@ -159,6 +175,228 @@ impl LogBuffer {
         drop(state);
         self.condvar.notify_all();
     }
+}
+
+/// `sh -c 'cd -- "$1" && shift && exec "$@"' sh <cwd> [argv...]`.
+///
+/// The `cd` runs **inside** the entered mount namespace, so `getcwd(2)` resolves through the
+/// world's bind mounts instead of the hidden host path.
+pub(crate) fn world_cwd_wrapper(cwd: &Path, argv: &[String]) -> Vec<String> {
+    let mut wrapped = vec![
+        "sh".to_owned(),
+        "-c".to_owned(),
+        "cd -- \"$1\" && shift && exec \"$@\"".to_owned(),
+        "sh".to_owned(),
+        cwd.display().to_string(),
+    ];
+    wrapped.extend(argv.iter().cloned());
+    wrapped
+}
+
+/// Stable `crun` container id derived from the world sequence and service id.
+pub(crate) fn container_id(world_seq: u64, service_id: &str) -> String {
+    let slug: String = service_id
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, '-' | '_') {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let slug = slug.trim_matches('_');
+    let slug = if slug.is_empty() { "service" } else { slug };
+    format!("sf{world_seq}-{}", &slug[..slug.len().min(48)])
+}
+
+/// Host pids of `pid`'s direct children, read from `/proc/<pid>/task/<pid>/children`.
+pub(crate) fn host_child_pids(pid: u32) -> io::Result<Vec<u32>> {
+    let raw = std::fs::read_to_string(format!("/proc/{pid}/task/{pid}/children"))?;
+    Ok(raw
+        .split_whitespace()
+        .filter_map(|token| token.parse().ok())
+        .collect())
+}
+
+/// Poll `step` every [`POLL_INTERVAL`] until it is ready or `grace` elapses.
+///
+/// The one bounded-wait loop: `step` returns `Some(..)` to stop with a value, `None` to keep
+/// polling. A caller that must stop early returns its terminal value from `step` (for example
+/// [`wait_for_exit`]'s `Some(false)` on `try_wait` error).
+pub(crate) fn poll_until<T>(grace: Duration, mut step: impl FnMut() -> Option<T>) -> Option<T> {
+    let deadline = Instant::now() + grace;
+    loop {
+        if let Some(value) = step() {
+            return Some(value);
+        }
+        if Instant::now() >= deadline {
+            return None;
+        }
+        thread::sleep(POLL_INTERVAL);
+    }
+}
+
+/// Wait (bounded) for `supervisor_pid`'s first child — the process `nsenter --pid` forked into the
+/// world's PID namespace.
+pub(crate) fn wait_for_inner_pid(supervisor_pid: u32, grace: Duration) -> Option<u32> {
+    poll_until(grace, || {
+        host_child_pids(supervisor_pid)
+            .ok()
+            .and_then(|children| children.first().copied())
+    })
+}
+
+/// Wait (bounded) for `child` to exit, reaping it.
+pub(crate) fn wait_for_exit(child: &mut Child, grace: Duration) -> bool {
+    poll_until(grace, || match child.try_wait() {
+        Ok(Some(_)) => Some(true),
+        Ok(None) => None,
+        Err(_) => Some(false),
+    }) == Some(true)
+}
+
+/// Wait (bounded) until `/proc/<pid>` disappears (the PID namespace is gone).
+pub(crate) fn wait_for_path_gone(pid: u32, grace: Duration) -> bool {
+    poll_until(grace, || {
+        (!Path::new(&format!("/proc/{pid}")).exists()).then_some(())
+    })
+    .is_some()
+}
+
+/// Run `command` to completion, streaming interleaved stdout/stderr chunks to `on_output`.
+pub(crate) fn run_streamed(
+    mut command: Command,
+    on_output: &mut dyn FnMut(StreamChunk),
+) -> Result<ExecOutput, EngineError> {
+    let mut child = command
+        .spawn()
+        .map_err(|err| EngineError::Execution(format!("cannot execute: {err}")))?;
+    let (sender, receiver) = mpsc::channel::<StreamChunk>();
+    let mut readers = Vec::with_capacity(2);
+    if let Some(stdout) = child.stdout.take() {
+        readers.push(spawn_reader(stdout, StreamSource::Stdout, sender.clone()));
+    }
+    if let Some(stderr) = child.stderr.take() {
+        readers.push(spawn_reader(stderr, StreamSource::Stderr, sender.clone()));
+    }
+    drop(sender);
+
+    let mut stdout = Vec::new();
+    let mut stderr = Vec::new();
+    for chunk in receiver {
+        match chunk.source {
+            StreamSource::Stdout => stdout.extend_from_slice(&chunk.bytes),
+            StreamSource::Stderr => stderr.extend_from_slice(&chunk.bytes),
+        }
+        on_output(chunk);
+    }
+    for reader in readers {
+        let _ = reader.join();
+    }
+    let status = child
+        .wait()
+        .map_err(|err| EngineError::Execution(err.to_string()))?;
+    Ok(ExecOutput {
+        exit_code: status.code().unwrap_or(1),
+        stdout: String::from_utf8_lossy(&stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&stderr).into_owned(),
+    })
+}
+
+/// Read `source` to EOF in 4 KiB chunks, handing each chunk to `sink`; stop when `sink` returns
+/// `false` (a closed channel or a closed log window).
+fn pump<R: Read>(mut source: R, mut sink: impl FnMut(Vec<u8>) -> bool) {
+    let mut buffer = [0_u8; 4096];
+    while let Ok(read) = source.read(&mut buffer) {
+        if read == 0 {
+            break;
+        }
+        if !sink(buffer[..read].to_vec()) {
+            break;
+        }
+    }
+}
+
+fn spawn_reader<R: Read + Send + 'static>(
+    source: R,
+    kind: StreamSource,
+    sender: mpsc::Sender<StreamChunk>,
+) -> thread::JoinHandle<()> {
+    thread::spawn(move || {
+        pump(source, |bytes| {
+            sender
+                .send(StreamChunk {
+                    source: kind,
+                    bytes,
+                })
+                .is_ok()
+        })
+    })
+}
+
+/// Capture one service stream into its retained [`ServiceLogs`] window.
+pub(crate) fn spawn_log_reader<R: Read + Send + 'static>(
+    source: R,
+    kind: StreamSource,
+    log: ServiceLogs,
+) {
+    thread::spawn(move || {
+        pump(source, |bytes| {
+            log.push(kind, bytes);
+            true
+        })
+    });
+}
+
+/// Best-effort helper stderr tail for actionable boot diagnostics.
+pub(crate) fn drain_stderr(child: &mut Child) -> String {
+    let mut raw = String::new();
+    if let Some(mut stderr) = child.stderr.take() {
+        let _ = stderr.read_to_string(&mut raw);
+    }
+    let trimmed = raw.trim();
+    if trimmed.chars().count() > 2000 {
+        trimmed.chars().take(2000).collect()
+    } else {
+        trimmed.to_owned()
+    }
+}
+
+/// Refuse a container mount destination the backing-service image does not carry.
+pub(crate) fn ensure_container_destination(
+    image: &OciRootfs,
+    image_key: &BackingServiceKey,
+    container_path: &Path,
+) -> Result<(), EngineError> {
+    let relative = container_path
+        .strip_prefix("/")
+        .map_err(|_| EngineError::InvalidWorldSpec {
+            reason: format!(
+                "container path '{}' must be absolute",
+                container_path.display()
+            ),
+        })?;
+    if !image.rootfs.join(relative).exists() {
+        return Err(EngineError::InvalidWorldSpec {
+            reason: format!(
+                "container path '{}' does not exist in backing-service image {image_key}; \
+                 the image rootfs must carry the mount destination",
+                container_path.display()
+            ),
+        });
+    }
+    Ok(())
+}
+
+/// Translate one host path into the guest path the world sees after `pivot_root`.
+pub(crate) fn world_guest_for_host(mounts: &[WorldMount], host_path: &Path) -> Option<PathBuf> {
+    mounts.iter().find_map(|mount| {
+        host_path
+            .strip_prefix(&mount.host_path)
+            .ok()
+            .map(|relative| mount.guest_path.join(relative))
+    })
 }
 
 #[cfg(test)]

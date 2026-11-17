@@ -1,25 +1,31 @@
 //! Persistent per-world PID 1 (`H-011`).
 //!
 //! Spawned by [`slipfork_engine::WorldEngine::clone_world`] on
-//! `ReflinkNetnsEngine` inside
-//! `unshare --map-user=$UID --map-group=$GID --keep-caps --mount --net --pid --fork --mount-proc`,
+//! `BtrfsEngine` inside
+//! `unshare --map-user=$UID --map-group=$GID --keep-caps --mount --net --ipc --pid --fork
+//! --mount-proc`,
 //! so every world owns a **stable** `init_pid` for its whole lifetime. A daemon thread of
 //! `slipforkd` can never `setns(CLONE_NEWNET)` into an unprivileged descendant user namespace
 //! (`EPERM`) and `setns(CLONE_NEWUSER)` is `EINVAL` in a multithreaded process, so the world's own
 //! PID 1 must answer both namespace-scoped capabilities:
 //!
-//! 1. `netns.sock` — a `0600` pathname `AF_UNIX` socket inside the world directory. A caller sends
-//!    `port: u16` (big endian) and receives the connected in-world `127.0.0.1:<port>` stream as an
-//!    `SCM_RIGHTS` descriptor (`linux_cow.rs` is the only `unsafe` module in the workspace).
-//!    Pathname `AF_UNIX` sockets live in the filesystem, so they cross `CLONE_NEWNET` natively.
+//! 1. `netns.sock` — a `0600` pathname `AF_UNIX` socket inside the world's control directory. A
+//!    caller sends `port: u16` (big endian) and receives the connected in-world
+//!    `127.0.0.1:<port>` stream as an `SCM_RIGHTS` descriptor (`linux_cow.rs` is the only `unsafe`
+//!    module in the workspace). Pathname `AF_UNIX` sockets live in the filesystem, so they cross
+//!    `CLONE_NEWNET` natively.
 //! 2. `$BASE_URL` bridge — when the world spec carries a [`slipfork_engine::LocalIngressBridge`],
 //!    bind `127.0.0.1:<port>` (including `:80`, allowed by in-userns `CAP_NET_BIND_SERVICE` and
 //!    `net.ipv4.ip_unprivileged_port_start=0`) and splice every accepted stream to `slipforkd`'s
 //!    `0600` `AF_UNIX` HTTP ingress.
 //!
+//! `--ipc` (`CLONE_NEWIPC`) gives the world a private System V shared-memory and POSIX
+//! message-queue namespace, so parallel `postgres` containers never collide on `shmget` key
+//! `90000` or port-derived keys (`ADR-0010` §6); every `nsenter` entry joins it with `--ipc`.
+//!
 //! The process also establishes the world's bind mounts once, so `nsenter --target <init_pid>`
-//! entry, exec, and services all observe the same mount/net namespace. `SIGKILL` to this PID 1
-//! tears the whole PID namespace down atomically; `ReflinkNetnsEngine::destroy_world` reaps it.
+//! entry, exec, and services all observe the same mount/net/ipc namespace. `SIGKILL` to this PID 1
+//! tears the whole PID namespace down atomically; `BtrfsEngine::destroy_world` reaps it.
 
 #![forbid(unsafe_code)]
 
