@@ -74,11 +74,19 @@ impl DaemonControlServer {
     /// frame) never affects the accept loop.
     pub fn serve(self) -> Result<(), EdgeError> {
         let label = self.path.display().to_string();
+        let shutdown = Arc::new(std::sync::atomic::AtomicBool::new(false));
         loop {
             match self.listener.accept() {
                 Ok((stream, _)) => {
+                    if shutdown.load(std::sync::atomic::Ordering::SeqCst) {
+                        break;
+                    }
                     let control = Arc::clone(&self.control);
-                    thread::spawn(move || serve_connection(control.as_ref(), stream));
+                    let shutdown = Arc::clone(&shutdown);
+                    let wake_path = self.path.clone();
+                    thread::spawn(move || {
+                        serve_connection(control.as_ref(), stream, &shutdown, &wake_path);
+                    });
                 }
                 Err(err) if err.kind() == std::io::ErrorKind::Interrupted => {}
                 Err(err) => {
@@ -89,11 +97,19 @@ impl DaemonControlServer {
                 }
             }
         }
+        // Release the pathname immediately so `is_served()` fails before the process exits.
+        let _ = std::fs::remove_file(&self.path);
+        Ok(())
     }
 }
 
 /// Serve one control connection: read one request, answer it, close.
-fn serve_connection(control: &dyn DaemonControl, stream: UnixStream) {
+fn serve_connection(
+    control: &dyn DaemonControl,
+    stream: UnixStream,
+    shutdown: &std::sync::atomic::AtomicBool,
+    wake_path: &Path,
+) {
     let Ok(read_half) = stream.try_clone() else {
         return;
     };
@@ -127,8 +143,15 @@ fn serve_connection(control: &dyn DaemonControl, stream: UnixStream) {
         }
     };
 
-    if let Err(err) = dispatch(control, request, &mut reader, &mut writer) {
-        let _ = write_reply(&mut writer, &DaemonReply::Error { error: err.into() });
+    match dispatch(control, request, &mut reader, &mut writer, shutdown) {
+        Ok(()) => {}
+        Err(err) => {
+            let _ = write_reply(&mut writer, &DaemonReply::Error { error: err.into() });
+        }
+    }
+    if shutdown.load(std::sync::atomic::Ordering::SeqCst) {
+        // Wake the blocked `accept` so the serve loop observes the flag and releases the socket.
+        let _ = UnixStream::connect(wake_path);
     }
 }
 
@@ -138,6 +161,7 @@ fn dispatch(
     request: DaemonRequest,
     reader: &mut FrameReader<UnixStream>,
     writer: &mut impl Write,
+    shutdown: &std::sync::atomic::AtomicBool,
 ) -> Result<(), EdgeError> {
     match request {
         DaemonRequest::Status => write_reply(
@@ -262,6 +286,12 @@ fn dispatch(
                 auth: control.auth_login(pairing_url.expose())?,
             },
         ),
+        DaemonRequest::Shutdown => {
+            control.shutdown()?;
+            write_reply(writer, &DaemonReply::Shutdown)?;
+            shutdown.store(true, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        }
     }
 }
 

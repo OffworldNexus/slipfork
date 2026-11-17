@@ -77,6 +77,9 @@ fn run(url: &str) -> Result<(), String> {
 }
 
 /// Resolve the same explicit roots the thin CLI uses, without inventing a daemon address.
+///
+/// The control socket is always `<state_dir>/run/daemon.sock` (`ADR-0011` §2); `XDG_RUNTIME_DIR`
+/// is deliberately not consulted, so a system `slipforkd.service` and a login shell agree.
 fn layout_from_env() -> Result<Layout, String> {
     let home = std::env::var_os("HOME")
         .filter(|home| !home.is_empty())
@@ -85,14 +88,11 @@ fn layout_from_env() -> Result<Layout, String> {
             "HOME is not set; git-remote-slipfork needs the developer account's home directory to locate slipforkd".to_owned()
         })?;
     let xdg_cache = absolute_env("XDG_CACHE_HOME");
-    let xdg_runtime = absolute_env("XDG_RUNTIME_DIR");
     let xdg_data = absolute_env("XDG_DATA_HOME");
     Ok(Layout::resolve(
         None,
-        None,
         &home,
         xdg_cache.as_deref(),
-        xdg_runtime.as_deref(),
         xdg_data.as_deref(),
     ))
 }

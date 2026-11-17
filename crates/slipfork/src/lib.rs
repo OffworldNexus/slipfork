@@ -22,12 +22,15 @@
 //! - [`runtime`]: pinned `crun` + `slipfork-world-init` payload provisioning for every `L0` rootfs.
 //! - [`daemon`]: the in-process [`slipfork_edge::DaemonControl`] implementation `slipforkd` injects
 //!   into [`slipfork_edge::DaemonControlServer`].
+//! - [`daemon_unit_install`]: the single `slipfork daemon install` orchestration over a narrow
+//!   [`daemon_unit_install::UnitInstaller`] port (`ADR-0011` §1).
 
 #![forbid(unsafe_code)]
 
 pub mod apparmor;
 pub mod cli;
 pub mod daemon;
+pub mod daemon_unit_install;
 pub mod doctor;
 pub mod layout;
 pub mod oci_store;

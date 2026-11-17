@@ -143,14 +143,7 @@ fn run(cli: DaemonCli) -> Result<(), String> {
             cli.runtime_dir.display()
         )
     })?;
-    let layout = Layout::resolve(
-        Some(state_dir),
-        Some(runtime_dir),
-        &home,
-        None,
-        None,
-        xdg_data_home.as_deref(),
-    );
+    let layout = Layout::explicit(state_dir, runtime_dir, &home, xdg_data_home.as_deref());
     let state_dir = layout.state_dir().to_path_buf();
     let runtime_dir = layout.runtime_dir().to_path_buf();
 

@@ -2804,6 +2804,11 @@ impl DaemonControl for DaemonService {
         Ok(())
     }
 
+    fn shutdown(&self) -> Result<(), EdgeError> {
+        // The transport server stops accepting and releases `daemon.sock` after this ack.
+        Ok(())
+    }
+
     fn auth_login(&self, pairing_url: &str) -> Result<slipfork_edge::AuthSummary, EdgeError> {
         let url = PairingUrl::parse(pairing_url)
             .map_err(|err| rejected(format!("invalid pairing URL: {err}")))?;
@@ -4518,14 +4523,7 @@ modes:
         scratch: &Path,
         worktree: &Path,
     ) -> (Arc<DaemonService>, Arc<WorldRegistry>, Arc<RecordingEngine>) {
-        let layout = Layout::resolve(
-            Some(scratch.join("state")),
-            Some(scratch.join("run")),
-            scratch,
-            None,
-            None,
-            None,
-        );
+        let layout = Layout::explicit(scratch.join("state"), scratch.join("run"), scratch, None);
         let engine = Arc::new(RecordingEngine::new());
         let registry = Arc::new(WorldRegistry::new(
             engine.clone(),

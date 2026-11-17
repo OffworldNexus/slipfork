@@ -12,7 +12,7 @@
 
 #![forbid(unsafe_code)]
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use serde_json::{Value, json};
@@ -50,6 +50,81 @@ pub enum NetnsCheck {
     Skipped,
 }
 
+/// Advisory `:80` systemd socket-activation state (`ADR-0011` §3).
+///
+/// Never affects [`DoctorReport::ok`] or [`DoctorReport::fixes`]: `doctor` must work on an
+/// unprivileged host that has no `systemd` units installed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum IngressCheck {
+    /// `slipforkd.socket` is active and binds port `80`; `listen` names its `Listen=` entries.
+    ActivePort80 {
+        /// `systemctl show -p Listen` entries, in systemd's order.
+        listen: Vec<String>,
+    },
+    /// The unit is active but does not bind port `80` (an older or hand-written unit), or its
+    /// `Listen=` entries could not be read.
+    ActiveOtherListeners {
+        /// `systemctl show -p Listen` entries; `None` when the query failed or returned nothing.
+        listen: Option<Vec<String>>,
+    },
+    /// The unit exists but is not active.
+    Inactive,
+    /// No `slipforkd.socket` unit is installed on this host.
+    NotInstalled,
+}
+
+impl IngressCheck {
+    /// The single human line (`docs/design/dx-0.1.0-ux.md` §2).
+    pub fn label(&self) -> String {
+        match self {
+            Self::ActivePort80 { .. } => ":80 active (port-less origins)".to_owned(),
+            Self::ActiveOtherListeners { listen } => match listen {
+                Some(_) => "active without :80 (origins carry the answered port; run `sudo slipfork daemon install` to rebind :80)".to_owned(),
+                None => "active but `systemctl show -p Listen slipforkd.socket` failed; cannot confirm :80 (run `sudo systemctl show -p Listen slipforkd.socket`)".to_owned(),
+            },
+            Self::Inactive => {
+                "installed but inactive (run `sudo systemctl start slipforkd.socket`)".to_owned()
+            }
+            Self::NotInstalled => {
+                "not installed (ephemeral port; run `slipfork daemon install`)".to_owned()
+            }
+        }
+    }
+
+    /// The single `--json` projection (`docs/design/dx-0.1.0-ux.md` §10).
+    pub fn to_json(&self) -> Value {
+        match self {
+            Self::ActivePort80 { listen } => json!({
+                "status": "active",
+                "port": 80,
+                "listen": listen,
+                "hint": Value::Null,
+            }),
+            Self::ActiveOtherListeners { listen } => json!({
+                "status": "active_other_listeners",
+                "port": Value::Null,
+                "listen": listen,
+                "hint": match listen {
+                    Some(_) => "active without :80 (origins carry the answered port; run `sudo slipfork daemon install` to rebind :80)",
+                    None => "active but `systemctl show -p Listen slipforkd.socket` failed; cannot confirm :80 (run `sudo systemctl show -p Listen slipforkd.socket`)",
+                },
+            }),
+            Self::Inactive => json!({
+                "status": "inactive",
+                "port": Value::Null,
+                "listen": Value::Null,
+                "hint": "installed but inactive (run `sudo systemctl start slipforkd.socket`)",
+            }),
+            Self::NotInstalled => json!({
+                "status": "not_installed",
+                "port": Value::Null,
+                "listen": Value::Null,
+                "hint": "not installed (ephemeral port; run `slipfork daemon install`)",
+            }),
+        }
+    }
+}
+
 /// The single `slipfork doctor` report (`M3.25`, rendered by [`DoctorReport::render_text`] and
 /// projected by [`DoctorReport::to_json`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -68,6 +143,8 @@ pub struct DoctorReport {
     pub unshare_userns: HostCheckOutcome,
     /// Network-namespace probe (`Skipped` when user namespaces already failed).
     pub netns: NetnsCheck,
+    /// Advisory `:80` systemd socket-activation state (never feeds `ok` or `fixes`).
+    pub ingress: IngressCheck,
     /// Deterministic remediation list, emitted `btrfs` -> `unshare_userns` -> `netns`.
     pub fixes: Vec<String>,
 }
@@ -83,6 +160,116 @@ pub trait HostProbe: Send + Sync {
 
     /// `unshare --user ... --keep-caps --net --ipc --pid --fork -- ip link set lo up`.
     fn probe_netns(&self, uid: u32, gid: u32) -> HostCheckOutcome;
+}
+
+/// Sole pre-daemon `:80` systemd unit probe seam (`ADR-0011` §3).
+///
+/// `SystemdIngressProbe` is the production adapter (constructed in `crates/slipfork/src/main.rs`);
+/// tests inject recording doubles. The probe is advisory and read-only.
+pub trait IngressProbe: Send + Sync {
+    /// Report whether `slipforkd.socket` is installed/active and binds port `80`.
+    fn probe_ingress(&self) -> IngressCheck;
+}
+
+/// Production [`IngressProbe`]: fixed-`PATH` `systemctl` reads, never a unit write.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct SystemdIngressProbe;
+
+impl SystemdIngressProbe {
+    /// Bind the production probe.
+    pub fn new() -> Self {
+        Self
+    }
+
+    /// Run one `systemctl` read with the fixed diagnostic environment.
+    fn systemctl(&self, args: &[&str]) -> Result<String, String> {
+        let output = Command::new("systemctl")
+            .args(args)
+            .env_clear()
+            .env("PATH", PROBE_PATH)
+            .env("LC_ALL", "C")
+            .env("LANGUAGE", "C")
+            .output()
+            .map_err(|err| format!("cannot run `systemctl {}`: {err}", args.join(" ")))?;
+        if !output.status.success() {
+            return Err(format!(
+                "`systemctl {}` exited with {}: {}",
+                args.join(" "),
+                output.status,
+                String::from_utf8_lossy(&output.stderr).trim()
+            ));
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+    }
+
+    /// `systemctl show -p Listen` -> the individual address strings.
+    ///
+    /// `Err` means the query failed or returned no `Listen=` entries: the caller must not claim
+    /// it read the listener set.
+    fn listen_addrs(&self) -> Result<Vec<String>, String> {
+        let output = self.systemctl(&["show", "-p", "Listen", "slipforkd.socket"])?;
+        let listen: Vec<String> = output
+            .lines()
+            .filter_map(|line| line.strip_prefix("Listen="))
+            .map(|value| {
+                value
+                    .split_once(" (")
+                    .map_or(value, |(address, _)| address)
+                    .trim()
+                    .to_owned()
+            })
+            .filter(|value| !value.is_empty())
+            .collect();
+        if listen.is_empty() {
+            return Err(
+                "`systemctl show -p Listen slipforkd.socket` returned no listeners".to_owned(),
+            );
+        }
+        Ok(listen)
+    }
+}
+
+impl IngressProbe for SystemdIngressProbe {
+    fn probe_ingress(&self) -> IngressCheck {
+        // `LoadState=not-found` is the only "no such unit" answer; any other load state means the
+        // unit exists. An unreachable `systemctl` (no systemd host) is the same as not installed:
+        // `doctor` must stay usable on containers and CI.
+        let load_state = self
+            .systemctl(&["show", "-p", "LoadState", "slipforkd.socket"])
+            .ok()
+            .and_then(|output| {
+                output
+                    .lines()
+                    .find_map(|line| line.strip_prefix("LoadState="))
+                    .map(str::to_owned)
+            });
+        if load_state.as_deref() != Some("loaded") {
+            return IngressCheck::NotInstalled;
+        }
+        let active = self
+            .systemctl(&["is-active", "slipforkd.socket"])
+            .is_ok_and(|state| state == "active");
+        if !active {
+            return IngressCheck::Inactive;
+        }
+        match self.listen_addrs() {
+            Ok(listen) => {
+                let binds_port_80 = listen.iter().any(|address| {
+                    address
+                        .parse::<std::net::SocketAddr>()
+                        .is_ok_and(|socket| socket.port() == 80)
+                });
+                if binds_port_80 {
+                    IngressCheck::ActivePort80 { listen }
+                } else {
+                    IngressCheck::ActiveOtherListeners {
+                        listen: Some(listen),
+                    }
+                }
+            }
+            Err(_) => IngressCheck::ActiveOtherListeners { listen: None },
+        }
+    }
 }
 
 /// Production [`HostProbe`]: fixed-`PATH` `unshare` invocations.
@@ -213,7 +400,8 @@ fn failed_fix(context: &str, outcome: &HostCheckOutcome) -> Option<String> {
 pub fn run(
     driver: &dyn SubvolumeDriver,
     host: &dyn HostProbe,
-    state_dir: &std::path::Path,
+    ingress: &dyn IngressProbe,
+    state_dir: &Path,
     uid: u32,
     gid: u32,
 ) -> Result<DoctorReport, EngineError> {
@@ -225,6 +413,7 @@ pub fn run(
         NetnsCheck::Skipped
     };
     let filesystem = filesystem_name(btrfs.fstype);
+    let ingress = ingress.probe_ingress();
 
     let mut fixes = Vec::new();
     if !required_btrfs_ok(&btrfs) {
@@ -251,6 +440,7 @@ pub fn run(
         filesystem,
         unshare_userns,
         netns,
+        ingress,
         fixes,
     })
 }
@@ -298,6 +488,7 @@ impl DoctorReport {
             check_label(&self.unshare_userns)
         ));
         text.push_str(&format!("netns: {}\n", netns_label(&self.netns)));
+        text.push_str(&format!("ingress: {}\n", self.ingress.label()));
         for fix in &self.fixes {
             text.push_str(&format!("fix: {fix}\n"));
         }
@@ -319,6 +510,7 @@ impl DoctorReport {
             "noatime": self.btrfs.noatime,
             "unshare_userns": check_json(&self.unshare_userns),
             "netns": netns_json(&self.netns),
+            "ingress": self.ingress.to_json(),
             "fixes": self.fixes,
         })
     }
@@ -405,6 +597,50 @@ mod tests {
         fn probe_netns(&self, _uid: u32, _gid: u32) -> HostCheckOutcome {
             self.netns.clone()
         }
+    }
+
+    /// Deterministic [`IngressProbe`] that records how many times it was consulted.
+    struct RecordingIngressProbe {
+        check: IngressCheck,
+        calls: std::sync::atomic::AtomicUsize,
+    }
+
+    impl RecordingIngressProbe {
+        fn new(check: IngressCheck) -> Self {
+            Self {
+                check,
+                calls: std::sync::atomic::AtomicUsize::new(0),
+            }
+        }
+
+        fn calls(&self) -> usize {
+            self.calls.load(std::sync::atomic::Ordering::SeqCst)
+        }
+    }
+
+    impl IngressProbe for RecordingIngressProbe {
+        fn probe_ingress(&self) -> IngressCheck {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.check.clone()
+        }
+    }
+
+    /// The composer tests that do not care about ingress use "not installed".
+    fn run(
+        driver: &dyn SubvolumeDriver,
+        host: &dyn HostProbe,
+        state_dir: &Path,
+        uid: u32,
+        gid: u32,
+    ) -> Result<DoctorReport, EngineError> {
+        super::run(
+            driver,
+            host,
+            &RecordingIngressProbe::new(IngressCheck::NotInstalled),
+            state_dir,
+            uid,
+            gid,
+        )
     }
 
     #[test]
@@ -587,5 +823,104 @@ mod tests {
         assert_eq!(filesystem_name(0x0102_1994), "tmpfs");
         assert_eq!(filesystem_name(0x794c_7630), "overlayfs");
         assert_eq!(filesystem_name(0x1), "unknown(0x1)");
+    }
+
+    #[test]
+    fn ingress_is_advisory_and_rendered_once_before_fixes() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ingress = RecordingIngressProbe::new(IngressCheck::ActivePort80 {
+            listen: vec!["127.0.0.1:80".to_owned(), "[::1]:80".to_owned()],
+        });
+        let report = super::run(
+            &TestTreeDriver::non_btrfs(0xef53),
+            &FakeHostProbe::passing(),
+            &ingress,
+            &tmp.path().join("state"),
+            1000,
+            1000,
+        )
+        .expect("probe succeeds off Btrfs");
+
+        assert_eq!(ingress.calls(), 1, "the probe runs exactly once");
+        assert!(
+            !report.ok,
+            "ingress never makes a non-Btrfs host healthy: {report:?}"
+        );
+        assert_eq!(report.fixes, vec![BTRFS_MOUNT_HINT.to_owned()]);
+        let text = report.render_text();
+        assert!(
+            text.contains("ingress: :80 active (port-less origins)\n"),
+            "{text}"
+        );
+        assert!(
+            text.find("ingress: ").expect("ingress line") < text.find("fix: ").expect("fix line"),
+            "the ingress line precedes fixes: {text}"
+        );
+
+        let value = report.to_json();
+        assert_eq!(
+            value["ingress"],
+            json!({
+                "status": "active",
+                "port": 80,
+                "listen": ["127.0.0.1:80", "[::1]:80"],
+                "hint": Value::Null,
+            })
+        );
+    }
+
+    #[test]
+    fn every_ingress_state_has_its_design_text_and_typed_json() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        for (check, label, status) in [
+            (
+                IngressCheck::NotInstalled,
+                "ingress: not installed (ephemeral port; run `slipfork daemon install`)\n",
+                "not_installed",
+            ),
+            (
+                IngressCheck::Inactive,
+                "ingress: installed but inactive (run `sudo systemctl start slipforkd.socket`)\n",
+                "inactive",
+            ),
+            (
+                IngressCheck::ActiveOtherListeners {
+                    listen: Some(vec!["127.0.0.1:7080".to_owned()]),
+                },
+                "ingress: active without :80 (origins carry the answered port; run `sudo slipfork daemon install` to rebind :80)\n",
+                "active_other_listeners",
+            ),
+            (
+                IngressCheck::ActiveOtherListeners { listen: None },
+                "ingress: active but `systemctl show -p Listen slipforkd.socket` failed; cannot confirm :80 (run `sudo systemctl show -p Listen slipforkd.socket`)\n",
+                "active_other_listeners",
+            ),
+        ] {
+            let ingress = RecordingIngressProbe::new(check.clone());
+            let report = super::run(
+                &TestTreeDriver::btrfs(),
+                &FakeHostProbe::passing(),
+                &ingress,
+                tmp.path(),
+                1000,
+                1000,
+            )
+            .expect("probe succeeds on Btrfs");
+            assert!(report.ok, "ingress never affects the verdict");
+            assert!(report.fixes.is_empty());
+            assert!(
+                report.render_text().contains(label),
+                "{}",
+                report.render_text()
+            );
+            let value = report.to_json();
+            assert_eq!(value["ingress"]["status"], json!(status));
+            assert_eq!(value["ingress"]["port"], Value::Null);
+            assert!(
+                value["ingress"]["listen"].is_null() || value["ingress"]["listen"].is_array(),
+                "listen is a list or null: {value}"
+            );
+            assert!(value["ingress"]["hint"].is_string());
+        }
     }
 }

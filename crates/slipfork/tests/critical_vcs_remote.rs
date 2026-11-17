@@ -87,8 +87,8 @@ fn git_with_helper(repo: &Path, daemon: &Daemon, args: &[&str]) -> Output {
             helper_path(daemon.runtime_dir.parent().expect("runtime parent")),
         )
         .env(
-            "XDG_RUNTIME_DIR",
-            daemon.runtime_dir.parent().expect("runtime parent"),
+            "XDG_CACHE_HOME",
+            daemon.state_dir.parent().expect("state parent"),
         )
         .env("XDG_DATA_HOME", daemon.state_dir.join("xdg-data"))
         .output()

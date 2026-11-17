@@ -333,6 +333,15 @@ impl DaemonControl for DaemonControlClient {
         }
     }
 
+    fn shutdown(&self) -> Result<(), EdgeError> {
+        match self.call(&DaemonRequest::Shutdown)? {
+            DaemonReply::Shutdown => Ok(()),
+            other => Err(EdgeError::ControlProtocol {
+                reason: format!("unexpected reply to shutdown: {other:?}"),
+            }),
+        }
+    }
+
     fn auth_login(&self, pairing_url: &str) -> Result<AuthSummary, EdgeError> {
         match self.call(&DaemonRequest::AuthLogin {
             pairing_url: crate::daemon::ControlSecret::new(pairing_url),

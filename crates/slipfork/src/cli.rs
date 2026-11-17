@@ -29,13 +29,11 @@ pub struct Cli {
     pub json: bool,
 
     /// Explicit CoW state directory (defaults to `$XDG_CACHE_HOME/slipfork` or `~/.cache/slipfork`).
+    ///
+    /// The client's control socket is always `<state_dir>/run/daemon.sock`; there is no
+    /// `--runtime-dir` override outside `slipforkd` itself (`ADR-0011` §2).
     #[arg(long, global = true)]
     pub state_dir: Option<PathBuf>,
-
-    /// Explicit runtime directory holding `daemon.sock`
-    /// (defaults to `$XDG_RUNTIME_DIR/slipfork` or `<state_dir>/run`).
-    #[arg(long, global = true)]
-    pub runtime_dir: Option<PathBuf>,
 
     #[command(subcommand)]
     pub command: Commands,
@@ -301,6 +299,29 @@ pub enum DaemonAction {
         /// Planned static forward port emitted as the trailing `ListenStream=`.
         #[arg(long, default_value_t = DEFAULT_FORWARD_PORT)]
         forward_port: u16,
+        /// Account the rendered `User=` names (default: the invoking account); previews exactly
+        /// what `sudo slipfork daemon install --user <ACCOUNT>` would write.
+        #[arg(long, value_name = "ACCOUNT")]
+        user: Option<String>,
+        /// Directory holding the `slipfork{,d,-world-init}` executables; repeat for several
+        /// install locations (default: this executable's directory).
+        #[arg(long, value_name = "DIR", action = clap::ArgAction::Append)]
+        bin_dir: Vec<PathBuf>,
+    },
+
+    /// Install the systemd units plus the AppArmor profile and enable `:80` socket activation
+    /// (writes `/etc`; requires root).
+    Install {
+        /// Account `slipforkd.service` runs as (default: the invoking `sudo` account).
+        #[arg(long, value_name = "ACCOUNT")]
+        user: Option<String>,
+        /// Directory holding the `slipfork{,d,-world-init}` executables; repeat for several
+        /// install locations (default: this executable's directory).
+        #[arg(long, value_name = "DIR", action = clap::ArgAction::Append)]
+        bin_dir: Vec<PathBuf>,
+        /// Planned static forward port emitted as the trailing `ListenStream=`.
+        #[arg(long, default_value_t = DEFAULT_FORWARD_PORT)]
+        forward_port: u16,
     },
 }
 
@@ -397,5 +418,70 @@ mod tests {
     fn world_selectors_are_flags_never_positional_forks() {
         assert!(Cli::try_parse_from(["slipfork", "up", "feat"]).is_err());
         assert!(Cli::try_parse_from(["slipfork", "up", "--world", "feat"]).is_ok());
+    }
+
+    #[test]
+    fn the_client_has_no_runtime_dir_override() {
+        let err = Cli::try_parse_from(["slipfork", "--runtime-dir", "/run/user/1000", "list"])
+            .expect_err("--runtime-dir is a slipforkd-only flag");
+        assert_eq!(err.kind(), clap::error::ErrorKind::UnknownArgument);
+        assert!(
+            Cli::try_parse_from(["slipfork", "--state-dir", "/state", "list"]).is_ok(),
+            "--state-dir stays global"
+        );
+    }
+
+    #[test]
+    fn daemon_bin_dir_is_repeatable_for_unit_and_install() {
+        let unit = Cli::try_parse_from([
+            "slipfork",
+            "daemon",
+            "unit",
+            "--only",
+            "apparmor",
+            "--bin-dir",
+            "/usr/local/bin",
+            "--bin-dir",
+            "/tmp/ux/bin",
+        ])
+        .expect("repeatable --bin-dir");
+        let Commands::Daemon {
+            action: DaemonAction::Unit { bin_dir, .. },
+        } = unit.command
+        else {
+            panic!("expected `daemon unit`");
+        };
+        assert_eq!(
+            bin_dir,
+            vec![
+                PathBuf::from("/usr/local/bin"),
+                PathBuf::from("/tmp/ux/bin")
+            ]
+        );
+
+        let install = Cli::try_parse_from([
+            "slipfork",
+            "daemon",
+            "install",
+            "--user",
+            "dev",
+            "--bin-dir",
+            "/usr/local/bin",
+        ])
+        .expect("daemon install");
+        let Commands::Daemon {
+            action:
+                DaemonAction::Install {
+                    user,
+                    bin_dir,
+                    forward_port,
+                },
+        } = install.command
+        else {
+            panic!("expected `daemon install`");
+        };
+        assert_eq!(user.as_deref(), Some("dev"));
+        assert_eq!(bin_dir, vec![PathBuf::from("/usr/local/bin")]);
+        assert_eq!(forward_port, DEFAULT_FORWARD_PORT);
     }
 }

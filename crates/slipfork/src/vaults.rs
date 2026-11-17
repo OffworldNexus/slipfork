@@ -108,7 +108,7 @@ mod tests {
     use slipfork_snow::Namespace;
 
     fn layout(dir: &std::path::Path) -> Layout {
-        Layout::resolve(None, None, dir, None, None, Some(dir))
+        Layout::resolve(None, dir, None, Some(dir))
     }
 
     #[test]

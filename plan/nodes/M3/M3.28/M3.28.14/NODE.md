@@ -6,12 +6,18 @@ status: ready
 owner: "doc-writer"
 priority: 2
 depends_on: [M3.28.13]
-paths: [docs/reference/cli.md, "docs/getting-started.md", docs/index.md, README.md, CHANGELOG.md]
+paths:
+  - docs/reference/cli.md
+  - "docs/getting-started.md"
+  - docs/index.md
+  - "docs/snow-modes.md"
+  - README.md
+  - CHANGELOG.md
 attempts: 0
 max_attempts: 3
 escalation: none
 created: "2026-11-17T16:34"
-updated: "2026-11-17T16:34"
+updated: "2026-11-17T22:43"
 ---
 
 # Goal

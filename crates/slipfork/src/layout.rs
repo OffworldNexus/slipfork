@@ -1,17 +1,23 @@
 //! Pure filesystem layout derived from explicit composition-root inputs.
 //!
 //! No function here reads the environment or the process working directory: `slipfork` and
-//! `slipforkd` resolve `HOME`, `$XDG_CACHE_HOME`, `$XDG_DATA_HOME`, `$XDG_RUNTIME_DIR`, and their
-//! `--state-dir`/`--runtime-dir` arguments once, then pass those values in.
+//! `slipforkd` resolve `HOME`, `$XDG_CACHE_HOME`, `$XDG_DATA_HOME`, and `SUDO_USER` once, then pass
+//! those values in. There is exactly one runtime directory — `<state_dir>/run` (`ADR-0011` §2):
+//! the thin client has no `--runtime-dir` override, so it can never dial a different
+//! `daemon.sock` than the installed `slipforkd.service`.
 
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
+use crate::user::ResolvedAccount;
 use slipfork_world::ProjectSlug;
 
 /// Directory holding the developer's private `0600` vaults (`<data_home>/slipfork/vaults`).
 const VAULTS_DIRECTORY: &str = "vaults";
+
+/// Directory holding the daemon's control socket, always directly under the state root.
+const RUNTIME_DIRECTORY: &str = "run";
 
 /// The explicit state/runtime/data roots every `slipfork`/`slipforkd` invocation shares.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -22,28 +28,70 @@ pub struct Layout {
 }
 
 impl Layout {
-    /// Resolve the roots from explicit flags and already-read environment values.
+    /// Resolve the roots for one already-resolved OS account (`ADR-0011` §2).
     ///
-    /// `state_dir` falls back to `$XDG_CACHE_HOME/slipfork` (or `~/.cache/slipfork`);
-    /// `runtime_dir` falls back to `$XDG_RUNTIME_DIR/slipfork` (or `<state_dir>/run`, which keeps
-    /// the socket on disk when no session runtime directory exists); `data_home` falls back to
-    /// `$XDG_DATA_HOME` (or `~/.local/share`) and holds the `0600` vaults.
+    /// `state_dir` falls back to `$XDG_CACHE_HOME/slipfork` (or `<home>/.cache/slipfork`);
+    /// `runtime_dir` is unconditionally `<state_dir>/run` (the daemon composition root has
+    /// its own `explicit` constructor); `data_home` falls back to `$XDG_DATA_HOME` (or
+    /// `~/.local/share`) and holds the `0600` vaults.
+    pub fn for_account(
+        account: &ResolvedAccount,
+        state_dir: Option<PathBuf>,
+        xdg_cache_home: Option<&Path>,
+        xdg_data_home: Option<&Path>,
+    ) -> Self {
+        Self::with_roots(
+            state_dir,
+            None,
+            &account.home,
+            xdg_cache_home,
+            xdg_data_home,
+        )
+    }
+
+    /// Resolve the client/default roots from the developer's home and XDG cache/data homes.
+    ///
+    /// The runtime directory is **always** `<state_dir>/run`; there is no `$XDG_RUNTIME_DIR`
+    /// branch, because a system unit and a login shell must derive the same `daemon.sock`
+    /// (`ADR-0011` §2).
     pub fn resolve(
+        state_dir: Option<PathBuf>,
+        home: &Path,
+        xdg_cache_home: Option<&Path>,
+        xdg_data_home: Option<&Path>,
+    ) -> Self {
+        Self::with_roots(state_dir, None, home, xdg_cache_home, xdg_data_home)
+    }
+
+    /// Both roots explicit: the `slipforkd` composition root, whose `--runtime-dir` is required.
+    pub fn explicit(
+        state_dir: PathBuf,
+        runtime_dir: PathBuf,
+        home: &Path,
+        xdg_data_home: Option<&Path>,
+    ) -> Self {
+        Self::with_roots(
+            Some(state_dir),
+            Some(runtime_dir),
+            home,
+            None,
+            xdg_data_home,
+        )
+    }
+
+    /// The single layout formula every constructor above delegates to.
+    fn with_roots(
         state_dir: Option<PathBuf>,
         runtime_dir: Option<PathBuf>,
         home: &Path,
         xdg_cache_home: Option<&Path>,
-        xdg_runtime_dir: Option<&Path>,
         xdg_data_home: Option<&Path>,
     ) -> Self {
         let state_dir = state_dir.unwrap_or_else(|| match xdg_cache_home {
             Some(xdg) if xdg.is_absolute() => xdg.join("slipfork"),
             _ => home.join(".cache").join("slipfork"),
         });
-        let runtime_dir = runtime_dir.unwrap_or_else(|| match xdg_runtime_dir {
-            Some(xdg) if xdg.is_absolute() => xdg.join("slipfork"),
-            _ => state_dir.join("run"),
-        });
+        let runtime_dir = runtime_dir.unwrap_or_else(|| state_dir.join(RUNTIME_DIRECTORY));
         let data_home = match xdg_data_home {
             Some(xdg) if xdg.is_absolute() => xdg.to_path_buf(),
             _ => home.join(".local").join("share"),
@@ -138,18 +186,25 @@ mod tests {
         PathBuf::from("/home/developer")
     }
 
+    fn account() -> ResolvedAccount {
+        ResolvedAccount {
+            name: "developer".to_owned(),
+            uid: 1000,
+            gid: 1000,
+            home: home(),
+        }
+    }
+
     #[test]
-    fn explicit_roots_always_win() {
+    fn explicit_state_wins_and_runtime_is_always_its_run_directory() {
         let layout = Layout::resolve(
             Some(PathBuf::from("/state")),
-            Some(PathBuf::from("/runtime")),
             &home(),
             Some(Path::new("/cache")),
-            Some(Path::new("/xdg-runtime")),
             Some(Path::new("/xdg-data")),
         );
         assert_eq!(layout.state_dir(), Path::new("/state"));
-        assert_eq!(layout.runtime_dir(), Path::new("/runtime"));
+        assert_eq!(layout.runtime_dir(), Path::new("/state/run"));
         assert_eq!(layout.data_home(), Path::new("/xdg-data"));
     }
 
@@ -157,17 +212,15 @@ mod tests {
     fn defaults_follow_xdg_then_home_and_keep_runtime_on_disk() {
         let xdg = Layout::resolve(
             None,
-            None,
             &home(),
             Some(Path::new("/cache")),
-            Some(Path::new("/run/user/1000")),
             Some(Path::new("/data")),
         );
         assert_eq!(xdg.state_dir(), Path::new("/cache/slipfork"));
-        assert_eq!(xdg.runtime_dir(), Path::new("/run/user/1000/slipfork"));
+        assert_eq!(xdg.runtime_dir(), Path::new("/cache/slipfork/run"));
         assert_eq!(xdg.data_home(), Path::new("/data"));
 
-        let bare = Layout::resolve(None, None, &home(), None, None, None);
+        let bare = Layout::resolve(None, &home(), None, None);
         assert_eq!(
             bare.state_dir(),
             Path::new("/home/developer/.cache/slipfork")
@@ -180,13 +233,40 @@ mod tests {
     }
 
     #[test]
+    fn for_account_derives_both_roots_from_the_target_accounts_home() {
+        let layout = Layout::for_account(&account(), None, None, None);
+        assert_eq!(
+            layout.state_dir(),
+            Path::new("/home/developer/.cache/slipfork")
+        );
+        assert_eq!(
+            layout.runtime_dir(),
+            Path::new("/home/developer/.cache/slipfork/run")
+        );
+    }
+
+    #[test]
+    fn only_the_daemon_explicit_constructor_overrides_the_runtime_directory() {
+        let layout = Layout::explicit(
+            PathBuf::from("/state"),
+            PathBuf::from("/elsewhere/run"),
+            &home(),
+            None,
+        );
+        assert_eq!(layout.state_dir(), Path::new("/state"));
+        assert_eq!(layout.runtime_dir(), Path::new("/elsewhere/run"));
+
+        let account_layout =
+            Layout::for_account(&account(), Some(PathBuf::from("/state")), None, None);
+        assert_eq!(account_layout.runtime_dir(), Path::new("/state/run"));
+    }
+
+    #[test]
     fn relative_xdg_values_are_not_trusted() {
         let layout = Layout::resolve(
             None,
-            None,
             &home(),
             Some(Path::new("cache")),
-            None,
             Some(Path::new("data")),
         );
         assert_eq!(
@@ -204,9 +284,7 @@ mod tests {
         let project = ProjectSlug::parse("acme").expect("valid slug");
         let layout = Layout::resolve(
             Some(PathBuf::from("/state")),
-            Some(PathBuf::from("/runtime")),
             &home(),
-            None,
             None,
             Some(Path::new("/data")),
         );

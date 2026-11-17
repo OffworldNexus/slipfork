@@ -74,7 +74,7 @@ pub use slipfork_engine::{
     WorldLineage, WorldServiceInfo,
 };
 pub use tunnel::UnavailableTunnelRegistrar;
-pub use unit::{UnitSpec, render_service_unit, render_socket_unit};
+pub use unit::{INGRESS_ADDRS, INGRESS_PORT, UnitSpec, render_service_unit, render_socket_unit};
 
 /// Fail-closed errors produced by the edge crate.
 ///
@@ -337,7 +337,7 @@ pub enum EdgeError {
 
     /// A `slipforkd.service` path cannot be written into a UTF-8 systemd unit line.
     #[error(
-        "cannot write the {role} path '{path}' into slipforkd.service: unit files are UTF-8 text without control characters"
+        "cannot write the {role} path '{path}' into slipforkd.service: unit files are UTF-8 text without control characters or systemd %-specifiers"
     )]
     UnitInvalidPath {
         /// Which `ExecStart=` argument the path feeds (`ExecStart`, `--state-dir`, `--runtime-dir`).

@@ -24,7 +24,8 @@ use slipfork_ospp_testkit::{
 
 pub mod support;
 use support::{
-    Daemon, assert_success, git_only_path, jj_binary, repo_with_manifest, stderr, stdout,
+    Daemon, DaemonLayout, assert_success, git_only_path, jj_binary, repo_with_manifest, stderr,
+    stdout,
 };
 
 const OSPP_SNOW: &str = r#"
@@ -193,7 +194,11 @@ fn paired_ospp_resolves_remote_secrets_restores_a_real_dump_and_forks_rows() {
     // The host's system `tpmd` may be absent or unreachable; the composition root's
     // `$XDG_RUNTIME_DIR/tpmd/tpmd.sock` probe is served by the real pinned-protocol fake daemon.
     let _tpmd = FakeTpmd::start_at(
-        scratch.join("xdg-runtime/tpmd/tpmd.sock"),
+        DaemonLayout::under(scratch)
+            .runtime_dir
+            .parent()
+            .expect("runtime parent")
+            .join("tpmd/tpmd.sock"),
         TpmdBehavior::Sealed,
     );
     let daemon = Daemon::start(scratch);

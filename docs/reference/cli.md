@@ -1,6 +1,10 @@
 # CLI Reference (`0.1.0`)
 
-`slipfork` is a thin client: `doctor` and `dag plan` read the host locally, `snow resolve` asks `slipforkd` (it owns the vault), and every world command talks to the unprivileged `slipforkd` daemon over a `0600` `<runtime_dir>/daemon.sock`. When nothing answers there, the CLI starts `slipforkd --listen 127.0.0.1:0` in the background (`<runtime_dir>/daemon.log`, `0600`).
+`slipfork` is a thin client: `doctor` and `dag plan` read the host locally, `snow resolve` asks `slipforkd` (it owns the vault), and every world command talks to the unprivileged `slipforkd` daemon over a `0600` `<state_dir>/run/daemon.sock`. Only `up` and `fork` start `slipforkd --listen 127.0.0.1:0` in the background (`<state_dir>/run/daemon.log`, `0600`); every other verb fails closed with one line when nothing answers:
+```console
+$ slipfork list
+slipfork: no slipforkd on /home/acme/.cache/slipfork/run/daemon.sock — run `slipfork up`
+```
 
 ```console
 $ slipfork doctor
@@ -11,6 +15,7 @@ subvolume_ioctl: skipped
 noatime: missing
 unshare_userns: ok
 netns: ok
+ingress: not installed (ephemeral port; run `slipfork daemon install`)
 fix: sudo mount -o user_subvol_rm_allowed,noatime /dev/<device> <state_dir>
 ```
 
@@ -26,6 +31,7 @@ fix: sudo mount -o user_subvol_rm_allowed,noatime /dev/<device> <state_dir>
 | `"subvolume_ioctl": {"status": "skipped"}` | `ok` after a live scratch create → read-only snapshot → clear read-only → destroy; `skipped` off Btrfs; `failed` adds `errno` and the mount `hint` |
 | `"noatime": false` | Advisory `ST_NOATIME` evidence; never affects `ok` |
 | `"unshare_userns": {"status": "ok"}`, `"netns": {"status": "ok"}` | `ok` or `failed` (+ `detail`, + `hint`); `netns` is `skipped` when `unshare_userns` failed |
+| `"ingress": {"status": "active", "port": 80, "listen": ["127.0.0.1:80", "[::1]:80"], "hint": null}` | Advisory `:80` systemd socket activation. `active` carries `port: 80`; `active_other_listeners` carries `port: null`, `listen: [...]` (or `null` when `systemctl show -p Listen` failed) and a non-null `hint`; `inactive` and `not_installed` carry `port: null`, `listen: null`, and a non-null `hint`. Never affects `ok` |
 | `"uid": 1000`, `"gid": 1000` | The invoking identity every world runs as |
 | `"ok": false`, `"fixes": [...]` | `ok` is the four required checks; `fixes` is empty exactly when `ok` is `true` |
 
@@ -34,8 +40,7 @@ fix: sudo mount -o user_subvol_rm_allowed,noatime /dev/<device> <state_dir>
 | Option | Default | Description |
 |---|---|---|
 | `--json` | `false` | Emit JSON on stdout |
-| `--state-dir <DIR>` | `$XDG_CACHE_HOME/slipfork` or `~/.cache/slipfork` | Btrfs subvolumes, worlds, `cache/{rootfs,oci,runtime}` |
-| `--runtime-dir <DIR>` | `$XDG_RUNTIME_DIR/slipfork` or `<state_dir>/run` | Holds the `0600` `daemon.sock` |
+| `--state-dir <DIR>` | `$XDG_CACHE_HOME/slipfork` or `~/.cache/slipfork` | Btrfs subvolumes, worlds, `cache/{rootfs,oci,runtime}`; the client's control socket is always `<state_dir>/run/daemon.sock` |
 | `-h, --help` / `-V, --version` | — | Help or CLI version |
 
 `--json` is global (`slipfork --json list`). Human diagnostics go to stderr; with `--json`, a failure prints `{"ok": false, "error": "..."}` on stdout. Exit `0` is success, `1` a `slipfork:` runtime error, and `2` a `clap` usage error. `exec`, `shell`, `db`, `redis`, and `hook run` instead exit with the child command's status (so `slipfork exec -- false` exits `1` with no `slipfork:` line), and their child stdout is not JSON even under `--json`.
@@ -56,7 +61,8 @@ fix: sudo mount -o user_subvol_rm_allowed,noatime /dev/<device> <state_dir>
 | `secret set` / `unset` | Store a value read from **stdin** (`--force` rotates it) or remove one key | `printf '%s' "$V" \| slipfork secret set STRIPE_SECRET_KEY` |
 | `secret list` | Print key names only, never values | `slipfork secret list` |
 | `share` | Tunnel sharing is unavailable in this release and fails closed; `--stop` releases a lease | `slipfork share` |
-| `daemon unit` | Render the non-template systemd units and the AppArmor profile on stdout (`--only socket\|service\|apparmor`) | `slipfork daemon unit --only apparmor` |
+| `daemon unit` | Render the non-template systemd units and the AppArmor profile on stdout (`--only socket\|service\|apparmor`, repeatable `--bin-dir`) | `slipfork daemon unit --only apparmor` |
+| `daemon install` | Write `/etc/systemd/system/slipforkd.{socket,service}` + `/etc/apparmor.d/slipfork`, then `enable --now` (`sudo`) | `sudo slipfork daemon install` |
 | `exec` | Run a command non-interactively inside a world | `slipfork exec -- id` |
 | `shell` | Enter a world interactively (requires a TTY) | `slipfork shell` |
 | `logs` | Read or follow retained component/hook logs (`--follow`, `--lines`, `--stderr`) | `slipfork logs --lines 3 api` |
@@ -89,14 +95,15 @@ fix: sudo mount -o user_subvol_rm_allowed,noatime /dev/<device> <state_dir>
 | `logs` | `--follow`, `--lines <N>`, `--stderr`, optional target (`api`, `api:pre-deploy`) |
 | `hook run` | `--no-tty` (run through the daemon instead of a native TTY) |
 | `forward` | positional targets (`pg_databases.main`, `components.api`); no target forwards all |
-| `daemon unit` | `--only socket` / `--only service` / `--only apparmor`, `--forward-port <PORT>` (default `7080`) |
+| `daemon unit` | `--only socket` / `--only service` / `--only apparmor`, `--forward-port <PORT>` (default `7080`), repeatable `--bin-dir <DIR>` (default: this executable's directory) |
+| `daemon install` | `--user <ACCOUNT>` (default: the invoking `sudo` account), repeatable `--bin-dir <DIR>`, `--forward-port <PORT>` (default `7080`); no `--force` |
 | `secret set` | `--force` rotates an existing value |
 
 ## Failure modes you will actually see
 
 ```console
 $ slipfork list
-slipfork: slipforkd exited with exit status: 1 before serving /run/user/1000/slipfork/daemon.sock; see /run/user/1000/slipfork/daemon.log
+slipfork: no slipforkd on /home/acme/.cache/slipfork/run/daemon.sock — run `slipfork up`
 ```
 
 - A non-Btrfs state directory fails closed at `slipforkd` boot: `daemon.log` names the filesystem code and the `mount -o user_subvol_rm_allowed,noatime` line to run, and nothing is created.
@@ -121,30 +128,54 @@ Unpaired, `local = "remote"` on a database and `--refresh-dump` both fail closed
 
 ## `slipforkd`
 
-`slipforkd` is the sole stateful Composition Root and runs unprivileged. It requires explicit paths and never guesses them, runs in the foreground, logs to stderr, and is started for you by `slipfork` when no daemon answers.
+`slipforkd` is the sole stateful Composition Root and runs unprivileged. It requires explicit paths and never guesses them, runs in the foreground, logs to stderr, and is started for you by `slipfork up` / `slipfork fork` (or by `slipforkd.socket` after `slipfork daemon install`). Every other verb fails closed instead of spawning one.
 
 | Option | Description |
 |---|---|
 | `--state-dir <DIR>` | Btrfs subvolumes, world clones, `cache/{rootfs,oci,runtime}` |
-| `--runtime-dir <DIR>` | `0600` `daemon.sock` |
+| `--runtime-dir <DIR>` | `0600` `daemon.sock`; a `slipforkd`-only flag (clients always use `<state_dir>/run`) |
 | `--listen <ADDR>` | HTTP ingress (`127.0.0.1:0` for zero-setup); ignored when `LISTEN_FDS` is set |
 | `--forward-port <PORT>` | Also bind `127.0.0.1:<PORT>` as the static forward listener |
 | `--world-init <PATH>` / `--crun <PATH>` | Explicit helper and pinned static `crun` binaries |
 
 With `LISTEN_PID`/`LISTEN_FDS` present, `slipforkd` adopts inherited descriptors by fd order and fails closed on any mismatch.
 
-## `slipfork daemon unit`
+## `slipfork daemon install`
 
-Renders to stdout with zero filesystem writes (`User=<your-account>`, empty `CapabilityBoundingSet=`, `ListenStream=127.0.0.1:80`, `[::1]:80`, `127.0.0.1:7080`); install it with `slipfork daemon unit --only socket | sudo tee /etc/systemd/system/slipforkd.socket` and `--only service | sudo tee /etc/systemd/system/slipforkd.service`.
-
-`--only apparmor` renders the `/etc/apparmor.d/slipfork` profile instead. Ubuntu 24.04 LTS enables `kernel.apparmor_restrict_unprivileged_userns=1`, so unprivileged `CLONE_NEWUSER` is denied (`doctor` reports `unshare_userns: failed` and `netns: skipped`) until that profile is installed and loaded:
+`slipfork daemon install` is the **single** install path for port-less `.localhost` origins. `systemd` (PID 1) is the only component allowed to bind `127.0.0.1:80` / `[::1]:80`, so it installs and enables the system socket:
 
 ```console
-$ slipfork daemon unit --only apparmor | sudo tee /etc/apparmor.d/slipfork
-$ sudo apparmor_parser -r /etc/apparmor.d/slipfork
+$ sudo slipfork daemon install
+wrote     /etc/systemd/system/slipforkd.socket
+wrote     /etc/systemd/system/slipforkd.service
+wrote     /etc/apparmor.d/slipfork
+enabled   slipforkd.socket + slipforkd.service as acme, ingress 127.0.0.1:80 + [::1]:80
+next      slipfork up
 ```
 
-The profile is four lines. For `slipfork` in `/usr/local/bin` it prints exactly:
+It writes the **exact bytes** `slipfork daemon unit` renders, reloads `systemd`, loads the AppArmor profile with `apparmor_parser -r`, and runs `systemctl enable --now slipforkd.socket slipforkd.service`, after releasing any zero-setup `slipforkd` that still holds `daemon.sock`. A file is rewritten only when its bytes differ, so a second run performs zero writes; if a run fails halfway, re-running the same command converges (every write is idempotent and `enable --now` is safe to repeat).
+
+```console
+$ sudo slipfork daemon install
+unchanged slipforkd.socket, slipforkd.service, /etc/apparmor.d/slipfork; enabled
+```
+
+Running it without root fails closed and changes nothing:
+
+```console
+$ slipfork daemon install
+slipfork: daemon install writes /etc and enables system units; run it as root (sudo slipfork daemon install --user acme)
+```
+
+`--user <ACCOUNT>` names the unprivileged account `slipforkd.service` runs as; omitted, it is the account behind `sudo` (`SUDO_USER`). `--user root`, an unknown account, or direct root with no valid invoking account fails closed. There is no `--force` and no user-unit alternative.
+
+## `slipfork daemon unit`
+
+Renders to stdout with zero filesystem writes (`User=<your-account>`, empty `CapabilityBoundingSet=`, `ListenStream=127.0.0.1:80`, `[::1]:80`, `127.0.0.1:7080`, `Requires=slipforkd.socket`, `After=slipforkd.socket`, `WantedBy=multi-user.target`). `--bin-dir <DIR>` is repeatable (default: this executable's directory) and feeds the AppArmor profile: each directory becomes one flat alternative inside the single four-line brace expression. `--user <ACCOUNT>` pins the rendered `User=` (and the account home the state/runtime paths derive from), so `slipfork daemon unit --user <ACCOUNT> --bin-dir <DIR>` reproduces exactly what `sudo slipfork daemon install --user <ACCOUNT> --bin-dir <DIR>` writes.
+
+`--only apparmor` renders the `/etc/apparmor.d/slipfork` profile instead. Ubuntu 24.04 LTS enables `kernel.apparmor_restrict_unprivileged_userns=1`, so unprivileged `CLONE_NEWUSER` is denied (`doctor` reports `unshare_userns: failed` and `netns: skipped`) until that profile is installed and loaded by `slipfork daemon install`.
+
+For `slipfork` in `/usr/local/bin` it prints exactly:
 
 ```text
 abi <abi/4.0>,
@@ -153,7 +184,7 @@ profile slipfork /{usr/local/bin/slipfork{,d,-world-init},usr/bin/unshare,.slipf
 }
 ```
 
-AppArmor 4.0 accepts one attachment expression per profile header, so that single leading-slash brace expression names every executable that performs `CLONE_NEWUSER` for a world: `<bin_dir>/slipfork`, `<bin_dir>/slipforkd`, `<bin_dir>/slipfork-world-init`, host `/usr/bin/unshare` (outer world namespaces and `doctor`), and in-world `/.slipfork/bin/crun` (inner OCI namespaces). The body is `userns,` only, so file and mount mediation stay inactive. `<bin_dir>` is baked in; reload after moving the binaries.
+AppArmor 4.0 accepts one attachment expression per profile header, so that single leading-slash brace expression names every executable that performs `CLONE_NEWUSER` for a world: `<bin_dir>/slipfork`, `<bin_dir>/slipforkd`, `<bin_dir>/slipfork-world-init`, host `/usr/bin/unshare` (outer world namespaces and `doctor`), and in-world `/.slipfork/bin/crun` (inner OCI namespaces). Pass `--bin-dir` once per install location on the host; the body is `userns,` only, so file and mount mediation stay inactive.
 
 ## `git-remote-slipfork`
 

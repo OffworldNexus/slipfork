@@ -2,7 +2,7 @@
 id: M3.28.6
 title: "slipfork daemon install: :80 socket activation, AppArmor profile, idempotent and fail-closed"
 kind: task
-status: ready
+status: done
 owner: implementer
 priority: 2
 depends_on: [M3.28.3, M3.28.4, M3.28.17]
@@ -16,18 +16,19 @@ paths:
   - crates/slipfork/src/lib.rs
   - crates/slipfork/src/layout.rs
   - crates/slipfork/src/vaults.rs
+  - crates/slipfork/src/daemon.rs
   - crates/slipfork/src/bin/slipforkd.rs
   - "crates/slipfork/src/bin/git-remote-slipfork.rs"
-  - crates/slipfork/tests/critical_cli.rs
-  - crates/slipfork/tests/support/mod.rs
-  - "crates/slipfork-edge/src/unit.rs"
-  - "crates/slipfork-edge/tests/golden/slipforkd.service"
+  - "crates/slipfork/tests/**"
+  - "crates/slipfork-edge/src/**"
+  - "crates/slipfork-edge/tests/**"
   - docs/reference/cli.md
-attempts: 0
-max_attempts: 3
+  - "docs/decisions/ADR-0011-*.md"
+attempts: 4
+max_attempts: 4
 escalation: none
 created: "2026-11-17T16:33"
-updated: "2026-11-17T19:46"
+updated: "2026-11-17T23:36"
 ---
 
 # Goal

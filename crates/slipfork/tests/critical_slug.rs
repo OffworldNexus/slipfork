@@ -53,8 +53,6 @@ fn run_slipfork_with_env(
         .env("XDG_DATA_HOME", &layout.data_home)
         .arg("--state-dir")
         .arg(&layout.state_dir)
-        .arg("--runtime-dir")
-        .arg(&layout.runtime_dir)
         .args(args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -171,8 +169,9 @@ fn worktree_resolves_to_canonical_repo_slug_and_honors_only_vcs_root_slipfork_to
         "expected canonical repo slug, got:\n{stdout}"
     );
     assert!(
-        scratch
-            .join("state/xdg-data/slipfork/vaults/acme-app.json")
+        DaemonLayout::under(scratch)
+            .data_home
+            .join("slipfork/vaults/acme-app.json")
             .is_file(),
         "vault must be keyed by canonical ProjectSlug"
     );
@@ -283,8 +282,8 @@ fn worktree_resolves_to_canonical_repo_slug_and_honors_only_vcs_root_slipfork_to
     // Poison the artifact cache with the empty-input digest: a buggy `cwd`-rooted planner in
     // `repo/nested/sub` (which has no `src/**`) would match zero files and report `cached`!
     fs::create_dir_all(
-        scratch
-            .join("state")
+        DaemonLayout::under(scratch)
+            .state_dir
             .join("artifacts")
             .join(&empty_artifact_digest),
     )

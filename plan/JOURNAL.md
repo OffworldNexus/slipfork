@@ -1152,3 +1152,19 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-17T22:21 [M3.28.6] (lead) attempt 2/3 started
 - 2026-11-17T22:21 [M3.28.6] (lead) attempt 1 cap-out after the bulk of the work; cargo check -p slipfork --all-targets is CLEAN on the tree. Paths widened to crates/slipfork/tests/** (removing th
 - 2026-11-17T22:39 [M3.28.19] (lead) architect clean rewrite: 136 lines, 3 sequenceDiagrams; verified plan OK + guard 562 + zensical strict; content untouched.
+- 2026-11-17T22:42 [M3.28.6] (lead) status active -> review
+- 2026-11-17T22:43 [M3.28.14] (lead) edited fields
+- 2026-11-17T22:43 [M3.28.14] (lead) quad finding from M3.28.6 folded in: getting-started.md:65,153-164, index.md:18, README.md:27 and snow-modes.md:96 still teach the superseded 'daemon unit | sud
+- 2026-11-17T22:43 [M3.28.6] (lead) quad round 1 (cruft): FAIL — MAJOR: Layout::for_account's runtime_dir Option is never Some in production and re-implements Layout::explicit; MAJOR: UnitSpec is 
+- 2026-11-17T22:43 [M3.28.6] (lead) edited fields
+- 2026-11-17T22:43 [M3.28.6] (lead) quad round 1 (ioc): FAIL — MAJOR: under sudo, 'daemon unit' (preview) prints User=root//root/.cache while 'daemon install' writes User=dev//home/dev/.cache, so 
+- 2026-11-17T22:43 [M3.28.6] (lead) quad round 1 (legality): FAIL — BLOCKER: --bin-dir is interpolated verbatim into /etc/apparmor.d/slipfork, so a newline injects arbitrary profile lines (loaded 
+- 2026-11-17T22:52 [M3.28.6] (lead) edited fields
+- 2026-11-17T22:52 [M3.28.6] (lead) attempt 3/4 started
+- 2026-11-17T22:52 [M3.28.6] (lead) quad round 1 (functional): FAIL — 2 BLOCKERs are in docs/getting-started.md (still the deleted three-step | sudo tee recipe; XDG_RUNTIME_DIR/daemon.log path and
+- 2026-11-17T23:11 [M3.28.6] (lead) round 2 (legality): PASS — validator reachable only through Result-propagating callers, injection exits 1 writing nothing, account validated via getent with rea
+- 2026-11-17T23:16 [M3.28.6] (lead) edited fields
+- 2026-11-17T23:16 [M3.28.6] (lead) attempt 4/4 started
+- 2026-11-17T23:16 [M3.28.6] (lead) round 2 (functional): FAIL only on scope — the Shutdown plumbing touched edge/src/{lib,daemon,daemon/client,daemon/server}.rs, which I have now authorized (path
+- 2026-11-17T23:36 [M3.28.6] (lead) status review -> done
+- 2026-11-17T23:36 [M3.28.6] (lead) pre-commit verified: lib 61, %-specifier rejected for service+socket with one line (apparmor legitimately unaffected: that profile never interpolates --state-di

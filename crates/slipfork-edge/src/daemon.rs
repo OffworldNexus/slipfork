@@ -722,6 +722,11 @@ pub enum DaemonRequest {
     HookRun(HookRunRequest),
     /// Bind host listeners and bridge them into a world for this connection's lifetime.
     Forward(ForwardRequest),
+    /// Stop serving: the daemon releases `daemon.sock` and exits.
+    ///
+    /// Used only by `slipfork daemon install` to hand a zero-setup `:0` daemon over to
+    /// `slipforkd.socket` (`ADR-0011` §3).
+    Shutdown,
     /// Pair a device key using a `#handle=` pairing URL.
     AuthLogin {
         /// Full pairing URL (the fragment handle is redacted by `Debug`).
@@ -823,6 +828,8 @@ pub enum DaemonReply {
         /// Bound host listeners.
         summary: ForwardSummary,
     },
+    /// Reply to [`DaemonRequest::Shutdown`]; the server stops accepting after this frame.
+    Shutdown,
     /// Reply to [`DaemonRequest::AuthLogin`].
     Auth {
         /// Pairing outcome.
@@ -993,4 +1000,13 @@ pub trait DaemonControl: Send + Sync {
 
     /// Pair a device key using a `#handle=` pairing URL.
     fn auth_login(&self, pairing_url: &str) -> Result<AuthSummary, EdgeError>;
+
+    /// Acknowledge a shutdown request; the transport server stops serving after the reply.
+    ///
+    /// A control backend that cannot stop its transport fails closed (it never pretends).
+    fn shutdown(&self) -> Result<(), EdgeError> {
+        Err(EdgeError::ControlProtocol {
+            reason: "this control backend cannot shut down".to_owned(),
+        })
+    }
 }

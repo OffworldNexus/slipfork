@@ -24,7 +24,7 @@
 
 3. **Zero Silent Ephemeral Ports & Pre-Daemon `IngressProbe` (`M3.28.3`, `M3.28.6`–`M3.28.9`):**
    - Rootless auto-spawn (`slipforkd --listen 127.0.0.1:0`) remains the unprivileged zero-setup path for CI and containers without `systemd`, but is **never silent**: `DaemonStatus` carries `ingress: IngressInfo { addrs, port }` (`port` validated present in `addrs`), and whenever `ingress.port != 80`, `status`, `up`, `fork`, `restart`, `list`, and `open` emit the single stderr notice specified normatively in `docs/design/dx-0.1.0-ux.md` §2 rule 4.
-   - `slipfork doctor` gains an advisory `ingress` check via `trait IngressProbe` (`SystemdIngressProbe` wired solely in `crates/slipfork/src/main.rs`), reporting `:80 active`, `installed but inactive`, or `not installed` without failing `DoctorReport.ok` on unprivileged hosts.
+   - `slipfork doctor` gains an advisory `ingress` check via `trait IngressProbe` (`SystemdIngressProbe` wired solely in `crates/slipfork/src/main.rs`), reporting exactly four typed states — `ActivePort80 { listen }` (`:80 active`), `ActiveOtherListeners { listen }` (active but not binding `:80`, so origins carry the answered port and the installer is still the remedy), `Inactive` (installed, not started), and `NotInstalled` — without failing `DoctorReport.ok` on unprivileged hosts. The fourth state exists because `systemctl start` cannot change an active-but-wrong listener set.
 
 ## Deletion Tombstone (`0.1.0`)
 

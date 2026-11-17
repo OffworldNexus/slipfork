@@ -18,6 +18,7 @@ use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use serde_json::Value;
+use slipfork::daemon_unit_install::{self, InstallRequest, ManagedUnit, UnitInstaller};
 
 pub mod support;
 use support::{
@@ -243,15 +244,12 @@ fn home_unset_fails_closed_before_any_mutation() {
     let scratch = tmp.path();
     let repo = repo_with_snow(scratch);
 
-    // Explicit roots make the "mutates nothing" assertion precise: the HOME guard must fire before
-    // either directory is created.
+    // An explicit state root makes the "mutates nothing" assertion precise: the HOME guard must
+    // fire before either the state directory or its `run/` runtime child is created.
     let state_dir = scratch.join("home-unset-state");
-    let runtime_dir = scratch.join("home-unset-rt");
     let output = Command::new(env!("CARGO_BIN_EXE_slipfork"))
         .arg("--state-dir")
         .arg(&state_dir)
-        .arg("--runtime-dir")
-        .arg(&runtime_dir)
         .arg("up")
         .current_dir(&repo)
         .env_remove("HOME")
@@ -267,7 +265,7 @@ fn home_unset_fails_closed_before_any_mutation() {
         stderr(&output)
     );
     assert!(
-        !state_dir.exists() && !runtime_dir.exists(),
+        !state_dir.exists(),
         "a HOME-unset invocation must not create state or runtime directories"
     );
 }
@@ -384,18 +382,14 @@ fn daemon_unit_renders_the_resolved_user_and_never_a_template_specifier() {
     // otherwise fall back to. Both are watched below, so "daemon unit writes no files" can fail.
     let layout = support::DaemonLayout::under(scratch);
     let xdg_cache_home = scratch.join("xdg-cache");
-    let xdg_runtime_dir = scratch.join("xdg-default-runtime");
     let xdg_data_home = scratch.join("xdg-data");
     let unit = |args: &[&str]| {
         Command::new(env!("CARGO_BIN_EXE_slipfork"))
             .arg("--state-dir")
             .arg(&layout.state_dir)
-            .arg("--runtime-dir")
-            .arg(&layout.runtime_dir)
             .args(args)
             .current_dir(&repo)
             .env("XDG_CACHE_HOME", &xdg_cache_home)
-            .env("XDG_RUNTIME_DIR", &xdg_runtime_dir)
             .env("XDG_DATA_HOME", &xdg_data_home)
             .output()
             .expect("daemon unit invocation")
@@ -444,13 +438,292 @@ fn daemon_unit_renders_the_resolved_user_and_never_a_template_specifier() {
         &layout.state_dir,
         &layout.runtime_dir,
         &xdg_cache_home.join("slipfork"),
-        &xdg_runtime_dir.join("slipfork"),
         &xdg_data_home,
     ] {
         assert!(
             !path.exists(),
             "daemon unit must not create {}",
             path.display()
+        );
+    }
+}
+
+#[test]
+fn read_verbs_never_spawn_a_daemon_and_fail_closed_in_one_line() {
+    let tmp = disk_tempdir();
+    let scratch = tmp.path();
+    let repo = repo_with_snow(scratch);
+    let state_dir = scratch.join("no-daemon-state");
+    let socket = state_dir.join("run").join("daemon.sock");
+    let expected = format!(
+        "slipfork: no slipforkd on {} — run `slipfork up`\n",
+        socket.display()
+    );
+
+    for args in [
+        vec!["list"],
+        vec!["down"],
+        vec!["logs"],
+        vec!["share"],
+        vec!["prune", "--dry-run"],
+        vec!["secret", "list"],
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_slipfork"))
+            .arg("--state-dir")
+            .arg(&state_dir)
+            .args(&args)
+            .current_dir(&repo)
+            .env("XDG_DATA_HOME", scratch.join("xdg-data"))
+            .output()
+            .expect("spawn a read verb without a daemon");
+        assert!(
+            !output.status.success(),
+            "slipfork {args:?} must fail closed without a daemon"
+        );
+        assert!(
+            stdout(&output).is_empty(),
+            "a refused read verb writes nothing to stdout: {}",
+            stdout(&output)
+        );
+        assert_eq!(
+            stderr(&output),
+            expected,
+            "slipfork {args:?} must print exactly the one no-daemon line"
+        );
+        assert!(
+            !state_dir.exists(),
+            "a refused read verb must not create the state root"
+        );
+    }
+}
+
+/// Recording [`UnitInstaller`] that keeps every rendered file for byte comparison.
+#[derive(Default)]
+struct CapturedInstaller {
+    files: std::sync::Mutex<std::collections::BTreeMap<PathBuf, Vec<u8>>>,
+}
+
+impl UnitInstaller for CapturedInstaller {
+    fn read_file(&self, path: &Path) -> Result<Option<Vec<u8>>, String> {
+        Ok(self.files.lock().expect("files").get(path).cloned())
+    }
+
+    fn write_file_atomic(&self, path: &Path, contents: &[u8]) -> Result<(), String> {
+        self.files
+            .lock()
+            .expect("files")
+            .insert(path.to_path_buf(), contents.to_vec());
+        Ok(())
+    }
+
+    fn daemon_reload(&self) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn apparmor_replace(&self, _profile_path: &Path) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn release_running_daemon(&self, _runtime_dir: &Path) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn enable_now(&self, _units: &[ManagedUnit]) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn restart_service(&self) -> Result<(), String> {
+        Ok(())
+    }
+}
+
+#[test]
+fn daemon_install_bytes_equal_a_real_daemon_unit_preview() {
+    let tmp = disk_tempdir();
+    let scratch = tmp.path();
+    let state_dir = scratch.join("install-preview-state");
+    let account = String::from_utf8(
+        Command::new("id")
+            .arg("-un")
+            .output()
+            .expect("id -un")
+            .stdout,
+    )
+    .expect("utf8 account name");
+    let account = account.trim().to_owned();
+    let executable = PathBuf::from(env!("CARGO_BIN_EXE_slipforkd"));
+    let bin_dir = executable
+        .parent()
+        .expect("daemon binary parent")
+        .to_path_buf();
+    let preview = |only: &str| {
+        let output = Command::new(env!("CARGO_BIN_EXE_slipfork"))
+            .arg("--state-dir")
+            .arg(&state_dir)
+            .args([
+                "daemon",
+                "unit",
+                "--user",
+                &account,
+                "--only",
+                only,
+                "--bin-dir",
+                bin_dir.to_str().expect("utf8 bin dir"),
+            ])
+            .output()
+            .expect("daemon unit preview");
+        assert_success(&output, &format!("daemon unit --only {only}"));
+        output.stdout
+    };
+    let socket = preview("socket");
+    let service = preview("service");
+    let apparmor = preview("apparmor");
+
+    let installer = CapturedInstaller::default();
+    daemon_unit_install::install(
+        &slipfork::user::AccountDatabaseIdentity,
+        &installer,
+        &InstallRequest {
+            is_root: true,
+            explicit_user: Some(account),
+            executable,
+            bin_dirs: vec![bin_dir],
+            forward_port: 7080,
+            state_dir: Some(state_dir),
+            xdg_cache_home: None,
+            xdg_data_home: None,
+        },
+    )
+    .expect("the pure install renders the preview's bytes");
+    let files = installer.files.lock().expect("files");
+    for (path, expected) in [
+        (daemon_unit_install::SOCKET_UNIT_PATH, socket.as_slice()),
+        (daemon_unit_install::SERVICE_UNIT_PATH, service.as_slice()),
+        (
+            daemon_unit_install::APPARMOR_PROFILE_PATH,
+            apparmor.as_slice(),
+        ),
+    ] {
+        assert_eq!(
+            files.get(Path::new(path)).map(Vec::as_slice),
+            Some(expected),
+            "{path} must equal the real `daemon unit` stdout"
+        );
+    }
+}
+
+#[test]
+fn daemon_unit_refuses_an_apparmor_injecting_bin_dir_without_writing() {
+    let tmp = disk_tempdir();
+    let scratch = tmp.path();
+    let state_dir = scratch.join("inject-state");
+    let output = Command::new(env!("CARGO_BIN_EXE_slipfork"))
+        .arg("--state-dir")
+        .arg(&state_dir)
+        .args([
+            "daemon",
+            "unit",
+            "--only",
+            "apparmor",
+            "--bin-dir",
+            "/tmp/a\nprofile x,",
+        ])
+        .output()
+        .expect("daemon unit with an injecting --bin-dir");
+    assert!(
+        !output.status.success(),
+        "an injecting --bin-dir must fail closed"
+    );
+    assert!(stdout(&output).is_empty(), "nothing is rendered");
+    let err = stderr(&output);
+    assert_eq!(err.lines().count(), 1, "exactly one line: {err}");
+    assert!(
+        err.starts_with("slipfork: invalid --bin-dir"),
+        "the refusal names --bin-dir: {err}"
+    );
+    assert!(!state_dir.exists(), "the refusal writes nothing");
+}
+
+#[test]
+fn daemon_unit_apparmor_lists_every_bin_dir_in_one_four_line_profile() {
+    let tmp = disk_tempdir();
+    let scratch = tmp.path();
+    let repo = repo_with_snow(scratch);
+    let output = Command::new(env!("CARGO_BIN_EXE_slipfork"))
+        .arg("--state-dir")
+        .arg(scratch.join("unit-state"))
+        .args([
+            "daemon",
+            "unit",
+            "--only",
+            "apparmor",
+            "--bin-dir",
+            "/usr/local/bin",
+            "--bin-dir",
+            "/tmp/ux/bin",
+        ])
+        .current_dir(&repo)
+        .output()
+        .expect("daemon unit --only apparmor");
+    assert_success(&output, "daemon unit --only apparmor");
+
+    let profile = stdout(&output);
+    assert_eq!(profile.lines().count(), 4, "{profile}");
+    assert_eq!(
+        profile
+            .lines()
+            .filter(|line| line.contains("slipfork"))
+            .count(),
+        1,
+        "the brace expression appears on exactly one line: {profile}"
+    );
+    assert_eq!(profile.matches("/{").count(), 1, "{profile}");
+    assert!(!profile.contains("{{"), "no nested braces: {profile}");
+    for clause in [
+        "usr/local/bin/slipfork{,d,-world-init}",
+        "tmp/ux/bin/slipfork{,d,-world-init}",
+        "usr/bin/unshare",
+        ".slipfork/bin/crun",
+    ] {
+        assert!(profile.contains(clause), "missing {clause}: {profile}");
+    }
+}
+
+#[test]
+fn doctor_json_carries_the_typed_ingress_document() {
+    let tmp = disk_tempdir();
+    let scratch = tmp.path();
+    let repo = repo_with_snow(scratch);
+    // `doctor` is pre-daemon and advisory: a non-Btrfs host still emits the full document (and
+    // exits 1), so only the ingress projection is asserted here.
+    let output = Command::new(env!("CARGO_BIN_EXE_slipfork"))
+        .arg("--state-dir")
+        .arg(scratch.join("doctor-state"))
+        .args(["--json", "doctor"])
+        .current_dir(&repo)
+        .output()
+        .expect("doctor --json");
+    let value: Value = serde_json::from_str(&stdout(&output)).expect("doctor json");
+    let ingress = value
+        .get("ingress")
+        .unwrap_or_else(|| panic!("doctor --json must carry `ingress`: {value}"));
+    let status = ingress["status"]
+        .as_str()
+        .unwrap_or_else(|| panic!("ingress.status must be a string: {ingress}"));
+    assert!(
+        [
+            "active",
+            "active_other_listeners",
+            "inactive",
+            "not_installed"
+        ]
+        .contains(&status),
+        "unexpected ingress status: {status}"
+    );
+    for key in ["port", "listen", "hint"] {
+        assert!(
+            ingress.get(key).is_some(),
+            "ingress.{key} must always be present: {ingress}"
         );
     }
 }
@@ -463,15 +736,13 @@ fn zero_setup_auto_spawn_serves_up_without_a_prestarted_daemon() {
     let scratch = tmp.path();
     let repo = repo_with_snow(scratch);
     let state_dir = scratch.join("auto-state");
-    let runtime_dir = scratch.join("auto-rt");
+    let runtime_dir = state_dir.join("run");
     let daemon_log = runtime_dir.join("daemon.log");
     fs::create_dir_all(&runtime_dir).expect("create runtime dir");
 
     let child = Command::new(env!("CARGO_BIN_EXE_slipfork"))
         .arg("--state-dir")
         .arg(&state_dir)
-        .arg("--runtime-dir")
-        .arg(&runtime_dir)
         .args(["up"])
         .current_dir(&repo)
         .env("XDG_DATA_HOME", scratch.join("xdg-auto-data"))

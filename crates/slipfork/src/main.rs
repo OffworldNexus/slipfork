@@ -1,10 +1,10 @@
 //! `slipfork`: the thin CLI client (`H-010` #1, `ADR-0008` §4).
 //!
 //! The CLI holds **no** `WorldEngine`, `SecretProvider`, or tunnel lease for world operations: it
-//! parses `clap` arguments, resolves `HOME`/`$XDG_*`/`--state-dir`/`--runtime-dir` once, and drives
-//! `slipforkd` through the typed `<runtime_dir>/daemon.sock` [`DaemonControlClient`]. When that
-//! socket does not answer, it auto-spawns `slipforkd --listen 127.0.0.1:0` in the background so
-//! `slipfork up` and CI work zero-setup without systemd.
+//! parses `clap` arguments, resolves `HOME`/`$XDG_*`/`--state-dir` once, and drives `slipforkd`
+//! through the typed `<state_dir>/run/daemon.sock` [`DaemonControlClient`]. Only `up` and `fork`
+//! auto-spawn `slipforkd --listen 127.0.0.1:0` in the background; every read/diagnostic verb fails
+//! closed with one actionable line when nothing answers (`ADR-0011` §2–§3).
 //!
 //! `snow resolve` runs through `slipforkd` (`DaemonControl::snow_resolve`), so the daemon owns the
 //! `0600` local vault and any paired `OSPP v1` remote vault. Only `doctor` and `dag plan` stay
@@ -27,15 +27,18 @@ use slipfork::cli::{
     AuthAction, Cli, Commands, DaemonAction, DagAction, DumpArgs, HookAction, ResourceArgs,
     SecretAction, SnowAction, UnitKind,
 };
-use slipfork::doctor::{self, OsHostProbe};
+use slipfork::daemon_unit_install::{
+    self, InstallRequest, ManagedUnit, UnitInstaller, ingress_unit_spec, target_account,
+};
+use slipfork::doctor::{self, OsHostProbe, SystemdIngressProbe};
 use slipfork::layout::{Layout, ensure_private_dir};
 use slipfork::project::{load_slipfork_config, repository_resolver};
-use slipfork::user::{AccountDatabaseIdentity, UserIdentity};
+use slipfork::user::AccountDatabaseIdentity;
 use slipfork_dag::{DagPlanner, EvidenceField, FsDigestCache, FsMerkleHasher, SupportRegistry};
 use slipfork_edge::{
     BootEvent, DaemonControl, DaemonControlClient, DropForkRequest, ExecTargetRequest, ForkRequest,
-    ForwardRequest, ForwardSummary, HookRunRequest, LogsRequest, SnowResolveRequest, UnitSpec,
-    UpRequest, WorldSelector, render_service_unit, render_socket_unit,
+    ForwardRequest, ForwardSummary, HookRunRequest, LogsRequest, SnowResolveRequest, UpRequest,
+    WorldSelector, render_service_unit, render_socket_unit,
 };
 use slipfork_engine::btrfs::KernelBtrfsDriver;
 use slipfork_engine::current_uid_gid;
@@ -67,14 +70,12 @@ fn run(cli: Cli) -> Result<ExitCode, String> {
     // or open a socket when the developer account has no home directory.
     let home = home_dir()?;
     let xdg_cache = absolute_env("XDG_CACHE_HOME");
-    let xdg_runtime = absolute_env("XDG_RUNTIME_DIR");
     let xdg_data = absolute_env("XDG_DATA_HOME");
+    let explicit_state_dir = cli.state_dir.clone();
     let layout = Layout::resolve(
-        cli.state_dir.clone(),
-        cli.runtime_dir.clone(),
+        explicit_state_dir.clone(),
         &home,
         xdg_cache.as_deref(),
-        xdg_runtime.as_deref(),
         xdg_data.as_deref(),
     );
     let json = cli.json;
@@ -100,9 +101,40 @@ fn run(cli: Cli) -> Result<ExitCode, String> {
         Commands::Dag {
             action: DagAction::Plan { file },
         } => dag_plan(json, &layout, file),
-        Commands::Daemon {
-            action: DaemonAction::Unit { only, forward_port },
-        } => daemon_unit(json, &layout, only, forward_port),
+        Commands::Daemon { action } => match action {
+            DaemonAction::Unit {
+                only,
+                forward_port,
+                user,
+                bin_dir,
+            } => daemon_unit(
+                json,
+                ClientRoots {
+                    state_dir: explicit_state_dir,
+                    xdg_cache_home: xdg_cache,
+                    xdg_data_home: xdg_data,
+                },
+                only,
+                forward_port,
+                user,
+                bin_dir,
+            ),
+            DaemonAction::Install {
+                user,
+                bin_dir,
+                forward_port,
+            } => daemon_install(
+                json,
+                ClientRoots {
+                    state_dir: explicit_state_dir,
+                    xdg_cache_home: xdg_cache,
+                    xdg_data_home: xdg_data,
+                },
+                user,
+                bin_dir,
+                forward_port,
+            ),
+        },
         Commands::Up {
             world,
             dump,
@@ -190,8 +222,9 @@ fn doctor(json: bool, layout: &Layout) -> Result<ExitCode, String> {
     let (uid, gid) = current_uid_gid();
     let driver = KernelBtrfsDriver::new();
     let host = OsHostProbe::new(exe_dir()?);
-    let report =
-        doctor::run(&driver, &host, layout.state_dir(), uid, gid).map_err(|err| err.to_string())?;
+    let ingress = SystemdIngressProbe;
+    let report = doctor::run(&driver, &host, &ingress, layout.state_dir(), uid, gid)
+        .map_err(|err| err.to_string())?;
     if json {
         println!("{}", render_json(&report.to_json())?);
     } else {
@@ -212,7 +245,7 @@ fn resolve_snow(
     component: Option<&str>,
     expose_secrets: bool,
 ) -> Result<ExitCode, String> {
-    let client = connect_or_spawn(layout)?;
+    let client = connect(layout)?;
     let summary = client
         .snow_resolve(&SnowResolveRequest {
             cwd: current_dir()?,
@@ -264,39 +297,42 @@ fn dag_plan(json: bool, layout: &Layout, file: Option<PathBuf>) -> Result<ExitCo
     Ok(ExitCode::SUCCESS)
 }
 
+/// The client's already-resolved root overrides, shared by `daemon unit` and `daemon install`.
+struct ClientRoots {
+    state_dir: Option<PathBuf>,
+    xdg_cache_home: Option<PathBuf>,
+    xdg_data_home: Option<PathBuf>,
+}
+
 fn daemon_unit(
     json: bool,
-    layout: &Layout,
+    roots: ClientRoots,
     only: Option<UnitKind>,
     forward_port: u16,
+    user: Option<String>,
+    bin_dir: Vec<PathBuf>,
 ) -> Result<ExitCode, String> {
-    let user = AccountDatabaseIdentity.username()?;
-    let executable = daemon_executable()?;
-    let bin_dir = exe_dir()?;
-    let spec = UnitSpec {
-        user,
-        listen_addrs: vec![
-            "127.0.0.1:80"
-                .parse()
-                .map_err(|err| format!("invalid loopback ingress: {err}"))?,
-            "[::1]:80"
-                .parse()
-                .map_err(|err| format!("invalid loopback ingress: {err}"))?,
-        ],
-        forward_port,
-        executable,
-        state_dir: layout.state_dir().to_path_buf(),
-        runtime_dir: layout.runtime_dir().to_path_buf(),
-    };
+    let identity = AccountDatabaseIdentity;
+    let (uid, _) = current_uid_gid();
+    // One account derivation shared with `daemon install`, so `--user` reproduces an install.
+    let account = target_account(&identity, uid == 0, user.as_deref())?;
+    let layout = Layout::for_account(
+        &account,
+        roots.state_dir,
+        roots.xdg_cache_home.as_deref(),
+        roots.xdg_data_home.as_deref(),
+    );
+    let spec = ingress_unit_spec(&account, &layout, daemon_executable()?, forward_port)?;
+    let bin_dirs = bin_dirs_or_executable_dir(bin_dir)?;
     let socket = || render_socket_unit(&spec).map_err(|err| err.to_string());
     let service = || render_service_unit(&spec).map_err(|err| err.to_string());
-    let apparmor = || render_userns_profile(&bin_dir);
+    let apparmor = || render_userns_profile(&bin_dirs);
     let (text, wants_socket, wants_service, wants_apparmor) = match only {
         Some(UnitKind::Socket) => (socket()?, true, false, false),
         Some(UnitKind::Service) => (service()?, false, true, false),
-        Some(UnitKind::Apparmor) => (apparmor(), false, false, true),
+        Some(UnitKind::Apparmor) => (apparmor()?, false, false, true),
         None => (
-            format!("{}\n{}\n{}", socket()?, service()?, apparmor()),
+            format!("{}\n{}\n{}", socket()?, service()?, apparmor()?),
             true,
             true,
             true,
@@ -306,15 +342,217 @@ fn daemon_unit(
         println!(
             "{}",
             json!({
+                "ok": true,
                 "socket": if wants_socket { serde_json::Value::String(socket()?) } else { serde_json::Value::Null },
                 "service": if wants_service { serde_json::Value::String(service()?) } else { serde_json::Value::Null },
-                "apparmor": if wants_apparmor { serde_json::Value::String(apparmor()) } else { serde_json::Value::Null },
+                "apparmor": if wants_apparmor { serde_json::Value::String(apparmor()?) } else { serde_json::Value::Null },
             })
         );
     } else {
         print!("{text}");
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// `slipfork daemon install`: write `/etc/systemd/system/slipforkd.{socket,service}` plus the
+/// AppArmor profile, then `daemon-reload`, `apparmor_parser -r`, and `enable --now`.
+///
+/// The composition root constructs the production [`OsUnitInstaller`]; the orchestration itself is
+/// pure and fails closed before any effect when the process is not root.
+fn daemon_install(
+    json: bool,
+    roots: ClientRoots,
+    user: Option<String>,
+    bin_dir: Vec<PathBuf>,
+    forward_port: u16,
+) -> Result<ExitCode, String> {
+    let (uid, _) = current_uid_gid();
+    let request = InstallRequest {
+        is_root: uid == 0,
+        explicit_user: user,
+        executable: daemon_executable()?,
+        bin_dirs: bin_dirs_or_executable_dir(bin_dir)?,
+        forward_port,
+        state_dir: roots.state_dir,
+        xdg_cache_home: roots.xdg_cache_home,
+        xdg_data_home: roots.xdg_data_home,
+    };
+    let report =
+        daemon_unit_install::install(&AccountDatabaseIdentity, &OsUnitInstaller, &request)?;
+    if json {
+        println!(
+            "{}",
+            json!({
+                "ok": true,
+                "user": report.user,
+                "socket": report.socket.as_str(),
+                "service": report.service.as_str(),
+                "apparmor": report.apparmor.as_str(),
+            })
+        );
+    } else {
+        print!("{}", report.render_text());
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+/// The repeatable `--bin-dir` list, defaulting to this executable's directory.
+fn bin_dirs_or_executable_dir(bin_dir: Vec<PathBuf>) -> Result<Vec<PathBuf>, String> {
+    if bin_dir.is_empty() {
+        Ok(vec![exe_dir()?])
+    } else {
+        Ok(bin_dir)
+    }
+}
+
+/// [`UnitInstaller`] over the real host: `/etc` writes and `systemctl`/`apparmor_parser` verbs.
+///
+/// This is the only place `daemon install` touches the filesystem or spawns a process, and it is
+/// constructed solely by the composition root above.
+struct OsUnitInstaller;
+
+/// Fixed executable search path for every install verb (nothing is inherited).
+const INSTALL_TOOL_PATH: &str = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
+
+impl OsUnitInstaller {
+    /// Run one privileged tool with a cleared environment and the fixed tool path.
+    fn run_tool(program: &str, args: &[&std::ffi::OsStr]) -> Result<(), String> {
+        let output = Command::new(program)
+            .args(args)
+            .env_clear()
+            .env("PATH", INSTALL_TOOL_PATH)
+            .output()
+            .map_err(|err| format!("cannot run `{program}`: {err}"))?;
+        if output.status.success() {
+            return Ok(());
+        }
+        Err(format!(
+            "`{program}` exited with {}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        ))
+    }
+}
+
+impl UnitInstaller for OsUnitInstaller {
+    fn read_file(&self, path: &Path) -> Result<Option<Vec<u8>>, String> {
+        match fs::read(path) {
+            Ok(contents) => Ok(Some(contents)),
+            Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(err) => Err(format!("cannot read {}: {err}", path.display())),
+        }
+    }
+
+    fn write_file_atomic(&self, path: &Path, contents: &[u8]) -> Result<(), String> {
+        let parent = path
+            .parent()
+            .ok_or_else(|| format!("{} has no parent directory", path.display()))?;
+        let file_name = path
+            .file_name()
+            .ok_or_else(|| format!("{} has no file name", path.display()))?;
+        let mut temp_name = std::ffi::OsString::from(".");
+        temp_name.push(file_name);
+        temp_name.push(".slipfork-tmp");
+        let temp_path = parent.join(temp_name);
+        let written = (|| -> io::Result<()> {
+            let mut file = OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .mode(0o644)
+                .open(&temp_path)?;
+            file.write_all(contents)?;
+            file.sync_all()
+        })();
+        if let Err(err) = written {
+            let _ = fs::remove_file(&temp_path);
+            return Err(format!(
+                "cannot write {} via {}: {err}",
+                path.display(),
+                temp_path.display()
+            ));
+        }
+        fs::rename(&temp_path, path).map_err(|err| {
+            let _ = fs::remove_file(&temp_path);
+            format!(
+                "cannot rename {} to {}: {err}",
+                temp_path.display(),
+                path.display()
+            )
+        })?;
+        // A crash after `rename` must never leave a zero-length unit: persist the directory entry.
+        fs::File::open(parent)
+            .and_then(|directory| directory.sync_all())
+            .map_err(|err| format!("cannot fsync {}: {err}", parent.display()))
+    }
+
+    fn release_running_daemon(&self, runtime_dir: &Path) -> Result<(), String> {
+        let client = DaemonControlClient::bind(runtime_dir);
+        if !client.is_served() {
+            return Ok(());
+        }
+        let status = client.status().map_err(|err| {
+            format!("cannot read the running slipforkd's ingress before installing: {err}")
+        })?;
+        if status.ingress.port() == slipfork_edge::INGRESS_PORT {
+            // The installed `:80` socket is already served by the unit: `enable --now` is a no-op.
+            return Ok(());
+        }
+        client.shutdown().map_err(|err| {
+            format!(
+                "cannot stop the auto-spawned slipforkd on :{} before enabling the unit: {err}",
+                status.ingress.port()
+            )
+        })?;
+        let deadline = Instant::now() + SPAWN_TIMEOUT;
+        loop {
+            if !client.is_served() {
+                return Ok(());
+            }
+            if Instant::now() >= deadline {
+                return Err(format!(
+                    "slipforkd did not release {} within {}s; stop it manually, then run `sudo systemctl start slipforkd.socket`",
+                    client.socket_path().display(),
+                    SPAWN_TIMEOUT.as_secs()
+                ));
+            }
+            std::thread::sleep(SPAWN_POLL);
+        }
+    }
+
+    fn daemon_reload(&self) -> Result<(), String> {
+        Self::run_tool("systemctl", &[std::ffi::OsStr::new("daemon-reload")])
+    }
+
+    fn apparmor_replace(&self, profile_path: &Path) -> Result<(), String> {
+        Self::run_tool(
+            "apparmor_parser",
+            &[std::ffi::OsStr::new("-r"), profile_path.as_os_str()],
+        )
+    }
+
+    fn enable_now(&self, units: &[ManagedUnit]) -> Result<(), String> {
+        let mut args = vec![
+            std::ffi::OsStr::new("enable"),
+            std::ffi::OsStr::new("--now"),
+        ];
+        args.extend(
+            units
+                .iter()
+                .map(|unit| std::ffi::OsStr::new(unit.unit_name())),
+        );
+        Self::run_tool("systemctl", &args)
+    }
+
+    fn restart_service(&self) -> Result<(), String> {
+        Self::run_tool(
+            "systemctl",
+            &[
+                std::ffi::OsStr::new("restart"),
+                std::ffi::OsStr::new("slipforkd.service"),
+            ],
+        )
+    }
 }
 
 fn up(
@@ -347,7 +585,7 @@ fn up(
 }
 
 fn down(json: bool, layout: &Layout, world: Option<String>) -> Result<ExitCode, String> {
-    let client = connect_or_spawn(layout)?;
+    let client = connect(layout)?;
     let selector = WorldSelector {
         cwd: current_dir()?,
         world,
@@ -395,7 +633,7 @@ fn create_fork(
 }
 
 fn drop_fork(json: bool, layout: &Layout, fork: String) -> Result<ExitCode, String> {
-    let client = connect_or_spawn(layout)?;
+    let client = connect(layout)?;
     let request = DropForkRequest {
         cwd: current_dir()?,
         fork,
@@ -412,7 +650,7 @@ fn drop_fork(json: bool, layout: &Layout, fork: String) -> Result<ExitCode, Stri
 }
 
 fn list(json: bool, layout: &Layout) -> Result<ExitCode, String> {
-    let client = connect_or_spawn(layout)?;
+    let client = connect(layout)?;
     let worlds = client.list(None).map_err(|err| err.to_string())?;
     if json {
         let rows: Vec<serde_json::Value> = worlds
@@ -443,7 +681,7 @@ fn list(json: bool, layout: &Layout) -> Result<ExitCode, String> {
 }
 
 fn prune(json: bool, layout: &Layout, dry_run: bool, yes: bool) -> Result<ExitCode, String> {
-    let client = connect_or_spawn(layout)?;
+    let client = connect(layout)?;
     let dry_run = dry_run || !yes;
     let report = client.prune(dry_run).map_err(|err| err.to_string())?;
     if json {
@@ -475,7 +713,7 @@ fn prune(json: bool, layout: &Layout, dry_run: bool, yes: bool) -> Result<ExitCo
 }
 
 fn secret(json: bool, layout: &Layout, action: SecretAction) -> Result<ExitCode, String> {
-    let client = connect_or_spawn(layout)?;
+    let client = connect(layout)?;
     let cwd = current_dir()?;
     match action {
         SecretAction::Set { key, force } => {
@@ -543,7 +781,7 @@ fn share(
     stop: bool,
     world: Option<String>,
 ) -> Result<ExitCode, String> {
-    let client = connect_or_spawn(layout)?;
+    let client = connect(layout)?;
     let selector = WorldSelector {
         cwd: current_dir()?,
         world,
@@ -576,7 +814,7 @@ fn exec(
     cwd: Option<PathBuf>,
     argv: Vec<String>,
 ) -> Result<ExitCode, String> {
-    let client = connect_or_spawn(layout)?;
+    let client = connect(layout)?;
     let cwd = match cwd {
         Some(cwd) => cwd,
         None => current_dir()?,
@@ -651,7 +889,7 @@ fn shell(json: bool, layout: &Layout, world: Option<String>) -> Result<ExitCode,
         .ok_or_else(|| {
             "SHELL is not set; `slipfork shell` enters the world with the developer's shell — set SHELL (for example /bin/sh) and retry".to_owned()
         })?;
-    let client = connect_or_spawn(layout)?;
+    let client = connect(layout)?;
     let target = client
         .exec_target(&ExecTargetRequest {
             cwd: current_dir()?,
@@ -679,7 +917,7 @@ fn logs(
     stderr: bool,
     lines: Option<usize>,
 ) -> Result<ExitCode, String> {
-    let client = connect_or_spawn(layout)?;
+    let client = connect(layout)?;
     let request = LogsRequest {
         cwd: current_dir()?,
         world,
@@ -721,7 +959,7 @@ fn hook_run(
     world: Option<String>,
     no_tty: bool,
 ) -> Result<ExitCode, String> {
-    let client = connect_or_spawn(layout)?;
+    let client = connect(layout)?;
     let request = HookRunRequest {
         cwd: current_dir()?,
         world,
@@ -809,7 +1047,7 @@ fn service_entry(
     service: String,
     argv: Vec<String>,
 ) -> Result<ExitCode, String> {
-    let client = connect_or_spawn(layout)?;
+    let client = connect(layout)?;
     // Ask the daemon first: a stopped service must surface `ServiceNotRunning` even when the
     // caller has no TTY (the service refusal is the primary diagnostic).
     let target = client
@@ -901,7 +1139,7 @@ fn forward(
     world: Option<String>,
     targets: Vec<String>,
 ) -> Result<ExitCode, String> {
-    let client = connect_or_spawn(layout)?;
+    let client = connect(layout)?;
     let request = ForwardRequest {
         cwd: current_dir()?,
         world,
@@ -962,7 +1200,7 @@ fn auth_login(json: bool, layout: &Layout, url: Option<String>) -> Result<ExitCo
             );
         }
     };
-    let client = connect_or_spawn(layout)?;
+    let client = connect(layout)?;
     let auth = client
         .auth_login(&pairing_url)
         .map_err(|err| err.to_string())?;
@@ -1162,12 +1400,38 @@ fn world_state_label(state: slipfork_edge::WorldState) -> &'static str {
     }
 }
 
-/// Dial the daemon, auto-spawning it once when `<runtime_dir>/daemon.sock` does not answer.
-fn connect_or_spawn(layout: &Layout) -> Result<DaemonControlClient, String> {
+/// Dial the daemon, failing closed with the one line that fixes an absent `slipforkd`.
+///
+/// Read/diagnostic verbs never spawn a daemon: auto-spawn is reserved for `up`/`fork`, so a
+/// `slipfork list` can never leave a mystery `--listen 127.0.0.1:0` process behind.
+fn connect(layout: &Layout) -> Result<DaemonControlClient, String> {
+    served_client(layout).ok_or_else(|| no_daemon_line(layout))
+}
+
+/// The bound control client when a daemon answers, else `None`.
+fn served_client(layout: &Layout) -> Option<DaemonControlClient> {
     let client = DaemonControlClient::bind(layout.runtime_dir());
-    if client.is_served() {
+    client.is_served().then_some(client)
+}
+
+/// The single one-line refusal read/diagnostic verbs print when nothing answers.
+fn no_daemon_line(layout: &Layout) -> String {
+    format!(
+        "no slipforkd on {} — run `slipfork up`",
+        DaemonControlClient::bind(layout.runtime_dir())
+            .socket_path()
+            .display()
+    )
+}
+
+/// Dial the daemon, auto-spawning it once when `<state_dir>/run/daemon.sock` does not answer.
+///
+/// Only `up` and `fork` call this (`ADR-0011` §3); every other verb uses [`connect`].
+fn connect_or_spawn(layout: &Layout) -> Result<DaemonControlClient, String> {
+    if let Some(client) = served_client(layout) {
         return Ok(client);
     }
+    let client = DaemonControlClient::bind(layout.runtime_dir());
     ensure_private_dir(layout.runtime_dir())?;
     let log_path = layout.runtime_dir().join("daemon.log");
     let log = OpenOptions::new()

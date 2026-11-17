@@ -4,8 +4,9 @@
 //! the actual `slipfork` binary. A Btrfs host drives a real `slipforkd` child; every other host
 //! serves the same `slipfork::daemon` in-process over the one
 //! [`slipfork::daemon::compose_daemon`] graph over `BtrfsEngine::with_driver_and_clock(TestTreeDriver, clock)`.
-//! The daemon's runtime directory lives under `$XDG_RUNTIME_DIR/slipfork` (or the explicit
-//! `--runtime-dir`) so the `git-remote-slipfork` helper resolves exactly the same control socket.
+//! The daemon's runtime directory is always `<state_dir>/run` (`ADR-0011` §2), and every helper
+//! exports `XDG_CACHE_HOME=<state_dir parent>` so `git-remote-slipfork` derives the exact same
+//! state/runtime roots without a client-side `--runtime-dir`.
 //!
 //! Each integration-test binary compiles this module independently and links only the subset it
 //! uses, so the suites declare `pub mod support;`: the shared surface stays crate-reachable while
@@ -192,8 +193,9 @@ fn helper_is_current(helper: &Path) -> bool {
 
 /// The explicit roots one scratch directory serves.
 ///
-/// `daemon.cli` exports exactly these values (`XDG_DATA_HOME`/`XDG_RUNTIME_DIR`) so an in-process
-/// daemon and a spawned `slipforkd` resolve the same layout from the tests' point of view.
+/// `daemon.cli` exports exactly these values (`XDG_CACHE_HOME` / `XDG_DATA_HOME`) so an in-process
+/// daemon, a spawned `slipforkd`, the thin client, and `git-remote-slipfork` resolve the same
+/// layout from the tests' point of view.
 #[derive(Debug, Clone)]
 pub struct DaemonLayout {
     pub state_dir: PathBuf,
@@ -202,12 +204,13 @@ pub struct DaemonLayout {
 }
 
 impl DaemonLayout {
-    /// The default roots every CLI-critical suite uses.
+    /// The default roots every CLI-critical suite uses (`runtime_dir` is always `<state>/run`).
     pub fn under(scratch: &Path) -> Self {
+        let state_dir = scratch.join("slipfork");
         Self {
-            state_dir: scratch.join("state"),
-            runtime_dir: scratch.join("xdg-runtime").join("slipfork"),
-            data_home: scratch.join("state").join("xdg-data"),
+            runtime_dir: state_dir.join("run"),
+            data_home: state_dir.join("xdg-data"),
+            state_dir,
         }
     }
 }
@@ -455,12 +458,10 @@ impl Daemon {
     fn serve_in_process(scratch: &Path, spec: &DaemonLayout) -> Self {
         let home = PathBuf::from(std::env::var_os("HOME").expect("HOME is set"));
         let runtime_parent = runtime_parent(&spec.runtime_dir);
-        let layout = Layout::resolve(
-            Some(spec.state_dir.clone()),
-            Some(spec.runtime_dir.clone()),
+        let layout = Layout::explicit(
+            spec.state_dir.clone(),
+            spec.runtime_dir.clone(),
             &home,
-            None,
-            Some(runtime_parent),
             Some(&spec.data_home),
         );
         let (uid, gid) = current_uid_gid();
@@ -566,15 +567,13 @@ impl Daemon {
         command
             .arg("--state-dir")
             .arg(&self.state_dir)
-            .arg("--runtime-dir")
-            .arg(&self.runtime_dir)
             .args(args)
             .current_dir(cwd)
-            .env("XDG_DATA_HOME", self.state_dir.join("xdg-data"))
             .env(
-                "XDG_RUNTIME_DIR",
-                self.runtime_dir.parent().expect("runtime parent"),
-            );
+                "XDG_CACHE_HOME",
+                self.state_dir.parent().expect("state parent"),
+            )
+            .env("XDG_DATA_HOME", self.state_dir.join("xdg-data"));
         command
     }
 }

@@ -25,6 +25,12 @@ use std::path::PathBuf;
 
 use crate::EdgeError;
 
+/// The two loopback ingress listeners systemd binds for port-less `.localhost` origins.
+pub const INGRESS_ADDRS: [&str; 2] = ["127.0.0.1:80", "[::1]:80"];
+
+/// The single port every world origin omits (`http://<project>.localhost`).
+pub const INGRESS_PORT: u16 = 80;
+
 /// Every value needed to render the non-template `slipforkd.socket` / `slipforkd.service` pair.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnitSpec {
@@ -80,7 +86,7 @@ impl UnitSpec {
                 role,
                 path: path.display().to_string(),
             })?;
-            if text.is_empty() || text.chars().any(char::is_control) {
+            if text.is_empty() || text.contains('%') || text.chars().any(char::is_control) {
                 return Err(EdgeError::UnitInvalidPath {
                     role,
                     path: text.to_owned(),
@@ -116,8 +122,8 @@ impl UnitSpec {
 /// `tests/golden/slipforkd.socket`.
 ///
 /// The `[Install]` section exists so the documented
-/// `systemctl enable --now slipforkd.socket` works; the service is started by the socket
-/// (`Service=slipforkd.service`), so it carries no install target of its own.
+/// `systemctl enable --now slipforkd.socket` works; the socket names the service it activates
+/// (`Service=slipforkd.service`).
 pub fn render_socket_unit(spec: &UnitSpec) -> Result<String, EdgeError> {
     spec.validate()?;
     let mut unit = String::from(
@@ -143,8 +149,11 @@ pub fn render_socket_unit(spec: &UnitSpec) -> Result<String, EdgeError> {
 /// Render `slipforkd.service` byte-exactly as pinned by
 /// `tests/golden/slipforkd.service`.
 ///
-/// Exactly one `Type=` line is emitted (`simple`). The daemon does not implement the `sd_notify`
-/// protocol, so `Type=notify` would leave the unit stuck activating forever.
+/// `Requires=`/`After=slipforkd.socket` make the service start with the socket (including on every
+/// boot) and `[Install] WantedBy=multi-user.target` lets `systemctl enable --now
+/// slipforkd.socket slipforkd.service` start it immediately. Exactly one `Type=` line is emitted
+/// (`simple`); the daemon does not implement the `sd_notify` protocol, so `Type=notify` would
+/// leave the unit stuck activating forever.
 pub fn render_service_unit(spec: &UnitSpec) -> Result<String, EdgeError> {
     spec.validate()?;
     let executable = quote_argument(&spec.executable);
@@ -153,6 +162,8 @@ pub fn render_service_unit(spec: &UnitSpec) -> Result<String, EdgeError> {
     let mut unit = String::from(
         "[Unit]\n\
          Description=Slipfork daemon (unprivileged HTTP/WS ingress, world registry, and daemon control)\n\
+         Requires=slipforkd.socket\n\
+         After=slipforkd.socket\n\
          \n\
          [Service]\n\
          Type=simple\n",
@@ -173,7 +184,10 @@ pub fn render_service_unit(spec: &UnitSpec) -> Result<String, EdgeError> {
     unit.push_str(
         "PrivateTmp=yes\n\
          RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX\n\
-         LimitNOFILE=65536\n",
+         LimitNOFILE=65536\n\
+         \n\
+         [Install]\n\
+         WantedBy=multi-user.target\n",
     );
     Ok(unit)
 }
@@ -263,5 +277,28 @@ mod tests {
             spec.validate(),
             Err(EdgeError::UnitInvalidPath { role, .. }) if role == "--state-dir"
         ));
+    }
+
+    #[test]
+    fn percent_specifiers_in_unit_paths_are_refused() {
+        for (role, mutate) in [("--state-dir", 0), ("--runtime-dir", 1), ("ExecStart", 2)] {
+            let mut spec = spec();
+            match mutate {
+                0 => spec.state_dir = PathBuf::from("/tmp/%h/state"),
+                1 => spec.runtime_dir = PathBuf::from("/tmp/%h/run"),
+                _ => spec.executable = PathBuf::from("/tmp/%h/slipforkd"),
+            }
+            assert!(
+                matches!(
+                    spec.validate(),
+                    Err(EdgeError::UnitInvalidPath { role: hit, .. }) if hit == role
+                ),
+                "{role} with a %-specifier must fail closed"
+            );
+            assert!(
+                render_service_unit(&spec).is_err(),
+                "{role} with a %-specifier must never render"
+            );
+        }
     }
 }
