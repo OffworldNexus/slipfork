@@ -43,3 +43,15 @@ Quad gate 1/2 results: ioc PASS (1 MINOR: missing SAFETY comment on test-only me
 ## 2026-11-17T12:36 [lead]
 
 Gate passed: acceptance grep is 2 hits, both NEGATIVE assertions that a Btrfs refusal never advertises a reflink fallback (crates/slipfork/tests/support/mod.rs:307, packages/opencode-slipfork/tests/e2e.critical.test.ts:355) — deleting the word there would weaken a contract; tracked as cross-node residual for M3.23. clippy --workspace -D warnings, make check (gate 1 + rs-lint) and cargo test -p slipfork-engine --lib 62 passed are green; critical_guard --base 053596e --node M3.21 has no unauthorized change (all 6 protected edits belong to M3.15's paths).
+
+## 2026-11-17T12:36 [lead]
+
+status active -> done
+
+## 2026-11-17T12:38 [lead]
+
+FINAL: functional PASS, legality PASS (minors: RESULT inventory understates 9 files; the rootfs/mod.rs 'Incus image name' residual is already fixed; the 2 remaining grep hits are legitimate negative assertions outside paths). make check green, 62 engine lib tests, fd-race identity-based. Committing.
+
+## 2026-11-17T12:38 [lead]
+
+status done -> done

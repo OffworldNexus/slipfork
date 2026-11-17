@@ -31,3 +31,11 @@ Quad gate 1/2: ioc BLOCKER (ctypes/statfs re-implements the shipped doctor seam;
 ## 2026-11-17T12:34 [lead]
 
 edited fields
+
+## 2026-11-17T12:45 [lead]
+
+Gate passed: Quad functional PASS, legality PASS, ioc PASS after the attempt-2 rewrite through doctor; cruft MAJOR (gate re-decided doctor's verdict and kept a namespace warn-and-continue) fixed in attempt 3 → gate decides on report.ok alone. 37 pytest, ruff, support-check, guard, plan validate green.
+
+## 2026-11-17T12:45 [lead]
+
+status active -> done

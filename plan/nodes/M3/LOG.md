@@ -59,3 +59,7 @@ BLOCKER (H-005): the tagged DO volume 131a2765 is ZFS (incuspool), not Btrfs; M3
 ## 2026-11-17T04:44 [lead]
 
 LEAD SCOPE RULING (0.1.0 shipping decision, 2026-11-17): M3.13 implements BtrfsEngine against the CURRENT trait surface (WorldSpec unchanged: target/rootfs/snapshot/mounts/base_env/local_ingress; engine derives <state_dir>/ctl/<slug>). The M3.25 target-state refinements — slipfork_world::WorldId + resolve_world_selector, WorldSpec.world/control_dir/state_subdirs injection, BaseKey::derive + BaseSeedSpec + WorldEngine::ensure_base sealing — are DEFERRED to 0.2.0 (M3.2/follow-up M3.26), not silently dropped: M3.23 must relabel ARCHITECTURE/ADR target-state references as 0.2.0 so 0.1.0 docs stay honest. Rationale: the daemon's existing ensure_base_snapshot flow already seals bases via create_snapshot, so Btrfs worlds work; shipping the owner-testable 0.1.0 takes priority over the internal trait refactor.
+
+## 2026-11-17T14:01 [lead]
+
+MILESTONE GATE (lead-side): make check EXIT=0 (zero env overrides; every suite green incl. slipfork:critical_cli 14 @62s, critical_ospp_daemon 4 @111s, both critical_btrfs_live 1) and make docs-check EXIT=0 (zensical --strict 'No issues found'; check_docs_honesty OK 9 pages) on the committed 0.1.0 tree 2db6c8f. Live VM evidence pending M3.19 attempt 2. NOTE for conductor/strategist: plan/ROADMAP.md's M3 row is still 0.3.0/Option-A framed with the STP v1 checklist; it must be rewritten to 0.1.0 (Btrfs worlds shipped, STP v1 parked to 0.2.0) before this milestone can be marked done.

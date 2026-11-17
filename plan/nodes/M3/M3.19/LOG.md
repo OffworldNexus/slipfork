@@ -75,3 +75,39 @@ edited fields
 ## 2026-11-17T13:42 [lead]
 
 OWNER APPROVED H-006: 'Approve profile list (Recommended)'. Ruling applied by M3.19.1 (apparmor.rs + engine hint + do_vm.py harness clause + cli.md + byte-equivalence test). Next: re-apply the profile on 165.232.86.174 (rm /var/lib/slipfork/.slipfork-ready; do_vm.py up --yes), re-sync, run the 5 live suites, re-install 0.1.0 binaries, and verify /home/slipfork/demo live.
+
+## 2026-11-17T13:42 [lead]
+
+M3.19.1 committed (8417868). Re-verification authorized: profile now covers /usr/local/bin/slipfork{,d,-world-init}, /usr/bin/unshare and /.slipfork/bin/crun.
+
+## 2026-11-17T13:51 [lead]
+
+LIVE RE-VERIFICATION (owner-approved H-006 profile applied by hand on 165.232.86.174 at 12:48): engine critical_btrfs_live 1 passed (29.86s); slipfork:critical_btrfs_live 1 passed (64.23s); critical_cli 14 passed (123.17s); critical_slug 6 passed (4.50s); critical_ospp_daemon 4 passed (after installing jj 0.47.1 at /var/lib/slipfork/home/.cache/slipfork-tools/jj/jj — the suite fails loudly without it, no silent skip). Remaining: 0.1.0 sync + full do_vm.py test, install 0.1.0 binaries, verify /home/slipfork/demo.
+
+## 2026-11-17T13:56 [lead]
+
+attempt 2/3 started
+
+## 2026-11-17T13:56 [lead]
+
+status blocked -> active
+
+## 2026-11-17T13:56 [lead]
+
+attempt 2/3 start: owner approved H-006; M3.19.1 landed the profile; 0.1.0 tree committed at 2db6c8f. Live re-verification + 0.1.0 binary install + demo walkthrough.
+
+## 2026-11-17T14:07 [lead]
+
+LEAD NOTE for the live re-run: the sysctl workaround I used earlier (kernel.apparmor_restrict_unprivileged_userns=0 in /etc/sysctl.d/99-slipfork-devvm.conf) is REMOVED and the sysctl is back to 1 on 165.232.86.174, so any live proof now exercises the M3.19.1 profile attachment set honestly. If a run shows crun DENIED in dmesg, the installed profile is stale — reinstall 'slipfork daemon unit --only apparmor' and apparmor_parser -r. Also: the demo binaries installed earlier are 0.2.0; rebuild/install after the 0.1.0 version bump.
+
+## 2026-11-17T14:30 [implementer]
+
+attempt 2/3 COMPLETED GREEN. Attempt-1 blocker cleared by M3.19.1 (8417868, owner-approved H-006 profile: /{<bin_dir>/slipfork{,d,-world-init},usr/bin/unshare,.slipfork/bin/crun}) with the sysctl back at stock 1. do_vm.py sync exit 0 (496 files); do_vm.py test exit 0 TWICE — slipfork-engine:critical_btrfs_live 1 (32.86s/28.92s), slipfork:critical_btrfs_live 1 (27.58s/27.37s), critical_cli 14 (129.78s/117.01s), critical_slug 7 (5.72s/5.01s), critical_ospp_daemon 4 (126.91s/107.84s), warm wall 301.238s. Acceptance all green: findmnt rw,noatime,...,user_subvol_rm_allowed; statfs 9123683e; buildx 0.30.1; prune --yes 'nothing to reap'; subvolume list empty outside /snapshots/; real-path proof (sealed base ro + EROFS on touch, two sibling clones both binding 127.0.0.1:5432 in separate netns, drop+down destroys both). 0.1.0 installed for root and slipfork (slipfork --version 0.1.0; all four binaries on PATH). Demo live: up -> http://demo.localhost:46271, / -> world demo, /db 4 rows, fork feat-1 -> feat-1.demo.localhost:46271, fork-only row gives fork 5 / canonical 4, slipfork exec -- /.slipfork/bin/crun --version -> crun 1.20, slipfork db demo -> psql 18.7 count 4, drop/down exit 0, subvolume list empty. Reboot verified (doctl reboot exit 0; mount options + 9123683e + slipfork (unconfined) + doctor exit 0 both users; demo flow re-verified green after reboot). BENCHMARK NOT RUN — documented gap: preflight missing initdb/pg_dump/pg_restore + /usr/bin/google-chrome (zstd present) and the invocation failed with 'uv: command not found' (VM has no uv; needs its own python3). No numbers produced, nothing faked. Four follow-ups: (1) M3.19.1 profile fix landed; (2) M3.26 slipfork fork fails when .gitignore ignores .worktrees/ (git add names ignored pathspecs); (3) M3.27 critical_cli leaks one world subvolume per test (Daemon::shutdown SIGKILLs before engine Drop reclaim, 27 seen); (4) benchmark runnability on the VM (host prereqs + python3, no uv). Also recorded: the working in-world crun form is 'slipfork exec -- /.slipfork/bin/crun --version' (not 'slipfork shell -- crun --version', which is not a shipped CLI form); cosmetic 'sh: 0: getcwd() failed' line from slipfork exec. Host changes: stale daemons/sockets cleaned, attempt-1 leaked test base deleted, /home/slipfork/demo re-chowned to slipfork:slipfork. Droplet LEFT UP (620073485 / 165.232.86.174); demo left down; only the two demo sealed bases remain under /snapshots/. Evidence in RESULT.md §12.
+
+## 2026-11-17T14:26 [lead]
+
+GATE PASSED (attempt 2): 5 live suites green twice on 165.232.86.174 (engine btrfs_live 1, slipfork btrfs_live 1, critical_cli 14, critical_slug 7, critical_ospp_daemon 4; warm wall 301.238s); findmnt user_subvol_rm_allowed,noatime; statfs 9123683e; sealed base ro + 2 sibling clones on :5432 in separate netns; prune leaves no world subvolume; 0.1.0 binaries installed for root and slipfork; demo verified end-to-end incl. a fork with its own DB rows; reboot-safe. Benchmark = documented gap (host PG18/Chrome absent, no uv on the VM), no numbers faked. Follow-ups filed: M3.26 (fork vs .gitignore), M3.27 (world leak in critical_cli). Droplet LEFT UP, demo down.
+
+## 2026-11-17T14:26 [lead]
+
+status active -> done

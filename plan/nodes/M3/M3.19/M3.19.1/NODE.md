@@ -2,7 +2,7 @@
 id: M3.19.1
 title: "Apply the H-006 AppArmor attachment set: profile covers every CLONE_NEWUSER executable"
 kind: task
-status: active
+status: done
 owner: implementer
 priority: 3
 depends_on: [M3.18]
@@ -17,7 +17,7 @@ attempts: 1
 max_attempts: 3
 escalation: none
 created: "2026-11-17T13:37"
-updated: "2026-11-17T13:37"
+updated: "2026-11-17T13:42"
 ---
 
 # Goal

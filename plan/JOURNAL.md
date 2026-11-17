@@ -965,3 +965,14 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-17T13:42 [M3.23] (lead) attempt 1/3 started
 - 2026-11-17T13:42 [M3.23] (lead) base 8417868066bb3af9448dd1aba650b57e25960740
 - 2026-11-17T13:51 [M3.19] (lead) LIVE RE-VERIFICATION (owner-approved H-006 profile applied by hand on 165.232.86.174 at 12:48): engine critical_btrfs_live 1 passed (29.86s); slipfork:critical_
+- 2026-11-17T13:56 [M3.23] (lead) Gate passed: acceptance greps all green, slipfork --version == 0.1.0, cargo build --workspace --locked exit 0, plan validate/guard (505 files)/check_docs_honest
+- 2026-11-17T13:56 [M3.23] (lead) status active -> done
+- 2026-11-17T13:56 [M3.19] (lead) attempt 2/3 started
+- 2026-11-17T13:56 [M3.19] (lead) status blocked -> active
+- 2026-11-17T13:56 [M3.19] (lead) attempt 2/3 start: owner approved H-006; M3.19.1 landed the profile; 0.1.0 tree committed at 2db6c8f. Live re-verification + 0.1.0 binary install + demo walkthr
+- 2026-11-17T14:01 [M3] (lead) MILESTONE GATE (lead-side): make check EXIT=0 (zero env overrides; every suite green incl. slipfork:critical_cli 14 @62s, critical_ospp_daemon 4 @111s, both cri
+- 2026-11-17T14:07 [M3.19] (lead) LEAD NOTE for the live re-run: the sysctl workaround I used earlier (kernel.apparmor_restrict_unprivileged_userns=0 in /etc/sysctl.d/99-slipfork-devvm.conf) is 
+- 2026-11-17T14:21 [M3.26] (lead) created (task) slipfork fork fails closed when .gitignore ignores .worktrees/.slipfork
+- 2026-11-17T14:21 [M3.27] (lead) created (task) CLI critical suites leak one Btrfs world subvolume per test; reap worlds as well as processes
+- 2026-11-17T14:26 [M3.19] (lead) GATE PASSED (attempt 2): 5 live suites green twice on 165.232.86.174 (engine btrfs_live 1, slipfork btrfs_live 1, critical_cli 14, critical_slug 7, critical_osp
+- 2026-11-17T14:26 [M3.19] (lead) status active -> done

@@ -31,3 +31,7 @@ REQUIREMENT (M3.9 legality): own the `slipfork test -j N` concurrency flag in th
 ## 2026-11-16T21:52 [lead]
 
 OWNER WIRE-PROTOCOL DIRECTIVE: STP v1 frames are CBOR (RFC 8949) on the inherited SLIPFORK_PROTOCOL_FD socketpair — never NDJSON/JSON, never line-delimited framing. The Phase 2 replan must encode this in ADR-0006 §3 and the runner-protocol types, and delete every NDJSON mention.
+
+## 2026-11-16T23:50 [lead]
+
+OWNER REGROUP RULING (2026-11-16, binding): M3.2 (STP v1) and every M3.2.* child are PARKED for 0.2.0. Do not activate any of them in this run. The 0.1.0 release ships Btrfs Worlds (up, fork, list, shell, service, logs, forward, drop, prune, doctor, OSPP v1, .localhost edge) only; the owner tests 0.1.0 hands-on on the DO Btrfs VM first.

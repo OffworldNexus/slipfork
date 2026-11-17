@@ -537,3 +537,314 @@ uv run --no-project tools/do_vm.py down --yes
 3. **Product-vs-harness byte-equivalence rule (`tools/tests/test_do_vm.py`):** Yes, the harness profile legitimately expands only the `<bin_dir>` prefix clause to cover Cargo `target/{debug,release}` builds alongside `/usr/local/bin`. `test_do_vm.py` must assert exact 4-line output on both renderers and full-profile byte-equality after replacing **only** that `<bin_dir>` prefix clause with `<bin_clause>` (retaining `,usr/bin/unshare,.slipfork/bin/crun}` verbatim rather than erasing the whole attachment to `<files>`), and scope `test_provision_script_installs_no_host_crun_and_keeps_git` to `PACKAGES` / `apt-get install` rather than `"crun" not in script`.
 4. **Security verdict:** Worlds are cooperative unprivileged `$UID:$GID` namespace sandboxes rather than hostile-tenant VMs (`ADR-0010`, `docs/design/do-vm-harness.md` §6), so granting `userns,` to in-world `/.slipfork/bin/crun` is strictly within `ADR-0010`'s trust boundary; attaching host `/usr/bin/unshare` widens Ubuntu's opportunistic `userns` gate on that workstation or CI VM to any local caller of `/usr/bin/unshare`, matching stock Ubuntu 24.04's own `/etc/apparmor.d/{crun,runc,chrome}` `flags=(unconfined)` shims without crossing any `$UID` or host-root boundary.
 5. **Next implementer scope:** Update `crates/slipfork/src/apparmor.rs`, `crates/slipfork-engine/src/lib.rs` (`userns_remediation_hint`), `docs/reference/cli.md:147`, `tools/do_vm.py` (`render_apparmor_body`), and `tools/tests/test_do_vm.py` (plus unit tests); then on `165.232.86.174` remove `/var/lib/slipfork/.slipfork-ready`, run `tools/do_vm.py up --yes`, `tools/do_vm.py sync`, `tools/do_vm.py test`, reinstall `/usr/local/bin/{slipfork,slipforkd,git-remote-slipfork,slipfork-world-init}`, and verify `/home/slipfork/demo` (`slipfork up`, `slipfork fork`, `slipfork exec -- crun --version`).
+
+---
+
+## 12. Attempt 2 — owner-approved profile, live green, 0.1.0 installed, demo verified
+
+- **Date:** 2026-11-17 (UTC), attempt 2/3
+- **Branch / base:** `release/0.1.0`, tree at `2db6c8f` (`[M3.23] 0.1.0 single version source, …`), on top of `8417868` (`[M3.19.1] AppArmor profile attaches every executable that creates a world user namespace`)
+- **Droplet:** `slipfork-dev-vm` id `620073485`, `165.232.86.174`, volume `131a2765-e1ba-11f1-b67b-d6114774f516`
+- **Verdict:** the attempt-1 blocker is gone. With the owner-approved H-006 profile (§8, applied by `M3.19.1`) and the sysctl back at its stock value `1`, all five live suites are green twice, every acceptance command passes, `0.1.0` is installed for both users, and the full demo (`up`, `curl /`, `curl /db`, `fork`, fork-only write, `db`, `drop`, `down`) is verified live before **and** after a droplet reboot. One documented gap remains: the benchmark (§12.6) produced no numbers because the VM lacks its host prerequisites and `uv`; nothing was estimated or faked.
+
+### 12.1 Live suites — `do_vm.py test` GREEN twice
+
+```console
+$ uv run --no-project tools/do_vm.py sync
+synced 496 file(s) to /home/slipfork/slipfork on 165.232.86.174
+EXIT=0
+```
+
+| Suite | Cold run (`/tmp/opencode/m3.19-test.log`) | Warm run (`/tmp/opencode/m3.19-test-timed.log`) |
+|---|---|---|
+| `slipfork-engine:critical_btrfs_live` | 1 passed, 0 failed — 32.86 s | 1 passed, 0 failed — 28.92 s |
+| `slipfork:critical_btrfs_live` | 1 passed, 0 failed — 27.58 s | 1 passed, 0 failed — 27.37 s |
+| `slipfork:critical_cli` | 14 passed, 0 failed — 129.78 s | 14 passed, 0 failed — 117.01 s |
+| `slipfork:critical_slug` | 7 passed, 0 failed — 5.72 s | 7 passed, 0 failed — 5.01 s |
+| `slipfork:critical_ospp_daemon` | 4 passed, 0 failed — 126.91 s | 4 passed, 0 failed — 107.84 s |
+| **`do_vm.py test`** | **exit 0** | **exit 0, wall 301.238 s** |
+
+Verbatim tails (warm run):
+
+```console
+test btrfs_kernel_ro_snapshot_two_clones_same_port_services_and_ipc_isolation ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 28.92s
+
+test production_slipforkd_is_btrfs_only_and_boots_a_real_world_on_btrfs ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 27.37s
+
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 117.01s
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.01s
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 107.84s
+```
+
+The attempt-1 assertion now passes for real: `btrfs_kernel_ro_snapshot_two_clones_same_port_services_and_ipc_isolation` boots `postgres:18` in both sibling clones, each binding `127.0.0.1:5432` inside its own network namespace, with `--ipc` isolation and independent seeded rows. `critical_ospp_daemon` runs its real dump/restore/fork path (jj 0.47.1 present, no silent skip).
+
+### 12.2 Acceptance table (exact commands, exits, output)
+
+| # | Command | Exit | Output |
+|---|---|---|---|
+| 1 | `uv run --no-project tools/do_vm.py sync` | 0 | `synced 496 file(s) to /home/slipfork/slipfork on 165.232.86.174` |
+| 2 | `uv run --no-project tools/do_vm.py test` | 0 | §12.1, wall 301.238 s |
+| 3 | `do_vm.py ssh -- findmnt -no OPTIONS /var/lib/slipfork` | 0 | `rw,noatime,discard=async,space_cache=v2,user_subvol_rm_allowed,subvolid=5,subvol=/` |
+| 4 | `do_vm.py ssh -- stat -f -c %t /var/lib/slipfork` | 0 | `9123683e` |
+| 5 | `do_vm.py ssh -- docker buildx version` | 0 | `github.com/docker/buildx 0.30.1 0.30.1-0ubuntu1~24.04.1` |
+| 6 | `do_vm.py ssh -- slipfork prune --yes` | 0 | `[prune] nothing to reap` |
+| 7 | `do_vm.py ssh -- btrfs subvolume list /var/lib/slipfork \| grep -v /snapshots/` | 0 | *(empty)* |
+| 8 | `do_vm.py ssh -- slipfork exec -- /.slipfork/bin/crun --version` | 0 | `crun version 1.20` (see §12.7 (a)) |
+| 9 | `do_vm.py ssh -- slipfork up` (in `/home/slipfork/demo`) | 0 | `[origin] http://demo.localhost:46271` |
+
+Real-path proof on the same host (independent of the suites):
+
+- the sealed base is `ro=true`; `touch` inside it fails with `Read-only file system`;
+- two sibling writable clones (`worlds/canonical-2`, `worlds/fork-feat-1-3`) each bind `127.0.0.1:5432` in separate network namespaces simultaneously;
+- `drop` + `down` destroy both, leaving only the sealed bases.
+
+Post-cleanup `btrfs subvolume list /var/lib/slipfork | grep -v /snapshots/` is empty, as required (the digest-keyed sealed bases under `/snapshots/` legitimately survive until the Phase-2 `M3.2.13` GC).
+
+### 12.3 Installed `0.1.0` binaries (both users)
+
+```console
+$ cargo build --release --locked        # CLI binaries
+EXIT=0
+$ cargo build --release --locked        # engine binaries (slipfork-world-init)
+EXIT=0
+```
+
+All four installed binaries in `/usr/local/bin` (`slipfork`, `slipforkd`, `git-remote-slipfork`, `slipfork-world-init`) are that `0.1.0` build, and each resolves on `PATH` for both users:
+
+```console
+$ slipfork --version                    # root
+slipfork 0.1.0
+$ slipfork --version                    # slipfork
+slipfork 0.1.0
+
+$ command -v slipfork slipforkd git-remote-slipfork slipfork-world-init   # root
+/usr/local/bin/slipfork
+/usr/local/bin/slipforkd
+/usr/local/bin/git-remote-slipfork
+/usr/local/bin/slipfork-world-init
+$ command -v slipfork slipforkd git-remote-slipfork slipfork-world-init   # slipfork
+/usr/local/bin/slipfork
+/usr/local/bin/slipforkd
+/usr/local/bin/git-remote-slipfork
+/usr/local/bin/slipfork-world-init
+```
+
+The attempt-1 `0.2.0` string is gone: `0.1.0` is the single version source (`M3.23`).
+
+### 12.4 Demo transcript — `/home/slipfork/demo`, live
+
+Run as `slipfork` from `~/demo`. `/home/slipfork/demo/README.md` was corrected on the VM to match exactly what works and committed there; the blocks below are that verified session.
+
+```console
+$ slipfork doctor
+state_dir: /home/slipfork/.cache/slipfork
+filesystem: btrfs
+btrfs_super_magic: ok
+subvolume_ioctl: ok
+noatime: ok
+unshare_userns: ok
+netns: ok
+EXIT=0
+
+$ slipfork up
+[resources] demo: prefer_remote -> local (not_offered)
+[ready]     api (internal :8000 in world netns)
+[origin]    http://demo.localhost:46271
+EXIT=0
+
+$ PORT=$(slipfork list | awk '/demo/ {split($3, u, ":"); print u[3]; exit}')
+$ curl -s -H 'Host: demo.localhost' "http://127.0.0.1:$PORT/"
+{"debug": true, "hello": "world", "host": "slipfork-dev-vm", "secret_len": 32, "world": "demo"}
+$ curl -s -H 'Host: demo.localhost' "http://127.0.0.1:$PORT/db"
+{"rows": [[1, "alpha", "shared"], [2, "beta", "shared"], [3, "gamma", "shared"], [4, "boot", "demo"]]}
+
+$ slipfork fork feat-1
+[resources] demo: prefer_remote -> local (not_offered)
+[ready]     api (internal :8000 in world netns)
+[origin]    http://feat-1.demo.localhost:46271
+EXIT=0
+
+$ slipfork list
+WORLD            STATE     ORIGIN                                   WORKTREE
+demo             running   http://demo.localhost:46271              /home/slipfork/demo
+demo:feat-1      running   http://feat-1.demo.localhost:46271       /home/slipfork/demo/.worktrees/feat-1
+
+$ curl -s -H 'Host: feat-1.demo.localhost' "http://127.0.0.1:$PORT/db"
+{"rows": [[1, "alpha", "shared"], [2, "beta", "shared"], [3, "gamma", "shared"], [4, "boot", "feat-1"]]}
+
+$ slipfork exec --world feat-1 -- python3 -c \
+    'import os, psycopg; c = psycopg.connect(os.environ["DATABASE_URL"]); \
+     c.execute("INSERT INTO items (name, scope) VALUES (%s, %s) ON CONFLICT DO NOTHING", ("only-in-feat-1", "feat-1")); c.commit()'
+EXIT=0
+$ curl -s -H 'Host: feat-1.demo.localhost' "http://127.0.0.1:$PORT/db"
+{"rows": [[1, "alpha", "shared"], [2, "beta", "shared"], [3, "gamma", "shared"], [4, "boot", "feat-1"], [5, "only-in-feat-1", "feat-1"]]}
+$ curl -s -H 'Host: demo.localhost' "http://127.0.0.1:$PORT/db"
+{"rows": [[1, "alpha", "shared"], [2, "beta", "shared"], [3, "gamma", "shared"], [4, "boot", "demo"]]}
+
+$ slipfork exec -- /.slipfork/bin/crun --version
+crun version 1.20
+commit: 9c9a76ac11994701dd666c4f0b869ceffb599a66
+rundir: /run/crun
+spec: 1.0.0
++SELINUX +APPARMOR +CAP +SECCOMP +EBPF +CRIU +YAJL
+
+$ slipfork db demo                                    # under a pty
+psql (18.7 (Debian 18.7-1.pgdg13+2))
+Type "help" for help.
+
+demo=# SELECT count(*) FROM items;
+ count
+-------
+     4
+(1 row)
+
+$ slipfork drop feat-1
+[drop] fork world and worktree removed
+EXIT=0
+$ slipfork down
+[down] world stopped (worktree kept)
+EXIT=0
+$ btrfs subvolume list /var/lib/slipfork | grep -v /snapshots/
+EXIT=0        # empty
+```
+
+What this proves end to end: one ingress port shared by both worlds and disambiguated by `Host`; the fork is a real `.worktrees/feat-1` Git worktree on its own Btrfs world with its own `postgres:18` state cloned from the sealed base; a row written only in the fork (`only-in-feat-1`) is visible in the fork (5 rows) and absent from the canonical world (4 rows); `slipfork db` reaches the real `psql 18.7` client; teardown leaves no world subvolume outside `/snapshots/`.
+
+### 12.5 Reboot — survives, demo still green
+
+```console
+$ doctl compute droplet-action reboot 620073485 --wait
+Action (…) completed
+EXIT=0
+```
+
+After SSH returned with the persistent `--identity` key:
+
+```console
+$ findmnt -no OPTIONS /var/lib/slipfork
+rw,noatime,discard=async,space_cache=v2,user_subvol_rm_allowed,subvolid=5,subvol=/
+$ stat -f -c %t /var/lib/slipfork
+9123683e
+$ slipfork doctor                            # root
+EXIT=0
+$ slipfork doctor                            # slipfork
+EXIT=0
+```
+
+The `slipfork (unconfined)` profile is still loaded after the reboot, and the mount options still carry `user_subvol_rm_allowed,noatime`.
+
+The whole §12.4 demo flow (`up` → `curl /` → `curl /db` → `fork` → fork-only write → `db` → `drop` → `down`) was re-verified green after the reboot, then left `down`.
+
+### 12.6 Benchmark — NOT RUN (documented gap, no numbers produced)
+
+`poc/run_benchmark.py` was not executed to completion, and **no snapshot/clone/warm-SQL/RSS figure is reported** here — none was measured. Two independent reasons, both recorded verbatim:
+
+1. **Preflight fails closed on missing host prerequisites.** The preflight list recorded `initdb`, `pg_dump`, `pg_restore` **MISSING**, `/usr/bin/google-chrome` **MISSING**, `zstd` present. The harness refuses to measure without them.
+2. **The invocation itself cannot start on the VM.** It failed with `uv: command not found` — the droplet has no `uv` on `PATH`; the harness must be run with the VM's own `python3` (and its own environment), not `uv run`.
+
+Installing PostgreSQL 18 + Chrome was not done: the benchmark still needs a deliberate decision on how to run it on the VM (host `python3`, host prereqs) and on whether those numbers belong to this node or to a follow-up. Nothing was estimated, defaulted, or back-filled.
+
+### 12.7 Findings (non-blocking, recorded for the lead)
+
+**(a) The in-world `crun` form that works is `slipfork exec -- /.slipfork/bin/crun --version`.** `/.slipfork/bin` is deliberately not on the world `PATH`, so bare `crun` is not resolvable. The NODE/design-doc form `slipfork shell -- crun --version` is not a shipped CLI form at all (`Commands::Shell` takes only `--world`; clap exits 2 on a trailing argv). Verified output: `crun version 1.20 …`. The acceptance line and `docs/design/do-vm-harness.md` should name the `exec` form.
+
+**(b) Cosmetic:** `slipfork exec` prints one `sh: 0: getcwd() failed: No such file or directory` line before running the command (the wrapper shell starts on a host path that only exists after entering the world). Harmless; the command runs with the world worktree as its cwd.
+
+**(c) Real product defect → node `M3.26`:** `slipfork fork` exits 1 for any project whose `.gitignore` ignores `.worktrees/`. `git add -A -- . ':(exclude).slipfork' ':(exclude).worktrees'` names ignored pathspecs explicitly, so git refuses:
+
+```console
+$ git add -A -- . ':(exclude).slipfork' ':(exclude).worktrees'
+fatal: Pathspec '.worktrees' is in .gitignore
+```
+
+The demo hit this on itself and its own history records the workaround-free path: `48cc6d0 demo: ignore .slipfork/ and .worktrees/` made `fork` fail, and `4f9f4d1 demo: drop .gitignore (git add -A refuses an ignored .worktrees pathspec)` removed the file so the fork could proceed. The demo therefore has no `.gitignore` today. Filed with the repro as `M3.26`.
+
+**(d) Harness hygiene → node `M3.27`:** 12 of 14 `critical_cli` tests never call `down`, and `Daemon::shutdown` SIGKILLs the daemon before the engine's `Drop` reclaim runs, so each test leaves one world subvolume in its per-test temp state dir (27 accumulated across the two runs). `TempDir` also cannot delete the read-only sealed base. Filed as `M3.27`.
+
+**(e) Host changes this attempt (on `165.232.86.174`):** stale daemons and sockets cleaned; the attempt-1 leaked test base subvolume deleted; `/home/slipfork/demo` re-chowned to `slipfork:slipfork`. The sysctl is back at `kernel.apparmor_restrict_unprivileged_userns=1` (the lead's earlier `=0` workaround is removed), so every proof above exercises the `M3.19.1` profile attachment set honestly.
+
+### 12.8 Write-up verification (this attempt, after the fact)
+
+```console
+$ uv run --no-project tools/guard.py
+guard: OK (500 file(s) checked)
+EXIT=0
+
+$ uv run --no-project tools/plan.py validate
+plan OK
+EXIT=0
+```
+
+`make check` / `make rs-test` were deliberately **not** re-run here: the lead already ran `make check` (exit 0) and `make docs-check` (exit 0) on `2db6c8f`, and this attempt writes only `plan/nodes/M3/M3.19/{RESULT,LOG}.md`.
+
+Cheap read-only spot checks against `165.232.86.174` confirm the state described above:
+
+```console
+$ uv run --no-project tools/do_vm.py status
+droplet  slipfork-dev-vm  id=620073485  region=ams3  size=s-4vcpu-8gb  ip=165.232.86.174
+volume   slipfork-dev-vm  id=131a2765-e1ba-11f1-b67b-d6114774f516  region=ams3  100 GiB
+EXIT=0
+```
+
+On the droplet (`ssh -i ~/.cache/slipfork/do-vm/id_ed25519 root@165.232.86.174`):
+
+```console
+# sysctl kernel.apparmor_restrict_unprivileged_userns
+kernel.apparmor_restrict_unprivileged_userns = 1
+# cat /etc/apparmor.d/slipfork
+abi <abi/4.0>,
+profile slipfork /{usr/local/bin/slipfork{,d,-world-init},home/slipfork/slipfork/target/{debug,release}/slipfork{,d,-world-init},usr/bin/unshare,.slipfork/bin/crun} flags=(unconfined) {
+  userns,
+}
+# /usr/local/bin/slipfork --version
+slipfork 0.1.0
+# btrfs subvolume list /var/lib/slipfork
+ID 265 gen 307 top level 5 path home/.cache/slipfork/snapshots/demo-seed-empty
+ID 278 gen 310 top level 5 path home/.cache/slipfork/snapshots/demo-base-4570132bffb8d480614da23adf1ad1bbe56ab5bf5512b93386dacfcb71497107
+# runuser -u slipfork -- env HOME=/home/slipfork bash -c 'cd ~/demo && slipfork list'
+WORLD            STATE     ORIGIN                                   WORKTREE
+EXIT=0
+```
+
+`/home/slipfork/demo/README.md` hashes `0d825c54…c3fc1d61b` on the VM and is byte-identical to the copy the §12.4 transcript was taken from, so the transcript is the committed, verified one. The two surviving subvolumes are exactly the two demo sealed bases (`demo-seed-empty` and the digest-keyed `demo-base-4570132b…`); no world subvolume survives.
+
+### 12.9 Owner walkthrough
+
+**Droplet LEFT UP** — id `620073485`, `165.232.86.174`. **Demo left `down`**; only the two demo sealed bases (`demo-seed-empty`, `demo-base-4570132b…`) remain under `/snapshots/`.
+
+```console
+$ ssh -i ~/.cache/slipfork/do-vm/id_ed25519 slipfork@165.232.86.174
+# root works too: ssh -i ~/.cache/slipfork/do-vm/id_ed25519 root@165.232.86.174
+```
+
+Then, copy-paste as `slipfork`:
+
+```console
+$ cd ~/demo
+$ slipfork doctor                 # exit 0: btrfs, subvolume_ioctl ok, unshare_userns ok, netns ok
+$ slipfork up                     # prints [origin] http://demo.localhost:<port> — read the port here
+$ PORT=$(slipfork list | awk '/demo/ {split($3, u, ":"); print u[3]; exit}')
+
+# The ingress port is ephemeral (daemon auto-spawns on 127.0.0.1:0); never assume :80.
+$ curl -s -H 'Host: demo.localhost' "http://127.0.0.1:$PORT/"
+$ curl -s -H 'Host: demo.localhost' "http://127.0.0.1:$PORT/db"        # 4 rows, last is [4,"boot","demo"]
+
+$ slipfork fork feat-1            # [origin] http://feat-1.demo.localhost:<same port>
+$ curl -s -H 'Host: feat-1.demo.localhost' "http://127.0.0.1:$PORT/db"  # last row is [4,"boot","feat-1"]
+$ slipfork list                   # demo + demo:feat-1, one port, two Hosts
+
+$ slipfork exec -- /.slipfork/bin/crun --version     # crun version 1.20 (guest path, not on PATH)
+$ slipfork db demo                # real psql 18.7 — needs a TTY
+$ slipfork drop feat-1            # destroys the fork world, worktree, branch, snapshot ref
+$ slipfork down                   # stops the canonical world, keeps the worktree
+```
+
+`slipfork drop feat-1` and `slipfork down` both exit 0. To destroy the droplet when you are done (owner's decision):
+
+```console
+$ uv run --no-project tools/do_vm.py down --yes
+```

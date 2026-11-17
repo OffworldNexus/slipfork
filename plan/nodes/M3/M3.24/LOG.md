@@ -63,3 +63,11 @@ Quad gate 1/2: legality MAJOR (the 'daemon unit writes no files' assertion check
 ## 2026-11-17T13:32 [lead]
 
 edited fields
+
+## 2026-11-17T13:42 [lead]
+
+Gate passed: Quad reviewer PASS after attempts 2-3 (hollow daemon-unit assertion, three poll_until copies, fail-open /proc scan, over-claiming Makefile comments all fixed; attempt-3 addendum covers the poc --repo argv, a non-production readiness test policy and the TMPDIR wording). make check exit 0 on the final tree; guard OK.
+
+## 2026-11-17T13:42 [lead]
+
+status active -> done

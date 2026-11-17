@@ -2,7 +2,7 @@
 id: M3.24
 title: "Finish bounded-wait consolidation, reap orphaned world-init processes, and make rs-test-list comments match what the guard enforces"
 kind: task
-status: active
+status: done
 owner: implementer
 priority: 4
 depends_on: [M3.1]
@@ -23,7 +23,7 @@ attempts: 1
 max_attempts: 3
 escalation: none
 created: "2026-11-16T20:44"
-updated: "2026-11-17T13:32"
+updated: "2026-11-17T13:42"
 ---
 
 # Goal
