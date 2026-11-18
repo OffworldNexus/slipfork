@@ -5,13 +5,13 @@ kind: task
 status: active
 owner: implementer
 priority: 2
-depends_on: [M3.28.6, M3.28.20]
-paths: [tools/do_vm.py, tools/tests/test_do_vm.py, "support/demo/**"]
-attempts: 3
-max_attempts: 3
+depends_on: [M3.28.6, M3.28.20, M3.28.21]
+paths: [tools/do_vm.py, tools/tests/test_do_vm.py, tools/check_docs_honesty.py, "support/demo/**"]
+attempts: 5
+max_attempts: 5
 escalation: none
 created: "2026-11-17T16:33"
-updated: "2026-11-18T00:18"
+updated: "2026-11-18T00:57"
 ---
 
 # Goal
@@ -27,15 +27,15 @@ Fact 1: the deployed daemon ran `--listen 127.0.0.1:0`, so `http://demo.localhos
 1. Provisioning installs the four binaries into `/usr/local/bin`, then `slipfork daemon install --user slipfork --bin-dir /usr/local/bin --bin-dir <remote_tree>/target/{debug,release}`, then asserts `systemctl is-active slipforkd.socket` = `active`. Re-running provisioning twice leaves both runs `active` and rewrites zero unit files.
 2. Add a tracked demo template at `support/demo/**`: `snow.yml` (one build image, component on an internal port, `/` ingress, `pg_clusters[{id: psql, version: "18"}]`, `pg_databases[{id: demo, cluster: psql}]`, `modes.local`), `Dockerfile` (python app stage), `app/` + `db/*.sql`, `slipfork.toml` (`project = "demo"`), and a README with the port-less quickstart. `do_vm.py sync` copies it to `/home/slipfork/demo` (owned `slipfork:slipfork`, git identity preset, commit made once) and never clobbers owner edits after the first stamp.
 3. The harness's own AppArmor renderer is deleted: the profile comes from `slipfork daemon unit --only apparmor --bin-dir …` (one renderer). `tools/tests/test_do_vm.py` enforces byte-equality against that command, not a second copy.
-4. Login banner (one file written by provisioning) prints, as `slipfork`: the account, `cd ~/demo`, `slipfork`, `slipfork up`, `slipfork open`. No password/`getent` step anywhere.
-5. Every new provisioning step fails closed (no `|| true`); no secrets, no client names, no VM-only scripts.
+4. Login banner (one file written by the **install+seed** step, never by bare provisioning) prints, as `slipfork`: the account, `cd ~/demo`, `slipfork`, `slipfork up`, `slipfork list`. **Every verb it names must exist in `slipfork --help` at that moment** — the harness asserts this so a banner can never advertise an unshipped command. No password/`getent` step anywhere.
+5. Every new provisioning step fails closed (no `|| true`); no secrets, no client names, no VM-only scripts; the seeded README likewise names only shipped verbs and shows only captured output.
 
 # Acceptance
 
 ```console
-$ uv run --no-project pytest tools/tests -q
+$ uv run --no-project --with pytest pytest -q tools/tests
 ... passed
-$ uv run --no-project ruff check tools && uvx --offline ruff format --check tools
+$ uvx --offline ruff check tools && uvx --offline ruff format --check tools
 All checks passed!
 $ grep -q 'daemon install' tools/do_vm.py && echo product-install
 product-install

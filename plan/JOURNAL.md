@@ -1226,3 +1226,43 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-18T00:31 [M3.28.12] (lead) attempt 3 LIVE PROOF COMPLETE (the milestone acceptance): sync wrote slipforkd.service with AF_NETLINK; systemctl is-active slipforkd.socket => active; slipfork
 - 2026-11-18T00:36 [M3.28.20] (lead) status review -> done
 - 2026-11-18T00:36 [M3.28.20] (lead) quad: functional PASS, legality PASS, cruft/ioc quality items closed in attempt 3 (one const SERVICE_RESTRICT_ADDRESS_FAMILIES used by renderer+golden; redundan
+- 2026-11-18T00:36 [M3.28.12] (lead) status active -> review
+- 2026-11-18T00:37 [M3.28.12] (lead) edited fields
+- 2026-11-18T00:37 [M3.28.12] (lead) gate (ioc): SPEC_BLIND_SPOT — render_daemon_handover is a SECOND daemon lifecycle that bypasses DaemonInstaller::release_running_daemon, because the product rel
+- 2026-11-18T00:37 [M3.28.21] (planner) created (task) daemon install owns the socket handover for any holder (version-agnostic, ownership-proven), so the harness keeps no daemon lifecycle
+- 2026-11-18T00:37 [M3.28.12] (lead) edited fields
+- 2026-11-18T00:37 [M3.28.13] (lead) edited fields
+- 2026-11-18T00:37 [M3.28.21] (lead) status ready -> active
+- 2026-11-18T00:37 [M3.28.21] (lead) attempt 1/3 started
+- 2026-11-18T00:37 [M3.28.21] (lead) base 9e392f6eae75153ed25264ac2648b7c3686a06ab
+- 2026-11-18T00:38 [M3.28.12] (lead) status review -> active
+- 2026-11-18T00:38 [M3.28.12] (lead) edited fields
+- 2026-11-18T00:38 [M3.28.12] (lead) attempt 4/4 started
+- 2026-11-18T00:38 [M3.28.12] (lead) gate (legality): FAIL — BLOCKER: support/demo/README.md and the /etc/profile.d login banner advertise 'slipfork open' and 'slipfork restart', which do not exist
+- 2026-11-18T00:38 [M3.28.14] (lead) edited fields
+- 2026-11-18T00:38 [M3.28.14] (lead) added docs/design/do-vm-harness.md: it still documents render_apparmor_body and a harness-written /etc/apparmor.d/slipfork (deleted by M3.28.12) plus pre-AF_NET
+- 2026-11-18T00:41 [M3.28.21] (lead) edited fields
+- 2026-11-18T00:41 [M3.28.21] (lead) attempt 2/3 started
+- 2026-11-18T00:41 [M3.28.21] (lead) attempt 1 blocked correctly: SO_PEERCRED needs an unsafe getsockopt, but every candidate host file is #![forbid(unsafe_code)] and std peer_cred() is unstable. R
+- 2026-11-18T00:44 [M3.28.12] (lead) gate (functional): FAIL on two blockers that are not this node's fault: (1) the tree does not compile because M3.28.21 is mid-edit (daemon_unit_install.rs:318 c
+- 2026-11-18T00:55 [M3.29.3] (lead) edited fields
+- 2026-11-18T00:55 [M3.29.1] (lead) status active -> review
+- 2026-11-18T00:56 [M3.29.1] (lead) edited fields
+- 2026-11-18T00:56 [M3.29.1] (lead) round 1 (cruft): FAIL — BLOCKER: ARCHITECTURE + ADR-0008 restate the entire ospp-v1 wire while declaring ospp.md sole normative (three copies will drift). MAJOR
+- 2026-11-18T00:57 [M3.28.21] (lead) status active -> review
+- 2026-11-18T00:57 [M3.29.1] (lead) round 1 (functional): PASS — old-wire-gone, two-tier-boundary, hpke-documented, remote-verbatim, spec byte-identical, guard/plan/zensical green. NODE acceptance
+- 2026-11-18T00:57 [M3.28.12] (lead) edited fields
+- 2026-11-18T00:57 [M3.28.12] (lead) attempt 5/5 started
+- 2026-11-18T00:57 [M3.28.12] (lead) attempt 4: vaporware eliminated (banner+README name only real verbs; db demo not psql; DEMO_SECRET in modes.local), check_docs_honesty now scans support/demo/RE
+- 2026-11-18T01:05 [M3.28.21] (lead) attempt 3/3 started
+- 2026-11-18T01:05 [M3.28.21] (lead) gate FAIL (legality x2 BLOCKER): (1) /proc/<pid>/exe NotFound => Ok(None) => release returns Ok without re-probing is_served(), so a live holder becomes 'no hol
+- 2026-11-18T01:20 [M3.28.21] (lead) round 1 (functional): PASS — shutdown answerer released with zero signals; foreign proven holder Terminate->full grace->Kill; unowned holder refused with path/p
+- 2026-11-18T01:21 [M3.28.7] (lead) quad round 1 (cruft): FAIL — MAJOR: list re-implements the status row (its own format string + literal 16 vs status.rs MIN_WORLD_COLUMN) -> one shared row forma
+- 2026-11-18T01:21 [M3.28.7] (lead) round 1 (legality): FAIL — BLOCKER: the dashboard's next hints name 'slipfork open'/'slipfork restart', neither of which is a subcommand yet, and a critical tes
+- 2026-11-18T01:22 [M3.28.7] (lead) attempt 2/3 started
+- 2026-11-18T01:22 [M3.28.7] (lead) round 1 (ioc): PASS with MINORs (hand-assembled json! could be a typed Serialize doc; world_state_label could live beside world_next_commands in edge; installer
+- 2026-11-18T01:26 [M3.29.2] (lead) edited fields
+- 2026-11-18T01:26 [M3.29.3] (lead) edited fields
+- 2026-11-18T01:26 [M3.29.2] (lead) dependency relaxed from [M3.29.1, M3.28.9] to [M3.29.1]: the crate rewrite touches only crates/slipfork-ospp{,-testkit}/** + Cargo.toml/lock, which is disjoint 
+- 2026-11-18T01:26 [M3.29.1] (lead) status review -> done
+- 2026-11-18T01:26 [M3.29.1] (lead) quad: functional PASS, ioc resolved by ruling (SecretVault port, RemoteResourceOffer deleted, RemoteStream deleted -> daemon streams SetupBaseR into zstd -d|pg_

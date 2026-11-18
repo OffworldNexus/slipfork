@@ -13,11 +13,12 @@ paths:
   - "docs/snow-modes.md"
   - README.md
   - CHANGELOG.md
+  - "docs/design/do-vm-harness.md"
 attempts: 0
 max_attempts: 3
 escalation: none
 created: "2026-11-17T16:34"
-updated: "2026-11-18T00:08"
+updated: "2026-11-18T00:38"
 ---
 
 # Goal

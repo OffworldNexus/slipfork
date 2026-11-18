@@ -12,11 +12,11 @@ paths:
   - crates/slipfork/src/lib.rs
   - crates/slipfork/src/main.rs
   - crates/slipfork/tests/critical_cli.rs
-attempts: 1
+attempts: 2
 max_attempts: 3
 escalation: none
 created: "2026-11-17T16:33"
-updated: "2026-11-17T23:50"
+updated: "2026-11-18T01:22"
 ---
 
 # Goal

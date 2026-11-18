@@ -19,3 +19,11 @@ quad finding from M3.28.6 folded in: getting-started.md:65,153-164, index.md:18,
 ## 2026-11-18T00:08 [lead]
 
 edited fields
+
+## 2026-11-18T00:38 [lead]
+
+edited fields
+
+## 2026-11-18T00:38 [lead]
+
+added docs/design/do-vm-harness.md: it still documents render_apparmor_body and a harness-written /etc/apparmor.d/slipfork (deleted by M3.28.12) plus pre-AF_NETLINK sandbox text. Sweep it in the same pass as the published pages.

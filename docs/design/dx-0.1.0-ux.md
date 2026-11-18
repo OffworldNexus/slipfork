@@ -30,7 +30,7 @@ slipforkd 1420, ingress 127.0.0.1:80, [::1]:80
 
 - **Block order:** `world`, `app`, `worktree`, `restarted` (restart) / `cd` (fork), `next`, `lineage`; `status` renders the daemon line plus one `world` / `lineage` / `next` triple per world, and `ps` renders `world`, `lineage`, the process table, then `next`. No command invents a sixth row.
 - **One `lineage` line, defined once:** the renderer, its key order, and its outcome vocabulary live in `§8.2` only; no other section restates them.
-- **Zero happy-path noise:** `[resources]` resolution rows (`prefer_remote -> local (not_offered)`), `[lineage]` per-node rows, and namespace vocabulary never print on a normal boot. Global `-v` / `--verbose` adds those rows to **human** output only; `--json` is always the maximal machine document (`§10`).
+- **Zero happy-path noise:** `[resources]` resolution rows (`prefer_remote -> local (unpaired)`), `[lineage]` per-node rows, and namespace vocabulary never print on a normal boot. Global `-v` / `--verbose` adds those rows to **human** output only; `--json` is always the maximal machine document (`§10`).
 - **`next` is one table, stated here and nowhere else:**
 
   | World state | `next` membership, in this order |
@@ -40,7 +40,7 @@ slipforkd 1420, ingress 127.0.0.1:80, [::1]:80
   | `stopped` | `up`, `logs`, `down` |
 
   A world that is not the `cwd`-selected one renders each command with `--world <project>:<fork>`. `status`'s `list`-style `NEXT` column (`§10`) shows that table's first command for the row's state.
-- **Only `up` and `fork` auto-spawn `slipforkd`.** Every other verb — `status`, `ps`, `list`, `logs`, `open`, `restart`, `down`, `drop`, `db`, `redis`, `exec`, `shell`, `secret`, `snow resolve`, `hook` — fails closed when nothing answers on `<state_dir>/run/daemon.sock`, with exactly one line and exit `1`:
+- **Only `up` and `fork` auto-spawn `slipforkd`.** Every other verb — `status`, `ps`, `list`, `logs`, `open`, `restart`, `down`, `drop`, `db`, `redis`, `exec`, `shell`, `secret`, `auth`, `snow resolve`, `hook` — fails closed when nothing answers on `<state_dir>/run/daemon.sock`, with exactly one line and exit `1`:
   ```console
   $ slipfork
   slipfork: no slipforkd on /home/slipfork/.cache/slipfork/run/daemon.sock — run `slipfork up`
@@ -286,7 +286,7 @@ A node whose `Option` is `None` (the daemon recorded no such fact) renders `-`; 
 - **Verbose `slipfork -v up` (`M3.28.8` / `M3.28.11`):** adds per-node lineage and `[resources]` detail to human output only:
   ```console
   $ slipfork -v up
-  [resources] demo: prefer_remote -> local (not_offered)
+  [resources] demo: prefer_remote -> local (unpaired)
   [lineage]   rootfs       a1b2c3d4e5f6   cached        -
   [lineage]   postgres:18  -              cached        -
   [lineage]   seed         9f8e7d6c5b4a   rebuilt       2104ms
@@ -300,9 +300,12 @@ A node whose `Option` is `None` (the daemon recorded no such fact) renders `-`; 
 
 ---
 
-## 9. One `Local` Origin (`struct WorldOrigin`)
+## 9. One `Local` Origin (`struct WorldOrigin`), Two-Tier Secrets & OSPP v1 Pairing
 
 `0.1.0` has **one** origin kind: untagged `struct WorldOrigin(LocalOrigin)`, minted solely via `WorldOrigin::local(&route, ingress_port)`. The outbound-sharing surface is deleted in `M3.28.15` (tombstone: `ADR-0011`; worklist: `plan/nodes/M3/M3.28/NODE.md`); `slipforkd` origin rendering and `WorldRegistry::resolve` therefore have zero shared-origin branch and zero `_ =>` catch-all arm.
+
+- **Two-tier secret boundary (`ARCHITECTURE.md` §3.1, `docs/design/ospp.md`):** `slipfork secret set|unset|list` and local-mode `!!` manage **strictly the local `0600` vault** (`trait SecretVault` -> `FileVaultProvider`: local backing-service credentials that must survive restarts to reconnect to persistent Btrfs world state, plus local developer overrides). `SecretVault::keys` (alongside locally-provisioned `resources` and `domains`) automatically populates OSPP `subscribe.claims` (IDs only, never values); everything unclaimed is resolved by CI to template-free plaintext, and **remote OSPP secrets (`{ "encrypted": "<base64>" }`) and encrypted `dump_ready` streams are HPKE-decrypted strictly in `slipforkd` memory and never written to disk**.
+- **Server-supplied fragment pairing & single `OsppEndpoint` (`slipfork auth <URL>`, `docs/design/ospp.md` §Device Pairing):** `slipfork auth <URL>` validates `<URL>` against `slipforkd`'s single boot-injected `OsppEndpoint` (refusing any differing server identity), solves ALTCHA proof-of-work + signs P-256 proof-of-possession over `ospp-v1`, prints and opens the server-supplied `<url>#handle=<handle>` (fragment only — never computed client-side from the hostname), and waits on the open WebSocket for pushed `pair_approved { account, machine }` (disconnect or Ctrl-C cancels immediately; refusals emit `§10`'s single `auth_failed` code).
 
 ---
 
@@ -335,6 +338,7 @@ The base is open, but the extra keys are a **closed list per code** — no code 
 | `ingress_missing` | `addrs` | any verb that needs the origin when the daemon reported no HTTP ingress listener (an invariant violation, so the CLI fails closed instead of guessing a port) |
 | `ingress_port_invalid` | `addrs`, `port` | any verb that needs the origin when the daemon's reported `port` is not carried by a bound listener (the daemon re-validates its own report and the CLI never substitutes `:0`) |
 | `variable_collision` | `key` | `snow resolve` when a `snow.yml` variable name collides with `ok` / `code` / `error` / `next` |
+| `auth_failed` | `detail` | `auth` when pairing fails (`detail` carries the server `error.code` — `rejected` \| `already_paired` \| `throttled` \| `bad_proof` — or `endpoint_mismatch` / `disconnected` when `<URL>` differs from `slipforkd`'s boot-injected `OsppEndpoint` or the pairing socket drops, `§9`) |
 
 | Command | Summary | `--json` stdout document |
 |---|---|---|
@@ -358,9 +362,9 @@ The base is open, but the extra keys are a **closed list per code** — no code 
 | `slipfork db [DB_ID] [--world <W>]` | Interactive `psql` inside the running `postgres:<v>` `crun` container (TTY) | **no document**: rejects `--json` |
 | `slipfork redis [CLUSTER_ID] [--world <W>]` | Interactive `redis-cli` inside the running `redis:<v>` `crun` container (TTY) | **no document**: rejects `--json` |
 | `slipfork forward [--world <W>] [TARGET...]` | Bind daemon-owned `127.0.0.1:0` bridges into the world until Ctrl-C / disconnect | object: `{"ok": true, "world": str, "targets": [{"id": str, "host_addr": str, "uri": str}]}` |
-| `slipfork snow resolve [--file <F>] [--mode <M>] [--component <C>] [--expose-secrets]` | Validate `snow.yml`, persist missing `!!` secrets, print resolved variables (secrets redacted) | collection: `{<KEY>: str \| null}` (`null` = redacted; `--expose-secrets` fills it). The keys `ok` / `code` / `error` / `next` are reserved and a `snow.yml` variable using one fails closed: `slipfork: snow.yml variable 'ok' collides with the reserved ok/code/error/next keys` |
-| `slipfork secret set [--force] <KEY>` / `unset <KEY>` / `list` | Manage `0600` project vault secrets through `slipforkd` (`set` reads stdin) | object `{"ok": true, "key": str}` / object `{"ok": true, "key": str, "removed": bool}` / collection `[str]` |
-| `slipfork auth login [- \| '<url>#handle=<64-hex>']` | Pair `tpmd` / P-256 device key over `ospp-v1` (`-` reads stdin) | object: `{"ok": true, "key_id": str, "backend": str, "account": str\|null}` |
+| `slipfork snow resolve [--file <F>] [--mode <M>] [--component <C>] [--expose-secrets]` | Validate `snow.yml`, persist missing local `!!` secrets to the local `0600` vault (remote OSPP secrets stay in memory only), print resolved variables (secrets redacted) | collection: `{<KEY>: str \| null}` (`null` = redacted; `--expose-secrets` fills it). The keys `ok` / `code` / `error` / `next` are reserved and a `snow.yml` variable using one fails closed: `slipfork: snow.yml variable 'ok' collides with the reserved ok/code/error/next keys` |
+| `slipfork secret set [--force] <KEY>` / `unset <KEY>` / `list` | Manage local-only `0600` project vault overrides through `slipforkd` (`set` reads stdin; remote OSPP secrets never enter this vault) | object `{"ok": true, "key": str}` / object `{"ok": true, "key": str, "removed": bool}` / collection `[str]` |
+| `slipfork auth <URL>` | Pair machine P-256 key over `ospp-v1`: solves ALTCHA + PoP, prints and opens server-supplied `<url>#handle=<handle>` (fragment only), and awaits `pair_approved` | object: `{"ok": true, "public_key": str, "account": str, "machine": str}` |
 | `slipfork support` | Report embedded integration tiers and `required_evidence` (`support/integrations.toml`) | collection: `[{"id": str, "category": str, "tier": str, "evidence": {...}, "required_evidence": [str]}]` |
 
 **The four verbs with no document** (`exec`, `shell`, `db`, `redis`) reject `--json` because the child owns stdout and no single document is possible: ``slipfork: <verb> passes the child's stdout through and cannot emit one JSON document; drop --json and use the exit code``.
