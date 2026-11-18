@@ -1,27 +1,25 @@
 ---
-name: DX-First (Dream Tool Documentation Before Code)
-description: MANDATORY for every planner, doc-writer, designer, architect, reviewer, critic, lead, and strategist in Slipfork. Everything stems from Developer Experience: write and critique the lean user-facing dream-tool documentation BEFORE internal design or code.
+name: DX-First (High-Craft CLI & Visual User Documentation)
+description: MANDATORY for planner, writer, implementer, architect, review-ux, lead, and strategist. Everything stems from Developer Experience: problem-first visual Zensical docs, rich ANSI/spinner CLI ergonomics, and zero published vaporware.
 ---
 
-# DX-First: Write the Dream Tool First, Then Build It
+# DX-First: High-Craft CLI & Visual Documentation
 
-Slipfork exists to make spinning up dev environments, forking agent worktrees, and running heavy polyglot test suites feel **instantaneous and invisible**. If adopting Slipfork requires rewriting tests, fixing root-owned files, juggling `.env` files, or teaching an LLM custom shell syntax, we failed.
+Slipfork exists to make spinning up polyglot dev environments, forking agent worktrees, and running isolated stacks feel **instantaneous and invisible**. Every extra CLI flag, sheared table column, silent 10-second freeze, manual `.env` dance, or wall of lawyer prose is a defect.
 
-## 1. Docs Before Design, Design Before Code — Without Selling Vaporware!
+## 1. Docs Before Code — Zero Published Vaporware
 
-Before writing internal Rust/TypeScript code for any feature, hypervisor backend, or language test adapter:
+1. **Draft Pre-Code DX Blueprints in `docs/design/dx-<slug>.md` (excluded from public Zensical site):**
+   - Never publish CLI commands, flags, or integrations in `docs/` or `README.md` that do not exist and run in the compiled `slipfork` binary (`uv run --no-project tools/check_docs_honesty.py` enforces this mechanically).
+   - Draft unshipped target UX in `docs/design/dx-<slug>.md` first; promote into published `docs/` (`zensical.toml`) **only** alongside the real working implementation.
+2. **Problem-First Framing & Visual Hierarchy (`writer` + `review-ux`):**
+   - Open user pages with clear user value (*"Slipfork runs your cloud environment locally in a box; CI is the clutch"*) and a working copy-pasteable 10-line CLI/`snow.yml` snippet in the first 25 lines — never lead with `$XDG_DATA_HOME`, `0600` file modes, Btrfs ioctls, or `"Mental model"` headers.
+   - Include Mermaid workflow/`sequenceDiagram` diagrams, Zensical `!!! info` / `!!! warning` admonitions, narrow scannable tables, and `<= 2`-sentence paragraphs (`<= 280` chars).
+   - Ban internal `ADR-*` / `M3.*` plan citations, bit-width lawyer tables, legacy dual syntaxes, and client names; verify with `uvx --offline zensical build --strict`.
 
-1. **Draft the Target DX Blueprint FIRST in `docs/design/dx-<slug>.md` (excluded from public docs!):**
-   - Never publish documentation in `docs/` or `README.md` that advertises CLI commands, flags, or integrations that do not exist yet in the compiled `slipfork` binary!
-   - Instead, write the dream user workflow first as an **unpublished DX spec** (`docs/design/dx-<slug>.md` or `docs/design/target-dx.md`, excluded via `exclude_docs` in `zensical.toml`), covering:
-     * **Local developer machine:** `snow.yml` (`modes.all` + `modes.local`), shared `$UID:$GID` mounts, `.localhost` routing, and auto-generated `!!` secrets.
-     * **Parallel tests:** World-owned stack + orthogonal **Artifact Volumes** + **Fixture Snapshot DAG**.
-     * **AI coding agents (`@slipfork/opencode`):** Implicit worktree forks and `cwd`-based `shell` routing.
-2. **Critique the DX spec with fresh eyes** (`critic` with `dx` and `ai-ergonomics` lenses). Every extra CLI flag, second config file, manual `chmod`, or wall of kernel prose is a defect.
-3. **Promote to published `docs/` ONLY alongside the real working implementation:** Public `docs/` (`zensical.toml`) and `README.md` describe **strictly what runs today** (with future vision kept clearly in `docs/VISION.md` or a small explicitly labeled roadmap corner). Every CLI command and config block in published `docs/` must work against the current binary.
+## 2. High-Craft Terminal & CLI UX (`implementer` + `review-ux`)
 
-## 2. Ruthless Documentation Leanness
-
-- **Lead with the 10-line working example.** Put Incus REST internals, `FICLONE` ioctls, CRIU mechanics, and Linux namespace flags in `ARCHITECTURE.md` — never at the top of user guides.
-- **One canonical way per task.** Never document two syntaxes or a "legacy mode".
-- **Scannable structure:** Short sentences, active voice, crisp comparison tables, ≤ 160 lines per user page, verified with `uvx --offline zensical build --strict`.
+- **Dynamic Column Widths:** Measure visible widths after stripping ANSI escapes (`.max()`) — never shear world/worktree IDs with fixed `{:<16}`/`{:<24}`.
+- **Semantic ANSI Hierarchy & Purity:** Bold/cyan primary URLs, green `running`, red `failed`, dimmed 12-char digests; emit **zero** `\x1b[` escapes under `NO_COLOR`, non-TTY, or `--json`.
+- **Live Progress on `> 200ms` Operations:** Use `spawn()` with `[step/total]` phase headers, spinners, and elapsed time — never freeze the terminal in silent `sleep` poll loops, `pull -q`, or blocking `.output()`.
+- **Sharp Defaults & Remedies:** Format errors as `1 line + next:` remedy, put `doctor`'s `✓ Ready` / `✗ N issue(s)` verdict first, omit `:80` on port-80 URLs, warn on stderr when running ephemerally (`sudo slipfork daemon install`), and gate `[resources]` plumbing behind `-v`.

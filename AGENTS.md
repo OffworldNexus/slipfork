@@ -1,70 +1,75 @@
-# Slipfork (`slipfork`): rules for every agent
+# Slipfork (`slipfork`): Engineering Constitution & Agent Rules
 
-Slipfork is a **DX-first copy-on-write environment** for modern polyglot applications and AI coding agents. From a single `snow.yml` manifest (`modes.all`, `modes.local`, `modes.cloud` + `!!` auto-generated secrets via an open Secret Provider Protocol), Slipfork builds shared-UID local development worlds and forks running worlds in milliseconds as Btrfs subvolume snapshots when agents open worktrees. `0.1.0` ships Btrfs worlds plus the `snow.yml` resolver. The parallel test orchestrator is `0.2.0`: it targets heavy multi-component suites (`pytest`, `Playwright`/`Vitest`, `PHPUnit`, `cargo test`, `blastit check`) across a content-addressed **Artifact + Fixture Snapshot DAG**.
+Slipfork (`0.1.0`) is a **DX-first copy-on-write Btrfs environment** for modern polyglot applications and AI coding agents ("your cloud environment locally in a box; CI is the clutch"). From a single `snow.yml` manifest (`modes.all`, `modes.local`, `modes.cloud` + `!!` auto-generated secrets via the Open Secret Provider Protocol), Slipfork runs shared-UID local worlds behind `.localhost` and forks running worlds in milliseconds as Btrfs subvolume snapshots when agents open worktrees. (`0.2.0` adds the parallel STP v1 **Artifact + Fixture Snapshot DAG** test orchestrator.)
 
-The project runs autonomously when `plan/AUTOPILOT` is `on`: a cheap model (`deepseek-v4.1-flash`) executes leaf tasks and narrow-lens goldfish reviews; an expensive model (`gemini-4-carbon`) runs architecture crossroads, upward direction checks, milestone gates, and hard rescues.
+When `plan/AUTOPILOT` is `on`, `deepseek-v4.1-flash` executes coarse vertical slices (`implementer`, `writer`, `planner`, `lead`) and runs the parallel **Triad Review Gate** (`review-arch` + `review-tests` + `review-ux`); `gemini-4-carbon` (`architect`, `strategist`, `expert`) handles upward architecture crossroads, milestone gates, and hard kernel/systems rescues.
 
-**Read these before doing anything:**
+---
 
-1. `docs/VISION.md`: why Slipfork exists and why **everything stems from Developer Experience**.
-2. `ARCHITECTURE.md`: the **Composition Root & DI Tree** governing every crate, trait, and adapter.
-3. `plan/STATE.md`: current plan & open `HUMAN.md` items (`uv run --no-project tools/plan.py state`).
-4. Your assigned `NODE.md`, plus `docs/knowledge/LESSONS.md`.
+## Five Non-Negotiable Engineering Laws
 
-## The Three Engineering Iron Laws (learned the hard way — enforced by dedicated reviewers)
+1. **True Constructor IoC/DI, Cohesive OOP & Canonical Module Ownership (`review-arch`):**
+   - **Single Composition Root:** Only `crates/slipfork/src/main.rs` and `packages/opencode-slipfork/src/index.ts` read `std::env` / `process.env`, probe `/proc`, or bind ambient OS sockets/filesystems. Library crates have **zero** `std::env::var`, `OnceLock`/`LazyLock`, or `static` mutable/atomic state.
+   - **Cohesive Structs (`<= 500` LOC) Over Free-Function Galaxies:** Group related state + behavior into cohesive structs (`SupervisedProcess`, `WorldManager`, `FileVault`) with methods — never 6-arg free functions or `*Inputs` parameter bags.
+   - **Architectural Port Traits ONLY — Zero Single-Impl Mock Traits:** Define traits **strictly** at genuine architectural ports (`WorldEngine`, `SecretProvider`, `SubvolumeDriver`, `UnitPort`, `TunnelRegistrar`, `VcsWorkspace`). **NEVER** invent single-impl mock-only traits (`MonotonicClock`, `HandoverClock`, `HostLoadProbe`, `FakeClock`) when a plain value struct (`Duration`, `StopBudget`) suffices.
+   - **Extend Canonical Modules Instead of Leaking Internals:** Keep all syntax parsing, token/AST traversal, fallback evaluation, secret-taint rules, and framing strictly inside their canonical owner module (`slipfork-snow`, `wire`, `relay`, `slipfork-edge`; keep `slipfork-edge` pure of CLI tables; reuse `Cargo.toml` crates like `tempfile`, `httparse`, `serde_json`). Add predicate/visitor helpers inside the canonical module rather than re-scanning `${{` delimiters, HTTP headers, or tokens downstream.
+   - **Think Upwards:** If a cross-backend DI conflict prevents a clean non-leaky tree, **STOP** and escalate `STATUS: blocked` (`BLOCK_KIND: direction-challenge`) rather than hacking around a leaky port.
 
-1. **Zero "Illegal" Solutions — Block on Missing Inputs (`review-legality`):**
-   - Initiative is good **only** when the resulting code is genuinely useful and clean afterwards.
-   - **NEVER** invent specs, designs, `[derived]`/`[guessed]` placeholders, fake/in-memory production fallbacks, `os.environ` side-doors, or monkey-patches around missing credentials, missing host capabilities (a non-Btrfs state directory, a missing secret key), or upstream library contracts.
-   - Check `Cargo.toml`, `pyproject.toml`, and `package.json` before coding: never hand-roll what a workspace crate or declared dependency already provides.
-   - When a required external input, credential, host daemon, or specification constraint is missing or unreachable: **STOP immediately** and return `STATUS: blocked` so `lead`/`conductor` files `plan.py human add --kind missing-input`.
-2. **Strict IoC / DI & Mandatory Upward Direction Challenge (`review-ioc`):**
-   - **Zero global/mutable state**, zero singletons, and zero direct `std::env::var`, filesystem, clock, network, or subprocess calls outside thin adapter implementations wired at the **single Composition Root**.
-   - Collaborators depend strictly on small, honest capability traits (`WorldEngine`, `SecretProvider`, `ArtifactStore`, `TestAdapter`, `TunnelRegistrar`, `VcsWorkspace`) — never concrete cross-layer structs or `match backend_kind` ladders.
-   - **Think UPWARDS before coding downwards:** Integrating a new backend, language, or feature must challenge whether the global DI tree and specification cover all directions cleanly. **If you cannot draw a clean, non-leaky DI tree, there is a blind spot in the specification.** Do NOT build a parallel pipeline or hack around a leaky trait — stop and escalate a `direction-challenge` (`plan.py human add --kind direction-challenge`) for human architectural feedback.
-3. **SemVer Honesty: Zero Pre-`1.0` Backward Compatibility & Zero Fallback Cruft (`review-cruft`):**
-   - Workspace version `< 1.0.0` carries **zero backward-compatibility promises** unless explicitly requested by the human.
-   - **One Canonical Way, No Fallbacks:** When an idea or syntax is superseded, **delete** the old code, config keys, tests, docs, and plan nodes in the same sweep. Never preserve legacy aliases, dual syntaxes, deprecated shims, or degraded fallback modes ("try Btrfs, else silently fall back to a plain host directory"). In doubt about breaking an already-used `0.x` contract, **ask the human** — never add a compatibility shim preemptively.
+2. **Lab-First E2E Testing & Coverage Economy — Zero Mocks (`review-tests`):**
+   - Test with real disk directories, real `git`/shell subprocesses, real Btrfs/daemon workflows, and (for OSPP) the minimal `127.0.0.1:0` loopback reference server. **NEVER** write `Mock*`, `Fake*`, `Recording*`, `Stub*`, `MemorySecretProvider` shims, or `chmod 0o555` `TestTreeDriver` theater.
+   - Consolidate slow daemon/world boots into 1 rich, cohesive E2E lifecycle journey (reaping worlds and `-pgid` process groups cleanly). Write unit tests strictly for subtle pure algorithms (DAG cycles/waves, Merkle hashing, `snow.yml` secret taint). Delete 0%-covered fallback dead code (`LayeredSecretProvider`, `.ok().unwrap_or_default()`) instead of testing it.
+   - Protected critical tests (`crates/*/tests/critical_*.rs` and `**/tests/critical/**`) are guarded by `tools/critical_guard.py`; never weaken or delete them unless authorized in your node's `paths`.
 
-## Core workflow rules
+3. **High-Craft CLI & Scannable Visual Docs (`review-ux`):**
+   - Compute dynamic visible column widths (`.max()`, stripping ANSI when measuring) — never shear long IDs with hardcoded `{:<16}`/`{:<24}`. Style primary URLs bold/cyan, `running` green, `failed` red, and 12-char digests dimmed; emit **zero** `\x1b[` under `NO_COLOR` / non-TTY or `--json`.
+   - Never swallow slow (`> 200ms`) child progress in blocking `.output()`, silent `sleep` loops, or `pull -q`: `spawn()` and stream live lines with `[step/total]` phase headers, spinners, and elapsed time. Pin `GIT_AUTHOR_*`/`GIT_COMMITTER_*` on internal git plumbing, format errors as `1 line + next:` remedy, lead `doctor` with `✓ Ready` / `✗ N issue(s)`, omit `:80` on port-80 URLs, warn on stderr when ephemeral (`sudo slipfork daemon install`), and gate `[resources]` jargon behind `-v`.
+   - Docs & specs: lead with user value + a working copy-pasteable snippet in the first 25 lines, use Mermaid diagrams + Zensical `!!!` admonitions + `<= 2`-sentence paragraphs, and ban internal `ADR-*` / `M3.*` lawyer prose.
 
-4. **Developer Experience First — Zero Vaporware in Published Docs.** Draft and critique target DX specs in `docs/design/dx-<slug>.md` (excluded from the public Zensical site) *before* writing internal designs or Rust/TS code; promote pages and commands into published `docs/` and `README.md` **only** when the real feature exists and runs. Load skill `dx-first`.
-5. **Mandatory Quad Review Gate on Code & Design Tasks.** Every implementation or design task must pass:
-   - `reviewer` (fresh-context functional review: re-runs all `# Acceptance` commands + `make check` + `guard.py` + `critical_guard.py`), **plus**
-   - the three narrow-context goldfish smell reviewers in parallel: **`review-legality`**, **`review-ioc`**, and **`review-cruft`**.
-6. **The plan lives on disk (`plan/nodes/`).** Mutate it **only** via `uv run --no-project tools/plan.py ...` (skill `plan-system`). `plan.py set <id> active` mechanically blocks overlapping `paths` across concurrent active tasks — never bypass it.
-7. **Stay in your lane & stage explicit paths.** Touch only globs in your node's `paths`. When committing (`lead`/`conductor` only), run `git add -- <explicit files>`, never `git add .` or broad directory globs.
-8. **Disk, never `/tmp` tmpfs, for heavy state.** `/tmp` on Linux runners is RAM-backed `tmpfs`. Keep worktrees under `.worktrees/`, CoW snapshots/volumes under `~/.cache/slipfork` or `.slipfork/`, and scratch builds on disk. Use `/tmp/opencode/` only for tiny short-lived files.
-9. **Python & Rust execution:** Bare `python`, `python3`, and `pip` are denied. Use `uv run --no-project` for `tools/*.py` and `poc/*.py`, `uvx --offline` for `ruff` and `zensical`, and `cargo` / `make` targets for Rust.
-10. **Confidentiality:** Never mention proprietary client or sibling private repository names in code, docs, tests, comments, or commit messages. (`snow.yml` and Kerfufoo's public Snow reference are public specs.)
-11. **Protected critical tests:** `crates/*/tests/critical_*.rs` and `**/tests/critical/**` are guarded by `tools/critical_guard.py`. Never weaken or delete them unless authorized in your node's `paths`.
-12. **Git & Release PR workflow:** Work on `release/<version>` branches (`lead` and `conductor` commit; `conductor` opens PRs into `develop` and pauses for human merge). Never push directly to `develop`, never force-push, never `git tag`, never `gh pr merge`.
+4. **Anti-Vaporware, Upstream Grounding & Pre-`1.0` Scorched-Earth Deletion:**
+   - Read `Cargo.toml`, `package.json`, `ARCHITECTURE.md`, and `vendor/` BEFORE designing or coding.
+   - If a required external daemon/webhook/wire spec is missing, **STOP immediately** (zero `[derived]`/`[guessed]` markers, zero `Unavailable*` CLI vaporware, zero degraded fallbacks) and return a `<= 12`-line `STATUS: blocked` (`BLOCK_KIND: missing-input`).
+   - Published `docs/` (`zensical.toml`) and `README.md` describe **strictly what runs in the shipped binary** (`tools/check_docs_honesty.py`); pre-code DX blueprints live in `docs/design/dx-*.md`.
+   - Pre-`1.0`: delete superseded commands/types/tests/docs atomically with zero legacy aliases, zero `#[deprecated]`, and zero `"Option A vs Option B"` pivot archaeology.
 
-## Where things are
+5. **Adaptive Scope, Triad Review Gate & Batched Execution Economy:**
+   - **1-Call Discovery & Complete Writes:** Batch initial discovery into **one** command (never snoop `.opencode/**`, `candidate_meta.json`, `tools/*.py` source, `.gitignore`, or `git log`), write complete warning-free files in 1 `write` per file over micro-`edit` loops, and write **zero `RESULT.md` essays**.
+   - **Coarse Vertical Slices & Triad Gate:** Plan 2–6 cohesive vertical slices per epic (1 writer per worktree; serialize shared `cli.rs`/`main.rs`/`Cargo.toml` edits via `--depends`; return `STATUS: needs_split` if a leaf explodes across `>= 4` subsystems). `lead` runs the parallel **Triad Review Gate** (`review-arch` + `review-tests` + `review-ux`), filters cosmetic nits into at most 1 consolidated fix pass, runs targeted crate tests per slice, and runs full `make check` once at the epic gate.
+
+---
+
+## Repository Safety & Workflow Rules
+
+- **Plan & Path Locks:** Mutate `plan/` **exclusively** via `uv run --no-project tools/plan.py ...` (skill `plan-system`). Touch only globs in your node's `paths`.
+- **Disk, Never `/tmp` `tmpfs`, for Heavy State:** `/tmp` on Linux runners is RAM-backed `tmpfs`. Keep worktrees under `.worktrees/`, CoW snapshots/volumes under `~/.cache/slipfork`, `.slipfork/`, or `/var/tmp`, and use `/tmp/opencode/` only for tiny short-lived files.
+- **Python & Rust Execution:** Bare `python`, `python3`, and `pip` are denied. Use `uv run --no-project` for `tools/*.py` and `poc/*.py`, `uvx --offline` for `ruff` and `zensical`, and `cargo` / `make` targets for Rust.
+- **Confidentiality:** Never mention proprietary client or sibling private repository names in code, docs, tests, comments, or commit messages (`snow.yml` and Kerfufoo's public Snow reference are public specs).
+- **Git & Release PR Workflow:** Work on `release/<version>` branches; only `lead` and `conductor` commit using explicit paths (`git add -- <explicit files>`). Never push directly to `develop`, force-push, tag, or `gh pr merge`.
+
+## Where Things Are
 
 | Path | What |
 |---|---|
 | `plan/` | Autonomous plan tree: `ROADMAP.md`, `STATE.md`, `HUMAN.md`, `ESCALATIONS.md`, `JOURNAL.md`, `BUDGET.json`, `AUTOPILOT`, `nodes/` |
-| `docs/VISION.md` | North Star vision, DX-first mandate, and Milestone 1–4 scope (excluded from public Zensical site) |
-| `ARCHITECTURE.md` | Living technical specification: Composition Root, DI Tree, traits, wire/API protocols, and invariants |
-| `docs/` & `README.md` | Lean dream-tool public user documentation (`zensical.toml` -> `make docs-check`) |
-| `docs/design/` | Technical design docs (`*.md`) + goldfish critic artifacts (`*.review-<lens>.md`) |
-| `docs/decisions/` | Architecture Decision Records (`ADR-NNNN-<slug>.md`) |
-| `docs/research/` | Cited hypervisor/CoW/framework research & measured benchmark reports (`m1-poc-benchmark.md`) |
-| `docs/knowledge/` | `LESSONS.md` — concise host, Rust, Linux namespace, Btrfs subvolume, AppArmor, and OpenCode facts |
-| `crates/` | Rust workspace (`slipfork-world`, `slipfork-snow`, `slipfork-dag`, the `BtrfsEngine` in `slipfork-engine`, `slipfork-edge`, `slipfork-vcs`, `slipfork-ospp`, `slipfork`): one unified Btrfs subvolume per world, snapshotted and cloned through `SubvolumeDriver`; `slipfork-testkit`/`slipfork-ospp-testkit` are test-only scaffolding |
+| `docs/VISION.md` | North Star vision, DX-first mandate, and milestone scope (excluded from public Zensical site) |
+| `ARCHITECTURE.md` | Living technical specification: Composition Root, Constructor DI Tree, port traits, wire protocols, and invariants |
+| `docs/` & `README.md` | Lean, visual public user documentation (`zensical.toml` -> `make docs-check` + `tools/check_docs_honesty.py`) |
+| `docs/design/` | Pre-code DX blueprints (`dx-*.md`) & `<= 150`-line technical/protocol specs |
+| `docs/decisions/` | 1-page Architecture Decision Records (`ADR-NNNN-<slug>.md`) |
+| `docs/research/` | Primary-source research & real CoW benchmark reports (`m1-poc-benchmark.md`) |
+| `docs/knowledge/` | `LESSONS.md` — concise host, Rust, Linux namespace/process-group, Btrfs subvolume, AppArmor, and OpenCode facts |
+| `crates/` | Rust workspace (`slipfork-world`, `slipfork-snow`, `slipfork-dag`, `slipfork-engine`, `slipfork-edge`, `slipfork-vcs`, `slipfork-ospp`, `slipfork`); `slipfork-testkit` & `slipfork-ospp-testkit` are test-only lab harnesses |
 | `packages/opencode-slipfork/` | OpenCode V2 plugin (`ctx.worktree.transform` + `ctx.shell.hook` + `ctx.session.hook`) |
 | `poc/` | Real PostgreSQL 18 + Linux `netns` + Playwright M1 PoC benchmark harness |
-| `tools/` | Stdlib-only harness tools (`plan.py`, `guard.py`, `critical_guard.py`) + `tools/tests/` |
+| `tools/` | Stdlib-only harness & honesty guards (`plan.py`, `guard.py`, `critical_guard.py`, `check_docs_honesty.py`, `check_support.py`, `rs_test_list.py`) |
 
-## Skills index (load with `skill`)
+## Skills Index (load with `skill`)
 
 | Skill | Load when |
 |---|---|
-| `dx-first` | Planning, writing docs, designing CLI/`snow.yml` UX, or reviewing any user-facing surface |
-| `engineering-laws` | Designing, coding, or reviewing anything (Zero Illegal Solutions, Strict IoC/DI + Upward Challenge, Zero Pre-1.0 Compat) |
+| `dx-first` | Designing CLI/`snow.yml` UX, writing `docs/**` or `docs/design/dx-*.md`, or running `review-ux` |
+| `engineering-laws` | Designing, coding, planning, or reviewing anything (Five Non-Negotiable Laws & Triad Gate) |
 | `plan-system` | Reading or mutating `plan/` via `tools/plan.py` |
-| `dispatch` | Spawning subagents, writing briefs/reports, running the Quad Review Gate, or escalating |
+| `dispatch` | Spawning subagents, running the Triad Review Gate, triaging findings, or escalating |
 | `rust-standards` | Writing or reviewing Rust crates (`crates/*`) |
-| `testing` | Writing critical tests, tool tests, or running `test-curator` audits |
-| `git-workflow` | Staging explicit files, running pre-commit gates, committing, or opening Release PRs |
+| `testing` | Writing consolidated lab E2E / protected critical tests or running `review-tests` |
+| `git-workflow` | Staging explicit files, running slice vs epic-gate checks, committing, or opening Release PRs |

@@ -1426,3 +1426,13 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-18T15:27 [M3.28.24] (lead) status active -> review
 - 2026-11-18T15:39 [M3.28.24] (lead) edited fields
 - 2026-11-18T16:07 [M3.28.24] (lead) final delta: WorldEngine::world_is_live (no default; BtrfsEngine = status Live AND init_identity.is_live_leader; stub derives from its frozen set), matches_live
+- 2026-11-18T16:15 [M3.27] (lead) status ready -> active
+- 2026-11-18T16:15 [M3.27] (lead) attempt 3/3 started
+- 2026-11-18T16:15 [M3.27] (lead) base d254fe7144cc0006c8bb7750c67925544deaf215
+- 2026-11-18T16:22 [M3.27] (unknown) edited fields
+- 2026-11-18T16:22 [M3.27] (unknown) edited fields
+- 2026-11-18T16:39 [M3.27] (lead) status active -> review
+- 2026-11-18T16:53 [M3.27] (lead) edited fields
+- 2026-11-18T16:53 [M3.27] (lead) paths widened: crates/slipfork-engine/tests/** (the protected suites need the injected StopBudget argument) and crates/slipfork-testkit/src/lib.rs (its doc refe
+- 2026-11-18T17:00 AUTOPILOT off by conductor User requested hard stop and root-cause speed/quality audit
+- 2026-11-18T21:38 AUTOPILOT on by conductor Install GEPA winning G4 agent bundle and execute pre-diagnosed 6-slice 0.1.0 cleanup + UX overhaul
