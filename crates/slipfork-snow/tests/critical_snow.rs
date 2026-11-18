@@ -3,11 +3,9 @@
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU8, Ordering};
 
-use slipfork_snow::conformance::assert_secret_provider_conformance;
 use slipfork_snow::{
-    EntropySource, FileVaultProvider, LayeredSecretProvider, MemorySecretProvider, Namespace,
-    ProviderError, ResourceCoordinates, S3Coordinates, SecretProvider, SecretValue, SnowError,
-    SnowFile,
+    EntropySource, FileVaultProvider, Namespace, ProviderError, ResourceCoordinates, S3Coordinates,
+    SecretProvider, SecretValue, SnowError, SnowFile,
 };
 use slipfork_world::{
     DNS_LABEL_REASON, LocalHostRoute, ProjectSlug, WorldError, WorldOrigin, WorldTarget,
@@ -42,6 +40,41 @@ impl EntropySource for FixedCounterEntropy {
     }
 }
 
+/// The `SecretProvider` contract: isolated namespaces, `None` on missing keys, and write-once
+/// `ensure_secret` idempotence.
+fn assert_secret_provider_conformance<P: SecretProvider>(provider: &P) {
+    assert_eq!(
+        provider.get(Namespace::Secrets, "SECRET_KEY").expect("get"),
+        None
+    );
+    assert_eq!(
+        provider.get(Namespace::Vars, "SECRET_KEY").expect("get"),
+        None
+    );
+
+    let first = provider
+        .ensure_secret("SECRET_KEY", "first-generated-value")
+        .expect("first ensure");
+    assert_eq!(first, "first-generated-value");
+    assert_eq!(
+        provider
+            .get(Namespace::Secrets, "SECRET_KEY")
+            .expect("read back")
+            .as_deref(),
+        Some("first-generated-value")
+    );
+
+    // A second ensure with a DIFFERENT proposal preserves the first value.
+    let second = provider
+        .ensure_secret("SECRET_KEY", "second-different-value")
+        .expect("second ensure");
+    assert_eq!(second, "first-generated-value");
+    assert_eq!(
+        provider.get(Namespace::Vars, "SECRET_KEY").expect("get"),
+        None
+    );
+}
+
 /// Both DI ports and every shipped adapter are shareable across threads.
 #[test]
 fn providers_are_send_sync_and_usable_through_shared_references() {
@@ -49,26 +82,16 @@ fn providers_are_send_sync_and_usable_through_shared_references() {
     assert_send_sync::<dyn SecretProvider>();
     assert_send_sync::<dyn EntropySource>();
     assert_send_sync::<FileVaultProvider>();
-    assert_send_sync::<MemorySecretProvider>();
-    assert_send_sync::<LayeredSecretProvider<MemorySecretProvider, MemorySecretProvider>>();
     assert_send_sync::<slipfork_snow::OsCsprngEntropy>();
     assert_send_sync::<FixedCounterEntropy>();
 }
 
 #[test]
-fn secret_provider_conformance_holds_for_memory_and_file_vault() {
-    assert_secret_provider_conformance(MemorySecretProvider::default);
+fn secret_provider_conformance_holds_for_the_file_vault() {
     let dir = tempfile::tempdir().expect("tempdir");
-    assert_secret_provider_conformance(|| {
-        let p = dir.path().join(format!("vault-{}.json", fastrand_u64()));
-        FileVaultProvider::open(p).expect("open vault")
-    });
-}
-
-fn fastrand_u64() -> u64 {
-    let mut b = [0u8; 8];
-    getrandom::fill(&mut b).expect("rng");
-    u64::from_le_bytes(b)
+    let provider =
+        FileVaultProvider::open(dir.path().join("conformance.json")).expect("open vault");
+    assert_secret_provider_conformance(&provider);
 }
 
 #[test]
@@ -311,16 +334,12 @@ fn coordinates_and_s3_debug_redact_every_secret() {
     assert!(!format!("{value:?}").contains("value-secret-must-not-leak"));
 
     // A provider's `Debug` must never expose the store: no `{:?}` path may print plaintext.
-    let provider = MemorySecretProvider::new();
-    provider.insert(
-        Namespace::Secrets,
-        "SECRET_KEY",
-        "provider-secret-must-not-leak",
-    );
-    assert_eq!(format!("{provider:?}"), "MemorySecretProvider(<redacted>)");
+    let dir = tempfile::tempdir().expect("tempdir");
+    let provider = FileVaultProvider::open(dir.path().join("redaction.json")).expect("open");
+    provider
+        .ensure_secret("SECRET_KEY", "provider-secret-must-not-leak")
+        .expect("ensure");
     assert!(!format!("{provider:?}").contains("provider-secret-must-not-leak"));
-    let layered = LayeredSecretProvider::new(provider, MemorySecretProvider::new());
-    assert!(!format!("{layered:?}").contains("provider-secret-must-not-leak"));
 }
 
 #[test]
@@ -334,7 +353,8 @@ modes:
 "#;
     let snow_bad = SnowFile::parse_yaml(bad_ensure).expect("parse");
     let coords = canonical_coords(&snow_bad);
-    let mem = MemorySecretProvider::new();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mem = FileVaultProvider::open(dir.path().join("bad.json")).expect("open vault");
     let rng = FixedCounterEntropy::new(1);
     assert!(matches!(
         snow_bad.resolve_mode("local", None, &mem, &coords, &rng),
@@ -368,49 +388,6 @@ modes:
         }
         other => panic!("unexpected error: {other}"),
     }
-}
-
-#[test]
-fn layered_provider_reads_primary_then_fallback_and_writes_primary_only() {
-    let local = MemorySecretProvider::new();
-    let remote = MemorySecretProvider::new();
-    remote.insert(Namespace::Secrets, "SHARED_API_KEY", "remote-shared-secret");
-    let layered = LayeredSecretProvider::new(local, remote.clone());
-
-    assert_eq!(
-        layered
-            .get(Namespace::Secrets, "SHARED_API_KEY")
-            .expect("get")
-            .as_deref(),
-        Some("remote-shared-secret")
-    );
-    let gen_val = layered
-        .ensure_secret("LOCAL_SECRET", "generated-locally")
-        .expect("ensure");
-    assert_eq!(gen_val, "generated-locally");
-    // Remote provider was never mutated!
-    assert_eq!(
-        remote
-            .get(Namespace::Secrets, "LOCAL_SECRET")
-            .expect("remote untouched"),
-        None
-    );
-
-    // A remote-only secret converges without writing anything locally.
-    let local = MemorySecretProvider::new();
-    let layered = LayeredSecretProvider::new(local.clone(), remote.clone());
-    assert_eq!(
-        layered
-            .ensure_secret("SHARED_API_KEY", "freshly-generated")
-            .expect("converge"),
-        "remote-shared-secret"
-    );
-    assert_eq!(
-        local
-            .get(Namespace::Secrets, "SHARED_API_KEY")
-            .expect("local untouched"),
-        None
-    );
 }
 
 #[test]
@@ -733,7 +710,8 @@ modes:
         );
         let snow_alias = SnowFile::parse_yaml(&bad_alias).expect("parse");
         let coords = canonical_coords(&snow_alias);
-        let mem = MemorySecretProvider::new();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mem = FileVaultProvider::open(dir.path().join("alias.json")).expect("open vault");
         let rng = FixedCounterEntropy::new(1);
         assert!(matches!(
             snow_alias.resolve_mode("local", Some("api"), &mem, &coords, &rng),
@@ -774,7 +752,8 @@ modes:
 "#;
     let snow = SnowFile::parse_yaml(yaml).expect("parse");
     let coords = canonical_coords(&snow);
-    let mem = MemorySecretProvider::new();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mem = FileVaultProvider::open(dir.path().join("mode.json")).expect("open vault");
     let rng = FixedCounterEntropy::new(1);
 
     let cloud = snow

@@ -7,6 +7,10 @@
 
 pub mod support;
 
+mod rootfs_conformance;
+
+use rootfs_conformance::assert_world_rootfs_conformance;
+
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -16,7 +20,7 @@ use slipfork_engine::rootfs::{
     BackingServiceKey, BaseImageBuilder, BaseImageError, BuildxExporter, BuildxRequest,
     DockerfileStageBuilder, ElfAbiProbe, HostCacheRequest, ImageContractMetadata, InputHasher,
     OciImageStore, OciRootfs, OsRelease, RootfsBuildEvent, RuntimeAssets, SnowPortContract,
-    WorldRootfs, WorldRootfsRequest, conformance::assert_world_rootfs_conformance,
+    WorldRootfs, WorldRootfsRequest,
 };
 use slipfork_engine::rootfs::{CRUN_GUEST_PATH, WORLD_INIT_GUEST_PATH};
 use slipfork_engine::{CacheOutcome, SystemClock};

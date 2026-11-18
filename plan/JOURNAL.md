@@ -1469,3 +1469,18 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-18T22:19 [M3.30.4] (planner) created (task) Lab-first test consolidation: 1 Btrfs journey + 1 OSPP journey + pure algorithm tests & single-build Makefile
 - 2026-11-18T22:19 [M3.30.5] (planner) created (task) Visual high-hierarchy 0.1.0 docs: value-first quickstart, Mermaid diagram, admonitions & single CHANGELOG entry
 - 2026-11-18T22:19 [M3.30.6] (planner) created (task) Live lab VM proof (165.232.86.174): PTY color/spinner E2E, .localhost :80 demo & before/after llvm-cov audit
+- 2026-11-18T22:20 [M3.30.1] (lead) status ready -> active
+- 2026-11-18T22:20 [M3.30.1] (lead) attempt 1/3 started
+- 2026-11-18T22:20 [M3.30.1] (lead) base 52a8a4c39d2c16193c29557560245f41343bb791
+- 2026-11-18T22:20 [M3.30.1] (lead) edited fields
+- 2026-11-18T22:20 [M3.30.1.1] (lead) created (task) Canonical snow claimed-eval + delete dead provider/conformance/event code
+- 2026-11-18T22:20 [M3.30.1.2] (lead) created (task) Purge support-matrix bureaucracy and collapse duplicated helper forks
+- 2026-11-18T22:21 [M3.30.1.3] (lead) created (task) Delete single-impl mock traits/doubles & write concrete Constructor DI through both composition roots
+- 2026-11-18T22:21 [M3.30.1.1] (lead) status ready -> active
+- 2026-11-18T22:21 [M3.30.1.1] (lead) attempt 1/3 started
+- 2026-11-18T22:21 [M3.30.1.1] (lead) base 52a8a4c39d2c16193c29557560245f41343bb791
+- 2026-11-18T22:21 [M3.30.1] (lead) split into M3.30.1.1/.2/.3 (crate-DAG order) after needs_split; no code changes yet
+- 2026-11-18T22:27 [M3.30.1.1] (lead) status active -> review
+- 2026-11-18T22:27 [M3.30.1.1] (lead) lead re-ran acceptance: fmt+clippy clean, engine/edge/slipfork-lib tests green; greps clean
+- 2026-11-18T22:29 [M3.30.1.1] (lead) status review -> ready: triad: 2 BLOCKER + 3 MAJOR, one consolidated fix pass
+- 2026-11-18T22:29 [M3.30.1.1] (lead) attempt 2/3 started

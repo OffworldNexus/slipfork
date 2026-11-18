@@ -40,7 +40,10 @@ use slipfork_edge::{
     IngressRoute, ListenConfig, UnitSpec, WorldRegistry, adopt_systemd_listener, bind_listen,
     render_service_unit, render_socket_unit, resolve_listener_set,
 };
-use slipfork_engine::conformance::assert_world_engine_conformance;
+#[path = "../../slipfork-engine/tests/conformance/mod.rs"]
+mod conformance;
+
+use conformance::assert_world_engine_conformance;
 use slipfork_engine::rootfs::{
     ElfAbi, ImageContractMetadata, LibcFamily, OsRelease, RootfsDigest, WorldRootfs,
 };
@@ -637,7 +640,7 @@ fn registry_mints_one_origin_per_world() {
 /// handles, their lifecycle, the snapshot set a clone may come from, and an entry command that runs
 /// the argv directly (a stub world has no namespaces to enter), and it dials a real loopback
 /// `TcpStream`. It passes the shared
-/// [`assert_world_engine_conformance`](slipfork_engine::conformance::assert_world_engine_conformance)
+/// [`assert_world_engine_conformance`](conformance::assert_world_engine_conformance)
 /// matrix; the service capabilities it never exercises are typed `Unsupported` naming the engine.
 struct StubWorldEngine {
     live: Mutex<Vec<WorldHandle>>,

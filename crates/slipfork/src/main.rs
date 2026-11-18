@@ -1473,12 +1473,6 @@ fn print_event(json: bool, event: BootEvent) {
         return;
     }
     match event {
-        BootEvent::Secrets { key, vault } => {
-            println!(
-                "[secrets]   ensured secrets::{key} -> {} (0600)",
-                vault.display()
-            );
-        }
         BootEvent::Resources { .. } => {
             // Rendered once, from the returned summary, and only under `-v`.
         }

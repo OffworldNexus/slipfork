@@ -287,13 +287,6 @@ impl WorldProcessReport {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum BootEvent {
-    /// A `secrets::<KEY>` value was ensured in the local vault.
-    Secrets {
-        /// Secret key name (never its value).
-        key: String,
-        /// `0600` vault file holding it.
-        vault: PathBuf,
-    },
     /// One `[resources]` decision line.
     Resources {
         /// The decided resource.

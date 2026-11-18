@@ -1,5 +1,5 @@
-//! `SecretProvider` / `EntropySource` DI traits, the `SecretValue` redaction wrapper, and the
-//! local vault / in-memory adapters.
+//! `SecretProvider` / `EntropySource` DI traits, the `SecretValue` redaction wrapper, and the local
+//! `0600` vault adapter.
 //!
 //! Both ports are `Send + Sync` and take `&self`: M2 resolves worlds and secrets from several
 //! threads, so interior synchronization belongs to the adapter (the `0600` [`FileVaultProvider`]
@@ -11,7 +11,6 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
-use std::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -211,94 +210,6 @@ impl EntropySource for OsCsprngEntropy {
     }
 }
 
-/// In-memory [`SecretProvider`] for tests and static snapshots.
-#[derive(Default)]
-pub struct MemorySecretProvider {
-    record: RwLock<VaultRecord>,
-}
-
-impl fmt::Debug for MemorySecretProvider {
-    /// Never print the store: `{:?}` on a provider must not expose plaintext secrets.
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "MemorySecretProvider(<redacted>)")
-    }
-}
-
-impl MemorySecretProvider {
-    /// Construct an empty in-memory provider.
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Set a value in the given namespace.
-    pub fn insert(&self, namespace: Namespace, key: impl Into<String>, val: impl Into<String>) {
-        self.write()
-            .map_mut(namespace)
-            .insert(key.into(), val.into());
-    }
-
-    fn read(&self) -> RwLockReadGuard<'_, VaultRecord> {
-        // Poisoning only means a panicking thread held the lock; the maps carry no invariant a
-        // panic can break, so recover instead of failing every later resolution.
-        self.record
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-    }
-
-    fn write(&self) -> RwLockWriteGuard<'_, VaultRecord> {
-        self.record
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-    }
-}
-
-impl Clone for MemorySecretProvider {
-    fn clone(&self) -> Self {
-        Self {
-            record: RwLock::new(self.read().clone()),
-        }
-    }
-}
-
-impl SecretProvider for MemorySecretProvider {
-    fn get(&self, namespace: Namespace, key: &str) -> Result<Option<String>, ProviderError> {
-        Ok(self.read().map(namespace).get(key).cloned())
-    }
-
-    fn ensure_secret(&self, key: &str, proposed: &str) -> Result<String, ProviderError> {
-        let mut record = self.write();
-        let entry = record
-            .map_mut(Namespace::Secrets)
-            .entry(key.to_owned())
-            .or_insert_with(|| proposed.to_owned());
-        Ok(entry.clone())
-    }
-}
-
-impl MutableSecretStore for MemorySecretProvider {
-    fn put(&self, namespace: Namespace, key: &str, value: &str) -> Result<(), ProviderError> {
-        self.insert(namespace, key, value);
-        Ok(())
-    }
-
-    fn remove(&self, key: &str) -> Result<bool, ProviderError> {
-        Ok(self
-            .write()
-            .map_mut(Namespace::Secrets)
-            .remove(key)
-            .is_some())
-    }
-
-    fn keys(&self) -> Result<Vec<String>, ProviderError> {
-        Ok(self
-            .read()
-            .map(Namespace::Secrets)
-            .keys()
-            .cloned()
-            .collect())
-    }
-}
-
 /// Local `0600` JSON vault adapter (`~/.local/share/slipfork/vaults/<project>.json`).
 ///
 /// Reads are lock-free because every write lands through an atomic `rename`; a write takes an
@@ -462,92 +373,32 @@ impl MutableSecretStore for FileVaultProvider {
     }
 }
 
-/// Layered [`SecretProvider`]: reads `primary` then `fallback`, and persists `!!` generated
-/// secrets exclusively into `primary` (`ADR-0001` §3, `ADR-0008` §2).
-///
-/// Remote OSPP secrets no longer flow through a provider (the daemon injects them in memory), so
-/// production wires the plain `FileVaultProvider`. The generic adapter stays available for
-/// read-through compositions whose fallback is another honest `SecretProvider`.
-#[derive(Debug)]
-pub struct LayeredSecretProvider<Primary, Fallback> {
-    primary: Primary,
-    fallback: Fallback,
-}
-
-impl<Primary: SecretProvider, Fallback: SecretProvider> LayeredSecretProvider<Primary, Fallback> {
-    /// Combine the readable/writable `primary` provider with a read-only `fallback` provider.
-    pub fn new(primary: Primary, fallback: Fallback) -> Self {
-        Self { primary, fallback }
-    }
-}
-
-impl<Primary: SecretProvider, Fallback: SecretProvider> SecretProvider
-    for LayeredSecretProvider<Primary, Fallback>
-{
-    fn get(&self, namespace: Namespace, key: &str) -> Result<Option<String>, ProviderError> {
-        if let Some(val) = self.primary.get(namespace, key)? {
-            return Ok(Some(val));
-        }
-        self.fallback.get(namespace, key)
-    }
-
-    fn ensure_secret(&self, key: &str, proposed: &str) -> Result<String, ProviderError> {
-        if let Some(existing) = self.get(Namespace::Secrets, key)? {
-            return Ok(existing);
-        }
-        self.primary.ensure_secret(key, proposed)
-    }
-}
-
-impl<Primary: MutableSecretStore, Fallback: SecretProvider> MutableSecretStore
-    for LayeredSecretProvider<Primary, Fallback>
-{
-    /// Explicit writes target the local write sink; the fallback is never mutated.
-    fn put(&self, namespace: Namespace, key: &str, value: &str) -> Result<(), ProviderError> {
-        self.primary.put(namespace, key, value)
-    }
-
-    /// Removal is a local write-sink operation: the fallback (a read-only provider) is never
-    /// mutated, exactly as `!!` persistence never writes it.
-    fn remove(&self, key: &str) -> Result<bool, ProviderError> {
-        self.primary.remove(key)
-    }
-
-    /// Key enumeration is the local write-sink vault's list: remote-only keys are readable but not
-    /// listed, because the fallback never accepts writes and is not the local source of truth.
-    fn keys(&self) -> Result<Vec<String>, ProviderError> {
-        self.primary.keys()
-    }
+/// A temporary directory on disk under `~/.cache/slipfork/test-tmp`, never on RAM-backed `/tmp`.
+#[cfg(test)]
+pub(crate) fn disk_tempdir(label: &str) -> tempfile::TempDir {
+    let root = std::env::var("HOME")
+        .map(|home| PathBuf::from(home).join(".cache/slipfork/test-tmp"))
+        .unwrap_or_else(|_| PathBuf::from("/var/tmp/slipfork-tests"));
+    std::fs::create_dir_all(&root).expect("create disk scratch root");
+    tempfile::Builder::new()
+        .prefix(label)
+        .tempdir_in(root)
+        .expect("disk tempdir")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn memory_provider_removes_and_lists_only_secret_keys() {
-        let provider = MemorySecretProvider::new();
-        provider
-            .ensure_secret("ALPHA", "one")
-            .expect("ensure alpha");
-        provider.ensure_secret("BETA", "two").expect("ensure beta");
-        provider.insert(Namespace::Vars, "PLAIN", "value");
-        assert_eq!(
-            provider.keys().expect("keys"),
-            vec!["ALPHA".to_owned(), "BETA".to_owned()]
-        );
-        assert!(provider.remove("ALPHA").expect("remove alpha"));
-        assert!(!provider.remove("ALPHA").expect("second remove"));
-        assert_eq!(provider.keys().expect("keys"), vec!["BETA".to_owned()]);
-        assert_eq!(
-            provider.get(Namespace::Vars, "PLAIN").expect("plain"),
-            Some("value".to_owned())
-        );
+    fn vault() -> (tempfile::TempDir, FileVaultProvider) {
+        let dir = disk_tempdir("snow-vault");
+        let provider = FileVaultProvider::open(dir.path().join("vault.json")).expect("open vault");
+        (dir, provider)
     }
 
     #[test]
     fn file_vault_removes_and_lists_through_the_atomic_writer() {
-        let dir = tempfile::tempdir().expect("tempdir");
+        let dir = disk_tempdir("snow-vault-atomic");
         let path = dir.path().join("vault.json");
         let provider = FileVaultProvider::open(&path).expect("open");
         provider
@@ -582,35 +433,11 @@ mod tests {
     }
 
     #[test]
-    fn layered_removal_only_touches_the_local_write_sink() {
-        let primary = MemorySecretProvider::new();
-        let fallback = MemorySecretProvider::new();
-        primary.ensure_secret("LOCAL", "one").expect("local");
-        fallback.ensure_secret("REMOTE", "two").expect("remote");
-        let layered = LayeredSecretProvider::new(primary, fallback);
-        assert_eq!(
-            layered
-                .get(Namespace::Secrets, "REMOTE")
-                .expect("remote read"),
-            Some("two".to_owned())
-        );
-        assert_eq!(layered.keys().expect("keys"), vec!["LOCAL".to_owned()]);
-        assert!(layered.remove("LOCAL").expect("remove local"));
-        assert!(!layered.remove("REMOTE").expect("remote is not removable"));
-        assert_eq!(
-            layered
-                .get(Namespace::Secrets, "REMOTE")
-                .expect("remote still readable"),
-            Some("two".to_owned())
-        );
-    }
-
-    #[test]
     fn the_read_contract_does_not_require_mutation_capabilities() {
-        // A read-only remote backend satisfies `SecretProvider`; mutation is a separate capability
+        // A read-only backend satisfies `SecretProvider`; mutation is a separate capability
         // (`MutableSecretStore`) that `slipforkd` injects only where the CLI mutates the vault.
         fn assert_read_only<P: SecretProvider>(_provider: &P) {}
-        let provider = MemorySecretProvider::new();
+        let (_dir, provider) = vault();
         provider.ensure_secret("KEY", "value").expect("ensure");
         assert_read_only(&provider);
         assert_eq!(

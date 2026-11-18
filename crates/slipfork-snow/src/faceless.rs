@@ -1,6 +1,10 @@
 //! `Faceless` v2 template tokenizer and evaluator (`${{ ns::path ?? "default" }}`
 //! and `${{ secrets::KEY !! random_string(50) }}`).
 
+mod claimed;
+
+pub use claimed::ClaimedEvaluator;
+
 use base64::Engine;
 
 use crate::model::{MissingRef, ResourceCoordinates, SnowError};
@@ -194,6 +198,10 @@ fn parse_expr(inner: &str) -> Result<Token, SnowError> {
 }
 
 /// Evaluate a template against `provider`, `resources`, and `entropy`, collecting missing refs.
+///
+/// This is the exhaustive resolver: every expression must resolve locally, and an absent value is
+/// reported through `missing_out` (or [`SnowError::MissingValues`] by the caller) instead of being
+/// forwarded. Local worlds use [`ClaimedEvaluator`] instead.
 pub fn render_template(
     template: &str,
     env_location: &str,
@@ -202,55 +210,181 @@ pub fn render_template(
     entropy: &dyn EntropySource,
     missing_out: &mut Vec<MissingRef>,
 ) -> Result<Option<SecretValue>, SnowError> {
-    let tokens = parse_faceless(template)?;
-    let mut rendered = String::new();
-    let mut contaminated = false;
-    let mut had_missing = false;
+    let mut policy = Policy::Exhaustive {
+        env_location,
+        missing_out,
+    };
+    let rendered = render(template, provider, resources, entropy, &mut policy)?;
+    Ok((!rendered.missing).then_some(rendered.value))
+}
 
-    for token in tokens {
+/// How one render pass treats the expressions it meets.
+enum Policy<'a> {
+    /// Every expression resolves locally; an absent value is recorded, never forwarded.
+    Exhaustive {
+        env_location: &'a str,
+        missing_out: &'a mut Vec<MissingRef>,
+    },
+    /// Only `claims` expressions resolve; every other expression passes through verbatim.
+    Claimed {
+        claims: &'a dyn Fn(&str, &[String]) -> bool,
+    },
+}
+
+impl Policy<'_> {
+    /// Whether this pass resolves `namespace::path` locally.
+    fn resolves(&self, namespace: &str, path: &[String]) -> bool {
+        match self {
+            Self::Exhaustive { .. } => true,
+            Self::Claimed { claims } => claims(namespace, path),
+        }
+    }
+
+    /// Read one provider value, mapping the failure for this pass.
+    fn read(
+        &self,
+        provider: &dyn SecretProvider,
+        namespace: Namespace,
+        key: &str,
+    ) -> Result<Option<String>, SnowError> {
+        match self {
+            Self::Exhaustive { .. } => Ok(provider.get(namespace, key)?),
+            Self::Claimed { .. } => {
+                provider
+                    .get(namespace, key)
+                    .map_err(|source| SnowError::ClaimedSecretRead {
+                        key: key.to_owned(),
+                        source,
+                    })
+            }
+        }
+    }
+
+    /// Persist one generated `!!` value, mapping the failure for this pass.
+    fn persist(
+        &self,
+        provider: &dyn SecretProvider,
+        key: &str,
+        proposed: &str,
+    ) -> Result<String, SnowError> {
+        match self {
+            Self::Exhaustive { .. } => Ok(provider.ensure_secret(key, proposed)?),
+            Self::Claimed { .. } => provider.ensure_secret(key, proposed).map_err(|source| {
+                SnowError::ClaimedSecretPersist {
+                    key: key.to_owned(),
+                    source,
+                }
+            }),
+        }
+    }
+
+    /// Record a provider miss: `Ok(None)` means "counted as missing", `Ok(Some)` appends text.
+    fn provider_missing(
+        &mut self,
+        namespace: &str,
+        key: &str,
+        raw: &str,
+    ) -> Result<Option<String>, SnowError> {
+        match self {
+            Self::Exhaustive {
+                env_location,
+                missing_out,
+            } => {
+                missing_out.push(MissingRef {
+                    expression: format!("{namespace}::{key}"),
+                    referenced_by: (*env_location).to_owned(),
+                });
+                Ok(None)
+            }
+            Self::Claimed { .. } => Err(SnowError::ClaimedValueMissing {
+                expression: raw.to_owned(),
+            }),
+        }
+    }
+
+    /// Fail on a coordinate miss (a `??` fallback is handled before this point).
+    fn coordinate_missing(&self, raw: &str) -> Result<(), SnowError> {
+        match self {
+            Self::Exhaustive { .. } => Err(SnowError::UnknownResourcePath(raw.to_owned())),
+            Self::Claimed { .. } => Err(SnowError::ClaimedCoordinateMissing {
+                expression: raw.to_owned(),
+            }),
+        }
+    }
+}
+
+/// One rendered value plus whether an exhaustive pass hit a missing reference.
+struct Rendered {
+    value: SecretValue,
+    missing: bool,
+}
+
+/// The single token loop shared by [`render_template`] and [`ClaimedEvaluator`].
+///
+/// A `secrets::*` token taints the whole value, and `??` / `!!` keep their precedence, in **every**
+/// pass: only the [`Policy`] decides what happens to an expression the pass cannot resolve.
+fn render(
+    template: &str,
+    provider: &dyn SecretProvider,
+    resources: &ResourceCoordinates,
+    entropy: &dyn EntropySource,
+    policy: &mut Policy<'_>,
+) -> Result<Rendered, SnowError> {
+    let mut rendered = String::with_capacity(template.len());
+    let mut contaminated = false;
+    let mut missing = false;
+
+    for token in parse_faceless(template)? {
         match token {
-            Token::Literal(lit) => rendered.push_str(&lit),
+            Token::Literal(literal) => rendered.push_str(&literal),
             Token::Expr {
                 namespace,
                 path,
                 modifier,
                 raw,
             } => {
+                if !policy.resolves(&namespace, &path) {
+                    // The remote resolver's reply is template-free, so it must receive the exact
+                    // expression the author wrote — never a locally re-evaluated value.
+                    rendered.push_str("${{ ");
+                    rendered.push_str(&raw);
+                    rendered.push_str(" }}");
+                    continue;
+                }
                 if let Some(ns) = Namespace::from_name(&namespace) {
                     if ns == Namespace::Secrets {
                         contaminated = true;
                     }
                     let key = path.join(".");
-                    match provider.get(ns, &key)? {
-                        Some(val) => rendered.push_str(&val),
+                    match policy.read(provider, ns, &key)? {
+                        Some(value) => rendered.push_str(&value),
                         None => match modifier {
-                            TailModifier::Fallback(def) => rendered.push_str(&def),
-                            TailModifier::Ensure(gen_spec) => {
-                                let proposed = gen_spec.generate(entropy)?;
-                                let saved = provider.ensure_secret(&key, &proposed)?;
-                                rendered.push_str(&saved);
+                            TailModifier::Fallback(default) => rendered.push_str(&default),
+                            TailModifier::Ensure(generator) => {
+                                let proposed = generator.generate(entropy)?;
+                                rendered.push_str(&policy.persist(provider, &key, &proposed)?);
                             }
                             TailModifier::None => {
-                                had_missing = true;
-                                missing_out.push(MissingRef {
-                                    expression: format!("{}::{}", ns.as_str(), key),
-                                    referenced_by: env_location.to_owned(),
-                                });
+                                if let Some(text) =
+                                    policy.provider_missing(&namespace, &key, &raw)?
+                                {
+                                    rendered.push_str(&text);
+                                } else {
+                                    missing = true;
+                                }
                             }
                         },
                     }
                 } else {
                     match resources.resolve(&namespace, &path) {
-                        Some((val, is_sec)) => {
-                            if is_sec {
-                                contaminated = true;
-                            }
-                            rendered.push_str(&val);
+                        Some((value, secret)) => {
+                            contaminated |= secret;
+                            rendered.push_str(&value);
                         }
                         None => match modifier {
-                            TailModifier::Fallback(def) => rendered.push_str(&def),
+                            TailModifier::Fallback(default) => rendered.push_str(&default),
                             TailModifier::None | TailModifier::Ensure(_) => {
-                                return Err(SnowError::UnknownResourcePath(raw));
+                                policy.coordinate_missing(&raw)?;
                             }
                         },
                     }
@@ -259,12 +393,12 @@ pub fn render_template(
         }
     }
 
-    if had_missing {
-        return Ok(None);
-    }
-    Ok(Some(if contaminated {
-        SecretValue::secret(rendered)
-    } else {
-        SecretValue::plain(rendered)
-    }))
+    Ok(Rendered {
+        value: if contaminated {
+            SecretValue::secret(rendered)
+        } else {
+            SecretValue::plain(rendered)
+        },
+        missing,
+    })
 }

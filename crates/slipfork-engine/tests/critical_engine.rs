@@ -13,6 +13,8 @@
 
 pub mod support;
 
+mod conformance;
+
 use std::fs;
 use std::io::{Read, Write};
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
@@ -23,8 +25,8 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
+use conformance::assert_world_engine_conformance;
 use slipfork_engine::btrfs::SubvolumeDriver;
-use slipfork_engine::conformance::assert_world_engine_conformance;
 use slipfork_engine::{
     BootLineage, BtrfsEngine, EngineError, ExecEnv, InheritedVar, LocalIngressBridge, MountMode,
     ServiceKind, ServiceRuntime, ServiceSpec, ServiceState, SnapshotId, StreamChunk, SystemClock,

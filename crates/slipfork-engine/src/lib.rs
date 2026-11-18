@@ -2,7 +2,7 @@
 //! its single shipped implementation, [`BtrfsEngine`], over an injected `SubvolumeDriver` (one
 //! unified Btrfs subvolume per world, `ADR-0010`).
 //!
-//! [`BtrfsEngine`] satisfies the one [`conformance::assert_world_engine_conformance`] contract: a
+//! [`BtrfsEngine`] satisfies the one shared conformance contract (`tests/conformance/mod.rs`): a
 //! world is materialized from an immutable [`SnapshotId`] plus a multi-mount [`WorldSpec`], its
 //! services are supervised and stopped before [`WorldEngine::freeze_world`] seals it, and it is
 //! referenced only through the opaque in-process [`WorldHandle`] (owned by `slipforkd`, never
@@ -16,7 +16,6 @@ pub mod btrfs;
 pub mod btrfs_engine;
 pub mod child_env;
 pub mod clock;
-pub mod conformance;
 pub mod env;
 pub mod lineage;
 pub mod linux_cow;

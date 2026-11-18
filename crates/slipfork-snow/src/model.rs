@@ -11,7 +11,7 @@ use slipfork_world::{
     LocalHostRoute, ProjectSlug, WorldOrigin, WorldTarget, validate_unreserved_dns_label,
 };
 
-use crate::faceless::render_template;
+use crate::faceless::{TailModifier, Token, parse_faceless, render_template};
 use crate::provider::{EntropySource, ProviderError, SecretProvider, SecretValue};
 
 /// Map of variable name to resolved [`SecretValue`].
@@ -40,6 +40,8 @@ pub enum SnowError {
         requested: String,
         available: String,
     },
+    #[error("component '{0}' is not defined in snow.yml")]
+    UnknownComponent(String),
     #[error("snow.yml validation failed:\n  - {}", .0.join("\n  - "))]
     Validation(Vec<String>),
     #[error("unclosed '${{{{' expression in template: {0}")]
@@ -62,6 +64,24 @@ pub enum SnowError {
     UnknownResourcePath(String),
     #[error("resources.s3_buckets.{0}: coordinate override for an undeclared bucket")]
     UnknownS3Bucket(String),
+    #[error("cannot resolve claimed '{key}': {source}")]
+    ClaimedSecretRead {
+        key: String,
+        #[source]
+        source: ProviderError,
+    },
+    #[error("cannot persist claimed secret '{key}': {source}")]
+    ClaimedSecretPersist {
+        key: String,
+        #[source]
+        source: ProviderError,
+    },
+    #[error(
+        "the claimed '${{{{ {expression} }}}}' has no local value; set it with `slipfork secret set` or remove it from `snow.yml`"
+    )]
+    ClaimedValueMissing { expression: String },
+    #[error("the claimed '${{{{ {expression} }}}}' has no local coordinate")]
+    ClaimedCoordinateMissing { expression: String },
     #[error(transparent)]
     World(#[from] slipfork_world::WorldError),
     #[error(
@@ -561,6 +581,33 @@ impl SnowFile {
             });
         }
         Ok(out)
+    }
+
+    /// Every `secrets::<KEY> !! <generator>` a local world must generate itself, sorted.
+    ///
+    /// The result is an ID-only claim set: a generated value never appears here, so this list can
+    /// cross the wire or be logged verbatim.
+    pub fn generated_secret_keys(&self, mode: &str) -> Result<Vec<String>, SnowError> {
+        let groups = self.effective_env_groups(mode)?;
+        let mut names = BTreeSet::new();
+        for vars in groups.values() {
+            for template in vars.values() {
+                for token in parse_faceless(template)? {
+                    if let Token::Expr {
+                        namespace,
+                        path,
+                        modifier: TailModifier::Ensure(_),
+                        ..
+                    } = token
+                        && namespace == "secrets"
+                        && path.len() == 1
+                    {
+                        names.insert(path[0].clone());
+                    }
+                }
+            }
+        }
+        Ok(names.into_iter().collect())
     }
 
     /// Resolve the ordered component set for `mode` (`ADR-0001` §1).

@@ -4,12 +4,11 @@
 
 #![forbid(unsafe_code)]
 
-pub mod conformance;
 pub mod faceless;
 pub mod model;
 pub mod provider;
 
-pub use faceless::{GeneratorSpec, parse_faceless, render_template};
+pub use faceless::{ClaimedEvaluator, GeneratorSpec, parse_faceless, render_template};
 pub use model::{
     BuildImage, Component, Domain, Hook, HookPhase, Image, Ingress, IngressMatch, IngressTarget,
     MissingRef, ModeComponentOverride, ModeSpec, PgCluster, PgDatabase, RedisCluster,
@@ -17,6 +16,6 @@ pub use model::{
     S3Bucket, S3Coordinates, SnowError, SnowFile,
 };
 pub use provider::{
-    EntropySource, FileVaultProvider, LayeredSecretProvider, MemorySecretProvider,
-    MutableSecretStore, Namespace, OsCsprngEntropy, ProviderError, SecretProvider, SecretValue,
+    EntropySource, FileVaultProvider, MutableSecretStore, Namespace, OsCsprngEntropy,
+    ProviderError, SecretProvider, SecretValue,
 };

@@ -25,7 +25,6 @@ pub mod abi;
 pub mod builder;
 pub mod buildx;
 pub(crate) mod cache;
-pub mod conformance;
 pub(crate) mod contract;
 pub(crate) mod dockerfile;
 pub mod input;
@@ -390,6 +389,17 @@ pub struct WorldRootfs {
     pub cache: crate::CacheOutcome,
     /// Measured build milliseconds (`None` when the digest was already cached and no build ran).
     pub millis: Option<u64>,
+}
+
+impl WorldRootfs {
+    /// Resolve `guest` inside this rootfs, following in-tree symlinks and never escaping it.
+    ///
+    /// This is the [`WorldRootfs`] contract surface for reading the extracted tree: absolute
+    /// symlink targets restart at `app_rootfs`, `..` may not climb above it, and a dangling or
+    /// looping link is reported as absent (`None`).
+    pub fn guest_binary(&self, guest: &str) -> Option<PathBuf> {
+        resolve_guest_path(&self.app_rootfs, guest)
+    }
 }
 
 /// Host capability: run `docker buildx build` with a local (`type=local`) exporter.

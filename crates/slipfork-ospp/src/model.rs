@@ -35,6 +35,29 @@ pub struct OsppClaims {
     pub components: Vec<String>,
 }
 
+impl OsppClaims {
+    /// Whether this claim set owns the `${{ namespace::path }}` reference locally.
+    ///
+    /// Only identifiers are consulted — never a value — so this is safe to call for a template
+    /// the daemon has not resolved yet.
+    pub fn owns(&self, namespace: &str, path: &[String]) -> bool {
+        match namespace {
+            "vars" => path.len() == 1 && self.vars.iter().any(|key| key == &path[0]),
+            "secrets" => path.len() == 1 && self.secrets.iter().any(|key| key == &path[0]),
+            "domains" => path.len() == 1 && self.domains.iter().any(|id| id == &path[0]),
+            "components" => path.len() == 1 && self.components.iter().any(|id| id == &path[0]),
+            "resources" => {
+                path.len() >= 2
+                    && self
+                        .resources
+                        .get(&path[0])
+                        .is_some_and(|ids| ids.iter().any(|id| id == &path[1]))
+            }
+            _ => false,
+        }
+    }
+}
+
 /// One `subscribe` request: project identity is the verbatim Git remote string
 /// and only that string.
 #[derive(Debug, Clone, PartialEq, Eq)]

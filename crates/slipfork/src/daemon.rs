@@ -52,10 +52,9 @@ use slipfork_ospp::{
     OsppEndpoint, OsppSession, OsppTimeouts, SoftwareP256Key, SoftwareP256Signer, SubscribeRequest,
     SubscriptionEnv, WsOsppClient,
 };
-use slipfork_snow::faceless::{TailModifier, Token};
 use slipfork_snow::{
-    EntropySource, HookPhase, Image, Namespace, OsCsprngEntropy, ResolvedEnvMap,
-    ResourceCoordinates, SecretProvider, SecretValue, SnowFile, parse_faceless,
+    ClaimedEvaluator, EntropySource, HookPhase, Image, OsCsprngEntropy, ResolvedEnvMap,
+    ResourceCoordinates, SecretProvider, SecretValue, SnowError, SnowFile,
 };
 use slipfork_vcs::{
     RepoRoot, RepoRootResolver, VcsWorkspace, VcsWorkspaceFactory, WORKTREES_DIRECTORY,
@@ -1086,7 +1085,7 @@ impl DaemonService {
         // A local-mode `!!` secret is generated and persisted by this daemon, so the server must
         // leave it untouched even before the vault file records it.
         let mut secrets: BTreeSet<String> = store.keys(project)?.into_iter().collect();
-        secrets.extend(local_generated_secrets(snow)?);
+        secrets.extend(snow.generated_secret_keys(WORLD_MODE).map_err(snow_error)?);
         Ok(OsppClaims {
             vars: store.vars(project)?,
             secrets: secrets.into_iter().collect(),
@@ -1440,15 +1439,10 @@ impl DaemonService {
             .filter_map(|group| groups.get(group))
             .flat_map(|vars| vars.keys().cloned())
             .collect();
-        let resolved = resolve_mode_local(
-            snow,
-            WORLD_MODE,
-            None,
-            vault,
-            coords,
-            claims,
-            self.entropy.as_ref(),
-        )?;
+        let owns = |namespace: &str, path: &[String]| claims.owns(namespace, path);
+        let resolved = ClaimedEvaluator::new(vault, coords, self.entropy.as_ref(), &owns)
+            .mode(snow, WORLD_MODE, None)
+            .map_err(snow_error)?;
         let mut build_envs: Vec<BuildEnvVar> = Vec::new();
         for (name, value) in resolved
             .iter()
@@ -1921,26 +1915,14 @@ impl DaemonService {
         for (var, value) in &self.config.inherited {
             env.inherit(*var, value.clone());
         }
-        let resolved = resolve_mode_local(
-            snow,
-            WORLD_MODE,
-            None,
-            vault,
-            coords,
-            claims,
-            self.entropy.as_ref(),
-        )?;
+        let owns = |namespace: &str, path: &[String]| claims.owns(namespace, path);
+        let evaluator = ClaimedEvaluator::new(vault, coords, self.entropy.as_ref(), &owns);
+        let resolved = evaluator.mode(snow, WORLD_MODE, None).map_err(snow_error)?;
         apply_env(&mut env, resolved)?;
         if let Some(components) = ospp_env {
             for server in components.values() {
                 for (name, value) in server {
-                    let rendered = render_claimed(
-                        value.expose(),
-                        claims,
-                        vault,
-                        coords,
-                        self.entropy.as_ref(),
-                    )?;
+                    let rendered = evaluator.render(value.expose()).map_err(snow_error)?;
                     let secret = value.is_secret() || rendered.is_secret();
                     let raw = rendered.expose().to_owned();
                     let outcome = if secret {
@@ -3433,6 +3415,20 @@ fn runtime_error(message: impl Into<String>) -> EdgeError {
     EdgeError::Control(DaemonError::new(DaemonErrorKind::Internal, message))
 }
 
+/// Map one `snow.yml` failure to a control error, keeping the author-facing `1 line + next:` text.
+///
+/// A malformed manifest is the caller's to fix, so the three author-facing kinds stay typed as
+/// [`DaemonErrorKind::Rejected`]; everything else is an internal `snow.yml`/provider failure.
+fn snow_error(err: SnowError) -> EdgeError {
+    let kind = match &err {
+        SnowError::UnknownComponent(_)
+        | SnowError::ClaimedValueMissing { .. }
+        | SnowError::ClaimedCoordinateMissing { .. } => DaemonErrorKind::Rejected,
+        _ => DaemonErrorKind::Internal,
+    };
+    EdgeError::Control(DaemonError::new(kind, err.to_string()))
+}
+
 /// Render a failed read of one **held** world's engine record (`list`, `status`, and `ps`).
 ///
 /// A world whose last reload tore it down keeps its engine record — still owned, but with no live
@@ -4067,73 +4063,6 @@ fn apply_env(env: &mut ExecEnv, resolved: ResolvedEnvMap) -> Result<(), EdgeErro
     Ok(())
 }
 
-/// Every `secrets::<KEY> !! <generator>` the local world must generate itself.
-///
-/// These are ID-only claims: the name, never the generated value, crosses the wire.
-fn local_generated_secrets(snow: &SnowFile) -> Result<Vec<String>, EdgeError> {
-    let groups = snow
-        .effective_env_groups(WORLD_MODE)
-        .map_err(|err| runtime_error(err.to_string()))?;
-    let mut names = BTreeSet::new();
-    for vars in groups.values() {
-        for template in vars.values() {
-            for token in parse_faceless(template).map_err(|err| runtime_error(err.to_string()))? {
-                if let Token::Expr {
-                    namespace,
-                    path,
-                    modifier: TailModifier::Ensure(_),
-                    ..
-                } = token
-                    && namespace == "secrets"
-                    && path.len() == 1
-                {
-                    names.insert(path[0].clone());
-                }
-            }
-        }
-    }
-    Ok(names.into_iter().collect())
-}
-
-/// Resolve the mode's env groups against the local vault and coordinates only.
-///
-/// Claimed expressions are resolved locally; every unclaimed expression stays verbatim for the
-/// server (or for a later in-memory server overlay). This is the one boot-time resolver: a missing
-/// remote value must never make a purely local world fail before `subscribe` can fill it.
-fn resolve_mode_local(
-    snow: &SnowFile,
-    mode: &str,
-    component: Option<&str>,
-    provider: &dyn SecretProvider,
-    coords: &ResourceCoordinates,
-    claims: &OsppClaims,
-    entropy: &dyn EntropySource,
-) -> Result<ResolvedEnvMap, EdgeError> {
-    let groups = snow
-        .effective_env_groups(mode)
-        .map_err(|err| runtime_error(err.to_string()))?;
-    let selected: Vec<String> = match component {
-        Some(id) => snow
-            .components
-            .iter()
-            .find(|candidate| candidate.id == id)
-            .map(|candidate| candidate.envs.clone())
-            .unwrap_or_default(),
-        None => groups.keys().cloned().collect(),
-    };
-    let mut out = ResolvedEnvMap::new();
-    for group in selected {
-        let Some(vars) = groups.get(&group) else {
-            continue;
-        };
-        for (name, template) in vars {
-            let value = render_claimed(template, claims, provider, coords, entropy)?;
-            out.insert(name.clone(), value);
-        }
-    }
-    Ok(out)
-}
-
 /// One component's environment: local `snow.yml` resolution first, then the server-resolved
 /// values, with only **claimed** `${{ ... }}` expressions substituted locally.
 fn resolve_component_env(
@@ -4145,22 +4074,18 @@ fn resolve_component_env(
     server: Option<&BTreeMap<String, SecretValue>>,
     entropy: &dyn EntropySource,
 ) -> Result<ExecEnv, EdgeError> {
-    let resolved = resolve_mode_local(
-        snow,
-        WORLD_MODE,
-        Some(component),
-        provider,
-        coords,
-        claims,
-        entropy,
-    )?;
+    let owns = |namespace: &str, path: &[String]| claims.owns(namespace, path);
+    let evaluator = ClaimedEvaluator::new(provider, coords, entropy, &owns);
+    let resolved = evaluator
+        .mode(snow, WORLD_MODE, Some(component))
+        .map_err(snow_error)?;
     let mut env = ExecEnv::default();
     apply_env(&mut env, resolved)?;
     let Some(server) = server else {
         return Ok(env);
     };
     for (name, value) in server {
-        let rendered = render_claimed(value.expose(), claims, provider, coords, entropy)?;
+        let rendered = evaluator.render(value.expose()).map_err(snow_error)?;
         let secret = value.is_secret() || rendered.is_secret();
         let raw = rendered.expose().to_owned();
         let outcome = if secret {
@@ -4172,110 +4097,6 @@ fn resolve_component_env(
             .map_err(|err| runtime_error(format!("invalid OSPP environment '{name}': {err}")))?;
     }
     Ok(env)
-}
-
-/// Substitute only the expressions this world claims, leaving every unclaimed expression to the
-/// server's template-free guarantee.
-fn render_claimed(
-    template: &str,
-    claims: &OsppClaims,
-    provider: &dyn SecretProvider,
-    coords: &ResourceCoordinates,
-    entropy: &dyn EntropySource,
-) -> Result<SecretValue, EdgeError> {
-    let tokens = parse_faceless(template).map_err(|err| runtime_error(err.to_string()))?;
-    let mut rendered = String::with_capacity(template.len());
-    let mut contaminated = false;
-    for token in tokens {
-        match token {
-            Token::Literal(literal) => rendered.push_str(&literal),
-            Token::Expr {
-                namespace,
-                path,
-                modifier,
-                raw,
-            } => {
-                if !is_claimed(claims, &namespace, &path) {
-                    // Unclaimed values are template-free per the spec; if one leaks through, it
-                    // is forwarded verbatim rather than re-evaluated against local state.
-                    rendered.push_str("${{ ");
-                    rendered.push_str(&raw);
-                    rendered.push_str(" }}");
-                    continue;
-                }
-                if let Some(namespace) = Namespace::from_name(&namespace) {
-                    if namespace == Namespace::Secrets {
-                        contaminated = true;
-                    }
-                    let key = path.join(".");
-                    match provider.get(namespace, &key).map_err(|err| {
-                        runtime_error(format!("cannot resolve claimed {key}: {err}"))
-                    })? {
-                        Some(value) => rendered.push_str(&value),
-                        None => match modifier {
-                            TailModifier::Fallback(default) => rendered.push_str(&default),
-                            TailModifier::Ensure(generator) => {
-                                let proposed = generator
-                                    .generate(entropy)
-                                    .map_err(|err| runtime_error(err.to_string()))?;
-                                let saved =
-                                    provider.ensure_secret(&key, &proposed).map_err(|err| {
-                                        runtime_error(format!(
-                                            "cannot persist claimed secret '{key}': {err}"
-                                        ))
-                                    })?;
-                                rendered.push_str(&saved);
-                            }
-                            TailModifier::None => {
-                                return Err(runtime_error(format!(
-                                    "the claimed '${{{{ {raw} }}}}' has no local value; set it with `slipfork secret set` or remove it from `snow.yml`"
-                                )));
-                            }
-                        },
-                    }
-                } else {
-                    match coords.resolve(&namespace, &path) {
-                        Some((value, secret)) => {
-                            contaminated |= secret;
-                            rendered.push_str(&value);
-                        }
-                        None => match modifier {
-                            TailModifier::Fallback(default) => rendered.push_str(&default),
-                            _ => {
-                                return Err(runtime_error(format!(
-                                    "the claimed '${{{{ {raw} }}}}' has no local coordinate"
-                                )));
-                            }
-                        },
-                    }
-                }
-            }
-        }
-    }
-    Ok(if contaminated {
-        SecretValue::secret(rendered)
-    } else {
-        SecretValue::plain(rendered)
-    })
-}
-
-/// `true` when the daemon owns this expression locally (`docs/design/ospp.md` §Environment
-/// Resolution). Only identifiers are consulted; no value is involved.
-fn is_claimed(claims: &OsppClaims, namespace: &str, path: &[String]) -> bool {
-    match namespace {
-        "vars" => path.len() == 1 && claims.vars.iter().any(|key| key == &path[0]),
-        "secrets" => path.len() == 1 && claims.secrets.iter().any(|key| key == &path[0]),
-        "domains" => path.len() == 1 && claims.domains.iter().any(|id| id == &path[0]),
-        "components" => path.len() == 1 && claims.components.iter().any(|id| id == &path[0]),
-        "resources" => {
-            path.len() >= 2
-                && claims
-                    .resources
-                    .get(&path[0])
-                    .is_some_and(|ids| ids.iter().any(|id| id == &path[1]))
-        }
-        _ => false,
-    }
 }
 
 /// Parent directory of an explicit manifest path (`"."` for a bare file name).
