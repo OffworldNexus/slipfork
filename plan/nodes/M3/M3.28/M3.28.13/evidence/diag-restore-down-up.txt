@@ -1,0 +1,9 @@
+[down] world stopped (worktree kept)
+[ready]     api (internal :8000 in world netns)
+world     demo (running, changed)
+app       http://demo.localhost
+worktree  /home/slipfork/demo
+next      slipfork open | slipfork db | slipfork logs | slipfork restart | slipfork down
+lineage   rootfs 479f73c1a7b0 rebuilt 10.3s · postgres:18 cached · seed - - · base 4570132bffb8 reused
+EXIT=0
+OUTER_EXIT=0

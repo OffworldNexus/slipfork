@@ -98,7 +98,7 @@ with `api: ` or `worker: `, and the named target contains the bare `api-line` an
 | `uv run --no-project tools/guard.py` | 0 | `guard: OK (605 file(s) checked)` |
 | `uv run --no-project tools/plan.py validate` | 0 | `plan OK` |
 | `uv run --no-project tools/critical_guard.py --base c5dda37 --node M3.28.23` | **1** | one unauthorized protected edit — see below |
-| `make check` | 0 | full workspace gate (`plan-check guard stub-check py-lint py-test support-check ts-test rs-fmt rs-lint rs-test docs-check`) — `make check rc=0`; re-run on the frozen tree after two doc/test-only late edits (recorded in the node `LOG.md` by `lead`) |
+| `make check` | 0 | full workspace gate (`plan-check guard stub-check py-lint py-test support-check ts-test rs-fmt rs-lint rs-test docs-check`); `make check rc=0` on the frozen tree |
 
 Reproduce the renderer unit tests:
 

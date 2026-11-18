@@ -1,0 +1,3 @@
+EXIT=1
+slipfork: world 'demo:never-booted' is not running; boot it with `slipfork up`
+OUTER_EXIT=0

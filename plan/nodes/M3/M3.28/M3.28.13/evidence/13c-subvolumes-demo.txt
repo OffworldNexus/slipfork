@@ -1,0 +1,13 @@
+home/.cache/slipfork/snapshots/demo-seed-empty
+home/.cache/slipfork/snapshots/demo-base-4570132bffb8d480614da23adf1ad1bbe56ab5bf5512b93386dacfcb71497107
+home/.cache/slipfork/worlds/canonical-6
+home/.cache/slipfork/worlds/canonical-1
+home/.cache/slipfork/worlds/canonical-2
+home/.cache/slipfork/worlds/canonical-3
+home/.cache/slipfork/worlds/canonical-4
+home/.cache/slipfork/worlds/canonical-5
+home/.cache/slipfork/worlds/canonical-7
+home/.cache/slipfork/worlds/canonical-8
+home/.cache/slipfork/worlds/canonical-9
+LIST_EXIT=0
+OUTER_EXIT=0

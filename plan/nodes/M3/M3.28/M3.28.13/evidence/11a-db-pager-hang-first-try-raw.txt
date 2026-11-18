@@ -1,0 +1,24 @@
+
+Slipfork demo — account: slipfork (from root: sudo -iu slipfork)
+  cd ~/demo
+  slipfork
+  slipfork up
+  slipfork list
+select version();
+\q
+psql (18.7 (Debian 18.7-1.pgdg13+2))
+Type "help" for help.
+
+demo=# select version();
+WARNING: terminal is not fully functional
+Press RETURN to continue 
+                                                      version                   
+                                    
+--------------------------------------------------------------------------------
+------------------------------------
+ PostgreSQL 18.7 (Debian 18.7-1.pgdg13+2) on x86_64-pc-linux-gnu, compiled by gc
+c (Debian 14.2.0-19) 14.2.0, 64-bit
+(1 row)
+
+(END)demo=# 
+demo=# Connection to 165.232.86.174 closed.

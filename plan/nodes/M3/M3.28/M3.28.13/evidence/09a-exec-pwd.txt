@@ -1,0 +1,6 @@
+EXEC_EXIT=0
+--- stdout
+/home/slipfork/demo
+--- stderr bytes
+0
+OUTER_EXIT=0

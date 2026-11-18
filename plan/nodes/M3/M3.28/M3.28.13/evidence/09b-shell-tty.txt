@@ -1,0 +1,12 @@
+
+Slipfork demo — account: slipfork (from root: sudo -iu slipfork)
+  cd ~/demo
+  slipfork
+  slipfork up
+  slipfork list
+exit
+world rootfs is the app stage (no host tools; use slipfork ps / logs / open)
+slipfork@slipfork-dev-vm:/home/slipfork/demo$ exit
+exit
+Connection to 165.232.86.174 closed.
+EXIT=0

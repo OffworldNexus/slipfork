@@ -11,3 +11,15 @@ Field evidence from the M3.28 epic (2026-11-17): under host load 16-19 (a foreig
 ## 2026-11-18T00:19 [lead]
 
 followup from M3.28.20: on a Btrfs host ensure_daemon spawns a real slipforkd child that currently outlives the test binary (no Drop guard). Teardown must also reap the harness-owned daemon, not only world-init processes and subvolumes.
+
+## 2026-11-18T05:07 [lead]
+
+status ready -> active
+
+## 2026-11-18T05:07 [lead]
+
+attempt 1/3 started
+
+## 2026-11-18T05:07 [lead]
+
+base 9a79afc81a20eb5dc0a911525a82f6f0aa673df6

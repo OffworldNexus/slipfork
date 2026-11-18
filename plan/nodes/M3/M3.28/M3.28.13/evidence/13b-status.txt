@@ -1,0 +1,13 @@
+droplet  slipfork-dev-vm  id=620073485  region=ams3  size=s-4vcpu-8gb  ip=165.232.86.174
+volume   slipfork-dev-vm  id=131a2765-e1ba-11f1-b67b-d6114774f516  region=ams3  100 GiB
+keys     authorized_keys fingerprints:
+         == /root/.ssh/authorized_keys
+         256 SHA256:nZVhV69SFiOZLtnUMnPnu982J+lqO/40YjMiQiqKSu8 slipfork-do-vm (ED25519)
+         2048 SHA256:SGXbyi5u4i8RO0JgxubkI2RZ2N7M4bCFB4HdUkgas9w remy@doc (RSA)
+         == /home/slipfork/.ssh/authorized_keys
+         256 SHA256:nZVhV69SFiOZLtnUMnPnu982J+lqO/40YjMiQiqKSu8 slipfork-do-vm (ED25519)
+         2048 SHA256:SGXbyi5u4i8RO0JgxubkI2RZ2N7M4bCFB4HdUkgas9w remy@doc (RSA)
+ssh      ssh -i /home/remy/.cache/slipfork/do-vm/id_ed25519 root@165.232.86.174
+sync     tools/do_vm.py sync
+down     tools/do_vm.py down --yes
+EXIT=0

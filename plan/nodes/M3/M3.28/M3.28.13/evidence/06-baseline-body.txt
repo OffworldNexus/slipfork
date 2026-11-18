@@ -1,0 +1,2 @@
+{"debug": true, "hello": "world-M3.28.13", "host": "slipfork-dev-vm", "secret_len": 32, "world": "demo"}
+EXIT=0

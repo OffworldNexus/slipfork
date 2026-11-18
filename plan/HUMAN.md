@@ -56,7 +56,7 @@ Live VM blocks on AppArmor: every world boot dies at the first crun backing serv
 
 **Answer:**
 
-## H-007 [open] [direction-challenge] (node M3.29.3)
+## H-007 [closed] [direction-challenge] (node M3.29.3)
 
 - asked: 2026-11-18T03:17 by lead
 

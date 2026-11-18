@@ -1,0 +1,9 @@
+EXIT=2
+error: unrecognized subcommand 'share'
+
+  tip: a similar subcommand exists: 'secret'
+
+Usage: slipfork [OPTIONS] [COMMAND]
+
+For more information, try '--help'.
+OUTER_EXIT=0

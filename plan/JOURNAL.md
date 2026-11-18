@@ -1377,3 +1377,21 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-18T04:59 [M3.28.14] (lead) from M3.28.23: docs/reference/cli.md rows 67/105 must document the new logs rule — every line is prefixed '<source>: ' when the request names no single target; 
 - 2026-11-18T05:03 [M3.28.23] (lead) status active -> done
 - 2026-11-18T05:03 [M3.28.23] (lead) make check rc=0 (10 docs honesty) on the frozen tree; critical_cli 30 incl. logs_fan_out_attributes_every_line_to_its_component, lib logs 6, engine lib 69, crit
+- 2026-11-18T05:03 [M3.28.13] (lead) status ready -> active
+- 2026-11-18T05:03 [M3.28.13] (lead) attempt 1/3 started
+- 2026-11-18T05:03 [M3.28.13] (lead) base 9a79afc81a20eb5dc0a911525a82f6f0aa673df6
+- 2026-11-18T05:07 [M3.28.14] (lead) from M3.28.23 (record in CHANGELOG as a known limitation, do not hide): 'logs --follow' with no explicit target still follows only the first retained target (pr
+- 2026-11-18T05:07 [M3.27] (lead) status ready -> active
+- 2026-11-18T05:07 [M3.27] (lead) attempt 1/3 started
+- 2026-11-18T05:07 [M3.27] (lead) base 9a79afc81a20eb5dc0a911525a82f6f0aa673df6
+- 2026-11-18T05:34 [M3.28.24] (planner) created (task) restart must apply an edit: stop the whole component (not its sh wrapper) and re-materialize an edited rootfs
+- 2026-11-18T05:34 [M3.28.13] (lead) attempt 1 LIVE RESULT: 12/13 pass. The one failure is real and is the headline DX promise: restart leaves the old python3 orphaned (stop signals sh, wait_for_in
+- 2026-11-18T05:34 [M3.28.13] (lead) status active -> ready
+- 2026-11-18T05:34 [M3.28.13] (lead) edited fields
+- 2026-11-18T05:34 [M3.28.24] (lead) edited fields
+- 2026-11-18T05:34 [M3.28.13] (lead) edited fields
+- 2026-11-18T05:34 [M3.28.24] (lead) edited fields
+- 2026-11-18T05:34 [M3.28.24] (lead) queued behind M3.27 (both need crates/slipfork/tests/**); created from M3.28.13's live failure.
+- 2026-11-18T07:45 HUMAN H-007 closed by lead
+- 2026-11-18T07:46 [M3.29.5] (planner) created (task) slipfork auth <wss-url> saves the OSPP endpoint in <state_dir>/ospp.json (public metadata only) so pairing survives reboots
+- 2026-11-18T07:46 [M3.29.5] (lead) H-007 answered by the owner ('Save on slipfork auth <url>'). Design: flag > <state_dir>/ospp.json > unpaired, one resolver logged once; atomic 0600 write of end
