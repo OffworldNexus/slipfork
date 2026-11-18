@@ -1368,3 +1368,12 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-18T04:34 [M3.28.22] (lead) attempt 1/3 started
 - 2026-11-18T04:45 [M3.28.22] (lead) status active -> done
 - 2026-11-18T04:45 [M3.28.22] (lead) attempt 2 complete: stub returns in-world cwd, fn shell prints the one orientation line (stderr, shell only, never --json). critical_engine 16, critical_edge 35
+- 2026-11-18T04:45 [M3.29] (lead) gate acceptance corrected for the owner's two-tier ruling: the vault is KEPT and scoped, so 'no-disk-vaults' became 'local-vault-kept-scoped' + 'two-tiers'. Gat
+- 2026-11-18T04:45 [M3.28.23] (lead) status ready -> active
+- 2026-11-18T04:45 [M3.28.23] (lead) attempt 1/3 started
+- 2026-11-18T04:45 [M3.28.23] (lead) base c5dda37f6167a27897433006ccd47b1853c6becc
+- 2026-11-18T04:59 [M3.28.23] (lead) edited fields
+- 2026-11-18T04:59 [M3.28.23] (lead) path lock widened for the mechanical, assertion-preserving protected edit (fake logs signature -> FnMut(LogChunk), one literal gains target: api) and for main.r
+- 2026-11-18T04:59 [M3.28.14] (lead) from M3.28.23: docs/reference/cli.md rows 67/105 must document the new logs rule — every line is prefixed '<source>: ' when the request names no single target; 
+- 2026-11-18T05:03 [M3.28.23] (lead) status active -> done
+- 2026-11-18T05:03 [M3.28.23] (lead) make check rc=0 (10 docs honesty) on the frozen tree; critical_cli 30 incl. logs_fan_out_attributes_every_line_to_its_component, lib logs 6, engine lib 69, crit

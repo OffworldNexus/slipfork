@@ -45,14 +45,25 @@ pub(crate) const POLL_INTERVAL: Duration = Duration::from_millis(10);
 /// for callers that want to surface it.
 #[derive(Clone)]
 pub struct ServiceLogs {
+    target: Arc<str>,
     inner: Arc<LogBuffer>,
 }
 
 impl ServiceLogs {
-    pub(crate) fn new() -> Self {
+    /// Mint the retained window of the service/hook `target` the engine is about to supervise.
+    pub(crate) fn new(target: impl Into<Arc<str>>) -> Self {
         Self {
+            target: target.into(),
             inner: Arc::new(LogBuffer::default()),
         }
+    }
+
+    /// The component or hook id this retained window belongs to.
+    ///
+    /// Recorded when the service was spawned, so `slipfork logs` attributes every chunk to the
+    /// engine's own record instead of echoing whatever the caller asked for.
+    pub fn target(&self) -> &str {
+        &self.target
     }
 
     fn lock(&self) -> MutexGuard<'_, LogState> {
@@ -129,6 +140,7 @@ impl std::fmt::Debug for ServiceLogs {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let state = self.lock();
         f.debug_struct("ServiceLogs")
+            .field("target", &self.target())
             .field("chunks", &state.chunks.len())
             .field("bytes", &state.bytes)
             .field("closed", &state.closed)
@@ -526,7 +538,7 @@ mod tests {
 
     #[test]
     fn poisoned_log_still_serves_captured_output_and_reports_the_diagnostic() {
-        let logs = ServiceLogs::new();
+        let logs = ServiceLogs::new("api");
         logs.push(StreamSource::Stdout, b"before-panic\n".to_vec());
         let poisoner = logs.clone();
         let _ = std::thread::spawn(move || {

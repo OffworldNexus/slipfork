@@ -1074,29 +1074,18 @@ fn logs(
         stderr,
         lines,
     };
-    let mut stdout = io::stdout();
-    let mut stderr_stream = io::stderr();
+    // A fan-out request streams every retained source, so each line must name its own source; one
+    // explicitly named target is printed byte-exact (`docs/design/dx-0.1.0-ux.md` §8.3).
+    let mut renderer = slipfork::logs::Renderer::new(
+        json,
+        request.target.is_none(),
+        Box::new(io::stdout()),
+        Box::new(io::stderr()),
+    );
     client
-        .logs(&request, &mut |chunk| {
-            if json {
-                let stream = match chunk.source {
-                    slipfork_engine::StreamSource::Stdout => "stdout",
-                    slipfork_engine::StreamSource::Stderr => "stderr",
-                };
-                println!(
-                    "{}",
-                    json!({ "stream": stream, "text": String::from_utf8_lossy(&chunk.bytes) })
-                );
-                return;
-            }
-            let stream: &mut dyn Write = match chunk.source {
-                slipfork_engine::StreamSource::Stdout => &mut stdout,
-                slipfork_engine::StreamSource::Stderr => &mut stderr_stream,
-            };
-            let _ = stream.write_all(&chunk.bytes);
-            let _ = stream.flush();
-        })
+        .logs(&request, &mut |log| renderer.chunk(log))
         .map_err(|err| err.to_string())?;
+    renderer.finish();
     Ok(ExitCode::SUCCESS)
 }
 

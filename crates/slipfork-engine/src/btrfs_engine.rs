@@ -1652,7 +1652,7 @@ impl WorldEngine for BtrfsEngine {
             let env = child_env::materialize(&record.base_env, &spec.env, |var| {
                 std::env::var(var.name()).ok()
             });
-            let log = ServiceLogs::new();
+            let log = ServiceLogs::new(spec.id.as_str());
             let state = Arc::new(AtomicU8::new(ServiceState::Running.to_bits()));
             let process = Arc::new(Mutex::new(ServiceProcess::default()));
             record.services.insert(
@@ -2588,7 +2588,7 @@ mod tests {
             wait_for_inner_pid(supervisor.id(), Duration::from_secs(5)).expect("service inner pid");
         let inner = ProcessIdentity::capture(inner_pid);
         let state = Arc::new(AtomicU8::new(ServiceState::Running.to_bits()));
-        let log = ServiceLogs::new();
+        let log = ServiceLogs::new(id);
         let process = Arc::new(Mutex::new(ServiceProcess {
             supervisor: Some(supervisor),
             inner,
@@ -2611,13 +2611,14 @@ mod tests {
     }
 
     fn stopped_record(kind: ServiceKind, started_at: Instant) -> ServiceRecord {
+        let spec = test_spec(kind, Some(5432));
         ServiceRecord {
             runtime_kind: RuntimeKind::WorldProcess,
-            spec: test_spec(kind, Some(5432)),
+            log: ServiceLogs::new(spec.id.as_str()),
+            spec,
             kind,
             port: Some(5432),
             started_at,
-            log: ServiceLogs::new(),
             state: Arc::new(AtomicU8::new(ServiceState::Stopped.to_bits())),
             process: Arc::new(Mutex::new(ServiceProcess::default())),
         }

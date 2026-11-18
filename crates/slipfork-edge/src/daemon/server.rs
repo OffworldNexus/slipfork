@@ -1,8 +1,9 @@
 //! `<runtime_dir>/daemon.sock` server: bounded JSON-line framing over a `0600` Unix socket.
 //!
 //! One connection carries exactly one request. Most calls answer with a single terminal frame;
-//! `up`/`restart`/`fork`, `logs`, and `hook_run` may stream [`DaemonReply::Event`] / [`DaemonReply::Chunk`]
-//! frames first, and `forward` keeps the connection open until the client disconnects.
+//! `up`/`restart`/`fork`, `logs`, and `hook_run` may stream [`DaemonReply::Event`] /
+//! [`DaemonReply::Log`] / [`DaemonReply::Chunk`] frames first, and `forward` keeps the connection
+//! open until the client disconnects.
 
 use std::io::Write;
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -10,10 +11,10 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::thread;
 
-use slipfork_engine::StreamChunk;
+use slipfork_engine::{LogChunk, StreamChunk};
 
 use crate::EdgeError;
-use crate::daemon::wire::{FrameReader, write_chunk, write_reply};
+use crate::daemon::wire::{FrameReader, write_chunk, write_log, write_reply};
 use crate::daemon::{
     BootEvent, CONTROL_SOCKET_FILE, DaemonControl, DaemonReply, DaemonRequest, ForwardSummary,
     WorldUpSummary,
@@ -240,7 +241,7 @@ fn dispatch(
             },
         ),
         DaemonRequest::Logs(request) => {
-            stream_chunks(writer, |on_chunk| control.logs(&request, on_chunk))?;
+            stream_logs(writer, |on_chunk| control.logs(&request, on_chunk))?;
             write_reply(writer, &DaemonReply::Done)
         }
         DaemonRequest::ExecTarget(request) => write_reply(
@@ -311,6 +312,25 @@ fn stream_chunks<T>(
     let value = call(&mut |chunk| {
         if failure.is_none()
             && let Err(err) = write_chunk(writer, chunk)
+        {
+            failure = Some(err);
+        }
+    })?;
+    match failure {
+        Some(err) => Err(err),
+        None => Ok(value),
+    }
+}
+
+/// Run a streaming log call, splitting each attributed chunk under the frame cap.
+fn stream_logs<T>(
+    writer: &mut impl Write,
+    call: impl FnOnce(&mut dyn FnMut(LogChunk)) -> Result<T, EdgeError>,
+) -> Result<T, EdgeError> {
+    let mut failure: Option<EdgeError> = None;
+    let value = call(&mut |log| {
+        if failure.is_none()
+            && let Err(err) = write_log(writer, log)
         {
             failure = Some(err);
         }

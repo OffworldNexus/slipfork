@@ -1423,6 +1423,35 @@ modes:
         BASE_URL: '${{ resources::app.url }}'
 "#;
 
+const ATTRIBUTED_LOGS_SNOW: &str = r#"
+images:
+  - id: app
+    context: .
+    dockerfile: Dockerfile
+
+components:
+  - id: api
+    image: app
+    run_command: "while true; do echo api-line; sleep 0.1; done"
+
+  - id: worker
+    image: app
+    run_command: "while true; do echo worker-line; sleep 0.1; done"
+
+ingresses:
+  - match:
+      prefix: "/"
+    target:
+      component: api
+      port: 8000
+
+modes:
+  local:
+    envs:
+      app:
+        BASE_URL: '${{ resources::app.url }}'
+"#;
+
 const FORWARD_SNOW: &str = r#"
 images:
   - id: app
@@ -1745,6 +1774,60 @@ fn logs_follow_streams_new_component_output() {
         "the retained tail must be exactly one line: {}",
         stdout(&tail)
     );
+}
+
+#[test]
+fn logs_fan_out_attributes_every_line_to_its_component() {
+    let tmp = disk_tempdir();
+    let scratch = tmp.path();
+    let repo = repo_with_manifest(scratch, "acme-attributed-logs", ATTRIBUTED_LOGS_SNOW);
+    let daemon = Daemon::start(scratch);
+    assert_success(&daemon.cli(&repo, &["up"]), "up for attributed logs");
+
+    let mut fan_out = String::new();
+    let attributed = poll_until(Duration::from_secs(30), POLL_INTERVAL, || {
+        fan_out = stdout(&daemon.cli(&repo, &["logs", "--lines", "40"]));
+        if fan_out.contains("api: api-line") && fan_out.contains("worker: worker-line") {
+            Ok(())
+        } else {
+            Err(fan_out.clone())
+        }
+    });
+    assert!(
+        attributed.is_ok(),
+        "both components must stream attributed lines: {fan_out}"
+    );
+    for line in fan_out.lines().filter(|line| !line.is_empty()) {
+        assert!(
+            line.starts_with("api: ") || line.starts_with("worker: "),
+            "every fan-out line names its source: {line}"
+        );
+    }
+
+    // One explicitly named target stays byte-exact: the service's own text, no prefix.
+    let single = daemon.cli(&repo, &["logs", "api", "--lines", "3"]);
+    assert_success(&single, "logs api --lines 3");
+    let single = stdout(&single);
+    assert!(
+        single.lines().any(|line| line == "api-line"),
+        "a named target prints raw lines: {single}"
+    );
+    assert!(
+        !single.contains("api: api-line"),
+        "a named target is never prefixed: {single}"
+    );
+
+    // `--json` keeps one NDJSON document per chunk and carries the same structured source.
+    let json = daemon.cli(&repo, &["logs", "--json", "--lines", "2", "api"]);
+    assert_success(&json, "logs --json");
+    let first = stdout(&json)
+        .lines()
+        .next()
+        .expect("at least one NDJSON document")
+        .to_owned();
+    let document: Value = serde_json::from_str(&first).expect("one JSON document per chunk");
+    assert_eq!(document["source"], "api");
+    assert_eq!(document["stream"], "stdout");
 }
 
 #[test]

@@ -11,3 +11,7 @@ OWNER DIRECTIVE 2026-11-18: docs/design/ospp.md (9098b20) is the sole normative 
 ## 2026-11-18T00:30 [lead]
 
 OWNER CLARIFICATION (2026-11-18) — supersedes the 'delete the file vault' part of the M3.29 brief: KEEP FileVaultProvider (0600 local vault) + 'slipfork secret' strictly for LOCAL credentials/overrides (locally-provisioned postgres/redis passwords that must survive slipforkd/host restarts, local-mode !!, locally-managed vars/secrets). Local vault keys + locally-provisioned resources/domains are what populate OSPP claims (ids only, never values). Remote OSPP secrets (env_resolved/env_updated encrypted values and encrypted dump streams) are decrypted strictly in slipforkd memory and NEVER written to the vault or any disk file. Routed to the active M3.29.1 architect session; M3.29.3 and M3.29.4 re-scoped below.
+
+## 2026-11-18T04:45 [lead]
+
+gate acceptance corrected for the owner's two-tier ruling: the vault is KEPT and scoped, so 'no-disk-vaults' became 'local-vault-kept-scoped' + 'two-tiers'. Gate awaits M3.28.13's live evidence.

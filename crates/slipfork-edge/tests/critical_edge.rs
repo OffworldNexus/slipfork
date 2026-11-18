@@ -45,9 +45,9 @@ use slipfork_engine::rootfs::{
     ElfAbi, ImageContractMetadata, LibcFamily, OsRelease, RootfsDigest, WorldRootfs,
 };
 use slipfork_engine::{
-    BootLineage, EngineError, ExecEnv, ExecOutput, ServiceHandle, ServiceLogs, ServiceSpec,
-    ServiceState, SnapshotId, StreamChunk, StreamSource, WorldEngine, WorldEntryCommand,
-    WorldHandle, WorldServiceInfo, WorldSpec,
+    BootLineage, EngineError, ExecEnv, ExecOutput, LogChunk, ServiceHandle, ServiceLogs,
+    ServiceSpec, ServiceState, SnapshotId, StreamChunk, StreamSource, WorldEngine,
+    WorldEntryCommand, WorldHandle, WorldServiceInfo, WorldSpec,
 };
 use slipfork_world::{LocalHostRoute, ProjectSlug, WorldOrigin, WorldTarget};
 
@@ -2072,10 +2072,11 @@ impl DaemonControl for TestControl {
     fn logs(
         &self,
         _req: &LogsRequest,
-        on_chunk: &mut dyn FnMut(StreamChunk),
+        on_chunk: &mut dyn FnMut(LogChunk),
     ) -> Result<(), EdgeError> {
         // Larger than one frame's safe chunk size, so the server must split it.
-        on_chunk(StreamChunk {
+        on_chunk(LogChunk {
+            target: "api".to_owned(),
             source: StreamSource::Stdout,
             bytes: vec![b'x'; 20 * 1024],
         });

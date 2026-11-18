@@ -2,22 +2,25 @@
 id: M3.28.23
 title: "Attributed logs: the engine tags every chunk with its source and the CLI prefixes multi-source lines"
 kind: task
-status: ready
+status: done
 owner: implementer
 priority: 3
 depends_on: [M3.28.22]
 paths:
   - "crates/slipfork-engine/src/**"
+  - "crates/slipfork-engine/tests/**"
   - "crates/slipfork-edge/src/**"
-  - "crates/slipfork/src/{daemon.rs"
-  - logs.rs
-  - "lib.rs}"
+  - "crates/slipfork-edge/tests/critical_edge.rs"
+  - crates/slipfork/src/daemon.rs
+  - crates/slipfork/src/logs.rs
+  - crates/slipfork/src/lib.rs
+  - crates/slipfork/src/main.rs
   - "crates/slipfork/tests/**"
-attempts: 0
+attempts: 1
 max_attempts: 3
 escalation: none
 created: "2026-11-18T04:15"
-updated: "2026-11-18T04:15"
+updated: "2026-11-18T05:03"
 ---
 
 # Goal

@@ -35,3 +35,7 @@ edited fields
 ## 2026-11-18T04:34 [lead]
 
 added poc/run_benchmark.py: its benchmark still drives 'slipfork dag plan', a command M3.28.11 deleted, so the opt-in 'make bench' is broken. Remove that step or retarget it to a shipped command.
+
+## 2026-11-18T04:59 [lead]
+
+from M3.28.23: docs/reference/cli.md rows 67/105 must document the new logs rule — every line is prefixed '<source>: ' when the request names no single target; a single named target prints raw; --json is NDJSON with {stream, source, text}. Also still pending here: poc/run_benchmark.py's deleted 'dag plan' step, and the do-vm-harness.md rewrite.

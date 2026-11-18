@@ -7,7 +7,7 @@
 
 use std::io::{self, Read, Write};
 
-use slipfork_engine::StreamChunk;
+use slipfork_engine::{LogChunk, StreamChunk};
 
 use crate::EdgeError;
 use crate::daemon::{DaemonReply, MAX_CONTROL_FRAME, MAX_STREAM_CHUNK};
@@ -47,6 +47,29 @@ pub(crate) fn write_chunk(writer: &mut impl Write, chunk: StreamChunk) -> Result
             &DaemonReply::Chunk {
                 chunk: StreamChunk {
                     source,
+                    bytes: piece.to_vec(),
+                },
+            },
+        )?;
+    }
+    Ok(())
+}
+
+/// Split one attributed log chunk into frame-sized pieces and write each as a `log` reply.
+///
+/// The component/hook id and the stream are copied onto every piece, so a chunk larger than one
+/// frame stays attributable after the split; no piece is ever sent without its label.
+pub(crate) fn write_log(writer: &mut impl Write, log: LogChunk) -> Result<(), EdgeError> {
+    if log.bytes.len() <= MAX_STREAM_CHUNK {
+        return write_reply(writer, &DaemonReply::Log { log });
+    }
+    for piece in log.bytes.chunks(MAX_STREAM_CHUNK) {
+        write_reply(
+            writer,
+            &DaemonReply::Log {
+                log: LogChunk {
+                    target: log.target.clone(),
+                    source: log.source,
                     bytes: piece.to_vec(),
                 },
             },

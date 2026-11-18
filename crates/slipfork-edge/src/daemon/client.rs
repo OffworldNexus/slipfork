@@ -1,15 +1,15 @@
 //! `<runtime_dir>/daemon.sock` client: the thin `slipfork` CLI's only view of `slipforkd`.
 //!
 //! [`DaemonControlClient`] implements the same [`DaemonControl`] trait the daemon implements
-//! in-process, one fresh connection per call. Streaming replies (`up`/`restart`/`fork` events, log
-//! chunks)
+//! in-process, one fresh connection per call. Streaming replies (`up`/`restart`/`fork` events,
+//! attributed log frames, `hook run` chunks)
 //! are dispatched to the caller's callback until the terminal frame arrives.
 
 use std::io::Write;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 
-use slipfork_engine::StreamChunk;
+use slipfork_engine::{LogChunk, StreamChunk};
 
 use crate::EdgeError;
 use crate::daemon::server::DaemonControlServer;
@@ -51,15 +51,16 @@ impl DaemonControlClient {
         request: &DaemonRequest,
         on_event: &mut dyn FnMut(BootEvent),
         on_chunk: &mut dyn FnMut(StreamChunk),
+        on_log: &mut dyn FnMut(LogChunk),
     ) -> Result<DaemonReply, EdgeError> {
         let stream = self.connect()?;
         let mut reader = FrameReader::new(self.read_half(&stream)?);
         self.send(&stream, request)?;
-        read_terminal(&mut reader, on_event, on_chunk)
+        read_terminal(&mut reader, on_event, on_chunk, on_log)
     }
 
     fn call(&self, request: &DaemonRequest) -> Result<DaemonReply, EdgeError> {
-        self.exchange(request, &mut |_| {}, &mut |_| {})
+        self.exchange(request, &mut |_| {}, &mut |_| {}, &mut |_| {})
     }
 
     fn connect(&self) -> Result<UnixStream, EdgeError> {
@@ -101,11 +102,12 @@ impl DaemonControlClient {
     }
 }
 
-/// Read frames until a terminal one, dispatching streamed events/chunks to the callbacks.
+/// Read frames until a terminal one, dispatching streamed events/chunks/logs to the callbacks.
 fn read_terminal<R: std::io::Read>(
     reader: &mut FrameReader<R>,
     on_event: &mut dyn FnMut(BootEvent),
     on_chunk: &mut dyn FnMut(StreamChunk),
+    on_log: &mut dyn FnMut(LogChunk),
 ) -> Result<DaemonReply, EdgeError> {
     loop {
         let frame = reader.read_frame()?.ok_or(EdgeError::ControlIo {
@@ -119,6 +121,7 @@ fn read_terminal<R: std::io::Read>(
         match reply {
             DaemonReply::Event { event } => on_event(event),
             DaemonReply::Chunk { chunk } => on_chunk(chunk),
+            DaemonReply::Log { log } => on_log(log),
             DaemonReply::Error { error } => return Err(EdgeError::Control(error)),
             terminal => return Ok(terminal),
         }
@@ -148,7 +151,12 @@ impl DaemonControl for DaemonControlClient {
         req: &UpRequest,
         on_event: &mut dyn FnMut(BootEvent),
     ) -> Result<WorldUpSummary, EdgeError> {
-        match self.exchange(&DaemonRequest::Up(req.clone()), on_event, &mut |_| {})? {
+        match self.exchange(
+            &DaemonRequest::Up(req.clone()),
+            on_event,
+            &mut |_| {},
+            &mut |_| {},
+        )? {
             DaemonReply::World { world } => Ok(world),
             other => Err(unexpected_reply(&other)),
         }
@@ -159,7 +167,12 @@ impl DaemonControl for DaemonControlClient {
         req: &WorldSelector,
         on_event: &mut dyn FnMut(BootEvent),
     ) -> Result<WorldUpSummary, EdgeError> {
-        match self.exchange(&DaemonRequest::Restart(req.clone()), on_event, &mut |_| {})? {
+        match self.exchange(
+            &DaemonRequest::Restart(req.clone()),
+            on_event,
+            &mut |_| {},
+            &mut |_| {},
+        )? {
             DaemonReply::World { world } => Ok(world),
             other => Err(unexpected_reply(&other)),
         }
@@ -177,7 +190,12 @@ impl DaemonControl for DaemonControlClient {
         req: &ForkRequest,
         on_event: &mut dyn FnMut(BootEvent),
     ) -> Result<WorldUpSummary, EdgeError> {
-        match self.exchange(&DaemonRequest::Fork(req.clone()), on_event, &mut |_| {})? {
+        match self.exchange(
+            &DaemonRequest::Fork(req.clone()),
+            on_event,
+            &mut |_| {},
+            &mut |_| {},
+        )? {
             DaemonReply::World { world } => Ok(world),
             other => Err(unexpected_reply(&other)),
         }
@@ -250,12 +268,13 @@ impl DaemonControl for DaemonControlClient {
         }
     }
 
-    fn logs(
-        &self,
-        req: &LogsRequest,
-        on_chunk: &mut dyn FnMut(StreamChunk),
-    ) -> Result<(), EdgeError> {
-        match self.exchange(&DaemonRequest::Logs(req.clone()), &mut |_| {}, on_chunk)? {
+    fn logs(&self, req: &LogsRequest, on_chunk: &mut dyn FnMut(LogChunk)) -> Result<(), EdgeError> {
+        match self.exchange(
+            &DaemonRequest::Logs(req.clone()),
+            &mut |_| {},
+            &mut |_| {},
+            on_chunk,
+        )? {
             DaemonReply::Done => Ok(()),
             other => Err(unexpected_reply(&other)),
         }
@@ -290,7 +309,12 @@ impl DaemonControl for DaemonControlClient {
         req: &HookRunRequest,
         on_chunk: &mut dyn FnMut(StreamChunk),
     ) -> Result<i32, EdgeError> {
-        match self.exchange(&DaemonRequest::HookRun(req.clone()), &mut |_| {}, on_chunk)? {
+        match self.exchange(
+            &DaemonRequest::HookRun(req.clone()),
+            &mut |_| {},
+            on_chunk,
+            &mut |_| {},
+        )? {
             DaemonReply::HookExit { exit_code } => Ok(exit_code),
             other => Err(unexpected_reply(&other)),
         }
@@ -308,7 +332,7 @@ impl DaemonControl for DaemonControlClient {
                 message: err.to_string(),
             })?);
         self.send(&stream, &DaemonRequest::Forward(req.clone()))?;
-        match read_terminal(&mut reader, &mut |_| {}, &mut |_| {})? {
+        match read_terminal(&mut reader, &mut |_| {}, &mut |_| {}, &mut |_| {})? {
             DaemonReply::Forward { summary } => {
                 // Holding the connection open is the bridge's lifetime contract.
                 wait_disconnect(summary);

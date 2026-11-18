@@ -43,9 +43,9 @@ use slipfork_engine::rootfs::{
 };
 use slipfork_engine::{
     BaseLineage, BootLineage, BtrfsEngine, EngineError, ExecEnv, ExecOutput, InheritedVar,
-    LocalIngressBridge, MonotonicClock, MountMode, SeedLineage, ServiceHandle, ServiceKind,
-    ServiceRuntime, ServiceSpec, ServiceState, SnapshotId, StateSubdirMount, StreamChunk,
-    SystemClock, WorldEngine, WorldHandle, WorldMount, WorldSpec, elapsed_millis,
+    LocalIngressBridge, LogChunk, MonotonicClock, MountMode, SeedLineage, ServiceHandle,
+    ServiceKind, ServiceRuntime, ServiceSpec, ServiceState, SnapshotId, StateSubdirMount,
+    StreamChunk, SystemClock, WorldEngine, WorldHandle, WorldMount, WorldSpec, elapsed_millis,
 };
 use slipfork_ospp::{
     BrowserOpener, DeviceKeyPath, DeviceKeySigner, FileDeviceKeyStore, OsppClaims, OsppClient,
@@ -264,8 +264,11 @@ enum RetainedTarget {
 /// Size-capped retained output plus its on-disk log for one hook run.
 ///
 /// Mirrors the engine's `ServiceLogs` retention so `slipfork logs <hook_id> --follow` behaves like
-/// a service log, while [`HookLog::path`] gives the rescue block a real file to point at.
+/// a service log, while [`HookLog::path`] gives the rescue block a real file to point at. The
+/// `target` is the hook id the record was minted for, so `slipfork logs` attributes every chunk to
+/// its own hook record instead of the caller's request string.
 struct HookLog {
+    target: String,
     path: PathBuf,
     state: Mutex<HookLogState>,
     changed: Condvar,
@@ -278,12 +281,17 @@ struct HookLogState {
 }
 
 impl HookLog {
-    fn new(path: PathBuf) -> Self {
+    fn new(target: String, path: PathBuf) -> Self {
         Self {
+            target,
             path,
             state: Mutex::new(HookLogState::default()),
             changed: Condvar::new(),
         }
+    }
+
+    fn target(&self) -> &str {
+        &self.target
     }
 
     fn lock(&self) -> MutexGuard<'_, HookLogState> {
@@ -2377,6 +2385,7 @@ impl DaemonService {
             .rsplit_once(':')
             .ok_or_else(|| rejected(format!("invalid hook id '{id}'")))?;
         let log = Arc::new(HookLog::new(
+            id.to_owned(),
             directory.join(format!("{component}.{phase}.log")),
         ));
         live.hook_logs.insert(id.to_owned(), Arc::clone(&log));
@@ -2805,11 +2814,7 @@ impl DaemonControl for DaemonService {
         vault.keys(&repo.project)
     }
 
-    fn logs(
-        &self,
-        req: &LogsRequest,
-        on_chunk: &mut dyn FnMut(StreamChunk),
-    ) -> Result<(), EdgeError> {
+    fn logs(&self, req: &LogsRequest, on_chunk: &mut dyn FnMut(LogChunk)) -> Result<(), EdgeError> {
         let selection = self.select(&req.cwd, req.world.as_deref())?;
         let world_id_text = world_id(&selection.repo.project, &selection.target);
         let (handle, service_ids, hook_logs) = {
@@ -2866,12 +2871,15 @@ impl DaemonControl for DaemonService {
                         .engine
                         .service_logs(&handle, &id)
                         .map_err(|err| runtime_error(err.to_string()))?;
+                    // The engine's own record — never the request string — labels the chunks.
+                    let label = log.target().to_owned();
+                    let mut emit = |chunk: StreamChunk| {
+                        if wants(&chunk) {
+                            on_chunk(LogChunk::attribute(label.clone(), chunk));
+                        }
+                    };
                     if req.follow {
-                        log.follow(&mut |chunk| {
-                            if wants(&chunk) {
-                                on_chunk(chunk);
-                            }
-                        });
+                        log.follow(&mut emit);
                     } else {
                         let selected: Vec<StreamChunk> = log
                             .snapshot()
@@ -2879,17 +2887,19 @@ impl DaemonControl for DaemonService {
                             .filter(|chunk| wants(chunk))
                             .collect();
                         for chunk in tail_lines(selected, req.lines) {
-                            on_chunk(chunk);
+                            emit(chunk);
                         }
                     }
                 }
                 RetainedTarget::Hook(log) => {
+                    let label = log.target().to_owned();
+                    let mut emit = |chunk: StreamChunk| {
+                        if wants(&chunk) {
+                            on_chunk(LogChunk::attribute(label.clone(), chunk));
+                        }
+                    };
                     if req.follow {
-                        log.follow(&mut |chunk| {
-                            if wants(&chunk) {
-                                on_chunk(chunk);
-                            }
-                        });
+                        log.follow(&mut emit);
                     } else {
                         let selected: Vec<StreamChunk> = log
                             .snapshot()
@@ -2897,7 +2907,7 @@ impl DaemonControl for DaemonService {
                             .filter(|chunk| wants(chunk))
                             .collect();
                         for chunk in tail_lines(selected, req.lines) {
-                            on_chunk(chunk);
+                            emit(chunk);
                         }
                     }
                 }

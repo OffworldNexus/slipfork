@@ -435,6 +435,34 @@ pub struct StreamChunk {
     pub bytes: Vec<u8>,
 }
 
+/// One attributed chunk of a **retained** component/hook log.
+///
+/// [`StreamChunk`] is the un-attributed stream a live exec or hook run yields; a retained log chunk
+/// also names the component or hook id it came from, so `slipfork logs` can attribute interleaved
+/// output from several sources without the renderer guessing which service produced which line.
+/// The id is the engine's own record ([`ServiceLogs::target`]) for a service and the daemon's hook
+/// record for a hook — never the caller's request string.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LogChunk {
+    /// Component id (`api`) or hook id (`api:pre-deploy`) that produced the bytes.
+    pub target: String,
+    /// Originating stream.
+    pub source: StreamSource,
+    /// Raw bytes (not necessarily UTF-8).
+    pub bytes: Vec<u8>,
+}
+
+impl LogChunk {
+    /// Attribute one retained [`StreamChunk`] to the component/hook `target` that produced it.
+    pub fn attribute(target: impl Into<String>, chunk: StreamChunk) -> Self {
+        Self {
+            target: target.into(),
+            source: chunk.source,
+            bytes: chunk.bytes,
+        }
+    }
+}
+
 /// Result of running [`WorldEngine::exec_in_world`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExecOutput {

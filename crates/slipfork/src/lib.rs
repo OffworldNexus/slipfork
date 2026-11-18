@@ -12,6 +12,8 @@
 //!   rendering over an injected `SubvolumeDriver` (the CLI owns no `WorldEngine`).
 //! - [`apparmor`]: the Ubuntu 24.04 `/etc/apparmor.d/slipfork` `userns` profile body.
 //! - [`layout`]: pure paths derived from already-resolved roots (`state`, `runtime`, data/vaults).
+//! - [`logs`]: the one attributed `slipfork logs` renderer (`<source>: ` prefixes for fan-out,
+//!   byte-exact raw output for one named target).
 //! - [`project`]: the injected [`slipfork_vcs::ProjectSlugOverride`] and the one
 //!   `SlipforkConfig` loader/resolver constructor (no second TOML parser, no silent defaults).
 //! - [`user`]: the [`user::UserIdentity`] and [`user::HostIdentity`] ports with their `id -un` /
@@ -43,6 +45,7 @@ pub mod daemon;
 pub mod daemon_unit_install;
 pub mod doctor;
 pub mod layout;
+pub mod logs;
 pub mod oci_store;
 pub mod open;
 pub mod project;

@@ -28,7 +28,7 @@ pub use slipfork_engine::{
     BaseLineage, CacheOutcome, RootfsLineage, SeedLineage, ServiceImageLineage, ServiceKind,
     WorldLineage, WorldServiceInfo,
 };
-use slipfork_engine::{ExecEnv, StreamChunk, WorldEntryCommand};
+use slipfork_engine::{ExecEnv, LogChunk, StreamChunk, WorldEntryCommand};
 use slipfork_world::WorldOrigin;
 
 use crate::EdgeError;
@@ -39,7 +39,8 @@ pub const CONTROL_SOCKET_FILE: &str = "daemon.sock";
 /// Hard cap on one JSON-line control frame (request or reply).
 pub const MAX_CONTROL_FRAME: usize = 64 * 1024;
 
-/// Largest `StreamChunk` payload emitted per frame, so JSON escaping stays under the frame cap.
+/// Largest streamed chunk payload (a `StreamChunk` or `LogChunk`'s bytes) emitted per frame, so
+/// JSON escaping stays under the frame cap.
 pub const MAX_STREAM_CHUNK: usize = 8 * 1024;
 
 /// The HTTP ingress listeners `slipforkd` actually serves, plus the one port every minted
@@ -708,7 +709,7 @@ pub enum DaemonRequest {
         /// Repository root owning the vault.
         repo_root: PathBuf,
     },
-    /// Read or follow retained component/hook logs ([`DaemonReply::Chunk`] frames).
+    /// Read or follow retained component/hook logs ([`DaemonReply::Log`] frames).
     Logs(LogsRequest),
     /// Fetch the direct-execution target for a world (or a running backing-service container).
     ExecTarget(ExecTargetRequest),
@@ -790,10 +791,15 @@ pub enum DaemonReply {
         /// Stored secret key names (never values).
         keys: Vec<String>,
     },
-    /// One streamed log/hook output chunk.
+    /// One streamed `hook run` output chunk.
     Chunk {
         /// Captured output chunk.
         chunk: StreamChunk,
+    },
+    /// One streamed retained log chunk, attributed to its component or hook id.
+    Log {
+        /// Attributed log chunk.
+        log: LogChunk,
     },
     /// Terminal reply to [`DaemonRequest::Logs`].
     Done,
@@ -933,12 +939,8 @@ pub trait DaemonControl: Send + Sync {
     /// List stored secret key names (never values).
     fn secret_list(&self, repo_root: &Path) -> Result<Vec<String>, EdgeError>;
 
-    /// Read or follow retained logs, streaming chunks to `on_chunk`.
-    fn logs(
-        &self,
-        req: &LogsRequest,
-        on_chunk: &mut dyn FnMut(StreamChunk),
-    ) -> Result<(), EdgeError>;
+    /// Read or follow retained logs, streaming attributed chunks to `on_chunk`.
+    fn logs(&self, req: &LogsRequest, on_chunk: &mut dyn FnMut(LogChunk)) -> Result<(), EdgeError>;
 
     /// Fetch the direct-execution target (the only `ExecEnv`-bearing reply).
     ///

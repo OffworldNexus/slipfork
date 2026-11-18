@@ -44,10 +44,12 @@ $ make check
 ... exit 0
 $ make docs-check
 ... exit 0
-$ ! grep -rn 'FileVaultProvider\|slipfork secret\|vaults/' crates/ docs/ README.md && echo no-disk-vaults
-no-disk-vaults
+$ grep -rn 'FileVaultProvider' crates/slipfork/src/vaults.rs >/dev/null && grep -q 'slipfork secret' docs/reference/cli.md && echo local-vault-kept-scoped
+local-vault-kept-scoped
 $ ! grep -rn 'env\.bundle\|secrets\.ensure\|resources\.describe\|dump\.begin\|tpmd' crates/slipfork-ospp crates/slipfork-ospp-testkit docs/reference/ospp.md && echo ospp-v1-only
 ospp-v1-only
+$ ! grep -rni 'remote secret.*vault\|vault.*remote secret' crates/ docs/reference/ospp.md && echo two-tiers
+two-tiers
 ```
 
 - Every child is `done`; the epic is `done` only with `M3.28.13`'s live evidence plus a zero-secret-on-disk proof.
