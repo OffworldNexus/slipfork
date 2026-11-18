@@ -87,13 +87,13 @@ modes:
 | Operator | Syntax | When the key is missing | Allowed on |
 |---|---|---|---|
 | **Fallback** | `${{ vars::LOG_LEVEL ?? "INFO" }}` | returns `"INFO"` for this render; **writes nothing** | every namespace |
-| **Ensure** | `${{ secrets::KEY !! random_string(50) }}` | generates once and persists it in the local vault | single-key `secrets::<KEY>` only |
+| **Ensure** | `${{ secrets::KEY !! random_string(50) }}` | generates once and persists it in the project's local vault, so it survives restarts | single-key `secrets::<KEY>` only |
 
 The generator grammar (`random_string`, `random_hex`, `random_base64`, `uuid4`) lives in the [manifest reference](reference/manifest.md). A `??` fallback must be a JSON string literal, so `${{ vars::LOG_LEVEL ?? INFO }}` fails while `?? "INFO"` works.
 
 ### Where a key is read from
 
-The local vault is `$XDG_DATA_HOME/slipfork/vaults/<project>.json` (default `~/.local/share/slipfork/vaults/`), mode `0600`; `--state-dir`/`--runtime-dir` do not move it, so set `$XDG_DATA_HOME` for a hermetic run. `secrets::` and `vars::` resolve there. Remote provider protocol: [OSPP v1](reference/ospp.md).
+The local vault is `$XDG_DATA_HOME/slipfork/vaults/<project>.json` (default `~/.local/share/slipfork/vaults/`), mode `0600`; `--state-dir`/`--runtime-dir` do not move it, so set `$XDG_DATA_HOME` for a hermetic run. `secrets::` and `vars::` resolve there, and it holds local values only — CI-resolved secrets arrive HPKE-encrypted and are never written to it (see [two tiers](reference/ospp.md#two-tiers)).
 
 Any reference without `??` or `!!` that the vault cannot satisfy fails the whole render, listing **every** missing value in one pass:
 

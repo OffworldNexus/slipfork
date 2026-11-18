@@ -62,7 +62,7 @@ On a Btrfs host those lines report `btrfs`, `ok`, `ok`, and `ok`, `fix:` disappe
 `slipforkd` refuses to boot on a non-Btrfs state directory too, so no world command leaves a half-created tree:
 
 ```console
-$ tail -1 "$XDG_RUNTIME_DIR/slipfork/daemon.log"   # <state_dir>/run/daemon.log when XDG_RUNTIME_DIR is unset
+$ tail -1 ~/.cache/slipfork/run/daemon.log
 slipforkd: cannot start the Btrfs world engine: /home/acme/.cache/slipfork is not on Btrfs: statfs reports f_type 0x58465342, not BTRFS_SUPER_MAGIC 0x9123683e; fix: sudo mount -o user_subvol_rm_allowed,noatime /dev/<device> <state_dir>
 ```
 
@@ -105,18 +105,15 @@ LOG_LEVEL=INFO
 SECRET_KEY=[REDACTED]
 ```
 
-`!!` fills a missing secret once and persists it in a `0600` vault; re-running after a manifest edit keeps the value. A top-level `envs:` or `project:` block **in `snow.yml`** is refused by key name only (`project` is a `slipfork.toml` key). Components, hooks, ingresses, and every key: [`snow.yml` modes & secrets](snow-modes.md).
+`!!` fills a missing secret once and persists it in the project's local `0600` vault (`~/.local/share/slipfork/vaults/<project>.json`), so it survives every restart; re-running after a manifest edit keeps the value. That vault holds only local values — your own credentials and overrides; CI-provided secrets never land in it ([two tiers](reference/ospp.md#two-tiers)). A top-level `envs:` or `project:` block **in `snow.yml`** is refused by key name only (`project` is a `slipfork.toml` key). Components, hooks, ingresses, and every key: [`snow.yml` modes & secrets](snow-modes.md).
 
 ## 3. Boot the canonical world
 
 ```console
 $ slipfork up
-[resources] appdb: prefer_remote -> local (not_offered)
-[ready]     api (internal :8000 in world netns)
-[origin]    http://acme.localhost:41921
 ```
 
-`not_offered` means no paired OSPP session offered a remote database, so `appdb` ran world-local. The first `up` builds and caches the rootfs under `<state_dir>/cache/rootfs/<sha256>/app`, seals it as a read-only Btrfs snapshot, clones the world's writable subvolume from it, starts one `crun` OCI container per declared resource sharing the world's `127.0.0.1`, and runs your components as `$UID:$GID` on the read-only rootfs. Repeating `up` prints the same origin URL.
+`up` prints one `world` row, the single `app` URL, the `worktree`, the `next` commands, and one `lineage` line; `-v` adds `[resources]` rows such as `appdb: prefer_remote -> local (no_remote_session)` — no paired OSPP session supplied a remote database, so `appdb` ran world-local. The first `up` builds and caches the rootfs under `<state_dir>/cache/rootfs/<sha256>/app`, seals it as a read-only Btrfs snapshot, clones the world's writable subvolume from it, starts one `crun` OCI container per declared resource sharing the world's `127.0.0.1`, and runs your components as `$UID:$GID` on the read-only rootfs. Repeating `up` prints the same app URL.
 
 `slipfork` auto-starts `slipforkd` when `<runtime_dir>/daemon.sock` does not answer (`<runtime_dir>/daemon.log`, `0600`); `HOME` must be set before any mutation. Host toolchain caches: [CLI reference](reference/cli.md) (`--host-caches`).
 
@@ -124,8 +121,11 @@ $ slipfork up
 
 ```console
 $ slipfork fork feat-billing
-[origin]    http://feat-billing.acme.localhost:41921   # after the same [resources]/[ready] rows
+```
 
+`fork` prints the fork's `world` and `cd` rows plus its own app URL (`http://feat-billing.acme.localhost`, or `:<port>` when the ingress is not on `:80`).
+
+```console
 $ slipfork down --world feat-billing   # stop services, keep .worktrees/feat-billing
 $ slipfork drop feat-billing           # destroy the world, worktree, branch, and snapshot ref
 ```

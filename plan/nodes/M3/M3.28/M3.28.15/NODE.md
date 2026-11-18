@@ -5,7 +5,7 @@ kind: task
 status: ready
 owner: implementer
 priority: 2
-depends_on: [M3.28.11, M3.29.3]
+depends_on: [M3.29.3, M3.28.9]
 paths:
   - crates/slipfork/src/cli.rs
   - crates/slipfork/src/main.rs
@@ -30,7 +30,7 @@ attempts: 0
 max_attempts: 3
 escalation: none
 created: "2026-11-17T17:40"
-updated: "2026-11-18T01:37"
+updated: "2026-11-18T03:16"
 ---
 
 # Goal

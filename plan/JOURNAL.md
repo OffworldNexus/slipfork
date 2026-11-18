@@ -1301,3 +1301,21 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-18T03:07 [M3.29.2] (lead) status active -> done
 - 2026-11-18T03:07 [M3.29.3] (lead) status active -> done
 - 2026-11-18T03:07 [M3.28.8] (lead) status ready -> done
+- 2026-11-18T03:07 [M3.28.9] (lead) status ready -> active
+- 2026-11-18T03:07 [M3.28.9] (lead) attempt 1/3 started
+- 2026-11-18T03:07 [M3.28.9] (lead) base 4a1428f1752420e57399c20f61db0dcec3d08ec3
+- 2026-11-18T03:07 [M3.29.4] (lead) status ready -> active
+- 2026-11-18T03:07 [M3.29.4] (lead) attempt 1/3 started
+- 2026-11-18T03:07 [M3.29.4] (lead) base 4a1428f1752420e57399c20f61db0dcec3d08ec3
+- 2026-11-18T03:11 [M3.29.4] (lead) attempt 1 cap-out after writing the pages (ospp.md 73 lines, two-tier section, cli.md secret section, seed-dump rewrite, auth verb, nav). Acceptance items ospp-
+- 2026-11-18T03:11 [M3.29.3] (lead) amendment: invariant 4's 'ephemeral in-memory session secret for a local-only run without a vault entry' is superseded by the owner's two-tier ruling and by the
+- 2026-11-18T03:11 [M3.28.16] (lead) status ready -> active
+- 2026-11-18T03:11 [M3.28.16] (lead) attempt 1/3 started
+- 2026-11-18T03:11 [M3.28.16] (lead) base 4a1428f1752420e57399c20f61db0dcec3d08ec3
+- 2026-11-18T03:16 [M3.28.16] (lead) status active -> ready
+- 2026-11-18T03:16 [M3.28.16] (lead) attempt 1: tool+tests+LESSONS+Makefile wiring delivered and verified (8/9 pytest; real-repo case correctly RED). Blocked by SEQUENCING, not by a missing input: 
+- 2026-11-18T03:16 [M3.28.15] (lead) edited fields
+- 2026-11-18T03:16 [M3.28.9] (lead) status active -> done
+- 2026-11-18T03:16 [M3.28.9] (lead) lead-verified (worker's report was lost again): ps/open exist, lib ps 9 + open 7 pass, --world/--remote present, clippy clean, critical_cli 24/0, and the dashbo
+- 2026-11-18T03:16 [M3.29.4] (lead) status active -> done
+- 2026-11-18T03:16 [M3.29.4] (lead) docs-check green (11 docs, zensical --strict ok); ospp.md 73 lines with the two-tier boundary, cli.md's local-vault section, streamed seed-dump rewrite, auth vi

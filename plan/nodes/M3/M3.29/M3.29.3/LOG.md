@@ -63,3 +63,7 @@ landed in one atomic commit with its siblings: the OSPP crate cut-over breaks cr
 ## 2026-11-18T03:07 [lead]
 
 status active -> done
+
+## 2026-11-18T03:11 [lead]
+
+amendment: invariant 4's 'ephemeral in-memory session secret for a local-only run without a vault entry' is superseded by the owner's two-tier ruling and by the shipped behaviour (snow's ensure_secret persists '!!' in the local 0600 vault). No ephemeral session secret is generated in 0.1.0; local '!!' values persist so a world can reconnect after a restart. Do not implement the ephemeral-secret path.

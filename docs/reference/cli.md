@@ -1,6 +1,6 @@
 # CLI Reference (`0.1.0`)
 
-`slipfork` is a thin client: `doctor` and `dag plan` read the host locally, `snow resolve` asks `slipforkd` (it owns the vault), and every world command talks to the unprivileged `slipforkd` daemon over a `0600` `<state_dir>/run/daemon.sock`. Only `up` and `fork` start `slipforkd --listen 127.0.0.1:0` in the background (`<state_dir>/run/daemon.log`, `0600`); every other verb fails closed with one line when nothing answers:
+`slipfork` is a thin client: `doctor` and `dag plan` read the host locally, `snow resolve` and `secret` ask `slipforkd` (it owns the vault), and every world command talks to the unprivileged `slipforkd` daemon over a `0600` `<state_dir>/run/daemon.sock`. Only `up` and `fork` start `slipforkd --listen 127.0.0.1:0` in the background (`<state_dir>/run/daemon.log`, `0600`); every other verb fails closed with one line when nothing answers:
 ```console
 $ slipfork list
 slipfork: no slipforkd on /home/acme/.cache/slipfork/run/daemon.sock — run `slipfork up`
@@ -40,6 +40,7 @@ fix: sudo mount -o user_subvol_rm_allowed,noatime /dev/<device> <state_dir>
 | Option | Default | Description |
 |---|---|---|
 | `--json` | `false` | Emit JSON on stdout |
+| `-v, --verbose` | `false` | Add per-node lineage and `[resources]` detail to human output (ignored under `--json`) |
 | `--state-dir <DIR>` | `$XDG_CACHE_HOME/slipfork` or `~/.cache/slipfork` | Btrfs subvolumes, worlds, `cache/{rootfs,oci,runtime}`; the client's control socket is always `<state_dir>/run/daemon.sock` |
 | `-h, --help` / `-V, --version` | — | Help or CLI version |
 
@@ -52,14 +53,14 @@ fix: sudo mount -o user_subvol_rm_allowed,noatime /dev/<device> <state_dir>
 | `doctor` | Probe the Btrfs substrate, the live subvolume round-trip, and unprivileged userns/netns | `slipfork doctor` |
 | `snow resolve` | Validate `snow.yml`, persist missing `!!` secrets, print one mode (`[REDACTED]`) | `slipfork snow resolve --file snow.yml --mode local` |
 | `dag plan` | Merkle-hash inputs and print `Cached` / `Rebuild` per artifact and fixture wave | `slipfork dag plan` |
-| `up` | Boot or confirm the world selected by `--world` or `cwd`; print one origin URL | `slipfork up` |
+| `up` | Boot or confirm the world selected by `--world` or `cwd`; print one app URL | `slipfork up` |
 | `down` | Stop a world's services, keep its worktree (idempotent) | `slipfork down --world feat-billing` |
 | `fork` | Create `.worktrees/<fork>` — a Git worktree, or a Jujutsu workspace when the checkout carries `.jj` — plus its Btrfs world subvolume | `slipfork fork feat-billing` |
 | `drop` | Destroy a fork world's subvolume, its worktree, branch, and snapshot ref | `slipfork drop feat-billing` |
-| `list` | One row per world: state (`running`/`stopped`/`failed`), exactly one origin URL, worktree | `slipfork list` |
+| `list` | One row per world: state (`running`/`stopped`/`failed`), exactly one app URL, worktree | `slipfork list` |
 | `prune` | Preview worlds whose checkout directory is gone (default, or `--dry-run`); `--yes` reaps them. Sealed snapshots and caches are retained | `slipfork prune` |
-| `secret set` / `unset` | Store a value read from **stdin** (`--force` rotates it) or remove one key | `printf '%s' "$V" \| slipfork secret set STRIPE_SECRET_KEY` |
-| `secret list` | Print key names only, never values | `slipfork secret list` |
+| `secret set` / `unset` | Store a **local**-vault value read from **stdin** (`--force` rotates it) or remove one key | `slipfork secret set PG_PASSWORD` |
+| `secret list` | Print the local vault's key names only, never values | `slipfork secret list` |
 | `share` | Tunnel sharing is unavailable in this release and fails closed; `--stop` releases a lease | `slipfork share` |
 | `daemon unit` | Render the non-template systemd units and the AppArmor profile on stdout (`--only socket\|service\|apparmor`, repeatable `--bin-dir`) | `slipfork daemon unit --only apparmor` |
 | `daemon install` | Write `/etc/systemd/system/slipforkd.{socket,service}` + `/etc/apparmor.d/slipfork`, then `enable --now` (`sudo`) | `sudo slipfork daemon install` |
@@ -70,8 +71,21 @@ fix: sudo mount -o user_subvol_rm_allowed,noatime /dev/<device> <state_dir>
 | `db` | Open `psql` inside the world's running `postgres:<v>` container (TTY) | `slipfork db appdb` |
 | `redis` | Open `redis-cli` inside the world's running `redis:<v>` container (TTY) | `slipfork redis cache` |
 | `forward` | Bind daemon-owned `127.0.0.1:0` listeners bridged into a world, held until Ctrl-C | `slipfork forward pg_databases.appdb` |
-| `auth [ENDPOINT]` | Pair this machine against the daemon's injected OSPP endpoint, open the server-supplied `<url>#handle=…` page, and print it | `slipfork auth` |
+| `auth [ENDPOINT]` | Pair this machine with the daemon's injected OSPP endpoint; open and print the **server-supplied** `<url>#handle=…` page | `slipfork auth` |
 | `support` | Report registry tiers and required evidence (`ADR-0007`) | `slipfork support` |
+
+## `slipfork secret` (local vault)
+
+`slipfork secret` manages the **local** tier only: one `0600` `<data_home>/slipfork/vaults/<project>.json` per project (default `~/.local/share/slipfork/vaults/`, moved only by `$XDG_DATA_HOME`) holding `secrets::<KEY>` values that are yours and must outlive a daemon restart — an app secret such as `secrets::SECRET_KEY`, a password for a database you run yourself, and every local-mode `!!` value. That is why it is a file and not process memory. CI-resolved secrets are the other tier: [two tiers](ospp.md#two-tiers). Like `snow resolve`, every `secret` verb needs a running `slipforkd`.
+
+```console
+$ printf '%s' "$PGPASSWORD" | slipfork secret set PG_PASSWORD
+[secret] stored secrets::PG_PASSWORD (value never printed)
+$ slipfork secret list
+PG_PASSWORD
+```
+
+`set` reads the value from **stdin only** — it refuses an interactive terminal, never echoes the value, and refuses to replace an existing key without `--force`. `list` prints key names, one per line. `vars::` keys are read-only here: the CLI writes `secrets::` only.
 
 ## World selection and boot options
 
@@ -81,8 +95,7 @@ fix: sudo mount -o user_subvol_rm_allowed,noatime /dev/<device> <state_dir>
 |---|---|---|
 | `--world <WORLD>` | `up`, `down`, `share`, `exec`, `shell`, `logs`, `hook run`, `db`, `redis`, `forward` | `<fork>`, `<project>:<fork>`, or canonical `<project>`; a foreign project prefix fails closed |
 | `--base <REV>` | `fork` | Git checkouts: commit-ish to fork from (default: requesting checkout's `HEAD`). A `.jj` checkout always forks the working-copy parent `@-` (`@` when dirty) and ignores `--base` |
-| `--no-dump` / `--refresh-dump` | `up`, `fork` | Seal a clean `initdb` base / re-stream every offered dump into a new base (fails closed unpaired or offline) |
-| `--resources local` | `up`, `fork` | Force hermetic world-local resources |
+| `--no-dump` / `--refresh-dump` / `--resources local` | `up`, `fork` | Dump policy and hermetic-resource overrides; exact behaviour in [seed dumps](#seed-dumps-and-sealed-bases) |
 | `--host-caches` | `up`, `fork` | Mount `~/.cargo/{registry,git,bin}`, `~/.rustup`, `~/.cache/uv`, `~/.local/share/uv`, and `~/.local/share/pnpm/store` read-only **after** the ELF/libc ABI probe passes; never a `slipfork.toml` key |
 | `--cwd <DIR>` | `exec` | Directory used to resolve and enter the world |
 
@@ -113,18 +126,18 @@ slipfork: no slipforkd on /home/acme/.cache/slipfork/run/daemon.sock — run `sl
 
 ## Seed dumps and sealed bases
 
-A paired OSPP session can offer one PostgreSQL seed dump per database; `up`/`fork` then stream it once over `OSPP v1` into `<state_dir>/dumps/<sha256>.pgdump`, decompress it to `<sha256>.pgcustom`, `pg_restore --no-owner --no-privileges --clean --if-exists` + `CHECKPOINT` it inside a short-lived seed world's `postgres:<v>` container, and seal the result as a read-only `<project>-base-<digest>` Btrfs snapshot keyed by the service versions and every dump digest.
+A paired OSPP session can offer one PostgreSQL seed dump per database; `up`/`fork` stream it once, decrypt the stream in `slipforkd` memory, and pipe it straight into `zstd -d | pg_restore --no-owner --no-privileges --clean --if-exists` + `CHECKPOINT` inside a short-lived seed world's `postgres:<v>` container, then seal the result as a read-only `<project>-base-<digest>` Btrfs snapshot keyed by the service versions and each database's seed kind. No dump byte is written to host disk.
 
-Every later `up`/`fork` clones that sealed base and never re-runs `pg_restore`; a deleted `.pgcustom` only means decompressing the cached `.pgdump` again.
+Every later `up`/`fork` clones that sealed base and never re-runs `pg_restore`.
 
 | Flag | Behaviour |
 |---|---|
-| *(default)* | Reuse a cached dump, else stream it once; restore into the sealed base |
+| *(default)* | Reuse the sealed base, else stream each requested dump once while sealing it |
 | `--no-dump` | Seal a clean `initdb` base and stream nothing; a dump-backed base is a distinct digest |
-| `--refresh-dump` | Re-stream every offered dump and seal a new base; fails closed without a live paired session |
+| `--refresh-dump` | Require a live paired session (refused for a local strategy) and seed from a dump |
 | `--resources local` | Force hermetic world-local resources; implies `--no-dump` and cannot combine with `--refresh-dump` |
 
-Unpaired, `local = "remote"` on a database and `--refresh-dump` both fail closed with `requires a remote OSPP offer`; `prefer_remote` degrades to local with a `not_offered` row. No OSPP v1 provider ships in `0.1.0`; this flow requires a compatible provider.
+Unpaired, `local = "remote"` on a database and `--refresh-dump` both fail closed with `requires an authenticated OSPP session` (run `slipfork auth`, or `up --no-dump` for a clean database); `prefer_remote` degrades to local with a `no_remote_session` row. This flow requires a provider at the other end of [OSPP v1](ospp.md).
 
 ## `slipforkd`
 
@@ -137,6 +150,7 @@ Unpaired, `local = "remote"` on a database and `--refresh-dump` both fail closed
 | `--listen <ADDR>` | HTTP ingress (`127.0.0.1:0` for zero-setup); ignored when `LISTEN_FDS` is set |
 | `--forward-port <PORT>` | Also bind `127.0.0.1:<PORT>` as the static forward listener |
 | `--world-init <PATH>` / `--crun <PATH>` | Explicit helper and pinned static `crun` binaries |
+| `--ospp-endpoint <URL>` | The one OSPP v1 server identity (`wss://…`, or `ws://` strictly on loopback); omit for a purely local daemon. `slipfork auth` needs it ([pairing](ospp.md#pairing)) |
 
 With `LISTEN_PID`/`LISTEN_FDS` present, `slipforkd` adopts inherited descriptors by fd order and fails closed on any mismatch.
 

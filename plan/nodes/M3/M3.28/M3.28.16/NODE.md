@@ -11,11 +11,11 @@ paths:
   - tools/tests/test_check_stub_adapters.py
   - Makefile
   - docs/knowledge/LESSONS.md
-attempts: 0
+attempts: 1
 max_attempts: 3
 escalation: none
 created: "2026-11-17T17:41"
-updated: "2026-11-18T00:08"
+updated: "2026-11-18T03:16"
 ---
 
 # Goal

@@ -2,7 +2,7 @@
 id: M3.28.9
 title: "slipfork ps [--json] and slipfork open [--remote] [--json]"
 kind: task
-status: ready
+status: done
 owner: implementer
 priority: 3
 depends_on: [M3.28.8]
@@ -18,11 +18,11 @@ paths:
   - crates/slipfork/src/bin/slipforkd.rs
   - crates/slipfork/tests/support/mod.rs
   - crates/slipfork/tests/critical_cli.rs
-attempts: 0
+attempts: 1
 max_attempts: 3
 escalation: none
 created: "2026-11-17T16:33"
-updated: "2026-11-17T17:56"
+updated: "2026-11-18T03:16"
 ---
 
 # Goal

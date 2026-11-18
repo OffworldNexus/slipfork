@@ -2,7 +2,7 @@
 id: M3.29.4
 title: "Publish docs/reference/ospp.md (two-tier secrets: local 0600 vault vs memory-only remote) and purge only the false wire/vault claims"
 kind: task
-status: ready
+status: done
 owner: "doc-writer"
 priority: 2
 depends_on: [M3.29.3]
@@ -15,11 +15,11 @@ paths:
   - docs/index.md
   - README.md
   - zensical.toml
-attempts: 0
+attempts: 1
 max_attempts: 3
 escalation: none
 created: "2026-11-18T00:08"
-updated: "2026-11-18T00:30"
+updated: "2026-11-18T03:16"
 ---
 
 # Goal

@@ -11,3 +11,23 @@ edited fields
 ## 2026-11-17T17:56 [lead]
 
 edited fields
+
+## 2026-11-18T03:07 [lead]
+
+status ready -> active
+
+## 2026-11-18T03:07 [lead]
+
+attempt 1/3 started
+
+## 2026-11-18T03:07 [lead]
+
+base 4a1428f1752420e57399c20f61db0dcec3d08ec3
+
+## 2026-11-18T03:16 [lead]
+
+status active -> done
+
+## 2026-11-18T03:16 [lead]
+
+lead-verified (worker's report was lost again): ps/open exist, lib ps 9 + open 7 pass, --world/--remote present, clippy clean, critical_cli 24/0, and the dashboard now lists status/restart/ps/open as real verbs (the command-table filter self-enabled).

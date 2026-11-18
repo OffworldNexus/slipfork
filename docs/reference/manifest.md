@@ -82,12 +82,12 @@ generator := "random_string(" 1..=512 ")" | "random_hex(" 1..=256 ")"
 
 | Namespace | Reads | `??` | `!!` |
 |---|---|---|---|
-| `secrets::<KEY>` | local vault `secrets` | yes | yes — `!!` is valid only here |
-| `vars::<KEY>` | local vault `vars` | yes | no |
-| `domains::<ID>` | no provider today — fails closed | yes | no |
+| `secrets::<KEY>` | local `0600` vault `secrets` | yes | yes — `!!` is valid only here |
+| `vars::<KEY>` | local `0600` vault `vars` | yes | no |
+| `domains::<ID>` | no provider in `0.1.0` — fails closed | yes | no |
 | `resources::…`, `components::…`, `deployment::…` | world coordinates (below) | yes | no |
 
-`!!` values persist for reuse in the local vault ([`snow.yml` modes & secrets](../snow-modes.md)).
+`!!` values persist for reuse in the project's local vault ([`snow.yml` modes & secrets](../snow-modes.md)), which holds only local values — CI-resolved secrets are never written there ([two tiers](ospp.md#two-tiers)).
 
 ### Coordinates (`ResourceCoordinates::for_world`)
 
@@ -155,6 +155,6 @@ A project with two build images (say `api` and `worker`) must set `world.image`;
 ### Validation rules
 
 - **Unknown keys fail closed** in every `slipfork.toml` table (`#[serde(deny_unknown_fields)]`).
-- **`[resources.<kind>.<id>]`** (`pg_databases` / `s3_buckets`) takes `local` and `test` strategies (`local` | `prefer_remote` | `remote`), e.g. `[resources.pg_databases.appdb] local = "prefer_remote"`; `slipforkd` applies the plan when it boots the world. The `remote` strategy fails closed without a provider; seed dumps and `--no-dump`/`--refresh-dump`: [CLI reference](cli.md#seed-dumps-and-sealed-bases).
+- **`[resources.<kind>.<id>]`** (`pg_databases` / `s3_buckets`) takes `local` and `test` strategies (`local` | `prefer_remote` | `remote`), e.g. `[resources.pg_databases.appdb] local = "prefer_remote"`; `slipforkd` applies the plan when it boots the world. The `remote` strategy fails closed without a live paired OSPP session; seed dumps and `--no-dump`/`--refresh-dump`: [CLI reference](cli.md#seed-dumps-and-sealed-bases).
 - **`[test]` is typed fields only** (`ADR-0006` §1): `coverage = true` is the sole switch, `coverage_report` defaults to `["text"]`, options without it fail with `DagError::CoverageOptionsRequireEnabled`, `coverage_report = []` with `DagError::EmptyCoverageReport`, and `coverage_fail_under` outside `0..=100` with `DagError::InvalidCoverageThreshold`. Coverage execution is not shipped in `0.1.0`; it lands with `STP v1` in `0.2.0`.
 - **`[fixtures.<id>].per_world`** defaults to `false`. A per-world fixture is never reported `CacheAction::Cached` and cannot be the `parent` of an origin-independent fixture (`DagError::OriginIndependentChildOfPerWorld`). Per-world snapshot execution is not shipped in `0.1.0`; it lands with `STP v1` in `0.2.0`.

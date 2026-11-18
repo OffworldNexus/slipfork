@@ -7,3 +7,23 @@ created (task) Guard rail: production composition roots may not wire stub adapte
 ## 2026-11-18T00:08 [lead]
 
 edited fields
+
+## 2026-11-18T03:11 [lead]
+
+status ready -> active
+
+## 2026-11-18T03:11 [lead]
+
+attempt 1/3 started
+
+## 2026-11-18T03:11 [lead]
+
+base 4a1428f1752420e57399c20f61db0dcec3d08ec3
+
+## 2026-11-18T03:16 [lead]
+
+status active -> ready
+
+## 2026-11-18T03:16 [lead]
+
+attempt 1: tool+tests+LESSONS+Makefile wiring delivered and verified (8/9 pytest; real-repo case correctly RED). Blocked by SEQUENCING, not by a missing input: it is wired into 'make check' and reports the vapour that M3.28.15 exists to delete (UnavailableTunnelRegistrar in daemon.rs:34/778). I activated it before .15 — my error. Parked; .15 runs next, then .16 re-runs and turns green with no code change.
