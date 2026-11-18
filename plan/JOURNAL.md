@@ -1403,3 +1403,26 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-18T11:39 [M3.27] (lead) status review -> active
 - 2026-11-18T11:57 [M3.27] (lead) attempt 2 report: done. All 4 MAJORs + 7 MINORs applied; make check exit 0.
 - 2026-11-18T11:57 [M3.27] (lead) status active -> review
+- 2026-11-18T12:02 [M3.27] (lead) status review -> done
+- 2026-11-18T12:02 [M3.28.24] (lead) status ready -> active
+- 2026-11-18T12:02 [M3.28.24] (lead) attempt 1/3 started
+- 2026-11-18T12:02 [M3.28.24] (lead) base cdca7d3a1bdc43282e12a4229df521deca514430
+- 2026-11-18T12:10 [M3.27] (lead) Quad gate attempt 2: review-legality PASS, review-ioc PASS, review-cruft PASS (MINORs only), reviewer FAIL — reopened. The reviewer reproduced the LOG:9 flake c
+- 2026-11-18T12:10 [M3.27] (lead) status done -> ready
+- 2026-11-18T12:10 [M3.27] (lead) edited fields
+- 2026-11-18T12:44 [M3.28.24] (lead) attempt 2/3 started
+- 2026-11-18T12:44 [M3.28.24] (lead) attempt 1 cap: engine group supervision + reload_world + shared prepare_world + demo done and green (critical_engine 18/18); one CLI serving test still being re
+- 2026-11-18T13:07 [M3.28.24] (lead) status active -> review
+- 2026-11-18T13:27 [M3.28.24] (lead) attempt 3/3 started
+- 2026-11-18T13:27 [M3.28.24] (lead) status review -> active
+- 2026-11-18T13:27 [M3.28.24] (lead) Quad gate attempt 2: reviewer FAIL (1 MAJOR: stop_world_services filters to State::Running so an Exited component whose descendant outlived sh is never group-si
+- 2026-11-18T14:03 [M3.28.24] (lead) attempt 3 report: done, all 6 MAJORs + 6 MINORs applied; engine lib 72, critical_engine 20, critical_cli 38, ospp 12, clippy clean, make check 0.
+- 2026-11-18T14:03 [M3.28.24] (lead) status active -> review
+- 2026-11-18T14:06 [M3.28.24] (lead) Quad gate attempt 3: reviewer PASS-in-progress?, review-legality FAIL (conformance reload clause is a tautology in both arms; stop_identity swallows the SIGKILL
+- 2026-11-18T14:06 ESCALATION #25 -> expert for M3.28.24 by lead: repeated pre-flight/rollback correctness findings in reload_world; attempt cap reached
+- 2026-11-18T14:06 [M3.28.24] (lead) attempt 4/3 started
+- 2026-11-18T14:06 [M3.28.24] (lead) status review -> active
+- 2026-11-18T15:27 [M3.28.24] (lead) expert rescue + final bounded pass: stop_identity propagates SIGKILL errors; world_preflight (validate+HOME+snapshot_source+rootfs ref) now runs FIRST in both c
+- 2026-11-18T15:27 [M3.28.24] (lead) status active -> review
+- 2026-11-18T15:39 [M3.28.24] (lead) edited fields
+- 2026-11-18T16:07 [M3.28.24] (lead) final delta: WorldEngine::world_is_live (no default; BtrfsEngine = status Live AND init_identity.is_live_leader; stub derives from its frozen set), matches_live

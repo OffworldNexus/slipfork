@@ -179,11 +179,12 @@ pub fn host_caches(home: &Path) -> HostCaches {
 
 /// One live world owned by this daemon.
 ///
-/// Two groups of fields, and only the first is frozen at boot:
+/// Two groups of fields, and only the first is frozen while the handle lives:
 ///
-/// - **Frozen while the handle lives:** `worktree`, `handle` (and the CoW state behind it),
-///   `rootfs`, `policy`, `workspace`, `hook_logs`, and `project`/`target`/`repo`. A `restart`
-///   never re-clones, never rebuilds the rootfs, and never discards the worktree.
+/// - **Frozen until a reload re-roots the world:** `worktree`, `handle` (and the CoW state behind
+///   it), `rootfs`, `policy`, `workspace`, `hook_logs`, and `project`/`target`/`repo`. A `restart`
+///   keeps the handle and the subvolume (so backing-service data survives) and only re-clones that
+///   subvolume when the resolved base snapshot changed; it never discards the worktree.
 /// - **Re-derived by every pipeline run** (`resolve_world`): `snow`, `resources`, `coords`,
 ///   `base_env`, `components`, and the registry's ingress/domain table, so an edited `snow.yml` is
 ///   what the world actually runs after a `restart`.
@@ -212,8 +213,8 @@ struct LiveWorld {
     plan: ResourcePlan,
     /// The last decrypted server environment applied to this world (never persisted).
     ospp_env: Option<BTreeMap<String, BTreeMap<String, SecretValue>>>,
-    /// The `L0` rootfs this world was cloned from: `restart` reuses it, so the world's own CoW
-    /// state (backing-service data included) is never discarded.
+    /// The `L0` rootfs this world is currently rooted in: `restart` replaces it (and its
+    /// subvolume, when the base changed) only when the resolver's digest changed.
     rootfs: WorldRootfs,
     resources: Vec<ResourceSummary>,
     services: Vec<ServiceHandle>,
@@ -559,12 +560,6 @@ struct BootPolicy {
     host_caches: bool,
 }
 
-/// Every `snow.yml`- and flag-derived fact one pipeline run resolves before it starts anything.
-///
-/// `boot` and `reboot` build this through the same resolver, so a `restart` re-derives the
-/// resource plan, coordinates, environments, enabled components, and ingress/domain table from the
-/// edited file. `config`, `client`, and `vault` are the inputs only a fresh `boot` needs (rootfs
-/// build and base seal); a rerun reuses the world's own rootfs and base.
 /// Inputs to one `L0` rootfs materialization.
 struct RootfsInputs<'a> {
     worktree: &'a Path,
@@ -604,6 +599,18 @@ struct ResolvedWorld {
     /// The server-resolved per-component environment (already decrypted in memory), kept so a
     /// pushed `env_updated` can be diffed against what the world runs.
     ospp_env: Option<BTreeMap<String, BTreeMap<String, SecretValue>>>,
+}
+
+/// Everything one `up`/`restart` pipeline run resolves **before** the world exists.
+///
+/// Both verbs call [`DaemonService::prepare_world`], so the `L0` cache verdict (hit vs rebuild),
+/// the base-snapshot seal, and every environment are decided by one code path; only what the
+/// engine does with the result differs (`clone_world` vs `reload_world`).
+struct PreparedWorld {
+    resolved: ResolvedWorld,
+    rootfs: WorldRootfs,
+    snapshot: SnapshotId,
+    boot: BootLineage,
 }
 
 /// One enabled component of the world: everything `start_world` needs, resolved once.
@@ -2064,6 +2071,66 @@ impl DaemonService {
         })
     }
 
+    /// Resolve one run's world inputs and materialize the content-addressed `L0` rootfs and base
+    /// snapshot — the one prep path `boot` and `reboot` share.
+    ///
+    /// The rootfs digest is content-addressed over the whole build context, so an edited
+    /// `Dockerfile` or copied input yields a new digest here and the builder rebuilds it; an
+    /// unchanged tree is served from the cache. Neither verb can skip this and boot a stale tree.
+    fn prepare_world(
+        &self,
+        repo: &RepoRoot,
+        target: &WorldTarget,
+        worktree: &Path,
+        policy: BootPolicy,
+        on_event: &mut dyn FnMut(BootEvent),
+    ) -> Result<PreparedWorld, EdgeError> {
+        let resolved = self.resolve_world(repo, target, worktree, policy, on_event)?;
+        let rootfs = self.materialize_rootfs(RootfsInputs {
+            worktree,
+            snow: &resolved.snow,
+            config: &resolved.config,
+            vault: resolved.vault.as_ref(),
+            coords: &resolved.coords,
+            claims: &resolved.claims,
+            host_caches: policy.host_caches,
+        })?;
+        let (snapshot, boot) =
+            self.ensure_base_snapshot(&repo.project, &resolved.snow, &resolved.plan, &rootfs)?;
+        Ok(PreparedWorld {
+            resolved,
+            rootfs,
+            snapshot,
+            boot,
+        })
+    }
+
+    /// The one `WorldSpec` both verbs hand the engine: the worktree bind mount, the world-scoped
+    /// environment, and the daemon's ingress bridge.
+    fn world_spec(
+        &self,
+        target: &WorldTarget,
+        worktree: &Path,
+        prepared: &PreparedWorld,
+    ) -> WorldSpec {
+        WorldSpec {
+            target: target.clone(),
+            rootfs: prepared.rootfs.clone(),
+            snapshot: prepared.snapshot.clone(),
+            mounts: vec![WorldMount {
+                host_path: worktree.to_path_buf(),
+                guest_path: worktree.to_path_buf(),
+                mode: MountMode::ReadWrite,
+            }],
+            base_env: prepared.resolved.base_env.clone(),
+            local_ingress: Some(LocalIngressBridge {
+                port: self.ingress.port(),
+                host_ingress_sock: self.config.layout.http_ingress_socket(),
+            }),
+            boot: prepared.boot.clone(),
+        }
+    }
+
     /// Materialize, attach, and start one world.
     fn boot(
         &self,
@@ -2084,43 +2151,14 @@ impl DaemonService {
             workspace,
         };
 
-        let resolved = match self.resolve_world(&repo, &target, &worktree, policy, on_event) {
-            Ok(resolved) => resolved,
+        let prepared = match self.prepare_world(&repo, &target, &worktree, policy, on_event) {
+            Ok(prepared) => prepared,
             Err(error) => return Err(fail(error, workspace)),
         };
-        let rootfs = match self.materialize_rootfs(RootfsInputs {
-            worktree: &worktree,
-            snow: &resolved.snow,
-            config: &resolved.config,
-            vault: resolved.vault.as_ref(),
-            coords: &resolved.coords,
-            claims: &resolved.claims,
-            host_caches: policy.host_caches,
-        }) {
-            Ok(rootfs) => rootfs,
-            Err(error) => return Err(fail(error, workspace)),
-        };
-        let (snapshot, boot) =
-            match self.ensure_base_snapshot(&project, &resolved.snow, &resolved.plan, &rootfs) {
-                Ok(base) => base,
-                Err(error) => return Err(fail(error, workspace)),
-            };
-        let spec = WorldSpec {
-            target: target.clone(),
-            rootfs: rootfs.clone(),
-            snapshot,
-            mounts: vec![WorldMount {
-                host_path: worktree.clone(),
-                guest_path: worktree.clone(),
-                mode: MountMode::ReadWrite,
-            }],
-            base_env: resolved.base_env.clone(),
-            local_ingress: Some(LocalIngressBridge {
-                port: self.ingress.port(),
-                host_ingress_sock: self.config.layout.http_ingress_socket(),
-            }),
-            boot,
-        };
+        let spec = self.world_spec(&target, &worktree, &prepared);
+        let PreparedWorld {
+            resolved, rootfs, ..
+        } = prepared;
         let handle = match self.engine.clone_world(&spec) {
             Ok(handle) => handle,
             Err(err) => {
@@ -2690,20 +2728,20 @@ impl DaemonControl for DaemonService {
         };
         let mut summaries = Vec::with_capacity(entries.len());
         for (project, target, state, worktree, handle) in entries {
+            let world = world_id(&project, &target);
+            // Recorded on this world's own engine handle at boot: an unrecorded fact is `None` and
+            // renders `-`, never `0` and never another world's value.
+            let lineage = self
+                .engine
+                .world_lineage(&handle)
+                .map_err(|err| engine_read_error(&world, state, &err))?;
             summaries.push(WorldSummary {
-                world: world_id(&project, &target),
+                world,
                 parent: parent_world(&project, &target),
                 state,
                 origin: self.registry.origin(&project, &target)?,
                 worktree,
-                // Recorded on this world's own engine handle at boot: an unrecorded fact is `None`
-                // and renders `-`, never `0` and never another world's value.
-                lineage: self.engine.world_lineage(&handle).map_err(|err| {
-                    runtime_error(format!(
-                        "world '{}' is attached but its engine handle is gone: {err}",
-                        world_id(&project, &target)
-                    ))
-                })?,
+                lineage,
             });
         }
         summaries.sort_by(|a, b| a.world.cmp(&b.world));
@@ -2723,16 +2761,14 @@ impl DaemonControl for DaemonService {
             (world.state, world.handle.clone())
         };
         let world_text = world_id(&selection.repo.project, &selection.target);
-        let gone = |err: EngineError| {
-            runtime_error(format!(
-                "world '{world_text}' is attached but its engine handle is gone: {err}"
-            ))
-        };
-        let lineage = self.engine.world_lineage(&handle).map_err(gone)?;
+        let lineage = self
+            .engine
+            .world_lineage(&handle)
+            .map_err(|err| engine_read_error(&world_text, state, &err))?;
         let services = self
             .engine
             .world_processes(&handle)
-            .map_err(gone)?
+            .map_err(|err| engine_read_error(&world_text, state, &err))?
             .into_iter()
             .map(|info| WorldServiceSummary {
                 world: world_text.clone(),
@@ -3225,15 +3261,31 @@ impl DaemonService {
         self.summary(&project, &target, &facts, rows, changed, restarted)
     }
 
-    /// Stop one held world's components and `crun` services **in place**, then run the shared boot
-    /// pipeline over the same engine handle (`slipfork restart`, and `up`'s rescue path, §4).
+    /// Whether the engine still holds a live world behind `handle`.
     ///
-    /// The worktree and the world's CoW state subvolume are kept: the handle is never destroyed and
-    /// nothing is re-cloned, so backing-service data survives. Every boot-scope fact is re-derived
-    /// through [`DaemonService::resolve_world`] — resource plan and coordinates, origin, environments,
-    /// components, and the registry's ingress/domain table — so an edited `snow.yml` is what the
-    /// world actually runs. `changed` and `restarted` are observed from the engine's own rows: the
-    /// run changed the world only when a service came back `Running` or a hook ran.
+    /// [`WorldEngine::reload_world`] refuses a malformed spec, a pruned base, or a world that is
+    /// sealing/sealed **before** it mutates anything, so a refused reload leaves the world's own
+    /// engine record `Live` with its services bound. A failure past that gate may already have
+    /// reaped the world PID 1 while the record still reads `Live` (the `Failed` stamp happens
+    /// later), so the status alone is not a liveness proof: [`WorldEngine::world_is_live`] checks
+    /// the record's booted init identity against `/proc`. No error variant or message is
+    /// interpreted here, and a read error is not evidence of a live PID 1 — it counts as "no live
+    /// world", so the daemon never reports a torn-down world as running.
+    fn engine_holds_live_world(&self, handle: &WorldHandle) -> bool {
+        self.engine.world_is_live(handle).unwrap_or(false)
+    }
+
+    /// Re-run one held world over freshly resolved inputs (`slipfork restart`, and `up`'s rescue
+    /// path, §4) through the engine's one reload path.
+    ///
+    /// The world keeps its handle, its worktree, and — when the resolved base snapshot is
+    /// unchanged — its one CoW subvolume, so backing-service data survives a rootfs-only change.
+    /// Every boot-scope fact is re-derived through [`DaemonService::prepare_world`] (the same path
+    /// `up` takes), which also re-materializes the content-addressed `L0` rootfs: an edited
+    /// `Dockerfile`/copied input rebuilds and is what the world actually boots, while an unchanged
+    /// tree stays a cache hit. A changed base snapshot re-clones the world from that base.
+    /// `changed` and `restarted` are observed from the engine's own rows: the run changed the world
+    /// only when a service came back `Running` or a hook ran.
     fn reboot(
         &self,
         mut live: LiveWorld,
@@ -3249,33 +3301,48 @@ impl DaemonService {
             return Err(error);
         }
 
-        // The engine's supervision record is the one owner of "what this world runs": stop every
-        // service through it, never by replaying the handles this daemon happens to hold.
-        if let Err(err) = self.engine.stop_world_services(&live.handle) {
-            live.state = WorldState::Failed;
+        // Resolve and materialize first: a resolution or build failure leaves the running world
+        // untouched instead of failing a healthy world.
+        let prepared =
+            match self.prepare_world(&live.repo, &live.target, &live.worktree, policy, on_event) {
+                Ok(prepared) => prepared,
+                Err(error) => {
+                    self.insert_world(live);
+                    return Err(error);
+                }
+            };
+        let spec = self.world_spec(&live.target, &live.worktree, &prepared);
+        let PreparedWorld {
+            resolved, rootfs, ..
+        } = prepared;
+
+        // The engine owns the world's lifecycle: it stops every service (group-signalling each
+        // `sh -eu -c` wrapper and its children), reaps the PID 1, keeps or re-clones the subvolume
+        // for the resolved base, re-materializes the rootfs reference, records this run's lineage,
+        // and boots a new PID 1 over the same handle.
+        if let Err(err) = self.engine.reload_world(&live.handle, &spec) {
+            // The engine's reload gate — the spec, its world-scoped `HOME`, the base snapshot, and
+            // the world's lifecycle status — runs **before any mutation**, so a refused reload
+            // leaves the world live with every service still bound: the daemon leaves its own
+            // record untouched and only reports the error. A failure past that gate stopped every
+            // service and left the engine record non-live, so the world is marked `Failed` and the
+            // rows the engine already stopped are dropped.
+            if !self.engine_holds_live_world(&live.handle) {
+                live.state = WorldState::Failed;
+                live.services.clear();
+            }
             self.insert_world(live);
             return Err(runtime_error(format!(
-                "cannot stop the services of world '{world}': {err}"
+                "cannot re-run world '{world}': {err}"
             )));
         }
         live.services.clear();
-
-        let repo = live.repo.clone();
-        let target = live.target.clone();
-        let resolved = match self.resolve_world(&repo, &target, &live.worktree, policy, on_event) {
-            Ok(resolved) => resolved,
-            Err(error) => {
-                live.state = WorldState::Failed;
-                self.insert_world(live);
-                return Err(error);
-            }
-        };
 
         // The registry serves the world's routes: swap them for the re-resolved table without
         // touching the engine handle, so an edited `ingresses:`/`domains:` takes effect.
         if let Err(error) = self.registry.replace_world(
             &live.project,
-            &target,
+            &live.target,
             resolved.domains.clone(),
             resolved.ingresses.clone(),
         ) {
@@ -3291,11 +3358,12 @@ impl DaemonService {
         live.components = resolved.components;
         live.plan = resolved.plan;
         live.ospp_env = resolved.ospp_env;
+        live.rootfs = rootfs;
         live.policy = policy;
 
-        // The rows as they stand after the stop (every service `Stopped`) and before the pipeline:
-        // whatever is `Running` afterwards and was not `Running` here is what this run restarted.
-        let rows_before = match self.service_rows(&live.project, &target, &live.handle) {
+        // The rows as they stand after the reload (the engine cleared them) and before the
+        // pipeline: whatever is `Running` afterwards is what this run restarted.
+        let rows_before = match self.service_rows(&live.project, &live.target, &live.handle) {
             Ok(rows) => rows,
             Err(error) => {
                 live.state = WorldState::Failed;
@@ -3311,7 +3379,7 @@ impl DaemonService {
                 return Err(error);
             }
         };
-        let rows_after = match self.service_rows(&live.project, &target, &live.handle) {
+        let rows_after = match self.service_rows(&live.project, &live.target, &live.handle) {
             Ok(rows) => rows,
             Err(error) => {
                 live.state = WorldState::Failed;
@@ -3363,6 +3431,23 @@ impl DaemonService {
 /// Map one engine failure to a secret-free runtime diagnostic.
 fn runtime_error(message: impl Into<String>) -> EdgeError {
     EdgeError::Control(DaemonError::new(DaemonErrorKind::Internal, message))
+}
+
+/// Render a failed read of one **held** world's engine record (`list`, `status`, and `ps`).
+///
+/// A world whose last reload tore it down keeps its engine record — still owned, but with no live
+/// PID 1 — and every read fails closed with [`EngineError::WorldNotLive`]: name the failed boot and
+/// the retry, never a handle the daemon still holds. Only a genuinely absent handle (a released,
+/// destroyed, or foreign one) renders "engine handle is gone".
+fn engine_read_error(world: &str, state: WorldState, err: &EngineError) -> EdgeError {
+    match (err, state) {
+        (EngineError::WorldNotLive { .. }, WorldState::Failed) => runtime_error(format!(
+            "world '{world}' last boot failed; run `slipfork up` to retry: {err}"
+        )),
+        _ => runtime_error(format!(
+            "world '{world}' is attached but its engine handle is gone: {err}"
+        )),
+    }
 }
 
 /// Open (truncate) one hook's `0600` retained log for a fresh run.
@@ -4689,6 +4774,28 @@ modes:
         hooks: Mutex<Vec<Vec<String>>>,
         greetings: Mutex<Vec<Option<String>>>,
         rows: Mutex<Vec<RecordedRow>>,
+        /// The reload failure shape the next `reload_world` produces, if any.
+        reload_fault: Mutex<Option<ReloadFault>>,
+        /// Handles a reload tore down and stamped non-live (`WorldStatus::Failed`): still owned,
+        /// no live PID 1, and every read fails closed with `WorldNotLive`.
+        torndown: Mutex<Vec<WorldHandle>>,
+        /// Handles a reload tore down while its record still reads `Live` — the real engine's
+        /// window between reaping the PID 1 and stamping `Failed`, where only `world_is_live` can
+        /// tell the truth.
+        init_gone: Mutex<Vec<WorldHandle>>,
+    }
+
+    /// The reload failure shapes the real engine distinguishes, and the daemon must not confuse.
+    #[derive(Clone, Copy)]
+    enum ReloadFault {
+        /// A pre-flight refusal: nothing was stopped or re-rooted, the world stays live.
+        Refused,
+        /// A boot failure past the gate: every service stopped and the record stamped
+        /// `WorldStatus::Failed`.
+        AfterTheGate,
+        /// A teardown failure past the gate: the PID 1 is gone but the record is not stamped
+        /// `Failed` yet, so its lineage still reads and only `world_is_live` says it is dead.
+        TeardownBeforeStamp,
     }
 
     struct RecordedRow {
@@ -4716,6 +4823,9 @@ modes:
                 hooks: Mutex::new(Vec::new()),
                 greetings: Mutex::new(Vec::new()),
                 rows: Mutex::new(Vec::new()),
+                reload_fault: Mutex::new(None),
+                torndown: Mutex::new(Vec::new()),
+                init_gone: Mutex::new(Vec::new()),
             }
         }
 
@@ -4728,7 +4838,8 @@ modes:
             )
         }
 
-        fn live_world(&self, world: &WorldHandle) -> Result<(), EngineError> {
+        /// The double owns `world` (it was minted here and never released).
+        fn owns(&self, world: &WorldHandle) -> Result<(), EngineError> {
             let live = self.live.lock().expect("live worlds");
             if live.contains(world) {
                 Ok(())
@@ -4737,6 +4848,28 @@ modes:
                     world: format!("{world:?}"),
                 })
             }
+        }
+
+        /// The double owns `world` and its last reload did not fail: a read that needs a live world
+        /// fails closed with `WorldNotLive` for a record stamped `Failed`, exactly like the engine.
+        fn live_world(&self, world: &WorldHandle) -> Result<(), EngineError> {
+            self.owns(world)?;
+            let torndown = self
+                .torndown
+                .lock()
+                .expect("torndown worlds")
+                .contains(world);
+            if torndown {
+                return Err(EngineError::WorldNotLive {
+                    world: format!("{world:?}"),
+                });
+            }
+            Ok(())
+        }
+
+        /// Arm the failure shape the next `reload_world` produces.
+        fn fail_next_reload(&self, fault: ReloadFault) {
+            *self.reload_fault.lock().expect("reload fault") = Some(fault);
         }
     }
 
@@ -4817,6 +4950,46 @@ modes:
             Ok(())
         }
 
+        /// The real engine's reload contract: the handle survives, the services do not — and a
+        /// failure either refuses before any mutation or leaves the record non-live.
+        fn reload_world(&self, world: &WorldHandle, spec: &WorldSpec) -> Result<(), EngineError> {
+            spec.validate()?;
+            self.live_world(world)?;
+            let fault = self.reload_fault.lock().expect("reload fault").take();
+            if let Some(ReloadFault::Refused) = fault {
+                return Err(EngineError::SnapshotNotFound("refused".to_owned()));
+            }
+            self.world_stops.fetch_add(1, Ordering::SeqCst);
+            self.rows
+                .lock()
+                .expect("rows")
+                .retain(|row| row.world != *world);
+            if let Some(ReloadFault::AfterTheGate) = fault {
+                self.torndown
+                    .lock()
+                    .expect("torndown worlds")
+                    .push(world.clone());
+                return Err(EngineError::WorldInitFailed {
+                    world: format!("{world:?}"),
+                    reason: "the world PID 1 never became ready".to_owned(),
+                });
+            }
+            if let Some(ReloadFault::TeardownBeforeStamp) = fault {
+                // The recorded messages of a stop that burned its grace: the daemon must reach the
+                // same verdict from the engine's liveness answer alone, never by reading this text.
+                self.init_gone
+                    .lock()
+                    .expect("dead init worlds")
+                    .push(world.clone());
+                return Err(EngineError::Execution(
+                    "service 'api' survived SIGTERM and SIGKILL for 70.0s: pid 4242 is still in \
+                     /proc state 'D'"
+                        .to_owned(),
+                ));
+            }
+            Ok(())
+        }
+
         fn service_logs(
             &self,
             _world: &WorldHandle,
@@ -4861,6 +5034,23 @@ modes:
                 seed: None,
                 base: None,
             })
+        }
+
+        fn world_is_live(&self, world: &WorldHandle) -> Result<bool, EngineError> {
+            // Ownership decides "gone"; the two teardown shapes decide "not live". The double keeps
+            // no PID 1, so it models the engine's answer directly.
+            self.owns(world)?;
+            let torndown = self
+                .torndown
+                .lock()
+                .expect("torndown worlds")
+                .contains(world);
+            let init_gone = self
+                .init_gone
+                .lock()
+                .expect("dead init worlds")
+                .contains(world);
+            Ok(!torndown && !init_gone)
         }
 
         fn exec_in_service(
@@ -5175,6 +5365,205 @@ modes:
                 world: None,
             })
             .expect("down");
+        let _ = fs::remove_dir_all(&scratch);
+    }
+
+    /// A reload the engine refuses at its pre-flight gate leaves the world exactly as it was: the
+    /// daemon record stays `Running` with its services bound, and `ps` still reads them.
+    #[test]
+    fn a_refused_reload_keeps_the_running_world_and_its_service_rows() {
+        let scratch = disk_scratch("reload-refused");
+        let worktree = scratch.join("worktree");
+        fs::create_dir_all(&worktree).expect("worktree");
+        fs::write(
+            worktree.join("snow.yml"),
+            restart_snow(7000, "echo one", "one"),
+        )
+        .expect("snow.yml");
+        let (service, _registry, engine) = test_service(&scratch, &worktree);
+        let selector = WorldSelector {
+            cwd: worktree.clone(),
+            world: None,
+        };
+        service
+            .up(
+                &UpRequest {
+                    cwd: worktree.clone(),
+                    world: None,
+                    dump: slipfork_edge::DumpRequest::Default,
+                    resources: slipfork_edge::ResourceRequest::Default,
+                    host_caches: false,
+                },
+                &mut |_| {},
+            )
+            .expect("boot the world");
+
+        // The engine's pre-flight refusal (a pruned base, a malformed spec, a sealing world) stops
+        // nothing: the world is still live behind the same handle.
+        engine.fail_next_reload(ReloadFault::Refused);
+        let refused = service
+            .restart(&selector, &mut |_| {})
+            .expect_err("the engine refused the reload");
+        assert!(
+            refused.to_string().contains("cannot re-run world 'acme'"),
+            "the refusal reaches the user verbatim: {refused}"
+        );
+        assert_eq!(
+            service.list(None).expect("list")[0].state,
+            WorldState::Running,
+            "a refusal that mutated nothing must never fail a healthy world"
+        );
+        let processes = service
+            .world_processes(&selector)
+            .expect("`ps` reads a world this refusal never touched");
+        assert_eq!(processes.state, WorldState::Running);
+        assert_eq!(
+            processes
+                .services
+                .iter()
+                .map(|row| (row.info.id.as_str(), row.info.state))
+                .collect::<Vec<_>>(),
+            vec![("api", ServiceState::Running)],
+            "the refused reload left the component's own row running"
+        );
+
+        let _ = fs::remove_dir_all(&scratch);
+    }
+
+    /// A reload that dies *past* the gate stopped the services and tore the world down: the record
+    /// is `Failed`, and `ps` names the failed boot and its retry instead of a lost handle.
+    #[test]
+    fn a_reload_failure_past_the_gate_fails_the_world_and_ps_names_the_retry() {
+        let scratch = disk_scratch("reload-torndown");
+        let worktree = scratch.join("worktree");
+        fs::create_dir_all(&worktree).expect("worktree");
+        fs::write(
+            worktree.join("snow.yml"),
+            restart_snow(7000, "echo one", "one"),
+        )
+        .expect("snow.yml");
+        let (service, _registry, engine) = test_service(&scratch, &worktree);
+        let selector = WorldSelector {
+            cwd: worktree.clone(),
+            world: None,
+        };
+        service
+            .up(
+                &UpRequest {
+                    cwd: worktree.clone(),
+                    world: None,
+                    dump: slipfork_edge::DumpRequest::Default,
+                    resources: slipfork_edge::ResourceRequest::Default,
+                    host_caches: false,
+                },
+                &mut |_| {},
+            )
+            .expect("boot the world");
+
+        engine.fail_next_reload(ReloadFault::AfterTheGate);
+        let failed = service
+            .restart(&selector, &mut |_| {})
+            .expect_err("the reload died after its gate");
+        assert!(
+            failed.to_string().contains("cannot re-run world 'acme'"),
+            "the boot failure reaches the user: {failed}"
+        );
+        assert_eq!(
+            service
+                .world_facts(
+                    &ProjectSlug::parse("acme").expect("project slug"),
+                    &WorldTarget::Canonical,
+                )
+                .expect("the failed world stays in the index")
+                .state,
+            WorldState::Failed,
+            "a reload that stopped every service leaves a failed world record"
+        );
+        let err = service
+            .world_processes(&selector)
+            .expect_err("a world with no live PID 1 has no rows to read");
+        let error = DaemonError::from(&err);
+        assert_eq!(error.kind, DaemonErrorKind::Internal);
+        assert!(
+            error
+                .message
+                .contains("last boot failed; run `slipfork up` to retry"),
+            "`ps` names the failed boot and the retry: {}",
+            error.message
+        );
+        assert!(
+            !error.message.contains("engine handle is gone"),
+            "the daemon still holds this handle: {}",
+            error.message
+        );
+
+        let _ = fs::remove_dir_all(&scratch);
+    }
+
+    /// A reload that dies after it reaped the world PID 1 but before the engine stamps `Failed`
+    /// leaves a record that still reads `Live` — the exact shape the old lineage-as-liveness check
+    /// mistook for a healthy world. The daemon must mark it `Failed`, never `Running`.
+    #[test]
+    fn a_reload_failure_that_already_reaped_the_world_init_fails_the_world() {
+        let scratch = disk_scratch("reload-init-gone");
+        let worktree = scratch.join("worktree");
+        fs::create_dir_all(&worktree).expect("worktree");
+        fs::write(
+            worktree.join("snow.yml"),
+            restart_snow(7000, "echo one", "one"),
+        )
+        .expect("snow.yml");
+        let (service, _registry, engine) = test_service(&scratch, &worktree);
+        let selector = WorldSelector {
+            cwd: worktree.clone(),
+            world: None,
+        };
+        service
+            .up(
+                &UpRequest {
+                    cwd: worktree.clone(),
+                    world: None,
+                    dump: slipfork_edge::DumpRequest::Default,
+                    resources: slipfork_edge::ResourceRequest::Default,
+                    host_caches: false,
+                },
+                &mut |_| {},
+            )
+            .expect("boot the world");
+
+        engine.fail_next_reload(ReloadFault::TeardownBeforeStamp);
+        let failed = service
+            .restart(&selector, &mut |_| {})
+            .expect_err("the reload died while tearing the world down");
+        assert!(
+            failed.to_string().contains("cannot re-run world 'acme'"),
+            "the teardown failure reaches the user: {failed}"
+        );
+
+        let facts = service
+            .world_facts(
+                &ProjectSlug::parse("acme").expect("project slug"),
+                &WorldTarget::Canonical,
+            )
+            .expect("the failed world stays in the index");
+        assert_eq!(
+            facts.state,
+            WorldState::Failed,
+            "a reload whose world PID 1 is gone must never leave the world `Running`"
+        );
+        // The bug's precondition, pinned: the engine still answers a record read while the world is
+        // dead, so only `world_is_live` may decide liveness.
+        assert!(
+            engine.world_lineage(&facts.handle).is_ok(),
+            "this shape must still read as a record, or it would not reproduce the bug"
+        );
+        assert!(
+            !engine
+                .world_is_live(&facts.handle)
+                .expect("the engine answers its own liveness"),
+            "the reload reaped the world PID 1"
+        );
+
         let _ = fs::remove_dir_all(&scratch);
     }
 

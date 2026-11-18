@@ -775,6 +775,18 @@ impl WorldEngine for StubWorldEngine {
         Ok(empty_lineage())
     }
 
+    fn world_is_live(&self, world: &WorldHandle) -> Result<bool, EngineError> {
+        // The double keeps no PID 1, so its own record is the liveness proof: a handle it still
+        // owns answers from its frozen set (a sealed world is not live), and a destroyed handle
+        // fails closed above with `WorldGone`.
+        self.live_world(world)?;
+        Ok(!self
+            .frozen
+            .lock()
+            .expect("stub frozen worlds")
+            .contains(world))
+    }
+
     fn exec_in_service(
         &self,
         _service: &ServiceHandle,

@@ -2,7 +2,7 @@
 id: M3.28.24
 title: "restart must apply an edit: stop the whole component (not its sh wrapper) and re-materialize an edited rootfs"
 kind: task
-status: ready
+status: review
 owner: implementer
 priority: 1
 depends_on: [M3.28.17, M3.27]
@@ -12,11 +12,12 @@ paths:
   - crates/slipfork/src/daemon.rs
   - "crates/slipfork/tests/**"
   - "support/demo/**"
-attempts: 0
+  - "crates/slipfork-edge/tests/critical_edge.rs"
+attempts: 4
 max_attempts: 3
-escalation: none
+escalation: expert
 created: "2026-11-18T03:20"
-updated: "2026-11-18T03:20"
+updated: "2026-11-18T15:39"
 ---
 
 # Goal

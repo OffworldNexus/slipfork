@@ -53,6 +53,54 @@ pub fn signal_process(pid: u32, signal: ProcessSignal) -> io::Result<()> {
     }
 }
 
+/// Send `signal` to every member of the process group `pgid` (`kill(-pgid, …)`).
+///
+/// A world process is spawned into its own group (`CommandExt::process_group(0)`), so this reaches
+/// the `sh -eu -c` wrapper *and* the service it forked — including a descendant orphaned by its
+/// parent's exit.
+///
+/// # Errors
+///
+/// Returns the raw `kill(2)` error (`ESRCH` when the group is empty, `EPERM` for a foreign group).
+pub fn signal_process_group(pgid: u32, signal: ProcessSignal) -> io::Result<()> {
+    let signo = match signal {
+        ProcessSignal::Terminate => libc::SIGTERM,
+        ProcessSignal::Kill => libc::SIGKILL,
+    };
+    // SAFETY: the kernel treats a negative pid as "every process in process group |pid|".
+    // `pgid` is a verified host pgid captured at spawn (`pgid` is never `0`, which would address
+    // the caller's own group), and `kill` mutates no userspace memory.
+    let rc = unsafe { libc::kill(-(pgid as libc::pid_t), signo) };
+    if rc == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
+/// Reap one exited child without blocking (`waitpid(-1, WNOHANG)`).
+///
+/// A PID 1 of a child PID namespace inherits every orphaned descendant; without this call it
+/// would keep them as zombies forever (`pid_namespaces(7)`), so an engine that killed a whole
+/// process group could never observe the group disappear from `/proc`.
+///
+/// Returns `Ok(Some(pid))` when one child was reaped, `Ok(None)` when no child is waitable yet,
+/// and the raw `waitpid(2)` error otherwise (`ECHILD` means this process currently has no
+/// children, which is the normal steady state).
+pub fn reap_exited_child_nonblocking() -> io::Result<Option<u32>> {
+    let mut status = 0 as libc::c_int;
+    // SAFETY: `waitpid` with pid `-1` waits for any child; `status` is a live stack value it only
+    // writes on a successful reap, and `WNOHANG` makes the call non-blocking.
+    let reaped = unsafe { libc::waitpid(-1, &mut status, libc::WNOHANG) };
+    if reaped > 0 {
+        return Ok(Some(reaped as u32));
+    }
+    if reaped == 0 {
+        return Ok(None);
+    }
+    Err(io::Error::last_os_error())
+}
+
 /// Peer pid of a connected `AF_UNIX` socket (`getsockopt(SO_PEERCRED)`).
 ///
 /// The kernel reports the credentials of the process at the other end of `stream`: for a client

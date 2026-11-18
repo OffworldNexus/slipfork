@@ -111,6 +111,10 @@ fn run(config_path: &Path) -> Result<(), String> {
     if let Some((bridge, ingress)) = ingress {
         thread::spawn(move || serve_ingress(bridge, ingress.guest_ingress_sock));
     }
+    // PID 1 owns every orphaned descendant of the world. Reap them so a service process group the
+    // engine killed (a `sh -eu -c` wrapper and its service) actually leaves `/proc` instead of
+    // lingering as zombies until the world is destroyed.
+    thread::spawn(reap_orphans);
 
     let mut ready = ready;
     ready
@@ -136,6 +140,25 @@ fn wait_for_supervisor_eof() {
             Ok(_) => {}
             Err(err) if err.kind() == std::io::ErrorKind::Interrupted => {}
             Err(_) => return,
+        }
+    }
+}
+
+/// Reap adopted orphans for the whole lifetime of the world (`pid 1` of a child PID namespace).
+///
+/// A killed process whose parent already died is reparented to this PID 1; without a `waitpid` it
+/// stays a zombie forever. `waitpid(-1, WNOHANG)` cannot steal a child another thread owns: after
+/// setup this PID 1 starts no further subprocesses (services are `nsenter` launchers in the parent
+/// namespace), so every child it sees is an orphan.
+fn reap_orphans() {
+    loop {
+        match slipfork_engine::linux_cow::reap_exited_child_nonblocking() {
+            Ok(Some(_)) => {}
+            Ok(None) => thread::sleep(Duration::from_millis(50)),
+            Err(err) if err.kind() == std::io::ErrorKind::Interrupted => {}
+            // `ECHILD` (no children right now, the normal steady state) or another terminal error:
+            // back off rather than spinning; an adopted orphan wakes the next probe.
+            Err(_) => thread::sleep(Duration::from_millis(50)),
         }
     }
 }

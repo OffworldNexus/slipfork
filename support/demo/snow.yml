@@ -8,7 +8,7 @@ images:
 components:
   - id: api
     image: api
-    run_command: python3 /app/server.py
+    run_command: python3 app/server.py
     envs: [app]
     internal_ports: [8000]
 

@@ -74,6 +74,27 @@ fn service_spec(id: &str, cwd: &Path, port: Option<u16>, script: &str) -> Servic
     }
 }
 
+/// `/proc/<pid>/stat` field 5 (`pgrp`) of a host process.
+fn host_pgrp(pid: u32) -> Option<u32> {
+    let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    stat.get(stat.rfind(')')? + 1..)?
+        .split_whitespace()
+        .nth(2)?
+        .parse()
+        .ok()
+}
+
+/// Every host pid whose process group is `pgid`.
+fn group_members(pgid: u32) -> Vec<u32> {
+    fs::read_dir("/proc")
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|entry| entry.file_name().to_str()?.parse::<u32>().ok())
+        .filter(|pid| host_pgrp(*pid) == Some(pgid))
+        .collect()
+}
+
 #[test]
 fn r10_a_non_btrfs_state_dir_fails_closed_without_a_silent_fallback() {
     let root = engine_test_dir("non-btrfs");
@@ -919,6 +940,232 @@ fn service_logs_survive_idempotent_stop_and_freeze_seals_only_after_stop() {
 }
 
 #[test]
+fn a_sh_wrapped_component_is_stopped_as_a_process_group_not_only_its_first_child() {
+    let fx = WorldFixture::new("process-group");
+    let world = fx.world(WorldTarget::Canonical);
+    const PORT: u16 = 18123;
+
+    // The production shape `slipforkd` spawns for every component: a distinct `sh -eu -c` parent
+    // with the real service underneath it, so the service that owns the port is a grandchild.
+    let spec = ServiceSpec {
+        id: "api".to_owned(),
+        kind: ServiceKind::Component,
+        runtime: ServiceRuntime::WorldProcess {
+            argv: vec![
+                "sh".to_owned(),
+                "-eu".to_owned(),
+                "-c".to_owned(),
+                format!("python3 -m http.server {PORT} --bind 0.0.0.0 & wait"),
+            ],
+            cwd: fx.repo.clone(),
+        },
+        env: ExecEnv::default(),
+        readiness_port: Some(PORT),
+    };
+    let api = fx.service(&world, spec);
+    let row = fx
+        .engine
+        .world_processes(&world)
+        .expect("rows")
+        .into_iter()
+        .find(|row| row.id == "api")
+        .expect("api row");
+    let wrapper = row.pid.expect("the wrapper pid is reported while running");
+    let pgid = host_pgrp(wrapper).expect("the wrapper's host process group");
+    let children = fs::read_to_string(format!("/proc/{wrapper}/task/{wrapper}/children"))
+        .expect("children of the sh wrapper");
+    let service_pid: u32 = children
+        .split_whitespace()
+        .next()
+        .expect("the python service under sh")
+        .parse()
+        .expect("a pid");
+    assert_ne!(
+        service_pid, wrapper,
+        "the defect needs a distinct sh parent and a service grandchild"
+    );
+
+    fx.engine.stop_service(&api).expect("stop the component");
+    assert_eq!(api.state(), ServiceState::Stopped);
+
+    // Both processes of the group must be gone — the old stop only signalled `sh` and orphaned
+    // `python3`, which kept this port bound forever.
+    let reaped = poll_until(ENGINE_SETTLE_DEADLINE, POLL_INTERVAL, || {
+        if Path::new(&format!("/proc/{wrapper}")).exists()
+            || Path::new(&format!("/proc/{service_pid}")).exists()
+            || !group_members(pgid).is_empty()
+        {
+            Err(format!("group {pgid} still has {:?}", group_members(pgid)))
+        } else {
+            Ok(())
+        }
+    });
+    assert!(
+        reaped.is_ok(),
+        "stop must reap the whole process group: {reaped:?}"
+    );
+    fx.engine
+        .dial_world_tcp(&world, PORT)
+        .expect_err("the stopped component must no longer own its port");
+
+    fx.engine.destroy_world(world).expect("destroy world");
+    let _ = fs::remove_dir_all(&fx.root);
+}
+
+#[test]
+fn stop_reaps_a_group_descendant_that_outlives_its_supervisor() {
+    let fx = WorldFixture::new("process-group-orphan");
+    let world = fx.world(WorldTarget::Canonical);
+    const PORT: u16 = 18124;
+
+    // `sh` backgrounds the server and exits: the watcher flips the row to `Exited` while the
+    // server keeps the port. Stop must still reach that descendant through the group.
+    let spec = ServiceSpec {
+        id: "orphan".to_owned(),
+        kind: ServiceKind::Component,
+        runtime: ServiceRuntime::WorldProcess {
+            argv: vec![
+                "sh".to_owned(),
+                "-eu".to_owned(),
+                "-c".to_owned(),
+                format!(
+                    "python3 -m http.server {PORT} --bind 0.0.0.0 & \
+                     while [ ! -f exit-now ]; do sleep 0.05; done"
+                ),
+            ],
+            cwd: fx.repo.clone(),
+        },
+        env: ExecEnv::default(),
+        readiness_port: Some(PORT),
+    };
+    let orphan = fx.service(&world, spec);
+    let wrapper = fx
+        .engine
+        .world_processes(&world)
+        .expect("rows")
+        .into_iter()
+        .find(|row| row.id == "orphan")
+        .and_then(|row| row.pid)
+        .expect("the wrapper pid is reported while it lives");
+    let pgid = host_pgrp(wrapper).expect("the wrapper's host process group");
+
+    // The supervised child exits on its own; the service it forked survives in the group.
+    fs::write(fx.repo.join("exit-now"), b"exit\n").expect("ask the wrapper to exit");
+    let exited = poll_until(ENGINE_SETTLE_DEADLINE, POLL_INTERVAL, || {
+        let state = fx
+            .engine
+            .world_processes(&world)
+            .expect("rows")
+            .into_iter()
+            .find(|row| row.id == "orphan")
+            .map(|row| row.state)
+            .expect("orphan row");
+        if state == ServiceState::Exited {
+            Ok(())
+        } else {
+            Err(format!("row is {state:?}"))
+        }
+    });
+    assert!(exited.is_ok(), "the wrapper must have exited: {exited:?}");
+    let survivors = group_members(pgid);
+    assert!(
+        !survivors.is_empty(),
+        "the forked server must outlive the wrapper in group {pgid}: {survivors:?}"
+    );
+
+    fx.engine
+        .stop_service(&orphan)
+        .expect("stop must reap the orphaned group");
+    assert!(
+        group_members(pgid).is_empty(),
+        "a descendant that outlived its supervisor must still be reaped: {:?}",
+        group_members(pgid)
+    );
+    fx.engine
+        .dial_world_tcp(&world, PORT)
+        .expect_err("the reaped orphan must no longer own its port");
+
+    // The same `Exited`/surviving-descendant shape under the world-wide stop path: `freeze_world`
+    // stops every recorded row, including this one, so the seal can never capture a live writer.
+    const FREEZE_PORT: u16 = 18125;
+    let freezer = fx.service(
+        &world,
+        ServiceSpec {
+            id: "freezer".to_owned(),
+            kind: ServiceKind::Component,
+            runtime: ServiceRuntime::WorldProcess {
+                argv: vec![
+                    "sh".to_owned(),
+                    "-eu".to_owned(),
+                    "-c".to_owned(),
+                    format!(
+                        "python3 -m http.server {FREEZE_PORT} --bind 0.0.0.0 & \
+                         while [ ! -f exit-freeze ]; do sleep 0.05; done"
+                    ),
+                ],
+                cwd: fx.repo.clone(),
+            },
+            env: ExecEnv::default(),
+            readiness_port: Some(FREEZE_PORT),
+        },
+    );
+    let freezer_wrapper = fx
+        .engine
+        .world_processes(&world)
+        .expect("rows")
+        .into_iter()
+        .find(|row| row.id == "freezer")
+        .and_then(|row| row.pid)
+        .expect("the freezer wrapper pid is reported while it lives");
+    let freezer_pgid = host_pgrp(freezer_wrapper).expect("the freezer wrapper's process group");
+    fs::write(fx.repo.join("exit-freeze"), b"exit\n").expect("ask the freezer wrapper to exit");
+    let freezer_exited = poll_until(ENGINE_SETTLE_DEADLINE, POLL_INTERVAL, || {
+        let state = fx
+            .engine
+            .world_processes(&world)
+            .expect("rows")
+            .into_iter()
+            .find(|row| row.id == "freezer")
+            .map(|row| row.state)
+            .expect("freezer row");
+        if state == ServiceState::Exited {
+            Ok(())
+        } else {
+            Err(format!("freezer row is {state:?}"))
+        }
+    });
+    assert!(
+        freezer_exited.is_ok(),
+        "the freezer wrapper must have exited: {freezer_exited:?}"
+    );
+    assert!(
+        !group_members(freezer_pgid).is_empty(),
+        "the forked freezer must outlive the wrapper in group {freezer_pgid}: {:?}",
+        group_members(freezer_pgid)
+    );
+
+    fx.engine
+        .freeze_world(&world, &snap("sealed-over-orphan"))
+        .expect("freeze must stop every recorded row before it seals");
+    assert_eq!(
+        freezer.state(),
+        ServiceState::Stopped,
+        "the world-wide stop covers an already-`Exited` row"
+    );
+    assert!(
+        group_members(freezer_pgid).is_empty(),
+        "freeze must reap the descendant that outlived its supervisor: {:?}",
+        group_members(freezer_pgid)
+    );
+    fx.engine
+        .dial_world_tcp(&world, FREEZE_PORT)
+        .expect_err("a frozen world must have no live writer on its port");
+
+    fx.engine.destroy_world(world).expect("destroy world");
+    let _ = fs::remove_dir_all(&fx.root);
+}
+
+#[test]
 fn readiness_timeout_stops_the_supervisor_and_releases_the_service_id() {
     let fx = WorldFixture::new("ready-timeout");
     let world = fx.world(WorldTarget::Canonical);
@@ -1398,4 +1645,189 @@ fn world_init_fails_closed_when_the_helper_is_missing() {
         "a failed world boot must leave no half-materialized world behind"
     );
     let _ = fs::remove_dir_all(&root);
+}
+
+/// The exact spec a `slipfork restart` hands `WorldEngine::reload_world`.
+fn reload_spec(fx: &WorldFixture, snapshot: SnapshotId) -> WorldSpec {
+    WorldSpec {
+        target: WorldTarget::Canonical,
+        rootfs: fx.rootfs.clone(),
+        snapshot,
+        mounts: vec![WorldMount {
+            host_path: fx.repo.clone(),
+            guest_path: fx.repo.clone(),
+            mode: MountMode::ReadWrite,
+        }],
+        base_env: world_env(&fx.home),
+        local_ingress: None,
+        boot: BootLineage::default(),
+    }
+}
+
+#[test]
+fn a_frozen_world_refuses_a_reload_over_its_read_only_subvolume() {
+    let fx = WorldFixture::new("reload-frozen");
+    let world = fx.world(WorldTarget::Canonical);
+    fx.engine
+        .freeze_world(&world, &snap("reload-sealed"))
+        .expect("freeze the world");
+
+    let spec = reload_spec(&fx, fx.snapshot.clone());
+    let err = fx
+        .engine
+        .reload_world(&world, &spec)
+        .expect_err("a frozen world must not be re-rooted");
+    assert!(
+        matches!(err, EngineError::WorldNotReloadable { .. }),
+        "expected WorldNotReloadable, got {err:?}"
+    );
+    assert!(
+        fx.engine.world_lineage(&world).is_ok(),
+        "the refusal leaves the frozen record intact"
+    );
+
+    fx.engine
+        .destroy_world(world)
+        .expect("destroy the frozen world");
+    let _ = fs::remove_dir_all(&fx.root);
+}
+
+#[test]
+fn a_reload_naming_a_pruned_snapshot_fails_before_it_touches_the_world() {
+    let fx = WorldFixture::new("reload-pruned");
+    let world = fx.world(WorldTarget::Canonical);
+    let wrote = fx.exec(&world, "printf kept > \"$SLIPFORK_WORLD_STATE/keep.txt\"");
+    assert_eq!(wrote.exit_code, 0, "stderr: {}", wrote.stderr);
+
+    let spec = reload_spec(&fx, snap("pruned-base"));
+    let err = fx
+        .engine
+        .reload_world(&world, &spec)
+        .expect_err("a pruned snapshot must fail closed");
+    assert!(
+        matches!(err, EngineError::SnapshotNotFound(_)),
+        "expected SnapshotNotFound, got {err:?}"
+    );
+
+    // The shared pre-flight ran before any mutation: the world's PID 1, subvolume, and state
+    // directory still stand, so a mistyped restart never destroys a world's backing-service state.
+    let still_there = fx.exec(&world, "cat \"$SLIPFORK_WORLD_STATE/keep.txt\"");
+    assert_eq!(still_there.exit_code, 0, "stderr: {}", still_there.stderr);
+    assert_eq!(still_there.stdout.trim(), "kept");
+
+    // A malformed spec lacking a world-scoped `HOME` is likewise caught by `world_preflight`
+    // before stopping services or re-cloning over a new base snapshot.
+    let src_v2 = fx.root.join("state-src-v2");
+    fs::create_dir_all(src_v2.join("state")).expect("state-src-v2");
+    fs::write(src_v2.join("state/seed.txt"), b"v2\n").expect("seed-v2");
+    fx.engine
+        .create_snapshot(&src_v2, &snap("base-v2"))
+        .expect("snapshot base-v2");
+    let mut no_home = reload_spec(&fx, snap("base-v2"));
+    no_home.base_env = ExecEnv::default();
+    let err = fx
+        .engine
+        .reload_world(&world, &no_home)
+        .expect_err("a reload spec without world HOME must fail closed in pre-flight");
+    assert!(
+        matches!(err, EngineError::InvalidWorldSpec { .. }),
+        "expected InvalidWorldSpec, got {err:?}"
+    );
+    let untouched = fx.exec(&world, "cat \"$SLIPFORK_WORLD_STATE/keep.txt\"");
+    assert_eq!(untouched.exit_code, 0, "stderr: {}", untouched.stderr);
+    assert_eq!(untouched.stdout.trim(), "kept");
+
+    fx.engine.destroy_world(world).expect("destroy the world");
+    let _ = fs::remove_dir_all(&fx.root);
+}
+
+#[test]
+fn reload_across_a_new_base_replaces_the_subvolume_and_never_lies_after_a_failed_boot() {
+    let fx = WorldFixture::new("reload-base-change");
+    let world = fx.world(WorldTarget::Canonical);
+    let _svc = fx.service(&world, service_spec("bg", &fx.repo, None, "sleep 30"));
+    assert_eq!(
+        fx.exec(&world, "printf old > \"$SLIPFORK_WORLD_STATE/old.txt\"")
+            .exit_code,
+        0
+    );
+
+    let src_v2 = fx.root.join("state-src-v2");
+    fs::create_dir_all(src_v2.join("state")).expect("state-src-v2");
+    fs::write(src_v2.join("state/seed.txt"), b"v2\n").expect("seed-v2");
+    fx.engine
+        .create_snapshot(&src_v2, &snap("base-v2"))
+        .expect("snapshot base-v2");
+
+    // 1. Destructive `!same_base` reload whose boot fails after re-cloning `base-v2`:
+    //    `local_ingress` names an unbound socket, failing inside `boot_world` with
+    //    `WorldInitFailed`. The record transitions to `Failed` (`WorldNotLive`) and keeps the
+    //    truthful `base-v2` storage fact instead of rolling back to `fx.snapshot`.
+    let mut bad_boot = reload_spec(&fx, snap("base-v2"));
+    bad_boot.local_ingress = Some(LocalIngressBridge {
+        port: 80,
+        host_ingress_sock: fx.root.join("missing-ingress.sock"),
+    });
+    let err = fx
+        .engine
+        .reload_world(&world, &bad_boot)
+        .expect_err("missing ingress socket must fail boot_world");
+    assert!(
+        matches!(err, EngineError::WorldInitFailed { .. }),
+        "expected WorldInitFailed, got {err:?}"
+    );
+    assert!(
+        matches!(
+            fx.engine.world_processes(&world),
+            Err(EngineError::WorldNotLive { .. })
+        ),
+        "live operations on a failed reload must return WorldNotLive"
+    );
+
+    // 2. Retrying back onto the original `fx.snapshot` proves the record did NOT lie and claim
+    //    `fx.snapshot` over `base-v2`: it must re-clone `fx.snapshot` and serve `"ancestor"`,
+    //    whereas a rollback lie would have treated `same_base` as true and kept `"v2"`.
+    fx.engine
+        .reload_world(&world, &reload_spec(&fx, fx.snapshot.clone()))
+        .expect("retry reload back to original base");
+    assert!(
+        fx.engine
+            .world_processes(&world)
+            .expect("live after retry")
+            .is_empty(),
+        "reload clears old service rows"
+    );
+    assert_eq!(
+        fx.exec(&world, "cat \"$SLIPFORK_WORLD_STATE/seed.txt\"")
+            .stdout
+            .trim(),
+        "ancestor"
+    );
+    assert_ne!(
+        fx.exec(&world, "test -e \"$SLIPFORK_WORLD_STATE/old.txt\"")
+            .exit_code,
+        0,
+        "re-cloning replaced the previous subvolume state"
+    );
+
+    // 3. Happy-path `!same_base` reload onto `base-v2` replaces the subvolume cleanly, and a
+    //    subsequent failed reload remains destroyable via `destroy_world`.
+    fx.engine
+        .reload_world(&world, &reload_spec(&fx, snap("base-v2")))
+        .expect("reload onto base-v2");
+    assert_eq!(
+        fx.exec(&world, "cat \"$SLIPFORK_WORLD_STATE/seed.txt\"")
+            .stdout
+            .trim(),
+        "v2"
+    );
+    let err = fx
+        .engine
+        .reload_world(&world, &bad_boot)
+        .expect_err("second failed boot");
+    assert!(matches!(err, EngineError::WorldInitFailed { .. }));
+    fx.engine
+        .destroy_world(world)
+        .expect("destroy_world must release a Failed world");
+    let _ = fs::remove_dir_all(&fx.root);
 }

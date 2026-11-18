@@ -204,7 +204,118 @@ pub fn assert_world_engine_conformance(
         ),
     }
 
-    // 7. The engine.s own process and lineage records are honest: unique ids, no live fact on a
+    // 7. `reload_world` is honest and load-bearing: an adapter that can re-root a live world
+    //    returns `Ok` after clearing supervised service rows and recording the reload spec's
+    //    rootfs/lineage facts, while one that declines reports the typed, engine-named
+    //    `Unsupported`. The world keeps its opaque handle across the reload.
+    match engine.spawn_service(
+        &world,
+        &crate::ServiceSpec {
+            id: "conformance-pre-reload".to_owned(),
+            kind: crate::ServiceKind::Component,
+            runtime: crate::ServiceRuntime::WorldProcess {
+                argv: vec!["sh".to_owned(), "-c".to_owned(), "sleep 30".to_owned()],
+                cwd: std::path::PathBuf::from("/"),
+            },
+            env: ExecEnv::default(),
+            readiness_port: None,
+        },
+    ) {
+        Ok(_handle) => {
+            assert_eq!(
+                engine
+                    .world_processes(&world)
+                    .expect("live world rows before reload")
+                    .len(),
+                1,
+                "{} must record a spawned service before reload",
+                engine.name()
+            );
+        }
+        Err(EngineError::Unsupported {
+            engine: reported, ..
+        }) => {
+            assert_eq!(reported, engine.name(), "Unsupported must name the engine");
+        }
+        Err(other) => panic!(
+            "{} must spawn a trivial world process or decline with Unsupported, got {other:?}",
+            engine.name()
+        ),
+    }
+    let (reloaded_cache, reloaded_millis) = match rootfs.cache {
+        crate::CacheOutcome::Hit => (crate::CacheOutcome::Miss, Some(42)),
+        crate::CacheOutcome::Miss => (crate::CacheOutcome::Hit, None),
+    };
+    let reloaded_spec = WorldSpec {
+        rootfs: WorldRootfs {
+            cache: reloaded_cache,
+            millis: reloaded_millis,
+            ..rootfs.clone()
+        },
+        boot: crate::BootLineage {
+            base: Some(crate::BaseLineage {
+                key: "conformance-reloaded-base".to_owned(),
+                millis: Some(7),
+            }),
+            seed: None,
+        },
+        ..spec.clone()
+    };
+    let reload_supported = match engine.reload_world(&world, &reloaded_spec) {
+        Ok(()) => {
+            let cleared = engine
+                .world_processes(&world)
+                .expect("live world must report its row set after reload");
+            assert!(
+                cleared.is_empty(),
+                "{} reload_world returned Ok without clearing service rows: {cleared:?}",
+                engine.name()
+            );
+            let reloaded_lineage = engine
+                .world_lineage(&world)
+                .expect("live world must report its lineage after reload");
+            assert_eq!(
+                reloaded_lineage.rootfs,
+                Some(crate::RootfsLineage {
+                    digest: reloaded_spec.rootfs.digest.hex().to_owned(),
+                    cache: reloaded_cache,
+                    millis: reloaded_millis,
+                }),
+                "{} reload_world returned Ok without recording spec.rootfs lineage",
+                engine.name()
+            );
+            assert_eq!(
+                reloaded_lineage.base,
+                reloaded_spec.boot.base,
+                "{} reload_world returned Ok without recording spec.boot.base",
+                engine.name()
+            );
+            true
+        }
+        Err(EngineError::Unsupported {
+            engine: reported,
+            capability,
+        }) => {
+            assert_eq!(reported, engine.name(), "Unsupported must name the engine");
+            assert_eq!(
+                capability, "reload_world",
+                "the declined capability must be named"
+            );
+            false
+        }
+        Err(other) => panic!(
+            "{} must reload a live world or decline with a typed Unsupported, got {other:?}",
+            engine.name()
+        ),
+    };
+    assert_eq!(
+        format!("{world:?}"),
+        format!("{opaque:?}"),
+        "{} handle Debug must be stable across a reload",
+        engine.name()
+    );
+
+    // 8. The engine.s own process and lineage records are honest: unique ids, no live fact on a
     //    non-running row, and a cache `hit` never claims a measured duration.
     let rows = engine
         .world_processes(&world)
@@ -237,6 +348,13 @@ pub fn assert_world_engine_conformance(
     let lineage = engine
         .world_lineage(&world)
         .expect("a live world must report its lineage");
+    assert!(
+        engine
+            .world_is_live(&world)
+            .expect("a live world must answer its own liveness"),
+        "{} must report its booted world as live",
+        engine.name()
+    );
     if let Some(lineage_rootfs) = &lineage.rootfs {
         assert_eq!(
             lineage_rootfs.digest,
@@ -255,7 +373,7 @@ pub fn assert_world_engine_conformance(
         assert_lineage_cache_is_honest(engine, &service.id, service.cache, service.millis);
     }
 
-    // 8. Unknown services are typed; logs are never fabricated.
+    // 9. Unknown services are typed; logs are never fabricated.
     match engine.service_logs(&world, "conformance-missing-service") {
         Ok(_) => panic!("{} must not fabricate service logs", engine.name()),
         Err(EngineError::Unsupported {
@@ -285,6 +403,44 @@ pub fn assert_world_engine_conformance(
         matches!(err, EngineError::WorldNotFreezable { .. }),
         "expected WorldNotFreezable, got {err:?}"
     );
+    // Sealing is a liveness transition: the three answers are pinned together — a booted world is
+    // live, a frozen one is not live (never an error, never `true`), and a destroyed handle fails
+    // closed with `WorldGone` below. An engine that answers `status == Live` alone, or that derives
+    // "live" from holding the handle, fails here.
+    assert!(
+        !engine
+            .world_is_live(&world)
+            .expect("a frozen world must answer its liveness"),
+        "{} must report a frozen world as not live",
+        engine.name()
+    );
+    // A frozen world is immutable: an engine implementing `reload_world` must refuse to re-root it
+    // with `WorldNotReloadable`; one that declines the capability reports the same `Unsupported`.
+    match (reload_supported, engine.reload_world(&world, &spec)) {
+        (true, Err(EngineError::WorldNotReloadable { .. })) => {}
+        (
+            false,
+            Err(EngineError::Unsupported {
+                engine: reported,
+                capability,
+            }),
+        ) => {
+            assert_eq!(reported, engine.name(), "Unsupported must name the engine");
+            assert_eq!(
+                capability, "reload_world",
+                "the declined capability must be named"
+            );
+        }
+        (_, other) => panic!(
+            "{} reload_world on a frozen world must fail closed with {} (reload_supported={reload_supported}), got {other:?}",
+            engine.name(),
+            if reload_supported {
+                "WorldNotReloadable"
+            } else {
+                "Unsupported"
+            }
+        ),
+    }
 
     engine
         .destroy_world(world)
@@ -302,6 +458,7 @@ pub fn assert_world_engine_conformance(
             engine.world_processes(&opaque).map(|_| ()),
         ),
         ("world_lineage", engine.world_lineage(&opaque).map(|_| ())),
+        ("world_is_live", engine.world_is_live(&opaque).map(|_| ())),
         ("stop_world_services", engine.stop_world_services(&opaque)),
     ] {
         match err {
@@ -311,6 +468,34 @@ pub fn assert_world_engine_conformance(
                 engine.name()
             ),
         }
+    }
+    // On a destroyed handle, an engine whose live reload succeeded MUST fail closed with
+    // `WorldGone` (never `Unsupported`); `Unsupported` is permitted only when the live call itself
+    // declined the capability.
+    match (reload_supported, engine.reload_world(&opaque, &spec)) {
+        (true, Err(EngineError::WorldGone { .. })) => {}
+        (
+            false,
+            Err(EngineError::Unsupported {
+                engine: reported,
+                capability,
+            }),
+        ) => {
+            assert_eq!(reported, engine.name(), "Unsupported must name the engine");
+            assert_eq!(
+                capability, "reload_world",
+                "the declined capability must be named"
+            );
+        }
+        (_, other) => panic!(
+            "{} reload_world on a destroyed world must fail closed with {} (reload_supported={reload_supported}), got {other:?}",
+            engine.name(),
+            if reload_supported {
+                "WorldGone"
+            } else {
+                "Unsupported"
+            }
+        ),
     }
     let err = engine
         .destroy_world(opaque)

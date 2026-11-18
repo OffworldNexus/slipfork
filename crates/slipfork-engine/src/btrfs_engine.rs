@@ -32,6 +32,7 @@ use std::io::Write;
 use std::net::TcpStream;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixStream;
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
@@ -47,9 +48,9 @@ use crate::clock::MonotonicClock;
 use crate::linux_cow::{self, ProcessSignal};
 use crate::oci::{self, ContainerBundle, ContainerMount};
 use crate::service::{
-    POLL_INTERVAL, ProcessIdentity, ServiceLogs, container_id, drain_stderr,
+    D_STATE_KILL_GRACE, POLL_INTERVAL, ProcessIdentity, ServiceLogs, container_id, drain_stderr,
     ensure_container_destination, host_child_pids, kill_and_reap_child, run_streamed,
-    run_streamed_with_input, spawn_log_reader, wait_for_exit, wait_for_inner_pid,
+    run_streamed_with_input, spawn_log_reader, wait_for_exit, wait_for_inner_pid, wait_reaped,
     world_guest_for_host,
 };
 use crate::world_init::{
@@ -176,6 +177,14 @@ impl Drop for BtrfsEngine {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum WorldSubvolume {
+    /// `<state_dir>/worlds/<world_id>` exists on disk, cloned from this sealed snapshot.
+    Cloned(SnapshotId),
+    /// A base-changing reload destroyed the previous subvolume and has not cloned its replacement.
+    Missing,
+}
+
 #[derive(Debug)]
 struct WorldRecord {
     /// Subvolume name: `<state_dir>/worlds/<world_id>` and `<state_dir>/ctl/<world_id>`.
@@ -193,13 +202,16 @@ struct WorldRecord {
     launcher: Option<Child>,
     base_env: ExecEnv,
     rootfs: WorldRootfs,
+    /// On-disk base snapshot of this world's subvolume: a reload naming the same snapshot keeps
+    /// the existing subvolume, while a different snapshot (or `Missing`) clones from `spec`.
+    subvolume: WorldSubvolume,
     mounts: Vec<WorldMount>,
     status: WorldStatus,
     /// A teardown started and may still be running: every caller sees the world as gone, and
     /// [`WorldEngine::destroy_world`] re-enters where the previous attempt stopped.
     destroying: bool,
     services: BTreeMap<String, ServiceRecord>,
-    /// This world's own boot lineage, recorded when [`WorldEngine::clone_world`] materialized it.
+    /// This world's own boot lineage, recorded when its on-disk rootfs was materialized.
     lineage: WorldLineage,
 }
 
@@ -241,6 +253,9 @@ struct ServiceRecord {
 struct ServiceProcess {
     supervisor: Option<Child>,
     inner: Option<ProcessIdentity>,
+    /// The group this service's launcher leads; stop signals the whole group so a descendant that
+    /// outlived the supervised child is still reaped.
+    process_group: Option<ProcessIdentity>,
     container: Option<ContainerProcess>,
 }
 
@@ -264,6 +279,13 @@ impl ServiceTeardown {
             process: Arc::clone(&service.process),
         }
     }
+}
+
+/// Validated, mutation-free pre-flight inputs resolved before [`WorldEngine::clone_world`] or
+/// [`WorldEngine::reload_world`] touches a service, PID 1, control directory, or subvolume.
+struct WorldPreflight {
+    source: PathBuf,
+    home: PathBuf,
 }
 
 /// Everything a spawn path needs from the already-locked world record.
@@ -389,8 +411,13 @@ impl BtrfsEngine {
             })
     }
 
-    /// The record of a world that still exists, failing closed with [`EngineError::WorldGone`] once
-    /// its teardown has started.
+    /// The record of a world that still exists and whose last reload did not fail, failing closed
+    /// with [`EngineError::WorldGone`] once its teardown has started and with
+    /// [`EngineError::WorldNotLive`] after a reload whose boot failed.
+    ///
+    /// Status is **not** a liveness proof: a reload that dies while stopping services or reaping
+    /// the PID 1 returns before it stamps `Failed`, so a `Live` record can describe a world whose
+    /// init is gone. Callers that must know ask [`WorldEngine::world_is_live`].
     fn live_record<'a>(
         &self,
         worlds: &'a mut BTreeMap<u64, WorldRecord>,
@@ -399,6 +426,11 @@ impl BtrfsEngine {
         let record = self.owned(worlds, world)?;
         if record.is_gone() {
             return Err(EngineError::WorldGone {
+                world: format!("{world:?}"),
+            });
+        }
+        if record.status == WorldStatus::Failed {
+            return Err(EngineError::WorldNotLive {
                 world: format!("{world:?}"),
             });
         }
@@ -418,10 +450,45 @@ impl BtrfsEngine {
             WorldStatus::Freezing | WorldStatus::Frozen => Err(EngineError::WorldNotFreezable {
                 world: format!("{world:?}"),
             }),
+            WorldStatus::Failed => Err(EngineError::WorldNotLive {
+                world: format!("{world:?}"),
+            }),
             WorldStatus::Destroyed => Err(EngineError::WorldGone {
                 world: format!("{world:?}"),
             }),
         }
+    }
+
+    /// The reload precondition, the same lifecycle gate [`Self::sealable`] enforces for freeze:
+    /// only a `Live` world can be re-rooted, and a world whose previous reload failed to boot may
+    /// retry. A sealing/sealed world would be re-materialized over a read-only subvolume, so it
+    /// fails closed instead.
+    fn reloadable(record: &WorldRecord, world: &WorldHandle) -> Result<(), EngineError> {
+        if record.is_gone() {
+            return Err(EngineError::WorldGone {
+                world: format!("{world:?}"),
+            });
+        }
+        match record.status {
+            WorldStatus::Live | WorldStatus::Failed => Ok(()),
+            WorldStatus::Freezing | WorldStatus::Frozen => Err(EngineError::WorldNotReloadable {
+                world: format!("{world:?}"),
+            }),
+            WorldStatus::Destroyed => Err(EngineError::WorldGone {
+                world: format!("{world:?}"),
+            }),
+        }
+    }
+
+    /// The record a reload re-roots: [`Self::reloadable`], failing closed before any mutation.
+    fn reload_record<'a>(
+        &self,
+        worlds: &'a mut BTreeMap<u64, WorldRecord>,
+        world: &WorldHandle,
+    ) -> Result<&'a mut WorldRecord, EngineError> {
+        let record = self.owned(worlds, world)?;
+        Self::reloadable(record, world)?;
+        Ok(record)
     }
 
     /// The one `nsenter` argv entering every namespace of `init_pid` at a working directory that
@@ -556,6 +623,30 @@ impl BtrfsEngine {
                 rootfs.digest
             ),
         })
+    }
+
+    /// Validate `spec` and resolve its clone source and world-scoped `HOME` **before any
+    /// mutation**: `spec.validate()`, `HOME` presence, an existing sealed snapshot, and the
+    /// content-addressed cache rootfs reference.
+    ///
+    /// Called first by both [`WorldEngine::clone_world`] and [`WorldEngine::reload_world`] so both
+    /// verbs enforce identical preconditions before stopping services or touching subvolumes.
+    fn world_preflight(&self, spec: &WorldSpec) -> Result<WorldPreflight, EngineError> {
+        spec.validate()?;
+        let home = spec
+            .base_env
+            .home()
+            .ok_or_else(|| EngineError::InvalidWorldSpec {
+                reason: "base_env must carry a world-scoped HOME (ExecEnv::world_scoped)"
+                    .to_owned(),
+            })?
+            .to_path_buf();
+        let source = self.snapshots_dir().join(spec.snapshot.validate()?);
+        if !source.is_dir() {
+            return Err(EngineError::SnapshotNotFound(spec.snapshot.0.clone()));
+        }
+        self.validate_rootfs_reference(&spec.rootfs)?;
+        Ok(WorldPreflight { source, home })
     }
 
     /// Materialize the world's control directory, boot the PID 1, and wait until its listeners are
@@ -796,13 +887,8 @@ impl BtrfsEngine {
         match outcome {
             Ok(init) => Ok((netns_sock, init, launcher)),
             Err(reason) => {
-                drop(launcher.stdin.take());
-                if let Some(identity) = &init {
-                    let _ = identity.signal(ProcessSignal::Kill);
-                }
-                let _ = launcher.kill();
-                let stderr = drain_stderr(&mut launcher);
-                let _ = wait_for_exit(&mut launcher, WORLD_STOP_KILL_GRACE);
+                let stderr =
+                    Self::abandon_unbooted_world(init.as_ref(), &mut launcher).unwrap_or_default();
                 let reason = format!("{reason}; helper stderr: {stderr}");
                 // `ADR-0010` §7: an unprivileged `CLONE_NEWUSER` refusal (AppArmor
                 // `kernel.apparmor_restrict_unprivileged_userns=1`) is a host-profile problem, not
@@ -830,6 +916,17 @@ impl BtrfsEngine {
         argv: &[String],
         cwd: &Path,
     ) -> Result<(), EngineError> {
+        // The world PID namespace every descendant of this component lives in. Group membership is
+        // preserved across `nsenter --pid` (members report pgid 0 inside the world); the namespace
+        // link is what proves a surviving member of a recycled pgid is not ours.
+        let world_pid_ns = std::fs::read_link(format!("/proc/{}/ns/pid", spawn.init_pid)).map_err(
+            |err| {
+                EngineError::Execution(format!(
+                    "cannot read the world PID namespace of pid {} to supervise service '{}': {err}",
+                    spawn.init_pid, spawn.spec.id
+                ))
+            },
+        )?;
         let mut command = Command::new("nsenter");
         command
             .args(self.entry_prefix(spawn.init_pid, spawn.mounts, cwd))
@@ -839,7 +936,10 @@ impl BtrfsEngine {
             .env("SLIPFORK_WORLD_STATE", WORLD_STATE_GUEST)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+            .stderr(Stdio::piped())
+            // One process group per component (`pgid == the launcher's host pid`): `sh -eu -c`
+            // forks the real service, so stop must signal the group, never only the first child.
+            .process_group(0);
         let mut child = command.spawn().map_err(|err| {
             EngineError::Execution(format!(
                 "cannot start service '{}' ({}): {err}",
@@ -847,18 +947,30 @@ impl BtrfsEngine {
                 argv.join(" ")
             ))
         })?;
+        let supervisor_pid = child.id();
+        let Some(process_group) =
+            ProcessIdentity::capture_group_leader(supervisor_pid, world_pid_ns)
+        else {
+            let label = format!("service '{}'", spawn.spec.id);
+            let _ = kill_and_reap_child(&mut child, SERVICE_STOP_GRACE, &label);
+            return Err(EngineError::Execution(format!(
+                "cannot pin the process group of service '{}' (pid {supervisor_pid}); the spawn \
+                 was stopped instead of leaving an unsignalable service",
+                spawn.spec.id
+            )));
+        };
         if let Some(stdout) = child.stdout.take() {
             spawn_log_reader(stdout, crate::StreamSource::Stdout, spawn.log.clone());
         }
         if let Some(stderr) = child.stderr.take() {
             spawn_log_reader(stderr, crate::StreamSource::Stderr, spawn.log.clone());
         }
-        let supervisor_pid = child.id();
         if let Ok(mut process) = spawn.process.lock() {
             process.supervisor = Some(child);
+            process.process_group = Some(process_group);
         }
-        // `nsenter --pid` forks: the service itself is the launcher's first child. `SIGTERM` must
-        // reach that in-world pid, never the launcher parent.
+        // `nsenter --pid` forks: the service itself is the launcher's first child. It is recorded
+        // for reporting; stop signals the group above.
         if let Some(inner) = wait_for_inner_pid(supervisor_pid, SERVICE_STOP_GRACE)
             .and_then(ProcessIdentity::capture)
             && let Ok(mut process) = spawn.process.lock()
@@ -1132,10 +1244,12 @@ impl BtrfsEngine {
     /// Stop one service's process tree with a bounded `SIGTERM` → `SIGKILL` grace.
     ///
     /// The one stop implementation: `grace` is the `SIGTERM` window (`Duration::ZERO` for a spawn
-    /// that already failed, which escalates to `SIGKILL` immediately). Idempotent: a service that
-    /// already exited on its own, or was stopped before, keeps its retained logs and reports
-    /// success. Takes the record's handles directly so world teardown can stop services after the
-    /// world has been fenced.
+    /// that already failed, which escalates to `SIGKILL` immediately). A world process is
+    /// signalled as its whole **process group**, so the `sh -eu -c` wrapper and the service it
+    /// forked are both stopped — including a descendant that outlived the supervised child.
+    /// Idempotent: a service that already exited on its own, or was stopped before, keeps its
+    /// retained logs and reports success once no group member survives. Takes the record's handles
+    /// directly so world teardown can stop services after the world has been fenced.
     fn stop_service_process(
         &self,
         id: &str,
@@ -1144,12 +1258,9 @@ impl BtrfsEngine {
         process: &Arc<Mutex<ServiceProcess>>,
         grace: Duration,
     ) -> Result<(), EngineError> {
-        if ServiceState::from_bits(state.load(Ordering::Relaxed)) != ServiceState::Running {
-            log.close();
-            return Ok(());
-        }
-
-        let (supervisor, inner, container) = {
+        let running =
+            ServiceState::from_bits(state.load(Ordering::Relaxed)) == ServiceState::Running;
+        let (mut supervisor, process_group, container) = {
             let Ok(mut process) = process.lock() else {
                 return Err(EngineError::Execution(format!(
                     "service '{id}' process state is poisoned"
@@ -1157,57 +1268,173 @@ impl BtrfsEngine {
             };
             (
                 process.supervisor.take(),
-                process.inner.clone(),
+                process.process_group.clone(),
                 process.container.clone(),
             )
         };
-        let Some(mut supervisor) = supervisor else {
-            state.store(ServiceState::Stopped.to_bits(), Ordering::Relaxed);
+        // A row that already left `Running` still owns its group: the supervised child may have
+        // exited while a descendant kept running (the `sh`/`python3` shape), so the early return
+        // only applies when there is nothing left to reap.
+        if !running && supervisor.is_none() && process_group.is_none() && container.is_none() {
             log.close();
             return Ok(());
-        };
-        // Re-resolve the in-world pid if it was not observed at spawn time: `SIGTERM` must reach
-        // the forked service, not only the `nsenter` launcher.
-        let inner = inner.or_else(|| {
-            host_child_pids(supervisor.id())
-                .ok()
-                .and_then(|children| children.first().copied())
-                .and_then(ProcessIdentity::capture)
-        });
+        }
 
-        if grace > Duration::ZERO {
-            if let Some(container) = &container {
-                signal_container(self, container, "TERM");
-            } else if let Some(inner) = &inner {
-                let _ = inner.signal(ProcessSignal::Terminate);
-            }
-        }
-        if grace.is_zero() || !wait_for_exit(&mut supervisor, grace) {
-            if let Some(container) = &container {
-                signal_container(self, container, "KILL");
-            } else if let Some(inner) = &inner {
-                let _ = inner.signal(ProcessSignal::Kill);
-            }
-            if let Err(err) = kill_and_reap_child(
-                &mut supervisor,
-                SERVICE_STOP_GRACE,
-                &format!("service '{id}'"),
-            ) {
-                // The supervisor is restored so a retry can still signal it, and the service stays
-                // `Running` with its log open: marking it `Stopped` here would make a retried
-                // `teardown_world` short-circuit at the "not Running" guard above while the
-                // supervisor still lives, and report a clean destroy over a leaked process.
-                if let Ok(mut guard) = process.lock() {
-                    guard.supervisor = Some(supervisor);
-                }
-                return finish_service_stop(state, log, Err(err));
-            }
-        }
         if let Some(container) = &container {
+            // A backing-service container is signalled through `crun` (not a host process group)
+            // and its supervisor is the `nsenter` launcher.
+            if grace > Duration::ZERO {
+                signal_container(self, container, "TERM");
+            }
+            let deadline = Instant::now() + grace;
+            let mut stopped = grace > Duration::ZERO;
+            if stopped && let Some(child) = supervisor.as_mut() {
+                stopped = wait_for_exit(child, deadline.saturating_duration_since(Instant::now()));
+            }
+            if !stopped {
+                signal_container(self, container, "KILL");
+                if let Some(mut child) = supervisor.take()
+                    && let Err(err) = kill_and_reap_child(
+                        &mut child,
+                        SERVICE_STOP_GRACE,
+                        &format!("service '{id}'"),
+                    )
+                {
+                    // The supervisor is restored so a retry can still signal it, and the service
+                    // stays `Running` with its log open: marking it `Stopped` here would make a
+                    // retried `teardown_world` short-circuit at the "not Running" guard above
+                    // while the supervisor still lives.
+                    if let Ok(mut guard) = process.lock() {
+                        guard.supervisor = Some(child);
+                    }
+                    return finish_service_stop(state, log, Err(err));
+                }
+            }
             delete_container(self, container);
             let _ = fs::remove_dir_all(&container.bundle_host);
+            if let Ok(mut guard) = process.lock() {
+                guard.process_group = None;
+            }
+            return finish_service_stop(state, log, Ok(()));
+        }
+
+        // A world process is only recorded after a successful group pin:
+        // `spawn_world_process` stops and fails closed otherwise, so a row without a group has no
+        // honest signal target and must never be reported stopped.
+        let Some(group) = process_group else {
+            if let Some(child) = supervisor.take()
+                && let Ok(mut guard) = process.lock()
+            {
+                guard.supervisor = Some(child);
+            }
+            return finish_service_stop(
+                state,
+                log,
+                Err(EngineError::Execution(format!(
+                    "service '{id}' has no pinned process group; spawn_world_process records a \
+                     group or fails closed rather than leave an unsignalable world process"
+                ))),
+            );
+        };
+        let label = format!("service '{id}' process group {}", group.pid);
+        let stopped = Self::stop_identity(
+            Some(&group),
+            &mut supervisor,
+            grace,
+            SERVICE_STOP_GRACE,
+            D_STATE_KILL_GRACE,
+            &label,
+        );
+        if let Err(err) = stopped {
+            // The supervisor is restored so a retry can still signal it, and the service stays
+            // `Running` with its log open (see the container branch above).
+            if let Some(child) = supervisor
+                && let Ok(mut guard) = process.lock()
+            {
+                guard.supervisor = Some(child);
+            }
+            return finish_service_stop(state, log, Err(err));
+        }
+        // Nothing in the group survives: drop the handle so a repeated stop (idempotent by
+        // contract) never signals a host pgid the kernel may have recycled for a new process.
+        if let Ok(mut guard) = process.lock() {
+            guard.process_group = None;
         }
         finish_service_stop(state, log, Ok(()))
+    }
+
+    /// The one stop path for one supervised process tree: `SIGTERM` the pinned identity (the whole
+    /// group when it leads one), wait out `term_grace` for the caller's launcher/supervisor child
+    /// and the identity, `SIGKILL` and reap the child, then confirm the identity is gone.
+    ///
+    /// `d_state_grace` is the caller's `D`-state retry budget: a service group retries for
+    /// [`D_STATE_KILL_GRACE`], while the world PID 1 keeps its existing kill grace and reports at
+    /// once. [`wait_reaped`] names the surviving pid, its `/proc` state, and the **measured** time
+    /// since the first `SIGTERM` (the configured kill and `D`-state budgets sit beside it). The
+    /// caller keeps ownership of the child: on error it is still in `child` and can be restored
+    /// into the record.
+    fn stop_identity(
+        identity: Option<&ProcessIdentity>,
+        child: &mut Option<Child>,
+        term_grace: Duration,
+        kill_grace: Duration,
+        d_state_grace: Duration,
+        label: &str,
+    ) -> Result<(), EngineError> {
+        let term_started = Instant::now();
+        let deadline = term_started + term_grace;
+        if let Some(identity) = identity {
+            let _ = identity.signal(ProcessSignal::Terminate);
+        }
+        let mut stopped = true;
+        if let Some(child) = child.as_mut() {
+            stopped = wait_for_exit(child, term_grace);
+        }
+        if let Some(identity) = identity {
+            stopped =
+                identity.wait_gone(deadline.saturating_duration_since(Instant::now())) && stopped;
+        }
+        if !stopped {
+            if let Some(identity) = identity
+                && let Err(err) = identity.signal(ProcessSignal::Kill)
+                && (err.raw_os_error() != Some(libc::ESRCH) || identity.is_live())
+            {
+                return Err(EngineError::Execution(format!(
+                    "cannot SIGKILL {label} (pid {}): {err}",
+                    identity.pid
+                )));
+            }
+            if let Some(child) = child.as_mut() {
+                kill_and_reap_child(child, kill_grace, label)?;
+            }
+        }
+        match identity {
+            Some(identity) => wait_reaped(identity, term_started, kill_grace, d_state_grace, label),
+            None => Ok(()),
+        }
+    }
+
+    /// Abandon a world that will never become a record: drop the `stdin` lifeline, `SIGKILL` the
+    /// discovered init identity, kill the `unshare` launcher, and wait for it bounded by
+    /// [`WORLD_STOP_KILL_GRACE`].
+    ///
+    /// Two sites reach this before a `WorldRecord` exists — a `boot_world` that failed its
+    /// readiness contract and a `clone_world` whose record could not be inserted — so neither can
+    /// reap through [`Self::reap_world_init`] (it owns a record). Each caller keeps its own control
+    /// directory and diagnostic handling; the returned `stderr` tail is `None` when the launcher
+    /// wrote nothing.
+    fn abandon_unbooted_world(
+        init: Option<&ProcessIdentity>,
+        launcher: &mut Child,
+    ) -> Option<String> {
+        drop(launcher.stdin.take());
+        if let Some(identity) = init {
+            let _ = identity.signal(ProcessSignal::Kill);
+        }
+        let _ = launcher.kill();
+        let stderr = drain_stderr(launcher);
+        let _ = wait_for_exit(launcher, WORLD_STOP_KILL_GRACE);
+        (!stderr.is_empty()).then_some(stderr)
     }
 
     fn restore_launcher(&self, world: &WorldHandle, launcher: Child) {
@@ -1225,12 +1452,11 @@ impl BtrfsEngine {
     /// kernel silently drops unhandled `SIGTERM` from an ancestor namespace, whereas `SIGKILL` is
     /// forcibly delivered. Closing `launcher.stdin` makes `slipfork-world-init` observe `EOF` and
     /// exit `0` voluntarily so `unshare` reaps it immediately; `SIGTERM` is also sent (after
-    /// `/proc/<pid>/ns/pid` identity verification) for un-namespaced unit-test doubles. If either
-    /// process survives `term_grace`, `SIGKILL` is sent to the verified `init` and `launcher`
-    /// (`--kill-child=SIGKILL`), and `launcher` is bounded-reaped **before** polling
-    /// `/proc/<init_pid>`. Any `kill` or bounded-wait failure restores `launcher` into the record
-    /// and returns a typed [`EngineError::Execution`] naming the launcher pid before storage is
-    /// touched.
+    /// `/proc/<pid>/ns/pid` identity verification) for un-namespaced unit-test doubles. The stop
+    /// itself is [`Self::stop_identity`] — the same one path a service group takes — with this
+    /// world-init grace policy: `term_grace`, then `WORLD_STOP_KILL_GRACE`, no `D`-state retry
+    /// budget. Any `kill` or bounded-wait failure restores `launcher` into the record and returns
+    /// a typed [`EngineError::Execution`] naming the survivor before storage is touched.
     fn reap_world_init(
         &self,
         world: &WorldHandle,
@@ -1254,51 +1480,23 @@ impl BtrfsEngine {
             )));
         }
 
-        let started = Instant::now();
         if let Some(child) = launcher.as_mut() {
             drop(child.stdin.take());
         }
-        if term_grace > Duration::ZERO
-            && let Some(identity) = &init_identity
-        {
-            let _ = identity.signal(ProcessSignal::Terminate);
-        }
-
-        let term_deadline = started + term_grace;
-        if let Some(mut child) = launcher.take() {
-            let exited_on_term =
-                term_grace > Duration::ZERO && wait_for_exit(&mut child, term_grace);
-            if !exited_on_term {
-                if let Some(identity) = &init_identity {
-                    let _ = identity.signal(ProcessSignal::Kill);
-                }
-                let label = format!("world init launcher pid {}", child.id());
-                if let Err(err) = kill_and_reap_child(&mut child, WORLD_STOP_KILL_GRACE, &label) {
-                    self.restore_launcher(world, child);
-                    return Err(err);
-                }
+        let label = format!("world init pid {init_pid}");
+        let stopped = Self::stop_identity(
+            init_identity.as_ref(),
+            &mut launcher,
+            term_grace,
+            WORLD_STOP_KILL_GRACE,
+            Duration::ZERO,
+            &label,
+        );
+        if let Err(err) = stopped {
+            if let Some(child) = launcher {
+                self.restore_launcher(world, child);
             }
-        }
-
-        if let Some(identity) = &init_identity {
-            let remaining_term = term_deadline.saturating_duration_since(Instant::now());
-            if !identity.wait_gone(remaining_term) {
-                if let Err(err) = identity.signal(ProcessSignal::Kill)
-                    && identity.matches_live()
-                {
-                    return Err(EngineError::Execution(format!(
-                        "cannot SIGKILL world init pid {}: {err}",
-                        identity.pid
-                    )));
-                }
-                if !identity.wait_gone(WORLD_STOP_KILL_GRACE) {
-                    return Err(EngineError::Execution(format!(
-                        "world init pid {} survived SIGTERM and SIGKILL for {:?}",
-                        identity.pid,
-                        started.elapsed()
-                    )));
-                }
-            }
+            return Err(err);
         }
 
         let mut worlds = self.lock()?;
@@ -1319,7 +1517,7 @@ impl BtrfsEngine {
         service_grace: Duration,
         init_term_grace: Duration,
     ) -> Result<(), EngineError> {
-        let (world_id, ctl_dir, services) = {
+        let (world_id, ctl_dir, has_subvolume, services) = {
             let mut worlds = self.lock()?;
             let record = self.owned(&mut worlds, world)?;
             // Fence the record: every later operation on this handle fails closed with `WorldGone`
@@ -1331,7 +1529,12 @@ impl BtrfsEngine {
                 .iter()
                 .map(|(id, service)| ServiceTeardown::from_record(id, service))
                 .collect();
-            (record.world_id.clone(), record.ctl_dir.clone(), services)
+            (
+                record.world_id.clone(),
+                record.ctl_dir.clone(),
+                matches!(record.subvolume, WorldSubvolume::Cloned(_)),
+                services,
+            )
         };
 
         // 1. Stop services (app components first, then backing-service containers).
@@ -1342,9 +1545,11 @@ impl BtrfsEngine {
         if ctl_dir.exists() {
             fs::remove_dir_all(&ctl_dir).map_err(|err| io_error(&ctl_dir, &err))?;
         }
-        // 4. Destroy the world subvolume; the driver clears `BTRFS_SUBVOL_RDONLY` first.
-        self.driver
-            .destroy_subvolume(&self.worlds_dir(), &world_id)?;
+        // 4. Destroy the world subvolume when present; the driver clears `BTRFS_SUBVOL_RDONLY` first.
+        if has_subvolume {
+            self.driver
+                .destroy_subvolume(&self.worlds_dir(), &world_id)?;
+        }
 
         // The world subvolume is gone, so the record must go too: a long-lived daemon creates and
         // destroys worlds forever, and the old handle now resolves to `EngineError::WorldGone`
@@ -1521,24 +1726,8 @@ impl WorldEngine for BtrfsEngine {
     }
 
     fn clone_world(&self, spec: &WorldSpec) -> Result<WorldHandle, EngineError> {
-        spec.validate()?;
-        let snapshot_name = spec.snapshot.validate()?;
-        let snapshots = self.snapshots_dir();
-        let source = snapshots.join(snapshot_name);
-        if !source.is_dir() {
-            return Err(EngineError::SnapshotNotFound(spec.snapshot.0.clone()));
-        }
-        // Fail closed before any subvolume exists: the world may only reference the
-        // content-addressed cache tree this engine owns.
-        self.validate_rootfs_reference(&spec.rootfs)?;
-        let home = spec
-            .base_env
-            .home()
-            .ok_or_else(|| EngineError::InvalidWorldSpec {
-                reason: "base_env must carry a world-scoped HOME".to_owned(),
-            })?
-            .to_path_buf();
-        fs::create_dir_all(&home).map_err(|err| io_error(&home, &err))?;
+        let preflight = self.world_preflight(spec)?;
+        fs::create_dir_all(&preflight.home).map_err(|err| io_error(&preflight.home, &err))?;
 
         let worlds = self.worlds_dir();
         fs::create_dir_all(&worlds).map_err(|err| io_error(&worlds, &err))?;
@@ -1547,7 +1736,10 @@ impl WorldEngine for BtrfsEngine {
         let mut attempts = 0;
         let (seq, world_id) = loop {
             let (seq, world_id) = self.allocate_world_id(&spec.target)?;
-            match self.driver.snapshot_writable(&source, &worlds, &world_id) {
+            match self
+                .driver
+                .snapshot_writable(&preflight.source, &worlds, &world_id)
+            {
                 Ok(_) => break (seq, world_id),
                 Err(EngineError::Ioctl { errno, .. }) if errno == libc::EEXIST && attempts < 8 => {
                     attempts += 1;
@@ -1574,10 +1766,7 @@ impl WorldEngine for BtrfsEngine {
         let mut locked = match self.lock() {
             Ok(locked) => locked,
             Err(err) => {
-                drop(launcher.stdin.take());
-                let _ = init.signal(ProcessSignal::Kill);
-                let _ = launcher.kill();
-                let _ = wait_for_exit(&mut launcher, WORLD_STOP_KILL_GRACE);
+                let _ = Self::abandon_unbooted_world(Some(&init), &mut launcher);
                 let _ = fs::remove_dir_all(&ctl_dir);
                 let _ = self.driver.destroy_subvolume(&worlds, &world_id);
                 return Err(err);
@@ -1602,9 +1791,127 @@ impl WorldEngine for BtrfsEngine {
                 destroying: false,
                 services: BTreeMap::new(),
                 lineage: boot_lineage(spec),
+                subvolume: WorldSubvolume::Cloned(spec.snapshot.clone()),
             },
         );
         Ok(world)
+    }
+
+    fn reload_world(&self, world: &WorldHandle, spec: &WorldSpec) -> Result<(), EngineError> {
+        // Shared pre-flight runs **before any mutation** (identical to `clone_world`): an invalid
+        // spec, missing `HOME`, foreign rootfs, or pruned snapshot fails before touching services,
+        // PID 1, or the world subvolume.
+        let preflight = self.world_preflight(spec)?;
+        let (world_id, world_dir, ctl_dir, services) = {
+            let mut worlds = self.lock()?;
+            let record = self.reload_record(&mut worlds, world)?;
+            let services: Vec<ServiceTeardown> = record
+                .services
+                .iter()
+                .map(|(id, service)| ServiceTeardown::from_record(id, service))
+                .collect();
+            (
+                record.world_id.clone(),
+                record.world_dir.clone(),
+                record.ctl_dir.clone(),
+                services,
+            )
+        };
+        // 1. Stop every world-owned service, 2. reap the world PID 1: nothing from the old run may
+        // hold the rootfs reference or a state directory while it is reconciled.
+        self.stop_services_with_grace(&services, SERVICE_STOP_GRACE)?;
+        self.reap_world_init(world, WORLD_STOP_TERM_GRACE)?;
+        let current_subvolume = {
+            let mut worlds = self.lock()?;
+            let record = self.reload_record(&mut worlds, world)?;
+            record.services.clear();
+            record.status = WorldStatus::Failed;
+            record.subvolume.clone()
+        };
+
+        let booted = (|| {
+            // Reconcile the subvolume with `spec.snapshot`, recording each on-disk storage
+            // transition as soon as it succeeds so a later failure never leaves stale base/rootfs
+            // claims over replaced (or absent) storage.
+            match current_subvolume {
+                WorldSubvolume::Cloned(existing) if existing == spec.snapshot => {}
+                WorldSubvolume::Cloned(_) => {
+                    self.driver
+                        .destroy_subvolume(&self.worlds_dir(), &world_id)?;
+                    {
+                        let mut worlds = self.lock()?;
+                        let record = self.reload_record(&mut worlds, world)?;
+                        record.subvolume = WorldSubvolume::Missing;
+                        record.lineage = WorldLineage {
+                            rootfs: None,
+                            services: Vec::new(),
+                            seed: None,
+                            base: None,
+                        };
+                    }
+                    self.driver.snapshot_writable(
+                        &preflight.source,
+                        &self.worlds_dir(),
+                        &world_id,
+                    )?;
+                    let mut worlds = self.lock()?;
+                    let record = self.reload_record(&mut worlds, world)?;
+                    record.subvolume = WorldSubvolume::Cloned(spec.snapshot.clone());
+                }
+                WorldSubvolume::Missing => {
+                    self.driver.snapshot_writable(
+                        &preflight.source,
+                        &self.worlds_dir(),
+                        &world_id,
+                    )?;
+                    let mut worlds = self.lock()?;
+                    let record = self.reload_record(&mut worlds, world)?;
+                    record.subvolume = WorldSubvolume::Cloned(spec.snapshot.clone());
+                }
+            }
+
+            self.materialize_world(&world_dir, spec)?;
+            {
+                let mut worlds = self.lock()?;
+                let record = self.reload_record(&mut worlds, world)?;
+                record.rootfs = spec.rootfs.clone();
+                record.lineage = boot_lineage(spec);
+            }
+            fs::create_dir_all(&preflight.home).map_err(|err| io_error(&preflight.home, &err))?;
+
+            self.boot_world(&world_id, &world_dir, &ctl_dir, spec)
+        })();
+
+        match booted {
+            Ok((netns_sock, init, launcher)) => {
+                let mut worlds = self.lock()?;
+                let record = self.reload_record(&mut worlds, world)?;
+                record.netns_sock = netns_sock;
+                record.init_pid = init.pid;
+                record.init_identity = Some(init);
+                record.launcher = Some(launcher);
+                record.mounts = spec.mounts.clone();
+                record.base_env = spec.base_env.clone();
+                record.status = WorldStatus::Live;
+                Ok(())
+            }
+            Err(err) => {
+                // No PID 1 survived this reload: keep only the storage/rootfs/lineage facts that
+                // actually hold on disk, ensure the record stays non-live (`WorldStatus::Failed`
+                // so a retry recomputes `same_base` from truth and `destroy_world` still owns it),
+                // and drop the half-built control directory.
+                if let Ok(mut worlds) = self.lock()
+                    && let Ok(record) = self.owned(&mut worlds, world)
+                {
+                    record.init_pid = 0;
+                    record.init_identity = None;
+                    record.launcher = None;
+                    record.status = WorldStatus::Failed;
+                }
+                let _ = fs::remove_dir_all(&ctl_dir);
+                Err(err)
+            }
+        }
     }
 
     fn spawn_service(
@@ -1786,13 +2093,12 @@ impl WorldEngine for BtrfsEngine {
         let services: Vec<ServiceTeardown> = {
             let mut worlds = self.lock()?;
             let record = self.live_record(&mut worlds, world)?;
+            // Every recorded service, not only the `Running` rows: an `Exited` component whose
+            // descendant outlived its supervisor (the `sh`-gone/`python3`-alive shape) still owns
+            // a process group, and a freeze that sealed over it would capture a live writer.
             record
                 .services
                 .iter()
-                .filter(|(_, service)| {
-                    ServiceState::from_bits(service.state.load(Ordering::Relaxed))
-                        == ServiceState::Running
-                })
                 .map(|(id, service)| ServiceTeardown::from_record(id, service))
                 .collect()
         };
@@ -1855,6 +2161,25 @@ impl WorldEngine for BtrfsEngine {
         let mut worlds = self.lock()?;
         let record = self.live_record(&mut worlds, world)?;
         Ok(record.lineage.clone())
+    }
+
+    fn world_is_live(&self, world: &WorldHandle) -> Result<bool, EngineError> {
+        let mut worlds = self.lock()?;
+        let record = self.owned(&mut worlds, world)?;
+        if record.is_gone() {
+            return Err(EngineError::WorldGone {
+                world: format!("{world:?}"),
+            });
+        }
+        // Both halves are load-bearing: a reload stamps `Failed` only *after* it reaped the PID 1,
+        // so a `Live` status alone can still describe a dead world, and a live pin alone cannot
+        // vouch for a record being sealed mid-freeze. Leader-only: a service left behind by dead
+        // init is not a live world.
+        Ok(record.status == WorldStatus::Live
+            && record
+                .init_identity
+                .as_ref()
+                .is_some_and(ProcessIdentity::is_live_leader))
     }
 
     fn exec_in_service(
@@ -2210,6 +2535,7 @@ mod tests {
         ServiceSpec, StateSubdirMount, WorldRootfs,
     };
     use std::collections::BTreeMap;
+    use std::os::unix::process::CommandExt;
     use std::sync::Mutex;
     use std::time::{Duration, Instant, SystemTime};
 
@@ -2534,6 +2860,7 @@ mod tests {
             launcher,
             base_env: ExecEnv::world_scoped(engine.state_dir.join("homes/test")),
             rootfs: rootfs(engine),
+            subvolume: WorldSubvolume::Cloned(SnapshotId("base".to_owned())),
             mounts: Vec::new(),
             status: WorldStatus::Live,
             destroying: false,
@@ -2575,6 +2902,9 @@ mod tests {
     }
 
     /// A supervisor that exits as soon as its in-world child is signalled, plus that child's pid.
+    ///
+    /// The supervisor is spawned as its own process-group leader exactly like a production world
+    /// process (`spawn_world_process`), so the engine's one stop path signals a real group.
     fn running_world_process(
         record: &mut WorldRecord,
         id: &str,
@@ -2582,8 +2912,13 @@ mod tests {
     ) -> (Arc<AtomicU8>, u32) {
         let supervisor = Command::new("sh")
             .args(["-c", "sleep 30 & wait"])
+            .process_group(0)
             .spawn()
             .expect("service supervisor");
+        let world_pid_ns = std::fs::read_link(format!("/proc/{}/ns/pid", supervisor.id()))
+            .expect("supervisor pid namespace");
+        let process_group = ProcessIdentity::capture_group_leader(supervisor.id(), world_pid_ns)
+            .expect("the supervisor leads its own process group");
         let inner_pid =
             wait_for_inner_pid(supervisor.id(), Duration::from_secs(5)).expect("service inner pid");
         let inner = ProcessIdentity::capture(inner_pid);
@@ -2592,6 +2927,7 @@ mod tests {
         let process = Arc::new(Mutex::new(ServiceProcess {
             supervisor: Some(supervisor),
             inner,
+            process_group: Some(process_group),
             container: None,
         }));
         record.services.insert(
@@ -3726,6 +4062,7 @@ mod tests {
             pid: bystander_pid,
             pid_ns: PathBuf::from("pid:[1]"),
             start_ticks: 0,
+            group: None,
         });
         let _recycled_handle = insert(&engine, recycled);
 

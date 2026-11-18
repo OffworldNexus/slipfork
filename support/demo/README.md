@@ -22,6 +22,10 @@ $ slipfork list            # world ids, states, and one origin each
 If nothing answers on the daemon's control socket yet, `slipfork up` is the verb that starts it
 and boots the world.
 
+The component runs `app/server.py` **from this checkout** (the worktree is bind-mounted at its
+same path inside the world), and its SQL is the sibling `db/`. Edit either and run
+`slipfork restart`: no Docker rebuild is involved.
+
 ## Forks
 
 ```console

@@ -11,7 +11,8 @@
 //! free while a test binary runs).
 
 use std::fs;
-use std::io::Write;
+use std::io::{Read, Write};
+use std::net::TcpStream;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -90,6 +91,34 @@ modes:
         GREETING: v1
 "#;
 
+/// A world whose single component prints a file copied into the image stage (`/marker.txt`), so a
+/// rootfs rebuild is proven by the content the world actually booted, not only by its lineage.
+const REBUILD_SNOW: &str = r#"
+images:
+  - id: app
+    context: .
+    dockerfile: Dockerfile
+
+components:
+  - id: api
+    image: app
+    envs: [app]
+    run_command: "cat /marker.txt && exec sleep 300"
+
+ingresses:
+  - match:
+      prefix: "/"
+    target:
+      component: api
+      port: 8000
+
+modes:
+  local:
+    envs:
+      app:
+        BASE_URL: '${{ resources::app.url }}'
+"#;
+
 /// A world whose single component is disabled in `local`: the pipeline starts nothing, so a
 /// restart has no service to bring back (`changed: false`, `restarted: []`).
 const IDLE_SNOW: &str = r#"
@@ -128,6 +157,35 @@ fn repo_with_snow(scratch: &Path) -> PathBuf {
 fn url_count(text: &str) -> usize {
     text.matches("http://").count()
 }
+
+/// A component in the exact production shape: `sh -eu -c "python3 server.py"`, where the served
+/// process is a distinct child of the wrapper and keeps the readiness port bound.
+const SERVING_SNOW: &str = r#"
+images:
+  - id: app
+    context: .
+    dockerfile: Dockerfile
+
+components:
+  - id: api
+    image: app
+    envs: [app]
+    internal_ports: [8000]
+    run_command: "python3 server.py"
+
+ingresses:
+  - match:
+      prefix: "/"
+    target:
+      component: api
+      port: 8000
+
+modes:
+  local:
+    envs:
+      app:
+        BASE_URL: '${{ resources::app.url }}'
+"#;
 
 #[test]
 fn up_down_lifecycle_is_idempotent_and_one_url_per_world() {
@@ -781,6 +839,343 @@ fn restart_reports_no_change_when_the_pipeline_starts_nothing() {
         Some(0),
         "an empty id list, never a guess: {document}"
     );
+}
+
+#[test]
+fn restart_stops_a_serving_sh_wrapped_component_and_serves_the_edited_body() {
+    let tmp = disk_tempdir();
+    let scratch = tmp.path();
+    let repo = repo_with_manifest(scratch, "acme-serving", SERVING_SNOW);
+    let daemon = Daemon::start(scratch);
+    fs::write(repo.join("body.txt"), "v1\n").expect("write body");
+    fs::write(
+        repo.join("server.py"),
+        r#"import http.server
+import pathlib
+
+BODY = pathlib.Path("body.txt").read_text(encoding="utf-8").strip()
+print("serving " + BODY, flush=True)
+
+
+class Handler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        payload = BODY.encode()
+        self.send_response(200)
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def log_message(self, fmt, *args):
+        pass
+
+
+http.server.ThreadingHTTPServer(("0.0.0.0", 8000), Handler).serve_forever()
+"#,
+    )
+    .expect("write server.py");
+
+    assert_success(&daemon.cli(&repo, &["up"]), "up the serving world");
+    assert_eq!(
+        forwarded_body(&daemon, &repo, "components.api"),
+        "v1",
+        "the boot serves the checked-out body"
+    );
+
+    // Every host pid in the running component's own process group (the `nsenter` launcher, the
+    // `sh -eu -c` wrapper and the service it forked) must be gone after the restart, or the old
+    // body survives on the port.
+    let (pgid, old_pids) = component_group(&daemon, &repo, "api");
+    assert!(
+        !old_pids.is_empty(),
+        "the running component should own at least one live pid in group {pgid}"
+    );
+
+    fs::write(repo.join("body.txt"), "v2\n").expect("edit the served body");
+    let restart = daemon.cli(&repo, &["restart"]);
+    assert_success(&restart, "restart after an edit");
+    assert!(
+        stdout(&restart).contains("[restarted] api"),
+        "restart names the component it brought back: {}",
+        stdout(&restart)
+    );
+    assert_eq!(
+        forwarded_body(&daemon, &repo, "components.api"),
+        "v2",
+        "restart must serve the edited body, not the old one"
+    );
+
+    let reaped = poll_until(SHUTDOWN_DEADLINE, POLL_INTERVAL, || {
+        if let Some(pid) = old_pids
+            .iter()
+            .find(|pid| Path::new(&format!("/proc/{pid}")).exists())
+        {
+            Err(format!(
+                "old component pid {pid} is still alive in group {pgid}"
+            ))
+        } else {
+            Ok(())
+        }
+    });
+    assert!(
+        reaped.is_ok(),
+        "restart must stop the whole component (wrapper and its child): {reaped:?}"
+    );
+
+    // The new boot bound the port cleanly: no `EADDRINUSE`, and its own startup line is retained.
+    let stderr_logs = daemon.cli(&repo, &["logs", "--stderr", "api"]);
+    assert_success(&stderr_logs, "logs --stderr api");
+    let stderr_text = stdout(&stderr_logs);
+    assert!(
+        !stderr_text.contains("Address already in use")
+            && !stderr_text.contains("EADDRINUSE")
+            && !stderr_text.contains("Errno 98"),
+        "the new component must bind its port: {stderr_text}"
+    );
+    let stdout_logs = daemon.cli(&repo, &["logs", "api"]);
+    assert_success(&stdout_logs, "logs api");
+    assert!(
+        stdout(&stdout_logs).contains("serving v2"),
+        "the reloaded component is the new process: {}",
+        stdout(&stdout_logs)
+    );
+}
+
+#[test]
+fn restart_rebuilds_an_edited_rootfs_input_and_keeps_state_for_unchanged_inputs() {
+    let tmp = disk_tempdir();
+    let scratch = tmp.path();
+    let repo = repo_with_manifest(scratch, "acme-rebuild", REBUILD_SNOW);
+    let daemon = Daemon::start(scratch);
+
+    // The app stage copies this marker and the component prints it, so a retained log proves which
+    // rootfs content the world actually booted — not only what the lineage claims.
+    fs::write(repo.join("marker.txt"), b"rootfs-v1\n").expect("write the rootfs marker");
+    let dockerfile = fs::read_to_string(repo.join("Dockerfile")).expect("read Dockerfile");
+    fs::write(
+        repo.join("Dockerfile"),
+        format!("{dockerfile}COPY marker.txt /marker.txt\n"),
+    )
+    .expect("copy the marker into the app stage");
+
+    assert_success(&daemon.cli(&repo, &["up"]), "up before the rebuild");
+    let first_ready = poll_until(SHUTDOWN_DEADLINE, POLL_INTERVAL, || {
+        let logs = service_output(&daemon, &repo);
+        if logs.contains("rootfs-v1") {
+            Ok(())
+        } else {
+            Err(format!("component logs so far: {logs:?}"))
+        }
+    });
+    assert!(
+        first_ready.is_ok(),
+        "the first boot serves the copied marker: {first_ready:?}"
+    );
+    let first_body = service_output(&daemon, &repo);
+    assert!(
+        !first_body.contains("rootfs-v2"),
+        "the first boot must not serve content that does not exist yet: {first_body:?}"
+    );
+    let first = ps_json(&daemon, &repo);
+    let first_digest = first["lineage"]["rootfs"]["digest"]
+        .as_str()
+        .expect("the rootfs digest is recorded")
+        .to_owned();
+    assert_eq!(
+        first["lineage"]["rootfs"]["cache"], "miss",
+        "the first boot built the rootfs"
+    );
+
+    // A marker in the world's own subvolume: only a base-snapshot change may replace it.
+    let subvolumes = canonical_subvolumes(&daemon.state_dir);
+    assert_eq!(subvolumes.len(), 1, "one canonical world subvolume");
+    let marker = subvolumes[0].join("state/keep-me.txt");
+    fs::write(&marker, b"kept\n").expect("write a state marker");
+
+    // Unchanged inputs: the same subvolume (and its state) is kept, and the lineage is a hit.
+    assert_success(&daemon.cli(&repo, &["restart"]), "restart unchanged");
+    let second = ps_json(&daemon, &repo);
+    assert_eq!(
+        second["lineage"]["rootfs"]["cache"], "hit",
+        "an unchanged tree must report the cache hit: {second}"
+    );
+    assert_eq!(
+        second["lineage"]["rootfs"]["digest"], first_digest,
+        "an unchanged tree keeps the same digest"
+    );
+    assert_eq!(
+        canonical_subvolumes(&daemon.state_dir),
+        subvolumes,
+        "an unchanged tree keeps the same world subvolume"
+    );
+    assert!(
+        marker.exists(),
+        "world state must survive an unchanged restart"
+    );
+
+    // An edited copied stage input flips the content-addressed digest: the rootfs is rebuilt (miss)
+    // and the component serves the new content, proving the reload booted the rebuild.
+    fs::write(repo.join("marker.txt"), b"rootfs-v2\n").expect("edit the copied marker");
+    let rebuilt = daemon.cli(&repo, &["restart"]);
+    assert_success(&rebuilt, "restart after editing the Dockerfile input");
+    let block = stdout(&rebuilt);
+    assert!(
+        block.contains("lineage   rootfs ") && block.contains(" rebuilt "),
+        "an edited input must read `rebuilt`, not `cached`: {block}"
+    );
+    let second_ready = poll_until(SHUTDOWN_DEADLINE, POLL_INTERVAL, || {
+        let logs = service_output(&daemon, &repo);
+        if logs.contains("rootfs-v2") {
+            Ok(())
+        } else {
+            Err(format!("component logs so far: {logs:?}"))
+        }
+    });
+    assert!(
+        second_ready.is_ok(),
+        "the rebuilt world serves the edited marker: {second_ready:?}"
+    );
+    let second_body = service_output(&daemon, &repo);
+    assert!(
+        !second_body.contains("rootfs-v1"),
+        "the restart must not serve the old rootfs content: {second_body:?}"
+    );
+    let third = ps_json(&daemon, &repo);
+    assert_eq!(
+        third["lineage"]["rootfs"]["cache"], "miss",
+        "the edited input must rebuild the rootfs: {third}"
+    );
+    assert_ne!(
+        third["lineage"]["rootfs"]["digest"], first_digest,
+        "the edited input must change the rootfs digest"
+    );
+    assert_eq!(
+        canonical_subvolumes(&daemon.state_dir),
+        subvolumes,
+        "the base snapshot did not change, so the world subvolume (and state) is kept"
+    );
+    assert!(
+        marker.exists(),
+        "a rootfs-only edit keeps the backing-service state"
+    );
+
+    // And a further unchanged restart is a hit again: no unconditional rebuild.
+    assert_success(&daemon.cli(&repo, &["restart"]), "restart unchanged again");
+    assert_eq!(
+        ps_json(&daemon, &repo)["lineage"]["rootfs"]["cache"],
+        "hit",
+        "an unchanged tree must not rebuild the rootfs again"
+    );
+}
+
+/// The `ps --json` document for the repo's world.
+fn ps_json(daemon: &Daemon, cwd: &Path) -> Value {
+    let output = daemon.cli(cwd, &["--json", "ps"]);
+    assert_success(&output, "ps --json");
+    serde_json::from_str(&stdout(&output)).expect("ps json")
+}
+
+/// The retained stdout of the repo's `api` component.
+fn service_output(daemon: &Daemon, cwd: &Path) -> String {
+    let output = daemon.cli(cwd, &["logs", "api"]);
+    assert_success(&output, "logs api");
+    stdout(&output)
+}
+
+/// The canonical world's one subvolume directory under the daemon's state root.
+fn canonical_subvolumes(state_dir: &Path) -> Vec<PathBuf> {
+    let mut subvolumes: Vec<PathBuf> = fs::read_dir(state_dir.join("worlds"))
+        .expect("worlds directory")
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with("canonical-"))
+        })
+        .collect();
+    subvolumes.sort();
+    subvolumes
+}
+
+/// `/proc/<pid>/stat` field 5 (`pgrp`) of a host process.
+fn host_pgrp(pid: u32) -> Option<u32> {
+    let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    stat.get(stat.rfind(')')? + 1..)?
+        .split_whitespace()
+        .nth(2)?
+        .parse()
+        .ok()
+}
+
+/// Every host pid whose process group is `pgid`.
+fn group_members(pgid: u32) -> Vec<u32> {
+    fs::read_dir("/proc")
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|entry| entry.file_name().to_str()?.parse::<u32>().ok())
+        .filter(|pid| host_pgrp(*pid) == Some(pgid))
+        .collect()
+}
+
+/// The live process group of one running component (its `nsenter` launcher and descendants).
+fn component_group(daemon: &Daemon, cwd: &Path, id: &str) -> (u32, Vec<u32>) {
+    let document = ps_json(daemon, cwd);
+    let pid = document["services"]
+        .as_array()
+        .expect("services array")
+        .iter()
+        .find(|service| service["id"] == id)
+        .and_then(|service| service["pid"].as_u64())
+        .unwrap_or_else(|| panic!("component '{id}' has no live pid: {document}"));
+    let pid = u32::try_from(pid).expect("a pid");
+    let pgid = host_pgrp(pid).expect("the component's process group");
+    (pgid, group_members(pgid))
+}
+
+/// One HTTP/1.0 request through a `slipfork forward` listener, returning the body.
+fn http_get(addr: &str) -> String {
+    let mut stream = TcpStream::connect(addr).expect("connect to the forward listener");
+    stream
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .expect("bound the response read");
+    stream
+        .set_write_timeout(Some(Duration::from_secs(10)))
+        .expect("bound the request write");
+    write!(
+        stream,
+        "GET / HTTP/1.0\r\nHost: slipfork\r\nConnection: close\r\n\r\n"
+    )
+    .expect("write the request");
+    let mut response = String::new();
+    stream
+        .read_to_string(&mut response)
+        .unwrap_or_else(|err| panic!("read the response (got {response:?}): {err}"));
+    response
+        .split("\r\n\r\n")
+        .nth(1)
+        .expect("a response body")
+        .trim()
+        .to_owned()
+}
+
+/// Serve one `forward` target, read its body, and release the listener.
+fn forwarded_body(daemon: &Daemon, cwd: &Path, target: &str) -> String {
+    let mut forward = daemon.cli_spawn(cwd, &["--json", "forward", target]);
+    let line = wait_for_line(&mut forward, |line| line.contains("host_addr"));
+    let summary: Value = serde_json::from_str(&line).expect("forward json");
+    let addr = summary["targets"]
+        .as_array()
+        .expect("targets")
+        .iter()
+        .find(|entry| entry["id"] == target)
+        .and_then(|entry| entry["host_addr"].as_str())
+        .unwrap_or_else(|| panic!("forward target {target} has no host_addr: {summary}"))
+        .to_owned();
+    let body = http_get(&addr);
+    let _ = forward.kill();
+    let _ = forward.wait();
+    body
 }
 
 #[test]

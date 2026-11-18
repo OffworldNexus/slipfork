@@ -22,7 +22,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import psycopg
 
 APP_DIR = pathlib.Path(__file__).resolve().parent
-DB_DIR = APP_DIR / "db"
+# `app/server.py` runs from the bind-mounted checkout, so its SQL is the sibling `db/` directory.
+DB_DIR = APP_DIR.parent / "db"
 PORT = 8000
 WORKTREE_MARKER = f"{os.sep}.worktrees{os.sep}"
 

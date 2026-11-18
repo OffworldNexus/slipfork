@@ -518,6 +518,13 @@ pub enum EngineError {
     OverlappingMounts { outer: String, inner: String },
     #[error("world {world} cannot be frozen: it is already sealed or destroyed")]
     WorldNotFreezable { world: String },
+    #[error("world {world} cannot be reloaded: it is sealed or being sealed")]
+    WorldNotReloadable { world: String },
+    #[error(
+        "world {world} has no live world init: its last boot failed; reloading it again re-runs \
+         the boot, and destroying it releases its storage"
+    )]
+    WorldNotLive { world: String },
     #[error("world {world} is not owned by this engine (already destroyed or foreign)")]
     WorldGone { world: String },
     #[error("world init for {world} failed: {reason}")]
@@ -553,6 +560,10 @@ pub(crate) enum WorldStatus {
     Live,
     Freezing,
     Frozen,
+    /// The last reload tore the old world down but could not boot its replacement: no PID 1
+    /// survives, so live operations fail closed while a retried [`WorldEngine::reload_world`] or
+    /// [`WorldEngine::destroy_world`] still owns the record.
+    Failed,
     Destroyed,
 }
 
@@ -617,6 +628,25 @@ pub trait WorldEngine: Send + Sync {
     /// Instantaneously clone `spec.snapshot` into a fresh isolated world.
     fn clone_world(&self, spec: &WorldSpec) -> Result<WorldHandle, EngineError>;
 
+    /// Re-run an existing world over `spec` (`slipfork restart`, and `up`'s rescue path).
+    ///
+    /// The world keeps its handle and therefore its identity in the daemon's index and routing
+    /// table. The engine stops every world-owned service, reaps the world PID 1, reconciles the
+    /// world's one subvolume with `spec.snapshot` — the same subvolume (and therefore every
+    /// backing-service state directory) when the snapshot is unchanged, a fresh clone of the new
+    /// base otherwise — re-materializes the read-only rootfs reference, boots a new PID 1, and
+    /// records `spec`'s own rootfs/base/seed facts as this world's lineage. Services are not
+    /// restarted here: the caller's pipeline declares them again after the reload.
+    ///
+    /// Adapters that cannot re-root a live world report [`EngineError::Unsupported`] rather than
+    /// pretending the new spec was applied.
+    fn reload_world(&self, _world: &WorldHandle, _spec: &WorldSpec) -> Result<(), EngineError> {
+        Err(EngineError::Unsupported {
+            engine: self.name(),
+            capability: "reload_world",
+        })
+    }
+
     /// Start `spec` as a supervised world-owned service.
     ///
     /// The engine captures its stdout/stderr into a size-capped retained [`ServiceLogs`] readable
@@ -676,6 +706,19 @@ pub trait WorldEngine: Send + Sync {
     /// A destroyed, teardown-in-progress, or foreign `world` fails closed with
     /// [`EngineError::WorldGone`] — never an all-`None` lineage.
     fn world_lineage(&self, world: &WorldHandle) -> Result<WorldLineage, EngineError>;
+
+    /// Whether this engine still holds a **live** world behind `world`.
+    ///
+    /// `true` only when the engine's own record is `Live` **and** the world PID 1 it booted is still
+    /// that process (verified against `/proc`, never by a bare pid number). A record whose status is
+    /// still `Live` but whose PID 1 already exited — the window between a reload's teardown and its
+    /// `Failed` stamp — is `false`, as is a `Freezing`/`Frozen`/`Failed` world. Callers use this to
+    /// decide whether a failure tore the world down; they never interpret an error variant or
+    /// message to mean "still running".
+    ///
+    /// A destroyed, teardown-in-progress, or foreign `world` fails closed with
+    /// [`EngineError::WorldGone`].
+    fn world_is_live(&self, world: &WorldHandle) -> Result<bool, EngineError>;
 
     /// Replace a supervised service's overlay environment and restart it with its retained
     /// `ServiceSpec` (`M3.29` live `env_updated`).

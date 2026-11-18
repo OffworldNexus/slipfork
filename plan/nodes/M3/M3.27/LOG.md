@@ -51,3 +51,19 @@ attempt 2 report: done. All 4 MAJORs + 7 MINORs applied; make check exit 0.
 ## 2026-11-18T11:57 [lead]
 
 status active -> review
+
+## 2026-11-18T12:02 [lead]
+
+status review -> done
+
+## 2026-11-18T12:10 [lead]
+
+Quad gate attempt 2: review-legality PASS, review-ioc PASS, review-cruft PASS (MINORs only), reviewer FAIL — reopened. The reviewer reproduced the LOG:9 flake class on an UNMODIFIED production path: 'cannot destroy the base seed world: world init pid N survived SIGTERM and SIGKILL for 15.026s' from crates/slipfork-engine/src/btrfs_engine.rs (WORLD_STOP_TERM_GRACE 5s + WORLD_STOP_KILL_GRACE 10s, no /proc state, no D-state backoff, no injectable budget). 3 of 4 suite runs red at load 6-17/8 CPUs. The harness ReapBudget covers only the test-side reaper, so attempt 3 must give reap_world_init the same state-bearing, D-state-backoff treatment. Attempt 3 is queued after M3.28.24 because that node is simultaneously reworking the same stop/teardown region (setsid + group signalling + /proc state); paths must widen to crates/slipfork-engine/src/** + crates/slipfork/src/daemon.rs. RESULT.md:182-194 and LOG over-claim the flake class and must record these red runs verbatim.
+
+## 2026-11-18T12:10 [lead]
+
+status done -> ready
+
+## 2026-11-18T12:10 [lead]
+
+edited fields

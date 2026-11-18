@@ -28,3 +28,4 @@ Every call to an expensive-tier agent (`strategist`, `architect`, `expert`) is r
 | 2026-11-17T12:45 | M3.19 | architect | lead | H-006: AppArmor attachment set for world launchers; ADR-0010 §7 mechanism is false (children execve out of the profile), so the profile must name every executable that calls unshare(CLONE_NEWUSER). Architect to adjudicate + record the corrected §7 and the exact attachment set before any code change. |
 | 2026-11-17T16:34 | M3.28.1 | architect | lead | DX of record for the 0.1.0 UX pass (epic-sactioned single architect escalation) |
 | 2026-11-18T00:09 | M3.29.1 | architect | lead | OSPP v1 spec ripple across ARCHITECTURE/ADRs/DX (epic-sanctioned) |
+| 2026-11-18T14:06 | M3.28.24 | expert | lead | repeated pre-flight/rollback correctness findings in reload_world; attempt cap reached |
