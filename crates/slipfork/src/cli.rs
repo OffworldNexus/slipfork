@@ -239,9 +239,6 @@ pub enum Commands {
         /// Optional endpoint URL; the daemon refuses one that differs from its injected endpoint.
         endpoint: Option<String>,
     },
-
-    /// Report verified integration tiers and their required evidence (`ADR-0007`).
-    Support,
 }
 
 /// `slipfork hook` actions.

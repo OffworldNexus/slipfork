@@ -28,8 +28,8 @@ use std::time::Duration;
 use crate::EdgeError;
 use crate::activation::ListenerSet;
 use crate::registry::WorldRegistry;
-use crate::relay::{Duplex, pipe};
 use crate::unix_socket::{SocketRole, bind_private};
+use slipfork_engine::relay::{Duplex, pipe};
 
 /// Largest HTTP request head (request line + headers) the ingress accepts.
 pub const HEADER_CAP: usize = 16 * 1024;

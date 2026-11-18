@@ -31,26 +31,24 @@ Every world and sealed snapshot is one unprivileged Btrfs subvolume, so any othe
 - **`Dockerfile`-derived `L0` world rootfs** — content-addressed under `<state_dir>/cache/rootfs/<sha256>/app`, mounted read-only, executed as `$UID:$GID`, with `[world]` selecting the image and stage.
 - **One Btrfs subvolume per world** — the read-only rootfs tree and `postgres`/`redis`/S3 state live inside it, so sealing a snapshot and cloning a world are single metadata operations with zero file copies.
 - **Daemonless `crun` backing services** — `postgres:<v>`, `redis:<v>`, and SeaweedFS in OCI containers sharing the world's `127.0.0.1`, and `slipfork db`/`redis` run their clients inside the containers.
-- **Daemon-served world lifecycle** — `up`, `down`, `fork`, `drop`, `list`, `prune`, `secret`, plus local `daemon unit` rendering and `exec`, `shell`, `logs`, `hook run`, `forward`, `auth`, `support`, `git-remote-slipfork`; `fork` creates a Git worktree or, when the checkout carries `.jj`, a Jujutsu workspace with zero Git fallback.
+- **Daemon-served world lifecycle** — `up`, `down`, `fork`, `drop`, `list`, `prune`, `secret`, plus local `daemon unit` rendering and `exec`, `shell`, `logs`, `hook run`, `forward`, `auth`, `git-remote-slipfork`; `fork` creates a Git worktree or, when the checkout carries `.jj`, a Jujutsu workspace with zero Git fallback.
 - **`snow.yml` resolver** — mode-scoped components and write-once `!!` secrets in the project's local `0600` vault.
 - **OSPP v1 secrets** — pair once with `slipfork auth` (server-supplied `<url>#handle=…` page), then let the provider resolve CI values: they arrive HPKE-encrypted, are decrypted in `slipforkd` memory, and are injected into children only. The local vault stays local-only; remote secrets are never written to disk by Slipfork.
 - **OpenCode V2 plugin** — worktrees become CoW worlds; shell commands route through `slipfork exec`.
 - **Measured cost model** — `19.5 ms` read-only snapshot, `11–24 ms` writable clone, `39 ms` to a warm-SQL world, `6.3 MiB` RSS per world (owner-recorded; [`docs/research/btrfs-crun-benchmarks.md`](docs/research/btrfs-crun-benchmarks.md)).
-
-All supported integrations are graded against their evidence in the [support matrix](docs/support-matrix.md).
 
 ## Documentation
 
 - [Getting started](docs/getting-started.md)
 - [`snow.yml` modes & secrets](docs/snow-modes.md)
 - [OpenCode V2 plugin](docs/agents-and-opencode.md)
-- [CLI reference](docs/reference/cli.md) · [Secrets & OSPP v1](docs/reference/ospp.md) · [Manifest reference](docs/reference/manifest.md) · [Support matrix](docs/support-matrix.md)
+- [CLI reference](docs/reference/cli.md) · [Secrets & OSPP v1](docs/reference/ospp.md) · [Manifest reference](docs/reference/manifest.md)
 - Internal design: [`ARCHITECTURE.md`](ARCHITECTURE.md), [`docs/decisions/`](docs/decisions/), [`docs/design/target-dx.md`](docs/design/target-dx.md) (nothing there is a shipped promise)
 
 ## Validation
 
 ```console
-$ make check   # plan, hygiene, Python, TS, Rust fmt/clippy/doc/test, support registry, and Zensical --strict
+$ make check   # plan, hygiene, Python, TS, Rust fmt/clippy/doc, and Zensical --strict
 ```
 
 ## Where this is going (not yet shipped)

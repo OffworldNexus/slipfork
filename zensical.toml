@@ -17,7 +17,6 @@ nav = [
   { "Getting started" = "getting-started.md" },
   { "snow.yml modes & secrets" = "snow-modes.md" },
   { "OpenCode V2 plugin" = "agents-and-opencode.md" },
-  { "Integrations & support" = "support-matrix.md" },
   { "Reference" = [
     { "CLI (0.1.0)" = "reference/cli.md" },
     { "Secrets & OSPP v1" = "reference/ospp.md" },

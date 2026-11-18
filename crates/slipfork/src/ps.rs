@@ -6,7 +6,7 @@
 //! `None` pid/port/uptime renders `-` — never an invented `0`. `ps` is the per-world process view;
 //! [`crate::status`] is the fleet view.
 
-use slipfork_edge::{ServiceKind, WorldProcessReport, WorldState};
+use slipfork_edge::{ServiceKind, WorldProcessReport};
 use slipfork_engine::ServiceState;
 
 use crate::status::render_lineage;
@@ -26,7 +26,7 @@ pub fn render(report: &WorldProcessReport) -> String {
     out.push_str(&format!(
         "{:<LABEL_WIDTH$}{}\n",
         "state",
-        world_state_label(report.state)
+        report.state.label()
     ));
     out.push_str(&format!(
         "{:<LABEL_WIDTH$}{}\n",
@@ -107,15 +107,6 @@ fn table(report: &WorldProcessReport) -> String {
     out
 }
 
-/// The world's lifecycle label (`running` / `failed` / `stopped`).
-fn world_state_label(state: WorldState) -> &'static str {
-    match state {
-        WorldState::Running => "running",
-        WorldState::Failed => "failed",
-        WorldState::Stopped => "stopped",
-    }
-}
-
 /// The service's lifecycle label; `exited` = ended on its own, `stopped` = `down`/`restart`.
 fn service_state_label(state: ServiceState) -> &'static str {
     match state {
@@ -146,7 +137,7 @@ fn dash_len<T: std::fmt::Display>(value: Option<T>) -> usize {
 mod tests {
     use slipfork_edge::{
         BaseLineage, CacheOutcome, RootfsLineage, SeedLineage, ServiceImageLineage, WorldLineage,
-        WorldServiceSummary,
+        WorldServiceSummary, WorldState,
     };
     use slipfork_engine::WorldServiceInfo;
 

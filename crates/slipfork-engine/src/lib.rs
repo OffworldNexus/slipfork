@@ -20,6 +20,7 @@ pub mod env;
 pub mod lineage;
 pub mod linux_cow;
 pub mod oci;
+pub mod relay;
 pub mod rootfs;
 pub mod service;
 pub mod world_init;

@@ -1,9 +1,12 @@
-//! `slipfork-world`: the single canonical home for world identity and `.localhost` routing.
+//! `slipfork-world`: the single canonical home for world identity, `.localhost` routing,
+//! repo-input Merkle hashing, and shared diagnostic formatting.
 //!
 //! This crate is intentionally tiny and depends only on [`serde`], [`thiserror`], [`sha2`], and
 //! [`hex`]. It contains **zero** OS socket/file-descriptor types so every engine, edge proxy, or
 //! test coordinator can depend on the same [`WorldTarget`] / [`LocalHostRoute`] / [`WorldOrigin`]
-//! vocabulary without inverting layering:
+//! vocabulary without inverting layering. [`merkle`] (`file_digest`, `merkle_hex`, `glob_matches`)
+//! and [`format`] (`quoted`) are the only implementations of those shared helpers, so
+//! `slipfork-dag` and `slipfork-engine` delegate instead of forking them:
 //!
 //! ```text
 //! slipfork-world  <--  slipfork-snow (manifest validation & coordinates)
@@ -13,6 +16,9 @@
 //! ```
 
 #![forbid(unsafe_code)]
+
+pub mod format;
+pub mod merkle;
 
 use std::fmt;
 

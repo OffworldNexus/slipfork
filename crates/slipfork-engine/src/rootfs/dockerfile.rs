@@ -7,7 +7,9 @@
 
 #![forbid(unsafe_code)]
 
-use crate::rootfs::{BaseImageError, quoted};
+use slipfork_world::format::quoted;
+
+use crate::rootfs::BaseImageError;
 
 /// One logical `Dockerfile` instruction of the target stage.
 #[derive(Debug, Clone, PartialEq, Eq)]

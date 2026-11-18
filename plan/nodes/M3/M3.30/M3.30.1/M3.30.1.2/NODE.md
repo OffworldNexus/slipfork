@@ -13,17 +13,20 @@ paths:
   - "support/**"
   - "tools/**"
   - "docs/support-matrix.md"
+  - ARCHITECTURE.md
   - zensical.toml
   - "crates/slipfork-dag/**"
+  - "crates/slipfork-world/**"
   - "crates/slipfork-engine/**"
   - "crates/slipfork-edge/**"
   - "crates/slipfork-ospp/**"
+  - "crates/slipfork-testkit/**"
   - "crates/slipfork/**"
-attempts: 0
+attempts: 2
 max_attempts: 3
 escalation: none
 created: "2026-11-18T22:20"
-updated: "2026-11-18T22:20"
+updated: "2026-11-18T22:40"
 ---
 
 # Goal

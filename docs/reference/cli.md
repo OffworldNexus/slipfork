@@ -70,7 +70,6 @@ fix: sudo mount -o user_subvol_rm_allowed,noatime /dev/<device> <state_dir>
 | `redis` | Open `redis-cli` inside the world's running `redis:<v>` container (TTY) | `slipfork redis cache` |
 | `forward` | Bind daemon-owned `127.0.0.1:0` listeners bridged into a world, held until Ctrl-C | `slipfork forward pg_databases.appdb` |
 | `auth [ENDPOINT]` | Pair this machine with the daemon's injected OSPP endpoint; open and print the **server-supplied** `<url>#handle=…` page | `slipfork auth` |
-| `support` | Report registry tiers and required evidence (`ADR-0007`) | `slipfork support` |
 
 ## `slipfork secret` (local vault)
 

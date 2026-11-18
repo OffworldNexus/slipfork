@@ -24,16 +24,14 @@ use hpke::kdf::HkdfSha256;
 use hpke::kem::DhP256HkdfSha256;
 use hpke::rand_core::{CryptoRng, TryCryptoRng, TryRng};
 use hpke::{OpModeS, Serializable, setup_sender_with_rng};
-use serde_json::json;
-use sha2::{Digest, Sha256};
 use slipfork_ospp::wire::{
     AuthResponse, Challenge, ClientFrame, Encryption, ServerFrame, WireValue, auth_transcript,
     pairing_transcript,
 };
 use slipfork_ospp::{
     AUTH_METHOD_P256, ENCRYPTION_METHOD_HPKE_P256, OSPP_SUBPROTOCOL, OsppClaims, OsppEndpoint,
-    OsppError, PROTOCOL_VERSION, codes, dump_aad, parse_recipient_public_key, secret_aad,
-    verify_device_signature,
+    OsppError, PROTOCOL_VERSION, altcha_challenge, altcha_challenge_hash, codes, dump_aad,
+    parse_recipient_public_key, secret_aad, verify_altcha, verify_device_signature,
 };
 use slipfork_snow::faceless::{GeneratorSpec, TailModifier, Token, parse_faceless};
 use slipfork_snow::{EntropySource, SnowFile};
@@ -720,17 +718,12 @@ fn pairing_session(
     let mut number_bytes = [0u8; 1];
     shared.entropy.fill_bytes(&mut number_bytes)?;
     let number = u64::from(number_bytes[0] % 64);
-    let challenge = hex::encode(Sha256::digest(format!("{salt}{number}").as_bytes()));
+    let challenge = altcha_challenge_hash(&salt, number);
     send_frame(
         socket,
         &ServerFrame::PairChallenge {
             method: AUTH_METHOD_P256.to_owned(),
-            altcha: json!({
-                "algorithm": "SHA-256",
-                "challenge": challenge,
-                "salt": salt,
-                "maxnumber": 64,
-            }),
+            altcha: altcha_challenge(&salt, number, 64),
             challenge: Challenge {
                 nonce: hex::encode(server_nonce),
             },
@@ -806,25 +799,6 @@ fn pairing_session(
         }
         let _ = read_client(socket)?;
     }
-}
-
-fn verify_altcha(solution: &str, salt: &str, challenge: &str) -> bool {
-    let Ok(bytes) = STANDARD.decode(solution) else {
-        return false;
-    };
-    let Ok(payload) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
-        return false;
-    };
-    if payload["algorithm"] != "SHA-256"
-        || payload["salt"] != salt
-        || payload["challenge"] != challenge
-    {
-        return false;
-    }
-    let Some(number) = payload["number"].as_u64() else {
-        return false;
-    };
-    hex::encode(Sha256::digest(format!("{salt}{number}").as_bytes())) == challenge
 }
 
 fn read_client(socket: &mut WebSocket<TcpStream>) -> Result<Option<ClientFrame>, OsppError> {

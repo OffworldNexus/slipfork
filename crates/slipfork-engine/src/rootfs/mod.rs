@@ -723,38 +723,6 @@ pub(crate) fn read_guest_file(rootfs: &Path, guest: &str) -> Option<Vec<u8>> {
     std::fs::read(path).ok()
 }
 
-/// Render `items` as `'api', 'worker'` for diagnostics.
-pub(crate) fn quoted(items: &[String]) -> String {
-    if items.is_empty() {
-        return "none".to_owned();
-    }
-    items
-        .iter()
-        .map(|item| format!("'{item}'"))
-        .collect::<Vec<_>>()
-        .join(", ")
-}
-
-/// Staging suffix so two builders never share a temporary directory.
-///
-/// Wall time comes from the injected [`crate::MonotonicClock`], never from a direct
-/// `SystemTime::now()`, so the clock port stays the one time source.
-pub(crate) fn unique_suffix(clock: &dyn crate::MonotonicClock) -> String {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    use std::time::UNIX_EPOCH;
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    let nanos = clock
-        .now_wall()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or_default();
-    format!(
-        "{}-{}-{nanos}",
-        std::process::id(),
-        COUNTER.fetch_add(1, Ordering::Relaxed)
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::{BuildEnvVar, RootfsDigest, RootfsDigestInputs};

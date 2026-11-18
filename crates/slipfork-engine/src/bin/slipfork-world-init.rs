@@ -35,7 +35,7 @@
 use std::env;
 use std::fs;
 use std::io::{Read, Write};
-use std::net::{Ipv4Addr, Shutdown, SocketAddr, TcpListener, TcpStream};
+use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 use std::os::fd::AsFd;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -403,43 +403,13 @@ fn answer_dial(mut stream: UnixStream) {
 /// Splice every `127.0.0.1:<port>` connection inside the world to `slipforkd`'s AF_UNIX ingress.
 fn serve_ingress(listener: TcpListener, host_ingress_sock: PathBuf) {
     for stream in listener.incoming() {
-        let Ok(stream) = stream else { continue };
+        let Ok(mut stream) = stream else { continue };
         let host_ingress_sock = host_ingress_sock.clone();
         thread::spawn(move || {
-            let Ok(host) = UnixStream::connect(&host_ingress_sock) else {
+            let Ok(mut host) = UnixStream::connect(&host_ingress_sock) else {
                 return;
             };
-            splice(stream, host);
+            let _ = slipfork_engine::relay::pipe(&mut stream, &mut host);
         });
-    }
-}
-
-/// Bidirectional copy with half-close propagation in both directions.
-fn splice(mut client: TcpStream, mut host: UnixStream) {
-    let (Ok(client_reader), Ok(host_writer)) = (client.try_clone(), host.try_clone()) else {
-        return;
-    };
-    let uplink = thread::spawn(move || {
-        let mut reader = client_reader;
-        let mut writer = host_writer;
-        forward(&mut reader, &mut writer);
-        let _ = writer.shutdown(Shutdown::Write);
-    });
-    forward(&mut host, &mut client);
-    let _ = client.shutdown(Shutdown::Write);
-    let _ = uplink.join();
-}
-
-fn forward<R: Read, W: Write>(reader: &mut R, writer: &mut W) {
-    let mut buffer = [0_u8; 16 * 1024];
-    loop {
-        match reader.read(&mut buffer) {
-            Ok(0) | Err(_) => return,
-            Ok(read) => {
-                if writer.write_all(&buffer[..read]).is_err() || writer.flush().is_err() {
-                    return;
-                }
-            }
-        }
     }
 }

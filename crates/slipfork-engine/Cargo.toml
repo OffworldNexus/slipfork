@@ -14,9 +14,9 @@ serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 slipfork-world = { path = "../slipfork-world" }
+tempfile.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
 base64.workspace = true
 slipfork-testkit = { path = "../slipfork-testkit" }
-tempfile.workspace = true

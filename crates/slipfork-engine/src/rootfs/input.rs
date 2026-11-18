@@ -9,7 +9,7 @@
 
 use std::path::Path;
 
-use sha2::{Digest, Sha256};
+use slipfork_world::merkle::{file_digest, glob_matches, merkle_hex};
 
 use crate::rootfs::{BaseImageError, InputHasher};
 
@@ -23,13 +23,9 @@ impl InputHasher for FsInputHasher {
         let mut entries: Vec<(String, Vec<u8>)> = Vec::new();
         walk(context, context, &ignore, &mut entries)?;
         entries.sort_by(|left, right| left.0.cmp(&right.0));
-        let mut hash = Sha256::new();
-        for (rel_path, content) in entries {
-            hash.update(rel_path.as_bytes());
-            hash.update(b"\0");
-            hash.update(Sha256::digest(content));
-        }
-        Ok(hex::encode(hash.finalize()))
+        Ok(merkle_hex(entries.iter().map(|(rel_path, content)| {
+            (rel_path.as_str(), file_digest(content))
+        })))
     }
 }
 
@@ -160,60 +156,6 @@ impl DockerIgnore {
     }
 }
 
-/// Segment-wise glob matcher supporting `**/`, `**`, `*`, and `?`.
-fn glob_matches(pattern: &str, path: &str) -> bool {
-    let pattern: Vec<&str> = pattern.split('/').filter(|s| !s.is_empty()).collect();
-    let path: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
-    match_segments(&pattern, &path)
-}
-
-fn match_segments(pattern: &[&str], path: &[&str]) -> bool {
-    match pattern.split_first() {
-        None => path.is_empty(),
-        Some((&"**", rest)) => (0..=path.len()).any(|skip| match_segments(rest, &path[skip..])),
-        Some((segment, rest)) => match path.split_first() {
-            Some((candidate, tail)) if match_segment(segment, candidate) => {
-                match_segments(rest, tail)
-            }
-            _ => false,
-        },
-    }
-}
-
-fn match_segment(pattern: &str, candidate: &str) -> bool {
-    let pattern: Vec<char> = pattern.chars().collect();
-    let candidate: Vec<char> = candidate.chars().collect();
-    let (mut p, mut c) = (0, 0);
-    let (mut star, mut resume) = (None, 0);
-    while c < candidate.len() {
-        match pattern.get(p) {
-            Some('*') => {
-                star = Some(p);
-                resume = c;
-                p += 1;
-            }
-            Some('?') => {
-                p += 1;
-                c += 1;
-            }
-            Some(expected) if *expected == candidate[c] => {
-                p += 1;
-                c += 1;
-            }
-            _ => match star {
-                Some(position) => {
-                    p = position + 1;
-                    resume += 1;
-                    c = resume;
-                }
-                None => return false,
-            },
-        }
-    }
-    pattern[p..].iter().all(|ch| *ch == '*')
-}
-
-/// Lowercase hex SHA-256 helper shared by the tests.
 #[cfg(test)]
 mod tests {
     use super::DockerIgnore;
@@ -243,13 +185,5 @@ mod tests {
         assert!(ignore.is_ignored("docs/build.log", false));
         assert!(!ignore.is_ignored("keep.log", false));
         assert!(!ignore.is_ignored("src/main.rs", false));
-    }
-
-    #[test]
-    fn glob_segments() {
-        assert!(super::glob_matches("**/*.rs", "src/deep/main.rs"));
-        assert!(super::glob_matches("src/**", "src/deep/main.rs"));
-        assert!(!super::glob_matches("src/*.rs", "src/deep/main.rs"));
-        assert!(super::glob_matches("Docker*.?", "Dockerfile.x"));
     }
 }

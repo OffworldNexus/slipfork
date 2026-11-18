@@ -4,8 +4,7 @@
 //! (`[fixtures.<id>]`) so frontend asset changes never invalidate seeded database snapshots
 //! and schema/seed changes never rebuild frontend bundles (`ADR-0003`). Also owns the typed
 //! `[test]` coverage schema (`ADR-0006` §5), mode-aware `[resources]` resolution (`ADR-0008` §3),
-//! the sole `[world]` `world.image` + `world.stage` selector (`ADR-0009`), and the embedded
-//! integration support registry (`support/integrations.toml`, `ADR-0007`).
+//! and the sole `[world]` `world.image` + `world.stage` selector (`ADR-0009`).
 //!
 //! The domain core is filesystem-free: concrete filesystem adapters live behind the `fs` feature.
 
@@ -16,10 +15,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use slipfork_world::ProjectSlug;
+use slipfork_world::merkle::{file_digest, glob_matches, merkle_hex};
 use thiserror::Error;
 
 mod resources;
-mod support;
 mod world;
 
 #[cfg(feature = "fs")]
@@ -29,10 +28,6 @@ pub use resources::{
     DumpPolicy, PgSeed, PlannedPgDatabase, PlannedS3Bucket, ResourceDiagnostic, ResourceKind,
     ResourceMode, ResourceOverride, ResourcePlan, ResourceReason, ResourceStrategy, ResourceTarget,
     ResourcesSpec, S3Resolution,
-};
-pub use support::{
-    Evidence, EvidenceField, IntegrationCategory, IntegrationEntry, IntegrationTier, RegistryError,
-    SupportRegistry,
 };
 pub use world::{WorldConfigError, WorldImageConfig};
 
@@ -475,70 +470,13 @@ pub struct MapInputHasher {
 
 impl InputHasher for MapInputHasher {
     fn hash_globs(&self, globs: &[String]) -> Result<String, DagError> {
-        let mut h = Sha256::new();
-        for (rel_path, content) in &self.files {
-            if globs.iter().any(|g| matches_glob(g, rel_path)) {
-                h.update(rel_path.as_bytes());
-                h.update(b"\0");
-                let file_hash = Sha256::digest(content);
-                h.update(file_hash);
-            }
-        }
-        Ok(hex::encode(h.finalize()))
+        let entries = self
+            .files
+            .iter()
+            .filter(|(rel_path, _)| globs.iter().any(|glob| glob_matches(glob, rel_path)))
+            .map(|(rel_path, content)| (rel_path.as_str(), file_digest(content)));
+        Ok(merkle_hex(entries))
     }
-}
-
-/// Simple, dependency-free repo glob matcher supporting `**/`, `**`, `*`, and `?`.
-pub fn matches_glob(pattern: &str, path: &str) -> bool {
-    let pat_segs: Vec<&str> = pattern
-        .trim_matches('/')
-        .split('/')
-        .filter(|s| !s.is_empty())
-        .collect();
-    let path_segs: Vec<&str> = path
-        .trim_matches('/')
-        .split('/')
-        .filter(|s| !s.is_empty())
-        .collect();
-    match_segments(&pat_segs, &path_segs)
-}
-
-fn match_segments(pat: &[&str], path: &[&str]) -> bool {
-    match (pat.first(), path.first()) {
-        (None, None) => true,
-        (Some(&"**"), _) => {
-            match_segments(&pat[1..], path) || (!path.is_empty() && match_segments(pat, &path[1..]))
-        }
-        (Some(p), Some(s)) if match_segment(p, s) => match_segments(&pat[1..], &path[1..]),
-        _ => false,
-    }
-}
-
-fn match_segment(pat: &str, text: &str) -> bool {
-    let p: Vec<char> = pat.chars().collect();
-    let t: Vec<char> = text.chars().collect();
-    let (mut pi, mut ti) = (0usize, 0usize);
-    let (mut star_pi, mut star_ti) = (None, 0usize);
-    while ti < t.len() {
-        if pi < p.len() && (p[pi] == '?' || p[pi] == t[ti]) {
-            pi += 1;
-            ti += 1;
-        } else if pi < p.len() && p[pi] == '*' {
-            star_pi = Some(pi);
-            pi += 1;
-            star_ti = ti;
-        } else if let Some(sp) = star_pi {
-            pi = sp + 1;
-            star_ti += 1;
-            ti = star_ti;
-        } else {
-            return false;
-        }
-    }
-    while pi < p.len() && p[pi] == '*' {
-        pi += 1;
-    }
-    pi == p.len()
 }
 
 /// In-memory [`DigestCache`] for tests.

@@ -34,10 +34,9 @@ use slipfork::daemon_unit_install::{
     ingress_unit_spec, probe_socket_holder, target_account,
 };
 use slipfork::doctor::{self, OsHostProbe, SystemdIngressProbe};
-use slipfork::layout::{Layout, ensure_private_dir};
+use slipfork::layout::{Layout, absolute_path, ensure_private_dir};
 use slipfork::project::repository_resolver;
 use slipfork::user::{AccountDatabaseIdentity, HostIdentity, KernelHostIdentity, UserIdentity};
-use slipfork_dag::{EvidenceField, SupportRegistry};
 use slipfork_edge::{
     BootEvent, DaemonControl, DaemonControlClient, DropForkRequest, ExecTargetRequest, ForkRequest,
     ForwardRequest, ForwardSummary, HookRunRequest, LogsRequest, SnowResolveRequest, UpRequest,
@@ -69,8 +68,8 @@ fn run(cli: Cli) -> Result<ExitCode, String> {
     // `HOME` is a fail-closed precondition: nothing below may create a directory, spawn a daemon,
     // or open a socket when the developer account has no home directory.
     let home = home_dir()?;
-    let xdg_cache = absolute_env("XDG_CACHE_HOME");
-    let xdg_data = absolute_env("XDG_DATA_HOME");
+    let xdg_cache = absolute_path(std::env::var_os("XDG_CACHE_HOME"));
+    let xdg_data = absolute_path(std::env::var_os("XDG_DATA_HOME"));
     let explicit_state_dir = cli.state_dir.clone();
     let layout = Layout::resolve(
         explicit_state_dir.clone(),
@@ -189,7 +188,6 @@ fn run(cli: Cli) -> Result<ExitCode, String> {
         Some(Commands::Redis { cluster_id, world }) => redis(json, &layout, cluster_id, world),
         Some(Commands::Forward { world, targets }) => forward(json, &layout, world, targets),
         Some(Commands::Auth { endpoint }) => auth_login(json, &layout, endpoint),
-        Some(Commands::Support) => support(json),
     }
 }
 
@@ -203,13 +201,6 @@ fn home_dir() -> Result<PathBuf, String> {
              under the developer account's home directory — set HOME and retry"
                 .to_owned()
         })
-}
-
-/// Read one XDG variable, refusing relative values (`XDG_*` must be absolute).
-fn absolute_env(name: &str) -> Option<PathBuf> {
-    std::env::var_os(name)
-        .map(PathBuf::from)
-        .filter(|path| path.is_absolute())
 }
 
 fn current_dir() -> Result<PathBuf, String> {
@@ -1350,72 +1341,6 @@ fn auth_login(json: bool, layout: &Layout, endpoint: Option<String>) -> Result<E
         );
     }
     Ok(ExitCode::SUCCESS)
-}
-
-fn support(json: bool) -> Result<ExitCode, String> {
-    let registry = SupportRegistry::embedded().map_err(|err| err.to_string())?;
-    if json {
-        let rows: Vec<serde_json::Value> = registry
-            .entries()
-            .iter()
-            .map(|entry| {
-                let required: Vec<&str> = entry
-                    .tier()
-                    .required_evidence()
-                    .iter()
-                    .map(|field| field.as_str())
-                    .collect();
-                json!({
-                    "id": entry.id(),
-                    "category": category_label(entry.category()),
-                    "tier": entry.tier().to_string(),
-                    "evidence": evidence_json(entry.evidence()),
-                    "required_evidence": required,
-                })
-            })
-            .collect();
-        println!("{}", render_json(&rows)?);
-    } else {
-        println!(
-            "{:<28} {:<14} {:<12} EVIDENCE",
-            "INTEGRATION", "CATEGORY", "TIER"
-        );
-        for entry in registry.entries() {
-            let evidence = EvidenceField::ALL
-                .iter()
-                .filter(|field| entry.evidence().is_present(**field))
-                .map(|field| field.as_str())
-                .collect::<Vec<_>>()
-                .join(",");
-            println!(
-                "{:<28} {:<14} {:<12} {}",
-                entry.id(),
-                category_label(entry.category()),
-                entry.tier(),
-                evidence
-            );
-        }
-    }
-    Ok(ExitCode::SUCCESS)
-}
-
-fn category_label(category: slipfork_dag::IntegrationCategory) -> String {
-    serde_json::to_value(category)
-        .ok()
-        .and_then(|value| value.as_str().map(str::to_owned))
-        .unwrap_or_default()
-}
-
-fn evidence_json(evidence: &slipfork_dag::Evidence) -> serde_json::Value {
-    let mut map = serde_json::Map::new();
-    for field in EvidenceField::ALL {
-        if let Some(value) = evidence.field(*field)
-            && !value.trim().is_empty()
-        {
-            map.insert(field.as_str().to_owned(), json!(value));
-        }
-    }
-    serde_json::Value::Object(map)
 }
 
 /// Remember the last hook failure so a failed `up` / `fork` can print the rescue block.

@@ -1484,3 +1484,13 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-18T22:27 [M3.30.1.1] (lead) lead re-ran acceptance: fmt+clippy clean, engine/edge/slipfork-lib tests green; greps clean
 - 2026-11-18T22:29 [M3.30.1.1] (lead) status review -> ready: triad: 2 BLOCKER + 3 MAJOR, one consolidated fix pass
 - 2026-11-18T22:29 [M3.30.1.1] (lead) attempt 2/3 started
+- 2026-11-18T22:32 [M3.30.1.1] (lead) status ready -> done
+- 2026-11-18T22:33 [M3.30.1.2] (lead) status ready -> active
+- 2026-11-18T22:33 [M3.30.1.2] (lead) attempt 1/3 started
+- 2026-11-18T22:33 [M3.30.1.2] (lead) base 678b6c849f3785cfdfcae8f19ffa9fb42dc24cb2
+- 2026-11-18T22:38 [M3.30.1.2] (lead) status active -> review
+- 2026-11-18T22:38 [M3.30.1.2] (lead) forward note for M3.30.2: relay moved to slipfork-engine::relay; relocate to a neutral canonical owner so slipfork-edge can drop its slipfork-engine dependency
+- 2026-11-18T22:40 [M3.30.1.2] (lead) edited fields
+- 2026-11-18T22:40 [M3.30.5] (lead) edited fields
+- 2026-11-18T22:40 [M3.30.1.2] (lead) status review -> ready: triad: 2 BLOCKER (Makefile lost rs-test, dead python test) + 4 MAJOR, one fix pass
+- 2026-11-18T22:40 [M3.30.1.2] (lead) attempt 2/3 started

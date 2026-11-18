@@ -20,6 +20,7 @@
 //! 2. [`WorldImageConfig::select_stage`] validates `world.stage` against the selected
 //!    `Dockerfile`'s named stages, defaulting to the final stage's name when it has one.
 
+use slipfork_world::format::quoted;
 use thiserror::Error;
 
 /// The `ADR-0009` §4.2 rule #1 prefix shared by every target-stage diagnostic.
@@ -217,18 +218,6 @@ fn exact_match<'a>(
         .find(|candidate| *candidate == selector)
         .map(String::as_str)
         .ok_or_else(|| unknown(selector.to_owned(), available.to_vec()))
-}
-
-/// Render declared ids/stages as `'api', 'worker'` for actionable diagnostics.
-fn quoted(items: &[String]) -> String {
-    if items.is_empty() {
-        return "none".to_owned();
-    }
-    items
-        .iter()
-        .map(|item| format!("'{item}'"))
-        .collect::<Vec<_>>()
-        .join(", ")
 }
 
 fn stage_fix(declared: &[String]) -> String {

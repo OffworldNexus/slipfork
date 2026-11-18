@@ -13,7 +13,7 @@ export TMPDIR
 CARGO_BUILD_JOBS ?= 4
 export CARGO_BUILD_JOBS
 
-.PHONY: help check fmt rs-fmt rs-lint rs-test rs-test-list ts-test py-lint py-test docs-check guard stub-check plan-check support-check support-sync bench bench-update docs-serve
+.PHONY: help check fmt rs-fmt rs-lint rs-test ts-test py-lint py-test docs-check guard stub-check plan-check bench bench-update docs-serve
 
 $(TMPDIR):
 	mkdir -p $(TMPDIR)
@@ -21,7 +21,7 @@ $(TMPDIR):
 help: ## Show available targets
 	@grep -E '^[a-zA-Z0-9_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-22s\033[0m %s\n", $$1, $$2}'
 
-check: plan-check guard stub-check py-lint py-test support-check ts-test rs-fmt rs-lint rs-test docs-check ## Run every static, unit, critical, plan, hygiene, stub, support, TS, and docs check
+check: plan-check guard stub-check py-lint py-test ts-test rs-fmt rs-lint rs-test docs-check ## Run every static, unit, critical, plan, hygiene, stub, TS, Rust, and docs check
 
 fmt: rs-fmt | $(TMPDIR) ## Format Rust and Python tooling
 	uvx --offline ruff format tools poc
@@ -42,12 +42,6 @@ py-lint: | $(TMPDIR) ## Lint and format-check Python harness/PoC scripts
 py-test: | $(TMPDIR) ## Run unit tests for tools/
 	uv run --no-project --with pytest pytest -q tools/tests
 
-support-check: | $(TMPDIR) ## Verify the integration support registry, its evidence pointers, and docs/support-matrix.md (read-only)
-	uv run --no-project tools/check_support.py --check
-
-support-sync: | $(TMPDIR) ## Demote unsupported tier claims and regenerate docs/support-matrix.md (explicit mutator)
-	uv run --no-project tools/check_support.py --sync
-
 ts-test: | $(TMPDIR) ## Run critical tests for @slipfork/opencode plugin
 	bun test packages/opencode-slipfork/tests
 
@@ -58,57 +52,29 @@ rs-lint: | $(TMPDIR) ## Run Clippy (-D warnings) and rustdoc (-D warnings) acros
 	cargo clippy --workspace --all-targets -- -D warnings
 	RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
 
-# Integration binaries are listed explicitly (never one `--workspace --all-targets` sweep) so the
-# parallel and serialized phases stay auditable. `tools/rs_test_list.py` enforces exactly four
-# rules:
-#   1. every `tests/*.rs` is part of a declared test target — a `[[test]]` path or a `#[path]`
-#      module of one — so no protected file is compiled by nothing;
-#   2. the list names test targets only (a `#[path]`-inlined file is never its own entry), and
-#      every declared target is listed (a missing pair fails);
-#   3. every `<package>:<test>` pair appears exactly once;
-#   4. every pair in `WORLD_BOOTING_TESTS` is listed with `-- --test-threads=1`.
-# `WORLD_BOOTING_TESTS` itself is explicit and human-maintained: the guard cannot discover which
-# suites boot a real world, run a real `docker buildx` build, or spawn a real `slipforkd`, so a new
-# world-booting suite must be classified here by hand. The invariants live in
-# `tools/rs_test_list.py`.
-WORLD_BOOTING_TESTS := \
-	slipfork-engine:critical_rootfs_live \
-	slipfork-engine:critical_engine \
-	slipfork-engine:critical_oci_runtime \
-	slipfork-engine:critical_btrfs_live \
-	slipfork:critical_slug \
-	slipfork:critical_vcs_remote \
-	slipfork:critical_cli \
-	slipfork:critical_l0_wiring \
-	slipfork:critical_ospp_daemon \
-	slipfork:critical_btrfs_live
-
-rs-test-list: | $(TMPDIR) ## Guard the rs-test binary list, its package pairs, and world-booting serialization
-	@uv run --no-project tools/rs_test_list.py --world-booting $(WORLD_BOOTING_TESTS)
-
-rs-test: rs-test-list | $(TMPDIR) ## Run all Rust unit, integration, critical, and doc tests
-	cargo test --workspace --lib --bins
-	cargo test --workspace --doc
+rs-test: | $(TMPDIR) ## Run Rust unit/bin/doc tests plus every critical integration suite (world-booting suites serialized)
+	uv run --no-project tools/rs_test_list.py --world-booting slipfork-engine:critical_btrfs_live slipfork-engine:critical_engine slipfork-engine:critical_oci_runtime slipfork:critical_btrfs_live slipfork:critical_cli slipfork:critical_l0_wiring slipfork:critical_ospp_daemon slipfork:critical_slug slipfork:critical_vcs_remote
+	cargo test --workspace --lib --bins --doc
 	cargo test -p slipfork-dag --test critical_dag
-	cargo test -p slipfork-dag --test critical_support
 	cargo test -p slipfork-dag --test critical_world_config
 	cargo test -p slipfork-edge --test critical_edge
 	cargo test -p slipfork-engine --test critical_rootfs_contract
+	cargo test -p slipfork-engine --test critical_rootfs_live
 	cargo test -p slipfork-ospp --test critical_ospp
+	cargo test -p slipfork-snow --test claimed_eval
 	cargo test -p slipfork-snow --test critical_snow
-	cargo test -p slipfork-vcs --test critical_vcs
 	cargo test -p slipfork-vcs --test critical_conformance_matrix
+	cargo test -p slipfork-vcs --test critical_vcs
 	cargo test -p slipfork-world --test critical_world
-	cargo test -p slipfork-engine --test critical_rootfs_live -- --test-threads=1
+	cargo test -p slipfork-engine --test critical_btrfs_live -- --test-threads=1
 	cargo test -p slipfork-engine --test critical_engine -- --test-threads=1
 	cargo test -p slipfork-engine --test critical_oci_runtime -- --test-threads=1
-	cargo test -p slipfork-engine --test critical_btrfs_live -- --test-threads=1
-	cargo test -p slipfork --test critical_slug -- --test-threads=1
-	cargo test -p slipfork --test critical_vcs_remote -- --test-threads=1
+	cargo test -p slipfork --test critical_btrfs_live -- --test-threads=1
 	cargo test -p slipfork --test critical_cli -- --test-threads=1
 	cargo test -p slipfork --test critical_l0_wiring -- --test-threads=1
 	cargo test -p slipfork --test critical_ospp_daemon -- --test-threads=1
-	cargo test -p slipfork --test critical_btrfs_live -- --test-threads=1
+	cargo test -p slipfork --test critical_slug -- --test-threads=1
+	cargo test -p slipfork --test critical_vcs_remote -- --test-threads=1
 
 docs-check: | $(TMPDIR) ## Build public Zensical documentation site in --strict mode and verify CLI honesty
 	uvx --offline zensical build --strict

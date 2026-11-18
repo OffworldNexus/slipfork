@@ -41,7 +41,6 @@ pub mod daemon;
 pub mod forward;
 pub mod ingress;
 pub mod registry;
-pub(crate) mod relay;
 pub mod unit;
 pub mod unix_socket;
 pub mod vault;

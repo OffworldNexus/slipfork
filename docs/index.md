@@ -34,8 +34,6 @@ $ slipfork list                                      # one app URL per world
 | **OpenCode V2 plugin** (`@slipfork/opencode`) | Worktree → world binding, `cwd`-based shell routing through `slipfork exec`, session context hints |
 | **`git-remote-slipfork`** | `git fetch` a running fork's branch and `refs/slipfork/<fork>/wip` over `slipfork://<fork>` |
 
-Integration rows above are graded in the [integration support matrix](support-matrix.md); the OpenCode plugin is covered by its own package tests.
-
 ## Measured cost model
 
 Owner-recorded figures for the single-subvolume world (provenance and open questions in `docs/research/btrfs-crun-benchmarks.md`; re-measurement is tracked separately):
@@ -54,7 +52,6 @@ Owner-recorded figures for the single-subvolume world (provenance and open quest
 - **[Secrets & OSPP v1](reference/ospp.md)** — pairing quickstart, the two tiers, and the frame map.
 - **[OpenCode V2 plugin](agents-and-opencode.md)** — automatic worktree worlds for agents.
 - **[CLI](reference/cli.md)** & **[manifest reference](reference/manifest.md)** — commands, flags, schemas.
-- **[Support matrix](support-matrix.md)** — tiers, evidence, and what each integration guarantees.
 
 ## Roadmap corner (not yet shipped)
 

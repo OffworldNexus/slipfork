@@ -137,16 +137,13 @@ pub(crate) fn read_manifest(dir: &Path) -> Option<ImageContractMetadata> {
 pub(crate) fn write_manifest(
     dir: &Path,
     metadata: &ImageContractMetadata,
-    clock: &dyn crate::MonotonicClock,
+    suffix: &str,
 ) -> Result<(), BaseImageError> {
     let bytes = serde_json::to_vec_pretty(metadata).map_err(|error| BaseImageError::Io {
         path: dir.join("manifest.json").display().to_string(),
         message: error.to_string(),
     })?;
-    let temporary = dir.join(format!(
-        "manifest.json.{}",
-        crate::rootfs::unique_suffix(clock)
-    ));
+    let temporary = dir.join(format!("manifest.json.{suffix}"));
     std::fs::write(&temporary, bytes).map_err(|error| BaseImageError::Io {
         path: temporary.display().to_string(),
         message: error.to_string(),

@@ -28,7 +28,7 @@ use crate::rootfs::pin::{buildx_platform, crun_pin};
 use crate::rootfs::{
     BaseImageBuilder, BaseImageError, CRUN_GUEST_PATH, ImageContractMetadata, OciImageStore,
     RootfsBuildEvent, RootfsDigest, RootfsDigestInputs, WORLD_INIT_GUEST_PATH, WorldRootfs,
-    WorldRootfsRequest, sha256_hex, unique_suffix,
+    WorldRootfsRequest, sha256_hex,
 };
 use crate::rootfs::{BuildxExporter, InputHasher};
 
@@ -96,17 +96,17 @@ impl DockerfileStageBuilder {
     ) -> Result<ImageContractMetadata, BaseImageError> {
         let final_dir = layout.rootfs_dir(digest);
         std::fs::create_dir_all(&final_dir).map_err(|error| io_error(&final_dir, &error))?;
-        let staging = final_dir.join(format!(".staging-{}", unique_suffix(self.clock.as_ref())));
-        let scratch = layout
-            .tmp_dir()
-            .join(format!("build-{}", unique_suffix(self.clock.as_ref())));
-        let runtime_context = scratch.join("runtime");
-        let _scratch_guard = Scratch::new(scratch.clone());
+        // One per-build scratch directory owns every derived path. Its OS-unique name is the
+        // single suffix the staging tree and the manifest temp file share, so two builds starting
+        // in the same clock instant can never collide — no globals, no atomics.
+        let build = BuildPaths::create(&layout.tmp_dir(), &final_dir)?;
+        let staging = build.staging.clone();
+        let runtime_context = build.scratch.path().join("runtime");
         std::fs::create_dir_all(&runtime_context)
             .map_err(|error| io_error(&runtime_context, &error))?;
 
         let scratch_dockerfile = scratch_dockerfile(dockerfile_bytes, stage_name);
-        let dockerfile_path = scratch.join("Dockerfile");
+        let dockerfile_path = build.scratch.path().join("Dockerfile");
         std::fs::write(&dockerfile_path, &scratch_dockerfile)
             .map_err(|error| io_error(&dockerfile_path, &error))?;
         write_executable(&runtime_context.join("crun"), crun_bytes)?;
@@ -149,7 +149,7 @@ impl DockerfileStageBuilder {
                 return Err(io_error(&app, &error));
             }
         }
-        cache::write_manifest(&final_dir, &metadata, self.clock.as_ref())?;
+        cache::write_manifest(&final_dir, &metadata, &build.suffix)?;
         Ok(metadata)
     }
 }
@@ -349,26 +349,40 @@ fn io_error(path: &Path, error: &std::io::Error) -> BaseImageError {
     }
 }
 
-/// Scratch directory removed on drop (success or failure): the worktree stays untouched.
-struct Scratch {
-    path: PathBuf,
+/// One build's scratch directory plus the suffix every path it derives shares.
+///
+/// The OS-unique scratch name is the single per-build value: the staging tree, the scratch
+/// `Dockerfile`/runtime context, and the manifest temp file all derive from it, and
+/// [`tempfile::TempDir`] removes the scratch tree on drop (success or failure).
+struct BuildPaths {
+    scratch: tempfile::TempDir,
+    staging: PathBuf,
+    suffix: String,
 }
 
-impl Scratch {
-    fn new(path: PathBuf) -> Self {
-        Self { path }
-    }
-}
-
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        cache::remove_dir_all(&self.path);
+impl BuildPaths {
+    fn create(tmp_dir: &Path, final_dir: &Path) -> Result<Self, BaseImageError> {
+        let scratch = tempfile::Builder::new()
+            .prefix("build-")
+            .tempdir_in(tmp_dir)
+            .map_err(|error| io_error(tmp_dir, &error))?;
+        let suffix = scratch
+            .path()
+            .file_name()
+            .expect("a temp directory always has a name")
+            .to_string_lossy()
+            .into_owned();
+        Ok(Self {
+            staging: final_dir.join(format!(".staging-{suffix}")),
+            scratch,
+            suffix,
+        })
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{dockerfile_rel_path, scratch_dockerfile};
+    use super::{BuildPaths, dockerfile_rel_path, scratch_dockerfile};
     use std::path::Path;
 
     #[test]
@@ -383,6 +397,29 @@ mod tests {
         ));
         assert!(!text.contains("apt-get"));
         assert!(!text.contains("apk add"));
+    }
+
+    #[test]
+    fn same_instant_builds_never_share_a_staging_path() {
+        // The suffix is OS-unique (never clock-derived), so two builds that start in the same
+        // clock instant still get disjoint staging trees and manifest temp names.
+        let root = tempfile::tempdir().expect("scratch root");
+        let tmp_dir = root.path().join("tmp");
+        let final_dir = root.path().join("cache/rootfs/deadbeef");
+        std::fs::create_dir_all(&tmp_dir).expect("tmp dir");
+        std::fs::create_dir_all(&final_dir).expect("final dir");
+        let first = BuildPaths::create(&tmp_dir, &final_dir).expect("first build paths");
+        let second = BuildPaths::create(&tmp_dir, &final_dir).expect("second build paths");
+        assert_ne!(first.suffix, second.suffix);
+        assert_ne!(first.staging, second.staging);
+        assert_eq!(
+            first
+                .staging
+                .file_name()
+                .expect("staging name")
+                .to_string_lossy(),
+            format!(".staging-{}", first.suffix)
+        );
     }
 
     #[test]

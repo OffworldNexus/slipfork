@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use sha2::{Digest, Sha256};
+use slipfork_world::merkle::{file_digest, glob_matches, merkle_hex};
 
 use crate::{DagError, DigestCache, InputHasher};
 
@@ -29,22 +29,19 @@ impl FsMerkleHasher {
 
 impl InputHasher for FsMerkleHasher {
     fn hash_globs(&self, globs: &[String]) -> Result<String, DagError> {
-        if globs.is_empty() {
-            return Ok(hex::encode(Sha256::digest(b"")));
-        }
         let mut matched: BTreeMap<String, PathBuf> = BTreeMap::new();
         collect_files(&self.root, &self.root, globs, &mut matched)?;
-        let mut h = Sha256::new();
-        for (rel, full) in matched {
-            let bytes = fs::read(&full).map_err(|e| DagError::Io {
-                path: full.display().to_string(),
-                message: e.to_string(),
-            })?;
-            h.update(rel.as_bytes());
-            h.update(b"\0");
-            h.update(Sha256::digest(&bytes));
-        }
-        Ok(hex::encode(h.finalize()))
+        let entries = matched
+            .iter()
+            .map(|(rel, full)| {
+                let bytes = fs::read(full).map_err(|e| DagError::Io {
+                    path: full.display().to_string(),
+                    message: e.to_string(),
+                })?;
+                Ok((rel.as_str(), file_digest(&bytes)))
+            })
+            .collect::<Result<Vec<_>, DagError>>()?;
+        Ok(merkle_hex(entries))
     }
 }
 
@@ -82,7 +79,7 @@ fn collect_files(
             && let Ok(rel) = path.strip_prefix(root)
         {
             let rel_str = rel.to_string_lossy().replace('\\', "/");
-            if globs.iter().any(|glob| crate::matches_glob(glob, &rel_str)) {
+            if globs.iter().any(|glob| glob_matches(glob, &rel_str)) {
                 out.insert(rel_str, path);
             }
         }

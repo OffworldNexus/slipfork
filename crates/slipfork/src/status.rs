@@ -10,7 +10,7 @@
 use std::collections::BTreeSet;
 
 use slipfork_edge::{
-    CacheOutcome, DaemonStatus, INGRESS_PORT, SeedLineage, WorldLineage, WorldState, WorldSummary,
+    CacheOutcome, DaemonStatus, INGRESS_PORT, SeedLineage, WorldLineage, WorldSummary,
     world_next_commands,
 };
 
@@ -138,15 +138,6 @@ pub(crate) fn render_lineage(lineage: &WorldLineage) -> String {
     parts.join(" · ")
 }
 
-/// The one lifecycle label of a world (`running` / `failed` / `stopped`).
-fn world_state_label(state: WorldState) -> &'static str {
-    match state {
-        WorldState::Running => "running",
-        WorldState::Failed => "failed",
-        WorldState::Stopped => "stopped",
-    }
-}
-
 /// One `WORLD  STATE  ORIGIN  WORKTREE` row — the single row formatter of `status` and `list`.
 ///
 /// `indent` is the row's tree indentation (`""` for the flat `list` table, the fork indent on the
@@ -156,7 +147,7 @@ pub fn world_row(world: &WorldSummary, indent: &str, world_column: usize) -> Str
     format!(
         "{indent}{:<world_column$} {:<9} {:<40} {}\n",
         world.world,
-        world_state_label(world.state),
+        world.state.label(),
         world.origin.url(),
         world.worktree.display(),
     )
@@ -306,7 +297,7 @@ mod tests {
 
     use slipfork_edge::{
         BaseLineage, DaemonStatus, IngressInfo, RootfsLineage, SeedLineage, ServiceImageLineage,
-        WorldLineage,
+        WorldLineage, WorldState,
     };
     use slipfork_world::{LocalHostRoute, ProjectSlug, WorldOrigin, WorldTarget};
 

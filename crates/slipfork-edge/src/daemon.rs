@@ -148,6 +148,17 @@ pub enum WorldState {
     Stopped,
 }
 
+impl WorldState {
+    /// The one lifecycle label rendered by `status`, `list`, and `ps`.
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Running => "running",
+            Self::Failed => "failed",
+            Self::Stopped => "stopped",
+        }
+    }
+}
+
 /// One row of `slipfork list` / `slipfork status` (`docs/design/dx-0.1.0-ux.md` §3).
 ///
 /// `world` is the canonical `<project>` / `<project>:<fork>` id printed by every command and

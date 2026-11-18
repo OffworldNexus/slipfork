@@ -2,7 +2,7 @@
 id: M3.30.1.1
 title: "Canonical snow claimed-eval + delete dead provider/conformance/event code"
 kind: task
-status: ready
+status: done
 owner: implementer
 priority: 3
 depends_on: []
@@ -17,7 +17,7 @@ attempts: 2
 max_attempts: 3
 escalation: none
 created: "2026-11-18T22:20"
-updated: "2026-11-18T22:29"
+updated: "2026-11-18T22:32"
 ---
 
 # Goal

@@ -1,22 +1,25 @@
-//! Bounded byte relay shared by the HTTP ingress and daemon-owned `forward` bridges.
+//! Bounded byte relay shared by every stream splice in the workspace.
 //!
 //! One chunk is at most [`RELAY_CAP`] bytes and is flushed as soon as it is read, so a request or
 //! response body larger than the buffer streams through with constant memory and half-close
 //! propagation instead of being buffered to completion.
 //!
 //! [`pipe`] is the single bidirectional relay: it owns the stream clones, the uplink thread, the
-//! half-close handshake, and the join, so callers only supply the two endpoints and map errors.
+//! half-close handshake, and the join, so callers only supply the two endpoints. The edge ingress
+//! relays TCP/AF_UNIX client streams through it, and `slipfork-world-init` uses the same code to
+//! bridge in-world loopback traffic to `slipforkd`.
 
 use std::io::{self, Read, Write};
 use std::net::{Shutdown, TcpStream};
+use std::os::unix::net::UnixStream;
 use std::thread;
 use std::time::Duration;
 
 /// Chunk size for relayed bytes in either direction.
-pub(crate) const RELAY_CAP: usize = 16 * 1024;
+pub const RELAY_CAP: usize = 16 * 1024;
 
 /// One whole-duplex stream `pipe` can relay in both directions.
-pub(crate) trait Duplex: Read + Write + Send + 'static {
+pub trait Duplex: Read + Write + Send + 'static {
     /// Duplicate the underlying descriptor (each direction and the teardown need their own).
     fn try_clone_duplex(&self) -> io::Result<Self>
     where
@@ -51,11 +54,30 @@ impl Duplex for TcpStream {
     }
 }
 
+impl Duplex for UnixStream {
+    fn try_clone_duplex(&self) -> io::Result<Self> {
+        self.try_clone()
+    }
+
+    fn shutdown_write_half(&self) {
+        let _ = self.shutdown(Shutdown::Write);
+    }
+
+    fn shutdown_both(&self) {
+        let _ = self.shutdown(Shutdown::Both);
+    }
+
+    fn set_timeout(&self, timeout: Option<Duration>) -> io::Result<()> {
+        self.set_read_timeout(timeout)?;
+        self.set_write_timeout(timeout)
+    }
+}
+
 /// Copy until EOF or an error, flushing after every chunk.
 ///
 /// A read error or a write error ends the copy instead of panicking: the peer is gone, and the
 /// caller's subsequent half-close/shutdown reports the outcome to the other direction.
-pub(crate) fn copy<R: Read, W: Write>(reader: &mut R, writer: &mut W) {
+fn copy<R: Read, W: Write>(reader: &mut R, writer: &mut W) {
     let mut buffer = [0_u8; RELAY_CAP];
     loop {
         match reader.read(&mut buffer) {
@@ -76,7 +98,7 @@ pub(crate) fn copy<R: Read, W: Write>(reader: &mut R, writer: &mut W) {
 /// the worker's pending read/write returns and is joined. The idle bound armed on the endpoints is
 /// preserved for the whole exchange — callers that legitimately idle (an upgraded WebSocket) clear
 /// it first via [`Duplex::set_timeout`].
-pub(crate) fn pipe<A: Duplex, B: Duplex>(a: &mut A, b: &mut B) -> io::Result<()> {
+pub fn pipe<A: Duplex, B: Duplex>(a: &mut A, b: &mut B) -> io::Result<()> {
     let mut a_read = a.try_clone_duplex()?;
     let a_control = a.try_clone_duplex()?;
     let mut b_read = b.try_clone_duplex()?;

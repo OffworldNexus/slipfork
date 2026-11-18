@@ -16,7 +16,7 @@
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
 
-use slipfork::layout::Layout;
+use slipfork::layout::{Layout, absolute_path};
 use slipfork_edge::daemon::WorkspaceRefsRequest;
 use slipfork_edge::{DaemonControl, DaemonControlClient};
 use slipfork_vcs::{VcsError, VcsWorkspace, WorkspaceChanges, WorkspaceRefs, remote_helper};
@@ -87,20 +87,14 @@ fn layout_from_env() -> Result<Layout, String> {
         .ok_or_else(|| {
             "HOME is not set; git-remote-slipfork needs the developer account's home directory to locate slipforkd".to_owned()
         })?;
-    let xdg_cache = absolute_env("XDG_CACHE_HOME");
-    let xdg_data = absolute_env("XDG_DATA_HOME");
+    let xdg_cache = absolute_path(std::env::var_os("XDG_CACHE_HOME"));
+    let xdg_data = absolute_path(std::env::var_os("XDG_DATA_HOME"));
     Ok(Layout::resolve(
         None,
         &home,
         xdg_cache.as_deref(),
         xdg_data.as_deref(),
     ))
-}
-
-fn absolute_env(name: &str) -> Option<PathBuf> {
-    std::env::var_os(name)
-        .map(PathBuf::from)
-        .filter(|path| path.is_absolute())
 }
 
 /// Read-only view of the daemon-resolved refs.

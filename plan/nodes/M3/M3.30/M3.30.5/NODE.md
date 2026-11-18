@@ -6,12 +6,12 @@ status: ready
 owner: "doc-writer"
 priority: 3
 depends_on: [M3.30.4]
-paths: [README.md, CHANGELOG.md, zensical.toml, "docs/**", support/demo/README.md]
+paths: [README.md, CHANGELOG.md, AGENTS.md, "docs/**", support/demo/README.md, zensical.toml]
 attempts: 0
 max_attempts: 3
 escalation: none
 created: "2026-11-18T22:19"
-updated: "2026-11-18T22:19"
+updated: "2026-11-18T22:40"
 ---
 
 # Goal

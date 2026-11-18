@@ -6,12 +6,18 @@
 //! the thin client has no `--runtime-dir` override, so it can never dial a different
 //! `daemon.sock` than the installed `slipforkd.service`.
 
+use std::ffi::OsString;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 use crate::user::ResolvedAccount;
 use slipfork_world::ProjectSlug;
+
+/// Accept an environment value only when it names an absolute path.
+pub fn absolute_path(value: Option<OsString>) -> Option<PathBuf> {
+    value.map(PathBuf::from).filter(|path| path.is_absolute())
+}
 
 /// Directory holding the developer's private `0600` vaults (`<data_home>/slipfork/vaults`).
 const VAULTS_DIRECTORY: &str = "vaults";

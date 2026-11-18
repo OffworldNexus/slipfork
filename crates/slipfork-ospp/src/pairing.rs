@@ -113,11 +113,15 @@ pub fn solve_altcha(challenge: &serde_json::Value) -> Result<String, OsppError> 
             "unsupported altcha algorithm {algorithm}"
         )));
     }
-    let target = object
+    let challenge = object
         .get("challenge")
         .and_then(serde_json::Value::as_str)
-        .and_then(|value| hex::decode(value).ok())
         .ok_or_else(|| OsppError::Protocol("altcha challenge hash is invalid".to_owned()))?;
+    if hex::decode(challenge).is_err() {
+        return Err(OsppError::Protocol(
+            "altcha challenge hash is invalid".to_owned(),
+        ));
+    }
     let salt = object
         .get("salt")
         .and_then(serde_json::Value::as_str)
@@ -129,10 +133,7 @@ pub fn solve_altcha(challenge: &serde_json::Value) -> Result<String, OsppError> 
         .min(MAX_ALTCHA_NUMBER);
 
     let number = (0..=maxnumber)
-        .find(|number| {
-            let digest = Sha256::digest(format!("{salt}{number}").as_bytes());
-            digest.as_slice() == target.as_slice()
-        })
+        .find(|number| altcha_challenge_hash(salt, *number) == challenge)
         .ok_or_else(|| OsppError::Protocol("altcha proof-of-work was not solved".to_owned()))?;
 
     let mut solution = object.clone();
@@ -140,6 +141,42 @@ pub fn solve_altcha(challenge: &serde_json::Value) -> Result<String, OsppError> 
     let json = serde_json::to_vec(&serde_json::Value::Object(solution))
         .map_err(|error| OsppError::Protocol(error.to_string()))?;
     Ok(STANDARD.encode(json))
+}
+
+/// The exact `altcha` challenge hash (`sha256(salt + number)`) as lowercase hex.
+pub fn altcha_challenge_hash(salt: &str, number: u64) -> String {
+    hex::encode(Sha256::digest(format!("{salt}{number}").as_bytes()))
+}
+
+/// The exact `altcha` challenge object a server sends in `pair_challenge`.
+pub fn altcha_challenge(salt: &str, number: u64, maxnumber: u64) -> serde_json::Value {
+    serde_json::json!({
+        "algorithm": "SHA-256",
+        "challenge": altcha_challenge_hash(salt, number),
+        "salt": salt,
+        "maxnumber": maxnumber,
+    })
+}
+
+/// Whether `solution` proves `challenge` for `salt` (the server-side half of
+/// [`solve_altcha`]).
+pub fn verify_altcha(solution: &str, salt: &str, challenge: &str) -> bool {
+    let Ok(bytes) = STANDARD.decode(solution) else {
+        return false;
+    };
+    let Ok(payload) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+        return false;
+    };
+    if payload["algorithm"] != "SHA-256"
+        || payload["salt"] != salt
+        || payload["challenge"] != challenge
+    {
+        return false;
+    }
+    let Some(number) = payload["number"].as_u64() else {
+        return false;
+    };
+    altcha_challenge_hash(salt, number) == challenge
 }
 
 #[cfg(test)]
@@ -171,23 +208,59 @@ mod tests {
         assert!(LivePairingUrl::with_handle("https://ci.example.com/pair", "not-hex").is_err());
     }
 
-    #[test]
-    fn altcha_solver_finds_the_number_and_preserves_the_payload() {
-        let salt = "0f1e2d3c";
-        let number = 7u64;
-        let hash = hex::encode(Sha256::digest(format!("{salt}{number}").as_bytes()));
-        let challenge = json!({
+    const GOLDEN_SALT: &str = "0f1e2d3c";
+
+    /// `sha256("0f1e2d3c7")`, the fixed ALTCHA challenge the server would send.
+    const GOLDEN_HASH: &str = "a9cb548f2520c120286285f6acf84cb1114995a69791343f451a29685f615c81";
+
+    fn encode_solution(salt: &str, number: u64, challenge: &str) -> String {
+        let payload = json!({
             "algorithm": "SHA-256",
-            "challenge": hash,
+            "challenge": challenge,
             "salt": salt,
+            "number": number,
             "maxnumber": 64,
         });
+        STANDARD.encode(serde_json::to_vec(&payload).expect("json"))
+    }
+
+    #[test]
+    fn altcha_challenge_hash_matches_the_golden_sha256() {
+        assert_eq!(altcha_challenge_hash(GOLDEN_SALT, 7), GOLDEN_HASH);
+        assert!(verify_altcha(
+            &encode_solution(GOLDEN_SALT, 7, GOLDEN_HASH),
+            GOLDEN_SALT,
+            GOLDEN_HASH
+        ));
+    }
+
+    #[test]
+    fn verify_altcha_rejects_a_tampered_salt_number_challenge_or_encoding() {
+        let solution = encode_solution(GOLDEN_SALT, 7, GOLDEN_HASH);
+        assert!(!verify_altcha(&solution, "deadbeef", GOLDEN_HASH));
+        assert!(!verify_altcha(
+            &encode_solution(GOLDEN_SALT, 8, GOLDEN_HASH),
+            GOLDEN_SALT,
+            GOLDEN_HASH
+        ));
+        assert!(!verify_altcha(
+            &encode_solution(GOLDEN_SALT, 7, &altcha_challenge_hash(GOLDEN_SALT, 6)),
+            GOLDEN_SALT,
+            GOLDEN_HASH
+        ));
+        assert!(!verify_altcha("not-base64!!", GOLDEN_SALT, GOLDEN_HASH));
+    }
+
+    #[test]
+    fn altcha_solver_finds_the_golden_number_and_preserves_the_payload() {
+        let challenge = altcha_challenge(GOLDEN_SALT, 7, 64);
         let solution = solve_altcha(&challenge).expect("solvable");
+        assert!(verify_altcha(&solution, GOLDEN_SALT, GOLDEN_HASH));
         let decoded = STANDARD.decode(solution).expect("base64");
         let payload: serde_json::Value = serde_json::from_slice(&decoded).expect("json");
         assert_eq!(payload["number"], 7);
-        assert_eq!(payload["salt"], salt);
-        assert_eq!(payload["challenge"], challenge["challenge"]);
+        assert_eq!(payload["salt"], GOLDEN_SALT);
+        assert_eq!(payload["challenge"], GOLDEN_HASH);
     }
 
     #[test]

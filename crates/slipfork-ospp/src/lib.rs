@@ -46,7 +46,10 @@ pub use keys::{
     parse_recipient_public_key, secret_aad,
 };
 pub use model::{OsppClaims, SubscribeRequest, SubscriptionEnv};
-pub use pairing::{BrowserOpener, HANDLE_HEX_LEN, LivePairingUrl, solve_altcha};
+pub use pairing::{
+    BrowserOpener, HANDLE_HEX_LEN, LivePairingUrl, altcha_challenge, altcha_challenge_hash,
+    solve_altcha, verify_altcha,
+};
 pub use wire::{
     AUTH_METHOD_P256, ENCRYPTION_METHOD_HPKE_P256, OSPP_SUBPROTOCOL, PROTOCOL_VERSION,
     auth_transcript, pairing_transcript,
