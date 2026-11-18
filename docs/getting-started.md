@@ -163,4 +163,4 @@ $ sudo sysctl --system
 
 `slipfork daemon unit --only socket` / `--only service` are **optional**: they render the units to stdout with zero filesystem writes, embedding the absolute binary, state, and runtime paths; the socket unit binds `127.0.0.1:80`, `[::1]:80`, and `127.0.0.1:7080`. Install them with `slipfork daemon unit --only socket | sudo tee /etc/systemd/system/slipforkd.socket` and `--only service | sudo tee /etc/systemd/system/slipforkd.service`; the auto-spawn path above needs no `sudo`. Render from the installed binaries, not a build tree; flags: [CLI reference](reference/cli.md#slipfork-daemon-unit).
 
-Next: [`snow.yml` modes & secrets](snow-modes.md), [orthogonal DAG planner](testing-dag.md), [manifest reference](reference/manifest.md).
+Next: [`snow.yml` modes & secrets](snow-modes.md), [manifest reference](reference/manifest.md).

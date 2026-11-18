@@ -1,5 +1,5 @@
 //! Protected end-to-end CLI critical tests for canonical VCS project identity (`H-005`),
-//! fail-closed Git/Jujutsu topologies (owner ruling), and `snow resolve` / `dag plan` diagnostics.
+//! fail-closed Git/Jujutsu topologies (owner ruling), and `snow resolve` diagnostics.
 
 use std::ffi::OsStr;
 use std::fs::{self, File, Permissions};
@@ -8,8 +8,6 @@ use std::os::unix::fs::{PermissionsExt, symlink};
 use std::os::unix::process::CommandExt as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
-
-use serde_json::Value;
 
 pub mod support;
 use support::{Daemon, DaemonLayout, disk_tempdir, run_git};
@@ -86,9 +84,9 @@ fn run_slipfork_with_env(
     let process_group = child.id();
     let output = child.wait_with_output().expect("wait for slipfork binary");
     let termination = support::terminate_process_group(process_group);
-    // A diagnostic-only invocation (`dag plan`) never spawns a daemon, so its group is already empty
-    // here and `kill` reports `ESRCH`; a failed TERM is only tolerated when nothing is left to reap,
-    // which the `kill -0` probe proves.
+    // Every invocation in this suite is daemon-served by the harness (`ensure_daemon`), so the
+    // invocation's own process group is already empty here and `kill` reports `ESRCH`; a failed
+    // TERM is only tolerated when nothing is left to reap, which the `kill -0` probe proves.
     assert!(
         termination.term_delivered || !termination.members_alive,
         "kill -TERM -{process_group} failed while the process group still had live members\n\
@@ -154,13 +152,9 @@ fn worktree_resolves_to_canonical_repo_slug_and_honors_only_vcs_root_slipfork_to
     );
 
     // (a) Inside `.worktrees/<fork>`, project slug resolves to canonical `acme-app`, never `feat-auth`.
-    // Place a rogue worktree-local `slipfork.toml` (`project = "rogue-wt"` + rogue artifact):
-    // the worktree-local file MUST be ignored by both `snow resolve` and `dag plan`.
-    fs::write(
-        wt.join("slipfork.toml"),
-        "project = \"rogue-wt\"\n\n[artifacts.rogue]\ninputs = [\"src/**\"]\nbuild = \"echo rogue\"\nmount = \"dist\"\n",
-    )
-    .expect("write rogue toml");
+    // Place a rogue worktree-local `slipfork.toml` (`project = "rogue-wt"`): the worktree-local
+    // file MUST be ignored by `snow resolve`.
+    fs::write(wt.join("slipfork.toml"), "project = \"rogue-wt\"\n").expect("write rogue toml");
     let wt_snow = wt.join("snow.yml");
     let out = run_slipfork(
         scratch,
@@ -192,14 +186,10 @@ fn worktree_resolves_to_canonical_repo_slug_and_honors_only_vcs_root_slipfork_to
         "vault must be keyed by canonical ProjectSlug"
     );
 
-    // (b) Setting `project = "custom-slug"`, `[artifacts.front]`, and typed `[test]` coverage in
-    // `<vcs_root>/slipfork.toml` wins cleanly in both `snow resolve` and default `dag plan`
-    // even when `.worktrees/<fork>/slipfork.toml` says `rogue-wt`.
-    fs::write(
-        repo.join("slipfork.toml"),
-        "project = \"custom-slug\"\n\n[artifacts.front]\ninputs = [\"src/**\"]\nbuild = \"echo ok\"\nmount = \"dist\"\n\n[test]\ncoverage = true\ncoverage_report = [\"text\"]\n",
-    )
-    .expect("write root slipfork.toml");
+    // (b) Setting `project = "custom-slug"` in `<vcs_root>/slipfork.toml` wins cleanly in
+    // `snow resolve` even when `.worktrees/<fork>/slipfork.toml` says `rogue-wt`.
+    fs::write(repo.join("slipfork.toml"), "project = \"custom-slug\"\n")
+        .expect("write root slipfork.toml");
 
     let out_override = run_slipfork(
         scratch,
@@ -223,149 +213,10 @@ fn worktree_resolves_to_canonical_repo_slug_and_honors_only_vcs_root_slipfork_to
         stdout_override.contains("APP_URL=http://custom-slug.localhost\n"),
         "expected <vcs_root>/slipfork.toml override, got:\n{stdout_override}"
     );
-
-    // `dag plan` (without `--file`) invoked from inside `.worktrees/<fork>` must default to
-    // `<vcs_root>/slipfork.toml` (`artifacts.front`), never the rogue worktree-local file.
-    let out_dag = run_slipfork(scratch, &wt, &["dag", "plan"]);
-    assert!(
-        out_dag.status.success(),
-        "dag plan inside worktree failed: {}",
-        String::from_utf8_lossy(&out_dag.stderr)
-    );
-    let dag_stdout = String::from_utf8_lossy(&out_dag.stdout);
-    assert!(
-        dag_stdout.contains("artifact front") && !dag_stdout.contains("rogue"),
-        "expected default `dag plan` to read <vcs_root>/slipfork.toml, got:\n{dag_stdout}"
-    );
-
-    // (c) Explicit `--file` resolves its own VCS root: a config outside any repository fails
-    // closed, and a standalone repository whose `inputs = ["src/**"]` match nothing plans cleanly
-    // with the empty-input digest the cache-poisoning check below needs.
-    let repo_toml = repo.join("slipfork.toml");
-    let standalone = scratch.join("standalone");
-    fs::create_dir_all(&standalone).expect("create standalone");
-    let standalone_toml = standalone.join("slipfork.toml");
-    fs::copy(&repo_toml, &standalone_toml).expect("copy slipfork.toml into standalone");
-
-    let outside_out = run_slipfork(
-        scratch,
-        scratch,
-        &[
-            "dag",
-            "plan",
-            "--file",
-            standalone_toml.to_str().expect("utf8"),
-        ],
-    );
-    assert!(
-        !outside_out.status.success(),
-        "--file outside any VCS repository must fail closed"
-    );
-    let outside_stderr = String::from_utf8_lossy(&outside_out.stderr);
-    assert!(
-        outside_stderr.contains(standalone.to_str().expect("utf8"))
-            && outside_stderr.contains("not a git or jj repository"),
-        "expected the outside-repo refusal to name the config's directory, got: {outside_stderr}"
-    );
-
-    run_git(&standalone, &["init", "-q"]);
-    let empty_plan_out = run_slipfork(
-        scratch,
-        scratch,
-        &[
-            "--json",
-            "dag",
-            "plan",
-            "--file",
-            standalone_toml.to_str().expect("utf8"),
-        ],
-    );
-    assert!(
-        empty_plan_out.status.success(),
-        "dag plan over a standalone VCS repository must succeed: {}",
-        String::from_utf8_lossy(&empty_plan_out.stderr)
-    );
-    let empty_plan: Value = serde_json::from_slice(&empty_plan_out.stdout).expect("empty json");
-    const EMPTY_SHA256: &str = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
-    assert_eq!(
-        empty_plan["artifacts"][0]["input_merkle"].as_str(),
-        Some(EMPTY_SHA256)
-    );
-    let empty_artifact_digest = empty_plan["artifacts"][0]["digest"]
-        .as_str()
-        .expect("empty digest")
-        .to_owned();
-    // Poison the artifact cache with the empty-input digest: a buggy `cwd`-rooted planner in
-    // `repo/nested/sub` (which has no `src/**`) would match zero files and report `cached`!
-    fs::create_dir_all(
-        DaemonLayout::under(scratch)
-            .state_dir
-            .join("artifacts")
-            .join(&empty_artifact_digest),
-    )
-    .expect("create poisoned empty artifact cache entry");
-
-    let subdir = repo.join("nested").join("sub");
-    fs::create_dir_all(&subdir).expect("create repo/nested/sub");
-    let root_plan_out = run_slipfork(scratch, &repo, &["--json", "dag", "plan"]);
-    assert!(root_plan_out.status.success());
-    let root_plan: Value = serde_json::from_slice(&root_plan_out.stdout).expect("root plan json");
-
-    let explicit_file_out = run_slipfork(
-        scratch,
-        &subdir,
-        &[
-            "--json",
-            "dag",
-            "plan",
-            "--file",
-            repo_toml.to_str().expect("utf8"),
-        ],
-    );
-    assert!(explicit_file_out.status.success());
-    let explicit_file_plan: Value =
-        serde_json::from_slice(&explicit_file_out.stdout).expect("explicit --file plan json");
-    assert_eq!(explicit_file_plan, root_plan);
-
-    let sub_plan_out = run_slipfork(scratch, &subdir, &["--json", "dag", "plan"]);
-    assert!(
-        sub_plan_out.status.success(),
-        "dag plan in subdirectory failed: {}",
-        String::from_utf8_lossy(&sub_plan_out.stderr)
-    );
-    let sub_plan: Value = serde_json::from_slice(&sub_plan_out.stdout).expect("sub plan json");
-    assert_eq!(
-        sub_plan, root_plan,
-        "dag plan in subdirectory must match VCS-toplevel plan identically"
-    );
-    assert_ne!(
-        sub_plan["artifacts"][0]["input_merkle"].as_str(),
-        Some(EMPTY_SHA256),
-        "subdirectory dag plan must hash <vcs_root>/src/**, never empty cwd"
-    );
-    assert_ne!(
-        sub_plan["artifacts"][0]["digest"].as_str(),
-        Some(empty_artifact_digest.as_str())
-    );
-    assert_eq!(
-        sub_plan["artifacts"][0]["action"].as_str(),
-        Some("rebuild"),
-        "poisoned empty-input digest must never make real unmaterialized inputs report Cached"
-    );
-
-    // Editing `<vcs_root>/src/lib.txt` invalidates the digest observed from `repo/nested/sub`.
-    fs::write(repo.join("src/lib.txt"), "v2\n").expect("update src/lib.txt");
-    let sub_plan_v2_out = run_slipfork(scratch, &subdir, &["--json", "dag", "plan"]);
-    assert!(sub_plan_v2_out.status.success());
-    let sub_plan_v2: Value =
-        serde_json::from_slice(&sub_plan_v2_out.stdout).expect("sub plan v2 json");
-    assert_ne!(
-        sub_plan_v2["artifacts"][0]["digest"], sub_plan["artifacts"][0]["digest"],
-        "editing <vcs_root>/src/lib.txt must change the digest observed from a subdirectory"
-    );
-
     // (d) Ambient `GIT_DIR` / `GIT_WORK_TREE` / `GIT_COMMON_DIR` in parent env must be scrubbed by
     // the thin git adapter so slug resolution cannot be hijacked.
+    let subdir = repo.join("nested").join("sub");
+    fs::create_dir_all(&subdir).expect("create repo/nested/sub");
     let hijack_git_dir = scratch.join("hijack-nonexistent-git-dir");
     let hijack_wt = scratch.join("hijack-nonexistent-wt");
     let hijack_common = scratch.join("hijack-nonexistent-common");
@@ -783,7 +634,7 @@ fn invalid_project_label_fails_closed_until_rescued_by_valid_slipfork_toml_overr
         "expected invalid project slug diagnostic naming slipfork.toml, got: {err_text}"
     );
 
-    // Invalid `project = "My_Project"` inside `slipfork.toml` ALSO fails closed in both commands.
+    // Invalid `project = "My_Project"` inside `slipfork.toml` ALSO fails closed.
     fs::write(bad_repo.join("slipfork.toml"), "project = \"My_Project\"\n")
         .expect("write bad slipfork.toml");
     let out_toml_err = run_slipfork(
@@ -793,10 +644,6 @@ fn invalid_project_label_fails_closed_until_rescued_by_valid_slipfork_toml_overr
     );
     assert!(!out_toml_err.status.success());
     assert!(String::from_utf8_lossy(&out_toml_err.stderr).contains("My_Project"));
-
-    let out_dag_err = run_slipfork(scratch, &bad_repo, &["dag", "plan"]);
-    assert!(!out_dag_err.status.success());
-    assert!(String::from_utf8_lossy(&out_dag_err.stderr).contains("My_Project"));
 
     // Valid `project = "my-project"` in `<vcs_root>/slipfork.toml` rescues the uppercase folder name.
     fs::write(bad_repo.join("slipfork.toml"), "project = \"my-project\"\n")
@@ -814,32 +661,6 @@ fn invalid_project_label_fails_closed_until_rescued_by_valid_slipfork_toml_overr
     assert!(
         String::from_utf8_lossy(&out_rescued.stdout)
             .contains("APP_URL=http://my-project.localhost\n")
-    );
-}
-
-#[test]
-fn dag_plan_repo_flag_is_gone_and_rejected_by_the_parser() {
-    let tmp = disk_tempdir("slug-");
-    let scratch = tmp.path();
-    let _daemon = harness_daemon(scratch);
-    let repo = scratch.join("plain");
-    fs::create_dir_all(&repo).expect("create plain dir");
-    let repo_arg = repo.to_str().expect("utf8");
-
-    // `dag plan --repo` was deleted (the plan is always rooted at the VCS toplevel): the removed
-    // flag must stay a typed usage error, never a silently ignored no-op.
-    let out = run_slipfork(scratch, &repo, &["dag", "plan", "--repo", repo_arg]);
-    assert_eq!(
-        out.status.code(),
-        Some(2),
-        "an unknown `--repo` must exit 2, got {}:\nstderr:\n{}",
-        out.status,
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        stderr.contains("--repo"),
-        "the usage error must name the removed flag: {stderr}"
     );
 }
 

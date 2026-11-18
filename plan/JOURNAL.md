@@ -1343,3 +1343,28 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-18T04:03 [M3.28.10] (lead) status active -> review
 - 2026-11-18T04:10 [M3.28.10] (lead) status review -> done
 - 2026-11-18T04:10 [M3.28.10] (lead) pre-commit: make check rc=0 (docs-check included — the worker's zensical complaint was its own offline cache), critical_guard OK after the path widening.
+- 2026-11-18T04:10 [M3.28.11] (lead) status ready -> active
+- 2026-11-18T04:10 [M3.28.11] (lead) attempt 1/3 started
+- 2026-11-18T04:10 [M3.28.11] (lead) base 97efc4ac173767820f5a1332fc6e25d6342f9f0e
+- 2026-11-18T04:14 [M3.28.11] (lead) edited fields
+- 2026-11-18T04:14 [M3.28.11] (lead) attempt 1 blocked correctly on three scope questions; rulings: (1) A — critical_slug.rs added to paths, delete ONLY its dag-plan blocks (snow resolve stays); (2
+- 2026-11-18T04:15 [M3.28.22] (planner) created (task) Quiet world entry: the entry argv must start inside the world so the shell's first getcwd succeeds
+- 2026-11-18T04:15 [M3.28.23] (planner) created (task) Attributed logs: the engine tags every chunk with its source and the CLI prefixes multi-source lines
+- 2026-11-18T04:15 [M3.28.13] (lead) edited fields
+- 2026-11-18T04:15 [M3.28.11] (lead) edited fields
+- 2026-11-18T04:15 [M3.28.11] (lead) attempt 2/3 started
+- 2026-11-18T04:27 [M3.28.22] (lead) edited fields
+- 2026-11-18T04:27 [M3.28.22] (lead) status ready -> ready
+- 2026-11-18T04:27 [M3.28.22] (lead) attempt 1: root cause solved correctly (nsenter --wd opens the dir in the CALLER's ns then fchdir after setns, so pivot_root leaves a detached cwd; --wdns opens
+- 2026-11-18T04:28 [M3.28.22] (lead) edited fields
+- 2026-11-18T04:28 [M3.28.22] (lead) attempt 1 (final): make check's only failure is the shared conformance pin hitting StubWorldEngine's host cwd in the protected critical_edge (one line). Took op
+- 2026-11-18T04:33 [M3.28.11] (lead) edited fields
+- 2026-11-18T04:33 [M3.28.11] (lead) attempt 2 done and verified in an isolated worktree (make check exit 0 there): dag deleted everywhere, support/planner machinery kept, [resources] already behin
+- 2026-11-18T04:34 [M3.28.11] (lead) status active -> done
+- 2026-11-18T04:34 [M3.28.11] (lead) companions settled: recipe_page -> manifest.md, manifest.md's dag sentence rewritten, ARCHITECTURE:92 corrected (keeps src/fs.rs + the crate's fs feature; drops
+- 2026-11-18T04:34 [M3.28.14] (lead) edited fields
+- 2026-11-18T04:34 [M3.28.14] (lead) added poc/run_benchmark.py: its benchmark still drives 'slipfork dag plan', a command M3.28.11 deleted, so the opt-in 'make bench' is broken. Remove that step o
+- 2026-11-18T04:34 [M3.28.22] (lead) status ready -> active
+- 2026-11-18T04:34 [M3.28.22] (lead) attempt 1/3 started
+- 2026-11-18T04:45 [M3.28.22] (lead) status active -> done
+- 2026-11-18T04:45 [M3.28.22] (lead) attempt 2 complete: stub returns in-world cwd, fn shell prints the one orientation line (stderr, shell only, never --json). critical_engine 16, critical_edge 35

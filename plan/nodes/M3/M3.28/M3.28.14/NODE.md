@@ -14,11 +14,12 @@ paths:
   - README.md
   - CHANGELOG.md
   - "docs/design/do-vm-harness.md"
+  - poc/run_benchmark.py
 attempts: 0
 max_attempts: 3
 escalation: none
 created: "2026-11-17T16:34"
-updated: "2026-11-18T00:38"
+updated: "2026-11-18T04:34"
 ---
 
 # Goal

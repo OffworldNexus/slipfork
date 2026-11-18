@@ -170,9 +170,21 @@ fn up_down_lifecycle_is_idempotent_and_one_url_per_world() {
     assert_success(&up_again, "second slipfork up");
     assert_eq!(url_count(&stdout(&up_again)), 1);
 
-    // Direct daemon-resolved execution enters the live world with inherited stdio.
-    let exec = daemon.cli(&repo, &["exec", "--", "true"]);
-    assert_success(&exec, "slipfork exec -- true");
+    // Direct daemon-resolved execution enters the live world with inherited stdio, starting on a
+    // directory the world carries: the entry shell's first `getcwd(2)` never fails (a host
+    // pathname under a `pivot_root`ed mount namespace is exactly the owner-reported symptom).
+    let exec = daemon.cli(&repo, &["exec", "--", "sh", "-c", "pwd"]);
+    assert_success(&exec, "slipfork exec -- sh -c pwd");
+    assert_eq!(
+        stdout(&exec).trim(),
+        repo.display().to_string(),
+        "exec must start in the world's mapped worktree, exactly like the requested cwd"
+    );
+    assert_eq!(
+        stderr(&exec),
+        "",
+        "world entry must be quiet: no `getcwd` line before the command"
+    );
 
     let prune = daemon.cli(&repo, &["prune", "--dry-run"]);
     assert_success(&prune, "slipfork prune --dry-run");
@@ -1622,6 +1634,89 @@ fn rescue_commands_re_run_and_inspect_the_failed_world() {
         stderr(&interactive).contains("--no-tty"),
         "the failure must name `hook run --no-tty`: {}",
         stderr(&interactive)
+    );
+}
+
+/// Run one `slipfork` invocation on a real PTY (`script(1)`), the way a developer's terminal does,
+/// and send `stdin` to it. `require_tty` is a real `isatty(2)` probe, so no fake can stand in.
+fn cli_on_a_pty(daemon: &Daemon, cwd: &Path, args: &[&str], stdin: &str) -> std::process::Output {
+    let mut line = format!(
+        "'{}' --state-dir '{}'",
+        env!("CARGO_BIN_EXE_slipfork"),
+        daemon.state_dir.display()
+    );
+    for arg in args {
+        line.push_str(&format!(" '{arg}'"));
+    }
+    let mut child = Command::new("script")
+        .args(["-qec", &line, "/dev/null"])
+        .current_dir(cwd)
+        .env(
+            "XDG_CACHE_HOME",
+            daemon.state_dir.parent().expect("state parent"),
+        )
+        .env("XDG_DATA_HOME", daemon.state_dir.join("xdg-data"))
+        .env("SHELL", "/bin/sh")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn script(1) for a real terminal");
+    child
+        .stdin
+        .take()
+        .expect("pty stdin")
+        .write_all(stdin.as_bytes())
+        .expect("write pty stdin");
+    child.wait_with_output().expect("wait for script(1)")
+}
+
+/// The one orientation line `slipfork shell` prints before handing over the terminal.
+const SHELL_ORIENTATION: &str =
+    "world rootfs is the app stage (no host tools; use slipfork ps / logs / open)";
+
+#[test]
+fn interactive_shell_prints_one_orientation_line_and_json_never_does() {
+    let tmp = disk_tempdir();
+    let scratch = tmp.path();
+    let repo = repo_with_snow(scratch);
+    let daemon = Daemon::start(scratch);
+    assert_success(&daemon.cli(&repo, &["up"]), "up before shell");
+
+    let shell = cli_on_a_pty(&daemon, &repo, &["shell"], "exit\n");
+    assert!(
+        shell.status.success(),
+        "interactive shell must hand over the terminal and exit cleanly: stdout={:?} stderr={:?}",
+        stdout(&shell),
+        stderr(&shell)
+    );
+    assert_eq!(
+        stdout(&shell).matches(SHELL_ORIENTATION).count(),
+        1,
+        "shell must print the orientation line exactly once: {}",
+        stdout(&shell)
+    );
+
+    let json = cli_on_a_pty(&daemon, &repo, &["--json", "shell"], "exit\n");
+    assert!(
+        json.status.success(),
+        "--json shell must exit cleanly: stdout={:?} stderr={:?}",
+        stdout(&json),
+        stderr(&json)
+    );
+    assert!(
+        !stdout(&json).contains(SHELL_ORIENTATION),
+        "--json never mixes the human orientation line into its document: {}",
+        stdout(&json)
+    );
+
+    // Non-interactive entry stays silent: `exec` shares the entry command, not the banner.
+    let exec = daemon.cli(&repo, &["exec", "--", "true"]);
+    assert_success(&exec, "exec -- true");
+    assert!(
+        !stderr(&exec).contains("app stage"),
+        "exec must stay silent: {}",
+        stderr(&exec)
     );
 }
 

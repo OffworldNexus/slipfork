@@ -27,3 +27,11 @@ edited fields
 ## 2026-11-18T00:38 [lead]
 
 added docs/design/do-vm-harness.md: it still documents render_apparmor_body and a harness-written /etc/apparmor.d/slipfork (deleted by M3.28.12) plus pre-AF_NETLINK sandbox text. Sweep it in the same pass as the published pages.
+
+## 2026-11-18T04:34 [lead]
+
+edited fields
+
+## 2026-11-18T04:34 [lead]
+
+added poc/run_benchmark.py: its benchmark still drives 'slipfork dag plan', a command M3.28.11 deleted, so the opt-in 'make bench' is broken. Remove that step or retarget it to a shipped command.

@@ -108,7 +108,7 @@ pub enum IntegrationCategory {
     Vcs,
     /// Language/framework test runner adapter (e.g. `pytest-slipfork`, Playwright, PHPUnit).
     TestRunner,
-    /// Slipfork CLI surface (e.g. `slipfork dag plan`).
+    /// Slipfork CLI surface (e.g. `slipfork snow resolve`).
     Cli,
 }
 

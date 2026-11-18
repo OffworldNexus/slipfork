@@ -50,7 +50,7 @@ use crate::service::{
     POLL_INTERVAL, ProcessIdentity, ServiceLogs, container_id, drain_stderr,
     ensure_container_destination, host_child_pids, kill_and_reap_child, run_streamed,
     run_streamed_with_input, spawn_log_reader, wait_for_exit, wait_for_inner_pid,
-    world_cwd_wrapper, world_guest_for_host,
+    world_guest_for_host,
 };
 use crate::world_init::{
     GROUP_GUEST, INGRESS_GUEST, OCI_BUNDLES_GUEST, OCI_RUN_GUEST, PASSWD_GUEST,
@@ -424,14 +424,21 @@ impl BtrfsEngine {
         }
     }
 
-    /// `nsenter` arguments entering every namespace of `init_pid`.
+    /// The one `nsenter` argv entering every namespace of `init_pid` at a working directory that
+    /// exists **inside** the world — shared by interactive entry, `exec`, and every supervised
+    /// `L0` process, so no caller can drift back to a host pathname.
     ///
     /// `--ipc` joins the world's private System V IPC namespace, so `shmget` keys never collide
-    /// across parallel worlds (`ADR-0010` §6). The working directory is applied by
-    /// [`world_cwd_wrapper`] **after** the mount-namespace entry: a path that lives on a bind
-    /// mount (the repo, `<state_dir>`) has no reachable host pathname after `pivot_root`, so
-    /// entering `--wd=<host path>` leaves `getcwd(2)` failing.
-    fn entry_prefix(&self, init_pid: u32, cwd: &Path) -> Vec<String> {
+    /// across parallel worlds (`ADR-0010` §6). The working directory is the load-bearing part:
+    /// `nsenter --wd=<dir>` opens the directory in the caller's namespace and only `fchdir(2)`s
+    /// after `setns(2)`, so a host pathname becomes a detached dentry once the world's
+    /// `pivot_root` is in force and the entered shell reports a `getcwd` failure before running
+    /// anything. `--wdns=<dir>` is opened **after** the namespace switch instead, so the process
+    /// starts on a real world dentry: [`world_guest_for_host`] maps the caller's host directory through the world's bind mounts, and `/` (the app stage root) is the one
+    /// directory every rootfs carries when the caller's directory is not mounted in-world.
+    fn entry_prefix(&self, init_pid: u32, mounts: &[WorldMount], host_cwd: &Path) -> Vec<String> {
+        let world_cwd =
+            world_guest_for_host(mounts, host_cwd).unwrap_or_else(|| PathBuf::from("/"));
         vec![
             format!("--target={init_pid}"),
             "--user".to_owned(),
@@ -440,7 +447,7 @@ impl BtrfsEngine {
             "--net".to_owned(),
             "--ipc".to_owned(),
             "--pid".to_owned(),
-            format!("--wd={}", cwd.display()),
+            format!("--wdns={}", world_cwd.display()),
             "--".to_owned(),
         ]
     }
@@ -825,8 +832,8 @@ impl BtrfsEngine {
     ) -> Result<(), EngineError> {
         let mut command = Command::new("nsenter");
         command
-            .args(self.entry_prefix(spawn.init_pid, Path::new("/")))
-            .args(world_cwd_wrapper(cwd, argv))
+            .args(self.entry_prefix(spawn.init_pid, spawn.mounts, cwd))
+            .args(argv)
             .env_clear()
             .envs(spawn.env)
             .env("SLIPFORK_WORLD_STATE", WORLD_STATE_GUEST)
@@ -1012,7 +1019,9 @@ impl BtrfsEngine {
     /// `crun` with its disabled cgroup manager and state root. Every `crun` invocation (`run`,
     /// `exec`, `kill`, `delete`) is built from it.
     fn crun_prefix(&self, init_pid: u32, crun_guest: &Path, crun_root_guest: &Path) -> Vec<String> {
-        let mut prefix = self.entry_prefix(init_pid, Path::new("/"));
+        // `crun` is a world binary and each container's own cwd comes from its OCI bundle, so the
+        // shared entry prefix only has to land on the app stage root.
+        let mut prefix = self.entry_prefix(init_pid, &[], Path::new("/"));
         prefix.push(crun_guest.display().to_string());
         prefix.extend([
             "--cgroup-manager=disabled".to_owned(),
@@ -1948,11 +1957,12 @@ impl WorldEngine for BtrfsEngine {
                 "exec argv must not be empty".to_owned(),
             ));
         }
-        let (init_pid, env) = {
+        let (init_pid, mounts, env) = {
             let mut worlds = self.lock()?;
             let record = self.live_record(&mut worlds, world)?;
             (
                 record.init_pid,
+                record.mounts.clone(),
                 child_env::materialize(&record.base_env, overlay_env, |var| {
                     std::env::var(var.name()).ok()
                 }),
@@ -1961,8 +1971,8 @@ impl WorldEngine for BtrfsEngine {
 
         let mut command = Command::new("nsenter");
         command
-            .args(self.entry_prefix(init_pid, Path::new("/")))
-            .args(world_cwd_wrapper(cwd, argv))
+            .args(self.entry_prefix(init_pid, &mounts, cwd))
+            .args(argv)
             .env_clear()
             .envs(&env)
             .env("SLIPFORK_WORLD_STATE", WORLD_STATE_GUEST)
@@ -1977,17 +1987,18 @@ impl WorldEngine for BtrfsEngine {
         world: &WorldHandle,
         cwd: &Path,
     ) -> Result<WorldEntryCommand, EngineError> {
-        let init_pid = {
+        let (init_pid, mounts) = {
             let mut worlds = self.lock()?;
             let record = self.live_record(&mut worlds, world)?;
-            record.init_pid
+            (record.init_pid, record.mounts.clone())
         };
-        let mut args_prefix = self.entry_prefix(init_pid, Path::new("/"));
-        args_prefix.extend(world_cwd_wrapper(cwd, &[]));
         Ok(WorldEntryCommand {
             program: PathBuf::from("nsenter"),
-            args_prefix,
-            cwd: cwd.to_path_buf(),
+            args_prefix: self.entry_prefix(init_pid, &mounts, cwd),
+            // The thin CLI `chdir`s here before `exec`ing `nsenter`, so this must be a host path:
+            // `/` is the one directory that exists on the host *and* in every world rootfs. The
+            // in-world start directory is `--wdns=<mapped dir>` inside `args_prefix`.
+            cwd: PathBuf::from("/"),
         })
     }
 
@@ -2968,7 +2979,7 @@ mod tests {
             "the injected helper is the unshare target: {argv:?}"
         );
 
-        let prefix = engine.entry_prefix(4242, Path::new("/"));
+        let prefix = engine.entry_prefix(4242, &[], Path::new("/"));
         assert_eq!(
             prefix.iter().filter(|arg| *arg == "--ipc").count(),
             1,
@@ -2980,6 +2991,11 @@ mod tests {
                 "{flag} missing: {prefix:?}"
             );
         }
+        assert!(
+            prefix.iter().any(|arg| arg == "--wdns=/")
+                && !prefix.iter().any(|arg| arg.starts_with("--wd=")),
+            "the working directory must be opened inside the target mount namespace: {prefix:?}"
+        );
     }
 
     #[test]

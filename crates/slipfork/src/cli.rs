@@ -76,12 +76,6 @@ pub enum Commands {
         action: SnowAction,
     },
 
-    /// Compute the orthogonal Artifact + Fixture Snapshot DAG execution plan.
-    Dag {
-        #[command(subcommand)]
-        action: DagAction,
-    },
-
     /// Boot the world selected by `--world` (or `cwd`) through `slipforkd`.
     Up {
         #[arg(long, value_name = "WORLD", help = WORLD_HELP)]
@@ -282,17 +276,6 @@ pub enum SnowAction {
         /// Expose plaintext secrets (only for internal child-process wiring; redacted by default).
         #[arg(long)]
         expose_secrets: bool,
-    },
-}
-
-/// `slipfork dag` actions.
-#[derive(Debug, Subcommand)]
-pub enum DagAction {
-    /// Hash repo inputs and print cached vs rebuild waves.
-    Plan {
-        /// Path to `slipfork.toml` (defaults to `<vcs_root>/slipfork.toml`).
-        #[arg(long)]
-        file: Option<PathBuf>,
     },
 }
 
@@ -538,6 +521,13 @@ mod tests {
     fn the_deleted_snap_subcommand_is_gone() {
         let err = Cli::try_parse_from(["slipfork", "snap", "--source", ".", "base"])
             .expect_err("snap was deleted in M2.16");
+        assert_eq!(err.kind(), clap::error::ErrorKind::InvalidSubcommand);
+    }
+
+    #[test]
+    fn the_deleted_dag_subcommand_is_gone() {
+        let err = Cli::try_parse_from(["slipfork", "dag", "plan"])
+            .expect_err("dag was deleted in M3.28.11");
         assert_eq!(err.kind(), clap::error::ErrorKind::InvalidSubcommand);
     }
 

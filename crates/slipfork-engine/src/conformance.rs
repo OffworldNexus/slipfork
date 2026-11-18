@@ -149,7 +149,11 @@ pub fn assert_world_engine_conformance(
         engine.name()
     );
 
-    // 5. Entry commands name a real program, carry an argv prefix, and preserve the requested cwd.
+    // 5. Entry commands name a real program, carry an argv prefix, and start the target on a
+    //    directory that exists inside the world — never on the caller's host pathname, which has
+    //    no reachable `getcwd(2)` after the world's `pivot_root` (the shell prints a `getcwd`
+    //    failure). The conformance world mounts nothing, so the app stage root `/` is the honest
+    //    start.
     let entry_cwd = scratch_dir.join("repo");
     let entry = engine
         .entry_command(&world, &entry_cwd)
@@ -166,9 +170,19 @@ pub fn assert_world_engine_conformance(
     );
     assert_eq!(
         entry.cwd,
-        entry_cwd,
-        "{} entry command must preserve the requested cwd",
+        Path::new("/"),
+        "{} entry command must spawn in `/`, the one directory that exists on the host and inside \
+         every world rootfs",
         engine.name()
+    );
+    assert!(
+        !entry.args_prefix.iter().any(|arg| arg.starts_with("--wd=")
+            || arg.contains(entry_cwd.display().to_string().as_str())),
+        "{} entry command must never name the caller's host directory ({}) as its working \
+         directory: {:?}",
+        engine.name(),
+        entry_cwd.display(),
+        entry.args_prefix
     );
 
     // 6. Dialing a live world either works, or fails closed with a typed error — never a

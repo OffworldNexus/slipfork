@@ -404,8 +404,16 @@ pub struct WorldEntryCommand {
     /// Executable of the engine's entry program (for example `nsenter`).
     pub program: PathBuf,
     /// Arguments that must precede the target argv.
+    ///
+    /// The entry program starts the target in a directory that exists **inside** the world: a
+    /// host pathname is unreachable after the world's `pivot_root`, so the entry shell's first
+    /// `getcwd(2)` would fail there.
     pub args_prefix: Vec<String>,
-    /// Working directory inside the world.
+    /// Working directory of the process that spawns [`Self::program`].
+    ///
+    /// `/` on purpose: it is the one directory that exists both on the host and inside every
+    /// world rootfs, so the spawner can `chdir` before `exec`ing the entry program without
+    /// touching a path the world owns.
     pub cwd: PathBuf,
 }
 
@@ -706,6 +714,10 @@ pub trait WorldEngine: Send + Sync {
 
     /// Execute `argv` inside `world` under the effective environment
     /// (`world.base_env ⊕ overlay_env`), streaming interleaved output chunks to `on_output`.
+    ///
+    /// `cwd` is the caller's **host** directory: the engine maps it through the world's bind
+    /// mounts and starts `argv` on that in-world path (the rootfs `/` when the directory is not
+    /// mounted), so the child's first `getcwd(2)` succeeds.
     fn exec_in_world(
         &self,
         world: &WorldHandle,
@@ -716,6 +728,9 @@ pub trait WorldEngine: Send + Sync {
     ) -> Result<ExecOutput, EngineError>;
 
     /// Argv prefix letting the thin CLI enter `world` directly with inherited stdio (`H-010` #1).
+    ///
+    /// `cwd` is the caller's **host** directory; the returned `args_prefix` starts the target on
+    /// that directory's in-world mapping (or the world rootfs `/`), never on the host pathname.
     fn entry_command(
         &self,
         world: &WorldHandle,

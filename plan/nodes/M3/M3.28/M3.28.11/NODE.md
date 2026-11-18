@@ -2,29 +2,32 @@
 id: M3.28.11
 title: "Delete the dag CLI, sweep unreachable dag types, quiet world entry, per-component log prefixes, [resources] behind -v"
 kind: task
-status: ready
+status: done
 owner: implementer
 priority: 3
 depends_on: [M3.28.10]
 paths:
   - crates/slipfork/src/cli.rs
   - crates/slipfork/src/main.rs
-  - crates/slipfork/src/logs.rs
   - crates/slipfork/tests/critical_cli.rs
+  - crates/slipfork/tests/critical_slug.rs
   - crates/slipfork/Cargo.toml
-  - "crates/slipfork-dag/Cargo.toml"
+  - "crates/slipfork-dag/src/support.rs"
   - docs/reference/cli.md
+  - docs/reference/manifest.md
   - "docs/testing-dag.md"
   - docs/index.md
   - "docs/getting-started.md"
   - README.md
-  - zensical.toml
   - AGENTS.md
-attempts: 0
+  - zensical.toml
+  - support/integrations.toml
+  - ARCHITECTURE.md
+attempts: 2
 max_attempts: 3
 escalation: none
 created: "2026-11-17T16:33"
-updated: "2026-11-17T17:53"
+updated: "2026-11-18T04:34"
 ---
 
 # Goal

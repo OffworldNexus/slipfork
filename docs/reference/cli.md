@@ -1,6 +1,6 @@
 # CLI Reference (`0.1.0`)
 
-`slipfork` is a thin client: `doctor` and `dag plan` read the host locally, `snow resolve` and `secret` ask `slipforkd` (it owns the vault), and every world command talks to the unprivileged `slipforkd` daemon over a `0600` `<state_dir>/run/daemon.sock`. Only `up` and `fork` start `slipforkd --listen 127.0.0.1:0` in the background (`<state_dir>/run/daemon.log`, `0600`); every other verb fails closed with one line when nothing answers:
+`slipfork` is a thin client: `doctor` reads the host locally, `snow resolve` and `secret` ask `slipforkd` (it owns the vault), and every world command talks to the unprivileged `slipforkd` daemon over a `0600` `<state_dir>/run/daemon.sock`. Only `up` and `fork` start `slipforkd --listen 127.0.0.1:0` in the background (`<state_dir>/run/daemon.log`, `0600`); every other verb fails closed with one line when nothing answers:
 ```console
 $ slipfork list
 slipfork: no slipforkd on /home/acme/.cache/slipfork/run/daemon.sock — run `slipfork up`
@@ -52,7 +52,6 @@ fix: sudo mount -o user_subvol_rm_allowed,noatime /dev/<device> <state_dir>
 |---|---|---|
 | `doctor` | Probe the Btrfs substrate, the live subvolume round-trip, and unprivileged userns/netns | `slipfork doctor` |
 | `snow resolve` | Validate `snow.yml`, persist missing `!!` secrets, print one mode (`[REDACTED]`) | `slipfork snow resolve --file snow.yml --mode local` |
-| `dag plan` | Merkle-hash inputs and print `Cached` / `Rebuild` per artifact and fixture wave | `slipfork dag plan` |
 | `up` | Boot or confirm the world selected by `--world` or `cwd`; print one app URL | `slipfork up` |
 | `down` | Stop a world's services, keep its worktree (idempotent) | `slipfork down --world feat-billing` |
 | `fork` | Create `.worktrees/<fork>` — a Git worktree, or a Jujutsu workspace when the checkout carries `.jj` — plus its Btrfs world subvolume | `slipfork fork feat-billing` |
@@ -103,7 +102,6 @@ PG_PASSWORD
 | Command | Command-specific flags |
 |---|---|
 | `snow resolve` | `--file <FILE>` (default `snow.yml`), `--mode <MODE>` (default `local`), `--component <ID>`, `--expose-secrets` |
-| `dag plan` | `--file <FILE>` (default `<vcs_root>/slipfork.toml`) |
 | `logs` | `--follow`, `--lines <N>`, `--stderr`, optional target (`api`, `api:pre-deploy`) |
 | `hook run` | `--no-tty` (run through the daemon instead of a native TTY) |
 | `forward` | positional targets (`pg_databases.main`, `components.api`); no target forwards all |

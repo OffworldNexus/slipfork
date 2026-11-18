@@ -178,22 +178,6 @@ impl LogBuffer {
     }
 }
 
-/// `sh -c 'cd -- "$1" && shift && exec "$@"' sh <cwd> [argv...]`.
-///
-/// The `cd` runs **inside** the entered mount namespace, so `getcwd(2)` resolves through the
-/// world's bind mounts instead of the hidden host path.
-pub(crate) fn world_cwd_wrapper(cwd: &Path, argv: &[String]) -> Vec<String> {
-    let mut wrapped = vec![
-        "sh".to_owned(),
-        "-c".to_owned(),
-        "cd -- \"$1\" && shift && exec \"$@\"".to_owned(),
-        "sh".to_owned(),
-        cwd.display().to_string(),
-    ];
-    wrapped.extend(argv.iter().cloned());
-    wrapped
-}
-
 /// Stable `crun` container id derived from the world sequence and service id.
 pub(crate) fn container_id(world_seq: u64, service_id: &str) -> String {
     let slug: String = service_id
@@ -525,7 +509,14 @@ pub(crate) fn world_guest_for_host(mounts: &[WorldMount], host_path: &Path) -> O
         host_path
             .strip_prefix(&mount.host_path)
             .ok()
-            .map(|relative| mount.guest_path.join(relative))
+            .map(|relative| {
+                // `join("")` would append a trailing separator; the mount root maps to itself.
+                if relative.as_os_str().is_empty() {
+                    mount.guest_path.clone()
+                } else {
+                    mount.guest_path.join(relative)
+                }
+            })
     })
 }
 

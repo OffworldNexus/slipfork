@@ -70,7 +70,7 @@ category = "cli"
 tier = "declared"
 
 [integration.evidence]
-recipe_page = "docs/testing-dag.md"
+recipe_page = "docs/reference/manifest.md"
 critical_test = "slipfork_dag::critical_dag::r9_orthogonal_invalidation_front_edit_never_invalidates_db_snapshots_and_vice_versa"
 
 [[integration]]

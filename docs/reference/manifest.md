@@ -133,7 +133,7 @@ coverage_report = ["html", "xml"] # html | xml | json | lcov | text
 coverage_fail_under = 85          # optional integer 0..=100
 ```
 
-The whole file is optional: absent, `up`/`fork` boot with defaults. `dag plan` reads it explicitly (`--file`, default `<vcs_root>/slipfork.toml`), so a repository using artifacts or fixtures declares them there. A malformed file always fails closed.
+The whole file is optional: absent, `up`/`fork` boot with defaults. A repository using artifacts or fixtures declares them there; `0.1.0` validates them at boot but ships no command that materializes a plan. A malformed file always fails closed.
 
 ### `[world]`: which rootfs a world boots
 

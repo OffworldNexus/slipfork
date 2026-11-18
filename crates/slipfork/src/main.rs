@@ -7,12 +7,11 @@
 //! closed with one actionable line when nothing answers (`ADR-0011` §2–§3).
 //!
 //! `snow resolve` runs through `slipforkd` (`DaemonControl::snow_resolve`), so the daemon owns the
-//! `0600` local vault and the in-memory OSPP environment. Only `doctor` and `dag plan` stay
-//! CLI-local: they read host capabilities and repository files without materializing a world.
+//! `0600` local vault and the in-memory OSPP environment. Only `doctor` stays CLI-local: it reads
+//! host capabilities without materializing a world.
 
 #![forbid(unsafe_code)]
 
-use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::fs::{self, OpenOptions};
 use std::io::{self, IsTerminal, Read, Write};
@@ -27,8 +26,8 @@ use serde_json::json;
 use slipfork::apparmor::render_userns_profile;
 use slipfork::browser::{NO_BROWSER_REMEDY, SystemBrowserOpener};
 use slipfork::cli::{
-    Cli, Commands, DaemonAction, DagAction, DumpArgs, HookAction, ResourceArgs, SecretAction,
-    SnowAction, UnitKind,
+    Cli, Commands, DaemonAction, DumpArgs, HookAction, ResourceArgs, SecretAction, SnowAction,
+    UnitKind,
 };
 use slipfork::daemon_unit_install::{
     self, DAEMON_GRACE, DAEMON_POLL, InstallRequest, ManagedUnit, SocketHolder, UnitInstaller,
@@ -36,9 +35,9 @@ use slipfork::daemon_unit_install::{
 };
 use slipfork::doctor::{self, OsHostProbe, SystemdIngressProbe};
 use slipfork::layout::{Layout, ensure_private_dir};
-use slipfork::project::{load_slipfork_config, repository_resolver};
+use slipfork::project::repository_resolver;
 use slipfork::user::{AccountDatabaseIdentity, HostIdentity, KernelHostIdentity, UserIdentity};
-use slipfork_dag::{DagPlanner, EvidenceField, FsDigestCache, FsMerkleHasher, SupportRegistry};
+use slipfork_dag::{EvidenceField, SupportRegistry};
 use slipfork_edge::{
     BootEvent, DaemonControl, DaemonControlClient, DropForkRequest, ExecTargetRequest, ForkRequest,
     ForwardRequest, ForwardSummary, HookRunRequest, LogsRequest, SnowResolveRequest, UpRequest,
@@ -103,9 +102,6 @@ fn run(cli: Cli) -> Result<ExitCode, String> {
             component.as_deref(),
             expose_secrets,
         ),
-        Some(Commands::Dag {
-            action: DagAction::Plan { file },
-        }) => dag_plan(json, &layout, file),
         Some(Commands::Daemon { action }) => match action {
             DaemonAction::Unit {
                 only,
@@ -297,38 +293,6 @@ fn resolve_snow(
     } else {
         for (key, value) in &summary.vars {
             println!("{key}={value}");
-        }
-    }
-    Ok(ExitCode::SUCCESS)
-}
-
-fn dag_plan(json: bool, layout: &Layout, file: Option<PathBuf>) -> Result<ExitCode, String> {
-    let (config_path, repo_root) = resolve_dag_paths(file)?;
-    let config = load_slipfork_config(&config_path)?;
-    let hasher = FsMerkleHasher::new(&repo_root);
-    let cache = FsDigestCache::new(layout.state_dir());
-    let plan = DagPlanner::plan(&config, &BTreeMap::new(), &BTreeMap::new(), &hasher, &cache)
-        .map_err(|err| err.to_string())?;
-    if json {
-        println!("{}", render_json(&plan)?);
-    } else {
-        for artifact in &plan.artifacts {
-            println!(
-                "artifact {:16} {:?} ({})",
-                artifact.id,
-                artifact.action,
-                &artifact.digest[..12]
-            );
-        }
-        for (wave_index, wave) in plan.fixture_waves.iter().enumerate() {
-            for fixture in wave {
-                println!(
-                    "wave {wave_index} fixture {:12} {:?} ({})",
-                    fixture.id,
-                    fixture.action,
-                    &fixture.digest[..12]
-                );
-            }
         }
     }
     Ok(ExitCode::SUCCESS)
@@ -1077,6 +1041,11 @@ fn shell(json: bool, layout: &Layout, world: Option<String>) -> Result<ExitCode,
             argv: vec![shell],
         })
         .map_err(|err| err.to_string())?;
+    // One orientation line before the TTY is handed over, and never under `--json`: the world
+    // rootfs is the app stage, not the host, so `ps`/`curl` do not exist inside it.
+    if !json {
+        eprintln!("world rootfs is the app stage (no host tools; use slipfork ps / logs / open)");
+    }
     let status = spawn_entry(&target)?;
     if json {
         println!(
@@ -1715,32 +1684,4 @@ fn repo_root(start: &Path) -> Result<slipfork_vcs::RepoRoot, String> {
     repository_resolver()
         .resolve(start)
         .map_err(|err| err.to_string())
-}
-
-fn parent_dir(path: &Path) -> PathBuf {
-    match path.parent() {
-        Some(parent) if !parent.as_os_str().is_empty() => parent.to_path_buf(),
-        _ => PathBuf::from("."),
-    }
-}
-
-/// Resolve the DAG planner's `--file` (default `<vcs_root>/slipfork.toml`) through the shared
-/// repository resolver, so the config and its input globs always share one VCS root.
-fn resolve_dag_paths(file: Option<PathBuf>) -> Result<(PathBuf, PathBuf), String> {
-    match file {
-        None => {
-            let repository = repo_root(Path::new("."))?;
-            Ok((
-                repository.vcs_root.join("slipfork.toml"),
-                repository.vcs_root,
-            ))
-        }
-        Some(explicit_file) => {
-            if let Err(err) = fs::metadata(&explicit_file) {
-                return Err(format!("cannot read {}: {err}", explicit_file.display()));
-            }
-            let vcs_root = repo_root(&parent_dir(&explicit_file))?.vcs_root;
-            Ok((explicit_file, vcs_root))
-        }
-    }
 }

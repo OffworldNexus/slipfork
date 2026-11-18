@@ -12,10 +12,8 @@ $ slipfork fork feat-billing                         # second CoW world + .workt
 $ slipfork list                                      # one app URL per world
 ```
 
-Once you have written a `slipfork.toml`, `slipfork dag plan` previews the artifact/fixture waves ([DAG planner](testing-dag.md)).
-
 !!! info "One daemon, many thin clients"
-    `slipfork` auto-spawns the unprivileged `slipforkd` daemon when `<runtime_dir>/daemon.sock` does not answer, so no systemd setup is required. `doctor` and `dag plan` are local diagnostics; `snow resolve` and every world command run through the daemon.
+    `slipfork` auto-spawns the unprivileged `slipforkd` daemon when `<runtime_dir>/daemon.sock` does not answer, so no systemd setup is required. `doctor` is a local diagnostic; `snow resolve` and every world command run through the daemon.
 
 !!! warning "Btrfs only"
     The state directory (`~/.cache/slipfork` by default) must be a `btrfs` filesystem mounted `user_subvol_rm_allowed,noatime` and owned by your user; every world and sealed snapshot is one unprivileged subvolume. There is no second filesystem mode: `slipfork doctor` prints the exact `mount` line and exits `1` on anything else.
@@ -33,7 +31,6 @@ Once you have written a `slipfork.toml`, `slipfork dag plan` previews the artifa
 | **Inside a world** (`exec`/`shell`/`logs`/`hook run`/`forward`) | Daemon-resolved environment, native terminal stdio, retained component/hook logs, daemon-owned forward listeners |
 | **`snow.yml` resolver** (`snow resolve`) | `modes.all` + `modes.<mode>`, mode-scoped components, `??` fallbacks, write-once `!!` CSPRNG secrets in the project's local `0600` vault (local values only — the other tier is [memory-only remote secrets](reference/ospp.md#two-tiers)) |
 | **OSPP v1 secrets** (`slipfork auth`) | Pair the machine with the daemon's `--ospp-endpoint` provider by opening the server-supplied `<url>#handle=…` page; server-resolved secrets arrive HPKE-encrypted, are decrypted in `slipforkd` memory, and are injected into children without touching disk |
-| **DAG planner** (`dag plan`) | SHA-256 Merkle digests per `[artifacts.<id>]` and topological `[fixtures.<id>]` waves |
 | **OpenCode V2 plugin** (`@slipfork/opencode`) | Worktree → world binding, `cwd`-based shell routing through `slipfork exec`, session context hints |
 | **`git-remote-slipfork`** | `git fetch` a running fork's branch and `refs/slipfork/<fork>/wip` over `slipfork://<fork>` |
 
@@ -55,7 +52,6 @@ Owner-recorded figures for the single-subvolume world (provenance and open quest
 - **[Getting started](getting-started.md)** — mount Btrfs, probe, boot, fork, and work inside a world.
 - **[`snow.yml` modes & secrets](snow-modes.md)** — mode resolution, `!!` generators, coordinates.
 - **[Secrets & OSPP v1](reference/ospp.md)** — pairing quickstart, the two tiers, and the frame map.
-- **[Orthogonal DAG planner](testing-dag.md)** — configure `slipfork.toml` and read rebuild waves.
 - **[OpenCode V2 plugin](agents-and-opencode.md)** — automatic worktree worlds for agents.
 - **[CLI](reference/cli.md)** & **[manifest reference](reference/manifest.md)** — commands, flags, schemas.
 - **[Support matrix](support-matrix.md)** — tiers, evidence, and what each integration guarantees.

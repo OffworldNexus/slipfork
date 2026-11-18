@@ -806,14 +806,16 @@ impl WorldEngine for StubWorldEngine {
     fn entry_command(
         &self,
         world: &WorldHandle,
-        cwd: &Path,
+        _cwd: &Path,
     ) -> Result<WorldEntryCommand, EngineError> {
         self.live_world(world)?;
-        // A stub world has no namespaces to enter, so entering it runs the argv directly.
+        // A stub world has no namespaces to enter, so entering it runs the argv directly. The
+        // shared conformance contract still applies: `/` is the one directory that exists on the
+        // spawning host and inside every world rootfs.
         Ok(WorldEntryCommand {
             program: PathBuf::from("env"),
             args_prefix: vec!["--".to_owned()],
-            cwd: cwd.to_path_buf(),
+            cwd: PathBuf::from("/"),
         })
     }
 

@@ -724,13 +724,19 @@ fn persistent_init_pid_stays_stable_across_calls_and_is_reaped_on_destroy() {
         "BtrfsEngine enters via a single-threaded nsenter child"
     );
     assert!(
-        entry.args_prefix.iter().any(|arg| arg == "--wd=/")
-            && entry
-                .args_prefix
-                .iter()
-                .any(|arg| arg == &fx.repo.display().to_string()),
-        "entry must apply the requested cwd after entering the world mount namespace: {:?}",
+        entry
+            .args_prefix
+            .iter()
+            .any(|arg| arg == &format!("--wdns={}", fx.repo.display()))
+            && !entry.args_prefix.iter().any(|arg| arg.starts_with("--wd=")),
+        "entry must start the worktree's in-world path at a directory the world carries, opened \
+         after the namespace switch: {:?}",
         entry.args_prefix
+    );
+    assert_eq!(
+        entry.cwd,
+        Path::new("/"),
+        "the spawner chdirs to `/`, which exists on the host and in every world rootfs"
     );
     assert!(
         Path::new(&format!("/proc/{init_pid}")).exists(),
@@ -1107,9 +1113,14 @@ fn entry_command_enters_the_persistent_init_pid_with_native_stdio() {
         String::from_utf8_lossy(&out.stderr)
     );
     let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
     assert!(
         stdout.starts_with(&format!("entered|{uid}|")),
         "entry must preserve the host uid: {stdout}"
+    );
+    assert!(
+        !stderr.contains("getcwd"),
+        "the entry shell's first getcwd(2) must succeed in-world: {stderr}"
     );
     let via_exec = fx
         .exec(&world, "stat -c %i /proc/1/ns/pid")
@@ -1127,6 +1138,111 @@ fn entry_command_enters_the_persistent_init_pid_with_native_stdio() {
     assert_eq!(
         target_pid(&entry),
         target_pid(&fx.engine.entry_command(&world, &fx.repo).unwrap())
+    );
+
+    fx.engine.destroy_world(world).expect("destroy");
+    let _ = fs::remove_dir_all(&fx.root);
+}
+
+#[test]
+fn entry_and_exec_start_on_the_in_world_directory_mapped_from_the_host_path() {
+    let fx = WorldFixture::new("in-world-cwd");
+    let sub = fx.repo.join("pkg");
+    fs::create_dir_all(&sub).expect("repo subdir");
+    // A guest path that has no host counterpart at all: only the in-world mapping can start here.
+    let guest = fx.root.join("stage");
+    assert!(
+        !guest.exists(),
+        "the fixture must not create the in-world mount target on the host"
+    );
+    let world = fx
+        .engine
+        .clone_world(&WorldSpec {
+            target: WorldTarget::Canonical,
+            rootfs: fx.rootfs.clone(),
+            snapshot: fx.snapshot.clone(),
+            mounts: vec![WorldMount {
+                host_path: fx.repo.clone(),
+                guest_path: guest.clone(),
+                mode: MountMode::ReadWrite,
+            }],
+            base_env: world_env(&fx.home),
+            local_ingress: None,
+            boot: BootLineage::default(),
+        })
+        .expect("clone world with a remapped worktree");
+    let world_cwd = guest.join("pkg");
+
+    // 1. The argv names the in-world directory, never the host pathname.
+    let entry = fx.engine.entry_command(&world, &sub).expect("entry");
+    assert_eq!(entry.cwd, Path::new("/"));
+    assert!(
+        entry
+            .args_prefix
+            .iter()
+            .any(|arg| arg == &format!("--wdns={}", world_cwd.display())),
+        "entry must open the mapped in-world directory after setns: {:?}",
+        entry.args_prefix
+    );
+    assert!(
+        !entry
+            .args_prefix
+            .iter()
+            .any(|arg| arg.starts_with("--wd=") || arg.contains(sub.display().to_string().as_str())),
+        "the caller's host path must never appear in the entry argv: {:?}",
+        entry.args_prefix
+    );
+
+    // 2. Driving it exactly like the thin CLI does (spawn cwd `/`, argv untouched): the shell's
+    //    first `getcwd(2)` succeeds and it really starts in the mapped directory.
+    let out = Command::new(&entry.program)
+        .args(&entry.args_prefix)
+        .args(["sh", "-c", "pwd"])
+        .env_clear()
+        .env("PATH", HELPER_PATH)
+        .current_dir(&entry.cwd)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("spawn entry command");
+    assert!(
+        out.status.success(),
+        "direct entry failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert!(
+        !stderr.contains("getcwd"),
+        "the entry shell must start on a reachable world dentry: {stderr}"
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout).trim(),
+        world_cwd.display().to_string(),
+        "the entry shell must run in the world's mapped directory"
+    );
+
+    // 3. The same builder backs non-interactive exec: no wrapper shell, same in-world directory.
+    let exec = fx
+        .engine
+        .exec_in_world(
+            &world,
+            &["sh".to_owned(), "-c".to_owned(), "pwd".to_owned()],
+            &sub,
+            &ExecEnv::default(),
+            &mut |_| {},
+        )
+        .expect("exec in world");
+    assert_eq!(exec.exit_code, 0, "stderr: {}", exec.stderr);
+    assert_eq!(
+        exec.stdout.trim(),
+        world_cwd.display().to_string(),
+        "exec must start in the same mapped in-world directory"
+    );
+    assert!(
+        !exec.stderr.contains("getcwd"),
+        "exec must never inherit an unreachable cwd: {}",
+        exec.stderr
     );
 
     fx.engine.destroy_world(world).expect("destroy");

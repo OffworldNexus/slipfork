@@ -275,6 +275,12 @@ fn remote_secrets_never_reach_disk_and_claimed_vars_resolve_from_the_local_vault
         ],
     );
     assert_success(&env, "exec the resolved environment");
+    assert!(
+        !stderr(&env).contains("getcwd"),
+        "world entry must start on a directory the world carries, never a host pathname (the \
+         entered shell must not report a `getcwd` failure): {}",
+        stderr(&env)
+    );
     let values = stdout(&env);
     assert!(
         values.contains("local-debug"),
