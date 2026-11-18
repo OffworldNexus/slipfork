@@ -2,7 +2,7 @@
 id: M3.30.1.3.3.4
 title: Concrete unit installer + delete last recording/stub doubles
 kind: task
-status: ready
+status: done
 owner: implementer
 priority: 3
 depends_on: [M3.30.1.3.3.3]
@@ -17,7 +17,7 @@ attempts: 2
 max_attempts: 3
 escalation: none
 created: "2026-11-18T23:13"
-updated: "2026-11-18T23:44"
+updated: "2026-11-18T23:52"
 ---
 
 # Goal

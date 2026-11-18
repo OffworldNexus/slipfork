@@ -19,3 +19,7 @@ base 8b8189a07ca1010a120c7cd30729147b4897092d
 ## 2026-11-18T23:13 [lead]
 
 edited fields
+
+## 2026-11-18T23:52 [lead]
+
+status active -> done: 4/4 children done: identity, probes, browser, installer concrete; no CLI doubles left (test-only WorldEngine/BaseImageBuilder doubles carried to M3.30.4)

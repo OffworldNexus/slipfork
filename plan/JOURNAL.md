@@ -1560,3 +1560,9 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-18T23:44 [M3.30.1.3.3.4] (lead) attempt 2/3 started
 - 2026-11-18T23:44 [M3.30.5] (lead) carry-over: amend ADR-0011 clause naming deleted trait UnitInstaller/OsUnitInstaller; docs/design blueprint trait verbs
 - 2026-11-18T23:44 [M3.30.3] (lead) carry-over: daemon install systemctl/apparmor legs block silently via .output(); add phase lines + spawn
+- 2026-11-18T23:52 [M3.30.1.3.3.4] (lead) status ready -> done
+- 2026-11-18T23:52 [M3.30.1.3.3] (lead) status active -> done: 4/4 children done: identity, probes, browser, installer concrete; no CLI doubles left (test-only WorldEngine/BaseImageBuilder doubles car
+- 2026-11-18T23:52 [M3.30.1.3.4] (lead) status ready -> active
+- 2026-11-18T23:52 [M3.30.1.3.4] (lead) attempt 1/3 started
+- 2026-11-18T23:52 [M3.30.1.3.4] (lead) base cf7aa28623c4f5ea09298d7f7a6df77f41d3a9f3
+- 2026-11-19T00:02 [M3.30.6] (lead) carry-over: docs/knowledge/LESSONS.md still references deleted tools/check_stub_adapters.py — update while recording lab lessons

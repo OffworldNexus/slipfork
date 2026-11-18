@@ -2,16 +2,16 @@
 id: M3.30.1.3.4
 title: "Docs/tooling: surviving port list + delete vacuous stub-adapters guard"
 kind: task
-status: ready
+status: active
 owner: implementer
 priority: 3
 depends_on: [M3.30.1.3.3]
 paths: [ARCHITECTURE.md, Makefile, "tools/**"]
-attempts: 0
+attempts: 1
 max_attempts: 3
 escalation: none
 created: "2026-11-18T22:46"
-updated: "2026-11-18T22:46"
+updated: "2026-11-18T23:52"
 ---
 
 # Goal

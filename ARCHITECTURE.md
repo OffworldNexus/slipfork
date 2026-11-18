@@ -2,34 +2,47 @@
 
 This document is the authoritative specification of Slipfork's **Composition Root**, **Inversion of Control / Dependency Injection (IoC/DI) Tree**, crate boundaries, wire protocols, and execution invariants (`ADR-0001`..`ADR-0011`, `H-001`..`H-011`).
 
-The single Btrfs world engine (and its injected `SubvolumeDriver` seam, `ADR-0010`), world base-image builder, local `0600` file vault (`FileVaultProvider`), OSPP v1 live subscription/dump client (`docs/design/ospp.md`), VCS workspace drivers, and language-blind `STP v1` test orchestrator MUST plug into the trait tree below without global state, ambient OS/env reads, downcasts, opaque extras bags, `match wire_version` / `match kind` sprawl, stub/unavailable composition-root adapters (`tools/check_stub_adapters.py`, `M3.28.16`), or fallback hacks. **All domain traits are 100% synchronous (`std::net`, `UnixStream`, synchronous `tungstenite` over `rustls` + `webpki-roots`, `std::thread` — zero `tokio`, and remote OSPP secrets never touch disk). If a feature cannot fit this DI tree cleanly, stop and file a `direction-challenge` in `plan/HUMAN.md`.**
+The single Btrfs world engine over the concrete `KernelBtrfsDriver` (`ADR-0010` §§3–5), world base-image builder, local `0600` file vault (`FileVaultProvider`), OSPP v1 live subscription/dump client (`docs/design/ospp.md`), VCS workspace drivers, and language-blind `STP v1` test orchestrator MUST plug into the port tree below without global state, ambient OS/env reads, downcasts, opaque extras bags, `match wire_version` / `match kind` sprawl, or fallback hacks. **All domain traits are 100% synchronous (`std::net`, `UnixStream`, synchronous `tungstenite` over `rustls` + `webpki-roots`, `std::thread` — zero `tokio`, and remote OSPP secrets never touch disk). If a feature cannot fit this DI tree cleanly, stop and file a `direction-challenge` in `plan/HUMAN.md`.**
 
 ---
 
 ## 1. Composition Root & DI Tree (`H-010` Unified User Daemon & M3 Target-State `ADR-0010` Btrfs Engine)
 
-> **Cargo Feature & Test-Scaffolding Rule (normative):** Cargo features are reserved for language/platform modularity; test scaffolding (such as `TestTreeDriver`, `FakeHostProbe`, `FakeBaseImageBuilder`, and `MemorySecretProvider`) lives strictly in `#[cfg(test)]` (crate-internal unit tests), `tests/support/` (per-crate integration suites, e.g. `crates/slipfork/tests/support/` supplying a test `SubvolumeDriver` to `doctor` and in-process `slipforkd`, plus `FakeHostProbe` to `doctor`, in `M3.15`), or an optional `publish = false` workspace testkit crate in `[dev-dependencies]` — never behind a Cargo `[features]` flag on a production crate. (The M2 residue — `crates/slipfork-ospp`'s `test-server` feature enabled from `crates/slipfork/Cargo.toml` — was deleted in `M3.22`: those reference-server doubles now live in the unpublished `crates/slipfork-ospp-testkit` crate (`publish = false`), consumed as a `[dev-dependencies]` entry by both protected test suites.) **Dev-dependency double-compile rule (normative):** a `publish = false` testkit crate that itself depends on the crate under test (`slipfork-engine` →dev→ `slipfork-testkit` →normal→ `slipfork-engine`) makes Cargo compile that crate **twice**, so a testkit double implements a different copy of the crate's traits than its own `--lib` unit tests see — such doubles are consumed from integration suites (`tests/`), which link the normal library and can pass `&TestTreeDriver as &dyn SubvolumeDriver`, while `--lib` unit tests use crate-internal fakes.
+> **Cargo Feature & Test-Scaffolding Rule (normative):** Cargo features are reserved for language/platform modularity; test scaffolding (in-memory fakes, stub engines, loopback reference servers) lives strictly in `#[cfg(test)]` (crate-internal unit tests), `tests/support/` (per-crate integration suites), or an optional `publish = false` workspace testkit crate in `[dev-dependencies]` — never behind a Cargo `[features]` flag on a production crate. (The M2 residue — `crates/slipfork-ospp`'s `test-server` feature enabled from `crates/slipfork/Cargo.toml` — was deleted in `M3.22`: those reference-server doubles now live in the unpublished `crates/slipfork-ospp-testkit` crate (`publish = false`), consumed as a `[dev-dependencies]` entry by both protected test suites.) **Dev-dependency double-compile rule (normative):** a `publish = false` testkit crate that itself depends on the crate under test (`slipfork-engine` →dev→ `slipfork-testkit` →normal→ `slipfork-engine`) makes Cargo compile that crate **twice**, so a testkit double implements a different copy of the crate's traits than its own `--lib` unit tests see — such doubles are consumed from integration suites (`tests/`), which link the normal library and can pass an `Arc<dyn WorldEngine>` / `Arc<dyn BaseImageBuilder>`, while `--lib` unit tests use crate-internal fakes.
 
 > **Test-only port doubles (carry-over, `M3.30.4`):** `RecordingEngine`/`StubRootfs` (inside `crates/slipfork/src/daemon.rs` `#[cfg(test)]`) and `StubWorldEngine` (`crates/slipfork-edge/tests/critical_edge.rs`) are `#[cfg(test)]`/`tests/**`-confined doubles of the genuine `WorldEngine` and `BaseImageBuilder` ports — no production crate compiles or names them. Their real-lab replacement (real `BtrfsEngine` worlds + real rootfs builds) is the test-consolidation slice `M3.30.4`; until then they are the only way the `M3.28.17` reload windows and the protected registry/ingress routing assertions run. `slipfork daemon install`, by contrast, ships **one concrete** `UnitInstaller` (`M3.30.1.3.3.4`): no installer trait and no recorded/captured effect stands in for the real `0644` files.
 
 Only **two entrypoints** in the entire repository wire concrete adapters from ambient environment variables, wall clocks, OS sockets, or real filesystems:
 
-1. **Rust Unified User Daemon Composition Root (`slipforkd` in `crates/slipfork`, shipped in `0.1.0`; M3 Phase 1 `BtrfsEngine` switchover in `M3.20`, `M3.12`–`M3.15`, `M3.21`; `0.1.0` UX pass in `M3.28`, `ADR-0011`; `0.1.0` OSPP v1 target state in `M3.29`, `docs/design/ospp.md`; M3 Phase 2 `STP v1` wiring in `M3.2`):** Runs unprivileged as `User=<developer-user>` (`H-010`'s `%i` shorthand denotes the developer's own OS account, resolved once at the CLI composition boundary via `UserIdentity` into non-template `slipforkd.{socket,service}` plus `/etc/apparmor.d/slipfork` `userns` profile via `slipfork daemon unit` / installed atomically via `slipfork daemon install` [`M3.15`, `M3.28.6`, `ADR-0010` §7, `ADR-0011` §1], or `--listen 127.0.0.1:0 --state-dir <path> --runtime-dir <path>` auto-spawned by the CLI). `slipforkd` receives explicit `--state-dir` and `--runtime-dir` flags (never defaulting or guessing `$XDG_RUNTIME_DIR` or `current_dir()`; optional composition-root helper overrides `--crun <path>` and `--world-init <path>` inject explicit binary paths into `runtime_assets`, `ADR-0009` §1) plus one injected `OsppEndpoint` (the single server identity authority across `connect`, `subscribe`, `dump`, and `auth_pair`), binds `<runtime_dir>/daemon.sock` (`0600`) plus `<state_dir>/http-ingress.sock` (`0600`), provisions `runtime_assets` (`ADR-0009` §1), injects each world's disjoint per-world control directory `WorldSpec.control_dir` (`ADR-0010` §2), constructs `SystemBrowserOpener` (`crates/slipfork/src/browser.rs`, `M3.28.9`), and owns **all** stateful adapters in-process: shipped `0.1.0` `BaseImageBuilder`, injected `SecretVault` (`crates/slipfork-edge`: `get`/`put`/`remove`/`keys`, wired solely at the Composition Root over `FileVaultProvider` for local `0600` backing-service credentials, local `!!` secrets, and `slipfork secret` overrides — **remote OSPP secrets never touch disk**, and `SecretVault::keys` feeds `OsppClaims`), `OsppClient` + live `OsppSession` subscription lifecycle (keeping the `ospp-v1` WebSocket open while worlds run, holding each subscription's ephemeral `hpke-p256` private key `S=` strictly in memory, decrypting server-resolved secrets in memory, updating affected service envs via `WorldEngine::update_service_env` and restarting through `M3.28.17`'s shared boot pipeline on `env_updated`, re-subscribing with the same `id` on config/vault change, unsubscribing on stop, and streaming HPKE-encrypted dumps via `OsppSession::dump` straight into `zstd -d | pg_restore` before `freeze_world` with zero plaintext at rest), `ResourcePlan`, `VcsWorkspaceFactory` (`create_workspace` + `current_branch`, `M3.28.5`) + `RepoRootResolver` (resolving the verbatim Git `remote` string for OSPP `subscribe`), and `WorldRegistry` (untagged `struct WorldOrigin(LocalOrigin)` `.localhost` origins only; one origin kind, tombstone in `ADR-0011`); `BtrfsEngine` (`M3.13`/`M3.15`/`M3.28.4`/`M3.29`) constructed over `Arc<dyn SubvolumeDriver>` = `Arc::new(KernelBtrfsDriver)` (`M3.12`, enforcing §3.3 / `ADR-0010` §4's magic-only fail-closed `SubvolumeDriver::ensure_supported` boot check and an injected monotonic clock stamping `uptime_secs` and per-world `WorldLineage` in `WorldEngine::world_processes` & `world_lineage`); and M3 Phase 2 target-state (`M3.2`) `STP v1` orchestrator + `BtrfsArtifactStore` (`crates/slipfork-test`, sharing `Arc<dyn SubvolumeDriver>`). The `slipfork` CLI binary (`crates/slipfork/src/main.rs`) is a **thin client** (`clap` with optional subcommand defaulting to `status` [`M3.28.7`] + `UserIdentity`/`HostIdentity` [`crates/slipfork::user`, sole reader of `SUDO_USER` via `invoking_account`] + single `Layout::for_account` / `Layout::resolve` [resolving the invoking account + `for_account`, with `<state_dir>/run` as the client's only socket directory (`ADR-0011` §2), before dialing `<state_dir>/run/daemon.sock`, rendering/installing units, or auto-spawning `slipforkd` — which only `up` and `fork` may do] + `DaemonControlClient` + single `resolve_world_selector` parser [`ADR-0005` §3, `M3.15`] + direct `Command` world entry inheriting `Stdio::inherit()` with zero `SCM_RIGHTS` FD passing at the CLI<->daemon boundary, `slipfork open` feeding typed `&WorldOrigin` to `SystemBrowserOpener` [`crates/slipfork/src/browser.rs`, `M3.28.9`], `slipfork daemon install` driving the concrete `UnitInstaller` struct constructed in `crates/slipfork/src/main.rs` over `/etc/systemd/system` + `/etc/apparmor.d` [`M3.28.6`, `ADR-0011` §1], and pre-daemon `slipfork doctor` constructing `KernelBtrfsDriver` + `OsHostProbe` + `SystemdIngressProbe` in `crates/slipfork/src/main.rs` and passing `(&dyn SubvolumeDriver, &dyn HostProbe, &dyn IngressProbe)` to `slipfork::doctor::run` [`M3.12`/`M3.15`/`M3.28.6`, `ADR-0010` §4, `ADR-0011` §3] while holding **zero** `WorldEngine`, **zero** `SecretVault`/`SecretProvider`, and **zero** `OsppClient`/HPKE keys — never opening a vault file or receiving a remote OSPP secret outside `WorldExecTarget` child spawning; `BtrfsEngine` spawns its internal PID 1 helper `slipfork-world-init`, §3.3).
+1. **Rust Unified User Daemon Composition Root (`slipforkd` in `crates/slipfork`, shipped in `0.1.0`; M3 Phase 1 `BtrfsEngine` switchover in `M3.20`, `M3.12`–`M3.15`, `M3.21`; `0.1.0` UX pass in `M3.28`, `ADR-0011`; `0.1.0` OSPP v1 target state in `M3.29`, `docs/design/ospp.md`; M3 Phase 2 `STP v1` wiring in `M3.2`):** Runs unprivileged as `User=<developer-user>` (`H-010`'s `%i` shorthand denotes the developer's own OS account, resolved once at the CLI composition boundary via `UserIdentity` into non-template `slipforkd.{socket,service}` plus `/etc/apparmor.d/slipfork` `userns` profile via `slipfork daemon unit` / installed atomically via `slipfork daemon install` [`M3.15`, `M3.28.6`, `ADR-0010` §7, `ADR-0011` §1], or `--listen 127.0.0.1:0 --state-dir <path> --runtime-dir <path>` auto-spawned by the CLI). `slipforkd` receives explicit `--state-dir` and `--runtime-dir` flags (never defaulting or guessing `$XDG_RUNTIME_DIR` or `current_dir()`; optional composition-root helper overrides `--crun <path>` and `--world-init <path>` inject explicit binary paths into `runtime_assets`, `ADR-0009` §1) plus one injected `OsppEndpoint` (the single server identity authority across `connect`, `subscribe`, `dump`, and `auth_pair`), binds `<runtime_dir>/daemon.sock` (`0600`) plus `<state_dir>/http-ingress.sock` (`0600`), provisions `runtime_assets` (`ADR-0009` §1), injects each world's disjoint per-world control directory `WorldSpec.control_dir` (`ADR-0010` §2), constructs `Browser` (`crates/slipfork/src/browser.rs`, `M3.28.9`), and owns **all** stateful adapters in-process: shipped `0.1.0` `BaseImageBuilder`, injected `SecretVault` (`crates/slipfork-edge`: `get`/`put`/`remove`/`keys`, wired solely at the Composition Root over `FileVaultProvider` for local `0600` backing-service credentials, local `!!` secrets, and `slipfork secret` overrides — **remote OSPP secrets never touch disk**, and `SecretVault::keys` feeds `OsppClaims`), `OsppClient` + live `OsppSession` subscription lifecycle (keeping the `ospp-v1` WebSocket open while worlds run, holding each subscription's ephemeral `hpke-p256` private key `S=` strictly in memory, decrypting server-resolved secrets in memory, updating affected service envs via `WorldEngine::update_service_env` and restarting through `M3.28.17`'s shared boot pipeline on `env_updated`, re-subscribing with the same `id` on config/vault change, unsubscribing on stop, and streaming HPKE-encrypted dumps via `OsppSession::dump` straight into `zstd -d | pg_restore` before `freeze_world` with zero plaintext at rest), `ResourcePlan`, `VcsWorkspaceFactory` (`create_workspace` + `current_branch`, `M3.28.5`) + `RepoRootResolver` (resolving the verbatim Git `remote` string for OSPP `subscribe`), and `WorldRegistry` (untagged `struct WorldOrigin(LocalOrigin)` `.localhost` origins only; one origin kind, tombstone in `ADR-0011`); `BtrfsEngine` (`M3.13`/`M3.15`/`M3.28.4`/`M3.29`) constructed only via `BtrfsEngine::new(state_dir, host_uid, host_gid, world_init_bin, KernelBtrfsDriver::new())` (`M3.12`, enforcing §3.3 / `ADR-0010` §4's magic-only fail-closed `KernelBtrfsDriver::ensure_supported` boot check and stamping `uptime_secs` and per-world `WorldLineage` from the `Instant` observed when each service spawns, in `WorldEngine::world_processes` & `world_lineage`); and M3 Phase 2 target-state (`M3.2`) `STP v1` orchestrator + `BtrfsArtifactStore` (`crates/slipfork-test`, sharing `KernelBtrfsDriver`). The `slipfork` CLI binary (`crates/slipfork/src/main.rs`) is a **thin client** (`clap` with optional subcommand defaulting to `status` [`M3.28.7`] + `UserIdentity` [`crates/slipfork::user`, with `main.rs`'s `invoking_account()` as the sole `SUDO_USER` read, hostname via `kernel_hostname()`] + single `Layout::for_account` / `Layout::resolve` [resolving the invoking account + `for_account`, with `<state_dir>/run` as the client's only socket directory (`ADR-0011` §2), before dialing `<state_dir>/run/daemon.sock`, rendering/installing units, or auto-spawning `slipforkd` — which only `up` and `fork` may do] + `DaemonControlClient` + single `resolve_world_selector` parser [`ADR-0005` §3, `M3.15`] + direct `Command` world entry inheriting `Stdio::inherit()` with zero `SCM_RIGHTS` FD passing at the CLI<->daemon boundary, `slipfork open` handing `WorldOrigin::url()` to `Browser::open` [`crates/slipfork/src/browser.rs`, `M3.28.9`], `slipfork daemon install` driving the concrete `UnitInstaller` struct constructed in `crates/slipfork/src/main.rs` over `/etc/systemd/system` + `/etc/apparmor.d` [`M3.28.6`, `ADR-0011` §1], and pre-daemon `slipfork doctor` constructing `KernelBtrfsDriver` + `OsHostProbe` + `SystemdIngressProbe` in `crates/slipfork/src/main.rs` and passing the observed `BtrfsProbeReport` + `HostFacts` to `slipfork::doctor::run` [`M3.12`/`M3.15`/`M3.28.6`, `ADR-0010` §4, `ADR-0011` §3] while holding **zero** `WorldEngine`, **zero** `SecretVault`/`SecretProvider`, and **zero** `OsppClient`/HPKE keys — never opening a vault file or receiving a remote OSPP secret outside `WorldExecTarget` child spawning; `BtrfsEngine` spawns its internal PID 1 helper `slipfork-world-init`, §3.3).
 2. **OpenCode V2 Plugin Composition Root:** `packages/opencode-slipfork/src/index.ts` (injecting explicit `SlipforkProjectState` in `M2.18` and routing shell calls via `slipfork exec --cwd <cwd>` without resolving or injecting `snow.yml` env vars itself, `ADR-0004`).
+
+**Surviving ports (M3.30.1.3 truth pass):** the table below is the complete set of *traits* the two composition roots wire. Everything else they assemble is a concrete struct (`KernelBtrfsDriver`, `OsHostProbe`, `SystemdIngressProbe`, `UnitInstaller`, `Browser`, `Layout`, `UserIdentity`) or a plain value (`HostFacts`, `InstallPaths`, `BtrfsProbeReport`, `Instant`-stamped `WorldLineage`).
+
+| Port trait | Canonical owner | Production adapter | Wired at |
+|---|---|---|---|
+| `WorldEngine` | `slipfork-engine` | `BtrfsEngine` | `slipforkd` |
+| `BaseImageBuilder` | `slipfork-engine::rootfs` | `DockerfileStageBuilder` | `slipforkd` |
+| `SecretVault` | `slipfork-edge` | `FileVaultProvider`-backed vault | `slipforkd` |
+| `SecretProvider` / `EntropySource` | `slipfork-snow` | `FileVaultProvider` | `slipforkd` (vault alias) |
+| `DaemonControl` | `slipfork-edge` | `DaemonService` | `slipforkd` |
+| `OsppClient` -> `OsppSession` | `slipfork-ospp` | `WsOsppClient` | `slipforkd` |
+| `DeviceKeySigner` / `DeviceKeyStore` | `slipfork-ospp` | `SoftwareP256Signer` / `FileDeviceKeyStore` | `slipforkd` |
+| `VcsWorkspace` / `VcsWorkspaceFactory` | `slipfork-vcs` | `GitWorktreeAdapter` / `JjWorkspaceAdapter` | `slipforkd` |
+| `RepoRootResolver` / `ProjectSlugOverride` | `slipfork-vcs` | Git/Jujutsu root discovery | `slipforkd` |
+| `ArtifactStore` (Phase 2 `M3.2`) | `slipfork-test` | `BtrfsArtifactStore` | Phase 2 orchestrator |
+
+The two roots are `crates/slipfork/src/main.rs` + `crates/slipfork/src/bin/slipforkd.rs` (Rust CLI/daemon) and `packages/opencode-slipfork/src/index.ts` (OpenCode plugin); no library crate reads ambient OS state.
 
 ```mermaid
 flowchart TD
-  CLI["Thin CLI Client (crates/slipfork: slipfork, git-remote-slipfork)<br/>clap (None =&gt; status) + UserIdentity/HostIdentity + Layout::for_account (&lt;state_dir&gt;/run) + auto-spawn + DaemonControlClient + Stdio::inherit() exec<br/>holds NO WorldEngine, NO SecretProvider, NO OsppClient"]
+  CLI["Thin CLI Client (crates/slipfork: slipfork, git-remote-slipfork)<br/>clap (None =&gt; status) + UserIdentity (hostname via kernel_hostname()) + Layout::for_account (&lt;state_dir&gt;/run) + auto-spawn + DaemonControlClient + Stdio::inherit() exec<br/>holds NO WorldEngine, NO SecretProvider, NO OsppClient"]
   CLI -->|0600 Unix JSON-line IPC<br/>&lt;state_dir&gt;/run/daemon.sock| DC["trait DaemonControl<br/>(crates/slipfork-edge: status, up, restart, world_processes, fork, secret_set/unset/list, auth, shutdown, ...)"]
-  CLI -->|main.rs constructs SystemBrowserOpener (src/browser.rs)| BO["trait BrowserOpener<br/>(crates/slipfork-ospp: open_pairing_url + open_origin)"]
+  CLI -->|main.rs resolves Browser::resolve(xdg-open/gio + DISPLAY/WAYLAND_DISPLAY)| BO["Browser (concrete struct)<br/>(crates/slipfork/src/browser.rs: resolve + open; headless fails closed with NO_BROWSER_REMEDY)"]
   CLI -->|main.rs constructs UnitInstaller over /etc/systemd/system (M3.28.6, ADR-0011 §1)| UI["UnitInstaller (concrete struct)<br/>(crates/slipfork::daemon_unit_install: 0644 temp+rename, systemctl/apparmor_parser, typed daemon.sock handover)"]
-  CLI -->|main.rs constructs KernelBtrfsDriver + OsHostProbe + SystemdIngressProbe| DR["doctor::run(&amp;dyn SubvolumeDriver, &amp;dyn HostProbe, &amp;dyn IngressProbe)<br/>(crates/slipfork::doctor — calls btrfs::probe_with)"]
-  DR --> SD
-  DR --> HP["trait HostProbe<br/>(crates/slipfork::doctor: probe_userns + probe_netns)"]
-  DR --> IP["trait IngressProbe<br/>(crates/slipfork::doctor: probe_ingress :80 socket status)"]
-  HP --- HP1["OsHostProbe (sole prod adapter: fixed-PATH unshare + AppArmor EPERM hint)"]
-  HP --- HP2["FakeHostProbe (test-only; §1)"]
-  IP --- IP1["SystemdIngressProbe (sole prod adapter: fixed-PATH systemctl is-active/show)"]
+  CLI -->|main.rs constructs KernelBtrfsDriver + OsHostProbe + SystemdIngressProbe, then passes plain facts| DR["doctor::run(BtrfsProbeReport, HostFacts, uid, gid) -&gt; DoctorReport<br/>(crates/slipfork::doctor — pure composer: filesystem_name + text/--json render)"]
+  CLI -.-> HP["OsHostProbe (concrete struct: fixed-PATH unshare --user + netns; AppArmor EPERM hint)"]
+  CLI -.-> IP["SystemdIngressProbe (concrete struct: fixed-PATH systemctl is-active/show)"]
 
   CR["Unified Daemon Composition Root<br/>(slipforkd in crates/slipfork, User=&lt;developer-user&gt;)"]
   DC --> CR
@@ -42,26 +55,21 @@ flowchart TD
   CR -->|injects Phase 2 M3.2| STPOrch["Language-Blind STP v1 DAG Orchestrator<br/>(crates/slipfork-test, Phase 2 M3.2)"]
 
   CR -->|parses world.image + world.stage, holds BuildImage| BIB["trait BaseImageBuilder<br/>(crates/slipfork-engine::rootfs)"]
-  BIB --- BIB1["DockerfileStageBuilder<br/>(BuildxExporter + OciImageStore + AbiProbe)"]
-  BIB --- BIB2["FakeBaseImageBuilder (test-only; §1)"]
+  BIB --- BIB1["DockerfileStageBuilder<br/>(DockerBuildx + DockerImageStore + ElfProbe)"]
   BIB -->|WorldRootfs (§3.3)| WE
 
   SV -->|wired at CR| SP1
   SnowRes --> SP["trait SecretProvider (Send + Sync: read/ensure resolver input)"]
   SnowRes --> RG["trait EntropySource (Send + Sync)"]
   SP --- SP1["FileVaultProvider (0600 JSON — local credentials/overrides &amp; local !! ONLY; remote OSPP secrets never touch disk)"]
-  SP --- SP2["MemorySecretProvider (test-only; §1)"]
 
   OsppSvc --> OsppProd["WsOsppClient (ospp-v1 all-JSON WebSocket + out-of-band HTTPS SetupBaseR dump reader)"]
   OsppSvc --> DKS["trait DeviceKeySigner &amp; trait DeviceKeyStore<br/>(ECDSA P-256 machine auth identity: SoftwareP256Signer + FileDeviceKeyStore over DeviceKeyPath)"]
   OsppSvc --> BO
-  BO --- BO1["SystemBrowserOpener (crates/slipfork/src/browser.rs; fails closed headless on open_origin)"]
 
   Edge --> WE["trait WorldEngine<br/>(crates/slipfork-engine — in-process inside slipforkd)"]
   WE --- WE1["BtrfsEngine (M3.13 sole prod WorldEngine, ADR-0010: one unified Btrfs subvolume per world + WorldSpec.control_dir + slipfork-world-init PID 1 + crun OCI services + ReadinessProbe)"]
-  WE1 -->|constructor DI Arc&lt;dyn SubvolumeDriver&gt;| SD["trait SubvolumeDriver<br/>(crates/slipfork-engine::btrfs, M3.12 — sole CoW &amp; probe seam)"]
-  SD --- SD1["KernelBtrfsDriver (sole prod SubvolumeDriver: probe + ensure_supported -&gt; BtrfsRequired)"]
-  SD --- SD2["TestTreeDriver (test-only; §1)"]
+  WE1 -->|constructor DI: KernelBtrfsDriver::new() passed by value| SD["KernelBtrfsDriver (concrete struct)<br/>(crates/slipfork-engine::btrfs, M3.12 — sole CoW ioctl + statfs authority: probe/ensure_supported -&gt; BtrfsRequired)"]
 
   SnowRes --> WN["crates/slipfork-world<br/>ProjectSlug (local only), WorldTarget, WorldId, LocalHostRoute, WorldOrigin::local(&amp;route, port) &amp; WeaverServiceName (&lt;= 31 bytes)"]
   DagOrch --> WN
@@ -77,7 +85,7 @@ flowchart TD
   STPOrch --> DagOrch
   STPOrch --> DC
   STPOrch --> AS["trait ArtifactStore (crates/slipfork-test, Phase 2 M3.2)"]
-  AS --- AS1["BtrfsArtifactStore (Phase 2 M3.2; reuses Arc&lt;dyn SubvolumeDriver&gt;)"]
+  AS --- AS1["BtrfsArtifactStore (Phase 2 M3.2; reuses KernelBtrfsDriver)"]
   AS1 --> SD
   STPOrch -->|SLIPFORK_PROTOCOL_FD| STP["STP v1 (ADR-0006 §3)"]
 ```
@@ -91,12 +99,12 @@ flowchart TD
 | `crates/slipfork-world` | M1 (shipped) + M2 `WorldOrigin` & `WeaverServiceName` (`M2.3`) + **`M3.28.15` untagged `struct WorldOrigin`** (typed `WorldId` is `0.2.0` target state) + `M3.30.1` canonical `merkle`/`format` owners | `#![forbid(unsafe_code)]`; depends only on `serde`, `thiserror` (+ `sha2`, `hex` in `M2.2`); zero OS socket/FD/env/fs types | Validated local-only `ProjectSlug` (never sent on the OSPP wire), `WorldTarget { Canonical, UserFork, TestSlot }`, `0.1.0` world ids as the canonical `<project>` / `<project>:<fork>` strings (`crates/slipfork-edge/src/registry.rs::world_id`; typed `WorldId` `Display` + `FromStr` + `WorldId::parse_selector` is `0.2.0`, `ADR-0005` §3), `WorldError`, encapsulated `LocalHostRoute`, untagged `struct WorldOrigin(LocalOrigin)` (`WorldOrigin::local(&LocalHostRoute, ingress_port)`, `H-010` #2; one origin kind — tombstone in `ADR-0011`), and `WeaverServiceName` (`SERVICE_NAME_MAX = 31`, `derive_weaver_service_name`, `ADR-0008` §6), plus the canonical shared helpers `merkle::{file_digest, merkle_hex, glob_matches}` (the sole repo-input Merkle fold and segment glob matcher) and `format::quoted` (candidate rendering), so `slipfork-dag` and `slipfork-engine` delegate instead of forking them |
 | `crates/slipfork-snow` | M1 (shipped) + M2 `Send + Sync` & `effective_components` (`M2.4`) + **`M3.29` target state (`M3.29.3`)** | `#![forbid(unsafe_code)]`; depends on `slipfork-world` (zero `slipfork-dag` dep); zero ambient `env`/`net`/clock (`FileVaultProvider` `0600` is the sole local-vault filesystem writer, wired at the Composition Root — remote OSPP secrets never touch it) | `SnowFile` v2 AST (`modes.all` + `modes.<m>`, `SnowFile::effective_components(mode)` per `ADR-0001` §1, `SnowError::ForbiddenTopLevelKey { key }` in `M2.4`), `Faceless` v2 (`??` vs `!!`), `ResourceCoordinates` (`WorldOrigin` precedence over `domains::`, redacted `Debug`), `SecretValue`, read/ensure resolver input `SecretProvider: Send + Sync` (`&self`), `FileVaultProvider` (`0600` local credentials/overrides & local `!!` only), `EntropySource: Send + Sync` (`&self`) |
 | `crates/slipfork-dag` | M1 (shipped) + M2 `[resources]` (`M2.5`) + `WorldImageConfig` (`M2.26`, shipped in `0.1.0`) + `M3.28.11` `dag` CLI sweep + **`M3.29` target state** | `#![forbid(unsafe_code)]`; depends on `slipfork-world` (zero `slipfork-snow`/`slipfork-engine`/`std::env`/`std::fs`/clock dep; `M3.28.11` deletes the `slipfork dag` CLI and drops only the CLI dependency's `features = ["fs"]`; `src/fs.rs` (`FsMerkleHasher`/`FsDigestCache`) and this crate's own `fs` feature stay for `0.2.0`, pinned by protected `critical_dag.rs`) | Root `SlipforkConfig` (`project`, `artifacts`, `fixtures`, `test: TestSpec`, M2 `resources: ResourcesSpec`, M2 `world: WorldImageConfig { image, stage }` — two optional keys under `#[serde(deny_unknown_fields)]`, `ADR-0009` §1), `ArtifactSpec` + `FixtureSpec` (`per_world: bool`), `TestSpec` / `CoverageConfig` / `CoverageThreshold` (shipped in `0.1.0`), `ResourceMode { Local, Test }`, `ResourceStrategy { Local, PreferRemote, Remote }`, `DumpPolicy`, and single `ResourcePlan::resolve(...)` (`M3.29` target state: resolves from `snow` + `claims`/pairing state + local coordinates only, `ADR-0008` §3); `DagPlanner`/`InputHasher`/`DigestCache` are not wired into the `0.1.0` composition root (retained because protected `critical_dag.rs` pins them and `0.2.0`'s `slipfork test` consumes the planner) |
-| `crates/slipfork-ospp` | **`M3.29` target state (`M3.29.2` clean-sheet OSPP v1 rewrite, `docs/design/ospp.md`)** + `open_origin` (`M3.28.9`) | `#![forbid(unsafe_code)]`; **`M3.29.2` target-state Cargo deps:** `slipfork-world`, `slipfork-snow`, `tungstenite` + `rustls` + `webpki-roots` (sync), `p256` (`0.14.0`), `hpke = { version = "0.15.1", default-features = false, features = ["alloc", "nistp", "aes", "hkdfsha2"] }`, `sha2` (`0.10.9`), `hex` (`0.4.3`), `base64` (`0.22.1`), `zstd` (`0.14.4`), removing `tokio` and `tpmd-*` in `M3.29.2`; zero `std::env`, zero `slipfork-engine`/`slipfork-dag` dep; **zero OSPP secret or plaintext-dump filesystem writes** (`FileDeviceKeyStore` writes only the `0600` machine authentication P-256 scalar at the injected `DeviceKeyPath`) | Clean-sheet **`OSPP v1`** sync WebSocket + HTTPS dump client (`docs/design/ospp.md` is sole normative wire spec: `Sec-WebSocket-Protocol: ospp-v1`, 100% JSON text frames discriminated by `#[serde(tag = "type", rename_all = "snake_case")]`, zero `#[serde(flatten)]` / `extra` bag / `match wire_version`, zero binary WS frames): single injected `OsppEndpoint`, single client capability `trait OsppClient` + `trait OsppSession` (`pair`, `connect` -> `subscribe`, `dump`, `unsubscribe`, `close`; prod `WsOsppClient`), `DeviceKeySigner` + `DeviceKeyStore` + `DeviceKeyPath` (`SoftwareP256Signer` + `FileDeviceKeyStore` signing `b"ospp-v1" \|\| server_nonce \|\| client_nonce` on auth and `b"ospp-v1-pair" \|\| server_nonce \|\| client_nonce` on ALTCHA+PoP pairing), server-supplied `<url>#handle=<handle>` fragment-only `LivePairingUrl` + env-free `BrowserOpener` (`open_pairing_url` + `open_origin`), verbatim Git `remote` wire identity, uniform ID-only `OsppClaims`, per-subscription **in-memory** ephemeral `hpke-p256` keypair (`S=` zeroized on `Drop`; RFC 9180 Base `info = "ospp-v1-secret"`, `aad = "<component>:<env_key>"`), and out-of-band HTTPS stateful `hpke-p256` streaming dump reader (`SetupBaseR` recipient context, `info = "ospp-v1-dump"`, `aad = "<subscription_id>:<resource>"`, `len = 0` sealed EOF) |
-| `crates/slipfork-engine` | M1 + M2 (`L0` rootfs + `crun`) + **M3 target state (`M3.20`, `M3.12`–`M3.14`, `M3.21`, `M3.28.4`, `M3.29`, `M3.2`, `ADR-0010`)** | M3 target state: `unsafe` confined strictly to two audited kernel modules — **`src/btrfs.rs`** (`M3.12` `KernelBtrfsDriver` per `ADR-0010` §§3–5) and **`src/linux_cow.rs`** (`M3.21`: `current_uid_gid`, `signal_process`, and `SCM_RIGHTS` `send_fd`/`recv_fd`), each with a per-call `// SAFETY:` proof (zero `pty.rs`, zero per-file extent-clone helpers, zero test Cargo features per §1); `#![forbid(unsafe_code)]` everywhere else (`src/btrfs_engine.rs`, `src/rootfs/`, `src/bin/slipfork-world-init.rs`) | `WorldEngine` (`M3.20` distinct RO snapshot vs writable clone signatures + `ensure_base` + `M3.29` `update_service_env` + `M3.28.4` `world_processes` & `world_lineage` + Phase 2 `M3.2` `prune_snapshots`; zero mode flags, zero capability boolean bags), `SubvolumeDriver` (`M3.12` sole CoW & Btrfs probe seam: `KernelBtrfsDriver` + `BTRFS_MOUNT_HINT` + `BtrfsProbeReport` + `btrfs::probe_with(&dyn SubvolumeDriver, ...)` in prod; test-only `TestTreeDriver` per §1), `WorldRef` + `EngineError` + `userns_remediation_hint` (§3.3), `BaseKey` (`derive` + `snapshot_id`) + clean-only `BaseSeedSpec` + `WorldSpec` (`world` + `control_dir` + `state_subdirs`), `ServiceSpec` / `ServiceKind` / `ServiceState` / `WorldServiceInfo` / `WorldLineage` / `ReadinessProbe` / `ServiceRuntime` (`ADR-0002` §2, `M3.28.4`), opaque `WorldHandle`, `#![forbid(unsafe_code)]` `src/bin/slipfork-world-init.rs` (see §3.3 & `ADR-0010` §6), `src/rootfs/` (`WorldRootfs` & `OciRootfs` returning cache outcome + `millis` alongside `crun_bin = /.slipfork/bin/crun` and `readiness: ReadinessProbe`, `trait BaseImageBuilder` [`materialize` + Phase 2 `M3.2` `prune_cache(&CacheKeepSet, dry_run)` -> `CachePruneReport`] + prod `DockerfileStageBuilder` stopping at plain `cache/{rootfs,oci}` trees, 6-rule World Image Contract — `ADR-0009` §1–§3 is normative; test-only `FakeBaseImageBuilder` per §1), and M3 sole production adapter `BtrfsEngine` (`M3.13`, `ADR-0002`, `ADR-0010` §1–§2: implements `WorldEngine::ensure_base`, `update_service_env`, `world_processes`, and `world_lineage` stamping `uptime_secs` and `millis` from its injected monotonic clock), plus `src/relay.rs` (`pipe`/`Duplex`, the single 16 KiB duplex relay loop shared by `slipfork-edge`'s ingress and `slipfork-world-init`; `M3.30.2` extracts it so `slipfork-edge` stops reaching into `slipfork-engine` for byte plumbing, restoring `slipfork-edge` purity) |
+| `crates/slipfork-ospp` | **`M3.29` target state (`M3.29.2` clean-sheet OSPP v1 rewrite, `docs/design/ospp.md`)** | `#![forbid(unsafe_code)]`; **`M3.29.2` target-state Cargo deps:** `slipfork-world`, `slipfork-snow`, `tungstenite` + `rustls` + `webpki-roots` (sync), `p256` (`0.14.0`), `hpke = { version = "0.15.1", default-features = false, features = ["alloc", "nistp", "aes", "hkdfsha2"] }`, `sha2` (`0.10.9`), `hex` (`0.4.3`), `base64` (`0.22.1`), `zstd` (`0.14.4`), removing `tokio` and `tpmd-*` in `M3.29.2`; zero `std::env`, zero `slipfork-engine`/`slipfork-dag` dep; **zero OSPP secret or plaintext-dump filesystem writes** (`FileDeviceKeyStore` writes only the `0600` machine authentication P-256 scalar at the injected `DeviceKeyPath`) | Clean-sheet **`OSPP v1`** sync WebSocket + HTTPS dump client (`docs/design/ospp.md` is sole normative wire spec: `Sec-WebSocket-Protocol: ospp-v1`, 100% JSON text frames discriminated by `#[serde(tag = "type", rename_all = "snake_case")]`, zero `#[serde(flatten)]` / `extra` bag / `match wire_version`, zero binary WS frames): single injected `OsppEndpoint`, single client capability `trait OsppClient` + `trait OsppSession` (`pair`, `connect` -> `subscribe`, `dump`, `unsubscribe`, `close`; prod `WsOsppClient`), `DeviceKeySigner` + `DeviceKeyStore` + `DeviceKeyPath` (`SoftwareP256Signer` + `FileDeviceKeyStore` signing `b"ospp-v1" \|\| server_nonce \|\| client_nonce` on auth and `b"ospp-v1-pair" \|\| server_nonce \|\| client_nonce` on ALTCHA+PoP pairing), server-supplied `<url>#handle=<handle>` fragment-only `LivePairingUrl` (`on_handle`; the URL never reaches a log or diagnostic), verbatim Git `remote` wire identity, uniform ID-only `OsppClaims`, per-subscription **in-memory** ephemeral `hpke-p256` keypair (`S=` zeroized on `Drop`; RFC 9180 Base `info = "ospp-v1-secret"`, `aad = "<component>:<env_key>"`), and out-of-band HTTPS stateful `hpke-p256` streaming dump reader (`SetupBaseR` recipient context, `info = "ospp-v1-dump"`, `aad = "<subscription_id>:<resource>"`, `len = 0` sealed EOF) |
+| `crates/slipfork-engine` | M1 + M2 (`L0` rootfs + `crun`) + **M3 target state (`M3.20`, `M3.12`–`M3.14`, `M3.21`, `M3.28.4`, `M3.29`, `M3.2`, `ADR-0010`)** | M3 target state: `unsafe` confined strictly to two audited kernel modules — **`src/btrfs.rs`** (`M3.12` `KernelBtrfsDriver` per `ADR-0010` §§3–5) and **`src/linux_cow.rs`** (`M3.21`: `current_uid_gid`, `signal_process`, and `SCM_RIGHTS` `send_fd`/`recv_fd`), each with a per-call `// SAFETY:` proof (zero `pty.rs`, zero per-file extent-clone helpers, zero test Cargo features per §1); `#![forbid(unsafe_code)]` everywhere else (`src/btrfs_engine.rs`, `src/rootfs/`, `src/bin/slipfork-world-init.rs`) | `WorldEngine` (`M3.20` distinct RO snapshot vs writable clone signatures + `ensure_base` + `M3.29` `update_service_env` + `M3.28.4` `world_processes` & `world_lineage` + Phase 2 `M3.2` `prune_snapshots`; zero mode flags, zero capability boolean bags), `KernelBtrfsDriver` (`M3.12` sole CoW & Btrfs authority — a concrete struct passed by value into `BtrfsEngine::new`, with `probe_facts`/`probe`/`ensure_supported`/`create_subvolume`/`snapshot_ro`/`snapshot_writable`/`destroy_subvolume`/`list_children` + `BTRFS_MOUNT_HINT` + `BtrfsProbeReport`), `WorldRef` + `EngineError` + `userns_remediation_hint` (§3.3), `BaseKey` (`derive` + `snapshot_id`) + clean-only `BaseSeedSpec` + `WorldSpec` (`world` + `control_dir` + `state_subdirs`), `ServiceSpec` / `ServiceKind` / `ServiceState` / `WorldServiceInfo` / `WorldLineage` / `ReadinessProbe` / `ServiceRuntime` (`ADR-0002` §2, `M3.28.4`), opaque `WorldHandle`, `#![forbid(unsafe_code)]` `src/bin/slipfork-world-init.rs` (see §3.3 & `ADR-0010` §6), `src/rootfs/` (`WorldRootfs` & `OciRootfs` returning cache outcome + `millis` alongside `crun_bin = /.slipfork/bin/crun` and `readiness: ReadinessProbe`, `trait BaseImageBuilder` [`materialize` + Phase 2 `M3.2` `prune_cache(&CacheKeepSet, dry_run)` -> `CachePruneReport`] + prod `DockerfileStageBuilder` stopping at plain `cache/{rootfs,oci}` trees, 6-rule World Image Contract — `ADR-0009` §1–§3 is normative; test doubles confined to `#[cfg(test)]`/`tests/` per §1), and M3 sole production adapter `BtrfsEngine` (`M3.13`, `ADR-0002`, `ADR-0010` §1–§2: implements `WorldEngine::ensure_base`, `update_service_env`, `world_processes`, and `world_lineage` stamping `uptime_secs` and `millis` from the `Instant` observed when each service spawns), plus `src/relay.rs` (`pipe`/`Duplex`, the single 16 KiB duplex relay loop shared by `slipfork-edge`'s ingress and `slipfork-world-init`; `M3.30.2` extracts it so `slipfork-edge` stops reaching into `slipfork-engine` for byte plumbing, restoring `slipfork-edge` purity) |
 | `crates/slipfork-edge` | M2 (`M2.8`–`M2.10`, shipped in `0.1.0`) + `0.1.0` UX (`M3.28.3`–`M3.28.6`, `M3.28.15`, `M3.28.20`) + **`M3.29` target state** | `#![forbid(unsafe_code)]` (uses safe `listenfd` and `httparse`); depends on `slipfork-world`, `slipfork-engine` (zero `slipfork-snow` dep); `std::env` confined strictly to `activation.rs` (`LISTEN_PID` / `LISTEN_FDS`) | Unprivileged `slipforkd` HTTP/WS ingress (`adopt_systemd_listener`, `--listen`, `<state_dir>/http-ingress.sock` [§3.3], non-template `UnitSpec` renderer with `User=<developer-user>`, `ReadWritePaths=`, `RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK` [`AF_NETLINK` required for `slipfork-world-init`'s `ip link set lo up` in-netns loopback bring-up, `M3.28.20`], and `M3.28.6` `Requires=slipforkd.socket` + `After=slipforkd.socket` + `WantedBy=multi-user.target`, `httparse` `<= 16 KiB` cap, `ADR-0008` §5, `ADR-0011` §1): `WorldRegistry` (`mint_origin`, `attach_world`, `release_world`; `Local` `.localhost` routing only, one origin kind — tombstone in `ADR-0011`), `IngressRoute` -> `dial_world_tcp`, `trait SecretVault` (`get`/`put`/`remove`/`keys` — sole local-vault port injected into `DaemonService`, feeding `OsppClaims`), and `DaemonControl` (`<runtime_dir>/daemon.sock` `0600`: `DaemonStatus { pid, ingress: IngressInfo, forward_port, worlds }`, `WorldSummary`, `WorldUpSummary`, `WorldProcessReport`, `WorldServiceSummary`, `restart`, `world_processes`, local-vault `secret_set`/`secret_unset`/`secret_list`, `auth_pair`, `shutdown`) |
 | `crates/slipfork-vcs` | M2 (`M2.11`–`M2.12`) + `0.1.0` UX (`M3.28.5`, `M3.29` target state) | `#![forbid(unsafe_code)]`; depends only on `slipfork-world`, `serde`, `serde_json`, `thiserror` (zero `slipfork-dag` dep); zero `src/bin/*` targets | `ProjectSlugOverride` (injected `<vcs_root>/slipfork.toml` `project` reader), `RepoRootResolver` (`RepoRoot` + verbatim Git `origin` remote discovery for OSPP `subscribe`), `VcsWorkspace` (`WorkspaceRefs`, `WorkspaceChanges`), `VcsWorkspaceFactory` (`create_workspace` + `current_branch`, `WorkspaceRequest`), `sanitize_fork_name`, `GitWorktreeAdapter` (`.worktrees/<fork>`, `refs/heads/<fork>`, and D/F-safe `refs/slipfork/<fork>/wip` via `.slipfork/git/index-<fork>` with pinned `-c user.name=slipfork -c user.email=slipfork@localhost`), `JjWorkspaceAdapter` (`@-` -> `refs/heads/<fork>`, `@` -> `refs/slipfork/<fork>/wip` with pinned `slipfork` identity), single-line `VcsError` formatting, and pure `remote_helper` (`git-remote-slipfork` line protocol over `BufRead`/`Write`) |
-| `crates/slipfork-test` | **M3 Phase 2 target state (`M3.2`, `ADR-0006` §3)** | `#![forbid(unsafe_code)]`; depends on `slipfork-world`, `slipfork-dag`, `slipfork-edge`, `slipfork-engine`; injected `EntropySource` + `Arc<dyn SubvolumeDriver>` | Language-blind **`STP v1` DAG orchestrator** over inherited `SLIPFORK_PROTOCOL_FD` (`STP v1` wire framing in `ADR-0006` §3): orchestrates global DAG nodes including persistent setup/fixture stage nodes frozen into RO Btrfs subvolume snapshots (`ADR-0010` §3), protocol-native coverage & mutation testing (`mutants`, zero hardcoded per-language Rust drivers, zero magic runtime guessing), `trait ArtifactStore` (`ensure_artifact` + `prune_artifacts`, §3.6) + `BtrfsArtifactStore` (sealing `[artifacts.*]` RO subvolumes via `Arc<dyn SubvolumeDriver>`), surviving `SLIPFORK_OUTPUT_DIR`, and Btrfs-warm `TestSlot` worlds (`ResourceMode::Test`) |
-| `crates/slipfork` | M1..M4 (`M2.16`–`M2.17` shipped; **M3 `0.1.0` `M3.15`, `M3.28` & `M3.29` target state; Phase 2 `M3.2`**) | `#![forbid(unsafe_code)]`; **`slipforkd` is sole stateful Rust Composition Root; `slipfork` is thin client** | Binaries `slipforkd` (`--state-dir` + `--runtime-dir` unified user daemon Composition Root assembling `DaemonService: DaemonControl`, injecting one `OsppEndpoint` authority, wiring `FileVaultProvider` behind `trait SecretVault` [no concrete vault outside the Composition Root], owning live `OsppSession` subscriptions, deriving ID-only `claims` from `SecretVault::keys` + local resources/domains, decrypting `hpke-p256` secrets in memory, applying `env_updated` via `WorldEngine::update_service_env` + `M3.28.17`'s shared boot/restart pipeline, and owning streaming `OsppSession::dump -> zstd -d \| pg_restore -> freeze_world` dump restore — remote OSPP secrets and plaintext dumps never touch disk [`M3.29`, `docs/design/ospp.md`], provisioning `runtime_assets` [`ADR-0009` §1], constructing `SystemBrowserOpener` [`src/browser.rs`] and `BtrfsEngine::with_driver_and_clock(..., Arc::new(KernelBtrfsDriver::new()), clock)` [`M3.15`, failing closed with magic-only `EngineError::BtrfsRequired` at boot before any world directory exists, `ADR-0010` §4–§5], injecting `WorldSpec.world` + `WorldSpec.control_dir` + `state_subdirs` and clean `BaseSeedSpec` [`ADR-0010` §2], and wiring `DockerfileStageBuilder` -> `WorldRootfs` -> `dyn WorldEngine` with `--host-caches`, `ADR-0009`), `slipfork` (thin `clap` defaulting bare `slipfork` to `status` [`M3.28.7`] + `UserIdentity`/`HostIdentity` [`crates/slipfork::user`, `invoking_account`] + `Layout::for_account` / `Layout::resolve` [`<state_dir>/run` sole default runtime dir, `ADR-0011` §2] + the shipped private `daemon::resolve_world_selector -> WorldTarget` parser [`ADR-0005` §3: `<project>`, `<project>:<fork>`, or `<fork>`]; typed `WorldId` plus a shared `project::` location is `0.2.0` target state) + `DaemonControlClient` + auto-spawner + `status`/`restart`/`ps`/`open` [`SystemBrowserOpener`]/`fork [FORK]`/`secret`/`auth <URL>` + `daemon unit` [flat repeatable `--bin-dir`] & `daemon install` [concrete `UnitInstaller` constructed in `main.rs` over `/etc/systemd/system` + `/etc/apparmor.d`, `M3.28.6`, `ADR-0011` §1] + `doctor::run(&dyn SubvolumeDriver, &dyn HostProbe, &dyn IngressProbe, ...)` wired in `main.rs` over `KernelBtrfsDriver` + `OsHostProbe` + `SystemdIngressProbe` [`M3.15`, `M3.28.6`, `ADR-0010` §4, `ADR-0011` §3] + direct `WorldEntryCommand` `Stdio::inherit()` executor; `HOME`-unset fail-closed guard), and `git-remote-slipfork` |
+| `crates/slipfork-test` | **M3 Phase 2 target state (`M3.2`, `ADR-0006` §3)** | `#![forbid(unsafe_code)]`; depends on `slipfork-world`, `slipfork-dag`, `slipfork-edge`, `slipfork-engine`; injected `EntropySource` + `KernelBtrfsDriver` | Language-blind **`STP v1` DAG orchestrator** over inherited `SLIPFORK_PROTOCOL_FD` (`STP v1` wire framing in `ADR-0006` §3): orchestrates global DAG nodes including persistent setup/fixture stage nodes frozen into RO Btrfs subvolume snapshots (`ADR-0010` §3), protocol-native coverage & mutation testing (`mutants`, zero hardcoded per-language Rust drivers, zero magic runtime guessing), `trait ArtifactStore` (`ensure_artifact` + `prune_artifacts`, §3.6) + `BtrfsArtifactStore` (sealing `[artifacts.*]` RO subvolumes via `KernelBtrfsDriver`), surviving `SLIPFORK_OUTPUT_DIR`, and Btrfs-warm `TestSlot` worlds (`ResourceMode::Test`) |
+| `crates/slipfork` | M1..M4 (`M2.16`–`M2.17` shipped; **M3 `0.1.0` `M3.15`, `M3.28` & `M3.29` target state; Phase 2 `M3.2`**) | `#![forbid(unsafe_code)]`; **`slipforkd` is sole stateful Rust Composition Root; `slipfork` is thin client** | Binaries `slipforkd` (`--state-dir` + `--runtime-dir` unified user daemon Composition Root assembling `DaemonService: DaemonControl`, injecting one `OsppEndpoint` authority, wiring `FileVaultProvider` behind `trait SecretVault` [no concrete vault outside the Composition Root], owning live `OsppSession` subscriptions, deriving ID-only `claims` from `SecretVault::keys` + local resources/domains, decrypting `hpke-p256` secrets in memory, applying `env_updated` via `WorldEngine::update_service_env` + `M3.28.17`'s shared boot/restart pipeline, and owning streaming `OsppSession::dump -> zstd -d \| pg_restore -> freeze_world` dump restore — remote OSPP secrets and plaintext dumps never touch disk [`M3.29`, `docs/design/ospp.md`], provisioning `runtime_assets` [`ADR-0009` §1], constructing `Browser` [`src/browser.rs`] and `BtrfsEngine::new(..., KernelBtrfsDriver::new())` [`M3.15`, failing closed with magic-only `EngineError::BtrfsRequired` at boot before any world directory exists, `ADR-0010` §4–§5], injecting `WorldSpec.world` + `WorldSpec.control_dir` + `state_subdirs` and clean `BaseSeedSpec` [`ADR-0010` §2], and wiring `DockerfileStageBuilder` -> `WorldRootfs` -> `dyn WorldEngine` with `--host-caches`, `ADR-0009`), `slipfork` (thin `clap` defaulting bare `slipfork` to `status` [`M3.28.7`] + `UserIdentity` [`crates/slipfork::user`, `invoking_account()` in `main.rs`] + `Layout::for_account` / `Layout::resolve` [`<state_dir>/run` sole default runtime dir, `ADR-0011` §2] + the shipped private `daemon::resolve_world_selector -> WorldTarget` parser [`ADR-0005` §3: `<project>`, `<project>:<fork>`, or `<fork>`]; typed `WorldId` plus a shared `project::` location is `0.2.0` target state) + `DaemonControlClient` + auto-spawner + `status`/`restart`/`ps`/`open` [`Browser`]/`fork [FORK]`/`secret`/`auth <URL>` + `daemon unit` [flat repeatable `--bin-dir`] & `daemon install` [concrete `UnitInstaller` constructed in `main.rs` over `/etc/systemd/system` + `/etc/apparmor.d`, `M3.28.6`, `ADR-0011` §1] + `doctor::run(BtrfsProbeReport, HostFacts, uid, gid)` wired in `main.rs` over `KernelBtrfsDriver` + `OsHostProbe` + `SystemdIngressProbe` [`M3.15`, `M3.28.6`, `ADR-0010` §4, `ADR-0011` §3] + direct `WorldEntryCommand` `Stdio::inherit()` executor; `HOME`-unset fail-closed guard), and `git-remote-slipfork` |
 | `packages/opencode-slipfork` | M1 (shipped) + M2 e2e (`M2.18`) | Type-only `@opencode/plugin`; injected `SlipforkProjectState` + `SlipforkGateway` (zero `existsSync` inside gateway in M2) | OpenCode V2 `worktree.transform`, `shell.hook("create.before")` (routes to `slipfork exec --cwd <cwd>`, never injects `snow.yml` envs), and `session.hook("context")` |
 
 ---
@@ -240,16 +248,18 @@ pub struct PairingApproval {
     pub machine: String,
 }
 
-/// Neutral browser-launch port (`crates/slipfork-ospp/src/pairing.rs`, keeping `slipfork-ospp` 100% env-free);
-/// sole production implementation `SystemBrowserOpener` lives in `crates/slipfork/src/browser.rs` and is
-/// constructed from resolved env inputs by both `crates/slipfork/src/main.rs` and `crates/slipfork/src/bin/slipforkd.rs`.
-pub trait BrowserOpener: Send + Sync {
-    /// Open `<url>#handle=<handle>` in the developer's browser (`LivePairingUrl` appends `#handle=` to the
-    /// server-supplied `pair_handle.url` — fragment-only, never computed from hostname — and zeroizes on `Drop`).
-    fn open_pairing_url(&self, url: LivePairingUrl) -> Result<(), OsppError>;
-    /// Open a world's validated `WorldOrigin` (`slipfork open`, `M3.28.9`); headless sessions fail closed
-    /// ending with the actionable line naming `slipfork open --remote`.
-    fn open_origin(&self, origin: &WorldOrigin) -> Result<(), OsppError>;
+/// The one concrete desktop launcher (`crates/slipfork/src/browser.rs`), constructed from resolved env inputs by
+/// both `crates/slipfork/src/main.rs` and `crates/slipfork/src/bin/slipforkd.rs`; `slipfork-ospp` stays 100%
+/// env-free and receives the already-resolved handle URL through the `on_handle` callback.
+pub struct Browser { /* resolved program (gio/xdg-open) + headless flag */ }
+
+impl Browser {
+    pub fn new(program: impl Into<PathBuf>, available: bool) -> Self;
+    pub fn gio(program: impl Into<PathBuf>, available: bool) -> Self;
+    pub fn none() -> Self;
+    pub fn resolve(path: Option<&OsStr>, available: bool) -> Self;
+    /// Open a URL (the `#handle=` pairing fragment, or a world origin); `Ok(false)` fails closed headless.
+    pub fn open(&self, url: &str) -> Result<bool, String>;
 }
 
 /// Single client-side OSPP v1 adapter port injected into `DaemonService` (`WsOsppClient` in prod; fake in tests),
@@ -297,7 +307,7 @@ pub trait OsppSession: Send + Sync {
   - **Daemon-owned out-of-band streaming dump restore (`info = "ospp-v1-dump"`, `SetupBaseR` on client):** `slipforkd` owns dump restore end-to-end (`WorldEngine` has zero `slipfork-ospp` dependency and sees only a sealed base snapshot). `OsppSession::dump` issues `dump_request { id, subscription_id, resource }`, receives `dump_ready { id, url }`, streams `HTTPS GET <url>`, and opens the server's `SetupBaseS`-sealed stream on the client with RFC 9180 stateful recipient context `SetupBaseR` (`info = "ospp-v1-dump"`, `65`-byte uncompressed P-256 `enc` header + `4-byte big-endian plaintext length` + `ctx.Open(aad = "<subscription_id>:<resource>", ciphertext)` frames + mandatory empty sealed chunk `len = 0` EOF) while streaming directly into bounded `zstd -d | pg_restore` inside the transient seed world's running `postgres:<v>` `crun` container (`CHECKPOINT;` -> `WorldEngine::freeze_world`), writing **zero plaintext dump bytes to disk**.
 - **Daemon-Owned Live Subscription Lifecycle, `WorldEngine::update_service_env` & CLI Isolation:** `slipforkd` keeps its `OsppSession` WebSocket open while worlds run. When the server pushes `env_updated`, `slipforkd` decrypts remote `{ "encrypted": "<base64>" }` values in memory, substitutes only claimed `${{ ... }}` expressions through the local `SecretProvider` (`SecretVault`) + local `ResourceCoordinates` (never writing remote OSPP secrets to disk and never re-scanning unclaimed plaintexts for templates), updates affected services via `WorldEngine::update_service_env(&ServiceHandle, &ExecEnv)` (so `DaemonService` never re-authors `ServiceSpec`), and restarts through `M3.28.17`'s single shared boot/restart pipeline. Editing `snow.yml`, mutating the local vault (`slipfork secret`), or changing local `claims` (`slipfork restart`) re-sends `subscribe` with the **same `id`**; stopping the project's last running world (`down` / `drop` / `shutdown`) sends `unsubscribe { id }`; and an unexpected socket drop or `error` frame fails closed with an actionable diagnostic rather than silently falling back to unauthenticated secrets. The thin `slipfork` CLI never owns `OsppClient`, `SecretVault`, `SecretProvider`, or any HPKE key.
 
-### 3.3 `WorldEngine`, `SubvolumeDriver`, `ReadinessProbe`, Persistent `slipfork-world-init` & Disjoint Control/Socket Paths (`crates/slipfork-engine`, M3 target state `M3.20`, `M3.12`–`M3.15`, `M3.21`; `ADR-0002`, `ADR-0008`, `ADR-0009`, `ADR-0010`, `H-010`, `H-011`)
+### 3.3 `WorldEngine`, `KernelBtrfsDriver`, `ReadinessProbe`, Persistent `slipfork-world-init` & Disjoint Control/Socket Paths (`crates/slipfork-engine`, M3 target state `M3.20`, `M3.12`–`M3.15`, `M3.21`; `ADR-0002`, `ADR-0008`, `ADR-0009`, `ADR-0010`, `H-010`, `H-011`)
 
 ```rust
 // crates/slipfork-engine::btrfs (M3 target state: M3.12) — sole CoW & Btrfs probe seam (ADR-0010 §3–§5)
@@ -317,19 +327,18 @@ pub struct ProbeFacts { pub probed_path: PathBuf, pub fstype: i64, pub noatime: 
 /// (`ADR-0010` §4): returns `EngineError::BtrfsRequired { path, actual_fstype, mount_hint: BTRFS_MOUNT_HINT }`.
 pub fn require_btrfs(fstype: i64, path: &Path) -> Result<(), EngineError>;
 
-pub trait SubvolumeDriver: Send + Sync {
-    /// Required (`M3.12` lead-ruled refinement): inspect `statfs`/`statvfs` on `path` (or nearest existing
-    /// ancestor); a driver supplies facts only, never a report.
+pub struct KernelBtrfsDriver; // zero-sized: the only CoW/statfs authority, passed by value into `BtrfsEngine::new`
+
+impl KernelBtrfsDriver {
+    pub const fn new() -> Self;
+    /// Facts only (`statfs`/`statvfs` on `path` or its nearest existing ancestor), never a report.
     fn probe_facts(&self, path: &Path) -> Result<ProbeFacts, EngineError>;
-    /// Provided (`M3.12` lead-ruled refinement): rejects a non-absolute `path`, then builds the one
-    /// `BtrfsProbeReport` from `probe_facts`, creating nothing on non-Btrfs and running the scratch-subvolume
-    /// `user_subvol_rm_allowed` round-trip (`Option<Result<(), i32>>`) iff Btrfs
+    /// Rejects a non-absolute `path`, builds the one `BtrfsProbeReport`, creates nothing on non-Btrfs
+    /// (`require_btrfs`), and runs the scratch-subvolume `user_subvol_rm_allowed` round-trip iff Btrfs
     /// (`BtrfsProbeReport` fields specified once in `ADR-0010` §4).
-    fn probe(&self, path: &Path) -> Result<BtrfsProbeReport, EngineError> { /* default body */ }
+    fn probe(&self, path: &Path) -> Result<BtrfsProbeReport, EngineError>;
     /// Magic-only `slipforkd` boot gate (`ADR-0010` §4): fails closed with `EngineError::BtrfsRequired`
-    /// unless `statfs` reports `BTRFS_SUPER_MAGIC` (does NOT run the scratch round-trip; missing
-    /// `user_subvol_rm_allowed` is caught by `probe` in `doctor` or by `destroy_subvolume` ->
-    /// `EngineError::SubvolumeDestroyDenied` at teardown).
+    /// unless `statfs` reports `BTRFS_SUPER_MAGIC` (the scratch round-trip belongs to `probe` in `doctor`).
     fn ensure_supported(&self, path: &Path) -> Result<(), EngineError>;
     fn create_subvolume(&self, parent: &Path, name: &str) -> Result<PathBuf, EngineError>;
     fn snapshot_ro(&self, source_subvol: &Path, dest_parent: &Path, name: &str) -> Result<PathBuf, EngineError>;
@@ -340,10 +349,9 @@ pub trait SubvolumeDriver: Send + Sync {
     fn list_children(&self, parent: &Path) -> Result<Vec<PathBuf>, EngineError>;
 }
 
-/// Injected pre-daemon CLI probe helper (`M3.12`/`M3.15`, `ADR-0010` §4): `crates/slipfork/src/main.rs`
-/// constructs `KernelBtrfsDriver` at the CLI composition boundary and passes `&dyn SubvolumeDriver` here
-/// (holding NO `WorldEngine`), while tests pass a test `SubvolumeDriver` via §1 (`tests/support/` or dev-dep testkit).
-pub fn probe_with(driver: &dyn SubvolumeDriver, state_dir: &Path) -> Result<BtrfsProbeReport, EngineError>;
+/// Pre-daemon probe hand-off (`M3.12`/`M3.15`, `ADR-0010` §4): `crates/slipfork/src/main.rs` constructs
+/// `KernelBtrfsDriver`, calls `probe(state_dir)` once, and passes the plain `BtrfsProbeReport` into
+/// `doctor::run` (holding NO `WorldEngine`); no probe trait object exists.
 
 // crates/slipfork::doctor (#![forbid(unsafe_code)], M3.15 target state; ADR-0010 §4, M3.25)
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -353,7 +361,7 @@ pub enum HostCheckOutcome {
 }
 
 /// `Skipped` exists only on `DoctorReport.netns` (synthesized solely by `doctor::run` when `unshare_userns != Ok`;
-/// `HostProbe` methods return two-variant `HostCheckOutcome` so `probe_userns` can never report `Skipped`).
+/// `OsHostProbe::probe_userns`/`probe_netns` return two-variant `HostCheckOutcome` so `probe_userns` can never report `Skipped`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NetnsCheck {
     Executed(HostCheckOutcome),
@@ -382,46 +390,55 @@ pub struct DoctorReport {
     pub fixes: Vec<String>,            // emission order & `ok` invariant: `ADR-0010` §4
 }
 
-/// Sole pre-daemon namespace probe seam (`OsHostProbe` constructed in `crates/slipfork/src/main.rs`,
-/// injected into `doctor::run` only — never `slipforkd` boot; `ADR-0010` §4).
-pub trait HostProbe: Send + Sync {
-    fn probe_userns(&self, uid: u32, gid: u32) -> HostCheckOutcome; // fixed PATH + LC_ALL=C unshare --user; EPERM -> userns_remediation_hint
-    fn probe_netns(&self, uid: u32, gid: u32) -> HostCheckOutcome;  // fixed PATH + LC_ALL=C unshare ... --net --ipc --pid -- ip link set lo up
+/// Plain probe facts assembled by `crates/slipfork/src/main.rs` (the CLI composition boundary).
+pub struct HostFacts {
+    pub unshare_userns: HostCheckOutcome,
+    pub netns: NetnsCheck,
+    pub ingress: IngressCheck,
 }
 
-/// Sole pre-daemon `:80` systemd unit probe seam (`SystemdIngressProbe` constructed in `crates/slipfork/src/main.rs`,
-/// fixed `PATH` + `env_clear` + `LC_ALL=C` over `systemctl is-active` / `systemctl show -p Listen`; `M3.28.6`, `ADR-0011` §3).
-pub trait IngressProbe: Send + Sync {
-    fn probe_ingress(&self) -> IngressCheck;
+/// Sole pre-daemon namespace probe (`crates/slipfork/src/doctor.rs`): a concrete struct constructed and
+/// called in `crates/slipfork/src/main.rs` — `run` receives only the resulting `HostFacts`.
+pub struct OsHostProbe { /* fixed PATH + locale-cleared child environment */ }
+
+impl OsHostProbe {
+    pub fn probe_userns(&self, uid: u32, gid: u32) -> HostCheckOutcome; // fixed PATH + LC_ALL=C unshare --user; EPERM -> userns_remediation_hint
+    pub fn probe_netns(&self, uid: u32, gid: u32) -> HostCheckOutcome;  // fixed PATH + LC_ALL=C unshare ... --net --ipc --pid -- ip link set lo up
 }
 
-/// Pure `doctor` composer (`crates/slipfork::doctor`, M3.15 + M3.28.6): calls `btrfs::probe_with(driver, state_dir)` +
-/// `host.probe_userns` (and `NetnsCheck::Executed(host.probe_netns)` iff `userns == Ok`, else `NetnsCheck::Skipped`) +
-/// `ingress.probe_ingress()` -> `DoctorReport`.
-pub fn run(
-    driver: &dyn SubvolumeDriver,
-    host: &dyn HostProbe,
-    ingress: &dyn IngressProbe,
-    state_dir: &Path,
-    uid: u32,
-    gid: u32,
-) -> Result<DoctorReport, EngineError>;
+/// Sole advisory `:80` systemd unit probe (`M3.28.6`, `ADR-0011` §3): concrete struct over
+/// fixed `PATH` + `env_clear` + `LC_ALL=C` `systemctl is-active` / `systemctl show -p Listen`.
+pub struct SystemdIngressProbe;
+
+impl SystemdIngressProbe {
+    pub fn probe_ingress(&self) -> IngressCheck;
+}
+
+/// Pure `doctor` composer (`crates/slipfork::doctor`, M3.15 + M3.28.6): renders one `DoctorReport` from
+/// already-observed facts; spawns nothing and owns no `WorldEngine`.
+pub fn run(btrfs: BtrfsProbeReport, facts: HostFacts, uid: u32, gid: u32) -> DoctorReport;
 
 // crates/slipfork::{user, layout, daemon_unit_install} (`#![forbid(unsafe_code)]`, M3.28.6 & M3.28.9; ADR-0011 §§1–2)
 pub struct ResolvedAccount { pub name: String, pub uid: u32, pub gid: u32, pub home: PathBuf }
 
-/// Single OS-account & hostname adapter family (`crates/slipfork/src/user.rs`, fixed `PATH`, `env_clear`, zero `$USER`/`$HOSTNAME` reads).
-pub trait UserIdentity: Send + Sync {
-    fn username(&self) -> Result<String, String>;
-    fn lookup_account(&self, account: &str) -> Result<ResolvedAccount, String>; // rejects unknown accounts, `%`, and `uid == 0`
-    /// Sole reader of `SUDO_USER` (under the adapter's fixed `PATH`), validated through `lookup_account`;
-    /// nothing outside `crates/slipfork/src/user.rs` touches `SUDO_USER`.
-    fn invoking_account(&self) -> Result<Option<String>, String>;
+/// Single OS-account & hostname value family (`crates/slipfork/src/user.rs`, fixed `PATH`, `env_clear`, zero `$USER`/`$HOSTNAME` reads).
+pub struct UserIdentity { pub uid: u32, pub gid: u32, pub home: PathBuf, pub account: String }
+
+impl UserIdentity {
+    pub fn resolve() -> Result<Self, String>;
+    /// `--user`, else the sudo invoking account, else self; direct root with neither fails closed.
+    pub fn target_account(
+        &self,
+        is_root: bool,
+        explicit_user: Option<&str>,
+        invoking_user: Option<&str>,
+    ) -> Result<ResolvedAccount, String>;
 }
 
-pub trait HostIdentity: Send + Sync {
-    fn hostname(&self) -> Result<String, String>; // feeds `slipfork open --remote` SSH target (`M3.28.9`)
-}
+pub fn lookup_account(account: &str) -> Result<ResolvedAccount, String>; // rejects unknown accounts, `%`, and `uid == 0`
+pub fn account_name() -> Result<String, String>;                         // `id -un`
+pub fn kernel_hostname() -> String;                                      // `uname -n`; feeds `slipfork open --remote` (`M3.28.9`)
+// The workspace's single `SUDO_USER` read is `crates/slipfork/src/main.rs`'s `invoking_account()`, passed in here.
 
 impl Layout {
     /// Pure single-source layout derivation for any `ResolvedAccount` (`runtime_dir` defaults unconditionally to `<state_dir>/run`).
@@ -445,6 +462,14 @@ pub enum ManagedUnit { Socket, Service } // slipforkd.socket, slipforkd.service
 /// scripted recorder: install orchestration takes `is_root: bool` and `explicit_user: Option<&str>`
 /// — zero stringly command bag, zero `--force`.
 pub struct UnitInstaller { /* unit_dir, apparmor_dir, systemctl, apparmor_parser */ }
+
+/// The three installed paths, declared once (`crates/slipfork::daemon_unit_install`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InstallPaths {
+    pub socket: PathBuf,   // <unit_dir>/slipforkd.socket
+    pub service: PathBuf,  // <unit_dir>/slipforkd.service
+    pub apparmor: PathBuf, // <apparmor_dir>/slipfork
+}
 
 impl UnitInstaller {
     pub fn new(unit_dir: PathBuf, apparmor_dir: PathBuf, systemctl: PathBuf, apparmor_parser: PathBuf) -> Self;
@@ -527,16 +552,16 @@ pub struct BaseDatabaseSeed {
     pub service: String,
 }
 
-// Production (`M3.13`): `BtrfsEngine::with_driver_and_clock(..., Arc::new(KernelBtrfsDriver::new()), clock)` — the only constructor.
-// Tests (`M3.12`/`M3.14`/`M3.15`): the same constructor receives a test-only `TestTreeDriver` per §1 and a deterministic clock.
+// Production (`M3.13`): `BtrfsEngine::new(state_dir, host_uid, host_gid, world_init_bin, KernelBtrfsDriver::new())` — the only constructor.
+// Tests that need worlds run in the lab suites (`tests/`) against a real Btrfs `<state_dir>`; no clock is injected
+// (the engine records the `Instant` it observes when each service spawns).
 impl BtrfsEngine {
-    pub fn with_driver_and_clock(
-        state_dir: PathBuf,
+    pub fn new(
+        state_dir: impl Into<PathBuf>,
         host_uid: u32,
         host_gid: u32,
-        world_init_bin: PathBuf,
-        driver: Arc<dyn SubvolumeDriver>,
-        clock: Arc<dyn MonotonicClock>,
+        world_init_bin: impl Into<PathBuf>,
+        driver: KernelBtrfsDriver,
     ) -> Result<Self, EngineError>;
 }
 
@@ -809,7 +834,7 @@ pub trait WorldEngine: Send + Sync {
     /// (`WorldSpec.control_dir`), sends `port: u16`, and receives the in-world `TcpStream` via `linux_cow.rs`'s single audited `SCM_RIGHTS` helper (`H-011` #3).
     fn dial_world_tcp(&self, world: &WorldHandle, port: u16) -> Result<std::net::TcpStream, EngineError>;
     /// Phase 2 `M3.2` target state (`ADR-0010` §3): destroys (or previews when `dry_run`) unreferenced
-    /// `<state_dir>/snapshots/*` subvolumes outside `keep` via `SubvolumeDriver::destroy_subvolume`.
+    /// `<state_dir>/snapshots/*` subvolumes outside `keep` via `KernelBtrfsDriver::destroy_subvolume`.
     /// `DaemonService::prune` populates `keep` with every retained `BaseKey::snapshot_id()` (from surviving live worlds,
     /// in-flight `BaseSeedSpec` / `M3.2` `WorldPool` leases, and active `DigestCache` lineage roots, `M3.2.13`) plus every
     /// surviving `WorldSpec.snapshot` and `DigestCache`-referenced stage/fixture `SnapshotId`, so retained sealed bases are
@@ -819,8 +844,8 @@ pub trait WorldEngine: Send + Sync {
 }
 ```
 
-- **Btrfs Substrate, Diagnostic Seam Ownership & Unified Layout (M3 target state `M3.12`–`M3.15`, `M3.21`, `M3.28.6`; **`ADR-0010` §§2–5 & `ADR-0011` §§2–3 are normative**):** `BtrfsEngine` (`crates/slipfork-engine/src/btrfs_engine.rs`) is the sole production `WorldEngine`, constructed only via `BtrfsEngine::with_driver_and_clock(..., Arc<dyn SubvolumeDriver>, Arc<dyn MonotonicClock>)` and implementing `WorldEngine::ensure_base(&BaseSeedSpec)` (`ADR-0010` §2), `WorldEngine::world_processes` (`M3.28.4`), plus Phase 2 `M3.2` `WorldEngine::prune_snapshots` (`ADR-0010` §3). `crates/slipfork-engine::btrfs` (`SubvolumeDriver::{probe, ensure_supported}` implemented by `KernelBtrfsDriver`, `BTRFS_MOUNT_HINT`, and injected `btrfs::probe_with(&dyn SubvolumeDriver, state_dir)`) is the single owner of Btrfs host probing (`BtrfsProbeReport` & `EngineError::{BtrfsRequired, SubvolumeDestroyDenied, Ioctl}`, `ADR-0010` §4): `slipforkd` boot calls magic-only `ensure_supported`, pre-daemon `slipfork doctor` calls `doctor::run(&dyn SubvolumeDriver, &dyn HostProbe, &dyn IngressProbe, ...)` -> `DoctorReport` (running `btrfs::probe_with`'s scratch-subvolume `user_subvol_rm_allowed` round-trip iff `btrfs_super_magic == true` alongside `OsHostProbe` and `SystemdIngressProbe` in `main.rs`, `ADR-0010` §4, `ADR-0011` §3), and `destroy_subvolume` maps runtime `BTRFS_IOC_SNAP_DESTROY_V2` `EPERM` to `EngineError::SubvolumeDestroyDenied` when `doctor` was skipped. Unified single-subvolume world layout, disjoint `<state_dir>/run/daemon.sock` (`--runtime-dir`) vs `<state_dir>/http-ingress.sock` vs `WorldSpec.control_dir` (`ADR-0010` §2, `ADR-0011` §2), and the ioctl lifecycle follow `ADR-0010` §§2–5; engine-owned `ServiceSpec.readiness: ReadinessProbe` follows `ADR-0002` §2.
-- **`WorldRootfs` / `BaseImageBuilder` Ownership & In-World `crun` Supervision (`ADR-0009` §1–§3):** `WorldRootfs`, `WorldRootfsRequest`, `BackingServiceKey`, `OciRootfs` (carrying `readiness: ReadinessProbe` in `M3.13`/`M3.15`, passed through unchanged to `ServiceSpec.readiness`), `ImageContractMetadata`, `CacheKeepSet` + `CachePruneReport` (`M3.2`), and `trait BaseImageBuilder` (`materialize` shipped in `0.1.0`; `prune_cache` added in Phase 2 `M3.2`) live in `#![forbid(unsafe_code)]` `crates/slipfork-engine/src/rootfs/` (zero `slipfork-snow`/`slipfork-dag`/`SubvolumeDriver` dep; `DockerfileStageBuilder` owns `<state_dir>/cache/{rootfs,oci}`). Static `crun` provisioning, staging, and in-world execution follow `ADR-0009` §1 normatively. `ServiceRuntime::OciContainer` specs flow through `spawn_service` / `stop_service` / `service_logs` alongside `WorldProcess` (`crates/slipfork-engine` owns the single `match runtime` over `WorldProcess | OciContainer` — no `ContainerRuntime` trait, no `dockerd`, no second supervisor).
+- **Btrfs Substrate, Diagnostic Seam Ownership & Unified Layout (M3 target state `M3.12`–`M3.15`, `M3.21`, `M3.28.6`; **`ADR-0010` §§2–5 & `ADR-0011` §§2–3 are normative**):** `BtrfsEngine` (`crates/slipfork-engine/src/btrfs_engine.rs`) is the sole production `WorldEngine`, constructed only via `BtrfsEngine::new(state_dir, host_uid, host_gid, world_init_bin, KernelBtrfsDriver::new())` and implementing `WorldEngine::ensure_base(&BaseSeedSpec)` (`ADR-0010` §2), `WorldEngine::world_processes` (`M3.28.4`), plus Phase 2 `M3.2` `WorldEngine::prune_snapshots` (`ADR-0010` §3). `crates/slipfork-engine::btrfs` (the concrete `KernelBtrfsDriver` with `probe_facts`/`probe`/`ensure_supported` over the shared `require_btrfs` magic gate, plus `BTRFS_MOUNT_HINT`) is the single owner of Btrfs host probing (`BtrfsProbeReport` & `EngineError::{BtrfsRequired, SubvolumeDestroyDenied, Ioctl}`, `ADR-0010` §4): `slipforkd` boot calls magic-only `ensure_supported`, pre-daemon `slipfork doctor` calls `doctor::run(BtrfsProbeReport, HostFacts, uid, gid)` -> `DoctorReport` (`main.rs` runs `KernelBtrfsDriver::probe`'s scratch-subvolume `user_subvol_rm_allowed` round-trip iff `btrfs_super_magic == true` alongside `OsHostProbe` and `SystemdIngressProbe`, `ADR-0010` §4, `ADR-0011` §3), and `destroy_subvolume` maps runtime `BTRFS_IOC_SNAP_DESTROY_V2` `EPERM` to `EngineError::SubvolumeDestroyDenied` when `doctor` was skipped. Unified single-subvolume world layout, disjoint `<state_dir>/run/daemon.sock` (`--runtime-dir`) vs `<state_dir>/http-ingress.sock` vs `WorldSpec.control_dir` (`ADR-0010` §2, `ADR-0011` §2), and the ioctl lifecycle follow `ADR-0010` §§2–5; engine-owned `ServiceSpec.readiness: ReadinessProbe` follows `ADR-0002` §2.
+- **`WorldRootfs` / `BaseImageBuilder` Ownership & In-World `crun` Supervision (`ADR-0009` §1–§3):** `WorldRootfs`, `WorldRootfsRequest`, `BackingServiceKey`, `OciRootfs` (carrying `readiness: ReadinessProbe` in `M3.13`/`M3.15`, passed through unchanged to `ServiceSpec.readiness`), `ImageContractMetadata`, `CacheKeepSet` + `CachePruneReport` (`M3.2`), and `trait BaseImageBuilder` (`materialize` shipped in `0.1.0`; `prune_cache` added in Phase 2 `M3.2`) live in `#![forbid(unsafe_code)]` `crates/slipfork-engine/src/rootfs/` (zero `slipfork-snow`/`slipfork-dag`/Btrfs-driver dep; `DockerfileStageBuilder` owns `<state_dir>/cache/{rootfs,oci}`). Static `crun` provisioning, staging, and in-world execution follow `ADR-0009` §1 normatively. `ServiceRuntime::OciContainer` specs flow through `spawn_service` / `stop_service` / `service_logs` alongside `WorldProcess` (`crates/slipfork-engine` owns the single `match runtime` over `WorldProcess | OciContainer` — no `ContainerRuntime` trait, no `dockerd`, no second supervisor).
 - **Persistent `slipfork-world-init` PID 1, `--ipc` (`CLONE_NEWIPC`), AppArmor `userns` & `<state_dir>/http-ingress.sock` Bridge (`H-011`; **`ADR-0010` §§6–7 is normative**):** Because multithreaded `setns` into an unprivileged userns/netns fails (`EINVAL`/`EPERM`), `BtrfsEngine::clone_world` spawns `#![forbid(unsafe_code)]` `crates/slipfork-engine/src/bin/slipfork-world-init.rs` under `ADR-0010` §6's unprivileged `unshare` namespace set (including normative `--ipc` / `CLONE_NEWIPC`, `M3.13`). `slipfork-world-init` brings `lo` up, writes `0` to `/proc/sys/net/ipv4/ip_unprivileged_port_start`, mounts the read-only `L0` root + subvolume state mounts (`ADR-0010` §2) + `spec.mounts` and `pivot_root`s into it, binds `0600` pathname `AF_UNIX` `<control_dir>/netns.sock` (`spec.control_dir`) to service `dial_world_tcp(port)` via `linux_cow.rs`'s audited `sendmsg`/`recvmsg` `SCM_RIGHTS` pair (`send_fd`/`recv_fd`, `MSG_CMSG_CLOEXEC`, rejecting >1 descriptors without leaking), and — when `WorldSpec.local_ingress` is `Some` — binds `127.0.0.1:<port>` (including `:80`) inside the world netns and splices accepted streams to `slipforkd`'s `0600` `<state_dir>/http-ingress.sock`. Ubuntu 24.04 LTS AppArmor `userns` profile rendering (`slipfork daemon install`, `M3.15`, `M3.28.6`) follows `ADR-0010` §7 and `ADR-0011` §1. Across the workspace, M3 `unsafe` lives solely in `crates/slipfork-engine/src/{btrfs.rs,linux_cow.rs}` (each call carrying a `// SAFETY:` proof; `H-010`'s "zero `SCM_RIGHTS`" rule applies strictly to the CLI <-> `slipforkd` TTY boundary).
 
 ### 3.4 Port-Aware `WorldOrigin::local`, `WorldRegistry` & `DaemonControl` (`crates/slipfork-world`, `crates/slipfork-edge`, `ADR-0005`, `ADR-0008`, `H-010`)
@@ -1120,7 +1145,7 @@ pub trait DaemonControl: Send + Sync {
 }
 ```
 
-- **Daemon Wire vs CLI `--json` Documents (`docs/design/dx-0.1.0-ux.md` §3 & §10):** Over `<state_dir>/run/daemon.sock`, `DaemonControl` exchanges the typed values above (`WorldId`, `WorldOrigin`, `ServiceState`, full 64-hex digests in `WorldLineage`), and `slipfork open` passes `&WorldOrigin` directly to `BrowserOpener::open_origin`. Each CLI verb owns its own top-level `--json` document — there is **no** shared envelope type, wrapper, or projection layer: object verbs carry `"ok": true`, `list` / `support` / `snow resolve` / `secret list` emit their bare collection payload, `logs --json` is the single NDJSON stream, `exec` / `shell` / `db` / `redis` reject `--json`, and a failure document carries `code` + `error` + `next` with the per-code extras listed in `docs/design/dx-0.1.0-ux.md` §10.
+- **Daemon Wire vs CLI `--json` Documents (`docs/design/dx-0.1.0-ux.md` §3 & §10):** Over `<state_dir>/run/daemon.sock`, `DaemonControl` exchanges the typed values above (`WorldId`, `WorldOrigin`, `ServiceState`, full 64-hex digests in `WorldLineage`), and `slipfork open` passes `origin.url()` to the concrete `Browser::open`. Each CLI verb owns its own top-level `--json` document — there is **no** shared envelope type, wrapper, or projection layer: object verbs carry `"ok": true`, `list` / `support` / `snow resolve` / `secret list` emit their bare collection payload, `logs --json` is the single NDJSON stream, `exec` / `shell` / `db` / `redis` reject `--json`, and a failure document carries `code` + `error` + `next` with the per-code extras listed in `docs/design/dx-0.1.0-ux.md` §10.
 
 ### 3.5 `ProjectSlugOverride`, `RepoRootResolver`, `VcsWorkspace` (`Git` + `Jujutsu`) & `git-remote-slipfork` (`crates/slipfork-vcs`, `ADR-0005`, `ADR-0008`)
 
@@ -1210,7 +1235,7 @@ pub struct TestSpec {
     pub coverage: Option<CoverageConfig>, // coverage = true is the sole activation switch
 }
 
-// crates/slipfork-test (Phase 2 M3.2 target state; BtrfsArtifactStore over Arc<dyn SubvolumeDriver>, ADR-0006 §4, ADR-0010 §§3, 5)
+// crates/slipfork-test (Phase 2 M3.2 target state; BtrfsArtifactStore over KernelBtrfsDriver, ADR-0006 §4, ADR-0010 §§3, 5)
 pub trait ArtifactStore: Send + Sync {
     fn ensure_artifact(
         &self,
@@ -1218,7 +1243,7 @@ pub trait ArtifactStore: Send + Sync {
         populate: &mut dyn FnMut(&Path) -> Result<(), ArtifactError>,
     ) -> Result<PathBuf, ArtifactError>;
     /// Phase 2 `M3.2` target state (`ADR-0010` §3): destroys (or previews when `dry_run`) unreferenced
-    /// `<state_dir>/artifacts/<digest>` RO subvolumes outside `keep` via `SubvolumeDriver::destroy_subvolume`.
+    /// `<state_dir>/artifacts/<digest>` RO subvolumes outside `keep` via `KernelBtrfsDriver::destroy_subvolume`.
     fn prune_artifacts(&self, keep: &BTreeSet<String>, dry_run: bool) -> Result<Vec<String>, ArtifactError>;
 }
 ```

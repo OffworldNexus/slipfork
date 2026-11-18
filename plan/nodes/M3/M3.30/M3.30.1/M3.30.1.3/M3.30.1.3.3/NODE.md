@@ -2,7 +2,7 @@
 id: M3.30.1.3.3
 title: "CLI roots: concrete identity/browser/probe/installer DI, delete remaining doubles"
 kind: epic
-status: active
+status: done
 priority: 3
 depends_on: [M3.30.1.3.2]
 paths:
@@ -21,7 +21,7 @@ attempts: 0
 max_attempts: 3
 escalation: none
 created: "2026-11-18T22:46"
-updated: "2026-11-18T23:13"
+updated: "2026-11-18T23:52"
 ---
 
 # Goal
