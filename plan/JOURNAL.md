@@ -1333,3 +1333,8 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-18T03:43 [M3.28.9] (lead) landed together with its sibling: both nodes edit cli.rs/main.rs/lib.rs/critical_cli.rs, and splitting would require hand-editing code. make check GREEN (44+ su
 - 2026-11-18T03:43 [M3.28.15] (lead) status review -> done
 - 2026-11-18T03:43 [M3.28.15] (lead) landed together with its sibling: both nodes edit cli.rs/main.rs/lib.rs/critical_cli.rs, and splitting would require hand-editing code. make check GREEN (44+ su
+- 2026-11-18T03:44 [M3.28.10] (lead) status ready -> active
+- 2026-11-18T03:44 [M3.28.10] (lead) attempt 1/3 started
+- 2026-11-18T03:44 [M3.28.10] (lead) base a364b31d9252dba223f026b58643718918d47951
+- 2026-11-18T03:48 [M3.28.16] (lead) status ready -> done
+- 2026-11-18T03:48 [M3.28.16] (lead) un-parked and re-armed after M3.28.15: tool exit 0 (91 production files, 6 composition roots), pytest 9 passed incl. test_real_repository_is_clean, stub-check b

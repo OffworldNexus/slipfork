@@ -13,7 +13,7 @@ export TMPDIR
 CARGO_BUILD_JOBS ?= 4
 export CARGO_BUILD_JOBS
 
-.PHONY: help check fmt rs-fmt rs-lint rs-test rs-test-list ts-test py-lint py-test docs-check guard plan-check support-check support-sync bench bench-update docs-serve
+.PHONY: help check fmt rs-fmt rs-lint rs-test rs-test-list ts-test py-lint py-test docs-check guard stub-check plan-check support-check support-sync bench bench-update docs-serve
 
 $(TMPDIR):
 	mkdir -p $(TMPDIR)
@@ -21,7 +21,7 @@ $(TMPDIR):
 help: ## Show available targets
 	@grep -E '^[a-zA-Z0-9_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-22s\033[0m %s\n", $$1, $$2}'
 
-check: plan-check guard py-lint py-test support-check ts-test rs-fmt rs-lint rs-test docs-check ## Run every static, unit, critical, plan, hygiene, support, TS, and docs check
+check: plan-check guard stub-check py-lint py-test support-check ts-test rs-fmt rs-lint rs-test docs-check ## Run every static, unit, critical, plan, hygiene, stub, support, TS, and docs check
 
 fmt: rs-fmt | $(TMPDIR) ## Format Rust and Python tooling
 	uvx --offline ruff format tools poc
@@ -31,6 +31,9 @@ plan-check: | $(TMPDIR) ## Validate plan/ consistency
 
 guard: | $(TMPDIR) ## Verify repository hygiene and zero [derived]/[guessed] spec markers
 	uv run --no-project tools/guard.py
+
+stub-check: | $(TMPDIR) ## Refuse production composition roots that wire stub/unavailable adapters
+	uv run --no-project tools/check_stub_adapters.py --check all
 
 py-lint: | $(TMPDIR) ## Lint and format-check Python harness/PoC scripts
 	uvx --offline ruff check tools poc

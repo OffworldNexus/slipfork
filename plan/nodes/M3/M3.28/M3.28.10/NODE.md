@@ -2,7 +2,7 @@
 id: M3.28.10
 title: "slipfork fork with no argument: branch-derived name, worktree/origin/cd output, one-line git errors"
 kind: task
-status: ready
+status: active
 owner: implementer
 priority: 3
 depends_on: [M3.28.9]
@@ -12,11 +12,11 @@ paths:
   - crates/slipfork/src/vcs.rs
   - crates/slipfork/src/daemon.rs
   - crates/slipfork/tests/critical_cli.rs
-attempts: 0
+attempts: 1
 max_attempts: 3
 escalation: none
 created: "2026-11-17T16:33"
-updated: "2026-11-17T18:55"
+updated: "2026-11-18T03:44"
 ---
 
 # Goal

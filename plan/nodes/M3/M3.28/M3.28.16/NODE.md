@@ -2,7 +2,7 @@
 id: M3.28.16
 title: "Guard rail: production composition roots may not wire stub adapters (tools/check_stub_adapters.py)"
 kind: task
-status: ready
+status: done
 owner: implementer
 priority: 2
 depends_on: [M3.28.15, M3.29.3]
@@ -15,7 +15,7 @@ attempts: 1
 max_attempts: 3
 escalation: none
 created: "2026-11-17T17:41"
-updated: "2026-11-18T03:16"
+updated: "2026-11-18T03:48"
 ---
 
 # Goal
