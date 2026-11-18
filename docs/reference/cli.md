@@ -61,7 +61,6 @@ fix: sudo mount -o user_subvol_rm_allowed,noatime /dev/<device> <state_dir>
 | `prune` | Preview worlds whose checkout directory is gone (default, or `--dry-run`); `--yes` reaps them. Sealed snapshots and caches are retained | `slipfork prune` |
 | `secret set` / `unset` | Store a **local**-vault value read from **stdin** (`--force` rotates it) or remove one key | `slipfork secret set PG_PASSWORD` |
 | `secret list` | Print the local vault's key names only, never values | `slipfork secret list` |
-| `share` | Tunnel sharing is unavailable in this release and fails closed; `--stop` releases a lease | `slipfork share` |
 | `daemon unit` | Render the non-template systemd units and the AppArmor profile on stdout (`--only socket\|service\|apparmor`, repeatable `--bin-dir`) | `slipfork daemon unit --only apparmor` |
 | `daemon install` | Write `/etc/systemd/system/slipforkd.{socket,service}` + `/etc/apparmor.d/slipfork`, then `enable --now` (`sudo`) | `sudo slipfork daemon install` |
 | `exec` | Run a command non-interactively inside a world | `slipfork exec -- id` |
@@ -89,11 +88,11 @@ PG_PASSWORD
 
 ## World selection and boot options
 
-`up`, `down`, `share`, `exec`, `shell`, `logs`, `hook run`, `db`, `redis`, and `forward` accept `--world <WORLD>`: a bare `<fork>`, the `<project>:<fork>` id `slipfork list` prints, or the canonical `<project>`. `--world` only picks which world of the current project to use, so run these from inside that project's Git/JJ checkout; omitted, the world is inferred from `cwd`: `.worktrees/<fork>[/...]` selects fork `<fork>`, the repository root selects the canonical world.
+`up`, `down`, `exec`, `shell`, `logs`, `hook run`, `db`, `redis`, and `forward` accept `--world <WORLD>`: a bare `<fork>`, the `<project>:<fork>` id `slipfork list` prints, or the canonical `<project>`. `--world` only picks which world of the current project to use, so run these from inside that project's Git/JJ checkout; omitted, the world is inferred from `cwd`: `.worktrees/<fork>[/...]` selects fork `<fork>`, the repository root selects the canonical world.
 
 | Option | Applies to | Description |
 |---|---|---|
-| `--world <WORLD>` | `up`, `down`, `share`, `exec`, `shell`, `logs`, `hook run`, `db`, `redis`, `forward` | `<fork>`, `<project>:<fork>`, or canonical `<project>`; a foreign project prefix fails closed |
+| `--world <WORLD>` | `up`, `down`, `exec`, `shell`, `logs`, `hook run`, `db`, `redis`, `forward` | `<fork>`, `<project>:<fork>`, or canonical `<project>`; a foreign project prefix fails closed |
 | `--base <REV>` | `fork` | Git checkouts: commit-ish to fork from (default: requesting checkout's `HEAD`). A `.jj` checkout always forks the working-copy parent `@-` (`@` when dirty) and ignores `--base` |
 | `--no-dump` / `--refresh-dump` / `--resources local` | `up`, `fork` | Dump policy and hermetic-resource overrides; exact behaviour in [seed dumps](#seed-dumps-and-sealed-bases) |
 | `--host-caches` | `up`, `fork` | Mount `~/.cargo/{registry,git,bin}`, `~/.rustup`, `~/.cache/uv`, `~/.local/share/uv`, and `~/.local/share/pnpm/store` read-only **after** the ELF/libc ABI probe passes; never a `slipfork.toml` key |
@@ -120,7 +119,6 @@ slipfork: no slipforkd on /home/acme/.cache/slipfork/run/daemon.sock — run `sl
 ```
 
 - A non-Btrfs state directory fails closed at `slipforkd` boot: `daemon.log` names the filesystem code and the `mount -o user_subvol_rm_allowed,noatime` line to run, and nothing is created.
-- `share` fails closed until tunnel sharing lands (`slipfork: slipforkd has no forward listener, …`), and a forward listener alone does not change that; `share --stop` on a local world is an idempotent success.
 - `db`/`redis` fail closed with `ServiceNotRunning` unless that service's container is running in the world.
 - `prune` reaps orphaned worlds; it does not garbage-collect sealed snapshots or `<state_dir>/cache/{rootfs,oci}` yet.
 

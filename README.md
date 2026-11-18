@@ -8,10 +8,10 @@ $ cargo install --path crates/slipfork-engine    # installs `slipfork-world-init
 $ cargo install --path crates/slipfork           # `slipfork` + `slipforkd` + `git-remote-slipfork`
 $ cd /path/to/your/project
 $ slipfork doctor                                # probe the Btrfs substrate, the live subvolume round-trip, and unprivileged namespaces
-$ slipfork snow resolve --file snow.yml --mode local  # validate modes, persist !! secrets (0600)
+$ slipfork snow resolve --file snow.yml --mode local  # validate modes, persist !! secrets in the local 0600 vault
 $ slipfork up                                    # build the world rootfs from your Dockerfile, boot it
 $ slipfork fork feat-billing                     # second CoW world + .worktrees/feat-billing
-$ slipfork list                                  # one origin URL per world
+$ slipfork list                                  # one app URL per world
 ```
 
 In a repository with a `snow.yml` that declares a build image and `modes.local` ([getting started](docs/getting-started.md)); a `slipfork.toml` is optional. Run the `slipfork` commands after the one-time Btrfs mount below. Once you have written a `slipfork.toml`, `slipfork dag plan` previews the artifact/fixture waves ([DAG planner](docs/testing-dag.md)).
@@ -31,8 +31,9 @@ Every world and sealed snapshot is one unprivileged Btrfs subvolume, so any othe
 - **`Dockerfile`-derived `L0` world rootfs** — content-addressed under `<state_dir>/cache/rootfs/<sha256>/app`, mounted read-only, executed as `$UID:$GID`, with `[world]` selecting the image and stage.
 - **One Btrfs subvolume per world** — the read-only rootfs tree and `postgres`/`redis`/S3 state live inside it, so sealing a snapshot and cloning a world are single metadata operations with zero file copies.
 - **Daemonless `crun` backing services** — `postgres:<v>`, `redis:<v>`, and SeaweedFS in OCI containers sharing the world's `127.0.0.1`, and `slipfork db`/`redis` run their clients inside the containers.
-- **Daemon-served world lifecycle** — `up`, `down`, `fork`, `drop`, `list`, `prune`, `secret` (`share` fails closed until tunnel sharing lands), plus local `daemon unit` rendering and `exec`, `shell`, `logs`, `hook run`, `forward`, `auth login`, `support`, `git-remote-slipfork`; `fork` creates a Git worktree or, when the checkout carries `.jj`, a Jujutsu workspace with zero Git fallback.
-- **`snow.yml` resolver and DAG planner** — mode-scoped components, write-once `!!` secrets in a local `0600` vault, Merkle artifact/fixture waves.
+- **Daemon-served world lifecycle** — `up`, `down`, `fork`, `drop`, `list`, `prune`, `secret`, plus local `daemon unit` rendering and `exec`, `shell`, `logs`, `hook run`, `forward`, `auth`, `support`, `git-remote-slipfork`; `fork` creates a Git worktree or, when the checkout carries `.jj`, a Jujutsu workspace with zero Git fallback.
+- **`snow.yml` resolver and DAG planner** — mode-scoped components, write-once `!!` secrets in the project's local `0600` vault, Merkle artifact/fixture waves.
+- **OSPP v1 secrets** — pair once with `slipfork auth` (server-supplied `<url>#handle=…` page), then let the provider resolve CI values: they arrive HPKE-encrypted, are decrypted in `slipforkd` memory, and are injected into children only. The local vault stays local-only; remote secrets are never written to disk by Slipfork.
 - **OpenCode V2 plugin** — worktrees become CoW worlds; shell commands route through `slipfork exec`.
 - **Measured cost model** — `19.5 ms` read-only snapshot, `11–24 ms` writable clone, `39 ms` to a warm-SQL world, `6.3 MiB` RSS per world (owner-recorded; [`docs/research/btrfs-crun-benchmarks.md`](docs/research/btrfs-crun-benchmarks.md)).
 
@@ -44,7 +45,7 @@ All supported integrations are graded against their evidence in the [support mat
 - [`snow.yml` modes & secrets](docs/snow-modes.md)
 - [Orthogonal DAG planner](docs/testing-dag.md)
 - [OpenCode V2 plugin](docs/agents-and-opencode.md)
-- [CLI reference](docs/reference/cli.md) · [Manifest reference](docs/reference/manifest.md) · [Support matrix](docs/support-matrix.md)
+- [CLI reference](docs/reference/cli.md) · [Secrets & OSPP v1](docs/reference/ospp.md) · [Manifest reference](docs/reference/manifest.md) · [Support matrix](docs/support-matrix.md)
 - Internal design: [`ARCHITECTURE.md`](ARCHITECTURE.md), [`docs/decisions/`](docs/decisions/), [`docs/design/target-dx.md`](docs/design/target-dx.md) (nothing there is a shipped promise)
 
 ## Validation
@@ -55,6 +56,6 @@ $ make check   # plan, hygiene, Python, TS, Rust fmt/clippy/doc/test, support re
 
 ## Where this is going (not yet shipped)
 
-- **Planned:** tunnel sharing (`weaved` registrar), and unreferenced snapshot plus rootfs/OCI cache garbage collection in `prune`.
+- **Planned:** unreferenced snapshot plus rootfs/OCI cache garbage collection in `prune`.
 - **`0.2.0`:** polyglot parallel test orchestrator (`STP v1`, artifact/fixture snapshot materialization, pre-warmed Btrfs world slots, typed coverage, `SLIPFORK_OUTPUT_DIR`).
 - **Later:** remote content-addressed snapshot/artifact cache export and turnkey agent skills.

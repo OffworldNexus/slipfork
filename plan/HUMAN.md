@@ -56,3 +56,11 @@ Live VM blocks on AppArmor: every world boot dies at the first crun backing serv
 
 **Answer:**
 
+## H-007 [open] [direction-challenge] (node M3.29.3)
+
+- asked: 2026-11-18T03:17 by lead
+
+OSPP endpoint has no durable source of truth in 0.1.0. 'slipforkd --ospp-endpoint' works only for a hand-run foreground daemon: (a) the auto-spawned daemon (up/fork) never receives it, (b) 'daemon unit'/'daemon install' render no Environment= or config key for it, (c) there is no 'daemon stop', so pairing cannot survive a reboot. Consequence: 'slipfork auth' + live subscriptions only work with a manually started slipforkd. Decide ONE: (A) SLIPFORK_OSPP_ENDPOINT read in the composition root only, embedded into the unit by 'daemon install' (Environment=), documented as the single override; (B) a [ospp] endpoint key in slipfork.toml, resolved by slipforkd at boot (needs the config schema + docs); (C) keep 0.1.0 pairing-only-by-hand and publish that constraint. Recommendation: A (no schema change, one ambient read at the composition root, and 'daemon install' already owns the unit bytes).
+
+**Answer:**
+

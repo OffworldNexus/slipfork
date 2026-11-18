@@ -108,6 +108,21 @@ pub enum Commands {
         world: Option<String>,
     },
 
+    /// Show one world's state, lineage, and every supervised component / `crun` service row.
+    Ps {
+        #[arg(long, value_name = "WORLD", help = WORLD_HELP)]
+        world: Option<String>,
+    },
+
+    /// Open the selected world's origin in the desktop browser, or print the SSH recipe.
+    Open {
+        #[arg(long, value_name = "WORLD", help = WORLD_HELP)]
+        world: Option<String>,
+        /// Print the SSH local-forward recipe for a laptop instead of opening a browser.
+        #[arg(long)]
+        remote: bool,
+    },
+
     /// Create `.worktrees/<fork>` plus its CoW world through `slipforkd`.
     Fork {
         /// Fork name (a single lowercase DNS label).
@@ -150,15 +165,6 @@ pub enum Commands {
     Secret {
         #[command(subcommand)]
         action: SecretAction,
-    },
-
-    /// Share a world through the tunnel registrar, or stop sharing it.
-    Share {
-        /// Drop the world's tunnel lease instead of minting one.
-        #[arg(long)]
-        stop: bool,
-        #[arg(long, value_name = "WORLD", help = WORLD_HELP)]
-        world: Option<String>,
     },
 
     /// Daemon administration.
@@ -443,6 +449,31 @@ mod tests {
         assert_eq!(err.kind(), clap::error::ErrorKind::UnknownArgument);
         assert!(Cli::try_parse_from(["slipfork", "--verbose", "restart"]).is_ok());
         assert!(Cli::try_parse_from(["slipfork", "restart", "-v"]).is_ok());
+    }
+
+    #[test]
+    fn ps_and_open_select_a_world_and_open_has_a_remote_recipe() {
+        let ps =
+            Cli::try_parse_from(["slipfork", "ps", "--world", "demo:feat"]).expect("ps parses");
+        let Some(Commands::Ps { world }) = ps.command else {
+            panic!("expected `ps`");
+        };
+        assert_eq!(world.as_deref(), Some("demo:feat"));
+        assert!(Cli::try_parse_from(["slipfork", "ps"]).is_ok());
+
+        let open = Cli::try_parse_from(["slipfork", "open", "--remote"]).expect("open parses");
+        let Some(Commands::Open { world, remote }) = open.command else {
+            panic!("expected `open`");
+        };
+        assert!(world.is_none());
+        assert!(
+            remote,
+            "`--remote` prints the SSH recipe instead of opening a browser"
+        );
+        // The laptop-side forward port is the fixed constant `8080`; there is no extra flag.
+        let err = Cli::try_parse_from(["slipfork", "open", "--remote", "--local-port", "9090"])
+            .expect_err("`--local-port` was locked out of 0.1.0");
+        assert_eq!(err.kind(), clap::error::ErrorKind::UnknownArgument);
     }
 
     #[test]

@@ -32,7 +32,6 @@ use slipfork_engine::{ExecEnv, StreamChunk, WorldEntryCommand};
 use slipfork_world::WorldOrigin;
 
 use crate::EdgeError;
-use crate::registry::SharedWorldInfo;
 
 /// File name of the user control socket inside `slipforkd`'s explicit `--runtime-dir`.
 pub const CONTROL_SOCKET_FILE: &str = "daemon.sock";
@@ -580,10 +579,6 @@ pub struct WorldExecTarget {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DaemonErrorKind {
-    /// `slipforkd` has no forward listener, so sharing fails closed.
-    NoForwardListener,
-    /// No tunnel registrar adapter is wired (`H-006`).
-    TunnelUnavailable,
     /// A request that would need the HTTP ingress cannot name one bound port.
     IngressMissing,
     /// The daemon's ingress report has no single real, bound origin port.
@@ -635,8 +630,6 @@ impl From<&EdgeError> for DaemonError {
             return error.clone();
         }
         let kind = match err {
-            EdgeError::NoForwardListener => DaemonErrorKind::NoForwardListener,
-            EdgeError::TunnelUnavailable { .. } => DaemonErrorKind::TunnelUnavailable,
             EdgeError::IngressMissing => DaemonErrorKind::IngressMissing,
             EdgeError::IngressPortInvalid { .. } => DaemonErrorKind::IngressPortInvalid,
             EdgeError::UnknownHost { .. } | EdgeError::UnknownIngressPath { .. } => {
@@ -688,10 +681,6 @@ pub enum DaemonRequest {
         /// `true` for `--dry-run`.
         dry_run: bool,
     },
-    /// Mint a public tunnel lease for a world (`WorldRegistry::share_world`).
-    Share(WorldSelector),
-    /// Drop a world's tunnel lease (`WorldRegistry::unshare_world`).
-    Unshare(WorldSelector),
     /// Store a `0600` vault secret, refusing to overwrite without `force`.
     SecretSet {
         /// Repository root owning the vault.
@@ -784,16 +773,6 @@ pub enum DaemonReply {
     Prune {
         /// What was (or would be) reaped.
         report: PruneReport,
-    },
-    /// Reply to [`DaemonRequest::Share`].
-    Shared {
-        /// The minted shared origin and lease id.
-        shared: SharedWorldInfo,
-    },
-    /// Reply to [`DaemonRequest::Unshare`].
-    Origin {
-        /// The world's origin after unsharing (`WorldOrigin::Local`).
-        origin: WorldOrigin,
     },
     /// Reply to [`DaemonRequest::SecretSet`].
     SecretSet,
@@ -934,12 +913,6 @@ pub trait DaemonControl: Send + Sync {
 
     /// Preview or reap orphaned worlds and snapshots.
     fn prune(&self, dry_run: bool) -> Result<PruneReport, EdgeError>;
-
-    /// Mint a public tunnel lease (`WorldRegistry::share_world`).
-    fn share(&self, req: &WorldSelector) -> Result<SharedWorldInfo, EdgeError>;
-
-    /// Drop a tunnel lease (`WorldRegistry::unshare_world`; idempotent when already local).
-    fn unshare(&self, req: &WorldSelector) -> Result<WorldOrigin, EdgeError>;
 
     /// Store a `0600` vault secret, refusing to overwrite without `force`.
     fn secret_set(

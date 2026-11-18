@@ -104,8 +104,6 @@ pub enum IntegrationCategory {
     WorldEngine,
     /// Secret provider / vault integration (e.g. `FileVaultProvider`, `OSPP v1`).
     Secrets,
-    /// Outbound tunnel registrar (e.g. `weaved`).
-    Tunnel,
     /// VCS workspace driver (e.g. Git worktrees, Jujutsu workspaces).
     Vcs,
     /// Language/framework test runner adapter (e.g. `pytest-slipfork`, Playwright, PHPUnit).

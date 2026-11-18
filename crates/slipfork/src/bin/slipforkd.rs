@@ -7,7 +7,7 @@
 //! `EngineError::BtrfsRequired` before any world directory exists), `FileVaultProvider` layered
 //! over a paired `OsppSecretProvider`, `ResourcePlan::resolve`, `GitRepoRootResolver` over the one
 //! `SlipforkConfig` `ProjectSlugOverride`, `RepositoryWorkspaces` (Git or Jujutsu by `.jj`),
-//! `DiskSeedDumpStore`, `WorldRegistry`, and `UnavailableTunnelRegistrar`. It serves the HTTP/WS
+//! `DiskSeedDumpStore`, and `WorldRegistry`. It serves the HTTP/WS
 //! ingress (`LISTEN_FDS` or `--listen`, plus `0600` `<state_dir>/http-ingress.sock`) and the typed
 //! `DaemonControl` socket (`0600` `<runtime_dir>/daemon.sock`).
 //!
@@ -24,6 +24,7 @@ use std::sync::Arc;
 use std::thread;
 
 use clap::Parser;
+use slipfork::browser::SystemBrowserOpener;
 use slipfork::daemon::{DaemonWiring, compose_daemon, host_caches};
 use slipfork::layout::{Layout, ensure_private_dir};
 use slipfork::runtime::{runtime_assets, target_arch};
@@ -32,8 +33,7 @@ use slipfork_edge::{
 };
 use slipfork_engine::btrfs::KernelBtrfsDriver;
 use slipfork_engine::{InheritedVar, current_uid_gid};
-use slipfork_ospp::{BrowserOpener, LivePairingUrl, OsppEndpoint, OsppError};
-use slipfork_world::WorldOrigin;
+use slipfork_ospp::OsppEndpoint;
 
 /// Unified unprivileged user daemon.
 #[derive(Debug, Parser)]
@@ -82,47 +82,6 @@ fn main() -> ExitCode {
             eprintln!("slipforkd: {message}");
             ExitCode::from(1)
         }
-    }
-}
-
-/// Open the pairing approval page through the desktop's `xdg-open` (the live handle is handed
-/// over in-process and never becomes an argv/log value of our own process).
-struct SystemBrowserOpener;
-
-impl SystemBrowserOpener {
-    fn open(&self, url: &str) -> Result<(), OsppError> {
-        // Honor the developer's `BROWSER` choice first (the composition root is the only place
-        // ambient environment is read); fall back to the desktop's `xdg-open`.
-        let program = std::env::var_os("BROWSER")
-            .filter(|value| !value.is_empty())
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("xdg-open"));
-        let status = std::process::Command::new(&program)
-            .arg(url)
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .map_err(|err| {
-                OsppError::Transport(format!("cannot run {}: {err}", program.display()))
-            })?;
-        if !status.success() {
-            return Err(OsppError::Transport(format!(
-                "{} exited with {status}",
-                program.display()
-            )));
-        }
-        Ok(())
-    }
-}
-
-impl BrowserOpener for SystemBrowserOpener {
-    fn open_pairing_url(&self, url: LivePairingUrl) -> Result<(), OsppError> {
-        self.open(url.as_str())
-    }
-
-    fn open_origin(&self, origin: &WorldOrigin) -> Result<(), OsppError> {
-        self.open(origin.url())
     }
 }
 
@@ -186,10 +145,17 @@ fn run(cli: DaemonCli) -> Result<(), String> {
 
     // The one daemon graph: `compose_daemon` owns every adapter wiring, so `slipforkd` and the
     // integration harness can never drift into two composition paths.
+    let browser = SystemBrowserOpener::from_host_inputs(
+        std::env::var_os("BROWSER")
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from),
+        std::env::var_os("DISPLAY").is_some_and(|value| !value.is_empty()),
+        std::env::var_os("WAYLAND_DISPLAY").is_some_and(|value| !value.is_empty()),
+    );
     let graph = compose_daemon(DaemonWiring {
         layout,
         driver: Arc::new(KernelBtrfsDriver::new()),
-        browser: Arc::new(SystemBrowserOpener),
+        browser: Arc::new(browser),
         ingress,
         forward_port,
         host_caches: host_caches(&home),

@@ -477,13 +477,6 @@ modes:
         Some(("http://acme.localhost:8080".to_owned(), false))
     );
 
-    let shared_origin = WorldOrigin::shared("https://acme.tunnel.example:8443").expect("shared");
-    let shared_coords =
-        ResourceCoordinates::for_world(&snow, &project, &target, &shared_origin, &BTreeMap::new())
-            .expect("shared coordinates");
-    assert_eq!(shared_coords.app_url, "https://acme.tunnel.example:8443");
-    assert_eq!(shared_coords.app_domain, "acme.tunnel.example");
-
     // `ResourcePlan` overrides replace bucket coordinates; undeclared buckets fail closed.
     let overrides = BTreeMap::from([(
         "media".to_owned(),

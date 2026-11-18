@@ -4,9 +4,8 @@
 //! [`crate::registry::WorldRegistry`]'s `IngressRoute` longest-prefix table into
 //! `WorldEngine::dial_world_tcp`, and relayed byte-for-byte back to the client. Unknown hosts and
 //! unmatched paths answer `404`; malformed requests, unknown methods, oversized heads, and
-//! unreachable backends answer `400`/`405`/`431`/`502` respectively. A `*.localhost` host of a
-//! shared world answers `308 Permanent Redirect` (`421 Misdirected Request` for `Upgrade`) before
-//! any backend is dialed (`ADR-0005` §1) — never a partial response and never a silent fallback.
+//! unreachable backends answer `400`/`405`/`431`/`502` respectively — never a partial response and
+//! never a silent fallback.
 //!
 //! Alongside its TCP listeners [`HttpIngress`] binds the `0600` pathname `AF_UNIX` socket
 //! `<state_dir>/http-ingress.sock` (`H-011` #4 Variant a). `slipfork-world-init` splices every
@@ -28,7 +27,7 @@ use std::time::Duration;
 
 use crate::EdgeError;
 use crate::activation::ListenerSet;
-use crate::registry::{RouteDecision, WorldRegistry};
+use crate::registry::WorldRegistry;
 use crate::relay::{Duplex, pipe};
 use crate::unix_socket::{SocketRole, bind_private};
 
@@ -379,22 +378,11 @@ fn dispatch(
     let host = host_header(&request, &peer)?;
     let upgrade = is_upgrade(&request);
 
-    // The routing decision comes before the method allowlist so a shared world's `*.localhost`
-    // host answers `308`/`421` for *every* method and is never proxied (`ADR-0005` §1).
-    let routed = match registry
-        .resolve(&host, path, upgrade)
-        .map_err(|err| route_refusal(&host, err))?
-    {
-        RouteDecision::Redirect { location, .. } => {
-            return write_redirect(client, &location, method == "HEAD")
-                .map_err(|err| Refusal::Internal(format!("cannot redirect {peer}: {err}")));
-        }
-        RouteDecision::Misdirected { world, shared_url } => {
-            return write_misdirected(client, &world, &shared_url, method == "HEAD")
-                .map_err(|err| Refusal::Internal(format!("cannot refuse {peer}: {err}")));
-        }
-        RouteDecision::Forward(routed) => routed,
-    };
+    // The routing decision comes before the method allowlist, so an unroutable host is never
+    // dispatched against a world backend.
+    let routed = registry
+        .resolve(&host, path)
+        .map_err(|err| route_refusal(&host, err))?;
     if !ALLOWED_METHODS.contains(&method) {
         return Err(Refusal::MethodNotAllowed(format!(
             "method '{method}' from {peer} is not dispatched by slipforkd"
@@ -602,64 +590,6 @@ fn write_upstream_request(
     out.extend_from_slice(forwarded_for.as_bytes());
     out.extend_from_slice(b"\r\nX-Forwarded-Proto: http\r\n\r\n");
     upstream.write_all(&out)
-}
-
-/// Answer `308 Permanent Redirect` for a `*.localhost` request against a shared world.
-///
-/// The response is written immediately after the request head: an `Expect: 100-continue` body is
-/// never acknowledged with `100 Continue` and never read, and a `HEAD` request carries neither a
-/// body nor a `Content-Length` (`ADR-0005` §1, RFC 9110 §15.4.9/§9.3.2).
-fn write_redirect(client: &mut ClientStream, location: &str, head_only: bool) -> io::Result<()> {
-    let body = format!("Permanent Redirect: {location}\n");
-    write_status(
-        client,
-        308,
-        "Permanent Redirect",
-        Some(location),
-        &body,
-        head_only,
-    )
-}
-
-/// Answer `421 Misdirected Request` naming the shared origin (`ADR-0005` §1 rule 2).
-fn write_misdirected(
-    client: &mut ClientStream,
-    world: &str,
-    shared_url: &str,
-    head_only: bool,
-) -> io::Result<()> {
-    let body = format!(
-        "Misdirected Request: world {world} is shared at {shared_url}; connect to that origin instead\n"
-    );
-    write_status(client, 421, "Misdirected Request", None, &body, head_only)
-}
-
-/// Render one complete `text/plain` status response (the single status-head writer).
-///
-/// `head_only` answers a `HEAD` request: the status line, `Location`, and framing headers are
-/// preserved, but neither a body nor a `Content-Length` is emitted (RFC 9110 §9.3.2).
-fn write_status(
-    client: &mut ClientStream,
-    status: u16,
-    reason: &str,
-    location: Option<&str>,
-    body: &str,
-    head_only: bool,
-) -> io::Result<()> {
-    let mut head =
-        format!("HTTP/1.1 {status} {reason}\r\nContent-Type: text/plain; charset=utf-8\r\n");
-    if let Some(location) = location {
-        head.push_str(&format!("Location: {location}\r\n"));
-    }
-    if !head_only {
-        head.push_str(&format!("Content-Length: {}\r\n", body.len()));
-    }
-    head.push_str("Connection: close\r\n\r\n");
-    if !head_only {
-        head.push_str(body);
-    }
-    client.write_all(head.as_bytes())?;
-    client.flush()
 }
 
 /// Relay the backend response to the client and the remaining client bytes to the backend.

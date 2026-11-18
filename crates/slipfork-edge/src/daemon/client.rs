@@ -10,7 +10,6 @@ use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 
 use slipfork_engine::StreamChunk;
-use slipfork_world::WorldOrigin;
 
 use crate::EdgeError;
 use crate::daemon::server::DaemonControlServer;
@@ -18,8 +17,8 @@ use crate::daemon::wire::{FrameReader, unexpected_reply};
 use crate::daemon::{
     AuthSummary, BootEvent, DaemonControl, DaemonReply, DaemonRequest, DaemonStatus,
     DropForkRequest, ExecTargetRequest, ForkRequest, ForwardRequest, ForwardSummary,
-    HookRunRequest, LogsRequest, MAX_CONTROL_FRAME, PruneReport, SharedWorldInfo, UpRequest,
-    WorldExecTarget, WorldProcessReport, WorldSelector, WorldSummary, WorldUpSummary,
+    HookRunRequest, LogsRequest, MAX_CONTROL_FRAME, PruneReport, UpRequest, WorldExecTarget,
+    WorldProcessReport, WorldSelector, WorldSummary, WorldUpSummary,
 };
 
 /// A client bound to `<runtime_dir>/daemon.sock` (never guessing `$XDG_RUNTIME_DIR`).
@@ -210,20 +209,6 @@ impl DaemonControl for DaemonControlClient {
     fn prune(&self, dry_run: bool) -> Result<PruneReport, EdgeError> {
         match self.call(&DaemonRequest::Prune { dry_run })? {
             DaemonReply::Prune { report } => Ok(report),
-            other => Err(unexpected_reply(&other)),
-        }
-    }
-
-    fn share(&self, req: &WorldSelector) -> Result<SharedWorldInfo, EdgeError> {
-        match self.call(&DaemonRequest::Share(req.clone()))? {
-            DaemonReply::Shared { shared } => Ok(shared),
-            other => Err(unexpected_reply(&other)),
-        }
-    }
-
-    fn unshare(&self, req: &WorldSelector) -> Result<WorldOrigin, EdgeError> {
-        match self.call(&DaemonRequest::Unshare(req.clone()))? {
-            DaemonReply::Origin { origin } => Ok(origin),
             other => Err(unexpected_reply(&other)),
         }
     }

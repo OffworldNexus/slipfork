@@ -1319,3 +1319,17 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-18T03:16 [M3.28.9] (lead) lead-verified (worker's report was lost again): ps/open exist, lib ps 9 + open 7 pass, --world/--remote present, clippy clean, critical_cli 24/0, and the dashbo
 - 2026-11-18T03:16 [M3.29.4] (lead) status active -> done
 - 2026-11-18T03:16 [M3.29.4] (lead) docs-check green (11 docs, zensical --strict ok); ospp.md 73 lines with the two-tier boundary, cli.md's local-vault section, streamed seed-dump rewrite, auth vi
+- 2026-11-18T03:16 [M3.28.15] (lead) status ready -> active
+- 2026-11-18T03:16 [M3.28.15] (lead) attempt 1/3 started
+- 2026-11-18T03:16 [M3.28.15] (lead) base d24a6c584dc5ea31c58f9980ca65c2b34c958a63
+- 2026-11-18T03:17 HUMAN H-007 [direction-challenge] opened by lead (node M3.29.3)
+- 2026-11-18T03:17 [M3.29.3] (lead) H-007 filed (direction-challenge): the OSPP endpoint has no durable source of truth in 0.1.0 (auto-spawn never gets it, units render no Environment=, no daemon 
+- 2026-11-18T03:20 [M3.28.15] (lead) edited fields
+- 2026-11-18T03:20 [M3.28.15] (lead) attempt 2/5 started
+- 2026-11-18T03:20 [M3.28.15] (lead) attempt 1 cap-out mid-sweep (tree RED). DONE and kept: world crate (TunnelRegistrar family + TunnelLease/Error/Request + Shared origin deleted; WorldOrigin coll
+- 2026-11-18T03:36 [M3.28.15] (lead) edited fields
+- 2026-11-18T03:36 [M3.28.15] (lead) status active -> review
+- 2026-11-18T03:43 [M3.28.9] (lead) status done -> done
+- 2026-11-18T03:43 [M3.28.9] (lead) landed together with its sibling: both nodes edit cli.rs/main.rs/lib.rs/critical_cli.rs, and splitting would require hand-editing code. make check GREEN (44+ su
+- 2026-11-18T03:43 [M3.28.15] (lead) status review -> done
+- 2026-11-18T03:43 [M3.28.15] (lead) landed together with its sibling: both nodes edit cli.rs/main.rs/lib.rs/critical_cli.rs, and splitting would require hand-editing code. make check GREEN (44+ su

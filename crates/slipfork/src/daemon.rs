@@ -30,10 +30,10 @@ use slipfork_edge::forward::ForwardTargetSpec;
 use slipfork_edge::{
     BootEvent, DaemonControl, DaemonError, DaemonErrorKind, DaemonStatus, DropForkRequest,
     EdgeError, ExecTargetRequest, ForkRequest, ForwardRequest, ForwardSummary, HookRunRequest,
-    IngressInfo, IngressRoute, LogsRequest, PruneReport, ResourceSummary, SharedWorldInfo,
-    SnowResolveRequest, SnowResolveSummary, UnavailableTunnelRegistrar, UpRequest, WorldExecTarget,
-    WorldProcessReport, WorldRegistry, WorldSelector, WorldServiceSummary, WorldState,
-    WorldSummary, WorldUpSummary, parent_world, world_id, world_next_commands,
+    IngressInfo, IngressRoute, LogsRequest, PruneReport, ResourceSummary, SnowResolveRequest,
+    SnowResolveSummary, UpRequest, WorldExecTarget, WorldProcessReport, WorldRegistry,
+    WorldSelector, WorldServiceSummary, WorldState, WorldSummary, WorldUpSummary, parent_world,
+    world_id, world_next_commands,
 };
 use slipfork_engine::btrfs::SubvolumeDriver;
 use slipfork_engine::rootfs::{
@@ -61,7 +61,7 @@ use slipfork_vcs::{
     RepoRoot, RepoRootResolver, VcsWorkspace, VcsWorkspaceFactory, WORKTREES_DIRECTORY,
     WorkspaceRequest,
 };
-use slipfork_world::{LocalHostRoute, ProjectSlug, WorldOrigin, WorldTarget, validate_fork_name};
+use slipfork_world::{LocalHostRoute, ProjectSlug, WorldTarget, validate_fork_name};
 
 use slipfork_edge::SecretVault;
 
@@ -773,12 +773,7 @@ pub fn compose_daemon(wiring: DaemonWiring) -> Result<DaemonGraph, String> {
         )
         .map_err(|err| format!("cannot start the Btrfs world engine: {err}"))?,
     );
-    let registry = Arc::new(WorldRegistry::new(
-        Arc::clone(&engine),
-        Arc::new(UnavailableTunnelRegistrar::new()),
-        ingress.port(),
-        forward_port,
-    ));
+    let registry = Arc::new(WorldRegistry::new(Arc::clone(&engine), ingress.port()));
 
     // One machine-authentication P-256 identity: a `0600` scalar at the injected data-home path.
     // Subscription encryption keys are ephemeral and live only in the session thread's memory.
@@ -2707,24 +2702,6 @@ impl DaemonControl for DaemonService {
             // to have reaped a snapshot it cannot remove. Snapshot GC lands with the engine surface.
             snapshots: Vec::new(),
         })
-    }
-
-    fn share(&self, req: &WorldSelector) -> Result<SharedWorldInfo, EdgeError> {
-        let selection = self.select(&req.cwd, req.world.as_deref())?;
-        if self.world_state(&selection).is_none() {
-            return Err(Self::unknown_world(
-                &selection.repo.project,
-                &selection.target,
-            ));
-        }
-        self.registry
-            .share_world(&selection.repo.project, &selection.target)
-    }
-
-    fn unshare(&self, req: &WorldSelector) -> Result<WorldOrigin, EdgeError> {
-        let selection = self.select(&req.cwd, req.world.as_deref())?;
-        self.registry
-            .unshare_world(&selection.repo.project, &selection.target)
     }
 
     fn secret_set(
@@ -4974,12 +4951,7 @@ modes:
     ) -> (Arc<DaemonService>, Arc<WorldRegistry>, Arc<RecordingEngine>) {
         let layout = Layout::explicit(scratch.join("state"), scratch.join("run"), scratch, None);
         let engine = Arc::new(RecordingEngine::new());
-        let registry = Arc::new(WorldRegistry::new(
-            engine.clone(),
-            Arc::new(slipfork_edge::UnavailableTunnelRegistrar::new()),
-            80,
-            None,
-        ));
+        let registry = Arc::new(WorldRegistry::new(engine.clone(), 80));
         let clock: Arc<dyn MonotonicClock> = Arc::new(SystemClock);
         let service = DaemonService::new(
             DaemonPorts {
@@ -5139,9 +5111,6 @@ modes:
 
     /// The port the registry serves for one `*.localhost` host at `/`.
     fn route_port(registry: &WorldRegistry, host: &str) -> u16 {
-        match registry.resolve(host, "/", false).expect("attached route") {
-            slipfork_edge::RouteDecision::Forward(world) => world.port(),
-            other => panic!("expected a forwarded route, got {other:?}"),
-        }
+        registry.resolve(host, "/").expect("attached route").port()
     }
 }

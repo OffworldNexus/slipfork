@@ -2,7 +2,7 @@
 id: M3.28.15
 title: "Delete the unimplemented tunnel-sharing surface (slipfork share, TunnelRegistrar, WorldOrigin::Shared, support tier)"
 kind: task
-status: ready
+status: done
 owner: implementer
 priority: 2
 depends_on: [M3.29.3, M3.28.9]
@@ -17,6 +17,8 @@ paths:
   - "crates/slipfork-edge/tests/**"
   - "crates/slipfork-world/src/**"
   - "crates/slipfork-world/tests/**"
+  - "crates/slipfork-world/Cargo.toml"
+  - "crates/slipfork-snow/tests/**"
   - "crates/slipfork-dag/src/support.rs"
   - support/integrations.toml
   - docs/reference/cli.md
@@ -26,11 +28,13 @@ paths:
   - docs/reference/manifest.md
   - "docs/design/target-dx.md"
   - "docs/decisions/ADR-0005-*.md"
-attempts: 0
-max_attempts: 3
+  - "docs/decisions/ADR-0011-*.md"
+  - docs/knowledge/LESSONS.md
+attempts: 2
+max_attempts: 5
 escalation: none
 created: "2026-11-17T17:40"
-updated: "2026-11-18T03:16"
+updated: "2026-11-18T03:43"
 ---
 
 # Goal

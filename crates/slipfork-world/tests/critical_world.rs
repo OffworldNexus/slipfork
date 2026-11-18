@@ -8,9 +8,7 @@ use slipfork_world::{
     DNS_LABEL_REASON, LocalHostRoute, ProjectSlug, SERVICE_NAME_MAX, WeaverServiceName, WorldError,
     WorldOrigin, WorldTarget, derive_weaver_service_name, validate_fork_name,
 };
-use support::{
-    InMemoryTunnelRegistrar, assert_tunnel_registrar_conformance, canonical_route, route,
-};
+use support::{canonical_route, route};
 
 fn slug(project: &str) -> ProjectSlug {
     ProjectSlug::parse(project).expect("valid project slug")
@@ -287,12 +285,6 @@ fn ipv6_port_corrupted_foreign_and_malformed_hosts_are_rejected_cleanly() {
     }
 }
 
-#[test]
-fn tunnel_registrar_conformance_holds_for_the_in_memory_fake() {
-    let registrar = InMemoryTunnelRegistrar::new();
-    assert_tunnel_registrar_conformance(&registrar, |lease_id| registrar.is_lease_active(lease_id));
-}
-
 fn weaver(label: &str) -> String {
     derive_weaver_service_name(label)
         .expect("label must derive")
@@ -448,7 +440,6 @@ fn weaver_service_name_rejects_invalid_charset_and_length() {
 #[test]
 fn world_origin_local_omits_port_80_and_renders_other_ports() {
     let origin = WorldOrigin::local(&canonical_route(), 80).expect("port-80 origin");
-    assert!(matches!(origin, WorldOrigin::Local(_)));
     assert_eq!(origin.url(), "http://acme.localhost");
     assert_eq!(origin.host(), "acme.localhost");
 
@@ -478,21 +469,6 @@ fn world_origin_local_never_renders_port_zero() {
 }
 
 #[test]
-fn world_origin_host_is_the_port_less_authority_for_shared_origins_too() {
-    let shared =
-        WorldOrigin::shared("https://acme.tunnel.example:8443/app").expect("shared origin");
-    assert_eq!(shared.host(), "acme.tunnel.example");
-    assert_eq!(shared.url(), "https://acme.tunnel.example:8443/app");
-
-    // A bracketed IPv6 literal keeps its brackets so `host()` stays a valid `Host` authority.
-    let v6 = WorldOrigin::shared("http://[::1]:8080").expect("ipv6 origin");
-    assert_eq!(v6.host(), "[::1]");
-
-    let bare = WorldOrigin::shared("http://acme.tunnel.example").expect("host-only origin");
-    assert_eq!(bare.host(), "acme.tunnel.example");
-}
-
-#[test]
 fn world_origin_local_rejects_named_snow_domain_routes() {
     let named = route("acme", WorldTarget::Canonical, Some("admin"));
     match WorldOrigin::local(&named, 80) {
@@ -505,55 +481,30 @@ fn world_origin_local_rejects_named_snow_domain_routes() {
 }
 
 #[test]
-fn world_origin_serializes_with_a_kind_tag_and_deserializes_fail_closed() {
+fn world_origin_serializes_its_url_and_deserializes_fail_closed() {
     let local = WorldOrigin::local(&canonical_route(), 7080).expect("local origin");
     assert_eq!(
         serde_json::to_value(&local).expect("serialize"),
-        json!({"kind": "local", "url": "http://acme.localhost:7080"})
-    );
-    let shared = WorldOrigin::shared("https://acme.tunnel.invalid").expect("shared origin");
-    assert_eq!(
-        serde_json::to_value(&shared).expect("serialize"),
-        json!({"kind": "shared", "url": "https://acme.tunnel.invalid"})
+        json!({"url": "http://acme.localhost:7080"})
     );
 
     assert_eq!(
-        serde_json::from_str::<WorldOrigin>(r#"{"kind":"local","url":"http://acme.localhost"}"#)
-            .expect("valid local origin"),
+        serde_json::from_str::<WorldOrigin>(r#"{"url":"http://acme.localhost"}"#)
+            .expect("valid origin"),
         WorldOrigin::local(&canonical_route(), 80).expect("port-80 origin")
     );
-    assert_eq!(
-        serde_json::from_str::<WorldOrigin>(r#"{"kind":"shared","url":"https://acme.invalid"}"#)
-            .expect("valid shared origin"),
-        WorldOrigin::shared("https://acme.invalid").expect("shared origin")
-    );
 
+    // The retired `kind` tag is not a second accepted syntax: it fails closed like any typo.
     for bad in [
-        r#"{"kind":"local","url":""}"#,
-        r#"{"kind":"local","url":"acme.localhost"}"#,
-        r#"{"kind":"local","url":"ftp://acme.localhost"}"#,
-        r#"{"kind":"shared","url":""}"#,
-        r#"{"kind":"shared","url":"http://"}"#,
-        r#"{"kind":"shared","url":"ws://acme.invalid"}"#,
-        r#"{"kind":"cloud","url":"https://acme.invalid"}"#,
+        r#"{"url":""}"#,
+        r#"{"url":"acme.localhost"}"#,
+        r#"{"url":"ftp://acme.localhost"}"#,
+        r#"{"kind":"local","url":"http://acme.localhost"}"#,
+        r#"{"url":"http://acme.localhost","kind":"shared"}"#,
     ] {
         assert!(
             serde_json::from_str::<WorldOrigin>(bad).is_err(),
             "deserializing {bad} must fail closed"
         );
     }
-
-    assert!(matches!(
-        WorldOrigin::shared(""),
-        Err(WorldError::InvalidOriginUrl { .. })
-    ));
-    assert!(matches!(
-        WorldOrigin::shared("http://"),
-        Err(WorldError::InvalidOriginUrl { .. })
-    ));
-    assert!(matches!(
-        WorldOrigin::shared("https://"),
-        Err(WorldError::InvalidOriginUrl { .. })
-    ));
-    assert!(WorldOrigin::shared("https://acme.invalid").is_ok());
 }

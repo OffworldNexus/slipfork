@@ -3,8 +3,8 @@
 //! These tests boot real `BtrfsEngine` worlds through the harness `slipforkd` composition root
 //! (the real child on a Btrfs host, the in-process `TestTreeDriver` backend elsewhere), drive the
 //! thin `slipfork` binary over the `0600` `<runtime_dir>/daemon.sock`, and assert the adversarial
-//! contracts: fail-closed `HOME`, exactly one URL per world, idempotent `down`, the
-//! `share`/`unshare` asymmetry, secret overwrite refusal, and non-template unit rendering.
+//! contracts: fail-closed `HOME`, exactly one URL per world, idempotent `down`, secret overwrite
+//! refusal, and non-template unit rendering.
 //!
 //! The `slipfork-world-init` helper is located in Cargo's target directory; when the engine's bins
 //! were not built by the current invocation, the test builds them once (the cargo build lock is
@@ -595,29 +595,6 @@ fn home_unset_fails_closed_before_any_mutation() {
 }
 
 #[test]
-fn share_blocked_while_unshare_is_an_idempotent_no_op() {
-    let tmp = disk_tempdir();
-    let scratch = tmp.path();
-    let repo = repo_with_snow(scratch);
-    let daemon = Daemon::start(scratch);
-    assert_success(&daemon.cli(&repo, &["up"]), "up");
-
-    // `--listen` binds no forward listener, so `share` fails closed before any tunnel attempt.
-    let share = daemon.cli(&repo, &["share"]);
-    assert!(!share.status.success(), "share must fail closed");
-    assert!(
-        stderr(&share).contains("forward listener"),
-        "expected the forward-listener diagnostic, got: {}",
-        stderr(&share)
-    );
-
-    let stop = daemon.cli(&repo, &["share", "--stop"]);
-    assert_success(&stop, "share --stop on a local world");
-    let stop_again = daemon.cli(&repo, &["share", "--stop"]);
-    assert_success(&stop_again, "second share --stop is idempotent");
-}
-
-#[test]
 fn secret_set_refuses_an_existing_double_bang_key_and_never_echoes_values() {
     let tmp = disk_tempdir();
     let scratch = tmp.path();
@@ -790,7 +767,6 @@ fn read_verbs_never_spawn_a_daemon_and_fail_closed_in_one_line() {
         vec!["list"],
         vec!["down"],
         vec!["logs"],
-        vec!["share"],
         vec!["prune", "--dry-run"],
         vec!["secret", "list"],
     ] {

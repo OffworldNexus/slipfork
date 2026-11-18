@@ -67,3 +67,7 @@ status active -> done
 ## 2026-11-18T03:11 [lead]
 
 amendment: invariant 4's 'ephemeral in-memory session secret for a local-only run without a vault entry' is superseded by the owner's two-tier ruling and by the shipped behaviour (snow's ensure_secret persists '!!' in the local 0600 vault). No ephemeral session secret is generated in 0.1.0; local '!!' values persist so a world can reconnect after a restart. Do not implement the ephemeral-secret path.
+
+## 2026-11-18T03:17 [lead]
+
+H-007 filed (direction-challenge): the OSPP endpoint has no durable source of truth in 0.1.0 (auto-spawn never gets it, units render no Environment=, no daemon stop) — recommendation A: SLIPFORK_OSPP_ENDPOINT read only in the composition root and embedded by daemon install. Not a blocker for the epic: the unpaired path is the default and is what M3.28.13 verifies live; auth/subscriptions are documented as requiring a foreground daemon until H-007 is answered.

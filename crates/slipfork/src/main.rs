@@ -1,6 +1,6 @@
 //! `slipfork`: the thin CLI client (`H-010` #1, `ADR-0008` §4).
 //!
-//! The CLI holds **no** `WorldEngine`, `SecretProvider`, or tunnel lease for world operations: it
+//! The CLI holds **no** `WorldEngine` or `SecretProvider` for world operations: it
 //! parses `clap` arguments, resolves `HOME`/`$XDG_*`/`--state-dir` once, and drives `slipforkd`
 //! through the typed `<state_dir>/run/daemon.sock` [`DaemonControlClient`]. Only `up` and `fork`
 //! auto-spawn `slipforkd --listen 127.0.0.1:0` in the background; every read/diagnostic verb fails
@@ -25,6 +25,7 @@ use std::time::Instant;
 use clap::Parser;
 use serde_json::json;
 use slipfork::apparmor::render_userns_profile;
+use slipfork::browser::{NO_BROWSER_REMEDY, SystemBrowserOpener};
 use slipfork::cli::{
     Cli, Commands, DaemonAction, DagAction, DumpArgs, HookAction, ResourceArgs, SecretAction,
     SnowAction, UnitKind,
@@ -36,7 +37,7 @@ use slipfork::daemon_unit_install::{
 use slipfork::doctor::{self, OsHostProbe, SystemdIngressProbe};
 use slipfork::layout::{Layout, ensure_private_dir};
 use slipfork::project::{load_slipfork_config, repository_resolver};
-use slipfork::user::AccountDatabaseIdentity;
+use slipfork::user::{AccountDatabaseIdentity, HostIdentity, KernelHostIdentity, UserIdentity};
 use slipfork_dag::{DagPlanner, EvidenceField, FsDigestCache, FsMerkleHasher, SupportRegistry};
 use slipfork_edge::{
     BootEvent, DaemonControl, DaemonControlClient, DropForkRequest, ExecTargetRequest, ForkRequest,
@@ -46,6 +47,7 @@ use slipfork_edge::{
 use slipfork_engine::btrfs::KernelBtrfsDriver;
 use slipfork_engine::linux_cow::{ProcessSignal, signal_pidfd};
 use slipfork_engine::{SystemClock, current_uid_gid};
+use slipfork_ospp::BrowserOpener;
 use slipfork_snow::SnowFile;
 
 fn main() -> ExitCode {
@@ -146,6 +148,8 @@ fn run(cli: Cli) -> Result<ExitCode, String> {
         }) => up(json, verbose, &layout, world, dump, resources, host_caches),
         Some(Commands::Down { world }) => down(json, &layout, world),
         Some(Commands::Restart { world }) => restart(json, verbose, &layout, world),
+        Some(Commands::Ps { world }) => ps(json, &layout, world),
+        Some(Commands::Open { world, remote }) => open(json, &layout, world, remote),
         Some(Commands::Fork {
             fork,
             base,
@@ -168,7 +172,6 @@ fn run(cli: Cli) -> Result<ExitCode, String> {
         Some(Commands::List) => list(json, &layout),
         Some(Commands::Prune { dry_run, yes }) => prune(json, &layout, dry_run, yes),
         Some(Commands::Secret { action }) => secret(json, &layout, action),
-        Some(Commands::Share { stop, world }) => share(json, &layout, stop, world),
         Some(Commands::Exec { world, cwd, argv }) => exec(json, &layout, world, cwd, argv),
         Some(Commands::Shell { world }) => shell(json, &layout, world),
         Some(Commands::Logs {
@@ -684,6 +687,95 @@ fn restart(
     }
 }
 
+/// `slipfork ps`: one `DaemonControl::world_processes` read rendered by [`slipfork::ps`].
+///
+/// The world's `state`, its lineage, and every service row come from that single read — never a
+/// second `status` call — and the CLI reads no `/proc`, `/sys`, or log directory. A stopped or
+/// failed world still renders its rows and exits `0`; only an unknown world fails closed.
+fn ps(json: bool, layout: &Layout, world: Option<String>) -> Result<ExitCode, String> {
+    let client = connect(layout)?;
+    let report = client
+        .world_processes(&WorldSelector {
+            cwd: current_dir()?,
+            world,
+        })
+        .map_err(|err| err.to_string())?;
+    if json {
+        println!("{}", render_json(&slipfork::ps::json(&report))?);
+    } else {
+        print!("{}", slipfork::ps::render(&report));
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+/// `slipfork open [--remote]`: hand the world's typed origin to the one `BrowserOpener`, or print
+/// the verified SSH recipe for a laptop (`docs/design/dx-0.1.0-ux.md` §6).
+///
+/// The world and its origin are the daemon's facts (`DaemonStatus.worlds`), the remote recipe's
+/// port is `DaemonStatus.ingress.port` (never a literal `80`), and the account/host come from the
+/// composition root's injected `UserIdentity` / `HostIdentity` probes — never `$USER`/`$HOSTNAME`.
+/// A non-`:80` ingress announces §2's one stderr line (never under `--json`).
+fn open(
+    json: bool,
+    layout: &Layout,
+    world: Option<String>,
+    remote: bool,
+) -> Result<ExitCode, String> {
+    let client = connect(layout)?;
+    let status = client.status().map_err(|err| err.to_string())?;
+    // Only the cwd-selected form needs a checkout; an explicit `--world` is a fleet-wide lookup
+    // over the daemon's own world ids.
+    let repo = match world {
+        Some(_) => None,
+        None => Some(repo_root(&current_dir()?)?),
+    };
+    let selection = slipfork::open::resolve(&status.worlds, repo.as_ref(), world.as_deref())?;
+    if !json && let Some(hint) = slipfork::status::ingress_hint(status.ingress.port()) {
+        eprintln!("{hint}");
+    }
+    if remote {
+        let recipe = slipfork::open::remote_recipe(
+            &selection.origin,
+            status.ingress.port(),
+            &AccountDatabaseIdentity.username()?,
+            &KernelHostIdentity.hostname()?,
+        )?;
+        if json {
+            println!(
+                "{}",
+                render_json(&slipfork::open::json(&selection, Some(&recipe)))?
+            );
+        } else {
+            print!("{}", slipfork::open::render_remote(&selection, &recipe));
+        }
+        return Ok(ExitCode::SUCCESS);
+    }
+    let opener = system_browser_opener();
+    if !opener.is_available() {
+        return Err(NO_BROWSER_REMEDY.to_owned());
+    }
+    opener
+        .open_origin(&selection.origin)
+        .map_err(|err| format!("{NO_BROWSER_REMEDY} ({err})"))?;
+    if json {
+        println!("{}", render_json(&slipfork::open::json(&selection, None))?);
+    } else {
+        print!("{}", slipfork::open::render_local(&selection));
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+/// The one desktop-launch resolution: `BROWSER`, `DISPLAY`, and `WAYLAND_DISPLAY` read once here.
+fn system_browser_opener() -> SystemBrowserOpener {
+    SystemBrowserOpener::from_host_inputs(
+        std::env::var_os("BROWSER")
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from),
+        std::env::var_os("DISPLAY").is_some_and(|value| !value.is_empty()),
+        std::env::var_os("WAYLAND_DISPLAY").is_some_and(|value| !value.is_empty()),
+    )
+}
+
 fn down(json: bool, layout: &Layout, world: Option<String>) -> Result<ExitCode, String> {
     let client = connect(layout)?;
     let selector = WorldSelector {
@@ -890,38 +982,6 @@ fn read_secret() -> Result<String, String> {
         return Err("the secret read from stdin is empty".to_owned());
     }
     Ok(value)
-}
-
-fn share(
-    json: bool,
-    layout: &Layout,
-    stop: bool,
-    world: Option<String>,
-) -> Result<ExitCode, String> {
-    let client = connect(layout)?;
-    let selector = WorldSelector {
-        cwd: current_dir()?,
-        world,
-    };
-    if stop {
-        let origin = client.unshare(&selector).map_err(|err| err.to_string())?;
-        if json {
-            println!("{}", json!({ "ok": true, "origin": origin.url() }));
-        } else {
-            println!("[share] stopped; origin {}", origin.url());
-        }
-    } else {
-        let shared = client.share(&selector).map_err(|err| err.to_string())?;
-        if json {
-            println!(
-                "{}",
-                json!({ "ok": true, "origin": shared.origin.url(), "lease_id": &shared.lease_id })
-            );
-        } else {
-            println!("[share] {}", shared.origin.url());
-        }
-    }
-    Ok(ExitCode::SUCCESS)
 }
 
 fn exec(

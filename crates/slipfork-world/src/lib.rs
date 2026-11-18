@@ -11,11 +11,6 @@
 //!        +----------  slipfork-engine (world specs & entry commands)
 //!        +----------  slipfork-edge / slipfork-test (M2/M3)
 //! ```
-//!
-//! Tunnel sharing is expressed purely as [`TunnelRegistrar`] + opaque [`TunnelLease`]; no
-//! `UnixStream`, raw FD, JSON wire payload, or socket path lives here. The concrete
-//! `WeavedRegistrar` wire adapter is gated on `tunnel-weaver` publishing `weaved`'s real IPC
-//! specification.
 
 #![forbid(unsafe_code)]
 
@@ -262,40 +257,23 @@ impl LocalHostRoute {
 
 /// The single public origin of one world (`ADR-0005` §1, `H-010` #2).
 ///
-/// A world is exactly one of these at a time; sharing swaps `Local` for `Shared` and unsharing
-/// swaps it back. Both variants are minted by validated constructors:
+/// A world has exactly one public origin: its `.localhost` URL served by `slipforkd`'s HTTP
+/// ingress. [`WorldOrigin::local`] is the sole minting path: it takes the world's
+/// [`LocalHostRoute`] plus `slipforkd`'s bound HTTP ingress port, and renders `http://<host>` at
+/// port 80 and `http://<host>:<port>` otherwise, so `--listen 127.0.0.1:0` deployments hand out a
+/// reachable port-qualified origin.
 ///
-/// - [`WorldOrigin::local`] takes the world's [`LocalHostRoute`] plus `slipforkd`'s bound HTTP
-///   ingress port. It renders `http://<host>` at port 80 and `http://<host>:<port>` otherwise, so
-///   `--listen 127.0.0.1:0` deployments hand out a reachable port-qualified origin.
-/// - [`WorldOrigin::shared`] takes the validated lease URL returned by a [`TunnelLease`].
-///
-/// The variant payloads are opaque ([`LocalOrigin`] / [`SharedOrigin`]), so a struct literal cannot
-/// mint an unvalidated origin: those constructors are the only minting paths. Deserialization goes
-/// through the same validation and fails closed on an empty or non-`http(s)` URL.
+/// The payload is private, so a struct literal cannot mint an unvalidated origin: `local` is the
+/// only minting path. Deserialization goes through the same validation and fails closed on an
+/// empty or non-`http(s)` URL.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case", try_from = "Wire")]
-pub enum WorldOrigin {
-    /// `*.localhost` origin served by `slipforkd`'s HTTP ingress.
-    Local(LocalOrigin),
-    /// Public tunnel origin minted from a [`TunnelLease`].
-    Shared(SharedOrigin),
-}
-
-/// Opaque rendered `.localhost` origin URL; only [`WorldOrigin::local`] mints one.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct LocalOrigin {
-    url: String,
-}
-
-/// Opaque rendered tunnel origin URL; only [`WorldOrigin::shared`] mints one.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct SharedOrigin {
+#[serde(try_from = "Wire")]
+pub struct WorldOrigin {
     url: String,
 }
 
 impl WorldOrigin {
-    /// Mint the sole `Local` origin for a default-ingress `.localhost` route.
+    /// Mint the sole origin for a default-ingress `.localhost` route.
     ///
     /// This is the **only** renderer of a world origin URL: port 80 renders port-less
     /// (`http://acme.localhost`) because `slipforkd`'s systemd socket binds `:80`, every other
@@ -318,65 +296,40 @@ impl WorldOrigin {
         } else {
             format!(":{ingress_port}")
         };
-        Ok(Self::Local(LocalOrigin {
+        Ok(Self {
             url: format!("http://{}{port}", route.host()),
-        }))
-    }
-
-    /// Mint the sole `Shared` origin from a validated tunnel lease URL.
-    pub fn shared(url: &str) -> Result<Self, WorldError> {
-        validate_origin_url(url)?;
-        Ok(Self::Shared(SharedOrigin {
-            url: url.to_owned(),
-        }))
+        })
     }
 
     /// The rendered origin URL.
     pub fn url(&self) -> &str {
-        match self {
-            Self::Local(local) => &local.url,
-            Self::Shared(shared) => &shared.url,
-        }
+        &self.url
     }
 
-    /// Host authority of the origin URL: the **sole** host accessor (no scheme, port, or path).
-    ///
-    /// Bracketed IPv6 literals keep their brackets (`http://[::1]:8080` -> `[::1]`), so the value
-    /// is directly usable as a `Host` header or hostname comparison key.
+    /// Host authority of the origin URL: the **sole** host accessor (no scheme or port).
     pub fn host(&self) -> &str {
         let url = self.url();
         let authority = url.split_once("://").map_or(url, |(_, rest)| rest);
         let authority = authority.split(['/', '?', '#']).next().unwrap_or(authority);
-        if authority.starts_with('[') {
-            return authority.split_once(']').map_or(authority, |(_, rest)| {
-                &authority[..authority.len() - rest.len()]
-            });
-        }
         authority
             .split_once(':')
             .map_or(authority, |(host, _)| host)
     }
 }
 
-/// Wire shape of [`WorldOrigin`]; the tag/field schema is declared exactly once here.
+/// Wire shape of [`WorldOrigin`]; the field schema is declared exactly once here.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-enum Wire {
-    Local { url: String },
-    Shared { url: String },
+#[serde(deny_unknown_fields)]
+struct Wire {
+    url: String,
 }
 
 impl TryFrom<Wire> for WorldOrigin {
     type Error = WorldError;
 
     fn try_from(wire: Wire) -> Result<Self, WorldError> {
-        match wire {
-            Wire::Local { url } => {
-                validate_origin_url(&url)?;
-                Ok(Self::Local(LocalOrigin { url }))
-            }
-            Wire::Shared { url } => Self::shared(&url),
-        }
+        validate_origin_url(&wire.url)?;
+        Ok(Self { url: wire.url })
     }
 }
 
@@ -609,41 +562,6 @@ fn normalize_host(header: &str) -> Option<String> {
     };
     let host = host.trim_end_matches('.').to_ascii_lowercase();
     if host.is_empty() { None } else { Some(host) }
-}
-
-/// One tunnel registration request: a resolved `.localhost` route plus the loopback port.
-#[derive(Debug, Clone, Copy)]
-pub struct TunnelRequest<'a> {
-    pub route: &'a LocalHostRoute,
-    pub local_port: u16,
-}
-
-/// Opaque RAII tunnel lease.
-///
-/// Adapters own their transport (a future `WeavedRegistrar` keeps its `UnixStream` private); the
-/// domain trait only exposes the lease identity. Dropping the lease MUST revoke the tunnel.
-pub trait TunnelLease: Send + Sync {
-    /// Public HTTPS URL handed out by the tunnel daemon.
-    fn public_url(&self) -> &str;
-    /// Opaque daemon-issued lease identifier.
-    fn lease_id(&self) -> &str;
-}
-
-/// Errors produced by a [`TunnelRegistrar`] adapter.
-#[derive(Debug, Clone, PartialEq, Eq, Error)]
-pub enum TunnelError {
-    #[error("tunnel daemon unavailable: {0}")]
-    DaemonUnavailable(String),
-    #[error("tunnel registration failed: {0}")]
-    RegistrationFailed(String),
-}
-
-/// Port for acquiring a public tunnel lease for a resolved world route.
-///
-/// There is no no-op fallback registrar: if no daemon is reachable, `register` fails closed with
-/// [`TunnelError::DaemonUnavailable`].
-pub trait TunnelRegistrar: Send + Sync {
-    fn register(&self, request: &TunnelRequest<'_>) -> Result<Box<dyn TunnelLease>, TunnelError>;
 }
 
 #[cfg(test)]

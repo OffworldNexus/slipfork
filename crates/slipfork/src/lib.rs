@@ -14,7 +14,8 @@
 //! - [`layout`]: pure paths derived from already-resolved roots (`state`, `runtime`, data/vaults).
 //! - [`project`]: the injected [`slipfork_vcs::ProjectSlugOverride`] and the one
 //!   `SlipforkConfig` loader/resolver constructor (no second TOML parser, no silent defaults).
-//! - [`user`]: the [`user::UserIdentity`] port and its `id -un` OS-account adapter.
+//! - [`user`]: the [`user::UserIdentity`] and [`user::HostIdentity`] ports with their `id -un` /
+//!   `getent passwd` / `uname -n` kernel adapters.
 //! - [`vaults`]: the injected project-vault factory over the `0600` local vault.
 //! - [`vcs`]: the composition-root Git/Jujutsu [`slipfork_vcs::VcsWorkspaceFactory`] router.
 //! - [`oci_store`]: the injected [`slipfork_engine::rootfs::OciImageStore`] over the Docker CLI.
@@ -27,17 +28,25 @@
 //!   line, rendered purely from the daemon's [`slipfork_edge::DaemonStatus`].
 //! - [`restart`]: the one actionable `up` / `fork` / `restart` block and its `--json` document,
 //!   rendered purely from the daemon's [`slipfork_edge::WorldUpSummary`].
+//! - [`ps`]: the per-world process tree, rendered purely from the daemon's
+//!   [`slipfork_edge::WorldProcessReport`].
+//! - [`open`]: world selection, the typed-origin hand-off to [`browser::SystemBrowserOpener`], and
+//!   the verified `open --remote` SSH recipe.
+//! - [`browser`]: the single production [`slipfork_ospp::BrowserOpener`] over the desktop launcher.
 
 #![forbid(unsafe_code)]
 
 pub mod apparmor;
+pub mod browser;
 pub mod cli;
 pub mod daemon;
 pub mod daemon_unit_install;
 pub mod doctor;
 pub mod layout;
 pub mod oci_store;
+pub mod open;
 pub mod project;
+pub mod ps;
 pub mod restart;
 pub mod runtime;
 pub mod status;

@@ -29,7 +29,7 @@
 ## Deletion Tombstone (`0.1.0`)
 
 - **`dag`:** the `slipfork dag` command and the unreachable planner surface behind it are deleted from `0.1.0` (`M3.28.11`); a plan view re-enters at `M3.2`, never as a `0.1.0` verb.
-- **Outbound sharing:** the whole tunnel-sharing surface — `slipfork share`, the `TunnelRegistrar` family, and `WorldOrigin::Shared` — is deleted from `0.1.0` (`M3.28.15`); sharing re-enters at `M4.1` (`H-006`).
+- **Outbound sharing:** the whole public-tunnel surface — the `share` subcommand, the `TunnelRegistrar` family, and the `Shared` origin kind — is deleted from `0.1.0` (`M3.28.15`); it re-enters at `M4.1` (`H-006`).
 
 ## Consequences
 

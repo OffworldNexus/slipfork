@@ -218,18 +218,6 @@ fn dispatch(
                 report: control.prune(dry_run)?,
             },
         ),
-        DaemonRequest::Share(request) => write_reply(
-            writer,
-            &DaemonReply::Shared {
-                shared: control.share(&request)?,
-            },
-        ),
-        DaemonRequest::Unshare(request) => write_reply(
-            writer,
-            &DaemonReply::Origin {
-                origin: control.unshare(&request)?,
-            },
-        ),
         DaemonRequest::SecretSet {
             repo_root,
             key,

@@ -434,7 +434,7 @@ mod tests {
         );
         assert_eq!(
             lines[3],
-            "                  next      slipfork db | slipfork logs | slipfork restart | slipfork down"
+            "                  next      slipfork open | slipfork db | slipfork logs | slipfork restart | slipfork down"
         );
         assert_eq!(
             lines[6],

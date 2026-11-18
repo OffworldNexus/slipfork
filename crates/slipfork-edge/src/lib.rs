@@ -18,11 +18,7 @@
 //!   `slipfork-world-init` bridges in-netns `$BASE_URL` traffic to (`H-011` #4 Variant a).
 //! - [`registry`]: canonical owner of `(ProjectSlug, WorldTarget)` -> `WorldOrigin` routing. It
 //!   resolves `*.localhost` requests through each world's [`registry::IngressRoute`]
-//!   longest-prefix table into `WorldEngine::dial_world_tcp`, proxies `shared_hosts` public
-//!   hostnames, enforces the `308`/`421` rules for shared worlds (`ADR-0005` §1), and owns
-//!   [`registry::WorldRegistry::share_world`] / [`registry::WorldRegistry::unshare_world`].
-//! - [`tunnel`]: [`tunnel::UnavailableTunnelRegistrar`], the fail-closed `TunnelRegistrar` wired
-//!   until `weaved` publishes its IPC specification (`H-006` / `M2.22`).
+//!   longest-prefix table into `WorldEngine::dial_world_tcp`.
 //! - [`daemon`]: the complete typed `DaemonControl` port plus its bounded (64 KiB JSON-line)
 //!   `0600` Unix-socket server/client (`ADR-0008` §4).
 //! - [`forward`]: daemon-owned `127.0.0.1:0` raw TCP bridges into a world (`H-010` #1).
@@ -46,7 +42,6 @@ pub mod forward;
 pub mod ingress;
 pub mod registry;
 pub(crate) mod relay;
-pub mod tunnel;
 pub mod unit;
 pub mod unix_socket;
 pub mod vault;
@@ -66,15 +61,11 @@ pub use daemon::{
 };
 pub use forward::{ForwardBridge, ForwardTargetSpec};
 pub use ingress::HttpIngress;
-pub use registry::{
-    IngressRoute, RouteDecision, RoutedWorld, SharedWorldInfo, WorldRegistry, parent_world,
-    world_id,
-};
+pub use registry::{IngressRoute, RoutedWorld, WorldRegistry, parent_world, world_id};
 pub use slipfork_engine::{
     BaseLineage, CacheOutcome, RootfsLineage, SeedLineage, ServiceImageLineage, ServiceKind,
     WorldLineage, WorldServiceInfo,
 };
-pub use tunnel::UnavailableTunnelRegistrar;
 pub use unit::{INGRESS_ADDRS, INGRESS_PORT, UnitSpec, render_service_unit, render_socket_unit};
 pub use vault::SecretVault;
 
@@ -286,30 +277,6 @@ pub enum EdgeError {
         host: String,
         /// Underlying world error.
         reason: String,
-    },
-
-    /// `slipforkd` has no planned static forward listener, so no tunnel can reach this world.
-    #[error(
-        "slipforkd has no forward listener, so it cannot share a world: start it from the slipforkd.socket unit, or pass --listen <addr> --forward-port <port>"
-    )]
-    NoForwardListener,
-
-    /// The tunnel registrar could not mint a public lease.
-    #[error("cannot share world {world}: {reason}")]
-    TunnelUnavailable {
-        /// World id.
-        world: String,
-        /// Underlying registrar error.
-        reason: String,
-    },
-
-    /// Two worlds claim the same public tunnel hostname.
-    #[error("cannot share world {world}: public host '{host}' is already owned by another world")]
-    SharedHostConflict {
-        /// World id.
-        world: String,
-        /// Public hostname returned by the registrar.
-        host: String,
     },
 
     /// Destroying a released world failed.

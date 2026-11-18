@@ -29,7 +29,7 @@ Once you have written a `slipfork.toml`, `slipfork dag plan` previews the artifa
 | **Host preflight** (`slipfork doctor`) | One `statfs` of the state dir, a live scratch subvolume round-trip proving unprivileged create/snapshot/destroy, and `unshare --user`/`--net --ipc --pid` probes; text or `--json`, exit `1` with one `fix:` line per failed check, in `btrfs -> unshare_userns -> netns` order |
 | **World rootfs** (`slipfork up`) | Read-only `L0` rootfs built from your `snow.yml` `images:` `Dockerfile`, content-addressed under `<state_dir>/cache/rootfs/<sha256>/app`, running as `$UID:$GID` |
 | **Backing services** | `postgres:<v>`, `redis:<v>`, and SeaweedFS run as daemonless `crun` OCI containers sharing the world's `127.0.0.1`, and `slipfork db`/`redis` open their clients |
-| **World lifecycle** (`up`/`down`/`fork`/`drop`/`list`/`prune`) | One Btrfs subvolume per world, cloned from a sealed read-only snapshot, one app URL per world, `--json` output, zero-setup daemon; `fork` creates a Git worktree or, when the checkout carries `.jj`, a Jujutsu workspace (`jj` on `PATH`, no Git fallback); `share` fails closed until tunnel sharing lands |
+| **World lifecycle** (`up`/`down`/`fork`/`drop`/`list`/`prune`) | One Btrfs subvolume per world, cloned from a sealed read-only snapshot, one app URL per world, `--json` output, zero-setup daemon; `fork` creates a Git worktree or, when the checkout carries `.jj`, a Jujutsu workspace (`jj` on `PATH`, no Git fallback) |
 | **Inside a world** (`exec`/`shell`/`logs`/`hook run`/`forward`) | Daemon-resolved environment, native terminal stdio, retained component/hook logs, daemon-owned forward listeners |
 | **`snow.yml` resolver** (`snow resolve`) | `modes.all` + `modes.<mode>`, mode-scoped components, `??` fallbacks, write-once `!!` CSPRNG secrets in the project's local `0600` vault (local values only — the other tier is [memory-only remote secrets](reference/ospp.md#two-tiers)) |
 | **OSPP v1 secrets** (`slipfork auth`) | Pair the machine with the daemon's `--ospp-endpoint` provider by opening the server-supplied `<url>#handle=…` page; server-resolved secrets arrive HPKE-encrypted, are decrypted in `slipforkd` memory, and are injected into children without touching disk |
@@ -62,6 +62,6 @@ Owner-recorded figures for the single-subvolume world (provenance and open quest
 
 ## Roadmap corner (not yet shipped)
 
-- **Planned:** tunnel sharing (`weaved` registrar), and unreferenced snapshot plus rootfs/OCI cache garbage collection in `prune`.
+- **Planned:** unreferenced snapshot plus rootfs/OCI cache garbage collection in `prune`.
 - **`0.2.0`:** polyglot parallel test orchestrator (`STP v1`, artifact/fixture snapshot materialization, pre-warmed Btrfs world slots, typed coverage, `SLIPFORK_OUTPUT_DIR`).
 - **Later:** remote content-addressed snapshot/artifact cache export and turnkey agent skills.

@@ -37,8 +37,7 @@ use slipfork_edge::daemon::{
 };
 use slipfork_edge::{
     DaemonControlClient, DaemonControlServer, EdgeError, ForwardTargetSpec, HttpIngress,
-    IngressRoute, ListenConfig, RouteDecision, RoutedWorld, SharedWorldInfo,
-    UnavailableTunnelRegistrar, UnitSpec, WorldRegistry, adopt_systemd_listener, bind_listen,
+    IngressRoute, ListenConfig, UnitSpec, WorldRegistry, adopt_systemd_listener, bind_listen,
     render_service_unit, render_socket_unit, resolve_listener_set,
 };
 use slipfork_engine::conformance::assert_world_engine_conformance;
@@ -50,10 +49,7 @@ use slipfork_engine::{
     ServiceState, SnapshotId, StreamChunk, StreamSource, WorldEngine, WorldEntryCommand,
     WorldHandle, WorldServiceInfo, WorldSpec,
 };
-use slipfork_world::{
-    LocalHostRoute, ProjectSlug, TunnelError, TunnelLease, TunnelRegistrar, TunnelRequest,
-    WorldOrigin, WorldTarget,
-};
+use slipfork_world::{LocalHostRoute, ProjectSlug, WorldOrigin, WorldTarget};
 
 const PROBE_MODE_ENV: &str = "SLIPFORK_EDGE_PROBE";
 const PROBE_STATE_ENV: &str = "SLIPFORK_EDGE_STATE_DIR";
@@ -82,18 +78,9 @@ fn acme() -> ProjectSlug {
     ProjectSlug::parse("acme").expect("valid project slug")
 }
 
-/// The one registry builder: ingress port 80, `registrar`, and an optional forward port.
-fn registry_over(
-    engine: Arc<StubWorldEngine>,
-    registrar: Arc<dyn TunnelRegistrar>,
-    forward_port: Option<u16>,
-) -> Arc<WorldRegistry> {
-    Arc::new(WorldRegistry::new(engine, registrar, 80, forward_port))
-}
-
-/// The registry the non-sharing suites use: no tunnel registrar, no forward port.
+/// The registry the suites use: ingress port 80 over the given engine.
 fn stub_registry(engine: Arc<StubWorldEngine>) -> Arc<WorldRegistry> {
-    registry_over(engine, Arc::new(UnavailableTunnelRegistrar::new()), None)
+    Arc::new(WorldRegistry::new(engine, 80))
 }
 
 fn listen_local() -> ListenConfig {
@@ -1001,17 +988,13 @@ fn registry_replace_world_swaps_routes_without_touching_the_handle() {
             ],
         )
         .expect("replace the routes of an attached world");
-    let api = forward_decision(
-        registry
-            .resolve("acme.localhost", "/api/users", false)
-            .expect("the edited prefix serves"),
-    );
+    let api = registry
+        .resolve("acme.localhost", "/api/users")
+        .expect("the edited prefix serves");
     assert_eq!(api.port(), 9000);
-    let root = forward_decision(
-        registry
-            .resolve("acme.localhost", "/", false)
-            .expect("the edited catch-all serves"),
-    );
+    let root = registry
+        .resolve("acme.localhost", "/")
+        .expect("the edited catch-all serves");
     assert_eq!(root.port(), 9100);
     assert_eq!(
         engine.destroyed(),
@@ -1080,20 +1063,16 @@ fn registry_attach_rejects_duplicates_and_resolves_prefixes() {
         other => panic!("expected WorldAlreadyRegistered, got {other:?}"),
     }
 
-    let api = forward_decision(
-        registry
-            .resolve("feat.acme.localhost", "/api/users?page=2", false)
-            .expect("longest prefix wins"),
-    );
+    let api = registry
+        .resolve("feat.acme.localhost", "/api/users?page=2")
+        .expect("longest prefix wins");
     assert_eq!(api.port(), 3001);
     assert_eq!(api.world_id(), "acme:feat");
     assert_eq!(api.host(), "feat.acme.localhost");
 
-    let catch_all = forward_decision(
-        registry
-            .resolve("feat.acme.localhost:8080", "/static/app.js", false)
-            .expect("the empty prefix is the internal_ports[0] catch-all"),
-    );
+    let catch_all = registry
+        .resolve("feat.acme.localhost:8080", "/static/app.js")
+        .expect("the empty prefix is the internal_ports[0] catch-all");
     assert_eq!(catch_all.port(), 3000);
     assert_eq!(
         catch_all.host(),
@@ -1102,7 +1081,7 @@ fn registry_attach_rejects_duplicates_and_resolves_prefixes() {
     );
 
     let err = registry
-        .resolve("other.localhost", "/", false)
+        .resolve("other.localhost", "/")
         .expect_err("an unattached project must not route");
     assert!(
         matches!(&err, EdgeError::UnknownHost { host } if host == "other.localhost"),
@@ -1126,7 +1105,7 @@ fn registry_attach_rejects_duplicates_and_resolves_prefixes() {
         "the second release reports nothing was registered"
     );
     let err = registry
-        .resolve("feat.acme.localhost", "/api", false)
+        .resolve("feat.acme.localhost", "/api")
         .expect_err("a released world must stop routing");
     assert!(matches!(err, EdgeError::UnknownHost { .. }), "got {err:?}");
     let _ = fs::remove_dir_all(&state);
@@ -1187,7 +1166,7 @@ fn registry_rejects_invalid_ingress_tables() {
         }
     }
     let err = registry
-        .resolve("acme.localhost", "/", false)
+        .resolve("acme.localhost", "/")
         .expect_err("no refused table may leave a registered world behind");
     assert!(matches!(err, EdgeError::UnknownHost { .. }), "got {err:?}");
     let _ = fs::remove_dir_all(&state);
@@ -1409,10 +1388,7 @@ fn unix_ingress_sock_replaces_stale_file() {
 fn routing_skeleton_rejects_unknown_methods_and_oversized_heads() {
     let state = cached_test_dir("ingress-refusals");
     let engine = Arc::new(StubWorldEngine::new());
-    let registrar = Arc::new(InMemoryTunnelRegistrar::new(
-        "https://acme-abc.weaved.example",
-    ));
-    let registry = registry_over(Arc::clone(&engine), registrar, None);
+    let registry = stub_registry(Arc::clone(&engine));
     attach_pointing_at(
         &registry,
         &engine,
@@ -1451,81 +1427,8 @@ fn routing_skeleton_rejects_unknown_methods_and_oversized_heads() {
     let _ = fs::remove_dir_all(&state);
 }
 // ---------------------------------------------------------------------------------------------
-// Shared worlds: proxying, 308/421 rules, WebSocket byte piping
+// Ingress proxying and WebSocket byte piping
 // ---------------------------------------------------------------------------------------------
-
-/// One proxied decision; the other variants are asserted explicitly where they are expected.
-fn forward_decision(decision: RouteDecision) -> RoutedWorld {
-    match decision {
-        RouteDecision::Forward(routed) => routed,
-        other => panic!("expected a proxied route, got {other:?}"),
-    }
-}
-
-/// An in-memory `TunnelRegistrar` (`tests/` only, per `M2.9`) that records the registration.
-struct InMemoryTunnelRegistrar {
-    url: String,
-    calls: Mutex<Vec<(String, u16)>>,
-    revoked: Arc<AtomicUsize>,
-    minted: AtomicUsize,
-}
-
-impl InMemoryTunnelRegistrar {
-    fn new(url: &str) -> Self {
-        Self {
-            url: url.to_owned(),
-            calls: Mutex::new(Vec::new()),
-            revoked: Arc::new(AtomicUsize::new(0)),
-            minted: AtomicUsize::new(0),
-        }
-    }
-
-    fn calls(&self) -> Vec<(String, u16)> {
-        self.calls.lock().expect("registrar calls").clone()
-    }
-}
-
-impl TunnelRegistrar for InMemoryTunnelRegistrar {
-    fn register(&self, request: &TunnelRequest<'_>) -> Result<Box<dyn TunnelLease>, TunnelError> {
-        assert_eq!(
-            request.route.snow_domain(),
-            None,
-            "a shared world is always the default-ingress route"
-        );
-        let minted = self.minted.fetch_add(1, Ordering::SeqCst) + 1;
-        self.calls
-            .lock()
-            .expect("registrar calls")
-            .push((request.route.host(), request.local_port));
-        Ok(Box::new(InMemoryLease {
-            url: self.url.clone(),
-            id: format!("lease-{minted}"),
-            revoked: Arc::clone(&self.revoked),
-        }))
-    }
-}
-
-struct InMemoryLease {
-    url: String,
-    id: String,
-    revoked: Arc<AtomicUsize>,
-}
-
-impl TunnelLease for InMemoryLease {
-    fn public_url(&self) -> &str {
-        &self.url
-    }
-
-    fn lease_id(&self) -> &str {
-        &self.id
-    }
-}
-
-impl Drop for InMemoryLease {
-    fn drop(&mut self) {
-        self.revoked.fetch_add(1, Ordering::SeqCst);
-    }
-}
 
 /// One real loopback HTTP/TCP backend standing in for a world-local service.
 struct Backend {
@@ -1703,14 +1606,11 @@ fn start_ingress_with_timeout(
 }
 
 #[test]
-fn shared_proxy_preserves_host_and_forwarded_headers() {
-    let state = cached_test_dir("shared-proxy");
+fn proxy_preserves_host_and_forwarded_headers() {
+    let state = cached_test_dir("proxy-headers");
     let engine = Arc::new(StubWorldEngine::new());
     let backend = spawn_backend(BackendMode::Head);
-    let registrar = Arc::new(InMemoryTunnelRegistrar::new(
-        "https://acme-abc.weaved.example",
-    ));
-    let registry = registry_over(Arc::clone(&engine), registrar.clone(), Some(7080));
+    let registry = stub_registry(Arc::clone(&engine));
     let project = acme();
     attach_pointing_at(
         &registry,
@@ -1721,34 +1621,25 @@ fn shared_proxy_preserves_host_and_forwarded_headers() {
         Vec::new(),
         backend.port,
     );
-    let shared = registry
-        .share_world(&project, &WorldTarget::Canonical)
-        .expect("share the world");
-    assert_eq!(shared.public_url(), "https://acme-abc.weaved.example");
-    assert_eq!(
-        registrar.calls(),
-        vec![("acme.localhost".to_owned(), 7080)],
-        "the lease is registered against the planned static forward port, never a .localhost host"
-    );
     let port = start_ingress(&state, Arc::clone(&registry));
 
-    // A tunnel hostname arrives with the public `Host` and any client-supplied forwarding headers;
-    // the ingress must preserve `Host`, replace `X-Forwarded-*`, and never redirect.
+    // A client-supplied forwarding header arrives with the `.localhost` Host: the ingress must
+    // preserve `Host`, replace `X-Forwarded-*`, and forward the target unchanged.
     let response = send_raw(
         port,
-        b"GET /api/users?page=2 HTTP/1.1\r\nHost: acme-abc.weaved.example\r\nX-Forwarded-For: 203.0.113.9\r\nConnection: close\r\n\r\n",
+        b"GET /api/users?page=2 HTTP/1.1\r\nHost: acme.localhost\r\nX-Forwarded-For: 203.0.113.9\r\nConnection: close\r\n\r\n",
     );
     assert!(
         response.starts_with("HTTP/1.1 200 OK"),
-        "a shared public host must be proxied, got:\n{response}"
+        "a .localhost world host must be proxied, got:\n{response}"
     );
     assert!(
-        response.contains("Host: acme-abc.weaved.example\r\n"),
-        "the public Host must reach the backend verbatim, got:\n{response}"
+        response.contains("Host: acme.localhost\r\n"),
+        "the Host must reach the backend verbatim, got:\n{response}"
     );
     assert!(
-        response.contains("X-Forwarded-Host: acme-abc.weaved.example\r\n"),
-        "X-Forwarded-Host must name the public host, got:\n{response}"
+        response.contains("X-Forwarded-Host: acme.localhost\r\n"),
+        "X-Forwarded-Host must name the request host, got:\n{response}"
     );
     assert!(
         response.contains("X-Forwarded-For: 203.0.113.9, 127.0.0.1\r\n"),
@@ -1765,21 +1656,18 @@ fn shared_proxy_preserves_host_and_forwarded_headers() {
     assert_eq!(
         backend.connections.load(Ordering::SeqCst),
         1,
-        "the shared host must be dialed exactly once"
+        "the world host must be dialed exactly once"
     );
     let _ = fs::remove_dir_all(&state);
 }
 
 #[test]
-fn shared_proxy_streams_body_larger_than_buffer() {
+fn proxy_streams_body_larger_than_buffer() {
     const BODY: usize = 2 * 1024 * 1024;
-    let state = cached_test_dir("shared-stream");
+    let state = cached_test_dir("proxy-stream");
     let engine = Arc::new(StubWorldEngine::new());
     let backend = spawn_backend(BackendMode::Stream);
-    let registrar = Arc::new(InMemoryTunnelRegistrar::new(
-        "https://acme-abc.weaved.example",
-    ));
-    let registry = registry_over(Arc::clone(&engine), registrar, Some(7080));
+    let registry = stub_registry(Arc::clone(&engine));
     let project = acme();
     attach_pointing_at(
         &registry,
@@ -1790,9 +1678,6 @@ fn shared_proxy_streams_body_larger_than_buffer() {
         Vec::new(),
         backend.port,
     );
-    registry
-        .share_world(&project, &WorldTarget::Canonical)
-        .expect("share the world");
     let port = start_ingress(&state, Arc::clone(&registry));
 
     let mut stream = TcpStream::connect((Ipv4Addr::LOCALHOST, port)).expect("connect");
@@ -1802,7 +1687,7 @@ fn shared_proxy_streams_body_larger_than_buffer() {
     stream
         .write_all(
             format!(
-                "POST /upload HTTP/1.1\r\nHost: acme-abc.weaved.example\r\nContent-Length: {BODY}\r\nConnection: close\r\n\r\n"
+                "POST /upload HTTP/1.1\r\nHost: acme.localhost\r\nContent-Length: {BODY}\r\nConnection: close\r\n\r\n"
             )
             .as_bytes(),
         )
@@ -1842,164 +1727,12 @@ fn shared_proxy_streams_body_larger_than_buffer() {
 }
 
 #[test]
-fn redirect_308_for_every_method_and_before_100_continue() {
-    let state = cached_test_dir("redirect");
-    let engine = Arc::new(StubWorldEngine::new());
-    let backend = spawn_backend(BackendMode::Head);
-    let registrar = Arc::new(InMemoryTunnelRegistrar::new(
-        "https://acme-abc.weaved.example",
-    ));
-    let registry = registry_over(Arc::clone(&engine), registrar, Some(7080));
-    let project = acme();
-    attach_pointing_at(
-        &registry,
-        &engine,
-        &state,
-        &project,
-        &WorldTarget::Canonical,
-        vec!["admin".to_owned()],
-        backend.port,
-    );
-    registry
-        .share_world(&project, &WorldTarget::Canonical)
-        .expect("share the world");
-    let port = start_ingress(&state, Arc::clone(&registry));
-
-    for method in [
-        "GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "BREW",
-    ] {
-        for host in [
-            "acme.localhost",
-            "admin.acme.localhost",
-            "acme.localhost:8080",
-        ] {
-            let response = send_raw(
-                port,
-                format!(
-                    "{method} /deep/path?x=1 HTTP/1.1\r\nHost: {host}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
-                )
-                .as_bytes(),
-            );
-            assert!(
-                response.starts_with("HTTP/1.1 308 Permanent Redirect"),
-                "{method} on a shared world's {host} must be a 308, got:\n{response}"
-            );
-            assert!(
-                response.contains("Location: https://acme-abc.weaved.example/deep/path?x=1\r\n"),
-                "the 308 must preserve the path and query, got:\n{response}"
-            );
-        }
-    }
-    // `HEAD` keeps the status and `Location` but carries neither a body nor `Content-Length`.
-    let head = send_raw(
-        port,
-        b"HEAD /deep/path?x=1 HTTP/1.1\r\nHost: acme.localhost\r\nConnection: close\r\n\r\n",
-    );
-    assert!(
-        head.starts_with("HTTP/1.1 308 Permanent Redirect"),
-        "HEAD must be a 308, got:\n{head}"
-    );
-    assert!(
-        head.contains("Location: https://acme-abc.weaved.example/deep/path?x=1\r\n"),
-        "HEAD must keep Location, got:\n{head}"
-    );
-    assert!(
-        !head.contains("Content-Length"),
-        "HEAD must not advertise a Content-Length, got:\n{head}"
-    );
-    let (head_part, body_part) = head
-        .split_once("\r\n\r\n")
-        .expect("a complete response head");
-    assert!(head_part.starts_with("HTTP/1.1 308"));
-    assert!(
-        body_part.is_empty(),
-        "HEAD must not emit a body, got:\n{head}"
-    );
-
-    assert_eq!(
-        backend.connections.load(Ordering::SeqCst),
-        0,
-        "a shared world's *.localhost host must never be proxied"
-    );
-
-    // `Expect: 100-continue` is answered with the redirect before any `100 Continue` and without
-    // waiting for (or reading) the body.
-    let mut stream = TcpStream::connect((Ipv4Addr::LOCALHOST, port)).expect("connect");
-    stream
-        .set_read_timeout(Some(Duration::from_secs(20)))
-        .expect("bound reads");
-    stream
-        .write_all(
-            b"POST /big HTTP/1.1\r\nHost: acme.localhost\r\nContent-Length: 1048576\r\nExpect: 100-continue\r\n\r\n",
-        )
-        .expect("write the head only");
-    let mut response = String::new();
-    stream.read_to_string(&mut response).expect("read 308");
-    assert!(
-        response.starts_with("HTTP/1.1 308 Permanent Redirect"),
-        "the 308 must precede 100 Continue, got:\n{response}"
-    );
-    assert!(
-        !response.contains("100 Continue"),
-        "the ingress must never send 100 Continue for a shared world, got:\n{response}"
-    );
-    let _ = fs::remove_dir_all(&state);
-}
-
-#[test]
-fn upgrade_refused_421_on_shared_localhost() {
-    let state = cached_test_dir("upgrade-refused");
-    let engine = Arc::new(StubWorldEngine::new());
-    let backend = spawn_backend(BackendMode::Head);
-    let registrar = Arc::new(InMemoryTunnelRegistrar::new(
-        "https://acme-abc.weaved.example",
-    ));
-    let registry = registry_over(Arc::clone(&engine), registrar, Some(7080));
-    let project = acme();
-    attach_pointing_at(
-        &registry,
-        &engine,
-        &state,
-        &project,
-        &WorldTarget::Canonical,
-        Vec::new(),
-        backend.port,
-    );
-    registry
-        .share_world(&project, &WorldTarget::Canonical)
-        .expect("share the world");
-    let port = start_ingress(&state, Arc::clone(&registry));
-
-    let response = send_raw(
-        port,
-        b"GET /ws HTTP/1.1\r\nHost: acme.localhost\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n",
-    );
-    assert!(
-        response.starts_with("HTTP/1.1 421 Misdirected Request"),
-        "an Upgrade on a shared world's *.localhost host must be a 421, got:\n{response}"
-    );
-    assert!(
-        response.contains("https://acme-abc.weaved.example"),
-        "the 421 body must name the shared origin, got:\n{response}"
-    );
-    assert_eq!(
-        backend.connections.load(Ordering::SeqCst),
-        0,
-        "an Upgrade on a shared world's *.localhost host must never be proxied"
-    );
-    let _ = fs::remove_dir_all(&state);
-}
-
-#[test]
 fn websocket_pipe_survives_fragmentation() {
     const PAYLOAD: usize = 4096;
     let state = cached_test_dir("websocket-pipe");
     let engine = Arc::new(StubWorldEngine::new());
     let backend = spawn_backend(BackendMode::UpgradeEcho);
-    let registrar = Arc::new(InMemoryTunnelRegistrar::new(
-        "https://acme-abc.weaved.example",
-    ));
-    let registry = registry_over(Arc::clone(&engine), registrar, Some(7080));
+    let registry = stub_registry(Arc::clone(&engine));
     let project = acme();
     attach_pointing_at(
         &registry,
@@ -2010,9 +1743,6 @@ fn websocket_pipe_survives_fragmentation() {
         Vec::new(),
         backend.port,
     );
-    registry
-        .share_world(&project, &WorldTarget::Canonical)
-        .expect("share the world");
     let port = start_ingress(&state, Arc::clone(&registry));
 
     let mut stream = TcpStream::connect((Ipv4Addr::LOCALHOST, port)).expect("connect");
@@ -2021,7 +1751,7 @@ fn websocket_pipe_survives_fragmentation() {
         .expect("bound reads");
     stream
         .write_all(
-            b"GET /ws HTTP/1.1\r\nHost: acme-abc.weaved.example\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n",
+            b"GET /ws HTTP/1.1\r\nHost: acme.localhost\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n",
         )
         .expect("write the upgrade handshake");
 
@@ -2035,7 +1765,7 @@ fn websocket_pipe_survives_fragmentation() {
     let handshake = String::from_utf8_lossy(&head);
     assert!(
         handshake.starts_with("HTTP/1.1 101 Switching Protocols"),
-        "a shared public host must proxy WebSocket handshakes, got:\n{handshake}"
+        "the .localhost world host must proxy WebSocket handshakes, got:\n{handshake}"
     );
 
     // Fragmented writes in both directions prove the post-101 connection is a raw byte pipe.
@@ -2063,10 +1793,7 @@ fn websocket_pipe_survives_an_idle_gap_longer_than_the_relay_timeout() {
     let state = cached_test_dir("websocket-idle");
     let engine = Arc::new(StubWorldEngine::new());
     let backend = spawn_backend(BackendMode::UpgradeEcho);
-    let registrar = Arc::new(InMemoryTunnelRegistrar::new(
-        "https://acme-abc.weaved.example",
-    ));
-    let registry = registry_over(Arc::clone(&engine), registrar, Some(7080));
+    let registry = stub_registry(Arc::clone(&engine));
     let project = acme();
     attach_pointing_at(
         &registry,
@@ -2077,9 +1804,6 @@ fn websocket_pipe_survives_an_idle_gap_longer_than_the_relay_timeout() {
         Vec::new(),
         backend.port,
     );
-    registry
-        .share_world(&project, &WorldTarget::Canonical)
-        .expect("share the world");
     let port = start_ingress_with_timeout(&state, Arc::clone(&registry), RELAY_TIMEOUT);
 
     let mut stream = TcpStream::connect((Ipv4Addr::LOCALHOST, port)).expect("connect");
@@ -2088,7 +1812,7 @@ fn websocket_pipe_survives_an_idle_gap_longer_than_the_relay_timeout() {
         .expect("bound reads");
     stream
         .write_all(
-            b"GET /ws HTTP/1.1\r\nHost: acme-abc.weaved.example\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n",
+            b"GET /ws HTTP/1.1\r\nHost: acme.localhost\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n",
         )
         .expect("write the upgrade handshake");
 
@@ -2116,218 +1840,11 @@ fn websocket_pipe_survives_an_idle_gap_longer_than_the_relay_timeout() {
 }
 
 // ---------------------------------------------------------------------------------------------
-// share_world / unshare_world asymmetry (ADR-0005 §2)
-// ---------------------------------------------------------------------------------------------
-
-#[test]
-fn share_world_fails_closed_without_forward_listener_or_registrar() {
-    let state = cached_test_dir("share-fail-closed");
-    let engine = Arc::new(StubWorldEngine::new());
-    let project = acme();
-    let target = WorldTarget::Canonical;
-    let backend = spawn_backend(BackendMode::Head);
-
-    let no_forward = registry_over(
-        Arc::clone(&engine),
-        Arc::new(InMemoryTunnelRegistrar::new(
-            "https://acme-abc.weaved.example",
-        )),
-        None,
-    );
-    attach_pointing_at(
-        &no_forward,
-        &engine,
-        &state,
-        &project,
-        &target,
-        Vec::new(),
-        backend.port,
-    );
-    let err = no_forward
-        .share_world(&project, &target)
-        .expect_err("sharing without a forward listener must fail closed");
-    assert!(matches!(err, EdgeError::NoForwardListener), "got {err:?}");
-
-    let unavailable = registry_over(
-        Arc::clone(&engine),
-        Arc::new(UnavailableTunnelRegistrar::new()),
-        Some(7080),
-    );
-    attach_pointing_at(
-        &unavailable,
-        &engine,
-        &state,
-        &project,
-        &target,
-        Vec::new(),
-        backend.port,
-    );
-    let err = unavailable
-        .share_world(&project, &target)
-        .expect_err("sharing without a tunnel registrar must fail closed");
-    assert!(
-        matches!(err, EdgeError::TunnelUnavailable { ref world, .. } if world == "acme"),
-        "got {err:?}"
-    );
-    let decision = unavailable
-        .resolve("acme.localhost", "/", false)
-        .expect("the world still routes");
-    assert!(
-        matches!(decision, RouteDecision::Forward(_)),
-        "a failed share must leave the world Local, got {decision:?}"
-    );
-
-    // A lease URL inside `*.localhost` would redirect-loop back into this ingress (`H-008`).
-    let looping = registry_over(
-        Arc::clone(&engine),
-        Arc::new(InMemoryTunnelRegistrar::new("http://acme.localhost")),
-        Some(7080),
-    );
-    attach_pointing_at(
-        &looping,
-        &engine,
-        &state,
-        &project,
-        &target,
-        Vec::new(),
-        backend.port,
-    );
-    let err = looping
-        .share_world(&project, &target)
-        .expect_err("a .localhost lease URL must never be recorded");
-    assert!(
-        matches!(err, EdgeError::TunnelUnavailable { .. }),
-        "got {err:?}"
-    );
-    let _ = fs::remove_dir_all(&state);
-}
-
-#[test]
-fn unshare_world_is_idempotent_on_local_world() {
-    let state = cached_test_dir("unshare-idempotent");
-    let engine = Arc::new(StubWorldEngine::new());
-    let registrar = Arc::new(InMemoryTunnelRegistrar::new(
-        "https://acme-abc.weaved.example",
-    ));
-    let registrar_port: Arc<dyn TunnelRegistrar> =
-        Arc::clone(&registrar) as Arc<dyn TunnelRegistrar>;
-    let registry = Arc::new(WorldRegistry::new(
-        Arc::clone(&engine) as Arc<dyn WorldEngine>,
-        registrar_port,
-        8080,
-        Some(7080),
-    ));
-    let project = acme();
-    let target = WorldTarget::Canonical;
-    let backend = spawn_backend(BackendMode::Head);
-    attach_pointing_at(
-        &registry,
-        &engine,
-        &state,
-        &project,
-        &target,
-        Vec::new(),
-        backend.port,
-    );
-
-    for _ in 0..2 {
-        let origin = registry
-            .unshare_world(&project, &target)
-            .expect("unsharing a local world is an idempotent success");
-        assert_eq!(
-            origin,
-            WorldOrigin::local(
-                &LocalHostRoute::new(project.clone(), target.clone(), None, &[])
-                    .expect("canonical route"),
-                8080
-            )
-            .expect("local origin"),
-            "an unshared world keeps its single .localhost origin"
-        );
-    }
-    assert_eq!(
-        registrar.revoked.load(Ordering::SeqCst),
-        0,
-        "unsharing a world with no lease must not revoke anything"
-    );
-
-    registry
-        .share_world(&project, &target)
-        .expect("share the world");
-    let redirect = registry
-        .resolve("acme.localhost", "/a?b=1", false)
-        .expect("the shared world redirects");
-    match redirect {
-        RouteDecision::Redirect { location, .. } => {
-            assert_eq!(location, "https://acme-abc.weaved.example/a?b=1");
-        }
-        other => panic!("expected a 308 redirect, got {other:?}"),
-    }
-    let origin = registry
-        .unshare_world(&project, &target)
-        .expect("unshare the world");
-    assert_eq!(origin.url(), "http://acme.localhost:8080");
-    assert_eq!(
-        registrar.revoked.load(Ordering::SeqCst),
-        1,
-        "unsharing must drop (revoke) the tunnel lease"
-    );
-    let decision = registry
-        .resolve("acme.localhost", "/a", false)
-        .expect("the world routes locally again");
-    assert!(
-        matches!(decision, RouteDecision::Forward(_)),
-        "got {decision:?}"
-    );
-    let err = registry
-        .resolve("acme-abc.weaved.example", "/a", false)
-        .expect_err("the public hostname must stop proxying after unshare");
-    assert!(matches!(err, EdgeError::UnknownHost { .. }), "got {err:?}");
-    let _ = fs::remove_dir_all(&state);
-}
-
-#[test]
-fn release_world_clears_the_share_and_revokes_the_lease() {
-    let state = cached_test_dir("release-share");
-    let engine = Arc::new(StubWorldEngine::new());
-    let registrar = Arc::new(InMemoryTunnelRegistrar::new(
-        "https://acme-abc.weaved.example",
-    ));
-    let registry = registry_over(Arc::clone(&engine), registrar.clone(), Some(7080));
-    let project = acme();
-    let target = WorldTarget::Canonical;
-    let backend = spawn_backend(BackendMode::Head);
-    attach_pointing_at(
-        &registry,
-        &engine,
-        &state,
-        &project,
-        &target,
-        Vec::new(),
-        backend.port,
-    );
-    registry
-        .share_world(&project, &target)
-        .expect("share the world");
-    assert!(registry.release_world(&project, &target).expect("release"));
-    assert_eq!(
-        registrar.revoked.load(Ordering::SeqCst),
-        1,
-        "release_world must drop the lease"
-    );
-    let err = registry
-        .resolve("acme-abc.weaved.example", "/", false)
-        .expect_err("a released world's public host must stop proxying");
-    assert!(matches!(err, EdgeError::UnknownHost { .. }), "got {err:?}");
-    let _ = fs::remove_dir_all(&state);
-}
-
-// ---------------------------------------------------------------------------------------------
 // DaemonControl over <runtime_dir>/daemon.sock
 // ---------------------------------------------------------------------------------------------
 
-/// A deterministic in-process `DaemonControl`: `share`/`unshare` delegate 1:1 to the registry,
-/// `forward` uses the real daemon-owned bridge, and the remaining calls prove the wire contract.
+/// A deterministic in-process `DaemonControl`: `forward` uses the real daemon-owned bridge, and the
+/// remaining calls prove the wire contract.
 struct TestControl {
     registry: Arc<WorldRegistry>,
     project: ProjectSlug,
@@ -2340,7 +1857,7 @@ struct TestControl {
 
 impl TestControl {
     fn new(registry: Arc<WorldRegistry>, forward_port: u16) -> Self {
-        // `registry_over` models a `:80` ingress, so the status report mirrors that bind.
+        // `stub_registry` models a `:80` ingress, so the status report mirrors that bind.
         let ingress = ingress_info(80);
         Self {
             registry,
@@ -2411,7 +1928,7 @@ impl DaemonControl for TestControl {
         Ok(DaemonStatus {
             pid: std::process::id(),
             ingress: self.ingress.clone(),
-            forward_port: self.registry.planned_forward_port(),
+            forward_port: Some(self.forward_port),
             worlds: vec![self.summary()?],
         })
     }
@@ -2525,16 +2042,6 @@ impl DaemonControl for TestControl {
             worlds: vec!["acme:orphan".to_owned()],
             snapshots: Vec::new(),
         })
-    }
-
-    fn share(&self, req: &WorldSelector) -> Result<SharedWorldInfo, EdgeError> {
-        self.record_cwd(&req.cwd);
-        self.registry.share_world(&self.project, &self.target)
-    }
-
-    fn unshare(&self, req: &WorldSelector) -> Result<WorldOrigin, EdgeError> {
-        self.record_cwd(&req.cwd);
-        self.registry.unshare_world(&self.project, &self.target)
     }
 
     fn secret_set(
@@ -2690,10 +2197,7 @@ fn spawn_tcp_echo() -> u16 {
 
 fn ready_registry(state: &Path) -> Arc<WorldRegistry> {
     let engine = Arc::new(StubWorldEngine::new());
-    let registrar = Arc::new(InMemoryTunnelRegistrar::new(
-        "https://acme-abc.weaved.example",
-    ));
-    let registry = registry_over(Arc::clone(&engine), registrar, Some(7080));
+    let registry = stub_registry(Arc::clone(&engine));
     let backend = spawn_backend(BackendMode::Head);
     attach_pointing_at(
         &registry,
@@ -2719,7 +2223,7 @@ fn daemon_control_round_trip_and_frame_cap() {
 
     let status = client.status().expect("status");
     assert_eq!(status.pid, std::process::id());
-    assert_eq!(status.forward_port, Some(7080));
+    assert_eq!(status.forward_port, Some(control.forward_port));
     assert_eq!(status.worlds.len(), 1);
     assert_eq!(status.worlds[0].origin.url(), "http://acme.localhost");
 
@@ -2854,29 +2358,6 @@ fn daemon_control_round_trip_and_frame_cap() {
     let prune = client.prune(true).expect("prune");
     assert!(prune.dry_run);
     assert_eq!(prune.worlds, vec!["acme:orphan".to_owned()]);
-
-    let shared = client
-        .share(&WorldSelector {
-            cwd: cwd.clone(),
-            world: None,
-        })
-        .expect("share");
-    assert_eq!(shared.public_url(), "https://acme-abc.weaved.example");
-    assert_eq!(shared.lease_id, "lease-1");
-    let origin = client
-        .unshare(&WorldSelector {
-            cwd: cwd.clone(),
-            world: None,
-        })
-        .expect("unshare");
-    assert_eq!(origin.url(), "http://acme.localhost");
-    let again = client
-        .unshare(&WorldSelector {
-            cwd: cwd.clone(),
-            world: None,
-        })
-        .expect("unshare is idempotent");
-    assert_eq!(again.url(), "http://acme.localhost");
 
     client
         .secret_set(Path::new("/repo"), "SECRET_KEY", "value", false)
@@ -3126,50 +2607,6 @@ fn daemon_control_forward_lifetime_closes_host_listener() {
         thread::sleep(Duration::from_millis(25));
     }
     panic!("the forward listener at {addr} stayed open after the control connection closed");
-}
-
-#[test]
-fn daemon_control_preserves_typed_errors() {
-    let state = cached_test_dir("control-errors");
-    let engine = Arc::new(StubWorldEngine::new());
-    // No forward listener: `share` fails closed and the typed kind crosses the socket.
-    let registry = stub_registry(Arc::clone(&engine));
-    attach_pointing_at(
-        &registry,
-        &engine,
-        &state,
-        &acme(),
-        &WorldTarget::Canonical,
-        Vec::new(),
-        spawn_backend(BackendMode::Head).port,
-    );
-    let control = Arc::new(TestControl::new(registry, spawn_tcp_echo()));
-    start_control_server(&state, control);
-    let client = DaemonControlClient::bind(&state);
-    let cwd = PathBuf::from("/tmp/opencode/project");
-
-    let err = client
-        .share(&WorldSelector {
-            cwd: cwd.clone(),
-            world: None,
-        })
-        .expect_err("sharing without a forward listener fails closed");
-    match err {
-        EdgeError::Control(error) => {
-            assert_eq!(error.kind, DaemonErrorKind::NoForwardListener);
-            assert!(
-                error.message.contains("forward listener"),
-                "the diagnostic must be actionable, got '{}'",
-                error.message
-            );
-        }
-        other => panic!("expected a typed remote error, got {other:?}"),
-    }
-    let origin = client
-        .unshare(&WorldSelector { cwd, world: None })
-        .expect("unshare stays an idempotent success");
-    assert_eq!(origin.url(), "http://acme.localhost");
-    let _ = fs::remove_dir_all(&state);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -3640,7 +3077,7 @@ fn test_origin(project: &str, port: u16) -> WorldOrigin {
     WorldOrigin::local(&route, port).expect("local origin")
 }
 
-/// The one ingress fixture: the `:80` model bind `registry_over` builds.
+/// The one ingress fixture: the `:80` model bind `stub_registry` builds.
 fn ingress_info(port: u16) -> IngressInfo {
     IngressInfo::new(vec![SocketAddr::from((Ipv4Addr::LOCALHOST, port))]).expect("valid ingress")
 }

@@ -31,3 +31,11 @@ status active -> done
 ## 2026-11-18T03:16 [lead]
 
 lead-verified (worker's report was lost again): ps/open exist, lib ps 9 + open 7 pass, --world/--remote present, clippy clean, critical_cli 24/0, and the dashboard now lists status/restart/ps/open as real verbs (the command-table filter self-enabled).
+
+## 2026-11-18T03:43 [lead]
+
+status done -> done
+
+## 2026-11-18T03:43 [lead]
+
+landed together with its sibling: both nodes edit cli.rs/main.rs/lib.rs/critical_cli.rs, and splitting would require hand-editing code. make check GREEN (44+ suites), check_stub_adapters exit 0, docs honesty 11 docs.
