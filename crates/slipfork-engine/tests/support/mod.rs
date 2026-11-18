@@ -16,13 +16,13 @@ use std::time::Duration;
 
 use slipfork_engine::btrfs::{BTRFS_SUPER_MAGIC, KernelBtrfsDriver, mount_hint};
 use slipfork_engine::rootfs::{
-    BaseImageBuilder, BaseImageError, CliBuildxExporter, DockerfileStageBuilder, ElfAbiProbe,
-    FsInputHasher, HostCacheRequest, OciImageStore, OciRootfs, RuntimeAssets, SnowPortContract,
-    WorldRootfs, WorldRootfsRequest,
+    BaseImageBuilder, DockerBuildx, DockerImageStore, DockerfileStageBuilder, ElfProbe,
+    FsInputHasher, HostCacheRequest, OciRootfs, RuntimeAssets, SnowPortContract, WorldRootfs,
+    WorldRootfsRequest,
 };
 use slipfork_engine::{
-    BootLineage, BtrfsEngine, CacheOutcome, ExecEnv, ExecOutput, InheritedVar, LocalIngressBridge,
-    MountMode, ServiceHandle, ServiceLogs, ServiceSpec, SnapshotId, StateSubdirMount, StreamChunk,
+    BootLineage, BtrfsEngine, ExecEnv, ExecOutput, InheritedVar, LocalIngressBridge, MountMode,
+    ServiceHandle, ServiceLogs, ServiceSpec, SnapshotId, StateSubdirMount, StreamChunk,
     WorldEngine, WorldHandle, WorldMount, WorldSpec, current_uid_gid,
 };
 // The one bounded-wait shape and its named deadlines come from the shared testkit, so no suite in
@@ -131,17 +131,6 @@ WORKDIR /workspace
 /// Marker file proving a previously materialized fixture is complete.
 const FIXTURE_MARKER: &str = ".slipfork/bin/slipfork-world-init";
 
-struct NoServices;
-
-impl OciImageStore for NoServices {
-    fn materialize(
-        &self,
-        image: &slipfork_engine::BackingServiceKey,
-    ) -> Result<OciRootfs, BaseImageError> {
-        panic!("the engine test fixture requests no backing services, got {image}");
-    }
-}
-
 /// A real [`WorldRootfs`] materialized through the production [`DockerfileStageBuilder`].
 ///
 /// The Dockerfile is a genuine `alpine:3.21` stage; the pinned static `crun` and
@@ -188,10 +177,10 @@ fn fixture_rootfs() -> WorldRootfs {
                 host_caches: HostCacheRequest::default(),
             };
             let builder = DockerfileStageBuilder::new(
-                std::sync::Arc::new(CliBuildxExporter::new("docker")),
-                std::sync::Arc::new(FsInputHasher),
-                std::sync::Arc::new(NoServices),
-                std::sync::Arc::new(ElfAbiProbe),
+                DockerBuildx::new("docker"),
+                FsInputHasher,
+                DockerImageStore::new(dir.join("state")),
+                ElfProbe,
             );
             let mut events = Vec::new();
             let rootfs = builder
@@ -501,64 +490,21 @@ fn link_tree(from: &Path, to: &Path) -> std::io::Result<()> {
     std::fs::set_permissions(to, std::fs::metadata(from)?.permissions())
 }
 
-/// Materialize one digest-pinned OCI image into the content-addressed test cache.
+/// Materialize one image reference through the production [`DockerImageStore`].
 ///
 /// `extra_paths` are prepared **inside** the extracted rootfs so `crun` can bind a state or
 /// read-only mount at an existing destination (the runtime never mutates a read-only rootfs).
-/// A missing Docker daemon or a failed pull fails the test with the exact fix, never a skip.
+/// The real store owns digest resolution, `docker create`/`export`, `tar -xf`, and the atomic
+/// cache install; a missing daemon or failed pull fails the test with the exact fix, never a skip.
 pub fn oci_rootfs(image_ref: &str, extra_paths: &[&str]) -> OciRootfs {
-    let digest = resolve_image_digest(image_ref);
-    let hex = digest
-        .strip_prefix("sha256:")
-        .expect("RepoDigest must be sha256:<hex>");
-    let cache = disk_scratch_root().join("oci").join(hex);
-    let rootfs = cache.join("rootfs");
-    if !rootfs.is_dir() || !cache.join("config.json").is_file() {
-        let staging = cache.with_extension(format!("staging-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&staging);
-        std::fs::create_dir_all(&staging).expect("create OCI staging rootfs");
-        let container = Command::new("docker")
-            .args(["create", image_ref])
-            .output()
-            .unwrap_or_else(|error| {
-                panic!(
-                    "docker is required to materialize {image_ref}: {error}\n  fix: install Docker and verify with `docker version`"
-                )
-            });
-        assert!(
-            container.status.success(),
-            "docker create {image_ref} failed: {}",
-            String::from_utf8_lossy(&container.stderr)
-        );
-        let id = String::from_utf8_lossy(&container.stdout).trim().to_owned();
-        let tar = staging.with_extension("tar");
-        let export = Command::new("docker")
-            .args(["export", "-o"])
-            .arg(&tar)
-            .arg(&id)
-            .status()
-            .expect("docker export");
-        let _ = Command::new("docker").args(["rm", "-f", &id]).status();
-        assert!(
-            export.success(),
-            "docker export {image_ref} ({id}) failed with {export}\n  fix: verify the image is pullable and Docker is healthy"
-        );
-        let status = Command::new("tar")
-            .args(["-xf"])
-            .arg(&tar)
-            .arg("-C")
-            .arg(&staging)
-            .status()
-            .expect("extract OCI rootfs");
-        assert!(status.success(), "tar extraction of {image_ref} failed");
-        let _ = std::fs::remove_file(&tar);
-        std::fs::create_dir_all(&cache).expect("create OCI cache");
-        let _ = std::fs::remove_dir_all(&rootfs);
-        std::fs::rename(&staging, &rootfs).expect("install OCI rootfs");
-        std::fs::write(cache.join("config.json"), b"{}").expect("write OCI config");
-    }
+    let store = DockerImageStore::new(disk_scratch_root().join("oci-state"));
+    let image = store
+        .materialize_reference(image_ref)
+        .unwrap_or_else(|error| {
+            panic!("cannot materialize {image_ref} through DockerImageStore:\n{error}")
+        });
     for path in extra_paths {
-        let target = rootfs.join(path.trim_start_matches('/'));
+        let target = image.rootfs.join(path.trim_start_matches('/'));
         if path.ends_with('/') {
             std::fs::create_dir_all(&target).unwrap_or_else(|error| {
                 panic!("create {} in {image_ref}: {error}", target.display())
@@ -572,84 +518,5 @@ pub fn oci_rootfs(image_ref: &str, extra_paths: &[&str]) -> OciRootfs {
             }
         }
     }
-    OciRootfs {
-        digest,
-        rootfs,
-        config: cache.join("config.json"),
-        cache: CacheOutcome::Hit,
-        millis: None,
-    }
-}
-
-fn resolve_image_digest(image_ref: &str) -> String {
-    let inspect = || {
-        Command::new("docker")
-            .args([
-                "image",
-                "inspect",
-                image_ref,
-                "--format",
-                "{{index .RepoDigests 0}}",
-            ])
-            .output()
-    };
-    let mut output = inspect().unwrap_or_else(|error| {
-        panic!(
-            "docker is required to resolve {image_ref}: {error}\n  fix: install Docker and verify with `docker version`"
-        )
-    });
-    if !output.status.success() || String::from_utf8_lossy(&output.stdout).trim().is_empty() {
-        let pull = Command::new("docker")
-            .args(["pull", "-q", image_ref])
-            .status()
-            .unwrap_or_else(|error| {
-                panic!(
-                    "cannot pull {image_ref}: {error}\n  fix: verify network access to docker.io"
-                )
-            });
-        assert!(
-            pull.success(),
-            "docker pull {image_ref} failed with {pull}\n  fix: verify network access to docker.io"
-        );
-        output = inspect().expect("docker image inspect after pull");
-    }
-    assert!(
-        output.status.success(),
-        "docker image inspect {image_ref} failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let repo_digest = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-    repo_digest
-        .rsplit_once('@')
-        .map(|(_, digest)| digest.to_owned())
-        .filter(|digest| {
-            digest
-                .strip_prefix("sha256:")
-                .is_some_and(|hex| hex.len() == 64 && hex.bytes().all(|b| b.is_ascii_hexdigit()))
-        })
-        .unwrap_or_else(|| {
-            panic!(
-                "{image_ref} resolves to '{repo_digest}', not a digest-pinned sha256 reference\n  fix: pull the official digest-pinned image"
-            )
-        })
-}
-
-/// Recursively copy `from` into `to`, preserving Unix modes.
-pub fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {
-    std::fs::create_dir_all(to)?;
-    for entry in std::fs::read_dir(from)? {
-        let entry = entry?;
-        let source = entry.path();
-        let target = to.join(entry.file_name());
-        let metadata = std::fs::symlink_metadata(&source)?;
-        if metadata.is_dir() {
-            copy_tree(&source, &target)?;
-        } else if metadata.file_type().is_symlink() {
-            let link = std::fs::read_link(&source)?;
-            std::os::unix::fs::symlink(link, &target)?;
-        } else {
-            std::fs::copy(&source, &target)?;
-        }
-    }
-    Ok(())
+    image
 }

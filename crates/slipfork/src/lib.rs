@@ -21,7 +21,6 @@
 //!   `getent passwd` / `uname -n` kernel adapters.
 //! - [`vaults`]: the injected project-vault factory over the `0600` local vault.
 //! - [`vcs`]: the composition-root Git/Jujutsu [`slipfork_vcs::VcsWorkspaceFactory`] router.
-//! - [`oci_store`]: the injected [`slipfork_engine::rootfs::OciImageStore`] over the Docker CLI.
 //! - [`runtime`]: pinned `crun` + `slipfork-world-init` payload provisioning for every `L0` rootfs.
 //! - [`daemon`]: the in-process [`slipfork_edge::DaemonControl`] implementation `slipforkd` injects
 //!   into [`slipfork_edge::DaemonControlServer`].
@@ -47,7 +46,6 @@ pub mod daemon_unit_install;
 pub mod doctor;
 pub mod layout;
 pub mod logs;
-pub mod oci_store;
 pub mod open;
 pub mod project;
 pub mod ps;

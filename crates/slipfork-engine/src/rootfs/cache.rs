@@ -3,7 +3,7 @@
 //! ```text
 //! <state_dir>/cache/
 //! ├── rootfs/<l0_merkle_sha256>/{app,manifest.json}
-//! ├── oci/<image_sha256>/{rootfs,config.json}   # OciImageStore adapter
+//! ├── oci/<image_sha256>/{rootfs,config.json}   # DockerImageStore adapter
 //! ├── runtime/<pinned crun>                     # pin-verified static crun
 //! └── tmp/Dockerfile.<uuid> + runtime.<uuid>/   # scratch, never in the worktree
 //! ```

@@ -54,23 +54,18 @@ impl fmt::Display for ElfAbi {
     }
 }
 
-/// Host capability: determine the ELF/libc ABI of `binary` as seen from `rootfs`.
-pub trait AbiProbe: Send + Sync {
-    /// Probe `binary` (a host path under `rootfs`; `rootfs` is `/` for a host binary).
-    fn probe(&self, rootfs: &Path, binary: &Path) -> Result<ElfAbi, BaseImageError>;
-}
-
-/// Production [`AbiProbe`]: pure-Rust ELF header + libc version-symbol parsing.
+/// Concrete ELF/libc inspector: pure-Rust ELF header + libc version-symbol parsing.
 #[derive(Debug, Default, Clone, Copy)]
-pub struct ElfAbiProbe;
+pub struct ElfProbe;
 
-impl AbiProbe for ElfAbiProbe {
-    fn probe(&self, rootfs: &Path, binary: &Path) -> Result<ElfAbi, BaseImageError> {
-        let bytes = std::fs::read(binary).map_err(|error| BaseImageError::AbiProbe {
+impl ElfProbe {
+    /// Probe `binary` (a host path under `rootfs`; `rootfs` is `/` for a host binary).
+    pub fn probe(&self, rootfs: &Path, binary: &Path) -> Result<ElfAbi, BaseImageError> {
+        let bytes = std::fs::read(binary).map_err(|error| BaseImageError::ElfInspection {
             path: binary.display().to_string(),
             reason: error.to_string(),
         })?;
-        let (arch, interp) = parse_elf(&bytes).map_err(|reason| BaseImageError::AbiProbe {
+        let (arch, interp) = parse_elf(&bytes).map_err(|reason| BaseImageError::ElfInspection {
             path: binary.display().to_string(),
             reason,
         })?;
@@ -79,7 +74,7 @@ impl AbiProbe for ElfAbiProbe {
         } else if interp.contains("ld-linux") {
             LibcFamily::Glibc
         } else {
-            return Err(BaseImageError::AbiProbe {
+            return Err(BaseImageError::ElfInspection {
                 path: binary.display().to_string(),
                 reason: format!(
                     "PT_INTERP '{interp}' is neither glibc (ld-linux-*) nor musl (ld-musl-*)"
@@ -218,7 +213,7 @@ fn glibc_version(rootfs: &Path, arch: &str, interp: &str) -> Result<String, Base
         "x86_64" => "x86_64-linux-gnu",
         "aarch64" => "aarch64-linux-gnu",
         other => {
-            return Err(BaseImageError::AbiProbe {
+            return Err(BaseImageError::ElfInspection {
                 path: interp.to_owned(),
                 reason: format!("no glibc triple for architecture '{other}'"),
             });
@@ -254,7 +249,7 @@ fn glibc_version(rootfs: &Path, arch: &str, interp: &str) -> Result<String, Base
             return Ok(version);
         }
     }
-    Err(BaseImageError::AbiProbe {
+    Err(BaseImageError::ElfInspection {
         path: format!("{}/libc.so.6", rootfs.display()),
         reason: format!("no GLIBC_2.* version symbol found (interpreter {interp})"),
     })
@@ -290,15 +285,15 @@ fn max_glibc_symbol(bytes: &[u8]) -> Option<String> {
 }
 
 fn musl_version(rootfs: &Path, interp: &str) -> Result<String, BaseImageError> {
-    let path = resolve_guest_path(rootfs, interp).ok_or_else(|| BaseImageError::AbiProbe {
+    let path = resolve_guest_path(rootfs, interp).ok_or_else(|| BaseImageError::ElfInspection {
         path: interp.to_owned(),
         reason: "musl interpreter not found inside the rootfs".to_owned(),
     })?;
-    let bytes = std::fs::read(&path).map_err(|error| BaseImageError::AbiProbe {
+    let bytes = std::fs::read(&path).map_err(|error| BaseImageError::ElfInspection {
         path: path.display().to_string(),
         reason: error.to_string(),
     })?;
-    let version = scan_dotted_version(&bytes).ok_or_else(|| BaseImageError::AbiProbe {
+    let version = scan_dotted_version(&bytes).ok_or_else(|| BaseImageError::ElfInspection {
         path: path.display().to_string(),
         reason: "no musl version string found".to_owned(),
     })?;

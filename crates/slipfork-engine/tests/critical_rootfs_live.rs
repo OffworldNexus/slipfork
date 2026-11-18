@@ -7,25 +7,20 @@
 
 pub mod support;
 
+mod rootfs_conformance;
+
+use rootfs_conformance::assert_world_rootfs_conformance;
+
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
 use slipfork_engine::rootfs::{
-    BackingServiceKey, BaseImageBuilder, BaseImageError, CliBuildxExporter, DockerfileStageBuilder,
-    ElfAbiProbe, FsInputHasher, HostCacheRequest, LibcFamily, OciImageStore, OciRootfs,
-    RootfsBuildEvent, RuntimeAssets, SnowPortContract, WorldRootfsRequest,
+    BaseImageBuilder, BaseImageError, DockerBuildx, DockerImageStore, DockerfileStageBuilder,
+    ElfProbe, FsInputHasher, HostCacheRequest, LibcFamily, RootfsBuildEvent, RuntimeAssets,
+    SnowPortContract, WorldRootfsRequest,
 };
 
 const DOCKERFILE: &str =
     "FROM alpine:3.21 AS app\nWORKDIR /workspace\nRUN echo slipfork > /etc/slipfork-probe\n";
-
-struct NoServices;
-
-impl OciImageStore for NoServices {
-    fn materialize(&self, image: &BackingServiceKey) -> Result<OciRootfs, BaseImageError> {
-        panic!("the live fixture requests no backing services, got {image}");
-    }
-}
 
 struct LiveHarness {
     _dir: tempfile::TempDir,
@@ -72,10 +67,10 @@ impl LiveHarness {
 
     fn builder(&self, docker_program: &str) -> DockerfileStageBuilder {
         DockerfileStageBuilder::new(
-            Arc::new(CliBuildxExporter::new(docker_program)),
-            Arc::new(FsInputHasher),
-            Arc::new(NoServices),
-            Arc::new(ElfAbiProbe),
+            DockerBuildx::new(docker_program),
+            FsInputHasher,
+            DockerImageStore::new(self.request.state_dir.clone()),
+            ElfProbe,
         )
     }
 }
@@ -144,6 +139,9 @@ fn live_buildx_export_validates_and_caches_the_world_stage() {
         rootfs.service_images.is_empty(),
         "no backing services were requested"
     );
+
+    // The production `WorldRootfs` shape satisfies the shared conformance suite.
+    assert_world_rootfs_conformance(&rootfs, &harness.request);
 
     // A second builder points at a nonexistent `docker`: a cache hit must perform zero Docker
     // work, proving the offline/fork guarantee (`ADR-0009` §6.2 rule 4).

@@ -14,30 +14,30 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::time::Instant;
 
 use crate::CacheOutcome;
 use crate::clock::elapsed_millis;
-use crate::rootfs::abi::AbiProbe;
-use crate::rootfs::buildx::{BuildxRequest, SLIPFORK_RUNTIME_CONTEXT};
+use crate::rootfs::FsInputHasher;
+use crate::rootfs::abi::ElfProbe;
+use crate::rootfs::buildx::{BuildxRequest, DockerBuildx, SLIPFORK_RUNTIME_CONTEXT};
 use crate::rootfs::cache::{self, CacheLayout};
 use crate::rootfs::contract;
 use crate::rootfs::dockerfile::{Dockerfile, Stage};
+use crate::rootfs::oci_store::DockerImageStore;
 use crate::rootfs::pin::{buildx_platform, crun_pin};
 use crate::rootfs::{
-    BaseImageBuilder, BaseImageError, CRUN_GUEST_PATH, ImageContractMetadata, OciImageStore,
-    RootfsBuildEvent, RootfsDigest, RootfsDigestInputs, WORLD_INIT_GUEST_PATH, WorldRootfs,
-    WorldRootfsRequest, sha256_hex,
+    BaseImageBuilder, BaseImageError, CRUN_GUEST_PATH, ImageContractMetadata, RootfsBuildEvent,
+    RootfsDigest, RootfsDigestInputs, WORLD_INIT_GUEST_PATH, WorldRootfs, WorldRootfsRequest,
+    sha256_hex,
 };
-use crate::rootfs::{BuildxExporter, InputHasher};
 
 /// Production [`BaseImageBuilder`]: `Dockerfile` stage -> verified local rootfs tree.
 pub struct DockerfileStageBuilder {
-    exporter: Arc<dyn BuildxExporter>,
-    input_hasher: Arc<dyn InputHasher>,
-    oci_store: Arc<dyn OciImageStore>,
-    abi_probe: Arc<dyn AbiProbe>,
+    exporter: DockerBuildx,
+    input_hasher: FsInputHasher,
+    oci_store: DockerImageStore,
+    elf_probe: ElfProbe,
 }
 
 impl DockerfileStageBuilder {
@@ -47,16 +47,16 @@ impl DockerfileStageBuilder {
     /// milliseconds on [`WorldRootfs::millis`]; no clock is injected and no second time source
     /// exists downstream.
     pub fn new(
-        exporter: Arc<dyn BuildxExporter>,
-        input_hasher: Arc<dyn InputHasher>,
-        oci_store: Arc<dyn OciImageStore>,
-        abi_probe: Arc<dyn AbiProbe>,
+        exporter: DockerBuildx,
+        input_hasher: FsInputHasher,
+        oci_store: DockerImageStore,
+        elf_probe: ElfProbe,
     ) -> Self {
         Self {
             exporter,
             input_hasher,
             oci_store,
-            abi_probe,
+            elf_probe,
         }
     }
 
@@ -124,7 +124,7 @@ impl DockerfileStageBuilder {
         })?;
 
         let (os_release, elf_abi, exposed_ports) =
-            contract::validate_extracted(request, stage, &staging, self.abi_probe.as_ref())?;
+            contract::validate_extracted(request, stage, &staging, &self.elf_probe)?;
         let metadata = ImageContractMetadata {
             os_release,
             elf_abi,
@@ -233,7 +233,7 @@ impl BaseImageBuilder for DockerfileStageBuilder {
             stage,
             &metadata.elf_abi,
             &metadata.os_release.distro_label(),
-            self.abi_probe.as_ref(),
+            &self.elf_probe,
         )?;
         let service_images = self.materialize_services(request, on_event)?;
 

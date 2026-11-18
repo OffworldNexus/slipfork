@@ -9,9 +9,10 @@
 //!
 //! The module is engine-agnostic and dependency-inverted: [`DockerfileStageBuilder`] is the only
 //! production [`BaseImageBuilder`] and receives every host capability — `docker buildx`
-//! ([`BuildxExporter`]), build-context hashing ([`InputHasher`]), backing-service rootfs extraction
-//! ([`OciImageStore`]), and ELF/libc inspection ([`AbiProbe`]) — through its constructor. No
-//! `std::env`, `std::process`, or ambient host binary is touched by the builder itself.
+//! ([`DockerBuildx`]), build-context hashing ([`FsInputHasher`]), backing-service rootfs
+//! extraction ([`DockerImageStore`]), and ELF/libc inspection ([`ElfProbe`]) — through its
+//! constructor. The builder spawns nothing: [`DockerBuildx`] and [`DockerImageStore`] own the
+//! Docker CLI, and no `std::env` or ambient host probe is touched here.
 //!
 //! Every contract violation halts before a partial world directory exists and renders the exact
 //! [`ADR-0009`] §5 user-facing diagnostic, including its `  fix:` line. Callers print
@@ -28,6 +29,7 @@ pub(crate) mod cache;
 pub(crate) mod contract;
 pub(crate) mod dockerfile;
 pub mod input;
+pub(crate) mod oci_store;
 pub mod pin;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -38,10 +40,11 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
-pub use abi::{AbiProbe, ElfAbi, ElfAbiProbe, LibcFamily};
+pub use abi::{ElfAbi, ElfProbe, LibcFamily};
 pub use builder::DockerfileStageBuilder;
-pub use buildx::{BuildxRequest, CliBuildxExporter};
+pub use buildx::{BuildxRequest, DockerBuildx};
 pub use input::FsInputHasher;
+pub use oci_store::DockerImageStore;
 
 use crate::WorldMount;
 
@@ -178,7 +181,7 @@ pub struct OciRootfs {
     pub rootfs: PathBuf,
     /// Upstream image `config.json` (`ENV`/`PATH` metadata).
     pub config: PathBuf,
-    /// Cache outcome the [`OciImageStore`] observed for this digest.
+    /// Cache outcome the [`DockerImageStore`] observed for this digest.
     pub cache: crate::CacheOutcome,
     /// Measured export/extract milliseconds (`None` when the image was already cached).
     pub millis: Option<u64>,
@@ -205,7 +208,7 @@ impl BackingServiceKey {
     /// Official repository or digest-pinned reference (`ADR-0009` §2.2).
     ///
     /// SeaweedFS carries no tag here because its digest pin is part of the
-    /// [`OciImageStore`] adapter's registry resolution, never a floating tag.
+    /// [`DockerImageStore`] adapter's registry resolution, never a floating tag.
     pub fn image_repository(&self) -> &'static str {
         match self {
             Self::Postgres { .. } => "docker.io/library/postgres",
@@ -402,24 +405,6 @@ impl WorldRootfs {
     }
 }
 
-/// Host capability: run `docker buildx build` with a local (`type=local`) exporter.
-pub trait BuildxExporter: Send + Sync {
-    /// Build `request.expected_target` from `request.scratch_dockerfile` into `request.dest_dir`.
-    fn build_local(&self, request: &BuildxRequest<'_>) -> Result<(), BaseImageError>;
-}
-
-/// Host capability: hash the `.dockerignore`-filtered build context.
-pub trait InputHasher: Send + Sync {
-    /// SHA-256 Merkle of `context`, honoring `.dockerignore` and excluding `.git/`/`.worktrees/`.
-    fn hash_context(&self, context: &Path) -> Result<String, BaseImageError>;
-}
-
-/// Host capability: resolve and extract one backing-service OCI image rootfs.
-pub trait OciImageStore: Send + Sync {
-    /// Materialize `image` under `<state_dir>/cache/oci/<sha256>` (or return the cached copy).
-    fn materialize(&self, image: &BackingServiceKey) -> Result<OciRootfs, BaseImageError>;
-}
-
 /// Single production port for materializing a world rootfs (`ADR-0009` §1–§3).
 pub trait BaseImageBuilder: Send + Sync {
     /// Build (or reuse) and validate the rootfs described by `req`, reporting progress.
@@ -593,7 +578,7 @@ pub enum BaseImageError {
     },
     /// ELF/libc inspection failed closed.
     #[error("error: cannot determine the ELF/libc ABI of {path}: {reason}")]
-    AbiProbe {
+    ElfInspection {
         /// Binary or library path.
         path: String,
         /// Why the ABI is unknown.

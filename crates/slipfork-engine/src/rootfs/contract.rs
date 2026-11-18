@@ -10,7 +10,7 @@ use std::collections::BTreeSet;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
-use crate::rootfs::abi::{AbiProbe, ElfAbi, host_cache_abi_mismatch, suggested_base};
+use crate::rootfs::abi::{ElfAbi, ElfProbe, host_cache_abi_mismatch, suggested_base};
 use crate::rootfs::dockerfile::{Stage, argv, key_value_pairs};
 use crate::rootfs::pin::{CrunPin, crun_pin};
 use crate::rootfs::{
@@ -127,7 +127,7 @@ pub(crate) fn validate_extracted(
     request: &WorldRootfsRequest,
     stage: &Stage,
     rootfs: &Path,
-    abi_probe: &dyn AbiProbe,
+    elf_probe: &ElfProbe,
 ) -> Result<(OsRelease, ElfAbi, BTreeSet<u16>), BaseImageError> {
     let os_release = detect_distro(stage, rootfs)?;
 
@@ -146,7 +146,7 @@ pub(crate) fn validate_extracted(
     verify_world_init_digest(rootfs, &request.runtime)?;
 
     let shell = resolve_guest_path(rootfs, "/bin/sh").ok_or_else(|| missing_shell(stage))?;
-    let elf_abi = abi_probe.probe(rootfs, &shell)?;
+    let elf_abi = elf_probe.probe(rootfs, &shell)?;
     let exposed_ports = declared_ports(stage)?
         .into_iter()
         .map(|(port, _)| port)
@@ -160,7 +160,7 @@ pub(crate) fn validate_host_caches(
     stage: &Stage,
     world_abi: &ElfAbi,
     distro: &str,
-    abi_probe: &dyn AbiProbe,
+    elf_probe: &ElfProbe,
 ) -> Result<Vec<crate::WorldMount>, BaseImageError> {
     let HostCacheRequest { host_shell, mounts } = &request.host_caches;
     if mounts.is_empty() {
@@ -180,7 +180,7 @@ pub(crate) fn validate_host_caches(
                 .to_owned(),
         });
     }
-    let host_abi = abi_probe.probe(Path::new("/"), host_shell)?;
+    let host_abi = elf_probe.probe(Path::new("/"), host_shell)?;
     if host_cache_abi_mismatch(&host_abi, world_abi) {
         return Err(BaseImageError::HostCacheAbiMismatch {
             arch: host_abi.arch.clone().into(),

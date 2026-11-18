@@ -1,33 +1,35 @@
-//! Production [`OciImageStore`] over the Docker CLI (`ADR-0009` §2.2, design §6).
+//! Concrete Docker-CLI image store for backing-service rootfs extraction (`ADR-0009` §2.2).
 //!
-//! This is the Composition Root's host-capability adapter, not domain logic: it resolves an
-//! official backing-service image to a registry digest, exports that exact digest into
-//! `<state_dir>/cache/oci/<hex>/rootfs` (non-`tmpfs`, `$UID:$GID`-owned by construction), records
-//! the upstream image config as `config.json`, and reuses the cached tree on every later call —
-//! zero network or Docker work once a digest is on disk.
+//! [`DockerImageStore`] resolves an official backing-service image to a registry digest, exports
+//! that exact digest into `<state_dir>/cache/oci/<hex>/rootfs` (non-`tmpfs`, `$UID:$GID`-owned by
+//! construction), records the upstream image config as `config.json`, and reuses the cached tree on
+//! every later call — zero network or Docker work once a digest is on disk.
 //!
-//! The daemon never runs `docker` itself: only this injected [`OciImageStore`] implementation
-//! spawns the CLI, exactly like [`slipfork_engine::rootfs::CliBuildxExporter`] does for builds.
+//! The builder never runs `docker` itself: [`DockerImageStore`] is the only structure that spawns
+//! the CLI, exactly like [`crate::rootfs::DockerBuildx`] does for builds. Both are plain structs
+//! wired by the Composition Root and passed by value.
 
 #![forbid(unsafe_code)]
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-use slipfork_engine::rootfs::{BackingServiceKey, BaseImageError, OciImageStore, OciRootfs};
-use slipfork_engine::{CacheOutcome, elapsed_millis};
+use crate::CacheOutcome;
+use crate::clock::elapsed_millis;
+use crate::rootfs::{BackingServiceKey, BaseImageError, OciRootfs};
 
 /// File recording the tag -> digest resolution so later boots use the same bytes (`tags.json`).
 const TAGS_FILE: &str = "tags.json";
 
-/// Docker-CLI-backed [`OciImageStore`] rooted at one explicit Slipfork state directory.
-#[derive(Clone)]
-pub struct DockerOciImageStore {
+/// Docker-CLI-backed image store rooted at one explicit Slipfork state directory.
+#[derive(Debug, Clone)]
+pub struct DockerImageStore {
     state_dir: PathBuf,
     docker: PathBuf,
 }
 
-impl DockerOciImageStore {
+impl DockerImageStore {
     /// Root the content-addressed cache under `<state_dir>/cache/oci`.
     ///
     /// A cache miss takes the two `Instant`s around its own export and records their elapsed
@@ -39,10 +41,45 @@ impl DockerOciImageStore {
         }
     }
 
-    /// Replace the `docker` executable (conformance harnesses inject an explicit path).
-    pub fn with_docker(mut self, docker: impl Into<PathBuf>) -> Self {
-        self.docker = docker.into();
-        self
+    /// Materialize `image` under `<state_dir>/cache/oci/<sha256>` (or return the cached copy).
+    pub fn materialize(&self, image: &BackingServiceKey) -> Result<OciRootfs, BaseImageError> {
+        self.materialize_reference(&self.image_reference(image))
+    }
+
+    /// Materialize one image reference (tag or `repository@sha256:<hex>`) into the cache.
+    pub fn materialize_reference(&self, reference: &str) -> Result<OciRootfs, BaseImageError> {
+        let digest = self.resolve_digest(reference)?;
+        let hex = digest
+            .strip_prefix("sha256:")
+            .expect("resolve_digest validates the sha256: prefix");
+        let cache = self.cache_root().join(hex);
+        let rootfs = cache.join("rootfs");
+        let config = cache.join("config.json");
+        std::fs::create_dir_all(self.cache_root()).map_err(|error| BaseImageError::Io {
+            path: self.cache_root().display().to_string(),
+            message: error.to_string(),
+        })?;
+        if !rootfs.is_dir() || !config.is_file() {
+            let started = std::time::Instant::now();
+            self.export(reference, &digest, &rootfs, &config)?;
+            self.record_tag(reference, &digest);
+            return Ok(OciRootfs {
+                digest,
+                rootfs,
+                config,
+                cache: CacheOutcome::Miss,
+                millis: Some(elapsed_millis(started, std::time::Instant::now())),
+            });
+        }
+        self.record_tag(reference, &digest);
+        // The cached tree was reused: no export ran, so no duration is recorded (`None`, never `0`).
+        Ok(OciRootfs {
+            digest,
+            rootfs,
+            config,
+            cache: CacheOutcome::Hit,
+            millis: None,
+        })
     }
 
     fn cache_root(&self) -> PathBuf {
@@ -122,7 +159,7 @@ impl DockerOciImageStore {
 
     fn record_tag(&self, reference: &str, digest: &str) {
         let path = self.cache_root().join(TAGS_FILE);
-        let mut tags: std::collections::BTreeMap<String, String> = std::fs::read(&path)
+        let mut tags: BTreeMap<String, String> = std::fs::read(&path)
             .ok()
             .and_then(|bytes| serde_json::from_slice(&bytes).ok())
             .unwrap_or_default();
@@ -131,47 +168,7 @@ impl DockerOciImageStore {
             let _ = std::fs::write(path, bytes);
         }
     }
-}
 
-impl OciImageStore for DockerOciImageStore {
-    fn materialize(&self, image: &BackingServiceKey) -> Result<OciRootfs, BaseImageError> {
-        let reference = self.image_reference(image);
-        let digest = self.resolve_digest(&reference)?;
-        let hex = digest
-            .strip_prefix("sha256:")
-            .expect("resolve_digest validates the sha256: prefix");
-        let cache = self.cache_root().join(hex);
-        let rootfs = cache.join("rootfs");
-        let config = cache.join("config.json");
-        std::fs::create_dir_all(self.cache_root()).map_err(|error| BaseImageError::Io {
-            path: self.cache_root().display().to_string(),
-            message: error.to_string(),
-        })?;
-        if !rootfs.is_dir() || !config.is_file() {
-            let started = std::time::Instant::now();
-            self.export(&reference, &digest, &rootfs, &config)?;
-            self.record_tag(&reference, &digest);
-            return Ok(OciRootfs {
-                digest,
-                rootfs,
-                config,
-                cache: CacheOutcome::Miss,
-                millis: Some(elapsed_millis(started, std::time::Instant::now())),
-            });
-        }
-        self.record_tag(&reference, &digest);
-        // The cached tree was reused: no export ran, so no duration is recorded (`None`, never `0`).
-        Ok(OciRootfs {
-            digest,
-            rootfs,
-            config,
-            cache: CacheOutcome::Hit,
-            millis: None,
-        })
-    }
-}
-
-impl DockerOciImageStore {
     /// Export `reference@digest` into `rootfs`, atomically replacing a partial cache entry.
     fn export(
         &self,

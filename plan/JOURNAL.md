@@ -1512,3 +1512,10 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-18T22:59 [M3.30.1.3.1] (lead) off-Btrfs: critical_engine 21 + critical_btrfs_live 3 + critical_cli 26 fail closed with one-line Btrfs requirement (expected until M3.30.4/6)
 - 2026-11-18T23:01 [M3.30.1.3.1] (lead) status review -> ready: triad: 1 BLOCKER (silent green skip) + 4 MAJOR, one fix pass
 - 2026-11-18T23:01 [M3.30.1.3.1] (lead) attempt 2/3 started
+- 2026-11-18T23:04 [M3.30.1.3.1] (lead) status ready -> done
+- 2026-11-18T23:04 [M3.30.1.3.2] (lead) status ready -> active
+- 2026-11-18T23:04 [M3.30.1.3.2] (lead) attempt 1/3 started
+- 2026-11-18T23:04 [M3.30.1.3.2] (lead) base a55dbda13da2b041509a355e7ef709ea02ad3c13
+- 2026-11-18T23:08 [M3.30.1.3.2] (lead) status active -> review
+- 2026-11-18T23:09 [M3.30.1.3.2] (lead) status review -> ready: triad: 1 BLOCKER (InputHasher single-impl) + 2 MAJOR, one fix pass; oci progress deferred to M3.30.3
+- 2026-11-18T23:09 [M3.30.1.3.2] (lead) attempt 2/3 started

@@ -1,9 +1,9 @@
-//! `docker buildx build` adapter with a local (`type=local`) exporter (`ADR-0009` §1.1).
+//! `docker buildx build` exporter with a local (`type=local`) output (`ADR-0009` §1.1).
 //!
-//! The builder hands a scratch `Dockerfile` and two named build contexts to this port; the
-//! production [`CliBuildxExporter`] shells out to the real `docker buildx` binary and captures its
-//! stderr so a failure is reported with the exact command context. Nothing else in the tree spawns
-//! Docker.
+//! The builder hands a scratch `Dockerfile` and two named build contexts to [`DockerBuildx`]; the
+//! concrete struct shells out to the real `docker buildx` binary and captures its stderr so a
+//! failure is reported with the exact command context. Nothing else in the tree spawns
+//! `docker buildx`.
 //!
 //! The `crun` + `slipfork-world-init` binaries reach the appended stage through the
 //! `slipfork-runtime` **named build context** (`--build-context`), so Slipfork never writes into
@@ -14,7 +14,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::rootfs::{BaseImageError, BuildEnvVar, BuildxExporter};
+use crate::rootfs::{BaseImageError, BuildEnvVar};
 
 /// Name of the local build context carrying `/.slipfork/bin` payloads.
 pub const SLIPFORK_RUNTIME_CONTEXT: &str = "slipfork-runtime";
@@ -38,27 +38,27 @@ pub struct BuildxRequest<'a> {
     pub runtime_context: &'a Path,
 }
 
-/// Production [`BuildxExporter`] over the `docker` CLI.
+/// Concrete `docker buildx` exporter over the Docker CLI.
 #[derive(Debug, Clone)]
-pub struct CliBuildxExporter {
+pub struct DockerBuildx {
     program: PathBuf,
 }
 
-impl Default for CliBuildxExporter {
+impl Default for DockerBuildx {
     fn default() -> Self {
         Self::new("docker")
     }
 }
 
-impl CliBuildxExporter {
-    /// Use an explicit `docker` binary (tests inject a fake CLI at a fixed path).
+impl DockerBuildx {
+    /// Use an explicit `docker` binary (live suites inject an explicit path).
     pub fn new(program: impl Into<PathBuf>) -> Self {
         Self {
             program: program.into(),
         }
     }
 
-    /// The args this adapter passes to `docker buildx build`.
+    /// The args this exporter passes to `docker buildx build`.
     pub fn args<'a>(&self, request: &BuildxRequest<'a>) -> Vec<String> {
         let mut args = vec![
             "buildx".to_owned(),
@@ -88,10 +88,9 @@ impl CliBuildxExporter {
         args.push(request.context_dir.display().to_string());
         args
     }
-}
 
-impl BuildxExporter for CliBuildxExporter {
-    fn build_local(&self, request: &BuildxRequest<'_>) -> Result<(), BaseImageError> {
+    /// Build `request.target` from `request.dockerfile` into `request.dest_dir`.
+    pub fn build_local(&self, request: &BuildxRequest<'_>) -> Result<(), BaseImageError> {
         let mut command = Command::new(&self.program);
         command.args(self.args(request));
         for env in request.build_envs {
@@ -122,12 +121,12 @@ impl BuildxExporter for CliBuildxExporter {
 mod tests {
     use std::path::Path;
 
-    use super::{BuildxRequest, CliBuildxExporter, SLIPFORK_RUNTIME_CONTEXT};
+    use super::{BuildxRequest, DockerBuildx, SLIPFORK_RUNTIME_CONTEXT};
     use crate::rootfs::BuildEnvVar;
 
     #[test]
     fn args_export_only_the_slipfork_world_target() {
-        let args = CliBuildxExporter::default().args(&BuildxRequest {
+        let args = DockerBuildx::default().args(&BuildxRequest {
             dockerfile: Path::new("/state/cache/tmp/Dockerfile.1"),
             context_dir: Path::new("/repo"),
             target: "slipfork-world",
@@ -154,7 +153,7 @@ mod tests {
             name: "NPM_TOKEN".to_owned(),
             value: "super-secret".to_owned(),
         }];
-        let args = CliBuildxExporter::default().args(&BuildxRequest {
+        let args = DockerBuildx::default().args(&BuildxRequest {
             dockerfile: Path::new("/state/Dockerfile"),
             context_dir: Path::new("/repo"),
             target: "slipfork-world",

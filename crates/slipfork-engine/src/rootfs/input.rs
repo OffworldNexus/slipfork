@@ -11,14 +11,15 @@ use std::path::Path;
 
 use slipfork_world::merkle::{file_digest, glob_matches, merkle_hex};
 
-use crate::rootfs::{BaseImageError, InputHasher};
+use crate::rootfs::BaseImageError;
 
-/// Production [`InputHasher`]: deterministic filesystem walk + `.dockerignore`.
+/// Concrete build-context hasher: deterministic filesystem walk + `.dockerignore`.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct FsInputHasher;
 
-impl InputHasher for FsInputHasher {
-    fn hash_context(&self, context: &Path) -> Result<String, BaseImageError> {
+impl FsInputHasher {
+    /// SHA-256 Merkle of `context`, honoring `.dockerignore` and excluding `.git/`/`.worktrees/`.
+    pub fn hash_context(&self, context: &Path) -> Result<String, BaseImageError> {
         let ignore = DockerIgnore::load(context)?;
         let mut entries: Vec<(String, Vec<u8>)> = Vec::new();
         walk(context, context, &ignore, &mut entries)?;

@@ -1,87 +1,27 @@
 //! Protected critical tests for the `ADR-0009` 6-rule World Image Contract.
 //!
 //! Every rule asserts its typed [`BaseImageError`] variant **and** the exact user-facing diagnostic
-//! (contract prefix + `  fix:` line). Rules 1/3/4/6 are static; rules 2/5 run against a real
-//! extracted directory tree produced by an injected exporter — never a mocked validator. No Docker
-//! daemon is touched here.
+//! (contract prefix + `  fix:` line). Rules 1/3/4/6 are static and fail before any host work; rules
+//! 2/5 plus `/.slipfork/bin` integrity run the concrete [`DockerBuildx`] exporter over a real
+//! extracted tree and the concrete [`ElfProbe`] over the real host `/bin/sh`. Nothing is mocked:
+//! trees are produced by Docker on disk under `~/.cache/slipfork`, never in RAM `tmpfs`.
 
 pub mod support;
 
-mod rootfs_conformance;
+use std::path::PathBuf;
 
-use rootfs_conformance::assert_world_rootfs_conformance;
-
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
-
-use slipfork_engine::CacheOutcome;
-use slipfork_engine::MountMode;
 use slipfork_engine::rootfs::{
-    BackingServiceKey, BaseImageBuilder, BaseImageError, BuildxExporter, BuildxRequest,
-    DockerfileStageBuilder, ElfAbiProbe, HostCacheRequest, ImageContractMetadata, InputHasher,
-    OciImageStore, OciRootfs, OsRelease, RootfsBuildEvent, RuntimeAssets, SnowPortContract,
-    WorldRootfs, WorldRootfsRequest,
+    BaseImageBuilder, BaseImageError, CRUN_GUEST_PATH, DockerBuildx, DockerImageStore,
+    DockerfileStageBuilder, ElfProbe, FsInputHasher, HostCacheRequest, RootfsBuildEvent,
+    RuntimeAssets, SnowPortContract, WorldRootfsRequest,
 };
-use slipfork_engine::rootfs::{CRUN_GUEST_PATH, WORLD_INIT_GUEST_PATH};
 use tempfile::TempDir;
 
-const ALPINE_OS_RELEASE: &str = "ID=alpine\nVERSION_ID=3.21\n";
-
-/// Exporter fake: copies a prepared fixture tree into the local-export destination.
-struct FixtureExporter {
-    template: PathBuf,
-    calls: Arc<AtomicUsize>,
-}
-
-impl BuildxExporter for FixtureExporter {
-    fn build_local(&self, request: &BuildxRequest<'_>) -> Result<(), BaseImageError> {
-        self.calls.fetch_add(1, Ordering::SeqCst);
-        support::copy_tree(&self.template, request.dest_dir).map_err(|error| BaseImageError::Io {
-            path: request.dest_dir.display().to_string(),
-            message: error.to_string(),
-        })
-    }
-}
-
-/// Deterministic context hash (the Dockerfile bytes still feed the digest directly).
-struct FixedHasher;
-
-impl InputHasher for FixedHasher {
-    fn hash_context(&self, _context: &Path) -> Result<String, BaseImageError> {
-        Ok("a".repeat(64))
-    }
-}
-
-/// No service images are requested by these contract fixtures.
-struct NoOciStore;
-
-impl OciImageStore for NoOciStore {
-    fn materialize(&self, image: &BackingServiceKey) -> Result<OciRootfs, BaseImageError> {
-        panic!("contract fixtures request no backing services, got {image}");
-    }
-}
-
-fn builder(template: &Path) -> (DockerfileStageBuilder, Arc<AtomicUsize>) {
-    let calls = Arc::new(AtomicUsize::new(0));
-    let builder = DockerfileStageBuilder::new(
-        Arc::new(FixtureExporter {
-            template: template.to_path_buf(),
-            calls: calls.clone(),
-        }),
-        Arc::new(FixedHasher),
-        Arc::new(NoOciStore),
-        Arc::new(ElfAbiProbe),
-    );
-    (builder, calls)
-}
-
 struct Harness {
-    dir: TempDir,
+    _dir: TempDir,
     dockerfile: PathBuf,
     context: PathBuf,
     state_dir: PathBuf,
-    runtime: RuntimeAssets,
 }
 
 impl Harness {
@@ -92,21 +32,12 @@ impl Harness {
         std::fs::create_dir_all(&context).expect("context");
         let dockerfile_path = context.join("Dockerfile");
         std::fs::write(&dockerfile_path, dockerfile).expect("write Dockerfile");
-        let crun = root.join("crun.bin");
-        std::fs::write(&crun, b"fixture crun").expect("write crun");
-        let world_init = root.join("slipfork-world-init");
-        std::fs::write(&world_init, b"fixture world init").expect("write world init");
         Self {
-            dir,
+            _dir: dir,
             dockerfile: dockerfile_path,
             context,
             state_dir: root.join("state"),
-            runtime: RuntimeAssets { crun, world_init },
         }
-    }
-
-    fn root(&self) -> &Path {
-        self.dir.path()
     }
 
     fn request(&self, stage: Option<&str>) -> WorldRootfsRequest {
@@ -127,16 +58,33 @@ impl Harness {
             },
             uid: 1000,
             gid: 1000,
-            runtime: self.runtime.clone(),
+            runtime: RuntimeAssets {
+                crun: support::pinned_crun(),
+                world_init: PathBuf::from(env!("CARGO_BIN_EXE_slipfork-world-init")),
+            },
             host_caches: HostCacheRequest::default(),
         }
     }
+
+    /// The production builder over the real exporter, real disk image store, and real ELF probe.
+    fn builder(&self) -> DockerfileStageBuilder {
+        DockerfileStageBuilder::new(
+            DockerBuildx::new("docker"),
+            FsInputHasher,
+            DockerImageStore::new(self.state_dir.clone()),
+            ElfProbe,
+        )
+    }
 }
 
-fn expect_error(builder: &DockerfileStageBuilder, request: &WorldRootfsRequest) -> BaseImageError {
-    let mut events = |_event: RootfsBuildEvent| {};
-    match builder.materialize(request, &mut events) {
-        Err(error) => error,
+/// Materialize `request` and return the fail-closed error plus every progress event.
+fn materialize_error(
+    builder: &DockerfileStageBuilder,
+    request: &WorldRootfsRequest,
+) -> (BaseImageError, Vec<RootfsBuildEvent>) {
+    let mut events = Vec::new();
+    match builder.materialize(request, &mut |event| events.push(event)) {
+        Err(error) => (error, events),
         Ok(rootfs) => panic!("expected a fail-closed contract error, got {rootfs:?}"),
     }
 }
@@ -145,40 +93,20 @@ fn expect_message(error: &BaseImageError, expected: &str) {
     assert_eq!(error.to_string(), expected, "got {error:?}");
 }
 
-/// Build a real extracted-tree fixture on disk.
-fn fixture_tree(
-    root: &Path,
-    os_release: Option<&str>,
-    with_shell: bool,
-    extra_files: &[(&str, bool)],
-) -> PathBuf {
-    let tree = root.join("fixture-rootfs");
-    std::fs::create_dir_all(tree.join("etc")).expect("etc");
-    if let Some(os_release) = os_release {
-        std::fs::write(tree.join("etc/os-release"), os_release).expect("os-release");
-    }
-    if with_shell {
-        std::fs::create_dir_all(tree.join("bin")).expect("bin");
-        std::fs::copy("/bin/sh", tree.join("bin/sh")).expect("copy host /bin/sh");
-    }
-    for (guest, executable) in extra_files {
-        let path = tree.join(guest.trim_start_matches('/'));
-        std::fs::create_dir_all(path.parent().expect("parent")).expect("fixture parent");
-        std::fs::write(&path, b"fixture").expect("fixture file");
-        if *executable {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
-                .expect("fixture mode");
-        }
-    }
-    tree
+/// Assert the cold cache emitted `CacheMiss` before `build_app` ran.
+fn expect_cold_cache_attempt(events: &[RootfsBuildEvent]) {
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, RootfsBuildEvent::CacheMiss { .. })),
+        "cold cache, build attempted (`CacheMiss` precedes `build_app`): {events:?}"
+    );
 }
 
 #[test]
 fn rule_1_unnamed_final_stage_reports_the_exact_diagnostic() {
     let harness = Harness::new("FROM alpine:3.21\n");
-    let (builder, _) = builder(harness.root());
-    let error = expect_error(&builder, &harness.request(None));
+    let (error, _) = materialize_error(&harness.builder(), &harness.request(None));
     assert!(matches!(
         error,
         BaseImageError::UnnamedTargetStage { line: 1, .. }
@@ -192,8 +120,7 @@ fn rule_1_unnamed_final_stage_reports_the_exact_diagnostic() {
 #[test]
 fn rule_1_unknown_stage_lists_the_declared_stages() {
     let harness = Harness::new("FROM alpine:3.21 AS builder\nFROM builder AS runtime\n");
-    let (builder, _) = builder(harness.root());
-    let error = expect_error(&builder, &harness.request(Some("dev")));
+    let (error, _) = materialize_error(&harness.builder(), &harness.request(Some("dev")));
     assert!(matches!(error, BaseImageError::UnknownTargetStage { .. }));
     expect_message(
         &error,
@@ -203,16 +130,11 @@ fn rule_1_unknown_stage_lists_the_declared_stages() {
 
 #[test]
 fn rule_2_unsupported_distro_names_the_supported_table() {
-    let harness = Harness::new("FROM fedora:41 AS runtime\n");
-    let tree = fixture_tree(
-        harness.root(),
-        Some("ID=fedora\nVERSION_ID=41\n"),
-        false,
-        &[],
+    let harness = Harness::new(
+        "FROM alpine:3.21 AS runtime\nRUN printf 'ID=fedora\\nVERSION_ID=41\\n' > /etc/os-release\n",
     );
-    let (builder, calls) = builder(&tree);
-    let error = expect_error(&builder, &harness.request(None));
-    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    let (error, events) = materialize_error(&harness.builder(), &harness.request(None));
+    expect_cold_cache_attempt(&events);
     assert!(matches!(
         error,
         BaseImageError::UnsupportedDistro { line: 1, .. }
@@ -225,10 +147,9 @@ fn rule_2_unsupported_distro_names_the_supported_table() {
 
 #[test]
 fn rule_2_missing_os_release_and_shell_fails_closed() {
-    let harness = Harness::new("FROM scratch AS runtime\n");
-    let tree = fixture_tree(harness.root(), None, false, &[]);
-    let (builder, _) = builder(&tree);
-    let error = expect_error(&builder, &harness.request(None));
+    let harness = Harness::new("FROM alpine:3.21 AS runtime\nRUN rm -f /etc/os-release /bin/sh\n");
+    let (error, events) = materialize_error(&harness.builder(), &harness.request(None));
+    expect_cold_cache_attempt(&events);
     assert!(matches!(error, BaseImageError::UnsupportedDistro { .. }));
     expect_message(
         &error,
@@ -241,8 +162,7 @@ fn rule_3_root_only_entrypoint_reports_uid_gid_and_fix() {
     let harness = Harness::new(
         "FROM debian:trixie-slim AS api\nENTRYPOINT [\"docker-entrypoint.sh\", \"gosu\", \"appuser\"]\n",
     );
-    let (builder, _) = builder(harness.root());
-    let error = expect_error(&builder, &harness.request(None));
+    let (error, _) = materialize_error(&harness.builder(), &harness.request(None));
     assert!(matches!(
         error,
         BaseImageError::RootAtRuntimeEntrypoint {
@@ -261,8 +181,7 @@ fn rule_3_root_only_entrypoint_reports_uid_gid_and_fix() {
 fn rule_4_baked_origin_env_fails_closed() {
     let harness =
         Harness::new("FROM debian:trixie-slim AS api\nENV BASE_URL=http://localhost:8000\n");
-    let (builder, _) = builder(harness.root());
-    let error = expect_error(&builder, &harness.request(None));
+    let (error, _) = materialize_error(&harness.builder(), &harness.request(None));
     assert!(matches!(
         error,
         BaseImageError::BakedOriginOrHostPath { .. }
@@ -276,8 +195,7 @@ fn rule_4_baked_origin_env_fails_closed() {
 #[test]
 fn rule_4_baked_host_workdir_fails_closed() {
     let harness = Harness::new("FROM debian:trixie-slim AS api\nWORKDIR /home/alice/app\n");
-    let (builder, _) = builder(harness.root());
-    let error = expect_error(&builder, &harness.request(None));
+    let (error, _) = materialize_error(&harness.builder(), &harness.request(None));
     assert!(matches!(
         error,
         BaseImageError::BakedOriginOrHostPath { .. }
@@ -290,16 +208,11 @@ fn rule_4_baked_host_workdir_fails_closed() {
 
 #[test]
 fn rule_5_backing_service_inside_the_app_stage_fails_closed() {
-    let harness = Harness::new("FROM alpine:3.21 AS api\n");
-    let tree = fixture_tree(
-        harness.root(),
-        Some(ALPINE_OS_RELEASE),
-        true,
-        &[("/usr/lib/postgresql/18/bin/postgres", true)],
+    let harness = Harness::new(
+        "FROM alpine:3.21 AS api\nRUN mkdir -p /usr/lib/postgresql/18/bin && cp /bin/busybox /usr/lib/postgresql/18/bin/postgres\n",
     );
-    let (builder, calls) = builder(&tree);
-    let error = expect_error(&builder, &harness.request(None));
-    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    let (error, events) = materialize_error(&harness.builder(), &harness.request(None));
+    expect_cold_cache_attempt(&events);
     assert!(matches!(
         error,
         BaseImageError::EmbeddedBackingService { .. }
@@ -313,8 +226,7 @@ fn rule_5_backing_service_inside_the_app_stage_fails_closed() {
 #[test]
 fn rule_6_expose_port_mismatch_fails_closed() {
     let harness = Harness::new("FROM debian:trixie-slim AS api\nEXPOSE 3000\n");
-    let (builder, _) = builder(harness.root());
-    let error = expect_error(&builder, &harness.request(None));
+    let (error, _) = materialize_error(&harness.builder(), &harness.request(None));
     assert!(matches!(
         error,
         BaseImageError::ExposeIngressMismatch { port: 3000, .. }
@@ -330,8 +242,7 @@ fn rule_6_healthcheck_port_is_validated_too() {
     let harness = Harness::new(
         "FROM debian:trixie-slim AS api\nHEALTHCHECK --interval=30s CMD curl -fsS http://localhost:3000/healthz || exit 1\nEXPOSE 8000\n",
     );
-    let (builder, _) = builder(harness.root());
-    let error = expect_error(&builder, &harness.request(None));
+    let (error, _) = materialize_error(&harness.builder(), &harness.request(None));
     assert!(matches!(
         error,
         BaseImageError::ExposeIngressMismatch {
@@ -344,10 +255,11 @@ fn rule_6_healthcheck_port_is_validated_too() {
 
 #[test]
 fn runtime_binaries_missing_from_the_extracted_stage_fail_closed() {
-    let harness = Harness::new("FROM alpine:3.21 AS api\n");
-    let tree = fixture_tree(harness.root(), Some(ALPINE_OS_RELEASE), true, &[]);
-    let (builder, _) = builder(&tree);
-    let error = expect_error(&builder, &harness.request(None));
+    // `/.slipfork/bin/crun` already exists as a directory, so the appended stage copies the file
+    // *inside* it and the integrity check sees a non-file at the pinned guest path.
+    let harness = Harness::new("FROM alpine:3.21 AS api\nRUN mkdir -p /.slipfork/bin/crun\n");
+    let (error, events) = materialize_error(&harness.builder(), &harness.request(None));
+    expect_cold_cache_attempt(&events);
     assert!(matches!(
         error,
         BaseImageError::MissingRuntimeBinary {
@@ -358,118 +270,26 @@ fn runtime_binaries_missing_from_the_extracted_stage_fail_closed() {
 
 #[test]
 fn scratch_files_never_land_in_the_worktree() {
-    let harness = Harness::new("FROM alpine:3.21 AS api\n");
-    let tree = fixture_tree(harness.root(), Some(ALPINE_OS_RELEASE), true, &[]);
-    let (builder, _) = builder(&tree);
-    let request = harness.request(None);
-    let _ = expect_error(&builder, &request);
-    assert!(
-        std::fs::read_dir(&harness.context)
-            .expect("context")
-            .all(|entry| entry.expect("entry").file_name() == "Dockerfile"),
-        "the builder must never write Dockerfile stages into the project context"
-    );
-}
-
-/// Test-only [`BaseImageBuilder`] used to prove the shared conformance suite accepts a second
-/// implementation (the production builder is exercised by `critical_rootfs_live` and above).
-struct FakeBaseImageBuilder;
-
-impl BaseImageBuilder for FakeBaseImageBuilder {
-    fn materialize(
-        &self,
-        request: &WorldRootfsRequest,
-        on_event: &mut dyn FnMut(RootfsBuildEvent),
-    ) -> Result<WorldRootfs, BaseImageError> {
-        let app_rootfs = request.state_dir.join("fake/rootfs/app");
-        for guest in [CRUN_GUEST_PATH, WORLD_INIT_GUEST_PATH] {
-            let path = app_rootfs.join(guest.trim_start_matches('/'));
-            std::fs::create_dir_all(path.parent().expect("parent")).expect("fake bin dir");
-            std::fs::write(&path, b"fake").expect("fake binary");
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
-                .expect("fake mode");
-        }
-        let mut service_images = std::collections::BTreeMap::new();
-        for key in &request.services {
-            let digest = format!("sha256:{}", "b".repeat(64));
-            service_images.insert(
-                key.clone(),
-                OciRootfs {
-                    digest,
-                    rootfs: request.state_dir.join("fake/oci/rootfs"),
-                    config: request.state_dir.join("fake/oci/config.json"),
-                    // The fake store always serves its own tree; it measures no export duration.
-                    cache: CacheOutcome::Hit,
-                    millis: None,
-                },
-            );
-        }
-        let digest =
-            slipfork_engine::rootfs::RootfsDigest::from_hex("c".repeat(64)).expect("valid digest");
-        on_event(RootfsBuildEvent::Installed {
-            digest: digest.clone(),
-            app_rootfs: app_rootfs.clone(),
-        });
-        Ok(WorldRootfs {
-            digest,
-            app_rootfs,
-            crun_bin: PathBuf::from(CRUN_GUEST_PATH),
-            service_images,
-            metadata: ImageContractMetadata {
-                os_release: OsRelease {
-                    id: "alpine".to_owned(),
-                    version_id: "3.21".to_owned(),
-                    version_codename: String::new(),
-                },
-                elf_abi: slipfork_engine::rootfs::ElfAbi {
-                    arch: "x86_64".to_owned(),
-                    libc: slipfork_engine::rootfs::LibcFamily::Musl,
-                    libc_version: "1.2".to_owned(),
-                },
-                exposed_ports: [8000].into_iter().collect(),
-            },
-            host_caches: request.host_caches.mounts.clone(),
-            // This fixture installs its tree directly and reports the outcome it produced.
-            cache: CacheOutcome::Miss,
-            millis: None,
+    // A Dockerfile that really builds, so the builder reaches the post-export path where the
+    // scratch `Dockerfile` and runtime context could otherwise leak into the project context.
+    let harness = Harness::new("FROM alpine:3.21 AS api\nRUN mkdir -p /.slipfork/bin/crun\n");
+    let (error, events) = materialize_error(&harness.builder(), &harness.request(None));
+    expect_cold_cache_attempt(&events);
+    assert!(matches!(error, BaseImageError::MissingRuntimeBinary { .. }));
+    let mut entries: Vec<String> = std::fs::read_dir(&harness.context)
+        .expect("context")
+        .map(|entry| {
+            entry
+                .expect("entry")
+                .file_name()
+                .to_string_lossy()
+                .into_owned()
         })
-    }
-}
-
-#[test]
-fn fake_base_image_builder_passes_the_shared_conformance_suite() {
-    let harness = Harness::new("FROM alpine:3.21 AS api\nEXPOSE 8000\n");
-    let mut request = harness.request(None);
-    request.services = vec![
-        BackingServiceKey::Postgres {
-            version: "18".to_owned(),
-        },
-        BackingServiceKey::SeaweedFs,
-    ];
-    request.host_caches = HostCacheRequest {
-        host_shell: PathBuf::from("/bin/sh"),
-        mounts: vec![slipfork_engine::WorldMount {
-            host_path: PathBuf::from("/home/remy/.cargo/registry"),
-            guest_path: PathBuf::from("/.slipfork/host-cache/cargo/registry"),
-            mode: MountMode::ReadOnly,
-        }],
-    };
-    let mut events = Vec::new();
-    let rootfs = FakeBaseImageBuilder
-        .materialize(&request, &mut |event| events.push(event))
-        .expect("fake builder");
-    assert_world_rootfs_conformance(&rootfs, &request);
-    assert!(matches!(
-        events.last(),
-        Some(RootfsBuildEvent::Installed { .. })
-    ));
-    assert_eq!(rootfs.host_caches, request.host_caches.mounts);
-
-    let mut without_caches = request.clone();
-    without_caches.host_caches = HostCacheRequest::default();
-    let rootfs = FakeBaseImageBuilder
-        .materialize(&without_caches, &mut |_| {})
-        .expect("fake builder");
-    assert!(rootfs.host_caches.is_empty());
+        .collect();
+    entries.sort();
+    assert_eq!(
+        entries,
+        ["Dockerfile"],
+        "the builder must never write Dockerfile stages or runtime payloads into the project context"
+    );
 }

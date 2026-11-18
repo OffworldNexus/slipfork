@@ -2,7 +2,7 @@
 id: M3.30.1.3.1
 title: "Engine substrate: concrete clock/driver DI, delete RecordingDriver/TestTreeDriver theater"
 kind: task
-status: ready
+status: done
 owner: implementer
 priority: 3
 depends_on: []
@@ -16,7 +16,7 @@ attempts: 2
 max_attempts: 3
 escalation: none
 created: "2026-11-18T22:46"
-updated: "2026-11-18T23:01"
+updated: "2026-11-18T23:04"
 ---
 
 # Goal

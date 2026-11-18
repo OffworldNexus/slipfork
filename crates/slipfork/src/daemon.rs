@@ -37,9 +37,9 @@ use slipfork_edge::{
 };
 use slipfork_engine::btrfs::KernelBtrfsDriver;
 use slipfork_engine::rootfs::{
-    BackingServiceKey, BaseImageBuilder, BuildEnvVar, CliBuildxExporter, DockerfileStageBuilder,
-    ElfAbiProbe, FsInputHasher, HostCacheRequest, RootfsBuildEvent, RuntimeAssets,
-    SnowPortContract, WorldRootfs, WorldRootfsRequest,
+    BackingServiceKey, BaseImageBuilder, BuildEnvVar, DockerBuildx, DockerImageStore,
+    DockerfileStageBuilder, ElfProbe, FsInputHasher, HostCacheRequest, RootfsBuildEvent,
+    RuntimeAssets, SnowPortContract, WorldRootfs, WorldRootfsRequest,
 };
 use slipfork_engine::{
     BaseLineage, BootLineage, BtrfsEngine, EngineError, ExecEnv, ExecOutput, InheritedVar,
@@ -65,7 +65,6 @@ use slipfork_world::{LocalHostRoute, ProjectSlug, WorldTarget, validate_fork_nam
 use slipfork_edge::SecretVault;
 
 use crate::layout::{Layout, ensure_private_dir};
-use crate::oci_store::DockerOciImageStore;
 use crate::project::{load_optional_slipfork_config, repository_resolver};
 use crate::vaults::{LayoutProjectVaults, ProjectVaults};
 use crate::vcs::RepositoryWorkspaces;
@@ -791,10 +790,10 @@ pub fn compose_daemon(wiring: DaemonWiring) -> Result<DaemonGraph, String> {
     // Every measuring adapter records the plain `Instant` pair around its own work: the rootfs
     // builder, the OCI image store, and the engine's `uptime_secs` need no injected clock.
     let builder: Arc<dyn BaseImageBuilder> = Arc::new(DockerfileStageBuilder::new(
-        Arc::new(CliBuildxExporter::default()),
-        Arc::new(FsInputHasher),
-        Arc::new(DockerOciImageStore::new(layout.state_dir())),
-        Arc::new(ElfAbiProbe),
+        DockerBuildx::default(),
+        FsInputHasher,
+        DockerImageStore::new(layout.state_dir()),
+        ElfProbe,
     ));
     // The sole world engine: one unified Btrfs subvolume per world over the concrete driver.
     // Construction fails closed with `EngineError::BtrfsRequired` before any snapshot or world
