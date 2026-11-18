@@ -1,9 +1,10 @@
 //! `slipfork doctor`: the pre-daemon host diagnostic seam (`ADR-0010` §4, `M3.25`).
 //!
-//! The CLI composition root (`crates/slipfork/src/main.rs`) constructs the two production probes
+//! The CLI composition root (`crates/slipfork/src/main.rs`) constructs the two concrete probes
 //! — `KernelBtrfsDriver` for the Btrfs substrate and [`OsHostProbe`] for the namespace checks —
-//! and injects them here. This module therefore holds **no** `WorldEngine`: `doctor` still works
-//! when `slipforkd` refuses to boot on a non-Btrfs `<state_dir>`.
+//! observes them once, and passes plain [`HostFacts`] here. This module therefore holds **no**
+//! `WorldEngine` and spawns nothing in [`run`]: `doctor` still works when `slipforkd` refuses to
+//! boot on a non-Btrfs `<state_dir>`.
 //!
 //! [`run`] is the single composer, `filesystem_name` is the single `statfs`-code renderer,
 //! [`DoctorReport::render_text`] is the single human renderer, and [`DoctorReport::to_json`] is the
@@ -22,10 +23,10 @@ use slipfork_engine::userns_remediation_hint;
 /// Fixed `PATH` every `doctor` subprocess runs with (never the caller's environment).
 const PROBE_PATH: &str = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
 
-/// Outcome of one injected namespace probe.
+/// Outcome of one namespace probe.
 ///
 /// Two variants only: [`NetnsCheck::Skipped`] exists exclusively on [`DoctorReport::netns`] and is
-/// synthesized by [`run`], so a [`HostProbe`] implementation can never report `Skipped`.
+/// synthesized by the composition root, so a probe can never report `Skipped`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HostCheckOutcome {
     /// The probe command exited successfully.
@@ -41,7 +42,7 @@ pub enum HostCheckOutcome {
 }
 
 /// `netns` evidence on [`DoctorReport`]: executed when unprivileged user namespaces work, skipped
-/// otherwise (synthesized solely by [`run`]).
+/// otherwise (synthesized by the composition root when user namespaces already failed).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NetnsCheck {
     /// The `netns`/`ipcns`/`pidns` probe ran.
@@ -74,21 +75,34 @@ pub enum IngressCheck {
 }
 
 impl IngressCheck {
-    /// The single human line (`docs/design/dx-0.1.0-ux.md` §2).
-    pub fn label(&self) -> String {
+    /// The one remedy every non-`:80` state shares, or `None` when the ingress already is `:80`.
+    ///
+    /// [`Self::label`] and [`Self::to_json`] both render this single string, so the human line and
+    /// the `--json` `hint` can never drift apart.
+    fn hint(&self) -> Option<&'static str> {
         match self {
-            Self::ActivePort80 { .. } => ":80 active (port-less origins)".to_owned(),
-            Self::ActiveOtherListeners { listen } => match listen {
-                Some(_) => "active without :80 (origins carry the answered port; run `sudo slipfork daemon install` to rebind :80)".to_owned(),
-                None => "active but `systemctl show -p Listen slipforkd.socket` failed; cannot confirm :80 (run `sudo systemctl show -p Listen slipforkd.socket`)".to_owned(),
-            },
+            Self::ActivePort80 { .. } => None,
+            Self::ActiveOtherListeners { listen: Some(_) } => Some(
+                "active without :80 (origins carry the answered port; run `sudo slipfork daemon install` to rebind :80)",
+            ),
+            Self::ActiveOtherListeners { listen: None } => Some(
+                "active but `systemctl show -p Listen slipforkd.socket` failed; cannot confirm :80 (run `sudo systemctl show -p Listen slipforkd.socket`)",
+            ),
             Self::Inactive => {
-                "installed but inactive (run `sudo systemctl start slipforkd.socket`)".to_owned()
+                Some("installed but inactive (run `sudo systemctl start slipforkd.socket`)")
             }
             Self::NotInstalled => {
-                "not installed (ephemeral port; run `slipfork daemon install`)".to_owned()
+                Some("not installed (ephemeral port; run `sudo slipfork daemon install`)")
             }
         }
+    }
+
+    /// The single human line (`docs/design/dx-0.1.0-ux.md` §2).
+    pub fn label(&self) -> String {
+        self.hint().map_or_else(
+            || ":80 active (port-less origins)".to_owned(),
+            str::to_owned,
+        )
     }
 
     /// The single `--json` projection (`docs/design/dx-0.1.0-ux.md` §10).
@@ -104,22 +118,19 @@ impl IngressCheck {
                 "status": "active_other_listeners",
                 "port": Value::Null,
                 "listen": listen,
-                "hint": match listen {
-                    Some(_) => "active without :80 (origins carry the answered port; run `sudo slipfork daemon install` to rebind :80)",
-                    None => "active but `systemctl show -p Listen slipforkd.socket` failed; cannot confirm :80 (run `sudo systemctl show -p Listen slipforkd.socket`)",
-                },
+                "hint": self.hint(),
             }),
             Self::Inactive => json!({
                 "status": "inactive",
                 "port": Value::Null,
                 "listen": Value::Null,
-                "hint": "installed but inactive (run `sudo systemctl start slipforkd.socket`)",
+                "hint": self.hint(),
             }),
             Self::NotInstalled => json!({
                 "status": "not_installed",
                 "port": Value::Null,
                 "listen": Value::Null,
-                "hint": "not installed (ephemeral port; run `slipfork daemon install`)",
+                "hint": self.hint(),
             }),
         }
     }
@@ -149,38 +160,29 @@ pub struct DoctorReport {
     pub fixes: Vec<String>,
 }
 
-/// Sole pre-daemon namespace probe seam (`ADR-0010` §4).
+/// Already-observed host facts handed to [`run`] (`ADR-0010` §4).
 ///
-/// `OsHostProbe` is the only production adapter (constructed in `crates/slipfork/src/main.rs`);
-/// tests inject fakes. Both probes run with a cleared environment, a fixed `PATH`, and `LC_ALL=C`
-/// so a diagnostic never depends on the caller's shell configuration.
-pub trait HostProbe: Send + Sync {
-    /// `unshare --user --map-user=<uid> --map-group=<gid> -- true`.
-    fn probe_userns(&self, uid: u32, gid: u32) -> HostCheckOutcome;
-
-    /// `unshare --user ... --keep-caps --net --ipc --pid --fork -- ip link set lo up`.
-    fn probe_netns(&self, uid: u32, gid: u32) -> HostCheckOutcome;
+/// Plain values, never adapters: [`run`] spawns no subprocess and reads no ambient state, so the
+/// report is a pure composition of what the composition root observed once.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostFacts {
+    /// Result of `unshare --user`.
+    pub unshare_userns: HostCheckOutcome,
+    /// Result of the `netns` probe, or [`NetnsCheck::Skipped`] when user namespaces already failed.
+    pub netns: NetnsCheck,
+    /// Advisory `:80` systemd socket-activation state.
+    pub ingress: IngressCheck,
 }
 
-/// Sole pre-daemon `:80` systemd unit probe seam (`ADR-0011` §3).
+/// The concrete `:80` systemd unit probe (`ADR-0011` §3): fixed-`PATH` `systemctl` reads of the
+/// real unit state, never a unit write.
 ///
-/// `SystemdIngressProbe` is the production adapter (constructed in `crates/slipfork/src/main.rs`);
-/// tests inject recording doubles. The probe is advisory and read-only.
-pub trait IngressProbe: Send + Sync {
-    /// Report whether `slipforkd.socket` is installed/active and binds port `80`.
-    fn probe_ingress(&self) -> IngressCheck;
-}
-
-/// Production [`IngressProbe`]: fixed-`PATH` `systemctl` reads, never a unit write.
-#[derive(Debug, Default, Clone, Copy)]
+/// Constructed only in the composition root (`crates/slipfork/src/main.rs`); the probe is
+/// advisory and read-only.
+#[derive(Debug, Clone, Copy)]
 pub struct SystemdIngressProbe;
 
 impl SystemdIngressProbe {
-    /// Bind the production probe.
-    pub fn new() -> Self {
-        Self
-    }
-
     /// Run one `systemctl` read with the fixed diagnostic environment.
     fn systemctl(&self, args: &[&str]) -> Result<String, String> {
         let output = Command::new("systemctl")
@@ -227,10 +229,9 @@ impl SystemdIngressProbe {
         }
         Ok(listen)
     }
-}
 
-impl IngressProbe for SystemdIngressProbe {
-    fn probe_ingress(&self) -> IngressCheck {
+    /// Report whether the live `slipforkd.socket` unit is installed/active and binds port `80`.
+    pub fn probe_ingress(&self) -> IngressCheck {
         // `LoadState=not-found` is the only "no such unit" answer; any other load state means the
         // unit exists. An unreachable `systemctl` (no systemd host) is the same as not installed:
         // `doctor` must stay usable on containers and CI.
@@ -272,7 +273,8 @@ impl IngressProbe for SystemdIngressProbe {
     }
 }
 
-/// Production [`HostProbe`]: fixed-`PATH` `unshare` invocations.
+/// The concrete pre-daemon namespace probe (`ADR-0010` §4): fixed-`PATH` `unshare` invocations
+/// against the live kernel.
 ///
 /// `bin_dir` is the directory holding the `slipfork`/`slipforkd` executables; it feeds
 /// [`userns_remediation_hint`] so an AppArmor `EPERM` names the exact profile attachment.
@@ -300,18 +302,7 @@ impl OsHostProbe {
             .output();
         let output = match output {
             Ok(output) => output,
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-                return HostCheckOutcome::Failed {
-                    detail: "`unshare` was not found on the diagnostic PATH".to_owned(),
-                    hint: Some("install util-linux (`unshare`) and retry".to_owned()),
-                };
-            }
-            Err(err) => {
-                return HostCheckOutcome::Failed {
-                    detail: format!("cannot run `unshare`: {err}"),
-                    hint: Some("install util-linux (`unshare`) and retry".to_owned()),
-                };
-            }
+            Err(err) => return spawn_failed(&err),
         };
         if output.status.success() {
             return HostCheckOutcome::Ok;
@@ -343,16 +334,16 @@ impl OsHostProbe {
             None
         }
     }
-}
 
-impl HostProbe for OsHostProbe {
-    fn probe_userns(&self, uid: u32, gid: u32) -> HostCheckOutcome {
+    /// `unshare --user --map-user=<uid> --map-group=<gid> -- true`.
+    pub fn probe_userns(&self, uid: u32, gid: u32) -> HostCheckOutcome {
         let map_user = format!("--map-user={uid}");
         let map_group = format!("--map-group={gid}");
         self.run_unshare(&["--user", &map_user, &map_group, "--", "true"])
     }
 
-    fn probe_netns(&self, uid: u32, gid: u32) -> HostCheckOutcome {
+    /// `unshare --user ... --keep-caps --net --ipc --pid --fork -- ip link set lo up`.
+    pub fn probe_netns(&self, uid: u32, gid: u32) -> HostCheckOutcome {
         let map_user = format!("--map-user={uid}");
         let map_group = format!("--map-group={gid}");
         self.run_unshare(&[
@@ -374,6 +365,19 @@ impl HostProbe for OsHostProbe {
     }
 }
 
+/// The single spawn-failure mapping for the `unshare` probe (`ADR-0010` §4).
+fn spawn_failed(err: &std::io::Error) -> HostCheckOutcome {
+    let detail = if err.kind() == std::io::ErrorKind::NotFound {
+        "`unshare` was not found on the diagnostic PATH".to_owned()
+    } else {
+        format!("cannot run `unshare`: {err}")
+    };
+    HostCheckOutcome::Failed {
+        detail,
+        hint: Some("install util-linux (`unshare`) and retry".to_owned()),
+    }
+}
+
 /// Btrfs magic and the live subvolume ioctl are both required (`ADR-0010` §4).
 fn required_btrfs_ok(btrfs: &BtrfsProbeReport) -> bool {
     btrfs.btrfs_super_magic && matches!(btrfs.user_subvol_rm_allowed, Some(Ok(())))
@@ -381,7 +385,7 @@ fn required_btrfs_ok(btrfs: &BtrfsProbeReport) -> bool {
 
 /// The one remediation line for a failed required check: its hint, else its captured detail.
 ///
-/// This keeps `fixes.is_empty() <=> ok` true even when an injected probe fails without a hint.
+/// This keeps `fixes.is_empty() <=> ok` true even when a probe fails without a hint.
 fn failed_fix(context: &str, outcome: &HostCheckOutcome) -> Option<String> {
     match outcome {
         HostCheckOutcome::Ok => None,
@@ -392,30 +396,23 @@ fn failed_fix(context: &str, outcome: &HostCheckOutcome) -> Option<String> {
     }
 }
 
-/// Compose the single [`DoctorReport`] from the already-probed Btrfs evidence plus the injected
-/// host/ingress probes (`ADR-0010` §4).
+/// Compose the single [`DoctorReport`] from the composition root's already-observed facts
+/// (`ADR-0010` §4).
 ///
-/// The composition root owns the one `statfs` probe (`KernelBtrfsDriver::probe`) and passes its
-/// plain [`BtrfsProbeReport`] value here, so this renderer holds no driver.
+/// This function probes nothing and spawns nothing: `btrfs` is the plain [`BtrfsProbeReport`] the
+/// root got from `KernelBtrfsDriver::probe`, and `facts` is what [`OsHostProbe`] and
+/// [`SystemdIngressProbe`] observed once in `crates/slipfork/src/main.rs`.
 ///
-/// `NetnsCheck::Skipped` is synthesized here (and only here) when user namespaces already failed;
-/// `noatime` is advisory and never feeds `ok` or `fixes`, so `fixes.is_empty() <=> ok` holds
+/// `NetnsCheck::Skipped` arrives in `facts` already synthesized by the root; `noatime` and
+/// `ingress` are advisory and never feed `ok` or `fixes`, so `fixes.is_empty() <=> ok` holds
 /// unconditionally.
-pub fn run(
-    btrfs: BtrfsProbeReport,
-    host: &dyn HostProbe,
-    ingress: &dyn IngressProbe,
-    uid: u32,
-    gid: u32,
-) -> DoctorReport {
-    let unshare_userns = host.probe_userns(uid, gid);
-    let netns = if unshare_userns == HostCheckOutcome::Ok {
-        NetnsCheck::Executed(host.probe_netns(uid, gid))
-    } else {
-        NetnsCheck::Skipped
-    };
+pub fn run(btrfs: BtrfsProbeReport, facts: HostFacts, uid: u32, gid: u32) -> DoctorReport {
+    let HostFacts {
+        unshare_userns,
+        netns,
+        ingress,
+    } = facts;
     let filesystem = filesystem_name(btrfs.fstype);
-    let ingress = ingress.probe_ingress();
 
     let mut fixes = Vec::new();
     if !required_btrfs_ok(&btrfs) {
@@ -576,56 +573,10 @@ mod tests {
     use super::*;
     use slipfork_engine::btrfs::{BTRFS_SUPER_MAGIC, BtrfsProbeReport};
 
-    /// Deterministic [`HostProbe`] for the composer tests.
-    struct FakeHostProbe {
-        userns: HostCheckOutcome,
-        netns: HostCheckOutcome,
-    }
-
-    impl FakeHostProbe {
-        fn passing() -> Self {
-            Self {
-                userns: HostCheckOutcome::Ok,
-                netns: HostCheckOutcome::Ok,
-            }
-        }
-    }
-
-    impl HostProbe for FakeHostProbe {
-        fn probe_userns(&self, _uid: u32, _gid: u32) -> HostCheckOutcome {
-            self.userns.clone()
-        }
-
-        fn probe_netns(&self, _uid: u32, _gid: u32) -> HostCheckOutcome {
-            self.netns.clone()
-        }
-    }
-
-    /// Deterministic [`IngressProbe`] that records how many times it was consulted.
-    struct RecordingIngressProbe {
-        check: IngressCheck,
-        calls: std::sync::atomic::AtomicUsize,
-    }
-
-    impl RecordingIngressProbe {
-        fn new(check: IngressCheck) -> Self {
-            Self {
-                check,
-                calls: std::sync::atomic::AtomicUsize::new(0),
-            }
-        }
-
-        fn calls(&self) -> usize {
-            self.calls.load(std::sync::atomic::Ordering::SeqCst)
-        }
-    }
-
-    impl IngressProbe for RecordingIngressProbe {
-        fn probe_ingress(&self) -> IngressCheck {
-            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            self.check.clone()
-        }
-    }
+    const XFS_SUPER_MAGIC: i64 = 0x5846_5342;
+    const EXT4_SUPER_MAGIC: i64 = 0xef53;
+    const UNINSTALLED_HINT: &str = "install util-linux (`unshare`) and retry";
+    const IPROUTE2_HINT: &str = "install iproute2 (`ip`) and retry";
 
     /// The plain Btrfs evidence the composition root's one `statfs` probe produced.
     fn evidence(state_dir: &Path, fstype: i64) -> BtrfsProbeReport {
@@ -640,111 +591,173 @@ mod tests {
         }
     }
 
-    const XFS_SUPER_MAGIC: i64 = 0x5846_5342;
-    const EXT4_SUPER_MAGIC: i64 = 0xef53;
+    /// Deterministic facts the composition root would have observed on a healthy host.
+    fn healthy_facts() -> HostFacts {
+        HostFacts {
+            unshare_userns: HostCheckOutcome::Ok,
+            netns: NetnsCheck::Executed(HostCheckOutcome::Ok),
+            ingress: IngressCheck::NotInstalled,
+        }
+    }
+
+    fn failed(detail: &str, hint: Option<&str>) -> HostCheckOutcome {
+        HostCheckOutcome::Failed {
+            detail: detail.to_owned(),
+            hint: hint.map(str::to_owned),
+        }
+    }
 
     #[test]
-    fn non_btrfs_evidence_reports_the_mount_hint_and_creates_nothing() {
+    fn non_btrfs_evidence_leads_with_the_mount_hint_and_creates_nothing() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let state_dir = tmp.path().join("missing-state");
         let report = super::run(
             evidence(&state_dir, XFS_SUPER_MAGIC),
-            &FakeHostProbe::passing(),
-            &RecordingIngressProbe::new(IngressCheck::NotInstalled),
+            healthy_facts(),
             1000,
             1000,
         );
 
         assert!(!report.ok);
         assert!(!report.btrfs.btrfs_super_magic);
-        assert_eq!(report.btrfs.user_subvol_rm_allowed, None);
         assert_eq!(report.filesystem, "xfs");
         assert_eq!(report.fixes, vec![mount_hint(&report.btrfs.probed_path)]);
         assert!(!state_dir.exists());
     }
 
     #[test]
-    fn netns_is_skipped_only_when_user_namespaces_fail() {
+    fn fixes_follow_btrfs_then_userns_then_netns_with_literal_remedies() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let host = FakeHostProbe {
-            userns: HostCheckOutcome::Failed {
-                detail: "Operation not permitted".to_owned(),
-                hint: Some("install the profile".to_owned()),
-            },
-            netns: HostCheckOutcome::Ok,
-        };
         let report = super::run(
-            evidence(tmp.path(), BTRFS_SUPER_MAGIC),
-            &host,
-            &RecordingIngressProbe::new(IngressCheck::NotInstalled),
+            evidence(&tmp.path().join("state"), EXT4_SUPER_MAGIC),
+            HostFacts {
+                unshare_userns: failed("Operation not permitted", Some(UNINSTALLED_HINT)),
+                netns: NetnsCheck::Executed(failed("ip: not found", Some(IPROUTE2_HINT))),
+                ingress: IngressCheck::NotInstalled,
+            },
             1000,
             1000,
         );
 
         assert!(!report.ok);
-        assert_eq!(report.netns, NetnsCheck::Skipped);
-        assert_eq!(report.fixes, vec!["install the profile".to_owned()]);
-    }
-
-    #[test]
-    fn fixes_are_emitted_btrfs_then_userns_then_netns() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let host = FakeHostProbe {
-            userns: HostCheckOutcome::Ok,
-            netns: HostCheckOutcome::Failed {
-                detail: "ip: not found".to_owned(),
-                hint: Some("install iproute2".to_owned()),
-            },
-        };
-        let report = super::run(
-            evidence(&tmp.path().join("state"), EXT4_SUPER_MAGIC),
-            &host,
-            &RecordingIngressProbe::new(IngressCheck::NotInstalled),
-            1000,
-            1000,
-        );
-
         assert_eq!(
             report.fixes,
             vec![
                 mount_hint(&report.btrfs.probed_path),
-                "install iproute2".to_owned()
+                UNINSTALLED_HINT.to_owned(),
+                IPROUTE2_HINT.to_owned(),
             ]
         );
+
         let text = report.render_text();
-        assert!(text.contains("filesystem: ext4"), "{text}");
-        assert!(text.contains("subvolume_ioctl: skipped"), "{text}");
+        let mount_at = text
+            .find(&format!("fix: {}", mount_hint(&report.btrfs.probed_path)))
+            .expect("mount hint line");
+        let userns_at = text
+            .find(&format!("fix: {UNINSTALLED_HINT}"))
+            .expect("userns fix line");
+        let netns_at = text
+            .find(&format!("fix: {IPROUTE2_HINT}"))
+            .expect("netns fix line");
+        assert!(
+            mount_at < userns_at && userns_at < netns_at,
+            "btrfs -> userns -> netns order: {text}"
+        );
+        assert!(text.contains("subvolume_ioctl: skipped\n"), "{text}");
         assert!(text.contains("netns: failed\n"), "{text}");
-        assert!(text.contains("fix: install iproute2"), "{text}");
     }
 
     #[test]
-    fn json_projection_uses_the_adr_field_names() {
+    fn skipped_netns_renders_without_a_netns_fix() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let report = super::run(
+            evidence(tmp.path(), BTRFS_SUPER_MAGIC),
+            HostFacts {
+                unshare_userns: failed("Operation not permitted", Some(UNINSTALLED_HINT)),
+                netns: NetnsCheck::Skipped,
+                ingress: IngressCheck::NotInstalled,
+            },
+            1000,
+            1000,
+        );
+
+        assert!(!report.ok);
+        assert_eq!(report.fixes, vec![UNINSTALLED_HINT.to_owned()]);
+        assert!(report.render_text().contains("netns: skipped\n"));
+        assert_eq!(report.to_json()["netns"], json!({ "status": "skipped" }));
+    }
+
+    #[test]
+    fn json_projection_carries_every_key_and_the_failed_variant() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let report = super::run(
             evidence(&tmp.path().join("state"), XFS_SUPER_MAGIC),
-            &FakeHostProbe::passing(),
-            &RecordingIngressProbe::new(IngressCheck::NotInstalled),
+            HostFacts {
+                unshare_userns: failed("unshare: Operation not permitted", None),
+                netns: NetnsCheck::Skipped,
+                ingress: IngressCheck::NotInstalled,
+            },
             1000,
             1000,
         );
         let value = report.to_json();
 
-        assert_eq!(value["ok"], json!(false));
-        assert_eq!(value["filesystem"], json!("xfs"));
+        for key in [
+            "ok",
+            "uid",
+            "gid",
+            "state_dir",
+            "probed_path",
+            "fstype",
+            "filesystem",
+            "btrfs_super_magic",
+            "subvolume_ioctl",
+            "noatime",
+            "unshare_userns",
+            "netns",
+            "ingress",
+            "fixes",
+        ] {
+            assert!(value.get(key).is_some(), "missing `{key}`: {value}");
+        }
+        assert_eq!(value["uid"], json!(1000));
+        assert_eq!(value["gid"], json!(1000));
         assert_eq!(value["fstype"], json!("0x58465342"));
         assert_eq!(value["btrfs_super_magic"], json!(false));
+        assert_eq!(value["noatime"], json!(false));
         assert_eq!(value["subvolume_ioctl"], json!({ "status": "skipped" }));
-        assert_eq!(value["unshare_userns"], json!({ "status": "ok" }));
-        assert_eq!(value["netns"], json!({ "status": "ok" }));
         assert_eq!(
-            value["fixes"],
-            json!([mount_hint(&report.btrfs.probed_path)])
+            value["fixes"].as_array().expect("fixes array").len(),
+            report.fixes.len()
         );
-        assert!(
-            value.get("crun").is_none(),
-            "doctor never emits a crun field"
+
+        let failed_object = value["unshare_userns"].as_object().expect("object");
+        let mut keys: Vec<&str> = failed_object.keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(keys, ["detail", "status"]);
+        assert_eq!(failed_object["status"], json!("failed"));
+        assert_eq!(
+            failed_object["detail"],
+            json!("unshare: Operation not permitted")
         );
+        assert!(value.get("crun").is_none(), "no crun field");
+
+        let with_hint = super::run(
+            evidence(tmp.path(), BTRFS_SUPER_MAGIC),
+            HostFacts {
+                unshare_userns: failed("denied", Some("install the profile")),
+                netns: NetnsCheck::Skipped,
+                ingress: IngressCheck::NotInstalled,
+            },
+            1000,
+            1000,
+        )
+        .to_json();
+        let failed_object = with_hint["unshare_userns"].as_object().expect("object");
+        let mut keys: Vec<&str> = failed_object.keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(keys, ["detail", "hint", "status"]);
+        assert_eq!(failed_object["hint"], json!("install the profile"));
     }
 
     #[test]
@@ -752,15 +765,10 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let mut btrfs = evidence(tmp.path(), BTRFS_SUPER_MAGIC);
         btrfs.user_subvol_rm_allowed = Some(Err(1));
-        let report = super::run(
-            btrfs,
-            &FakeHostProbe::passing(),
-            &RecordingIngressProbe::new(IngressCheck::NotInstalled),
-            1000,
-            1000,
-        );
+        let report = super::run(btrfs, healthy_facts(), 1000, 1000);
         let value = report.to_json();
 
+        assert!(!report.ok);
         assert_eq!(
             value["subvolume_ioctl"]["status"],
             json!("failed"),
@@ -771,7 +779,7 @@ mod tests {
             value["subvolume_ioctl"]["hint"],
             json!(mount_hint(&report.btrfs.probed_path))
         );
-        assert!(!report.ok);
+        assert_eq!(report.fixes, vec![mount_hint(&report.btrfs.probed_path)]);
     }
 
     #[test]
@@ -779,8 +787,7 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let report = super::run(
             evidence(tmp.path(), BTRFS_SUPER_MAGIC),
-            &FakeHostProbe::passing(),
-            &RecordingIngressProbe::new(IngressCheck::NotInstalled),
+            healthy_facts(),
             1000,
             1000,
         );
@@ -804,97 +811,121 @@ mod tests {
     }
 
     #[test]
-    fn ingress_is_advisory_and_rendered_once_before_fixes() {
+    fn live_ingress_matches_the_concrete_probe_and_never_feeds_the_verdict() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let ingress = RecordingIngressProbe::new(IngressCheck::ActivePort80 {
-            listen: vec!["127.0.0.1:80".to_owned(), "[::1]:80".to_owned()],
-        });
+        let probe = SystemdIngressProbe;
         let report = super::run(
             evidence(&tmp.path().join("state"), EXT4_SUPER_MAGIC),
-            &FakeHostProbe::passing(),
-            &ingress,
+            HostFacts {
+                unshare_userns: HostCheckOutcome::Ok,
+                netns: NetnsCheck::Executed(HostCheckOutcome::Ok),
+                ingress: probe.probe_ingress(),
+            },
             1000,
             1000,
         );
 
-        assert_eq!(ingress.calls(), 1, "the probe runs exactly once");
-        assert!(
-            !report.ok,
-            "ingress never makes a non-Btrfs host healthy: {report:?}"
-        );
+        assert_eq!(report.ingress, probe.probe_ingress());
+        assert!(!report.ok, "ingress never makes a non-Btrfs host healthy");
         assert_eq!(report.fixes, vec![mount_hint(&report.btrfs.probed_path)]);
+
         let text = report.render_text();
+        let label = report.ingress.label();
+        assert!(text.contains(&format!("ingress: {label}\n")), "{text}");
+        let userns_at = text.find("unshare_userns: ").expect("userns line");
+        let ingress_at = text.find("ingress: ").expect("ingress line");
+        let fix_at = text.find("fix: ").expect("mount hint line");
         assert!(
-            text.contains("ingress: :80 active (port-less origins)\n"),
-            "{text}"
-        );
-        assert!(
-            text.find("ingress: ").expect("ingress line") < text.find("fix: ").expect("fix line"),
-            "the ingress line precedes fixes: {text}"
+            userns_at < ingress_at && ingress_at < fix_at,
+            "fatal probes precede the advisory ingress line, which precedes fixes: {text}"
         );
 
         let value = report.to_json();
-        assert_eq!(
-            value["ingress"],
-            json!({
-                "status": "active",
-                "port": 80,
-                "listen": ["127.0.0.1:80", "[::1]:80"],
-                "hint": Value::Null,
-            })
-        );
+        for key in ["port", "listen", "hint"] {
+            assert!(
+                value["ingress"].get(key).is_some(),
+                "ingress.{key} must always be present: {value}"
+            );
+        }
     }
 
     #[test]
     fn every_ingress_state_has_its_design_text_and_typed_json() {
-        let tmp = tempfile::tempdir().expect("tempdir");
         for (check, label, status) in [
             (
                 IngressCheck::NotInstalled,
-                "ingress: not installed (ephemeral port; run `slipfork daemon install`)\n",
+                "not installed (ephemeral port; run `sudo slipfork daemon install`)",
                 "not_installed",
             ),
             (
                 IngressCheck::Inactive,
-                "ingress: installed but inactive (run `sudo systemctl start slipforkd.socket`)\n",
+                "installed but inactive (run `sudo systemctl start slipforkd.socket`)",
                 "inactive",
             ),
             (
                 IngressCheck::ActiveOtherListeners {
                     listen: Some(vec!["127.0.0.1:7080".to_owned()]),
                 },
-                "ingress: active without :80 (origins carry the answered port; run `sudo slipfork daemon install` to rebind :80)\n",
+                "active without :80 (origins carry the answered port; run `sudo slipfork daemon install` to rebind :80)",
                 "active_other_listeners",
             ),
             (
                 IngressCheck::ActiveOtherListeners { listen: None },
-                "ingress: active but `systemctl show -p Listen slipforkd.socket` failed; cannot confirm :80 (run `sudo systemctl show -p Listen slipforkd.socket`)\n",
+                "active but `systemctl show -p Listen slipforkd.socket` failed; cannot confirm :80 (run `sudo systemctl show -p Listen slipforkd.socket`)",
                 "active_other_listeners",
             ),
         ] {
-            let ingress = RecordingIngressProbe::new(check.clone());
-            let report = super::run(
-                evidence(tmp.path(), BTRFS_SUPER_MAGIC),
-                &FakeHostProbe::passing(),
-                &ingress,
-                1000,
-                1000,
-            );
-            assert!(report.ok, "ingress never affects the verdict");
-            assert!(report.fixes.is_empty());
+            assert_eq!(check.label(), label);
+            assert_eq!(check.hint(), Some(label));
+            let value = check.to_json();
+            assert_eq!(value["status"], json!(status));
+            assert_eq!(value["port"], Value::Null);
+            assert_eq!(value["hint"], json!(label));
             assert!(
-                report.render_text().contains(label),
-                "{}",
-                report.render_text()
-            );
-            let value = report.to_json();
-            assert_eq!(value["ingress"]["status"], json!(status));
-            assert_eq!(value["ingress"]["port"], Value::Null);
-            assert!(
-                value["ingress"]["listen"].is_null() || value["ingress"]["listen"].is_array(),
+                value["listen"].is_null() || value["listen"].is_array(),
                 "listen is a list or null: {value}"
             );
-            assert!(value["ingress"]["hint"].is_string());
         }
+
+        let active = IngressCheck::ActivePort80 {
+            listen: vec!["127.0.0.1:80".to_owned(), "[::1]:80".to_owned()],
+        };
+        assert_eq!(active.hint(), None);
+        assert_eq!(active.label(), ":80 active (port-less origins)");
+        let value = active.to_json();
+        assert_eq!(value["status"], json!("active"));
+        assert_eq!(value["port"], json!(80));
+        assert_eq!(value["listen"], json!(["127.0.0.1:80", "[::1]:80"]));
+        assert_eq!(value["hint"], Value::Null);
+    }
+
+    #[test]
+    fn unshare_failure_paths_map_to_the_literal_remedies() {
+        let probe = OsHostProbe::new("/usr/bin");
+        assert_eq!(
+            probe.failure_hint("unshare: Operation not permitted"),
+            Some(userns_remediation_hint(&PathBuf::from("/usr/bin")))
+        );
+        assert_eq!(
+            probe.failure_hint("unshare: failed to execute ip: No such file or directory"),
+            Some(IPROUTE2_HINT.to_owned())
+        );
+        assert_eq!(probe.failure_hint("unshare: some other denial"), None);
+
+        assert_eq!(
+            spawn_failed(&std::io::Error::from(std::io::ErrorKind::NotFound)),
+            failed(
+                "`unshare` was not found on the diagnostic PATH",
+                Some(UNINSTALLED_HINT)
+            )
+        );
+        let other = std::io::Error::from(std::io::ErrorKind::PermissionDenied);
+        assert_eq!(
+            spawn_failed(&other),
+            failed(
+                &format!("cannot run `unshare`: {other}"),
+                Some(UNINSTALLED_HINT)
+            )
+        );
     }
 }

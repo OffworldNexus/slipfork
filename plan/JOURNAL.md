@@ -1535,3 +1535,10 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-18T23:17 [M3.30.1.3.3.4] (lead) edited fields
 - 2026-11-18T23:17 [M3.30.1.3.3.1] (lead) status review -> ready: triad: 2 real MAJOR test-fidelity + boot-path issues, one fix pass
 - 2026-11-18T23:17 [M3.30.1.3.3.1] (lead) attempt 2/3 started
+- 2026-11-18T23:20 [M3.30.1.3.3.1] (lead) status ready -> done
+- 2026-11-18T23:20 [M3.30.1.3.3.2] (lead) status ready -> active
+- 2026-11-18T23:20 [M3.30.1.3.3.2] (lead) attempt 1/3 started
+- 2026-11-18T23:20 [M3.30.1.3.3.2] (lead) base da98ed6f76e956c74a9b2be4d3e134d1f7401996
+- 2026-11-18T23:22 [M3.30.1.3.3.2] (lead) status active -> review
+- 2026-11-18T23:23 [M3.30.1.3.3.2] (lead) status review -> ready: triad: 2 MAJOR arch/test-fidelity + 2 UX (sudo remedy, silent doctor) — one pass
+- 2026-11-18T23:23 [M3.30.1.3.3.2] (lead) attempt 2/3 started

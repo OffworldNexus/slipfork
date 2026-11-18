@@ -13,11 +13,11 @@ paths:
   - crates/slipfork/src/main.rs
   - crates/slipfork/src/bin/slipforkd.rs
   - "crates/slipfork/tests/**"
-attempts: 0
+attempts: 2
 max_attempts: 3
 escalation: none
 created: "2026-11-18T23:13"
-updated: "2026-11-18T23:13"
+updated: "2026-11-18T23:23"
 ---
 
 # Goal

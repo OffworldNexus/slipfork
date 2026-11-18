@@ -33,7 +33,9 @@ use slipfork::daemon_unit_install::{
     self, DAEMON_GRACE, DAEMON_HANDOVER, DAEMON_POLL, InstallRequest, ManagedUnit, SocketHolder,
     UnitInstaller, ingress_unit_spec, probe_socket_holder,
 };
-use slipfork::doctor::{self, OsHostProbe, SystemdIngressProbe};
+use slipfork::doctor::{
+    self, HostCheckOutcome, HostFacts, NetnsCheck, OsHostProbe, SystemdIngressProbe,
+};
 use slipfork::layout::{Layout, absolute_path, ensure_private_dir};
 use slipfork::project::repository_resolver;
 use slipfork::user::{UserIdentity, account_name, kernel_hostname};
@@ -236,9 +238,10 @@ fn status(json: bool, layout: &Layout) -> Result<ExitCode, String> {
 
 /// `slipfork doctor`: probe the Btrfs substrate and the unprivileged namespaces without a daemon.
 ///
-/// The CLI is the only place that constructs the production probes (`KernelBtrfsDriver` +
-/// `OsHostProbe`); [`doctor::run`] holds no `WorldEngine`, so this works on a host where
-/// `slipforkd` refuses to boot. The report renders `state_dir`, `filesystem`,
+/// The CLI is the only place that constructs and observes the production probes
+/// (`KernelBtrfsDriver` + `OsHostProbe` + `SystemdIngressProbe`) and then hands their plain
+/// [`HostFacts`] to [`doctor::run`], which spawns nothing and holds no `WorldEngine`; this works
+/// on a host where `slipforkd` refuses to boot. The report renders `state_dir`, `filesystem`,
 /// `btrfs_super_magic: ok|mismatch`, `subvolume_ioctl: ok|skipped|failed`, advisory `noatime`,
 /// `unshare_userns`, `netns`, and the deterministic `fixes` list (`btrfs` -> `unshare_userns` ->
 /// `netns`); `--json` projects the same fields, and the exit status is 0 iff the report is `ok`.
@@ -246,11 +249,24 @@ fn doctor(json: bool, layout: &Layout) -> Result<ExitCode, String> {
     let (uid, gid) = current_uid_gid();
     let driver = KernelBtrfsDriver::new();
     let host = OsHostProbe::new(exe_dir()?);
-    let ingress = SystemdIngressProbe;
+    if !json && std::io::stdout().is_terminal() {
+        eprintln!("probing namespaces and :80 ingress…");
+    }
     let btrfs = driver
         .probe(layout.state_dir())
         .map_err(|err| err.to_string())?;
-    let report = doctor::run(btrfs, &host, &ingress, uid, gid);
+    let unshare_userns = host.probe_userns(uid, gid);
+    let netns = if unshare_userns == HostCheckOutcome::Ok {
+        NetnsCheck::Executed(host.probe_netns(uid, gid))
+    } else {
+        NetnsCheck::Skipped
+    };
+    let facts = HostFacts {
+        unshare_userns,
+        netns,
+        ingress: SystemdIngressProbe.probe_ingress(),
+    };
+    let report = doctor::run(btrfs, facts, uid, gid);
     if json {
         println!("{}", render_json(&report.to_json())?);
     } else {
