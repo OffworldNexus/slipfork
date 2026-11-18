@@ -2336,7 +2336,7 @@ fn daemon_control_round_trip_and_frame_cap() {
         .fork(
             &ForkRequest {
                 cwd: cwd.clone(),
-                fork: "feat".to_owned(),
+                fork: Some("feat".to_owned()),
                 base: None,
                 dump: DumpRequest::Default,
                 resources: ResourceRequest::Default,

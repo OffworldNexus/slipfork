@@ -312,6 +312,214 @@ fn one_url_per_world_holds_for_canonical_and_fork() {
 }
 
 // ---------------------------------------------------------------------------
+// M3.28.10: zero-argument `slipfork fork` (branch-derived name, one-line refusals)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn fork_help_marks_the_name_optional_while_drop_still_requires_one() {
+    let help = |args: &[&str]| {
+        let output = Command::new(env!("CARGO_BIN_EXE_slipfork"))
+            .args(args)
+            .output()
+            .expect("spawn slipfork --help");
+        assert_success(&output, "slipfork --help");
+        stdout(&output)
+    };
+    let fork = help(&["fork", "--help"]);
+    assert!(fork.contains("[FORK]"), "the name is optional: {fork}");
+    assert!(
+        !fork.contains("<FORK>"),
+        "no required-name usage line survives: {fork}"
+    );
+    assert!(
+        fork.contains("Fork name (default: the current branch)"),
+        "the help names the derivation: {fork}"
+    );
+    let drop = help(&["drop", "--help"]);
+    assert!(
+        drop.contains("<FORK>"),
+        "destructive teardown keeps its explicit name: {drop}"
+    );
+}
+
+#[test]
+fn zero_argument_fork_derives_the_branch_name_and_prints_worktree_and_cd() {
+    let tmp = disk_tempdir();
+    let scratch = tmp.path();
+    let repo = repo_with_snow(scratch);
+    support::run_git(&repo, &["switch", "-q", "-c", "feat/ux-pass"]);
+    let daemon = Daemon::start(scratch);
+
+    // The client carries a checkout with no usable user identity: `slipforkd` owns every VCS
+    // command and pins the snapshot author (§7.3), so `Author identity unknown` can never surface.
+    let fork = Command::new(env!("CARGO_BIN_EXE_slipfork"))
+        .arg("--state-dir")
+        .arg(&daemon.state_dir)
+        .arg("fork")
+        .current_dir(&repo)
+        .env(
+            "XDG_CACHE_HOME",
+            daemon.state_dir.parent().expect("state parent"),
+        )
+        .env("XDG_DATA_HOME", daemon.state_dir.join("xdg-data"))
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_SYSTEM", "/dev/null")
+        .output()
+        .expect("spawn slipfork fork");
+    assert_success(&fork, "slipfork fork (branch-derived)");
+
+    let worktree = repo.join(".worktrees/feat-ux-pass");
+    let block = stdout(&fork);
+    assert!(
+        block.contains("world     acme-app:feat-ux-pass (running, changed)"),
+        "`feat/ux-pass` becomes the fork `feat-ux-pass`: {block}"
+    );
+    assert!(
+        block.contains("app       http://feat-ux-pass.acme-app.localhost"),
+        "the origin is the fork URL, port-less at :80: {block}"
+    );
+    assert!(
+        block.contains(&format!("worktree  {}\n", worktree.display())),
+        "the block names the absolute `.worktrees/<fork>` checkout: {block}"
+    );
+    assert!(
+        block.contains(&format!("cd        cd {}\n", worktree.display())),
+        "the copy-pasteable `cd` line uses that same path: {block}"
+    );
+    assert_eq!(url_count(&block), 1, "exactly one origin URL: {block}");
+    assert!(
+        worktree.join("snow.yml").is_file(),
+        "the derived fork worktree is a real checkout"
+    );
+    assert!(
+        !block.contains("<FORK>") && !block.contains("[origin]"),
+        "no placeholder or superseded line survives: {block}"
+    );
+}
+
+#[test]
+fn zero_argument_fork_fails_closed_without_a_branch_or_from_inside_a_fork() {
+    let tmp = disk_tempdir();
+    let scratch = tmp.path();
+    let repo = repo_with_snow(scratch);
+    support::run_git(&repo, &["checkout", "-q", "--detach"]);
+    let daemon = Daemon::start(scratch);
+
+    let detached = daemon.cli(&repo, &["fork"]);
+    assert!(
+        !detached.status.success(),
+        "a detached HEAD must fail closed"
+    );
+    let diagnostic = stderr(&detached);
+    assert_eq!(
+        diagnostic.lines().count(),
+        1,
+        "one line, never a git advice block: {diagnostic}"
+    );
+    assert!(
+        diagnostic.contains("checkout has no active branch")
+            && diagnostic.contains("`slipfork fork <name>`"),
+        "the refusal names the explicit-name remedy: {diagnostic}"
+    );
+    assert!(
+        !repo.join(".worktrees").exists(),
+        "a refused derivation must create no worktree"
+    );
+
+    // The same nameless verb inside `.worktrees/<fork>` refuses and names the repository root.
+    support::run_git(&repo, &["switch", "-q", "-c", "feat/inner"]);
+    assert_success(&daemon.cli(&repo, &["fork"]), "fork feat-inner");
+    let nested = daemon.cli(&repo.join(".worktrees/feat-inner"), &["fork"]);
+    assert!(
+        !nested.status.success(),
+        "a nameless fork from a fork worktree must fail closed"
+    );
+    let diagnostic = stderr(&nested);
+    assert_eq!(
+        diagnostic.lines().count(),
+        1,
+        "one line, never a git advice block: {diagnostic}"
+    );
+    assert!(
+        diagnostic.contains("already inside fork worktree '.worktrees/feat-inner'")
+            && diagnostic.contains(&format!("repository root {}", repo.display())),
+        "the refusal names the worktree and the repository root: {diagnostic}"
+    );
+}
+
+#[test]
+fn a_branch_named_fork_that_already_exists_fails_closed_naming_up() {
+    let tmp = disk_tempdir();
+    let scratch = tmp.path();
+    let repo = repo_with_snow(scratch);
+    support::run_git(&repo, &["switch", "-q", "-c", "feat/ux-pass"]);
+    let daemon = Daemon::start(scratch);
+
+    assert_success(&daemon.cli(&repo, &["fork"]), "first branch-named fork");
+    let again = daemon.cli(&repo, &["fork"]);
+    assert!(
+        !again.status.success(),
+        "forking the same branch twice must fail closed"
+    );
+    let diagnostic = stderr(&again);
+    assert_eq!(
+        diagnostic.lines().count(),
+        1,
+        "one line, never a git advice block: {diagnostic}"
+    );
+    assert!(
+        diagnostic.contains("fork 'feat-ux-pass' already exists")
+            && diagnostic.contains("`slipfork up --world acme-app:feat-ux-pass`"),
+        "the refusal names the boot command for the existing world: {diagnostic}"
+    );
+}
+
+#[test]
+fn a_branch_fork_name_that_collides_with_a_project_or_a_domain_fails_closed() {
+    let tmp = disk_tempdir();
+    let scratch = tmp.path();
+    // `domains[].id` collisions are validated against the checkout's real `snow.yml`, never an
+    // empty stand-in that would let a fork shadow a declared domain.
+    let repo = repo_with_manifest(
+        scratch,
+        "acme-domains",
+        &format!("domains:\n  - id: admin\n{SNOW_YML}"),
+    );
+    let daemon = Daemon::start(scratch);
+
+    support::run_git(&repo, &["switch", "-q", "-c", "admin"]);
+    let domain = daemon.cli(&repo, &["fork"]);
+    assert!(
+        !domain.status.success(),
+        "a declared `domains[].id` must never be forked over"
+    );
+    let diagnostic = stderr(&domain);
+    assert!(
+        diagnostic.contains("collides with snow.yml domains[].id 'admin'")
+            && diagnostic.contains("`slipfork fork <name>`"),
+        "the refusal names the real domain collision and the explicit-name remedy: {diagnostic}"
+    );
+
+    support::run_git(&repo, &["switch", "-q", "-c", "acme-domains"]);
+    let project = daemon.cli(&repo, &["fork"]);
+    assert!(
+        !project.status.success(),
+        "the project's own name is not a fork name"
+    );
+    let diagnostic = stderr(&project);
+    assert_eq!(
+        diagnostic.lines().count(),
+        1,
+        "one line, never a git advice block: {diagnostic}"
+    );
+    assert!(
+        diagnostic.contains("branch 'acme-domains' collides with project 'acme-domains'")
+            && diagnostic.contains("`slipfork fork <name>`"),
+        "the refusal is the project-collision line: {diagnostic}"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // M3.28.8: `slipfork restart` and the actionable `up`/`fork`/`restart` block
 // ---------------------------------------------------------------------------
 

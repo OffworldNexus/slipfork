@@ -1,5 +1,5 @@
 {
-  "recordedFrom": "slipfork --help (commit e5ac58f)",
+  "recordedFrom": "slipfork --help (M3.28.10)",
   "topLevel": {
     "argv": ["--help"],
     "requiredTokens": ["Usage: slipfork", "fork", "drop", "exec", "list"]
@@ -9,8 +9,8 @@
       "argv": ["fork", "--help"],
       "requiredTokens": [
         "Usage: slipfork fork",
-        "<FORK>",
-        "Fork name (a single lowercase DNS label)",
+        "[FORK]",
+        "Fork name (default: the current branch)",
         "--base <BASE>",
         "--json"
       ]

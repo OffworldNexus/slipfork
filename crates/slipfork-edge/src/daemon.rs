@@ -403,13 +403,17 @@ pub struct UpRequest {
     pub host_caches: bool,
 }
 
-/// Request body of `slipfork fork <fork>`.
+/// Request body of `slipfork fork [FORK]`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ForkRequest {
     /// Caller working directory; the fork worktree is created beneath its repository root.
     pub cwd: PathBuf,
-    /// Fork name.
-    pub fork: String,
+    /// Fork name, or `None` to derive it from the requesting checkout's current branch.
+    ///
+    /// Only `slipforkd` resolves `None`: it asks `VcsWorkspaceFactory::current_branch`, sanitises
+    /// the answer, and validates the result against the project's real `snow.yml` `domains[].id`
+    /// set (`docs/design/dx-0.1.0-ux.md` §7.1). The client never runs `git` or reads `.git`.
+    pub fork: Option<String>,
     /// Base revision for the new worktree (`None` uses the current branch).
     pub base: Option<String>,
     /// Seed-dump flag.

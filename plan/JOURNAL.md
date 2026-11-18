@@ -1338,3 +1338,8 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-18T03:44 [M3.28.10] (lead) base a364b31d9252dba223f026b58643718918d47951
 - 2026-11-18T03:48 [M3.28.16] (lead) status ready -> done
 - 2026-11-18T03:48 [M3.28.16] (lead) un-parked and re-armed after M3.28.15: tool exit 0 (91 production files, 6 composition roots), pytest 9 passed incl. test_real_repository_is_clean, stub-check b
+- 2026-11-18T04:03 [M3.28.10] (lead) edited fields
+- 2026-11-18T04:03 [M3.28.10] (lead) attempt 1: complete and verified (critical_cli 28/0, lib fork 9, optional-fork, no-git-in-cli, vcs-branch-wired, clippy). Took option A: paths widened for the w
+- 2026-11-18T04:03 [M3.28.10] (lead) status active -> review
+- 2026-11-18T04:10 [M3.28.10] (lead) status review -> done
+- 2026-11-18T04:10 [M3.28.10] (lead) pre-commit: make check rc=0 (docs-check included — the worker's zensical complaint was its own offline cache), critical_guard OK after the path widening.

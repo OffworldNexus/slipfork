@@ -2,9 +2,10 @@
 //!
 //! Every world-scoped command selects a non-default world exclusively through `--world <WORLD>`,
 //! which accepts exactly the ids `slipfork list` prints: the canonical `<project>`,
-//! `<project>:<fork>`, or the repo-local bare `<fork>` (`ADR-0008` §4). `fork` and `drop` name
-//! their fork positionally because they create/destroy it. `/M2.16` deleted M1's `snap`
-//! subcommand: worlds and forks are the only snapshot producers.
+//! `<project>:<fork>`, or the repo-local bare `<fork>` (`ADR-0008` §4). `drop` names its fork
+//! positionally because it destroys it; `fork` takes one positionally when given and otherwise
+//! derives it from the current branch inside `slipforkd` (`docs/design/dx-0.1.0-ux.md` §7).
+//! `/M2.16` deleted M1's `snap` subcommand: worlds and forks are the only snapshot producers.
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -125,8 +126,9 @@ pub enum Commands {
 
     /// Create `.worktrees/<fork>` plus its CoW world through `slipforkd`.
     Fork {
-        /// Fork name (a single lowercase DNS label).
-        fork: String,
+        /// Fork name (default: the current branch).
+        #[arg(value_name = "FORK")]
+        fork: Option<String>,
         /// Commit-ish to fork from (defaults to the requesting checkout's `HEAD`).
         #[arg(long)]
         base: Option<String>,
@@ -474,6 +476,47 @@ mod tests {
         let err = Cli::try_parse_from(["slipfork", "open", "--remote", "--local-port", "9090"])
             .expect_err("`--local-port` was locked out of 0.1.0");
         assert_eq!(err.kind(), clap::error::ErrorKind::UnknownArgument);
+    }
+
+    #[test]
+    fn fork_takes_an_optional_name_and_drop_still_requires_one() {
+        let derived = Cli::try_parse_from(["slipfork", "fork"]).expect("zero-argument fork parses");
+        let Some(Commands::Fork { fork, .. }) = derived.command else {
+            panic!("expected `fork`");
+        };
+        assert!(
+            fork.is_none(),
+            "an absent fork name is derived by `slipforkd` from the current branch"
+        );
+        let named = Cli::try_parse_from(["slipfork", "fork", "feat-ux"]).expect("named fork");
+        let Some(Commands::Fork { fork, .. }) = named.command else {
+            panic!("expected `fork`");
+        };
+        assert_eq!(fork.as_deref(), Some("feat-ux"));
+
+        // Destructive teardown always names the fork explicitly: `drop` has no derived form.
+        let err = Cli::try_parse_from(["slipfork", "drop"])
+            .expect_err("`slipfork drop` was locked out of 0.1.0");
+        assert_eq!(err.kind(), clap::error::ErrorKind::MissingRequiredArgument);
+    }
+
+    #[test]
+    fn fork_help_shows_the_fork_slot_as_optional() {
+        let mut command = Cli::command();
+        let help = command
+            .find_subcommand_mut("fork")
+            .expect("`fork` is a command")
+            .render_long_help()
+            .to_string();
+        assert!(help.contains("[FORK]"), "the slot is optional: {help}");
+        assert!(
+            !help.contains("<FORK>"),
+            "a required-name usage line is gone: {help}"
+        );
+        assert!(
+            help.contains("Fork name (default: the current branch)"),
+            "the help names the derivation: {help}"
+        );
     }
 
     #[test]

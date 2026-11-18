@@ -59,7 +59,7 @@ use slipfork_snow::{
 };
 use slipfork_vcs::{
     RepoRoot, RepoRootResolver, VcsWorkspace, VcsWorkspaceFactory, WORKTREES_DIRECTORY,
-    WorkspaceRequest,
+    WorkspaceRequest, sanitize_fork_name,
 };
 use slipfork_world::{LocalHostRoute, ProjectSlug, WorldTarget, validate_fork_name};
 
@@ -465,6 +465,43 @@ fn boot_verb(command: BootCommand, state: Option<WorldState>) -> Option<BootVerb
         }
         (BootCommand::Restart, Some(WorldState::Stopped) | None) => None,
     }
+}
+
+/// The fork name a zero-argument `slipfork fork` derives from the requesting checkout (§7.1–§7.2).
+///
+/// Exactly three fail-closed answers — a request from inside `<vcs_root>/.worktrees/<fork>`, a
+/// detached `HEAD` / bookmark-less `jj` checkout, and a branch that cannot become a fork name — and
+/// never a generated or placeholder name. The name itself is [`sanitize_fork_name`]'s only; the
+/// project and `domains[].id` collisions stay [`validate_fork_name`]'s job in the `fork` verb.
+fn branch_fork_name(
+    workspaces: &dyn VcsWorkspaceFactory,
+    repo: &RepoRoot,
+) -> Result<String, EdgeError> {
+    let worktrees = repo.vcs_root.join(WORKTREES_DIRECTORY);
+    if let Ok(relative) = repo.worktree_root.strip_prefix(&worktrees)
+        && let Some(fork) = relative
+            .components()
+            .next()
+            .and_then(|component| component.as_os_str().to_str())
+    {
+        return Err(rejected(format!(
+            "already inside fork worktree '{WORKTREES_DIRECTORY}/{fork}'; run `slipfork fork` from the repository root {}",
+            repo.vcs_root.display()
+        )));
+    }
+    let branch = workspaces
+        .current_branch(repo)
+        .map_err(|err| runtime_error(err.to_string()))?
+        .ok_or_else(|| {
+            rejected(
+                "checkout has no active branch; pass an explicit name with `slipfork fork <name>`",
+            )
+        })?;
+    sanitize_fork_name(&branch).ok_or_else(|| {
+        rejected(format!(
+            "branch '{branch}' cannot become a fork name; pass a distinct name with `slipfork fork <name>`"
+        ))
+    })
 }
 
 /// Reject `restart` of a world this daemon never booted (`code: not_running`, §4).
@@ -2517,21 +2554,43 @@ impl DaemonControl for DaemonService {
         req: &ForkRequest,
         on_event: &mut dyn FnMut(BootEvent),
     ) -> Result<WorldUpSummary, EdgeError> {
-        let fork = req.fork.trim();
-        validate_fork_name(fork, &[]).map_err(|err| rejected(err.to_string()))?;
-        let selection = self.select(&req.cwd, Some(fork))?;
-        if !matches!(&selection.target, WorldTarget::UserFork(selected) if selected == fork) {
-            return Err(rejected(format!(
-                "cannot create a fork named '{fork}', which is the project's canonical world id; pass a distinct bare <fork>"
-            )));
+        let repo = self
+            .repo_roots
+            .resolve(&req.cwd)
+            .map_err(|err| runtime_error(err.to_string()))?;
+        // A nameless `slipfork fork` is resolved here and only here (§7.1): the client sends `None`
+        // and never runs a VCS command.
+        let (fork, derived) = match req.fork.as_deref().map(str::trim) {
+            Some(name) => (name.to_owned(), false),
+            None => (branch_fork_name(self.workspaces.as_ref(), &repo)?, true),
+        };
+        // The collision checks read the checkout's real `snow.yml` `domains[].id` set — never an
+        // empty placeholder, which would let a fork shadow a declared domain.
+        let (snow, _) = self.load_snow(&repo.worktree_root)?;
+        let domains = snow.domain_ids();
+        if fork == repo.project.as_str() {
+            return Err(rejected(if derived {
+                format!(
+                    "branch '{fork}' collides with project '{}'; pass a distinct name with `slipfork fork <name>`",
+                    repo.project.as_str()
+                )
+            } else {
+                format!(
+                    "cannot create a fork named '{fork}', which is the project's canonical world id; pass a distinct name with `slipfork fork <name>`"
+                )
+            }));
         }
+        validate_fork_name(&fork, &domains).map_err(|err| {
+            rejected(format!(
+                "{err}; pass a distinct name with `slipfork fork <name>`"
+            ))
+        })?;
+        let selection = self.select(&req.cwd, Some(&fork))?;
         let _guard = self.boot_guard();
         if self.world_state(&selection).is_some() {
             return Err(rejected(format!(
-                "world '{}' already exists; run `slipfork down --world {}` or `slipfork drop {}` first",
-                world_id(&selection.repo.project, &selection.target),
-                fork,
-                fork
+                "fork '{fork}' already exists; boot it with `slipfork up --world {}`",
+                world_id(&selection.repo.project, &selection.target)
             )));
         }
         let workspace = self

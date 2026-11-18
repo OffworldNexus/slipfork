@@ -797,7 +797,9 @@ fn down(json: bool, layout: &Layout, world: Option<String>) -> Result<ExitCode, 
 struct ForkOptions {
     json: bool,
     verbose: bool,
-    fork: String,
+    /// `None` lets `slipforkd` derive the name from the current branch (`§7.1`); the client never
+    /// runs `git` and never reads `.git`.
+    fork: Option<String>,
     base: Option<String>,
     dump: DumpArgs,
     resources: ResourceArgs,
