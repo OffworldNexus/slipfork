@@ -3,11 +3,13 @@
 # requires-python = ">=3.12"
 # dependencies = []
 # ///
-"""Verify that published documentation (`README.md` and non-excluded `docs/**/*.md`)
-never advertises unimplemented `slipfork <subcommand>` CLI commands (Zero Vaporware rule).
+"""Verify that published documentation (`README.md` and non-excluded `docs/**/*.md`) and the
+seeded demo doc (`support/demo/README.md`) never advertise unimplemented `slipfork <subcommand>`
+CLI commands (Zero Vaporware rule).
 
 Target vision and pre-implementation DX blueprints belong strictly in `docs/VISION.md`
-and `docs/design/` (which are excluded from the public Zensical documentation site).
+and `docs/design/` (which are excluded from the public Zensical documentation site). The demo
+README is included because `tools/do_vm.py sync` stamps it onto the dev VM as user-facing proof.
 """
 
 from __future__ import annotations
@@ -30,6 +32,9 @@ EXCLUDED_PREFIXES = (
     "knowledge/",
     "testing/",
 )
+
+# Seeded user-facing docs that ship to the dev VM: same Zero-Vaporware rule as published docs.
+SEEDED_DOCS = ("support/demo/README.md",)
 
 
 def extract_help_subcommands(help_text: str) -> set[str]:
@@ -71,6 +76,10 @@ def published_doc_files(repo: Path) -> list[Path]:
             p = docs_dir / rel
             if p not in files and p.is_file():
                 files.append(p)
+    for rel in SEEDED_DOCS:
+        seeded = repo / rel
+        if seeded.is_file():
+            files.append(seeded)
     return files
 
 
@@ -137,7 +146,8 @@ def main() -> int:
             print(f"  X {err}", file=sys.stderr)
         return 1
     print(
-        f"check_docs_honesty: OK ({len(docs)} published doc(s) match real CLI subcommands)"
+        f"check_docs_honesty: OK ({len(docs)} doc(s) match real CLI subcommands: published "
+        f"pages plus {', '.join(SEEDED_DOCS)})"
     )
     return 0
 

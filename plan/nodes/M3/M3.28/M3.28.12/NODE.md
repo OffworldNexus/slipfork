@@ -2,7 +2,7 @@
 id: M3.28.12
 title: "VM harness: :80 bound via daemon install, tracked support/demo template, login quickstart banner"
 kind: task
-status: active
+status: done
 owner: implementer
 priority: 2
 depends_on: [M3.28.6, M3.28.20, M3.28.21]
@@ -11,7 +11,7 @@ attempts: 5
 max_attempts: 5
 escalation: none
 created: "2026-11-17T16:33"
-updated: "2026-11-18T00:57"
+updated: "2026-11-18T01:27"
 ---
 
 # Goal

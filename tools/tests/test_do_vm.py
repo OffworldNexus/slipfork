@@ -10,10 +10,12 @@ executables on `PATH`.
 from __future__ import annotations
 
 import contextlib
+import getpass
 import importlib.util
 import io
 import json
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -153,6 +155,7 @@ FAKE_SSH = (
     + sys.executable
     + """
 import io
+import json
 import os
 import sys
 import tarfile
@@ -199,6 +202,13 @@ if remote.endswith("cargo --version"):
         sys.exit(env_int("FAKE_CARGO_EXIT"))
     print(env("FAKE_CARGO_VERSION", "cargo 1.94.0 (0000000 2026-01-01)"))
     sys.exit(0)
+if remote.startswith("bash -s ") and remote != "bash -s":
+    label = remote.split(" ", 2)[2]
+    (state / f"{label}.sh").write_text(sys.stdin.read(), encoding="utf-8")
+    env_label = label.upper().replace("-", "_")
+    if env(f"FAKE_{env_label}_STDERR"):
+        print(env(f"FAKE_{env_label}_STDERR"), file=sys.stderr)
+    sys.exit(env_int(f"FAKE_{env_label}_EXIT"))
 if remote == "bash -s":
     (state / "provision.txt").write_text(sys.stdin.read(), encoding="utf-8")
     if env("FAKE_PROVISION_STDERR"):
@@ -222,6 +232,29 @@ if remote.startswith("tar -x -C "):
     sys.exit(0)
 if "docker info" in remote:
     sys.exit(env_int("FAKE_DOCKER_EXIT"))
+if "cargo metadata --format-version" in remote:
+    if env("FAKE_METADATA_JSON"):
+        print(env("FAKE_METADATA_JSON"))
+    else:
+        print(json.dumps({"packages": [
+            {"name": "slipfork", "targets": [
+                {"name": "git-remote-slipfork", "kind": ["bin"]},
+                {"name": "slipfork", "kind": ["bin"]},
+                {"name": "slipforkd", "kind": ["bin"]},
+                {"name": "slipfork", "kind": ["test"]},
+            ]},
+            {"name": "slipfork-engine", "targets": [
+                {"name": "slipfork-world-init", "kind": ["bin"]},
+            ]},
+            {"name": "slipfork-edge", "targets": [
+                {"name": "unrelated", "kind": ["bin"]},
+            ]},
+        ]}))
+    sys.exit(env_int("FAKE_METADATA_EXIT"))
+if "cargo build" in remote:
+    with (state / "builds.log").open("a", encoding="utf-8") as log:
+        log.write(remote + "\\n")
+    sys.exit(env_int("FAKE_BUILD_EXIT"))
 if "cargo test -p " in remote:
     with (state / "suites.log").open("a", encoding="utf-8") as log:
         log.write(remote + "\\n")
@@ -489,7 +522,7 @@ def test_up_creates_volume_then_droplet_with_btrfs_provisioning(
         "mkfs.btrfs",
         "user_subvol_rm_allowed,noatime",
         "docker.io docker-buildx",
-        "/etc/apparmor.d/slipfork",
+        do_vm_mod.LOGIN_BANNER,
         do_vm_mod.RUSTUP_INIT_SHA256,
         do_vm_mod.MARKER,
         "_format_allowed=1",
@@ -588,7 +621,11 @@ def test_up_installs_authorized_keys_union_for_root_and_slipfork(
         assert extra.split()[1] in content
         assert "owner@example" in content
     script = (harness.state / "install-keys.sh").read_text(encoding="utf-8")
-    assert "for _user in root slipfork" in script
+    assert (
+        "set -- root /root/.ssh/authorized_keys slipfork "
+        "/home/slipfork/.ssh/authorized_keys" in script
+    )
+    assert 'while [ "$#" -gt 0 ]' in script
     assert "sort -u" in script
 
 
@@ -1057,6 +1094,9 @@ def test_provision_script_is_valid_bash() -> None:
         do_vm_mod.render_automount_teardown,
         do_vm_mod.render_volume_signature_step,
         do_vm_mod.render_install_authorized_keys,
+        do_vm_mod.render_product_install,
+        do_vm_mod.render_demo_seed,
+        do_vm_mod.render_login_banner,
     ):
         result = subprocess.run(
             ["bash", "-n"],
@@ -1404,26 +1444,18 @@ exit 1
     assert "systemctl is broken" in failed.stderr
 
 
-def test_apparmor_body_renders_the_ruling_exactly() -> None:
-    expected = (
-        "abi <abi/4.0>,\n"
-        "profile slipfork /{usr/local/bin/slipfork{,d,-world-init},"
-        "home/slipfork/slipfork/target/{debug,release}/slipfork{,d,-world-init},"
-        "usr/bin/unshare,.slipfork/bin/crun} flags=(unconfined) {\n"
-        "  userns,\n"
-        "}\n"
-    )
-    assert do_vm_mod.render_apparmor_body("/home/slipfork/slipfork") == expected
-    assert do_vm_mod.render_apparmor_body("/home/slipfork/slipfork/") == expected
-    assert len(expected.splitlines()) == 4
-    assert "//" not in expected
+def _product_install_bin_dirs(script: str | None = None) -> list[str]:
+    """The `--bin-dir` operands the install step hands to `slipfork daemon install`."""
+    text = do_vm_mod.render_product_install() if script is None else script
+    line = next(entry for entry in text.splitlines() if "daemon install" in entry)
+    return re.findall(r"--bin-dir (\S+)", line)
 
 
 def _built_slipfork() -> Path:
     """The built `slipfork` binary; build it when absent and fail closed if it cannot be built.
 
-    The AppArmor byte-equivalence contract must run on every `make check`; it never skips just
-    because `target/debug/slipfork` was not built by an earlier step.
+    The AppArmor attachment contract must run on every `make check`; it never skips just because
+    `target/debug/slipfork` was not built by an earlier step.
     """
     override = os.environ.get("SLIPFORK_BIN")
     if override:
@@ -1456,86 +1488,46 @@ def _built_slipfork() -> Path:
     return binary
 
 
-def _profile_attachment(header: str) -> tuple[str, str, str]:
-    """Split `profile slipfork <attachment> flags=(unconfined) {` into its three parts."""
-    prefix = "profile slipfork "
-    suffix = " flags=(unconfined) {"
-    assert header.startswith(prefix), header
-    assert header.endswith(suffix), header
-    return prefix, header[len(prefix) : -len(suffix)], suffix
+def test_product_apparmor_profile_is_rendered_by_the_product_command() -> None:
+    """One renderer owner: the VM's profile is `slipfork daemon unit --only apparmor` output.
 
-
-_USERNS_TAIL = ",usr/bin/unshare,.slipfork/bin/crun}"
-
-
-def _split_attachment(attachment: str) -> str:
-    """Return the `<bin_dir>` clause of one leading-slash brace attachment expression."""
-    assert attachment.startswith("/{"), attachment
-    assert attachment.endswith(_USERNS_TAIL), attachment
-    bin_clause = attachment[len("/{") : -len(_USERNS_TAIL)]
-    assert bin_clause, attachment
-    return bin_clause
-
-
-def test_cli_rendered_apparmor_profile_matches_the_harness_skeleton() -> None:
-    """One renderer owner: the harness copy must match `slipfork daemon unit --only apparmor`.
-
-    Both profiles attach every executable that performs `CLONE_NEWUSER` for a world under one
-    leading-slash brace expression. The harness expands only the `<bin_dir>` clause to cover
-    `/usr/local/bin` plus the Cargo `target/{debug,release}` binaries; the product names the one
-    `<bin_dir>`. The four-line body, the ABI header, the profile flags, and the
-    `,usr/bin/unshare,.slipfork/bin/crun}` tail are byte-identical, so neither copy can drift.
+    The harness keeps no profile body at all. It installs the four binaries, then names the same
+    `--bin-dir` operands it hands to `slipfork daemon install`; this test feeds those exact
+    operands to the rendering command and pins its four-line profile, so the attachment the VM
+    loads is the product's, byte for byte.
     """
+    harness_source = TOOL.read_text(encoding="utf-8")
+    assert "render_apparmor_body" not in harness_source
+    assert "profile slipfork" not in harness_source
+
     binary = _built_slipfork()
-    rendered = subprocess.run(
-        [str(binary), "daemon", "unit", "--only", "apparmor"],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    cli_lines = rendered.stdout.splitlines(keepends=True)
-    harness_lines = do_vm_mod.render_apparmor_body().splitlines(keepends=True)
+    bin_dirs = _product_install_bin_dirs()
+    assert bin_dirs == [
+        do_vm_mod.INSTALL_BIN_DIR,
+        *(
+            f"{do_vm_mod.REMOTE_TREE}/target/{profile}"
+            for profile in do_vm_mod.PROFILE_BIN_PROFILES
+        ),
+    ]
+    argv = [str(binary), "daemon", "unit", "--only", "apparmor"]
+    for directory in bin_dirs:
+        argv.extend(["--bin-dir", directory])
+    rendered = subprocess.run(argv, capture_output=True, text=True, check=True)
 
-    assert len(cli_lines) == 4, rendered.stdout
-    assert len(harness_lines) == 4
-    assert cli_lines[0] == harness_lines[0] == "abi <abi/4.0>,\n"
-    assert cli_lines[2] == harness_lines[2] == "  userns,\n"
-    assert cli_lines[3] == harness_lines[3] == "}\n"
-
-    cli_prefix, cli_attachment, cli_suffix = _profile_attachment(
-        cli_lines[1].rstrip("\n")
+    lines = rendered.stdout.splitlines(keepends=True)
+    assert len(lines) == 4, rendered.stdout
+    assert lines[0] == "abi <abi/4.0>,\n"
+    assert lines[2] == "  userns,\n"
+    assert lines[3] == "}\n"
+    clauses = "".join(
+        f"{directory.strip('/')}/slipfork{{,d,-world-init}}," for directory in bin_dirs
     )
-    harness_prefix, harness_attachment, harness_suffix = _profile_attachment(
-        harness_lines[1].rstrip("\n")
+    assert lines[1] == (
+        f"profile slipfork /{{{clauses}usr/bin/unshare,.slipfork/bin/crun}} "
+        "flags=(unconfined) {\n"
     )
-    assert (cli_prefix, cli_suffix) == (harness_prefix, harness_suffix)
-
-    rel_bin_dir = str(binary.parent).strip("/")
-    assert cli_attachment == (
-        f"/{{{rel_bin_dir}/slipfork{{,d,-world-init}},usr/bin/unshare,.slipfork/bin/crun}}"
-    )
-    rel_tree = do_vm_mod.REMOTE_TREE.strip("/")
-    assert harness_attachment == (
-        "/{usr/local/bin/slipfork{,d,-world-init},"
-        f"{rel_tree}/target/{{debug,release}}/slipfork{{,d,-world-init}},"
-        "usr/bin/unshare,.slipfork/bin/crun}"
-    )
-
-    cli_bin_clause = _split_attachment(cli_attachment)
-    harness_bin_clause = _split_attachment(harness_attachment)
-    assert cli_bin_clause == f"{rel_bin_dir}/slipfork{{,d,-world-init}}"
-    assert harness_bin_clause == (
-        "usr/local/bin/slipfork{,d,-world-init},"
-        f"{rel_tree}/target/{{debug,release}}/slipfork{{,d,-world-init}}"
-    )
-
-    # Byte-equality of the whole profile once only the `<bin_dir>` clause is normalised; the
-    # `,usr/bin/unshare,.slipfork/bin/crun}` tail is never rewritten, so it cannot drift.
-    assert cli_attachment.endswith(_USERNS_TAIL)
-    assert harness_attachment.endswith(_USERNS_TAIL)
-    cli_profile = "".join(cli_lines).replace(cli_bin_clause, "<bin_clause>")
-    harness_profile = "".join(harness_lines).replace(harness_bin_clause, "<bin_clause>")
-    assert cli_profile == harness_profile
+    assert "//" not in rendered.stdout
+    assert "{debug,release}" not in rendered.stdout
 
 
 def test_provision_script_installs_no_host_crun_and_keeps_git() -> None:
@@ -1543,7 +1535,9 @@ def test_provision_script_installs_no_host_crun_and_keeps_git() -> None:
     assert "crun" not in do_vm_mod.PACKAGES.split()
     install = next(line for line in script.splitlines() if "apt-get install" in line)
     assert "crun" not in install.split()
-    assert ".slipfork/bin/crun}" in script
+    assert ".slipfork/bin/crun}" not in script
+    assert "profile slipfork" not in script
+    assert "apparmor_parser -r" not in script
     assert "zfs" not in script.lower()
     assert "docker.io docker-buildx" in script
     assert "btrfs-progs" in script
@@ -1557,7 +1551,11 @@ def test_provision_script_installs_no_host_crun_and_keeps_git() -> None:
 
 def test_install_authorized_keys_targets_both_users() -> None:
     script = do_vm_mod.render_install_authorized_keys()
-    assert "for _user in root slipfork" in script
+    assert (
+        "set -- root /root/.ssh/authorized_keys slipfork "
+        "/home/slipfork/.ssh/authorized_keys" in script
+    )
+    assert 'while [ "$#" -gt 0 ]' in script
     assert "sort -u" in script
     assert script.count("authorized_keys") >= 3
 
@@ -1578,3 +1576,496 @@ def test_secrets_and_private_key_never_logged(harness: Harness) -> None:
     for haystack in haystacks:
         assert private_key.strip() not in haystack
         assert "SECRET_SENTINEL" not in haystack
+
+
+def _demo_config(tmp_path: Path, **overrides: str) -> object:
+    """A `ProvisionConfig` whose tree, demo, and fake home all live under `tmp_path`."""
+    tree = tmp_path / "tree"
+    template = tree / do_vm_mod.DEMO_TEMPLATE
+    template.mkdir(parents=True)
+    for name, body in {
+        "snow.yml": "images: []\n",
+        "Dockerfile": "FROM scratch AS app\n",
+        "README.md": "the tracked demo\n",
+        "slipfork.toml": 'project = "demo"\n',
+    }.items():
+        (template / name).write_text(body, encoding="utf-8")
+    home = tmp_path / "home"
+    home.mkdir(exist_ok=True)
+    values: dict[str, str] = {
+        "remote_tree": str(tree),
+        "remote_demo": str(tmp_path / "demo"),
+        "remote_home": str(home),
+        "remote_user": getpass.getuser(),
+    }
+    values.update(overrides)
+    return do_vm_mod.ProvisionConfig(**values)
+
+
+FAKE_RUNUSER = """#!/bin/sh
+# runuser -u <user> -- <command...>
+shift 2
+[ "$1" = "--" ] && shift
+exec "$@"
+"""
+
+FAKE_SLIPFORK = (
+    "#!"
+    + sys.executable
+    + """
+import os
+import sys
+from pathlib import Path
+
+with Path(os.environ["FAKE_COMMAND_LOG"]).open("a", encoding="utf-8") as log:
+    log.write("slipfork " + " ".join(sys.argv[1:]) + "\\n")
+sys.exit(int(os.environ.get("FAKE_SLIPFORK_EXIT", "0")))
+"""
+)
+
+FAKE_INSTALL = (
+    "#!"
+    + sys.executable
+    + """
+import os
+import shutil
+import sys
+from pathlib import Path
+
+args = sys.argv[1:]
+if "-d" in args:
+    os.execv("/usr/bin/install", ["install", *args])
+with Path(os.environ["FAKE_COMMAND_LOG"]).open("a", encoding="utf-8") as log:
+    log.write("install " + " ".join(args) + "\\n")
+shutil.copyfile(args[-2], args[-1])
+os.chmod(args[-1], 0o755)
+"""
+)
+
+FAKE_SYSTEMCTL = """#!/bin/sh
+echo "systemctl $*" >> "$FAKE_COMMAND_LOG"
+if [ "$1" = "show" ]; then
+  for _arg in "$@"; do
+    _unit="$_arg"
+  done
+  if [ -n "${FAKE_UNIT_STATE_DIR:-}" ] && [ -f "${FAKE_UNIT_STATE_DIR}/${_unit}.state" ]; then
+    cat "${FAKE_UNIT_STATE_DIR}/${_unit}.state"
+  else
+    echo "not-found"
+  fi
+  exit 0
+fi
+echo "${FAKE_SYSTEMCTL_STATE:-active}"
+if [ -n "${FAKE_SYSTEMCTL_STDERR:-}" ]; then
+  printf '%s\\n' "$FAKE_SYSTEMCTL_STDERR" >&2
+fi
+case "${FAKE_SYSTEMCTL_STATE:-active}" in
+  active) exit 0 ;;
+  *) exit 3 ;;
+esac
+"""
+
+FAKE_AA_STATUS = """#!/bin/sh
+echo "aa-status" >> "$FAKE_COMMAND_LOG"
+if [ -n "${FAKE_AA_STATUS_FAIL:-}" ]; then
+  echo "apparmor is not loaded" >&2
+  exit 1
+fi
+printf 'profiles are in enforce mode.\\n   slipfork\\n'
+"""
+
+FAKE_ID = """#!/bin/sh
+echo "id $*" >> "$FAKE_COMMAND_LOG"
+echo 1000
+"""
+
+
+def _fake_bin(tmp_path: Path) -> Path:
+    """The one fake privileged-verb `PATH` prefix every rendered snippet runs against."""
+    bin_dir = tmp_path / "fakebin"
+    bin_dir.mkdir(exist_ok=True)
+    for name, body in {
+        "install": FAKE_INSTALL,
+        "slipfork": FAKE_SLIPFORK,
+        "systemctl": FAKE_SYSTEMCTL,
+        "aa-status": FAKE_AA_STATUS,
+        "id": FAKE_ID,
+        "runuser": FAKE_RUNUSER,
+    }.items():
+        _write_executable(bin_dir / name, body)
+    return bin_dir
+
+
+def _product_binaries_tree(config: object) -> Path:
+    """Create the four built binaries under the configured `target/<profile>`."""
+    sources = Path(config.remote_tree) / "target" / do_vm_mod.BUILD_PROFILE
+    sources.mkdir(parents=True)
+    for binary in do_vm_mod.PRODUCT_BINARIES:
+        _write_executable(sources / binary, "#!/bin/sh\nexit 0\n")
+    return sources
+
+
+def _run_step(
+    script: str, bin_dir: Path, tmp_path: Path, **env: str
+) -> subprocess.CompletedProcess[str]:
+    return run_bash(
+        script,
+        bin_dir,
+        FAKE_COMMAND_LOG=str(tmp_path / "commands.log"),
+        PATH=f"{bin_dir}:{os.environ['PATH']}",
+        **env,
+    )
+
+
+def test_product_install_hands_port_80_to_daemon_install() -> None:
+    script = do_vm_mod.render_product_install()
+    for binary in do_vm_mod.PRODUCT_BINARIES:
+        assert f'target/{do_vm_mod.BUILD_PROFILE}/"$_binary"' in script
+    assert f"for _binary in {' '.join(do_vm_mod.PRODUCT_BINARIES)}; do" in script
+    assert 'if ! cmp -s "$_source"' in script
+    assert (
+        "/usr/local/bin/slipfork daemon install --user slipfork --bin-dir /usr/local/bin "
+        f"--bin-dir {do_vm_mod.REMOTE_TREE}/target/debug "
+        f"--bin-dir {do_vm_mod.REMOTE_TREE}/target/release"
+    ) in script
+    assert "systemctl is-active slipforkd.socket" in script
+    assert '!= "active"' in script
+    assert "aa-status" in script
+    assert "runuser -u slipfork -- unshare --user" in script
+    assert "|| true" not in script
+
+
+def test_product_build_is_derived_from_cargo_metadata() -> None:
+    metadata = json.dumps(
+        {
+            "packages": [
+                {
+                    "name": "slipfork",
+                    "targets": [
+                        {"name": "slipfork", "kind": ["bin"]},
+                        {"name": "slipforkd", "kind": ["bin"]},
+                        {"name": "git-remote-slipfork", "kind": ["bin"]},
+                        {"name": "slipfork", "kind": ["test"]},
+                    ],
+                },
+                {
+                    "name": "slipfork-engine",
+                    "targets": [{"name": "slipfork-world-init", "kind": ["bin"]}],
+                },
+                {
+                    "name": "slipfork-edge",
+                    "targets": [{"name": "not-a-product-bin", "kind": ["bin"]}],
+                },
+            ]
+        }
+    )
+    binaries = do_vm_mod.parse_product_binaries(metadata)
+    assert binaries == [
+        "git-remote-slipfork",
+        "slipfork",
+        "slipfork-world-init",
+        "slipforkd",
+    ]
+    assert set(binaries) == set(do_vm_mod.PRODUCT_BINARIES)
+    assert do_vm_mod.product_build_command(binaries, "debug") == (
+        "cargo build -p slipfork -p slipfork-engine "
+        "--bin git-remote-slipfork --bin slipfork --bin slipfork-world-init --bin slipforkd"
+    )
+    assert do_vm_mod.product_build_command(binaries, "release").startswith(
+        "cargo build --release -p slipfork -p slipfork-engine "
+    )
+    for broken, message in (
+        ("", "did not emit JSON"),
+        ("{}", "no `packages` list"),
+        (
+            json.dumps({"packages": [{"name": "slipfork", "targets": []}]}),
+            "no binary targets",
+        ),
+    ):
+        with pytest.raises(do_vm_mod.HarnessError, match=message):
+            do_vm_mod.parse_product_binaries(broken)
+    with pytest.raises(
+        do_vm_mod.HarnessError, match="unsupported product build profile"
+    ):
+        do_vm_mod.product_build_command(binaries, "bench")
+
+
+def test_sync_fails_closed_when_cargo_metadata_disagrees(harness: Harness) -> None:
+    harness.write_state("droplet.json", _droplet_state())
+    harness.materialize_identity()
+    (harness.root / "README.md").write_text("hello\n", encoding="utf-8")
+    drifted = json.dumps(
+        {
+            "packages": [
+                {
+                    "name": "slipfork",
+                    "targets": [
+                        {"name": "slipfork", "kind": ["bin"]},
+                        {"name": "slipforkd", "kind": ["bin"]},
+                    ],
+                }
+            ]
+        }
+    )
+    result = harness.run("sync", env={"FAKE_METADATA_JSON": drifted})
+    assert result.code == 2
+    assert "cargo metadata disagrees with the shipped binary set" in result.stderr
+    assert "git-remote-slipfork" in result.stderr
+    assert not (harness.state / "builds.log").exists()
+
+
+def test_product_install_copies_verifies_and_reruns_without_writes(
+    tmp_path: Path,
+) -> None:
+    installed = tmp_path / "usr-local-bin"
+    installed.mkdir()
+    config = _demo_config(tmp_path, install_bin_dir=str(installed))
+    sources = _product_binaries_tree(config)
+    _write_executable(sources / "slipfork", FAKE_SLIPFORK)
+    bin_dir = _fake_bin(tmp_path)
+
+    first = _run_step(do_vm_mod.render_product_install(config), bin_dir, tmp_path)
+    assert first.returncode == 0, first.stderr
+    commands = _lines(tmp_path / "commands.log")
+    installs = [entry for entry in commands if entry.startswith("install ")]
+    assert len(installs) == len(do_vm_mod.PRODUCT_BINARIES)
+    for entry in installs:
+        assert "-m 0755" in entry
+    daemon = [
+        entry for entry in commands if entry.startswith("slipfork daemon install")
+    ]
+    assert len(daemon) == 1
+    for binary in do_vm_mod.PRODUCT_BINARIES:
+        assert (installed / binary).is_file()
+
+    (tmp_path / "commands.log").write_text("", encoding="utf-8")
+    second = _run_step(do_vm_mod.render_product_install(config), bin_dir, tmp_path)
+    assert second.returncode == 0, second.stderr
+    commands = _lines(tmp_path / "commands.log")
+    assert [entry for entry in commands if entry.startswith("install ")] == []
+    assert any(entry.startswith("slipfork daemon install") for entry in commands)
+
+
+def test_product_install_fails_closed_without_the_binaries(tmp_path: Path) -> None:
+    config = _demo_config(tmp_path)
+    bin_dir = _fake_bin(tmp_path)
+    result = _run_step(do_vm_mod.render_product_install(config), bin_dir, tmp_path)
+    assert result.returncode == 1
+    assert "tools/do_vm.py test" in result.stderr
+    assert "target/debug/slipfork" in result.stderr
+    assert not (tmp_path / "commands.log").exists()
+
+
+def test_product_install_fails_closed_when_the_socket_is_not_active(
+    tmp_path: Path,
+) -> None:
+    installed = tmp_path / "usr-local-bin"
+    installed.mkdir()
+    config = _demo_config(tmp_path, install_bin_dir=str(installed))
+    _product_binaries_tree(config)
+    bin_dir = _fake_bin(tmp_path)
+    result = _run_step(
+        do_vm_mod.render_product_install(config),
+        bin_dir,
+        tmp_path,
+        FAKE_SYSTEMCTL_STATE="inactive",
+    )
+    assert result.returncode == 1
+    assert "not active" in result.stderr
+    assert "inactive" in result.stderr
+
+
+def test_product_install_fails_closed_when_the_profile_is_not_loaded(
+    tmp_path: Path,
+) -> None:
+    installed = tmp_path / "usr-local-bin"
+    installed.mkdir()
+    config = _demo_config(tmp_path, install_bin_dir=str(installed))
+    _product_binaries_tree(config)
+    bin_dir = _fake_bin(tmp_path)
+    result = _run_step(
+        do_vm_mod.render_product_install(config),
+        bin_dir,
+        tmp_path,
+        FAKE_AA_STATUS_FAIL="1",
+    )
+    assert result.returncode == 1
+    assert "aa-status failed" in result.stderr
+
+
+def _git_demo(demo: Path, *args: str) -> str:
+    return subprocess.run(
+        ["git", "-C", str(demo), *args],
+        capture_output=True,
+        text=True,
+        check=True,
+        env={**os.environ, "GIT_CONFIG_GLOBAL": "/dev/null"},
+    ).stdout
+
+
+def test_demo_seed_copies_once_and_keeps_owner_edits(tmp_path: Path) -> None:
+    config = _demo_config(tmp_path)
+    demo = Path(config.remote_demo)
+    bin_dir = _fake_bin(tmp_path)
+
+    seeded = _run_step(do_vm_mod.render_demo_seed(config), bin_dir, tmp_path)
+    assert seeded.returncode == 0, seeded.stderr
+    assert "seeded" in seeded.stdout
+    assert (demo / "snow.yml").is_file()
+    assert (demo / "slipfork.toml").read_text(encoding="utf-8") == 'project = "demo"\n'
+    stamp = demo / ".git" / do_vm_mod.DEMO_STAMP
+    assert stamp.is_file()
+    assert _git_demo(demo, "log", "--oneline").count("\n") == 1
+    assert _git_demo(demo, "config", "user.name").strip() == do_vm_mod.DEMO_GIT_NAME
+    assert _git_demo(demo, "config", "user.email").strip() == do_vm_mod.DEMO_GIT_EMAIL
+    assert _git_demo(demo, "status", "--porcelain") == ""
+
+    (demo / "README.md").write_text("owner edit\n", encoding="utf-8")
+    again = _run_step(do_vm_mod.render_demo_seed(config), bin_dir, tmp_path)
+    assert again.returncode == 0, again.stderr
+    assert "unchanged" in again.stdout
+    assert (demo / "README.md").read_text(encoding="utf-8") == "owner edit\n"
+
+
+def test_demo_seed_fails_closed_on_an_unstamped_directory(tmp_path: Path) -> None:
+    config = _demo_config(tmp_path)
+    demo = Path(config.remote_demo)
+    demo.mkdir()
+    (demo / "README.md").write_text("someone's work\n", encoding="utf-8")
+    bin_dir = _fake_bin(tmp_path)
+    result = _run_step(do_vm_mod.render_demo_seed(config), bin_dir, tmp_path)
+    assert result.returncode == 1
+    assert "move it aside" in result.stderr
+    assert do_vm_mod.DEMO_STAMP in result.stderr
+    assert (demo / "README.md").read_text(encoding="utf-8") == "someone's work\n"
+
+
+def test_login_banner_states_the_account_and_the_shipped_verbs() -> None:
+    banner = do_vm_mod.render_login_banner()
+    for needle in (
+        "account: slipfork",
+        "cd ~/demo",
+        "  slipfork\n",
+        "  slipfork up\n",
+        "  slipfork list\n",
+    ):
+        assert needle in banner, banner
+    # Guarded, not advertised before it exists: the demo directory and the installed CLI.
+    assert f"[ -d {do_vm_mod.REMOTE_DEMO} ]" in banner
+    assert "command -v slipfork" in banner
+    script = do_vm_mod.render_provision_script()
+    profile_d = set(re.findall(r"/etc/profile\.d/[\w.-]+", script))
+    assert profile_d == {do_vm_mod.LOGIN_BANNER}
+    assert script.count("<<'SLIPFORK_BANNER'") == 1
+    assert f"cmp -s {do_vm_mod.LOGIN_BANNER} " in script
+
+
+def test_banner_and_demo_readme_only_advertise_installed_verbs() -> None:
+    """Zero vaporware on the VM: every `slipfork <verb>` we print is in `slipfork --help`."""
+    import check_docs_honesty
+
+    binary = _built_slipfork()
+    help_text = subprocess.run(
+        [str(binary), "--help"], capture_output=True, text=True, check=True
+    ).stdout
+    valid = check_docs_honesty.extract_help_subcommands(help_text)
+    sources = {
+        "render_login_banner()": do_vm_mod.render_login_banner(),
+        "support/demo/README.md": (
+            REPO_ROOT / "support" / "demo" / "README.md"
+        ).read_text(encoding="utf-8"),
+    }
+    for name, text in sources.items():
+        for match in re.finditer(r"slipfork[ \t]+([a-z][a-z0-9-]*)", text):
+            verb = match.group(1)
+            assert verb in valid, (
+                f"{name} advertises `slipfork {verb}`, which `slipfork --help` does not list "
+                f"(shipped: {', '.join(sorted(valid))})"
+            )
+
+
+def test_provisioning_links_the_cache_tree_at_the_volume() -> None:
+    script = do_vm_mod.render_provision_script()
+    assert f"ln -s {do_vm_mod.CACHE_TARGET} {do_vm_mod.CACHE_SYMLINK}" in script
+    assert f"readlink {do_vm_mod.CACHE_SYMLINK}" in script
+    assert f"stat -f -c %t {do_vm_mod.CACHE_SYMLINK}" in script
+    assert "is a real directory" in script
+
+
+def test_no_getent_or_password_step_anywhere() -> None:
+    for renderer in (
+        do_vm_mod.render_provision_script,
+        do_vm_mod.render_install_authorized_keys,
+        do_vm_mod.render_product_install,
+        do_vm_mod.render_demo_seed,
+        do_vm_mod.render_login_banner,
+    ):
+        text = renderer()
+        assert "getent" not in text, renderer.__name__
+        assert "passwd" not in text.lower(), renderer.__name__
+
+
+def test_sync_seeds_the_demo_builds_and_installs_the_product(harness: Harness) -> None:
+    harness.write_state("droplet.json", _droplet_state())
+    harness.materialize_identity()
+    (harness.root / "README.md").write_text("hello\n", encoding="utf-8")
+    result = harness.run("sync")
+    assert result.code == 0, result.stderr
+    calls = harness.ssh_calls()
+    replace = next(
+        index
+        for index, call in enumerate(calls)
+        if "chown -R slipfork:slipfork" in call
+    )
+    demo = calls.index(_only(calls, "bash -s demo-seed"))
+    build = calls.index(
+        _only(
+            calls,
+            "cargo build -p slipfork -p slipfork-engine --bin git-remote-slipfork --bin slipfork --bin slipfork-world-init --bin slipforkd",
+        )
+    )
+    install = calls.index(_only(calls, "bash -s product-install"))
+    assert replace < demo < build < install
+    assert "synced 1 file(s) to /home/slipfork/slipfork" in result.stdout
+    demo_script = (harness.state / "demo-seed.sh").read_text(encoding="utf-8")
+    assert do_vm_mod.DEMO_STAMP in demo_script
+    assert f"{do_vm_mod.REMOTE_TREE}/{do_vm_mod.DEMO_TEMPLATE}" in demo_script
+    install_script = (harness.state / "product-install.sh").read_text(encoding="utf-8")
+    assert "daemon install --user slipfork" in install_script
+
+
+def test_sync_fails_closed_when_the_product_install_refuses(harness: Harness) -> None:
+    harness.write_state("droplet.json", _droplet_state())
+    harness.materialize_identity()
+    (harness.root / "README.md").write_text("hello\n", encoding="utf-8")
+    result = harness.run(
+        "sync",
+        env={
+            "FAKE_PRODUCT_INSTALL_EXIT": "3",
+            "FAKE_PRODUCT_INSTALL_STDERR": "slipfork: reported inactive, not active",
+        },
+    )
+    assert result.code == 2
+    assert "product install on 203.0.113.10 failed (3)" in result.stderr
+    assert "not active" in result.stderr
+    assert "synced" not in result.stdout
+
+
+def test_test_builds_and_installs_before_the_suites(harness: Harness) -> None:
+    harness.suite_files()
+    harness.write_state("droplet.json", _droplet_state())
+    harness.materialize_identity()
+    result = harness.run("test")
+    assert result.code == 0, result.stderr
+    calls = harness.ssh_calls()
+    build = calls.index(
+        _only(
+            calls,
+            "cargo build -p slipfork -p slipfork-engine --bin git-remote-slipfork --bin slipfork --bin slipfork-world-init --bin slipforkd",
+        )
+    )
+    install = calls.index(_only(calls, "bash -s product-install"))
+    assert build < install
+    assert "runuser -u slipfork" in calls[build]
+    assert "HOME=/var/lib/slipfork/home" in calls[build]
+    assert len(_lines(harness.state / "suites.log")) == len(do_vm_mod.SUITES)

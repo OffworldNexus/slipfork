@@ -1273,3 +1273,5 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-18T01:26 [M3.28.21] (lead) committed together with M3.28.7 for the same reason (interleaved hunks in main.rs/critical_cli.rs).
 - 2026-11-18T01:26 [M3.28.21] (lead) status review -> done
 - 2026-11-18T01:26 [M3.28.7] (lead) status review -> done
+- 2026-11-18T01:27 [M3.28.12] (lead) final verification by lead: no render_daemon_handover/ss in tools (harness-has-no-lifecycle), zero 'slipfork open|restart' mentions in support/demo/README.md an
+- 2026-11-18T01:27 [M3.28.12] (lead) status active -> done

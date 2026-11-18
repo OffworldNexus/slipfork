@@ -3,13 +3,17 @@
 # requires-python = ">=3.12"
 # dependencies = []
 # ///
-"""DigitalOcean dev-VM harness: Btrfs volume, docker/Rust, AppArmor `userns` (`M3.16`).
+"""DigitalOcean dev-VM harness: Btrfs volume, docker/Rust, `:80` socket activation (`M3.16`).
 
 Boots one disposable Ubuntu 24.04 droplet, attaches a 100 GiB block-storage volume formatted
 **Btrfs** at `/var/lib/slipfork` (`user_subvol_rm_allowed,noatime`), provisions `btrfs-progs`,
-`docker.io`/`docker-buildx`, a Rust toolchain, and the `/etc/apparmor.d/slipfork` `userns`
-profile, syncs the working tree, and streams the real-kernel Btrfs suites. No host `crun` is
-installed: the pinned static binary ships inside the `L0` world rootfs.
+`docker.io`/`docker-buildx`, and a Rust toolchain, links the account's `~/.cache` onto that
+volume, syncs the working tree, builds the product binaries (named by `cargo metadata`) and
+installs them into `/usr/local/bin`, and runs `slipfork daemon install` so `slipforkd.socket`
+owns `:80` (the `userns` AppArmor profile and the control-socket handover are rendered by that
+product command only; this harness never writes either). `sync` also stamps the tracked
+`support/demo` template at `/home/slipfork/demo` once.
+No host `crun` is installed: the pinned static binary ships inside the `L0` world rootfs.
 
 `up` is idempotent by the tag `slipfork-dev-vm` and never reformats a device that carries a
 filesystem. A volume this invocation creates is formatted Btrfs; a pre-existing blank volume is
@@ -28,6 +32,15 @@ keeps it unless `--delete-volume` is given.
   tools/do_vm.py test    [--identity PATH ...]
   tools/do_vm.py ssh     [--identity PATH ...] [-- <remote command> ...]
   tools/do_vm.py down    [--yes] [--delete-volume]
+
+`sync` is also the install step: it seeds `support/demo` at `/home/slipfork/demo` once, builds the
+product binaries (their names come from `cargo metadata`, in the `debug` profile), installs them
+into `/usr/local/bin`, and runs `slipfork daemon install --user slipfork --bin-dir
+/usr/local/bin --bin-dir <tree>/target/{debug,release}` — the single writer of the units and the
+single owner of the socket handover — before asserting `systemctl is-active slipforkd.socket`.
+Both `sync` and `test` therefore stop the installed units and hand the control socket over from
+any running `slipforkd`, so every running world's processes stop until the next `slipfork up`. A
+missing binary fails closed naming `tools/do_vm.py test`.
 
 Design notes: `docs/design/do-vm-harness.md`. This is a test harness, never a supported
 deployment path.
@@ -73,14 +86,41 @@ REMOTE_USER = "slipfork"
 REMOTE_HOME = "/home/slipfork"
 REMOTE_TREE = f"{REMOTE_HOME}/slipfork"
 REMOTE_STAGING = f"{REMOTE_HOME}/.sync"
+REMOTE_DEMO = f"{REMOTE_HOME}/demo"
 STATE_DIR = "/var/lib/slipfork"
+# The unprivileged account's cache tree (`~/.cache`, which holds the default `slipfork` state
+# root) is a symlink onto the Btrfs volume, so an ordinary login-shell `slipfork` and the
+# installed unit name one state root with no VM-only `--state-dir` on either side.
+CACHE_SYMLINK = f"{REMOTE_HOME}/.cache"
+CACHE_TARGET = f"{STATE_DIR}/home/.cache"
+# The account's single state root, reached through `CACHE_SYMLINK`; the installed unit renders
+# exactly this path as `--state-dir`/`--runtime-dir`.
+INSTALL_BIN_DIR = "/usr/local/bin"
+# The workspace packages whose binary targets are the shipped product.
+PRODUCT_BUILD_PACKAGES = ("slipfork", "slipfork-engine")
+# The exact binary targets those packages must provide (asserted against `cargo metadata`).
+PRODUCT_BINARIES = (
+    "slipfork",
+    "slipforkd",
+    "slipfork-world-init",
+    "git-remote-slipfork",
+)
+BUILD_PROFILE = "debug"
+# `cargo metadata --format-version 1 --no-deps` is the one source of the binary target list.
+PRODUCT_METADATA = "cargo metadata --format-version 1 --no-deps"
+# The AppArmor profile also names these directories, so release builds (benchmarks) are attached.
+PROFILE_BIN_PROFILES = ("debug", "release")
+DEMO_TEMPLATE = "support/demo"
+DEMO_STAMP = "slipfork-demo-stamp"
+DEMO_GIT_NAME = "Slipfork Demo"
+DEMO_GIT_EMAIL = "demo@slipfork.invalid"
+LOGIN_BANNER = "/etc/profile.d/slipfork-demo.sh"
 SUITE_HOME = f"{STATE_DIR}/home"
 OWNER_HOME = f"{STATE_DIR}/root-home"
 MOUNT_OPTIONS = "user_subvol_rm_allowed,noatime,nofail"
 BTRFS_MAGIC = "9123683e"
 MARKER = f"{STATE_DIR}/.slipfork-ready"
 VOLUME_GLOB = "/dev/disk/by-id/scsi-0DO_Volume_*"
-APPARMOR_PROFILE = "/etc/apparmor.d/slipfork"
 FSTAB = "/etc/fstab"
 UDEV_AUTOMOUNT_RULE = "/etc/udev/rules.d/99-digitalocean-automount.rules"
 UNIT_DIRS = ("/etc/systemd/system", "/run/systemd/system")
@@ -147,6 +187,20 @@ def authorized_keys_paths(remote_home: str = REMOTE_HOME) -> tuple[str, ...]:
     return ("/root/.ssh/authorized_keys", f"{remote_home}/.ssh/authorized_keys")
 
 
+def _authorized_key_entries(
+    remote_home: str = REMOTE_HOME,
+) -> tuple[tuple[str, str], ...]:
+    """Pair each `authorized_keys` path with its owning account (no account lookup needed)."""
+    return tuple(
+        zip(AUTHORIZED_KEY_USERS, authorized_keys_paths(remote_home), strict=True)
+    )
+
+
+def _q(text: str) -> str:
+    """Quote one config path/word for a remote shell (`shlex.quote` is a no-op when it is safe)."""
+    return shlex.quote(text)
+
+
 class HarnessError(RuntimeError):
     """A fail-closed harness precondition, API call, or remote step failed."""
 
@@ -202,7 +256,6 @@ class ProvisionConfig:
     volume_glob: str = VOLUME_GLOB
     mountpoint: str = STATE_DIR
     fstab: str = FSTAB
-    profile_path: str = APPARMOR_PROFILE
     udev_rule: str = UDEV_AUTOMOUNT_RULE
     unit_dirs: tuple[str, ...] = UNIT_DIRS
     marker: str = MARKER
@@ -210,7 +263,19 @@ class ProvisionConfig:
     owner_home: str = OWNER_HOME
     remote_home: str = REMOTE_HOME
     remote_tree: str = REMOTE_TREE
+    remote_demo: str = REMOTE_DEMO
     remote_user: str = REMOTE_USER
+    cache_symlink: str = CACHE_SYMLINK
+    cache_target: str = CACHE_TARGET
+    login_banner: str = LOGIN_BANNER
+    install_bin_dir: str = INSTALL_BIN_DIR
+    binaries: tuple[str, ...] = PRODUCT_BINARIES
+    build_profile: str = BUILD_PROFILE
+    bin_profiles: tuple[str, ...] = PROFILE_BIN_PROFILES
+    demo_template: str = DEMO_TEMPLATE
+    demo_stamp: str = DEMO_STAMP
+    demo_git_name: str = DEMO_GIT_NAME
+    demo_git_email: str = DEMO_GIT_EMAIL
     mount_options: str = MOUNT_OPTIONS
     btrfs_magic: str = BTRFS_MAGIC
     packages: str = PACKAGES
@@ -222,25 +287,6 @@ class ProvisionConfig:
     device_wait_attempts: int = 30
     device_wait_seconds: int = 2
     allow_format: bool = False
-
-
-def render_apparmor_body(remote_tree: str = REMOTE_TREE) -> str:
-    """The four-line `userns` profile body from `ADR-0010` §7 (harness attachment list).
-
-    AppArmor's profile header takes one attachment expression, so every executable that performs
-    `CLONE_NEWUSER` for a world is matched by a single leading-slash alternation (`/{a,b}`): the
-    installed `/usr/local/bin` binaries, the Cargo `target/{debug,release}` binaries built by
-    `do_vm.py test`, host `/usr/bin/unshare`, and in-world `/.slipfork/bin/crun`.
-    """
-    rel_tree = remote_tree.strip("/")
-    return (
-        "abi <abi/4.0>,\n"
-        "profile slipfork /{usr/local/bin/slipfork{,d,-world-init},"
-        f"{rel_tree}/target/{{debug,release}}/slipfork{{,d,-world-init}},"
-        "usr/bin/unshare,.slipfork/bin/crun} flags=(unconfined) {\n"
-        "  userns,\n"
-        "}\n"
-    )
 
 
 PROVISION = ProvisionConfig()
@@ -415,32 +461,190 @@ fi
 
 
 def render_install_authorized_keys(config: ProvisionConfig = PROVISION) -> str:
-    """Install the key blob on stdin for root and the suite user (one canonical enumeration)."""
-    users = " ".join(AUTHORIZED_KEY_USERS)
+    """Install the key blob on stdin for root and the suite user (one canonical enumeration).
+
+    Each `user path` pair carries both facts the step needs, so no account-database lookup
+    (`getent passwd`/`id`) runs to rediscover a home directory this harness already names. The
+    pair is passed as two positional words, so a path that needs quoting survives the shell.
+    """
+    pairs = " ".join(
+        f"{_q(user)} {_q(path)}"
+        for user, path in _authorized_key_entries(config.remote_home)
+    )
     return f"""\
 set -euo pipefail
 _key_blob=$(mktemp)
 cat > "$_key_blob"
-for _user in {users}; do
-  _home=$(getent passwd "$_user" | cut -d: -f6)
-  if [ -z "$_home" ]; then
-    echo "slipfork: no home directory for $_user" >&2
-    exit 1
-  fi
+set -- {pairs}
+while [ "$#" -gt 0 ]; do
+  _user=$1
+  _path=$2
+  shift 2
+  _home=${{_path%/.ssh/authorized_keys}}
   install -d -m 700 -o "$_user" -g "$_user" "$_home/.ssh"
-  touch "$_home/.ssh/authorized_keys"
-  chmod 600 "$_home/.ssh/authorized_keys"
-  chown "$_user:$_user" "$_home/.ssh/authorized_keys"
-  cat "$_key_blob" >> "$_home/.ssh/authorized_keys"
-  sort -u -o "$_home/.ssh/authorized_keys" "$_home/.ssh/authorized_keys"
+  touch "$_path"
+  chmod 600 "$_path"
+  chown "$_user:$_user" "$_path"
+  cat "$_key_blob" >> "$_path"
+  sort -u -o "$_path" "$_path"
 done
 rm -f "$_key_blob"
 """
 
 
+def render_login_banner(config: ProvisionConfig = PROVISION) -> str:
+    """The one login banner provisioning writes: the account plus the demo's shipped verbs.
+
+    The banner is a guard, not an advert: it prints only when the seeded demo directory exists
+    and a `slipfork` is on `PATH`, so a host brought up by provisioning alone (before `sync`
+    seeds the demo and installs the CLI) never claims something that is not there.
+    """
+    return f"""\
+# Slipfork dev-VM quickstart banner, written by `tools/do_vm.py` provisioning (harness-owned).
+if [ -n "${{BASH_VERSION:-}}" ] && [ -t 1 ]; then
+  _slipfork_account=$(id -un)
+  if {{ [ "$_slipfork_account" = "{config.remote_user}" ] ||
+       [ "$_slipfork_account" = "root" ]; }} &&
+     [ -d {_q(config.remote_demo)} ] && command -v slipfork >/dev/null 2>&1; then
+    cat <<'SLIPFORK'
+
+Slipfork demo — account: {config.remote_user} (from root: sudo -iu {config.remote_user})
+  cd ~/demo
+  slipfork
+  slipfork up
+  slipfork list
+SLIPFORK
+  fi
+  unset _slipfork_account
+fi
+"""
+
+
+def render_product_install(config: ProvisionConfig = PROVISION) -> str:
+    """Install the four binaries, release a daemon from an older build, then hand `:80` over.
+
+    `slipfork daemon install` is the only writer of `slipforkd.{socket,service}` and of
+    `/etc/apparmor.d/slipfork`; this script never renders a unit or a profile body, it installs
+    the executables the AppArmor attachment names, and then asserts the product's own verbs
+    took effect. `slipfork daemon install` owns the socket handover (any holder, including a
+    daemon from an older build), so this step adds no daemon lifecycle of its own. Every branch
+    fails closed: a missing binary, a non-`active` socket unit, an unloaded profile, or a
+    denied unprivileged `CLONE_NEWUSER` exits non-zero.
+    """
+    sources = f'  _source={_q(f"{config.remote_tree}/target/{config.build_profile}")}/"$_binary"'
+    installs = "\n".join(
+        [
+            '  if [ ! -x "$_source" ]; then',
+            "    echo \"slipfork: $_source is missing or not executable; run 'tools/do_vm.py test' to build the product binaries\" >&2",
+            "    exit 1",
+            "  fi",
+            f'  if ! cmp -s "$_source" {_q(config.install_bin_dir)}/"$_binary"; then',
+            f'    install -o root -g root -m 0755 "$_source" {_q(config.install_bin_dir)}/"$_binary"',
+            "  fi",
+        ]
+    )
+    bin_dirs = " ".join(
+        f"--bin-dir {_q(directory)}"
+        for directory in (
+            config.install_bin_dir,
+            *(
+                f"{config.remote_tree}/target/{profile}"
+                for profile in config.bin_profiles
+            ),
+        )
+    )
+    daemon_install = (
+        f"{_q(config.install_bin_dir)}/slipfork daemon install "
+        f"--user {_q(config.remote_user)} {bin_dirs}"
+    )
+    return f"""\
+set -euo pipefail
+for _binary in {" ".join(config.binaries)}; do
+{sources}
+{installs}
+done
+{daemon_install}
+if _socket_state=$(systemctl is-active slipforkd.socket); then
+  _socket_rc=0
+else
+  _socket_rc=$?
+fi
+if [ "$_socket_rc" -ne 0 ] || [ "$_socket_state" != "active" ]; then
+  echo "slipfork: systemctl is-active slipforkd.socket reported '${{_socket_state:-no output}}' (rc $_socket_rc), not active" >&2
+  exit 1
+fi
+if _aa_status=$(aa-status); then
+  _aa_rc=0
+else
+  _aa_rc=$?
+fi
+if [ "$_aa_rc" -ne 0 ]; then
+  echo "slipfork: aa-status failed (rc $_aa_rc): $_aa_status" >&2
+  exit 1
+fi
+case "$_aa_status" in
+  *slipfork*) ;;
+  *)
+    echo "slipfork: the slipfork userns profile is not loaded (aa-status has no slipfork profile):" >&2
+    printf '%s\\n' "$_aa_status" >&2
+    exit 1
+    ;;
+esac
+if ! runuser -u {_q(config.remote_user)} -- unshare --user \\
+  --map-user="$(id -u {_q(config.remote_user)})" \\
+  --map-group="$(id -g {_q(config.remote_user)})" -- true; then
+  echo "slipfork: unprivileged userns creation is still denied for {config.remote_user}" >&2
+  exit 1
+fi
+"""
+
+
+def render_demo_seed(config: ProvisionConfig = PROVISION) -> str:
+    """Seed the tracked demo template once, as one Git commit, and never clobber later edits.
+
+    A seeded demo carries the stamp file inside its own `.git`, so every later `sync` reports it
+    unchanged and touches nothing. A directory that exists without the stamp is somebody's work:
+    it fails closed and names the path instead of copying over it.
+    """
+    git = (
+        f"runuser -u {_q(config.remote_user)} -- env HOME={_q(config.remote_home)} "
+        "GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 "
+        f'git -C "$_demo"'
+    )
+    template = _q(f"{config.remote_tree}/{config.demo_template}")
+    return f"""\
+set -euo pipefail
+_demo={_q(config.remote_demo)}
+_stamp="$_demo/.git/{config.demo_stamp}"
+if [ -f "$_stamp" ]; then
+  echo "demo     unchanged $_demo (seeded once; owner edits are kept)"
+  exit 0
+fi
+if [ -e "$_demo" ]; then
+  echo "slipfork: $_demo exists but carries no $_stamp; move it aside and re-run 'tools/do_vm.py sync'" >&2
+  exit 1
+fi
+if [ ! -d {template} ]; then
+  echo "slipfork: {template} is missing; run 'tools/do_vm.py sync' from the repository root" >&2
+  exit 1
+fi
+install -d -o {_q(config.remote_user)} -g {_q(config.remote_user)} -m 755 "$_demo"
+cp -a {template}/. "$_demo"/
+chown -R {_q(config.remote_user)}:{_q(config.remote_user)} "$_demo"
+{git} init --quiet --initial-branch=main
+{git} config user.name {_q(config.demo_git_name)}
+{git} config user.email {_q(config.demo_git_email)}
+{git} add --all
+{git} commit --quiet --message 'Slipfork 0.1.0 demo (seeded by tools/do_vm.py sync)'
+printf 'seeded by tools/do_vm.py sync\\n' > "$_stamp"
+chown {_q(config.remote_user)}:{_q(config.remote_user)} "$_stamp"
+echo "demo     seeded $_demo (one commit; owner edits are kept from now on)"
+"""
+
+
 def render_provision_script(config: ProvisionConfig = PROVISION) -> str:
     """One idempotent provisioning script, embedded verbatim in cloud-init and re-run over SSH."""
-    apparmor_body = render_apparmor_body(config.remote_tree)
+    banner_body = render_login_banner(config)
     return f"""\
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
@@ -471,56 +675,79 @@ if [ "$_apt_ok" -ne 1 ]; then
   exit 1
 fi
 
-if ! getent passwd {config.remote_user} >/dev/null; then
-  useradd --create-home --shell /bin/bash {config.remote_user}
+if ! id -u {_q(config.remote_user)} >/dev/null 2>&1; then
+  useradd --create-home --shell /bin/bash {_q(config.remote_user)}
 fi
-usermod -aG docker {config.remote_user}
+usermod -aG docker {_q(config.remote_user)}
 
 {render_volume_discovery(config)}
 {render_automount_teardown(config)}
 {render_volume_signature_step(config)}
-mkdir -p {config.mountpoint}
-if [ -f {config.fstab} ]; then
+mkdir -p {_q(config.mountpoint)}
+if [ -f {_q(config.fstab)} ]; then
   awk '$2 != "{config.mountpoint}"' {config.fstab} > {config.fstab}.slipfork
-  mv {config.fstab}.slipfork {config.fstab}
+  mv {_q(config.fstab)}.slipfork {_q(config.fstab)}
 fi
-printf 'UUID=%s {config.mountpoint} btrfs %s 0 0\\n' "$_uuid" "{config.mount_options}" >> {config.fstab}
-if _mount_options=$(findmnt -no OPTIONS {config.mountpoint}); then
+printf 'UUID=%s {_q(config.mountpoint)} btrfs %s 0 0\\n' "$_uuid" "{config.mount_options}" >> {_q(config.fstab)}
+if _mount_options=$(findmnt -no OPTIONS {_q(config.mountpoint)}); then
   if ! printf ',%s,' "$_mount_options" | grep -q ',user_subvol_rm_allowed,' ||
      ! printf ',%s,' "$_mount_options" | grep -q ',noatime,'; then
-    mount -o remount,user_subvol_rm_allowed,noatime {config.mountpoint}
+    mount -o remount,user_subvol_rm_allowed,noatime {_q(config.mountpoint)}
   fi
 else
-  mount {config.mountpoint}
+  mount {_q(config.mountpoint)}
 fi
 
-_verify_options=$(findmnt -no OPTIONS {config.mountpoint})
+_verify_options=$(findmnt -no OPTIONS {_q(config.mountpoint)})
 case ",$_verify_options," in
   *,user_subvol_rm_allowed,*) ;;
   *)
-    echo "slipfork: {config.mountpoint} is mounted without user_subvol_rm_allowed: $_verify_options" >&2
+    echo "slipfork: {_q(config.mountpoint)} is mounted without user_subvol_rm_allowed: $_verify_options" >&2
     exit 1
     ;;
 esac
 case ",$_verify_options," in
   *,noatime,*) ;;
   *)
-    echo "slipfork: {config.mountpoint} is mounted without noatime: $_verify_options" >&2
+    echo "slipfork: {_q(config.mountpoint)} is mounted without noatime: $_verify_options" >&2
     exit 1
     ;;
 esac
-_magic=$(stat -f -c %t {config.mountpoint})
+_magic=$(stat -f -c %t {_q(config.mountpoint)})
 if [ "$_magic" != "{config.btrfs_magic}" ]; then
-  echo "slipfork: statfs({config.mountpoint}) f_type is 0x$_magic, not 0x{config.btrfs_magic} (btrfs)" >&2
+  echo "slipfork: statfs({_q(config.mountpoint)}) f_type is 0x$_magic, not 0x{config.btrfs_magic} (btrfs)" >&2
   exit 1
 fi
-rm -f {config.marker}
+rm -f {_q(config.marker)}
 
-install -d -o {config.remote_user} -g {config.remote_user} {config.suite_home}
-install -d -o {config.remote_user} -g {config.remote_user} -m 700 {config.suite_home}/tmp
-install -d -o root -g root -m 700 {config.owner_home}
-install -d -o root -g root -m 700 {config.owner_home}/tmp
-chown {config.remote_user}:{config.remote_user} {config.mountpoint}
+install -d -o {_q(config.remote_user)} -g {_q(config.remote_user)} {_q(config.suite_home)}
+install -d -o {_q(config.remote_user)} -g {_q(config.remote_user)} -m 700 {_q(config.suite_home)}/tmp
+install -d -o root -g root -m 700 {_q(config.owner_home)}
+install -d -o root -g root -m 700 {_q(config.owner_home)}/tmp
+chown {_q(config.remote_user)}:{_q(config.remote_user)} {_q(config.mountpoint)}
+
+# The account's cache tree (`~/.cache`) lives on the Btrfs volume, so an ordinary login-shell
+# `slipfork` resolves the same `<state_dir>/run/daemon.sock` the installed unit serves, with no
+# VM-only `--state-dir` flag on either side.
+install -d -o {_q(config.remote_user)} -g {_q(config.remote_user)} -m 700 {_q(config.cache_target)}
+if [ -L {_q(config.cache_symlink)} ]; then
+  _cache_target=$(readlink {_q(config.cache_symlink)})
+  if [ "$_cache_target" != "{_q(config.cache_target)}" ]; then
+    echo "slipfork: {_q(config.cache_symlink)} points at $_cache_target, not {_q(config.cache_target)}" >&2
+    exit 1
+  fi
+elif [ -e {_q(config.cache_symlink)} ]; then
+  echo "slipfork: {_q(config.cache_symlink)} is a real directory, not the {_q(config.cache_target)} symlink; move it aside and re-run provisioning" >&2
+  exit 1
+else
+  ln -s {_q(config.cache_target)} {_q(config.cache_symlink)}
+  chown -h {_q(config.remote_user)}:{_q(config.remote_user)} {_q(config.cache_symlink)}
+fi
+_cache_magic=$(stat -f -c %t {_q(config.cache_symlink)})
+if [ "$_cache_magic" != "{config.btrfs_magic}" ]; then
+  echo "slipfork: {_q(config.cache_symlink)} resolves to a filesystem with f_type 0x$_cache_magic, not 0x{config.btrfs_magic} (btrfs)" >&2
+  exit 1
+fi
 
 if [ "$(uname -m)" != "x86_64" ]; then
   echo "slipfork: the pinned rustup-init asset targets x86_64, not $(uname -m)" >&2
@@ -537,12 +764,12 @@ if [ "$_rustup_sha" != "{config.rustup_sha256}" ]; then
   exit 1
 fi
 chmod 755 "$_rustup_init"
-runuser -u {config.remote_user} -- env HOME={config.remote_home} \\
-  CARGO_HOME={config.remote_home}/.cargo \\
-  RUSTUP_HOME={config.remote_home}/.rustup \\
+runuser -u {_q(config.remote_user)} -- env HOME={_q(config.remote_home)} \\
+  CARGO_HOME={_q(config.remote_home)}/.cargo \\
+  RUSTUP_HOME={_q(config.remote_home)}/.rustup \\
   "$_rustup_init" -y --profile minimal --default-toolchain {config.rust_min} --no-modify-path
 rm -rf "$_rustup_dir"
-_cargo_version=$(runuser -u {config.remote_user} -- {config.remote_home}/.cargo/bin/cargo --version)
+_cargo_version=$(runuser -u {_q(config.remote_user)} -- {_q(config.remote_home)}/.cargo/bin/cargo --version)
 _cargo_number=$(printf '%s' "$_cargo_version" | awk '{{print $2}}')
 if [ "$(printf '%s\\n%s\\n' "{config.rust_min}" "$_cargo_number" | sort -V | head -n 1)" != "{config.rust_min}" ]; then
   echo "slipfork: cargo $_cargo_number is older than {config.rust_min}: $_cargo_version" >&2
@@ -553,38 +780,19 @@ systemctl enable --now docker
 docker buildx version
 apparmor_parser --version
 
-_profile_body='{apparmor_body.rstrip()}'
-if [ ! -f {config.profile_path} ] || [ "$(cat {config.profile_path})" != "$_profile_body" ]; then
-  printf '%s\\n' "$_profile_body" > {config.profile_path}
+# One harness-owned login banner. The AppArmor `userns` profile is not rendered here: it is a
+# product artifact written by `slipfork daemon install` (see `render_product_install`).
+_banner_tmp=$(mktemp)
+cat > "$_banner_tmp" <<'SLIPFORK_BANNER'
+{banner_body.rstrip()}
+SLIPFORK_BANNER
+if [ ! -f {_q(config.login_banner)} ] || ! cmp -s {_q(config.login_banner)} "$_banner_tmp"; then
+  install -o root -g root -m 644 "$_banner_tmp" {_q(config.login_banner)}
 fi
-apparmor_parser -Q {config.profile_path}
-apparmor_parser -r {config.profile_path}
-if _aa_status=$(aa-status); then
-  _aa_rc=0
-else
-  _aa_rc=$?
-fi
-if [ "$_aa_rc" -ne 0 ]; then
-  echo "slipfork: aa-status failed (rc $_aa_rc): $_aa_status" >&2
-  exit 1
-fi
-case "$_aa_status" in
-  *slipfork*) ;;
-  *)
-    echo "slipfork: {config.profile_path} is not loaded (aa-status has no slipfork profile):" >&2
-    printf '%s\\n' "$_aa_status" >&2
-    exit 1
-    ;;
-esac
-if ! runuser -u {config.remote_user} -- unshare --user \\
-  --map-user="$(id -u {config.remote_user})" \\
-  --map-group="$(id -g {config.remote_user})" -- true; then
-  echo "slipfork: unprivileged userns creation is still denied for {config.remote_user}" >&2
-  exit 1
-fi
+rm -f "$_banner_tmp"
 
-printf 'ready\\n' > {config.marker}
-chown {config.remote_user}:{config.remote_user} {config.marker}
+printf 'ready\\n' > {_q(config.marker)}
+chown {_q(config.remote_user)}:{_q(config.remote_user)} {_q(config.marker)}
 """
 
 
@@ -1364,6 +1572,149 @@ def _provision(
             print(line)
 
 
+def _run_remote_script(
+    droplet: Droplet,
+    known_hosts: Path,
+    identity: Identity,
+    label: str,
+    script: str,
+) -> subprocess.CompletedProcess[str]:
+    """Run one self-contained script over SSH stdin; `label` names the step for logs."""
+    return _run(
+        ssh_argv(droplet, known_hosts, identity, f"bash -s {shlex.quote(label)}"),
+        input_text=script,
+        check=False,
+    )
+
+
+def _step_failed(
+    step: str,
+    result: subprocess.CompletedProcess[str],
+    droplet: Droplet,
+    known_hosts: Path,
+) -> None:
+    """Print a step's transcript and raise on failure (transport failures stay distinct)."""
+    for line in (result.stdout or "").splitlines():
+        print(line)
+    if result.returncode == 0:
+        return
+    detail = _detail(result)
+    if (
+        result.returncode == 255
+        or _is_host_key_failure(detail)
+        or _is_auth_failure(detail)
+    ):
+        _transport_failure(result, droplet, known_hosts)
+    raise HarnessError(f"{step} on {droplet.ip} failed ({result.returncode}): {detail}")
+
+
+def _seed_demo(droplet: Droplet, known_hosts: Path, identity: Identity) -> None:
+    """Seed `/home/slipfork/demo` from the tracked template once (`render_demo_seed`)."""
+    _step_failed(
+        "demo seeding",
+        _run_remote_script(
+            droplet, known_hosts, identity, "demo-seed", render_demo_seed()
+        ),
+        droplet,
+        known_hosts,
+    )
+
+
+def parse_product_binaries(metadata_text: str) -> list[str]:
+    """The sorted binary target names of [`PRODUCT_BUILD_PACKAGES`], from `cargo metadata`."""
+    try:
+        data = json.loads(metadata_text)
+    except json.JSONDecodeError as error:
+        raise HarnessError(f"cargo metadata did not emit JSON: {error}") from error
+    packages = data.get("packages") if isinstance(data, dict) else None
+    if not isinstance(packages, list):
+        raise HarnessError("cargo metadata returned no `packages` list")
+    names: list[str] = []
+    for package in packages:
+        if not isinstance(package, dict):
+            raise HarnessError(
+                f"cargo metadata package entry is malformed: {package!r}"
+            )
+        if package.get("name") not in PRODUCT_BUILD_PACKAGES:
+            continue
+        targets = package.get("targets")
+        if not isinstance(targets, list):
+            raise HarnessError(
+                f"cargo metadata package {package.get('name')!r} has no `targets` list"
+            )
+        for target in targets:
+            if not isinstance(target, dict):
+                raise HarnessError(
+                    f"cargo metadata target entry is malformed: {target!r}"
+                )
+            kind = target.get("kind")
+            name = target.get("name")
+            if isinstance(kind, list) and "bin" in kind and isinstance(name, str):
+                names.append(name)
+    if not names:
+        raise HarnessError(
+            "cargo metadata listed no binary targets for "
+            + ", ".join(PRODUCT_BUILD_PACKAGES)
+        )
+    return sorted(names)
+
+
+def product_build_command(binaries: list[str], profile: str) -> str:
+    """One `cargo build` for exactly `binaries` in `profile`, from the metadata-derived list."""
+    if profile not in PROFILE_BIN_PROFILES:
+        raise HarnessError(
+            f"unsupported product build profile '{profile}'; "
+            f"expected one of {', '.join(PROFILE_BIN_PROFILES)}"
+        )
+    flags = " --release" if profile == "release" else ""
+    packages = " ".join(f"-p {package}" for package in PRODUCT_BUILD_PACKAGES)
+    targets = " ".join(f"--bin {shlex.quote(binary)}" for binary in binaries)
+    return f"cargo build{flags} {packages} {targets}"
+
+
+def _build_product(droplet: Droplet, known_hosts: Path, identity: Identity) -> None:
+    """Build the product binaries in `BUILD_PROFILE`, derived from `cargo metadata`."""
+    metadata = _run(
+        ssh_argv(droplet, known_hosts, identity, suite_command(PRODUCT_METADATA)),
+        check=False,
+    )
+    if metadata.returncode != 0:
+        raise HarnessError(
+            f"cargo metadata on {droplet.ip} failed ({metadata.returncode}): "
+            f"{_detail(metadata)}"
+        )
+    binaries = parse_product_binaries(metadata.stdout)
+    missing = [binary for binary in PRODUCT_BINARIES if binary not in binaries]
+    unexpected = [binary for binary in binaries if binary not in PRODUCT_BINARIES]
+    if missing or unexpected:
+        raise HarnessError(
+            "cargo metadata disagrees with the shipped binary set: missing "
+            f"[{', '.join(missing)}], unexpected [{', '.join(unexpected)}]"
+        )
+    build = _run(
+        ssh_argv(
+            droplet,
+            known_hosts,
+            identity,
+            suite_command(product_build_command(binaries, BUILD_PROFILE)),
+        ),
+        check=False,
+    )
+    _step_failed("product build", build, droplet, known_hosts)
+
+
+def _install_product(droplet: Droplet, known_hosts: Path, identity: Identity) -> None:
+    """Install the four binaries, then let `slipfork daemon install` own `:80`."""
+    _step_failed(
+        "product install",
+        _run_remote_script(
+            droplet, known_hosts, identity, "product-install", render_product_install()
+        ),
+        droplet,
+        known_hosts,
+    )
+
+
 def _poll_or_raise(
     probe: Callable[[], subprocess.CompletedProcess[str]],
     *,
@@ -1754,6 +2105,9 @@ def cmd_sync(args: argparse.Namespace) -> int:
         f"chown -R {REMOTE_USER}:{REMOTE_USER} {REMOTE_TREE}"
     )
     _run(ssh_argv(droplet, known_hosts, identity, replace))
+    _seed_demo(droplet, known_hosts, identity)
+    _build_product(droplet, known_hosts, identity)
+    _install_product(droplet, known_hosts, identity)
     print(f"synced {len(sync_paths)} file(s) to {REMOTE_TREE} on {droplet.ip}")
     return 0
 
@@ -1865,6 +2219,9 @@ def cmd_test(args: argparse.Namespace) -> int:
         raise HarnessError(
             f"docker did not answer `docker info` as {REMOTE_USER}: {_detail(docker)}"
         )
+
+    _build_product(droplet, known_hosts, identity)
+    _install_product(droplet, known_hosts, identity)
 
     for package, test, _, _ in SUITES:
         command = f"cargo test -p {package} --test {test} -- --test-threads=1"
@@ -1992,7 +2349,7 @@ def build_parser(home: Path) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="tools/do_vm.py",
         description=(
-            "DigitalOcean dev-VM harness: Btrfs volume, docker/Rust, AppArmor userns."
+            "DigitalOcean dev-VM harness: Btrfs volume, docker/Rust, :80 socket activation."
         ),
         epilog="See docs/design/do-vm-harness.md.",
     )
@@ -2048,12 +2405,26 @@ def build_parser(home: Path) -> argparse.ArgumentParser:
     status.set_defaults(handler=cmd_status)
 
     sync = commands.add_parser(
-        "sync", help=f"tar-pipe the working tree to {REMOTE_TREE}"
+        "sync",
+        help="sync the tree to the VM, seed the demo, install the product",
+        description=(
+            "Replace the remote tree, seed support/demo once, build the product binaries "
+            "(derived from `cargo metadata`), install them into /usr/local/bin, and run "
+            "`slipfork daemon install` so slipforkd.socket owns :80. "
+            "Disclosure: this stops slipforkd.socket/slipforkd.service and `daemon install` hands "
+            "the control socket over from any running slipforkd, so every running world's "
+            "processes stop until the next `slipfork up`."
+        ),
     )
     sync.set_defaults(handler=cmd_sync)
 
     test = commands.add_parser(
-        "test", help="stream the live Btrfs kernel conformance suites"
+        "test",
+        help="stream the live Btrfs kernel conformance suites",
+        description=(
+            "Build and install the product (same steps and the same daemon stop/handover "
+            "disclosure as `sync`), then stream the five live Btrfs suites one at a time."
+        ),
     )
     _add_identity(test, home=home)
     test.set_defaults(handler=cmd_test)

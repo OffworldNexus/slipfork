@@ -95,3 +95,11 @@ attempt 5/5 started
 ## 2026-11-18T00:57 [lead]
 
 attempt 4: vaporware eliminated (banner+README name only real verbs; db demo not psql; DEMO_SECRET in modes.local), check_docs_honesty now scans support/demo/README.md with a negative test, harness handover workaround deleted (render_daemon_handover + 6 tests + socket_wait knobs), build inputs from cargo metadata with profile driving path, paths shlex-quoted, banner guarded, description/help honest. LIVE: second sync unchanged + identical sha256, socket active, up => [origin] http://demo.localhost, curl 200 no port re-verified, do_vm.py test exit 0 (1/1/21/7/4), pytest 141, ruff clean, guard OK 590. Blocked only on M3.28.21's rustdoc link (public fn doc -> private HANDOVER_GRACE) which makes make check stop at rs-lint; .21 fix in flight, then .12 re-runs make check.
+
+## 2026-11-18T01:27 [lead]
+
+final verification by lead: no render_daemon_handover/ss in tools (harness-has-no-lifecycle), zero 'slipfork open|restart' mentions in support/demo/README.md and tools/do_vm.py, pytest 141 passed, ruff clean, check_docs_honesty covers 11 docs incl. the seeded README. Live evidence already recorded: 200 no-port curl, socket active, second sync unchanged with identical sha256, do_vm.py test 0 (1/1/21/7/4).
+
+## 2026-11-18T01:27 [lead]
+
+status active -> done
