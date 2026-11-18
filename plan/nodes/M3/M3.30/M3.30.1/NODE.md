@@ -2,7 +2,7 @@
 id: M3.30.1
 title: "Purge dead weight: forked snow resolver, 14 mock/fake doubles, support-matrix bureaucracy & duplicated helpers"
 kind: epic
-status: active
+status: done
 priority: 3
 depends_on: [M3.27]
 paths:
@@ -19,7 +19,7 @@ attempts: 0
 max_attempts: 3
 escalation: none
 created: "2026-11-18T22:19"
-updated: "2026-11-18T22:20"
+updated: "2026-11-19T00:02"
 ---
 
 # Goal

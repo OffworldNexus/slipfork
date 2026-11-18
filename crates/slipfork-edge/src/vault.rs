@@ -12,7 +12,9 @@
 
 use slipfork_world::ProjectSlug;
 
-use crate::{DaemonError, DaemonErrorKind, EdgeError};
+use slipfork_wire::control::{DaemonError, DaemonErrorKind};
+
+use crate::EdgeError;
 
 /// Capability-honest local vault port.
 pub trait SecretVault: Send + Sync {

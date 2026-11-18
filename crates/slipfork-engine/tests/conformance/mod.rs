@@ -32,7 +32,7 @@ use std::path::Path;
 
 use slipfork_world::WorldTarget;
 
-use slipfork_engine::env::InheritedVar;
+use slipfork_engine::InheritedVar;
 use slipfork_engine::rootfs::WorldRootfs;
 use slipfork_engine::{
     EngineError, ExecEnv, MountMode, SnapshotId, WorldEngine, WorldMount, WorldSpec,

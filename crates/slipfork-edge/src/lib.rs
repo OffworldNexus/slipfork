@@ -34,6 +34,7 @@
 
 use std::net::SocketAddr;
 
+use slipfork_wire::control::DaemonError;
 use thiserror::Error;
 
 pub mod activation;
@@ -48,23 +49,12 @@ pub mod vault;
 pub use activation::{
     ListenConfig, ListenerSet, adopt_systemd_listener, bind_listen, resolve_listener_set,
 };
+pub use daemon::DaemonControl;
 pub use daemon::client::DaemonControlClient;
 pub use daemon::server::DaemonControlServer;
-pub use daemon::{
-    AuthSummary, BootEvent, DaemonControl, DaemonError, DaemonErrorKind, DaemonStatus,
-    DropForkRequest, DumpRequest, ExecTargetRequest, ForkRequest, ForwardRequest, ForwardSummary,
-    ForwardTarget, HookRunRequest, IngressInfo, LogsRequest, PruneReport, ResourceRequest,
-    ResourceSummary, SnowResolveRequest, SnowResolveSummary, UpRequest, WorldExecTarget,
-    WorldProcessReport, WorldSelector, WorldServiceSummary, WorldState, WorldSummary,
-    WorldUpSummary, world_next_commands,
-};
 pub use forward::{ForwardBridge, ForwardTargetSpec};
 pub use ingress::HttpIngress;
 pub use registry::{IngressRoute, RoutedWorld, WorldRegistry, parent_world, world_id};
-pub use slipfork_engine::{
-    BaseLineage, CacheOutcome, RootfsLineage, SeedLineage, ServiceImageLineage, ServiceKind,
-    WorldLineage, WorldServiceInfo,
-};
 pub use unit::{INGRESS_ADDRS, INGRESS_PORT, UnitSpec, render_service_unit, render_socket_unit};
 pub use vault::SecretVault;
 

@@ -11,7 +11,7 @@ use std::collections::BTreeSet;
 use std::path::PathBuf;
 
 use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
-use slipfork_edge::{DumpRequest, ResourceRequest};
+use slipfork_wire::control::{DumpRequest, ResourceRequest};
 
 /// Shared `--world` help text for every world-scoped command. Carries no trailing period because
 /// `clap` strips the one it derives from a doc comment; the rendered help stays byte-identical.

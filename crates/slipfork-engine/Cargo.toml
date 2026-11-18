@@ -14,6 +14,7 @@ serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 slipfork-world = { path = "../slipfork-world" }
+slipfork-wire = { path = "../slipfork-wire" }
 tempfile.workspace = true
 thiserror.workspace = true
 

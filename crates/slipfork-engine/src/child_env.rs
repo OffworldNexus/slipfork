@@ -9,7 +9,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::env::{ExecEnv, InheritedVar};
+use crate::{ExecEnv, InheritedVar};
 
 /// Effective child environment: `ambient` allowlist overridden by `base ⊕ overlay`.
 pub(crate) fn materialize(

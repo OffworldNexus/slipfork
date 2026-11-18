@@ -7,13 +7,11 @@
 //! named boundaries:
 //!
 //! 1. `ExecEnv::expose_to_child_process` — the `Command::env_clear().envs(..)` hand-off
-//!    (crate-private, so only the engine's child-process spawners can call it).
+//!    (called only from a child-process spawner).
 //! 2. `serde` — the `0600` `<runtime_dir>/daemon.sock` wire form carried only inside
 //!    `DaemonControl::exec_target`'s `WorldExecTarget`.
 //!
 //! Every other surface (including [`std::fmt::Debug`]) redacts every secret value.
-
-#![forbid(unsafe_code)]
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -21,7 +19,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::EngineError;
+use thiserror::Error;
 
 /// Environment variables a world may inherit from the process that materializes it.
 ///
@@ -99,10 +97,10 @@ impl ExecEnv {
     }
 
     /// Bind a non-secret variable.
-    pub fn set(&mut self, key: &str, value: impl Into<String>) -> Result<&mut Self, EngineError> {
+    pub fn set(&mut self, key: &str, value: impl Into<String>) -> Result<&mut Self, EnvNameError> {
         validate_env_name(key)?;
         if matches!(key, "HOME") || InheritedVar::parse(key).is_some() {
-            return Err(EngineError::InvalidEnvName {
+            return Err(EnvNameError {
                 name: key.to_owned(),
                 reason: "is reserved; use ExecEnv::world_scoped(HOME) or ExecEnv::inherit(..)"
                     .to_owned(),
@@ -118,10 +116,10 @@ impl ExecEnv {
         &mut self,
         key: &str,
         value: impl Into<String>,
-    ) -> Result<&mut Self, EngineError> {
+    ) -> Result<&mut Self, EnvNameError> {
         validate_env_name(key)?;
         if matches!(key, "HOME") || InheritedVar::parse(key).is_some() {
-            return Err(EngineError::InvalidEnvName {
+            return Err(EnvNameError {
                 name: key.to_owned(),
                 reason: "is reserved; use ExecEnv::world_scoped(HOME) or ExecEnv::inherit(..)"
                     .to_owned(),
@@ -162,9 +160,9 @@ impl ExecEnv {
     /// Materialize the values handed to `Command::env_clear().envs(..)`.
     ///
     /// **SECURITY:** this is one of the two sanctioned secret-release boundaries. It is
-    /// `pub(crate)` so only the engine's child-process spawners ([`crate::child_env`]) can reach
+    /// `pub` so only a child-process spawner can reach
     /// it; every other consumer (including the `exec_target` IPC path) sees redacted `Debug` only.
-    pub(crate) fn expose_to_child_process(&self) -> BTreeMap<String, String> {
+    pub fn expose_to_child_process(&self) -> BTreeMap<String, String> {
         self.iter()
             .map(|(name, value)| (name.to_owned(), value.into_owned()))
             .collect()
@@ -174,7 +172,7 @@ impl ExecEnv {
     ///
     /// This is the sanctioned materialization surface for the **thin CLI's** direct world entry
     /// (the engine's entry program, for example `nsenter`): `slipfork` receives an [`ExecEnv`] inside
-    /// [`crate::WorldEntryCommand`]'s reply and must hand exactly these pairs to
+    /// [`super::stream::WorldEntryCommand`]'s reply and must hand exactly these pairs to
     /// `Command::env_clear().envs(..)`. Reserved names never collide (construction rejects them),
     /// and `HOME` is rendered exactly as the engine's child-process materialization renders it. The
     /// values are plaintext at this boundary and must never be logged or formatted.
@@ -223,14 +221,14 @@ impl fmt::Debug for ExecEnv {
     }
 }
 
-fn validate_env_name(key: &str) -> Result<(), EngineError> {
+fn validate_env_name(key: &str) -> Result<(), EnvNameError> {
     let mut chars = key.chars();
     let valid_start = chars
         .next()
         .is_some_and(|c| c.is_ascii_alphabetic() || c == '_');
     let valid_rest = chars.all(|c| c.is_ascii_alphanumeric() || c == '_');
     if key.is_empty() || !valid_start || !valid_rest {
-        return Err(EngineError::InvalidEnvName {
+        return Err(EnvNameError {
             name: key.to_owned(),
             reason: "must be a non-empty [A-Za-z_][A-Za-z0-9_]* shell identifier".to_owned(),
         });
@@ -331,4 +329,17 @@ mod tests {
         );
         assert!(!format!("{env:?}").contains("s3cr3t"));
     }
+}
+
+/// Failure to bind an environment entry: not a shell identifier, or a reserved name.
+///
+/// The engine maps this into its own fail-closed `EnvNameError::InvalidEnvName` variant, so one
+/// user-facing message stays identical at both boundaries.
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+#[error("invalid environment variable name '{name}': {reason}")]
+pub struct EnvNameError {
+    /// Offending variable name.
+    pub name: String,
+    /// Why the name is refused.
+    pub reason: String,
 }

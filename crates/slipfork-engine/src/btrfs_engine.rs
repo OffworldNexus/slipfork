@@ -1166,7 +1166,9 @@ impl BtrfsEngine {
                     world: format!("{:?}", service.world()),
                     id: service.id().to_owned(),
                 })?;
-        if ServiceState::from_bits(running.state.load(Ordering::Relaxed)) != ServiceState::Running {
+        if crate::service_state_from_bits(running.state.load(Ordering::Relaxed))
+            != ServiceState::Running
+        {
             return Err(EngineError::ServiceNotRunning {
                 world: format!("{:?}", service.world()),
                 id: service.id().to_owned(),
@@ -1251,7 +1253,7 @@ impl BtrfsEngine {
         grace: Duration,
     ) -> Result<(), EngineError> {
         let running =
-            ServiceState::from_bits(state.load(Ordering::Relaxed)) == ServiceState::Running;
+            crate::service_state_from_bits(state.load(Ordering::Relaxed)) == ServiceState::Running;
         let (mut supervisor, process_group, container) = {
             let Ok(mut process) = process.lock() else {
                 return Err(EngineError::Execution(format!(
@@ -1935,7 +1937,7 @@ impl WorldEngine for BtrfsEngine {
             let mut worlds = self.lock()?;
             let record = self.live_record(&mut worlds, world)?;
             if let Some(existing) = record.services.get(&spec.id)
-                && ServiceState::from_bits(existing.state.load(Ordering::Relaxed))
+                && crate::service_state_from_bits(existing.state.load(Ordering::Relaxed))
                     == ServiceState::Running
             {
                 return Err(EngineError::ServiceAlreadyRunning {
@@ -2024,7 +2026,9 @@ impl WorldEngine for BtrfsEngine {
                         return Err(err);
                     }
                 }
-                if ServiceState::from_bits(state.load(Ordering::Relaxed)) != ServiceState::Running {
+                if crate::service_state_from_bits(state.load(Ordering::Relaxed))
+                    != ServiceState::Running
+                {
                     // The watcher already reaped the process and closed the log; the record stays
                     // `Exited` so a corrected retry with the same id is not blocked.
                     return Err(EngineError::Execution(format!(
@@ -2117,7 +2121,7 @@ impl WorldEngine for BtrfsEngine {
         let now = Instant::now();
         let mut rows = Vec::with_capacity(record.services.len());
         for (id, service) in &record.services {
-            let state = ServiceState::from_bits(service.state.load(Ordering::Relaxed));
+            let state = crate::service_state_from_bits(service.state.load(Ordering::Relaxed));
             let running = state == ServiceState::Running;
             // A stopped or self-exited service keeps its row but reports no live facts: `None`
             // renders `-`, never a stale pid or an uptime that keeps growing.
@@ -2414,7 +2418,9 @@ fn spawn_service_watcher(
                 }
             };
             if exited {
-                if ServiceState::from_bits(state.load(Ordering::Relaxed)) == ServiceState::Running {
+                if crate::service_state_from_bits(state.load(Ordering::Relaxed))
+                    == ServiceState::Running
+                {
                     state.store(ServiceState::Exited.to_bits(), Ordering::Relaxed);
                     log.close();
                 }

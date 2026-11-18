@@ -1,24 +1,20 @@
 //! Bounded JSON-line framing shared by the control server and client.
 //!
 //! A frame is one `\n`-terminated JSON object of at most [`MAX_CONTROL_FRAME`] bytes. The reader is
-//! buffered across calls, so a single OS read carrying several frames (or a frame plus the next
-//! one) never drops bytes. Oversized or truncated frames fail closed with
-//! [`EdgeError::ControlFrame`] / [`EdgeError::ControlProtocol`]; nothing is truncated and retried.
+//! buffered across calls, so one OS read carrying several frames never drops bytes.
 
 use std::io::{self, Read, Write};
 
-use slipfork_engine::{LogChunk, StreamChunk};
-
-use crate::EdgeError;
-use crate::daemon::{DaemonReply, MAX_CONTROL_FRAME, MAX_STREAM_CHUNK};
+use super::stream::{LogChunk, StreamChunk};
+use super::{ControlError, DaemonReply, MAX_CONTROL_FRAME, MAX_STREAM_CHUNK};
 
 /// Encode and write one `\n`-terminated JSON frame, refusing anything above the frame cap.
-pub(crate) fn write_reply(writer: &mut impl Write, reply: &DaemonReply) -> Result<(), EdgeError> {
-    let mut bytes = serde_json::to_vec(reply).map_err(|err| EdgeError::ControlFrame {
+pub fn write_reply(writer: &mut impl Write, reply: &DaemonReply) -> Result<(), ControlError> {
+    let mut bytes = serde_json::to_vec(reply).map_err(|err| ControlError::Frame {
         reason: err.to_string(),
     })?;
     if bytes.len() > MAX_CONTROL_FRAME {
-        return Err(EdgeError::ControlFrame {
+        return Err(ControlError::Frame {
             reason: format!(
                 "reply frame is {} bytes, above the {MAX_CONTROL_FRAME} byte cap",
                 bytes.len()
@@ -29,14 +25,14 @@ pub(crate) fn write_reply(writer: &mut impl Write, reply: &DaemonReply) -> Resul
     writer
         .write_all(&bytes)
         .and_then(|()| writer.flush())
-        .map_err(|err| EdgeError::ControlIo {
+        .map_err(|err| ControlError::Io {
             operation: "write reply",
             message: err.to_string(),
         })
 }
 
 /// Split one stream chunk into frame-sized pieces and write each as a `chunk` reply.
-pub(crate) fn write_chunk(writer: &mut impl Write, chunk: StreamChunk) -> Result<(), EdgeError> {
+pub fn write_chunk(writer: &mut impl Write, chunk: StreamChunk) -> Result<(), ControlError> {
     if chunk.bytes.len() <= MAX_STREAM_CHUNK {
         return write_reply(writer, &DaemonReply::Chunk { chunk });
     }
@@ -59,7 +55,7 @@ pub(crate) fn write_chunk(writer: &mut impl Write, chunk: StreamChunk) -> Result
 ///
 /// The component/hook id and the stream are copied onto every piece, so a chunk larger than one
 /// frame stays attributable after the split; no piece is ever sent without its label.
-pub(crate) fn write_log(writer: &mut impl Write, log: LogChunk) -> Result<(), EdgeError> {
+pub fn write_log(writer: &mut impl Write, log: LogChunk) -> Result<(), ControlError> {
     if log.bytes.len() <= MAX_STREAM_CHUNK {
         return write_reply(writer, &DaemonReply::Log { log });
     }
@@ -79,14 +75,14 @@ pub(crate) fn write_log(writer: &mut impl Write, log: LogChunk) -> Result<(), Ed
 }
 
 /// A buffered, bounded JSON-line frame reader.
-pub(crate) struct FrameReader<R> {
+pub struct FrameReader<R> {
     reader: R,
     pending: Vec<u8>,
 }
 
 impl<R: Read> FrameReader<R> {
     /// Wrap a reader; bytes already buffered are preserved across every [`Self::read_frame`].
-    pub(crate) fn new(reader: R) -> Self {
+    pub fn new(reader: R) -> Self {
         Self {
             reader,
             pending: Vec::new(),
@@ -94,7 +90,7 @@ impl<R: Read> FrameReader<R> {
     }
 
     /// Read one `\n`-terminated frame; `Ok(None)` only when the peer closed between frames.
-    pub(crate) fn read_frame(&mut self) -> Result<Option<Vec<u8>>, EdgeError> {
+    pub fn read_frame(&mut self) -> Result<Option<Vec<u8>>, ControlError> {
         let mut chunk = [0_u8; 4096];
         loop {
             if let Some(end) = self.pending.iter().position(|byte| *byte == b'\n') {
@@ -111,7 +107,7 @@ impl<R: Read> FrameReader<R> {
             let read = self
                 .reader
                 .read(&mut chunk)
-                .map_err(|err| EdgeError::ControlIo {
+                .map_err(|err| ControlError::Io {
                     operation: "read frame",
                     message: err.to_string(),
                 })?;
@@ -119,7 +115,7 @@ impl<R: Read> FrameReader<R> {
                 return if self.pending.is_empty() {
                     Ok(None)
                 } else {
-                    Err(EdgeError::ControlProtocol {
+                    Err(ControlError::Protocol {
                         reason: "peer closed in the middle of a control frame".to_owned(),
                     })
                 };
@@ -129,7 +125,7 @@ impl<R: Read> FrameReader<R> {
     }
 
     /// Block until the peer closes the connection (the `forward` lifetime contract).
-    pub(crate) fn drain_until_close(&mut self) -> io::Result<()> {
+    pub fn drain_until_close(&mut self) -> io::Result<()> {
         self.pending.clear();
         let mut sink = [0_u8; 256];
         loop {
@@ -143,15 +139,46 @@ impl<R: Read> FrameReader<R> {
     }
 }
 
-fn frame_too_large() -> EdgeError {
-    EdgeError::ControlFrame {
+fn frame_too_large() -> ControlError {
+    ControlError::Frame {
         reason: format!("frame exceeds the {MAX_CONTROL_FRAME} byte cap"),
     }
 }
 
 /// The reply a connection received does not answer the request it sent.
-pub(crate) fn unexpected_reply(reply: &DaemonReply) -> EdgeError {
-    EdgeError::ControlProtocol {
+pub fn unexpected_reply(reply: &DaemonReply) -> ControlError {
+    ControlError::Protocol {
         reason: format!("unexpected reply {reply:?}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn frames_split_across_reads_are_reassembled() {
+        let bytes = b"{\"a\":1}\n{\"b\":2}\n".to_vec();
+        let mut reader = FrameReader::new(std::io::Cursor::new(bytes));
+        assert_eq!(
+            reader.read_frame().expect("first frame"),
+            Some(b"{\"a\":1}".to_vec())
+        );
+        assert_eq!(
+            reader.read_frame().expect("second frame"),
+            Some(b"{\"b\":2}".to_vec())
+        );
+        assert_eq!(reader.read_frame().expect("clean close"), None);
+    }
+
+    #[test]
+    fn an_oversized_frame_is_refused() {
+        let mut bytes = vec![b' '; MAX_CONTROL_FRAME + 1];
+        bytes.push(b'\n');
+        let mut reader = FrameReader::new(std::io::Cursor::new(bytes));
+        let err = reader
+            .read_frame()
+            .expect_err("a frame above the cap must fail closed");
+        assert!(err.to_string().contains("cap"), "{err}");
     }
 }

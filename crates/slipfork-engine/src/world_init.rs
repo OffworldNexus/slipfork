@@ -43,19 +43,7 @@ pub const WORLD_INIT_READY_FILE: &str = "init.ready";
 /// File name of the world's `AF_UNIX` dial socket.
 pub const WORLD_INIT_SOCKET_FILE: &str = "netns.sock";
 
-/// Longest pathname an `AF_UNIX` socket can bind: `sun_path` holds 108 bytes including the NUL.
-pub const UNIX_SOCKET_PATH_MAX: usize = 107;
-
-/// `true` when `path` fits the kernel's `sun_path` buffer.
-///
-/// A pathname `AF_UNIX` socket is the only transport that crosses `CLONE_NEWNET` without a relay
-/// (`H-011` #3), but the kernel rejects longer paths with `ENAMETOOLONG`/`EINVAL`. Both the world
-/// directory and `slipforkd`'s `http-ingress.sock` derive from `<state_root>`, so an overlong state
-/// root fails closed during validation instead of producing a half-usable world.
-pub fn unix_socket_path_fits(path: &Path) -> bool {
-    use std::os::unix::ffi::OsStrExt;
-    path.as_os_str().as_bytes().len() <= UNIX_SOCKET_PATH_MAX
-}
+pub use slipfork_wire::control::{UNIX_SOCKET_PATH_MAX, unix_socket_path_fits};
 
 /// One bind mount the world init establishes inside the world mount namespace.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -32,7 +32,7 @@ pub const DAEMON_POLL: Duration = Duration::from_millis(50);
 
 /// The handover's bounded-wait budget: one grace window plus the probe interval.
 ///
-/// `daemon install` keeps time with plain [`Instant`] observations, and the production caller
+/// `daemon install` keeps time with plain [`std::time::Instant`] observations, and the production caller
 /// passes [`DAEMON_HANDOVER`]; a test passes a zero budget and reaches the refusal immediately.
 #[derive(Debug, Clone, Copy)]
 pub struct HandoverBudget {
@@ -69,7 +69,7 @@ pub const DAEMON_HANDOVER: HandoverBudget = HandoverBudget {
 
 /// What one probe of `<runtime_dir>/daemon.sock` found.
 ///
-/// `Absent` is the only "released" answer, and the handover re-probes [`UnitInstaller::is_served`]
+/// `Absent` is the only "released" answer, and the handover re-probes `UnitInstaller::is_served`
 /// after `Absent` and `Unprovable` before it trusts that: a probe that could not name a holder has
 /// proven nothing, so an answering socket is still a held socket.
 #[derive(Debug)]
@@ -101,7 +101,7 @@ pub enum SocketHolder {
 /// 1. the units this installer writes are stopped while they exist;
 /// 2. a daemon that speaks the typed contract is asked to shut down, then awaited (bounded);
 /// 3. whatever still answers must be proven to be a `slipforkd` by the adapter's
-///    [`UnitInstaller::socket_holder`] probe — peer pid from `SO_PEERCRED`, `/proc/<pid>/exe`
+///    `UnitInstaller::socket_holder` probe — peer pid from `SO_PEERCRED`, `/proc/<pid>/exe`
 ///    basename, and a `pidfd` that pins that process — and is then `SIGTERM`ed through the pidfd,
 ///    with `SIGKILL` only after the grace window;
 /// 4. a holder that cannot be proven is refused in one line: it is never signalled, and the socket
@@ -261,7 +261,7 @@ fn owner_of(holder: &SocketHolder) -> (Option<u32>, PeerOwner) {
 /// [`pidfd`](open_pidfd) so a later signal can never reach a reused pid.
 ///
 /// `Absent` means the connect failed; it is **not** a release decision — the handover re-probes
-/// [`UnitInstaller::is_served`] after `Absent` and `Unprovable`, so a probe that could not name a
+/// `UnitInstaller::is_served` after `Absent` and `Unprovable`, so a probe that could not name a
 /// holder can never let a held socket through.
 pub fn probe_socket_holder(runtime_dir: &Path) -> Result<SocketHolder, String> {
     let socket = DaemonControlServer::socket_path_in(runtime_dir);

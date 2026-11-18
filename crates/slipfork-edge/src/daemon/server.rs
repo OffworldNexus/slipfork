@@ -11,15 +11,27 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::thread;
 
-use slipfork_engine::{LogChunk, StreamChunk};
+use slipfork_wire::control::{
+    BootEvent, CONTROL_SOCKET_FILE, DaemonReply, DaemonRequest, ForwardSummary, FrameReader,
+    LogChunk, StreamChunk, WorldUpSummary, write_chunk as wire_write_chunk,
+    write_log as wire_write_log, write_reply as wire_write_reply,
+};
 
 use crate::EdgeError;
-use crate::daemon::wire::{FrameReader, write_chunk, write_log, write_reply};
-use crate::daemon::{
-    BootEvent, CONTROL_SOCKET_FILE, DaemonControl, DaemonReply, DaemonRequest, ForwardSummary,
-    WorldUpSummary,
-};
+use crate::daemon::{DaemonControl, transport_error};
 use crate::unix_socket::{SocketRole, bind_private};
+
+fn write_reply(writer: &mut impl Write, reply: &DaemonReply) -> Result<(), EdgeError> {
+    wire_write_reply(writer, reply).map_err(transport_error)
+}
+
+fn write_chunk(writer: &mut impl Write, chunk: StreamChunk) -> Result<(), EdgeError> {
+    wire_write_chunk(writer, chunk).map_err(transport_error)
+}
+
+fn write_log(writer: &mut impl Write, log: LogChunk) -> Result<(), EdgeError> {
+    wire_write_log(writer, log).map_err(transport_error)
+}
 
 /// Bound on reading one request frame, so a stalled client cannot pin a thread forever. It is
 /// cleared once the request is in hand: `forward` and log streaming legitimately block.
@@ -123,7 +135,12 @@ fn serve_connection(
         // A client that connected and left without a request is not an error.
         Ok(None) => return,
         Err(err) => {
-            let _ = write_reply(&mut writer, &DaemonReply::Error { error: err.into() });
+            let _ = write_reply(
+                &mut writer,
+                &DaemonReply::Error {
+                    error: crate::daemon::project_error(err),
+                },
+            );
             return;
         }
     };

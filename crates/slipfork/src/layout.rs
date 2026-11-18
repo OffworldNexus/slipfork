@@ -134,7 +134,7 @@ impl Layout {
 
     /// `0600` Unix control socket of the daemon (`<runtime_dir>/daemon.sock`).
     pub fn daemon_socket(&self) -> PathBuf {
-        slipfork_edge::DaemonControlServer::socket_path_in(&self.runtime_dir)
+        slipfork_wire::control::control_socket_path(&self.runtime_dir)
     }
 
     /// `0600` `AF_UNIX` HTTP ingress socket (`<state_dir>/http-ingress.sock`).

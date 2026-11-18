@@ -9,17 +9,17 @@ use std::io::Write;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 
-use slipfork_engine::{LogChunk, StreamChunk};
+use slipfork_wire::control::{
+    AuthSummary, BootEvent, ControlSecret, DaemonReply, DaemonRequest, DaemonStatus,
+    DropForkRequest, ExecTargetRequest, ForkRequest, ForwardRequest, ForwardSummary, FrameReader,
+    HookRunRequest, LogChunk, LogsRequest, MAX_CONTROL_FRAME, PruneReport, StreamChunk, UpRequest,
+    WorldExecTarget, WorldProcessReport, WorldSelector, WorldSummary, WorldUpSummary,
+    unexpected_reply,
+};
 
 use crate::EdgeError;
+use crate::daemon::DaemonControl;
 use crate::daemon::server::DaemonControlServer;
-use crate::daemon::wire::{FrameReader, unexpected_reply};
-use crate::daemon::{
-    AuthSummary, BootEvent, DaemonControl, DaemonReply, DaemonRequest, DaemonStatus,
-    DropForkRequest, ExecTargetRequest, ForkRequest, ForwardRequest, ForwardSummary,
-    HookRunRequest, LogsRequest, MAX_CONTROL_FRAME, PruneReport, UpRequest, WorldExecTarget,
-    WorldProcessReport, WorldSelector, WorldSummary, WorldUpSummary,
-};
 
 /// A client bound to `<runtime_dir>/daemon.sock` (never guessing `$XDG_RUNTIME_DIR`).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -110,10 +110,13 @@ fn read_terminal<R: std::io::Read>(
     on_log: &mut dyn FnMut(LogChunk),
 ) -> Result<DaemonReply, EdgeError> {
     loop {
-        let frame = reader.read_frame()?.ok_or(EdgeError::ControlIo {
-            operation: "read reply",
-            message: "the daemon closed the control connection without a reply".to_owned(),
-        })?;
+        let frame = reader
+            .read_frame()
+            .map_err(crate::daemon::transport_error)?
+            .ok_or(EdgeError::ControlIo {
+                operation: "read reply",
+                message: "the daemon closed the control connection without a reply".to_owned(),
+            })?;
         let reply: DaemonReply =
             serde_json::from_slice(&frame).map_err(|err| EdgeError::ControlProtocol {
                 reason: err.to_string(),
@@ -132,7 +135,7 @@ impl DaemonControl for DaemonControlClient {
     fn status(&self) -> Result<DaemonStatus, EdgeError> {
         match self.call(&DaemonRequest::Status)? {
             DaemonReply::Status { status } => Ok(status),
-            other => Err(unexpected_reply(&other)),
+            other => Err(crate::daemon::transport_error(unexpected_reply(&other))),
         }
     }
 
@@ -142,7 +145,7 @@ impl DaemonControl for DaemonControlClient {
     ) -> Result<crate::daemon::SnowResolveSummary, EdgeError> {
         match self.call(&DaemonRequest::SnowResolve(req.clone()))? {
             DaemonReply::SnowResolved { summary } => Ok(summary),
-            other => Err(unexpected_reply(&other)),
+            other => Err(crate::daemon::transport_error(unexpected_reply(&other))),
         }
     }
 
@@ -158,7 +161,7 @@ impl DaemonControl for DaemonControlClient {
             &mut |_| {},
         )? {
             DaemonReply::World { world } => Ok(world),
-            other => Err(unexpected_reply(&other)),
+            other => Err(crate::daemon::transport_error(unexpected_reply(&other))),
         }
     }
 
@@ -174,14 +177,14 @@ impl DaemonControl for DaemonControlClient {
             &mut |_| {},
         )? {
             DaemonReply::World { world } => Ok(world),
-            other => Err(unexpected_reply(&other)),
+            other => Err(crate::daemon::transport_error(unexpected_reply(&other))),
         }
     }
 
     fn down(&self, req: &WorldSelector) -> Result<bool, EdgeError> {
         match self.call(&DaemonRequest::Down(req.clone()))? {
             DaemonReply::Released { released } => Ok(released),
-            other => Err(unexpected_reply(&other)),
+            other => Err(crate::daemon::transport_error(unexpected_reply(&other))),
         }
     }
 
@@ -197,14 +200,14 @@ impl DaemonControl for DaemonControlClient {
             &mut |_| {},
         )? {
             DaemonReply::World { world } => Ok(world),
-            other => Err(unexpected_reply(&other)),
+            other => Err(crate::daemon::transport_error(unexpected_reply(&other))),
         }
     }
 
     fn drop_fork(&self, req: &DropForkRequest) -> Result<bool, EdgeError> {
         match self.call(&DaemonRequest::DropFork(req.clone()))? {
             DaemonReply::Released { released } => Ok(released),
-            other => Err(unexpected_reply(&other)),
+            other => Err(crate::daemon::transport_error(unexpected_reply(&other))),
         }
     }
 
@@ -213,21 +216,21 @@ impl DaemonControl for DaemonControlClient {
             repo_root: repo_root.map(Path::to_path_buf),
         })? {
             DaemonReply::Worlds { worlds } => Ok(worlds),
-            other => Err(unexpected_reply(&other)),
+            other => Err(crate::daemon::transport_error(unexpected_reply(&other))),
         }
     }
 
     fn world_processes(&self, req: &WorldSelector) -> Result<WorldProcessReport, EdgeError> {
         match self.call(&DaemonRequest::WorldProcesses(req.clone()))? {
             DaemonReply::Processes { report } => Ok(report),
-            other => Err(unexpected_reply(&other)),
+            other => Err(crate::daemon::transport_error(unexpected_reply(&other))),
         }
     }
 
     fn prune(&self, dry_run: bool) -> Result<PruneReport, EdgeError> {
         match self.call(&DaemonRequest::Prune { dry_run })? {
             DaemonReply::Prune { report } => Ok(report),
-            other => Err(unexpected_reply(&other)),
+            other => Err(crate::daemon::transport_error(unexpected_reply(&other))),
         }
     }
 
@@ -241,11 +244,11 @@ impl DaemonControl for DaemonControlClient {
         match self.call(&DaemonRequest::SecretSet {
             repo_root: repo_root.to_path_buf(),
             key: key.to_owned(),
-            value: crate::daemon::ControlSecret::new(value),
+            value: ControlSecret::new(value),
             force,
         })? {
             DaemonReply::SecretSet => Ok(()),
-            other => Err(unexpected_reply(&other)),
+            other => Err(crate::daemon::transport_error(unexpected_reply(&other))),
         }
     }
 
@@ -255,7 +258,7 @@ impl DaemonControl for DaemonControlClient {
             key: key.to_owned(),
         })? {
             DaemonReply::SecretUnset { removed } => Ok(removed),
-            other => Err(unexpected_reply(&other)),
+            other => Err(crate::daemon::transport_error(unexpected_reply(&other))),
         }
     }
 
@@ -264,7 +267,7 @@ impl DaemonControl for DaemonControlClient {
             repo_root: repo_root.to_path_buf(),
         })? {
             DaemonReply::SecretKeys { keys } => Ok(keys),
-            other => Err(unexpected_reply(&other)),
+            other => Err(crate::daemon::transport_error(unexpected_reply(&other))),
         }
     }
 
@@ -276,21 +279,21 @@ impl DaemonControl for DaemonControlClient {
             on_chunk,
         )? {
             DaemonReply::Done => Ok(()),
-            other => Err(unexpected_reply(&other)),
+            other => Err(crate::daemon::transport_error(unexpected_reply(&other))),
         }
     }
 
     fn exec_target(&self, req: &ExecTargetRequest) -> Result<WorldExecTarget, EdgeError> {
         match self.call(&DaemonRequest::ExecTarget(req.clone()))? {
             DaemonReply::ExecTarget { target } => Ok(target),
-            other => Err(unexpected_reply(&other)),
+            other => Err(crate::daemon::transport_error(unexpected_reply(&other))),
         }
     }
 
     fn hook_exec_target(&self, req: &HookRunRequest) -> Result<WorldExecTarget, EdgeError> {
         match self.call(&DaemonRequest::HookExecTarget(req.clone()))? {
             DaemonReply::ExecTarget { target } => Ok(target),
-            other => Err(unexpected_reply(&other)),
+            other => Err(crate::daemon::transport_error(unexpected_reply(&other))),
         }
     }
 
@@ -300,7 +303,7 @@ impl DaemonControl for DaemonControlClient {
     ) -> Result<crate::daemon::WorkspaceRefsSummary, EdgeError> {
         match self.call(&DaemonRequest::WorkspaceRefs(req.clone()))? {
             DaemonReply::WorkspaceRefs { refs } => Ok(refs),
-            other => Err(unexpected_reply(&other)),
+            other => Err(crate::daemon::transport_error(unexpected_reply(&other))),
         }
     }
 
@@ -316,7 +319,7 @@ impl DaemonControl for DaemonControlClient {
             &mut |_| {},
         )? {
             DaemonReply::HookExit { exit_code } => Ok(exit_code),
-            other => Err(unexpected_reply(&other)),
+            other => Err(crate::daemon::transport_error(unexpected_reply(&other))),
         }
     }
 
@@ -338,7 +341,7 @@ impl DaemonControl for DaemonControlClient {
                 wait_disconnect(summary);
                 Ok(())
             }
-            other => Err(unexpected_reply(&other)),
+            other => Err(crate::daemon::transport_error(unexpected_reply(&other))),
         }
     }
 
@@ -356,7 +359,7 @@ impl DaemonControl for DaemonControlClient {
             endpoint_url: endpoint_url.map(str::to_owned),
         })? {
             DaemonReply::Auth { auth } => Ok(auth),
-            other => Err(unexpected_reply(&other)),
+            other => Err(crate::daemon::transport_error(unexpected_reply(&other))),
         }
     }
 }

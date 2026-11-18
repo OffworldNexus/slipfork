@@ -2,7 +2,7 @@
 //!
 //! Every function here is pure over the daemon's own facts: the world table
 //! ([`WorldSummary`] rows, each with one typed [`WorldOrigin`]), the ingress port from
-//! [`DaemonStatus`](slipfork_edge::DaemonStatus), and the composition root's resolved
+//! [`DaemonStatus`](slipfork_wire::control::DaemonStatus), and the composition root's resolved
 //! [`UserIdentity`](crate::user::UserIdentity) value and the `uname -n` host name. The local verb
 //! hands the typed origin to the one concrete [`Browser`](crate::browser::Browser); the remote verb
 //! never opens anything and never invents a port — the laptop forwards the fixed constant
@@ -15,8 +15,8 @@
 //! recipe the edge would reject can never ship.
 
 use serde::Serialize;
-use slipfork_edge::WorldSummary;
 use slipfork_vcs::{RepoRoot, WORKTREES_DIRECTORY};
+use slipfork_wire::control::WorldSummary;
 use slipfork_world::WorldOrigin;
 
 /// The fixed laptop-side forward port of the `open --remote` recipe (there is no `--local-port`).
@@ -198,7 +198,7 @@ pub fn json(selection: &WorldSelection, recipe: Option<&RemoteRecipe>) -> serde_
 mod tests {
     use std::path::PathBuf;
 
-    use slipfork_edge::{WorldLineage, WorldState};
+    use slipfork_wire::control::{WorldLineage, WorldState};
     use slipfork_world::{LocalHostRoute, ProjectSlug, WorldTarget};
 
     use super::*;

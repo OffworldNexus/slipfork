@@ -17,9 +17,9 @@ use std::io::BufReader;
 use std::path::{Path, PathBuf};
 
 use slipfork::layout::{Layout, absolute_path};
-use slipfork_edge::daemon::WorkspaceRefsRequest;
 use slipfork_edge::{DaemonControl, DaemonControlClient};
 use slipfork_vcs::{VcsError, VcsWorkspace, WorkspaceChanges, WorkspaceRefs, remote_helper};
+use slipfork_wire::control::WorkspaceRefsRequest;
 use slipfork_world::validate_fork_name;
 
 fn main() {

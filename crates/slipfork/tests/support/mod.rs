@@ -25,12 +25,11 @@ use slipfork::browser::Browser;
 use slipfork::daemon::{DaemonWiring, compose_daemon, host_caches};
 use slipfork::layout::{Layout, ensure_private_dir};
 use slipfork::runtime::{runtime_assets, target_arch};
-use slipfork_edge::{
-    DaemonControlClient, DaemonControlServer, HttpIngress, IngressInfo, ListenerSet,
-};
+use slipfork_edge::{DaemonControlClient, DaemonControlServer, HttpIngress, ListenerSet};
 use slipfork_engine::btrfs::{BTRFS_SUPER_MAGIC, KernelBtrfsDriver, mount_hint};
 use slipfork_engine::{InheritedVar, current_uid_gid};
 use slipfork_ospp::OsppEndpoint;
+use slipfork_wire::control::IngressInfo;
 // The one bounded-wait shape and its named deadlines come from the shared testkit, so no suite in
 // this crate can drift into a second copy of the poll loop.
 pub use slipfork_testkit::{

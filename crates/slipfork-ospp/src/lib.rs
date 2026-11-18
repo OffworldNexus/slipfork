@@ -31,7 +31,8 @@ pub mod pairing;
 pub mod wire;
 
 pub use client::{
-    OsppClient, OsppSession, OsppTimeouts, PairingApproval, WsOsppClient, WsOsppSession,
+    MAX_DUMP_HEADER_BYTES, OsppClient, OsppSession, OsppTimeouts, PairingApproval, WsOsppClient,
+    WsOsppSession, open_dump_stream,
 };
 pub use device_key::{
     DeviceKeyPath, DeviceKeySigner, DeviceKeyStore, DeviceSignature, FileDeviceKeyStore,

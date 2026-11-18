@@ -12,7 +12,7 @@
 //! this module only adds the block around it and the `-v` per-node table.
 
 use serde_json::Value;
-use slipfork_edge::{CacheOutcome, WorldLineage, WorldState, WorldUpSummary};
+use slipfork_wire::control::{CacheOutcome, WorldLineage, WorldState, WorldUpSummary};
 
 use crate::status::{render_lineage, short_digest};
 
@@ -240,10 +240,12 @@ pub fn json(summary: &WorldUpSummary) -> Result<Value, String> {
 mod tests {
     use std::path::PathBuf;
 
-    use slipfork_edge::{
+    use slipfork_wire::control::{
         BaseLineage, ResourceSummary, RootfsLineage, SeedLineage, ServiceImageLineage,
-        WorldServiceSummary, world_next_commands,
+        WorldServiceSummary,
     };
+
+    use crate::status::world_next_commands;
     use slipfork_engine::{ServiceKind, ServiceState, WorldServiceInfo};
     use slipfork_world::{LocalHostRoute, ProjectSlug, WorldOrigin, WorldTarget};
 

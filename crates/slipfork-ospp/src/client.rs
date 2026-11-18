@@ -9,8 +9,8 @@
 //! environment.
 
 use std::collections::BTreeMap;
-use std::io::{BufRead, BufReader, Read, Write};
-use std::net::{TcpStream, ToSocketAddrs};
+use std::io::Read;
+use std::net::TcpStream;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TryRecvError};
 use std::sync::{Arc, Mutex};
@@ -22,6 +22,7 @@ use tungstenite::client::IntoClientRequest;
 use tungstenite::http::HeaderValue;
 use tungstenite::http::header::SEC_WEBSOCKET_PROTOCOL;
 use tungstenite::{Message, WebSocket, client, stream::MaybeTlsStream};
+use url::Url;
 
 use crate::device_key::DeviceKeySigner;
 use crate::dump::DumpReader;
@@ -38,8 +39,6 @@ use crate::wire::{
 
 /// Bound on how long the session thread sleeps between command polls.
 const POLL_SLICE: Duration = Duration::from_millis(25);
-/// Largest accepted HTTP response header block.
-const MAX_HTTP_HEADERS: usize = 16 * 1024;
 
 /// Injected client timeouts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -558,7 +557,7 @@ impl SessionThread {
             let ServerFrame::DumpReady { url, .. } = frame else {
                 return Err(unexpected("dump_ready", &frame));
             };
-            let source = http_get(&url, self.io)?;
+            let source = open_dump_stream(&url, self.io)?;
             let dump = DumpReader::open(source, &key, subscription_id, resource)?;
             Ok(Box::new(dump) as Box<dyn Read + Send>)
         })();
@@ -722,127 +721,75 @@ fn unexpected(expected: &str, actual: &ServerFrame) -> OsppError {
     OsppError::Protocol(format!("expected {expected}, got {kind}"))
 }
 
-/// Open an out-of-band dump body: `https://` anywhere, `http://` on loopback only.
-fn http_get(url: &str, io: Duration) -> Result<Box<dyn Read + Send>, OsppError> {
-    let (secure, host, port, path) = parse_http_url(url)?;
-    let address = (host.as_str(), port)
-        .to_socket_addrs()
-        .map_err(|error| OsppError::Transport(error.to_string()))?
-        .next()
-        .ok_or_else(|| OsppError::Transport(format!("dump host {host} did not resolve")))?;
-    let mut stream = TcpStream::connect_timeout(&address, io)?;
-    stream.set_read_timeout(Some(io))?;
-    stream.set_write_timeout(Some(io))?;
+/// Hard cap on the response header block a dump endpoint may return (mirrors the ingress cap).
+pub const MAX_DUMP_HEADER_BYTES: usize = 16 * 1024;
 
-    let request = format!(
-        "GET {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\naccept-encoding: identity\r\n\r\n"
-    );
-    let reader: Box<dyn Read + Send> = if secure {
-        let mut tls = tls_stream(&host, stream)?;
-        tls.write_all(request.as_bytes())?;
-        tls.flush()?;
-        Box::new(tls)
-    } else {
-        stream.write_all(request.as_bytes())?;
-        stream.flush()?;
-        Box::new(stream)
-    };
-    http_body(reader)
-}
-
-fn http_body(reader: Box<dyn Read + Send>) -> Result<Box<dyn Read + Send>, OsppError> {
-    let mut reader = BufReader::new(reader);
-    let mut header_bytes = 0usize;
-    let mut status = String::new();
-    reader
-        .read_line(&mut status)
-        .map_err(|error| OsppError::Transport(error.to_string()))?;
-    header_bytes += status.len();
-    let mut content_length: Option<usize> = None;
-    loop {
-        let mut line = String::new();
-        let read = reader
-            .read_line(&mut line)
-            .map_err(|error| OsppError::Transport(error.to_string()))?;
-        if read == 0 {
-            return Err(OsppError::TruncatedDump);
-        }
-        header_bytes += read;
-        if header_bytes > MAX_HTTP_HEADERS {
-            return Err(OsppError::Transport(
-                "dump headers are too large".to_owned(),
-            ));
-        }
-        if line == "\r\n" || line == "\n" {
-            break;
-        }
-        if let Some((name, value)) = line.split_once(':')
-            && name.eq_ignore_ascii_case("content-length")
-        {
-            content_length =
-                Some(value.trim().parse().map_err(|_| {
-                    OsppError::Transport("dump content-length is invalid".to_owned())
-                })?);
-        }
-    }
-    if !status.contains(" 200 ") {
+/// Open the out-of-band OSPP v1 dump body: `https://` anywhere, `http://` on loopback only.
+///
+/// `ureq` performs the HTTP/1.1 GET over rustls with the injected timeout, one connection per
+/// dump (no pooled connection outlives the sealed stream), and zero redirects — the same
+/// single-request contract the OSPP v1 dump endpoint serves. The response is bounded exactly like
+/// the rest of the daemon: at most [`MAX_DUMP_HEADER_BYTES`] of headers, a mandatory
+/// `content-length`, and a body read through `take(content-length)` so a truncated or oversized
+/// stream can never be read unbounded.
+pub fn open_dump_stream(url: &str, io: Duration) -> Result<Box<dyn Read + Send>, OsppError> {
+    let url = dump_url(url)?;
+    let agent = ureq::AgentBuilder::new()
+        .timeout_connect(io)
+        .timeout_read(io)
+        .timeout_write(io)
+        .redirects(0)
+        .build();
+    let response = agent
+        .get(url.as_str())
+        .set("accept-encoding", "identity")
+        .call()
+        .map_err(|error| match error {
+            ureq::Error::Status(status, _) => {
+                OsppError::Transport(format!("dump endpoint returned HTTP {status}"))
+            }
+            other => OsppError::Transport(other.to_string()),
+        })?;
+    let header_bytes: usize = response
+        .headers_names()
+        .iter()
+        .map(|name| name.len() + 4 + response.header(name).map_or(0, str::len))
+        .sum();
+    if header_bytes > MAX_DUMP_HEADER_BYTES {
         return Err(OsppError::Transport(format!(
-            "dump endpoint returned {}",
-            status.trim()
+            "dump response headers are {header_bytes} bytes, above the {MAX_DUMP_HEADER_BYTES} byte cap"
         )));
     }
-    let length = content_length
-        .ok_or_else(|| OsppError::Transport("dump response has no content-length".to_owned()))?;
-    Ok(Box::new(reader.take(length as u64)))
+    let length = response
+        .header("content-length")
+        .ok_or_else(|| {
+            OsppError::Transport(
+                "dump response has no content-length; the body cannot be bounded".to_owned(),
+            )
+        })?
+        .parse::<u64>()
+        .map_err(|_| {
+            OsppError::Transport("dump response content-length is not a byte count".to_owned())
+        })?;
+    Ok(Box::new(response.into_reader().take(length)))
 }
 
-fn parse_http_url(url: &str) -> Result<(bool, String, u16, String), OsppError> {
-    let (scheme, rest) = url
-        .split_once("://")
-        .ok_or_else(|| OsppError::Transport(format!("dump URL {url:?} has no scheme")))?;
-    let secure = match scheme {
-        "https" => true,
-        "http" => false,
-        _ => {
-            return Err(OsppError::Transport(format!(
-                "dump URL scheme {scheme} is unsupported"
-            )));
-        }
-    };
-    let (authority, path) = match rest.find('/') {
-        Some(index) => (&rest[..index], &rest[index..]),
-        None => (rest, "/"),
-    };
-    let (host, port) = match authority.rsplit_once(':') {
-        Some((host, port)) if !host.contains(':') => (
-            host.to_owned(),
-            port.parse()
-                .map_err(|_| OsppError::Transport("dump URL port is invalid".to_owned()))?,
-        ),
-        _ => (authority.to_owned(), if secure { 443 } else { 80 }),
-    };
-    if !secure && !matches!(host.as_str(), "localhost" | "127.0.0.1" | "::1") {
-        return Err(OsppError::Transport(
-            "plaintext dump URLs are only allowed on a loopback host".to_owned(),
-        ));
+/// Validate a dump URL: `https://` anywhere, `http://` strictly on a loopback host.
+fn dump_url(url: &str) -> Result<Url, OsppError> {
+    let parsed = Url::parse(url)
+        .map_err(|_| OsppError::Transport(format!("dump URL {url:?} has no scheme")))?;
+    match parsed.scheme() {
+        "https" => Ok(parsed),
+        "http" => match parsed.host_str() {
+            Some("localhost" | "127.0.0.1" | "::1") => Ok(parsed),
+            _ => Err(OsppError::Transport(
+                "plaintext dump URLs are only allowed on a loopback host".to_owned(),
+            )),
+        },
+        scheme => Err(OsppError::Transport(format!(
+            "dump URL scheme {scheme} is unsupported"
+        ))),
     }
-    Ok((secure, host, port, path.to_owned()))
-}
-
-fn tls_stream(
-    host: &str,
-    stream: TcpStream,
-) -> Result<rustls::StreamOwned<rustls::ClientConnection, TcpStream>, OsppError> {
-    let mut roots = rustls::RootCertStore::empty();
-    roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-    let config = rustls::ClientConfig::builder()
-        .with_root_certificates(roots)
-        .with_no_client_auth();
-    let server_name = rustls::pki_types::ServerName::try_from(host.to_owned())
-        .map_err(|_| OsppError::Transport(format!("dump host {host} is not a TLS name")))?;
-    let connection = rustls::ClientConnection::new(Arc::new(config), server_name)
-        .map_err(|error| OsppError::Transport(error.to_string()))?;
-    Ok(rustls::StreamOwned::new(connection, stream))
 }
 
 #[cfg(test)]
@@ -852,9 +799,9 @@ mod tests {
 
     #[test]
     fn plaintext_dump_urls_are_loopback_only() {
-        assert!(parse_http_url("http://127.0.0.1:1234/dumps/x").is_ok());
-        assert!(parse_http_url("http://ci.example.com/dumps/x").is_err());
-        assert!(parse_http_url("https://ci.example.com/dumps/x").is_ok());
+        assert!(dump_url("http://127.0.0.1:1234/dumps/x").is_ok());
+        assert!(dump_url("http://ci.example.com/dumps/x").is_err());
+        assert!(dump_url("https://ci.example.com/dumps/x").is_ok());
     }
 
     #[test]

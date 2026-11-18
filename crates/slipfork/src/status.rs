@@ -9,12 +9,38 @@
 
 use std::collections::BTreeSet;
 
-use slipfork_edge::{
-    CacheOutcome, DaemonStatus, INGRESS_PORT, SeedLineage, WorldLineage, WorldSummary,
-    world_next_commands,
+use slipfork_edge::INGRESS_PORT;
+use slipfork_wire::control::{
+    CacheOutcome, DaemonStatus, SeedLineage, WorldLineage, WorldState, WorldSummary,
 };
 
 use crate::cli::implemented_commands;
+
+/// The `next` commands of one world state (`docs/design/dx-0.1.0-ux.md` §1 is the only table).
+///
+/// Rows are the bare `<verb>` commands of the state; a caller that renders a world other than the
+/// cwd-selected one appends its own `--world <WORLD>`, so the daemon never guesses a selector.
+#[must_use]
+pub fn world_next_commands(state: WorldState) -> Vec<String> {
+    let verbs: &[&str] = match state {
+        WorldState::Running => &["open", "db", "logs", "restart", "down"],
+        WorldState::Failed => &["logs", "restart", "down"],
+        WorldState::Stopped => &["up", "logs", "down"],
+    };
+    verbs
+        .iter()
+        .map(|verb| format!("slipfork {verb}"))
+        .collect()
+}
+
+/// The one lifecycle label rendered by `status`, `list`, and `ps`.
+pub fn world_state_label(state: WorldState) -> &'static str {
+    match state {
+        WorldState::Running => "running",
+        WorldState::Failed => "failed",
+        WorldState::Stopped => "stopped",
+    }
+}
 
 /// Width of one lineage digest in human output (`<digest12>` / `<key12>`, §8.2).
 const SHORT_DIGEST: usize = 12;
@@ -147,7 +173,7 @@ pub fn world_row(world: &WorldSummary, indent: &str, world_column: usize) -> Str
     format!(
         "{indent}{:<world_column$} {:<9} {:<40} {}\n",
         world.world,
-        world.state.label(),
+        world_state_label(world.state),
         world.origin.url(),
         world.worktree.display(),
     )
@@ -291,11 +317,56 @@ fn human_duration(millis: Option<u64>) -> String {
 }
 
 #[cfg(test)]
+mod next_table_tests {
+    use slipfork_wire::control::WorldState;
+
+    use super::*;
+
+    #[test]
+    fn world_next_commands_follow_the_one_state_table() {
+        let verbs = |state| world_next_commands(state);
+        assert_eq!(
+            verbs(WorldState::Running),
+            vec![
+                "slipfork open".to_owned(),
+                "slipfork db".to_owned(),
+                "slipfork logs".to_owned(),
+                "slipfork restart".to_owned(),
+                "slipfork down".to_owned(),
+            ]
+        );
+        assert_eq!(
+            verbs(WorldState::Failed),
+            vec![
+                "slipfork logs".to_owned(),
+                "slipfork restart".to_owned(),
+                "slipfork down".to_owned(),
+            ]
+        );
+        assert_eq!(
+            verbs(WorldState::Stopped),
+            vec![
+                "slipfork up".to_owned(),
+                "slipfork logs".to_owned(),
+                "slipfork down".to_owned(),
+            ]
+        );
+    }
+
+    #[test]
+    fn world_state_labels_are_the_lowercase_table() {
+        assert_eq!(world_state_label(WorldState::Running), "running");
+        assert_eq!(world_state_label(WorldState::Failed), "failed");
+        assert_eq!(world_state_label(WorldState::Stopped), "stopped");
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::path::PathBuf;
 
-    use slipfork_edge::{
+    use slipfork_wire::control::{
         BaseLineage, DaemonStatus, IngressInfo, RootfsLineage, SeedLineage, ServiceImageLineage,
         WorldLineage, WorldState,
     };

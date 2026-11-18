@@ -15,9 +15,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
-use slipfork_edge::daemon::{ExecTargetRequest, WorldSelector};
 use slipfork_edge::{DaemonControl, DaemonControlClient};
 use slipfork_ospp_testkit::{ReferenceOsppServer, ReferenceServerConfig};
+use slipfork_wire::control::{ExecTargetRequest, WorldSelector};
 
 pub mod support;
 use support::{
@@ -359,7 +359,7 @@ fn pushed_env_update_restarts_only_the_affected_component() {
         cwd: repo.clone(),
         world: None,
     };
-    let uptime = |rows: &slipfork_edge::WorldProcessReport, id: &str| {
+    let uptime = |rows: &slipfork_wire::control::WorldProcessReport, id: &str| {
         rows.services
             .iter()
             .find(|row| row.info.id == id)

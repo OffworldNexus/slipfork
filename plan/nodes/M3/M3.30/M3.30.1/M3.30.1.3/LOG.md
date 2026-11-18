@@ -23,3 +23,7 @@ edited fields
 ## 2026-11-18T22:46 [lead]
 
 scope gate: resplit into .1 engines/.2 rootfs/.3 CLI/.4 docs-tooling
+
+## 2026-11-19T00:02 [lead]
+
+status active -> done: 4/4 children done

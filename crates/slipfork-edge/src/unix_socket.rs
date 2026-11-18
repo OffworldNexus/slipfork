@@ -11,7 +11,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;
 
-use slipfork_engine::world_init::{UNIX_SOCKET_PATH_MAX, unix_socket_path_fits};
+use slipfork_wire::control::{UNIX_SOCKET_PATH_MAX, unix_socket_path_fits};
 
 use crate::EdgeError;
 

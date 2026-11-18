@@ -11,8 +11,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
-use slipfork_edge::daemon::ExecTargetRequest;
-use slipfork_edge::{DaemonControl, DaemonControlClient, DaemonErrorKind, EdgeError};
+use slipfork_edge::{DaemonControl, DaemonControlClient, EdgeError};
+use slipfork_wire::control::DaemonErrorKind;
+use slipfork_wire::control::ExecTargetRequest;
 
 pub mod support;
 use support::{Daemon, assert_success, repo_with_manifest, stderr, stdout};
@@ -91,7 +92,10 @@ fn glibc_repo(scratch: &Path) -> PathBuf {
 }
 
 /// Drive the entry command the daemon returned, exactly like the thin CLI does.
-fn run_entry(target: &slipfork_edge::WorldExecTarget, argv: &[&str]) -> std::process::ExitStatus {
+fn run_entry(
+    target: &slipfork_wire::control::WorldExecTarget,
+    argv: &[&str],
+) -> std::process::ExitStatus {
     let mut args = target.entry.args_prefix.clone();
     // `crun exec` takes the command directly after the container id; its own CLI does not strip a
     // trailing `--` separator (recorded as an engine follow-up in RESULT.md).

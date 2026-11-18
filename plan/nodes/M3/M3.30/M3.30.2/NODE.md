@@ -1,9 +1,8 @@
 ---
 id: M3.30.2
 title: "Split 3 god-files into cohesive structs, fix edge layering, replace hand-rolled HTTP/NDJSON wheels, persist ospp.json"
-kind: task
+kind: epic
 status: ready
-owner: implementer
 priority: 3
 depends_on: [M3.30.1]
 paths: [Cargo.toml, Cargo.lock, "crates/**", ARCHITECTURE.md]
@@ -11,7 +10,7 @@ attempts: 0
 max_attempts: 3
 escalation: none
 created: "2026-11-18T22:19"
-updated: "2026-11-18T22:19"
+updated: "2026-11-19T00:03"
 ---
 
 # Goal

@@ -409,7 +409,7 @@ fn serve_ingress(listener: TcpListener, host_ingress_sock: PathBuf) {
             let Ok(mut host) = UnixStream::connect(&host_ingress_sock) else {
                 return;
             };
-            let _ = slipfork_engine::relay::pipe(&mut stream, &mut host);
+            let _ = slipfork_wire::relay::pipe(&mut stream, &mut host);
         });
     }
 }

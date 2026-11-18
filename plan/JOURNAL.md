@@ -1566,3 +1566,23 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-18T23:52 [M3.30.1.3.4] (lead) attempt 1/3 started
 - 2026-11-18T23:52 [M3.30.1.3.4] (lead) base cf7aa28623c4f5ea09298d7f7a6df77f41d3a9f3
 - 2026-11-19T00:02 [M3.30.6] (lead) carry-over: docs/knowledge/LESSONS.md still references deleted tools/check_stub_adapters.py — update while recording lab lessons
+- 2026-11-19T00:02 [M3.30.1.3.4] (lead) status active -> done
+- 2026-11-19T00:02 [M3.30.1.3] (lead) status active -> done: 4/4 children done
+- 2026-11-19T00:02 [M3.30.1] (lead) status active -> done: 3/3 slices done; test-only engine doubles carried to M3.30.4
+- 2026-11-19T00:03 [M3.30.2] (lead) edited fields
+- 2026-11-19T00:03 [M3.30.2.1] (lead) created (task) Edge purity + canonical wheels: control module, relay out of engine, ureq/url, serde_json NDJSON, atomic write
+- 2026-11-19T00:03 [M3.30.2.2] (lead) created (task) Split daemon.rs into cohesive WorldSession/PostgresProvisioner/OsppSupervisor/PairingStore modules
+- 2026-11-19T00:03 [M3.30.2.3] (lead) created (task) Split btrfs_engine.rs + service.rs into BtrfsWorldEngine/OciContainerRuntime/SupervisedProcess
+- 2026-11-19T00:03 [M3.30.2.4] (lead) created (task) Composition root <250 LOC + CliApp/commands split + VcsCli struct
+- 2026-11-19T00:03 [M3.30.2.1] (lead) status ready -> active
+- 2026-11-19T00:03 [M3.30.2.1] (lead) attempt 1/3 started
+- 2026-11-19T00:03 [M3.30.2.1] (lead) base 349f921a72399b3f0c8e677d534c1d2e4e024a4b
+- 2026-11-19T00:06 [M3.30.2.1] (lead) edited fields
+- 2026-11-19T00:06 [M3.30.2.1.1] (lead) created (task) New slipfork-wire crate: DaemonControl types + socket framing + neutral relay; finish wheel swap
+- 2026-11-19T00:06 [M3.30.2.1.2] (lead) created (task) Extract WorldEngine port + world value types to slipfork-world; edge has zero engine dependency
+- 2026-11-19T00:06 [M3.30.2.1.1] (lead) status ready -> active
+- 2026-11-19T00:06 [M3.30.2.1.1] (lead) attempt 1/3 started
+- 2026-11-19T00:06 [M3.30.2.1.1] (lead) base 349f921a72399b3f0c8e677d534c1d2e4e024a4b; working tree already has green wheel swaps (ureq/url, tempfile persist) from M3.30.2.1
+- 2026-11-19T00:11 [M3.30.2.1.1] (lead) status active -> review
+- 2026-11-19T00:13 [M3.30.2.1.1] (lead) status review -> ready: triad: 1 BLOCKER (compat re-export curtain) + 4 MAJOR (CLI tables in wire, policy dup, path budget dup, ospp caps) — one pass
+- 2026-11-19T00:13 [M3.30.2.1.1] (lead) attempt 2/3 started

@@ -23,3 +23,7 @@ edited fields
 ## 2026-11-18T22:21 [lead]
 
 split into M3.30.1.1/.2/.3 (crate-DAG order) after needs_split; no code changes yet
+
+## 2026-11-19T00:02 [lead]
+
+status active -> done: 3/3 slices done; test-only engine doubles carried to M3.30.4

@@ -3,6 +3,7 @@ resolver = "3"
 members = [
   "crates/slipfork-world",
   "crates/slipfork-snow",
+  "crates/slipfork-wire",
   "crates/slipfork-dag",
   "crates/slipfork-engine",
   "crates/slipfork-edge",
@@ -30,7 +31,6 @@ httparse = "1.10.1"
 libc = "0.2.190"
 listenfd = "1.0.2"
 p256 = "0.14.0"
-rustls = "0.23.46"
 serde = { version = "1.0.228", features = ["derive"] }
 serde-saphyr = "2.1.1"
 serde_json = "1.0.149"
@@ -39,4 +39,5 @@ tempfile = "3.22.0"
 thiserror = "2.0.17"
 toml = "1.1.2"
 tungstenite = { version = "0.30.0", features = ["rustls-tls-webpki-roots"] }
-webpki-roots = "1.0.12"
+ureq = { version = "2.12.1", default-features = false, features = ["tls"] }
+url = "2.5.8"

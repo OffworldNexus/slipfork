@@ -28,11 +28,11 @@
 //!   [`daemon_unit_install::UnitInstaller`] the composition root builds over
 //!   `/etc/systemd/system` + `/etc/apparmor.d` (`ADR-0011` §1).
 //! - [`status`]: the bare `slipfork` / `slipfork status` dashboard and its single human lineage
-//!   line, rendered purely from the daemon's [`slipfork_edge::DaemonStatus`].
+//!   line, rendered purely from the daemon's [`slipfork_wire::control::DaemonStatus`].
 //! - [`restart`]: the one actionable `up` / `fork` / `restart` block and its `--json` document,
-//!   rendered purely from the daemon's [`slipfork_edge::WorldUpSummary`].
+//!   rendered purely from the daemon's [`slipfork_wire::control::WorldUpSummary`].
 //! - [`ps`]: the per-world process tree, rendered purely from the daemon's
-//!   [`slipfork_edge::WorldProcessReport`].
+//!   [`slipfork_wire::control::WorldProcessReport`].
 //! - [`open`]: world selection, the typed-origin hand-off to [`browser::Browser`], and the verified
 //!   `open --remote` SSH recipe.
 //! - [`browser`]: the one concrete desktop launcher over the Composition Root's resolved program.

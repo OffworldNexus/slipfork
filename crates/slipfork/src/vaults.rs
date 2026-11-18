@@ -12,10 +12,11 @@
 use std::sync::Arc;
 
 use slipfork_edge::vault::already_exists;
-use slipfork_edge::{DaemonError, DaemonErrorKind, EdgeError, SecretVault};
+use slipfork_edge::{EdgeError, SecretVault};
 use slipfork_snow::{
     FileVaultProvider, MutableSecretStore, Namespace, ProviderError, SecretProvider, SnowError,
 };
+use slipfork_wire::control::{DaemonError, DaemonErrorKind};
 use slipfork_world::ProjectSlug;
 
 use crate::layout::Layout;

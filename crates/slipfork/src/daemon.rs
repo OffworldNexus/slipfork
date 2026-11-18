@@ -25,15 +25,9 @@ use sha2::{Digest, Sha256};
 use slipfork_dag::{
     DumpPolicy, PgSeed, ResourceMode, ResourcePlan, ResourceStrategy, SlipforkConfig,
 };
-use slipfork_edge::daemon::{WorkspaceRefsRequest, WorkspaceRefsSummary};
 use slipfork_edge::forward::ForwardTargetSpec;
 use slipfork_edge::{
-    BootEvent, DaemonControl, DaemonError, DaemonErrorKind, DaemonStatus, DropForkRequest,
-    EdgeError, ExecTargetRequest, ForkRequest, ForwardRequest, ForwardSummary, HookRunRequest,
-    IngressInfo, IngressRoute, LogsRequest, PruneReport, ResourceSummary, SnowResolveRequest,
-    SnowResolveSummary, UpRequest, WorldExecTarget, WorldProcessReport, WorldRegistry,
-    WorldSelector, WorldServiceSummary, WorldState, WorldSummary, WorldUpSummary, parent_world,
-    world_id, world_next_commands,
+    DaemonControl, EdgeError, IngressRoute, WorldRegistry, parent_world, world_id,
 };
 use slipfork_engine::btrfs::KernelBtrfsDriver;
 use slipfork_engine::rootfs::{
@@ -60,6 +54,13 @@ use slipfork_vcs::{
     RepoRoot, RepoRootResolver, VcsWorkspace, VcsWorkspaceFactory, WORKTREES_DIRECTORY,
     WorkspaceRequest, sanitize_fork_name,
 };
+use slipfork_wire::control::{
+    BootEvent, DaemonError, DaemonErrorKind, DaemonStatus, DropForkRequest, ExecTargetRequest,
+    ForkRequest, ForwardRequest, ForwardSummary, HookRunRequest, IngressInfo, LogsRequest,
+    PruneReport, ResourceSummary, SnowResolveRequest, SnowResolveSummary, UpRequest,
+    WorkspaceRefsRequest, WorkspaceRefsSummary, WorldExecTarget, WorldProcessReport, WorldSelector,
+    WorldServiceSummary, WorldState, WorldSummary, WorldUpSummary,
+};
 use slipfork_world::{LocalHostRoute, ProjectSlug, WorldTarget, validate_fork_name};
 
 use slipfork_edge::SecretVault;
@@ -67,6 +68,7 @@ use slipfork_edge::SecretVault;
 use crate::browser::{APPROVAL_HINT_PREFIX, Browser};
 use crate::layout::{Layout, ensure_private_dir};
 use crate::project::{load_optional_slipfork_config, repository_resolver};
+use crate::status::world_next_commands;
 use crate::vaults::{LayoutProjectVaults, ProjectVaults};
 use crate::vcs::RepositoryWorkspaces;
 
@@ -643,13 +645,13 @@ fn check_rerun_policy(world: &str, held: BootPolicy, policy: BootPolicy) -> Resu
 
 /// The policy one `up`/`fork` request asks for from scratch.
 fn request_policy(
-    dump: slipfork_edge::DumpRequest,
-    resources: slipfork_edge::ResourceRequest,
+    dump: slipfork_wire::control::DumpRequest,
+    resources: slipfork_wire::control::ResourceRequest,
     host_caches: bool,
 ) -> BootPolicy {
     BootPolicy {
         dump: dump_policy(dump),
-        force_local_resources: matches!(resources, slipfork_edge::ResourceRequest::Local),
+        force_local_resources: matches!(resources, slipfork_wire::control::ResourceRequest::Local),
         host_caches,
     }
 }
@@ -662,16 +664,16 @@ fn request_policy(
 /// with one actionable line instead of dropping it.
 fn rerun_policy(
     held: BootPolicy,
-    dump: slipfork_edge::DumpRequest,
-    resources: slipfork_edge::ResourceRequest,
+    dump: slipfork_wire::control::DumpRequest,
+    resources: slipfork_wire::control::ResourceRequest,
     host_caches: bool,
 ) -> BootPolicy {
     BootPolicy {
         dump: match dump {
-            slipfork_edge::DumpRequest::Default => held.dump,
+            slipfork_wire::control::DumpRequest::Default => held.dump,
             explicit => dump_policy(explicit),
         },
-        force_local_resources: matches!(resources, slipfork_edge::ResourceRequest::Local)
+        force_local_resources: matches!(resources, slipfork_wire::control::ResourceRequest::Local)
             || held.force_local_resources,
         host_caches: host_caches || held.host_caches,
     }
@@ -2740,7 +2742,7 @@ impl DaemonControl for DaemonService {
                 info,
             })
             .collect();
-        WorldProcessReport::new(state, lineage, services)
+        WorldProcessReport::new(state, lineage, services).map_err(EdgeError::Control)
     }
 
     fn prune(&self, dry_run: bool) -> Result<PruneReport, EdgeError> {
@@ -2920,7 +2922,7 @@ impl DaemonControl for DaemonService {
     fn exec_target(
         &self,
         req: &ExecTargetRequest,
-    ) -> Result<slipfork_edge::WorldExecTarget, EdgeError> {
+    ) -> Result<slipfork_wire::control::WorldExecTarget, EdgeError> {
         let selection = self.select(&req.cwd, req.world.as_deref())?;
         let world = world_id(&selection.repo.project, &selection.target);
         let (handle, base_env, service) = {
@@ -2974,7 +2976,7 @@ impl DaemonControl for DaemonService {
             .engine
             .entry_command(&handle, &req.cwd)
             .map_err(|err| runtime_error(err.to_string()))?;
-        Ok(slipfork_edge::WorldExecTarget {
+        Ok(slipfork_wire::control::WorldExecTarget {
             world,
             origin,
             entry,
@@ -3154,7 +3156,7 @@ impl DaemonControl for DaemonService {
     fn auth_login(
         &self,
         endpoint_url: Option<&str>,
-    ) -> Result<slipfork_edge::AuthSummary, EdgeError> {
+    ) -> Result<slipfork_wire::control::AuthSummary, EdgeError> {
         let Some(client) = self.ospp.as_ref() else {
             return Err(rejected(
                 "this daemon has no OSPP endpoint; start `slipforkd` with `--ospp-endpoint <wss://...>`",
@@ -3195,12 +3197,12 @@ impl DaemonControl for DaemonService {
                 let _ = session.close();
             }
         }
-        Ok(slipfork_edge::AuthSummary {
+        Ok(slipfork_wire::control::AuthSummary {
             key_id: format!("p256:{}", self.signer.public_key_hex()),
             backend: "software:file-0600".to_owned(),
             account: Some(approval.account),
             machine: Some(approval.machine),
-            pairing_url: slipfork_edge::daemon::ControlSecret::new(
+            pairing_url: slipfork_wire::control::ControlSecret::new(
                 opened.ok_or_else(|| runtime_error("the OSPP server issued no pairing handle"))?,
             ),
         })
@@ -3625,11 +3627,11 @@ fn unknown_service(snow: &SnowFile, requested: &str) -> EdgeError {
     ))
 }
 
-fn dump_policy(request: slipfork_edge::DumpRequest) -> DumpPolicy {
+fn dump_policy(request: slipfork_wire::control::DumpRequest) -> DumpPolicy {
     match request {
-        slipfork_edge::DumpRequest::Default => DumpPolicy::Default,
-        slipfork_edge::DumpRequest::NoDump => DumpPolicy::NoDump,
-        slipfork_edge::DumpRequest::RefreshDump => DumpPolicy::RefreshDump,
+        slipfork_wire::control::DumpRequest::Default => DumpPolicy::Default,
+        slipfork_wire::control::DumpRequest::NoDump => DumpPolicy::NoDump,
+        slipfork_wire::control::DumpRequest::RefreshDump => DumpPolicy::RefreshDump,
     }
 }
 
@@ -4267,8 +4269,8 @@ mod tests {
         };
         let bare = rerun_policy(
             booted,
-            slipfork_edge::DumpRequest::Default,
-            slipfork_edge::ResourceRequest::Default,
+            slipfork_wire::control::DumpRequest::Default,
+            slipfork_wire::control::ResourceRequest::Default,
             false,
         );
         assert_eq!(bare, booted);
@@ -4277,8 +4279,8 @@ mod tests {
         // An explicit flag a rerun cannot apply is carried through and refused, never dropped.
         let explicit = rerun_policy(
             held,
-            slipfork_edge::DumpRequest::NoDump,
-            slipfork_edge::ResourceRequest::Local,
+            slipfork_wire::control::DumpRequest::NoDump,
+            slipfork_wire::control::ResourceRequest::Local,
             true,
         );
         assert_eq!(explicit.dump, DumpPolicy::NoDump);
@@ -4335,7 +4337,7 @@ mod tests {
         fn row(world: &str, id: &str, state: slipfork_engine::ServiceState) -> WorldServiceSummary {
             WorldServiceSummary {
                 world: world.to_owned(),
-                info: slipfork_edge::WorldServiceInfo {
+                info: slipfork_wire::control::WorldServiceInfo {
                     id: id.to_owned(),
                     kind: ServiceKind::Component,
                     state,
@@ -5040,8 +5042,8 @@ modes:
         let request = UpRequest {
             cwd: worktree.clone(),
             world: None,
-            dump: slipfork_edge::DumpRequest::Default,
-            resources: slipfork_edge::ResourceRequest::Default,
+            dump: slipfork_wire::control::DumpRequest::Default,
+            resources: slipfork_wire::control::ResourceRequest::Default,
             host_caches: false,
         };
         let up = service.up(&request, &mut |_| {}).expect("boot the world");
@@ -5163,8 +5165,8 @@ modes:
                 &UpRequest {
                     cwd: worktree.clone(),
                     world: None,
-                    dump: slipfork_edge::DumpRequest::Default,
-                    resources: slipfork_edge::ResourceRequest::Default,
+                    dump: slipfork_wire::control::DumpRequest::Default,
+                    resources: slipfork_wire::control::ResourceRequest::Default,
                     host_caches: false,
                 },
                 &mut |_| {},
@@ -5225,8 +5227,8 @@ modes:
                 &UpRequest {
                     cwd: worktree.clone(),
                     world: None,
-                    dump: slipfork_edge::DumpRequest::Default,
-                    resources: slipfork_edge::ResourceRequest::Default,
+                    dump: slipfork_wire::control::DumpRequest::Default,
+                    resources: slipfork_wire::control::ResourceRequest::Default,
                     host_caches: false,
                 },
                 &mut |_| {},
@@ -5296,8 +5298,8 @@ modes:
                 &UpRequest {
                     cwd: worktree.clone(),
                     world: None,
-                    dump: slipfork_edge::DumpRequest::Default,
-                    resources: slipfork_edge::ResourceRequest::Default,
+                    dump: slipfork_wire::control::DumpRequest::Default,
+                    resources: slipfork_wire::control::ResourceRequest::Default,
                     host_caches: false,
                 },
                 &mut |_| {},

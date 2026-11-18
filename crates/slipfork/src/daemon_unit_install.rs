@@ -24,12 +24,14 @@
 
 #![forbid(unsafe_code)]
 
-use std::ffi::{OsStr, OsString};
-use std::fs::{self, OpenOptions};
+use std::ffi::OsStr;
+use std::fs;
 use std::io::{self, Write as _};
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+
+use tempfile::NamedTempFile;
 
 use crate::apparmor::render_userns_profile;
 use crate::layout::Layout;
@@ -119,48 +121,34 @@ impl UnitInstaller {
         }
     }
 
-    /// Write one `0644` file through a same-directory temporary file and `rename`.
-    fn write_file_atomic(&self, path: &Path, contents: &[u8]) -> Result<(), String> {
+    /// Write one `0644` file through a same-directory temporary file and `persist` (rename).
+    fn persist_file(&self, path: &Path, contents: &[u8]) -> Result<(), String> {
         let parent = path
             .parent()
             .ok_or_else(|| format!("{} has no parent directory", path.display()))?;
-        let file_name = path
-            .file_name()
-            .ok_or_else(|| format!("{} has no file name", path.display()))?;
-        let mut temp_name = OsString::from(".");
-        temp_name.push(file_name);
-        temp_name.push(".slipfork-tmp");
-        let temp_path = parent.join(temp_name);
-        let written = (|| -> io::Result<()> {
-            let mut file = OpenOptions::new()
-                .write(true)
-                .create(true)
-                .truncate(true)
-                .mode(0o644)
-                .open(&temp_path)?;
-            file.write_all(contents)?;
-            file.sync_all()
-        })();
-        if let Err(err) = written {
-            let _ = fs::remove_file(&temp_path);
-            return Err(format!(
-                "cannot write {} via {}: {err}",
-                path.display(),
-                temp_path.display()
-            ));
-        }
-        fs::rename(&temp_path, path).map_err(|err| {
-            let _ = fs::remove_file(&temp_path);
+        let mut temp = NamedTempFile::new_in(parent).map_err(|err| {
             format!(
-                "cannot rename {} to {}: {err}",
-                temp_path.display(),
+                "cannot create a temporary file beside {}: {err}",
                 path.display()
             )
         })?;
-        // The mode is part of the contract: a rewritten unit is always a systemd-readable `0644`.
-        fs::set_permissions(path, fs::Permissions::from_mode(0o644))
-            .map_err(|err| format!("cannot set the mode of {}: {err}", path.display()))?;
-        // A crash after `rename` must never leave a zero-length unit: persist the directory entry.
+        let written = (|| -> io::Result<()> {
+            temp.write_all(contents)?;
+            // The mode is part of the contract: a rewritten unit is always a systemd-readable `0644`.
+            temp.as_file()
+                .set_permissions(fs::Permissions::from_mode(0o644))?;
+            temp.as_file().sync_all()
+        })();
+        if let Err(err) = written {
+            return Err(format!("cannot write {}: {err}", path.display()));
+        }
+        temp.persist(path).map_err(|err| {
+            format!(
+                "cannot rename the temporary file over {}: {err}",
+                path.display()
+            )
+        })?;
+        // A crash after `persist` must never leave a zero-length unit: persist the directory entry.
         fs::File::open(parent)
             .and_then(|directory| directory.sync_all())
             .map_err(|err| format!("cannot fsync {}: {err}", parent.display()))
@@ -433,7 +421,7 @@ pub fn install(
             statuses.push(FileStatus::Unchanged);
         } else {
             installer
-                .write_file_atomic(path, contents.as_bytes())
+                .persist_file(path, contents.as_bytes())
                 .map_err(converge_after_failure)?;
             statuses.push(FileStatus::Wrote);
         }

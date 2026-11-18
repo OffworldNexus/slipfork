@@ -8,6 +8,7 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+slipfork-wire = { path = "../slipfork-wire" }
 httparse.workspace = true
 listenfd.workspace = true
 serde.workspace = true

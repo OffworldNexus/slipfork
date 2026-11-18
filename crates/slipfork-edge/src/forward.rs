@@ -15,8 +15,8 @@ use std::time::Duration;
 use slipfork_engine::{WorldEngine, WorldHandle};
 
 use crate::EdgeError;
-use crate::daemon::{ForwardSummary, ForwardTarget};
-use slipfork_engine::relay::pipe;
+use slipfork_wire::control::{ForwardSummary, ForwardTarget};
+use slipfork_wire::relay::pipe;
 
 /// How often a non-blocking accept loop re-checks its stop flag (bounds teardown latency).
 const ACCEPT_POLL: Duration = Duration::from_millis(25);

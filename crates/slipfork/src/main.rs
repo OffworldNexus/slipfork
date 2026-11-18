@@ -37,14 +37,14 @@ use slipfork::doctor::{
 use slipfork::layout::{Layout, absolute_path, ensure_private_dir};
 use slipfork::project::repository_resolver;
 use slipfork::user::{UserIdentity, account_name, kernel_hostname};
-use slipfork_edge::{
-    BootEvent, DaemonControl, DaemonControlClient, DropForkRequest, ExecTargetRequest, ForkRequest,
-    ForwardRequest, ForwardSummary, HookRunRequest, LogsRequest, SnowResolveRequest, UpRequest,
-    WorldSelector, render_service_unit, render_socket_unit,
-};
+use slipfork_edge::{DaemonControl, DaemonControlClient, render_service_unit, render_socket_unit};
 use slipfork_engine::btrfs::KernelBtrfsDriver;
 use slipfork_engine::current_uid_gid;
 use slipfork_snow::SnowFile;
+use slipfork_wire::control::{
+    BootEvent, DropForkRequest, ExecTargetRequest, ForkRequest, ForwardRequest, ForwardSummary,
+    HookRunRequest, LogsRequest, SnowResolveRequest, UpRequest, WorldSelector,
+};
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
@@ -848,7 +848,7 @@ fn exec(
 
 /// Enter a world (or a backing-service container) with native terminal stdio.
 fn spawn_entry(
-    target: &slipfork_edge::WorldExecTarget,
+    target: &slipfork_wire::control::WorldExecTarget,
 ) -> Result<std::process::ExitStatus, String> {
     // `crun exec` takes the command directly after the container id and does not strip a
     // trailing `--` separator, so drop it before appending the interactive argv.
@@ -1306,7 +1306,7 @@ fn block_options(verbose: bool, qualify_next: bool) -> slipfork::restart::Option
 
 /// Print the `up` / `fork` / `restart` result: the `--json` document or the human block.
 ///
-/// Under `--json` the daemon's [`slipfork_edge::WorldUpSummary`] is serialized as-is (one
+/// Under `--json` the daemon's [`slipfork_wire::control::WorldUpSummary`] is serialized as-is (one
 /// projection, never a hand-built subset) with the envelope's `ok`. In human mode exactly one
 /// advisory stderr line announces a daemon that is not bound to `:80` (§2 rule 4); it is never
 /// written to stdout and never under `--json`.
@@ -1315,7 +1315,7 @@ fn print_world_up(
     client: &DaemonControlClient,
     verb: slipfork::restart::Verb,
     options: slipfork::restart::Options,
-    summary: &slipfork_edge::WorldUpSummary,
+    summary: &slipfork_wire::control::WorldUpSummary,
 ) -> Result<(), String> {
     if json {
         println!("{}", render_json(&slipfork::restart::json(summary)?)?);

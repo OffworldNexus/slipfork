@@ -6,10 +6,10 @@
 //! `None` pid/port/uptime renders `-` — never an invented `0`. `ps` is the per-world process view;
 //! [`crate::status`] is the fleet view.
 
-use slipfork_edge::{ServiceKind, WorldProcessReport};
 use slipfork_engine::ServiceState;
+use slipfork_wire::control::{ServiceKind, WorldProcessReport};
 
-use crate::status::render_lineage;
+use crate::status::{render_lineage, world_state_label};
 
 /// Width of the block's label column (`state     `, `lineage   `), shared with `restart`'s block.
 const LABEL_WIDTH: usize = 10;
@@ -26,7 +26,7 @@ pub fn render(report: &WorldProcessReport) -> String {
     out.push_str(&format!(
         "{:<LABEL_WIDTH$}{}\n",
         "state",
-        report.state.label()
+        world_state_label(report.state)
     ));
     out.push_str(&format!(
         "{:<LABEL_WIDTH$}{}\n",
@@ -135,11 +135,11 @@ fn dash_len<T: std::fmt::Display>(value: Option<T>) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use slipfork_edge::{
+    use slipfork_engine::WorldServiceInfo;
+    use slipfork_wire::control::{
         BaseLineage, CacheOutcome, RootfsLineage, SeedLineage, ServiceImageLineage, WorldLineage,
         WorldServiceSummary, WorldState,
     };
-    use slipfork_engine::WorldServiceInfo;
 
     use super::*;
 

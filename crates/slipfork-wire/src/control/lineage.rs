@@ -1,21 +1,19 @@
-//! Per-world build lineage and service-row data shared by the engine and the daemon wire.
+//! Per-world build lineage and service-row view values carried by the control wire.
 //!
-//! These are the engine's own records: a world's rootfs/base/seed/service-image facts and one row
-//! per supervised service. They carry no OS handles, no paths, and no clock: `millis`,
-//! `uptime_secs`, and every other measured fact are stamped by the engine from its injected clock
-//! before the value leaves the engine. `slipfork-edge` re-exports them for the `DaemonControl`
-//! wire, so there is exactly one model (no mapping between two identical structs).
+//! These are plain recorded facts: a world's rootfs/base/seed/service-image lineage and one row
+//! per supervised service. They carry no OS handles, no paths, and no clock — `millis` and
+//! `uptime_secs` are stamped by the engine before the value leaves it.
 
 use serde::{Deserialize, Serialize};
 
-use crate::ServiceState;
+use super::stream::ServiceState;
 
 /// One world's build lineage.
 ///
 /// Every fact is recorded on **that world's** engine handle when the world boots: the rootfs and
-/// per-service image facts come from the [`crate::WorldSpec`]'s materialized
-/// [`crate::WorldRootfs`] (cache outcome and build `millis` measured on the shared injected
-/// clock), and the base/seed facts come from [`BootLineage`], which the seeder measured. An
+/// per-service image facts come from the engine world spec's materialized
+/// the materialized world rootfs (cache outcome and build `millis` measured on the shared injected
+/// clock), and the base/seed facts come from the engine base/seed lineage, which the seeder measured. An
 /// unknown fact is `None` and renders `-` in human output, never `0` and never an invented value;
 /// there is no placeholder constructor, so a world with no recorded fact is the all-`None` value
 /// built from its own (empty) records.
@@ -29,21 +27,6 @@ pub struct WorldLineage {
     pub seed: Option<SeedLineage>,
     /// Base snapshot key plus its seal duration, when the boot recorded one.
     pub base: Option<BaseLineage>,
-}
-
-/// The base-snapshot and seed facts a world boots from, recorded on that world's handle.
-///
-/// `WorldEngine::clone_world` copies them verbatim into the cloned world's [`WorldLineage`]; it
-/// never estimates a seal duration or a seed verdict. The seeder fills them: `base.millis` is
-/// `Some(ms)` when it sealed the base for this world and `None` when the sealed snapshot already
-/// existed, and `seed.rebuilt` is `Some(true)` when it restored a dump into the base, `Some(false)`
-/// when it reused an already-sealed base, and `None` when the world ships no seed dump at all.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct BootLineage {
-    /// Base snapshot key (full 64-hex) and its seal duration.
-    pub base: Option<BaseLineage>,
-    /// Seed dump digest, rebuild verdict, and measured duration.
-    pub seed: Option<SeedLineage>,
 }
 
 /// The world rootfs build's digest, cache outcome, and measured duration.

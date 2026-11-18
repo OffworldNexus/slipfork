@@ -27,18 +27,18 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use slipfork_edge::daemon::{
-    AuthSummary, BaseLineage, BootEvent, CacheOutcome, DaemonControl, DaemonError, DaemonErrorKind,
-    DaemonStatus, DropForkRequest, DumpRequest, ExecTargetRequest, ForkRequest, ForwardRequest,
-    ForwardSummary, HookRunRequest, IngressInfo, LogsRequest, PruneReport, ResourceRequest,
-    ResourceSummary, RootfsLineage, SeedLineage, ServiceImageLineage, ServiceKind, UpRequest,
-    WorldExecTarget, WorldLineage, WorldProcessReport, WorldSelector, WorldServiceSummary,
-    WorldState, WorldSummary, WorldUpSummary,
-};
 use slipfork_edge::{
-    DaemonControlClient, DaemonControlServer, EdgeError, ForwardTargetSpec, HttpIngress,
-    IngressRoute, ListenConfig, UnitSpec, WorldRegistry, adopt_systemd_listener, bind_listen,
-    render_service_unit, render_socket_unit, resolve_listener_set,
+    DaemonControl, DaemonControlClient, DaemonControlServer, EdgeError, ForwardTargetSpec,
+    HttpIngress, IngressRoute, ListenConfig, UnitSpec, WorldRegistry, adopt_systemd_listener,
+    bind_listen, render_service_unit, render_socket_unit, resolve_listener_set,
+};
+use slipfork_wire::control::{
+    AuthSummary, BaseLineage, BootEvent, CacheOutcome, DaemonError, DaemonErrorKind, DaemonStatus,
+    DropForkRequest, DumpRequest, ExecTargetRequest, ForkRequest, ForwardRequest, ForwardSummary,
+    HookRunRequest, IngressInfo, LogsRequest, PruneReport, ResourceRequest, ResourceSummary,
+    RootfsLineage, SeedLineage, ServiceImageLineage, ServiceKind, UpRequest, WorldExecTarget,
+    WorldLineage, WorldProcessReport, WorldSelector, WorldServiceSummary, WorldState, WorldSummary,
+    WorldUpSummary,
 };
 #[path = "../../slipfork-engine/tests/conformance/mod.rs"]
 mod conformance;
@@ -1935,7 +1935,13 @@ impl TestControl {
                 resolved: "local".to_owned(),
                 reason: "OSPP unpaired".to_owned(),
             }],
-            next: slipfork_edge::world_next_commands(WorldState::Running),
+            next: vec![
+                "slipfork open".to_owned(),
+                "slipfork db".to_owned(),
+                "slipfork logs".to_owned(),
+                "slipfork restart".to_owned(),
+                "slipfork down".to_owned(),
+            ],
         })
     }
 }
@@ -2051,6 +2057,7 @@ impl DaemonControl for TestControl {
                 service_row(&world, "api", ServiceKind::Component, ServiceState::Running),
             ],
         )
+        .map_err(EdgeError::Control)
     }
 
     fn prune(&self, dry_run: bool) -> Result<PruneReport, EdgeError> {
@@ -2162,7 +2169,7 @@ impl DaemonControl for TestControl {
             backend: "software:file-0600".to_owned(),
             account: Some("developer".to_owned()),
             machine: Some("dev-laptop".to_owned()),
-            pairing_url: slipfork_edge::daemon::ControlSecret::new(
+            pairing_url: slipfork_wire::control::ControlSecret::new(
                 "https://ospp.example/pair#handle=abc",
             ),
         })
@@ -2453,7 +2460,7 @@ fn daemon_control_round_trip_and_frame_cap() {
     let mut raw = UnixStream::connect(&socket).expect("connect raw");
     raw.set_read_timeout(Some(Duration::from_secs(20)))
         .expect("bound reads");
-    raw.write_all(&vec![b'a'; slipfork_edge::daemon::MAX_CONTROL_FRAME + 16])
+    raw.write_all(&vec![b'a'; slipfork_wire::control::MAX_CONTROL_FRAME + 16])
         .expect("write an oversized frame");
     raw.write_all(b"\n").expect("terminate the oversized frame");
     let mut refusal = String::new();
@@ -2463,37 +2470,6 @@ fn daemon_control_round_trip_and_frame_cap() {
         "an oversized frame must be refused with a typed error, got:\n{refusal}"
     );
     let _ = fs::remove_dir_all(&state);
-}
-
-#[test]
-fn world_next_commands_follow_the_one_state_table() {
-    let verbs = |state| -> Vec<String> { slipfork_edge::world_next_commands(state) };
-    assert_eq!(
-        verbs(WorldState::Running),
-        vec![
-            "slipfork open".to_owned(),
-            "slipfork db".to_owned(),
-            "slipfork logs".to_owned(),
-            "slipfork restart".to_owned(),
-            "slipfork down".to_owned(),
-        ]
-    );
-    assert_eq!(
-        verbs(WorldState::Failed),
-        vec![
-            "slipfork logs".to_owned(),
-            "slipfork restart".to_owned(),
-            "slipfork down".to_owned(),
-        ]
-    );
-    assert_eq!(
-        verbs(WorldState::Stopped),
-        vec![
-            "slipfork up".to_owned(),
-            "slipfork logs".to_owned(),
-            "slipfork down".to_owned(),
-        ]
-    );
 }
 
 #[test]
@@ -2516,7 +2492,13 @@ fn world_up_summary_carries_the_documented_fields_and_joins_restarted_ids() {
             service_row("acme", "api", ServiceKind::Component, ServiceState::Running),
         ],
         resources: Vec::new(),
-        next: slipfork_edge::world_next_commands(WorldState::Running),
+        next: vec![
+            "slipfork open".to_owned(),
+            "slipfork db".to_owned(),
+            "slipfork logs".to_owned(),
+            "slipfork restart".to_owned(),
+            "slipfork down".to_owned(),
+        ],
     };
     let json = serde_json::to_value(&summary).expect("serialize the up summary");
     let mut keys: Vec<&str> = json
@@ -3170,18 +3152,19 @@ fn ingress_info_round_trips_port_80_and_ephemeral_binds() {
 
     // Fail closed: no listener, an unbound `:0`, or listeners that disagree on the port.
     assert!(matches!(
-        IngressInfo::new(Vec::new()),
+        IngressInfo::new(Vec::new()).map_err(EdgeError::from),
         Err(EdgeError::IngressMissing)
     ));
     assert!(matches!(
-        IngressInfo::new(vec!["127.0.0.1:0".parse().expect("port 0")]),
+        IngressInfo::new(vec!["127.0.0.1:0".parse().expect("port 0")]).map_err(EdgeError::from),
         Err(EdgeError::IngressPortInvalid { .. })
     ));
     assert!(matches!(
         IngressInfo::new(vec![
             "127.0.0.1:80".parse().expect("port 80"),
             "[::1]:8080".parse().expect("port 8080"),
-        ]),
+        ])
+        .map_err(EdgeError::from),
         Err(EdgeError::IngressPortInvalid { .. })
     ));
     // A forged frame whose `port` is not carried by `addrs` is a typed error, never a silent pass.

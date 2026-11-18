@@ -16,11 +16,8 @@ pub mod btrfs;
 pub mod btrfs_engine;
 pub mod child_env;
 pub mod clock;
-pub mod env;
-pub mod lineage;
 pub mod linux_cow;
 pub mod oci;
-pub mod relay;
 pub mod rootfs;
 pub mod service;
 pub mod world_init;
@@ -35,16 +32,25 @@ use thiserror::Error;
 
 pub use btrfs_engine::BtrfsEngine;
 pub use clock::elapsed_millis;
-pub use env::{ExecEnv, InheritedVar};
-pub use lineage::{
-    BaseLineage, BootLineage, CacheOutcome, RootfsLineage, SeedLineage, ServiceImageLineage,
-    ServiceKind, WorldLineage, WorldServiceInfo,
-};
 pub use linux_cow::current_uid_gid;
 pub use rootfs::{BackingServiceKey, OciRootfs, WorldRootfs};
 pub use service::ServiceLogs;
+pub use slipfork_wire::control::{
+    BaseLineage, CacheOutcome, ExecEnv, InheritedVar, LogChunk, RootfsLineage, SeedLineage,
+    ServiceImageLineage, ServiceKind, ServiceState, StreamChunk, StreamSource, WorldEntryCommand,
+    WorldLineage, WorldServiceInfo,
+};
 
 use slipfork_world::WorldTarget;
+
+/// Decode the engine's own supervision cell (`ServiceState::to_bits` is the wire form).
+fn service_state_from_bits(bits: u8) -> ServiceState {
+    match bits {
+        0 => ServiceState::Running,
+        1 => ServiceState::Exited,
+        _ => ServiceState::Stopped,
+    }
+}
 
 /// Single AppArmor/user-namespace remediation formatter (`ADR-0010` §4, §7).
 ///
@@ -69,6 +75,21 @@ pub fn userns_remediation_hint(bin_dir: &Path) -> String {
          /{{{bin_clause},usr/bin/unshare,.slipfork/bin/crun}} flags=(unconfined) {{ userns, }}`), \
          then reload it with `sudo apparmor_parser -r /etc/apparmor.d/slipfork`"
     )
+}
+
+/// The base-snapshot and seed facts a world boots from, recorded on that world's handle.
+///
+/// `WorldEngine::clone_world` copies them verbatim into the cloned world's [`WorldLineage`];
+/// the seeder fills them: `base.millis` is `Some(ms)` when it sealed the base for this world and
+/// `None` when the sealed snapshot already existed, and `seed.rebuilt` is `Some(true)` when it
+/// restored a dump into the base, `Some(false)` when it reused an already-sealed base, and `None`
+/// when the world ships no seed dump at all.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BootLineage {
+    /// Base snapshot key (full 64-hex) and its seal duration.
+    pub base: Option<BaseLineage>,
+    /// Seed dump digest, rebuild verdict, and measured duration.
+    pub seed: Option<SeedLineage>,
 }
 
 /// Stable filesystem label for a world target (fork/slot names are already validated DNS labels).
@@ -316,153 +337,6 @@ pub struct StateSubdirMount {
     pub container_path: PathBuf,
 }
 
-/// Lifecycle state of one world-owned service.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ServiceState {
-    /// The service process is alive.
-    Running,
-    /// The service process exited on its own (crash or clean exit); it is never restarted.
-    Exited,
-    /// [`WorldEngine::stop_service`] (or a parent world teardown/freeze) stopped it.
-    Stopped,
-}
-
-impl ServiceState {
-    /// The bit representation an out-of-crate [`WorldEngine`] adapter stores in the supervision
-    /// cell it mints [`ServiceHandle`]s over.
-    pub fn to_bits(self) -> u8 {
-        match self {
-            Self::Running => 0,
-            Self::Exited => 1,
-            Self::Stopped => 2,
-        }
-    }
-
-    fn from_bits(bits: u8) -> Self {
-        match bits {
-            0 => Self::Running,
-            1 => Self::Exited,
-            _ => Self::Stopped,
-        }
-    }
-}
-
-/// Opaque handle to one supervised service inside a live world.
-///
-/// Minted only by an engine. Its [`fmt::Debug`] exposes the service id and lifecycle state —
-/// never a filesystem path, environment value, or process id.
-#[derive(Clone)]
-pub struct ServiceHandle {
-    world: WorldHandle,
-    id: String,
-    state: Arc<AtomicU8>,
-}
-
-impl ServiceHandle {
-    pub(crate) fn mint(world: WorldHandle, id: impl Into<String>, state: Arc<AtomicU8>) -> Self {
-        Self {
-            world,
-            id: id.into(),
-            state,
-        }
-    }
-
-    /// World the service belongs to.
-    pub fn world(&self) -> &WorldHandle {
-        &self.world
-    }
-
-    /// Stable service id (`api`, `postgres`, `redis`).
-    pub fn id(&self) -> &str {
-        &self.id
-    }
-
-    /// Current lifecycle state (never silently restarted after `Exited`).
-    pub fn state(&self) -> ServiceState {
-        ServiceState::from_bits(self.state.load(Ordering::Relaxed))
-    }
-}
-
-impl fmt::Debug for ServiceHandle {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("ServiceHandle")
-            .field("world", &self.world)
-            .field("id", &self.id)
-            .field("state", &self.state())
-            .finish()
-    }
-}
-
-/// Engine-supplied argv prefix for entering a live world inheriting the caller's native stdio.
-///
-/// The thin `slipfork` CLI spawns `program` with `args_prefix` followed by the target argv,
-/// `cwd` as its working directory, and native `Stdio::inherit()` — zero `SCM_RIGHTS` descriptors
-/// cross the CLI <-> `slipforkd` boundary (`H-010` #1).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WorldEntryCommand {
-    /// Executable of the engine's entry program (for example `nsenter`).
-    pub program: PathBuf,
-    /// Arguments that must precede the target argv.
-    ///
-    /// The entry program starts the target in a directory that exists **inside** the world: a
-    /// host pathname is unreachable after the world's `pivot_root`, so the entry shell's first
-    /// `getcwd(2)` would fail there.
-    pub args_prefix: Vec<String>,
-    /// Working directory of the process that spawns [`Self::program`].
-    ///
-    /// `/` on purpose: it is the one directory that exists both on the host and inside every
-    /// world rootfs, so the spawner can `chdir` before `exec`ing the entry program without
-    /// touching a path the world owns.
-    pub cwd: PathBuf,
-}
-
-/// Which child stream a chunk came from.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum StreamSource {
-    /// Child stdout.
-    Stdout,
-    /// Child stderr.
-    Stderr,
-}
-
-/// One streamed chunk of child output.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct StreamChunk {
-    /// Originating stream.
-    pub source: StreamSource,
-    /// Raw bytes (not necessarily UTF-8).
-    pub bytes: Vec<u8>,
-}
-
-/// One attributed chunk of a **retained** component/hook log.
-///
-/// [`StreamChunk`] is the un-attributed stream a live exec or hook run yields; a retained log chunk
-/// also names the component or hook id it came from, so `slipfork logs` can attribute interleaved
-/// output from several sources without the renderer guessing which service produced which line.
-/// The id is the engine's own record ([`ServiceLogs::target`]) for a service and the daemon's hook
-/// record for a hook — never the caller's request string.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct LogChunk {
-    /// Component id (`api`) or hook id (`api:pre-deploy`) that produced the bytes.
-    pub target: String,
-    /// Originating stream.
-    pub source: StreamSource,
-    /// Raw bytes (not necessarily UTF-8).
-    pub bytes: Vec<u8>,
-}
-
-impl LogChunk {
-    /// Attribute one retained [`StreamChunk`] to the component/hook `target` that produced it.
-    pub fn attribute(target: impl Into<String>, chunk: StreamChunk) -> Self {
-        Self {
-            target: target.into(),
-            source: chunk.source,
-            bytes: chunk.bytes,
-        }
-    }
-}
-
 /// Result of running [`WorldEngine::exec_in_world`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExecOutput {
@@ -552,6 +426,61 @@ pub enum EngineError {
     Execution(String),
     #[error("engine I/O error at {path}: {message}")]
     Io { path: String, message: String },
+}
+
+/// Opaque handle to one supervised service inside a live world.
+///
+/// Minted only by an engine. Its [`fmt::Debug`] exposes the service id and lifecycle state —
+/// never a filesystem path, environment value, or process id.
+#[derive(Clone)]
+pub struct ServiceHandle {
+    world: WorldHandle,
+    id: String,
+    state: Arc<AtomicU8>,
+}
+
+impl ServiceHandle {
+    pub(crate) fn mint(world: WorldHandle, id: impl Into<String>, state: Arc<AtomicU8>) -> Self {
+        Self {
+            world,
+            id: id.into(),
+            state,
+        }
+    }
+
+    /// World the service belongs to.
+    pub fn world(&self) -> &WorldHandle {
+        &self.world
+    }
+
+    /// Stable service id (`api`, `postgres`, `redis`).
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    /// Current lifecycle state (never silently restarted after `Exited`).
+    pub fn state(&self) -> ServiceState {
+        service_state_from_bits(self.state.load(Ordering::Relaxed))
+    }
+}
+
+impl fmt::Debug for ServiceHandle {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ServiceHandle")
+            .field("world", &self.world)
+            .field("id", &self.id)
+            .field("state", &self.state())
+            .finish()
+    }
+}
+
+impl From<slipfork_wire::control::EnvNameError> for EngineError {
+    fn from(err: slipfork_wire::control::EnvNameError) -> Self {
+        Self::InvalidEnvName {
+            name: err.name,
+            reason: err.reason,
+        }
+    }
 }
 
 /// Lifecycle state of a world inside one engine instance.

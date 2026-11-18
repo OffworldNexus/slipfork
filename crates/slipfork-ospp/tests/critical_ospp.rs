@@ -398,3 +398,45 @@ fn dump_stream_restores_and_a_truncated_tail_fails_closed() {
 fn sealed_rng() -> slipfork_ospp_testkit::SeededEntropy {
     slipfork_ospp_testkit::SeededEntropy::new(0xfeed_beef)
 }
+
+#[test]
+fn dump_http_transport_fails_closed_on_bad_framing() {
+    use std::io::{Read as _, Write as _};
+    use std::net::TcpListener;
+    use std::time::Duration;
+
+    fn serve_once(response: Vec<u8>) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+        let addr = listener.local_addr().expect("local addr");
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept the dump GET");
+            let mut request = [0_u8; 1024];
+            let _ = stream.read(&mut request);
+            let _ = stream.write_all(&response);
+            let _ = stream.flush();
+        });
+        format!("http://{addr}/dumps/token")
+    }
+
+    // A response header block above the 16 KiB cap is refused before the body is read.
+    let oversized = format!(
+        "HTTP/1.1 200 OK\r\ncontent-length: 1\r\nx-pad: {}\r\n\r\nx",
+        "a".repeat(16 * 1024)
+    );
+    let error = slipfork_ospp::open_dump_stream(
+        &serve_once(oversized.into_bytes()),
+        Duration::from_secs(5),
+    )
+    .err()
+    .expect("oversized response headers must fail closed");
+    assert!(error.to_string().contains("header"), "{error}");
+
+    // A body with no content-length is refused instead of being read to EOF.
+    let error = slipfork_ospp::open_dump_stream(
+        &serve_once(b"HTTP/1.1 200 OK\r\nconnection: close\r\n\r\nbody".to_vec()),
+        Duration::from_secs(5),
+    )
+    .err()
+    .expect("a missing content-length must fail closed");
+    assert!(error.to_string().contains("content-length"), "{error}");
+}
