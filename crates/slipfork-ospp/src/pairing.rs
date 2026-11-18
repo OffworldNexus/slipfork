@@ -1,15 +1,15 @@
 //! Fragment-only browser pairing and the ALTCHA proof-of-work solver.
 //!
 //! The client never computes the pairing URL: it appends `#handle=<handle>` to the
-//! server-supplied `pair_handle.url` and hands the result to the injected
-//! [`BrowserOpener`]. The single-use handle never appears in a path or query.
+//! server-supplied `pair_handle.url` and hands the validated [`LivePairingUrl`] to the
+//! caller's `on_handle` callback while the handshake waits for approval. The single-use
+//! handle never appears in a path or query.
 
 use std::fmt;
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use sha2::{Digest, Sha256};
-use slipfork_world::WorldOrigin;
 
 use crate::error::OsppError;
 
@@ -83,19 +83,6 @@ impl Drop for LivePairingUrl {
         let zeros = "0".repeat(self.url.len() - self.handle_offset);
         self.url.replace_range(self.handle_offset.., &zeros);
     }
-}
-
-/// Neutral browser-launch port.
-///
-/// The production `SystemBrowserOpener` lives in `crates/slipfork/src/browser.rs`
-/// and is constructed from resolved environment inputs at the Composition Root,
-/// keeping `slipfork-ospp` free of OS and environment access.
-pub trait BrowserOpener: Send + Sync {
-    /// Open the server-supplied `<url>#handle=<handle>` pairing page.
-    fn open_pairing_url(&self, url: LivePairingUrl) -> Result<(), OsppError>;
-
-    /// Open a world's validated `.localhost` origin.
-    fn open_origin(&self, origin: &WorldOrigin) -> Result<(), OsppError>;
 }
 
 /// Solve the server's ALTCHA proof-of-work challenge and return the opaque

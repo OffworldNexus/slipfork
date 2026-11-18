@@ -62,7 +62,7 @@ fn production_slipforkd_is_btrfs_only_and_boots_a_real_world_on_btrfs() {
 
     if !support::host_is_btrfs(&layout.state_dir) {
         // The one child-daemon argv/env builder, with its stderr captured for the refusal proof.
-        let (mut command, _browser_marker) = daemon_command(scratch, &layout);
+        let mut command = daemon_command(scratch, &layout);
         let output = command
             .stderr(Stdio::piped())
             .output()

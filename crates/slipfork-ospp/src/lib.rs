@@ -12,8 +12,8 @@
 //! - [`keys::SubscriptionKey`]: a per-subscription `hpke-p256` keypair held in
 //!   memory only (`info = "ospp-v1-secret"`, `aad = "<component>:<env_key>"`).
 //! - [`dump::DumpReader`]: the out-of-band `SetupBaseR` sealed-stream decoder.
-//! - [`pairing::BrowserOpener`] + [`pairing::LivePairingUrl`]: the
-//!   server-supplied `<url>#handle=<handle>` fragment-only pairing page.
+//! - [`pairing::LivePairingUrl`]: the server-supplied `<url>#handle=<handle>`
+//!   fragment-only pairing page, returned to the caller that opens it.
 //!
 //! Zero `std::env`, zero filesystem access outside [`device_key::FileDeviceKeyStore`]
 //! (the injected `0600` machine key), zero `unsafe`, and no global mutable state.
@@ -47,8 +47,8 @@ pub use keys::{
 };
 pub use model::{OsppClaims, SubscribeRequest, SubscriptionEnv};
 pub use pairing::{
-    BrowserOpener, HANDLE_HEX_LEN, LivePairingUrl, altcha_challenge, altcha_challenge_hash,
-    solve_altcha, verify_altcha,
+    HANDLE_HEX_LEN, LivePairingUrl, altcha_challenge, altcha_challenge_hash, solve_altcha,
+    verify_altcha,
 };
 pub use wire::{
     AUTH_METHOD_P256, ENCRYPTION_METHOD_HPKE_P256, OSPP_SUBPROTOCOL, PROTOCOL_VERSION,

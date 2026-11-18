@@ -4,10 +4,9 @@
 //! ([`WorldSummary`] rows, each with one typed [`WorldOrigin`]), the ingress port from
 //! [`DaemonStatus`](slipfork_edge::DaemonStatus), and the composition root's resolved
 //! [`UserIdentity`](crate::user::UserIdentity) value and the `uname -n` host name. The local verb
-//! hands the typed origin to the single
-//! [`BrowserOpener`](slipfork_ospp::BrowserOpener); the remote verb never opens anything and never
-//! invents a port — the laptop forwards the fixed constant [`LOCAL_PORT`] to the daemon's real
-//! `127.0.0.1:<ingress.port>` listener.
+//! hands the typed origin to the one concrete [`Browser`](crate::browser::Browser); the remote verb
+//! never opens anything and never invents a port — the laptop forwards the fixed constant
+//! [`LOCAL_PORT`] to the daemon's real `127.0.0.1:<ingress.port>` listener.
 //!
 //! **Why `http://<route>.localhost:8080` routes (verified, `M3.28.1`):** browsers resolve
 //! `*.localhost` to loopback and send `Host: <route>.localhost:8080` through the forwarded port;

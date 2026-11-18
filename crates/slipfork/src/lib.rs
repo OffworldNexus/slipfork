@@ -32,9 +32,9 @@
 //!   rendered purely from the daemon's [`slipfork_edge::WorldUpSummary`].
 //! - [`ps`]: the per-world process tree, rendered purely from the daemon's
 //!   [`slipfork_edge::WorldProcessReport`].
-//! - [`open`]: world selection, the typed-origin hand-off to [`browser::SystemBrowserOpener`], and
-//!   the verified `open --remote` SSH recipe.
-//! - [`browser`]: the single production [`slipfork_ospp::BrowserOpener`] over the desktop launcher.
+//! - [`open`]: world selection, the typed-origin hand-off to [`browser::Browser`], and the verified
+//!   `open --remote` SSH recipe.
+//! - [`browser`]: the one concrete desktop launcher over the Composition Root's resolved program.
 
 #![forbid(unsafe_code)]
 

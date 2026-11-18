@@ -18,10 +18,10 @@ use std::io::BufRead;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
-use std::sync::Arc;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
+use slipfork::browser::Browser;
 use slipfork::daemon::{DaemonWiring, compose_daemon, host_caches};
 use slipfork::layout::{Layout, ensure_private_dir};
 use slipfork::runtime::{runtime_assets, target_arch};
@@ -30,7 +30,7 @@ use slipfork_edge::{
 };
 use slipfork_engine::btrfs::{BTRFS_SUPER_MAGIC, KernelBtrfsDriver, mount_hint};
 use slipfork_engine::{InheritedVar, current_uid_gid};
-use slipfork_ospp::{BrowserOpener, LivePairingUrl, OsppEndpoint, OsppError};
+use slipfork_ospp::OsppEndpoint;
 // The one bounded-wait shape and its named deadlines come from the shared testkit, so no suite in
 // this crate can drift into a second copy of the poll loop.
 pub use slipfork_testkit::{
@@ -219,7 +219,7 @@ impl DaemonLayout {
 ///
 /// `slipfork` (the live suite's refusal proof) and [`Daemon`] (the child backend) both call this,
 /// so the production composition root is invoked identically everywhere.
-pub fn daemon_command(scratch: &Path, layout: &DaemonLayout) -> (Command, PathBuf) {
+pub fn daemon_command(scratch: &Path, layout: &DaemonLayout) -> Command {
     daemon_command_with_ospp(scratch, layout, None)
 }
 
@@ -228,8 +228,8 @@ pub fn daemon_command_with_ospp(
     scratch: &Path,
     layout: &DaemonLayout,
     endpoint: Option<&OsppEndpoint>,
-) -> (Command, PathBuf) {
-    let (browser, browser_marker) = browser_opener(scratch);
+) -> Command {
+    let (script, _) = browser_fixture(scratch);
     let mut command = Command::new(env!("CARGO_BIN_EXE_slipforkd"));
     command
         .arg("--state-dir")
@@ -244,14 +244,51 @@ pub fn daemon_command_with_ospp(
         .arg(pinned_crun())
         .env("XDG_DATA_HOME", &layout.data_home)
         .env("XDG_RUNTIME_DIR", runtime_parent(&layout.runtime_dir))
-        .env("BROWSER", browser)
         .env("HOSTNAME", "test-machine")
         .stdin(Stdio::null())
         .stdout(Stdio::null());
     if let Some(endpoint) = endpoint {
         command.arg("--ospp-endpoint").arg(endpoint.as_str());
     }
-    (command, browser_marker)
+    // The daemon composes its own graph: give its root a real executable opener plus the host's
+    // PATH, so the fixture is what `Browser::resolve` selects.
+    let mut entries = Vec::new();
+    if let Some(bin) = script.parent() {
+        entries.push(bin.to_path_buf());
+    }
+    if let Some(existing) = std::env::var_os("PATH") {
+        entries.extend(std::env::split_paths(&existing));
+    }
+    command.env(
+        "PATH",
+        std::env::join_paths(entries).expect("join the daemon PATH"),
+    );
+    command
+}
+
+/// A real 0755 `xdg-open` that records its argv (one argument per line) and writes nothing else.
+///
+/// The daemon root resolves it through `PATH`; no `Mock*`/`Marker*` type sits in the way.
+fn browser_fixture(scratch: &Path) -> (PathBuf, PathBuf) {
+    let bin = scratch.join("browser-bin");
+    fs::create_dir_all(&bin).expect("browser bin directory");
+    let record = scratch.join("browser-argv.txt");
+    let script = bin.join("xdg-open");
+    fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\n: > '{}'\nfor arg in \"$@\"; do printf '%s\\n' \"$arg\" >> '{}'; done\n",
+            record.display(),
+            record.display()
+        ),
+    )
+    .expect("write the browser fixture");
+    let mut permissions = fs::metadata(&script)
+        .expect("browser fixture metadata")
+        .permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&script, permissions).expect("chmod the browser fixture");
+    (script, record)
 }
 
 /// Wait for a spawned `slipforkd` to serve `<runtime_dir>/daemon.sock`.
@@ -360,7 +397,8 @@ pub fn assert_btrfs_refusal(diagnostic: &str) {
 pub struct Daemon {
     pub state_dir: PathBuf,
     pub runtime_dir: PathBuf,
-    pub browser_marker: PathBuf,
+    /// The argv the injected real `xdg-open` fixture recorded (one argument per line).
+    pub browser_argv: PathBuf,
     /// The suite scratch root this daemon's worlds are booted from (the process reaping scope).
     scratch: PathBuf,
     /// The kernel adapter this daemon's worlds are written through, so teardown can destroy exactly
@@ -433,6 +471,18 @@ impl Daemon {
     /// `true` when this daemon is served by [`slipfork::daemon`] in the test process.
     pub fn is_in_process(&self) -> bool {
         matches!(self.backend, Backend::InProcess { .. })
+    }
+
+    /// Start the real `slipforkd` child with an explicit `PATH` and one OSPP endpoint.
+    pub fn try_start_with_ospp_path(
+        scratch: &Path,
+        path: Option<&Path>,
+        endpoint: OsppEndpoint,
+    ) -> Result<Self, String> {
+        let layout = DaemonLayout::under(scratch);
+        ensure_private_dir(&layout.state_dir)?;
+        ensure_private_dir(&layout.runtime_dir)?;
+        Self::spawn_child(scratch, &layout, path, Some(&endpoint))
     }
 
     /// The adapter this daemon's worlds were written through (the one it injected).
@@ -524,7 +574,7 @@ impl Daemon {
         let stderr = log
             .try_clone()
             .map_err(|err| format!("cannot duplicate {}: {err}", log_path.display()))?;
-        let (mut command, browser_marker) = daemon_command_with_ospp(scratch, layout, endpoint);
+        let mut command = daemon_command_with_ospp(scratch, layout, endpoint);
         command.stderr(stderr);
         if let Some(path) = path {
             command.env("PATH", path);
@@ -534,7 +584,7 @@ impl Daemon {
         Ok(Self {
             state_dir: layout.state_dir.clone(),
             runtime_dir: layout.runtime_dir.clone(),
-            browser_marker,
+            browser_argv: scratch.join("browser-argv.txt"),
             scratch: scratch.to_path_buf(),
             // The child backend only exists on a Btrfs state root (`slipforkd` refuses any other
             // `--state-dir` before serving), and this is the exact adapter its composition root
@@ -547,9 +597,8 @@ impl Daemon {
 
     /// Serve `slipfork::daemon` in-process over the real kernel [`KernelBtrfsDriver`].
     ///
-    /// The production [`compose_daemon`] graph is reused verbatim: only the browser opener (a
-    /// marker stub) differs from `slipforkd`. [`require_btrfs`] fails closed with one line when the
-    /// state root is not on Btrfs, so this path never fakes a substrate.
+    /// The production [`compose_daemon`] graph is reused verbatim; [`require_btrfs`] fails closed
+    /// with one line when the state root is not on Btrfs, so this path never fakes a substrate.
     fn serve_in_process(
         scratch: &Path,
         spec: &DaemonLayout,
@@ -585,14 +634,12 @@ impl Daemon {
             .into_iter()
             .filter_map(|var| std::env::var(var.name()).ok().map(|value| (var, value)))
             .collect();
-        let browser_marker = scratch.join("browser-used");
-        // The handle keeps the driver it injects, so teardown destroys the worlds this daemon wrote
-        // through the same kernel adapter the engine used.
         let driver = require_btrfs(&spec.state_dir);
+        let (script, browser_argv) = browser_fixture(scratch);
         let graph = compose_daemon(DaemonWiring {
             layout,
             driver,
-            browser: Arc::new(MarkerBrowserOpener::new(browser_marker.clone())),
+            browser: Browser::new(script, true),
             ingress,
             forward_port: None,
             host_caches: host_caches(&home),
@@ -623,7 +670,7 @@ impl Daemon {
         Self {
             state_dir: spec.state_dir.clone(),
             runtime_dir: spec.runtime_dir.clone(),
-            browser_marker,
+            browser_argv,
             scratch: scratch.to_path_buf(),
             driver,
             reap_budget: ReapBudget::current_host(),
@@ -636,6 +683,14 @@ impl Daemon {
 
     pub fn cli(&self, cwd: &Path, args: &[&str]) -> Output {
         self.command(cwd, args).output().expect("spawn slipfork")
+    }
+
+    /// The same CLI invocation with `PATH` pointed at `path` (a missing-opener host).
+    pub fn cli_with_path(&self, cwd: &Path, path: &Path, args: &[&str]) -> Output {
+        self.command(cwd, args)
+            .env("PATH", path)
+            .output()
+            .expect("spawn slipfork")
     }
 
     pub fn cli_with_stdin(&self, cwd: &Path, args: &[&str], stdin: &str) -> Output {
@@ -835,48 +890,6 @@ fn daemon_log(log_path: &Path, message: &str) -> String {
 /// `XDG_RUNTIME_DIR` for a daemon runtime directory (`<runtime_dir>`'s parent).
 fn runtime_parent(runtime_dir: &Path) -> &Path {
     runtime_dir.parent().expect("runtime directory parent")
-}
-
-/// In-process [`BrowserOpener`]: records that the pairing page was opened by creating the empty
-/// marker file the browser stub writes in child mode (never persists the live handle).
-struct MarkerBrowserOpener {
-    marker: PathBuf,
-}
-
-impl MarkerBrowserOpener {
-    fn new(marker: PathBuf) -> Self {
-        Self { marker }
-    }
-}
-
-impl BrowserOpener for MarkerBrowserOpener {
-    fn open_pairing_url(&self, _url: LivePairingUrl) -> Result<(), OsppError> {
-        self.record()
-    }
-
-    fn open_origin(&self, _origin: &slipfork_world::WorldOrigin) -> Result<(), OsppError> {
-        self.record()
-    }
-}
-
-impl MarkerBrowserOpener {
-    fn record(&self) -> Result<(), OsppError> {
-        fs::write(&self.marker, b"")
-            .map_err(|err| OsppError::Transport(format!("cannot record the browser marker: {err}")))
-    }
-}
-
-fn browser_opener(scratch: &Path) -> (PathBuf, PathBuf) {
-    let marker = scratch.join("browser-used");
-    let script = scratch.join("browser.sh");
-    fs::write(&script, format!("#!/bin/sh\n: > '{}'\n", marker.display()))
-        .expect("write browser stub");
-    let mut permissions = fs::metadata(&script)
-        .expect("browser stub metadata")
-        .permissions();
-    permissions.set_mode(0o755);
-    fs::set_permissions(&script, permissions).expect("make browser stub executable");
-    (script, marker)
 }
 
 pub fn stderr(output: &Output) -> String {

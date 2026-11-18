@@ -24,7 +24,7 @@ use std::sync::Arc;
 use std::thread;
 
 use clap::Parser;
-use slipfork::browser::SystemBrowserOpener;
+use slipfork::browser::Browser;
 use slipfork::daemon::{DaemonWiring, compose_daemon, host_caches};
 use slipfork::layout::{Layout, ensure_private_dir};
 use slipfork::runtime::{runtime_assets, target_arch};
@@ -144,18 +144,12 @@ fn run(cli: DaemonCli) -> Result<(), String> {
         .collect();
 
     // The one daemon graph: `compose_daemon` owns every adapter wiring, so `slipforkd` and the
-    // integration harness can never drift into two composition paths.
-    let browser = SystemBrowserOpener::from_host_inputs(
-        std::env::var_os("BROWSER")
-            .filter(|value| !value.is_empty())
-            .map(PathBuf::from),
-        std::env::var_os("DISPLAY").is_some_and(|value| !value.is_empty()),
-        std::env::var_os("WAYLAND_DISPLAY").is_some_and(|value| !value.is_empty()),
-    );
+    // integration harness can never drift into two composition paths. The launcher is resolved
+    // here once and injected as a value: pairing hands the live handle to it immediately.
     let graph = compose_daemon(DaemonWiring {
         layout,
         driver: KernelBtrfsDriver::new(),
-        browser: Arc::new(browser),
+        browser: resolve_browser(),
         ingress,
         forward_port,
         host_caches: host_caches(&home),
@@ -182,6 +176,17 @@ fn run(cli: DaemonCli) -> Result<(), String> {
         .map_err(|err| format!("cannot bind the daemon control socket: {err}"))?;
 
     serve(ingress, control)
+}
+
+/// The daemon's one desktop-launch resolution: `PATH` and the desktop-session flags read here
+/// and nowhere else; the injected [`Browser`] value is the only host fact the daemon sees.
+fn resolve_browser() -> Browser {
+    Browser::resolve(
+        std::env::var_os("PATH").as_deref(),
+        ["DISPLAY", "WAYLAND_DISPLAY"]
+            .into_iter()
+            .any(|var| std::env::var_os(var).is_some_and(|value| !value.is_empty())),
+    )
 }
 
 /// Run both daemon servers until one of them stops serving.

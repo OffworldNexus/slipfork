@@ -48,8 +48,8 @@ use slipfork_engine::{
     WorldEngine, WorldHandle, WorldMount, WorldSpec, elapsed_millis,
 };
 use slipfork_ospp::{
-    BrowserOpener, DeviceKeyPath, DeviceKeySigner, FileDeviceKeyStore, OsppClaims, OsppClient,
-    OsppEndpoint, OsppSession, OsppTimeouts, SoftwareP256Key, SoftwareP256Signer, SubscribeRequest,
+    DeviceKeyPath, DeviceKeySigner, FileDeviceKeyStore, OsppClaims, OsppClient, OsppEndpoint,
+    OsppSession, OsppTimeouts, SoftwareP256Key, SoftwareP256Signer, SubscribeRequest,
     SubscriptionEnv, WsOsppClient,
 };
 use slipfork_snow::{
@@ -64,6 +64,7 @@ use slipfork_world::{LocalHostRoute, ProjectSlug, WorldTarget, validate_fork_nam
 
 use slipfork_edge::SecretVault;
 
+use crate::browser::{APPROVAL_HINT_PREFIX, Browser};
 use crate::layout::{Layout, ensure_private_dir};
 use crate::project::{load_optional_slipfork_config, repository_resolver};
 use crate::vaults::{LayoutProjectVaults, ProjectVaults};
@@ -714,8 +715,8 @@ struct DaemonPorts {
     signer: Arc<dyn DeviceKeySigner>,
     /// Hostname proposed in `pair_begin` (resolved once by the Composition Root).
     hostname: String,
-    /// Injected browser opener for the pairing approval page (never logs the live handle).
-    browser: Arc<dyn BrowserOpener>,
+    /// The concrete desktop launcher the pairing handle is handed to immediately.
+    browser: Browser,
     /// CSPRNG injected into the pairing handshake nonce.
     entropy: Arc<dyn EntropySource>,
 }
@@ -723,17 +724,16 @@ struct DaemonPorts {
 /// Everything a Composition Root resolves before [`compose_daemon`] wires the daemon graph.
 ///
 /// `slipforkd` and the in-process integration harness pass the same already-resolved values and
-/// differ only in the concrete CoW driver and [`BrowserOpener`]; neither builds a second
-/// graph. Nothing in [`compose_daemon`] reads the environment or the working directory, and the
-/// only ambient collaborator it installs is the postmaster-readiness clock
-/// (`PostgresReady::production`).
+/// differ only in the concrete CoW driver; neither builds a second graph. Nothing in
+/// [`compose_daemon`] reads the environment or the working directory, and the only ambient
+/// collaborator it installs is the postmaster-readiness clock (`PostgresReady::production`).
 pub struct DaemonWiring {
     /// Explicit `--state-dir` / `--runtime-dir` roots and the project-vault data home.
     pub layout: Layout,
     /// CoW subvolume driver: the concrete kernel Btrfs driver ('slipforkd's one adapter).
     pub driver: KernelBtrfsDriver,
-    /// Browser opener for the pairing approval page.
-    pub browser: Arc<dyn BrowserOpener>,
+    /// The concrete desktop launcher (value, not a trait object) for the pairing approval page.
+    pub browser: Browser,
     /// Bound HTTP ingress listeners (`--listen`, `LISTEN_FDS`, or a test-bound listener) and the
     /// single port every minted origin carries.
     pub ingress: IngressInfo,
@@ -767,9 +767,9 @@ pub struct DaemonGraph {
 
 /// Wire the one daemon composition graph from already-resolved inputs.
 ///
-/// `slipforkd` and the in-process integration harness call this; the only differences are the
-/// concrete [`KernelBtrfsDriver`] and [`BrowserOpener`]. Every path, port, account id, and
-/// environment value arrives through [`DaemonWiring`].
+/// `slipforkd` and the in-process integration harness call this; the only difference is the
+/// concrete [`KernelBtrfsDriver`]. Every path, port, account id, and environment value arrives
+/// through [`DaemonWiring`].
 pub fn compose_daemon(wiring: DaemonWiring) -> Result<DaemonGraph, String> {
     let DaemonWiring {
         layout,
@@ -879,7 +879,8 @@ pub struct DaemonService {
     signer: Arc<dyn DeviceKeySigner>,
     /// Hostname proposed in `pair_begin`.
     hostname: String,
-    browser: Arc<dyn BrowserOpener>,
+    /// The concrete desktop launcher for the pairing approval page.
+    browser: Browser,
     entropy: Arc<dyn EntropySource>,
     /// The daemon-owned live `ospp-v1` session and its per-project subscriptions.
     ospp_runtime: Mutex<OsppRuntime>,
@@ -3169,17 +3170,17 @@ impl DaemonControl for DaemonService {
         }
         let mut opened: Option<String> = None;
         let mut on_handle = |url: &slipfork_ospp::LivePairingUrl| {
-            let full = url.as_str().to_owned();
-            let (base, handle) = full.split_once("#handle=").ok_or_else(|| {
-                slipfork_ospp::OsppError::InvalidPairingUrl(
-                    "server-supplied URL carries no #handle= fragment".to_owned(),
-                )
-            })?;
-            let page = slipfork_ospp::LivePairingUrl::with_handle(base, handle)?;
-            opened = Some(full);
-            self.browser.open_pairing_url(page).map_err(|err| {
-                slipfork_ospp::OsppError::Transport(format!("cannot open the pairing page: {err}"))
-            })
+            // The handle is live only for this pairing attempt: hand it to the launcher now,
+            // before `pair_approved` blocks the handshake, and show it to the developer.
+            let page = url.as_str();
+            eprintln!("{page}");
+            match self.browser.open(page) {
+                Ok(true) => {}
+                Ok(false) => eprintln!("{APPROVAL_HINT_PREFIX}{page}"),
+                Err(err) => return Err(slipfork_ospp::OsppError::Transport(err)),
+            }
+            opened = Some(page.to_owned());
+            Ok(())
         };
         let approval = client
             .pair(&self.hostname, &mut on_handle)
@@ -4976,24 +4977,6 @@ modes:
         }
     }
 
-    struct NoBrowser;
-
-    impl BrowserOpener for NoBrowser {
-        fn open_pairing_url(
-            &self,
-            _url: slipfork_ospp::LivePairingUrl,
-        ) -> Result<(), slipfork_ospp::OsppError> {
-            Ok(())
-        }
-
-        fn open_origin(
-            &self,
-            _origin: &slipfork_world::WorldOrigin,
-        ) -> Result<(), slipfork_ospp::OsppError> {
-            Ok(())
-        }
-    }
-
     /// Build the real `DaemonService` over doubled engine/rootfs/repository, the real registry,
     /// vault, and workspace factory.
     fn test_service(
@@ -5020,7 +5003,7 @@ modes:
                 ospp: None,
                 signer: Arc::new(slipfork_ospp_testkit::signers::software_signer()),
                 hostname: "test-machine".to_owned(),
-                browser: Arc::new(NoBrowser),
+                browser: Browser::none(),
                 entropy: Arc::new(OsCsprngEntropy),
             },
             DaemonConfig {

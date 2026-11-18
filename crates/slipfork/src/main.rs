@@ -24,7 +24,7 @@ use std::time::Instant;
 use clap::Parser;
 use serde_json::json;
 use slipfork::apparmor::render_userns_profile;
-use slipfork::browser::{NO_BROWSER_REMEDY, SystemBrowserOpener};
+use slipfork::browser::{APPROVAL_HINT_PREFIX, Browser, NO_BROWSER_REMEDY};
 use slipfork::cli::{
     Cli, Commands, DaemonAction, DumpArgs, HookAction, ResourceArgs, SecretAction, SnowAction,
     UnitKind,
@@ -47,7 +47,6 @@ use slipfork_edge::{
 use slipfork_engine::btrfs::KernelBtrfsDriver;
 use slipfork_engine::current_uid_gid;
 use slipfork_engine::linux_cow::{ProcessSignal, signal_pidfd};
-use slipfork_ospp::BrowserOpener;
 use slipfork_snow::SnowFile;
 
 fn main() -> ExitCode {
@@ -694,8 +693,8 @@ fn ps(json: bool, layout: &Layout, world: Option<String>) -> Result<ExitCode, St
     Ok(ExitCode::SUCCESS)
 }
 
-/// `slipfork open [--remote]`: hand the world's typed origin to the one `BrowserOpener`, or print
-/// the verified SSH recipe for a laptop (`docs/design/dx-0.1.0-ux.md` §6).
+/// `slipfork open [--remote]`: hand the world's typed origin to the one concrete [`Browser`], or
+/// print the verified SSH recipe for a laptop (`docs/design/dx-0.1.0-ux.md` §6).
 ///
 /// The world and its origin are the daemon's facts (`DaemonStatus.worlds`), the remote recipe's
 /// port is `DaemonStatus.ingress.port` (never a literal `80`), and the account/host come from the
@@ -738,13 +737,17 @@ fn open(
         }
         return Ok(ExitCode::SUCCESS);
     }
-    let opener = system_browser_opener();
-    if !opener.is_available() {
-        return Err(NO_BROWSER_REMEDY.to_owned());
+    let browser = resolve_browser();
+    match browser.open(selection.origin.url()) {
+        Ok(true) => {}
+        Ok(false) => {
+            if !json {
+                eprintln!("{APPROVAL_HINT_PREFIX}{}", selection.origin.url());
+            }
+            return Err(NO_BROWSER_REMEDY.to_owned());
+        }
+        Err(err) => return Err(err),
     }
-    opener
-        .open_origin(&selection.origin)
-        .map_err(|err| format!("{NO_BROWSER_REMEDY} ({err})"))?;
     if json {
         println!("{}", render_json(&slipfork::open::json(&selection, None))?);
     } else {
@@ -753,14 +756,14 @@ fn open(
     Ok(ExitCode::SUCCESS)
 }
 
-/// The one desktop-launch resolution: `BROWSER`, `DISPLAY`, and `WAYLAND_DISPLAY` read once here.
-fn system_browser_opener() -> SystemBrowserOpener {
-    SystemBrowserOpener::from_host_inputs(
-        std::env::var_os("BROWSER")
-            .filter(|value| !value.is_empty())
-            .map(PathBuf::from),
-        std::env::var_os("DISPLAY").is_some_and(|value| !value.is_empty()),
-        std::env::var_os("WAYLAND_DISPLAY").is_some_and(|value| !value.is_empty()),
+/// The one desktop-launch resolution: `DISPLAY`/`WAYLAND_DISPLAY` and `PATH` read here and
+/// nowhere else in the CLI; the value handed to [`Browser`] is the only host fact it sees.
+fn resolve_browser() -> Browser {
+    Browser::resolve(
+        std::env::var_os("PATH").as_deref(),
+        ["DISPLAY", "WAYLAND_DISPLAY"]
+            .into_iter()
+            .any(|var| std::env::var_os(var).is_some_and(|value| !value.is_empty())),
     )
 }
 

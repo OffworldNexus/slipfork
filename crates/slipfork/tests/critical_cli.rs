@@ -223,6 +223,26 @@ fn up_down_lifecycle_is_idempotent_and_one_url_per_world() {
         stdout(&list)
     );
 
+    // A host with no opener program fails `open` closed on the remote recipe, never a blank
+    // success: the CLI's only resolution input is the injected `PATH`.
+    let empty = scratch.join("empty-path");
+    fs::create_dir_all(&empty).expect("empty PATH directory");
+    let refused = daemon.cli_with_path(&repo, &empty, &["open"]);
+    assert!(
+        !refused.status.success(),
+        "no opener must fail `slipfork open` closed"
+    );
+    assert!(
+        stderr(&refused).contains("slipfork open --remote"),
+        "one actionable line naming the remote recipe: {}",
+        stderr(&refused)
+    );
+    assert!(
+        stdout(&refused).trim().is_empty(),
+        "a refused open never prints a confirmation: {}",
+        stdout(&refused)
+    );
+
     // Re-running `up` is idempotent and never mints a second URL.
     let up_again = daemon.cli(&repo, &["up"]);
     assert_success(&up_again, "second slipfork up");
@@ -2389,19 +2409,52 @@ fn auth_prints_the_server_supplied_fragment_url_and_never_echoes_a_secret() {
         handle.bytes().all(|byte| byte.is_ascii_hexdigit()),
         "the fragment handle must be hex: {handle}"
     );
-    assert!(
-        daemon.browser_marker.is_file(),
-        "the injected BROWSER must open the pairing page"
+    let argv = fs::read_to_string(&daemon.browser_argv)
+        .expect("the injected real opener records its argv");
+    assert_eq!(
+        argv.trim(),
+        pairing_line.trim(),
+        "the real opener receives exactly the printed fragment URL"
     );
-    assert!(
-        fs::read_to_string(&daemon.browser_marker)
-            .expect("browser marker")
-            .is_empty(),
-        "the browser stub must prove the opener ran without persisting the live URL"
+    assert_eq!(
+        argv.lines().count(),
+        1,
+        "the opener writes the URL it was handed and nothing else: {argv}"
+    );
+    assert_eq!(
+        fs::read_dir(scratch.join("browser-bin"))
+            .expect("the fixture directory")
+            .count(),
+        1,
+        "the fixture writes its argv file outside the PATH directory, no marker file"
     );
     assert!(
         !printed.contains("auth-probe-secret"),
         "no command may echo a stored secret value: {printed}"
+    );
+
+    // The same journey on a host with no opener program: `auth` fails closed before it can hang
+    // waiting for an approval page nobody can see.
+    let empty = scratch.join("empty-path");
+    fs::create_dir_all(&empty).expect("empty PATH directory");
+    let headless_scratch = scratch.join("headless");
+    fs::create_dir_all(&headless_scratch).expect("headless scratch");
+    let headless_server = ReferenceOsppServer::start(ReferenceServerConfig::default());
+    let headless = Daemon::try_start_with_ospp_path(
+        &headless_scratch,
+        Some(&empty),
+        headless_server.endpoint(),
+    )
+    .expect("a daemon on a host with no opener still serves");
+    let refused = headless.cli(&repo, &["auth"]);
+    assert!(
+        !refused.status.success(),
+        "a host with no opener fails `auth` closed instead of timing out"
+    );
+    assert!(
+        stderr(&refused).contains("slipfork open --remote"),
+        "one actionable line naming the remote recipe: {}",
+        stderr(&refused)
     );
 }
 

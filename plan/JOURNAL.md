@@ -1542,3 +1542,11 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-18T23:22 [M3.30.1.3.3.2] (lead) status active -> review
 - 2026-11-18T23:23 [M3.30.1.3.3.2] (lead) status review -> ready: triad: 2 MAJOR arch/test-fidelity + 2 UX (sudo remedy, silent doctor) — one pass
 - 2026-11-18T23:23 [M3.30.1.3.3.2] (lead) attempt 2/3 started
+- 2026-11-18T23:26 [M3.30.1.3.3.2] (lead) status ready -> done
+- 2026-11-18T23:26 [M3.30.1.3.3.3] (lead) status ready -> active
+- 2026-11-18T23:26 [M3.30.1.3.3.3] (lead) attempt 1/3 started
+- 2026-11-18T23:26 [M3.30.1.3.3.3] (lead) base 7c0c2141b21e94f1179c16f56f1878a6d5b23a4b
+- 2026-11-18T23:28 [M3.30.1.3.3.3] (lead) status active -> review
+- 2026-11-18T23:30 [M3.30.1.3.3.3] (lead) status review -> ready: triad: 2 BLOCKER — auth stopped opening/printing pairing page; one fix pass
+- 2026-11-18T23:30 [M3.30.1.3.3.3] (lead) attempt 2/3 started
+- 2026-11-18T23:30 [M3.30.3] (lead) carry-over: delete stale BROWSER=/bin/true coupling in packages/opencode-slipfork/tests/e2e.critical.test.ts; also doctor doctor-verdict text
