@@ -20,6 +20,7 @@ use std::time::Duration;
 use serde_json::Value;
 use slipfork::daemon_unit_install::{self, InstallRequest, ManagedUnit, UnitInstaller};
 use slipfork_engine::SystemClock;
+use slipfork_engine::btrfs::KernelBtrfsDriver;
 use slipfork_engine::linux_cow::ProcessSignal;
 use slipfork_ospp_testkit::{ReferenceOsppServer, ReferenceServerConfig};
 
@@ -1285,6 +1286,9 @@ fn zero_setup_auto_spawn_serves_up_without_a_prestarted_daemon() {
     let runtime_dir = state_dir.join("run");
     let daemon_log = runtime_dir.join("daemon.log");
     fs::create_dir_all(&runtime_dir).expect("create runtime dir");
+    // Capture the reap budget before the boot so the teardown proof never reads the host's load
+    // average while it is already failing.
+    let reap_budget = support::ReapBudget::current_host();
 
     let child = Command::new(env!("CARGO_BIN_EXE_slipfork"))
         .arg("--state-dir")
@@ -1330,10 +1334,10 @@ fn zero_setup_auto_spawn_serves_up_without_a_prestarted_daemon() {
             !runtime_dir.join("daemon.sock").exists(),
             "a refused daemon never binds its control socket"
         );
-        support::assert_no_world_init_processes(
-            scratch,
-            "after the refused zero-setup `up` (non-Btrfs state root)",
-        );
+        // A refused boot never created an engine or a world, so only process residue is possible.
+        if let Err(survivors) = support::reap_world_init_processes_within(scratch, reap_budget) {
+            panic!("{survivors}\nafter the refused zero-setup `up` (non-Btrfs state root)");
+        }
         return;
     }
 
@@ -1358,8 +1362,15 @@ fn zero_setup_auto_spawn_serves_up_without_a_prestarted_daemon() {
     );
     support::wait_daemon_teardown(&runtime_dir)
         .unwrap_or_else(|error| panic!("the auto-spawned slipforkd must stop accepting: {error}"));
-    support::assert_no_world_init_processes(
+    // The auto-spawned daemon was killed, so no engine `Drop` reclaimed the world it booted. The
+    // proof names the child-daemon adapter directly (`KernelBtrfsDriver`, the one `slipforkd`'s
+    // composition root builds), because this branch is only reached on a Btrfs state root and the
+    // test has no harness `Daemon` handle to take it from.
+    support::assert_no_world_residue(
         scratch,
+        &state_dir,
+        &KernelBtrfsDriver::new(),
+        reap_budget,
         "after the auto-spawned slipforkd was SIGTERMed and stopped accepting",
     );
 }

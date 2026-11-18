@@ -2,16 +2,16 @@
 id: M3.27
 title: CLI critical suites leak one Btrfs world subvolume per test; reap worlds as well as processes
 kind: task
-status: active
+status: review
 owner: implementer
 priority: 3
 depends_on: [M3.19]
 paths: ["crates/slipfork/tests/**"]
-attempts: 1
+attempts: 2
 max_attempts: 3
 escalation: none
 created: "2026-11-17T14:21"
-updated: "2026-11-18T05:07"
+updated: "2026-11-18T11:57"
 ---
 
 # Goal

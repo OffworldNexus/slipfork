@@ -1395,3 +1395,11 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-18T07:45 HUMAN H-007 closed by lead
 - 2026-11-18T07:46 [M3.29.5] (planner) created (task) slipfork auth <wss-url> saves the OSPP endpoint in <state_dir>/ospp.json (public metadata only) so pairing survives reboots
 - 2026-11-18T07:46 [M3.29.5] (lead) H-007 answered by the owner ('Save on slipfork auth <url>'). Design: flag > <state_dir>/ospp.json > unpaired, one resolver logged once; atomic 0600 write of end
+- 2026-11-18T11:06 [M3.28.13] (lead) edited fields
+- 2026-11-18T11:30 [M3.27] (lead) attempt 1 report: done. Reaper covers worlds (injected SubvolumeDriver) + world-init + harness daemon Drop guard; ReapBudget derives from load; /proc state repo
+- 2026-11-18T11:30 [M3.27] (lead) status active -> review
+- 2026-11-18T11:35 [M3.27] (lead) Quad gate attempt 1: review-legality FAIL, review-ioc FAIL, review-cruft FAIL (merged MAJORs). Root finding (legality+ioc+cruft agree): substrate_driver() re-de
+- 2026-11-18T11:39 [M3.27] (lead) attempt 2/3 started
+- 2026-11-18T11:39 [M3.27] (lead) status review -> active
+- 2026-11-18T11:57 [M3.27] (lead) attempt 2 report: done. All 4 MAJORs + 7 MINORs applied; make check exit 0.
+- 2026-11-18T11:57 [M3.27] (lead) status active -> review

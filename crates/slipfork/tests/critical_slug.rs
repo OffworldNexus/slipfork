@@ -42,15 +42,16 @@ fn write_executable_script(path: &Path, contents: &str) {
 ///
 /// Every invocation in this suite is daemon-served (`snow resolve`, and the diagnostics built on the
 /// same layout), so the test starts the daemon once and binds the handle in its own scope:
-/// `let _daemon = harness_daemon(scratch);`. `Drop` → [`support::Daemon::shutdown`] then kills a real
-/// `slipforkd` child, waits for it, and reaps the worlds it booted. The in-process backend returns
-/// `None`; `support::ensure_daemon` documents why that server is leaked.
-fn harness_daemon(scratch: &Path) -> Option<Daemon> {
+/// `let daemon = harness_daemon(scratch);`. `Drop` → [`support::Daemon::shutdown`] kills and waits
+/// a real `slipforkd` child (or unlinks the in-process control socket) and reaps the worlds it
+/// booted, both processes and subvolumes.
+fn harness_daemon(scratch: &Path) -> Daemon {
     support::ensure_daemon(scratch, &DaemonLayout::under(scratch), "snow resolve")
 }
 
 fn run_slipfork_with_env(
     scratch: &Path,
+    daemon: &Daemon,
     cwd: &Path,
     env_overrides: &[(&str, &OsStr)],
     args: &[&str],
@@ -60,7 +61,7 @@ fn run_slipfork_with_env(
     // silently start a daemon whose lifetime nobody supervises.
     assert!(
         support::daemon_is_served(&layout.runtime_dir),
-        "the test must own the harness daemon (`let _daemon = harness_daemon(scratch);`) before \
+        "the test must own the harness daemon (`let daemon = harness_daemon(scratch);`) before \
          invoking `slipfork {}`",
         args.join(" ")
     );
@@ -108,28 +109,25 @@ fn run_slipfork_with_env(
     );
     // A world PID 1 ignores `SIGTERM` and outlives a supervisor that was killed before it could
     // forward `--kill-child`, so the group signal alone is not a leak proof. This suite boots no
-    // world, so the reap is a no-op today; it is the suite-exit proof that no invocation leaves a
-    // world init behind.
-    support::assert_no_world_init_processes(
-        scratch,
-        &format!(
-            "offending invocation: slipfork {args:?}\nstdout:\n{}\nstderr:\n{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        ),
-    );
+    // world, so the reap is a no-op today; it is the per-invocation proof that no invocation leaves
+    // a world init or a world subvolume behind.
+    daemon.assert_no_world_residue(&format!(
+        "offending invocation: slipfork {args:?}\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    ));
     output
 }
 
-fn run_slipfork(scratch: &Path, cwd: &Path, args: &[&str]) -> Output {
-    run_slipfork_with_env(scratch, cwd, &[], args)
+fn run_slipfork(scratch: &Path, daemon: &Daemon, cwd: &Path, args: &[&str]) -> Output {
+    run_slipfork_with_env(scratch, daemon, cwd, &[], args)
 }
 
 #[test]
 fn worktree_resolves_to_canonical_repo_slug_and_honors_only_vcs_root_slipfork_toml() {
     let tmp = disk_tempdir("slug-");
     let scratch = tmp.path();
-    let _daemon = harness_daemon(scratch);
+    let daemon = harness_daemon(scratch);
     let repo = scratch.join("acme-app");
     fs::create_dir_all(repo.join("src")).expect("create repo/src");
     fs::write(repo.join("src/lib.txt"), "v1\n").expect("write input");
@@ -158,6 +156,7 @@ fn worktree_resolves_to_canonical_repo_slug_and_honors_only_vcs_root_slipfork_to
     let wt_snow = wt.join("snow.yml");
     let out = run_slipfork(
         scratch,
+        &daemon,
         &wt,
         &[
             "snow",
@@ -193,6 +192,7 @@ fn worktree_resolves_to_canonical_repo_slug_and_honors_only_vcs_root_slipfork_to
 
     let out_override = run_slipfork(
         scratch,
+        &daemon,
         &wt,
         &[
             "snow",
@@ -222,6 +222,7 @@ fn worktree_resolves_to_canonical_repo_slug_and_honors_only_vcs_root_slipfork_to
     let hijack_common = scratch.join("hijack-nonexistent-common");
     let hijack_out = run_slipfork_with_env(
         scratch,
+        &daemon,
         &subdir,
         &[
             ("GIT_DIR", hijack_git_dir.as_os_str()),
@@ -252,7 +253,7 @@ fn worktree_resolves_to_canonical_repo_slug_and_honors_only_vcs_root_slipfork_to
 fn git_submodule_bare_and_separate_git_dir_fail_closed_with_actionable_override_hints() {
     let tmp = disk_tempdir("slug-");
     let scratch = tmp.path();
-    let _daemon = harness_daemon(scratch);
+    let daemon = harness_daemon(scratch);
 
     // 1. Bare repository (`git init --bare`) -> fail closed naming canonical bare path + clone hint.
     let bare = scratch.join("bare-origin.git");
@@ -264,6 +265,7 @@ fn git_submodule_bare_and_separate_git_dir_fail_closed_with_actionable_override_
     fs::write(bare.join("snow.yml"), MINIMAL_SNOW_YML).expect("write bare snow.yml");
     let out_bare = run_slipfork(
         scratch,
+        &daemon,
         &bare,
         &["snow", "resolve", "--file", "snow.yml", "--mode", "local"],
     );
@@ -309,6 +311,7 @@ fn git_submodule_bare_and_separate_git_dir_fail_closed_with_actionable_override_
     let submod_canonical = fs::canonicalize(&submod_dir).expect("canonicalize submod");
     let out_submod = run_slipfork(
         scratch,
+        &daemon,
         &submod_dir,
         &["snow", "resolve", "--file", "snow.yml", "--mode", "local"],
     );
@@ -337,6 +340,7 @@ fn git_submodule_bare_and_separate_git_dir_fail_closed_with_actionable_override_
     .expect("write submodule slipfork.toml");
     let out_submod_ok = run_slipfork(
         scratch,
+        &daemon,
         &submod_dir,
         &["snow", "resolve", "--file", "snow.yml", "--mode", "local"],
     );
@@ -368,6 +372,7 @@ fn git_submodule_bare_and_separate_git_dir_fail_closed_with_actionable_override_
 
     let out_sep = run_slipfork(
         scratch,
+        &daemon,
         &sep_repo,
         &["snow", "resolve", "--file", "snow.yml", "--mode", "local"],
     );
@@ -400,6 +405,7 @@ fn git_submodule_bare_and_separate_git_dir_fail_closed_with_actionable_override_
     fs::write(sneaky_repo.join("snow.yml"), MINIMAL_SNOW_YML).expect("write sneaky snow.yml");
     let out_sneaky = run_slipfork(
         scratch,
+        &daemon,
         &sneaky_repo,
         &["snow", "resolve", "--file", "snow.yml", "--mode", "local"],
     );
@@ -421,6 +427,7 @@ fn git_submodule_bare_and_separate_git_dir_fail_closed_with_actionable_override_
     .expect("write sep slipfork.toml");
     let out_sep_ok = run_slipfork(
         scratch,
+        &daemon,
         &sep_repo,
         &["snow", "resolve", "--file", "snow.yml", "--mode", "local"],
     );
@@ -439,7 +446,7 @@ fn git_submodule_bare_and_separate_git_dir_fail_closed_with_actionable_override_
 fn jj_workspace_uses_the_shared_git_resolver_and_never_shells_out_to_jj() {
     let tmp = disk_tempdir("slug-");
     let scratch = tmp.path();
-    let _daemon = harness_daemon(scratch);
+    let daemon = harness_daemon(scratch);
 
     // 1. A Jujutsu-only workspace (no colocated Git store) fails closed through the one shared
     //    repository resolver: `slipfork-vcs` ships a Git resolver today, so no slug is invented and
@@ -452,6 +459,7 @@ fn jj_workspace_uses_the_shared_git_resolver_and_never_shells_out_to_jj() {
 
     let out_jj_only = run_slipfork(
         scratch,
+        &daemon,
         &jj_only_sub,
         &["snow", "resolve", "--file", "snow.yml", "--mode", "local"],
     );
@@ -496,6 +504,7 @@ fn jj_workspace_uses_the_shared_git_resolver_and_never_shells_out_to_jj() {
 
     let out_colocated = run_slipfork_with_env(
         scratch,
+        &daemon,
         &colocated_sub,
         &[("PATH", fake_bin.as_os_str())],
         &["snow", "resolve", "--file", "snow.yml", "--mode", "local"],
@@ -520,7 +529,7 @@ fn jj_workspace_uses_the_shared_git_resolver_and_never_shells_out_to_jj() {
 fn non_vcs_directory_fails_closed_and_corrupt_git_surfaces_real_git_stderr() {
     let tmp = disk_tempdir("slug-");
     let scratch = tmp.path();
-    let _daemon = harness_daemon(scratch);
+    let daemon = harness_daemon(scratch);
 
     // Non-git/non-jj directory fails closed even if a local `slipfork.toml` exists.
     let plain = scratch.join("plain-dir");
@@ -530,6 +539,7 @@ fn non_vcs_directory_fails_closed_and_corrupt_git_surfaces_real_git_stderr() {
 
     let out = run_slipfork(
         scratch,
+        &daemon,
         &plain,
         &["snow", "resolve", "--file", "snow.yml", "--mode", "local"],
     );
@@ -554,6 +564,7 @@ fn non_vcs_directory_fails_closed_and_corrupt_git_surfaces_real_git_stderr() {
 
     let out_broken = run_slipfork(
         scratch,
+        &daemon,
         &broken,
         &["snow", "resolve", "--file", "snow.yml", "--mode", "local"],
     );
@@ -578,6 +589,7 @@ fn non_vcs_directory_fails_closed_and_corrupt_git_surfaces_real_git_stderr() {
 
     let ambient = run_slipfork(
         scratch,
+        &daemon,
         &real_git_repo,
         &["snow", "resolve", "--file", "snow.yml", "--mode", "local"],
     );
@@ -586,6 +598,7 @@ fn non_vcs_directory_fails_closed_and_corrupt_git_surfaces_real_git_stderr() {
     fs::create_dir_all(&empty_bin).expect("create bin-empty");
     let out_no_git = run_slipfork_with_env(
         scratch,
+        &daemon,
         &real_git_repo,
         &[("PATH", empty_bin.as_os_str())],
         &["snow", "resolve", "--file", "snow.yml", "--mode", "local"],
@@ -614,7 +627,7 @@ fn non_vcs_directory_fails_closed_and_corrupt_git_surfaces_real_git_stderr() {
 fn invalid_project_label_fails_closed_until_rescued_by_valid_slipfork_toml_override() {
     let tmp = disk_tempdir("slug-");
     let scratch = tmp.path();
-    let _daemon = harness_daemon(scratch);
+    let daemon = harness_daemon(scratch);
 
     // Repo basename `My_Project` is not a lowercase DNS label -> fails closed with actionable hint.
     let bad_repo = scratch.join("My_Project");
@@ -624,6 +637,7 @@ fn invalid_project_label_fails_closed_until_rescued_by_valid_slipfork_toml_overr
 
     let out_dir_err = run_slipfork(
         scratch,
+        &daemon,
         &bad_repo,
         &["snow", "resolve", "--file", "snow.yml", "--mode", "local"],
     );
@@ -639,6 +653,7 @@ fn invalid_project_label_fails_closed_until_rescued_by_valid_slipfork_toml_overr
         .expect("write bad slipfork.toml");
     let out_toml_err = run_slipfork(
         scratch,
+        &daemon,
         &bad_repo,
         &["snow", "resolve", "--file", "snow.yml", "--mode", "local"],
     );
@@ -650,6 +665,7 @@ fn invalid_project_label_fails_closed_until_rescued_by_valid_slipfork_toml_overr
         .expect("write valid slipfork.toml");
     let out_rescued = run_slipfork(
         scratch,
+        &daemon,
         &bad_repo,
         &["snow", "resolve", "--file", "snow.yml", "--mode", "local"],
     );
@@ -668,13 +684,14 @@ fn invalid_project_label_fails_closed_until_rescued_by_valid_slipfork_toml_overr
 fn missing_snow_file_names_the_unreadable_path() {
     let tmp = disk_tempdir("slug-");
     let scratch = tmp.path();
-    let _daemon = harness_daemon(scratch);
+    let daemon = harness_daemon(scratch);
     let missing = scratch.join("does-not-exist-snow.yml");
     let missing_str = missing.to_str().expect("utf8");
 
     // `slipfork snow resolve --file <missing>` includes the exact path and OS error cause.
     let resolve_out = run_slipfork(
         scratch,
+        &daemon,
         scratch,
         &["snow", "resolve", "--file", missing_str, "--mode", "local"],
     );

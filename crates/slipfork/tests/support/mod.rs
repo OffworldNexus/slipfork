@@ -307,32 +307,24 @@ fn await_daemon_served(
 /// never auto-spawns a read/diagnostic verb (`M3.28.1` R5, `ADR-0011` §2–§3); the harness starts the
 /// daemon explicitly.
 ///
-/// The caller binds the returned handle in the **test** scope (`let _daemon = …`), never in a
-/// per-invocation helper: a real [`Backend::Child`] is a process, so its [`Daemon::shutdown`] must
-/// run (kill, wait, reap its worlds) when the test ends. `None` means a daemon already served the
-/// layout (the earlier call's handle owns it) or the in-process backend was started, which cannot be
-/// un-wound and is therefore forgotten.
-pub fn ensure_daemon(scratch: &Path, layout: &DaemonLayout, command: &str) -> Option<Daemon> {
-    if daemon_is_served(&layout.runtime_dir) {
-        return None;
-    }
-    let daemon = Daemon::start_in(scratch, layout).unwrap_or_else(|log| {
+/// The caller binds the returned handle in the **test** scope (`let daemon = …`), never in a
+/// per-invocation helper: the handle is the Drop guard. It kills and waits a real child daemon,
+/// unlinks an in-process control socket, and reaps the worlds either daemon booted. A layout that
+/// already has a served daemon is a harness bug: this test would not own the handle that reaps it,
+/// so it panics instead of returning an unowned server.
+pub fn ensure_daemon(scratch: &Path, layout: &DaemonLayout, command: &str) -> Daemon {
+    assert!(
+        !daemon_is_served(&layout.runtime_dir),
+        "a daemon already serves `slipfork {command}` on {}; the harness must own the daemon it \
+         reaps, so start this test on a fresh scratch layout",
+        layout.runtime_dir.display()
+    );
+    Daemon::start_in(scratch, layout).unwrap_or_else(|log| {
         panic!(
             "the test harness cannot serve `slipfork {command}`, which needs a daemon on {}: {log}",
             layout.runtime_dir.display()
         )
-    });
-    if daemon.is_in_process() {
-        // An in-process control server cannot be un-wound, so its handle is dropped on the floor:
-        // the zero-survivor proof runs here, before the only owner of that server is leaked.
-        assert_no_world_init_processes(
-            scratch,
-            "before the in-process daemon outlives this helper (its Drop never reaps)",
-        );
-        std::mem::forget(daemon);
-        return None;
-    }
-    Some(daemon)
+    })
 }
 
 /// `true` when a daemon is serving `<runtime_dir>/daemon.sock` right now (the production probe).
@@ -370,8 +362,14 @@ pub struct Daemon {
     pub state_dir: PathBuf,
     pub runtime_dir: PathBuf,
     pub browser_marker: PathBuf,
-    /// The suite scratch root this daemon's worlds are booted from (the reaping scope).
+    /// The suite scratch root this daemon's worlds are booted from (the process reaping scope).
     scratch: PathBuf,
+    /// The `SubvolumeDriver` this daemon's worlds are written through, so teardown can destroy
+    /// exactly the subvolumes the daemon created instead of trusting a hard-coded state path.
+    driver: Arc<dyn SubvolumeDriver>,
+    /// The world-init reap budget captured when this daemon was constructed, so teardown never
+    /// reads the host's load average while it is already failing.
+    reap_budget: ReapBudget,
     backend: Backend,
 }
 
@@ -438,17 +436,48 @@ impl Daemon {
         matches!(self.backend, Backend::InProcess { .. })
     }
 
+    /// The adapter this daemon's worlds were written through (the one it injected).
+    pub fn driver(&self) -> &dyn SubvolumeDriver {
+        self.driver.as_ref()
+    }
+
+    /// Reap this daemon's world residue (processes first, then subvolumes) and panic on survivors.
+    ///
+    /// The per-invocation suite proof for a test that owns a [`Daemon`] handle; `context` names the
+    /// offending invocation.
+    pub fn assert_no_world_residue(&self, context: &str) {
+        let failures = reap_world_residue(
+            &self.scratch,
+            &self.state_dir,
+            self.driver(),
+            self.reap_budget,
+        );
+        if !failures.is_empty() {
+            panic!("{}\n{context}", failures.join("\n"));
+        }
+    }
+
     /// Stop serving `<runtime_dir>/daemon.sock` (idempotent) and reap every world it booted.
     ///
     /// An in-process server cannot be un-wound, so its socket path is unlinked: every client then
     /// observes a dead daemon exactly like a killed child. A child is killed and reaped. Either
-    /// way the worlds the daemon booted are real `slipfork-world-init` processes that can outlive
-    /// their supervisor, so they are reaped here and their survival fails the test.
+    /// way the worlds the daemon booted are real `slipfork-world-init` processes and writable Btrfs
+    /// subvolumes that outlive a `SIGKILL`ed daemon (its engine `Drop` never runs), so both are
+    /// reaped here and their survival fails the test. [`reap_world_residue`] runs the process reap
+    /// first: a live world init still mounts its world, and a mounted subvolume cannot be destroyed.
     pub fn shutdown(&mut self) {
+        let mut failures = Vec::new();
         match &mut self.backend {
             Backend::Child(child) => {
+                // A `kill` error is not a reap failure: an already-exited child reports `ESRCH`,
+                // and `wait` below is what proves (and performs) the reap.
                 let _ = child.kill();
-                let _ = child.wait();
+                if let Err(error) = child.wait() {
+                    failures.push(format!(
+                        "the harness-owned slipforkd (pid {}) could not be reaped: {error}",
+                        child.id()
+                    ));
+                }
             }
             Backend::InProcess { closed, .. } => {
                 if !*closed {
@@ -461,14 +490,22 @@ impl Daemon {
                 }
             }
         }
-        if let Err(survivors) = reap_world_init_processes(&self.scratch) {
-            // A panic while the test is already unwinding would abort the whole test binary and
-            // hide the real failure, so that one case reports the leak instead of re-panicking.
-            if std::thread::panicking() {
-                eprintln!("slipfork test harness: {survivors}");
-            } else {
-                panic!("{survivors}");
-            }
+        failures.extend(reap_world_residue(
+            &self.scratch,
+            &self.state_dir,
+            self.driver(),
+            self.reap_budget,
+        ));
+        if failures.is_empty() {
+            return;
+        }
+        let report = failures.join("\n");
+        // A panic while the test is already unwinding would abort the whole test binary and hide
+        // the real failure, so that one case reports the leak instead of re-panicking.
+        if std::thread::panicking() {
+            eprintln!("slipfork test harness: {report}");
+        } else {
+            panic!("{report}");
         }
     }
 
@@ -500,6 +537,11 @@ impl Daemon {
             runtime_dir: layout.runtime_dir.clone(),
             browser_marker,
             scratch: scratch.to_path_buf(),
+            // The child backend only exists on a Btrfs state root (`slipforkd` refuses any other
+            // `--state-dir` before serving), and this is the exact adapter its composition root
+            // builds for the worlds it snapshots.
+            driver: Arc::new(KernelBtrfsDriver::new()),
+            reap_budget: ReapBudget::current_host(),
             backend: Backend::Child(child),
         })
     }
@@ -544,9 +586,12 @@ impl Daemon {
             .filter_map(|var| std::env::var(var.name()).ok().map(|value| (var, value)))
             .collect();
         let browser_marker = scratch.join("browser-used");
+        // The handle keeps the exact driver instance it injects, so teardown destroys the worlds
+        // this daemon wrote through the same driver contract the engine used.
+        let driver: Arc<dyn SubvolumeDriver> = Arc::new(TestTreeDriver::btrfs());
         let graph = compose_daemon(DaemonWiring {
             layout,
-            driver: Arc::new(TestTreeDriver::btrfs()),
+            driver: Arc::clone(&driver),
             browser: Arc::new(MarkerBrowserOpener::new(browser_marker.clone())),
             ingress,
             forward_port: None,
@@ -580,6 +625,8 @@ impl Daemon {
             runtime_dir: spec.runtime_dir.clone(),
             browser_marker,
             scratch: scratch.to_path_buf(),
+            driver,
+            reap_budget: ReapBudget::current_host(),
             backend: Backend::InProcess {
                 _ingress: ingress,
                 closed: false,
@@ -646,6 +693,109 @@ pub fn host_is_btrfs(path: &Path) -> bool {
     KernelBtrfsDriver::new()
         .probe_facts(path)
         .is_ok_and(|facts| facts.fstype == BTRFS_SUPER_MAGIC)
+}
+
+/// The `ADR-0010` §2 sealed-lineage directory the world reaper never touches.
+const SNAPSHOTS_DIR: &str = "snapshots";
+
+/// Reap every piece of world residue a suite's daemon can leave behind.
+///
+/// The process reap runs first: a live world init still mounts its world, and a mounted subvolume
+/// cannot be destroyed. One composed helper keeps that order in a single place for both the
+/// per-daemon teardown and the per-invocation proofs. Returns one diagnostic per failed reap
+/// (empty means clean).
+pub fn reap_world_residue(
+    scratch: &Path,
+    state_dir: &Path,
+    driver: &dyn SubvolumeDriver,
+    budget: ReapBudget,
+) -> Vec<String> {
+    let mut failures = Vec::new();
+    if let Err(error) = reap_world_init_processes_within(scratch, budget) {
+        failures.push(error);
+    }
+    if let Err(error) = reap_world_subvolumes_with(driver, state_dir) {
+        failures.push(error);
+    }
+    failures
+}
+
+/// Assert that one suite invocation left no world residue; `context` names the invocation.
+pub fn assert_no_world_residue(
+    scratch: &Path,
+    state_dir: &Path,
+    driver: &dyn SubvolumeDriver,
+    budget: ReapBudget,
+    context: &str,
+) {
+    let failures = reap_world_residue(scratch, state_dir, driver, budget);
+    if !failures.is_empty() {
+        panic!("{}\n{context}", failures.join("\n"));
+    }
+}
+
+/// Destroy every subvolume the injected `driver` reports under `state_dir`.
+///
+/// `<state_dir>/snapshots` holds the sealed base lineage (`ADR-0010` §§2–3) and is excluded; every
+/// other subvolume under the suite's state root is a live world the daemon did not reclaim (or
+/// scratch residue), so it is destroyed. The walk asks the driver at every directory instead of
+/// assuming one world path, so a regression that moves a world elsewhere still fails. A missing
+/// state root is a proof (no daemon ever wrote there), not a skip. A destroy failure is reported
+/// with the surviving subvolume names and the driver's own error, never dropped.
+pub fn reap_world_subvolumes_with(
+    driver: &dyn SubvolumeDriver,
+    state_dir: &Path,
+) -> Result<(), String> {
+    if !state_dir.is_dir() {
+        return Ok(());
+    }
+    let sealed_lineage = state_dir.join(SNAPSHOTS_DIR);
+    let mut survivors = Vec::new();
+    let mut pending = vec![state_dir.to_path_buf()];
+    while let Some(directory) = pending.pop() {
+        let children = driver.list_children(&directory).map_err(|error| {
+            format!(
+                "cannot enumerate the subvolumes under {}: {error}",
+                directory.display()
+            )
+        })?;
+        for path in children {
+            let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+                survivors.push(format!("{} (not a UTF-8 subvolume name)", path.display()));
+                continue;
+            };
+            if let Err(error) = driver.destroy_subvolume(&directory, name) {
+                survivors.push(format!("{} ({error})", path.display()));
+            }
+        }
+        let entries = fs::read_dir(&directory)
+            .map_err(|error| format!("cannot inspect {}: {error}", directory.display()))?;
+        for entry in entries {
+            let entry = entry
+                .map_err(|error| format!("cannot inspect {}: {error}", directory.display()))?;
+            let file_type = entry
+                .file_type()
+                .map_err(|error| format!("cannot inspect {}: {error}", entry.path().display()))?;
+            // `file_type` never follows a symlink, so a world's `rootfs` link cannot loop the walk.
+            // Only the sealed-lineage root is skipped; a world directory that happens to be named
+            // `snapshots` deeper in the tree is still reaped.
+            if !file_type.is_dir() || entry.path() == sealed_lineage {
+                continue;
+            }
+            pending.push(entry.path());
+        }
+    }
+    if survivors.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "world subvolumes survived teardown under {} (the daemon was killed before its engine \
+             could reclaim them; only {} is retained): {}",
+            state_dir.display(),
+            SNAPSHOTS_DIR,
+            survivors.join("; ")
+        ))
+    }
 }
 
 /// The daemon log appended to a failed child start.
@@ -762,90 +912,233 @@ pub fn terminate_process_group(process_group: u32) -> ProcessGroupTermination {
     }
 }
 
-/// How long a world-init process group gets to exit after `SIGTERM` before `SIGKILL`.
+/// The bounded wait a world-init reap is given before it reports a leak.
 ///
-/// A world PID 1 ignores `SIGTERM` (`pid_namespaces(7)`), so this window exists for the `unshare`
-/// supervisor, which can forward `--kill-child`; it only has to outlast one scheduling round trip.
-const REAP_TERM_GRACE: Duration = Duration::from_secs(1);
+/// The windows are test-side only (no production signature changes): the harness owns how long it
+/// waits for a `SIGKILL`ed world namespace to disappear.
+///
+/// A world PID 1 ignores `SIGTERM` (`pid_namespaces(7)`), so [`ReapBudget::term_grace`] only has to
+/// outlast one scheduling round trip for the `unshare` supervisor. `SIGKILL` is not maskable, so
+/// [`ReapBudget::kill_grace`] only waits for the kernel to tear the PID namespace down. A process
+/// sleeping uninterruptibly (`D`) cannot act on any signal until its syscall returns, so
+/// [`ReapBudget::d_state_grace`] is an extra window granted only while a survivor really is `D`;
+/// the reap retries it with backoff instead of failing fast.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReapBudget {
+    term_grace: Duration,
+    kill_grace: Duration,
+    d_state_grace: Duration,
+}
 
-/// How long a world-init process group gets to exit after `SIGKILL` before it is reported.
-///
-/// `SIGKILL` is not maskable, so the only wait is the kernel tearing the PID namespace down; a
-/// loaded host can starve a dying process, so this is generous and the poll returns as soon as the
-/// last process is gone.
-const REAP_KILL_GRACE: Duration = Duration::from_secs(10);
+/// Largest load multiplier [`ReapBudget::for_load`] applies, so a bogus load average cannot turn a
+/// failing reap into an unbounded wait.
+const MAX_REAP_LOAD_FACTOR: f64 = 8.0;
+
+/// Largest backoff between two `D`-state retries.
+const MAX_REAP_BACKOFF: Duration = Duration::from_secs(2);
+
+impl ReapBudget {
+    /// The idle-host windows: 1 s after `SIGTERM`, 10 s after the first `SIGKILL`, plus 20 s while a
+    /// survivor is uninterruptible.
+    pub const IDLE: Self = Self {
+        term_grace: Duration::from_secs(1),
+        kill_grace: Duration::from_secs(10),
+        d_state_grace: Duration::from_secs(20),
+    };
+
+    /// Derive the windows from a 1-minute load average and CPU count.
+    ///
+    /// A host whose runnable load exceeds its CPU count starves even a dying process, so every
+    /// window scales by `ceil(load / cpus)`, clamped to [`MAX_REAP_LOAD_FACTOR`]. An idle,
+    /// non-finite, or negative load keeps [`ReapBudget::IDLE`] unchanged.
+    pub fn for_load(load_1m: f64, cpus: usize) -> Self {
+        let cpus = cpus.max(1);
+        let factor = if load_1m.is_finite() && load_1m > 0.0 {
+            (load_1m / cpus as f64)
+                .ceil()
+                .clamp(1.0, MAX_REAP_LOAD_FACTOR)
+        } else {
+            1.0
+        };
+        Self {
+            term_grace: Self::IDLE.term_grace.mul_f64(factor),
+            kill_grace: Self::IDLE.kill_grace.mul_f64(factor),
+            d_state_grace: Self::IDLE.d_state_grace.mul_f64(factor),
+        }
+    }
+
+    /// The budget derived from this host's real 1-minute load average and CPU count.
+    ///
+    /// An unreadable `/proc/loadavg` is a failed inspection, not a quiet fall back to a constant:
+    /// the harness fails closed instead of waiting an unjustified amount of time.
+    pub fn current_host() -> Self {
+        let raw = fs::read_to_string("/proc/loadavg").unwrap_or_else(|error| {
+            panic!("cannot derive the world-init reap budget: /proc/loadavg is unreadable: {error}")
+        });
+        let load_1m = raw
+            .split_whitespace()
+            .next()
+            .and_then(|field| field.parse::<f64>().ok())
+            .unwrap_or_else(|| {
+                panic!(
+                    "cannot derive the world-init reap budget: unexpected /proc/loadavg contents \
+                     {raw:?}"
+                )
+            });
+        let cpus = std::thread::available_parallelism()
+            .map(|parallelism| parallelism.get())
+            .unwrap_or_else(|error| {
+                panic!("cannot derive the world-init reap budget: CPU count is unknown: {error}")
+            });
+        Self::for_load(load_1m, cpus)
+    }
+
+    /// How long the `SIGTERM` window lasts.
+    pub fn term_grace(&self) -> Duration {
+        self.term_grace
+    }
+
+    /// The windows this budget applies, for a failure diagnostic.
+    pub fn describe(&self) -> String {
+        format!(
+            "term {:?}, kill {:?}, uninterruptible {:?}",
+            self.term_grace, self.kill_grace, self.d_state_grace
+        )
+    }
+}
+
+/// The kernel's process state character and process group, read from `/proc/<pid>/stat`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ProcessStat {
+    /// Field 3: `R`, `S`, `D`, `Z`, `T`, …
+    state: char,
+    /// Field 5: the process group id.
+    pgid: u32,
+}
 
 /// One `slipfork-world-init` PID 1 or its `unshare` supervisor, matched by a suite's scratch root.
 struct WorldInitProcess {
     pid: u32,
     /// `None` when `/proc/<pid>/stat` could not be read: the process is still reported (and
     /// signalled directly) instead of being silently dropped as "no survivor".
-    pgid: Option<u32>,
+    stat: Option<ProcessStat>,
     cmdline: String,
+}
+
+impl WorldInitProcess {
+    /// `true` when the kernel reports this process in uninterruptible sleep (`D`).
+    ///
+    /// A `D` process has not acted on the `SIGKILL` it was sent: it is inside a kernel sleep and
+    /// only runs the signal when that call returns, so the reap must keep waiting rather than
+    /// declare it a leak at the first deadline.
+    fn is_uninterruptible(&self) -> bool {
+        self.stat.is_some_and(|stat| stat.state == 'D')
+    }
+
+    fn process_group(&self) -> Option<u32> {
+        self.stat.map(|stat| stat.pgid)
+    }
 }
 
 impl std::fmt::Display for WorldInitProcess {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self.pgid {
-            Some(pgid) => write!(
+        match self.stat {
+            Some(stat) => write!(
                 formatter,
-                "pid {} (pgid {pgid}): {}",
-                self.pid, self.cmdline
+                "pid {} (state {} = {}, pgid {}): {}",
+                self.pid,
+                stat.state,
+                process_state_name(stat.state),
+                stat.pgid,
+                self.cmdline
             ),
             None => write!(
                 formatter,
-                "pid {} (pgid unknown): {}",
+                "pid {} (state unknown, pgid unknown): {}",
                 self.pid, self.cmdline
             ),
         }
     }
 }
 
+/// Human name of a `/proc/<pid>/stat` state character (`proc(5)` §"/proc/pid/stat").
+fn process_state_name(state: char) -> &'static str {
+    match state {
+        'R' => "running",
+        'S' => "interruptible sleep",
+        'D' => "uninterruptible sleep",
+        'Z' => "zombie",
+        'T' => "stopped",
+        't' => "tracing stop",
+        'X' | 'x' => "dead",
+        'I' => "idle",
+        'P' => "parked",
+        _ => "unknown",
+    }
+}
+
 /// Boundedly reap every `slipfork-world-init` and `unshare` supervisor whose cmdline names
-/// `scratch`, returning the survivors when any outlive the `SIGTERM` → `SIGKILL` window.
+/// `scratch`, returning the survivors when any outlive the captured `budget`.
 ///
 /// A world PID 1 is `SIGNAL_UNKILLABLE` to `SIGTERM` (`pid_namespaces(7)`), and a supervisor that
 /// is `SIGKILL`ed can no longer forward `--kill-child`, so a world can outlive both its daemon and
-/// the `SIGTERM` that killed the daemon's process group. Every *wait* is a [`poll_until`] probe
-/// that re-scans `/proc` by cmdline, so no wait trusts a stale pid; the initial `SIGTERM` pass
-/// signals the first scan, and every later pass re-scans before signalling. The error names every
-/// survivor.
-pub fn reap_world_init_processes(scratch: &Path) -> Result<(), String> {
+/// the `SIGTERM` that killed the daemon's process group. Every *wait* re-scans `/proc` by cmdline,
+/// so no wait trusts a stale pid; the initial `SIGTERM` pass signals the first scan, and every later
+/// pass re-scans before signalling. The error names every survivor with the state character the
+/// kernel reports for it. `budget` is captured by the caller (a [`Daemon`] captures it at
+/// construction), so teardown never reads the host's load average while it is already failing.
+pub fn reap_world_init_processes_within(scratch: &Path, budget: ReapBudget) -> Result<(), String> {
+    let started = Instant::now();
     let targets = world_init_processes(scratch);
     if targets.is_empty() {
         return Ok(());
     }
     signal_world_init(&targets, "-TERM");
-    if poll_until(REAP_TERM_GRACE, POLL_INTERVAL, || no_world_init(scratch)).is_ok() {
+    if poll_until(budget.term_grace(), POLL_INTERVAL, || {
+        no_world_init(scratch)
+    })
+    .is_ok()
+    {
         return Ok(());
     }
-    poll_until(REAP_KILL_GRACE, POLL_INTERVAL, || {
-        match no_world_init(scratch) {
-            Ok(()) => Ok(()),
-            Err(survivors) => {
-                // A signal can be lost to a process that is momentarily unsignalable (an
-                // uninterruptible syscall), so every probe re-signals the survivors it just
-                // re-scanned by cmdline.
-                signal_world_init(&world_init_processes(scratch), "-KILL");
-                Err(survivors)
-            }
+    let kill_deadline = Instant::now() + budget.kill_grace;
+    // Granted once, only when a survivor is really uninterruptible: a `D` process cannot run the
+    // pending `SIGKILL` until the kernel returns it from its syscall. The extension always starts
+    // later than the base `SIGKILL` deadline (`d_state_grace` is the larger window), so it is the
+    // only deadline that can apply once it is set.
+    let mut d_state_deadline: Option<Instant> = None;
+    let mut backoff = POLL_INTERVAL;
+    loop {
+        let survivors = world_init_processes(scratch);
+        if survivors.is_empty() {
+            return Ok(());
         }
-    })
-    .map_err(|last| {
-        format!(
-            "world init processes for {} survived SIGTERM + SIGKILL: {last}",
-            scratch.display()
-        )
-    })
-}
-
-/// Assert that no world-init process for `scratch` survives, reaping first.
-///
-/// The one suite-exit proof for a suite that boots worlds without a harness [`Daemon`];
-/// `context` is appended to the failure so a caller can name the offending invocation.
-pub fn assert_no_world_init_processes(scratch: &Path, context: &str) {
-    if let Err(survivors) = reap_world_init_processes(scratch) {
-        panic!("{survivors}\n{context}");
+        // A signal can be lost to a process that is momentarily unsignalable (an uninterruptible
+        // syscall), so every pass re-signals the survivors it just re-scanned by cmdline.
+        signal_world_init(&survivors, "-KILL");
+        let uninterruptible = survivors.iter().any(WorldInitProcess::is_uninterruptible);
+        if uninterruptible {
+            d_state_deadline.get_or_insert_with(|| Instant::now() + budget.d_state_grace);
+        }
+        let deadline = d_state_deadline.unwrap_or(kill_deadline);
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "world init processes for {} survived SIGTERM and SIGKILL for {:?} (states read \
+                 from /proc/<pid>/stat; reap budget {}): {}",
+                scratch.display(),
+                started.elapsed(),
+                budget.describe(),
+                describe_world_init(&survivors)
+            ));
+        }
+        match d_state_deadline {
+            // An uninterruptible survivor gets exponential backoff between retries.
+            Some(_) => {
+                std::thread::sleep(backoff);
+                backoff = (backoff * 2).min(MAX_REAP_BACKOFF);
+            }
+            None => std::thread::sleep(POLL_INTERVAL),
+        }
     }
 }
 
@@ -890,10 +1183,10 @@ fn world_init_processes(scratch: &Path) -> Vec<WorldInitProcess> {
             continue;
         }
         // A matched process whose stat is unreadable is still a survivor: report it (with an
-        // unknown process group) instead of dropping it from the proof.
+        // unknown state and process group) instead of dropping it from the proof.
         found.push(WorldInitProcess {
             pid,
-            pgid: process_group(pid),
+            stat: process_stat(pid),
             cmdline: argv.join(" "),
         });
     }
@@ -912,11 +1205,12 @@ fn world_init_processes(scratch: &Path) -> Vec<WorldInitProcess> {
 fn signal_world_init(processes: &[WorldInitProcess], signal: &str) {
     // Without the test's own group, a group signal could kill the test runner: fail closed rather
     // than guess (the reaper may never act on ignorance).
-    let own_group = process_group(std::process::id())
-        .expect("/proc/self/stat must be readable to avoid signalling the test's own group");
+    let own_group = process_stat(std::process::id())
+        .expect("/proc/self/stat must be readable to avoid signalling the test's own group")
+        .pgid;
     let mut signalled: Vec<u32> = Vec::new();
     for process in processes {
-        match process.pgid {
+        match process.process_group() {
             Some(pgid) if pgid != own_group => {
                 if !signalled.contains(&pgid) {
                     signalled.push(pgid);
@@ -930,15 +1224,16 @@ fn signal_world_init(processes: &[WorldInitProcess], signal: &str) {
     }
 }
 
-/// The process group of `pid` (`/proc/<pid>/stat` field 5).
-fn process_group(pid: u32) -> Option<u32> {
+/// The state character and process group of `pid` (`/proc/<pid>/stat` fields 3 and 5).
+fn process_stat(pid: u32) -> Option<ProcessStat> {
     let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
     // `comm` (field 2) is parenthesized and may itself contain spaces or `)`, so split after its
     // last `)`; the remaining fields start with `state ppid pgrp …`.
     let mut fields = stat.rsplit_once(')')?.1.split_whitespace();
-    fields.next()?; // state
+    let state = fields.next()?.chars().next()?;
     fields.next()?; // ppid
-    fields.next()?.parse().ok()
+    let pgid = fields.next()?.parse().ok()?;
+    Some(ProcessStat { state, pgid })
 }
 
 fn describe_world_init(processes: &[WorldInitProcess]) -> String {
@@ -1066,4 +1361,128 @@ pub fn git_only_path(scratch: &Path) -> PathBuf {
     let git = find_on_path("git").expect("git must be on PATH for the .jj routing test");
     std::os::unix::fs::symlink(&git, directory.join("git")).expect("symlink git");
     directory
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// One scratch state root with `worlds/<name>` subvolumes created through a real
+    /// [`TestTreeDriver`]; the tempdir is returned so the caller keeps it alive.
+    fn world_fixture(names: &[&str]) -> (tempfile::TempDir, PathBuf, TestTreeDriver) {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let state_dir = tmp.path().join("state");
+        let worlds = state_dir.join("worlds");
+        fs::create_dir_all(&worlds).expect("worlds root");
+        let driver = TestTreeDriver::btrfs();
+        for name in names {
+            driver
+                .create_subvolume(&worlds, name)
+                .expect("create world subvolume");
+        }
+        (tmp, state_dir, driver)
+    }
+
+    #[test]
+    fn reap_budget_is_idle_derived_under_no_load_and_scales_with_load() {
+        assert_eq!(ReapBudget::for_load(0.0, 8), ReapBudget::IDLE);
+        assert_eq!(
+            ReapBudget::for_load(2.5, 8),
+            ReapBudget::IDLE,
+            "a load below one process per CPU keeps the idle windows"
+        );
+        let loaded = ReapBudget::for_load(16.0, 8);
+        assert_eq!(
+            loaded.term_grace(),
+            Duration::from_secs(2),
+            "a 2x-overcommitted host gets a 2x longer SIGTERM window"
+        );
+        let extreme = ReapBudget::for_load(1_000.0, 1);
+        assert_eq!(
+            extreme.term_grace(),
+            Duration::from_secs(8),
+            "the multiplier is clamped"
+        );
+    }
+
+    #[test]
+    fn process_stat_reads_the_live_state_character_and_process_group() {
+        let own = process_stat(std::process::id()).expect("/proc/self/stat is readable");
+        assert!(
+            own.state.is_ascii_alphabetic(),
+            "the kernel reports one state character, got {:?}",
+            own.state
+        );
+        assert!(own.pgid > 0, "a live test process has a process group");
+    }
+
+    #[test]
+    fn survivor_diagnostic_reports_the_kernel_state_instead_of_a_bare_timeout() {
+        let process = WorldInitProcess {
+            pid: 4242,
+            stat: Some(ProcessStat {
+                state: 'D',
+                pgid: 4243,
+            }),
+            cmdline: "slipfork-world-init --config /state/ctl/w/config.json".to_owned(),
+        };
+        assert!(process.is_uninterruptible());
+        let reported = process.to_string();
+        for needle in ["state D", "uninterruptible sleep", "pgid 4243"] {
+            assert!(reported.contains(needle), "missing {needle}: {reported}");
+        }
+        let unknown = WorldInitProcess {
+            pid: 4244,
+            stat: None,
+            cmdline: "unshare".to_owned(),
+        };
+        assert!(!unknown.is_uninterruptible());
+        assert!(unknown.to_string().contains("state unknown"));
+    }
+
+    #[test]
+    fn world_reaper_destroys_what_the_injected_driver_reports() {
+        let (_tmp, state_dir, driver) = world_fixture(&["acme-app-1", "acme-app-2"]);
+
+        reap_world_subvolumes_with(&driver, &state_dir).expect("reap the reported worlds");
+        assert_eq!(
+            driver
+                .list_children(&state_dir.join("worlds"))
+                .expect("re-list worlds"),
+            Vec::<PathBuf>::new(),
+            "no world subvolume may survive the reaper"
+        );
+    }
+
+    #[test]
+    fn world_reaper_fails_with_the_surviving_subvolume_names() {
+        let (_tmp, state_dir, _creator) = world_fixture(&["acme-app-7"]);
+        // A real kernel errno captured from a real failure: the reaper must report a destroy error
+        // of any kind, never silently drop the world. (The `EPERM` -> `SubvolumeDestroyDenied`
+        // mapping is the engine's own unit test.)
+        let errno = fs::read(state_dir.join("missing"))
+            .expect_err("reading a missing path fails")
+            .raw_os_error()
+            .expect("a missing path reports a kernel errno");
+        let denied = TestTreeDriver::btrfs().with_destroy_errno(errno);
+
+        let error = reap_world_subvolumes_with(&denied, &state_dir)
+            .expect_err("an undeletable world must fail the reaper");
+        assert!(error.contains("survived teardown"), "{error}");
+        assert!(
+            error.contains("acme-app-7"),
+            "the failure must name the surviving subvolume: {error}"
+        );
+    }
+
+    #[test]
+    fn world_reaper_is_a_proof_when_no_world_root_exists() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let state_dir = tmp.path().join("state");
+        fs::create_dir_all(&state_dir).expect("state root");
+        assert!(
+            reap_world_subvolumes_with(&TestTreeDriver::btrfs(), &state_dir).is_ok(),
+            "a state dir without worlds/ proves no world ever booted"
+        );
+    }
 }
