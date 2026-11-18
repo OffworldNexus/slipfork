@@ -29,7 +29,7 @@ use slipfork_edge::{
 };
 use slipfork_engine::btrfs::{BTRFS_SUPER_MAGIC, KernelBtrfsDriver, SubvolumeDriver};
 use slipfork_engine::{InheritedVar, current_uid_gid};
-use slipfork_ospp::{BrowserOpener, LivePairingUrl, OsppError};
+use slipfork_ospp::{BrowserOpener, LivePairingUrl, OsppEndpoint, OsppError};
 use slipfork_testkit::btrfs::TestTreeDriver;
 // The one bounded-wait shape and its named deadlines come from the shared testkit, so no suite in
 // this crate can drift into a second copy of the poll loop.
@@ -220,6 +220,15 @@ impl DaemonLayout {
 /// `slipfork` (the live suite's refusal proof) and [`Daemon`] (the child backend) both call this,
 /// so the production composition root is invoked identically everywhere.
 pub fn daemon_command(scratch: &Path, layout: &DaemonLayout) -> (Command, PathBuf) {
+    daemon_command_with_ospp(scratch, layout, None)
+}
+
+/// The same argv builder with an optional boot-injected OSPP endpoint.
+pub fn daemon_command_with_ospp(
+    scratch: &Path,
+    layout: &DaemonLayout,
+    endpoint: Option<&OsppEndpoint>,
+) -> (Command, PathBuf) {
     let (browser, browser_marker) = browser_opener(scratch);
     let mut command = Command::new(env!("CARGO_BIN_EXE_slipforkd"));
     command
@@ -236,8 +245,12 @@ pub fn daemon_command(scratch: &Path, layout: &DaemonLayout) -> (Command, PathBu
         .env("XDG_DATA_HOME", &layout.data_home)
         .env("XDG_RUNTIME_DIR", runtime_parent(&layout.runtime_dir))
         .env("BROWSER", browser)
+        .env("HOSTNAME", "test-machine")
         .stdin(Stdio::null())
         .stdout(Stdio::null());
+    if let Some(endpoint) = endpoint {
+        command.arg("--ospp-endpoint").arg(endpoint.as_str());
+    }
     (command, browser_marker)
 }
 
@@ -380,15 +393,31 @@ impl Daemon {
         Self::start_in(scratch, &layout).unwrap_or_else(|message| panic!("{message}"))
     }
 
+    /// Start a daemon whose single boot-injected OSPP endpoint is `endpoint`.
+    pub fn start_with_ospp(scratch: &Path, endpoint: OsppEndpoint) -> Self {
+        let layout = DaemonLayout::under(scratch);
+        Self::start_in_with_ospp(scratch, &layout, Some(endpoint))
+            .unwrap_or_else(|message| panic!("{message}"))
+    }
+
     /// Serve `layout` for `scratch`: the real child daemon on a Btrfs host, the in-process
     /// composition elsewhere.
     pub fn start_in(scratch: &Path, layout: &DaemonLayout) -> Result<Self, String> {
+        Self::start_in_with_ospp(scratch, layout, None)
+    }
+
+    /// Same as [`Daemon::start_in`], with an optional OSPP endpoint.
+    pub fn start_in_with_ospp(
+        scratch: &Path,
+        layout: &DaemonLayout,
+        endpoint: Option<OsppEndpoint>,
+    ) -> Result<Self, String> {
         ensure_private_dir(&layout.state_dir)?;
         ensure_private_dir(&layout.runtime_dir)?;
         if host_is_btrfs(&layout.state_dir) {
-            Self::spawn_child(scratch, layout, None)
+            Self::spawn_child(scratch, layout, None, endpoint.as_ref())
         } else {
-            Ok(Self::serve_in_process(scratch, layout))
+            Ok(Self::serve_in_process(scratch, layout, endpoint))
         }
     }
 
@@ -401,7 +430,7 @@ impl Daemon {
         let layout = DaemonLayout::under(scratch);
         ensure_private_dir(&layout.state_dir)?;
         ensure_private_dir(&layout.runtime_dir)?;
-        Self::spawn_child(scratch, &layout, path)
+        Self::spawn_child(scratch, &layout, path, None)
     }
 
     /// `true` when this daemon is served by [`slipfork::daemon`] in the test process.
@@ -424,6 +453,10 @@ impl Daemon {
             Backend::InProcess { closed, .. } => {
                 if !*closed {
                     let _ = fs::remove_file(self.runtime_dir.join("daemon.sock"));
+                    // The in-process ingress listener keeps its pathname socket bound until the
+                    // `Backend` drops; unlink it so a restarted daemon on the same state root can
+                    // bind a fresh one.
+                    let _ = fs::remove_file(self.state_dir.join("http-ingress.sock"));
                     *closed = true;
                 }
             }
@@ -443,6 +476,7 @@ impl Daemon {
         scratch: &Path,
         layout: &DaemonLayout,
         path: Option<&Path>,
+        endpoint: Option<&OsppEndpoint>,
     ) -> Result<Self, String> {
         let log_path = scratch.join("daemon.log");
         let log = OpenOptions::new()
@@ -454,7 +488,7 @@ impl Daemon {
         let stderr = log
             .try_clone()
             .map_err(|err| format!("cannot duplicate {}: {err}", log_path.display()))?;
-        let (mut command, browser_marker) = daemon_command(scratch, layout);
+        let (mut command, browser_marker) = daemon_command_with_ospp(scratch, layout, endpoint);
         command.stderr(stderr);
         if let Some(path) = path {
             command.env("PATH", path);
@@ -474,9 +508,12 @@ impl Daemon {
     ///
     /// The production [`compose_daemon`] graph is reused verbatim: only the driver
     /// ([`TestTreeDriver`]) and the browser opener (a marker stub) differ from `slipforkd`.
-    fn serve_in_process(scratch: &Path, spec: &DaemonLayout) -> Self {
+    fn serve_in_process(
+        scratch: &Path,
+        spec: &DaemonLayout,
+        endpoint: Option<OsppEndpoint>,
+    ) -> Self {
         let home = PathBuf::from(std::env::var_os("HOME").expect("HOME is set"));
-        let runtime_parent = runtime_parent(&spec.runtime_dir);
         let layout = Layout::explicit(
             spec.state_dir.clone(),
             spec.runtime_dir.clone(),
@@ -519,7 +556,8 @@ impl Daemon {
             target_arch: target_arch.to_owned(),
             uid,
             gid,
-            xdg_runtime_dir: Some(runtime_parent.to_path_buf()),
+            ospp_endpoint: endpoint,
+            hostname: "test-machine".to_owned(),
         })
         .expect("in-process daemon graph");
         let server = DaemonControlServer::bind(&spec.runtime_dir, graph.service)
@@ -637,9 +675,18 @@ impl MarkerBrowserOpener {
 
 impl BrowserOpener for MarkerBrowserOpener {
     fn open_pairing_url(&self, _url: LivePairingUrl) -> Result<(), OsppError> {
-        fs::write(&self.marker, b"").map_err(|err| OsppError::PairingUrl {
-            reason: format!("cannot record the browser marker: {err}"),
-        })
+        self.record()
+    }
+
+    fn open_origin(&self, _origin: &slipfork_world::WorldOrigin) -> Result<(), OsppError> {
+        self.record()
+    }
+}
+
+impl MarkerBrowserOpener {
+    fn record(&self) -> Result<(), OsppError> {
+        fs::write(&self.marker, b"")
+            .map_err(|err| OsppError::Transport(format!("cannot record the browser marker: {err}")))
     }
 }
 

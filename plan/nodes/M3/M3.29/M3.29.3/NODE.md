@@ -2,10 +2,10 @@
 id: M3.29.3
 title: "Scope the local 0600 vault to local credentials, prove remote secrets never hit disk, and add live slipforkd OSPP subscriptions + HPKE dump restore + auth pairing"
 kind: task
-status: ready
+status: done
 owner: implementer
 priority: 1
-depends_on: [M3.29.2, M3.28.15]
+depends_on: [M3.29.2]
 paths:
   - "crates/slipfork/src/**"
   - "crates/slipfork-snow/src/**"
@@ -15,13 +15,15 @@ paths:
   - "crates/slipfork-edge/tests/**"
   - "crates/slipfork-engine/src/**"
   - "crates/slipfork-dag/src/**"
+  - "crates/slipfork-dag/tests/**"
   - "crates/slipfork-vcs/src/**"
   - docs/reference/cli.md
-attempts: 0
-max_attempts: 3
+  - support/integrations.toml
+attempts: 2
+max_attempts: 5
 escalation: none
 created: "2026-11-18T00:08"
-updated: "2026-11-18T01:26"
+updated: "2026-11-18T03:07"
 ---
 
 # Goal

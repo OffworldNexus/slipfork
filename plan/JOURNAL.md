@@ -1275,3 +1275,29 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-18T01:26 [M3.28.7] (lead) status review -> done
 - 2026-11-18T01:27 [M3.28.12] (lead) final verification by lead: no render_daemon_handover/ss in tools (harness-has-no-lifecycle), zero 'slipfork open|restart' mentions in support/demo/README.md an
 - 2026-11-18T01:27 [M3.28.12] (lead) status active -> done
+- 2026-11-18T01:27 [M3.28.8] (lead) status ready -> active
+- 2026-11-18T01:27 [M3.28.8] (lead) attempt 1/3 started
+- 2026-11-18T01:27 [M3.28.8] (lead) base 90daf6e77eee40719b25c0960b66bbd73f6ba4fd
+- 2026-11-18T01:29 [M3.28.7] (lead) reviewer PASS on acceptance (status-listed, help-intact, lib status 6, critical_cli 21, clippy). Two text fixes applied: the /proc|/sys acceptance grep is now s
+- 2026-11-18T01:34 [M3.29.2] (lead) attempt 2/3 started
+- 2026-11-18T01:34 [M3.29.2] (lead) attempt 1 interrupted at the step limit with one known compile fix outstanding (second seal_dump call still passes &mut sealed_rng()) and no acceptance run. ACC
+- 2026-11-18T01:37 [M3.29.2] (lead) acceptance green in-scope: lib 15, critical_osspp 8, testkit 2, ospp-v1-only, no-catch-all, scoped clippy+fmt clean, guard 595, plan OK. NOT committed yet: the 
+- 2026-11-18T01:37 [M3.29.3] (lead) edited fields
+- 2026-11-18T01:37 [M3.28.15] (lead) edited fields
+- 2026-11-18T01:37 [M3.28.8] (lead) edited fields
+- 2026-11-18T01:37 [M3.28.8] (lead) attempt 1: work complete and verified in a clean 90daf6e worktree (lib restart 13, critical_cli 24/0, no --watch, /proc clean). Blocked only by the tree: M3.29.
+- 2026-11-18T01:37 [M3.28.8] (lead) status active -> ready
+- 2026-11-18T01:37 [M3.29.3] (lead) status ready -> active
+- 2026-11-18T01:37 [M3.29.3] (lead) attempt 1/3 started
+- 2026-11-18T01:37 [M3.29.3] (lead) base 90daf6e77eee40719b25c0960b66bbd73f6ba4fd
+- 2026-11-18T01:43 [M3.29.3] (lead) edited fields
+- 2026-11-18T01:43 [M3.29.3] (lead) attempt 2/5 started
+- 2026-11-18T01:43 [M3.29.3] (lead) attempt 1 cap-out mid-surgery: BUILD IS RED (crates/slipfork/src/daemon.rs half-rewritten). Solid and kept: slipfork-dag resources (RemoteResourceOffer deleted,
+- 2026-11-18T02:30 [M3.29.3] (lead) edited fields
+- 2026-11-18T02:30 [M3.29.3] (lead) attempt 3: make check GREEN. lib 81, critical_osspp_daemon 6 (two-tier byte scan 0 hits, vault credential survives restart, env_updated restarts api only), crit
+- 2026-11-18T03:07 [M3.29.2] (lead) landed in one atomic commit with its siblings: the OSPP crate cut-over breaks crates/slipfork by design, and M3.28.8's restart/-v work interleaves with M3.29.3 
+- 2026-11-18T03:07 [M3.29.3] (lead) landed in one atomic commit with its siblings: the OSPP crate cut-over breaks crates/slipfork by design, and M3.28.8's restart/-v work interleaves with M3.29.3 
+- 2026-11-18T03:07 [M3.28.8] (lead) landed in one atomic commit with its siblings: the OSPP crate cut-over breaks crates/slipfork by design, and M3.28.8's restart/-v work interleaves with M3.29.3 
+- 2026-11-18T03:07 [M3.29.2] (lead) status active -> done
+- 2026-11-18T03:07 [M3.29.3] (lead) status active -> done
+- 2026-11-18T03:07 [M3.28.8] (lead) status ready -> done

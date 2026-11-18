@@ -1,1093 +1,1341 @@
-//! In-tree `ospp-v1` **reference server**: the independent implementation the protected suite
-//! drives with the production client.
+//! In-tree `ospp-v1` reference server: an independent implementation of
+//! `docs/design/ospp.md` that the protected suite drives with the production client.
 //!
-//! It speaks the same `ADR-0008` §1–§2 frames over a real loopback WebSocket: server-first
-//! `CHALLENGE`, real P-256 signature verification, fragment-handle pairing, and all five
-//! capability frames (`env.bundle`, `secrets.ensure`, `resources.describe`, `dump.begin`,
-//! `dump.end`). `secrets.ensure` is a real compare-and-set over a mutex-held map, dumps are real
-//! `zstd::encode_all` archives streamed in bounded binary frames, and the rejection knobs exist
-//! only to prove fail-closed client behaviour.
+//! It speaks real loopback WebSocket frames with real P-256 verification and real
+//! RFC 9180 HPKE sealing, performs a single-pass `snow.yml` evaluation against the
+//! ID-only `claims`, pushes live `env_updated` frames, and serves a sealed dump
+//! stream from an out-of-band HTTP endpoint (plaintext HTTP on loopback only,
+//! mirroring the `ws://`-on-loopback endpoint rule; the production client's
+//! `https://` path uses `rustls` + `webpki-roots`).
 
-use std::collections::{BTreeMap, BTreeSet};
-use std::io;
+use std::collections::BTreeMap;
+use std::io::{BufRead, BufReader, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use p256::ecdsa::VerifyingKey;
-use p256::ecdsa::signature::hazmat::PrehashVerifier;
-use serde::Deserialize;
-use serde_json::{Value, json};
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD;
+use hpke::aead::AesGcm256;
+use hpke::kdf::HkdfSha256;
+use hpke::kem::DhP256HkdfSha256;
+use hpke::rand_core::{CryptoRng, TryCryptoRng, TryRng};
+use hpke::{OpModeS, Serializable, setup_sender_with_rng};
+use serde_json::json;
 use sha2::{Digest, Sha256};
-use slipfork_ospp::{KeyId, MAX_DUMP_FRAME, OsppEndpoint, PairingRejectReason, RejectReason};
-use slipfork_snow::{EntropySource, ProviderError};
+use slipfork_ospp::wire::{
+    AuthResponse, Challenge, ClientFrame, Encryption, ServerFrame, WireValue, auth_transcript,
+    pairing_transcript,
+};
+use slipfork_ospp::{
+    AUTH_METHOD_P256, ENCRYPTION_METHOD_HPKE_P256, OSPP_SUBPROTOCOL, OsppClaims, OsppEndpoint,
+    OsppError, PROTOCOL_VERSION, codes, dump_aad, parse_recipient_public_key, secret_aad,
+    verify_device_signature,
+};
+use slipfork_snow::faceless::{GeneratorSpec, TailModifier, Token, parse_faceless};
+use slipfork_snow::{EntropySource, SnowFile};
 use tungstenite::handshake::server::{ErrorResponse, Request, Response};
 use tungstenite::http::HeaderValue;
 use tungstenite::http::header::SEC_WEBSOCKET_PROTOCOL;
 use tungstenite::{Message, WebSocket, accept_hdr};
 
-/// Server-side read slice; a stopped server notices within this bound.
-const READ_SLICE: Duration = Duration::from_millis(100);
+use crate::signers::SeededEntropy;
 
-/// Deterministic wall clock used by the reference server for pairing TTLs.
-#[derive(Debug, Default)]
-pub struct ReferenceClock {
-    now_ms: AtomicU64,
-}
+const POLL_SLICE: Duration = Duration::from_millis(25);
+const IO_TIMEOUT: Duration = Duration::from_secs(10);
+const MAX_HTTP_HEADERS: usize = 16 * 1024;
 
-impl ReferenceClock {
-    /// Start the clock at `now_ms`.
-    pub fn new(now_ms: u64) -> Self {
-        Self {
-            now_ms: AtomicU64::new(now_ms),
-        }
-    }
-
-    /// Current time in milliseconds.
-    pub fn now_ms(&self) -> u64 {
-        self.now_ms.load(Ordering::SeqCst)
-    }
-
-    /// Advance by `millis`.
-    pub fn advance(&self, millis: u64) {
-        self.now_ms.fetch_add(millis, Ordering::SeqCst);
-    }
-}
-
-/// Seeded CSPRNG double for `nonce_c` (and any client-side entropy in tests).
-#[derive(Debug, Default)]
-pub struct SeededEntropy {
-    state: AtomicU64,
-}
-
-impl SeededEntropy {
-    /// Seed the generator.
-    pub fn new(seed: u64) -> Self {
-        Self {
-            state: AtomicU64::new(seed),
-        }
-    }
-
-    fn next_u64(&self) -> u64 {
-        // splitmix64: tiny, deterministic, and good enough for test nonces.
-        let mut z = self
-            .state
-            .fetch_add(0x9e37_79b9_7f4a_7c15, Ordering::SeqCst)
-            .wrapping_add(0x9e37_79b9_7f4a_7c15);
-        z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
-        z ^ (z >> 31)
-    }
-}
-
-impl EntropySource for SeededEntropy {
-    fn fill_bytes(&self, buf: &mut [u8]) -> Result<(), ProviderError> {
-        for chunk in buf.chunks_mut(8) {
-            let bytes = self.next_u64().to_le_bytes();
-            chunk.copy_from_slice(&bytes[..chunk.len()]);
-        }
-        Ok(())
-    }
-}
-
-/// A pairing handle the server will honour.
+/// One server-resolved resource (`pg_databases.main`, `s3_buckets.media`, …).
 #[derive(Debug, Clone)]
-pub struct HandleRecord {
-    /// Raw 32-byte handle.
-    pub handle: [u8; 32],
-    /// Clock time at which the five-minute window ends.
-    pub expires_at_ms: u64,
+pub struct ResourceRecord {
+    /// Non-sensitive coordinate (`url`, `endpoint`, …), returned in plaintext.
+    pub url: String,
+    /// Sensitive credential (`password`, `secret_key`), sealed when unclaimed.
+    pub password: String,
 }
 
-impl HandleRecord {
-    /// A handle valid for the standard five minutes from `now_ms`.
-    pub fn new(handle: [u8; 32], now_ms: u64) -> Self {
-        Self {
-            handle,
-            expires_at_ms: now_ms + 5 * 60 * 1000,
+/// Browser verdict a pending pairing resolves to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PairOutcome {
+    /// `pair_approved { account, machine }`.
+    Approve {
+        /// Account name.
+        account: String,
+        /// Approved machine name.
+        machine: String,
+    },
+    /// Typed `error` frame with this code.
+    Reject {
+        /// `rejected`, `already_paired`, `throttled`, or `bad_proof`.
+        code: String,
+    },
+}
+
+impl PairOutcome {
+    /// The default approval used by `ReferenceServerConfig::default`.
+    pub fn approved() -> Self {
+        Self::Approve {
+            account: "alice".to_owned(),
+            machine: "dev-laptop".to_owned(),
         }
     }
 }
 
-/// One S3 bucket the reference server offers (`s3_buckets.<id>`).
-#[derive(Debug, Clone)]
-pub struct S3BucketRecord {
-    pub endpoint: String,
-    pub region: String,
-    pub bucket: String,
-    pub access_key: String,
-    pub secret_key: String,
-}
-
-impl S3BucketRecord {
-    /// Construct one offered bucket.
-    pub fn new(
-        endpoint: impl Into<String>,
-        region: impl Into<String>,
-        bucket: impl Into<String>,
-        access_key: impl Into<String>,
-        secret_key: impl Into<String>,
-    ) -> Self {
-        Self {
-            endpoint: endpoint.into(),
-            region: region.into(),
-            bucket: bucket.into(),
-            access_key: access_key.into(),
-            secret_key: secret_key.into(),
-        }
-    }
-}
-
-/// One PostgreSQL seed dump the reference server can stream (`pg_databases.<id>`).
-#[derive(Debug, Clone)]
-pub struct DumpRecord {
-    /// Database id the archive belongs to.
-    pub db_id: String,
-    /// Uncompressed `pg_dump --format=custom` bytes.
-    pub archive: Vec<u8>,
-}
-
-impl DumpRecord {
-    /// Register an archive for `db_id`.
-    pub fn new(db_id: impl Into<String>, archive: impl Into<Vec<u8>>) -> Self {
-        Self {
-            db_id: db_id.into(),
-            archive: archive.into(),
-        }
-    }
-
-    /// The zstd-compressed archive the server streams.
-    pub fn compressed(&self) -> Vec<u8> {
-        zstd::encode_all(self.archive.as_slice(), 3).expect("zstd compression")
-    }
-
-    /// SHA-256 of [`Self::compressed`] as lowercase hex.
-    pub fn sha256_compressed(&self) -> String {
-        hex::encode(Sha256::digest(self.compressed()))
-    }
-}
-
-/// Reference-server behaviour knobs.
+/// Reference server configuration: authoritative server-side values.
 #[derive(Debug, Clone)]
 pub struct ReferenceServerConfig {
-    /// Public keys the server will accept.
-    pub keys: Vec<KeyId>,
-    /// Force a typed `REJECT` after any `HELLO`.
-    pub forced_reject: Option<RejectReason>,
-    /// Reuse this exact `nonce_s` on every connection (used to prove replay refusal).
-    pub fixed_nonce: Option<[u8; 32]>,
-    /// Send `WELCOME` before any `CHALLENGE`.
-    pub welcome_before_challenge: bool,
-    /// Send an `env.bundle` capability frame before any `CHALLENGE`.
-    pub capability_before_challenge: bool,
-    /// Send a >16 KiB first frame.
-    pub oversized_first_frame: bool,
-    /// Accept the upgrade and then send no frame at all (deadline proof).
-    pub silent_first_frame: bool,
-    /// Pairing handles this server will honour.
-    pub handles: Vec<HandleRecord>,
-    /// Account returned on a successful pairing.
-    pub account: String,
-    /// Seed `vars` served by `env.bundle`.
+    /// Compressed P-256 public keys allowed to open an authenticated session.
+    pub accepted_keys: Vec<String>,
+    /// `snow.yml` mode the server evaluates (`all` by default).
+    pub mode: String,
+    /// Resolvable `vars::<KEY>` values.
     pub vars: BTreeMap<String, String>,
-    /// Seed `secrets`; `secrets.ensure` compares-and-sets over this map.
+    /// Resolvable `secrets::<KEY>` values (always sealed to the client).
     pub secrets: BTreeMap<String, String>,
-    /// Seed `domains`; served only in `cloud` mode.
+    /// Resolvable `resources::<kind>.<id>` records.
+    pub resources: BTreeMap<String, ResourceRecord>,
+    /// Resolvable `domains::<ID>` values.
     pub domains: BTreeMap<String, String>,
-    /// S3 buckets offered by `resources.describe`.
-    pub s3_buckets: BTreeMap<String, S3BucketRecord>,
-    /// PostgreSQL dumps offered by `resources.describe` / `dump.begin`.
-    pub pg_databases: BTreeMap<String, DumpRecord>,
-    /// Answer every capability with `capability.error { kind: "not_authenticated" }`.
-    pub deny_capabilities: bool,
-    /// Advertise a dump, send part of it, then close before `dump.end`.
-    pub truncate_dump: bool,
-    /// Stream bytes that do not hash to the advertised digest.
-    pub corrupt_dump: bool,
-    /// Send one binary frame larger than the 64 KiB cap.
-    pub oversized_dump_frame: bool,
-    /// Advertised `dump.begin.format` (defaults to `pg_custom_zstd`).
-    pub dump_format: Option<String>,
-    /// Binary frame payload size for a normal dump stream.
-    pub dump_chunk_bytes: usize,
+    /// Resource dumps by resource path.
+    pub dumps: BTreeMap<String, Vec<u8>>,
+    /// Verdict for a pending pairing unless the test overrides it.
+    pub pair_outcome: PairOutcome,
+    /// Approve immediately after `pair_handle` instead of waiting for the test.
+    pub auto_approve: bool,
 }
 
 impl Default for ReferenceServerConfig {
     fn default() -> Self {
         Self {
-            keys: Vec::new(),
-            forced_reject: None,
-            fixed_nonce: None,
-            welcome_before_challenge: false,
-            capability_before_challenge: false,
-            oversized_first_frame: false,
-            silent_first_frame: false,
-            handles: Vec::new(),
-            account: String::new(),
+            accepted_keys: Vec::new(),
+            mode: "all".to_owned(),
             vars: BTreeMap::new(),
             secrets: BTreeMap::new(),
+            resources: BTreeMap::new(),
             domains: BTreeMap::new(),
-            s3_buckets: BTreeMap::new(),
-            pg_databases: BTreeMap::new(),
-            deny_capabilities: false,
-            truncate_dump: false,
-            corrupt_dump: false,
-            oversized_dump_frame: false,
-            dump_format: None,
-            dump_chunk_bytes: 4096,
+            dumps: BTreeMap::new(),
+            pair_outcome: PairOutcome::approved(),
+            auto_approve: true,
         }
     }
 }
 
-/// A recorded HTTP upgrade request.
+/// One observed WebSocket handshake.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RecordedRequest {
-    /// Requested path.
+pub struct ServerRequest {
+    /// Request path.
     pub path: String,
-    /// Requested subprotocol.
+    /// Offered `Sec-WebSocket-Protocol` value.
     pub subprotocol: Option<String>,
 }
 
-/// A recorded `HELLO`/`pair_hello`.
+/// One accepted subscription.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ConnectAttempt {
-    /// `type` field.
-    pub kind: String,
-    /// `version` field.
-    pub version: u16,
-    /// `key_id` field.
-    pub key_id: String,
-    /// `nonce_c` field.
-    pub nonce_c: String,
+pub struct SubscriptionRecord {
+    /// Subscription id.
+    pub id: String,
+    /// Verbatim Git remote string.
+    pub remote: String,
+    /// Raw `snow.yml` content.
+    pub snow: String,
+    /// ID-only claims.
+    pub claims: OsppClaims,
+    /// Client's ephemeral HPKE public key hex.
+    pub public_key: String,
 }
 
-/// A recorded capability request.
+/// One pairing attempt.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RecordedCapability {
-    /// Capability wire `type`.
-    pub capability: String,
-    /// Requested project.
-    pub project: String,
-    /// Requested mode.
-    pub mode: String,
-    /// Client-chosen request id.
-    pub request_id: u32,
+pub struct PairingRecord {
+    /// Single-use handle hex.
+    pub handle: String,
+    /// Proposed hostname.
+    pub hostname: String,
+    /// Enrolling public key hex.
+    pub public_key: String,
+    /// Whether the browser approved after the handle was issued.
+    pub approved: bool,
 }
 
-/// One observed `secrets.ensure` compare-and-set.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct EnsureCall {
-    /// Secret key.
-    pub key: String,
-    /// Value the client proposed.
-    pub proposed: String,
-    /// Authoritative value the server returned.
-    pub returned: String,
+/// Everything the suite observes on the reference server.
+#[derive(Debug, Clone, Default)]
+pub struct ServerState {
+    /// WebSocket handshakes, in arrival order.
+    pub requests: Vec<ServerRequest>,
+    /// Accepted subscriptions by id.
+    pub subscriptions: BTreeMap<String, SubscriptionRecord>,
+    /// Pairing attempts, in arrival order.
+    pub pairings: Vec<PairingRecord>,
+    /// Client frame types received, in arrival order.
+    pub frames: Vec<String>,
+    /// Number of `dump_request` frames served with a URL.
+    pub dump_urls: usize,
 }
 
-/// Observable server state for assertions.
-#[derive(Debug, Default)]
-pub struct ReferenceState {
-    /// Every upgrade request, in order.
-    pub requests: Vec<RecordedRequest>,
-    /// Every handshake attempt, in order.
-    pub attempts: Vec<ConnectAttempt>,
-    /// Every pairing handle that reached a `pair_hello`.
-    pub handles_seen: Vec<[u8; 32]>,
-    /// Every capability request, in order.
-    pub capability_requests: Vec<RecordedCapability>,
-    /// Every `secrets.ensure` compare-and-set, in order.
-    pub ensure_calls: Vec<EnsureCall>,
-    /// Database ids streamed by `dump.begin`.
-    pub dumps_served: Vec<String>,
-    /// Binary dump frames sent.
-    pub dump_frames: usize,
-    /// Compressed dump bytes sent.
-    pub dump_bytes: u64,
-    secrets: BTreeMap<String, String>,
-    used_nonces: BTreeSet<[u8; 32]>,
-    redeemed: BTreeSet<[u8; 32]>,
-}
-
-impl ReferenceState {
-    /// Whether `nonce` was already consumed by an accepted handshake.
-    pub fn nonce_used(&self, nonce: &[u8; 32]) -> bool {
-        self.used_nonces.contains(nonce)
-    }
-
-    /// Whether `handle` was already redeemed.
-    pub fn handle_redeemed(&self, handle: &[u8; 32]) -> bool {
-        self.redeemed.contains(handle)
-    }
-
-    /// The authoritative stored secret for `key`, if any.
-    pub fn secret_value(&self, key: &str) -> Option<&str> {
-        self.secrets.get(key).map(String::as_str)
-    }
-}
-
-/// A running in-process reference server.
+/// A running reference server.
 pub struct ReferenceOsppServer {
-    addr: SocketAddr,
-    shutdown: Arc<AtomicBool>,
-    state: Arc<Mutex<ReferenceState>>,
-    clock: Arc<ReferenceClock>,
-    thread: Option<JoinHandle<()>>,
+    endpoint: OsppEndpoint,
+    http_addr: SocketAddr,
+    shared: Arc<Shared>,
+    threads: Mutex<Vec<JoinHandle<()>>>,
+    stop: Arc<AtomicBool>,
 }
 
 impl ReferenceOsppServer {
-    /// Bind `127.0.0.1:0` and start serving.
+    /// Bind loopback WebSocket and dump listeners and serve until dropped.
     pub fn start(config: ReferenceServerConfig) -> Self {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("bind reference server");
-        let addr = listener.local_addr().expect("local addr");
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind reference ospp listener");
+        let port = listener.local_addr().expect("ws local addr").port();
+        let http_listener = TcpListener::bind("127.0.0.1:0").expect("bind reference dump listener");
+        let http_addr = http_listener.local_addr().expect("dump local addr");
         listener
             .set_nonblocking(true)
-            .expect("non-blocking listener");
-        let shutdown = Arc::new(AtomicBool::new(false));
-        let state = Arc::new(Mutex::new(ReferenceState {
-            secrets: config.secrets.clone(),
-            ..ReferenceState::default()
-        }));
-        let clock = Arc::new(ReferenceClock::new(1_000));
-        let config = Arc::new(config);
-        let nonce_seed = Arc::new(AtomicU64::new(0xa5a5_1234_5678_9abc));
+            .expect("nonblocking ws listener");
+        http_listener
+            .set_nonblocking(true)
+            .expect("nonblocking dump listener");
 
-        let thread = {
-            let shutdown = Arc::clone(&shutdown);
-            let state = Arc::clone(&state);
-            let clock = Arc::clone(&clock);
-            thread::spawn(move || {
-                while !shutdown.load(Ordering::SeqCst) {
-                    match listener.accept() {
-                        Ok((stream, _)) => {
-                            stream.set_nodelay(true).ok();
-                            handle_connection(
-                                stream,
-                                &config,
-                                &state,
-                                &clock,
-                                &nonce_seed,
-                                &shutdown,
-                            );
-                        }
-                        Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                            thread::sleep(Duration::from_millis(5));
-                        }
-                        Err(_) => break,
-                    }
-                }
-            })
+        let endpoint = OsppEndpoint::parse(&format!("ws://127.0.0.1:{port}/_ospp/v1"))
+            .expect("valid loopback endpoint");
+        let stop = Arc::new(AtomicBool::new(false));
+        let shared = Arc::new(Shared {
+            config: Mutex::new(config),
+            state: Mutex::new(ServerState::default()),
+            subscriptions: Mutex::new(BTreeMap::new()),
+            dumps: Mutex::new(BTreeMap::new()),
+            decisions: Mutex::new(BTreeMap::new()),
+            entropy: SeededEntropy::new(0x5eed_1234_9abc_def0),
+            http_addr,
+            stop: Arc::clone(&stop),
+        });
+
+        let ws_thread = {
+            let shared = Arc::clone(&shared);
+            thread::Builder::new()
+                .name("ospp-reference-server".to_owned())
+                .spawn(move || accept_loop(listener, shared))
+                .expect("spawn reference ws server")
         };
+        let http_thread = {
+            let shared = Arc::clone(&shared);
+            thread::Builder::new()
+                .name("ospp-reference-dumps".to_owned())
+                .spawn(move || http_loop(http_listener, shared))
+                .expect("spawn reference dump server")
+        };
+
         Self {
-            addr,
-            shutdown,
-            state,
-            clock,
-            thread: Some(thread),
+            endpoint,
+            http_addr,
+            shared,
+            threads: Mutex::new(vec![ws_thread, http_thread]),
+            stop,
         }
     }
 
-    /// A connect endpoint for [`slipfork_ospp::OsppClient`].
+    /// The validated `ws://127.0.0.1:<port>/_ospp/v1` endpoint.
     pub fn endpoint(&self) -> OsppEndpoint {
-        OsppEndpoint::connect("127.0.0.1", self.addr.port(), false).expect("loopback endpoint")
+        self.endpoint.clone()
     }
 
-    /// A browser pairing URL carrying `handle`.
-    pub fn browser_pairing_url(&self, handle: [u8; 32]) -> String {
-        format!(
-            "http://127.0.0.1:{}/pair#handle={}",
-            self.addr.port(),
-            hex::encode(handle)
-        )
+    /// The dump listener address.
+    pub const fn dump_addr(&self) -> SocketAddr {
+        self.http_addr
     }
 
-    /// The deterministic clock shared with the server.
-    pub fn clock(&self) -> &ReferenceClock {
-        &self.clock
+    /// Snapshot of everything observed so far.
+    pub fn state(&self) -> ServerState {
+        lock(&self.shared.state).clone()
     }
 
-    /// Snapshot the observable state.
-    pub fn state(&self) -> MutexGuard<'_, ReferenceState> {
-        self.state.lock().unwrap_or_else(PoisonError::into_inner)
+    /// Replace one server-side `secrets::<KEY>` value.
+    pub fn set_secret(&self, key: &str, value: &str) {
+        lock(&self.shared.config)
+            .secrets
+            .insert(key.to_owned(), value.to_owned());
+    }
+
+    /// Replace one server-side `vars::<KEY>` value.
+    pub fn set_var(&self, key: &str, value: &str) {
+        lock(&self.shared.config)
+            .vars
+            .insert(key.to_owned(), value.to_owned());
+    }
+
+    /// Re-resolve and push `env_updated` for every active subscription.
+    pub fn push_update(&self) -> Result<(), OsppError> {
+        let shared = Arc::clone(&self.shared);
+        let subscriptions: Vec<ActiveSubscription> =
+            lock(&shared.subscriptions).values().cloned().collect();
+        for subscription in subscriptions {
+            let config = lock(&shared.config).clone();
+            let resolved = resolve_components(
+                &config,
+                &subscription.record.claims,
+                &subscription.record.snow,
+            )
+            .map_err(|(code, message)| {
+                OsppError::server(Some(subscription.record.id.clone()), code, message)
+            })?;
+            let components = seal_components(
+                &resolved,
+                &subscription.record.public_key,
+                &mut FilledRng::new(&shared.entropy, 8192)?,
+            )?;
+            let _ = subscription.outbound.send(ServerFrame::EnvUpdated {
+                id: subscription.record.id.clone(),
+                components,
+            });
+        }
+        Ok(())
+    }
+
+    /// Simulate the browser approving a pending handle.
+    pub fn approve_pairing(&self, handle: &str) {
+        lock(&self.shared.decisions).insert(handle.to_owned(), PairOutcome::approved());
+    }
+
+    /// Simulate the browser rejecting a pending handle with a typed code.
+    pub fn reject_pairing(&self, handle: &str, code: &str) {
+        lock(&self.shared.decisions).insert(
+            handle.to_owned(),
+            PairOutcome::Reject {
+                code: code.to_owned(),
+            },
+        );
+    }
+
+    /// Stop accepting connections and join the listener threads.
+    pub fn shutdown(&self) {
+        self.stop.store(true, Ordering::SeqCst);
+        let threads = std::mem::take(&mut *lock(&self.threads));
+        for handle in threads {
+            let _ = handle.join();
+        }
     }
 }
 
 impl Drop for ReferenceOsppServer {
     fn drop(&mut self) {
-        self.shutdown.store(true, Ordering::SeqCst);
-        // Wake a blocking accept so the thread observes the flag promptly.
-        let _ = TcpStream::connect(self.addr);
-        if let Some(thread) = self.thread.take() {
-            let _ = thread.join();
+        self.shutdown();
+    }
+}
+
+struct Shared {
+    config: Mutex<ReferenceServerConfig>,
+    state: Mutex<ServerState>,
+    subscriptions: Mutex<BTreeMap<String, ActiveSubscription>>,
+    dumps: Mutex<BTreeMap<String, DumpEntry>>,
+    decisions: Mutex<BTreeMap<String, PairOutcome>>,
+    entropy: SeededEntropy,
+    http_addr: SocketAddr,
+    stop: Arc<AtomicBool>,
+}
+
+#[derive(Clone)]
+struct ActiveSubscription {
+    record: SubscriptionRecord,
+    outbound: Sender<ServerFrame>,
+}
+
+struct DumpEntry {
+    public_key: String,
+    subscription_id: String,
+    resource: String,
+    bytes: Vec<u8>,
+}
+
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+fn accept_loop(listener: TcpListener, shared: Arc<Shared>) {
+    while !shared.stop.load(Ordering::SeqCst) {
+        match listener.accept() {
+            Ok((stream, _peer)) => {
+                let shared = Arc::clone(&shared);
+                let _ = thread::Builder::new()
+                    .name("ospp-reference-conn".to_owned())
+                    .spawn(move || handle_connection(stream, shared));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                thread::sleep(POLL_SLICE);
+            }
+            Err(_) => break,
         }
     }
 }
 
-#[allow(clippy::result_large_err)] // tungstenite's `Callback` dictates the large `ErrorResponse`.
-fn handle_connection(
-    stream: TcpStream,
-    config: &Arc<ReferenceServerConfig>,
-    state: &Arc<Mutex<ReferenceState>>,
-    clock: &Arc<ReferenceClock>,
-    nonce_seed: &Arc<AtomicU64>,
-    shutdown: &Arc<AtomicBool>,
-) {
-    let recorded = Arc::new(Mutex::new(None::<String>));
-    let recorded_in_callback = Arc::clone(&recorded);
-    let state_in_callback = Arc::clone(state);
-    let accepted = accept_hdr(stream, move |request: &Request, mut response: Response| {
-        let path = request.uri().path().to_owned();
-        let subprotocol = request
-            .headers()
-            .get(SEC_WEBSOCKET_PROTOCOL)
-            .and_then(|value| value.to_str().ok())
-            .map(str::to_owned);
-        state_in_callback
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .requests
-            .push(RecordedRequest {
-                path: path.clone(),
-                subprotocol,
+#[allow(clippy::result_large_err)] // `tungstenite` fixes the handshake callback's error type
+fn handle_connection(stream: TcpStream, shared: Arc<Shared>) {
+    let recorder = Arc::clone(&shared);
+    let callback =
+        move |request: &Request, mut response: Response| -> Result<Response, ErrorResponse> {
+            let protocol = request
+                .headers()
+                .get(SEC_WEBSOCKET_PROTOCOL)
+                .and_then(|value| value.to_str().ok())
+                .map(str::to_owned);
+            lock(&recorder.state).requests.push(ServerRequest {
+                path: request.uri().path().to_owned(),
+                subprotocol: protocol.clone(),
             });
-        *recorded_in_callback
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner) = Some(path);
-        response
-            .headers_mut()
-            .insert(SEC_WEBSOCKET_PROTOCOL, HeaderValue::from_static("ospp-v1"));
-        Ok::<_, ErrorResponse>(response)
-    });
-    let Ok(mut socket) = accepted else {
-        return;
+            let offered = protocol.unwrap_or_default();
+            if !offered
+                .split(',')
+                .any(|value| value.trim() == OSPP_SUBPROTOCOL)
+            {
+                return Err(tungstenite::http::Response::builder()
+                    .status(400)
+                    .body(Some("missing Sec-WebSocket-Protocol: ospp-v1".to_owned()))
+                    .expect("static error response"));
+            }
+            response.headers_mut().insert(
+                SEC_WEBSOCKET_PROTOCOL,
+                HeaderValue::from_static(OSPP_SUBPROTOCOL),
+            );
+            Ok(response)
+        };
+    let mut socket = match accept_hdr(stream, callback) {
+        Ok(socket) => socket,
+        Err(_) => return,
     };
-    let _ = socket.get_ref().set_read_timeout(Some(READ_SLICE));
-    let path = recorded
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .clone()
-        .unwrap_or_default();
-    match path.as_str() {
-        "/_ospp/v1/connect" => handle_connect(&mut socket, config, state, nonce_seed, shutdown),
-        "/_ospp/v1/pair" => handle_pair(&mut socket, config, state, clock, nonce_seed, shutdown),
-        _ => {
-            let _ = socket.close(None);
-        }
-    }
+    let _ = socket.get_ref().set_read_timeout(Some(POLL_SLICE));
+    let _ = serve(&mut socket, &shared);
     let _ = socket.close(None);
 }
 
-fn handle_connect(
-    socket: &mut WebSocket<TcpStream>,
-    config: &ReferenceServerConfig,
-    state: &Mutex<ReferenceState>,
-    nonce_seed: &AtomicU64,
-    shutdown: &AtomicBool,
-) {
-    if config.silent_first_frame {
-        // The client's injected handshake deadline must fire before this returns.
-        thread::sleep(Duration::from_millis(500));
-        return;
-    }
-    if config.welcome_before_challenge {
-        send_json(socket, json!({"type": "welcome", "version": 1}));
-        return;
-    }
-    if config.capability_before_challenge {
-        send_json(
-            socket,
-            json!({
-                "type": "env.bundle",
-                "request_id": 1,
-                "vars": {},
-                "secrets": {},
-                "domains": {},
-            }),
-        );
-        return;
-    }
-    if config.oversized_first_frame {
-        send_json(
-            socket,
-            json!({
-                "type": "challenge",
-                "nonce_s": hex::encode([0u8; 32]),
-                "padding": "x".repeat(17_000),
-            }),
-        );
-        return;
-    }
-    let nonce = config.fixed_nonce.unwrap_or_else(|| next_nonce(nonce_seed));
-    send_json(
-        socket,
-        json!({"type": "challenge", "nonce_s": hex::encode(nonce)}),
-    );
-    let Some(hello) = read_hello(socket, shutdown) else {
-        return;
+fn serve(socket: &mut WebSocket<TcpStream>, shared: &Arc<Shared>) -> Result<(), OsppError> {
+    let first = loop {
+        if shared.stop.load(Ordering::SeqCst) {
+            return Ok(());
+        }
+        match read_client(socket)? {
+            Some(frame) => break frame,
+            None => continue,
+        }
     };
-    state
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .attempts
-        .push(attempt_from(&hello));
-    if let Some(reason) = config.forced_reject {
-        send_reject(socket, reason);
-        return;
-    }
-    if hello.version != 1 {
-        send_reject(socket, RejectReason::UnsupportedVersion { min: 1, max: 1 });
-        return;
-    }
-    if state
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .nonce_used(&nonce)
-    {
-        send_reject(socket, RejectReason::BadSignature);
-        return;
-    }
-    let Ok(key_id) = KeyId::parse(&hello.key_id) else {
-        send_reject(socket, RejectReason::UnknownKey);
-        return;
-    };
-    if !config.keys.contains(&key_id) {
-        send_reject(socket, RejectReason::UnknownKey);
-        return;
-    }
-    let Ok(nonce_c) = decode_32(&hello.nonce_c) else {
-        send_reject(socket, RejectReason::BadSignature);
-        return;
-    };
-    let Some(verifying_key) = parse_verifying_key(&hello.key_id) else {
-        send_reject(socket, RejectReason::UnknownKey);
-        return;
-    };
-    let transcript = connect_transcript(&nonce, &nonce_c, "127.0.0.1");
-    if !signature_verifies(&verifying_key, &transcript, &hello.sig) {
-        send_reject(socket, RejectReason::BadSignature);
-        return;
-    }
-    state
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .used_nonces
-        .insert(nonce);
-    send_json(socket, json!({"type": "welcome", "version": 1}));
-    serve_capabilities(socket, config, state, shutdown);
-}
-
-fn handle_pair(
-    socket: &mut WebSocket<TcpStream>,
-    config: &ReferenceServerConfig,
-    state: &Mutex<ReferenceState>,
-    clock: &ReferenceClock,
-    nonce_seed: &AtomicU64,
-    shutdown: &AtomicBool,
-) {
-    let nonce = next_nonce(nonce_seed);
-    send_json(
-        socket,
-        json!({"type": "challenge", "nonce_s": hex::encode(nonce)}),
-    );
-    let Some(hello) = read_hello(socket, shutdown) else {
-        return;
-    };
-    state
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .attempts
-        .push(attempt_from(&hello));
-    if hello.kind != "pair_hello" {
-        send_pair_reject(socket, PairingRejectReason::BadSignature);
-        return;
-    }
-    let Ok(handle) = decode_32(&hello.handle) else {
-        send_pair_reject(socket, PairingRejectReason::UnknownHandle);
-        return;
-    };
-    state
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .handles_seen
-        .push(handle);
-    let Some(record) = config.handles.iter().find(|record| record.handle == handle) else {
-        send_pair_reject(socket, PairingRejectReason::UnknownHandle);
-        return;
-    };
-    if clock.now_ms() >= record.expires_at_ms {
-        send_pair_reject(socket, PairingRejectReason::ExpiredHandle);
-        return;
-    }
-    if state
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .redeemed
-        .contains(&handle)
-    {
-        send_pair_reject(socket, PairingRejectReason::AlreadyRedeemed);
-        return;
-    }
-    let Ok(nonce_c) = decode_32(&hello.nonce_c) else {
-        send_pair_reject(socket, PairingRejectReason::BadSignature);
-        return;
-    };
-    if hello.version != 1 {
-        send_pair_reject(
-            socket,
-            PairingRejectReason::UnsupportedVersion { min: 1, max: 1 },
-        );
-        return;
-    }
-    // The pairing transcript includes the server's side of the handle; `hello.handle` is the same
-    // bytes, already validated against a registered record above.
-    let transcript = pairing_transcript(&nonce, &nonce_c, &handle, "127.0.0.1");
-    let Some(verifying_key) = parse_verifying_key(&hello.key_id) else {
-        send_pair_reject(socket, PairingRejectReason::BadSignature);
-        return;
-    };
-    if !signature_verifies(&verifying_key, &transcript, &hello.sig) {
-        send_pair_reject(socket, PairingRejectReason::BadSignature);
-        return;
-    }
-    state
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .redeemed
-        .insert(handle);
-    send_json(
-        socket,
-        json!({"type": "pair_approved", "account": config.account}),
-    );
-}
-
-/// One parsed capability request.
-#[derive(Debug, Deserialize)]
-struct CapabilityWire {
-    #[serde(rename = "type")]
-    kind: String,
-    request_id: u32,
-    #[serde(default)]
-    project: String,
-    #[serde(default)]
-    mode: String,
-    #[serde(default)]
-    key: String,
-    #[serde(default)]
-    proposed: String,
-    #[serde(default)]
-    db_id: String,
-}
-
-fn serve_capabilities(
-    socket: &mut WebSocket<TcpStream>,
-    config: &ReferenceServerConfig,
-    state: &Mutex<ReferenceState>,
-    shutdown: &AtomicBool,
-) {
-    loop {
-        let Some(text) = read_text(socket, shutdown) else {
-            return;
-        };
-        let Ok(request) = serde_json::from_str::<CapabilityWire>(&text) else {
-            return;
-        };
-        state
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .capability_requests
-            .push(RecordedCapability {
-                capability: request.kind.clone(),
-                project: request.project.clone(),
-                mode: request.mode.clone(),
-                request_id: request.request_id,
-            });
-        if config.deny_capabilities {
-            send_capability_error(
+    lock(&shared.state)
+        .frames
+        .push(frame_type(&first).to_owned());
+    match first {
+        ClientFrame::Hello {
+            version,
+            auth_methods,
+        } => authenticated_session(socket, shared, version, auth_methods),
+        ClientFrame::PairHello {
+            version,
+            key_methods,
+        } => pairing_session(socket, shared, version, key_methods),
+        other => {
+            let _ = send_error(
                 socket,
-                request.request_id,
-                &request.kind,
-                "not_authenticated",
+                None,
+                codes::BAD_FRAME,
+                "expected hello or pair_hello",
             );
-            continue;
+            Err(OsppError::Protocol(format!(
+                "unexpected first frame {}",
+                frame_type(&other)
+            )))
         }
-        if request.project.is_empty() || request.mode.is_empty() {
-            send_capability_error(socket, request.request_id, &request.kind, "invalid_request");
-            continue;
+    }
+}
+
+fn authenticated_session(
+    socket: &mut WebSocket<TcpStream>,
+    shared: &Arc<Shared>,
+    version: u32,
+    auth_methods: Vec<String>,
+) -> Result<(), OsppError> {
+    if version != PROTOCOL_VERSION {
+        let _ = send_error(
+            socket,
+            None,
+            codes::UNSUPPORTED_VERSION,
+            "only ospp-v1 is supported",
+        );
+        return Err(OsppError::Protocol("unsupported version".to_owned()));
+    }
+    if !auth_methods.iter().any(|method| method == AUTH_METHOD_P256) {
+        let _ = send_error(
+            socket,
+            None,
+            codes::UNSUPPORTED_AUTH,
+            "only p256 authentication is supported",
+        );
+        return Err(OsppError::Protocol("unsupported auth method".to_owned()));
+    }
+
+    let mut server_nonce = [0u8; 32];
+    shared.entropy.fill_bytes(&mut server_nonce)?;
+    send_frame(
+        socket,
+        &ServerFrame::AuthChallenge {
+            method: AUTH_METHOD_P256.to_owned(),
+            challenge: Challenge {
+                nonce: hex::encode(server_nonce),
+            },
+        },
+    )?;
+    let response = match read_client(socket)? {
+        Some(ClientFrame::AuthResponse { response }) => response,
+        _ => {
+            let _ = send_error(socket, None, codes::BAD_FRAME, "expected auth_response");
+            return Err(OsppError::Protocol("expected auth_response".to_owned()));
         }
-        match request.kind.as_str() {
-            "env.bundle" => {
-                let (vars, secrets, domains) = {
-                    let state = state.lock().unwrap_or_else(PoisonError::into_inner);
-                    let domains = if request.mode == "cloud" {
-                        config.domains.clone()
-                    } else {
-                        // `domains::` is provider data only in `cloud` mode; local worlds derive
-                        // their origin from `WorldOrigin` (`ADR-0005` §1).
-                        BTreeMap::new()
-                    };
-                    (config.vars.clone(), state.secrets.clone(), domains)
-                };
-                send_json(
-                    socket,
-                    json!({
-                        "type": "env.bundle",
-                        "request_id": request.request_id,
-                        "vars": vars,
-                        "secrets": secrets,
-                        "domains": domains,
-                    }),
-                );
+    };
+    lock(&shared.state).frames.push("auth_response".to_owned());
+    authenticate_response(socket, shared, &server_nonce, &response, false)?;
+    send_frame(
+        socket,
+        &ServerFrame::AuthOk {
+            encryption_methods: vec![ENCRYPTION_METHOD_HPKE_P256.to_owned()],
+        },
+    )?;
+    session_loop(socket, shared)
+}
+
+fn authenticate_response(
+    socket: &mut WebSocket<TcpStream>,
+    shared: &Arc<Shared>,
+    server_nonce: &[u8; 32],
+    response: &AuthResponse,
+    pairing: bool,
+) -> Result<(), OsppError> {
+    let client_nonce = hex::decode(&response.client_nonce)
+        .ok()
+        .and_then(|bytes| <[u8; 32]>::try_from(bytes).ok())
+        .ok_or_else(|| OsppError::Protocol("client_nonce must be 32 bytes".to_owned()))?;
+    if !pairing {
+        let accepted = lock(&shared.config).accepted_keys.clone();
+        if !accepted.iter().any(|key| key == &response.public_key) {
+            let _ = send_error(
+                socket,
+                None,
+                codes::UNAUTHORIZED_KEY,
+                "machine key is not enrolled",
+            );
+            return Err(OsppError::Protocol("unauthorized key".to_owned()));
+        }
+    }
+    let transcript = if pairing {
+        pairing_transcript(server_nonce, &client_nonce)
+    } else {
+        auth_transcript(server_nonce, &client_nonce)
+    };
+    let signature = slipfork_ospp::DeviceSignature::from_hex(&response.signature)
+        .map_err(|_| OsppError::InvalidSignature)?;
+    if verify_device_signature(&response.public_key, &transcript, &signature).is_err() {
+        let _ = send_error(socket, None, codes::BAD_PROOF, "signature did not verify");
+        return Err(OsppError::InvalidSignature);
+    }
+    Ok(())
+}
+
+fn session_loop(socket: &mut WebSocket<TcpStream>, shared: &Arc<Shared>) -> Result<(), OsppError> {
+    let (outbound, outbound_rx) = mpsc::channel();
+    loop {
+        if shared.stop.load(Ordering::SeqCst) {
+            return Ok(());
+        }
+        while let Ok(frame) = outbound_rx.try_recv() {
+            send_frame(socket, &frame)?;
+        }
+        let frame = match read_client(socket)? {
+            Some(frame) => frame,
+            None => continue,
+        };
+        lock(&shared.state)
+            .frames
+            .push(frame_type(&frame).to_owned());
+        match frame {
+            ClientFrame::Subscribe {
+                id,
+                remote,
+                encryption,
+                snow,
+                claims,
+            } => subscribe(
+                socket, shared, &outbound, id, remote, encryption, snow, claims,
+            )?,
+            ClientFrame::Unsubscribe { id } => {
+                lock(&shared.subscriptions).remove(&id);
+                lock(&shared.state).subscriptions.remove(&id);
             }
-            "secrets.ensure" => {
-                let returned = {
-                    let mut state = state.lock().unwrap_or_else(PoisonError::into_inner);
-                    let entry = state
-                        .secrets
-                        .entry(request.key.clone())
-                        .or_insert_with(|| request.proposed.clone());
-                    let returned = entry.clone();
-                    state.ensure_calls.push(EnsureCall {
-                        key: request.key.clone(),
-                        proposed: request.proposed.clone(),
-                        returned: returned.clone(),
-                    });
-                    returned
-                };
-                send_json(
+            ClientFrame::DumpRequest {
+                id,
+                subscription_id,
+                resource,
+            } => dump(socket, shared, id, subscription_id, resource)?,
+            other => {
+                let _ = send_error(
                     socket,
-                    json!({
-                        "type": "secrets.ensure",
-                        "request_id": request.request_id,
-                        "key": request.key,
-                        "value": returned,
-                    }),
+                    None,
+                    codes::BAD_FRAME,
+                    "frame is not valid in an authenticated session",
                 );
+                return Err(OsppError::Protocol(format!(
+                    "unexpected frame {}",
+                    frame_type(&other)
+                )));
             }
-            "resources.describe" => {
-                let s3_buckets: BTreeMap<&String, Value> = config
-                    .s3_buckets
-                    .iter()
-                    .map(|(id, bucket)| {
-                        (
-                            id,
-                            json!({
-                                "endpoint": bucket.endpoint,
-                                "region": bucket.region,
-                                "bucket": bucket.bucket,
-                                "access_key": bucket.access_key,
-                                "secret_key": bucket.secret_key,
-                            }),
-                        )
-                    })
-                    .collect();
-                let pg_databases: BTreeMap<&String, Value> = config
-                    .pg_databases
-                    .iter()
-                    .map(|(id, dump)| {
-                        (
-                            id,
-                            json!({
-                                "db_id": dump.db_id,
-                                "sha256_compressed": dump.sha256_compressed(),
-                                "compressed_bytes": dump.compressed().len(),
-                                "format": "pg_custom_zstd",
-                            }),
-                        )
-                    })
-                    .collect();
-                send_json(
-                    socket,
-                    json!({
-                        "type": "resources.describe",
-                        "request_id": request.request_id,
-                        "s3_buckets": s3_buckets,
-                        "pg_databases": pg_databases,
-                    }),
-                );
-            }
-            "dump.begin" => {
-                let Some(record) = config.pg_databases.get(&request.db_id) else {
-                    send_capability_error(
-                        socket,
-                        request.request_id,
-                        "dump.begin",
-                        "unknown_resource",
-                    );
-                    continue;
-                };
-                if !serve_dump(socket, config, state, request.request_id, record) {
-                    return;
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn subscribe(
+    socket: &mut WebSocket<TcpStream>,
+    shared: &Arc<Shared>,
+    outbound: &Sender<ServerFrame>,
+    id: String,
+    remote: String,
+    encryption: Encryption,
+    snow: String,
+    claims: OsppClaims,
+) -> Result<(), OsppError> {
+    if encryption.method != ENCRYPTION_METHOD_HPKE_P256 {
+        send_error(
+            socket,
+            Some(&id),
+            codes::UNSUPPORTED_ENCRYPTION,
+            "only hpke-p256 is supported",
+        )?;
+        return Ok(());
+    }
+    let config = lock(&shared.config).clone();
+    let resolved = match resolve_components(&config, &claims, &snow) {
+        Ok(resolved) => resolved,
+        Err((code, message)) => {
+            send_error(socket, Some(&id), &code, &message)?;
+            return Ok(());
+        }
+    };
+    let components = seal_components(
+        &resolved,
+        &encryption.public_key,
+        &mut FilledRng::new(&shared.entropy, 8192)?,
+    )?;
+    send_frame(
+        socket,
+        &ServerFrame::EnvResolved {
+            id: id.clone(),
+            components,
+        },
+    )?;
+    let record = SubscriptionRecord {
+        id: id.clone(),
+        remote,
+        snow,
+        claims,
+        public_key: encryption.public_key,
+    };
+    lock(&shared.subscriptions).insert(
+        id.clone(),
+        ActiveSubscription {
+            record: record.clone(),
+            outbound: outbound.clone(),
+        },
+    );
+    lock(&shared.state).subscriptions.insert(id, record);
+    Ok(())
+}
+
+fn dump(
+    socket: &mut WebSocket<TcpStream>,
+    shared: &Arc<Shared>,
+    id: String,
+    subscription_id: String,
+    resource: String,
+) -> Result<(), OsppError> {
+    let public_key = lock(&shared.subscriptions)
+        .get(&subscription_id)
+        .map(|subscription| subscription.record.public_key.clone());
+    let bytes = lock(&shared.config).dumps.get(&resource).cloned();
+    let (Some(public_key), Some(bytes)) = (public_key, bytes) else {
+        send_error(
+            socket,
+            Some(&id),
+            codes::DUMP_UNAVAILABLE,
+            "no dump is available for that resource",
+        )?;
+        return Ok(());
+    };
+    let mut token_bytes = [0u8; 16];
+    shared.entropy.fill_bytes(&mut token_bytes)?;
+    let token = hex::encode(token_bytes);
+    lock(&shared.dumps).insert(
+        token.clone(),
+        DumpEntry {
+            public_key,
+            subscription_id,
+            resource,
+            bytes,
+        },
+    );
+    lock(&shared.state).dump_urls += 1;
+    send_frame(
+        socket,
+        &ServerFrame::DumpReady {
+            id,
+            url: format!("http://{}/dumps/{}", shared.http_addr, token),
+        },
+    )
+}
+
+fn pairing_session(
+    socket: &mut WebSocket<TcpStream>,
+    shared: &Arc<Shared>,
+    version: u32,
+    key_methods: Vec<String>,
+) -> Result<(), OsppError> {
+    if version != PROTOCOL_VERSION {
+        send_error(
+            socket,
+            None,
+            codes::UNSUPPORTED_VERSION,
+            "only ospp-v1 is supported",
+        )?;
+        return Err(OsppError::Protocol("unsupported version".to_owned()));
+    }
+    if !key_methods.iter().any(|method| method == AUTH_METHOD_P256) {
+        send_error(
+            socket,
+            None,
+            codes::UNSUPPORTED_AUTH,
+            "only p256 key proof is supported",
+        )?;
+        return Err(OsppError::Protocol("unsupported key method".to_owned()));
+    }
+
+    let mut server_nonce = [0u8; 32];
+    shared.entropy.fill_bytes(&mut server_nonce)?;
+    let mut salt_bytes = [0u8; 16];
+    shared.entropy.fill_bytes(&mut salt_bytes)?;
+    let salt = hex::encode(salt_bytes);
+    let mut number_bytes = [0u8; 1];
+    shared.entropy.fill_bytes(&mut number_bytes)?;
+    let number = u64::from(number_bytes[0] % 64);
+    let challenge = hex::encode(Sha256::digest(format!("{salt}{number}").as_bytes()));
+    send_frame(
+        socket,
+        &ServerFrame::PairChallenge {
+            method: AUTH_METHOD_P256.to_owned(),
+            altcha: json!({
+                "algorithm": "SHA-256",
+                "challenge": challenge,
+                "salt": salt,
+                "maxnumber": 64,
+            }),
+            challenge: Challenge {
+                nonce: hex::encode(server_nonce),
+            },
+        },
+    )?;
+
+    let (altcha, hostname, response) = match read_client(socket)? {
+        Some(ClientFrame::PairBegin {
+            altcha,
+            hostname,
+            response,
+        }) => (altcha, hostname, response),
+        _ => {
+            send_error(socket, None, codes::BAD_FRAME, "expected pair_begin")?;
+            return Err(OsppError::Protocol("expected pair_begin".to_owned()));
+        }
+    };
+    lock(&shared.state).frames.push("pair_begin".to_owned());
+    if !verify_altcha(&altcha, &salt, &challenge) {
+        send_error(socket, None, codes::BAD_PROOF, "altcha proof was not valid")?;
+        return Err(OsppError::Protocol("bad altcha proof".to_owned()));
+    }
+    authenticate_response(socket, shared, &server_nonce, &response, true)?;
+
+    let mut handle_bytes = [0u8; 32];
+    shared.entropy.fill_bytes(&mut handle_bytes)?;
+    let handle = hex::encode(handle_bytes);
+    send_frame(
+        socket,
+        &ServerFrame::PairHandle {
+            url: format!("http://{}/pair", shared.http_addr),
+            handle: handle.clone(),
+        },
+    )?;
+    lock(&shared.state).pairings.push(PairingRecord {
+        handle: handle.clone(),
+        hostname,
+        public_key: response.public_key,
+        approved: false,
+    });
+
+    let config = lock(&shared.config).clone();
+    if config.auto_approve {
+        lock(&shared.decisions).insert(handle.clone(), config.pair_outcome.clone());
+    }
+    let deadline = Instant::now() + IO_TIMEOUT;
+    loop {
+        if shared.stop.load(Ordering::SeqCst) {
+            return Ok(());
+        }
+        if let Some(outcome) = lock(&shared.decisions).remove(&handle) {
+            match outcome {
+                PairOutcome::Approve { account, machine } => {
+                    send_frame(socket, &ServerFrame::PairApproved { account, machine })?;
+                    if let Some(record) = lock(&shared.state)
+                        .pairings
+                        .iter_mut()
+                        .find(|record| record.handle == handle)
+                    {
+                        record.approved = true;
+                    }
+                    return Ok(());
+                }
+                PairOutcome::Reject { code } => {
+                    send_error(socket, None, &code, "pairing was rejected")?;
+                    return Err(OsppError::Protocol("pairing rejected".to_owned()));
                 }
             }
-            _ => {
-                send_capability_error(
-                    socket,
-                    request.request_id,
-                    &request.kind,
-                    "unsupported_capability",
-                );
-            }
         }
+        if Instant::now() >= deadline {
+            send_error(socket, None, codes::THROTTLED, "pairing verdict timed out")?;
+            return Err(OsppError::Timeout);
+        }
+        let _ = read_client(socket)?;
     }
 }
 
-/// Stream one dump; returns `false` when the socket died.
-fn serve_dump(
-    socket: &mut WebSocket<TcpStream>,
-    config: &ReferenceServerConfig,
-    state: &Mutex<ReferenceState>,
-    request_id: u32,
-    record: &DumpRecord,
-) -> bool {
-    let compressed = record.compressed();
-    let sha256 = hex::encode(Sha256::digest(&compressed));
-    let format = config
-        .dump_format
-        .clone()
-        .unwrap_or_else(|| "pg_custom_zstd".to_owned());
-    send_json(
-        socket,
-        json!({
-            "type": "dump.begin",
-            "request_id": request_id,
-            "db_id": record.db_id,
-            "sha256_compressed": sha256,
-            "compressed_bytes": compressed.len(),
-            "format": format,
-        }),
-    );
-    state
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .dumps_served
-        .push(record.db_id.clone());
-
-    if config.truncate_dump {
-        let half = compressed.len() / 2;
-        if half > 0 {
-            send_binary(socket, &compressed[..half]);
-        }
-        // Close without `dump.end`: the client must abort and unlink.
+fn verify_altcha(solution: &str, salt: &str, challenge: &str) -> bool {
+    let Ok(bytes) = STANDARD.decode(solution) else {
+        return false;
+    };
+    let Ok(payload) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+        return false;
+    };
+    if payload["algorithm"] != "SHA-256"
+        || payload["salt"] != salt
+        || payload["challenge"] != challenge
+    {
         return false;
     }
-
-    let mut payload = compressed.clone();
-    if config.corrupt_dump && !payload.is_empty() {
-        let index = payload.len() / 2;
-        payload[index] ^= 0xff;
-    }
-    if config.oversized_dump_frame {
-        let oversized = vec![0u8; MAX_DUMP_FRAME + 1];
-        send_binary(socket, &oversized);
-        state
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .dump_frames += 1;
-    }
-    let chunk = config.dump_chunk_bytes.max(1);
-    for part in payload.chunks(chunk) {
-        if !send_binary(socket, part) {
-            return false;
-        }
-        let mut state = state.lock().unwrap_or_else(PoisonError::into_inner);
-        state.dump_frames += 1;
-        state.dump_bytes += part.len() as u64;
-    }
-    send_json(
-        socket,
-        json!({
-            "type": "dump.end",
-            "request_id": request_id,
-            "sha256_compressed": sha256,
-            "compressed_bytes": compressed.len(),
-        }),
-    );
-    true
+    let Some(number) = payload["number"].as_u64() else {
+        return false;
+    };
+    hex::encode(Sha256::digest(format!("{salt}{number}").as_bytes())) == challenge
 }
 
-#[derive(Debug, Clone, Deserialize)]
-struct HelloFrame {
-    #[serde(rename = "type")]
-    kind: String,
-    version: u16,
-    key_id: String,
-    nonce_c: String,
-    #[serde(default)]
-    handle: String,
-    sig: String,
-}
-
-fn read_hello(socket: &mut WebSocket<TcpStream>, shutdown: &AtomicBool) -> Option<HelloFrame> {
-    let text = read_text(socket, shutdown)?;
-    serde_json::from_str(&text).ok()
-}
-
-fn attempt_from(hello: &HelloFrame) -> ConnectAttempt {
-    ConnectAttempt {
-        kind: hello.kind.clone(),
-        version: hello.version,
-        key_id: hello.key_id.clone(),
-        nonce_c: hello.nonce_c.clone(),
-    }
-}
-
-fn read_message(socket: &mut WebSocket<TcpStream>, shutdown: &AtomicBool) -> Option<Message> {
+fn read_client(socket: &mut WebSocket<TcpStream>) -> Result<Option<ClientFrame>, OsppError> {
     loop {
-        if shutdown.load(Ordering::SeqCst) {
-            return None;
-        }
         match socket.read() {
-            Ok(message) => return Some(message),
+            Ok(Message::Text(text)) => {
+                return ClientFrame::parse(text.as_str()).map(Some);
+            }
+            Ok(Message::Binary(_)) => {
+                return Err(OsppError::Protocol(
+                    "binary WebSocket frames are not part of ospp-v1".to_owned(),
+                ));
+            }
+            Ok(Message::Ping(payload)) => {
+                socket.send(Message::Pong(payload))?;
+            }
+            Ok(Message::Pong(_)) | Ok(Message::Frame(_)) => {}
+            Ok(Message::Close(_)) => return Err(OsppError::Closed),
             Err(tungstenite::Error::Io(error))
-                if matches!(
-                    error.kind(),
-                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
-                ) =>
+                if error.kind() == std::io::ErrorKind::WouldBlock
+                    || error.kind() == std::io::ErrorKind::TimedOut =>
             {
-                continue;
+                return Ok(None);
             }
-            Err(_) => return None,
+            Err(error) => return Err(error.into()),
         }
     }
 }
 
-fn read_text(socket: &mut WebSocket<TcpStream>, shutdown: &AtomicBool) -> Option<String> {
-    loop {
-        match read_message(socket, shutdown)? {
-            Message::Text(text) => return Some(text.to_string()),
-            Message::Ping(_) => {
-                let _ = socket.flush();
-            }
-            Message::Pong(_) | Message::Frame(_) => {}
-            Message::Close(_) | Message::Binary(_) => return None,
-        }
-    }
+fn send_frame(socket: &mut WebSocket<TcpStream>, frame: &ServerFrame) -> Result<(), OsppError> {
+    socket.send(Message::Text(frame.to_json()?.into()))?;
+    Ok(())
 }
 
-fn send_json(socket: &mut WebSocket<TcpStream>, value: serde_json::Value) {
-    let _ = socket.send(Message::Text(value.to_string().into()));
-}
-
-fn send_binary(socket: &mut WebSocket<TcpStream>, bytes: &[u8]) -> bool {
-    socket.send(Message::Binary(bytes.to_vec().into())).is_ok()
-}
-
-fn send_capability_error(
+fn send_error(
     socket: &mut WebSocket<TcpStream>,
-    request_id: u32,
-    capability: &str,
-    kind: &str,
-) {
-    send_json(
+    id: Option<&str>,
+    code: &str,
+    message: &str,
+) -> Result<(), OsppError> {
+    send_frame(
         socket,
-        json!({
-            "type": "capability.error",
-            "request_id": request_id,
-            "capability": capability,
-            "kind": kind,
-            "message": "reference server refused the capability",
-        }),
-    );
+        &ServerFrame::Error {
+            id: id.map(str::to_owned),
+            code: code.to_owned(),
+            message: message.to_owned(),
+        },
+    )
 }
 
-fn send_reject(socket: &mut WebSocket<TcpStream>, reason: RejectReason) {
-    let reason = match reason {
-        RejectReason::UnknownKey => json!({"kind": "unknown_key"}),
-        RejectReason::BadSignature => json!({"kind": "bad_signature"}),
-        RejectReason::UnsupportedVersion { min, max } => {
-            json!({"kind": "unsupported_version", "min": min, "max": max})
+fn frame_type(frame: &ClientFrame) -> &'static str {
+    match frame {
+        ClientFrame::Hello { .. } => "hello",
+        ClientFrame::AuthResponse { .. } => "auth_response",
+        ClientFrame::PairHello { .. } => "pair_hello",
+        ClientFrame::PairBegin { .. } => "pair_begin",
+        ClientFrame::Subscribe { .. } => "subscribe",
+        ClientFrame::Unsubscribe { .. } => "unsubscribe",
+        ClientFrame::DumpRequest { .. } => "dump_request",
+    }
+}
+
+fn http_loop(listener: TcpListener, shared: Arc<Shared>) {
+    while !shared.stop.load(Ordering::SeqCst) {
+        match listener.accept() {
+            Ok((stream, _peer)) => handle_http(stream, &shared),
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                thread::sleep(POLL_SLICE);
+            }
+            Err(_) => break,
         }
-    };
-    send_json(socket, json!({"type": "reject", "reason": reason}));
+    }
 }
 
-fn send_pair_reject(socket: &mut WebSocket<TcpStream>, reason: PairingRejectReason) {
-    let reason = match reason {
-        PairingRejectReason::UnknownHandle => json!({"kind": "unknown_handle"}),
-        PairingRejectReason::ExpiredHandle => json!({"kind": "expired_handle"}),
-        PairingRejectReason::AlreadyRedeemed => json!({"kind": "already_redeemed"}),
-        PairingRejectReason::BadSignature => json!({"kind": "bad_signature"}),
-        PairingRejectReason::UnsupportedVersion { min, max } => {
-            json!({"kind": "unsupported_version", "min": min, "max": max})
+fn handle_http(mut stream: TcpStream, shared: &Arc<Shared>) {
+    let _ = stream.set_read_timeout(Some(IO_TIMEOUT));
+    let mut reader = BufReader::new(match stream.try_clone() {
+        Ok(clone) => clone,
+        Err(_) => return,
+    });
+    let mut request_line = String::new();
+    if reader.read_line(&mut request_line).is_err() {
+        return;
+    }
+    let mut headers = 0usize;
+    loop {
+        let mut line = String::new();
+        match reader.read_line(&mut line) {
+            Ok(0) => break,
+            Ok(read) => {
+                headers += read;
+                if headers > MAX_HTTP_HEADERS || line == "\r\n" || line == "\n" {
+                    break;
+                }
+            }
+            Err(_) => return,
         }
+    }
+    let path = request_line.split_whitespace().nth(1).unwrap_or_default();
+    let Some(token) = path.strip_prefix("/dumps/") else {
+        let _ = respond(&mut stream, 404, b"not found");
+        return;
     };
-    send_json(socket, json!({"type": "reject", "reason": reason}));
-}
-
-/// Independent transcript/signature verification: the reference server never calls the production
-/// transcript builders or the production verifier, so a spec deviation in either side is caught by
-/// the live handshake tests.
-fn connect_transcript(nonce_s: &[u8; 32], nonce_c: &[u8; 32], server_name: &str) -> Vec<u8> {
-    let mut out = Vec::new();
-    out.extend_from_slice(b"ospp-v1");
-    out.extend_from_slice(nonce_s);
-    out.extend_from_slice(nonce_c);
-    out.extend_from_slice(server_name.as_bytes());
-    out
-}
-
-fn pairing_transcript(
-    nonce_s: &[u8; 32],
-    nonce_c: &[u8; 32],
-    handle: &[u8; 32],
-    server_name: &str,
-) -> Vec<u8> {
-    let mut out = Vec::new();
-    out.extend_from_slice(b"ospp-v1-pair");
-    out.extend_from_slice(nonce_s);
-    out.extend_from_slice(nonce_c);
-    out.extend_from_slice(handle);
-    out.extend_from_slice(server_name.as_bytes());
-    out
-}
-
-fn parse_verifying_key(text: &str) -> Option<VerifyingKey> {
-    let hex_part = text.strip_prefix("p256:")?;
-    if hex_part.len() != 66 || !hex_part.bytes().all(is_lower_hex_digit) {
-        return None;
-    }
-    let mut bytes = [0u8; 33];
-    hex::decode_to_slice(hex_part, &mut bytes).ok()?;
-    VerifyingKey::from_sec1_bytes(&bytes).ok()
-}
-
-fn signature_verifies(key: &VerifyingKey, transcript: &[u8], sig_hex: &str) -> bool {
-    if sig_hex.len() != 128 || !sig_hex.bytes().all(is_lower_hex_digit) {
-        return false;
-    }
-    let mut bytes = [0u8; 64];
-    if hex::decode_to_slice(sig_hex, &mut bytes).is_err() {
-        return false;
-    }
-    let Ok(signature) = p256::ecdsa::Signature::from_slice(&bytes) else {
-        return false;
+    let entry = lock(&shared.dumps).remove(token);
+    let Some(entry) = entry else {
+        let _ = respond(&mut stream, 404, b"unknown dump token");
+        return;
     };
-    let digest = Sha256::digest(transcript);
-    key.verify_prehash(&digest, &signature).is_ok()
-}
-
-const fn is_lower_hex_digit(byte: u8) -> bool {
-    matches!(byte, b'0'..=b'9' | b'a'..=b'f')
-}
-
-fn decode_32(hex_part: &str) -> Result<[u8; 32], ()> {
-    if hex_part.len() != 64 || !hex_part.bytes().all(|b| b.is_ascii_hexdigit()) {
-        return Err(());
+    match seal_dump(
+        &entry.public_key,
+        &entry.subscription_id,
+        &entry.resource,
+        &entry.bytes,
+        &shared.entropy,
+    ) {
+        Ok(body) => {
+            let _ = respond(&mut stream, 200, &body);
+        }
+        Err(_) => {
+            let _ = respond(&mut stream, 500, b"sealing failure");
+        }
     }
-    let mut out = [0u8; 32];
-    hex::decode_to_slice(hex_part, &mut out).map_err(|_| ())?;
+}
+
+fn respond(stream: &mut TcpStream, status: u16, body: &[u8]) -> std::io::Result<()> {
+    let reason = match status {
+        200 => "OK",
+        404 => "Not Found",
+        _ => "Internal Server Error",
+    };
+    write!(
+        stream,
+        "HTTP/1.1 {status} {reason}\r\ncontent-length: {}\r\ncontent-type: application/octet-stream\r\nconnection: close\r\n\r\n",
+        body.len()
+    )?;
+    stream.write_all(body)?;
+    stream.flush()
+}
+
+/// Server-side sealed secret: `info = "ospp-v1-secret"`, `aad = "<component>:<env_key>"`.
+pub fn seal_secret(
+    public_key_hex: &str,
+    component: &str,
+    env_key: &str,
+    plaintext: &str,
+    entropy: &dyn EntropySource,
+) -> Result<String, OsppError> {
+    let mut rng = FilledRng::new(entropy, 128)?;
+    seal_secret_with_rng(public_key_hex, component, env_key, plaintext, &mut rng)
+}
+
+fn seal_secret_with_rng(
+    public_key_hex: &str,
+    component: &str,
+    env_key: &str,
+    plaintext: &str,
+    rng: &mut impl CryptoRng,
+) -> Result<String, OsppError> {
+    let public_key = parse_recipient_public_key(public_key_hex)?;
+    let (enc, mut context) = setup_sender_with_rng::<AesGcm256, HkdfSha256, DhP256HkdfSha256>(
+        &OpModeS::Base,
+        &public_key,
+        slipfork_ospp::SECRET_INFO,
+        rng,
+    )
+    .map_err(|error| OsppError::Hpke(error.to_string()))?;
+    let ciphertext = context
+        .seal(
+            plaintext.as_bytes(),
+            secret_aad(component, env_key).as_bytes(),
+        )
+        .map_err(|error| OsppError::Hpke(error.to_string()))?;
+    let mut sealed = enc.to_bytes().as_slice().to_vec();
+    sealed.extend_from_slice(&ciphertext);
+    Ok(STANDARD.encode(sealed))
+}
+
+/// Server-side sealed dump stream: `SetupBaseS` with `info = "ospp-v1-dump"`,
+/// `aad = "<subscription_id>:<resource>"`, and a mandatory `len = 0` EOF frame.
+pub fn seal_dump(
+    public_key_hex: &str,
+    subscription_id: &str,
+    resource: &str,
+    plaintext: &[u8],
+    entropy: &dyn EntropySource,
+) -> Result<Vec<u8>, OsppError> {
+    let mut rng = FilledRng::new(entropy, 4096)?;
+    seal_dump_with_rng(
+        public_key_hex,
+        subscription_id,
+        resource,
+        plaintext,
+        &mut rng,
+    )
+}
+
+fn seal_dump_with_rng(
+    public_key_hex: &str,
+    subscription_id: &str,
+    resource: &str,
+    plaintext: &[u8],
+    rng: &mut impl CryptoRng,
+) -> Result<Vec<u8>, OsppError> {
+    let public_key = parse_recipient_public_key(public_key_hex)?;
+    let (enc, mut context) = setup_sender_with_rng::<AesGcm256, HkdfSha256, DhP256HkdfSha256>(
+        &OpModeS::Base,
+        &public_key,
+        slipfork_ospp::DUMP_INFO,
+        rng,
+    )
+    .map_err(|error| OsppError::Hpke(error.to_string()))?;
+    let aad = dump_aad(subscription_id, resource);
+    let mut out = enc.to_bytes().as_slice().to_vec();
+    for chunk in plaintext.chunks(64 * 1024) {
+        let sealed = context
+            .seal(chunk, aad.as_bytes())
+            .map_err(|error| OsppError::Hpke(error.to_string()))?;
+        out.extend_from_slice(&(chunk.len() as u32).to_be_bytes());
+        out.extend_from_slice(&sealed);
+    }
+    let eof = context
+        .seal(&[], aad.as_bytes())
+        .map_err(|error| OsppError::Hpke(error.to_string()))?;
+    out.extend_from_slice(&0u32.to_be_bytes());
+    out.extend_from_slice(&eof);
     Ok(out)
 }
 
-fn next_nonce(seed: &AtomicU64) -> [u8; 32] {
-    let mut out = [0u8; 32];
-    let first = seed.fetch_add(0x9e37_79b9_7f4a_7c15, Ordering::SeqCst);
-    out[..8].copy_from_slice(&first.to_le_bytes());
-    let second = seed.fetch_add(0x9e37_79b9_7f4a_7c15, Ordering::SeqCst);
-    out[8..16].copy_from_slice(&second.to_le_bytes());
-    out[16..24].copy_from_slice(&(first ^ second).to_le_bytes());
-    out[24..].copy_from_slice(&first.wrapping_mul(second).to_le_bytes());
-    out
+fn seal_components(
+    resolved: &BTreeMap<String, BTreeMap<String, Resolved>>,
+    public_key_hex: &str,
+    rng: &mut FilledRng,
+) -> Result<BTreeMap<String, BTreeMap<String, WireValue>>, OsppError> {
+    let mut components = BTreeMap::new();
+    for (component, variables) in resolved {
+        let mut values = BTreeMap::new();
+        for (name, value) in variables {
+            let value = if value.secret {
+                WireValue::Encrypted(seal_secret_with_rng(
+                    public_key_hex,
+                    component,
+                    name,
+                    &value.text,
+                    rng,
+                )?)
+            } else {
+                WireValue::Plain(value.text.clone())
+            };
+            values.insert(name.clone(), value);
+        }
+        components.insert(component.clone(), values);
+    }
+    Ok(components)
+}
+
+#[derive(Debug, Clone)]
+struct Resolved {
+    text: String,
+    secret: bool,
+}
+
+fn resolve_components(
+    config: &ReferenceServerConfig,
+    claims: &OsppClaims,
+    snow: &str,
+) -> Result<BTreeMap<String, BTreeMap<String, Resolved>>, (String, String)> {
+    let file = SnowFile::parse_yaml(snow)
+        .map_err(|error| (codes::UNRESOLVED.to_owned(), error.to_string()))?;
+    let groups = file
+        .effective_env_groups(&config.mode)
+        .map_err(|error| (codes::UNRESOLVED.to_owned(), error.to_string()))?;
+    let mut components = BTreeMap::new();
+    for (component, variables) in groups {
+        if claims.components.iter().any(|id| id == &component) {
+            // A locally owned component is neither resolved nor returned.
+            continue;
+        }
+        let mut resolved = BTreeMap::new();
+        for (name, template) in variables {
+            let value = resolve_template(config, claims, &template)?;
+            resolved.insert(name, value);
+        }
+        components.insert(component, resolved);
+    }
+    Ok(components)
+}
+
+fn resolve_template(
+    config: &ReferenceServerConfig,
+    claims: &OsppClaims,
+    template: &str,
+) -> Result<Resolved, (String, String)> {
+    let mut out = String::new();
+    let mut secret = false;
+    let mut rest = template;
+    while let Some(start) = rest.find("${{") {
+        out.push_str(&rest[..start]);
+        let after = &rest[start + 3..];
+        let end = after
+            .find("}}")
+            .ok_or_else(|| (codes::UNRESOLVED.to_owned(), "unclosed template".to_owned()))?;
+        let expression = &rest[start..start + 3 + end + 2];
+        let tokens = parse_faceless(expression)
+            .map_err(|error| (codes::UNRESOLVED.to_owned(), error.to_string()))?;
+        let token = tokens
+            .into_iter()
+            .find(|token| matches!(token, Token::Expr { .. }))
+            .ok_or_else(|| (codes::UNRESOLVED.to_owned(), "empty expression".to_owned()))?;
+        let Token::Expr {
+            namespace,
+            path,
+            modifier,
+            ..
+        } = token
+        else {
+            unreachable!("filtered above")
+        };
+        if claimed(claims, &namespace, &path) {
+            // Claimed entries stay byte-verbatim; nothing is resolved or refused.
+            out.push_str(expression);
+        } else {
+            let (value, contaminated) = resolve_expression(config, &namespace, &path, &modifier)?;
+            secret |= contaminated;
+            out.push_str(&value);
+        }
+        rest = &rest[start + 3 + end + 2..];
+    }
+    out.push_str(rest);
+    Ok(Resolved { text: out, secret })
+}
+
+fn claimed(claims: &OsppClaims, namespace: &str, path: &[String]) -> bool {
+    match namespace {
+        "vars" => path.len() == 1 && claims.vars.iter().any(|key| key == &path[0]),
+        "secrets" => path.len() == 1 && claims.secrets.iter().any(|key| key == &path[0]),
+        "domains" => path.len() == 1 && claims.domains.iter().any(|id| id == &path[0]),
+        "components" => path.len() == 1 && claims.components.iter().any(|id| id == &path[0]),
+        "resources" => {
+            path.len() >= 2
+                && claims
+                    .resources
+                    .get(&path[0])
+                    .is_some_and(|ids| ids.iter().any(|id| id == &path[1]))
+        }
+        _ => false,
+    }
+}
+
+fn resolve_expression(
+    config: &ReferenceServerConfig,
+    namespace: &str,
+    path: &[String],
+    modifier: &TailModifier,
+) -> Result<(String, bool), (String, String)> {
+    let missing = || {
+        (
+            codes::UNRESOLVED.to_owned(),
+            format!(
+                "unclaimed ${{{{ {namespace}::{} }}}} has no value",
+                path.join(".")
+            ),
+        )
+    };
+    match namespace {
+        "vars" => {
+            let key = path.join(".");
+            match config.vars.get(&key) {
+                Some(value) => Ok((value.clone(), false)),
+                None => match modifier {
+                    TailModifier::Fallback(value) => Ok((value.clone(), false)),
+                    _ => Err(missing()),
+                },
+            }
+        }
+        "secrets" => {
+            let key = path.join(".");
+            match config.secrets.get(&key) {
+                Some(value) => Ok((value.clone(), true)),
+                None => match modifier {
+                    TailModifier::Fallback(value) => Ok((value.clone(), true)),
+                    TailModifier::Ensure(generator) => Ok((generate(generator)?, true)),
+                    TailModifier::None => Err(missing()),
+                },
+            }
+        }
+        "resources" => {
+            if path.len() < 2 {
+                return Err(missing());
+            }
+            let id = format!("{}.{}", path[0], path[1]);
+            let record = config.resources.get(&id).ok_or_else(missing)?;
+            match path.get(2).map(String::as_str) {
+                Some("url") => Ok((record.url.clone(), false)),
+                Some("password") => Ok((record.password.clone(), true)),
+                _ => Err(missing()),
+            }
+        }
+        "domains" => config
+            .domains
+            .get(&path.join("."))
+            .cloned()
+            .map(|value| (value, false))
+            .ok_or_else(missing),
+        _ => Err(missing()),
+    }
+}
+
+fn generate(generator: &GeneratorSpec) -> Result<String, (String, String)> {
+    generator
+        .generate(&SeededEntropy::new(0x9e37_79b9_7f4a_7c15))
+        .map_err(|error| (codes::UNRESOLVED.to_owned(), error.to_string()))
+}
+
+/// A bounded, already-gathered CSPRNG adapter for `hpke` encapsulation.
+///
+/// P-256 encapsulation consumes a handful of 32-byte scalars; the buffer is
+/// sized far above that, and exhaustion is a programming error rather than a
+/// silent weak-randomness fallback.
+struct FilledRng {
+    buffer: Vec<u8>,
+    offset: usize,
+}
+
+impl FilledRng {
+    fn new(entropy: &dyn EntropySource, len: usize) -> Result<Self, OsppError> {
+        let mut buffer = vec![0u8; len];
+        entropy.fill_bytes(&mut buffer)?;
+        Ok(Self { buffer, offset: 0 })
+    }
+
+    fn take(&mut self, len: usize) -> &[u8] {
+        assert!(
+            self.offset + len <= self.buffer.len(),
+            "reference-server hpke RNG buffer exhausted"
+        );
+        let start = self.offset;
+        self.offset += len;
+        &self.buffer[start..self.offset]
+    }
+}
+
+impl TryRng for FilledRng {
+    type Error = std::convert::Infallible;
+
+    fn try_next_u32(&mut self) -> Result<u32, Self::Error> {
+        let bytes = self.take(4);
+        Ok(u32::from_le_bytes(bytes.try_into().expect("4 bytes")))
+    }
+
+    fn try_next_u64(&mut self) -> Result<u64, Self::Error> {
+        let bytes = self.take(8);
+        Ok(u64::from_le_bytes(bytes.try_into().expect("8 bytes")))
+    }
+
+    fn try_fill_bytes(&mut self, dst: &mut [u8]) -> Result<(), Self::Error> {
+        let len = dst.len();
+        dst.copy_from_slice(self.take(len));
+        Ok(())
+    }
+}
+
+impl TryCryptoRng for FilledRng {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn claimed_expressions_survive_byte_verbatim() {
+        let config = ReferenceServerConfig {
+            vars: BTreeMap::from([("DEBUG".to_owned(), "server".to_owned())]),
+            ..ReferenceServerConfig::default()
+        };
+        let claims = OsppClaims {
+            vars: vec!["DEBUG".to_owned()],
+            ..OsppClaims::default()
+        };
+        let snow = r#"
+images: []
+modes:
+  all:
+    envs:
+      api:
+        DEBUG: "  ${{ vars::DEBUG ?? \"x\" }}  "
+        LOG_LEVEL: "info"
+"#;
+        let components = resolve_components(&config, &claims, snow).expect("resolves");
+        assert_eq!(
+            components["api"]["DEBUG"].text,
+            "  ${{ vars::DEBUG ?? \"x\" }}  "
+        );
+        assert_eq!(components["api"]["LOG_LEVEL"].text, "info");
+    }
+
+    #[test]
+    fn unclaimed_secrets_contaminate_and_claim_nothing() {
+        let config = ReferenceServerConfig {
+            secrets: BTreeMap::from([("SECRET_KEY".to_owned(), "s3cr3t".to_owned())]),
+            ..ReferenceServerConfig::default()
+        };
+        let snow = r#"
+images: []
+modes:
+  all:
+    envs:
+      api:
+        SECRET_KEY: "${{ secrets::SECRET_KEY }}"
+"#;
+        let components =
+            resolve_components(&config, &OsppClaims::default(), snow).expect("resolves");
+        assert!(components["api"]["SECRET_KEY"].secret);
+        assert_eq!(components["api"]["SECRET_KEY"].text, "s3cr3t");
+    }
 }

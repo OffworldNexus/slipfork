@@ -1,6 +1,6 @@
 [package]
 name = "slipfork-ospp"
-description = "Slipfork-owned OSPP v1 synchronous WebSocket client, tpmd-backed P-256 device keys, and streaming seed dumps"
+description = "Slipfork-owned OSPP v1 synchronous WebSocket client, P-256 machine auth, hpke-p256 secret and sealed dump reader"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -8,26 +8,19 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+base64.workspace = true
 hex.workspace = true
+hpke.workspace = true
 p256.workspace = true
 rustls.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
-slipfork-dag = { path = "../slipfork-dag" }
 slipfork-snow = { path = "../slipfork-snow" }
 slipfork-world = { path = "../slipfork-world" }
 thiserror.workspace = true
-tokio.workspace = true
-tpmd-client.workspace = true
-tpmd-ipc.workspace = true
 tungstenite.workspace = true
 webpki-roots.workspace = true
-zstd.workspace = true
 
 [dev-dependencies]
 slipfork-ospp-testkit = { path = "../slipfork-ospp-testkit" }
-tempfile.workspace = true
-# `critical_ospp` asserts on the fake daemon's typed reject codes; the daemon itself lives in
-# `slipfork-ospp-testkit` at the same pinned revision.
-tpmd-proto.workspace = true

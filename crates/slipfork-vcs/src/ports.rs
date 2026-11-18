@@ -207,6 +207,13 @@ impl ProjectSlugOverride for NoProjectOverride {
 /// Resolve a start directory to its canonical repository identity.
 pub trait RepoRootResolver: Send + Sync {
     fn resolve(&self, start: &Path) -> Result<RepoRoot, VcsError>;
+
+    /// The repository's **verbatim** `remote.origin.url`, or `None` when it has no origin.
+    ///
+    /// OSPP v1 project identity is this string and only this string (`docs/design/ospp.md`): no
+    /// client-side slug, hash, mode, or canonicalization is applied. A repository without an
+    /// origin simply never opens a subscription.
+    fn remote(&self, repo: &RepoRoot) -> Result<Option<String>, VcsError>;
 }
 
 /// Materialize and tear down one fork workspace.

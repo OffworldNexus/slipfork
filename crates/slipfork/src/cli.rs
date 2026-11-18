@@ -33,6 +33,10 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub json: bool,
 
+    /// Add per-node lineage and `[resources]` detail to human output (ignored under `--json`).
+    #[arg(short = 'v', long, global = true)]
+    pub verbose: bool,
+
     /// Explicit CoW state directory (defaults to `$XDG_CACHE_HOME/slipfork` or `~/.cache/slipfork`).
     ///
     /// The client's control socket is always `<state_dir>/run/daemon.sock`; there is no
@@ -93,6 +97,13 @@ pub enum Commands {
 
     /// Stop a world's services while keeping its worktree (idempotent).
     Down {
+        #[arg(long, value_name = "WORLD", help = WORLD_HELP)]
+        world: Option<String>,
+    },
+
+    /// Re-run a held world in place: stop its components + services, then run the same boot
+    /// pipeline as `up` (`0.1.0` has no `--watch`; re-run this command after an edit).
+    Restart {
         #[arg(long, value_name = "WORLD", help = WORLD_HELP)]
         world: Option<String>,
     },
@@ -221,10 +232,10 @@ pub enum Commands {
         targets: Vec<String>,
     },
 
-    /// OSPP device-key pairing.
+    /// Pair this machine with the daemon's OSPP endpoint.
     Auth {
-        #[command(subcommand)]
-        action: AuthAction,
+        /// Optional endpoint URL; the daemon refuses one that differs from its injected endpoint.
+        endpoint: Option<String>,
     },
 
     /// Report verified integration tiers and their required evidence (`ADR-0007`).
@@ -243,16 +254,6 @@ pub enum HookAction {
         /// Run non-interactively through `DaemonControl::hook_run`.
         #[arg(long)]
         no_tty: bool,
-    },
-}
-
-/// `slipfork auth` actions.
-#[derive(Debug, Subcommand)]
-pub enum AuthAction {
-    /// Pair a device key from a `#handle=` pairing URL (`-` reads it from stdin).
-    Login {
-        /// Pairing URL, or `-` to read it from stdin so the handle never enters `argv`.
-        url: Option<String>,
     },
 }
 
@@ -425,6 +426,23 @@ mod tests {
             Cli::try_parse_from(["slipfork", "--json"]).is_ok(),
             "the bare invocation accepts the global flags"
         );
+    }
+
+    #[test]
+    fn restart_has_a_world_selector_and_no_watcher() {
+        let restart = Cli::try_parse_from(["slipfork", "restart", "--world", "demo:feat"])
+            .expect("restart parses");
+        let Some(Commands::Restart { world }) = restart.command else {
+            panic!("expected `restart`");
+        };
+        assert_eq!(world.as_deref(), Some("demo:feat"));
+
+        // `0.1.0` ships zero file watchers (`M3.28.1`, §4): `--watch` is not a flag of any verb.
+        let err = Cli::try_parse_from(["slipfork", "restart", "--watch"])
+            .expect_err("restart --watch was locked out of 0.1.0");
+        assert_eq!(err.kind(), clap::error::ErrorKind::UnknownArgument);
+        assert!(Cli::try_parse_from(["slipfork", "--verbose", "restart"]).is_ok());
+        assert!(Cli::try_parse_from(["slipfork", "restart", "-v"]).is_ok());
     }
 
     #[test]

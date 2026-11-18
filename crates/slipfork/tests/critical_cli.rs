@@ -21,6 +21,7 @@ use serde_json::Value;
 use slipfork::daemon_unit_install::{self, InstallRequest, ManagedUnit, UnitInstaller};
 use slipfork_engine::SystemClock;
 use slipfork_engine::linux_cow::ProcessSignal;
+use slipfork_ospp_testkit::{ReferenceOsppServer, ReferenceServerConfig};
 
 pub mod support;
 use support::{
@@ -60,6 +61,64 @@ fn disk_tempdir() -> tempfile::TempDir {
     support::disk_tempdir("c-")
 }
 
+/// A world whose `GREETING` env is the only thing the edit-and-apply test changes.
+const RESTART_SNOW: &str = r#"
+images:
+  - id: app
+    context: .
+    dockerfile: Dockerfile
+
+components:
+  - id: api
+    image: app
+    envs: [app]
+    run_command: "exec sleep 300"
+
+ingresses:
+  - match:
+      prefix: "/"
+    target:
+      component: api
+      port: 8000
+
+modes:
+  local:
+    envs:
+      app:
+        BASE_URL: '${{ resources::app.url }}'
+        GREETING: v1
+"#;
+
+/// A world whose single component is disabled in `local`: the pipeline starts nothing, so a
+/// restart has no service to bring back (`changed: false`, `restarted: []`).
+const IDLE_SNOW: &str = r#"
+images:
+  - id: app
+    context: .
+    dockerfile: Dockerfile
+
+components:
+  - id: api
+    image: app
+    run_command: "exec sleep 300"
+
+ingresses:
+  - match:
+      prefix: "/"
+    target:
+      component: api
+      port: 8000
+
+modes:
+  local:
+    components:
+      api:
+        disabled: true
+    envs:
+      app:
+        BASE_URL: '${{ resources::app.url }}'
+"#;
+
 /// One git repository with the canonical `snow.yml` used by every test.
 fn repo_with_snow(scratch: &Path) -> PathBuf {
     repo_with_manifest(scratch, "acme-app", SNOW_YML)
@@ -79,10 +138,22 @@ fn up_down_lifecycle_is_idempotent_and_one_url_per_world() {
     let up = daemon.cli(&repo, &["up"]);
     assert_success(&up, "slipfork up");
     assert_eq!(url_count(&stdout(&up)), 1, "up prints exactly one origin");
+    let block = stdout(&up);
     assert!(
-        stdout(&up).contains("[origin]"),
-        "expected an [origin] line: {}",
-        stdout(&up)
+        block.contains("world     acme-app (running, changed)"),
+        "the block names the world, its state, and what changed: {block}"
+    );
+    assert!(
+        block.contains("app       http://acme-app.localhost"),
+        "the block carries the one origin: {block}"
+    );
+    assert!(
+        block.contains("worktree  ") && block.contains("lineage   rootfs "),
+        "the block carries the worktree and the single lineage line: {block}"
+    );
+    assert!(
+        !block.contains("[origin]") && !block.contains("[resources]"),
+        "the superseded `[origin]` line and happy-path jargon are gone: {block}"
     );
 
     let list = daemon.cli(&repo, &["list"]);
@@ -237,6 +308,257 @@ fn one_url_per_world_holds_for_canonical_and_fork() {
             .matches("http://")
             .count(),
         1
+    );
+}
+
+// ---------------------------------------------------------------------------
+// M3.28.8: `slipfork restart` and the actionable `up`/`fork`/`restart` block
+// ---------------------------------------------------------------------------
+
+/// The daemon's real ingress port, read from the one `status --json` document.
+fn ingress_port(daemon: &Daemon, cwd: &Path) -> u16 {
+    let output = daemon.cli(cwd, &["--json", "status"]);
+    assert_success(&output, "status --json");
+    let document: Value = serde_json::from_str(&stdout(&output)).expect("status json");
+    u16::try_from(
+        document["ingress"]["port"]
+            .as_u64()
+            .unwrap_or_else(|| panic!("ingress.port is always present: {document}")),
+    )
+    .expect("a u16 port")
+}
+
+/// The exact stderr the world verbs carry for `port` (`:80` means silence).
+fn ingress_stderr(port: u16) -> String {
+    if port == 80 {
+        String::new()
+    } else {
+        ingress_hint_line(port)
+    }
+}
+
+/// The world's `GREETING` from inside the running world (daemon-resolved env, not the host's).
+fn world_greeting(daemon: &Daemon, cwd: &Path) -> String {
+    let output = daemon.cli(cwd, &["exec", "--", "sh", "-c", "printf %s \"$GREETING\""]);
+    assert_success(&output, "exec printf $GREETING");
+    stdout(&output).trim().to_owned()
+}
+
+#[test]
+fn restart_applies_an_edited_snow_file_and_names_what_came_back() {
+    let tmp = disk_tempdir();
+    let scratch = tmp.path();
+    let repo = repo_with_manifest(scratch, "acme-restart", RESTART_SNOW);
+    let daemon = Daemon::start(scratch);
+    let port = ingress_port(&daemon, &repo);
+
+    let up = daemon.cli(&repo, &["up"]);
+    assert_success(&up, "up before restart");
+    assert_eq!(
+        world_greeting(&daemon, &repo),
+        "v1",
+        "the boot resolved the env"
+    );
+    assert_eq!(
+        stderr(&up),
+        ingress_stderr(port),
+        "the block's only stderr is the one loud ingress line"
+    );
+
+    // `up` is idempotent: an edited `snow.yml` is applied by `restart`, never by a second `up`.
+    let snow = fs::read_to_string(repo.join("snow.yml")).expect("read snow.yml");
+    fs::write(
+        repo.join("snow.yml"),
+        snow.replace("GREETING: v1", "GREETING: v2"),
+    )
+    .expect("edit snow.yml");
+    let again = daemon.cli(&repo, &["up"]);
+    assert_success(&again, "second up");
+    assert!(
+        stdout(&again).contains(
+            "world     acme-restart (running, unchanged — run `slipfork restart` to apply edits)"
+        ),
+        "an unchanged up names the verb that applies edits: {}",
+        stdout(&again)
+    );
+    assert_eq!(
+        world_greeting(&daemon, &repo),
+        "v1",
+        "up alone never applies an edited snow.yml"
+    );
+
+    let restart = daemon.cli(&repo, &["restart"]);
+    assert_success(&restart, "restart");
+    let block = stdout(&restart);
+    let lines: Vec<&str> = block.lines().collect();
+    assert_eq!(
+        lines[0], "[restarted] api",
+        "the verdict is exactly the daemon's observed restarted ids: {block}"
+    );
+    assert_eq!(lines[1], "world     acme-restart (running, changed)");
+    assert!(
+        lines[2].starts_with("app       http://acme-restart.localhost"),
+        "{block}"
+    );
+    assert!(lines[3].starts_with("worktree  "), "{block}");
+    assert!(
+        lines[4].starts_with("next      slipfork open | "),
+        "{block}"
+    );
+    assert!(lines[5].starts_with("lineage   rootfs "), "{block}");
+    assert_eq!(lines.len(), 6, "one verdict plus five block rows: {block}");
+    assert_eq!(
+        stderr(&restart),
+        ingress_stderr(port),
+        "exactly one ingress line on stderr, never on stdout"
+    );
+    assert!(
+        !block.contains("ingress is :"),
+        "the ingress line never reaches stdout"
+    );
+    assert_eq!(
+        world_greeting(&daemon, &repo),
+        "v2",
+        "restart applied the edited snow.yml env"
+    );
+
+    // `--json` is the daemon's own summary (one projection), with no human text and no stderr.
+    let document = daemon.cli(&repo, &["--json", "restart"]);
+    assert_success(&document, "restart --json");
+    assert_eq!(
+        stderr(&document),
+        "",
+        "--json never prints the ingress line"
+    );
+    let document: Value = serde_json::from_str(&stdout(&document)).expect("restart json");
+    let mut keys: Vec<&str> = document
+        .as_object()
+        .unwrap_or_else(|| panic!("an object document: {document}"))
+        .keys()
+        .map(String::as_str)
+        .collect();
+    keys.sort_unstable();
+    assert_eq!(
+        keys,
+        vec![
+            "changed",
+            "lineage",
+            "next",
+            "ok",
+            "origin",
+            "resources",
+            "restarted",
+            "services",
+            "state",
+            "worktree",
+            "world",
+        ],
+        "every documented key travels: {document}"
+    );
+    assert_eq!(document["ok"], true);
+    assert_eq!(document["world"], "acme-restart");
+    assert_eq!(document["state"], "running");
+    assert_eq!(document["changed"], true);
+    assert_eq!(document["restarted"][0], "api");
+    assert!(
+        document["origin"]
+            .as_str()
+            .is_some_and(|origin| origin.starts_with("http://acme-restart.localhost")),
+        "`origin` is the typed origin's URL string: {document}"
+    );
+    for key in ["rootfs", "services", "seed", "base"] {
+        assert!(
+            document["lineage"].get(key).is_some(),
+            "lineage.{key} travels as-is: {document}"
+        );
+    }
+}
+
+#[test]
+fn restart_refuses_a_never_booted_world_and_rescues_a_failed_one() {
+    let tmp = disk_tempdir();
+    let scratch = tmp.path();
+    let repo = repo_with_manifest(scratch, "acme-rescue-restart", HOOK_SNOW);
+    let daemon = Daemon::start(scratch);
+
+    // A world the daemon never booted is not silently booted by `restart`.
+    let never = daemon.cli(&repo, &["restart"]);
+    assert!(!never.status.success(), "restart must fail closed");
+    assert!(!stdout(&never).contains("[restarted]"));
+    let diagnostic = stderr(&never);
+    assert!(
+        diagnostic.contains("is not running") && diagnostic.contains("`slipfork up`"),
+        "the refusal names `slipfork up`: {diagnostic}"
+    );
+
+    // A failed boot stays listed as `failed` (the rescue path's precondition).
+    let fork = daemon.cli(&repo, &["fork", "feat-bad"]);
+    assert!(!fork.status.success(), "the failing hook fails the fork");
+    let listed = daemon.cli(&repo, &["--json", "list"]);
+    assert_success(&listed, "list after the failed fork");
+    let worlds: Value = serde_json::from_str(&stdout(&listed)).expect("list json");
+    assert!(
+        worlds
+            .as_array()
+            .expect("array")
+            .iter()
+            .any(|world| world["world"] == "acme-rescue-restart:feat-bad"
+                && world["state"] == "failed"),
+        "the failed fork stays listed: {worlds}"
+    );
+
+    // Rescue: the fork's own worktree is what a restart re-resolves, so fix the hook there.
+    let snow_path = repo.join(".worktrees/feat-bad/snow.yml");
+    let snow = fs::read_to_string(&snow_path).expect("read the fork's snow.yml");
+    fs::write(&snow_path, snow.replace("exit 7", "exit 0")).expect("fix the hook");
+    let rescue = daemon.cli(
+        &repo,
+        &["restart", "--world", "acme-rescue-restart:feat-bad"],
+    );
+    assert_success(&rescue, "restart rescues the failed world");
+    let block = stdout(&rescue);
+    assert!(
+        block.contains("[restarted] api\n"),
+        "the rescue names the service it brought back: {block}"
+    );
+    assert!(
+        block.contains("world     acme-rescue-restart:feat-bad (running, changed)"),
+        "the rescued world is running: {block}"
+    );
+    assert!(
+        block.contains("next      slipfork open --world acme-rescue-restart:feat-bad | "),
+        "a world selected with --world gets paste-ready next commands: {block}"
+    );
+}
+
+#[test]
+fn restart_reports_no_change_when_the_pipeline_starts_nothing() {
+    let tmp = disk_tempdir();
+    let scratch = tmp.path();
+    let repo = repo_with_manifest(scratch, "acme-idle", IDLE_SNOW);
+    let daemon = Daemon::start(scratch);
+
+    assert_success(&daemon.cli(&repo, &["up"]), "up the idle world");
+
+    let restart = daemon.cli(&repo, &["restart"]);
+    assert_success(&restart, "restart an idle world");
+    let block = stdout(&restart);
+    let lines: Vec<&str> = block.lines().collect();
+    assert_eq!(
+        lines[0], "[no change]",
+        "nothing came back, so the verdict says so: {block}"
+    );
+    assert_eq!(lines[1], "world     acme-idle (running, unchanged)");
+    assert!(!block.contains("[restarted]"), "{block}");
+
+    let document = daemon.cli(&repo, &["--json", "restart"]);
+    assert_success(&document, "restart --json");
+    let document: Value = serde_json::from_str(&stdout(&document)).expect("restart json");
+    assert_eq!(document["changed"], false, "{document}");
+    assert_eq!(
+        document["restarted"].as_array().map(Vec::len),
+        Some(0),
+        "an empty id list, never a guess: {document}"
     );
 }
 
@@ -1258,20 +1580,48 @@ fn db_redis_exec_resolve_container_entries_and_require_a_tty() {
 }
 
 #[test]
-fn auth_login_never_echoes_the_pairing_handle() {
+fn auth_prints_the_server_supplied_fragment_url_and_never_echoes_a_secret() {
     let tmp = disk_tempdir();
     let scratch = tmp.path();
     let repo = repo_with_snow(scratch);
-    let daemon = Daemon::start(scratch);
-    let handle = "ab".repeat(32);
-    let url = format!("http://127.0.0.1:1/pair#handle={handle}");
+    // The daemon owns one boot-injected endpoint; the reference server mints the pairing URL and
+    // its single-use handle, so the CLI must print exactly what the server supplied.
+    let server = ReferenceOsppServer::start(ReferenceServerConfig::default());
+    let daemon = Daemon::start_with_ospp(scratch, server.endpoint());
 
-    let stdin_login = daemon.cli_with_stdin(&repo, &["auth", "login", "-"], &format!("{url}\n"));
-    assert!(
-        !stdin_login.status.success(),
-        "an unreachable pairing endpoint must fail closed offline"
+    let stored = daemon.cli_with_stdin(
+        &repo,
+        &["secret", "set", "--force", "AUTH_PROBE"],
+        "auth-probe-secret",
     );
-    let combined = format!("{}{}", stdout(&stdin_login), stderr(&stdin_login));
+    assert_success(&stored, "seed a local vault secret before pairing");
+
+    let auth = daemon.cli(&repo, &["auth"]);
+    assert_success(&auth, "slipfork auth");
+    let printed = stdout(&auth);
+
+    let pairing_line = printed
+        .lines()
+        .find(|line| line.contains("#handle="))
+        .unwrap_or_else(|| panic!("auth must print the fragment URL: {printed}"));
+    let expected_prefix = format!("http://{}/pair#handle=", server.dump_addr());
+    assert!(
+        pairing_line.starts_with(&expected_prefix),
+        "the daemon must print the server-supplied URL, never one it computes: {pairing_line}"
+    );
+    let handle = pairing_line
+        .trim()
+        .strip_prefix(&expected_prefix)
+        .expect("fragment handle");
+    assert_eq!(
+        handle.len(),
+        64,
+        "the fragment handle is the server's 32-byte hex value: {handle}"
+    );
+    assert!(
+        handle.bytes().all(|byte| byte.is_ascii_hexdigit()),
+        "the fragment handle must be hex: {handle}"
+    );
     assert!(
         daemon.browser_marker.is_file(),
         "the injected BROWSER must open the pairing page"
@@ -1283,30 +1633,8 @@ fn auth_login_never_echoes_the_pairing_handle() {
         "the browser stub must prove the opener ran without persisting the live URL"
     );
     assert!(
-        !combined.contains(&handle),
-        "the pairing handle must never be echoed: {combined}"
-    );
-    assert!(
-        !combined.contains("#handle=ab"),
-        "the fragment handle must never be rendered: {combined}"
-    );
-
-    let arg_login = daemon.cli(
-        &repo,
-        &[
-            "auth",
-            "login",
-            "https://127.0.0.1:1/pair#handle=not-a-handle",
-        ],
-    );
-    assert!(
-        !arg_login.status.success(),
-        "a malformed handle must fail closed"
-    );
-    assert!(
-        !stderr(&arg_login).contains("not-a-handle"),
-        "a rejected handle must not be echoed: {}",
-        stderr(&arg_login)
+        !printed.contains("auth-probe-secret"),
+        "no command may echo a stored secret value: {printed}"
     );
 }
 

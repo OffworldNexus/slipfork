@@ -158,16 +158,11 @@ impl Layout {
             .join("logs")
     }
 
-    /// `0600` software device key used by the OSPP pairing fallback.
+    /// `0600` machine-authentication P-256 scalar used for OSPP `p256` auth and pairing.
     pub fn device_key_path(&self) -> PathBuf {
         self.data_home
             .join("slipfork")
             .join("device-key-software.json")
-    }
-
-    /// `0600` paired OSPP host coordinates (`<data_home>/slipfork/ospp-session.json`).
-    pub fn ospp_session_path(&self) -> PathBuf {
-        self.data_home.join("slipfork").join("ospp-session.json")
     }
 }
 

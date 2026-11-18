@@ -1,812 +1,865 @@
-//! The Slipfork-owned `OSPP v1` synchronous WebSocket session: server-speaks-first
-//! `CHALLENGE -> HELLO -> WELCOME | REJECT`, the `ospp-v1` subprotocol, a 16 KiB control-frame cap,
-//! a 64 KiB binary-frame cap, and bounded deadlines (`ADR-0008` §1–§2).
+//! The OSPP v1 capability ports and the synchronous WebSocket adapter.
 //!
-//! The transport is synchronous `tungstenite` over `rustls` + `webpki-roots`. Nonces come from the
-//! injected `EntropySource`; signatures come from the injected `DeviceKeySigner`. A `REJECT` is
-//! returned to the caller as a typed error and is never retried with a different signature
-//! encoding. TLS exporter channel binding is **reserved, not assumed**: `ospp-v1` does not enable
-//! it, matching the `weaver-mux-v1` posture in `docs/research/tunnel-weaver-and-systemd-facts.md`
-//! §3, and a future binding would bump the protocol version.
-//!
-//! After `WELCOME` one authenticated session serves every capability ([`EnvBundle`],
-//! [`CAPABILITY_ENV_BUNDLE`], [`CAPABILITY_SECRETS_ENSURE`], [`CAPABILITY_RESOURCES_DESCRIBE`]):
-//! the daemon-held [`OsppClient`] serializes requests behind one interior mutex, so
-//! `SecretProvider`'s `&self` contract is satisfied without a global runtime or connection pool.
+//! `WsOsppClient` performs `hello -> auth_challenge -> auth_response -> auth_ok`
+//! and `pair_hello -> pair_challenge -> pair_begin -> pair_handle -> pair_approved`
+//! over a real `tungstenite` WebSocket (`Sec-WebSocket-Protocol: ospp-v1`), then
+//! hands the authenticated socket to a single session thread that owns the
+//! per-subscription ephemeral HPKE keys. Every value the server resolved from a
+//! secret is opened in memory; nothing is written to disk or read from the
+//! environment.
 
-use std::io;
+use std::collections::BTreeMap;
+use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
-use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
-use std::time::Duration;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TryRecvError};
+use std::sync::{Arc, Mutex};
+use std::thread::{self, JoinHandle};
+use std::time::{Duration, Instant};
 
-use serde::Serialize;
-use slipfork_snow::EntropySource;
-use slipfork_world::ProjectSlug;
+use slipfork_snow::{EntropySource, SecretValue};
 use tungstenite::client::IntoClientRequest;
-use tungstenite::http::{HeaderValue, Request, Uri};
-use tungstenite::protocol::WebSocketConfig;
-use tungstenite::stream::MaybeTlsStream;
-use tungstenite::{Connector, Message, WebSocket, client_tls_with_config};
+use tungstenite::http::HeaderValue;
+use tungstenite::http::header::SEC_WEBSOCKET_PROTOCOL;
+use tungstenite::{Message, WebSocket, client, stream::MaybeTlsStream};
 
-use crate::device_key::{DeviceKeySigner, KeyId, SIGNATURE_HEX_LEN};
+use crate::device_key::DeviceKeySigner;
+use crate::dump::DumpReader;
+use crate::endpoint::OsppEndpoint;
 use crate::error::OsppError;
-use crate::hex::{hex_fixed, hex_str, is_lower_hex_digit};
-use crate::protocol::{
-    CAPABILITY_ENV_BUNDLE, CAPABILITY_RESOURCES_DESCRIBE, CAPABILITY_SECRETS_ENSURE,
-    CapabilityRequest, EnvBundle, ServerFrame, capability_error, validate_key, validate_mode,
+use crate::keys::SubscriptionKey;
+use crate::model::{SubscribeRequest, SubscriptionEnv};
+use crate::pairing::{LivePairingUrl, solve_altcha};
+use crate::wire::{
+    AUTH_METHOD_P256, AuthResponse, ClientFrame, ENCRYPTION_METHOD_HPKE_P256, Encryption,
+    OSPP_SUBPROTOCOL, PROTOCOL_VERSION, ServerFrame, WireValue, auth_transcript,
+    pairing_transcript,
 };
-use crate::resources::RemoteResourceBundle;
 
-/// The `ospp-v1` WebSocket subprotocol (`ADR-0008` §1).
-pub const OSPP_SUBPROTOCOL: &str = "ospp-v1";
+/// Bound on how long the session thread sleeps between command polls.
+const POLL_SLICE: Duration = Duration::from_millis(25);
+/// Largest accepted HTTP response header block.
+const MAX_HTTP_HEADERS: usize = 16 * 1024;
 
-/// Domain-separation prefix signed for the connect handshake.
-pub const CONNECT_TRANSCRIPT_PREFIX: &[u8] = b"ospp-v1";
-
-/// Domain-separation prefix signed for the pairing handshake.
-pub const PAIRING_TRANSCRIPT_PREFIX: &[u8] = b"ospp-v1-pair";
-
-/// Connect path on the OSPP host.
-pub const CONNECT_PATH: &str = "/_ospp/v1/connect";
-
-/// Pairing path on the OSPP host.
-pub const PAIR_PATH: &str = "/_ospp/v1/pair";
-
-/// Protocol version this crate speaks (`version: 1` is the first field of `HELLO`).
-pub const PROTOCOL_VERSION: u16 = 1;
-
-/// Hard cap on every control/RPC text frame (16 KiB).
-pub const MAX_CONTROL_FRAME: usize = 16_384;
-
-/// Hard cap on every seed-dump binary WebSocket frame (64 KiB).
-pub const MAX_DUMP_FRAME: usize = 65_536;
-
-/// Length of both `nonce_s` and `nonce_c`.
-pub const NONCE_BYTES: usize = 32;
-
-/// Hex character count of a nonce.
-pub const NONCE_HEX_LEN: usize = NONCE_BYTES * 2;
-
-/// Default bound on TCP connect and on the first server frame.
-pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
-
-/// Injected transport budgets for one `ospp-v1` session.
+/// Injected client timeouts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct OsppTimeouts {
-    /// Bound on establishing the TCP connection.
-    pub connect: Duration,
-    /// Bound on the first server frame (`CHALLENGE`, and every handshake frame).
+    /// Handshake read/write bound.
     pub handshake: Duration,
-    /// Bound on post-handshake reads.
+    /// Per-request and push-read bound.
     pub io: Duration,
 }
 
 impl Default for OsppTimeouts {
     fn default() -> Self {
         Self {
-            connect: DEFAULT_TIMEOUT,
-            handshake: DEFAULT_TIMEOUT,
+            handshake: Duration::from_secs(10),
             io: Duration::from_secs(30),
         }
     }
 }
 
-/// A validated OSPP endpoint: `wss://<host>:<port>/_ospp/v1/...`.
-///
-/// `ws://` is accepted only for a literal loopback host, so a test harness never becomes a
-/// production plaintext side-door.
+/// Paired machine identity returned by `pair_approved`.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct OsppEndpoint {
-    host: String,
-    port: u16,
-    tls: bool,
-    path: &'static str,
+pub struct PairingApproval {
+    /// Enrolled compressed public key hex.
+    pub public_key: String,
+    /// Authenticated account name.
+    pub account: String,
+    /// Approved machine name.
+    pub machine: String,
 }
 
-impl OsppEndpoint {
-    /// The connect endpoint (`/_ospp/v1/connect`).
-    pub fn connect(host: &str, port: u16, tls: bool) -> Result<Self, OsppError> {
-        Self::new(host, port, tls, CONNECT_PATH)
-    }
+/// Single client-side OSPP v1 adapter port injected into `slipforkd`.
+pub trait OsppClient: Send + Sync {
+    /// The single boot-injected server identity.
+    fn endpoint(&self) -> &OsppEndpoint;
 
-    /// The pairing endpoint (`/_ospp/v1/pair`).
-    pub fn pair(host: &str, port: u16, tls: bool) -> Result<Self, OsppError> {
-        Self::new(host, port, tls, PAIR_PATH)
-    }
-
-    fn new(host: &str, port: u16, tls: bool, path: &'static str) -> Result<Self, OsppError> {
-        if host.is_empty() || !host.is_ascii() || host.bytes().any(|b| b.is_ascii_whitespace()) {
-            return Err(OsppError::Protocol {
-                phase: "connect",
-                message: "host must be non-empty ASCII without whitespace".to_owned(),
-            });
-        }
-        if host.contains('/') || host.contains('@') {
-            return Err(OsppError::Protocol {
-                phase: "connect",
-                message: "host must be a bare hostname or IP address".to_owned(),
-            });
-        }
-        if port == 0 {
-            return Err(OsppError::Protocol {
-                phase: "connect",
-                message: "port must be non-zero".to_owned(),
-            });
-        }
-        let host = host.to_ascii_lowercase();
-        if !tls && !is_loopback_host(&host) {
-            return Err(OsppError::Protocol {
-                phase: "connect",
-                message: "plaintext ws:// is permitted only on loopback".to_owned(),
-            });
-        }
-        Ok(Self {
-            host,
-            port,
-            tls,
-            path,
-        })
-    }
-
-    /// The exact hostname string mixed into the signed transcript (no port, lowercase ASCII).
-    pub fn server_name(&self) -> &str {
-        &self.host
-    }
-
-    /// The TCP port.
-    pub const fn port(&self) -> u16 {
-        self.port
-    }
-
-    /// Whether the endpoint uses TLS.
-    pub const fn uses_tls(&self) -> bool {
-        self.tls
-    }
-
-    /// The request path.
-    pub const fn path(&self) -> &'static str {
-        self.path
-    }
-
-    fn uri(&self) -> String {
-        let host = if self.host.contains(':') {
-            format!("[{}]", self.host)
-        } else {
-            self.host.clone()
-        };
-        let scheme = if self.tls { "wss" } else { "ws" };
-        format!("{scheme}://{host}:{}{}", self.port, self.path)
-    }
-}
-
-/// The decoded `CHALLENGE` nonce.
-pub fn parse_nonce(raw: &str) -> Result<[u8; NONCE_BYTES], OsppError> {
-    if raw.len() != NONCE_HEX_LEN {
-        return Err(OsppError::Protocol {
-            phase: "challenge",
-            message: format!(
-                "expected a {NONCE_HEX_LEN}-character nonce, got {} characters",
-                raw.len()
-            ),
-        });
-    }
-    if !raw.bytes().all(is_lower_hex_digit) {
-        return Err(OsppError::Protocol {
-            phase: "challenge",
-            message: "nonce must be lowercase hex".to_owned(),
-        });
-    }
-    let mut nonce = [0u8; NONCE_BYTES];
-    let _ = hex::decode_to_slice(raw, &mut nonce);
-    Ok(nonce)
-}
-
-/// Draw a fresh 32-byte client nonce from the injected entropy source.
-pub fn random_nonce(entropy: &dyn EntropySource) -> Result<[u8; NONCE_BYTES], OsppError> {
-    let mut nonce = [0u8; NONCE_BYTES];
-    entropy.fill_bytes(&mut nonce)?;
-    Ok(nonce)
-}
-
-/// The exact bytes signed by `HELLO`:
-/// `"ospp-v1" || nonce_s(32) || nonce_c(32) || server_name`.
-pub fn connect_transcript(
-    nonce_s: &[u8; NONCE_BYTES],
-    nonce_c: &[u8; NONCE_BYTES],
-    server_name: &str,
-) -> Vec<u8> {
-    let mut out =
-        Vec::with_capacity(CONNECT_TRANSCRIPT_PREFIX.len() + NONCE_BYTES * 2 + server_name.len());
-    out.extend_from_slice(CONNECT_TRANSCRIPT_PREFIX);
-    out.extend_from_slice(nonce_s);
-    out.extend_from_slice(nonce_c);
-    out.extend_from_slice(server_name.as_bytes());
-    out
-}
-
-/// The exact bytes signed by `pair_hello`:
-/// `"ospp-v1-pair" || nonce_s(32) || nonce_c(32) || handle(32) || server_name`.
-pub fn pairing_transcript(
-    nonce_s: &[u8; NONCE_BYTES],
-    nonce_c: &[u8; NONCE_BYTES],
-    handle: &[u8; 32],
-    server_name: &str,
-) -> Vec<u8> {
-    let mut out = Vec::with_capacity(
-        PAIRING_TRANSCRIPT_PREFIX.len() + NONCE_BYTES * 2 + handle.len() + server_name.len(),
-    );
-    out.extend_from_slice(PAIRING_TRANSCRIPT_PREFIX);
-    out.extend_from_slice(nonce_s);
-    out.extend_from_slice(nonce_c);
-    out.extend_from_slice(handle);
-    out.extend_from_slice(server_name.as_bytes());
-    out
-}
-
-/// An authenticated, synchronous `ospp-v1` session.
-///
-/// One instance is held by `slipforkd` and shared across capability callers: requests are
-/// serialized on the single authenticated WebSocket, and `Send + Sync` comes from the interior
-/// mutex rather than from a global runtime or connection pool.
-pub struct OsppClient {
-    session: Mutex<OsppConnection>,
-    key_id: KeyId,
-    backend_label: &'static str,
-    server_name: String,
-    next_request: AtomicU32,
-}
-
-impl OsppClient {
-    /// Dial `endpoint`, perform `CHALLENGE -> HELLO -> WELCOME`, and hold the authenticated session.
-    pub fn connect(
-        endpoint: &OsppEndpoint,
-        signer: &dyn DeviceKeySigner,
-        entropy: &dyn EntropySource,
-        timeouts: OsppTimeouts,
-    ) -> Result<Self, OsppError> {
-        if endpoint.path() != CONNECT_PATH {
-            return Err(OsppError::Protocol {
-                phase: "connect",
-                message: "OsppClient::connect requires the /_ospp/v1/connect endpoint".to_owned(),
-            });
-        }
-        let mut connection = OsppConnection::open(endpoint, OSPP_SUBPROTOCOL, timeouts)?;
-        let nonce_s = connection.expect_challenge("challenge")?;
-        let nonce_c = random_nonce(entropy)?;
-        let transcript = connect_transcript(&nonce_s, &nonce_c, endpoint.server_name());
-        let signature = signer.sign(&transcript)?;
-
-        let nonce_hex = hex_fixed::<NONCE_HEX_LEN>(&nonce_c, "hello")?;
-        let sig_hex = hex_fixed::<SIGNATURE_HEX_LEN>(signature.as_bytes(), "hello")?;
-
-        let hello = ConnectHello {
-            kind: "hello",
-            version: PROTOCOL_VERSION,
-            key_id: signer.key_id().as_str(),
-            nonce_c: hex_str(&nonce_hex, "hello")?,
-            sig: hex_str(&sig_hex, "hello")?,
-        };
-        connection.send_json("hello", &hello)?;
-
-        match connection.read_frame("welcome")? {
-            ServerFrame::Welcome { version } if version == PROTOCOL_VERSION => {}
-            ServerFrame::Welcome { version } => {
-                return Err(OsppError::Protocol {
-                    phase: "welcome",
-                    message: format!(
-                        "server welcomed ospp-v{version}, but this client speaks v{PROTOCOL_VERSION}"
-                    ),
-                });
-            }
-            ServerFrame::Reject { reason } => {
-                return Err(match reason.into_connect() {
-                    Some(reason) => OsppError::Rejected { reason },
-                    None => OsppError::Protocol {
-                        phase: "welcome",
-                        message: "server sent a pairing-only refusal during HELLO".to_owned(),
-                    },
-                });
-            }
-            other => {
-                return Err(OsppError::Protocol {
-                    phase: "welcome",
-                    message: format!("expected WELCOME, got `{}`", other.kind()),
-                });
-            }
-        }
-        connection.set_io_timeout();
-        Ok(Self {
-            session: Mutex::new(connection),
-            key_id: signer.key_id().clone(),
-            backend_label: signer.backend_label(),
-            server_name: endpoint.server_name().to_owned(),
-            next_request: AtomicU32::new(1),
-        })
-    }
-
-    /// The authenticated device fingerprint.
-    pub fn key_id(&self) -> &KeyId {
-        &self.key_id
-    }
-
-    /// The adapter label that produced this session's signatures.
-    pub const fn backend_label(&self) -> &'static str {
-        self.backend_label
-    }
-
-    /// The hostname bound into the signed transcript.
-    pub fn server_name(&self) -> &str {
-        &self.server_name
-    }
-
-    /// Fetch the `vars` / `secrets` / (`cloud`-only) `domains` snapshot for one world scope.
-    pub fn env_bundle(&self, project: &ProjectSlug, mode: &str) -> Result<EnvBundle, OsppError> {
-        let capability = CAPABILITY_ENV_BUNDLE;
-        let scope = scope_label(project, mode);
-        validate_mode(mode).map_err(|message| capability_error(capability, &scope, message))?;
-        let request_id = self.request_id();
-        let mut session = self.lock();
-        session.send_json(
-            capability,
-            &CapabilityRequest::EnvBundle {
-                request_id,
-                project: project.as_str(),
-                mode,
-            },
-        )?;
-        match session.read_frame(capability)? {
-            ServerFrame::EnvBundle {
-                request_id: seen,
-                vars,
-                secrets,
-                domains,
-            } if seen == request_id => Ok(EnvBundle::new(vars, secrets, domains)),
-            other => Err(other.into_refusal(capability, &scope, request_id)),
-        }
-    }
-
-    /// Compare-and-set one `!!` secret (`put_if_absent`), returning the authoritative value.
-    pub fn ensure_secret(
+    /// Execute `pair_hello -> pair_challenge -> pair_begin -> pair_handle -> pair_approved`,
+    /// delivering the server-supplied `<url>#handle=<handle>` to `on_handle` while
+    /// keeping the socket open.
+    fn pair(
         &self,
-        project: &ProjectSlug,
-        mode: &str,
-        key: &str,
-        proposed: &str,
-    ) -> Result<String, OsppError> {
-        let capability = CAPABILITY_SECRETS_ENSURE;
-        let scope = scope_label(project, mode);
-        validate_scope(project, mode, key)?;
-        let request_id = self.request_id();
-        let mut session = self.lock();
-        session.send_json(
-            capability,
-            &CapabilityRequest::SecretsEnsure {
-                request_id,
-                project: project.as_str(),
-                mode,
-                key,
-                proposed,
+        hostname: &str,
+        on_handle: &mut dyn FnMut(&LivePairingUrl) -> Result<(), OsppError>,
+    ) -> Result<PairingApproval, OsppError>;
+
+    /// Open an authenticated persistent session, dispatching pushed `env_updated`
+    /// frames (already HPKE-decrypted in memory) to `on_update`.
+    fn connect(
+        &self,
+        on_update: Box<dyn Fn(SubscriptionEnv) + Send + Sync>,
+    ) -> Result<Box<dyn OsppSession>, OsppError>;
+}
+
+/// Live authenticated `ospp-v1` session.
+pub trait OsppSession: Send + Sync {
+    /// Subscribe or re-subscribe with the same id.
+    fn subscribe(&self, req: &SubscribeRequest) -> Result<SubscriptionEnv, OsppError>;
+
+    /// Request an out-of-band sealed dump and return its decoder.
+    fn dump(
+        &self,
+        subscription_id: &str,
+        resource: &str,
+    ) -> Result<Box<dyn Read + Send>, OsppError>;
+
+    /// Release one subscription and zeroize its ephemeral key.
+    fn unsubscribe(&self, subscription_id: &str) -> Result<(), OsppError>;
+
+    /// Close the WebSocket and join the session thread.
+    fn close(&self) -> Result<(), OsppError>;
+}
+
+/// Production synchronous `OsppClient`.
+pub struct WsOsppClient {
+    endpoint: OsppEndpoint,
+    signer: Arc<dyn DeviceKeySigner>,
+    entropy: Arc<dyn EntropySource>,
+    timeouts: OsppTimeouts,
+}
+
+impl WsOsppClient {
+    /// Bind the client to the injected endpoint, machine key, and entropy source.
+    pub fn new(
+        endpoint: OsppEndpoint,
+        signer: Arc<dyn DeviceKeySigner>,
+        entropy: Arc<dyn EntropySource>,
+        timeouts: OsppTimeouts,
+    ) -> Self {
+        Self {
+            endpoint,
+            signer,
+            entropy,
+            timeouts,
+        }
+    }
+
+    fn dial(&self) -> Result<WebSocket<MaybeTlsStream<TcpStream>>, OsppError> {
+        let mut request = self
+            .endpoint
+            .as_str()
+            .into_client_request()
+            .map_err(|error| OsppError::Transport(error.to_string()))?;
+        request.headers_mut().insert(
+            SEC_WEBSOCKET_PROTOCOL,
+            HeaderValue::from_static(OSPP_SUBPROTOCOL),
+        );
+        let (socket, _response) = client::connect(request)?;
+        set_socket_timeout(&socket, Some(self.timeouts.handshake))?;
+        Ok(socket)
+    }
+
+    fn random_nonce(&self) -> Result<[u8; 32], OsppError> {
+        let mut nonce = [0u8; 32];
+        self.entropy.fill_bytes(&mut nonce)?;
+        Ok(nonce)
+    }
+
+    fn response(
+        &self,
+        server_nonce: &[u8],
+        client_nonce: &[u8],
+        pair: bool,
+    ) -> Result<AuthResponse, OsppError> {
+        let transcript = if pair {
+            pairing_transcript(server_nonce, client_nonce)
+        } else {
+            auth_transcript(server_nonce, client_nonce)
+        };
+        let signature = self.signer.sign(&transcript)?;
+        Ok(AuthResponse {
+            public_key: self.signer.public_key_hex().to_owned(),
+            client_nonce: hex::encode(client_nonce),
+            signature: signature.to_hex(),
+        })
+    }
+
+    fn authenticate(
+        &self,
+        socket: &mut WebSocket<MaybeTlsStream<TcpStream>>,
+    ) -> Result<(), OsppError> {
+        send_frame(
+            socket,
+            &ClientFrame::Hello {
+                version: PROTOCOL_VERSION,
+                auth_methods: vec![AUTH_METHOD_P256.to_owned()],
             },
         )?;
-        match session.read_frame(capability)? {
-            ServerFrame::SecretsEnsure {
-                request_id: seen,
-                key: sent_key,
-                value,
-            } if seen == request_id => {
-                if sent_key != key || value.is_empty() {
-                    return Err(capability_error(
-                        capability,
-                        &scope,
-                        "server returned a different key or an empty stored value",
+        let ServerFrame::AuthChallenge { method, challenge } = read_frame(socket)? else {
+            return Err(OsppError::Protocol(
+                "expected auth_challenge after hello".to_owned(),
+            ));
+        };
+        if method != AUTH_METHOD_P256 {
+            return Err(OsppError::Protocol(format!(
+                "server selected unsupported auth method {method}"
+            )));
+        }
+        let server_nonce = parse_nonce(&challenge.nonce)?;
+        let client_nonce = self.random_nonce()?;
+        let response = self.response(&server_nonce, &client_nonce, false)?;
+        send_frame(socket, &ClientFrame::AuthResponse { response })?;
+        match read_frame(socket)? {
+            ServerFrame::AuthOk { encryption_methods } => {
+                if !encryption_methods
+                    .iter()
+                    .any(|method| method == ENCRYPTION_METHOD_HPKE_P256)
+                {
+                    return Err(OsppError::Protocol(
+                        "server supports no hpke-p256 encryption".to_owned(),
                     ));
                 }
-                Ok(value)
+                Ok(())
             }
-            other => Err(other.into_refusal(capability, &scope, request_id)),
+            ServerFrame::Error { id, code, message } => Err(OsppError::server(id, code, message)),
+            other => Err(unexpected("auth_ok", &other)),
         }
     }
+}
 
-    /// The single conversion from the wire `resources.describe` body to
-    /// `slipfork_dag::RemoteResourceOffer` (`ADR-0008` §3).
-    ///
-    /// `slipforkd` passes the result straight into
-    /// `slipfork_dag::ResourcePlan::resolve(spec, mode, dump_policy, offer.as_ref())`; no
-    /// `ResourceStrategy` or `DumpPolicy` decision is made here.
-    pub fn resource_offer(
-        &self,
-        project: &ProjectSlug,
-        mode: &str,
-    ) -> Result<Option<slipfork_dag::RemoteResourceOffer>, OsppError> {
-        let bundle = self.resources_describe(project, mode)?;
-        if bundle.is_empty() {
-            return Ok(None);
-        }
-        Ok(Some(bundle.into_offer(&scope_label(project, mode))?))
+impl OsppClient for WsOsppClient {
+    fn endpoint(&self) -> &OsppEndpoint {
+        &self.endpoint
     }
 
-    fn resources_describe(
+    fn pair(
         &self,
-        project: &ProjectSlug,
-        mode: &str,
-    ) -> Result<RemoteResourceBundle, OsppError> {
-        let capability = CAPABILITY_RESOURCES_DESCRIBE;
-        let scope = scope_label(project, mode);
-        validate_mode(mode).map_err(|message| capability_error(capability, &scope, message))?;
-        let request_id = self.request_id();
-        let mut session = self.lock();
-        session.send_json(
-            capability,
-            &CapabilityRequest::ResourcesDescribe {
-                request_id,
-                project: project.as_str(),
-                mode,
+        hostname: &str,
+        on_handle: &mut dyn FnMut(&LivePairingUrl) -> Result<(), OsppError>,
+    ) -> Result<PairingApproval, OsppError> {
+        let mut socket = self.dial()?;
+        send_frame(
+            &mut socket,
+            &ClientFrame::PairHello {
+                version: PROTOCOL_VERSION,
+                key_methods: vec![AUTH_METHOD_P256.to_owned()],
             },
         )?;
-        match session.read_frame(capability)? {
-            ServerFrame::ResourcesDescribe {
-                request_id: seen,
-                s3_buckets,
-                pg_databases,
-            } if seen == request_id => Ok(RemoteResourceBundle::new(s3_buckets, pg_databases)),
-            other => Err(other.into_refusal(capability, &scope, request_id)),
+        let ServerFrame::PairChallenge {
+            method,
+            altcha,
+            challenge,
+        } = read_frame(&mut socket)?
+        else {
+            return Err(OsppError::Protocol(
+                "expected pair_challenge after pair_hello".to_owned(),
+            ));
+        };
+        if method != AUTH_METHOD_P256 {
+            return Err(OsppError::Protocol(format!(
+                "server selected unsupported key method {method}"
+            )));
+        }
+        let altcha = solve_altcha(&altcha)?;
+        let server_nonce = parse_nonce(&challenge.nonce)?;
+        let client_nonce = self.random_nonce()?;
+        let response = self.response(&server_nonce, &client_nonce, true)?;
+        send_frame(
+            &mut socket,
+            &ClientFrame::PairBegin {
+                altcha,
+                hostname: hostname.to_owned(),
+                response,
+            },
+        )?;
+
+        let (url, handle) = match read_frame(&mut socket)? {
+            ServerFrame::PairHandle { url, handle } => (url, handle),
+            ServerFrame::Error { id, code, message } => {
+                return Err(OsppError::server(id, code, message));
+            }
+            other => return Err(unexpected("pair_handle", &other)),
+        };
+        let live = LivePairingUrl::with_handle(&url, &handle)?;
+        on_handle(&live)?;
+        drop(live);
+
+        set_socket_timeout(&socket, Some(self.timeouts.io))?;
+        match read_frame(&mut socket)? {
+            ServerFrame::PairApproved { account, machine } => Ok(PairingApproval {
+                public_key: self.signer.public_key_hex().to_owned(),
+                account,
+                machine,
+            }),
+            ServerFrame::Error { id, code, message } => Err(OsppError::server(id, code, message)),
+            other => Err(unexpected("pair_approved", &other)),
         }
     }
 
-    /// Next client-chosen request id; ids are per session, never global.
-    pub(crate) fn request_id(&self) -> u32 {
-        self.next_request.fetch_add(1, Ordering::Relaxed)
+    fn connect(
+        &self,
+        on_update: Box<dyn Fn(SubscriptionEnv) + Send + Sync>,
+    ) -> Result<Box<dyn OsppSession>, OsppError> {
+        let mut socket = self.dial()?;
+        self.authenticate(&mut socket)?;
+        set_socket_timeout(&socket, Some(self.timeouts.io))?;
+
+        let (commands, receiver) = mpsc::channel();
+        let closed = Arc::new(AtomicBool::new(false));
+        let thread_closed = Arc::clone(&closed);
+        let io = self.timeouts.io;
+        let handle = thread::Builder::new()
+            .name("ospp-session".to_owned())
+            .spawn(move || {
+                let mut session = SessionThread {
+                    socket,
+                    on_update,
+                    subscriptions: BTreeMap::new(),
+                    io,
+                };
+                let result = session.run(receiver);
+                thread_closed.store(true, Ordering::SeqCst);
+                result
+            })
+            .map_err(|error| OsppError::Transport(error.to_string()))?;
+
+        Ok(Box::new(WsOsppSession {
+            commands: Mutex::new(commands),
+            thread: Mutex::new(Some(handle)),
+            closed,
+            entropy: Arc::clone(&self.entropy),
+            io: self.timeouts.io,
+        }))
+    }
+}
+
+/// Live session handle: request/response over the session thread's channel.
+pub struct WsOsppSession {
+    commands: Mutex<mpsc::Sender<Command>>,
+    thread: Mutex<Option<JoinHandle<Result<(), OsppError>>>>,
+    closed: Arc<AtomicBool>,
+    entropy: Arc<dyn EntropySource>,
+    io: Duration,
+}
+
+enum Command {
+    Subscribe {
+        id: String,
+        frame: Box<ClientFrame>,
+        key: SubscriptionKey,
+        reply: SyncSender<Result<SubscriptionEnv, OsppError>>,
+    },
+    Dump {
+        id: String,
+        subscription_id: String,
+        resource: String,
+        reply: SyncSender<Result<Box<dyn Read + Send>, OsppError>>,
+    },
+    Unsubscribe {
+        id: String,
+        reply: SyncSender<Result<(), OsppError>>,
+    },
+    Close {
+        reply: SyncSender<Result<(), OsppError>>,
+    },
+}
+
+impl WsOsppSession {
+    fn request<T>(
+        &self,
+        build: impl FnOnce(SyncSender<Result<T, OsppError>>) -> Command,
+    ) -> Result<T, OsppError> {
+        let sender = self.commands.lock().map_err(|_| OsppError::Closed)?.clone();
+        let (reply, receiver) = mpsc::sync_channel(1);
+        sender.send(build(reply)).map_err(|_| OsppError::Closed)?;
+        match receiver.recv_timeout(self.io) {
+            Ok(result) => result,
+            Err(RecvTimeoutError::Timeout) => Err(OsppError::Timeout),
+            Err(RecvTimeoutError::Disconnected) => Err(OsppError::Closed),
+        }
     }
 
-    /// Borrow the authenticated connection; callers must not interleave frames manually.
-    pub(crate) fn session(&self) -> MutexGuard<'_, OsppConnection> {
-        self.lock()
-    }
-
-    fn lock(&self) -> MutexGuard<'_, OsppConnection> {
-        // Poisoning only means a capability caller panicked while holding the socket. The session
-        // is then unusable for anything but a clean close, which the next request surfaces as a
-        // typed error; recovering here keeps the other worlds' diagnostics flowing.
-        self.session.lock().unwrap_or_else(PoisonError::into_inner)
-    }
-}
-
-impl Drop for OsppClient {
-    fn drop(&mut self) {
-        // Best-effort clean close; a peer that already vanished is not an error worth surfacing.
-        let mut session = self.lock();
-        let _ = session.socket.close(None);
-        let _ = session.socket.flush();
-    }
-}
-
-/// `HELLO` body (`version` is deliberately the first field, `ADR-0008` §1).
-#[derive(Serialize)]
-struct ConnectHello<'a> {
-    #[serde(rename = "type")]
-    kind: &'static str,
-    version: u16,
-    key_id: &'a str,
-    nonce_c: &'a str,
-    sig: &'a str,
-}
-
-/// `pair_hello` body.
-#[derive(Serialize)]
-pub(crate) struct PairingHello<'a> {
-    #[serde(rename = "type")]
-    pub(crate) kind: &'static str,
-    pub(crate) version: u16,
-    pub(crate) key_id: &'a str,
-    pub(crate) nonce_c: &'a str,
-    pub(crate) handle: &'a str,
-    pub(crate) sig: &'a str,
-}
-
-impl PairingHello<'_> {
-    pub(crate) const KIND: &'static str = "pair_hello";
-}
-
-/// One inbound WebSocket message, after liveness frames are handled.
-pub(crate) enum Inbound {
-    Text(String),
-    Binary(Vec<u8>),
-    Closed,
-}
-
-/// The live WebSocket, kept private to this module; only the state machine above may speak.
-pub(crate) struct OsppConnection {
-    socket: WebSocket<MaybeTlsStream<TcpStream>>,
-    timeouts: OsppTimeouts,
-    /// The read budget actually armed on the socket for the current phase.
-    budget: Duration,
-    /// Set when a streamed dump was abandoned mid-frame; the session must be re-established.
-    poisoned: Option<&'static str>,
-}
-
-impl OsppConnection {
-    pub(crate) fn open(
-        endpoint: &OsppEndpoint,
-        subprotocol: &'static str,
-        timeouts: OsppTimeouts,
-    ) -> Result<Self, OsppError> {
-        let uri: Uri = endpoint
-            .uri()
-            .parse()
-            .map_err(|error| OsppError::Transport {
-                phase: "connect",
-                message: format!("invalid endpoint URI: {error}"),
-            })?;
-        let mut request: Request<()> = uri
-            .clone()
-            .into_client_request()
-            .map_err(|error| transport("connect", error))?;
-        request.headers_mut().insert(
-            "Sec-WebSocket-Protocol",
-            HeaderValue::from_static(subprotocol),
-        );
-
-        let stream = tcp_connect(&endpoint.host, endpoint.port, timeouts.connect)?;
-        stream
-            .set_nodelay(true)
-            .map_err(|error| transport("connect", error))?;
-        stream
-            .set_read_timeout(Some(timeouts.handshake))
-            .map_err(|error| transport("connect", error))?;
-        stream
-            .set_write_timeout(Some(timeouts.io))
-            .map_err(|error| transport("connect", error))?;
-
-        let config = WebSocketConfig::default()
-            .max_message_size(Some(MAX_DUMP_FRAME))
-            .max_frame_size(Some(MAX_DUMP_FRAME))
-            .write_buffer_size(MAX_DUMP_FRAME);
-
-        let connector = if endpoint.uses_tls() {
-            Connector::Rustls(Arc::new(tls_config()?))
-        } else {
-            Connector::Plain
+    fn finish(&self) -> Result<(), OsppError> {
+        let Some(handle) = self.thread.lock().map_err(|_| OsppError::Closed)?.take() else {
+            return Ok(());
         };
-        let (socket, response) =
-            client_tls_with_config(request, stream, Some(config), Some(connector)).map_err(
-                |error| match error {
-                    tungstenite::HandshakeError::Failure(error) => transport("connect", error),
-                    tungstenite::HandshakeError::Interrupted(_) => OsppError::Transport {
-                        phase: "connect",
-                        message: "TLS/WebSocket handshake would block".to_owned(),
-                    },
+        handle
+            .join()
+            .map_err(|_| OsppError::Transport("session thread panicked".to_owned()))?
+    }
+}
+
+impl OsppSession for WsOsppSession {
+    fn subscribe(&self, req: &SubscribeRequest) -> Result<SubscriptionEnv, OsppError> {
+        let key = SubscriptionKey::generate(&*self.entropy)?;
+        let frame = ClientFrame::Subscribe {
+            id: req.id.clone(),
+            remote: req.remote.clone(),
+            encryption: Encryption {
+                method: ENCRYPTION_METHOD_HPKE_P256.to_owned(),
+                public_key: key.public_key_hex().to_owned(),
+            },
+            snow: req.snow.clone(),
+            claims: req.claims.clone(),
+        };
+        let id = req.id.clone();
+        self.request(|reply| Command::Subscribe {
+            id,
+            frame: Box::new(frame),
+            key,
+            reply,
+        })
+    }
+
+    fn dump(
+        &self,
+        subscription_id: &str,
+        resource: &str,
+    ) -> Result<Box<dyn Read + Send>, OsppError> {
+        let id = format!("dump-{subscription_id}-{resource}");
+        let subscription_id = subscription_id.to_owned();
+        let resource = resource.to_owned();
+        self.request(|reply| Command::Dump {
+            id,
+            subscription_id,
+            resource,
+            reply,
+        })
+    }
+
+    fn unsubscribe(&self, subscription_id: &str) -> Result<(), OsppError> {
+        let id = subscription_id.to_owned();
+        self.request(|reply| Command::Unsubscribe { id, reply })
+    }
+
+    fn close(&self) -> Result<(), OsppError> {
+        let result = self.request(|reply| Command::Close { reply });
+        self.finish()?;
+        result
+    }
+}
+
+impl Drop for WsOsppSession {
+    fn drop(&mut self) {
+        if self.closed.load(Ordering::SeqCst) {
+            let _ = self.finish();
+            return;
+        }
+        if let Ok(sender) = self.commands.lock() {
+            let (reply, _receiver) = mpsc::sync_channel(1);
+            let _ = sender.send(Command::Close { reply });
+        }
+        let _ = self.finish();
+    }
+}
+
+/// The session thread owns the socket and every ephemeral subscription key.
+struct SessionThread {
+    socket: WebSocket<MaybeTlsStream<TcpStream>>,
+    on_update: Box<dyn Fn(SubscriptionEnv) + Send + Sync>,
+    subscriptions: BTreeMap<String, SubscriptionKey>,
+    io: Duration,
+}
+
+impl SessionThread {
+    fn run(&mut self, receiver: Receiver<Command>) -> Result<(), OsppError> {
+        loop {
+            match receiver.try_recv() {
+                Ok(Command::Close { reply }) => {
+                    let _ = self.socket.close(None);
+                    let _ = reply.send(Ok(()));
+                    return Ok(());
+                }
+                Ok(command) => self.handle(command),
+                Err(TryRecvError::Empty) => {}
+                Err(TryRecvError::Disconnected) => {
+                    let _ = self.socket.close(None);
+                    return Ok(());
+                }
+            }
+            match self.read_frame(POLL_SLICE) {
+                Ok(frame) => self.dispatch_push(frame)?,
+                Err(OsppError::Timeout) => {}
+                Err(error) => return Err(error),
+            }
+        }
+    }
+
+    fn handle(&mut self, command: Command) {
+        match command {
+            Command::Subscribe {
+                id,
+                frame,
+                key,
+                reply,
+            } => {
+                let result = self.subscribe(&id, *frame, key);
+                let _ = reply.send(result);
+            }
+            Command::Dump {
+                id,
+                subscription_id,
+                resource,
+                reply,
+            } => {
+                let result = self.dump(&id, &subscription_id, &resource);
+                let _ = reply.send(result);
+            }
+            Command::Unsubscribe { id, reply } => {
+                let result = self.unsubscribe(&id);
+                let _ = reply.send(result);
+            }
+            Command::Close { reply } => {
+                // Handled in `run`; reaching here means the loop shape changed.
+                let _ = reply.send(Ok(()));
+            }
+        }
+    }
+
+    fn subscribe(
+        &mut self,
+        id: &str,
+        frame: ClientFrame,
+        key: SubscriptionKey,
+    ) -> Result<SubscriptionEnv, OsppError> {
+        send_frame(&mut self.socket, &frame)?;
+        let frame = self.await_frame(id)?;
+        let ServerFrame::EnvResolved {
+            id: resolved_id,
+            components,
+        } = frame
+        else {
+            return Err(unexpected("env_resolved", &frame));
+        };
+        let environment = decrypt_env(&key, &resolved_id, components)?;
+        self.subscriptions.insert(id.to_owned(), key);
+        Ok(environment)
+    }
+
+    fn unsubscribe(&mut self, id: &str) -> Result<(), OsppError> {
+        send_frame(
+            &mut self.socket,
+            &ClientFrame::Unsubscribe { id: id.to_owned() },
+        )?;
+        self.subscriptions.remove(id);
+        Ok(())
+    }
+
+    fn dump(
+        &mut self,
+        id: &str,
+        subscription_id: &str,
+        resource: &str,
+    ) -> Result<Box<dyn Read + Send>, OsppError> {
+        let key = self.subscriptions.remove(subscription_id).ok_or_else(|| {
+            OsppError::Protocol(format!("dump for unknown subscription {subscription_id}"))
+        })?;
+        let result = (|| {
+            send_frame(
+                &mut self.socket,
+                &ClientFrame::DumpRequest {
+                    id: id.to_owned(),
+                    subscription_id: subscription_id.to_owned(),
+                    resource: resource.to_owned(),
                 },
             )?;
-        let selected = response
-            .headers()
-            .get("Sec-WebSocket-Protocol")
-            .and_then(|value| value.to_str().ok());
-        if selected != Some(subprotocol) {
-            return Err(OsppError::Protocol {
-                phase: "connect",
-                message: format!(
-                    "server did not select the `{subprotocol}` subprotocol (got {selected:?})"
-                ),
-            });
-        }
-        Ok(Self {
-            socket,
-            timeouts,
-            budget: timeouts.handshake,
-            poisoned: None,
-        })
+            let frame = self.await_frame(id)?;
+            let ServerFrame::DumpReady { url, .. } = frame else {
+                return Err(unexpected("dump_ready", &frame));
+            };
+            let source = http_get(&url, self.io)?;
+            let dump = DumpReader::open(source, &key, subscription_id, resource)?;
+            Ok(Box::new(dump) as Box<dyn Read + Send>)
+        })();
+        self.subscriptions.insert(subscription_id.to_owned(), key);
+        result
     }
 
-    /// Read the first frame and require it to be `CHALLENGE`.
-    pub(crate) fn expect_challenge(
-        &mut self,
-        phase: &'static str,
-    ) -> Result<[u8; NONCE_BYTES], OsppError> {
-        match self.read_frame(phase)? {
-            ServerFrame::Challenge { nonce_s } => parse_nonce(&nonce_s),
-            other => Err(OsppError::Protocol {
-                phase,
-                message: format!("expected a server CHALLENGE, got `{}`", other.kind()),
-            }),
-        }
-    }
-
-    pub(crate) fn send_json<T: Serialize>(
-        &mut self,
-        phase: &'static str,
-        value: &T,
-    ) -> Result<(), OsppError> {
-        self.ensure_live(phase)?;
-        let text = serde_json::to_string(value).map_err(|error| OsppError::Protocol {
-            phase,
-            message: format!("could not encode {phase}: {error}"),
-        })?;
-        if text.len() > MAX_CONTROL_FRAME {
-            return Err(OsppError::FrameTooLarge {
-                limit: MAX_CONTROL_FRAME,
-            });
-        }
-        self.socket
-            .send(Message::Text(text.into()))
-            .map_err(|error| transport(phase, error))
-    }
-
-    /// Read one typed server frame, rejecting binary frames on the control channel.
-    pub(crate) fn read_frame(&mut self, phase: &'static str) -> Result<ServerFrame, OsppError> {
-        match self.read_inbound(phase)? {
-            Inbound::Text(text) => {
-                serde_json::from_str(&text).map_err(|error| OsppError::Protocol {
-                    phase,
-                    message: format!("malformed server frame: {error}"),
-                })
+    /// Read frames until the response correlated to `id` arrives.
+    fn await_frame(&mut self, id: &str) -> Result<ServerFrame, OsppError> {
+        let deadline = Instant::now() + self.io;
+        loop {
+            let now = Instant::now();
+            if now >= deadline {
+                return Err(OsppError::Timeout);
             }
-            Inbound::Binary(_) => Err(OsppError::Protocol {
-                phase,
-                message: "binary frame outside dump.begin..dump.end".to_owned(),
-            }),
-            Inbound::Closed => Err(OsppError::Transport {
-                phase,
-                message: "server closed the connection".to_owned(),
-            }),
+            match self.read_frame(POLL_SLICE) {
+                Ok(frame) => {
+                    let correlated = match &frame {
+                        ServerFrame::Error { id: error_id, .. } => {
+                            error_id.as_deref().is_none_or(|value| value == id)
+                        }
+                        ServerFrame::EnvResolved { id: frame_id, .. }
+                        | ServerFrame::DumpReady { id: frame_id, .. } => frame_id == id,
+                        _ => false,
+                    };
+                    if correlated {
+                        return Ok(frame);
+                    }
+                    if matches!(frame, ServerFrame::EnvUpdated { .. }) {
+                        self.dispatch_push(frame)?;
+                    } else {
+                        return Err(unexpected("a correlated response", &frame));
+                    }
+                }
+                Err(OsppError::Timeout) => {}
+                Err(error) => return Err(error),
+            }
         }
     }
 
-    /// Read one inbound message, enforcing both frame caps and liveness handling.
-    pub(crate) fn read_inbound(&mut self, phase: &'static str) -> Result<Inbound, OsppError> {
-        self.ensure_live(phase)?;
+    fn dispatch_push(&mut self, frame: ServerFrame) -> Result<(), OsppError> {
+        match frame {
+            ServerFrame::EnvUpdated { id, components } => {
+                let key = self.subscriptions.get(&id).ok_or_else(|| {
+                    OsppError::Protocol(format!("env_updated for unknown subscription {id}"))
+                })?;
+                let environment = decrypt_env(key, &id, components)?;
+                (self.on_update)(environment);
+                Ok(())
+            }
+            ServerFrame::Error { id, code, message } => Err(OsppError::server(id, code, message)),
+            other => Err(unexpected("env_updated", &other)),
+        }
+    }
+
+    fn read_frame(&mut self, timeout: Duration) -> Result<ServerFrame, OsppError> {
+        set_socket_timeout(&self.socket, Some(timeout))?;
         loop {
             match self.socket.read() {
-                Ok(Message::Text(text)) => {
-                    if text.len() > MAX_CONTROL_FRAME {
-                        return Err(OsppError::Protocol {
-                            phase,
-                            message: format!(
-                                "text frame of {} bytes exceeded the 16 KiB ({MAX_CONTROL_FRAME}-byte) cap",
-                                text.len()
-                            ),
-                        });
-                    }
-                    return Ok(Inbound::Text(text.to_string()));
+                Ok(Message::Text(text)) => return ServerFrame::parse(text.as_str()),
+                Ok(Message::Binary(_)) => {
+                    return Err(OsppError::Protocol(
+                        "binary WebSocket frames are not part of ospp-v1".to_owned(),
+                    ));
                 }
-                Ok(Message::Binary(bytes)) => {
-                    if bytes.len() > MAX_DUMP_FRAME {
-                        return Err(OsppError::Protocol {
-                            phase,
-                            message: format!(
-                                "binary frame of {} bytes exceeded the 64 KiB ({MAX_DUMP_FRAME}-byte) cap",
-                                bytes.len()
-                            ),
-                        });
-                    }
-                    return Ok(Inbound::Binary(bytes.to_vec()));
-                }
-                Ok(Message::Ping(_)) => {
-                    // tungstenite queues the pong; flush it so the peer sees liveness.
-                    self.socket
-                        .flush()
-                        .map_err(|error| transport(phase, error))?;
+                Ok(Message::Ping(payload)) => {
+                    self.socket.send(Message::Pong(payload))?;
                 }
                 Ok(Message::Pong(_)) | Ok(Message::Frame(_)) => {}
-                Ok(Message::Close(_)) => return Ok(Inbound::Closed),
-                Err(tungstenite::Error::Io(error)) if is_timeout(&error) => {
-                    return Err(OsppError::Deadline {
-                        phase,
-                        millis: self.budget.as_millis() as u64,
-                    });
-                }
-                Err(tungstenite::Error::Capacity(error)) => {
-                    return Err(OsppError::Protocol {
-                        phase,
-                        message: format!(
-                            "wire frame exceeded the {MAX_DUMP_FRAME}-byte cap: {error}"
-                        ),
-                    });
-                }
-                Err(error) => return Err(transport(phase, error)),
+                Ok(Message::Close(_)) => return Err(OsppError::Closed),
+                Err(error) => return Err(error.into()),
             }
         }
     }
+}
 
-    pub(crate) fn set_io_timeout(&mut self) {
-        self.budget = self.timeouts.io;
-        let _ = set_stream_read_timeout(&self.socket, Some(self.timeouts.io));
-    }
-
-    /// Mark the session unusable; a streamed dump stopped between `dump.begin` and `dump.end`, so
-    /// the frame stream can no longer be trusted and `slipforkd` must reconnect.
-    pub(crate) fn poison(&mut self, why: &'static str) {
-        self.poisoned = Some(why);
-    }
-
-    fn ensure_live(&self, phase: &'static str) -> Result<(), OsppError> {
-        match self.poisoned {
-            None => Ok(()),
-            Some(why) => Err(OsppError::Transport {
-                phase,
-                message: format!("{why}; reconnect the ospp-v1 session"),
-            }),
+fn decrypt_env(
+    key: &SubscriptionKey,
+    id: &str,
+    components: BTreeMap<String, BTreeMap<String, WireValue>>,
+) -> Result<SubscriptionEnv, OsppError> {
+    let mut resolved = BTreeMap::new();
+    for (component, variables) in components {
+        let mut values = BTreeMap::new();
+        for (name, value) in variables {
+            let value = match value {
+                WireValue::Plain(text) => SecretValue::plain(text),
+                WireValue::Encrypted(ciphertext) => {
+                    SecretValue::secret(key.open_secret(&component, &name, &ciphertext)?)
+                }
+            };
+            values.insert(name, value);
         }
+        resolved.insert(component, values);
     }
+    Ok(SubscriptionEnv::new(id, resolved))
 }
 
-/// `"<project>:<mode>"`, the world scope every capability diagnostic names.
-pub(crate) fn scope_label(project: &ProjectSlug, mode: &str) -> String {
-    format!("{project}:{mode}")
-}
-
-/// Validate the caller-owned part of a capability request before it reaches the wire.
-pub(crate) fn validate_scope(
-    project: &ProjectSlug,
-    mode: &str,
-    key: &str,
+fn send_frame(
+    socket: &mut WebSocket<MaybeTlsStream<TcpStream>>,
+    frame: &ClientFrame,
 ) -> Result<(), OsppError> {
-    validate_mode(mode)
-        .and_then(|()| validate_key("key", key))
-        .map_err(|message| OsppError::Capability {
-            capability: CAPABILITY_SECRETS_ENSURE,
-            scope: format!("{project}:{mode}"),
-            message,
-        })
+    socket.send(Message::Text(frame.to_json()?.into()))?;
+    Ok(())
 }
 
-fn tcp_connect(host: &str, port: u16, timeout: Duration) -> Result<TcpStream, OsppError> {
-    let addresses = (host, port)
-        .to_socket_addrs()
-        .map_err(|error| OsppError::Transport {
-            phase: "connect",
-            message: format!("could not resolve {host}:{port}: {error}"),
-        })?;
-    let mut last = None;
-    for address in addresses {
-        match TcpStream::connect_timeout(&address, timeout) {
-            Ok(stream) => return Ok(stream),
-            Err(error) => last = Some(error),
+fn read_frame(socket: &mut WebSocket<MaybeTlsStream<TcpStream>>) -> Result<ServerFrame, OsppError> {
+    loop {
+        match socket.read()? {
+            Message::Text(text) => return ServerFrame::parse(text.as_str()),
+            Message::Binary(_) => {
+                return Err(OsppError::Protocol(
+                    "binary WebSocket frames are not part of ospp-v1".to_owned(),
+                ));
+            }
+            Message::Ping(payload) => socket.send(Message::Pong(payload))?,
+            Message::Pong(_) | Message::Frame(_) => {}
+            Message::Close(_) => return Err(OsppError::Closed),
         }
     }
-    Err(OsppError::Transport {
-        phase: "connect",
-        message: match last {
-            Some(error) => format!("could not connect to {host}:{port}: {error}"),
-            None => format!("{host}:{port} resolved to no addresses"),
-        },
-    })
 }
 
-fn tls_config() -> Result<rustls::ClientConfig, OsppError> {
-    let mut roots = rustls::RootCertStore::empty();
-    roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-    Ok(rustls::ClientConfig::builder()
-        .with_root_certificates(roots)
-        .with_no_client_auth())
-}
-
-fn set_stream_read_timeout(
+fn set_socket_timeout(
     socket: &WebSocket<MaybeTlsStream<TcpStream>>,
     timeout: Option<Duration>,
-) -> io::Result<()> {
-    let stream = socket.get_ref();
-    match stream {
-        MaybeTlsStream::Plain(stream) => stream.set_read_timeout(timeout),
-        MaybeTlsStream::Rustls(stream) => stream.sock.set_read_timeout(timeout),
-        _ => Ok(()),
+) -> Result<(), OsppError> {
+    match socket.get_ref() {
+        MaybeTlsStream::Plain(stream) => {
+            stream.set_read_timeout(timeout)?;
+            stream.set_write_timeout(timeout)?;
+        }
+        MaybeTlsStream::Rustls(stream) => {
+            stream.sock.set_read_timeout(timeout)?;
+            stream.sock.set_write_timeout(timeout)?;
+        }
+        _ => {}
     }
+    Ok(())
 }
 
-fn transport(phase: &'static str, error: impl std::fmt::Display) -> OsppError {
-    OsppError::Transport {
-        phase,
-        message: error.to_string(),
+fn parse_nonce(value: &str) -> Result<[u8; 32], OsppError> {
+    let bytes = hex::decode(value)
+        .map_err(|_| OsppError::Protocol("challenge nonce is not hex".to_owned()))?;
+    bytes
+        .try_into()
+        .map_err(|_| OsppError::Protocol("challenge nonce must be 32 bytes".to_owned()))
+}
+
+fn unexpected(expected: &str, actual: &ServerFrame) -> OsppError {
+    let kind = match actual {
+        ServerFrame::AuthChallenge { .. } => "auth_challenge",
+        ServerFrame::AuthOk { .. } => "auth_ok",
+        ServerFrame::PairChallenge { .. } => "pair_challenge",
+        ServerFrame::PairHandle { .. } => "pair_handle",
+        ServerFrame::PairApproved { .. } => "pair_approved",
+        ServerFrame::EnvResolved { .. } => "env_resolved",
+        ServerFrame::EnvUpdated { .. } => "env_updated",
+        ServerFrame::DumpReady { .. } => "dump_ready",
+        ServerFrame::Error { .. } => "error",
+    };
+    OsppError::Protocol(format!("expected {expected}, got {kind}"))
+}
+
+/// Open an out-of-band dump body: `https://` anywhere, `http://` on loopback only.
+fn http_get(url: &str, io: Duration) -> Result<Box<dyn Read + Send>, OsppError> {
+    let (secure, host, port, path) = parse_http_url(url)?;
+    let address = (host.as_str(), port)
+        .to_socket_addrs()
+        .map_err(|error| OsppError::Transport(error.to_string()))?
+        .next()
+        .ok_or_else(|| OsppError::Transport(format!("dump host {host} did not resolve")))?;
+    let mut stream = TcpStream::connect_timeout(&address, io)?;
+    stream.set_read_timeout(Some(io))?;
+    stream.set_write_timeout(Some(io))?;
+
+    let request = format!(
+        "GET {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\naccept-encoding: identity\r\n\r\n"
+    );
+    let reader: Box<dyn Read + Send> = if secure {
+        let mut tls = tls_stream(&host, stream)?;
+        tls.write_all(request.as_bytes())?;
+        tls.flush()?;
+        Box::new(tls)
+    } else {
+        stream.write_all(request.as_bytes())?;
+        stream.flush()?;
+        Box::new(stream)
+    };
+    http_body(reader)
+}
+
+fn http_body(reader: Box<dyn Read + Send>) -> Result<Box<dyn Read + Send>, OsppError> {
+    let mut reader = BufReader::new(reader);
+    let mut header_bytes = 0usize;
+    let mut status = String::new();
+    reader
+        .read_line(&mut status)
+        .map_err(|error| OsppError::Transport(error.to_string()))?;
+    header_bytes += status.len();
+    let mut content_length: Option<usize> = None;
+    loop {
+        let mut line = String::new();
+        let read = reader
+            .read_line(&mut line)
+            .map_err(|error| OsppError::Transport(error.to_string()))?;
+        if read == 0 {
+            return Err(OsppError::TruncatedDump);
+        }
+        header_bytes += read;
+        if header_bytes > MAX_HTTP_HEADERS {
+            return Err(OsppError::Transport(
+                "dump headers are too large".to_owned(),
+            ));
+        }
+        if line == "\r\n" || line == "\n" {
+            break;
+        }
+        if let Some((name, value)) = line.split_once(':')
+            && name.eq_ignore_ascii_case("content-length")
+        {
+            content_length =
+                Some(value.trim().parse().map_err(|_| {
+                    OsppError::Transport("dump content-length is invalid".to_owned())
+                })?);
+        }
     }
+    if !status.contains(" 200 ") {
+        return Err(OsppError::Transport(format!(
+            "dump endpoint returned {}",
+            status.trim()
+        )));
+    }
+    let length = content_length
+        .ok_or_else(|| OsppError::Transport("dump response has no content-length".to_owned()))?;
+    Ok(Box::new(reader.take(length as u64)))
 }
 
-fn is_timeout(error: &io::Error) -> bool {
-    matches!(
-        error.kind(),
-        io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
-    )
+fn parse_http_url(url: &str) -> Result<(bool, String, u16, String), OsppError> {
+    let (scheme, rest) = url
+        .split_once("://")
+        .ok_or_else(|| OsppError::Transport(format!("dump URL {url:?} has no scheme")))?;
+    let secure = match scheme {
+        "https" => true,
+        "http" => false,
+        _ => {
+            return Err(OsppError::Transport(format!(
+                "dump URL scheme {scheme} is unsupported"
+            )));
+        }
+    };
+    let (authority, path) = match rest.find('/') {
+        Some(index) => (&rest[..index], &rest[index..]),
+        None => (rest, "/"),
+    };
+    let (host, port) = match authority.rsplit_once(':') {
+        Some((host, port)) if !host.contains(':') => (
+            host.to_owned(),
+            port.parse()
+                .map_err(|_| OsppError::Transport("dump URL port is invalid".to_owned()))?,
+        ),
+        _ => (authority.to_owned(), if secure { 443 } else { 80 }),
+    };
+    if !secure && !matches!(host.as_str(), "localhost" | "127.0.0.1" | "::1") {
+        return Err(OsppError::Transport(
+            "plaintext dump URLs are only allowed on a loopback host".to_owned(),
+        ));
+    }
+    Ok((secure, host, port, path.to_owned()))
 }
 
-fn is_loopback_host(host: &str) -> bool {
-    matches!(host, "127.0.0.1" | "::1" | "localhost")
+fn tls_stream(
+    host: &str,
+    stream: TcpStream,
+) -> Result<rustls::StreamOwned<rustls::ClientConnection, TcpStream>, OsppError> {
+    let mut roots = rustls::RootCertStore::empty();
+    roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+    let config = rustls::ClientConfig::builder()
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+    let server_name = rustls::pki_types::ServerName::try_from(host.to_owned())
+        .map_err(|_| OsppError::Transport(format!("dump host {host} is not a TLS name")))?;
+    let connection = rustls::ClientConnection::new(Arc::new(config), server_name)
+        .map_err(|error| OsppError::Transport(error.to_string()))?;
+    Ok(rustls::StreamOwned::new(connection, stream))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::device_key::DeviceSignature;
+
+    #[test]
+    fn plaintext_dump_urls_are_loopback_only() {
+        assert!(parse_http_url("http://127.0.0.1:1234/dumps/x").is_ok());
+        assert!(parse_http_url("http://ci.example.com/dumps/x").is_err());
+        assert!(parse_http_url("https://ci.example.com/dumps/x").is_ok());
+    }
+
+    #[test]
+    fn device_signature_hex_is_fixed_width() {
+        let signature = DeviceSignature::from_raw([0x11; 64]);
+        assert_eq!(signature.to_hex().len(), 128);
+    }
 }

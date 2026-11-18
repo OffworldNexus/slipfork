@@ -47,3 +47,7 @@ committed together with M3.28.21 (see that log): the two nodes' edits interleave
 ## 2026-11-18T01:26 [lead]
 
 status review -> done
+
+## 2026-11-18T01:29 [lead]
+
+reviewer PASS on acceptance (status-listed, help-intact, lib status 6, critical_cli 21, clippy). Two text fixes applied: the /proc|/sys acceptance grep is now scoped to this node's four files because M3.28.21's adapter legitimately reads /proc/<pid>/exe; and the 'name a missing verb' note is closed by attempt 2's command-table filter (the reviewer saw the pre-fix tree). Recorded for later nodes: services[].id should serialize as 'image' per dx 8.2; cli.md needs the 'slipfork'/'status' row (M3.28.14); --json failure output lacks code/next (M3.28.2 scope).

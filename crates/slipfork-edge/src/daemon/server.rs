@@ -280,10 +280,10 @@ fn dispatch(
         DaemonRequest::Forward(request) => control.forward(&request, &mut |summary| {
             wait_for_disconnect(writer, reader, summary);
         }),
-        DaemonRequest::AuthLogin { pairing_url } => write_reply(
+        DaemonRequest::AuthLogin { endpoint_url } => write_reply(
             writer,
             &DaemonReply::Auth {
-                auth: control.auth_login(pairing_url.expose())?,
+                auth: control.auth_login(endpoint_url.as_deref())?,
             },
         ),
         DaemonRequest::Shutdown => {

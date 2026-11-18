@@ -4,11 +4,15 @@
 //! `slipfork.toml` declares deliberate overrides only. The mode default comes from
 //! [`ResourcesSpec::defaults_for`]: `local` worlds (`Canonical` / `UserFork`) prefer OSPP dev
 //! resources, while `TestSlot` worlds are hermetically local by construction. [`ResourcePlan`]
-//! owns every S3-bucket and PostgreSQL-seed decision consumed by `slipforkd`, the `OsppClient`
-//! offer mapper, and M3's `TestCoordinator`; there is no second precedence ladder.
+//! owns every S3-bucket and PostgreSQL-seed decision consumed by `slipforkd` and M3's
+//! `TestCoordinator`; there is no second precedence ladder.
+//!
+//! OSPP v1 no longer carries a client-visible "resource offer": remote coordinates arrive as
+//! ordinary component environment values (`env_resolved` / `env_updated`) and remote PostgreSQL
+//! dumps are requested explicitly through `OsppSession::dump`. The only OSPP fact the plan needs
+//! is therefore whether an authenticated session exists.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::fmt;
 
 use serde::{Deserialize, Serialize};
 use slipfork_world::WorldTarget;
@@ -43,9 +47,9 @@ impl From<&WorldTarget> for ResourceMode {
 pub enum ResourceStrategy {
     /// World-local coordinates (`127.0.0.1:9000` inside the world `netns`) / clean `initdb`.
     Local,
-    /// Use the OSPP offer when present, otherwise fall back to local with a diagnostic.
+    /// Use the OSPP session when paired, otherwise fall back to local with a diagnostic.
     PreferRemote,
-    /// Require the OSPP offer; fail closed when it is absent.
+    /// Require an authenticated OSPP session; fail closed when it is absent.
     Remote,
 }
 
@@ -64,7 +68,7 @@ pub enum DumpPolicy {
     Default,
     /// `--no-dump`: skip seed dumps and use a clean `initdb` with a diagnostic.
     NoDump,
-    /// `--refresh-dump`: require live OSPP dump metadata; fail closed when local or offline.
+    /// `--refresh-dump`: require a live OSPP session; fail closed when local or unpaired.
     RefreshDump,
 }
 
@@ -122,9 +126,9 @@ impl ResourcesSpec {
 
     /// Extend this override table with every id declared by the manifest.
     ///
-    /// `ResourcePlan::resolve` reports one decision per id in the spec or in the OSPP offer, so
-    /// `slipforkd` first covers the ids declared by `snow.yml`; an id without an explicit override
-    /// keeps [`ResourcesSpec::defaults_for`] precedence and reports `ResourceReason::ModeDefault`.
+    /// `ResourcePlan::resolve` reports one decision per declared id, so `slipforkd` first covers
+    /// the ids declared by `snow.yml`; an id without an explicit override keeps
+    /// [`ResourcesSpec::defaults_for`] precedence and reports `ResourceReason::ModeDefault`.
     pub fn with_declared_ids(&self, s3_ids: &[&str], pg_ids: &[&str]) -> Self {
         let mut spec = self.clone();
         for id in s3_ids {
@@ -250,165 +254,13 @@ struct RawResourceOverride {
     test: Option<ResourceStrategy>,
 }
 
-/// Redacted S3 coordinates offered by OSPP (`ADR-0008` §2–§3).
-///
-/// `Debug` never prints credentials; the consuming `slipforkd` builds `S3Coordinates` from the
-/// accessors without ever crossing a second resolution layer.
-#[derive(Clone, PartialEq, Eq)]
-pub struct RemoteS3Bucket {
-    endpoint_url: String,
-    region: String,
-    bucket: String,
-    access_key: String,
-    secret_key: String,
-}
-
-impl RemoteS3Bucket {
-    /// Construct an offer from typed OSPP `s3_buckets.<id>` fields.
-    pub fn new(
-        endpoint_url: impl Into<String>,
-        region: impl Into<String>,
-        bucket: impl Into<String>,
-        access_key: impl Into<String>,
-        secret_key: impl Into<String>,
-    ) -> Self {
-        Self {
-            endpoint_url: endpoint_url.into(),
-            region: region.into(),
-            bucket: bucket.into(),
-            access_key: access_key.into(),
-            secret_key: secret_key.into(),
-        }
-    }
-
-    /// S3-compatible endpoint URL.
-    pub fn endpoint_url(&self) -> &str {
-        &self.endpoint_url
-    }
-
-    /// S3 region.
-    pub fn region(&self) -> &str {
-        &self.region
-    }
-
-    /// Bucket name.
-    pub fn bucket(&self) -> &str {
-        &self.bucket
-    }
-
-    /// Access key id.
-    pub fn access_key(&self) -> &str {
-        &self.access_key
-    }
-
-    /// Secret access key.
-    pub fn secret_key(&self) -> &str {
-        &self.secret_key
-    }
-}
-
-impl fmt::Debug for RemoteS3Bucket {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("RemoteS3Bucket")
-            .field("endpoint_url", &self.endpoint_url)
-            .field("region", &self.region)
-            .field("bucket", &self.bucket)
-            .field("access_key", &"[REDACTED]")
-            .field("secret_key", &"[REDACTED]")
-            .finish()
-    }
-}
-
-/// Digest-pinned remote PostgreSQL seed dump offered by OSPP (`ADR-0008` §2–§3).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RemotePgDump {
-    sha256_compressed: String,
-    compressed_bytes: u64,
-}
-
-impl RemotePgDump {
-    /// Construct an offer from typed `PgDumpMetadata` fields.
-    pub fn new(sha256_compressed: impl Into<String>, compressed_bytes: u64) -> Self {
-        Self {
-            sha256_compressed: sha256_compressed.into(),
-            compressed_bytes,
-        }
-    }
-
-    /// SHA-256 of the `zstd`-compressed `pg_dump --format=custom` archive.
-    pub fn sha256_compressed(&self) -> &str {
-        &self.sha256_compressed
-    }
-
-    /// Compressed archive size in bytes.
-    pub fn compressed_bytes(&self) -> u64 {
-        self.compressed_bytes
-    }
-}
-
-/// One redacted `ResourcesDescribe` offer produced by the single
-/// `OsppClient::resource_offer` mapper (`ADR-0008` §3).
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub struct RemoteResourceOffer {
-    s3_buckets: BTreeMap<String, RemoteS3Bucket>,
-    pg_databases: BTreeMap<String, RemotePgDump>,
-}
-
-impl RemoteResourceOffer {
-    /// Build an offer from its complete coordinate maps.
-    pub fn new(
-        s3_buckets: BTreeMap<String, RemoteS3Bucket>,
-        pg_databases: BTreeMap<String, RemotePgDump>,
-    ) -> Self {
-        Self {
-            s3_buckets,
-            pg_databases,
-        }
-    }
-
-    /// Add one offered S3 bucket.
-    pub fn with_s3_bucket(mut self, id: impl Into<String>, bucket: RemoteS3Bucket) -> Self {
-        self.s3_buckets.insert(id.into(), bucket);
-        self
-    }
-
-    /// Add one offered PostgreSQL seed dump.
-    pub fn with_pg_dump(mut self, id: impl Into<String>, dump: RemotePgDump) -> Self {
-        self.pg_databases.insert(id.into(), dump);
-        self
-    }
-
-    /// Offered coordinates for `id`, if OSPP described that bucket.
-    pub fn s3_bucket(&self, id: &str) -> Option<&RemoteS3Bucket> {
-        self.s3_buckets.get(id)
-    }
-
-    /// Offered seed dump for `id`, if OSPP described that database.
-    pub fn pg_dump(&self, id: &str) -> Option<&RemotePgDump> {
-        self.pg_databases.get(id)
-    }
-
-    /// `true` when OSPP offered no resources at all.
-    pub fn is_empty(&self) -> bool {
-        self.s3_buckets.is_empty() && self.pg_databases.is_empty()
-    }
-
-    fn s3_ids(&self) -> impl Iterator<Item = &str> {
-        self.s3_buckets.keys().map(String::as_str)
-    }
-
-    fn pg_ids(&self) -> impl Iterator<Item = &str> {
-        self.pg_databases.keys().map(String::as_str)
-    }
-}
-
 /// Where a planned resource resolves to (`ADR-0008` §3).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ResourceTarget {
     /// World-local coordinates / clean `initdb`.
     Local,
-    /// OSPP-offered shared dev coordinates / seed dump.
+    /// The OSPP session owns the coordinates or supplies the seed dump.
     Remote,
 }
 
@@ -420,8 +272,8 @@ pub enum ResourceReason {
     Configured,
     /// Selected by [`ResourcesSpec::defaults_for`] because the resource has no override.
     ModeDefault,
-    /// `prefer_remote` had no OSPP offer, so it fell back to local with this diagnostic.
-    NotOffered,
+    /// `prefer_remote` had no authenticated OSPP session, so it used local with this diagnostic.
+    NoRemoteSession,
     /// `--no-dump` skipped the seed dump and uses a clean `initdb`.
     NoDump,
     /// `--refresh-dump` forced a live remote seed dump.
@@ -439,21 +291,17 @@ pub enum ResourceKind {
 }
 
 /// Resolution of one S3 bucket.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum S3Resolution {
-    /// Use world-local `127.0.0.1:9000` coordinates inside the world `netns`.
+    /// The world-local `127.0.0.1:9000` SeaweedFS container (the only client-side S3 endpoint;
+    /// remote credentials, when used, arrive as ordinary OSPP environment values).
     Local,
-    /// Use OSPP-offered shared dev bucket coordinates.
-    Remote(RemoteS3Bucket),
 }
 
 impl S3Resolution {
     /// Local vs remote target for diagnostics.
-    pub fn target(&self) -> ResourceTarget {
-        match self {
-            Self::Local => ResourceTarget::Local,
-            Self::Remote(_) => ResourceTarget::Remote,
-        }
+    pub const fn target(self) -> ResourceTarget {
+        ResourceTarget::Local
     }
 }
 
@@ -462,11 +310,9 @@ impl S3Resolution {
 pub enum PgSeed {
     /// Clean `initdb`, then migrations and `[fixtures.*]` (never touches shared dev state).
     CleanInitdb,
-    /// Restore from an OSPP-offered `zstd` custom dump.
+    /// Seed from a live OSPP `dump_request` streamed straight into `pg_restore`.
     RemoteDump {
-        /// Digest-pinned dump metadata.
-        dump: RemotePgDump,
-        /// `--refresh-dump` bypasses any cached copy and requires a live metadata check.
+        /// `--refresh-dump` bypasses any cached copy and requires a live dump request.
         refresh: bool,
     },
 }
@@ -529,41 +375,41 @@ pub struct ResourcePlan {
 impl ResourcePlan {
     /// Sole decision point for `[resources]` resolution (`ADR-0008` §3).
     ///
-    /// `mode` is derived from [`WorldTarget`]; `offer` is the single
-    /// `OsppClient::resource_offer` mapper's output. The plan covers every id declared in the
-    /// spec and every id present in the offer, sorted by id for deterministic diagnostics.
+    /// `mode` is derived from [`WorldTarget`]; `ospp_paired` reports whether an authenticated
+    /// `ospp-v1` session exists right now. The plan covers every id declared in the spec, sorted
+    /// by id for deterministic diagnostics.
     pub fn resolve(
         spec: &ResourcesSpec,
         mode: ResourceMode,
         dump_policy: DumpPolicy,
-        offer: Option<&RemoteResourceOffer>,
+        ospp_paired: bool,
     ) -> Result<Self, DagError> {
-        let mut s3_ids: BTreeSet<&str> = spec.s3_buckets.keys().map(String::as_str).collect();
-        let mut pg_ids: BTreeSet<&str> = spec.pg_databases.keys().map(String::as_str).collect();
-        if let Some(offer) = offer {
-            s3_ids.extend(offer.s3_ids());
-            pg_ids.extend(offer.pg_ids());
-        }
+        let s3_ids: BTreeSet<&str> = spec.s3_buckets.keys().map(String::as_str).collect();
+        let pg_ids: BTreeSet<&str> = spec.pg_databases.keys().map(String::as_str).collect();
 
         let mut s3_buckets = Vec::with_capacity(s3_ids.len());
         for id in s3_ids {
             let (strategy, reason) = effective_strategy(&spec.s3_buckets, id, mode);
-            let (resolution, reason) = match strategy {
-                ResourceStrategy::Local => (S3Resolution::Local, reason),
-                ResourceStrategy::Remote => (
-                    S3Resolution::Remote(required_s3_bucket(offer, id, mode)?),
-                    reason,
-                ),
-                ResourceStrategy::PreferRemote => match offered_s3_bucket(offer, id) {
-                    Some(bucket) => (S3Resolution::Remote(bucket), reason),
-                    None => (S3Resolution::Local, ResourceReason::NotOffered),
-                },
+            if strategy == ResourceStrategy::Remote && !ospp_paired {
+                // An explicitly remote bucket needs the OSPP session. (A `prefer_remote` bucket
+                // falls back to the world-local SeaweedFS with a diagnostic, exactly like a
+                // PostgreSQL seed; remote credentials would arrive as component env values.)
+                return Err(DagError::RemoteResourceUnavailable {
+                    kind: "s3_bucket",
+                    id: id.to_owned(),
+                    mode,
+                });
+            }
+            let reason = if strategy == ResourceStrategy::PreferRemote && !ospp_paired {
+                ResourceReason::NoRemoteSession
+            } else {
+                reason
             };
             s3_buckets.push(PlannedS3Bucket {
                 id: id.to_owned(),
                 strategy,
                 reason,
-                resolution,
+                resolution: S3Resolution::Local,
             });
         }
 
@@ -583,41 +429,50 @@ impl ResourcePlan {
                     if configured_strategy.is_local() {
                         return Err(DagError::RefreshDumpRequiresRemote { id: id.to_owned() });
                     }
-                    let dump = required_pg_dump(offer, id, mode)?;
+                    if !ospp_paired {
+                        return Err(DagError::RemoteResourceUnavailable {
+                            kind: "pg_database",
+                            id: id.to_owned(),
+                            mode,
+                        });
+                    }
                     (
                         configured_strategy,
-                        PgSeed::RemoteDump {
-                            dump,
-                            refresh: true,
-                        },
+                        PgSeed::RemoteDump { refresh: true },
                         ResourceReason::RefreshedDump,
                     )
                 }
                 DumpPolicy::Default => match configured_strategy {
                     ResourceStrategy::Local => (configured_strategy, PgSeed::CleanInitdb, reason),
-                    ResourceStrategy::Remote => (
-                        configured_strategy,
-                        PgSeed::RemoteDump {
-                            dump: required_pg_dump(offer, id, mode)?,
-                            refresh: false,
-                        },
-                        reason,
-                    ),
-                    ResourceStrategy::PreferRemote => match offered_pg_dump(offer, id) {
-                        Some(dump) => (
+                    ResourceStrategy::Remote => {
+                        if !ospp_paired {
+                            return Err(DagError::RemoteResourceUnavailable {
+                                kind: "pg_database",
+                                id: id.to_owned(),
+                                mode,
+                            });
+                        }
+                        (
                             configured_strategy,
-                            PgSeed::RemoteDump {
-                                dump,
-                                refresh: false,
-                            },
+                            PgSeed::RemoteDump { refresh: false },
                             reason,
-                        ),
-                        None => (
-                            configured_strategy,
-                            PgSeed::CleanInitdb,
-                            ResourceReason::NotOffered,
-                        ),
-                    },
+                        )
+                    }
+                    ResourceStrategy::PreferRemote => {
+                        if ospp_paired {
+                            (
+                                configured_strategy,
+                                PgSeed::RemoteDump { refresh: false },
+                                reason,
+                            )
+                        } else {
+                            (
+                                configured_strategy,
+                                PgSeed::CleanInitdb,
+                                ResourceReason::NoRemoteSession,
+                            )
+                        }
+                    }
                 },
             };
             pg_databases.push(PlannedPgDatabase {
@@ -688,38 +543,6 @@ fn effective_strategy(
     }
 }
 
-fn required_s3_bucket(
-    offer: Option<&RemoteResourceOffer>,
-    id: &str,
-    mode: ResourceMode,
-) -> Result<RemoteS3Bucket, DagError> {
-    offered_s3_bucket(offer, id).ok_or_else(|| DagError::RemoteResourceUnavailable {
-        kind: "s3_bucket",
-        id: id.to_owned(),
-        mode,
-    })
-}
-
-fn offered_s3_bucket(offer: Option<&RemoteResourceOffer>, id: &str) -> Option<RemoteS3Bucket> {
-    offer.and_then(|offer| offer.s3_bucket(id)).cloned()
-}
-
-fn required_pg_dump(
-    offer: Option<&RemoteResourceOffer>,
-    id: &str,
-    mode: ResourceMode,
-) -> Result<RemotePgDump, DagError> {
-    offered_pg_dump(offer, id).ok_or_else(|| DagError::RemoteResourceUnavailable {
-        kind: "pg_database",
-        id: id.to_owned(),
-        mode,
-    })
-}
-
-fn offered_pg_dump(offer: Option<&RemoteResourceOffer>, id: &str) -> Option<RemotePgDump> {
-    offer.and_then(|offer| offer.pg_dump(id)).cloned()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -750,16 +573,16 @@ mod tests {
         assert_eq!(spec.s3_buckets().len(), 2);
         assert_eq!(spec.pg_databases().len(), 2);
 
-        let plan = ResourcePlan::resolve(&spec, ResourceMode::Local, DumpPolicy::Default, None)
+        let plan = ResourcePlan::resolve(&spec, ResourceMode::Local, DumpPolicy::Default, false)
             .expect("local plan");
         assert_eq!(plan.s3_buckets.len(), 2);
         let assets = plan.s3_bucket("assets").expect("declared bucket");
         assert_eq!(assets.strategy, ResourceStrategy::PreferRemote);
-        assert_eq!(assets.reason, ResourceReason::NotOffered);
+        assert_eq!(assets.reason, ResourceReason::NoRemoteSession);
         assert_eq!(assets.target(), ResourceTarget::Local);
         assert_eq!(plan.pg_databases.len(), 2);
         let audit = plan.pg_database("audit").expect("declared database");
-        assert_eq!(audit.reason, ResourceReason::NotOffered);
+        assert_eq!(audit.reason, ResourceReason::NoRemoteSession);
         assert_eq!(audit.target(), ResourceTarget::Local);
     }
 
@@ -768,7 +591,7 @@ mod tests {
         let spec = spec()
             .with_declared_ids(&["media"], &["main"])
             .forced_strategy(ResourceStrategy::Local);
-        let plan = ResourcePlan::resolve(&spec, ResourceMode::Local, DumpPolicy::Default, None)
+        let plan = ResourcePlan::resolve(&spec, ResourceMode::Local, DumpPolicy::Default, false)
             .expect("forced local plan");
         for bucket in &plan.s3_buckets {
             assert_eq!(bucket.strategy, ResourceStrategy::Local);
@@ -783,10 +606,25 @@ mod tests {
     }
 
     #[test]
-    fn forcing_a_remote_strategy_still_fails_closed_without_an_offer() {
+    fn a_remote_strategy_fails_closed_without_a_session() {
         let spec = spec().forced_strategy(ResourceStrategy::Remote);
-        let err = ResourcePlan::resolve(&spec, ResourceMode::Local, DumpPolicy::Default, None)
-            .expect_err("remote without an offer must fail closed");
+        let err = ResourcePlan::resolve(&spec, ResourceMode::Local, DumpPolicy::Default, false)
+            .expect_err("remote without a session must fail closed");
         assert!(matches!(err, DagError::RemoteResourceUnavailable { .. }));
+    }
+
+    #[test]
+    fn a_paired_session_selects_the_remote_seed() {
+        let spec = spec().forced_strategy(ResourceStrategy::PreferRemote);
+        let plan = ResourcePlan::resolve(&spec, ResourceMode::Local, DumpPolicy::Default, true)
+            .expect("paired plan");
+        assert_eq!(
+            plan.pg_database("main").expect("main").seed,
+            PgSeed::RemoteDump { refresh: false }
+        );
+        assert_eq!(
+            plan.pg_database("main").expect("main").target(),
+            ResourceTarget::Remote
+        );
     }
 }

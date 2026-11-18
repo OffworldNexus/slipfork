@@ -349,12 +349,44 @@ pub(crate) fn kill_and_reap_child(
 
 /// Run `command` to completion, streaming interleaved stdout/stderr chunks to `on_output`.
 pub(crate) fn run_streamed(
+    command: Command,
+    on_output: &mut dyn FnMut(StreamChunk),
+) -> Result<ExecOutput, EngineError> {
+    run_streamed_inner(command, None, on_output)
+}
+
+/// Run `command` with `input` copied to its stdin while streaming interleaved stdout/stderr.
+pub(crate) fn run_streamed_with_input(
+    command: Command,
+    input: Box<dyn Read + Send>,
+    on_output: &mut dyn FnMut(StreamChunk),
+) -> Result<ExecOutput, EngineError> {
+    run_streamed_inner(command, Some(input), on_output)
+}
+
+fn run_streamed_inner(
     mut command: Command,
+    input: Option<Box<dyn Read + Send>>,
     on_output: &mut dyn FnMut(StreamChunk),
 ) -> Result<ExecOutput, EngineError> {
     let mut child = command
         .spawn()
         .map_err(|err| EngineError::Execution(format!("cannot execute: {err}")))?;
+    let writer = match (input, child.stdin.take()) {
+        (Some(mut input), Some(mut stdin)) => Some(thread::spawn(move || {
+            let copied = io::copy(&mut input, &mut stdin);
+            drop(stdin);
+            copied
+        })),
+        (None, _) => None,
+        (Some(_), None) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(EngineError::Execution(
+                "cannot stream input: the child has no piped stdin".to_owned(),
+            ));
+        }
+    };
     let (sender, receiver) = mpsc::channel::<StreamChunk>();
     let mut readers = Vec::with_capacity(2);
     if let Some(stdout) = child.stdout.take() {
@@ -380,6 +412,21 @@ pub(crate) fn run_streamed(
     let status = child
         .wait()
         .map_err(|err| EngineError::Execution(err.to_string()))?;
+    if let Some(writer) = writer {
+        match writer.join() {
+            Ok(Ok(_)) => {}
+            Ok(Err(error)) => {
+                return Err(EngineError::Execution(format!(
+                    "streamed input failed: {error}"
+                )));
+            }
+            Err(_) => {
+                return Err(EngineError::Execution(
+                    "streamed input writer panicked".to_owned(),
+                ));
+            }
+        }
+    }
     Ok(ExecOutput {
         exit_code: status.code().unwrap_or(1),
         stdout: String::from_utf8_lossy(&stdout).into_owned(),

@@ -7,7 +7,7 @@
 //! closed with one actionable line when nothing answers (`ADR-0011` §2–§3).
 //!
 //! `snow resolve` runs through `slipforkd` (`DaemonControl::snow_resolve`), so the daemon owns the
-//! `0600` local vault and any paired `OSPP v1` remote vault. Only `doctor` and `dag plan` stay
+//! `0600` local vault and the in-memory OSPP environment. Only `doctor` and `dag plan` stay
 //! CLI-local: they read host capabilities and repository files without materializing a world.
 
 #![forbid(unsafe_code)]
@@ -26,8 +26,8 @@ use clap::Parser;
 use serde_json::json;
 use slipfork::apparmor::render_userns_profile;
 use slipfork::cli::{
-    AuthAction, Cli, Commands, DaemonAction, DagAction, DumpArgs, HookAction, ResourceArgs,
-    SecretAction, SnowAction, UnitKind,
+    Cli, Commands, DaemonAction, DagAction, DumpArgs, HookAction, ResourceArgs, SecretAction,
+    SnowAction, UnitKind,
 };
 use slipfork::daemon_unit_install::{
     self, DAEMON_GRACE, DAEMON_POLL, InstallRequest, ManagedUnit, SocketHolder, UnitInstaller,
@@ -78,6 +78,7 @@ fn run(cli: Cli) -> Result<ExitCode, String> {
         xdg_data.as_deref(),
     );
     let json = cli.json;
+    let verbose = cli.verbose;
 
     match cli.command {
         // Bare `slipfork` is the status dashboard: the exact same handler as `slipfork status`
@@ -142,15 +143,27 @@ fn run(cli: Cli) -> Result<ExitCode, String> {
             dump,
             resources,
             host_caches,
-        }) => up(json, &layout, world, dump, resources, host_caches),
+        }) => up(json, verbose, &layout, world, dump, resources, host_caches),
         Some(Commands::Down { world }) => down(json, &layout, world),
+        Some(Commands::Restart { world }) => restart(json, verbose, &layout, world),
         Some(Commands::Fork {
             fork,
             base,
             dump,
             resources,
             host_caches,
-        }) => create_fork(json, &layout, fork, base, dump, resources, host_caches),
+        }) => create_fork(
+            ForkOptions {
+                json,
+                verbose,
+                fork,
+                base,
+                dump,
+                resources,
+                host_caches,
+            },
+            &layout,
+        ),
         Some(Commands::Drop { fork }) => drop_fork(json, &layout, fork),
         Some(Commands::List) => list(json, &layout),
         Some(Commands::Prune { dry_run, yes }) => prune(json, &layout, dry_run, yes),
@@ -176,9 +189,7 @@ fn run(cli: Cli) -> Result<ExitCode, String> {
         Some(Commands::Db { db_id, world }) => db(json, &layout, db_id, world),
         Some(Commands::Redis { cluster_id, world }) => redis(json, &layout, cluster_id, world),
         Some(Commands::Forward { world, targets }) => forward(json, &layout, world, targets),
-        Some(Commands::Auth {
-            action: AuthAction::Login { url },
-        }) => auth_login(json, &layout, url),
+        Some(Commands::Auth { endpoint }) => auth_login(json, &layout, endpoint),
         Some(Commands::Support) => support(json),
     }
 }
@@ -602,6 +613,7 @@ impl UnitInstaller for OsUnitInstaller {
 
 fn up(
     json: bool,
+    verbose: bool,
     layout: &Layout,
     world: Option<String>,
     dump: DumpArgs,
@@ -609,6 +621,7 @@ fn up(
     host_caches: bool,
 ) -> Result<ExitCode, String> {
     let client = connect_or_spawn(layout)?;
+    let options = block_options(verbose, world.is_some());
     let request = UpRequest {
         cwd: current_dir()?,
         world,
@@ -622,7 +635,49 @@ fn up(
         print_event(json, event);
     }) {
         Ok(summary) => {
-            print_world_up(json, &summary);
+            print_world_up(
+                json,
+                &client,
+                slipfork::restart::Verb::Up,
+                options,
+                &summary,
+            )?;
+            Ok(ExitCode::SUCCESS)
+        }
+        Err(err) => fail_with_rescue(json, failure.as_ref(), err),
+    }
+}
+
+/// `slipfork restart`: one `DaemonControl::restart` round trip, never `down` + `up` composed here.
+///
+/// The verb refuses to spawn a daemon (only `up`/`fork` may, `ADR-0011` §3): a restart of a world
+/// the daemon never booted fails closed in one line naming `slipfork up`. A `failed` world is the
+/// rescue path — the daemon re-runs the same boot pipeline in place.
+fn restart(
+    json: bool,
+    verbose: bool,
+    layout: &Layout,
+    world: Option<String>,
+) -> Result<ExitCode, String> {
+    let client = connect(layout)?;
+    let options = block_options(verbose, world.is_some());
+    let selector = WorldSelector {
+        cwd: current_dir()?,
+        world,
+    };
+    let mut failure = None;
+    match client.restart(&selector, &mut |event| {
+        note_hook_failure(&event, &mut failure);
+        print_event(json, event);
+    }) {
+        Ok(summary) => {
+            print_world_up(
+                json,
+                &client,
+                slipfork::restart::Verb::Restart,
+                options,
+                &summary,
+            )?;
             Ok(ExitCode::SUCCESS)
         }
         Err(err) => fail_with_rescue(json, failure.as_ref(), err),
@@ -646,16 +701,29 @@ fn down(json: bool, layout: &Layout, world: Option<String>) -> Result<ExitCode, 
     Ok(ExitCode::SUCCESS)
 }
 
-fn create_fork(
+/// The full `slipfork fork` surface, bundled so the entry point stays a two-argument contract.
+struct ForkOptions {
     json: bool,
-    layout: &Layout,
+    verbose: bool,
     fork: String,
     base: Option<String>,
     dump: DumpArgs,
     resources: ResourceArgs,
     host_caches: bool,
-) -> Result<ExitCode, String> {
+}
+
+fn create_fork(options: ForkOptions, layout: &Layout) -> Result<ExitCode, String> {
+    let ForkOptions {
+        json,
+        verbose,
+        fork,
+        base,
+        dump,
+        resources,
+        host_caches,
+    } = options;
     let client = connect_or_spawn(layout)?;
+    let options = block_options(verbose, true);
     let request = ForkRequest {
         cwd: current_dir()?,
         fork,
@@ -670,7 +738,13 @@ fn create_fork(
         print_event(json, event);
     }) {
         Ok(summary) => {
-            print_world_up(json, &summary);
+            print_world_up(
+                json,
+                &client,
+                slipfork::restart::Verb::Fork,
+                options,
+                &summary,
+            )?;
             Ok(ExitCode::SUCCESS)
         }
         Err(err) => fail_with_rescue(json, failure.as_ref(), err),
@@ -1226,26 +1300,10 @@ fn print_forward(json: bool, summary: &ForwardSummary) {
     let _ = io::stdout().flush();
 }
 
-fn auth_login(json: bool, layout: &Layout, url: Option<String>) -> Result<ExitCode, String> {
-    let pairing_url = match url.as_deref() {
-        Some("-") => {
-            let mut buffer = String::new();
-            io::stdin()
-                .read_to_string(&mut buffer)
-                .map_err(|err| format!("cannot read the pairing URL from stdin: {err}"))?;
-            buffer.trim_end_matches(['\n', '\r']).to_owned()
-        }
-        Some(url) => url.to_owned(),
-        None => {
-            return Err(
-                "pass the pairing URL (`slipfork auth login '<url>#handle=<64 hex>'`) or read it from stdin with `slipfork auth login -`"
-                    .to_owned(),
-            );
-        }
-    };
+fn auth_login(json: bool, layout: &Layout, endpoint: Option<String>) -> Result<ExitCode, String> {
     let client = connect(layout)?;
     let auth = client
-        .auth_login(&pairing_url)
+        .auth_login(endpoint.as_deref())
         .map_err(|err| err.to_string())?;
     if json {
         println!(
@@ -1255,9 +1313,12 @@ fn auth_login(json: bool, layout: &Layout, url: Option<String>) -> Result<ExitCo
                 "key_id": auth.key_id,
                 "backend": auth.backend,
                 "account": auth.account,
+                "machine": auth.machine,
+                "pairing_url": auth.pairing_url.expose(),
             })
         );
     } else {
+        println!("{}", auth.pairing_url.expose());
         println!(
             "[auth] paired {} (backend={}){}",
             auth.key_id,
@@ -1383,6 +1444,10 @@ fn fail_with_rescue(
 }
 
 /// Print one streamed boot event (never in `--json` mode, which writes only JSON).
+///
+/// `[resources]` resolution rows are developer diagnostics on an otherwise healthy boot, so they
+/// never stream: the block's `-v` detail renders the daemon's recorded `resources` instead
+/// (`docs/design/dx-0.1.0-ux.md` §1, §8.2).
 fn print_event(json: bool, event: BootEvent) {
     if json {
         return;
@@ -1394,11 +1459,8 @@ fn print_event(json: bool, event: BootEvent) {
                 vault.display()
             );
         }
-        BootEvent::Resources { resource } => {
-            println!(
-                "[resources] {}: {} -> {} ({})",
-                resource.id, resource.strategy, resource.resolved, resource.reason
-            );
+        BootEvent::Resources { .. } => {
+            // Rendered once, from the returned summary, and only under `-v`.
         }
         BootEvent::Hook { id, argv } => {
             println!("[hook]      {id}: {}", argv.join(" "));
@@ -1420,18 +1482,47 @@ fn print_event(json: bool, event: BootEvent) {
     }
 }
 
-fn print_world_up(json: bool, summary: &slipfork_edge::WorldUpSummary) {
+/// The block's two presentation facts: `-v`, and whether `next` needs `--world`.
+fn block_options(verbose: bool, qualify_next: bool) -> slipfork::restart::Options {
+    slipfork::restart::Options {
+        qualify_next,
+        verbose,
+    }
+}
+
+/// Print the `up` / `fork` / `restart` result: the `--json` document or the human block.
+///
+/// Under `--json` the daemon's [`slipfork_edge::WorldUpSummary`] is serialized as-is (one
+/// projection, never a hand-built subset) with the envelope's `ok`. In human mode exactly one
+/// advisory stderr line announces a daemon that is not bound to `:80` (§2 rule 4); it is never
+/// written to stdout and never under `--json`.
+fn print_world_up(
+    json: bool,
+    client: &DaemonControlClient,
+    verb: slipfork::restart::Verb,
+    options: slipfork::restart::Options,
+    summary: &slipfork_edge::WorldUpSummary,
+) -> Result<(), String> {
     if json {
-        println!(
-            "{}",
-            json!({
-                "world": &summary.world,
-                "origin": summary.origin.url(),
-                "resources": &summary.resources,
-            })
-        );
-    } else {
-        println!("[origin]    {}", summary.origin.url());
+        println!("{}", render_json(&slipfork::restart::json(summary)?)?);
+        return Ok(());
+    }
+    note_ingress(client);
+    print!("{}", slipfork::restart::render(verb, summary, options));
+    Ok(())
+}
+
+/// The one `:80` line when the daemon serves another ingress port (`docs/design/dx-0.1.0-ux.md` §2).
+///
+/// The port is the daemon's own `DaemonStatus.ingress` fact, read after the mutation succeeded and
+/// rendered by the single [`slipfork::status::ingress_hint`]; the CLI never parses a port out of an
+/// origin URL. The boot already succeeded, so an advisory read that fails changes nothing.
+fn note_ingress(client: &DaemonControlClient) {
+    let Ok(status) = client.status() else {
+        return;
+    };
+    if let Some(hint) = slipfork::status::ingress_hint(status.ingress.port()) {
+        eprintln!("{hint}");
     }
 }
 

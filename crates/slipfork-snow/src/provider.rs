@@ -336,6 +336,14 @@ impl FileVaultProvider {
         })
     }
 
+    /// Every stored key name in `namespace` (never a value), sorted for deterministic output.
+    ///
+    /// `slipforkd` uses this to derive ID-only OSPP `claims` from the local vault: locally
+    /// provisioned `vars`/`secrets` names are exactly the entries the server must leave untouched.
+    pub fn keys_in(&self, namespace: Namespace) -> Result<Vec<String>, ProviderError> {
+        Ok(self.read_vault()?.map(namespace).keys().cloned().collect())
+    }
+
     /// Read the whole vault from disk (`Ok(default)` when the vault does not exist yet).
     fn read_vault(&self) -> Result<VaultRecord, ProviderError> {
         match fs::read_to_string(&self.path) {
@@ -457,9 +465,9 @@ impl MutableSecretStore for FileVaultProvider {
 /// Layered [`SecretProvider`]: reads `primary` then `fallback`, and persists `!!` generated
 /// secrets exclusively into `primary` (`ADR-0001` §3, `ADR-0008` §2).
 ///
-/// `slipforkd` wires `LayeredSecretProvider<FileVaultProvider, OsppSecretProvider>` for `local`
-/// mode, so a paired cloud vault is read second and never mutated while the `0600` local vault
-/// stays the sole write sink.
+/// Remote OSPP secrets no longer flow through a provider (the daemon injects them in memory), so
+/// production wires the plain `FileVaultProvider`. The generic adapter stays available for
+/// read-through compositions whose fallback is another honest `SecretProvider`.
 #[derive(Debug)]
 pub struct LayeredSecretProvider<Primary, Fallback> {
     primary: Primary,
@@ -499,7 +507,7 @@ impl<Primary: MutableSecretStore, Fallback: SecretProvider> MutableSecretStore
         self.primary.put(namespace, key, value)
     }
 
-    /// Removal is a local write-sink operation: the fallback (read-only remote vault) is never
+    /// Removal is a local write-sink operation: the fallback (a read-only provider) is never
     /// mutated, exactly as `!!` persistence never writes it.
     fn remove(&self, key: &str) -> Result<bool, ProviderError> {
         self.primary.remove(key)

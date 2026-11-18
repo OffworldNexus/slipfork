@@ -70,7 +70,7 @@ fix: sudo mount -o user_subvol_rm_allowed,noatime /dev/<device> <state_dir>
 | `db` | Open `psql` inside the world's running `postgres:<v>` container (TTY) | `slipfork db appdb` |
 | `redis` | Open `redis-cli` inside the world's running `redis:<v>` container (TTY) | `slipfork redis cache` |
 | `forward` | Bind daemon-owned `127.0.0.1:0` listeners bridged into a world, held until Ctrl-C | `slipfork forward pg_databases.appdb` |
-| `auth login` | Pair an OSPP device key from a `#handle=` URL (`-` reads stdin) | `slipfork auth login -` |
+| `auth [ENDPOINT]` | Pair this machine against the daemon's injected OSPP endpoint, open the server-supplied `<url>#handle=…` page, and print it | `slipfork auth` |
 | `support` | Report registry tiers and required evidence (`ADR-0007`) | `slipfork support` |
 
 ## World selection and boot options

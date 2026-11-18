@@ -16,7 +16,6 @@
 //!   `SlipforkConfig` loader/resolver constructor (no second TOML parser, no silent defaults).
 //! - [`user`]: the [`user::UserIdentity`] port and its `id -un` OS-account adapter.
 //! - [`vaults`]: the injected project-vault factory over the `0600` local vault.
-//! - [`ospp`]: the injected paired-`OSPP v1` session coordinate store (`0600`, zero secrets).
 //! - [`vcs`]: the composition-root Git/Jujutsu [`slipfork_vcs::VcsWorkspaceFactory`] router.
 //! - [`oci_store`]: the injected [`slipfork_engine::rootfs::OciImageStore`] over the Docker CLI.
 //! - [`runtime`]: pinned `crun` + `slipfork-world-init` payload provisioning for every `L0` rootfs.
@@ -26,6 +25,8 @@
 //!   [`daemon_unit_install::UnitInstaller`] port (`ADR-0011` §1).
 //! - [`status`]: the bare `slipfork` / `slipfork status` dashboard and its single human lineage
 //!   line, rendered purely from the daemon's [`slipfork_edge::DaemonStatus`].
+//! - [`restart`]: the one actionable `up` / `fork` / `restart` block and its `--json` document,
+//!   rendered purely from the daemon's [`slipfork_edge::WorldUpSummary`].
 
 #![forbid(unsafe_code)]
 
@@ -36,8 +37,8 @@ pub mod daemon_unit_install;
 pub mod doctor;
 pub mod layout;
 pub mod oci_store;
-pub mod ospp;
 pub mod project;
+pub mod restart;
 pub mod runtime;
 pub mod status;
 pub mod user;

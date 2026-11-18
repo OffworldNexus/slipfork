@@ -641,6 +641,25 @@ pub trait WorldEngine: Send + Sync {
     /// [`EngineError::WorldGone`] — never an all-`None` lineage.
     fn world_lineage(&self, world: &WorldHandle) -> Result<WorldLineage, EngineError>;
 
+    /// Replace a supervised service's overlay environment and restart it with its retained
+    /// `ServiceSpec` (`M3.29` live `env_updated`).
+    ///
+    /// The caller owns the new environment (already decrypted and locally substituted in memory);
+    /// the engine owns the argv, cwd, mounts, and readiness contract it captured at spawn time, so
+    /// `DaemonService` never re-authors a `ServiceSpec`. Only this one service is stopped and
+    /// respawned; sibling services are untouched. A read-only test adapter that cannot restart
+    /// services reports [`EngineError::Unsupported`] rather than pretending it applied the update.
+    fn update_service_env(
+        &self,
+        _service: &ServiceHandle,
+        _env: &ExecEnv,
+    ) -> Result<(), EngineError> {
+        Err(EngineError::Unsupported {
+            engine: self.name(),
+            capability: "update_service_env",
+        })
+    }
+
     /// Execute `argv` **inside a running service's own rootfs** — never the app rootfs — so
     /// `pg_restore`, `CHECKPOINT;`, and `psql` match the backing-service image (`ADR-0008` §2).
     ///
@@ -653,6 +672,27 @@ pub trait WorldEngine: Send + Sync {
         overlay_env: &ExecEnv,
         on_output: &mut dyn FnMut(StreamChunk),
     ) -> Result<ExecOutput, EngineError>;
+
+    /// Execute `argv` inside a running service with `input` streamed to its stdin.
+    ///
+    /// This is the one dump-restore seam: the decrypted `OsppSession::dump` stream is piped into
+    /// `zstd -d | pg_restore` inside the container without materializing plaintext on disk. A
+    /// read error from `input` is never swallowed (a truncated sealed dump must fail the restore
+    /// even when the child happened to exit `0`). Adapters that cannot stream stdin report
+    /// [`EngineError::Unsupported`].
+    fn exec_in_service_with_input(
+        &self,
+        _service: &ServiceHandle,
+        _argv: &[String],
+        _input: Box<dyn std::io::Read + Send>,
+        _overlay_env: &ExecEnv,
+        _on_output: &mut dyn FnMut(StreamChunk),
+    ) -> Result<ExecOutput, EngineError> {
+        Err(EngineError::Unsupported {
+            engine: self.name(),
+            capability: "exec_in_service_with_input",
+        })
+    }
 
     /// `crun exec` entry command for interactive service clients (`slipfork db` -> `psql`,
     /// `slipfork redis` -> `redis-cli`, `ADR-0009` §3).

@@ -2,7 +2,7 @@
 id: M3.28.8
 title: "slipfork restart and the actionable up block with the loud :80 line"
 kind: task
-status: ready
+status: done
 owner: implementer
 priority: 3
 depends_on: [M3.28.7]
@@ -11,12 +11,13 @@ paths:
   - crates/slipfork/src/restart.rs
   - crates/slipfork/src/lib.rs
   - crates/slipfork/src/main.rs
+  - crates/slipfork/src/status.rs
   - crates/slipfork/tests/critical_cli.rs
-attempts: 0
+attempts: 1
 max_attempts: 3
 escalation: none
 created: "2026-11-17T16:33"
-updated: "2026-11-17T17:53"
+updated: "2026-11-18T03:07"
 ---
 
 # Goal

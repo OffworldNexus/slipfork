@@ -97,8 +97,10 @@ pub fn ingress_hint(port: u16) -> Option<String> {
 ///
 /// Order is `rootfs`, one entry per resolved service image, `seed`, `base`; a fact the daemon never
 /// recorded is `-`, and only the four outcome words appear (`cached`, `rebuilt <dur>`, `reused`,
-/// `sealed <dur>`) — never the wire `hit`/`miss`.
-fn render_lineage(lineage: &WorldLineage) -> String {
+/// `sealed <dur>`) — never the wire `hit`/`miss`. This is the one renderer of that line: `status`
+/// and the `up` / `fork` / `restart` block ([`crate::restart`]) both call it, so the compact line
+/// can never drift between the fleet view and the actionable block.
+pub(crate) fn render_lineage(lineage: &WorldLineage) -> String {
     let mut parts = vec![match &lineage.rootfs {
         Some(rootfs) => format!(
             "rootfs {} {}",
@@ -254,7 +256,7 @@ fn ingress_addrs(status: &DaemonStatus) -> String {
 }
 
 /// One short digest: the first [`SHORT_DIGEST`] characters of the full 64-hex value.
-fn short_digest(digest: &str) -> String {
+pub(crate) fn short_digest(digest: &str) -> String {
     digest.chars().take(SHORT_DIGEST).collect()
 }
 
@@ -432,7 +434,7 @@ mod tests {
         );
         assert_eq!(
             lines[3],
-            "                  next      slipfork db | slipfork logs | slipfork down"
+            "                  next      slipfork db | slipfork logs | slipfork restart | slipfork down"
         );
         assert_eq!(
             lines[6],

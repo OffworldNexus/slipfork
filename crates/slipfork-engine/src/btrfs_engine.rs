@@ -49,7 +49,8 @@ use crate::oci::{self, ContainerBundle, ContainerMount};
 use crate::service::{
     POLL_INTERVAL, ProcessIdentity, ServiceLogs, container_id, drain_stderr,
     ensure_container_destination, host_child_pids, kill_and_reap_child, run_streamed,
-    spawn_log_reader, wait_for_exit, wait_for_inner_pid, world_cwd_wrapper, world_guest_for_host,
+    run_streamed_with_input, spawn_log_reader, wait_for_exit, wait_for_inner_pid,
+    world_cwd_wrapper, world_guest_for_host,
 };
 use crate::world_init::{
     GROUP_GUEST, INGRESS_GUEST, OCI_BUNDLES_GUEST, OCI_RUN_GUEST, PASSWD_GUEST,
@@ -221,6 +222,10 @@ enum RuntimeKind {
 struct ServiceRecord {
     /// Which spawn path produced it (teardown/readiness discriminator).
     runtime_kind: RuntimeKind,
+    /// The complete spawn contract retained for [`WorldEngine::update_service_env`]: argv, cwd,
+    /// mounts, and readiness are the engine's to own so the daemon never re-authors a
+    /// `ServiceSpec` to apply a new environment.
+    spec: ServiceSpec,
     /// The caller-declared row classification (`ServiceSpec::kind`).
     kind: ServiceKind,
     /// In-world serving/readiness port the caller asked for, recorded at spawn.
@@ -1645,6 +1650,7 @@ impl WorldEngine for BtrfsEngine {
                 spec.id.clone(),
                 ServiceRecord {
                     runtime_kind,
+                    spec: spec.clone(),
                     kind: spec.kind,
                     port: spec.readiness_port,
                     started_at: self.clock.now(),
@@ -1737,6 +1743,30 @@ impl WorldEngine for BtrfsEngine {
         }
 
         Ok(ServiceHandle::mint(world.clone(), spec.id.clone(), state))
+    }
+
+    fn update_service_env(
+        &self,
+        service: &ServiceHandle,
+        env: &ExecEnv,
+    ) -> Result<(), EngineError> {
+        let mut spec =
+            {
+                let mut worlds = self.lock()?;
+                let record = self.live_record(&mut worlds, service.world())?;
+                let service_record = record.services.get(service.id()).ok_or_else(|| {
+                    EngineError::UnknownService {
+                        world: format!("{:?}", service.world()),
+                        id: service.id().to_owned(),
+                    }
+                })?;
+                service_record.spec.clone()
+            };
+        // The one stop path first, so a failed respawn never leaves two processes under one id.
+        self.stop_service_inner(service.world(), service.id())?;
+        spec.env = env.clone();
+        self.spawn_service(service.world(), &spec)?;
+        Ok(())
     }
 
     fn stop_service(&self, service: &ServiceHandle) -> Result<(), EngineError> {
@@ -1850,6 +1880,41 @@ impl WorldEngine for BtrfsEngine {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         run_streamed(command, on_output)
+    }
+
+    fn exec_in_service_with_input(
+        &self,
+        service: &ServiceHandle,
+        argv: &[String],
+        input: Box<dyn std::io::Read + Send>,
+        overlay_env: &ExecEnv,
+        on_output: &mut dyn FnMut(StreamChunk),
+    ) -> Result<ExecOutput, EngineError> {
+        if argv.is_empty() {
+            return Err(EngineError::Execution(
+                "service exec argv must not be empty".to_owned(),
+            ));
+        }
+        let (container, base_env) = self.container_for(service)?;
+        let env =
+            child_env::materialize(&base_env, overlay_env, |var| std::env::var(var.name()).ok());
+        let mut command = self.crun_command(
+            container.init_pid,
+            &container.crun_guest,
+            &container.crun_root_guest,
+            &env,
+        );
+        command.arg("exec");
+        for (name, value) in &env {
+            command.args(["--env", &format!("{name}={value}")]);
+        }
+        command
+            .arg(&container.id)
+            .args(argv)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        run_streamed_with_input(command, input, on_output)
     }
 
     fn service_entry_command(
@@ -2485,6 +2550,19 @@ mod tests {
         engine.mint_world_handle(seq)
     }
 
+    fn test_spec(kind: ServiceKind, readiness_port: Option<u16>) -> ServiceSpec {
+        ServiceSpec {
+            id: "test".to_owned(),
+            kind,
+            runtime: ServiceRuntime::WorldProcess {
+                argv: vec!["true".to_owned()],
+                cwd: PathBuf::from("/"),
+            },
+            env: ExecEnv::default(),
+            readiness_port,
+        }
+    }
+
     /// A supervisor that exits as soon as its in-world child is signalled, plus that child's pid.
     fn running_world_process(
         record: &mut WorldRecord,
@@ -2509,6 +2587,7 @@ mod tests {
             id.to_owned(),
             ServiceRecord {
                 runtime_kind: RuntimeKind::WorldProcess,
+                spec: test_spec(ServiceKind::Component, None),
                 kind: ServiceKind::Component,
                 port: None,
                 started_at,
@@ -2523,6 +2602,7 @@ mod tests {
     fn stopped_record(kind: ServiceKind, started_at: Instant) -> ServiceRecord {
         ServiceRecord {
             runtime_kind: RuntimeKind::WorldProcess,
+            spec: test_spec(kind, Some(5432)),
             kind,
             port: Some(5432),
             started_at,

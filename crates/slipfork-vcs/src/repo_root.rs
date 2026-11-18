@@ -159,6 +159,24 @@ impl RepoRootResolver for GitRepoRootResolver {
             project,
         })
     }
+
+    fn remote(&self, repo: &RepoRoot) -> Result<Option<String>, VcsError> {
+        let output = run_git(
+            &repo.vcs_root,
+            &[
+                OsStr::new("config"),
+                OsStr::new("--get"),
+                OsStr::new("remote.origin.url"),
+            ],
+            None,
+        )?;
+        if !output.success {
+            // `git config --get` exits 1 when the key is unset: "no origin" is not an error.
+            return Ok(None);
+        }
+        let url = output.stdout_trimmed()?.to_owned();
+        Ok((!url.is_empty()).then_some(url))
+    }
 }
 
 /// `true` when Git reported that `start` is outside any repository.

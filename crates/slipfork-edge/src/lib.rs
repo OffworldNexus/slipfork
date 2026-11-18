@@ -49,6 +49,7 @@ pub(crate) mod relay;
 pub mod tunnel;
 pub mod unit;
 pub mod unix_socket;
+pub mod vault;
 
 pub use activation::{
     ListenConfig, ListenerSet, adopt_systemd_listener, bind_listen, resolve_listener_set,
@@ -75,6 +76,7 @@ pub use slipfork_engine::{
 };
 pub use tunnel::UnavailableTunnelRegistrar;
 pub use unit::{INGRESS_ADDRS, INGRESS_PORT, UnitSpec, render_service_unit, render_socket_unit};
+pub use vault::SecretVault;
 
 /// Fail-closed errors produced by the edge crate.
 ///

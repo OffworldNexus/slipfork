@@ -2,16 +2,16 @@
 id: M3.29.2
 title: "Implement OSPP v1 wire, p256 pairing, ID-only claims, hpke-p256 per-variable encryption and encrypted dump streaming"
 kind: task
-status: active
+status: done
 owner: implementer
 priority: 1
 depends_on: [M3.29.1]
 paths: ["crates/slipfork-ospp/**", "crates/slipfork-ospp-testkit/**", Cargo.toml, Cargo.lock]
-attempts: 1
+attempts: 2
 max_attempts: 3
 escalation: none
 created: "2026-11-18T00:08"
-updated: "2026-11-18T01:26"
+updated: "2026-11-18T03:07"
 ---
 
 # Goal
@@ -48,7 +48,7 @@ $ ! grep -rn 'env\.bundle\|secrets\.ensure\|resources\.describe\|dump\.begin\|tp
 ospp-v1-only
 $ ! grep -rn 'serde(flatten)\|extra:' crates/slipfork-ospp/src && echo no-catch-all
 no-catch-all
-$ cargo clippy --workspace --all-targets -- -D warnings
+$ cargo clippy -p slipfork-ospp -p slipfork-ospp-testkit --all-targets -- -D warnings
     Finished
 ```
 

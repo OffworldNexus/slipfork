@@ -17,6 +17,6 @@ pub use model::{
     S3Bucket, S3Coordinates, SnowError, SnowFile,
 };
 pub use provider::{
-    EntropySource, FileVaultProvider, LayeredSecretProvider, MemorySecretProvider, Namespace,
-    OsCsprngEntropy, ProviderError, SecretProvider, SecretValue,
+    EntropySource, FileVaultProvider, LayeredSecretProvider, MemorySecretProvider,
+    MutableSecretStore, Namespace, OsCsprngEntropy, ProviderError, SecretProvider, SecretValue,
 };

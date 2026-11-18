@@ -543,15 +543,20 @@ pub struct ForwardSummary {
     pub targets: Vec<ForwardTarget>,
 }
 
-/// Result of `slipfork auth login`.
+/// Result of `slipfork auth`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AuthSummary {
     /// Paired device key id (`p256:<66 hex>`).
     pub key_id: String,
-    /// Signing backend (`tpmd:sealed`, `software:file-0600`).
+    /// Signing backend (`software:file-0600`).
     pub backend: String,
     /// Account the remote provider reported, when it reports one.
     pub account: Option<String>,
+    /// Machine name the server approved, when it reports one.
+    pub machine: Option<String>,
+    /// The server-supplied `<url>#handle=<handle>` pairing page that was opened (redacted by
+    /// `Debug`; the single-use handle is zeroized when the owning `LivePairingUrl` drops).
+    pub pairing_url: ControlSecret,
 }
 
 /// Everything the thin CLI needs to enter a world with inherited native stdio (`H-010` #1).
@@ -727,10 +732,11 @@ pub enum DaemonRequest {
     /// Used only by `slipfork daemon install` to hand a zero-setup `:0` daemon over to
     /// `slipforkd.socket` (`ADR-0011` §3).
     Shutdown,
-    /// Pair a device key using a `#handle=` pairing URL.
+    /// Pair this machine against the daemon's boot-injected OSPP endpoint.
     AuthLogin {
-        /// Full pairing URL (the fragment handle is redacted by `Debug`).
-        pairing_url: ControlSecret,
+        /// Optional endpoint URL from the CLI; the daemon refuses any endpoint that differs
+        /// from the one injected at boot (one server identity per daemon).
+        endpoint_url: Option<String>,
     },
 }
 
@@ -998,8 +1004,11 @@ pub trait DaemonControl: Send + Sync {
         wait_disconnect: &mut dyn FnMut(ForwardSummary),
     ) -> Result<(), EdgeError>;
 
-    /// Pair a device key using a `#handle=` pairing URL.
-    fn auth_login(&self, pairing_url: &str) -> Result<AuthSummary, EdgeError>;
+    /// Pair this machine against the daemon's boot-injected OSPP endpoint.
+    ///
+    /// `endpoint_url` must be absent or byte-identical to the injected endpoint; the daemon never
+    /// dials a second server identity.
+    fn auth_login(&self, endpoint_url: Option<&str>) -> Result<AuthSummary, EdgeError>;
 
     /// Acknowledge a shutdown request; the transport server stops serving after the reply.
     ///

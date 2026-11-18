@@ -16,14 +16,14 @@ use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError, mpsc};
+use std::thread;
 use std::time::Duration;
 
 use sha2::{Digest, Sha256};
 
 use slipfork_dag::{
-    DumpPolicy, PgSeed, RemoteResourceOffer, ResourceMode, ResourcePlan, ResourceStrategy,
-    S3Resolution, SlipforkConfig,
+    DumpPolicy, PgSeed, ResourceMode, ResourcePlan, ResourceStrategy, SlipforkConfig,
 };
 use slipfork_edge::daemon::{WorkspaceRefsRequest, WorkspaceRefsSummary};
 use slipfork_edge::forward::ForwardTargetSpec;
@@ -48,14 +48,14 @@ use slipfork_engine::{
     SystemClock, WorldEngine, WorldHandle, WorldMount, WorldSpec, elapsed_millis,
 };
 use slipfork_ospp::{
-    BrowserOpener, DeviceKeySigner, DiskSeedDumpStore, DumpStreamer, FallbackDeviceKeySigner,
-    FileDeviceKeyStore, KeyStorePaths, OsppClient, OsppEndpoint, OsppError, OsppTimeouts,
-    PGCUSTOM_SUFFIX, PairingUrl, SeedDumpStore, SoftwareP256Signer, TpmdDeviceKeySigner,
-    redeem_pairing_url,
+    BrowserOpener, DeviceKeyPath, DeviceKeySigner, FileDeviceKeyStore, OsppClaims, OsppClient,
+    OsppEndpoint, OsppSession, OsppTimeouts, SoftwareP256Key, SoftwareP256Signer, SubscribeRequest,
+    SubscriptionEnv, WsOsppClient,
 };
+use slipfork_snow::faceless::{TailModifier, Token};
 use slipfork_snow::{
     EntropySource, HookPhase, Image, Namespace, OsCsprngEntropy, ResolvedEnvMap,
-    ResourceCoordinates, S3Coordinates, SecretProvider, SnowFile,
+    ResourceCoordinates, SecretProvider, SecretValue, SnowFile, parse_faceless,
 };
 use slipfork_vcs::{
     RepoRoot, RepoRootResolver, VcsWorkspace, VcsWorkspaceFactory, WORKTREES_DIRECTORY,
@@ -63,9 +63,10 @@ use slipfork_vcs::{
 };
 use slipfork_world::{LocalHostRoute, ProjectSlug, WorldOrigin, WorldTarget, validate_fork_name};
 
+use slipfork_edge::SecretVault;
+
 use crate::layout::{Layout, ensure_private_dir};
 use crate::oci_store::DockerOciImageStore;
-use crate::ospp::{FileOsppSessionStore, OsppSessionCoordinates, OsppSessionStore};
 use crate::project::{load_optional_slipfork_config, repository_resolver};
 use crate::vaults::{LayoutProjectVaults, ProjectVaults};
 use crate::vcs::RepositoryWorkspaces;
@@ -207,6 +208,10 @@ struct LiveWorld {
     /// Resources coordinates for `resources::*`/`deployment::*` values, re-derived with the plan.
     coords: ResourceCoordinates,
     snow: SnowFile,
+    /// The resource plan this run resolved (kept so `env_updated` can re-derive ID-only claims).
+    plan: ResourcePlan,
+    /// The last decrypted server environment applied to this world (never persisted).
+    ospp_env: Option<BTreeMap<String, BTreeMap<String, SecretValue>>>,
     /// The `L0` rootfs this world was cloned from: `restart` reuses it, so the world's own CoW
     /// state (backing-service data included) is never discarded.
     rootfs: WorldRootfs,
@@ -215,6 +220,19 @@ struct LiveWorld {
     /// Retained hook logs by `<component>:<phase>` (`slipfork logs <hook_id>`, `ADR-0008` §4).
     hook_logs: BTreeMap<String, Arc<HookLog>>,
     workspace: Option<Arc<dyn VcsWorkspace>>,
+}
+
+/// The one daemon-held `ospp-v1` session and its stable per-project subscriptions.
+#[derive(Default)]
+struct OsppRuntime {
+    session: Option<Arc<dyn OsppSession>>,
+    /// Subscription id -> project. One subscription per project while its worlds run.
+    subscriptions: BTreeMap<String, ProjectSlug>,
+}
+
+/// Stable per-project subscription id, reused on every re-`subscribe`.
+fn subscription_id(project: &ProjectSlug) -> String {
+    format!("sub-{}", project.as_str())
 }
 
 /// The daemon's own record of one held world, copied out of the index so engine reads never run
@@ -502,10 +520,31 @@ struct BootPolicy {
 /// resource plan, coordinates, environments, enabled components, and ingress/domain table from the
 /// edited file. `config`, `client`, and `vault` are the inputs only a fresh `boot` needs (rootfs
 /// build and base seal); a rerun reuses the world's own rootfs and base.
+/// Inputs to one `L0` rootfs materialization.
+struct RootfsInputs<'a> {
+    worktree: &'a Path,
+    snow: &'a SnowFile,
+    config: &'a SlipforkConfig,
+    vault: &'a dyn SecretProvider,
+    coords: &'a ResourceCoordinates,
+    claims: &'a OsppClaims,
+    host_caches: bool,
+}
+
+/// Inputs to one world-level environment resolution.
+struct WorldEnvInputs<'a> {
+    snow: &'a SnowFile,
+    vault: &'a dyn SecretProvider,
+    coords: &'a ResourceCoordinates,
+    project: &'a ProjectSlug,
+    target: &'a WorldTarget,
+    claims: &'a OsppClaims,
+    ospp_env: Option<&'a BTreeMap<String, BTreeMap<String, SecretValue>>>,
+}
+
 struct ResolvedWorld {
     snow: SnowFile,
     config: SlipforkConfig,
-    client: Option<Arc<OsppClient>>,
     vault: Arc<dyn SecretProvider>,
     plan: ResourcePlan,
     resources: Vec<ResourceSummary>,
@@ -515,6 +554,11 @@ struct ResolvedWorld {
     components: Vec<ResolvedComponent>,
     ingresses: Vec<IngressRoute>,
     domains: Vec<String>,
+    /// The ID-only claims this boot sent (local vault keys, local resources, local domains).
+    claims: OsppClaims,
+    /// The server-resolved per-component environment (already decrypted in memory), kept so a
+    /// pushed `env_updated` can be diffed against what the world runs.
+    ospp_env: Option<BTreeMap<String, BTreeMap<String, SecretValue>>>,
 }
 
 /// One enabled component of the world: everything `start_world` needs, resolved once.
@@ -618,20 +662,18 @@ struct DaemonPorts {
     repo_roots: std::sync::Arc<dyn RepoRootResolver>,
     /// Fork workspace factory.
     workspaces: std::sync::Arc<dyn VcsWorkspaceFactory>,
-    /// Project-scoped `0600` vault factory.
+    /// Project-scoped `0600` local-vault factory.
     vaults: std::sync::Arc<dyn ProjectVaults>,
-    /// Persistent OSPP device-key signer (`tpmd:sealed` or the `0600` software fallback).
+    /// The one OSPP v1 client bound to the boot-injected endpoint (`None` = local-only daemon).
+    ospp: Option<Arc<dyn OsppClient>>,
+    /// The machine-authentication identity (`p256` auth only; never subscription encryption).
     signer: Arc<dyn DeviceKeySigner>,
-    /// Paired OSPP host coordinates (`0600`, zero secrets), written by `auth login`.
-    ospp_sessions: Arc<dyn OsppSessionStore>,
-    /// Digest-pinned seed-dump cache (`DiskSeedDumpStore` in production).
-    seed_dumps: Arc<dyn SeedDumpStore>,
+    /// Hostname proposed in `pair_begin` (resolved once by the Composition Root).
+    hostname: String,
     /// Injected browser opener for the pairing approval page (never logs the live handle).
     browser: Arc<dyn BrowserOpener>,
     /// CSPRNG injected into the pairing handshake nonce.
     entropy: Arc<dyn EntropySource>,
-    /// Bounds for the pairing WebSocket handshake.
-    ospp_timeouts: OsppTimeouts,
     /// The one monotonic clock, shared with the engine/builder/OCI store that stamp measured facts.
     clock: Arc<dyn MonotonicClock>,
 }
@@ -667,8 +709,10 @@ pub struct DaemonWiring {
     pub uid: u32,
     /// Invoking developer's group.
     pub gid: u32,
-    /// Already-resolved `$XDG_RUNTIME_DIR` holding the `tpmd` device-key socket.
-    pub xdg_runtime_dir: Option<PathBuf>,
+    /// The single OSPP v1 endpoint resolved at the Composition Root (`None` = local-only).
+    pub ospp_endpoint: Option<OsppEndpoint>,
+    /// Hostname proposed to the server in `pair_begin` (never re-read from the environment).
+    pub hostname: String,
 }
 
 /// The wired daemon graph: the control service and the ingress registry over one engine.
@@ -697,7 +741,8 @@ pub fn compose_daemon(wiring: DaemonWiring) -> Result<DaemonGraph, String> {
         target_arch,
         uid,
         gid,
-        xdg_runtime_dir,
+        ospp_endpoint,
+        hostname,
     } = wiring;
 
     // The one monotonic clock every measuring adapter shares: the rootfs builder, the OCI image
@@ -735,21 +780,29 @@ pub fn compose_daemon(wiring: DaemonWiring) -> Result<DaemonGraph, String> {
         forward_port,
     ));
 
-    // Persistent OSPP identity: `tpmd` when it serves, otherwise the `0600` software key. The
-    // fallback is lazy inside `FallbackDeviceKeySigner`, so a tpmd-capable host never mints a file.
-    let entropy = Arc::new(OsCsprngEntropy);
-    let key_store_paths = KeyStorePaths::user_then_system(xdg_runtime_dir.as_deref());
-    let signer =
-        FallbackDeviceKeySigner::new(TpmdDeviceKeySigner::connect(&key_store_paths, None), || {
-            let store = FileDeviceKeyStore::new(layout.device_key_path());
-            SoftwareP256Signer::open(&store, entropy.as_ref())
-        })
-        .map_err(|err| format!("cannot initialize the OSPP device key: {err}"))?;
-    let signer: Arc<dyn DeviceKeySigner> = Arc::new(signer);
-    let seed_dumps = Arc::new(
-        DiskSeedDumpStore::open(layout.state_dir())
-            .map_err(|err| format!("cannot open the seed-dump cache: {err}"))?,
-    );
+    // One machine-authentication P-256 identity: a `0600` scalar at the injected data-home path.
+    // Subscription encryption keys are ephemeral and live only in the session thread's memory.
+    let entropy: Arc<dyn EntropySource> = Arc::new(OsCsprngEntropy);
+    let signer: Arc<dyn DeviceKeySigner> = if ospp_endpoint.is_some() {
+        let store = FileDeviceKeyStore::new(DeviceKeyPath(layout.device_key_path()));
+        Arc::new(
+            SoftwareP256Signer::from_store(&store, entropy.as_ref())
+                .map_err(|err| format!("cannot initialize the OSPP device key: {err}"))?,
+        )
+    } else {
+        let key = SoftwareP256Key::generate(entropy.as_ref())
+            .map_err(|err| format!("cannot initialize the in-memory OSPP identity: {err}"))?;
+        Arc::new(SoftwareP256Signer::new(key))
+    };
+    let ospp: Option<Arc<dyn OsppClient>> = match ospp_endpoint {
+        Some(endpoint) => Some(Arc::new(WsOsppClient::new(
+            endpoint,
+            Arc::clone(&signer),
+            Arc::clone(&entropy),
+            OsppTimeouts::default(),
+        ))),
+        None => None,
+    };
 
     let service = Arc::new(DaemonService::new(
         DaemonPorts {
@@ -759,12 +812,11 @@ pub fn compose_daemon(wiring: DaemonWiring) -> Result<DaemonGraph, String> {
             repo_roots: repository_resolver(),
             workspaces: Arc::new(RepositoryWorkspaces::new()),
             vaults: Arc::new(LayoutProjectVaults::new(layout.clone())),
+            ospp,
             signer,
-            ospp_sessions: Arc::new(FileOsppSessionStore::new(layout.ospp_session_path())),
-            seed_dumps,
+            hostname,
             browser,
             entropy,
-            ospp_timeouts: OsppTimeouts::default(),
             clock: Arc::clone(&clock),
         },
         DaemonConfig {
@@ -780,6 +832,7 @@ pub fn compose_daemon(wiring: DaemonWiring) -> Result<DaemonGraph, String> {
         ingress,
         forward_port,
     ));
+    service.start_ospp_supervisor();
     Ok(DaemonGraph { service, registry })
 }
 
@@ -791,14 +844,21 @@ pub struct DaemonService {
     repo_roots: std::sync::Arc<dyn RepoRootResolver>,
     workspaces: std::sync::Arc<dyn VcsWorkspaceFactory>,
     vaults: std::sync::Arc<dyn ProjectVaults>,
+    /// The one boot-injected OSPP client (`None` = local-only daemon).
+    ospp: Option<Arc<dyn OsppClient>>,
+    /// The machine-authentication identity (`p256` auth only).
     signer: Arc<dyn DeviceKeySigner>,
-    ospp_sessions: Arc<dyn OsppSessionStore>,
-    seed_dumps: Arc<dyn SeedDumpStore>,
-    /// Lazily connected, daemon-held `ospp-v1` session (`None` while unpaired or offline).
-    ospp_client: Mutex<Option<Arc<OsppClient>>>,
+    /// Hostname proposed in `pair_begin`.
+    hostname: String,
     browser: Arc<dyn BrowserOpener>,
     entropy: Arc<dyn EntropySource>,
-    ospp_timeouts: OsppTimeouts,
+    /// The daemon-owned live `ospp-v1` session and its per-project subscriptions.
+    ospp_runtime: Mutex<OsppRuntime>,
+    /// Pushed `env_updated` environments, drained by the subscription supervisor thread.
+    ospp_updates_tx: Arc<Mutex<mpsc::Sender<SubscriptionEnv>>>,
+    ospp_updates_rx: Mutex<Option<mpsc::Receiver<SubscriptionEnv>>>,
+    /// One actionable line describing a failed live session (never a secret value).
+    ospp_failure: Mutex<Option<String>>,
     config: DaemonConfig,
     ingress: IngressInfo,
     forward_port: Option<u16>,
@@ -825,6 +885,7 @@ impl DaemonService {
         ingress: IngressInfo,
         forward_port: Option<u16>,
     ) -> Self {
+        let (updates_tx, updates_rx) = mpsc::channel();
         Self {
             engine: ports.engine,
             builder: ports.builder,
@@ -832,13 +893,15 @@ impl DaemonService {
             repo_roots: ports.repo_roots,
             workspaces: ports.workspaces,
             vaults: ports.vaults,
+            ospp: ports.ospp,
             signer: ports.signer,
-            ospp_sessions: ports.ospp_sessions,
-            seed_dumps: ports.seed_dumps,
-            ospp_client: Mutex::new(None),
+            hostname: ports.hostname,
             browser: ports.browser,
             entropy: ports.entropy,
-            ospp_timeouts: ports.ospp_timeouts,
+            ospp_runtime: Mutex::new(OsppRuntime::default()),
+            ospp_updates_tx: Arc::new(Mutex::new(updates_tx)),
+            ospp_updates_rx: Mutex::new(Some(updates_rx)),
+            ospp_failure: Mutex::new(None),
             clock: ports.clock,
             config,
             ingress,
@@ -858,99 +921,282 @@ impl DaemonService {
             .unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// The daemon-held `ospp-v1` session: lazily dial the persisted coordinates once, then reuse it.
+    /// The project's local vault: the narrow read/ensure input to `SnowFile` evaluation.
+    fn vault_for(&self, project: &ProjectSlug) -> Result<Arc<dyn SecretProvider>, EdgeError> {
+        self.vaults.provider(project)
+    }
+
+    /// The project's local vault as the capability-honest `SecretVault` port.
+    fn vault_store(&self, project: &ProjectSlug) -> Result<Arc<dyn SecretVault>, EdgeError> {
+        self.vaults.store(project)
+    }
+
+    /// Record one actionable, secret-free line describing a failed live session.
+    fn record_ospp_failure(&self, line: String) {
+        let mut failure = self
+            .ospp_failure
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if failure.as_deref() != Some(line.as_str()) {
+            eprintln!("slipforkd: {line}");
+            *failure = Some(line);
+        }
+    }
+
+    /// The daemon-held `ospp-v1` session, dialed once and reused while it lives.
     ///
-    /// An unpaired developer, or a paired host whose OSPP server is unreachable
-    /// (`OsppError::Transport`), yields `None` so the `0600` local vault still serves every secret;
-    /// `ResourceStrategy::Remote` and `DumpPolicy::RefreshDump` then fail closed inside
-    /// `ResourcePlan::resolve`. Every other connect failure (a revoked key, bad signature, TLS or
-    /// protocol refusal) is a paired host rejecting us, so it propagates instead of silently
-    /// degrading to the local vault.
-    fn ospp_client(&self) -> Result<Option<Arc<OsppClient>>, EdgeError> {
-        let Some(coordinates) = self.ospp_sessions.load()? else {
+    /// An endpoint that is unreachable or refuses the machine key yields `None` so a purely local
+    /// world still boots (`OSPP` is never a prerequisite, `ADR-0005` §1). A resource strategy that
+    /// needs the session then fails closed inside `ResourcePlan::resolve`, and the recorded line
+    /// names the endpoint and the remedy.
+    fn ospp_session(&self) -> Result<Option<Arc<dyn OsppSession>>, EdgeError> {
+        let Some(client) = self.ospp.as_ref() else {
             return Ok(None);
         };
         {
-            let cache = self
-                .ospp_client
+            let runtime = self
+                .ospp_runtime
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner);
-            if let Some(client) = cache.as_ref() {
-                return Ok(Some(Arc::clone(client)));
+            if let Some(session) = runtime.session.as_ref() {
+                return Ok(Some(Arc::clone(session)));
             }
         }
-        let endpoint =
-            OsppEndpoint::connect(coordinates.host(), coordinates.port(), coordinates.tls())
-                .map_err(|error| {
-                    runtime_error(format!(
-                        "the paired OSPP endpoint '{}:{}' is invalid: {error}",
-                        coordinates.host(),
-                        coordinates.port()
-                    ))
-                })?;
-        let client = match OsppClient::connect(
-            &endpoint,
-            self.signer.as_ref(),
-            self.entropy.as_ref(),
-            self.ospp_timeouts,
-        ) {
-            Ok(client) => Arc::new(client),
-            Err(OsppError::Transport { .. }) => {
-                // A dead socket must never be reused; the next call dials afresh.
-                self.invalidate_ospp_client();
+        let updates = Arc::clone(&self.ospp_updates_tx);
+        let on_update = Box::new(move |environment: SubscriptionEnv| {
+            if let Ok(sender) = updates.lock() {
+                let _ = sender.send(environment);
+            }
+        });
+        let session: Arc<dyn OsppSession> = match client.connect(on_update) {
+            Ok(session) => Arc::from(session),
+            Err(error) => {
+                self.record_ospp_failure(format!(
+                    "the OSPP endpoint {} is unavailable ({error}); run `slipfork auth` to pair this machine, then `slipfork restart`",
+                    client.endpoint()
+                ));
                 return Ok(None);
             }
-            Err(error) => {
-                return Err(runtime_error(format!(
-                    "the paired OSPP server '{}:{}' refused the session: {error}",
-                    coordinates.host(),
-                    coordinates.port()
-                )));
-            }
         };
-        let mut cache = self
-            .ospp_client
+        self.record_ospp_failure_clear();
+        let mut runtime = self
+            .ospp_runtime
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        *cache = Some(Arc::clone(&client));
-        Ok(Some(client))
+        runtime.session = Some(Arc::clone(&session));
+        Ok(Some(session))
     }
 
-    /// Drop the cached session so the next capability call reconnects from the persisted
-    /// coordinates instead of reusing a dead socket.
-    fn invalidate_ospp_client(&self) {
+    fn record_ospp_failure_clear(&self) {
         *self
-            .ospp_client
+            .ospp_failure
             .lock()
             .unwrap_or_else(PoisonError::into_inner) = None;
     }
 
-    /// The project's vault, layered over the paired remote vault when one is reachable.
-    fn vault_for(&self, project: &ProjectSlug) -> Result<Arc<dyn SecretProvider>, EdgeError> {
-        let client = self.ospp_client()?;
-        self.vaults.vault(project, client, WORLD_MODE)
-    }
-
-    /// The single `OsppClient::resource_offer` mapper, with offline transport failures treated as
-    /// "no offer" so `prefer_remote` falls back to world-local coordinates with a diagnostic.
-    fn resource_offer(
+    /// The ID-only claims the local world owns: local vault `vars`/`secrets`, locally provisioned
+    /// resources, and Slipfork-assigned domains. Values never cross the wire.
+    fn claims_for(
         &self,
         project: &ProjectSlug,
-        client: Option<&Arc<OsppClient>>,
-    ) -> Result<Option<RemoteResourceOffer>, EdgeError> {
-        let Some(client) = client else {
+        snow: &SnowFile,
+        plan: &ResourcePlan,
+    ) -> Result<OsppClaims, EdgeError> {
+        let store = self.vault_store(project)?;
+        let mut resources: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        // Slipfork always assigns the local world's origin, so `resources::app.*` stays local.
+        resources.insert(
+            "app".to_owned(),
+            vec!["url".to_owned(), "domain".to_owned()],
+        );
+        let pg_ids: Vec<String> = snow
+            .resources
+            .pg_databases
+            .iter()
+            .map(|database| database.id.clone())
+            .collect();
+        if !pg_ids.is_empty() {
+            resources.insert("pg_databases".to_owned(), pg_ids);
+        }
+        let redis_ids: Vec<String> = snow
+            .resources
+            .redis_clusters
+            .iter()
+            .map(|cluster| cluster.id.clone())
+            .collect();
+        if !redis_ids.is_empty() {
+            resources.insert("redis_clusters".to_owned(), redis_ids);
+        }
+        let local_s3: Vec<String> = plan
+            .s3_buckets
+            .iter()
+            .filter(|bucket| matches!(bucket.strategy, ResourceStrategy::Local))
+            .map(|bucket| bucket.id.clone())
+            .collect();
+        if !local_s3.is_empty() {
+            resources.insert("s3_buckets".to_owned(), local_s3);
+        }
+        // A local-mode `!!` secret is generated and persisted by this daemon, so the server must
+        // leave it untouched even before the vault file records it.
+        let mut secrets: BTreeSet<String> = store.keys(project)?.into_iter().collect();
+        secrets.extend(local_generated_secrets(snow)?);
+        Ok(OsppClaims {
+            vars: store.vars(project)?,
+            secrets: secrets.into_iter().collect(),
+            resources,
+            domains: snow.domain_ids().into_iter().map(str::to_owned).collect(),
+            // Components are always started locally, but their *environment* is exactly what the
+            // server resolves; claiming one would suppress its `env_resolved` entry.
+            components: Vec::new(),
+        })
+    }
+
+    /// Subscribe (or re-subscribe with the same stable id) for one project.
+    fn subscribe_project(
+        &self,
+        project: &ProjectSlug,
+        remote: &str,
+        snow_source: &str,
+        claims: &OsppClaims,
+    ) -> Result<Option<SubscriptionEnv>, EdgeError> {
+        let Some(session) = self.ospp_session()? else {
             return Ok(None);
         };
-        match client.resource_offer(project, WORLD_MODE) {
-            Ok(offer) => Ok(offer),
-            Err(OsppError::Transport { .. }) => {
-                self.invalidate_ospp_client();
-                Ok(None)
+        let id = subscription_id(project);
+        let request = SubscribeRequest {
+            id: id.clone(),
+            remote: remote.to_owned(),
+            snow: snow_source.to_owned(),
+            claims: claims.clone(),
+        };
+        match session.subscribe(&request) {
+            Ok(environment) => {
+                let mut runtime = self
+                    .ospp_runtime
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner);
+                runtime.subscriptions.insert(id, project.clone());
+                Ok(Some(environment))
             }
-            Err(error) => Err(runtime_error(format!(
-                "cannot describe OSPP resources for '{project}:{WORLD_MODE}': {error}"
-            ))),
+            Err(error) => {
+                self.record_ospp_failure(format!(
+                    "the OSPP subscription for project '{project}' failed ({error}); run `slipfork restart` after fixing the server"
+                ));
+                Err(runtime_error(format!(
+                    "cannot subscribe project '{project}' to OSPP: {error}"
+                )))
+            }
         }
+    }
+
+    /// Drop the session when the project's last world stops (`unsubscribe`, then `close`).
+    fn note_world_released(&self, project: &ProjectSlug) {
+        let remaining = {
+            let state = self.lock();
+            state.worlds.iter().any(|world| &world.project == project)
+        };
+        if remaining {
+            return;
+        }
+        let mut runtime = self
+            .ospp_runtime
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let id = subscription_id(project);
+        let released = runtime.subscriptions.remove(&id).is_some();
+        if released && let Some(session) = runtime.session.as_ref() {
+            let _ = session.unsubscribe(&id);
+        }
+        if runtime.subscriptions.is_empty()
+            && let Some(session) = runtime.session.take()
+        {
+            let _ = session.close();
+        }
+    }
+
+    /// Start the one subscription supervisor that applies pushed `env_updated` environments.
+    fn start_ospp_supervisor(self: &Arc<Self>) {
+        let Some(receiver) = self
+            .ospp_updates_rx
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take()
+        else {
+            return;
+        };
+        let service = Arc::downgrade(self);
+        let _ = thread::Builder::new()
+            .name("ospp-supervisor".to_owned())
+            .spawn(move || {
+                while let Ok(environment) = receiver.recv() {
+                    let Some(service) = service.upgrade() else {
+                        break;
+                    };
+                    if let Err(error) = service.apply_env_update(&environment) {
+                        service.record_ospp_failure(error.to_string());
+                    }
+                }
+            });
+    }
+
+    /// Apply one already-decrypted `env_updated` environment: recompute each component's
+    /// environment from the local vault + coordinates, and restart **only** the components whose
+    /// environment actually changed.
+    fn apply_env_update(&self, environment: &SubscriptionEnv) -> Result<(), EdgeError> {
+        let project = {
+            let runtime = self
+                .ospp_runtime
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            runtime.subscriptions.get(&environment.id).cloned()
+        };
+        let Some(project) = project else {
+            return Err(runtime_error(format!(
+                "OSPP pushed an environment for unknown subscription '{}'",
+                environment.id
+            )));
+        };
+        let _guard = self.boot_guard();
+        let mut state = self.lock();
+        for world in state
+            .worlds
+            .iter_mut()
+            .filter(|world| world.project == project)
+        {
+            let provider = self.vault_for(&project)?;
+            let claims = self.claims_for(&project, &world.snow, &world.plan)?;
+            for index in 0..world.components.len() {
+                let id = world.components[index].id.clone();
+                let server = environment.component(&id);
+                let env = resolve_component_env(
+                    &world.snow,
+                    provider.as_ref(),
+                    &world.coords,
+                    &id,
+                    &claims,
+                    server,
+                    self.entropy.as_ref(),
+                )?;
+                if env == world.components[index].env {
+                    continue;
+                }
+                let handle = world
+                    .services
+                    .iter()
+                    .find(|service| service.id() == id)
+                    .cloned();
+                if let Some(handle) = handle {
+                    self.engine.update_service_env(&handle, &env).map_err(|err| {
+                        runtime_error(format!(
+                            "cannot restart component '{id}' with the pushed OSPP environment: {err}"
+                        ))
+                    })?;
+                }
+                world.components[index].env = env;
+            }
+            world.ospp_env = Some(environment.components.clone());
+        }
+        Ok(())
     }
 
     /// Resolve the repository, target, and checkout for one `cwd` + `--world` request.
@@ -1080,7 +1326,8 @@ impl DaemonService {
             .collect())
     }
 
-    fn load_snow(&self, worktree: &Path) -> Result<SnowFile, EdgeError> {
+    /// Load `snow.yml` and keep its raw bytes: OSPP `subscribe` sends the file verbatim.
+    fn load_snow(&self, worktree: &Path) -> Result<(SnowFile, String), EdgeError> {
         let path = worktree.join("snow.yml");
         let raw = fs::read_to_string(&path).map_err(|err| {
             runtime_error(format!(
@@ -1088,8 +1335,9 @@ impl DaemonService {
                 path.display()
             ))
         })?;
-        SnowFile::parse_yaml(&raw)
-            .map_err(|err| runtime_error(format!("{}: {err}", path.display())))
+        let parsed = SnowFile::parse_yaml(&raw)
+            .map_err(|err| runtime_error(format!("{}: {err}", path.display())))?;
+        Ok((parsed, raw))
     }
 
     fn load_config(&self, vcs_root: &Path) -> Result<SlipforkConfig, EdgeError> {
@@ -1100,15 +1348,16 @@ impl DaemonService {
 
     /// Materialize (or reuse) the selected `snow.yml` `Dockerfile` stage as the world's `L0`
     /// rootfs (`ADR-0009` §1–§3), resolving `[world]` and every requested backing-service image.
-    fn materialize_rootfs(
-        &self,
-        worktree: &Path,
-        snow: &SnowFile,
-        config: &SlipforkConfig,
-        vault: &dyn SecretProvider,
-        coords: &ResourceCoordinates,
-        host_caches: bool,
-    ) -> Result<WorldRootfs, EdgeError> {
+    fn materialize_rootfs(&self, inputs: RootfsInputs<'_>) -> Result<WorldRootfs, EdgeError> {
+        let RootfsInputs {
+            worktree,
+            snow,
+            config,
+            vault,
+            coords,
+            claims,
+            host_caches,
+        } = inputs;
         let build_images: Vec<&slipfork_snow::BuildImage> = snow
             .images
             .iter()
@@ -1144,17 +1393,30 @@ impl DaemonService {
             .filter_map(|group| groups.get(group))
             .flat_map(|vars| vars.keys().cloned())
             .collect();
-        let resolved = snow
-            .resolve_mode(WORLD_MODE, None, vault, coords, &OsCsprngEntropy)
-            .map_err(|err| runtime_error(err.to_string()))?;
-        let build_envs: Vec<BuildEnvVar> = resolved
+        let resolved = resolve_mode_local(
+            snow,
+            WORLD_MODE,
+            None,
+            vault,
+            coords,
+            claims,
+            self.entropy.as_ref(),
+        )?;
+        let mut build_envs: Vec<BuildEnvVar> = Vec::new();
+        for (name, value) in resolved
             .iter()
             .filter(|(name, _)| build_names.contains(*name))
-            .map(|(name, value)| BuildEnvVar {
+        {
+            if value.expose().contains("${{") {
+                return Err(runtime_error(format!(
+                    "`snow.yml` build variable '{name}' has no locally resolvable value; a Dockerfile build cannot receive an OSPP-resolved template"
+                )));
+            }
+            build_envs.push(BuildEnvVar {
                 name: name.clone(),
                 value: value.expose().to_owned(),
-            })
-            .collect();
+            });
+        }
 
         let component = snow
             .components
@@ -1225,7 +1487,6 @@ impl DaemonService {
         snow: &SnowFile,
         plan: &ResourcePlan,
         rootfs: &WorldRootfs,
-        client: Option<&Arc<OsppClient>>,
     ) -> Result<(SnapshotId, BootLineage), EdgeError> {
         let digest = base_digest(project, snow, plan);
         let key = (project.clone(), digest.clone());
@@ -1253,7 +1514,6 @@ impl DaemonService {
             return Ok((snapshot, lineage));
         }
 
-        let dumps = self.materialize_seed_dumps(project, snow, plan, client)?;
         let seed = self.config.layout.base_seed_dir(project);
         ensure_private_dir(&seed).map_err(runtime_error)?;
         let empty = SnapshotId(format!("{project}-seed-empty"));
@@ -1267,24 +1527,11 @@ impl DaemonService {
             }
         }
 
-        let mut mounts = Vec::new();
-        if let Some(directory) = dumps
-            .values()
-            .next()
-            .and_then(|(_, path)| path.parent())
-            .map(Path::to_path_buf)
-        {
-            mounts.push(WorldMount {
-                host_path: directory.clone(),
-                guest_path: directory,
-                mode: MountMode::ReadOnly,
-            });
-        }
         let spec = WorldSpec {
             target: WorldTarget::TestSlot(0),
             rootfs: rootfs.clone(),
             snapshot: empty,
-            mounts,
+            mounts: Vec::new(),
             base_env: ExecEnv::world_scoped(self.config.layout.world_home(project, "base-seed")),
             local_ingress: None,
             boot: BootLineage::default(),
@@ -1296,7 +1543,7 @@ impl DaemonService {
         })?;
 
         let restore_started = self.clock.now();
-        let restored = self.restore_base(&handle, snow, rootfs, &dumps);
+        let restored = self.restore_base(project, &handle, snow, plan, rootfs);
         let restore_millis = restored
             .as_ref()
             .ok()
@@ -1353,66 +1600,34 @@ impl DaemonService {
         Ok((snapshot, facts))
     }
 
-    /// Fetch/materialize every dump the plan selected, keyed by `snow.yml` database id.
-    fn materialize_seed_dumps(
-        &self,
-        project: &ProjectSlug,
-        snow: &SnowFile,
-        plan: &ResourcePlan,
-        client: Option<&Arc<OsppClient>>,
-    ) -> Result<BTreeMap<String, (String, PathBuf)>, EdgeError> {
-        let mut dumps = BTreeMap::new();
-        for database in &plan.pg_databases {
-            let PgSeed::RemoteDump { dump, refresh } = &database.seed else {
-                continue;
-            };
-            if !snow
-                .resources
-                .pg_databases
-                .iter()
-                .any(|declared| declared.id == database.id)
-            {
-                continue;
-            }
-            let sha256 = dump.sha256_compressed().to_owned();
-            if self.seed_dumps.lookup(&sha256).is_none() || *refresh {
-                let client = client.ok_or_else(|| {
-                    runtime_error(format!(
-                        "the seed dump for '{}' requires a paired OSPP session; run `slipfork auth login`",
-                        database.id
-                    ))
-                })?;
-                DumpStreamer::new(client.as_ref())
-                    .fetch(project, WORLD_MODE, &database.id, self.seed_dumps.as_ref())
-                    .map_err(|err| {
-                        runtime_error(format!(
-                            "cannot stream the seed dump for '{}': {err}",
-                            database.id
-                        ))
-                    })?;
-            }
-            let pgcustom = self.seed_dumps.materialize(&sha256).map_err(|err| {
-                runtime_error(format!(
-                    "cannot materialize the seed dump for '{}': {err}",
-                    database.id
-                ))
-            })?;
-            dumps.insert(database.id.clone(), (sha256, pgcustom));
-        }
-        Ok(dumps)
-    }
-
     /// Start every backing-service container in the seed world and restore the selected dumps.
     fn restore_base(
         &self,
+        project: &ProjectSlug,
         handle: &WorldHandle,
         snow: &SnowFile,
+        plan: &ResourcePlan,
         rootfs: &WorldRootfs,
-        dumps: &BTreeMap<String, (String, PathBuf)>,
     ) -> Result<(), EdgeError> {
-        let mounts = dump_mounts(snow, dumps);
+        let remote_dumps: BTreeMap<&str, bool> = plan
+            .pg_databases
+            .iter()
+            .filter_map(|database| match &database.seed {
+                PgSeed::RemoteDump { refresh } => Some((database.id.as_str(), *refresh)),
+                PgSeed::CleanInitdb => None,
+            })
+            .collect();
+        let session = if remote_dumps.is_empty() {
+            None
+        } else {
+            Some(self.ospp_session()?.ok_or_else(|| {
+                runtime_error(
+                    "the selected seed dump requires an authenticated OSPP session; run `slipfork auth` (or `up --no-dump` for a clean database)",
+                )
+            })?)
+        };
         let mut services: BTreeMap<String, ServiceHandle> = BTreeMap::new();
-        for spec in service_specs(snow, rootfs, &mounts)? {
+        for spec in service_specs(snow, rootfs)? {
             let service = match self.engine.spawn_service(handle, &spec) {
                 Ok(service) => service,
                 Err(err) => {
@@ -1442,29 +1657,65 @@ impl DaemonService {
             let Some(service) = services.get(&format!("pg_clusters.{}", database.cluster)) else {
                 continue;
             };
+            validate_database_id(&database.id)?;
             self.ensure_database(service, &database.id)?;
-            let Some((sha256, _)) = dumps.get(&database.id) else {
+            let Some(_refresh) = remote_dumps.get(database.id.as_str()) else {
                 continue;
             };
-            let guest = format!("/dumps/{sha256}{PGCUSTOM_SUFFIX}");
-            self.exec_service_checked(
-                service,
-                &[
-                    "pg_restore".to_owned(),
-                    "--no-owner".to_owned(),
-                    "--no-privileges".to_owned(),
-                    "--clean".to_owned(),
-                    "--if-exists".to_owned(),
-                    "-U".to_owned(),
-                    "postgres".to_owned(),
-                    "-h".to_owned(),
-                    "127.0.0.1".to_owned(),
-                    "-d".to_owned(),
-                    database.id.clone(),
-                    guest,
-                ],
-                &format!("restoring database '{}'", database.id),
-            )?;
+            let session = session.as_ref().ok_or_else(|| {
+                runtime_error(format!(
+                    "the seed dump for '{}' requires an authenticated OSPP session",
+                    database.id
+                ))
+            })?;
+            let reader = session
+                .dump(
+                    &subscription_id(project),
+                    &format!("pg_databases.{}", database.id),
+                )
+                .map_err(|err| {
+                    runtime_error(format!(
+                        "cannot stream the seed dump for '{}': {err}",
+                        database.id
+                    ))
+                })?;
+            // The decrypted stream is piped straight into `zstd -d | pg_restore` inside the
+            // container: no plaintext dump byte ever lands on host disk.
+            let restore = format!(
+                "zstd -d | pg_restore --no-owner --no-privileges --clean --if-exists -U postgres -h 127.0.0.1 -d {}",
+                database.id
+            );
+            let argv = vec!["sh".to_owned(), "-c".to_owned(), restore];
+            let mut stderr = Vec::new();
+            let output = self
+                .engine
+                .exec_in_service_with_input(
+                    service,
+                    &argv,
+                    reader,
+                    &ExecEnv::default(),
+                    &mut |chunk| {
+                        if chunk.source == slipfork_engine::StreamSource::Stderr {
+                            stderr.extend_from_slice(&chunk.bytes);
+                        }
+                    },
+                )
+                .map_err(|err| {
+                    runtime_error(format!("cannot restore database '{}': {err}", database.id))
+                })?;
+            if output.exit_code != 0 {
+                let detail = if output.stderr.trim().is_empty() {
+                    String::from_utf8_lossy(&stderr).into_owned()
+                } else {
+                    output.stderr.clone()
+                };
+                return Err(runtime_error(format!(
+                    "restoring database '{}' failed with exit code {}: {}",
+                    database.id,
+                    output.exit_code,
+                    detail.trim()
+                )));
+            }
             self.exec_service_checked(
                 service,
                 &[
@@ -1605,14 +1856,16 @@ impl DaemonService {
         Ok((output, detail))
     }
 
-    fn world_env(
-        &self,
-        snow: &SnowFile,
-        vault: &dyn SecretProvider,
-        coords: &ResourceCoordinates,
-        project: &ProjectSlug,
-        target: &WorldTarget,
-    ) -> Result<ExecEnv, EdgeError> {
+    fn world_env(&self, inputs: WorldEnvInputs<'_>) -> Result<ExecEnv, EdgeError> {
+        let WorldEnvInputs {
+            snow,
+            vault,
+            coords,
+            project,
+            target,
+            claims,
+            ospp_env,
+        } = inputs;
         let mut env = ExecEnv::world_scoped(
             self.config
                 .layout
@@ -1621,25 +1874,39 @@ impl DaemonService {
         for (var, value) in &self.config.inherited {
             env.inherit(*var, value.clone());
         }
-        let resolved = snow
-            .resolve_mode(WORLD_MODE, None, vault, coords, &OsCsprngEntropy)
-            .map_err(|err| runtime_error(err.to_string()))?;
+        let resolved = resolve_mode_local(
+            snow,
+            WORLD_MODE,
+            None,
+            vault,
+            coords,
+            claims,
+            self.entropy.as_ref(),
+        )?;
         apply_env(&mut env, resolved)?;
-        Ok(env)
-    }
-
-    fn component_env(
-        &self,
-        snow: &SnowFile,
-        vault: &dyn SecretProvider,
-        coords: &ResourceCoordinates,
-        component: &str,
-    ) -> Result<ExecEnv, EdgeError> {
-        let resolved = snow
-            .resolve_mode(WORLD_MODE, Some(component), vault, coords, &OsCsprngEntropy)
-            .map_err(|err| runtime_error(err.to_string()))?;
-        let mut env = ExecEnv::default();
-        apply_env(&mut env, resolved)?;
+        if let Some(components) = ospp_env {
+            for server in components.values() {
+                for (name, value) in server {
+                    let rendered = render_claimed(
+                        value.expose(),
+                        claims,
+                        vault,
+                        coords,
+                        self.entropy.as_ref(),
+                    )?;
+                    let secret = value.is_secret() || rendered.is_secret();
+                    let raw = rendered.expose().to_owned();
+                    let outcome = if secret {
+                        env.set_secret(name, raw)
+                    } else {
+                        env.set(name, raw)
+                    };
+                    outcome.map_err(|err| {
+                        runtime_error(format!("invalid OSPP environment '{name}': {err}"))
+                    })?;
+                }
+            }
+        }
         Ok(env)
     }
 
@@ -1658,7 +1925,7 @@ impl DaemonService {
         on_event: &mut dyn FnMut(BootEvent),
     ) -> Result<ResolvedWorld, EdgeError> {
         let project = &repo.project;
-        let snow = self.load_snow(worktree)?;
+        let (snow, snow_source) = self.load_snow(worktree)?;
         let effective = snow
             .effective_components(WORLD_MODE)
             .map_err(|err| runtime_error(err.to_string()))?;
@@ -1666,15 +1933,25 @@ impl DaemonService {
             .map_err(|err| runtime_error(err.to_string()))?;
         let origin = self.registry.mint_origin(&route, self.ingress.port())?;
         let config = self.load_config(&repo.vcs_root)?;
-        let client = self.ospp_client()?;
-        let offer = self.resource_offer(project, client.as_ref())?;
+
+        // OSPP project identity is the verbatim Git remote and only that string: without an
+        // origin there is nothing to subscribe, even when the machine key is paired.
+        let remote = self.repo_roots.remote(repo).map_err(|err| {
+            runtime_error(format!(
+                "cannot read the repository's Git origin for OSPP: {err}"
+            ))
+        })?;
+        // One live session per project while worlds run; the plan only needs to know whether a
+        // usable (paired and remote-identified) session exists. OSPP is never a prerequisite.
+        let session = self.ospp_session()?;
+        let ospp_paired = session.is_some() && remote.is_some();
         let plan = resolve_plan(
             &config,
             &snow,
             target,
             policy.dump,
             policy.force_local_resources,
-            offer.as_ref(),
+            ospp_paired,
         )?;
         let resources = plan_summaries(&plan);
         for resource in &resources {
@@ -1682,11 +1959,28 @@ impl DaemonService {
                 resource: resource.clone(),
             });
         }
+        // Resource coordinates are always world-local: remote S3 credentials arrive as component
+        // environment values, and PostgreSQL is still the local container restored from a stream.
         let coords =
-            ResourceCoordinates::for_world(&snow, project, target, &origin, &s3_overrides(&plan))
+            ResourceCoordinates::for_world(&snow, project, target, &origin, &BTreeMap::new())
                 .map_err(|err| runtime_error(err.to_string()))?;
         let vault = self.vault_for(project)?;
-        let base_env = self.world_env(&snow, vault.as_ref(), &coords, project, target)?;
+        let claims = self.claims_for(project, &snow, &plan)?;
+        let ospp_env = match (session.as_ref(), remote.as_deref()) {
+            (Some(_), Some(remote)) => {
+                self.subscribe_project(project, remote, &snow_source, &claims)?
+            }
+            _ => None,
+        };
+        let base_env = self.world_env(WorldEnvInputs {
+            snow: &snow,
+            vault: vault.as_ref(),
+            coords: &coords,
+            project,
+            target,
+            claims: &claims,
+            ospp_env: ospp_env.as_ref().map(|env| &env.components),
+        })?;
         let mut components = Vec::new();
         for (id, resolved) in &effective {
             if resolved.disabled {
@@ -1701,7 +1995,15 @@ impl DaemonService {
                 id: id.clone(),
                 run_command: resolved.run_command.clone(),
                 readiness_port,
-                env: self.component_env(&snow, vault.as_ref(), &coords, id)?,
+                env: resolve_component_env(
+                    &snow,
+                    vault.as_ref(),
+                    &coords,
+                    id,
+                    &claims,
+                    ospp_env.as_ref().and_then(|env| env.component(id)),
+                    self.entropy.as_ref(),
+                )?,
             });
         }
         let ingresses = ingress_routes(&snow, &effective)?;
@@ -1709,7 +2011,6 @@ impl DaemonService {
         Ok(ResolvedWorld {
             snow,
             config,
-            client,
             vault,
             plan,
             resources,
@@ -1718,6 +2019,8 @@ impl DaemonService {
             components,
             ingresses,
             domains,
+            claims,
+            ospp_env: ospp_env.map(|environment| environment.components),
         })
     }
 
@@ -1745,27 +2048,23 @@ impl DaemonService {
             Ok(resolved) => resolved,
             Err(error) => return Err(fail(error, workspace)),
         };
-        let rootfs = match self.materialize_rootfs(
-            &worktree,
-            &resolved.snow,
-            &resolved.config,
-            resolved.vault.as_ref(),
-            &resolved.coords,
-            policy.host_caches,
-        ) {
+        let rootfs = match self.materialize_rootfs(RootfsInputs {
+            worktree: &worktree,
+            snow: &resolved.snow,
+            config: &resolved.config,
+            vault: resolved.vault.as_ref(),
+            coords: &resolved.coords,
+            claims: &resolved.claims,
+            host_caches: policy.host_caches,
+        }) {
             Ok(rootfs) => rootfs,
             Err(error) => return Err(fail(error, workspace)),
         };
-        let (snapshot, boot) = match self.ensure_base_snapshot(
-            &project,
-            &resolved.snow,
-            &resolved.plan,
-            &rootfs,
-            resolved.client.as_ref(),
-        ) {
-            Ok(base) => base,
-            Err(error) => return Err(fail(error, workspace)),
-        };
+        let (snapshot, boot) =
+            match self.ensure_base_snapshot(&project, &resolved.snow, &resolved.plan, &rootfs) {
+                Ok(base) => base,
+                Err(error) => return Err(fail(error, workspace)),
+            };
         let spec = WorldSpec {
             target: target.clone(),
             rootfs: rootfs.clone(),
@@ -1818,6 +2117,8 @@ impl DaemonService {
             policy,
             coords: resolved.coords,
             snow: resolved.snow,
+            plan: resolved.plan,
+            ospp_env: resolved.ospp_env,
             rootfs: rootfs.clone(),
             resources: resolved.resources,
             services: Vec::new(),
@@ -1880,7 +2181,7 @@ impl DaemonService {
     ) -> Result<usize, EdgeError> {
         let world = world_id(&live.project, &live.target);
 
-        let service_specs = service_specs(&live.snow, &live.rootfs, &BTreeMap::new())?;
+        let service_specs = service_specs(&live.snow, &live.rootfs)?;
         for spec in service_specs {
             match self.engine.spawn_service(&live.handle, &spec) {
                 Ok(service) => live.services.push(service),
@@ -2438,19 +2739,15 @@ impl DaemonControl for DaemonService {
             .repo_roots
             .resolve(repo_root)
             .map_err(|err| runtime_error(err.to_string()))?;
-        let vault = self.vaults.mutable_vault(&repo.project)?;
-        let existing = vault
-            .get(Namespace::Secrets, key)
-            .map_err(|err| runtime_error(err.to_string()))?;
+        let vault = self.vault_store(&repo.project)?;
+        let existing = vault.get(&repo.project, key)?;
         if existing.is_some() && !force {
             return Err(rejected(format!(
                 "secret '{key}' already exists in {}; pass --force to rotate it",
                 self.config.layout.vault_path(&repo.project).display()
             )));
         }
-        vault
-            .put(Namespace::Secrets, key, value)
-            .map_err(|err| runtime_error(err.to_string()))
+        vault.put(&repo.project, key, value, true)
     }
 
     fn secret_unset(&self, repo_root: &Path, key: &str) -> Result<bool, EdgeError> {
@@ -2459,10 +2756,8 @@ impl DaemonControl for DaemonService {
             .repo_roots
             .resolve(repo_root)
             .map_err(|err| runtime_error(err.to_string()))?;
-        let vault = self.vaults.mutable_vault(&repo.project)?;
-        vault
-            .remove(key)
-            .map_err(|err| runtime_error(err.to_string()))
+        let vault = self.vault_store(&repo.project)?;
+        vault.remove(&repo.project, key)
     }
 
     fn secret_list(&self, repo_root: &Path) -> Result<Vec<String>, EdgeError> {
@@ -2470,8 +2765,8 @@ impl DaemonControl for DaemonService {
             .repo_roots
             .resolve(repo_root)
             .map_err(|err| runtime_error(err.to_string()))?;
-        let vault = self.vaults.mutable_vault(&repo.project)?;
-        vault.keys().map_err(|err| runtime_error(err.to_string()))
+        let vault = self.vault_store(&repo.project)?;
+        vault.keys(&repo.project)
     }
 
     fn logs(
@@ -2809,40 +3104,58 @@ impl DaemonControl for DaemonService {
         Ok(())
     }
 
-    fn auth_login(&self, pairing_url: &str) -> Result<slipfork_edge::AuthSummary, EdgeError> {
-        let url = PairingUrl::parse(pairing_url)
-            .map_err(|err| rejected(format!("invalid pairing URL: {err}")))?;
-        let browser_url = url
-            .browser_url()
-            .map_err(|err| rejected(format!("invalid pairing URL: {err}")))?;
-        self.browser
-            .open_pairing_url(browser_url)
-            .map_err(|err| runtime_error(format!("cannot open the pairing page: {err}")))?;
-        let host = url.host().to_owned();
-        let port = url.port();
-        let tls = url.scheme().uses_tls();
-        let approval = redeem_pairing_url(
-            url,
-            self.signer.as_ref(),
-            self.entropy.as_ref(),
-            self.ospp_timeouts,
-        )
-        .map_err(|err| {
-            // OSPP errors never embed the handle; the URL itself is never re-rendered here.
-            runtime_error(format!("OSPP pairing failed: {err}"))
-        })?;
-        self.ospp_sessions.save(&OsppSessionCoordinates::new(
-            host,
-            port,
-            tls,
-            approval.account.clone(),
-        ))?;
-        // The next capability call must dial the freshly paired host, never a stale session.
-        self.invalidate_ospp_client();
+    fn auth_login(
+        &self,
+        endpoint_url: Option<&str>,
+    ) -> Result<slipfork_edge::AuthSummary, EdgeError> {
+        let Some(client) = self.ospp.as_ref() else {
+            return Err(rejected(
+                "this daemon has no OSPP endpoint; start `slipforkd` with `--ospp-endpoint <wss://...>`",
+            ));
+        };
+        if let Some(requested) = endpoint_url
+            && requested != client.endpoint().as_str()
+        {
+            return Err(rejected(format!(
+                "the requested OSPP endpoint '{requested}' differs from this daemon's injected endpoint '{}'; one daemon has exactly one server identity",
+                client.endpoint()
+            )));
+        }
+        let mut opened: Option<String> = None;
+        let mut on_handle = |url: &slipfork_ospp::LivePairingUrl| {
+            let full = url.as_str().to_owned();
+            let (base, handle) = full.split_once("#handle=").ok_or_else(|| {
+                slipfork_ospp::OsppError::InvalidPairingUrl(
+                    "server-supplied URL carries no #handle= fragment".to_owned(),
+                )
+            })?;
+            let page = slipfork_ospp::LivePairingUrl::with_handle(base, handle)?;
+            opened = Some(full);
+            self.browser.open_pairing_url(page).map_err(|err| {
+                slipfork_ospp::OsppError::Transport(format!("cannot open the pairing page: {err}"))
+            })
+        };
+        let approval = client
+            .pair(&self.hostname, &mut on_handle)
+            .map_err(|err| runtime_error(format!("OSPP pairing failed: {err}")))?;
+        // The freshly paired key must be used on the next dial, never a stale session.
+        {
+            let mut runtime = self
+                .ospp_runtime
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            if let Some(session) = runtime.session.take() {
+                let _ = session.close();
+            }
+        }
         Ok(slipfork_edge::AuthSummary {
-            key_id: self.signer.key_id().as_str().to_owned(),
-            backend: self.signer.backend_label().to_owned(),
+            key_id: format!("p256:{}", self.signer.public_key_hex()),
+            backend: "software:file-0600".to_owned(),
             account: Some(approval.account),
+            machine: Some(approval.machine),
+            pairing_url: slipfork_edge::daemon::ControlSecret::new(
+                opened.ok_or_else(|| runtime_error("the OSPP server issued no pairing handle"))?,
+            ),
         })
     }
 }
@@ -2930,6 +3243,8 @@ impl DaemonService {
         live.coords = resolved.coords;
         live.base_env = resolved.base_env;
         live.components = resolved.components;
+        live.plan = resolved.plan;
+        live.ospp_env = resolved.ospp_env;
         live.policy = policy;
 
         // The rows as they stand after the stop (every service `Stopped`) and before the pipeline:
@@ -2976,6 +3291,9 @@ impl DaemonService {
     ) -> Result<(bool, Option<LiveWorld>), EdgeError> {
         let released = self.registry.release_world(project, target)?;
         let world = self.take_world(project, target);
+        if world.is_some() {
+            self.note_world_released(project);
+        }
         Ok((released, world))
     }
 
@@ -3212,7 +3530,7 @@ fn resolve_plan(
     target: &WorldTarget,
     dump: DumpPolicy,
     force_local: bool,
-    offer: Option<&RemoteResourceOffer>,
+    ospp_paired: bool,
 ) -> Result<ResourcePlan, EdgeError> {
     let s3_ids: Vec<&str> = snow
         .resources
@@ -3248,7 +3566,7 @@ fn resolve_plan(
     } else {
         (spec, dump)
     };
-    ResourcePlan::resolve(&spec, ResourceMode::from(target), dump, offer)
+    ResourcePlan::resolve(&spec, ResourceMode::from(target), dump, ospp_paired)
         .map_err(|err| runtime_error(err.to_string()))
 }
 
@@ -3279,25 +3597,15 @@ fn json_label<T: serde::Serialize>(value: &T) -> String {
 /// `false` means the plan restores no dump (a clean `initdb` base); several dumps are a seed with
 /// no single digest, so the digest stays `None` rather than naming one database arbitrarily.
 fn selected_seed(snow: &SnowFile, plan: &ResourcePlan) -> (bool, Option<String>) {
-    let digests: Vec<&str> = plan
-        .pg_databases
-        .iter()
-        .filter(|database| {
-            snow.resources
-                .pg_databases
-                .iter()
-                .any(|declared| declared.id == database.id)
-        })
-        .filter_map(|database| match &database.seed {
-            PgSeed::RemoteDump { dump, .. } => Some(dump.sha256_compressed()),
-            PgSeed::CleanInitdb => None,
-        })
-        .collect();
-    match digests.as_slice() {
-        [] => (false, None),
-        [digest] => (true, Some((*digest).to_owned())),
-        _ => (true, None),
-    }
+    let has_seed = plan.pg_databases.iter().any(|database| {
+        snow.resources
+            .pg_databases
+            .iter()
+            .any(|declared| declared.id == database.id)
+            && matches!(database.seed, PgSeed::RemoteDump { .. })
+    });
+    // OSPP v1 no longer advertises a dump digest, so the only honest lineage label is `remote`.
+    (has_seed, has_seed.then(|| "remote".to_owned()))
 }
 
 /// The facts a world reuses when the base snapshot already existed on disk.
@@ -3332,38 +3640,11 @@ fn base_digest(project: &ProjectSlug, snow: &SnowFile, plan: &ResourcePlan) -> S
         hasher.update(b"=");
         match &database.seed {
             PgSeed::CleanInitdb => hasher.update(b"clean"),
-            PgSeed::RemoteDump { dump, .. } => hasher.update(dump.sha256_compressed().as_bytes()),
+            PgSeed::RemoteDump { .. } => hasher.update(b"remote"),
         }
         hasher.update(b"\0");
     }
     hex::encode(hasher.finalize())
-}
-
-/// The verified `<sha256>.pgcustom` files one `pg_clusters.<id>` container mounts read-only.
-fn dump_mounts(
-    snow: &SnowFile,
-    dumps: &BTreeMap<String, (String, PathBuf)>,
-) -> BTreeMap<String, Vec<WorldMount>> {
-    let mut mounts: BTreeMap<String, Vec<WorldMount>> = BTreeMap::new();
-    for (database_id, (sha256, pgcustom)) in dumps {
-        let Some(database) = snow
-            .resources
-            .pg_databases
-            .iter()
-            .find(|database| database.id == *database_id)
-        else {
-            continue;
-        };
-        mounts
-            .entry(format!("pg_clusters.{}", database.cluster))
-            .or_default()
-            .push(WorldMount {
-                host_path: pgcustom.clone(),
-                guest_path: PathBuf::from("/dumps").join(format!("{sha256}{PGCUSTOM_SUFFIX}")),
-                mode: MountMode::ReadOnly,
-            });
-    }
-    mounts
 }
 
 /// A `snow.yml` database id is interpolated into `psql` SQL, so it stays a plain identifier.
@@ -3443,11 +3724,7 @@ fn requested_service_images(snow: &SnowFile) -> Vec<BackingServiceKey> {
 ///
 /// `dump_mounts` maps a `pg_clusters.<id>` service id to the verified `<sha256>.pgcustom` files the
 /// base seed world must expose read-only at `/dumps/...`.
-fn service_specs(
-    snow: &SnowFile,
-    rootfs: &WorldRootfs,
-    dump_mounts: &BTreeMap<String, Vec<WorldMount>>,
-) -> Result<Vec<ServiceSpec>, EdgeError> {
+fn service_specs(snow: &SnowFile, rootfs: &WorldRootfs) -> Result<Vec<ServiceSpec>, EdgeError> {
     let mut specs = Vec::new();
     for cluster in &snow.resources.pg_clusters {
         let image = BackingServiceKey::Postgres {
@@ -3456,10 +3733,6 @@ fn service_specs(
         let id = format!("pg_clusters.{}", cluster.id);
         require_image(rootfs, &image, &id)?;
         ensure_container_dirs(rootfs, &image, &["/var/lib/postgresql/data"])?;
-        let readonly_mounts = dump_mounts.get(&id).cloned().unwrap_or_default();
-        for mount in &readonly_mounts {
-            ensure_container_file(rootfs, &image, &mount.guest_path)?;
-        }
         specs.push(ServiceSpec {
             kind: ServiceKind::BackingService,
             id: id.clone(),
@@ -3470,7 +3743,7 @@ fn service_specs(
                     host_subdir: PathBuf::from("pgdata").join(&cluster.id),
                     container_path: PathBuf::from("/var/lib/postgresql/data"),
                 }],
-                readonly_mounts,
+                readonly_mounts: Vec::new(),
             },
             env: container_env(
                 "/tmp",
@@ -3579,32 +3852,6 @@ fn ensure_container_dirs(
     Ok(())
 }
 
-/// Create the parent directory and an empty destination file a read-only file mount needs.
-///
-/// `docker export` never carries the `/dumps/<sha256>.pgcustom` path, and `crun` requires the
-/// bind-mount destination to exist in the image rootfs.
-fn ensure_container_file(
-    rootfs: &WorldRootfs,
-    image: &BackingServiceKey,
-    path: &Path,
-) -> Result<(), EdgeError> {
-    let image = rootfs.service_images.get(image).ok_or_else(|| {
-        runtime_error(format!(
-            "backing-service image '{image}' is not materialized; re-run `slipfork up`"
-        ))
-    })?;
-    let host = image.rootfs.join(path.strip_prefix("/").unwrap_or(path));
-    if let Some(parent) = host.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|err| runtime_error(format!("cannot create {}: {err}", parent.display())))?;
-    }
-    if !host.exists() {
-        File::create(&host)
-            .map_err(|err| runtime_error(format!("cannot create {}: {err}", host.display())))?;
-    }
-    Ok(())
-}
-
 fn require_image(
     rootfs: &WorldRootfs,
     image: &BackingServiceKey,
@@ -3632,26 +3879,6 @@ fn container_env(home: &str, vars: &[(&str, &str)], path: &str) -> Result<ExecEn
             .map_err(|err| runtime_error(err.to_string()))?;
     }
     Ok(env)
-}
-
-/// OSPP-offered S3 coordinates are the only ones that override the world-local endpoint.
-fn s3_overrides(plan: &ResourcePlan) -> BTreeMap<String, S3Coordinates> {
-    plan.s3_buckets
-        .iter()
-        .filter_map(|bucket| match &bucket.resolution {
-            S3Resolution::Remote(remote) => Some((
-                bucket.id.clone(),
-                S3Coordinates {
-                    endpoint_url: remote.endpoint_url().to_owned(),
-                    bucket: remote.bucket().to_owned(),
-                    access_key: remote.access_key().to_owned(),
-                    secret_key: remote.secret_key().to_owned(),
-                    region: remote.region().to_owned(),
-                },
-            )),
-            S3Resolution::Local => None,
-        })
-        .collect()
 }
 
 /// Build the `IngressRoute` prefix table: declared `snow.yml` ingresses plus the canonical
@@ -3707,6 +3934,217 @@ fn apply_env(env: &mut ExecEnv, resolved: ResolvedEnvMap) -> Result<(), EdgeErro
             .map_err(|err| runtime_error(format!("invalid world environment '{key}': {err}")))?;
     }
     Ok(())
+}
+
+/// Every `secrets::<KEY> !! <generator>` the local world must generate itself.
+///
+/// These are ID-only claims: the name, never the generated value, crosses the wire.
+fn local_generated_secrets(snow: &SnowFile) -> Result<Vec<String>, EdgeError> {
+    let groups = snow
+        .effective_env_groups(WORLD_MODE)
+        .map_err(|err| runtime_error(err.to_string()))?;
+    let mut names = BTreeSet::new();
+    for vars in groups.values() {
+        for template in vars.values() {
+            for token in parse_faceless(template).map_err(|err| runtime_error(err.to_string()))? {
+                if let Token::Expr {
+                    namespace,
+                    path,
+                    modifier: TailModifier::Ensure(_),
+                    ..
+                } = token
+                    && namespace == "secrets"
+                    && path.len() == 1
+                {
+                    names.insert(path[0].clone());
+                }
+            }
+        }
+    }
+    Ok(names.into_iter().collect())
+}
+
+/// Resolve the mode's env groups against the local vault and coordinates only.
+///
+/// Claimed expressions are resolved locally; every unclaimed expression stays verbatim for the
+/// server (or for a later in-memory server overlay). This is the one boot-time resolver: a missing
+/// remote value must never make a purely local world fail before `subscribe` can fill it.
+fn resolve_mode_local(
+    snow: &SnowFile,
+    mode: &str,
+    component: Option<&str>,
+    provider: &dyn SecretProvider,
+    coords: &ResourceCoordinates,
+    claims: &OsppClaims,
+    entropy: &dyn EntropySource,
+) -> Result<ResolvedEnvMap, EdgeError> {
+    let groups = snow
+        .effective_env_groups(mode)
+        .map_err(|err| runtime_error(err.to_string()))?;
+    let selected: Vec<String> = match component {
+        Some(id) => snow
+            .components
+            .iter()
+            .find(|candidate| candidate.id == id)
+            .map(|candidate| candidate.envs.clone())
+            .unwrap_or_default(),
+        None => groups.keys().cloned().collect(),
+    };
+    let mut out = ResolvedEnvMap::new();
+    for group in selected {
+        let Some(vars) = groups.get(&group) else {
+            continue;
+        };
+        for (name, template) in vars {
+            let value = render_claimed(template, claims, provider, coords, entropy)?;
+            out.insert(name.clone(), value);
+        }
+    }
+    Ok(out)
+}
+
+/// One component's environment: local `snow.yml` resolution first, then the server-resolved
+/// values, with only **claimed** `${{ ... }}` expressions substituted locally.
+fn resolve_component_env(
+    snow: &SnowFile,
+    provider: &dyn SecretProvider,
+    coords: &ResourceCoordinates,
+    component: &str,
+    claims: &OsppClaims,
+    server: Option<&BTreeMap<String, SecretValue>>,
+    entropy: &dyn EntropySource,
+) -> Result<ExecEnv, EdgeError> {
+    let resolved = resolve_mode_local(
+        snow,
+        WORLD_MODE,
+        Some(component),
+        provider,
+        coords,
+        claims,
+        entropy,
+    )?;
+    let mut env = ExecEnv::default();
+    apply_env(&mut env, resolved)?;
+    let Some(server) = server else {
+        return Ok(env);
+    };
+    for (name, value) in server {
+        let rendered = render_claimed(value.expose(), claims, provider, coords, entropy)?;
+        let secret = value.is_secret() || rendered.is_secret();
+        let raw = rendered.expose().to_owned();
+        let outcome = if secret {
+            env.set_secret(name, raw)
+        } else {
+            env.set(name, raw)
+        };
+        outcome
+            .map_err(|err| runtime_error(format!("invalid OSPP environment '{name}': {err}")))?;
+    }
+    Ok(env)
+}
+
+/// Substitute only the expressions this world claims, leaving every unclaimed expression to the
+/// server's template-free guarantee.
+fn render_claimed(
+    template: &str,
+    claims: &OsppClaims,
+    provider: &dyn SecretProvider,
+    coords: &ResourceCoordinates,
+    entropy: &dyn EntropySource,
+) -> Result<SecretValue, EdgeError> {
+    let tokens = parse_faceless(template).map_err(|err| runtime_error(err.to_string()))?;
+    let mut rendered = String::with_capacity(template.len());
+    let mut contaminated = false;
+    for token in tokens {
+        match token {
+            Token::Literal(literal) => rendered.push_str(&literal),
+            Token::Expr {
+                namespace,
+                path,
+                modifier,
+                raw,
+            } => {
+                if !is_claimed(claims, &namespace, &path) {
+                    // Unclaimed values are template-free per the spec; if one leaks through, it
+                    // is forwarded verbatim rather than re-evaluated against local state.
+                    rendered.push_str("${{ ");
+                    rendered.push_str(&raw);
+                    rendered.push_str(" }}");
+                    continue;
+                }
+                if let Some(namespace) = Namespace::from_name(&namespace) {
+                    if namespace == Namespace::Secrets {
+                        contaminated = true;
+                    }
+                    let key = path.join(".");
+                    match provider.get(namespace, &key).map_err(|err| {
+                        runtime_error(format!("cannot resolve claimed {key}: {err}"))
+                    })? {
+                        Some(value) => rendered.push_str(&value),
+                        None => match modifier {
+                            TailModifier::Fallback(default) => rendered.push_str(&default),
+                            TailModifier::Ensure(generator) => {
+                                let proposed = generator
+                                    .generate(entropy)
+                                    .map_err(|err| runtime_error(err.to_string()))?;
+                                let saved =
+                                    provider.ensure_secret(&key, &proposed).map_err(|err| {
+                                        runtime_error(format!(
+                                            "cannot persist claimed secret '{key}': {err}"
+                                        ))
+                                    })?;
+                                rendered.push_str(&saved);
+                            }
+                            TailModifier::None => {
+                                return Err(runtime_error(format!(
+                                    "the claimed '${{{{ {raw} }}}}' has no local value; set it with `slipfork secret set` or remove it from `snow.yml`"
+                                )));
+                            }
+                        },
+                    }
+                } else {
+                    match coords.resolve(&namespace, &path) {
+                        Some((value, secret)) => {
+                            contaminated |= secret;
+                            rendered.push_str(&value);
+                        }
+                        None => match modifier {
+                            TailModifier::Fallback(default) => rendered.push_str(&default),
+                            _ => {
+                                return Err(runtime_error(format!(
+                                    "the claimed '${{{{ {raw} }}}}' has no local coordinate"
+                                )));
+                            }
+                        },
+                    }
+                }
+            }
+        }
+    }
+    Ok(if contaminated {
+        SecretValue::secret(rendered)
+    } else {
+        SecretValue::plain(rendered)
+    })
+}
+
+/// `true` when the daemon owns this expression locally (`docs/design/ospp.md` §Environment
+/// Resolution). Only identifiers are consulted; no value is involved.
+fn is_claimed(claims: &OsppClaims, namespace: &str, path: &[String]) -> bool {
+    match namespace {
+        "vars" => path.len() == 1 && claims.vars.iter().any(|key| key == &path[0]),
+        "secrets" => path.len() == 1 && claims.secrets.iter().any(|key| key == &path[0]),
+        "domains" => path.len() == 1 && claims.domains.iter().any(|id| id == &path[0]),
+        "components" => path.len() == 1 && claims.components.iter().any(|id| id == &path[0]),
+        "resources" => {
+            path.len() >= 2
+                && claims
+                    .resources
+                    .get(&path[0])
+                    .is_some_and(|ids| ids.iter().any(|id| id == &path[1]))
+        }
+        _ => false,
+    }
 }
 
 /// Parent directory of an explicit manifest path (`"."` for a bare file name).
@@ -4504,6 +4942,10 @@ modes:
         fn resolve(&self, _start: &Path) -> Result<RepoRoot, slipfork_vcs::VcsError> {
             Ok(self.repo.clone())
         }
+
+        fn remote(&self, _repo: &RepoRoot) -> Result<Option<String>, slipfork_vcs::VcsError> {
+            Ok(None)
+        }
     }
 
     struct NoBrowser;
@@ -4512,6 +4954,13 @@ modes:
         fn open_pairing_url(
             &self,
             _url: slipfork_ospp::LivePairingUrl,
+        ) -> Result<(), slipfork_ospp::OsppError> {
+            Ok(())
+        }
+
+        fn open_origin(
+            &self,
+            _origin: &slipfork_world::WorldOrigin,
         ) -> Result<(), slipfork_ospp::OsppError> {
             Ok(())
         }
@@ -4546,14 +4995,11 @@ modes:
                 }),
                 workspaces: Arc::new(RepositoryWorkspaces::new()),
                 vaults: Arc::new(LayoutProjectVaults::new(layout.clone())),
+                ospp: None,
                 signer: Arc::new(slipfork_ospp_testkit::signers::software_signer()),
-                ospp_sessions: Arc::new(FileOsppSessionStore::new(layout.ospp_session_path())),
-                seed_dumps: Arc::new(
-                    DiskSeedDumpStore::open(layout.state_dir()).expect("disk-backed dumps"),
-                ),
+                hostname: "test-machine".to_owned(),
                 browser: Arc::new(NoBrowser),
                 entropy: Arc::new(OsCsprngEntropy),
-                ospp_timeouts: OsppTimeouts::default(),
                 clock: clock.clone(),
             },
             DaemonConfig {

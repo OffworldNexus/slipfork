@@ -19,3 +19,47 @@ edited fields
 ## 2026-11-18T01:26 [lead]
 
 edited fields
+
+## 2026-11-18T01:37 [lead]
+
+edited fields
+
+## 2026-11-18T01:37 [lead]
+
+status ready -> active
+
+## 2026-11-18T01:37 [lead]
+
+attempt 1/3 started
+
+## 2026-11-18T01:37 [lead]
+
+base 90daf6e77eee40719b25c0960b66bbd73f6ba4fd
+
+## 2026-11-18T01:43 [lead]
+
+edited fields
+
+## 2026-11-18T01:43 [lead]
+
+attempt 2/5 started
+
+## 2026-11-18T01:43 [lead]
+
+attempt 1 cap-out mid-surgery: BUILD IS RED (crates/slipfork/src/daemon.rs half-rewritten). Solid and kept: slipfork-dag resources (RemoteResourceOffer deleted, resolve(spec,mode,dump_policy,ospp_paired)), engine update_service_env + exec_in_service_with_input, edge SecretVault port + AuthSummary/AuthLogin, snow keys_in, vcs remote(), slipfork ospp.rs deleted + vaults.rs/ProjectVaults + daemon imports/ports/wiring/OsppRuntime/subscribe_project/start_ospp_supervisor. Remaining: ResolvedWorld/LiveWorld fields + boot/reboot population + supervisor call; helpers (resolve_component_env/render_claimed/claimed/subscription_id); move dumps to streaming session.dump -> exec_in_service_with_input(zstd -d|pg_restore) and delete .pgcustom/PGCUSTOM_SUFFIX; auth_login -> pair(); release_world -> note_world_released; main/cli/slipforkd wiring + tests/support endpoint + binary_opener.open_origin + FixedRepo::remote; then critical_osspp_daemon rewrite + critical_cli auth; then acceptance. Two protected files outside paths were necessarily adapted (dag critical_dag, edge critical_edge) — disclose in RESULT.
+
+## 2026-11-18T02:30 [lead]
+
+edited fields
+
+## 2026-11-18T02:30 [lead]
+
+attempt 3: make check GREEN. lib 81, critical_osspp_daemon 6 (two-tier byte scan 0 hits, vault credential survives restart, env_updated restarts api only), critical_cli 24, clippy/fmt/rustdoc/guard 597/plan OK. Dump proof: server dump_urls=1, SELECT count(*)=3, no PGDMP/zstd header file on disk — postgres:18 ships zstd, so the streaming restore is real, no fallback. Paths extended for the two protected edits this cut-over necessarily touches (dag tests + support/integrations.toml evidence pointer). Remaining before commit: remove the NEW clippy allow on create_fork by bundling fork flags into one struct (Law 1).
+
+## 2026-11-18T03:07 [lead]
+
+landed in one atomic commit with its siblings: the OSPP crate cut-over breaks crates/slipfork by design, and M3.28.8's restart/-v work interleaves with M3.29.3 in main.rs/cli.rs; splitting would require hand-editing code. make check green.
+
+## 2026-11-18T03:07 [lead]
+
+status active -> done

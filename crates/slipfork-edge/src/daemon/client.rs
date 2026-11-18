@@ -342,9 +342,9 @@ impl DaemonControl for DaemonControlClient {
         }
     }
 
-    fn auth_login(&self, pairing_url: &str) -> Result<AuthSummary, EdgeError> {
+    fn auth_login(&self, endpoint_url: Option<&str>) -> Result<AuthSummary, EdgeError> {
         match self.call(&DaemonRequest::AuthLogin {
-            pairing_url: crate::daemon::ControlSecret::new(pairing_url),
+            endpoint_url: endpoint_url.map(str::to_owned),
         })? {
             DaemonReply::Auth { auth } => Ok(auth),
             other => Err(unexpected_reply(&other)),

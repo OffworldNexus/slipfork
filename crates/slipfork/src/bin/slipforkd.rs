@@ -32,7 +32,8 @@ use slipfork_edge::{
 };
 use slipfork_engine::btrfs::KernelBtrfsDriver;
 use slipfork_engine::{InheritedVar, current_uid_gid};
-use slipfork_ospp::{BrowserOpener, LivePairingUrl, OsppError};
+use slipfork_ospp::{BrowserOpener, LivePairingUrl, OsppEndpoint, OsppError};
+use slipfork_world::WorldOrigin;
 
 /// Unified unprivileged user daemon.
 #[derive(Debug, Parser)]
@@ -66,6 +67,11 @@ struct DaemonCli {
     /// (defaults to `<state_dir>/cache/runtime/<pinned file>`).
     #[arg(long)]
     crun: Option<PathBuf>,
+
+    /// The one OSPP v1 server identity (`wss://…`, or `ws://` strictly on loopback). Omit for a
+    /// purely local daemon.
+    #[arg(long)]
+    ospp_endpoint: Option<String>,
 }
 
 fn main() -> ExitCode {
@@ -83,8 +89,8 @@ fn main() -> ExitCode {
 /// over in-process and never becomes an argv/log value of our own process).
 struct SystemBrowserOpener;
 
-impl BrowserOpener for SystemBrowserOpener {
-    fn open_pairing_url(&self, url: LivePairingUrl) -> Result<(), OsppError> {
+impl SystemBrowserOpener {
+    fn open(&self, url: &str) -> Result<(), OsppError> {
         // Honor the developer's `BROWSER` choice first (the composition root is the only place
         // ambient environment is read); fall back to the desktop's `xdg-open`.
         let program = std::env::var_os("BROWSER")
@@ -92,20 +98,31 @@ impl BrowserOpener for SystemBrowserOpener {
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from("xdg-open"));
         let status = std::process::Command::new(&program)
-            .arg(url.as_str())
+            .arg(url)
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .status()
-            .map_err(|err| OsppError::PairingUrl {
-                reason: format!("cannot run {}: {err}", program.display()),
+            .map_err(|err| {
+                OsppError::Transport(format!("cannot run {}: {err}", program.display()))
             })?;
         if !status.success() {
-            return Err(OsppError::PairingUrl {
-                reason: format!("{} exited with {status}", program.display()),
-            });
+            return Err(OsppError::Transport(format!(
+                "{} exited with {status}",
+                program.display()
+            )));
         }
         Ok(())
+    }
+}
+
+impl BrowserOpener for SystemBrowserOpener {
+    fn open_pairing_url(&self, url: LivePairingUrl) -> Result<(), OsppError> {
+        self.open(url.as_str())
+    }
+
+    fn open_origin(&self, origin: &WorldOrigin) -> Result<(), OsppError> {
+        self.open(origin.url())
     }
 }
 
@@ -122,10 +139,6 @@ fn run(cli: DaemonCli) -> Result<(), String> {
     let xdg_data_home = std::env::var_os("XDG_DATA_HOME")
         .map(PathBuf::from)
         .filter(|path| path.is_absolute());
-    let xdg_runtime_dir = std::env::var_os("XDG_RUNTIME_DIR")
-        .map(PathBuf::from)
-        .filter(|path| path.is_absolute());
-
     let listener_config = listen_config(&cli);
     // Resolve the two explicit roots once, on disk and absolute: the Btrfs engine never resolves
     // a path against the ambient `current_dir()`.
@@ -185,7 +198,16 @@ fn run(cli: DaemonCli) -> Result<(), String> {
         target_arch: target_arch.to_owned(),
         uid,
         gid,
-        xdg_runtime_dir,
+        ospp_endpoint: cli
+            .ospp_endpoint
+            .as_deref()
+            .map(OsppEndpoint::parse)
+            .transpose()
+            .map_err(|err| format!("invalid --ospp-endpoint: {err}"))?,
+        hostname: std::env::var("HOSTNAME")
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| "slipfork".to_owned()),
     })?;
 
     let ingress = HttpIngress::bind(&state_dir, listeners, Arc::clone(&graph.registry))

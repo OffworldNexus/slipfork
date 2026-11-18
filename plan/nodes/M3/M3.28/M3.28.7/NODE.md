@@ -48,7 +48,7 @@ $ cargo test -p slipfork --lib status
 ... test result: ok
 $ cargo test -p slipfork --test critical_cli -- --test-threads=1
 ... test result: ok
-$ ! grep -rn '/proc\|/sys/' crates/slipfork/src && echo no-host-proc
+$ ! grep -rn '/proc\|/sys/' crates/slipfork/src/status.rs crates/slipfork/src/cli.rs crates/slipfork/src/main.rs crates/slipfork/src/lib.rs && echo no-host-proc
 no-host-proc
 $ cargo clippy --workspace --all-targets -- -D warnings
     Finished

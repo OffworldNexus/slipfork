@@ -2630,12 +2630,16 @@ impl DaemonControl for TestControl {
         Ok(())
     }
 
-    fn auth_login(&self, pairing_url: &str) -> Result<AuthSummary, EdgeError> {
-        assert!(pairing_url.contains("#handle="));
+    fn auth_login(&self, endpoint_url: Option<&str>) -> Result<AuthSummary, EdgeError> {
+        assert_eq!(endpoint_url, Some("wss://ospp.example/_ospp/v1"));
         Ok(AuthSummary {
             key_id: "p256:00".to_owned(),
             backend: "software:file-0600".to_owned(),
             account: Some("developer".to_owned()),
+            machine: Some("dev-laptop".to_owned()),
+            pairing_url: slipfork_edge::daemon::ControlSecret::new(
+                "https://ospp.example/pair#handle=abc",
+            ),
         })
     }
 }
@@ -2940,7 +2944,7 @@ fn daemon_control_round_trip_and_frame_cap() {
     );
     assert_eq!(
         client
-            .auth_login("https://ospp.example/_ospp/v1/pair#handle=abc")
+            .auth_login(Some("wss://ospp.example/_ospp/v1"))
             .expect("auth_login")
             .key_id,
         "p256:00"

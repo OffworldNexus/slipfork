@@ -26,9 +26,9 @@ mod world;
 mod fs;
 
 pub use resources::{
-    DumpPolicy, PgSeed, PlannedPgDatabase, PlannedS3Bucket, RemotePgDump, RemoteResourceOffer,
-    RemoteS3Bucket, ResourceDiagnostic, ResourceKind, ResourceMode, ResourceOverride, ResourcePlan,
-    ResourceReason, ResourceStrategy, ResourceTarget, ResourcesSpec, S3Resolution,
+    DumpPolicy, PgSeed, PlannedPgDatabase, PlannedS3Bucket, ResourceDiagnostic, ResourceKind,
+    ResourceMode, ResourceOverride, ResourcePlan, ResourceReason, ResourceStrategy, ResourceTarget,
+    ResourcesSpec, S3Resolution,
 };
 pub use support::{
     Evidence, EvidenceField, IntegrationCategory, IntegrationEntry, IntegrationTier, RegistryError,
@@ -62,9 +62,7 @@ pub enum DagError {
     EmptyResourceOverride { kind: &'static str, id: String },
     #[error("[resources] declares {kind} '{id}' which is absent from snow.yml")]
     UndeclaredResourceId { kind: &'static str, id: String },
-    #[error(
-        "resource '{kind}.{id}' requires a remote OSPP offer in {mode:?} mode but none was provided"
-    )]
+    #[error("resource '{kind}.{id}' requires an authenticated OSPP session in {mode:?} mode")]
     RemoteResourceUnavailable {
         kind: &'static str,
         id: String,

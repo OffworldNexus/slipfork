@@ -4,9 +4,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use slipfork_dag::{
     CacheAction, CoverageConfig, CoverageReportFormat, CoverageThreshold, DagError, DagPlanner,
-    DumpPolicy, MapInputHasher, PgSeed, RemotePgDump, RemoteResourceOffer, RemoteS3Bucket,
-    ResourceMode, ResourcePlan, ResourceReason, ResourceStrategy, ResourceTarget, S3Resolution,
-    SetDigestCache, SlipforkConfig,
+    DumpPolicy, MapInputHasher, PgSeed, ResourceMode, ResourcePlan, ResourceReason,
+    ResourceStrategy, ResourceTarget, S3Resolution, SetDigestCache, SlipforkConfig,
 };
 use slipfork_world::WorldTarget;
 
@@ -526,65 +525,35 @@ test = "remote"
         ResourceMode::Test
     );
 
-    let offer = RemoteResourceOffer::default()
-        .with_s3_bucket(
-            "media",
-            RemoteS3Bucket::new(
-                "https://s3.example",
-                "us-east-1",
-                "acme-media",
-                "access",
-                "secret",
-            ),
-        )
-        .with_s3_bucket(
-            "logs",
-            RemoteS3Bucket::new(
-                "https://s3.example",
-                "us-east-1",
-                "acme-logs",
-                "access",
-                "secret",
-            ),
-        )
-        .with_pg_dump("main", RemotePgDump::new("a".repeat(64), 100))
-        .with_pg_dump("analytics", RemotePgDump::new("b".repeat(64), 200));
-
-    // `local` worlds default to PreferRemote: offered resources resolve remotely.
+    // `local` worlds default to PreferRemote: with a paired session they seed remotely, while
+    // S3 stays on the world-local SeaweedFS container (remote credentials arrive as env values).
     let local = ResourcePlan::resolve(
         &cfg.resources,
         ResourceMode::Local,
         DumpPolicy::Default,
-        Some(&offer),
+        true,
     )
     .expect("local plan");
     assert_eq!(
         local.s3_bucket("media").expect("media").target(),
-        ResourceTarget::Remote
-    );
-    assert_eq!(
-        local.s3_bucket("logs").expect("logs").target(),
-        ResourceTarget::Remote
+        ResourceTarget::Local
     );
     assert_eq!(
         local.pg_database("main").expect("main").seed,
-        PgSeed::RemoteDump {
-            dump: RemotePgDump::new("a".repeat(64), 100),
-            refresh: false,
-        }
+        PgSeed::RemoteDump { refresh: false }
     );
     assert_eq!(
-        local.pg_database("analytics").expect("analytics").target(),
+        local.pg_database("main").expect("main").target(),
         ResourceTarget::Remote
     );
 
-    // `TestSlot` worlds are hermetically local by construction even when OSPP offers everything,
+    // `TestSlot` worlds are hermetically local by construction even with a paired session,
     // unless the resource explicitly sets `test = "remote"`.
     let test = ResourcePlan::resolve(
         &cfg.resources,
         ResourceMode::Test,
         DumpPolicy::Default,
-        Some(&offer),
+        true,
     )
     .expect("test plan");
     assert_eq!(
@@ -592,19 +561,8 @@ test = "remote"
         S3Resolution::Local
     );
     assert_eq!(
-        test.s3_bucket("logs").expect("logs").target(),
-        ResourceTarget::Local
-    );
-    assert_eq!(
         test.pg_database("main").expect("main").seed,
-        PgSeed::RemoteDump {
-            dump: RemotePgDump::new("a".repeat(64), 100),
-            refresh: false,
-        }
-    );
-    assert_eq!(
-        test.pg_database("analytics").expect("analytics").seed,
-        PgSeed::CleanInitdb
+        PgSeed::RemoteDump { refresh: false }
     );
     let diagnostics = test.diagnostics();
     let media = diagnostics
@@ -615,8 +573,8 @@ test = "remote"
     assert_eq!(media.resolved, ResourceTarget::Local);
     assert_eq!(media.reason, ResourceReason::ModeDefault);
 
-    // Offline `prefer_remote` falls back to local with the `NotOffered` diagnostic, never a
-    // silent third mode.
+    // An unpaired `prefer_remote` falls back to local with the `NoRemoteSession` diagnostic,
+    // never a silent third mode.
     let fallback_spec = SlipforkConfig::parse_toml(
         r#"
 [resources.s3_buckets.media]
@@ -631,9 +589,9 @@ test = "local"
         &fallback_spec.resources,
         ResourceMode::Local,
         DumpPolicy::Default,
-        None,
+        false,
     )
-    .expect("offline plan");
+    .expect("unpaired plan");
     for (target, reason) in [
         (
             offline.s3_bucket("media").expect("media").target(),
@@ -645,7 +603,7 @@ test = "local"
         ),
     ] {
         assert_eq!(target, ResourceTarget::Local);
-        assert_eq!(reason, ResourceReason::NotOffered);
+        assert_eq!(reason, ResourceReason::NoRemoteSession);
     }
 }
 
@@ -723,9 +681,9 @@ local = "remote"
         &pg_only.resources,
         ResourceMode::Local,
         DumpPolicy::Default,
-        None,
+        false,
     )
-    .expect_err("remote pg requires an OSPP offer");
+    .expect_err("remote pg requires an OSPP session");
     assert!(
         matches!(
             error,
@@ -737,44 +695,36 @@ local = "remote"
         "{error:?}"
     );
 
-    let offer =
-        RemoteResourceOffer::default().with_pg_dump("main", RemotePgDump::new("a".repeat(64), 100));
     let default = ResourcePlan::resolve(
         &pg_only.resources,
         ResourceMode::Local,
         DumpPolicy::Default,
-        Some(&offer),
+        true,
     )
     .expect("remote dump");
     assert_eq!(
         default.pg_database("main").expect("main").seed,
-        PgSeed::RemoteDump {
-            dump: RemotePgDump::new("a".repeat(64), 100),
-            refresh: false,
-        }
+        PgSeed::RemoteDump { refresh: false }
     );
 
     let refreshed = ResourcePlan::resolve(
         &pg_only.resources,
         ResourceMode::Local,
         DumpPolicy::RefreshDump,
-        Some(&offer),
+        true,
     )
     .expect("refresh dump");
     assert_eq!(
         refreshed.pg_database("main").expect("main").seed,
-        PgSeed::RemoteDump {
-            dump: RemotePgDump::new("a".repeat(64), 100),
-            refresh: true,
-        }
+        PgSeed::RemoteDump { refresh: true }
     );
 
-    // `--no-dump` skips the dump and uses a clean initdb without requiring an offer.
+    // `--no-dump` skips the dump and uses a clean initdb without requiring a session.
     let no_dump = ResourcePlan::resolve(
         &pg_only.resources,
         ResourceMode::Local,
         DumpPolicy::NoDump,
-        None,
+        false,
     )
     .expect("no dump");
     let no_dump_main = no_dump.pg_database("main").expect("main");
@@ -798,7 +748,7 @@ local = "remote"
         &pg_only.resources,
         ResourceMode::Test,
         DumpPolicy::RefreshDump,
-        Some(&offer),
+        true,
     )
     .expect_err("refresh dump requires a non-local strategy");
     assert!(
@@ -818,14 +768,11 @@ test = "remote"
         &test_remote.resources,
         ResourceMode::Test,
         DumpPolicy::RefreshDump,
-        Some(&offer),
+        true,
     )
     .expect("explicit test remote refresh");
     assert_eq!(
         plan.pg_database("main").expect("main").seed,
-        PgSeed::RemoteDump {
-            dump: RemotePgDump::new("a".repeat(64), 100),
-            refresh: true,
-        }
+        PgSeed::RemoteDump { refresh: true }
     );
 }

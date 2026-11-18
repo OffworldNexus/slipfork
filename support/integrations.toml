@@ -89,7 +89,7 @@ tier = "declared"
 
 [integration.evidence]
 recipe_page = "docs/snow-modes.md"
-critical_test = "slipfork::critical_ospp_daemon::paired_ospp_resolves_remote_secrets_restores_a_real_dump_and_forks_rows"
+critical_test = "slipfork::critical_ospp_daemon::remote_secrets_never_reach_disk_and_claimed_vars_resolve_from_the_local_vault"
 
 [[integration]]
 id = "jj-workspaces"
