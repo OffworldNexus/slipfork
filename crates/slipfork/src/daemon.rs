@@ -1,7 +1,7 @@
 //! The in-process [`DaemonControl`] implementation `slipforkd` injects into its server.
 //!
 //! Every collaborator is wired by [`compose_daemon`], the one composition function `slipforkd` and
-//! the integration harness both call: the CoW engine over the injected [`SubvolumeDriver`], the
+//! the integration harness both call: the CoW engine over the concrete [`KernelBtrfsDriver`], the
 //! HTTP ingress `WorldRegistry`, the VCS repository resolver and workspace factory, the explicit
 //! state/data roots, and the inherited allowlist the engine hands to world processes. This module
 //! never reads `std::env`, never calls `current_dir()`, and never guesses a path: every request
@@ -35,7 +35,7 @@ use slipfork_edge::{
     WorldSelector, WorldServiceSummary, WorldState, WorldSummary, WorldUpSummary, parent_world,
     world_id, world_next_commands,
 };
-use slipfork_engine::btrfs::SubvolumeDriver;
+use slipfork_engine::btrfs::KernelBtrfsDriver;
 use slipfork_engine::rootfs::{
     BackingServiceKey, BaseImageBuilder, BuildEnvVar, CliBuildxExporter, DockerfileStageBuilder,
     ElfAbiProbe, FsInputHasher, HostCacheRequest, RootfsBuildEvent, RuntimeAssets,
@@ -43,9 +43,9 @@ use slipfork_engine::rootfs::{
 };
 use slipfork_engine::{
     BaseLineage, BootLineage, BtrfsEngine, EngineError, ExecEnv, ExecOutput, InheritedVar,
-    LocalIngressBridge, LogChunk, MonotonicClock, MountMode, SeedLineage, ServiceHandle,
-    ServiceKind, ServiceRuntime, ServiceSpec, ServiceState, SnapshotId, StateSubdirMount,
-    StreamChunk, SystemClock, WorldEngine, WorldHandle, WorldMount, WorldSpec, elapsed_millis,
+    LocalIngressBridge, LogChunk, MountMode, SeedLineage, ServiceHandle, ServiceKind,
+    ServiceRuntime, ServiceSpec, ServiceState, SnapshotId, StateSubdirMount, StreamChunk,
+    WorldEngine, WorldHandle, WorldMount, WorldSpec, elapsed_millis,
 };
 use slipfork_ospp::{
     BrowserOpener, DeviceKeyPath, DeviceKeySigner, FileDeviceKeyStore, OsppClaims, OsppClient,
@@ -85,27 +85,21 @@ const POSTGRES_READY_POLL: Duration = Duration::from_millis(100);
 /// Injected postmaster-readiness policy for the base seed world's `postgres:18` server.
 ///
 /// [`compose_daemon`] defaults it once from [`POSTGRES_READY_DEADLINE`]/[`POSTGRES_READY_POLL`];
-/// the readiness gate reads time only through these closures, so a unit test drives the whole
-/// poll loop with a fake clock and sleeper instead of waiting 30 real seconds.
+/// the gate measures its own start [`std::time::Instant`], so no clock is injected and no test
+/// needs to wait 30 real seconds to exercise the deadline.
 struct PostgresReady {
     /// Total time the postmaster gets to accept `pg_isready`.
     deadline: Duration,
     /// Interval between probes while the postmaster finishes startup.
     poll: Duration,
-    /// The one monotonic clock the deadline check reads.
-    clock: Arc<dyn MonotonicClock>,
-    /// How the gate waits between probes.
-    sleeper: Arc<dyn Fn(Duration) + Send + Sync>,
 }
 
 impl PostgresReady {
-    /// Production bounds and sleeper over the composition root.s one injected clock.
-    fn production(clock: Arc<dyn MonotonicClock>) -> Self {
+    /// Production bounds for the postmaster-readiness gate.
+    fn production() -> Self {
         Self {
             deadline: POSTGRES_READY_DEADLINE,
             poll: POSTGRES_READY_POLL,
-            clock,
-            sleeper: Arc::new(std::thread::sleep),
         }
     }
 }
@@ -725,22 +719,20 @@ struct DaemonPorts {
     browser: Arc<dyn BrowserOpener>,
     /// CSPRNG injected into the pairing handshake nonce.
     entropy: Arc<dyn EntropySource>,
-    /// The one monotonic clock, shared with the engine/builder/OCI store that stamp measured facts.
-    clock: Arc<dyn MonotonicClock>,
 }
 
 /// Everything a Composition Root resolves before [`compose_daemon`] wires the daemon graph.
 ///
 /// `slipforkd` and the in-process integration harness pass the same already-resolved values and
-/// differ only in the injected [`SubvolumeDriver`] and [`BrowserOpener`]; neither builds a second
+/// differ only in the concrete CoW driver and [`BrowserOpener`]; neither builds a second
 /// graph. Nothing in [`compose_daemon`] reads the environment or the working directory, and the
 /// only ambient collaborator it installs is the postmaster-readiness clock
 /// (`PostgresReady::production`).
 pub struct DaemonWiring {
     /// Explicit `--state-dir` / `--runtime-dir` roots and the project-vault data home.
     pub layout: Layout,
-    /// CoW subvolume driver: `KernelBtrfsDriver` in `slipforkd`, the test tree driver in tests.
-    pub driver: Arc<dyn SubvolumeDriver>,
+    /// CoW subvolume driver: the concrete kernel Btrfs driver ('slipforkd's one adapter).
+    pub driver: KernelBtrfsDriver,
     /// Browser opener for the pairing approval page.
     pub browser: Arc<dyn BrowserOpener>,
     /// Bound HTTP ingress listeners (`--listen`, `LISTEN_FDS`, or a test-bound listener) and the
@@ -777,7 +769,7 @@ pub struct DaemonGraph {
 /// Wire the one daemon composition graph from already-resolved inputs.
 ///
 /// `slipforkd` and the in-process integration harness call this; the only differences are the
-/// injected [`SubvolumeDriver`] and [`BrowserOpener`]. Every path, port, account id, and
+/// concrete [`KernelBtrfsDriver`] and [`BrowserOpener`]. Every path, port, account id, and
 /// environment value arrives through [`DaemonWiring`].
 pub fn compose_daemon(wiring: DaemonWiring) -> Result<DaemonGraph, String> {
     let DaemonWiring {
@@ -796,31 +788,24 @@ pub fn compose_daemon(wiring: DaemonWiring) -> Result<DaemonGraph, String> {
         hostname,
     } = wiring;
 
-    // The one monotonic clock every measuring adapter shares: the rootfs builder, the OCI image
-    // store, the world engine (`uptime_secs` + lineage `millis`), and the daemon's base-seed
-    // measurement. There is no second time source anywhere in the graph.
-    let clock: Arc<dyn MonotonicClock> = Arc::new(SystemClock);
+    // Every measuring adapter records the plain `Instant` pair around its own work: the rootfs
+    // builder, the OCI image store, and the engine's `uptime_secs` need no injected clock.
     let builder: Arc<dyn BaseImageBuilder> = Arc::new(DockerfileStageBuilder::new(
         Arc::new(CliBuildxExporter::default()),
         Arc::new(FsInputHasher),
-        Arc::new(DockerOciImageStore::new(
-            layout.state_dir(),
-            Arc::clone(&clock),
-        )),
+        Arc::new(DockerOciImageStore::new(layout.state_dir())),
         Arc::new(ElfAbiProbe),
-        Arc::clone(&clock),
     ));
-    // The sole world engine: one unified Btrfs subvolume per world over the injected driver.
+    // The sole world engine: one unified Btrfs subvolume per world over the concrete driver.
     // Construction fails closed with `EngineError::BtrfsRequired` before any snapshot or world
     // directory exists (`ADR-0010` §4), so a non-Btrfs `--state-dir` never reaches a degraded mode.
     let engine: Arc<dyn WorldEngine> = Arc::new(
-        BtrfsEngine::with_driver_and_clock(
+        BtrfsEngine::new(
             layout.state_dir(),
             uid,
             gid,
             runtime.world_init.clone(),
             driver,
-            Arc::clone(&clock),
         )
         .map_err(|err| format!("cannot start the Btrfs world engine: {err}"))?,
     );
@@ -863,7 +848,6 @@ pub fn compose_daemon(wiring: DaemonWiring) -> Result<DaemonGraph, String> {
             hostname,
             browser,
             entropy,
-            clock: Arc::clone(&clock),
         },
         DaemonConfig {
             layout,
@@ -873,7 +857,7 @@ pub fn compose_daemon(wiring: DaemonWiring) -> Result<DaemonGraph, String> {
             uid,
             gid,
             host_caches,
-            postgres_ready: PostgresReady::production(Arc::clone(&clock)),
+            postgres_ready: PostgresReady::production(),
         },
         ingress,
         forward_port,
@@ -909,7 +893,6 @@ pub struct DaemonService {
     ingress: IngressInfo,
     forward_port: Option<u16>,
     state: Mutex<DaemonState>,
-    clock: Arc<dyn MonotonicClock>,
     /// Serializes world materialization so one project's base snapshot is minted exactly once.
     boot_lock: Mutex<()>,
 }
@@ -948,7 +931,6 @@ impl DaemonService {
             ospp_updates_tx: Arc::new(Mutex::new(updates_tx)),
             ospp_updates_rx: Mutex::new(Some(updates_rx)),
             ospp_failure: Mutex::new(None),
-            clock: ports.clock,
             config,
             ingress,
             forward_port,
@@ -1521,7 +1503,7 @@ impl DaemonService {
     /// performed by this call reports its measured duration and seed rebuild verdict, while a base
     /// that already existed reports `base.millis: None` (rendered `reused`) and
     /// `seed.rebuilt: Some(false)` (rendered `cached`). Every duration comes from the daemon's one
-    /// injected [`MonotonicClock`]; nothing is estimated.
+    /// own plain [`std::time::Instant`] observations; nothing is estimated.
     fn ensure_base_snapshot(
         &self,
         project: &ProjectSlug,
@@ -1583,14 +1565,14 @@ impl DaemonService {
             ))
         })?;
 
-        let restore_started = self.clock.now();
+        let restore_started = std::time::Instant::now();
         let restored = self.restore_base(project, &handle, snow, plan, rootfs);
         let restore_millis = restored
             .as_ref()
             .ok()
-            .map(|()| elapsed_millis(restore_started, self.clock.now()));
+            .map(|()| elapsed_millis(restore_started, std::time::Instant::now()));
         // The seal outcome decides the facts: only a seal performed here may claim a duration.
-        let seal_started = self.clock.now();
+        let seal_started = std::time::Instant::now();
         let sealed = restored.and_then(|()| {
             match self.engine.freeze_world(&handle, &snapshot) {
                 Ok(()) => Ok(true),
@@ -1608,7 +1590,8 @@ impl DaemonService {
                 return Err(error);
             }
         };
-        let seal_millis = sealed_now.then(|| elapsed_millis(seal_started, self.clock.now()));
+        let seal_millis =
+            sealed_now.then(|| elapsed_millis(seal_started, std::time::Instant::now()));
         self.engine
             .destroy_world(handle)
             .map_err(|err| runtime_error(format!("cannot destroy the base seed world: {err}")))?;
@@ -3801,29 +3784,29 @@ fn readiness_detail<'a>(stdout: &'a str, stderr: &'a str) -> &'a str {
     }
 }
 
-/// Poll `probe` until it reports exit code `0`, bounded by the injected [`PostgresReady`] policy.
+/// Poll `probe` until it reports exit code `0`, bounded by the [`PostgresReady`] policy.
 ///
-/// `probe` yields the `pg_isready` exit code plus the last server-side diagnostic. Time passes only
-/// through the policy's clock and sleeper, so a unit test exercises the deadline and poll cadence
-/// without a real 30 s wait.
+/// `probe` yields the `pg_isready` exit code plus the last server-side diagnostic. The gate stamps
+/// its own start [`std::time::Instant`] and sleeps the policy's plain [`Duration`], so a zero
+/// deadline expires on the first rejection without a real 30 s wait.
 fn await_postgres_ready(
     policy: &PostgresReady,
     mut probe: impl FnMut() -> Result<(i32, String), EdgeError>,
 ) -> Result<(), EdgeError> {
-    let deadline = policy.clock.now() + policy.deadline;
+    let started = std::time::Instant::now();
     loop {
         let (exit_code, detail) = probe()?;
         if exit_code == 0 {
             return Ok(());
         }
-        if policy.clock.now() >= deadline {
+        if started.elapsed() >= policy.deadline {
             return Err(runtime_error(format!(
                 "the base seed world's postgres server did not accept queries within {}s \
                  (pg_isready exit code {exit_code}): {detail}",
                 policy.deadline.as_secs(),
             )));
         }
-        (policy.sleeper)(policy.poll);
+        thread::sleep(policy.poll);
     }
 }
 
@@ -4214,7 +4197,6 @@ mod tests {
     use super::*;
     use std::net::SocketAddr;
     use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-    use std::time::Instant;
 
     #[test]
     fn up_twice_on_a_running_world_confirms_without_touching_it() {
@@ -4434,69 +4416,59 @@ mod tests {
     }
 
     #[test]
-    fn postgres_readiness_gate_drives_the_injected_clock_and_sleeper() {
-        use std::sync::atomic::{AtomicU64, Ordering};
-
-        /// A monotonic instant advanced only by the test's injected sleeper.
-        struct FakeClock {
-            base: Instant,
-            millis: Arc<AtomicU64>,
-        }
-
-        impl MonotonicClock for FakeClock {
-            fn now(&self) -> Instant {
-                self.base + Duration::from_millis(self.millis.load(Ordering::SeqCst))
-            }
-
-            fn now_wall(&self) -> std::time::SystemTime {
-                std::time::SystemTime::UNIX_EPOCH
-            }
-        }
-
-        let start = Instant::now();
-        let elapsed = Arc::new(AtomicU64::new(0));
-        // A non-production deadline/poll pair: reverting the gate to the hardcoded
-        // `POSTGRES_READY_DEADLINE`/`POSTGRES_READY_POLL` constants fails these exact counts.
+    fn postgres_readiness_gate_returns_on_the_first_accepted_probe() {
         let policy = PostgresReady {
-            deadline: Duration::from_secs(3),
-            poll: Duration::from_millis(10),
-            clock: {
-                let elapsed = Arc::clone(&elapsed);
-                Arc::new(FakeClock {
-                    base: start,
-                    millis: elapsed,
-                })
-            },
-            sleeper: {
-                let elapsed = Arc::clone(&elapsed);
-                Arc::new(move |poll| {
-                    elapsed.fetch_add(poll.as_millis() as u64, Ordering::SeqCst);
-                })
-            },
+            deadline: Duration::from_secs(1),
+            poll: Duration::from_millis(1),
         };
+        await_postgres_ready(&policy, || Ok((0, String::new())))
+            .expect("a postmaster that answers is ready");
+    }
 
-        // Three rejections then acceptance: the gate waits one injected poll between probes.
-        let mut probes = 0;
-        await_postgres_ready(&policy, || {
-            probes += 1;
-            Ok((if probes < 4 { 2 } else { 0 }, "starting up".to_owned()))
-        })
-        .expect("the fourth probe accepts queries");
-        assert_eq!(probes, 4);
-        assert_eq!(elapsed.load(Ordering::SeqCst), 30);
-
-        // A postmaster that never accepts fails at the injected deadline, not after a real wait.
-        elapsed.store(0, Ordering::SeqCst);
+    #[test]
+    fn postgres_readiness_gate_fails_closed_at_the_deadline() {
+        let policy = PostgresReady {
+            deadline: Duration::ZERO,
+            poll: Duration::ZERO,
+        };
         let mut probes = 0;
         let error = await_postgres_ready(&policy, || {
             probes += 1;
             Ok((2, "FATAL:  the database system is starting up".to_owned()))
         })
         .expect_err("a postmaster that never accepts must fail closed");
-        assert_eq!(probes, 301, "3 s deadline at a 10 ms poll, inclusive");
+        assert_eq!(probes, 1, "a zero deadline fails on the first rejection");
         let message = error.to_string();
-        assert!(message.contains("within 3s"), "got: {message}");
+        assert!(message.contains("within 0s"), "got: {message}");
         assert!(message.contains("starting up"), "got: {message}");
+    }
+
+    #[test]
+    fn postgres_readiness_gate_polls_until_the_real_deadline() {
+        let policy = PostgresReady {
+            deadline: Duration::from_millis(120),
+            poll: Duration::from_millis(10),
+        };
+        let mut probes = 0;
+        let started = std::time::Instant::now();
+        let error = await_postgres_ready(&policy, || {
+            probes += 1;
+            Ok((2, "FATAL:  the database system is starting up".to_owned()))
+        })
+        .expect_err("a postmaster that never accepts must fail closed");
+        let elapsed = started.elapsed();
+        assert!(
+            probes >= 2,
+            "the gate polls again after each rejection (probes: {probes})"
+        );
+        assert!(
+            elapsed >= Duration::from_millis(120) && elapsed < Duration::from_millis(500),
+            "the gate waits the policy deadline in real time (elapsed {elapsed:?}): {error}"
+        );
+        assert!(
+            error.to_string().contains("starting up"),
+            "the last server diagnostic survives the deadline: {error}"
+        );
     }
 
     #[test]
@@ -5032,7 +5004,6 @@ modes:
         let layout = Layout::explicit(scratch.join("state"), scratch.join("run"), scratch, None);
         let engine = Arc::new(RecordingEngine::new());
         let registry = Arc::new(WorldRegistry::new(engine.clone(), 80));
-        let clock: Arc<dyn MonotonicClock> = Arc::new(SystemClock);
         let service = DaemonService::new(
             DaemonPorts {
                 engine: engine.clone(),
@@ -5052,7 +5023,6 @@ modes:
                 hostname: "test-machine".to_owned(),
                 browser: Arc::new(NoBrowser),
                 entropy: Arc::new(OsCsprngEntropy),
-                clock: clock.clone(),
             },
             DaemonConfig {
                 layout,
@@ -5065,7 +5035,7 @@ modes:
                 uid: 1000,
                 gid: 1000,
                 host_caches: HostCaches::default(),
-                postgres_ready: PostgresReady::production(clock),
+                postgres_ready: PostgresReady::production(),
             },
             IngressInfo::new(vec![SocketAddr::from(([127, 0, 0, 1], 80))]).expect("ingress"),
             None,

@@ -1,9 +1,7 @@
 //! Protected critical tests for `BtrfsEngine` (`R10`, `R11`, `H-011`).
 //!
-//! Every suite drives `BtrfsEngine::with_driver_and_clock` over the shared
-//! [`slipfork_testkit::btrfs::TestTreeDriver`], which emulates the [`SubvolumeDriver`] contract in
-//! real directories (`ARCHITECTURE.md` §1), so the CoW substrate runs unchanged on any host. What
-//! stays real is everything above that seam: the unprivileged
+//! Every suite drives `BtrfsEngine::new` over the real [`slipfork_engine::btrfs::KernelBtrfsDriver`].
+//! What stays real is the unprivileged
 //! `userns`/`netns`/`ipcns`/`pidns`/`mntns` world PID 1 (`slipfork-world-init`), `nsenter` entry,
 //! `pivot_root` mount plumbing, service supervision, and the `AF_UNIX` / `SCM_RIGHTS` descriptor
 //! handoff — never a mocked engine and never a fixed sleep as a readiness proof.
@@ -26,20 +24,18 @@ use std::thread;
 use std::time::Duration;
 
 use conformance::assert_world_engine_conformance;
-use slipfork_engine::btrfs::SubvolumeDriver;
+use slipfork_engine::btrfs::{BTRFS_SUPER_MAGIC, KernelBtrfsDriver};
 use slipfork_engine::{
     BootLineage, BtrfsEngine, EngineError, ExecEnv, InheritedVar, LocalIngressBridge, MountMode,
-    ServiceKind, ServiceRuntime, ServiceSpec, ServiceState, SnapshotId, StreamChunk, SystemClock,
-    WorldEngine, WorldEntryCommand, WorldHandle, WorldMount, WorldSpec, current_uid_gid,
+    ServiceKind, ServiceRuntime, ServiceSpec, ServiceState, SnapshotId, StreamChunk, WorldEngine,
+    WorldEntryCommand, WorldHandle, WorldMount, WorldSpec, current_uid_gid,
 };
-use slipfork_testkit::btrfs::{SubvolumeOp, TestTreeDriver};
 use slipfork_world::WorldTarget;
 use support::{
     POLL_INTERVAL, WorldFixture, engine_test_dir, log_text, observe_for, poll_until, world_env,
 };
 
 const HELPER_PATH: &str = "/usr/local/bin:/usr/bin:/bin";
-const XFS_SUPER_MAGIC: i64 = 0x5846_5342;
 
 /// Observation window for "a stopped writer never grows its state again" (an absence assertion
 /// needs a window; it is never used as a readiness proof).
@@ -99,16 +95,32 @@ fn group_members(pgid: u32) -> Vec<u32> {
 
 #[test]
 fn r10_a_non_btrfs_state_dir_fails_closed_without_a_silent_fallback() {
-    let root = engine_test_dir("non-btrfs");
+    // A real tmpfs (`/dev/shm`), so the refusal contract runs on every Linux host — a Btrfs host
+    // included — with zero mocks.
+    let root = PathBuf::from(format!(
+        "/dev/shm/slipfork-non-btrfs-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
     let state_dir = root.join("state");
+    fs::create_dir_all(&state_dir).expect("create the tmpfs state dir");
+    let driver = KernelBtrfsDriver::new();
+    let probed = driver
+        .probe_facts(&state_dir)
+        .expect("statfs the tmpfs state dir");
+    assert_ne!(
+        probed.fstype,
+        BTRFS_SUPER_MAGIC,
+        "{} must not be Btrfs for the refusal contract",
+        state_dir.display()
+    );
     let (uid, gid) = current_uid_gid();
-    let err = BtrfsEngine::with_driver_and_clock(
+    let err = BtrfsEngine::new(
         &state_dir,
         uid,
         gid,
         env!("CARGO_BIN_EXE_slipfork-world-init"),
-        Arc::new(TestTreeDriver::non_btrfs(XFS_SUPER_MAGIC)) as Arc<dyn SubvolumeDriver>,
-        Arc::new(SystemClock),
+        driver,
     )
     .expect_err("a non-Btrfs state dir must fail the boot gate closed");
     match err {
@@ -119,10 +131,14 @@ fn r10_a_non_btrfs_state_dir_fails_closed_without_a_silent_fallback() {
         } => {
             assert_eq!(path, state_dir);
             assert_eq!(
-                actual_fstype, XFS_SUPER_MAGIC,
+                actual_fstype, probed.fstype,
                 "the refusal must report the probed f_type"
             );
-            assert_eq!(mount_hint, slipfork_engine::btrfs::BTRFS_MOUNT_HINT);
+            assert_eq!(mount_hint, slipfork_engine::btrfs::mount_hint(&state_dir));
+            assert!(
+                mount_hint.contains(&state_dir.display().to_string()),
+                "the refusal renders the probed path, not a placeholder: {mount_hint}"
+            );
             assert!(
                 mount_hint.contains("user_subvol_rm_allowed,noatime"),
                 "the refusal names the exact mount remediation: {mount_hint}"
@@ -130,9 +146,12 @@ fn r10_a_non_btrfs_state_dir_fails_closed_without_a_silent_fallback() {
         }
         other => panic!("expected BtrfsRequired, got {other:?}"),
     }
-    assert!(
-        !state_dir.exists(),
-        "a refused engine creates no state directory at all"
+    assert_eq!(
+        fs::read_dir(&state_dir)
+            .expect("read the tmpfs state dir")
+            .count(),
+        0,
+        "a refused engine writes nothing into the state dir"
     );
     let _ = fs::remove_dir_all(&root);
 }
@@ -244,8 +263,8 @@ fn r10_r11_btrfs_conformance_cow_isolation_uid_and_parallel_same_port() {
 
 #[test]
 fn one_writable_subvolume_per_world_with_ro_snapshot_lineage_and_host_ownership() {
-    let driver = Arc::new(TestTreeDriver::btrfs());
-    let fx = WorldFixture::with_driver("layout", Arc::clone(&driver));
+    let fx = WorldFixture::new("layout");
+    let driver = KernelBtrfsDriver::new();
     let (uid, gid) = current_uid_gid();
     let snapshots = fx.state_dir.join("snapshots");
     let worlds = fx.state_dir.join("worlds");
@@ -277,22 +296,20 @@ fn one_writable_subvolume_per_world_with_ro_snapshot_lineage_and_host_ownership(
     let after_b = driver.list_children(&worlds).expect("worlds after b");
     assert_eq!(after_b.len(), 2, "each world is exactly one subvolume");
 
-    // 2. One `snapshot_writable` per world, always from the same read-only snapshot.
-    let writable: Vec<(PathBuf, PathBuf)> = driver
-        .journal()
-        .iter()
-        .filter_map(|op| match op {
-            SubvolumeOp::SnapshotWritable { source, dest } => Some((source.clone(), dest.clone())),
-            _ => None,
-        })
-        .collect();
-    assert_eq!(writable.len(), 2, "one writable clone per world");
-    for (source, dest) in &writable {
-        assert_eq!(*source, snapshots.join("base"));
+    // 2. Every world is one writable clone of the same read-only snapshot: the snapshot's own
+    //    `state/seed.txt` is readable through each cloned world.
+    let snapshot_seed = fx.state_dir.join("snapshots/base/state/seed.txt");
+    assert_eq!(
+        fs::read(&snapshot_seed).expect("read the sealed snapshot seed"),
+        b"ancestor\n",
+        "the sealed snapshot carries the fixture seed"
+    );
+    for world_dir in &after_b {
         assert_eq!(
-            dest.parent(),
-            Some(worlds.as_path()),
-            "a world subvolume only ever lives under worlds/"
+            fs::read(world_dir.join("state/seed.txt")).expect("read the world's seed"),
+            fs::read(&snapshot_seed).expect("re-read the snapshot seed"),
+            "{} must read the snapshot's seed through the CoW clone",
+            world_dir.display()
         );
     }
 
@@ -416,27 +433,14 @@ fn one_writable_subvolume_per_world_with_ro_snapshot_lineage_and_host_ownership(
     driver
         .destroy_subvolume(&snapshots, "sealed")
         .expect("destroy a sealed snapshot");
-    let journal = driver.journal();
-    let cleared = journal
-        .iter()
-        .position(|op| matches!(op, SubvolumeOp::ClearReadonly { path } if path == &snapshots.join("sealed")))
-        .expect("the read-only flag is cleared before destroy");
-    let destroyed = journal
-        .iter()
-        .position(|op| matches!(op, SubvolumeOp::DestroySubvolume { path } if path == &snapshots.join("sealed")))
-        .expect("the sealed snapshot is destroyed");
-    assert!(
-        cleared < destroyed,
-        "clear read-only must precede destroy: {journal:?}"
-    );
     assert!(!snapshots.join("sealed").exists());
     let _ = fs::remove_dir_all(&fx.root);
 }
 
 #[test]
 fn a_rootfs_outside_the_content_addressed_cache_is_refused_before_a_subvolume_exists() {
-    let driver = Arc::new(TestTreeDriver::btrfs());
-    let fx = WorldFixture::with_driver("rootfs-cache", Arc::clone(&driver));
+    let fx = WorldFixture::new("rootfs-cache");
+    let driver = KernelBtrfsDriver::new();
     let mut rootfs = fx.rootfs.clone();
     rootfs.app_rootfs = fx.root.join("somewhere-else/app");
     let err = fx
@@ -1606,16 +1610,7 @@ fn in_netns_bridge_port_80_reaches_host_ingress_and_dials_back_into_the_world() 
 fn world_init_fails_closed_when_the_helper_is_missing() {
     let root = engine_test_dir("missing-world-init");
     let state_dir = root.join("state");
-    let (uid, gid) = current_uid_gid();
-    let engine = BtrfsEngine::with_driver_and_clock(
-        &state_dir,
-        uid,
-        gid,
-        root.join("no-such-slipfork-world-init"),
-        Arc::new(TestTreeDriver::btrfs()) as Arc<dyn SubvolumeDriver>,
-        Arc::new(SystemClock),
-    )
-    .expect("engine construction");
+    let engine = support::require_engine(&state_dir, root.join("no-such-slipfork-world-init"));
     let rootfs = support::engine_rootfs(&state_dir);
     let src = root.join("state-src");
     fs::create_dir_all(src.join("state")).expect("state-src");

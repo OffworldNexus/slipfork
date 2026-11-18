@@ -38,7 +38,6 @@ use crate::user::{ResolvedAccount, UNPRIVILEGED_ACCOUNT_REMEDY, UserIdentity};
 use slipfork_edge::{
     DaemonControlServer, INGRESS_ADDRS, UnitSpec, render_service_unit, render_socket_unit,
 };
-use slipfork_engine::MonotonicClock;
 use slipfork_engine::linux_cow::{ProcessSignal, open_pidfd, peer_pid};
 
 /// `/etc/systemd/system/slipforkd.socket` — PID 1 binds the ingress/forward ports here.
@@ -58,22 +57,23 @@ pub const DAEMON_GRACE: Duration = Duration::from_secs(15);
 /// Poll interval while waiting for `<runtime_dir>/daemon.sock` to answer or disappear.
 pub const DAEMON_POLL: Duration = Duration::from_millis(50);
 
-/// The handover's bounded-wait port: the engine's single clock plus the poll pause.
+/// The handover's bounded-wait budget: one grace window plus the probe interval.
 ///
-/// The production adapter is `slipfork_engine::SystemClock` itself, so `daemon install` keeps time
-/// with the same clock the daemon uses. Tests inject a fake whose
-/// [`pause`](HandoverClock::pause) advances [`now`](MonotonicClock::now), so a grace window is
-/// reached deterministically without sleeping.
-pub trait HandoverClock: MonotonicClock {
-    /// Wait one poll interval before re-reading the socket.
-    fn pause(&self);
+/// `daemon install` keeps time with plain [`Instant`] observations, and the production caller
+/// passes [`DAEMON_HANDOVER`]; a test passes a zero budget and reaches the refusal immediately.
+#[derive(Debug, Clone, Copy)]
+pub struct HandoverBudget {
+    /// How long a held socket may be awaited before the refusal.
+    pub grace: Duration,
+    /// Interval between probes while waiting.
+    pub poll: Duration,
 }
 
-impl HandoverClock for slipfork_engine::SystemClock {
-    fn pause(&self) {
-        std::thread::sleep(DAEMON_POLL);
-    }
-}
+/// The production handover budget.
+pub const DAEMON_HANDOVER: HandoverBudget = HandoverBudget {
+    grace: DAEMON_GRACE,
+    poll: DAEMON_POLL,
+};
 
 /// What one probe of `<runtime_dir>/daemon.sock` found.
 ///
@@ -280,7 +280,7 @@ pub fn ingress_unit_spec(
 
 /// Render and install the three files, then reload/enable the units (`ADR-0011` §1).
 ///
-/// The function is pure over `identity` + `installer` + `clock` + `request`: it reads no
+/// The function is pure over `identity` + `installer` + `budget` + `request`: it reads no
 /// environment, opens no file, and spawns no process. Its one process-facing effect is the socket
 /// handover, which is entirely delegated to the injected [`UnitInstaller`] (stop, shutdown, prove,
 /// signal) so this flow only decides the order. It fails closed **before** touching the installer
@@ -291,7 +291,7 @@ pub fn ingress_unit_spec(
 pub fn install(
     identity: &dyn UserIdentity,
     installer: &dyn UnitInstaller,
-    clock: &dyn HandoverClock,
+    budget: HandoverBudget,
     request: &InstallRequest,
 ) -> Result<InstallReport, String> {
     if !request.is_root {
@@ -352,7 +352,7 @@ pub fn install(
         .map_err(converge_after_failure)?;
     // A zero-setup daemon (of any build) may hold `<runtime_dir>/daemon.sock`; hand it over before
     // `enable --now`.
-    release_daemon(installer, clock, layout.runtime_dir()).map_err(converge_after_failure)?;
+    release_daemon(installer, budget, layout.runtime_dir()).map_err(converge_after_failure)?;
     installer
         .enable_now(&[ManagedUnit::Socket, ManagedUnit::Service])
         .map_err(converge_after_failure)?;
@@ -394,7 +394,7 @@ fn converge_after_failure(message: String) -> String {
 /// No holder means no effect beyond the unit stop, so a second run converges with `[ok] unchanged`.
 pub fn release_daemon(
     installer: &dyn UnitInstaller,
-    clock: &dyn HandoverClock,
+    budget: HandoverBudget,
     runtime_dir: &Path,
 ) -> Result<(), String> {
     let socket = DaemonControlServer::socket_path_in(runtime_dir);
@@ -407,7 +407,7 @@ pub fn release_daemon(
     }
 
     // (b) The typed contract first: ask the daemon to stop itself, then await its disappearance.
-    if installer.shutdown(runtime_dir).is_ok() && await_release(installer, clock, runtime_dir)? {
+    if installer.shutdown(runtime_dir).is_ok() && await_release(installer, budget, runtime_dir)? {
         return Ok(());
     }
 
@@ -419,7 +419,7 @@ pub fn release_daemon(
                 if let Err(err) = installer.signal_proven(&pidfd, signal) {
                     // The pinned process exited between the proof and the signal; the bounded
                     // await is still the single judge of whether the socket was released.
-                    if await_release(installer, clock, runtime_dir)? {
+                    if await_release(installer, budget, runtime_dir)? {
                         return Ok(());
                     }
                     return Err(held_socket(
@@ -428,7 +428,7 @@ pub fn release_daemon(
                         &format!("could not be signalled ({err})"),
                     ));
                 }
-                if await_release(installer, clock, runtime_dir)? {
+                if await_release(installer, budget, runtime_dir)? {
                     return Ok(());
                 }
             }
@@ -440,7 +440,7 @@ pub fn release_daemon(
         }
         SocketHolder::Foreign { pid } => refuse_unless_released(
             installer,
-            clock,
+            budget,
             runtime_dir,
             &socket,
             Some(pid),
@@ -448,7 +448,7 @@ pub fn release_daemon(
         ),
         SocketHolder::Unprovable => refuse_unless_released(
             installer,
-            clock,
+            budget,
             runtime_dir,
             &socket,
             None,
@@ -457,7 +457,7 @@ pub fn release_daemon(
         // The probe could not name a holder; if the socket still answers, a different one took it.
         SocketHolder::Absent => refuse_unless_released(
             installer,
-            clock,
+            budget,
             runtime_dir,
             &socket,
             None,
@@ -514,21 +514,21 @@ pub fn probe_socket_holder(runtime_dir: &Path) -> Result<SocketHolder, String> {
     Ok(SocketHolder::ProvenSlipforkd { pid, pidfd })
 }
 
-/// Await the control socket's disappearance, bounded by one grace window from the injected clock.
+/// Await the control socket's disappearance, bounded by the caller's grace window.
 fn await_release(
     installer: &dyn UnitInstaller,
-    clock: &dyn HandoverClock,
+    budget: HandoverBudget,
     runtime_dir: &Path,
 ) -> Result<bool, String> {
-    let deadline = clock.now() + DAEMON_GRACE;
+    let deadline = std::time::Instant::now() + budget.grace;
     loop {
         if !installer.is_served(runtime_dir)? {
             return Ok(true);
         }
-        if clock.now() >= deadline {
+        if std::time::Instant::now() >= deadline {
             return Ok(false);
         }
-        clock.pause();
+        std::thread::sleep(budget.poll);
     }
 }
 
@@ -538,13 +538,13 @@ fn await_release(
 /// namespace, or an unreadable executable); naming `sudo kill 0` would be worse than naming none.
 fn refuse_unless_released(
     installer: &dyn UnitInstaller,
-    clock: &dyn HandoverClock,
+    budget: HandoverBudget,
     runtime_dir: &Path,
     socket: &Path,
     pid: Option<u32>,
     reason: &str,
 ) -> Result<(), String> {
-    if await_release(installer, clock, runtime_dir)? {
+    if await_release(installer, budget, runtime_dir)? {
         return Ok(());
     }
     Err(match pid {
@@ -591,9 +591,7 @@ mod tests {
     use std::os::unix::net::UnixListener;
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-    use std::time::{Duration, Instant, SystemTime};
-
-    use slipfork_engine::SystemClock;
+    use std::time::Duration;
 
     use super::*;
 
@@ -866,44 +864,6 @@ mod tests {
         }
     }
 
-    /// A deterministic [`HandoverClock`]: `pause` advances `now` by exactly one poll interval.
-    struct FakeClock {
-        now: Mutex<Instant>,
-        pauses: AtomicUsize,
-    }
-
-    impl FakeClock {
-        fn new() -> Self {
-            Self {
-                now: Mutex::new(Instant::now()),
-                pauses: AtomicUsize::new(0),
-            }
-        }
-
-        /// How much fake time the handover waited in total.
-        fn waited(&self) -> Duration {
-            let pauses = u32::try_from(self.pauses.load(Ordering::SeqCst)).expect("pause count");
-            DAEMON_POLL * pauses
-        }
-    }
-
-    impl MonotonicClock for FakeClock {
-        fn now(&self) -> Instant {
-            *self.now.lock().expect("now")
-        }
-
-        fn now_wall(&self) -> SystemTime {
-            SystemTime::UNIX_EPOCH
-        }
-    }
-
-    impl HandoverClock for FakeClock {
-        fn pause(&self) {
-            self.pauses.fetch_add(1, Ordering::SeqCst);
-            *self.now.lock().expect("now") += DAEMON_POLL;
-        }
-    }
-
     fn request(is_root: bool) -> InstallRequest {
         InstallRequest {
             is_root,
@@ -940,7 +900,7 @@ mod tests {
         let error = install(
             &FakeIdentity::default(),
             &installer,
-            &SystemClock,
+            DAEMON_HANDOVER,
             &request(false),
         )
         .expect_err("non-root must fail closed");
@@ -962,7 +922,7 @@ mod tests {
         let error = install(
             &FakeIdentity::default(),
             &installer,
-            &SystemClock,
+            DAEMON_HANDOVER,
             &request(true),
         )
         .expect_err("direct root must fail closed");
@@ -974,7 +934,7 @@ mod tests {
         let error = install(
             &FakeIdentity::default(),
             &installer,
-            &SystemClock,
+            DAEMON_HANDOVER,
             &root_user,
         )
         .expect_err("--user root must fail closed");
@@ -983,8 +943,13 @@ mod tests {
 
         let mut unknown = request(true);
         unknown.explicit_user = Some("nobody-here".to_owned());
-        let error = install(&FakeIdentity::default(), &installer, &SystemClock, &unknown)
-            .expect_err("an unknown --user must fail closed");
+        let error = install(
+            &FakeIdentity::default(),
+            &installer,
+            DAEMON_HANDOVER,
+            &unknown,
+        )
+        .expect_err("an unknown --user must fail closed");
         assert!(error.contains("no OS account"), "{error}");
         assert!(installer.effects().is_empty());
     }
@@ -996,8 +961,8 @@ mod tests {
             username: "root".to_owned(),
             invoking: Some("dev".to_owned()),
         };
-        let report =
-            install(&identity, &installer, &SystemClock, &request(true)).expect("install as dev");
+        let report = install(&identity, &installer, DAEMON_HANDOVER, &request(true))
+            .expect("install as dev");
         assert_eq!(report.user, "dev");
         let service = installer
             .writes()
@@ -1015,8 +980,13 @@ mod tests {
     #[test]
     fn first_run_writes_the_exact_daemon_unit_bytes_and_enables_once() {
         let installer = RecordingInstaller::default();
-        let report =
-            install(&sudo_identity(), &installer, &SystemClock, &request(true)).expect("install");
+        let report = install(
+            &sudo_identity(),
+            &installer,
+            DAEMON_HANDOVER,
+            &request(true),
+        )
+        .expect("install");
 
         assert_eq!(report.socket, FileStatus::Wrote);
         assert_eq!(report.service, FileStatus::Wrote);
@@ -1109,7 +1079,7 @@ mod tests {
     #[test]
     fn identical_bytes_are_not_rewritten_and_enable_still_runs() {
         let first = RecordingInstaller::default();
-        install(&sudo_identity(), &first, &SystemClock, &request(true)).expect("first install");
+        install(&sudo_identity(), &first, DAEMON_HANDOVER, &request(true)).expect("first install");
         let seeded: Vec<(PathBuf, String)> = first
             .writes()
             .into_iter()
@@ -1121,8 +1091,13 @@ mod tests {
         assert_eq!(seeded.len(), 3);
 
         let installer = RecordingInstaller::seeded(&seeded);
-        let report = install(&sudo_identity(), &installer, &SystemClock, &request(true))
-            .expect("idempotent re-run");
+        let report = install(
+            &sudo_identity(),
+            &installer,
+            DAEMON_HANDOVER,
+            &request(true),
+        )
+        .expect("idempotent re-run");
         assert_eq!(report.socket, FileStatus::Unchanged);
         assert_eq!(report.service, FileStatus::Unchanged);
         assert_eq!(report.apparmor, FileStatus::Unchanged);
@@ -1154,8 +1129,13 @@ mod tests {
         let stale_service = expected_service.replace("LimitNOFILE=65536", "LimitNOFILE=1024");
         let installer =
             RecordingInstaller::seeded(&[(PathBuf::from(SERVICE_UNIT_PATH), stale_service)]);
-        let report = install(&sudo_identity(), &installer, &SystemClock, &request(true))
-            .expect("upgrade install");
+        let report = install(
+            &sudo_identity(),
+            &installer,
+            DAEMON_HANDOVER,
+            &request(true),
+        )
+        .expect("upgrade install");
         assert_eq!(report.service, FileStatus::Wrote);
         assert!(
             installer.effects().contains(&Effect::RestartService),
@@ -1168,7 +1148,7 @@ mod tests {
         let installer = RecordingInstaller::default();
         let mut request = request(true);
         request.xdg_cache_home = Some(PathBuf::from("/xdg/cache"));
-        install(&sudo_identity(), &installer, &SystemClock, &request).expect("install");
+        install(&sudo_identity(), &installer, DAEMON_HANDOVER, &request).expect("install");
         let service = installer
             .writes()
             .into_iter()
@@ -1230,9 +1210,12 @@ mod tests {
     fn a_runtime_dir_without_a_holder_performs_no_signal() {
         let dir = temp_runtime();
         let installer = RecordingInstaller::default();
-        let clock = FakeClock::new();
+        let budget = HandoverBudget {
+            grace: Duration::ZERO,
+            poll: Duration::ZERO,
+        };
 
-        release_daemon(&installer, &clock, dir.path()).expect("no holder releases nothing");
+        release_daemon(&installer, budget, dir.path()).expect("no holder releases nothing");
 
         assert_eq!(
             installer.stop_units_calls(),
@@ -1243,27 +1226,24 @@ mod tests {
             "no holder means no signal: {:?}",
             installer.effects()
         );
-        assert_eq!(clock.waited(), Duration::ZERO, "nothing is awaited");
     }
 
     #[test]
     fn a_holder_that_answers_shutdown_is_released_without_a_signal() {
         let dir = temp_runtime();
         let installer = RecordingInstaller::default().daemon(FakeDaemon::Typed);
-        let clock = FakeClock::new();
+        let budget = HandoverBudget {
+            grace: Duration::ZERO,
+            poll: Duration::ZERO,
+        };
 
-        release_daemon(&installer, &clock, dir.path())
+        release_daemon(&installer, budget, dir.path())
             .expect("a daemon that speaks the typed contract shuts itself down");
 
         assert!(
             installer.signals().is_empty(),
             "a daemon that answers `shutdown` is never signalled: {:?}",
             installer.signals()
-        );
-        assert!(
-            clock.waited() < DAEMON_GRACE,
-            "the socket is gone as soon as the daemon accepts `shutdown`, waited {:?}",
-            clock.waited()
         );
     }
 
@@ -1273,20 +1253,18 @@ mod tests {
         let installer = RecordingInstaller::default()
             .daemon(FakeDaemon::ForeignUntilKill)
             .holding(proven_holder(std::process::id()));
-        let clock = FakeClock::new();
+        let budget = HandoverBudget {
+            grace: Duration::ZERO,
+            poll: Duration::ZERO,
+        };
 
-        release_daemon(&installer, &clock, dir.path())
+        release_daemon(&installer, budget, dir.path())
             .expect("a proven slipforkd holder converges");
 
         assert_eq!(
             installer.signals(),
             vec![ProcessSignal::Terminate, ProcessSignal::Kill],
             "SIGTERM first, SIGKILL only after the grace elapsed"
-        );
-        assert!(
-            clock.waited() >= DAEMON_GRACE,
-            "SIGKILL must wait a full grace window, waited {:?}",
-            clock.waited()
         );
     }
 
@@ -1296,9 +1274,12 @@ mod tests {
         let installer = RecordingInstaller::default()
             .daemon(FakeDaemon::Immortal)
             .holding(SocketHolder::Foreign { pid: 777 });
-        let clock = FakeClock::new();
+        let budget = HandoverBudget {
+            grace: Duration::ZERO,
+            poll: Duration::ZERO,
+        };
 
-        let error = release_daemon(&installer, &clock, dir.path())
+        let error = release_daemon(&installer, budget, dir.path())
             .expect_err("an unproven holder must be refused");
 
         assert_eq!(error.lines().count(), 1, "exactly one line: {error}");
@@ -1329,9 +1310,12 @@ mod tests {
             let installer = RecordingInstaller::default()
                 .daemon(FakeDaemon::Immortal)
                 .holding(holder);
-            let clock = FakeClock::new();
+            let budget = HandoverBudget {
+                grace: Duration::ZERO,
+                poll: Duration::ZERO,
+            };
 
-            let error = release_daemon(&installer, &clock, dir.path())
+            let error = release_daemon(&installer, budget, dir.path())
                 .expect_err("a held socket must be refused");
 
             assert_eq!(error.lines().count(), 1, "exactly one line: {error}");
@@ -1364,8 +1348,11 @@ mod tests {
         );
 
         let installer = RecordingInstaller::default().daemon(FakeDaemon::Real);
-        let clock = FakeClock::new();
-        let error = release_daemon(&installer, &clock, dir.path())
+        let budget = HandoverBudget {
+            grace: Duration::ZERO,
+            poll: Duration::ZERO,
+        };
+        let error = release_daemon(&installer, budget, dir.path())
             .expect_err("a real foreign peer must be refused");
 
         assert_eq!(error.lines().count(), 1, "exactly one line: {error}");

@@ -1,7 +1,7 @@
 //! Protected end-to-end CLI + `slipforkd` critical tests (`H-010` #1, `ADR-0008` §4).
 //!
 //! These tests boot real `BtrfsEngine` worlds through the harness `slipforkd` composition root
-//! (the real child on a Btrfs host, the in-process `TestTreeDriver` backend elsewhere), drive the
+//! (the real child, or the same in-process daemon graph over the real kernel driver), drive the
 //! thin `slipfork` binary over the `0600` `<runtime_dir>/daemon.sock`, and assert the adversarial
 //! contracts: fail-closed `HOME`, exactly one URL per world, idempotent `down`, secret overwrite
 //! refusal, and non-template unit rendering.
@@ -20,7 +20,6 @@ use std::time::Duration;
 
 use serde_json::Value;
 use slipfork::daemon_unit_install::{self, InstallRequest, ManagedUnit, UnitInstaller};
-use slipfork_engine::SystemClock;
 use slipfork_engine::btrfs::KernelBtrfsDriver;
 use slipfork_engine::linux_cow::ProcessSignal;
 use slipfork_ospp_testkit::{ReferenceOsppServer, ReferenceServerConfig};
@@ -1524,7 +1523,7 @@ fn daemon_install_bytes_equal_a_real_daemon_unit_preview() {
     daemon_unit_install::install(
         &slipfork::user::AccountDatabaseIdentity,
         &installer,
-        &SystemClock,
+        daemon_unit_install::DAEMON_HANDOVER,
         &InstallRequest {
             is_root: true,
             explicit_user: Some(account),

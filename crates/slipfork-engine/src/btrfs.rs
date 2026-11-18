@@ -1,12 +1,11 @@
-//! Btrfs subvolume CoW and host-probe seam ([`SubvolumeDriver`], `ADR-0010` §§3–5).
+//! Btrfs subvolume CoW and host-probe seam ([`KernelBtrfsDriver`], `ADR-0010` §§3–5).
 //!
 //! This module is the **sole** owner of Btrfs filesystem and ioctl probing in the workspace: the
-//! magic-only `slipforkd` boot gate ([`SubvolumeDriver::ensure_supported`]), the pre-daemon
-//! `slipfork doctor` probe ([`SubvolumeDriver::probe`] through [`probe_with`]), the
-//! `BTRFS_IOC_*` subvolume lifecycle, and the single mount remediation constant
-//! [`BTRFS_MOUNT_HINT`]. [`KernelBtrfsDriver`] is the only production implementation; test
-//! doubles implement the same trait through `ARCHITECTURE.md` §1's test-scaffolding rule (the
-//! `publish = false` `slipfork-testkit` crate), never through a Cargo feature.
+//! magic-only `slipforkd` boot gate ([`KernelBtrfsDriver::ensure_supported`]), the pre-daemon
+//! `slipfork doctor` probe ([`KernelBtrfsDriver::probe`]), the
+//! `BTRFS_IOC_*` subvolume lifecycle, and the single mount remediation renderer
+//! [`mount_hint`]. [`KernelBtrfsDriver`] is the only implementation: it holds no state, so
+//! the composition root constructs it directly and the engine takes it by value.
 //!
 //! `unsafe` is confined to the `statfs`/`statvfs`/`ioctl` calls below, each with a per-call
 //! `// SAFETY:` proof. Every failure is typed: a non-Btrfs `f_type` fails closed with
@@ -27,10 +26,17 @@ use crate::EngineError;
 /// `BTRFS_SUPER_MAGIC` (`<linux/magic.h>`): the only `statfs(2).f_type` Slipfork accepts.
 pub const BTRFS_SUPER_MAGIC: i64 = 0x9123_683e;
 
-/// Single mount remediation constant shared by [`EngineError::BtrfsRequired`] and
+/// Single mount remediation shared by [`EngineError::BtrfsRequired`] and
 /// [`EngineError::SubvolumeDestroyDenied`] (`ADR-0010` §4).
-pub const BTRFS_MOUNT_HINT: &str =
-    "sudo mount -o user_subvol_rm_allowed,noatime /dev/<device> <state_dir>";
+///
+/// The probed `path` is rendered into the command, so the remedy names exactly the directory the
+/// kernel refused (`<device>` stays a placeholder: only the operator knows the backing device).
+pub fn mount_hint(path: &Path) -> String {
+    format!(
+        "sudo mount -o user_subvol_rm_allowed,noatime /dev/<device> {}",
+        path.display()
+    )
+}
 
 /// Normative `slipfork doctor` Btrfs evidence (`ADR-0010` §4).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -53,130 +59,23 @@ pub struct BtrfsProbeReport {
     pub noatime: bool,
 }
 
-/// Sole CoW subvolume seam (`ADR-0010` §5): the one port `BtrfsEngine` and the Phase 2
-/// `BtrfsArtifactStore` are specified to share, and the pre-daemon `doctor` probe owner.
+/// Statfs/statvfs evidence the kernel driver observed for a path: the only kernel-specific probe
+/// input.
 ///
-/// Read-only snapshot and writable clone are distinct methods: there is no mode flag, no
-/// capability boolean bag, and no `set_readonly` switch. Clearing `BTRFS_SUBVOL_RDONLY` belongs
-/// inside [`SubvolumeDriver::destroy_subvolume`] (`ADR-0010` §3).
-pub trait SubvolumeDriver: Send + Sync {
-    /// `statfs`/`statvfs` evidence for `path` (or its nearest existing ancestor): the only
-    /// kernel-specific input a driver supplies to [`SubvolumeDriver::probe`].
-    fn probe_facts(&self, path: &Path) -> Result<ProbeFacts, EngineError>;
-
-    /// Pre-daemon `doctor` probe (`ADR-0010` §4) and the **single** producer of
-    /// [`BtrfsProbeReport`].
-    ///
-    /// Provided method: it rejects a non-absolute `path` (nothing is ever resolved against the
-    /// ambient `current_dir()`), takes [`SubvolumeDriver::probe_facts`], and — only when the probed
-    /// filesystem is Btrfs — creates `path` when needed and runs the scratch-subvolume
-    /// `user_subvol_rm_allowed` round-trip. A driver therefore supplies facts only; the report has
-    /// exactly one producer and the round-trip has exactly one implementation.
-    fn probe(&self, path: &Path) -> Result<BtrfsProbeReport, EngineError> {
-        require_absolute(path)?;
-        let facts = self.probe_facts(path)?;
-        let btrfs_super_magic = is_btrfs(facts.fstype);
-        let mut created_state_dir = false;
-        let user_subvol_rm_allowed = if btrfs_super_magic {
-            if !path.exists() {
-                fs::create_dir_all(path).map_err(|err| EngineError::Io {
-                    path: path.display().to_string(),
-                    message: err.to_string(),
-                })?;
-                created_state_dir = true;
-            }
-            let outcome = scratch_round_trip(self, path);
-            if created_state_dir {
-                remove_probe_state_dir(path)?;
-            }
-            match outcome {
-                Ok(()) => Some(Ok(())),
-                Err(err) => match errno_of(&err) {
-                    Some(errno) => Some(Err(errno)),
-                    // A failure that carries no raw errno is not `user_subvol_rm_allowed` evidence.
-                    None => return Err(err),
-                },
-            }
-        } else {
-            None
-        };
-        Ok(BtrfsProbeReport {
-            state_dir: path.to_path_buf(),
-            probed_path: facts.probed_path,
-            fstype: facts.fstype,
-            btrfs_super_magic,
-            user_subvol_rm_allowed,
-            noatime: facts.noatime,
-        })
-    }
-
-    /// Magic-only `slipforkd` boot gate (`ADR-0010` §4): fails closed with
-    /// [`EngineError::BtrfsRequired`] unless `statfs(path).f_type` is [`BTRFS_SUPER_MAGIC`]. It
-    /// runs no scratch round-trip, so a Btrfs mount that merely lacks `user_subvol_rm_allowed`
-    /// boots and the gap surfaces at teardown.
-    fn ensure_supported(&self, path: &Path) -> Result<(), EngineError>;
-
-    /// Create one empty subvolume `parent/name` and return its path.
-    fn create_subvolume(&self, parent: &Path, name: &str) -> Result<PathBuf, EngineError>;
-
-    /// Seal `source_subvol` into the read-only snapshot `dest_parent/name`.
-    fn snapshot_ro(
-        &self,
-        source_subvol: &Path,
-        dest_parent: &Path,
-        name: &str,
-    ) -> Result<PathBuf, EngineError>;
-
-    /// Clone `source_subvol` into the writable subvolume `dest_parent/name`.
-    fn snapshot_writable(
-        &self,
-        source_subvol: &Path,
-        dest_parent: &Path,
-        name: &str,
-    ) -> Result<PathBuf, EngineError>;
-
-    /// Destroy `parent/name`, clearing `BTRFS_SUBVOL_RDONLY` internally first (`ADR-0010` §3).
-    ///
-    /// `EPERM` on the destroy path maps to [`EngineError::SubvolumeDestroyDenied`] carrying
-    /// [`BTRFS_MOUNT_HINT`]; every other errno maps to [`EngineError::Ioctl`].
-    fn destroy_subvolume(&self, parent: &Path, name: &str) -> Result<(), EngineError>;
-
-    /// Direct child **subvolume roots** of `parent`, sorted by path.
-    ///
-    /// Consumers: the `slipforkd`-side engine test suite (`M3.14`) will assert sealed-base subvolume
-    /// names through it, and the Phase 2 `M3.2.13` GC will enumerate snapshot lineage through it.
-    fn list_children(&self, parent: &Path) -> Result<Vec<PathBuf>, EngineError>;
-}
-
-/// Statfs/statvfs evidence one driver observed for a path: part of the [`SubvolumeDriver`]
-/// contract and the only kernel-specific probe input.
-///
-/// `ADR-0010` §4's report is assembled once, by the provided [`SubvolumeDriver::probe`], so a
-/// driver reports facts about its own substrate and nothing else.
+/// `ADR-0010` §4's report is assembled once, by [`KernelBtrfsDriver::probe`], so the driver
+/// reports facts about its own substrate and nothing else.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProbeFacts {
     /// Existing directory the driver inspected.
     pub probed_path: PathBuf,
-    /// `statfs(probed_path).f_type`, or the emulated filesystem type of a test driver.
+    /// `statfs(probed_path).f_type`.
     pub fstype: i64,
-    /// `statvfs(probed_path).f_flag & ST_NOATIME`, or the emulated mount option of a test driver.
+    /// `statvfs(probed_path).f_flag & ST_NOATIME`.
     pub noatime: bool,
 }
 
-/// Injected pre-daemon CLI probe helper (`ADR-0010` §4).
-///
-/// `crates/slipfork/src/main.rs` wires this in `M3.15`: it constructs [`KernelBtrfsDriver`] at the
-/// CLI composition boundary and passes `&dyn SubvolumeDriver` here (holding no `WorldEngine`), so
-/// `doctor` still explains a refused `slipforkd` boot; tests pass a test driver instead.
-pub fn probe_with(
-    driver: &dyn SubvolumeDriver,
-    state_dir: &Path,
-) -> Result<BtrfsProbeReport, EngineError> {
-    driver.probe(state_dir)
-}
-
 /// The single `BTRFS_SUPER_MAGIC` gate (`ADR-0010` §4), shared by
-/// [`SubvolumeDriver::ensure_supported`], [`SubvolumeDriver::list_children`], and the test driver.
+/// [`KernelBtrfsDriver::ensure_supported`] and [`KernelBtrfsDriver::list_children`].
 pub fn require_btrfs(fstype: i64, path: &Path) -> Result<(), EngineError> {
     if is_btrfs(fstype) {
         Ok(())
@@ -184,7 +83,7 @@ pub fn require_btrfs(fstype: i64, path: &Path) -> Result<(), EngineError> {
         Err(EngineError::BtrfsRequired {
             path: path.to_path_buf(),
             actual_fstype: fstype,
-            mount_hint: BTRFS_MOUNT_HINT,
+            mount_hint: mount_hint(path),
         })
     }
 }
@@ -245,10 +144,7 @@ struct ScratchCreated {
 /// A cleanup failure is never silently discarded: whenever the failure is not already the returned
 /// destroy error, the error names the residue paths. A successful round-trip leaves nothing behind
 /// (every created name was destroyed again by `scratch_steps`).
-fn scratch_round_trip<D: SubvolumeDriver + ?Sized>(
-    driver: &D,
-    state_dir: &Path,
-) -> Result<(), EngineError> {
+fn scratch_round_trip(driver: &KernelBtrfsDriver, state_dir: &Path) -> Result<(), EngineError> {
     let pid = std::process::id();
     let names = ProbeNames {
         probe: format!(".doctor-probe-{pid}"),
@@ -303,8 +199,8 @@ fn residue_error(residue: &[PathBuf], cause: Option<&EngineError>) -> EngineErro
     }
 }
 
-fn scratch_steps<D: SubvolumeDriver + ?Sized>(
-    driver: &D,
+fn scratch_steps(
+    driver: &KernelBtrfsDriver,
     state_dir: &Path,
     names: &ProbeNames,
     created: &mut ScratchCreated,
@@ -336,8 +232,8 @@ fn errno_of(err: &EngineError) -> Option<i32> {
     }
 }
 
-/// The only production [`SubvolumeDriver`]: `statfs` magic checks plus the `BTRFS_IOC_*`
-/// subvolume lifecycle (`ADR-0010` §§3–5).
+/// The only Btrfs driver: `statfs` magic checks plus the `BTRFS_IOC_*` subvolume lifecycle
+/// (`ADR-0010` §§3–5). It holds no state, so callers construct it directly and share it freely.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct KernelBtrfsDriver;
 
@@ -379,8 +275,9 @@ impl KernelBtrfsDriver {
     }
 }
 
-impl SubvolumeDriver for KernelBtrfsDriver {
-    fn probe_facts(&self, path: &Path) -> Result<ProbeFacts, EngineError> {
+impl KernelBtrfsDriver {
+    /// `statfs`/`statvfs` evidence for `path` (or its nearest existing ancestor).
+    pub fn probe_facts(&self, path: &Path) -> Result<ProbeFacts, EngineError> {
         let probed_path = nearest_existing_ancestor(path)?;
         Ok(ProbeFacts {
             fstype: statfs_type(&probed_path)?,
@@ -389,11 +286,53 @@ impl SubvolumeDriver for KernelBtrfsDriver {
         })
     }
 
-    fn ensure_supported(&self, path: &Path) -> Result<(), EngineError> {
+    /// Pre-daemon `doctor` probe (`ADR-0010` §4) and the **single** producer of
+    /// [`BtrfsProbeReport`]: facts plus the scratch-subvolume `user_subvol_rm_allowed` round-trip.
+    pub fn probe(&self, path: &Path) -> Result<BtrfsProbeReport, EngineError> {
+        require_absolute(path)?;
+        let facts = self.probe_facts(path)?;
+        let btrfs_super_magic = is_btrfs(facts.fstype);
+        let mut created_state_dir = false;
+        let user_subvol_rm_allowed = if btrfs_super_magic {
+            if !path.exists() {
+                fs::create_dir_all(path).map_err(|err| EngineError::Io {
+                    path: path.display().to_string(),
+                    message: err.to_string(),
+                })?;
+                created_state_dir = true;
+            }
+            let outcome = scratch_round_trip(self, path);
+            if created_state_dir {
+                remove_probe_state_dir(path)?;
+            }
+            match outcome {
+                Ok(()) => Some(Ok(())),
+                Err(err) => match errno_of(&err) {
+                    Some(errno) => Some(Err(errno)),
+                    // A failure that carries no raw errno is not `user_subvol_rm_allowed` evidence.
+                    None => return Err(err),
+                },
+            }
+        } else {
+            None
+        };
+        Ok(BtrfsProbeReport {
+            state_dir: path.to_path_buf(),
+            probed_path: facts.probed_path,
+            fstype: facts.fstype,
+            btrfs_super_magic,
+            user_subvol_rm_allowed,
+            noatime: facts.noatime,
+        })
+    }
+
+    /// Magic-only `slipforkd` boot gate (`ADR-0010` §4): a non-Btrfs `f_type` fails closed
+    /// **before** any snapshot, world, or control directory exists.
+    pub fn ensure_supported(&self, path: &Path) -> Result<(), EngineError> {
         require_btrfs(statfs_type(path)?, path)
     }
 
-    fn create_subvolume(&self, parent: &Path, name: &str) -> Result<PathBuf, EngineError> {
+    pub fn create_subvolume(&self, parent: &Path, name: &str) -> Result<PathBuf, EngineError> {
         let dest = parent.join(name);
         // Validate before opening anything: a bad name never reaches `open_dir`.
         let mut args = vol_args(name, 0, 0, parent)?;
@@ -403,7 +342,7 @@ impl SubvolumeDriver for KernelBtrfsDriver {
         Ok(dest)
     }
 
-    fn snapshot_ro(
+    pub(crate) fn snapshot_ro(
         &self,
         source_subvol: &Path,
         dest_parent: &Path,
@@ -412,7 +351,7 @@ impl SubvolumeDriver for KernelBtrfsDriver {
         self.snapshot(source_subvol, dest_parent, name, BTRFS_SUBVOL_RDONLY)
     }
 
-    fn snapshot_writable(
+    pub(crate) fn snapshot_writable(
         &self,
         source_subvol: &Path,
         dest_parent: &Path,
@@ -421,7 +360,7 @@ impl SubvolumeDriver for KernelBtrfsDriver {
         self.snapshot(source_subvol, dest_parent, name, 0)
     }
 
-    fn destroy_subvolume(&self, parent: &Path, name: &str) -> Result<(), EngineError> {
+    pub fn destroy_subvolume(&self, parent: &Path, name: &str) -> Result<(), EngineError> {
         let path = parent.join(name);
         // Validate before opening the parent or the subvolume: `..`/empty names never reach
         // `open_dir`, so destroy can never be pointed at a sibling or an ancestor.
@@ -450,7 +389,7 @@ impl SubvolumeDriver for KernelBtrfsDriver {
     ///
     /// Consumers: the `M3.14` engine suite will assert sealed-base subvolume names through it, and
     /// the Phase 2 `M3.2.13` GC will enumerate snapshot lineage through it.
-    fn list_children(&self, parent: &Path) -> Result<Vec<PathBuf>, EngineError> {
+    pub fn list_children(&self, parent: &Path) -> Result<Vec<PathBuf>, EngineError> {
         require_btrfs(statfs_type(parent)?, parent)?;
         let entries = fs::read_dir(parent).map_err(|err| EngineError::Io {
             path: parent.display().to_string(),
@@ -667,7 +606,7 @@ fn destroy_error(op: &'static str, path: &Path, errno: i32) -> EngineError {
         EngineError::SubvolumeDestroyDenied {
             path: path.to_path_buf(),
             errno,
-            mount_hint: BTRFS_MOUNT_HINT,
+            mount_hint: mount_hint(path),
         }
     } else {
         ioctl_error(op, path, errno)
@@ -707,11 +646,11 @@ mod tests {
                 Err(EngineError::BtrfsRequired {
                     path: got,
                     actual_fstype,
-                    mount_hint,
+                    mount_hint: hint,
                 }) => {
                     assert_eq!(got, path);
                     assert_eq!(actual_fstype, fstype);
-                    assert_eq!(mount_hint, BTRFS_MOUNT_HINT);
+                    assert_eq!(hint, mount_hint(path));
                 }
                 other => {
                     panic!("fstype {fstype:#x} must fail closed with BtrfsRequired: {other:?}")
@@ -745,11 +684,11 @@ mod tests {
     }
 
     #[test]
-    fn btrfs_magic_and_mount_hint_are_the_documented_constants() {
+    fn btrfs_magic_and_mount_hint_are_the_documented_contract() {
         assert_eq!(BTRFS_SUPER_MAGIC, 0x9123_683e);
         assert_eq!(
-            BTRFS_MOUNT_HINT,
-            "sudo mount -o user_subvol_rm_allowed,noatime /dev/<device> <state_dir>"
+            mount_hint(Path::new("/var/lib/slipfork")),
+            "sudo mount -o user_subvol_rm_allowed,noatime /dev/<device> /var/lib/slipfork"
         );
     }
 
@@ -794,12 +733,12 @@ mod tests {
             ),
             Err(EngineError::BtrfsRequired {
                 actual_fstype,
-                mount_hint,
+                mount_hint: hint,
                 ..
             }) => {
                 assert!(!report.btrfs_super_magic);
                 assert_eq!(actual_fstype, report.fstype);
-                assert_eq!(mount_hint, BTRFS_MOUNT_HINT);
+                assert_eq!(hint, mount_hint(&report.probed_path));
             }
             Err(other) => panic!("ensure_supported must fail closed with BtrfsRequired: {other}"),
         }
@@ -831,11 +770,11 @@ mod tests {
             EngineError::SubvolumeDestroyDenied {
                 path: got,
                 errno,
-                mount_hint,
+                mount_hint: hint,
             } => {
                 assert_eq!(got, path);
                 assert_eq!(errno, libc::EPERM);
-                assert_eq!(mount_hint, BTRFS_MOUNT_HINT);
+                assert_eq!(hint, mount_hint(path));
             }
             other => panic!("EPERM must map to SubvolumeDestroyDenied, got {other}"),
         }
@@ -853,7 +792,7 @@ mod tests {
         let required = EngineError::BtrfsRequired {
             path: PathBuf::from("/var/lib/slipfork"),
             actual_fstype: XFS_SUPER_MAGIC,
-            mount_hint: BTRFS_MOUNT_HINT,
+            mount_hint: mount_hint(Path::new("/var/lib/slipfork")),
         };
         let text = required.to_string();
         assert!(text.contains("/var/lib/slipfork"), "{text}");
@@ -863,7 +802,7 @@ mod tests {
         let denied = EngineError::SubvolumeDestroyDenied {
             path: PathBuf::from("/var/lib/slipfork/snapshots/base"),
             errno: libc::EPERM,
-            mount_hint: BTRFS_MOUNT_HINT,
+            mount_hint: mount_hint(Path::new("/var/lib/slipfork")),
         };
         let text = denied.to_string();
         assert!(text.contains("errno 1"), "{text}");

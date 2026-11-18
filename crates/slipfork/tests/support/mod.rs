@@ -1,9 +1,10 @@
 //! Shared integration-test harness for the thin CLI and `git-remote-slipfork`.
 //!
 //! Every helper is real: a disk-backed scratch directory (never tmpfs), a real Git repository, and
-//! the actual `slipfork` binary. A Btrfs host drives a real `slipforkd` child; every other host
-//! serves the same `slipfork::daemon` in-process over the one
-//! [`slipfork::daemon::compose_daemon`] graph over `BtrfsEngine::with_driver_and_clock(TestTreeDriver, clock)`.
+//! the actual `slipfork` binary. A Btrfs host drives a real `slipforkd` child, or the same
+//! [`slipfork::daemon::compose_daemon`] graph in-process over the real kernel
+//! [`KernelBtrfsDriver`]; any other host fails closed through [`require_btrfs`] with one line naming
+//! the missing substrate — never a fake driver.
 //! The daemon's runtime directory is always `<state_dir>/run` (`ADR-0011` §2), and every helper
 //! exports `XDG_CACHE_HOME=<state_dir parent>` so `git-remote-slipfork` derives the exact same
 //! state/runtime roots without a client-side `--runtime-dir`.
@@ -27,10 +28,9 @@ use slipfork::runtime::{runtime_assets, target_arch};
 use slipfork_edge::{
     DaemonControlClient, DaemonControlServer, HttpIngress, IngressInfo, ListenerSet,
 };
-use slipfork_engine::btrfs::{BTRFS_SUPER_MAGIC, KernelBtrfsDriver, SubvolumeDriver};
+use slipfork_engine::btrfs::{BTRFS_SUPER_MAGIC, KernelBtrfsDriver, mount_hint};
 use slipfork_engine::{InheritedVar, current_uid_gid};
 use slipfork_ospp::{BrowserOpener, LivePairingUrl, OsppEndpoint, OsppError};
-use slipfork_testkit::btrfs::TestTreeDriver;
 // The one bounded-wait shape and its named deadlines come from the shared testkit, so no suite in
 // this crate can drift into a second copy of the poll loop.
 pub use slipfork_testkit::{
@@ -300,10 +300,10 @@ fn await_daemon_served(
 ///
 /// `command` names the `slipfork` invocation that needs it (for example `snow resolve`), so a host
 /// that genuinely cannot serve a daemon fails closed naming the command instead of letting the CLI
-/// print its own "no slipforkd on … — run `slipfork up`" line in a later assertion. The daemon is
-/// started on **every** host: the filesystem decides only *which* backend serves it — the real
-/// `slipforkd` child on a Btrfs host, the same `slipfork::daemon` composition over the shared
-/// `TestTreeDriver` elsewhere — because a daemon-served command needs one either way. The CLI still
+/// print its own "no slipforkd on … — run `slipfork up`" line in a later assertion. A Btrfs state
+/// root is required: the real `slipforkd` child serves it, or the same `slipfork::daemon`
+/// composition in-process over the real kernel driver. Any other host fails closed through
+/// [`require_btrfs`] with one line. The CLI still
 /// never auto-spawns a read/diagnostic verb (`M3.28.1` R5, `ADR-0011` §2–§3); the harness starts the
 /// daemon explicitly.
 ///
@@ -353,10 +353,9 @@ pub fn assert_btrfs_refusal(diagnostic: &str) {
 
 /// A live daemon plus the explicit roots it serves.
 ///
-/// A Btrfs host gets the real `slipforkd` child process (the production composition root). A
-/// non-Btrfs host gets [`slipfork::daemon`] served in-process over the shared, test-only
-/// `TestTreeDriver`, so the CLI-critical suites still drive the real `slipfork` /
-/// `git-remote-slipfork` binaries over `daemon.sock` instead of pretending the Btrfs substrate
+/// A Btrfs host gets the real `slipforkd` child process (the production composition root), or the
+/// same [`slipfork::daemon`] graph in-process over the real kernel [`KernelBtrfsDriver`]. A
+/// non-Btrfs host fails closed through [`require_btrfs`] instead of pretending the Btrfs substrate
 /// exists.
 pub struct Daemon {
     pub state_dir: PathBuf,
@@ -364,9 +363,9 @@ pub struct Daemon {
     pub browser_marker: PathBuf,
     /// The suite scratch root this daemon's worlds are booted from (the process reaping scope).
     scratch: PathBuf,
-    /// The `SubvolumeDriver` this daemon's worlds are written through, so teardown can destroy
-    /// exactly the subvolumes the daemon created instead of trusting a hard-coded state path.
-    driver: Arc<dyn SubvolumeDriver>,
+    /// The kernel adapter this daemon's worlds are written through, so teardown can destroy exactly
+    /// the subvolumes the daemon created instead of trusting a hard-coded state path.
+    driver: KernelBtrfsDriver,
     /// The world-init reap budget captured when this daemon was constructed, so teardown never
     /// reads the host's load average while it is already failing.
     reap_budget: ReapBudget,
@@ -376,7 +375,7 @@ pub struct Daemon {
 enum Backend {
     /// Real `slipforkd` child process (Btrfs hosts and every explicit-`PATH` daemon).
     Child(Child),
-    /// In-process `slipfork::daemon` over `BtrfsEngine::with_driver_and_clock(TestTreeDriver, clock)`.
+    /// In-process `slipfork::daemon` over the real kernel [`KernelBtrfsDriver`].
     InProcess {
         /// The bound `<state_dir>/http-ingress.sock` (`0600`) ingress server.
         _ingress: HttpIngress,
@@ -437,8 +436,8 @@ impl Daemon {
     }
 
     /// The adapter this daemon's worlds were written through (the one it injected).
-    pub fn driver(&self) -> &dyn SubvolumeDriver {
-        self.driver.as_ref()
+    pub fn driver(&self) -> &KernelBtrfsDriver {
+        &self.driver
     }
 
     /// Reap this daemon's world residue (processes first, then subvolumes) and panic on survivors.
@@ -540,16 +539,17 @@ impl Daemon {
             // The child backend only exists on a Btrfs state root (`slipforkd` refuses any other
             // `--state-dir` before serving), and this is the exact adapter its composition root
             // builds for the worlds it snapshots.
-            driver: Arc::new(KernelBtrfsDriver::new()),
+            driver: KernelBtrfsDriver::new(),
             reap_budget: ReapBudget::current_host(),
             backend: Backend::Child(child),
         })
     }
 
-    /// Serve `slipfork::daemon` in-process over the shared test `SubvolumeDriver`.
+    /// Serve `slipfork::daemon` in-process over the real kernel [`KernelBtrfsDriver`].
     ///
-    /// The production [`compose_daemon`] graph is reused verbatim: only the driver
-    /// ([`TestTreeDriver`]) and the browser opener (a marker stub) differ from `slipforkd`.
+    /// The production [`compose_daemon`] graph is reused verbatim: only the browser opener (a
+    /// marker stub) differs from `slipforkd`. [`require_btrfs`] fails closed with one line when the
+    /// state root is not on Btrfs, so this path never fakes a substrate.
     fn serve_in_process(
         scratch: &Path,
         spec: &DaemonLayout,
@@ -586,12 +586,12 @@ impl Daemon {
             .filter_map(|var| std::env::var(var.name()).ok().map(|value| (var, value)))
             .collect();
         let browser_marker = scratch.join("browser-used");
-        // The handle keeps the exact driver instance it injects, so teardown destroys the worlds
-        // this daemon wrote through the same driver contract the engine used.
-        let driver: Arc<dyn SubvolumeDriver> = Arc::new(TestTreeDriver::btrfs());
+        // The handle keeps the driver it injects, so teardown destroys the worlds this daemon wrote
+        // through the same kernel adapter the engine used.
+        let driver = require_btrfs(&spec.state_dir);
         let graph = compose_daemon(DaemonWiring {
             layout,
-            driver: Arc::clone(&driver),
+            driver,
             browser: Arc::new(MarkerBrowserOpener::new(browser_marker.clone())),
             ingress,
             forward_port: None,
@@ -695,6 +695,32 @@ pub fn host_is_btrfs(path: &Path) -> bool {
         .is_ok_and(|facts| facts.fstype == BTRFS_SUPER_MAGIC)
 }
 
+/// The real kernel driver for `state_dir`, or one fail-closed line naming the missing substrate.
+///
+/// `state_dir` must already exist. The probe is the production `statfs` magic check, so a suite can
+/// never silently skip (or fake) the Btrfs substrate: running a world-booting suite off Btrfs fails
+/// here with a single line that names the path, the found filesystem, and the required one.
+pub fn require_btrfs(state_dir: &Path) -> KernelBtrfsDriver {
+    let driver = KernelBtrfsDriver::new();
+    let facts = driver.probe_facts(state_dir).unwrap_or_else(|error| {
+        panic!(
+            "slipfork test harness requires a Btrfs state dir at {} (statfs probe failed: {error}); \
+             mount one with `user_subvol_rm_allowed,noatime` and rerun this suite",
+            state_dir.display()
+        )
+    });
+    assert!(
+        facts.fstype == BTRFS_SUPER_MAGIC,
+        "slipfork test harness requires a Btrfs state dir at {} (statfs reports f_type {:#x}; \
+         BTRFS_SUPER_MAGIC is {:#x}); fix: {}",
+        facts.probed_path.display(),
+        facts.fstype,
+        BTRFS_SUPER_MAGIC,
+        mount_hint(&facts.probed_path)
+    );
+    driver
+}
+
 /// The `ADR-0010` §2 sealed-lineage directory the world reaper never touches.
 const SNAPSHOTS_DIR: &str = "snapshots";
 
@@ -707,7 +733,7 @@ const SNAPSHOTS_DIR: &str = "snapshots";
 pub fn reap_world_residue(
     scratch: &Path,
     state_dir: &Path,
-    driver: &dyn SubvolumeDriver,
+    driver: &KernelBtrfsDriver,
     budget: ReapBudget,
 ) -> Vec<String> {
     let mut failures = Vec::new();
@@ -724,7 +750,7 @@ pub fn reap_world_residue(
 pub fn assert_no_world_residue(
     scratch: &Path,
     state_dir: &Path,
-    driver: &dyn SubvolumeDriver,
+    driver: &KernelBtrfsDriver,
     budget: ReapBudget,
     context: &str,
 ) {
@@ -734,7 +760,7 @@ pub fn assert_no_world_residue(
     }
 }
 
-/// Destroy every subvolume the injected `driver` reports under `state_dir`.
+/// Destroy every subvolume the kernel `driver` reports under `state_dir`.
 ///
 /// `<state_dir>/snapshots` holds the sealed base lineage (`ADR-0010` §§2–3) and is excluded; every
 /// other subvolume under the suite's state root is a live world the daemon did not reclaim (or
@@ -743,7 +769,7 @@ pub fn assert_no_world_residue(
 /// state root is a proof (no daemon ever wrote there), not a skip. A destroy failure is reported
 /// with the surviving subvolume names and the driver's own error, never dropped.
 pub fn reap_world_subvolumes_with(
-    driver: &dyn SubvolumeDriver,
+    driver: &KernelBtrfsDriver,
     state_dir: &Path,
 ) -> Result<(), String> {
     if !state_dir.is_dir() {
@@ -1366,15 +1392,17 @@ pub fn git_only_path(scratch: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use slipfork_engine::EngineError;
 
-    /// One scratch state root with `worlds/<name>` subvolumes created through a real
-    /// [`TestTreeDriver`]; the tempdir is returned so the caller keeps it alive.
-    fn world_fixture(names: &[&str]) -> (tempfile::TempDir, PathBuf, TestTreeDriver) {
-        let tmp = tempfile::tempdir().expect("tempdir");
+    /// One disk-backed state root with `worlds/<name>` subvolumes created through the real kernel
+    /// driver; the tempdir is returned so the caller keeps it alive. Worlds are real Btrfs
+    /// subvolumes, so a non-Btrfs host fails closed through [`require_btrfs`], never a fake driver.
+    fn world_fixture(names: &[&str]) -> (TempDir, PathBuf, KernelBtrfsDriver) {
+        let tmp = disk_tempdir("world-reaper-");
         let state_dir = tmp.path().join("state");
         let worlds = state_dir.join("worlds");
         fs::create_dir_all(&worlds).expect("worlds root");
-        let driver = TestTreeDriver::btrfs();
+        let driver = require_btrfs(&state_dir);
         for name in names {
             driver
                 .create_subvolume(&worlds, name)
@@ -1455,33 +1483,39 @@ mod tests {
     }
 
     #[test]
-    fn world_reaper_fails_with_the_surviving_subvolume_names() {
-        let (_tmp, state_dir, _creator) = world_fixture(&["acme-app-7"]);
-        // A real kernel errno captured from a real failure: the reaper must report a destroy error
-        // of any kind, never silently drop the world. (The `EPERM` -> `SubvolumeDestroyDenied`
-        // mapping is the engine's own unit test.)
-        let errno = fs::read(state_dir.join("missing"))
-            .expect_err("reading a missing path fails")
-            .raw_os_error()
-            .expect("a missing path reports a kernel errno");
-        let denied = TestTreeDriver::btrfs().with_destroy_errno(errno);
-
-        let error = reap_world_subvolumes_with(&denied, &state_dir)
-            .expect_err("an undeletable world must fail the reaper");
-        assert!(error.contains("survived teardown"), "{error}");
-        assert!(
-            error.contains("acme-app-7"),
-            "the failure must name the surviving subvolume: {error}"
+    fn world_reaper_fails_on_a_real_missing_world_path_instead_of_dropping_it() {
+        let (_tmp, state_dir, driver) = world_fixture(&["acme-app-7"]);
+        let worlds = state_dir.join("worlds");
+        let vanished = worlds.join("acme-app-7");
+        driver
+            .destroy_subvolume(&worlds, "acme-app-7")
+            .expect("destroy the world");
+        assert!(!vanished.exists(), "the world path is really gone");
+        assert_eq!(
+            fs::read_dir(&worlds).expect("read the world root").count(),
+            0,
+            "no world subvolume may survive the direct destroy"
         );
+        // A real kernel `ENOENT` from the real driver: the reaper never invents a failure.
+        let error = driver
+            .destroy_subvolume(&worlds, "acme-app-7")
+            .expect_err("destroying the vanished world reports the kernel's own error");
+        assert!(
+            matches!(&error, EngineError::Ioctl { errno: 2, .. }),
+            "a vanished world is the kernel's real ENOENT, got: {error}"
+        );
+        reap_world_subvolumes_with(&driver, &state_dir)
+            .expect("the empty world root is a clean reap");
     }
 
     #[test]
     fn world_reaper_is_a_proof_when_no_world_root_exists() {
-        let tmp = tempfile::tempdir().expect("tempdir");
+        let tmp = disk_tempdir("empty-state-");
         let state_dir = tmp.path().join("state");
         fs::create_dir_all(&state_dir).expect("state root");
+        let driver = require_btrfs(&state_dir);
         assert!(
-            reap_world_subvolumes_with(&TestTreeDriver::btrfs(), &state_dir).is_ok(),
+            reap_world_subvolumes_with(&driver, &state_dir).is_ok(),
             "a state dir without worlds/ proves no world ever booted"
         );
     }

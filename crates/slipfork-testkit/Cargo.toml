@@ -1,6 +1,6 @@
 [package]
 name = "slipfork-testkit"
-description = "Unpublished shared bounded-wait helpers and test-only SubvolumeDriver for Slipfork integration test suites"
+description = "Unpublished shared bounded-wait helpers for Slipfork integration test suites"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -8,9 +8,4 @@ repository.workspace = true
 rust-version.workspace = true
 publish = false
 
-[dependencies]
-libc.workspace = true
-slipfork-engine = { path = "../slipfork-engine" }
 
-[dev-dependencies]
-tempfile.workspace = true

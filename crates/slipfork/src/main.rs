@@ -30,8 +30,8 @@ use slipfork::cli::{
     UnitKind,
 };
 use slipfork::daemon_unit_install::{
-    self, DAEMON_GRACE, DAEMON_POLL, InstallRequest, ManagedUnit, SocketHolder, UnitInstaller,
-    ingress_unit_spec, probe_socket_holder, target_account,
+    self, DAEMON_GRACE, DAEMON_HANDOVER, DAEMON_POLL, InstallRequest, ManagedUnit, SocketHolder,
+    UnitInstaller, ingress_unit_spec, probe_socket_holder, target_account,
 };
 use slipfork::doctor::{self, OsHostProbe, SystemdIngressProbe};
 use slipfork::layout::{Layout, absolute_path, ensure_private_dir};
@@ -43,8 +43,8 @@ use slipfork_edge::{
     WorldSelector, render_service_unit, render_socket_unit,
 };
 use slipfork_engine::btrfs::KernelBtrfsDriver;
+use slipfork_engine::current_uid_gid;
 use slipfork_engine::linux_cow::{ProcessSignal, signal_pidfd};
-use slipfork_engine::{SystemClock, current_uid_gid};
 use slipfork_ospp::BrowserOpener;
 use slipfork_snow::SnowFile;
 
@@ -247,8 +247,10 @@ fn doctor(json: bool, layout: &Layout) -> Result<ExitCode, String> {
     let driver = KernelBtrfsDriver::new();
     let host = OsHostProbe::new(exe_dir()?);
     let ingress = SystemdIngressProbe;
-    let report = doctor::run(&driver, &host, &ingress, layout.state_dir(), uid, gid)
+    let btrfs = driver
+        .probe(layout.state_dir())
         .map_err(|err| err.to_string())?;
+    let report = doctor::run(btrfs, &host, &ingress, uid, gid);
     if json {
         println!("{}", render_json(&report.to_json())?);
     } else {
@@ -372,7 +374,7 @@ fn daemon_install(
     let report = daemon_unit_install::install(
         &AccountDatabaseIdentity,
         &OsUnitInstaller,
-        &SystemClock,
+        DAEMON_HANDOVER,
         &request,
     )?;
     if json {

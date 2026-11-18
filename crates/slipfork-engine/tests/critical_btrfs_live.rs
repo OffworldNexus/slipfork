@@ -22,18 +22,15 @@ pub mod support;
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::time::Duration;
 
 use base64::Engine as _;
-use slipfork_engine::btrfs::{
-    BTRFS_MOUNT_HINT, BTRFS_SUPER_MAGIC, KernelBtrfsDriver, ProbeFacts, SubvolumeDriver,
-};
+use slipfork_engine::btrfs::{BTRFS_SUPER_MAGIC, KernelBtrfsDriver, ProbeFacts, mount_hint};
 use slipfork_engine::rootfs::BackingServiceKey;
 use slipfork_engine::{
     BootLineage, BtrfsEngine, EngineError, ExecEnv, ExecOutput, MountMode, ServiceHandle,
     ServiceKind, ServiceRuntime, ServiceSpec, ServiceState, SnapshotId, StateSubdirMount,
-    SystemClock, WorldEngine, WorldHandle, WorldMount, WorldRootfs, WorldSpec, current_uid_gid,
+    WorldEngine, WorldHandle, WorldMount, WorldRootfs, WorldSpec, current_uid_gid,
 };
 use slipfork_testkit::poll_until;
 use slipfork_world::WorldTarget;
@@ -70,7 +67,7 @@ fn btrfs_kernel_ro_snapshot_two_clones_same_port_services_and_ipc_isolation() {
 
     // The one `statfs` probe (and the one real driver) this suite performs: `0x9123683e` is
     // `BTRFS_SUPER_MAGIC`. The engine and the teardown share this same driver instance.
-    let driver: Arc<dyn SubvolumeDriver> = Arc::new(KernelBtrfsDriver::new());
+    let driver = KernelBtrfsDriver::new();
     let probe = driver
         .probe_facts(&state_dir)
         .expect("statfs the state dir");
@@ -85,30 +82,29 @@ fn btrfs_kernel_ro_snapshot_two_clones_same_port_services_and_ipc_isolation() {
 fn assert_fail_closed_contract(state_dir: &Path, probe: &ProbeFacts) {
     let actual_fstype = probe.fstype;
     let (uid, gid) = current_uid_gid();
-    let err = BtrfsEngine::with_driver_and_clock(
+    let err = BtrfsEngine::new(
         state_dir,
         uid,
         gid,
         env!("CARGO_BIN_EXE_slipfork-world-init"),
-        Arc::new(KernelBtrfsDriver::new()),
-        Arc::new(SystemClock),
+        KernelBtrfsDriver::new(),
     )
     .expect_err("a non-Btrfs state dir must refuse the engine");
     match err {
         EngineError::BtrfsRequired {
             path,
             actual_fstype: reported,
-            mount_hint,
+            mount_hint: hint,
         } => {
             assert_eq!(path, state_dir, "the refusal names the state directory");
             assert_eq!(
                 reported, actual_fstype,
                 "the refusal reports the f_type statfs observed"
             );
-            assert_eq!(mount_hint, BTRFS_MOUNT_HINT);
+            assert_eq!(hint, mount_hint(state_dir));
             assert!(
-                mount_hint.contains("mount -o user_subvol_rm_allowed,noatime"),
-                "the refusal names the exact mount remediation: {mount_hint}"
+                hint.contains("mount -o user_subvol_rm_allowed,noatime"),
+                "the refusal names the exact mount remediation: {hint}"
             );
         }
         other => panic!("expected BtrfsRequired, got {other:?}"),
@@ -129,19 +125,18 @@ fn assert_fail_closed_contract(state_dir: &Path, probe: &ProbeFacts) {
 }
 
 /// A Btrfs host: the real ioctl, namespace, and `crun` path.
-fn run_kernel_suite(root: &Path, state_dir: &Path, driver: Arc<dyn SubvolumeDriver>) {
+fn run_kernel_suite(root: &Path, state_dir: &Path, driver: KernelBtrfsDriver) {
     assert!(
         support::pinned_crun().is_file(),
         "the pinned static crun is a real input of the live suite (sha256-pinned, downloaded once)"
     );
     let (uid, gid) = current_uid_gid();
-    let engine = BtrfsEngine::with_driver_and_clock(
+    let engine = BtrfsEngine::new(
         state_dir,
         uid,
         gid,
         env!("CARGO_BIN_EXE_slipfork-world-init"),
-        Arc::clone(&driver),
-        Arc::new(SystemClock),
+        driver,
     )
     .expect("BtrfsEngine over KernelBtrfsDriver");
     let rootfs = backing_service_rootfs(state_dir);

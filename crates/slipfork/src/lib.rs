@@ -9,7 +9,8 @@
 //!
 //! - [`cli`]: the single `clap` surface shared by both binaries.
 //! - [`doctor`]: the pre-daemon `slipfork doctor` seam (`ADR-0010` §4): `HostProbe` + report
-//!   rendering over an injected `SubvolumeDriver` (the CLI owns no `WorldEngine`).
+//!   rendering over the concrete [`slipfork_engine::btrfs::KernelBtrfsDriver`] probe seam (the CLI
+//!   owns no `WorldEngine`).
 //! - [`apparmor`]: the Ubuntu 24.04 `/etc/apparmor.d/slipfork` `userns` profile body.
 //! - [`layout`]: pure paths derived from already-resolved roots (`state`, `runtime`, data/vaults).
 //! - [`logs`]: the one attributed `slipfork logs` renderer (`<source>: ` prefixes for fan-out,

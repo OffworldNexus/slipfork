@@ -2,7 +2,7 @@
 id: M3.30.1.2
 title: "Purge support-matrix bureaucracy and collapse duplicated helper forks"
 kind: task
-status: ready
+status: done
 owner: implementer
 priority: 3
 depends_on: [M3.30.1.1]
@@ -26,7 +26,7 @@ attempts: 2
 max_attempts: 3
 escalation: none
 created: "2026-11-18T22:20"
-updated: "2026-11-18T22:40"
+updated: "2026-11-18T22:46"
 ---
 
 # Goal

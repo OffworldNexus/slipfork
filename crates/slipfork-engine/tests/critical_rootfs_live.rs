@@ -10,7 +10,6 @@ pub mod support;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use slipfork_engine::SystemClock;
 use slipfork_engine::rootfs::{
     BackingServiceKey, BaseImageBuilder, BaseImageError, CliBuildxExporter, DockerfileStageBuilder,
     ElfAbiProbe, FsInputHasher, HostCacheRequest, LibcFamily, OciImageStore, OciRootfs,
@@ -77,7 +76,6 @@ impl LiveHarness {
             Arc::new(FsInputHasher),
             Arc::new(NoServices),
             Arc::new(ElfAbiProbe),
-            Arc::new(SystemClock),
         )
     }
 }

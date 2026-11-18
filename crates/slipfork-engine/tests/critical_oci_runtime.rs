@@ -2,7 +2,7 @@
 //! (`ADR-0009` §2–§3).
 //!
 //! Everything here runs on any host: the suite boots a real world over the shared
-//! [`slipfork_testkit::btrfs::TestTreeDriver`] and asserts every container contract the engine
+//! the real [`slipfork_engine::btrfs::KernelBtrfsDriver`] and asserts every container contract the engine
 //! refuses **before** it execs `crun` — request shape, backing-image presence in `WorldRootfs`,
 //! state-subdirectory lineage, read-only mount visibility and collisions, and the typed
 //! `ServiceNotRunning`/`UnknownService`/`WorldGone` surfaces.

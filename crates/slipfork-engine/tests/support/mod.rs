@@ -14,7 +14,7 @@ use std::process::Command;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
-use slipfork_engine::btrfs::SubvolumeDriver;
+use slipfork_engine::btrfs::{BTRFS_SUPER_MAGIC, KernelBtrfsDriver, mount_hint};
 use slipfork_engine::rootfs::{
     BaseImageBuilder, BaseImageError, CliBuildxExporter, DockerfileStageBuilder, ElfAbiProbe,
     FsInputHasher, HostCacheRequest, OciImageStore, OciRootfs, RuntimeAssets, SnowPortContract,
@@ -23,9 +23,8 @@ use slipfork_engine::rootfs::{
 use slipfork_engine::{
     BootLineage, BtrfsEngine, CacheOutcome, ExecEnv, ExecOutput, InheritedVar, LocalIngressBridge,
     MountMode, ServiceHandle, ServiceLogs, ServiceSpec, SnapshotId, StateSubdirMount, StreamChunk,
-    SystemClock, WorldEngine, WorldHandle, WorldMount, WorldSpec, current_uid_gid,
+    WorldEngine, WorldHandle, WorldMount, WorldSpec, current_uid_gid,
 };
-use slipfork_testkit::btrfs::TestTreeDriver;
 // The one bounded-wait shape and its named deadlines come from the shared testkit, so no suite in
 // this crate can drift into a second copy of the poll loop.
 pub use slipfork_testkit::{POLL_INTERVAL, poll_until_with_interval as poll_until};
@@ -193,7 +192,6 @@ fn fixture_rootfs() -> WorldRootfs {
                 std::sync::Arc::new(FsInputHasher),
                 std::sync::Arc::new(NoServices),
                 std::sync::Arc::new(ElfAbiProbe),
-                std::sync::Arc::new(SystemClock),
             );
             let mut events = Vec::new();
             let rootfs = builder
@@ -317,26 +315,57 @@ pub struct WorldFixture {
     pub artifacts: PathBuf,
 }
 
-impl WorldFixture {
-    pub fn new(label: &str) -> Self {
-        Self::with_driver(label, Arc::new(TestTreeDriver::btrfs()))
-    }
+/// The real kernel driver for `state_dir`, or ONE fail-closed line naming the missing substrate.
+///
+/// `state_dir` is created first, so the `statfs` probe reports the real filesystem instead of a
+/// bare `ENOENT`; a non-Btrfs host then panics with the probed path, the found `f_type`, the
+/// required [`BTRFS_SUPER_MAGIC`], and the mount remedy. There is no `Option` to return early on,
+/// so no protected suite can report green on a host that cannot boot a world.
+pub fn require_btrfs(state_dir: &Path) -> KernelBtrfsDriver {
+    std::fs::create_dir_all(state_dir)
+        .unwrap_or_else(|error| panic!("create the state dir {}: {error}", state_dir.display()));
+    let driver = KernelBtrfsDriver::new();
+    let facts = driver.probe_facts(state_dir).unwrap_or_else(|error| {
+        panic!(
+            "slipfork-engine live suites cannot probe {} (statfs failed: {error}); fix: {}",
+            state_dir.display(),
+            mount_hint(state_dir)
+        )
+    });
+    assert!(
+        facts.fstype == BTRFS_SUPER_MAGIC,
+        "slipfork-engine live suites require a Btrfs state dir at {} (statfs reports f_type {:#x}; \
+         BTRFS_SUPER_MAGIC is {:#x}); fix: {}",
+        facts.probed_path.display(),
+        facts.fstype,
+        BTRFS_SUPER_MAGIC,
+        mount_hint(&facts.probed_path)
+    );
+    driver
+}
 
-    pub fn with_driver(label: &str, driver: Arc<TestTreeDriver>) -> Self {
+/// The real engine over [`require_btrfs`]'s driver; every other construction error is a hard fail.
+pub fn require_engine(state_dir: &Path, world_init: PathBuf) -> BtrfsEngine {
+    let driver = require_btrfs(state_dir);
+    let (uid, gid) = current_uid_gid();
+    BtrfsEngine::new(state_dir, uid, gid, world_init, driver).unwrap_or_else(|error| {
+        panic!(
+            "cannot construct the Btrfs engine at {}: {error}",
+            state_dir.display()
+        )
+    })
+}
+
+impl WorldFixture {
+    /// Build the fixture over the real kernel driver; a non-Btrfs host fails closed through
+    /// [`require_btrfs`] with one clear line (never a skipped test, never a fake driver).
+    pub fn new(label: &str) -> Self {
         let root = engine_test_dir(label);
         let state_dir = root.join("state");
-        let (uid, gid) = current_uid_gid();
-        let engine = Arc::new(
-            BtrfsEngine::with_driver_and_clock(
-                &state_dir,
-                uid,
-                gid,
-                env!("CARGO_BIN_EXE_slipfork-world-init"),
-                driver as Arc<dyn SubvolumeDriver>,
-                Arc::new(SystemClock),
-            )
-            .expect("BtrfsEngine over the shared TestTreeDriver"),
-        );
+        let engine = Arc::new(require_engine(
+            &state_dir,
+            PathBuf::from(env!("CARGO_BIN_EXE_slipfork-world-init")),
+        ));
         let rootfs = engine_rootfs(&state_dir);
         let src = root.join("state-src");
         std::fs::create_dir_all(src.join("state")).expect("state-src");

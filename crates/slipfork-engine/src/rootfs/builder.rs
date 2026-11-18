@@ -15,9 +15,9 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Instant;
 
 use crate::CacheOutcome;
-use crate::clock::MonotonicClock;
 use crate::clock::elapsed_millis;
 use crate::rootfs::abi::AbiProbe;
 use crate::rootfs::buildx::{BuildxRequest, SLIPFORK_RUNTIME_CONTEXT};
@@ -38,28 +38,25 @@ pub struct DockerfileStageBuilder {
     input_hasher: Arc<dyn InputHasher>,
     oci_store: Arc<dyn OciImageStore>,
     abi_probe: Arc<dyn AbiProbe>,
-    clock: Arc<dyn MonotonicClock>,
 }
 
 impl DockerfileStageBuilder {
     /// Wire the builder with every host capability it needs (`ADR-0009` Composition Root).
     ///
-    /// `clock` is the composition root's single [`MonotonicClock`]: the builder stamps the measured
-    /// rootfs build duration with it, so the value it returns on [`WorldRootfs::millis`] needs no
-    /// second time source downstream.
+    /// The builder takes the two `Instant`s around its own build and records their elapsed
+    /// milliseconds on [`WorldRootfs::millis`]; no clock is injected and no second time source
+    /// exists downstream.
     pub fn new(
         exporter: Arc<dyn BuildxExporter>,
         input_hasher: Arc<dyn InputHasher>,
         oci_store: Arc<dyn OciImageStore>,
         abi_probe: Arc<dyn AbiProbe>,
-        clock: Arc<dyn MonotonicClock>,
     ) -> Self {
         Self {
             exporter,
             input_hasher,
             oci_store,
             abi_probe,
-            clock,
         }
     }
 
@@ -197,7 +194,7 @@ impl BaseImageBuilder for DockerfileStageBuilder {
         });
 
         let final_app = layout.app_rootfs(&digest);
-        let started = self.clock.now();
+        let started = Instant::now();
         let (metadata, cache) = match cache::read_manifest(&layout.rootfs_dir(&digest)) {
             Some(metadata) if final_app.is_dir() => {
                 on_event(RootfsBuildEvent::CacheHit {
@@ -228,7 +225,7 @@ impl BaseImageBuilder for DockerfileStageBuilder {
         // A cache hit ran no build, so it records no duration: `None` is "not measured", never `0`.
         let millis = match cache {
             CacheOutcome::Hit => None,
-            CacheOutcome::Miss => Some(elapsed_millis(started, self.clock.now())),
+            CacheOutcome::Miss => Some(elapsed_millis(started, Instant::now())),
         };
 
         let host_caches = contract::validate_host_caches(

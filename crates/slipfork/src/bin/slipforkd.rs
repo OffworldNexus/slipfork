@@ -154,7 +154,7 @@ fn run(cli: DaemonCli) -> Result<(), String> {
     );
     let graph = compose_daemon(DaemonWiring {
         layout,
-        driver: Arc::new(KernelBtrfsDriver::new()),
+        driver: KernelBtrfsDriver::new(),
         browser: Arc::new(browser),
         ingress,
         forward_port,

@@ -35,3 +35,7 @@ status review -> ready: triad: 2 BLOCKER (Makefile lost rs-test, dead python tes
 ## 2026-11-18T22:40 [lead]
 
 attempt 2/3 started
+
+## 2026-11-18T22:46 [lead]
+
+status ready -> done

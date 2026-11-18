@@ -13,10 +13,9 @@
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::Arc;
 
 use slipfork_engine::rootfs::{BackingServiceKey, BaseImageError, OciImageStore, OciRootfs};
-use slipfork_engine::{CacheOutcome, MonotonicClock, elapsed_millis};
+use slipfork_engine::{CacheOutcome, elapsed_millis};
 
 /// File recording the tag -> digest resolution so later boots use the same bytes (`tags.json`).
 const TAGS_FILE: &str = "tags.json";
@@ -26,16 +25,17 @@ const TAGS_FILE: &str = "tags.json";
 pub struct DockerOciImageStore {
     state_dir: PathBuf,
     docker: PathBuf,
-    clock: Arc<dyn MonotonicClock>,
 }
 
 impl DockerOciImageStore {
-    /// Root the content-addressed cache under `<state_dir>/cache/oci` over the one injected clock.
-    pub fn new(state_dir: impl Into<PathBuf>, clock: Arc<dyn MonotonicClock>) -> Self {
+    /// Root the content-addressed cache under `<state_dir>/cache/oci`.
+    ///
+    /// A cache miss takes the two `Instant`s around its own export and records their elapsed
+    /// milliseconds; no clock is injected.
+    pub fn new(state_dir: impl Into<PathBuf>) -> Self {
         Self {
             state_dir: state_dir.into(),
             docker: PathBuf::from("docker"),
-            clock,
         }
     }
 
@@ -148,7 +148,7 @@ impl OciImageStore for DockerOciImageStore {
             message: error.to_string(),
         })?;
         if !rootfs.is_dir() || !config.is_file() {
-            let started = self.clock.now();
+            let started = std::time::Instant::now();
             self.export(&reference, &digest, &rootfs, &config)?;
             self.record_tag(&reference, &digest);
             return Ok(OciRootfs {
@@ -156,7 +156,7 @@ impl OciImageStore for DockerOciImageStore {
                 rootfs,
                 config,
                 cache: CacheOutcome::Miss,
-                millis: Some(elapsed_millis(started, self.clock.now())),
+                millis: Some(elapsed_millis(started, std::time::Instant::now())),
             });
         }
         self.record_tag(&reference, &digest);

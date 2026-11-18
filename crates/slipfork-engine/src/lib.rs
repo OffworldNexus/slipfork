@@ -1,6 +1,6 @@
 //! `slipfork-engine`: the [`WorldEngine`] Dependency Injection port for copy-on-write worlds and
-//! its single shipped implementation, [`BtrfsEngine`], over an injected `SubvolumeDriver` (one
-//! unified Btrfs subvolume per world, `ADR-0010`).
+//! its single shipped implementation, [`BtrfsEngine`], over the concrete
+//! [`btrfs::KernelBtrfsDriver`] (one unified Btrfs subvolume per world, `ADR-0010`).
 //!
 //! [`BtrfsEngine`] satisfies the one shared conformance contract (`tests/conformance/mod.rs`): a
 //! world is materialized from an immutable [`SnapshotId`] plus a multi-mount [`WorldSpec`], its
@@ -34,7 +34,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 pub use btrfs_engine::BtrfsEngine;
-pub use clock::{MonotonicClock, SystemClock, elapsed_millis};
+pub use clock::elapsed_millis;
 pub use env::{ExecEnv, InheritedVar};
 pub use lineage::{
     BaseLineage, BootLineage, CacheOutcome, RootfsLineage, SeedLineage, ServiceImageLineage,
@@ -483,7 +483,7 @@ pub enum EngineError {
     BtrfsRequired {
         path: PathBuf,
         actual_fstype: i64,
-        mount_hint: &'static str,
+        mount_hint: String,
     },
     #[error(
         "cannot destroy subvolume {path}: permission denied (errno {errno}); unprivileged subvolume deletion requires: {mount_hint}"
@@ -491,7 +491,7 @@ pub enum EngineError {
     SubvolumeDestroyDenied {
         path: PathBuf,
         errno: i32,
-        mount_hint: &'static str,
+        mount_hint: String,
     },
     #[error("btrfs {op} failed at {path} (errno {errno})")]
     Ioctl {
@@ -687,9 +687,9 @@ pub trait WorldEngine: Send + Sync {
     /// Rows come from the engine's own supervision records (`ServiceProcess` /
     /// `ContainerProcess`), never from a caller-side list: a service that exited or was stopped
     /// **keeps its row** with [`ServiceState::Exited`] / [`ServiceState::Stopped`] and `pid: None`,
-    /// and two worlds never share a row. `uptime_secs` is stamped from the engine's injected
-    /// [`MonotonicClock`] (zero `Instant` on the wire, zero second clock in the daemon); a service
-    /// whose serving port the engine does not know reports `port: None` rather than `0`.
+    /// and two worlds never share a row. `uptime_secs` is stamped from the engine's own spawn
+    /// instant (zero `Instant` on the wire); a service whose serving port the engine does not know
+    /// reports `port: None` rather than `0`.
     ///
     /// A destroyed, teardown-in-progress, or foreign `world` fails closed with
     /// [`EngineError::WorldGone`] — never an empty row set.

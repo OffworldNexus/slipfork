@@ -1,6 +1,6 @@
 [package]
 name = "slipfork-engine"
-description = "WorldEngine IoC port with the BtrfsEngine adapter: one Btrfs subvolume per world through the injected SubvolumeDriver"
+description = "WorldEngine IoC port with the BtrfsEngine adapter: one Btrfs subvolume per world through the concrete KernelBtrfsDriver seam"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

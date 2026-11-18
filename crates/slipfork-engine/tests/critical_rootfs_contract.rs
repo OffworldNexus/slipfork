@@ -15,6 +15,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use slipfork_engine::CacheOutcome;
 use slipfork_engine::MountMode;
 use slipfork_engine::rootfs::{
     BackingServiceKey, BaseImageBuilder, BaseImageError, BuildxExporter, BuildxRequest,
@@ -23,7 +24,6 @@ use slipfork_engine::rootfs::{
     WorldRootfs, WorldRootfsRequest,
 };
 use slipfork_engine::rootfs::{CRUN_GUEST_PATH, WORLD_INIT_GUEST_PATH};
-use slipfork_engine::{CacheOutcome, SystemClock};
 use tempfile::TempDir;
 
 const ALPINE_OS_RELEASE: &str = "ID=alpine\nVERSION_ID=3.21\n";
@@ -72,7 +72,6 @@ fn builder(template: &Path) -> (DockerfileStageBuilder, Arc<AtomicUsize>) {
         Arc::new(FixedHasher),
         Arc::new(NoOciStore),
         Arc::new(ElfAbiProbe),
-        Arc::new(SystemClock),
     );
     (builder, calls)
 }

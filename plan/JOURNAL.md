@@ -1494,3 +1494,21 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-18T22:40 [M3.30.5] (lead) edited fields
 - 2026-11-18T22:40 [M3.30.1.2] (lead) status review -> ready: triad: 2 BLOCKER (Makefile lost rs-test, dead python test) + 4 MAJOR, one fix pass
 - 2026-11-18T22:40 [M3.30.1.2] (lead) attempt 2/3 started
+- 2026-11-18T22:46 [M3.30.1.2] (lead) status ready -> done
+- 2026-11-18T22:46 [M3.30.1.3] (lead) status ready -> active
+- 2026-11-18T22:46 [M3.30.1.3] (lead) attempt 1/3 started
+- 2026-11-18T22:46 [M3.30.1.3] (lead) base 5dd81295816939361a12a0d0389d909dac6771d8
+- 2026-11-18T22:46 [M3.30.1.3] (lead) edited fields
+- 2026-11-18T22:46 [M3.30.1.3.1] (lead) created (task) Engine substrate: concrete clock/driver DI, delete RecordingDriver/TestTreeDriver theater
+- 2026-11-18T22:46 [M3.30.1.3.2] (lead) created (task) Rootfs ports: delete AbiProbe/BuildxExporter/OciImageStore traits, concrete disk/ELF/status
+- 2026-11-18T22:46 [M3.30.1.3.3] (lead) created (task) CLI roots: concrete identity/browser/probe/installer DI, delete remaining doubles
+- 2026-11-18T22:46 [M3.30.1.3.4] (lead) created (task) Docs/tooling: surviving port list + delete vacuous stub-adapters guard
+- 2026-11-18T22:46 [M3.30.1.3.1] (lead) edited fields
+- 2026-11-18T22:46 [M3.30.1.3.1] (lead) status ready -> active
+- 2026-11-18T22:46 [M3.30.1.3.1] (lead) attempt 1/3 started
+- 2026-11-18T22:46 [M3.30.1.3.1] (lead) base 5dd81295816939361a12a0d0389d909dac6771d8
+- 2026-11-18T22:46 [M3.30.1.3] (lead) scope gate: resplit into .1 engines/.2 rootfs/.3 CLI/.4 docs-tooling
+- 2026-11-18T22:59 [M3.30.1.3.1] (lead) status active -> review
+- 2026-11-18T22:59 [M3.30.1.3.1] (lead) off-Btrfs: critical_engine 21 + critical_btrfs_live 3 + critical_cli 26 fail closed with one-line Btrfs requirement (expected until M3.30.4/6)
+- 2026-11-18T23:01 [M3.30.1.3.1] (lead) status review -> ready: triad: 1 BLOCKER (silent green skip) + 4 MAJOR, one fix pass
+- 2026-11-18T23:01 [M3.30.1.3.1] (lead) attempt 2/3 started

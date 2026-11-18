@@ -16,8 +16,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use serde_json::{Value, json};
-use slipfork_engine::btrfs::{BTRFS_MOUNT_HINT, BtrfsProbeReport, SubvolumeDriver, probe_with};
-use slipfork_engine::{EngineError, userns_remediation_hint};
+use slipfork_engine::btrfs::{BtrfsProbeReport, mount_hint};
+use slipfork_engine::userns_remediation_hint;
 
 /// Fixed `PATH` every `doctor` subprocess runs with (never the caller's environment).
 const PROBE_PATH: &str = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
@@ -135,7 +135,7 @@ pub struct DoctorReport {
     pub uid: u32,
     /// Invoking developer's gid.
     pub gid: u32,
-    /// Btrfs evidence from [`SubvolumeDriver::probe`] (`ADR-0010` §4).
+    /// Btrfs evidence from the composition root's `statfs` probe (`ADR-0010` §4).
     pub btrfs: BtrfsProbeReport,
     /// Filesystem name derived once from `btrfs.fstype`.
     pub filesystem: String,
@@ -392,20 +392,22 @@ fn failed_fix(context: &str, outcome: &HostCheckOutcome) -> Option<String> {
     }
 }
 
-/// Compose the single [`DoctorReport`] from the injected probes (`ADR-0010` §4).
+/// Compose the single [`DoctorReport`] from the already-probed Btrfs evidence plus the injected
+/// host/ingress probes (`ADR-0010` §4).
+///
+/// The composition root owns the one `statfs` probe (`KernelBtrfsDriver::probe`) and passes its
+/// plain [`BtrfsProbeReport`] value here, so this renderer holds no driver.
 ///
 /// `NetnsCheck::Skipped` is synthesized here (and only here) when user namespaces already failed;
 /// `noatime` is advisory and never feeds `ok` or `fixes`, so `fixes.is_empty() <=> ok` holds
 /// unconditionally.
 pub fn run(
-    driver: &dyn SubvolumeDriver,
+    btrfs: BtrfsProbeReport,
     host: &dyn HostProbe,
     ingress: &dyn IngressProbe,
-    state_dir: &Path,
     uid: u32,
     gid: u32,
-) -> Result<DoctorReport, EngineError> {
-    let btrfs = probe_with(driver, state_dir)?;
+) -> DoctorReport {
     let unshare_userns = host.probe_userns(uid, gid);
     let netns = if unshare_userns == HostCheckOutcome::Ok {
         NetnsCheck::Executed(host.probe_netns(uid, gid))
@@ -417,7 +419,7 @@ pub fn run(
 
     let mut fixes = Vec::new();
     if !required_btrfs_ok(&btrfs) {
-        fixes.push(BTRFS_MOUNT_HINT.to_owned());
+        fixes.push(mount_hint(&btrfs.probed_path));
     }
     if let Some(fix) = failed_fix("unshare_userns", &unshare_userns) {
         fixes.push(fix);
@@ -432,7 +434,7 @@ pub fn run(
         && unshare_userns == HostCheckOutcome::Ok
         && netns == NetnsCheck::Executed(HostCheckOutcome::Ok);
 
-    Ok(DoctorReport {
+    DoctorReport {
         ok,
         uid,
         gid,
@@ -442,7 +444,7 @@ pub fn run(
         netns,
         ingress,
         fixes,
-    })
+    }
 }
 
 /// Single `statfs(2).f_type` -> filesystem name renderer (`ADR-0010` §4).
@@ -506,7 +508,7 @@ impl DoctorReport {
             "fstype": format!("0x{:x}", self.btrfs.fstype as u32),
             "filesystem": self.filesystem,
             "btrfs_super_magic": self.btrfs.btrfs_super_magic,
-            "subvolume_ioctl": subvolume_ioctl_json(self.btrfs.user_subvol_rm_allowed),
+            "subvolume_ioctl": subvolume_ioctl_json(self.btrfs.user_subvol_rm_allowed, &self.btrfs.probed_path),
             "noatime": self.btrfs.noatime,
             "unshare_userns": check_json(&self.unshare_userns),
             "netns": netns_json(&self.netns),
@@ -533,14 +535,14 @@ fn netns_label(netns: &NetnsCheck) -> String {
 }
 
 /// `subvolume_ioctl` `--json` projection (`ADR-0010` §4).
-fn subvolume_ioctl_json(outcome: Option<Result<(), i32>>) -> Value {
+fn subvolume_ioctl_json(outcome: Option<Result<(), i32>>, probed_path: &Path) -> Value {
     match outcome {
         None => json!({ "status": "skipped" }),
         Some(Ok(())) => json!({ "status": "ok" }),
         Some(Err(errno)) => json!({
             "status": "failed",
             "errno": errno,
-            "hint": BTRFS_MOUNT_HINT,
+            "hint": mount_hint(probed_path),
         }),
     }
 }
@@ -572,7 +574,7 @@ fn netns_json(netns: &NetnsCheck) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use slipfork_testkit::btrfs::TestTreeDriver;
+    use slipfork_engine::btrfs::{BTRFS_SUPER_MAGIC, BtrfsProbeReport};
 
     /// Deterministic [`HostProbe`] for the composer tests.
     struct FakeHostProbe {
@@ -625,101 +627,40 @@ mod tests {
         }
     }
 
-    /// The composer tests that do not care about ingress use "not installed".
-    fn run(
-        driver: &dyn SubvolumeDriver,
-        host: &dyn HostProbe,
-        state_dir: &Path,
-        uid: u32,
-        gid: u32,
-    ) -> Result<DoctorReport, EngineError> {
-        super::run(
-            driver,
-            host,
-            &RecordingIngressProbe::new(IngressCheck::NotInstalled),
-            state_dir,
-            uid,
-            gid,
-        )
+    /// The plain Btrfs evidence the composition root's one `statfs` probe produced.
+    fn evidence(state_dir: &Path, fstype: i64) -> BtrfsProbeReport {
+        let btrfs = fstype == BTRFS_SUPER_MAGIC;
+        BtrfsProbeReport {
+            state_dir: state_dir.to_path_buf(),
+            probed_path: state_dir.to_path_buf(),
+            fstype,
+            btrfs_super_magic: btrfs,
+            user_subvol_rm_allowed: btrfs.then_some(Ok(())),
+            noatime: false,
+        }
     }
 
+    const XFS_SUPER_MAGIC: i64 = 0x5846_5342;
+    const EXT4_SUPER_MAGIC: i64 = 0xef53;
+
     #[test]
-    fn non_btrfs_reports_the_mount_hint_and_creates_nothing() {
+    fn non_btrfs_evidence_reports_the_mount_hint_and_creates_nothing() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let state_dir = tmp.path().join("missing-state");
-        let driver = TestTreeDriver::non_btrfs(0x5846_5342);
-        let report = run(&driver, &FakeHostProbe::passing(), &state_dir, 1000, 1000)
-            .expect("probe succeeds off Btrfs");
+        let report = super::run(
+            evidence(&state_dir, XFS_SUPER_MAGIC),
+            &FakeHostProbe::passing(),
+            &RecordingIngressProbe::new(IngressCheck::NotInstalled),
+            1000,
+            1000,
+        );
 
         assert!(!report.ok);
         assert!(!report.btrfs.btrfs_super_magic);
         assert_eq!(report.btrfs.user_subvol_rm_allowed, None);
         assert_eq!(report.filesystem, "xfs");
-        assert_eq!(report.fixes, vec![BTRFS_MOUNT_HINT.to_owned()]);
-        assert!(!state_dir.exists(), "doctor must create nothing off Btrfs");
-    }
-
-    #[test]
-    fn failed_checks_without_a_hint_still_produce_a_fix() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-
-        let userns_only = FakeHostProbe {
-            userns: HostCheckOutcome::Failed {
-                detail: "unshare: Operation not permitted".to_owned(),
-                hint: None,
-            },
-            netns: HostCheckOutcome::Ok,
-        };
-        let report = run(
-            &TestTreeDriver::btrfs(),
-            &userns_only,
-            tmp.path(),
-            1000,
-            1000,
-        )
-        .expect("probe succeeds on Btrfs");
-        assert!(!report.ok);
-        assert_eq!(
-            report.fixes,
-            vec!["unshare_userns: unshare: Operation not permitted".to_owned()]
-        );
-        assert_eq!(report.netns, NetnsCheck::Skipped);
-
-        let netns_only = FakeHostProbe {
-            userns: HostCheckOutcome::Ok,
-            netns: HostCheckOutcome::Failed {
-                detail: "ip link: Operation not permitted".to_owned(),
-                hint: None,
-            },
-        };
-        let report = run(
-            &TestTreeDriver::btrfs(),
-            &netns_only,
-            tmp.path(),
-            1000,
-            1000,
-        )
-        .expect("probe succeeds on Btrfs");
-        assert!(!report.ok);
-        assert_eq!(
-            report.fixes,
-            vec!["netns: ip link: Operation not permitted".to_owned()]
-        );
-    }
-
-    #[test]
-    fn btrfs_host_passes_with_an_empty_fix_list() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let driver = TestTreeDriver::btrfs();
-        let report = run(&driver, &FakeHostProbe::passing(), tmp.path(), 1000, 1000)
-            .expect("probe succeeds on Btrfs");
-
-        assert!(report.ok);
-        assert!(report.btrfs.btrfs_super_magic);
-        assert_eq!(report.btrfs.user_subvol_rm_allowed, Some(Ok(())));
-        assert_eq!(report.filesystem, "btrfs");
-        assert!(report.fixes.is_empty());
-        assert_eq!(report.netns, NetnsCheck::Executed(HostCheckOutcome::Ok));
+        assert_eq!(report.fixes, vec![mount_hint(&report.btrfs.probed_path)]);
+        assert!(!state_dir.exists());
     }
 
     #[test]
@@ -732,8 +673,13 @@ mod tests {
             },
             netns: HostCheckOutcome::Ok,
         };
-        let report = run(&TestTreeDriver::btrfs(), &host, tmp.path(), 1000, 1000)
-            .expect("probe succeeds on Btrfs");
+        let report = super::run(
+            evidence(tmp.path(), BTRFS_SUPER_MAGIC),
+            &host,
+            &RecordingIngressProbe::new(IngressCheck::NotInstalled),
+            1000,
+            1000,
+        );
 
         assert!(!report.ok);
         assert_eq!(report.netns, NetnsCheck::Skipped);
@@ -750,18 +696,20 @@ mod tests {
                 hint: Some("install iproute2".to_owned()),
             },
         };
-        let report = run(
-            &TestTreeDriver::non_btrfs(0xef53),
+        let report = super::run(
+            evidence(&tmp.path().join("state"), EXT4_SUPER_MAGIC),
             &host,
-            &tmp.path().join("state"),
+            &RecordingIngressProbe::new(IngressCheck::NotInstalled),
             1000,
             1000,
-        )
-        .expect("probe succeeds off Btrfs");
+        );
 
         assert_eq!(
             report.fixes,
-            vec![BTRFS_MOUNT_HINT.to_owned(), "install iproute2".to_owned()]
+            vec![
+                mount_hint(&report.btrfs.probed_path),
+                "install iproute2".to_owned()
+            ]
         );
         let text = report.render_text();
         assert!(text.contains("filesystem: ext4"), "{text}");
@@ -773,14 +721,13 @@ mod tests {
     #[test]
     fn json_projection_uses_the_adr_field_names() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let report = run(
-            &TestTreeDriver::non_btrfs(0x5846_5342),
+        let report = super::run(
+            evidence(&tmp.path().join("state"), XFS_SUPER_MAGIC),
             &FakeHostProbe::passing(),
-            &tmp.path().join("state"),
+            &RecordingIngressProbe::new(IngressCheck::NotInstalled),
             1000,
             1000,
-        )
-        .expect("probe succeeds off Btrfs");
+        );
         let value = report.to_json();
 
         assert_eq!(value["ok"], json!(false));
@@ -790,7 +737,10 @@ mod tests {
         assert_eq!(value["subvolume_ioctl"], json!({ "status": "skipped" }));
         assert_eq!(value["unshare_userns"], json!({ "status": "ok" }));
         assert_eq!(value["netns"], json!({ "status": "ok" }));
-        assert_eq!(value["fixes"], json!([BTRFS_MOUNT_HINT]));
+        assert_eq!(
+            value["fixes"],
+            json!([mount_hint(&report.btrfs.probed_path)])
+        );
         assert!(
             value.get("crun").is_none(),
             "doctor never emits a crun field"
@@ -798,11 +748,17 @@ mod tests {
     }
 
     #[test]
-    fn failed_ioctl_json_carries_the_errno_and_mount_hint() {
+    fn failed_ioctl_evidence_carries_the_errno_and_mount_hint() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let driver = TestTreeDriver::btrfs().with_destroy_errno(1);
-        let report = run(&driver, &FakeHostProbe::passing(), tmp.path(), 1000, 1000)
-            .expect("a scratch round-trip failure is evidence, not an error");
+        let mut btrfs = evidence(tmp.path(), BTRFS_SUPER_MAGIC);
+        btrfs.user_subvol_rm_allowed = Some(Err(1));
+        let report = super::run(
+            btrfs,
+            &FakeHostProbe::passing(),
+            &RecordingIngressProbe::new(IngressCheck::NotInstalled),
+            1000,
+            1000,
+        );
         let value = report.to_json();
 
         assert_eq!(
@@ -811,8 +767,30 @@ mod tests {
             "{value}"
         );
         assert_eq!(value["subvolume_ioctl"]["errno"], json!(1));
-        assert_eq!(value["subvolume_ioctl"]["hint"], json!(BTRFS_MOUNT_HINT));
+        assert_eq!(
+            value["subvolume_ioctl"]["hint"],
+            json!(mount_hint(&report.btrfs.probed_path))
+        );
         assert!(!report.ok);
+    }
+
+    #[test]
+    fn btrfs_evidence_passes_with_an_empty_fix_list() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let report = super::run(
+            evidence(tmp.path(), BTRFS_SUPER_MAGIC),
+            &FakeHostProbe::passing(),
+            &RecordingIngressProbe::new(IngressCheck::NotInstalled),
+            1000,
+            1000,
+        );
+
+        assert!(report.ok);
+        assert!(report.btrfs.btrfs_super_magic);
+        assert_eq!(report.btrfs.user_subvol_rm_allowed, Some(Ok(())));
+        assert_eq!(report.filesystem, "btrfs");
+        assert!(report.fixes.is_empty());
+        assert_eq!(report.netns, NetnsCheck::Executed(HostCheckOutcome::Ok));
     }
 
     #[test]
@@ -832,21 +810,19 @@ mod tests {
             listen: vec!["127.0.0.1:80".to_owned(), "[::1]:80".to_owned()],
         });
         let report = super::run(
-            &TestTreeDriver::non_btrfs(0xef53),
+            evidence(&tmp.path().join("state"), EXT4_SUPER_MAGIC),
             &FakeHostProbe::passing(),
             &ingress,
-            &tmp.path().join("state"),
             1000,
             1000,
-        )
-        .expect("probe succeeds off Btrfs");
+        );
 
         assert_eq!(ingress.calls(), 1, "the probe runs exactly once");
         assert!(
             !report.ok,
             "ingress never makes a non-Btrfs host healthy: {report:?}"
         );
-        assert_eq!(report.fixes, vec![BTRFS_MOUNT_HINT.to_owned()]);
+        assert_eq!(report.fixes, vec![mount_hint(&report.btrfs.probed_path)]);
         let text = report.render_text();
         assert!(
             text.contains("ingress: :80 active (port-less origins)\n"),
@@ -898,14 +874,12 @@ mod tests {
         ] {
             let ingress = RecordingIngressProbe::new(check.clone());
             let report = super::run(
-                &TestTreeDriver::btrfs(),
+                evidence(tmp.path(), BTRFS_SUPER_MAGIC),
                 &FakeHostProbe::passing(),
                 &ingress,
-                tmp.path(),
                 1000,
                 1000,
-            )
-            .expect("probe succeeds on Btrfs");
+            );
             assert!(report.ok, "ingress never affects the verdict");
             assert!(report.fixes.is_empty());
             assert!(

@@ -1,7 +1,7 @@
 //! Protected `L0` wiring tests (`M2.29`, `ADR-0009` §1–§3).
 //!
 //! These tests boot real `BtrfsEngine` worlds through the harness `slipforkd` composition root
-//! (the real child on a Btrfs host, the in-process `TestTreeDriver` backend elsewhere), extract the
+//! (the real child, or the same in-process daemon graph over the real kernel driver), extract the
 //! real pinned `crun` + `redis:8` OCI image, and assert the container-scoped CLI contract: `db`/`redis`
 //! resolve only through `WorldEngine::service_entry_command`, a stopped container fails closed with
 //! `ServiceNotRunning`, and `--host-caches` refuses on the measured ELF/libc ABI mismatch while

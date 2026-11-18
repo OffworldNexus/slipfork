@@ -4,7 +4,7 @@
 //! fail-closed error types, mount-spec validation, environment redaction, opaque handle stability,
 //! and seal-once freeze semantics. Real CoW lineage (frozen snapshot → independent sibling
 //! clones, `$UID` ownership, real bind mounts) is asserted by `tests/critical_engine.rs` against
-//! `BtrfsEngine` over the injected [`slipfork_engine::btrfs::SubvolumeDriver`] — never mocked — and by
+//! `BtrfsEngine` over the concrete [`slipfork_engine::btrfs::KernelBtrfsDriver`] seam — never mocked — and by
 //! `tests/critical_btrfs_live.rs` against the real kernel ioctl path.
 //!
 //! # Read-only snapshot vs writable clone
