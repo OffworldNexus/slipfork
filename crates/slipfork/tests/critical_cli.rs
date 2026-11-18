@@ -19,9 +19,8 @@ use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use serde_json::Value;
-use slipfork::daemon_unit_install::{self, InstallRequest, ManagedUnit, UnitInstaller};
+use slipfork::daemon_unit_install::{self, InstallRequest};
 use slipfork_engine::btrfs::KernelBtrfsDriver;
-use slipfork_engine::linux_cow::ProcessSignal;
 use slipfork_ospp_testkit::{ReferenceOsppServer, ReferenceServerConfig};
 
 pub mod support;
@@ -29,6 +28,10 @@ use support::{
     Daemon, POLL_INTERVAL, SHUTDOWN_DEADLINE, assert_success, poll_until, repo_with_manifest,
     stderr, stdout, wait_for_line,
 };
+
+#[path = "support/install_tool.rs"]
+mod install_tool;
+use install_tool::recording_tool;
 
 const SNOW_YML: &str = r#"
 images:
@@ -1434,71 +1437,10 @@ fn read_verbs_never_spawn_a_daemon_and_fail_closed_in_one_line() {
     }
 }
 
-/// Recording [`UnitInstaller`] that keeps every rendered file for byte comparison.
-#[derive(Default)]
-struct CapturedInstaller {
-    files: std::sync::Mutex<std::collections::BTreeMap<PathBuf, Vec<u8>>>,
-}
-
-impl UnitInstaller for CapturedInstaller {
-    fn read_file(&self, path: &Path) -> Result<Option<Vec<u8>>, String> {
-        Ok(self.files.lock().expect("files").get(path).cloned())
-    }
-
-    fn write_file_atomic(&self, path: &Path, contents: &[u8]) -> Result<(), String> {
-        self.files
-            .lock()
-            .expect("files")
-            .insert(path.to_path_buf(), contents.to_vec());
-        Ok(())
-    }
-
-    fn daemon_reload(&self) -> Result<(), String> {
-        Ok(())
-    }
-
-    fn apparmor_replace(&self, _profile_path: &Path) -> Result<(), String> {
-        Ok(())
-    }
-
-    fn stop_units(&self, _units: &[ManagedUnit]) -> Result<(), String> {
-        Ok(())
-    }
-
-    fn is_served(&self, _runtime_dir: &Path) -> Result<bool, String> {
-        Ok(false)
-    }
-
-    fn shutdown(&self, _runtime_dir: &Path) -> Result<(), String> {
-        Ok(())
-    }
-
-    fn socket_holder(
-        &self,
-        _runtime_dir: &Path,
-    ) -> Result<daemon_unit_install::SocketHolder, String> {
-        Ok(daemon_unit_install::SocketHolder::Absent)
-    }
-
-    fn signal_proven(
-        &self,
-        _pidfd: &std::os::fd::OwnedFd,
-        _signal: ProcessSignal,
-    ) -> Result<(), String> {
-        Ok(())
-    }
-
-    fn enable_now(&self, _units: &[ManagedUnit]) -> Result<(), String> {
-        Ok(())
-    }
-
-    fn restart_service(&self) -> Result<(), String> {
-        Ok(())
-    }
-}
-
 #[test]
 fn daemon_install_bytes_equal_a_real_daemon_unit_preview() {
+    use std::os::unix::fs::PermissionsExt as _;
+
     let tmp = disk_tempdir();
     let scratch = tmp.path();
     let state_dir = scratch.join("install-preview-state");
@@ -1538,7 +1480,20 @@ fn daemon_install_bytes_equal_a_real_daemon_unit_preview() {
     let service = preview("service");
     let apparmor = preview("apparmor");
 
-    let installer = CapturedInstaller::default();
+    // The one concrete installer, over a real disk root and real tool programs: no recorded or
+    // captured effect stands in for the files the install writes.
+    let install_root = scratch.join("install-root");
+    let unit_dir = install_root.join("systemd/system");
+    let apparmor_dir = install_root.join("apparmor.d");
+    std::fs::create_dir_all(&unit_dir).expect("create the system unit dir");
+    std::fs::create_dir_all(&apparmor_dir).expect("create the apparmor dir");
+    let log = install_root.join("tools.log");
+    let installer = slipfork::daemon_unit_install::UnitInstaller::new(
+        unit_dir,
+        apparmor_dir,
+        recording_tool(&install_root, "systemctl", &log),
+        recording_tool(&install_root, "apparmor_parser", &log),
+    );
     daemon_unit_install::install(
         &slipfork::user::UserIdentity::resolve().expect("the test runner's real OS identity"),
         &installer,
@@ -1555,21 +1510,27 @@ fn daemon_install_bytes_equal_a_real_daemon_unit_preview() {
             xdg_data_home: None,
         },
     )
-    .expect("the pure install renders the preview's bytes");
-    let files = installer.files.lock().expect("files");
+    .expect("the concrete installer writes the preview's bytes");
+    let paths = installer.paths();
     for (path, expected) in [
-        (daemon_unit_install::SOCKET_UNIT_PATH, socket.as_slice()),
-        (daemon_unit_install::SERVICE_UNIT_PATH, service.as_slice()),
-        (
-            daemon_unit_install::APPARMOR_PROFILE_PATH,
-            apparmor.as_slice(),
-        ),
+        (paths.socket, socket.as_slice()),
+        (paths.service, service.as_slice()),
+        (paths.apparmor, apparmor.as_slice()),
     ] {
+        let written = std::fs::read(&path)
+            .unwrap_or_else(|err| panic!("{} must be written: {err}", path.display()));
         assert_eq!(
-            files.get(Path::new(path)).map(Vec::as_slice),
-            Some(expected),
-            "{path} must equal the real `daemon unit` stdout"
+            written,
+            expected,
+            "{} must equal the real `daemon unit` stdout",
+            path.display()
         );
+        let mode = std::fs::metadata(&path)
+            .expect("written file metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o644, "{} must be systemd-readable", path.display());
     }
 }
 

@@ -24,8 +24,9 @@
 //! - [`runtime`]: pinned `crun` + `slipfork-world-init` payload provisioning for every `L0` rootfs.
 //! - [`daemon`]: the in-process [`slipfork_edge::DaemonControl`] implementation `slipforkd` injects
 //!   into [`slipfork_edge::DaemonControlServer`].
-//! - [`daemon_unit_install`]: the single `slipfork daemon install` orchestration over a narrow
-//!   [`daemon_unit_install::UnitInstaller`] port (`ADR-0011` §1).
+//! - [`daemon_unit_install`]: the single `slipfork daemon install` orchestration over the concrete
+//!   [`daemon_unit_install::UnitInstaller`] the composition root builds over
+//!   `/etc/systemd/system` + `/etc/apparmor.d` (`ADR-0011` §1).
 //! - [`status`]: the bare `slipfork` / `slipfork status` dashboard and its single human lineage
 //!   line, rendered purely from the daemon's [`slipfork_edge::DaemonStatus`].
 //! - [`restart`]: the one actionable `up` / `fork` / `restart` block and its `--json` document,

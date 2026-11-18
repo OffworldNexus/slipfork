@@ -1550,3 +1550,13 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-18T23:30 [M3.30.1.3.3.3] (lead) status review -> ready: triad: 2 BLOCKER — auth stopped opening/printing pairing page; one fix pass
 - 2026-11-18T23:30 [M3.30.1.3.3.3] (lead) attempt 2/3 started
 - 2026-11-18T23:30 [M3.30.3] (lead) carry-over: delete stale BROWSER=/bin/true coupling in packages/opencode-slipfork/tests/e2e.critical.test.ts; also doctor doctor-verdict text
+- 2026-11-18T23:33 [M3.30.1.3.3.3] (lead) status ready -> done
+- 2026-11-18T23:33 [M3.30.1.3.3.4] (lead) status ready -> active
+- 2026-11-18T23:33 [M3.30.1.3.3.4] (lead) attempt 1/3 started
+- 2026-11-18T23:33 [M3.30.1.3.3.4] (lead) base 7c5062856cc3200fec7c23a7ae01b4da867abd83
+- 2026-11-18T23:34 [M3.30.4] (lead) carry-over from M3.30.1.3.3.4: replace test-only RecordingEngine/StubRootfs (daemon.rs #[cfg(test)]) and StubWorldEngine (slipfork-edge/tests/critical_edge.rs) 
+- 2026-11-18T23:43 [M3.30.1.3.3.4] (lead) status active -> review
+- 2026-11-18T23:44 [M3.30.1.3.3.4] (lead) status review -> ready: triad: 3 BLOCKER (4 protected handover tests silently dropped) + 4 MAJOR, one pass
+- 2026-11-18T23:44 [M3.30.1.3.3.4] (lead) attempt 2/3 started
+- 2026-11-18T23:44 [M3.30.5] (lead) carry-over: amend ADR-0011 clause naming deleted trait UnitInstaller/OsUnitInstaller; docs/design blueprint trait verbs
+- 2026-11-18T23:44 [M3.30.3] (lead) carry-over: daemon install systemctl/apparmor legs block silently via .output(); add phase lines + spawn

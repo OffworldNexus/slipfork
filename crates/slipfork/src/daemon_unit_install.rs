@@ -3,13 +3,13 @@
 //! `systemd` (PID 1) is the only component allowed to bind `127.0.0.1:80` and `[::1]:80` on a host
 //! whose `net.ipv4.ip_unprivileged_port_start` is `1024`; neither an unprivileged process nor
 //! `systemd --user` may do it (`docs/research/tunnel-weaver-and-systemd-facts.md` §5). This module
-//! owns the pure install orchestration (`ADR-0011` §1): it renders the **exact bytes**
+//! owns the install orchestration (`ADR-0011` §1): it renders the **exact bytes**
 //! `slipfork daemon unit` prints through the `slipfork-edge` renderers, resolves the target
-//! developer account, and drives a narrow [`UnitInstaller`] port. Every filesystem and
-//! unit-management effect happens in the adapter (`OsUnitInstaller` in `main.rs`); the one
-//! ownership proof ([`probe_socket_holder`]) lives here because it is pure over an explicit
-//! runtime dir and is exercised end to end by the tests. There is no stringly
-//! `run(program, args)` bag, no `--force`, and no user-unit fallback.
+//! developer account, and drives one concrete [`UnitInstaller`] over the real host filesystem and
+//! `systemctl`/`apparmor_parser`. The composition root constructs it with the real unit directory
+//! (`/etc/systemd/system`) and AppArmor directory (`/etc/apparmor.d`); tests construct the same
+//! struct over a real disk directory. There is no installer trait, no scripted effect recorder, no
+//! stringly `run(program, args)` bag, no `--force`, and no user-unit fallback.
 //!
 //! Idempotency is byte equality: a file is rewritten only when its content differs, so a second
 //! `daemon install` performs zero writes while still running `enable --now`.
@@ -19,31 +19,40 @@
 //! still answers — [`probe_socket_holder`] must prove the holder is a `slipforkd` from
 //! `SO_PEERCRED` plus the `/proc/<pid>/exe` basename, **pin it with a pidfd**, and signal only
 //! through that descriptor, so `SIGKILL` can never reach a recycled pid. The probe and the shutdown
-//! both go through the injected [`UnitInstaller`], so there is one socket path, one adapter, and no
-//! second client racing it. An unowned holder is refused in one line and never signalled.
+//! both go through the installer, so there is one socket path, one adapter, and no second client
+//! racing it. An unowned holder is refused in one line and never signalled.
 
 #![forbid(unsafe_code)]
 
-use std::os::fd::OwnedFd;
+use std::ffi::{OsStr, OsString};
+use std::fs::{self, OpenOptions};
+use std::io::{self, Write as _};
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use crate::apparmor::render_userns_profile;
 use crate::layout::Layout;
 use crate::user::{ResolvedAccount, UserIdentity};
 use slipfork_edge::{INGRESS_ADDRS, UnitSpec, render_service_unit, render_socket_unit};
-use slipfork_engine::linux_cow::ProcessSignal;
 
 pub use crate::daemon_handover::{
-    DAEMON_GRACE, DAEMON_HANDOVER, DAEMON_POLL, HandoverBudget, SocketHolder, probe_socket_holder,
-    release_daemon,
+    DAEMON_GRACE, DAEMON_HANDOVER, DAEMON_POLL, HandoverBudget, HoldOutcome, HolderFacts,
+    ManagedUnit, PeerOwner, SocketHolder, hold_outcome, probe_socket_holder, release_daemon,
 };
 
-/// `/etc/systemd/system/slipforkd.socket` — PID 1 binds the ingress/forward ports here.
-pub const SOCKET_UNIT_PATH: &str = "/etc/systemd/system/slipforkd.socket";
-/// `/etc/systemd/system/slipforkd.service` — the unprivileged daemon unit.
-pub const SERVICE_UNIT_PATH: &str = "/etc/systemd/system/slipforkd.service";
-/// `/etc/apparmor.d/slipfork` — the `userns,` profile (`ADR-0010` §7).
-pub const APPARMOR_PROFILE_PATH: &str = "/etc/apparmor.d/slipfork";
+/// `/etc/systemd/system` — PID 1 reads the two unit files here (`ADR-0011` §1).
+pub const SYSTEM_UNIT_DIR: &str = "/etc/systemd/system";
+/// `/etc/apparmor.d` — the `userns,` profile directory (`ADR-0010` §7).
+pub const APPARMOR_DIR: &str = "/etc/apparmor.d";
+/// The system manager every install verb speaks to.
+pub const SYSTEMCTL: &str = "systemctl";
+/// The AppArmor profile loader.
+pub const APPARMOR_PARSER: &str = "apparmor_parser";
+/// Fixed executable search path for every install verb (nothing is inherited).
+const INSTALL_TOOL_PATH: &str = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
+/// The AppArmor profile file name inside [`APPARMOR_DIR`].
+const APPARMOR_PROFILE_NAME: &str = "slipfork";
 
 /// Names the non-root remedy includes the resolved account (the `--user` value that will work
 /// after `sudo`). The bare command is not enough on a host whose login account differs.
@@ -54,62 +63,178 @@ pub fn non_root_remedy(account: &str) -> String {
     format!("{NON_ROOT_REMEDY}{account})")
 }
 
-/// The systemd units `daemon install` enables together.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ManagedUnit {
-    /// `slipforkd.socket` (owns the privileged binds).
-    Socket,
-    /// `slipforkd.service` (the unprivileged daemon).
-    Service,
+/// The three absolute file paths one install writes, derived from the installer's directories.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InstallPaths {
+    pub socket: PathBuf,
+    pub service: PathBuf,
+    pub apparmor: PathBuf,
 }
 
-impl ManagedUnit {
-    /// The unit file name `systemctl enable --now` receives.
-    pub fn unit_name(self) -> &'static str {
-        match self {
-            Self::Socket => "slipforkd.socket",
-            Self::Service => "slipforkd.service",
+/// The one installer for `slipfork daemon install`: real files, real unit manager.
+///
+/// The composition root constructs it with [`SYSTEM_UNIT_DIR`] + [`APPARMOR_DIR`] + [`SYSTEMCTL`] +
+/// [`APPARMOR_PARSER`]; a lab test constructs the same struct over a real disk directory and real
+/// executable scripts named `systemctl`/`apparmor_parser` (a host without a system manager still
+/// runs the real subprocesses and records their argv on disk). Nothing here reads the environment.
+#[derive(Debug, Clone)]
+pub struct UnitInstaller {
+    unit_dir: PathBuf,
+    apparmor_dir: PathBuf,
+    systemctl: PathBuf,
+    apparmor_parser: PathBuf,
+}
+
+impl UnitInstaller {
+    /// Build the installer over explicit directories and tool programs.
+    pub fn new(
+        unit_dir: PathBuf,
+        apparmor_dir: PathBuf,
+        systemctl: PathBuf,
+        apparmor_parser: PathBuf,
+    ) -> Self {
+        Self {
+            unit_dir,
+            apparmor_dir,
+            systemctl,
+            apparmor_parser,
         }
     }
-}
 
-/// Narrow filesystem + unit-management port (`ADR-0011` §1).
-///
-/// Each verb names one real effect; the install sequence never composes shell command lines.
-pub trait UnitInstaller: Send + Sync {
+    /// The three file paths every install target uses (the one derivation).
+    pub fn paths(&self) -> InstallPaths {
+        InstallPaths {
+            socket: self.unit_dir.join(ManagedUnit::Socket.unit_name()),
+            service: self.unit_dir.join(ManagedUnit::Service.unit_name()),
+            apparmor: self.apparmor_dir.join(APPARMOR_PROFILE_NAME),
+        }
+    }
+
     /// Read one file, or `Ok(None)` when it does not exist.
-    fn read_file(&self, path: &Path) -> Result<Option<Vec<u8>>, String>;
-    /// Write one file through a same-directory temporary file and `rename`.
-    fn write_file_atomic(&self, path: &Path, contents: &[u8]) -> Result<(), String>;
+    fn read_file(&self, path: &Path) -> Result<Option<Vec<u8>>, String> {
+        match fs::read(path) {
+            Ok(contents) => Ok(Some(contents)),
+            Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(err) => Err(format!("cannot read {}: {err}", path.display())),
+        }
+    }
+
+    /// Write one `0644` file through a same-directory temporary file and `rename`.
+    fn write_file_atomic(&self, path: &Path, contents: &[u8]) -> Result<(), String> {
+        let parent = path
+            .parent()
+            .ok_or_else(|| format!("{} has no parent directory", path.display()))?;
+        let file_name = path
+            .file_name()
+            .ok_or_else(|| format!("{} has no file name", path.display()))?;
+        let mut temp_name = OsString::from(".");
+        temp_name.push(file_name);
+        temp_name.push(".slipfork-tmp");
+        let temp_path = parent.join(temp_name);
+        let written = (|| -> io::Result<()> {
+            let mut file = OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .mode(0o644)
+                .open(&temp_path)?;
+            file.write_all(contents)?;
+            file.sync_all()
+        })();
+        if let Err(err) = written {
+            let _ = fs::remove_file(&temp_path);
+            return Err(format!(
+                "cannot write {} via {}: {err}",
+                path.display(),
+                temp_path.display()
+            ));
+        }
+        fs::rename(&temp_path, path).map_err(|err| {
+            let _ = fs::remove_file(&temp_path);
+            format!(
+                "cannot rename {} to {}: {err}",
+                temp_path.display(),
+                path.display()
+            )
+        })?;
+        // The mode is part of the contract: a rewritten unit is always a systemd-readable `0644`.
+        fs::set_permissions(path, fs::Permissions::from_mode(0o644))
+            .map_err(|err| format!("cannot set the mode of {}: {err}", path.display()))?;
+        // A crash after `rename` must never leave a zero-length unit: persist the directory entry.
+        fs::File::open(parent)
+            .and_then(|directory| directory.sync_all())
+            .map_err(|err| format!("cannot fsync {}: {err}", parent.display()))
+    }
+
     /// `systemctl daemon-reload`.
-    fn daemon_reload(&self) -> Result<(), String>;
+    fn daemon_reload(&self) -> Result<(), String> {
+        self.run_tool(&[OsStr::new("daemon-reload")])
+    }
+
     /// `apparmor_parser -r <profile_path>`.
-    fn apparmor_replace(&self, profile_path: &Path) -> Result<(), String>;
-    /// `systemctl stop` every unit that exists in `units` (a missing unit is skipped).
-    ///
-    /// Runs before `enable --now`, so `systemctl start slipforkd.service` never races a
-    /// unit-managed daemon of an older build for the control socket.
-    fn stop_units(&self, units: &[ManagedUnit]) -> Result<(), String>;
-    /// `true` when a process answers `<runtime_dir>/daemon.sock` (one connect, dropped at once).
-    ///
-    /// The bounded wait's only question: a leftover socket file nobody bound answers `false`.
-    fn is_served(&self, runtime_dir: &Path) -> Result<bool, String>;
-    /// One `DaemonRequest::Shutdown` round trip against `<runtime_dir>/daemon.sock`.
-    ///
-    /// Fails closed when the holder does not speak this build's typed contract (a foreign or older
-    /// daemon) — the handover then proves ownership before it signals anything.
-    fn shutdown(&self, runtime_dir: &Path) -> Result<(), String>;
-    /// The one probe that proves (or refuses) who answers the socket.
-    fn socket_holder(&self, runtime_dir: &Path) -> Result<SocketHolder, String>;
-    /// `pidfd_send_signal(2)` the process pinned by a [`SocketHolder::ProvenSlipforkd`] proof.
-    ///
-    /// Signalling through the pidfd — never a pid — is what keeps the grace-window `SIGKILL` away
-    /// from a process that merely reused the number.
-    fn signal_proven(&self, pidfd: &OwnedFd, signal: ProcessSignal) -> Result<(), String>;
+    fn apparmor_replace(&self, profile_path: &Path) -> Result<(), String> {
+        self.run_program(
+            &self.apparmor_parser,
+            &[OsStr::new("-r"), profile_path.as_os_str()],
+        )
+        .map(|_| ())
+    }
+
     /// `systemctl enable --now <units>`.
-    fn enable_now(&self, units: &[ManagedUnit]) -> Result<(), String>;
+    fn enable_now(&self, units: &[ManagedUnit]) -> Result<(), String> {
+        let mut args = vec![OsStr::new("enable"), OsStr::new("--now")];
+        args.extend(units.iter().map(|unit| OsStr::new(unit.unit_name())));
+        self.run_tool(&args)
+    }
+
     /// `systemctl restart slipforkd.service`.
-    fn restart_service(&self) -> Result<(), String>;
+    fn restart_service(&self) -> Result<(), String> {
+        self.run_tool(&[
+            OsStr::new("restart"),
+            OsStr::new(ManagedUnit::Service.unit_name()),
+        ])
+    }
+
+    /// Run one `systemctl` verb with a cleared environment and the fixed tool path.
+    pub(crate) fn run_tool(&self, args: &[&OsStr]) -> Result<(), String> {
+        self.run_capture(args).map(|_| ())
+    }
+
+    /// Run one `systemctl` verb the same way, returning its stdout.
+    pub(crate) fn run_capture(&self, args: &[&OsStr]) -> Result<String, String> {
+        self.run_program(&self.systemctl, args)
+    }
+
+    /// Run one install tool with a cleared environment and the fixed tool path.
+    fn run_program(&self, program: &Path, args: &[&OsStr]) -> Result<String, String> {
+        let output = Command::new(program)
+            .args(args)
+            .env_clear()
+            .env("PATH", INSTALL_TOOL_PATH)
+            .output()
+            .map_err(|err| {
+                format!(
+                    "cannot run `{}`: {err}; next: install apparmor, or run `slipfork daemon unit` to preview the files",
+                    program.display()
+                )
+            })?;
+        if !output.status.success() {
+            // Exactly one line: the tool's first stderr line is the whole context.
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let first = stderr.lines().next().unwrap_or("").trim();
+            return Err(format!(
+                "`{} {}` exited with {}: {first}",
+                program.display(),
+                args.iter()
+                    .map(|arg| arg.to_string_lossy())
+                    .collect::<Vec<_>>()
+                    .join(" "),
+                output.status
+            ));
+        }
+        String::from_utf8(output.stdout)
+            .map_err(|err| format!("`{}` printed non-UTF-8 on stdout: {err}", program.display()))
+    }
 }
 
 /// Every already-resolved input of one `slipfork daemon install` invocation.
@@ -180,15 +305,17 @@ pub struct InstallReport {
     pub service: FileStatus,
     /// `/etc/apparmor.d/slipfork` outcome.
     pub apparmor: FileStatus,
+    /// The exact paths this run wrote (the installer's own derivation).
+    pub paths: InstallPaths,
 }
 
 impl InstallReport {
     /// The three `(path, status)` rows, declared once for the human transcript.
-    fn rows(&self) -> [(&'static str, FileStatus); 3] {
+    fn rows(&self) -> [(&Path, FileStatus); 3] {
         [
-            (SOCKET_UNIT_PATH, self.socket),
-            (SERVICE_UNIT_PATH, self.service),
-            (APPARMOR_PROFILE_PATH, self.apparmor),
+            (self.paths.socket.as_path(), self.socket),
+            (self.paths.service.as_path(), self.service),
+            (self.paths.apparmor.as_path(), self.apparmor),
         ]
     }
 
@@ -203,12 +330,15 @@ impl InstallReport {
     pub fn render_text(&self) -> String {
         if self.all_unchanged() {
             return format!(
-                "unchanged slipforkd.socket, slipforkd.service, {APPARMOR_PROFILE_PATH}; enabled\n"
+                "unchanged {}, {}, {}; enabled\n",
+                ManagedUnit::Socket.unit_name(),
+                ManagedUnit::Service.unit_name(),
+                self.paths.apparmor.display()
             );
         }
         let mut text = String::new();
         for (path, status) in self.rows() {
-            text.push_str(&format!("{:<9} {path}\n", status.as_str()));
+            text.push_str(&format!("{:<9} {}\n", status.as_str(), path.display()));
         }
         text.push_str(&format!(
             "enabled   slipforkd.socket + slipforkd.service as {}, ingress 127.0.0.1:80 + [::1]:80\n",
@@ -248,17 +378,15 @@ pub fn ingress_unit_spec(
 
 /// Render and install the three files, then reload/enable the units (`ADR-0011` §1).
 ///
-/// The function is pure over `identity` + `installer` + `budget` + `request`: it reads no
-/// environment, opens no file, and spawns no process. Its one process-facing effect is the socket
-/// handover, which is entirely delegated to the injected [`UnitInstaller`] (stop, shutdown, prove,
-/// signal) so this flow only decides the order. It fails closed **before** touching the installer
-/// when it is not root or when the target account is unusable.
+/// The function reads no environment and resolves no account database; every effect runs through
+/// the one concrete [`UnitInstaller`] (write, reload, AppArmor, handover, enable). It fails closed
+/// **before** touching any file when it is not root or when the target account is unusable.
 ///
 /// A failure halfway through leaves already-written files in place; because every write is
 /// idempotent, re-running the same command converges (and `enable --now` is safe to repeat).
 pub fn install(
     identity: &UserIdentity,
-    installer: &dyn UnitInstaller,
+    installer: &UnitInstaller,
     budget: HandoverBudget,
     request: &InstallRequest,
 ) -> Result<InstallReport, String> {
@@ -279,17 +407,18 @@ pub fn install(
         request.forward_port,
     )?;
     let apparmor = render_userns_profile(&request.bin_dirs)?;
+    let paths = installer.paths();
 
     let files = [
         (
-            Path::new(SOCKET_UNIT_PATH),
+            paths.socket.as_path(),
             render_socket_unit(&spec).map_err(|err| err.to_string())?,
         ),
         (
-            Path::new(SERVICE_UNIT_PATH),
+            paths.service.as_path(),
             render_service_unit(&spec).map_err(|err| err.to_string())?,
         ),
-        (Path::new(APPARMOR_PROFILE_PATH), apparmor),
+        (paths.apparmor.as_path(), apparmor),
     ];
 
     let mut statuses = Vec::with_capacity(files.len());
@@ -315,7 +444,7 @@ pub fn install(
 
     installer.daemon_reload().map_err(converge_after_failure)?;
     installer
-        .apparmor_replace(Path::new(APPARMOR_PROFILE_PATH))
+        .apparmor_replace(&paths.apparmor)
         .map_err(converge_after_failure)?;
     // A zero-setup daemon (of any build) may hold `<runtime_dir>/daemon.sock`; hand it over before
     // `enable --now`.
@@ -336,6 +465,7 @@ pub fn install(
         socket,
         service,
         apparmor,
+        paths,
     })
 }
 

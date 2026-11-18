@@ -2,7 +2,7 @@
 id: M3.30.1.3.3.3
 title: "Concrete browser open: delete BrowserOpener trait and NoBrowser across ospp/daemon/commands"
 kind: task
-status: ready
+status: done
 owner: implementer
 priority: 3
 depends_on: [M3.30.1.3.3.2]
@@ -11,7 +11,7 @@ attempts: 2
 max_attempts: 3
 escalation: none
 created: "2026-11-18T23:13"
-updated: "2026-11-18T23:30"
+updated: "2026-11-18T23:33"
 ---
 
 # Goal

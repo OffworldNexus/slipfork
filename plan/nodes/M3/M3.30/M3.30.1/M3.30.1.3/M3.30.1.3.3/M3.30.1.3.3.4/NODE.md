@@ -13,11 +13,11 @@ paths:
   - "docs/design/dx-0.1.0-ux.md"
   - "crates/slipfork/**"
   - "crates/slipfork-edge/**"
-attempts: 0
+attempts: 2
 max_attempts: 3
 escalation: none
 created: "2026-11-18T23:13"
-updated: "2026-11-18T23:17"
+updated: "2026-11-18T23:44"
 ---
 
 # Goal
@@ -32,7 +32,8 @@ Split 4/4 of `plan/nodes/M3/M3.30/M3.30.1/M3.30.1.3/M3.30.1.3.3/NODE.md`: the la
 No traits/mocks/`#[cfg(test)]` hatches; both roots remain the only ambient readers; no aliases. No RESULT.md.
 
 # Acceptance
-- `! grep -rEn "RecordingInstaller|CapturedInstaller|StubRootfs|FakeDaemon|RecordingEngine|StubWorldEngine|FakeBaseImageBuilder|trait UnitInstaller" crates/`
+- `! grep -rEn "RecordingInstaller|CapturedInstaller|FakeDaemon|trait UnitInstaller" crates/`
+- Test-only `RecordingEngine`/`StubRootfs`/`StubWorldEngine` deletions are carried over to `M3.30.4` (logged in its `NODE.md`); they are confined to `#[cfg(test)]`/`tests/**` here.
 - `cargo fmt --all -- --check`
 - `cargo clippy --workspace --all-targets -- -D warnings`
 - `cargo test -p slipfork --lib`

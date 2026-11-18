@@ -15,14 +15,14 @@
 use std::ffi::OsStr;
 use std::fs;
 use std::io;
-use std::os::fd::OwnedFd;
+use std::os::fd::{AsFd, OwnedFd};
 use std::os::unix::net::UnixStream;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use crate::daemon_unit_install::{ManagedUnit, UnitInstaller};
-use slipfork_edge::DaemonControlServer;
-use slipfork_engine::linux_cow::{ProcessSignal, open_pidfd, peer_pid};
+use crate::daemon_unit_install::UnitInstaller;
+use slipfork_edge::{DaemonControl, DaemonControlClient, DaemonControlServer};
+use slipfork_engine::linux_cow::{ProcessSignal, open_pidfd, peer_pid, signal_pidfd};
 
 /// One daemon-socket budget shared by the handover and the CLI's auto-spawn wait.
 pub const DAEMON_GRACE: Duration = Duration::from_secs(15);
@@ -40,6 +40,25 @@ pub struct HandoverBudget {
     pub grace: Duration,
     /// Interval between probes while waiting.
     pub poll: Duration,
+}
+
+/// The systemd units `daemon install` enables together.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ManagedUnit {
+    /// `slipforkd.socket` (owns the privileged binds).
+    Socket,
+    /// `slipforkd.service` (the unprivileged daemon).
+    Service,
+}
+
+impl ManagedUnit {
+    /// The unit file name `systemctl enable --now` receives.
+    pub fn unit_name(self) -> &'static str {
+        match self {
+            Self::Socket => "slipforkd.socket",
+            Self::Service => "slipforkd.service",
+        }
+    }
 }
 
 /// The production handover budget.
@@ -91,7 +110,7 @@ pub enum SocketHolder {
 /// Every probe and the shutdown go through `installer`, so one adapter sees one socket at a time.
 /// No holder means no effect beyond the unit stop, so a second run converges with `[ok] unchanged`.
 pub fn release_daemon(
-    installer: &dyn UnitInstaller,
+    installer: &UnitInstaller,
     budget: HandoverBudget,
     runtime_dir: &Path,
 ) -> Result<(), String> {
@@ -104,17 +123,33 @@ pub fn release_daemon(
         return Ok(());
     }
 
-    // (b) The typed contract first: ask the daemon to stop itself, then await its disappearance.
-    if installer.shutdown(runtime_dir).is_ok() && await_release(installer, budget, runtime_dir)? {
+    // The typed contract first: ask the daemon to stop itself, then await its disappearance.
+    let answered_shutdown = installer.shutdown(runtime_dir).is_ok();
+    if answered_shutdown && await_release(installer, budget, runtime_dir)? {
         return Ok(());
     }
 
-    // (c) Anything still answering is proven by the adapter before a signal exists to send. The
-    // proof opens a pidfd, so both signals below address that process and never a reused pid.
-    match installer.socket_holder(runtime_dir)? {
-        SocketHolder::ProvenSlipforkd { pid, pidfd } => {
-            for signal in [ProcessSignal::Terminate, ProcessSignal::Kill] {
-                if let Err(err) = installer.signal_proven(&pidfd, signal) {
+    // Anything still answering is proven by the adapter before a signal exists to send. The proof
+    // opens a pidfd, so every signal below addresses that process and never a reused pid.
+    let holder = installer.socket_holder(runtime_dir)?;
+    let (pid, owner) = owner_of(&holder);
+    let mut signals_sent = 0;
+    loop {
+        let facts = HolderFacts {
+            socket: socket.clone(),
+            pid,
+            owner: owner.clone(),
+            answered_shutdown,
+            released: await_release(installer, budget, runtime_dir)?,
+            signals_sent,
+        };
+        match hold_outcome(&facts) {
+            HoldOutcome::Release => return Ok(()),
+            HoldOutcome::Refuse(line) => return Err(line),
+            HoldOutcome::Terminate(signal) => {
+                if let SocketHolder::ProvenSlipforkd { pid: pinned, pidfd } = &holder
+                    && let Err(err) = installer.signal_proven(pidfd, signal)
+                {
                     // The pinned process exited between the proof and the signal; the bounded
                     // await is still the single judge of whether the socket was released.
                     if await_release(installer, budget, runtime_dir)? {
@@ -122,45 +157,99 @@ pub fn release_daemon(
                     }
                     return Err(held_socket(
                         &socket,
-                        pid,
+                        *pinned,
                         &format!("could not be signalled ({err})"),
                     ));
                 }
-                if await_release(installer, budget, runtime_dir)? {
-                    return Ok(());
-                }
+                signals_sent += 1;
             }
-            Err(held_socket(
-                &socket,
+        }
+    }
+}
+
+/// Who the kernel says answers `<runtime_dir>/daemon.sock`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PeerOwner {
+    /// A live process that is not this host's `slipforkd`.
+    Foreign { pid: u32 },
+    /// A proven `slipforkd`.
+    Daemon { pid: u32 },
+    /// A peer this PID namespace cannot name (or a probe that named none).
+    Unprovable,
+}
+
+/// Every fact the handover decision depends on — plain values, no socket, no clock.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HolderFacts {
+    /// The control socket the refusal names.
+    pub socket: PathBuf,
+    /// The peer pid, when one was named.
+    pub pid: Option<u32>,
+    /// What the ownership proof reported.
+    pub owner: PeerOwner,
+    /// Whether the holder accepted `DaemonRequest::Shutdown`.
+    pub answered_shutdown: bool,
+    /// Whether the bounded wait saw the socket released.
+    pub released: bool,
+    /// Signals already delivered through the pinned pidfd.
+    pub signals_sent: usize,
+}
+
+/// The one decision the handover makes once its facts are gathered.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HoldOutcome {
+    /// Nothing holds the socket (or the shutdown was honoured).
+    Release,
+    /// Refuse in one line; the holder is never signalled.
+    Refuse(String),
+    /// Signal the pinned holder through its pidfd.
+    Terminate(ProcessSignal),
+}
+
+/// Decide the handover's next step from plain facts (`ADR-0011` §3, invariant `1d`).
+///
+/// Pure: it reads no socket, clock, or database, so every refusal line and the
+/// `SIGTERM` → `SIGKILL` order are pinned by deterministic tests.
+pub fn hold_outcome(facts: &HolderFacts) -> HoldOutcome {
+    if facts.released {
+        return HoldOutcome::Release;
+    }
+    match facts.owner {
+        PeerOwner::Daemon { pid } => match facts.signals_sent {
+            0 => HoldOutcome::Terminate(ProcessSignal::Terminate),
+            1 => HoldOutcome::Terminate(ProcessSignal::Kill),
+            _ => HoldOutcome::Refuse(held_socket(
+                &facts.socket,
                 pid,
                 "still holds the socket after `SIGTERM` and `SIGKILL`",
+            )),
+        },
+        PeerOwner::Foreign { pid } => HoldOutcome::Refuse(held_socket(
+            &facts.socket,
+            pid,
+            "is not a slipforkd this install can prove and stop",
+        )),
+        PeerOwner::Unprovable => {
+            // Naming `sudo kill 0` would be worse than naming none.
+            let reason = if facts.answered_shutdown {
+                "answers the socket, but the probe could not name its holder"
+            } else {
+                "answers the socket, but this install cannot prove which process holds it"
+            };
+            HoldOutcome::Refuse(format!(
+                "{} {reason}; stop it manually with `sudo systemctl stop slipforkd.socket slipforkd.service`",
+                facts.socket.display()
             ))
         }
-        SocketHolder::Foreign { pid } => refuse_unless_released(
-            installer,
-            budget,
-            runtime_dir,
-            &socket,
-            Some(pid),
-            "is not a slipforkd this install can prove and stop",
-        ),
-        SocketHolder::Unprovable => refuse_unless_released(
-            installer,
-            budget,
-            runtime_dir,
-            &socket,
-            None,
-            "answers the socket, but this install cannot prove which process holds it",
-        ),
-        // The probe could not name a holder; if the socket still answers, a different one took it.
-        SocketHolder::Absent => refuse_unless_released(
-            installer,
-            budget,
-            runtime_dir,
-            &socket,
-            None,
-            "answers the socket, but the probe could not name its holder",
-        ),
+    }
+}
+
+/// Map one probe answer onto the facts the pure decision consumes.
+fn owner_of(holder: &SocketHolder) -> (Option<u32>, PeerOwner) {
+    match holder {
+        SocketHolder::ProvenSlipforkd { pid, .. } => (Some(*pid), PeerOwner::Daemon { pid: *pid }),
+        SocketHolder::Foreign { pid } => (Some(*pid), PeerOwner::Foreign { pid: *pid }),
+        SocketHolder::Unprovable | SocketHolder::Absent => (None, PeerOwner::Unprovable),
     }
 }
 
@@ -214,7 +303,7 @@ pub fn probe_socket_holder(runtime_dir: &Path) -> Result<SocketHolder, String> {
 
 /// Await the control socket's disappearance, bounded by the caller's grace window.
 fn await_release(
-    installer: &dyn UnitInstaller,
+    installer: &UnitInstaller,
     budget: HandoverBudget,
     runtime_dir: &Path,
 ) -> Result<bool, String> {
@@ -229,29 +318,56 @@ fn await_release(
         std::thread::sleep(budget.poll);
     }
 }
-
-/// Refuse in one line unless the socket was really released (invariant `1d`).
-///
-/// `pid` is `None` when the probe itself could not name the holder (a peer outside this PID
-/// namespace, or an unreadable executable); naming `sudo kill 0` would be worse than naming none.
-fn refuse_unless_released(
-    installer: &dyn UnitInstaller,
-    budget: HandoverBudget,
-    runtime_dir: &Path,
-    socket: &Path,
-    pid: Option<u32>,
-    reason: &str,
-) -> Result<(), String> {
-    if await_release(installer, budget, runtime_dir)? {
-        return Ok(());
+impl UnitInstaller {
+    /// `systemctl stop` every unit that exists in `units` (a missing unit is skipped).
+    ///
+    /// Runs before `enable --now`, so `systemctl start slipforkd.service` never races a
+    /// unit-managed daemon of an older build for the control socket.
+    pub(crate) fn stop_units(&self, units: &[ManagedUnit]) -> Result<(), String> {
+        for unit in units {
+            let name = unit.unit_name();
+            // `LoadState=not-found` is a unit this installer never wrote; every other state is a
+            // unit the host knows, and `systemctl stop` is a no-op when it is already inactive.
+            let load_state = self.run_capture(&[
+                OsStr::new("show"),
+                OsStr::new("--property=LoadState"),
+                OsStr::new("--value"),
+                OsStr::new(name),
+            ])?;
+            if load_state.trim() == "not-found" {
+                continue;
+            }
+            self.run_tool(&[OsStr::new("stop"), OsStr::new(name)])?;
+        }
+        Ok(())
     }
-    Err(match pid {
-        Some(pid) => held_socket(socket, pid, reason),
-        None => format!(
-            "{} {reason}; stop it manually with `sudo systemctl stop slipforkd.socket slipforkd.service`",
-            socket.display()
-        ),
-    })
+
+    /// `true` when a process answers `<runtime_dir>/daemon.sock` (one connect, dropped at once).
+    pub(crate) fn is_served(&self, runtime_dir: &Path) -> Result<bool, String> {
+        Ok(DaemonControlClient::bind(runtime_dir).is_served())
+    }
+
+    /// One `DaemonRequest::Shutdown` round trip against `<runtime_dir>/daemon.sock`.
+    pub(crate) fn shutdown(&self, runtime_dir: &Path) -> Result<(), String> {
+        DaemonControlClient::bind(runtime_dir)
+            .shutdown()
+            .map_err(|err| err.to_string())
+    }
+
+    /// The one probe that proves (or refuses) who answers the socket.
+    pub(crate) fn socket_holder(&self, runtime_dir: &Path) -> Result<SocketHolder, String> {
+        probe_socket_holder(runtime_dir)
+    }
+
+    /// `pidfd_send_signal(2)` the process pinned by a [`SocketHolder::ProvenSlipforkd`] proof.
+    pub(crate) fn signal_proven(
+        &self,
+        pidfd: &OwnedFd,
+        signal: ProcessSignal,
+    ) -> Result<(), String> {
+        signal_pidfd(pidfd.as_fd(), signal)
+            .map_err(|err| format!("cannot signal the proven slipforkd: {err}"))
+    }
 }
 
 /// One line naming the socket, its holder, and the exact manual command (invariant `1d`).

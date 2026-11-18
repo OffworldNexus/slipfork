@@ -12,10 +12,8 @@
 
 #![forbid(unsafe_code)]
 
-use std::ffi::OsStr;
 use std::fs::{self, OpenOptions};
 use std::io::{self, IsTerminal, Read, Write};
-use std::os::fd::{AsFd, OwnedFd};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
@@ -30,8 +28,8 @@ use slipfork::cli::{
     UnitKind,
 };
 use slipfork::daemon_unit_install::{
-    self, DAEMON_GRACE, DAEMON_HANDOVER, DAEMON_POLL, InstallRequest, ManagedUnit, SocketHolder,
-    UnitInstaller, ingress_unit_spec, probe_socket_holder,
+    self, APPARMOR_DIR, APPARMOR_PARSER, DAEMON_GRACE, DAEMON_HANDOVER, DAEMON_POLL,
+    InstallRequest, SYSTEM_UNIT_DIR, SYSTEMCTL, UnitInstaller, ingress_unit_spec,
 };
 use slipfork::doctor::{
     self, HostCheckOutcome, HostFacts, NetnsCheck, OsHostProbe, SystemdIngressProbe,
@@ -46,7 +44,6 @@ use slipfork_edge::{
 };
 use slipfork_engine::btrfs::KernelBtrfsDriver;
 use slipfork_engine::current_uid_gid;
-use slipfork_engine::linux_cow::{ProcessSignal, signal_pidfd};
 use slipfork_snow::SnowFile;
 
 fn main() -> ExitCode {
@@ -376,8 +373,8 @@ fn invoking_account() -> Option<String> {
 /// `slipfork daemon install`: write `/etc/systemd/system/slipforkd.{socket,service}` plus the
 /// AppArmor profile, then `daemon-reload`, `apparmor_parser -r`, and `enable --now`.
 ///
-/// The composition root constructs the production [`OsUnitInstaller`]; the orchestration itself is
-/// pure and fails closed before any effect when the process is not root.
+/// The composition root constructs the concrete [`UnitInstaller`] over the real system unit
+/// directory; the orchestration itself fails closed before any effect when the process is not root.
 fn daemon_install(
     json: bool,
     roots: ClientRoots,
@@ -403,8 +400,13 @@ fn daemon_install(
         xdg_cache_home: roots.xdg_cache_home,
         xdg_data_home: roots.xdg_data_home,
     };
-    let report =
-        daemon_unit_install::install(&identity, &OsUnitInstaller, DAEMON_HANDOVER, &request)?;
+    let installer = UnitInstaller::new(
+        PathBuf::from(SYSTEM_UNIT_DIR),
+        PathBuf::from(APPARMOR_DIR),
+        PathBuf::from(SYSTEMCTL),
+        PathBuf::from(APPARMOR_PARSER),
+    );
+    let report = daemon_unit_install::install(&identity, &installer, DAEMON_HANDOVER, &request)?;
     if json {
         println!(
             "{}",
@@ -414,6 +416,11 @@ fn daemon_install(
                 "socket": report.socket.as_str(),
                 "service": report.service.as_str(),
                 "apparmor": report.apparmor.as_str(),
+                "paths": {
+                    "socket": report.paths.socket,
+                    "service": report.paths.service,
+                    "apparmor": report.paths.apparmor,
+                },
             })
         );
     } else {
@@ -428,174 +435,6 @@ fn bin_dirs_or_executable_dir(bin_dir: Vec<PathBuf>) -> Result<Vec<PathBuf>, Str
         Ok(vec![exe_dir()?])
     } else {
         Ok(bin_dir)
-    }
-}
-
-/// [`UnitInstaller`] over the real host: `/etc` writes and `systemctl`/`apparmor_parser` verbs.
-///
-/// This is the only place `daemon install` touches the filesystem or spawns a process, and it is
-/// constructed solely by the composition root above.
-struct OsUnitInstaller;
-
-/// Fixed executable search path for every install verb (nothing is inherited).
-const INSTALL_TOOL_PATH: &str = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
-
-impl OsUnitInstaller {
-    /// One control client for `<runtime_dir>/daemon.sock` (owned by this adapter, never shared).
-    fn control(runtime_dir: &Path) -> DaemonControlClient {
-        DaemonControlClient::bind(runtime_dir)
-    }
-
-    /// Run one privileged tool with a cleared environment and the fixed tool path.
-    fn run_tool(program: &str, args: &[&std::ffi::OsStr]) -> Result<(), String> {
-        Self::run_capture(program, args).map(|_| ())
-    }
-
-    /// Run one privileged tool the same way, returning its stdout.
-    fn run_capture(program: &str, args: &[&std::ffi::OsStr]) -> Result<String, String> {
-        let output = Command::new(program)
-            .args(args)
-            .env_clear()
-            .env("PATH", INSTALL_TOOL_PATH)
-            .output()
-            .map_err(|err| format!("cannot run `{program}`: {err}"))?;
-        if !output.status.success() {
-            return Err(format!(
-                "`{program}` exited with {}: {}",
-                output.status,
-                String::from_utf8_lossy(&output.stderr).trim()
-            ));
-        }
-        String::from_utf8(output.stdout)
-            .map_err(|err| format!("`{program}` printed non-UTF-8 on stdout: {err}"))
-    }
-}
-
-impl UnitInstaller for OsUnitInstaller {
-    fn read_file(&self, path: &Path) -> Result<Option<Vec<u8>>, String> {
-        match fs::read(path) {
-            Ok(contents) => Ok(Some(contents)),
-            Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(None),
-            Err(err) => Err(format!("cannot read {}: {err}", path.display())),
-        }
-    }
-
-    fn write_file_atomic(&self, path: &Path, contents: &[u8]) -> Result<(), String> {
-        let parent = path
-            .parent()
-            .ok_or_else(|| format!("{} has no parent directory", path.display()))?;
-        let file_name = path
-            .file_name()
-            .ok_or_else(|| format!("{} has no file name", path.display()))?;
-        let mut temp_name = std::ffi::OsString::from(".");
-        temp_name.push(file_name);
-        temp_name.push(".slipfork-tmp");
-        let temp_path = parent.join(temp_name);
-        let written = (|| -> io::Result<()> {
-            let mut file = OpenOptions::new()
-                .write(true)
-                .create(true)
-                .truncate(true)
-                .mode(0o644)
-                .open(&temp_path)?;
-            file.write_all(contents)?;
-            file.sync_all()
-        })();
-        if let Err(err) = written {
-            let _ = fs::remove_file(&temp_path);
-            return Err(format!(
-                "cannot write {} via {}: {err}",
-                path.display(),
-                temp_path.display()
-            ));
-        }
-        fs::rename(&temp_path, path).map_err(|err| {
-            let _ = fs::remove_file(&temp_path);
-            format!(
-                "cannot rename {} to {}: {err}",
-                temp_path.display(),
-                path.display()
-            )
-        })?;
-        // A crash after `rename` must never leave a zero-length unit: persist the directory entry.
-        fs::File::open(parent)
-            .and_then(|directory| directory.sync_all())
-            .map_err(|err| format!("cannot fsync {}: {err}", parent.display()))
-    }
-
-    fn daemon_reload(&self) -> Result<(), String> {
-        Self::run_tool("systemctl", &[std::ffi::OsStr::new("daemon-reload")])
-    }
-
-    fn apparmor_replace(&self, profile_path: &Path) -> Result<(), String> {
-        Self::run_tool(
-            "apparmor_parser",
-            &[std::ffi::OsStr::new("-r"), profile_path.as_os_str()],
-        )
-    }
-
-    fn stop_units(&self, units: &[ManagedUnit]) -> Result<(), String> {
-        for unit in units {
-            let name = unit.unit_name();
-            // `LoadState=not-found` is a unit this installer never wrote; every other state is a
-            // unit the host knows, and `systemctl stop` is a no-op when it is already inactive.
-            let load_state = Self::run_capture(
-                "systemctl",
-                &[
-                    OsStr::new("show"),
-                    OsStr::new("--property=LoadState"),
-                    OsStr::new("--value"),
-                    OsStr::new(name),
-                ],
-            )?;
-            if load_state.trim() == "not-found" {
-                continue;
-            }
-            Self::run_tool("systemctl", &[OsStr::new("stop"), OsStr::new(name)])?;
-        }
-        Ok(())
-    }
-
-    fn is_served(&self, runtime_dir: &Path) -> Result<bool, String> {
-        Ok(Self::control(runtime_dir).is_served())
-    }
-
-    fn shutdown(&self, runtime_dir: &Path) -> Result<(), String> {
-        Self::control(runtime_dir)
-            .shutdown()
-            .map_err(|err| err.to_string())
-    }
-
-    fn socket_holder(&self, runtime_dir: &Path) -> Result<SocketHolder, String> {
-        probe_socket_holder(runtime_dir)
-    }
-
-    fn signal_proven(&self, pidfd: &OwnedFd, signal: ProcessSignal) -> Result<(), String> {
-        signal_pidfd(pidfd.as_fd(), signal)
-            .map_err(|err| format!("cannot signal the proven slipforkd: {err}"))
-    }
-
-    fn enable_now(&self, units: &[ManagedUnit]) -> Result<(), String> {
-        let mut args = vec![
-            std::ffi::OsStr::new("enable"),
-            std::ffi::OsStr::new("--now"),
-        ];
-        args.extend(
-            units
-                .iter()
-                .map(|unit| std::ffi::OsStr::new(unit.unit_name())),
-        );
-        Self::run_tool("systemctl", &args)
-    }
-
-    fn restart_service(&self) -> Result<(), String> {
-        Self::run_tool(
-            "systemctl",
-            &[
-                std::ffi::OsStr::new("restart"),
-                std::ffi::OsStr::new("slipforkd.service"),
-            ],
-        )
     }
 }
 

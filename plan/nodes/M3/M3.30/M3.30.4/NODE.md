@@ -56,6 +56,10 @@ Faceless template rendering + secret taint, DAG cycle/wave planning, HPKE/wire f
 - Protected `critical_*` suites may be restructured within this node's paths but their assertions must not be weakened or dropped.
 - No `RESULT.md`; journey evidence goes to `LOG.md` via `plan.py log`.
 
+# Carried over from `M3.30.1.3.3.4`
+- Replace the test-only `RecordingEngine`/`StubRootfs` (`crates/slipfork/src/daemon.rs` `#[cfg(test)]`) and `StubWorldEngine` (`crates/slipfork-edge/tests/critical_edge.rs`) with the real lab drivers inside the two consolidated journeys. They are confined to test code, not production mock traits.
+- Engine fixtures must create their state dir before the `statfs` probe so the off-Btrfs fail-closed line reads `BtrfsRequired`, not `statfs ... errno 2`.
+
 # Acceptance
 - `! grep -rn "Command::new(\"cargo\")\|cargo\", \"build\"" crates/slipfork/tests/support/mod.rs`
 - `! grep -rn "dag plan" poc/`
