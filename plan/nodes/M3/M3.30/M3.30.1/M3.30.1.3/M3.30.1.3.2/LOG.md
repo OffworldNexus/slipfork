@@ -27,3 +27,7 @@ status review -> ready: triad: 1 BLOCKER (InputHasher single-impl) + 2 MAJOR, on
 ## 2026-11-18T23:09 [lead]
 
 attempt 2/3 started
+
+## 2026-11-18T23:12 [lead]
+
+status ready -> done

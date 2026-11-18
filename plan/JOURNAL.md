@@ -1519,3 +1519,19 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-18T23:08 [M3.30.1.3.2] (lead) status active -> review
 - 2026-11-18T23:09 [M3.30.1.3.2] (lead) status review -> ready: triad: 1 BLOCKER (InputHasher single-impl) + 2 MAJOR, one fix pass; oci progress deferred to M3.30.3
 - 2026-11-18T23:09 [M3.30.1.3.2] (lead) attempt 2/3 started
+- 2026-11-18T23:12 [M3.30.1.3.2] (lead) status ready -> done
+- 2026-11-18T23:13 [M3.30.1.3.3] (lead) status ready -> active
+- 2026-11-18T23:13 [M3.30.1.3.3] (lead) attempt 1/3 started
+- 2026-11-18T23:13 [M3.30.1.3.3] (lead) base 8b8189a07ca1010a120c7cd30729147b4897092d
+- 2026-11-18T23:13 [M3.30.1.3.3] (lead) edited fields
+- 2026-11-18T23:13 [M3.30.1.3.3.1] (lead) created (task) Concrete user identity: delete UserIdentity/HostIdentity traits and FakeIdentity
+- 2026-11-18T23:13 [M3.30.1.3.3.2] (lead) created (task) Concrete host/ingress probes: delete HostProbe/IngressProbe traits and recorders
+- 2026-11-18T23:13 [M3.30.1.3.3.3] (lead) created (task) Concrete browser open: delete BrowserOpener trait and NoBrowser across ospp/daemon/commands
+- 2026-11-18T23:13 [M3.30.1.3.3.4] (lead) created (task) Concrete unit installer + delete last recording/stub doubles
+- 2026-11-18T23:13 [M3.30.1.3.3.1] (lead) status ready -> active
+- 2026-11-18T23:13 [M3.30.1.3.3.1] (lead) attempt 1/3 started
+- 2026-11-18T23:13 [M3.30.1.3.3.1] (lead) base 8b8189a07ca1010a120c7cd30729147b4897092d
+- 2026-11-18T23:16 [M3.30.1.3.3.1] (lead) status active -> review
+- 2026-11-18T23:17 [M3.30.1.3.3.4] (lead) edited fields
+- 2026-11-18T23:17 [M3.30.1.3.3.1] (lead) status review -> ready: triad: 2 real MAJOR test-fidelity + boot-path issues, one fix pass
+- 2026-11-18T23:17 [M3.30.1.3.3.1] (lead) attempt 2/3 started

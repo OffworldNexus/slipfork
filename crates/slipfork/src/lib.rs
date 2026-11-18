@@ -17,8 +17,8 @@
 //!   byte-exact raw output for one named target).
 //! - [`project`]: the injected [`slipfork_vcs::ProjectSlugOverride`] and the one
 //!   `SlipforkConfig` loader/resolver constructor (no second TOML parser, no silent defaults).
-//! - [`user`]: the [`user::UserIdentity`] and [`user::HostIdentity`] ports with their `id -un` /
-//!   `getent passwd` / `uname -n` kernel adapters.
+//! - [`user`]: the concrete [`user::UserIdentity`] value (resolved once at a composition root
+//!   from `id -un` / `getent passwd`) and the `kernel_hostname()` (`uname -n`) recipe helper.
 //! - [`vaults`]: the injected project-vault factory over the `0600` local vault.
 //! - [`vcs`]: the composition-root Git/Jujutsu [`slipfork_vcs::VcsWorkspaceFactory`] router.
 //! - [`runtime`]: pinned `crun` + `slipfork-world-init` payload provisioning for every `L0` rootfs.
@@ -42,6 +42,7 @@ pub mod apparmor;
 pub mod browser;
 pub mod cli;
 pub mod daemon;
+pub mod daemon_handover;
 pub mod daemon_unit_install;
 pub mod doctor;
 pub mod layout;

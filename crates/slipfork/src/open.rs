@@ -3,8 +3,8 @@
 //! Every function here is pure over the daemon's own facts: the world table
 //! ([`WorldSummary`] rows, each with one typed [`WorldOrigin`]), the ingress port from
 //! [`DaemonStatus`](slipfork_edge::DaemonStatus), and the composition root's resolved
-//! [`UserIdentity`](crate::user::UserIdentity) / [`HostIdentity`](crate::user::HostIdentity)
-//! values. The local verb hands the typed origin to the single
+//! [`UserIdentity`](crate::user::UserIdentity) value and the `uname -n` host name. The local verb
+//! hands the typed origin to the single
 //! [`BrowserOpener`](slipfork_ospp::BrowserOpener); the remote verb never opens anything and never
 //! invents a port — the laptop forwards the fixed constant [`LOCAL_PORT`] to the daemon's real
 //! `127.0.0.1:<ingress.port>` listener.
@@ -149,6 +149,15 @@ pub fn remote_recipe(
     account: &str,
     host: &str,
 ) -> Result<RemoteRecipe, String> {
+    // `kernel_hostname()` yields the empty string when `uname -n` is unusable; a recipe without a
+    // real host would hand the developer a command that cannot connect.
+    if host.is_empty() {
+        return Err(
+            "cannot resolve this machine's name: `uname -n` returned no usable node name; the \
+             `open --remote` recipe needs a host usable as `account@host`"
+                .to_owned(),
+        );
+    }
     if ingress_port == 0 {
         return Err(
             "the daemon reported ingress :0; a remote recipe needs the real bound port — restart \

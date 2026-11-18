@@ -31,12 +31,12 @@ use slipfork::cli::{
 };
 use slipfork::daemon_unit_install::{
     self, DAEMON_GRACE, DAEMON_HANDOVER, DAEMON_POLL, InstallRequest, ManagedUnit, SocketHolder,
-    UnitInstaller, ingress_unit_spec, probe_socket_holder, target_account,
+    UnitInstaller, ingress_unit_spec, probe_socket_holder,
 };
 use slipfork::doctor::{self, OsHostProbe, SystemdIngressProbe};
 use slipfork::layout::{Layout, absolute_path, ensure_private_dir};
 use slipfork::project::repository_resolver;
-use slipfork::user::{AccountDatabaseIdentity, HostIdentity, KernelHostIdentity, UserIdentity};
+use slipfork::user::{UserIdentity, account_name, kernel_hostname};
 use slipfork_edge::{
     BootEvent, DaemonControl, DaemonControlClient, DropForkRequest, ExecTargetRequest, ForkRequest,
     ForwardRequest, ForwardSummary, HookRunRequest, LogsRequest, SnowResolveRequest, UpRequest,
@@ -306,10 +306,11 @@ fn daemon_unit(
     user: Option<String>,
     bin_dir: Vec<PathBuf>,
 ) -> Result<ExitCode, String> {
-    let identity = AccountDatabaseIdentity;
+    let identity = UserIdentity::resolve()?;
     let (uid, _) = current_uid_gid();
+    let invoking = invoking_account();
     // One account derivation shared with `daemon install`, so `--user` reproduces an install.
-    let account = target_account(&identity, uid == 0, user.as_deref())?;
+    let account = identity.target_account(uid == 0, user.as_deref(), invoking.as_deref())?;
     let layout = Layout::for_account(
         &account,
         roots.state_dir,
@@ -348,6 +349,15 @@ fn daemon_unit(
     Ok(ExitCode::SUCCESS)
 }
 
+/// The one `SUDO_USER` read in the workspace (`ADR-0011` §1): a bare `sudo slipfork daemon
+/// install` installs for the operator's login account instead of `root`, and nothing else ever
+/// reads the variable.
+fn invoking_account() -> Option<String> {
+    std::env::var_os("SUDO_USER")
+        .map(|value| value.to_string_lossy().trim().to_owned())
+        .filter(|name| !name.is_empty())
+}
+
 /// `slipfork daemon install`: write `/etc/systemd/system/slipforkd.{socket,service}` plus the
 /// AppArmor profile, then `daemon-reload`, `apparmor_parser -r`, and `enable --now`.
 ///
@@ -361,9 +371,16 @@ fn daemon_install(
     forward_port: u16,
 ) -> Result<ExitCode, String> {
     let (uid, _) = current_uid_gid();
+    // The root gate runs before any account-database read, so a non-root host always hears the
+    // sudo remedy instead of an identity-probe failure.
+    if uid != 0 {
+        return Err(daemon_unit_install::non_root_remedy(&account_name()?));
+    }
+    let identity = UserIdentity::resolve()?;
     let request = InstallRequest {
-        is_root: uid == 0,
+        is_root: true,
         explicit_user: user,
+        invoking_user: invoking_account(),
         executable: daemon_executable()?,
         bin_dirs: bin_dirs_or_executable_dir(bin_dir)?,
         forward_port,
@@ -371,12 +388,8 @@ fn daemon_install(
         xdg_cache_home: roots.xdg_cache_home,
         xdg_data_home: roots.xdg_data_home,
     };
-    let report = daemon_unit_install::install(
-        &AccountDatabaseIdentity,
-        &OsUnitInstaller,
-        DAEMON_HANDOVER,
-        &request,
-    )?;
+    let report =
+        daemon_unit_install::install(&identity, &OsUnitInstaller, DAEMON_HANDOVER, &request)?;
     if json {
         println!(
             "{}",
@@ -670,7 +683,8 @@ fn ps(json: bool, layout: &Layout, world: Option<String>) -> Result<ExitCode, St
 ///
 /// The world and its origin are the daemon's facts (`DaemonStatus.worlds`), the remote recipe's
 /// port is `DaemonStatus.ingress.port` (never a literal `80`), and the account/host come from the
-/// composition root's injected `UserIdentity` / `HostIdentity` probes — never `$USER`/`$HOSTNAME`.
+/// composition root's resolved [`UserIdentity`] and the `uname -n` probe — never
+/// `$USER`/`$HOSTNAME`.
 /// A non-`:80` ingress announces §2's one stderr line (never under `--json`).
 fn open(
     json: bool,
@@ -691,11 +705,12 @@ fn open(
         eprintln!("{hint}");
     }
     if remote {
+        let identity = UserIdentity::resolve()?;
         let recipe = slipfork::open::remote_recipe(
             &selection.origin,
             status.ingress.port(),
-            &AccountDatabaseIdentity.username()?,
-            &KernelHostIdentity.hostname()?,
+            &identity.account,
+            &kernel_hostname(),
         )?;
         if json {
             println!(

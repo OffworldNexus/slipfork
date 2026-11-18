@@ -1482,15 +1482,14 @@ fn daemon_install_bytes_equal_a_real_daemon_unit_preview() {
     let tmp = disk_tempdir();
     let scratch = tmp.path();
     let state_dir = scratch.join("install-preview-state");
-    let account = String::from_utf8(
-        Command::new("id")
-            .arg("-un")
-            .output()
-            .expect("id -un")
-            .stdout,
-    )
-    .expect("utf8 account name");
-    let account = account.trim().to_owned();
+    // A real passwd row that is never the runner's own account: an install that ignored `--user`
+    // would render `User=<runner>` and the byte comparison below would fail.
+    assert!(
+        slipfork::user::lookup_account("nobody").is_ok(),
+        "this suite needs the real `nobody` passwd row to prove `--user` is honoured; add it to \
+         the host account database and rerun"
+    );
+    let account = "nobody".to_owned();
     let executable = PathBuf::from(env!("CARGO_BIN_EXE_slipforkd"));
     let bin_dir = executable
         .parent()
@@ -1521,12 +1520,13 @@ fn daemon_install_bytes_equal_a_real_daemon_unit_preview() {
 
     let installer = CapturedInstaller::default();
     daemon_unit_install::install(
-        &slipfork::user::AccountDatabaseIdentity,
+        &slipfork::user::UserIdentity::resolve().expect("the test runner's real OS identity"),
         &installer,
         daemon_unit_install::DAEMON_HANDOVER,
         &InstallRequest {
             is_root: true,
             explicit_user: Some(account),
+            invoking_user: None,
             executable,
             bin_dirs: vec![bin_dir],
             forward_port: 7080,

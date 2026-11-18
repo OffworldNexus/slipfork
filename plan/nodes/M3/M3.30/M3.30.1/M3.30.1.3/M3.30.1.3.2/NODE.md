@@ -2,7 +2,7 @@
 id: M3.30.1.3.2
 title: "Rootfs ports: delete AbiProbe/BuildxExporter/OciImageStore traits, concrete disk/ELF/status"
 kind: task
-status: ready
+status: done
 owner: implementer
 priority: 3
 depends_on: [M3.30.1.3.1]
@@ -11,7 +11,7 @@ attempts: 2
 max_attempts: 3
 escalation: none
 created: "2026-11-18T22:46"
-updated: "2026-11-18T23:09"
+updated: "2026-11-18T23:12"
 ---
 
 # Goal
