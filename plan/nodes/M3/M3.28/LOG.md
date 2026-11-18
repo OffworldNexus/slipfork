@@ -11,3 +11,7 @@ M3.28.3 (dc9bd20) and M3.28.5 (b49faef) committed. Note for the gate: critical_g
 ## 2026-11-17T23:36 [lead]
 
 note: docs/design/ospp.md is dirty in the worktree from outside this epic (OSPP e2e public_key rewrite) — NOT ours, never staged by M3.28 commits. Leave it alone unless the owner asks.
+
+## 2026-11-18T22:19 [planner]
+
+status ready -> done: Remaining scope absorbed into M3.30.

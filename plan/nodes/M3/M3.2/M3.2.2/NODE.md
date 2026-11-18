@@ -2,7 +2,7 @@
 id: M3.2.2
 title: "Cargo wedge: crates/slipfork-test crate skeleton, workspace member, full dependency set"
 kind: task
-status: ready
+status: superseded
 owner: implementer
 priority: 1
 depends_on: [M3.2.1]
@@ -16,7 +16,7 @@ attempts: 0
 max_attempts: 3
 escalation: none
 created: "2026-11-16T16:59"
-updated: "2026-11-16T17:25"
+updated: "2026-11-18T22:19"
 ---
 
 # Goal

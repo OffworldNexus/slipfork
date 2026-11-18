@@ -2,7 +2,7 @@
 id: M3.29
 title: "Implement OSPP v1 (docs/design/ospp.md): live subscriptions, HPKE end-to-end secrets, and the zero-disk-secret lifecycle in 0.1.0"
 kind: epic
-status: ready
+status: done
 priority: 1
 depends_on: []
 paths: []
@@ -10,7 +10,7 @@ attempts: 0
 max_attempts: 3
 escalation: none
 created: "2026-11-18T00:08"
-updated: "2026-11-18T00:08"
+updated: "2026-11-18T22:19"
 ---
 
 # Goal

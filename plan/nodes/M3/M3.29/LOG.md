@@ -15,3 +15,7 @@ OWNER CLARIFICATION (2026-11-18) — supersedes the 'delete the file vault' part
 ## 2026-11-18T04:45 [lead]
 
 gate acceptance corrected for the owner's two-tier ruling: the vault is KEPT and scoped, so 'no-disk-vaults' became 'local-vault-kept-scoped' + 'two-tiers'. Gate awaits M3.28.13's live evidence.
+
+## 2026-11-18T22:19 [planner]
+
+status ready -> done: Remaining scope absorbed into M3.30.

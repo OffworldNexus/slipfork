@@ -2,7 +2,7 @@
 id: M3.2.11
 title: "packages/pytest-slipfork: zero-ceremony pytest plugin (RunnerProtocol v1, warm os.fork Zygote)"
 kind: task
-status: ready
+status: superseded
 owner: implementer
 priority: 3
 depends_on: [M3.2.3]
@@ -11,7 +11,7 @@ attempts: 0
 max_attempts: 3
 escalation: none
 created: "2026-11-16T16:59"
-updated: "2026-11-16T16:59"
+updated: "2026-11-18T22:19"
 ---
 
 # Goal

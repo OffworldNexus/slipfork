@@ -87,3 +87,7 @@ edited fields
 ## 2026-11-18T16:07 [lead]
 
 final delta: WorldEngine::world_is_live (no default; BtrfsEngine = status Live AND init_identity.is_live_leader; stub derives from its frozen set), matches_live now rejects /proc state Z/X so an unreaped zombie PID 1 is not live, abandon_unbooted_world dedupes the two cleanup ladders, wait_reaped reports measured elapsed, conformance pins live-true/frozen-false/destroyed-WorldGone, RESULT.md honesty corrected. Acceptance re-run by lead: engine 74, critical_engine 21, critical_edge 35, critical_cli 38, ospp 12, clippy clean.
+
+## 2026-11-18T22:19 [planner]
+
+status review -> done: Landed in HEAD (d254fe7): WorldEngine::world_is_live + shared stop-budget handover.

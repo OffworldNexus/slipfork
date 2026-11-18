@@ -59,3 +59,7 @@ edited fields
 ## 2026-11-18T11:06 [lead]
 
 edited fields
+
+## 2026-11-18T22:19 [planner]
+
+status ready -> superseded: Absorbed into M3.30 (dead-code, mock-trait and fork dedup sweep).

@@ -2,7 +2,7 @@
 id: M3.2.17
 title: "0.3.0 release prep: workspace version, CHANGELOG breaking note, docs nav label"
 kind: task
-status: ready
+status: superseded
 owner: implementer
 priority: 4
 depends_on: [M3.2.16]
@@ -11,7 +11,7 @@ attempts: 0
 max_attempts: 3
 escalation: none
 created: "2026-11-16T16:59"
-updated: "2026-11-16T16:59"
+updated: "2026-11-18T22:19"
 ---
 
 # Goal

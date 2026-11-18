@@ -2,7 +2,7 @@
 id: M3.2.18
 title: "Live end-to-end slipfork test -j 4 on the Btrfs DO VM (warm pool, typed coverage, output survival, prune)"
 kind: task
-status: ready
+status: superseded
 owner: implementer
 priority: 5
 depends_on: [M3.2.17]
@@ -11,7 +11,7 @@ attempts: 0
 max_attempts: 3
 escalation: none
 created: "2026-11-16T16:59"
-updated: "2026-11-16T16:59"
+updated: "2026-11-18T22:19"
 ---
 
 # Goal

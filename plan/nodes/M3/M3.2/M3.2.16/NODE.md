@@ -2,7 +2,7 @@
 id: M3.2.16
 title: "Published 0.3.0 docs for slipfork test: CLI reference, testing DAG, README, getting-started recipe"
 kind: task
-status: ready
+status: superseded
 owner: "doc-writer"
 priority: 4
 depends_on: [M3.2.15]
@@ -11,7 +11,7 @@ attempts: 0
 max_attempts: 3
 escalation: none
 created: "2026-11-16T16:59"
-updated: "2026-11-16T16:59"
+updated: "2026-11-18T22:19"
 ---
 
 # Goal

@@ -2,7 +2,7 @@
 id: M3.28.13
 title: "Live re-verification of the 0.1.0 UX pass on the Btrfs DO VM (port-less :80, status, restart, ps, fork)"
 kind: task
-status: ready
+status: superseded
 owner: implementer
 priority: 2
 depends_on: [M3.28.11, M3.28.12, M3.28.15, M3.28.21, M3.28.22, M3.28.23, M3.28.24, M3.29.3, M3.29.4, M3.29.5]
@@ -11,7 +11,7 @@ attempts: 1
 max_attempts: 3
 escalation: none
 created: "2026-11-17T16:33"
-updated: "2026-11-18T11:06"
+updated: "2026-11-18T22:19"
 ---
 
 # Goal

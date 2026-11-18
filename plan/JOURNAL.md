@@ -1436,3 +1436,36 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-18T16:53 [M3.27] (lead) paths widened: crates/slipfork-engine/tests/** (the protected suites need the injected StopBudget argument) and crates/slipfork-testkit/src/lib.rs (its doc refe
 - 2026-11-18T17:00 AUTOPILOT off by conductor User requested hard stop and root-cause speed/quality audit
 - 2026-11-18T21:38 AUTOPILOT on by conductor Install GEPA winning G4 agent bundle and execute pre-diagnosed 6-slice 0.1.0 cleanup + UX overhaul
+- 2026-11-18T22:19 [M3.27] (planner) status ready -> done: Landed in HEAD (cdca7d3): CLI critical suites reap worlds and process groups.
+- 2026-11-18T22:19 [M3.28.24] (planner) status review -> done: Landed in HEAD (d254fe7): WorldEngine::world_is_live + shared stop-budget handover.
+- 2026-11-18T22:19 [M3.28.13] (planner) status ready -> superseded: Absorbed into M3.30 (dead-code, mock-trait and fork dedup sweep).
+- 2026-11-18T22:19 [M3.28.14] (planner) status ready -> superseded: Absorbed into M3.30 (high-craft CLI UX sweep).
+- 2026-11-18T22:19 [M3.29.5] (planner) status ready -> superseded: Absorbed into M3.30 (docs + CHANGELOG rewrite slice M3.30.5).
+- 2026-11-18T22:19 [M3.28] (planner) status ready -> done: Remaining scope absorbed into M3.30.
+- 2026-11-18T22:19 [M3.29] (planner) status ready -> done: Remaining scope absorbed into M3.30.
+- 2026-11-18T22:19 [M3.2.1] (planner) status ready -> superseded: Obsolete pre-CBOR test runner draft; STP v1 belongs to 0.2.0
+- 2026-11-18T22:19 [M3.2.2] (planner) status ready -> superseded: Obsolete pre-CBOR test runner draft; STP v1 belongs to 0.2.0
+- 2026-11-18T22:19 [M3.2.3] (planner) status ready -> superseded: Obsolete pre-CBOR test runner draft; STP v1 belongs to 0.2.0
+- 2026-11-18T22:19 [M3.2.4] (planner) status ready -> superseded: Obsolete pre-CBOR test runner draft; STP v1 belongs to 0.2.0
+- 2026-11-18T22:19 [M3.2.5] (planner) status ready -> superseded: Obsolete pre-CBOR test runner draft; STP v1 belongs to 0.2.0
+- 2026-11-18T22:19 [M3.2.6] (planner) status ready -> superseded: Obsolete pre-CBOR test runner draft; STP v1 belongs to 0.2.0
+- 2026-11-18T22:19 [M3.2.7] (planner) status ready -> superseded: Obsolete pre-CBOR test runner draft; STP v1 belongs to 0.2.0
+- 2026-11-18T22:19 [M3.2.8] (planner) status ready -> superseded: Obsolete pre-CBOR test runner draft; STP v1 belongs to 0.2.0
+- 2026-11-18T22:19 [M3.2.9] (planner) status ready -> superseded: Obsolete pre-CBOR test runner draft; STP v1 belongs to 0.2.0
+- 2026-11-18T22:19 [M3.2.10] (planner) status ready -> superseded: Obsolete pre-CBOR test runner draft; STP v1 belongs to 0.2.0
+- 2026-11-18T22:19 [M3.2.11] (planner) status ready -> superseded: Obsolete pre-CBOR test runner draft; STP v1 belongs to 0.2.0
+- 2026-11-18T22:19 [M3.2.12] (planner) status ready -> superseded: Obsolete pre-CBOR test runner draft; STP v1 belongs to 0.2.0
+- 2026-11-18T22:19 [M3.2.13] (planner) status ready -> superseded: Obsolete pre-CBOR test runner draft; STP v1 belongs to 0.2.0
+- 2026-11-18T22:19 [M3.2.14] (planner) status ready -> superseded: Obsolete pre-CBOR test runner draft; STP v1 belongs to 0.2.0
+- 2026-11-18T22:19 [M3.2.15] (planner) status ready -> superseded: Obsolete pre-CBOR test runner draft; STP v1 belongs to 0.2.0
+- 2026-11-18T22:19 [M3.2.16] (planner) status ready -> superseded: Obsolete pre-CBOR test runner draft; STP v1 belongs to 0.2.0
+- 2026-11-18T22:19 [M3.2.17] (planner) status ready -> superseded: Obsolete pre-CBOR test runner draft; STP v1 belongs to 0.2.0
+- 2026-11-18T22:19 [M3.2.18] (planner) status ready -> superseded: Obsolete pre-CBOR test runner draft; STP v1 belongs to 0.2.0
+- 2026-11-18T22:19 [M3.2] (planner) status blocked -> superseded: Obsolete pre-CBOR test runner draft; STP v1 belongs to 0.2.0
+- 2026-11-18T22:19 [M3.30] (planner) created (epic) 0.1.0 Ship-Ready Sweep: dead-weight purge, god-file splits, high-craft UX, lab-first tests & visual docs
+- 2026-11-18T22:19 [M3.30.1] (planner) created (task) Purge dead weight: forked snow resolver, 14 mock/fake doubles, support-matrix bureaucracy & duplicated helpers
+- 2026-11-18T22:19 [M3.30.2] (planner) created (task) Split 3 god-files into cohesive structs, fix edge layering, replace hand-rolled HTTP/NDJSON wheels, persist ospp.json
+- 2026-11-18T22:19 [M3.30.3] (planner) created (task) High-craft terminal UX: TerminalUi palette, live streamed progress/spinners, dynamic column alignment
+- 2026-11-18T22:19 [M3.30.4] (planner) created (task) Lab-first test consolidation: 1 Btrfs journey + 1 OSPP journey + pure algorithm tests & single-build Makefile
+- 2026-11-18T22:19 [M3.30.5] (planner) created (task) Visual high-hierarchy 0.1.0 docs: value-first quickstart, Mermaid diagram, admonitions & single CHANGELOG entry
+- 2026-11-18T22:19 [M3.30.6] (planner) created (task) Live lab VM proof (165.232.86.174): PTY color/spinner E2E, .localhost :80 demo & before/after llvm-cov audit

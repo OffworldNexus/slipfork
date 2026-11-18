@@ -2,7 +2,7 @@
 id: M3.2.10
 title: "PytestAdapter (Rust): warm Zygote runner over RunnerProtocol v1 + Python coverage combine"
 kind: task
-status: ready
+status: superseded
 owner: implementer
 priority: 3
 depends_on: [M3.2.9, M3.2.11]
@@ -14,7 +14,7 @@ attempts: 0
 max_attempts: 3
 escalation: none
 created: "2026-11-16T16:59"
-updated: "2026-11-16T17:25"
+updated: "2026-11-18T22:19"
 ---
 
 # Goal

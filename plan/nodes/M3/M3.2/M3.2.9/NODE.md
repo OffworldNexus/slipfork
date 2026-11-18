@@ -2,7 +2,7 @@
 id: M3.2.9
 title: "TestCoordinator: run tree, batch vs world scheduling, coverage enforcement, TestEvent stream"
 kind: task
-status: ready
+status: superseded
 owner: implementer
 priority: 2
 depends_on: [M3.2.8]
@@ -14,7 +14,7 @@ attempts: 0
 max_attempts: 3
 escalation: none
 created: "2026-11-16T16:59"
-updated: "2026-11-16T16:59"
+updated: "2026-11-18T22:19"
 ---
 
 # Goal

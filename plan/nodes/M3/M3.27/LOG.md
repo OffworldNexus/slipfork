@@ -67,3 +67,7 @@ status done -> ready
 ## 2026-11-18T12:10 [lead]
 
 edited fields
+
+## 2026-11-18T22:19 [planner]
+
+status ready -> done: Landed in HEAD (cdca7d3): CLI critical suites reap worlds and process groups.

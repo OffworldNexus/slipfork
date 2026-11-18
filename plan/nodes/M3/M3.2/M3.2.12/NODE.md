@@ -2,7 +2,7 @@
 id: M3.2.12
 title: "CLI slipfork test + DaemonControl::test streaming seam (typed exit codes, --json purity)"
 kind: task
-status: ready
+status: superseded
 owner: implementer
 priority: 3
 depends_on: [M3.2.9, M3.2.10, M3.2.11]
@@ -17,7 +17,7 @@ attempts: 0
 max_attempts: 3
 escalation: none
 created: "2026-11-16T16:59"
-updated: "2026-11-16T17:25"
+updated: "2026-11-18T22:19"
 ---
 
 # Goal

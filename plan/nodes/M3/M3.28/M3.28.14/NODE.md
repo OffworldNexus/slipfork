@@ -2,7 +2,7 @@
 id: M3.28.14
 title: "Publish the 0.1.0 UX surface: CLI reference, getting started, index, README, CHANGELOG"
 kind: task
-status: ready
+status: superseded
 owner: "doc-writer"
 priority: 2
 depends_on: [M3.28.13, M3.29.4]
@@ -19,7 +19,7 @@ attempts: 0
 max_attempts: 3
 escalation: none
 created: "2026-11-17T16:34"
-updated: "2026-11-18T04:34"
+updated: "2026-11-18T22:19"
 ---
 
 # Goal

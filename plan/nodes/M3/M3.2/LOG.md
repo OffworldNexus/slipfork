@@ -59,3 +59,7 @@ OSPP remote path gaps (from M3.28.18 RESULT, recorded here because 0.1.0 ships n
 ## 2026-11-17T21:49 [lead]
 
 ADR-0008 wire supersession (from M3.28.19): this epic implements docs/design/ospp.md, which supersedes ADR-0008's wire specification at 0.2.0. ADR-0008 status gains: 'Superseded for the wire specification by docs/design/ospp.md (0.2.0); the resource-strategy and world-UX decisions below remain in force.' Same one-line pointer must appear wherever ADR-0001 calls ADR-0008 the sole normative wire spec. Routed to M3.23 for the edit.
+
+## 2026-11-18T22:19 [planner]
+
+status blocked -> superseded: Obsolete pre-CBOR test runner draft; STP v1 belongs to 0.2.0

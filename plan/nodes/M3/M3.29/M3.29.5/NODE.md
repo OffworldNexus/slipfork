@@ -2,7 +2,7 @@
 id: M3.29.5
 title: "slipfork auth <wss-url> saves the OSPP endpoint in <state_dir>/ospp.json (public metadata only) so pairing survives reboots"
 kind: task
-status: ready
+status: superseded
 owner: implementer
 priority: 1
 depends_on: [M3.29.3, M3.28.24]
@@ -15,7 +15,7 @@ attempts: 0
 max_attempts: 3
 escalation: none
 created: "2026-11-18T07:46"
-updated: "2026-11-18T07:46"
+updated: "2026-11-18T22:19"
 ---
 
 # Goal

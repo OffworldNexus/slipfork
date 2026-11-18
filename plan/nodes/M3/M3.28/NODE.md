@@ -2,7 +2,7 @@
 id: M3.28
 title: "0.1.0 UX pre-release pass (owner hands-on findings): :80 ingress, bare status, restart/ps/open, fork identity"
 kind: epic
-status: ready
+status: done
 priority: 1
 depends_on: []
 paths: []
@@ -10,7 +10,7 @@ attempts: 0
 max_attempts: 3
 escalation: none
 created: "2026-11-17T16:32"
-updated: "2026-11-17T16:32"
+updated: "2026-11-18T22:19"
 ---
 
 # Goal

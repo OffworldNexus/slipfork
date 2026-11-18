@@ -2,7 +2,7 @@
 id: M3.2.6
 title: "Typed CoverageDriver: coverage env/paths, report combination, coverage_fail_under"
 kind: task
-status: ready
+status: superseded
 owner: implementer
 priority: 2
 depends_on: [M3.2.5]
@@ -15,7 +15,7 @@ attempts: 0
 max_attempts: 3
 escalation: none
 created: "2026-11-16T16:59"
-updated: "2026-11-16T17:25"
+updated: "2026-11-18T22:19"
 ---
 
 # Goal

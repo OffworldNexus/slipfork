@@ -19,3 +19,7 @@ HOLD RELEASED (owner, 2026-11-16): blueprint may start once DAG predecessors (M3
 ## 2026-11-16T18:16 [lead]
 
 OWNER HOLD: do not start. M3.2 is being rewritten around a thin slipfork<->blastit boundary; Slipfork will not ship a second test runner (no pytest-slipfork Zygote, no per-language coverage drivers). The blastit post-mortem invariants already recorded here remain binding input for the rewrite.
+
+## 2026-11-18T22:19 [planner]
+
+status ready -> superseded: Obsolete pre-CBOR test runner draft; STP v1 belongs to 0.2.0

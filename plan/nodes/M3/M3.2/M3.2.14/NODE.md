@@ -2,7 +2,7 @@
 id: M3.2.14
 title: "Makefile: run pytest-slipfork tests in py-test and serialize new world-booting suites"
 kind: task
-status: ready
+status: superseded
 owner: implementer
 priority: 4
 depends_on: [M3.2.12, M3.2.11]
@@ -11,7 +11,7 @@ attempts: 0
 max_attempts: 3
 escalation: none
 created: "2026-11-16T16:59"
-updated: "2026-11-16T16:59"
+updated: "2026-11-18T22:19"
 ---
 
 # Goal

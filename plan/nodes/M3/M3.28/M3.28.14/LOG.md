@@ -43,3 +43,7 @@ from M3.28.23: docs/reference/cli.md rows 67/105 must document the new logs rule
 ## 2026-11-18T05:07 [lead]
 
 from M3.28.23 (record in CHANGELOG as a known limitation, do not hide): 'logs --follow' with no explicit target still follows only the first retained target (pre-existing daemon fan-out limitation; needs thread-per-target). Also state the new logs rule: '<source>: ' prefix when no single target is named, raw bytes for one named target, and NDJSON {stream,source,text} under --json.
+
+## 2026-11-18T22:19 [planner]
+
+status ready -> superseded: Absorbed into M3.30 (high-craft CLI UX sweep).
