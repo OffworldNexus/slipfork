@@ -2,7 +2,7 @@
 id: M3.28.7
 title: "Bare slipfork = status dashboard plus slipfork status (world tree, port-less origin, next-step hints)"
 kind: task
-status: review
+status: done
 owner: implementer
 priority: 2
 depends_on: [M3.28.6]
@@ -16,7 +16,7 @@ attempts: 2
 max_attempts: 3
 escalation: none
 created: "2026-11-17T16:33"
-updated: "2026-11-18T01:22"
+updated: "2026-11-18T01:26"
 ---
 
 # Goal

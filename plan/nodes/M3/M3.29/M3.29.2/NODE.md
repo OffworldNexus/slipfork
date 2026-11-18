@@ -2,12 +2,12 @@
 id: M3.29.2
 title: "Implement OSPP v1 wire, p256 pairing, ID-only claims, hpke-p256 per-variable encryption and encrypted dump streaming"
 kind: task
-status: ready
+status: active
 owner: implementer
 priority: 1
 depends_on: [M3.29.1]
 paths: ["crates/slipfork-ospp/**", "crates/slipfork-ospp-testkit/**", Cargo.toml, Cargo.lock]
-attempts: 0
+attempts: 1
 max_attempts: 3
 escalation: none
 created: "2026-11-18T00:08"

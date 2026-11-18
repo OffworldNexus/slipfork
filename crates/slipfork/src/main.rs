@@ -13,12 +13,14 @@
 #![forbid(unsafe_code)]
 
 use std::collections::BTreeMap;
+use std::ffi::OsStr;
 use std::fs::{self, OpenOptions};
 use std::io::{self, IsTerminal, Read, Write};
+use std::os::fd::{AsFd, OwnedFd};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use clap::Parser;
 use serde_json::json;
@@ -28,7 +30,8 @@ use slipfork::cli::{
     SecretAction, SnowAction, UnitKind,
 };
 use slipfork::daemon_unit_install::{
-    self, InstallRequest, ManagedUnit, UnitInstaller, ingress_unit_spec, target_account,
+    self, DAEMON_GRACE, DAEMON_POLL, InstallRequest, ManagedUnit, SocketHolder, UnitInstaller,
+    ingress_unit_spec, probe_socket_holder, target_account,
 };
 use slipfork::doctor::{self, OsHostProbe, SystemdIngressProbe};
 use slipfork::layout::{Layout, ensure_private_dir};
@@ -41,13 +44,9 @@ use slipfork_edge::{
     WorldSelector, render_service_unit, render_socket_unit,
 };
 use slipfork_engine::btrfs::KernelBtrfsDriver;
-use slipfork_engine::current_uid_gid;
+use slipfork_engine::linux_cow::{ProcessSignal, signal_pidfd};
+use slipfork_engine::{SystemClock, current_uid_gid};
 use slipfork_snow::SnowFile;
-
-/// Bound on waiting for a freshly spawned `slipforkd` to answer its control socket.
-const SPAWN_TIMEOUT: Duration = Duration::from_secs(15);
-/// Poll interval while waiting for the daemon socket.
-const SPAWN_POLL: Duration = Duration::from_millis(50);
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
@@ -81,8 +80,11 @@ fn run(cli: Cli) -> Result<ExitCode, String> {
     let json = cli.json;
 
     match cli.command {
-        Commands::Doctor => doctor(json, &layout),
-        Commands::Snow {
+        // Bare `slipfork` is the status dashboard: the exact same handler as `slipfork status`
+        // (`docs/design/dx-0.1.0-ux.md` §3), never a second render path.
+        None | Some(Commands::Status) => status(json, &layout),
+        Some(Commands::Doctor) => doctor(json, &layout),
+        Some(Commands::Snow {
             action:
                 SnowAction::Resolve {
                     file,
@@ -90,7 +92,7 @@ fn run(cli: Cli) -> Result<ExitCode, String> {
                     component,
                     expose_secrets,
                 },
-        } => resolve_snow(
+        }) => resolve_snow(
             json,
             &layout,
             &file,
@@ -98,10 +100,10 @@ fn run(cli: Cli) -> Result<ExitCode, String> {
             component.as_deref(),
             expose_secrets,
         ),
-        Commands::Dag {
+        Some(Commands::Dag {
             action: DagAction::Plan { file },
-        } => dag_plan(json, &layout, file),
-        Commands::Daemon { action } => match action {
+        }) => dag_plan(json, &layout, file),
+        Some(Commands::Daemon { action }) => match action {
             DaemonAction::Unit {
                 only,
                 forward_port,
@@ -135,49 +137,49 @@ fn run(cli: Cli) -> Result<ExitCode, String> {
                 forward_port,
             ),
         },
-        Commands::Up {
+        Some(Commands::Up {
             world,
             dump,
             resources,
             host_caches,
-        } => up(json, &layout, world, dump, resources, host_caches),
-        Commands::Down { world } => down(json, &layout, world),
-        Commands::Fork {
+        }) => up(json, &layout, world, dump, resources, host_caches),
+        Some(Commands::Down { world }) => down(json, &layout, world),
+        Some(Commands::Fork {
             fork,
             base,
             dump,
             resources,
             host_caches,
-        } => create_fork(json, &layout, fork, base, dump, resources, host_caches),
-        Commands::Drop { fork } => drop_fork(json, &layout, fork),
-        Commands::List => list(json, &layout),
-        Commands::Prune { dry_run, yes } => prune(json, &layout, dry_run, yes),
-        Commands::Secret { action } => secret(json, &layout, action),
-        Commands::Share { stop, world } => share(json, &layout, stop, world),
-        Commands::Exec { world, cwd, argv } => exec(json, &layout, world, cwd, argv),
-        Commands::Shell { world } => shell(json, &layout, world),
-        Commands::Logs {
+        }) => create_fork(json, &layout, fork, base, dump, resources, host_caches),
+        Some(Commands::Drop { fork }) => drop_fork(json, &layout, fork),
+        Some(Commands::List) => list(json, &layout),
+        Some(Commands::Prune { dry_run, yes }) => prune(json, &layout, dry_run, yes),
+        Some(Commands::Secret { action }) => secret(json, &layout, action),
+        Some(Commands::Share { stop, world }) => share(json, &layout, stop, world),
+        Some(Commands::Exec { world, cwd, argv }) => exec(json, &layout, world, cwd, argv),
+        Some(Commands::Shell { world }) => shell(json, &layout, world),
+        Some(Commands::Logs {
             world,
             target,
             follow,
             stderr,
             lines,
-        } => logs(json, &layout, world, target, follow, stderr, lines),
-        Commands::Hook {
+        }) => logs(json, &layout, world, target, follow, stderr, lines),
+        Some(Commands::Hook {
             action:
                 HookAction::Run {
                     hook,
                     world,
                     no_tty,
                 },
-        } => hook_run(json, &layout, hook, world, no_tty),
-        Commands::Db { db_id, world } => db(json, &layout, db_id, world),
-        Commands::Redis { cluster_id, world } => redis(json, &layout, cluster_id, world),
-        Commands::Forward { world, targets } => forward(json, &layout, world, targets),
-        Commands::Auth {
+        }) => hook_run(json, &layout, hook, world, no_tty),
+        Some(Commands::Db { db_id, world }) => db(json, &layout, db_id, world),
+        Some(Commands::Redis { cluster_id, world }) => redis(json, &layout, cluster_id, world),
+        Some(Commands::Forward { world, targets }) => forward(json, &layout, world, targets),
+        Some(Commands::Auth {
             action: AuthAction::Login { url },
-        } => auth_login(json, &layout, url),
-        Commands::Support => support(json),
+        }) => auth_login(json, &layout, url),
+        Some(Commands::Support) => support(json),
     }
 }
 
@@ -208,6 +210,27 @@ fn current_dir() -> Result<PathBuf, String> {
 fn render_json<T: serde::Serialize>(value: &T) -> Result<String, String> {
     serde_json::to_string_pretty(value)
         .map_err(|err| format!("cannot render the JSON response: {err}"))
+}
+
+/// `slipfork` / `slipfork status`: one `DaemonControl::status` read rendered by
+/// [`slipfork::status`] (`docs/design/dx-0.1.0-ux.md` §3).
+///
+/// This is a read verb: it dials the daemon and never starts one, so a bare `slipfork` on a host
+/// with no daemon fails closed with the one `slipfork up` line. When the daemon answers on an
+/// ingress port other than `:80`, exactly one actionable line goes to stderr — never to stdout and
+/// never under `--json` (§2 rule 4).
+fn status(json: bool, layout: &Layout) -> Result<ExitCode, String> {
+    let client = connect(layout)?;
+    let payload = client.status().map_err(|err| err.to_string())?;
+    if json {
+        println!("{}", render_json(&slipfork::status::json(&payload))?);
+        return Ok(ExitCode::SUCCESS);
+    }
+    if let Some(hint) = slipfork::status::ingress_hint(payload.ingress.port()) {
+        eprintln!("{hint}");
+    }
+    print!("{}", slipfork::status::render(&payload));
+    Ok(ExitCode::SUCCESS)
 }
 
 /// `slipfork doctor`: probe the Btrfs substrate and the unprivileged namespaces without a daemon.
@@ -377,8 +400,12 @@ fn daemon_install(
         xdg_cache_home: roots.xdg_cache_home,
         xdg_data_home: roots.xdg_data_home,
     };
-    let report =
-        daemon_unit_install::install(&AccountDatabaseIdentity, &OsUnitInstaller, &request)?;
+    let report = daemon_unit_install::install(
+        &AccountDatabaseIdentity,
+        &OsUnitInstaller,
+        &SystemClock,
+        &request,
+    )?;
     if json {
         println!(
             "{}",
@@ -415,22 +442,33 @@ struct OsUnitInstaller;
 const INSTALL_TOOL_PATH: &str = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
 
 impl OsUnitInstaller {
+    /// One control client for `<runtime_dir>/daemon.sock` (owned by this adapter, never shared).
+    fn control(runtime_dir: &Path) -> DaemonControlClient {
+        DaemonControlClient::bind(runtime_dir)
+    }
+
     /// Run one privileged tool with a cleared environment and the fixed tool path.
     fn run_tool(program: &str, args: &[&std::ffi::OsStr]) -> Result<(), String> {
+        Self::run_capture(program, args).map(|_| ())
+    }
+
+    /// Run one privileged tool the same way, returning its stdout.
+    fn run_capture(program: &str, args: &[&std::ffi::OsStr]) -> Result<String, String> {
         let output = Command::new(program)
             .args(args)
             .env_clear()
             .env("PATH", INSTALL_TOOL_PATH)
             .output()
             .map_err(|err| format!("cannot run `{program}`: {err}"))?;
-        if output.status.success() {
-            return Ok(());
+        if !output.status.success() {
+            return Err(format!(
+                "`{program}` exited with {}: {}",
+                output.status,
+                String::from_utf8_lossy(&output.stderr).trim()
+            ));
         }
-        Err(format!(
-            "`{program}` exited with {}: {}",
-            output.status,
-            String::from_utf8_lossy(&output.stderr).trim()
-        ))
+        String::from_utf8(output.stdout)
+            .map_err(|err| format!("`{program}` printed non-UTF-8 on stdout: {err}"))
     }
 }
 
@@ -486,40 +524,6 @@ impl UnitInstaller for OsUnitInstaller {
             .map_err(|err| format!("cannot fsync {}: {err}", parent.display()))
     }
 
-    fn release_running_daemon(&self, runtime_dir: &Path) -> Result<(), String> {
-        let client = DaemonControlClient::bind(runtime_dir);
-        if !client.is_served() {
-            return Ok(());
-        }
-        let status = client.status().map_err(|err| {
-            format!("cannot read the running slipforkd's ingress before installing: {err}")
-        })?;
-        if status.ingress.port() == slipfork_edge::INGRESS_PORT {
-            // The installed `:80` socket is already served by the unit: `enable --now` is a no-op.
-            return Ok(());
-        }
-        client.shutdown().map_err(|err| {
-            format!(
-                "cannot stop the auto-spawned slipforkd on :{} before enabling the unit: {err}",
-                status.ingress.port()
-            )
-        })?;
-        let deadline = Instant::now() + SPAWN_TIMEOUT;
-        loop {
-            if !client.is_served() {
-                return Ok(());
-            }
-            if Instant::now() >= deadline {
-                return Err(format!(
-                    "slipforkd did not release {} within {}s; stop it manually, then run `sudo systemctl start slipforkd.socket`",
-                    client.socket_path().display(),
-                    SPAWN_TIMEOUT.as_secs()
-                ));
-            }
-            std::thread::sleep(SPAWN_POLL);
-        }
-    }
-
     fn daemon_reload(&self) -> Result<(), String> {
         Self::run_tool("systemctl", &[std::ffi::OsStr::new("daemon-reload")])
     }
@@ -529,6 +533,47 @@ impl UnitInstaller for OsUnitInstaller {
             "apparmor_parser",
             &[std::ffi::OsStr::new("-r"), profile_path.as_os_str()],
         )
+    }
+
+    fn stop_units(&self, units: &[ManagedUnit]) -> Result<(), String> {
+        for unit in units {
+            let name = unit.unit_name();
+            // `LoadState=not-found` is a unit this installer never wrote; every other state is a
+            // unit the host knows, and `systemctl stop` is a no-op when it is already inactive.
+            let load_state = Self::run_capture(
+                "systemctl",
+                &[
+                    OsStr::new("show"),
+                    OsStr::new("--property=LoadState"),
+                    OsStr::new("--value"),
+                    OsStr::new(name),
+                ],
+            )?;
+            if load_state.trim() == "not-found" {
+                continue;
+            }
+            Self::run_tool("systemctl", &[OsStr::new("stop"), OsStr::new(name)])?;
+        }
+        Ok(())
+    }
+
+    fn is_served(&self, runtime_dir: &Path) -> Result<bool, String> {
+        Ok(Self::control(runtime_dir).is_served())
+    }
+
+    fn shutdown(&self, runtime_dir: &Path) -> Result<(), String> {
+        Self::control(runtime_dir)
+            .shutdown()
+            .map_err(|err| err.to_string())
+    }
+
+    fn socket_holder(&self, runtime_dir: &Path) -> Result<SocketHolder, String> {
+        probe_socket_holder(runtime_dir)
+    }
+
+    fn signal_proven(&self, pidfd: &OwnedFd, signal: ProcessSignal) -> Result<(), String> {
+        signal_pidfd(pidfd.as_fd(), signal)
+            .map_err(|err| format!("cannot signal the proven slipforkd: {err}"))
     }
 
     fn enable_now(&self, units: &[ManagedUnit]) -> Result<(), String> {
@@ -666,15 +711,13 @@ fn list(json: bool, layout: &Layout) -> Result<ExitCode, String> {
             .collect();
         println!("{}", render_json(&rows)?);
     } else {
-        println!("{:<16} {:<9} {:<40} WORKTREE", "WORLD", "STATE", "ORIGIN");
+        let column = slipfork::status::world_column(&worlds);
+        println!(
+            "{:<column$} {:<9} {:<40} WORKTREE",
+            "WORLD", "STATE", "ORIGIN"
+        );
         for world in &worlds {
-            println!(
-                "{:<16} {:<9} {:<40} {}",
-                world.world,
-                world_state_label(world.state),
-                world.origin.url(),
-                world.worktree.display()
-            );
+            print!("{}", slipfork::status::world_row(world, "", column));
         }
     }
     Ok(ExitCode::SUCCESS)
@@ -1392,14 +1435,6 @@ fn print_world_up(json: bool, summary: &slipfork_edge::WorldUpSummary) {
     }
 }
 
-fn world_state_label(state: slipfork_edge::WorldState) -> &'static str {
-    match state {
-        slipfork_edge::WorldState::Running => "running",
-        slipfork_edge::WorldState::Failed => "failed",
-        slipfork_edge::WorldState::Stopped => "stopped",
-    }
-}
-
 /// Dial the daemon, failing closed with the one line that fixes an absent `slipforkd`.
 ///
 /// Read/diagnostic verbs never spawn a daemon: auto-spawn is reserved for `up`/`fork`, so a
@@ -1466,7 +1501,7 @@ fn connect_or_spawn(layout: &Layout) -> Result<DaemonControlClient, String> {
             )
         })?;
 
-    let deadline = Instant::now() + SPAWN_TIMEOUT;
+    let deadline = Instant::now() + DAEMON_GRACE;
     loop {
         if client.is_served() {
             return Ok(client);
@@ -1488,11 +1523,11 @@ fn connect_or_spawn(layout: &Layout) -> Result<DaemonControlClient, String> {
             return Err(format!(
                 "slipforkd did not serve {} within {}s; see {}",
                 client.socket_path().display(),
-                SPAWN_TIMEOUT.as_secs(),
+                DAEMON_GRACE.as_secs(),
                 log_path.display()
             ));
         }
-        std::thread::sleep(SPAWN_POLL);
+        std::thread::sleep(DAEMON_POLL);
     }
 }
 

@@ -2,7 +2,7 @@
 id: M3.28.21
 title: "daemon install owns the socket handover for any holder (version-agnostic, ownership-proven), so the harness keeps no daemon lifecycle"
 kind: task
-status: review
+status: done
 owner: implementer
 priority: 1
 depends_on: [M3.28.6]
@@ -17,7 +17,7 @@ attempts: 3
 max_attempts: 3
 escalation: none
 created: "2026-11-18T00:37"
-updated: "2026-11-18T01:05"
+updated: "2026-11-18T01:26"
 ---
 
 # Goal

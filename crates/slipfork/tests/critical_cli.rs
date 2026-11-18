@@ -19,6 +19,8 @@ use std::time::Duration;
 
 use serde_json::Value;
 use slipfork::daemon_unit_install::{self, InstallRequest, ManagedUnit, UnitInstaller};
+use slipfork_engine::SystemClock;
+use slipfork_engine::linux_cow::ProcessSignal;
 
 pub mod support;
 use support::{
@@ -461,6 +463,8 @@ fn read_verbs_never_spawn_a_daemon_and_fail_closed_in_one_line() {
     );
 
     for args in [
+        vec![],
+        vec!["status"],
         vec!["list"],
         vec!["down"],
         vec!["logs"],
@@ -524,7 +528,30 @@ impl UnitInstaller for CapturedInstaller {
         Ok(())
     }
 
-    fn release_running_daemon(&self, _runtime_dir: &Path) -> Result<(), String> {
+    fn stop_units(&self, _units: &[ManagedUnit]) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn is_served(&self, _runtime_dir: &Path) -> Result<bool, String> {
+        Ok(false)
+    }
+
+    fn shutdown(&self, _runtime_dir: &Path) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn socket_holder(
+        &self,
+        _runtime_dir: &Path,
+    ) -> Result<daemon_unit_install::SocketHolder, String> {
+        Ok(daemon_unit_install::SocketHolder::Absent)
+    }
+
+    fn signal_proven(
+        &self,
+        _pidfd: &std::os::fd::OwnedFd,
+        _signal: ProcessSignal,
+    ) -> Result<(), String> {
         Ok(())
     }
 
@@ -583,6 +610,7 @@ fn daemon_install_bytes_equal_a_real_daemon_unit_preview() {
     daemon_unit_install::install(
         &slipfork::user::AccountDatabaseIdentity,
         &installer,
+        &SystemClock,
         &InstallRequest {
             is_root: true,
             explicit_user: Some(account),
@@ -1315,5 +1343,280 @@ fn support_json_lists_required_evidence_for_every_integration() {
         stdout(&human).contains("INTEGRATION") && stdout(&human).contains("TIER"),
         "the human report must render the matrix: {}",
         stdout(&human)
+    );
+}
+
+// ---------------------------------------------------------------------------
+// M3.28.7: bare `slipfork` is the status dashboard (`docs/design/dx-0.1.0-ux.md` §3)
+// ---------------------------------------------------------------------------
+
+/// The one `:80` line stderr carries when the daemon answered on another ingress port.
+///
+/// Rendered by [`slipfork::status::ingress_hint`]; the test never re-types the format.
+fn ingress_hint_line(port: u16) -> String {
+    format!(
+        "{}\n",
+        slipfork::status::ingress_hint(port).expect("a non-:80 ingress is announced")
+    )
+}
+
+/// One world object's `--json` key set: every key, and only the status document's keys.
+fn world_keys(world: &Value) -> Vec<String> {
+    let mut keys: Vec<String> = world
+        .as_object()
+        .unwrap_or_else(|| panic!("a world row is an object: {world}"))
+        .keys()
+        .cloned()
+        .collect();
+    keys.sort();
+    keys
+}
+
+#[test]
+fn bare_slipfork_and_status_render_one_dashboard_and_json_stays_pure() {
+    let tmp = disk_tempdir();
+    let scratch = tmp.path();
+    let repo = repo_with_snow(scratch);
+    let daemon = Daemon::start(scratch);
+    assert_success(&daemon.cli(&repo, &["up"]), "up the canonical world");
+    assert_success(&daemon.cli(&repo, &["fork", "feat-ux"]), "fork feat-ux");
+
+    // `--help` still lists every command, and `slipfork help` renders the same list.
+    let help = Command::new(env!("CARGO_BIN_EXE_slipfork"))
+        .arg("--help")
+        .output()
+        .expect("slipfork --help");
+    assert_success(&help, "slipfork --help");
+    let help_text = stdout(&help);
+    assert!(
+        help_text.contains("Commands:"),
+        "the help keeps its Commands block: {help_text}"
+    );
+    assert!(
+        help_text.lines().any(|line| line.starts_with("  status")),
+        "`status` must be listed: {help_text}"
+    );
+    let help_subcommand = Command::new(env!("CARGO_BIN_EXE_slipfork"))
+        .arg("help")
+        .output()
+        .expect("slipfork help");
+    assert_success(&help_subcommand, "slipfork help");
+    assert!(
+        stdout(&help_subcommand).contains("  status"),
+        "`slipfork help` lists the same commands: {}",
+        stdout(&help_subcommand)
+    );
+
+    // Bare `slipfork` is the exact same handler, so the dashboard is byte-identical.
+    let bare = daemon.cli(&repo, &[]);
+    assert_success(&bare, "bare slipfork");
+    let explicit = daemon.cli(&repo, &["status"]);
+    assert_success(&explicit, "slipfork status");
+    assert_eq!(
+        stdout(&bare),
+        stdout(&explicit),
+        "bare slipfork must run `slipfork status`, not a second renderer"
+    );
+
+    let dashboard = stdout(&bare);
+    let lines: Vec<&str> = dashboard.lines().collect();
+    assert!(
+        lines[0].starts_with("slipforkd ") && lines[0].contains(", ingress 127.0.0.1:"),
+        "the header names the daemon pid and its ingress: {dashboard}"
+    );
+    let canonical = lines
+        .iter()
+        .position(|line| line.starts_with("  acme-app "))
+        .unwrap_or_else(|| panic!("expected a canonical row: {dashboard}"));
+    assert!(
+        lines[canonical].contains("running")
+            && lines[canonical].contains("http://acme-app.localhost"),
+        "the canonical row carries its state and origin: {dashboard}"
+    );
+    let label_column = lines[canonical + 1]
+        .find("lineage")
+        .unwrap_or_else(|| panic!("each world row is followed by its lineage line: {dashboard}"));
+    assert!(
+        lines[canonical + 1][..label_column].trim().is_empty(),
+        "the lineage label sits in an indented label column: {dashboard}"
+    );
+
+    // Derive both sub-lines instead of re-typing the literal indent/hint text asserted once in
+    // `slipfork::status`'s own tests.
+    let sub_line = |row: usize, label: &str| -> String {
+        lines[row]
+            .strip_prefix(&" ".repeat(label_column))
+            .and_then(|tail| tail.strip_prefix(label))
+            .unwrap_or_else(|| panic!("expected a `{label}` sub-line for row {row}: {dashboard}"))
+            .to_owned()
+    };
+    let canonical_next = sub_line(canonical + 2, "next      ");
+    assert!(
+        sub_line(canonical + 1, "lineage   ").starts_with("rootfs "),
+        "the lineage line starts with the rootfs fact: {dashboard}"
+    );
+    assert!(
+        !canonical_next.contains("--world"),
+        "the canonical world's hint stays bare: {canonical_next}"
+    );
+    let implemented = slipfork::cli::implemented_commands();
+    for hint in canonical_next.split(" | ") {
+        let verb = hint
+            .strip_prefix("slipfork ")
+            .unwrap_or_else(|| panic!("a hint is a full `slipfork <verb>` command: {hint}"));
+        assert!(
+            implemented.contains(verb),
+            "`{hint}` is hinted but is not a subcommand of this binary: {dashboard}"
+        );
+    }
+
+    let fork_row = lines
+        .iter()
+        .position(|line| line.starts_with("    acme-app:feat-ux "))
+        .unwrap_or_else(|| panic!("expected the fork indented under its project: {dashboard}"));
+    assert!(
+        fork_row > canonical,
+        "the canonical world leads its own forks: {dashboard}"
+    );
+    assert!(
+        lines[fork_row].contains("http://feat-ux.acme-app.localhost"),
+        "the fork row carries its own origin: {dashboard}"
+    );
+    let expected_fork_next = canonical_next
+        .split(" | ")
+        .map(|hint| format!("{hint} --world acme-app:feat-ux"))
+        .collect::<Vec<_>>()
+        .join(" | ");
+    assert_eq!(
+        sub_line(fork_row + 2, "next      "),
+        expected_fork_next,
+        "a fork hint pastes straight back into --world: {dashboard}"
+    );
+
+    // `--json` is the same single read projected, with no human text on stdout.
+    let json_status = daemon.cli(&repo, &["--json", "status"]);
+    assert_success(&json_status, "status --json");
+    assert_eq!(
+        stderr(&json_status),
+        "",
+        "--json never prints the human ingress line"
+    );
+    let bare_json = daemon.cli(&repo, &["--json"]);
+    assert_success(&bare_json, "bare slipfork --json");
+    assert_eq!(
+        stdout(&bare_json),
+        stdout(&json_status),
+        "the bare --json document is the same one `status --json` emits"
+    );
+
+    let document: Value = serde_json::from_str(&stdout(&json_status)).expect("status json");
+    assert_eq!(document["ok"], true);
+    assert!(!stdout(&json_status).contains("slipforkd"));
+    assert!(!stdout(&json_status).contains("lineage   "));
+    assert!(document["pid"].as_u64().is_some_and(|pid| pid > 0));
+    let port = document["ingress"]["port"]
+        .as_u64()
+        .unwrap_or_else(|| panic!("ingress.port is always present: {document}"))
+        as u16;
+    assert_eq!(
+        document["ingress"]["addrs"]
+            .as_array()
+            .expect("addrs array")
+            .len(),
+        1,
+        "the ephemeral daemon binds one ingress listener: {document}"
+    );
+    assert!(
+        document["forward_port"].is_null(),
+        "a daemon with no forward listener reports null: {document}"
+    );
+
+    let worlds = document["worlds"]
+        .as_array()
+        .unwrap_or_else(|| panic!("worlds array: {document}"));
+    assert_eq!(worlds.len(), 2, "canonical plus one fork");
+    for world in worlds {
+        assert_eq!(
+            world_keys(world),
+            vec!["lineage", "origin", "parent", "state", "worktree", "world"],
+            "a status row carries exactly the documented keys: {world}"
+        );
+        assert_eq!(world["state"], "running");
+        assert_eq!(
+            world["origin"]
+                .as_str()
+                .expect("origin string")
+                .matches("http://")
+                .count(),
+            1,
+            "every world carries exactly one origin: {world}"
+        );
+        for key in ["rootfs", "services", "seed", "base"] {
+            assert!(
+                world["lineage"].get(key).is_some(),
+                "lineage.{key} is always present: {world}"
+            );
+        }
+    }
+    let canonical_json = worlds
+        .iter()
+        .find(|world| world["world"] == "acme-app")
+        .expect("canonical row");
+    let fork_json = worlds
+        .iter()
+        .find(|world| world["world"] == "acme-app:feat-ux")
+        .expect("fork row");
+    assert!(
+        canonical_json["parent"].is_null(),
+        "the canonical world has no parent: {canonical_json}"
+    );
+    assert_eq!(fork_json["parent"], "acme-app");
+
+    // The loud `:80` line: exactly one stderr line in human mode, and it names the installer.
+    let expected_stderr = if port == 80 {
+        String::new()
+    } else {
+        ingress_hint_line(port)
+    };
+    assert_eq!(
+        stderr(&bare),
+        expected_stderr,
+        "exactly one actionable ingress line on stderr (port {port})"
+    );
+    assert!(
+        !stdout(&bare).contains("ingress is :"),
+        "the ingress line never reaches stdout: {dashboard}"
+    );
+}
+
+#[test]
+fn status_with_zero_worlds_prints_one_line_plus_up() {
+    let tmp = disk_tempdir();
+    let scratch = tmp.path();
+    let repo = repo_with_snow(scratch);
+    let daemon = Daemon::start(scratch);
+
+    let bare = daemon.cli(&repo, &[]);
+    assert_success(&bare, "bare slipfork with no worlds");
+    let dashboard = stdout(&bare);
+    let lines: Vec<&str> = dashboard.lines().collect();
+    assert_eq!(lines.len(), 2, "one daemon line plus one hint: {dashboard}");
+    assert!(
+        lines[0].starts_with("slipforkd ") && lines[0].contains(", ingress 127.0.0.1:"),
+        "the daemon line stays first: {dashboard}"
+    );
+    assert_eq!(
+        lines[1], "  no worlds — run `slipfork up` inside a project checkout",
+        "a daemon with no world names the command that creates one: {dashboard}"
+    );
+
+    let json_status = daemon.cli(&repo, &["--json", "status"]);
+    assert_success(&json_status, "status --json with no worlds");
+    let document: Value = serde_json::from_str(&stdout(&json_status)).expect("status json");
+    assert_eq!(document["ok"], true);
+    assert_eq!(
+        document["worlds"].as_array().map(Vec::len),
+        Some(0),
+        "an empty fleet is an empty array, never a missing key: {document}"
     );
 }

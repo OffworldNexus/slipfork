@@ -39,3 +39,11 @@ attempt 2/3 started
 ## 2026-11-18T01:22 [lead]
 
 round 1 (ioc): PASS with MINORs (hand-assembled json! could be a typed Serialize doc; world_state_label could live beside world_next_commands in edge; installer-remedy sentence duplicated with doctor; dx 42 vs 3/10 NEXT wording). RULING for this node: filter next hints against the CLI command table (legality BLOCKER), share one world-row formatter with list, make render_lineage private, and use one expectation builder in tests. Typed StatusDocument and the edge-side label move are followups, not blockers.
+
+## 2026-11-18T01:26 [lead]
+
+committed together with M3.28.21 (see that log): the two nodes' edits interleave inside main.rs and critical_cli.rs, and splitting them would require hand-editing code, which the lead must not do. One commit, both subjects in the message, both nodes' acceptance verified.
+
+## 2026-11-18T01:26 [lead]
+
+status review -> done

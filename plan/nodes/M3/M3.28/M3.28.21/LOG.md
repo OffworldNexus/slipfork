@@ -43,3 +43,11 @@ gate FAIL (legality x2 BLOCKER): (1) /proc/<pid>/exe NotFound => Ok(None) => rel
 ## 2026-11-18T01:20 [lead]
 
 round 1 (functional): PASS — shutdown answerer released with zero signals; foreign proven holder Terminate->full grace->Kill; unowned holder refused with path/pid/sudo kill and zero signals (also proven on a real listener); no holder => no writes/signals. MINORs accepted: NODE acceptance amended (Layout guarantees an absolute runtime dir, so 'empty path' is not a defended case; the guard + its test stay removed) and the RESULT wording for [ok] unchanged / zero effects corrected by the worker. Remaining attempt-3 work: the two legality BLOCKERs (NotFound != released; pidfd-pinned signals) plus pid-0 rejection, one probe, real-proof test, lib.rs untouched.
+
+## 2026-11-18T01:26 [lead]
+
+committed together with M3.28.7 for the same reason (interleaved hunks in main.rs/critical_cli.rs).
+
+## 2026-11-18T01:26 [lead]
+
+status review -> done

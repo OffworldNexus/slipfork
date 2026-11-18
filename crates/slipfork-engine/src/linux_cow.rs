@@ -4,6 +4,9 @@
 //! carries a `// SAFETY:` proof. This module owns:
 //! - `geteuid`/`getegid` ([`current_uid_gid`]);
 //! - `kill(2)` for bounded service shutdown ([`signal_process`]);
+//! - the peer pid of a connected `AF_UNIX` socket ([`peer_pid`]) and the `pidfd` pair
+//!   ([`open_pidfd`]/[`signal_pidfd`]) that lets `slipfork daemon install` prove who holds
+//!   `daemon.sock` and signal **that** process, never a recycled pid;
 //! - the single `sendmsg`/`recvmsg` `SCM_RIGHTS` descriptor-transfer pair
 //!   ([`send_fd`]/[`recv_fd`]) used by `netns.sock` to hand an in-world `TcpStream` to
 //!   `slipforkd` (`H-011` #3).
@@ -43,6 +46,108 @@ pub fn signal_process(pid: u32, signal: ProcessSignal) -> io::Result<()> {
     // SAFETY: `kill` is a thread-safe syscall wrapper taking a pid and a signal number; a positive
     // pid never addresses a process group and the call mutates no userspace memory.
     let rc = unsafe { libc::kill(pid as libc::pid_t, signo) };
+    if rc == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
+/// Peer pid of a connected `AF_UNIX` socket (`getsockopt(SO_PEERCRED)`).
+///
+/// The kernel reports the credentials of the process at the other end of `stream`: for a client
+/// connected to a daemon's listening socket that is the daemon itself. This is the only ownership
+/// proof `slipfork daemon install` accepts before it signals a socket holder.
+///
+/// The pid is a **snapshot**: the peer may exit (and the number be recycled) after this call, so a
+/// caller that will signal the process must pin it with [`open_pidfd`] first and signal through
+/// [`signal_pidfd`].
+///
+/// # Errors
+///
+/// Returns the raw `getsockopt(2)` error (`ENOTCONN` for an unconnected socket, `ENOTSOCK`) and
+/// [`io::ErrorKind::InvalidData`] when the kernel reports an unusable pid (`0` addresses a whole
+/// process group under `kill(2)`, and a negative value is not a pid at all).
+pub fn peer_pid(stream: &UnixStream) -> io::Result<u32> {
+    let mut credentials: libc::ucred = unsafe { mem::zeroed() };
+    let mut length = size_of::<libc::ucred>() as libc::socklen_t;
+    // SAFETY: `credentials` and `length` are live, correctly sized stack values; `getsockopt`
+    // writes at most `length` bytes into `credentials` and updates `length` with what it wrote,
+    // and `stream` stays open for the whole call.
+    let rc = unsafe {
+        libc::getsockopt(
+            stream.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_PEERCRED,
+            (&raw mut credentials).cast(),
+            &mut length,
+        )
+    };
+    if rc != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    checked_peer_pid(credentials.pid)
+}
+
+/// Refuse a `SO_PEERCRED` pid this process could not address safely.
+///
+/// `kill(0, …)` signals the caller's own process group, which is never what a socket holder means,
+/// and a peer outside this PID namespace reports `0`.
+fn checked_peer_pid(raw: libc::pid_t) -> io::Result<u32> {
+    u32::try_from(raw)
+        .ok()
+        .filter(|pid| *pid != 0)
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("SO_PEERCRED reported the unusable pid {raw}"),
+            )
+        })
+}
+
+/// Pin `pid` in a `pidfd` (`pidfd_open(2)`).
+///
+/// The descriptor names **that** process for as long as it is open: a signal sent through it can
+/// never reach a later process that reuses the number. `slipfork daemon install` opens it at the
+/// moment ownership is proven, and signals only through it.
+///
+/// # Errors
+///
+/// Returns the raw `pidfd_open(2)` error (`ESRCH` when the pid is already gone).
+pub fn open_pidfd(pid: u32) -> io::Result<OwnedFd> {
+    // SAFETY: `pidfd_open` is a thread-safe syscall wrapper taking a pid and a flags word; it
+    // returns a fresh descriptor that this function owns exclusively, and mutates no userspace
+    // memory.
+    let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, i64::from(pid), 0_i64) } as libc::c_int;
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: `fd` is a fresh, valid descriptor returned by `pidfd_open` and owned by nobody else.
+    Ok(unsafe { OwnedFd::from_raw_fd(fd) })
+}
+
+/// Send `signal` through `pidfd` (`pidfd_send_signal(2)`), immune to pid reuse.
+///
+/// # Errors
+///
+/// Returns the raw `pidfd_send_signal(2)` error (`ESRCH` when the pinned process is already gone,
+/// `EPERM` when the caller may not signal it).
+pub fn signal_pidfd(pidfd: BorrowedFd<'_>, signal: ProcessSignal) -> io::Result<()> {
+    let signo = match signal {
+        ProcessSignal::Terminate => libc::SIGTERM,
+        ProcessSignal::Kill => libc::SIGKILL,
+    };
+    // SAFETY: `pidfd_send_signal` takes a borrowed pidfd and a signal number; a null `siginfo` and
+    // zero flags are the documented "plain signal" form, and it mutates no userspace memory.
+    let rc = unsafe {
+        libc::syscall(
+            libc::SYS_pidfd_send_signal,
+            i64::from(pidfd.as_raw_fd()),
+            i64::from(signo),
+            0_i64,
+            0_i64,
+        )
+    } as libc::c_int;
     if rc == 0 {
         Ok(())
     } else {
@@ -279,5 +384,43 @@ mod tests {
             descriptor.is_some(),
             "the contract's single descriptor must arrive"
         );
+    }
+
+    #[test]
+    fn peer_pid_reports_the_pid_at_the_other_end() {
+        let (client, server) = UnixStream::pair().expect("socketpair");
+        let expected = std::process::id();
+        assert_eq!(peer_pid(&client).expect("client peer pid"), expected);
+        assert_eq!(peer_pid(&server).expect("server peer pid"), expected);
+    }
+
+    #[test]
+    fn a_peer_pid_of_zero_or_less_is_refused() {
+        for raw in [0, -1, libc::pid_t::MIN] {
+            let err = checked_peer_pid(raw).expect_err("an unusable pid must be refused");
+            assert_eq!(err.kind(), io::ErrorKind::InvalidData, "{raw}: {err}");
+        }
+    }
+
+    #[test]
+    fn a_pidfd_signals_exactly_the_pinned_process() {
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("spawn a real child to pin");
+        let pidfd = open_pidfd(child.id()).expect("open the child's pidfd");
+
+        signal_pidfd(pidfd.as_fd(), ProcessSignal::Terminate).expect("SIGTERM the pinned child");
+        let status = child.wait().expect("reap the child");
+        assert!(
+            !status.success(),
+            "the pinned child was terminated, never this test: {status}"
+        );
+
+        // The pidfd keeps naming the process it was opened for, so it reports `ESRCH` instead of
+        // ever retargeting a reused pid.
+        let err = signal_pidfd(pidfd.as_fd(), ProcessSignal::Terminate)
+            .expect_err("the pinned process is gone");
+        assert_eq!(err.raw_os_error(), Some(libc::ESRCH), "{err}");
     }
 }

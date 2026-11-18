@@ -6,9 +6,10 @@
 //! their fork positionally because they create/destroy it. `/M2.16` deleted M1's `snap`
 //! subcommand: worlds and forks are the only snapshot producers.
 
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 
-use clap::{Args, Parser, Subcommand, ValueEnum};
+use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
 use slipfork_edge::{DumpRequest, ResourceRequest};
 
 /// Shared `--world` help text for every world-scoped command. Carries no trailing period because
@@ -17,6 +18,10 @@ const WORLD_HELP: &str =
     "World id (`<fork>`, `<project>:<fork>`, or canonical `<project>`); omit for `cwd`'s world";
 
 /// `slipfork` thin client.
+///
+// The subcommand is optional so bare `slipfork` is the status dashboard: it runs the exact same
+// handler as `slipfork status` (`docs/design/dx-0.1.0-ux.md` §3), with no alias and no second help
+// mode — `--help` still lists every command.
 #[derive(Debug, Parser)]
 #[command(
     name = "slipfork",
@@ -36,12 +41,27 @@ pub struct Cli {
     pub state_dir: Option<PathBuf>,
 
     #[command(subcommand)]
-    pub command: Commands,
+    pub command: Option<Commands>,
+}
+
+/// Every top-level verb this binary really implements, taken from the `clap` table itself.
+///
+/// This is the same table `slipfork --help` prints and `tools/check_docs_honesty.py` parses, so a
+/// renderer that suggests a command can filter it against this set instead of duplicating (and
+/// drifting from) the command list. A verb nobody implemented can therefore never be hinted.
+pub fn implemented_commands() -> BTreeSet<String> {
+    Cli::command()
+        .get_subcommands()
+        .map(|command| command.get_name().to_owned())
+        .collect()
 }
 
 /// Top-level `slipfork` commands.
 #[derive(Debug, Subcommand)]
 pub enum Commands {
+    /// Show the daemon ingress plus every world's tree, lineage, and next steps.
+    Status,
+
     /// Probe the Btrfs substrate, the live subvolume ioctl round-trip, and unprivileged namespaces.
     Doctor,
 
@@ -393,6 +413,21 @@ mod tests {
     use super::*;
 
     #[test]
+    fn bare_invocation_and_status_share_one_command() {
+        let bare = Cli::try_parse_from(["slipfork"]).expect("bare slipfork parses");
+        assert!(
+            bare.command.is_none(),
+            "a missing subcommand must reach the status handler, not a clap error"
+        );
+        let explicit = Cli::try_parse_from(["slipfork", "status"]).expect("slipfork status parses");
+        assert!(matches!(explicit.command, Some(Commands::Status)));
+        assert!(
+            Cli::try_parse_from(["slipfork", "--json"]).is_ok(),
+            "the bare invocation accepts the global flags"
+        );
+    }
+
+    #[test]
     fn dump_flags_are_mutually_exclusive() {
         assert!(Cli::try_parse_from(["slipfork", "up", "--no-dump", "--refresh-dump"]).is_err());
         assert!(Cli::try_parse_from(["slipfork", "up", "--no-dump"]).is_ok());
@@ -445,9 +480,9 @@ mod tests {
             "/tmp/ux/bin",
         ])
         .expect("repeatable --bin-dir");
-        let Commands::Daemon {
+        let Some(Commands::Daemon {
             action: DaemonAction::Unit { bin_dir, .. },
-        } = unit.command
+        }) = unit.command
         else {
             panic!("expected `daemon unit`");
         };
@@ -469,14 +504,14 @@ mod tests {
             "/usr/local/bin",
         ])
         .expect("daemon install");
-        let Commands::Daemon {
+        let Some(Commands::Daemon {
             action:
                 DaemonAction::Install {
                     user,
                     bin_dir,
                     forward_port,
                 },
-        } = install.command
+        }) = install.command
         else {
             panic!("expected `daemon install`");
         };

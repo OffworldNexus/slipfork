@@ -1266,3 +1266,10 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-18T01:26 [M3.29.2] (lead) dependency relaxed from [M3.29.1, M3.28.9] to [M3.29.1]: the crate rewrite touches only crates/slipfork-ospp{,-testkit}/** + Cargo.toml/lock, which is disjoint 
 - 2026-11-18T01:26 [M3.29.1] (lead) status review -> done
 - 2026-11-18T01:26 [M3.29.1] (lead) quad: functional PASS, ioc resolved by ruling (SecretVault port, RemoteResourceOffer deleted, RemoteStream deleted -> daemon streams SetupBaseR into zstd -d|pg_
+- 2026-11-18T01:26 [M3.29.2] (lead) status ready -> active
+- 2026-11-18T01:26 [M3.29.2] (lead) attempt 1/3 started
+- 2026-11-18T01:26 [M3.29.2] (lead) base b8b246b5198476ab408fa6a35809418be8397158
+- 2026-11-18T01:26 [M3.28.7] (lead) committed together with M3.28.21 (see that log): the two nodes' edits interleave inside main.rs and critical_cli.rs, and splitting them would require hand-editi
+- 2026-11-18T01:26 [M3.28.21] (lead) committed together with M3.28.7 for the same reason (interleaved hunks in main.rs/critical_cli.rs).
+- 2026-11-18T01:26 [M3.28.21] (lead) status review -> done
+- 2026-11-18T01:26 [M3.28.7] (lead) status review -> done

@@ -24,6 +24,8 @@
 //!   into [`slipfork_edge::DaemonControlServer`].
 //! - [`daemon_unit_install`]: the single `slipfork daemon install` orchestration over a narrow
 //!   [`daemon_unit_install::UnitInstaller`] port (`ADR-0011` §1).
+//! - [`status`]: the bare `slipfork` / `slipfork status` dashboard and its single human lineage
+//!   line, rendered purely from the daemon's [`slipfork_edge::DaemonStatus`].
 
 #![forbid(unsafe_code)]
 
@@ -37,6 +39,7 @@ pub mod oci_store;
 pub mod ospp;
 pub mod project;
 pub mod runtime;
+pub mod status;
 pub mod user;
 pub mod vaults;
 pub mod vcs;
