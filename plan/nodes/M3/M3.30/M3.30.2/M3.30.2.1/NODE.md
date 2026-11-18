@@ -2,7 +2,7 @@
 id: M3.30.2.1
 title: "Edge purity + canonical wheels: control module, relay out of engine, ureq/url, serde_json NDJSON, atomic write"
 kind: epic
-status: active
+status: done
 priority: 3
 depends_on: []
 paths:
@@ -17,7 +17,7 @@ attempts: 0
 max_attempts: 3
 escalation: none
 created: "2026-11-19T00:03"
-updated: "2026-11-19T00:06"
+updated: "2026-11-19T00:30"
 ---
 
 # Goal

@@ -70,12 +70,12 @@ must escalate for a `slipfork daemon stop`-shaped verb rather than leave the qui
 
 Two claims are wrong and one impossibility is hidden:
 
-1. `crates/slipfork/src/daemon.rs:3116-3140` opens the pairing page **inside `slipforkd`**
+1. `crates/slipfork/src/daemon/ospp.rs` opens the pairing page **inside `slipforkd`**
    (`browser.open_pairing_url`), and the URL is printed by `crates/slipfork/src/main.rs:1320-1321`
    only *after* `client.pair(...)` returns `Ok`. So the URL appears **after** approval: it can
    never be copied to another machine, which is what the prose (print → then approve) implies.
 2. When the opener fails, `on_handle` returns `Err`, `slipfork auth` aborts, and **no URL is
-   printed at all** (`daemon.rs:3134-3138`; `crates/slipfork/src/browser.rs:55-75`). A headless
+   printed at all** (`daemon/ospp.rs`; `crates/slipfork/src/browser.rs:55-75`). A headless
    agent gets `slipfork: OSPP pairing failed: ospp-v1 transport failed: cannot run xdg-open: No such file or directory`
    (or `…: xdg-open exited with <status>`), which no page in this set documents.
 3. Approval is inherently human. The page sells steps 1–4 as an agent-followable sequence, so an
@@ -113,7 +113,7 @@ Two claims are wrong and one impossibility is hidden:
 > ... an override such as `vars::DEBUG` ...
 
 `FileSecretVault::put` always writes `Namespace::Secrets` (`crates/slipfork/src/vaults.rs:82-101`),
-and `validate_secret_key` (`crates/slipfork/src/daemon.rs:4158-4169`) accepts `vars::DEBUG` as a
+and `validate_secret_key` (`crates/slipfork/src/daemon/env.rs`) accepts `vars::DEBUG` as a
 plain printable name. So the literal command an agent derives from this sentence silently
 succeeds and creates a junk key:
 
@@ -150,7 +150,7 @@ that limitation or add the write path.
 > ... backing-service credentials such as your local Postgres password ...
 
 `service_specs` starts every `postgres:<v>` with `POSTGRES_HOST_AUTH_METHOD=trust`
-(`crates/slipfork/src/daemon.rs:3734-3749`), and the rendered `DATABASE_URL` carries no password
+(`crates/slipfork/src/daemon/ospp.rs`), and the rendered `DATABASE_URL` carries no password
 (`postgres://127.0.0.1:5432/<id>`, `docs/reference/manifest.md:100`). No code path reads a
 Postgres password from the vault (no `POSTGRES_PASSWORD` anywhere in `crates/`). An agent follows
 the sentence, stores `PG_PASSWORD`, wires nothing, and gets no error — then reports "credentials
@@ -192,12 +192,12 @@ tiers depends on.
   message is ``resource 'pg_databases.appdb' requires an authenticated OSPP session in Local mode``
   (`crates/slipfork-dag/src/lib.rs:65`), with **no remedy**. The `--refresh-dump` message *does*
   carry one: ``the selected seed dump requires an authenticated OSPP session; run `slipfork auth` (or `up --no-dump` for a clean database)``
-  (`crates/slipfork/src/daemon.rs:1624-1626`).
+  (`crates/slipfork/src/daemon/world.rs`).
 - `--refresh-dump` on a `local` strategy is a different, earlier refusal: `` `--refresh-dump` cannot be combined with a local strategy for pg_databases 'appdb' ``
   (`crates/slipfork-dag/src/lib.rs:66-67`); neither page quotes it.
 - `ospp.md:67` drops the backticks the binary emits: it prints
   ``this daemon has no OSPP endpoint; start `slipforkd` with `--ospp-endpoint <wss://...>` ``
-  (`crates/slipfork/src/daemon.rs:3113`), so an agent matching the page's string verbatim misses.
+  (`crates/slipfork/src/daemon/ospp.rs`), so an agent matching the page's string verbatim misses.
 
 **Replacement wording (`ospp.md:63-67`):**
 
@@ -239,7 +239,7 @@ variable is simply absent from the shell."
 ### m3. Pairing is documented as repeatable, but it is first-time enrolment
 
 `docs/reference/ospp.md:28-31` reads as a command an agent may re-run whenever secrets look stale.
-The daemon always dials `pair` (`crates/slipfork/src/daemon.rs:3119-3137`), and the spec's verdicts
+The daemon always dials `pair` (`crates/slipfork/src/daemon/ospp.rs`), and the spec's verdicts
 include `already_paired` (`docs/design/ospp.md:107`). **Fix:** append to step 4: "`slipfork auth`
 is first-time enrolment: once the key is enrolled the daemon authenticates with it on every dial,
 so do not re-run `slipfork auth` to 'refresh' secrets — `env_updated` pushes them."
@@ -247,7 +247,7 @@ so do not re-run `slipfork auth` to 'refresh' secrets — `env_updated` pushes t
 ### m4. `slipfork auth <ENDPOINT>` compares byte-for-byte, so a normalising agent gets a confusing refusal
 
 `docs/reference/ospp.md:36` / `cli.md:73`. The comparison is `requested != client.endpoint().as_str()`
-(`crates/slipfork/src/daemon.rs:3121-3127`), so a trailing slash or a `ws://`/`wss://` swap fails.
+(`crates/slipfork/src/daemon/ospp.rs`), so a trailing slash or a `ws://`/`wss://` swap fails.
 **Fix:** at `ospp.md:36` add: "the argument must match the injected `--ospp-endpoint` byte for byte
 (no trailing slash, same scheme); omit it and the daemon uses its own endpoint."
 
@@ -278,7 +278,7 @@ generated on first resolve".
   `#slipfork-daemon-unit`, `#expressions`, `#2-slipforktoml-…` all resolve.
 - `no_remote_session` is exactly the wire spelling (`serde(rename_all = "snake_case")` on
   `ResourceReason::NoRemoteSession`, `crates/slipfork-dag/src/resources.rs:266-270`, rendered
-  through `json_label` at `crates/slipfork/src/daemon.rs:3573-3586`), and it is genuinely `-v`-only
+  through `json_label` at `crates/slipfork/src/daemon/ospp.rs`), and it is genuinely `-v`-only
   (`crates/slipfork/src/restart.rs:69-79`).
 - `[auth] paired … (backend=software:file-0600)` and `[secret] stored secrets::<KEY> (value never
   printed)` match the code byte for byte (`main.rs:1320-1329`, `main.rs:844`).

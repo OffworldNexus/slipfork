@@ -1593,3 +1593,19 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-19T00:25 [M3.30.2.1.2] (lead) status active -> review
 - 2026-11-19T00:26 [M3.30.2.1.2] (lead) status review -> ready: triad: 3 MAJOR (harness ownership, mock conformance witness, TcpStream contract) — one pass
 - 2026-11-19T00:26 [M3.30.2.1.2] (lead) attempt 2/3 started
+- 2026-11-19T00:29 [M3.30.2.1.2] (lead) status ready -> done
+- 2026-11-19T00:30 [M3.30.2.1] (lead) status active -> done: 2/2 children done: wire crate + world port extraction
+- 2026-11-19T00:30 [M3.30.2.2] (lead) status ready -> active
+- 2026-11-19T00:30 [M3.30.2.2] (lead) attempt 1/3 started
+- 2026-11-19T00:30 [M3.30.2.2] (lead) base b887e61aa1b7b25f92432f36983d00932308d939
+- 2026-11-19T00:31 [M3.30.2.2] (lead) edited fields
+- 2026-11-19T00:31 [M3.30.2.2.1] (lead) created (task) Mechanical daemon.rs extraction into daemon/{mod,types,service,world,control,resolve,backing,env,tests}.rs
+- 2026-11-19T00:31 [M3.30.2.2.2] (lead) created (task) PostgresProvisioner + OsppSupervisor + PairingStore cohesive structs over the new daemon modules
+- 2026-11-19T00:31 [M3.30.2.2.1] (lead) status ready -> active
+- 2026-11-19T00:31 [M3.30.2.2.1] (lead) attempt 1/3 started
+- 2026-11-19T00:31 [M3.30.2.2.1] (lead) base b887e61aa1b7b25f92432f36983d00932308d939
+- 2026-11-19T00:39 [M3.30.2.2.1] (lead) status active -> review
+- 2026-11-19T00:40 [M3.30.4] (lead) also replace daemon/tests/engine.rs RecordingEngine/StubRootfs/FixedRepo doubles with one real daemon/world E2E journey (happy path + fail-closed refusal + reap
+- 2026-11-19T00:40 [M3.30.2.2.1] (lead) status review -> ready: triad: 1 BLOCKER (glob prelude curtain) + 4 MAJOR grouping, one pass
+- 2026-11-19T00:40 [M3.30.2.2.1] (lead) attempt 2/3 started
+- 2026-11-19T00:48 [M3.30.2.2.1] (lead) status ready -> done

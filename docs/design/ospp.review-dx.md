@@ -16,7 +16,7 @@ Counts: **1 BLOCKER · 5 MAJOR · 7 MINOR · 2 NIT**
 The page's first step is a hand-started, 4-flag foreground `slipforkd`, while `docs/reference/cli.md:144` says
 `slipforkd` "is started for you by `slipfork up` / `slipfork fork`". A fresh user follows
 `getting-started.md` §3 (`up` spawns a daemon with no endpoint) and then this page: `slipfork auth` fails closed
-(`daemon.rs:3113`) and the manual replacement refuses to start — `replace_stale_socket` returns `SocketInUse` when
+(`daemon/ospp.rs`) and the manual replacement refuses to start — `replace_stale_socket` returns `SocketInUse` when
 anything still answers `daemon.sock` (`crates/slipfork-edge/src/unix_socket.rs:72-81`). No `slipfork daemon stop`
 exists (`cli.rs` `DaemonAction` = `unit|install` only), so the documented flow dead-ends. The page never says the
 foreground daemon must stay up for the whole session either.
@@ -43,7 +43,7 @@ leave `see [seed dumps](#seed-dumps-and-sealed-bases)`.
 
 **M3. `docs/reference/ospp.md:28-31` — pairing is impossible headless, and the page promises otherwise.**
 `slipfork auth` prints the URL only *after* `client.pair()` returns, and it fails closed when the opener fails:
-`on_handle` calls `browser.open_pairing_url(page)` and propagates the error (`daemon.rs:3136-3146`), which is
+`on_handle` calls `browser.open_pairing_url(page)` and propagates the error (`daemon/ospp.rs`), which is
 `xdg-open`/`$BROWSER` (`bin/slipforkd.rs:96-118`). On SSH/CI you get "cannot open the pairing page" and never see a URL.
 Fix: add a bullet under `## Pairing`: requires a desktop opener (`BROWSER` or `xdg-open`); the URL is printed after
 approval, so headless hosts cannot pair yet. Escalate printing the URL before the blocking wait as a direction-challenge.
@@ -70,7 +70,7 @@ sentence "Open Secret Provider Protocol (OSPP) v1 …"; expand HPKE at `ospp.md:
 **N2. `docs/reference/ospp.md:10`** — `backend=software:file-0600` is internal jargon inside a copy-paste transcript,
 explained only at `:37`. Fix: drop the parenthetical from the transcript; the machine-key bullet already says it.
 
-**N3. `docs/reference/ospp.md:67`** — the quoted error is not the shipped string: `daemon.rs:3113` is
+**N3. `docs/reference/ospp.md:67`** — the quoted error is not the shipped string: `daemon/ospp.rs` is
 "start \`slipforkd\` with \`--ospp-endpoint <wss://...>\`". Fix: copy it verbatim (this page quotes errors elsewhere,
 so drift is visible).
 
