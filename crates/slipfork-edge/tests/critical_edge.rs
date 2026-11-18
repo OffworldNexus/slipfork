@@ -33,21 +33,20 @@ use slipfork_edge::{
     bind_listen, render_service_unit, render_socket_unit, resolve_listener_set,
 };
 use slipfork_wire::control::{
-    AuthSummary, BaseLineage, BootEvent, CacheOutcome, DaemonError, DaemonErrorKind, DaemonStatus,
-    DropForkRequest, DumpRequest, ExecTargetRequest, ForkRequest, ForwardRequest, ForwardSummary,
-    HookRunRequest, IngressInfo, LogsRequest, PruneReport, ResourceRequest, ResourceSummary,
-    RootfsLineage, SeedLineage, ServiceImageLineage, ServiceKind, UpRequest, WorldExecTarget,
-    WorldLineage, WorldProcessReport, WorldSelector, WorldServiceSummary, WorldState, WorldSummary,
-    WorldUpSummary,
+    AuthSummary, BootEvent, DaemonError, DaemonErrorKind, DaemonStatus, DropForkRequest,
+    DumpRequest, ExecTargetRequest, ForkRequest, ForwardRequest, ForwardSummary, HookRunRequest,
+    IngressInfo, LogsRequest, PruneReport, ResourceRequest, ResourceSummary, UpRequest,
+    WorldExecTarget, WorldProcessReport, WorldSelector, WorldServiceSummary, WorldState,
+    WorldSummary, WorldUpSummary,
 };
-#[path = "../../slipfork-engine/tests/conformance/mod.rs"]
-mod conformance;
-
-use conformance::assert_world_engine_conformance;
-use slipfork_engine::rootfs::{
+use slipfork_world::rootfs::{
     ElfAbi, ImageContractMetadata, LibcFamily, OsRelease, RootfsDigest, WorldRootfs,
 };
-use slipfork_engine::{
+use slipfork_world::{
+    BaseLineage, CacheOutcome, RootfsLineage, SeedLineage, ServiceImageLineage, ServiceKind,
+    WorldLineage,
+};
+use slipfork_world::{
     BootLineage, EngineError, ExecEnv, ExecOutput, LogChunk, ServiceHandle, ServiceLogs,
     ServiceSpec, ServiceState, SnapshotId, StreamChunk, StreamSource, WorldEngine,
     WorldEntryCommand, WorldHandle, WorldServiceInfo, WorldSpec,
@@ -640,7 +639,7 @@ fn registry_mints_one_origin_per_world() {
 /// handles, their lifecycle, the snapshot set a clone may come from, and an entry command that runs
 /// the argv directly (a stub world has no namespaces to enter), and it dials a real loopback
 /// `TcpStream`. It passes the shared
-/// [`assert_world_engine_conformance`](conformance::assert_world_engine_conformance)
+/// the shared `slipfork_testkit::conformance` matrix
 /// matrix; the service capabilities it never exercises are typed `Unsupported` naming the engine.
 struct StubWorldEngine {
     live: Mutex<Vec<WorldHandle>>,
@@ -940,13 +939,6 @@ fn clone_world_refuses_an_unrecorded_snapshot() {
         matches!(&err, EngineError::SnapshotNotFound(id) if id == "missing"),
         "expected SnapshotNotFound, got {err:?}"
     );
-}
-
-#[test]
-fn stub_world_engine_passes_the_shared_conformance_matrix() {
-    let state = cached_test_dir("stub-conformance");
-    assert_world_engine_conformance(&StubWorldEngine::new(), &state, &test_rootfs());
-    let _ = fs::remove_dir_all(&state);
 }
 
 #[test]

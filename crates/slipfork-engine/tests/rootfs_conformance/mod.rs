@@ -1,4 +1,4 @@
-//! Shared [`WorldRootfs`] conformance checks for every [`slipfork_engine::rootfs::BaseImageBuilder`].
+//! Shared [`WorldRootfs`] conformance checks for every [`slipfork_world::rootfs::BaseImageBuilder`].
 //!
 //! The suite asserts only what every builder must satisfy without Docker, an OCI registry, or a
 //! host ABI: a content-addressed identity, a readable `/.slipfork/bin` layout, metadata that agrees
@@ -10,10 +10,10 @@
 use std::collections::BTreeSet;
 use std::os::unix::fs::PermissionsExt;
 
-use slipfork_engine::MountMode;
-use slipfork_engine::rootfs::{
-    CRUN_GUEST_PATH, WORLD_INIT_GUEST_PATH, WorldRootfs, WorldRootfsRequest,
-};
+use slipfork_engine::rootfs::WorldRootfsRequest;
+use slipfork_engine::rootfs::{CRUN_GUEST_PATH, WORLD_INIT_GUEST_PATH};
+use slipfork_world::MountMode;
+use slipfork_world::rootfs::WorldRootfs;
 
 /// Verify the shared [`WorldRootfs`] contract for any builder.
 ///
@@ -42,8 +42,7 @@ pub fn assert_world_rootfs_conformance(rootfs: &WorldRootfs, request: &WorldRoot
         "crun_bin must be the guest path {CRUN_GUEST_PATH}"
     );
     for guest in [CRUN_GUEST_PATH, WORLD_INIT_GUEST_PATH] {
-        let path = rootfs
-            .guest_binary(guest)
+        let path = slipfork_engine::rootfs::guest_binary(rootfs, guest)
             .unwrap_or_else(|| panic!("app_rootfs must contain {guest}"));
         let metadata = std::fs::metadata(&path).expect("runtime binary metadata");
         assert!(

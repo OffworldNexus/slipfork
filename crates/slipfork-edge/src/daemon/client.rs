@@ -12,10 +12,10 @@ use std::path::{Path, PathBuf};
 use slipfork_wire::control::{
     AuthSummary, BootEvent, ControlSecret, DaemonReply, DaemonRequest, DaemonStatus,
     DropForkRequest, ExecTargetRequest, ForkRequest, ForwardRequest, ForwardSummary, FrameReader,
-    HookRunRequest, LogChunk, LogsRequest, MAX_CONTROL_FRAME, PruneReport, StreamChunk, UpRequest,
-    WorldExecTarget, WorldProcessReport, WorldSelector, WorldSummary, WorldUpSummary,
-    unexpected_reply,
+    HookRunRequest, LogsRequest, MAX_CONTROL_FRAME, PruneReport, UpRequest, WorldExecTarget,
+    WorldProcessReport, WorldSelector, WorldSummary, WorldUpSummary, unexpected_reply,
 };
+use slipfork_world::{LogChunk, StreamChunk};
 
 use crate::EdgeError;
 use crate::daemon::DaemonControl;

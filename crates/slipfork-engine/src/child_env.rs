@@ -1,15 +1,15 @@
 //! Composition of the child-process environment at the adapter boundary.
 //!
-//! [`crate::ExecEnv`] stays free of ambient state. Each adapter supplies the *inherited allowlist*
+//! [`slipfork_world::ExecEnv`] stays free of ambient state. Each adapter supplies the *inherited allowlist*
 //! lookup (`PATH`, `TERM`, `LANG`) from its own process environment — the same way every adapter
-//! reads OS state — while values explicitly recorded in the effective [`crate::ExecEnv`] always
+//! reads OS state — while values explicitly recorded in the effective [`slipfork_world::ExecEnv`] always
 //! win. No variable outside [`InheritedVar::ALL`] is ever inherited.
 
 #![forbid(unsafe_code)]
 
 use std::collections::BTreeMap;
 
-use crate::{ExecEnv, InheritedVar};
+use slipfork_world::{ExecEnv, InheritedVar};
 
 /// Effective child environment: `ambient` allowlist overridden by `base ⊕ overlay`.
 pub(crate) fn materialize(

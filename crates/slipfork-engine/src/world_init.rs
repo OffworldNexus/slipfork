@@ -16,8 +16,8 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::rootfs::WorldRootfs;
-use crate::{EngineError, MountMode, WorldMount};
+use slipfork_world::rootfs::WorldRootfs;
+use slipfork_world::{EngineError, MountMode, WorldMount};
 
 /// Guest mount of the world's CoW `state_dir` (`<subvol>/state`).
 pub(crate) const WORLD_STATE_GUEST: &str = "/.slipfork/state";
@@ -42,8 +42,6 @@ pub const WORLD_INIT_READY_FILE: &str = "init.ready";
 
 /// File name of the world's `AF_UNIX` dial socket.
 pub const WORLD_INIT_SOCKET_FILE: &str = "netns.sock";
-
-pub use slipfork_wire::control::{UNIX_SOCKET_PATH_MAX, unix_socket_path_fits};
 
 /// One bind mount the world init establishes inside the world mount namespace.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

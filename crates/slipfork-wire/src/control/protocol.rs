@@ -10,8 +10,8 @@ use super::request::{
     HookRunRequest, LogsRequest, PruneReport, SnowResolveRequest, SnowResolveSummary, UpRequest,
     WorkspaceRefsRequest, WorkspaceRefsSummary, WorldExecTarget, WorldSelector,
 };
-use super::stream::{LogChunk, StreamChunk};
 use super::view::{BootEvent, DaemonStatus, WorldProcessReport, WorldSummary, WorldUpSummary};
+use slipfork_world::{LogChunk, StreamChunk};
 
 /// Typed reason a control call failed, preserved across the socket.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

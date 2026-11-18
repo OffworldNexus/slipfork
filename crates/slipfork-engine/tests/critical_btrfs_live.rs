@@ -26,14 +26,16 @@ use std::time::Duration;
 
 use base64::Engine as _;
 use slipfork_engine::btrfs::{BTRFS_SUPER_MAGIC, KernelBtrfsDriver, ProbeFacts, mount_hint};
-use slipfork_engine::rootfs::BackingServiceKey;
-use slipfork_engine::{
-    BootLineage, BtrfsEngine, EngineError, ExecEnv, ExecOutput, MountMode, ServiceHandle,
-    ServiceKind, ServiceRuntime, ServiceSpec, ServiceState, SnapshotId, StateSubdirMount,
-    WorldEngine, WorldHandle, WorldMount, WorldRootfs, WorldSpec, current_uid_gid,
-};
+use slipfork_engine::{BtrfsEngine, current_uid_gid};
 use slipfork_testkit::poll_until;
 use slipfork_world::WorldTarget;
+use slipfork_world::rootfs::BackingServiceKey;
+use slipfork_world::rootfs::WorldRootfs;
+use slipfork_world::{
+    BootLineage, EngineError, ExecEnv, ExecOutput, MountMode, ServiceHandle, ServiceKind,
+    ServiceRuntime, ServiceSpec, ServiceState, SnapshotId, StateSubdirMount, WorldEngine,
+    WorldHandle, WorldMount, WorldSpec,
+};
 use support::{PG_DATA, container_env, log_text, pg_state, world_env};
 
 const PG_PATH: &str =

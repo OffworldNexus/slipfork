@@ -15,9 +15,9 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-use crate::CacheOutcome;
 use crate::clock::elapsed_millis;
-use crate::rootfs::{BackingServiceKey, BaseImageError, OciRootfs};
+use slipfork_world::CacheOutcome;
+use slipfork_world::rootfs::{BackingServiceKey, BaseImageError, OciRootfs};
 
 /// File recording the tag -> digest resolution so later boots use the same bytes (`tags.json`).
 const TAGS_FILE: &str = "tags.json";

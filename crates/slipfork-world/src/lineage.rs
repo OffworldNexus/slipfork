@@ -6,7 +6,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::stream::ServiceState;
+use crate::stream::ServiceState;
 
 /// One world's build lineage.
 ///

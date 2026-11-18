@@ -9,7 +9,8 @@
 
 use std::path::{Path, PathBuf};
 
-use slipfork_engine::rootfs::{RuntimeAssets, pin::crun_pin};
+use slipfork_engine::rootfs::RuntimeAssets;
+use slipfork_engine::rootfs::pin::crun_pin;
 
 /// Linux architecture of this binary (`x86_64`, `aarch64`); never guessed at runtime.
 pub fn target_arch() -> Result<&'static str, String> {

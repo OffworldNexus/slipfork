@@ -1,5 +1,5 @@
 //! The one `slipfork logs` renderer: attributed, line-buffered output over daemon
-//! [`slipfork_engine::LogChunk`]s.
+//! [`slipfork_world::LogChunk`]s.
 //!
 //! Attribution is **data from `slipforkd`**, never a renderer guess: every chunk names the
 //! component or hook id that produced its bytes (`LogChunk::target`), and this module only decides
@@ -20,7 +20,7 @@
 use std::collections::BTreeMap;
 use std::io::{self, Write};
 
-use slipfork_engine::{LogChunk, StreamSource};
+use slipfork_world::{LogChunk, StreamSource};
 
 /// Render `slipforkd` log chunks to the caller's two inherited streams.
 pub struct Renderer {
@@ -134,7 +134,7 @@ mod tests {
     use std::io::{self, Write};
     use std::sync::{Arc, Mutex};
 
-    use slipfork_engine::StreamSource;
+    use slipfork_world::StreamSource;
 
     use super::Renderer;
 
@@ -159,10 +159,10 @@ mod tests {
         }
     }
 
-    fn chunk(target: &str, bytes: &[u8]) -> slipfork_engine::LogChunk {
-        slipfork_engine::LogChunk::attribute(
+    fn chunk(target: &str, bytes: &[u8]) -> slipfork_world::LogChunk {
+        slipfork_world::LogChunk::attribute(
             target,
-            slipfork_engine::StreamChunk {
+            slipfork_world::StreamChunk {
                 source: StreamSource::Stdout,
                 bytes: bytes.to_vec(),
             },
@@ -225,7 +225,7 @@ mod tests {
     fn logs_routes_stderr_lines_to_stderr_with_the_same_prefix() {
         let (mut renderer, out, err) = renderer(true);
         renderer.chunk(chunk("api", b"to stdout\n"));
-        renderer.chunk(slipfork_engine::LogChunk {
+        renderer.chunk(slipfork_world::LogChunk {
             target: "api".to_owned(),
             source: StreamSource::Stderr,
             bytes: b"to stderr\n".to_vec(),

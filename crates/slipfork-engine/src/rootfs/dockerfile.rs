@@ -9,7 +9,7 @@
 
 use slipfork_world::format::quoted;
 
-use crate::rootfs::BaseImageError;
+use slipfork_world::rootfs::BaseImageError;
 
 /// One logical `Dockerfile` instruction of the target stage.
 #[derive(Debug, Clone, PartialEq, Eq)]

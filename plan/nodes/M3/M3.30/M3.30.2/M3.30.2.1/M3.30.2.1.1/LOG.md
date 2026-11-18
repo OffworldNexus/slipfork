@@ -27,3 +27,7 @@ status review -> ready: triad: 1 BLOCKER (compat re-export curtain) + 4 MAJOR (C
 ## 2026-11-19T00:13 [lead]
 
 attempt 2/3 started
+
+## 2026-11-19T00:19 [lead]
+
+status ready -> done

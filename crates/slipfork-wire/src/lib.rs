@@ -5,8 +5,8 @@
 //!
 //! - [`control`]: the typed `DaemonControl` contract the thin `slipfork` CLI and `slipforkd` speak
 //!   over `<runtime_dir>/daemon.sock` (one `\n`-terminated JSON frame per message, hard-capped at
-//!   64 KiB), the `0600` pathname-socket budget both daemon sockets share, and the redacting
-//!   [`control::ExecEnv`] / lineage view values those frames carry.
+//!   64 KiB) and the `0600` control-socket path. The plain payload values it frames (world specs,
+//!   lineage, streamed chunks, `ExecEnv`) live in `slipfork-world`.
 //! - [`relay`]: the single bounded 16 KiB whole-duplex splice (`Duplex`, `pipe`) used by the edge
 //!   ingress, the daemon's `forward` bridge, and `slipfork-world-init`.
 //!

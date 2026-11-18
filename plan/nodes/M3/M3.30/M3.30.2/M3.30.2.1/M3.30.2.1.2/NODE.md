@@ -15,11 +15,11 @@ paths:
   - "crates/slipfork-edge/**"
   - "crates/slipfork/**"
   - "crates/slipfork-testkit/**"
-attempts: 0
+attempts: 2
 max_attempts: 3
 escalation: none
 created: "2026-11-19T00:06"
-updated: "2026-11-19T00:06"
+updated: "2026-11-19T00:26"
 ---
 
 # Goal

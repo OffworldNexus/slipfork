@@ -13,9 +13,10 @@ use std::thread;
 
 use slipfork_wire::control::{
     BootEvent, CONTROL_SOCKET_FILE, DaemonReply, DaemonRequest, ForwardSummary, FrameReader,
-    LogChunk, StreamChunk, WorldUpSummary, write_chunk as wire_write_chunk,
-    write_log as wire_write_log, write_reply as wire_write_reply,
+    WorldUpSummary, write_chunk as wire_write_chunk, write_log as wire_write_log,
+    write_reply as wire_write_reply,
 };
+use slipfork_world::{LogChunk, StreamChunk};
 
 use crate::EdgeError;
 use crate::daemon::{DaemonControl, transport_error};

@@ -10,9 +10,8 @@
 use std::collections::BTreeSet;
 
 use slipfork_edge::INGRESS_PORT;
-use slipfork_wire::control::{
-    CacheOutcome, DaemonStatus, SeedLineage, WorldLineage, WorldState, WorldSummary,
-};
+use slipfork_wire::control::{DaemonStatus, WorldState, WorldSummary};
+use slipfork_world::{CacheOutcome, SeedLineage, WorldLineage};
 
 use crate::cli::implemented_commands;
 
@@ -366,9 +365,9 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
-    use slipfork_wire::control::{
-        BaseLineage, DaemonStatus, IngressInfo, RootfsLineage, SeedLineage, ServiceImageLineage,
-        WorldLineage, WorldState,
+    use slipfork_wire::control::{DaemonStatus, IngressInfo, WorldState};
+    use slipfork_world::{
+        BaseLineage, RootfsLineage, SeedLineage, ServiceImageLineage, WorldLineage,
     };
     use slipfork_world::{LocalHostRoute, ProjectSlug, WorldOrigin, WorldTarget};
 

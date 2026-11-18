@@ -1586,3 +1586,10 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-19T00:11 [M3.30.2.1.1] (lead) status active -> review
 - 2026-11-19T00:13 [M3.30.2.1.1] (lead) status review -> ready: triad: 1 BLOCKER (compat re-export curtain) + 4 MAJOR (CLI tables in wire, policy dup, path budget dup, ospp caps) — one pass
 - 2026-11-19T00:13 [M3.30.2.1.1] (lead) attempt 2/3 started
+- 2026-11-19T00:19 [M3.30.2.1.1] (lead) status ready -> done
+- 2026-11-19T00:19 [M3.30.2.1.2] (lead) status ready -> active
+- 2026-11-19T00:19 [M3.30.2.1.2] (lead) attempt 1/3 started
+- 2026-11-19T00:19 [M3.30.2.1.2] (lead) base 2016a25735d202f20b3d31465a463aebdcb5489b
+- 2026-11-19T00:25 [M3.30.2.1.2] (lead) status active -> review
+- 2026-11-19T00:26 [M3.30.2.1.2] (lead) status review -> ready: triad: 3 MAJOR (harness ownership, mock conformance witness, TcpStream contract) — one pass
+- 2026-11-19T00:26 [M3.30.2.1.2] (lead) attempt 2/3 started

@@ -11,7 +11,7 @@ use std::path::Path;
 
 use slipfork_world::merkle::{file_digest, glob_matches, merkle_hex};
 
-use crate::rootfs::BaseImageError;
+use slipfork_world::rootfs::BaseImageError;
 
 /// Concrete build-context hasher: deterministic filesystem walk + `.dockerignore`.
 #[derive(Debug, Default, Clone, Copy)]

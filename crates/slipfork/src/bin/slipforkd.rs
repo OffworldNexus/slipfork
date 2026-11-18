@@ -30,9 +30,10 @@ use slipfork::layout::{Layout, ensure_private_dir};
 use slipfork::runtime::{runtime_assets, target_arch};
 use slipfork_edge::{DaemonControlServer, HttpIngress, ListenConfig, resolve_listener_set};
 use slipfork_engine::btrfs::KernelBtrfsDriver;
-use slipfork_engine::{InheritedVar, current_uid_gid};
+use slipfork_engine::current_uid_gid;
 use slipfork_ospp::OsppEndpoint;
 use slipfork_wire::control::IngressInfo;
+use slipfork_world::InheritedVar;
 
 /// Unified unprivileged user daemon.
 #[derive(Debug, Parser)]

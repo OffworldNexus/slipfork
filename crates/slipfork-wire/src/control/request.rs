@@ -8,8 +8,7 @@ use serde::{Deserialize, Serialize};
 use slipfork_world::WorldOrigin;
 
 use super::ControlSecret;
-use super::env::ExecEnv;
-use super::stream::WorldEntryCommand;
+use slipfork_world::{ExecEnv, WorldEntryCommand};
 
 /// Request body of the local `slipfork snow resolve` diagnostic (daemon-owned vault access).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

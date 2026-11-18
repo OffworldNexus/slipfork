@@ -977,8 +977,8 @@ fn hook_run(
                     return;
                 }
                 let stream: &mut dyn Write = match chunk.source {
-                    slipfork_engine::StreamSource::Stdout => &mut stdout,
-                    slipfork_engine::StreamSource::Stderr => &mut stderr_stream,
+                    slipfork_world::StreamSource::Stdout => &mut stdout,
+                    slipfork_world::StreamSource::Stderr => &mut stderr_stream,
                 };
                 let _ = stream.write_all(&chunk.bytes);
                 let _ = stream.flush();
@@ -1281,8 +1281,8 @@ fn print_event(json: bool, event: BootEvent) {
         }
         BootEvent::HookOutput { chunk, .. } => {
             let mut stream: Box<dyn Write> = match chunk.source {
-                slipfork_engine::StreamSource::Stdout => Box::new(io::stdout()),
-                slipfork_engine::StreamSource::Stderr => Box::new(io::stderr()),
+                slipfork_world::StreamSource::Stdout => Box::new(io::stdout()),
+                slipfork_world::StreamSource::Stderr => Box::new(io::stderr()),
             };
             let _ = stream.write_all(&chunk.bytes);
             let _ = stream.flush();

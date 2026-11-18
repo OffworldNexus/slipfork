@@ -16,14 +16,17 @@ use std::time::Duration;
 
 use slipfork_engine::btrfs::{BTRFS_SUPER_MAGIC, KernelBtrfsDriver, mount_hint};
 use slipfork_engine::rootfs::{
-    BaseImageBuilder, DockerBuildx, DockerImageStore, DockerfileStageBuilder, ElfProbe,
-    FsInputHasher, HostCacheRequest, OciRootfs, RuntimeAssets, SnowPortContract, WorldRootfs,
-    WorldRootfsRequest,
+    BaseImageBuilder, HostCacheRequest, RuntimeAssets, SnowPortContract, WorldRootfsRequest,
 };
-use slipfork_engine::{
-    BootLineage, BtrfsEngine, ExecEnv, ExecOutput, InheritedVar, LocalIngressBridge, MountMode,
-    ServiceHandle, ServiceLogs, ServiceSpec, SnapshotId, StateSubdirMount, StreamChunk,
-    WorldEngine, WorldHandle, WorldMount, WorldSpec, current_uid_gid,
+use slipfork_engine::rootfs::{
+    DockerBuildx, DockerImageStore, DockerfileStageBuilder, ElfProbe, FsInputHasher,
+};
+use slipfork_engine::{BtrfsEngine, current_uid_gid};
+use slipfork_world::rootfs::{OciRootfs, WorldRootfs};
+use slipfork_world::{
+    BootLineage, ExecEnv, ExecOutput, InheritedVar, LocalIngressBridge, MountMode, ServiceHandle,
+    ServiceLogs, ServiceSpec, SnapshotId, StateSubdirMount, StreamChunk, WorldEngine, WorldHandle,
+    WorldMount, WorldSpec,
 };
 // The one bounded-wait shape and its named deadlines come from the shared testkit, so no suite in
 // this crate can drift into a second copy of the poll loop.

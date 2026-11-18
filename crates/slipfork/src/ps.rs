@@ -6,8 +6,9 @@
 //! `None` pid/port/uptime renders `-` — never an invented `0`. `ps` is the per-world process view;
 //! [`crate::status`] is the fleet view.
 
-use slipfork_engine::ServiceState;
-use slipfork_wire::control::{ServiceKind, WorldProcessReport};
+use slipfork_wire::control::WorldProcessReport;
+use slipfork_world::ServiceKind;
+use slipfork_world::ServiceState;
 
 use crate::status::{render_lineage, world_state_label};
 
@@ -135,10 +136,10 @@ fn dash_len<T: std::fmt::Display>(value: Option<T>) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use slipfork_engine::WorldServiceInfo;
-    use slipfork_wire::control::{
+    use slipfork_wire::control::{WorldServiceSummary, WorldState};
+    use slipfork_world::WorldServiceInfo;
+    use slipfork_world::{
         BaseLineage, CacheOutcome, RootfsLineage, SeedLineage, ServiceImageLineage, WorldLineage,
-        WorldServiceSummary, WorldState,
     };
 
     use super::*;

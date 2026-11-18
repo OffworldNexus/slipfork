@@ -18,12 +18,13 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use slipfork_engine::rootfs::OciRootfs;
-use slipfork_engine::{
-    BackingServiceKey, BootLineage, CacheOutcome, EngineError, ExecEnv, MountMode, ServiceKind,
-    ServiceRuntime, ServiceSpec, StateSubdirMount, WorldEngine, WorldMount, WorldSpec,
-};
 use slipfork_world::WorldTarget;
+use slipfork_world::rootfs::BackingServiceKey;
+use slipfork_world::rootfs::OciRootfs;
+use slipfork_world::{
+    BootLineage, CacheOutcome, EngineError, ExecEnv, MountMode, ServiceKind, ServiceRuntime,
+    ServiceSpec, StateSubdirMount, WorldEngine, WorldMount, WorldSpec,
+};
 use support::{PG_DATA, WorldFixture, pg_state};
 
 /// The image's own `PATH` allowlist; this suite never executes a container.

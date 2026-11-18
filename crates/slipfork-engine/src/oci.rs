@@ -180,7 +180,7 @@ fn bind_mount(source: &Path, destination: &Path, read_only: bool) -> serde_json:
 /// `true` when two container paths are equal or one contains the other.
 ///
 /// Backing-service state must never be shadowed by a read-only client mount (or vice versa), so
-/// [`crate::EngineError::InvalidWorldSpec`] is raised before any container exists.
+/// [`slipfork_world::EngineError::InvalidWorldSpec`] is raised before any container exists.
 pub fn paths_overlap(a: &Path, b: &Path) -> bool {
     a == b || a.starts_with(b) || b.starts_with(a)
 }

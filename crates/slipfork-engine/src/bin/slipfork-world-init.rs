@@ -1,6 +1,6 @@
 //! Persistent per-world PID 1 (`H-011`).
 //!
-//! Spawned by [`slipfork_engine::WorldEngine::clone_world`] on
+//! Spawned by [`slipfork_world::WorldEngine::clone_world`] on
 //! `BtrfsEngine` inside
 //! `unshare --user --map-user=$UID --map-group=$GID --keep-caps --mount --net --ipc --pid --fork
 //! --kill-child=SIGKILL --mount-proc`,
@@ -14,7 +14,7 @@
 //!    `127.0.0.1:<port>` stream as an `SCM_RIGHTS` descriptor (`linux_cow.rs` and `btrfs.rs` are
 //!    the two audited `unsafe` modules in the workspace). Pathname `AF_UNIX` sockets live in the
 //!    filesystem, so they cross `CLONE_NEWNET` natively.
-//! 2. `$BASE_URL` bridge — when the world spec carries a [`slipfork_engine::LocalIngressBridge`],
+//! 2. `$BASE_URL` bridge — when the world spec carries a [`slipfork_world::LocalIngressBridge`],
 //!    bind `127.0.0.1:<port>` (including `:80`, allowed by in-userns `CAP_NET_BIND_SERVICE` and
 //!    `net.ipv4.ip_unprivileged_port_start=0`) and splice every accepted stream to `slipforkd`'s
 //!    `0600` `AF_UNIX` HTTP ingress.

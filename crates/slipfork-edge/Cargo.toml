@@ -13,6 +13,8 @@ httparse.workspace = true
 listenfd.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-slipfork-engine = { path = "../slipfork-engine" }
 slipfork-world = { path = "../slipfork-world" }
 thiserror.workspace = true
+
+[dev-dependencies]
+slipfork-testkit = { path = "../slipfork-testkit" }

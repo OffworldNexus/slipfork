@@ -18,6 +18,18 @@ pub enum ServiceState {
 }
 
 impl ServiceState {
+    /// Decode the bit representation an engine adapter stores in its supervision cell.
+    ///
+    /// Unknown bits fail closed to [`ServiceState::Stopped`]: a supervision cell must never be
+    /// reported as a live service just because its value is unrecognized.
+    pub fn from_bits(bits: u8) -> Self {
+        match bits {
+            0 => Self::Running,
+            1 => Self::Exited,
+            _ => Self::Stopped,
+        }
+    }
+
     /// The bit representation an engine adapter stores in its supervision cell.
     pub fn to_bits(self) -> u8 {
         match self {

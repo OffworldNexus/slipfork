@@ -12,7 +12,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::rootfs::{BaseImageError, ImageContractMetadata, RootfsDigest};
+use slipfork_world::rootfs::{BaseImageError, ImageContractMetadata, RootfsDigest};
 
 /// Scratch subdirectory for the appended `Dockerfile` and its named build context.
 pub(crate) const TMP_SUBDIR: &str = "tmp";

@@ -11,8 +11,6 @@
 
 pub mod support;
 
-mod conformance;
-
 use std::fs;
 use std::io::{Read, Write};
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
@@ -23,14 +21,15 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
-use conformance::assert_world_engine_conformance;
 use slipfork_engine::btrfs::{BTRFS_SUPER_MAGIC, KernelBtrfsDriver};
-use slipfork_engine::{
-    BootLineage, BtrfsEngine, EngineError, ExecEnv, InheritedVar, LocalIngressBridge, MountMode,
-    ServiceKind, ServiceRuntime, ServiceSpec, ServiceState, SnapshotId, StreamChunk, WorldEngine,
-    WorldEntryCommand, WorldHandle, WorldMount, WorldSpec, current_uid_gid,
-};
+use slipfork_engine::{BtrfsEngine, current_uid_gid};
+use slipfork_testkit::conformance::assert_world_engine_conformance;
 use slipfork_world::WorldTarget;
+use slipfork_world::{
+    BootLineage, EngineError, ExecEnv, InheritedVar, LocalIngressBridge, MountMode, ServiceKind,
+    ServiceRuntime, ServiceSpec, ServiceState, SnapshotId, StreamChunk, WorldEngine,
+    WorldEntryCommand, WorldHandle, WorldMount, WorldSpec,
+};
 use support::{
     POLL_INTERVAL, WorldFixture, engine_test_dir, log_text, observe_for, poll_until, world_env,
 };

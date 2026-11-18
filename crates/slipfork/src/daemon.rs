@@ -9,7 +9,7 @@
 //!
 //! World handles live only here (`H-010` #1): `up`/`fork` clone and attach a world, `down`/`drop`
 //! release it, and the thin CLI only ever receives serializable summaries and the direct-entry
-//! [`slipfork_engine::WorldEntryCommand`].
+//! [`slipfork_world::WorldEntryCommand`].
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
@@ -31,16 +31,13 @@ use slipfork_edge::{
 };
 use slipfork_engine::btrfs::KernelBtrfsDriver;
 use slipfork_engine::rootfs::{
-    BackingServiceKey, BaseImageBuilder, BuildEnvVar, DockerBuildx, DockerImageStore,
-    DockerfileStageBuilder, ElfProbe, FsInputHasher, HostCacheRequest, RootfsBuildEvent,
-    RuntimeAssets, SnowPortContract, WorldRootfs, WorldRootfsRequest,
+    BaseImageBuilder, HostCacheRequest, RootfsBuildEvent, RuntimeAssets, SnowPortContract,
+    WorldRootfsRequest,
 };
-use slipfork_engine::{
-    BaseLineage, BootLineage, BtrfsEngine, EngineError, ExecEnv, ExecOutput, InheritedVar,
-    LocalIngressBridge, LogChunk, MountMode, SeedLineage, ServiceHandle, ServiceKind,
-    ServiceRuntime, ServiceSpec, ServiceState, SnapshotId, StateSubdirMount, StreamChunk,
-    WorldEngine, WorldHandle, WorldMount, WorldSpec, elapsed_millis,
+use slipfork_engine::rootfs::{
+    DockerBuildx, DockerImageStore, DockerfileStageBuilder, ElfProbe, FsInputHasher,
 };
+use slipfork_engine::{BtrfsEngine, elapsed_millis};
 use slipfork_ospp::{
     DeviceKeyPath, DeviceKeySigner, FileDeviceKeyStore, OsppClaims, OsppClient, OsppEndpoint,
     OsppSession, OsppTimeouts, SoftwareP256Key, SoftwareP256Signer, SubscribeRequest,
@@ -60,6 +57,13 @@ use slipfork_wire::control::{
     PruneReport, ResourceSummary, SnowResolveRequest, SnowResolveSummary, UpRequest,
     WorkspaceRefsRequest, WorkspaceRefsSummary, WorldExecTarget, WorldProcessReport, WorldSelector,
     WorldServiceSummary, WorldState, WorldSummary, WorldUpSummary,
+};
+use slipfork_world::rootfs::{BackingServiceKey, BuildEnvVar, WorldRootfs};
+use slipfork_world::{
+    BaseLineage, BootLineage, EngineError, ExecEnv, ExecOutput, InheritedVar, LocalIngressBridge,
+    LogChunk, MountMode, SeedLineage, ServiceHandle, ServiceKind, ServiceRuntime, ServiceSpec,
+    ServiceState, SnapshotId, StateSubdirMount, StreamChunk, WorldEngine, WorldHandle, WorldMount,
+    WorldSpec,
 };
 use slipfork_world::{LocalHostRoute, ProjectSlug, WorldTarget, validate_fork_name};
 
@@ -1721,7 +1725,7 @@ impl DaemonService {
                     reader,
                     &ExecEnv::default(),
                     &mut |chunk| {
-                        if chunk.source == slipfork_engine::StreamSource::Stderr {
+                        if chunk.source == slipfork_world::StreamSource::Stderr {
                             stderr.extend_from_slice(&chunk.bytes);
                         }
                     },
@@ -1863,7 +1867,7 @@ impl DaemonService {
         let output = self
             .engine
             .exec_in_service(service, argv, &ExecEnv::default(), &mut |chunk| {
-                if chunk.source == slipfork_engine::StreamSource::Stderr {
+                if chunk.source == slipfork_world::StreamSource::Stderr {
                     stderr.extend_from_slice(&chunk.bytes);
                 }
             })
@@ -2250,7 +2254,7 @@ impl DaemonService {
             let spec = ServiceSpec {
                 kind: ServiceKind::Component,
                 id: id.clone(),
-                runtime: slipfork_engine::ServiceRuntime::WorldProcess {
+                runtime: slipfork_world::ServiceRuntime::WorldProcess {
                     argv: vec![
                         "sh".to_owned(),
                         "-eu".to_owned(),
@@ -2865,7 +2869,7 @@ impl DaemonControl for DaemonService {
         }
 
         let wants = |chunk: &StreamChunk| {
-            req.stderr == matches!(chunk.source, slipfork_engine::StreamSource::Stderr)
+            req.stderr == matches!(chunk.source, slipfork_world::StreamSource::Stderr)
         };
         for target in retained {
             match target {
@@ -4190,7 +4194,7 @@ fn tail_lines(chunks: Vec<StreamChunk>, lines: Option<usize>) -> Vec<StreamChunk
     }
     let source = chunks
         .first()
-        .map_or(slipfork_engine::StreamSource::Stdout, |chunk| chunk.source);
+        .map_or(slipfork_world::StreamSource::Stdout, |chunk| chunk.source);
     vec![StreamChunk { source, bytes }]
 }
 
@@ -4334,10 +4338,10 @@ mod tests {
 
     #[test]
     fn restarted_ids_are_the_engine_rows_this_run_brought_to_running() {
-        fn row(world: &str, id: &str, state: slipfork_engine::ServiceState) -> WorldServiceSummary {
+        fn row(world: &str, id: &str, state: slipfork_world::ServiceState) -> WorldServiceSummary {
             WorldServiceSummary {
                 world: world.to_owned(),
-                info: slipfork_wire::control::WorldServiceInfo {
+                info: slipfork_world::WorldServiceInfo {
                     id: id.to_owned(),
                     kind: ServiceKind::Component,
                     state,
@@ -4347,7 +4351,7 @@ mod tests {
                 },
             }
         }
-        use slipfork_engine::ServiceState;
+        use slipfork_world::ServiceState;
 
         let stopped = vec![
             row("acme", "pg_databases.main", ServiceState::Stopped),
@@ -4492,7 +4496,7 @@ mod tests {
     #[test]
     fn tail_lines_keeps_the_requested_tail() {
         let chunk = StreamChunk {
-            source: slipfork_engine::StreamSource::Stdout,
+            source: slipfork_world::StreamSource::Stdout,
             bytes: b"one\ntwo\nthree\n".to_vec(),
         };
         let out = tail_lines(vec![chunk], Some(2));
@@ -4789,7 +4793,7 @@ modes:
             &self,
             _world: &WorldHandle,
             _id: &str,
-        ) -> Result<slipfork_engine::ServiceLogs, EngineError> {
+        ) -> Result<slipfork_world::ServiceLogs, EngineError> {
             Err(EngineError::Unsupported {
                 engine: self.name(),
                 capability: "service_logs",
@@ -4799,7 +4803,7 @@ modes:
         fn world_processes(
             &self,
             world: &WorldHandle,
-        ) -> Result<Vec<slipfork_engine::WorldServiceInfo>, EngineError> {
+        ) -> Result<Vec<slipfork_world::WorldServiceInfo>, EngineError> {
             self.live_world(world)?;
             Ok(self
                 .rows
@@ -4807,7 +4811,7 @@ modes:
                 .expect("rows")
                 .iter()
                 .filter(|row| row.world == *world)
-                .map(|row| slipfork_engine::WorldServiceInfo {
+                .map(|row| slipfork_world::WorldServiceInfo {
                     id: row.id.clone(),
                     kind: ServiceKind::Component,
                     state: row.state,
@@ -4821,9 +4825,9 @@ modes:
         fn world_lineage(
             &self,
             world: &WorldHandle,
-        ) -> Result<slipfork_engine::WorldLineage, EngineError> {
+        ) -> Result<slipfork_world::WorldLineage, EngineError> {
             self.live_world(world)?;
-            Ok(slipfork_engine::WorldLineage {
+            Ok(slipfork_world::WorldLineage {
                 rootfs: None,
                 services: Vec::new(),
                 seed: None,
@@ -4864,7 +4868,7 @@ modes:
         fn service_entry_command(
             &self,
             _service: &ServiceHandle,
-        ) -> Result<slipfork_engine::WorldEntryCommand, EngineError> {
+        ) -> Result<slipfork_world::WorldEntryCommand, EngineError> {
             Err(EngineError::Unsupported {
                 engine: self.name(),
                 capability: "service_entry_command",
@@ -4892,7 +4896,7 @@ modes:
             &self,
             _world: &WorldHandle,
             _cwd: &Path,
-        ) -> Result<slipfork_engine::WorldEntryCommand, EngineError> {
+        ) -> Result<slipfork_world::WorldEntryCommand, EngineError> {
             Err(EngineError::Unsupported {
                 engine: self.name(),
                 capability: "entry_command",
@@ -4937,28 +4941,28 @@ modes:
             &self,
             _req: &slipfork_engine::rootfs::WorldRootfsRequest,
             _on_event: &mut dyn FnMut(slipfork_engine::rootfs::RootfsBuildEvent),
-        ) -> Result<WorldRootfs, slipfork_engine::rootfs::BaseImageError> {
+        ) -> Result<WorldRootfs, slipfork_world::rootfs::BaseImageError> {
             Ok(WorldRootfs {
-                digest: slipfork_engine::rootfs::RootfsDigest::from_hex("e".repeat(64))
+                digest: slipfork_world::rootfs::RootfsDigest::from_hex("e".repeat(64))
                     .expect("valid digest"),
                 app_rootfs: PathBuf::from("/nonexistent/m3-28-17/app"),
                 crun_bin: PathBuf::from("/.slipfork/bin/crun"),
                 service_images: BTreeMap::new(),
-                metadata: slipfork_engine::rootfs::ImageContractMetadata {
-                    os_release: slipfork_engine::rootfs::OsRelease {
+                metadata: slipfork_world::rootfs::ImageContractMetadata {
+                    os_release: slipfork_world::rootfs::OsRelease {
                         id: "alpine".to_owned(),
                         version_id: "3.21".to_owned(),
                         version_codename: String::new(),
                     },
-                    elf_abi: slipfork_engine::rootfs::ElfAbi {
+                    elf_abi: slipfork_world::rootfs::ElfAbi {
                         arch: "x86_64".to_owned(),
-                        libc: slipfork_engine::rootfs::LibcFamily::Musl,
+                        libc: slipfork_world::rootfs::LibcFamily::Musl,
                         libc_version: "1.2".to_owned(),
                     },
                     exposed_ports: BTreeSet::new(),
                 },
                 host_caches: Vec::new(),
-                cache: slipfork_engine::CacheOutcome::Miss,
+                cache: slipfork_world::CacheOutcome::Miss,
                 millis: None,
             })
         }

@@ -14,7 +14,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::rootfs::{BaseImageError, BuildEnvVar};
+use slipfork_world::rootfs::{BaseImageError, BuildEnvVar};
 
 /// Name of the local build context carrying `/.slipfork/bin` payloads.
 pub const SLIPFORK_RUNTIME_CONTEXT: &str = "slipfork-runtime";
@@ -122,7 +122,7 @@ mod tests {
     use std::path::Path;
 
     use super::{BuildxRequest, DockerBuildx, SLIPFORK_RUNTIME_CONTEXT};
-    use crate::rootfs::BuildEnvVar;
+    use slipfork_world::rootfs::BuildEnvVar;
 
     #[test]
     fn args_export_only_the_slipfork_world_target() {

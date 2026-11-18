@@ -2,7 +2,7 @@
 id: M3.30.2.1.1
 title: "New slipfork-wire crate: DaemonControl types + socket framing + neutral relay; finish wheel swap"
 kind: task
-status: ready
+status: done
 owner: implementer
 priority: 3
 depends_on: []
@@ -21,7 +21,7 @@ attempts: 2
 max_attempts: 3
 escalation: none
 created: "2026-11-19T00:06"
-updated: "2026-11-19T00:13"
+updated: "2026-11-19T00:19"
 ---
 
 # Goal

@@ -10,13 +10,16 @@ use std::collections::BTreeSet;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
-use crate::rootfs::abi::{ElfAbi, ElfProbe, host_cache_abi_mismatch, suggested_base};
+use crate::rootfs::abi::{ElfProbe, host_cache_abi_mismatch, suggested_base};
 use crate::rootfs::dockerfile::{Stage, argv, key_value_pairs};
 use crate::rootfs::pin::{CrunPin, crun_pin};
 use crate::rootfs::{
-    BaseImageError, CRUN_GUEST_PATH, HostCacheRequest, OsRelease, RuntimeAssets,
-    WORLD_INIT_GUEST_PATH, WorldRootfsRequest, read_guest_file, resolve_guest_path, sha256_hex,
+    CRUN_GUEST_PATH, HostCacheRequest, RuntimeAssets, WORLD_INIT_GUEST_PATH, WorldRootfsRequest,
+    read_guest_file, resolve_guest_path, sha256_hex,
 };
+use slipfork_world::rootfs::ElfAbi;
+use slipfork_world::rootfs::{BaseImageError, OsRelease};
+use slipfork_world::{MountMode, WorldMount};
 
 /// Root-only privilege-drop wrappers forbidden by World Image Contract #3.
 const PRIVILEGE_WRAPPERS: &[&str] = &["gosu", "su-exec", "sudo", "chpst"];
@@ -161,7 +164,7 @@ pub(crate) fn validate_host_caches(
     world_abi: &ElfAbi,
     distro: &str,
     elf_probe: &ElfProbe,
-) -> Result<Vec<crate::WorldMount>, BaseImageError> {
+) -> Result<Vec<WorldMount>, BaseImageError> {
     let HostCacheRequest { host_shell, mounts } = &request.host_caches;
     if mounts.is_empty() {
         return Ok(Vec::new());
@@ -171,10 +174,7 @@ pub(crate) fn validate_host_caches(
             reason: "`--host-caches` needs an injected host ABI witness (host_shell)".to_owned(),
         });
     }
-    if mounts
-        .iter()
-        .any(|mount| mount.mode != crate::MountMode::ReadOnly)
-    {
+    if mounts.iter().any(|mount| mount.mode != MountMode::ReadOnly) {
         return Err(BaseImageError::InvalidRequest {
             reason: "`--host-caches` mounts must be read-only; never expose a writable host cache"
                 .to_owned(),

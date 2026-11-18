@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
 
-use slipfork_engine::{WorldEngine, WorldHandle};
+use slipfork_world::{WorldEngine, WorldHandle};
 
 use crate::EdgeError;
 use slipfork_wire::control::{ForwardSummary, ForwardTarget};

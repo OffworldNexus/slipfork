@@ -14,10 +14,13 @@ use rootfs_conformance::assert_world_rootfs_conformance;
 use std::path::{Path, PathBuf};
 
 use slipfork_engine::rootfs::{
-    BaseImageBuilder, BaseImageError, DockerBuildx, DockerImageStore, DockerfileStageBuilder,
-    ElfProbe, FsInputHasher, HostCacheRequest, LibcFamily, RootfsBuildEvent, RuntimeAssets,
-    SnowPortContract, WorldRootfsRequest,
+    BaseImageBuilder, HostCacheRequest, RootfsBuildEvent, RuntimeAssets, SnowPortContract,
+    WorldRootfsRequest,
 };
+use slipfork_engine::rootfs::{
+    DockerBuildx, DockerImageStore, DockerfileStageBuilder, ElfProbe, FsInputHasher,
+};
+use slipfork_world::rootfs::{BaseImageError, LibcFamily};
 
 const DOCKERFILE: &str =
     "FROM alpine:3.21 AS app\nWORKDIR /workspace\nRUN echo slipfork > /etc/slipfork-probe\n";

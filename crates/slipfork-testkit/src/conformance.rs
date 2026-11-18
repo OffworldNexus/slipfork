@@ -4,7 +4,7 @@
 //! fail-closed error types, mount-spec validation, environment redaction, opaque handle stability,
 //! and seal-once freeze semantics. Real CoW lineage (frozen snapshot → independent sibling
 //! clones, `$UID` ownership, real bind mounts) is asserted by `tests/critical_engine.rs` against
-//! `BtrfsEngine` over the concrete [`slipfork_engine::btrfs::KernelBtrfsDriver`] seam — never mocked — and by
+//! `slipfork-engine`'s `BtrfsEngine` over its injected `KernelBtrfsDriver` seam — never mocked — and by
 //! `tests/critical_btrfs_live.rs` against the real kernel ioctl path.
 //!
 //! # Read-only snapshot vs writable clone
@@ -32,9 +32,9 @@ use std::path::Path;
 
 use slipfork_world::WorldTarget;
 
-use slipfork_engine::InheritedVar;
-use slipfork_engine::rootfs::WorldRootfs;
-use slipfork_engine::{
+use slipfork_world::InheritedVar;
+use slipfork_world::rootfs::WorldRootfs;
+use slipfork_world::{
     EngineError, ExecEnv, MountMode, SnapshotId, WorldEngine, WorldMount, WorldSpec,
 };
 
@@ -81,7 +81,7 @@ pub fn assert_world_engine_conformance(
         mounts: Vec::new(),
         base_env: base_env.clone(),
         local_ingress: None,
-        boot: slipfork_engine::BootLineage::default(),
+        boot: slipfork_world::BootLineage::default(),
     };
     let spec_debug = format!("{missing:?}");
     assert!(
@@ -212,10 +212,10 @@ pub fn assert_world_engine_conformance(
     //    `Unsupported`. The world keeps its opaque handle across the reload.
     match engine.spawn_service(
         &world,
-        &slipfork_engine::ServiceSpec {
+        &slipfork_world::ServiceSpec {
             id: "conformance-pre-reload".to_owned(),
-            kind: slipfork_engine::ServiceKind::Component,
-            runtime: slipfork_engine::ServiceRuntime::WorldProcess {
+            kind: slipfork_world::ServiceKind::Component,
+            runtime: slipfork_world::ServiceRuntime::WorldProcess {
                 argv: vec!["sh".to_owned(), "-c".to_owned(), "sleep 30".to_owned()],
                 cwd: std::path::PathBuf::from("/"),
             },
@@ -245,8 +245,8 @@ pub fn assert_world_engine_conformance(
         ),
     }
     let (reloaded_cache, reloaded_millis) = match rootfs.cache {
-        slipfork_engine::CacheOutcome::Hit => (slipfork_engine::CacheOutcome::Miss, Some(42)),
-        slipfork_engine::CacheOutcome::Miss => (slipfork_engine::CacheOutcome::Hit, None),
+        slipfork_world::CacheOutcome::Hit => (slipfork_world::CacheOutcome::Miss, Some(42)),
+        slipfork_world::CacheOutcome::Miss => (slipfork_world::CacheOutcome::Hit, None),
     };
     let reloaded_spec = WorldSpec {
         rootfs: WorldRootfs {
@@ -254,8 +254,8 @@ pub fn assert_world_engine_conformance(
             millis: reloaded_millis,
             ..rootfs.clone()
         },
-        boot: slipfork_engine::BootLineage {
-            base: Some(slipfork_engine::BaseLineage {
+        boot: slipfork_world::BootLineage {
+            base: Some(slipfork_world::BaseLineage {
                 key: "conformance-reloaded-base".to_owned(),
                 millis: Some(7),
             }),
@@ -278,7 +278,7 @@ pub fn assert_world_engine_conformance(
                 .expect("live world must report its lineage after reload");
             assert_eq!(
                 reloaded_lineage.rootfs,
-                Some(slipfork_engine::RootfsLineage {
+                Some(slipfork_world::RootfsLineage {
                     digest: reloaded_spec.rootfs.digest.hex().to_owned(),
                     cache: reloaded_cache,
                     millis: reloaded_millis,
@@ -333,7 +333,7 @@ pub fn assert_world_engine_conformance(
         engine.name()
     );
     for row in &rows {
-        if row.state != slipfork_engine::ServiceState::Running {
+        if row.state != slipfork_world::ServiceState::Running {
             assert!(
                 row.pid.is_none() && row.port.is_none() && row.uptime_secs.is_none(),
                 "{} reported live facts on the non-running row '{}': {row:?}",
@@ -513,10 +513,10 @@ pub fn assert_world_engine_conformance(
 fn assert_lineage_cache_is_honest(
     engine: &dyn WorldEngine,
     node: &str,
-    cache: slipfork_engine::CacheOutcome,
+    cache: slipfork_world::CacheOutcome,
     millis: Option<u64>,
 ) {
-    if cache == slipfork_engine::CacheOutcome::Hit {
+    if cache == slipfork_world::CacheOutcome::Hit {
         assert_eq!(
             millis,
             None,

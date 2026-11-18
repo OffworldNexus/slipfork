@@ -198,7 +198,8 @@ pub fn json(selection: &WorldSelection, recipe: Option<&RemoteRecipe>) -> serde_
 mod tests {
     use std::path::PathBuf;
 
-    use slipfork_wire::control::{WorldLineage, WorldState};
+    use slipfork_wire::control::WorldState;
+    use slipfork_world::WorldLineage;
     use slipfork_world::{LocalHostRoute, ProjectSlug, WorldTarget};
 
     use super::*;

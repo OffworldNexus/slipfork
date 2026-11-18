@@ -20,10 +20,11 @@ use crate::EdgeError;
 use slipfork_wire::control::{
     AuthSummary, BootEvent, ControlError, DaemonError, DaemonErrorKind, DaemonStatus,
     DropForkRequest, ExecTargetRequest, ForkRequest, ForwardRequest, ForwardSummary,
-    HookRunRequest, LogChunk, LogsRequest, PruneReport, SnowResolveRequest, SnowResolveSummary,
-    StreamChunk, UpRequest, WorkspaceRefsRequest, WorkspaceRefsSummary, WorldExecTarget,
-    WorldProcessReport, WorldSelector, WorldSummary, WorldUpSummary,
+    HookRunRequest, LogsRequest, PruneReport, SnowResolveRequest, SnowResolveSummary, UpRequest,
+    WorkspaceRefsRequest, WorkspaceRefsSummary, WorldExecTarget, WorldProcessReport, WorldSelector,
+    WorldSummary, WorldUpSummary,
 };
+use slipfork_world::{LogChunk, StreamChunk};
 
 impl From<&EdgeError> for DaemonError {
     fn from(err: &EdgeError) -> Self {

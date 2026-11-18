@@ -1,6 +1,6 @@
 [package]
 name = "slipfork-world"
-description = "Pure world identity, .localhost route, origin validation, repo-input Merkle hashing, and shared diagnostic formatting"
+description = "Pure world identity, the WorldEngine port, control/env/lineage/rootfs values, .localhost routing, and shared diagnostic formatting"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

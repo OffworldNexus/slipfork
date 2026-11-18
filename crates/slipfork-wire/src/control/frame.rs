@@ -5,8 +5,8 @@
 
 use std::io::{self, Read, Write};
 
-use super::stream::{LogChunk, StreamChunk};
 use super::{ControlError, DaemonReply, MAX_CONTROL_FRAME, MAX_STREAM_CHUNK};
+use slipfork_world::{LogChunk, StreamChunk};
 
 /// Encode and write one `\n`-terminated JSON frame, refusing anything above the frame cap.
 pub fn write_reply(writer: &mut impl Write, reply: &DaemonReply) -> Result<(), ControlError> {

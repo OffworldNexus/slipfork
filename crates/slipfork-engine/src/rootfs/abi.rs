@@ -6,53 +6,17 @@
 
 #![forbid(unsafe_code)]
 
-use std::fmt;
 use std::path::{Path, PathBuf};
 
-use serde::{Deserialize, Serialize};
+use slipfork_world::rootfs::BaseImageError;
+use slipfork_world::rootfs::{ElfAbi, LibcFamily};
 
-use crate::rootfs::{BaseImageError, resolve_guest_path};
+use crate::rootfs::resolve_guest_path;
 
 const ELF_MAGIC: &[u8; 4] = b"\x7fELF";
 const PT_INTERP: u32 = 3;
 const EM_X86_64: u16 = 62;
 const EM_AARCH64: u16 = 183;
-
-/// C library family of one ELF binary (`ADR-0009` §2.3).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum LibcFamily {
-    /// GNU C Library (`libc.so.6`).
-    Glibc,
-    /// musl libc (`ld-musl-*.so.1`).
-    Musl,
-}
-
-impl fmt::Display for LibcFamily {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
-            Self::Glibc => "glibc",
-            Self::Musl => "musl",
-        })
-    }
-}
-
-/// Architecture + C library ABI of one ELF binary.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ElfAbi {
-    /// `e_machine` name (`x86_64`, `aarch64`).
-    pub arch: String,
-    /// C library family.
-    pub libc: LibcFamily,
-    /// `2.41` for glibc, `1.2` for musl.
-    pub libc_version: String,
-}
-
-impl fmt::Display for ElfAbi {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{} {} {}", self.arch, self.libc, self.libc_version)
-    }
-}
 
 /// Concrete ELF/libc inspector: pure-Rust ELF header + libc version-symbol parsing.
 #[derive(Debug, Default, Clone, Copy)]

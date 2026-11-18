@@ -8,25 +8,17 @@
 //!
 //! Every `cwd`-sensitive request carries an explicit `cwd: PathBuf`, so a daemon never calls
 //! `current_dir()`. [`WorldExecTarget`] is the **only** reply permitted to carry a plaintext
-//! [`ExecEnv`]; every failure rendered by this port is a [`DaemonError`] with a redacted message.
+//! [`slipfork_world::ExecEnv`]; every failure rendered by this port is a [`DaemonError`] with a redacted message.
 
-pub mod env;
 pub mod frame;
-pub mod lineage;
 pub mod protocol;
 pub mod request;
 pub mod socket;
-pub mod stream;
 pub mod view;
 
 use thiserror::Error;
 
-pub use env::{EnvNameError, ExecEnv, InheritedVar, REDACTED};
 pub use frame::{FrameReader, unexpected_reply, write_chunk, write_log, write_reply};
-pub use lineage::{
-    BaseLineage, CacheOutcome, RootfsLineage, SeedLineage, ServiceImageLineage, ServiceKind,
-    WorldLineage, WorldServiceInfo,
-};
 pub use protocol::{ControlSecret, DaemonError, DaemonErrorKind, DaemonReply, DaemonRequest};
 pub use request::{
     AuthSummary, DropForkRequest, DumpRequest, ExecTargetRequest, ForkRequest, ForwardRequest,
@@ -34,10 +26,7 @@ pub use request::{
     SnowResolveRequest, SnowResolveSummary, UpRequest, WorkspaceRefsRequest, WorkspaceRefsSummary,
     WorldExecTarget, WorldSelector,
 };
-pub use socket::{
-    CONTROL_SOCKET_FILE, UNIX_SOCKET_PATH_MAX, control_socket_path, unix_socket_path_fits,
-};
-pub use stream::{LogChunk, ServiceState, StreamChunk, StreamSource, WorldEntryCommand};
+pub use socket::{CONTROL_SOCKET_FILE, control_socket_path};
 pub use view::{
     BootEvent, DaemonStatus, IngressError, IngressInfo, ResourceSummary, WorldProcessReport,
     WorldServiceSummary, WorldState, WorldSummary, WorldUpSummary,
@@ -46,7 +35,7 @@ pub use view::{
 /// Hard cap on one JSON-line control frame (request or reply).
 pub const MAX_CONTROL_FRAME: usize = 64 * 1024;
 
-/// Largest streamed chunk payload (a [`StreamChunk`] or [`LogChunk`]'s bytes) emitted per frame,
+/// Largest streamed chunk payload (a [`slipfork_world::StreamChunk`] or [`slipfork_world::LogChunk`]'s bytes) emitted per frame,
 /// so JSON escaping stays under the frame cap.
 pub const MAX_STREAM_CHUNK: usize = 8 * 1024;
 

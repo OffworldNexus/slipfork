@@ -8,9 +8,8 @@ use serde::{Deserialize, Serialize};
 
 use slipfork_world::WorldOrigin;
 
-use super::lineage::{WorldLineage, WorldServiceInfo};
-use super::stream::StreamChunk;
 use super::{DaemonError, DaemonErrorKind};
+use slipfork_world::{StreamChunk, WorldLineage, WorldServiceInfo};
 
 /// The HTTP ingress listeners `slipforkd` actually serves, plus the one port every minted
 /// `WorldOrigin` carries (`docs/design/dx-0.1.0-ux.md` §3).

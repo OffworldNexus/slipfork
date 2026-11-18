@@ -7,7 +7,7 @@
 
 #![forbid(unsafe_code)]
 
-use crate::rootfs::BaseImageError;
+use slipfork_world::rootfs::BaseImageError;
 
 /// One verified static `crun` release asset.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

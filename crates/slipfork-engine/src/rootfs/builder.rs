@@ -16,7 +16,6 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use crate::CacheOutcome;
 use crate::clock::elapsed_millis;
 use crate::rootfs::FsInputHasher;
 use crate::rootfs::abi::ElfProbe;
@@ -27,9 +26,12 @@ use crate::rootfs::dockerfile::{Dockerfile, Stage};
 use crate::rootfs::oci_store::DockerImageStore;
 use crate::rootfs::pin::{buildx_platform, crun_pin};
 use crate::rootfs::{
-    BaseImageBuilder, BaseImageError, CRUN_GUEST_PATH, ImageContractMetadata, RootfsBuildEvent,
-    RootfsDigest, RootfsDigestInputs, WORLD_INIT_GUEST_PATH, WorldRootfs, WorldRootfsRequest,
+    BaseImageBuilder, CRUN_GUEST_PATH, RootfsBuildEvent, WORLD_INIT_GUEST_PATH, WorldRootfsRequest,
     sha256_hex,
+};
+use slipfork_world::CacheOutcome;
+use slipfork_world::rootfs::{
+    BaseImageError, ImageContractMetadata, OciRootfs, RootfsDigest, RootfsDigestInputs, WorldRootfs,
 };
 
 /// Production [`BaseImageBuilder`]: `Dockerfile` stage -> verified local rootfs tree.
@@ -64,8 +66,7 @@ impl DockerfileStageBuilder {
         &self,
         request: &WorldRootfsRequest,
         on_event: &mut dyn FnMut(RootfsBuildEvent),
-    ) -> Result<BTreeMap<crate::rootfs::BackingServiceKey, crate::rootfs::OciRootfs>, BaseImageError>
-    {
+    ) -> Result<BTreeMap<crate::rootfs::BackingServiceKey, OciRootfs>, BaseImageError> {
         let mut images = BTreeMap::new();
         for image in &request.services {
             on_event(RootfsBuildEvent::MaterializingService {

@@ -172,7 +172,7 @@ impl ExecEnv {
     ///
     /// This is the sanctioned materialization surface for the **thin CLI's** direct world entry
     /// (the engine's entry program, for example `nsenter`): `slipfork` receives an [`ExecEnv`] inside
-    /// [`super::stream::WorldEntryCommand`]'s reply and must hand exactly these pairs to
+    /// [`crate::stream::WorldEntryCommand`]'s reply and must hand exactly these pairs to
     /// `Command::env_clear().envs(..)`. Reserved names never collide (construction rejects them),
     /// and `HOME` is rendered exactly as the engine's child-process materialization renders it. The
     /// values are plaintext at this boundary and must never be logged or formatted.

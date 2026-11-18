@@ -8,4 +8,7 @@ repository.workspace = true
 rust-version.workspace = true
 publish = false
 
+[dependencies]
+slipfork-world = { path = "../slipfork-world" }
+
 

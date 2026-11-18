@@ -21,7 +21,7 @@ use std::os::fd::AsRawFd;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 
-use crate::EngineError;
+use slipfork_world::EngineError;
 
 /// `BTRFS_SUPER_MAGIC` (`<linux/magic.h>`): the only `statfs(2).f_type` Slipfork accepts.
 pub const BTRFS_SUPER_MAGIC: i64 = 0x9123_683e;

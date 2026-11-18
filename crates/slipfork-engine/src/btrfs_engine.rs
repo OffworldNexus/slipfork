@@ -47,7 +47,7 @@ use crate::child_env;
 use crate::linux_cow::{self, ProcessSignal};
 use crate::oci::{self, ContainerBundle, ContainerMount};
 use crate::service::{
-    D_STATE_KILL_GRACE, POLL_INTERVAL, ProcessIdentity, ServiceLogs, container_id, drain_stderr,
+    D_STATE_KILL_GRACE, POLL_INTERVAL, ProcessIdentity, container_id, drain_stderr,
     ensure_container_destination, host_child_pids, kill_and_reap_child, run_streamed,
     run_streamed_with_input, spawn_log_reader, wait_for_exit, wait_for_inner_pid, wait_reaped,
     world_guest_for_host,
@@ -56,15 +56,18 @@ use crate::world_init::{
     GROUP_GUEST, INGRESS_GUEST, OCI_BUNDLES_GUEST, OCI_RUN_GUEST, PASSWD_GUEST,
     WORLD_INIT_CONFIG_FILE, WORLD_INIT_SOCKET_FILE, WORLD_STATE_GUEST, WorldInitConfig,
     WorldInitIngress, WorldInitMount, WorldInitRootfs, image_guest_rootfs,
-    synthesize_identity_files, unix_socket_path_fits, world_init_mount,
+    synthesize_identity_files, world_init_mount,
 };
-use crate::{
-    BackingServiceKey, EngineError, ExecEnv, ExecOutput, MountMode, RootfsLineage, ServiceHandle,
-    ServiceImageLineage, ServiceKind, ServiceRuntime, ServiceSpec, ServiceState, SnapshotId,
-    StateSubdirMount, StreamChunk, WorldEngine, WorldEntryCommand, WorldHandle, WorldLineage,
-    WorldMount, WorldRootfs, WorldServiceInfo, WorldSpec, WorldStatus, target_slug,
-    userns_remediation_hint,
+use slipfork_world::rootfs::{BackingServiceKey, WorldRootfs};
+use slipfork_world::{
+    EngineError, ExecEnv, ExecOutput, MountMode, RootfsLineage, ServiceHandle, ServiceImageLineage,
+    ServiceKind, ServiceLogs, ServiceRuntime, ServiceSpec, ServiceState, SnapshotId,
+    StateSubdirMount, StreamChunk, StreamSource, UNIX_SOCKET_PATH_MAX, WorldEngine,
+    WorldEntryCommand, WorldHandle, WorldLineage, WorldMount, WorldServiceInfo, WorldSpec,
+    unix_socket_path_fits,
 };
+
+use crate::{WorldStatus, target_slug, userns_remediation_hint};
 
 /// Installed file name of the per-world PID 1 helper (diagnostics only: the path is injected).
 const WORLD_INIT_PROGRAM: &str = "slipfork-world-init";
@@ -659,7 +662,7 @@ impl BtrfsEngine {
                     "world dial socket '{}' exceeds the {} byte AF_UNIX path limit; use a \
                      shorter --state-dir",
                     netns_sock.display(),
-                    crate::world_init::UNIX_SOCKET_PATH_MAX
+                    UNIX_SOCKET_PATH_MAX
                 ),
             });
         }
@@ -952,10 +955,10 @@ impl BtrfsEngine {
             )));
         };
         if let Some(stdout) = child.stdout.take() {
-            spawn_log_reader(stdout, crate::StreamSource::Stdout, spawn.log.clone());
+            spawn_log_reader(stdout, StreamSource::Stdout, spawn.log.clone());
         }
         if let Some(stderr) = child.stderr.take() {
-            spawn_log_reader(stderr, crate::StreamSource::Stderr, spawn.log.clone());
+            spawn_log_reader(stderr, StreamSource::Stderr, spawn.log.clone());
         }
         if let Ok(mut process) = spawn.process.lock() {
             process.supervisor = Some(child);
@@ -1101,10 +1104,10 @@ impl BtrfsEngine {
             ))
         })?;
         if let Some(stdout) = child.stdout.take() {
-            spawn_log_reader(stdout, crate::StreamSource::Stdout, spawn.log.clone());
+            spawn_log_reader(stdout, StreamSource::Stdout, spawn.log.clone());
         }
         if let Some(stderr) = child.stderr.take() {
-            spawn_log_reader(stderr, crate::StreamSource::Stderr, spawn.log.clone());
+            spawn_log_reader(stderr, StreamSource::Stderr, spawn.log.clone());
         }
         if let Ok(mut process) = spawn.process.lock() {
             process.supervisor = Some(child);
@@ -1166,9 +1169,7 @@ impl BtrfsEngine {
                     world: format!("{:?}", service.world()),
                     id: service.id().to_owned(),
                 })?;
-        if crate::service_state_from_bits(running.state.load(Ordering::Relaxed))
-            != ServiceState::Running
-        {
+        if ServiceState::from_bits(running.state.load(Ordering::Relaxed)) != ServiceState::Running {
             return Err(EngineError::ServiceNotRunning {
                 world: format!("{:?}", service.world()),
                 id: service.id().to_owned(),
@@ -1253,7 +1254,7 @@ impl BtrfsEngine {
         grace: Duration,
     ) -> Result<(), EngineError> {
         let running =
-            crate::service_state_from_bits(state.load(Ordering::Relaxed)) == ServiceState::Running;
+            ServiceState::from_bits(state.load(Ordering::Relaxed)) == ServiceState::Running;
         let (mut supervisor, process_group, container) = {
             let Ok(mut process) = process.lock() else {
                 return Err(EngineError::Execution(format!(
@@ -1937,7 +1938,7 @@ impl WorldEngine for BtrfsEngine {
             let mut worlds = self.lock()?;
             let record = self.live_record(&mut worlds, world)?;
             if let Some(existing) = record.services.get(&spec.id)
-                && crate::service_state_from_bits(existing.state.load(Ordering::Relaxed))
+                && ServiceState::from_bits(existing.state.load(Ordering::Relaxed))
                     == ServiceState::Running
             {
                 return Err(EngineError::ServiceAlreadyRunning {
@@ -2026,9 +2027,7 @@ impl WorldEngine for BtrfsEngine {
                         return Err(err);
                     }
                 }
-                if crate::service_state_from_bits(state.load(Ordering::Relaxed))
-                    != ServiceState::Running
-                {
+                if ServiceState::from_bits(state.load(Ordering::Relaxed)) != ServiceState::Running {
                     // The watcher already reaped the process and closed the log; the record stays
                     // `Exited` so a corrected retry with the same id is not blocked.
                     return Err(EngineError::Execution(format!(
@@ -2121,7 +2120,7 @@ impl WorldEngine for BtrfsEngine {
         let now = Instant::now();
         let mut rows = Vec::with_capacity(record.services.len());
         for (id, service) in &record.services {
-            let state = crate::service_state_from_bits(service.state.load(Ordering::Relaxed));
+            let state = ServiceState::from_bits(service.state.load(Ordering::Relaxed));
             let running = state == ServiceState::Running;
             // A stopped or self-exited service keeps its row but reports no live facts: `None`
             // renders `-`, never a stale pid or an uptime that keeps growing.
@@ -2418,9 +2417,7 @@ fn spawn_service_watcher(
                 }
             };
             if exited {
-                if crate::service_state_from_bits(state.load(Ordering::Relaxed))
-                    == ServiceState::Running
-                {
+                if ServiceState::from_bits(state.load(Ordering::Relaxed)) == ServiceState::Running {
                     state.store(ServiceState::Exited.to_bits(), Ordering::Relaxed);
                     log.close();
                 }

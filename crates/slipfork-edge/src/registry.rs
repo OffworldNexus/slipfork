@@ -19,8 +19,8 @@
 use std::net::TcpStream;
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use slipfork_engine::{WorldEngine, WorldHandle};
 use slipfork_world::{LocalHostRoute, ProjectSlug, WorldOrigin, WorldTarget};
+use slipfork_world::{WorldEngine, WorldHandle};
 
 use crate::EdgeError;
 use crate::forward::{ForwardBridge, ForwardTargetSpec};

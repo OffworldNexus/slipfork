@@ -11,10 +11,14 @@ pub mod support;
 use std::path::PathBuf;
 
 use slipfork_engine::rootfs::{
-    BaseImageBuilder, BaseImageError, CRUN_GUEST_PATH, DockerBuildx, DockerImageStore,
-    DockerfileStageBuilder, ElfProbe, FsInputHasher, HostCacheRequest, RootfsBuildEvent,
-    RuntimeAssets, SnowPortContract, WorldRootfsRequest,
+    BaseImageBuilder, HostCacheRequest, RootfsBuildEvent, RuntimeAssets, SnowPortContract,
+    WorldRootfsRequest,
 };
+use slipfork_engine::rootfs::{
+    CRUN_GUEST_PATH, DockerBuildx, DockerImageStore, DockerfileStageBuilder, ElfProbe,
+    FsInputHasher,
+};
+use slipfork_world::rootfs::BaseImageError;
 use tempfile::TempDir;
 
 struct Harness {

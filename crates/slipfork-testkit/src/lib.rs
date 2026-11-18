@@ -6,6 +6,8 @@
 
 #![forbid(unsafe_code)]
 
+pub mod conformance;
+
 use std::time::{Duration, Instant};
 
 /// The one poll interval for every bounded wait in Slipfork's integration suites.

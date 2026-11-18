@@ -1359,7 +1359,7 @@ dependencies = [
  "listenfd",
  "serde",
  "serde_json",
- "slipfork-engine",
+ "slipfork-testkit",
  "slipfork-wire",
  "slipfork-world",
  "thiserror",
@@ -1435,6 +1435,9 @@ dependencies = [
 [[package]]
 name = "slipfork-testkit"
 version = "0.1.0"
+dependencies = [
+ "slipfork-world",
+]
 
 [[package]]
 name = "slipfork-vcs"
