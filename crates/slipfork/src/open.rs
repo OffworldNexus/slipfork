@@ -21,7 +21,7 @@ use slipfork_world::WorldOrigin;
 
 use crate::ui::{TerminalUi, column_width};
 
-/// The fixed laptop-side forward port of the `open --remote` recipe (there is no `--local-port`).
+/// The default laptop-side forward port of the `open --remote` recipe (`-p/--port` overrides it).
 pub const LOCAL_PORT: u16 = 8080;
 
 /// Narrowest label column of the `open --remote` block (`world   `, `ssh     `, `app     `).
@@ -144,12 +144,13 @@ fn unknown_world(world: &str) -> String {
 
 /// The verified recipe from the daemon's real ingress port and the composition root's account.
 ///
-/// The local port is always [`LOCAL_PORT`] and the tunnel target is the daemon's own
-/// `127.0.0.1:<ingress_port>`; a reported `:0` fails closed instead of printing a recipe that
-/// cannot connect.
+/// `local_port` is the laptop-side `-p/--port` (default [`LOCAL_PORT`]); the tunnel target is always
+/// the daemon's own `127.0.0.1:<ingress_port>`. A reported `:0` fails closed instead of printing a
+/// recipe that cannot connect.
 pub fn remote_recipe(
     origin: &WorldOrigin,
     ingress_port: u16,
+    local_port: u16,
     account: &str,
     host: &str,
 ) -> Result<RemoteRecipe, String> {
@@ -169,10 +170,37 @@ pub fn remote_recipe(
                 .to_owned(),
         );
     }
+    if local_port == 0 {
+        return Err(
+            "the laptop-side port must be a bound TCP port; pass `--port <1..65535>`".to_owned(),
+        );
+    }
+    // Port 80 renders port-less: `http://demo.localhost` is the canonical spelling every world
+    // origin already uses, and browsers fill in `:80` themselves.
+    let port = if local_port == 80 {
+        String::new()
+    } else {
+        format!(":{local_port}")
+    };
     Ok(RemoteRecipe {
-        ssh: format!("ssh -N -L {LOCAL_PORT}:127.0.0.1:{ingress_port} {account}@{host}"),
-        url: format!("http://{}:{LOCAL_PORT}", origin.host()),
+        ssh: format!("ssh -N -L {local_port}:127.0.0.1:{ingress_port} {account}@{host}"),
+        url: format!("http://{}{port}", origin.host()),
     })
+}
+
+/// The host an SSH recipe must name: `$SSH_CONNECTION`'s server address when present, else `uname`.
+///
+/// `$SSH_CONNECTION` is `client_ip client_port server_ip server_port`; the third field is the
+/// machine the developer dialled in to, i.e. exactly what a laptop-side `ssh` must target. A
+/// malformed value falls back to the `uname -n` node name rather than printing a broken command.
+pub fn remote_host(ssh_connection: Option<&str>, kernel_hostname: &str) -> String {
+    let server = ssh_connection.and_then(|connection| {
+        connection
+            .split_whitespace()
+            .nth(2)
+            .filter(|server| !server.is_empty())
+    });
+    server.unwrap_or(kernel_hostname).to_owned()
 }
 
 /// The human `open --remote` block: the world, the line to paste on the laptop, and its URL.
@@ -197,14 +225,14 @@ pub fn render_local(selection: &WorldSelection) -> String {
     format!("opened    {}\n", selection.origin.url())
 }
 
-/// The `open --json` document (`docs/design/dx-0.1.0-ux.md` §10): every key is always present,
-/// and `recipe` is `null` for a local open.
-pub fn json(selection: &WorldSelection, recipe: Option<&RemoteRecipe>) -> serde_json::Value {
+/// The `open --json` document (`docs/design/dx-cli-0.1.0.md` §3): every key is always present,
+/// and `remote` is `null` for a local open.
+pub fn json(selection: &WorldSelection, remote: Option<&RemoteRecipe>) -> serde_json::Value {
     serde_json::json!({
         "ok": true,
         "world": selection.world,
         "origin": selection.origin.url(),
-        "recipe": recipe,
+        "remote": remote,
     })
 }
 
@@ -328,7 +356,7 @@ mod tests {
     #[test]
     fn the_remote_recipe_uses_the_real_ingress_port_and_the_constant_8080() {
         let origin = origin("demo", None, 40645);
-        let recipe = remote_recipe(&origin, 40645, "slipfork", "slipfork-dev-vm")
+        let recipe = remote_recipe(&origin, 40645, LOCAL_PORT, "slipfork", "slipfork-dev-vm")
             .expect("a bound ingress port");
         assert_eq!(
             recipe.ssh,
@@ -336,8 +364,18 @@ mod tests {
         );
         assert_eq!(recipe.url, "http://demo.localhost:8080");
         assert!(recipe.ssh.contains("8080:127.0.0.1:40645"));
+        let port_80 = remote_recipe(&origin, 40645, 80, "slipfork", "slipfork-dev-vm")
+            .expect("port 80 is a valid laptop-side port");
+        assert_eq!(
+            port_80.ssh,
+            "ssh -N -L 80:127.0.0.1:40645 slipfork@slipfork-dev-vm"
+        );
+        assert_eq!(
+            port_80.url, "http://demo.localhost",
+            "the default `:80` is omitted from the URL"
+        );
         assert!(
-            remote_recipe(&origin, 0, "slipfork", "slipfork-dev-vm").is_err(),
+            remote_recipe(&origin, 0, LOCAL_PORT, "slipfork", "slipfork-dev-vm").is_err(),
             "a :0 recipe can never connect"
         );
     }
@@ -355,7 +393,8 @@ mod tests {
             )
             .expect("a routable route");
             let origin = WorldOrigin::local(&route, 40645).expect("a minted origin");
-            let recipe = remote_recipe(&origin, 40645, "dev", "vm").expect("a bound ingress port");
+            let recipe = remote_recipe(&origin, 40645, LOCAL_PORT, "dev", "vm")
+                .expect("a bound ingress port");
 
             // The browser forwards the URL's authority; `LocalHostRoute::parse` strips `:8080`.
             let authority = recipe
@@ -381,8 +420,14 @@ mod tests {
             "opened    http://demo.localhost:40645\n"
         );
 
-        let recipe = remote_recipe(&selected.origin, 40645, "slipfork", "slipfork-dev-vm")
-            .expect("a bound ingress port");
+        let recipe = remote_recipe(
+            &selected.origin,
+            40645,
+            LOCAL_PORT,
+            "slipfork",
+            "slipfork-dev-vm",
+        )
+        .expect("a bound ingress port");
         assert_eq!(
             render_remote(&selected, &recipe, &plain()),
             "world   demo\n\
@@ -406,12 +451,39 @@ mod tests {
         assert_eq!(document["ok"], true);
         assert_eq!(document["world"], "demo");
         assert_eq!(document["origin"], "http://demo.localhost:40645");
-        assert_eq!(document["recipe"]["ssh"], recipe.ssh);
-        assert_eq!(document["recipe"]["url"], recipe.url);
+        assert_eq!(document["remote"]["ssh"], recipe.ssh);
+        assert_eq!(document["remote"]["url"], recipe.url);
 
         let local = json(&selected, None);
-        assert!(local["recipe"].is_null(), "a local open has no recipe");
+        assert!(
+            local["remote"].is_null(),
+            "a local open has no remote recipe"
+        );
         let text = serde_json::to_string(&local).expect("json");
         assert!(!text.contains("opened"), "no human text: {text}");
+    }
+
+    #[test]
+    fn an_ssh_session_supplies_the_recipe_host_and_port_flag_the_local_port() {
+        // `$SSH_CONNECTION` is `client_ip client_port server_ip server_port`.
+        assert_eq!(
+            remote_host(Some("203.0.113.9 51234 10.0.0.7 22"), "devbox"),
+            "10.0.0.7"
+        );
+        assert_eq!(remote_host(None, "devbox"), "devbox");
+        assert_eq!(remote_host(Some("garbage"), "devbox"), "devbox");
+
+        let origin = origin("demo", None, 40645);
+        let recipe = remote_recipe(&origin, 40645, 9090, "slipfork", "10.0.0.7")
+            .expect("a bound ingress port");
+        assert_eq!(
+            recipe.ssh,
+            "ssh -N -L 9090:127.0.0.1:40645 slipfork@10.0.0.7"
+        );
+        assert_eq!(recipe.url, "http://demo.localhost:9090");
+        assert!(
+            remote_recipe(&origin, 40645, 0, "slipfork", "vm").is_err(),
+            "a :0 laptop port cannot forward"
+        );
     }
 }

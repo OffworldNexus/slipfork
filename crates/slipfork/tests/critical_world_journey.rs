@@ -505,26 +505,58 @@ fn world_lifecycle_journey_boots_edits_forks_and_reaps() {
         "world entry must be quiet: no `getcwd` line before the command"
     );
 
-    // --- the fail-closed container `db`/`redis` entries (no TTY) ------------
+    // --- a non-TTY `secret set` with no piped value refuses with one `next:` remedy
+    let secret = daemon.cli(&repo, &["secret", "set", "PIPE_KEY"]);
+    assert!(
+        !secret.status.success(),
+        "an empty non-TTY secret read must refuse"
+    );
+    let diagnostic = stderr(&secret);
+    assert!(
+        diagnostic.contains("the secret read from stdin is empty"),
+        "the refusal is one line: {diagnostic}"
+    );
+    assert!(
+        diagnostic.contains("next: printf '%s' \"$VALUE\" | slipfork secret set PIPE_KEY"),
+        "the remedy is the pipe: {diagnostic}"
+    );
+
+    // --- a piped data client prints the world's published connection URI, cleanly
     let db = daemon.cli(&repo, &["db"]);
-    assert!(!db.status.success(), "a non-TTY db entry must fail closed");
-    let diagnostic = stderr(&db);
+    assert_success(&db, "a piped `db` prints the connection URI");
+    let db_uri = stdout(&db);
     assert!(
-        diagnostic.contains("needs an interactive terminal"),
-        "the resolved container entry must require a TTY: {diagnostic}"
+        db_uri.starts_with("postgres://slipfork@127.0.0.1:5432/"),
+        "the URI is the world's own published resource fact: {db_uri}"
     );
     assert!(
-        !diagnostic.contains("ServiceNotRunning"),
-        "a running postgres container must not report ServiceNotRunning: {diagnostic}"
-    );
-    assert!(
-        stdout(&db).trim().is_empty(),
-        "a refused TTY entry must produce no output"
+        !db_uri.contains('\x1b'),
+        "a piped URI carries no spinner or ANSI bytes: {db_uri:?}"
     );
     let redis = daemon.cli(&repo, &["redis"]);
-    assert!(!redis.status.success());
-    assert!(stderr(&redis).contains("needs an interactive terminal"));
-    assert!(!stderr(&redis).contains("ServiceNotRunning"));
+    assert_success(&redis, "a piped `redis` prints the connection URI");
+    let redis_uri = stdout(&redis);
+    assert!(
+        redis_uri.starts_with("redis://127.0.0.1:6379"),
+        "the URI is the world's own published resource fact: {redis_uri}"
+    );
+    assert!(
+        !redis_uri.contains('\x1b'),
+        "a piped URI carries no spinner or ANSI bytes: {redis_uri:?}"
+    );
+
+    // --- a real TTY makes the data client interactive, never a URI printer ---------
+    let interactive = daemon.cli_with_pty(&repo, &["redis"], "PING\nQUIT\n");
+    assert_success(&interactive, "a TTY `redis` opens the interactive client");
+    let pty_text = stdout(&interactive);
+    assert!(
+        pty_text.contains("PONG"),
+        "the interactive redis-cli answered over the pseudo-terminal: {pty_text:?}"
+    );
+    assert!(
+        !pty_text.contains("redis://"),
+        "an interactive TTY entry never prints the piped URI leg: {pty_text:?}"
+    );
 
     // --- second `up` is idempotent and never mints a second URL -------------
     let up_again = daemon.cli(&repo, &["up"]);
@@ -545,6 +577,46 @@ fn world_lifecycle_journey_boots_edits_forks_and_reaps() {
             .any(|line| line.contains("ssh") || line.contains("slipfork")),
         "`--remote` prints the recipe instead of opening a browser: {}",
         stdout(&remote)
+    );
+    // The `--json` recipe carries the paste-ready tunnel and omits the default `:80`.
+    let remote_json = daemon.cli(&repo, &["--json", "open", "--remote"]);
+    assert_success(&remote_json, "open --remote --json");
+    let document: Value = serde_json::from_str(&stdout(&remote_json)).expect("open json");
+    let ssh_line = document["remote"]["ssh"]
+        .as_str()
+        .expect("the --json document carries `remote.ssh`");
+    assert!(
+        ssh_line.starts_with("ssh -N -L 8080:127.0.0.1:"),
+        "the printed line is the paste-ready tunnel: {ssh_line}"
+    );
+    assert_eq!(
+        document["remote"]["url"], "http://acme-app.localhost:8080",
+        "the remote URL is the world's verified authority on the fixed laptop port: {document}"
+    );
+    // The one genuine port-80 case renders port-less.
+    let local_80 = daemon.cli(&repo, &["--json", "open", "--remote", "-p", "80"]);
+    assert_success(&local_80, "open --remote -p 80 --json");
+    let document: Value = serde_json::from_str(&stdout(&local_80)).expect("open -p 80 json");
+    assert_eq!(
+        document["remote"]["url"], "http://acme-app.localhost",
+        "a port-80 forward omits the redundant `:80`: {document}"
+    );
+    // A headless host reached over SSH auto-selects the recipe without `-r`.
+    let headless = daemon.cli_with_env(
+        &repo,
+        &["open"],
+        "SSH_CONNECTION",
+        "203.0.113.9 41000 10.0.0.7 22",
+    );
+    assert_success(&headless, "an SSH session auto-selects `open --remote`");
+    let headless_text = stdout(&headless);
+    assert!(
+        headless_text.contains("ssh -N -L 8080:127.0.0.1:"),
+        "the auto-selected recipe prints the tunnel: {headless_text}"
+    );
+    assert!(
+        headless_text.contains("@10.0.0.7"),
+        "the recipe targets $SSH_CONNECTION's server address: {headless_text}"
     );
     let restricted = support::tool_path(scratch, "restricted-path", &["git", "sh", "uname"]);
     let refused = daemon.cli_with_path(&repo, &restricted, &["open"]);
@@ -1097,6 +1169,51 @@ fn world_lifecycle_journey_boots_edits_forks_and_reaps() {
         "an empty id list, never a guess: {idle_doc}"
     );
     assert_success(&daemon.cli(&idle_repo, &["down"]), "down the idle world");
+
+    // --- a dirty throwaway fork is refused until `-f` ----------------------
+    let probe_fork = daemon.cli(&repo, &["fork", "dirty-probe"]);
+    assert_success(&probe_fork, "fork the throwaway `dirty-probe`");
+    let probe_worktree = repo.join(".worktrees/dirty-probe");
+    assert!(
+        probe_worktree.is_dir(),
+        "the throwaway fork has a real checkout: {}",
+        probe_worktree.display()
+    );
+    fs::write(probe_worktree.join("dirty.txt"), "dirty\n").expect("dirty marker");
+    let refused = daemon.cli(&probe_worktree, &["drop"]);
+    assert!(
+        !refused.status.success(),
+        "a dirty fork must refuse to drop: stdout={:?}",
+        stdout(&refused)
+    );
+    let diagnostic = stderr(&refused);
+    assert!(
+        diagnostic.contains("has 1 uncommitted path(s) in its checkout"),
+        "the refusal counts the dirty paths: {diagnostic}"
+    );
+    assert!(
+        diagnostic.contains("slipfork drop dirty-probe --force"),
+        "the remedy names `--force`: {diagnostic}"
+    );
+    assert!(
+        probe_worktree.exists(),
+        "a refused drop keeps the checkout: {}",
+        probe_worktree.display()
+    );
+    let forced = daemon.cli(&probe_worktree, &["drop", "--force"]);
+    assert_success(
+        &forced,
+        "drop --force discards the dirty throwaway checkout",
+    );
+    assert!(
+        !probe_worktree.exists(),
+        "`-f` removes the dirty throwaway checkout"
+    );
+    assert!(
+        worktree.exists(),
+        "the retained fork is untouched by the throwaway probe: {}",
+        worktree.display()
+    );
 
     // --- `drop` releases the fork by its printed id, `down` the canonical world
     let drop = daemon.cli(&repo, &["drop", fork_id.as_str()]);

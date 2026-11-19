@@ -202,7 +202,7 @@ pub enum Commands {
         action: HookAction,
     },
 
-    /// Open `psql` inside the world's running PostgreSQL service container (requires a TTY).
+    /// Open `psql` in the world's PostgreSQL container, or print the database URI on a pipe.
     Db {
         /// Declared `pg_databases.<id>` entry; inferred when exactly one is declared.
         db_id: Option<String>,
@@ -210,7 +210,7 @@ pub enum Commands {
         world: Option<String>,
     },
 
-    /// Open `redis-cli` inside the world's running Redis service container (requires a TTY).
+    /// Open `redis-cli` in the world's Redis container, or print the cluster URI on a pipe.
     Redis {
         /// Declared `redis_clusters.<id>` entry; inferred when exactly one is declared.
         cluster_id: Option<String>,

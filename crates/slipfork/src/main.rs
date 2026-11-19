@@ -89,6 +89,9 @@ pub(crate) struct Ui {
     browser: Browser,
     /// The one `SUDO_USER` read in the workspace (`ADR-0011` §1).
     invoking_account: Option<String>,
+    /// `$SSH_CONNECTION` (`client_ip client_port server_ip server_port`), the headless-host fact
+    /// `slipfork open` uses to auto-select the SSH recipe. `None` on a local desktop session.
+    ssh_connection: Option<String>,
     /// Explicit `--state-dir`, forwarded verbatim to `daemon unit` / `daemon install`.
     pub(crate) state_dir: Option<PathBuf>,
     pub(crate) xdg_cache_home: Option<PathBuf>,
@@ -119,6 +122,10 @@ impl CliApp {
             exe_dir: exe_dir(),
             browser: browser_from_env(),
             invoking_account: invoking_account(),
+            ssh_connection: std::env::var("SSH_CONNECTION")
+                .ok()
+                .map(|value| value.trim().to_owned())
+                .filter(|value| !value.is_empty()),
             state_dir: cli.state_dir,
             xdg_cache_home: xdg_cache,
             xdg_data_home: xdg_data,
@@ -242,6 +249,11 @@ impl Ui {
     /// The one `SUDO_USER` read in the workspace (`ADR-0011` §1).
     pub(crate) fn invoking_account(&self) -> Option<String> {
         self.invoking_account.clone()
+    }
+
+    /// `$SSH_CONNECTION` when this shell arrived over SSH (`open` auto-selects the recipe).
+    pub(crate) fn ssh_connection(&self) -> Option<&str> {
+        self.ssh_connection.as_deref()
     }
 
     /// The invoking uid/gid pair used by `doctor` and the `daemon install` root gate.

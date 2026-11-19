@@ -47,6 +47,7 @@ pub mod daemon_handover;
 pub mod daemon_install_report;
 pub mod daemon_unit_install;
 pub mod doctor;
+pub mod hook_failure;
 pub mod layout;
 pub mod logs;
 pub mod open;

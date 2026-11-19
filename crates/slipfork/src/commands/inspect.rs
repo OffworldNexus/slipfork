@@ -59,14 +59,20 @@ pub(crate) fn ps(app: &CliApp, world: Option<String>) -> Result<ExitCode, String
     Ok(ExitCode::SUCCESS)
 }
 
-/// `slipfork open [--remote]`: hand the world's typed origin to the one concrete [`Browser`], or
-/// print the verified SSH recipe for a laptop (`docs/design/dx-0.1.0-ux.md` §6).
+/// `slipfork open [--remote] [-p PORT]`: hand the world's typed origin to the one concrete
+/// [`Browser`], or print the verified SSH recipe for a laptop (`docs/design/dx-cli-0.1.0.md` §2).
 ///
 /// The world and its origin are the daemon's facts (`DaemonStatus.worlds`), the remote recipe's
-/// port is `DaemonStatus.ingress.port` (never a literal `80`), and the account/host come from the
-/// resolved identity and the `uname -n` probe — never `$USER`/`$HOSTNAME`.
-/// A non-`:80` ingress announces §2's one stderr line (never under `--json`).
-pub(crate) fn open(app: &CliApp, world: Option<String>, remote: bool) -> Result<ExitCode, String> {
+/// ports are `DaemonStatus.ingress.port` and the caller's `-p/--port`, and the account/host come from
+/// the resolved identity plus `$SSH_CONNECTION`'s server address (falling back to the `uname -n`
+/// probe) — never `$USER`/`$HOSTNAME`. An active SSH session auto-selects the recipe, and a non-`:80`
+/// ingress announces §2's one stderr line (never under `--json`).
+pub(crate) fn open(
+    app: &CliApp,
+    world: Option<String>,
+    remote: bool,
+    port: u16,
+) -> Result<ExitCode, String> {
     let client = connect(&app.layout)?;
     let status = client.status().map_err(|err| err.to_string())?;
     // Only the cwd-selected form needs a checkout; an explicit `--world` is a fleet-wide lookup
@@ -81,13 +87,17 @@ pub(crate) fn open(app: &CliApp, world: Option<String>, remote: bool) -> Result<
     {
         eprintln!("{} {hint}", app.terminal.warn("!"));
     }
+    // A headless host reached over SSH gets the paste-ready tunnel without remembering `-r`.
+    let remote = remote || app.ui.ssh_connection().is_some();
     if remote {
         let identity = app.ui.identity()?;
+        let host = slipfork::open::remote_host(app.ui.ssh_connection(), &app.ui.kernel_hostname());
         let recipe = slipfork::open::remote_recipe(
             &selection.origin,
             status.ingress.port(),
+            port,
             &identity.account,
-            &app.ui.kernel_hostname(),
+            &host,
         )?;
         if app.output_mode.json {
             println!(

@@ -51,7 +51,11 @@ pub(crate) fn dispatch(app: &CliApp, command: Option<Commands>) -> Result<ExitCo
         Some(Commands::Down { world }) => boot::down(app, world),
         Some(Commands::Restart { world, features }) => boot::restart(app, world, features),
         Some(Commands::Ps { world }) => inspect::ps(app, world),
-        Some(Commands::Open { world, remote, .. }) => inspect::open(app, world, remote),
+        Some(Commands::Open {
+            world,
+            remote,
+            port,
+        }) => inspect::open(app, world, remote, port),
         Some(Commands::Fork {
             fork,
             base,
@@ -60,7 +64,7 @@ pub(crate) fn dispatch(app: &CliApp, command: Option<Commands>) -> Result<ExitCo
             features,
             host_caches,
         }) => boot::fork(app, fork, base, dump, resources, features, host_caches),
-        Some(Commands::Drop { fork, .. }) => boot::drop_fork(app, fork),
+        Some(Commands::Drop { fork, force }) => boot::drop_fork(app, fork, force),
         Some(Commands::Prune { dry_run, yes }) => inspect::prune(app, dry_run, yes),
         Some(Commands::Secret { action }) => secret::secret(app, action),
         Some(Commands::Exec {

@@ -1,12 +1,13 @@
 //! Boot and teardown verbs: `up`, `fork`, `restart`, `down`, and `drop`.
 
 use std::io::{self, Write};
-use std::path::Path;
-use std::process::ExitCode;
+use std::path::{Path, PathBuf};
+use std::process::{Command, ExitCode};
 
 use serde_json::json;
 use slipfork::cli::{DumpArgs, FeatureArgs, ResourceArgs};
 use slipfork_edge::{DaemonControl, DaemonControlClient, EdgeError};
+use slipfork_vcs::WORKTREES_DIRECTORY;
 use slipfork_wire::control::{
     BootEvent, DropForkRequest, ForkRequest, RestartRequest, UpRequest, WorldSelector,
     WorldUpSummary,
@@ -15,6 +16,7 @@ use slipfork_wire::control::{
 use crate::CliApp;
 use crate::commands::control::{connect, connect_or_spawn};
 use crate::commands::render_json;
+use slipfork::hook_failure::HookFailure;
 
 /// `slipfork up`: boot the selected world, streaming every daemon event.
 pub(crate) fn up(
@@ -150,17 +152,26 @@ pub(crate) fn down(app: &CliApp, world: Option<String>) -> Result<ExitCode, Stri
     Ok(ExitCode::SUCCESS)
 }
 
-/// `slipfork drop [FORK]`: destroy a fork world and remove its checkout.
+/// `slipfork drop [FORK] [-f]`: destroy a fork world and remove its checkout.
 ///
 /// An omitted fork defaults to the `.worktrees/<fork>` checkout containing `cwd`; outside one it
-/// fails closed naming the explicit form rather than guessing a destructive target.
-pub(crate) fn drop_fork(app: &CliApp, fork: Option<String>) -> Result<ExitCode, String> {
+/// fails closed naming the explicit form rather than guessing a destructive target. A checkout with
+/// uncommitted or untracked paths is never destroyed silently: the refusal is one line plus the
+/// `-f` remedy, and only `-f/--force` discards those changes.
+pub(crate) fn drop_fork(
+    app: &CliApp,
+    fork: Option<String>,
+    force: bool,
+) -> Result<ExitCode, String> {
     let client = connect(&app.layout)?;
     let cwd = app.ui.cwd()?;
     let fork = match fork {
         Some(fork) => fork,
         None => cwd_fork(&cwd)?,
     };
+    if !force && let Some(changed) = dirty_fork(&cwd, &fork)? {
+        return Err(dirty_refusal(&fork, changed));
+    }
     let request = DropForkRequest { cwd, fork };
     let released = client.drop_fork(&request).map_err(|err| err.to_string())?;
     if app.output_mode.json {
@@ -177,7 +188,7 @@ pub(crate) fn drop_fork(app: &CliApp, fork: Option<String>) -> Result<ExitCode, 
 fn cwd_fork(cwd: &Path) -> Result<String, String> {
     let mut components = cwd.components();
     while let Some(component) = components.next() {
-        if component.as_os_str() == ".worktrees"
+        if component.as_os_str() == WORKTREES_DIRECTORY
             && let Some(fork) = components.next()
         {
             return Ok(fork.as_os_str().to_string_lossy().into_owned());
@@ -189,6 +200,55 @@ fn cwd_fork(cwd: &Path) -> Result<String, String> {
     ))
 }
 
+/// The `.worktrees/<fork>` checkout this invocation may destroy, if it exists on disk.
+///
+/// The selector is resolved by the one grammar `project::world_worktree` already owns
+/// (`<project>`, `<project>:<fork>`, or `<fork>`), so a qualified id can never silently miss the
+/// dirty guard; only a path that really is a fork checkout beneath `.worktrees/` is returned.
+fn fork_checkout(cwd: &Path, selector: &str) -> Option<PathBuf> {
+    let repo = crate::commands::control::repo_root(cwd).ok()?;
+    let path = slipfork::project::world_worktree(&repo, Some(selector)).ok()?;
+    let checkouts = repo.vcs_root.join(WORKTREES_DIRECTORY);
+    (path.starts_with(&checkouts) && path.is_dir()).then_some(path)
+}
+
+/// How many paths the fork checkout has changed relative to its branch (`None` = clean/unknown).
+///
+/// `git status --porcelain=v1 -z --untracked-files=all` is the exact view `slipfork-vcs` snapshots;
+/// a checkout the probe cannot read (foreign backend, absent git) yields `None` so the daemon, not a
+/// guessed client answer, owns the authoritative refusal.
+fn dirty_fork(cwd: &Path, fork: &str) -> Result<Option<usize>, String> {
+    let Some(checkout) = fork_checkout(cwd, fork) else {
+        return Ok(None);
+    };
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(&checkout)
+        .args(["status", "--porcelain=v1", "-z", "--untracked-files=all"])
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .output();
+    let Ok(output) = output else {
+        return Ok(None);
+    };
+    if !output.status.success() {
+        return Ok(None);
+    }
+    // `-z` separates entries with NUL; a rename contributes a second, empty-terminated field.
+    let changed = output
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter(|entry| !entry.is_empty())
+        .count();
+    Ok((changed > 0).then_some(changed))
+}
+
+/// The one-line dirty-fork refusal plus its `-f` remedy (never a bare "dirty worktree").
+fn dirty_refusal(fork: &str, changed: usize) -> String {
+    format!(
+        "fork '{fork}' has {changed} uncommitted path(s) in its checkout\n  next: commit or stash them, or run `slipfork drop {fork} --force` to discard"
+    )
+}
+
 /// Remember the last hook failure so a failed `up` / `fork` can print the rescue block.
 fn note_hook_failure(event: &BootEvent, failure: &mut Option<BootEvent>) {
     if matches!(event, BootEvent::HookFailed { .. }) {
@@ -196,42 +256,28 @@ fn note_hook_failure(event: &BootEvent, failure: &mut Option<BootEvent>) {
     }
 }
 
-/// Print the full hook failure and its one-line rescue commands, then exit non-zero.
+/// Print the inline hook failure block (last 15 log lines + `Forkfile:<line>`) and its rescue.
 fn fail_with_rescue(
     app: &CliApp,
     failure: Option<&BootEvent>,
     error: EdgeError,
 ) -> Result<ExitCode, String> {
     app.terminal.finish_progress();
-    let Some(BootEvent::HookFailed {
-        id,
-        argv,
-        exit_code,
-        world,
-        log_path,
-    }) = failure
-    else {
+    let Some(failure) = failure.and_then(HookFailure::from_event) else {
         return Err(error.to_string());
     };
     if app.output_mode.json {
         return Err(error.to_string());
     }
-    let world_selector = world
-        .split_once(':')
-        .map(|(_, fork)| format!(" --world {fork}"))
-        .unwrap_or_default();
-    eprintln!("error: hook '{id}' exited with code {exit_code} in world '{world}'");
-    eprintln!("  argv: {argv:?}");
-    eprintln!("  log:  {}", log_path.display());
-    eprintln!();
-    eprintln!("Rescue commands (world '{world}' kept alive for inspection):");
-    eprintln!(
-        "  slipfork hook run {id}{world_selector}          # add --no-tty in non-interactive shells"
-    );
-    eprintln!("  slipfork logs{world_selector} {id}");
-    eprintln!(
-        "  slipfork shell{world_selector}                            # or: slipfork exec{world_selector} -- <cmd>"
-    );
+    // The hook ran in the world's worktree; the caller's checkout resolves to it without asking the
+    // daemon a second time. A non-repository `cwd` simply prints the block without a line.
+    let worktree = app
+        .ui
+        .cwd()
+        .and_then(|cwd| crate::commands::control::repo_root(&cwd))
+        .ok()
+        .map(|repo| repo.worktree_root);
+    eprint!("{}", failure.render(worktree.as_deref(), &app.terminal));
     Ok(ExitCode::from(1))
 }
 
@@ -322,5 +368,84 @@ fn note_ingress(client: &DaemonControlClient) {
     };
     if let Some(hint) = slipfork::status::ingress_hint(status.ingress.port()) {
         eprintln!("{hint}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use super::*;
+
+    /// Run real `git` plumbing with pinned identity, exactly like the internals do.
+    fn git(dir: &Path, args: &[&str]) {
+        let status = Command::new("git")
+            .current_dir(dir)
+            .args([
+                "-c",
+                "user.name=slipfork",
+                "-c",
+                "user.email=slipfork@localhost",
+            ])
+            .args(args)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_SYSTEM", "/dev/null")
+            .status()
+            .expect("spawn git");
+        assert!(status.success(), "git {args:?} failed");
+    }
+
+    #[test]
+    fn a_dirty_fork_checkout_is_detected_and_clean_or_unknown_is_not() {
+        let tmp = tempfile::Builder::new()
+            .prefix("slipfork-dirty-")
+            .tempdir_in("/var/tmp")
+            .expect("disk scratch");
+        // A valid directory name is the project slug `repo_root` derives (never a tempdir label).
+        let repo = tmp.path().join("demoapp");
+        fs::create_dir(&repo).expect("repo directory");
+        git(&repo, &["init", "-q", "-b", "main"]);
+        fs::write(repo.join("seed.txt"), "seed\n").expect("seed file");
+        git(&repo, &["add", "seed.txt"]);
+        git(&repo, &["commit", "-qm", "seed"]);
+        git(
+            &repo,
+            &["worktree", "add", "-q", ".worktrees/feat", "-b", "feat"],
+        );
+        let worktree = repo.join(WORKTREES_DIRECTORY).join("feat");
+
+        // A clean checkout is `None` (nothing to refuse) and resolves from the repo or the fork.
+        assert_eq!(dirty_fork(&repo, "feat").expect("probe"), None);
+        assert_eq!(
+            fork_checkout(&repo, "feat").as_deref(),
+            Some(worktree.as_path())
+        );
+        assert_eq!(
+            fork_checkout(&worktree, "feat").as_deref(),
+            Some(worktree.as_path())
+        );
+        // A project-qualified id resolves through the same canonical grammar, never by skipping.
+        assert_eq!(
+            fork_checkout(&repo, "demoapp:feat").as_deref(),
+            Some(worktree.as_path())
+        );
+
+        // One untracked file is the dirty view `-f` is needed to discard.
+        fs::write(worktree.join("dirty.txt"), "dirty\n").expect("dirty file");
+        assert_eq!(dirty_fork(&repo, "feat").expect("probe"), Some(1));
+        assert_eq!(dirty_fork(&repo, "demoapp:feat").expect("probe"), Some(1));
+        assert_eq!(dirty_fork(&worktree, "feat").expect("probe"), Some(1));
+
+        // An absent fork never invents a destructive target.
+        assert_eq!(fork_checkout(&repo, "missing"), None);
+        assert_eq!(dirty_fork(&repo, "missing").expect("probe"), None);
+
+        // The refusal is exactly one line plus one `next:` remedy naming `--force`.
+        assert_eq!(
+            dirty_refusal("feat", 2),
+            "fork 'feat' has 2 uncommitted path(s) in its checkout\n  \
+             next: commit or stash them, or run `slipfork drop feat --force` to discard"
+        );
+        assert!(!dirty_refusal("feat", 2).contains('\x1b'));
     }
 }

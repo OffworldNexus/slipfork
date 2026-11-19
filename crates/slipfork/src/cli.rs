@@ -154,10 +154,13 @@ mod tests {
             remote,
             "`--remote` prints the SSH recipe instead of opening a browser"
         );
-        // The laptop-side forward port is the fixed constant `8080`; there is no extra flag.
-        let err = Cli::try_parse_from(["slipfork", "open", "--remote", "--local-port", "9090"])
-            .expect_err("`--local-port` was locked out of 0.1.0");
-        assert_eq!(err.kind(), clap::error::ErrorKind::UnknownArgument);
+        // `-p/--port` selects the laptop-side forward port; the tunnel target stays the daemon's.
+        let custom = Cli::try_parse_from(["slipfork", "open", "--remote", "-p", "9090"])
+            .expect("`-p 9090` selects a custom laptop-side port");
+        let Some(Commands::Open { port, .. }) = custom.command else {
+            panic!("expected `open`");
+        };
+        assert_eq!(port, 9090);
     }
 
     #[test]

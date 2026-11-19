@@ -749,12 +749,56 @@ impl Daemon {
             .expect("spawn slipfork stream")
     }
 
+    /// The same CLI invocation with stdin/stdout attached to a real pseudo-terminal (`script`),
+    /// so `isatty` is true on both ends; `stdin` is fed to the terminal.
+    pub fn cli_with_pty(&self, cwd: &Path, args: &[&str], stdin: &str) -> Output {
+        use std::io::Write;
+
+        use std::ffi::OsStr;
+
+        let mut argv: Vec<std::ffi::OsString> = vec![
+            OsStr::new(env!("CARGO_BIN_EXE_slipfork")).to_owned(),
+            OsStr::new("--state-dir").to_owned(),
+            self.state_dir.clone().into_os_string(),
+        ];
+        argv.extend(args.iter().map(OsStr::new).map(OsStr::to_owned));
+        let line = argv
+            .iter()
+            .map(|arg| shell_quote(arg))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let mut command = Command::new("script");
+        command
+            .arg("-q")
+            .arg("-e")
+            .arg("-c")
+            .arg(line)
+            .arg("/dev/null");
+        self.apply_cli_env(&mut command, cwd);
+        let mut child = command
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn a pseudo-terminal");
+        child
+            .stdin
+            .take()
+            .expect("pty stdin")
+            .write_all(stdin.as_bytes())
+            .expect("write pty stdin");
+        child.wait_with_output().expect("wait for the pty child")
+    }
+
     fn command(&self, cwd: &Path, args: &[&str]) -> Command {
         let mut command = Command::new(env!("CARGO_BIN_EXE_slipfork"));
+        command.arg("--state-dir").arg(&self.state_dir).args(args);
+        self.apply_cli_env(&mut command, cwd);
         command
-            .arg("--state-dir")
-            .arg(&self.state_dir)
-            .args(args)
+    }
+
+    fn apply_cli_env(&self, command: &mut Command, cwd: &Path) {
+        command
             .current_dir(cwd)
             .env(
                 "XDG_CACHE_HOME",
@@ -765,8 +809,12 @@ impl Daemon {
             // opener from one, and the harness's real `xdg-open` fixture must be what it selects.
             .env("DISPLAY", ":0")
             .env("PATH", cli_path(&self.browser_bin));
-        command
     }
+}
+
+/// One token quoted for `sh -c` (the `script -c` command string).
+fn shell_quote(value: &std::ffi::OsStr) -> String {
+    format!("'{}'", value.to_string_lossy().replace('\'', "'\\''"))
 }
 
 impl Drop for Daemon {
