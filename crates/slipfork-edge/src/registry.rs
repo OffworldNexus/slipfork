@@ -15,7 +15,8 @@
 //! - [`WorldRegistry::release_world`] destroys the in-process world.
 //!
 //! The `Host` port-strip and DNS-label grammar is owned by `slipfork_world`; the table grammar and
-//! longest-prefix resolution live in [`ingress_table`], so this module only owns the world index.
+//! longest-prefix resolution live in the `ingress_table` module, so this module only owns the
+//! world index.
 //!
 //! Every request-path error names the world id and the `Host` header.
 

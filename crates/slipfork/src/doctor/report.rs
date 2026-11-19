@@ -70,8 +70,8 @@ pub(crate) fn failed_fix(context: &str, outcome: &HostCheckOutcome) -> Option<St
 /// (`ADR-0010` §4).
 ///
 /// This function probes nothing and spawns nothing: `btrfs` is the plain [`BtrfsProbeReport`] the
-/// root got from `KernelBtrfsDriver::probe`, and `facts` is what [`OsHostProbe`] and
-/// [`SystemdIngressProbe`] observed once in `crates/slipfork/src/main.rs`.
+/// root got from `KernelBtrfsDriver::probe`, and `facts` is what `OsHostProbe` and
+/// `SystemdIngressProbe` observed once in `crates/slipfork/src/main.rs`.
 ///
 /// `NetnsCheck::Skipped` arrives in `facts` already synthesized by the root; `noatime` and
 /// `ingress` are advisory and never feed `ok` or `fixes`, so `fixes.is_empty() <=> ok` holds

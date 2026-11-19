@@ -89,7 +89,7 @@ impl EvaluatedFork {
     /// The `<entity>.<project>.localhost` and `app.*` facts are omitted when the manifest declares
     /// no `project <slug>`; everything else stays world-local. This method is the single source of
     /// `$app_db.url`-style references: [`Self::resolve_env`] and [`Self::resolve_build_env`] read
-    /// [`Self::world_projection`], which starts from these facts and adds the declared local
+    /// `Self::world_projection`, which starts from these facts and adds the declared local
     /// passwords plus the caller's deployment metadata.
     pub fn world_facts(&self) -> Vec<WorldFact> {
         let mut facts = Vec::new();

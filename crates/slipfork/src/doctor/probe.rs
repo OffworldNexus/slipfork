@@ -10,14 +10,14 @@ pub(crate) const PROBE_PATH: &str = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/u
 
 /// Outcome of one namespace probe.
 ///
-/// Two variants only: [`NetnsCheck::Skipped`] exists exclusively on [`DoctorReport::netns`] and is
+/// Two variants only: [`NetnsCheck::Skipped`] exists exclusively on `DoctorReport::netns` and is
 /// synthesized by the composition root, so a probe can never report `Skipped`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HostCheckOutcome {
     /// The probe command exited successfully.
     Ok,
     /// The probe command could not run or exited non-zero; `detail` is its stderr / spawn message
-    /// and `hint` is the optional remediation appended to [`DoctorReport::fixes`].
+    /// and `hint` is the optional remediation appended to `DoctorReport::fixes`.
     Failed {
         /// Subprocess spawn error or captured stderr message.
         detail: String,
@@ -26,7 +26,7 @@ pub enum HostCheckOutcome {
     },
 }
 
-/// `netns` evidence on [`DoctorReport`]: executed when unprivileged user namespaces work, skipped
+/// `netns` evidence on `DoctorReport`: executed when unprivileged user namespaces work, skipped
 /// otherwise (synthesized by the composition root when user namespaces already failed).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NetnsCheck {
@@ -38,7 +38,7 @@ pub enum NetnsCheck {
 
 /// Advisory `:80` systemd socket-activation state (`ADR-0011` §3).
 ///
-/// Never affects [`DoctorReport::ok`] or [`DoctorReport::fixes`]: `doctor` must work on an
+/// Never affects `DoctorReport::ok` or `DoctorReport::fixes`: `doctor` must work on an
 /// unprivileged host that has no `systemd` units installed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IngressCheck {
