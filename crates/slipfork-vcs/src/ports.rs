@@ -44,7 +44,7 @@ pub enum VcsError {
         hint: String,
     },
     #[error(
-        "cannot derive a project slug from repository root {vcs_root}: '{slug}' is not a single lowercase DNS label; set `project = \"<slug>\"` in {hint}"
+        "cannot derive a project slug from repository root {vcs_root}: '{slug}' is not a single lowercase DNS label; set `project <slug>` in {hint}"
     )]
     InvalidProjectSlug {
         vcs_root: PathBuf,
@@ -52,7 +52,7 @@ pub enum VcsError {
         hint: String,
     },
     #[error(
-        "cannot derive a project slug from repository root {vcs_root}: the directory name is not valid UTF-8; set `project = \"<slug>\"` in {hint}"
+        "cannot derive a project slug from repository root {vcs_root}: the directory name is not valid UTF-8; set `project <slug>` in {hint}"
     )]
     UnnamedProjectRoot { vcs_root: PathBuf, hint: String },
     #[error(
@@ -185,10 +185,10 @@ pub struct WorkspaceChanges {
     pub truncated: bool,
 }
 
-/// Injected `<vcs_root>/Forkfile` `project = "<slug>"` reader.
+/// Injected `<vcs_root>/Forkfile` `project <slug>` reader.
 ///
-/// `slipforkd` implements this once over `slipfork_dag::SlipforkConfig`, so `crates/slipfork-vcs`
-/// honors the override without depending on `slipfork-dag` or owning a second TOML parser.
+/// `slipforkd` implements this once over `slipfork_forkfile::ForkFile`, so `crates/slipfork-vcs`
+/// honors the override without depending on the `Forkfile` parser or owning a second one.
 pub trait ProjectSlugOverride: Send + Sync {
     /// Return the override declared in `<vcs_root>/Forkfile`, or `None` when absent.
     fn project_override(&self, vcs_root: &Path) -> Result<Option<ProjectSlug>, VcsError>;

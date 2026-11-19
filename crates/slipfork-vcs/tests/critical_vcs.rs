@@ -104,7 +104,7 @@ impl ProjectSlugOverride for FailingOverride {
     fn project_override(&self, vcs_root: &Path) -> Result<Option<ProjectSlug>, VcsError> {
         Err(VcsError::Io {
             path: vcs_root.to_path_buf(),
-            message: "slipfork.toml is unreadable".to_owned(),
+            message: "Forkfile is unreadable".to_owned(),
         })
     }
 }
@@ -447,7 +447,7 @@ fn fail_closed_repository_and_override_errors_are_actionable() {
     );
     let message = error.to_string();
     assert!(
-        message.contains("git clone") && message.contains("slipfork.toml"),
+        message.contains("git clone") && message.contains("Forkfile"),
         "bare refusal points at git clone + the project override, got: {message}"
     );
 
@@ -456,7 +456,7 @@ fn fail_closed_repository_and_override_errors_are_actionable() {
         .resolve(fixture.root())
         .expect_err("override errors are propagated, never swallowed");
     assert!(
-        matches!(error, VcsError::Io { ref message, .. } if message == "slipfork.toml is unreadable"),
+        matches!(error, VcsError::Io { ref message, .. } if message == "Forkfile is unreadable"),
         "{error}"
     );
 }
@@ -529,12 +529,9 @@ fn repo_root_resolves_linked_worktrees_to_the_main_checkout() {
         "feat-link",
         &fixture.base,
     ]);
-    // A worktree-local `slipfork.toml` is never consulted (`ADR-0005` §3).
-    fs::write(
-        linked.join("slipfork.toml"),
-        "project = \"rogue-worktree\"\n",
-    )
-    .expect("write worktree-local slipfork.toml");
+    // A worktree-local `Forkfile` is never consulted (`ADR-0005` §3).
+    fs::write(linked.join("Forkfile"), "project rogue-worktree\n")
+        .expect("write worktree-local Forkfile");
 
     let from_linked = resolver
         .resolve(&linked)
@@ -547,7 +544,7 @@ fn repo_root_resolves_linked_worktrees_to_the_main_checkout() {
     assert_eq!(
         from_linked.project.as_str(),
         "acme-app",
-        "the slug comes from <vcs_root>, never the linked worktree basename or its slipfork.toml"
+        "the slug comes from <vcs_root>, never the linked worktree basename or its Forkfile"
     );
 
     let (override_impl, seen) = FixedOverride::new("linked-override");
@@ -558,7 +555,7 @@ fn repo_root_resolves_linked_worktrees_to_the_main_checkout() {
     assert_eq!(
         seen.lock().expect("override lock").as_deref(),
         Some(fixture.repo.vcs_root.as_path()),
-        "the override is read from <vcs_root>/slipfork.toml only"
+        "the override is read from <vcs_root>/Forkfile only"
     );
 }
 
@@ -653,7 +650,7 @@ fn repo_root_fails_closed_for_bare_submodule_and_separate_git_dir() {
     assert!(
         error
             .to_string()
-            .contains(&submodule.join("slipfork.toml").display().to_string()),
+            .contains(&submodule.join("Forkfile").display().to_string()),
         "submodule refusal names the concrete override file, got: {error}"
     );
     let (override_impl, _) = FixedOverride::new("sub-pkg");
@@ -773,7 +770,7 @@ fn jj_absent_child_probe_reports_tool_missing() {
         } => {
             assert_eq!(seen, "jj");
             assert!(
-                hint.contains("project = \"<slug>\"") && hint.contains("slipfork.toml"),
+                hint.contains("project <slug>") && hint.contains("Forkfile"),
                 "the jj diagnostic points at the project override, got: {hint}"
             );
         }
