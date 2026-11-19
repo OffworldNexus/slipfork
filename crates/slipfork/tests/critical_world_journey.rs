@@ -180,6 +180,39 @@ fn component_group(daemon: &Daemon, cwd: &Path, id: &str) -> (u32, Vec<u32>) {
     (pgid, group_members(pgid))
 }
 
+/// The ids named by the block's single `[restarted] ...` verdict line, or `None` when the restart
+/// reported nothing coming back.
+fn restarted_ids(block: &str) -> Option<Vec<&str>> {
+    let mut verdicts = block
+        .lines()
+        .filter(|line| line.starts_with("[restarted] "));
+    let verdict = verdicts.next()?;
+    assert!(
+        verdicts.next().is_none(),
+        "a restart prints exactly one verdict line: {block}"
+    );
+    Some(
+        verdict
+            .trim_start_matches("[restarted] ")
+            .split(", ")
+            .collect(),
+    )
+}
+
+/// Every service id the daemon reports `running` in the world's `ps --json` projection, sorted.
+fn running_service_ids(daemon: &Daemon, cwd: &Path) -> Vec<String> {
+    let document = ps_json(daemon, cwd);
+    let mut ids: Vec<String> = document["services"]
+        .as_array()
+        .expect("services array")
+        .iter()
+        .filter(|service| service["state"] == "running")
+        .filter_map(|service| service["id"].as_str().map(str::to_owned))
+        .collect();
+    ids.sort_unstable();
+    ids
+}
+
 /// Every world subvolume directly under `<state_dir>/worlds`.
 fn world_subvolumes(state_dir: &Path) -> Vec<PathBuf> {
     let worlds = state_dir.join("worlds");
@@ -480,10 +513,25 @@ fn world_lifecycle_journey_boots_edits_forks_and_reaps() {
     fs::write(repo.join("body.txt"), "v2\n").expect("edit the served body");
     let restart = daemon.cli(&repo, &["restart"]);
     assert_success(&restart, "restart after a body edit");
+    let restart_block = stdout(&restart);
+    let restarted = restarted_ids(&restart_block)
+        .unwrap_or_else(|| panic!("a changed restart names what came back: {restart_block}"));
+    for id in ["api", "pg_clusters.main", "redis_clusters.cache"] {
+        assert!(
+            restarted.contains(&id),
+            "restart names `{id}` beside the edited component: {restart_block}"
+        );
+    }
+    let mut brought_back: Vec<String> = restarted.iter().map(|id| (*id).to_owned()).collect();
+    brought_back.sort_unstable();
+    assert_eq!(
+        brought_back,
+        running_service_ids(&daemon, &repo),
+        "the verdict names exactly the services the daemon reports running: {restart_block}"
+    );
     assert!(
-        stdout(&restart).contains("[restarted] api"),
-        "restart names the component it brought back: {}",
-        stdout(&restart)
+        !restart_block.contains("[no change]"),
+        "an edited restart never claims nothing changed: {restart_block}"
     );
     assert_eq!(
         url_count(&stdout(&restart)),
@@ -560,27 +608,55 @@ fn world_lifecycle_journey_boots_edits_forks_and_reaps() {
     let applied = daemon.cli(&repo, &["restart"]);
     assert_success(&applied, "restart after an edited snow.yml");
     let block = stdout(&applied);
-    let block_lines: Vec<&str> = block.lines().collect();
-    assert_eq!(
-        block_lines[0], "[restarted] api",
-        "the verdict is exactly the daemon's observed restarted ids: {block}"
-    );
-    assert_eq!(block_lines[1], "world     acme-app (running, changed)");
     assert!(
-        block_lines[2].starts_with("app       http://acme-app.localhost"),
-        "{block}"
+        !block.contains('\x1b'),
+        "the piped restart block carries zero escape bytes: {block:?}"
     );
-    assert!(block_lines[3].starts_with("worktree  "), "{block}");
-    assert!(
-        block_lines[4].starts_with("next      slipfork open | "),
-        "{block}"
-    );
-    assert!(block_lines[5].starts_with("lineage   rootfs "), "{block}");
+    for component in ["api", "idle"] {
+        assert!(
+            block.lines().any(|line| {
+                line.starts_with("[ready]") && line.split_whitespace().nth(1) == Some(component)
+            }),
+            "restart announces `{component}` ready: {block}"
+        );
+    }
+    let restarted = restarted_ids(&block)
+        .unwrap_or_else(|| panic!("a changed restart names what came back: {block}"));
+    for id in ["api", "pg_clusters.main", "redis_clusters.cache"] {
+        assert!(
+            restarted.contains(&id),
+            "the verdict names `{id}` beside the edited component: {block}"
+        );
+    }
+    let mut brought_back: Vec<String> = restarted.iter().map(|id| (*id).to_owned()).collect();
+    brought_back.sort_unstable();
     assert_eq!(
-        block_lines.len(),
-        6,
-        "one verdict plus five block rows: {block}"
+        brought_back,
+        running_service_ids(&daemon, &repo),
+        "the verdict names exactly the services the daemon reports running: {block}"
     );
+    assert!(
+        !block.contains("[no change]"),
+        "a changed restart never claims nothing changed: {block}"
+    );
+    assert!(
+        block.contains("world     acme-app (running, changed)"),
+        "the changed world row: {block}"
+    );
+    assert!(
+        block.contains("app       http://acme-app.localhost"),
+        "the app row carries the world origin whatever its ephemeral port: {block}"
+    );
+    for row in [
+        "worktree  ",
+        "next      slipfork open | ",
+        "lineage   rootfs ",
+    ] {
+        assert!(
+            block.lines().any(|line| line.starts_with(row)),
+            "the block carries a `{row}` row: {block}"
+        );
+    }
     assert_eq!(
         world_greeting(&daemon, &repo),
         "v2",
@@ -624,7 +700,18 @@ fn world_lifecycle_journey_boots_edits_forks_and_reaps() {
     assert_eq!(document["world"], "acme-app");
     assert_eq!(document["state"], "running");
     assert_eq!(document["changed"], true);
-    assert_eq!(document["restarted"][0], "api");
+    let mut json_restarted: Vec<String> = document["restarted"]
+        .as_array()
+        .unwrap_or_else(|| panic!("the restarted ids travel as an array: {document}"))
+        .iter()
+        .map(|id| id.as_str().expect("a restarted id").to_owned())
+        .collect();
+    json_restarted.sort_unstable();
+    assert_eq!(
+        json_restarted,
+        running_service_ids(&daemon, &repo),
+        "the json projection names the same restarted set the daemon observed: {document}"
+    );
     for key in ["rootfs", "services", "seed", "base"] {
         assert!(
             document["lineage"].get(key).is_some(),
@@ -866,13 +953,19 @@ fn world_lifecycle_journey_boots_edits_forks_and_reaps() {
     let idle_restart = daemon.cli(&idle_repo, &["restart"]);
     assert_success(&idle_restart, "restart an idle world");
     let idle_block = stdout(&idle_restart);
-    let idle_lines: Vec<&str> = idle_block.lines().collect();
-    assert_eq!(
-        idle_lines[0], "[no change]",
+    assert!(
+        idle_block.lines().any(|line| line == "[no change]"),
         "nothing came back, so the verdict says so: {idle_block}"
     );
-    assert_eq!(idle_lines[1], "world     acme-idle (running, unchanged)");
+    assert!(
+        idle_block.contains("world     acme-idle (running, unchanged)"),
+        "the unchanged world row: {idle_block}"
+    );
     assert!(!idle_block.contains("[restarted]"), "{idle_block}");
+    assert!(
+        !idle_block.contains("[ready]"),
+        "a disabled pipeline announces nothing ready: {idle_block}"
+    );
     let idle_json = daemon.cli(&idle_repo, &["--json", "restart"]);
     assert_success(&idle_json, "restart --json");
     let idle_doc: Value = serde_json::from_str(&stdout(&idle_json)).expect("restart json");

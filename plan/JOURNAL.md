@@ -1721,3 +1721,5 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-19T04:57 [M3.30.9] (lead) base e09aee88d027ca57d4d68d29b8ddae622b92da32
 - 2026-11-19T04:59 [M3.30.8] (lead) VM: oci 4/4 (new bundle+exec leak proofs), btrfs_live 1/1 (container exec env), ospp 7/7, engine 21/21
 - 2026-11-19T04:59 [M3.30.8] (lead) status active -> done
+- 2026-11-19T05:14 [M3.30.9] (lead) VM: critical_world_journey 7/7 and the whole do_vm.py test suite exits 0 (11 suites, 782s wall)
+- 2026-11-19T05:14 [M3.30.9] (lead) status active -> done
