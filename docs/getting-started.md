@@ -9,7 +9,7 @@ $ sudo slipfork daemon install                  # :80 socket activation + AppArm
 $ cd /path/to/your/project
 $ slipfork doctor && slipfork up
 $ slipfork fork feat-billing
-$ slipfork open
+$ slipfork open -w feat-billing
 ```
 
 !!! warning "Btrfs state directory"
@@ -29,7 +29,7 @@ sequenceDiagram
   You->>CLI: slipfork up
   CLI->>D: boot world over daemon.sock
   D->>K: clone the sealed base subvolume
-  D-->>CLI: origin http://acme.localhost
+  D-->>CLI: origin http://demo.localhost
   CLI-->>You: world row, URL, next commands
 ```
 
@@ -65,8 +65,6 @@ next      slipfork up
 
 Ubuntu 24.04 LTS restricts unprivileged user namespaces by default. `daemon install` writes and loads `/etc/apparmor.d/slipfork`, so `doctor` passes `unshare_userns` and `netns` afterwards.
 
-Re-run the same command after moving the binaries; it rewrites only files whose bytes changed.
-
 ## 2. Probe the host
 
 ```console
@@ -82,49 +80,42 @@ $ slipfork doctor
   ingress: :80 active (port-less origins)
 ```
 
-`doctor` exits `0` only when the Btrfs checks and both namespace probes pass. On a non-Btrfs path it exits `1`, prints one `next:` line per failed check, and writes nothing.
+`doctor` exits `0` only when the Btrfs checks and both namespace probes pass. On a non-Btrfs path it exits `1`, prints one `next:` line per failed check, and writes nothing. `slipfork doctor --json` emits the same report as one object.
 
-`slipfork doctor --json` emits the same report as one object.
+## 3. Describe the world in a `Forkfile`
 
-## 3. Declare the world in `snow.yml`
+One file at the repository root declares services, resources, and environment:
 
-A world needs at least one build image with a named final Dockerfile stage and a `modes.local` entry:
+```text title="Forkfile"
+project demo
 
-```yaml title="snow.yml"
-images:
-  - { id: api, context: api }
-components:
-  - id: api
-    image: api
-    run_command: uv run uvicorn app.main:app --host 0.0.0.0 --port 8000
-    envs: [app]
-    internal_ports: [8000]
-ingresses:
-  - match: { prefix: "/" }
-    target: { component: api, port: 8000 }
-resources:
-  pg_clusters: [{ id: psql, version: "18" }]
-  pg_databases: [{ id: appdb, cluster: psql }]
-modes:
-  all:
-    envs:
-      app:
-        SECRET_KEY: '${{ secrets::SECRET_KEY !! random_string(50) }}'
-        DATABASE_URL: '${{ resources::pg_databases.appdb.url }}'
-  local:
-    envs:
-      app:
-        LOG_LEVEL: '${{ vars::LOG_LEVEL ?? "INFO" }}'
+postgres pg { database app_db }
+
+env app {
+    DATABASE_URL = app_db.url
+    SECRET_KEY   = secret(SECRET_KEY) ?? random_string(50)
+}
+
+service api ./api {
+    use env app
+    port 8000
+    route /api
+    setup: python3 -m venv .venv
+    run .venv/bin/python -m uvicorn app.main:app --host 0.0.0.0 --port $port
+}
 ```
 
-`run_command` goes to `sh -eu -c` verbatim, so it is not templated: keep the literal port that `ingresses` declares. Expressions belong in `envs` values.
+`service api ./api` builds `api/Dockerfile` and runs the container with `api/` as its working directory. The origin is `/`, `/api` is routed to this service, and `$port` expands to `8000` without word splitting.
+
+!!! info "One container per service"
+    Every `service` block becomes its own `crun` container in one network namespace. `postgres`, `redis`, and S3 run as separate backing containers in the same world.
 
 ## 4. Boot and fork
 
 ```console
 $ slipfork up
 $ slipfork fork feat-billing
-$ slipfork list
+$ slipfork status
 ```
 
 `up` prints one world row, the app URL, the worktree, and the next commands. `fork` creates `.worktrees/feat-billing` and clones the world's subvolume in one daemon call. Each fork gets its own origin, database, Redis, and S3 state.
@@ -135,11 +126,11 @@ $ slipfork list
 ## 5. Work inside the world
 
 ```console
-$ slipfork exec -- env | grep DATABASE_URL
-$ slipfork shell
+$ slipfork exec -s api -- env | grep DATABASE_URL
+$ slipfork shell api
+$ slipfork run migrate
 $ slipfork logs api --follow
-$ slipfork db appdb
-$ slipfork redis cache
+$ slipfork db app_db
 $ slipfork ps
 ```
 
@@ -147,7 +138,7 @@ All of these resolve the world from `cwd` or `--world` and need the world runnin
 
 ## 6. Secrets: local first, CI when paired
 
-`!!` generates a value once and keeps it in the project's `0600` vault at `~/.local/share/slipfork/vaults/<project>.json`. That tier is yours: app secrets, self-run database passwords, and local values that must survive a restart.
+`secret(<KEY>) ?? random_string(50)` generates a value once and keeps it in the project's `0600` vault at `~/.local/share/slipfork/vaults/<project>.json`. That tier is yours: app secrets, self-run database passwords, and local values that must survive a restart.
 
 CI values are the other tier. Pair this machine once with `slipfork auth`; afterwards `<state_dir>/ospp.json` remembers the endpoint, account, and machine, so later daemons reconnect without the flag. Details: [Secrets & OSPP v1](reference/ospp.md).
 
@@ -160,4 +151,4 @@ $ slipfork prune                       # preview worlds whose checkout is gone
 $ slipfork prune --yes                 # reap them (sealed snapshots and caches stay)
 ```
 
-Next: [`snow.yml` modes & secrets](snow-modes.md), then the [CLI reference](reference/cli.md).
+Next: [the `Forkfile` guide](forkfile.md), then the [CLI reference](reference/cli.md).

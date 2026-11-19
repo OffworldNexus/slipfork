@@ -9,55 +9,52 @@
 
 A Slipfork world is **exactly one Btrfs subvolume**: the `L0` application root filesystem tree and the mutable PostgreSQL / Redis / S3 state directories live side by side inside it (`ADR-0010` §2), so a single `BTRFS_IOC_SNAP_CREATE_V2` seals or forks the whole world — rootfs and data together — in constant time.
 
-The `L0` application root filesystem **always** derives from a `Dockerfile` declared in the project's own `snow.yml` `images:` list. There is **no** Slipfork-maintained language base image and **no** host-`/usr` fallback (Iron Law #3).
+The `L0` application root filesystem **always** derives from a `Dockerfile` declared beside a `Forkfile` `service`. There is **no** Slipfork-maintained language base image and **no** host-`/usr` fallback (Iron Law #3).
 
-### 1.1 Single-Image Project (Zero `[world]` Config Needed)
+### 1.1 Per-Service Rootfs (Zero Extra Config)
 
-When `snow.yml` declares one `BuildImage` and its final `Dockerfile` stage is named (`FROM ... AS api`), **zero lines** are needed in `slipfork.toml`:
+Each `service <id> ./dir` names its own build context, so no image selector is needed:
 
-```yaml title="snow.yml"
-images:
-  - id: api
-    context: .
-    dockerfile: Dockerfile
-resources:
-  pg_clusters: [{ id: main, version: "18" }]
-  pg_databases: [{ id: app, cluster: main }]
-  redis_clusters: [{ id: cache, version: "8" }]
-  s3_buckets: [{ id: media }]
+```text title="Forkfile"
+postgres pg { database app }
+
+service api ./api {
+    port 8000
+    route /api
+    run /app/.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port $port
+}
+
+service worker ./worker {
+    run /app/.venv/bin/python -m app.worker
+}
 ```
 
-```dockerfile title="Dockerfile"
-FROM python:3.14-slim-trixie AS api
+Services that share an identical `(context, dockerfile, stage, build_env)` build and cache one rootfs.
+
+```dockerfile title="api/Dockerfile"
+FROM python:3.12-slim AS api
 WORKDIR /workspace
 COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev
 ```
 
-### 1.2 Multi-Image or Multi-Stage Compiled Project (`world.image` & `world.stage`)
+### 1.2 Multi-Stage Compiled Services
 
-`[world]` in `slipfork.toml` is a **selector, never a menu**, exposing **at most two optional keys** (`WorldConfigError::UnknownKey`):
+`service <id> ./dir` builds `<dir>/Dockerfile`; `dockerfile <relpath>` and `stage <name>` select another file or an earlier stage. A compiled service names the stage that still carries its toolchain:
 
-| Key | Type | When Required | Meaning |
-|---|---|---|---|
-| `world.image` | `String` | Mandatory when `snow.yml` declares `>= 2` `BuildImage` entries; inferred when `== 1` | Selects which `snow.yml` `images[].id` (`context` + `dockerfile`) builds the `L0` world rootfs |
-| `world.stage` | `String` | Required when targeting an earlier stage (e.g. `"builder"`) or when the final stage is not targetable; inferred when final `FROM` has `AS <name>` | Selects the named `FROM ... AS <stage>` that Slipfork extends into `slipfork-world` |
-
-**Rust / Go multi-stage example (retaining `cargo` + `rustc` omitted from the slim runtime stage):**
-
-```dockerfile title="Dockerfile"
+```dockerfile title="api/Dockerfile"
 FROM rust:1.85-slim-bookworm AS builder
 WORKDIR /workspace
 RUN apt-get update && apt-get install -y --no-install-recommends pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*
-
-FROM debian:trixie-slim AS runtime
-COPY --from=builder /workspace/target/release/acme-api /usr/local/bin/acme-api
 ```
 
-```toml title="slipfork.toml"
-[world]
-image = "api"
-stage = "builder" # Targets the named stage that still carries cargo + rustc for hooks and slipfork test
+```text title="Forkfile"
+service api ./api {
+    dockerfile Dockerfile
+    stage builder
+    port 8000
+    run /app/target/release/acme-api
+}
 ```
 
 ---
@@ -148,12 +145,12 @@ base_key_sha256 = SHA256(
 `service_images` is keyed by `BackingServiceKey` and each `OciRootfs` carries the resolved `digest`, so a tag re-pin or a SeaweedFS pin bump changes the key even when the tag string does not. `BaseSeedSource::tag()` is the one accessor the key reads off the carrier (§2.3.2): `Clean => "clean"`, `Dump { sha256, .. } => sha256` (the verified compressed digest). Length prefixes make the encoding injective: no two distinct inputs produce the same byte string.
 
 - **Who computes it:** a pure `BaseKey::derive` in `crates/slipfork-engine` (golden-vector unit tests: baseline, `pg_clusters[].version` bump, dump change, and rootfs-digest change yield four distinct keys). `slipforkd` (Composition Root) calls it — it holds `WorldRootfs` and the resolved `ResourcePlan` — and passes the result onward twice: `base_key_sha12` (+ `project`) inside the `BaseSeedSpec` that seeds and seals the base (§2.3.2), and the resulting sealed-base name as `WorldSpec.snapshot` (`SnapshotId`) for the `clone_world` that follows (§2.3 clone row). `BtrfsEngine` owns materialization only: seed, restore, freeze (§2.3). An engine test asserts the sealed subvolume's name is exactly `<project>-base-<base_key_sha12>`, observable through `list_children`.
-- **Why all three inputs:** a `snow.yml` `pg_clusters[].version` bump, a new digest-pinned SeaweedFS image, or a `--refresh-dump` stream changes the base's *contents* without changing `l0_merkle_sha256`. Because the key covers all three, each such change yields a different `<project>-base-<base_key_sha12>`, so a seal never collides with, or silently reuses, an existing base.
+- **Why all three inputs:** a `Forkfile` `pg_clusters[].version` bump, a new digest-pinned SeaweedFS image, or a `--refresh-dump` stream changes the base's *contents* without changing `l0_merkle_sha256`. Because the key covers all three, each such change yields a different `<project>-base-<base_key_sha12>`, so a seal never collides with, or silently reuses, an existing base.
 - **Clean versus dump-backed bases are distinct:** a `--no-dump` base records `clean` per database (`docs/reference/cli.md` §"Seed dumps and sealed bases"), so the next default `up` seals its own dump-backed base instead of reusing a clean one.
 
 #### 2.3.2 Seed Inputs Are Explicit (`BaseSeedSpec`)
 
-`BtrfsEngine` reads no `snow.yml`, no `<state_dir>/dumps` listing, and no `ResourcePlan`: the daemon already assembles exactly these inputs for the shipped seed path — the rootfs tree to copy (`app_rootfs`), the base identity it derived (`project`, `base_key_sha12`), the seed control dir, and the state/service/database payload (`state_subdirs`, `service_specs`, `databases`) — so it passes them as one carrier **argument** to the base-preparation call:
+`BtrfsEngine` reads no `Forkfile`, no `<state_dir>/dumps` listing, and no `ResourcePlan`: the daemon already assembles exactly these inputs for the shipped seed path — the rootfs tree to copy (`app_rootfs`), the base identity it derived (`project`, `base_key_sha12`), the seed control dir, and the state/service/database payload (`state_subdirs`, `service_specs`, `databases`) — so it passes them as one carrier **argument** to the base-preparation call:
 
 ```rust
 // crates/slipfork-engine::btrfs_engine (M3.13) — every field is an explicit input, never derived
@@ -165,11 +162,11 @@ pub struct BaseSeedSpec {
     pub app_rootfs: PathBuf,              // <state_dir>/cache/rootfs/<l0_merkle_sha256>/app — the plain tree to copy
     pub state_subdirs: Vec<PathBuf>,      // subvolume-relative: state/pgdata/<id>, state/redis/<id>, state/s3
     pub service_specs: Vec<ServiceSpec>,  // the seed world's backing-service specs (argv, readiness, RO dump mounts)
-    pub databases: Vec<BaseDatabaseSeed>, // one per snow.yml pg_databases[] entry
+    pub databases: Vec<BaseDatabaseSeed>, // one per Forkfile pg_databases[] entry
 }
 
 pub struct BaseDatabaseSeed {
-    pub database: String,                 // snow.yml pg_databases[].id
+    pub database: String,                 // Forkfile pg_databases[].id
     pub service: String,                  // ServiceSpec.id of its pg_clusters container
     pub source: BaseSeedSource,
 }
@@ -241,7 +238,7 @@ let handle = world_engine.clone_world(&spec)?;                              // s
 - **One CoW seam, shared upward.** `Arc<dyn SubvolumeDriver>` is the whole seam: `probe`, `ensure_supported`, `create_subvolume`, `snapshot_ro`, `snapshot_writable`, `destroy_subvolume`, `list_children` (`ARCHITECTURE.md` §3.3). The same handle is injected into Phase 2 `M3.2`'s `BtrfsArtifactStore` (`<state_dir>/artifacts/<digest>`) and into the Phase-2 GC entry point (§7.2 #4), so artifacts, worlds, and collection all use one trait with no second cloning or deletion port.
 - **The builder stops at plain directories.** `DockerfileStageBuilder` holds no `SubvolumeDriver` and produces only `<state_dir>/cache/rootfs/<l0_merkle_sha256>/app` and `<state_dir>/cache/oci/<sha256>/rootfs` (`ADR-0010` §2). It never creates, seeds, seals, or destroys a subvolume: seeding, the dump restore, and sealing are `BtrfsEngine`'s alone (§2.3). There is no second base pipeline.
 - **One enumeration-filter owner.** `SubvolumeDriver::list_children(parent)` returns every immediate child name and filters nothing; `BtrfsEngine` owns the only exclusion policy (`worlds/seed-*`, `worlds/.seed.lock`, `ADR-0010` §3) and hands a world set — never a raw directory listing — to its Phase-2 GC planner. Control directories are never candidates: they live under `<state_dir>/ctl/<id>`, not under `worlds/` or `snapshots/`.
-- **One owner per manifest mapping.** `slipforkd`'s service-spec builder — not the engine — translates `snow.yml` `resources:` into `ServiceSpec` (`BackingServiceKey`, `argv`, `readiness`, `StateSubdirMount`); the engine resolves the key in `WorldRootfs::service_images` and synthesizes that container's runtime bundle and mounts from the spec.
+- **One owner per manifest mapping.** `slipforkd`'s service-spec builder — not the engine — translates `Forkfile` `resources:` into `ServiceSpec` (`BackingServiceKey`, `argv`, `readiness`, `StateSubdirMount`); the engine resolves the key in `WorldRootfs::service_images` and synthesizes that container's runtime bundle and mounts from the spec.
 - **Test double by injection.** `BtrfsEngine::with_driver_and_clock(..., Arc<dyn SubvolumeDriver>, clock)` receives a `TestTreeDriver` and a deterministic clock through `ARCHITECTURE.md` §1's Cargo Feature & Test-Scaffolding Rule (`#[cfg(test)]`, `tests/support/`, or an unpublished `publish = false` testkit crate — never a Cargo feature on a production crate); real kernel behaviour is asserted by `critical_btrfs_live` on the Btrfs VM (`M3.14`, `M3.19`), and `M3.22` deletes the workspace's last test-scaffolding Cargo feature.
 
 There is no optional capability to branch on: a host without Btrfs is not a degraded Slipfork — it is not a supported Slipfork host, and the daemon says so before creating anything.
@@ -256,9 +253,9 @@ Slipfork composes every world from three strictly orthogonal layers, with **exac
 |---|---|---|
 | **App runtime & OS libraries** (`python`, `node`, `php`, `.venv`, C `.so` deps) | **Layer 1:** Project's own `Dockerfile` stage (`world.image` + `world.stage`) | Never shared from host `/usr` or `/lib`; never synthesized from a language menu |
 | **Compiled-language build/test toolchains** (`cargo`/`rustc`, `go`, `javac`) | **Layer 1:** Select the `Dockerfile`'s named build stage via `world.stage = "builder"` | Never installed ad hoc by Slipfork into a stripped runtime stage |
-| **Backing services & DB/cache CLI tools** (`postgres`, `psql`, `pg_restore`, `initdb`, `redis-server`, `redis-cli`, `seaweedfs`) | **Layer 2:** Daemonless **`crun`** OCI containers in the world's shared `127.0.0.1` `netns` and private `ipcns`, mapped from `snow.yml` `resources:`, state in the world subvolume | Never `apt`/`apk`-installed into the app rootfs; never run via `dockerd`-in-Docker |
+| **Backing services & DB/cache CLI tools** (`postgres`, `psql`, `pg_restore`, `initdb`, `redis-server`, `redis-cli`, `seaweedfs`) | **Layer 2:** Daemonless **`crun`** OCI containers in the world's shared `127.0.0.1` `netns` and private `ipcns`, mapped from `Forkfile` `resources:`, state in the world subvolume | Never `apt`/`apk`-installed into the app rootfs; never run via `dockerd`-in-Docker |
 | **Headless browsers** (`Playwright` Chromium / Firefox / WebKit) | **Host browser pool** opening isolated `BrowserContext`s against `http://test-<slot>.<project>.localhost[:<port>]` (`ADR-0006` §4.2) | Never installed inside world rootfs; never cold-launched per world |
-| **Host package/toolchain caches** (`~/.cargo`, `~/.rustup`, `uv`, `pnpm` store) | **Layer 3:** Per-invocation `--host-caches` read-only mounts gated by a fail-closed ELF/libc ABI probe | Never configured in `slipfork.toml`; never mounted RW; never mounted across mismatched libc ABIs |
+| **Host package/toolchain caches** (`~/.cargo`, `~/.rustup`, `uv`, `pnpm` store) | **Layer 3:** Per-invocation `--host-caches` read-only mounts gated by a fail-closed ELF/libc ABI probe | Never configured in `Forkfile`; never mounted RW; never mounted across mismatched libc ABIs |
 
 ### 3.1 Layer 1 — Fidelity Layer (`slipfork-world` Stage Synthesis)
 
@@ -284,11 +281,11 @@ The export extracts a plain directory tree owned by the invoking **`$UID:$GID`**
 
 The builder's work ends here: it caches the extracted tree immutably at `<state_dir>/cache/rootfs/<l0_merkle_sha256>/app` (§7) and never touches a subvolume. `BtrfsEngine` then seeds that plain directory once into the transient seed subvolume and seals it (§2.3), so the sealed base — not the cache directory and not a builder-owned snapshot — is what every world clones. Inside every world the `L0` tree is mounted read-only at `/`, so forks and `TestSlot`s share one rootfs without copying a single file.
 
-### 3.2 Layer 2 — Daemonless `crun` Backing-Service Containers (`snow.yml` `resources:`)
+### 3.2 Layer 2 — Daemonless `crun` Backing-Service Containers (`Forkfile` `resources:`)
 
-`snow.yml` `resources:` map deterministically to official OCI images with **zero new syntax**:
+`Forkfile` `resources:` map deterministically to official OCI images with **zero new syntax**:
 
-| `snow.yml` Declaration | Resolved OCI Image | In-World Loopback Bind | State Subdir in World Subvolume (RW) | Container Path | `OciRootfs.readiness` (`M3.13`/`M3.15` target state) |
+| `Forkfile` Declaration | Resolved OCI Image | In-World Loopback Bind | State Subdir in World Subvolume (RW) | Container Path | `OciRootfs.readiness` (`M3.13`/`M3.15` target state) |
 |---|---|---|---|---|---|
 | `resources.pg_clusters: [{ id, version: "<v>" }]` | `docker.io/library/postgres:<v>` (e.g. `postgres:18`) | `127.0.0.1:5432` (one cluster per world) | `<subvol>/state/pgdata/<id>` → `/var/lib/slipfork/state/pgdata/<id>` | `/var/lib/postgresql/data` | `Exec { port: 5432, argv: ["psql", "-U", "postgres", "-Atc", "SELECT 1"], timeout }` |
 | `resources.redis_clusters: [{ id, version: "<v>" }]` | `docker.io/library/redis:<v>` (e.g. `redis:8`) | `127.0.0.1:6379` (one cluster per world) | `<subvol>/state/redis/<id>` → `/var/lib/slipfork/state/redis/<id>` | `/data` | `Exec { port: 6379, argv: ["redis-cli", "PING"], timeout }` |
@@ -370,20 +367,20 @@ Any mismatch **fails closed** with `BaseImageError::HostCacheAbiMismatch` (§6.1
 | **2** | **Supported Linux distro & executable `/bin/sh`** | `<app_rootfs>/etc/os-release` must match `debian` (`bookworm`\|`trixie`), `ubuntu` (`jammy`\|`noble`), or `alpine` (`3.20`\|`3.21`), and `/bin/sh` must exist and be executable. Both causes carry the same variant with a different `detail`. | `UnsupportedDistro { detail }` |
 | **3** | **Unprivileged `$UID:$GID` & read-only `/` runtime** | **Static, pre-boot (the only `BaseImageError` check):** image `ENTRYPOINT` / `CMD` (when used because `run_command` is empty) must not invoke root-only privilege-drop wrappers (`gosu`, `su-exec`, `sudo`, `chpst`). **Boot, no `BaseImageError`:** `/` is `EROFS` and POSIX mode bits are the runtime file-access enforcement, so an unreadable path surfaces as the operating system's own `EROFS`/`EACCES` naming that path (`ADR-0009` §3, `M3.25`; §4.1 #3). | `RootAtRuntimeEntrypoint` (static only) |
 | **4** | **Zero baked host paths or single-origin URLs (`ADR-0005`)** | Image `ENV` and `WORKDIR` must not bake `BASE_URL`, `*.localhost` URLs, `DATABASE_URL`, `REDIS_URL`, `AWS_S3_ENDPOINT_URL`, or host user paths (`/Users/*`, `/home/*`). | `BakedOriginOrHostPath` |
-| **5** | **App deps in `Dockerfile`; backing services in `snow.yml`** | App stage must not install or launch `postgres`/`postgresql`, `redis-server`, `weed` (SeaweedFS), or `dockerd`; backing services belong in `snow.yml` `resources:`. | `EmbeddedBackingService` |
-| **6** | **`EXPOSE` / `HEALTHCHECK` agrees with `snow.yml`** | Every TCP port in image `EXPOSE` / `HEALTHCHECK` must appear in `snow.yml` `components[].internal_ports` or `ingresses[].target.port` for components using that image. | `ExposeIngressMismatch` |
+| **5** | **App deps in `Dockerfile`; backing services in `Forkfile`** | App stage must not install or launch `postgres`/`postgresql`, `redis-server`, `weed` (SeaweedFS), or `dockerd`; backing services belong in `Forkfile` `resources:`. | `EmbeddedBackingService` |
+| **6** | **`EXPOSE` / `HEALTHCHECK` agrees with `Forkfile`** | Every TCP port in image `EXPOSE` / `HEALTHCHECK` must appear in `Forkfile` `components[].internal_ports` or `ingresses[].target.port` for components using that image. | `ExposeIngressMismatch` |
 
 ---
 
 ## 6. Failure-Mode Catalogue & Exact User-Facing Error Strings
 
-Every contract violation halts **before** creating partial world directories or subvolumes and prints an actionable diagnostic naming the exact 1-line fix. The CLI prints `slipfork: ` followed by the error's `Display` text; each block below shows the `Display` text alone. `BaseImageError` diagnostics begin with their own `error:`. Daemon-side `WorldConfigError` world-selection variants (`NoBuildableImage` on `up`, `AmbiguousWorldImage`, `UnknownWorldImage`) carry no prefix and **no path**. Parse-time `WorldConfigError` variants are not rendered by the daemon at all: they surface through `crates/slipfork/src/project.rs`'s `load_slipfork_config`, which wraps the parser message as `<path>: {err}` (and `cannot read <path>: {err}` when the file is unreadable), so a parse-time diagnostic carries the `slipfork.toml` path while a world-selection diagnostic never does. The published rendering in `docs/reference/manifest.md` shows the `slipfork: ` wrapper. Diagnostics that belong to `M3.12`–`M3.15` target state (`EngineError::BtrfsRequired`, `EngineError::SubvolumeDestroyDenied`, the `doctor` renderings) carry that label inline.
+Every contract violation halts **before** creating partial world directories or subvolumes and prints an actionable diagnostic naming the exact 1-line fix. The CLI prints `slipfork: ` followed by the error's `Display` text; each block below shows the `Display` text alone. `BaseImageError` diagnostics begin with their own `error:`. Daemon-side `WorldConfigError` world-selection variants (`NoBuildableImage` on `up`, `AmbiguousWorldImage`, `UnknownWorldImage`) carry no prefix and **no path**. Parse-time `WorldConfigError` variants are not rendered by the daemon at all: they surface through `crates/slipfork/src/project.rs`'s `load_slipfork_config`, which wraps the parser message as `<path>: {err}` (and `cannot read <path>: {err}` when the file is unreadable), so a parse-time diagnostic carries the `Forkfile` path while a world-selection diagnostic never does. The published rendering in `docs/reference/manifest.md` shows the `slipfork: ` wrapper. Diagnostics that belong to `M3.12`–`M3.15` target state (`EngineError::BtrfsRequired`, `EngineError::SubvolumeDestroyDenied`, the `doctor` renderings) carry that label inline.
 
-### 6.1 No Buildable Image in `snow.yml` (`WorldConfigError::NoBuildableImage` on `up`; `BaseImageError::NoBuildableImage` in the builder)
+### 6.1 No Buildable Image in `Forkfile` (`WorldConfigError::NoBuildableImage` on `up`; `BaseImageError::NoBuildableImage` in the builder)
 Both variants carry this body; the builder's copy begins with its own `error: ` prefix, and `up`'s carries none.
 ```text
-snow.yml declares no buildable Dockerfile under 'images:'; a project that cannot be built into an image is not a project Slipfork can fork
-  fix: add a named Dockerfile stage and declare it in snow.yml:
+Forkfile declares no buildable Dockerfile under 'images:'; a project that cannot be built into an image is not a project Slipfork can fork
+  fix: add a named Dockerfile stage and declare it in Forkfile:
     images:
       - id: app
         context: .
@@ -392,26 +389,26 @@ snow.yml declares no buildable Dockerfile under 'images:'; a project that cannot
 
 ### 6.2 Multiple `BuildImage` Entries Without `world.image` (`WorldConfigError::AmbiguousWorldImage`)
 ```text
-snow.yml declares 2 buildable images ('api', 'worker') and slipfork.toml does not select one
-  fix: add `world.image = "api"` under `[world]` in slipfork.toml
+Forkfile declares 2 buildable images ('api', 'worker') and Forkfile does not select one
+  fix: add `world.image = "api"` under `[world]` in Forkfile
 ```
 
 ### 6.3 Unknown `world.image` Selector (`WorldConfigError::UnknownWorldImage`)
 ```text
-slipfork.toml sets `world.image = "backend"`, which matches no buildable image in snow.yml (available: 'api', 'worker')
-  fix: set `world.image = "api"` in slipfork.toml
+Forkfile sets `world.image = "backend"`, which matches no buildable image in Forkfile (available: 'api', 'worker')
+  fix: set `world.image = "api"` in Forkfile
 ```
 
 ### 6.4 Rule 1 — Unnamed Final `Dockerfile` Stage (`BaseImageError::UnnamedTargetStage`)
 ```text
 error: World Image Contract #1 violated in Dockerfile:24: final stage `FROM python:3.14-slim-trixie` has no stage name
-  fix: change Dockerfile:24 to `FROM python:3.14-slim-trixie AS app` (or set `world.stage = "<stage>"` in slipfork.toml)
+  fix: change Dockerfile:24 to `FROM python:3.14-slim-trixie AS app` (or set `world.stage = "<stage>"` in Forkfile)
 ```
 
 ### 6.5 Rule 1 — Unknown `world.stage` (`BaseImageError::UnknownTargetStage`)
 ```text
 error: World Image Contract #1 violated: `world.stage = "dev"` not found in Dockerfile (declared stages: 'builder', 'runtime')
-  fix: set `world.stage = "builder"` in slipfork.toml
+  fix: set `world.stage = "builder"` in Forkfile
 ```
 
 ### 6.6 Rule 2 — Unsupported Base Distro or `distroless`/`scratch` (`BaseImageError::UnsupportedDistro`)
@@ -419,18 +416,18 @@ Both causes share the variant and the fix line; the `detail` differs:
 
 ```text
 error: World Image Contract #2 violated in stage 'runtime' (Dockerfile:18): detected distro 'fedora:41'; supported distros are debian (bookworm, trixie), ubuntu (jammy, noble), and alpine (3.20, 3.21)
-  fix: set `world.stage = "builder"` in slipfork.toml or switch `FROM` to a supported Debian, Ubuntu, or Alpine base
+  fix: set `world.stage = "builder"` in Forkfile or switch `FROM` to a supported Debian, Ubuntu, or Alpine base
 ```
 
 ```text
 error: World Image Contract #2 violated in stage 'runtime' (Dockerfile:18): missing /etc/os-release + /bin/sh; supported distros are debian (bookworm, trixie), ubuntu (jammy, noble), and alpine (3.20, 3.21)
-  fix: set `world.stage = "builder"` in slipfork.toml or switch `FROM` to a supported Debian, Ubuntu, or Alpine base
+  fix: set `world.stage = "builder"` in Forkfile or switch `FROM` to a supported Debian, Ubuntu, or Alpine base
 ```
 
 ### 6.7 Rule 3 — Root-at-Runtime Entrypoint (`BaseImageError::RootAtRuntimeEntrypoint`)
 ```text
 error: World Image Contract #3 violated in stage 'api': ENTRYPOINT ["docker-entrypoint.sh", "gosu", "appuser"] requires root to switch UIDs, but Slipfork always executes as host $UID:$GID (1000:1000) with a read-only '/' filesystem
-  fix: set an unprivileged command in snow.yml `modes.local.components.api.run_command` (or remove `gosu`/`su-exec`/`chown` from ENTRYPOINT)
+  fix: set an unprivileged command in Forkfile `modes.local.components.api.run_command` (or remove `gosu`/`su-exec`/`chown` from ENTRYPOINT)
 ```
 
 ### 6.8 Rule 4 — Baked Host Path or Origin/Service URL (`BaseImageError::BakedOriginOrHostPath`)
@@ -438,24 +435,24 @@ The `what` slot names the offending entry; two representative transcripts:
 
 ```text
 error: World Image Contract #4 violated in stage 'api': baked image ENV `BASE_URL=http://localhost:8000` conflicts with Slipfork single-origin and ResourceCoordinates injection
-  fix: delete ENV `BASE_URL=http://localhost:8000` from Dockerfile and reference `${{ resources::api.url }}` under `modes.all.envs` in snow.yml
+  fix: delete ENV `BASE_URL=http://localhost:8000` from Dockerfile and reference `${{ resources::api.url }}` under `modes.all.envs` in Forkfile
 ```
 
 ```text
 error: World Image Contract #4 violated in stage 'api': baked image host path `/home/alice/app` conflicts with Slipfork single-origin and ResourceCoordinates injection
-  fix: delete host path `/home/alice/app` from Dockerfile and reference `${{ resources::api.url }}` under `modes.all.envs` in snow.yml
+  fix: delete host path `/home/alice/app` from Dockerfile and reference `${{ resources::api.url }}` under `modes.all.envs` in Forkfile
 ```
 
 ### 6.9 Rule 5 — Backing Service Installed Inside App `Dockerfile` (`BaseImageError::EmbeddedBackingService`)
 ```text
-error: World Image Contract #5 violated in stage 'api': detected `/usr/lib/postgresql/18/bin/postgres` (backing service daemon) installed inside the app image; Slipfork runs postgres, redis, and seaweedfs as isolated crun containers from snow.yml
-  fix: remove `postgresql` server installation from Dockerfile and declare `resources.pg_clusters` in snow.yml
+error: World Image Contract #5 violated in stage 'api': detected `/usr/lib/postgresql/18/bin/postgres` (backing service daemon) installed inside the app image; Slipfork runs postgres, redis, and seaweedfs as isolated crun containers from Forkfile
+  fix: remove `postgresql` server installation from Dockerfile and declare `resources.pg_clusters` in Forkfile
 ```
 
-### 6.10 Rule 6 — `EXPOSE` / `HEALTHCHECK` Disagrees with `snow.yml` (`BaseImageError::ExposeIngressMismatch`)
+### 6.10 Rule 6 — `EXPOSE` / `HEALTHCHECK` Disagrees with `Forkfile` (`BaseImageError::ExposeIngressMismatch`)
 ```text
-error: World Image Contract #6 violated for image 'api': Dockerfile EXPOSE declares port 3000, but snow.yml component 'api' declares internal_ports [8000] (ingresses target 8000)
-  fix: change `EXPOSE 3000` to `EXPOSE 8000` in Dockerfile (or update `components.api.internal_ports` / `ingresses` in snow.yml to 3000)
+error: World Image Contract #6 violated for image 'api': Dockerfile EXPOSE declares port 3000, but Forkfile component 'api' declares internal_ports [8000] (ingresses target 8000)
+  fix: change `EXPOSE 3000` to `EXPOSE 8000` in Dockerfile (or update `components.api.internal_ports` / `ingresses` in Forkfile to 3000)
 ```
 
 ### 6.11 Layer 3 — `--host-caches` ELF/Libc ABI Mismatch (`BaseImageError::HostCacheAbiMismatch`)
@@ -505,7 +502,7 @@ All `L0` rootfs trees and backing-service OCI bundles live under `<state_dir>/ca
 
 1. **Source-only edit outside `Dockerfile` `COPY` inputs (or ignored by `.dockerignore`):** `l0_merkle_sha256` is **unchanged**, so no rebuild happens at all; the live worktree bind-mount reflects the edit immediately inside running worlds.
 2. **`Dockerfile`, lockfile (`uv.lock`, `Cargo.lock`, `pnpm-lock.yaml`), or `world.stage` edit:** `l0_merkle_sha256` changes → `DockerfileStageBuilder` runs `docker buildx build` (reusing BuildKit layer cache) into `.staging-<uuid>`, validates the 6-rule contract, and atomically renames to `cache/rootfs/<new_sha256>`. The builder's work ends there. Because the new digest changes the base key (§2.3.1), `BtrfsEngine` seeds and seals a **new** `snapshots/<project>-base-<base_key_sha12>` (§2.3 — never copy-over, so the old base is untouched). That invalidates `DagPlanner`'s `base` fixture root and downstream `[fixtures.*]` while leaving `[artifacts.front]` untouched (`ADR-0003`). Worlds already cloned keep their existing CoW lineage and rootfs until destroyed; the superseded base is collected by Phase-2 GC once no subvolume clones from it (§7.2 #4).
-3. **`snow.yml` `pg_clusters[].version` change (e.g. `"17"` → `"18"`):** Resolves/extracts `postgres:18` into `cache/oci/<sha256>/rootfs` once and changes the base key's service-image identity (§2.3.1), so a fresh base is seeded (`initdb`, or the §3.2 restore sequence followed by `freeze_world`) without rebuilding `app_rootfs`.
+3. **`Forkfile` `pg_clusters[].version` change (e.g. `"17"` → `"18"`):** Resolves/extracts `postgres:18` into `cache/oci/<sha256>/rootfs` once and changes the base key's service-image identity (§2.3.1), so a fresh base is seeded (`initdb`, or the §3.2 restore sequence followed by `freeze_world`) without rebuilding `app_rootfs`.
 4. **Offline, Fork & Staged GC Guarantee:** Once `tags.json` + `cache/oci/<sha256>/rootfs` + `cache/rootfs/<l0_merkle_sha256>/app` + `<state_dir>/dumps/<sha256>.pgdump` exist on disk, `slipfork up`, `slipfork fork`, and `slipfork test` resolve the cached digest and clone subvolumes; `DockerfileStageBuilder` is the only component that ever calls Docker, and it runs only on a cache miss (its cache-hit contract test counts exporter calls and asserts zero on a hit). Collection is **staged**, and `slipfork prune` is never a second holder of the storage seam:
    - **Phase 1 (`M3.13`–`M3.15`, `M3.19`):** `DaemonControl::prune` reaps detached world records only, each through the daemon's own `WorldEngine::destroy_world`, and `PruneReport.snapshots` stays empty. Sealed bases under `snapshots/`, fixture/stage snapshots, artifacts, and `cache/` are untouched, so `M3.19` asserts only that the scenario's own world subvolumes are gone (`btrfs subvolume list <state_dir> | grep -v '/snapshots/'` empty); the digest-keyed sealed base legitimately survives.
    - **Phase 2 (`M3.2.13`):** `ADR-0010` §3 is normative for the delegation. `M3.2`'s `DaemonService::prune` is the orchestrator: it computes the liveness sets and drives `WorldEngine::prune_snapshots` (subvolumes over `SubvolumeDriver`), `ArtifactStore::prune_artifacts` (`artifacts/*`), and `BaseImageBuilder`'s cache pruning (`cache/{rootfs,oci}`). `M3.2.13` owns `crates/slipfork-engine/src/prune.rs` — the typed planner (`PrunePlan`) behind `prune_snapshots`, plus the daemon wiring and `--dry-run`/idempotency. Plain directories are never deleted through the subvolume driver, and `BaseImageBuilder` is never injected into `BtrfsEngine`. Liveness includes each live world's `WorldSpec.snapshot`, so a base any live world cloned from is retained; an unknown on-disk entry is reported, not deleted.

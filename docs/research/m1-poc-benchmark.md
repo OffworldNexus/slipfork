@@ -50,6 +50,6 @@ Compare Mode 2 (`5.63 s`) vs Mode 3 (`1.89 s`):
 ## 3. Developer & AI-Agent Convenience Gains
 
 1. **Deletes ~250–300 lines of fragile `conftest.py` process/port plumbing per project:** Every world binds fixed canonical ports (`:8000`, `:3000`, `:5432`, `:6379`, `:9000`). No `live_server` port-0 scraping, no re-baking Vite bundles per `xdist` worker, and no `settings.STORAGES` monkey-patching.
-2. **Zero `.env` drift & zero secret-missing hallucinations:** `snow.yml` `modes.all` + `modes.local` + `!! random_string(50)` auto-generates local secrets once (`0600` vault) and fails closed listing **all** missing external keys up front.
+2. **Zero `.env` drift & zero secret-missing hallucinations:** `Forkfile` `modes.all` + `modes.local` + `!! random_string(50)` auto-generates local secrets once (`0600` vault) and fails closed listing **all** missing external keys up front.
 3. **Zero `root:root` files:** Shared workspace bind-mounts run as host `$UID:$GID` (`1000:1000` verified in `critical_engine.rs`).
 4. **Zero-confusion OpenCode worktrees:** `@slipfork/opencode` forks the live world in `44 ms` on `worktree.create` and routes standard `shell` commands implicitly by `cwd`.

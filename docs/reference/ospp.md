@@ -2,7 +2,7 @@
 
 Your CI already holds the authoritative values for the real environment. OSPP v1 is how a local world asks for them without copying `.env` files or pasting secrets into a terminal.
 
-Pair once, boot, and `slipforkd` injects the resolved environment into every component and shell it supervises:
+Pair once, boot, and `slipforkd` injects the resolved environment into every service and shell it supervises:
 
 ```console
 $ slipforkd --state-dir ~/.cache/slipfork --runtime-dir ~/.cache/slipfork/run \
@@ -11,14 +11,20 @@ $ slipfork auth
 https://ci.acme-shop.example/pair#handle=<32-byte hex>
 [auth] paired p256:02b1… account=alice
 $ slipfork up
-$ slipfork exec -- sh -c 'echo ${SECRET_KEY:+injected}'
+$ slipfork exec -s api -- sh -c 'echo ${SECRET_KEY:+injected}'
 injected
 ```
 
 !!! info "`--ospp-endpoint` is a first-run flag"
     Pairing needs a server identity, so the first daemon needs `--ospp-endpoint`. `slipfork auth` then saves `{endpoint, account, machine}` at `<state_dir>/ospp.json` (`0600`), and later auto-spawned or systemd daemons reconnect from that record. An explicit `--ospp-endpoint` still wins when given.
 
-`SECRET_KEY` is an ordinary `modes.<mode>.envs` entry you do **not** claim locally. A claimed key resolves from your vault; an unclaimed one resolves from the provider (`${{ secrets::SECRET_KEY }}`, with no `!!` and no `??`).
+`SECRET_KEY` is an ordinary `env` entry you do **not** claim locally. A claimed key resolves from your vault; an unclaimed one resolves from the provider:
+
+```text
+env app {
+    SECRET_KEY = secret(SECRET_KEY)
+}
+```
 
 ## What it buys you
 
@@ -28,7 +34,7 @@ Slipfork ships the OSPP v1 **client**. The server belongs to a provider (your CI
 
 ## Two tiers
 
-The local `0600` vault holds values that are yours and must survive a restart: `secrets::<KEY>` values stored with `slipfork secret set` and the local-mode `!!` values generated once on first resolve. The default path is `~/.local/share/slipfork/vaults/<project>.json`, moved only by `$XDG_DATA_HOME`.
+The local `0600` vault holds values that are yours and must survive a restart: `secret(<KEY>)` values stored with `slipfork secret set` and generated values from `secret(<KEY>) ?? <generator>`. The default path is `~/.local/share/slipfork/vaults/<project>.json`, moved only by `$XDG_DATA_HOME`.
 
 Remote secrets take the other tier. They arrive HPKE-encrypted (RFC 9180) over OSPP, are decrypted inside `slipforkd` memory, and are injected directly into supervised children. Restarting the daemon drops them until the next subscribe; no vault entry or file ever holds one.
 
@@ -52,9 +58,9 @@ Remote secrets take the other tier. They arrive HPKE-encrypted (RFC 9180) over O
 
 ## What stays local
 
-Before subscribing, `slipforkd` sends the feature-evaluated `Forkfile` (`EvaluatedFork` JSON for the active mode) plus `claims`: the `secrets::` keys in the project's vault, the resources it runs locally plus every declared `domains[].id`, and every local-mode `!!` key.
+Before subscribing, `slipforkd` sends the feature-evaluated `Forkfile` plus `claims`: the `secret(<KEY>)` keys in the project's vault, the resources it runs locally, and every declared domain id.
 
-A claimed entry is never resolved by the server. Its expression comes back untouched and is filled from the local vault. That is how `${{ secrets::LOCAL_PASSWORD }}` wins over CI on your machine while no local value leaves it.
+A claimed entry is never resolved by the server. Its expression comes back untouched and is filled from the local vault. That is how a local password wins over CI on your machine while no local value leaves it.
 
 Anything not claimed is resolved by the server, or refused there if missing. Server values whose evaluation touched a secret come back as `{ "encrypted": "<base64>" }` and are decrypted in memory.
 
@@ -70,7 +76,7 @@ Every frame is one UTF-8 JSON text message with a `"type"`. Field-level JSON, HP
 | `pair_handle` | server → client | The `url` and single-use `handle` to open |
 | `pair_approved` | server → client | The browser approved, or an `error` (rejected, already paired, throttled, bad proof) |
 | `subscribe` | client → server | Verbatim Git `remote`, ephemeral HPKE public key, feature-evaluated `forkfile`, `claims` |
-| `env_resolved` | server → client | Per-component environment for the subscription |
+| `env_resolved` | server → client | Per-service environment for the subscription |
 | `env_updated` | server → client | Live push after an upstream change; affected services restart in place |
 | `unsubscribe` | client → server | The project's last world stopped |
 | `dump_request` / `dump_ready` | client ⇄ server | Short-lived HTTPS URL for one HPKE-sealed resource dump |
@@ -81,13 +87,13 @@ Every frame is one UTF-8 JSON text message with a `"type"`. Field-level JSON, HP
 
 ## When it fails
 
-- `[resources.pg_databases.appdb] local = "remote"`, unpaired: `resource 'pg_database.appdb' requires an authenticated OSPP session in Local mode`. Run `slipfork auth`, or `up --no-dump` for a clean database.
-- `local = "prefer_remote"`, unpaired: the world runs the service locally with a `no_remote_session` row, visible under `slipfork up -v`. Never a silent half-remote world.
-- `--refresh-dump` on a local strategy is refused earlier: `` `--refresh-dump` cannot be combined with a local strategy for pg_databases 'appdb' ``.
+- `slipfork up --refresh-dump`, unpaired: `requires an authenticated OSPP session`. Run `slipfork auth`, or `slipfork up --no-dump` for a clean database.
+- A dump-stream failure leaves the world on its sealed base and prints one `next:` line naming the database; the world is never half-seeded.
 - `slipfork auth` on a daemon with no endpoint and no saved record fails with `this daemon has no OSPP endpoint` and names the flag to start `slipforkd` with.
+- A second daemon on one state directory refuses to steal `daemon.sock`; stop the running world first.
 
 ## Next
 
 - [Local vault & `slipfork secret`](cli.md#slipfork-secret-local-vault) — what the first tier stores and how to manage it.
-- [`snow.yml` modes & secrets](../snow-modes.md) — `!!`, `??`, and the vault path.
-- [Manifest reference](manifest.md#expressions) — namespaces and resource strategies.
+- [`Forkfile` reference](forkfile.md#environment-expressions) — `secret(...) ??`, generators, and taint.
+- [CLI reference](cli.md#seed-dumps-and-sealed-bases) — `--no-dump`, `--refresh-dump`, and sealed bases.

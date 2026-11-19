@@ -1,6 +1,6 @@
 # ADR-0009: Per-Service `crun` Pod Execution Model, Deduplicated Service & Backing OCI Rootfses, `$UID:$GID` Runtime, and World Btrfs Volumes
 
-- **Status:** Superseded & Updated in `0.1.0` — **the single-app-`/` `L0` `pivot_root` (`ServiceRuntime::WorldProcess`) and `[world] image` / `world.stage` selector in `slipfork.toml` are superseded and deleted pre-`1.0` in favor of the Per-Service `crun` Pod Model ("A World Is a Pod, Not One Image") and [`docs/design/forkfile.md`](../design/forkfile.md)**. Static `/.slipfork/bin/crun` provisioning, `$UID:$GID` execution, `OciRootfs.readiness`, `--host-caches` ABI probing, and unified per-world Btrfs subvolume CoW (`ADR-0010`) remain active and normative.
+- **Status:** Superseded & Updated in `0.1.0` — **the single-app-`/` `L0` `pivot_root` (`ServiceRuntime::WorldProcess`) and `[world] image` / `world.stage` selector in `Forkfile` are superseded and deleted pre-`1.0` in favor of the Per-Service `crun` Pod Model ("A World Is a Pod, Not One Image") and [`docs/design/forkfile.md`](../design/forkfile.md)**. Static `/.slipfork/bin/crun` provisioning, `$UID:$GID` execution, `OciRootfs.readiness`, `--host-caches` ABI probing, and unified per-world Btrfs subvolume CoW (`ADR-0010`) remain active and normative.
 - **Date:** 2026-11-15 (superseded/updated 2026-11-19)
 
 ## Context
@@ -22,4 +22,4 @@
 
 ## Consequences
 
-- Eliminates `slipfork.toml` `[world]`, unifies app services and backing resources onto one daemonless `crun` container runtime per pod, deduplicates shared service rootfses, and gives every fork instant ~20 ms CoW `.venv` / `node_modules` volumes alongside live host source editing.
+- Eliminates `Forkfile` `[world]`, unifies app services and backing resources onto one daemonless `crun` container runtime per pod, deduplicates shared service rootfses, and gives every fork instant ~20 ms CoW `.venv` / `node_modules` volumes alongside live host source editing.

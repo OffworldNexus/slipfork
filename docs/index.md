@@ -1,49 +1,75 @@
 # Slipfork (`0.1.0`)
 
-**Slipfork runs your cloud environment locally in a box; CI is the clutch.** Your `snow.yml` already describes the app and its services. Slipfork boots that description as a disposable Btrfs world and forks it in milliseconds for every branch, task, or agent.
+**Slipfork runs your cloud environment locally in a box; CI is the clutch.** One `Forkfile` describes your services, databases, and secrets. `slipfork up` boots them as a copy-on-write Btrfs world behind a `.localhost` origin, and `slipfork fork` clones the whole world — data included — in milliseconds.
 
 ```console
 $ sudo slipfork daemon install   # one time: :80 socket activation + AppArmor userns profile
-$ slipfork up                    # Dockerfile rootfs → Btrfs world → http://acme.localhost
-$ slipfork fork feat-billing     # second world + .worktrees/feat-billing
-$ slipfork list                  # one URL per world
-$ slipfork open --world feat-billing
+$ slipfork up                    # Forkfile → containers → http://demo.localhost
+$ slipfork fork feat-billing     # own worktree, database, cache, URL
+$ slipfork status                # every world, one URL each
+$ slipfork open -w feat-billing
 ```
+
+```text title="Forkfile"
+postgres pg { database app_db }
+
+service api ./api {
+    port 8000
+    route /api
+    env { DATABASE_URL = app_db.url }
+    run .venv/bin/uvicorn app.main:app --host 0.0.0.0 --port $port
+}
+```
+
+That is the whole manifest: no Compose file, no `.env`, no port table. Each `service` is its own `crun` container, `postgres` is another, and fork copies all of it.
 
 !!! warning "Btrfs is the substrate"
     Every world and sealed snapshot is one unprivileged subvolume. The state directory must be Btrfs mounted `user_subvol_rm_allowed,noatime`; `slipfork doctor` prints the exact `mount` line and exits `1` on anything else.
 
 !!! info "One daemon, thin clients"
-    `slipfork` auto-spawns the unprivileged `slipforkd` when `<state_dir>/run/daemon.sock` does not answer. `doctor` runs locally; world commands and secret resolution run through the daemon.
+    `slipfork` auto-spawns the unprivileged `slipforkd` on `up` and `fork`. `doctor` runs locally; world commands, tasks, and secret resolution run through the daemon.
 
-## The workflow
+## How it fits together
 
 ```mermaid
 flowchart LR
-  M["snow.yml<br/>modes.all + modes.local"] --> W["slipfork up<br/>L0 rootfs + Btrfs world"]
-  W --> C["app + postgres + redis + S3<br/>one subvolume"]
-  C --> U["http://acme.localhost"]
+  M["Forkfile<br/>services + postgres + env"] --> W["slipfork up<br/>per-service rootfs + Btrfs world"]
+  W --> C["api + front + postgres<br/>one subvolume"]
+  C --> U["http://demo.localhost"]
   C -->|"subvolume snapshot"| F["fork feat-billing<br/>.worktrees/feat-billing"]
-  F --> V["http://feat-billing.acme.localhost"]
-  U --> O["OSPP v1<br/>CI secrets via HPKE"]
+  F --> V["http://feat-billing.demo.localhost"]
+  U --> O["OSPP v1<br/>CI secrets, HPKE, memory only"]
   V --> O
-  O -. "memory only" .-> C
 ```
 
-Forking a Git worktree isolates source files. Slipfork also isolates the database, cache, object store, and ports those files talk to — with one metadata snapshot, not a rebuild.
+## Everyday commands
 
-## What runs today
-
-| Surface | Shipped behaviour |
+| Command | What it does |
 |---|---|
-| **Host probe** | `slipfork doctor` checks the Btrfs magic, a live subvolume round-trip, `userns`/`netns`, and `:80` ingress; text or `--json` |
-| **World rootfs** | Read-only `L0` image built from your `Dockerfile`, cached under `<state_dir>/cache/rootfs`, run as `$UID:$GID` |
-| **Backing services** | `postgres:<v>`, `redis:<v>`, and SeaweedFS as `crun` containers on the world's `127.0.0.1` |
-| **Lifecycle** | `up`, `down`, `restart`, `fork`, `drop`, `list`, `ps`, `prune`, `open`, bare `status` |
-| **Inside a world** | `exec`, `shell`, `logs`, `hook run`, `db`, `redis`, `forward` |
-| **`snow.yml`** | `modes.all` + named modes, `??` fallbacks, write-once `!!` secrets in a local `0600` vault |
-| **OSPP v1** | Pair once with `slipfork auth`; remote secrets arrive HPKE-encrypted and stay in daemon memory |
-| **OpenCode V2** | Worktree becomes a world; shell commands route through `slipfork exec` |
+| `slipfork up` | Boot or confirm the world selected by `--world` or `cwd` |
+| `slipfork fork <name>` | Git worktree (or Jujutsu workspace) plus its own Btrfs world |
+| `slipfork status` | Every world with state and exactly one URL |
+| `slipfork ps` | Services and `crun` containers of one world |
+| `slipfork exec -s api -- <cmd>` | Run a command inside a service with its resolved environment |
+| `slipfork run <task>` | Run a `Forkfile` task inside its service |
+| `slipfork shell <service>` | Interactive shell inside a service container |
+| `slipfork db <id>` / `slipfork redis <id>` | `psql` / `redis-cli` inside the running container |
+| `slipfork restart` | Re-run the boot pipeline after editing code or hooks |
+| `slipfork down` / `slipfork drop` | Stop a world / destroy a fork world and its checkout |
+
+Run bare `slipfork` for the same fleet tree as `status`. Add `--json` for the machine document agents read.
+
+## What ships in `0.1.0`
+
+- `Forkfile`: one procedural manifest with whole-file static checking, features, `on` conditionals, env groups, tasks, and rustc-style diagnostics.
+- Read-only per-service rootfs built from each service's `Dockerfile`, cached content-addressed, executed as `$UID:$GID`.
+- One unprivileged Btrfs subvolume per world; sealing and cloning are metadata-only.
+- Daemonless `crun` containers: every `service`, plus `postgres:<v>`, `redis:<v>`, and SeaweedFS on the world's `127.0.0.1`.
+- `secret(KEY) ?? <generator>` write-once secrets in a local `0600` vault; `var(KEY) ?? <fallback>` for local overrides.
+- OSPP v1 CI secrets over HPKE, decrypted in `slipforkd` memory; pair once, reconnect from `<state_dir>/ospp.json`.
+- OpenCode V2 plugin: a worktree becomes a world; shell commands route through `slipfork exec`.
+- `git-remote-slipfork`: fetch a running fork's branch over `slipfork://<fork>`.
+- `slipfork lsp` for `Forkfile` diagnostics, and `slipfork migrate` for upstream Snow manifests.
 
 ## Measured cost model
 
@@ -54,12 +80,13 @@ Forking a Git worktree isolates source files. Slipfork also isolates the databas
 | Clone to a warm-SQL world | **`39 ms`** |
 | RAM per running world | **`6.3 MiB`** |
 
-Owner-recorded figures; provenance in `docs/research/btrfs-crun-benchmarks.md` in the repository.
+Owner-recorded; method and caveats in `docs/research/btrfs-crun-benchmarks.md` in the repository.
 
-## Next steps
+## Documentation
 
-- **[Getting started](getting-started.md)** — mount Btrfs, probe, boot, fork, and work inside a world.
-- **[`snow.yml` modes & secrets](snow-modes.md)** — mode resolution, `!!` generators, coordinates.
-- **[Secrets & OSPP v1](reference/ospp.md)** — pair once, reconnect from the saved record.
-- **[OpenCode V2 plugin](agents-and-opencode.md)** — automatic worktree worlds for agents.
-- **[CLI](reference/cli.md)** and **[manifest reference](reference/manifest.md)** — commands, flags, schemas.
+- [Getting started](getting-started.md)
+- [The `Forkfile`](forkfile.md) and its [reference](reference/forkfile.md)
+- [OpenCode V2 plugin](agents-and-opencode.md)
+- [CLI reference](reference/cli.md) · [Secrets & OSPP v1](reference/ospp.md)
+
+Build the site with `make docs-check`; it runs Zensical `--strict` and a CLI-honesty check.

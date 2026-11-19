@@ -1,14 +1,25 @@
-# Demo: a real PostgreSQL-backed world
+# Demo: a two-service world on PostgreSQL
 
-One small Python API, one `postgres:18` cluster, one database, and one `/` ingress. `slipfork up` turns it into a running Copy-on-Write world with a port-less origin.
+One `Forkfile`: an API on `/api`, a static front on `/`, and one `postgres:18` database. `slipfork up` boots all three as separate containers in one copy-on-write world.
+
+```mermaid
+flowchart LR
+    forkfile["Forkfile"] --> up["slipfork up"]
+    up --> api["api :8000 /api"]
+    up --> front["front :5173 /"]
+    up --> pg["postgres 18 demo"]
+    api --> origin["http://demo.localhost"]
+    front --> origin
+    pg --> origin
+```
 
 ```console
 $ cd ~/demo
 $ slipfork up
-$ curl -fsS -o /dev/null -w '%{http_code}\n' -H 'Host: demo.localhost' http://127.0.0.1/
-200
-$ slipfork ps
-$ slipfork fork demo-a            # second world at http://demo-a.demo.localhost
+$ curl -fsS http://demo.localhost/api
+{"hello": "world", "host": "api", "world": "canonical", "debug": true, "secret_len": 32}
+$ slipfork run migrate          # re-apply db/*.sql through the api service
+$ slipfork fork demo-a          # second world at http://demo-a.demo.localhost
 ```
 
 !!! info "No port to remember"
@@ -20,15 +31,15 @@ $ slipfork fork demo-a            # second world at http://demo-a.demo.localhost
 
 | File | Purpose |
 |---|---|
-| `app/server.py` | The API component on internal port `8000` |
+| `Forkfile` | `project`, `env app`, both `service` blocks, `postgres pg`, and `task migrate` |
+| `api/server.py` | JSON on `/api` and `/api/db`, on port `8000` |
+| `api/migrate.py` | Applies `db/*.sql`; the `pre-deploy` hook and the `migrate` task |
+| `front/index.html` | The page served on `/`, reading `/api/db` |
 | `db/*.sql` | Schema and seed, applied idempotently on every boot |
-| `Dockerfile` | The `api` build image (`FROM python:3.12-slim AS app`) |
-| `snow.yml` | `images`, `components`, `ingresses`, `resources.pg_*`, `modes.all` / `modes.local` |
-| `slipfork.toml` | `project = "demo"`; world and fork ids derive from it |
 
-The component runs `app/server.py` **from this checkout**, bind-mounted at its same path inside the world. Edit the API or the SQL and run `slipfork restart`; there is no Docker rebuild.
+The services run their sources **from this checkout**, bind-mounted at the same path inside the world. Edit `api/server.py` or the SQL and run `slipfork restart`; there is no Docker rebuild.
 
-`modes.all` carries only values every host resolves (`DATABASE_URL`, `PGUSER`). `modes.local` carries the local-tier `!!` secret (`DEMO_SECRET`) plus `DEBUG`. Auto-generated secrets belong to the mode tier that consumes them.
+`env app` carries the database URL, `secret(DEMO_SECRET) ?? random_hex(16)` (written once to the local `0600` vault), and `DEBUG`. Auto-generated secrets belong in the `env` group that consumes them.
 
 ## Forks
 
@@ -37,16 +48,16 @@ $ slipfork fork demo-a     # .worktrees/demo-a plus its own subvolume and origin
 $ slipfork drop demo-a     # stop it and remove the worktree
 ```
 
-Each fork is its own Btrfs subvolume, its own `postgres:18` cluster, and its own subdomain. The canonical world and every fork run at the same time.
+Each fork is its own Btrfs subvolume, its own `postgres:18` cluster, its own `.venv` volume, and its own subdomain. The canonical world and every fork run at the same time.
 
 ## Database and logs
 
 ```console
 $ slipfork db demo         # psql 18 inside the world's postgres container (needs a TTY)
-$ slipfork logs api        # retained component output
-$ slipfork ps              # every component and crun service in the world
+$ slipfork logs api        # retained service output
+$ slipfork ps              # every service and crun container in the world
 ```
 
-`db` takes the declared `pg_databases.<id>`; with exactly one declaration the argument can be omitted. Each fork starts from the same tables and adds its own `boot` row scoped to the fork.
+`db` takes the declared database id; with exactly one declaration the argument can be omitted. Each fork starts from the same tables and adds its own `boot` row scoped to the fork.
 
-Cookbook: [`docs/getting-started.md`](../../docs/getting-started.md) and [`docs/snow-modes.md`](../../docs/snow-modes.md).
+Cookbook: [`docs/getting-started.md`](../../docs/getting-started.md) and [`docs/forkfile.md`](../../docs/forkfile.md).

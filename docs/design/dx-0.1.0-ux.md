@@ -40,7 +40,7 @@ slipforkd 1420, ingress 127.0.0.1:80, [::1]:80
   | `stopped` | `up`, `logs`, `down` |
 
   A world that is not the `cwd`-selected one renders each command with `--world <project>:<fork>`. `status`'s `list`-style `NEXT` column (`§10`) shows that table's first command for the row's state.
-- **Only `up` and `fork` auto-spawn `slipforkd`.** Every other verb — `status`, `ps`, `list`, `logs`, `open`, `restart`, `down`, `drop`, `db`, `redis`, `exec`, `shell`, `secret`, `auth`, `snow resolve`, `hook` — fails closed when nothing answers on `<state_dir>/run/daemon.sock`, with exactly one line and exit `1`:
+- **Only `up` and `fork` auto-spawn `slipforkd`.** Every other verb — `status`, `ps`, `list`, `logs`, `open`, `restart`, `down`, `drop`, `db`, `redis`, `exec`, `shell`, `secret`, `auth`, `slipfork env --reveal`, `hook` — fails closed when nothing answers on `<state_dir>/run/daemon.sock`, with exactly one line and exit `1`:
   ```console
   $ slipfork
   slipfork: no slipforkd on /home/slipfork/.cache/slipfork/run/daemon.sock — run `slipfork up`
@@ -189,7 +189,7 @@ next      slipfork open | slipfork db | slipfork logs | slipfork restart | slipf
 
 - **Ports are in-world only.** `PORT 5432` is the container's readiness port inside the world's `netns`; nothing on the host answers it. The `next` line names `slipfork db` (the supported way in) so nobody tries host `psql -p 5432`.
 - **States, defined once:** a world is `running | failed | stopped`; a world service is `running | exited | stopped` (`exited` = the process ended on its own; `stopped` = `down`/`restart` stopped it).
-- **`ps` is read-only and never fails for a world that exists:** a `stopped` or `failed` world prints its `world` line, lineage, and rows, and exits `0`. Only an unknown or never-booted world fails closed, in one line: ``slipfork: no world 'demo' here; boot it with `slipfork up` or list worlds with `slipfork list` `` (`code: unknown_world`). With no daemon answering at all, `§1`'s `no_daemon` line applies.
+- **`ps` is read-only and never fails for a world that exists:** a `stopped` or `failed` world prints its `world` line, lineage, and rows, and exits `0`. Only an unknown or never-booted world fails closed, in one line: ``slipfork: no world 'demo' here; boot it with `slipfork up` or list worlds with `slipfork status` `` (`code: unknown_world`). With no daemon answering at all, `§1`'s `no_daemon` line applies.
 - **`slipfork ps --json`:** that verb's document in `§10` — `{"ok": true, "world", "state", "lineage", "services"}` — preserving full 64-hex digests and `null` for every unknown.
 
 ---
@@ -239,7 +239,7 @@ next      slipfork open --world demo:feat-ux-pass | slipfork db --world demo:fea
 lineage   rootfs a1b2c3d4e5f6 cached · postgres:18 cached · seed 9f8e7d6c5b4a cached · base 4570132bffb8 reused
 ```
 
-1. **Daemon-side branch derivation & real `snow_domains` validation (`VcsWorkspaceFactory::current_branch`):** The CLI sends `ForkRequest { fork: Option<String>, .. }` and never runs `git` or reads `.git`. When `fork` is `None`, `slipforkd` queries `VcsWorkspaceFactory::current_branch(&worktree_root)` and sanitises the branch name via `crates/slipfork-vcs::sanitize_fork_name` (lowercase ASCII, `/` -> `-`, drop bytes outside `[a-z0-9-]`, collapse repeated `-`, strip leading/trailing `-`, reject empty). `slipforkd` then parses the checkout's `snow.yml`, checks `sanitised != repo.project.as_str()` as a separate check, and validates `validate_fork_name(&sanitised, &snow_domains)` passing the project's real `snow.yml` `domains[].id` slice (never `&[]`).
+1. **Daemon-side branch derivation & real `snow_domains` validation (`VcsWorkspaceFactory::current_branch`):** The CLI sends `ForkRequest { fork: Option<String>, .. }` and never runs `git` or reads `.git`. When `fork` is `None`, `slipforkd` queries `VcsWorkspaceFactory::current_branch(&worktree_root)` and sanitises the branch name via `crates/slipfork-vcs::sanitize_fork_name` (lowercase ASCII, `/` -> `-`, drop bytes outside `[a-z0-9-]`, collapse repeated `-`, strip leading/trailing `-`, reject empty). `slipforkd` then parses the checkout's `Forkfile`, checks `sanitised != repo.project.as_str()` as a separate check, and validates `validate_fork_name(&sanitised, &snow_domains)` passing the project's real `Forkfile` `domains[].id` slice (never `&[]`).
 2. **Fail-closed no-arg cases (never a generated random name, never a placeholder — every message prints the resolved values, and each names its `§10` code):**
    - Detached `HEAD` or bookmark-less `jj`: `slipfork: checkout has no active branch; pass an explicit name with slipfork fork <name>` (`code: no_branch`)
    - Invoked inside a fork worktree: `slipfork: already inside fork worktree '.worktrees/feat-ux-pass'; run slipfork fork from the repository root /home/slipfork/demo` (`code: in_fork_worktree`, extra `worktree`)
@@ -337,7 +337,7 @@ The base is open, but the extra keys are a **closed list per code** — no code 
 | `not_root` | — | `daemon install` (`§2`) |
 | `ingress_missing` | `addrs` | any verb that needs the origin when the daemon reported no HTTP ingress listener (an invariant violation, so the CLI fails closed instead of guessing a port) |
 | `ingress_port_invalid` | `addrs`, `port` | any verb that needs the origin when the daemon's reported `port` is not carried by a bound listener (the daemon re-validates its own report and the CLI never substitutes `:0`) |
-| `variable_collision` | `key` | `snow resolve` when a `snow.yml` variable name collides with `ok` / `code` / `error` / `next` |
+| `variable_collision` | `key` | `slipfork env --reveal` when a `Forkfile` variable name collides with `ok` / `code` / `error` / `next` |
 | `auth_failed` | `detail` | `auth` when pairing fails (`detail` carries the server `error.code` — `rejected` \| `already_paired` \| `throttled` \| `bad_proof` — or `endpoint_mismatch` / `disconnected` when `<URL>` differs from `slipforkd`'s boot-injected `OsppEndpoint` or the pairing socket drops, `§9`) |
 
 | Command | Summary | `--json` stdout document |
@@ -350,7 +350,7 @@ The base is open, but the extra keys are a **closed list per code** — no code 
 | `slipfork fork [FORK] [--base <REV>] [--no-dump \| --refresh-dump] [--resources local] [--host-caches]` | Branch-derived (or explicit) `.worktrees/<fork>` + Btrfs CoW world + `cd` + `lineage`; may auto-spawn `slipforkd` | same document as `slipfork up --json` (`"changed": true`) |
 | `slipfork drop <FORK>` | Destroy fork subvolume, `.worktrees/<fork>`, branch, and `refs/slipfork/<fork>/wip` | object: `{"ok": true, "dropped": bool}` |
 | `slipfork down [--world <W>]` | Stop world services while keeping its worktree (idempotent) | object: `{"ok": true, "released": bool}` |
-| `slipfork list` | Flat `WORLD / STATE / ORIGIN / NEXT` table across projects; `NEXT` is that world's first `next` command (`§1`), paste-ready | collection: `[{"world": str, "state": "running\|failed\|stopped", "origin": str, "worktree": str}]` |
+| `slipfork status` | Flat `WORLD / STATE / ORIGIN / NEXT` table across projects; `NEXT` is that world's first `next` command (`§1`), paste-ready | collection: `[{"world": str, "state": "running\|failed\|stopped", "origin": str, "worktree": str}]` |
 | `slipfork prune [--dry-run \| --yes]` | Preview (default/`--dry-run`) or reap worlds whose checkout directory is gone | object: `{"ok": true, "dry_run": bool, "worlds": [str], "snapshots": [str], "artifacts": [str], "rootfs_digests": [str], "oci_digests": [str], "reclaim_bytes": u64}` |
 | `slipfork daemon install [--user <U>] [--bin-dir <D>]... [--forward-port <P>]` | Install `/etc/systemd/system/slipforkd.{socket,service}` + `/etc/apparmor.d/slipfork` and `enable --now` | object: `{"ok": true, "user": str, "socket": "wrote\|unchanged", "service": "wrote\|unchanged", "apparmor": "wrote\|unchanged"}` |
 | `slipfork daemon unit [--only socket\|service\|apparmor] [--bin-dir <D>]... [--forward-port <P>]` | Render systemd socket/service or flat 4-line AppArmor profile to stdout (render seam; `daemon install` is the only install path) | object: `{"ok": true, "socket": str\|null, "service": str\|null, "apparmor": str\|null}` |
@@ -362,7 +362,7 @@ The base is open, but the extra keys are a **closed list per code** — no code 
 | `slipfork db [DB_ID] [--world <W>]` | Interactive `psql` inside the running `postgres:<v>` `crun` container (TTY) | **no document**: rejects `--json` |
 | `slipfork redis [CLUSTER_ID] [--world <W>]` | Interactive `redis-cli` inside the running `redis:<v>` `crun` container (TTY) | **no document**: rejects `--json` |
 | `slipfork forward [--world <W>] [TARGET...]` | Bind daemon-owned `127.0.0.1:0` bridges into the world until Ctrl-C / disconnect | object: `{"ok": true, "world": str, "targets": [{"id": str, "host_addr": str, "uri": str}]}` |
-| `slipfork snow resolve [--file <F>] [--mode <M>] [--component <C>] [--expose-secrets]` | Validate `snow.yml`, persist missing local `!!` secrets to the local `0600` vault (remote OSPP secrets stay in memory only), print resolved variables (secrets redacted) | collection: `{<KEY>: str \| null}` (`null` = redacted; `--expose-secrets` fills it). The keys `ok` / `code` / `error` / `next` are reserved and a `snow.yml` variable using one fails closed: `slipfork: snow.yml variable 'ok' collides with the reserved ok/code/error/next keys` |
+| `slipfork env [-s <SVC>] [--reveal]` | Validate `Forkfile`, persist missing local `!!` secrets to the local `0600` vault (remote OSPP secrets stay in memory only), print resolved variables (secrets redacted) | collection: `{<KEY>: str \| null}` (`null` = redacted; `--reveal` fills it). The keys `ok` / `code` / `error` / `next` are reserved and a `Forkfile` variable using one fails closed: `slipfork: Forkfile variable 'ok' collides with the reserved ok/code/error/next keys` |
 | `slipfork secret set [--force] <KEY>` / `unset <KEY>` / `list` | Manage local-only `0600` project vault overrides through `slipforkd` (`set` reads stdin; remote OSPP secrets never enter this vault) | object `{"ok": true, "key": str}` / object `{"ok": true, "key": str, "removed": bool}` / collection `[str]` |
 | `slipfork auth <URL>` | Pair machine P-256 key over `ospp-v1`: solves ALTCHA + PoP, prints and opens server-supplied `<url>#handle=<handle>` (fragment only), and awaits `pair_approved` | object: `{"ok": true, "public_key": str, "account": str, "machine": str}` |
 | `slipfork support` | Report embedded integration tiers and `required_evidence` (`support/integrations.toml`) | collection: `[{"id": str, "category": str, "tier": str, "evidence": {...}, "required_evidence": [str]}]` |

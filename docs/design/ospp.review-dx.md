@@ -49,7 +49,7 @@ Fix: add a bullet under `## Pairing`: requires a desktop opener (`BROWSER` or `x
 approval, so headless hosts cannot pair yet. Escalate printing the URL before the blocking wait as a direction-challenge.
 
 **M4. `docs/reference/ospp.md:5-13` — the page's only worked example is not reproducible.**
-`STRIPE_SECRET_KEY` appears with no `snow.yml`; nothing says it must be declared in `modes.<mode>.envs` and left
+`STRIPE_SECRET_KEY` appears with no `Forkfile`; nothing says it must be declared in `modes.<mode>.envs` and left
 unclaimed so the server resolves it. A reader cannot get `injected` out of that block.
 Fix: one sentence after the block — "`STRIPE_SECRET_KEY` is an ordinary `modes.<mode>.envs` entry you do not claim
 locally; a claimed key resolves from your vault, an unclaimed one from the provider (`snow-modes.md`, `!!`/`??`)."
@@ -74,10 +74,10 @@ explained only at `:37`. Fix: drop the parenthetical from the transcript; the ma
 "start \`slipforkd\` with \`--ospp-endpoint <wss://...>\`". Fix: copy it verbatim (this page quotes errors elsewhere,
 so drift is visible).
 
-**N4. `docs/reference/cli.md:3`** — "doctor and `dag plan` read the host locally, `snow resolve` asks `slipforkd` … and
+**N4. `docs/reference/cli.md:3`** — "doctor and `dag plan` read the host locally, `slipfork env --reveal` asks `slipforkd` … and
 every world command talks to …" omits `secret`, which is also daemon-backed; a user setting a password before first
-boot gets "no slipforkd … run `slipfork up`" (`M3.29.3/RESULT.md`). Fix: list `secret` next to `snow resolve` in that
-sentence, plus one line in the section: "needs a running `slipforkd`, like `snow resolve`".
+boot gets "no slipforkd … run `slipfork up`" (`M3.29.3/RESULT.md`). Fix: list `secret` next to `slipfork env --reveal` in that
+sentence, plus one line in the section: "needs a running `slipforkd`, like `slipfork env --reveal`".
 
 **N5. `docs/reference/cli.md:61` and `:81`** — the same `printf '%s' "$PGPASSWORD" | slipfork secret set PG_PASSWORD`
 example twice on one page. Fix: keep the table row terse (`slipfork secret set PG_PASSWORD`); the working example

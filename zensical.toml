@@ -1,7 +1,7 @@
 [project]
 site_name = "slipfork"
 site_url = "https://offworldnexus.github.io/slipfork/"
-site_description = "Instant copy-on-write dev worlds, OpenCode worktree forks, and orthogonal build/fixture planning from snow.yml."
+site_description = "Instant copy-on-write dev worlds and OpenCode worktree forks from one Forkfile."
 site_author = "Offworld Nexus"
 copyright = "&copy; 2026 Offworld Nexus &middot; Apache 2.0"
 
@@ -15,12 +15,12 @@ site_dir = "site"
 nav = [
   { "Home" = "index.md" },
   { "Getting started" = "getting-started.md" },
-  { "snow.yml modes & secrets" = "snow-modes.md" },
+  { "The Forkfile" = "forkfile.md" },
   { "OpenCode V2 plugin" = "agents-and-opencode.md" },
   { "Reference" = [
     { "CLI (0.1.0)" = "reference/cli.md" },
+    { "Forkfile" = "reference/forkfile.md" },
     { "Secrets & OSPP v1" = "reference/ospp.md" },
-    { "Manifests (snow.yml & slipfork.toml)" = "reference/manifest.md" },
   ] },
 ]
 

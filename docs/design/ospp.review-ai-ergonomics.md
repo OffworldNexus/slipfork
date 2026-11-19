@@ -120,18 +120,18 @@ succeeds and creates a junk key:
 ```console
 $ printf '%s' True | slipfork secret set vars::DEBUG
 [secret] stored secrets::vars::DEBUG (value never printed)
-$ slipfork snow resolve --mode local   # still fails: vars::DEBUG was never written
+$ slipfork env --reveal -s api   # still fails: vars::DEBUG was never written
 ```
 
 `${{ vars::DEBUG }}` reads `Namespace::Vars`, which has no write path in the CLI (`vars()` is
 read-only for claims, `crates/slipfork-edge/src/vault.rs:37-41`). Same false achievability at
-`docs/reference/ospp.md:24` ("the local `snow.yml` overrides you store with `slipfork secret set`")
+`docs/reference/ospp.md:24` ("the local `Forkfile` overrides you store with `slipfork secret set`")
 and implied by the example at `ospp.md:41`.
 
 **Replacement wording (`cli.md:78`):** replace `an override such as `vars::DEBUG`` with
 `` a `secrets::` override your `modes.local` block reads, such as `secrets::MY_API_TOKEN` ``.
 
-**Replacement wording (`ospp.md:24`):** replace `the local `snow.yml` overrides you store with `slipfork secret set`` with
+**Replacement wording (`ospp.md:24`):** replace `the local `Forkfile` overrides you store with `slipfork secret set`` with
 `` the `secrets::` overrides you store with `slipfork secret set` ``.
 
 **Replacement wording (`ospp.md:41`):** keep the resolution rule but stop implying the CLI writes
@@ -227,12 +227,12 @@ verbatim messages above, then keep the final sentence about needing a provider.
 `# terminal 1` above the `slipforkd` line and `# terminal 2 (or append &)` above `slipfork auth`,
 or append `&` to the daemon line.
 
-### m2. The `exec` example never shows the `snow.yml` declaration that makes the variable exist
+### m2. The `exec` example never shows the `Forkfile` declaration that makes the variable exist
 
 `docs/reference/ospp.md:12` prints `injected` for `STRIPE_SECRET_KEY`, but the server only resolves
-expressions present in the manifest (`claims`/`subscribe` carry the raw `snow.yml`,
+expressions present in the manifest (`claims`/`subscribe` carry the raw `Forkfile`,
 `docs/design/ospp.md:109-146`), and `exec` injects a component's resolved environment. **Fix:** add
-one line before the block: "`snow.yml` must declare it, e.g.
+one line before the block: "`Forkfile` must declare it, e.g.
 `modes.all.envs.api: { STRIPE_SECRET_KEY: '${{ secrets::STRIPE_SECRET_KEY }}' }`; an undeclared
 variable is simply absent from the shell."
 

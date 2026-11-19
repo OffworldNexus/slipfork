@@ -14,7 +14,7 @@ $ doctl auth init                 # once: the harness shells out to an authentic
 $ tools/do_vm.py up               # droplet + Btrfs volume + packages
 $ tools/do_vm.py sync             # build, install, daemon install, seed the demo
 $ tools/do_vm.py test             # real-kernel suites
-$ tools/do_vm.py ssh -- slipfork list
+$ tools/do_vm.py ssh -- slipfork status
 $ tools/do_vm.py down --yes       # the only destructive command
 ```
 

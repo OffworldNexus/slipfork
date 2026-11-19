@@ -1,7 +1,0 @@
-# The app and its SQL run from the bind-mounted worktree (the image never copies them), so they are
-# not build inputs: editing them must not flip the rootfs digest and trigger a rebuild.
-app/
-db/
-README.md
-slipfork.toml
-snow.yml

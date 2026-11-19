@@ -198,6 +198,8 @@ WORKDIR /workspace
 EXPOSE 8000
 """
 
+# Historical benchmark input. This legacy Snow manifest is exactly what
+# `slipfork migrate` consumes; the product manifest is the generated `Forkfile`.
 SNOW_YML = """images:
   - id: app
     context: .

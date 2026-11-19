@@ -1,6 +1,6 @@
 # Slipfork (`slipfork`): Engineering Constitution & Agent Rules
 
-Slipfork (`0.1.0`) is a **DX-first copy-on-write Btrfs environment** for modern polyglot applications and AI coding agents ("your cloud environment locally in a box; CI is the clutch"). From a single `snow.yml` manifest (`modes.all`, `modes.local`, `modes.cloud` + `!!` auto-generated secrets via the Open Secret Provider Protocol), Slipfork runs shared-UID local worlds behind `.localhost` and forks running worlds in milliseconds as Btrfs subvolume snapshots when agents open worktrees. (`0.2.0` adds the parallel STP v1 **Artifact + Fixture Snapshot DAG** test orchestrator.)
+Slipfork (`0.1.0`) is a **DX-first copy-on-write Btrfs environment** for modern polyglot applications and AI coding agents ("your cloud environment locally in a box; CI is the clutch"). From a single `Forkfile` (`features`, `env` groups, `service` blocks, resource declarations, and `secret(...) ?? <generator>` values), Slipfork runs every service in its own `crun` container sharing one world behind `.localhost`, and forks running worlds in milliseconds as Btrfs subvolume snapshots when agents open worktrees. (`0.2.0` adds the parallel STP v1 **Artifact + Fixture Snapshot DAG** test orchestrator.)
 
 When `plan/AUTOPILOT` is `on`, `deepseek-v4.1-flash` executes coarse vertical slices (`implementer`, `writer`, `planner`, `lead`) and runs the parallel **Triad Review Gate** (`review-arch` + `review-tests` + `review-ux`); `gemini-4-carbon` (`architect`, `strategist`, `expert`) handles upward architecture crossroads, milestone gates, and hard kernel/systems rescues.
 
@@ -12,12 +12,12 @@ When `plan/AUTOPILOT` is `on`, `deepseek-v4.1-flash` executes coarse vertical sl
    - **Single Composition Root:** Only `crates/slipfork/src/main.rs` and `packages/opencode-slipfork/src/index.ts` read `std::env` / `process.env`, probe `/proc`, or bind ambient OS sockets/filesystems. Library crates have **zero** `std::env::var`, `OnceLock`/`LazyLock`, or `static` mutable/atomic state.
    - **Cohesive Structs (`<= 500` LOC) Over Free-Function Galaxies:** Group related state + behavior into cohesive structs (`SupervisedProcess`, `WorldManager`, `FileVault`) with methods — never 6-arg free functions or `*Inputs` parameter bags.
    - **Architectural Port Traits ONLY — Zero Single-Impl Mock Traits:** Define traits **strictly** at genuine architectural ports (`WorldEngine`, `BaseImageBuilder`, `SecretVault`, `DaemonControl`, `OsppClient`, `VcsWorkspace`). **NEVER** invent single-impl mock-only traits (`MonotonicClock`, `HandoverClock`, `HostLoadProbe`, `FakeClock`) when a plain value struct (`Duration`, `StopBudget`) suffices.
-   - **Extend Canonical Modules Instead of Leaking Internals:** Keep all syntax parsing, token/AST traversal, fallback evaluation, secret-taint rules, and framing strictly inside their canonical owner module (`slipfork-snow`, `wire`, `relay`, `slipfork-edge`; keep `slipfork-edge` pure of CLI tables; reuse `Cargo.toml` crates like `tempfile`, `httparse`, `serde_json`). Add predicate/visitor helpers inside the canonical module rather than re-scanning `${{` delimiters, HTTP headers, or tokens downstream.
+   - **Extend Canonical Modules Instead of Leaking Internals:** Keep all syntax parsing, token/AST traversal, fallback evaluation, secret-taint rules, and framing strictly inside their canonical owner module (`slipfork-forkfile`, `wire`, `relay`, `slipfork-edge`; keep `slipfork-edge` pure of CLI tables; reuse `Cargo.toml` crates like `tempfile`, `httparse`, `serde_json`). Add predicate/visitor helpers inside the canonical module rather than re-scanning `$` tokens, HTTP headers, or argv slots downstream.
    - **Think Upwards:** If a cross-backend DI conflict prevents a clean non-leaky tree, **STOP** and escalate `STATUS: blocked` (`BLOCK_KIND: direction-challenge`) rather than hacking around a leaky port.
 
 2. **Lab-First E2E Testing & Coverage Economy — Zero Mocks (`review-tests`):**
    - Test with real disk directories, real `git`/shell subprocesses, real Btrfs/daemon workflows, and (for OSPP) the minimal `127.0.0.1:0` loopback reference server. **NEVER** write `Mock*`, `Fake*`, `Recording*`, `Stub*`, `MemorySecretProvider` shims, or `chmod 0o555` `TestTreeDriver` theater.
-   - Consolidate slow daemon/world boots into 1 rich, cohesive E2E lifecycle journey (reaping worlds and `-pgid` process groups cleanly). Write unit tests strictly for subtle pure algorithms (DAG cycles/waves, Merkle hashing, `snow.yml` secret taint). Delete 0%-covered fallback dead code (`LayeredSecretProvider`, `.ok().unwrap_or_default()`) instead of testing it.
+   - Consolidate slow daemon/world boots into 1 rich, cohesive E2E lifecycle journey (reaping worlds and `-pgid` process groups cleanly). Write unit tests strictly for subtle pure algorithms (DAG cycles/waves, Merkle hashing, `Forkfile` secret taint). Delete 0%-covered fallback dead code (`LayeredSecretProvider`, `.ok().unwrap_or_default()`) instead of testing it.
    - Protected critical tests (`crates/*/tests/critical_*.rs` and `**/tests/critical/**`) are guarded by `tools/critical_guard.py`; never weaken or delete them unless authorized in your node's `paths`.
 
 3. **High-Craft CLI & Scannable Visual Docs (`review-ux`):**
@@ -42,7 +42,7 @@ When `plan/AUTOPILOT` is `on`, `deepseek-v4.1-flash` executes coarse vertical sl
 - **Plan & Path Locks:** Mutate `plan/` **exclusively** via `uv run --no-project tools/plan.py ...` (skill `plan-system`). Touch only globs in your node's `paths`.
 - **Disk, Never `/tmp` `tmpfs`, for Heavy State:** `/tmp` on Linux runners is RAM-backed `tmpfs`. Keep worktrees under `.worktrees/`, CoW snapshots/volumes under `~/.cache/slipfork`, `.slipfork/`, or `/var/tmp`, and use `/tmp/opencode/` only for tiny short-lived files.
 - **Python & Rust Execution:** Bare `python`, `python3`, and `pip` are denied. Use `uv run --no-project` for `tools/*.py` and `poc/*.py`, `uvx --offline` for `ruff` and `zensical`, and `cargo` / `make` targets for Rust.
-- **Confidentiality:** Never mention proprietary client or sibling private repository names in code, docs, tests, comments, or commit messages (`snow.yml` and Kerfufoo's public Snow reference are public specs).
+- **Confidentiality:** Never mention proprietary client or sibling private repository names in code, docs, tests, comments, or commit messages (`Forkfile` and Kerfufoo's public Snow reference are public specs).
 - **Git & Release PR Workflow:** Work on `release/<version>` branches; only `lead` and `conductor` commit using explicit paths (`git add -- <explicit files>`). Never push directly to `develop`, force-push, tag, or `gh pr merge`.
 
 ## Where Things Are
@@ -57,7 +57,7 @@ When `plan/AUTOPILOT` is `on`, `deepseek-v4.1-flash` executes coarse vertical sl
 | `docs/decisions/` | 1-page Architecture Decision Records (`ADR-NNNN-<slug>.md`) |
 | `docs/research/` | Primary-source research & real CoW benchmark reports (`m1-poc-benchmark.md`) |
 | `docs/knowledge/` | `LESSONS.md` — concise host, Rust, Linux namespace/process-group, Btrfs subvolume, AppArmor, and OpenCode facts |
-| `crates/` | Rust workspace (`slipfork-world`, `slipfork-snow`, `slipfork-dag`, `slipfork-engine`, `slipfork-edge`, `slipfork-vcs`, `slipfork-ospp`, `slipfork`); `slipfork-testkit` & `slipfork-ospp-testkit` are test-only lab harnesses |
+| `crates/` | Rust workspace (`slipfork-world`, `slipfork-forkfile`, `slipfork-dag`, `slipfork-engine`, `slipfork-edge`, `slipfork-vcs`, `slipfork-ospp`, `slipfork`); `slipfork-testkit` & `slipfork-ospp-testkit` are test-only lab harnesses |
 | `packages/opencode-slipfork/` | OpenCode V2 plugin (`ctx.worktree.transform` + `ctx.shell.hook` + `ctx.session.hook`) |
 | `poc/` | Real PostgreSQL 18 + Linux `netns` + Playwright M1 PoC benchmark harness |
 | `tools/` | Stdlib-only harness & honesty guards (`plan.py`, `guard.py`, `critical_guard.py`, `check_docs_honesty.py`, `rs_test_list.py`) |
@@ -66,7 +66,7 @@ When `plan/AUTOPILOT` is `on`, `deepseek-v4.1-flash` executes coarse vertical sl
 
 | Skill | Load when |
 |---|---|
-| `dx-first` | Designing CLI/`snow.yml` UX, writing `docs/**` or `docs/design/dx-*.md`, or running `review-ux` |
+| `dx-first` | Designing CLI/`Forkfile` UX, writing `docs/**` or `docs/design/dx-*.md`, or running `review-ux` |
 | `engineering-laws` | Designing, coding, planning, or reviewing anything (Five Non-Negotiable Laws & Triad Gate) |
 | `plan-system` | Reading or mutating `plan/` via `tools/plan.py` |
 | `dispatch` | Spawning subagents, running the Triad Review Gate, triaging findings, or escalating |

@@ -6,7 +6,7 @@
 ## Context
 
 Two naive topologies fail at scale for full-stack integration/browser test suites:
-1. **One environment per component per test:** A 5-component `snow.yml` running across 16 parallel test workers spawns **80 environments** concurrently, adds virtual-network complexity, and loses atomic snapshot consistency across API + worker + DB + S3.
+1. **One environment per component per test:** A 5-component `Forkfile` running across 16 parallel test workers spawns **80 environments** concurrently, adds virtual-network complexity, and loses atomic snapshot consistency across API + worker + DB + S3.
 2. **Single linear snapshot chain mixing frontend builds and DB seeds:** Baking `pnpm build` inside the same snapshot lineage as `manage.py migrate -> seed` means changing 1 line of CSS invalidates every seeded PostgreSQL snapshot (and adding 1 DB migration triggers a frontend rebuild).
 
 ## Decision
