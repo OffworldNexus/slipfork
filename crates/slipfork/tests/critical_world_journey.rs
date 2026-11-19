@@ -36,79 +36,93 @@ use support::{
 /// wrapper), an `idle` forward target that accepts then closes, a real `postgres:18`, a real
 /// `redis:8`, one ingress, and one `!!` secret so the boot exercises the Open Secret Provider path
 /// as well as the process pipeline.
-const JOURNEY_SNOW: &str = r#"
-images:
-  - id: app
-    context: .
-    dockerfile: Dockerfile
+const JOURNEY_FORKFILE: &str = r#"project acme-app
 
-components:
-  - id: api
-    image: app
-    envs: [app]
-    internal_ports: [8000]
-    run_command: "python3 server.py"
+features {
+    local
+}
 
-  - id: idle
-    image: app
-    internal_ports: [8001]
-    run_command: 'exec python3 -c "import socket,time; s=socket.socket(); s.bind((\"127.0.0.1\",8001)); s.listen(1); s.accept(); s.close(); time.sleep(300)"'
+postgres main {
+    database main
+}
 
-ingresses:
-  - match:
-      prefix: "/"
-    target:
-      component: api
-      port: 8000
+redis cache {
+    version 8
+}
 
-resources:
-  pg_clusters:
-    - id: main
-      version: "18"
-  pg_databases:
-    - id: main
-      cluster: main
-  redis_clusters:
-    - id: cache
-      version: "8"
+env app {
+    BASE_URL = app.url
+    GREETING = "v1"
+    SECRET_KEY = secret(SECRET_KEY) ?? random_string(32)
+}
 
-modes:
-  local:
-    envs:
-      app:
-        BASE_URL: '${{ resources::app.url }}'
-        GREETING: v1
-        SECRET_KEY: '${{ secrets::SECRET_KEY !! random_string(32) }}'
+service api ./ {
+    port 8000
+    route /
+    internal_ports [8000]
+    use env app
+    run python3 server.py
+}
+
+service idle ./ {
+    internal_ports [8001]
+    run python3 -c 'import socket,time; s=socket.socket(); s.bind(("127.0.0.1",8001)); s.listen(1); s.accept(); s.close(); time.sleep(300)'
+}
 "#;
 
-/// A world whose single component is disabled in `local`: the pipeline starts nothing, so a restart
-/// has no service to bring back (`changed: false`, `restarted: []`).
-const IDLE_SNOW: &str = r#"
-images:
-  - id: app
-    context: .
-    dockerfile: Dockerfile
+/// [`JOURNEY_FORKFILE`] under the `acme-domains` project, whose declared `domain admin` is the
+/// collision subject. Canonical statement order, so no `format!`/`replace` surgery builds it.
+const JOURNEY_DOMAIN_FORKFILE: &str = r#"project acme-domains
 
-components:
-  - id: api
-    image: app
-    run_command: "exec sleep 300"
+features {
+    local
+}
 
-ingresses:
-  - match:
-      prefix: "/"
-    target:
-      component: api
-      port: 8000
+postgres main {
+    database main
+}
 
-modes:
-  local:
-    components:
-      api:
-        disabled: true
-    envs:
-      app:
-        BASE_URL: '${{ resources::app.url }}'
+redis cache {
+    version 8
+}
+
+env app {
+    BASE_URL = app.url
+    GREETING = "v1"
+    SECRET_KEY = secret(SECRET_KEY) ?? random_string(32)
+}
+
+service api ./ {
+    port 8000
+    route /
+    internal_ports [8000]
+    use env app
+    run python3 server.py
+}
+
+service idle ./ {
+    internal_ports [8001]
+    run python3 -c 'import socket,time; s=socket.socket(); s.bind(("127.0.0.1",8001)); s.listen(1); s.accept(); s.close(); time.sleep(300)'
+}
+"#;
+
+/// A world whose single service declares no `run` command: the pipeline starts nothing, so a
+/// restart has no service to bring back (`changed: false`, `restarted: []`).
+const IDLE_FORKFILE: &str = r#"project acme-idle
+
+features {
+    local
+}
+
+env app {
+    BASE_URL = app.url
+}
+
+service api ./ {
+    port 8000
+    route /
+    use env app
+}
 "#;
 
 /// The serving fixture: the wrapper (`sh -eu -c`) forks the server, so a restart must stop both the
@@ -348,7 +362,7 @@ fn http_get(addr: &str) -> String {
 fn world_lifecycle_journey_boots_edits_forks_and_reaps() {
     let tmp = disk_tempdir("journey-");
     let scratch = tmp.path();
-    let repo = repo_with_manifest(scratch, "acme-app", JOURNEY_SNOW);
+    let repo = repo_with_manifest(scratch, "acme-app", JOURNEY_FORKFILE);
     fs::write(repo.join("body.txt"), "v1\n").expect("write body");
     fs::write(repo.join("server.py"), SERVER_PY).expect("write server.py");
 
@@ -772,13 +786,13 @@ fn world_lifecycle_journey_boots_edits_forks_and_reaps() {
     follower.assert_no_line_containing("── restarted ");
     follower.stop();
 
-    // --- an edited `snow.yml` is applied by `restart`, never by `up` --------
-    let snow = fs::read_to_string(repo.join("snow.yml")).expect("read snow.yml");
+    // --- an edited `Forkfile` is applied by `restart`, never by `up` --------
+    let manifest = fs::read_to_string(repo.join("Forkfile")).expect("read Forkfile");
     fs::write(
-        repo.join("snow.yml"),
-        snow.replace("GREETING: v1", "GREETING: v2"),
+        repo.join("Forkfile"),
+        manifest.replace("GREETING = \"v1\"", "GREETING = \"v2\""),
     )
-    .expect("edit snow.yml");
+    .expect("edit Forkfile");
     assert_eq!(
         world_greeting(&daemon, &repo),
         "v1",
@@ -796,10 +810,10 @@ fn world_lifecycle_journey_boots_edits_forks_and_reaps() {
     assert_eq!(
         world_greeting(&daemon, &repo),
         "v1",
-        "up alone never applies an edited snow.yml"
+        "up alone never applies an edited Forkfile"
     );
     let applied = daemon.cli(&repo, &["restart"]);
-    assert_success(&applied, "restart after an edited snow.yml");
+    assert_success(&applied, "restart after an edited Forkfile");
     let block = stdout(&applied);
     assert!(
         !block.contains('\x1b'),
@@ -957,7 +971,7 @@ fn world_lifecycle_journey_boots_edits_forks_and_reaps() {
         "no placeholder or superseded line survives: {fork_block}"
     );
     assert!(
-        worktree.join("snow.yml").is_file(),
+        worktree.join("Forkfile").is_file(),
         "the derived fork worktree is a real checkout"
     );
 
@@ -1085,7 +1099,7 @@ fn world_lifecycle_journey_boots_edits_forks_and_reaps() {
     let domains_repo = repo_with_manifest(
         scratch,
         "acme-domains",
-        &format!("domains:\n  - id: admin\n{JOURNEY_SNOW}"),
+        &format!("{JOURNEY_DOMAIN_FORKFILE}\ndomain admin\n"),
     );
     run_git(&domains_repo, &["switch", "-q", "-c", "admin"]);
     let domain = daemon.cli(&domains_repo, &["fork"]);
@@ -1100,7 +1114,7 @@ fn world_lifecycle_journey_boots_edits_forks_and_reaps() {
         "one line, never a git advice block: {diagnostic}"
     );
     assert!(
-        diagnostic.contains("collides with snow.yml domains[].id 'admin'")
+        diagnostic.contains("collides with Forkfile domain 'admin'")
             && diagnostic.contains("`slipfork fork <name>`"),
         "the refusal names the real domain collision and the explicit-name remedy: {diagnostic}"
     );
@@ -1141,7 +1155,7 @@ fn world_lifecycle_journey_boots_edits_forks_and_reaps() {
     );
 
     // --- a world whose pipeline starts nothing reports `[no change]` --------
-    let idle_repo = repo_with_manifest(scratch, "acme-idle", IDLE_SNOW);
+    let idle_repo = repo_with_manifest(scratch, "acme-idle", IDLE_FORKFILE);
     assert_success(&daemon.cli(&idle_repo, &["up"]), "up the idle world");
     let idle_restart = daemon.cli(&idle_repo, &["restart"]);
     assert_success(&idle_restart, "restart an idle world");

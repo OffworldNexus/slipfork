@@ -8,9 +8,8 @@
 //! written `0600` → `slipforkd` reboot with **no** `--ospp-endpoint` flag survives via the store →
 //! encrypted `subscribe` with local-vault `claims` → zero secret bytes on disk → a live
 //! `env_updated` restarts only `api` → the streaming sealed `dump_ready` archive restores into a
-//! real `postgres:18` with no plaintext dump file. The currently separate fail-closed cases (an
-//! unpaired remote strategy, an unpaired `--refresh-dump`, an optional and a malformed
-//! `slipfork.toml`) are folded into the first and the last boot. `postgres:18` and the pinned
+//! real `postgres:18` with no plaintext dump file. The fail-closed unpaired `--refresh-dump` and a
+//! malformed `Forkfile` are folded into the first and the last boot. `postgres:18` and the pinned
 //! static `crun` are real; a missing Docker/crun dependency fails loudly.
 
 use std::collections::BTreeMap;
@@ -31,72 +30,52 @@ use support::{Daemon, assert_success, repo_with_manifest, run_git, stderr, stdou
 /// Two components, a real `postgres:18`, and a local-vault `vars::DEBUG` override. The server
 /// resolves the unclaimed remote values, while the claimed local ones stay byte-verbatim
 /// templates for the daemon. The `pg_databases.main` dump is the streaming-restore subject.
-const TWO_TIER_SNOW: &str = r#"
-images:
-  - id: app
-    context: .
-    dockerfile: Dockerfile
+const TWO_TIER_FORKFILE: &str = r#"project acme-two-tier
 
-components:
-  - id: api
-    image: app
-    envs: [api]
-    run_command: "exec sleep 300"
-  - id: worker
-    image: app
-    envs: [worker]
-    run_command: "exec sleep 300"
+features {
+    local
+}
 
-ingresses:
-  - match:
-      prefix: "/"
-    target:
-      component: api
-      port: 8000
+postgres main {
+    database main
+}
 
-resources:
-  pg_clusters:
-    - id: main
-      version: "18"
-  pg_databases:
-    - id: main
-      cluster: main
+env api {
+    DEBUG = var(DEBUG)
+    REMOTE_VAR = var(REMOTE_VAR)
+    REMOTE_TOKEN = secret(REMOTE_TOKEN)
+    LOCAL_PASSWORD = secret(LOCAL_PASSWORD)
+}
 
-modes:
-  local:
-    envs:
-      api:
-        DEBUG: '${{ vars::DEBUG }}'
-        REMOTE_VAR: '${{ vars::REMOTE_VAR }}'
-        REMOTE_TOKEN: '${{ secrets::REMOTE_TOKEN }}'
-        LOCAL_PASSWORD: '${{ secrets::LOCAL_PASSWORD }}'
-      worker:
-        WORKER_VAR: '${{ vars::WORKER_VAR }}'
+env worker {
+    WORKER_VAR = var(WORKER_VAR)
+}
+
+service api ./ {
+    port 8000
+    route /
+    use env api
+    run sleep 300
+}
+
+service worker ./ {
+    use env worker
+    run sleep 300
+}
 "#;
 
-const PLAIN_SNOW: &str = r#"
-images:
-  - id: app
-    context: .
-    dockerfile: Dockerfile
+/// A minimal world for the malformed-manifest refusal.
+const MINIMAL_FORKFILE: &str = r#"project acme-malformed
 
-components:
-  - id: api
-    image: app
-    run_command: "exec sleep 300"
+features {
+    local
+}
 
-ingresses:
-  - match:
-      prefix: "/"
-    target:
-      component: api
-      port: 8000
-
-modes:
-  local:
-    envs:
-      app:
-        BASE_URL: '${{ resources::app.url }}'
+service api ./ {
+    port 8000
+    route /
+    run sleep 300
+}
 "#;
 
 /// A known remote-secret plaintext with non-ASCII bytes, so the byte scan proves the real UTF-8
@@ -309,7 +288,7 @@ fn uptime(rows: &slipfork_wire::control::WorldProcessReport, id: &str) -> u64 {
 fn ospp_pairing_store_reboot_subscribe_push_and_sealed_dump_journey() {
     let tmp = scratch_dir();
     let scratch = tmp.path();
-    let repo = repo_with_manifest(scratch, "acme-two-tier", TWO_TIER_SNOW);
+    let repo = repo_with_manifest(scratch, "acme-two-tier", TWO_TIER_FORKFILE);
     run_git(
         &repo,
         &[
@@ -320,31 +299,15 @@ fn ospp_pairing_store_reboot_subscribe_push_and_sealed_dump_journey() {
         ],
     );
 
-    // --- boot 1: the fail-closed unpaired cases, then the pairing itself ----------------
+    // --- boot 1: the fail-closed unpaired case, then the pairing itself -----------------
     // A permissive reference server mints the pairing; no `auth` has run yet, so this daemon has
-    // no authenticated session and an OSPP-backed resource must refuse instead of degrading.
+    // no authenticated session and a required seed dump must refuse instead of degrading.
     let discovery = ReferenceOsppServer::start(ReferenceServerConfig::default());
     let key = {
         let mut daemon = Daemon::start_with_ospp(scratch, discovery.endpoint());
 
-        fs::write(
-            repo.join("slipfork.toml"),
-            "project = \"acme-two-tier\"\n[resources.pg_databases.main]\nlocal = \"remote\"\n",
-        )
-        .expect("write remote strategy");
-        let remote = daemon.cli(&repo, &["up"]);
-        assert!(
-            !remote.status.success(),
-            "an unpaired `local = \"remote\"` must fail closed"
-        );
-        assert!(
-            stderr(&remote).contains("requires an authenticated OSPP session"),
-            "the refusal must name the missing session: {}",
-            stderr(&remote)
-        );
-
-        fs::write(repo.join("slipfork.toml"), "project = \"acme-two-tier\"\n")
-            .expect("restore default strategy");
+        // A per-resource `local = "remote"` strategy override was deleted before `1.0`; the
+        // remaining shipped fail-closed path is `--refresh-dump`, which requires a live session.
         let refresh = daemon.cli(&repo, &["up", "--refresh-dump"]);
         assert!(
             !refresh.status.success(),
@@ -507,18 +470,18 @@ fn ospp_pairing_store_reboot_subscribe_push_and_sealed_dump_journey() {
         "up through the store-resolved subscription",
     );
     // The daemon subscribes exactly the feature-evaluated manifest its world runs: the active
-    // `local` mode is the Forkfile feature, and no `snow.yml` shape crosses the wire.
+    // `local` mode is the Forkfile feature, and the wire carries the parsed manifest itself.
     let recorded = server.state().subscriptions["sub-acme-two-tier"]
         .forkfile
         .clone();
-    let migrated = slipfork_forkfile::migrate_snow_yaml(TWO_TIER_SNOW).expect("migrate snow.yml");
-    let expected = slipfork_forkfile::parse_forkfile(&migrated)
-        .expect("the migrated Forkfile parses")
+    let source = fs::read_to_string(repo.join("Forkfile")).expect("read the world's Forkfile");
+    let expected = slipfork_forkfile::parse_forkfile(&source)
+        .expect("the fixture Forkfile parses")
         .evaluate(&slipfork_forkfile::FeatureSet::with_features(["local"]))
-        .expect("the migrated Forkfile evaluates");
+        .expect("the fixture Forkfile evaluates");
     assert_eq!(
         recorded, expected,
-        "subscribe must carry the feature-evaluated Forkfile, not snow.yml"
+        "subscribe must carry the feature-evaluated Forkfile the world boots"
     );
     assert!(
         recorded.features.contains(&"local".to_owned()),
@@ -675,26 +638,19 @@ fn ospp_pairing_store_reboot_subscribe_push_and_sealed_dump_journey() {
         "a dump stream was materialized on disk: {hits:?}"
     );
 
-    // --- an optional and a malformed `slipfork.toml` on the same daemon ---------------------
-    let optional = repo_with_manifest(scratch, "acme-optional", PLAIN_SNOW);
-    fs::remove_file(optional.join("slipfork.toml")).expect("remove optional slipfork.toml");
-    assert_success(
-        &daemon.cli(&optional, &["up"]),
-        "up in a repository without slipfork.toml",
-    );
-    assert_success(
-        &daemon.cli(&optional, &["down"]),
-        "down before the malformed retry",
-    );
-    fs::write(optional.join("slipfork.toml"), "project = \"Bad_Slug\"\n")
-        .expect("write malformed slipfork.toml");
-    let malformed = daemon.cli(&optional, &["up"]);
+    // --- a malformed `Forkfile` on the same daemon -----------------------------------------
+    // A repository without a manifest is not a world: the `Forkfile` is the sole manifest, so the
+    // retired "optional override" case has no successor.
+    let malformed_repo = repo_with_manifest(scratch, "acme-malformed", MINIMAL_FORKFILE);
+    fs::write(malformed_repo.join("Forkfile"), "project Bad_Slug\n")
+        .expect("write malformed Forkfile");
+    let malformed = daemon.cli(&malformed_repo, &["up"]);
     assert!(
         !malformed.status.success(),
-        "a malformed slipfork.toml must fail closed"
+        "a malformed Forkfile must fail closed"
     );
     assert!(
-        stderr(&malformed).contains("slipfork.toml"),
+        stderr(&malformed).contains("Forkfile") && stderr(&malformed).contains("Bad_Slug"),
         "the diagnostic must name the malformed manifest: {}",
         stderr(&malformed)
     );

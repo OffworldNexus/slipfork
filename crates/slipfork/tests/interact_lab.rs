@@ -12,32 +12,6 @@ use serde_json::Value;
 pub mod support;
 use support::{Daemon, assert_success, repo_with_manifest, stderr, stdout};
 
-const SNOW_YML: &str = r#"
-images:
-  - id: app
-    context: .
-    dockerfile: Dockerfile
-
-components:
-  - id: api
-    image: app
-    envs: [app]
-    run_command: "exec sleep 300"
-
-ingresses:
-  - match:
-      prefix: "/"
-    target:
-      component: api
-      port: 8000
-
-modes:
-  local:
-    envs:
-      app:
-        BASE_URL: '${{ resources::app.url }}'
-"#;
-
 /// The manifest half of the contract: a secret generator, a plain variable, and two tasks.
 const FORKFILE: &str = "\
 project acme-interact
@@ -62,10 +36,7 @@ task tick in api: sh -c 'echo LIVE-LINE; exit 3'
 fn run_streams_a_task_and_mirrors_its_exit_code_while_env_redacts() {
     let tmp = support::disk_tempdir("i-");
     let scratch = tmp.path();
-    let repo = repo_with_manifest(scratch, "acme-interact", SNOW_YML);
-    fs::write(repo.join("Forkfile"), FORKFILE).expect("write Forkfile");
-    support::run_git(&repo, &["add", "Forkfile"]);
-    support::run_git(&repo, &["commit", "-q", "-m", "forkfile"]);
+    let repo = repo_with_manifest(scratch, "acme-interact", FORKFILE);
 
     let daemon = Daemon::start(scratch);
     assert_success(&daemon.cli(&repo, &["up"]), "up before run/env");

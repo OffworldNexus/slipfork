@@ -3,7 +3,7 @@
 //! `--separate-git-dir` layouts (`ADR-0005` §3).
 //!
 //! The `project = "<slug>"` override is injected as a [`ProjectSlugOverride`] capability, so this
-//! crate honors `<vcs_root>/slipfork.toml` without owning a TOML parser or depending on
+//! crate honors `<vcs_root>/Forkfile` without owning a Forkfile parser or depending on
 //! `slipfork-dag`.
 
 use std::ffi::OsStr;
@@ -33,7 +33,7 @@ impl GitRepoRootResolver {
 
     /// Resolve an otherwise-unsupported topology through the explicit `project` override.
     ///
-    /// Bare repositories have no working tree and therefore no `<vcs_root>/slipfork.toml`, so they
+    /// Bare repositories have no working tree and therefore no `<vcs_root>/Forkfile`, so they
     /// are rejected before this point. Submodules and separate-git-dir checkouts do have one, and
     /// their slug may never be derived from the directory basename (it would name the admin store
     /// or `.git/modules/<id>`); an explicit override is the only honest way to name them.
@@ -97,7 +97,7 @@ impl RepoRootResolver for GitRepoRootResolver {
             .to_owned();
         if !superproject.is_empty() {
             let hint = format!(
-                "this checkout is a git submodule of {superproject}; set `project = \"<slug>\"` in {} to name it explicitly",
+                "this checkout is a git submodule of {superproject}; set `project = \"<slug>\"` in its `Forkfile` at {} to name it explicitly",
                 config_hint(&worktree_root)
             );
             return self.resolve_unsupported(
@@ -132,7 +132,7 @@ impl RepoRootResolver for GitRepoRootResolver {
             main_root
         } else {
             let hint = format!(
-                "this checkout uses a git directory outside its working tree or an unrecognized gitdir indirection; set `project = \"<slug>\"` in {} to name it explicitly",
+                "this checkout uses a git directory outside its working tree or an unrecognized gitdir indirection; set `project = \"<slug>\"` in its `Forkfile` at {} to name it explicitly",
                 config_hint(&worktree_root)
             );
             return self.resolve_unsupported(
@@ -191,7 +191,7 @@ fn bare_repository_error(start: &Path) -> Result<VcsError, VcsError> {
         topology: "bare repository",
         root: root.clone(),
         hint: format!(
-            "bare repositories have no working tree or `slipfork.toml`; clone it into a working tree (`git clone {} <dir>`) and set `project = \"<slug>\"` in `<dir>/slipfork.toml` if the clone directory name is not a valid project slug",
+            "bare repositories have no working tree or `Forkfile`; clone it into a working tree (`git clone {} <dir>`) and set `project = \"<slug>\"` in `<dir>/Forkfile` if the clone directory name is not a valid project slug",
             root.display()
         ),
     })
@@ -242,9 +242,9 @@ fn slug_from_vcs_root(vcs_root: &Path) -> Result<ProjectSlug, VcsError> {
     })
 }
 
-/// `<vcs_root>/slipfork.toml`, where the `project = "<slug>"` override lives.
+/// `<vcs_root>/Forkfile`, where the `project = "<slug>"` override lives.
 fn config_hint(vcs_root: &Path) -> String {
-    vcs_root.join("slipfork.toml").display().to_string()
+    vcs_root.join("Forkfile").display().to_string()
 }
 
 /// Run a `git rev-parse` path probe and canonicalize its result.

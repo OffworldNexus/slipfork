@@ -1,12 +1,13 @@
 //! Protected end-to-end CLI critical tests for canonical VCS project identity (`H-005`),
-//! fail-closed Git/Jujutsu topologies (owner ruling), and `snow resolve` diagnostics.
+//! fail-closed Git/Jujutsu topologies (owner ruling), and `slipfork env` diagnostics.
 //!
-//! One daemon serves the whole topology journey: every resolution below names the repository and
-//! the mode, and the daemon answers all of them (`snow resolve` never auto-spawns a daemon, so one
-//! harness-owned daemon replaces the five per-test boots this file used to pay). The `.jj` routing
-//! case keeps its own two daemons because its subject *is* the daemon's `PATH`: a `jj`-less daemon
-//! must refuse with the typed `ToolMissing` line while a `jj`-carrying daemon creates a Jujutsu
-//! workspace.
+//! `slipfork env` resolves the checkout itself (the thin client runs the one Git resolver), so the
+//! journey proves the same facts the retired resolver verb used to: the canonical `<vcs_root>`
+//! slug, the `project <slug>` override in `<vcs_root>/Forkfile`, and the vault key it derives. One
+//! harness-owned daemon still serves the scratch layout for the whole journey, so every invocation
+//! is also a process-group and world-residue proof. The `.jj` routing case keeps its own two
+//! daemons because its subject *is* the daemon's `PATH`: a `jj`-less daemon must refuse with the
+//! typed `ToolMissing` line while a `jj`-carrying daemon creates a Jujutsu workspace.
 
 use std::ffi::OsStr;
 use std::fs::{self, File, Permissions};
@@ -19,39 +20,56 @@ use std::process::{Command, Output, Stdio};
 pub mod support;
 use support::{Daemon, DaemonLayout, disk_tempdir, jj_binary, repo_with_manifest, run_git};
 
-const MINIMAL_SNOW_YML: &str = r#"
-modes:
-  local:
-    envs:
-      app:
-        APP_URL: '${{ resources::app.url }}'
-        SECRET_KEY: '${{ secrets::SECRET_KEY !! random_string(32) }}'
+/// The manifest the topology journey resolves: one service, one visible variable, and one
+/// generated secret, so every `env` read also proves the vault is written and the secret redacted.
+const TOPOLOGY_FORKFILE: &str = r#"features {
+    local
+}
+
+service api ./ {
+    port 8000
+    route /
+    env {
+        BASE_URL = app.url
+        SECRET_KEY = secret(SECRET_KEY) ?? random_string(32)
+    }
+    run sleep 300
+}
 "#;
 
-const PLAIN_SNOW: &str = r#"
-images:
-  - id: app
-    context: .
-    dockerfile: Dockerfile
+/// A manifest with no generated secret, for the `.jj` fork cases.
+const PLAIN_FORKFILE: &str = r#"features {
+    local
+}
 
-components:
-  - id: api
-    image: app
-    run_command: "exec sleep 300"
-
-ingresses:
-  - match:
-      prefix: "/"
-    target:
-      component: api
-      port: 8000
-
-modes:
-  local:
-    envs:
-      app:
-        BASE_URL: '${{ resources::app.url }}'
+service api ./ {
+    port 8000
+    route /
+    run sleep 300
+}
 "#;
+
+/// The topology manifest with an optional `project <slug>` override at the top.
+fn topology_forkfile(project: Option<&str>) -> String {
+    match project {
+        Some(slug) => format!("project {slug}\n\n{TOPOLOGY_FORKFILE}"),
+        None => TOPOLOGY_FORKFILE.to_owned(),
+    }
+}
+
+/// Write the journey `Forkfile`, optionally carrying a `project <slug>` override.
+fn write_forkfile(repo: &Path, project: Option<&str>) {
+    fs::write(repo.join("Forkfile"), topology_forkfile(project)).expect("write Forkfile");
+}
+
+/// The vault the client keys by the resolved canonical `ProjectSlug`.
+fn vault(scratch: &Path, project: &str) -> PathBuf {
+    DaemonLayout::under(scratch)
+        .data_home
+        .join("slipfork")
+        .join("vaults")
+        .join(format!("{project}.json"))
+}
 
 fn find_host_executable(name: &str) -> PathBuf {
     let path_var = std::env::var_os("PATH").expect("PATH must be set");
@@ -72,13 +90,13 @@ fn write_executable_script(path: &Path, contents: &str) {
 
 /// Own the harness daemon for one test.
 ///
-/// Every invocation in this suite is daemon-served (`snow resolve`, and the diagnostics built on the
-/// same layout), so the test starts the daemon once and binds the handle in its own scope:
+/// Every invocation in this suite is client-side (`slipfork env`) or daemon-served (the `.jj`
+/// forks), so the test starts the daemon once and binds the handle in its own scope:
 /// `let daemon = harness_daemon(scratch);`. `Drop` → [`support::Daemon::shutdown`] kills and waits
 /// a real `slipforkd` child (or unlinks the in-process control socket) and reaps the worlds it
 /// booted, both processes and subvolumes.
 fn harness_daemon(scratch: &Path) -> Daemon {
-    support::ensure_daemon(scratch, &DaemonLayout::under(scratch), "snow resolve")
+    support::ensure_daemon(scratch, &DaemonLayout::under(scratch), "env")
 }
 
 fn run_slipfork_with_env(
@@ -154,6 +172,17 @@ fn run_slipfork(scratch: &Path, daemon: &Daemon, cwd: &Path, args: &[&str]) -> O
     run_slipfork_with_env(scratch, daemon, cwd, &[], args)
 }
 
+/// The exact `KEY=value` document one default-feature `slipfork env` prints for
+/// [`TOPOLOGY_FORKFILE`] resolved as `project`: the derived world URL and the redacted secret.
+fn assert_topology_env(output: &Output, project: &str, what: &str) {
+    support::assert_success(output, what);
+    assert_eq!(
+        support::stdout(output),
+        format!("BASE_URL=http://{project}.localhost\nSECRET_KEY=[REDACTED]\n"),
+        "{what} must resolve the redacted environment of project `{project}`"
+    );
+}
+
 #[test]
 fn one_daemon_resolves_every_vcs_topology_and_diagnostic_journey() {
     let tmp = disk_tempdir("slug-");
@@ -162,15 +191,15 @@ fn one_daemon_resolves_every_vcs_topology_and_diagnostic_journey() {
 
     // ---------------------------------------------------------------------------------------
     // (1) A `.worktrees/<fork>` checkout resolves to the canonical repo slug, and only the
-    //     `<vcs_root>/slipfork.toml` may override it.
+    //     `<vcs_root>/Forkfile` may override it.
     // ---------------------------------------------------------------------------------------
     {
         let repo = scratch.join("acme-app");
         fs::create_dir_all(repo.join("src")).expect("create repo/src");
         fs::write(repo.join("src/lib.txt"), "v1\n").expect("write input");
         run_git(&repo, &["init", "-q"]);
-        fs::write(repo.join("snow.yml"), MINIMAL_SNOW_YML).expect("write snow.yml");
-        run_git(&repo, &["add", "snow.yml", "src/lib.txt"]);
+        write_forkfile(&repo, Some("acme-app"));
+        run_git(&repo, &["add", "Forkfile", "src/lib.txt"]);
         run_git(&repo, &["commit", "-q", "-m", "init"]);
 
         let wt = repo.join(".worktrees").join("feat-auth");
@@ -186,68 +215,34 @@ fn one_daemon_resolves_every_vcs_topology_and_diagnostic_journey() {
             ],
         );
 
-        // (a) Inside `.worktrees/<fork>`, the project slug resolves to canonical `acme-app`, never
-        // `feat-auth`. A rogue worktree-local `slipfork.toml` (`project = "rogue-wt"`) MUST be
-        // ignored by `snow resolve`.
-        fs::write(wt.join("slipfork.toml"), "project = \"rogue-wt\"\n").expect("write rogue toml");
-        let wt_snow = wt.join("snow.yml");
-        let out = run_slipfork(
-            scratch,
-            &daemon,
-            &wt,
-            &[
-                "snow",
-                "resolve",
-                "--file",
-                wt_snow.to_str().expect("utf8"),
-                "--mode",
-                "local",
-            ],
+        // (a) Inside `.worktrees/<fork>`, the vault is keyed by canonical `acme-app`, never
+        // `feat-auth`. A rogue worktree-local `project rogue-wt` MUST be ignored for keying: only
+        // `<vcs_root>/Forkfile` names the project.
+        fs::write(wt.join("Forkfile"), topology_forkfile(Some("rogue-wt")))
+            .expect("write rogue Forkfile");
+        let out = run_slipfork(scratch, &daemon, &wt, &["env"]);
+        assert_topology_env(&out, "acme-app", "slipfork env inside .worktrees/feat-auth");
+        assert!(
+            vault(scratch, "acme-app").is_file(),
+            "vault must be keyed by the canonical ProjectSlug"
         );
         assert!(
-            out.status.success(),
-            "snow resolve failed: {}",
-            String::from_utf8_lossy(&out.stderr)
-        );
-        let stdout = String::from_utf8_lossy(&out.stdout);
-        assert!(
-            stdout.contains("APP_URL=http://acme-app.localhost\n"),
-            "expected canonical repo slug, got:\n{stdout}"
-        );
-        assert!(
-            DaemonLayout::under(scratch)
-                .data_home
-                .join("slipfork/vaults/acme-app.json")
-                .is_file(),
-            "vault must be keyed by canonical ProjectSlug"
+            !vault(scratch, "rogue-wt").exists() && !vault(scratch, "feat-auth").exists(),
+            "a worktree-local project override must never re-key the vault"
         );
 
-        // (b) `project = "custom-slug"` in `<vcs_root>/slipfork.toml` wins cleanly in
-        // `snow resolve` even when `.worktrees/<fork>/slipfork.toml` says `rogue-wt`.
-        fs::write(repo.join("slipfork.toml"), "project = \"custom-slug\"\n")
-            .expect("write root slipfork.toml");
-        let out_override = run_slipfork(
-            scratch,
-            &daemon,
-            &wt,
-            &[
-                "snow",
-                "resolve",
-                "--file",
-                wt_snow.to_str().expect("utf8"),
-                "--mode",
-                "local",
-            ],
+        // (b) `project custom-slug` in `<vcs_root>/Forkfile` wins cleanly, even when the worktree
+        // manifest still says `rogue-wt`.
+        write_forkfile(&repo, Some("custom-slug"));
+        let out_override = run_slipfork(scratch, &daemon, &wt, &["env"]);
+        assert_topology_env(
+            &out_override,
+            "custom-slug",
+            "slipfork env with a root project override",
         );
         assert!(
-            out_override.status.success(),
-            "snow resolve with root slipfork.toml failed: {}",
-            String::from_utf8_lossy(&out_override.stderr)
-        );
-        let stdout_override = String::from_utf8_lossy(&out_override.stdout);
-        assert!(
-            stdout_override.contains("APP_URL=http://custom-slug.localhost\n"),
-            "expected <vcs_root>/slipfork.toml override, got:\n{stdout_override}"
+            vault(scratch, "custom-slug").is_file(),
+            "expected the <vcs_root>/Forkfile override, got no custom-slug vault"
         );
 
         // (d) Ambient `GIT_DIR` / `GIT_WORK_TREE` / `GIT_COMMON_DIR` in the parent environment must
@@ -266,29 +261,22 @@ fn one_daemon_resolves_every_vcs_topology_and_diagnostic_journey() {
                 ("GIT_WORK_TREE", hijack_wt.as_os_str()),
                 ("GIT_COMMON_DIR", hijack_common.as_os_str()),
             ],
-            &[
-                "snow",
-                "resolve",
-                "--file",
-                "../../snow.yml",
-                "--mode",
-                "local",
-            ],
+            &["env"],
+        );
+        assert_topology_env(
+            &hijack_out,
+            "custom-slug",
+            "ambient GIT_DIR/GIT_WORK_TREE must be scrubbed by the adapter",
         );
         assert!(
-            hijack_out.status.success(),
-            "ambient GIT_DIR/GIT_WORK_TREE must be scrubbed by adapter: {}",
-            String::from_utf8_lossy(&hijack_out.stderr)
-        );
-        assert!(
-            String::from_utf8_lossy(&hijack_out.stdout)
-                .contains("APP_URL=http://custom-slug.localhost\n")
+            vault(scratch, "custom-slug").is_file(),
+            "the scrubbed environment still resolves the root override"
         );
     }
 
     // ---------------------------------------------------------------------------------------
     // (2) Bare repositories, submodules, and `--separate-git-dir` checkouts fail closed with
-    //     actionable override hints, and each is rescued by its `<toplevel>/slipfork.toml`.
+    //     actionable override hints, and each is rescued by its `<vcs_root>/Forkfile`.
     // ---------------------------------------------------------------------------------------
     {
         // 1. Bare repository (`git init --bare`) -> fail closed naming the canonical bare path and
@@ -298,14 +286,7 @@ fn one_daemon_resolves_every_vcs_topology_and_diagnostic_journey() {
         run_git(&bare, &["init", "--bare", "-q"]);
         let bare_canonical = fs::canonicalize(&bare).expect("canonicalize bare");
 
-        // Pass relative `snow.yml` so `parent_dir` exercises `start = "."` -> canonicalized bare path.
-        fs::write(bare.join("snow.yml"), MINIMAL_SNOW_YML).expect("write bare snow.yml");
-        let out_bare = run_slipfork(
-            scratch,
-            &daemon,
-            &bare,
-            &["snow", "resolve", "--file", "snow.yml", "--mode", "local"],
-        );
+        let out_bare = run_slipfork(scratch, &daemon, &bare, &["env"]);
         assert!(
             !out_bare.status.success(),
             "bare repository must fail closed"
@@ -315,19 +296,19 @@ fn one_daemon_resolves_every_vcs_topology_and_diagnostic_journey() {
             bare_stderr.contains("bare")
                 && bare_stderr.contains(bare_canonical.to_str().expect("utf8"))
                 && bare_stderr.contains("clone")
-                && bare_stderr.contains("slipfork.toml")
+                && bare_stderr.contains("project =")
                 && !bare_stderr.contains("repository .:")
-                && !bare_stderr.contains("<vcs_root>/slipfork.toml"),
+                && !bare_stderr.contains("<vcs_root>"),
             "expected bare repo refusal naming canonical path + reachable clone hint, got: {bare_stderr}"
         );
 
         // 2. Git submodule (`git submodule add` of a local repo) -> fail closed naming "submodule"
-        //    and the override, then succeed once `project = "..."` is set in its `slipfork.toml`.
+        //    and the override, then succeed once its `Forkfile` declares `project ...`.
         let upstream_mod = scratch.join("upstream-mod");
         fs::create_dir_all(&upstream_mod).expect("create upstream-mod");
         run_git(&upstream_mod, &["init", "-q"]);
-        fs::write(upstream_mod.join("snow.yml"), MINIMAL_SNOW_YML).expect("write mod snow.yml");
-        run_git(&upstream_mod, &["add", "snow.yml"]);
+        fs::write(upstream_mod.join("Forkfile"), PLAIN_FORKFILE).expect("write mod Forkfile");
+        run_git(&upstream_mod, &["add", "Forkfile"]);
         run_git(&upstream_mod, &["commit", "-q", "-m", "init mod"]);
 
         let superproject = scratch.join("parent-monorepo");
@@ -346,48 +327,34 @@ fn one_daemon_resolves_every_vcs_topology_and_diagnostic_journey() {
 
         let submod_dir = superproject.join("vendor").join("sub-pkg");
         let submod_canonical = fs::canonicalize(&submod_dir).expect("canonicalize submod");
-        let out_submod = run_slipfork(
-            scratch,
-            &daemon,
-            &submod_dir,
-            &["snow", "resolve", "--file", "snow.yml", "--mode", "local"],
-        );
+        let out_submod = run_slipfork(scratch, &daemon, &submod_dir, &["env"]);
         assert!(
             !out_submod.status.success(),
-            "git submodule without slipfork.toml override must fail closed"
+            "git submodule without a project override must fail closed"
         );
         let submod_stderr = String::from_utf8_lossy(&out_submod.stderr);
         assert!(
             submod_stderr.contains("submodule")
                 && submod_stderr.contains("project =")
-                && submod_stderr.contains(
-                    submod_canonical
-                        .join("slipfork.toml")
-                        .to_str()
-                        .expect("utf8")
-                ),
-            "expected submodule refusal naming 'submodule' + concrete slipfork.toml path, got: {submod_stderr}"
+                && submod_stderr
+                    .contains(submod_canonical.join("Forkfile").to_str().expect("utf8")),
+            "expected submodule refusal naming 'submodule' + the concrete override path, got: {submod_stderr}"
         );
 
         fs::write(
-            submod_dir.join("slipfork.toml"),
-            "project = \"sub-pkg-override\"\n",
+            submod_dir.join("Forkfile"),
+            topology_forkfile(Some("sub-pkg-override")),
         )
-        .expect("write submodule slipfork.toml");
-        let out_submod_ok = run_slipfork(
-            scratch,
-            &daemon,
-            &submod_dir,
-            &["snow", "resolve", "--file", "snow.yml", "--mode", "local"],
+        .expect("write submodule Forkfile");
+        let out_submod_ok = run_slipfork(scratch, &daemon, &submod_dir, &["env"]);
+        assert_topology_env(
+            &out_submod_ok,
+            "sub-pkg-override",
+            "submodule with an explicit project override should succeed",
         );
         assert!(
-            out_submod_ok.status.success(),
-            "submodule with explicit project override should succeed: {}",
-            String::from_utf8_lossy(&out_submod_ok.stderr)
-        );
-        assert!(
-            String::from_utf8_lossy(&out_submod_ok.stdout)
-                .contains("APP_URL=http://sub-pkg-override.localhost\n")
+            vault(scratch, "sub-pkg-override").is_file(),
+            "the submodule override keys its own vault"
         );
 
         // 3. Separate git dir (`git init --separate-git-dir=<dir> <repo>`) -> fail closed naming
@@ -403,15 +370,10 @@ fn one_daemon_resolves_every_vcs_topology_and_diagnostic_journey() {
                 sep_repo.to_str().expect("utf8"),
             ],
         );
-        fs::write(sep_repo.join("snow.yml"), MINIMAL_SNOW_YML).expect("write sep snow.yml");
+        write_forkfile(&sep_repo, None);
         let sep_canonical = fs::canonicalize(&sep_repo).expect("canonicalize sep");
 
-        let out_sep = run_slipfork(
-            scratch,
-            &daemon,
-            &sep_repo,
-            &["snow", "resolve", "--file", "snow.yml", "--mode", "local"],
-        );
+        let out_sep = run_slipfork(scratch, &daemon, &sep_repo, &["env"]);
         assert!(
             !out_sep.status.success(),
             "--separate-git-dir checkout without override must fail closed"
@@ -420,8 +382,8 @@ fn one_daemon_resolves_every_vcs_topology_and_diagnostic_journey() {
         assert!(
             sep_stderr.contains("separate git directory")
                 && sep_stderr.contains("project =")
-                && sep_stderr.contains(sep_canonical.join("slipfork.toml").to_str().expect("utf8")),
-            "expected separate-git-dir refusal + concrete slipfork.toml hint, got: {sep_stderr}"
+                && sep_stderr.contains(sep_canonical.join("Forkfile").to_str().expect("utf8")),
+            "expected separate-git-dir refusal + concrete override hint, got: {sep_stderr}"
         );
 
         // Even when `--separate-git-dir` points at a path named `.git`, it must NOT be mistaken for
@@ -439,13 +401,8 @@ fn one_daemon_resolves_every_vcs_topology_and_diagnostic_journey() {
                 sneaky_repo.to_str().expect("utf8"),
             ],
         );
-        fs::write(sneaky_repo.join("snow.yml"), MINIMAL_SNOW_YML).expect("write sneaky snow.yml");
-        let out_sneaky = run_slipfork(
-            scratch,
-            &daemon,
-            &sneaky_repo,
-            &["snow", "resolve", "--file", "snow.yml", "--mode", "local"],
-        );
+        write_forkfile(&sneaky_repo, None);
+        let out_sneaky = run_slipfork(scratch, &daemon, &sneaky_repo, &["env"]);
         assert!(
             !out_sneaky.status.success(),
             "--separate-git-dir ending in /.git must still fail closed"
@@ -456,25 +413,16 @@ fn one_daemon_resolves_every_vcs_topology_and_diagnostic_journey() {
             String::from_utf8_lossy(&out_sneaky.stderr)
         );
 
-        fs::write(
-            sep_repo.join("slipfork.toml"),
-            "project = \"sep-rescued\"\n",
-        )
-        .expect("write sep slipfork.toml");
-        let out_sep_ok = run_slipfork(
-            scratch,
-            &daemon,
-            &sep_repo,
-            &["snow", "resolve", "--file", "snow.yml", "--mode", "local"],
+        write_forkfile(&sep_repo, Some("sep-rescued"));
+        let out_sep_ok = run_slipfork(scratch, &daemon, &sep_repo, &["env"]);
+        assert_topology_env(
+            &out_sep_ok,
+            "sep-rescued",
+            "separate-git-dir with an explicit project override should succeed",
         );
         assert!(
-            out_sep_ok.status.success(),
-            "separate-git-dir with explicit project override should succeed: {}",
-            String::from_utf8_lossy(&out_sep_ok.stderr)
-        );
-        assert!(
-            String::from_utf8_lossy(&out_sep_ok.stdout)
-                .contains("APP_URL=http://sep-rescued.localhost\n")
+            vault(scratch, "sep-rescued").is_file(),
+            "the separate-git-dir override keys its own vault"
         );
     }
 
@@ -487,14 +435,9 @@ fn one_daemon_resolves_every_vcs_topology_and_diagnostic_journey() {
         let jj_only_sub = jj_only.join("nested").join("api");
         fs::create_dir_all(jj_only.join(".jj")).expect("create .jj dir");
         fs::create_dir_all(&jj_only_sub).expect("create nested subdir");
-        fs::write(jj_only_sub.join("snow.yml"), MINIMAL_SNOW_YML).expect("write snow.yml");
+        write_forkfile(&jj_only_sub, None);
 
-        let out_jj_only = run_slipfork(
-            scratch,
-            &daemon,
-            &jj_only_sub,
-            &["snow", "resolve", "--file", "snow.yml", "--mode", "local"],
-        );
+        let out_jj_only = run_slipfork(scratch, &daemon, &jj_only_sub, &["env"]);
         assert!(
             !out_jj_only.status.success(),
             "a jj-only workspace without a colocated Git store must fail closed"
@@ -512,15 +455,11 @@ fn one_daemon_resolves_every_vcs_topology_and_diagnostic_journey() {
         let colocated_sub = colocated.join("nested").join("api");
         fs::create_dir_all(colocated.join(".jj")).expect("create .jj dir");
         fs::create_dir_all(&colocated_sub).expect("create nested subdir");
-        fs::write(colocated_sub.join("snow.yml"), MINIMAL_SNOW_YML).expect("write snow.yml");
+        write_forkfile(&colocated_sub, None);
         run_git(&colocated, &["init", "-q"]);
-        run_git(&colocated, &["add", "nested/api/snow.yml"]);
+        write_forkfile(&colocated, Some("jj-colocated"));
+        run_git(&colocated, &["add", "Forkfile", "nested/api/Forkfile"]);
         run_git(&colocated, &["commit", "-q", "-m", "init"]);
-        fs::write(
-            colocated.join("slipfork.toml"),
-            "project = \"jj-colocated\"\n",
-        )
-        .expect("write colocated slipfork.toml");
 
         let jj_marker = scratch.join("jj-was-invoked.txt");
         let fake_bin = scratch.join("bin-colocated");
@@ -539,17 +478,16 @@ fn one_daemon_resolves_every_vcs_topology_and_diagnostic_journey() {
             &daemon,
             &colocated_sub,
             &[("PATH", fake_bin.as_os_str())],
-            &["snow", "resolve", "--file", "snow.yml", "--mode", "local"],
+            &["env"],
+        );
+        assert_topology_env(
+            &out_colocated,
+            "jj-colocated",
+            "a colocated jj+git workspace must resolve through the Git resolver",
         );
         assert!(
-            out_colocated.status.success(),
-            "a colocated jj+git workspace must resolve through the Git resolver: {}",
-            String::from_utf8_lossy(&out_colocated.stderr)
-        );
-        assert!(
-            String::from_utf8_lossy(&out_colocated.stdout)
-                .contains("APP_URL=http://jj-colocated.localhost\n"),
-            "expected the project override from <vcs_root>/slipfork.toml"
+            vault(scratch, "jj-colocated").is_file(),
+            "expected the project override from <vcs_root>/Forkfile"
         );
         assert!(
             !jj_marker.exists(),
@@ -558,22 +496,15 @@ fn one_daemon_resolves_every_vcs_topology_and_diagnostic_journey() {
     }
 
     // ---------------------------------------------------------------------------------------
-    // (4) A non-VCS directory fails closed, a corrupt `.git` surfaces the real git stderr, and the
-    //     client's PATH never influences daemon-side resolution.
+    // (4) A non-VCS directory fails closed, a corrupt `.git` surfaces the real git stderr, and a
+    //     client PATH without `git` fails closed with the typed remedy.
     // ---------------------------------------------------------------------------------------
     {
         let plain = scratch.join("plain-dir");
         fs::create_dir_all(&plain).expect("create plain dir");
-        fs::write(plain.join("snow.yml"), MINIMAL_SNOW_YML).expect("write snow.yml");
-        fs::write(plain.join("slipfork.toml"), "project = \"acme\"\n")
-            .expect("write slipfork.toml");
+        write_forkfile(&plain, None);
 
-        let out = run_slipfork(
-            scratch,
-            &daemon,
-            &plain,
-            &["snow", "resolve", "--file", "snow.yml", "--mode", "local"],
-        );
+        let out = run_slipfork(scratch, &daemon, &plain, &["env"]);
         assert!(
             !out.status.success(),
             "non-VCS directory must fail closed, stdout={}",
@@ -591,14 +522,9 @@ fn one_daemon_resolves_every_vcs_topology_and_diagnostic_journey() {
         fs::create_dir_all(&broken).expect("create broken dir");
         fs::write(broken.join(".git"), "gitdir: /nonexistent/worktree/admin\n")
             .expect("write broken .git");
-        fs::write(broken.join("snow.yml"), MINIMAL_SNOW_YML).expect("write snow.yml");
+        write_forkfile(&broken, None);
 
-        let out_broken = run_slipfork(
-            scratch,
-            &daemon,
-            &broken,
-            &["snow", "resolve", "--file", "snow.yml", "--mode", "local"],
-        );
+        let out_broken = run_slipfork(scratch, &daemon, &broken, &["env"]);
         assert!(!out_broken.status.success());
         let broken_stderr = String::from_utf8_lossy(&out_broken.stderr);
         assert!(
@@ -607,21 +533,18 @@ fn one_daemon_resolves_every_vcs_topology_and_diagnostic_journey() {
             "expected real git stderr, got: {broken_stderr}"
         );
 
-        // A daemon-served request carries no environment, so the client's `PATH` cannot influence
-        // repository resolution: `snow resolve` sends the cwd and the daemon resolves the VCS root
-        // with its own `PATH` (`M3.28.1` R5 removed the CLI auto-spawn that used to forward it).
+        // `slipfork env` is a client-side verb: it runs the one Git resolver itself, so a client
+        // PATH without `git` fails closed with the typed `ToolMissing` remedy instead of degrading.
         let real_git_repo = scratch.join("git-missing-bin-repo");
         fs::create_dir_all(&real_git_repo).expect("create git-missing-bin-repo");
         run_git(&real_git_repo, &["init", "-q"]);
-        fs::write(real_git_repo.join("snow.yml"), MINIMAL_SNOW_YML).expect("write snow.yml");
-
-        let ambient = run_slipfork(
-            scratch,
-            &daemon,
-            &real_git_repo,
-            &["snow", "resolve", "--file", "snow.yml", "--mode", "local"],
+        write_forkfile(&real_git_repo, Some("acme-app"));
+        let ambient = run_slipfork(scratch, &daemon, &real_git_repo, &["env"]);
+        assert_topology_env(
+            &ambient,
+            "acme-app",
+            "slipfork env with the ambient client PATH",
         );
-        support::assert_success(&ambient, "snow resolve with the ambient client PATH");
         let empty_bin = scratch.join("bin-empty");
         fs::create_dir_all(&empty_bin).expect("create bin-empty");
         let out_no_git = run_slipfork_with_env(
@@ -629,31 +552,24 @@ fn one_daemon_resolves_every_vcs_topology_and_diagnostic_journey() {
             &daemon,
             &real_git_repo,
             &[("PATH", empty_bin.as_os_str())],
-            &["snow", "resolve", "--file", "snow.yml", "--mode", "local"],
-        );
-        support::assert_success(
-            &out_no_git,
-            "snow resolve must not need any tool on the client's PATH: the daemon owns resolution",
-        );
-        let resolved = support::stdout(&out_no_git);
-        assert_eq!(
-            resolved,
-            support::stdout(&ambient),
-            "the client's PATH must not influence daemon-side resolution:\n{resolved}"
+            &["env"],
         );
         assert!(
-            resolved.contains("APP_URL=http://git-missing-bin-repo.localhost\n"),
-            "the daemon's own tool lookup must still derive the canonical slug from `git`, got:\n{resolved}"
+            !out_no_git.status.success(),
+            "a client PATH without `git` must fail closed"
         );
+        let no_git_stderr = String::from_utf8_lossy(&out_no_git.stderr);
         assert!(
-            !resolved.contains("required tool") && !resolved.contains("not a git or jj repository"),
-            "a resolve the daemon completed must never surface a tool or topology refusal:\n{resolved}"
+            no_git_stderr.contains("git")
+                && no_git_stderr.contains("not found on PATH")
+                && no_git_stderr.contains("install Git"),
+            "expected the typed ToolMissing remedy naming git, got: {no_git_stderr}"
         );
     }
 
     // ---------------------------------------------------------------------------------------
-    // (5) An invalid project label fails closed until a valid `slipfork.toml` override rescues it,
-    //     and a missing `snow.yml` names the unreadable path with its OS cause.
+    // (5) An invalid project label fails closed until a valid `project <slug>` override rescues
+    //     it, and a missing `Forkfile` names the unreadable path with its remedy.
     // ---------------------------------------------------------------------------------------
     {
         // Repo basename `My_Project` is not a lowercase DNS label -> fails closed with an
@@ -661,65 +577,49 @@ fn one_daemon_resolves_every_vcs_topology_and_diagnostic_journey() {
         let bad_repo = scratch.join("My_Project");
         fs::create_dir_all(&bad_repo).expect("create My_Project");
         run_git(&bad_repo, &["init", "-q"]);
-        fs::write(bad_repo.join("snow.yml"), MINIMAL_SNOW_YML).expect("write snow.yml");
+        write_forkfile(&bad_repo, None);
 
-        let out_dir_err = run_slipfork(
-            scratch,
-            &daemon,
-            &bad_repo,
-            &["snow", "resolve", "--file", "snow.yml", "--mode", "local"],
-        );
+        let out_dir_err = run_slipfork(scratch, &daemon, &bad_repo, &["env"]);
         assert!(!out_dir_err.status.success());
         let err_text = String::from_utf8_lossy(&out_dir_err.stderr);
         assert!(
-            err_text.contains("My_Project") && err_text.contains("slipfork.toml"),
-            "expected invalid project slug diagnostic naming slipfork.toml, got: {err_text}"
+            err_text.contains("My_Project")
+                && err_text.contains("not a single lowercase DNS label"),
+            "expected invalid project slug diagnostic, got: {err_text}"
         );
 
-        // An invalid `project = "My_Project"` inside `slipfork.toml` ALSO fails closed.
-        fs::write(bad_repo.join("slipfork.toml"), "project = \"My_Project\"\n")
-            .expect("write bad slipfork.toml");
-        let out_toml_err = run_slipfork(
-            scratch,
-            &daemon,
-            &bad_repo,
-            &["snow", "resolve", "--file", "snow.yml", "--mode", "local"],
-        );
-        assert!(!out_toml_err.status.success());
-        assert!(String::from_utf8_lossy(&out_toml_err.stderr).contains("My_Project"));
+        // An invalid `project My_Project` inside the Forkfile ALSO fails closed.
+        write_forkfile(&bad_repo, Some("My_Project"));
+        let out_manifest_err = run_slipfork(scratch, &daemon, &bad_repo, &["env"]);
+        assert!(!out_manifest_err.status.success());
+        assert!(String::from_utf8_lossy(&out_manifest_err.stderr).contains("My_Project"));
 
-        // A valid `project = "my-project"` rescues the uppercase folder name.
-        fs::write(bad_repo.join("slipfork.toml"), "project = \"my-project\"\n")
-            .expect("write valid slipfork.toml");
-        let out_rescued = run_slipfork(
-            scratch,
-            &daemon,
-            &bad_repo,
-            &["snow", "resolve", "--file", "snow.yml", "--mode", "local"],
+        // A valid `project my-project` rescues the uppercase folder name.
+        write_forkfile(&bad_repo, Some("my-project"));
+        let out_rescued = run_slipfork(scratch, &daemon, &bad_repo, &["env"]);
+        assert_topology_env(
+            &out_rescued,
+            "my-project",
+            "a valid override must rescue the My_Project folder name",
         );
         assert!(
-            out_rescued.status.success(),
-            "expected valid override to rescue My_Project: {}",
-            String::from_utf8_lossy(&out_rescued.stderr)
-        );
-        assert!(
-            String::from_utf8_lossy(&out_rescued.stdout)
-                .contains("APP_URL=http://my-project.localhost\n")
+            vault(scratch, "my-project").is_file(),
+            "the valid override keys its own vault"
         );
 
-        let missing = scratch.join("does-not-exist-snow.yml");
+        // A checkout with no manifest is one fail-closed line naming the path and the remedy.
+        let empty_repo = scratch.join("manifest-less-repo");
+        fs::create_dir_all(&empty_repo).expect("create manifest-less repo");
+        run_git(&empty_repo, &["init", "-q"]);
+        let missing = empty_repo.join("Forkfile");
         let missing_str = missing.to_str().expect("utf8");
-        let resolve_out = run_slipfork(
-            scratch,
-            &daemon,
-            scratch,
-            &["snow", "resolve", "--file", missing_str, "--mode", "local"],
-        );
+        let resolve_out = run_slipfork(scratch, &daemon, &empty_repo, &["env"]);
         assert!(!resolve_out.status.success());
         let resolve_stderr = String::from_utf8_lossy(&resolve_out.stderr);
         assert!(
-            resolve_stderr.contains(&format!("cannot read {missing_str}:")),
-            "expected `cannot read <path>: <cause>`, got: {resolve_stderr}"
+            resolve_stderr.contains(&format!("cannot read {missing_str}:"))
+                && resolve_stderr.contains("next: add the project `Forkfile`"),
+            "expected `cannot read <path>; next: ...`, got: {resolve_stderr}"
         );
     }
 }
@@ -753,7 +653,7 @@ fn dot_jj_repository_routes_to_jujutsu_and_never_falls_back_to_git() {
     // creates a Git worktree.
     let tmp = disk_tempdir("jj-");
     let scratch = tmp.path();
-    let repo = repo_with_manifest(scratch, "acme-jj-absent", PLAIN_SNOW);
+    let repo = repo_with_manifest(scratch, "acme-jj-absent", PLAIN_FORKFILE);
     fs::create_dir(repo.join(".jj")).expect("create .jj marker");
     let git_only = support::git_only_path(scratch);
     let Some(daemon) = daemon_with_path(scratch, &git_only) else {
@@ -777,7 +677,7 @@ fn dot_jj_repository_routes_to_jujutsu_and_never_falls_back_to_git() {
     // Positive: the same `.jj` repository with `jj` on PATH creates a Jujutsu workspace.
     let tmp = disk_tempdir("jj-");
     let scratch = tmp.path();
-    let repo = repo_with_manifest(scratch, "acme-jj", PLAIN_SNOW);
+    let repo = repo_with_manifest(scratch, "acme-jj", PLAIN_FORKFILE);
     let status = Command::new(&jj)
         .args(["git", "init", "--colocate"])
         .current_dir(&repo)

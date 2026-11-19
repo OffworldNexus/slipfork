@@ -88,19 +88,18 @@ RUN apk add --no-cache python3
 WORKDIR /workspace
 ";
 
-/// One git repository carrying an explicit `snow.yml` body and a buildable `Dockerfile`.
-pub fn repo_with_manifest(scratch: &Path, project: &str, snow: &str) -> PathBuf {
+/// One git repository carrying an explicit `Forkfile` body and a buildable `Dockerfile`.
+///
+/// `forkfile` is the whole manifest, so the project override the retired TOML file used to supply
+/// is the body's own `project <slug>` statement. Every fixture in this crate declares the slug its
+/// directory is named after, which is also the slug the vault key and URL facts resolve to.
+pub fn repo_with_manifest(scratch: &Path, project: &str, forkfile: &str) -> PathBuf {
     let repo = scratch.join(project);
     fs::create_dir_all(&repo).expect("create repo");
     run_git(&repo, &["init", "-q"]);
-    fs::write(repo.join("snow.yml"), snow).expect("write snow.yml");
+    fs::write(repo.join("Forkfile"), forkfile).expect("write Forkfile");
     fs::write(repo.join("Dockerfile"), FIXTURE_DOCKERFILE).expect("write Dockerfile");
-    fs::write(
-        repo.join("slipfork.toml"),
-        format!("project = \"{project}\"\n"),
-    )
-    .expect("write slipfork.toml");
-    run_git(&repo, &["add", "snow.yml", "slipfork.toml", "Dockerfile"]);
+    run_git(&repo, &["add", "Forkfile", "Dockerfile"]);
     run_git(&repo, &["commit", "-q", "-m", "init"]);
     repo
 }
@@ -274,7 +273,7 @@ fn await_daemon_served(
 
 /// Ensure a daemon serves `layout`'s `<runtime_dir>/daemon.sock` for the calling test.
 ///
-/// `command` names the `slipfork` invocation that needs it (for example `snow resolve`), so a host
+/// `command` names the `slipfork` invocation that needs it (for example `slipfork ps`), so a host
 /// that genuinely cannot serve a daemon fails closed naming the command instead of letting the CLI
 /// print its own "no slipforkd on … — run `slipfork up`" line in a later assertion. A Btrfs state
 /// root is required: the real `slipforkd` child serves it, or the same `slipfork::daemon`

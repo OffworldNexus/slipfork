@@ -185,16 +185,16 @@ pub struct WorkspaceChanges {
     pub truncated: bool,
 }
 
-/// Injected `<vcs_root>/slipfork.toml` `project = "<slug>"` reader.
+/// Injected `<vcs_root>/Forkfile` `project = "<slug>"` reader.
 ///
 /// `slipforkd` implements this once over `slipfork_dag::SlipforkConfig`, so `crates/slipfork-vcs`
 /// honors the override without depending on `slipfork-dag` or owning a second TOML parser.
 pub trait ProjectSlugOverride: Send + Sync {
-    /// Return the override declared in `<vcs_root>/slipfork.toml`, or `None` when absent.
+    /// Return the override declared in `<vcs_root>/Forkfile`, or `None` when absent.
     fn project_override(&self, vcs_root: &Path) -> Result<Option<ProjectSlug>, VcsError>;
 }
 
-/// Unit [`ProjectSlugOverride`] for repositories without `slipfork.toml`.
+/// Unit [`ProjectSlugOverride`] for repositories without a `Forkfile`.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct NoProjectOverride;
 

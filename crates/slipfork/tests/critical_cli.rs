@@ -32,31 +32,24 @@ use support::{
 mod install_tool;
 use install_tool::recording_tool;
 
-const SNOW_YML: &str = r#"
-images:
-  - id: app
-    context: .
-    dockerfile: Dockerfile
+/// The canonical `Forkfile` every test in this suite boots.
+const FORKFILE: &str = r#"project acme-app
 
-components:
-  - id: api
-    image: app
-    envs: [app]
-    run_command: "exec sleep 300"
+features {
+    local
+}
 
-ingresses:
-  - match:
-      prefix: "/"
-    target:
-      component: api
-      port: 8000
+env app {
+    BASE_URL = app.url
+    SECRET_KEY = secret(SECRET_KEY) ?? random_string(32)
+}
 
-modes:
-  local:
-    envs:
-      app:
-        BASE_URL: '${{ resources::app.url }}'
-        SECRET_KEY: '${{ secrets::SECRET_KEY !! random_string(32) }}'
+service api ./ {
+    port 8000
+    route /
+    use env app
+    run sleep 300
+}
 "#;
 
 /// Disk-backed scratch directory with a short path (AF_UNIX `sun_path` budget), never `/tmp`.
@@ -66,36 +59,42 @@ fn disk_tempdir() -> tempfile::TempDir {
 
 /// A world whose single component prints a file copied into the image stage (`/marker.txt`), so a
 /// rootfs rebuild is proven by the content the world actually booted, not only by its lineage.
-const REBUILD_SNOW: &str = r#"
-images:
-  - id: app
-    context: .
-    dockerfile: Dockerfile
+const REBUILD_FORKFILE: &str = r#"project acme-rebuild
 
-components:
-  - id: api
-    image: app
-    envs: [app]
-    run_command: "cat /marker.txt && exec sleep 300"
+features {
+    local
+}
 
-ingresses:
-  - match:
-      prefix: "/"
-    target:
-      component: api
-      port: 8000
+env app {
+    BASE_URL = app.url
+}
 
-modes:
-  local:
-    envs:
-      app:
-        BASE_URL: '${{ resources::app.url }}'
+service api ./ {
+    port 8000
+    route /
+    use env app
+    run sh -c 'cat /marker.txt && exec sleep 300'
+}
 "#;
 
-/// One git repository with the canonical `snow.yml` used by every test.
-fn repo_with_snow(scratch: &Path) -> PathBuf {
-    repo_with_manifest(scratch, "acme-app", SNOW_YML)
+/// A manifest that declares no `project` statement: the daemon must derive the slug from the
+/// checkout directory instead.
+const NO_PROJECT_FORKFILE: &str = r#"features {
+    local
 }
+
+env app {
+    BASE_URL = "derived"
+    SECRET_KEY = secret(SECRET_KEY) ?? random_string(32)
+}
+
+service api ./ {
+    port 8000
+    route /
+    use env app
+    run sleep 300
+}
+"#;
 
 fn url_count(text: &str) -> usize {
     text.matches("http://").count()
@@ -104,6 +103,42 @@ fn url_count(text: &str) -> usize {
 // ---------------------------------------------------------------------------
 // M3.28.10: zero-argument `slipfork fork` (branch-derived name, one-line refusals)
 // ---------------------------------------------------------------------------
+
+#[test]
+fn a_forkfile_without_a_project_statement_derives_its_slug_from_the_directory() {
+    let tmp = disk_tempdir();
+    let scratch = tmp.path();
+    // The directory basename is the only project identity this checkout declares.
+    let repo = repo_with_manifest(scratch, "derived-dir", NO_PROJECT_FORKFILE);
+    let daemon = Daemon::start(scratch);
+
+    let up = daemon.cli(&repo, &["up"]);
+    assert_success(&up, "up a repository with no `project` statement");
+    let printed = stdout(&up);
+    assert!(
+        printed.contains("http://derived-dir.localhost"),
+        "the world URL must derive from the directory slug: {printed}"
+    );
+
+    let status = daemon.cli(&repo, &["--json", "status"]);
+    assert_success(&status, "status --json after the derived-slug up");
+    let document: Value = serde_json::from_str(&stdout(&status)).expect("status json");
+    let worlds = document["worlds"].as_array().expect("worlds array");
+    assert_eq!(worlds.len(), 1, "one world: {document}");
+    assert_eq!(
+        worlds[0]["world"], "derived-dir",
+        "the daemon keys the world by the directory-derived slug"
+    );
+
+    let vault = daemon
+        .state_dir
+        .join("xdg-data/slipfork/vaults/derived-dir.json");
+    assert!(
+        vault.is_file(),
+        "the daemon-side resolution keys the !! secret vault by the derived slug: {}",
+        vault.display()
+    );
+}
 
 #[test]
 fn fork_and_drop_help_mark_the_name_optional() {
@@ -144,7 +179,7 @@ fn fork_and_drop_help_mark_the_name_optional() {
 fn restart_rebuilds_an_edited_rootfs_input_and_keeps_state_for_unchanged_inputs() {
     let tmp = disk_tempdir();
     let scratch = tmp.path();
-    let repo = repo_with_manifest(scratch, "acme-rebuild", REBUILD_SNOW);
+    let repo = repo_with_manifest(scratch, "acme-rebuild", REBUILD_FORKFILE);
     let daemon = Daemon::start(scratch);
 
     // The app stage copies this marker and the component prints it, so a retained log proves which
@@ -302,7 +337,7 @@ fn canonical_subvolumes(state_dir: &Path) -> Vec<PathBuf> {
 fn home_unset_fails_closed_before_any_mutation() {
     let tmp = disk_tempdir();
     let scratch = tmp.path();
-    let repo = repo_with_snow(scratch);
+    let repo = repo_with_manifest(scratch, "acme-app", FORKFILE);
 
     // An explicit state root makes the "mutates nothing" assertion precise: the HOME guard must
     // fire before either the state directory or its `run/` runtime child is created.
@@ -334,7 +369,7 @@ fn home_unset_fails_closed_before_any_mutation() {
 fn secret_set_refuses_an_existing_double_bang_key_and_never_echoes_values() {
     let tmp = disk_tempdir();
     let scratch = tmp.path();
-    let repo = repo_with_snow(scratch);
+    let repo = repo_with_manifest(scratch, "acme-app", FORKFILE);
     let daemon = Daemon::start(scratch);
     assert_success(&daemon.cli(&repo, &["up"]), "up generates the !! secret");
 
@@ -403,7 +438,7 @@ fn secret_set_refuses_an_existing_double_bang_key_and_never_echoes_values() {
 fn daemon_unit_renders_the_resolved_user_and_never_a_template_specifier() {
     let tmp = disk_tempdir();
     let scratch = tmp.path();
-    let repo = repo_with_snow(scratch);
+    let repo = repo_with_manifest(scratch, "acme-app", FORKFILE);
     let expected_user = String::from_utf8(
         Command::new("id")
             .arg("-un")
@@ -489,7 +524,7 @@ fn daemon_unit_renders_the_resolved_user_and_never_a_template_specifier() {
 fn read_verbs_never_spawn_a_daemon_and_fail_closed_in_one_line() {
     let tmp = disk_tempdir();
     let scratch = tmp.path();
-    let repo = repo_with_snow(scratch);
+    let repo = repo_with_manifest(scratch, "acme-app", FORKFILE);
     let state_dir = scratch.join("no-daemon-state");
     let socket = state_dir.join("run").join("daemon.sock");
     let expected = format!(
@@ -718,7 +753,7 @@ fn daemon_unit_refuses_an_apparmor_injecting_bin_dir_without_writing() {
 fn daemon_unit_apparmor_lists_every_bin_dir_in_one_four_line_profile() {
     let tmp = disk_tempdir();
     let scratch = tmp.path();
-    let repo = repo_with_snow(scratch);
+    let repo = repo_with_manifest(scratch, "acme-app", FORKFILE);
     let output = Command::new(env!("CARGO_BIN_EXE_slipfork"))
         .arg("--state-dir")
         .arg(scratch.join("unit-state"))
@@ -763,7 +798,7 @@ fn daemon_unit_apparmor_lists_every_bin_dir_in_one_four_line_profile() {
 fn doctor_json_carries_the_typed_ingress_document() {
     let tmp = disk_tempdir();
     let scratch = tmp.path();
-    let repo = repo_with_snow(scratch);
+    let repo = repo_with_manifest(scratch, "acme-app", FORKFILE);
     // `doctor` is pre-daemon and advisory: a non-Btrfs host still emits the full document (and
     // exits 1), so only the ingress projection is asserted here.
     let output = Command::new(env!("CARGO_BIN_EXE_slipfork"))
@@ -821,7 +856,7 @@ fn doctor_json_carries_the_typed_ingress_document() {
 fn zero_setup_auto_spawn_serves_up_without_a_prestarted_daemon() {
     let tmp = disk_tempdir();
     let scratch = tmp.path();
-    let repo = repo_with_snow(scratch);
+    let repo = repo_with_manifest(scratch, "acme-app", FORKFILE);
     let state_dir = scratch.join("auto-state");
     let runtime_dir = state_dir.join("run");
     let daemon_log = runtime_dir.join("daemon.log");
@@ -931,88 +966,64 @@ fn zero_setup_auto_spawn_serves_up_without_a_prestarted_daemon() {
 // M2.17: hook rescue UX, logs, shell, db/redis, forward, auth, support
 // ---------------------------------------------------------------------------
 
-const HOOK_SNOW: &str = r#"
-images:
-  - id: app
-    context: .
-    dockerfile: Dockerfile
+const HOOK_FORKFILE: &str = r#"project acme-hook
 
-components:
-  - id: api
-    image: app
-    run_command: "exec sleep 300"
+features {
+    local
+}
 
-ingresses:
-  - match:
-      prefix: "/"
-    target:
-      component: api
-      port: 8000
+env app {
+    BASE_URL = app.url
+}
 
-hooks:
-  - component: api
-    when: pre-deploy
-    run_command: "echo HOOK-BOOM; echo HOOK-ERR >&2; exit 7"
-
-modes:
-  local:
-    envs:
-      app:
-        BASE_URL: '${{ resources::app.url }}'
+service api ./ {
+    port 8000
+    route /
+    use env app
+    run sleep 300
+    pre-deploy: sh -c 'echo HOOK-BOOM; echo HOOK-ERR >&2; exit 7'
+}
 "#;
 
-const LOGS_SNOW: &str = r#"
-images:
-  - id: app
-    context: .
-    dockerfile: Dockerfile
+const LOGS_FORKFILE: &str = r#"project acme-logs
 
-components:
-  - id: api
-    image: app
-    run_command: "while true; do echo tick-line; sleep 0.1; done"
+features {
+    local
+}
 
-ingresses:
-  - match:
-      prefix: "/"
-    target:
-      component: api
-      port: 8000
+env app {
+    BASE_URL = app.url
+}
 
-modes:
-  local:
-    envs:
-      app:
-        BASE_URL: '${{ resources::app.url }}'
+service api ./ {
+    port 8000
+    route /
+    use env app
+    run sh -c 'while true; do echo tick-line; sleep 0.1; done'
+}
 "#;
 
-const ATTRIBUTED_LOGS_SNOW: &str = r#"
-images:
-  - id: app
-    context: .
-    dockerfile: Dockerfile
+const ATTRIBUTED_LOGS_FORKFILE: &str = r#"project acme-attributed-logs
 
-components:
-  - id: api
-    image: app
-    run_command: "while true; do echo api-line; sleep 0.1; done"
+features {
+    local
+}
 
-  - id: worker
-    image: app
-    run_command: "while true; do echo worker-line; sleep 0.1; done"
+env app {
+    BASE_URL = app.url
+}
 
-ingresses:
-  - match:
-      prefix: "/"
-    target:
-      component: api
-      port: 8000
+service api ./ {
+    port 8000
+    route /
+    use env app
+    run sh -c 'while true; do echo api-line; sleep 0.1; done'
+}
 
-modes:
-  local:
-    envs:
-      app:
-        BASE_URL: '${{ resources::app.url }}'
+service worker ./ {
+    use env app
+    run sh -c 'while true; do echo worker-line; sleep 0.1; done'
+}
 "#;
 
 fn find_log_file(root: &Path, needle: &str) -> Option<PathBuf> {
@@ -1038,7 +1049,7 @@ fn find_log_file(root: &Path, needle: &str) -> Option<PathBuf> {
 fn hook_failure_keeps_the_world_and_prints_the_full_diagnostic() {
     let tmp = disk_tempdir();
     let scratch = tmp.path();
-    let repo = repo_with_manifest(scratch, "acme-hook", HOOK_SNOW);
+    let repo = repo_with_manifest(scratch, "acme-hook", HOOK_FORKFILE);
     let daemon = Daemon::start(scratch);
 
     let fork = daemon.cli(&repo, &["fork", "feat-bad"]);
@@ -1152,9 +1163,9 @@ fn hook_failure_keeps_the_world_and_prints_the_full_diagnostic() {
     );
 
     // Rescue: the fork's own worktree is what a restart re-resolves, so fix the hook there.
-    let snow_path = repo.join(".worktrees/feat-bad/snow.yml");
-    let snow = fs::read_to_string(&snow_path).expect("read the fork's snow.yml");
-    fs::write(&snow_path, snow.replace("exit 7", "exit 0")).expect("fix the hook");
+    let manifest_path = repo.join(".worktrees/feat-bad/Forkfile");
+    let manifest = fs::read_to_string(&manifest_path).expect("read the fork's Forkfile");
+    fs::write(&manifest_path, manifest.replace("exit 7", "exit 0")).expect("fix the hook");
     let rescue = daemon.cli(&repo, &["restart", "--world", "acme-hook:feat-bad"]);
     assert_success(&rescue, "restart rescues the failed world");
     let block = stdout(&rescue);
@@ -1213,7 +1224,7 @@ const SHELL_PROMPT_PREFIX: &str = "(slipfork:";
 fn interactive_shell_hands_over_the_service_prompt_and_json_refuses() {
     let tmp = disk_tempdir();
     let scratch = tmp.path();
-    let repo = repo_with_snow(scratch);
+    let repo = repo_with_manifest(scratch, "acme-app", FORKFILE);
     let daemon = Daemon::start(scratch);
     assert_success(&daemon.cli(&repo, &["up"]), "up before shell");
 
@@ -1267,7 +1278,7 @@ fn interactive_shell_hands_over_the_service_prompt_and_json_refuses() {
 fn logs_follow_streams_new_component_output() {
     let tmp = disk_tempdir();
     let scratch = tmp.path();
-    let repo = repo_with_manifest(scratch, "acme-logs", LOGS_SNOW);
+    let repo = repo_with_manifest(scratch, "acme-logs", LOGS_FORKFILE);
     let daemon = Daemon::start(scratch);
     assert_success(&daemon.cli(&repo, &["up"]), "up for logs");
 
@@ -1294,7 +1305,7 @@ fn logs_follow_streams_new_component_output() {
 fn logs_fan_out_attributes_every_line_to_its_component() {
     let tmp = disk_tempdir();
     let scratch = tmp.path();
-    let repo = repo_with_manifest(scratch, "acme-attributed-logs", ATTRIBUTED_LOGS_SNOW);
+    let repo = repo_with_manifest(scratch, "acme-attributed-logs", ATTRIBUTED_LOGS_FORKFILE);
     let daemon = Daemon::start(scratch);
     assert_success(&daemon.cli(&repo, &["up"]), "up for attributed logs");
 
@@ -1348,7 +1359,7 @@ fn logs_fan_out_attributes_every_line_to_its_component() {
 fn auth_prints_the_server_supplied_fragment_url_and_never_echoes_a_secret() {
     let tmp = disk_tempdir();
     let scratch = tmp.path();
-    let repo = repo_with_snow(scratch);
+    let repo = repo_with_manifest(scratch, "acme-app", FORKFILE);
     // The daemon owns one boot-injected endpoint; the reference server mints the pairing URL and
     // its single-use handle, so the CLI must print exactly what the server supplied.
     let server = ReferenceOsppServer::start(ReferenceServerConfig::default());
@@ -1504,7 +1515,7 @@ fn world_keys(world: &Value) -> Vec<String> {
 fn bare_slipfork_and_status_render_one_dashboard_and_json_stays_pure() {
     let tmp = disk_tempdir();
     let scratch = tmp.path();
-    let repo = repo_with_snow(scratch);
+    let repo = repo_with_manifest(scratch, "acme-app", FORKFILE);
     let daemon = Daemon::start(scratch);
     assert_success(&daemon.cli(&repo, &["up"]), "up the canonical world");
     assert_success(&daemon.cli(&repo, &["fork", "feat-ux"]), "fork feat-ux");
@@ -1683,7 +1694,7 @@ fn bare_slipfork_and_status_render_one_dashboard_and_json_stays_pure() {
 fn status_with_zero_worlds_prints_one_line_and_exits_zero() {
     let tmp = disk_tempdir();
     let scratch = tmp.path();
-    let repo = repo_with_snow(scratch);
+    let repo = repo_with_manifest(scratch, "acme-app", FORKFILE);
     let daemon = Daemon::start(scratch);
 
     let bare = daemon.cli(&repo, &[]);

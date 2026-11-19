@@ -56,7 +56,7 @@ impl Tool {
                 "install Git (https://git-scm.com) to resolve repositories, create fork worktrees, and synthesize fork snapshots"
             }
             Self::Jj => {
-                "install Jujutsu (https://jj-vcs.github.io) to use Jujutsu fork workspaces, or fork from a Git checkout; to name a checkout whose directory basename is not a valid project slug, set `project = \"<slug>\"` in `slipfork.toml`"
+                "install Jujutsu (https://jj-vcs.github.io) to use Jujutsu fork workspaces, or fork from a Git checkout; to name a checkout whose directory basename is not a valid project slug, set `project = \"<slug>\"` in the `Forkfile`"
             }
         }
     }
@@ -349,7 +349,7 @@ mod tests {
             panic!("expected ToolMissing");
         };
         assert!(
-            hint.contains("project = \"<slug>\"") && hint.contains("slipfork.toml"),
+            hint.contains("project = \"<slug>\"") && hint.contains("Forkfile"),
             "the jj hint must point at the project override, got: {hint}"
         );
     }

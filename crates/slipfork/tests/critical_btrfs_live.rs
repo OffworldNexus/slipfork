@@ -4,7 +4,7 @@
 //! skips:
 //!
 //! - **Btrfs host:** runs the full production path — the composition root constructs
-//!   `BtrfsEngine` over `KernelBtrfsDriver`, the fixture `snow.yml` builds an `L0` rootfs, a
+//!   `BtrfsEngine` over `KernelBtrfsDriver`, the fixture `Forkfile` builds an `L0` rootfs, a
 //!   `postgres:18` `crun` backing service seeds a clean base, and the sealed base snapshot is
 //!   cloned into a live world.
 //! - **Non-Btrfs host:** the same binary must fail closed with `EngineError::BtrfsRequired`: exit
@@ -21,37 +21,26 @@ use support::{
     repo_with_manifest, stderr, stdout,
 };
 
-const LIVE_SNOW: &str = r#"
-images:
-  - id: app
-    context: .
-    dockerfile: Dockerfile
+const LIVE_FORKFILE: &str = r#"project acme-live
 
-components:
-  - id: api
-    image: app
-    run_command: "exec sleep 300"
+features {
+    local
+}
 
-ingresses:
-  - match:
-      prefix: "/"
-    target:
-      component: api
-      port: 8000
+postgres main {
+    database main
+}
 
-resources:
-  pg_clusters:
-    - id: main
-      version: "18"
-  pg_databases:
-    - id: main
-      cluster: main
+env app {
+    BASE_URL = app.url
+}
 
-modes:
-  local:
-    envs:
-      app:
-        BASE_URL: '${{ resources::app.url }}'
+service api ./ {
+    port 8000
+    route /
+    use env app
+    run sleep 300
+}
 "#;
 
 #[test]
@@ -93,7 +82,7 @@ fn production_slipforkd_is_btrfs_only_and_boots_a_real_world_on_btrfs() {
     }
 
     // Btrfs host: the same spawn helper the CLI-critical suites use, running the real child.
-    let repo = repo_with_manifest(scratch, "acme-live", LIVE_SNOW);
+    let repo = repo_with_manifest(scratch, "acme-live", LIVE_FORKFILE);
     let daemon = Daemon::start_in(scratch, &layout).expect("start the production slipforkd");
     assert!(
         !daemon.is_in_process(),

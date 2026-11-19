@@ -3,7 +3,7 @@
 //! `slipforkd` wires these ports and passes them into world orchestration; domain crates never shell
 //! out, never read `std::env`, and never branch on a backend kind:
 //!
-//! - `ProjectSlugOverride`: injected `<vcs_root>/slipfork.toml` `project = "<slug>"` reader,
+//! - `ProjectSlugOverride`: injected `<vcs_root>/Forkfile` `project = "<slug>"` reader,
 //!   implemented once at the composition root over `slipfork_dag::SlipforkConfig` (this crate
 //!   carries zero `slipfork-dag` dependency and zero second TOML parser).
 //! - `RepoRootResolver`: resolves a start directory to `RepoRoot` (worktree root, VCS root,

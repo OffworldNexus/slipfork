@@ -17,29 +17,22 @@ pub mod support;
 
 use support::{Daemon, disk_tempdir, repo_with_manifest, stderr, stdout};
 
-const SNOW_YML: &str = r#"
-images:
-  - id: app
-    context: .
-    dockerfile: Dockerfile
+const FORKFILE: &str = r#"project acme-git
 
-components:
-  - id: api
-    image: app
-    run_command: "exec sleep 300"
+features {
+    local
+}
 
-ingresses:
-  - match:
-      prefix: "/"
-    target:
-      component: api
-      port: 8000
+env app {
+    BASE_URL = app.url
+}
 
-modes:
-  local:
-    envs:
-      app:
-        BASE_URL: '${{ resources::app.url }}'
+service api ./ {
+    port 8000
+    route /
+    use env app
+    run sleep 300
+}
 "#;
 
 fn run_git(cwd: &Path, args: &[&str]) -> Output {
@@ -99,7 +92,7 @@ fn git_with_helper(repo: &Path, daemon: &Daemon, args: &[&str]) -> Output {
 fn git_fetch_lists_and_fetches_fork_and_wip_refs_through_the_real_binary() {
     let tmp = disk_tempdir("v-");
     let scratch = tmp.path();
-    let repo = repo_with_manifest(scratch, "acme-git", SNOW_YML);
+    let repo = repo_with_manifest(scratch, "acme-git", FORKFILE);
     let mut daemon = Daemon::start(scratch);
 
     let fork = daemon.cli(&repo, &["fork", "feat-x"]);

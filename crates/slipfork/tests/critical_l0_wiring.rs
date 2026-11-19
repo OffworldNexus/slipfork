@@ -23,69 +23,54 @@ use support::{Daemon, assert_success, repo_with_manifest, stderr, stdout};
 /// PID 1, and the daemon must then answer the next entry with the typed `ServiceNotRunning`.
 const REDIS_STOP_DEADLINE: Duration = Duration::from_secs(20);
 
-const ALPINE_SNOW: &str = r#"
-images:
-  - id: app
-    context: .
-    dockerfile: Dockerfile
+const ALPINE_FORKFILE: &str = r#"project acme-l0
 
-components:
-  - id: api
-    image: app
-    run_command: "exec sleep 300"
+features {
+    local
+}
 
-ingresses:
-  - match:
-      prefix: "/"
-    target:
-      component: api
-      port: 8000
+redis cache {
+    version 8
+}
 
-resources:
-  redis_clusters:
-    - id: cache
-      version: "8"
+env app {
+    BASE_URL = app.url
+}
 
-modes:
-  local:
-    envs:
-      app:
-        BASE_URL: '${{ resources::app.url }}'
+service api ./ {
+    port 8000
+    route /
+    use env app
+    run sleep 300
+}
 "#;
 
 const DEBIAN_DOCKERFILE: &str = "FROM debian:trixie-slim AS app\nWORKDIR /workspace\n";
 
-const DEBIAN_SNOW: &str = r#"
-images:
-  - id: app
-    context: .
-    dockerfile: Dockerfile
+const DEBIAN_FORKFILE: &str = r#"project acme-glibc
 
-components:
-  - id: api
-    image: app
-    run_command: "exec sleep 300"
+features {
+    local
+}
 
-ingresses:
-  - match:
-      prefix: "/"
-    target:
-      component: api
-      port: 8000
+env app {
+    BASE_URL = app.url
+}
 
-modes:
-  local:
-    envs:
-      app:
-        BASE_URL: '${{ resources::app.url }}'
+service api ./ {
+    port 8000
+    route /
+    use env app
+    run sleep 300
+}
 "#;
 
 fn alpine_repo(scratch: &Path) -> PathBuf {
-    repo_with_manifest(scratch, "acme-l0", ALPINE_SNOW)
+    repo_with_manifest(scratch, "acme-l0", ALPINE_FORKFILE)
 }
 
 fn glibc_repo(scratch: &Path) -> PathBuf {
-    let repo = repo_with_manifest(scratch, "acme-glibc", DEBIAN_SNOW);
+    let repo = repo_with_manifest(scratch, "acme-glibc", DEBIAN_FORKFILE);
     std::fs::write(repo.join("Dockerfile"), DEBIAN_DOCKERFILE).expect("write glibc Dockerfile");
     support::run_git(&repo, &["add", "Dockerfile"]);
     support::run_git(&repo, &["commit", "-q", "-m", "glibc fixture"]);
