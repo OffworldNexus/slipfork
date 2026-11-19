@@ -226,6 +226,15 @@ pub enum EdgeError {
         reason: String,
     },
 
+    /// The `Host` header is not inside the `.localhost` namespace this daemon serves.
+    #[error(
+        "host '{host}' is outside the .localhost namespace; use http://<world>.localhost[:<port>]"
+    )]
+    HostOutsideLocalhost {
+        /// Offending `Host` header.
+        host: String,
+    },
+
     /// No attached world owns the requested `Host`.
     #[error("no world is attached for host '{host}'")]
     UnknownHost {
@@ -238,6 +247,17 @@ pub enum EdgeError {
     UnknownIngressPath {
         /// World id.
         world: String,
+        /// `Host` header the request was routed with.
+        host: String,
+        /// Request path and query.
+        path: String,
+    },
+
+    /// A request target tries to climb out of the routed prefix by `..` traversal.
+    #[error(
+        "refusing path traversal from host '{host}': '{path}' is not a routable request target"
+    )]
+    IngressTraversal {
         /// `Host` header the request was routed with.
         host: String,
         /// Request path and query.

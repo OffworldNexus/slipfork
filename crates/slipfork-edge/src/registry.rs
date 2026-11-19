@@ -14,21 +14,31 @@
 //!   `WorldEngine::dial_world_tcp`; the stream never crosses the CLI <-> `slipforkd` boundary.
 //! - [`WorldRegistry::release_world`] destroys the in-process world.
 //!
+//! The `Host` port-strip and DNS-label grammar is owned by `slipfork_world`; the table grammar and
+//! longest-prefix resolution live in [`ingress_table`], so this module only owns the world index.
+//!
 //! Every request-path error names the world id and the `Host` header.
+
+mod ingress_table;
 
 use std::net::TcpStream;
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use slipfork_world::{LocalHostRoute, ProjectSlug, WorldOrigin, WorldTarget};
+use slipfork_world::{LocalHostRoute, ProjectSlug, WorldOrigin, WorldTarget, normalize_host};
 use slipfork_world::{WorldEngine, WorldHandle};
 
 use crate::EdgeError;
 use crate::forward::{ForwardBridge, ForwardTargetSpec};
+use ingress_table::IngressTable;
 
-/// One `snow.yml` ingress prefix mapped to a backend port inside the world.
+/// One ingress route mapped to a backend port inside the world.
 ///
-/// The empty prefix is the canonical catch-all: it matches every path and loses every
-/// longest-prefix competition, so it behaves exactly like `internal_ports[0]`.
+/// Two spellings, both supplied by the caller (the edge holds no CLI routing tables):
+///
+/// - a path prefix (`"/api"`, `"/"`, or `""` for the `internal_ports[0]` catch-all), matched
+///   longest-prefix-first and only after the host is validated; or
+/// - `<label>.*` (`"mail.*"`), the `label.<world>.localhost` / `label.<fork>.<world>.localhost`
+///   host family, which owns every path on that host.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IngressRoute {
     /// Request-path prefix (`"/api"`), or `""` for the `internal_ports[0]` catch-all.
@@ -69,7 +79,7 @@ struct AttachedWorld {
     target: WorldTarget,
     snow_domains: Vec<String>,
     world: WorldHandle,
-    ingresses: Vec<IngressRoute>,
+    ingresses: IngressTable,
 }
 
 impl AttachedWorld {
@@ -77,28 +87,27 @@ impl AttachedWorld {
         world_id(&self.project, &self.target)
     }
 
-    fn resolve_port(&self, path: &str) -> Option<u16> {
-        self.ingresses
-            .iter()
-            .filter(|route| prefix_matches(&route.prefix, path))
-            .max_by_key(|route| route.prefix.len())
-            .map(|route| route.port)
-    }
-
-    fn routed(&self, host: &str, path: &str) -> Result<RoutedWorld, EdgeError> {
+    /// The path-prefix route for `path`, or a typed missing-route refusal.
+    fn routed_by_path(&self, host: &str, path: &str) -> Result<RoutedWorld, EdgeError> {
         let port = self
-            .resolve_port(path)
+            .ingresses
+            .path_port(path)
             .ok_or_else(|| EdgeError::UnknownIngressPath {
                 world: self.id(),
                 host: host.to_owned(),
                 path: path.to_owned(),
             })?;
-        Ok(RoutedWorld {
+        Ok(self.routed(host, port))
+    }
+
+    /// A resolved backend port on this world, carrying the diagnostic identity.
+    fn routed(&self, host: &str, port: u16) -> RoutedWorld {
+        RoutedWorld {
             world: self.world.clone(),
             port,
             host: host.to_owned(),
             id: self.id(),
-        })
+        }
     }
 }
 
@@ -160,7 +169,8 @@ impl WorldRegistry {
         ingresses: Vec<IngressRoute>,
     ) -> Result<(), EdgeError> {
         let id = world_id(project, target);
-        validate_ingresses(&id, &ingresses)?;
+        let ingresses = IngressTable::new(ingresses);
+        ingresses.validate(&id)?;
         let mut state = self.lock("attach_world")?;
         if state
             .worlds
@@ -194,7 +204,8 @@ impl WorldRegistry {
         ingresses: Vec<IngressRoute>,
     ) -> Result<(), EdgeError> {
         let id = world_id(project, target);
-        validate_ingresses(&id, &ingresses)?;
+        let ingresses = IngressTable::new(ingresses);
+        ingresses.validate(&id)?;
         let mut state = self.lock("replace_world")?;
         let Some(entry) = state
             .worlds
@@ -258,21 +269,47 @@ impl WorldRegistry {
 
     /// Decide how one incoming request is served.
     ///
-    /// A `*.localhost` host of an attached world is proxied; every other host is
-    /// [`EdgeError::UnknownHost`], and an unmatched path of an attached world is
-    /// [`EdgeError::UnknownIngressPath`]. The routing table is borrowed only long enough to
-    /// resolve, so the caller may dial the world without holding the registry lock.
+    /// A `*.localhost` host of an attached world is proxied; any `:<port>` suffix is stripped
+    /// first, so `demo.localhost:8080` (an `ssh -L` tunnel) routes exactly like `demo.localhost`.
+    /// A route table entry of the form `<label>.*` matches the `label.<world>.localhost` host
+    /// family; `/`, `/api`, and the empty catch-all remain path prefixes. Path traversal, encoded
+    /// separators, and hosts outside `.localhost` fail closed. The routing table is borrowed only
+    /// long enough to resolve, so the caller may dial the world without holding the registry lock.
     pub fn resolve(&self, host: &str, path: &str) -> Result<RoutedWorld, EdgeError> {
+        let Some(normalized) = normalize_ingress_host(host) else {
+            return Err(EdgeError::HostOutsideLocalhost {
+                host: host.to_owned(),
+            });
+        };
+        if path_is_traversal(path) {
+            return Err(EdgeError::IngressTraversal {
+                host: host.to_owned(),
+                path: path.to_owned(),
+            });
+        }
         let state = self.lock("route")?;
         for entry in state.worlds.iter() {
             let snow_domains: Vec<&str> = entry.snow_domains.iter().map(String::as_str).collect();
-            let Some(route) = LocalHostRoute::parse(&entry.project, &snow_domains, host) else {
+            // An explicit `<label>.*` route owns that subdomain's host family; the remaining
+            // labels are validated as the world's own identity (canonical or fork).
+            if let Some((port, remainder)) = entry.ingresses.subdomain_route(&normalized) {
+                let Some(route) = LocalHostRoute::parse(&entry.project, &snow_domains, remainder)
+                else {
+                    continue;
+                };
+                if route.target() != &entry.target {
+                    continue;
+                }
+                return Ok(entry.routed(host, port));
+            }
+            let Some(route) = LocalHostRoute::parse(&entry.project, &snow_domains, &normalized)
+            else {
                 continue;
             };
             if route.target() != &entry.target {
                 continue;
             }
-            return entry.routed(host, path);
+            return entry.routed_by_path(host, path);
         }
         Err(EdgeError::UnknownHost {
             host: host.to_owned(),
@@ -383,58 +420,66 @@ pub fn parent_world(project: &ProjectSlug, target: &WorldTarget) -> Option<Strin
     }
 }
 
-/// `true` when `prefix` covers `path` as a URL path segment boundary.
+/// Normalize one `Host` header for routing and assert the `.localhost` namespace.
 ///
-/// The empty prefix (the `internal_ports[0]` catch-all) covers everything; `"/api"` covers
-/// `"/api"`, `"/api/users"`, and `"/api?x=1"`, but never `"/apifoo"`.
-fn prefix_matches(prefix: &str, path: &str) -> bool {
-    if prefix.is_empty() {
-        return true;
-    }
-    let Some(rest) = path.strip_prefix(prefix) else {
-        return false;
-    };
-    prefix.ends_with('/') || rest.is_empty() || rest.starts_with('/') || rest.starts_with('?')
+/// The port-strip, bracket, trailing-dot, and lowercase grammar is owned by
+/// [`slipfork_world::normalize_host`]; this daemon only adds the one namespace assertion, so
+/// `demo.localhost:8080` and `demo.localhost` name the same world and `demo.localhost.evil.com`
+/// is refused.
+fn normalize_ingress_host(header: &str) -> Option<String> {
+    let host = normalize_host(header)?;
+    host.ends_with(".localhost").then_some(host)
 }
 
-/// Fail closed on an ingress table that cannot be routed deterministically.
-fn validate_ingresses(world: &str, ingresses: &[IngressRoute]) -> Result<(), EdgeError> {
-    if ingresses.is_empty() {
-        return Err(EdgeError::InvalidIngressRoute {
-            world: world.to_owned(),
-            reason: "at least one route (the internal_ports[0] catch-all) is required".to_owned(),
-        });
+/// `true` when any raw or percent-encoded path segment tries to climb out of the route.
+///
+/// Raw `..` segments are refused, and so is any segment carrying an encoded separator (`%2e`,
+/// `%2f`, `%5c`) or a backslash, so `/a/..%2fetc` and `/a/%2e%2e%2fb` never reach a backend.
+fn path_is_traversal(path: &str) -> bool {
+    let path = path.split(['?', '#']).next().unwrap_or("");
+    path.split('/').any(|segment| {
+        let segment = segment.to_ascii_lowercase();
+        matches!(segment.as_str(), ".." | "%2e%2e" | "%2e." | ".%2e")
+            || segment.contains("%2e")
+            || segment.contains("%2f")
+            || segment.contains("%5c")
+            || segment.contains('\\')
+    })
+}
+
+#[cfg(test)]
+mod routing_tests {
+    use super::{normalize_ingress_host, path_is_traversal};
+
+    #[test]
+    fn a_localhost_port_is_stripped_before_matching() {
+        assert_eq!(
+            normalize_ingress_host("demo.localhost:8080").as_deref(),
+            Some("demo.localhost")
+        );
+        assert_eq!(
+            normalize_ingress_host("DEMO.localhost.:80").as_deref(),
+            Some("demo.localhost")
+        );
+        assert_eq!(
+            normalize_ingress_host("demo.localhost.evil.com"),
+            None,
+            "a foreign host is never a .localhost world"
+        );
+        assert_eq!(normalize_ingress_host("demo.localhost:http"), None);
+        assert_eq!(normalize_ingress_host("[::1]:80"), None);
     }
-    for (index, route) in ingresses.iter().enumerate() {
-        if route.port == 0 {
-            return Err(EdgeError::InvalidIngressRoute {
-                world: world.to_owned(),
-                reason: format!("prefix '{}' maps to port 0", route.prefix),
-            });
-        }
-        if !route.prefix.is_empty()
-            && (!route.prefix.starts_with('/')
-                || route.prefix.contains(char::is_whitespace)
-                || route.prefix.contains('?')
-                || route.prefix.contains('#'))
-        {
-            return Err(EdgeError::InvalidIngressRoute {
-                world: world.to_owned(),
-                reason: format!(
-                    "prefix '{}' must be empty or start with '/' and contain no whitespace, '?', or '#'",
-                    route.prefix
-                ),
-            });
-        }
-        if ingresses[..index]
-            .iter()
-            .any(|previous| previous.prefix == route.prefix)
-        {
-            return Err(EdgeError::InvalidIngressRoute {
-                world: world.to_owned(),
-                reason: format!("duplicate ingress prefix '{}'", route.prefix),
-            });
-        }
+
+    #[test]
+    fn traversal_is_refused() {
+        assert!(path_is_traversal("../etc/passwd"));
+        assert!(path_is_traversal("/api/../secret"));
+        assert!(path_is_traversal("/a/%2E%2E/b"));
+        assert!(path_is_traversal("/a/..%2fetc"));
+        assert!(path_is_traversal("/a/%2e%2e%2fb"));
+        assert!(path_is_traversal("/a/%5c..%5cetc"));
+        assert!(path_is_traversal(r"/a\..\etc"));
+        assert!(!path_is_traversal("/api/..b"));
+        assert!(!path_is_traversal("/api/v1/users"));
     }
-    Ok(())
 }

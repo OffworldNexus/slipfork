@@ -3,7 +3,7 @@
 //! Services that declare the same `./dir` build inputs — `(repo identity, repo-relative context,
 //! dockerfile, stage, build_env)` — share one image build, and services pulling the same
 //! `from <image>` digest share one extracted rootfs. A build key never contains a worktree path:
-//! it is the one [`BuildKey`](slipfork_world::rootfs::BuildKey) formula from `slipfork-world`, so
+//! it is the one [`BuildKey`] formula from `slipfork-world`, so
 //! a fork in another directory still hits the build its parent already produced.
 //!
 //! Nothing here touches disk, spawns a process, or reads the environment.
@@ -57,7 +57,7 @@ pub struct RootfsKey(String);
 
 impl RootfsKey {
     /// Key one `./dir` build through the shared
-    /// [`BuildKey`](slipfork_world::rootfs::BuildKey) formula.
+    /// [`BuildKey`] formula.
     ///
     /// The repo identity and the *declared* repo-relative context are load-bearing: hashing an
     /// absolute worktree path would split one build across forks and re-resolve caches per

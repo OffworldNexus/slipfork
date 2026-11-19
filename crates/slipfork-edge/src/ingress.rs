@@ -423,8 +423,14 @@ fn dispatch(
 }
 
 /// Map one routing failure to its HTTP status.
+///
+/// A host outside `.localhost` (foreign or malformed) and a traversal target are client errors, and
+/// both render the typed [`EdgeError`] display text verbatim, so a refusal is worded exactly once.
 fn route_refusal(host: &str, err: EdgeError) -> Refusal {
     match err {
+        EdgeError::HostOutsideLocalhost { .. } | EdgeError::IngressTraversal { .. } => {
+            Refusal::BadRequest(err.to_string())
+        }
         EdgeError::UnknownHost { host } => {
             Refusal::NotFound(format!("no world is attached for host '{host}'"))
         }

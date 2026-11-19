@@ -583,6 +583,19 @@ fn registry_ingress_and_forward_over_one_real_world() {
             "TCP and http-ingress.sock must run the exact same dispatch"
         );
 
+        // A traversal target is refused before any backend is dialed, with the typed wording.
+        eprintln!("edge-live step: traversal");
+        let traversal = tcp_request(ingress_port, "acme.localhost", "/api/../secret");
+        assert!(
+            traversal.starts_with("HTTP/1.1 400 Bad Request"),
+            "a traversal target must fail closed with 400, got:\n{traversal}"
+        );
+        assert!(
+            traversal
+                .contains("refusing path traversal from host 'acme.localhost': '/api/../secret'"),
+            "the 400 must name the host and target, got:\n{traversal}"
+        );
+
         // A live socket is never stolen: a second daemon on the same state dir fails closed.
         let listeners = bind_listen(&ListenConfig {
             addr: SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
@@ -699,6 +712,10 @@ fn registry_ingress_and_forward_over_one_real_world() {
                         port: WS_BACKEND_PORT,
                     },
                     IngressRoute {
+                        prefix: "mail.*".to_owned(),
+                        port: CLOSED_BACKEND_PORT,
+                    },
+                    IngressRoute {
                         prefix: String::new(),
                         port: INGRESS_BACKEND_PORT,
                     },
@@ -712,6 +729,12 @@ fn registry_ingress_and_forward_over_one_real_world() {
                 .port(),
             INGRESS_BACKEND_PORT
         );
+        // A `<label>.*` entry owns the label.<world>.localhost host family on its own port.
+        let mail = registry
+            .resolve("mail.acme.localhost", "/")
+            .expect("a mail.* route owns the mail.<world>.localhost host");
+        assert_eq!(mail.port(), CLOSED_BACKEND_PORT);
+        assert_eq!(mail.world_id(), "acme");
         assert!(
             fixture
                 .engine()
@@ -803,6 +826,29 @@ fn registry_ingress_and_forward_over_one_real_world() {
                 "the proxied request must carry {needle}, got:\n{response}"
             );
         }
+
+        // An `ssh -L` tunnel's local port must route exactly like the bare host: the in-world
+        // backend sees the same request and the same forwarded host once the port is stripped.
+        let tunneled = tcp_request(
+            ingress_port,
+            &format!("acme.localhost:{ingress_port}"),
+            "/api/users?page=2",
+        );
+        assert!(
+            tunneled.starts_with("HTTP/1.1 200 OK"),
+            "a port-qualified .localhost Host must be proxied, got:\n{tunneled}"
+        );
+        let normalize = |text: &str| {
+            let (head, body) = text.split_once("\r\n\r\n").unwrap_or((text, ""));
+            let echoed = body.split_once("\r\n").map_or(body, |(_, rest)| rest);
+            format!("{head}\r\n\r\n{echoed}")
+                .replace(&format!("acme.localhost:{ingress_port}"), "acme.localhost")
+        };
+        assert_eq!(
+            normalize(&tunneled),
+            normalize(&response),
+            "Host: acme.localhost:<port> must route exactly like Host: acme.localhost"
+        );
 
         // WebSocket proving: a 101 handshake, a fragmented 4 KiB echo, and an idle socket.
         eprintln!("edge-live step: ws-handshake");

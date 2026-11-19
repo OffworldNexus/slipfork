@@ -220,7 +220,7 @@ next      slipfork open | slipfork db | slipfork logs | slipfork restart | slipf
   app     http://demo.localhost:8080
   ```
   `--json` returns the same two strings (`"recipe": {"ssh", "url"}`), so no agent has to assemble them.
-- **Why `http://<route>.localhost:8080` routes without proxy config (verified):** Modern browsers resolve `*.localhost` to `127.0.0.1`/`::1` (RFC 6761) and send `Host: demo.localhost:8080` over the SSH tunnel to `slipforkd`'s `127.0.0.1:<ingress.port>` listener. `WorldRegistry::resolve` delegates to `LocalHostRoute::parse`, whose `normalize_host` strips any numeric `:port` (`crates/slipfork-world/src/lib.rs:582-594`), routing `Host: demo.localhost:8080` and `Host: feat-ux.demo.localhost:8080` to the exact same worlds.
+- **Why `http://<route>.localhost:8080` routes without proxy config (verified):** Modern browsers resolve `*.localhost` to `127.0.0.1`/`::1` (RFC 6761) and send `Host: demo.localhost:8080` over the SSH tunnel to `slipforkd`'s `127.0.0.1:<ingress.port>` listener. `WorldRegistry::resolve` calls the canonical `slipfork_world::normalize_host` (`crates/slipfork-world/src/identity.rs`), which strips any numeric `:port`, lowercases the host, and is followed by the edge's single `.localhost` namespace assertion before `LocalHostRoute::parse`, routing `Host: demo.localhost:8080` and `Host: feat-ux.demo.localhost:8080` to the exact same worlds.
 
 ---
 

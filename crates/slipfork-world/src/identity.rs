@@ -388,7 +388,13 @@ fn parse_test_slot(label: &str) -> Option<u32> {
     label.strip_prefix("test-")?.parse().ok()
 }
 
-fn normalize_host(header: &str) -> Option<String> {
+/// Normalize one `Host` header: strip any numeric `:<port>`, lowercase it, and drop one trailing
+/// dot, so `Demo.localhost.:8080` and `demo.localhost` name the same host.
+///
+/// The single owner of the `Host` port-strip grammar: [`LocalHostRoute::parse`] and every other
+/// consumer (the `slipfork-edge` ingress included) call this instead of re-splitting on `:`.
+/// Returns `None` for an empty host, an IPv6 literal, or a repeated/non-numeric port.
+pub fn normalize_host(header: &str) -> Option<String> {
     let trimmed = header.trim();
     if trimmed.is_empty() || trimmed.contains('[') || trimmed.contains(']') {
         return None;

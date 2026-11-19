@@ -346,15 +346,12 @@ impl Checker<'_> {
 
     fn check_route(&mut self, route: &crate::syntax::Spanned<String>) {
         let value = route.value.trim();
-        let subdomain = value
-            .strip_suffix(".*")
-            .is_some_and(|prefix| !prefix.is_empty() && !prefix.contains(char::is_whitespace));
-        if value.starts_with('/') || subdomain {
+        if value.starts_with('/') || subdomain_label(value).is_some() {
             return;
         }
         self.diags.push(
             Diagnostic::new(route.span, format!("invalid route `{value}`"))
-                .with_hint("use `/`, `/prefix`, or `subdomain.*`"),
+                .with_hint("use /, /prefix, or one lowercase label like mail.*"),
         );
     }
 
@@ -443,6 +440,68 @@ impl Checker<'_> {
                     }
                 }
             }
+        }
+    }
+}
+
+/// A `<label>.*` route entry: exactly one lowercase DNS label plus `.*`.
+fn subdomain_label(route: &str) -> Option<&str> {
+    let label = route.strip_suffix(".*")?;
+    is_dns_label(label).then_some(label)
+}
+
+/// `true` for one lowercase DNS label (`mail`, `pg-admin`): `<= 63` bytes, no leading/trailing `-`.
+///
+/// The edge enforces the identical rule through `slipfork_world::is_valid_dns_label`; a route this
+/// checker accepts must never fail at world attach time, so the two must agree.
+fn is_dns_label(label: &str) -> bool {
+    !label.is_empty()
+        && label.len() <= 63
+        && !label.starts_with('-')
+        && !label.ends_with('-')
+        && label
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+}
+
+#[cfg(test)]
+mod route_tests {
+    use crate::parse_forkfile;
+
+    /// The `invalid route` diagnostics `route <value>` produces in an otherwise valid manifest.
+    fn route_errors(route: &str) -> Vec<String> {
+        let source =
+            format!("project demo\n\nservice api ./api {{\n    port 8000\n    route {route}\n}}\n");
+        match parse_forkfile(&source) {
+            Ok(_) => Vec::new(),
+            Err(diags) => diags
+                .into_iter()
+                .map(|diag| diag.to_string())
+                .filter(|line| line.contains("invalid route"))
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn a_route_accepts_paths_and_one_lowercase_label() {
+        for route in ["/api", "mail.*", "pg-admin.*"] {
+            assert!(
+                route_errors(route).is_empty(),
+                "route {route} must be accepted by the checker"
+            );
+        }
+    }
+
+    #[test]
+    fn a_route_rejects_what_the_edge_refuses() {
+        for route in ["MAIL.*", "a.b.*", "mail_x.*"] {
+            let errors = route_errors(route);
+            assert!(
+                errors
+                    .iter()
+                    .any(|line| line.contains(&format!("invalid route `{route}`"))),
+                "route {route} must be refused at check time, got {errors:?}"
+            );
         }
     }
 }

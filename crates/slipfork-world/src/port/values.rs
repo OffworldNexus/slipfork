@@ -226,7 +226,7 @@ pub struct ServiceSpec {
     /// The caller's classification of this row (`snow.yml` component vs backing service).
     pub kind: ServiceKind,
     /// Exactly one runtime: an `L0` world process, a daemonless `crun` backing-service container,
-    /// or a `Forkfile` service pod (all three flow through [`WorldEngine::spawn_service`]).
+    /// or a `Forkfile` service pod (all three flow through [`WorldEngine::spawn_service`](crate::WorldEngine::spawn_service)).
     pub runtime: ServiceRuntime,
     /// `WorldProcess`: overlay applied on top of `WorldSpec::base_env`. `OciContainer`: the
     /// container's **complete declared** environment — a container bundle `config.json` never

@@ -1520,7 +1520,7 @@ def test_product_apparmor_profile_is_rendered_by_the_product_command() -> None:
         f"{directory.strip('/')}/slipfork{{,d,-world-init}}," for directory in bin_dirs
     )
     assert lines[1] == (
-        f"profile slipfork /{{{clauses}usr/bin/unshare,.slipfork/bin/crun}} "
+        f"profile slipfork /{{{clauses}usr/bin/unshare,**/.slipfork/bin/crun}} "
         "flags=(unconfined) {\n"
     )
     assert "//" not in rendered.stdout

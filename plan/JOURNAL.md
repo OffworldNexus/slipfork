@@ -1949,3 +1949,26 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-19T19:26 [M3.32.2.2.3.1] (lead) status ready -> active
 - 2026-11-19T19:48 [M3.32.2.2.3.1] (implementer) attempt2: do_vm RC=0 (12 suites): btrfs_live 1, engine 21, oci_runtime 4, pod_runtime 1, edge_live 3, btrfs_live(cli) 7, cli 24, l0_wiring 8, slug 8, ospp_daemo
 - 2026-11-19T19:48 [M3.32.2.2.3.1] (lead) status active -> done
+- 2026-11-19T19:48 [M3.32.3] (lead) status ready -> active
+- 2026-11-19T19:48 [M3.32.3] (lead) attempt 1/3 started
+- 2026-11-19T19:48 [M3.32.3] (lead) base 9706d6298472c3e6b4cf71d6a6cc7f7e3f56f069
+- 2026-11-19T19:49 [M3.32.3] (lead) edited fields
+- 2026-11-19T19:49 [M3.32.3.1] (lead) created (task) Port-agnostic .localhost ingress + multiplexed logs -f (survives restart)
+- 2026-11-19T19:49 [M3.32.3.2] (lead) created (task) wire subscribe.forkfile: EvaluatedFork + OSPP/testkit retype on slipfork-forkfile
+- 2026-11-19T19:49 [M3.32.3.3] (lead) created (task) Daemon/CLI cut-over on EvaluatedFork, project identity, delete slipfork-snow
+- 2026-11-19T19:49 [M3.32.3.1] (lead) status ready -> active
+- 2026-11-19T19:49 [M3.32.3.1] (lead) attempt 1/3 started
+- 2026-11-19T19:49 [M3.32.3.1] (lead) base 9706d6298472c3e6b4cf71d6a6cc7f7e3f56f069
+- 2026-11-19T19:49 [M3.32.3.1] (lead) edited fields
+- 2026-11-19T19:49 [M3.32.3.4] (lead) created (task) Capture-time ts_ms + concurrent logs -f fan-in with restart divider
+- 2026-11-19T19:49 [M3.32.3.1] (lead) lead: narrowed to edge-only; logs multiplexer split to M3.32.3.4 (capture-time ts_ms seam)
+- 2026-11-19T19:51 [M3.32.3.1] (lead) lead: appended missing # Acceptance sections to M3.32.3.1-.4 (plan.py has no body-edit command)
+- 2026-11-19T19:51 [M3.32.3.1] (lead) edited fields
+- 2026-11-19T19:52 [M3.32.3.1] (lead) edited fields
+- 2026-11-19T19:54 [M3.32.3.1] (lead) status active -> review
+- 2026-11-19T19:59 [M3.32.3.1] (lead) edited fields
+- 2026-11-19T19:59 [M3.32.5] (lead) note (from M3.32.3.1 Triad): published docs must show the new ingress shape — a <label>.* subdomain route (e.g. mail.*) and that <world>.localhost:<any port> (s
+- 2026-11-19T19:59 [M3.32.3.1] (lead) status review -> active
+- 2026-11-19T19:59 [M3.32.3.1] (lead) attempt 2/3 started
+- 2026-11-19T19:59 [M3.32.3.1] (lead) fix pass 1/3 base 9706d6298472c3e6b4cf71d6a6cc7f7e3f56f069
+- 2026-11-19T20:02 [M3.32.3.1] (lead) status active -> done

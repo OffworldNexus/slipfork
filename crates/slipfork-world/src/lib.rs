@@ -37,7 +37,7 @@ pub mod weaver;
 pub use env::{EnvNameError, ExecEnv, InheritedVar, REDACTED};
 pub use identity::{
     DNS_LABEL_REASON, LocalHostRoute, ProjectSlug, WorldError, WorldOrigin, WorldTarget,
-    is_valid_dns_label, validate_fork_name, validate_unreserved_dns_label,
+    is_valid_dns_label, normalize_host, validate_fork_name, validate_unreserved_dns_label,
 };
 pub use lineage::{
     BaseLineage, CacheOutcome, RootfsLineage, SeedLineage, ServiceImageLineage, ServiceKind,

@@ -34,6 +34,9 @@ impl From<&EdgeError> for DaemonError {
         let kind = match err {
             EdgeError::IngressMissing => DaemonErrorKind::IngressMissing,
             EdgeError::IngressPortInvalid { .. } => DaemonErrorKind::IngressPortInvalid,
+            EdgeError::HostOutsideLocalhost { .. } | EdgeError::IngressTraversal { .. } => {
+                DaemonErrorKind::BadRequest
+            }
             EdgeError::UnknownHost { .. } | EdgeError::UnknownIngressPath { .. } => {
                 DaemonErrorKind::UnknownWorld
             }

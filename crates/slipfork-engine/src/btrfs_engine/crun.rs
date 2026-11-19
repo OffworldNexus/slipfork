@@ -24,7 +24,7 @@ use super::services::ServiceProcess;
 /// This type is the **sole** `crun` argv owner in the engine, and it is also the single writer of
 /// per-service OCI bundles: a backing-service container gets an id-addressed bundle in the world
 /// control dir, and a `ServicePod` gets `ctl/<world_id>/oci/<service>/config.json` from its
-/// injected [`ServicePodSpec`].
+/// injected [`ServicePodSpec`](slipfork_world::pod::ServicePodSpec).
 #[derive(Debug, Clone)]
 pub struct CrunSurface {
     prefix: Vec<String>,
