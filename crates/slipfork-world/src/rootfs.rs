@@ -409,7 +409,7 @@ pub enum BaseImageError {
     },
     /// `ADR-0009` §5.8 — baked origin/service URL or host path.
     #[error(
-        "error: World Image Contract #4 violated in stage '{stage}': baked image {what} conflicts with Slipfork single-origin and ResourceCoordinates injection\n  fix: delete {what} from Dockerfile and reference `${{{{ resources::{component}.url }}}}` under `modes.all.envs` in Forkfile"
+        "error: World Image Contract #4 violated in stage '{stage}': baked image {what} conflicts with Slipfork single-origin and ResourceCoordinates injection\n  fix: delete {what} from Dockerfile and reference `{component}.url` in the Forkfile `env` block"
     )]
     BakedOriginOrHostPath {
         /// Selected stage.

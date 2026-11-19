@@ -214,6 +214,12 @@ SUITES = (
         "crates/slipfork/tests/critical_vcs_remote.rs",
         "M3.30.4",
     ),
+    (
+        "slipfork",
+        "interact_lab",
+        "crates/slipfork/tests/interact_lab.rs",
+        "M3.32.4.2.1",
+    ),
 )
 AUTHORIZED_KEY_USERS = ("root", REMOTE_USER)
 EXCLUDED_TOP_LEVEL = frozenset({"target", "site", ".worktrees"})

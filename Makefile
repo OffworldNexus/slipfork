@@ -16,7 +16,7 @@ export CARGO_BUILD_JOBS
 # Suites that boot real Btrfs worlds (and therefore need a Btrfs state root and a serialized run).
 # `make rs-test-live` owns them; `make check` never runs them, so this non-Btrfs host stays green.
 # Run them on the lab VM: `uv run --no-project tools/do_vm.py test`.
-RS_LIVE_SUITES := slipfork-engine:critical_btrfs_live slipfork-engine:critical_engine slipfork-engine:critical_oci_runtime slipfork-engine:critical_pod_runtime slipfork:critical_btrfs_live slipfork:critical_cli slipfork:critical_l0_wiring slipfork:critical_ospp_daemon slipfork:critical_slug slipfork:critical_world_journey slipfork:critical_vcs_remote slipfork-edge:critical_edge_live
+RS_LIVE_SUITES := slipfork-engine:critical_btrfs_live slipfork-engine:critical_engine slipfork-engine:critical_oci_runtime slipfork-engine:critical_pod_runtime slipfork:critical_btrfs_live slipfork:critical_cli slipfork:critical_l0_wiring slipfork:critical_ospp_daemon slipfork:critical_slug slipfork:critical_world_journey slipfork:critical_vcs_remote slipfork:interact_lab slipfork-edge:critical_edge_live
 .PHONY: help check fmt rs-fmt rs-lint rs-test rs-test-live ts-test docs-js-test py-lint py-test docs-check guard zed-check grammar-test plan-check bench bench-update docs-serve
 
 $(TMPDIR):
@@ -79,8 +79,10 @@ rs-test: | $(TMPDIR) ## Run the pure/loopback Rust suites (compile once, no Btrf
 	cargo test -p slipfork-engine --test critical_pod_bundle
 	cargo test -p slipfork-engine --test critical_rootfs_contract
 	cargo test -p slipfork-engine --test critical_rootfs_live
+	cargo test -p slipfork-forkfile --test critical_evaluated_world
 	cargo test -p slipfork-forkfile --test critical_forkfile
 	cargo test -p slipfork-forkfile --test critical_migrate
+	cargo test -p slipfork-forkfile --test demo_forkfile
 	cargo test -p slipfork-lsp --test critical_lsp
 	cargo test -p slipfork-ospp --test critical_ospp
 	cargo test -p slipfork-vcs --test critical_conformance_matrix
@@ -88,6 +90,7 @@ rs-test: | $(TMPDIR) ## Run the pure/loopback Rust suites (compile once, no Btrf
 	cargo test -p slipfork-world --test critical_world
 	cargo test -p slipfork --test browser
 	cargo test -p slipfork --test daemon_unit_install
+	cargo test -p slipfork --test migrate
 
 # The Btrfs world-booting journeys. A direct `cargo test --test …` on a non-Btrfs host fails closed
 # through `require_btrfs` (one line naming the missing substrate) — it never skips silently.
@@ -106,6 +109,7 @@ rs-test-live: | $(TMPDIR) ## Run the Btrfs world-booting suites (needs Btrfs; la
 	cargo test -p slipfork-edge --test critical_edge_live -- --test-threads=1
 	cargo test -p slipfork --test critical_world_journey -- --test-threads=1
 	cargo test -p slipfork --test critical_vcs_remote -- --test-threads=1
+	cargo test -p slipfork --test interact_lab -- --test-threads=1
 
 docs-check: | $(TMPDIR) ## Build public Zensical documentation site in --strict mode and verify CLI honesty
 	uvx --offline zensical build --strict
