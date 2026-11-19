@@ -19,3 +19,7 @@ base b887e61aa1b7b25f92432f36983d00932308d939
 ## 2026-11-19T00:31 [lead]
 
 edited fields
+
+## 2026-11-19T01:01 [lead]
+
+status active -> done: 2/2 children done: mechanical split + cohesive postgres/ospp/pairing structs

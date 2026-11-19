@@ -170,6 +170,11 @@ impl Layout {
             .join("slipfork")
             .join("device-key-software.json")
     }
+
+    /// Public OSPP pairing record `{ endpoint, account, machine }` (`0600`, atomic replace).
+    pub fn pairing_path(&self) -> PathBuf {
+        self.state_dir.join("ospp.json")
+    }
 }
 
 /// Create `path` (and parents) as a user-private `0700` directory when missing.

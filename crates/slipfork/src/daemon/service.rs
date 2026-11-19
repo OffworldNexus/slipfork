@@ -1,12 +1,11 @@
 //! The daemon service: index, lifecycle orchestration entry points, and world release.
 
-use super::types::{DaemonState, LiveWorld, OsppRuntime, WorldFacts};
+use super::ospp_supervisor::OsppSupervisor;
+use super::types::{DaemonState, LiveWorld, WorldFacts};
 use super::{DaemonConfig, DaemonPorts, engine_read_error, runtime_error};
-use crate::browser::Browser;
 use crate::vaults::ProjectVaults;
 use slipfork_edge::{EdgeError, WorldRegistry, parent_world, world_id};
 use slipfork_engine::rootfs::BaseImageBuilder;
-use slipfork_ospp::{DeviceKeySigner, OsppClient, SubscriptionEnv};
 use slipfork_snow::EntropySource;
 use slipfork_vcs::{RepoRootResolver, VcsWorkspaceFactory};
 use slipfork_wire::control::{
@@ -15,7 +14,7 @@ use slipfork_wire::control::{
 };
 use slipfork_world::{ProjectSlug, WorldEngine, WorldHandle, WorldTarget};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError, mpsc};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 /// The daemon-owned [`DaemonControl`] implementation.
 pub struct DaemonService {
@@ -25,22 +24,9 @@ pub struct DaemonService {
     pub(super) repo_roots: std::sync::Arc<dyn RepoRootResolver>,
     pub(super) workspaces: std::sync::Arc<dyn VcsWorkspaceFactory>,
     pub(super) vaults: std::sync::Arc<dyn ProjectVaults>,
-    /// The one boot-injected OSPP client (`None` = local-only daemon).
-    pub(super) ospp: Option<Arc<dyn OsppClient>>,
-    /// The machine-authentication identity (`p256` auth only).
-    pub(super) signer: Arc<dyn DeviceKeySigner>,
-    /// Hostname proposed in `pair_begin`.
-    pub(super) hostname: String,
-    /// The concrete desktop launcher for the pairing approval page.
-    pub(super) browser: Browser,
+    /// The daemon's one OSPP client, live session, and public pairing record.
+    pub(super) ospp: OsppSupervisor,
     pub(super) entropy: Arc<dyn EntropySource>,
-    /// The daemon-owned live `ospp-v1` session and its per-project subscriptions.
-    pub(super) ospp_runtime: Mutex<OsppRuntime>,
-    /// Pushed `env_updated` environments, drained by the subscription supervisor thread.
-    pub(super) ospp_updates_tx: Arc<Mutex<mpsc::Sender<SubscriptionEnv>>>,
-    pub(super) ospp_updates_rx: Mutex<Option<mpsc::Receiver<SubscriptionEnv>>>,
-    /// One actionable line describing a failed live session (never a secret value).
-    pub(super) ospp_failure: Mutex<Option<String>>,
     pub(super) config: DaemonConfig,
     pub(super) ingress: IngressInfo,
     pub(super) forward_port: Option<u16>,
@@ -66,7 +52,13 @@ impl DaemonService {
         ingress: IngressInfo,
         forward_port: Option<u16>,
     ) -> Self {
-        let (updates_tx, updates_rx) = mpsc::channel();
+        let ospp = OsppSupervisor::new(
+            ports.ospp,
+            ports.signer,
+            ports.hostname,
+            ports.browser,
+            ports.pairing,
+        );
         Self {
             engine: ports.engine,
             builder: ports.builder,
@@ -74,15 +66,8 @@ impl DaemonService {
             repo_roots: ports.repo_roots,
             workspaces: ports.workspaces,
             vaults: ports.vaults,
-            ospp: ports.ospp,
-            signer: ports.signer,
-            hostname: ports.hostname,
-            browser: ports.browser,
+            ospp,
             entropy: ports.entropy,
-            ospp_runtime: Mutex::new(OsppRuntime::default()),
-            ospp_updates_tx: Arc::new(Mutex::new(updates_tx)),
-            ospp_updates_rx: Mutex::new(Some(updates_rx)),
-            ospp_failure: Mutex::new(None),
             config,
             ingress,
             forward_port,

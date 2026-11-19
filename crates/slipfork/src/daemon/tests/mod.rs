@@ -2,4 +2,5 @@
 
 mod engine;
 mod lifecycle;
+mod pairing;
 mod policy;

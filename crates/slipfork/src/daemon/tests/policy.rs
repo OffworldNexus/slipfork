@@ -1,10 +1,10 @@
-use super::super::backing::PostgresReady;
-use super::super::backing::{await_postgres_ready, readiness_detail};
 use super::super::boot::{
     BootCommand, BootVerb, boot_verb, check_rerun_policy, not_running, rerun_policy,
     restarted_service_ids,
 };
 use super::super::env::{parse_hook_id, validate_secret_key};
+use super::super::postgres::PostgresReady;
+use super::super::postgres::{await_postgres_ready, readiness_detail};
 use super::super::protocol::tail_lines;
 use super::super::types::BootPolicy;
 use slipfork_dag::DumpPolicy;

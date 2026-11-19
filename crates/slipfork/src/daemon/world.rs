@@ -1,6 +1,7 @@
 use super::backing::service_specs;
 use super::base::{base_digest, reused_base_lineage, selected_seed};
 use super::boot::{check_rerun_policy, restarted_service_ids};
+use super::env::resolve_component_env;
 use super::service::DaemonService;
 use super::types::PreparedWorld;
 use super::types::SealedBase;
@@ -10,6 +11,7 @@ use crate::layout::ensure_private_dir;
 use slipfork_dag::ResourcePlan;
 use slipfork_edge::{EdgeError, world_id};
 use slipfork_engine::elapsed_millis;
+use slipfork_ospp::SubscriptionEnv;
 use slipfork_snow::{HookPhase, SnowFile};
 use slipfork_vcs::VcsWorkspace;
 use slipfork_wire::control::{BootEvent, WorldState, WorldUpSummary};
@@ -468,5 +470,65 @@ impl DaemonService {
         let changed = !restarted.is_empty() || hooks > 0;
         live.state = WorldState::Running;
         self.record_world(live, rows_after, changed, restarted)
+    }
+}
+
+impl DaemonService {
+    /// Apply one already-decrypted `env_updated` environment to this daemon's live worlds:
+    /// recompute each component's environment from the local vault + coordinates, and restart
+    /// **only** the components whose environment actually changed.
+    pub(super) fn apply_env_update(&self, environment: &SubscriptionEnv) -> Result<(), EdgeError> {
+        let Some(project) = self.ospp.project_for(&environment.id) else {
+            return Err(runtime_error(format!(
+                "OSPP pushed an environment for unknown subscription '{}'",
+                environment.id
+            )));
+        };
+        let _guard = self.boot_guard();
+        let mut state = self.lock();
+        for world in state
+            .worlds
+            .iter_mut()
+            .filter(|world| world.project == project)
+        {
+            let provider = self.vault_for(&project)?;
+            let claims = self.ospp.claims_for(
+                &project,
+                &world.snow,
+                &world.plan,
+                self.vault_store(&project)?,
+            )?;
+            for index in 0..world.components.len() {
+                let id = world.components[index].id.clone();
+                let server = environment.component(&id);
+                let env = resolve_component_env(
+                    &world.snow,
+                    provider.as_ref(),
+                    &world.coords,
+                    &id,
+                    &claims,
+                    server,
+                    self.entropy.as_ref(),
+                )?;
+                if env == world.components[index].env {
+                    continue;
+                }
+                let handle = world
+                    .services
+                    .iter()
+                    .find(|service| service.id() == id)
+                    .cloned();
+                if let Some(handle) = handle {
+                    self.engine.update_service_env(&handle, &env).map_err(|err| {
+                        runtime_error(format!(
+                            "cannot restart component '{id}' with the pushed OSPP environment: {err}"
+                        ))
+                    })?;
+                }
+                world.components[index].env = env;
+            }
+            world.ospp_env = Some(environment.components.clone());
+        }
+        Ok(())
     }
 }

@@ -247,7 +247,7 @@ impl DaemonService {
         })?;
         // One live session per project while worlds run; the plan only needs to know whether a
         // usable (paired and remote-identified) session exists. OSPP is never a prerequisite.
-        let session = self.ospp_session()?;
+        let session = self.ospp.session()?;
         let ospp_paired = session.is_some() && remote.is_some();
         let plan = resolve_plan(
             &config,
@@ -269,10 +269,13 @@ impl DaemonService {
             ResourceCoordinates::for_world(&snow, project, target, &origin, &BTreeMap::new())
                 .map_err(|err| runtime_error(err.to_string()))?;
         let vault = self.vault_for(project)?;
-        let claims = self.claims_for(project, &snow, &plan)?;
+        let claims = self
+            .ospp
+            .claims_for(project, &snow, &plan, self.vault_store(project)?)?;
         let ospp_env = match (session.as_ref(), remote.as_deref()) {
             (Some(_), Some(remote)) => {
-                self.subscribe_project(project, remote, &snow_source, &claims)?
+                self.ospp
+                    .subscribe(project, remote, &snow_source, &claims)?
             }
             _ => None,
         };

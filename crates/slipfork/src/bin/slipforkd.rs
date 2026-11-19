@@ -25,13 +25,12 @@ use std::thread;
 
 use clap::Parser;
 use slipfork::browser::Browser;
-use slipfork::daemon::{DaemonWiring, compose_daemon, host_caches};
+use slipfork::daemon::{DaemonWiring, compose_daemon, host_caches, resolve_boot_endpoint};
 use slipfork::layout::{Layout, ensure_private_dir};
 use slipfork::runtime::{runtime_assets, target_arch};
 use slipfork_edge::{DaemonControlServer, HttpIngress, ListenConfig, resolve_listener_set};
 use slipfork_engine::btrfs::KernelBtrfsDriver;
 use slipfork_engine::current_uid_gid;
-use slipfork_ospp::OsppEndpoint;
 use slipfork_wire::control::IngressInfo;
 use slipfork_world::InheritedVar;
 
@@ -118,6 +117,12 @@ fn run(cli: DaemonCli) -> Result<(), String> {
     let layout = Layout::explicit(state_dir, runtime_dir, &home, xdg_data_home.as_deref());
     let state_dir = layout.state_dir().to_path_buf();
     let runtime_dir = layout.runtime_dir().to_path_buf();
+    // A saved `slipfork auth` pairing reconnects this daemon after a restart; an explicit
+    // `--ospp-endpoint` always wins. A corrupt record only warns: OSPP is never a prerequisite.
+    let boot = resolve_boot_endpoint(cli.ospp_endpoint.as_deref(), &layout.pairing_path())?;
+    if let Some(warning) = &boot.warning {
+        eprintln!("slipforkd: {warning}");
+    }
 
     let listeners = resolve_listener_set(listener_config.as_ref())
         .map_err(|err| format!("cannot resolve the ingress listeners: {err}"))?;
@@ -158,12 +163,7 @@ fn run(cli: DaemonCli) -> Result<(), String> {
         target_arch: target_arch.to_owned(),
         uid,
         gid,
-        ospp_endpoint: cli
-            .ospp_endpoint
-            .as_deref()
-            .map(OsppEndpoint::parse)
-            .transpose()
-            .map_err(|err| format!("invalid --ospp-endpoint: {err}"))?,
+        ospp_endpoint: boot.endpoint,
         hostname: std::env::var("HOSTNAME")
             .ok()
             .filter(|value| !value.trim().is_empty())

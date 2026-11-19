@@ -16,7 +16,7 @@ use crate::layout::Layout;
 use crate::project::repository_resolver;
 use crate::vaults::{LayoutProjectVaults, ProjectVaults};
 use crate::vcs::RepositoryWorkspaces;
-use backing::PostgresReady;
+use postgres::PostgresReady;
 use slipfork_edge::{EdgeError, WorldRegistry};
 use slipfork_engine::BtrfsEngine;
 use slipfork_engine::btrfs::KernelBtrfsDriver;
@@ -41,7 +41,9 @@ mod base;
 mod boot;
 mod control;
 mod env;
-mod ospp;
+mod ospp_supervisor;
+mod pairing_store;
+mod postgres;
 mod protocol;
 mod resolve;
 mod select;
@@ -50,6 +52,7 @@ mod types;
 mod vault;
 mod world;
 
+pub use pairing_store::{BootEndpoint, PairingStore, resolve_boot_endpoint};
 pub use service::DaemonService;
 
 #[cfg(test)]
@@ -138,6 +141,8 @@ pub(super) struct DaemonPorts {
     pub(super) workspaces: std::sync::Arc<dyn VcsWorkspaceFactory>,
     /// Project-scoped `0600` local-vault factory.
     pub(super) vaults: std::sync::Arc<dyn ProjectVaults>,
+    /// Public OSPP pairing record store (`<state_dir>/ospp.json`, `0600`).
+    pub(super) pairing: PairingStore,
     /// The one OSPP v1 client bound to the boot-injected endpoint (`None` = local-only daemon).
     pub(super) ospp: Option<Arc<dyn OsppClient>>,
     /// The machine-authentication identity (`p256` auth only; never subscription encryption).
@@ -271,6 +276,7 @@ pub fn compose_daemon(wiring: DaemonWiring) -> Result<DaemonGraph, String> {
             repo_roots: repository_resolver(),
             workspaces: Arc::new(RepositoryWorkspaces::new()),
             vaults: Arc::new(LayoutProjectVaults::new(layout.clone())),
+            pairing: PairingStore::new(layout.pairing_path()),
             ospp,
             signer,
             hostname,

@@ -2,16 +2,16 @@
 id: M3.30.2.2.2
 title: PostgresProvisioner + OsppSupervisor + PairingStore cohesive structs over the new daemon modules
 kind: task
-status: ready
+status: done
 owner: implementer
 priority: 3
 depends_on: [M3.30.2.2.1]
 paths: [Cargo.toml, Cargo.lock, "crates/slipfork/**"]
-attempts: 0
+attempts: 2
 max_attempts: 3
 escalation: none
 created: "2026-11-19T00:31"
-updated: "2026-11-19T00:31"
+updated: "2026-11-19T01:01"
 ---
 
 # Goal

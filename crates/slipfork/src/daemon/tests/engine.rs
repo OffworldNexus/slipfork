@@ -1,7 +1,8 @@
 use super::super::DaemonConfig;
 use super::super::DaemonPorts;
 use super::super::HostCaches;
-use super::super::backing::PostgresReady;
+use super::super::PairingStore;
+use super::super::postgres::PostgresReady;
 use super::super::service::DaemonService;
 use crate::browser::Browser;
 use crate::layout::Layout;
@@ -10,6 +11,7 @@ use crate::vcs::RepositoryWorkspaces;
 use slipfork_edge::WorldRegistry;
 use slipfork_engine::rootfs::BaseImageBuilder;
 use slipfork_engine::rootfs::RuntimeAssets;
+use slipfork_ospp::{DeviceKeySigner, OsppClient, OsppEndpoint, OsppTimeouts, WsOsppClient};
 use slipfork_snow::OsCsprngEntropy;
 use slipfork_vcs::{RepoRoot, RepoRootResolver};
 use slipfork_wire::control::IngressInfo;
@@ -510,9 +512,51 @@ pub(super) fn test_service(
     scratch: &Path,
     worktree: &Path,
 ) -> (Arc<DaemonService>, Arc<WorldRegistry>, Arc<RecordingEngine>) {
+    build_service(
+        scratch,
+        worktree,
+        None,
+        Arc::new(slipfork_ospp_testkit::signers::software_signer()),
+        Browser::none(),
+    )
+}
+
+/// The same graph wired to a live `ospp-v1` reference-server endpoint.
+pub(super) fn test_service_with_ospp(
+    scratch: &Path,
+    worktree: &Path,
+    endpoint: OsppEndpoint,
+    signer: Arc<dyn DeviceKeySigner>,
+) -> Arc<DaemonService> {
+    // A real opener that exits zero: the pairing URL is handed to it, never logged.
+    build_service(
+        scratch,
+        worktree,
+        Some(endpoint),
+        signer,
+        Browser::new("/bin/true", true),
+    )
+    .0
+}
+
+fn build_service(
+    scratch: &Path,
+    worktree: &Path,
+    endpoint: Option<OsppEndpoint>,
+    signer: Arc<dyn DeviceKeySigner>,
+    browser: Browser,
+) -> (Arc<DaemonService>, Arc<WorldRegistry>, Arc<RecordingEngine>) {
     let layout = Layout::explicit(scratch.join("state"), scratch.join("run"), scratch, None);
     let engine = Arc::new(RecordingEngine::new());
     let registry = Arc::new(WorldRegistry::new(engine.clone(), 80));
+    let ospp: Option<Arc<dyn OsppClient>> = endpoint.map(|endpoint| {
+        Arc::new(WsOsppClient::new(
+            endpoint,
+            Arc::clone(&signer),
+            Arc::new(OsCsprngEntropy),
+            OsppTimeouts::default(),
+        )) as Arc<dyn OsppClient>
+    });
     let service = DaemonService::new(
         DaemonPorts {
             engine: engine.clone(),
@@ -527,11 +571,12 @@ pub(super) fn test_service(
             }),
             workspaces: Arc::new(RepositoryWorkspaces::new()),
             vaults: Arc::new(LayoutProjectVaults::new(layout.clone())),
-            ospp: None,
-            signer: Arc::new(slipfork_ospp_testkit::signers::software_signer()),
+            ospp,
+            signer,
             hostname: "test-machine".to_owned(),
-            browser: Browser::none(),
+            browser,
             entropy: Arc::new(OsCsprngEntropy),
+            pairing: PairingStore::new(layout.pairing_path()),
         },
         DaemonConfig {
             layout,

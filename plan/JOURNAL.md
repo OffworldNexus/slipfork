@@ -1609,3 +1609,12 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-19T00:40 [M3.30.2.2.1] (lead) status review -> ready: triad: 1 BLOCKER (glob prelude curtain) + 4 MAJOR grouping, one pass
 - 2026-11-19T00:40 [M3.30.2.2.1] (lead) attempt 2/3 started
 - 2026-11-19T00:48 [M3.30.2.2.1] (lead) status ready -> done
+- 2026-11-19T00:49 [M3.30.2.2.2] (lead) status ready -> active
+- 2026-11-19T00:49 [M3.30.2.2.2] (lead) attempt 1/3 started
+- 2026-11-19T00:49 [M3.30.2.2.2] (lead) base 248c7c1b77ae4678ce6316226d88897924721f9e
+- 2026-11-19T00:52 [M3.30.2.2.2] (lead) status active -> review
+- 2026-11-19T00:55 [M3.30.5] (lead) carry-over: docs/reference/ospp.md + cli.md must describe saved ospp.json reconnect (endpoint flag only needed on first run)
+- 2026-11-19T00:55 [M3.30.2.2.2] (lead) status review -> ready: triad: 2 BLOCKER test-fidelity + 3 MAJOR ownership, one pass
+- 2026-11-19T00:55 [M3.30.2.2.2] (lead) attempt 2/3 started
+- 2026-11-19T01:01 [M3.30.2.2.2] (lead) status ready -> done
+- 2026-11-19T01:01 [M3.30.2.2] (lead) status active -> done: 2/2 children done: mechanical split + cohesive postgres/ospp/pairing structs
