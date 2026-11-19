@@ -2,7 +2,7 @@
 id: M3.30
 title: "0.1.0 Ship-Ready Sweep: dead-weight purge, god-file splits, high-craft UX, lab-first tests & visual docs"
 kind: epic
-status: ready
+status: done
 priority: 3
 depends_on: []
 paths: []
@@ -10,7 +10,7 @@ attempts: 0
 max_attempts: 3
 escalation: none
 created: "2026-11-18T22:19"
-updated: "2026-11-18T22:19"
+updated: "2026-11-19T06:45"
 ---
 
 # Goal
