@@ -2,7 +2,7 @@
 id: M3.30.2.3
 title: Split btrfs_engine.rs + service.rs into BtrfsWorldEngine/OciContainerRuntime/SupervisedProcess
 kind: task
-status: ready
+status: done
 owner: implementer
 priority: 3
 depends_on: [M3.30.2.2]
@@ -11,7 +11,7 @@ attempts: 2
 max_attempts: 3
 escalation: none
 created: "2026-11-19T00:03"
-updated: "2026-11-19T01:10"
+updated: "2026-11-19T01:14"
 ---
 
 # Goal

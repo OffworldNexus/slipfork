@@ -14,7 +14,7 @@ use std::sync::Arc;
 use slipfork_world::ProjectSlug;
 
 use crate::ports::{ProjectSlugOverride, RepoRoot, RepoRootResolver, VcsError};
-use crate::tool_command::{ToolOutput, run_git, run_git_checked};
+use crate::tool_command::{ToolOutput, VcsCli};
 
 /// First line Git emits when `start` is outside any repository (`LC_ALL=C`).
 const NOT_A_REPOSITORY_PREFIX: &str = "fatal: not a git repository (or any ";
@@ -71,11 +71,8 @@ impl RepoRootResolver for GitRepoRootResolver {
 
         // Bare repositories have no worktree, so `--show-toplevel` would fail first with a
         // misleading message; probe the topology before anything else.
-        let bare = run_git(
-            &start,
-            &[OsStr::new("rev-parse"), OsStr::new("--is-bare-repository")],
-            None,
-        )?;
+        let bare = VcsCli::git(&start)
+            .run(&[OsStr::new("rev-parse"), OsStr::new("--is-bare-repository")])?;
         if !bare.success {
             if is_not_a_repository(&bare) {
                 return Err(VcsError::NotARepository { start });
@@ -91,16 +88,13 @@ impl RepoRootResolver for GitRepoRootResolver {
             &[OsStr::new("rev-parse"), OsStr::new("--show-toplevel")],
         )?;
 
-        let superproject = run_git_checked(
-            &worktree_root,
-            &[
+        let superproject = VcsCli::git(&worktree_root)
+            .checked(&[
                 OsStr::new("rev-parse"),
                 OsStr::new("--show-superproject-working-tree"),
-            ],
-            None,
-        )?
-        .stdout_trimmed()?
-        .to_owned();
+            ])?
+            .stdout_trimmed()?
+            .to_owned();
         if !superproject.is_empty() {
             let hint = format!(
                 "this checkout is a git submodule of {superproject}; set `project = \"<slug>\"` in {} to name it explicitly",
@@ -161,15 +155,11 @@ impl RepoRootResolver for GitRepoRootResolver {
     }
 
     fn remote(&self, repo: &RepoRoot) -> Result<Option<String>, VcsError> {
-        let output = run_git(
-            &repo.vcs_root,
-            &[
-                OsStr::new("config"),
-                OsStr::new("--get"),
-                OsStr::new("remote.origin.url"),
-            ],
-            None,
-        )?;
+        let output = VcsCli::git(&repo.vcs_root).run(&[
+            OsStr::new("config"),
+            OsStr::new("--get"),
+            OsStr::new("remote.origin.url"),
+        ])?;
         if !output.success {
             // `git config --get` exits 1 when the key is unset: "no origin" is not an error.
             return Ok(None);
@@ -259,7 +249,7 @@ fn config_hint(vcs_root: &Path) -> String {
 
 /// Run a `git rev-parse` path probe and canonicalize its result.
 fn probe_path(cwd: &Path, args: &[&OsStr]) -> Result<PathBuf, VcsError> {
-    let out = run_git_checked(cwd, args, None)?;
+    let out = VcsCli::git(cwd).checked(args)?;
     let raw = out.stdout_trimmed()?.to_owned();
     fs::canonicalize(&raw).map_err(|err| VcsError::io(Path::new(&raw), &err))
 }

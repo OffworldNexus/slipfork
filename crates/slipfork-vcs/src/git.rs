@@ -22,7 +22,7 @@ use crate::ports::{
     MAX_WORKSPACE_CHANGES, RepoRoot, VcsError, VcsWorkspace, VcsWorkspaceFactory,
     WORKTREES_DIRECTORY, WorkspaceChanges, WorkspaceRequest, fork_branch_ref, fork_snapshot_ref,
 };
-use crate::tool_command::{ToolOutput, run_git, run_git_checked, run_git_with_pinned_identity};
+use crate::tool_command::{ToolOutput, VcsCli};
 
 /// Repository-relative Slipfork state directory (never `/tmp`: it sits beside the checkout).
 const STATE_DIRECTORY: &str = ".slipfork";
@@ -89,16 +89,12 @@ impl VcsWorkspaceFactory for GitWorktreeAdapter {
 
     fn current_branch(&self, repo: &RepoRoot) -> Result<Option<String>, VcsError> {
         // The requesting checkout's own `HEAD`, so a linked `.worktrees/<fork>` reports its branch.
-        let out = run_git(
-            &repo.worktree_root,
-            &[
-                OsStr::new("symbolic-ref"),
-                OsStr::new("--short"),
-                OsStr::new("--quiet"),
-                OsStr::new("HEAD"),
-            ],
-            None,
-        )?;
+        let out = VcsCli::git(&repo.worktree_root).run(&[
+            OsStr::new("symbolic-ref"),
+            OsStr::new("--short"),
+            OsStr::new("--quiet"),
+            OsStr::new("HEAD"),
+        ])?;
         match out.code {
             // A branch checkout: `HEAD` is a symref to `refs/heads/<branch>`.
             Some(0) => {
@@ -138,16 +134,12 @@ impl VcsWorkspace for GitWorkspace {
     }
 
     fn changes(&self) -> Result<WorkspaceChanges, VcsError> {
-        let status = run_git_checked(
-            &self.path,
-            &[
-                OsStr::new("status"),
-                OsStr::new("--porcelain=v1"),
-                OsStr::new("-z"),
-                OsStr::new("--untracked-files=all"),
-            ],
-            None,
-        )?;
+        let status = VcsCli::git(&self.path).checked(&[
+            OsStr::new("status"),
+            OsStr::new("--porcelain=v1"),
+            OsStr::new("-z"),
+            OsStr::new("--untracked-files=all"),
+        ])?;
         parse_workspace_changes(&status)
     }
 
@@ -183,49 +175,43 @@ fn synthesize_snapshot(repo: &RepoRoot, fork: &str, base: &str) -> Result<Snapsh
     remove_if_exists(&index)?;
 
     let worktree = repo.worktree_root.as_path();
-    run_git_checked(
-        worktree,
-        &[OsStr::new("read-tree"), OsStr::new(base)],
-        Some(&index),
-    )?;
+    VcsCli::git(worktree)
+        .with_index(&index)
+        .checked(&[OsStr::new("read-tree"), OsStr::new(base)])?;
     stage_snapshot_index(worktree, &index)?;
-    let tree = run_git_checked(worktree, &[OsStr::new("write-tree")], Some(&index))?
+    let tree = VcsCli::git(worktree)
+        .with_index(&index)
+        .checked(&[OsStr::new("write-tree")])?
         .stdout_trimmed()?
         .to_owned();
 
     let base_tree_spec = format!("{base}^{{tree}}");
-    let base_tree = run_git_checked(
-        worktree,
-        &[
+    let base_tree = VcsCli::git(worktree)
+        .checked(&[
             OsStr::new("rev-parse"),
             OsStr::new("--verify"),
             OsStr::new(&base_tree_spec),
-        ],
-        None,
-    )?
-    .stdout_trimmed()?
-    .to_owned();
+        ])?
+        .stdout_trimmed()?
+        .to_owned();
     if tree == base_tree {
         return Ok(Snapshot {
             commit: base.to_owned(),
         });
     }
 
-    let commit = run_git_with_pinned_identity(
-        worktree,
-        &[
+    let commit = VcsCli::snapshot(worktree)
+        .run(&[
             OsStr::new("commit-tree"),
             OsStr::new(&tree),
             OsStr::new("-p"),
             OsStr::new(base),
             OsStr::new("-m"),
             OsStr::new(SNAPSHOT_MESSAGE),
-        ],
-        None,
-    )?
-    .ensure_success()?
-    .stdout_trimmed()?
-    .to_owned();
+        ])?
+        .ensure_success()?
+        .stdout_trimmed()?
+        .to_owned();
     Ok(Snapshot { commit })
 }
 
@@ -241,31 +227,23 @@ fn synthesize_snapshot(repo: &RepoRoot, fork: &str, base: &str) -> Result<Snapsh
 /// is required because the scratch index file itself lives under `.slipfork/git/` and its bytes
 /// change while it is staged.
 fn stage_snapshot_index(worktree: &Path, index: &Path) -> Result<(), VcsError> {
-    run_git_checked(
-        worktree,
-        &[
-            OsStr::new("add"),
-            OsStr::new("-A"),
-            OsStr::new("--"),
-            OsStr::new("."),
-        ],
-        Some(index),
-    )?;
-    run_git_checked(
-        worktree,
-        &[
-            OsStr::new("rm"),
-            OsStr::new("-r"),
-            OsStr::new("-f"),
-            OsStr::new("--cached"),
-            OsStr::new("--ignore-unmatch"),
-            OsStr::new("-q"),
-            OsStr::new("--"),
-            OsStr::new(STATE_DIRECTORY),
-            OsStr::new(WORKTREES_DIRECTORY),
-        ],
-        Some(index),
-    )?;
+    VcsCli::git(worktree).with_index(index).checked(&[
+        OsStr::new("add"),
+        OsStr::new("-A"),
+        OsStr::new("--"),
+        OsStr::new("."),
+    ])?;
+    VcsCli::git(worktree).with_index(index).checked(&[
+        OsStr::new("rm"),
+        OsStr::new("-r"),
+        OsStr::new("-f"),
+        OsStr::new("--cached"),
+        OsStr::new("--ignore-unmatch"),
+        OsStr::new("-q"),
+        OsStr::new("--"),
+        OsStr::new(STATE_DIRECTORY),
+        OsStr::new(WORKTREES_DIRECTORY),
+    ])?;
     Ok(())
 }
 
@@ -278,42 +256,30 @@ fn materialize(
     base: &str,
     snapshot: &Snapshot,
 ) -> Result<(), VcsError> {
-    run_git_checked(
-        &repo.vcs_root,
-        &[
-            OsStr::new("worktree"),
-            OsStr::new("add"),
-            OsStr::new("--no-checkout"),
-            worktree.as_os_str(),
-            OsStr::new("-b"),
-            OsStr::new(fork),
-            OsStr::new(base),
-        ],
-        None,
-    )?;
+    VcsCli::git(&repo.vcs_root).checked(&[
+        OsStr::new("worktree"),
+        OsStr::new("add"),
+        OsStr::new("--no-checkout"),
+        worktree.as_os_str(),
+        OsStr::new("-b"),
+        OsStr::new(fork),
+        OsStr::new(base),
+    ])?;
     let snapshot_ref = fork_snapshot_ref(fork);
-    run_git_checked(
-        &repo.vcs_root,
-        &[
-            OsStr::new("update-ref"),
-            OsStr::new(&snapshot_ref),
-            OsStr::new(&snapshot.commit),
-        ],
-        None,
-    )?;
+    VcsCli::git(&repo.vcs_root).checked(&[
+        OsStr::new("update-ref"),
+        OsStr::new(&snapshot_ref),
+        OsStr::new(&snapshot.commit),
+    ])?;
     // Check out the snapshot, then rewind only the linked worktree's index to the base tree: the
     // files stay dirty, so `git status` reproduces the developer's M/D/?? view exactly.
-    run_git_checked(
-        worktree,
-        &[
-            OsStr::new("read-tree"),
-            OsStr::new("-u"),
-            OsStr::new("--reset"),
-            OsStr::new(&snapshot.commit),
-        ],
-        None,
-    )?;
-    run_git_checked(worktree, &[OsStr::new("read-tree"), OsStr::new(base)], None)?;
+    VcsCli::git(worktree).checked(&[
+        OsStr::new("read-tree"),
+        OsStr::new("-u"),
+        OsStr::new("--reset"),
+        OsStr::new(&snapshot.commit),
+    ])?;
+    VcsCli::git(worktree).checked(&[OsStr::new("read-tree"), OsStr::new(base)])?;
     Ok(())
 }
 
@@ -324,24 +290,16 @@ fn materialize(
 /// them because it runs while an earlier error is already being reported.
 fn teardown(vcs_root: &Path, fork: &str, worktree: &Path) -> Result<(), VcsError> {
     if path_exists(worktree)? {
-        run_git_checked(
-            vcs_root,
-            &[
-                OsStr::new("worktree"),
-                OsStr::new("remove"),
-                OsStr::new("--force"),
-                worktree.as_os_str(),
-            ],
-            None,
-        )?;
+        VcsCli::git(vcs_root).checked(&[
+            OsStr::new("worktree"),
+            OsStr::new("remove"),
+            OsStr::new("--force"),
+            worktree.as_os_str(),
+        ])?;
     } else {
         // Idempotent re-run: the checkout is already gone, so only stale worktree metadata
         // (if any) remains to be pruned.
-        run_git_checked(
-            vcs_root,
-            &[OsStr::new("worktree"), OsStr::new("prune")],
-            None,
-        )?;
+        VcsCli::git(vcs_root).checked(&[OsStr::new("worktree"), OsStr::new("prune")])?;
     }
     let snapshot_ref = fork_snapshot_ref(fork);
     if ref_exists(vcs_root, &snapshot_ref)? {
@@ -349,11 +307,11 @@ fn teardown(vcs_root: &Path, fork: &str, worktree: &Path) -> Result<(), VcsError
     }
     let branch = fork_branch_ref(fork);
     if ref_exists(vcs_root, &branch)? {
-        run_git_checked(
-            vcs_root,
-            &[OsStr::new("branch"), OsStr::new("-D"), OsStr::new(fork)],
-            None,
-        )?;
+        VcsCli::git(vcs_root).checked(&[
+            OsStr::new("branch"),
+            OsStr::new("-D"),
+            OsStr::new(fork),
+        ])?;
     }
     remove_if_exists(&scratch_index_path(vcs_root, fork))
 }

@@ -11,20 +11,16 @@ use std::io;
 use std::path::Path;
 
 use crate::ports::VcsError;
-use crate::tool_command::{run_git, run_git_checked};
+use crate::tool_command::VcsCli;
 
 /// `true` when `reference` exists in `root`'s ref store.
 pub(crate) fn ref_exists(root: &Path, reference: &str) -> Result<bool, VcsError> {
-    let out = run_git(
-        root,
-        &[
-            OsStr::new("show-ref"),
-            OsStr::new("--verify"),
-            OsStr::new("--quiet"),
-            OsStr::new(reference),
-        ],
-        None,
-    )?;
+    let out = VcsCli::git(root).run(&[
+        OsStr::new("show-ref"),
+        OsStr::new("--verify"),
+        OsStr::new("--quiet"),
+        OsStr::new(reference),
+    ])?;
     match out.code {
         Some(0) => Ok(true),
         Some(1) => Ok(false),
@@ -34,15 +30,11 @@ pub(crate) fn ref_exists(root: &Path, reference: &str) -> Result<bool, VcsError>
 
 /// Delete `reference` (callers check [`ref_exists`] first, keeping teardown idempotent).
 pub(crate) fn delete_ref(root: &Path, reference: &str) -> Result<(), VcsError> {
-    run_git_checked(
-        root,
-        &[
-            OsStr::new("update-ref"),
-            OsStr::new("-d"),
-            OsStr::new(reference),
-        ],
-        None,
-    )?;
+    VcsCli::git(root).checked(&[
+        OsStr::new("update-ref"),
+        OsStr::new("-d"),
+        OsStr::new(reference),
+    ])?;
     Ok(())
 }
 
@@ -51,16 +43,12 @@ pub(crate) fn delete_ref(root: &Path, reference: &str) -> Result<(), VcsError> {
 /// The `^{commit}` peel makes a tag or tree ref fail closed instead of being served as a commit.
 pub(crate) fn resolve_commit(root: &Path, reference: &str) -> Result<String, VcsError> {
     let spec = format!("{reference}^{{commit}}");
-    let out = run_git_checked(
-        root,
-        &[
-            OsStr::new("rev-parse"),
-            OsStr::new("--verify"),
-            OsStr::new("--end-of-options"),
-            OsStr::new(&spec),
-        ],
-        None,
-    )?;
+    let out = VcsCli::git(root).checked(&[
+        OsStr::new("rev-parse"),
+        OsStr::new("--verify"),
+        OsStr::new("--end-of-options"),
+        OsStr::new(&spec),
+    ])?;
     let oid = out.stdout_trimmed()?;
     if oid.is_empty() {
         return Err(out.unexpected("rev-parse returned an empty commit id"));

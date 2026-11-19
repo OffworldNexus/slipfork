@@ -36,7 +36,7 @@ use crate::ports::{
     MAX_WORKSPACE_CHANGES, RepoRoot, VcsError, VcsWorkspace, VcsWorkspaceFactory,
     WORKTREES_DIRECTORY, WorkspaceChanges, WorkspaceRequest, fork_branch_ref, fork_snapshot_ref,
 };
-use crate::tool_command::{ToolOutput, probe_jj, run_git_checked, run_jj_checked};
+use crate::tool_command::{ToolOutput, VcsCli};
 
 /// Jujutsu revset of the working-copy commit.
 const WORKING_COPY: &str = "@";
@@ -75,7 +75,7 @@ impl JjWorkspaceAdapter {
     /// to skip **loudly**; [`VcsWorkspaceFactory::create_workspace`] performs the same probe and
     /// never falls back to Git.
     pub fn detect(&self, start: &Path) -> Result<(), VcsError> {
-        probe_jj(start)
+        VcsCli::jj(start).probe()
     }
 }
 
@@ -89,7 +89,7 @@ impl VcsWorkspaceFactory for JjWorkspaceAdapter {
         // Fork names become a `.worktrees/<fork>` path component, a Jujutsu workspace name, and a
         // refname, so they use the same single-DNS-label contract as `.localhost` user forks.
         validate_fork_name(fork, &[])?;
-        probe_jj(&repo.vcs_root)?;
+        VcsCli::jj(&repo.vcs_root).probe()?;
         require_colocated_git_store(&repo.vcs_root)?;
 
         let worktree = repo.vcs_root.join(WORKTREES_DIRECTORY).join(fork);
@@ -142,18 +142,15 @@ impl VcsWorkspaceFactory for JjWorkspaceAdapter {
         // `--ignore-working-copy` keeps this probe read-only: naming a fork must never snapshot the
         // developer's checkout just to read a bookmark. The requesting workspace is the one whose
         // working-copy commit is asked about.
-        let out = run_jj_checked(
-            &repo.worktree_root,
-            &[
-                OsStr::new("--ignore-working-copy"),
-                OsStr::new("log"),
-                OsStr::new("--no-graph"),
-                OsStr::new("-r"),
-                OsStr::new(WORKING_COPY),
-                OsStr::new("--template"),
-                OsStr::new(LOCAL_BOOKMARK_TEMPLATE),
-            ],
-        )?;
+        let out = VcsCli::jj(&repo.worktree_root).checked(&[
+            OsStr::new("--ignore-working-copy"),
+            OsStr::new("log"),
+            OsStr::new("--no-graph"),
+            OsStr::new("-r"),
+            OsStr::new(WORKING_COPY),
+            OsStr::new("--template"),
+            OsStr::new(LOCAL_BOOKMARK_TEMPLATE),
+        ])?;
         parse_local_bookmarks(&out)
     }
 }
@@ -200,18 +197,15 @@ impl VcsWorkspace for JjWorkspace {
 
     fn changes(&self) -> Result<WorkspaceChanges, VcsError> {
         let base = resolve_commit(&self.vcs_root, &fork_branch_ref(&self.fork))?;
-        let diff = run_jj_checked(
-            &self.path,
-            &[
-                OsStr::new("diff"),
-                OsStr::new("--from"),
-                OsStr::new(&base),
-                OsStr::new("--to"),
-                OsStr::new(WORKING_COPY),
-                OsStr::new("--template"),
-                OsStr::new(DIFF_TEMPLATE),
-            ],
-        )?;
+        let diff = VcsCli::jj(&self.path).checked(&[
+            OsStr::new("diff"),
+            OsStr::new("--from"),
+            OsStr::new(&base),
+            OsStr::new("--to"),
+            OsStr::new(WORKING_COPY),
+            OsStr::new("--template"),
+            OsStr::new(DIFF_TEMPLATE),
+        ])?;
         parse_workspace_changes(&diff)
     }
 
@@ -231,38 +225,27 @@ fn materialize(
     base: &str,
     snapshot: &str,
 ) -> Result<(), VcsError> {
-    run_jj_checked(
-        source,
-        &[
-            OsStr::new("workspace"),
-            OsStr::new("add"),
-            worktree.as_os_str(),
-            OsStr::new("--name"),
-            OsStr::new(fork),
-            OsStr::new("--revision"),
-            OsStr::new(revision),
-        ],
-    )?;
+    VcsCli::jj(source).checked(&[
+        OsStr::new("workspace"),
+        OsStr::new("add"),
+        worktree.as_os_str(),
+        OsStr::new("--name"),
+        OsStr::new(fork),
+        OsStr::new("--revision"),
+        OsStr::new(revision),
+    ])?;
     let branch_ref = fork_branch_ref(fork);
     let snapshot_ref = fork_snapshot_ref(fork);
-    run_git_checked(
-        vcs_root,
-        &[
-            OsStr::new("update-ref"),
-            OsStr::new(&branch_ref),
-            OsStr::new(base),
-        ],
-        None,
-    )?;
-    run_git_checked(
-        vcs_root,
-        &[
-            OsStr::new("update-ref"),
-            OsStr::new(&snapshot_ref),
-            OsStr::new(snapshot),
-        ],
-        None,
-    )?;
+    VcsCli::git(vcs_root).checked(&[
+        OsStr::new("update-ref"),
+        OsStr::new(&branch_ref),
+        OsStr::new(base),
+    ])?;
+    VcsCli::git(vcs_root).checked(&[
+        OsStr::new("update-ref"),
+        OsStr::new(&snapshot_ref),
+        OsStr::new(snapshot),
+    ])?;
     Ok(())
 }
 
@@ -272,14 +255,11 @@ fn materialize(
 /// them because it runs while an earlier error is already being reported.
 fn teardown(vcs_root: &Path, fork: &str, worktree: &Path) -> Result<(), VcsError> {
     if workspace_registered(vcs_root, fork)? {
-        run_jj_checked(
-            vcs_root,
-            &[
-                OsStr::new("workspace"),
-                OsStr::new("forget"),
-                OsStr::new(fork),
-            ],
-        )?;
+        VcsCli::jj(vcs_root).checked(&[
+            OsStr::new("workspace"),
+            OsStr::new("forget"),
+            OsStr::new(fork),
+        ])?;
     }
     remove_checkout(vcs_root, worktree)?;
     let snapshot_ref = fork_snapshot_ref(fork);
@@ -308,16 +288,12 @@ fn remove_checkout(vcs_root: &Path, worktree: &Path) -> Result<(), VcsError> {
     if fs::symlink_metadata(worktree.join(".git")).is_ok() {
         // A colocated repository (or `git.colocate = true`) registers the workspace as a Git
         // worktree; deleting the directory behind Git's back would leave stale worktree metadata.
-        run_git_checked(
-            vcs_root,
-            &[
-                OsStr::new("worktree"),
-                OsStr::new("remove"),
-                OsStr::new("--force"),
-                worktree.as_os_str(),
-            ],
-            None,
-        )?;
+        VcsCli::git(vcs_root).checked(&[
+            OsStr::new("worktree"),
+            OsStr::new("remove"),
+            OsStr::new("--force"),
+            worktree.as_os_str(),
+        ])?;
     } else {
         fs::remove_dir_all(worktree).map_err(|err| VcsError::io(worktree, &err))?;
     }
@@ -326,31 +302,25 @@ fn remove_checkout(vcs_root: &Path, worktree: &Path) -> Result<(), VcsError> {
 
 /// `true` when `fork` is a workspace of `vcs_root`'s Jujutsu repository.
 fn workspace_registered(vcs_root: &Path, fork: &str) -> Result<bool, VcsError> {
-    let out = run_jj_checked(
-        vcs_root,
-        &[
-            OsStr::new("workspace"),
-            OsStr::new("list"),
-            OsStr::new("--template"),
-            OsStr::new(WORKSPACE_NAME_TEMPLATE),
-        ],
-    )?;
+    let out = VcsCli::jj(vcs_root).checked(&[
+        OsStr::new("workspace"),
+        OsStr::new("list"),
+        OsStr::new("--template"),
+        OsStr::new(WORKSPACE_NAME_TEMPLATE),
+    ])?;
     Ok(out.stdout_str()?.lines().any(|name| name == fork))
 }
 
 /// Resolve `revset` to a full commit id in `cwd`, snapshotting the working copy on the way.
 fn commit_id(cwd: &Path, revset: &str) -> Result<String, VcsError> {
-    let out = run_jj_checked(
-        cwd,
-        &[
-            OsStr::new("log"),
-            OsStr::new("--no-graph"),
-            OsStr::new("-r"),
-            OsStr::new(revset),
-            OsStr::new("--template"),
-            OsStr::new(COMMIT_ID_TEMPLATE),
-        ],
-    )?;
+    let out = VcsCli::jj(cwd).checked(&[
+        OsStr::new("log"),
+        OsStr::new("--no-graph"),
+        OsStr::new("-r"),
+        OsStr::new(revset),
+        OsStr::new("--template"),
+        OsStr::new(COMMIT_ID_TEMPLATE),
+    ])?;
     let id = out.stdout_trimmed()?;
     if id.is_empty() {
         return Err(out.unexpected(format!("`jj log -r {revset}` returned no commit id")));
@@ -363,17 +333,14 @@ fn commit_id(cwd: &Path, revset: &str) -> Result<String, VcsError> {
 /// A clean Jujutsu working copy is still a commit of its own, so the decision has to compare trees
 /// (`jj diff`), never commit ids.
 fn working_copy_changed(cwd: &Path, base: &str, working_copy: &str) -> Result<bool, VcsError> {
-    let out = run_jj_checked(
-        cwd,
-        &[
-            OsStr::new("diff"),
-            OsStr::new("--from"),
-            OsStr::new(base),
-            OsStr::new("--to"),
-            OsStr::new(working_copy),
-            OsStr::new("--summary"),
-        ],
-    )?;
+    let out = VcsCli::jj(cwd).checked(&[
+        OsStr::new("diff"),
+        OsStr::new("--from"),
+        OsStr::new(base),
+        OsStr::new("--to"),
+        OsStr::new(working_copy),
+        OsStr::new("--summary"),
+    ])?;
     Ok(!out.stdout_trimmed()?.is_empty())
 }
 
