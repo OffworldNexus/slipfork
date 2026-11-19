@@ -442,6 +442,28 @@ impl WorldFixture {
             &mut |chunk| chunks.push(chunk),
         )
     }
+
+    /// Boot one real service pod in `world` through the same engine path `slipforkd` uses.
+    ///
+    /// [`PodPlan`](crate::pods::PodPlan)'s directory is resolved beneath the fixture's read-write
+    /// worktree ([`WorldFixture::repo`]), so the pod's live bind (and any declared CoW volume)
+    /// behaves exactly as it does in a daemon-booted world. The returned handle carries the bundle
+    /// directory, the world init's published namespace joins, and the pod's own `-pgid` readers.
+    pub fn spawn_pod(
+        &self,
+        world: &WorldHandle,
+        plan: crate::pods::PodPlan,
+    ) -> crate::pods::ServicePod<'_> {
+        let id = plan.service().to_owned();
+        crate::pods::ServicePod::spawn(
+            self.engine.as_ref(),
+            world,
+            &self.repo,
+            &self.rootfs.app_rootfs,
+            plan,
+        )
+        .unwrap_or_else(|error| panic!("cannot spawn service pod '{id}': {error}"))
+    }
 }
 
 impl Drop for WorldFixture {

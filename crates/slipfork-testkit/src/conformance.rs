@@ -29,6 +29,7 @@
 
 use std::fs;
 use std::path::Path;
+use std::time::Duration;
 
 use slipfork_world::WorldTarget;
 
@@ -37,6 +38,8 @@ use slipfork_world::rootfs::WorldRootfs;
 use slipfork_world::{
     EngineError, ExecEnv, MountMode, SnapshotId, WorldEngine, WorldMount, WorldSpec,
 };
+
+use crate::pods::PodPlan;
 
 const SECRET_KEY: &str = "SLIPFORK_TEST_SECRET";
 const SECRET_VALUE: &str = "conformance-secret-value";
@@ -74,11 +77,18 @@ pub fn assert_world_engine_conformance(
         engine.name()
     );
 
+    // 2. Unknown snapshots fail closed instead of degrading to an empty world. The conformance
+    //    world mounts one real read-write worktree, so a service pod can be placed in it below.
+    fs::create_dir_all(scratch_dir.join("repo")).expect("create the conformance worktree");
     let missing = WorldSpec {
         target: WorldTarget::Canonical,
         rootfs: rootfs.clone(),
         snapshot: SnapshotId("definitely-missing-snapshot".to_owned()),
-        mounts: Vec::new(),
+        mounts: vec![WorldMount {
+            host_path: scratch_dir.join("repo"),
+            guest_path: scratch_dir.join("repo"),
+            mode: MountMode::ReadWrite,
+        }],
         base_env: base_env.clone(),
         local_ingress: None,
         boot: slipfork_world::BootLineage::default(),
@@ -154,8 +164,8 @@ pub fn assert_world_engine_conformance(
     // 5. Entry commands name a real program, carry an argv prefix, and start the target on a
     //    directory that exists inside the world — never on the caller's host pathname, which has
     //    no reachable `getcwd(2)` after the world's `pivot_root` (the shell prints a `getcwd`
-    //    failure). The conformance world mounts nothing, so the app stage root `/` is the honest
-    //    start.
+    //    failure). The entry process still starts at `/`, the one directory that exists on the
+    //    host and inside every world rootfs, and reaches the mounted worktree via `--wdns`.
     let entry_cwd = scratch_dir.join("repo");
     let entry = engine
         .entry_command(&world, &entry_cwd)
@@ -215,24 +225,68 @@ pub fn assert_world_engine_conformance(
         ),
     }
 
-    // 7. `reload_world` is honest and load-bearing: an adapter that can re-root a live world
-    //    returns `Ok` after clearing supervised service rows and recording the reload spec's
-    //    rootfs/lineage facts, while one that declines reports the typed, engine-named
-    //    `Unsupported`. The world keeps its opaque handle across the reload.
-    match engine.spawn_service(
+    // 7. One service pod is one `crun` container joined to the world's published namespaces: the
+    //    engine either boots it (a real bundle in its control directory, its own host `-pgid`) or
+    //    declines with the typed, engine-named `Unsupported`. Nothing spawns outside the pod
+    //    pipeline, so there is no second runtime shape to assert.
+    let pod_plan = PodPlan::new("conformance-pre-reload", &["sh", "-c", "sleep 30"]);
+    match crate::pods::ServicePod::spawn(
+        engine,
         &world,
-        &slipfork_world::ServiceSpec {
-            id: "conformance-pre-reload".to_owned(),
-            kind: slipfork_world::ServiceKind::Component,
-            runtime: slipfork_world::ServiceRuntime::WorldProcess {
-                argv: vec!["sh".to_owned(), "-c".to_owned(), "sleep 30".to_owned()],
-                cwd: std::path::PathBuf::from("/"),
-            },
-            env: ExecEnv::default(),
-            readiness_port: None,
-        },
+        &scratch_dir.join("repo"),
+        &rootfs.app_rootfs,
+        pod_plan,
     ) {
-        Ok(_handle) => {
+        Ok(pod) => {
+            let world_subvol = engine
+                .world_subvolume(&world)
+                .expect("a pod-owning world resolves its subvolume");
+            assert!(
+                !pod.bundle_dir().starts_with(&world_subvol),
+                "{} pod bundle '{}' must live outside the world subvolume '{}'",
+                engine.name(),
+                pod.bundle_dir().display(),
+                world_subvol.display()
+            );
+            let config = pod.config();
+            assert_eq!(
+                config["process"]["cwd"],
+                scratch_dir.join("repo").display().to_string(),
+                "{} pod bundle must carry the service working directory",
+                engine.name()
+            );
+            assert_eq!(
+                config["process"]["env"],
+                serde_json::json!(["PATH=/usr/local/bin:/usr/bin:/bin"]),
+                "{} pod bundle must carry exactly the declared container environment",
+                engine.name()
+            );
+            let pid = crate::poll_until(Duration::from_secs(10), || {
+                pod.pid()
+                    .map(|_| ())
+                    .ok_or_else(|| "the pod supervisor has not been recorded yet".to_owned())
+            })
+            .map(|()| pod.pid().expect("the pod supervisor pid"))
+            .expect("a spawned pod must report its supervisor pid");
+            assert_eq!(
+                pod.process_group(),
+                Some(pid),
+                "{} pod must be its own process-group leader",
+                engine.name()
+            );
+            assert!(
+                pod.members().contains(&pid),
+                "{} pod group must contain its launcher",
+                engine.name()
+            );
+            assert_eq!(
+                pod.namespaces(),
+                &engine
+                    .world_pod_namespaces(&world)
+                    .expect("the pod's published joins"),
+                "{} pod must join the world's published namespaces",
+                engine.name()
+            );
             assert_eq!(
                 engine
                     .world_processes(&world)
@@ -249,7 +303,7 @@ pub fn assert_world_engine_conformance(
             assert_eq!(reported, engine.name(), "Unsupported must name the engine");
         }
         Err(other) => panic!(
-            "{} must spawn a trivial world process or decline with Unsupported, got {other:?}",
+            "{} must spawn a trivial service pod or decline with Unsupported, got {other:?}",
             engine.name()
         ),
     }
