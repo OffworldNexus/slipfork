@@ -371,31 +371,34 @@ impl DaemonService {
                 id: id.clone(),
                 argv: hook.argv.clone(),
             });
+            let world = world_id(&live.project, &live.target);
+            let service = live
+                .services
+                .iter()
+                .find(|service| service.id() == hook.service.as_str())
+                .cloned()
+                .ok_or_else(|| {
+                    runtime_error(format!(
+                        "cannot run hook '{id}' in world '{world}': service '{}' is not running\n  next: add `run` to `service {}` and run `slipfork up`",
+                        hook.service, hook.service
+                    ))
+                })?;
             let log = self.hook_log(live, &id, hook_phase_label(hook.phase))?;
             let mut file = open_hook_log(&log.path)?;
             let output = self
                 .engine
-                .exec_in_world(
-                    &live.handle,
-                    &hook.argv,
-                    &live.worktree,
-                    &hook.overlay,
-                    &mut |chunk| {
-                        let _ = file.write_all(&chunk.bytes);
-                        let _ = file.flush();
-                        log.push(chunk.clone());
-                        on_event(BootEvent::HookOutput {
-                            id: id.clone(),
-                            chunk,
-                        });
-                    },
-                )
+                .exec_in_service(&service, &hook.argv, &hook.overlay, &mut |chunk| {
+                    let _ = file.write_all(&chunk.bytes);
+                    let _ = file.flush();
+                    log.push(chunk.clone());
+                    on_event(BootEvent::HookOutput {
+                        id: id.clone(),
+                        chunk,
+                    });
+                })
                 .map_err(|err| {
                     log.close();
-                    runtime_error(format!(
-                        "cannot run hook '{id}' in world '{}': {err}",
-                        world_id(&live.project, &live.target)
-                    ))
+                    runtime_error(format!("cannot run hook '{id}' in world '{world}': {err}"))
                 })?;
             log.close();
             if output.exit_code != 0 {

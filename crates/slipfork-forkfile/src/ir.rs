@@ -2,6 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::diag::Span;
 use crate::syntax::{Argv, EnvAssignment, HookPhase};
 use crate::vault::{EntropySource, SecretProvider};
 
@@ -242,6 +243,8 @@ pub struct EvaluatedEnvGroup {
 pub struct EvaluatedService {
     /// The service id.
     pub id: String,
+    /// The `service` declaration's source span, so a runtime failure can render `Forkfile:<line>`.
+    pub span: Span,
     /// The container source.
     pub image: EvaluatedImage,
     /// The single exposed port, when declared.

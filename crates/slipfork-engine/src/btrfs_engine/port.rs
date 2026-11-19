@@ -5,7 +5,7 @@
 #![forbid(unsafe_code)]
 
 use std::net::TcpStream;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use slipfork_world::{
     EngineError, EntryKind, ExecEnv, ExecOutput, PodNamespaces, ServiceHandle, ServiceLogs,
@@ -34,6 +34,16 @@ impl WorldEngine for BtrfsEngine {
         };
         Self::read_pod_namespaces(&ctl_dir)
     }
+
+    fn world_subvolume(&self, world: &WorldHandle) -> Result<PathBuf, EngineError> {
+        let mut worlds = self.lock()?;
+        Ok(self.live_record(&mut worlds, world)?.world_dir.clone())
+    }
+
+    fn pod_bundle_dir(&self, world: &WorldHandle, service: &str) -> Result<PathBuf, EngineError> {
+        BtrfsEngine::pod_bundle_dir(self, world, service)
+    }
+
     fn snapshot_exists(&self, id: &SnapshotId) -> Result<bool, EngineError> {
         self.snapshot_exists_on_disk(id)
     }

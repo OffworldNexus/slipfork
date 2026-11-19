@@ -93,8 +93,8 @@ impl BtrfsEngine {
     ///
     /// The one stop implementation: `grace` is the `SIGTERM` window (`Duration::ZERO` for a spawn
     /// that already failed, which escalates to `SIGKILL` immediately). A world process is
-    /// signalled as its whole **process group**, so the `sh -eu -c` wrapper and the service it
-    /// forked are both stopped — including a descendant that outlived the supervised child.
+    /// signalled as its whole **process group**, so the `crun` runtime and the service it directly
+    /// `execve`s are both stopped — including a descendant that outlived the supervised child.
     /// Idempotent: a service that already exited on its own, or was stopped before, keeps its
     /// retained logs and reports success once no group member survives. Takes the record's handles
     /// directly so world teardown can stop services after the world has been fenced.

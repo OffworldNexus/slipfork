@@ -82,8 +82,8 @@ pub fn write_pod_bundle_at(
     make_private(&bundle_host.join(oci::OCI_CONFIG_FILE))
 }
 
-/// One legacy world process (`ServiceRuntime::WorldProcess` or `exec_in_world`), materialized as a
-/// pod-shaped OCI bundle in the world's private tmpfs.
+/// One test-only world process (`ServiceRuntime::WorldProcess`, scheduled for deletion in
+/// `M3.32.2.2.1.3.2.2`), materialized as a pod-shaped OCI bundle in the world's private tmpfs.
 ///
 /// It runs in the world's namespaces on the app rootfs with the world's bind mounts, exactly like
 /// a pod, so the same supervision, log, and stop paths apply.
@@ -381,6 +381,12 @@ impl super::BtrfsEngine {
                     pod.cwd().display()
                 ),
             })?;
+        // Each CoW volume is a plain directory in the world subvolume, so the one snap create
+        // captures it; it must exist before the bundle can bind it over the live worktree.
+        for volume in pod.volumes.volumes() {
+            fs::create_dir_all(&volume.host_subvolume)
+                .map_err(|err| io_error(&volume.host_subvolume, &err))?;
+        }
         let runtime = self.pod_crun_surface(spawn);
         let bundle_host = runtime.host_path(&pod.bundle_dir);
         write_pod_bundle_at(self.host_uid, self.host_gid, worktree, pod, &bundle_host)?;
@@ -397,7 +403,8 @@ impl super::BtrfsEngine {
         )
     }
 
-    /// Materialize and run one legacy world process as a pod-shaped container.
+    /// Materialize and run one test-only world process (scheduled for deletion in
+    /// `M3.32.2.2.1.3.2.2`) as a pod-shaped container.
     pub(crate) fn spawn_world_process_pod(
         &self,
         spawn: &ServiceSpawn<'_>,

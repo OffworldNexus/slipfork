@@ -1,8 +1,8 @@
 //! Kernel process identity and process-group supervision for one spawned child.
 //!
-//! A world component is launched as its own process-group leader (`CommandExt::process_group(0)`,
-//! `pgid == the launcher's host pid`), so stop signals `kill(-pgid, …)` and reaches the `sh -eu -c`
-//! wrapper, the service it forked, and any descendant that outlived the supervised child.
+//! A service pod is launched as its own process-group leader (`CommandExt::process_group(0)`,
+//! `pgid == the launcher's host pid`), so stop signals `kill(-pgid, …)` reach the `crun` runtime,
+//! the direct `execve`d service argv, and any descendant that outlived the supervised child.
 //! [`SupervisedProcess`] owns that one stop-and-reap path; [`ProcessIdentity`] pins the namespace
 //! link and start ticks so a recycled host PID is never signalled.
 
@@ -20,9 +20,9 @@ use crate::wait::{poll_until, wait_for_exit, wait_reaped};
 
 /// The process group one spawned world process owns.
 ///
-/// A component is launched as `nsenter … sh -eu -c <run_command>`: the `sh` and the real service
-/// are **descendants** of the launcher, so stopping only the first child would orphan the process
-/// that owns the port. Every world process therefore becomes its own process-group leader
+/// A service pod is launched as `nsenter … crun … run -b <bundle> <id>`: the runtime directly
+/// `execve`s the service argv, so stopping only the runtime would orphan the process that owns
+/// the port. Every pod therefore becomes its own process-group leader
 /// (`CommandExt::process_group(0)`, pgid == the launcher's host pid) and stop signals
 /// `kill(-pgid, …)`, which reaches the whole tree including a descendant that outlives the
 /// supervised child.

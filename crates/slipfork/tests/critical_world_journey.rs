@@ -125,6 +125,23 @@ service api ./ {
 }
 "#;
 
+/// A world whose second service cannot start: the first pod and every backing service must be
+/// reaped when the pipeline fails closed.
+const BROKEN_FORKFILE: &str = r#"project acme-broken
+
+service api ./ {
+    port 8000
+    route /
+    run python3 server.py
+}
+
+service broken ./ {
+    port 8001
+    route /broken
+    run /nonexistent/slipfork-missing
+}
+"#;
+
 /// The serving fixture: the wrapper (`sh -eu -c`) forks the server, so a restart must stop both the
 /// wrapper and the process that owns the readiness port.
 const SERVER_PY: &str = r#"import http.server
@@ -237,6 +254,69 @@ fn world_subvolumes(state_dir: &Path) -> Vec<PathBuf> {
         .unwrap_or_default();
     entries.sort();
     entries
+}
+
+/// The host pid of a world's own `slipfork-world-init`: the window into its mount namespace.
+fn world_init_pid(state_dir: &Path, world: &str) -> u32 {
+    let ctl = state_dir.join("ctl").join(world);
+    for entry in fs::read_dir("/proc").into_iter().flatten().flatten() {
+        let Some(pid) = entry
+            .file_name()
+            .to_str()
+            .and_then(|name| name.parse::<u32>().ok())
+        else {
+            continue;
+        };
+        let Ok(cmdline) = fs::read(entry.path().join("cmdline")) else {
+            continue;
+        };
+        let argv: Vec<String> = cmdline
+            .split(|byte| *byte == 0)
+            .filter(|arg| !arg.is_empty())
+            .map(|arg| String::from_utf8_lossy(arg).into_owned())
+            .collect();
+        if argv.iter().any(|arg| arg.ends_with("slipfork-world-init"))
+            && argv.iter().any(|arg| Path::new(arg).starts_with(&ctl))
+        {
+            return pid;
+        }
+    }
+    panic!(
+        "no `slipfork-world-init` for world '{world}' under {}",
+        ctl.display()
+    )
+}
+
+/// One pod's OCI `config.json`, read through the world init's own mount namespace.
+fn pod_config(init_pid: u32, state_dir: &Path, world: &str, service: &str) -> Value {
+    let path = state_dir
+        .join("ctl")
+        .join(world)
+        .join("oci")
+        .join(service)
+        .join("config.json");
+    let namespace_path = PathBuf::from(format!("/proc/{init_pid}/root{}", path.display()));
+    let text = fs::read_to_string(&namespace_path)
+        .unwrap_or_else(|err| panic!("read {}: {err}", namespace_path.display()));
+    serde_json::from_str(&text).expect("pod config json")
+}
+
+/// Every live host process whose working directory is inside `directory`.
+fn processes_under(directory: &Path) -> Vec<u32> {
+    fs::read_dir("/proc")
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|entry| {
+            entry
+                .file_name()
+                .to_str()
+                .and_then(|name| name.parse::<u32>().ok())
+        })
+        .filter(|pid| {
+            fs::read_link(format!("/proc/{pid}/cwd")).is_ok_and(|cwd| cwd.starts_with(directory))
+        })
+        .collect()
 }
 
 /// The daemon's real ingress port, read from the one `status --json` document.
@@ -504,6 +584,39 @@ fn world_lifecycle_journey_boots_edits_forks_and_reaps() {
     );
     let logs = daemon.cli(&repo, &["logs", "api"]);
     assert_success(&logs, "logs api");
+
+    // --- one pod per service: a distinct process group and a distinct OCI bundle ---
+    let (idle_pgid, idle_members) = component_group(&daemon, &repo, "idle");
+    assert!(
+        !idle_members.is_empty(),
+        "the idle component runs in its own process group {idle_pgid}"
+    );
+    assert_ne!(
+        pgid, idle_pgid,
+        "api and idle must each be their own pod with its own `-pgid`"
+    );
+    let init_pid = world_init_pid(&daemon.state_dir, "acme-app");
+    let api_config = pod_config(init_pid, &daemon.state_dir, "acme-app", "api");
+    let idle_config = pod_config(init_pid, &daemon.state_dir, "acme-app", "idle");
+    assert_ne!(
+        api_config, idle_config,
+        "each pod owns its own bundle config.json: api={api_config} idle={idle_config}"
+    );
+    assert!(
+        api_config["process"]["args"]
+            .to_string()
+            .contains("server.py"),
+        "the api bundle runs the api command: {api_config}"
+    );
+    assert!(
+        idle_config["process"]["args"].to_string().contains("8001"),
+        "the idle bundle runs the idle command: {idle_config}"
+    );
+    let pod_env = api_config["process"]["env"].to_string();
+    assert!(
+        pod_env.contains("GREETING=v1") && pod_env.contains("HOME="),
+        "the pod carries the resolved world environment exactly once: {pod_env}"
+    );
 
     // --- exec starts in the world's mapped worktree, quietly ----------------
     let exec = daemon.cli(&repo, &["exec", "--", "sh", "-c", "pwd"]);
@@ -1183,6 +1296,54 @@ fn world_lifecycle_journey_boots_edits_forks_and_reaps() {
         "an empty id list, never a guess: {idle_doc}"
     );
     assert_success(&daemon.cli(&idle_repo, &["down"]), "down the idle world");
+
+    // --- a mid-spawn failure tears down every service it already started ----
+    let broken_repo = repo_with_manifest(scratch, "acme-broken", BROKEN_FORKFILE);
+    fs::write(broken_repo.join("body.txt"), "v1\n").expect("write broken body");
+    fs::write(broken_repo.join("server.py"), SERVER_PY).expect("write broken server.py");
+    let failed = daemon.cli(&broken_repo, &["up"]);
+    assert!(
+        !failed.status.success(),
+        "a service that cannot start must fail `up` closed"
+    );
+    let diagnostic = stderr(&failed);
+    assert!(
+        diagnostic.contains("cannot start service pod 'broken'")
+            && diagnostic.contains("(Forkfile:"),
+        "the refusal names the pod and its `Forkfile` declaration: {diagnostic}"
+    );
+    assert!(
+        diagnostic.contains("next: "),
+        "the refusal carries one `next:` remedy: {diagnostic}"
+    );
+    let reaped = poll_until(SHUTDOWN_DEADLINE, POLL_INTERVAL, || {
+        let survivors = processes_under(&broken_repo);
+        if survivors.is_empty() {
+            Ok(())
+        } else {
+            Err(format!(
+                "the failed boot left service pids {survivors:?} in the broken world"
+            ))
+        }
+    });
+    assert!(reaped.is_ok(), "{reaped:?}");
+    let ps = daemon.cli(&broken_repo, &["--json", "ps"]);
+    assert_success(&ps, "ps --json after a failed up");
+    let report: Value = serde_json::from_str(&stdout(&ps)).expect("ps json");
+    assert_eq!(
+        report["state"], "failed",
+        "the kept world is `failed`: {report}"
+    );
+    let rows = report["services"].as_array().expect("services array");
+    assert!(
+        rows.iter()
+            .all(|row| row["state"] != "running" && row["pid"].is_null()),
+        "no service row survives the failed boot: {report}"
+    );
+    assert_success(
+        &daemon.cli(&broken_repo, &["down"]),
+        "down the failed world",
+    );
 
     // --- a dirty throwaway fork is refused until `-f` ----------------------
     let probe_fork = daemon.cli(&repo, &["fork", "dirty-probe"]);

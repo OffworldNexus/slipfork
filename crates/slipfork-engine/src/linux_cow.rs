@@ -55,9 +55,9 @@ pub fn signal_process(pid: u32, signal: ProcessSignal) -> io::Result<()> {
 
 /// Send `signal` to every member of the process group `pgid` (`kill(-pgid, …)`).
 ///
-/// A world process is spawned into its own group (`CommandExt::process_group(0)`), so this reaches
-/// the `sh -eu -c` wrapper *and* the service it forked — including a descendant orphaned by its
-/// parent's exit.
+/// A service pod is spawned into its own group (`CommandExt::process_group(0)`), so this reaches
+/// the `crun` runtime *and* the service it directly `execve`s — including a descendant orphaned
+/// by its parent's exit.
 ///
 /// # Errors
 ///

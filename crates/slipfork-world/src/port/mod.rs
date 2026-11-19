@@ -109,6 +109,23 @@ pub trait WorldEngine: Send + Sync {
     /// there is no fabricated path and no degraded fallback.
     fn world_pod_namespaces(&self, world: &WorldHandle) -> Result<PodNamespaces, EngineError>;
 
+    /// The world's one writable CoW subvolume (the root of every per-service volume plan).
+    ///
+    /// Only the engine knows the `<world_id>` its substrate allocated, so a caller planning a
+    /// [`crate::pod::VolumePlan`] asks here instead of deriving an engine layout path.
+    fn world_subvolume(&self, world: &WorldHandle) -> Result<std::path::PathBuf, EngineError>;
+
+    /// The engine-owned OCI bundle directory of one service pod under the world's control dir.
+    ///
+    /// The bundle's `config.json` carries the pod's resolved environment, so the engine keeps it
+    /// outside the world subvolume; a caller planning a pod passes this exact path into
+    /// [`crate::pod::PodLocation`].
+    fn pod_bundle_dir(
+        &self,
+        world: &WorldHandle,
+        service: &str,
+    ) -> Result<std::path::PathBuf, EngineError>;
+
     /// Start `spec` as a supervised world-owned service.
     ///
     /// The engine captures its stdout/stderr into a size-capped retained [`ServiceLogs`] readable

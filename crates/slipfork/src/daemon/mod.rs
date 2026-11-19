@@ -46,6 +46,7 @@ mod env;
 mod fork;
 mod ospp_supervisor;
 mod pairing_store;
+mod pod;
 mod postgres;
 mod protocol;
 mod resolve;

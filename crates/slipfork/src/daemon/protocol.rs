@@ -4,61 +4,59 @@ use std::io::Write;
 use super::env::{forward_specs, hook_phase_label, open_hook_log, resolve_hook};
 use super::protocol::services::{service_engine_error, service_not_running};
 use super::service::DaemonService;
-use super::types::ResolvedComponent;
 use super::{rejected, runtime_error};
-use crate::project::{ExecEntry, select_exec_entry, service_directory};
+use crate::project::{ExecEntry, select_exec_entry};
 use slipfork_edge::{EdgeError, world_id};
 use slipfork_forkfile::EvaluatedFork;
 use slipfork_wire::control::{
     ExecTargetRequest, ForwardRequest, ForwardSummary, HookRunRequest, WorkspaceRefsRequest,
     WorkspaceRefsSummary, WorldExecTarget, WorldState,
 };
-use slipfork_world::{
-    EntryKind, ExecEnv, ServiceHandle, StreamChunk, WorldEngine, WorldHandle, WorldOrigin,
-};
+use slipfork_world::{ExecEnv, ServiceHandle, StreamChunk, WorldEngine, WorldOrigin};
 
 /// The copied, lock-free world facts one entry target resolves against.
 struct ExecWorld {
     id: String,
-    handle: WorldHandle,
-    base_env: ExecEnv,
     worktree: std::path::PathBuf,
     fork: EvaluatedFork,
-    components: Vec<ResolvedComponent>,
     services: Vec<ServiceHandle>,
     origin: WorldOrigin,
 }
 
 impl ExecWorld {
-    /// One declared app service: its own directory and the component's live environment overlay.
+    /// The running pod of one declared app service; no app-rootfs fallback exists.
+    fn service(&self, id: &str) -> Result<ServiceHandle, EdgeError> {
+        self.services
+            .iter()
+            .find(|service| service.id() == id)
+            .cloned()
+            .ok_or_else(|| service_not_running(&self.id, id))
+    }
+
+    /// One declared app service, entered through its own `crun exec` container.
     fn app(
         &self,
         engine: &dyn WorldEngine,
         id: &str,
-        kind: EntryKind,
         argv: &[String],
     ) -> Result<WorldExecTarget, EdgeError> {
-        let component = self
-            .components
-            .iter()
-            .find(|component| component.id == id)
-            .ok_or_else(|| service_not_running(&self.id, id))?;
-        let service = self
-            .fork
+        self.fork
             .services
             .iter()
             .find(|service| service.id == id)
             .ok_or_else(|| service_not_running(&self.id, id))?;
-        let cwd = self.worktree.join(service_directory(service));
+        let service = self.service(id)?;
         let entry = engine
-            .entry_command_for(&self.handle, &cwd, kind, argv)
-            .map_err(|err| runtime_error(err.to_string()))?;
+            .service_entry_command(&service)
+            .map_err(|err| service_engine_error(&self.id, service.id(), err))?;
         Ok(WorldExecTarget {
             world: self.id.clone(),
             service: Some(id.to_owned()),
             origin: self.origin.clone(),
             entry,
-            env: self.base_env.overlaid(&component.env),
+            // The pod bundle's own environment is authoritative; never overlay the host or the
+            // app rootfs PATH onto the container runtime.
+            env: ExecEnv::default(),
             target_argv: argv.to_vec(),
         })
     }
@@ -95,27 +93,12 @@ impl ExecWorld {
         })
     }
 
-    /// The world's app stage itself: no declared service for this `cwd`.
-    fn root(
-        &self,
-        engine: &dyn WorldEngine,
-        cwd: &std::path::Path,
-        kind: EntryKind,
-        argv: &[String],
-    ) -> Result<WorldExecTarget, EdgeError> {
-        let entry = engine
-            .entry_command_for(&self.handle, cwd, kind, argv)
-            .map_err(|err| runtime_error(err.to_string()))?;
-        // One owner: the engine reports whether its prefix consumed the argv, so the request is
-        // forwarded verbatim and `spawn_entry` decides from `entry.consumes_target_argv`.
-        Ok(WorldExecTarget {
-            world: self.id.clone(),
-            service: None,
-            origin: self.origin.clone(),
-            entry,
-            env: self.base_env.clone(),
-            target_argv: argv.to_vec(),
-        })
+    /// No declared service means no pod to enter: fail closed instead of an app-rootfs fallback.
+    fn root(&self) -> Result<WorldExecTarget, EdgeError> {
+        Err(rejected(format!(
+            "world '{}' declares no app service; name one with `-s/--service <id>` or add a `service` block to the Forkfile",
+            self.id
+        )))
     }
 }
 
@@ -135,22 +118,16 @@ impl DaemonService {
                 ));
             };
             (
-                live.handle.clone(),
-                live.base_env.clone(),
                 live.worktree.clone(),
                 live.fork.clone(),
-                live.components.clone(),
                 live.services.clone(),
             )
         };
-        let (handle, base_env, worktree, fork, components, services) = facts;
+        let (worktree, fork, services) = facts;
         let world_facts = ExecWorld {
             id: world,
-            handle,
-            base_env,
             worktree,
             fork,
-            components,
             services,
             origin: self
                 .registry
@@ -164,11 +141,9 @@ impl DaemonService {
         )
         .map_err(rejected)?
         {
-            ExecEntry::App(id) => world_facts.app(&*self.engine, &id, req.entry_kind, &req.argv),
+            ExecEntry::App(id) => world_facts.app(&*self.engine, &id, &req.argv),
             ExecEntry::Backing(id) => world_facts.backing(&*self.engine, &id, &req.argv),
-            ExecEntry::World => {
-                world_facts.root(&*self.engine, &req.cwd, req.entry_kind, &req.argv)
-            }
+            ExecEntry::World => world_facts.root(),
         }
     }
 }
@@ -179,35 +154,37 @@ impl DaemonService {
         req: &HookRunRequest,
     ) -> Result<WorldExecTarget, EdgeError> {
         let selection = self.select(&req.cwd, req.world.as_deref())?;
-        let (handle, worktree, hooks, base_env) = {
+        let world = world_id(&selection.repo.project, &selection.target);
+        let (hooks, services) = {
             let state = self.lock();
-            let Some(world) = state.world(&selection.repo.project, &selection.target) else {
+            let Some(live) = state.world(&selection.repo.project, &selection.target) else {
                 return Err(Self::unknown_world(
                     &selection.repo.project,
                     &selection.target,
                 ));
             };
-            (
-                world.handle.clone(),
-                world.worktree.clone(),
-                world.hooks.clone(),
-                world.base_env.clone(),
-            )
+            (live.hooks.clone(), live.services.clone())
         };
         let resolved = resolve_hook(&hooks, &req.hook)?;
+        let service = services
+            .iter()
+            .find(|service| service.id() == resolved.service.as_str())
+            .cloned()
+            .ok_or_else(|| service_not_running(&world, &resolved.service))?;
         let entry = self
             .engine
-            .entry_command(&handle, &worktree)
-            .map_err(|err| runtime_error(err.to_string()))?;
+            .service_entry_command(&service)
+            .map_err(|err| service_engine_error(&world, service.id(), err))?;
         let origin = self
             .registry
             .origin(&selection.repo.project, &selection.target)?;
         Ok(WorldExecTarget {
-            world: world_id(&selection.repo.project, &selection.target),
+            world,
             service: Some(resolved.service.clone()),
             origin,
             entry,
-            env: base_env.overlaid(&resolved.overlay),
+            // The pod bundle's own environment is authoritative for a hook in that container.
+            env: ExecEnv::default(),
             target_argv: resolved.argv.clone(),
         })
     }
@@ -269,21 +246,23 @@ impl DaemonService {
         on_chunk: &mut dyn FnMut(StreamChunk),
     ) -> Result<i32, EdgeError> {
         let selection = self.select(&req.cwd, req.world.as_deref())?;
-        let (handle, worktree, hooks) = {
+        let world = world_id(&selection.repo.project, &selection.target);
+        let (hooks, services) = {
             let state = self.lock();
-            let Some(world) = state.world(&selection.repo.project, &selection.target) else {
+            let Some(live) = state.world(&selection.repo.project, &selection.target) else {
                 return Err(Self::unknown_world(
                     &selection.repo.project,
                     &selection.target,
                 ));
             };
-            (
-                world.handle.clone(),
-                world.worktree.clone(),
-                world.hooks.clone(),
-            )
+            (live.hooks.clone(), live.services.clone())
         };
         let resolved = resolve_hook(&hooks, &req.hook)?;
+        let service = services
+            .iter()
+            .find(|service| service.id() == resolved.service.as_str())
+            .cloned()
+            .ok_or_else(|| service_not_running(&world, &resolved.service))?;
         let phase = hook_phase_label(resolved.phase);
         let log = {
             let mut state = self.lock();
@@ -298,21 +277,15 @@ impl DaemonService {
         let mut file = open_hook_log(&log.path)?;
         let output = self
             .engine
-            .exec_in_world(
-                &handle,
-                &resolved.argv,
-                &worktree,
-                &resolved.overlay,
-                &mut |chunk| {
-                    let _ = file.write_all(&chunk.bytes);
-                    let _ = file.flush();
-                    log.push(chunk.clone());
-                    on_chunk(chunk);
-                },
-            )
+            .exec_in_service(&service, &resolved.argv, &resolved.overlay, &mut |chunk| {
+                let _ = file.write_all(&chunk.bytes);
+                let _ = file.flush();
+                log.push(chunk.clone());
+                on_chunk(chunk);
+            })
             .map_err(|err| {
                 log.close();
-                runtime_error(err.to_string())
+                service_engine_error(&world, service.id(), err)
             })?;
         log.close();
         Ok(output.exit_code)

@@ -63,7 +63,8 @@ pub(crate) struct ServiceSpawn<'a> {
 
 /// The engine's own spawn paths, decided once from a [`ServiceSpec`].
 enum SpawnPlan<'a> {
-    /// A legacy `WorldProcess`, run as a pod-shaped container on the app rootfs.
+    /// A test-only `WorldProcess` path (scheduled for deletion in `M3.32.2.2.1.3.2.2`), run as a
+    /// pod-shaped container on the app rootfs.
     World { argv: &'a [String], cwd: &'a Path },
     /// A backing-service container.
     Container {
@@ -97,6 +98,7 @@ impl BtrfsEngine {
             });
         }
         let plan = match &spec.runtime {
+            // Test-only path, scheduled for deletion in `M3.32.2.2.1.3.2.2`.
             ServiceRuntime::WorldProcess { argv, cwd } => SpawnPlan::World { argv, cwd },
             ServiceRuntime::OciContainer {
                 image,
@@ -147,6 +149,7 @@ impl BtrfsEngine {
             let mounts = record.mounts.clone();
             // Invariant: an OCI container bundle must never carry the world component environment.
             let env = match &spec.runtime {
+                // Test-only path, scheduled for deletion in `M3.32.2.2.1.3.2.2`.
                 ServiceRuntime::WorldProcess { .. } => {
                     child_env::materialize(&record.base_env, &spec.env, |var| {
                         self.inherited_env.get(var)
@@ -271,18 +274,29 @@ impl BtrfsEngine {
         };
         // A world process is a pod-shaped container whose bundle is rewritten on every spawn:
         // stopping the old container lets the new environment be the one it is created with.
-        // Backing-service and pod bundles stay fixed at spawn.
-        spec.env = env.clone();
-        if matches!(spec.runtime, ServiceRuntime::WorldProcess { .. }) {
-            self.stop_service_inner(service.world(), service.id())?;
-        } else if matches!(
-            spec.runtime,
-            ServiceRuntime::OciContainer { .. } | ServiceRuntime::ServicePod(_)
-        ) {
-            return Err(EngineError::ContainerEnvFixed {
-                world: format!("{:?}", service.world()),
-                id: service.id().to_owned(),
-            });
+        // A service pod's bundle is also rewritten: the overlay updates the pod's complete
+        // container environment while its base and argv stay as planned. A backing-service OCI
+        // bundle is fixed at spawn.
+        match &spec.runtime {
+            // Test-only path, scheduled for deletion in `M3.32.2.2.1.3.2.2`.
+            ServiceRuntime::WorldProcess { .. } => {
+                spec.env = env.clone();
+                self.stop_service_inner(service.world(), service.id())?;
+            }
+            ServiceRuntime::ServicePod(pod) => {
+                let mut pod = pod.clone();
+                for (name, value) in env.expose_to_child_process() {
+                    pod.command.env.insert(name, value);
+                }
+                spec.runtime = ServiceRuntime::ServicePod(pod);
+                self.stop_service_inner(service.world(), service.id())?;
+            }
+            ServiceRuntime::OciContainer { .. } => {
+                return Err(EngineError::ContainerEnvFixed {
+                    world: format!("{:?}", service.world()),
+                    id: service.id().to_owned(),
+                });
+            }
         }
         self.start_service(service.world(), &spec)?;
         Ok(())

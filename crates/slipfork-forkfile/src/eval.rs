@@ -173,6 +173,7 @@ impl Builder {
     fn apply_service(&mut self, definition: &ServiceDef, active: &BTreeSet<String>) {
         let mut service = EvaluatedService {
             id: definition.id.value.clone(),
+            span: definition.id.span,
             image: match &definition.source {
                 ImageSource::Dockerfile { context_dir, .. } => EvaluatedImage::Dockerfile {
                     context_dir: normalize_context(context_dir),
