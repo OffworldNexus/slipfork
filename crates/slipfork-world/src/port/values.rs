@@ -12,6 +12,7 @@ use std::sync::atomic::{AtomicU8, Ordering};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use crate::pod::ServicePodSpec;
 use crate::rootfs::{BackingServiceKey, WorldRootfs};
 use crate::socket::{UNIX_SOCKET_PATH_MAX, unix_socket_path_fits};
 use crate::{BaseLineage, ExecEnv, SeedLineage, ServiceKind, ServiceState, WorldTarget};
@@ -224,20 +225,24 @@ pub struct ServiceSpec {
     pub id: String,
     /// The caller's classification of this row (`snow.yml` component vs backing service).
     pub kind: ServiceKind,
-    /// Exactly one runtime: an `L0` world process or a daemonless `crun` container.
+    /// Exactly one runtime: an `L0` world process, a daemonless `crun` backing-service container,
+    /// or a `Forkfile` service pod (all three flow through [`WorldEngine::spawn_service`]).
     pub runtime: ServiceRuntime,
     /// `WorldProcess`: overlay applied on top of `WorldSpec::base_env`. `OciContainer`: the
     /// container's **complete declared** environment — a container bundle `config.json` never
-    /// carries the world component env.
+    /// carries the world component env. `ServicePod`: stays empty, because the pod spec's own
+    /// [`PodCommand`](crate::pod::PodCommand) carries the container's complete environment.
     pub env: ExecEnv,
     /// Port that must accept connections before the service counts as ready.
     pub readiness_port: Option<u16>,
 }
 
-/// Where one supervised service executes (`ADR-0009` §3).
+/// Where one supervised service executes (`ADR-0009` §3, `ARCHITECTURE.md` §3.3).
 ///
-/// Both variants flow through the same `spawn_service` / `stop_service` / `service_logs`
-/// surface — there is no second supervisor and no boolean mode flag.
+/// Every variant flows through the same `spawn_service` / `stop_service` / `service_logs`
+/// surface — there is no second supervisor and no boolean mode flag. An engine that has no pod
+/// spawn path yet fails a [`ServiceRuntime::ServicePod`] spec closed with
+/// [`EngineError::Unsupported`]; it never approximates the pod with another runtime.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ServiceRuntime {
     /// An `L0` app component running on the world rootfs as `$UID:$GID`.
@@ -261,6 +266,15 @@ pub enum ServiceRuntime {
         /// Read-only host mounts (for example the verified `<sha256>.pgdump`, `ADR-0008` §2).
         readonly_mounts: Vec<WorldMount>,
     },
+    /// One `Forkfile` service as a daemonless `crun` container joined to the world's shared
+    /// `slipfork-world-init` user/network/IPC namespaces (`ARCHITECTURE.md` §3.3).
+    ///
+    /// The pod spec owns everything the runtime decision needs — the OCI bundle directory under
+    /// the engine control dir (`<ctl>/<world_id>/oci/<service>/`, never the world subvolume), the
+    /// read-only rootfs, direct argv, complete environment, CoW volumes, and namespace joins — so
+    /// the engine writes that bundle and never re-derives any of it. The joins come from
+    /// [`crate::WorldEngine::world_pod_namespaces`]; this crate never probes `/proc` itself.
+    ServicePod(ServicePodSpec),
 }
 
 /// One read-write CoW state directory handed to a [`ServiceRuntime::OciContainer`].
@@ -421,5 +435,78 @@ impl From<crate::EnvNameError> for EngineError {
             name: err.name,
             reason: err.reason,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+    use std::path::Path;
+
+    use super::*;
+    use crate::pod::{PodCommand, PodLocation, PodNamespaces, VolumePlan};
+
+    #[test]
+    fn a_service_pod_runtime_carries_its_injected_spec_verbatim() {
+        let world_subvol = Path::new("/var/tmp/slipfork/worlds/acme-1");
+        let bundle_dir = Path::new("/var/tmp/slipfork/ctl/acme-1/oci/api");
+        let rootfs = Path::new("/var/tmp/slipfork/cache/oci/sha256-abc/rootfs");
+        let service_dir = Path::new("/home/dev/acme/api");
+        let namespaces = PodNamespaces::new(
+            Path::new("/proc/4242/ns/user"),
+            Path::new("/proc/4242/ns/net"),
+            Path::new("/proc/4242/ns/ipc"),
+        )
+        .expect("absolute namespace joins");
+        let volumes = VolumePlan::new(
+            world_subvol,
+            "api",
+            service_dir,
+            &[".venv".to_owned(), "node_modules".to_owned()],
+        )
+        .expect("valid volume plan");
+        let command = PodCommand::new(
+            service_dir.to_path_buf(),
+            vec!["uv".to_owned(), "run".to_owned(), "gunicorn".to_owned()],
+            BTreeMap::from([("DATABASE_URL".to_owned(), "postgres://hunter2".to_owned())]),
+        );
+        let pod = ServicePodSpec::new(
+            PodLocation::new(world_subvol, bundle_dir, rootfs).expect("valid locations"),
+            namespaces.clone(),
+            volumes.clone(),
+            command,
+        )
+        .expect("valid pod");
+
+        let spec = ServiceSpec {
+            id: pod.service.clone(),
+            kind: ServiceKind::Component,
+            runtime: ServiceRuntime::ServicePod(pod.clone()),
+            env: ExecEnv::world_scoped("/.slipfork/home"),
+            readiness_port: Some(8000),
+        };
+
+        match &spec.runtime {
+            ServiceRuntime::ServicePod(carried) => {
+                assert_eq!(
+                    carried, &pod,
+                    "the port value carries the planned pod spec verbatim"
+                );
+                assert_eq!(carried.argv(), ["uv", "run", "gunicorn"]);
+                assert_eq!(carried.cwd(), service_dir);
+                assert_eq!(carried.bundle_dir, bundle_dir);
+                assert_eq!(carried.rootfs, rootfs);
+                assert_eq!(carried.volumes, volumes);
+                assert_eq!(carried.namespace_joins(), namespaces.entries());
+            }
+            other => panic!("expected a service pod runtime, got {other:?}"),
+        }
+
+        let rendered = format!("{:?}", spec.runtime);
+        assert!(rendered.contains("DATABASE_URL"), "{rendered}");
+        assert!(
+            !rendered.contains("hunter2"),
+            "a pod runtime must never render environment values: {rendered}"
+        );
     }
 }

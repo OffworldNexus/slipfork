@@ -8,9 +8,9 @@ use std::net::TcpStream;
 use std::path::Path;
 
 use slipfork_world::{
-    EngineError, ExecEnv, ExecOutput, ServiceHandle, ServiceLogs, ServiceSpec, SnapshotId,
-    StreamChunk, WorldEngine, WorldEntryCommand, WorldHandle, WorldLineage, WorldServiceInfo,
-    WorldSpec,
+    EngineError, ExecEnv, ExecOutput, PodNamespaces, ServiceHandle, ServiceLogs, ServiceSpec,
+    SnapshotId, StreamChunk, WorldEngine, WorldEntryCommand, WorldHandle, WorldLineage,
+    WorldServiceInfo, WorldSpec,
 };
 
 use super::BtrfsEngine;
@@ -19,6 +19,16 @@ use super::teardown::{SERVICE_STOP_GRACE, WORLD_STOP_TERM_GRACE};
 impl WorldEngine for BtrfsEngine {
     fn name(&self) -> &'static str {
         "btrfs"
+    }
+
+    /// The shared `slipfork-world-init` namespace joins a pod would carry. This engine does not
+    /// publish them yet, so the capability is declined explicitly by name instead of fabricating
+    /// `/proc` paths.
+    fn world_pod_namespaces(&self, _world: &WorldHandle) -> Result<PodNamespaces, EngineError> {
+        Err(EngineError::Unsupported {
+            engine: "btrfs",
+            capability: "world_pod_namespaces",
+        })
     }
 
     fn snapshot_exists(&self, id: &SnapshotId) -> Result<bool, EngineError> {

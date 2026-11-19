@@ -1,17 +1,23 @@
 ---
 id: M3.32.2.3
-title: "Pod boot in crates/slipfork (PodBoot/ServicePod) + slipfork-testkit world harness"
+title: "slipfork-testkit per-service pod harness & Btrfs live-suite migration"
 kind: task
 status: ready
 owner: implementer
 priority: 3
-depends_on: [M3.32.2.2]
-paths: ["crates/slipfork/**", "crates/slipfork-testkit/**", Cargo.toml, Cargo.lock]
+depends_on: [M3.32.2.2.3]
+paths:
+  - "crates/slipfork-testkit/**"
+  - "crates/slipfork-ospp-testkit/**"
+  - "crates/slipfork/src/daemon/tests/**"
+  - Makefile
+  - Cargo.toml
+  - Cargo.lock
 attempts: 0
 max_attempts: 3
 escalation: none
 created: "2026-11-19T13:15"
-updated: "2026-11-19T13:15"
+updated: "2026-11-19T13:24"
 ---
 
 # Goal

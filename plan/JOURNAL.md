@@ -1798,3 +1798,27 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-19T13:19 [M3.32.2.1] (lead) status ready -> active
 - 2026-11-19T13:22 [M3.32.2.1] (lead) edited fields
 - 2026-11-19T13:23 [M3.32.2.1] (lead) status active -> done
+- 2026-11-19T13:23 [M3.32.2.2] (lead) status ready -> active
+- 2026-11-19T13:23 [M3.32.2.2] (lead) attempt 1/3 started
+- 2026-11-19T13:23 [M3.32.2.2] (lead) base 2906b51fbe4771d36fb565fb7754cfc0e1f672bb
+- 2026-11-19T13:24 [M3.32.2.2] (lead) edited fields
+- 2026-11-19T13:24 [M3.32.2.2.1] (lead) created (task) slipfork-world pod port surface + slipfork-engine shared-ns init & per-service CrunSurface bundles
+- 2026-11-19T13:24 [M3.32.2.2.2] (lead) created (task) slipfork-engine direct-execve lifecycle runner ([1/N], Forkfile:<line> fail-fast, zero sh -c)
+- 2026-11-19T13:24 [M3.32.2.2.3] (lead) created (task) slipforkd pod boot cut-over in crates/slipfork (PodBoot/ServicePod, per-service exec targets, live suites)
+- 2026-11-19T13:24 [M3.32.2.3] (lead) edited fields
+- 2026-11-19T13:24 [M3.32.2.2.1] (lead) status ready -> active
+- 2026-11-19T13:24 [M3.32.2.2.1] (lead) attempt 1/3 started
+- 2026-11-19T13:24 [M3.32.2.2.1] (lead) base 2906b51fbe4771d36fb565fb7754cfc0e1f672bb
+- 2026-11-19T13:26 [M3.32.2.2.1] (lead) edited fields
+- 2026-11-19T13:26 [M3.32.2.2.1.1] (lead) created (task) slipfork-world: additive ServicePod runtime + world_pod_namespaces port values
+- 2026-11-19T13:26 [M3.32.2.2.1.2] (lead) created (task) slipfork-engine: per-service OCI bundles via CrunSurface + rootfs dedupe
+- 2026-11-19T13:26 [M3.32.2.2.1.3] (lead) created (task) slipfork-engine: retire pivot_root init & WorldProcess verbs, migrate protected pod-exec suites
+- 2026-11-19T13:26 [M3.32.2.2.1.1] (lead) status ready -> active
+- 2026-11-19T13:26 [M3.32.2.2.1.1] (lead) attempt 1/3 started
+- 2026-11-19T13:26 [M3.32.2.2.1.1] (lead) base 2906b51fbe4771d36fb565fb7754cfc0e1f672bb
+- 2026-11-19T13:28 [M3.32.2.2.1.1] (lead) status active -> review
+- 2026-11-19T13:28 [M3.32.2.2.1.1] (lead) edited fields
+- 2026-11-19T13:28 [M3.32.2.2.1.1] (lead) status review -> ready: triad: 6 MAJOR (dead default body, duplicate unreachable pod arm, untested pod refusal, false port docs)
+- 2026-11-19T13:28 [M3.32.2.2.1.1] (lead) attempt 2/3 started
+- 2026-11-19T13:28 [M3.32.2.2.1.1] (lead) status ready -> active
+- 2026-11-19T13:30 [M3.32.2.2.1.1] (lead) status active -> done

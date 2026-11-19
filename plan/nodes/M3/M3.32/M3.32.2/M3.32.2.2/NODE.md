@@ -1,9 +1,8 @@
 ---
 id: M3.32.2.2
 title: "slipfork-engine per-service crun pod runtime, shared ns init & direct execve lifecycle"
-kind: task
-status: ready
-owner: implementer
+kind: epic
+status: active
 priority: 3
 depends_on: [M3.32.2.1]
 paths: ["crates/slipfork-engine/**", Cargo.toml, Cargo.lock]
@@ -11,7 +10,7 @@ attempts: 0
 max_attempts: 3
 escalation: none
 created: "2026-11-19T13:15"
-updated: "2026-11-19T13:15"
+updated: "2026-11-19T13:24"
 ---
 
 # Goal

@@ -12,10 +12,11 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use slipfork_world::rootfs::WorldRootfs;
+use slipfork_world::rootfs::{BackingServiceKey, WorldRootfs};
 use slipfork_world::{
     EngineError, ExecEnv, ServiceHandle, ServiceKind, ServiceLogs, ServiceRuntime, ServiceSpec,
-    ServiceState, StreamSource, WorldHandle, WorldMount, WorldServiceInfo,
+    ServiceState, StateSubdirMount, StreamSource, WorldEngine, WorldHandle, WorldMount,
+    WorldServiceInfo,
 };
 
 use crate::child_env;
@@ -39,6 +40,29 @@ const SERVICE_READY_TIMEOUT: Duration = Duration::from_secs(20);
 pub(crate) enum RuntimeKind {
     WorldProcess,
     OciContainer,
+}
+
+/// The engine's own two spawn paths, decided once from a [`ServiceSpec`] so no later match has to
+/// re-interpret the runtime or carry an unreachable pod arm.
+enum SpawnPlan<'a> {
+    World {
+        argv: &'a [String],
+        cwd: &'a Path,
+    },
+    Container {
+        image: &'a BackingServiceKey,
+        argv: &'a [String],
+        state_mounts: &'a [StateSubdirMount],
+        readonly_mounts: &'a [WorldMount],
+    },
+}
+
+impl SpawnPlan<'_> {
+    fn argv(&self) -> &[String] {
+        match self {
+            Self::World { argv, .. } | Self::Container { argv, .. } => argv,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -166,20 +190,40 @@ impl BtrfsEngine {
                 reason: "service id must not be empty".to_owned(),
             });
         }
-        match &spec.runtime {
-            ServiceRuntime::WorldProcess { argv, .. }
-            | ServiceRuntime::OciContainer { argv, .. } => {
-                if argv.is_empty() {
-                    return Err(EngineError::InvalidWorldSpec {
-                        reason: format!("service '{}' argv must not be empty", spec.id),
-                    });
-                }
+        // Exactly one gate for the pod runtime: a service pod owns its OCI bundle and
+        // shared-namespace joins, and this engine has no pod spawn path yet, so it fails closed
+        // here — before any world state is touched — and every later match covers only the two
+        // paths that actually reach a spawn.
+        let (runtime_kind, plan) = match &spec.runtime {
+            ServiceRuntime::WorldProcess { argv, cwd } => {
+                (RuntimeKind::WorldProcess, SpawnPlan::World { argv, cwd })
             }
-        }
-        let runtime_kind = match spec.runtime {
-            ServiceRuntime::WorldProcess { .. } => RuntimeKind::WorldProcess,
-            ServiceRuntime::OciContainer { .. } => RuntimeKind::OciContainer,
+            ServiceRuntime::OciContainer {
+                image,
+                argv,
+                state_mounts,
+                readonly_mounts,
+            } => (
+                RuntimeKind::OciContainer,
+                SpawnPlan::Container {
+                    image,
+                    argv,
+                    state_mounts,
+                    readonly_mounts,
+                },
+            ),
+            ServiceRuntime::ServicePod(_) => {
+                return Err(EngineError::Unsupported {
+                    engine: self.name(),
+                    capability: "service_pod",
+                });
+            }
         };
+        if plan.argv().is_empty() {
+            return Err(EngineError::InvalidWorldSpec {
+                reason: format!("service '{}' argv must not be empty", spec.id),
+            });
+        }
 
         let (init_pid, ctl_dir, state_dir, rootfs, mounts, env, log, state, process) = {
             let mut worlds = self.lock()?;
@@ -246,11 +290,9 @@ impl BtrfsEngine {
             log: &log,
             process: &process,
         };
-        let spawned = match &spec.runtime {
-            ServiceRuntime::WorldProcess { argv, cwd } => {
-                self.spawn_world_process(&spawn, argv, cwd)
-            }
-            ServiceRuntime::OciContainer {
+        let spawned = match plan {
+            SpawnPlan::World { argv, cwd } => self.spawn_world_process(&spawn, argv, cwd),
+            SpawnPlan::Container {
                 image,
                 argv,
                 state_mounts,

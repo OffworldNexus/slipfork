@@ -15,7 +15,10 @@ pub use values::{
     ServiceRuntime, ServiceSpec, SnapshotId, StateSubdirMount, WorldHandle, WorldMount, WorldSpec,
 };
 
-use crate::{ExecEnv, ServiceLogs, StreamChunk, WorldEntryCommand, WorldLineage, WorldServiceInfo};
+use crate::{
+    ExecEnv, PodNamespaces, ServiceLogs, StreamChunk, WorldEntryCommand, WorldLineage,
+    WorldServiceInfo,
+};
 
 /// Core Dependency Injection port for CoW world creation, cloning, execution, and teardown.
 pub trait WorldEngine: Send + Sync {
@@ -96,6 +99,15 @@ pub trait WorldEngine: Send + Sync {
             capability: "reload_world",
         })
     }
+
+    /// The shared-init namespace joins every [`ServiceRuntime::ServicePod`] of `world` must carry.
+    ///
+    /// The engine returns the injected `user`/`network`/`ipc` paths its own `slipfork-world-init`
+    /// published for the world, so a caller planning a pod passes them straight into
+    /// [`crate::pod::ServicePodSpec`] and this crate never probes `/proc` itself. A world whose
+    /// shared init has not published its namespace set reports [`EngineError::Unsupported`]:
+    /// there is no fabricated path and no degraded fallback.
+    fn world_pod_namespaces(&self, world: &WorldHandle) -> Result<PodNamespaces, EngineError>;
 
     /// Start `spec` as a supervised world-owned service.
     ///
