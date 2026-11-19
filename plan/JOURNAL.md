@@ -1670,3 +1670,10 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-19T02:15 [M3.30.5] (lead) attempt 1/3 started
 - 2026-11-19T02:15 [M3.30.5] (lead) base d5667acc7fb7423790508d8a7e96ab03b9ff97d3
 - 2026-11-19T02:19 [M3.30.5] (lead) status active -> done
+- 2026-11-19T02:19 [M3.30.4.2] (lead) created (task) Journey A: one rich Btrfs world E2E suite; delete daemon/engine test doubles
+- 2026-11-19T02:19 [M3.30.4.3] (lead) created (task) Journey B: one rich OSPP v1 loopback E2E suite + pure algorithm tests
+- 2026-11-19T02:19 [M3.30.4.2] (lead) status ready -> active
+- 2026-11-19T02:19 [M3.30.4.2] (lead) attempt 1/3 started
+- 2026-11-19T02:19 [M3.30.4.2] (lead) base 582400347c35312c8e2042e4bb8c0f74e99e3b47
+- 2026-11-19T02:24 [M3.30.4.4] (lead) created (task) Edge live suite: replace StubWorldEngine with KernelBtrfsDriver in require_btrfs critical_edge_live
+- 2026-11-19T02:24 [M3.30.4.2] (lead) status active -> done: Journey A landed (RecordingEngine/StubRootfs deleted); StubWorldEngine edge-live split re-homed to M3.30.4.4
