@@ -41,6 +41,21 @@ fn recording_opener(dir: &Path) -> (PathBuf, PathBuf) {
     (script, record)
 }
 
+/// Another test thread may fork between `fs::write` and `exec`, leaving the write fd open in the child (`ETXTBSY`).
+fn open_settling(browser: &Browser, url: &str) -> Result<bool, String> {
+    let mut last = String::new();
+    for _ in 0..20 {
+        match browser.open(url) {
+            Err(err) if err.contains("Text file busy") || err.contains("os error 26") => {
+                last = err;
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            result => return result,
+        }
+    }
+    Err(last)
+}
+
 fn selection() -> WorldSelection {
     let route = LocalHostRoute::new(
         ProjectSlug::parse("demo").expect("valid project slug"),
@@ -62,9 +77,11 @@ fn open_spawns_the_resolved_program_and_the_printed_surfaces_agree() {
     let selection = selection();
     let url = selection.origin.url();
 
-    let launched = Browser::new(fs::canonicalize(&script).expect("absolute opener"), true)
-        .open(url)
-        .expect("the real opener exits zero");
+    let launched = open_settling(
+        &Browser::new(fs::canonicalize(&script).expect("absolute opener"), true),
+        url,
+    )
+    .expect("the real opener exits zero");
     assert!(launched, "a desktop session spawns the opener");
 
     assert_eq!(
@@ -88,9 +105,11 @@ fn gio_passes_its_open_subcommand_before_the_url() {
     let (script, record) = recording_opener(dir.path());
     let url = "http://demo.localhost";
 
-    Browser::gio(fs::canonicalize(&script).expect("absolute opener"), true)
-        .open(url)
-        .expect("the real opener exits zero");
+    open_settling(
+        &Browser::gio(fs::canonicalize(&script).expect("absolute opener"), true),
+        url,
+    )
+    .expect("the real opener exits zero");
 
     assert_eq!(
         fs::read_to_string(&record).expect("argv"),
