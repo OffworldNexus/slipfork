@@ -201,10 +201,10 @@ pub struct PodMount {
 
 /// The three namespaces every service pod joins from `slipfork-world-init`.
 ///
-/// The paths are injected by the engine (the reference engine passes
-/// `/proc/<world-init>/ns/{user,net,ipc}`); this type owns only the logical join names and the
-/// absolute paths it was given, never a `/proc` probe of its own.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// The paths are injected by the engine from the init's published `namespaces.json`
+/// (`/proc/1/ns/{user,net,ipc}` — the init is world PID 1); this type owns only the logical join
+/// names and the absolute paths it was given, never a `/proc` probe of its own.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct PodNamespaces {
     /// User namespace join (`/proc/<world-init>/ns/user`).
     pub userns: PathBuf,

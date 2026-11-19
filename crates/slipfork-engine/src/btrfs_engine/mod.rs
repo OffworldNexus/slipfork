@@ -30,6 +30,7 @@
 
 mod boot;
 mod container;
+mod crun;
 mod pod;
 mod port;
 mod services;
@@ -37,13 +38,12 @@ mod snapshots;
 mod teardown;
 mod worlds;
 
-pub use container::CrunSurface;
-pub use pod::{pod_bundle_guest, write_pod_bundle};
+pub use crun::CrunSurface;
+pub use pod::write_pod_bundle;
 
 use std::collections::BTreeMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
@@ -57,9 +57,7 @@ use slipfork_world::{
 use crate::WorldStatus;
 use crate::btrfs::KernelBtrfsDriver;
 use crate::child_env::{self, InheritedEnv};
-use crate::child_io::run_streamed;
 use crate::supervise::ProcessIdentity;
-use crate::world_init::WORLD_STATE_GUEST;
 
 use services::ServiceRecord;
 
@@ -99,6 +97,8 @@ impl fmt::Debug for BtrfsEngine {
 pub(crate) struct Shared {
     pub(crate) worlds: Mutex<BTreeMap<u64, WorldRecord>>,
     pub(crate) next_seq: AtomicU64,
+    /// Monotonic seats for transient exec containers (`exec` never reuses a bundle dir).
+    pub(crate) next_exec: AtomicU64,
 }
 
 impl Default for Shared {
@@ -106,6 +106,7 @@ impl Default for Shared {
         Self {
             worlds: Mutex::new(BTreeMap::new()),
             next_seq: AtomicU64::new(0),
+            next_exec: AtomicU64::new(0),
         }
     }
 }
@@ -351,52 +352,76 @@ impl BtrfsEngine {
                 "exec argv must not be empty".to_owned(),
             ));
         }
-        let (init_pid, mounts, env) = {
+        let env = {
             let mut worlds = self.lock()?;
             let record = self.live_record(&mut worlds, world)?;
-            (
-                record.init_pid,
-                record.mounts.clone(),
-                child_env::materialize(&record.base_env, overlay_env, |var| {
-                    self.inherited_env.get(var)
-                }),
-            )
+            child_env::materialize(&record.base_env, overlay_env, |var| {
+                self.inherited_env.get(var)
+            })
         };
-
-        let mut command = Command::new("nsenter");
-        command
-            .args(self.entry_prefix(init_pid, &mounts, cwd))
-            .args(argv)
-            .env_clear()
-            .envs(&env)
-            .env("SLIPFORK_WORLD_STATE", WORLD_STATE_GUEST)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        run_streamed(command, on_output)
+        let seat = self.exec_bundle_slot();
+        let mut bundle = pod::WorldProcessBundle::for_exec(self, world, seat, argv, cwd, env)?;
+        bundle.write()?;
+        bundle.execute(on_output)
     }
+
+    /// Interactive world entry is relayed through a fresh PTY created *inside* the world.
+    ///
+    /// A process that has joined the world's child PID namespace cannot adopt the caller's terminal:
+    /// the PTY's controlling session belongs to the parent PID namespace, so `tcsetpgrp` cannot
+    /// resolve an in-world process group and an interactive `dash` exits with `Cannot set tty
+    /// process group`. `script(1)` — util-linux, already required for `nsenter`, and reached through
+    /// the world's 1:1 host mount — allocates its own PTY after `setns` and makes its child the
+    /// session leader of it, restoring job control, signal keys, and exit-code propagation.
+    ///
+    /// The relay is entered only for a real interactive terminal on **both** ends, with exactly one
+    /// command; anything else (`exec`, `hook`, piped stdout) executes the target directly so its
+    /// argv, environment, and bytes are unchanged.
+    const INTERACTIVE_ENTRY_SHIM: &str = "\
+if [ -t 0 ] && [ -t 1 ] && [ \"$#\" -eq 1 ]; then \
+for s in /usr/bin/script /bin/script; do [ -x \"$s\" ] && exec \"$s\" -qec \"$1\" /dev/null; done; \
+printf 'error: no script(1) available to relay an interactive terminal\\n  fix: install util-linux or use `slipfork exec -- <cmd>`\\n' >&2; \
+exit 127; fi; exec \"$@\"";
 
     pub(crate) fn world_entry_command(
         &self,
         world: &WorldHandle,
         cwd: &Path,
     ) -> Result<WorldEntryCommand, EngineError> {
-        let (init_pid, mounts) = {
+        let init_pid = {
             let mut worlds = self.lock()?;
             let record = self.live_record(&mut worlds, world)?;
-            (record.init_pid, record.mounts.clone())
+            record.init_pid
         };
+        let mut args_prefix = self.entry_prefix(init_pid, cwd);
+        args_prefix.extend([
+            "/bin/sh".to_owned(),
+            "-c".to_owned(),
+            Self::INTERACTIVE_ENTRY_SHIM.to_owned(),
+            "slipfork-entry".to_owned(),
+        ]);
         Ok(WorldEntryCommand {
             program: PathBuf::from("nsenter"),
-            args_prefix: self.entry_prefix(init_pid, &mounts, cwd),
-            // The thin CLI `chdir`s here before `exec`ing `nsenter`, so this must be a host path:
-            // `/` is the one directory that exists on the host *and* in every world rootfs. The
-            // in-world start directory is `--wdns=<mapped dir>` inside `args_prefix`.
+            args_prefix,
+            // The thin CLI `chdir`s here before `exec`ing `nsenter`; the in-world start directory
+            // is `--wdns=<cwd>` inside `args_prefix`.
             cwd: PathBuf::from("/"),
         })
     }
-}
 
+    /// Host path of the world's pinned static `crun`.
+    ///
+    /// The world owns no root filesystem, so the staged guest path `/.slipfork/bin/crun` inside
+    /// the app rootfs is reached through the rootfs's own host path.
+    pub(crate) fn crun_host_bin(rootfs: &WorldRootfs) -> PathBuf {
+        rootfs.app_rootfs.join(
+            rootfs
+                .crun_bin
+                .strip_prefix("/")
+                .unwrap_or(&rootfs.crun_bin),
+        )
+    }
+}
 pub(crate) fn io_error(path: &Path, err: &std::io::Error) -> EngineError {
     EngineError::Io {
         path: path.display().to_string(),

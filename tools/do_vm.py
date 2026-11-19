@@ -161,6 +161,12 @@ SUITES = (
         "M3.14",
     ),
     (
+        "slipfork-engine",
+        "critical_pod_runtime",
+        "crates/slipfork-engine/tests/critical_pod_runtime.rs",
+        "M3.32.2.2.1.3.2.1",
+    ),
+    (
         "slipfork-edge",
         "critical_edge_live",
         "crates/slipfork-edge/tests/critical_edge_live.rs",

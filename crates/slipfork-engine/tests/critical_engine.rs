@@ -72,27 +72,32 @@ fn service_spec(id: &str, cwd: &Path, port: Option<u16>, script: &str) -> Servic
     }
 }
 
-/// `/proc/<pid>/stat` field 5 (`pgrp`) of a host process.
-fn host_pgrp(pid: u32) -> Option<u32> {
-    let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-    stat.get(stat.rfind(')')? + 1..)?
-        .split_whitespace()
-        .nth(2)?
-        .parse()
-        .ok()
+/// Every host-visible descendant of `pid` (the container's process tree, crun included).
+///
+/// Container processes live in their own PID namespace but are still host children, so walking
+/// `/proc/<pid>/task/<pid>/children` sees exactly the tree the stop path must reap.
+fn descendants(pid: u32) -> Vec<u32> {
+    fn children(pid: u32) -> Vec<u32> {
+        fs::read_to_string(format!("/proc/{pid}/task/{pid}/children"))
+            .ok()
+            .map(|raw| {
+                raw.split_whitespace()
+                    .filter_map(|token| token.parse().ok())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+    let mut seen = Vec::new();
+    let mut pending = children(pid);
+    while let Some(next) = pending.pop() {
+        if seen.contains(&next) {
+            continue;
+        }
+        pending.extend(children(next));
+        seen.push(next);
+    }
+    seen
 }
-
-/// Every host pid whose process group is `pgid`.
-fn group_members(pgid: u32) -> Vec<u32> {
-    fs::read_dir("/proc")
-        .into_iter()
-        .flatten()
-        .flatten()
-        .filter_map(|entry| entry.file_name().to_str()?.parse::<u32>().ok())
-        .filter(|pid| host_pgrp(*pid) == Some(pgid))
-        .collect()
-}
-
 #[test]
 fn r10_a_non_btrfs_state_dir_fails_closed_without_a_silent_fallback() {
     // A real tmpfs (`/dev/shm`), so the refusal contract runs on every Linux host — a Btrfs host
@@ -776,7 +781,7 @@ fn persistent_init_pid_stays_stable_across_calls_and_is_reaped_on_destroy() {
     );
 
     // The world's `/proc/1` really is our persistent init, not a throw-away exec scope.
-    let out = fx.exec(
+    let out = fx.world_sh(
         &world,
         "tr '\\0' ' ' < /proc/1/cmdline; echo; stat -c %i /proc/1/ns/pid",
     );
@@ -788,11 +793,11 @@ fn persistent_init_pid_stays_stable_across_calls_and_is_reaped_on_destroy() {
     );
 
     // Consecutive exec/entry calls keep the same PID 1 and the same PID namespace.
-    let namespace_before = fx.exec(&world, "stat -c %i /proc/1/ns/pid").stdout;
+    let namespace_before = fx.world_sh(&world, "stat -c %i /proc/1/ns/pid").stdout;
     for _ in 0..3 {
         let again = fx.engine.entry_command(&world, &fx.repo).expect("entry");
         assert_eq!(target_pid(&again), init_pid, "init_pid must not change");
-        let out = fx.exec(&world, "stat -c %i /proc/1/ns/pid");
+        let out = fx.world_sh(&world, "stat -c %i /proc/1/ns/pid");
         assert_eq!(out.exit_code, 0, "stderr: {}", out.stderr);
         assert_eq!(
             out.stdout, namespace_before,
@@ -956,8 +961,8 @@ fn a_sh_wrapped_component_is_stopped_as_a_process_group_not_only_its_first_child
     let world = fx.world(WorldTarget::Canonical);
     const PORT: u16 = 18123;
 
-    // The production shape `slipforkd` spawns for every component: a distinct `sh -eu -c` parent
-    // with the real service underneath it, so the service that owns the port is a grandchild.
+    // The production shape: a distinct `sh -eu -c` container init with the real service forked
+    // underneath it, so the port owner is a grandchild of the container init.
     let spec = ServiceSpec {
         id: "api".to_owned(),
         kind: ServiceKind::Component,
@@ -974,46 +979,39 @@ fn a_sh_wrapped_component_is_stopped_as_a_process_group_not_only_its_first_child
         readiness_port: Some(PORT),
     };
     let api = fx.service(&world, spec);
-    let row = fx
+    let supervisor = fx
         .engine
         .world_processes(&world)
         .expect("rows")
         .into_iter()
         .find(|row| row.id == "api")
-        .expect("api row");
-    let wrapper = row.pid.expect("the wrapper pid is reported while running");
-    let pgid = host_pgrp(wrapper).expect("the wrapper's host process group");
-    let children = fs::read_to_string(format!("/proc/{wrapper}/task/{wrapper}/children"))
-        .expect("children of the sh wrapper");
-    let service_pid: u32 = children
-        .split_whitespace()
-        .next()
-        .expect("the python service under sh")
-        .parse()
-        .expect("a pid");
-    assert_ne!(
-        service_pid, wrapper,
-        "the defect needs a distinct sh parent and a service grandchild"
+        .and_then(|row| row.pid)
+        .expect("the container supervisor pid is reported while running");
+    let tree = descendants(supervisor);
+    assert!(
+        !tree.is_empty(),
+        "the running container must report its process tree: {tree:?}"
     );
 
     fx.engine.stop_service(&api).expect("stop the component");
     assert_eq!(api.state(), ServiceState::Stopped);
 
-    // Both processes of the group must be gone — the old stop only signalled `sh` and orphaned
-    // `python3`, which kept this port bound forever.
+    // Stop signals the runtime, which tears the container down: the supervisor, the forked service
+    // and every other member must leave `/proc`, and the port must be free again.
     let reaped = poll_until(ENGINE_SETTLE_DEADLINE, POLL_INTERVAL, || {
-        if Path::new(&format!("/proc/{wrapper}")).exists()
-            || Path::new(&format!("/proc/{service_pid}")).exists()
-            || !group_members(pgid).is_empty()
-        {
-            Err(format!("group {pgid} still has {:?}", group_members(pgid)))
-        } else {
+        let survivors: Vec<u32> = std::iter::once(supervisor)
+            .chain(tree.iter().copied())
+            .filter(|pid| Path::new(&format!("/proc/{pid}")).exists())
+            .collect();
+        if survivors.is_empty() {
             Ok(())
+        } else {
+            Err(format!("container processes still alive: {survivors:?}"))
         }
     });
     assert!(
         reaped.is_ok(),
-        "stop must reap the whole process group: {reaped:?}"
+        "stop must reap the whole container tree: {reaped:?}"
     );
     fx.engine
         .dial_world_tcp(&world, PORT)
@@ -1022,15 +1020,15 @@ fn a_sh_wrapped_component_is_stopped_as_a_process_group_not_only_its_first_child
     fx.engine.destroy_world(world).expect("destroy world");
     let _ = fs::remove_dir_all(&fx.root);
 }
-
 #[test]
 fn stop_reaps_a_group_descendant_that_outlives_its_supervisor() {
     let fx = WorldFixture::new("process-group-orphan");
     let world = fx.world(WorldTarget::Canonical);
     const PORT: u16 = 18124;
 
-    // `sh` backgrounds the server and exits: the watcher flips the row to `Exited` while the
-    // server keeps the port. Stop must still reach that descendant through the group.
+    // `sh` backgrounds a `setsid`-escaped server (its own session/process group) and waits on a
+    // file: the container init is the wrapper, the server a descendant that must never survive
+    // the container, even with its own group.
     let spec = ServiceSpec {
         id: "orphan".to_owned(),
         kind: ServiceKind::Component,
@@ -1040,7 +1038,7 @@ fn stop_reaps_a_group_descendant_that_outlives_its_supervisor() {
                 "-eu".to_owned(),
                 "-c".to_owned(),
                 format!(
-                    "python3 -m http.server {PORT} --bind 0.0.0.0 & \
+                    "setsid python3 -m http.server {PORT} --bind 0.0.0.0 & \
                      while [ ! -f exit-now ]; do sleep 0.05; done"
                 ),
             ],
@@ -1050,17 +1048,22 @@ fn stop_reaps_a_group_descendant_that_outlives_its_supervisor() {
         readiness_port: Some(PORT),
     };
     let orphan = fx.service(&world, spec);
-    let wrapper = fx
+    let supervisor = fx
         .engine
         .world_processes(&world)
         .expect("rows")
         .into_iter()
         .find(|row| row.id == "orphan")
         .and_then(|row| row.pid)
-        .expect("the wrapper pid is reported while it lives");
-    let pgid = host_pgrp(wrapper).expect("the wrapper's host process group");
+        .expect("the supervisor pid is reported while it lives");
+    let tree = descendants(supervisor);
+    assert!(
+        !tree.is_empty(),
+        "the running container must report its process tree: {tree:?}"
+    );
 
-    // The supervised child exits on its own; the service it forked survives in the group.
+    // The container init exits on its own; the runtime tears the rest of the container down, so the
+    // forked server can never outlive it.
     fs::write(fx.repo.join("exit-now"), b"exit\n").expect("ask the wrapper to exit");
     let exited = poll_until(ENGINE_SETTLE_DEADLINE, POLL_INTERVAL, || {
         let state = fx
@@ -1078,26 +1081,28 @@ fn stop_reaps_a_group_descendant_that_outlives_its_supervisor() {
         }
     });
     assert!(exited.is_ok(), "the wrapper must have exited: {exited:?}");
-    let survivors = group_members(pgid);
+    let survivors: Vec<u32> = std::iter::once(supervisor)
+        .chain(tree.iter().copied())
+        .filter(|pid| Path::new(&format!("/proc/{pid}")).exists())
+        .collect();
     assert!(
-        !survivors.is_empty(),
-        "the forked server must outlive the wrapper in group {pgid}: {survivors:?}"
-    );
-
-    fx.engine
-        .stop_service(&orphan)
-        .expect("stop must reap the orphaned group");
-    assert!(
-        group_members(pgid).is_empty(),
-        "a descendant that outlived its supervisor must still be reaped: {:?}",
-        group_members(pgid)
+        survivors.is_empty(),
+        "a descendant must not outlive the container: {survivors:?}"
     );
     fx.engine
         .dial_world_tcp(&world, PORT)
-        .expect_err("the reaped orphan must no longer own its port");
+        .expect_err("the exited container must no longer own its port");
 
-    // The same `Exited`/surviving-descendant shape under the world-wide stop path: `freeze_world`
-    // stops every recorded row, including this one, so the seal can never capture a live writer.
+    // The stop path stays idempotent for an already-exited row and still frees the port.
+    fx.engine
+        .stop_service(&orphan)
+        .expect("stop must reap the exited container tree");
+    fx.engine
+        .dial_world_tcp(&world, PORT)
+        .expect_err("the reaped container must no longer own its port");
+
+    // The same `Exited` shape under the world-wide stop path: `freeze_world` stops every recorded
+    // row, including this one, so the seal can never capture a live writer.
     const FREEZE_PORT: u16 = 18125;
     let freezer = fx.service(
         &world,
@@ -1120,15 +1125,6 @@ fn stop_reaps_a_group_descendant_that_outlives_its_supervisor() {
             readiness_port: Some(FREEZE_PORT),
         },
     );
-    let freezer_wrapper = fx
-        .engine
-        .world_processes(&world)
-        .expect("rows")
-        .into_iter()
-        .find(|row| row.id == "freezer")
-        .and_then(|row| row.pid)
-        .expect("the freezer wrapper pid is reported while it lives");
-    let freezer_pgid = host_pgrp(freezer_wrapper).expect("the freezer wrapper's process group");
     fs::write(fx.repo.join("exit-freeze"), b"exit\n").expect("ask the freezer wrapper to exit");
     let freezer_exited = poll_until(ENGINE_SETTLE_DEADLINE, POLL_INTERVAL, || {
         let state = fx
@@ -1149,11 +1145,9 @@ fn stop_reaps_a_group_descendant_that_outlives_its_supervisor() {
         freezer_exited.is_ok(),
         "the freezer wrapper must have exited: {freezer_exited:?}"
     );
-    assert!(
-        !group_members(freezer_pgid).is_empty(),
-        "the forked freezer must outlive the wrapper in group {freezer_pgid}: {:?}",
-        group_members(freezer_pgid)
-    );
+    fx.engine
+        .dial_world_tcp(&world, FREEZE_PORT)
+        .expect_err("the exited freezer container must not serve");
 
     fx.engine
         .freeze_world(&world, &snap("sealed-over-orphan"))
@@ -1162,11 +1156,6 @@ fn stop_reaps_a_group_descendant_that_outlives_its_supervisor() {
         freezer.state(),
         ServiceState::Stopped,
         "the world-wide stop covers an already-`Exited` row"
-    );
-    assert!(
-        group_members(freezer_pgid).is_empty(),
-        "freeze must reap the descendant that outlived its supervisor: {:?}",
-        group_members(freezer_pgid)
     );
     fx.engine
         .dial_world_tcp(&world, FREEZE_PORT)
@@ -1355,7 +1344,7 @@ fn entry_command_enters_the_persistent_init_pid_with_native_stdio() {
         .args([
             "sh",
             "-c",
-            "printf 'entered|%s|%s|%s' \"$(id -u)\" \"$(stat -c %i /proc/1/ns/pid)\" \"$(pwd)\"",
+            "printf 'entered|%s|%s|%s' \"$(id -u)\" \"$(stat -Lc %i /proc/self/ns/net)\" \"$(pwd)\"",
         ])
         .env_clear()
         .env("PATH", HELPER_PATH)
@@ -1381,13 +1370,13 @@ fn entry_command_enters_the_persistent_init_pid_with_native_stdio() {
         "the entry shell's first getcwd(2) must succeed in-world: {stderr}"
     );
     let via_exec = fx
-        .exec(&world, "stat -c %i /proc/1/ns/pid")
+        .world_sh(&world, "stat -Lc %i /proc/self/ns/net")
         .stdout
         .trim()
         .to_owned();
     assert!(
         stdout.contains(&via_exec),
-        "entry and exec must share one PID namespace: {stdout} vs {via_exec}"
+        "entry and exec must share the world network namespace: {stdout} vs {via_exec}"
     );
     assert!(
         stdout.contains(fx.repo.display().to_string().as_str()),
@@ -1407,12 +1396,8 @@ fn entry_and_exec_start_on_the_in_world_directory_mapped_from_the_host_path() {
     let fx = WorldFixture::new("in-world-cwd");
     let sub = fx.repo.join("pkg");
     fs::create_dir_all(&sub).expect("repo subdir");
-    // A guest path that has no host counterpart at all: only the in-world mapping can start here.
-    let guest = fx.root.join("stage");
-    assert!(
-        !guest.exists(),
-        "the fixture must not create the in-world mount target on the host"
-    );
+    // The world shares the host mount table 1:1, so the worktree is visible at its real path; the
+    // entry/exec cwd is that path, never a remapped guest name.
     let world = fx
         .engine
         .clone_world(&WorldSpec {
@@ -1421,38 +1406,37 @@ fn entry_and_exec_start_on_the_in_world_directory_mapped_from_the_host_path() {
             snapshot: fx.snapshot.clone(),
             mounts: vec![WorldMount {
                 host_path: fx.repo.clone(),
-                guest_path: guest.clone(),
+                guest_path: fx.repo.clone(),
                 mode: MountMode::ReadWrite,
             }],
             base_env: world_env(&fx.home),
             local_ingress: None,
             boot: BootLineage::default(),
         })
-        .expect("clone world with a remapped worktree");
-    let world_cwd = guest.join("pkg");
+        .expect("clone world");
 
-    // 1. The argv names the in-world directory, never the host pathname.
+    // 1. Entry names the requested directory after setns, never a retired guest path.
     let entry = fx.engine.entry_command(&world, &sub).expect("entry");
     assert_eq!(entry.cwd, Path::new("/"));
     assert!(
         entry
             .args_prefix
             .iter()
-            .any(|arg| arg == &format!("--wdns={}", world_cwd.display())),
-        "entry must open the mapped in-world directory after setns: {:?}",
+            .any(|arg| arg == &format!("--wdns={}", sub.display())),
+        "entry must open the requested directory after setns: {:?}",
         entry.args_prefix
     );
     assert!(
         !entry
             .args_prefix
             .iter()
-            .any(|arg| arg.starts_with("--wd=") || arg.contains(sub.display().to_string().as_str())),
-        "the caller's host path must never appear in the entry argv: {:?}",
+            .any(|arg| arg.contains("/.slipfork")),
+        "the entry argv must never name a retired guest path: {:?}",
         entry.args_prefix
     );
 
     // 2. Driving it exactly like the thin CLI does (spawn cwd `/`, argv untouched): the shell's
-    //    first `getcwd(2)` succeeds and it really starts in the mapped directory.
+    //    first `getcwd(2)` succeeds and it really starts in the requested directory.
     let out = Command::new(&entry.program)
         .args(&entry.args_prefix)
         .args(["sh", "-c", "pwd"])
@@ -1472,20 +1456,25 @@ fn entry_and_exec_start_on_the_in_world_directory_mapped_from_the_host_path() {
     let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
     assert!(
         !stderr.contains("getcwd"),
-        "the entry shell must start on a reachable world dentry: {stderr}"
+        "the entry shell must start on a reachable directory: {stderr}"
     );
     assert_eq!(
         String::from_utf8_lossy(&out.stdout).trim(),
-        world_cwd.display().to_string(),
-        "the entry shell must run in the world's mapped directory"
+        sub.display().to_string(),
+        "the entry shell must run in the requested directory"
     );
 
-    // 3. The same builder backs non-interactive exec: no wrapper shell, same in-world directory.
+    // 3. The same builder backs non-interactive exec: no wrapper shell, the same directory, and a
+    //    relative write lands in the live worktree.
     let exec = fx
         .engine
         .exec_in_world(
             &world,
-            &["sh".to_owned(), "-c".to_owned(), "pwd".to_owned()],
+            &[
+                "sh".to_owned(),
+                "-c".to_owned(),
+                "pwd; printf entered > relative.txt".to_owned(),
+            ],
             &sub,
             &ExecEnv::default(),
             &mut |_| {},
@@ -1494,8 +1483,13 @@ fn entry_and_exec_start_on_the_in_world_directory_mapped_from_the_host_path() {
     assert_eq!(exec.exit_code, 0, "stderr: {}", exec.stderr);
     assert_eq!(
         exec.stdout.trim(),
-        world_cwd.display().to_string(),
-        "exec must start in the same mapped in-world directory"
+        sub.display().to_string(),
+        "exec must start in the same directory as entry"
+    );
+    assert_eq!(
+        fs::read_to_string(sub.join("relative.txt")).expect("relative write in the worktree"),
+        "entered",
+        "a relative write must land in the live worktree"
     );
     assert!(
         !exec.stderr.contains("getcwd"),

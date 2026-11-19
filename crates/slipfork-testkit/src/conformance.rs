@@ -177,13 +177,22 @@ pub fn assert_world_engine_conformance(
          every world rootfs",
         engine.name()
     );
+    // The world shares the host mount table 1:1, so the requested directory is the directory the
+    // entry process must land on — after `setns`, and only via `--wdns` (never a pre-setns `--wd`).
     assert!(
-        !entry.args_prefix.iter().any(|arg| arg.starts_with("--wd=")
-            || arg.contains(entry_cwd.display().to_string().as_str())),
-        "{} entry command must never name the caller's host directory ({}) as its working \
-         directory: {:?}",
+        entry
+            .args_prefix
+            .iter()
+            .any(|arg| *arg == format!("--wdns={}", entry_cwd.display())),
+        "{} entry command must start in the requested directory ({}): {:?}",
         engine.name(),
         entry_cwd.display(),
+        entry.args_prefix
+    );
+    assert!(
+        !entry.args_prefix.iter().any(|arg| arg.starts_with("--wd=")),
+        "{} entry command must open its directory after the namespace switch: {:?}",
+        engine.name(),
         entry.args_prefix
     );
 
@@ -257,12 +266,37 @@ pub fn assert_world_engine_conformance(
                     engine.name(),
                     path.display()
                 );
+                // `/proc/<pid>/ns/<kind>` is a procfs *magic* symlink: `Path::exists()` follows the
+                // target (`user:[4026531837]`), which is not a filesystem path, so it always
+                // reports `false`. Liveness is proven by the link itself instead: `lstat` must
+                // succeed, and where the caller may read magic links the target must name the
+                // namespace and its inode.
+                let link = fs::symlink_metadata(path).unwrap_or_else(|err| {
+                    panic!(
+                        "{} {kind} namespace join '{}' must name a live namespace link: {err}",
+                        engine.name(),
+                        path.display()
+                    )
+                });
                 assert!(
-                    path.exists(),
-                    "{} {kind} namespace join '{}' must name a live namespace link",
+                    link.file_type().is_symlink(),
+                    "{} {kind} namespace join '{}' must be a namespace symlink",
                     engine.name(),
                     path.display()
                 );
+                if let Ok(target) = fs::read_link(path) {
+                    let target = target.display().to_string();
+                    assert!(
+                        target
+                            .split_once(':')
+                            .is_some_and(|(ns, inode)| !ns.is_empty()
+                                && inode.starts_with('[')
+                                && inode.ends_with(']')),
+                        "{} {kind} namespace join '{}' must resolve to '<ns>:[<inode>]', got '{target}'",
+                        engine.name(),
+                        path.display()
+                    );
+                }
             }
         }
         Err(EngineError::Unsupported {

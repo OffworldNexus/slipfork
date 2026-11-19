@@ -1,34 +1,27 @@
 //! Persistent per-world PID 1 (`H-011`).
 //!
-//! Spawned by [`slipfork_world::WorldEngine::clone_world`] on
-//! `BtrfsEngine` inside
-//! `unshare --user --map-user=$UID --map-group=$GID --keep-caps --mount --net --ipc --pid --fork
-//! --kill-child=SIGKILL --mount-proc`,
-//! so every world owns a **stable** `init_pid` for its whole lifetime. A daemon thread of
-//! `slipforkd` can never `setns(CLONE_NEWNET)` into an unprivileged descendant user namespace
-//! (`EPERM`) and `setns(CLONE_NEWUSER)` is `EINVAL` in a multithreaded process, so the world's own
-//! PID 1 must answer both namespace-scoped capabilities:
+//! Spawned inside `unshare --user --map-user=$UID --map-group=$GID --keep-caps --mount --net
+//! --ipc --pid --fork --kill-child=SIGKILL --mount-proc`, so every world owns a **stable** init
+//! for its whole lifetime. The init owns no root filesystem: it is a pure namespace and socket
+//! broker for the world's `crun` containers, which each carry their own OCI rootfs.
 //!
-//! 1. `netns.sock` — a `0600` pathname `AF_UNIX` socket inside the world's control directory. A
-//!    caller sends `port: u16` (big endian) and receives the connected in-world
-//!    `127.0.0.1:<port>` stream as an `SCM_RIGHTS` descriptor (`linux_cow.rs` and `btrfs.rs` are
-//!    the two audited `unsafe` modules in the workspace). Pathname `AF_UNIX` sockets live in the
-//!    filesystem, so they cross `CLONE_NEWNET` natively.
+//! It answers two namespace-scoped capabilities:
+//!
+//! 1. `netns.sock` — a `0600` pathname `AF_UNIX` socket in the world control directory. A caller
+//!    sends `port: u16` (big endian) and receives the connected in-world `127.0.0.1:<port>` stream
+//!    as an `SCM_RIGHTS` descriptor (`linux_cow.rs` and `btrfs.rs` are the two audited `unsafe`
+//!    modules in the workspace). Pathname `AF_UNIX` sockets live in the filesystem, so they cross
+//!    `CLONE_NEWNET` natively.
 //! 2. `$BASE_URL` bridge — when the world spec carries a [`slipfork_world::LocalIngressBridge`],
 //!    bind `127.0.0.1:<port>` (including `:80`, allowed by in-userns `CAP_NET_BIND_SERVICE` and
 //!    `net.ipv4.ip_unprivileged_port_start=0`) and splice every accepted stream to `slipforkd`'s
 //!    `0600` `AF_UNIX` HTTP ingress.
 //!
-//! `--ipc` (`CLONE_NEWIPC`) gives the world a private System V shared-memory and POSIX
-//! message-queue namespace, so parallel `postgres` containers never collide on `shmget` key
-//! `90000` or port-derived keys (`ADR-0010` §6); every `nsenter` entry joins it with `--ipc`.
-//!
-//! The process also establishes the world's bind mounts once, so `nsenter --target <init_pid>`
-//! entry, exec, and services all observe the same mount/net/ipc namespace. PID 1 of a child PID
+//! It also publishes `namespaces.json` — the world-guest `user`/`network`/`ipc` join paths a
+//! `crun` bundle names — and reaps every orphan in the world PID namespace. PID 1 of a child PID
 //! namespace carries `SIGNAL_UNKILLABLE` (`pid_namespaces(7)`), so clean shutdown is driven by a
-//! supervisor lifeline pipe on `stdin`: when `BtrfsEngine::destroy_world`, `Drop`, or `slipforkd`
-//! exit closes the write end, this PID 1 observes `EOF` and exits `0`, causing the kernel to tear
-//! down the entire PID namespace atomically without leaving orphaned `unshare` supervisors.
+//! supervisor lifeline on `stdin`: when the engine closes the write end, this PID 1 observes
+//! `EOF` and exits `0`, and the kernel tears the whole namespace down.
 
 #![forbid(unsafe_code)]
 
@@ -45,34 +38,13 @@ use std::thread;
 use std::time::Duration;
 
 use slipfork_engine::linux_cow::{STATUS_OK, send_fd};
-use slipfork_engine::world_init::{
-    WorldInitConfig, WorldInitIngress, WorldInitMount, WorldInitRootfs,
-};
+use slipfork_engine::world_init::{WorldInitConfig, WorldInitIngress};
+use slipfork_world::PodNamespaces;
 
-/// Environment every helper subprocess gets: a fixed search path, nothing inherited (`PATH` is
-/// needed to resolve `ip`/`mount`/`pivot_root`; no world or secret variable is ever exposed).
+/// Environment every helper subprocess gets: a fixed search path, nothing inherited.
 const HELPER_PATH: &str = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
 /// Bound on the request read and the in-world connect, so one stuck caller cannot wedge the world.
 const IO_TIMEOUT: Duration = Duration::from_secs(10);
-/// Guest mount points every world provides regardless of the app rootfs.
-const STANDARD_MOUNTPOINTS: [&str; 10] = [
-    "proc",
-    "dev",
-    "dev/pts",
-    "dev/shm",
-    "sys",
-    "tmp",
-    "var/tmp",
-    "run",
-    ".old_root",
-    ".slipfork",
-];
-/// Read-write `tmpfs` paths (`ADR-0009` §3.1 writable-path table).
-const TMPFS_MOUNTPOINTS: [(&str, &str); 3] = [
-    ("tmp", "mode=1777"),
-    ("var/tmp", "mode=1777"),
-    ("run", "mode=755"),
-];
 
 fn main() {
     let Some(config_path) = env::args_os().nth(1) else {
@@ -93,27 +65,23 @@ fn run(config_path: &Path) -> Result<(), String> {
 
     bring_up_loopback()?;
     allow_unprivileged_ports()?;
+    mount_private_tmpfs(&config.tmpfs_dirs)?;
 
-    // Both listeners must exist before `pivot_root`: a bound `AF_UNIX` socket survives the root
-    // change even though its host pathname no longer resolves. The readiness marker is created
-    // empty (the engine waits for `ready\n`) and written through this handle after the pivot.
     let dialer = bind_netns_socket(&config.netns_sock)?;
     let ingress = match &config.local_ingress {
         Some(ingress) => Some((bind_ingress(ingress)?, ingress.clone())),
         None => None,
     };
+    publish_namespaces(&config.namespaces_file)?;
     let ready = fs::File::create(config.ready_path())
         .map_err(|err| format!("cannot create world readiness marker: {err}"))?;
 
-    prepare_rootfs(&config.rootfs, &config.mounts)?;
-
     thread::spawn(move || serve_dials(dialer));
     if let Some((bridge, ingress)) = ingress {
-        thread::spawn(move || serve_ingress(bridge, ingress.guest_ingress_sock));
+        thread::spawn(move || serve_ingress(bridge, ingress.host_ingress_sock));
     }
-    // PID 1 owns every orphaned descendant of the world. Reap them so a service process group the
-    // engine killed (a `sh -eu -c` wrapper and its service) actually leaves `/proc` instead of
-    // lingering as zombies until the world is destroyed.
+    // PID 1 owns every orphaned descendant of the world. Reap them so a container process the
+    // engine killed actually leaves `/proc` instead of lingering as a zombie.
     thread::spawn(reap_orphans);
 
     let mut ready = ready;
@@ -127,10 +95,28 @@ fn run(config_path: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Publish the namespace join paths every `crun` bundle in this world names.
+///
+/// The init is PID 1 of the world PID namespace, so `/proc/1/ns/*` is its own namespace set and is
+/// exactly what a runtime resolving a bundle from inside the world can join.
+fn publish_namespaces(path: &Path) -> Result<(), String> {
+    let namespaces = PodNamespaces::new(
+        Path::new("/proc/1/ns/user"),
+        Path::new("/proc/1/ns/net"),
+        Path::new("/proc/1/ns/ipc"),
+    )
+    .map_err(|err| format!("cannot build the world namespace publication: {err}"))?;
+    let bytes = serde_json::to_vec(&namespaces)
+        .map_err(|err| format!("cannot serialize world namespaces: {err}"))?;
+    fs::write(path, bytes)
+        .map_err(|err| format!("cannot write world namespaces {}: {err}", path.display()))?;
+    fs::set_permissions(path, fs::Permissions::from_mode(0o600))
+        .map_err(|err| format!("cannot chmod {} to 0600: {err}", path.display()))
+}
+
 /// Block until the engine closes its supervisor lifeline pipe on `stdin` (`destroy_world`, engine
 /// `Drop`, or `slipforkd` exit/crash). Returning from PID 1 makes the kernel terminate every
-/// remaining process in the world PID namespace (`pid_namespaces(7)`), and the outer `unshare`
-/// supervisor reaps PID 1 and exits `0`.
+/// remaining process in the world PID namespace (`pid_namespaces(7)`).
 fn wait_for_supervisor_eof() {
     let mut stdin = std::io::stdin().lock();
     let mut scratch = [0_u8; 64];
@@ -145,11 +131,6 @@ fn wait_for_supervisor_eof() {
 }
 
 /// Reap adopted orphans for the whole lifetime of the world (`pid 1` of a child PID namespace).
-///
-/// A killed process whose parent already died is reparented to this PID 1; without a `waitpid` it
-/// stays a zombie forever. `waitpid(-1, WNOHANG)` cannot steal a child another thread owns: after
-/// setup this PID 1 starts no further subprocesses (services are `nsenter` launchers in the parent
-/// namespace), so every child it sees is an orphan.
 fn reap_orphans() {
     loop {
         match slipfork_engine::linux_cow::reap_exited_child_nonblocking() {
@@ -161,162 +142,6 @@ fn reap_orphans() {
             Err(_) => thread::sleep(Duration::from_millis(50)),
         }
     }
-}
-
-/// Merge the read-only `L0` rootfs with the world's mount-point tree and `pivot_root` into it.
-///
-/// Two lowerdirs and **zero** upperdir/workdir are deliberate: `/usr`, `/lib`, and `/etc` are
-/// genuinely `EROFS`, so no world can pollute the shared cache layer (`ADR-0009` §3.1). Every
-/// bind mount is established against `<merged>/<guest>` before the root change.
-fn prepare_rootfs(rootfs: &WorldInitRootfs, mounts: &[WorldInitMount]) -> Result<(), String> {
-    for guest in STANDARD_MOUNTPOINTS {
-        create_dir(&rootfs.mountpoints.join(guest))?;
-    }
-    for mount in mounts {
-        let target = rootfs.mountpoints.join(relative_guest(&mount.guest_path)?);
-        let parent = target
-            .parent()
-            .ok_or_else(|| format!("mount '{}' has no parent", target.display()))?;
-        create_dir(parent)?;
-        if fs::metadata(&mount.host_path)
-            .map(|metadata| metadata.is_dir())
-            .unwrap_or(false)
-        {
-            create_dir(&target)?;
-        } else {
-            fs::File::create(&target)
-                .map_err(|err| format!("cannot create mount target {}: {err}", target.display()))?;
-        }
-    }
-
-    helper("mount", &["--make-rprivate".to_owned(), "/".to_owned()])?;
-    let lower = format!(
-        "userxattr,lowerdir={}:{}",
-        rootfs.mountpoints.display(),
-        rootfs.app_rootfs.display()
-    );
-    helper(
-        "mount",
-        &[
-            "-t".to_owned(),
-            "overlay".to_owned(),
-            "overlay".to_owned(),
-            "-o".to_owned(),
-            lower,
-            rootfs.merged.display().to_string(),
-        ],
-    )?;
-
-    let merged = |guest: &str| rootfs.merged.join(guest);
-    helper(
-        "mount",
-        &[
-            "--rbind".to_owned(),
-            "/dev".to_owned(),
-            merged("dev").display().to_string(),
-        ],
-    )?;
-    helper(
-        "mount",
-        &[
-            "--rbind".to_owned(),
-            "/sys".to_owned(),
-            merged("sys").display().to_string(),
-        ],
-    )?;
-    helper(
-        "mount",
-        &[
-            "-t".to_owned(),
-            "proc".to_owned(),
-            "proc".to_owned(),
-            merged("proc").display().to_string(),
-        ],
-    )?;
-    for (guest, mode) in TMPFS_MOUNTPOINTS {
-        helper(
-            "mount",
-            &[
-                "-t".to_owned(),
-                "tmpfs".to_owned(),
-                "-o".to_owned(),
-                mode.to_owned(),
-                "tmpfs".to_owned(),
-                merged(guest).display().to_string(),
-            ],
-        )?;
-    }
-    helper(
-        "mount",
-        &[
-            "-t".to_owned(),
-            "tmpfs".to_owned(),
-            "-o".to_owned(),
-            "nosuid,noexec,nodev,mode=1777,size=65536k".to_owned(),
-            "tmpfs".to_owned(),
-            merged("dev/shm").display().to_string(),
-        ],
-    )?;
-
-    for mount in mounts {
-        let target = merged(&relative_guest(&mount.guest_path)?.display().to_string());
-        helper(
-            "mount",
-            &[
-                "--bind".to_owned(),
-                mount.host_path.display().to_string(),
-                target.display().to_string(),
-            ],
-        )?;
-        if mount.read_only {
-            // `remount,ro` on a bind mount of a directory reaches XFS as an unsupported
-            // `idmapped` reconfigure; `remount,bind,ro` is the verified form (§7.2).
-            helper(
-                "mount",
-                &[
-                    "-o".to_owned(),
-                    "remount,bind,ro".to_owned(),
-                    target.display().to_string(),
-                ],
-            )?;
-        }
-    }
-
-    helper(
-        "pivot_root",
-        &[
-            rootfs.merged.display().to_string(),
-            rootfs.merged.join(".old_root").display().to_string(),
-        ],
-    )?;
-    helper("umount", &["-l".to_owned(), "/.old_root".to_owned()])?;
-    Ok(())
-}
-
-/// Strip the leading `/` from a guest path and reject anything that could escape the merged root.
-fn relative_guest(guest: &Path) -> Result<PathBuf, String> {
-    let relative = guest
-        .strip_prefix("/")
-        .map_err(|_| format!("guest path '{}' must be absolute", guest.display()))?;
-    if relative.as_os_str().is_empty()
-        || relative.components().any(|component| {
-            !matches!(
-                component,
-                std::path::Component::Normal(_) | std::path::Component::CurDir
-            )
-        })
-    {
-        return Err(format!(
-            "guest path '{}' must be a plain path below the merged root",
-            guest.display()
-        ));
-    }
-    Ok(relative.to_path_buf())
-}
-
-fn create_dir(path: &Path) -> Result<(), String> {
-    fs::create_dir_all(path)
-        .map_err(|err| format!("cannot create mount point {}: {err}", path.display()))
 }
 
 fn helper(program: &str, args: &[String]) -> Result<(), String> {
@@ -355,6 +180,28 @@ fn bring_up_loopback() -> Result<(), String> {
 fn allow_unprivileged_ports() -> Result<(), String> {
     fs::write("/proc/sys/net/ipv4/ip_unprivileged_port_start", "0\n")
         .map_err(|err| format!("cannot lower ip_unprivileged_port_start in the world netns: {err}"))
+}
+
+/// Cover the world's OCI bundle and `crun` state directories with private, memory-only tmpfs.
+///
+/// `mode=0700,size=16m,nosuid,nodev` keeps every resolved secret inside this world's mount
+/// namespace: the host sees empty `0700` mountpoints, and the kernel reclaims both trees when
+/// PID 1 exits, so nothing secret ever reaches the on-disk state directory.
+fn mount_private_tmpfs(dirs: &[PathBuf]) -> Result<(), String> {
+    for dir in dirs {
+        helper(
+            "mount",
+            &[
+                "-t".to_owned(),
+                "tmpfs".to_owned(),
+                "-o".to_owned(),
+                "mode=0700,size=16m,nosuid,nodev".to_owned(),
+                "tmpfs".to_owned(),
+                dir.display().to_string(),
+            ],
+        )?;
+    }
+    Ok(())
 }
 
 fn bind_netns_socket(path: &Path) -> Result<UnixListener, String> {

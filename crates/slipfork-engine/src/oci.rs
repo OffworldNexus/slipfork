@@ -9,9 +9,10 @@
 //! - a **backing service** declares identity `uidMappings`/`gidMappings` (`$UID -> $UID`) and
 //!   explicit `user`, `pid`, `mount`, `ipc`, and `uts` namespaces — **never** a `network`
 //!   namespace, because every backing container shares the world's `127.0.0.1`;
-//! - a **service pod** joins the shared world init's `user`, `network`, and `ipc` namespaces by
-//!   path and creates only `pid`, `mount`, and `uts`, so it listens on the world's `127.0.0.1`
-//!   without declaring its own identity map;
+//! - a **service pod** inherits the world init's `ipc` namespace through the engine's `nsenter`
+//!   prefix (an OCI `path` join cannot be opened from inside the world) and creates an
+//!   identity-mapped `user` namespace plus fresh `pid`, `mount`, and `uts`, so it listens on the
+//!   world's `127.0.0.1` and never declares a `network` namespace;
 //! - read-only image rootfs (`root.readonly = true`);
 //! - read-only `/etc/passwd` + `/etc/group` overlays when the container needs host identity
 //!   (`initdb` resolves `getpwuid($UID)`);
@@ -47,8 +48,9 @@ pub struct ContainerMount {
 pub struct ContainerBundle<'a> {
     /// Directory the bundle is written to (host path inside the world's OCI state dir).
     pub bundle_dir: &'a Path,
-    /// Guest path of the extracted image rootfs (read-only container `/`).
-    pub image_rootfs_guest: &'a Path,
+    /// Path the runtime resolves as the read-only container `/` (host path, visible 1:1 in the
+    /// world mount namespace).
+    pub image_rootfs: &'a Path,
     /// Container command and arguments.
     pub argv: &'a [String],
     /// Effective container environment.
@@ -89,7 +91,7 @@ pub fn write_bundle(bundle: &ContainerBundle<'_>) -> io::Result<()> {
     let config = json!({
         "ociVersion": "1.0.2",
         "hostname": format!("slipfork-{}", bundle.uid),
-        "root": { "path": bundle.image_rootfs_guest, "readonly": true },
+        "root": { "path": bundle.image_rootfs, "readonly": true },
         "process": {
             "terminal": false,
             "user": { "uid": bundle.uid, "gid": bundle.gid },
@@ -117,21 +119,20 @@ pub fn write_bundle(bundle: &ContainerBundle<'_>) -> io::Result<()> {
 /// `postgres:18` and `redis:8` talk to an `alpine:3.21` app. A service pod joins `user`, `network`,
 /// and `ipc` by path and creates the rest.
 fn namespaces(bundle: &ContainerBundle<'_>) -> Vec<serde_json::Value> {
-    let mut namespaces: Vec<serde_json::Value> = bundle
-        .namespace_joins
-        .iter()
-        .map(|(kind, path)| json!({ "type": kind, "path": path }))
-        .collect();
-    for kind in ["user", "pid", "mount", "ipc", "uts"] {
-        if !bundle
-            .namespace_joins
-            .iter()
-            .any(|(joined, _path)| *joined == kind)
-        {
-            namespaces.push(json!({ "type": kind }));
-        }
-    }
-    namespaces
+    // A namespace named in `namespace_joins` is **inherited** from the engine's `nsenter` prefix
+    // and therefore omitted here: the OCI `path` form cannot be opened from inside the world
+    // (`/proc/1/ns/*` is owned by the init's capabilities), while the runtime itself already runs
+    // inside those namespaces. Every other kind is created fresh.
+    ["user", "pid", "mount", "ipc", "uts"]
+        .into_iter()
+        .filter(|kind| {
+            !bundle
+                .namespace_joins
+                .iter()
+                .any(|(inherited, _path)| inherited == kind)
+        })
+        .map(|kind| json!({ "type": kind }))
+        .collect()
 }
 
 fn container_mounts(bundle: &ContainerBundle<'_>) -> Vec<serde_json::Value> {
@@ -326,7 +327,7 @@ mod tests {
         let argv = vec!["postgres".to_owned()];
         write_bundle(&ContainerBundle {
             bundle_dir: dir.path(),
-            image_rootfs_guest: Path::new("/.slipfork/images/abc/rootfs"),
+            image_rootfs: Path::new("/var/tmp/slipfork/cache/oci/abc/rootfs"),
             argv: &argv,
             env: &env,
             uid: 1000,

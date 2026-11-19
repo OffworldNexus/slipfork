@@ -6,7 +6,7 @@
 //! profile grants `userns,` to every executable that performs `CLONE_NEWUSER` for a world — the
 //! `slipfork`/`slipforkd`/`slipfork-world-init` binaries in every installed `--bin-dir`, host
 //! `/usr/bin/unshare` (outer world `CLONE_NEWUSER` and `doctor`), and in-world
-//! `/.slipfork/bin/crun` (inner OCI `CLONE_NEWUSER`) — under one leading-slash brace expression,
+//! `**/.slipfork/bin/crun` (inner OCI `CLONE_NEWUSER`) — under one leading-slash brace expression,
 //! because AppArmor 4.0 accepts a single attachment expression per profile header. It deliberately
 //! contains no file or mount rules so AppArmor keeps file/mount mediation inactive.
 //!
@@ -32,7 +32,7 @@ pub fn render_userns_profile(bin_dirs: &[PathBuf]) -> Result<String, String> {
         alternatives.push(bin_clause(bin_dir)?);
     }
     alternatives.push("usr/bin/unshare".to_owned());
-    alternatives.push(".slipfork/bin/crun".to_owned());
+    alternatives.push("**/.slipfork/bin/crun".to_owned());
     Ok(format!(
         "abi <abi/4.0>,\nprofile slipfork /{{{}}} flags=(unconfined) {{\n  userns,\n}}\n",
         alternatives.join(",")
@@ -109,7 +109,7 @@ mod tests {
         assert_eq!(
             profile,
             "abi <abi/4.0>,\nprofile slipfork \
-             /{home/dev/.local/bin/slipfork{,d,-world-init},usr/bin/unshare,.slipfork/bin/crun} \
+             /{home/dev/.local/bin/slipfork{,d,-world-init},usr/bin/unshare,**/.slipfork/bin/crun} \
              flags=(unconfined) {\n  userns,\n}\n"
         );
         assert_eq!(profile.lines().count(), 4);
@@ -121,7 +121,7 @@ mod tests {
         assert_eq!(
             profile,
             "abi <abi/4.0>,\nprofile slipfork \
-             /{usr/local/bin/slipfork{,d,-world-init},tmp/ux/bin/slipfork{,d,-world-init},usr/bin/unshare,.slipfork/bin/crun} \
+             /{usr/local/bin/slipfork{,d,-world-init},tmp/ux/bin/slipfork{,d,-world-init},usr/bin/unshare,**/.slipfork/bin/crun} \
              flags=(unconfined) {\n  userns,\n}\n"
         );
         assert_eq!(profile.lines().count(), 4);
@@ -135,7 +135,7 @@ mod tests {
         assert_eq!(
             profile,
             "abi <abi/4.0>,\nprofile slipfork \
-             /{slipfork{,d,-world-init},usr/bin/unshare,.slipfork/bin/crun} \
+             /{slipfork{,d,-world-init},usr/bin/unshare,**/.slipfork/bin/crun} \
              flags=(unconfined) {\n  userns,\n}\n"
         );
         assert!(!profile.contains("//"), "{profile}");
@@ -214,7 +214,7 @@ mod tests {
             ]
         );
 
-        for executable in ["usr/bin/unshare,", ".slipfork/bin/crun}"] {
+        for executable in ["usr/bin/unshare,", "**/.slipfork/bin/crun}"] {
             assert!(
                 attachment.contains(executable),
                 "attachment {attachment} does not name {executable}"

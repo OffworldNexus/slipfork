@@ -3,11 +3,14 @@
 //!
 //! `clone_world` writes one `0600` JSON document into the world's control directory and spawns the
 //! helper with that path as its single argument. The document carries **no** secrets: only the
-//! world's bind mounts, the `netns.sock` path, and the optional in-netns `$BASE_URL` bridge.
+//! world's `netns.sock` path, the namespace publication file, and the optional in-netns
+//! `$BASE_URL` bridge.
 //!
-//! The guest-path constants and the pure boot helpers below are the single owner of the world's
-//! guest layout: every engine maps host state onto the same `/.slipfork/*` paths and the same
-//! synthesized `/etc/{passwd,group}`.
+//! There is no world root filesystem: the world is one shared `user`/`mount`/`net`/`ipc`/`pid`
+//! namespace set (the init is PID 1 and owns `/proc`), and every service — app component or
+//! backing service — is its own `crun` container with its own rootfs. All host paths are visible
+//! 1:1 in that mount namespace, so bundles, rootfses, volume subvolumes, and identity files are
+//! addressed by their host paths with no `/.slipfork/*` remap.
 
 #![forbid(unsafe_code)]
 
@@ -16,31 +19,10 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use slipfork_world::EngineError;
 use slipfork_world::rootfs::WorldRootfs;
-use slipfork_world::{EngineError, MountMode, WorldMount};
 
-/// Guest mount of the world's CoW `state_dir` (`<subvol>/state`).
-pub(crate) const WORLD_STATE_GUEST: &str = "/.slipfork/state";
-/// Guest mount of the world's `oci` bundle directory (control directory, never the subvolume).
-pub(crate) const OCI_BUNDLES_GUEST: &str = "/.slipfork/oci";
-/// Guest mount of the world's `crun` state root (control directory, never the subvolume).
-pub(crate) const OCI_RUN_GUEST: &str = "/.slipfork/run";
-/// Guest mount prefix of extracted backing-service OCI rootfs trees.
-pub(crate) const OCI_IMAGES_GUEST: &str = "/.slipfork/images";
-/// Guest mount of the engine's content-addressed app-rootfs cache (`<state_dir>/cache/rootfs`),
-/// so a service pod's `root.path` is a world-visible guest path.
-pub(crate) const POD_ROOTFS_GUEST: &str = "/.slipfork/images/rootfs";
-/// Guest mount of one world's own subvolume, so a service pod's CoW volume subvolumes and its
-/// live worktree are visible inside the world.
-pub(crate) const POD_WORLD_GUEST: &str = "/.slipfork/world";
-/// Guest path of the synthesized `/etc/passwd`.
-pub(crate) const PASSWD_GUEST: &str = "/.slipfork/etc/passwd";
-/// Guest path of the synthesized `/etc/group`.
-pub(crate) const GROUP_GUEST: &str = "/.slipfork/etc/group";
-/// Guest path of `slipforkd`'s ingress socket after `pivot_root`.
-pub(crate) const INGRESS_GUEST: &str = "/.slipfork/http-ingress.sock";
-
-/// File name of the world init configuration inside the world directory.
+/// File name of the world init configuration inside the world control directory.
 pub const WORLD_INIT_CONFIG_FILE: &str = "world-init.json";
 
 /// File name of the readiness marker written once every listener is bound.
@@ -49,16 +31,8 @@ pub const WORLD_INIT_READY_FILE: &str = "init.ready";
 /// File name of the world's `AF_UNIX` dial socket.
 pub const WORLD_INIT_SOCKET_FILE: &str = "netns.sock";
 
-/// One bind mount the world init establishes inside the world mount namespace.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WorldInitMount {
-    /// Directory on the host.
-    pub host_path: PathBuf,
-    /// Path the directory is mounted at inside the world.
-    pub guest_path: PathBuf,
-    /// Mount read-only (`mount -o remount,bind,ro`) instead of read-write.
-    pub read_only: bool,
-}
+/// File name of the namespace publication the engine reads for pod bundles.
+pub const WORLD_INIT_NAMESPACES_FILE: &str = "namespaces.json";
 
 /// In-netns loopback listener spliced to `slipforkd`'s `AF_UNIX` ingress.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -67,19 +41,6 @@ pub struct WorldInitIngress {
     pub port: u16,
     /// Pathname `AF_UNIX` socket served by `slipforkd` (`<state_root>/http-ingress.sock`).
     pub host_ingress_sock: PathBuf,
-    /// Guest path the host ingress socket is bound at after `pivot_root`.
-    pub guest_ingress_sock: PathBuf,
-}
-
-/// Read-only `L0` rootfs the world PID 1 merges and pivots into (`ADR-0009` §3.1).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WorldInitRootfs {
-    /// Extracted `slipfork-world` stage, shared read-only by every world.
-    pub app_rootfs: PathBuf,
-    /// Empty directory tree that contributes mount points to the overlay.
-    pub mountpoints: PathBuf,
-    /// Directory the two-lowerdir overlay is mounted at.
-    pub merged: PathBuf,
 }
 
 /// Complete boot configuration for one persistent world init process.
@@ -87,10 +48,14 @@ pub struct WorldInitRootfs {
 pub struct WorldInitConfig {
     /// Pathname `AF_UNIX` socket answering `dial_world_tcp` requests (mode `0600`).
     pub netns_sock: PathBuf,
-    /// Read-only overlay + `pivot_root` inputs (`ADR-0009` §3.1).
-    pub rootfs: WorldInitRootfs,
-    /// Bind mounts to establish inside the merged root before `pivot_root`.
-    pub mounts: Vec<WorldInitMount>,
+    /// File the init writes its `user`/`net`/`ipc` namespace paths into.
+    pub namespaces_file: PathBuf,
+    /// Directories the init covers with a private (`0700`, `16m`) tmpfs before `init.ready`.
+    ///
+    /// The engine writes every OCI bundle and `crun` state root beneath these, so resolved secrets
+    /// live only in world-private memory the kernel reclaims on PID 1 exit.
+    #[serde(default)]
+    pub tmpfs_dirs: Vec<PathBuf>,
     /// Optional in-netns `$BASE_URL` bridge.
     pub local_ingress: Option<WorldInitIngress>,
 }
@@ -105,50 +70,11 @@ impl WorldInitConfig {
     }
 }
 
-/// Translate one [`WorldMount`] into the wire form the world PID 1 establishes.
-pub(crate) fn world_init_mount(mount: &WorldMount) -> WorldInitMount {
-    WorldInitMount {
-        host_path: mount.host_path.clone(),
-        guest_path: mount.guest_path.clone(),
-        read_only: mount.mode == MountMode::ReadOnly,
-    }
-}
-
-/// Translate one host path into the guest path the world sees after `pivot_root`.
-pub(crate) fn world_guest_for_host(mounts: &[WorldMount], host_path: &Path) -> Option<PathBuf> {
-    mounts.iter().find_map(|mount| {
-        host_path
-            .strip_prefix(&mount.host_path)
-            .ok()
-            .map(|relative| {
-                // `join("")` would append a trailing separator; the mount root maps to itself.
-                if relative.as_os_str().is_empty() {
-                    mount.guest_path.clone()
-                } else {
-                    mount.guest_path.join(relative)
-                }
-            })
-    })
-}
-
-/// Guest mount of one extracted OCI rootfs, keyed by its immutable image digest.
-pub(crate) fn image_guest_rootfs(digest: &str) -> Result<PathBuf, EngineError> {
-    let hex = digest
-        .strip_prefix("sha256:")
-        .filter(|hex| hex.len() == 64 && hex.bytes().all(|byte| byte.is_ascii_hexdigit()))
-        .ok_or_else(|| EngineError::InvalidWorldSpec {
-            reason: format!(
-                "backing-service image digest '{digest}' must be `sha256:<64 lowercase hex>`"
-            ),
-        })?;
-    Ok(PathBuf::from(OCI_IMAGES_GUEST).join(hex).join("rootfs"))
-}
-
 /// Synthesize read-only `/etc/passwd` + `/etc/group` carrying the invoking `$UID:$GID`
 /// (`ADR-0009` §3.1 rule 2): `initdb` fails with `could not look up effective user ID` without it.
 ///
 /// The files live in the world's control directory, never in the world subvolume, so a seal never
-/// captures host identity data.
+/// captures host identity data, and containers bind them by host path.
 pub(crate) fn synthesize_identity_files(
     dir: &Path,
     rootfs: &WorldRootfs,

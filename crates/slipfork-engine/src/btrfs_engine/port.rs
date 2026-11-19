@@ -5,7 +5,7 @@
 #![forbid(unsafe_code)]
 
 use std::net::TcpStream;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use slipfork_world::{
     EngineError, ExecEnv, ExecOutput, PodNamespaces, ServiceHandle, ServiceLogs, ServiceSpec,
@@ -23,57 +23,17 @@ impl WorldEngine for BtrfsEngine {
 
     /// The shared `slipfork-world-init` namespace joins a service pod carries.
     ///
-    /// The returned paths are **world-guest** paths (`/proc/1/ns/{user,net,ipc}`): the init is
-    /// PID 1 of the world's PID namespace, and `crun` resolves a bundle's namespace `path` from
-    /// inside the world, where `/proc` is the world's own procfs. The host-side
-    /// `/proc/<init_pid>/ns/*` links are probed only to prove the init is alive; a world without
-    /// an observable shared init fails closed with a `fix:` line.
+    /// The world init publishes its own `user`/`network`/`ipc` join paths in `namespaces.json`
+    /// (`/proc/1/ns/*` — it is world PID 1), which is exactly what a `crun` bundle can name from
+    /// inside the world. A world without that publication fails closed with a `fix:` line.
     fn world_pod_namespaces(&self, world: &WorldHandle) -> Result<PodNamespaces, EngineError> {
-        let init_pid = {
+        let ctl_dir = {
             let mut worlds = self.lock()?;
             let record = self.live_record(&mut worlds, world)?;
-            record.init_pid
+            record.ctl_dir.clone()
         };
-        let label = format!("{world:?}");
-        if init_pid <= 1 {
-            return Err(EngineError::WorldInitFailed {
-                world: label.clone(),
-                reason: "the world has no booted shared init to join\n  fix: start the world \
-                         with `slipfork up` before planning a service pod"
-                    .to_owned(),
-            });
-        }
-        // The host links are probed for liveness; the returned joins are the paths `crun`
-        // resolves *inside* the world, where the init is PID 1 (the world's own `/proc`).
-        let host = |kind: &str| PathBuf::from(format!("/proc/{init_pid}/ns/{kind}"));
-        let guest = |kind: &str| PathBuf::from(format!("/proc/1/ns/{kind}"));
-        let namespaces =
-            PodNamespaces::new(&guest("user"), &guest("net"), &guest("ipc")).map_err(|err| {
-                EngineError::WorldInitFailed {
-                    world: label.clone(),
-                    reason: format!("{err}\n  fix: start the world again with `slipfork up`"),
-                }
-            })?;
-        for (kind, path) in [
-            ("user", host("user")),
-            ("net", host("net")),
-            ("ipc", host("ipc")),
-        ] {
-            if std::fs::symlink_metadata(&path).is_err() {
-                return Err(EngineError::WorldInitFailed {
-                    world: label.clone(),
-                    reason: format!(
-                        "the world init's {kind} namespace link '{}' is not observable\n  fix: \
-                         the shared init exited; stop the world and start it again with \
-                         `slipfork up`",
-                        path.display()
-                    ),
-                });
-            }
-        }
-        Ok(namespaces)
+        Self::read_pod_namespaces(&ctl_dir)
     }
-
     fn snapshot_exists(&self, id: &SnapshotId) -> Result<bool, EngineError> {
         self.snapshot_exists_on_disk(id)
     }

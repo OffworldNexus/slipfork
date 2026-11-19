@@ -333,7 +333,7 @@ fn readonly_mounts_are_typed_visible_and_collision_free() {
         .expect_err("a ReadWrite mode on a readonly mount must fail closed");
     expect_invalid(&wrong_mode, err, "must carry MountMode::ReadOnly");
 
-    // 2. The host path must be visible inside the world (`WorldSpec.mounts`).
+    // 2. The host path must exist before it is bound, so the world shows it 1:1.
     let invisible = oci_service(
         "pg-invisible",
         postgres_image(),
@@ -348,7 +348,7 @@ fn readonly_mounts_are_typed_visible_and_collision_free() {
         .engine
         .spawn_service(&world, &invisible)
         .expect_err("an invisible readonly mount must fail closed");
-    expect_invalid(&invisible, err, "is not visible inside the world");
+    expect_invalid(&invisible, err, "does not exist; stage it");
 
     // 3. A readonly mount that shadows a state mount is refused before a bundle exists.
     let colliding = oci_service(
@@ -412,22 +412,21 @@ fn service_handles_and_logs_are_typed_and_never_fabricated() {
             },
         )
         .expect("spawn app component");
-    let err = fixture
+    // A world process is a container: `exec_in_service` and `service_entry_command` work, and an
+    // unknown id still fails closed with a typed error (never a fabricated handle or log).
+    let exec = fixture
         .engine
         .exec_in_service(&app, &["true".to_owned()], &ExecEnv::default(), &mut |_| {})
-        .expect_err("a world process is not a container");
-    assert!(
-        matches!(err, EngineError::ServiceNotRunning { .. }),
-        "expected ServiceNotRunning, got {err:?}"
-    );
-
-    let err = fixture
+        .expect("exec inside the app container");
+    assert_eq!(exec.exit_code, 0, "stderr: {}", exec.stderr);
+    let entry = fixture
         .engine
         .service_entry_command(&app)
-        .expect_err("a world process is not a container");
+        .expect("the app container answers an entry command");
     assert!(
-        matches!(err, EngineError::ServiceNotRunning { .. }),
-        "expected ServiceNotRunning, got {err:?}"
+        entry.args_prefix.contains(&"exec".to_owned()),
+        "{:?}",
+        entry.args_prefix
     );
 
     let err = fixture
@@ -500,12 +499,27 @@ fn container_bundles_never_carry_the_world_environment() {
     );
 
     let ctl = fixture.state_dir.join("ctl");
+    let entry = fixture
+        .engine
+        .entry_command(&world, &fixture.repo)
+        .expect("entry command for the world whose bundle tree is being read");
+    let init_pid: u32 = entry
+        .args_prefix
+        .iter()
+        .find_map(|arg| arg.strip_prefix("--target="))
+        .and_then(|pid| pid.parse().ok())
+        .expect("the entry command names the world init pid");
+    // The bundles live in the world init's private tmpfs: read them through its mount namespace.
+    let mounted_ctl = Path::new("/proc")
+        .join(init_pid.to_string())
+        .join("root")
+        .join(ctl.strip_prefix("/").unwrap_or(&ctl));
     let mut bundles = Vec::new();
-    collect_bundle_configs(&ctl, &mut bundles);
+    collect_bundle_configs(&mounted_ctl, &mut bundles);
     assert!(
         !bundles.is_empty(),
         "the container spawn must have synthesized a bundle config.json under {}",
-        ctl.display()
+        mounted_ctl.display()
     );
     // Positive control: the bundle does carry the container's own declared environment, so the
     // absence assertions below prove filtering rather than an empty `process.env`.
@@ -515,7 +529,7 @@ fn container_bundles_never_carry_the_world_environment() {
             text.contains(&format!("PATH={SERVICE_PATH}")) && text.contains("\"LANG=C\"")
         }),
         "the bundle must carry the container's own env (`PATH`, `LANG`) under {}",
-        ctl.display()
+        mounted_ctl.display()
     );
     for config in &bundles {
         let text = fs::read_to_string(config).expect("read the bundle config");
@@ -550,10 +564,19 @@ fn container_bundles_never_carry_the_world_environment() {
             },
         )
         .expect("spawn the app component with the world environment");
+    // The shell truncates the dump before `env` writes it, so wait for the completed document
+    // rather than for the file's mere existence.
     slipfork_testkit::poll_until(Duration::from_secs(20), || {
-        fs::read_to_string(&dump)
-            .map(|_| ())
-            .map_err(|err| format!("world env dump: {err}"))
+        let text = fs::read_to_string(&dump).map_err(|err| format!("world env dump: {err}"))?;
+        let complete = text.ends_with('\n')
+            && ["WORLD_SECRET_MARKER=", "WORLD_PLAIN_MARKER="]
+                .iter()
+                .all(|needle| text.contains(needle));
+        if complete {
+            Ok(())
+        } else {
+            Err("world env dump is still being written".to_owned())
+        }
     })
     .expect("the world process must write its environment");
     let observed = fs::read_to_string(&dump).expect("read the world env dump");

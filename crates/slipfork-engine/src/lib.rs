@@ -27,7 +27,7 @@ pub mod world_init;
 
 use std::path::Path;
 
-pub use btrfs_engine::{BtrfsEngine, CrunSurface, pod_bundle_guest, write_pod_bundle};
+pub use btrfs_engine::{BtrfsEngine, CrunSurface, write_pod_bundle};
 pub use child_env::InheritedEnv;
 pub use clock::elapsed_millis;
 pub use linux_cow::current_uid_gid;
@@ -40,7 +40,7 @@ use slipfork_world::WorldTarget;
 /// so the composition root decides which binary directory the profile must name. The profile text
 /// is the one `slipfork daemon unit --only apparmor` prints, so this hint never drifts from it: one
 /// leading-slash brace expression naming every executable that performs `CLONE_NEWUSER` for a
-/// world — the `bin_dir` binaries, host `/usr/bin/unshare`, and in-world `/.slipfork/bin/crun`.
+/// world — the `bin_dir` binaries, host `/usr/bin/unshare`, and pinned `crun` staged in a world rootfs (`**/.slipfork/bin/crun`).
 pub fn userns_remediation_hint(bin_dir: &Path) -> String {
     let dir = bin_dir.display().to_string();
     let rel_bin_dir = dir.trim_matches('/');

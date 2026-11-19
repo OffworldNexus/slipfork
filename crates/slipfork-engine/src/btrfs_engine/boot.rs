@@ -13,7 +13,7 @@ use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
 use slipfork_world::{
-    EngineError, UNIX_SOCKET_PATH_MAX, WorldHandle, WorldMount, WorldSpec, unix_socket_path_fits,
+    EngineError, UNIX_SOCKET_PATH_MAX, WorldHandle, WorldSpec, unix_socket_path_fits,
 };
 
 use crate::child_io::drain_stderr;
@@ -22,14 +22,12 @@ use crate::supervise::{ProcessIdentity, SupervisedProcess, host_child_pids};
 use crate::userns_remediation_hint;
 use crate::wait::poll_until;
 use crate::world_init::{
-    GROUP_GUEST, INGRESS_GUEST, OCI_BUNDLES_GUEST, OCI_RUN_GUEST, PASSWD_GUEST,
-    WORLD_INIT_CONFIG_FILE, WORLD_INIT_SOCKET_FILE, WORLD_STATE_GUEST, WorldInitConfig,
-    WorldInitIngress, WorldInitMount, WorldInitRootfs, image_guest_rootfs,
-    synthesize_identity_files, world_guest_for_host, world_init_mount,
+    WORLD_INIT_CONFIG_FILE, WORLD_INIT_NAMESPACES_FILE, WORLD_INIT_SOCKET_FILE, WorldInitConfig,
+    WorldInitIngress, synthesize_identity_files,
 };
 
 use super::teardown::WORLD_STOP_KILL_GRACE;
-use super::{BtrfsEngine, WORLD_ROOTFS_DIR, WORLD_STATE_DIR, io_error};
+use super::{BtrfsEngine, WORLD_ROOTFS_DIR, io_error};
 
 /// Installed file name of the per-world PID 1 helper (diagnostics only: the path is injected).
 const WORLD_INIT_PROGRAM: &str = "slipfork-world-init";
@@ -41,27 +39,14 @@ const WORLD_INIT_TIMEOUT: Duration = Duration::from_secs(20);
 const DIAL_TIMEOUT: Duration = Duration::from_secs(10);
 
 impl BtrfsEngine {
-    /// The one `nsenter` argv entering every namespace of `init_pid` at a working directory that
-    /// exists **inside** the world — shared by interactive entry, `exec`, and every supervised
-    /// `L0` process, so no caller can drift back to a host pathname.
+    /// The one `nsenter` argv entering every namespace of `init_pid` at `cwd`.
     ///
-    /// `--ipc` joins the world's private System V IPC namespace, so `shmget` keys never collide
-    /// across parallel worlds (`ADR-0010` §6). The working directory is the load-bearing part:
-    /// `nsenter --wd=<dir>` opens the directory in the caller's namespace and only `fchdir(2)`s
-    /// after `setns(2)`, so a host pathname becomes a detached dentry once the world's
-    /// `pivot_root` is in force and the entered shell reports a `getcwd` failure before running
-    /// anything. `--wdns=<dir>` is opened **after** the namespace switch instead, so the process
-    /// starts on a real world dentry: [`world_guest_for_host`] maps the caller's host directory
-    /// through the world's bind mounts, and `/` (the app stage root) is the one directory every
-    /// rootfs carries when the caller's directory is not mounted in-world.
-    pub(crate) fn entry_prefix(
-        &self,
-        init_pid: u32,
-        mounts: &[WorldMount],
-        host_cwd: &Path,
-    ) -> Vec<String> {
-        let world_cwd =
-            world_guest_for_host(mounts, host_cwd).unwrap_or_else(|| PathBuf::from("/"));
+    /// The world owns no root filesystem: its mount namespace is a private copy of the host's, so
+    /// `cwd` is a real path there and needs no guest remap. `--wdns` is opened after the namespace
+    /// switch, so the process lands on that directory in the world rather than on a detached
+    /// host dentry. `--ipc` joins the world's private System V IPC namespace, so `shmget` keys
+    /// never collide across parallel worlds (`ADR-0010` §6).
+    pub(crate) fn entry_prefix(&self, init_pid: u32, cwd: &Path) -> Vec<String> {
         vec![
             format!("--target={init_pid}"),
             "--user".to_owned(),
@@ -70,7 +55,7 @@ impl BtrfsEngine {
             "--net".to_owned(),
             "--ipc".to_owned(),
             "--pid".to_owned(),
-            format!("--wdns={}", world_cwd.display()),
+            format!("--wdns={}", cwd.display()),
             "--".to_owned(),
         ]
     }
@@ -150,74 +135,18 @@ impl BtrfsEngine {
                 ),
             });
         }
-        let mountpoints = ctl_dir.join("mountpoints");
-        let merged = ctl_dir.join("merged");
         let oci_dir = ctl_dir.join("oci");
         let oci_run = ctl_dir.join("oci-run");
-        for dir in [&mountpoints, &merged, &oci_dir, &oci_run] {
+        for dir in [&oci_dir, &oci_run] {
             fs::create_dir_all(dir).map_err(|err| io_error(dir, &err))?;
+            fs::set_permissions(dir, fs::Permissions::from_mode(0o700))
+                .map_err(|err| io_error(dir, &err))?;
         }
-        let (passwd, group) =
-            synthesize_identity_files(ctl_dir, &spec.rootfs, &home, self.host_uid, self.host_gid)?;
+        // Identity files are bound into each backing-service bundle by host path; the world has no
+        // root filesystem of its own, so nothing is mounted at `/.slipfork`.
+        synthesize_identity_files(ctl_dir, &spec.rootfs, &home, self.host_uid, self.host_gid)?;
 
-        let state_dir = world_dir.join(WORLD_STATE_DIR);
-        let mut mounts: Vec<WorldInitMount> = spec.mounts.iter().map(world_init_mount).collect();
-        mounts.extend(spec.rootfs.host_caches.iter().map(world_init_mount));
-        mounts.push(WorldInitMount {
-            host_path: home.clone(),
-            guest_path: home.clone(),
-            read_only: false,
-        });
-        mounts.push(WorldInitMount {
-            host_path: passwd.clone(),
-            guest_path: PathBuf::from("/etc/passwd"),
-            read_only: true,
-        });
-        mounts.push(WorldInitMount {
-            host_path: group.clone(),
-            guest_path: PathBuf::from("/etc/group"),
-            read_only: true,
-        });
-        mounts.push(WorldInitMount {
-            host_path: passwd,
-            guest_path: PathBuf::from(PASSWD_GUEST),
-            read_only: true,
-        });
-        mounts.push(WorldInitMount {
-            host_path: group,
-            guest_path: PathBuf::from(GROUP_GUEST),
-            read_only: true,
-        });
-        mounts.push(WorldInitMount {
-            host_path: state_dir,
-            guest_path: PathBuf::from(WORLD_STATE_GUEST),
-            read_only: false,
-        });
-        mounts.push(WorldInitMount {
-            host_path: oci_dir,
-            guest_path: PathBuf::from(OCI_BUNDLES_GUEST),
-            read_only: false,
-        });
-        mounts.push(WorldInitMount {
-            host_path: oci_run,
-            guest_path: PathBuf::from(OCI_RUN_GUEST),
-            read_only: false,
-        });
-        // Service pods are separate OCI containers: their app rootfs must be readable as a guest
-        // path (`root.path`) and their CoW volume subvolumes must be bindable sources. The two
-        // trees are declared once by the pod module and reused by pod spawn.
-        mounts.extend(
-            super::pod::pod_world_mounts(&self.state_dir, world_dir)
-                .iter()
-                .map(world_init_mount),
-        );
-        for image in spec.rootfs.service_images.values() {
-            mounts.push(WorldInitMount {
-                host_path: image.rootfs.clone(),
-                guest_path: image_guest_rootfs(&image.digest)?,
-                read_only: true,
-            });
-        }
+        let namespaces_file = ctl_dir.join(WORLD_INIT_NAMESPACES_FILE);
         let local_ingress = match &spec.local_ingress {
             Some(bridge) => {
                 if !bridge.host_ingress_sock.exists() {
@@ -230,27 +159,17 @@ impl BtrfsEngine {
                         ),
                     });
                 }
-                mounts.push(WorldInitMount {
-                    host_path: bridge.host_ingress_sock.clone(),
-                    guest_path: PathBuf::from(INGRESS_GUEST),
-                    read_only: true,
-                });
                 Some(WorldInitIngress {
                     port: bridge.port,
                     host_ingress_sock: bridge.host_ingress_sock.clone(),
-                    guest_ingress_sock: PathBuf::from(INGRESS_GUEST),
                 })
             }
             None => None,
         };
         let config = WorldInitConfig {
             netns_sock: netns_sock.clone(),
-            rootfs: WorldInitRootfs {
-                app_rootfs: world_rootfs,
-                mountpoints,
-                merged,
-            },
-            mounts,
+            namespaces_file: namespaces_file.clone(),
+            tmpfs_dirs: vec![oci_dir.clone(), oci_run.clone()],
             local_ingress,
         };
         let config_path = ctl_dir.join(WORLD_INIT_CONFIG_FILE);
@@ -315,6 +234,7 @@ impl BtrfsEngine {
             if let Some(identity) = &init
                 && identity.matches_live()
                 && fs::read_to_string(config.ready_path()).is_ok_and(|ready| ready == "ready\n")
+                && config.namespaces_file.exists()
                 && netns_sock.exists()
                 // The marker alone is not proof: a listener that cannot accept a connection is
                 // not ready, so probe the dial socket before declaring the world up.

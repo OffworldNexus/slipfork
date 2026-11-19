@@ -1,79 +1,55 @@
 //! Per-service pod planning, OCI bundle synthesis, and `crun run` spawn
 //! (`ARCHITECTURE.md` §3.3, `docs/design/forkfile.md` §3).
 //!
-//! A pod is one `crun` container whose bundle the engine owns at
-//! `<ctl>/<world_id>/oci/<service>/`, outside the world subvolume. Its rootfs, live worktree, and
-//! CoW volumes are announced as the guest paths the world itself mounts
-//! ([`BtrfsEngine::pod_world_mounts`]), and its `user`/`network`/`ipc` namespace entries join the
-//! shared init that is world PID 1 (`/proc/1/ns/*`).
+//! The world owns no root filesystem: its mount namespace is a private copy of the host's, so
+//! every bundle path — rootfs, `process.cwd`, bind sources, the bundle itself, `crun --root` — is
+//! the real host path. A pod joins the shared init's published `user`/`network`/`ipc` namespaces.
 
 #![forbid(unsafe_code)]
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+use std::process::Stdio;
+use std::sync::{Arc, Mutex};
 
-use slipfork_world::{EngineError, MountMode, ServicePodSpec, WorldHandle, WorldMount};
-
-use crate::oci::{self, ContainerBundle, ContainerMount};
-use crate::world_init::{
-    OCI_BUNDLES_GUEST, OCI_RUN_GUEST, POD_ROOTFS_GUEST, POD_WORLD_GUEST, world_guest_for_host,
+use slipfork_world::{
+    EngineError, ExecOutput, MountMode, PodNamespaces, ServiceLogs, ServicePodSpec, StreamChunk,
+    WorldHandle, WorldMount,
 };
 
-use super::container::CrunSurface;
+use crate::child_io::run_streamed;
+use crate::oci::{self, ContainerBundle, ContainerMount};
+
+use super::BtrfsEngine;
+use super::crun::CrunSurface;
 use super::io_error;
-use super::services::ServiceSpawn;
-
-/// Guest path of one service's bundle: the engine boots `<ctl>/<world_id>/oci` at
-/// [`OCI_BUNDLES_GUEST`], so `crun -b` addresses the bundle by service id alone.
-pub fn pod_bundle_guest(service: &str) -> PathBuf {
-    PathBuf::from(OCI_BUNDLES_GUEST).join(service)
-}
-
-/// The two guest trees every world exposes to service pods: the read-only app-rootfs cache
-/// (`root.path`) and the world's own subvolume (CoW volumes). Boot turns them into world mounts;
-/// pod spawn appends them to the world's mount table so guest paths resolve.
-pub(crate) fn pod_world_mounts(state_dir: &Path, world_dir: &Path) -> [WorldMount; 2] {
-    [
-        WorldMount {
-            host_path: state_dir.join("cache").join("rootfs"),
-            guest_path: PathBuf::from(POD_ROOTFS_GUEST),
-            mode: MountMode::ReadOnly,
-        },
-        WorldMount {
-            host_path: world_dir.to_path_buf(),
-            guest_path: PathBuf::from(POD_WORLD_GUEST),
-            mode: MountMode::ReadWrite,
-        },
-    ]
-}
+use super::services::{ServiceProcess, ServiceSpawn};
 
 /// Materialize one `Forkfile` service pod's OCI bundle from its injected spec.
 ///
-/// The spec is the sole source of every value, and **every path in the emitted document is a
-/// world-visible guest path**: `root.path`, `process.cwd`, and each bind `source` are resolved
-/// through the world's own mount table ([`world_guest_for_host`]), while the bundle itself is
-/// addressed by [`pod_bundle_guest`]. A path the world does not expose fails closed with a remedy
-/// instead of leaking a host path that only happens to resolve because a mount is 1:1.
-///
-/// The bundle directory is created `0700` and `config.json` is left `0600`, because the
-/// environment may carry resolved secrets. Returns the written `config.json` path.
+/// The spec is the sole source of every value. Paths are host paths because the world mount
+/// namespace shows the host tree 1:1; the bundle is created `0700` and `config.json` is left
+/// `0600` because the environment may carry resolved secrets.
 pub fn write_pod_bundle(
     host_uid: u32,
     host_gid: u32,
-    world_mounts: &[WorldMount],
     worktree: &Path,
     spec: &ServicePodSpec,
 ) -> Result<PathBuf, EngineError> {
-    let guest = |host: &Path, what: &str, fix: &str| {
-        world_guest_for_host(world_mounts, host).ok_or_else(|| EngineError::InvalidWorldSpec {
-            reason: format!(
-                "service pod '{}' {what} '{}' is not visible inside the world\n  fix: {fix}",
-                spec.service,
-                host.display()
-            ),
-        })
-    };
+    write_pod_bundle_at(host_uid, host_gid, worktree, spec, &spec.bundle_dir)
+}
+
+/// Materialize one pod bundle at `bundle_host`, which may be a world-visible path reached through
+/// `/proc/<init_pid>/root` when the control directory is covered by the world's private tmpfs.
+pub fn write_pod_bundle_at(
+    host_uid: u32,
+    host_gid: u32,
+    worktree: &Path,
+    spec: &ServicePodSpec,
+    bundle_host: &Path,
+) -> Result<PathBuf, EngineError> {
     let mut mounts = Vec::new();
     for mount in spec
         .mounts(worktree)
@@ -81,67 +57,240 @@ pub fn write_pod_bundle(
             reason: err.to_string(),
         })?
     {
-        let source = guest(
-            &mount.source,
-            "mount source",
-            "mount the live worktree read-write in the world",
-        )?;
         mounts.push(ContainerMount {
-            source,
+            source: mount.source,
             destination: mount.target,
             read_only: mount.mode == MountMode::ReadOnly,
         });
     }
-    let image_rootfs_guest = guest(
-        &spec.rootfs,
-        "rootfs",
-        "mount the rootfs cache read-only in the world at a `/.slipfork/images/…` guest path",
-    )?;
-    let cwd = guest(
-        spec.cwd(),
-        "working directory",
-        "mount the live worktree read-write in the world",
-    )?;
-    create_private_bundle_dir(&spec.bundle_dir)?;
-    let joins: Vec<(&str, &Path)> = spec
-        .namespace_joins()
-        .iter()
-        .map(|(kind, path)| (*kind, *path))
-        .collect();
+    create_private_bundle_dir(bundle_host)?;
+    let joins = joined_namespaces(spec.namespace_joins().into_iter());
     oci::write_bundle(&ContainerBundle {
-        bundle_dir: &spec.bundle_dir,
-        image_rootfs_guest: &image_rootfs_guest,
+        bundle_dir: bundle_host,
+        image_rootfs: &spec.rootfs,
         argv: spec.argv(),
         env: &spec.command.env,
         uid: host_uid,
         gid: host_gid,
         mounts: &mounts,
         namespace_joins: &joins,
-        cwd: &cwd,
-        // A pod inherits the world init's identity map, so it carries no synthesized
-        // `/etc/passwd` of its own.
+        cwd: spec.cwd(),
         passwd_guest: None,
         group_guest: None,
     })
-    .map_err(|err| io_error(&spec.bundle_dir, &err))?;
-    let config = spec.bundle_dir.join(oci::OCI_CONFIG_FILE);
-    fs::set_permissions(&config, fs::Permissions::from_mode(0o600))
-        .map_err(|err| io_error(&config, &err))?;
-    Ok(config)
+    .map_err(|err| io_error(bundle_host, &err))?;
+    make_private(&bundle_host.join(oci::OCI_CONFIG_FILE))
+}
+
+/// One legacy world process (`ServiceRuntime::WorldProcess` or `exec_in_world`), materialized as a
+/// pod-shaped OCI bundle in the world's private tmpfs.
+///
+/// It runs in the world's namespaces on the app rootfs with the world's bind mounts, exactly like
+/// a pod, so the same supervision, log, and stop paths apply.
+pub(crate) struct WorldProcessBundle<'a> {
+    host_uid: u32,
+    host_gid: u32,
+    rootfs: PathBuf,
+    state_dir: PathBuf,
+    mounts: Vec<WorldMount>,
+    namespaces: PodNamespaces,
+    argv: &'a [String],
+    cwd: &'a Path,
+    env: BTreeMap<String, String>,
+    label: String,
+    bundle: PathBuf,
+    runtime: CrunSurface,
+    container_id: String,
+}
+
+impl<'a> WorldProcessBundle<'a> {
+    /// The bundle of one `ServiceRuntime::WorldProcess` service.
+    pub(crate) fn for_service(
+        engine: &BtrfsEngine,
+        spawn: &ServiceSpawn<'a>,
+        argv: &'a [String],
+        cwd: &'a Path,
+    ) -> Result<Self, EngineError> {
+        let runtime = CrunSurface::new(
+            engine,
+            spawn.init_pid,
+            BtrfsEngine::crun_host_bin(spawn.rootfs),
+            spawn.ctl_dir.join("oci-run"),
+            spawn.state_dir.to_path_buf(),
+        );
+        Ok(Self {
+            host_uid: engine.host_uid,
+            host_gid: engine.host_gid,
+            rootfs: spawn.rootfs.app_rootfs.clone(),
+            state_dir: spawn.state_dir.to_path_buf(),
+            mounts: spawn.mounts.to_vec(),
+            namespaces: BtrfsEngine::read_pod_namespaces(spawn.ctl_dir)?,
+            argv,
+            cwd,
+            env: BTreeMap::new(),
+            label: format!("service '{}'", spawn.spec.id),
+            bundle: BtrfsEngine::pod_bundle_dir_of(spawn.ctl_dir, &spawn.spec.id)?,
+            runtime,
+            container_id: oci::container_id(spawn.world.seq(), &spawn.spec.id),
+        })
+    }
+
+    /// The throw-away bundle of one `exec_in_world` call (slot `seat` of the world).
+    pub(crate) fn for_exec(
+        engine: &BtrfsEngine,
+        world: &WorldHandle,
+        seat: u64,
+        argv: &'a [String],
+        cwd: &'a Path,
+        env: BTreeMap<String, String>,
+    ) -> Result<Self, EngineError> {
+        let (init_pid, ctl_dir, state_dir, rootfs, mounts) = {
+            let mut worlds = engine.lock()?;
+            let record = engine.live_record(&mut worlds, world)?;
+            (
+                record.init_pid,
+                record.ctl_dir.clone(),
+                record.state_dir.clone(),
+                record.rootfs.clone(),
+                record.mounts.clone(),
+            )
+        };
+        let runtime = CrunSurface::new(
+            engine,
+            init_pid,
+            BtrfsEngine::crun_host_bin(&rootfs),
+            ctl_dir.join("oci-run"),
+            state_dir.clone(),
+        );
+        Ok(Self {
+            host_uid: engine.host_uid,
+            host_gid: engine.host_gid,
+            rootfs: rootfs.app_rootfs,
+            state_dir,
+            mounts,
+            namespaces: BtrfsEngine::read_pod_namespaces(&ctl_dir)?,
+            argv,
+            cwd,
+            env,
+            label: format!("exec slot {seat}"),
+            bundle: ctl_dir.join("oci").join("_exec").join(seat.to_string()),
+            runtime,
+            container_id: format!("sfexec{}-{seat}", world.seq()),
+        })
+    }
+
+    /// Replace the bundle environment (the exec path composes its own overlay first).
+    pub(crate) fn with_env(mut self, env: BTreeMap<String, String>) -> Self {
+        self.env = env;
+        self
+    }
+
+    /// Materialize the bundle in the world's private tmpfs and return its host-side config path.
+    pub(crate) fn write(&mut self) -> Result<PathBuf, EngineError> {
+        self.env.insert(
+            "SLIPFORK_WORLD_STATE".to_owned(),
+            self.state_dir.display().to_string(),
+        );
+        let bundle_host = self.runtime.host_path(&self.bundle);
+        let mut mounts: Vec<ContainerMount> = self
+            .mounts
+            .iter()
+            .map(|mount| ContainerMount {
+                source: mount.host_path.clone(),
+                destination: mount.guest_path.clone(),
+                read_only: mount.mode == MountMode::ReadOnly,
+            })
+            .collect();
+        // The world's CoW state directory is exposed at its own host path, so
+        // `SLIPFORK_WORLD_STATE` (and every seed/freeze journey's script) resolves inside the
+        // container.
+        mounts.push(ContainerMount {
+            source: self.state_dir.clone(),
+            destination: self.state_dir.clone(),
+            read_only: false,
+        });
+        create_private_bundle_dir(&bundle_host)?;
+        let joins = joined_namespaces(self.namespaces.entries().into_iter());
+        oci::write_bundle(&ContainerBundle {
+            bundle_dir: &bundle_host,
+            image_rootfs: &self.rootfs,
+            argv: self.argv,
+            env: &self.env,
+            uid: self.host_uid,
+            gid: self.host_gid,
+            mounts: &mounts,
+            namespace_joins: &joins,
+            cwd: self.cwd,
+            passwd_guest: None,
+            group_guest: None,
+        })
+        .map_err(|err| io_error(&bundle_host, &err))?;
+        make_private(&bundle_host.join(oci::OCI_CONFIG_FILE))
+    }
+
+    /// Start the supervised container for a `WorldProcess` service.
+    pub(crate) fn run(
+        &self,
+        log: &ServiceLogs,
+        process: &Arc<Mutex<ServiceProcess>>,
+    ) -> Result<(), EngineError> {
+        self.runtime.run_bundle(
+            &self.env,
+            &self.label,
+            &self.runtime.host_path(&self.bundle),
+            &self.bundle,
+            &self.container_id,
+            log,
+            process,
+        )
+    }
+
+    /// Run one one-shot world exec, collecting its streamed output, then reclaim the bundle.
+    pub(crate) fn execute(
+        self,
+        on_output: &mut dyn FnMut(StreamChunk),
+    ) -> Result<ExecOutput, EngineError> {
+        let mut command = self.runtime.command(&self.env);
+        command
+            .args([
+                "run".to_owned(),
+                "-b".to_owned(),
+                self.bundle.display().to_string(),
+                self.container_id.clone(),
+            ])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let output = run_streamed(command, on_output);
+        let _ = self.runtime.delete(&self.container_id);
+        let _ = std::fs::remove_dir_all(self.runtime.host_path(&self.bundle));
+        output
+    }
+}
+
+/// Only the **IPC** namespace is inherited: the runtime already runs inside the world's IPC
+/// namespace (`nsenter --ipc`), and an OCI `path` join cannot be opened from inside the world.
+/// The user namespace is created identity-mapped, and `pid`/`mount`/`uts` are always fresh.
+fn joined_namespaces<'a>(
+    entries: impl Iterator<Item = (&'a str, &'a Path)>,
+) -> Vec<(&'a str, &'a Path)> {
+    entries.filter(|(kind, _path)| *kind == "ipc").collect()
 }
 
 /// Create (or reuse) a bundle directory only the invoking developer can traverse or list.
-fn create_private_bundle_dir(dir: &Path) -> Result<(), EngineError> {
+pub(crate) fn create_private_bundle_dir(dir: &Path) -> Result<(), EngineError> {
     fs::create_dir_all(dir).map_err(|err| io_error(dir, &err))?;
     fs::set_permissions(dir, fs::Permissions::from_mode(0o700)).map_err(|err| io_error(dir, &err))
 }
 
+fn make_private(config: &Path) -> Result<PathBuf, EngineError> {
+    fs::set_permissions(config, fs::Permissions::from_mode(0o600))
+        .map_err(|err| io_error(config, &err))?;
+    Ok(config.to_path_buf())
+}
+
 impl super::BtrfsEngine {
     /// `<ctl>/<world_id>/oci/<service>`: the engine-owned bundle directory of one service pod.
-    ///
-    /// A caller planning a [`ServicePodSpec`] asks here instead of inventing a directory, so the
-    /// bundle can never land inside the world subvolume and `crun -b` always addresses it by the
-    /// guest path [`pod_bundle_guest`] names.
     pub fn pod_bundle_dir(
         &self,
         world: &WorldHandle,
@@ -152,7 +301,7 @@ impl super::BtrfsEngine {
         Self::pod_bundle_dir_of(&record.ctl_dir, service)
     }
 
-    fn pod_bundle_dir_of(ctl_dir: &Path, service: &str) -> Result<PathBuf, EngineError> {
+    pub(crate) fn pod_bundle_dir_of(ctl_dir: &Path, service: &str) -> Result<PathBuf, EngineError> {
         if !slipfork_world::is_valid_dns_label(service) {
             return Err(EngineError::InvalidWorldSpec {
                 reason: format!(
@@ -164,12 +313,39 @@ impl super::BtrfsEngine {
         Ok(ctl_dir.join("oci").join(service))
     }
 
+    /// Read the namespace joins the world init published (`namespaces.json`).
+    pub(crate) fn read_pod_namespaces(ctl_dir: &Path) -> Result<PodNamespaces, EngineError> {
+        let path = ctl_dir.join(crate::world_init::WORLD_INIT_NAMESPACES_FILE);
+        let raw = fs::read_to_string(&path).map_err(|err| EngineError::WorldInitFailed {
+            world: ctl_dir.display().to_string(),
+            reason: format!(
+                "cannot read the world's published namespace joins '{}': {err}\n  fix: restart \
+                 the world with `slipfork up` (the shared init exited before publishing its \
+                 namespaces)",
+                path.display()
+            ),
+        })?;
+        let published: PodNamespaces =
+            serde_json::from_str(&raw).map_err(|err| EngineError::WorldInitFailed {
+                world: ctl_dir.display().to_string(),
+                reason: format!(
+                    "invalid namespace publication '{}': {err}\n  fix: restart the world with \
+                     `slipfork up`",
+                    path.display()
+                ),
+            })?;
+        PodNamespaces::new(&published.userns, &published.netns, &published.ipcns).map_err(|err| {
+            EngineError::WorldInitFailed {
+                world: ctl_dir.display().to_string(),
+                reason: format!(
+                    "the world published a relative namespace join: {err}\n  fix: restart the \
+                     world with `slipfork up`"
+                ),
+            }
+        })
+    }
+
     /// Materialize and run one `Forkfile` service pod joined to the world's shared namespaces.
-    ///
-    /// The bundle is written from the spec by [`write_pod_bundle`], then `crun run` starts it as
-    /// the supervised child attached to the world's own `nsenter` prefix. Logs stream into the
-    /// service's retained ring, and the recorded container process is the same one the stop path
-    /// signals (`crun kill`), deletes, and whose bundle it removes.
     pub(crate) fn spawn_service_pod(
         &self,
         spawn: &ServiceSpawn<'_>,
@@ -180,16 +356,13 @@ impl super::BtrfsEngine {
             return Err(EngineError::InvalidWorldSpec {
                 reason: format!(
                     "service pod '{}' bundle '{}' is not the engine control-dir bundle '{}'\n  \
-                     fix: plan the pod with `slipfork up`'s engine bundle directory \
-                     (`pod_bundle_dir`), never a path inside the world subvolume",
+                     fix: plan the pod with the engine bundle directory (`pod_bundle_dir`)",
                     pod.service,
                     pod.bundle_dir.display(),
                     expected.display()
                 ),
             });
         }
-        let mut mapping = spawn.mounts.to_vec();
-        mapping.extend(pod_world_mounts(&self.state_dir, spawn.world_dir));
         let worktree = spawn
             .mounts
             .iter()
@@ -205,23 +378,48 @@ impl super::BtrfsEngine {
                     pod.cwd().display()
                 ),
             })?;
-        write_pod_bundle(self.host_uid, self.host_gid, &mapping, worktree, pod)?;
+        let runtime = self.pod_crun_surface(spawn);
+        let bundle_host = runtime.host_path(&pod.bundle_dir);
+        write_pod_bundle_at(self.host_uid, self.host_gid, worktree, pod, &bundle_host)?;
 
         let container_id = oci::container_id(spawn.world.seq(), &pod.service);
-        let runtime = CrunSurface::new(
-            self,
-            spawn.init_pid,
-            spawn.rootfs.crun_bin.clone(),
-            PathBuf::from(OCI_RUN_GUEST),
-        );
         runtime.run_bundle(
             spawn.env,
             &format!("service pod '{}'", pod.service),
+            &bundle_host,
             &pod.bundle_dir,
-            &pod_bundle_guest(&pod.service),
             &container_id,
             spawn.log,
             spawn.process,
         )
+    }
+
+    /// Materialize and run one legacy world process as a pod-shaped container.
+    pub(crate) fn spawn_world_process_pod(
+        &self,
+        spawn: &ServiceSpawn<'_>,
+        argv: &[String],
+        cwd: &Path,
+    ) -> Result<(), EngineError> {
+        let mut bundle =
+            WorldProcessBundle::for_service(self, spawn, argv, cwd)?.with_env(spawn.env.clone());
+        bundle.write()?;
+        bundle.run(spawn.log, spawn.process)
+    }
+
+    fn pod_crun_surface(&self, spawn: &ServiceSpawn<'_>) -> CrunSurface {
+        CrunSurface::new(
+            self,
+            spawn.init_pid,
+            Self::crun_host_bin(spawn.rootfs),
+            spawn.ctl_dir.join("oci-run"),
+            spawn.state_dir.to_path_buf(),
+        )
+    }
+
+    pub(crate) fn exec_bundle_slot(&self) -> u64 {
+        self.shared
+            .next_exec
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     }
 }

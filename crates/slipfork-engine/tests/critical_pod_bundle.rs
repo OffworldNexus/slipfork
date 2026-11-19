@@ -6,9 +6,11 @@
 //! Docker but no Btrfs: the bundle is pure data, and the `crun` boot journey is the next slice.
 //!
 //! The bundle proves the three facts the pod runtime owns: `process.cwd` is the service directory,
-//! `linux.namespaces[]` joins the shared init's injected `user`/`network`/`ipc` paths instead of
-//! creating its own, and **every path in the document is a world-visible guest path** (`root.path`,
-//! `process.cwd`, bind sources) — never a host path that only resolves because a mount is 1:1.
+//! `linux.namespaces[]` inherits the shared init's `ipc` namespace through the engine's `nsenter`
+//! prefix while creating an identity-mapped `user` namespace plus fresh `pid`/`mount`/`uts` (never
+//! a join `path`, never a `network` namespace), and **every path in the document is a
+//! world-visible guest path** (`root.path`, `process.cwd`, bind sources) — never a host path that
+//! only resolves because a mount is 1:1.
 //! No JSON is synthesized by hand.
 
 pub mod support;
@@ -19,16 +21,12 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
 use slipfork_engine::current_uid_gid;
-use slipfork_engine::pod_bundle_guest;
 use slipfork_engine::write_pod_bundle;
 use slipfork_world::{
-    MountMode, PodCommand, PodLocation, PodNamespaces, ServicePodSpec, VOLUMES_DIR, VolumePlan,
-    WorldMount,
+    PodCommand, PodLocation, PodNamespaces, ServicePodSpec, VOLUMES_DIR, VolumePlan,
 };
 
 const DATABASE_URL: &str = "postgres://pod_super_secret@127.0.0.1:5432/app";
-const ROOTFS_GUEST: &str = "/.slipfork/images/alpine/rootfs";
-const WORLD_GUEST: &str = "/.slipfork/world";
 
 /// The real namespace links of this test process, used as the injected shared-init joins.
 fn process_namespaces() -> PodNamespaces {
@@ -73,26 +71,6 @@ fn a_real_alpine_pod_bundle_binds_cwd_volumes_and_shared_namespaces() {
         "a pod bundle must live in the control directory, never the world subvolume"
     );
 
-    // The world's own mount table: the live checkout, the world subvolume's CoW volumes, and the
-    // rootfs cache. Every bundle path must resolve through it.
-    let world_mounts = [
-        WorldMount {
-            host_path: worktree.clone(),
-            guest_path: worktree.clone(),
-            mode: MountMode::ReadWrite,
-        },
-        WorldMount {
-            host_path: world_subvol.clone(),
-            guest_path: std::path::PathBuf::from(WORLD_GUEST),
-            mode: MountMode::ReadWrite,
-        },
-        WorldMount {
-            host_path: image.rootfs.clone(),
-            guest_path: std::path::PathBuf::from(ROOTFS_GUEST),
-            mode: MountMode::ReadOnly,
-        },
-    ];
-
     let volumes = VolumePlan::new(&world_subvol, "api", &service_dir, &[".venv".to_owned()])
         .expect("volume plan");
     let command = PodCommand::new(
@@ -117,15 +95,9 @@ fn a_real_alpine_pod_bundle_binds_cwd_volumes_and_shared_namespaces() {
     );
 
     let (uid, gid) = current_uid_gid();
-    let config_path = write_pod_bundle(uid, gid, &world_mounts, &worktree, &spec)
+    let config_path = write_pod_bundle(uid, gid, &worktree, &spec)
         .unwrap_or_else(|error| panic!("write the pod bundle:\n{error}"));
     assert_eq!(config_path, bundle_dir.join("config.json"));
-    assert_eq!(
-        pod_bundle_guest(&spec.service),
-        Path::new("/.slipfork/oci/api"),
-        "crun addresses the bundle by its guest path under the world-mounted ctl dir"
-    );
-
     let mode = |path: &Path| fs::metadata(path).expect("metadata").permissions().mode() & 0o777;
     assert_eq!(mode(&bundle_dir), 0o700, "the bundle carries secrets");
     assert_eq!(mode(&config_path), 0o600, "config.json carries secrets");
@@ -134,7 +106,8 @@ fn a_real_alpine_pod_bundle_binds_cwd_volumes_and_shared_namespaces() {
     let config: serde_json::Value = serde_json::from_str(&raw).expect("parse config.json");
     assert_eq!(config["ociVersion"], "1.0.2");
     assert_eq!(
-        config["root"]["path"], ROOTFS_GUEST,
+        config["root"]["path"],
+        image.rootfs.display().to_string(),
         "root.path must be the world-visible guest rootfs, never the host cache path"
     );
     assert_eq!(config["root"]["readonly"], true);
@@ -159,33 +132,45 @@ fn a_real_alpine_pod_bundle_binds_cwd_volumes_and_shared_namespaces() {
         "the bundle carries the spec's complete environment: {env:?}"
     );
 
+    // The pod inherits the world's IPC namespace through the engine's `nsenter` prefix (an OCI
+    // `path` join cannot be opened from inside the world) and creates its own identity-mapped
+    // user namespace plus a fresh pid/mount/uts set. It never names a join path and never creates
+    // a network namespace: it shares the world's `127.0.0.1`.
     let namespaces_json = config["linux"]["namespaces"]
         .as_array()
         .expect("namespaces");
-    let join = |kind: &str| {
-        namespaces_json
-            .iter()
-            .find(|entry| entry["type"] == kind)
-            .unwrap_or_else(|| panic!("missing namespace '{kind}': {namespaces_json:?}"))
-            .clone()
-    };
-    for (kind, path) in spec.namespace_joins() {
-        assert_eq!(
-            join(kind)["path"],
-            path.display().to_string(),
-            "namespace '{kind}' must join the injected shared-init path"
-        );
-    }
-    for fresh in ["pid", "mount", "uts"] {
-        assert!(
-            join(fresh)["path"].is_null(),
-            "a pod creates its own '{fresh}' namespace"
-        );
-    }
-    assert_eq!(namespaces_json.len(), 6, "{namespaces_json:?}");
+    let kinds: Vec<&str> = namespaces_json
+        .iter()
+        .map(|entry| entry["type"].as_str().expect("namespace type"))
+        .collect();
+    assert_eq!(
+        kinds,
+        ["user", "pid", "mount", "uts"],
+        "a pod creates exactly these namespaces and inherits `ipc`: {namespaces_json:?}"
+    );
     assert!(
-        config["linux"]["uidMappings"].is_null(),
-        "joining the shared user namespace must not declare its own identity map"
+        namespaces_json.iter().all(|entry| entry["path"].is_null()),
+        "no namespace may be joined by path from inside the world: {namespaces_json:?}"
+    );
+    assert!(
+        !kinds.contains(&"network"),
+        "a pod shares the world's `127.0.0.1` and creates no network namespace: {namespaces_json:?}"
+    );
+    assert!(
+        spec.namespace_joins()
+            .iter()
+            .any(|(kind, _path)| *kind == "ipc"),
+        "the pod spec still supplies the shared-init IPC join"
+    );
+    assert_eq!(
+        config["linux"]["uidMappings"],
+        serde_json::json!([{ "containerID": uid, "hostID": uid, "size": 1 }]),
+        "the pod creates an identity-mapped user namespace"
+    );
+    assert_eq!(
+        config["linux"]["gidMappings"],
+        serde_json::json!([{ "containerID": gid, "hostID": gid, "size": 1 }]),
+        "the pod creates an identity-mapped group namespace"
     );
 
     let binds: Vec<(String, String, Vec<String>)> = config["mounts"]
@@ -231,7 +216,11 @@ fn a_real_alpine_pod_bundle_binds_cwd_volumes_and_shared_namespaces() {
     assert_eq!(
         volume,
         &(
-            format!("{WORLD_GUEST}/{VOLUMES_DIR}/api/.venv"),
+            world_subvol
+                .join(VOLUMES_DIR)
+                .join("api/.venv")
+                .display()
+                .to_string(),
             volume_target.clone(),
             vec!["rw".to_owned(), "rbind".to_owned()],
         ),

@@ -1848,3 +1848,46 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-19T13:44 [M3.32.2.2.1.3.1] (lead) attempt 2/3 started
 - 2026-11-19T13:44 [M3.32.2.2.1.3.1] (lead) status ready -> active
 - 2026-11-19T13:49 [M3.32.2.2.1.3.1] (lead) status active -> done
+- 2026-11-19T13:49 [M3.32.2.2.1.3.2] (lead) status ready -> active
+- 2026-11-19T13:49 [M3.32.2.2.1.3.2] (lead) attempt 1/3 started
+- 2026-11-19T13:49 [M3.32.2.2.1.3.2] (lead) base 67386f22fc9de75f7a9cbe912f184caa7b5803e6
+- 2026-11-19T13:50 [M3.32.2.2.1.3.2] (lead) edited fields
+- 2026-11-19T13:50 [M3.32.2.2.1.3.2.1] (lead) created (task) Init + coordinate flip: drop pivot_root/overlay, publish namespaces.json, host-coordinate bundles, pod-backed legacy verbs
+- 2026-11-19T13:50 [M3.32.2.2.1.3.2.2] (lead) created (task) Retire WorldProcess verbs and rebase protected journeys onto explicit service pods
+- 2026-11-19T13:50 [M3.32.2.2.1.3.2.1] (lead) status ready -> active
+- 2026-11-19T13:50 [M3.32.2.2.1.3.2.1] (lead) attempt 1/3 started
+- 2026-11-19T13:50 [M3.32.2.2.1.3.2.1] (lead) base 67386f22fc9de75f7a9cbe912f184caa7b5803e6
+- 2026-11-19T14:04 [M3.32.2.2.1.3.2.1] (lead) edited fields
+- 2026-11-19T14:04 [M3.32.2.2.1.3.2.1] (lead) unblocked: apparmor profile now in scope (coordinate flip moved crun to a host rootfs path)
+- 2026-11-19T15:00 ESCALATION #28 -> architect for M3.32.2.2.1.3.2.1 by lead: pod flip writes resolved remote secrets into OCI config.json under state_dir; crun copies it into its --root, so critica
+- 2026-11-19T15:00 [M3.32.2.2.1.3.2.1] (lead) status active -> blocked: architect: secret env in OCI config leaks to disk (oci/ + oci-run/ copies)
+- 2026-11-19T15:31 [M3.32.2.2.1.3.2.1] (lead) status blocked -> ready: architect decision: world-mntns tmpfs over ctl/{oci,oci-run}
+- 2026-11-19T15:31 [M3.32.2.2.1.3.2.1] (lead) attempt 2/3 started
+- 2026-11-19T15:31 [M3.32.2.2.1.3.2.1] (lead) status ready -> active
+- 2026-11-19T15:31 [M3.32.2.2.1.3.2.1] (lead) architect: mount per-world mntns tmpfs over ctl/{oci,oci-run}; translate host writes via /proc/<init>/root; restore WorldProcess respawn for update_service_env
+- 2026-11-19T16:00 [M3.32.7] (lead) created (task) slipfork-forkfile: lossless snow.yml -> Forkfile converter (upstream Kerfufoo schema, ${{ }} templates, self-verified)
+- 2026-11-19T16:00 [M3.32.8] (lead) created (task) slipfork migrate CLI (file/output/--stdout/--force, crisp summary) + dx-cli-0.1.0 spec row
+- 2026-11-19T16:00 [M3.32.9] (lead) created (task) Migrate docs: docs/reference/cli.md, getting-started, CHANGELOG + legacy demo migration rehearsal
+- 2026-11-19T16:00 [M3.32.3] (lead) edited fields
+- 2026-11-19T16:00 [M3.32.6] (lead) edited fields
+- 2026-11-19T16:03 [M3.32.10] (lead) created (task) slipfork_forkfile::fmt + crates/slipfork-lsp (zero-tokio framed stdio, UTF-16) + slipfork lsp
+- 2026-11-19T16:03 [M3.32.11] (lead) created (task) editors/tree-sitter-forkfile grammar + editors/zed extension + tools/check_zed_extension.py
+- 2026-11-19T16:03 [M3.32.12] (lead) created (task) Forkfile syntax highlighting in Zensical docs (forkfile-highlight.js + WCAG AA CSS + JS tests)
+- 2026-11-19T16:03 [M3.32.6] (lead) edited fields
+- 2026-11-19T16:03 [M3.32] (lead) owner additions scheduled: migrate (M3.32.7-9), LSP (M3.32.10), tree-sitter/Zed (M3.32.11), docs highlighting (M3.32.12)
+- 2026-11-19T17:40 [M3.32.2.2.1.3.2.1] (implementer) do_vm test RC=0: critical_btrfs_live 1, critical_engine 21, critical_oci_runtime 4, critical_edge_live 3, critical_btrfs_live(cli-crate) 7, critical_cli 24, cri
+- 2026-11-19T17:41 [M3.32.2.2.1.3.2.1] (lead) edited fields
+- 2026-11-19T17:41 [M3.32.2.2.1.3.2.1] (lead) lead: new pod suite must run in the VM gate; do_vm.py SUITES in scope
+- 2026-11-19T18:01 [M3.32.2.2.1.3.2.1] (implementer) do_vm test RC=0 (12 suites): critical_btrfs_live 1, critical_engine 21, critical_oci_runtime 4, critical_pod_runtime 1, critical_edge_live 3, critical_btrfs_liv
+- 2026-11-19T18:01 [M3.32.2.2.1.3.2.1] (lead) status active -> review
+- 2026-11-19T18:03 [M3.32.2.2.1.3.2.1] (lead) status review -> ready: triad: 3 BLOCKER (shared ns doc, script not staged, IPC join unproven) + 12 MAJOR
+- 2026-11-19T18:03 [M3.32.2.2.1.3.2.1] (lead) attempt 3/3 started
+- 2026-11-19T18:03 [M3.32.2.2.1.3.2.1] (lead) status ready -> active
+- 2026-11-19T18:23 [M3.32.2.2.1.3.2.1] (implementer) do_vm test RC=0 (12 suites): critical_btrfs_live 1, critical_engine 21, critical_oci_runtime 4, critical_pod_runtime 1, critical_edge_live 3, critical_btrfs_liv
+- 2026-11-19T18:23 [M3.32.2.2.1.3.2.1] (lead) edited fields
+- 2026-11-19T18:23 [M3.32.2.2.1.3.2.1] (lead) attempt 1/5 started
+- 2026-11-19T18:23 [M3.32.2.2.1.3.2.1] (lead) status active -> active
+- 2026-11-19T18:23 [M3.32.2.2.1.3.2.1] (lead) final structural cleanup: container.rs split, WorldProcessBundle, unexport write_pod_bundle
+- 2026-11-19T18:42 [M3.32.2.2.1.3.2.1] (implementer) do_vm test RC=0 (12 suites): critical_btrfs_live 1, critical_engine 21, critical_oci_runtime 4, critical_pod_runtime 1, critical_edge_live 3, critical_btrfs_liv
+- 2026-11-19T18:42 [M3.32.2.2.1.3.2.1] (lead) arch PASS; defer one-line doc on write_pod_bundle (bundle-synthesis-only) to M3.32.2.2.1.3.2.2
+- 2026-11-19T18:42 [M3.32.2.2.1.3.2.1] (lead) status active -> done

@@ -264,16 +264,6 @@ pub(crate) fn host_child_pids(pid: u32) -> io::Result<Vec<u32>> {
         .collect())
 }
 
-/// Wait (bounded) for `supervisor_pid`'s first child — the process `nsenter --pid` forked into the
-/// world's PID namespace.
-pub(crate) fn wait_for_inner_pid(supervisor_pid: u32, grace: Duration) -> Option<u32> {
-    poll_until(grace, || {
-        host_child_pids(supervisor_pid)
-            .ok()
-            .and_then(|children| children.first().copied())
-    })
-}
-
 /// `SIGKILL` `child` (if still running) and reap it within `grace`, surfacing any `try_wait`,
 /// `kill`, or timeout failure as a typed [`EngineError::Execution`] naming `label`.
 pub(crate) fn kill_and_reap_child(

@@ -1,5 +1,6 @@
-//! Daemonless `crun` execution for backing-service containers: the pinned static binary, the OCI
-//! bundle, and every `run`/`exec`/`kill`/`delete` invocation (`ADR-0009` §§2–3).
+//! Daemonless `crun` service containers: OCI bundle materialization plus the engine-side `spawn`
+//! and `exec` entry points (`ADR-0009` §§2–3). The `crun` argv/state surface lives in
+//! [`super::crun`].
 
 #![forbid(unsafe_code)]
 
@@ -8,25 +9,21 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::Ordering;
-use std::sync::{Arc, Mutex};
 
 use slipfork_world::rootfs::BackingServiceKey;
 use slipfork_world::{
-    EngineError, ExecEnv, ExecOutput, MountMode, ServiceHandle, ServiceLogs, ServiceState,
-    StateSubdirMount, StreamChunk, StreamSource, WorldEntryCommand, WorldMount,
+    EngineError, ExecEnv, ExecOutput, MountMode, ServiceHandle, ServiceState, StateSubdirMount,
+    StreamChunk, WorldEntryCommand, WorldMount,
 };
 
 use crate::child_env;
-use crate::child_io::{run_streamed, run_streamed_with_input, spawn_log_reader};
+use crate::child_io::{run_streamed, run_streamed_with_input};
 use crate::oci::{self, ContainerBundle, ContainerMount};
-use crate::world_init::{
-    GROUP_GUEST, OCI_BUNDLES_GUEST, OCI_RUN_GUEST, PASSWD_GUEST, WORLD_STATE_GUEST,
-    image_guest_rootfs, world_guest_for_host,
-};
 
 use super::BtrfsEngine;
+use super::crun::CrunSurface;
 use super::io_error;
-use super::services::{ServiceProcess, ServiceSpawn};
+use super::services::ServiceSpawn;
 
 /// How `crun exec` composes the exec process environment.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -37,8 +34,6 @@ enum ExecEnvMode {
     /// forwarded and no resolved secret ever reaches a command line.
     ContainerConfig,
 }
-
-/// The `crun` invocation coordinates of one running backing-service container.
 #[derive(Debug, Clone)]
 pub(crate) struct ContainerProcess {
     /// Stable `crun` container id.
@@ -48,143 +43,6 @@ pub(crate) struct ContainerProcess {
     /// Host path of the synthesized bundle (removed after the container exits).
     pub(crate) bundle_host: PathBuf,
 }
-
-/// One world's `crun` execution surface: the exact `nsenter` → `crun` prefix resolved once at
-/// construction (world PID 1, pinned static `crun`, disabled cgroup manager, state root).
-///
-/// This type is the **sole** `crun` argv owner in the engine, and it is also the single writer of
-/// per-service OCI bundles: a backing-service container gets an id-addressed bundle in the world
-/// control dir, and a `ServicePod` gets `ctl/<world_id>/oci/<service>/config.json` from its
-/// injected [`ServicePodSpec`].
-#[derive(Debug, Clone)]
-pub struct CrunSurface {
-    prefix: Vec<String>,
-}
-
-impl CrunSurface {
-    pub(crate) fn new(
-        engine: &BtrfsEngine,
-        init_pid: u32,
-        crun_guest: PathBuf,
-        crun_root_guest: PathBuf,
-    ) -> Self {
-        // `crun` is a world binary and each container's own cwd comes from its OCI bundle, so the
-        // shared entry prefix only has to land on the app stage root.
-        let mut prefix = engine.entry_prefix(init_pid, &[], Path::new("/"));
-        prefix.push(crun_guest.display().to_string());
-        prefix.extend([
-            "--cgroup-manager=disabled".to_owned(),
-            "--root".to_owned(),
-            crun_root_guest.display().to_string(),
-        ]);
-        Self { prefix }
-    }
-
-    /// The one `nsenter` → `crun` prefix every invocation (`run`, `exec`, `kill`, `delete`) reuses.
-    pub(crate) fn prefix(&self) -> Vec<String> {
-        self.prefix.clone()
-    }
-
-    /// A `crun` invocation that runs inside the world's mount/net/ipc/pid namespaces.
-    pub(crate) fn command(&self, env: &BTreeMap<String, String>) -> Command {
-        let mut command = Command::new("nsenter");
-        command
-            .args(&self.prefix)
-            .env_clear()
-            .envs(env)
-            .env("SLIPFORK_WORLD_STATE", WORLD_STATE_GUEST);
-        command
-    }
-
-    fn control(&self, args: &[&str]) -> Command {
-        let mut command = Command::new("nsenter");
-        command
-            .args(&self.prefix)
-            .args(args)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
-        command
-    }
-
-    fn run_control(&self, args: &[&str], action: &str, id: &str) -> Result<(), EngineError> {
-        let status = self.control(args).status().map_err(|err| {
-            EngineError::Execution(format!(
-                "cannot run `crun {action}` for container '{id}': {err}"
-            ))
-        })?;
-        if status.success() {
-            Ok(())
-        } else {
-            Err(EngineError::Execution(format!(
-                "`crun {action}` for container '{id}' exited with {status}"
-            )))
-        }
-    }
-
-    /// `crun kill` one container; the caller decides whether a refusal is fatal.
-    pub(crate) fn signal(&self, id: &str, signal: &str) -> Result<(), EngineError> {
-        self.run_control(&["kill", id, signal], "kill", id)
-    }
-
-    /// `crun delete --force` after the container's supervisor exited.
-    pub(crate) fn delete(&self, id: &str) -> Result<(), EngineError> {
-        self.run_control(&["delete", "--force", id], "delete", id)
-    }
-
-    /// Start one container from an already-written bundle and record its supervision handles.
-    ///
-    /// The one `crun run` implementation: `crun` is the supervised child, both pipes feed the
-    /// retained log ring, and the recorded container is exactly what the stop path later signals
-    /// (`crun kill`), deletes, and whose bundle directory it removes. `what` names the service in
-    /// the failure diagnostic (never the argv, which may carry resolved secrets for other
-    /// runtimes).
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn run_bundle(
-        &self,
-        env: &BTreeMap<String, String>,
-        what: &str,
-        bundle_host: &Path,
-        bundle_guest: &Path,
-        id: &str,
-        log: &ServiceLogs,
-        process: &Arc<Mutex<ServiceProcess>>,
-    ) -> Result<(), EngineError> {
-        let mut command = self.command(env);
-        command
-            .args([
-                "run".to_owned(),
-                "-b".to_owned(),
-                bundle_guest.display().to_string(),
-                id.to_owned(),
-            ])
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        let mut child = command.spawn().map_err(|err| {
-            EngineError::Execution(format!(
-                "cannot start {what}: {err}\n  fix: run `slipfork doctor`; the pinned static \
-                 `crun` and rootfs must exist in the world"
-            ))
-        })?;
-        if let Some(stdout) = child.stdout.take() {
-            spawn_log_reader(stdout, StreamSource::Stdout, log.clone());
-        }
-        if let Some(stderr) = child.stderr.take() {
-            spawn_log_reader(stderr, StreamSource::Stderr, log.clone());
-        }
-        if let Ok(mut process) = process.lock() {
-            process.supervisor = Some(child);
-            process.container = Some(ContainerProcess {
-                id: id.to_owned(),
-                runtime: self.clone(),
-                bundle_host: bundle_host.to_path_buf(),
-            });
-        }
-        Ok(())
-    }
-}
-
 /// Forward exactly the environment the exec process needs, never a pod's resolved secrets.
 fn append_exec_env(
     command: &mut Command,
@@ -226,7 +84,7 @@ impl BtrfsEngine {
                 ),
             }
         })?;
-        let image_guest = image_guest_rootfs(&oci.digest)?;
+        let image_rootfs = oci.rootfs.clone();
         if !oci.rootfs.is_dir() {
             return Err(EngineError::InvalidWorldSpec {
                 reason: format!(
@@ -236,11 +94,18 @@ impl BtrfsEngine {
             });
         }
         let container_id = oci::container_id(spawn.world.seq(), &spawn.spec.id);
-        // Bundles and `crun` state live in the control directory, never in the world subvolume, so
-        // a seal never captures OCI runtime state (`ADR-0010` §2).
-        let bundle_host = spawn.ctl_dir.join("oci").join(&container_id);
+        // Bundles and `crun` state live in the world's private tmpfs, never in the world
+        // subvolume and never on the host state directory.
+        let runtime = CrunSurface::new(
+            self,
+            spawn.init_pid,
+            Self::crun_host_bin(spawn.rootfs),
+            spawn.ctl_dir.join("oci-run"),
+            spawn.state_dir.to_path_buf(),
+        );
+        let bundle_guest = spawn.ctl_dir.join("oci").join(&container_id);
+        let bundle_host = runtime.host_path(&bundle_guest);
         fs::create_dir_all(&bundle_host).map_err(|err| io_error(&bundle_host, &err))?;
-        let bundle_guest = PathBuf::from(OCI_BUNDLES_GUEST).join(&container_id);
 
         let mut mounts = Vec::with_capacity(state_mounts.len() + readonly_mounts.len());
         for state in state_mounts {
@@ -252,7 +117,7 @@ impl BtrfsEngine {
             fs::create_dir_all(&host).map_err(|err| io_error(&host, &err))?;
             oci::ensure_container_destination(oci, image, &state.container_path)?;
             mounts.push(ContainerMount {
-                source: PathBuf::from(WORLD_STATE_GUEST).join(&state.host_subdir),
+                source: host.clone(),
                 destination: state.container_path.clone(),
                 read_only: false,
             });
@@ -270,16 +135,18 @@ impl BtrfsEngine {
             oci::validate_container_path(&readonly.guest_path)
                 .map_err(|reason| EngineError::InvalidWorldSpec { reason })?;
             oci::ensure_container_destination(oci, image, &readonly.guest_path)?;
-            let source =
-                world_guest_for_host(spawn.mounts, &readonly.host_path).ok_or_else(|| {
-                    EngineError::InvalidWorldSpec {
-                        reason: format!(
-                            "readonly mount '{}' is not visible inside the world; add it to \
-                             WorldSpec.mounts as MountMode::ReadOnly",
-                            readonly.host_path.display()
-                        ),
-                    }
-                })?;
+            // The world mount namespace is a 1:1 copy of the host tree, so a read-only mount is
+            // its host path; the target must exist for the container to bind it.
+            if !readonly.host_path.exists() {
+                return Err(EngineError::InvalidWorldSpec {
+                    reason: format!(
+                        "readonly mount '{}' does not exist; stage it before spawning the \
+                         container",
+                        readonly.host_path.display()
+                    ),
+                });
+            }
+            let source = readonly.host_path.clone();
             for state in state_mounts {
                 if oci::paths_overlap(&readonly.guest_path, &state.container_path) {
                     return Err(EngineError::InvalidWorldSpec {
@@ -301,7 +168,7 @@ impl BtrfsEngine {
 
         oci::write_bundle(&ContainerBundle {
             bundle_dir: &bundle_host,
-            image_rootfs_guest: &image_guest,
+            image_rootfs: &image_rootfs,
             argv,
             env: spawn.env,
             uid: self.host_uid,
@@ -309,17 +176,11 @@ impl BtrfsEngine {
             mounts: &mounts,
             namespace_joins: &[],
             cwd: Path::new("/"),
-            passwd_guest: Some(Path::new(PASSWD_GUEST)),
-            group_guest: Some(Path::new(GROUP_GUEST)),
+            passwd_guest: Some(&spawn.ctl_dir.join("etc").join("passwd")),
+            group_guest: Some(&spawn.ctl_dir.join("etc").join("group")),
         })
         .map_err(|err| io_error(&bundle_host, &err))?;
 
-        let runtime = CrunSurface::new(
-            self,
-            spawn.init_pid,
-            spawn.rootfs.crun_bin.clone(),
-            PathBuf::from(OCI_RUN_GUEST),
-        );
         runtime.run_bundle(
             spawn.env,
             &format!("backing-service container '{}' ({image})", spawn.spec.id),

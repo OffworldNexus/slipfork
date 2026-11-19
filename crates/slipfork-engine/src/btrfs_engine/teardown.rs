@@ -13,7 +13,7 @@ use slipfork_world::{EngineError, ServiceLogs, ServiceState, WorldHandle};
 use crate::supervise::SupervisedProcess;
 use crate::wait::D_STATE_KILL_GRACE;
 
-use super::services::{RuntimeKind, ServiceProcess, ServiceRecord};
+use super::services::{ServiceProcess, ServiceRecord};
 use super::{BtrfsEngine, WorldSubvolume, io_error};
 
 /// Grace period between `SIGTERM` and `SIGKILL` when stopping a service.
@@ -28,7 +28,6 @@ pub(crate) const WORLD_STOP_KILL_GRACE: Duration = Duration::from_secs(10);
 /// One service's teardown handles, taken out of the world record before `destroy_world` releases
 /// the world's processes and storage.
 pub(crate) struct ServiceTeardown {
-    pub(crate) runtime_kind: RuntimeKind,
     pub(crate) id: String,
     pub(crate) state: Arc<AtomicU8>,
     pub(crate) log: ServiceLogs,
@@ -38,7 +37,6 @@ pub(crate) struct ServiceTeardown {
 impl ServiceTeardown {
     pub(crate) fn from_record(id: &str, service: &ServiceRecord) -> Self {
         Self {
-            runtime_kind: service.runtime_kind,
             id: id.to_owned(),
             state: Arc::clone(&service.state),
             log: service.log.clone(),
@@ -48,26 +46,21 @@ impl ServiceTeardown {
 }
 
 impl BtrfsEngine {
-    /// Stop `services` in `ADR-0009` §3 order: app components first, then backing-service
-    /// containers, so no app request observes a half-shut-down database.
+    /// Stop `services` in `ADR-0009` §3 order (app components, then backing-service containers) so
+    /// no app request observes a half-shut-down database.
     pub(crate) fn stop_services_with_grace(
         &self,
         services: &[ServiceTeardown],
         grace: Duration,
     ) -> Result<(), EngineError> {
-        for kind in [RuntimeKind::WorldProcess, RuntimeKind::OciContainer] {
-            for service in services
-                .iter()
-                .filter(|service| service.runtime_kind == kind)
-            {
-                self.stop_service_process(
-                    &service.id,
-                    &service.state,
-                    &service.log,
-                    &service.process,
-                    grace,
-                )?;
-            }
+        for service in services {
+            self.stop_service_process(
+                &service.id,
+                &service.state,
+                &service.log,
+                &service.process,
+                grace,
+            )?;
         }
         Ok(())
     }
@@ -115,107 +108,75 @@ impl BtrfsEngine {
     ) -> Result<(), EngineError> {
         let running =
             ServiceState::from_bits(state.load(Ordering::Relaxed)) == ServiceState::Running;
-        let (mut supervisor, process_group, container) = {
+        let (supervisor, container) = {
             let Ok(mut process) = process.lock() else {
                 return Err(EngineError::Execution(format!(
                     "service '{id}' process state is poisoned"
                 )));
             };
-            (
-                process.supervisor.take(),
-                process.process_group.clone(),
-                process.container.clone(),
-            )
+            (process.supervisor.take(), process.container.clone())
         };
-        // A row that already left `Running` still owns its group: the supervised child may have
-        // exited while a descendant kept running (the `sh`/`python3` shape), so the early return
-        // only applies when there is nothing left to reap.
-        if !running && supervisor.is_none() && process_group.is_none() && container.is_none() {
+        if !running && supervisor.is_none() && container.is_none() {
             log.close();
             return Ok(());
         }
 
-        if let Some(container) = &container {
-            // A backing-service container is signalled through `crun` (not a host process group)
-            // and its supervisor is the `nsenter` launcher.
-            let mut supervised = SupervisedProcess::from_parts(supervisor.take(), None);
-            if grace > Duration::ZERO {
-                // A container that already exited refuses `crun kill TERM`; the supervisor exit
-                // observed below is the authority, so the refusal is not an error of the stop.
-                let _ = container.runtime.signal(&container.id, "TERM");
-            }
-            let deadline = Instant::now() + grace;
-            let mut stopped = grace > Duration::ZERO;
-            if stopped {
-                stopped = supervised.wait_exit(deadline.saturating_duration_since(Instant::now()));
-            }
-            if !stopped {
-                let killed = container.runtime.signal(&container.id, "KILL");
-                if let Err(err) =
-                    supervised.reap_child(SERVICE_STOP_GRACE, &format!("service '{id}'"))
+        let Some(container) = container else {
+            // A spawn that never produced a container (a refused pod) still owns its supervisor.
+            let Some(child) = supervisor else {
+                return finish_service_stop(state, log, Ok(()));
+            };
+            let mut supervised = SupervisedProcess::from_parts(Some(child), None);
+            let label = format!("service '{id}' supervisor");
+            let outcome = supervised.stop(grace, SERVICE_STOP_GRACE, D_STATE_KILL_GRACE, &label);
+            if let Err(err) = outcome {
+                if let Some(child) = supervised.into_child()
+                    && let Ok(mut guard) = process.lock()
                 {
-                    // The supervisor is restored so a retry can still signal it, and the service
-                    // stays `Running` with its log open: marking it `Stopped` here would make a
-                    // retried `teardown_world` short-circuit at the "not Running" guard above
-                    // while the supervisor still lives.
-                    if let Some(child) = supervised.into_child()
-                        && let Ok(mut guard) = process.lock()
-                    {
-                        guard.supervisor = Some(child);
-                    }
-                    return finish_service_stop(state, log, Err(err));
+                    guard.supervisor = Some(child);
                 }
-                // The supervisor is reaped; a refused `crun kill` is the container's own anomaly.
-                killed?;
-            }
-            container.runtime.delete(&container.id)?;
-            let _ = fs::remove_dir_all(&container.bundle_host);
-            if let Ok(mut guard) = process.lock() {
-                guard.process_group = None;
-                // The bundle is gone, so a repeated stop sees nothing left to signal.
-                guard.container = None;
+                return finish_service_stop(state, log, Err(err));
             }
             return finish_service_stop(state, log, Ok(()));
-        }
-
-        // A world process is only recorded after a successful group pin:
-        // `spawn_world_process` stops and fails closed otherwise, so a row without a group has no
-        // honest signal target and must never be reported stopped.
-        let Some(group) = process_group else {
-            if let Some(child) = supervisor.take()
-                && let Ok(mut guard) = process.lock()
-            {
-                guard.supervisor = Some(child);
-            }
-            return finish_service_stop(
-                state,
-                log,
-                Err(EngineError::Execution(format!(
-                    "service '{id}' has no pinned process group; spawn_world_process records a \
-                     group or fails closed rather than leave an unsignalable world process"
-                ))),
-            );
         };
-        let label = format!("service '{id}' process group {}", group.pid);
-        let mut supervised = SupervisedProcess::from_parts(supervisor.take(), Some(group));
-        if let Err(err) = supervised.stop(grace, SERVICE_STOP_GRACE, D_STATE_KILL_GRACE, &label) {
-            // The supervisor is restored so a retry can still signal it, and the service stays
-            // `Running` with its log open (see the container branch above).
-            if let Some(child) = supervised.into_child()
-                && let Ok(mut guard) = process.lock()
-            {
-                guard.supervisor = Some(child);
-            }
-            return finish_service_stop(state, log, Err(err));
+
+        // Every service is a container: it is signalled through `crun` (never a host process
+        // group) and its supervisor is the `nsenter` launcher.
+        let mut supervised = SupervisedProcess::from_parts(supervisor, None);
+        if grace > Duration::ZERO {
+            // A container that already exited refuses `crun kill TERM`; the supervisor exit
+            // observed below is the authority, so the refusal is not an error of the stop.
+            let _ = container.runtime.signal(&container.id, "TERM");
         }
-        // Nothing in the group survives: drop the handle so a repeated stop (idempotent by
-        // contract) never signals a host pgid the kernel may have recycled for a new process.
+        let deadline = Instant::now() + grace;
+        let mut stopped = grace > Duration::ZERO;
+        if stopped {
+            stopped = supervised.wait_exit(deadline.saturating_duration_since(Instant::now()));
+        }
+        if !stopped {
+            let killed = container.runtime.signal(&container.id, "KILL");
+            if let Err(err) = supervised.reap_child(SERVICE_STOP_GRACE, &format!("service '{id}'"))
+            {
+                // The supervisor is restored so a retry can still signal it, and the service
+                // stays `Running` with its log open.
+                if let Some(child) = supervised.into_child()
+                    && let Ok(mut guard) = process.lock()
+                {
+                    guard.supervisor = Some(child);
+                }
+                return finish_service_stop(state, log, Err(err));
+            }
+            // The supervisor is reaped; a refused `crun kill` is the container's own anomaly.
+            killed?;
+        }
+        container.runtime.delete(&container.id)?;
+        let _ = fs::remove_dir_all(&container.bundle_host);
         if let Ok(mut guard) = process.lock() {
-            guard.process_group = None;
+            // The bundle is gone, so a repeated stop sees nothing left to signal.
+            guard.container = None;
         }
         finish_service_stop(state, log, Ok(()))
     }
-
     pub(crate) fn restore_launcher(&self, world: &WorldHandle, launcher: std::process::Child) {
         if let Ok(mut worlds) = self.lock()
             && let Ok(record) = self.owned(&mut worlds, world)

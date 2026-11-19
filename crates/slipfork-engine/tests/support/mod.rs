@@ -10,7 +10,7 @@
 //! a genuinely dead private helper still trips the `dead_code` lint.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
@@ -468,6 +468,33 @@ impl WorldFixture {
                 &mut |chunk| chunks.push(chunk),
             )
             .expect("exec inside world")
+    }
+
+    /// Run `script` through the world's own namespaces (`entry_command`), not a container.
+    ///
+    /// This is the only surface that sees the world init as `/proc/1`; containers have their own
+    /// PID namespace. Read-only introspection journeys use it to prove the world identity.
+    pub fn world_sh(&self, world: &WorldHandle, script: &str) -> ExecOutput {
+        let entry = self
+            .engine
+            .entry_command(world, &self.repo)
+            .expect("entry command for a live world");
+        let output = Command::new(&entry.program)
+            .args(&entry.args_prefix)
+            .args(["sh", "-c", script])
+            .env_clear()
+            .env("PATH", "/usr/local/bin:/usr/bin:/bin")
+            .current_dir(&entry.cwd)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .expect("run the world shell");
+        ExecOutput {
+            exit_code: output.status.code().unwrap_or(1),
+            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+        }
     }
 
     pub fn service(&self, world: &WorldHandle, spec: ServiceSpec) -> ServiceHandle {

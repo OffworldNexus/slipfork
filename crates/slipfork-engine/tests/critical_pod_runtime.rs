@@ -11,7 +11,6 @@ pub mod support;
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -24,14 +23,30 @@ use support::WorldFixture;
 /// Port the pod's readiness contract waits for inside the joined world network namespace.
 const POD_PORT: u16 = 8081;
 
-/// Prove the bundle joins the shared init's namespace at `path`.
-fn assert_namespace_join(config: &serde_json::Value, kind: &str, path: &Path) {
-    let joined = config["linux"]["namespaces"]
+/// The bundle creates its own user/pid/mount/uts namespaces and inherits the world's IPC and
+/// network namespaces from the engine's `nsenter` prefix (an OCI `path` join is unreadable inside
+/// the world).
+fn assert_fresh_namespaces(config: &serde_json::Value) {
+    let namespaces = config["linux"]["namespaces"]
         .as_array()
-        .expect("namespaces")
+        .expect("namespaces");
+    let kinds: Vec<&str> = namespaces
         .iter()
-        .any(|entry| entry["type"] == kind && entry["path"] == path.display().to_string());
-    assert!(joined, "'{kind}' must join {}: {config}", path.display());
+        .map(|entry| entry["type"].as_str().expect("type"))
+        .collect();
+    assert_eq!(
+        kinds,
+        ["user", "pid", "mount", "uts"],
+        "IPC/network are inherited from the world, never recreated: {namespaces:?}"
+    );
+    assert!(
+        namespaces.iter().all(|entry| entry["path"].is_null()),
+        "no OCI path join may reach the bundle: {namespaces:?}"
+    );
+    assert!(
+        config["linux"]["uidMappings"].is_array(),
+        "the identity-mapped user namespace must declare its map"
+    );
 }
 
 /// Build one pod spec for `service`, optionally overriding its bundle/cwd/argv.
@@ -52,7 +67,10 @@ fn pod_spec(
         PodCommand::new(
             cwd,
             argv,
-            BTreeMap::from([("POD_TOKEN".to_owned(), "pod-secret-value".to_owned())]),
+            BTreeMap::from([
+                ("PATH".to_owned(), "/usr/local/bin:/usr/bin:/bin".to_owned()),
+                ("POD_TOKEN".to_owned(), "pod-secret-value".to_owned()),
+            ]),
         ),
     )
     .expect("service pod spec")
@@ -106,31 +124,41 @@ fn a_service_pod_boots_into_the_world_namespaces_and_runs_crun_exec() {
         .expect("spawn the service pod and wait for its readiness port");
 
     // The bundle the engine wrote is the container's real declaration: cwd, namespace joins, mode.
+    // It lives in the world's private tmpfs, so the host mountpoint stays empty and only an
+    // in-world `exec` can read it.
     let config_path = bundle.join("config.json");
-    let config: serde_json::Value =
-        serde_json::from_str(&fs::read_to_string(&config_path).expect("bundle config"))
-            .expect("bundle json");
+    assert!(
+        !config_path.exists(),
+        "the bundle config must never appear on the host state directory: {}",
+        config_path.display()
+    );
+    let config_text = fx.world_sh(&world, &format!("cat '{}'", config_path.display()));
+    assert_eq!(
+        config_text.exit_code, 0,
+        "read the in-world bundle config: {}",
+        config_text.stderr
+    );
+    let config: serde_json::Value = serde_json::from_str(&config_text.stdout).expect("bundle json");
+    assert_eq!(
+        fx.world_sh(&world, &format!("stat -c %a '{}'", config_path.display()))
+            .stdout
+            .trim(),
+        "600",
+        "the bundle carries resolved secrets"
+    );
     assert_eq!(
         config["process"]["cwd"],
         service_dir.display().to_string(),
         "process.cwd must be the service directory"
     );
-    assert_namespace_join(&config, "user", &namespaces.userns);
-    assert_namespace_join(&config, "network", &namespaces.netns);
-    assert_namespace_join(&config, "ipc", &namespaces.ipcns);
+    assert_fresh_namespaces(&config);
     assert_eq!(
         config["process"]["env"],
-        serde_json::json!(["POD_TOKEN=pod-secret-value"]),
-        "the bundle carries the pod's declared environment"
-    );
-    assert_eq!(
-        fs::metadata(&config_path)
-            .expect("config metadata")
-            .permissions()
-            .mode()
-            & 0o777,
-        0o600,
-        "the bundle carries resolved secrets"
+        serde_json::json!([
+            "PATH=/usr/local/bin:/usr/bin:/bin",
+            "POD_TOKEN=pod-secret-value"
+        ]),
+        "the bundle carries exactly the pod's declared environment"
     );
 
     // The retained log ring really receives the container's stdout.
@@ -170,10 +198,11 @@ fn a_service_pod_boots_into_the_world_namespaces_and_runs_crun_exec() {
         "the pod supervisor is alive"
     );
 
-    // `crun exec` runs inside the running container: its declared env and the world netns. The
-    // pod's `/proc/1` is the container init, which shares the world's network namespace.
+    // `crun exec` runs inside the running container: its declared env and the world netns. Every
+    // container inherits the world init's network namespace, so a one-shot world exec and the pod
+    // must report the same namespace identity (read with `-L`: the `/proc` link is a magic symlink).
     let world_netns = fx
-        .exec(&world, "stat -c %i /proc/1/ns/net")
+        .exec(&world, "stat -Lc %i /proc/1/ns/net")
         .stdout
         .trim()
         .to_owned();
@@ -185,7 +214,7 @@ fn a_service_pod_boots_into_the_world_namespaces_and_runs_crun_exec() {
             &[
                 "sh".to_owned(),
                 "-c".to_owned(),
-                "printf '%s|%s' \"$POD_TOKEN\" \"$(stat -c %i /proc/1/ns/net)\"".to_owned(),
+                "printf '%s|%s' \"$POD_TOKEN\" \"$(stat -Lc %i /proc/1/ns/net)\"".to_owned(),
             ],
             &ExecEnv::default(),
             &mut |_chunk| {},
@@ -196,6 +225,33 @@ fn a_service_pod_boots_into_the_world_namespaces_and_runs_crun_exec() {
         exec.stdout,
         format!("pod-secret-value|{world_netns}"),
         "the pod's declared env and the world's network namespace apply"
+    );
+    // The pod must join the world's IPC namespace too: compare this process's own view on both
+    // surfaces (the pod's bundle creates a fresh PID namespace, so `/proc/1` is not the world init).
+    let world_ipc = fx
+        .exec(&world, "stat -Lc %i /proc/self/ns/ipc")
+        .stdout
+        .trim()
+        .to_owned();
+    assert!(!world_ipc.is_empty(), "the world exec IPC namespace exists");
+    let ipc = fx
+        .engine
+        .exec_in_service(
+            &handle,
+            &[
+                "sh".to_owned(),
+                "-c".to_owned(),
+                "stat -Lc %i /proc/self/ns/ipc".to_owned(),
+            ],
+            &ExecEnv::default(),
+            &mut |_chunk| {},
+        )
+        .expect("exec the IPC namespace probe inside the service pod");
+    assert_eq!(ipc.exit_code, 0, "crun exec stderr: {}", ipc.stderr);
+    assert_eq!(
+        ipc.stdout.trim(),
+        world_ipc,
+        "the pod must join the world's IPC namespace"
     );
 
     let entry = fx
@@ -229,7 +285,10 @@ fn a_service_pod_boots_into_the_world_namespaces_and_runs_crun_exec() {
         .expect("a stopped pod keeps its row");
     assert_eq!(row.state, ServiceState::Stopped);
     assert_eq!(row.pid, None);
-    assert!(!bundle.exists(), "stop removes the pod bundle");
+    assert!(
+        !config_path.exists(),
+        "stop removes the pod bundle from the world's tmpfs"
+    );
 
     // Fail-closed refusals on the same boot: a bundle outside the engine's directory and a cwd
     // outside every read-write world mount both stop before a bundle or a running row exists.

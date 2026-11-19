@@ -804,7 +804,20 @@ fn start_services(
                 Some(PG_PORT),
             ),
         )
-        .unwrap_or_else(|error| panic!("clone {label}: spawn postgres: {error}"));
+        .unwrap_or_else(|error| {
+            let logs = engine
+                .service_logs(world, "postgres")
+                .map(|logs| {
+                    logs.snapshot()
+                        .iter()
+                        .map(|chunk| String::from_utf8_lossy(&chunk.bytes).into_owned())
+                        .collect::<String>()
+                })
+                .unwrap_or_default();
+            panic!(
+                "clone {label}: spawn postgres: {error}\n--- retained postgres logs ---\n{logs}"
+            );
+        });
     let redis = engine
         .spawn_service(
             world,
