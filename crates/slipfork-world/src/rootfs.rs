@@ -32,7 +32,7 @@ const BUILD_KEY_DOMAIN: &[u8] = b"slipfork-pod-build-key:v1\0";
 /// Build-environment values are hashed and never stored.
 #[derive(Debug, Clone, Copy)]
 pub struct BuildKey<'a> {
-    /// Stable identity of the declaring project/image (`snow.yml` image id or project slug),
+    /// Stable identity of the declaring project/image (`Forkfile` image id or project slug),
     /// never a filesystem path.
     pub project: &'a str,
     /// Repo-relative build context directory, as declared (`./api`, `.`).
@@ -140,19 +140,19 @@ impl fmt::Debug for RootfsDigest {
 /// Every component of the [`RootfsDigest`] formula, in `ADR-0009` §3 order.
 #[derive(Debug, Clone, Copy)]
 pub struct RootfsDigestInputs<'a> {
-    /// `snow.yml` `images[].id`.
+    /// `Forkfile` service id.
     pub image_id: &'a str,
     /// `Dockerfile` path relative to its build context, as declared.
     pub dockerfile_rel_path: &'a str,
     /// Raw `Dockerfile` bytes (never rewritten in the worktree).
     pub dockerfile_bytes: &'a [u8],
-    /// `snow.yml` `images[].context`, as declared.
+    /// `Forkfile` service context directory, as declared.
     pub context_rel_path: &'a str,
     /// `.dockerignore`-filtered context Merkle SHA-256 (`InputHasher`).
     pub context_merkle_sha256: &'a str,
     /// Selected `Dockerfile` stage name.
     pub target_stage: &'a str,
-    /// Resolved `snow.yml` `images[].envs` build arguments.
+    /// Resolved `Forkfile` service env build arguments.
     pub build_envs: &'a [BuildEnvVar],
     /// SHA-256 of the pinned static `crun` binary.
     pub crun_binary_sha256: &'a str,
@@ -162,7 +162,7 @@ pub struct RootfsDigestInputs<'a> {
     pub target_arch: &'a str,
 }
 
-/// One resolved `snow.yml` `images[].envs` build argument.
+/// One resolved `Forkfile` service env build argument.
 ///
 /// The value is usually a secret: its [`fmt::Debug`] never renders it, and the [`RootfsDigest`]
 /// formula only hashes it (`ADR-0009` §3).
@@ -198,7 +198,7 @@ pub struct OciRootfs {
     pub millis: Option<u64>,
 }
 
-/// Stable identity of one backing service requested by `snow.yml` `resources:`.
+/// Stable identity of one backing service requested by `Forkfile` resources.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum BackingServiceKey {
     /// `resources.pg_clusters[].version` -> `docker.io/library/postgres:<version>`.
@@ -298,7 +298,7 @@ pub struct WorldRootfs {
     pub app_rootfs: PathBuf,
     /// Guest path of the static `crun` binary (`CRUN_GUEST_PATH`).
     pub crun_bin: PathBuf,
-    /// Backing-service OCI rootfs by `snow.yml` `resources:` key.
+    /// Backing-service OCI rootfs by `Forkfile` resource key.
     pub service_images: BTreeMap<BackingServiceKey, OciRootfs>,
     /// Verified OS/ABI/port metadata.
     pub metadata: ImageContractMetadata,
@@ -354,7 +354,7 @@ impl fmt::Display for ElfAbi {
 pub enum BaseImageError {
     /// `ADR-0009` §5.1 — the request names no buildable image.
     #[error(
-        "error: snow.yml declares no buildable Dockerfile under 'images:'; a project that cannot be built into an image is not a project Slipfork can fork\n  fix: add a named Dockerfile stage and declare it in snow.yml:\n    images:\n      - id: app\n        context: .\n        dockerfile: Dockerfile"
+        "error: the Forkfile declares no buildable Dockerfile service; a project that cannot be built into an image is not a project Slipfork can fork\n  fix: add a named Dockerfile stage and declare it in the Forkfile as a `service app ./app` with a `stage app` directive"
     )]
     NoBuildableImage,
     /// `ADR-0009` §5.4 — the selected final stage has no `AS <name>`.
@@ -393,7 +393,7 @@ pub enum BaseImageError {
     },
     /// `ADR-0009` §5.7 — root-only privilege-drop entrypoint.
     #[error(
-        "error: World Image Contract #3 violated in stage '{stage}': ENTRYPOINT {entrypoint:?} requires root to switch UIDs, but Slipfork always executes as host $UID:$GID ({uid}:{gid}) with a read-only '/' filesystem\n  fix: set an unprivileged command in snow.yml `modes.local.components.{component}.run_command` (or remove `gosu`/`su-exec`/`chown` from ENTRYPOINT)"
+        "error: World Image Contract #3 violated in stage '{stage}': ENTRYPOINT {entrypoint:?} requires root to switch UIDs, but Slipfork always executes as host $UID:$GID ({uid}:{gid}) with a read-only '/' filesystem\n  fix: set an unprivileged command in `on local: run …` inside Forkfile service '{component}' (or remove `gosu`/`su-exec`/`chown` from ENTRYPOINT)"
     )]
     RootAtRuntimeEntrypoint {
         /// Selected stage.
@@ -409,7 +409,7 @@ pub enum BaseImageError {
     },
     /// `ADR-0009` §5.8 — baked origin/service URL or host path.
     #[error(
-        "error: World Image Contract #4 violated in stage '{stage}': baked image {what} conflicts with Slipfork single-origin and ResourceCoordinates injection\n  fix: delete {what} from Dockerfile and reference `${{{{ resources::{component}.url }}}}` under `modes.all.envs` in snow.yml"
+        "error: World Image Contract #4 violated in stage '{stage}': baked image {what} conflicts with Slipfork single-origin and ResourceCoordinates injection\n  fix: delete {what} from Dockerfile and reference `${{{{ resources::{component}.url }}}}` under `modes.all.envs` in Forkfile"
     )]
     BakedOriginOrHostPath {
         /// Selected stage.
@@ -421,7 +421,7 @@ pub enum BaseImageError {
     },
     /// `ADR-0009` §5.9 — backing-service daemon inside the app stage.
     #[error(
-        "error: World Image Contract #5 violated in stage '{stage}': detected `{path}` (backing service daemon) installed inside the app image; Slipfork runs postgres, redis, and seaweedfs as isolated crun containers from snow.yml\n  fix: {fix}"
+        "error: World Image Contract #5 violated in stage '{stage}': detected `{path}` (backing service daemon) installed inside the app image; Slipfork runs postgres, redis, and seaweedfs as isolated crun containers declared in the Forkfile\n  fix: {fix}"
     )]
     EmbeddedBackingService {
         /// Selected stage.
@@ -431,12 +431,12 @@ pub enum BaseImageError {
         /// Exact one-line fix for this daemon.
         fix: String,
     },
-    /// `ADR-0009` §5.10 — `EXPOSE`/`HEALTHCHECK` disagrees with `snow.yml`.
+    /// `ADR-0009` §5.10 — `EXPOSE`/`HEALTHCHECK` disagrees with `Forkfile`.
     #[error(
-        "error: World Image Contract #6 violated for image '{image}': Dockerfile {instruction} declares port {port}, but snow.yml component '{component}' declares internal_ports [{internal}] (ingresses target {ingress})\n  fix: change `EXPOSE {port}` to `EXPOSE {suggested}` in Dockerfile (or update `components.{component}.internal_ports` / `ingresses` in snow.yml to {port})"
+        "error: World Image Contract #6 violated for image '{image}': Dockerfile {instruction} declares port {port}, but the Forkfile service '{component}' declares internal_ports [{internal}] (ingresses target {ingress})\n  fix: change `EXPOSE {port}` to `EXPOSE {suggested}` in Dockerfile (or update `internal_ports` / `route` of service `{component}` in the Forkfile to {port})"
     )]
     ExposeIngressMismatch {
-        /// Selected `snow.yml` image id.
+        /// Selected `Forkfile` image id.
         image: Box<str>,
         /// `EXPOSE` or `HEALTHCHECK`.
         instruction: &'static str,

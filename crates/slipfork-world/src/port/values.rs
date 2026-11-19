@@ -223,7 +223,7 @@ impl fmt::Debug for WorldHandle {
 pub struct ServiceSpec {
     /// Stable service id (`api`, `postgres`, `redis`).
     pub id: String,
-    /// The caller's classification of this row (`snow.yml` component vs backing service).
+    /// The caller's classification of this row (`Forkfile` service vs backing service).
     pub kind: ServiceKind,
     /// Exactly one runtime: an `L0` world process, a daemonless `crun` backing-service container,
     /// or a `Forkfile` service pod (all three flow through [`WorldEngine::spawn_service`](crate::WorldEngine::spawn_service)).
@@ -257,7 +257,7 @@ pub enum ServiceRuntime {
     /// The image rootfs is read-only, the container shares the world's `127.0.0.1` (no network
     /// namespace), and every process runs as the invoking host `$UID:$GID`.
     OciContainer {
-        /// `snow.yml` `resources:` key resolved to an [`crate::rootfs::OciRootfs`] in [`WorldRootfs`].
+        /// `Forkfile` resource key resolved to an [`crate::rootfs::OciRootfs`] in [`WorldRootfs`].
         image: BackingServiceKey,
         /// Container command and arguments.
         argv: Vec<String>,

@@ -8,9 +8,9 @@ use super::service::DaemonService;
 use slipfork_edge::{DaemonControl, EdgeError};
 use slipfork_wire::control::{
     BootEvent, DaemonStatus, DropForkRequest, ExecTargetRequest, ForkRequest, ForwardRequest,
-    ForwardSummary, HookRunRequest, LogsRequest, PruneReport, SnowResolveRequest,
-    SnowResolveSummary, UpRequest, WorkspaceRefsRequest, WorkspaceRefsSummary, WorldExecTarget,
-    WorldProcessReport, WorldSelector, WorldSummary, WorldUpSummary,
+    ForwardSummary, HookRunRequest, LogsRequest, PruneReport, UpRequest, WorkspaceRefsRequest,
+    WorkspaceRefsSummary, WorldExecTarget, WorldProcessReport, WorldSelector, WorldSummary,
+    WorldUpSummary,
 };
 use slipfork_world::{LogChunk, StreamChunk};
 use std::path::Path;
@@ -18,10 +18,6 @@ use std::path::Path;
 impl DaemonControl for DaemonService {
     fn status(&self) -> Result<DaemonStatus, EdgeError> {
         DaemonService::status(self)
-    }
-
-    fn snow_resolve(&self, req: &SnowResolveRequest) -> Result<SnowResolveSummary, EdgeError> {
-        DaemonService::snow_resolve(self, req)
     }
 
     fn up(

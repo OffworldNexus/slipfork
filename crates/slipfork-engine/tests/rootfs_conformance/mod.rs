@@ -2,7 +2,7 @@
 //!
 //! The suite asserts only what every builder must satisfy without Docker, an OCI registry, or a
 //! host ABI: a content-addressed identity, a readable `/.slipfork/bin` layout, metadata that agrees
-//! with `snow.yml`, and host caches that are either absent or strictly read-only. Real `buildx`
+//! with `Forkfile`, and host caches that are either absent or strictly read-only. Real `buildx`
 //! extraction is asserted by `tests/critical_rootfs_live.rs`.
 
 #![forbid(unsafe_code)]
@@ -55,7 +55,7 @@ pub fn assert_world_rootfs_conformance(rootfs: &WorldRootfs, request: &WorldRoot
     let offered: BTreeSet<_> = rootfs.service_images.keys().cloned().collect();
     assert_eq!(
         offered, requested,
-        "service_images keys must equal the requested snow.yml resources"
+        "service_images keys must equal the requested Forkfile resources"
     );
     for (key, image) in &rootfs.service_images {
         assert!(
@@ -89,7 +89,7 @@ pub fn assert_world_rootfs_conformance(rootfs: &WorldRootfs, request: &WorldRoot
     for port in &rootfs.metadata.exposed_ports {
         assert!(
             allowed.contains(port),
-            "exposed port {port} must be declared by snow.yml components/ingresses"
+            "exposed port {port} must be declared by Forkfile components/ingresses"
         );
     }
 

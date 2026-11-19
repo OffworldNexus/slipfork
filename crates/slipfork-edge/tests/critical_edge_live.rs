@@ -435,7 +435,7 @@ fn registry_ingress_and_forward_over_one_real_world() {
         let target = WorldTarget::Canonical;
 
         // One origin per world: port 80 renders port-less, an ephemeral ingress keeps its port,
-        // and a `snow.yml` `domains[].id` route is never the single public origin.
+        // and a `Forkfile` `domain` ids route is never the single public origin.
         let canonical = LocalHostRoute::new(project.clone(), target.clone(), None, &[])
             .expect("canonical route");
         assert_eq!(

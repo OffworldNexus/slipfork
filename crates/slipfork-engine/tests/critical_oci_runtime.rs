@@ -165,7 +165,7 @@ fn container_requests_fail_closed_before_crun_is_executed() {
         .expect_err("an empty container argv must fail closed");
     expect_invalid(&empty_argv, err, "argv must not be empty");
 
-    // 2. The backing image must be materialized into `WorldRootfs` under its `snow.yml` key.
+    // 2. The backing image must be materialized into `WorldRootfs` under its `Forkfile` key.
     let mut missing_rootfs = fixture.rootfs.clone();
     missing_rootfs.service_images.clear();
     let world_without_images = fixture

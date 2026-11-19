@@ -9,7 +9,6 @@ use super::types::{
     BootPolicy, PreparedWorld, ResolvedComponent, ResolvedHook, ResolvedWorld, RootfsSource,
 };
 use super::{rejected, runtime_error};
-use crate::WORLD_FEATURE;
 use crate::project::forkfile_error;
 use slipfork_dag::{DumpPolicy, ResourceMode, ResourcePlan, ResourceStrategy, ResourcesSpec};
 use slipfork_edge::{EdgeError, world_id};
@@ -18,7 +17,7 @@ use slipfork_engine::rootfs::WorldRootfsRequest;
 use slipfork_engine::rootfs::{HostCacheRequest, RootfsBuildEvent};
 use slipfork_forkfile::{EvaluatedFork, EvaluatedService, HookPhase, Resolvers};
 use slipfork_vcs::RepoRoot;
-use slipfork_wire::control::{BootEvent, ResourceSummary, SnowResolveRequest, SnowResolveSummary};
+use slipfork_wire::control::{BootEvent, ResourceSummary};
 use slipfork_world::WorldMount;
 use slipfork_world::rootfs::{BuildEnvVar, WorldRootfs};
 use slipfork_world::{
@@ -356,57 +355,6 @@ impl DaemonService {
             }),
             boot: prepared.boot.clone(),
         }
-    }
-}
-
-impl DaemonService {
-    /// Transitional `snow_resolve` adapter for `slipfork_edge::DaemonControl`.
-    ///
-    /// removed in M3.32.3.3.3: resolve the requested service environment from the `Forkfile` that
-    /// lives beside the requested path. No YAML, mode, or `!!` handling remains.
-    pub(super) fn snow_resolve(
-        &self,
-        req: &SnowResolveRequest,
-    ) -> Result<SnowResolveSummary, EdgeError> {
-        // `.3` deletes this transitional verb; until then it answers only for the local world. A
-        // `cloud`/`all` request must never be handed the local environment.
-        if req.mode != WORLD_FEATURE {
-            return Err(rejected(format!(
-                "mode '{}' cannot be resolved by the local daemon\n  next: pass `--mode {WORLD_FEATURE}` to resolve the local world's environment",
-                req.mode
-            )));
-        }
-        let file = if req.file.is_absolute() {
-            req.file.clone()
-        } else {
-            req.cwd.join(&req.file)
-        };
-        let worktree = file.parent().unwrap_or(req.cwd.as_path());
-        let fork = load_project_fork(worktree)?;
-        let repo = self
-            .repo_roots
-            .resolve(worktree)
-            .map_err(|err| runtime_error(err.to_string()))?;
-        let vault = self.vault_for(&repo.project)?;
-        let resolvers = Resolvers::new(vault.as_ref(), self.entropy.as_ref());
-        let resolved = match &req.component {
-            Some(component) => fork
-                .resolve_env(component, &resolvers)
-                .map_err(forkfile_error)?,
-            None => fork.world_env(&resolvers).map_err(forkfile_error)?,
-        };
-        let vars = resolved
-            .into_iter()
-            .map(|(key, value)| {
-                let rendered = if req.expose_secrets {
-                    value.expose().to_owned()
-                } else {
-                    value.redacted().to_owned()
-                };
-                (key, rendered)
-            })
-            .collect();
-        Ok(SnowResolveSummary { vars })
     }
 }
 

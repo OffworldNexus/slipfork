@@ -12,7 +12,7 @@
 //! `slipfork-dag` and `slipfork-engine` delegate instead of forking them:
 //!
 //! ```text
-//! slipfork-world  <--  slipfork-snow (manifest validation & coordinates)
+//! slipfork-world  <--  slipfork-forkfile (Forkfile parse/evaluate)
 //!        ^
 //!        +----------  slipfork-wire (control contract framing & relay)
 //!        +----------  slipfork-engine (BtrfsEngine implements WorldEngine)

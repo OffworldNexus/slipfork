@@ -1,6 +1,6 @@
 //! Protected contract for the canonical world projection on [`EvaluatedFork`].
 //!
-//! These assertions were ported from the retired `slipfork-snow` critical suite: `!!`/`??`
+//! These assertions were ported from the retired manifest-engine critical suite: `!!`/`??`
 //! secret-taint precedence, feature inheritance, resource ids, and one single-origin world view.
 //! Snow-only YAML/mode internals were dropped rather than copied.
 

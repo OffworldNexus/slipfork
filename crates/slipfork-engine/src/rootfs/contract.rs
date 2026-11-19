@@ -1,7 +1,7 @@
 //! The 6-rule World Image Contract (`ADR-0009` §4.2) with the exact §5 user-facing diagnostics.
 //!
 //! Rules 1, 3, 4, and 6 are static: they are re-checked on every materialization (including cache
-//! hits) so a `snow.yml` port edit can never bypass a cached rootfs. Rules 2 and 5 inspect the
+//! hits) so a `Forkfile` port edit can never bypass a cached rootfs. Rules 2 and 5 inspect the
 //! extracted tree, which is immutable for a given digest.
 
 #![forbid(unsafe_code)]
@@ -86,7 +86,7 @@ pub(crate) fn validate_static(
         }
     }
 
-    // Rule 6 — every declared port must be served by a snow.yml component/ingress.
+    // Rule 6 — every declared port must be served by a Forkfile component/ingress.
     let declared = declared_ports(stage)?;
     let allowed = request.ports.allowed_ports();
     for (port, instruction) in &declared {
@@ -372,27 +372,27 @@ fn first_backing_service(rootfs: &Path) -> Option<(String, String)> {
     const FIXED: &[(&str, &str)] = &[
         (
             "/usr/bin/postgres",
-            "remove `postgresql` server installation from Dockerfile and declare `resources.pg_clusters` in snow.yml",
+            "remove `postgresql` server installation from Dockerfile and declare a `postgres <cluster> { … }` in the Forkfile",
         ),
         (
             "/usr/local/bin/postgres",
-            "remove `postgresql` server installation from Dockerfile and declare `resources.pg_clusters` in snow.yml",
+            "remove `postgresql` server installation from Dockerfile and declare a `postgres <cluster> { … }` in the Forkfile",
         ),
         (
             "/usr/bin/redis-server",
-            "remove `redis` server installation from Dockerfile and declare `resources.redis_clusters` in snow.yml",
+            "remove `redis` server installation from Dockerfile and declare a `redis <cluster>` in the Forkfile",
         ),
         (
             "/usr/local/bin/redis-server",
-            "remove `redis` server installation from Dockerfile and declare `resources.redis_clusters` in snow.yml",
+            "remove `redis` server installation from Dockerfile and declare a `redis <cluster>` in the Forkfile",
         ),
         (
             "/usr/bin/weed",
-            "remove `seaweedfs` server installation from Dockerfile and declare `resources.s3_buckets` in snow.yml",
+            "remove `seaweedfs` server installation from Dockerfile and declare an `s3 <bucket>` in the Forkfile",
         ),
         (
             "/usr/local/bin/weed",
-            "remove `seaweedfs` server installation from Dockerfile and declare `resources.s3_buckets` in snow.yml",
+            "remove `seaweedfs` server installation from Dockerfile and declare an `s3 <bucket>` in the Forkfile",
         ),
         (
             "/usr/bin/dockerd",
@@ -420,7 +420,7 @@ fn first_backing_service(rootfs: &Path) -> Option<(String, String)> {
                 );
                 return Some((
                     guest,
-                    "remove `postgresql` server installation from Dockerfile and declare `resources.pg_clusters` in snow.yml"
+                    "remove `postgresql` server installation from Dockerfile and declare a `postgres <cluster> { … }` in the Forkfile"
                         .to_owned(),
                 ));
             }

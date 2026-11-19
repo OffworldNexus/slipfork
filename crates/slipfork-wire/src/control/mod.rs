@@ -23,8 +23,7 @@ pub use protocol::{ControlSecret, DaemonError, DaemonErrorKind, DaemonReply, Dae
 pub use request::{
     AuthSummary, DropForkRequest, DumpRequest, ExecTargetRequest, ForkRequest, ForwardRequest,
     ForwardSummary, ForwardTarget, HookRunRequest, LogsRequest, PruneReport, ResourceRequest,
-    SnowResolveRequest, SnowResolveSummary, UpRequest, WorkspaceRefsRequest, WorkspaceRefsSummary,
-    WorldExecTarget, WorldSelector,
+    UpRequest, WorkspaceRefsRequest, WorkspaceRefsSummary, WorldExecTarget, WorldSelector,
 };
 pub use socket::{CONTROL_SOCKET_FILE, control_socket_path};
 pub use view::{

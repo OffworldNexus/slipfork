@@ -6,8 +6,8 @@
 //!
 //! - [`WorldRegistry::mint_origin`] renders the world's single public `WorldOrigin`.
 //! - [`WorldRegistry::attach_world`] registers one live [`WorldHandle`] with the manifest's
-//!   `snow.yml` `domains[].id` set and its `ingresses` prefix table. The **caller** supplies that
-//!   table: the declared `snow.yml` prefixes plus the empty-prefix catch-all built from the first
+//!   `Forkfile` `domain` ids set and its `ingresses` prefix table. The **caller** supplies that
+//!   table: the declared `Forkfile` prefixes plus the empty-prefix catch-all built from the first
 //!   component `internal_ports[0]` (it matches every path and loses every longest-prefix race).
 //! - [`WorldRegistry::resolve`] decides one incoming request: proxy its `*.localhost` world.
 //! - [`WorldRegistry::dial`] / [`WorldRegistry::forward`] open the world-local backend through
@@ -143,7 +143,7 @@ impl WorldRegistry {
     /// Mint the world's single public origin for its `.localhost` route (`H-010` #2).
     ///
     /// Port 80 renders `http://<host>`; every other ingress port renders `http://<host>:<port>`.
-    /// A route scoped to a `snow.yml` `domains[].id` is not the default ingress and fails closed.
+    /// A route scoped to a `Forkfile` `domain` ids is not the default ingress and fails closed.
     pub fn mint_origin(
         &self,
         route: &LocalHostRoute,
@@ -156,7 +156,7 @@ impl WorldRegistry {
         })
     }
 
-    /// Register one live world handle with its `snow.yml` domains and ingress prefix table.
+    /// Register one live world handle with its `Forkfile` domains and ingress prefix table.
     ///
     /// A second attach for an already-registered `(project, target)` fails closed with
     /// [`EdgeError::WorldAlreadyRegistered`]; it never replaces or leaks the previous handle.
@@ -189,7 +189,7 @@ impl WorldRegistry {
         Ok(())
     }
 
-    /// Replace an attached world's `snow.yml`-derived domains and ingress table **in place**.
+    /// Replace an attached world's `Forkfile`-derived domains and ingress table **in place**.
     ///
     /// `slipfork restart` re-reads `ingresses:`/`domains:`/`internal_ports` and applies them to the
     /// live world without touching its engine handle (the CoW state must survive). The world must

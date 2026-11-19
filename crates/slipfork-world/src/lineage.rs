@@ -88,7 +88,7 @@ pub struct BaseLineage {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ServiceKind {
-    /// A `snow.yml` component's run command.
+    /// A `Forkfile` service's run command.
     Component,
     /// A `crun`-backed resource service (`postgres:18`, `redis:7`).
     BackingService,

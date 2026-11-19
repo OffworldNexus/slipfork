@@ -48,11 +48,11 @@ def _init_plan(tmp_path: Path):
 
 def test_globs_overlap_precision() -> None:
     assert plan_mod.globs_overlap(
-        "crates/slipfork-snow/**", "crates/slipfork-snow/src/lib.rs"
+        "crates/slipfork-forkfile/**", "crates/slipfork-forkfile/src/lib.rs"
     )
     assert plan_mod.globs_overlap("docs/design/*.md", "docs/design/core.md")
     assert not plan_mod.globs_overlap(
-        "crates/slipfork-snow/**", "crates/slipfork-dag/**"
+        "crates/slipfork-forkfile/**", "crates/slipfork-dag/**"
     )
     assert not plan_mod.globs_overlap("docs/index.md", "docs/snow-modes.md")
 
@@ -74,7 +74,7 @@ def test_single_writer_path_lock_blocks_overlapping_active_nodes(
             "task",
             "implementer",
             [],
-            ["crates/slipfork-snow/**"],
+            ["crates/slipfork-forkfile/**"],
             1,
             "ready",
             body,
@@ -89,7 +89,7 @@ def test_single_writer_path_lock_blocks_overlapping_active_nodes(
             "task",
             "implementer",
             [],
-            ["crates/slipfork-snow/src/lib.rs"],
+            ["crates/slipfork-forkfile/src/lib.rs"],
             2,
             "ready",
             body,
@@ -174,7 +174,7 @@ def test_critical_guard_allows_untracked_addition_and_blocks_unauthorized_edit(
 ) -> None:
     env = {**os.environ, "GIT_CONFIG_GLOBAL": "/dev/null"}
     repo = _git_repo(tmp_path)
-    crit_file = repo / "crates" / "slipfork-snow" / "tests" / "critical_modes.rs"
+    crit_file = repo / "crates" / "slipfork-forkfile" / "tests" / "critical_modes.rs"
     crit_file.parent.mkdir(parents=True)
     crit_file.write_text("#[test] fn a() {}\n", encoding="utf-8")
     node_dir = repo / "plan" / "nodes" / "M1" / "M1.1"
@@ -206,9 +206,9 @@ def test_critical_guard_allows_untracked_addition_and_blocks_unauthorized_edit(
     crit_file.write_text("#[test] fn weakened() {}\n", encoding="utf-8")
     assert crit_mod.main(["--repo", str(repo), "--base", base, "--node", "M1.1"]) == 1
 
-    # 3. Authorizing crates/slipfork-snow/tests/** in NODE.md passes!
+    # 3. Authorizing crates/slipfork-forkfile/tests/** in NODE.md passes!
     (node_dir / "NODE.md").write_text(
-        "---\nid: M1.1\npaths: [crates/slipfork-snow/tests/**]\n---\n# Goal\n\n# Acceptance\n- [ ] ok\n",
+        "---\nid: M1.1\npaths: [crates/slipfork-forkfile/tests/**]\n---\n# Goal\n\n# Acceptance\n- [ ] ok\n",
         encoding="utf-8",
     )
     assert crit_mod.main(["--repo", str(repo), "--base", base, "--node", "M1.1"]) == 0

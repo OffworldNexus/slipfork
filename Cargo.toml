@@ -2,7 +2,6 @@
 resolver = "3"
 members = [
   "crates/slipfork-world",
-  "crates/slipfork-snow",
   "crates/slipfork-forkfile",
   "crates/slipfork-wire",
   "crates/slipfork-dag",
@@ -35,7 +34,6 @@ listenfd = "1.0.2"
 owo-colors = { version = "4.2.0", features = ["supports-colors"] }
 p256 = "0.14.0"
 serde = { version = "1.0.228", features = ["derive"] }
-serde-saphyr = "2.1.1"
 serde_json = "1.0.149"
 sha2 = "0.10.9"
 tempfile = "3.22.0"

@@ -177,7 +177,7 @@ fn rule_3_root_only_entrypoint_reports_uid_gid_and_fix() {
     ));
     expect_message(
         &error,
-        "error: World Image Contract #3 violated in stage 'api': ENTRYPOINT [\"docker-entrypoint.sh\", \"gosu\", \"appuser\"] requires root to switch UIDs, but Slipfork always executes as host $UID:$GID (1000:1000) with a read-only '/' filesystem\n  fix: set an unprivileged command in snow.yml `modes.local.components.api.run_command` (or remove `gosu`/`su-exec`/`chown` from ENTRYPOINT)",
+        "error: World Image Contract #3 violated in stage 'api': ENTRYPOINT [\"docker-entrypoint.sh\", \"gosu\", \"appuser\"] requires root to switch UIDs, but Slipfork always executes as host $UID:$GID (1000:1000) with a read-only '/' filesystem\n  fix: set an unprivileged command in `on local: run …` inside Forkfile service 'api' (or remove `gosu`/`su-exec`/`chown` from ENTRYPOINT)",
     );
 }
 
@@ -192,7 +192,7 @@ fn rule_4_baked_origin_env_fails_closed() {
     ));
     expect_message(
         &error,
-        "error: World Image Contract #4 violated in stage 'api': baked image ENV `BASE_URL=http://localhost:8000` conflicts with Slipfork single-origin and ResourceCoordinates injection\n  fix: delete ENV `BASE_URL=http://localhost:8000` from Dockerfile and reference `${{ resources::api.url }}` under `modes.all.envs` in snow.yml",
+        "error: World Image Contract #4 violated in stage 'api': baked image ENV `BASE_URL=http://localhost:8000` conflicts with Slipfork single-origin and ResourceCoordinates injection\n  fix: delete ENV `BASE_URL=http://localhost:8000` from Dockerfile and reference `api.url` in the Forkfile `env` block",
     );
 }
 
@@ -206,7 +206,7 @@ fn rule_4_baked_host_workdir_fails_closed() {
     ));
     expect_message(
         &error,
-        "error: World Image Contract #4 violated in stage 'api': baked image host path `/home/alice/app` conflicts with Slipfork single-origin and ResourceCoordinates injection\n  fix: delete host path `/home/alice/app` from Dockerfile and reference `${{ resources::api.url }}` under `modes.all.envs` in snow.yml",
+        "error: World Image Contract #4 violated in stage 'api': baked image host path `/home/alice/app` conflicts with Slipfork single-origin and ResourceCoordinates injection\n  fix: delete host path `/home/alice/app` from Dockerfile and reference `api.url` in the Forkfile `env` block",
     );
 }
 
@@ -223,7 +223,7 @@ fn rule_5_backing_service_inside_the_app_stage_fails_closed() {
     ));
     expect_message(
         &error,
-        "error: World Image Contract #5 violated in stage 'api': detected `/usr/lib/postgresql/18/bin/postgres` (backing service daemon) installed inside the app image; Slipfork runs postgres, redis, and seaweedfs as isolated crun containers from snow.yml\n  fix: remove `postgresql` server installation from Dockerfile and declare `resources.pg_clusters` in snow.yml",
+        "error: World Image Contract #5 violated in stage 'api': detected `/usr/lib/postgresql/18/bin/postgres` (backing service daemon) installed inside the app image; Slipfork runs postgres, redis, and seaweedfs as isolated crun containers declared in the Forkfile\n  fix: remove `postgresql` server installation from Dockerfile and declare a `postgres <cluster> { … }` in the Forkfile",
     );
 }
 
@@ -237,7 +237,7 @@ fn rule_6_expose_port_mismatch_fails_closed() {
     ));
     expect_message(
         &error,
-        "error: World Image Contract #6 violated for image 'api': Dockerfile EXPOSE declares port 3000, but snow.yml component 'api' declares internal_ports [8000] (ingresses target 8000)\n  fix: change `EXPOSE 3000` to `EXPOSE 8000` in Dockerfile (or update `components.api.internal_ports` / `ingresses` in snow.yml to 3000)",
+        "error: World Image Contract #6 violated for image 'api': Dockerfile EXPOSE declares port 3000, but the Forkfile service 'api' declares internal_ports [8000] (ingresses target 8000)\n  fix: change `EXPOSE 3000` to `EXPOSE 8000` in Dockerfile (or update `internal_ports` / `route` of service `api` in the Forkfile to 3000)",
     );
 }
 

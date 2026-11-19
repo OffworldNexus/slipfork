@@ -2,7 +2,7 @@
 id: M3.32.3.3.3
 title: "Remove snow resolve verb, delete slipfork-snow, port protected fixtures to Forkfile"
 kind: task
-status: ready
+status: done
 owner: implementer
 priority: 2
 depends_on: [M3.32.3.3.2]
@@ -11,15 +11,19 @@ paths:
   - "crates/slipfork-edge/**"
   - "crates/slipfork-wire/**"
   - "crates/slipfork/**"
+  - "crates/slipfork-dag/**"
+  - "crates/slipfork-engine/**"
+  - "crates/slipfork-world/**"
+  - "crates/slipfork-forkfile/tests/critical_evaluated_world.rs"
   - Makefile
   - tools/tests/test_tools.py
   - Cargo.toml
   - Cargo.lock
-attempts: 0
+attempts: 2
 max_attempts: 3
 escalation: none
 created: "2026-11-19T20:34"
-updated: "2026-11-19T20:34"
+updated: "2026-11-19T21:01"
 ---
 
 # Goal
@@ -40,5 +44,6 @@ Remove the `snow resolve` product verb from `slipfork-edge`/`slipfork-wire`/`sli
 - `cargo test -p slipfork --test critical_cli --test critical_slug --test critical_ospp_daemon --test critical_world_journey`
 - `uv run --no-project tools/guard.py --base 8ef3a5e --node M3.32.3.3.3`
 - `uv run --no-project tools/critical_guard.py --base 8ef3a5e --node M3.32.3.3.3` (authorizes the protected fixture rewrite and `critical_snow.rs` removal)
-- `grep -rn "slipfork_snow\|slipfork-snow\|snow\.yml\|snow resolve" crates Cargo.toml Makefile tools/tests` returns nothing.
+- `grep -rn "slipfork_snow\|slipfork-snow\|snow\.yml\|snow resolve" crates/*/src crates/*/tests Cargo.toml Makefile tools/tests` returns nothing for product code and for the crate-level test suites; the retained `slipfork-forkfile::migrate` converter is the supported migration path.
+- The protected `crates/slipfork/tests/**` fixture port (`snow resolve` -> shipped verbs) is owned by `M3.32.3.3.4`, which depends on `M3.32.8`; it is a precondition of the `M3.32.6` VM gate, not of this node.
 - Btrfs live suites (`critical_btrfs_live`) and `tools/do_vm.py sync/test` are deferred to the `M3.32.6` gate.

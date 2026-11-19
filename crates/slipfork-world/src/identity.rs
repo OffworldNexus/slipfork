@@ -26,7 +26,7 @@ pub enum WorldError {
     #[error("invalid world origin url '{url}': {reason}")]
     InvalidOriginUrl { url: String, reason: String },
     #[error(
-        "world origin requires the default `.localhost` ingress: route is scoped to snow.yml domains[].id '{domain}'"
+        "world origin requires the default `.localhost` ingress: route is scoped to Forkfile domain '{domain}'"
     )]
     OriginNotDefaultIngress { domain: String },
     #[error(
@@ -41,7 +41,7 @@ pub enum WorldError {
 ///
 /// Construction is fallible and always goes through [`ProjectSlug::parse`], so no unvalidated
 /// string can reach a `.localhost` hostname. Deserialization is fail-closed for the same reason:
-/// an invalid `project` value in `slipfork.toml` is a hard parse error.
+/// an invalid `project` value in `Forkfile` is a hard parse error.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 pub struct ProjectSlug(String);
 
@@ -145,7 +145,7 @@ impl LocalHostRoute {
                 if !snow_domains.contains(&domain) {
                     return Err(WorldError::InvalidSnowDomain {
                         domain: domain.to_owned(),
-                        reason: "domain is not declared in snow.yml domains[].id".to_owned(),
+                        reason: "domain is not declared in the Forkfile".to_owned(),
                     });
                 }
                 Some(domain.to_owned())
@@ -168,7 +168,7 @@ impl LocalHostRoute {
         &self.target
     }
 
-    /// Target `snow.yml` `domains[].id` (`None` means the default ingress domain).
+    /// Target `Forkfile` `domain` ids (`None` means the default ingress domain).
     pub fn snow_domain(&self) -> Option<&str> {
         self.snow_domain.as_deref()
     }
@@ -251,7 +251,7 @@ impl WorldOrigin {
     /// `1..=65535` renders `:<port>` so an ephemeral `--listen 127.0.0.1:0` deployment hands out a
     /// reachable URL, and port 0 fails closed — the daemon reports the port it actually bound.
     ///
-    /// Fails closed for a route scoped to a `snow.yml` `domains[].id`: named-domain ingresses keep
+    /// Fails closed for a route scoped to a `Forkfile` `domain` ids: named-domain ingresses keep
     /// their own host and are never the world's single public origin.
     pub fn local(route: &LocalHostRoute, ingress_port: u16) -> Result<Self, WorldError> {
         if let Some(domain) = route.snow_domain() {
@@ -334,7 +334,7 @@ fn validate_origin_url(url: &str) -> Result<(), WorldError> {
 /// Validate a user/agent fork name against the disjoint `.localhost` namespace.
 ///
 /// Fork names must be single lowercase DNS labels, must not start with the reserved `test-`
-/// prefix, and must not collide with any `snow.yml` `domains[].id`.
+/// prefix, and must not collide with any `Forkfile` `domain` ids.
 pub fn validate_fork_name(fork: &str, snow_domains: &[&str]) -> Result<(), WorldError> {
     validate_unreserved_dns_label(fork).map_err(|reason| WorldError::InvalidForkName {
         fork: fork.to_owned(),
@@ -343,7 +343,7 @@ pub fn validate_fork_name(fork: &str, snow_domains: &[&str]) -> Result<(), World
     if snow_domains.contains(&fork) {
         return Err(WorldError::InvalidForkName {
             fork: fork.to_owned(),
-            reason: format!("collides with snow.yml domains[].id '{fork}'"),
+            reason: format!("collides with Forkfile domain '{fork}'"),
         });
     }
     Ok(())

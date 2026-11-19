@@ -51,7 +51,7 @@ run = "python manage.py migrate"
 
 #[test]
 fn r9_orthogonal_invalidation_front_edit_never_invalidates_db_snapshots_and_vice_versa() {
-    let cfg = SlipforkConfig::parse_toml(SAMPLE_TOML).expect("valid slipfork.toml");
+    let cfg = SlipforkConfig::parse_toml(SAMPLE_TOML).expect("valid the Forkfile");
     let build_envs = BTreeMap::from([("PUBLIC_API".to_owned(), "/back".to_owned())]);
     let runtime_envs = BTreeMap::from([(
         "DATABASE_URL".to_owned(),
@@ -232,7 +232,7 @@ coverage_report = ["html", "xml"]
 coverage_fail_under = 85
 "#,
     )
-    .expect("valid slipfork.toml with project and typed [test] coverage");
+    .expect("valid the Forkfile with project and typed [test] coverage");
     assert_eq!(
         cfg.project
             .as_ref()

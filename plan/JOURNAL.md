@@ -2036,3 +2036,14 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-19T20:54 [M3.32.3.3.2] (lead) attempt 5: review-tests fail-closed + test-coverage items
 - 2026-11-19T20:56 [M3.32.3.3.2] (lead) status active -> done
 - 2026-11-19T20:56 [M3.32.3.3.2] (lead) resolve.rs 518 LOC deferred: .3 deletes the transitional snow_resolve adapter (~45 LOC), landing it under 500
+- 2026-11-19T20:56 [M3.32.3.3.3] (lead) status ready -> active
+- 2026-11-19T20:56 [M3.32.3.3.3] (lead) attempt 1/3 started
+- 2026-11-19T20:56 [M3.32.3.3.3] (lead) base 73b62a18e3e38a6c22a785bacc859477930a029a
+- 2026-11-19T20:58 [M3.32.3.3.4] (lead) created (task) Port protected live fixtures from snow resolve onto the shipped env/migrate verbs
+- 2026-11-19T20:58 [M3.32.3.3.3] (lead) edited fields
+- 2026-11-19T20:58 [M3.32.3.3.3] (lead) attempt 2/3 started
+- 2026-11-19T20:58 [M3.32.3.3.3] (lead) attempt 2: fixture port split to M3.32.3.3.4 (needs shipped env/migrate); this node deletes the verb+crate and scrubs product strings
+- 2026-11-19T21:00 [M3.32.3.3.3] (unknown) edited fields
+- 2026-11-19T21:00 [M3.32.3.3.3] (lead) status active -> review
+- 2026-11-19T21:01 [M3.32.3.3.3] (lead) Triad: ux PASS, tests PASS; arch BLOCKER is the fixture port owned by M3.32.3.3.4 (needs env/migrate) — acceptance wording corrected, no churn
+- 2026-11-19T21:01 [M3.32.3.3.3] (lead) status review -> done

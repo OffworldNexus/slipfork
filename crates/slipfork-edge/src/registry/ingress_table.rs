@@ -11,7 +11,7 @@ use crate::EdgeError;
 
 use super::IngressRoute;
 
-/// The declared ingress table of one attached world: `snow.yml` prefixes plus the empty-prefix
+/// The declared ingress table of one attached world: `Forkfile` prefixes plus the empty-prefix
 /// catch-all built from the first component `internal_ports[0]`.
 ///
 /// Two spellings live in one table (`IngressRoute`), so one owner must classify them:

@@ -33,10 +33,10 @@ pub use resources::{
 #[cfg(feature = "fs")]
 pub use fs::{FsDigestCache, FsMerkleHasher};
 
-/// Errors produced when parsing or planning a `slipfork.toml` DAG.
+/// Errors produced when parsing or planning a `Forkfile` DAG.
 #[derive(Debug, Error)]
 pub enum DagError {
-    #[error("invalid slipfork.toml: {0}")]
+    #[error("invalid Forkfile: {0}")]
     Toml(String),
     #[error("fixture '{fixture}' references unknown parent '{parent}'")]
     UnknownParent { fixture: String, parent: String },
@@ -54,7 +54,7 @@ pub enum DagError {
     InvalidCoverageThreshold { value: String },
     #[error("[resources.{kind}.{id}] must declare at least one of `local` or `test`")]
     EmptyResourceOverride { kind: &'static str, id: String },
-    #[error("[resources] declares {kind} '{id}' which is absent from snow.yml")]
+    #[error("[resources] declares {kind} '{id}' which is absent from the Forkfile")]
     UndeclaredResourceId { kind: &'static str, id: String },
     #[error("resource '{kind}.{id}' requires an authenticated OSPP session in {mode:?} mode")]
     RemoteResourceUnavailable {
@@ -143,7 +143,7 @@ pub struct CoverageConfig {
     pub fail_under: Option<CoverageThreshold>,
 }
 
-/// Suite-level test runner configuration (`[test]` in `<vcs_root>/slipfork.toml`, `ADR-0006` §5).
+/// Suite-level test runner configuration (`[test]` in `<vcs_root>/Forkfile`, `ADR-0006` §5).
 ///
 /// `coverage = true` is the sole TOML activation switch: it parses into `Some(CoverageConfig)`
 /// with `coverage_report` defaulting to `{text}`. `coverage_report` / `coverage_fail_under`
@@ -193,7 +193,7 @@ impl RawTestSpec {
     }
 }
 
-/// Root `<vcs_root>/slipfork.toml` manifest owning `project`, `[artifacts]`, `[fixtures]`,
+/// Root `<vcs_root>/Forkfile` manifest owning `project`, `[artifacts]`, `[fixtures]`,
 /// `[test]`, and `[resources]`.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct SlipforkConfig {
@@ -221,7 +221,7 @@ struct RawSlipforkConfig {
 }
 
 impl SlipforkConfig {
-    /// Parse and validate a `slipfork.toml` document.
+    /// Parse and validate a `Forkfile` document.
     pub fn parse_toml(raw: &str) -> Result<Self, DagError> {
         let raw: RawSlipforkConfig =
             toml::from_str(raw).map_err(|e| DagError::Toml(e.to_string()))?;

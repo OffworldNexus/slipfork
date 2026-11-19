@@ -1,6 +1,5 @@
 //! Control request bodies and their rendered summaries.
 
-use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
@@ -9,28 +8,6 @@ use slipfork_world::WorldOrigin;
 
 use super::ControlSecret;
 use slipfork_world::{EntryKind, ExecEnv, WorldEntryCommand};
-
-/// Request body of the local `slipfork snow resolve` diagnostic (daemon-owned vault access).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SnowResolveRequest {
-    /// Caller working directory; a relative `file` is resolved against it.
-    pub cwd: PathBuf,
-    /// Path to `snow.yml` (absolute, or relative to `cwd`).
-    pub file: PathBuf,
-    /// Mode to resolve (`local`, `cloud`, `all`, ...).
-    pub mode: String,
-    /// Optional component id whose environment groups are resolved.
-    pub component: Option<String>,
-    /// Return plaintext values instead of `[REDACTED]` (explicit caller request; `0600` socket).
-    pub expose_secrets: bool,
-}
-
-/// Reply body of `snow_resolve`: already-rendered variables (redacted unless requested).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SnowResolveSummary {
-    /// One `VAR=value` entry per resolved variable; secret values are `[REDACTED]` by default.
-    pub vars: BTreeMap<String, String>,
-}
 
 /// Endpoint selector shared by every world-scoped command (`--world <fork>` or explicit `cwd`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -75,7 +52,7 @@ pub struct UpRequest {
     /// Resource override flag.
     pub resources: ResourceRequest,
     /// Mount the developer's host toolchain caches read-only after the ELF/libc ABI probe passes
-    /// (`--host-caches`, `ADR-0009` §2.3). Never a `slipfork.toml` key.
+    /// (`--host-caches`, `ADR-0009` §2.3). Never a `Forkfile` key.
     pub host_caches: bool,
 }
 
@@ -87,7 +64,7 @@ pub struct ForkRequest {
     /// Fork name, or `None` to derive it from the requesting checkout's current branch.
     ///
     /// Only `slipforkd` resolves `None`: it asks `VcsWorkspaceFactory::current_branch`, sanitises
-    /// the answer, and validates the result against the project's real `snow.yml` `domains[].id`
+    /// the answer, and validates the result against the project's real `Forkfile` `domain` ids
     /// set (`docs/design/dx-0.1.0-ux.md` §7.1). The client never runs `git` or reads `.git`.
     pub fork: Option<String>,
     /// Base revision for the new worktree (`None` uses the current branch).

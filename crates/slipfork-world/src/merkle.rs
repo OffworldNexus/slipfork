@@ -1,6 +1,6 @@
 //! Canonical repo-input Merkle digest and segment-wise glob matcher.
 //!
-//! `slipfork-dag` (`snow.yml` artifact and fixture inputs) and `slipfork-engine` (`L0` build
+//! `slipfork-dag` (`Forkfile` artifact and fixture inputs) and `slipfork-engine` (`L0` build
 //! context) hash file trees with the one algorithm defined here: a sorted sequence of
 //! `relative path NUL sha256(file)` records folded into a single SHA-256. Living in the shared
 //! base crate means neither caller can fork the matcher or the fold again.

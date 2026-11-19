@@ -1,7 +1,7 @@
 //! `L0` world root filesystem materialization (`ADR-0009` §1–§3).
 //!
 //! One mechanism only, zero fallbacks: every [`WorldRootfs`] is extracted from the project's own
-//! `snow.yml` `images:` `Dockerfile` (using its named target stage), validated against the
+//! `Forkfile` `service` `Dockerfile` (using its named target stage), validated against the
 //! 6-rule World Image Contract, and cached content-addressed under
 //! `<state_dir>/cache/{rootfs,oci,runtime}` on non-`tmpfs` disk. Slipfork never curates language
 //! base images, never shares the host `/usr`, and never installs backing services into the app
@@ -56,7 +56,7 @@ pub const CRUN_GUEST_PATH: &str = "/.slipfork/bin/crun";
 /// Guest path of the world PID 1 helper every world rootfs carries (`ADR-0009` §1).
 pub const WORLD_INIT_GUEST_PATH: &str = "/.slipfork/bin/slipfork-world-init";
 
-/// `snow.yml` ports of the component that uses the selected image (World Image Contract #6).
+/// `Forkfile` ports of the component that uses the selected image (World Image Contract #6).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SnowPortContract {
     /// Component id the diagnostic names (`api`).
@@ -68,7 +68,7 @@ pub struct SnowPortContract {
 }
 
 impl SnowPortContract {
-    /// Every port `snow.yml` allows the image to serve.
+    /// Every port `Forkfile` allows the image to serve.
     pub fn allowed_ports(&self) -> BTreeSet<u16> {
         self.internal_ports
             .iter()
@@ -100,28 +100,28 @@ pub struct HostCacheRequest {
     pub mounts: Vec<WorldMount>,
 }
 
-/// Everything one [`BaseImageBuilder`] needs; resolved by `slipforkd` from `snow.yml`/`SlipforkConfig`.
+/// Everything one [`BaseImageBuilder`] needs; resolved by `slipforkd` from `Forkfile`/`SlipforkConfig`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorldRootfsRequest {
     /// Slipfork state directory; the cache lives in `<state_dir>/cache`.
     pub state_dir: PathBuf,
-    /// Selected `snow.yml` `images[].id`.
+    /// Selected `Forkfile` service id.
     pub image_id: String,
     /// Absolute build context directory.
     pub context_dir: PathBuf,
-    /// `snow.yml` `images[].context`, as declared (digest input).
+    /// `Forkfile` service context directory, as declared (digest input).
     pub context_label: String,
     /// Absolute path to the selected `Dockerfile`.
     pub dockerfile: PathBuf,
     /// Requested target stage; `None` targets the final stage, which must then be named.
     pub target_stage: Option<String>,
-    /// Resolved `snow.yml` `images[].envs`.
+    /// Resolved `Forkfile` service env.
     pub build_envs: Vec<BuildEnvVar>,
     /// Target platform (`x86_64`, `aarch64`).
     pub target_arch: String,
-    /// Backing services resolved from `snow.yml` `resources:`.
+    /// Backing services resolved from `Forkfile` resources.
     pub services: Vec<BackingServiceKey>,
-    /// Ports `snow.yml` declares for this image's component.
+    /// Ports `Forkfile` declares for this image's component.
     pub ports: SnowPortContract,
     /// Invoking developer's uid (used in the World Image Contract #3 diagnostic).
     pub uid: u32,

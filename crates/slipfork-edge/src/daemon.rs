@@ -20,9 +20,9 @@ use crate::EdgeError;
 use slipfork_wire::control::{
     AuthSummary, BootEvent, ControlError, DaemonError, DaemonErrorKind, DaemonStatus,
     DropForkRequest, ExecTargetRequest, ForkRequest, ForwardRequest, ForwardSummary,
-    HookRunRequest, LogsRequest, PruneReport, SnowResolveRequest, SnowResolveSummary, UpRequest,
-    WorkspaceRefsRequest, WorkspaceRefsSummary, WorldExecTarget, WorldProcessReport, WorldSelector,
-    WorldSummary, WorldUpSummary,
+    HookRunRequest, LogsRequest, PruneReport, UpRequest, WorkspaceRefsRequest,
+    WorkspaceRefsSummary, WorldExecTarget, WorldProcessReport, WorldSelector, WorldSummary,
+    WorldUpSummary,
 };
 use slipfork_world::{LogChunk, StreamChunk};
 
@@ -63,16 +63,6 @@ impl From<EdgeError> for DaemonError {
 pub trait DaemonControl: Send + Sync {
     /// Daemon status plus every world, each with exactly one origin URL.
     fn status(&self) -> Result<DaemonStatus, EdgeError>;
-
-    /// Validate/resolve `snow.yml` through the daemon-owned `0600` vault.
-    ///
-    /// The shipped daemon and client implement this; a control backend that does not own a vault
-    /// fails closed instead of pretending to resolve secrets.
-    fn snow_resolve(&self, _req: &SnowResolveRequest) -> Result<SnowResolveSummary, EdgeError> {
-        Err(EdgeError::ControlProtocol {
-            reason: "this control backend does not implement `snow resolve`".to_owned(),
-        })
-    }
 
     /// Boot (or idempotently confirm) the world selected by `req.cwd` / `req.world`.
     fn up(

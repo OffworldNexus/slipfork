@@ -1,7 +1,7 @@
 //! Mode-aware `[resources]` `ResourceStrategy` schema and the single
 //! [`ResourcePlan::resolve`] decision point (`ADR-0008` §3).
 //!
-//! `slipfork.toml` declares deliberate overrides only. The mode default comes from
+//! `Forkfile` declares deliberate overrides only. The mode default comes from
 //! [`ResourcesSpec::defaults_for`]: `local` worlds (`Canonical` / `UserFork`) prefer OSPP dev
 //! resources, while `TestSlot` worlds are hermetically local by construction. [`ResourcePlan`]
 //! owns every S3-bucket and PostgreSQL-seed decision consumed by `slipforkd` and M3's
@@ -101,7 +101,7 @@ impl ResourceOverride {
     }
 }
 
-/// Typed `[resources]` table from `slipfork.toml` (`ADR-0008` §3).
+/// Typed `[resources]` table from `Forkfile` (`ADR-0008` §3).
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct ResourcesSpec {
     s3_buckets: BTreeMap<String, ResourceOverride>,
@@ -109,12 +109,12 @@ pub struct ResourcesSpec {
 }
 
 impl ResourcesSpec {
-    /// Declared S3-bucket overrides keyed by `snow.yml` bucket id.
+    /// Declared S3-bucket overrides keyed by `Forkfile` bucket id.
     pub fn s3_buckets(&self) -> &BTreeMap<String, ResourceOverride> {
         &self.s3_buckets
     }
 
-    /// Declared PostgreSQL-database overrides keyed by `snow.yml` database id.
+    /// Declared PostgreSQL-database overrides keyed by `Forkfile` database id.
     pub fn pg_databases(&self) -> &BTreeMap<String, ResourceOverride> {
         &self.pg_databases
     }
@@ -127,7 +127,7 @@ impl ResourcesSpec {
     /// Extend this override table with every id declared by the manifest.
     ///
     /// `ResourcePlan::resolve` reports one decision per declared id, so `slipforkd` first covers
-    /// the ids declared by `snow.yml`; an id without an explicit override keeps
+    /// the ids declared by `Forkfile`; an id without an explicit override keeps
     /// [`ResourcesSpec::defaults_for`] precedence and reports `ResourceReason::ModeDefault`.
     pub fn with_declared_ids(&self, s3_ids: &[&str], pg_ids: &[&str]) -> Self {
         let mut spec = self.clone();
@@ -182,9 +182,9 @@ impl ResourcesSpec {
         }
     }
 
-    /// Fail closed when `[resources]` names an id absent from `snow.yml`.
+    /// Fail closed when `[resources]` names an id absent from `Forkfile`.
     ///
-    /// `slipfork-dag` never depends on `slipfork-snow`; the Composition Root passes the plain id
+    /// `slipfork-dag` never depends on the manifest crate; the Composition Root passes the plain id
     /// slices it already owns.
     pub fn validate_declared_ids(
         &self,

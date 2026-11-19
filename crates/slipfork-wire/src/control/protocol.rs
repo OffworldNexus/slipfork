@@ -7,8 +7,8 @@ use serde::{Deserialize, Serialize};
 
 use super::request::{
     AuthSummary, DropForkRequest, ExecTargetRequest, ForkRequest, ForwardRequest, ForwardSummary,
-    HookRunRequest, LogsRequest, PruneReport, SnowResolveRequest, SnowResolveSummary, UpRequest,
-    WorkspaceRefsRequest, WorkspaceRefsSummary, WorldExecTarget, WorldSelector,
+    HookRunRequest, LogsRequest, PruneReport, UpRequest, WorkspaceRefsRequest,
+    WorkspaceRefsSummary, WorldExecTarget, WorldSelector,
 };
 use super::view::{BootEvent, DaemonStatus, WorldProcessReport, WorldSummary, WorldUpSummary};
 use slipfork_world::{LogChunk, StreamChunk};
@@ -68,8 +68,6 @@ impl fmt::Display for DaemonError {
 pub enum DaemonRequest {
     /// Daemon process status plus every world (each with exactly one origin).
     Status,
-    /// Validate/resolve `snow.yml` through the daemon-owned `0600` vault.
-    SnowResolve(SnowResolveRequest),
     /// Boot a world; [`DaemonReply::Event`] frames precede the [`DaemonReply::World`] reply.
     Up(UpRequest),
     /// Stop the selected world's components and `crun` services in place, then boot it again;
@@ -149,11 +147,6 @@ pub enum DaemonReply {
     Status {
         /// Daemon status.
         status: DaemonStatus,
-    },
-    /// Reply to [`DaemonRequest::SnowResolve`].
-    SnowResolved {
-        /// Resolved variables (redacted unless the request asked for plaintext).
-        summary: SnowResolveSummary,
     },
     /// A live boot event, streamed before the terminal [`DaemonReply::World`] reply.
     Event {

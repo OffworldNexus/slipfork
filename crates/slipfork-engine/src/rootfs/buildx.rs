@@ -24,13 +24,13 @@ pub const SLIPFORK_RUNTIME_CONTEXT: &str = "slipfork-runtime";
 pub struct BuildxRequest<'a> {
     /// Scratch `Dockerfile` outside the worktree (user bytes + appended `slipfork-world` stage).
     pub dockerfile: &'a Path,
-    /// User build context (`snow.yml` `images[].context`).
+    /// User build context (`Forkfile` service context directory).
     pub context_dir: &'a Path,
     /// Stage to export (`slipfork-world`).
     pub target: &'a str,
     /// Staging directory the local exporter writes to.
     pub dest_dir: &'a Path,
-    /// `snow.yml` `images[].envs`, resolved by the Composition Root.
+    /// `Forkfile` service env, resolved by the Composition Root.
     pub build_envs: &'a [BuildEnvVar],
     /// Target platform (`linux/amd64`), derived from the requested architecture.
     pub platform: &'a str,
