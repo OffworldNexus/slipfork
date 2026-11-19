@@ -408,9 +408,8 @@ fn world_lifecycle_journey_boots_edits_forks_and_reaps() {
         "`--remote` prints the recipe instead of opening a browser: {}",
         stdout(&remote)
     );
-    let empty = scratch.join("empty-path");
-    fs::create_dir_all(&empty).expect("empty PATH directory");
-    let refused = daemon.cli_with_path(&repo, &empty, &["open"]);
+    let restricted = support::tool_path(scratch, "restricted-path", &["git", "sh", "uname"]);
+    let refused = daemon.cli_with_path(&repo, &restricted, &["open"]);
     assert!(
         !refused.status.success(),
         "no opener must fail `slipfork open` closed"

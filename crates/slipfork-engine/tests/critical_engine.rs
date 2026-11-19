@@ -276,18 +276,22 @@ fn one_writable_subvolume_per_world_with_ro_snapshot_lineage_and_host_ownership(
         vec![snapshots.join("base")],
         "one sealed snapshot subvolume, no staging residue"
     );
-    assert_eq!(
-        fs::metadata(snapshots.join("base"))
-            .expect("snapshot metadata")
-            .permissions()
-            .mode()
-            & 0o200,
-        0,
-        "a read-only snapshot carries no owner-write bit"
+    // A real Btrfs snapshot keeps mode 0o755 and is sealed with the kernel's `BTRFS_SUBVOL_RDONLY`
+    // flag (`ro=true`) — the deleted `TestTreeDriver` simulated that with a 0o555 root. The seal
+    // is proven by the kernel refusing both a new entry and the removal of a sealed payload file.
+    let sealed = snapshots.join("base");
+    assert!(
+        fs::write(sealed.join("new-file"), b"nope").is_err(),
+        "a new entry at the sealed snapshot root fails"
+    );
+    let payload = sealed.join("state/seed.txt");
+    assert!(
+        payload.is_file(),
+        "the sealed snapshot carries the source payload it was snapshotted from"
     );
     assert!(
-        fs::write(snapshots.join("base/new-file"), b"nope").is_err(),
-        "a new entry at the sealed snapshot root fails"
+        fs::remove_file(&payload).is_err(),
+        "removing a sealed payload file fails"
     );
 
     let world_a = fx.world(WorldTarget::Canonical);

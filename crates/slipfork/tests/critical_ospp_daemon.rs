@@ -374,8 +374,47 @@ fn ospp_pairing_store_reboot_subscribe_push_and_sealed_dump_journey() {
             handle.bytes().all(|byte| byte.is_ascii_hexdigit()),
             "the fragment handle must be hex: {handle}"
         );
-        let argv = fs::read_to_string(&daemon.browser_argv)
-            .expect("the injected real opener records its argv");
+        let argv = match fs::read_to_string(&daemon.browser_argv) {
+            Ok(argv) => argv,
+            Err(error) => {
+                let record_dir = daemon
+                    .browser_argv
+                    .parent()
+                    .expect("the browser argv record has a parent");
+                let listing = match fs::read_dir(record_dir) {
+                    Ok(entries) => entries
+                        .map(|entry| match entry {
+                            Ok(entry) => entry.file_name().to_string_lossy().into_owned(),
+                            Err(entry_error) => format!("<entry error: {entry_error}>"),
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                    Err(listing_error) => format!("<unreadable: {listing_error}>"),
+                };
+                let fixture = scratch.join("browser-bin").join("xdg-open");
+                let executable = fs::metadata(&fixture)
+                    .map(|metadata| metadata.permissions().mode() & 0o111 != 0)
+                    .unwrap_or(false);
+                let log_path = scratch.join("daemon.log");
+                panic!(
+                    "the injected real opener did not record its argv ({error})\n\
+                     record file: {}\n\
+                     record dir ({}) listing: {listing}\n\
+                     fixture {}: exists={} executable={executable}\n\
+                     test process PATH={:?} DISPLAY={:?}\n\
+                     daemon log ({}):\n{}",
+                    daemon.browser_argv.display(),
+                    record_dir.display(),
+                    fixture.display(),
+                    fixture.exists(),
+                    std::env::var("PATH").ok(),
+                    std::env::var("DISPLAY").ok(),
+                    log_path.display(),
+                    fs::read_to_string(&log_path)
+                        .unwrap_or_else(|log_error| format!("<unreadable: {log_error}>")),
+                )
+            }
+        };
         assert_eq!(
             argv.trim(),
             url.trim(),

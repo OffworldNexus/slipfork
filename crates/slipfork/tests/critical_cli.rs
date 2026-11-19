@@ -765,8 +765,6 @@ fn doctor_json_carries_the_typed_ingress_document() {
 
 #[test]
 fn zero_setup_auto_spawn_serves_up_without_a_prestarted_daemon() {
-    use std::os::unix::process::CommandExt as _;
-
     let tmp = disk_tempdir();
     let scratch = tmp.path();
     let repo = repo_with_snow(scratch);
@@ -786,12 +784,8 @@ fn zero_setup_auto_spawn_serves_up_without_a_prestarted_daemon() {
         .env("XDG_DATA_HOME", scratch.join("xdg-auto-data"))
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        // The CLI and the daemon it spawns share this new process group, so the test can reap the
-        // detached zero-setup daemon without inventing a pid file or a `daemon stop` command.
-        .process_group(0)
         .spawn()
         .expect("spawn slipfork (auto-spawn)");
-    let process_group = child.id();
     let output = child.wait_with_output().expect("wait for auto-spawned up");
 
     if !support::host_is_btrfs(&state_dir) {
@@ -841,12 +835,28 @@ fn zero_setup_auto_spawn_serves_up_without_a_prestarted_daemon() {
     assert_eq!(mode, 0o600, "daemon.sock must be 0600");
     assert!(daemon_log.is_file(), "auto-spawn must record its log");
 
-    let termination = support::terminate_process_group(process_group);
+    // The CLI spawns the daemon in its own process group (`commands/control.rs`), so no signal to
+    // the CLI's group can reach it: SIGTERM the pid the daemon reports about itself in `status`.
+    let status = Command::new(env!("CARGO_BIN_EXE_slipfork"))
+        .arg("--state-dir")
+        .arg(&state_dir)
+        .args(["--json", "status"])
+        .current_dir(&repo)
+        .env("XDG_DATA_HOME", scratch.join("xdg-auto-data"))
+        .output()
+        .expect("read the auto-spawned daemon status");
+    assert_success(&status, "status after the auto-spawned up");
+    let document: Value = serde_json::from_str(&stdout(&status)).expect("status json");
+    let daemon_pid = document["pid"]
+        .as_u64()
+        .expect("the status document carries the daemon pid");
+    let killed = Command::new("kill")
+        .args(["-TERM", &daemon_pid.to_string()])
+        .status()
+        .expect("run kill");
     assert!(
-        termination.term_delivered,
-        "kill -TERM -{process_group} must succeed to prove the test reaped its daemon \
-         (live members: {})",
-        termination.members_alive
+        killed.success(),
+        "SIGTERM the daemon pid {daemon_pid} the status document reports"
     );
     support::wait_daemon_teardown(&runtime_dir)
         .unwrap_or_else(|error| panic!("the auto-spawned slipforkd must stop accepting: {error}"));
@@ -1315,8 +1325,47 @@ fn auth_prints_the_server_supplied_fragment_url_and_never_echoes_a_secret() {
         handle.bytes().all(|byte| byte.is_ascii_hexdigit()),
         "the fragment handle must be hex: {handle}"
     );
-    let argv = fs::read_to_string(&daemon.browser_argv)
-        .expect("the injected real opener records its argv");
+    let argv = match fs::read_to_string(&daemon.browser_argv) {
+        Ok(argv) => argv,
+        Err(error) => {
+            let record_dir = daemon
+                .browser_argv
+                .parent()
+                .expect("the browser argv record has a parent");
+            let listing = match fs::read_dir(record_dir) {
+                Ok(entries) => entries
+                    .map(|entry| match entry {
+                        Ok(entry) => entry.file_name().to_string_lossy().into_owned(),
+                        Err(entry_error) => format!("<entry error: {entry_error}>"),
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                Err(listing_error) => format!("<unreadable: {listing_error}>"),
+            };
+            let fixture = scratch.join("browser-bin").join("xdg-open");
+            let executable = fs::metadata(&fixture)
+                .map(|metadata| metadata.permissions().mode() & 0o111 != 0)
+                .unwrap_or(false);
+            let log_path = scratch.join("daemon.log");
+            panic!(
+                "the injected real opener did not record its argv ({error})\n\
+                 record file: {}\n\
+                 record dir ({}) listing: {listing}\n\
+                 fixture {}: exists={} executable={executable}\n\
+                 test process PATH={:?} DISPLAY={:?}\n\
+                 daemon log ({}):\n{}",
+                daemon.browser_argv.display(),
+                record_dir.display(),
+                fixture.display(),
+                fixture.exists(),
+                std::env::var("PATH").ok(),
+                std::env::var("DISPLAY").ok(),
+                log_path.display(),
+                fs::read_to_string(&log_path)
+                    .unwrap_or_else(|log_error| format!("<unreadable: {log_error}>")),
+            )
+        }
+    };
     assert_eq!(
         argv.trim(),
         pairing_line.trim(),
@@ -1361,42 +1410,6 @@ fn auth_prints_the_server_supplied_fragment_url_and_never_echoes_a_secret() {
         stderr(&refused).contains("slipfork open --remote"),
         "one actionable line naming the remote recipe: {}",
         stderr(&refused)
-    );
-}
-
-#[test]
-fn support_json_lists_required_evidence_for_every_integration() {
-    let tmp = disk_tempdir();
-    let scratch = tmp.path();
-    let repo = repo_with_snow(scratch);
-    let daemon = Daemon::start(scratch);
-
-    let output = daemon.cli(&repo, &["--json", "support"]);
-    assert_success(&output, "support --json");
-    let rows: Value = serde_json::from_str(&stdout(&output)).expect("support json");
-    let rows = rows.as_array().expect("support array");
-    assert!(!rows.is_empty(), "the support registry must not be empty");
-    for row in rows {
-        assert!(row["id"].as_str().is_some_and(|id| !id.is_empty()));
-        assert!(row["category"].as_str().is_some());
-        assert!(row["tier"].as_str().is_some());
-        let required = row["required_evidence"]
-            .as_array()
-            .unwrap_or_else(|| panic!("missing required_evidence for {}", row["id"]));
-        assert!(
-            !required.is_empty(),
-            "every integration must list required evidence: {}",
-            row["id"]
-        );
-        assert!(required.iter().all(|field| field.as_str().is_some()));
-    }
-
-    let human = daemon.cli(&repo, &["support"]);
-    assert_success(&human, "support");
-    assert!(
-        stdout(&human).contains("INTEGRATION") && stdout(&human).contains("TIER"),
-        "the human report must render the matrix: {}",
-        stdout(&human)
     );
 }
 

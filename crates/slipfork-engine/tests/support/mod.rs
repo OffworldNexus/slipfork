@@ -61,13 +61,9 @@ fn runtime_cache_dir() -> PathBuf {
         .join("test-runtime")
 }
 
-/// Disk-backed scratch root (`/tmp` is RAM-backed `tmpfs` on Linux runners).
-fn disk_scratch_root() -> PathBuf {
-    PathBuf::from(std::env::var("HOME").expect("HOME is set"))
-        .join(".cache")
-        .join("slipfork")
-        .join("test-tmp")
-}
+// Disk-backed scratch root resolved once in the shared testkit (`SLIPFORK_TEST_ROOT`, then
+// `$HOME/.cache/slipfork`), so no suite carries a second resolution.
+use slipfork_testkit::live::disk_scratch_root;
 
 /// A temporary directory on disk, never on `tmpfs`.
 pub fn disk_tempdir(label: &str) -> tempfile::TempDir {

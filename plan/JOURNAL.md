@@ -1699,3 +1699,14 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-19T02:52 [M3.30.4.4] (lead) status active -> done
 - 2026-11-19T02:52 [M3.30.4] (lead) Epic acceptance green: no nested cargo build, no dag plan, one compile per target set; fmt/clippy; dag/snow/ospp/engine lib tests (5/4/17/52) pass; critical_edg
 - 2026-11-19T02:52 [M3.30.4] (lead) status ready -> done
+- 2026-11-19T02:52 [M3.30.6] (lead) status ready -> active
+- 2026-11-19T02:52 [M3.30.6] (lead) attempt 1/3 started
+- 2026-11-19T02:52 [M3.30.6] (lead) base c12b84a06ace16b817f756c8092cc45bc514f355
+- 2026-11-19T03:26 [M3.30.7] (lead) created (task) Lab-VM reality fixes: short test root, browser fixture on CLI, real seal invariant, stale-command pruning
+- 2026-11-19T03:26 [M3.30.7] (lead) status ready -> active
+- 2026-11-19T03:26 [M3.30.7] (lead) attempt 1/3 started
+- 2026-11-19T03:26 [M3.30.7] (lead) base c12b84a06ace16b817f756c8092cc45bc514f355 (opened from the first suite-user VM run of M3.30.6)
+- 2026-11-19T03:26 [M3.30.7] (lead) edited fields
+- 2026-11-19T03:29 [M3.30.7] (lead) status active -> review
+- 2026-11-19T04:28 [M3.30.7] (lead) suite-user VM: engine 21, oci 3, edge_live 3, btrfs_live 1+7, cli 24, l0 8, slug 8, vcs_remote 7 all pass; ospp blocked by a real product leak (component secret
+- 2026-11-19T04:28 [M3.30.7] (lead) status review -> done

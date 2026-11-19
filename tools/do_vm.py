@@ -116,6 +116,9 @@ DEMO_GIT_NAME = "Slipfork Demo"
 DEMO_GIT_EMAIL = "demo@slipfork.invalid"
 LOGIN_BANNER = "/etc/profile.d/slipfork-demo.sh"
 SUITE_HOME = f"{STATE_DIR}/home"
+# One short disk-backed test root on the Btrfs volume: `<state>/ctl/<world>/netns.sock` must fit
+# the 107-byte `AF_UNIX` limit, so the suites never build it under the deeper suite `HOME`.
+SUITE_TEST_ROOT = f"{STATE_DIR}/t"
 OWNER_HOME = f"{STATE_DIR}/root-home"
 MOUNT_OPTIONS = "user_subvol_rm_allowed,noatime,nofail"
 BTRFS_MAGIC = "9123683e"
@@ -296,6 +299,7 @@ class ProvisionConfig:
     unit_dirs: tuple[str, ...] = UNIT_DIRS
     marker: str = MARKER
     suite_home: str = SUITE_HOME
+    test_root: str = SUITE_TEST_ROOT
     owner_home: str = OWNER_HOME
     remote_home: str = REMOTE_HOME
     remote_tree: str = REMOTE_TREE
@@ -758,6 +762,7 @@ rm -f {_q(config.marker)}
 
 install -d -o {_q(config.remote_user)} -g {_q(config.remote_user)} {_q(config.suite_home)}
 install -d -o {_q(config.remote_user)} -g {_q(config.remote_user)} -m 700 {_q(config.suite_home)}/tmp
+install -d -o {_q(config.remote_user)} -g {_q(config.remote_user)} -m 700 {_q(config.test_root)}
 install -d -o root -g root -m 700 {_q(config.owner_home)}
 install -d -o root -g root -m 700 {_q(config.owner_home)}/tmp
 chown {_q(config.remote_user)}:{_q(config.remote_user)} {_q(config.mountpoint)}
@@ -2141,6 +2146,14 @@ def cmd_sync(args: argparse.Namespace) -> int:
         f"chown -R {REMOTE_USER}:{REMOTE_USER} {REMOTE_TREE}"
     )
     _run(ssh_argv(droplet, known_hosts, identity, replace))
+    _run(
+        ssh_argv(
+            droplet,
+            known_hosts,
+            identity,
+            f"install -d -o {REMOTE_USER} -g {REMOTE_USER} -m 700 {SUITE_TEST_ROOT}",
+        )
+    )
     _seed_demo(droplet, known_hosts, identity)
     _build_product(droplet, known_hosts, identity)
     _install_product(droplet, known_hosts, identity)
@@ -2153,6 +2166,7 @@ def suite_command(command: str) -> str:
     inner = (
         f"cd {REMOTE_TREE} && exec env -i "
         f"HOME={SUITE_HOME} TMPDIR={SUITE_HOME}/tmp "
+        f"SLIPFORK_TEST_ROOT={SUITE_TEST_ROOT} "
         f"CARGO_HOME={REMOTE_HOME}/.cargo RUSTUP_HOME={REMOTE_HOME}/.rustup "
         f"PATH={REMOTE_HOME}/.cargo/bin:/usr/local/bin:/usr/bin:/bin "
     ) + command

@@ -210,7 +210,12 @@ fn host_caches_abi_journey_refuses_musl_and_passes_a_matching_glibc_world() {
     let scratch = tmp.path();
     let alpine = alpine_repo(scratch);
     let glibc = glibc_repo(scratch);
-    let daemon = Daemon::start(scratch);
+    // `--host-caches` resolves from the daemon's `HOME`, so hand this daemon a scratch home with
+    // one real toolchain cache witness instead of relying on the suite account's home layout.
+    let daemon_home = scratch.join("daemon-home");
+    std::fs::create_dir_all(daemon_home.join(".cargo").join("registry"))
+        .expect("seed the toolchain cache witness");
+    let daemon = Daemon::start_with_home(scratch, &daemon_home);
 
     let up = daemon.cli(&alpine, &["up", "--host-caches"]);
     assert!(

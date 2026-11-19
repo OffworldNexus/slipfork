@@ -11,7 +11,7 @@
 #![forbid(unsafe_code)]
 
 use std::fs;
-use std::io::{Read, Write};
+use std::io::{ErrorKind, Read, Write};
 use std::net::{Ipv4Addr, Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::os::fd::OwnedFd;
 use std::os::unix::fs::PermissionsExt;
@@ -58,7 +58,7 @@ const LIVE_PROBE_PORT_ENV: &str = "SLIPFORK_EDGE_LIVE_PROBE_PORT";
 /// `ws_port`. The script writes the ready file (inside the world's `repo` mount, so the host sees
 /// it) only after all three listeners are bound.
 const SERVER: &str = r#"
-import socket, sys, threading, time
+import os, socket, sys, threading, time
 ready = sys.argv[1]
 http_port = int(sys.argv[2])
 echo_port = int(sys.argv[3])
@@ -81,6 +81,8 @@ def http_exchange(conn):
         name, _, value = line.partition(b":")
         if name.strip().lower() == b"content-length":
             length = int(value.strip())
+    # Answer before the body is forwarded: the ingress relays this head first, then pipes the
+    # remaining request bytes while the backend drains them (src/ingress.rs relay order).
     conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\n")
     received = len(rest)
     while received < length:
@@ -125,22 +127,35 @@ threading.Thread(target=serve, args=(http_port, http_exchange), daemon=True).sta
 threading.Thread(target=serve, args=(echo_port, raw_echo), daemon=True).start()
 threading.Thread(target=serve, args=(ws_port, ws_exchange), daemon=True).start()
 open(ready, "w").write("ready")
-while True:
-    time.sleep(1)
+while os.path.exists(ready):
+    time.sleep(0.1)
 "#;
 
 fn acme() -> ProjectSlug {
     ProjectSlug::parse("acme").expect("valid project slug")
 }
 
-/// Read until the peer closes (the ingress answers `Connection: close`).
+/// Read until the peer closes, tolerating a reset once the body has begun.
+///
+/// The in-world backend closes immediately after its last `sendall`, so the kernel can surface
+/// `ECONNRESET` instead of a clean EOF; a reset after any byte is that close, not a lost reply.
+/// A reset before the first byte is a real failure and names the byte count.
 fn read_to_close(stream: &mut TcpStream) -> String {
     let _ = stream.set_read_timeout(Some(Duration::from_secs(30)));
-    let mut text = String::new();
-    stream
-        .read_to_string(&mut text)
-        .expect("read the ingress response");
-    text
+    let mut bytes = Vec::new();
+    let mut buffer = [0_u8; 16 * 1024];
+    loop {
+        match stream.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(count) => bytes.extend_from_slice(&buffer[..count]),
+            Err(error) if error.kind() == ErrorKind::ConnectionReset && !bytes.is_empty() => break,
+            Err(error) => panic!(
+                "read the peer response after {} byte(s): {error}",
+                bytes.len()
+            ),
+        }
+    }
+    String::from_utf8_lossy(&bytes).into_owned()
 }
 
 /// One raw HTTP/1.1 request against the real ingress, returning the whole response.
@@ -212,6 +227,20 @@ fn bind_ingress(
         None => ingress,
     };
     (port, ingress)
+}
+
+/// Stops the in-world fixture server on scope exit, including while a failed assertion unwinds.
+///
+/// The server serves while its `ready` file exists, so removing the file lets the blocked
+/// `fixture.exec` return and `thread::scope` join instead of deadlocking the whole suite.
+struct ReadyGuard<'a> {
+    ready: &'a Path,
+}
+
+impl Drop for ReadyGuard<'_> {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(self.ready);
+    }
 }
 
 /// Wait for the in-world server's ready file, failing with the server's own output if it exits.
@@ -396,6 +425,10 @@ fn registry_ingress_and_forward_over_one_real_world() {
             let _ = fixture.exec(&world, &script);
         });
         await_server(&ready, &server);
+        // Declared after the server is ready, so removing the file can never race its creation;
+        // the guard drops (removing the ready file) before the scope joins the server thread,
+        // including while unwinding from a failed assertion below.
+        let ready_guard = ReadyGuard { ready: &ready };
 
         let registry = Arc::new(WorldRegistry::new(fixture.engine().clone(), 80));
         let project = acme();
@@ -496,6 +529,27 @@ fn registry_ingress_and_forward_over_one_real_world() {
             Err(EdgeError::UnknownHost { .. })
         ));
 
+        // Direct-hop sanity: dial the world exactly as the ingress does and read the backend's raw
+        // reply, so a later ingress failure is never mistaken for a broken world listener.
+        let mut backend = registry.dial(&api).expect("dial the in-world listener");
+        backend
+            .write_all(
+                b"GET /api/users?page=2 HTTP/1.1\r\nHost: acme.localhost\r\nConnection: close\r\n\r\n",
+            )
+            .expect("write the direct backend request");
+        let direct = read_to_close(&mut backend);
+        if !direct.starts_with("HTTP/1.1 200") || !direct.contains("HEAD_BYTES:") {
+            eprintln!("direct world dial returned:\n{direct}");
+        }
+        assert!(
+            direct.starts_with("HTTP/1.1 200"),
+            "the world backend must answer a direct dial, got:\n{direct}"
+        );
+        assert!(
+            direct.contains("HEAD_BYTES:"),
+            "the direct hop must reach the in-world handler, got:\n{direct}"
+        );
+
         // The live ingress: `0600` pathname socket, real dispatch on both transports.
         let (ingress_port, ingress) = bind_ingress(
             fixture.state_dir(),
@@ -513,6 +567,7 @@ fn registry_ingress_and_forward_over_one_real_world() {
             let _ = ingress.serve();
         });
 
+        eprintln!("edge-live step: unknown-host");
         let unknown = tcp_request(ingress_port, "missing.localhost", "/");
         assert!(
             unknown.starts_with("HTTP/1.1 404 Not Found"),
@@ -576,6 +631,7 @@ fn registry_ingress_and_forward_over_one_real_world() {
                 .contains("world acme has no ingress route for '/nope' (host 'acme.localhost')"),
             "the 404 must name the world id, host, and path, got:\n{unmatched}"
         );
+        eprintln!("edge-live step: 405");
         let method = send_raw(
             ingress_port,
             b"BREW /api HTTP/1.1\r\nHost: acme.localhost\r\n\r\n",
@@ -610,6 +666,7 @@ fn registry_ingress_and_forward_over_one_real_world() {
             too_large.starts_with("HTTP/1.1 431 Request Header Fields Too Large"),
             "a head past the {HEADER_CAP}-byte cap must be a 431, got:\n{too_large}"
         );
+        eprintln!("edge-live step: 502");
         let unreachable = tcp_request(ingress_port, "acme.localhost", "/dead");
         assert!(
             unreachable.starts_with("HTTP/1.1 502 Bad Gateway"),
@@ -636,6 +693,10 @@ fn registry_ingress_and_forward_over_one_real_world() {
                     IngressRoute {
                         prefix: "/dead".to_owned(),
                         port: CLOSED_BACKEND_PORT,
+                    },
+                    IngressRoute {
+                        prefix: "/ws".to_owned(),
+                        port: WS_BACKEND_PORT,
                     },
                     IngressRoute {
                         prefix: String::new(),
@@ -725,6 +786,7 @@ fn registry_ingress_and_forward_over_one_real_world() {
         );
 
         // A real proxied hop: the ingress resolves, dials the in-world listener, and pipes it.
+        eprintln!("edge-live step: proxied-200");
         let response = tcp_request(ingress_port, "acme.localhost", "/api/users?page=2");
         assert!(
             response.starts_with("HTTP/1.1 200 OK"),
@@ -743,6 +805,7 @@ fn registry_ingress_and_forward_over_one_real_world() {
         }
 
         // WebSocket proving: a 101 handshake, a fragmented 4 KiB echo, and an idle socket.
+        eprintln!("edge-live step: ws-handshake");
         let mut ws =
             TcpStream::connect((Ipv4Addr::LOCALHOST, ingress_port)).expect("connect the websocket");
         ws.set_read_timeout(Some(Duration::from_secs(30)))
@@ -755,6 +818,7 @@ fn registry_ingress_and_forward_over_one_real_world() {
             "the .localhost world host must proxy WebSocket handshakes, got:\n{}",
             String::from_utf8_lossy(&handshake)
         );
+        eprintln!("edge-live step: ws-fragments");
         let payload: Vec<u8> = (0..WS_PAYLOAD).map(|index| (index % 251) as u8).collect();
         for piece in payload.chunks(63) {
             ws.write_all(piece).expect("write a fragment");
@@ -768,8 +832,10 @@ fn registry_ingress_and_forward_over_one_real_world() {
             echoed, payload,
             "the byte pipe must not re-frame the stream"
         );
+        // An upgraded connection holds an ingress relay slot: close it before the next phase.
         drop(ws);
 
+        eprintln!("edge-live step: ws-idle");
         let mut idle = TcpStream::connect((Ipv4Addr::LOCALHOST, ingress_port))
             .expect("connect the idle websocket");
         idle.set_read_timeout(Some(Duration::from_secs(30)))
@@ -790,8 +856,10 @@ fn registry_ingress_and_forward_over_one_real_world() {
         idle.read_exact(&mut after)
             .expect("the upgraded socket must survive the idle gap");
         assert_eq!(&after, b"after-idle");
+        // An upgraded connection holds an ingress relay slot: close it before the upload phase.
         drop(idle);
 
+        eprintln!("edge-live step: upload");
         // A 2 MiB upload streams through the bounded relay: the backend counts every byte.
         let (stream_port, stream_ingress) = bind_ingress(
             &fixture.state_dir().join("stream"),
@@ -833,6 +901,7 @@ fn registry_ingress_and_forward_over_one_real_world() {
         );
 
         // A real forward bridge: host listener -> dial_world_tcp -> in-world raw echo.
+        eprintln!("edge-live step: forward");
         let bridge = registry
             .forward(
                 &project,
@@ -858,6 +927,7 @@ fn registry_ingress_and_forward_over_one_real_world() {
         drop(bridge);
 
         // Releasing the world removes the route and destroys the real handle exactly once.
+        eprintln!("edge-live step: release");
         assert!(
             registry
                 .release_world(&project, &target)
@@ -872,7 +942,7 @@ fn registry_ingress_and_forward_over_one_real_world() {
             registry.resolve("acme.localhost", "/api"),
             Err(EdgeError::UnknownHost { .. })
         ));
-        let _ = fs::remove_file(&ready);
+        drop(ready_guard);
         server.join().expect("the in-world server thread joins");
     });
 }

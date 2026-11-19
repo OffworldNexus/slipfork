@@ -39,13 +39,13 @@ pub use slipfork_testkit::{
 };
 use tempfile::TempDir;
 
+// The one disk-backed scratch root (shared testkit resolution: `SLIPFORK_TEST_ROOT`, then
+// `$HOME/.cache/slipfork`), never `/tmp`.
+use slipfork_testkit::live::disk_scratch_root;
+
 /// Disk-backed scratch directory with a short path (AF_UNIX `sun_path` budget), never `/tmp`.
 pub fn disk_tempdir(prefix: &str) -> TempDir {
-    let base = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .expect("HOME")
-        .join(".cache")
-        .join("slipfork-cli-tests");
+    let base = disk_scratch_root();
     fs::create_dir_all(&base).expect("create test cache base");
     tempfile::Builder::new()
         .prefix(prefix)
@@ -179,6 +179,10 @@ pub fn daemon_command_with_ospp(
         .arg(pinned_crun())
         .env("XDG_DATA_HOME", &layout.data_home)
         .env("XDG_RUNTIME_DIR", runtime_parent(&layout.runtime_dir))
+        // The suite user's `env -i` carries no desktop session; without one `Browser::available`
+        // is false and the injected opener never runs. A real X display is the fact a login shell
+        // would provide.
+        .env("DISPLAY", ":0")
         .env("HOSTNAME", "test-machine")
         .stdin(Stdio::null())
         .stdout(Stdio::null());
@@ -334,6 +338,8 @@ pub struct Daemon {
     pub runtime_dir: PathBuf,
     /// The argv the injected real `xdg-open` fixture recorded (one argument per line).
     pub browser_argv: PathBuf,
+    /// The directory holding the real `xdg-open` fixture, prepended to every CLI `PATH`.
+    browser_bin: PathBuf,
     /// The suite scratch root this daemon's worlds are booted from (the process reaping scope).
     scratch: PathBuf,
     /// The kernel adapter this daemon's worlds are written through, so teardown can destroy exactly
@@ -357,10 +363,43 @@ enum Backend {
     },
 }
 
+/// The optional knobs one child-daemon spawn site sets; everything else is the shared layout.
+#[derive(Default)]
+struct SpawnSpec<'a> {
+    /// Explicit daemon `PATH` (the `jj` adapter probes it).
+    path: Option<&'a Path>,
+    /// Boot-injected OSPP endpoint.
+    endpoint: Option<&'a OsppEndpoint>,
+    /// Scratch `HOME` whose toolchain caches `--host-caches` resolves.
+    home: Option<&'a Path>,
+}
+
 impl Daemon {
     pub fn start(scratch: &Path) -> Self {
         let layout = DaemonLayout::under(scratch);
         Self::start_in(scratch, &layout).unwrap_or_else(|message| panic!("{message}"))
+    }
+
+    /// Start a real `slipforkd` child whose `HOME` is `home`, a scratch toolchain-cache root.
+    ///
+    /// Only the child backend can be handed a different `HOME` (the in-process graph resolves
+    /// [`host_caches`] from this process's environment), and a scratch home exists to prove the
+    /// `--host-caches` ABI path on a real world, so a non-Btrfs host fails closed.
+    pub fn start_with_home(scratch: &Path, home: &Path) -> Self {
+        let layout = DaemonLayout::under(scratch);
+        ensure_private_dir(&layout.state_dir).expect("private state dir");
+        ensure_private_dir(&layout.runtime_dir).expect("private runtime dir");
+        let driver = require_btrfs(&layout.state_dir);
+        Self::spawn_child(
+            scratch,
+            &layout,
+            SpawnSpec {
+                home: Some(home),
+                ..SpawnSpec::default()
+            },
+            driver,
+        )
+        .unwrap_or_else(|message| panic!("{message}"))
     }
 
     /// Start a daemon whose single boot-injected OSPP endpoint is `endpoint`.
@@ -385,7 +424,15 @@ impl Daemon {
         ensure_private_dir(&layout.state_dir)?;
         ensure_private_dir(&layout.runtime_dir)?;
         if host_is_btrfs(&layout.state_dir) {
-            Self::spawn_child(scratch, layout, None, endpoint.as_ref())
+            Self::spawn_child(
+                scratch,
+                layout,
+                SpawnSpec {
+                    endpoint: endpoint.as_ref(),
+                    ..SpawnSpec::default()
+                },
+                KernelBtrfsDriver::new(),
+            )
         } else {
             Ok(Self::serve_in_process(scratch, layout, endpoint))
         }
@@ -400,7 +447,15 @@ impl Daemon {
         let layout = DaemonLayout::under(scratch);
         ensure_private_dir(&layout.state_dir)?;
         ensure_private_dir(&layout.runtime_dir)?;
-        Self::spawn_child(scratch, &layout, path, None)
+        Self::spawn_child(
+            scratch,
+            &layout,
+            SpawnSpec {
+                path,
+                ..SpawnSpec::default()
+            },
+            KernelBtrfsDriver::new(),
+        )
     }
 
     /// `true` when this daemon is served by [`slipfork::daemon`] in the test process.
@@ -417,7 +472,16 @@ impl Daemon {
         let layout = DaemonLayout::under(scratch);
         ensure_private_dir(&layout.state_dir)?;
         ensure_private_dir(&layout.runtime_dir)?;
-        Self::spawn_child(scratch, &layout, path, Some(&endpoint))
+        Self::spawn_child(
+            scratch,
+            &layout,
+            SpawnSpec {
+                path,
+                endpoint: Some(&endpoint),
+                ..SpawnSpec::default()
+            },
+            KernelBtrfsDriver::new(),
+        )
     }
 
     /// The adapter this daemon's worlds were written through (the one it injected).
@@ -496,10 +560,20 @@ impl Daemon {
     fn spawn_child(
         scratch: &Path,
         layout: &DaemonLayout,
-        path: Option<&Path>,
-        endpoint: Option<&OsppEndpoint>,
+        spec: SpawnSpec<'_>,
+        driver: KernelBtrfsDriver,
     ) -> Result<Self, String> {
+        let SpawnSpec {
+            path,
+            endpoint,
+            home,
+        } = spec;
         let log_path = scratch.join("daemon.log");
+        let (browser_script, browser_argv) = browser_fixture(scratch);
+        let browser_bin = browser_script
+            .parent()
+            .expect("browser fixture bin directory")
+            .to_path_buf();
         let log = OpenOptions::new()
             .create(true)
             .append(true)
@@ -514,17 +588,23 @@ impl Daemon {
         if let Some(path) = path {
             command.env("PATH", path);
         }
+        if let Some(home) = home {
+            // `--host-caches` resolves from the daemon's `HOME` (`host_caches`), so one suite can
+            // hand it a scratch home carrying a real toolchain cache without touching the rest.
+            command.env("HOME", home);
+        }
         let mut child = command.spawn().expect("spawn slipforkd");
         await_daemon_served(&mut child, &layout.runtime_dir, &log_path)?;
         Ok(Self {
             state_dir: layout.state_dir.clone(),
             runtime_dir: layout.runtime_dir.clone(),
-            browser_argv: scratch.join("browser-argv.txt"),
+            browser_argv,
+            browser_bin,
             scratch: scratch.to_path_buf(),
             // The child backend only exists on a Btrfs state root (`slipforkd` refuses any other
             // `--state-dir` before serving), and this is the exact adapter its composition root
             // builds for the worlds it snapshots.
-            driver: KernelBtrfsDriver::new(),
+            driver,
             reap_budget: ReapBudget::current_host(),
             backend: Backend::Child(child),
         })
@@ -571,6 +651,10 @@ impl Daemon {
             .collect();
         let driver = require_btrfs(&spec.state_dir);
         let (script, browser_argv) = browser_fixture(scratch);
+        let browser_bin = script
+            .parent()
+            .expect("browser fixture bin directory")
+            .to_path_buf();
         let graph = compose_daemon(DaemonWiring {
             layout,
             driver,
@@ -606,6 +690,7 @@ impl Daemon {
             state_dir: spec.state_dir.clone(),
             runtime_dir: spec.runtime_dir.clone(),
             browser_argv,
+            browser_bin,
             scratch: scratch.to_path_buf(),
             driver,
             reap_budget: ReapBudget::current_host(),
@@ -675,7 +760,11 @@ impl Daemon {
                 "XDG_CACHE_HOME",
                 self.state_dir.parent().expect("state parent"),
             )
-            .env("XDG_DATA_HOME", self.state_dir.join("xdg-data"));
+            .env("XDG_DATA_HOME", self.state_dir.join("xdg-data"))
+            // The suite user's `env -i` carries no desktop session; `slipfork auth` resolves the
+            // opener from one, and the harness's real `xdg-open` fixture must be what it selects.
+            .env("DISPLAY", ":0")
+            .env("PATH", cli_path(&self.browser_bin));
         command
     }
 }
@@ -684,6 +773,39 @@ impl Drop for Daemon {
     fn drop(&mut self) {
         self.shutdown();
     }
+}
+
+/// The CLI `PATH`: the real `xdg-open` fixture first, then the host's own entries.
+///
+/// The daemon root carries the fixture only in its own `PATH`, but `slipfork auth` opens the
+/// browser from the CLI process, so the CLI must see it too; [`Daemon::cli_with_path`] still wins
+/// because it sets `PATH` again after this.
+fn cli_path(browser_bin: &Path) -> std::ffi::OsString {
+    let mut entries = vec![browser_bin.to_path_buf()];
+    if let Some(existing) = std::env::var_os("PATH") {
+        entries.extend(std::env::split_paths(&existing));
+    }
+    std::env::join_paths(entries).expect("join the CLI PATH")
+}
+
+/// A `PATH` directory exposing only `tools` as symlinks to the real binaries.
+///
+/// The no-opener proofs need a host that resolves `git` (the CLI reaches the opener remedy only
+/// after the repository check) but no `xdg-open`; an empty directory fails on the missing tool
+/// instead of on the missing opener.
+pub fn tool_path(scratch: &Path, label: &str, tools: &[&str]) -> PathBuf {
+    let directory = scratch.join(label);
+    fs::create_dir_all(&directory).expect("create restricted PATH dir");
+    let host_path = std::env::var_os("PATH").expect("PATH");
+    for tool in tools {
+        let resolved = std::env::split_paths(&host_path)
+            .map(|candidate| candidate.join(*tool))
+            .find(|candidate| candidate.is_file())
+            .unwrap_or_else(|| panic!("{tool} must be on PATH to build the restricted PATH"));
+        std::os::unix::fs::symlink(&resolved, directory.join(tool))
+            .unwrap_or_else(|error| panic!("symlink {}: {error}", resolved.display()));
+    }
+    directory
 }
 
 /// `true` when `path` (or its nearest existing ancestor) is on a real Btrfs mount.

@@ -27,7 +27,20 @@ use slipfork_world::{
 const HELPER_PATH: &str = "/usr/local/bin:/usr/bin:/bin";
 
 /// Disk-backed scratch root (`/tmp` is RAM-backed `tmpfs` on Linux runners).
-fn disk_scratch_root() -> PathBuf {
+///
+/// The one resolution of `SLIPFORK_TEST_ROOT` for every live suite: the VM harness sets it to a
+/// short absolute directory (`/var/lib/slipfork/t`) because `<state>/ctl/<world>/netns.sock` must
+/// fit the 107-byte `AF_UNIX` limit and a deep `$HOME` overflows it.
+pub fn disk_scratch_root() -> PathBuf {
+    if let Some(root) = std::env::var_os("SLIPFORK_TEST_ROOT") {
+        let root = PathBuf::from(root);
+        assert!(
+            root.is_absolute(),
+            "SLIPFORK_TEST_ROOT must be an absolute disk directory, got {}",
+            root.display()
+        );
+        return root;
+    }
     PathBuf::from(std::env::var("HOME").expect("HOME is set"))
         .join(".cache")
         .join("slipfork")
