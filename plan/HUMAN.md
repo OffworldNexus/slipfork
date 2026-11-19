@@ -64,7 +64,7 @@ OSPP endpoint has no durable source of truth in 0.1.0. 'slipforkd --ospp-endpoin
 
 **Answer:**
 
-## H-008 [open] [release-gate] (node M3)
+## H-008 [closed] [release-gate] (node M3)
 
 - asked: 2026-11-19T07:17 by conductor
 

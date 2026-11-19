@@ -1755,3 +1755,14 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-19T07:15 [M3] (strategist) status active -> done
 - 2026-11-19T07:17 HUMAN H-008 [release-gate] opened by conductor (node M3)
 - 2026-11-19T07:17 AUTOPILOT off by conductor Awaiting human review and merge of Release 0.1.0 PR
+- 2026-11-19T12:42 HUMAN H-008 closed by conductor
+- 2026-11-19T12:42 [M3] (conductor) status done -> active: Reopening 0.1.0 for Snowfile DSL + per-service crun pod rootfs + clean-sheet CLI UX redesign
+- 2026-11-19T12:42 AUTOPILOT on by conductor Build Snowfile DSL, per-service crun pod engine, and clean-sheet CLI UX for 0.1.0
+- 2026-11-19T12:42 ESCALATION #27 -> architect for M3 by conductor: Lock Snowfile DSL grammar, per-service crun pod model, and clean-sheet CLI UX spec
+- 2026-11-19T13:02 [M3.32] (planner) created (epic) Forkfile DSL, Per-Service crun Pod Engine & Clean-Sheet 0.1.0 CLI UX
+- 2026-11-19T13:02 [M3.32.1] (planner) created (task) slipfork-forkfile: purpose-made Forkfile parser, whole-file caret checker, evaluator & JSON IR
+- 2026-11-19T13:02 [M3.32.2] (planner) created (task) Per-service crun pod engine: shared userns/netns/ipcns, Btrfs volume CoW submounts & direct execve argv
+- 2026-11-19T13:02 [M3.32.3] (planner) created (task) slipforkd Forkfile/OSPP EvaluatedFork cut-over, port-agnostic .localhost ingress & multiplexed logs -f
+- 2026-11-19T13:02 [M3.32.4] (planner) created (task) Clean-sheet 0.1.0 CLI surface (dx-cli-0.1.0.md §1-§3) & @slipfork/opencode status --json sync
+- 2026-11-19T13:02 [M3.32.5] (planner) created (task) Forkfile visual docs, CHANGELOG & multi-service (api + front + postgres) support/demo
+- 2026-11-19T13:02 [M3.32.6] (planner) created (task) Zero-mock lab E2E + live multi-service PTY proof on 165.232.86.174, demo left on :80

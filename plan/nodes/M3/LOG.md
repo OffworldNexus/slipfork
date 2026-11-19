@@ -95,3 +95,7 @@ Milestone gate PASS (HEAD e06375f): M3.31 verified, all Triad & automated gates 
 ## 2026-11-19T07:15 [strategist]
 
 status active -> done
+
+## 2026-11-19T12:42 [conductor]
+
+status done -> active: Reopening 0.1.0 for Snowfile DSL + per-service crun pod rootfs + clean-sheet CLI UX redesign
