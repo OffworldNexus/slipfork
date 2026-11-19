@@ -13,7 +13,7 @@ export const SLIPFORK = {
     fork: "fork",
     drop: "drop",
     exec: "exec",
-    list: "list",
+    status: "status",
   },
   flag: {
     json: "--json",
@@ -22,9 +22,14 @@ export const SLIPFORK = {
     cwd: "--cwd",
   },
   field: {
+    ok: "ok",
+    ingressPort: "ingress_port",
+    worlds: "worlds",
     world: "world",
     origin: "origin",
     worktree: "worktree",
+    error: "error",
+    next: "next",
   },
 } as const;
 
@@ -39,7 +44,7 @@ export interface ForkedWorld {
   readonly origin: string;
 }
 
-/** One row of `slipfork --json list`. */
+/** One world row of the `slipfork --json status` document. */
 export interface SlipforkWorldRow {
   readonly world: string;
   readonly origin: string;
@@ -63,9 +68,9 @@ export function buildDropArgs(fork: string): string[] {
   return [SLIPFORK.command.drop, fork];
 }
 
-/** `slipfork --json list`: every world with its state, worktree, and one origin URL. */
-export function buildListArgs(): string[] {
-  return [SLIPFORK.flag.json, SLIPFORK.command.list];
+/** `slipfork --json status`: the fleet document every world (with worktree and origin) lives in. */
+export function buildStatusArgs(): string[] {
+  return [SLIPFORK.flag.json, SLIPFORK.command.status];
 }
 
 /**
@@ -116,26 +121,53 @@ export function parseForkedWorld(stdout: string, fork: string): ForkedWorld {
   return { world, origin };
 }
 
-/** Decode and validate one `slipfork --json list` payload. */
-export function parseWorldList(stdout: string): SlipforkWorldRow[] {
+/**
+ * Decode the CLI's `{"ok":false,"code":"error","error":…,"next":…}` failure document into one
+ * actionable message (`1 line + next:`), or `undefined` when the text is not that document.
+ *
+ * `slipfork --json` prints this on stdout for every failed verb, so the adapter never surfaces a
+ * silent empty fleet in place of a real error.
+ */
+export function decodeCliFailure(stdout: string): string | undefined {
   let parsed: unknown;
   try {
     parsed = JSON.parse(stdout);
-  } catch (err) {
-    throw new Error(`slipfork list did not print JSON: ${(err as Error).message}`);
+  } catch {
+    return undefined;
   }
-  if (!Array.isArray(parsed)) {
-    throw new Error("slipfork list did not print a JSON array of worlds");
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return undefined;
+  const record = parsed as Record<string, unknown>;
+  if (record[SLIPFORK.field.ok] !== false) return undefined;
+  const error = presentString(record[SLIPFORK.field.error]);
+  const next = presentString(record[SLIPFORK.field.next]);
+  const lines: string[] = [];
+  if (error !== undefined) lines.push(error);
+  if (next !== undefined) lines.push(`next: ${next}`);
+  if (lines.length === 0) return "the CLI reported failure without a message";
+  return lines.join("\n  ");
+}
+
+/** Decode and validate one `slipfork --json status` payload, failing closed on `{"ok":false}`. */
+export function parseStatusWorlds(stdout: string): SlipforkWorldRow[] {
+  const payload = parseJsonObject(stdout, "slipfork status");
+  if (payload[SLIPFORK.field.ok] !== true) {
+    throw new Error(
+      `slipfork status failed: ${decodeCliFailure(stdout) ?? "the JSON document did not report ok"}`,
+    );
   }
-  return parsed.map((row, index) => {
-    if (typeof row !== "object" || row === null) {
-      throw new Error(`slipfork list row ${index} is not an object`);
+  const worlds = payload[SLIPFORK.field.worlds];
+  if (!Array.isArray(worlds)) {
+    throw new Error("slipfork status did not print a 'worlds' array");
+  }
+  return worlds.map((row, index) => {
+    if (typeof row !== "object" || row === null || Array.isArray(row)) {
+      throw new Error(`slipfork status world ${index} is not an object`);
     }
     const record = row as Record<string, unknown>;
-    const world = requireString(record, SLIPFORK.field.world, `slipfork list row ${index}`);
-    const origin = requireString(record, SLIPFORK.field.origin, `slipfork list row ${index}`);
-    const worktree = requireString(record, SLIPFORK.field.worktree, `slipfork list row ${index}`);
-    requireHttpOrigin(origin, `slipfork list row ${index}`);
+    const world = requireString(record, SLIPFORK.field.world, `slipfork status world ${index}`);
+    const origin = requireString(record, SLIPFORK.field.origin, `slipfork status world ${index}`);
+    const worktree = requireString(record, SLIPFORK.field.worktree, `slipfork status world ${index}`);
+    requireHttpOrigin(origin, `slipfork status world ${index}`);
     return { world, origin, worktree };
   });
 }
@@ -153,9 +185,14 @@ function parseJsonObject(stdout: string, what: string): Record<string, unknown> 
   return parsed as Record<string, unknown>;
 }
 
+/** The one emptiness rule: an empty or non-string value is a missing field. */
+function presentString(value: unknown): string | undefined {
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
 function requireString(record: Record<string, unknown>, field: string, what: string): string {
-  const value = record[field];
-  if (typeof value !== "string" || value.length === 0) {
+  const value = presentString(record[field]);
+  if (value === undefined) {
     throw new Error(`${what} JSON is missing the '${field}' string field`);
   }
   return value;

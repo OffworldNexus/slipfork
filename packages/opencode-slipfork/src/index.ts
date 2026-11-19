@@ -18,10 +18,11 @@ import {
   buildDropArgs,
   buildExecCommandLine,
   buildForkArgs,
-  buildListArgs,
+  buildStatusArgs,
+  decodeCliFailure,
   type ForkedWorld,
   parseForkedWorld,
-  parseWorldList,
+  parseStatusWorlds,
   type SlipforkWorldRow,
 } from "./cli.ts";
 import {
@@ -74,8 +75,8 @@ export class CliSlipforkGateway implements SlipforkGateway {
   }
 
   async listWorlds(input: { signal: AbortSignal }): Promise<readonly SlipforkWorldRow[]> {
-    const stdout = await this.run(buildListArgs(), input.signal, "list");
-    return parseWorldList(stdout);
+    const stdout = await this.run(buildStatusArgs(), input.signal, "status");
+    return parseStatusWorlds(stdout);
   }
 
   wrapShellCommand(input: {
@@ -113,8 +114,13 @@ export class CliSlipforkGateway implements SlipforkGateway {
       const failure = err as Error & { stdout?: string | Buffer; stderr?: string | Buffer };
       const asText = (value: string | Buffer | undefined): string =>
         typeof value === "string" ? value.trim() : "";
-      const output = [asText(failure.stdout), asText(failure.stderr)].filter((part) => part !== "");
-      throw new Error(`slipfork ${what} failed: ${output.join("\n") || failure.message}`);
+      const stdout = asText(failure.stdout);
+      const stderr = asText(failure.stderr);
+      // `slipfork --json` prints `{"ok":false,"error":…,"next":…}` on stdout and exits non-zero:
+      // surface that one actionable line (plus any `next:` remedy), never a raw JSON blob.
+      const plain = [stdout, stderr].filter((part) => part !== "").join("\n");
+      const detail = decodeCliFailure(stdout) ?? (plain !== "" ? plain : failure.message);
+      throw new Error(`slipfork ${what} failed: ${detail}`);
     }
   }
 }

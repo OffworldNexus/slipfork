@@ -28,10 +28,10 @@ import {
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import type { SlipforkWorldRow } from "../src/cli.ts";
 import plugin from "../src/index.ts";
 import type {
   ShellCreateBeforeEvent,
-  SlipforkWorldRow,
   WorktreeStrategy,
 } from "../src/coordinator.ts";
 
@@ -165,8 +165,16 @@ describe("opencode-slipfork live world (M2.18)", () => {
     });
   }
 
+  /** The one `slipfork --json status` document (the CLI's whole-fleet read). */
+  function statusDocument(): { ok: boolean; worlds: SlipforkWorldRow[] } {
+    return JSON.parse(cli(["--json", "status"])) as {
+      ok: boolean;
+      worlds: SlipforkWorldRow[];
+    };
+  }
+
   function listWorlds(): SlipforkWorldRow[] {
-    return JSON.parse(cli(["--json", "list"])) as SlipforkWorldRow[];
+    return statusDocument().worlds;
   }
 
   beforeAll(async () => {
@@ -260,17 +268,18 @@ describe("opencode-slipfork live world (M2.18)", () => {
   }, 120_000);
 
   if (LIVE) {
-    test("piped human tables the plugin forwards stay ANSI-free and --json parses", () => {
-      // The daemon is up and the fork exists; a piped `list` renders the real `WorldTable` path
+    test("piped human status stays ANSI-free and --json carries the fleet document", () => {
+      // The daemon is up and the fork exists; `status` renders the real fleet tree
       // (`TerminalUi` built off a non-TTY), so any stray escape byte or spinner would fail here.
-      const human = cli(["list"]);
-      expect(human).toContain("WORLD");
+      const human = cli(["status"]);
       expect(human).toContain(FORK);
+      expect(human).toContain(worktree);
       expect(human).not.toContain("\x1b");
 
-      const rows = JSON.parse(cli(["--json", "list"])) as SlipforkWorldRow[];
-      expect(Array.isArray(rows)).toBe(true);
-      expect(rows.some((row) => row.worktree === worktree)).toBe(true);
+      const document = statusDocument();
+      expect(document.ok).toBe(true);
+      expect(Array.isArray(document.worlds)).toBe(true);
+      expect(document.worlds.some((row) => row.worktree === worktree)).toBe(true);
     });
 
     test("forking through the plugin creates the CLI-owned worktree world", () => {

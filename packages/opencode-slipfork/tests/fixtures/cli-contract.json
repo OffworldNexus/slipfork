@@ -1,8 +1,8 @@
 {
-  "recordedFrom": "slipfork --help (M3.28.10)",
+  "recordedFrom": "slipfork --help (M3.32.4)",
   "topLevel": {
     "argv": ["--help"],
-    "requiredTokens": ["Usage: slipfork", "fork", "drop", "exec", "list"]
+    "requiredTokens": ["Usage: slipfork", "status", "fork", "drop", "exec"]
   },
   "subcommands": {
     "fork": {
@@ -17,7 +17,7 @@
     },
     "drop": {
       "argv": ["drop", "--help"],
-      "requiredTokens": ["Usage: slipfork drop", "<FORK>", "Fork name to destroy"]
+      "requiredTokens": ["Usage: slipfork drop", "[FORK]", "Fork name to destroy", "--force"]
     },
     "exec": {
       "argv": ["exec", "--help"],
@@ -28,13 +28,14 @@
         "--cwd <CWD>"
       ]
     },
-    "list": {
-      "argv": ["list", "--help"],
-      "requiredTokens": ["Usage: slipfork list", "--json", "exactly one origin URL"]
+    "status": {
+      "argv": ["status", "--help"],
+      "requiredTokens": ["Usage: slipfork status", "--json", "Emit machine-readable JSON on stdout"]
     }
   },
   "jsonFields": {
     "fork": ["world", "origin"],
-    "list": ["world", "state", "origin", "worktree"]
+    "status": ["ok", "ingress_port", "worlds"],
+    "statusWorld": ["world", "parent", "state", "origin", "worktree", "lineage", "services"]
   }
 }

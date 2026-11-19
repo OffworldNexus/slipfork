@@ -10,7 +10,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
-import { SLIPFORK, parseForkedWorld, parseWorldList } from "../src/cli.ts";
+import { SLIPFORK, decodeCliFailure, parseForkedWorld, parseStatusWorlds } from "../src/cli.ts";
 
 const REPO_ROOT = join(import.meta.dir, "..", "..", "..");
 
@@ -69,12 +69,22 @@ describe("slipfork CLI contract fixture (M2.18)", () => {
     const fork = contract.subcommands[SLIPFORK.command.fork];
     expect(fork.requiredTokens).toContain(`${SLIPFORK.flag.base} <BASE>`);
     expect(fork.requiredTokens).toContain(SLIPFORK.flag.json);
-    expect(contract.subcommands[SLIPFORK.command.list].requiredTokens).toContain(SLIPFORK.flag.json);
+    expect(contract.subcommands[SLIPFORK.command.status].requiredTokens).toContain(
+      SLIPFORK.flag.json,
+    );
 
     expect(contract.jsonFields.fork).toEqual(
       expect.arrayContaining([SLIPFORK.field.world, SLIPFORK.field.origin]),
     );
-    expect(contract.jsonFields.list).toEqual(
+    // The status document is the envelope; every world row carries the fields the plugin reads.
+    expect(contract.jsonFields[SLIPFORK.command.status]).toEqual(
+      expect.arrayContaining([
+        SLIPFORK.field.ok,
+        SLIPFORK.field.ingressPort,
+        SLIPFORK.field.worlds,
+      ]),
+    );
+    expect(contract.jsonFields.statusWorld).toEqual(
       expect.arrayContaining([
         SLIPFORK.field.world,
         SLIPFORK.field.origin,
@@ -111,21 +121,44 @@ describe("slipfork CLI contract fixture (M2.18)", () => {
       parseForkedWorld(JSON.stringify({ world: "feat", origin: "file:///tmp/x" }), "feat"),
     ).toThrow("non-HTTP origin URL");
 
-    const rows = parseWorldList(
-      JSON.stringify([
-        {
-          [SLIPFORK.field.world]: "acme:feat",
-          [SLIPFORK.field.origin]: "http://feat.acme.localhost:3000",
-          [SLIPFORK.field.worktree]: "/repo/.worktrees/feat",
-        },
-      ]),
-    );
+    const world = (extra: Record<string, unknown>): Record<string, unknown> => ({
+      [SLIPFORK.field.world]: "acme:feat",
+      [SLIPFORK.field.origin]: "http://feat.acme.localhost:3000",
+      [SLIPFORK.field.worktree]: "/repo/.worktrees/feat",
+      ...extra,
+    });
+    const status = (worlds: unknown[]): string =>
+      JSON.stringify({ [SLIPFORK.field.ok]: true, [SLIPFORK.field.worlds]: worlds });
+
+    const rows = parseStatusWorlds(status([world({})]));
     expect(rows).toEqual([
       { world: "acme:feat", origin: "http://feat.acme.localhost:3000", worktree: "/repo/.worktrees/feat" },
     ]);
-    expect(() => parseWorldList("{}")).toThrow("did not print a JSON array");
-    expect(() => parseWorldList(JSON.stringify([{ world: "acme:feat" }]))).toThrow(
+
+    // A `{"ok":false}` document is never an empty fleet: the error and `next` remedy must surface.
+    const refusal = JSON.stringify({
+      [SLIPFORK.field.ok]: false,
+      code: "error",
+      [SLIPFORK.field.error]: "slipforkd is not running",
+      [SLIPFORK.field.next]: "slipfork status",
+    });
+    expect(() => parseStatusWorlds(refusal)).toThrow("slipforkd is not running");
+    expect(() => parseStatusWorlds(refusal)).toThrow("next: slipfork status");
+    expect(decodeCliFailure(refusal)).toBe(
+      "slipforkd is not running\n  next: slipfork status",
+    );
+    expect(decodeCliFailure("not json")).toBeUndefined();
+    expect(decodeCliFailure(JSON.stringify({ [SLIPFORK.field.ok]: true }))).toBeUndefined();
+
+    expect(() => parseStatusWorlds(JSON.stringify({ [SLIPFORK.field.ok]: true }))).toThrow(
+      "did not print a 'worlds' array",
+    );
+    expect(() => parseStatusWorlds(JSON.stringify([]))).toThrow("did not print a JSON object");
+    expect(() => parseStatusWorlds(status([{ [SLIPFORK.field.world]: "acme:feat" }]))).toThrow(
       "missing the 'origin' string field",
+    );
+    expect(() => parseStatusWorlds(status([world({ [SLIPFORK.field.origin]: "file:///x" })]))).toThrow(
+      "non-HTTP origin URL",
     );
   });
 });

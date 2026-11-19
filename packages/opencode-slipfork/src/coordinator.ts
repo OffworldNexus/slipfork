@@ -66,6 +66,7 @@ export type ShellRouting =
 export interface SlipforkGateway {
   forkWorld(input: { fork: string; base?: string; signal: AbortSignal }): Promise<ForkedWorld>;
   dropWorld(input: { fork: string; signal: AbortSignal }): Promise<void>;
+  /** Every world from one `slipfork status --json` read (`worlds[].worktree`), failing closed. */
   listWorlds(input: { signal: AbortSignal }): Promise<readonly SlipforkWorldRow[]>;
   /** Build the host-shell command line that enters `fork` at `cwd`. Never resolves env vars. */
   wrapShellCommand(input: {
