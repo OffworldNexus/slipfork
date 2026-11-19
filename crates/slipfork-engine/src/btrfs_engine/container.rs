@@ -272,6 +272,9 @@ impl BtrfsEngine {
         Ok(())
     }
 
+    /// Resolve a running container plus the environment its `exec` composes against: the
+    /// container's own declared `spec.env`, never the world component env (see the invariant in
+    /// [`BtrfsEngine::start_service`]).
     fn container_for(
         &self,
         service: &ServiceHandle,
@@ -306,7 +309,7 @@ impl BtrfsEngine {
                     world: format!("{:?}", service.world()),
                     id: service.id().to_owned(),
                 })?;
-        Ok((container, record.base_env.clone()))
+        Ok((container, running.spec.env.clone()))
     }
 
     pub(crate) fn exec_in_container(

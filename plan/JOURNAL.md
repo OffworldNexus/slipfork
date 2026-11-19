@@ -1710,3 +1710,14 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-19T03:29 [M3.30.7] (lead) status active -> review
 - 2026-11-19T04:28 [M3.30.7] (lead) suite-user VM: engine 21, oci 3, edge_live 3, btrfs_live 1+7, cli 24, l0 8, slug 8, vcs_remote 7 all pass; ospp blocked by a real product leak (component secret
 - 2026-11-19T04:28 [M3.30.7] (lead) status review -> done
+- 2026-11-19T04:28 [M3.30.8] (lead) created (task) Never write the world component env into an OCI container config.json (secret plaintext on disk)
+- 2026-11-19T04:28 [M3.30.8] (lead) status ready -> active
+- 2026-11-19T04:28 [M3.30.8] (lead) attempt 1/3 started
+- 2026-11-19T04:28 [M3.30.8] (lead) base e09aee88d027ca57d4d68d29b8ddae622b92da32
+- 2026-11-19T04:50 [M3.30.8] (lead) edited fields
+- 2026-11-19T04:57 [M3.30.9] (lead) created (task) Journey restart assertions match the real multi-component restart output
+- 2026-11-19T04:57 [M3.30.9] (lead) status ready -> active
+- 2026-11-19T04:57 [M3.30.9] (lead) attempt 1/3 started
+- 2026-11-19T04:57 [M3.30.9] (lead) base e09aee88d027ca57d4d68d29b8ddae622b92da32
+- 2026-11-19T04:59 [M3.30.8] (lead) VM: oci 4/4 (new bundle+exec leak proofs), btrfs_live 1/1 (container exec env), ospp 7/7, engine 21/21
+- 2026-11-19T04:59 [M3.30.8] (lead) status active -> done

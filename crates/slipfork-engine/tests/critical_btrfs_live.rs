@@ -60,6 +60,10 @@ const IPC_RMID: i64 = 0;
 const SERVICE_STATE_TIMEOUT: Duration = Duration::from_secs(120);
 /// Bound on one `psql`/`redis-cli` query answering after the engine's own readiness gate passed.
 const QUERY_TIMEOUT: Duration = Duration::from_secs(30);
+/// Marked values planted in each world's `base_env`: a container must receive neither the value
+/// nor the name (`ServiceSpec::env` is a container's complete declared environment).
+const WORLD_SECRET_MARKER: &str = "slipfork-live-world-secret-marker";
+const WORLD_PLAIN_MARKER: &str = "slipfork-live-world-plain-marker";
 
 #[test]
 fn btrfs_kernel_ro_snapshot_two_clones_same_port_services_and_ipc_isolation() {
@@ -235,6 +239,49 @@ fn run_kernel_suite(root: &Path, state_dir: &Path, driver: KernelBtrfsDriver) {
             "clone {label} must run postgres:18"
         );
     }
+
+    // 3b. The world component environment never reaches a container: each world `base_env` carries
+    //     a marked secret and a marked plain variable (`world_spec`), yet `exec` inside the
+    //     postgres container sees neither value nor name, only its own declared `spec.env`.
+    let container_env_dump = container_exec(&engine, &pg_a, &["sh", "-c", "env"]);
+    assert_eq!(
+        container_env_dump.exit_code, 0,
+        "env inside the postgres container: {}",
+        container_env_dump.stderr
+    );
+    for needle in [
+        WORLD_SECRET_MARKER,
+        WORLD_PLAIN_MARKER,
+        "WORLD_SECRET_MARKER",
+        "WORLD_PLAIN_MARKER",
+    ] {
+        assert!(
+            !container_env_dump.stdout.contains(needle),
+            "the container exec env leaked `{needle}` from the world component environment:\n{}",
+            container_env_dump.stdout
+        );
+    }
+    for needle in [format!("PATH={PG_PATH}"), format!("PGDATA={PG_DATA}")] {
+        assert!(
+            container_env_dump.stdout.contains(&needle),
+            "the container must still receive its own `{needle}`:\n{}",
+            container_env_dump.stdout
+        );
+    }
+    // A container's bundle env is fixed at spawn: the update is refused before the container is
+    // touched, and the running service stays up.
+    let err = engine
+        .update_service_env(&pg_a, &ExecEnv::default())
+        .expect_err("a container's bundle env is fixed at spawn");
+    assert!(
+        matches!(err, EngineError::ContainerEnvFixed { .. }),
+        "expected ContainerEnvFixed, got {err:?}"
+    );
+    assert_eq!(
+        pg_a.state(),
+        ServiceState::Running,
+        "a refused env update must not stop the container"
+    );
 
     // 4. SysV IPC isolation across the clones: `shmget(2)` for one fixed key from both worlds. Each
     //    `exec_in_world` enters with `nsenter --ipc`, so this proves the private IPC namespace the
@@ -628,7 +675,14 @@ fn world_spec(
                 mode: MountMode::ReadOnly,
             },
         ],
-        base_env: world_env(&home),
+        base_env: {
+            let mut env = world_env(&home);
+            env.set_secret("WORLD_SECRET_MARKER", WORLD_SECRET_MARKER)
+                .expect("bind the marked world secret");
+            env.set("WORLD_PLAIN_MARKER", WORLD_PLAIN_MARKER)
+                .expect("bind the marked world variable");
+            env
+        },
         local_ingress: None,
         boot: BootLineage::default(),
     }
@@ -655,6 +709,14 @@ fn oci_service(
         env,
         readiness_port,
     }
+}
+
+/// The `postgres:18` container's own declared environment: the image `PATH` and the `PGDATA` the
+/// image declares. Never the world component env.
+fn pg_env() -> ExecEnv {
+    let mut env = container_env(PG_PATH);
+    env.set("PGDATA", PG_DATA).expect("bind PGDATA");
+    env
 }
 
 fn redis_state() -> Vec<StateSubdirMount> {
@@ -685,7 +747,7 @@ fn init_postgres(engine: &BtrfsEngine, world: &WorldHandle, label: &str) {
                     "--encoding=UTF8",
                     "--no-instructions",
                 ],
-                container_env(PG_PATH),
+                pg_env(),
                 pg_state(),
                 Vec::new(),
                 None,
@@ -736,7 +798,7 @@ fn start_services(
                     "-c",
                     "unix_socket_directories=/tmp",
                 ],
-                container_env(PG_PATH),
+                pg_env(),
                 pg_state(),
                 Vec::new(),
                 Some(PG_PORT),

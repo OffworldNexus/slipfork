@@ -17,6 +17,7 @@ pub mod support;
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use slipfork_world::WorldTarget;
 use slipfork_world::rootfs::BackingServiceKey;
@@ -120,6 +121,21 @@ fn expect_invalid(service: &ServiceSpec, err: EngineError, needle: &str) {
             "service '{}': expected InvalidWorldSpec, got {other:?}",
             service.id
         ),
+    }
+}
+
+/// Collect every synthesized OCI bundle `config.json` under the world control tree.
+fn collect_bundle_configs(dir: &Path, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries {
+        let path = entry.expect("read control directory entry").path();
+        if path.is_dir() {
+            collect_bundle_configs(&path, out);
+        } else if path.file_name().and_then(|name| name.to_str()) == Some("config.json") {
+            out.push(path);
+        }
     }
 }
 
@@ -442,5 +458,122 @@ fn service_handles_and_logs_are_typed_and_never_fabricated() {
         .service_logs(&world, "pg")
         .expect_err("a destroyed world has no services");
     assert!(matches!(err, EngineError::WorldGone { .. }));
+    let _ = fs::remove_dir_all(&fixture.root);
+}
+
+/// The world component environment is persisted verbatim into an OCI bundle, so a backing
+/// service must never receive it (resolved `modes.*.envs.*` secrets included); a world process
+/// still must. This is the on-disk contract, asserted before the stub image can ever run.
+#[test]
+fn container_bundles_never_carry_the_world_environment() {
+    const MARKER: &str = "slipfork-engine-world-env-marker";
+    let fixture = oci_fixture("oci-env");
+    let mut base_env = support::world_env(&fixture.home);
+    base_env
+        .set_secret("WORLD_SECRET_MARKER", MARKER)
+        .expect("bind the marked world secret");
+    base_env
+        .set("WORLD_PLAIN_MARKER", MARKER)
+        .expect("bind the marked world variable");
+    let world = fixture
+        .engine
+        .clone_world(&WorldSpec {
+            target: WorldTarget::Canonical,
+            rootfs: fixture.rootfs.clone(),
+            snapshot: fixture.snapshot.clone(),
+            mounts: vec![WorldMount {
+                host_path: fixture.repo.clone(),
+                guest_path: fixture.repo.clone(),
+                mode: MountMode::ReadWrite,
+            }],
+            base_env,
+            local_ingress: None,
+            boot: BootLineage::default(),
+        })
+        .expect("clone world with a marked environment");
+
+    // The stub image carries no runnable payload, but `write_bundle` runs before `crun` is exec'd:
+    // that `config.json` is exactly the plaintext-on-disk surface this test guards.
+    let container = fixture.engine.spawn_service(
+        &world,
+        &oci_service("pg", postgres_image(), pg_state(), Vec::new()),
+    );
+
+    let ctl = fixture.state_dir.join("ctl");
+    let mut bundles = Vec::new();
+    collect_bundle_configs(&ctl, &mut bundles);
+    assert!(
+        !bundles.is_empty(),
+        "the container spawn must have synthesized a bundle config.json under {}",
+        ctl.display()
+    );
+    // Positive control: the bundle does carry the container's own declared environment, so the
+    // absence assertions below prove filtering rather than an empty `process.env`.
+    assert!(
+        bundles.iter().any(|config| {
+            let text = fs::read_to_string(config).unwrap_or_default();
+            text.contains(&format!("PATH={SERVICE_PATH}")) && text.contains("\"LANG=C\"")
+        }),
+        "the bundle must carry the container's own env (`PATH`, `LANG`) under {}",
+        ctl.display()
+    );
+    for config in &bundles {
+        let text = fs::read_to_string(config).expect("read the bundle config");
+        for needle in [MARKER, "WORLD_SECRET_MARKER", "WORLD_PLAIN_MARKER"] {
+            assert!(
+                !text.contains(needle),
+                "container bundle {} leaked `{needle}` from the world component environment:\n{text}",
+                config.display()
+            );
+        }
+    }
+
+    // A world process still receives the world env: it writes it into the shared repo mount.
+    let dump = fixture.repo.join("world-env.dump");
+    let app = fixture
+        .engine
+        .spawn_service(
+            &world,
+            &ServiceSpec {
+                id: "app".to_owned(),
+                kind: ServiceKind::Component,
+                runtime: ServiceRuntime::WorldProcess {
+                    argv: vec![
+                        "sh".to_owned(),
+                        "-c".to_owned(),
+                        "env > world-env.dump && exec sleep 300".to_owned(),
+                    ],
+                    cwd: fixture.repo.clone(),
+                },
+                env: ExecEnv::default(),
+                readiness_port: None,
+            },
+        )
+        .expect("spawn the app component with the world environment");
+    slipfork_testkit::poll_until(Duration::from_secs(20), || {
+        fs::read_to_string(&dump)
+            .map(|_| ())
+            .map_err(|err| format!("world env dump: {err}"))
+    })
+    .expect("the world process must write its environment");
+    let observed = fs::read_to_string(&dump).expect("read the world env dump");
+    for needle in [
+        format!("WORLD_SECRET_MARKER={MARKER}"),
+        format!("WORLD_PLAIN_MARKER={MARKER}"),
+    ] {
+        assert!(
+            observed.contains(&needle),
+            "a world process must still receive `{needle}`:\n{observed}"
+        );
+    }
+
+    fixture.engine.stop_service(&app).expect("stop app");
+    if let Ok(container) = container {
+        fixture
+            .engine
+            .stop_service(&container)
+            .expect("stop container");
+    }
+    fixture.engine.destroy_world(world).expect("destroy world");
     let _ = fs::remove_dir_all(&fixture.root);
 }

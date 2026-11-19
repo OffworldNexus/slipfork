@@ -50,3 +50,17 @@ pub(crate) fn materialize(
     env.extend(base.overlaid(overlay).expose_to_child_process());
     env
 }
+
+/// Effective environment of one OCI container: the inherited allowlist overridden by the
+/// container's **own** declared environment only.
+///
+/// This is the bundle composition: the writer persists exactly this map into
+/// `<ctl>/oci*/<id>/config.json`, and a container `exec` re-derives from the same
+/// `ServiceSpec::env` base with its own overlay. Neither path can pick up the world component
+/// environment (`WorldSpec::base_env`, every resolved `modes.*.envs.*` secret included).
+pub(crate) fn materialize_container(
+    own: &ExecEnv,
+    ambient: impl Fn(InheritedVar) -> Option<String>,
+) -> BTreeMap<String, String> {
+    materialize(&ExecEnv::default(), own, ambient)
+}

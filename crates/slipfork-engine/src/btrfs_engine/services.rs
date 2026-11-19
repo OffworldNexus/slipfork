@@ -198,9 +198,21 @@ impl BtrfsEngine {
             let state_dir = record.state_dir.clone();
             let rootfs = record.rootfs.clone();
             let mounts = record.mounts.clone();
-            let env = child_env::materialize(&record.base_env, &spec.env, |var| {
-                self.inherited_env.get(var)
-            });
+            // Invariant: an OCI container bundle must never carry the world component environment.
+            // `record.base_env` holds every resolved `modes.*.envs.*` value (secrets included) and
+            // is persisted verbatim into the bundle's `config.json`; a container therefore gets
+            // only the inherited allowlist plus its own `spec.env`. World processes (components
+            // and hooks) legitimately need the world env.
+            let env = match runtime_kind {
+                RuntimeKind::WorldProcess => {
+                    child_env::materialize(&record.base_env, &spec.env, |var| {
+                        self.inherited_env.get(var)
+                    })
+                }
+                RuntimeKind::OciContainer => {
+                    child_env::materialize_container(&spec.env, |var| self.inherited_env.get(var))
+                }
+            };
             let log = ServiceLogs::new(spec.id.as_str());
             let state = Arc::new(AtomicU8::new(ServiceState::Running.to_bits()));
             let process = Arc::new(Mutex::new(ServiceProcess::default()));
@@ -325,8 +337,19 @@ impl BtrfsEngine {
                 })?;
                 service_record.spec.clone()
             };
+        // A container's bundle `config.json` is composed once, from its own declared env, at
+        // spawn. Respawning it with a caller's world env would persist that env (secrets included)
+        // onto disk, so the update is refused before the running container is touched.
+        if matches!(spec.runtime, ServiceRuntime::OciContainer { .. }) {
+            return Err(EngineError::ContainerEnvFixed {
+                world: format!("{:?}", service.world()),
+                id: service.id().to_owned(),
+            });
+        }
         // The one stop path first, so a failed respawn never leaves two processes under one id.
         self.stop_service_inner(service.world(), service.id())?;
+        // A world process re-derives `record.base_env ⊕ spec.env` plus the inherited allowlist at
+        // spawn, so an env update can neither drop nor smuggle the world environment.
         spec.env = env.clone();
         self.start_service(service.world(), &spec)?;
         Ok(())

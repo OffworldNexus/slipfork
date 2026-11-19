@@ -695,7 +695,9 @@ pub enum ReadinessProbe {
 pub struct ServiceSpec {
     pub id: String,              // stable id: `api`, `postgres:<v>`, `redis:<v>`, `seaweedfs`
     pub runtime: ServiceRuntime, // never a boolean mode flag, never a second supervisor
-    pub env: ExecEnv,            // overlay on `WorldSpec.base_env`
+    // `WorldProcess`: overlay on `WorldSpec.base_env`. `OciContainer`: the container's complete
+    // declared environment — a container bundle `config.json` never carries the world env.
+    pub env: ExecEnv,
     pub readiness: ReadinessProbe,
 }
 

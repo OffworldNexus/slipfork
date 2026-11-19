@@ -226,7 +226,9 @@ pub struct ServiceSpec {
     pub kind: ServiceKind,
     /// Exactly one runtime: an `L0` world process or a daemonless `crun` container.
     pub runtime: ServiceRuntime,
-    /// Overlay environment applied on top of the world's base env.
+    /// `WorldProcess`: overlay applied on top of `WorldSpec::base_env`. `OciContainer`: the
+    /// container's **complete declared** environment — a container bundle `config.json` never
+    /// carries the world component env.
     pub env: ExecEnv,
     /// Port that must accept connections before the service counts as ready.
     pub readiness_port: Option<u16>,
@@ -344,6 +346,11 @@ pub enum EngineError {
         "world {world} service '{id}' is not running (ServiceNotRunning); start the backing service before executing inside it"
     )]
     ServiceNotRunning { world: String, id: String },
+    #[error(
+        "cannot replace the environment of service '{id}' in world {world}: a container's bundle \
+         env is fixed at spawn"
+    )]
+    ContainerEnvFixed { world: String, id: String },
     #[error("cannot dial 127.0.0.1:{port} inside world {world} (errno {errno})")]
     DialFailed {
         world: String,
