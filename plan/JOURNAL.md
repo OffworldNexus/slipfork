@@ -1750,3 +1750,4 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-19T07:07 [M3.31] (lead) base 0e54f97f3e459204835ce0334f462cba7b25e322
 - 2026-11-19T07:08 [M3.31] (lead) status ready -> review
 - 2026-11-19T07:09 [M3.31] (lead) status review -> done
+- 2026-11-19T07:10 [M3.31] (lead) VM 165.232.86.174 synced (809 files, daemon install, :80 socket activation); demo up on http://demo.localhost HTTP=200; installed slipfork --help first line = '

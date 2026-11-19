@@ -39,3 +39,7 @@ status ready -> review
 ## 2026-11-19T07:09 [lead]
 
 status review -> done
+
+## 2026-11-19T07:10 [lead]
+
+VM 165.232.86.174 synced (809 files, daemon install, :80 socket activation); demo up on http://demo.localhost HTTP=200; installed slipfork --help first line = 'Instant CoW Btrfs dev worlds & worktree forks from snow.yml'; make check + make docs-check exit 0
