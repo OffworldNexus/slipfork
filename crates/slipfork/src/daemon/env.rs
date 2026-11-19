@@ -1,25 +1,24 @@
 //! Resolved world/component environments, ingress routes, forward targets, and hooks.
-use slipfork_wire::control::BootEvent;
-use std::io::Write;
-
-use super::service::DaemonService;
-use super::types::{HookLog, LiveWorld, ResolvedComponent, ResolvedHook};
-use super::{WORLD_MODE, rejected, runtime_error, snow_error};
-use crate::layout::ensure_private_dir;
-use slipfork_edge::forward::ForwardTargetSpec;
-use slipfork_edge::{EdgeError, IngressRoute, world_id};
-use slipfork_forkfile::TaintedString;
-use slipfork_ospp::OsppClaims;
-use slipfork_snow::{
-    ClaimedEvaluator, EntropySource, HookPhase, ResolvedEnvMap, ResourceCoordinates,
-    SecretProvider, SnowFile,
-};
-use slipfork_world::{ExecEnv, InheritedVar};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{File, OpenOptions};
+use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+
+use slipfork_edge::forward::ForwardTargetSpec;
+use slipfork_edge::{EdgeError, IngressRoute, world_id};
+use slipfork_forkfile::{EvaluatedFork, HookPhase, Resolvers, TaintedString, WorldFact};
+use slipfork_ospp::{OsppClaims, SubscriptionEnv};
+use slipfork_wire::control::BootEvent;
+use slipfork_world::{ExecEnv, InheritedVar};
+
+use super::fork::fact_port;
+use super::service::DaemonService;
+use super::types::{HookLog, LiveWorld, ResolvedComponent, ResolvedHook};
+use super::{WORLD_FEATURE, rejected, runtime_error};
+use crate::layout::ensure_private_dir;
+use crate::project::forkfile_error;
 
 impl DaemonService {
     /// The retained log for one hook, created once per world and reused by `hook run`.
@@ -61,47 +60,49 @@ pub(super) fn open_hook_log(path: &Path) -> Result<File, EdgeError> {
 }
 
 /// The `forward` targets a world exposes: declared resources plus enabled component ports.
+///
+/// Every port comes from the canonical [`EvaluatedFork::world_facts`] projection, so a forwarded
+/// `pg_databases.main` dials exactly the port `$app_db.port` publishes.
 pub(super) fn forward_specs(
-    snow: &SnowFile,
+    fork: &EvaluatedFork,
     world: &str,
     components: &[ResolvedComponent],
     requested: &[String],
 ) -> Result<Vec<ForwardTargetSpec>, EdgeError> {
+    let facts = fork.world_facts();
     let mut specs: Vec<ForwardTargetSpec> = Vec::new();
-    for db in &snow.resources.pg_databases {
+    for database in fork.pg_databases() {
+        let id = format!("pg_databases.{}", database.database);
         specs.push(ForwardTargetSpec {
-            id: format!("pg_databases.{}", db.id),
-            port: 5432,
+            port: required_port(&facts, &database.database, &id)?,
             scheme: "postgres".to_owned(),
-            path: format!("/{}", db.id),
+            path: format!("/{}", database.database),
+            id,
         });
     }
-    for cluster in &snow.resources.redis_clusters {
+    for cluster in &fork.redis {
+        let id = format!("redis_clusters.{}", cluster.id);
         specs.push(ForwardTargetSpec {
-            id: format!("redis_clusters.{}", cluster.id),
-            port: 6379,
+            port: required_port(&facts, &cluster.id, &id)?,
             scheme: "redis".to_owned(),
             path: String::new(),
+            id,
         });
     }
-    for bucket in &snow.resources.s3_buckets {
+    for bucket in &fork.s3 {
+        let id = format!("s3_buckets.{bucket}");
         specs.push(ForwardTargetSpec {
-            id: format!("s3_buckets.{}", bucket.id),
-            // `ADR-0009` §2 pins the SeaweedFS container to `-port=9000` on the world loopback;
-            // `snow.yml` carries no per-bucket S3 port to read.
-            port: 9000,
+            port: required_port(&facts, bucket, &id)?,
             scheme: "http".to_owned(),
             path: String::new(),
+            id,
         });
     }
-    for component in &snow.components {
-        if !components.iter().any(|enabled| enabled.id == component.id) {
-            continue;
-        }
-        if let Some(port) = component.internal_ports.first() {
+    for component in components {
+        if let Some(port) = component.readiness_port {
             specs.push(ForwardTargetSpec {
                 id: format!("components.{}", component.id),
-                port: *port,
+                port,
                 scheme: "http".to_owned(),
                 path: String::new(),
             });
@@ -110,7 +111,7 @@ pub(super) fn forward_specs(
     if requested.is_empty() {
         if specs.is_empty() {
             return Err(rejected(format!(
-                "world '{world}' has no forwardable target: declare snow.yml resources or component internal_ports"
+                "world '{world}' has no forwardable target: declare a `postgres`, `redis`, or `s3` resource, or give a service an `internal_port`"
             )));
         }
         return Ok(specs);
@@ -137,6 +138,15 @@ pub(super) fn forward_specs(
     Ok(selected)
 }
 
+/// A projected port a world cannot run without: dialing `0` would silently forward nowhere.
+fn required_port(facts: &[WorldFact], entity: &str, id: &str) -> Result<u16, EdgeError> {
+    fact_port(facts, entity).ok_or_else(|| {
+        rejected(format!(
+            "Forkfile projects no `port` for '{id}'\n  next: declare `port <n>`"
+        ))
+    })
+}
+
 pub(super) fn container_env(
     home: &str,
     vars: &[(&str, &str)],
@@ -156,56 +166,42 @@ pub(super) fn container_env(
     Ok(env)
 }
 
-/// Build the `IngressRoute` prefix table: declared `snow.yml` ingresses plus the canonical
-/// empty-prefix catch-all from the first enabled component's first `internal_ports` entry.
-pub(super) fn ingress_routes(
-    snow: &SnowFile,
-    effective: &[(String, slipfork_snow::ResolvedComponent)],
-) -> Result<Vec<IngressRoute>, EdgeError> {
-    let mut routes: Vec<IngressRoute> = snow
-        .ingresses
-        .iter()
-        .map(|ingress| IngressRoute {
-            prefix: ingress.match_rule.prefix.clone(),
-            port: ingress.target.port,
-        })
-        .collect();
-    if !routes.iter().any(|route| route.prefix.is_empty()) {
-        for (id, resolved) in effective {
-            if resolved.disabled {
-                continue;
-            }
-            if let Some(port) = snow
-                .components
-                .iter()
-                .find(|component| component.id == *id)
-                .and_then(|component| component.internal_ports.first())
-            {
-                routes.push(IngressRoute {
-                    prefix: String::new(),
-                    port: *port,
-                });
-                break;
-            }
-        }
+/// The `IngressRoute` prefix table derived from every service `route`.
+pub(super) fn ingress_routes(fork: &EvaluatedFork) -> Result<Vec<IngressRoute>, EdgeError> {
+    let mut routes: Vec<IngressRoute> = Vec::new();
+    for route in fork.ingress_routes() {
+        let Some(port) = route.port else {
+            return Err(rejected(format!(
+                "service '{}' declares `route {}` but no `port` to serve it\n  next: add `port <n>` to `service {}`",
+                route.service, route.route, route.service
+            )));
+        };
+        let port = u16::try_from(port).map_err(|_| {
+            rejected(format!(
+                "service '{}' declares port {port}, which is not a TCP port\n  next: declare a port between 1 and 65535",
+                route.service
+            ))
+        })?;
+        routes.push(IngressRoute {
+            prefix: route.route,
+            port,
+        });
     }
     if routes.is_empty() {
         return Err(rejected(format!(
-            "world has no HTTP ingress: declare `ingresses:` in snow.yml or give a component an \
-             `internal_ports` entry (mode '{WORLD_MODE}')"
+            "world has no HTTP ingress\n  next: add `route /` to a service in the Forkfile (feature '{WORLD_FEATURE}')"
         )));
     }
     Ok(routes)
 }
 
-pub(super) fn apply_env(env: &mut ExecEnv, resolved: ResolvedEnvMap) -> Result<(), EdgeError> {
+/// Apply one already-resolved environment map to an [`ExecEnv`], taint-aware.
+pub(super) fn apply_env(
+    env: &mut ExecEnv,
+    resolved: BTreeMap<String, TaintedString>,
+) -> Result<(), EdgeError> {
     for (key, value) in resolved {
-        // A claimed expression is evaluated locally by the transition resolver; an unclaimed one
-        // stays unresolved and is filled by the server layer instead.
-        if value.has_unresolved_expression() {
-            continue;
-        }
-        let outcome = if value.is_secret() {
+        let outcome = if value.is_tainted() {
             env.set_secret(&key, value.expose())
         } else {
             env.set(&key, value.expose())
@@ -216,50 +212,102 @@ pub(super) fn apply_env(env: &mut ExecEnv, resolved: ResolvedEnvMap) -> Result<(
     Ok(())
 }
 
-/// One component's environment resolution: every injected collaborator plus the claimed-key set.
+/// One world's environment resolver: the canonical `Forkfile` projection plus the OSPP layer.
 ///
 /// Claimed keys are dropped from the server layer: the server echoes their canonical `Forkfile`
 /// source, which the world must never receive as a literal. The local resolver fills them.
-pub(super) struct ComponentEnv<'a> {
-    pub(super) snow: &'a SnowFile,
-    pub(super) provider: &'a dyn SecretProvider,
-    pub(super) coords: &'a ResourceCoordinates,
-    pub(super) claims: &'a OsppClaims,
-    pub(super) claimed: &'a BTreeSet<String>,
-    pub(super) entropy: &'a dyn EntropySource,
+pub(super) struct WorldEnv<'a, 'r> {
+    fork: &'a EvaluatedFork,
+    resolvers: &'a Resolvers<'r>,
+    claims: &'a OsppClaims,
+    home: PathBuf,
+    inherited: &'a [(InheritedVar, String)],
 }
 
-impl ComponentEnv<'_> {
-    pub(super) fn resolve(
+impl<'a, 'r> WorldEnv<'a, 'r> {
+    pub(super) fn new(
+        fork: &'a EvaluatedFork,
+        resolvers: &'a Resolvers<'r>,
+        claims: &'a OsppClaims,
+        home: PathBuf,
+        inherited: &'a [(InheritedVar, String)],
+    ) -> Self {
+        Self {
+            fork,
+            resolvers,
+            claims,
+            home,
+            inherited,
+        }
+    }
+
+    /// The world-scoped base environment: every `env` group plus the unclaimed server layer.
+    pub(super) fn base(
         &self,
-        component: &str,
-        server: Option<&BTreeMap<String, TaintedString>>,
+        server: Option<&BTreeMap<String, BTreeMap<String, TaintedString>>>,
     ) -> Result<ExecEnv, EdgeError> {
-        let owns = |namespace: &str, path: &[String]| self.claims.owns(namespace, path);
-        let evaluator = ClaimedEvaluator::new(self.provider, self.coords, self.entropy, &owns);
-        let resolved = evaluator
-            .mode(self.snow, WORLD_MODE, Some(component))
-            .map_err(snow_error)?;
-        let mut env = ExecEnv::default();
+        let resolved = self
+            .fork
+            .world_env(self.resolvers)
+            .map_err(forkfile_error)?;
+        let mut env = ExecEnv::world_scoped(self.home.clone());
+        for (var, value) in self.inherited {
+            env.inherit(*var, value.clone());
+        }
         apply_env(&mut env, resolved)?;
-        let Some(server) = server else {
+        let Some(components) = server else {
             return Ok(env);
         };
-        for (name, value) in server {
-            if self.claimed.contains(name) {
-                continue;
-            }
-            let outcome = if value.is_tainted() {
-                env.set_secret(name, value.expose())
-            } else {
-                env.set(name, value.expose())
-            };
-            outcome.map_err(|err| {
-                runtime_error(format!("invalid OSPP environment '{name}': {err}"))
-            })?;
+        let claimed = self.fork.all_claimed_env_keys(&self.owns());
+        for component in components.values() {
+            overlay(&mut env, component, &claimed)?;
         }
         Ok(env)
     }
+
+    /// One component's environment: its own assignments plus only its own server layer.
+    pub(super) fn component(
+        &self,
+        id: &str,
+        server: Option<&BTreeMap<String, TaintedString>>,
+    ) -> Result<ExecEnv, EdgeError> {
+        let resolved = self
+            .fork
+            .resolve_env(id, self.resolvers)
+            .map_err(forkfile_error)?;
+        let claimed = self.fork.claimed_env_keys(id, &self.owns());
+        let mut env = ExecEnv::default();
+        apply_env(&mut env, resolved)?;
+        if let Some(server) = server {
+            overlay(&mut env, server, &claimed)?;
+        }
+        Ok(env)
+    }
+
+    fn owns(&self) -> impl Fn(&str, &[String]) -> bool + '_ {
+        |namespace, path| self.claims.owns(namespace, path)
+    }
+}
+
+/// Layer one server-resolved environment on top, skipping every locally claimed key.
+fn overlay(
+    env: &mut ExecEnv,
+    server: &BTreeMap<String, TaintedString>,
+    claimed: &BTreeSet<String>,
+) -> Result<(), EdgeError> {
+    for (name, value) in server {
+        if claimed.contains(name) {
+            continue;
+        }
+        let outcome = if value.is_tainted() {
+            env.set_secret(name, value.expose())
+        } else {
+            env.set(name, value.expose())
+        };
+        outcome
+            .map_err(|err| runtime_error(format!("invalid OSPP environment '{name}': {err}")))?;
+    }
+    Ok(())
 }
 
 pub(super) fn validate_secret_key(key: &str) -> Result<(), EdgeError> {
@@ -277,63 +325,29 @@ pub(super) fn validate_secret_key(key: &str) -> Result<(), EdgeError> {
 
 pub(super) fn hook_phase_label(phase: HookPhase) -> &'static str {
     match phase {
+        HookPhase::Setup => "setup",
         HookPhase::PreDeploy => "pre-deploy",
         HookPhase::PostDeploy => "post-deploy",
         HookPhase::FailedDeploy => "failed-deploy",
     }
 }
 
-/// Resolve one `<component>:<phase>` hook through the single validation path used by both
-/// interactive `hook run` (entry argv) and `--no-tty` streaming.
-pub(super) fn resolve_hook(
-    snow: &SnowFile,
-    components: &[ResolvedComponent],
+/// Look one already-resolved `<service>:<phase>` hook up by the id the CLI names.
+pub(super) fn resolve_hook<'a>(
+    hooks: &'a [ResolvedHook],
     hook_id: &str,
-) -> Result<ResolvedHook, EdgeError> {
-    let (component, phase) = parse_hook_id(hook_id).ok_or_else(|| {
+) -> Result<&'a ResolvedHook, EdgeError> {
+    hooks.iter().find(|hook| hook.id == hook_id).ok_or_else(|| {
+        let known = hooks
+            .iter()
+            .map(|hook| hook.id.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
         rejected(format!(
-            "invalid hook id '{hook_id}' (expected <component>:<phase>)"
+            "world has no hook '{hook_id}' (declared hooks: {})\n  next: name one of the declared hooks, or declare one as `<phase>: <command>` in the service",
+            if known.is_empty() { "none" } else { &known }
         ))
-    })?;
-    let Some(enabled) = components
-        .iter()
-        .find(|candidate| candidate.id == component)
-    else {
-        return Err(rejected(format!(
-            "component '{component}' is not enabled in mode '{WORLD_MODE}'"
-        )));
-    };
-    let hook = snow
-        .hooks
-        .iter()
-        .find(|hook| hook.component == component && hook.when == phase)
-        .ok_or_else(|| rejected(format!("world has no hook '{hook_id}'")))?;
-    if hook.run_command.trim().is_empty() {
-        return Err(rejected(format!(
-            "hook '{hook_id}' declares an empty run_command"
-        )));
-    }
-    Ok(ResolvedHook {
-        argv: vec![
-            "sh".to_owned(),
-            "-eu".to_owned(),
-            "-c".to_owned(),
-            hook.run_command.clone(),
-        ],
-        overlay: enabled.env.clone(),
-        phase_label: hook_phase_label(phase),
     })
-}
-
-pub(super) fn parse_hook_id(hook: &str) -> Option<(&str, HookPhase)> {
-    let (component, phase) = hook.rsplit_once(':')?;
-    let phase = match phase {
-        "pre-deploy" => HookPhase::PreDeploy,
-        "post-deploy" => HookPhase::PostDeploy,
-        "failed-deploy" => HookPhase::FailedDeploy,
-        _ => return None,
-    };
-    (!component.is_empty()).then_some((component, phase))
 }
 
 impl DaemonService {
@@ -344,47 +358,28 @@ impl DaemonService {
         phase: HookPhase,
         on_event: &mut dyn FnMut(BootEvent),
     ) -> Result<usize, EdgeError> {
-        let hooks = live.snow.hooks.clone();
+        let hooks: Vec<ResolvedHook> = live
+            .hooks
+            .iter()
+            .filter(|hook| hook.phase == phase)
+            .cloned()
+            .collect();
         let mut ran = 0;
         for hook in hooks {
-            let Some(component) = live
-                .components
-                .iter()
-                .find(|component| component.id == hook.component)
-            else {
-                continue;
-            };
-            if hook.when != phase {
-                continue;
-            }
-            if hook.run_command.trim().is_empty() {
-                return Err(rejected(format!(
-                    "hook '{}:{}' declares an empty run_command",
-                    hook.component,
-                    hook_phase_label(hook.when)
-                )));
-            }
-            let id = format!("{}:{}", hook.component, hook_phase_label(hook.when));
-            let argv = vec![
-                "sh".to_owned(),
-                "-eu".to_owned(),
-                "-c".to_owned(),
-                hook.run_command.clone(),
-            ];
+            let id = hook.id.clone();
             on_event(BootEvent::Hook {
                 id: id.clone(),
-                argv: argv.clone(),
+                argv: hook.argv.clone(),
             });
-            let overlay = component.env.clone();
-            let log = self.hook_log(live, &id, hook_phase_label(hook.when))?;
+            let log = self.hook_log(live, &id, hook_phase_label(hook.phase))?;
             let mut file = open_hook_log(&log.path)?;
             let output = self
                 .engine
                 .exec_in_world(
                     &live.handle,
-                    &argv,
+                    &hook.argv,
                     &live.worktree,
-                    &overlay,
+                    &hook.overlay,
                     &mut |chunk| {
                         let _ = file.write_all(&chunk.bytes);
                         let _ = file.flush();
@@ -407,13 +402,13 @@ impl DaemonService {
                 let world = world_id(&live.project, &live.target);
                 on_event(BootEvent::HookFailed {
                     id: id.clone(),
-                    argv,
+                    argv: hook.argv,
                     exit_code: output.exit_code,
                     world: world.clone(),
                     log_path: log.path.clone(),
                 });
                 return Err(runtime_error(format!(
-                    "hook '{id}' exited with code {} in world '{world}' (the world is kept for inspection; full output is in {})",
+                    "hook '{id}' exited with code {} in world '{world}' (the world is kept for inspection; full output is in {})\n  next: fix the hook, then run `slipfork restart`",
                     output.exit_code,
                     log.path.display()
                 )));
@@ -421,5 +416,73 @@ impl DaemonService {
             ran += 1;
         }
         Ok(ran)
+    }
+}
+
+impl DaemonService {
+    /// Apply one already-decrypted `env_updated` environment to this daemon's live worlds:
+    /// recompute each component's environment from the local vault + projection, and restart
+    /// **only** the components whose environment actually changed.
+    pub(super) fn apply_env_update(&self, environment: &SubscriptionEnv) -> Result<(), EdgeError> {
+        let Some(project) = self.ospp.project_for(&environment.id) else {
+            return Err(runtime_error(format!(
+                "OSPP pushed an environment for unknown subscription '{}'",
+                environment.id
+            )));
+        };
+        let _guard = self.boot_guard();
+        let mut state = self.lock();
+        let provider = self.vault_for(&project)?;
+        let resolvers = Resolvers::new(provider.as_ref(), self.entropy.as_ref());
+        for world in state
+            .worlds
+            .iter_mut()
+            .filter(|world| world.project == project)
+        {
+            let claims = self.ospp.claims_for(
+                &project,
+                &world.fork,
+                &world.plan,
+                self.vault_store(&project)?,
+            )?;
+            let home = self
+                .config
+                .layout
+                .world_home(&project, &world_id(&world.project, &world.target));
+            let resolved = WorldEnv::new(
+                &world.fork,
+                &resolvers,
+                &claims,
+                home,
+                &self.config.inherited,
+            );
+            let mut updated = Vec::with_capacity(world.components.len());
+            for component in &world.components {
+                let env =
+                    resolved.component(&component.id, environment.component(&component.id))?;
+                updated.push(env);
+            }
+            for (component, env) in world.components.iter_mut().zip(updated) {
+                if env == component.env {
+                    continue;
+                }
+                let handle = world
+                    .services
+                    .iter()
+                    .find(|service| service.id() == component.id)
+                    .cloned();
+                if let Some(handle) = handle {
+                    self.engine.update_service_env(&handle, &env).map_err(|err| {
+                        runtime_error(format!(
+                            "cannot restart component '{}' with the pushed OSPP environment: {err}",
+                            component.id
+                        ))
+                    })?;
+                }
+                component.env = env;
+            }
+            world.ospp_env = Some(environment.components.clone());
+        }
+        Ok(())
     }
 }

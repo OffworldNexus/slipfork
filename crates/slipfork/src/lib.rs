@@ -3,7 +3,7 @@
 //! Only the two binaries built from this crate (`slipfork` = `src/main.rs`, `slipforkd` =
 //! `src/bin/slipforkd.rs`) are Composition Roots: they resolve `HOME`, `$XDG_*`, the developer's OS
 //! account, and the explicit `--state-dir`/`--runtime-dir` once, then wire the concrete adapters
-//! from `slipfork-edge`, `slipfork-engine`, `slipfork-vcs`, `slipfork-snow`, and `slipfork-dag`
+//! from `slipfork-edge`, `slipfork-engine`, `slipfork-vcs`, `slipfork-forkfile`, and `slipfork-dag`
 //! into the domain ports. Everything in this library takes those resolved values as arguments and
 //! contains no ambient environment access.
 //!
@@ -15,8 +15,8 @@
 //! - [`layout`]: pure paths derived from already-resolved roots (`state`, `runtime`, data/vaults).
 //! - [`logs`]: the one attributed `slipfork logs` renderer (`<source>: ` prefixes for fan-out,
 //!   byte-exact raw output for one named target).
-//! - [`project`]: the injected [`slipfork_vcs::ProjectSlugOverride`] and the one
-//!   `SlipforkConfig` loader/resolver constructor (no second TOML parser, no silent defaults).
+//! - [`project`]: the injected [`slipfork_vcs::ProjectSlugOverride`] over the `Forkfile`
+//!   `project <slug>` statement (no TOML manifest, no second parser).
 //! - [`user`]: the concrete [`user::UserIdentity`] value (resolved once at a composition root
 //!   from `id -un` / `getent passwd`) and the `kernel_hostname()` (`uname -n`) recipe helper.
 //! - [`vaults`]: the injected project-vault factory over the `0600` local vault.
@@ -38,6 +38,9 @@
 //! - [`browser`]: the one concrete desktop launcher over the Composition Root's resolved program.
 
 #![forbid(unsafe_code)]
+
+/// The `Forkfile` feature every local world evaluates (`features { local }` / `on local`).
+pub const WORLD_FEATURE: &str = "local";
 
 pub mod apparmor;
 pub mod browser;

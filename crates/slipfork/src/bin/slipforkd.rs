@@ -4,10 +4,10 @@
 //! and the sibling `slipfork-world-init` helper, then hands those values to
 //! [`slipfork::daemon::compose_daemon`], which wires every stateful adapter in-process: the single
 //! `BtrfsEngine` over `Arc::new(KernelBtrfsDriver)` (failing closed with
-//! `EngineError::BtrfsRequired` before any world directory exists), `FileVaultProvider` layered
-//! over a paired `OsppSecretProvider`, `ResourcePlan::resolve`, `GitRepoRootResolver` over the one
-//! `SlipforkConfig` `ProjectSlugOverride`, `RepositoryWorkspaces` (Git or Jujutsu by `.jj`),
-//! `DiskSeedDumpStore`, and `WorldRegistry`. It serves the HTTP/WS
+//! `EngineError::BtrfsRequired` before any world directory exists), `LayoutProjectVaults` over a
+//! paired OSPP secret provider, `ResourcePlan` from the evaluated `Forkfile` projection,
+//! `GitRepoRootResolver` under its `Forkfile project` override, `RepositoryWorkspaces` (Git or
+//! Jujutsu by `.jj`), `DiskSeedDumpStore`, and `WorldRegistry`. It serves the HTTP/WS
 //! ingress (`LISTEN_FDS` or `--listen`, plus `0600` `<state_dir>/http-ingress.sock`) and the typed
 //! `DaemonControl` socket (`0600` `<runtime_dir>/daemon.sock`).
 //!

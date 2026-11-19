@@ -7,7 +7,6 @@ use std::process::ExitCode;
 
 use serde_json::json;
 use slipfork_edge::DaemonControl;
-use slipfork_snow::SnowFile;
 use slipfork_vcs::WORKTREES_DIRECTORY;
 use slipfork_wire::control::{ExecTargetRequest, HookRunRequest, LogsRequest};
 use slipfork_world::EntryKind;
@@ -277,23 +276,18 @@ fn default_resource_id(
         Some(fork) => repo.vcs_root.join(WORKTREES_DIRECTORY).join(fork),
         None => repo.worktree_root.clone(),
     };
-    let path = worktree.join("snow.yml");
-    let raw = std::fs::read_to_string(&path)
-        .map_err(|err| format!("cannot read {}: {err}", path.display()))?;
-    let snow = SnowFile::parse_yaml(&raw).map_err(|err| format!("{}: {err}", path.display()))?;
+    let fork = slipfork::project::load_project_fork(&worktree)?;
     let (prefix, ids) = match kind {
         ResourceKind::PgDatabase => (
             "pg_databases",
-            snow.resources
-                .pg_databases
-                .iter()
-                .map(|db| db.id.clone())
+            fork.pg_databases()
+                .into_iter()
+                .map(|db| db.database)
                 .collect::<Vec<_>>(),
         ),
         ResourceKind::RedisCluster => (
             "redis_clusters",
-            snow.resources
-                .redis_clusters
+            fork.redis
                 .iter()
                 .map(|cluster| cluster.id.clone())
                 .collect::<Vec<_>>(),
@@ -302,10 +296,10 @@ fn default_resource_id(
     match ids.as_slice() {
         [id] => Ok(format!("{prefix}.{id}")),
         [] => Err(format!(
-            "snow.yml declares no {prefix} entry; add one before using this client"
+            "the `Forkfile` declares no {prefix} entry; add one before using this client"
         )),
         _ => Err(format!(
-            "snow.yml declares several {prefix} entries ({}); pass the id explicitly",
+            "the `Forkfile` declares several {prefix} entries ({}); pass the id explicitly",
             ids.join(", ")
         )),
     }

@@ -303,10 +303,10 @@ impl DaemonService {
             Some(name) => (name.to_owned(), false),
             None => (branch_fork_name(self.workspaces.as_ref(), &repo)?, true),
         };
-        // The collision checks read the checkout's real `snow.yml` `domains[].id` set — never an
+        // The collision checks read the checkout's real `Forkfile` `domain` set — never an
         // empty placeholder, which would let a fork shadow a declared domain.
-        let (snow, _) = self.load_snow(&repo.worktree_root)?;
-        let domains = snow.domain_ids();
+        let forkfile = super::fork::load_project_fork(&repo.worktree_root)?;
+        let domains: Vec<&str> = forkfile.domains.iter().map(String::as_str).collect();
         if fork == repo.project.as_str() {
             return Err(rejected(if derived {
                 format!(

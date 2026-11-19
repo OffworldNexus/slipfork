@@ -1410,7 +1410,6 @@ dependencies = [
  "slipfork-forkfile",
  "slipfork-ospp",
  "slipfork-ospp-testkit",
- "slipfork-snow",
  "slipfork-testkit",
  "slipfork-vcs",
  "slipfork-wire",

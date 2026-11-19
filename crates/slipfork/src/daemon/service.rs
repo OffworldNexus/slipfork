@@ -6,7 +6,7 @@ use super::{DaemonConfig, DaemonPorts, engine_read_error, runtime_error};
 use crate::vaults::ProjectVaults;
 use slipfork_edge::{EdgeError, WorldRegistry, parent_world, world_id};
 use slipfork_engine::rootfs::BaseImageBuilder;
-use slipfork_snow::EntropySource;
+use slipfork_forkfile::EntropySource;
 use slipfork_vcs::{RepoRootResolver, VcsWorkspaceFactory};
 use slipfork_wire::control::{
     DaemonError, DaemonErrorKind, DaemonStatus, IngressInfo, PruneReport, WorldProcessReport,

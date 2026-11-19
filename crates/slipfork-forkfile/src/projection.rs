@@ -81,10 +81,10 @@ impl EvaluatedFork {
     /// Every env-visible world fact, derived purely from the active feature set.
     ///
     /// Postgres databases expose `host`, `port`, `user`, `db_name`, `url`, and `jdbc`; redis
-    /// clusters expose `host`, `port`, `user`, and `url`; S3 buckets expose `endpoint`, `bucket`,
-    /// `region`, and `url`; domains expose `name` and `url`; services expose `private_domain`,
-    /// `private_port`, `private_url`, `public_route_path`, and `public_url`; `app` exposes `id`,
-    /// `domain`, and `url`.
+    /// clusters expose `host`, `port`, `user`, and `url`; S3 buckets expose `port`, `endpoint`,
+    /// `bucket`, `region`, and `url`; domains expose `name` and `url`; services expose
+    /// `private_domain`, `private_port`, `private_url`, `public_route_path`, and `public_url`;
+    /// `app` exposes `id`, `domain`, and `url`.
     ///
     /// The `<entity>.<project>.localhost` and `app.*` facts are omitted when the manifest declares
     /// no `project <slug>`; everything else stays world-local. This method is the single source of
@@ -160,11 +160,13 @@ impl EvaluatedFork {
             );
         }
         for (index, bucket) in self.s3.iter().enumerate() {
-            let endpoint = format!("http://{LOOPBACK}:{}", S3_BASE_PORT + index as u16);
+            let port = S3_BASE_PORT + index as u16;
+            let endpoint = format!("http://{LOOPBACK}:{port}");
             push_facts(
                 &mut facts,
                 bucket,
                 &[
+                    ("port", port.to_string()),
                     ("endpoint", endpoint.clone()),
                     ("bucket", bucket.clone()),
                     ("region", "us-east-1".to_owned()),

@@ -29,7 +29,7 @@ const WORLD_HELP: &str =
 #[command(
     name = "slipfork",
     version,
-    about = "Instant CoW Btrfs dev worlds & worktree forks from snow.yml"
+    about = "Instant CoW Btrfs dev worlds & worktree forks from a Forkfile"
 )]
 pub struct Cli {
     /// Emit machine-readable JSON on stdout.
@@ -104,12 +104,6 @@ pub enum Commands {
     /// Probe the Btrfs substrate, the live subvolume ioctl round-trip, and unprivileged namespaces.
     Doctor,
 
-    /// Validate and resolve `snow.yml` modes & `!!` auto-generated secrets.
-    Snow {
-        #[command(subcommand)]
-        action: SnowAction,
-    },
-
     /// Boot the world selected by `--world` (or `cwd`) through `slipforkd`.
     Up {
         #[arg(long, value_name = "WORLD", help = WORLD_HELP)]
@@ -119,7 +113,7 @@ pub enum Commands {
         #[command(flatten)]
         resources: ResourceArgs,
         /// Mount the developer's host toolchain caches read-only after the ELF/libc ABI probe
-        /// passes (`ADR-0009` §2.3; never a `slipfork.toml` key).
+        /// passes (`ADR-0009` §2.3).
         #[arg(long)]
         host_caches: bool,
     },
@@ -165,7 +159,7 @@ pub enum Commands {
         #[command(flatten)]
         resources: ResourceArgs,
         /// Mount the developer's host toolchain caches read-only after the ELF/libc ABI probe
-        /// passes (`ADR-0009` §2.3; never a `slipfork.toml` key).
+        /// passes (`ADR-0009` §2.3).
         #[arg(long)]
         host_caches: bool,
     },
@@ -287,26 +281,6 @@ pub enum HookAction {
         /// Run non-interactively through `DaemonControl::hook_run`.
         #[arg(long)]
         no_tty: bool,
-    },
-}
-
-/// `slipfork snow` actions.
-#[derive(Debug, Subcommand)]
-pub enum SnowAction {
-    /// Validate `snow.yml`, persist missing `!!` secrets, and output resolved/redacted variables.
-    Resolve {
-        /// Path to `snow.yml`.
-        #[arg(long, default_value = "snow.yml")]
-        file: PathBuf,
-        /// Active mode (`local`, `cloud`, etc.).
-        #[arg(long, default_value = "local")]
-        mode: String,
-        /// Optional component ID filter.
-        #[arg(long)]
-        component: Option<String>,
-        /// Expose plaintext secrets (only for internal child-process wiring; redacted by default).
-        #[arg(long)]
-        expose_secrets: bool,
     },
 }
 

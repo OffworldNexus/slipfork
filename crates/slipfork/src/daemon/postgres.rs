@@ -11,7 +11,7 @@ use super::service::DaemonService;
 use super::{rejected, runtime_error};
 use slipfork_dag::{PgSeed, ResourcePlan};
 use slipfork_edge::EdgeError;
-use slipfork_snow::SnowFile;
+use slipfork_forkfile::EvaluatedFork;
 use slipfork_world::rootfs::WorldRootfs;
 use slipfork_world::{
     EngineError, ExecEnv, ExecOutput, ProjectSlug, ServiceHandle, WorldEngine, WorldHandle,
@@ -75,7 +75,7 @@ impl<'a> PostgresProvisioner<'a> {
         &self,
         project: &ProjectSlug,
         handle: &WorldHandle,
-        snow: &SnowFile,
+        fork: &EvaluatedFork,
         plan: &ResourcePlan,
         rootfs: &WorldRootfs,
     ) -> Result<(), EdgeError> {
@@ -97,7 +97,7 @@ impl<'a> PostgresProvisioner<'a> {
             })?)
         };
         let mut services: BTreeMap<String, ServiceHandle> = BTreeMap::new();
-        for spec in service_specs(snow, rootfs)? {
+        for spec in service_specs(fork, rootfs)? {
             let service = match self.engine.spawn_service(handle, &spec) {
                 Ok(service) => service,
                 Err(err) => {
@@ -123,34 +123,34 @@ impl<'a> PostgresProvisioner<'a> {
             };
             services.insert(spec.id.clone(), service);
         }
-        for database in &snow.resources.pg_databases {
+        for database in fork.pg_databases() {
             let Some(service) = services.get(&format!("pg_clusters.{}", database.cluster)) else {
                 continue;
             };
-            self.ensure_database(service, &database.id)?;
-            if !remote_dumps.contains(database.id.as_str()) {
+            self.ensure_database(service, &database.database)?;
+            if !remote_dumps.contains(database.database.as_str()) {
                 continue;
             }
             let session = session.as_ref().ok_or_else(|| {
                 runtime_error(format!(
                     "the seed dump for '{}' requires an authenticated OSPP session",
-                    database.id
+                    database.database
                 ))
             })?;
             let reader = self
                 .ospp
-                .dump(session, project, &database.id)
+                .dump(session, project, &database.database)
                 .map_err(|err| {
                     runtime_error(format!(
                         "cannot stream the seed dump for '{}': {err}",
-                        database.id
+                        database.database
                     ))
                 })?;
             // The decrypted stream is piped straight into `zstd -d | pg_restore` inside the
             // container: no plaintext dump byte ever lands on host disk.
             let restore = format!(
                 "zstd -d | pg_restore --no-owner --no-privileges --clean --if-exists -U postgres -h 127.0.0.1 -d {}",
-                database.id
+                database.database
             );
             let argv = vec!["sh".to_owned(), "-c".to_owned(), restore];
             let mut stderr = Vec::new();
@@ -168,7 +168,10 @@ impl<'a> PostgresProvisioner<'a> {
                     },
                 )
                 .map_err(|err| {
-                    runtime_error(format!("cannot restore database '{}': {err}", database.id))
+                    runtime_error(format!(
+                        "cannot restore database '{}': {err}",
+                        database.database
+                    ))
                 })?;
             if output.exit_code != 0 {
                 let detail = if output.stderr.trim().is_empty() {
@@ -178,7 +181,7 @@ impl<'a> PostgresProvisioner<'a> {
                 };
                 return Err(runtime_error(format!(
                     "restoring database '{}' failed with exit code {}: {}",
-                    database.id,
+                    database.database,
                     output.exit_code,
                     detail.trim()
                 )));
@@ -192,19 +195,19 @@ impl<'a> PostgresProvisioner<'a> {
                     "-h".to_owned(),
                     "127.0.0.1".to_owned(),
                     "-d".to_owned(),
-                    database.id.clone(),
+                    database.database.clone(),
                     "-v".to_owned(),
                     "ON_ERROR_STOP=1".to_owned(),
                     "-c".to_owned(),
                     "CHECKPOINT;".to_owned(),
                 ],
-                &format!("checkpointing database '{}'", database.id),
+                &format!("checkpointing database '{}'", database.database),
             )?;
         }
         Ok(())
     }
 
-    /// Create one declared `snow.yml` database in a freshly `initdb`-ed cluster when absent.
+    /// Create one declared `Forkfile` database in a freshly `initdb`-ed cluster when absent.
     fn ensure_database(&self, service: &ServiceHandle, database: &str) -> Result<(), EdgeError> {
         validate_database_id(database)?;
         self.wait_for_postgres_ready(service)?;
@@ -330,12 +333,12 @@ impl DaemonService {
         &self,
         project: &ProjectSlug,
         handle: &WorldHandle,
-        snow: &SnowFile,
+        fork: &EvaluatedFork,
         plan: &ResourcePlan,
         rootfs: &WorldRootfs,
     ) -> Result<(), EdgeError> {
         self.postgres()
-            .restore_base(project, handle, snow, plan, rootfs)
+            .restore_base(project, handle, fork, plan, rootfs)
     }
 
     fn postgres(&self) -> PostgresProvisioner<'_> {
@@ -347,7 +350,7 @@ impl DaemonService {
     }
 }
 
-/// A `snow.yml` database id is interpolated into `psql` SQL, so it stays a plain identifier.
+/// A `Forkfile` database id is interpolated into `psql` SQL, so it stays a plain identifier.
 pub(super) fn validate_database_id(id: &str) -> Result<(), EdgeError> {
     if id.is_empty()
         || id.len() > 63

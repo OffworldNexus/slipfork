@@ -4,13 +4,13 @@ use super::env::validate_secret_key;
 use super::service::DaemonService;
 use super::{rejected, runtime_error};
 use slipfork_edge::{EdgeError, SecretVault};
-use slipfork_snow::SecretProvider;
+use slipfork_forkfile::SecretProvider;
 use slipfork_world::ProjectSlug;
 use std::path::Path;
 use std::sync::Arc;
 
 impl DaemonService {
-    /// The project's local vault: the narrow read/ensure input to `SnowFile` evaluation.
+    /// The project's local vault: the narrow read/ensure input to `Forkfile` evaluation.
     pub(super) fn vault_for(
         &self,
         project: &ProjectSlug,

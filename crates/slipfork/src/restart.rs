@@ -3,7 +3,7 @@
 //! Every function here is pure over the single
 //! [`WorldUpSummary`] the daemon returned: the CLI performs exactly
 //! one boot (or restart) round trip and hands the typed summary to these renderers. Nothing is
-//! recomputed from `snow.yml`, the process table, or the filesystem — `world`, `state`, `changed`,
+//! recomputed from the `Forkfile`, the process table, or the filesystem — `world`, `state`, `changed`,
 //! `restarted`, the origin, the worktree, the lineage, and `next` are the daemon's own observed
 //! facts, and a fact the daemon did not record renders `-`, never `0` and never an invented
 //! duration.

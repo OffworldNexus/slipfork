@@ -4,10 +4,10 @@
 //! the integration harness both call: the CoW engine over the concrete [`KernelBtrfsDriver`], the
 //! HTTP ingress `WorldRegistry`, the VCS repository resolver and workspace factory, the explicit
 //! state/data roots, and the inherited allowlist the engine hands to world processes.
-//! `compose_daemon` is this binary's composition root: it resolves the inherited `PATH`/`TERM`/`LANG`
-//! allowlist from `std::env` once, before the engine exists. Nothing else here reads ambient state:
-//! the module never calls `current_dir()` and never guesses a path — every request carries its
-//! explicit `cwd`.
+//! `compose_daemon` is this binary's composition graph, not its environment: every inherited
+//! `PATH`/`TERM`/`LANG` value arrives already resolved by the Composition Root. Nothing here reads
+//! ambient state: the module never calls `current_dir()` and never guesses a path — every request
+//! carries its explicit `cwd`.
 //!
 //! World handles live only here (`H-010` #1): `up`/`fork` clone and attach a world, `down`/`drop`
 //! release it, and the thin CLI only ever receives serializable summaries and the direct-entry
@@ -26,11 +26,11 @@ use slipfork_engine::rootfs::{
     FsInputHasher, RuntimeAssets,
 };
 use slipfork_engine::{BtrfsEngine, InheritedEnv};
+use slipfork_forkfile::{EntropySource, OsCsprngEntropy};
 use slipfork_ospp::{
     DeviceKeyPath, DeviceKeySigner, FileDeviceKeyStore, OsppClient, OsppEndpoint, OsppTimeouts,
     SoftwareP256Key, SoftwareP256Signer, WsOsppClient,
 };
-use slipfork_snow::{EntropySource, OsCsprngEntropy, SnowError};
 use slipfork_vcs::{RepoRootResolver, VcsWorkspaceFactory};
 use slipfork_wire::control::{DaemonError, DaemonErrorKind, IngressInfo, WorldState};
 use slipfork_world::{EngineError, InheritedVar, MountMode, WorldEngine, WorldMount};
@@ -43,6 +43,7 @@ mod base;
 mod boot;
 mod control;
 mod env;
+mod fork;
 mod ospp_supervisor;
 mod pairing_store;
 mod postgres;
@@ -51,8 +52,6 @@ mod resolve;
 mod rootfs_select;
 mod select;
 mod service;
-mod snow_bridge;
-mod snow_resolve;
 mod types;
 mod vault;
 mod world;
@@ -70,8 +69,8 @@ pub(crate) use protocol::fan_in;
 #[cfg(test)]
 pub(crate) use types::HookLog;
 
-/// The world mode this daemon supervises (`snow.yml` `modes.local`, `ADR-0001` §1).
-pub(super) const WORLD_MODE: &str = "local";
+/// The `Forkfile` feature this daemon evaluates for every local world.
+pub(super) const WORLD_FEATURE: &str = crate::WORLD_FEATURE;
 
 /// Host toolchain caches exposed read-only by `--host-caches` (`ADR-0009` §2.3).
 ///
@@ -251,9 +250,11 @@ pub fn compose_daemon(wiring: DaemonWiring) -> Result<DaemonGraph, String> {
             gid,
             runtime.world_init.clone(),
             driver,
-            InheritedEnv::new(std::env::vars().filter_map(|(name, value)| {
-                InheritedVar::parse(&name).map(|var| (var.name().to_owned(), value))
-            })),
+            InheritedEnv::new(
+                inherited
+                    .iter()
+                    .map(|(var, value)| (var.name().to_owned(), value.clone())),
+            ),
         )
         .map_err(|err| format!("cannot start the Btrfs world engine: {err}"))?,
     );
@@ -321,20 +322,6 @@ pub fn compose_daemon(wiring: DaemonWiring) -> Result<DaemonGraph, String> {
 /// Map one engine failure to a secret-free runtime diagnostic.
 pub(super) fn runtime_error(message: impl Into<String>) -> EdgeError {
     EdgeError::Control(DaemonError::new(DaemonErrorKind::Internal, message))
-}
-
-/// Map one `snow.yml` failure to a control error, keeping the author-facing `1 line + next:` text.
-///
-/// A malformed manifest is the caller's to fix, so the three author-facing kinds stay typed as
-/// [`DaemonErrorKind::Rejected`]; everything else is an internal `snow.yml`/provider failure.
-pub(super) fn snow_error(err: SnowError) -> EdgeError {
-    let kind = match &err {
-        SnowError::UnknownComponent(_)
-        | SnowError::ClaimedValueMissing { .. }
-        | SnowError::ClaimedCoordinateMissing { .. } => DaemonErrorKind::Rejected,
-        _ => DaemonErrorKind::Internal,
-    };
-    EdgeError::Control(DaemonError::new(kind, err.to_string()))
 }
 
 /// Render a failed read of one **held** world's engine record (`list`, `status`, and `ps`).

@@ -1,18 +1,16 @@
 use super::backing::service_specs;
 use super::base::{base_digest, reused_base_lineage, selected_seed};
 use super::boot::{check_rerun_policy, restarted_service_ids};
-use super::env::ComponentEnv;
 use super::service::DaemonService;
 use super::types::PreparedWorld;
 use super::types::SealedBase;
 use super::types::{BootContext, BootFailure, BootPolicy, BootedWorld, LiveWorld};
-use super::{WORLD_MODE, rejected, runtime_error};
+use super::{rejected, runtime_error};
 use crate::layout::ensure_private_dir;
 use slipfork_dag::ResourcePlan;
 use slipfork_edge::{EdgeError, world_id};
 use slipfork_engine::elapsed_millis;
-use slipfork_ospp::SubscriptionEnv;
-use slipfork_snow::{HookPhase, SnowFile};
+use slipfork_forkfile::{EvaluatedFork, HookPhase};
 use slipfork_vcs::VcsWorkspace;
 use slipfork_wire::control::{BootEvent, WorldState, WorldUpSummary};
 use slipfork_world::BaseLineage;
@@ -43,11 +41,11 @@ impl DaemonService {
     pub(super) fn ensure_base_snapshot(
         &self,
         project: &ProjectSlug,
-        snow: &SnowFile,
+        fork: &EvaluatedFork,
         plan: &ResourcePlan,
         rootfs: &WorldRootfs,
     ) -> Result<(SnapshotId, BootLineage), EdgeError> {
-        let digest = base_digest(project, snow, plan);
+        let digest = base_digest(project, fork, plan);
         let key = (project.clone(), digest.clone());
         if let Some(sealed) = self.lock().bases.get(&key).cloned() {
             return Ok((sealed.snapshot, sealed.lineage));
@@ -61,7 +59,7 @@ impl DaemonService {
             .snapshot_exists(&snapshot)
             .map_err(|err| runtime_error(format!("cannot look up the base snapshot: {err}")))?;
         if reused {
-            let (has_seed, digest_hex) = selected_seed(snow, plan);
+            let (has_seed, digest_hex) = selected_seed(fork, plan);
             let lineage = reused_base_lineage(&digest, has_seed, digest_hex);
             self.lock().bases.insert(
                 key,
@@ -102,7 +100,7 @@ impl DaemonService {
         })?;
 
         let restore_started = std::time::Instant::now();
-        let restored = self.restore_base(project, &handle, snow, plan, rootfs);
+        let restored = self.restore_base(project, &handle, fork, plan, rootfs);
         let restore_millis = restored
             .as_ref()
             .ok()
@@ -132,7 +130,7 @@ impl DaemonService {
             .destroy_world(handle)
             .map_err(|err| runtime_error(format!("cannot destroy the base seed world: {err}")))?;
         // A seed exists only when a dump was restored; several dumps have no single digest.
-        let (has_seed, digest_hex) = selected_seed(snow, plan);
+        let (has_seed, digest_hex) = selected_seed(fork, plan);
         let seed = has_seed.then_some(SeedLineage {
             digest: digest_hex,
             rebuilt: Some(sealed_now),
@@ -223,9 +221,9 @@ impl DaemonService {
             state: WorldState::Running,
             base_env: resolved.base_env,
             components: resolved.components,
+            hooks: resolved.hooks,
             policy,
-            coords: resolved.coords,
-            snow: resolved.snow,
+            fork: resolved.fork,
             plan: resolved.plan,
             ospp_env: resolved.ospp_env,
             rootfs: rootfs.clone(),
@@ -295,7 +293,7 @@ impl DaemonService {
     /// pipeline tail `up`, `fork`, and `restart` all run.
     ///
     /// `live` already carries the world's handle (and therefore its CoW state), worktree, resolved
-    /// environments, and `snow.yml`; this call owns only what happens *inside* that world. The
+    /// environments, and `Forkfile`; this call owns only what happens *inside* that world. The
     /// services it starts are recorded on `live`, so `restarted` is read back from that record
     /// instead of being counted a second time. Returns the number of hooks that actually ran.
     pub(super) fn start_world(
@@ -305,7 +303,7 @@ impl DaemonService {
     ) -> Result<usize, EdgeError> {
         let world = world_id(&live.project, &live.target);
 
-        let service_specs = service_specs(&live.snow, &live.rootfs)?;
+        let service_specs = service_specs(&live.fork, &live.rootfs)?;
         for spec in service_specs {
             match self.engine.spawn_service(&live.handle, &spec) {
                 Ok(service) => live.services.push(service),
@@ -321,21 +319,16 @@ impl DaemonService {
         let components = live.components.clone();
         for component in &components {
             let id = &component.id;
-            if component.run_command.trim().is_empty() {
+            if component.argv.is_empty() {
                 return Err(rejected(format!(
-                    "component '{id}' declares an empty run_command in mode '{WORLD_MODE}'"
+                    "component '{id}' declares no `run` command in the Forkfile\n  next: add `run <command>` to `service {id}`"
                 )));
             }
             let spec = ServiceSpec {
                 kind: ServiceKind::Component,
                 id: id.clone(),
                 runtime: slipfork_world::ServiceRuntime::WorldProcess {
-                    argv: vec![
-                        "sh".to_owned(),
-                        "-eu".to_owned(),
-                        "-c".to_owned(),
-                        component.run_command.clone(),
-                    ],
+                    argv: component.argv.clone(),
                     cwd: live.worktree.clone(),
                 },
                 env: component.env.clone(),
@@ -442,11 +435,11 @@ impl DaemonService {
             return Err(error);
         }
 
-        live.snow = resolved.snow;
+        live.fork = resolved.fork;
         live.resources = resolved.resources;
-        live.coords = resolved.coords;
         live.base_env = resolved.base_env;
         live.components = resolved.components;
+        live.hooks = resolved.hooks;
         live.plan = resolved.plan;
         live.ospp_env = resolved.ospp_env;
         live.rootfs = rootfs;
@@ -485,76 +478,5 @@ impl DaemonService {
         // `record_world` publishes the epoch after inserting the reloaded world; one divider per
         // reload reaches every attached follower.
         self.record_world(live, rows_after, changed, restarted)
-    }
-}
-
-impl DaemonService {
-    /// Apply one already-decrypted `env_updated` environment to this daemon's live worlds:
-    /// recompute each component's environment from the local vault + coordinates, and restart
-    /// **only** the components whose environment actually changed.
-    pub(super) fn apply_env_update(&self, environment: &SubscriptionEnv) -> Result<(), EdgeError> {
-        let Some(project) = self.ospp.project_for(&environment.id) else {
-            return Err(runtime_error(format!(
-                "OSPP pushed an environment for unknown subscription '{}'",
-                environment.id
-            )));
-        };
-        let _guard = self.boot_guard();
-        let mut state = self.lock();
-        for world in state
-            .worlds
-            .iter_mut()
-            .filter(|world| world.project == project)
-        {
-            let provider = self.vault_for(&project)?;
-            let claims = self.ospp.claims_for(
-                &project,
-                &world.snow,
-                &world.plan,
-                self.vault_store(&project)?,
-            )?;
-            // The pushed server environment echoes claimed expressions verbatim; the canonical
-            // evaluator decides which keys those are, and only the local layer fills them.
-            let source =
-                std::fs::read_to_string(world.worktree.join("snow.yml")).map_err(|err| {
-                    runtime_error(format!(
-                        "cannot read {}: {err}",
-                        world.worktree.join("snow.yml").display()
-                    ))
-                })?;
-            let forkfile = super::snow_bridge::evaluated_forkfile(&source, &world.worktree)?;
-            let owns = |namespace: &str, path: &[String]| claims.owns(namespace, path);
-            for index in 0..world.components.len() {
-                let id = world.components[index].id.clone();
-                let server = environment.component(&id);
-                let env = ComponentEnv {
-                    snow: &world.snow,
-                    provider: provider.as_ref(),
-                    coords: &world.coords,
-                    claims: &claims,
-                    claimed: &forkfile.claimed_env_keys(&id, &owns),
-                    entropy: self.entropy.as_ref(),
-                }
-                .resolve(&id, server)?;
-                if env == world.components[index].env {
-                    continue;
-                }
-                let handle = world
-                    .services
-                    .iter()
-                    .find(|service| service.id() == id)
-                    .cloned();
-                if let Some(handle) = handle {
-                    self.engine.update_service_env(&handle, &env).map_err(|err| {
-                        runtime_error(format!(
-                            "cannot restart component '{id}' with the pushed OSPP environment: {err}"
-                        ))
-                    })?;
-                }
-                world.components[index].env = env;
-            }
-            world.ospp_env = Some(environment.components.clone());
-        }
-        Ok(())
     }
 }

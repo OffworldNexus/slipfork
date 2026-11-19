@@ -2,13 +2,12 @@ use super::super::boot::{
     BootCommand, BootVerb, boot_verb, check_rerun_policy, not_running, rerun_policy,
     restarted_service_ids,
 };
-use super::super::env::{parse_hook_id, validate_secret_key};
+use super::super::env::validate_secret_key;
 use super::super::postgres::PostgresReady;
 use super::super::postgres::{await_postgres_ready, readiness_detail};
 use super::super::types::BootPolicy;
 use slipfork_dag::DumpPolicy;
 use slipfork_edge::EdgeError;
-use slipfork_snow::HookPhase;
 use slipfork_wire::control::{DaemonErrorKind, WorldServiceSummary, WorldState};
 use slipfork_world::{ProjectSlug, ServiceKind, WorldTarget};
 use std::time::Duration;
@@ -205,25 +204,6 @@ pub(super) fn restarted_ids_are_the_engine_rows_this_run_brought_to_running() {
         restarted_service_ids(&stopped, &doubled),
         vec!["pg_databases.main", "api"]
     );
-}
-
-#[test]
-pub(super) fn hook_ids_round_trip_every_phase() {
-    assert_eq!(
-        parse_hook_id("api:pre-deploy"),
-        Some(("api", HookPhase::PreDeploy))
-    );
-    assert_eq!(
-        parse_hook_id("api:post-deploy"),
-        Some(("api", HookPhase::PostDeploy))
-    );
-    assert_eq!(
-        parse_hook_id("api:failed-deploy"),
-        Some(("api", HookPhase::FailedDeploy))
-    );
-    assert_eq!(parse_hook_id("api"), None);
-    assert_eq!(parse_hook_id("api:unknown"), None);
-    assert_eq!(parse_hook_id(":pre-deploy"), None);
 }
 
 #[test]

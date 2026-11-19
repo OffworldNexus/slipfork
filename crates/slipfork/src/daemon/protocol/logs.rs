@@ -82,7 +82,7 @@ impl DaemonService {
         }
 
         // A fan-out follows the world's *current* target set on every re-attach, so a service added
-        // by an edited `snow.yml` after `restart` is picked up without reconnecting.
+        // by an edited `Forkfile` and applied by `restart` is picked up without reconnecting.
         let requested = req.target.clone();
         let bus = self.log_bus(&project, &target);
         let aborted = AtomicBool::new(false);

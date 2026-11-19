@@ -2,16 +2,21 @@
 id: M3.32.3.3.2
 title: "Retype slipforkd on EvaluatedFork, VCS project identity, delete slipfork.toml loader"
 kind: task
-status: ready
+status: done
 owner: implementer
 priority: 2
 depends_on: [M3.32.3.3.1]
-paths: ["crates/slipfork/**"]
-attempts: 0
-max_attempts: 3
+paths:
+  - "crates/slipfork/**"
+  - "crates/slipfork-forkfile/src/projection.rs"
+  - "crates/slipfork-forkfile/src/props.rs"
+  - Cargo.toml
+  - Cargo.lock
+attempts: 5
+max_attempts: 5
 escalation: none
 created: "2026-11-19T20:34"
-updated: "2026-11-19T20:34"
+updated: "2026-11-19T20:56"
 ---
 
 # Goal

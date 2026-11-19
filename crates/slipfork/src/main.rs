@@ -9,9 +9,8 @@
 //! This file is the single composition root: the only place that reads `HOME`, `$XDG_*`, `SHELL`,
 //! `PATH`, `DISPLAY`, `WAYLAND_DISPLAY`, `SUDO_USER`, the current directory, `current_exe`, or the
 //! terminal, and it snapshots those values into [`Ui`] once so no command body ever probes ambient
-//! host state. `snow resolve` runs through `slipforkd` (`DaemonControl::snow_resolve`), so the daemon
-//! owns the `0600` local vault and the in-memory OSPP environment. Only `doctor` stays CLI-local: it
-//! reads host capabilities without materializing a world.
+//! host state. The daemon owns the `0600` local vault and the in-memory OSPP environment. Only
+//! `doctor` stays CLI-local: it reads host capabilities without materializing a world.
 
 #![forbid(unsafe_code)]
 

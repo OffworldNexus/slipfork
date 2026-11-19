@@ -10,7 +10,7 @@ use crate::syntax::{EnvAssignment, Expr, ForkFile, ServiceDirective, Stmt};
 
 const PG_DB_PROPERTIES: [&str; 6] = ["host", "port", "user", "db_name", "url", "jdbc"];
 const REDIS_PROPERTIES: [&str; 4] = ["host", "port", "user", "url"];
-const S3_PROPERTIES: [&str; 4] = ["endpoint", "bucket", "region", "url"];
+const S3_PROPERTIES: [&str; 5] = ["port", "endpoint", "bucket", "region", "url"];
 const DOMAIN_PROPERTIES: [&str; 2] = ["name", "url"];
 const SERVICE_PROPERTIES: [&str; 5] = [
     "private_domain",

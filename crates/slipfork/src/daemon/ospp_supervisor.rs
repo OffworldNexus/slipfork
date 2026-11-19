@@ -8,7 +8,7 @@
 use super::pairing_store::{PairingRecord, PairingStore};
 use super::service::DaemonService;
 use super::types::OsppRuntime;
-use super::{WORLD_MODE, rejected, runtime_error, snow_error};
+use super::{rejected, runtime_error};
 use crate::browser::{APPROVAL_HINT_PREFIX, Browser};
 use slipfork_dag::{ResourcePlan, ResourceStrategy};
 use slipfork_edge::EdgeError;
@@ -17,7 +17,6 @@ use slipfork_ospp::{
     DeviceKeySigner, OsppClaims, OsppClient, OsppError, OsppSession, SubscribeRequest,
     SubscriptionEnv,
 };
-use slipfork_snow::SnowFile;
 use slipfork_wire::control::{AuthSummary, ControlSecret};
 use slipfork_world::ProjectSlug;
 use std::collections::{BTreeMap, BTreeSet};
@@ -137,7 +136,7 @@ impl OsppSupervisor {
     pub(super) fn claims_for(
         &self,
         project: &ProjectSlug,
-        snow: &SnowFile,
+        fork: &EvaluatedFork,
         plan: &ResourcePlan,
         store: Arc<dyn slipfork_edge::SecretVault>,
     ) -> Result<OsppClaims, EdgeError> {
@@ -147,18 +146,16 @@ impl OsppSupervisor {
             "app".to_owned(),
             vec!["url".to_owned(), "domain".to_owned()],
         );
-        let pg_ids: Vec<String> = snow
-            .resources
-            .pg_databases
-            .iter()
-            .map(|database| database.id.clone())
+        let pg_ids: Vec<String> = fork
+            .pg_databases()
+            .into_iter()
+            .map(|database| database.database)
             .collect();
         if !pg_ids.is_empty() {
             resources.insert("pg_databases".to_owned(), pg_ids);
         }
-        let redis_ids: Vec<String> = snow
-            .resources
-            .redis_clusters
+        let redis_ids: Vec<String> = fork
+            .redis
             .iter()
             .map(|cluster| cluster.id.clone())
             .collect();
@@ -177,12 +174,12 @@ impl OsppSupervisor {
         // A local-mode `!!` secret is generated and persisted by this daemon, so the server must
         // leave it untouched even before the vault file records it.
         let mut secrets: BTreeSet<String> = store.keys(project)?.into_iter().collect();
-        secrets.extend(snow.generated_secret_keys(WORLD_MODE).map_err(snow_error)?);
+        secrets.extend(fork.generated_secret_keys());
         Ok(OsppClaims {
             vars: store.vars(project)?,
             secrets: secrets.into_iter().collect(),
             resources,
-            domains: snow.domain_ids().into_iter().map(str::to_owned).collect(),
+            domains: fork.domains.clone(),
             // Components are always started locally, but their *environment* is exactly what the
             // server resolves; claiming one would suppress its `env_resolved` entry.
             components: Vec::new(),

@@ -123,7 +123,7 @@ fn service_state_label(state: ServiceState) -> &'static str {
     }
 }
 
-/// The row's kind: a `snow.yml` component or a `crun`-backed resource service.
+/// The row's kind: a `Forkfile` component or a `crun`-backed resource service.
 fn service_kind_label(kind: ServiceKind) -> &'static str {
     match kind {
         ServiceKind::Component => "component",

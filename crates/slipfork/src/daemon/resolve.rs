@@ -1,144 +1,92 @@
+//! The one pre-world resolver: manifest projection, resources, environments, rootfs, and base.
+
 use super::backing::requested_service_images;
-use super::env::{ComponentEnv, apply_env, ingress_routes};
+use super::env::{WorldEnv, hook_phase_label, ingress_routes};
+use super::fork::load_project_fork;
 use super::rootfs_select::select_single_build_image;
 use super::service::DaemonService;
-use super::snow_bridge::evaluated_forkfile;
-use super::types::ResolvedComponent;
 use super::types::{
-    BootPolicy, PreparedWorld, ResolvedWorld, RootfsInputs, WorldEnvInputs, json_label,
+    BootPolicy, PreparedWorld, ResolvedComponent, ResolvedHook, ResolvedWorld, RootfsSource,
 };
-use super::{WORLD_MODE, rejected, runtime_error, snow_error};
-use crate::project::load_optional_slipfork_config;
-use slipfork_dag::{DumpPolicy, ResourceMode, ResourcePlan, ResourceStrategy, SlipforkConfig};
+use super::{rejected, runtime_error};
+use crate::WORLD_FEATURE;
+use crate::project::forkfile_error;
+use slipfork_dag::{DumpPolicy, ResourceMode, ResourcePlan, ResourceStrategy, ResourcesSpec};
 use slipfork_edge::{EdgeError, world_id};
 use slipfork_engine::rootfs::SnowPortContract;
 use slipfork_engine::rootfs::WorldRootfsRequest;
 use slipfork_engine::rootfs::{HostCacheRequest, RootfsBuildEvent};
-use slipfork_snow::{ClaimedEvaluator, Image, ResourceCoordinates, SnowFile};
+use slipfork_forkfile::{EvaluatedFork, EvaluatedService, HookPhase, Resolvers};
 use slipfork_vcs::RepoRoot;
-use slipfork_wire::control::{BootEvent, ResourceSummary};
-use slipfork_world::LocalIngressBridge;
+use slipfork_wire::control::{BootEvent, ResourceSummary, SnowResolveRequest, SnowResolveSummary};
 use slipfork_world::WorldMount;
 use slipfork_world::rootfs::{BuildEnvVar, WorldRootfs};
-use slipfork_world::{ExecEnv, LocalHostRoute, MountMode, WorldSpec, WorldTarget};
-use std::collections::{BTreeMap, BTreeSet};
-use std::fs;
-use std::path::Path;
+use slipfork_world::{
+    ExecEnv, LocalHostRoute, LocalIngressBridge, MountMode, WorldSpec, WorldTarget,
+};
 
 impl DaemonService {
-    /// Load `snow.yml` and keep its raw bytes: OSPP `subscribe` sends the file verbatim.
-    pub(super) fn load_snow(&self, worktree: &Path) -> Result<(SnowFile, String), EdgeError> {
-        let path = worktree.join("snow.yml");
-        let raw = fs::read_to_string(&path).map_err(|err| {
-            runtime_error(format!(
-                "cannot read {}: {err}; every world boot needs the project's snow.yml",
-                path.display()
-            ))
-        })?;
-        let parsed = SnowFile::parse_yaml(&raw)
-            .map_err(|err| runtime_error(format!("{}: {err}", path.display())))?;
-        Ok((parsed, raw))
-    }
-}
-
-impl DaemonService {
-    pub(super) fn load_config(&self, vcs_root: &Path) -> Result<SlipforkConfig, EdgeError> {
-        // `slipfork.toml` is optional (`VISION.md`, `docs/getting-started.md`): an absent manifest
-        // means the default DAG/resources spec, while a malformed or unreadable one fails closed.
-        load_optional_slipfork_config(&vcs_root.join("slipfork.toml")).map_err(runtime_error)
-    }
-}
-
-impl DaemonService {
-    /// Materialize (or reuse) the selected `snow.yml` `Dockerfile` stage as the world's `L0`
+    /// Materialize (or reuse) the selected `Forkfile` `Dockerfile` service as the world's `L0`
     /// rootfs (`ADR-0009` §1–§3), selecting its one buildable image and every backing service.
     pub(super) fn materialize_rootfs(
         &self,
-        inputs: RootfsInputs<'_>,
+        source: RootfsSource<'_>,
         on_event: &mut dyn FnMut(BootEvent),
     ) -> Result<WorldRootfs, EdgeError> {
-        let RootfsInputs {
+        let RootfsSource {
             worktree,
-            snow,
-            vault,
-            coords,
-            claims,
+            fork,
+            resolvers,
             host_caches,
-        } = inputs;
-        let build_images: Vec<&slipfork_snow::BuildImage> = snow
-            .images
-            .iter()
-            .filter_map(|image| match image {
-                Image::Build(build) => Some(build),
-                Image::DockerHub { .. } => None,
-            })
-            .collect();
-        let ids: Vec<String> = build_images.iter().map(|image| image.id.clone()).collect();
+        } = source;
+        let images = fork.build_images();
+        let ids: Vec<String> = images.iter().map(|image| image.service.clone()).collect();
         // Per-service pods read their image from `Forkfile`; the transitional single-rootfs boot
         // can only materialize a project that declares exactly one buildable Dockerfile.
-        let image = build_images[select_single_build_image(&ids)?];
-        let image_id = image.id.clone();
-        let context_dir = worktree.join(&image.context);
+        let image = &images[select_single_build_image(&ids)?];
+        let context_dir = worktree.join(&image.context_dir);
         let dockerfile = context_dir.join(&image.dockerfile);
 
-        let groups = snow
-            .effective_env_groups(WORLD_MODE)
-            .map_err(|err| runtime_error(err.to_string()))?;
-        let build_names: BTreeSet<String> = image
-            .envs
-            .iter()
-            .filter_map(|group| groups.get(group))
-            .flat_map(|vars| vars.keys().cloned())
-            .collect();
-        let owns = |namespace: &str, path: &[String]| claims.owns(namespace, path);
-        let resolved = ClaimedEvaluator::new(vault, coords, self.entropy.as_ref(), &owns)
-            .mode(snow, WORLD_MODE, None)
-            .map_err(snow_error)?;
-        let mut build_envs: Vec<BuildEnvVar> = Vec::new();
-        for (name, value) in resolved
-            .iter()
-            .filter(|(name, _)| build_names.contains(*name))
-        {
-            if value.has_unresolved_expression() {
-                return Err(runtime_error(format!(
-                    "`snow.yml` build variable '{name}' has no locally resolvable value; a Dockerfile build cannot receive an OSPP-resolved template"
-                )));
-            }
-            build_envs.push(BuildEnvVar {
-                name: name.clone(),
+        let resolved = fork
+            .resolve_build_env(&image.service, resolvers)
+            .map_err(forkfile_error)?;
+        let build_envs: Vec<BuildEnvVar> = resolved
+            .into_iter()
+            .map(|(name, value)| BuildEnvVar {
+                name,
                 value: value.expose().to_owned(),
-            });
-        }
+            })
+            .collect();
 
-        let component = snow
-            .components
+        let service = fork
+            .services
             .iter()
-            .find(|component| component.image == image_id);
+            .find(|service| service.id == image.service);
         let ports = SnowPortContract {
-            component: component.map_or_else(|| image_id.clone(), |component| component.id.clone()),
-            internal_ports: component
-                .map(|component| component.internal_ports.clone())
-                .unwrap_or_default(),
-            ingress_ports: snow
-                .ingresses
-                .iter()
-                .filter(|ingress| {
-                    component.is_some_and(|component| ingress.target.component == component.id)
-                })
-                .map(|ingress| ingress.target.port)
-                .collect(),
+            component: image.service.clone(),
+            internal_ports: match service {
+                Some(service) => internal_ports(service)?,
+                None => Vec::new(),
+            },
+            ingress_ports: fork
+                .ingress_routes()
+                .into_iter()
+                .filter(|route| route.service == image.service)
+                .filter_map(|route| route.port)
+                .map(|port| tcp_port(&image.service, port))
+                .collect::<Result<Vec<_>, _>>()?,
         };
 
         let request = WorldRootfsRequest {
             state_dir: self.config.layout.state_dir().to_path_buf(),
-            image_id,
+            image_id: image.service.clone(),
             context_dir,
-            context_label: image.context.clone(),
+            context_label: image.context_dir.clone(),
             dockerfile,
-            target_stage: None,
+            target_stage: image.stage.clone(),
             build_envs,
             target_arch: self.config.target_arch.clone(),
-            services: requested_service_images(snow),
+            services: requested_service_images(fork),
             ports,
             uid: self.config.uid,
             gid: self.config.gid,
@@ -176,75 +124,33 @@ impl DaemonService {
 }
 
 impl DaemonService {
-    pub(super) fn world_env(&self, inputs: WorldEnvInputs<'_>) -> Result<ExecEnv, EdgeError> {
-        let WorldEnvInputs {
-            snow,
-            vault,
-            coords,
-            project,
-            target,
-            claims,
-            claimed_env,
-            ospp_env,
-        } = inputs;
-        let mut env = ExecEnv::world_scoped(
-            self.config
-                .layout
-                .world_home(project, &world_id(project, target)),
-        );
-        for (var, value) in &self.config.inherited {
-            env.inherit(*var, value.clone());
-        }
-        let owns = |namespace: &str, path: &[String]| claims.owns(namespace, path);
-        let evaluator = ClaimedEvaluator::new(vault, coords, self.entropy.as_ref(), &owns);
-        let resolved = evaluator.mode(snow, WORLD_MODE, None).map_err(snow_error)?;
-        apply_env(&mut env, resolved)?;
-        if let Some(components) = ospp_env {
-            for server in components.values() {
-                for (name, value) in server {
-                    if claimed_env.contains(name) {
-                        continue;
-                    }
-                    let outcome = if value.is_tainted() {
-                        env.set_secret(name, value.expose())
-                    } else {
-                        env.set(name, value.expose())
-                    };
-                    outcome.map_err(|err| {
-                        runtime_error(format!("invalid OSPP environment '{name}': {err}"))
-                    })?;
-                }
-            }
-        }
-        Ok(env)
-    }
-}
-
-impl DaemonService {
-    /// Resolve every `snow.yml`- and flag-derived fact one pipeline run needs, before anything is
+    /// Resolve every `Forkfile`- and flag-derived fact one pipeline run needs, before anything is
     /// materialized or started.
     ///
     /// `boot` and `reboot` call this same resolver, so a `restart` re-derives the resource plan,
-    /// resource coordinates, origin, environments, enabled components, and ingress/domain table
-    /// from the edited file instead of reusing boot-time values.
+    /// environments, enabled components, and ingress/domain table from the edited manifest
+    /// instead of reusing boot-time values.
     pub(super) fn resolve_world(
         &self,
         repo: &RepoRoot,
         target: &WorldTarget,
-        worktree: &Path,
+        worktree: &std::path::Path,
         policy: BootPolicy,
         on_event: &mut dyn FnMut(BootEvent),
     ) -> Result<ResolvedWorld, EdgeError> {
         let project = &repo.project;
-        let (snow, snow_source) = self.load_snow(worktree)?;
-        let forkfile = evaluated_forkfile(&snow_source, worktree)?;
-        let effective = snow
-            .effective_components(WORLD_MODE)
+        let fork = load_project_fork(worktree)?;
+        let vault = self.vault_for(project)?;
+        let resolvers = Resolvers::new(vault.as_ref(), self.entropy.as_ref());
+
+        let ingresses = ingress_routes(&fork)?;
+        let domains = fork.domains.clone();
+        let domain_refs: Vec<&str> = domains.iter().map(String::as_str).collect();
+        // Validate the world's `.localhost` route before anything is materialized; the origin
+        // itself stays derivable on demand from the registry.
+        let route = LocalHostRoute::new(project.clone(), target.clone(), None, &domain_refs)
             .map_err(|err| runtime_error(err.to_string()))?;
-        let route = LocalHostRoute::new(project.clone(), target.clone(), None, &snow.domain_ids())
-            .map_err(|err| runtime_error(err.to_string()))?;
-        let origin = self.registry.mint_origin(&route, self.ingress.port())?;
-        let config = self.load_config(&repo.vcs_root)?;
+        self.registry.mint_origin(&route, self.ingress.port())?;
 
         // OSPP project identity is the verbatim Git remote and only that string: without an
         // origin there is nothing to subscribe, even when the machine key is paired.
@@ -258,8 +164,7 @@ impl DaemonService {
         let session = self.ospp.session()?;
         let ospp_paired = session.is_some() && remote.is_some();
         let plan = resolve_plan(
-            &config,
-            &snow,
+            &fork,
             target,
             policy.dump,
             policy.force_local_resources,
@@ -271,72 +176,122 @@ impl DaemonService {
                 resource: resource.clone(),
             });
         }
-        // Resource coordinates are always world-local: remote S3 credentials arrive as component
-        // environment values, and PostgreSQL is still the local container restored from a stream.
-        let coords =
-            ResourceCoordinates::for_world(&snow, project, target, &origin, &BTreeMap::new())
-                .map_err(|err| runtime_error(err.to_string()))?;
-        let vault = self.vault_for(project)?;
         let claims = self
             .ospp
-            .claims_for(project, &snow, &plan, self.vault_store(project)?)?;
-        let owns = |namespace: &str, path: &[String]| claims.owns(namespace, path);
-        let claimed_env = forkfile.all_claimed_env_keys(&owns);
+            .claims_for(project, &fork, &plan, self.vault_store(project)?)?;
         let ospp_env = match (session.as_ref(), remote.as_deref()) {
-            (Some(_), Some(remote)) => self.ospp.subscribe(project, remote, &forkfile, &claims)?,
+            (Some(_), Some(remote)) => self.ospp.subscribe(project, remote, &fork, &claims)?,
             _ => None,
         };
-        let base_env = self.world_env(WorldEnvInputs {
-            snow: &snow,
-            vault: vault.as_ref(),
-            coords: &coords,
-            project,
-            target,
-            claims: &claims,
-            claimed_env: &claimed_env,
-            ospp_env: ospp_env.as_ref().map(|env| &env.components),
-        })?;
+        let home = self
+            .config
+            .layout
+            .world_home(project, &world_id(project, target));
+        let world_env = WorldEnv::new(&fork, &resolvers, &claims, home, &self.config.inherited);
+        let base_env = world_env.base(ospp_env.as_ref().map(|env| &env.components))?;
         let mut components = Vec::new();
-        for (id, resolved) in &effective {
-            if resolved.disabled {
-                continue;
-            }
-            let readiness_port = snow
-                .components
-                .iter()
-                .find(|component| component.id == *id)
-                .and_then(|component| component.internal_ports.first().copied());
+        for service in &fork.services {
+            let declared = internal_ports(service)?;
+            let readiness_port = match declared.first() {
+                Some(port) => Some(*port),
+                None => service
+                    .port
+                    .map(|port| tcp_port(&service.id, port))
+                    .transpose()?,
+            };
+            let env = world_env.component(
+                &service.id,
+                ospp_env.as_ref().and_then(|env| env.component(&service.id)),
+            )?;
             components.push(ResolvedComponent {
-                id: id.clone(),
-                run_command: resolved.run_command.clone(),
+                id: service.id.clone(),
+                argv: component_argv(&fork, service, &resolvers)?,
                 readiness_port,
-                env: ComponentEnv {
-                    snow: &snow,
-                    provider: vault.as_ref(),
-                    coords: &coords,
-                    claims: &claims,
-                    claimed: &forkfile.claimed_env_keys(id, &owns),
-                    entropy: self.entropy.as_ref(),
-                }
-                .resolve(id, ospp_env.as_ref().and_then(|env| env.component(id)))?,
+                env,
             });
         }
-        let ingresses = ingress_routes(&snow, &effective)?;
-        let domains = snow.domain_ids().into_iter().map(str::to_owned).collect();
+        let hooks = resolve_hooks(&fork, &resolvers)?;
         Ok(ResolvedWorld {
-            snow,
+            fork,
             vault,
             plan,
             resources,
-            coords,
             base_env,
             components,
+            hooks,
             ingresses,
             domains,
-            claims,
             ospp_env: ospp_env.map(|environment| environment.components),
         })
     }
+}
+
+/// One declared service port as a real TCP port: a non-TCP value is a manifest refusal.
+fn tcp_port(service: &str, port: u32) -> Result<u16, EdgeError> {
+    u16::try_from(port).map_err(|_| {
+        rejected(format!(
+            "service '{service}' declares port {port}, which is not a TCP port\n  next: declare a port between 1 and 65535"
+        ))
+    })
+}
+
+/// Every declared `internal_port` of one service, in declaration order (none is skipped).
+fn internal_ports(service: &EvaluatedService) -> Result<Vec<u16>, EdgeError> {
+    service
+        .internal_ports
+        .iter()
+        .map(|port| tcp_port(&service.id, *port))
+        .collect()
+}
+
+/// One component's `run` argv through the canonical evaluator (never a shell re-parse).
+fn component_argv(
+    fork: &EvaluatedFork,
+    service: &EvaluatedService,
+    resolvers: &Resolvers<'_>,
+) -> Result<Vec<String>, EdgeError> {
+    let Some(run) = &service.run else {
+        return Err(rejected(format!(
+            "component '{}' declares no `run` command in the Forkfile\n  next: add `run <command>` to `service {}`",
+            service.id, service.id
+        )));
+    };
+    Ok(fork
+        .resolve_argv(&service.id, run, resolvers)
+        .map_err(forkfile_error)?
+        .into_iter()
+        .map(|argument| argument.expose().to_owned())
+        .collect())
+}
+
+/// The `<service>:<phase>` id `slipfork hook run` names.
+fn hook_id(service: &str, phase: HookPhase) -> String {
+    format!("{service}:{}", hook_phase_label(phase))
+}
+
+/// Every declared lifecycle hook, resolved once through the canonical evaluator.
+fn resolve_hooks(
+    fork: &EvaluatedFork,
+    resolvers: &Resolvers<'_>,
+) -> Result<Vec<ResolvedHook>, EdgeError> {
+    let mut hooks = Vec::new();
+    for service in &fork.services {
+        for hook in &service.hooks {
+            let argv: Vec<String> = fork
+                .resolve_argv(&service.id, &hook.argv, resolvers)
+                .map_err(forkfile_error)?
+                .into_iter()
+                .map(|argument| argument.expose().to_owned())
+                .collect();
+            hooks.push(ResolvedHook {
+                id: hook_id(&service.id, hook.phase),
+                phase: hook.phase,
+                argv,
+                overlay: ExecEnv::default(),
+            });
+        }
+    }
+    Ok(hooks)
 }
 
 impl DaemonService {
@@ -350,24 +305,23 @@ impl DaemonService {
         &self,
         repo: &RepoRoot,
         target: &WorldTarget,
-        worktree: &Path,
+        worktree: &std::path::Path,
         policy: BootPolicy,
         on_event: &mut dyn FnMut(BootEvent),
     ) -> Result<PreparedWorld, EdgeError> {
         let resolved = self.resolve_world(repo, target, worktree, policy, on_event)?;
+        let resolvers = Resolvers::new(resolved.vault.as_ref(), self.entropy.as_ref());
         let rootfs = self.materialize_rootfs(
-            RootfsInputs {
+            RootfsSource {
                 worktree,
-                snow: &resolved.snow,
-                vault: resolved.vault.as_ref(),
-                coords: &resolved.coords,
-                claims: &resolved.claims,
+                fork: &resolved.fork,
+                resolvers: &resolvers,
                 host_caches: policy.host_caches,
             },
             on_event,
         )?;
         let (snapshot, boot) =
-            self.ensure_base_snapshot(&repo.project, &resolved.snow, &resolved.plan, &rootfs)?;
+            self.ensure_base_snapshot(&repo.project, &resolved.fork, &resolved.plan, &rootfs)?;
         Ok(PreparedWorld {
             resolved,
             rootfs,
@@ -383,7 +337,7 @@ impl DaemonService {
     pub(super) fn world_spec(
         &self,
         target: &WorldTarget,
-        worktree: &Path,
+        worktree: &std::path::Path,
         prepared: &PreparedWorld,
     ) -> WorldSpec {
         WorldSpec {
@@ -405,6 +359,57 @@ impl DaemonService {
     }
 }
 
+impl DaemonService {
+    /// Transitional `snow_resolve` adapter for `slipfork_edge::DaemonControl`.
+    ///
+    /// removed in M3.32.3.3.3: resolve the requested service environment from the `Forkfile` that
+    /// lives beside the requested path. No YAML, mode, or `!!` handling remains.
+    pub(super) fn snow_resolve(
+        &self,
+        req: &SnowResolveRequest,
+    ) -> Result<SnowResolveSummary, EdgeError> {
+        // `.3` deletes this transitional verb; until then it answers only for the local world. A
+        // `cloud`/`all` request must never be handed the local environment.
+        if req.mode != WORLD_FEATURE {
+            return Err(rejected(format!(
+                "mode '{}' cannot be resolved by the local daemon\n  next: pass `--mode {WORLD_FEATURE}` to resolve the local world's environment",
+                req.mode
+            )));
+        }
+        let file = if req.file.is_absolute() {
+            req.file.clone()
+        } else {
+            req.cwd.join(&req.file)
+        };
+        let worktree = file.parent().unwrap_or(req.cwd.as_path());
+        let fork = load_project_fork(worktree)?;
+        let repo = self
+            .repo_roots
+            .resolve(worktree)
+            .map_err(|err| runtime_error(err.to_string()))?;
+        let vault = self.vault_for(&repo.project)?;
+        let resolvers = Resolvers::new(vault.as_ref(), self.entropy.as_ref());
+        let resolved = match &req.component {
+            Some(component) => fork
+                .resolve_env(component, &resolvers)
+                .map_err(forkfile_error)?,
+            None => fork.world_env(&resolvers).map_err(forkfile_error)?,
+        };
+        let vars = resolved
+            .into_iter()
+            .map(|(key, value)| {
+                let rendered = if req.expose_secrets {
+                    value.expose().to_owned()
+                } else {
+                    value.redacted().to_owned()
+                };
+                (key, rendered)
+            })
+            .collect();
+        Ok(SnowResolveSummary { vars })
+    }
+}
+
 pub(super) fn dump_policy(request: slipfork_wire::control::DumpRequest) -> DumpPolicy {
     match request {
         slipfork_wire::control::DumpRequest::Default => DumpPolicy::Default,
@@ -413,35 +418,25 @@ pub(super) fn dump_policy(request: slipfork_wire::control::DumpRequest) -> DumpP
     }
 }
 
+/// Resolve one run's resource plan from the projection's declared ids and the boot policy.
 pub(super) fn resolve_plan(
-    config: &SlipforkConfig,
-    snow: &SnowFile,
+    fork: &EvaluatedFork,
     target: &WorldTarget,
     dump: DumpPolicy,
     force_local: bool,
     ospp_paired: bool,
 ) -> Result<ResourcePlan, EdgeError> {
-    let s3_ids: Vec<&str> = snow
-        .resources
-        .s3_buckets
+    let databases = fork.pg_databases();
+    let s3_ids: Vec<&str> = fork.s3.iter().map(String::as_str).collect();
+    let pg_ids: Vec<&str> = databases
         .iter()
-        .map(|bucket| bucket.id.as_str())
+        .map(|database| database.database.as_str())
         .collect();
-    let pg_ids: Vec<&str> = snow
-        .resources
-        .pg_databases
-        .iter()
-        .map(|database| database.id.as_str())
-        .collect();
-    config
-        .resources
-        .validate_declared_ids(&s3_ids, &pg_ids)
-        .map_err(|err| runtime_error(err.to_string()))?;
+    let spec = ResourcesSpec::default().with_declared_ids(&s3_ids, &pg_ids);
 
     // `--resources local` is a per-invocation override (`ADR-0008` §3): the typed forced-strategy
     // spec keeps `ResourcePlan::resolve` the sole decision point while no seed dumps are used and
     // no OSPP offer is consulted.
-    let spec = config.resources.with_declared_ids(&s3_ids, &pg_ids);
     let (spec, dump) = if force_local {
         if dump == DumpPolicy::RefreshDump {
             return Err(rejected(
@@ -464,9 +459,60 @@ pub(super) fn plan_summaries(plan: &ResourcePlan) -> Vec<ResourceSummary> {
         .into_iter()
         .map(|diagnostic| ResourceSummary {
             id: diagnostic.id,
-            strategy: json_label(&diagnostic.strategy),
-            resolved: json_label(&diagnostic.resolved),
-            reason: json_label(&diagnostic.reason),
+            strategy: super::types::json_label(&diagnostic.strategy),
+            resolved: super::types::json_label(&diagnostic.resolved),
+            reason: super::types::json_label(&diagnostic.reason),
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use slipfork_wire::control::{DaemonError, DaemonErrorKind};
+
+    /// Assert one typed refusal and return it (every refusal is a `next:`-carrying rejection).
+    fn refused<T>(result: Result<T, EdgeError>) -> DaemonError {
+        let error = match result {
+            Ok(_) => panic!("expected a manifest refusal"),
+            Err(EdgeError::Control(error)) => error,
+            Err(other) => panic!("a refusal must be a typed control error, got {other:?}"),
+        };
+        assert_eq!(error.kind, DaemonErrorKind::Rejected, "got {error:?}");
+        assert!(
+            error.message.contains("\n  next: "),
+            "one line plus the remedy: {}",
+            error.message
+        );
+        error
+    }
+
+    #[test]
+    fn every_hook_phase_round_trips_into_its_cli_id() {
+        for (phase, label) in [
+            (HookPhase::Setup, "setup"),
+            (HookPhase::PreDeploy, "pre-deploy"),
+            (HookPhase::PostDeploy, "post-deploy"),
+            (HookPhase::FailedDeploy, "failed-deploy"),
+        ] {
+            assert_eq!(hook_id("api", phase), format!("api:{label}"));
+        }
+    }
+
+    #[test]
+    fn an_unknown_hook_id_fails_closed_with_the_declared_list() {
+        let hooks = [ResolvedHook {
+            id: hook_id("api", HookPhase::Setup),
+            phase: HookPhase::Setup,
+            argv: vec!["/bin/true".to_owned()],
+            overlay: ExecEnv::default(),
+        }];
+        let error = refused(super::super::env::resolve_hook(&hooks, "api:unknown"));
+        assert!(
+            error.message.contains("world has no hook 'api:unknown'"),
+            "{}",
+            error.message
+        );
+        assert!(error.message.contains("api:setup"), "{}", error.message);
+    }
 }

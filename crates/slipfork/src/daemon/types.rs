@@ -2,9 +2,8 @@
 
 use slipfork_dag::{DumpPolicy, ResourcePlan};
 use slipfork_edge::{EdgeError, IngressRoute};
-use slipfork_forkfile::TaintedString;
-use slipfork_ospp::{OsppClaims, OsppSession};
-use slipfork_snow::{ResourceCoordinates, SecretProvider, SnowFile};
+use slipfork_forkfile::{EvaluatedFork, HookPhase, Resolvers, SecretProvider, TaintedString};
+use slipfork_ospp::OsppSession;
 use slipfork_vcs::{RepoRoot, VcsWorkspace};
 use slipfork_wire::control::{ResourceSummary, WorldServiceSummary, WorldState};
 use slipfork_world::rootfs::WorldRootfs;
@@ -29,9 +28,9 @@ const FOLLOW_POLL: Duration = Duration::from_millis(50);
 ///   it), `rootfs`, `policy`, `workspace`, `hook_logs`, and `project`/`target`/`repo`. A `restart`
 ///   keeps the handle and the subvolume (so backing-service data survives) and only re-clones that
 ///   subvolume when the resolved base snapshot changed; it never discards the worktree.
-/// - **Re-derived by every pipeline run** (`resolve_world`): `snow`, `resources`, `coords`,
-///   `base_env`, `components`, and the registry's ingress/domain table, so an edited `snow.yml` is
-///   what the world actually runs after a `restart`.
+/// - **Re-derived by every pipeline run** (`resolve_world`): `fork`, `resources`, `plan`,
+///   `base_env`, `components`, `hooks`, and the registry's ingress/domain table, so an edited
+///   `Forkfile` is what the world actually runs after a `restart`.
 ///
 /// `services` holds the spawn handles this daemon needs for the entry/log paths only; the engine's
 /// `world_processes` rows remain the authoritative record of what is running.
@@ -44,15 +43,16 @@ pub(super) struct LiveWorld {
     pub(super) state: WorldState,
     /// Resolved world environment (re-derived by `resolve_world`).
     pub(super) base_env: ExecEnv,
-    /// The one enabled-component list: id, run command, readiness port, and environment
+    /// The one enabled-component list: id, argv, readiness port, and environment
     /// (re-derived by `resolve_world`; `start_world` and the hook paths never re-resolve it).
     pub(super) components: Vec<ResolvedComponent>,
+    /// Every declared lifecycle hook, resolved once through the canonical evaluator.
+    pub(super) hooks: Vec<ResolvedHook>,
     /// The policy this world was booted (or last re-run) with; a later `up` may not silently ask
     /// for a different dump policy or rootfs build on top of the retained CoW state.
     pub(super) policy: BootPolicy,
-    /// Resources coordinates for `resources::*`/`deployment::*` values, re-derived with the plan.
-    pub(super) coords: ResourceCoordinates,
-    pub(super) snow: SnowFile,
+    /// The feature-evaluated manifest this world runs (re-derived with the plan).
+    pub(super) fork: EvaluatedFork,
     /// The resource plan this run resolved (kept so `env_updated` can re-derive ID-only claims).
     pub(super) plan: ResourcePlan,
     /// The last decrypted server environment applied to this world (never persisted).
@@ -369,11 +369,14 @@ impl DaemonState {
     }
 }
 
-/// A hook resolved once for both interactive entry and non-interactive streaming.
+/// A hook resolved once through the canonical evaluator for entry and streaming alike.
+#[derive(Debug, Clone)]
 pub(super) struct ResolvedHook {
+    /// `<service>:<phase>`, the id `slipfork hook run` names.
+    pub(super) id: String,
+    pub(super) phase: HookPhase,
     pub(super) argv: Vec<String>,
     pub(super) overlay: ExecEnv,
-    pub(super) phase_label: &'static str,
 }
 
 /// A resolved world selection: repository identity, target, and the checkout its world mounts.
@@ -392,42 +395,26 @@ pub(super) struct BootPolicy {
     pub(super) host_caches: bool,
 }
 
-/// Inputs to one `L0` rootfs materialization.
-pub(super) struct RootfsInputs<'a> {
+/// One `L0` rootfs materialization: the checkout, the evaluated manifest, and its resolvers.
+pub(super) struct RootfsSource<'a> {
     pub(super) worktree: &'a Path,
-    pub(super) snow: &'a SnowFile,
-    pub(super) vault: &'a dyn SecretProvider,
-    pub(super) coords: &'a ResourceCoordinates,
-    pub(super) claims: &'a OsppClaims,
+    pub(super) fork: &'a EvaluatedFork,
+    pub(super) resolvers: &'a Resolvers<'a>,
     pub(super) host_caches: bool,
 }
 
-/// Inputs to one world-level environment resolution.
-pub(super) struct WorldEnvInputs<'a> {
-    pub(super) snow: &'a SnowFile,
-    pub(super) vault: &'a dyn SecretProvider,
-    pub(super) coords: &'a ResourceCoordinates,
-    pub(super) project: &'a ProjectSlug,
-    pub(super) target: &'a WorldTarget,
-    pub(super) claims: &'a OsppClaims,
-    /// Env keys whose expression is locally claimed: the literal expression never reaches a world.
-    pub(super) claimed_env: &'a std::collections::BTreeSet<String>,
-    pub(super) ospp_env: Option<&'a BTreeMap<String, BTreeMap<String, TaintedString>>>,
-}
-
 pub(super) struct ResolvedWorld {
-    pub(super) snow: SnowFile,
+    pub(super) fork: EvaluatedFork,
     pub(super) vault: Arc<dyn SecretProvider>,
     pub(super) plan: ResourcePlan,
     pub(super) resources: Vec<ResourceSummary>,
-    pub(super) coords: ResourceCoordinates,
     pub(super) base_env: ExecEnv,
     /// The one enabled-component list this run resolved; `start_world` iterates exactly this.
     pub(super) components: Vec<ResolvedComponent>,
+    /// Every declared hook, resolved once for the entry and streaming verbs.
+    pub(super) hooks: Vec<ResolvedHook>,
     pub(super) ingresses: Vec<IngressRoute>,
     pub(super) domains: Vec<String>,
-    /// The ID-only claims this boot sent (local vault keys, local resources, local domains).
-    pub(super) claims: OsppClaims,
     /// The server-resolved per-component environment (already decrypted in memory), kept so a
     /// pushed `env_updated` can be diffed against what the world runs.
     pub(super) ospp_env: Option<BTreeMap<String, BTreeMap<String, TaintedString>>>,
@@ -449,7 +436,8 @@ pub(super) struct PreparedWorld {
 #[derive(Debug, Clone)]
 pub(super) struct ResolvedComponent {
     pub(super) id: String,
-    pub(super) run_command: String,
+    /// The service's `run` argv, already word-split-safe and resolved.
+    pub(super) argv: Vec<String>,
     pub(super) readiness_port: Option<u16>,
     pub(super) env: ExecEnv,
 }
@@ -487,12 +475,4 @@ pub(super) fn json_label<T: serde::Serialize>(value: &T) -> String {
         .ok()
         .and_then(|value| value.as_str().map(str::to_owned))
         .unwrap_or_default()
-}
-
-/// Parent directory of an explicit manifest path (`"."` for a bare file name).
-pub(super) fn parent_dir(path: &Path) -> PathBuf {
-    match path.parent() {
-        Some(parent) if !parent.as_os_str().is_empty() => parent.to_path_buf(),
-        _ => PathBuf::from("."),
-    }
 }

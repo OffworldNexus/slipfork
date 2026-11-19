@@ -1,29 +1,31 @@
-//! The backing-service `ServiceSpec` table `snow.yml` `resources:` requests (`ADR-0009` §2–§3).
+//! The backing-service `ServiceSpec` table the `Forkfile` resources declare (`ADR-0009` §2–§3).
 
-use super::env::container_env;
-use super::runtime_error;
-use slipfork_edge::EdgeError;
-use slipfork_snow::SnowFile;
-use slipfork_world::StateSubdirMount;
-use slipfork_world::rootfs::{BackingServiceKey, WorldRootfs};
-use slipfork_world::{ServiceKind, ServiceRuntime, ServiceSpec};
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
-/// The backing-service OCI images `snow.yml` `resources:` requests (`ADR-0009` §2.2).
-pub(super) fn requested_service_images(snow: &SnowFile) -> Vec<BackingServiceKey> {
+use slipfork_edge::EdgeError;
+use slipfork_forkfile::EvaluatedFork;
+use slipfork_world::StateSubdirMount;
+use slipfork_world::rootfs::{BackingServiceKey, WorldRootfs};
+use slipfork_world::{ServiceKind, ServiceRuntime, ServiceSpec};
+
+use super::env::container_env;
+use super::runtime_error;
+
+/// The backing-service OCI images the projection requests (`ADR-0009` §2.2).
+pub(super) fn requested_service_images(fork: &EvaluatedFork) -> Vec<BackingServiceKey> {
     let mut images = BTreeSet::new();
-    for cluster in &snow.resources.pg_clusters {
+    for cluster in &fork.postgres {
         images.insert(BackingServiceKey::Postgres {
             version: cluster.version.clone(),
         });
     }
-    for cluster in &snow.resources.redis_clusters {
+    for cluster in &fork.redis {
         images.insert(BackingServiceKey::Redis {
             version: cluster.version.clone(),
         });
     }
-    if !snow.resources.s3_buckets.is_empty() {
+    if !fork.s3.is_empty() {
         images.insert(BackingServiceKey::SeaweedFs);
     }
     images.into_iter().collect()
@@ -35,11 +37,11 @@ pub(super) fn requested_service_images(snow: &SnowFile) -> Vec<BackingServiceKey
 /// `dump_mounts` maps a `pg_clusters.<id>` service id to the verified `<sha256>.pgcustom` files the
 /// base seed world must expose read-only at `/dumps/...`.
 pub(super) fn service_specs(
-    snow: &SnowFile,
+    fork: &EvaluatedFork,
     rootfs: &WorldRootfs,
 ) -> Result<Vec<ServiceSpec>, EdgeError> {
     let mut specs = Vec::new();
-    for cluster in &snow.resources.pg_clusters {
+    for cluster in &fork.postgres {
         let image = BackingServiceKey::Postgres {
             version: cluster.version.clone(),
         };
@@ -73,7 +75,7 @@ pub(super) fn service_specs(
             readiness_port: Some(5432),
         });
     }
-    for cluster in &snow.resources.redis_clusters {
+    for cluster in &fork.redis {
         let image = BackingServiceKey::Redis {
             version: cluster.version.clone(),
         };
@@ -104,7 +106,7 @@ pub(super) fn service_specs(
             readiness_port: Some(6379),
         });
     }
-    if !snow.resources.s3_buckets.is_empty() {
+    if !fork.s3.is_empty() {
         let image = BackingServiceKey::SeaweedFs;
         require_image(rootfs, &image, "s3_buckets")?;
         ensure_container_dirs(rootfs, &image, &["/data"])?;

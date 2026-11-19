@@ -1,7 +1,7 @@
 //! Streaming protocol verbs: logs, exec targets, hooks, and forwards.
 use std::io::Write;
 
-use super::env::{forward_specs, open_hook_log, resolve_hook};
+use super::env::{forward_specs, hook_phase_label, open_hook_log, resolve_hook};
 use super::service::DaemonService;
 use super::{rejected, runtime_error};
 use slipfork_edge::{EdgeError, world_id};
@@ -29,7 +29,7 @@ impl DaemonService {
             let service = match &req.service {
                 Some(requested) => {
                     let (service_id, argv) =
-                        resolve_service_target(&world.snow, requested, &req.argv)?;
+                        resolve_service_target(&world.fork, requested, &req.argv)?;
                     let handle = world
                         .services
                         .iter()
@@ -87,7 +87,7 @@ impl DaemonService {
         req: &HookRunRequest,
     ) -> Result<WorldExecTarget, EdgeError> {
         let selection = self.select(&req.cwd, req.world.as_deref())?;
-        let (handle, worktree, snow, components, base_env) = {
+        let (handle, worktree, hooks, base_env) = {
             let state = self.lock();
             let Some(world) = state.world(&selection.repo.project, &selection.target) else {
                 return Err(Self::unknown_world(
@@ -98,12 +98,11 @@ impl DaemonService {
             (
                 world.handle.clone(),
                 world.worktree.clone(),
-                world.snow.clone(),
-                world.components.clone(),
+                world.hooks.clone(),
                 world.base_env.clone(),
             )
         };
-        let resolved = resolve_hook(&snow, &components, &req.hook)?;
+        let resolved = resolve_hook(&hooks, &req.hook)?;
         let entry = self
             .engine
             .entry_command(&handle, &worktree)
@@ -116,7 +115,7 @@ impl DaemonService {
             origin,
             entry,
             env: base_env.overlaid(&resolved.overlay),
-            target_argv: resolved.argv,
+            target_argv: resolved.argv.clone(),
         })
     }
 }
@@ -177,7 +176,7 @@ impl DaemonService {
         on_chunk: &mut dyn FnMut(StreamChunk),
     ) -> Result<i32, EdgeError> {
         let selection = self.select(&req.cwd, req.world.as_deref())?;
-        let (handle, worktree, snow, components) = {
+        let (handle, worktree, hooks) = {
             let state = self.lock();
             let Some(world) = state.world(&selection.repo.project, &selection.target) else {
                 return Err(Self::unknown_world(
@@ -188,11 +187,11 @@ impl DaemonService {
             (
                 world.handle.clone(),
                 world.worktree.clone(),
-                world.snow.clone(),
-                world.components.clone(),
+                world.hooks.clone(),
             )
         };
-        let resolved = resolve_hook(&snow, &components, &req.hook)?;
+        let resolved = resolve_hook(&hooks, &req.hook)?;
+        let phase = hook_phase_label(resolved.phase);
         let log = {
             let mut state = self.lock();
             let Some(world) = state.world_mut(&selection.repo.project, &selection.target) else {
@@ -201,7 +200,7 @@ impl DaemonService {
                     &selection.target,
                 ));
             };
-            self.hook_log(world, &req.hook, resolved.phase_label)?
+            self.hook_log(world, &req.hook, phase)?
         };
         let mut file = open_hook_log(&log.path)?;
         let output = self
@@ -235,7 +234,7 @@ impl DaemonService {
     ) -> Result<(), EdgeError> {
         let selection = self.select(&req.cwd, req.world.as_deref())?;
         let world_id_text = world_id(&selection.repo.project, &selection.target);
-        let (snow, components) = {
+        let (fork, components) = {
             let state = self.lock();
             let Some(world) = state.world(&selection.repo.project, &selection.target) else {
                 return Err(Self::unknown_world(
@@ -243,9 +242,9 @@ impl DaemonService {
                     &selection.target,
                 ));
             };
-            (world.snow.clone(), world.components.clone())
+            (world.fork.clone(), world.components.clone())
         };
-        let specs = forward_specs(&snow, &world_id_text, &components, &req.targets)?;
+        let specs = forward_specs(&fork, &world_id_text, &components, &req.targets)?;
         let bridge = self
             .registry
             .forward(&selection.repo.project, &selection.target, &specs)?;

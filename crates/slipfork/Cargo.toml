@@ -21,7 +21,6 @@ slipfork-dag = { path = "../slipfork-dag" }
 slipfork-edge = { path = "../slipfork-edge" }
 slipfork-engine = { path = "../slipfork-engine" }
 slipfork-ospp = { path = "../slipfork-ospp" }
-slipfork-snow = { path = "../slipfork-snow" }
 slipfork-vcs = { path = "../slipfork-vcs" }
 slipfork-world = { path = "../slipfork-world" }
 slipfork-wire = { path = "../slipfork-wire" }

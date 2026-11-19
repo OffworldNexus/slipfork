@@ -230,7 +230,7 @@ impl UnitInstaller {
             .env("PATH", INSTALL_TOOL_PATH);
         let output = command.stream(on_line).map_err(|err| {
             format!(
-                "cannot run `{}`: {err}; next: install apparmor, or run `slipfork daemon unit` to preview the files",
+                "cannot run `{}`: {err}\n  next: install apparmor, or run `slipfork daemon unit` to preview the files",
                 program.display()
             )
         })?;
