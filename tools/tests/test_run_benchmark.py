@@ -24,8 +24,6 @@ BASELINE = {
     "metrics": {
         "pgdata_logical_mib": {"value": 41.5, "max_factor": 1.15, "min_factor": 1.15},
         "pgdata_files": {"value": 1000, "max_factor": 1.5, "min_factor": 1.5},
-        "dag_warm_plan_ms": {"value": 10.89, "max_factor": 4.0},
-        "dag_front_only_plan_ms": {"value": 10.7, "max_factor": 4.0},
     },
 }
 
@@ -63,8 +61,6 @@ def _metrics(**overrides: object) -> object:
         "worktree_exec_ms": 20.0,
         "parallel_4_forks_ms": 400.0,
         "pg_restore_ms": 100.0,
-        "dag_warm_plan_ms": 10.89,
-        "dag_front_only_plan_ms": 10.7,
         "num_tests": 4,
         "workers": 2,
         "baseline_serial_s": 2.0,
@@ -482,8 +478,8 @@ class ReadOnlyCheckTests(BenchTestCase):
         self,
     ) -> None:
         self.assertEqual(bench.compare_to_baseline(_metrics(), BASELINE), [])
-        drift = bench.compare_to_baseline(_metrics(dag_warm_plan_ms=99_999.0), BASELINE)
-        self.assertTrue(any("dag_warm_plan_ms" in problem for problem in drift))
+        drift = bench.compare_to_baseline(_metrics(pgdata_logical_mib=999.0), BASELINE)
+        self.assertTrue(any("pgdata_logical_mib" in problem for problem in drift))
 
     def test_compare_to_baseline_flags_a_broken_seed(self) -> None:
         drift = bench.compare_to_baseline(_metrics(pgdata_files=5), BASELINE)

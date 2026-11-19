@@ -16,7 +16,7 @@ use slipfork_world::{ProjectSlug, WorldEngine, WorldHandle, WorldTarget};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-/// The daemon-owned [`DaemonControl`] implementation.
+/// The daemon-owned `DaemonControl` implementation.
 pub struct DaemonService {
     pub(super) engine: std::sync::Arc<dyn WorldEngine>,
     pub(super) builder: std::sync::Arc<dyn BaseImageBuilder>,

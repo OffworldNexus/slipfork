@@ -22,9 +22,9 @@
 //! `statfs`/`BTRFS_IOC_*` are confined to [`crate::btrfs`] and `SCM_RIGHTS`/`kill(2)` to
 //! [`crate::linux_cow`].
 //!
-//! Module layout: [`worlds`] materializes a world subvolume and [`snapshots`] seals one, [`boot`]
-//! runs the world PID 1 and its dial socket, [`services`]/[`container`] spawn and query supervised
-//! service trees, and [`teardown`] owns the one stop-and-reap order.
+//! Module layout: the private `worlds` module materializes a world subvolume and `snapshots` seals
+//! one, `boot` runs the world PID 1 and its dial socket, `services`/`container` spawn and query
+//! supervised service trees, and `teardown` owns the one stop-and-reap order.
 
 #![forbid(unsafe_code)]
 

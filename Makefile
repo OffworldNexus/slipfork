@@ -13,7 +13,12 @@ export TMPDIR
 CARGO_BUILD_JOBS ?= 4
 export CARGO_BUILD_JOBS
 
-.PHONY: help check fmt rs-fmt rs-lint rs-test ts-test py-lint py-test docs-check guard plan-check bench bench-update docs-serve
+# Suites that boot real Btrfs worlds (and therefore need a Btrfs state root and a serialized run).
+# `make rs-test-live` owns them; `make check` never runs them, so this non-Btrfs host stays green.
+# Run them on the lab VM: `uv run --no-project tools/do_vm.py test`.
+RS_LIVE_SUITES := slipfork-engine:critical_btrfs_live slipfork-engine:critical_engine slipfork-engine:critical_oci_runtime slipfork:critical_btrfs_live slipfork:critical_cli slipfork:critical_l0_wiring slipfork:critical_ospp_daemon slipfork:critical_slug slipfork:critical_vcs_remote
+
+.PHONY: help check fmt rs-fmt rs-lint rs-test rs-test-live ts-test py-lint py-test docs-check guard plan-check bench bench-update docs-serve
 
 $(TMPDIR):
 	mkdir -p $(TMPDIR)
@@ -49,9 +54,15 @@ rs-lint: | $(TMPDIR) ## Run Clippy (-D warnings) and rustdoc (-D warnings) acros
 	cargo clippy --workspace --all-targets -- -D warnings
 	RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
 
-rs-test: | $(TMPDIR) ## Run Rust unit/bin/doc tests plus every critical integration suite (world-booting suites serialized)
-	uv run --no-project tools/rs_test_list.py --world-booting slipfork-engine:critical_btrfs_live slipfork-engine:critical_engine slipfork-engine:critical_oci_runtime slipfork:critical_btrfs_live slipfork:critical_cli slipfork:critical_l0_wiring slipfork:critical_ospp_daemon slipfork:critical_slug slipfork:critical_vcs_remote
-	cargo test --workspace --lib --bins --doc
+# One compile step per target set: `--bins`/`--lib`/`--doc` builds and runs the unit and doc
+# tests, `--tests --no-run` links every integration binary exactly once. The per-suite `cargo test
+# --test …` lines below then only execute an already-built binary (Cargo's fingerprint is
+# up to date), so no target is re-linked and no test shells out to a nested `cargo build`.
+rs-test: | $(TMPDIR) ## Run the pure/loopback Rust suites (compile once, no Btrfs needed)
+	cargo test --workspace --lib --bins
+	cargo test --workspace --tests --no-run
+	cargo test --workspace --doc
+	uv run --no-project tools/rs_test_list.py --world-booting $(RS_LIVE_SUITES)
 	cargo test -p slipfork-dag --test critical_dag
 	cargo test -p slipfork-dag --test critical_world_config
 	cargo test -p slipfork-edge --test critical_edge
@@ -63,6 +74,13 @@ rs-test: | $(TMPDIR) ## Run Rust unit/bin/doc tests plus every critical integrat
 	cargo test -p slipfork-vcs --test critical_conformance_matrix
 	cargo test -p slipfork-vcs --test critical_vcs
 	cargo test -p slipfork-world --test critical_world
+	cargo test -p slipfork --test browser
+	cargo test -p slipfork --test daemon_unit_install
+
+# The Btrfs world-booting journeys. A direct `cargo test --test …` on a non-Btrfs host fails closed
+# through `require_btrfs` (one line naming the missing substrate) — it never skips silently.
+rs-test-live: | $(TMPDIR) ## Run the Btrfs world-booting suites (needs Btrfs; lab VM: `tools/do_vm.py test`)
+	cargo test --workspace --tests --no-run
 	cargo test -p slipfork-engine --test critical_btrfs_live -- --test-threads=1
 	cargo test -p slipfork-engine --test critical_engine -- --test-threads=1
 	cargo test -p slipfork-engine --test critical_oci_runtime -- --test-threads=1

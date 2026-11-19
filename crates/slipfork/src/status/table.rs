@@ -39,7 +39,7 @@ impl<'a> WorldTable<'a> {
         Self { worlds, ui }
     }
 
-    /// The world-id column width: the widest id, never narrower than [`MIN_WORLD_COLUMN`].
+    /// The world-id column width: the widest id, never narrower than `MIN_WORLD_COLUMN`.
     #[must_use]
     pub fn world_column(&self) -> usize {
         column_width(

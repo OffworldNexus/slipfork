@@ -2,6 +2,6 @@
 
 - status: WARNING
 - expensive spent: $258.25 of $300.00 cap (86%)
-- updated: 2026-11-19T01:01:43.413Z
+- updated: 2026-11-19T01:14:31.378Z
 
 Over warning threshold: escalate only when indispensable.

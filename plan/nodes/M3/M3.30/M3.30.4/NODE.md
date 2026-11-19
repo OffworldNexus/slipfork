@@ -1,9 +1,8 @@
 ---
 id: M3.30.4
 title: "Lab-first test consolidation: 1 Btrfs journey + 1 OSPP journey + pure algorithm tests & single-build Makefile"
-kind: task
+kind: epic
 status: ready
-owner: implementer
 priority: 3
 depends_on: [M3.30.3]
 paths: [Makefile, Cargo.toml, Cargo.lock, "crates/**", "tools/**", "poc/**"]
@@ -11,7 +10,7 @@ attempts: 0
 max_attempts: 3
 escalation: none
 created: "2026-11-18T22:19"
-updated: "2026-11-18T22:19"
+updated: "2026-11-19T02:02"
 ---
 
 # Goal

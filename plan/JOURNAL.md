@@ -1659,3 +1659,10 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-19T01:58 [M3.30.3.3] (lead) attempt 2/3 started
 - 2026-11-19T02:02 [M3.30.3.3] (lead) status ready -> done
 - 2026-11-19T02:02 [M3.30.3] (lead) status ready -> done: 3/3 children done: palette, streamed progress, dynamic tables
+- 2026-11-19T02:02 [M3.30.4] (lead) edited fields
+- 2026-11-19T02:02 [M3.30.4.1] (lead) created (task) Single-build Makefile, no nested cargo build, Btrfs live-suite gating, poc dag-plan cleanup
+- 2026-11-19T02:02 [M3.30.4.1] (lead) status ready -> active
+- 2026-11-19T02:02 [M3.30.4.1] (lead) attempt 1/3 started
+- 2026-11-19T02:02 [M3.30.4.1] (lead) base 308f1a0c5212a7a237603cd4d0062c71970a3ab3
+- 2026-11-19T02:11 [M3.30.4.1] (lead) edited fields
+- 2026-11-19T02:15 [M3.30.4.1] (lead) status active -> done

@@ -8,7 +8,7 @@
 # ///
 """Real end-to-end PoC benchmark for the `0.2.0` world model (`docs/research/m1-poc-benchmark.md`).
 
-`slipfork doctor --json` gates the host, then `snow resolve` / `auth login` / `dag plan` / `up` /
+`slipfork doctor --json` gates the host, then `snow resolve` / `auth login` / `up` /
 `down` / `fork` / `exec` / `drop` drive a harness-owned `slipforkd` against a generated sample
 project. The harness measures real PostgreSQL 18 `initdb -> seed -> pg_dump -> pg_restore`, the real
 `BtrfsEngine` subvolume snapshot/clone path (`KernelBtrfsDriver`), and a head-to-head browser +
@@ -990,8 +990,6 @@ class BenchmarkMetrics:
     worktree_exec_ms: float
     parallel_4_forks_ms: float
     pg_restore_ms: float
-    dag_warm_plan_ms: float
-    dag_front_only_plan_ms: float
     num_tests: int
     workers: int
     baseline_serial_s: float
@@ -1785,30 +1783,6 @@ def measure_fork_ms(
     return (time.perf_counter() - started) * 1000.0
 
 
-def measure_dag_plan_ms(
-    layout: Path,
-    env: dict[str, str],
-    project: Path,
-    plan_args: Sequence[str],
-    *,
-    repeats: int = 3,
-) -> tuple[float, dict]:
-    """Best-of-`repeats` `slipfork dag plan` wall time plus the last parsed plan.
-
-    `dag plan` is read-only and deterministic, so the fastest of three identical invocations is
-    the honest Merkle-hash cost; a loaded developer host otherwise inflates a single sample.
-    """
-    best = None
-    plan: dict = {}
-    for _ in range(repeats):
-        started = time.perf_counter()
-        plan = _slipfork_json(layout, env, project, *plan_args)
-        elapsed_ms = (time.perf_counter() - started) * 1000.0
-        best = elapsed_ms if best is None else min(best, elapsed_ms)
-    assert best is not None
-    return best, plan
-
-
 def measure_all(
     num_tests: int,
     workers: int,
@@ -1946,21 +1920,6 @@ def measure_all(
             list(pool.map(mutate, range(4)))
         parallel_4_ms = (time.perf_counter() - parallel_started) * 1000.0
 
-        plan_args = (
-            "dag",
-            "plan",
-            "--file",
-            str(project / "slipfork.toml"),
-        )
-        plan = _slipfork_json(run_dir, env, project, *plan_args)
-
-        dag_warm_ms, warm_plan = measure_dag_plan_ms(run_dir, env, project, plan_args)
-        if [item["digest"] for item in warm_plan["artifacts"]] != [
-            item["digest"] for item in plan["artifacts"]
-        ]:
-            msg = "`dag plan` must be deterministic on an unchanged tree"
-            raise BenchError(msg)
-
         # Traditional baseline: host PostgreSQL 18 + one host Chromium.
         baseline_src = run_dir / "baseline"
         _initdb(baseline_src / "pgdata", env)
@@ -1988,28 +1947,6 @@ def measure_all(
         cold_s = measure_cold_parallel_suite(env, project, run_dir, order, workers)
         warm_s = measure_warm_pool_suite(env, project, run_dir, order, workers)
 
-        # Orthogonal invalidation is measured last so every fork above sees a clean tree.
-        app_html = project / "front" / "src" / "App.html"
-        app_html.write_text(
-            app_html.read_text(encoding="utf-8") + "<!-- css tweak -->\n",
-            encoding="utf-8",
-        )
-        dag_front_ms, front_plan = measure_dag_plan_ms(run_dir, env, project, plan_args)
-        front = next(item for item in front_plan["artifacts"] if item["id"] == "front")
-        if front["digest"] == next(
-            item["digest"] for item in plan["artifacts"] if item["id"] == "front"
-        ):
-            msg = "editing `front/src` must change the `front` artifact digest"
-            raise BenchError(msg)
-        if [
-            [fixture["digest"] for fixture in wave]
-            for wave in front_plan["fixture_waves"]
-        ] != [
-            [fixture["digest"] for fixture in wave] for wave in plan["fixture_waves"]
-        ]:
-            msg = "editing `front/src` must never invalidate the DB fixtures"
-            raise BenchError(msg)
-
         return BenchmarkMetrics(
             first_up_ms=first_up_ms,
             pgdata_logical_mib=pg_mib,
@@ -2019,8 +1956,6 @@ def measure_all(
             worktree_exec_ms=exec_ms,
             parallel_4_forks_ms=parallel_4_ms,
             pg_restore_ms=restore_ms,
-            dag_warm_plan_ms=dag_warm_ms,
-            dag_front_only_plan_ms=dag_front_ms,
             num_tests=num_tests,
             workers=workers,
             baseline_serial_s=baseline_s,
@@ -2126,16 +2061,6 @@ def primitive_rows(metrics: BenchmarkMetrics) -> list[tuple[str, str, str]]:
             "**4 parallel worlds** mutating `:5432` concurrently",
             f"{metrics.parallel_4_forks_ms:.1f} ms total",
             "Fork + execute + drop in parallel; every world binds `127.0.0.1:5432`",
-        ),
-        (
-            "`slipfork dag plan` (unchanged tree)",
-            f"{metrics.dag_warm_plan_ms:.2f} ms",
-            "SHA-256 Merkle check across `front` + `migrate` + `seed_*` -> identical digests",
-        ),
-        (
-            "`slipfork dag plan` after editing `front/src/App.html`",
-            f"{metrics.dag_front_only_plan_ms:.2f} ms",
-            "`artifact:front` digest changes; every DB fixture digest is unchanged (0 re-seed)",
         ),
     ]
 

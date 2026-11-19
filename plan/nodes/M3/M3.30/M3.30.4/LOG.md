@@ -11,3 +11,7 @@ carry-over from M3.30.1.3.3.4: replace test-only RecordingEngine/StubRootfs (dae
 ## 2026-11-19T00:40 [lead]
 
 also replace daemon/tests/engine.rs RecordingEngine/StubRootfs/FixedRepo doubles with one real daemon/world E2E journey (happy path + fail-closed refusal + reaped worlds) and delete that file
+
+## 2026-11-19T02:02 [lead]
+
+edited fields

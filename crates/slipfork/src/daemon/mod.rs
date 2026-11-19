@@ -1,4 +1,4 @@
-//! The in-process [`DaemonControl`] implementation `slipforkd` injects into its server.
+//! The in-process `DaemonControl` implementation `slipforkd` injects into its server.
 //!
 //! Every collaborator is wired by [`compose_daemon`], the one composition function `slipforkd` and
 //! the integration harness both call: the CoW engine over the concrete [`KernelBtrfsDriver`], the
@@ -195,7 +195,7 @@ pub struct DaemonWiring {
 
 /// The wired daemon graph: the control service and the ingress registry over one engine.
 pub struct DaemonGraph {
-    /// In-process [`DaemonControl`] implementation the control socket serves.
+    /// In-process `DaemonControl` implementation the control socket serves.
     pub service: Arc<DaemonService>,
     /// HTTP ingress registry the ingress server binds over the same engine.
     pub registry: Arc<WorldRegistry>,

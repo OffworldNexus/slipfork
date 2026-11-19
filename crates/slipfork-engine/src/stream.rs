@@ -4,7 +4,7 @@
 //! install legs all outlive the 200 ms a silent wait may hide. Every such call goes through
 //! [`ChildCommand`]: the child leads its own process group, both pipes are drained by reader
 //! threads (no 64 KiB pipe deadlock), each line reaches the caller's sink as it arrives, the last
-//! [`TAIL_LINES`] stderr lines survive for the failure diagnostic, and a hung child is killed
+//! `TAIL_LINES` stderr lines survive for the failure diagnostic, and a hung child is killed
 //! through its pinned group identity and reaped — never left orphaned by a Ctrl-C unwind.
 
 #![forbid(unsafe_code)]
@@ -181,7 +181,7 @@ pub struct ChildOutput {
     pub status: ExitStatus,
     /// Everything the child wrote to stdout.
     pub stdout: String,
-    /// The last [`TAIL_LINES`] stderr lines, newline-joined.
+    /// The last `TAIL_LINES` stderr lines, newline-joined.
     pub tail: String,
 }
 

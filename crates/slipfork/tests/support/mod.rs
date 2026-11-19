@@ -105,90 +105,25 @@ pub fn repo_with_manifest(scratch: &Path, project: &str, snow: &str) -> PathBuf 
     repo
 }
 
-/// Locate (or build once) the engine's `slipfork-world-init` helper next to the test binaries.
+/// The engine's `slipfork-world-init` helper Cargo built beside the integration-test binaries.
 ///
-/// The helper is rebuilt when it is missing **or** older than any `slipfork-engine/src/**/*.rs`
-/// file, so a standalone `cargo test -p slipfork --test …` can never execute a helper built before
-/// the last engine edit. The staleness check runs at most once per test process
-/// ([`std::sync::Once`]) and shells out only when a rebuild is actually required.
+/// Cargo places every workspace binary in the same target directory as the test binaries it links,
+/// so the helper is a sibling of `CARGO_BIN_EXE_slipforkd` and is always the one this build
+/// produced — no test ever shells out to a nested `cargo build`. The `make rs-test` compile step
+/// (`cargo test --workspace --bins`) builds it; a missing helper fails closed with the exact
+/// remedy instead of silently booting a stale binary.
 fn world_init_helper() -> PathBuf {
-    fn helper_path() -> PathBuf {
-        PathBuf::from(env!("CARGO_BIN_EXE_slipforkd"))
-            .parent()
-            .expect("daemon binary parent")
-            .join("slipfork-world-init")
-    }
-
-    static BUILD_ONCE: std::sync::Once = std::sync::Once::new();
-    BUILD_ONCE.call_once(|| {
-        let helper = helper_path();
-        if helper_is_current(&helper) {
-            return;
-        }
-        let output = Command::new(env!("CARGO"))
-            .args(["build", "-p", "slipfork-engine", "--bins"])
-            .output()
-            .unwrap_or_else(|error| {
-                panic!(
-                    "cannot run `cargo build -p slipfork-engine --bins` to refresh {}: {error}",
-                    helper.display()
-                )
-            });
-        assert!(
-            output.status.success(),
-            "`cargo build -p slipfork-engine --bins` failed ({}), so {} would be stale:\n{}",
-            output.status,
-            helper.display(),
-            String::from_utf8_lossy(&output.stderr)
-        );
-        assert!(
-            helper.is_file(),
-            "expected `cargo build -p slipfork-engine --bins` to produce {}",
-            helper.display()
-        );
-    });
-    helper_path()
-}
-
-/// `true` when `helper` exists and is at least as new as every `slipfork-engine/src/**/*.rs` file.
-///
-/// An unreadable timestamp (or source tree) counts as stale: without mtimes the helper's freshness
-/// cannot be proven, so it is rebuilt instead of silently trusted.
-fn helper_is_current(helper: &Path) -> bool {
-    let Ok(helper_modified) = fs::metadata(helper).and_then(|metadata| metadata.modified()) else {
-        return false;
-    };
-    let mut pending = vec![
-        Path::new(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .expect("the workspace crates directory")
-            .join("slipfork-engine")
-            .join("src"),
-    ];
-    while let Some(directory) = pending.pop() {
-        let Ok(entries) = fs::read_dir(&directory) else {
-            return false;
-        };
-        for entry in entries {
-            let Ok(entry) = entry else {
-                return false;
-            };
-            let Ok(file_type) = entry.file_type() else {
-                return false;
-            };
-            if file_type.is_dir() {
-                pending.push(entry.path());
-            } else if entry.path().extension().is_some_and(|ext| ext == "rs") {
-                let Ok(modified) = entry.metadata().and_then(|metadata| metadata.modified()) else {
-                    return false;
-                };
-                if modified > helper_modified {
-                    return false;
-                }
-            }
-        }
-    }
-    true
+    let helper = PathBuf::from(env!("CARGO_BIN_EXE_slipforkd"))
+        .parent()
+        .expect("daemon binary parent")
+        .join("slipfork-world-init");
+    assert!(
+        helper.is_file(),
+        "{} is missing; run `make rs-test` (or `cargo build -p slipfork-engine --bins`) before \
+         this suite",
+        helper.display()
+    );
+    helper
 }
 
 /// The explicit roots one scratch directory serves.

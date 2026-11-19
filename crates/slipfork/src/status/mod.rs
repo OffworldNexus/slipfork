@@ -7,8 +7,9 @@
 //! a bare `slipfork` never leaves a mystery `--listen 127.0.0.1:0` process behind (§1, `M3.28.1`
 //! R5).
 //!
-//! The table and the lineage line live in [`table`] and [`lineage`] so each file stays one cohesive
-//! renderer; both are re-exported from here because `status`, `list`, `ps`, and `restart` share them.
+//! The table and the lineage line live in the private `table` and `lineage` modules so each file
+//! stays one cohesive renderer; both are re-exported from here because `status`, `list`, `ps`, and
+//! `restart` share them.
 
 use std::collections::BTreeSet;
 
