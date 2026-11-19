@@ -29,7 +29,7 @@ pub use request::{
 pub use socket::{CONTROL_SOCKET_FILE, control_socket_path};
 pub use view::{
     BootEvent, CONTROL_VIEW_VERSION, DaemonStatus, IngressError, IngressInfo, ResourceSummary,
-    WorldProcessReport, WorldServiceSummary, WorldState, WorldSummary, WorldUpSummary,
+    WorldReport, WorldServiceSummary, WorldState, WorldSummary, WorldUpSummary,
 };
 
 /// Version of the retained-log wire shape (`LogChunk`, the `logs` reply, and its NDJSON document).

@@ -12,11 +12,11 @@ use super::request::FeatureSelection;
 use super::{DaemonError, DaemonErrorKind};
 use slipfork_world::{StreamChunk, WorldLineage, WorldServiceInfo};
 
-/// Version of the control **view** models (`DaemonStatus`, `WorldSummary`, `WorldProcessReport`)
+/// Version of the control **view** models (`DaemonStatus`, `WorldSummary`, `WorldReport`)
 /// and of the stamped boot/restart feature selection.
 ///
 /// The control surface is additive-only within a version: v3 added `WorldSummary::services` and
-/// the `WorldProcessReport` world/origin/worktree facts; v4 stamps the `FeatureSelection` carried
+/// the `WorldReport` world/origin/worktree facts; v4 stamps the `FeatureSelection` carried
 /// by `up`/`fork`/`restart`, so a peer from another build fails closed instead of booting without
 /// the requested `-F` features.
 pub const CONTROL_VIEW_VERSION: u32 = 4;
@@ -229,7 +229,7 @@ pub struct WorldServiceSummary {
 /// One world's process view: the world's identity, its state, its lineage, and every service row —
 /// read once (`slipfork ps`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WorldProcessReport {
+pub struct WorldReport {
     /// Control view version this payload was produced for ([`CONTROL_VIEW_VERSION`]).
     #[serde(deserialize_with = "current_view_version")]
     pub protocol: u32,
@@ -253,7 +253,7 @@ pub struct WorldProcessReport {
     pub feature_selection: FeatureSelection,
 }
 
-impl WorldProcessReport {
+impl WorldReport {
     /// Assemble one world's report from the canonical world row and its service rows.
     ///
     /// Every row must belong to `world.world`, and ids must be unique, so `services[].id` can

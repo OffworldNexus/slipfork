@@ -2,7 +2,7 @@
 //!
 //! Two daemons cover the container contract: one boots a real `BtrfsEngine` world with the pinned
 //! static `crun` and a real `redis:8` OCI image (asserting that `db`/`redis` resolve only through
-//! `WorldEngine::service_entry_command`, and that a stopped container fails closed with the typed
+//! `WorldEngine::service_exec_prefix`, and that a stopped container fails closed with the typed
 //! `ServiceNotRunning`), and one measures the `--host-caches` ELF/libc ABI on a musl world (refused)
 //! and on a matching glibc world (accepted). No test skips: a missing Docker/crun dependency fails
 //! loudly.
@@ -82,17 +82,14 @@ fn run_entry(
     target: &slipfork_wire::control::WorldExecTarget,
     argv: &[&str],
 ) -> std::process::ExitStatus {
-    let mut args = target.entry.args_prefix.clone();
+    let args = target.entry.args_prefix.clone();
     // `crun exec` takes the command directly after the container id; its own CLI does not strip a
     // trailing `--` separator.
-    if args.last().map(String::as_str) == Some("--") {
-        args.pop();
-    }
     let mut command = Command::new(&target.entry.program);
     command
         .args(&args)
         .args(argv)
-        .current_dir(&target.entry.cwd)
+        .current_dir("/")
         .env_clear()
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -119,7 +116,6 @@ fn container_backed_world_targets_redis_and_fails_closed_after_the_container_sto
         world: None,
         service: ExecService::Backing("redis_clusters.cache".to_owned()),
         argv: vec!["redis-cli".to_owned()],
-        entry_kind: slipfork_world::EntryKind::Exec,
     };
     let target = client
         .exec_target(&request)

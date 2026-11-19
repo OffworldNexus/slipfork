@@ -1,5 +1,5 @@
-//! Streamed-output chunks, the child-stream source, service lifecycle state, and the engine's
-//! entry-command value — every value the control wire carries verbatim.
+//! Streamed-output chunks, the child-stream source, service lifecycle state, and the service exec
+//! recipe — every value the control wire carries verbatim.
 
 use std::path::PathBuf;
 
@@ -40,45 +40,19 @@ impl ServiceState {
     }
 }
 
-/// Engine-supplied argv prefix for entering a live world inheriting the caller's native stdio.
+/// The thin `slipfork` CLI spawns `program` with `args_prefix` followed by the target argv, from
+/// `/`, with native `Stdio::inherit()` — zero `SCM_RIGHTS` descriptors cross the CLI <->
+/// `slipforkd` boundary (`H-010` #1).
 ///
-/// What the caller is about to do with the entry command.
-///
-/// `Exec` appends the requested argv to the bridge's prefix (hooks, one-shot `exec`, service
-/// clients); `Interactive` bakes the single requested program into a PTY relay inside the world,
-/// because a process in a child PID namespace cannot adopt the caller's terminal directly.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum EntryKind {
-    /// Non-interactive: append the target argv to the entry prefix.
-    #[default]
-    Exec,
-    /// Interactive: the entry command carries the PTY relay and the single target program.
-    Interactive,
-}
-
-/// The thin `slipfork` CLI spawns `program` with `args_prefix` followed by the target argv,
-/// `cwd` as its working directory, and native `Stdio::inherit()` — zero `SCM_RIGHTS` descriptors
-/// cross the CLI <-> `slipforkd` boundary (`H-010` #1).
+/// The recipe always names a **running service container** (`crun exec` into a pod or a
+/// backing-service container); the container's own bundle owns its working directory and complete
+/// environment, so the spawner only chooses `/` as its host chdir.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WorldEntryCommand {
+pub struct ServiceExec {
     /// Executable of the engine's entry program (for example `nsenter`).
     pub program: PathBuf,
     /// Arguments that must precede the target argv.
-    ///
-    /// The entry program starts the target in a directory that exists **inside** the world: a
-    /// host pathname is unreachable after the world's `pivot_root`, so the entry shell's first
-    /// `getcwd(2)` would fail there.
     pub args_prefix: Vec<String>,
-    /// Working directory of the process that spawns [`Self::program`].
-    ///
-    /// `/` on purpose: it is the one directory that exists both on the host and inside every
-    /// world rootfs, so the spawner can `chdir` before `exec`ing the entry program without
-    /// touching a path the world owns.
-    pub cwd: PathBuf,
-    /// Whether `args_prefix` already consumes the caller's target argv (e.g. an interactive relay).
-    #[serde(default)]
-    pub consumes_target_argv: bool,
 }
 
 /// Which child stream a chunk came from.

@@ -7,9 +7,7 @@ use serde::{Deserialize, Serialize};
 use slipfork_world::WorldOrigin;
 
 use super::ControlSecret;
-use slipfork_world::{
-    EntryKind, ExecEnv, ProjectSlug, WorldEntryCommand, WorldTarget, validate_fork_name,
-};
+use slipfork_world::{ExecEnv, ProjectSlug, ServiceExec, WorldTarget, validate_fork_name};
 
 /// Endpoint selector shared by every world-scoped command (`--world <fork>` or explicit `cwd`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -228,18 +226,17 @@ pub struct LogsRequest {
 /// The daemon resolves each variant against the world's own `Forkfile`: [`Self::App`] must name a
 /// declared app service and enters that container at its directory; [`Self::Backing`] must name a
 /// declared backing resource (`pg_databases.main`, `redis_clusters.cache`) and enters that running
-/// container; [`Self::World`] enters the world's app stage, whose service the daemon selects from
-/// the caller's `cwd` (or the world rootfs when the manifest declares none). No id is classified by
-/// its spelling, so a service named `api.v2` is never mistaken for a backing container.
+/// container; [`Self::World`] selects the app service from the caller's `cwd`. No id is classified
+/// by its spelling, so a service named `api.v2` is never mistaken for a backing container.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "id", rename_all = "snake_case")]
 pub enum ExecService {
-    /// The world's app stage, with the service resolved from `cwd` (or the plain world rootfs).
+    /// The app service selected from `cwd` (never a bare world rootfs entry).
     #[default]
     World,
     /// One declared app service, entered at `<worktree>/<service_dir>`.
     App(String),
-    /// One declared backing resource, entered through `WorldEngine::service_entry_command`.
+    /// One declared backing resource, entered through `WorldEngine::service_exec_prefix`.
     Backing(String),
 }
 
@@ -258,11 +255,8 @@ pub struct ExecTargetRequest {
     /// The typed entry surface this call enters.
     #[serde(default)]
     pub service: ExecService,
-    /// Argv the caller wants to run inside the world or service container.
+    /// Argv the caller wants to run inside the selected service container.
     pub argv: Vec<String>,
-    /// Whether the caller holds a real terminal (`shell`) or not (`exec`, hooks, service clients).
-    #[serde(default)]
-    pub entry_kind: EntryKind,
 }
 
 /// Request body of `slipfork hook run --no-tty`.
@@ -347,23 +341,24 @@ pub struct AuthSummary {
     pub pairing_url: ControlSecret,
 }
 
-/// Everything the thin CLI needs to enter a world with inherited native stdio (`H-010` #1).
+/// Everything the thin CLI needs to enter a **running service container** with inherited native
+/// stdio (`H-010` #1).
 ///
 /// This is the **only** control-port reply permitted to carry a plaintext [`ExecEnv`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorldExecTarget {
     /// World id (`<project>` or `<project>:<fork>`).
     pub world: String,
-    /// The service whose context this entry targets (`None` for the plain world rootfs), so an
-    /// interactive shell can render `(slipfork:<world>/<service>)` without re-deriving it.
+    /// The service whose context this entry targets, so an interactive shell can render
+    /// `(slipfork:<world>/<service>)` without re-deriving it.
     #[serde(default)]
     pub service: Option<String>,
     /// The world's single public origin.
     pub origin: WorldOrigin,
-    /// Child argv prefix of the engine's entry program (for example `nsenter`) to spawn.
-    pub entry: WorldEntryCommand,
+    /// Child spawn recipe of the engine's entry program (for example `nsenter`) plus `crun exec`.
+    pub entry: ServiceExec,
     /// Resolved world environment (redacted by `Debug`).
     pub env: ExecEnv,
-    /// Argv to run inside the world after `entry` (ignored when the entry consumes it).
+    /// Argv to run inside the service container after `entry`'s prefix.
     pub target_argv: Vec<String>,
 }

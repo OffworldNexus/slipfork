@@ -55,7 +55,7 @@ pub use port::{
 };
 pub use socket::{UNIX_SOCKET_PATH_MAX, unix_socket_path_fits};
 pub use stream::{
-    CONTROL_PROTOCOL_VERSION, EntryKind, LogChunk, LogStream, ServiceState, StreamChunk,
-    StreamSource, WorldEntryCommand, epoch_millis_now,
+    CONTROL_PROTOCOL_VERSION, LogChunk, LogStream, ServiceExec, ServiceState, StreamChunk,
+    StreamSource, epoch_millis_now,
 };
 pub use weaver::{SERVICE_NAME_MAX, WeaverServiceName, derive_weaver_service_name};

@@ -9,7 +9,7 @@ use slipfork_edge::{DaemonControl, EdgeError};
 use slipfork_wire::control::{
     BootEvent, DaemonStatus, DropForkRequest, ExecTargetRequest, ForkRequest, ForwardRequest,
     ForwardSummary, HookRunRequest, LogsRequest, PruneReport, UpRequest, WorkspaceRefsRequest,
-    WorkspaceRefsSummary, WorldExecTarget, WorldProcessReport, WorldSelector, WorldSummary,
+    WorkspaceRefsSummary, WorldExecTarget, WorldReport, WorldSelector, WorldSummary,
     WorldUpSummary,
 };
 use slipfork_world::{LogChunk, StreamChunk};
@@ -56,7 +56,7 @@ impl DaemonControl for DaemonService {
         DaemonService::list(self, repo_root)
     }
 
-    fn world_processes(&self, req: &WorldSelector) -> Result<WorldProcessReport, EdgeError> {
+    fn world_processes(&self, req: &WorldSelector) -> Result<WorldReport, EdgeError> {
         DaemonService::world_processes(self, req)
     }
 

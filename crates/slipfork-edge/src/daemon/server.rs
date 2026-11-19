@@ -219,7 +219,7 @@ fn dispatch(
                 worlds: control.list(repo_root.as_deref())?,
             },
         ),
-        DaemonRequest::WorldProcesses(request) => write_reply(
+        DaemonRequest::Worlds(request) => write_reply(
             writer,
             &DaemonReply::Processes {
                 report: control.world_processes(&request)?,

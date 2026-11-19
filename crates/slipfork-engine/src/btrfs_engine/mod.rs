@@ -49,14 +49,11 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use slipfork_world::rootfs::WorldRootfs;
-use slipfork_world::{
-    EngineError, ExecEnv, ExecOutput, StreamChunk, WorldEngine, WorldEntryCommand, WorldHandle,
-    WorldLineage, WorldMount,
-};
+use slipfork_world::{EngineError, ExecEnv, WorldEngine, WorldHandle, WorldLineage, WorldMount};
 
 use crate::WorldStatus;
 use crate::btrfs::KernelBtrfsDriver;
-use crate::child_env::{self, InheritedEnv};
+use crate::child_env::InheritedEnv;
 use crate::supervise::ProcessIdentity;
 
 use services::ServiceRecord;
@@ -97,8 +94,6 @@ impl fmt::Debug for BtrfsEngine {
 pub(crate) struct Shared {
     pub(crate) worlds: Mutex<BTreeMap<u64, WorldRecord>>,
     pub(crate) next_seq: AtomicU64,
-    /// Monotonic seats for transient exec containers (`exec` never reuses a bundle dir).
-    pub(crate) next_exec: AtomicU64,
 }
 
 impl Default for Shared {
@@ -106,7 +101,6 @@ impl Default for Shared {
         Self {
             worlds: Mutex::new(BTreeMap::new()),
             next_seq: AtomicU64::new(0),
-            next_exec: AtomicU64::new(0),
         }
     }
 }
@@ -339,91 +333,6 @@ impl BtrfsEngine {
                 .is_some_and(ProcessIdentity::is_live_leader))
     }
 
-    pub(crate) fn run_in_world(
-        &self,
-        world: &WorldHandle,
-        argv: &[String],
-        cwd: &Path,
-        overlay_env: &ExecEnv,
-        on_output: &mut dyn FnMut(StreamChunk),
-    ) -> Result<ExecOutput, EngineError> {
-        if argv.is_empty() {
-            return Err(EngineError::Execution(
-                "exec argv must not be empty".to_owned(),
-            ));
-        }
-        let env = {
-            let mut worlds = self.lock()?;
-            let record = self.live_record(&mut worlds, world)?;
-            child_env::materialize(&record.base_env, overlay_env, |var| {
-                self.inherited_env.get(var)
-            })
-        };
-        let seat = self.exec_bundle_slot();
-        let mut bundle = pod::WorldProcessBundle::for_exec(self, world, seat, argv, cwd, env)?;
-        bundle.write()?;
-        bundle.execute(on_output)
-    }
-
-    pub(crate) fn world_entry_command(
-        &self,
-        world: &WorldHandle,
-        cwd: &Path,
-    ) -> Result<WorldEntryCommand, EngineError> {
-        let init_pid = {
-            let mut worlds = self.lock()?;
-            let record = self.live_record(&mut worlds, world)?;
-            record.init_pid
-        };
-        let args_prefix = self.entry_prefix(init_pid, cwd);
-        Ok(WorldEntryCommand {
-            program: PathBuf::from("nsenter"),
-            args_prefix,
-            // The thin CLI `chdir`s here before `exec`ing `nsenter`; the in-world start directory
-            // is `--wdns=<cwd>` inside `args_prefix`.
-            cwd: PathBuf::from("/"),
-            consumes_target_argv: false,
-        })
-    }
-
-    /// Interactive entry: a fresh PTY relayed by `script(1)` **after** `setns`.
-    ///
-    /// A process in the world's child PID namespace cannot adopt the caller's terminal
-    /// (`tcsetpgrp` resolves against the tty's own session), so `script` — util-linux, reached
-    /// through the world's 1:1 host mount — allocates a new PTY inside the world and makes its
-    /// child the session leader.
-    ///
-    /// The relay command is `exec '<program>'`: `script -qec` runs it through `/bin/sh -c`, so the
-    /// single program path is single-quoted (and therefore immediately `exec`ed as one literal
-    /// path, never re-parsed). Multi-argument interactive entry is not representable and fails
-    /// closed; the caller must pass exactly one program.
-    pub(crate) fn interactive_entry_command(
-        &self,
-        world: &WorldHandle,
-        cwd: &Path,
-        program: &str,
-    ) -> Result<WorldEntryCommand, EngineError> {
-        let script = script_relay_bin().ok_or_else(script_missing_error)?;
-        let init_pid = {
-            let mut worlds = self.lock()?;
-            let record = self.live_record(&mut worlds, world)?;
-            record.init_pid
-        };
-        let mut args_prefix = self.entry_prefix(init_pid, cwd);
-        args_prefix.extend([
-            script.to_owned(),
-            "-qec".to_owned(),
-            format!("exec {}", shell_single_quote(program)),
-            "/dev/null".to_owned(),
-        ]);
-        Ok(WorldEntryCommand {
-            program: PathBuf::from("nsenter"),
-            args_prefix,
-            cwd: PathBuf::from("/"),
-            consumes_target_argv: true,
-        })
-    }
-
     /// Host path of the world's pinned static `crun`.
     ///
     /// The world owns no root filesystem, so the staged guest path `/.slipfork/bin/crun` inside
@@ -441,71 +350,5 @@ pub(crate) fn io_error(path: &Path, err: &std::io::Error) -> EngineError {
     EngineError::Io {
         path: path.display().to_string(),
         message: err.to_string(),
-    }
-}
-
-/// The `script(1)` relay binary, probed on both util-linux locations.
-fn script_relay_bin() -> Option<&'static str> {
-    ["/usr/bin/script", "/bin/script"]
-        .into_iter()
-        .find(|path| Path::new(path).is_file())
-}
-
-/// Fail-closed diagnostic when the world has no `script(1)` to relay an interactive terminal.
-fn script_missing_error() -> EngineError {
-    EngineError::Execution(
-        "interactive entry needs `script(1)` inside the world\n  fix: install util-linux (script) \
-         or use `slipfork exec -- <cmd>`"
-            .to_owned(),
-    )
-}
-
-/// Fail-closed diagnostic for an interactive entry that is not exactly one program.
-pub(crate) fn interactive_arity_error(count: usize) -> EngineError {
-    EngineError::Execution(format!(
-        "interactive entry needs exactly one program (got {count})\n  fix: use `slipfork exec -- \
-         <cmd>` for multi-argument commands"
-    ))
-}
-
-/// Quote one literal path for `/bin/sh -c` as a single token (`'` becomes `'\''`).
-fn shell_single_quote(value: &str) -> String {
-    let mut quoted = String::from("'");
-    for ch in value.chars() {
-        if ch == '\'' {
-            quoted.push_str("'\\''");
-        } else {
-            quoted.push(ch);
-        }
-    }
-    quoted.push('\'');
-    quoted
-}
-
-#[cfg(test)]
-mod entry_tests {
-    use super::{interactive_arity_error, script_missing_error, shell_single_quote};
-
-    #[test]
-    fn a_single_quoted_program_is_one_literal_shell_token() {
-        assert_eq!(shell_single_quote("/bin/sh"), "'/bin/sh'");
-        assert_eq!(
-            shell_single_quote("/opt/it's here/sh"),
-            "'/opt/it'\\''s here/sh'"
-        );
-    }
-
-    #[test]
-    fn the_missing_script_remedy_names_the_fallback_command() {
-        let message = script_missing_error().to_string();
-        assert!(message.contains("install util-linux (script)"), "{message}");
-        assert!(message.contains("slipfork exec -- <cmd>"), "{message}");
-    }
-
-    #[test]
-    fn a_multi_argument_interactive_entry_fails_closed() {
-        let message = interactive_arity_error(2).to_string();
-        assert!(message.contains("exactly one program (got 2)"), "{message}");
-        assert!(message.contains("slipfork exec -- <cmd>"), "{message}");
     }
 }

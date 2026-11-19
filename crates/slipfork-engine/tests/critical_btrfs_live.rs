@@ -284,8 +284,8 @@ fn run_kernel_suite(root: &Path, state_dir: &Path, driver: KernelBtrfsDriver) {
     );
 
     // 4. SysV IPC isolation across the clones: `shmget(2)` for one fixed key from both worlds. Each
-    //    `exec_in_world` enters with `nsenter --ipc`, so this proves the private IPC namespace the
-    //    world PID 1 was created with (without it, the second clone would see `EEXIST`).
+    //    Every entry joins the published `ipcns` (`nsenter --ipc`), so this proves the private IPC
+    //    namespace the world PID 1 was created with (without it, clone B would see `EEXIST`).
     let created_a = shm_probe(&engine, &world_a, SHM_EXCLUSIVE);
     assert_eq!(
         created_a.exit_code, 0,
@@ -531,7 +531,7 @@ fn run_kernel_suite(root: &Path, state_dir: &Path, driver: KernelBtrfsDriver) {
         "expected ServiceNotRunning, got {err:?}"
     );
     let err = engine
-        .service_entry_command(&client)
+        .service_exec_prefix(&client)
         .expect_err("a stopped container must refuse entry");
     assert!(
         matches!(err, EngineError::ServiceNotRunning { .. }),
@@ -870,10 +870,33 @@ fn container_exec(engine: &BtrfsEngine, service: &ServiceHandle, argv: &[&str]) 
         .expect("exec inside container")
 }
 
-/// `shmget(2)` for one fixed key inside `world`'s private System V IPC namespace.
+/// Run `argv` inside `world`'s published private System V IPC namespace.
 ///
-/// `exec_in_world` enters with `nsenter --ipc`, so the syscall runs in the namespace the world PID 1
-/// was created with; the script exits with the raw `errno` on failure (17 = `EEXIST`).
+/// The engine publishes `/proc/<world-init>/ns/ipc`; joining it with `nsenter --ipc` runs the
+/// syscall in the namespace the world PID 1 was created with, on the test host's own tools.
+fn ipc_exec(engine: &BtrfsEngine, world: &WorldHandle, argv: &[String]) -> ExecOutput {
+    let joins = engine
+        .world_pod_namespaces(world)
+        .expect("a live world publishes its IPC namespace join");
+    let output = std::process::Command::new("nsenter")
+        .arg(format!("--ipc={}", joins.ipcns.display()))
+        .args(["--preserve-credentials", "--"])
+        .args(argv)
+        .env_clear()
+        .env("PATH", "/usr/local/bin:/usr/bin:/bin")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .expect("join the world IPC namespace");
+    ExecOutput {
+        exit_code: output.status.code().unwrap_or(1),
+        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+    }
+}
+
+/// `shmget(2)` for one fixed key inside `world`'s private System V IPC namespace.
 fn shm_probe(engine: &BtrfsEngine, world: &WorldHandle, flags: &str) -> ExecOutput {
     let script = format!(
         "import ctypes\n\
@@ -884,15 +907,11 @@ fn shm_probe(engine: &BtrfsEngine, world: &WorldHandle, flags: &str) -> ExecOutp
          \x20   raise SystemExit(ctypes.get_errno())\n\
          print(shmid)\n"
     );
-    engine
-        .exec_in_world(
-            world,
-            &["python3".to_owned(), "-c".to_owned(), script],
-            Path::new("/"),
-            &ExecEnv::default(),
-            &mut |_| {},
-        )
-        .expect("shmget inside world")
+    ipc_exec(
+        engine,
+        world,
+        &["python3".to_owned(), "-c".to_owned(), script],
+    )
 }
 
 /// `shmctl(shmid, IPC_RMID)` inside `world`'s private System V IPC namespace.
@@ -906,15 +925,11 @@ fn shm_remove(engine: &BtrfsEngine, world: &WorldHandle, shmid: i64) -> ExecOutp
          \x20   raise SystemExit(ctypes.get_errno())\n\
          print(\"removed\")\n"
     );
-    engine
-        .exec_in_world(
-            world,
-            &["python3".to_owned(), "-c".to_owned(), script],
-            Path::new("/"),
-            &ExecEnv::default(),
-            &mut |_| {},
-        )
-        .expect("shmctl inside world")
+    ipc_exec(
+        engine,
+        world,
+        &["python3".to_owned(), "-c".to_owned(), script],
+    )
 }
 
 fn psql(engine: &BtrfsEngine, service: &ServiceHandle, sql: &str) -> String {

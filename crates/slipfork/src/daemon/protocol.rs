@@ -47,7 +47,7 @@ impl ExecWorld {
             .ok_or_else(|| service_not_running(&self.id, id))?;
         let service = self.service(id)?;
         let entry = engine
-            .service_entry_command(&service)
+            .service_exec_prefix(&service)
             .map_err(|err| service_engine_error(&self.id, service.id(), err))?;
         Ok(WorldExecTarget {
             world: self.id.clone(),
@@ -78,7 +78,7 @@ impl ExecWorld {
             .cloned()
             .ok_or_else(|| service_not_running(&self.id, &service_id))?;
         let entry = engine
-            .service_entry_command(&service)
+            .service_exec_prefix(&service)
             .map_err(|err| service_engine_error(&self.id, service.id(), err))?;
         Ok(WorldExecTarget {
             world: self.id.clone(),
@@ -173,7 +173,7 @@ impl DaemonService {
             .ok_or_else(|| service_not_running(&world, &resolved.service))?;
         let entry = self
             .engine
-            .service_entry_command(&service)
+            .service_exec_prefix(&service)
             .map_err(|err| service_engine_error(&world, service.id(), err))?;
         let origin = self
             .registry

@@ -88,7 +88,7 @@ impl CrunSurface {
         state_dir: PathBuf,
     ) -> Self {
         // `crun` is a world binary and each container's own cwd comes from its OCI bundle.
-        let mut prefix = engine.entry_prefix(init_pid, Path::new("/"));
+        let mut prefix = engine.nsenter_prefix(init_pid, Path::new("/"));
         prefix.push(crun_bin.display().to_string());
         prefix.extend([
             "--cgroup-manager=disabled".to_owned(),

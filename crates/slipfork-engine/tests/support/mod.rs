@@ -20,8 +20,8 @@ use slipfork_engine::{BtrfsEngine, InheritedEnv, current_uid_gid};
 use slipfork_world::rootfs::{OciRootfs, WorldRootfs};
 use slipfork_world::{
     BootLineage, ExecEnv, ExecOutput, InheritedVar, LocalIngressBridge, MountMode, ServiceHandle,
-    ServiceLogs, ServiceSpec, SnapshotId, StateSubdirMount, StreamChunk, WorldEngine, WorldHandle,
-    WorldMount, WorldSpec,
+    ServiceLogs, ServiceSpec, SnapshotId, StateSubdirMount, StreamChunk, StreamSource, WorldEngine,
+    WorldHandle, WorldMount, WorldSpec,
 };
 // The one bounded-wait shape and its named deadlines come from the shared testkit, so no suite in
 // this crate can drift into a second copy of the poll loop.
@@ -286,42 +286,42 @@ impl WorldFixture {
 
     pub fn exec_in(&self, world: &WorldHandle, cwd: &Path, script: &str) -> ExecOutput {
         let mut chunks: Vec<StreamChunk> = Vec::new();
-        self.engine
-            .exec_in_world(
-                world,
-                &["sh".to_owned(), "-c".to_owned(), script.to_owned()],
-                cwd,
-                &ExecEnv::default(),
-                &mut |chunk| chunks.push(chunk),
-            )
-            .expect("exec inside world")
+        self.exec_argv(
+            world,
+            &["sh".to_owned(), "-c".to_owned(), script.to_owned()],
+            cwd,
+            &ExecEnv::default(),
+            &mut |chunk| chunks.push(chunk),
+        )
     }
 
-    /// Run `script` through the world's own namespaces (`entry_command`), not a container.
-    ///
-    /// This is the only surface that sees the world init as `/proc/1`; containers have their own
-    /// PID namespace. Read-only introspection journeys use it to prove the world identity.
-    pub fn world_sh(&self, world: &WorldHandle, script: &str) -> ExecOutput {
-        let entry = self
+    /// Run `argv` inside `world`'s namespaces through the host's `nsenter`, starting in `cwd`.
+    pub fn exec_argv(
+        &self,
+        world: &WorldHandle,
+        argv: &[String],
+        cwd: &Path,
+        overlay_env: &ExecEnv,
+        on_output: &mut dyn FnMut(StreamChunk),
+    ) -> ExecOutput {
+        nsenter_exec(
+            self.engine.as_ref(),
+            &self.home,
+            world,
+            argv,
+            cwd,
+            overlay_env,
+            on_output,
+        )
+    }
+
+    /// The live world init's host pid, read from the engine's published namespace joins.
+    pub fn init_pid(&self, world: &WorldHandle) -> u32 {
+        let joins = self
             .engine
-            .entry_command(world, &self.repo)
-            .expect("entry command for a live world");
-        let output = Command::new(&entry.program)
-            .args(&entry.args_prefix)
-            .args(["sh", "-c", script])
-            .env_clear()
-            .env("PATH", "/usr/local/bin:/usr/bin:/bin")
-            .current_dir(&entry.cwd)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .output()
-            .expect("run the world shell");
-        ExecOutput {
-            exit_code: output.status.code().unwrap_or(1),
-            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-        }
+            .world_pod_namespaces(world)
+            .expect("a live world publishes its namespace joins");
+        init_pid_from(&joins)
     }
 
     /// Plan one component pod exactly the way `slipforkd`'s `PodBoot::component` plans it: the
@@ -354,6 +354,84 @@ impl WorldFixture {
     /// subvolume), the world's published namespace joins, and the world's own `-pgid` group.
     pub fn service(&self, world: &WorldHandle, pod: ComponentPod) -> ServiceHandle {
         self.component(world, pod)
+    }
+}
+
+/// The live world-init pid named by the engine's published user-namespace join.
+pub fn init_pid_from(joins: &slipfork_world::PodNamespaces) -> u32 {
+    joins
+        .userns
+        .parent()
+        .and_then(Path::parent)
+        .and_then(Path::file_name)
+        .and_then(|pid| pid.to_str())
+        .and_then(|pid| pid.parse().ok())
+        .expect("the published user namespace join names /proc/<init_pid>/ns/user")
+}
+
+/// Run `argv` inside `world`'s namespaces through the host's `nsenter`, starting in `cwd`.
+///
+/// The world shares the host mount table 1:1, so `cwd` is a real in-world path opened after
+/// `setns` (`--wdns`); the child also sees `SLIPFORK_WORLD_STATE` pointing at the world's CoW
+/// state directory, the same contract a service container gets.
+pub fn nsenter_exec(
+    engine: &BtrfsEngine,
+    home: &Path,
+    world: &WorldHandle,
+    argv: &[String],
+    cwd: &Path,
+    overlay_env: &ExecEnv,
+    on_output: &mut dyn FnMut(StreamChunk),
+) -> ExecOutput {
+    let joins = engine
+        .world_pod_namespaces(world)
+        .expect("a live world publishes its namespace joins");
+    let init_pid = init_pid_from(&joins);
+    let state_dir = engine
+        .world_subvolume(world)
+        .expect("world subvolume")
+        .join("state");
+    let env = world_env(home).overlaid(overlay_env);
+    let mut command = Command::new("nsenter");
+    command
+        .args([
+            format!("--target={init_pid}"),
+            "--user".to_owned(),
+            "--preserve-credentials".to_owned(),
+            "--mount".to_owned(),
+            "--net".to_owned(),
+            "--ipc".to_owned(),
+            "--pid".to_owned(),
+            format!("--wdns={}", cwd.display()),
+            "--".to_owned(),
+        ])
+        .args(argv)
+        .env_clear()
+        .env("SLIPFORK_WORLD_STATE", &state_dir)
+        .current_dir("/")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    for (name, value) in env.iter() {
+        command.env(name, value.as_ref());
+    }
+    let output = command.output().expect("spawn the world namespace entry");
+    if !output.stdout.is_empty() {
+        on_output(StreamChunk {
+            source: StreamSource::Stdout,
+            bytes: output.stdout.clone(),
+        });
+    }
+    if !output.stderr.is_empty() {
+        on_output(StreamChunk {
+            source: StreamSource::Stderr,
+            bytes: output.stderr.clone(),
+        });
+    }
+    ExecOutput {
+        exit_code: output.status.code().unwrap_or(1),
+        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
     }
 }
 

@@ -225,13 +225,13 @@ pub struct ServiceSpec {
     pub id: String,
     /// The caller's classification of this row (`Forkfile` service vs backing service).
     pub kind: ServiceKind,
-    /// Exactly one runtime: an `L0` world process, a daemonless `crun` backing-service container,
-    /// or a `Forkfile` service pod (all three flow through [`WorldEngine::spawn_service`](crate::WorldEngine::spawn_service)).
+    /// Exactly one runtime: a daemonless `crun` backing-service container or a `Forkfile` service
+    /// pod (both flow through [`WorldEngine::spawn_service`](crate::WorldEngine::spawn_service)).
     pub runtime: ServiceRuntime,
-    /// `WorldProcess`: overlay applied on top of `WorldSpec::base_env`. `OciContainer`: the
-    /// container's **complete declared** environment — a container bundle `config.json` never
-    /// carries the world component env. `ServicePod`: stays empty, because the pod spec's own
-    /// [`PodCommand`](crate::pod::PodCommand) carries the container's complete environment.
+    /// `OciContainer`: the container's **complete declared** environment — a container bundle
+    /// `config.json` never carries the world component env. `ServicePod`: stays empty, because the
+    /// pod spec's own [`PodCommand`](crate::pod::PodCommand) carries the container's complete
+    /// environment.
     pub env: ExecEnv,
     /// Port that must accept connections before the service counts as ready.
     pub readiness_port: Option<u16>,
@@ -245,13 +245,6 @@ pub struct ServiceSpec {
 /// [`EngineError::Unsupported`]; it never approximates the pod with another runtime.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ServiceRuntime {
-    /// An `L0` app component running on the world rootfs as `$UID:$GID`.
-    WorldProcess {
-        /// Command and arguments.
-        argv: Vec<String>,
-        /// Working directory inside the world.
-        cwd: PathBuf,
-    },
     /// A daemonless `crun` backing-service container (`ADR-0009` §2).
     ///
     /// The image rootfs is read-only, the container shares the world's `127.0.0.1` (no network
@@ -286,7 +279,7 @@ pub struct StateSubdirMount {
     pub container_path: PathBuf,
 }
 
-/// Result of running [`crate::WorldEngine::exec_in_world`].
+/// Result of running [`crate::WorldEngine::exec_in_service`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExecOutput {
     /// Process exit code (`1` when the process died from a signal).

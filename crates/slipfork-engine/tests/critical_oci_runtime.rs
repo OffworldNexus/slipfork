@@ -393,7 +393,7 @@ fn service_handles_and_logs_are_typed_and_never_fabricated() {
 
     // An app component is not a container: `exec_in_service` fails closed, typed.
     let app = fixture.component(&world, ComponentPod::script("app", "exec sleep 300"));
-    // A component pod is a container: `exec_in_service` and `service_entry_command` work, and an
+    // A component pod is a container: `exec_in_service` and `service_exec_prefix` work, and an
     // unknown id still fails closed with a typed error (never a fabricated handle or log).
     let exec = fixture
         .engine
@@ -402,7 +402,7 @@ fn service_handles_and_logs_are_typed_and_never_fabricated() {
     assert_eq!(exec.exit_code, 0, "stderr: {}", exec.stderr);
     let entry = fixture
         .engine
-        .service_entry_command(&app)
+        .service_exec_prefix(&app)
         .expect("the app container answers an entry command");
     assert!(
         entry.args_prefix.contains(&"exec".to_owned()),
@@ -480,16 +480,18 @@ fn container_bundles_never_carry_the_world_environment() {
     );
 
     let ctl = fixture.state_dir.join("ctl");
-    let entry = fixture
+    let joins = fixture
         .engine
-        .entry_command(&world, &fixture.repo)
-        .expect("entry command for the world whose bundle tree is being read");
-    let init_pid: u32 = entry
-        .args_prefix
-        .iter()
-        .find_map(|arg| arg.strip_prefix("--target="))
+        .world_pod_namespaces(&world)
+        .expect("a live world publishes its namespace joins");
+    let init_pid: u32 = joins
+        .userns
+        .parent()
+        .and_then(Path::parent)
+        .and_then(Path::file_name)
+        .and_then(|pid| pid.to_str())
         .and_then(|pid| pid.parse().ok())
-        .expect("the entry command names the world init pid");
+        .expect("the published user namespace join names the world init pid");
     // The bundles live in the world init's private tmpfs: read them through its mount namespace.
     let mounted_ctl = Path::new("/proc")
         .join(init_pid.to_string())

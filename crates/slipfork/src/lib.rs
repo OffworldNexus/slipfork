@@ -32,7 +32,7 @@
 //! - [`restart`]: the one actionable `up` / `fork` / `restart` block and its `--json` document,
 //!   rendered purely from the daemon's [`slipfork_wire::control::WorldUpSummary`].
 //! - [`ps`]: the `cwd`-scoped view of the same tree, rendered from one
-//!   [`slipfork_wire::control::WorldProcessReport`] read.
+//!   [`slipfork_wire::control::WorldReport`] read.
 //! - [`open`]: world selection, the typed-origin hand-off to [`browser::Browser`], and the verified
 //!   `open --remote` SSH recipe.
 //! - [`browser`]: the one concrete desktop launcher over the Composition Root's resolved program.

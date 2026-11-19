@@ -5,12 +5,12 @@
 //! and every service row — so the CLI reads no process table, sysfs tree, or log directory, and a
 //! `None` pid/port/uptime renders `-`, never an invented `0`.
 
-use slipfork_wire::control::{WorldProcessReport, WorldSummary};
+use slipfork_wire::control::{WorldReport, WorldSummary};
 
 use crate::ui::TerminalUi;
 
 /// The human `ps` block: the one `World -> Services` tree for the selected world.
-pub fn render(report: &WorldProcessReport, ui: &TerminalUi) -> String {
+pub fn render(report: &WorldReport, ui: &TerminalUi) -> String {
     let world = WorldSummary {
         world: report.world.clone(),
         parent: report.parent.clone(),
@@ -27,7 +27,7 @@ pub fn render(report: &WorldProcessReport, ui: &TerminalUi) -> String {
 ///
 /// The field names are the contract: `ok`, `world`, `parent`, `state`, `origin`, `worktree`,
 /// `lineage`, and the flattened service rows. Unknown facts stay `null`, never `0`.
-pub fn json(report: &WorldProcessReport) -> serde_json::Value {
+pub fn json(report: &WorldReport) -> serde_json::Value {
     serde_json::json!({
         "ok": true,
         "world": &report.world,
@@ -93,7 +93,7 @@ mod tests {
         }
     }
 
-    fn report(state: WorldState, services: Vec<WorldServiceSummary>) -> WorldProcessReport {
+    fn report(state: WorldState, services: Vec<WorldServiceSummary>) -> WorldReport {
         let project = ProjectSlug::parse("demo").expect("a valid project slug");
         let route = LocalHostRoute::new(project, WorldTarget::Canonical, None, &[])
             .expect("a routable route");
@@ -106,7 +106,7 @@ mod tests {
             lineage: lineage(),
             services: services.clone(),
         };
-        WorldProcessReport::new(&summary, services).expect("unique service ids")
+        WorldReport::new(&summary, services).expect("unique service ids")
     }
 
     #[test]
@@ -182,7 +182,7 @@ mod tests {
             lineage: lineage(),
             services: Vec::new(),
         };
-        let report = WorldProcessReport::new(&summary, Vec::new()).expect("one world");
+        let report = WorldReport::new(&summary, Vec::new()).expect("one world");
         assert_eq!(json(&report)["parent"], "demo");
         assert_eq!(
             render(&report, &plain()),

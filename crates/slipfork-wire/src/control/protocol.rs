@@ -10,7 +10,7 @@ use super::request::{
     HookRunRequest, LogsRequest, PruneReport, RestartRequest, UpRequest, WorkspaceRefsRequest,
     WorkspaceRefsSummary, WorldExecTarget, WorldSelector,
 };
-use super::view::{BootEvent, DaemonStatus, WorldProcessReport, WorldSummary, WorldUpSummary};
+use super::view::{BootEvent, DaemonStatus, WorldReport, WorldSummary, WorldUpSummary};
 use slipfork_world::{LogChunk, StreamChunk};
 
 /// Typed reason a control call failed, preserved across the socket.
@@ -85,7 +85,7 @@ pub enum DaemonRequest {
         repo_root: Option<PathBuf>,
     },
     /// Read one world's state, lineage, and process rows in a single call (`slipfork ps`).
-    WorldProcesses(WorldSelector),
+    Worlds(WorldSelector),
     /// Preview or reap orphaned worlds and snapshots.
     Prune {
         /// `true` for `--dry-run`.
@@ -169,10 +169,10 @@ pub enum DaemonReply {
         /// Every matching world.
         worlds: Vec<WorldSummary>,
     },
-    /// Reply to [`DaemonRequest::WorldProcesses`].
+    /// Reply to [`DaemonRequest::Worlds`].
     Processes {
         /// The world's state, lineage, and process rows.
-        report: WorldProcessReport,
+        report: WorldReport,
     },
     /// Reply to [`DaemonRequest::Prune`].
     Prune {

@@ -46,7 +46,7 @@ impl BtrfsEngine {
     /// switch, so the process lands on that directory in the world rather than on a detached
     /// host dentry. `--ipc` joins the world's private System V IPC namespace, so `shmget` keys
     /// never collide across parallel worlds (`ADR-0010` §6).
-    pub(crate) fn entry_prefix(&self, init_pid: u32, cwd: &Path) -> Vec<String> {
+    pub(crate) fn nsenter_prefix(&self, init_pid: u32, cwd: &Path) -> Vec<String> {
         vec![
             format!("--target={init_pid}"),
             "--user".to_owned(),

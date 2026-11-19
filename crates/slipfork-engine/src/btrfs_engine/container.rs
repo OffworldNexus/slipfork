@@ -12,8 +12,8 @@ use std::sync::atomic::Ordering;
 
 use slipfork_world::rootfs::BackingServiceKey;
 use slipfork_world::{
-    EngineError, ExecEnv, ExecOutput, MountMode, ServiceHandle, ServiceState, StateSubdirMount,
-    StreamChunk, WorldEntryCommand, WorldMount,
+    EngineError, ExecEnv, ExecOutput, MountMode, ServiceExec, ServiceHandle, ServiceState,
+    StateSubdirMount, StreamChunk, WorldMount,
 };
 
 use crate::child_env;
@@ -292,18 +292,16 @@ impl BtrfsEngine {
         run_streamed_with_input(command, input, on_output)
     }
 
-    pub(crate) fn container_entry_command(
+    pub(crate) fn container_service_exec(
         &self,
         service: &ServiceHandle,
-    ) -> Result<WorldEntryCommand, EngineError> {
+    ) -> Result<ServiceExec, EngineError> {
         let (container, _env, _mode) = self.container_for(service)?;
         let mut args_prefix = container.runtime.prefix();
         args_prefix.extend(["exec".to_owned(), container.id, "--".to_owned()]);
-        Ok(WorldEntryCommand {
+        Ok(ServiceExec {
             program: PathBuf::from("nsenter"),
             args_prefix,
-            cwd: PathBuf::from("/"),
-            consumes_target_argv: false,
         })
     }
 }

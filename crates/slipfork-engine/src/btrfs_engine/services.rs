@@ -1,8 +1,8 @@
 //! Service supervision rows and the `WorldEngine` service verbs: spawn, stop, query, and re-apply
 //! an environment while keeping the retained log (`ADR-0002` §2, `ADR-0009` §3).
 //!
-//! Every service — a `Forkfile` service pod, a legacy world process, or a backing service — is a
-//! daemonless `crun` container; the legacy variants differ only in which bundle is synthesized.
+//! Every service — a `Forkfile` service pod or a backing service — is a daemonless `crun`
+//! container; the variants differ only in which bundle is synthesized.
 
 #![forbid(unsafe_code)]
 
@@ -63,9 +63,6 @@ pub(crate) struct ServiceSpawn<'a> {
 
 /// The engine's own spawn paths, decided once from a [`ServiceSpec`].
 enum SpawnPlan<'a> {
-    /// A test-only `WorldProcess` path (scheduled for deletion in `M3.32.2.2.1.3.2.2`), run as a
-    /// pod-shaped container on the app rootfs.
-    World { argv: &'a [String], cwd: &'a Path },
     /// A backing-service container.
     Container {
         image: &'a BackingServiceKey,
@@ -80,7 +77,7 @@ enum SpawnPlan<'a> {
 impl SpawnPlan<'_> {
     fn argv(&self) -> &[String] {
         match self {
-            Self::World { argv, .. } | Self::Container { argv, .. } => argv,
+            Self::Container { argv, .. } => argv,
             Self::Pod(pod) => pod.argv(),
         }
     }
@@ -98,8 +95,6 @@ impl BtrfsEngine {
             });
         }
         let plan = match &spec.runtime {
-            // Test-only path, scheduled for deletion in `M3.32.2.2.1.3.2.2`.
-            ServiceRuntime::WorldProcess { argv, cwd } => SpawnPlan::World { argv, cwd },
             ServiceRuntime::OciContainer {
                 image,
                 argv,
@@ -148,17 +143,8 @@ impl BtrfsEngine {
             let rootfs = record.rootfs.clone();
             let mounts = record.mounts.clone();
             // Invariant: an OCI container bundle must never carry the world component environment.
-            let env = match &spec.runtime {
-                // Test-only path, scheduled for deletion in `M3.32.2.2.1.3.2.2`.
-                ServiceRuntime::WorldProcess { .. } => {
-                    child_env::materialize(&record.base_env, &spec.env, |var| {
-                        self.inherited_env.get(var)
-                    })
-                }
-                ServiceRuntime::OciContainer { .. } | ServiceRuntime::ServicePod(_) => {
-                    child_env::materialize_container(&spec.env, |var| self.inherited_env.get(var))
-                }
-            };
+            let env =
+                child_env::materialize_container(&spec.env, |var| self.inherited_env.get(var));
             let log = ServiceLogs::new(spec.id.as_str());
             let state = Arc::new(AtomicU8::new(ServiceState::Running.to_bits()));
             let process = Arc::new(Mutex::new(ServiceProcess::default()));
@@ -192,7 +178,6 @@ impl BtrfsEngine {
             process: &process,
         };
         let spawned = match plan {
-            SpawnPlan::World { argv, cwd } => self.spawn_world_process_pod(&spawn, argv, cwd),
             SpawnPlan::Container {
                 image,
                 argv,
@@ -272,17 +257,10 @@ impl BtrfsEngine {
                 .spec
                 .clone()
         };
-        // A world process is a pod-shaped container whose bundle is rewritten on every spawn:
-        // stopping the old container lets the new environment be the one it is created with.
-        // A service pod's bundle is also rewritten: the overlay updates the pod's complete
-        // container environment while its base and argv stay as planned. A backing-service OCI
-        // bundle is fixed at spawn.
+        // A service pod's bundle is rewritten: the overlay updates the pod's complete container
+        // environment while its base and argv stay as planned. A backing-service OCI bundle is
+        // fixed at spawn and refuses a live environment update.
         match &spec.runtime {
-            // Test-only path, scheduled for deletion in `M3.32.2.2.1.3.2.2`.
-            ServiceRuntime::WorldProcess { .. } => {
-                spec.env = env.clone();
-                self.stop_service_inner(service.world(), service.id())?;
-            }
             ServiceRuntime::ServicePod(pod) => {
                 let mut pod = pod.clone();
                 for (name, value) in env.expose_to_child_process() {

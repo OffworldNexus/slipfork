@@ -13,7 +13,7 @@ use slipfork_wire::control::{
     AuthSummary, BootEvent, ControlSecret, DaemonReply, DaemonRequest, DaemonStatus,
     DropForkRequest, ExecTargetRequest, ForkRequest, ForwardRequest, ForwardSummary, FrameReader,
     HookRunRequest, LogsRequest, MAX_CONTROL_FRAME, PruneReport, UpRequest, WorldExecTarget,
-    WorldProcessReport, WorldSelector, WorldSummary, WorldUpSummary, unexpected_reply,
+    WorldReport, WorldSelector, WorldSummary, WorldUpSummary, unexpected_reply,
 };
 use slipfork_world::{LogChunk, StreamChunk};
 
@@ -210,8 +210,8 @@ impl DaemonControl for DaemonControlClient {
         }
     }
 
-    fn world_processes(&self, req: &WorldSelector) -> Result<WorldProcessReport, EdgeError> {
-        match self.call(&DaemonRequest::WorldProcesses(req.clone()))? {
+    fn world_processes(&self, req: &WorldSelector) -> Result<WorldReport, EdgeError> {
+        match self.call(&DaemonRequest::Worlds(req.clone()))? {
             DaemonReply::Processes { report } => Ok(report),
             other => Err(crate::daemon::transport_error(unexpected_reply(&other))),
         }

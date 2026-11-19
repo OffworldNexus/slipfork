@@ -8,9 +8,9 @@ use std::net::TcpStream;
 use std::path::{Path, PathBuf};
 
 use slipfork_world::{
-    EngineError, EntryKind, ExecEnv, ExecOutput, PodNamespaces, ServiceHandle, ServiceLogs,
-    ServiceSpec, SnapshotId, StreamChunk, WorldEngine, WorldEntryCommand, WorldHandle,
-    WorldLineage, WorldServiceInfo, WorldSpec,
+    EngineError, ExecEnv, ExecOutput, PodNamespaces, ServiceExec, ServiceHandle, ServiceLogs,
+    ServiceSpec, SnapshotId, StreamChunk, WorldEngine, WorldHandle, WorldLineage, WorldServiceInfo,
+    WorldSpec,
 };
 
 use super::BtrfsEngine;
@@ -125,48 +125,9 @@ impl WorldEngine for BtrfsEngine {
         self.exec_in_container_with_input(service, argv, input, overlay_env, on_output)
     }
 
-    fn service_entry_command(
-        &self,
-        service: &ServiceHandle,
-    ) -> Result<WorldEntryCommand, EngineError> {
-        self.container_entry_command(service)
+    fn service_exec_prefix(&self, service: &ServiceHandle) -> Result<ServiceExec, EngineError> {
+        self.container_service_exec(service)
     }
-
-    fn exec_in_world(
-        &self,
-        world: &WorldHandle,
-        argv: &[String],
-        cwd: &Path,
-        overlay_env: &ExecEnv,
-        on_output: &mut dyn FnMut(StreamChunk),
-    ) -> Result<ExecOutput, EngineError> {
-        self.run_in_world(world, argv, cwd, overlay_env, on_output)
-    }
-
-    fn entry_command(
-        &self,
-        world: &WorldHandle,
-        cwd: &Path,
-    ) -> Result<WorldEntryCommand, EngineError> {
-        self.world_entry_command(world, cwd)
-    }
-
-    fn entry_command_for(
-        &self,
-        world: &WorldHandle,
-        cwd: &Path,
-        kind: EntryKind,
-        argv: &[String],
-    ) -> Result<WorldEntryCommand, EngineError> {
-        match (kind, argv) {
-            (EntryKind::Interactive, [program]) => {
-                self.interactive_entry_command(world, cwd, program)
-            }
-            (EntryKind::Interactive, _) => Err(super::interactive_arity_error(argv.len())),
-            (EntryKind::Exec, _) => self.world_entry_command(world, cwd),
-        }
-    }
-
     fn dial_world_tcp(&self, world: &WorldHandle, port: u16) -> Result<TcpStream, EngineError> {
         self.open_world_tcp(world, port)
     }

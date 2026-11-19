@@ -23,7 +23,7 @@ use slipfork_edge::{
     render_socket_unit, resolve_listener_set,
 };
 use slipfork_wire::control::{
-    DaemonStatus, IngressInfo, WorldProcessReport, WorldServiceSummary, WorldState, WorldSummary,
+    DaemonStatus, IngressInfo, WorldReport, WorldServiceSummary, WorldState, WorldSummary,
 };
 use slipfork_world::{
     BaseLineage, CacheOutcome, RootfsLineage, SeedLineage, ServiceImageLineage, ServiceKind,
@@ -825,7 +825,7 @@ fn world_summary_parent_and_lineage_survive_serde() {
 
 #[test]
 fn world_process_reports_are_world_scoped_and_keep_stopped_rows() {
-    let canonical = WorldProcessReport::new(
+    let canonical = WorldReport::new(
         &report_world("acme", WorldState::Running, empty_lineage()),
         vec![
             service_row("acme", "api", ServiceKind::Component, ServiceState::Running),
@@ -838,7 +838,7 @@ fn world_process_reports_are_world_scoped_and_keep_stopped_rows() {
         ],
     )
     .expect("unique ids");
-    let fork = WorldProcessReport::new(
+    let fork = WorldReport::new(
         &report_world("acme:feat", WorldState::Stopped, empty_lineage()),
         vec![service_row(
             "acme:feat",
@@ -893,18 +893,18 @@ fn world_process_reports_are_world_scoped_and_keep_stopped_rows() {
     );
     assert_eq!(json["services"][1]["pid"], serde_json::Value::Null);
     assert_eq!(
-        serde_json::from_value::<WorldProcessReport>(json).expect("process report round-trip"),
+        serde_json::from_value::<WorldReport>(json).expect("process report round-trip"),
         canonical
     );
     let mut unknown_state = serde_json::to_value(&canonical).expect("serialize the process report");
     unknown_state["services"][0]["state"] = serde_json::json!("zombie");
     assert!(
-        serde_json::from_value::<WorldProcessReport>(unknown_state).is_err(),
+        serde_json::from_value::<WorldReport>(unknown_state).is_err(),
         "an unknown service state must fail closed, never default"
     );
 
     // Duplicate ids are refused: `services[].id` stays a 1:1 join key.
-    let duplicate = WorldProcessReport::new(
+    let duplicate = WorldReport::new(
         &report_world("acme", WorldState::Running, empty_lineage()),
         vec![
             service_row("acme", "api", ServiceKind::Component, ServiceState::Running),

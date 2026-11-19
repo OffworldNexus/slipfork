@@ -16,7 +16,6 @@ use slipfork_forkfile::{
     EvaluatedFork, EvaluatedTask, FileVaultProvider, OsCsprngEntropy, Resolvers, TaintedString,
 };
 use slipfork_wire::control::{ExecService, ExecTargetRequest, WorldSelector};
-use slipfork_world::EntryKind;
 
 use crate::CliApp;
 use crate::commands::control::{connect, repo_root};
@@ -234,7 +233,6 @@ pub(crate) fn run(
                 world: world.clone(),
                 service: ExecService::App(service_id.clone()),
                 argv,
-                entry_kind: EntryKind::Exec,
             })
             .map_err(|err| err.to_string())?;
         let status = spawn_entry(&target)?;

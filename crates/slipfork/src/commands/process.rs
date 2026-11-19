@@ -11,7 +11,6 @@ use slipfork_vcs::WORKTREES_DIRECTORY;
 use slipfork_wire::control::{
     ExecService, ExecTargetRequest, HookRunRequest, LogsRequest, WorldSelector,
 };
-use slipfork_world::EntryKind;
 use slipfork_world::StreamSource;
 
 use crate::CliApp;
@@ -57,7 +56,6 @@ pub(crate) fn exec(
             world,
             service,
             argv,
-            entry_kind: EntryKind::Exec,
         })
         .map_err(|err| err.to_string())?;
     let status = spawn_entry(&target)?;
@@ -102,13 +100,6 @@ pub(crate) fn shell(
             world,
             service,
             argv: vec![shell],
-            // A real interactive hand-over needs both ends: `shell | tee log` must stay
-            // byte-clean, so the engine only bakes a PTY when stdout is a terminal too.
-            entry_kind: if app.ui.stdout_tty {
-                EntryKind::Interactive
-            } else {
-                EntryKind::Exec
-            },
         })
         .map_err(|err| err.to_string())?;
     let prompt = match &target.service {
@@ -301,8 +292,6 @@ fn service_entry(
             world,
             service: ExecService::Backing(selection.service.clone()),
             argv,
-            // A terminal gets the interactive client; a pipe gets the plain exec bridge.
-            entry_kind: client_entry_kind(app.ui.stdin_tty, app.ui.stdout_tty),
         })
         .map_err(entry_refusal)?;
     // A pipe is a script's turn: the world's own published `...url` resource fact is the connection
@@ -326,15 +315,6 @@ fn entry_refusal(err: EdgeError) -> String {
         format!("{message}\n  next: slipfork up")
     } else {
         message
-    }
-}
-
-/// The entry a data client needs: interactive only when both ends are a terminal.
-fn client_entry_kind(stdin_tty: bool, stdout_tty: bool) -> EntryKind {
-    if stdin_tty && stdout_tty {
-        EntryKind::Interactive
-    } else {
-        EntryKind::Exec
     }
 }
 

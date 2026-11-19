@@ -431,16 +431,24 @@ impl WorldFixture {
         world
     }
 
-    /// Run `sh -c <script>` inside the world through the real namespace entry.
+    /// Run `sh -c <script>` inside a real service pod joined to `world`'s published namespaces.
     pub fn exec(&self, world: &WorldHandle, script: &str) -> Result<ExecOutput, EngineError> {
-        let mut chunks: Vec<StreamChunk> = Vec::new();
-        self.engine.exec_in_world(
+        let pod = crate::pods::ServicePod::spawn(
+            self.engine.as_ref(),
             world,
-            &["sh".to_owned(), "-c".to_owned(), script.to_owned()],
             &self.repo,
+            &self.rootfs.app_rootfs,
+            crate::pods::PodPlan::new("fixture-exec", &["sh", "-c", "exec sleep 600"]),
+        )?;
+        let mut chunks: Vec<StreamChunk> = Vec::new();
+        let output = self.engine.exec_in_service(
+            pod.handle(),
+            &["sh".to_owned(), "-c".to_owned(), script.to_owned()],
             &ExecEnv::default(),
             &mut |chunk| chunks.push(chunk),
-        )
+        );
+        let _ = self.engine.stop_service(pod.handle());
+        output
     }
 
     /// Boot one real service pod in `world` through the same engine path `slipforkd` uses.

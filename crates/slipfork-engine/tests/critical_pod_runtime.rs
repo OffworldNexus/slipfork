@@ -132,7 +132,7 @@ fn a_service_pod_boots_into_the_world_namespaces_and_runs_crun_exec() {
         "the bundle config must never appear on the host state directory: {}",
         config_path.display()
     );
-    let config_text = fx.world_sh(&world, &format!("cat '{}'", config_path.display()));
+    let config_text = fx.exec(&world, &format!("cat '{}'", config_path.display()));
     assert_eq!(
         config_text.exit_code, 0,
         "read the in-world bundle config: {}",
@@ -140,7 +140,7 @@ fn a_service_pod_boots_into_the_world_namespaces_and_runs_crun_exec() {
     );
     let config: serde_json::Value = serde_json::from_str(&config_text.stdout).expect("bundle json");
     assert_eq!(
-        fx.world_sh(&world, &format!("stat -c %a '{}'", config_path.display()))
+        fx.exec(&world, &format!("stat -c %a '{}'", config_path.display()))
             .stdout
             .trim(),
         "600",
@@ -256,7 +256,7 @@ fn a_service_pod_boots_into_the_world_namespaces_and_runs_crun_exec() {
 
     let entry = fx
         .engine
-        .service_entry_command(&handle)
+        .service_exec_prefix(&handle)
         .expect("entry command");
     assert!(
         entry.args_prefix.contains(&"exec".to_owned()),

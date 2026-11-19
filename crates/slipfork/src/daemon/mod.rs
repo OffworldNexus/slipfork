@@ -11,7 +11,7 @@
 //!
 //! World handles live only here (`H-010` #1): `up`/`fork` clone and attach a world, `down`/`drop`
 //! release it, and the thin CLI only ever receives serializable summaries and the direct-entry
-//! [`slipfork_world::WorldEntryCommand`].
+//! [`slipfork_world::ServiceExec`].
 
 use crate::browser::Browser;
 use crate::layout::Layout;

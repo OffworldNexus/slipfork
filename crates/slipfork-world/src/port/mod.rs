@@ -16,8 +16,7 @@ pub use values::{
 };
 
 use crate::{
-    EntryKind, ExecEnv, PodNamespaces, ServiceLogs, StreamChunk, WorldEntryCommand, WorldLineage,
-    WorldServiceInfo,
+    ExecEnv, PodNamespaces, ServiceExec, ServiceLogs, StreamChunk, WorldLineage, WorldServiceInfo,
 };
 
 /// Core Dependency Injection port for CoW world creation, cloning, execution, and teardown.
@@ -252,54 +251,14 @@ pub trait WorldEngine: Send + Sync {
         })
     }
 
-    /// `crun exec` entry command for interactive service clients (`slipfork db` -> `psql`,
-    /// `slipfork redis` -> `redis-cli`, `ADR-0009` §3).
+    /// `crun exec` argv prefix for the thin CLI to enter a **running service container** with
+    /// inherited native stdio (`slipfork db` -> `psql`, `slipfork redis` -> `redis-cli`,
+    /// `slipfork shell`, hooks; `ADR-0009` §3, `H-010` #1).
     ///
     /// Fails closed with [`EngineError::ServiceNotRunning`] unless the service is
-    /// [`crate::ServiceState::Running`].
-    fn service_entry_command(
-        &self,
-        service: &ServiceHandle,
-    ) -> Result<WorldEntryCommand, EngineError>;
-
-    /// Execute `argv` inside `world` under the effective environment
-    /// (`world.base_env ⊕ overlay_env`), streaming interleaved output chunks to `on_output`.
-    ///
-    /// `cwd` is the caller's **host** directory: the engine maps it through the world's bind
-    /// mounts and starts `argv` on that in-world path (the rootfs `/` when the directory is not
-    /// mounted), so the child's first `getcwd(2)` succeeds.
-    fn exec_in_world(
-        &self,
-        world: &WorldHandle,
-        argv: &[String],
-        cwd: &std::path::Path,
-        overlay_env: &ExecEnv,
-        on_output: &mut dyn FnMut(StreamChunk),
-    ) -> Result<ExecOutput, EngineError>;
-
-    /// Argv prefix letting the thin CLI enter `world` directly with inherited stdio (`H-010` #1).
-    ///
-    /// `cwd` is the caller's **host** directory; the returned `args_prefix` starts the target on
-    /// that directory's in-world mapping (or the world rootfs `/`), never on the host pathname.
-    fn entry_command(
-        &self,
-        world: &WorldHandle,
-        cwd: &std::path::Path,
-    ) -> Result<WorldEntryCommand, EngineError>;
-
-    /// Like [`Self::entry_command`], but for a caller-declared [`EntryKind`].
-    ///
-    /// `Exec` keeps the plain bridge prefix (the CLI appends the target argv). `Interactive` lets
-    /// an engine bake a PTY relay into the prefix: the relay runs `script -qec 'exec <program>'`,
-    /// which `/bin/sh -c` re-parses, so `argv` must be exactly one **literal program path** and
-    /// the engine owns quoting and fails closed otherwise. Every engine must implement this.
-    fn entry_command_for(
-        &self,
-        world: &WorldHandle,
-        cwd: &std::path::Path,
-        kind: EntryKind,
-        argv: &[String],
-    ) -> Result<WorldEntryCommand, EngineError>;
+    /// [`crate::ServiceState::Running`]. There is no world-rootfs entry: every callable surface is
+    /// a service pod or a backing-service container.
+    fn service_exec_prefix(&self, service: &ServiceHandle) -> Result<ServiceExec, EngineError>;
 
     /// Open a TCP stream to `127.0.0.1:<port>` **inside** `world`'s network namespace.
     ///

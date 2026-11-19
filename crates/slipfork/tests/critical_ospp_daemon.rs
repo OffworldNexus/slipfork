@@ -233,18 +233,14 @@ fn run_service_entry(
             world: None,
             service: ExecService::Backing(service.to_owned()),
             argv: argv.iter().map(|arg| (*arg).to_owned()).collect(),
-            entry_kind: slipfork_world::EntryKind::Exec,
         })
         .expect("a running service must be enterable through the typed control port");
-    let mut args = target.entry.args_prefix.clone();
-    if args.last().map(String::as_str) == Some("--") {
-        args.pop();
-    }
+    let args = target.entry.args_prefix.clone();
     let mut command = Command::new(&target.entry.program);
     command
         .args(&args)
         .args(&target.target_argv)
-        .current_dir(&target.entry.cwd)
+        .current_dir("/")
         .env_clear()
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -276,7 +272,7 @@ fn zstd_compress(archive: &[u8]) -> Vec<u8> {
 }
 
 /// One `--json ps` row's uptime in whole seconds (`0` when the service is missing).
-fn uptime(rows: &slipfork_wire::control::WorldProcessReport, id: &str) -> u64 {
+fn uptime(rows: &slipfork_wire::control::WorldReport, id: &str) -> u64 {
     rows.services
         .iter()
         .find(|row| row.info.id == id)

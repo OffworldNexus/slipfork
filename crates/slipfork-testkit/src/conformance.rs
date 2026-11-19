@@ -161,50 +161,38 @@ pub fn assert_world_engine_conformance(
         engine.name()
     );
 
-    // 5. Entry commands name a real program, carry an argv prefix, and start the target on a
-    //    directory that exists inside the world — never on the caller's host pathname, which has
-    //    no reachable `getcwd(2)` after the world's `pivot_root` (the shell prints a `getcwd`
-    //    failure). The entry process still starts at `/`, the one directory that exists on the
-    //    host and inside every world rootfs, and reaches the mounted worktree via `--wdns`.
-    let entry_cwd = scratch_dir.join("repo");
-    let entry = engine
-        .entry_command(&world, &entry_cwd)
-        .expect("every engine must supply an entry command for a live world");
+    // 5. A live world publishes the three namespace joins every service pod enters, each an
+    //    existing `/proc/<init_pid>/ns/*` path — never a host pathname or a fabricated join.
+    let namespaces = engine
+        .world_pod_namespaces(&world)
+        .expect("every engine must publish a live world's namespace joins");
+    let init_pid = namespaces
+        .userns
+        .parent()
+        .and_then(Path::parent)
+        .and_then(Path::file_name)
+        .and_then(|pid| pid.to_str())
+        .and_then(|pid| pid.parse::<u32>().ok())
+        .expect("the published user namespace join must name /proc/<init_pid>/ns/user");
     assert!(
-        !entry.program.as_os_str().is_empty(),
-        "{} entry program must not be empty",
+        Path::new(&format!("/proc/{init_pid}")).exists(),
+        "{} must publish joins that name a live world-init pid",
         engine.name()
     );
-    assert!(
-        !entry.args_prefix.is_empty(),
-        "{} entry command needs an argv prefix",
-        engine.name()
-    );
-    assert_eq!(
-        entry.cwd,
-        Path::new("/"),
-        "{} entry command must spawn in `/`, the one directory that exists on the host and inside \
-         every world rootfs",
-        engine.name()
-    );
-    // The world shares the host mount table 1:1, so the requested directory is the directory the
-    // entry process must land on — after `setns`, and only via `--wdns` (never a pre-setns `--wd`).
-    assert!(
-        entry
-            .args_prefix
-            .iter()
-            .any(|arg| *arg == format!("--wdns={}", entry_cwd.display())),
-        "{} entry command must start in the requested directory ({}): {:?}",
-        engine.name(),
-        entry_cwd.display(),
-        entry.args_prefix
-    );
-    assert!(
-        !entry.args_prefix.iter().any(|arg| arg.starts_with("--wd=")),
-        "{} entry command must open its directory after the namespace switch: {:?}",
-        engine.name(),
-        entry.args_prefix
-    );
+    for join in [&namespaces.userns, &namespaces.netns, &namespaces.ipcns] {
+        assert!(
+            join.is_absolute(),
+            "{} must publish absolute namespace joins: {}",
+            engine.name(),
+            join.display()
+        );
+        assert!(
+            join.exists(),
+            "{} published a namespace join that does not exist: {}",
+            engine.name(),
+            join.display()
+        );
+    }
 
     // 6. Dialing a live world either works, or fails closed with a typed error — never a
     //    fabricated stream and never a hang.

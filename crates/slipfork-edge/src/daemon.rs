@@ -21,7 +21,7 @@ use slipfork_wire::control::{
     AuthSummary, BootEvent, ControlError, DaemonError, DaemonErrorKind, DaemonStatus,
     DropForkRequest, ExecTargetRequest, ForkRequest, ForwardRequest, ForwardSummary,
     HookRunRequest, LogsRequest, PruneReport, UpRequest, WorkspaceRefsRequest,
-    WorkspaceRefsSummary, WorldExecTarget, WorldProcessReport, WorldSelector, WorldSummary,
+    WorkspaceRefsSummary, WorldExecTarget, WorldReport, WorldSelector, WorldSummary,
     WorldUpSummary,
 };
 use slipfork_world::{LogChunk, StreamChunk};
@@ -104,7 +104,7 @@ pub trait DaemonControl: Send + Sync {
     /// The world's `state` comes from the same read as the rows, so `slipfork ps` never needs a
     /// second status call. An unknown or never-booted world fails closed with a typed
     /// `UnknownWorld` error — never an empty report.
-    fn world_processes(&self, req: &WorldSelector) -> Result<WorldProcessReport, EdgeError>;
+    fn world_processes(&self, req: &WorldSelector) -> Result<WorldReport, EdgeError>;
 
     /// Preview or reap orphaned worlds and snapshots.
     fn prune(&self, dry_run: bool) -> Result<PruneReport, EdgeError>;

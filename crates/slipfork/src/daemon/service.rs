@@ -10,8 +10,7 @@ use slipfork_forkfile::EntropySource;
 use slipfork_vcs::{RepoRootResolver, VcsWorkspaceFactory};
 use slipfork_wire::control::{
     CONTROL_VIEW_VERSION, DaemonError, DaemonErrorKind, DaemonStatus, IngressInfo, PruneReport,
-    WorldProcessReport, WorldSelector, WorldServiceSummary, WorldState, WorldSummary,
-    WorldUpSummary,
+    WorldReport, WorldSelector, WorldServiceSummary, WorldState, WorldSummary, WorldUpSummary,
 };
 use slipfork_world::{ProjectSlug, WorldEngine, WorldHandle, WorldTarget};
 use std::path::{Path, PathBuf};
@@ -229,10 +228,7 @@ impl DaemonService {
 }
 
 impl DaemonService {
-    pub(super) fn world_processes(
-        &self,
-        req: &WorldSelector,
-    ) -> Result<WorldProcessReport, EdgeError> {
+    pub(super) fn world_processes(&self, req: &WorldSelector) -> Result<WorldReport, EdgeError> {
         let selection = self.select(&req.cwd, req.world.as_deref())?;
         let (state, worktree, handle, feature_selection) = {
             let world_state = self.lock();
@@ -266,7 +262,7 @@ impl DaemonService {
             lineage,
             services: services.clone(),
         };
-        WorldProcessReport::new(&summary, services)
+        WorldReport::new(&summary, services)
             .map(|report| report.with_feature_selection(feature_selection))
             .map_err(EdgeError::Control)
     }

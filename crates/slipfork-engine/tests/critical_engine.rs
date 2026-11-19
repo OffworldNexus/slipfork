@@ -28,7 +28,7 @@ use slipfork_testkit::pods::ComponentPod;
 use slipfork_world::WorldTarget;
 use slipfork_world::{
     BootLineage, EngineError, ExecEnv, InheritedVar, LocalIngressBridge, MountMode, ServiceState,
-    SnapshotId, StreamChunk, WorldEngine, WorldEntryCommand, WorldHandle, WorldMount, WorldSpec,
+    SnapshotId, StreamChunk, WorldEngine, WorldHandle, WorldMount, WorldSpec,
 };
 use support::{
     POLL_INTERVAL, WorldFixture, engine_test_dir, inherited_env, log_text, observe_for, poll_until,
@@ -47,16 +47,6 @@ const ENGINE_SETTLE_DEADLINE: Duration = Duration::from_secs(10);
 
 fn snap(label: &str) -> SnapshotId {
     SnapshotId(label.to_owned())
-}
-
-fn target_pid(entry: &WorldEntryCommand) -> u32 {
-    // `entry_command` names the world's persistent PID 1 in `nsenter --target=<init_pid>`.
-    entry
-        .args_prefix
-        .iter()
-        .find_map(|arg| arg.strip_prefix("--target="))
-        .and_then(|pid| pid.parse().ok())
-        .expect("entry command must carry nsenter --target=<init_pid>")
 }
 
 /// Every host-visible descendant of `pid` (the container's process tree, crun included).
@@ -182,22 +172,19 @@ fn r10_r11_btrfs_conformance_cow_isolation_uid_and_parallel_same_port() {
 
     // 3. World A's writes (state + shared workspace) never leak into world B; files stay host-owned.
     let mut streamed: Vec<StreamChunk> = Vec::new();
-    let out = fx
-        .engine
-        .exec_in_world(
-            &world_a,
-            &[
-                "sh".to_owned(),
-                "-c".to_owned(),
-                "echo mutated-a >> \"$SLIPFORK_WORLD_STATE/seed.txt\"; \
-                 printf 'host-owned\\n' > generated.txt; echo \"$HOME\"; id -u; id -g"
-                    .to_owned(),
-            ],
-            &workspace_a,
-            &ExecEnv::default(),
-            &mut |chunk| streamed.push(chunk),
-        )
-        .expect("exec world a");
+    let out = fx.exec_argv(
+        &world_a,
+        &[
+            "sh".to_owned(),
+            "-c".to_owned(),
+            "echo mutated-a >> \"$SLIPFORK_WORLD_STATE/seed.txt\"; \
+             printf 'host-owned\\n' > generated.txt; echo \"$HOME\"; id -u; id -g"
+                .to_owned(),
+        ],
+        &workspace_a,
+        &ExecEnv::default(),
+        &mut |chunk| streamed.push(chunk),
+    );
     assert_eq!(out.exit_code, 0, "stderr: {}", out.stderr);
     assert!(!streamed.is_empty(), "exec must stream output chunks");
     let mut lines = out.stdout.lines();
@@ -226,16 +213,17 @@ fn r10_r11_btrfs_conformance_cow_isolation_uid_and_parallel_same_port() {
                    print(\"BOUND_OK\", s.getsockname()[1])\n";
     let bind_in_world = |world: WorldHandle, cwd: PathBuf| {
         let engine = Arc::clone(&fx.engine);
+        let home = fx.home.clone();
         thread::spawn(move || {
-            engine
-                .exec_in_world(
-                    &world,
-                    &["python3".to_owned(), "-c".to_owned(), bind_py.to_owned()],
-                    &cwd,
-                    &ExecEnv::default(),
-                    &mut |_| {},
-                )
-                .expect("parallel exec")
+            support::nsenter_exec(
+                engine.as_ref(),
+                &home,
+                &world,
+                &["python3".to_owned(), "-c".to_owned(), bind_py.to_owned()],
+                &cwd,
+                &ExecEnv::default(),
+                &mut |_| {},
+            )
         })
     };
     let out_a = bind_in_world(world_a.clone(), workspace_a.clone())
@@ -698,20 +686,17 @@ fn redacted_exec_env_and_opaque_world_handles() {
         })
         .expect("clone");
     let mut chunks = Vec::new();
-    let out = fx
-        .engine
-        .exec_in_world(
-            &world,
-            &[
-                "sh".to_owned(),
-                "-c".to_owned(),
-                "printf '%s|%s|%s' \"$API_TOKEN\" \"$APP_URL\" \"$HOME\"".to_owned(),
-            ],
-            &fx.root,
-            &overlay,
-            &mut |chunk| chunks.push(chunk),
-        )
-        .expect("exec world");
+    let out = fx.exec_argv(
+        &world,
+        &[
+            "sh".to_owned(),
+            "-c".to_owned(),
+            "printf '%s|%s|%s' \"$API_TOKEN\" \"$APP_URL\" \"$HOME\"".to_owned(),
+        ],
+        &fx.root,
+        &overlay,
+        &mut |chunk| chunks.push(chunk),
+    );
     assert_eq!(out.exit_code, 0, "stderr: {}", out.stderr);
     assert_eq!(
         out.stdout,
@@ -740,35 +725,14 @@ fn persistent_init_pid_stays_stable_across_calls_and_is_reaped_on_destroy() {
     let fx = WorldFixture::new("persistent-init");
     let world = fx.world(WorldTarget::Canonical);
 
-    let entry = fx.engine.entry_command(&world, &fx.repo).expect("entry");
-    let init_pid = target_pid(&entry);
-    assert_eq!(
-        entry.program,
-        PathBuf::from("nsenter"),
-        "BtrfsEngine enters via a single-threaded nsenter child"
-    );
-    assert!(
-        entry
-            .args_prefix
-            .iter()
-            .any(|arg| arg == &format!("--wdns={}", fx.repo.display()))
-            && !entry.args_prefix.iter().any(|arg| arg.starts_with("--wd=")),
-        "entry must start the worktree's in-world path at a directory the world carries, opened \
-         after the namespace switch: {:?}",
-        entry.args_prefix
-    );
-    assert_eq!(
-        entry.cwd,
-        Path::new("/"),
-        "the spawner chdirs to `/`, which exists on the host and in every world rootfs"
-    );
+    let init_pid = fx.init_pid(&world);
     assert!(
         Path::new(&format!("/proc/{init_pid}")).exists(),
         "the world PID 1 must be a live host process"
     );
 
     // The world's `/proc/1` really is our persistent init, not a throw-away exec scope.
-    let out = fx.world_sh(
+    let out = fx.exec(
         &world,
         "tr '\\0' ' ' < /proc/1/cmdline; echo; stat -c %i /proc/1/ns/pid",
     );
@@ -779,12 +743,11 @@ fn persistent_init_pid_stays_stable_across_calls_and_is_reaped_on_destroy() {
         out.stdout
     );
 
-    // Consecutive exec/entry calls keep the same PID 1 and the same PID namespace.
-    let namespace_before = fx.world_sh(&world, "stat -c %i /proc/1/ns/pid").stdout;
+    // Consecutive namespace entries keep the same PID 1 and the same PID namespace.
+    let namespace_before = fx.exec(&world, "stat -c %i /proc/1/ns/pid").stdout;
     for _ in 0..3 {
-        let again = fx.engine.entry_command(&world, &fx.repo).expect("entry");
-        assert_eq!(target_pid(&again), init_pid, "init_pid must not change");
-        let out = fx.world_sh(&world, "stat -c %i /proc/1/ns/pid");
+        assert_eq!(fx.init_pid(&world), init_pid, "init_pid must not change");
+        let out = fx.exec(&world, "stat -c %i /proc/1/ns/pid");
         assert_eq!(out.exit_code, 0, "stderr: {}", out.stderr);
         assert_eq!(
             out.stdout, namespace_before,
@@ -806,8 +769,8 @@ fn persistent_init_pid_stays_stable_across_calls_and_is_reaped_on_destroy() {
     );
     let err = fx
         .engine
-        .entry_command(&world, &fx.repo)
-        .expect_err("a destroyed world cannot be entered");
+        .world_pod_namespaces(&world)
+        .expect_err("a destroyed world publishes no namespace joins");
     assert!(matches!(err, EngineError::WorldGone { .. }));
     let _ = fs::remove_dir_all(&fx.root);
 }
@@ -1318,14 +1281,18 @@ fn two_worlds_isolate_the_same_port_and_dial_independently() {
 }
 
 #[test]
-fn entry_command_enters_the_persistent_init_pid_with_native_stdio() {
-    let fx = WorldFixture::new("entry-command");
+fn service_exec_prefix_enters_a_running_pod_with_native_stdio() {
+    let fx = WorldFixture::new("service-entry");
     let world = fx.world(WorldTarget::Canonical);
-    let entry = fx.engine.entry_command(&world, &fx.repo).expect("entry");
+    let pod = fx.component(&world, ComponentPod::script("entry-pod", "exec sleep 300"));
     let (uid, _gid) = current_uid_gid();
 
     // Spawn the engine-supplied prefix directly (the thin CLI does exactly this with inherited
     // stdio): no descriptor handover, no PTY, no daemon involvement.
+    let entry = fx
+        .engine
+        .service_exec_prefix(&pod)
+        .expect("a running pod has a crun exec prefix");
     let out = Command::new(&entry.program)
         .args(&entry.args_prefix)
         .args([
@@ -1335,43 +1302,45 @@ fn entry_command_enters_the_persistent_init_pid_with_native_stdio() {
         ])
         .env_clear()
         .env("PATH", HELPER_PATH)
-        .current_dir(&entry.cwd)
+        .current_dir("/")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output()
-        .expect("spawn entry command");
+        .expect("spawn the service entry");
     assert!(
         out.status.success(),
-        "direct entry failed: {}",
+        "direct service entry failed: {}",
         String::from_utf8_lossy(&out.stderr)
     );
     let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
-    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
     assert!(
         stdout.starts_with(&format!("entered|{uid}|")),
-        "entry must preserve the host uid: {stdout}"
-    );
-    assert!(
-        !stderr.contains("getcwd"),
-        "the entry shell's first getcwd(2) must succeed in-world: {stderr}"
+        "service entry must preserve the host uid: {stdout}"
     );
     let via_exec = fx
-        .world_sh(&world, "stat -Lc %i /proc/self/ns/net")
+        .engine
+        .exec_in_service(
+            &pod,
+            &[
+                "sh".to_owned(),
+                "-c".to_owned(),
+                "stat -Lc %i /proc/self/ns/net".to_owned(),
+            ],
+            &ExecEnv::default(),
+            &mut |_| {},
+        )
+        .expect("exec inside the pod")
         .stdout
         .trim()
         .to_owned();
     assert!(
         stdout.contains(&via_exec),
-        "entry and exec must share the world network namespace: {stdout} vs {via_exec}"
+        "service entry and exec must share the pod network namespace: {stdout} vs {via_exec}"
     );
     assert!(
         stdout.contains(fx.repo.display().to_string().as_str()),
-        "entry must start in the requested cwd: {stdout}"
-    );
-    assert_eq!(
-        target_pid(&entry),
-        target_pid(&fx.engine.entry_command(&world, &fx.repo).unwrap())
+        "service entry must start in the pod's own cwd: {stdout}"
     );
 
     fx.engine.destroy_world(world).expect("destroy");
@@ -1379,40 +1348,22 @@ fn entry_command_enters_the_persistent_init_pid_with_native_stdio() {
 }
 
 #[test]
-fn entry_and_exec_start_on_the_in_world_directory_mapped_from_the_host_path() {
+fn service_entry_and_exec_start_on_the_pod_directory_under_the_live_worktree() {
     let fx = WorldFixture::new("in-world-cwd");
     let sub = fx.repo.join("pkg");
     fs::create_dir_all(&sub).expect("repo subdir");
-    // The world shares the host mount table 1:1, so the worktree is visible at its real path; the
-    // entry/exec cwd is that path, never a remapped guest name.
-    let world = fx
-        .engine
-        .clone_world(&WorldSpec {
-            target: WorldTarget::Canonical,
-            rootfs: fx.rootfs.clone(),
-            snapshot: fx.snapshot.clone(),
-            mounts: vec![WorldMount {
-                host_path: fx.repo.clone(),
-                guest_path: fx.repo.clone(),
-                mode: MountMode::ReadWrite,
-            }],
-            base_env: world_env(&fx.home),
-            local_ingress: None,
-            boot: BootLineage::default(),
-        })
-        .expect("clone world");
+    let world = fx.world(WorldTarget::Canonical);
 
-    // 1. Entry names the requested directory after setns, never a retired guest path.
-    let entry = fx.engine.entry_command(&world, &sub).expect("entry");
-    assert_eq!(entry.cwd, Path::new("/"));
-    assert!(
-        entry
-            .args_prefix
-            .iter()
-            .any(|arg| arg == &format!("--wdns={}", sub.display())),
-        "entry must open the requested directory after setns: {:?}",
-        entry.args_prefix
+    // The pod's working directory is the world's read-write worktree subdirectory, never a
+    // remapped guest name; both the entry recipe and `crun exec` land there.
+    let pod = fx.component(
+        &world,
+        ComponentPod::script("cwd-pod", "exec sleep 300").in_directory("pkg"),
     );
+    let entry = fx
+        .engine
+        .service_exec_prefix(&pod)
+        .expect("a running pod has a crun exec prefix");
     assert!(
         !entry
             .args_prefix
@@ -1421,67 +1372,52 @@ fn entry_and_exec_start_on_the_in_world_directory_mapped_from_the_host_path() {
         "the entry argv must never name a retired guest path: {:?}",
         entry.args_prefix
     );
-
-    // 2. Driving it exactly like the thin CLI does (spawn cwd `/`, argv untouched): the shell's
-    //    first `getcwd(2)` succeeds and it really starts in the requested directory.
     let out = Command::new(&entry.program)
         .args(&entry.args_prefix)
         .args(["sh", "-c", "pwd"])
         .env_clear()
         .env("PATH", HELPER_PATH)
-        .current_dir(&entry.cwd)
+        .current_dir("/")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output()
-        .expect("spawn entry command");
+        .expect("spawn the service entry");
     assert!(
         out.status.success(),
-        "direct entry failed: {}",
+        "direct service entry failed: {}",
         String::from_utf8_lossy(&out.stderr)
-    );
-    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
-    assert!(
-        !stderr.contains("getcwd"),
-        "the entry shell must start on a reachable directory: {stderr}"
     );
     assert_eq!(
         String::from_utf8_lossy(&out.stdout).trim(),
         sub.display().to_string(),
-        "the entry shell must run in the requested directory"
+        "the service entry must run in the pod's declared directory"
     );
 
-    // 3. The same builder backs non-interactive exec: no wrapper shell, the same directory, and a
-    //    relative write lands in the live worktree.
+    // The same pod backs non-interactive exec: one relative write lands in the live worktree.
     let exec = fx
         .engine
-        .exec_in_world(
-            &world,
+        .exec_in_service(
+            &pod,
             &[
                 "sh".to_owned(),
                 "-c".to_owned(),
                 "pwd; printf entered > relative.txt".to_owned(),
             ],
-            &sub,
             &ExecEnv::default(),
             &mut |_| {},
         )
-        .expect("exec in world");
+        .expect("exec inside the pod");
     assert_eq!(exec.exit_code, 0, "stderr: {}", exec.stderr);
     assert_eq!(
         exec.stdout.trim(),
         sub.display().to_string(),
-        "exec must start in the same directory as entry"
+        "exec must start in the same directory as the service entry"
     );
     assert_eq!(
         fs::read_to_string(sub.join("relative.txt")).expect("relative write in the worktree"),
         "entered",
         "a relative write must land in the live worktree"
-    );
-    assert!(
-        !exec.stderr.contains("getcwd"),
-        "exec must never inherit an unreachable cwd: {}",
-        exec.stderr
     );
 
     fx.engine.destroy_world(world).expect("destroy");
