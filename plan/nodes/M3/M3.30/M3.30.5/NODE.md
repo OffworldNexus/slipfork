@@ -2,16 +2,16 @@
 id: M3.30.5
 title: "Visual high-hierarchy 0.1.0 docs: value-first quickstart, Mermaid diagram, admonitions & single CHANGELOG entry"
 kind: task
-status: ready
+status: done
 owner: "doc-writer"
 priority: 3
 depends_on: [M3.30.4]
 paths: [README.md, CHANGELOG.md, AGENTS.md, "docs/**", support/demo/README.md, zensical.toml]
-attempts: 0
+attempts: 1
 max_attempts: 3
 escalation: none
 created: "2026-11-18T22:19"
-updated: "2026-11-18T22:40"
+updated: "2026-11-19T02:19"
 ---
 
 # Goal

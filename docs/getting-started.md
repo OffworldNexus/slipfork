@@ -1,74 +1,92 @@
 # Getting Started (`0.1.0`)
 
-Go from a repository to a running, isolated development world in four `slipfork` commands after installing and the one-time host setup below — zero `root:root` files, and root only for the Btrfs mount plus the Ubuntu 24.04 AppArmor profile.
+From a Git checkout to a forkable, running world in about ten minutes. The only unusual requirement is a Btrfs filesystem for the state directory.
 
 ```console
-$ git clone https://github.com/OffworldNexus/slipfork && cd slipfork
-$ cargo install --path crates/slipfork-engine    # installs `slipfork-world-init`
-$ cargo install --path crates/slipfork           # `slipfork` + `slipforkd` + `git-remote-slipfork`
+$ cargo install --path crates/slipfork-engine   # slipfork-world-init
+$ cargo install --path crates/slipfork          # slipfork, slipforkd, git-remote-slipfork
+$ sudo slipfork daemon install                  # :80 socket activation + AppArmor profile
 $ cd /path/to/your/project
-$ slipfork doctor
-$ slipfork snow resolve --file snow.yml --mode local
-$ slipfork up
-$ slipfork list
+$ slipfork doctor && slipfork up
+$ slipfork fork feat-billing
+$ slipfork open
 ```
 
-Every world boots from a read-only rootfs built from your own `Dockerfile`, so `snow.yml` needs at least one build image with a **named final stage** and a `modes.local` entry. Create `api/Dockerfile` with `FROM <image> AS app`; if `up` reports `snow.yml declares no buildable Dockerfile under 'images:'`, add an `images:` entry (`id`, `context`, `dockerfile`); if it reports `mode 'local' is not defined`, add `modes: { local: {} }`.
+!!! warning "Btrfs state directory"
+    `mkfs.btrfs` erases the device. Keep the state directory on real disk, never RAM-backed `/tmp` `tmpfs`, and mount it `user_subvol_rm_allowed,noatime` before the first `slipfork` command.
 
-## Prerequisites
+!!! info "Root is for setup only"
+    Only `mkfs.btrfs`, `mount`, `chown`, `daemon install`, and `apparmor_parser` need root. Never run `slipfork` or `slipforkd` under `sudo`, or your worktrees and vault end up root-owned.
+
+## How a boot works
+
+```mermaid
+sequenceDiagram
+  participant You
+  participant CLI as slipfork
+  participant D as slipforkd
+  participant K as Btrfs
+  You->>CLI: slipfork up
+  CLI->>D: boot world over daemon.sock
+  D->>K: clone the sealed base subvolume
+  D-->>CLI: origin http://acme.localhost
+  CLI-->>You: world row, URL, next commands
+```
+
+## 1. One-time host setup
 
 | Requirement | Why |
 |---|---|
-| **Linux `x86_64`**, **Rust 1.94+** (`edition = "2024"`), a non-bare `git` repo | Builds the CLI and `slipforkd`; `fork` creates a worktree (a `.jj` checkout resolves through its Git store). The pinned `crun` asset exists for `x86_64` only |
-| **Btrfs** for the state directory, mounted `user_subvol_rm_allowed,noatime`, owned by you | Every world and sealed snapshot is one unprivileged `$UID:$GID` subvolume |
-| Docker with `buildx`, plus `unshare` (util-linux) and `ip` (iproute2) | Rootfs export via `buildx build --output type=local`; world user/network/IPC/PID namespaces |
-| `curl` + network on first boot | `slipforkd` downloads the pinned static `crun` once (sha256-verified, offline afterwards) into `<state_dir>/cache/runtime/` and stages it inside the world rootfs; `slipforkd --crun <PATH>` skips the download |
-| Docker usable as your own user (`docker ps` needs no `sudo`) | Rootfs export runs as you. **Never** run `slipfork`/`slipforkd` under `sudo` — only `mkfs.btrfs`, `mount`, `chown`, and `apparmor_parser` need root, or `.worktrees/` and the vault end up root-owned |
+| Linux `x86_64`, Rust 1.94+, a non-bare Git repo | Builds the binaries; `fork` creates a worktree (a `.jj` checkout forks a Jujutsu workspace instead) |
+| Btrfs state directory, owned by you | Every world and sealed snapshot is one unprivileged `$UID:$GID` subvolume |
+| Docker with `buildx`, `unshare`, `ip` | Rootfs export and world namespaces |
+| `curl` on first boot | `slipforkd` downloads the pinned static `crun` once, sha256-verified |
+| Docker usable without `sudo` | The rootfs export runs as you |
 
-One-time setup of the state directory, as root (`mkfs.btrfs` erases that device); keep it on disk, never RAM-backed `/tmp` `tmpfs`, and substitute your `--state-dir` path if you set one:
+Mount the state directory. Replace `/dev/<device>` with a free device and keep the path on disk:
 
 ```console
 $ mkdir -p ~/.cache/slipfork
 $ sudo mkfs.btrfs -L slipfork /dev/<device>
 $ sudo mount -o user_subvol_rm_allowed,noatime /dev/<device> ~/.cache/slipfork
-$ sudo chown "$(id -u):$(id -g)" ~/.cache/slipfork  # the fresh mount root is root-owned
+$ sudo chown "$(id -u):$(id -g)" ~/.cache/slipfork
 ```
 
-## 1. Probe the host
+Install the units and the AppArmor profile once. For a `cargo install` layout, name the binary directory explicitly:
+
+```console
+$ sudo "$(command -v slipfork)" daemon install --bin-dir "$(dirname "$(command -v slipfork)")"
+wrote     /etc/systemd/system/slipforkd.socket
+wrote     /etc/systemd/system/slipforkd.service
+wrote     /etc/apparmor.d/slipfork
+enabled   slipforkd.socket + slipforkd.service, ingress 127.0.0.1:80 + [::1]:80
+next      slipfork up
+```
+
+Ubuntu 24.04 LTS restricts unprivileged user namespaces by default. `daemon install` writes and loads `/etc/apparmor.d/slipfork`, so `doctor` passes `unshare_userns` and `netns` afterwards.
+
+Re-run the same command after moving the binaries; it rewrites only files whose bytes changed.
+
+## 2. Probe the host
 
 ```console
 $ slipfork doctor
 state_dir: /home/acme/.cache/slipfork
-filesystem: xfs
-btrfs_super_magic: mismatch
-subvolume_ioctl: skipped
-noatime: missing
+filesystem: btrfs
+btrfs_super_magic: ok
+subvolume_ioctl: ok
+noatime: ok
 unshare_userns: ok
 netns: ok
-fix: sudo mount -o user_subvol_rm_allowed,noatime /dev/<device> <state_dir>
+ingress: active :80
+✓ Ready
 ```
 
-That is the fail-closed path on a non-Btrfs state directory: `doctor` exits `1` and prints one `fix:` line per failed check — here a single mount fix (replace `<device>` with your Btrfs device and `<state_dir>` with the `state_dir:` line above). Each line is a probe, not a config echo:
+`doctor` exits `0` only when the Btrfs checks and both namespace probes pass. On a non-Btrfs path it exits `1`, prints one `fix:` line per failed check, and writes nothing. `slipfork doctor --json` emits the same report as one object.
 
-| Line | Evidence |
-|---|---|
-| `state_dir`, `filesystem` | Requested state root and the `statfs` filesystem label (`btrfs`, `xfs`, `ext4`, `tmpfs`, `overlayfs`, `unknown(0x…)`) |
-| `btrfs_super_magic` | `ok` only for `BTRFS_SUPER_MAGIC` (`0x9123683e`) |
-| `subvolume_ioctl` | Live scratch round-trip (create → read-only snapshot → clear read-only → destroy) proving unprivileged `user_subvol_rm_allowed`; `skipped` off Btrfs, `failed (errno <n>)` otherwise |
-| `unshare_userns`, `netns` | `unshare --user --map-user=<uid> --map-group=<gid>` succeeds, then `--user --net --ipc --pid` brings loopback up (`netns` is `skipped` when `unshare_userns` is not `ok`) |
+## 3. Declare the world in `snow.yml`
 
-On a Btrfs host those lines report `btrfs`, `ok`, `ok`, and `ok`, `fix:` disappears, and `doctor` exits `0`; `slipfork doctor --json` emits the same report as one object (field by field in the [CLI reference](reference/cli.md)). On Ubuntu 24.04, install the AppArmor profile in [§6](#6-ubuntu-2404-apparmor-required-on-stock-kernels-and-the-optional-systemd-daemon) before the namespace probes can pass.
-
-`slipforkd` refuses to boot on a non-Btrfs state directory too, so no world command leaves a half-created tree:
-
-```console
-$ tail -1 ~/.cache/slipfork/run/daemon.log
-slipforkd: cannot start the Btrfs world engine: /home/acme/.cache/slipfork is not on Btrfs: statfs reports f_type 0x58465342, not BTRFS_SUPER_MAGIC 0x9123683e; fix: sudo mount -o user_subvol_rm_allowed,noatime /dev/<device> <state_dir>
-```
-
-Every world command then exits with `slipfork: slipforkd exited with exit status: 1 before serving …; see …/daemon.log`.
-
-## 2. Resolve `snow.yml`
+A world needs at least one build image with a named final Dockerfile stage and a `modes.local` entry:
 
 ```yaml title="snow.yml"
 images:
@@ -85,7 +103,6 @@ ingresses:
 resources:
   pg_clusters: [{ id: psql, version: "18" }]
   pg_databases: [{ id: appdb, cluster: psql }]
-  redis_clusters: [{ id: cache, version: "8" }]
 modes:
   all:
     envs:
@@ -98,69 +115,47 @@ modes:
         LOG_LEVEL: '${{ vars::LOG_LEVEL ?? "INFO" }}'
 ```
 
-```console
-$ slipfork snow resolve --file snow.yml --mode local
-DATABASE_URL=postgres://127.0.0.1:5432/appdb
-LOG_LEVEL=INFO
-SECRET_KEY=[REDACTED]
-```
+`run_command` goes to `sh -eu -c` verbatim, so it is not templated: keep the literal port that `ingresses` declares. Expressions belong in `envs` values.
 
-`!!` fills a missing secret once and persists it in the project's local `0600` vault (`~/.local/share/slipfork/vaults/<project>.json`), so it survives every restart; re-running after a manifest edit keeps the value. That vault holds only local values — your own credentials and overrides; CI-provided secrets never land in it ([two tiers](reference/ospp.md#two-tiers)). A top-level `envs:` or `project:` block **in `snow.yml`** is refused by key name only (`project` is a `slipfork.toml` key). Components, hooks, ingresses, and every key: [`snow.yml` modes & secrets](snow-modes.md).
-
-## 3. Boot the canonical world
+## 4. Boot and fork
 
 ```console
 $ slipfork up
+$ slipfork fork feat-billing
+$ slipfork list
 ```
 
-`up` prints one `world` row, the single `app` URL, the `worktree`, the `next` commands, and one `lineage` line; `-v` adds `[resources]` rows such as `appdb: prefer_remote -> local (no_remote_session)` — no paired OSPP session supplied a remote database, so `appdb` ran world-local. The first `up` builds and caches the rootfs under `<state_dir>/cache/rootfs/<sha256>/app`, seals it as a read-only Btrfs snapshot, clones the world's writable subvolume from it, starts one `crun` OCI container per declared resource sharing the world's `127.0.0.1`, and runs your components as `$UID:$GID` on the read-only rootfs. Repeating `up` prints the same app URL.
+`up` prints one world row, the app URL, the worktree, and the next commands. `fork` creates `.worktrees/feat-billing` and clones the world's subvolume in one daemon call. Each fork gets its own origin, database, Redis, and S3 state.
 
-`slipfork` auto-starts `slipforkd` when `<runtime_dir>/daemon.sock` does not answer (`<runtime_dir>/daemon.log`, `0600`); `HOME` must be set before any mutation. Host toolchain caches: [CLI reference](reference/cli.md) (`--host-caches`).
+!!! info "Jujutsu checkouts"
+    If the checkout carries `.jj`, `fork` runs `jj workspace add` and projects the working copy into the colocated Git store. `jj` must be on `PATH`; Slipfork fails closed rather than silently using Git.
 
-## 4. Fork a second world
+## 5. Work inside the world
 
 ```console
-$ slipfork fork feat-billing
+$ slipfork exec -- env | grep DATABASE_URL
+$ slipfork shell
+$ slipfork logs api --follow
+$ slipfork db appdb
+$ slipfork redis cache
+$ slipfork ps
 ```
 
-`fork` prints the fork's `world` and `cd` rows plus its own app URL (`http://feat-billing.acme.localhost`, or `:<port>` when the ingress is not on `:80`).
+All of these resolve the world from `cwd` or `--world` and need the world running. `db` and `redis` fail closed when the container is stopped; `forward` bridges a service port to an ephemeral host port for non-interactive tools.
+
+## 6. Secrets: local first, CI when paired
+
+`!!` generates a value once and keeps it in the project's `0600` vault at `~/.local/share/slipfork/vaults/<project>.json`. That tier is yours: app secrets, self-run database passwords, and local values that must survive a restart.
+
+CI values are the other tier. Pair this machine once with `slipfork auth`; afterwards `<state_dir>/ospp.json` remembers the endpoint, account, and machine, so later daemons reconnect without the flag. Details: [Secrets & OSPP v1](reference/ospp.md).
+
+## 7. Stop and clean up
 
 ```console
 $ slipfork down --world feat-billing   # stop services, keep .worktrees/feat-billing
-$ slipfork drop feat-billing           # destroy the world, worktree, branch, and snapshot ref
+$ slipfork drop feat-billing           # remove world, worktree, branch, snapshot ref
+$ slipfork prune                       # preview worlds whose checkout is gone
+$ slipfork prune --yes                 # reap them (sealed snapshots and caches stay)
 ```
 
-A fork is a Git worktree (`.worktrees/<fork>` + `refs/slipfork/<fork>/wip`) plus its own Btrfs subvolume cloned by one subvolume snapshot, created in one daemon call. If the checkout carries `.jj`, the fork is a Jujutsu workspace instead: `slipfork fork` runs `jj workspace add`, projects `@-`/`@` into the colocated Git store, and fails closed with `ToolMissing` when `jj` is not on `PATH` — never a silent Git fallback.
-
-## 5. Work inside the running world
-
-All of these resolve the world from `cwd` or `--world`, and need the world running:
-
-```console
-$ slipfork db appdb                          # psql inside the postgres:<v> container (TTY)
-$ slipfork redis cache                       # redis-cli inside the redis:<v> container (TTY)
-$ slipfork logs api                          # retained component output; --follow streams
-$ slipfork forward pg_databases.appdb        # 127.0.0.1:<ephemeral> bridged into the world
-```
-
-`db`/`redis` fail closed with `ServiceNotRunning` when that container is stopped; non-interactive agents can run `slipfork forward <target>` in the background and connect with host `psql` instead.
-
-## 6. Ubuntu 24.04 AppArmor (required on stock kernels), and the optional systemd daemon
-
-Stock Ubuntu 24.04 LTS kernels set `kernel.apparmor_restrict_unprivileged_userns=1`, so unprivileged user namespaces are denied until the `slipfork` AppArmor profile is installed — the second root step here (the optional systemd units below are the third). `doctor` reports `unshare_userns: failed` with the hint and `netns: skipped`:
-
-```console
-$ slipfork daemon unit --only apparmor | sudo tee /etc/apparmor.d/slipfork
-$ sudo apparmor_parser -r /etc/apparmor.d/slipfork
-```
-
-The profile must name **every** executable that calls `unshare(CLONE_NEWUSER)` — the `slipfork`/`slipforkd`/`slipfork-world-init` entrypoints, `/usr/bin/unshare`, and the in-world `crun` — because an unnamed caller is still denied. On a dedicated development VM you can instead switch the restriction off for the whole guest (prefer the profile on a shared host):
-
-```console
-$ echo 'kernel.apparmor_restrict_unprivileged_userns=0' | sudo tee /etc/sysctl.d/99-slipfork-userns.conf
-$ sudo sysctl --system
-```
-
-`slipfork daemon unit --only socket` / `--only service` are **optional**: they render the units to stdout with zero filesystem writes, embedding the absolute binary, state, and runtime paths; the socket unit binds `127.0.0.1:80`, `[::1]:80`, and `127.0.0.1:7080`. Install them with `slipfork daemon unit --only socket | sudo tee /etc/systemd/system/slipforkd.socket` and `--only service | sudo tee /etc/systemd/system/slipforkd.service`; the auto-spawn path above needs no `sudo`. Render from the installed binaries, not a build tree; flags: [CLI reference](reference/cli.md#slipfork-daemon-unit).
-
-Next: [`snow.yml` modes & secrets](snow-modes.md), [manifest reference](reference/manifest.md).
+Next: [`snow.yml` modes & secrets](snow-modes.md), then the [CLI reference](reference/cli.md).

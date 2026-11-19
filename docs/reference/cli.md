@@ -1,10 +1,24 @@
 # CLI Reference (`0.1.0`)
 
-`slipfork` is a thin client: `doctor` reads the host locally, `snow resolve` and `secret` ask `slipforkd` (it owns the vault), and every world command talks to the unprivileged `slipforkd` daemon over a `0600` `<state_dir>/run/daemon.sock`. Only `up` and `fork` start `slipforkd --listen 127.0.0.1:0` in the background (`<state_dir>/run/daemon.log`, `0600`); every other verb fails closed with one line when nothing answers:
+`slipfork` is a thin client. `doctor` reads the host locally; every world command and every secret operation talks to the unprivileged `slipforkd` over a `0600` `<state_dir>/run/daemon.sock`.
+
+```console
+$ slipfork                 # bare command = status: ingress, worlds, next steps
+$ slipfork up              # boot the world selected by --world or cwd
+$ slipfork list            # one row per world, one origin URL each
+```
+
+Only `up` and `fork` start `slipforkd --listen 127.0.0.1:0` when nothing answers. Every other verb fails closed with one line:
+
 ```console
 $ slipfork list
 slipfork: no slipforkd on /home/acme/.cache/slipfork/run/daemon.sock — run `slipfork up`
 ```
+
+!!! info "Port-less by default"
+    After `sudo slipfork daemon install`, systemd owns `127.0.0.1:80` and `[::1]:80`, so origins are `http://acme.localhost` with no port. Without it, the daemon uses an ephemeral port and prints a warning.
+
+## `slipfork doctor`
 
 ```console
 $ slipfork doctor
@@ -19,61 +33,94 @@ ingress: not installed (ephemeral port; run `slipfork daemon install`)
 fix: sudo mount -o user_subvol_rm_allowed,noatime /dev/<device> <state_dir>
 ```
 
-`doctor` runs **before** any daemon and never needs one: it exits `0` only when `btrfs_super_magic` and `subvolume_ioctl` are `ok` and both namespace probes executed, and `1` otherwise, printing one `fix:` line per failed check in `btrfs -> unshare_userns -> netns` order (replace `<device>` with your Btrfs device and `<state_dir>` with the `state_dir:` line above). On a Btrfs host mounted `user_subvol_rm_allowed,noatime` the report reads `filesystem: btrfs`, `btrfs_super_magic: ok`, `subvolume_ioctl: ok`, `noatime: ok`, with no `fix:` line.
+`doctor` runs before any daemon and never needs one. It exits `0` only when the Btrfs checks and both namespace probes pass, and `1` otherwise with one `fix:` line per failed check.
 
-`--json` prints the same report as one object, keyed exactly as follows (values below are from the non-Btrfs run above):
+`--json` prints the same report as one object:
 
 | Key | Meaning |
 |---|---|
-| `"state_dir"`, `"probed_path"` | Requested state root, and the existing directory actually `statfs`ed (nearest ancestor when the root does not exist yet) |
-| `"fstype": "0x58465342"`, `"filesystem": "xfs"` | Raw `statfs` type as `"0x<lowercase-hex>"`, plus its label (`btrfs`, `xfs`, `ext4`, `tmpfs`, `overlayfs`, `unknown(0x…)`) |
-| `"btrfs_super_magic": false` | `true` only for `BTRFS_SUPER_MAGIC` (`0x9123683e`) |
-| `"subvolume_ioctl": {"status": "skipped"}` | `ok` after a live scratch create → read-only snapshot → clear read-only → destroy; `skipped` off Btrfs; `failed` adds `errno` and the mount `hint` |
-| `"noatime": false` | Advisory `ST_NOATIME` evidence; never affects `ok` |
-| `"unshare_userns": {"status": "ok"}`, `"netns": {"status": "ok"}` | `ok` or `failed` (+ `detail`, + `hint`); `netns` is `skipped` when `unshare_userns` failed |
-| `"ingress": {"status": "active", "port": 80, "listen": ["127.0.0.1:80", "[::1]:80"], "hint": null}` | Advisory `:80` systemd socket activation. `active` carries `port: 80`; `active_other_listeners` carries `port: null`, `listen: [...]` (or `null` when `systemctl show -p Listen` failed) and a non-null `hint`; `inactive` and `not_installed` carry `port: null`, `listen: null`, and a non-null `hint`. Never affects `ok` |
-| `"uid": 1000`, `"gid": 1000` | The invoking identity every world runs as |
-| `"ok": false`, `"fixes": [...]` | `ok` is the four required checks; `fixes` is empty exactly when `ok` is `true` |
+| `"state_dir"`, `"probed_path"` | Requested state root, and the existing directory actually `statfs`ed |
+| `"fstype"`, `"filesystem"` | Raw `statfs` type as `"0x<hex>"` plus a label (`btrfs`, `xfs`, `ext4`, `tmpfs`, `overlayfs`) |
+| `"btrfs_super_magic"` | `true` only for `BTRFS_SUPER_MAGIC` (`0x9123683e`) |
+| `"subvolume_ioctl"` | `ok` after a live create → read-only snapshot → destroy round-trip; `skipped` off Btrfs; `failed` adds `errno` and a hint |
+| `"noatime"` | Advisory `ST_NOATIME` evidence; never affects `ok` |
+| `"unshare_userns"`, `"netns"` | `ok`, `failed` (+ `detail`, `hint`), or `skipped` when the parent probe failed |
+| `"ingress"` | Advisory `:80` socket state: `active`, `active_other_listeners`, `inactive`, or `not_installed`; never affects `ok` |
+| `"uid"`, `"gid"` | The invoking identity every world runs as |
+| `"ok"`, `"fixes"` | `ok` is the required checks; `fixes` is empty exactly when `ok` is `true` |
 
 ## Global options
 
 | Option | Default | Description |
 |---|---|---|
 | `--json` | `false` | Emit JSON on stdout |
-| `-v, --verbose` | `false` | Add per-node lineage and `[resources]` detail to human output (ignored under `--json`) |
-| `--state-dir <DIR>` | `$XDG_CACHE_HOME/slipfork` or `~/.cache/slipfork` | Btrfs subvolumes, worlds, `cache/{rootfs,oci,runtime}`; the client's control socket is always `<state_dir>/run/daemon.sock` |
-| `-h, --help` / `-V, --version` | — | Help or CLI version |
+| `-v, --verbose` | `false` | Add lineage and `[resources]` detail to human output |
+| `--state-dir <DIR>` | `$XDG_CACHE_HOME/slipfork` or `~/.cache/slipfork` | Subvolumes, worlds, caches; the client socket is always `<state_dir>/run/daemon.sock` |
+| `-h, --help` / `-V, --version` | — | Help or version |
 
-`--json` is global (`slipfork --json list`). Human diagnostics go to stderr; with `--json`, a failure prints `{"ok": false, "error": "..."}` on stdout. Exit `0` is success, `1` a `slipfork:` runtime error, and `2` a `clap` usage error. `exec`, `shell`, `db`, `redis`, and `hook run` instead exit with the child command's status (so `slipfork exec -- false` exits `1` with no `slipfork:` line), and their child stdout is not JSON even under `--json`.
+`--json` is global (`slipfork --json list`). Human diagnostics go to stderr; a failure under `--json` prints `{"ok": false, "error": "..."}`.
+
+Exit `0` is success, `1` a runtime error, and `2` a usage error. `exec`, `shell`, `db`, `redis`, and `hook run` exit with the child command's status instead.
 
 ## Commands
 
 | Command | Behaviour | Example |
 |---|---|---|
-| `doctor` | Probe the Btrfs substrate, the live subvolume round-trip, and unprivileged userns/netns | `slipfork doctor` |
-| `snow resolve` | Validate `snow.yml`, persist missing `!!` secrets, print one mode (`[REDACTED]`) | `slipfork snow resolve --file snow.yml --mode local` |
-| `up` | Boot or confirm the world selected by `--world` or `cwd`; print one app URL | `slipfork up` |
+| `status` | Daemon ingress, every world's tree, lineage, and next steps; the default for bare `slipfork` | `slipfork status` |
+| `doctor` | Probe Btrfs, the live subvolume round-trip, and unprivileged namespaces | `slipfork doctor` |
+| `snow resolve` | Validate `snow.yml`, persist missing `!!` secrets, print one mode | `slipfork snow resolve --mode local` |
+| `up` | Boot or confirm the world selected by `--world` or `cwd` | `slipfork up` |
 | `down` | Stop a world's services, keep its worktree (idempotent) | `slipfork down --world feat-billing` |
-| `fork` | Create `.worktrees/<fork>` — a Git worktree, or a Jujutsu workspace when the checkout carries `.jj` — plus its Btrfs world subvolume | `slipfork fork feat-billing` |
-| `drop` | Destroy a fork world's subvolume, its worktree, branch, and snapshot ref | `slipfork drop feat-billing` |
-| `list` | One row per world: state (`running`/`stopped`/`failed`), exactly one app URL, worktree | `slipfork list` |
-| `prune` | Preview worlds whose checkout directory is gone (default, or `--dry-run`); `--yes` reaps them. Sealed snapshots and caches are retained | `slipfork prune` |
-| `secret set` / `unset` | Store a **local**-vault value read from **stdin** (`--force` rotates it) or remove one key | `slipfork secret set PG_PASSWORD` |
-| `secret list` | Print the local vault's key names only, never values | `slipfork secret list` |
-| `daemon unit` | Render the non-template systemd units and the AppArmor profile on stdout (`--only socket\|service\|apparmor`, repeatable `--bin-dir`) | `slipfork daemon unit --only apparmor` |
-| `daemon install` | Write `/etc/systemd/system/slipforkd.{socket,service}` + `/etc/apparmor.d/slipfork`, then `enable --now` (`sudo`) | `sudo slipfork daemon install` |
+| `restart` | Stop components and services, then re-run the boot pipeline in place | `slipfork restart` |
+| `ps` | One world's state, lineage, and every component / `crun` service row | `slipfork ps` |
+| `open` | Open the world's origin in the desktop browser; `--remote` prints an SSH forward recipe | `slipfork open --remote` |
+| `fork` | Create `.worktrees/<fork>` plus its Btrfs world; `[FORK]` defaults to the current branch | `slipfork fork feat-billing` |
+| `drop` | Destroy a fork world, its worktree, branch, and snapshot ref | `slipfork drop feat-billing` |
+| `list` | One row per world: state (`running`/`stopped`/`failed`), one URL, worktree | `slipfork list` |
+| `prune` | Preview worlds whose checkout is gone; `--yes` reaps them | `slipfork prune --yes` |
+| `secret set` / `unset` | Store a local-vault value read from stdin (`--force` rotates) or remove one key | `slipfork secret set PG_PASSWORD` |
+| `secret list` | Print local-vault key names only, never values | `slipfork secret list` |
+| `daemon unit` | Render units and the AppArmor profile on stdout | `slipfork daemon unit --only apparmor` |
+| `daemon install` | Write `/etc/systemd/system/slipforkd.{socket,service}` plus the AppArmor profile, then `enable --now` | `sudo slipfork daemon install` |
 | `exec` | Run a command non-interactively inside a world | `slipfork exec -- id` |
 | `shell` | Enter a world interactively (requires a TTY) | `slipfork shell` |
-| `logs` | Read or follow retained component/hook logs (`--follow`, `--lines`, `--stderr`) | `slipfork logs --lines 3 api` |
+| `logs` | Read or follow retained component and hook logs | `slipfork logs --lines 3 api` |
 | `hook run` | Re-run one `<component>:<phase>` hook (`--no-tty` when not interactive) | `slipfork hook run api:pre-deploy --no-tty` |
 | `db` | Open `psql` inside the world's running `postgres:<v>` container (TTY) | `slipfork db appdb` |
 | `redis` | Open `redis-cli` inside the world's running `redis:<v>` container (TTY) | `slipfork redis cache` |
-| `forward` | Bind daemon-owned `127.0.0.1:0` listeners bridged into a world, held until Ctrl-C | `slipfork forward pg_databases.appdb` |
-| `auth [ENDPOINT]` | Pair this machine with the daemon's injected OSPP endpoint; open and print the **server-supplied** `<url>#handle=…` page | `slipfork auth` |
+| `forward` | Bind daemon-owned `127.0.0.1:0` listeners bridged into a world until Ctrl-C | `slipfork forward pg_databases.appdb` |
+| `auth [ENDPOINT]` | Pair this machine with the daemon's OSPP endpoint and print the server-supplied page | `slipfork auth` |
+
+## World selection
+
+`up`, `down`, `restart`, `ps`, `open`, `exec`, `shell`, `logs`, `hook run`, `db`, `redis`, and `forward` accept `--world <WORLD>`: a bare `<fork>`, the `<project>:<fork>` id from `slipfork list`, or the canonical `<project>`.
+
+`--world` only picks which world of the current project to use, so run these from that project's checkout. Omitted, the world is inferred from `cwd`: `.worktrees/<fork>[/...]` selects that fork; the repository root selects the canonical world.
+
+| Option | Applies to | Description |
+|---|---|---|
+| `--world <WORLD>` | Most world verbs | `<fork>`, `<project>:<fork>`, or canonical `<project>`; a foreign project prefix fails closed |
+| `--base <REV>` | `fork` | Git commit-ish to fork from (default: `HEAD`); a `.jj` checkout ignores it |
+| `--no-dump` / `--refresh-dump` | `up`, `fork` | Seed-dump policy; see [seed dumps](#seed-dumps-and-sealed-bases) |
+| `--host-caches` | `up`, `fork` | Read-only mounts of Cargo, rustup, uv, and pnpm caches after an ABI probe; never a manifest key |
+| `--cwd <DIR>` | `exec` | Directory used to resolve and enter the world |
+| `--remote` | `open` | Print the SSH local-forward recipe instead of opening a browser |
+
+| Command | Command-specific flags |
+|---|---|
+| `snow resolve` | `--file <FILE>` (default `snow.yml`), `--mode <MODE>` (default `local`), `--component <ID>`, `--expose-secrets` |
+| `logs` | `--follow`, `--lines <N>`, `--stderr`, optional target (`api`, `api:pre-deploy`) |
+| `hook run` | `--no-tty` |
+| `forward` | positional targets (`pg_databases.main`, `components.api`); empty forwards everything |
+| `daemon unit` | `--only socket` / `--only service` / `--only apparmor`, `--forward-port <PORT>` (default `7080`), repeatable `--bin-dir <DIR>` |
+| `daemon install` | `--user <ACCOUNT>` (default: the invoking `sudo` account), repeatable `--bin-dir <DIR>`, `--forward-port <PORT>` (default `7080`); no `--force` |
+| `secret set` | `--force` rotates an existing value |
 
 ## `slipfork secret` (local vault)
 
-`slipfork secret` manages the **local** tier only: one `0600` `<data_home>/slipfork/vaults/<project>.json` per project (default `~/.local/share/slipfork/vaults/`, moved only by `$XDG_DATA_HOME`) holding `secrets::<KEY>` values that are yours and must outlive a daemon restart — an app secret such as `secrets::SECRET_KEY`, a password for a database you run yourself, and every local-mode `!!` value. That is why it is a file and not process memory. CI-resolved secrets are the other tier: [two tiers](ospp.md#two-tiers). Like `snow resolve`, every `secret` verb needs a running `slipforkd`.
+`slipfork secret` manages the local tier only: one `0600` `<data_home>/slipfork/vaults/<project>.json` per project, moved only by `$XDG_DATA_HOME`.
+
+It holds `secrets::<KEY>` values that must outlive a daemon restart: app secrets, passwords for databases you run yourself, and every local-mode `!!` value. CI-resolved secrets are the other tier ([two tiers](ospp.md#two-tiers)).
 
 ```console
 $ printf '%s' "$PGPASSWORD" | slipfork secret set PG_PASSWORD
@@ -82,76 +129,47 @@ $ slipfork secret list
 PG_PASSWORD
 ```
 
-`set` reads the value from **stdin only** — it refuses an interactive terminal, never echoes the value, and refuses to replace an existing key without `--force`. `list` prints key names, one per line. `vars::` keys are read-only here: the CLI writes `secrets::` only.
+`set` reads stdin only, refuses an interactive terminal, never echoes the value, and refuses to replace a key without `--force`. `list` prints key names. `vars::` keys are read-only here. Like `snow resolve`, every `secret` verb needs a running `slipforkd`.
 
-## World selection and boot options
+## Failure modes you will see
 
-`up`, `down`, `exec`, `shell`, `logs`, `hook run`, `db`, `redis`, and `forward` accept `--world <WORLD>`: a bare `<fork>`, the `<project>:<fork>` id `slipfork list` prints, or the canonical `<project>`. `--world` only picks which world of the current project to use, so run these from inside that project's Git/JJ checkout; omitted, the world is inferred from `cwd`: `.worktrees/<fork>[/...]` selects fork `<fork>`, the repository root selects the canonical world.
-
-| Option | Applies to | Description |
-|---|---|---|
-| `--world <WORLD>` | `up`, `down`, `exec`, `shell`, `logs`, `hook run`, `db`, `redis`, `forward` | `<fork>`, `<project>:<fork>`, or canonical `<project>`; a foreign project prefix fails closed |
-| `--base <REV>` | `fork` | Git checkouts: commit-ish to fork from (default: requesting checkout's `HEAD`). A `.jj` checkout always forks the working-copy parent `@-` (`@` when dirty) and ignores `--base` |
-| `--no-dump` / `--refresh-dump` / `--resources local` | `up`, `fork` | Dump policy and hermetic-resource overrides; exact behaviour in [seed dumps](#seed-dumps-and-sealed-bases) |
-| `--host-caches` | `up`, `fork` | Mount `~/.cargo/{registry,git,bin}`, `~/.rustup`, `~/.cache/uv`, `~/.local/share/uv`, and `~/.local/share/pnpm/store` read-only **after** the ELF/libc ABI probe passes; never a `slipfork.toml` key |
-| `--cwd <DIR>` | `exec` | Directory used to resolve and enter the world |
-
-`--host-caches` fails closed naming both ABIs when the host and world architectures, libc family, or glibc versions disagree.
-
-| Command | Command-specific flags |
-|---|---|
-| `snow resolve` | `--file <FILE>` (default `snow.yml`), `--mode <MODE>` (default `local`), `--component <ID>`, `--expose-secrets` |
-| `logs` | `--follow`, `--lines <N>`, `--stderr`, optional target (`api`, `api:pre-deploy`) |
-| `hook run` | `--no-tty` (run through the daemon instead of a native TTY) |
-| `forward` | positional targets (`pg_databases.main`, `components.api`); no target forwards all |
-| `daemon unit` | `--only socket` / `--only service` / `--only apparmor`, `--forward-port <PORT>` (default `7080`), repeatable `--bin-dir <DIR>` (default: this executable's directory) |
-| `daemon install` | `--user <ACCOUNT>` (default: the invoking `sudo` account), repeatable `--bin-dir <DIR>`, `--forward-port <PORT>` (default `7080`); no `--force` |
-| `secret set` | `--force` rotates an existing value |
-
-## Failure modes you will actually see
-
-```console
-$ slipfork list
-slipfork: no slipforkd on /home/acme/.cache/slipfork/run/daemon.sock — run `slipfork up`
-```
-
-- A non-Btrfs state directory fails closed at `slipforkd` boot: `daemon.log` names the filesystem code and the `mount -o user_subvol_rm_allowed,noatime` line to run, and nothing is created.
+- A non-Btrfs state directory fails at daemon boot: `daemon.log` names the filesystem code and the `mount -o user_subvol_rm_allowed,noatime` line, and nothing is created.
 - `db`/`redis` fail closed with `ServiceNotRunning` unless that service's container is running in the world.
 - `prune` reaps orphaned worlds; it does not garbage-collect sealed snapshots or `<state_dir>/cache/{rootfs,oci}` yet.
 
 ## Seed dumps and sealed bases
 
-A paired OSPP session can offer one PostgreSQL seed dump per database; `up`/`fork` stream it once, decrypt the stream in `slipforkd` memory, and pipe it straight into `zstd -d | pg_restore --no-owner --no-privileges --clean --if-exists` + `CHECKPOINT` inside a short-lived seed world's `postgres:<v>` container, then seal the result as a read-only `<project>-base-<digest>` Btrfs snapshot keyed by the service versions and each database's seed kind. No dump byte is written to host disk.
+A paired OSPP session can offer one PostgreSQL seed dump per database. `up`/`fork` stream it once, decrypt it in `slipforkd` memory, and pipe it into `zstd -d | pg_restore --clean --if-exists` inside a short-lived seed world.
 
-Every later `up`/`fork` clones that sealed base and never re-runs `pg_restore`.
+The restored result is sealed as a read-only `<project>-base-<digest>` snapshot. Every later `up` or `fork` clones that base and never re-runs `pg_restore`. No dump byte is written to host disk.
 
 | Flag | Behaviour |
 |---|---|
 | *(default)* | Reuse the sealed base, else stream each requested dump once while sealing it |
-| `--no-dump` | Seal a clean `initdb` base and stream nothing; a dump-backed base is a distinct digest |
-| `--refresh-dump` | Require a live paired session (refused for a local strategy) and seed from a dump |
-| `--resources local` | Force hermetic world-local resources; implies `--no-dump` and cannot combine with `--refresh-dump` |
+| `--no-dump` | Seal a clean `initdb` base and stream nothing |
+| `--refresh-dump` | Require a live paired session and seed from a dump |
+| `--resources local` | Force world-local resources; implies `--no-dump` and cannot combine with `--refresh-dump` |
 
-Unpaired, `local = "remote"` on a database and `--refresh-dump` both fail closed with `requires an authenticated OSPP session` (run `slipfork auth`, or `up --no-dump` for a clean database); `prefer_remote` degrades to local with a `no_remote_session` row. This flow requires a provider at the other end of [OSPP v1](ospp.md).
+Unpaired, `local = "remote"` and `--refresh-dump` fail closed with `requires an authenticated OSPP session`; `prefer_remote` degrades to local with a `no_remote_session` row.
 
 ## `slipforkd`
 
-`slipforkd` is the sole stateful Composition Root and runs unprivileged. It requires explicit paths and never guesses them, runs in the foreground, logs to stderr, and is started for you by `slipfork up` / `slipfork fork` (or by `slipforkd.socket` after `slipfork daemon install`). Every other verb fails closed instead of spawning one.
+`slipforkd` is the sole stateful composition root and runs unprivileged. It requires explicit paths, runs in the foreground, logs to stderr, and is started by `up`/`fork` or by `slipforkd.socket`.
 
 | Option | Description |
 |---|---|
-| `--state-dir <DIR>` | Btrfs subvolumes, world clones, `cache/{rootfs,oci,runtime}` |
-| `--runtime-dir <DIR>` | `0600` `daemon.sock`; a `slipforkd`-only flag (clients always use `<state_dir>/run`) |
-| `--listen <ADDR>` | HTTP ingress (`127.0.0.1:0` for zero-setup); ignored when `LISTEN_FDS` is set |
-| `--forward-port <PORT>` | Also bind `127.0.0.1:<PORT>` as the static forward listener |
+| `--state-dir <DIR>` | Subvolumes, world clones, `cache/{rootfs,oci,runtime}` |
+| `--runtime-dir <DIR>` | `0600` `daemon.sock`; `slipforkd`-only (clients always use `<state_dir>/run`) |
+| `--listen <ADDR>` | HTTP ingress (`127.0.0.1:0` for zero-setup); ignored with `LISTEN_FDS` |
+| `--forward-port <PORT>` | Also bind `127.0.0.1:<PORT>` as a static forward listener |
 | `--world-init <PATH>` / `--crun <PATH>` | Explicit helper and pinned static `crun` binaries |
-| `--ospp-endpoint <URL>` | The one OSPP v1 server identity (`wss://…`, or `ws://` strictly on loopback); omit for a purely local daemon. `slipfork auth` needs it ([pairing](ospp.md#pairing)) |
+| `--ospp-endpoint <URL>` | First-run OSPP server identity; omit to reuse `<state_dir>/ospp.json` |
 
 With `LISTEN_PID`/`LISTEN_FDS` present, `slipforkd` adopts inherited descriptors by fd order and fails closed on any mismatch.
 
 ## `slipfork daemon install`
 
-`slipfork daemon install` is the **single** install path for port-less `.localhost` origins. `systemd` (PID 1) is the only component allowed to bind `127.0.0.1:80` / `[::1]:80`, so it installs and enables the system socket:
+`slipfork daemon install` is the single install path for port-less `.localhost` origins, because only PID 1 `systemd` may bind `:80`:
 
 ```console
 $ sudo slipfork daemon install
@@ -162,29 +180,22 @@ enabled   slipforkd.socket + slipforkd.service as acme, ingress 127.0.0.1:80 + [
 next      slipfork up
 ```
 
-It writes the **exact bytes** `slipfork daemon unit` renders, reloads `systemd`, loads the AppArmor profile with `apparmor_parser -r`, and runs `systemctl enable --now slipforkd.socket slipforkd.service`, after releasing any zero-setup `slipforkd` that still holds `daemon.sock`. A file is rewritten only when its bytes differ, so a second run performs zero writes; if a run fails halfway, re-running the same command converges (every write is idempotent and `enable --now` is safe to repeat).
+It writes the exact bytes `daemon unit` renders, reloads systemd, loads the AppArmor profile, and runs `systemctl enable --now slipforkd.socket slipforkd.service`. It first releases any zero-setup daemon holding `daemon.sock`.
 
-```console
-$ sudo slipfork daemon install
-unchanged slipforkd.socket, slipforkd.service, /etc/apparmor.d/slipfork; enabled
-```
+A file is rewritten only when its bytes differ, so a second run performs zero writes. A failed half-run converges when you re-run the same command.
 
 Running it without root fails closed and changes nothing:
 
 ```console
 $ slipfork daemon install
-slipfork: daemon install writes /etc and enables system units; run it as root (sudo slipfork daemon install --user acme)
+slipfork: daemon install writes /etc and enables system units; run `sudo slipfork daemon install`
 ```
 
-`--user <ACCOUNT>` names the unprivileged account `slipforkd.service` runs as; omitted, it is the account behind `sudo` (`SUDO_USER`). `--user root`, an unknown account, or direct root with no valid invoking account fails closed. There is no `--force` and no user-unit alternative.
+`--user <ACCOUNT>` names the account `slipforkd.service` runs as; omitted, it is the account behind `sudo`. `--user root`, an unknown account, or direct root with no invoking account fails closed. There is no `--force` and no user-unit alternative.
 
 ## `slipfork daemon unit`
 
-Renders to stdout with zero filesystem writes (`User=<your-account>`, empty `CapabilityBoundingSet=`, `ListenStream=127.0.0.1:80`, `[::1]:80`, `127.0.0.1:7080`, `Requires=slipforkd.socket`, `After=slipforkd.socket`, `WantedBy=multi-user.target`). `--bin-dir <DIR>` is repeatable (default: this executable's directory) and feeds the AppArmor profile: each directory becomes one flat alternative inside the single four-line brace expression. `--user <ACCOUNT>` pins the rendered `User=` (and the account home the state/runtime paths derive from), so `slipfork daemon unit --user <ACCOUNT> --bin-dir <DIR>` reproduces exactly what `sudo slipfork daemon install --user <ACCOUNT> --bin-dir <DIR>` writes.
-
-`--only apparmor` renders the `/etc/apparmor.d/slipfork` profile instead. Ubuntu 24.04 LTS enables `kernel.apparmor_restrict_unprivileged_userns=1`, so unprivileged `CLONE_NEWUSER` is denied (`doctor` reports `unshare_userns: failed` and `netns: skipped`) until that profile is installed and loaded by `slipfork daemon install`.
-
-For `slipfork` in `/usr/local/bin` it prints exactly:
+Renders to stdout with zero filesystem writes. For `slipfork` in `/usr/local/bin`, `--only apparmor` prints:
 
 ```text
 abi <abi/4.0>,
@@ -193,11 +204,13 @@ profile slipfork /{usr/local/bin/slipfork{,d,-world-init},usr/bin/unshare,.slipf
 }
 ```
 
-AppArmor 4.0 accepts one attachment expression per profile header, so that single leading-slash brace expression names every executable that performs `CLONE_NEWUSER` for a world: `<bin_dir>/slipfork`, `<bin_dir>/slipforkd`, `<bin_dir>/slipfork-world-init`, host `/usr/bin/unshare` (outer world namespaces and `doctor`), and in-world `/.slipfork/bin/crun` (inner OCI namespaces). Pass `--bin-dir` once per install location on the host; the body is `userns,` only, so file and mount mediation stay inactive.
+The single brace expression names every executable that performs `CLONE_NEWUSER`: the three Slipfork binaries, host `/usr/bin/unshare`, and in-world `crun`. Pass `--bin-dir` once per install location.
+
+`--only socket` and `--only service` print the units, including `Requires=slipforkd.socket`, `After=slipforkd.socket`, and `WantedBy=multi-user.target`. `--user <ACCOUNT>` pins the rendered `User=` so `daemon unit` reproduces exactly what `daemon install` writes.
 
 ## `git-remote-slipfork`
 
-`git` invokes this helper for a `slipfork://<fork>` remote: it lists and fetches the fork's branch and `refs/slipfork/<fork>/wip` from the running daemon, so another checkout or agent can pull a fork's work. The world must be running in the same `slipforkd`:
+Git invokes this helper for a `slipfork://<fork>` remote. It lists and fetches the fork's branch and `refs/slipfork/<fork>/wip` from the running daemon:
 
 ```console
 $ git remote add fork slipfork://feat-billing && git fetch fork

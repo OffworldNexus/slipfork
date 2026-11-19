@@ -1,8 +1,13 @@
 # Manifest Reference (`0.1.0`)
 
-Slipfork reads two files: `snow.yml` (`crates/slipfork-snow`) and `slipfork.toml` (`crates/slipfork-dag`).
+Slipfork reads two files: `snow.yml` for the world and its services, and an optional `slipfork.toml` for project identity, the rootfs selector, and validated build/fixture intent.
 
-## 1. `snow.yml` (`slipfork_snow::SnowFile`)
+```console
+$ slipfork snow resolve --file snow.yml --mode local   # validate and render one mode
+$ slipfork up                                           # boot with the `local` mode
+```
+
+## 1. `snow.yml`
 
 ```yaml title="snow.yml"
 images:
@@ -39,40 +44,38 @@ modes:
         SECRET_KEY: '${{ secrets::SECRET_KEY !! random_string(50) }}'
         DATABASE_URL: '${{ resources::pg_databases.appdb.url }}'
   local:
-    components:
-      api:
-        run_command: uv run uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
-      worker: { disabled: true }
     envs:
       app:
         DEBUG: 'True'
 ```
 
-`run_command` is passed verbatim to `sh -eu -c`, so it is **not** expression-templated: name the same literal port you declared in `ingresses`/`internal_ports` (here `8000`). `${{ ... }}` expressions belong in `envs` values, not in commands.
+`run_command` is passed verbatim to `sh -eu -c`, so it is **not** templated. Name the same literal port you declared in `ingresses` or `internal_ports`; expressions belong in `envs` values.
 
-`images[]` is either a build image (`id`, `context`, optional `dockerfile` — default `Dockerfile` — and optional `envs` build groups) or a registry image (`id`, `registry`, `repository`, optional `tag` — default `latest`). Every world boots from a built `BuildImage` rootfs, so a project needs at least one build image (see [`[world]`](#2-slipforktoml-slipfork_dagslipforkconfig)).
+`images[]` is either a build image (`id`, `context`, optional `dockerfile`, optional build `envs`) or a registry image (`id`, `registry`, `repository`, optional `tag`). A project needs at least one build image, because every world boots a built rootfs.
 
-`domains: [{ id: admin }]` declares one local DNS label. `resources:` map to backing-service containers: `pg_clusters.version` → `docker.io/library/postgres:<version>`, `redis_clusters.version` → `docker.io/library/redis:<version>`, and a non-empty `s3_buckets` → SeaweedFS. `slipfork db` and `slipfork redis` open `psql`/`redis-cli` inside those containers.
+`domains: [{ id: admin }]` declares one local DNS label. Resource versions map to container images: `pg_clusters.version` → `postgres:<v>`, `redis_clusters.version` → `redis:<v>`, and a non-empty `s3_buckets` → SeaweedFS.
 
 ### Validation rules
 
-- **Forbidden top-level keys fail closed.** `envs:` and `project:` raise `SnowError::ForbiddenTopLevelKey { key }`, naming the key and never its contents. Environment groups live under `modes.all` / `modes.<mode>`; project identity lives in `slipfork.toml` (§2).
-- **`*` is not a mode** (`SnowError::AsteriskModeForbidden`); the universal base is `all`, and unknown keys fail closed in every table (`#[serde(deny_unknown_fields)]`). `slipfork snow resolve --mode <mode>` renders any declared mode, but `up`/`fork` hardcode `local`, so a manifest without `modes.local` fails closed.
-- **Cross-references are checked in one pass.** Every `components[].image`, `ingresses[].target.component`, `hooks[].component`, `pg_databases[].cluster`, and `envs` group name must exist; all violations are reported together in `SnowError::Validation`. `modes.all.components` is rejected — universal defaults belong on top-level `components[]`.
+- **Forbidden top-level keys fail closed.** `envs:` and `project:` are refused by key name; groups live under `modes`, project identity in `slipfork.toml`.
+- **`*` is not a mode.** The universal base is `all`, and unknown keys fail closed in every table.
+- **Cross-references are checked in one pass.** Every component image, ingress target, hook component, database cluster, and environment group must exist; all violations are reported together.
+- **`modes.all.components` is rejected.** Universal components belong on top-level `components[]`.
+- **`up` and `fork` hardcode `local`.** A manifest without `modes.local` can still resolve other modes but cannot boot a world.
 
-### Mode-scoped components (`SnowFile::effective_components`)
+### Components per mode
 
-`components[]` plus `modes.<mode>.components.<id>` resolve through one function — nothing else reads mode component overrides:
+`components[]` plus `modes.<mode>.components.<id>` resolve through one function:
 
 | Declaration | Effect in that mode |
 |---|---|
-| `run_command: <cmd>` on a declared id | resolves `<cmd>` instead of `components[].run_command` |
-| `run_command: <cmd>` on an undeclared id | adds the component (non-empty `run_command` required) |
-| `disabled: true` | drops a top-level component (and its env groups) from the mode |
+| `run_command: <cmd>` on a declared id | Resolves `<cmd>` instead of the top-level command |
+| `run_command: <cmd>` on an undeclared id | Adds the component; the command must be non-empty |
+| `disabled: true` | Drops a top-level component and its environment groups |
 
-A disabled component never resolves a command or environment, and `disabled: true` cannot target a mode-only addition. [`snow.yml` modes & secrets](../snow-modes.md) walks through the same rules with a task-oriented example.
+A disabled component never resolves a command or environment, and `disabled: true` cannot target a mode-only addition. [`snow.yml` modes & secrets](../snow-modes.md) walks through the same rules.
 
-### Expressions (`${{ ... }}`)
+### Expressions
 
 ```text
 expr      := namespace "::" path ( ("??" json_string) | ("!!" generator) )?
@@ -82,41 +85,38 @@ generator := "random_string(" 1..=512 ")" | "random_hex(" 1..=256 ")"
 
 | Namespace | Reads | `??` | `!!` |
 |---|---|---|---|
-| `secrets::<KEY>` | local `0600` vault `secrets` | yes | yes — `!!` is valid only here |
-| `vars::<KEY>` | local `0600` vault `vars` | yes | no |
-| `domains::<ID>` | no provider in `0.1.0` — fails closed | yes | no |
-| `resources::…`, `components::…`, `deployment::…` | world coordinates (below) | yes | no |
+| `secrets::<KEY>` | Local `0600` vault `secrets` | yes | yes — `!!` is valid only here |
+| `vars::<KEY>` | Local `0600` vault `vars` | yes | no |
+| `domains::<ID>` | No provider in `0.1.0` — fails closed | yes | no |
+| `resources::…`, `components::…`, `deployment::…` | World coordinates (below) | yes | no |
 
-`!!` values persist for reuse in the project's local vault ([`snow.yml` modes & secrets](../snow-modes.md)), which holds only local values — CI-resolved secrets are never written there ([two tiers](ospp.md#two-tiers)).
+`!!` values persist in the project's local vault, which holds local values only. CI-resolved secrets are never written there ([two tiers](ospp.md#two-tiers)).
 
-### Coordinates (`ResourceCoordinates::for_world`)
+### Coordinates
 
-`for_world(&snow, &project, &target, &origin, &s3_overrides)` is the sole coordinate builder: it validates `target` against `domains[].id` and renders every URL from the world's single public `WorldOrigin` (`ADR-0005` §1) — never from provider `domains`.
+`ResourceCoordinates::for_world` is the sole coordinate builder. It validates the world target against `domains[].id` and renders every URL from the world's single public origin, never from provider domains.
 
 | Expression | Value |
 |---|---|
-| `resources::app.url` | `origin.url()` — portless at `:80`, `:<port>` otherwise |
-| `resources::app.domain` | `origin.host()` |
+| `resources::app.url` | The origin URL: portless at `:80`, `:<port>` otherwise |
+| `resources::app.domain` | The origin host |
 | `resources::pg_databases.<id>.url` | `postgres://127.0.0.1:5432/<id>` |
 | `resources::redis_clusters.<id>.url` | `redis://127.0.0.1:6379/<index>` |
-| `resources::s3_buckets.<id>.{endpoint_url,bucket,access_key,secret_key,region}` | world-local `http://127.0.0.1:9000` unless a resource plan supplies remote coordinates |
-| `components::<id>.{private_url,private_domain,private_port}` | from `ingresses`, else `internal_ports[0]`; `UnknownResourcePath` when neither is declared |
+| `resources::s3_buckets.<id>.{endpoint_url,bucket,access_key,secret_key,region}` | World-local `http://127.0.0.1:9000` unless a remote plan supplies coordinates |
+| `components::<id>.{private_url,private_domain,private_port}` | From `ingresses`, else `internal_ports[0]` |
 
-`LocalHostRoute::parse(&project, &snow.domain_ids(), host_header)` parses `(<domain>.)?(<fork>.)?<project>.localhost` and enforces the disjoint `domains[].id` / fork rules (`ADR-0005` §1).
+`LocalHostRoute::parse(&project, &snow.domain_ids(), host_header)` parses `(<domain>.)?(<fork>.)?<project>.localhost` and enforces the disjoint domain-label and fork-name rules.
 
----
-
-## 2. `slipfork.toml` (`slipfork_dag::SlipforkConfig`)
+## 2. `slipfork.toml`
 
 ```toml title="slipfork.toml"
-# Optional canonical ProjectSlug override; defaults to the directory basename of the VCS
-# checkout, resolved through the Git store (a colocated Jujutsu checkout included).
+# Optional ProjectSlug override; defaults to the checkout directory's basename.
 project = "acme"
 
 # Optional world-rootfs selector: two keys only, both inferred when unambiguous.
 [world]
-image = "api"    # snow.yml BuildImage id; mandatory iff snow.yml declares >= 2
-stage = "builder" # named `FROM ... AS <stage>`; a compiled stage keeps cargo/rustc in the world
+image = "api"     # snow.yml BuildImage id; mandatory iff snow.yml declares two or more
+stage = "builder" # named `FROM ... AS <stage>`; keeps cargo/rustc in the world
 
 [artifacts.front]
 inputs = ["front/src/**", "front/package.json"]
@@ -133,16 +133,16 @@ coverage_report = ["html", "xml"] # html | xml | json | lcov | text
 coverage_fail_under = 85          # optional integer 0..=100
 ```
 
-The whole file is optional: absent, `up`/`fork` boot with defaults. A repository using artifacts or fixtures declares them there; `0.1.0` validates them at boot but ships no command that materializes a plan. A malformed file always fails closed.
+The whole file is optional: absent, `up` and `fork` boot with defaults. `artifacts` and `fixtures` are validated at boot, but `0.1.0` ships no command that materializes their plan. A malformed file always fails closed.
 
 ### `[world]`: which rootfs a world boots
 
-Every world's read-only rootfs is built from one `snow.yml` `BuildImage`, so `[world]` selects it and its Dockerfile stage. Both keys are optional and inferred when only one choice exists; `[world]` rejects any other key.
-
 | Key | Selects | Inferred when | Fails closed when |
 |---|---|---|---|
-| `image` | `snow.yml` `images[].id` used for the rootfs | exactly one `BuildImage` exists | no `BuildImage` exists, or `>= 2` exist and none is selected |
-| `stage` | named `FROM ... AS <stage>` inside that Dockerfile | the final `FROM` is named | the stage is unnamed or unknown |
+| `image` | `snow.yml` build image id | Exactly one build image exists | None exists, or two or more exist and none is selected |
+| `stage` | Named `FROM ... AS <stage>` | The final `FROM` is named | The stage is unnamed or unknown |
+
+A project with two build images must set `world.image`; a Rust or Go project that needs the toolchain at runtime sets `world.stage = "builder"`.
 
 ```console
 $ slipfork up
@@ -150,11 +150,11 @@ slipfork: snow.yml declares 2 buildable images ('api', 'worker') and slipfork.to
   fix: add `world.image = "api"` under `[world]` in slipfork.toml
 ```
 
-A project with two build images (say `api` and `worker`) must set `world.image`; a Rust/Go project that needs `cargo`/`rustc` at runtime sets `world.stage = "builder"`. A project with no build image fails closed with the 4-line `images:` snippet to add: it cannot be built into an image, so Slipfork cannot fork it.
+### Other validation rules
 
-### Validation rules
+- **Unknown keys fail closed** in every `slipfork.toml` table.
+- **`[resources.<kind>.<id>]`** takes `local` and `test` strategies (`local`, `prefer_remote`, `remote`); `slipforkd` applies the plan when it boots the world. `remote` fails closed without a live OSPP session.
+- **`[test]` is typed fields only.** `coverage = true` is the sole switch, `coverage_report` defaults to `["text"]`, and `coverage_fail_under` must be `0..=100`. These fields validate; test execution is not part of `0.1.0`.
+- **`[fixtures.<id>].per_world`** defaults to `false`. A per-world fixture is never reported `Cached` and cannot be the parent of an origin-independent fixture.
 
-- **Unknown keys fail closed** in every `slipfork.toml` table (`#[serde(deny_unknown_fields)]`).
-- **`[resources.<kind>.<id>]`** (`pg_databases` / `s3_buckets`) takes `local` and `test` strategies (`local` | `prefer_remote` | `remote`), e.g. `[resources.pg_databases.appdb] local = "prefer_remote"`; `slipforkd` applies the plan when it boots the world. The `remote` strategy fails closed without a live paired OSPP session; seed dumps and `--no-dump`/`--refresh-dump`: [CLI reference](cli.md#seed-dumps-and-sealed-bases).
-- **`[test]` is typed fields only** (`ADR-0006` §1): `coverage = true` is the sole switch, `coverage_report` defaults to `["text"]`, options without it fail with `DagError::CoverageOptionsRequireEnabled`, `coverage_report = []` with `DagError::EmptyCoverageReport`, and `coverage_fail_under` outside `0..=100` with `DagError::InvalidCoverageThreshold`. Coverage execution is not shipped in `0.1.0`; it lands with `STP v1` in `0.2.0`.
-- **`[fixtures.<id>].per_world`** defaults to `false`. A per-world fixture is never reported `CacheAction::Cached` and cannot be the `parent` of an origin-independent fixture (`DagError::OriginIndependentChildOfPerWorld`). Per-world snapshot execution is not shipped in `0.1.0`; it lands with `STP v1` in `0.2.0`.
+Back to the [CLI reference](cli.md) or [`snow.yml` modes & secrets](../snow-modes.md).

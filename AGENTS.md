@@ -11,7 +11,7 @@ When `plan/AUTOPILOT` is `on`, `deepseek-v4.1-flash` executes coarse vertical sl
 1. **True Constructor IoC/DI, Cohesive OOP & Canonical Module Ownership (`review-arch`):**
    - **Single Composition Root:** Only `crates/slipfork/src/main.rs` and `packages/opencode-slipfork/src/index.ts` read `std::env` / `process.env`, probe `/proc`, or bind ambient OS sockets/filesystems. Library crates have **zero** `std::env::var`, `OnceLock`/`LazyLock`, or `static` mutable/atomic state.
    - **Cohesive Structs (`<= 500` LOC) Over Free-Function Galaxies:** Group related state + behavior into cohesive structs (`SupervisedProcess`, `WorldManager`, `FileVault`) with methods — never 6-arg free functions or `*Inputs` parameter bags.
-   - **Architectural Port Traits ONLY — Zero Single-Impl Mock Traits:** Define traits **strictly** at genuine architectural ports (`WorldEngine`, `SecretProvider`, `SubvolumeDriver`, `UnitPort`, `TunnelRegistrar`, `VcsWorkspace`). **NEVER** invent single-impl mock-only traits (`MonotonicClock`, `HandoverClock`, `HostLoadProbe`, `FakeClock`) when a plain value struct (`Duration`, `StopBudget`) suffices.
+   - **Architectural Port Traits ONLY — Zero Single-Impl Mock Traits:** Define traits **strictly** at genuine architectural ports (`WorldEngine`, `BaseImageBuilder`, `SecretVault`, `DaemonControl`, `OsppClient`, `VcsWorkspace`). **NEVER** invent single-impl mock-only traits (`MonotonicClock`, `HandoverClock`, `HostLoadProbe`, `FakeClock`) when a plain value struct (`Duration`, `StopBudget`) suffices.
    - **Extend Canonical Modules Instead of Leaking Internals:** Keep all syntax parsing, token/AST traversal, fallback evaluation, secret-taint rules, and framing strictly inside their canonical owner module (`slipfork-snow`, `wire`, `relay`, `slipfork-edge`; keep `slipfork-edge` pure of CLI tables; reuse `Cargo.toml` crates like `tempfile`, `httparse`, `serde_json`). Add predicate/visitor helpers inside the canonical module rather than re-scanning `${{` delimiters, HTTP headers, or tokens downstream.
    - **Think Upwards:** If a cross-backend DI conflict prevents a clean non-leaky tree, **STOP** and escalate `STATUS: blocked` (`BLOCK_KIND: direction-challenge`) rather than hacking around a leaky port.
 
@@ -60,7 +60,7 @@ When `plan/AUTOPILOT` is `on`, `deepseek-v4.1-flash` executes coarse vertical sl
 | `crates/` | Rust workspace (`slipfork-world`, `slipfork-snow`, `slipfork-dag`, `slipfork-engine`, `slipfork-edge`, `slipfork-vcs`, `slipfork-ospp`, `slipfork`); `slipfork-testkit` & `slipfork-ospp-testkit` are test-only lab harnesses |
 | `packages/opencode-slipfork/` | OpenCode V2 plugin (`ctx.worktree.transform` + `ctx.shell.hook` + `ctx.session.hook`) |
 | `poc/` | Real PostgreSQL 18 + Linux `netns` + Playwright M1 PoC benchmark harness |
-| `tools/` | Stdlib-only harness & honesty guards (`plan.py`, `guard.py`, `critical_guard.py`, `check_docs_honesty.py`, `check_support.py`, `rs_test_list.py`) |
+| `tools/` | Stdlib-only harness & honesty guards (`plan.py`, `guard.py`, `critical_guard.py`, `check_docs_honesty.py`, `rs_test_list.py`) |
 
 ## Skills Index (load with `skill`)
 

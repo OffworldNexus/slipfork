@@ -1,6 +1,6 @@
 # ADR-0007: Integration Support Tiers, Evidence Registry, and `make check` Ceiling Enforcement
 
-- **Status:** Accepted — amended for M2 (`H-009` user-reachable scope ratified; schema + embedded `support/integrations.toml` + `critical_support.rs` shipped in `0.1.0`; `slipfork support [--json]` with `required_evidence`, generated `docs/support-matrix.md`, read-only `make check` ceiling, and explicit `make support-sync` land in M2)
+- **Status:** Superseded in `0.1.0`. The support matrix, `support/integrations.toml`, `critical_support.rs`, `tools/check_support.py`, and the `slipfork support` verb were deleted in the ship sweep; this ADR records the earlier design only.
 - **Date:** 2026-11-15
 
 ## Context
