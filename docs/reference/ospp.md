@@ -52,7 +52,7 @@ Remote secrets take the other tier. They arrive HPKE-encrypted (RFC 9180) over O
 
 ## What stays local
 
-Before subscribing, `slipforkd` sends the raw `snow.yml` plus `claims`: the `secrets::` keys in the project's vault, the resources it runs locally plus every declared `domains[].id`, and every local-mode `!!` key.
+Before subscribing, `slipforkd` sends the feature-evaluated `Forkfile` (`EvaluatedFork` JSON for the active mode) plus `claims`: the `secrets::` keys in the project's vault, the resources it runs locally plus every declared `domains[].id`, and every local-mode `!!` key.
 
 A claimed entry is never resolved by the server. Its expression comes back untouched and is filled from the local vault. That is how `${{ secrets::LOCAL_PASSWORD }}` wins over CI on your machine while no local value leaves it.
 
@@ -64,17 +64,20 @@ Every frame is one UTF-8 JSON text message with a `"type"`. Field-level JSON, HP
 
 | Frame | Direction | Purpose |
 |---|---|---|
-| `hello` | client → server | Protocol `version: 1` and supported auth methods |
+| `hello` | client → server | Protocol `version: 2` and supported auth methods |
 | `auth_challenge` / `auth_response` / `auth_ok` | ⇄ | P-256 nonce challenge, proof, and encryption methods |
 | `pair_hello` / `pair_challenge` / `pair_begin` | ⇄ | First-time enrolment: proof-of-work plus key proof of possession |
 | `pair_handle` | server → client | The `url` and single-use `handle` to open |
 | `pair_approved` | server → client | The browser approved, or an `error` (rejected, already paired, throttled, bad proof) |
-| `subscribe` | client → server | Verbatim Git `remote`, ephemeral HPKE public key, raw `snow.yml`, `claims` |
+| `subscribe` | client → server | Verbatim Git `remote`, ephemeral HPKE public key, feature-evaluated `forkfile`, `claims` |
 | `env_resolved` | server → client | Per-component environment for the subscription |
 | `env_updated` | server → client | Live push after an upstream change; affected services restart in place |
 | `unsubscribe` | client → server | The project's last world stopped |
 | `dump_request` / `dump_ready` | client ⇄ server | Short-lived HTTPS URL for one HPKE-sealed resource dump |
 | `error` | server → client | Coded refusal; handshake, pairing, and auth failures close the socket |
+
+!!! warning "Protocol version 2 is not negotiated"
+    A `hello` or `pair_hello` with any other `version` is refused with `unsupported_version` and the socket closes. There is no downgrade path: upgrade the OSPP provider to protocol v2, or run a matching `slipforkd`.
 
 ## When it fails
 

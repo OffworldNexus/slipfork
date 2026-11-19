@@ -54,6 +54,18 @@ pub(super) fn render(snow: &Snow) -> String {
         block.push('}');
         blocks.push(block);
     }
+    // Mode-scoped groups stay feature-gated, and precede the services that `use` them.
+    for (mode, group, vars) in &snow.mode_envs {
+        if vars.is_empty() {
+            continue;
+        }
+        let mut block = format!("on {mode} {{\n    env {group} {{\n");
+        for (key, expression) in vars {
+            let _ = writeln!(block, "        {key} = {expression}");
+        }
+        block.push_str("    }\n}");
+        blocks.push(block);
+    }
     for component in &snow.components {
         blocks.push(render_service(snow, component));
     }

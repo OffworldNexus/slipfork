@@ -10,12 +10,17 @@ use std::fmt;
 use serde::de::{self, MapAccess, Visitor};
 use serde::ser::SerializeMap;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use slipfork_forkfile::EvaluatedFork;
 
 use crate::error::OsppError;
 use crate::model::OsppClaims;
 
 /// The only `hello.version` this client and reference server speak.
-pub const PROTOCOL_VERSION: u32 = 1;
+///
+/// Bumped from `1` when `subscribe` started carrying the evaluated `Forkfile`; any
+/// other value is refused with `unsupported_version` (fail closed, never negotiated
+/// down). The `Sec-WebSocket-Protocol` name is stable across version bumps.
+pub const PROTOCOL_VERSION: u32 = 2;
 /// `auth_methods` / `key_methods` / `method` name for ECDSA P-256.
 pub const AUTH_METHOD_P256: &str = "p256";
 /// `encryption_methods` / `encryption.method` name for RFC 9180 HPKE P-256.
@@ -93,8 +98,8 @@ pub enum ClientFrame {
         remote: String,
         /// Ephemeral recipient key.
         encryption: Encryption,
-        /// Raw `snow.yml` content.
-        snow: String,
+        /// The feature-evaluated manifest (boxed: it dwarfs every other frame).
+        forkfile: Box<EvaluatedFork>,
         /// ID-only claims.
         claims: OsppClaims,
     },
@@ -223,7 +228,7 @@ const CLIENT_FIELDS: &[(&str, &[&str])] = &[
     ("pair_begin", &["type", "altcha", "hostname", "response"]),
     (
         "subscribe",
-        &["type", "id", "remote", "encryption", "snow", "claims"],
+        &["type", "id", "remote", "encryption", "forkfile", "claims"],
     ),
     ("unsubscribe", &["type", "id"]),
     (
@@ -371,8 +376,40 @@ mod tests {
         };
         assert_eq!(
             serde_json::to_value(&frame).expect("json"),
-            json!({ "type": "hello", "version": 1, "auth_methods": ["p256"] })
+            json!({ "type": "hello", "version": 2, "auth_methods": ["p256"] })
         );
+    }
+
+    #[test]
+    fn subscribe_carries_the_evaluated_manifest_single_shaped() {
+        let forkfile = slipfork_forkfile::parse_forkfile(
+            r#"
+postgres pg { database app_db }
+domain main
+service api ./api {
+    port 8000
+    env.DATABASE_URL = app_db.url
+    run /bin/true
+}
+"#,
+        )
+        .expect("valid Forkfile")
+        .evaluate(&slipfork_forkfile::FeatureSet::new())
+        .expect("evaluates");
+        let frame = ClientFrame::Subscribe {
+            id: "sub-1".to_owned(),
+            remote: "git@github.com:acme/web.git".to_owned(),
+            encryption: Encryption {
+                method: ENCRYPTION_METHOD_HPKE_P256.to_owned(),
+                public_key: "04".to_owned(),
+            },
+            forkfile: Box::new(forkfile),
+            claims: OsppClaims::default(),
+        };
+        let json = frame.to_json().expect("json");
+        assert!(json.contains("\"forkfile\""), "{json}");
+        assert!(!json.contains("\"snow\""), "{json}");
+        assert_eq!(ClientFrame::parse(&json).expect("parse"), frame);
     }
 
     #[test]

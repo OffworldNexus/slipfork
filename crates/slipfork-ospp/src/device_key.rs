@@ -13,7 +13,7 @@ use std::path::PathBuf;
 use p256::ecdsa::signature::{Signer, Verifier};
 use p256::ecdsa::{Signature, SigningKey, VerifyingKey};
 use p256::elliptic_curve::sec1::ToSec1Point;
-use slipfork_snow::EntropySource;
+use slipfork_forkfile::EntropySource;
 
 use crate::error::OsppError;
 

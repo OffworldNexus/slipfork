@@ -48,8 +48,11 @@ mod pairing_store;
 mod postgres;
 mod protocol;
 mod resolve;
+mod rootfs_select;
 mod select;
 mod service;
+mod snow_bridge;
+mod snow_resolve;
 mod types;
 mod vault;
 mod world;
@@ -252,14 +255,17 @@ pub fn compose_daemon(wiring: DaemonWiring) -> Result<DaemonGraph, String> {
     // One machine-authentication P-256 identity: a `0600` scalar at the injected data-home path.
     // Subscription encryption keys are ephemeral and live only in the session thread's memory.
     let entropy: Arc<dyn EntropySource> = Arc::new(OsCsprngEntropy);
+    // OSPP's ports are `slipfork-forkfile`'s; they draw from the same OS CSPRNG.
+    let ospp_entropy: Arc<dyn slipfork_forkfile::EntropySource> =
+        Arc::new(slipfork_forkfile::OsCsprngEntropy);
     let signer: Arc<dyn DeviceKeySigner> = if ospp_endpoint.is_some() {
         let store = FileDeviceKeyStore::new(DeviceKeyPath(layout.device_key_path()));
         Arc::new(
-            SoftwareP256Signer::from_store(&store, entropy.as_ref())
+            SoftwareP256Signer::from_store(&store, ospp_entropy.as_ref())
                 .map_err(|err| format!("cannot initialize the OSPP device key: {err}"))?,
         )
     } else {
-        let key = SoftwareP256Key::generate(entropy.as_ref())
+        let key = SoftwareP256Key::generate(ospp_entropy.as_ref())
             .map_err(|err| format!("cannot initialize the in-memory OSPP identity: {err}"))?;
         Arc::new(SoftwareP256Signer::new(key))
     };
@@ -267,7 +273,7 @@ pub fn compose_daemon(wiring: DaemonWiring) -> Result<DaemonGraph, String> {
         Some(endpoint) => Some(Arc::new(WsOsppClient::new(
             endpoint,
             Arc::clone(&signer),
-            Arc::clone(&entropy),
+            Arc::clone(&ospp_entropy),
             OsppTimeouts::default(),
         ))),
         None => None,

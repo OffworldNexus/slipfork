@@ -35,7 +35,7 @@ pub use check::ExternalCheck;
 pub use diag::{Diagnostic, Span};
 pub use eval::FeatureSet;
 pub use ir::{
-    EvaluatedEnvGroup, EvaluatedFork, EvaluatedImage, EvaluatedPg, EvaluatedPgDatabase,
+    EntityKind, EvaluatedEnvGroup, EvaluatedFork, EvaluatedImage, EvaluatedPg, EvaluatedPgDatabase,
     EvaluatedRedis, EvaluatedService, EvaluatedTask, Facts, FactsValue, HookRun, PropertyMap,
     Resolvers, TaintedString,
 };

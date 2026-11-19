@@ -17,6 +17,8 @@ pub struct Snow {
     pub(super) domains: Vec<String>,
     /// Rendered `Forkfile` expressions, keyed by env group then variable.
     pub(super) env_groups: BTreeMap<String, BTreeMap<String, String>>,
+    /// Mode-scoped env groups: `(mode, group, vars)`, rendered as `on <mode> { env … }`.
+    pub(super) mode_envs: Vec<(String, String, BTreeMap<String, String>)>,
     pub(super) components: Vec<Component>,
     pub(super) ingresses: Vec<Ingress>,
     pub(super) hooks: Vec<Hook>,
@@ -123,7 +125,8 @@ impl Snow {
             .map(|(index, node)| Hook::read(node, index))
             .collect::<Result<Vec<_>, _>>()?;
         let mut features: Vec<String> = Vec::new();
-        read_modes(root, &mut components, &mut features)?;
+        let mut mode_envs = Vec::new();
+        read_modes(root, &mut components, &mut features, &mut mode_envs)?;
         Ok(Self {
             images,
             pg_clusters,
@@ -132,6 +135,7 @@ impl Snow {
             s3,
             domains,
             env_groups,
+            mode_envs,
             components,
             ingresses,
             hooks,
@@ -282,6 +286,7 @@ fn read_modes(
     root: &Node,
     components: &mut [Component],
     features: &mut Vec<String>,
+    mode_envs: &mut Vec<(String, String, BTreeMap<String, String>)>,
 ) -> Result<(), MigrateError> {
     let Some(modes) = root.get("modes").and_then(Node::as_map) else {
         return Ok(());
@@ -301,16 +306,17 @@ fn read_modes(
             }
             continue;
         }
-        if spec
-            .get("envs")
-            .and_then(Node::as_map)
-            .is_some_and(|entries| !entries.is_empty())
-        {
-            return Err(schema(
-                format!("modes.{mode}.envs"),
-                "mode-scoped env groups cannot be represented in one Forkfile",
-                "merge them into `envs`/`modes.all.envs` or select the group with a feature",
-            ));
+        // `modes.<mode>.envs` becomes `on <mode> { env <group> { … } }`: the forkfile keeps one
+        // group per name, and the active world mode selects it exactly like any other feature.
+        if let Some(envs) = spec.get("envs").and_then(Node::as_map) {
+            let mut groups = BTreeMap::new();
+            merge_group_entries(envs, &format!("modes.{mode}.envs"), &mut groups)?;
+            if !groups.is_empty() && !features.contains(mode) {
+                features.push(mode.clone());
+            }
+            for (group, vars) in groups {
+                mode_envs.push((mode.clone(), group, vars));
+            }
         }
         let Some(overrides) = spec.get("components").and_then(Node::as_map) else {
             continue;
@@ -352,50 +358,63 @@ fn read_env_groups(
     root: &Node,
 ) -> Result<BTreeMap<String, BTreeMap<String, String>>, MigrateError> {
     let mut groups: BTreeMap<String, BTreeMap<String, String>> = BTreeMap::new();
-    let mut merge = |node: &Node, path: &str| -> Result<(), MigrateError> {
-        let Some(entries) = node.as_map() else {
-            return Err(schema(
-                path,
-                "expected an env-group map",
-                "write `envs: { <group>: { KEY: value } }`",
-            ));
-        };
-        for (group, vars) in entries {
-            let Some(vars) = vars.as_map() else {
-                return Err(schema(
-                    format!("{path}.{group}"),
-                    "expected `KEY: value` entries",
-                    "write each variable as `KEY: \"template\"`",
-                ));
-            };
-            let target = groups.entry(group.clone()).or_default();
-            for (key, value) in vars {
-                let Some(template) = value.as_scalar() else {
-                    return Err(schema(
-                        format!("{path}.{group}.{key}"),
-                        "expected a scalar template",
-                        "write the value as a quoted string",
-                    ));
-                };
-                target.insert(
-                    key.clone(),
-                    render_template(template, &format!("envs.{group}.{key}"))?,
-                );
-            }
-        }
-        Ok(())
-    };
     if let Some(envs) = root.get("envs") {
-        merge(envs, "envs")?;
+        merge_groups(envs, "envs", &mut groups)?;
     }
     if let Some(all) = root
         .get("modes")
         .and_then(|modes| modes.get("all"))
         .and_then(|all| all.get("envs"))
     {
-        merge(all, "modes.all.envs")?;
+        merge_groups(all, "modes.all.envs", &mut groups)?;
     }
     Ok(groups)
+}
+
+fn merge_groups(
+    node: &Node,
+    path: &str,
+    groups: &mut BTreeMap<String, BTreeMap<String, String>>,
+) -> Result<(), MigrateError> {
+    let Some(entries) = node.as_map() else {
+        return Err(schema(
+            path,
+            "expected an env-group map",
+            "write `envs: { <group>: { KEY: value } }`",
+        ));
+    };
+    merge_group_entries(entries, path, groups)
+}
+
+fn merge_group_entries(
+    entries: &[(String, Node)],
+    path: &str,
+    groups: &mut BTreeMap<String, BTreeMap<String, String>>,
+) -> Result<(), MigrateError> {
+    for (group, vars) in entries {
+        let Some(vars) = vars.as_map() else {
+            return Err(schema(
+                format!("{path}.{group}"),
+                "expected `KEY: value` entries",
+                "write each variable as `KEY: \"template\"`",
+            ));
+        };
+        let target = groups.entry(group.clone()).or_default();
+        for (key, value) in vars {
+            let Some(template) = value.as_scalar() else {
+                return Err(schema(
+                    format!("{path}.{group}.{key}"),
+                    "expected a scalar template",
+                    "write the value as a quoted string",
+                ));
+            };
+            target.insert(
+                key.clone(),
+                render_template(template, &format!("envs.{group}.{key}"))?,
+            );
+        }
+    }
+    Ok(())
 }
 
 fn sequence<'a>(node: &'a Node, key: &str) -> Result<&'a [Node], MigrateError> {

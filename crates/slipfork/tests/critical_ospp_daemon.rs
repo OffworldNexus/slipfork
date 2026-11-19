@@ -452,7 +452,6 @@ fn ospp_pairing_store_reboot_subscribe_push_and_sealed_dump_journey() {
     // --- boot 2: re-pair against the enrolled server so the store names the live endpoint ----
     let server = ReferenceOsppServer::start(ReferenceServerConfig {
         accepted_keys: vec![key],
-        mode: "local".to_owned(),
         vars: BTreeMap::from([
             ("REMOTE_VAR".to_owned(), "from-remote".to_owned()),
             ("WORKER_VAR".to_owned(), "worker-remote".to_owned()),
@@ -506,6 +505,25 @@ fn ospp_pairing_store_reboot_subscribe_push_and_sealed_dump_journey() {
     assert_success(
         &daemon.cli(&repo, &["up", "--no-dump"]),
         "up through the store-resolved subscription",
+    );
+    // The daemon subscribes exactly the feature-evaluated manifest its world runs: the active
+    // `local` mode is the Forkfile feature, and no `snow.yml` shape crosses the wire.
+    let recorded = server.state().subscriptions["sub-acme-two-tier"]
+        .forkfile
+        .clone();
+    let migrated = slipfork_forkfile::migrate_snow_yaml(TWO_TIER_SNOW).expect("migrate snow.yml");
+    let expected = slipfork_forkfile::parse_forkfile(&migrated)
+        .expect("the migrated Forkfile parses")
+        .evaluate(&slipfork_forkfile::FeatureSet::with_features(["local"]))
+        .expect("the migrated Forkfile evaluates");
+    assert_eq!(
+        recorded, expected,
+        "subscribe must carry the feature-evaluated Forkfile, not snow.yml"
+    );
+    assert!(
+        recorded.features.contains(&"local".to_owned()),
+        "the active world mode is the subscribed feature set: {:?}",
+        recorded.features
     );
     let env = daemon.cli(
         &repo,

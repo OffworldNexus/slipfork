@@ -1,6 +1,6 @@
 //! Environment resolution: expressions to tainted strings through injected ports.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::diag::{Diagnostic, Span};
 use crate::ir::{EntityKind, EvaluatedFork, Resolvers, TaintedString};
@@ -13,6 +13,21 @@ impl EvaluatedFork {
         &self,
         service_id: &str,
         resolvers: &Resolvers<'_>,
+    ) -> Result<BTreeMap<String, TaintedString>, Vec<Diagnostic>> {
+        self.resolve_env_with_claims(service_id, resolvers, &|_| false)
+    }
+
+    /// Resolve one service's environment, leaving claimed expressions byte-verbatim.
+    ///
+    /// `is_claimed` is the caller's `claims` predicate: an assignment whose whole expression reads
+    /// a locally owned entry is returned as canonical `Forkfile` source (via [`Expr::render`])
+    /// instead of being evaluated, exactly as the uniform OSPP claim rule requires. Everything
+    /// else goes through the one canonical evaluator below.
+    pub fn resolve_env_with_claims(
+        &self,
+        service_id: &str,
+        resolvers: &Resolvers<'_>,
+        is_claimed: &dyn Fn(&Expr) -> bool,
     ) -> Result<BTreeMap<String, TaintedString>, Vec<Diagnostic>> {
         let Some(service) = self
             .services
@@ -27,6 +42,13 @@ impl EvaluatedFork {
         let mut env = BTreeMap::new();
         let mut diags = Vec::new();
         for assignment in &service.env {
+            if is_claimed(&assignment.expr) {
+                env.insert(
+                    assignment.key.value.clone(),
+                    TaintedString::plain(assignment.expr.render()),
+                );
+                continue;
+            }
             match eval_expr(&assignment.expr, self, resolvers) {
                 Ok(Some(value)) => {
                     env.insert(assignment.key.value.clone(), value);
@@ -179,7 +201,8 @@ impl EvaluatedFork {
         })
     }
 
-    fn entity_kind(&self, id: &str) -> Option<EntityKind> {
+    /// The kind of the entity declared under `id`, if this fork declares one.
+    pub fn entity_kind(&self, id: &str) -> Option<EntityKind> {
         if self.postgres.iter().any(|cluster| cluster.id == id) {
             return Some(EntityKind::PgCluster);
         }
@@ -203,6 +226,81 @@ impl EvaluatedFork {
             return Some(EntityKind::Service);
         }
         None
+    }
+
+    /// The `claims` namespace owning `id`, when a client can claim that entity.
+    pub fn claim_namespace(&self, id: &str) -> Option<&'static str> {
+        self.entity_kind(id).and_then(EntityKind::claim_namespace)
+    }
+
+    /// Whether `expr` reads any entry the local world owns through `owns`.
+    pub fn expr_is_claimed(&self, expr: &Expr, owns: &dyn Fn(&str, &[String]) -> bool) -> bool {
+        match expr {
+            Expr::Var(key) => owns("vars", std::slice::from_ref(&key.value)),
+            Expr::Secret(key) => owns("secrets", std::slice::from_ref(&key.value)),
+            Expr::Ref(path) => self.ref_is_claimed(&path.value, owns),
+            Expr::Fallback { lhs, rhs, .. } => {
+                self.expr_is_claimed(lhs, owns) || self.expr_is_claimed(rhs, owns)
+            }
+            Expr::Concat { parts, .. } => parts.iter().any(|part| self.expr_is_claimed(part, owns)),
+            Expr::Str(_) | Expr::Int(_) | Expr::Bool(_) | Expr::Generator { .. } => false,
+        }
+    }
+
+    fn ref_is_claimed(&self, path: &[String], owns: &dyn Fn(&str, &[String]) -> bool) -> bool {
+        let Some((head, rest)) = path.split_first() else {
+            return false;
+        };
+        match head.as_str() {
+            "deployment" => false,
+            "app" => rest.len() == 1 && owns("resources", &["app".to_owned(), rest[0].clone()]),
+            _ => match self.claim_namespace(head) {
+                Some(namespace) => {
+                    owns(namespace, std::slice::from_ref(head))
+                        || owns("resources", &[namespace.to_owned(), head.clone()])
+                }
+                None => false,
+            },
+        }
+    }
+
+    /// Every env key of `service_id` whose expression reads a claimed entry.
+    pub fn claimed_env_keys(
+        &self,
+        service_id: &str,
+        owns: &dyn Fn(&str, &[String]) -> bool,
+    ) -> BTreeSet<String> {
+        let mut keys = BTreeSet::new();
+        for service in self
+            .services
+            .iter()
+            .filter(|service| service.id == service_id)
+        {
+            collect_claimed_keys(service, self, owns, &mut keys);
+        }
+        keys
+    }
+
+    /// Every env key, across every service, whose expression reads a claimed entry.
+    pub fn all_claimed_env_keys(&self, owns: &dyn Fn(&str, &[String]) -> bool) -> BTreeSet<String> {
+        let mut keys = BTreeSet::new();
+        for service in &self.services {
+            collect_claimed_keys(service, self, owns, &mut keys);
+        }
+        keys
+    }
+}
+
+fn collect_claimed_keys(
+    service: &crate::ir::EvaluatedService,
+    fork: &EvaluatedFork,
+    owns: &dyn Fn(&str, &[String]) -> bool,
+    keys: &mut BTreeSet<String>,
+) {
+    for assignment in &service.env {
+        if fork.expr_is_claimed(&assignment.expr, owns) {
+            keys.insert(assignment.key.value.clone());
+        }
     }
 }
 fn eval_expr(

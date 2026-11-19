@@ -6,7 +6,7 @@
 
 use std::io;
 
-use slipfork_snow::ProviderError;
+use slipfork_forkfile::ProviderError;
 use thiserror::Error;
 
 /// The typed `error.code` strings the OSPP v1 spec names explicitly

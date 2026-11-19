@@ -59,7 +59,9 @@ impl Snow {
         }
         for image in &self.images {
             for group in &image.build_envs {
-                if !self.env_groups.contains_key(group) {
+                if !self.env_groups.contains_key(group)
+                    && !self.mode_envs.iter().any(|(_, name, _)| name == group)
+                {
                     return Err(schema(
                         format!("{}.envs", image.path),
                         format!("unknown build env group `{group}`"),
@@ -77,7 +79,9 @@ impl Snow {
                 ));
             }
             for group in &component.envs {
-                if !self.env_groups.contains_key(group) {
+                if !self.env_groups.contains_key(group)
+                    && !self.mode_envs.iter().any(|(_, name, _)| name == group)
+                {
                     return Err(schema(
                         format!("{}.envs", component.path),
                         format!("unknown env group `{group}`"),
@@ -227,7 +231,7 @@ mod tests {
     }
 
     #[test]
-    fn disabled_and_mode_scoped_envs_are_refused() {
+    fn disabled_overrides_are_refused_and_mode_envs_become_feature_blocks() {
         let disabled = MODES.replace(
             "run_command: uv run api --reload",
             "run_command: uv run api --reload\n        disabled: true",
@@ -238,11 +242,17 @@ mod tests {
             "{disabled_error:?}"
         );
 
-        let mode_envs = "images: []\nmodes:\n  dev:\n    envs:\n      common:\n        A: b\n";
-        let error = error(mode_envs);
+        let mode_envs = "images:\n  - id: api\n    context: ./api\ncomponents:\n  - id: api\n    image: api\n    envs: [common]\n    run_command: uv run api\nmodes:\n  dev:\n    envs:\n      common:\n        A: b\n";
+        let output = migrate_snow_yaml(mode_envs).expect("mode envs migrate");
+        assert!(output.contains("features {\n    dev\n}"), "{output}");
         assert!(
-            matches!(&error, MigrateError::Schema { path, .. } if path == "modes.dev.envs"),
-            "{disabled_error:?}"
+            output.contains("on dev {\n    env common {\n        A = \"b\"\n    }\n}"),
+            "{output}"
         );
+        let evaluated = crate::parse_forkfile(&output)
+            .expect("migrated manifest parses")
+            .evaluate(&crate::FeatureSet::with_features(["dev"]))
+            .expect("active mode evaluates");
+        assert_eq!(evaluated.services[0].env[0].key.value, "A");
     }
 }

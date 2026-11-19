@@ -54,6 +54,25 @@ impl From<crate::yaml::YamlError> for MigrateError {
     }
 }
 
+impl MigrateError {
+    /// The one human sentence this refusal carries, without the `snow.yml:<path>:` prefix.
+    ///
+    /// A daemon prefixes it with the manifest path it read, so a refused boot stays one line.
+    pub fn message(&self) -> String {
+        match self {
+            Self::Yaml { message, .. }
+            | Self::Schema { message, .. }
+            | Self::InvalidOutput { message, .. } => message.clone(),
+            Self::UnsupportedExpression { expr, .. } => {
+                format!("unsupported template `${{{{ {expr} }}}}`")
+            }
+            Self::ShellSyntax { reason, .. } => {
+                format!("`run_command` uses shell syntax ({reason})")
+            }
+        }
+    }
+}
+
 pub(super) fn schema(
     path: impl Into<String>,
     message: impl Into<String>,
@@ -82,5 +101,52 @@ pub fn migrate_snow_yaml(source: &str) -> Result<String, MigrateError> {
                 message: diagnostic.message.clone(),
             })
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::eval::FeatureSet;
+
+    #[test]
+    fn mode_envs_become_feature_gated_groups() {
+        let source = r#"
+images:
+  - id: app
+    context: .
+components:
+  - id: api
+    image: app
+    run_command: "exec sleep 300"
+modes:
+  local:
+    envs:
+      app:
+        DEBUG: "${{ vars::DEBUG }}"
+"#;
+        let output = migrate_snow_yaml(source).expect("migrate");
+        assert!(
+            output.contains("features {\n    local\n}"),
+            "the mode becomes a feature: {output}"
+        );
+        assert!(
+            output.contains("on local {\n    env app {\n        DEBUG = var(DEBUG)\n    }\n}"),
+            "the mode env group is feature-gated: {output}"
+        );
+        let active = crate::parse_forkfile(&output)
+            .expect("parse")
+            .evaluate(&FeatureSet::with_features(["local"]))
+            .expect("evaluate with the active mode");
+        assert_eq!(active.env_groups.len(), 1);
+        assert_eq!(active.env_groups[0].name, "app");
+        let inactive = crate::parse_forkfile(&output)
+            .expect("parse")
+            .evaluate(&FeatureSet::new())
+            .expect("evaluate without the mode");
+        assert!(
+            inactive.env_groups.is_empty(),
+            "the mode group is inactive without its feature"
+        );
     }
 }

@@ -1972,3 +1972,17 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-19T19:59 [M3.32.3.1] (lead) attempt 2/3 started
 - 2026-11-19T19:59 [M3.32.3.1] (lead) fix pass 1/3 base 9706d6298472c3e6b4cf71d6a6cc7f7e3f56f069
 - 2026-11-19T20:02 [M3.32.3.1] (lead) status active -> done
+- 2026-11-19T20:02 [M3.32.3.2] (lead) status ready -> active
+- 2026-11-19T20:02 [M3.32.3.2] (lead) attempt 1/3 started
+- 2026-11-19T20:02 [M3.32.3.2] (lead) base e787cb7d94ab01d7e382a93b751adb40556bda97
+- 2026-11-19T20:03 [M3.32.3.2] (lead) edited fields
+- 2026-11-19T20:03 [M3.32.3.2] (lead) lead: widened paths with the 3 daemon files that construct SubscribeRequest so the wire retype compiles standalone; full daemon retype + snow deletion stay in M
+- 2026-11-19T20:06 [M3.32.3.2] (lead) status active -> review
+- 2026-11-19T20:07 [M3.32.3.2] (lead) edited fields
+- 2026-11-19T20:07 [M3.32.3.2] (lead) lead: Triad pass 2/3 — widened to slipfork-forkfile/** + daemon/** + the 2 OSPP docs; ref-server evaluation must move into the canonical crate
+- 2026-11-19T20:07 [M3.32.3.2] (lead) status review -> active
+- 2026-11-19T20:07 [M3.32.3.2] (lead) attempt 2/3 started
+- 2026-11-19T20:07 [M3.32.3.2] (lead) fix pass base e787cb7d94ab01d7e382a93b751adb40556bda97
+- 2026-11-19T20:10 [M3.32.3.2] (lead) attempt 3/3 started
+- 2026-11-19T20:10 [M3.32.3.2] (lead) attempt 2 stopped mid-refactor (step cap); attempt 3 completes testkit+daemon+docs+tests
+- 2026-11-19T20:16 [M3.32.3.2] (lead) status active -> done

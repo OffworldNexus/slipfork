@@ -35,14 +35,37 @@ pub struct Facts {
     /// Service property maps keyed by service id.
     pub services: BTreeMap<String, PropertyMap>,
 }
+/// The kind of one concrete manifest entity an expression can reference.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum EntityKind {
+pub enum EntityKind {
+    /// A `postgres <cluster>` declaration.
     PgCluster,
+    /// One `database <id>` inside a cluster.
     PgDatabase,
+    /// A `redis <cluster>` declaration.
     Redis,
+    /// An `s3 <bucket>` declaration.
     S3,
+    /// A `domain <id>` declaration.
     Domain,
+    /// A `service <id>` declaration.
     Service,
+}
+impl EntityKind {
+    /// The `claims` namespace a client uses to own this entity by id.
+    ///
+    /// `None` means the entity is not individually claimable: a postgres cluster is owned through
+    /// its databases, and `app`/`deployment` live in their own namespaces.
+    pub const fn claim_namespace(self) -> Option<&'static str> {
+        match self {
+            Self::PgCluster => None,
+            Self::PgDatabase => Some("pg_databases"),
+            Self::Redis => Some("redis_clusters"),
+            Self::S3 => Some("s3_buckets"),
+            Self::Domain => Some("domains"),
+            Self::Service => Some("components"),
+        }
+    }
 }
 impl Facts {
     pub(crate) fn lookup(&self, kind: EntityKind, id: &str, property: &str) -> Option<&FactsValue> {

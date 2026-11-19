@@ -1,9 +1,9 @@
 //! Deterministic test doubles used by the protected `critical_ospp` suite.
 
+use slipfork_forkfile::{EntropySource, ProviderError};
 use slipfork_ospp::{
     DeviceKeySigner, DeviceSignature, OsppError, SoftwareP256Key, SoftwareP256Signer,
 };
-use slipfork_snow::{EntropySource, ProviderError};
 
 /// Entropy source that repeats one byte, so generated keys and nonces are reproducible.
 #[derive(Debug, Clone, Copy)]

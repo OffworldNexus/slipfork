@@ -1,7 +1,7 @@
 use super::backing::service_specs;
 use super::base::{base_digest, reused_base_lineage, selected_seed};
 use super::boot::{check_rerun_policy, restarted_service_ids};
-use super::env::resolve_component_env;
+use super::env::ComponentEnv;
 use super::service::DaemonService;
 use super::types::PreparedWorld;
 use super::types::SealedBase;
@@ -498,18 +498,29 @@ impl DaemonService {
                 &world.plan,
                 self.vault_store(&project)?,
             )?;
+            // The pushed server environment echoes claimed expressions verbatim; the canonical
+            // evaluator decides which keys those are, and only the local layer fills them.
+            let source =
+                std::fs::read_to_string(world.worktree.join("snow.yml")).map_err(|err| {
+                    runtime_error(format!(
+                        "cannot read {}: {err}",
+                        world.worktree.join("snow.yml").display()
+                    ))
+                })?;
+            let forkfile = super::snow_bridge::evaluated_forkfile(&source, &world.worktree)?;
+            let owns = |namespace: &str, path: &[String]| claims.owns(namespace, path);
             for index in 0..world.components.len() {
                 let id = world.components[index].id.clone();
                 let server = environment.component(&id);
-                let env = resolve_component_env(
-                    &world.snow,
-                    provider.as_ref(),
-                    &world.coords,
-                    &id,
-                    &claims,
-                    server,
-                    self.entropy.as_ref(),
-                )?;
+                let env = ComponentEnv {
+                    snow: &world.snow,
+                    provider: provider.as_ref(),
+                    coords: &world.coords,
+                    claims: &claims,
+                    claimed: &forkfile.claimed_env_keys(&id, &owns),
+                    entropy: self.entropy.as_ref(),
+                }
+                .resolve(&id, server)?;
                 if env == world.components[index].env {
                     continue;
                 }

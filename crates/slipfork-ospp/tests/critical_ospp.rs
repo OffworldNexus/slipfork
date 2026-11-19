@@ -2,13 +2,14 @@
 //!
 //! Every test drives the production client path against the in-tree reference
 //! server: real loopback WebSocket frames, real P-256 verification, real RFC 9180
-//! HPKE sealing, single-pass `snow.yml` resolution against ID-only claims, live
+//! HPKE sealing, claim-aware resolution of the feature-evaluated `Forkfile` IR, live
 //! `env_updated` pushes, and the out-of-band sealed dump stream.
 
 use std::io::Read;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use slipfork_forkfile::{EvaluatedFork, FeatureSet, parse_forkfile};
 use slipfork_ospp::{
     DeviceKeySigner, DumpReader, OsppClaims, OsppClient, OsppTimeouts, SubscribeRequest,
     SubscriptionEnv, SubscriptionKey, WsOsppClient,
@@ -18,20 +19,33 @@ use slipfork_ospp_testkit::{
     ResourceRecord, seal_dump, seal_secret, software_signer,
 };
 
-const SNOW: &str = r#"
-images: []
-components: []
-modes:
-  all:
-    envs:
-      api:
-        LOG_LEVEL: "info"
-        DEBUG: '  ${{ vars::DEBUG ?? "local" }}  '
-        LOCAL_DEV_KEY: "${{ secrets::LOCAL_DEV_KEY }}"
-        DATABASE_URL: "${{ resources::pg_databases.main.url }}"
-        REPORTING_URL: "${{ resources::pg_databases.reporting.url }}"
-        SECRET_KEY: "${{ secrets::SECRET_KEY }}"
+const FORKFILE: &str = r#"
+postgres pg {
+    database main
+    database reporting
+}
+
+env app {
+    LOG_LEVEL     = "info"
+    DEBUG         = var(DEBUG) ?? "local"
+    LOCAL_DEV_KEY = secret(LOCAL_DEV_KEY)
+    DATABASE_URL  = main.url
+    REPORTING_URL = reporting.url
+    SECRET_KEY    = secret(SECRET_KEY)
+}
+
+service api ./api {
+    use env app
+    run /bin/true
+}
 "#;
+
+fn evaluated_forkfile() -> EvaluatedFork {
+    parse_forkfile(FORKFILE)
+        .expect("valid Forkfile")
+        .evaluate(&FeatureSet::default())
+        .expect("evaluates")
+}
 
 fn timeouts() -> OsppTimeouts {
     OsppTimeouts {
@@ -107,7 +121,7 @@ fn subscribe_request() -> SubscribeRequest {
     SubscribeRequest {
         id: "sub-1".to_owned(),
         remote: "git@github.com:acme/web.git".to_owned(),
-        snow: SNOW.to_owned(),
+        forkfile: evaluated_forkfile(),
         claims: claims(),
     }
 }
@@ -136,25 +150,19 @@ fn handshake_and_subscribe_resolve_id_only_claims() {
     let api = environment.component("api").expect("api component");
 
     assert_eq!(api["LOG_LEVEL"].expose(), "info");
-    // Claimed templates survive byte-verbatim, including the surrounding spaces.
-    assert_eq!(api["DEBUG"].expose(), "  ${{ vars::DEBUG ?? \"local\" }}  ");
-    assert_eq!(
-        api["LOCAL_DEV_KEY"].expose(),
-        "${{ secrets::LOCAL_DEV_KEY }}"
-    );
-    assert!(!api["LOCAL_DEV_KEY"].is_secret());
-    // A claimed resource keeps its expression verbatim (the uniform claim rule);
+    // Claimed references survive unresolved, spelled canonically for the client.
+    assert_eq!(api["DEBUG"].expose(), "var(DEBUG) ?? \"local\"");
+    assert_eq!(api["LOCAL_DEV_KEY"].expose(), "secret(LOCAL_DEV_KEY)");
+    assert!(!api["LOCAL_DEV_KEY"].is_tainted());
+    // A claimed resource keeps its reference verbatim (the uniform claim rule);
     // an unclaimed resource coordinate resolves to plaintext.
-    assert_eq!(
-        api["DATABASE_URL"].expose(),
-        "${{ resources::pg_databases.main.url }}"
-    );
+    assert_eq!(api["DATABASE_URL"].expose(), "main.url");
     assert_eq!(
         api["REPORTING_URL"].expose(),
         "postgres://reporting@127.0.0.1/reporting"
     );
-    assert!(api["SECRET_KEY"].is_secret());
     assert_eq!(api["SECRET_KEY"].expose(), "s3cr3t-value");
+    assert!(api["SECRET_KEY"].is_tainted());
     assert!(!format!("{environment:?}").contains("s3cr3t-value"));
 
     let state = server.state();
@@ -163,6 +171,7 @@ fn handshake_and_subscribe_resolve_id_only_claims() {
     assert_eq!(state.frames, vec!["hello", "auth_response", "subscribe"]);
     let recorded = &state.subscriptions["sub-1"];
     assert_eq!(recorded.remote, "git@github.com:acme/web.git");
+    assert_eq!(recorded.forkfile, evaluated_forkfile());
     assert_eq!(recorded.claims, claims());
     // Only identifiers cross the wire, never server values.
     let claims_json = serde_json::to_string(&recorded.claims).expect("claims json");
@@ -202,7 +211,7 @@ fn pushed_env_updated_is_decrypted_in_memory_and_delivered() {
     assert_eq!(update.id, "sub-1");
     let api = update.component("api").expect("api component");
     assert_eq!(api["SECRET_KEY"].expose(), "rotated-value");
-    assert!(api["SECRET_KEY"].is_secret());
+    assert!(api["SECRET_KEY"].is_tainted());
     assert!(!format!("{update:?}").contains("rotated-value"));
 }
 
@@ -314,6 +323,36 @@ fn hpke_round_trip_pinning_rejects_a_wrong_aad() {
     assert!(key.open_secret("worker", "SECRET_KEY", &sealed).is_err());
     let other = SubscriptionKey::from_scalar_bytes(&[0x12; 32]).expect("other key");
     assert!(other.open_secret("api", "SECRET_KEY", &sealed).is_err());
+}
+
+#[test]
+fn a_version_one_hello_is_refused_with_unsupported_version() {
+    use tungstenite::Message;
+    use tungstenite::client::IntoClientRequest;
+
+    let signer = software_signer();
+    let server = start_server(signer.public_key_hex(), |_| {});
+    let mut request = server
+        .endpoint()
+        .as_str()
+        .into_client_request()
+        .expect("loopback ws request");
+    request.headers_mut().insert(
+        "Sec-WebSocket-Protocol",
+        "ospp-v1".parse().expect("subprotocol header"),
+    );
+    let (mut socket, _) = tungstenite::connect(request).expect("handshake");
+    socket
+        .send(Message::Text(
+            r#"{"type":"hello","version":1,"auth_methods":["p256"]}"#.into(),
+        ))
+        .expect("send version 1 hello");
+    let Message::Text(reply) = socket.read().expect("refusal frame") else {
+        panic!("expected a text error frame");
+    };
+    let json: serde_json::Value = serde_json::from_str(&reply).expect("json error frame");
+    assert_eq!(json["type"], "error", "{reply}");
+    assert_eq!(json["code"], "unsupported_version", "{reply}");
 }
 
 fn pseudo_random(len: usize) -> Vec<u8> {

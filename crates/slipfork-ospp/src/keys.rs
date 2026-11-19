@@ -11,7 +11,7 @@ use hpke::aead::AesGcm256;
 use hpke::kdf::HkdfSha256;
 use hpke::kem::{DhP256HkdfSha256, Kem};
 use hpke::{Deserializable, OpModeR, Serializable, setup_receiver};
-use slipfork_snow::EntropySource;
+use slipfork_forkfile::EntropySource;
 
 use crate::error::OsppError;
 

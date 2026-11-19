@@ -8,13 +8,14 @@ use super::{WORLD_MODE, rejected, runtime_error, snow_error};
 use crate::layout::ensure_private_dir;
 use slipfork_edge::forward::ForwardTargetSpec;
 use slipfork_edge::{EdgeError, IngressRoute, world_id};
+use slipfork_forkfile::TaintedString;
 use slipfork_ospp::OsppClaims;
 use slipfork_snow::{
     ClaimedEvaluator, EntropySource, HookPhase, ResolvedEnvMap, ResourceCoordinates,
-    SecretProvider, SecretValue, SnowFile,
+    SecretProvider, SnowFile,
 };
 use slipfork_world::{ExecEnv, InheritedVar};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{File, OpenOptions};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
@@ -199,6 +200,11 @@ pub(super) fn ingress_routes(
 
 pub(super) fn apply_env(env: &mut ExecEnv, resolved: ResolvedEnvMap) -> Result<(), EdgeError> {
     for (key, value) in resolved {
+        // A claimed expression is evaluated locally by the transition resolver; an unclaimed one
+        // stays unresolved and is filled by the server layer instead.
+        if value.has_unresolved_expression() {
+            continue;
+        }
         let outcome = if value.is_secret() {
             env.set_secret(&key, value.expose())
         } else {
@@ -210,40 +216,50 @@ pub(super) fn apply_env(env: &mut ExecEnv, resolved: ResolvedEnvMap) -> Result<(
     Ok(())
 }
 
-/// One component's environment: local `snow.yml` resolution first, then the server-resolved
-/// values, with only **claimed** `${{ ... }}` expressions substituted locally.
-pub(super) fn resolve_component_env(
-    snow: &SnowFile,
-    provider: &dyn SecretProvider,
-    coords: &ResourceCoordinates,
-    component: &str,
-    claims: &OsppClaims,
-    server: Option<&BTreeMap<String, SecretValue>>,
-    entropy: &dyn EntropySource,
-) -> Result<ExecEnv, EdgeError> {
-    let owns = |namespace: &str, path: &[String]| claims.owns(namespace, path);
-    let evaluator = ClaimedEvaluator::new(provider, coords, entropy, &owns);
-    let resolved = evaluator
-        .mode(snow, WORLD_MODE, Some(component))
-        .map_err(snow_error)?;
-    let mut env = ExecEnv::default();
-    apply_env(&mut env, resolved)?;
-    let Some(server) = server else {
-        return Ok(env);
-    };
-    for (name, value) in server {
-        let rendered = evaluator.render(value.expose()).map_err(snow_error)?;
-        let secret = value.is_secret() || rendered.is_secret();
-        let raw = rendered.expose().to_owned();
-        let outcome = if secret {
-            env.set_secret(name, raw)
-        } else {
-            env.set(name, raw)
+/// One component's environment resolution: every injected collaborator plus the claimed-key set.
+///
+/// Claimed keys are dropped from the server layer: the server echoes their canonical `Forkfile`
+/// source, which the world must never receive as a literal. The local resolver fills them.
+pub(super) struct ComponentEnv<'a> {
+    pub(super) snow: &'a SnowFile,
+    pub(super) provider: &'a dyn SecretProvider,
+    pub(super) coords: &'a ResourceCoordinates,
+    pub(super) claims: &'a OsppClaims,
+    pub(super) claimed: &'a BTreeSet<String>,
+    pub(super) entropy: &'a dyn EntropySource,
+}
+
+impl ComponentEnv<'_> {
+    pub(super) fn resolve(
+        &self,
+        component: &str,
+        server: Option<&BTreeMap<String, TaintedString>>,
+    ) -> Result<ExecEnv, EdgeError> {
+        let owns = |namespace: &str, path: &[String]| self.claims.owns(namespace, path);
+        let evaluator = ClaimedEvaluator::new(self.provider, self.coords, self.entropy, &owns);
+        let resolved = evaluator
+            .mode(self.snow, WORLD_MODE, Some(component))
+            .map_err(snow_error)?;
+        let mut env = ExecEnv::default();
+        apply_env(&mut env, resolved)?;
+        let Some(server) = server else {
+            return Ok(env);
         };
-        outcome
-            .map_err(|err| runtime_error(format!("invalid OSPP environment '{name}': {err}")))?;
+        for (name, value) in server {
+            if self.claimed.contains(name) {
+                continue;
+            }
+            let outcome = if value.is_tainted() {
+                env.set_secret(name, value.expose())
+            } else {
+                env.set(name, value.expose())
+            };
+            outcome.map_err(|err| {
+                runtime_error(format!("invalid OSPP environment '{name}': {err}"))
+            })?;
+        }
+        Ok(env)
     }
-    Ok(env)
 }
 
 pub(super) fn validate_secret_key(key: &str) -> Result<(), EdgeError> {

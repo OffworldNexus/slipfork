@@ -2,8 +2,9 @@
 
 use slipfork_dag::{DumpPolicy, ResourcePlan};
 use slipfork_edge::{EdgeError, IngressRoute};
+use slipfork_forkfile::TaintedString;
 use slipfork_ospp::{OsppClaims, OsppSession};
-use slipfork_snow::{ResourceCoordinates, SecretProvider, SecretValue, SnowFile};
+use slipfork_snow::{ResourceCoordinates, SecretProvider, SnowFile};
 use slipfork_vcs::{RepoRoot, VcsWorkspace};
 use slipfork_wire::control::{ResourceSummary, WorldServiceSummary, WorldState};
 use slipfork_world::rootfs::WorldRootfs;
@@ -50,7 +51,7 @@ pub(super) struct LiveWorld {
     /// The resource plan this run resolved (kept so `env_updated` can re-derive ID-only claims).
     pub(super) plan: ResourcePlan,
     /// The last decrypted server environment applied to this world (never persisted).
-    pub(super) ospp_env: Option<BTreeMap<String, BTreeMap<String, SecretValue>>>,
+    pub(super) ospp_env: Option<BTreeMap<String, BTreeMap<String, TaintedString>>>,
     /// The `L0` rootfs this world is currently rooted in: `restart` replaces it (and its
     /// subvolume, when the base changed) only when the resolver's digest changed.
     pub(super) rootfs: WorldRootfs,
@@ -257,7 +258,9 @@ pub(super) struct WorldEnvInputs<'a> {
     pub(super) project: &'a ProjectSlug,
     pub(super) target: &'a WorldTarget,
     pub(super) claims: &'a OsppClaims,
-    pub(super) ospp_env: Option<&'a BTreeMap<String, BTreeMap<String, SecretValue>>>,
+    /// Env keys whose expression is locally claimed: the literal expression never reaches a world.
+    pub(super) claimed_env: &'a std::collections::BTreeSet<String>,
+    pub(super) ospp_env: Option<&'a BTreeMap<String, BTreeMap<String, TaintedString>>>,
 }
 
 pub(super) struct ResolvedWorld {
@@ -275,7 +278,7 @@ pub(super) struct ResolvedWorld {
     pub(super) claims: OsppClaims,
     /// The server-resolved per-component environment (already decrypted in memory), kept so a
     /// pushed `env_updated` can be diffed against what the world runs.
-    pub(super) ospp_env: Option<BTreeMap<String, BTreeMap<String, SecretValue>>>,
+    pub(super) ospp_env: Option<BTreeMap<String, BTreeMap<String, TaintedString>>>,
 }
 
 /// Everything one `up`/`restart` pipeline run resolves **before** the world exists.

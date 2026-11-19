@@ -12,6 +12,7 @@ use super::{WORLD_MODE, rejected, runtime_error, snow_error};
 use crate::browser::{APPROVAL_HINT_PREFIX, Browser};
 use slipfork_dag::{ResourcePlan, ResourceStrategy};
 use slipfork_edge::EdgeError;
+use slipfork_forkfile::EvaluatedFork;
 use slipfork_ospp::{
     DeviceKeySigner, OsppClaims, OsppClient, OsppError, OsppSession, SubscribeRequest,
     SubscriptionEnv,
@@ -27,6 +28,17 @@ use std::thread;
 /// Stable per-project subscription id, reused on every re-`subscribe`.
 pub(super) fn subscription_id(project: &ProjectSlug) -> String {
     format!("sub-{}", project.as_str())
+}
+
+/// Append the one remedy a protocol-version refusal needs.
+fn unsupported_version_remedy(line: String, error: &OsppError) -> String {
+    if error.code() == Some(slipfork_ospp::codes::UNSUPPORTED_VERSION) {
+        format!(
+            "{line}; next: upgrade the OSPP provider to protocol v2 (or run a matching slipforkd)"
+        )
+    } else {
+        line
+    }
 }
 
 /// The daemon-held OSPP client, its live session, and the public pairing record.
@@ -104,9 +116,12 @@ impl OsppSupervisor {
         let session: Arc<dyn OsppSession> = match client.connect(on_update) {
             Ok(session) => Arc::from(session),
             Err(error) => {
-                self.record_failure(format!(
-                    "the OSPP endpoint {} is unavailable ({error}); run `slipfork auth` to pair this machine, then `slipfork restart`",
-                    client.endpoint()
+                self.record_failure(unsupported_version_remedy(
+                    format!(
+                        "the OSPP endpoint {} is unavailable ({error}); run `slipfork auth` to pair this machine, then `slipfork restart`",
+                        client.endpoint()
+                    ),
+                    &error,
                 ));
                 return Ok(None);
             }
@@ -179,7 +194,7 @@ impl OsppSupervisor {
         &self,
         project: &ProjectSlug,
         remote: &str,
-        snow_source: &str,
+        forkfile: &EvaluatedFork,
         claims: &OsppClaims,
     ) -> Result<Option<SubscriptionEnv>, EdgeError> {
         let Some(session) = self.session()? else {
@@ -189,7 +204,7 @@ impl OsppSupervisor {
         let request = SubscribeRequest {
             id: id.clone(),
             remote: remote.to_owned(),
-            snow: snow_source.to_owned(),
+            forkfile: forkfile.clone(),
             claims: claims.clone(),
         };
         match session.subscribe(&request) {
@@ -199,11 +214,15 @@ impl OsppSupervisor {
                 Ok(Some(environment))
             }
             Err(error) => {
-                self.record_failure(format!(
-                    "the OSPP subscription for project '{project}' failed ({error}); run `slipfork restart` after fixing the server"
+                self.record_failure(unsupported_version_remedy(
+                    format!(
+                        "the OSPP subscription for project '{project}' failed ({error}); run `slipfork restart` after fixing the server"
+                    ),
+                    &error,
                 ));
-                Err(runtime_error(format!(
-                    "cannot subscribe project '{project}' to OSPP: {error}"
+                Err(runtime_error(unsupported_version_remedy(
+                    format!("cannot subscribe project '{project}' to OSPP: {error}"),
+                    &error,
                 )))
             }
         }

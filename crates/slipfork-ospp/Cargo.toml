@@ -15,7 +15,7 @@ p256.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
-slipfork-snow = { path = "../slipfork-snow" }
+slipfork-forkfile = { path = "../slipfork-forkfile" }
 thiserror.workspace = true
 tungstenite.workspace = true
 ureq.workspace = true

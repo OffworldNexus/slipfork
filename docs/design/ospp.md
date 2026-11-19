@@ -12,16 +12,16 @@ OSPP v1 runs over a persistent WebSocket connection negotiated with `Sec-WebSock
 sequenceDiagram
   participant C as Slipfork
   participant S as Kerfufoo
-  C->>S: hello { version: 1, auth_methods: ["p256"] }
+  C->>S: hello { version: 2, auth_methods: ["p256"] }
   S->>C: auth_challenge { method: "p256", challenge }
   C->>S: auth_response { response }
   S->>C: auth_ok { encryption_methods }
 ```
 
-On connect, the client announces protocol `"version": 1` and the list of authentication method names it supports:
+On connect, the client announces protocol `"version": 2` and the list of authentication method names it supports:
 
 ```json
-{ "type": "hello", "version": 1, "auth_methods": ["p256"] }
+{ "type": "hello", "version": 2, "auth_methods": ["p256"] }
 ```
 
 The server selects one supported method and issues its challenge, the client replies with its proof, and the server confirms the authenticated session alongside the list of secret-encryption method names it supports:
@@ -45,6 +45,9 @@ The server selects one supported method and issues its challenge, the client rep
 { "type": "auth_ok", "encryption_methods": ["hpke-p256"] }
 ```
 
+!!! warning "One protocol version, fail closed"
+    `hello` and `pair_hello` carry `version: 2` because `subscribe` now carries the feature-evaluated `Forkfile`. Any other value is refused with an `error` frame coded `unsupported_version` and the socket closes; the server never negotiates down. Upgrade the provider, or run a matching `slipforkd`.
+
 ### `p256` Authentication
 
 In `p256` authentication, the server sends a random 32-byte hex `nonce` inside `challenge`. The client replies with its compressed P-256 `public_key` (hex), a random 32-byte hex `client_nonce`, and an ECDSA P-256 SHA-256 `signature` (raw `r || s` hex) computed over `"ospp-v1" || server_nonce_bytes || client_nonce_bytes`.
@@ -56,7 +59,7 @@ sequenceDiagram
   participant C as Slipfork
   participant S as Kerfufoo
   participant B as Browser
-  C->>S: pair_hello { version: 1, key_methods: ["p256"] }
+  C->>S: pair_hello { version: 2, key_methods: ["p256"] }
   S->>C: pair_challenge { method: "p256", altcha, challenge }
   C->>S: pair_begin { altcha, hostname, response }
   S->>C: pair_handle { url, handle }
@@ -68,7 +71,7 @@ sequenceDiagram
 When a machine's key is not yet enrolled, the client opens an `ospp-v1` WebSocket and initiates pairing instead of `hello`:
 
 ```json
-{ "type": "pair_hello", "version": 1, "key_methods": ["p256"] }
+{ "type": "pair_hello", "version": 2, "key_methods": ["p256"] }
 ```
 
 The server picks a supported key method and returns `pair_challenge`, combining an ALTCHA proof-of-work challenge (rate-limiting unauthenticated pairing attempts without requiring prior credentials) and a random 32-byte hex `nonce` for key proof-of-possession:

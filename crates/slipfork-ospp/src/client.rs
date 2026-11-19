@@ -17,7 +17,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use slipfork_snow::{EntropySource, SecretValue};
+use slipfork_forkfile::{EntropySource, TaintedString};
 use tungstenite::client::IntoClientRequest;
 use tungstenite::http::HeaderValue;
 use tungstenite::http::header::SEC_WEBSOCKET_PROTOCOL;
@@ -389,7 +389,7 @@ impl OsppSession for WsOsppSession {
                 method: ENCRYPTION_METHOD_HPKE_P256.to_owned(),
                 public_key: key.public_key_hex().to_owned(),
             },
-            snow: req.snow.clone(),
+            forkfile: Box::new(req.forkfile.clone()),
             claims: req.claims.clone(),
         };
         let id = req.id.clone();
@@ -644,9 +644,9 @@ fn decrypt_env(
         let mut values = BTreeMap::new();
         for (name, value) in variables {
             let value = match value {
-                WireValue::Plain(text) => SecretValue::plain(text),
+                WireValue::Plain(text) => TaintedString::plain(text),
                 WireValue::Encrypted(ciphertext) => {
-                    SecretValue::secret(key.open_secret(&component, &name, &ciphertext)?)
+                    TaintedString::tainted(key.open_secret(&component, &name, &ciphertext)?)
                 }
             };
             values.insert(name, value);

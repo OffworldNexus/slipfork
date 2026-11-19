@@ -1,9 +1,11 @@
 use super::backing::requested_service_images;
-use super::env::{apply_env, ingress_routes, resolve_component_env};
+use super::env::{ComponentEnv, apply_env, ingress_routes};
+use super::rootfs_select::select_single_build_image;
 use super::service::DaemonService;
+use super::snow_bridge::evaluated_forkfile;
 use super::types::ResolvedComponent;
 use super::types::{
-    BootPolicy, PreparedWorld, ResolvedWorld, RootfsInputs, WorldEnvInputs, json_label, parent_dir,
+    BootPolicy, PreparedWorld, ResolvedWorld, RootfsInputs, WorldEnvInputs, json_label,
 };
 use super::{WORLD_MODE, rejected, runtime_error, snow_error};
 use crate::project::load_optional_slipfork_config;
@@ -12,9 +14,9 @@ use slipfork_edge::{EdgeError, world_id};
 use slipfork_engine::rootfs::SnowPortContract;
 use slipfork_engine::rootfs::WorldRootfsRequest;
 use slipfork_engine::rootfs::{HostCacheRequest, RootfsBuildEvent};
-use slipfork_snow::{ClaimedEvaluator, Image, OsCsprngEntropy, ResourceCoordinates, SnowFile};
+use slipfork_snow::{ClaimedEvaluator, Image, ResourceCoordinates, SnowFile};
 use slipfork_vcs::RepoRoot;
-use slipfork_wire::control::{BootEvent, ResourceSummary, SnowResolveRequest, SnowResolveSummary};
+use slipfork_wire::control::{BootEvent, ResourceSummary};
 use slipfork_world::LocalIngressBridge;
 use slipfork_world::WorldMount;
 use slipfork_world::rootfs::{BuildEnvVar, WorldRootfs};
@@ -182,6 +184,7 @@ impl DaemonService {
             project,
             target,
             claims,
+            claimed_env,
             ospp_env,
         } = inputs;
         let mut env = ExecEnv::world_scoped(
@@ -199,13 +202,13 @@ impl DaemonService {
         if let Some(components) = ospp_env {
             for server in components.values() {
                 for (name, value) in server {
-                    let rendered = evaluator.render(value.expose()).map_err(snow_error)?;
-                    let secret = value.is_secret() || rendered.is_secret();
-                    let raw = rendered.expose().to_owned();
-                    let outcome = if secret {
-                        env.set_secret(name, raw)
+                    if claimed_env.contains(name) {
+                        continue;
+                    }
+                    let outcome = if value.is_tainted() {
+                        env.set_secret(name, value.expose())
                     } else {
-                        env.set(name, raw)
+                        env.set(name, value.expose())
                     };
                     outcome.map_err(|err| {
                         runtime_error(format!("invalid OSPP environment '{name}': {err}"))
@@ -234,6 +237,7 @@ impl DaemonService {
     ) -> Result<ResolvedWorld, EdgeError> {
         let project = &repo.project;
         let (snow, snow_source) = self.load_snow(worktree)?;
+        let forkfile = evaluated_forkfile(&snow_source, worktree)?;
         let effective = snow
             .effective_components(WORLD_MODE)
             .map_err(|err| runtime_error(err.to_string()))?;
@@ -276,11 +280,10 @@ impl DaemonService {
         let claims = self
             .ospp
             .claims_for(project, &snow, &plan, self.vault_store(project)?)?;
+        let owns = |namespace: &str, path: &[String]| claims.owns(namespace, path);
+        let claimed_env = forkfile.all_claimed_env_keys(&owns);
         let ospp_env = match (session.as_ref(), remote.as_deref()) {
-            (Some(_), Some(remote)) => {
-                self.ospp
-                    .subscribe(project, remote, &snow_source, &claims)?
-            }
+            (Some(_), Some(remote)) => self.ospp.subscribe(project, remote, &forkfile, &claims)?,
             _ => None,
         };
         let base_env = self.world_env(WorldEnvInputs {
@@ -290,6 +293,7 @@ impl DaemonService {
             project,
             target,
             claims: &claims,
+            claimed_env: &claimed_env,
             ospp_env: ospp_env.as_ref().map(|env| &env.components),
         })?;
         let mut components = Vec::new();
@@ -306,15 +310,15 @@ impl DaemonService {
                 id: id.clone(),
                 run_command: resolved.run_command.clone(),
                 readiness_port,
-                env: resolve_component_env(
-                    &snow,
-                    vault.as_ref(),
-                    &coords,
-                    id,
-                    &claims,
-                    ospp_env.as_ref().and_then(|env| env.component(id)),
-                    self.entropy.as_ref(),
-                )?,
+                env: ComponentEnv {
+                    snow: &snow,
+                    provider: vault.as_ref(),
+                    coords: &coords,
+                    claims: &claims,
+                    claimed: &forkfile.claimed_env_keys(id, &owns),
+                    entropy: self.entropy.as_ref(),
+                }
+                .resolve(id, ospp_env.as_ref().and_then(|env| env.component(id)))?,
             });
         }
         let ingresses = ingress_routes(&snow, &effective)?;
@@ -401,52 +405,6 @@ impl DaemonService {
     }
 }
 
-impl DaemonService {
-    pub(super) fn snow_resolve(
-        &self,
-        req: &SnowResolveRequest,
-    ) -> Result<SnowResolveSummary, EdgeError> {
-        let file = if req.file.is_absolute() {
-            req.file.clone()
-        } else {
-            req.cwd.join(&req.file)
-        };
-        let raw = fs::read_to_string(&file)
-            .map_err(|err| runtime_error(format!("cannot read {}: {err}", file.display())))?;
-        let snow = SnowFile::parse_yaml(&raw)
-            .map_err(|err| runtime_error(format!("{}: {err}", file.display())))?;
-        let repository = self
-            .repo_roots
-            .resolve(&parent_dir(&file))
-            .map_err(|err| runtime_error(err.to_string()))?;
-        let project = repository.project;
-        let vault = self.vault_for(&project)?;
-        let coords = ResourceCoordinates::local_for_world(&snow, &project, &WorldTarget::Canonical)
-            .map_err(|err| runtime_error(err.to_string()))?;
-        let resolved = snow
-            .resolve_mode(
-                &req.mode,
-                req.component.as_deref(),
-                vault.as_ref(),
-                &coords,
-                &OsCsprngEntropy,
-            )
-            .map_err(|err| runtime_error(err.to_string()))?;
-        let vars = resolved
-            .iter()
-            .map(|(key, value)| {
-                let text = if req.expose_secrets {
-                    value.expose()
-                } else {
-                    value.redacted()
-                };
-                (key.clone(), text.to_owned())
-            })
-            .collect();
-        Ok(SnowResolveSummary { vars })
-    }
-}
-
 pub(super) fn dump_policy(request: slipfork_wire::control::DumpRequest) -> DumpPolicy {
     match request {
         slipfork_wire::control::DumpRequest::Default => DumpPolicy::Default,
@@ -511,63 +469,4 @@ pub(super) fn plan_summaries(plan: &ResourcePlan) -> Vec<ResourceSummary> {
             reason: json_label(&diagnostic.reason),
         })
         .collect()
-}
-
-/// The one buildable image the transitional single-rootfs boot materializes.
-///
-/// Per-service pods select their own image from `Forkfile`; until that boot path lands, the world
-/// rootfs can only be materialized from exactly one `snow.yml` buildable Dockerfile.
-fn select_single_build_image(ids: &[String]) -> Result<usize, EdgeError> {
-    match ids {
-        [_] => Ok(0),
-        [] => Err(runtime_error(
-            "snow.yml declares no buildable Dockerfile under 'images:'; a project that cannot be built into an image is not a project Slipfork can fork\n  fix: add `images:` with one Dockerfile (id, context, dockerfile)",
-        )),
-        declared => Err(runtime_error(format!(
-            "snow.yml declares more than one buildable image ({}); the single-rootfs world boots exactly one\n  fix: declare exactly one buildable Dockerfile image in snow.yml",
-            declared.join(", ")
-        ))),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::select_single_build_image;
-
-    fn ids(names: &[&str]) -> Vec<String> {
-        names.iter().map(|name| (*name).to_owned()).collect()
-    }
-
-    #[test]
-    fn one_buildable_image_is_selected() {
-        assert_eq!(
-            select_single_build_image(&ids(&["api"])).expect("one image"),
-            0
-        );
-    }
-
-    #[test]
-    fn zero_buildable_images_fail_closed_with_the_images_snippet() {
-        let error = select_single_build_image(&[]).expect_err("no buildable image");
-        let message = error.to_string();
-        assert!(
-            message.contains("declares no buildable Dockerfile"),
-            "{message}"
-        );
-        assert!(message.contains("fix: add `images:`"), "{message}");
-    }
-
-    #[test]
-    fn two_buildable_images_fail_closed_with_the_one_line_remedy() {
-        let error = select_single_build_image(&ids(&["api", "worker"])).expect_err("two images");
-        let message = error.to_string();
-        assert!(
-            message.contains("more than one buildable image (api, worker)"),
-            "{message}"
-        );
-        assert!(
-            message.contains("fix: declare exactly one buildable Dockerfile image in snow.yml"),
-            "{message}"
-        );
-    }
 }

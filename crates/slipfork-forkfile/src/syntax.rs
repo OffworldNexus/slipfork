@@ -379,6 +379,53 @@ impl Expr {
             | Self::Generator { span, .. } => *span,
         }
     }
+
+    /// The canonical `Forkfile` source text for this expression.
+    ///
+    /// A claimed expression crosses OSPP verbatim, so this is the one spelling both the reference
+    /// server and the daemon use for an unresolved assignment.
+    pub fn render(&self) -> String {
+        match self {
+            Self::Str(value) => quote_text(&value.value),
+            Self::Int(value) => value.value.to_string(),
+            Self::Bool(value) => {
+                if value.value {
+                    "true".to_owned()
+                } else {
+                    "false".to_owned()
+                }
+            }
+            Self::Ref(path) => path.value.join("."),
+            Self::Var(key) => format!("var({})", key.value),
+            Self::Secret(key) => format!("secret({})", key.value),
+            Self::Fallback { lhs, rhs, .. } => format!("{} ?? {}", lhs.render(), rhs.render()),
+            Self::Concat { parts, .. } => parts
+                .iter()
+                .map(Self::render)
+                .collect::<Vec<_>>()
+                .join(" + "),
+            Self::Generator { kind, arg, .. } => match kind {
+                GeneratorKind::Uuid4 => "uuid4()".to_owned(),
+                other => format!("{}({})", other.as_str(), arg.value),
+            },
+        }
+    }
+}
+
+fn quote_text(value: &str) -> String {
+    let mut quoted = String::from("\"");
+    for character in value.chars() {
+        match character {
+            '"' | '\\' => {
+                quoted.push('\\');
+                quoted.push(character);
+            }
+            '\n' => quoted.push_str("\\n"),
+            other => quoted.push(other),
+        }
+    }
+    quoted.push('"');
+    quoted
 }
 
 /// A cryptographic generator usable only as the fallback of `secret(<KEY>) ?? <generator>`.

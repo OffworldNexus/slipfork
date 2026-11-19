@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
-use slipfork_snow::SecretValue;
+use slipfork_forkfile::{EvaluatedFork, TaintedString};
 
 /// Uniform ID-only claim set across every `snow.yml` namespace.
 ///
@@ -66,8 +66,8 @@ pub struct SubscribeRequest {
     pub id: String,
     /// Verbatim Git remote string, with zero client-side canonicalization.
     pub remote: String,
-    /// Raw `snow.yml` content.
-    pub snow: String,
+    /// The feature-evaluated manifest `slipforkd` subscribes to.
+    pub forkfile: EvaluatedFork,
     /// ID-only local claims.
     pub claims: OsppClaims,
 }
@@ -83,14 +83,14 @@ pub struct SubscriptionEnv {
     /// Subscription id the server resolved this environment for.
     pub id: String,
     /// Component id → variable name → resolved value.
-    pub components: BTreeMap<String, BTreeMap<String, SecretValue>>,
+    pub components: BTreeMap<String, BTreeMap<String, TaintedString>>,
 }
 
 impl SubscriptionEnv {
     /// Build from already-decrypted components.
     pub fn new(
         id: impl Into<String>,
-        components: BTreeMap<String, BTreeMap<String, SecretValue>>,
+        components: BTreeMap<String, BTreeMap<String, TaintedString>>,
     ) -> Self {
         Self {
             id: id.into(),
@@ -99,7 +99,7 @@ impl SubscriptionEnv {
     }
 
     /// One component's resolved variables.
-    pub fn component(&self, id: &str) -> Option<&BTreeMap<String, SecretValue>> {
+    pub fn component(&self, id: &str) -> Option<&BTreeMap<String, TaintedString>> {
         self.components.get(id)
     }
 }

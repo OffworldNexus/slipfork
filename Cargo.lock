@@ -1460,8 +1460,8 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "slipfork-forkfile",
  "slipfork-ospp-testkit",
- "slipfork-snow",
  "thiserror",
  "tungstenite",
  "ureq",
@@ -1479,8 +1479,8 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "slipfork-forkfile",
  "slipfork-ospp",
- "slipfork-snow",
  "tungstenite",
 ]
 
