@@ -5,15 +5,15 @@
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::Ordering;
+use std::sync::{Arc, Mutex};
 
 use slipfork_world::rootfs::BackingServiceKey;
 use slipfork_world::{
-    EngineError, ExecEnv, ExecOutput, MountMode, ServiceHandle, ServicePodSpec, ServiceState,
-    StateSubdirMount, StreamChunk, WorldEntryCommand, WorldMount,
+    EngineError, ExecEnv, ExecOutput, MountMode, ServiceHandle, ServiceLogs, ServiceState,
+    StateSubdirMount, StreamChunk, StreamSource, WorldEntryCommand, WorldMount,
 };
 
 use crate::child_env;
@@ -26,7 +26,17 @@ use crate::world_init::{
 
 use super::BtrfsEngine;
 use super::io_error;
-use super::services::ServiceSpawn;
+use super::services::{ServiceProcess, ServiceSpawn};
+
+/// How `crun exec` composes the exec process environment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExecEnvMode {
+    /// Backing services: forward the retained declared environment as `--env` flags.
+    Declared,
+    /// Service pods: `crun` re-applies the bundle's `process.env`, so only caller overlays are
+    /// forwarded and no resolved secret ever reaches a command line.
+    ContainerConfig,
+}
 
 /// The `crun` invocation coordinates of one running backing-service container.
 #[derive(Debug, Clone)]
@@ -122,105 +132,78 @@ impl CrunSurface {
         self.run_control(&["delete", "--force", id], "delete", id)
     }
 
-    /// Materialize one `Forkfile` service pod's OCI bundle from its injected spec.
+    /// Start one container from an already-written bundle and record its supervision handles.
     ///
-    /// The spec is the sole source of every value, and **every path in the emitted document is a
-    /// world-visible guest path**: `root.path`, `process.cwd`, and each bind `source` are resolved
-    /// through the world's own mount table ([`world_guest_for_host`]), while the bundle itself is
-    /// addressed by [`OCI_BUNDLES_GUEST`] (the engine boots `<ctl>/<world_id>/oci` there). A path
-    /// the world does not expose fails closed with a remedy instead of leaking a host path that
-    /// only happens to resolve because a mount is 1:1.
-    ///
-    /// `world_mounts` is the live world's [`WorldMount`] table (`WorldSpec.mounts`); `worktree` is
-    /// the host checkout whose volumes override. The bundle directory is the spec's own
-    /// `ctl/<world_id>/oci/<service>/` (never the world subvolume: [`slipfork_world::PodLocation`]
-    /// enforced that when the pod was planned). It is created `0700` and `config.json` is left
-    /// `0600`, because the environment may carry resolved secrets. Returns the `config.json` path.
-    pub fn write_pod_bundle(
-        host_uid: u32,
-        host_gid: u32,
-        world_mounts: &[WorldMount],
-        worktree: &Path,
-        spec: &ServicePodSpec,
-    ) -> Result<PathBuf, EngineError> {
-        let guest = |host: &Path, what: &str, fix: &str| {
-            world_guest_for_host(world_mounts, host).ok_or_else(|| EngineError::InvalidWorldSpec {
-                reason: format!(
-                    "service pod '{}' {what} '{}' is not visible inside the world\n  fix: {fix}",
-                    spec.service,
-                    host.display()
-                ),
-            })
-        };
-        let mut mounts = Vec::new();
-        for mount in spec
-            .mounts(worktree)
-            .map_err(|err| EngineError::InvalidWorldSpec {
-                reason: err.to_string(),
-            })?
-        {
-            let source = guest(
-                &mount.source,
-                "mount source",
-                "mount the live worktree and the world subvolume (`volumes/`) in \
-                 WorldSpec.mounts",
-            )?;
-            mounts.push(ContainerMount {
-                source,
-                destination: mount.target,
-                read_only: mount.mode == MountMode::ReadOnly,
+    /// The one `crun run` implementation: `crun` is the supervised child, both pipes feed the
+    /// retained log ring, and the recorded container is exactly what the stop path later signals
+    /// (`crun kill`), deletes, and whose bundle directory it removes. `what` names the service in
+    /// the failure diagnostic (never the argv, which may carry resolved secrets for other
+    /// runtimes).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn run_bundle(
+        &self,
+        env: &BTreeMap<String, String>,
+        what: &str,
+        bundle_host: &Path,
+        bundle_guest: &Path,
+        id: &str,
+        log: &ServiceLogs,
+        process: &Arc<Mutex<ServiceProcess>>,
+    ) -> Result<(), EngineError> {
+        let mut command = self.command(env);
+        command
+            .args([
+                "run".to_owned(),
+                "-b".to_owned(),
+                bundle_guest.display().to_string(),
+                id.to_owned(),
+            ])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let mut child = command.spawn().map_err(|err| {
+            EngineError::Execution(format!(
+                "cannot start {what}: {err}\n  fix: run `slipfork doctor`; the pinned static \
+                 `crun` and rootfs must exist in the world"
+            ))
+        })?;
+        if let Some(stdout) = child.stdout.take() {
+            spawn_log_reader(stdout, StreamSource::Stdout, log.clone());
+        }
+        if let Some(stderr) = child.stderr.take() {
+            spawn_log_reader(stderr, StreamSource::Stderr, log.clone());
+        }
+        if let Ok(mut process) = process.lock() {
+            process.supervisor = Some(child);
+            process.container = Some(ContainerProcess {
+                id: id.to_owned(),
+                runtime: self.clone(),
+                bundle_host: bundle_host.to_path_buf(),
             });
         }
-        let image_rootfs_guest = guest(
-            &spec.rootfs,
-            "rootfs",
-            "mount the rootfs cache read-only in WorldSpec.mounts at a `/.slipfork/images/…` \
-             guest path",
-        )?;
-        let cwd = guest(
-            spec.cwd(),
-            "working directory",
-            "add the worktree to WorldSpec.mounts as MountMode::ReadWrite",
-        )?;
-        create_private_bundle_dir(&spec.bundle_dir)?;
-        let joins: Vec<(&str, &Path)> = spec
-            .namespace_joins()
-            .iter()
-            .map(|(kind, path)| (*kind, *path))
-            .collect();
-        oci::write_bundle(&ContainerBundle {
-            bundle_dir: &spec.bundle_dir,
-            image_rootfs_guest: &image_rootfs_guest,
-            argv: spec.argv(),
-            env: &spec.command.env,
-            uid: host_uid,
-            gid: host_gid,
-            mounts: &mounts,
-            namespace_joins: &joins,
-            cwd: &cwd,
-            // A pod inherits the world init's identity map, so it carries no synthesized
-            // `/etc/passwd` of its own.
-            passwd_guest: None,
-            group_guest: None,
-        })
-        .map_err(|err| io_error(&spec.bundle_dir, &err))?;
-        let config = spec.bundle_dir.join(oci::OCI_CONFIG_FILE);
-        fs::set_permissions(&config, fs::Permissions::from_mode(0o600))
-            .map_err(|err| io_error(&config, &err))?;
-        Ok(config)
+        Ok(())
     }
 }
 
-/// Guest path of one service's bundle: the engine boots `<ctl>/<world_id>/oci` at
-/// [`OCI_BUNDLES_GUEST`], so `crun -b` addresses the bundle by service id alone.
-pub fn pod_bundle_guest(service: &str) -> PathBuf {
-    PathBuf::from(OCI_BUNDLES_GUEST).join(service)
-}
-
-/// Create (or reuse) a bundle directory only the invoking developer can traverse or list.
-fn create_private_bundle_dir(dir: &Path) -> Result<(), EngineError> {
-    fs::create_dir_all(dir).map_err(|err| io_error(dir, &err))?;
-    fs::set_permissions(dir, fs::Permissions::from_mode(0o700)).map_err(|err| io_error(dir, &err))
+/// Forward exactly the environment the exec process needs, never a pod's resolved secrets.
+fn append_exec_env(
+    command: &mut Command,
+    mode: ExecEnvMode,
+    env: &BTreeMap<String, String>,
+    overlay: &ExecEnv,
+) {
+    match mode {
+        ExecEnvMode::Declared => {
+            for (name, value) in env {
+                command.args(["--env", &format!("{name}={value}")]);
+            }
+        }
+        ExecEnvMode::ContainerConfig => {
+            for (name, value) in overlay.iter() {
+                command.args(["--env", &format!("{name}={value}")]);
+            }
+        }
+    }
 }
 
 impl BtrfsEngine {
@@ -337,46 +320,15 @@ impl BtrfsEngine {
             spawn.rootfs.crun_bin.clone(),
             PathBuf::from(OCI_RUN_GUEST),
         );
-        let mut command = runtime.command(spawn.env);
-        command
-            .args([
-                "run".to_owned(),
-                "-b".to_owned(),
-                bundle_guest.display().to_string(),
-                container_id.clone(),
-            ])
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        let mut child = command.spawn().map_err(|err| {
-            EngineError::Execution(format!(
-                "cannot start backing-service container '{}' ({image}): {err}",
-                spawn.spec.id
-            ))
-        })?;
-        if let Some(stdout) = child.stdout.take() {
-            spawn_log_reader(
-                stdout,
-                slipfork_world::StreamSource::Stdout,
-                spawn.log.clone(),
-            );
-        }
-        if let Some(stderr) = child.stderr.take() {
-            spawn_log_reader(
-                stderr,
-                slipfork_world::StreamSource::Stderr,
-                spawn.log.clone(),
-            );
-        }
-        if let Ok(mut process) = spawn.process.lock() {
-            process.supervisor = Some(child);
-            process.container = Some(ContainerProcess {
-                id: container_id,
-                runtime,
-                bundle_host,
-            });
-        }
-        Ok(())
+        runtime.run_bundle(
+            spawn.env,
+            &format!("backing-service container '{}' ({image})", spawn.spec.id),
+            &bundle_host,
+            &bundle_guest,
+            &container_id,
+            spawn.log,
+            spawn.process,
+        )
     }
 
     /// Resolve a running container plus the environment its `exec` composes against: the
@@ -385,7 +337,7 @@ impl BtrfsEngine {
     fn container_for(
         &self,
         service: &ServiceHandle,
-    ) -> Result<(ContainerProcess, ExecEnv), EngineError> {
+    ) -> Result<(ContainerProcess, ExecEnv, ExecEnvMode), EngineError> {
         let mut worlds = self.lock()?;
         let record = self.live_record(&mut worlds, service.world())?;
         let running =
@@ -416,7 +368,14 @@ impl BtrfsEngine {
                     world: format!("{:?}", service.world()),
                     id: service.id().to_owned(),
                 })?;
-        Ok((container, running.spec.env.clone()))
+        Ok((
+            container,
+            running.spec.env.clone(),
+            match &running.spec.runtime {
+                slipfork_world::ServiceRuntime::ServicePod(_) => ExecEnvMode::ContainerConfig,
+                _ => ExecEnvMode::Declared,
+            },
+        ))
     }
 
     pub(crate) fn exec_in_container(
@@ -431,13 +390,11 @@ impl BtrfsEngine {
                 "service exec argv must not be empty".to_owned(),
             ));
         }
-        let (container, base_env) = self.container_for(service)?;
+        let (container, base_env, mode) = self.container_for(service)?;
         let env = child_env::materialize(&base_env, overlay_env, |var| self.inherited_env.get(var));
         let mut command = container.runtime.command(&env);
         command.arg("exec");
-        for (name, value) in &env {
-            command.args(["--env", &format!("{name}={value}")]);
-        }
+        append_exec_env(&mut command, mode, &env, overlay_env);
         command
             .arg(&container.id)
             .args(argv)
@@ -460,13 +417,11 @@ impl BtrfsEngine {
                 "service exec argv must not be empty".to_owned(),
             ));
         }
-        let (container, base_env) = self.container_for(service)?;
+        let (container, base_env, mode) = self.container_for(service)?;
         let env = child_env::materialize(&base_env, overlay_env, |var| self.inherited_env.get(var));
         let mut command = container.runtime.command(&env);
         command.arg("exec");
-        for (name, value) in &env {
-            command.args(["--env", &format!("{name}={value}")]);
-        }
+        append_exec_env(&mut command, mode, &env, overlay_env);
         command
             .arg(&container.id)
             .args(argv)
@@ -480,7 +435,7 @@ impl BtrfsEngine {
         &self,
         service: &ServiceHandle,
     ) -> Result<WorldEntryCommand, EngineError> {
-        let (container, _env) = self.container_for(service)?;
+        let (container, _env, _mode) = self.container_for(service)?;
         let mut args_prefix = container.runtime.prefix();
         args_prefix.extend(["exec".to_owned(), container.id, "--".to_owned()]);
         Ok(WorldEntryCommand {

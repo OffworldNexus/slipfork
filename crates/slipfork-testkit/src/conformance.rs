@@ -244,15 +244,50 @@ pub fn assert_world_engine_conformance(
             engine.name()
         ),
     }
-    // The pod runtime is a first-class port value: an engine with no pod spawn path must decline
-    // it by name and leave no service row behind. This runs on the already-booted world above —
+    // The shared-init namespace contract: a live world answers with the three absolute joins a
+    // service pod must carry, and an engine with no shared init reports the typed, engine-named
+    // `Unsupported` instead of fabricating handles. This runs on the already-booted world above —
     // no second boot, no substitute runtime.
-    let pod_world = scratch_dir.join("conformance-pod-world");
-    let pod_service_dir = scratch_dir.join("repo/conformance-pod");
-    let pod = slipfork_world::ServicePodSpec::new(
+    match engine.world_pod_namespaces(&world) {
+        Ok(namespaces) => {
+            for (kind, path) in namespaces.entries() {
+                assert!(
+                    path.is_absolute(),
+                    "{} {kind} namespace join '{}' must be absolute",
+                    engine.name(),
+                    path.display()
+                );
+                assert!(
+                    path.exists(),
+                    "{} {kind} namespace join '{}' must name a live namespace link",
+                    engine.name(),
+                    path.display()
+                );
+            }
+        }
+        Err(EngineError::Unsupported {
+            engine: reported,
+            capability,
+        }) => {
+            assert_eq!(reported, engine.name(), "Unsupported must name the engine");
+            assert_eq!(
+                capability, "world_pod_namespaces",
+                "the declined capability must be named"
+            );
+        }
+        Err(other) => panic!(
+            "{} must publish its shared-init namespaces or decline with Unsupported, got {other:?}",
+            engine.name()
+        ),
+    }
+
+    // A pod the engine cannot place must leave no usable row: either it is rejected before any
+    // record exists, or it keeps the documented retained `Stopped` row with a closed log and no
+    // live facts. Nothing may remain `Running`.
+    let bogus_pod = slipfork_world::ServicePodSpec::new(
         slipfork_world::PodLocation::new(
-            &pod_world,
-            &scratch_dir.join("conformance-ctl/oci/conformance-pod"),
+            &scratch_dir.join("conformance-world"),
+            &scratch_dir.join("conformance-foreign/app"),
             &scratch_dir.join("conformance-rootfs"),
         )
         .expect("absolute pod locations"),
@@ -262,53 +297,63 @@ pub fn assert_world_engine_conformance(
             &scratch_dir.join("conformance-ns/ipc"),
         )
         .expect("absolute namespace joins"),
-        slipfork_world::VolumePlan::new(&pod_world, "conformance-pod", &pod_service_dir, &[])
-            .expect("valid volume plan"),
+        slipfork_world::VolumePlan::new(
+            &scratch_dir.join("conformance-world"),
+            "conformance-foreign",
+            &scratch_dir.join("repo/conformance-foreign"),
+            &[],
+        )
+        .expect("valid volume plan"),
         slipfork_world::PodCommand::new(
-            pod_service_dir,
+            scratch_dir.join("repo/conformance-foreign"),
             vec!["sh".to_owned(), "-c".to_owned(), "sleep 30".to_owned()],
             std::collections::BTreeMap::new(),
         ),
     )
-    .expect("valid service pod");
-    let err = engine
-        .spawn_service(
-            &world,
-            &slipfork_world::ServiceSpec {
-                id: "conformance-pod".to_owned(),
-                kind: slipfork_world::ServiceKind::Component,
-                runtime: slipfork_world::ServiceRuntime::ServicePod(pod),
-                env: ExecEnv::default(),
-                readiness_port: None,
-            },
-        )
-        .expect_err("an engine without a pod spawn path must decline the pod runtime");
-    match err {
-        EngineError::Unsupported {
-            engine: reported,
-            capability,
-        } => {
-            assert_eq!(reported, engine.name(), "Unsupported must name the engine");
-            assert_eq!(
-                capability, "service_pod",
-                "the declined pod capability must be named"
-            );
-        }
-        other => panic!(
-            "{} must decline a service pod with Unsupported {{ capability: \"service_pod\" }}, \
-             got {other:?}",
+    .expect("valid pod spec");
+    match engine.spawn_service(
+        &world,
+        &slipfork_world::ServiceSpec {
+            id: "conformance-foreign".to_owned(),
+            kind: slipfork_world::ServiceKind::Component,
+            runtime: slipfork_world::ServiceRuntime::ServicePod(bogus_pod),
+            env: ExecEnv::default(),
+            readiness_port: None,
+        },
+    ) {
+        Ok(_) => panic!(
+            "{} must refuse a pod it cannot place in the world",
+            engine.name()
+        ),
+        Err(EngineError::InvalidWorldSpec { .. }) | Err(EngineError::Unsupported { .. }) => {}
+        Err(other) => panic!(
+            "{} must refuse an unplaceable pod with a typed error, got {other:?}",
             engine.name()
         ),
     }
-    assert!(
-        !engine
-            .world_processes(&world)
-            .expect("a live world must report its row set")
-            .iter()
-            .any(|row| row.id == "conformance-pod"),
-        "{} recorded a row for a pod runtime it declined",
-        engine.name()
-    );
+    if let Some(row) = engine
+        .world_processes(&world)
+        .expect("a live world must report its row set")
+        .into_iter()
+        .find(|row| row.id == "conformance-foreign")
+    {
+        assert_eq!(
+            row.state,
+            slipfork_world::ServiceState::Stopped,
+            "{} kept a rejected pod runnable: {row:?}",
+            engine.name()
+        );
+        assert!(
+            row.pid.is_none() && row.port.is_none(),
+            "{} reported live facts for a rejected pod: {row:?}",
+            engine.name()
+        );
+        assert!(
+            engine.service_logs(&world, "conformance-foreign").is_ok(),
+            "{} dropped the retained log of a rejected pod",
+            engine.name()
+        );
+    }
 
     let (reloaded_cache, reloaded_millis) = match rootfs.cache {
         slipfork_world::CacheOutcome::Hit => (slipfork_world::CacheOutcome::Miss, Some(42)),

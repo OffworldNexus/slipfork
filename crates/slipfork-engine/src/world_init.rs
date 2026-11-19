@@ -27,6 +27,12 @@ pub(crate) const OCI_BUNDLES_GUEST: &str = "/.slipfork/oci";
 pub(crate) const OCI_RUN_GUEST: &str = "/.slipfork/run";
 /// Guest mount prefix of extracted backing-service OCI rootfs trees.
 pub(crate) const OCI_IMAGES_GUEST: &str = "/.slipfork/images";
+/// Guest mount of the engine's content-addressed app-rootfs cache (`<state_dir>/cache/rootfs`),
+/// so a service pod's `root.path` is a world-visible guest path.
+pub(crate) const POD_ROOTFS_GUEST: &str = "/.slipfork/images/rootfs";
+/// Guest mount of one world's own subvolume, so a service pod's CoW volume subvolumes and its
+/// live worktree are visible inside the world.
+pub(crate) const POD_WORLD_GUEST: &str = "/.slipfork/world";
 /// Guest path of the synthesized `/etc/passwd`.
 pub(crate) const PASSWD_GUEST: &str = "/.slipfork/etc/passwd";
 /// Guest path of the synthesized `/etc/group`.

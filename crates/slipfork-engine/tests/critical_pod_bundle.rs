@@ -18,9 +18,9 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
-use slipfork_engine::CrunSurface;
 use slipfork_engine::current_uid_gid;
 use slipfork_engine::pod_bundle_guest;
+use slipfork_engine::write_pod_bundle;
 use slipfork_world::{
     MountMode, PodCommand, PodLocation, PodNamespaces, ServicePodSpec, VOLUMES_DIR, VolumePlan,
     WorldMount,
@@ -117,7 +117,7 @@ fn a_real_alpine_pod_bundle_binds_cwd_volumes_and_shared_namespaces() {
     );
 
     let (uid, gid) = current_uid_gid();
-    let config_path = CrunSurface::write_pod_bundle(uid, gid, &world_mounts, &worktree, &spec)
+    let config_path = write_pod_bundle(uid, gid, &world_mounts, &worktree, &spec)
         .unwrap_or_else(|error| panic!("write the pod bundle:\n{error}"));
     assert_eq!(config_path, bundle_dir.join("config.json"));
     assert_eq!(

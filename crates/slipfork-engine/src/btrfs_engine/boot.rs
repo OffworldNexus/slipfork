@@ -203,6 +203,14 @@ impl BtrfsEngine {
             guest_path: PathBuf::from(OCI_RUN_GUEST),
             read_only: false,
         });
+        // Service pods are separate OCI containers: their app rootfs must be readable as a guest
+        // path (`root.path`) and their CoW volume subvolumes must be bindable sources. The two
+        // trees are declared once by the pod module and reused by pod spawn.
+        mounts.extend(
+            super::pod::pod_world_mounts(&self.state_dir, world_dir)
+                .iter()
+                .map(world_init_mount),
+        );
         for image in spec.rootfs.service_images.values() {
             mounts.push(WorldInitMount {
                 host_path: image.rootfs.clone(),

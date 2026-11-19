@@ -30,13 +30,15 @@
 
 mod boot;
 mod container;
+mod pod;
 mod port;
 mod services;
 mod snapshots;
 mod teardown;
 mod worlds;
 
-pub use container::{CrunSurface, pod_bundle_guest};
+pub use container::CrunSurface;
+pub use pod::{pod_bundle_guest, write_pod_bundle};
 
 use std::collections::BTreeMap;
 use std::fmt;

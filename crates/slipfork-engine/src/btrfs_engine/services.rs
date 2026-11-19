@@ -14,8 +14,8 @@ use std::time::{Duration, Instant};
 
 use slipfork_world::rootfs::{BackingServiceKey, WorldRootfs};
 use slipfork_world::{
-    EngineError, ExecEnv, ServiceHandle, ServiceKind, ServiceLogs, ServiceRuntime, ServiceSpec,
-    ServiceState, StateSubdirMount, StreamSource, WorldEngine, WorldHandle, WorldMount,
+    EngineError, ExecEnv, ServiceHandle, ServiceKind, ServiceLogs, ServicePodSpec, ServiceRuntime,
+    ServiceSpec, ServiceState, StateSubdirMount, StreamSource, WorldHandle, WorldMount,
     WorldServiceInfo,
 };
 
@@ -55,12 +55,14 @@ enum SpawnPlan<'a> {
         state_mounts: &'a [StateSubdirMount],
         readonly_mounts: &'a [WorldMount],
     },
+    Pod(&'a ServicePodSpec),
 }
 
 impl SpawnPlan<'_> {
     fn argv(&self) -> &[String] {
         match self {
             Self::World { argv, .. } | Self::Container { argv, .. } => argv,
+            Self::Pod(pod) => pod.argv(),
         }
     }
 }
@@ -99,6 +101,7 @@ pub(crate) struct ServiceSpawn<'a> {
     pub(crate) world: &'a WorldHandle,
     pub(crate) init_pid: u32,
     pub(crate) ctl_dir: &'a Path,
+    pub(crate) world_dir: &'a Path,
     pub(crate) state_dir: &'a Path,
     pub(crate) rootfs: &'a WorldRootfs,
     pub(crate) mounts: &'a [WorldMount],
@@ -190,10 +193,9 @@ impl BtrfsEngine {
                 reason: "service id must not be empty".to_owned(),
             });
         }
-        // Exactly one gate for the pod runtime: a service pod owns its OCI bundle and
-        // shared-namespace joins, and this engine has no pod spawn path yet, so it fails closed
-        // here — before any world state is touched — and every later match covers only the two
-        // paths that actually reach a spawn.
+        // Exactly one decision per runtime: a pod owns its bundle and namespace joins, so the
+        // engine only materializes and runs it. A pod is a `crun` container for supervision and
+        // teardown purposes ([`RuntimeKind::OciContainer`]) but keeps its own env contract.
         let (runtime_kind, plan) = match &spec.runtime {
             ServiceRuntime::WorldProcess { argv, cwd } => {
                 (RuntimeKind::WorldProcess, SpawnPlan::World { argv, cwd })
@@ -212,20 +214,25 @@ impl BtrfsEngine {
                     readonly_mounts,
                 },
             ),
-            ServiceRuntime::ServicePod(_) => {
-                return Err(EngineError::Unsupported {
-                    engine: self.name(),
-                    capability: "service_pod",
-                });
-            }
+            ServiceRuntime::ServicePod(pod) => (RuntimeKind::OciContainer, SpawnPlan::Pod(pod)),
         };
         if plan.argv().is_empty() {
             return Err(EngineError::InvalidWorldSpec {
                 reason: format!("service '{}' argv must not be empty", spec.id),
             });
         }
+        // A pod's complete environment lives in its `PodCommand`. Retain it on the service record
+        // so `crun exec` re-applies exactly the environment the container was created with.
+        let retained = {
+            let mut retained = spec.clone();
+            if let ServiceRuntime::ServicePod(pod) = &spec.runtime {
+                retained.env = pod_exec_env(pod)?;
+            }
+            retained
+        };
+        let spec = &retained;
 
-        let (init_pid, ctl_dir, state_dir, rootfs, mounts, env, log, state, process) = {
+        let (init_pid, ctl_dir, world_dir, state_dir, rootfs, mounts, env, log, state, process) = {
             let mut worlds = self.lock()?;
             let record = self.live_record(&mut worlds, world)?;
             if let Some(existing) = record.services.get(&spec.id)
@@ -239,6 +246,7 @@ impl BtrfsEngine {
             }
             let init_pid = record.init_pid;
             let ctl_dir = record.ctl_dir.clone();
+            let world_dir = record.world_dir.clone();
             let state_dir = record.state_dir.clone();
             let rootfs = record.rootfs.clone();
             let mounts = record.mounts.clone();
@@ -274,7 +282,7 @@ impl BtrfsEngine {
                 },
             );
             (
-                init_pid, ctl_dir, state_dir, rootfs, mounts, env, log, state, process,
+                init_pid, ctl_dir, world_dir, state_dir, rootfs, mounts, env, log, state, process,
             )
         };
 
@@ -282,6 +290,7 @@ impl BtrfsEngine {
             world,
             init_pid,
             ctl_dir: &ctl_dir,
+            world_dir: &world_dir,
             state_dir: &state_dir,
             rootfs: &rootfs,
             mounts: &mounts,
@@ -298,6 +307,7 @@ impl BtrfsEngine {
                 state_mounts,
                 readonly_mounts,
             } => self.spawn_oci_container(&spawn, image, argv, state_mounts, readonly_mounts),
+            SpawnPlan::Pod(pod) => self.spawn_service_pod(&spawn, pod),
         };
         if let Err(err) = spawned {
             state.store(ServiceState::Stopped.to_bits(), Ordering::Relaxed);
@@ -382,7 +392,10 @@ impl BtrfsEngine {
         // A container's bundle `config.json` is composed once, from its own declared env, at
         // spawn. Respawning it with a caller's world env would persist that env (secrets included)
         // onto disk, so the update is refused before the running container is touched.
-        if matches!(spec.runtime, ServiceRuntime::OciContainer { .. }) {
+        if matches!(
+            spec.runtime,
+            ServiceRuntime::OciContainer { .. } | ServiceRuntime::ServicePod(_)
+        ) {
             return Err(EngineError::ContainerEnvFixed {
                 world: format!("{:?}", service.world()),
                 id: service.id().to_owned(),
@@ -475,6 +488,19 @@ impl BtrfsEngine {
         }
         Ok(rows)
     }
+}
+
+/// The exec environment of one pod: exactly the container's declared environment, validated.
+fn pod_exec_env(pod: &ServicePodSpec) -> Result<ExecEnv, EngineError> {
+    let mut env = ExecEnv::default();
+    for (name, value) in &pod.command.env {
+        env.set(name, value.clone())
+            .map_err(|err| EngineError::InvalidEnvName {
+                name: err.name,
+                reason: err.reason,
+            })?;
+    }
+    Ok(env)
 }
 
 /// Mark a service `Exited` (never restarted) once its supervisor process is reaped.

@@ -27,7 +27,7 @@ pub mod world_init;
 
 use std::path::Path;
 
-pub use btrfs_engine::{BtrfsEngine, CrunSurface, pod_bundle_guest};
+pub use btrfs_engine::{BtrfsEngine, CrunSurface, pod_bundle_guest, write_pod_bundle};
 pub use child_env::InheritedEnv;
 pub use clock::elapsed_millis;
 pub use linux_cow::current_uid_gid;
