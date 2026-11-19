@@ -11,6 +11,29 @@ use slipfork_world::WorldOrigin;
 use super::{DaemonError, DaemonErrorKind};
 use slipfork_world::{StreamChunk, WorldLineage, WorldServiceInfo};
 
+/// Version of the control **view** models (`DaemonStatus`, `WorldSummary`, `WorldProcessReport`)
+/// and of the stamped boot/restart feature selection.
+///
+/// The control surface is additive-only within a version: v3 added `WorldSummary::services` and
+/// the `WorldProcessReport` world/origin/worktree facts; v4 stamps the `FeatureSelection` carried
+/// by `up`/`fork`/`restart`, so a peer from another build fails closed instead of booting without
+/// the requested `-F` features.
+pub const CONTROL_VIEW_VERSION: u32 = 4;
+
+/// Accept only the view version this build speaks; a newer or older stamp is a typed refusal.
+pub(crate) fn current_view_version<'de, D>(deserializer: D) -> Result<u32, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let version = u32::deserialize(deserializer)?;
+    if version != CONTROL_VIEW_VERSION {
+        return Err(serde::de::Error::custom(format!(
+            "unsupported control view v{version}: this build speaks v{CONTROL_VIEW_VERSION}"
+        )));
+    }
+    Ok(version)
+}
+
 /// The HTTP ingress listeners `slipforkd` actually serves, plus the one port every minted
 /// `WorldOrigin` carries (`docs/design/dx-0.1.0-ux.md` §3).
 ///
@@ -94,6 +117,9 @@ impl TryFrom<IngressInfoFrame> for IngressInfo {
 /// Process-level view of `slipforkd` and its live worlds.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DaemonStatus {
+    /// Control view version this payload was produced for ([`CONTROL_VIEW_VERSION`]).
+    #[serde(deserialize_with = "current_view_version")]
+    pub protocol: u32,
     /// Pid of the daemon answering the control socket.
     pub pid: u32,
     /// Bound HTTP ingress listeners and the single origin port they serve.
@@ -135,6 +161,9 @@ pub struct WorldSummary {
     pub worktree: PathBuf,
     /// This world's own build lineage — never another world's facts.
     pub lineage: WorldLineage,
+    /// Every component and backing-service row of this world, so the fleet tree needs no second
+    /// call. A fleet row carries no supervised pid (`None`); only `ps` reports one.
+    pub services: Vec<WorldServiceSummary>,
 }
 
 /// One `[resources]` diagnostic line (`docs/design/target-dx.md` §1.2).
@@ -196,11 +225,23 @@ pub struct WorldServiceSummary {
     pub info: WorldServiceInfo,
 }
 
-/// One world's process view: the world state, its lineage, and every service row — read once.
+/// One world's process view: the world's identity, its state, its lineage, and every service row —
+/// read once (`slipfork ps`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorldProcessReport {
+    /// Control view version this payload was produced for ([`CONTROL_VIEW_VERSION`]).
+    #[serde(deserialize_with = "current_view_version")]
+    pub protocol: u32,
+    /// Canonical world id this report is scoped to.
+    pub world: String,
+    /// The canonical world this one is a fork of (`None` for a canonical world).
+    pub parent: Option<String>,
     /// The world's own lifecycle state, read by the same call that read the rows.
     pub state: WorldState,
+    /// The world's single public origin.
+    pub origin: WorldOrigin,
+    /// Host worktree backing the world.
+    pub worktree: PathBuf,
     /// This world's build lineage.
     pub lineage: WorldLineage,
     /// Every component and backing-service row of this world, ids unique.
@@ -208,28 +249,43 @@ pub struct WorldProcessReport {
 }
 
 impl WorldProcessReport {
-    /// Assemble one world's report, refusing a row set with a duplicated service id so
-    /// `services[].id` can never stop being a 1:1 join key.
+    /// Assemble one world's report from the canonical world row and its service rows.
+    ///
+    /// Every row must belong to `world.world`, and ids must be unique, so `services[].id` can
+    /// never stop being a 1:1 join key and one report can never mix two worlds.
     pub fn new(
-        state: WorldState,
-        lineage: WorldLineage,
+        world: &WorldSummary,
         services: Vec<WorldServiceSummary>,
     ) -> Result<Self, DaemonError> {
         let mut seen = BTreeSet::new();
         for service in &services {
+            if service.world != world.world {
+                return Err(DaemonError::new(
+                    DaemonErrorKind::Internal,
+                    format!(
+                        "world '{}' reported a process row for '{}'; one report is one world",
+                        world.world, service.world
+                    ),
+                ));
+            }
             if !seen.insert(service.info.id.as_str()) {
                 return Err(DaemonError::new(
                     DaemonErrorKind::Internal,
                     format!(
                         "world '{}' reported two services with the id '{}'; process rows must have unique ids",
-                        service.world, service.info.id
+                        world.world, service.info.id
                     ),
                 ));
             }
         }
         Ok(Self {
-            state,
-            lineage,
+            protocol: CONTROL_VIEW_VERSION,
+            world: world.world.clone(),
+            parent: world.parent.clone(),
+            state: world.state,
+            origin: world.origin.clone(),
+            worktree: world.worktree.clone(),
+            lineage: world.lineage.clone(),
             services,
         })
     }

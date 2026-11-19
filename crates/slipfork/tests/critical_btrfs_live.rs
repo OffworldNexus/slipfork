@@ -127,14 +127,14 @@ fn production_slipforkd_is_btrfs_only_and_boots_a_real_world_on_btrfs() {
     let exec = daemon.cli(&repo, &["exec", "--", "true"]);
     assert_success(&exec, "exec inside the live Btrfs world");
 
-    let list = daemon.cli(&repo, &["--json", "list"]);
-    assert_success(&list, "list --json");
-    let worlds: serde_json::Value = serde_json::from_str(&stdout(&list)).expect("list is JSON");
-    assert_eq!(
-        worlds.as_array().map(Vec::len),
-        Some(1),
-        "one live canonical world: {worlds}"
-    );
+    let status = daemon.cli(&repo, &["--json", "status"]);
+    assert_success(&status, "status --json");
+    let document: serde_json::Value =
+        serde_json::from_str(&stdout(&status)).expect("status is JSON");
+    let worlds = document["worlds"]
+        .as_array()
+        .unwrap_or_else(|| panic!("worlds array: {document}"));
+    assert_eq!(worlds.len(), 1, "one live canonical world: {document}");
 
     assert_success(&daemon.cli(&repo, &["down"]), "down the live world");
 }

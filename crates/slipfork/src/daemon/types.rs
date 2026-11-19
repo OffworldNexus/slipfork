@@ -5,7 +5,7 @@ use slipfork_edge::{EdgeError, IngressRoute};
 use slipfork_forkfile::{EvaluatedFork, HookPhase, Resolvers, SecretProvider, TaintedString};
 use slipfork_ospp::OsppSession;
 use slipfork_vcs::{RepoRoot, VcsWorkspace};
-use slipfork_wire::control::{ResourceSummary, WorldServiceSummary, WorldState};
+use slipfork_wire::control::{FeatureSelection, ResourceSummary, WorldServiceSummary, WorldState};
 use slipfork_world::rootfs::WorldRootfs;
 use slipfork_world::{
     BootLineage, ExecEnv, LogChunk, ProjectSlug, ServiceHandle, SnapshotId, StreamChunk,
@@ -51,6 +51,8 @@ pub(super) struct LiveWorld {
     /// The policy this world was booted (or last re-run) with; a later `up` may not silently ask
     /// for a different dump policy or rootfs build on top of the retained CoW state.
     pub(super) policy: BootPolicy,
+    /// The `-F/--no-default-features` selection this world last evaluated its `Forkfile` with.
+    pub(super) feature_selection: FeatureSelection,
     /// The feature-evaluated manifest this world runs (re-derived with the plan).
     pub(super) fork: EvaluatedFork,
     /// The resource plan this run resolved (kept so `env_updated` can re-derive ID-only claims).
@@ -457,6 +459,8 @@ pub(super) struct BootContext {
     pub(super) target: WorldTarget,
     pub(super) worktree: PathBuf,
     pub(super) policy: BootPolicy,
+    /// The feature selection this pipeline run evaluates the manifest with.
+    pub(super) feature_selection: FeatureSelection,
     pub(super) workspace: Option<Box<dyn VcsWorkspace>>,
 }
 

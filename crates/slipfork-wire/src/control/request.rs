@@ -18,7 +18,45 @@ pub struct WorldSelector {
     pub world: Option<String>,
 }
 
-/// Seed-dump policy requested for `up`/`fork` (`--no-dump | --refresh-dump`).
+/// The `-F/--features` + `--no-default-features` selection one invocation requested.
+///
+/// The selection is evaluated by `slipforkd` against the manifest's own feature table — the CLI
+/// never re-parses `Forkfile` syntax. `protocol` is stamped so a peer from another build fails
+/// closed instead of silently booting without the requested features.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FeatureSelection {
+    /// Control view version that produced this selection ([`super::CONTROL_VIEW_VERSION`]).
+    #[serde(deserialize_with = "super::view::current_view_version")]
+    pub protocol: u32,
+    /// Extra manifest features enabled for this invocation (`-F a,b`).
+    #[serde(default)]
+    pub features: Vec<String>,
+    /// Drop the manifest's default feature set (`--no-default-features`).
+    #[serde(default)]
+    pub no_default_features: bool,
+}
+
+impl Default for FeatureSelection {
+    fn default() -> Self {
+        Self {
+            protocol: super::CONTROL_VIEW_VERSION,
+            features: Vec::new(),
+            no_default_features: false,
+        }
+    }
+}
+
+/// Request body of `slipfork restart`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RestartRequest {
+    /// The world to re-run (`cwd` or an explicit id).
+    pub selector: WorldSelector,
+    /// Feature selection re-evaluated by this restart. A peer that omits it is refused, never
+    /// silently booted without the requested features.
+    pub feature_selection: FeatureSelection,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DumpRequest {
@@ -42,6 +80,7 @@ pub enum ResourceRequest {
 
 /// Request body of `slipfork up`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct UpRequest {
     /// Caller working directory; never resolved by the daemon itself.
     pub cwd: PathBuf,
@@ -54,10 +93,14 @@ pub struct UpRequest {
     /// Mount the developer's host toolchain caches read-only after the ELF/libc ABI probe passes
     /// (`--host-caches`, `ADR-0009` §2.3). Never a `Forkfile` key.
     pub host_caches: bool,
+    /// Feature selection for this invocation (`-F a,b`, `--no-default-features`). Required, so a
+    /// cross-build peer can never fail open.
+    pub feature_selection: FeatureSelection,
 }
 
 /// Request body of `slipfork fork [FORK]`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ForkRequest {
     /// Caller working directory; the fork worktree is created beneath its repository root.
     pub cwd: PathBuf,
@@ -75,6 +118,9 @@ pub struct ForkRequest {
     pub resources: ResourceRequest,
     /// Mount the developer's host toolchain caches read-only after the ABI probe passes.
     pub host_caches: bool,
+    /// Feature selection for this invocation (`-F a,b`, `--no-default-features`). Required, so a
+    /// cross-build peer can never fail open.
+    pub feature_selection: FeatureSelection,
 }
 
 /// Request body of `slipfork drop <fork>`.

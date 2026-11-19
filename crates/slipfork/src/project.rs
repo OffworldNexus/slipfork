@@ -10,24 +10,31 @@ use std::path::Path;
 use std::sync::Arc;
 
 use slipfork_edge::EdgeError;
-use slipfork_forkfile::{Diagnostic, EvaluatedFork, FeatureSet, ForkFile, Stmt, parse_forkfile};
+use slipfork_forkfile::{
+    Diagnostic, EvaluatedFork, FeatureSet, ForkFile, Stmt, WORLD_FEATURE, parse_forkfile,
+};
 use slipfork_vcs::{GitRepoRootResolver, ProjectSlugOverride, RepoRootResolver, VcsError};
-use slipfork_wire::control::{DaemonError, DaemonErrorKind};
+use slipfork_wire::control::{DaemonError, DaemonErrorKind, FeatureSelection};
 use slipfork_world::ProjectSlug;
-
-use crate::WORLD_FEATURE;
 
 /// The one repository-resolver constructor: `ProjectSlugOverride` + `GitRepoRootResolver`.
 pub fn repository_resolver() -> Arc<dyn RepoRootResolver> {
     Arc::new(GitRepoRootResolver::new(Arc::new(ForkfileProjectOverride)))
 }
 
-/// Load, statically check, and feature-evaluate `<worktree>/Forkfile` for the local world.
-pub fn load_project_fork(worktree: &Path) -> Result<EvaluatedFork, String> {
+/// Load, statically check, and feature-evaluate `<worktree>/Forkfile` for one invocation.
+///
+/// `local` is the manifest's default world feature; `selection.no_default_features` drops it and
+/// the requested `-F` features are evaluated on top, so an unknown feature fails closed inside
+/// [`ForkFile::evaluate`] with the diagnostic's own one-line `next:` remedy.
+pub fn load_project_fork(
+    worktree: &Path,
+    selection: &FeatureSelection,
+) -> Result<EvaluatedFork, String> {
     let path = worktree.join("Forkfile");
     let source = fs::read_to_string(&path).map_err(|_| missing_forkfile(&path))?;
     let file = parse_forkfile(&source).map_err(|diagnostics| refusal(&path, &diagnostics))?;
-    file.evaluate(&active_features(&file)?)
+    file.evaluate(&active_features(&file, selection)?)
         .map_err(|diagnostics| refusal(&path, &diagnostics))
 }
 
@@ -73,25 +80,18 @@ pub fn declared_project(file: &ForkFile) -> Option<&str> {
         })
 }
 
-/// The feature selection for one world: the manifest must declare the `local` world feature.
-fn active_features(file: &ForkFile) -> Result<FeatureSet, String> {
-    if declares_feature(&file.statements, WORLD_FEATURE) {
-        Ok(FeatureSet::with_features([WORLD_FEATURE]))
-    } else {
-        Err(format!(
-            "this `Forkfile` declares no `{WORLD_FEATURE}` feature\n  next: wrap world statements in a `features {WORLD_FEATURE} {{ ... }}` block"
-        ))
+/// The feature selection for one world: `local` unless `--no-default-features`, plus every `-F`.
+fn active_features(file: &ForkFile, selection: &FeatureSelection) -> Result<FeatureSet, String> {
+    if !selection.no_default_features && !file.declares_feature(WORLD_FEATURE) {
+        return Err(format!(
+            "this `Forkfile` declares no `{WORLD_FEATURE}` feature\n  next: wrap world statements in a `features local {{ ... }}` block, or pass `--no-default-features -F <feature>`"
+        ));
     }
-}
-
-fn declares_feature(statements: &[Stmt], name: &str) -> bool {
-    statements.iter().any(|statement| match statement {
-        Stmt::Features { definitions, .. } => definitions
-            .iter()
-            .any(|definition| definition.name.value == name),
-        Stmt::On(block) => declares_feature(&block.body, name),
-        _ => false,
-    })
+    let mut set = FeatureSet::from_cli(&selection.features, selection.no_default_features);
+    if !selection.no_default_features {
+        set.features.insert(WORLD_FEATURE.to_owned());
+    }
+    Ok(set)
 }
 
 /// The one missing-manifest remedy the loader and the project override both print.
@@ -193,12 +193,104 @@ mod tests {
             .tempdir_in("/var/tmp")
             .expect("disk scratch");
         fs::write(dir.path().join("Forkfile"), "project acme\n").expect("write Forkfile");
-        let message = load_project_fork(dir.path()).expect_err("a world-less Forkfile refuses");
+        let message = load_project_fork(dir.path(), &FeatureSelection::default())
+            .expect_err("a world-less Forkfile refuses");
         let remedy = "next: wrap world statements in a `features local { ... }` block";
         assert!(
             message.contains("declares no `local` feature"),
             "got: {message}"
         );
         assert!(message.contains(remedy), "got: {message}");
+    }
+}
+
+#[cfg(test)]
+mod feature_selection_tests {
+    use slipfork_wire::control::FeatureSelection;
+
+    use super::*;
+
+    /// A manifest that declares two features and one serviced world.
+    const TWO_FEATURES: &str = "\
+project demo
+
+features {
+    local
+    extra
+}
+
+service api ./api {
+    port 3000
+    run /bin/true
+}
+";
+
+    fn manifest() -> tempfile::TempDir {
+        let dir = tempfile::tempdir_in("/var/tmp").expect("a /var/tmp scratch directory");
+        std::fs::write(dir.path().join("Forkfile"), TWO_FEATURES).expect("write Forkfile");
+        dir
+    }
+
+    #[test]
+    fn an_undeclared_f_feature_is_refused_in_one_line_with_a_next_remedy() {
+        let dir = manifest();
+        let error = load_project_fork(
+            dir.path(),
+            &FeatureSelection {
+                features: vec!["nope".to_owned()],
+                ..FeatureSelection::default()
+            },
+        )
+        .expect_err("an undeclared -F feature must fail closed");
+
+        assert_eq!(
+            error.lines().filter(|line| !line.is_empty()).count(),
+            2,
+            "one actionable line plus one next: remedy: {error}"
+        );
+        assert!(
+            error.contains("feature `nope` is not declared"),
+            "the refusal names the feature: {error}"
+        );
+        assert!(
+            error.contains("\n  next: "),
+            "the refusal carries the remedy: {error}"
+        );
+    }
+
+    #[test]
+    fn no_default_features_drops_local_and_keeps_the_requested_feature() {
+        let dir = manifest();
+        let default = load_project_fork(dir.path(), &FeatureSelection::default())
+            .expect("the manifest declares its local world feature");
+        assert_eq!(default.features, vec!["local".to_owned()]);
+
+        let dropped = load_project_fork(
+            dir.path(),
+            &FeatureSelection {
+                no_default_features: true,
+                ..FeatureSelection::default()
+            },
+        )
+        .expect("the default feature set is optional");
+        assert!(
+            !dropped
+                .features
+                .iter()
+                .any(|feature| feature == WORLD_FEATURE),
+            "`--no-default-features` drops `local`: {:?}",
+            dropped.features
+        );
+
+        let extra = load_project_fork(
+            dir.path(),
+            &FeatureSelection {
+                features: vec!["extra".to_owned()],
+                no_default_features: true,
+                ..FeatureSelection::default()
+            },
+        )
+        .expect("`extra` is declared");
+        assert_eq!(extra.features, vec!["extra".to_owned()]);
     }
 }

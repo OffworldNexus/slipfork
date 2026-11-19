@@ -135,10 +135,11 @@ impl DaemonService {
         target: &WorldTarget,
         worktree: &std::path::Path,
         policy: BootPolicy,
+        feature_selection: &slipfork_wire::control::FeatureSelection,
         on_event: &mut dyn FnMut(BootEvent),
     ) -> Result<ResolvedWorld, EdgeError> {
         let project = &repo.project;
-        let fork = load_project_fork(worktree)?;
+        let fork = load_project_fork(worktree, feature_selection)?;
         let vault = self.vault_for(project)?;
         let resolvers = Resolvers::new(vault.as_ref(), self.entropy.as_ref());
 
@@ -306,9 +307,11 @@ impl DaemonService {
         target: &WorldTarget,
         worktree: &std::path::Path,
         policy: BootPolicy,
+        feature_selection: &slipfork_wire::control::FeatureSelection,
         on_event: &mut dyn FnMut(BootEvent),
     ) -> Result<PreparedWorld, EdgeError> {
-        let resolved = self.resolve_world(repo, target, worktree, policy, on_event)?;
+        let resolved =
+            self.resolve_world(repo, target, worktree, policy, feature_selection, on_event)?;
         let resolvers = Resolvers::new(resolved.vault.as_ref(), self.entropy.as_ref());
         let rootfs = self.materialize_rootfs(
             RootfsSource {

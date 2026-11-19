@@ -1,4 +1,4 @@
-//! Read verbs: `status`, `list`, `ps`, `prune`, and `open`.
+//! Read verbs: `status`, `ps`, `prune`, and `open`.
 
 use std::process::ExitCode;
 
@@ -7,25 +7,32 @@ use slipfork_edge::DaemonControl;
 use slipfork_wire::control::WorldSelector;
 
 use crate::CliApp;
-use crate::commands::control::{connect, repo_root};
+use crate::commands::control::{connect, repo_root, served_client};
 use crate::commands::render_json;
 
 /// `slipfork` / `slipfork status`: one `DaemonControl::status` read rendered by
 /// [`slipfork::status`] (`docs/design/dx-0.1.0-ux.md` §3).
 ///
-/// This is a read verb: it dials the daemon and never starts one, so a bare `slipfork` on a host
-/// with no daemon fails closed with the one `slipfork up` line. When the daemon answers on an
-/// ingress port other than `:80`, exactly one actionable line goes to stderr — never to stdout and
-/// never under `--json` (§2 rule 4).
+/// This is a read verb: it never starts a daemon, and a host with no daemon is simply an empty
+/// fleet (`○ No worlds running`, exit `0`), never a refusal. When the daemon answers on an ingress
+/// port other than `:80`, exactly one actionable line goes to stderr — never to stdout and never
+/// under `--json` (§2 rule 4).
 pub(crate) fn status(app: &CliApp) -> Result<ExitCode, String> {
-    let client = connect(&app.layout)?;
+    let Some(client) = served_client(&app.layout) else {
+        if app.output_mode.json {
+            println!("{}", render_json(&slipfork::status::json_empty())?);
+        } else {
+            print!("{}", slipfork::status::render_worlds(&[], &app.terminal));
+        }
+        return Ok(ExitCode::SUCCESS);
+    };
     let payload = client.status().map_err(|err| err.to_string())?;
     if app.output_mode.json {
         println!("{}", render_json(&slipfork::status::json(&payload))?);
         return Ok(ExitCode::SUCCESS);
     }
     if let Some(hint) = slipfork::status::ingress_hint(payload.ingress.port()) {
-        eprintln!("{hint}");
+        eprintln!("{} {hint}", app.terminal.warn("!"));
     }
     print!("{}", slipfork::status::render(&payload, &app.terminal));
     Ok(ExitCode::SUCCESS)
@@ -72,7 +79,7 @@ pub(crate) fn open(app: &CliApp, world: Option<String>, remote: bool) -> Result<
     if !app.output_mode.json
         && let Some(hint) = slipfork::status::ingress_hint(status.ingress.port())
     {
-        eprintln!("{hint}");
+        eprintln!("{} {hint}", app.terminal.warn("!"));
     }
     if remote {
         let identity = app.ui.identity()?;
@@ -110,33 +117,6 @@ pub(crate) fn open(app: &CliApp, world: Option<String>, remote: bool) -> Result<
         println!("{}", render_json(&slipfork::open::json(&selection, None))?);
     } else {
         print!("{}", slipfork::open::render_local(&selection));
-    }
-    Ok(ExitCode::SUCCESS)
-}
-
-/// `slipfork list`: every world with its state, worktree, and exactly one origin URL.
-pub(crate) fn list(app: &CliApp) -> Result<ExitCode, String> {
-    let client = connect(&app.layout)?;
-    let worlds = client.list(None).map_err(|err| err.to_string())?;
-    if app.output_mode.json {
-        let rows: Vec<serde_json::Value> = worlds
-            .iter()
-            .map(|world| {
-                serde_json::json!({
-                    "world": &world.world,
-                    "state": world.state,
-                    "origin": world.origin.url(),
-                    "worktree": &world.worktree,
-                })
-            })
-            .collect();
-        println!("{}", render_json(&rows)?);
-    } else {
-        let table = slipfork::status::WorldTable::new(&worlds, &app.terminal);
-        print!("{}", table.header());
-        for world in &worlds {
-            print!("{}", table.row(world, ""));
-        }
     }
     Ok(ExitCode::SUCCESS)
 }

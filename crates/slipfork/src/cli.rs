@@ -1,24 +1,28 @@
 //! The single `clap` command surface shared by `slipfork` and `slipforkd`.
 //!
-//! Every world-scoped command selects a non-default world exclusively through `--world <WORLD>`,
-//! which accepts exactly the ids `slipfork list` prints: the canonical `<project>`,
-//! `<project>:<fork>`, or the repo-local bare `<fork>` (`ADR-0008` §4). `drop` names its fork
-//! positionally because it destroys it; `fork` takes one positionally when given and otherwise
-//! derives it from the current branch inside `slipforkd` (`docs/design/dx-0.1.0-ux.md` §7).
-//! `/M2.16` deleted M1's `snap` subcommand: worlds and forks are the only snapshot producers.
+//! Every world-scoped command selects a non-default world exclusively through `-w/--world
+//! <WORLD>`, which accepts exactly the ids `slipfork status` prints: the canonical `<project>`,
+//! `<project>:<fork>`, or the repo-local bare `<fork>` (`ADR-0008` §4). `drop` takes an optional
+//! fork name, defaulting to the `.worktrees/<fork>` checkout containing `cwd`; `fork` takes one
+//! positionally when given and otherwise derives it from the current branch inside `slipforkd`
+//! (`docs/design/dx-cli-0.1.0.md` §1).
+//! `slipfork list` was deleted: bare `slipfork` (or `ps` for one world) is the only fleet view.
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
 use clap::builder::Styles;
 use clap::builder::styling::{AnsiColor, Effects};
-use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
-use slipfork_wire::control::{DumpRequest, ResourceRequest};
+use clap::{CommandFactory, FromArgMatches, Parser};
 
-/// Shared `--world` help text for every world-scoped command. Carries no trailing period because
-/// `clap` strips the one it derives from a doc comment; the rendered help stays byte-identical.
-const WORLD_HELP: &str =
-    "World id (`<fork>`, `<project>:<fork>`, or canonical `<project>`); omit for `cwd`'s world";
+mod commands;
+mod features;
+
+pub use commands::{
+    Commands, DEFAULT_FORWARD_PORT, DEFAULT_REMOTE_PORT, DaemonAction, DumpArgs, HookAction,
+    ResourceArgs, ResourceScope, SecretAction, UnitKind,
+};
+pub use features::FeatureArgs;
 
 /// `slipfork` thin client.
 ///
@@ -95,316 +99,6 @@ pub fn implemented_commands() -> BTreeSet<String> {
         .collect()
 }
 
-/// Top-level `slipfork` commands.
-#[derive(Debug, Subcommand)]
-pub enum Commands {
-    /// Show the daemon ingress plus every world's tree, lineage, and next steps.
-    Status,
-
-    /// Probe the Btrfs substrate, the live subvolume ioctl round-trip, and unprivileged namespaces.
-    Doctor,
-
-    /// Boot the world selected by `--world` (or `cwd`) through `slipforkd`.
-    Up {
-        #[arg(long, value_name = "WORLD", help = WORLD_HELP)]
-        world: Option<String>,
-        #[command(flatten)]
-        dump: DumpArgs,
-        #[command(flatten)]
-        resources: ResourceArgs,
-        /// Mount the developer's host toolchain caches read-only after the ELF/libc ABI probe
-        /// passes (`ADR-0009` §2.3).
-        #[arg(long)]
-        host_caches: bool,
-    },
-
-    /// Stop a world's services while keeping its worktree (idempotent).
-    Down {
-        #[arg(long, value_name = "WORLD", help = WORLD_HELP)]
-        world: Option<String>,
-    },
-
-    /// Re-run a held world in place: stop its components + services, then run the same boot
-    /// pipeline as `up` (`0.1.0` has no `--watch`; re-run this command after an edit).
-    Restart {
-        #[arg(long, value_name = "WORLD", help = WORLD_HELP)]
-        world: Option<String>,
-    },
-
-    /// Show one world's state, lineage, and every supervised component / `crun` service row.
-    Ps {
-        #[arg(long, value_name = "WORLD", help = WORLD_HELP)]
-        world: Option<String>,
-    },
-
-    /// Open the selected world's origin in the desktop browser, or print the SSH recipe.
-    Open {
-        #[arg(long, value_name = "WORLD", help = WORLD_HELP)]
-        world: Option<String>,
-        /// Print the SSH local-forward recipe for a laptop instead of opening a browser.
-        #[arg(long)]
-        remote: bool,
-    },
-
-    /// Create `.worktrees/<fork>` plus its CoW world through `slipforkd`.
-    Fork {
-        /// Fork name (default: the current branch).
-        #[arg(value_name = "FORK")]
-        fork: Option<String>,
-        /// Commit-ish to fork from (defaults to the requesting checkout's `HEAD`).
-        #[arg(long)]
-        base: Option<String>,
-        #[command(flatten)]
-        dump: DumpArgs,
-        #[command(flatten)]
-        resources: ResourceArgs,
-        /// Mount the developer's host toolchain caches read-only after the ELF/libc ABI probe
-        /// passes (`ADR-0009` §2.3).
-        #[arg(long)]
-        host_caches: bool,
-    },
-
-    /// Destroy a fork world and remove its `.worktrees/<fork>` checkout.
-    Drop {
-        /// Fork name to destroy.
-        fork: String,
-    },
-
-    /// List worlds with state, worktree path, and exactly one origin URL.
-    List,
-
-    /// Preview (default) or reap worlds whose checkout directory is gone.
-    ///
-    /// Sealed snapshot bases and the rootfs/OCI caches are retained, not collected.
-    Prune {
-        /// Preview only; delete nothing (the default when `--yes` is absent).
-        #[arg(long, conflicts_with = "yes")]
-        dry_run: bool,
-        /// Reap what the preview reports.
-        #[arg(long, conflicts_with = "dry_run")]
-        yes: bool,
-    },
-
-    /// Manage the project's local `0600` vault secrets through `slipforkd`.
-    Secret {
-        #[command(subcommand)]
-        action: SecretAction,
-    },
-
-    /// Daemon administration.
-    Daemon {
-        #[command(subcommand)]
-        action: DaemonAction,
-    },
-
-    /// Run a command non-interactively inside a world (daemon-resolved environment).
-    Exec {
-        #[arg(long, value_name = "WORLD", help = WORLD_HELP)]
-        world: Option<String>,
-        /// Working directory used to resolve the world and to enter it.
-        #[arg(long)]
-        cwd: Option<PathBuf>,
-        /// Command and arguments to execute.
-        #[arg(required = true, trailing_var_arg = true)]
-        argv: Vec<String>,
-    },
-
-    /// Enter a world interactively with native terminal stdio (requires a TTY).
-    Shell {
-        #[arg(long, value_name = "WORLD", help = WORLD_HELP)]
-        world: Option<String>,
-    },
-
-    /// Read or follow retained component and hook logs from `slipforkd`.
-    Logs {
-        #[arg(long, value_name = "WORLD", help = WORLD_HELP)]
-        world: Option<String>,
-        /// Component id, hook id (`api:pre-deploy`), or omit for every retained log.
-        target: Option<String>,
-        /// Keep streaming new output.
-        #[arg(long)]
-        follow: bool,
-        /// Read the stderr stream instead of stdout.
-        #[arg(long)]
-        stderr: bool,
-        /// Number of trailing lines to print.
-        #[arg(long)]
-        lines: Option<usize>,
-    },
-
-    /// Hook administration.
-    Hook {
-        #[command(subcommand)]
-        action: HookAction,
-    },
-
-    /// Open `psql` inside the world's running PostgreSQL service container (requires a TTY).
-    Db {
-        /// Declared `pg_databases.<id>` entry; inferred when exactly one is declared.
-        db_id: Option<String>,
-        #[arg(long, value_name = "WORLD", help = WORLD_HELP)]
-        world: Option<String>,
-    },
-
-    /// Open `redis-cli` inside the world's running Redis service container (requires a TTY).
-    Redis {
-        /// Declared `redis_clusters.<id>` entry; inferred when exactly one is declared.
-        cluster_id: Option<String>,
-        #[arg(long, value_name = "WORLD", help = WORLD_HELP)]
-        world: Option<String>,
-    },
-
-    /// Bind daemon-owned `127.0.0.1:0` listeners bridged into a world (held until Ctrl-C).
-    Forward {
-        #[arg(long, value_name = "WORLD", help = WORLD_HELP)]
-        world: Option<String>,
-        /// Target ids (`pg_databases.main`, `components.api`); empty forwards every target.
-        targets: Vec<String>,
-    },
-
-    /// Pair this machine with the daemon's OSPP endpoint.
-    Auth {
-        /// Optional endpoint URL; the daemon refuses one that differs from its injected endpoint.
-        endpoint: Option<String>,
-    },
-}
-
-/// `slipfork hook` actions.
-#[derive(Debug, Subcommand)]
-pub enum HookAction {
-    /// Re-run one `<component>:<phase>` hook (direct native TTY unless `--no-tty`).
-    Run {
-        /// `<component>:<phase>` hook id.
-        hook: String,
-        #[arg(long, value_name = "WORLD", help = WORLD_HELP)]
-        world: Option<String>,
-        /// Run non-interactively through `DaemonControl::hook_run`.
-        #[arg(long)]
-        no_tty: bool,
-    },
-}
-
-/// `slipfork secret` actions.
-#[derive(Debug, Subcommand)]
-pub enum SecretAction {
-    /// Store a secret read from stdin, refusing to replace an existing key without `--force`.
-    Set {
-        /// Secret key name (`STRIPE_SECRET_KEY`).
-        key: String,
-        /// Rotate an existing value.
-        #[arg(long)]
-        force: bool,
-    },
-    /// Remove a stored secret key.
-    Unset {
-        /// Secret key name.
-        key: String,
-    },
-    /// List the project's stored secret keys (never values).
-    List,
-}
-
-/// `slipfork daemon` actions.
-#[derive(Debug, Subcommand)]
-pub enum DaemonAction {
-    /// Render the non-template `slipforkd.socket` / `slipforkd.service` units and the
-    /// `/etc/apparmor.d/slipfork` `userns` profile on stdout.
-    Unit {
-        /// Render only one unit/profile instead of all three.
-        #[arg(long, value_enum)]
-        only: Option<UnitKind>,
-        /// Planned static forward port emitted as the trailing `ListenStream=`.
-        #[arg(long, default_value_t = DEFAULT_FORWARD_PORT)]
-        forward_port: u16,
-        /// Account the rendered `User=` names (default: the invoking account); previews exactly
-        /// what `sudo slipfork daemon install --user <ACCOUNT>` would write.
-        #[arg(long, value_name = "ACCOUNT")]
-        user: Option<String>,
-        /// Directory holding the `slipfork{,d,-world-init}` executables; repeat for several
-        /// install locations (default: this executable's directory).
-        #[arg(long, value_name = "DIR", action = clap::ArgAction::Append)]
-        bin_dir: Vec<PathBuf>,
-    },
-
-    /// Install the systemd units plus the AppArmor profile and enable `:80` socket activation
-    /// (writes `/etc`; requires root).
-    Install {
-        /// Account `slipforkd.service` runs as (default: the invoking `sudo` account).
-        #[arg(long, value_name = "ACCOUNT")]
-        user: Option<String>,
-        /// Directory holding the `slipfork{,d,-world-init}` executables; repeat for several
-        /// install locations (default: this executable's directory).
-        #[arg(long, value_name = "DIR", action = clap::ArgAction::Append)]
-        bin_dir: Vec<PathBuf>,
-        /// Planned static forward port emitted as the trailing `ListenStream=`.
-        #[arg(long, default_value_t = DEFAULT_FORWARD_PORT)]
-        forward_port: u16,
-    },
-}
-
-/// Which unit/profile `daemon unit --only` renders.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-pub enum UnitKind {
-    /// `slipforkd.socket`.
-    Socket,
-    /// `slipforkd.service`.
-    Service,
-    /// `/etc/apparmor.d/slipfork` unprivileged `userns` profile (`ADR-0010` §7).
-    Apparmor,
-}
-
-/// Default planned static forward port rendered into the systemd socket unit (`ADR-0008` §5).
-pub const DEFAULT_FORWARD_PORT: u16 = 7080;
-
-/// Mutually exclusive `--no-dump | --refresh-dump` (`ADR-0008` §3).
-#[derive(Debug, Default, Args)]
-pub struct DumpArgs {
-    /// Skip seed dumps and run a clean `initdb`.
-    #[arg(long, conflicts_with = "refresh_dump")]
-    pub no_dump: bool,
-    /// Require a live OSPP dump check (fails closed when offline).
-    #[arg(long, conflicts_with = "no_dump")]
-    pub refresh_dump: bool,
-}
-
-impl DumpArgs {
-    /// The wire request carried by `UpRequest` / `ForkRequest`.
-    pub fn request(&self) -> DumpRequest {
-        if self.no_dump {
-            DumpRequest::NoDump
-        } else if self.refresh_dump {
-            DumpRequest::RefreshDump
-        } else {
-            DumpRequest::Default
-        }
-    }
-}
-
-/// `--resources local` per-invocation override.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-pub enum ResourceScope {
-    /// Force hermetic world-local resources.
-    Local,
-}
-
-/// Optional per-invocation `[resources]` override.
-#[derive(Debug, Default, Args)]
-pub struct ResourceArgs {
-    /// Force world-local resources for this invocation.
-    #[arg(long, value_enum)]
-    pub resources: Option<ResourceScope>,
-}
-
-impl ResourceArgs {
-    /// The wire request carried by `UpRequest` / `ForkRequest`.
-    pub fn request(&self) -> ResourceRequest {
-        match self.resources {
-            Some(ResourceScope::Local) => ResourceRequest::Local,
-            None => ResourceRequest::Default,
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -428,7 +122,7 @@ mod tests {
     fn restart_has_a_world_selector_and_no_watcher() {
         let restart = Cli::try_parse_from(["slipfork", "restart", "--world", "demo:feat"])
             .expect("restart parses");
-        let Some(Commands::Restart { world }) = restart.command else {
+        let Some(Commands::Restart { world, .. }) = restart.command else {
             panic!("expected `restart`");
         };
         assert_eq!(world.as_deref(), Some("demo:feat"));
@@ -452,7 +146,7 @@ mod tests {
         assert!(Cli::try_parse_from(["slipfork", "ps"]).is_ok());
 
         let open = Cli::try_parse_from(["slipfork", "open", "--remote"]).expect("open parses");
-        let Some(Commands::Open { world, remote }) = open.command else {
+        let Some(Commands::Open { world, remote, .. }) = open.command else {
             panic!("expected `open`");
         };
         assert!(world.is_none());
@@ -467,7 +161,7 @@ mod tests {
     }
 
     #[test]
-    fn fork_takes_an_optional_name_and_drop_still_requires_one() {
+    fn fork_and_drop_both_take_optional_names() {
         let derived = Cli::try_parse_from(["slipfork", "fork"]).expect("zero-argument fork parses");
         let Some(Commands::Fork { fork, .. }) = derived.command else {
             panic!("expected `fork`");
@@ -482,10 +176,19 @@ mod tests {
         };
         assert_eq!(fork.as_deref(), Some("feat-ux"));
 
-        // Destructive teardown always names the fork explicitly: `drop` has no derived form.
-        let err = Cli::try_parse_from(["slipfork", "drop"])
-            .expect_err("`slipfork drop` was locked out of 0.1.0");
-        assert_eq!(err.kind(), clap::error::ErrorKind::MissingRequiredArgument);
+        let unnamed = Cli::try_parse_from(["slipfork", "drop"]).expect("zero-argument drop parses");
+        let Some(Commands::Drop { fork, .. }) = unnamed.command else {
+            panic!("expected `drop`");
+        };
+        assert!(
+            fork.is_none(),
+            "an absent fork name defaults to `cwd`'s `.worktrees` checkout"
+        );
+        let dropped = Cli::try_parse_from(["slipfork", "drop", "feat-ux"]).expect("named drop");
+        let Some(Commands::Drop { fork, .. }) = dropped.command else {
+            panic!("expected `drop`");
+        };
+        assert_eq!(fork.as_deref(), Some("feat-ux"));
     }
 
     #[test]
@@ -544,13 +247,43 @@ mod tests {
 
     #[test]
     fn the_client_has_no_runtime_dir_override() {
-        let err = Cli::try_parse_from(["slipfork", "--runtime-dir", "/run/user/1000", "list"])
+        let err = Cli::try_parse_from(["slipfork", "--runtime-dir", "/run/user/1000", "status"])
             .expect_err("--runtime-dir is a slipforkd-only flag");
         assert_eq!(err.kind(), clap::error::ErrorKind::UnknownArgument);
         assert!(
-            Cli::try_parse_from(["slipfork", "--state-dir", "/state", "list"]).is_ok(),
+            Cli::try_parse_from(["slipfork", "--state-dir", "/state", "status"]).is_ok(),
             "--state-dir stays global"
         );
+    }
+
+    #[test]
+    fn the_deleted_list_verb_is_gone_and_the_short_flags_parse() {
+        let err = Cli::try_parse_from(["slipfork", "list"])
+            .expect_err("`slipfork list` was deleted in M3.32.4");
+        assert_eq!(err.kind(), clap::error::ErrorKind::InvalidSubcommand);
+
+        // §2's short flags land on the verbs that own the behaviour today.
+        assert!(Cli::try_parse_from(["slipfork", "up", "-w", "demo", "-F", "api,worker"]).is_ok());
+        assert!(
+            Cli::try_parse_from(["slipfork", "up", "--no-default-features"]).is_ok(),
+            "the default feature set can be switched off"
+        );
+        assert!(Cli::try_parse_from(["slipfork", "ps", "-w", "demo"]).is_ok());
+        assert!(Cli::try_parse_from(["slipfork", "logs", "-f", "-n", "20"]).is_ok());
+        assert!(Cli::try_parse_from(["slipfork", "prune", "-y"]).is_ok());
+        assert!(Cli::try_parse_from(["slipfork", "open", "-r", "-p", "9090"]).is_ok());
+        assert!(Cli::try_parse_from(["slipfork", "drop", "feat", "-f"]).is_ok());
+        assert!(Cli::try_parse_from(["slipfork", "exec", "-s", "api", "true"]).is_ok());
+
+        // `secret list` keeps its name while no variant is spelled `List`.
+        let secret =
+            Cli::try_parse_from(["slipfork", "secret", "list"]).expect("secret list parses");
+        assert!(matches!(
+            secret.command,
+            Some(Commands::Secret {
+                action: SecretAction::Keys
+            })
+        ));
     }
 
     #[test]

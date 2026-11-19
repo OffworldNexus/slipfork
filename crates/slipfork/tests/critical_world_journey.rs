@@ -1,8 +1,8 @@
 //! Journey A: one rich, full-stack Btrfs World E2E journey (`M3.30.4` §2).
 //!
 //! One daemon, one canonical world (a serving `api`, an `idle` forward target, a real `postgres:18`
-//! and a real `redis:8`), one fork, and one idle world: `up` (and its idempotent second `up`), bare
-//! `status`, `list`, `ps`, `logs`, `exec`, an edited checkout applied by `restart` (a sh-wrapped
+//! and a real `redis:8`), one fork, and one idle world: `up -F nope`'s typed refusal, `up` (and its
+//! idempotent second `up`), bare `status`, `ps`, `logs`, `exec`, an edited checkout applied by
 //! serving component, its whole process group reaped, and the `--json` projection), the fail-closed
 //! `db`/`redis` TTY entries, the streaming `forward` bridge, a no-argument `fork` with the client's
 //! global/system git config unset (the daemon pins the snapshot author), the duplicate, detached,
@@ -231,9 +231,9 @@ fn ingress_port(daemon: &Daemon, cwd: &Path) -> u16 {
     assert_success(&output, "status --json");
     let document: Value = serde_json::from_str(&stdout(&output)).expect("status json");
     u16::try_from(
-        document["ingress"]["port"]
+        document["ingress_port"]
             .as_u64()
-            .unwrap_or_else(|| panic!("ingress.port is always present: {document}")),
+            .unwrap_or_else(|| panic!("ingress_port is always present: {document}")),
     )
     .expect("a u16 port")
 }
@@ -244,7 +244,7 @@ fn ingress_stderr(port: u16) -> String {
         String::new()
     } else {
         format!(
-            "{}\n",
+            "! {}\n",
             slipfork::status::ingress_hint(port).expect("a non-:80 ingress is announced")
         )
     }
@@ -357,6 +357,48 @@ fn world_lifecycle_journey_boots_edits_forks_and_reaps() {
     // naming the path, the found filesystem, and the required one.
     let _driver = support::require_btrfs(&daemon.state_dir);
 
+    // --- up -F nope: one typed refusal, no world, no subvolume -------------
+    let refused = daemon.cli(&repo, &["up", "-F", "nope"]);
+    assert!(
+        !refused.status.success(),
+        "an undeclared -F feature must fail closed"
+    );
+    assert!(
+        stdout(&refused).is_empty(),
+        "a refused up prints no block: {}",
+        stdout(&refused)
+    );
+    let refusal_text = stderr(&refused);
+    let refusal: Vec<&str> = refusal_text
+        .lines()
+        .filter(|line| !line.is_empty())
+        .collect();
+    assert_eq!(
+        refusal.len(),
+        2,
+        "one actionable line plus one next: remedy: {refusal:?}"
+    );
+    assert!(
+        refusal[0].contains("feature `nope` is not declared"),
+        "the refusal names the undeclared feature: {refusal:?}"
+    );
+    assert!(
+        refusal[1].trim_start().starts_with("next: "),
+        "the refusal carries the remedy: {refusal:?}"
+    );
+    assert_eq!(
+        world_subvolumes(&daemon.state_dir),
+        Vec::<PathBuf>::new(),
+        "a refused up creates no world subvolume"
+    );
+    let empty: Value = serde_json::from_str(&stdout(&daemon.cli(&repo, &["--json", "status"])))
+        .expect("status json");
+    assert_eq!(
+        empty["worlds"].as_array().map(Vec::len),
+        Some(0),
+        "a refused up leaves the fleet empty: {empty}"
+    );
+
     // --- up: one world, one origin, the scannable block ---------------------
     let up = daemon.cli(&repo, &["up"]);
     assert_success(&up, "slipfork up");
@@ -413,24 +455,31 @@ fn world_lifecycle_journey_boots_edits_forks_and_reaps() {
     );
     let lines: Vec<&str> = dashboard.lines().collect();
     assert!(
-        lines[0].starts_with("slipforkd ") && lines[0].contains(", ingress 127.0.0.1:"),
-        "the header names the daemon pid and its ingress: {dashboard}"
+        lines[0].starts_with("● acme-app  http://acme-app.localhost"),
+        "the canonical row leads its own tree with the one origin: {dashboard}"
     );
     assert!(
-        lines
-            .iter()
-            .any(|line| line.starts_with("  acme-app ") && line.contains("running")),
-        "the canonical row carries its running state: {dashboard}"
+        !dashboard.contains("slipforkd")
+            && !dashboard.contains("next")
+            && !dashboard.contains("lineage"),
+        "no daemon header, next spam, or lineage outside -v: {dashboard}"
+    );
+    let verbose = daemon.cli(&repo, &["-v", "status"]);
+    assert_success(&verbose, "status -v");
+    assert!(
+        stdout(&verbose).contains("lineage"),
+        "the -v tree carries the lineage fact: {}",
+        stdout(&verbose)
     );
 
-    // --- list: exactly one URL round-trips the printed world id -------------
-    let list = daemon.cli(&repo, &["list"]);
-    assert_success(&list, "slipfork list");
+    // --- status: exactly one URL round-trips the printed world id -----------
+    let fleet = daemon.cli(&repo, &["status"]);
+    assert_success(&fleet, "slipfork status");
     assert_eq!(
-        url_count(&stdout(&list)),
+        url_count(&stdout(&fleet)),
         1,
-        "list prints exactly one URL for one world:\n{}",
-        stdout(&list)
+        "status prints exactly one URL for one world:\n{}",
+        stdout(&fleet)
     );
 
     // --- ps + logs ---------------------------------------------------------
@@ -841,10 +890,10 @@ fn world_lifecycle_journey_boots_edits_forks_and_reaps() {
     );
 
     // --- the printed ids round-trip through `--world` ----------------------
-    let json_list = daemon.cli(&repo, &["--json", "list"]);
-    assert_success(&json_list, "list --json");
-    let worlds: Value = serde_json::from_str(&stdout(&json_list)).expect("list json");
-    let worlds = worlds.as_array().expect("list is an array");
+    let json_status = daemon.cli(&repo, &["--json", "status"]);
+    assert_success(&json_status, "status --json");
+    let document: Value = serde_json::from_str(&stdout(&json_status)).expect("status json");
+    let worlds = document["worlds"].as_array().expect("worlds is an array");
     assert_eq!(worlds.len(), 2, "canonical plus one fork");
     for world in worlds {
         let origin = world["origin"].as_str().expect("origin string");
@@ -1057,10 +1106,10 @@ fn world_lifecycle_journey_boots_edits_forks_and_reaps() {
         "drop removes the fork's real worktree: {}",
         worktree.display()
     );
-    let after = daemon.cli(&repo, &["--json", "list"]);
-    assert_success(&after, "list after drop");
-    let remaining: Value = serde_json::from_str(&stdout(&after)).expect("json");
-    let remaining = remaining.as_array().expect("array");
+    let after = daemon.cli(&repo, &["--json", "status"]);
+    assert_success(&after, "status after drop");
+    let document: Value = serde_json::from_str(&stdout(&after)).expect("json");
+    let remaining = document["worlds"].as_array().expect("worlds array");
     assert_eq!(remaining.len(), 1);
     assert_eq!(
         remaining[0]["origin"]

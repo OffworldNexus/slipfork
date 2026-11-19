@@ -48,7 +48,10 @@ fn main() -> ExitCode {
         Ok(code) => code,
         Err(message) => {
             if json {
-                println!("{}", json!({ "ok": false, "error": message }));
+                println!(
+                    "{}",
+                    json!({ "ok": false, "code": "error", "error": message, "next": null })
+                );
             } else {
                 eprintln!("slipfork: {message}");
             }

@@ -692,6 +692,21 @@ fn ingress_info_round_trips_port_80_and_ephemeral_binds() {
     );
 }
 
+/// The canonical world row a process report is assembled from.
+fn report_world(id: &str, state: WorldState, lineage: WorldLineage) -> WorldSummary {
+    WorldSummary {
+        world: id.to_owned(),
+        parent: id
+            .split_once(':')
+            .map(|(project, _fork)| project.to_owned()),
+        state,
+        origin: test_origin("acme", 80),
+        worktree: PathBuf::from("/repo"),
+        lineage,
+        services: Vec::new(),
+    }
+}
+
 #[test]
 fn world_summary_parent_and_lineage_survive_serde() {
     let canonical = WorldSummary {
@@ -701,6 +716,7 @@ fn world_summary_parent_and_lineage_survive_serde() {
         origin: test_origin("acme", 80),
         worktree: PathBuf::from("/repo"),
         lineage: empty_lineage(),
+        services: Vec::new(),
     };
     let fork = WorldSummary {
         world: "acme:feat-ux".to_owned(),
@@ -709,6 +725,7 @@ fn world_summary_parent_and_lineage_survive_serde() {
         origin: test_origin("acme", 80),
         worktree: PathBuf::from("/repo/.worktrees/feat-ux"),
         lineage: empty_lineage(),
+        services: Vec::new(),
     };
 
     let canonical_json = serde_json::to_value(&canonical).expect("serialize canonical summary");
@@ -780,6 +797,7 @@ fn world_summary_parent_and_lineage_survive_serde() {
 
     // `DaemonStatus` carries `ingress` and never a daemon-wide lineage or the retired port field.
     let status = DaemonStatus {
+        protocol: slipfork_wire::control::CONTROL_VIEW_VERSION,
         pid: 1420,
         ingress: ingress_info(80),
         forward_port: Some(7080),
@@ -808,8 +826,7 @@ fn world_summary_parent_and_lineage_survive_serde() {
 #[test]
 fn world_process_reports_are_world_scoped_and_keep_stopped_rows() {
     let canonical = WorldProcessReport::new(
-        WorldState::Running,
-        empty_lineage(),
+        &report_world("acme", WorldState::Running, empty_lineage()),
         vec![
             service_row("acme", "api", ServiceKind::Component, ServiceState::Running),
             service_row(
@@ -822,8 +839,7 @@ fn world_process_reports_are_world_scoped_and_keep_stopped_rows() {
     )
     .expect("unique ids");
     let fork = WorldProcessReport::new(
-        WorldState::Stopped,
-        empty_lineage(),
+        &report_world("acme:feat", WorldState::Stopped, empty_lineage()),
         vec![service_row(
             "acme:feat",
             "api",
@@ -889,8 +905,7 @@ fn world_process_reports_are_world_scoped_and_keep_stopped_rows() {
 
     // Duplicate ids are refused: `services[].id` stays a 1:1 join key.
     let duplicate = WorldProcessReport::new(
-        WorldState::Running,
-        empty_lineage(),
+        &report_world("acme", WorldState::Running, empty_lineage()),
         vec![
             service_row("acme", "api", ServiceKind::Component, ServiceState::Running),
             service_row(

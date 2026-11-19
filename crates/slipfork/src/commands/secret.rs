@@ -39,7 +39,7 @@ pub(crate) fn secret(app: &CliApp, action: SecretAction) -> Result<ExitCode, Str
                 println!("[secret] secrets::{key} was not stored; nothing to remove");
             }
         }
-        SecretAction::List => {
+        SecretAction::Keys => {
             let keys = client.secret_list(&cwd).map_err(|err| err.to_string())?;
             if app.output_mode.json {
                 println!("{}", render_json(&keys)?);

@@ -171,6 +171,7 @@ impl DaemonService {
             target,
             worktree,
             policy,
+            feature_selection,
             mut workspace,
         } = context;
         let project = repo.project.clone();
@@ -180,7 +181,14 @@ impl DaemonService {
             workspace,
         };
 
-        let prepared = match self.prepare_world(&repo, &target, &worktree, policy, on_event) {
+        let prepared = match self.prepare_world(
+            &repo,
+            &target,
+            &worktree,
+            policy,
+            &feature_selection,
+            on_event,
+        ) {
             Ok(prepared) => prepared,
             Err(error) => return Err(fail(error, workspace)),
         };
@@ -223,6 +231,7 @@ impl DaemonService {
             components: resolved.components,
             hooks: resolved.hooks,
             policy,
+            feature_selection,
             fork: resolved.fork,
             plan: resolved.plan,
             ospp_env: resolved.ospp_env,
@@ -387,14 +396,20 @@ impl DaemonService {
 
         // Resolve and materialize first: a resolution or build failure leaves the running world
         // untouched instead of failing a healthy world.
-        let prepared =
-            match self.prepare_world(&live.repo, &live.target, &live.worktree, policy, on_event) {
-                Ok(prepared) => prepared,
-                Err(error) => {
-                    self.insert_world(live);
-                    return Err(error);
-                }
-            };
+        let prepared = match self.prepare_world(
+            &live.repo,
+            &live.target,
+            &live.worktree,
+            policy,
+            &live.feature_selection,
+            on_event,
+        ) {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                self.insert_world(live);
+                return Err(error);
+            }
+        };
         let spec = self.world_spec(&live.target, &live.worktree, &prepared);
         let PreparedWorld {
             resolved, rootfs, ..

@@ -15,8 +15,11 @@ use super::rejected;
 ///
 /// A malformed or missing manifest is a user-authored refusal, never an internal failure: the
 /// single `crate::project` formatter already supplies the `path:line:col` and the `next:` remedy.
-pub(super) fn load_project_fork(worktree: &Path) -> Result<EvaluatedFork, EdgeError> {
-    crate::project::load_project_fork(worktree).map_err(rejected)
+pub(super) fn load_project_fork(
+    worktree: &Path,
+    feature_selection: &slipfork_wire::control::FeatureSelection,
+) -> Result<EvaluatedFork, EdgeError> {
+    crate::project::load_project_fork(worktree, feature_selection).map_err(rejected)
 }
 
 /// One `<entity>.<property>` fact of an already-built projection.

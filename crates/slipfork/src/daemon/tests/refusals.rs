@@ -71,7 +71,10 @@ fn refused<T>(result: Result<T, EdgeError>) -> DaemonError {
 #[test]
 fn a_missing_forkfile_is_a_rejection_naming_the_fix() {
     let dir = scratch_dir("slipfork-missing");
-    let error = refused(load_project_fork(dir.path()));
+    let error = refused(load_project_fork(
+        dir.path(),
+        &slipfork_wire::control::FeatureSelection::default(),
+    ));
     assert!(
         error.message.starts_with("cannot read "),
         "{}",
@@ -87,7 +90,10 @@ fn a_missing_forkfile_is_a_rejection_naming_the_fix() {
 #[test]
 fn an_unparseable_forkfile_is_a_rejection_with_line_and_remedy() {
     let dir = scratch("slipfork-unparseable", "features local {\n");
-    let error = refused(load_project_fork(dir.path()));
+    let error = refused(load_project_fork(
+        dir.path(),
+        &slipfork_wire::control::FeatureSelection::default(),
+    ));
     assert!(
         error.message.starts_with('/') && error.message.contains("Forkfile:"),
         "path:line:col comes first: {}",
@@ -98,7 +104,11 @@ fn an_unparseable_forkfile_is_a_rejection_with_line_and_remedy() {
 #[test]
 fn a_route_without_a_port_is_refused() {
     let dir = scratch("slipfork-route", ROUTE_WITHOUT_PORT);
-    let fork = load_project_fork(dir.path()).expect("a routeless port still parses");
+    let fork = load_project_fork(
+        dir.path(),
+        &slipfork_wire::control::FeatureSelection::default(),
+    )
+    .expect("a routeless port still parses");
     let error = refused(ingress_routes(&fork));
     assert!(
         error.message.contains("no `port` to serve it"),
@@ -115,7 +125,11 @@ fn a_route_without_a_port_is_refused() {
 #[test]
 fn a_world_without_an_ingress_route_is_refused() {
     let dir = scratch("slipfork-ingress", WORLD_WITHOUT_ROUTE);
-    let fork = load_project_fork(dir.path()).expect("a valid single-service manifest");
+    let fork = load_project_fork(
+        dir.path(),
+        &slipfork_wire::control::FeatureSelection::default(),
+    )
+    .expect("a valid single-service manifest");
     let error = refused(ingress_routes(&fork));
     assert!(
         error.message.contains("no HTTP ingress"),

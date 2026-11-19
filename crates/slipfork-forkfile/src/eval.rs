@@ -285,6 +285,24 @@ impl Builder {
 
 /// Evaluate `self` against `features` into the canonical [`EvaluatedFork`].
 impl ForkFile {
+    /// Whether this manifest declares feature `name` in any `features` block.
+    ///
+    /// The walk descends an `on` block because a `features` statement is legal there; it never
+    /// interprets the manifest's expressions, so the answer is exactly the declared feature set.
+    #[must_use]
+    pub fn declares_feature(&self, name: &str) -> bool {
+        fn walk(statements: &[Stmt], name: &str) -> bool {
+            statements.iter().any(|statement| match statement {
+                Stmt::Features { definitions, .. } => definitions
+                    .iter()
+                    .any(|definition| definition.name.value == name),
+                Stmt::On(block) => walk(&block.body, name),
+                _ => false,
+            })
+        }
+        walk(&self.statements, name)
+    }
+
     /// Resolve the active feature closure and apply every active statement top to bottom.
     pub fn evaluate(&self, features: &FeatureSet) -> Result<EvaluatedFork, Vec<Diagnostic>> {
         let active = self.resolve_features(features)?;

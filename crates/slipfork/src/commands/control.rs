@@ -22,7 +22,7 @@ pub(crate) fn connect(layout: &Layout) -> Result<DaemonControlClient, String> {
 }
 
 /// The bound control client when a daemon answers, else `None`.
-fn served_client(layout: &Layout) -> Option<DaemonControlClient> {
+pub(crate) fn served_client(layout: &Layout) -> Option<DaemonControlClient> {
     let client = DaemonControlClient::bind(layout.runtime_dir());
     client.is_served().then_some(client)
 }

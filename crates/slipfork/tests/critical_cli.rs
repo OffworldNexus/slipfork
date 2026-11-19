@@ -106,7 +106,7 @@ fn url_count(text: &str) -> usize {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn fork_help_marks_the_name_optional_while_drop_still_requires_one() {
+fn fork_and_drop_help_mark_the_name_optional() {
     let help = |args: &[&str]| {
         let output = Command::new(env!("CARGO_BIN_EXE_slipfork"))
             .args(args)
@@ -127,8 +127,12 @@ fn fork_help_marks_the_name_optional_while_drop_still_requires_one() {
     );
     let drop = help(&["drop", "--help"]);
     assert!(
-        drop.contains("<FORK>"),
-        "destructive teardown keeps its explicit name: {drop}"
+        drop.contains("[FORK]"),
+        "the fork slot is optional and cwd-derived: {drop}"
+    );
+    assert!(
+        drop.contains("cwd"),
+        "the help names the cwd-derived default: {drop}"
     );
 }
 
@@ -171,13 +175,13 @@ fn restart_rebuilds_an_edited_rootfs_input_and_keeps_state_for_unchanged_inputs(
         !first_body.contains("rootfs-v2"),
         "the first boot must not serve content that does not exist yet: {first_body:?}"
     );
-    let first = ps_json(&daemon, &repo);
-    let first_digest = first["lineage"]["rootfs"]["digest"]
+    let first = world_lineage(&daemon, &repo);
+    let first_digest = first["rootfs"]["digest"]
         .as_str()
         .expect("the rootfs digest is recorded")
         .to_owned();
     assert_eq!(
-        first["lineage"]["rootfs"]["cache"], "miss",
+        first["rootfs"]["cache"], "miss",
         "the first boot built the rootfs"
     );
 
@@ -189,13 +193,13 @@ fn restart_rebuilds_an_edited_rootfs_input_and_keeps_state_for_unchanged_inputs(
 
     // Unchanged inputs: the same subvolume (and its state) is kept, and the lineage is a hit.
     assert_success(&daemon.cli(&repo, &["restart"]), "restart unchanged");
-    let second = ps_json(&daemon, &repo);
+    let second = world_lineage(&daemon, &repo);
     assert_eq!(
-        second["lineage"]["rootfs"]["cache"], "hit",
+        second["rootfs"]["cache"], "hit",
         "an unchanged tree must report the cache hit: {second}"
     );
     assert_eq!(
-        second["lineage"]["rootfs"]["digest"], first_digest,
+        second["rootfs"]["digest"], first_digest,
         "an unchanged tree keeps the same digest"
     );
     assert_eq!(
@@ -235,13 +239,13 @@ fn restart_rebuilds_an_edited_rootfs_input_and_keeps_state_for_unchanged_inputs(
         !second_body.contains("rootfs-v1"),
         "the restart must not serve the old rootfs content: {second_body:?}"
     );
-    let third = ps_json(&daemon, &repo);
+    let third = world_lineage(&daemon, &repo);
     assert_eq!(
-        third["lineage"]["rootfs"]["cache"], "miss",
+        third["rootfs"]["cache"], "miss",
         "the edited input must rebuild the rootfs: {third}"
     );
     assert_ne!(
-        third["lineage"]["rootfs"]["digest"], first_digest,
+        third["rootfs"]["digest"], first_digest,
         "the edited input must change the rootfs digest"
     );
     assert_eq!(
@@ -257,17 +261,18 @@ fn restart_rebuilds_an_edited_rootfs_input_and_keeps_state_for_unchanged_inputs(
     // And a further unchanged restart is a hit again: no unconditional rebuild.
     assert_success(&daemon.cli(&repo, &["restart"]), "restart unchanged again");
     assert_eq!(
-        ps_json(&daemon, &repo)["lineage"]["rootfs"]["cache"],
+        world_lineage(&daemon, &repo)["rootfs"]["cache"],
         "hit",
         "an unchanged tree must not rebuild the rootfs again"
     );
 }
 
-/// The `ps --json` document for the repo's world.
-fn ps_json(daemon: &Daemon, cwd: &Path) -> Value {
-    let output = daemon.cli(cwd, &["--json", "ps"]);
-    assert_success(&output, "ps --json");
-    serde_json::from_str(&stdout(&output)).expect("ps json")
+/// The repo world's `lineage` from the one `status --json` document (`worlds[0]`).
+fn world_lineage(daemon: &Daemon, cwd: &Path) -> Value {
+    let output = daemon.cli(cwd, &["--json", "status"]);
+    assert_success(&output, "status --json");
+    let document: Value = serde_json::from_str(&stdout(&output)).expect("status json");
+    document["worlds"][0]["lineage"].clone()
 }
 
 /// The retained stdout of the repo's `api` component.
@@ -492,10 +497,59 @@ fn read_verbs_never_spawn_a_daemon_and_fail_closed_in_one_line() {
         socket.display()
     );
 
+    // An empty fleet is not an error: bare `slipfork` and `status` read no daemon and exit `0`.
+    for args in [vec![], vec!["status"]] {
+        let output = Command::new(env!("CARGO_BIN_EXE_slipfork"))
+            .arg("--state-dir")
+            .arg(&state_dir)
+            .args(&args)
+            .current_dir(&repo)
+            .env("XDG_DATA_HOME", scratch.join("xdg-data"))
+            .output()
+            .expect("spawn the fleet view without a daemon");
+        assert!(
+            output.status.success(),
+            "slipfork {args:?} is an empty fleet, not a failure"
+        );
+        assert_eq!(
+            stdout(&output),
+            "○ No worlds running\n",
+            "slipfork {args:?} prints the one empty-fleet line"
+        );
+        assert_eq!(
+            stderr(&output),
+            "",
+            "slipfork {args:?} needs no daemon to say nothing is running"
+        );
+        assert!(
+            !state_dir.exists(),
+            "a read-only fleet view must not create the state root"
+        );
+    }
+
+    let json = Command::new(env!("CARGO_BIN_EXE_slipfork"))
+        .arg("--state-dir")
+        .arg(&state_dir)
+        .arg("--json")
+        .arg("status")
+        .current_dir(&repo)
+        .env("XDG_DATA_HOME", scratch.join("xdg-data"))
+        .output()
+        .expect("spawn `status --json` without a daemon");
+    assert_success(&json, "status --json without a daemon");
+    let document: Value = serde_json::from_str(&stdout(&json)).expect("status json");
+    assert_eq!(document["ok"], true);
+    assert!(
+        document["ingress_port"].is_null(),
+        "no daemon means no guessed ingress port: {document}"
+    );
+    assert_eq!(document["worlds"].as_array().map(Vec::len), Some(0));
+    assert!(
+        !state_dir.exists(),
+        "a read-only `--json` read must not create the state root"
+    );
+
     for args in [
-        vec![],
-        vec!["status"],
-        vec!["list"],
         vec!["down"],
         vec!["logs"],
         vec!["prune", "--dry-run"],
@@ -1012,12 +1066,12 @@ fn hook_failure_keeps_the_world_and_prints_the_full_diagnostic() {
         "the rescue block must name the kept fork: {err}"
     );
 
-    let listed = daemon.cli(&repo, &["--json", "list"]);
-    assert_success(&listed, "list after a failed hook");
-    let worlds: Value = serde_json::from_str(&stdout(&listed)).expect("list json");
-    let failed = worlds
+    let listed = daemon.cli(&repo, &["--json", "status"]);
+    assert_success(&listed, "status after a failed hook");
+    let document: Value = serde_json::from_str(&stdout(&listed)).expect("status json");
+    let failed = document["worlds"]
         .as_array()
-        .expect("array")
+        .expect("worlds array")
         .iter()
         .find(|world| {
             world["world"]
@@ -1422,7 +1476,7 @@ fn auth_prints_the_server_supplied_fragment_url_and_never_echoes_a_secret() {
 /// Rendered by [`slipfork::status::ingress_hint`]; the test never re-types the format.
 fn ingress_hint_line(port: u16) -> String {
     format!(
-        "{}\n",
+        "! {}\n",
         slipfork::status::ingress_hint(port).expect("a non-:80 ingress is announced")
     )
 }
@@ -1438,7 +1492,6 @@ fn world_keys(world: &Value) -> Vec<String> {
     keys.sort();
     keys
 }
-
 #[test]
 fn bare_slipfork_and_status_render_one_dashboard_and_json_stays_pure() {
     let tmp = disk_tempdir();
@@ -1499,76 +1552,30 @@ fn bare_slipfork_and_status_render_one_dashboard_and_json_stays_pure() {
     );
     let lines: Vec<&str> = dashboard.lines().collect();
     assert!(
-        lines[0].starts_with("slipforkd ") && lines[0].contains(", ingress 127.0.0.1:"),
-        "the header names the daemon pid and its ingress: {dashboard}"
-    );
-    let canonical = lines
-        .iter()
-        .position(|line| line.starts_with("  acme-app "))
-        .unwrap_or_else(|| panic!("expected a canonical row: {dashboard}"));
-    assert!(
-        lines[canonical].contains("running")
-            && lines[canonical].contains("http://acme-app.localhost"),
-        "the canonical row carries its state and origin: {dashboard}"
-    );
-    let label_column = lines[canonical + 1]
-        .find("lineage")
-        .unwrap_or_else(|| panic!("each world row is followed by its lineage line: {dashboard}"));
-    assert!(
-        lines[canonical + 1][..label_column].trim().is_empty(),
-        "the lineage label sits in an indented label column: {dashboard}"
-    );
-
-    // Derive both sub-lines instead of re-typing the literal indent/hint text asserted once in
-    // `slipfork::status`'s own tests.
-    let sub_line = |row: usize, label: &str| -> String {
-        lines[row]
-            .strip_prefix(&" ".repeat(label_column))
-            .and_then(|tail| tail.strip_prefix(label))
-            .unwrap_or_else(|| panic!("expected a `{label}` sub-line for row {row}: {dashboard}"))
-            .to_owned()
-    };
-    let canonical_next = sub_line(canonical + 2, "next      ");
-    assert!(
-        sub_line(canonical + 1, "lineage   ").starts_with("rootfs "),
-        "the lineage line starts with the rootfs fact: {dashboard}"
+        lines[0].starts_with("● acme-app  http://acme-app.localhost"),
+        "the canonical row leads its own tree with the one origin: {dashboard}"
     );
     assert!(
-        !canonical_next.contains("--world"),
-        "the canonical world's hint stays bare: {canonical_next}"
+        !dashboard.contains("slipforkd")
+            && !dashboard.contains("next")
+            && !dashboard.contains("lineage")
+            && !dashboard.contains("--world"),
+        "no daemon header, next spam, lineage, or selector spam: {dashboard}"
     );
-    let implemented = slipfork::cli::implemented_commands();
-    for hint in canonical_next.split(" | ") {
-        let verb = hint
-            .strip_prefix("slipfork ")
-            .unwrap_or_else(|| panic!("a hint is a full `slipfork <verb>` command: {hint}"));
-        assert!(
-            implemented.contains(verb),
-            "`{hint}` is hinted but is not a subcommand of this binary: {dashboard}"
-        );
-    }
-
     let fork_row = lines
         .iter()
-        .position(|line| line.starts_with("    acme-app:feat-ux "))
-        .unwrap_or_else(|| panic!("expected the fork indented under its project: {dashboard}"));
-    assert!(
-        fork_row > canonical,
-        "the canonical world leads its own forks: {dashboard}"
-    );
+        .position(|line| line.starts_with("└─ feat-ux  "))
+        .unwrap_or_else(|| panic!("expected the fork under its project: {dashboard}"));
     assert!(
         lines[fork_row].contains("http://feat-ux.acme-app.localhost"),
         "the fork row carries its own origin: {dashboard}"
     );
-    let expected_fork_next = canonical_next
-        .split(" | ")
-        .map(|hint| format!("{hint} --world acme-app:feat-ux"))
-        .collect::<Vec<_>>()
-        .join(" | ");
-    assert_eq!(
-        sub_line(fork_row + 2, "next      "),
-        expected_fork_next,
-        "a fork hint pastes straight back into --world: {dashboard}"
+    let verbose = daemon.cli(&repo, &["-v", "status"]);
+    assert_success(&verbose, "status -v");
+    assert!(
+        stdout(&verbose).contains("lineage"),
+        "the -v tree carries the lineage fact: {}",
+        stdout(&verbose)
     );
 
     // `--json` is the same single read projected, with no human text on stdout.
@@ -1591,22 +1598,13 @@ fn bare_slipfork_and_status_render_one_dashboard_and_json_stays_pure() {
     assert_eq!(document["ok"], true);
     assert!(!stdout(&json_status).contains("slipforkd"));
     assert!(!stdout(&json_status).contains("lineage   "));
-    assert!(document["pid"].as_u64().is_some_and(|pid| pid > 0));
-    let port = document["ingress"]["port"]
+    let port = document["ingress_port"]
         .as_u64()
-        .unwrap_or_else(|| panic!("ingress.port is always present: {document}"))
+        .unwrap_or_else(|| panic!("ingress_port is always present: {document}"))
         as u16;
-    assert_eq!(
-        document["ingress"]["addrs"]
-            .as_array()
-            .expect("addrs array")
-            .len(),
-        1,
-        "the ephemeral daemon binds one ingress listener: {document}"
-    );
     assert!(
-        document["forward_port"].is_null(),
-        "a daemon with no forward listener reports null: {document}"
+        port > 0,
+        "the ephemeral daemon reports its real ingress port: {document}"
     );
 
     let worlds = document["worlds"]
@@ -1616,10 +1614,16 @@ fn bare_slipfork_and_status_render_one_dashboard_and_json_stays_pure() {
     for world in worlds {
         assert_eq!(
             world_keys(world),
-            vec!["lineage", "origin", "parent", "state", "worktree", "world"],
+            vec![
+                "lineage", "origin", "parent", "services", "state", "worktree", "world"
+            ],
             "a status row carries exactly the documented keys: {world}"
         );
         assert_eq!(world["state"], "running");
+        assert!(
+            world["services"].is_array(),
+            "every world carries its own service rows: {world}"
+        );
         assert_eq!(
             world["origin"]
                 .as_str()
@@ -1668,7 +1672,7 @@ fn bare_slipfork_and_status_render_one_dashboard_and_json_stays_pure() {
 }
 
 #[test]
-fn status_with_zero_worlds_prints_one_line_plus_up() {
+fn status_with_zero_worlds_prints_one_line_and_exits_zero() {
     let tmp = disk_tempdir();
     let scratch = tmp.path();
     let repo = repo_with_snow(scratch);
@@ -1676,25 +1680,64 @@ fn status_with_zero_worlds_prints_one_line_plus_up() {
 
     let bare = daemon.cli(&repo, &[]);
     assert_success(&bare, "bare slipfork with no worlds");
-    let dashboard = stdout(&bare);
-    let lines: Vec<&str> = dashboard.lines().collect();
-    assert_eq!(lines.len(), 2, "one daemon line plus one hint: {dashboard}");
-    assert!(
-        lines[0].starts_with("slipforkd ") && lines[0].contains(", ingress 127.0.0.1:"),
-        "the daemon line stays first: {dashboard}"
-    );
-    assert_eq!(
-        lines[1], "  no worlds — run `slipfork up` inside a project checkout",
-        "a daemon with no world names the command that creates one: {dashboard}"
-    );
+    assert_eq!(stdout(&bare), "○ No worlds running\n");
 
     let json_status = daemon.cli(&repo, &["--json", "status"]);
     assert_success(&json_status, "status --json with no worlds");
     let document: Value = serde_json::from_str(&stdout(&json_status)).expect("status json");
     assert_eq!(document["ok"], true);
+    let port = document["ingress_port"]
+        .as_u64()
+        .unwrap_or_else(|| panic!("a served daemon reports its real port: {document}"))
+        as u16;
+    let expected_stderr = if port == 80 {
+        String::new()
+    } else {
+        ingress_hint_line(port)
+    };
+    assert_eq!(
+        stderr(&bare),
+        expected_stderr,
+        "the empty fleet announces a non-:80 ingress exactly once, on stderr"
+    );
     assert_eq!(
         document["worlds"].as_array().map(Vec::len),
         Some(0),
         "an empty fleet is an empty array, never a missing key: {document}"
+    );
+
+    // A fresh host with no daemon at all is the same empty fleet: bare `slipfork` and `status`
+    // never start (or need) a daemon just to say nothing is running.
+    let cold_state = scratch.join("cold-state");
+    let cold = Command::new(env!("CARGO_BIN_EXE_slipfork"))
+        .arg("--state-dir")
+        .arg(&cold_state)
+        .current_dir(&repo)
+        .env("XDG_DATA_HOME", scratch.join("xdg-data"))
+        .output()
+        .expect("spawn bare slipfork on a cold host");
+    assert_success(&cold, "bare slipfork on a cold host");
+    assert_eq!(stdout(&cold), "○ No worlds running\n");
+    assert_eq!(stderr(&cold), "");
+    let cold_json = Command::new(env!("CARGO_BIN_EXE_slipfork"))
+        .arg("--state-dir")
+        .arg(&cold_state)
+        .arg("--json")
+        .arg("status")
+        .current_dir(&repo)
+        .env("XDG_DATA_HOME", scratch.join("xdg-data"))
+        .output()
+        .expect("spawn status --json on a cold host");
+    assert_success(&cold_json, "status --json on a cold host");
+    let cold_document: Value = serde_json::from_str(&stdout(&cold_json)).expect("status json");
+    assert_eq!(cold_document["ok"], true);
+    assert!(
+        cold_document["ingress_port"].is_null(),
+        "no daemon means no guessed ingress port: {cold_document}"
+    );
+    assert_eq!(cold_document["worlds"].as_array().map(Vec::len), Some(0));
+    assert!(
+        !cold_state.exists(),
+        "a read-only status never creates the state root"
     );
 }

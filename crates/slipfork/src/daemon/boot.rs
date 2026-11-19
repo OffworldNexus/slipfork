@@ -208,12 +208,13 @@ impl DaemonService {
                 self.summary(&project, &target, &facts, rows, false, Vec::new())
             }
             BootVerb::Rerun => {
-                let live = self
+                let mut live = self
                     .take_world(&project, &target)
                     .ok_or_else(|| Self::unknown_world(&project, &target))?;
                 // The same in-place pipeline as `restart`, honouring this invocation's flags: an
                 // absent flag keeps the world's policy, an explicit one a rerun cannot apply is
                 // refused rather than dropped.
+                live.feature_selection = req.feature_selection.clone();
                 let policy = rerun_policy(live.policy, req.dump, req.resources, req.host_caches);
                 self.reboot(live, policy, on_event)
             }
@@ -233,6 +234,7 @@ impl DaemonService {
                     target: selection.target.clone(),
                     worktree: selection.worktree.clone(),
                     policy: request_policy(req.dump, req.resources, req.host_caches),
+                    feature_selection: req.feature_selection.clone(),
                     workspace: None,
                 };
                 match self.boot(context, on_event) {
@@ -257,20 +259,22 @@ impl DaemonService {
 impl DaemonService {
     pub(super) fn restart(
         &self,
-        req: &WorldSelector,
+        req: &slipfork_wire::control::RestartRequest,
         on_event: &mut dyn FnMut(BootEvent),
     ) -> Result<WorldUpSummary, EdgeError> {
-        let selection = self.select(&req.cwd, req.world.as_deref())?;
+        let selection = self.select(&req.selector.cwd, req.selector.world.as_deref())?;
         let project = selection.repo.project.clone();
         let target = selection.target.clone();
         let _guard = self.boot_guard();
 
         match boot_verb(BootCommand::Restart, self.world_state(&selection)) {
             Some(BootVerb::Rerun) => {
-                let live = self
+                let mut live = self
                     .take_world(&project, &target)
                     .ok_or_else(|| not_running(&project, &target))?;
-                // `restart` carries no flags: it re-runs the policy the world already holds.
+                // `restart` keeps the world's dump/rootfs policy but re-evaluates the manifest
+                // with this invocation's `-F/--no-default-features` selection.
+                live.feature_selection = req.feature_selection.clone();
                 let policy = live.policy;
                 self.reboot(live, policy, on_event)
             }
@@ -305,7 +309,7 @@ impl DaemonService {
         };
         // The collision checks read the checkout's real `Forkfile` `domain` set — never an
         // empty placeholder, which would let a fork shadow a declared domain.
-        let forkfile = super::fork::load_project_fork(&repo.worktree_root)?;
+        let forkfile = super::fork::load_project_fork(&repo.worktree_root, &req.feature_selection)?;
         let domains: Vec<&str> = forkfile.domains.iter().map(String::as_str).collect();
         if fork == repo.project.as_str() {
             return Err(rejected(if derived {
@@ -345,6 +349,7 @@ impl DaemonService {
             target: selection.target.clone(),
             worktree: selection.worktree.clone(),
             policy: request_policy(req.dump, req.resources, req.host_caches),
+            feature_selection: req.feature_selection.clone(),
             workspace: Some(workspace),
         };
         match self.boot(context, on_event) {

@@ -1,17 +1,16 @@
 ---
 id: M3.32.4
 title: "Clean-sheet 0.1.0 CLI surface (dx-cli-0.1.0.md §1-§3) & @slipfork/opencode status --json sync"
-kind: task
-status: ready
-owner: implementer
+kind: epic
+status: active
 priority: 3
 depends_on: [M3.32.3]
-paths: ["crates/slipfork/**", "packages/opencode-slipfork/**", Cargo.toml, Cargo.lock]
+paths: ["crates/slipfork/**", "packages/opencode-slipfork/**"]
 attempts: 0
 max_attempts: 3
 escalation: none
 created: "2026-11-19T13:02"
-updated: "2026-11-19T13:02"
+updated: "2026-11-19T21:01"
 ---
 
 # Goal

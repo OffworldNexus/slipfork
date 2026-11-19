@@ -9,8 +9,9 @@ use slipfork_engine::rootfs::BaseImageBuilder;
 use slipfork_forkfile::EntropySource;
 use slipfork_vcs::{RepoRootResolver, VcsWorkspaceFactory};
 use slipfork_wire::control::{
-    DaemonError, DaemonErrorKind, DaemonStatus, IngressInfo, PruneReport, WorldProcessReport,
-    WorldSelector, WorldServiceSummary, WorldState, WorldSummary, WorldUpSummary,
+    CONTROL_VIEW_VERSION, DaemonError, DaemonErrorKind, DaemonStatus, IngressInfo, PruneReport,
+    WorldProcessReport, WorldSelector, WorldServiceSummary, WorldState, WorldSummary,
+    WorldUpSummary,
 };
 use slipfork_world::{ProjectSlug, WorldEngine, WorldHandle, WorldTarget};
 use std::path::{Path, PathBuf};
@@ -113,6 +114,7 @@ impl DaemonService {
     pub(super) fn status(&self) -> Result<DaemonStatus, EdgeError> {
         let worlds = self.list(None)?;
         Ok(DaemonStatus {
+            protocol: CONTROL_VIEW_VERSION,
             pid: std::process::id(),
             ingress: self.ingress.clone(),
             forward_port: self.forward_port,
@@ -161,6 +163,9 @@ impl DaemonService {
                 .engine
                 .world_lineage(&handle)
                 .map_err(|err| engine_read_error(&world, state, &err))?;
+            // The fleet tree prints every declared service row; a pid is a `ps` fact, so the
+            // one-read fleet payload never carries one.
+            let services = self.fleet_service_rows(&world, &handle, state)?;
             summaries.push(WorldSummary {
                 world,
                 parent: parent_world(&project, &target),
@@ -168,10 +173,58 @@ impl DaemonService {
                 origin: self.registry.origin(&project, &target)?,
                 worktree,
                 lineage,
+                services,
             });
         }
         summaries.sort_by(|a, b| a.world.cmp(&b.world));
         Ok(summaries)
+    }
+
+    /// The engine's authoritative service rows for one world, labelled with its canonical id.
+    ///
+    /// The fleet view never carries a supervised pid (the tree never prints one); `ps` keeps the
+    /// measured `pid`/`port`/`uptime_secs`.
+    fn fleet_service_rows(
+        &self,
+        world: &str,
+        handle: &WorldHandle,
+        state: WorldState,
+    ) -> Result<Vec<WorldServiceSummary>, EdgeError> {
+        let mut rows = self.engine_service_rows(world, handle, state)?;
+        for row in &mut rows {
+            row.info.pid = None;
+        }
+        Ok(rows)
+    }
+
+    /// The same rows with their measured pid, for the `ps` document.
+    fn process_service_rows(
+        &self,
+        world: &str,
+        handle: &WorldHandle,
+        state: WorldState,
+    ) -> Result<Vec<WorldServiceSummary>, EdgeError> {
+        self.engine_service_rows(world, handle, state)
+    }
+
+    /// One engine read labelled with the world's canonical id.
+    fn engine_service_rows(
+        &self,
+        world: &str,
+        handle: &WorldHandle,
+        state: WorldState,
+    ) -> Result<Vec<WorldServiceSummary>, EdgeError> {
+        let rows = self
+            .engine
+            .world_processes(handle)
+            .map_err(|err| engine_read_error(world, state, &err))?;
+        Ok(rows
+            .into_iter()
+            .map(|info| WorldServiceSummary {
+                world: world.to_owned(),
+                info,
+            })
+            .collect())
     }
 }
 
@@ -181,7 +234,7 @@ impl DaemonService {
         req: &WorldSelector,
     ) -> Result<WorldProcessReport, EdgeError> {
         let selection = self.select(&req.cwd, req.world.as_deref())?;
-        let (state, handle) = {
+        let (state, worktree, handle) = {
             let world_state = self.lock();
             let Some(world) = world_state.world(&selection.repo.project, &selection.target) else {
                 return Err(Self::unknown_world(
@@ -189,24 +242,26 @@ impl DaemonService {
                     &selection.target,
                 ));
             };
-            (world.state, world.handle.clone())
+            (world.state, world.worktree.clone(), world.handle.clone())
         };
         let world_text = world_id(&selection.repo.project, &selection.target);
         let lineage = self
             .engine
             .world_lineage(&handle)
             .map_err(|err| engine_read_error(&world_text, state, &err))?;
-        let services = self
-            .engine
-            .world_processes(&handle)
-            .map_err(|err| engine_read_error(&world_text, state, &err))?
-            .into_iter()
-            .map(|info| WorldServiceSummary {
-                world: world_text.clone(),
-                info,
-            })
-            .collect();
-        WorldProcessReport::new(state, lineage, services).map_err(EdgeError::Control)
+        let services = self.process_service_rows(&world_text, &handle, state)?;
+        let summary = WorldSummary {
+            world: world_text,
+            parent: parent_world(&selection.repo.project, &selection.target),
+            state,
+            origin: self
+                .registry
+                .origin(&selection.repo.project, &selection.target)?,
+            worktree,
+            lineage,
+            services: services.clone(),
+        };
+        WorldProcessReport::new(&summary, services).map_err(EdgeError::Control)
     }
 }
 

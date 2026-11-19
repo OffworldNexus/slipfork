@@ -11,6 +11,9 @@
 
 #![forbid(unsafe_code)]
 
+/// The manifest feature every local world declares (`features { local }` / `on local`).
+pub const WORLD_FEATURE: &str = "local";
+
 mod argv;
 mod check;
 mod commands;

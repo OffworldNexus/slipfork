@@ -70,7 +70,7 @@ pub(crate) use protocol::fan_in;
 pub(crate) use types::HookLog;
 
 /// The `Forkfile` feature this daemon evaluates for every local world.
-pub(super) const WORLD_FEATURE: &str = crate::WORLD_FEATURE;
+pub(super) const WORLD_FEATURE: &str = slipfork_forkfile::WORLD_FEATURE;
 
 /// Host toolchain caches exposed read-only by `--host-caches` (`ADR-0009` §2.3).
 ///

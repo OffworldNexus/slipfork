@@ -1,13 +1,15 @@
 //! Boot and teardown verbs: `up`, `fork`, `restart`, `down`, and `drop`.
 
 use std::io::{self, Write};
+use std::path::Path;
 use std::process::ExitCode;
 
 use serde_json::json;
-use slipfork::cli::{DumpArgs, ResourceArgs};
+use slipfork::cli::{DumpArgs, FeatureArgs, ResourceArgs};
 use slipfork_edge::{DaemonControl, DaemonControlClient, EdgeError};
 use slipfork_wire::control::{
-    BootEvent, DropForkRequest, ForkRequest, UpRequest, WorldSelector, WorldUpSummary,
+    BootEvent, DropForkRequest, ForkRequest, RestartRequest, UpRequest, WorldSelector,
+    WorldUpSummary,
 };
 
 use crate::CliApp;
@@ -20,6 +22,7 @@ pub(crate) fn up(
     world: Option<String>,
     dump: DumpArgs,
     resources: ResourceArgs,
+    features: FeatureArgs,
     host_caches: bool,
 ) -> Result<ExitCode, String> {
     let client = connect_or_spawn(app)?;
@@ -31,6 +34,7 @@ pub(crate) fn up(
         dump: dump.request(),
         resources: resources.request(),
         host_caches,
+        feature_selection: features.selection(),
     };
     let mut failure = None;
     match client.up(&request, &mut |event| {
@@ -50,16 +54,23 @@ pub(crate) fn up(
 /// The verb refuses to spawn a daemon (only `up`/`fork` may, `ADR-0011` §3): a restart of a world
 /// the daemon never booted fails closed in one line naming `slipfork up`. A `failed` world is the
 /// rescue path — the daemon re-runs the same boot pipeline in place.
-pub(crate) fn restart(app: &CliApp, world: Option<String>) -> Result<ExitCode, String> {
+pub(crate) fn restart(
+    app: &CliApp,
+    world: Option<String>,
+    features: FeatureArgs,
+) -> Result<ExitCode, String> {
     let client = connect(&app.layout)?;
     app.terminal.start_progress("restarting the world…");
     let options = block_options(app.terminal.verbose(), world.is_some());
-    let selector = WorldSelector {
-        cwd: app.ui.cwd()?,
-        world,
+    let request = RestartRequest {
+        selector: WorldSelector {
+            cwd: app.ui.cwd()?,
+            world,
+        },
+        feature_selection: features.selection(),
     };
     let mut failure = None;
-    match client.restart(&selector, &mut |event| {
+    match client.restart(&request, &mut |event| {
         note_hook_failure(&event, &mut failure);
         print_event(app, event);
     }) {
@@ -87,6 +98,7 @@ pub(crate) fn fork(
     base: Option<String>,
     dump: DumpArgs,
     resources: ResourceArgs,
+    features: FeatureArgs,
     host_caches: bool,
 ) -> Result<ExitCode, String> {
     let client = connect_or_spawn(app)?;
@@ -99,6 +111,7 @@ pub(crate) fn fork(
         dump: dump.request(),
         resources: resources.request(),
         host_caches,
+        feature_selection: features.selection(),
     };
     let mut failure = None;
     match client.fork(&request, &mut |event| {
@@ -137,13 +150,18 @@ pub(crate) fn down(app: &CliApp, world: Option<String>) -> Result<ExitCode, Stri
     Ok(ExitCode::SUCCESS)
 }
 
-/// `slipfork drop`: destroy a fork world and remove its checkout.
-pub(crate) fn drop_fork(app: &CliApp, fork: String) -> Result<ExitCode, String> {
+/// `slipfork drop [FORK]`: destroy a fork world and remove its checkout.
+///
+/// An omitted fork defaults to the `.worktrees/<fork>` checkout containing `cwd`; outside one it
+/// fails closed naming the explicit form rather than guessing a destructive target.
+pub(crate) fn drop_fork(app: &CliApp, fork: Option<String>) -> Result<ExitCode, String> {
     let client = connect(&app.layout)?;
-    let request = DropForkRequest {
-        cwd: app.ui.cwd()?,
-        fork,
+    let cwd = app.ui.cwd()?;
+    let fork = match fork {
+        Some(fork) => fork,
+        None => cwd_fork(&cwd)?,
     };
+    let request = DropForkRequest { cwd, fork };
     let released = client.drop_fork(&request).map_err(|err| err.to_string())?;
     if app.output_mode.json {
         println!("{}", json!({ "ok": true, "dropped": released }));
@@ -153,6 +171,22 @@ pub(crate) fn drop_fork(app: &CliApp, fork: String) -> Result<ExitCode, String> 
         println!("[drop] no such fork world; nothing to do");
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// The fork whose `.worktrees/<fork>` checkout contains `cwd`.
+fn cwd_fork(cwd: &Path) -> Result<String, String> {
+    let mut components = cwd.components();
+    while let Some(component) = components.next() {
+        if component.as_os_str() == ".worktrees"
+            && let Some(fork) = components.next()
+        {
+            return Ok(fork.as_os_str().to_string_lossy().into_owned());
+        }
+    }
+    Err(format!(
+        "cannot tell which fork `{}` belongs to; next: slipfork drop <fork>",
+        cwd.display()
+    ))
 }
 
 /// Remember the last hook failure so a failed `up` / `fork` can print the rescue block.

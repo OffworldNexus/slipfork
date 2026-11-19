@@ -1,110 +1,171 @@
-//! The one `WORLD  STATE  ORIGIN  WORKTREE` table of `status` and `list`.
+//! The one fleet tree: `World -> Services -> Forks` (`docs/design/dx-cli-0.1.0.md` §1).
+//!
+//! `slipfork`, `slipfork status`, and `slipfork ps` all render through this one presenter, so the
+//! fleet view and the cwd-scoped view can never drift. Every column width is measured from the
+//! visible cells after ANSI stripping, a world line never carries a daemon pid, and lineage
+//! digests appear only under `-v`.
 
-use std::collections::BTreeSet;
+use slipfork_wire::control::{WorldState, WorldSummary};
+use slipfork_world::{ServiceState, WorldServiceInfo};
 
-use slipfork_wire::control::WorldSummary;
-
-use super::{next_hint, render_lineage, world_state_label};
+use super::render_lineage;
 use crate::ui::{TerminalUi, column_width};
 
-/// Narrowest world-id column; a longer id widens the column instead of shifting the rest.
-const MIN_WORLD_COLUMN: usize = 16;
+/// Indentation of the `-v` lineage sub-line.
+const DETAIL_INDENT: &str = "  ";
 
-/// Narrowest origin column; the `ORIGIN` header is the floor.
-const MIN_ORIGIN_COLUMN: usize = 6;
+/// The tree branch before a child that has a successor.
+const BRANCH: &str = "├─";
 
-/// Width of the one `STATE` column (`running` is the widest lifecycle label).
-const STATE_COLUMN: usize = 9;
+/// The tree branch before the last child of a world.
+const LAST_BRANCH: &str = "└─";
 
-/// Indentation of one canonical project row (a fork row adds two more spaces).
-const PROJECT_INDENT: &str = "  ";
-
-/// Indentation of one fork row under its project.
-const FORK_INDENT: &str = "    ";
-
-/// The one `WORLD  STATE  ORIGIN  WORKTREE` table of `status` and `list`.
-///
-/// Column widths come from the payload's real content with ANSI stripped, so a long world id or
-/// origin widens its column instead of shearing the row; `indent` is the tree indentation (`""` for
-/// the flat `list` table, the fork indent on the dashboard).
-pub struct WorldTable<'a> {
-    worlds: &'a [WorldSummary],
+/// One fleet tree over an already-read payload.
+pub(super) struct FleetTree<'a> {
     ui: &'a TerminalUi,
+    verbose: bool,
 }
 
-impl<'a> WorldTable<'a> {
-    /// Bind the payload and the one palette its rows are painted through.
-    #[must_use]
-    pub fn new(worlds: &'a [WorldSummary], ui: &'a TerminalUi) -> Self {
-        Self { worlds, ui }
+/// Render the fleet tree; an empty daemon renders `○ No worlds running` (exit `0`).
+pub(super) fn render(worlds: &[WorldSummary], ui: &TerminalUi, verbose: bool) -> String {
+    if worlds.is_empty() {
+        return "○ No worlds running\n".to_owned();
     }
-
-    /// The world-id column width: the widest id, never narrower than `MIN_WORLD_COLUMN`.
-    #[must_use]
-    pub fn world_column(&self) -> usize {
-        column_width(
-            MIN_WORLD_COLUMN,
-            self.worlds.iter().map(|world| world.world.as_str()),
-        )
-    }
-
-    /// The origin column width: the widest rendered URL, never narrower than `ORIGIN`.
-    fn origin_column(&self) -> usize {
-        let urls: Vec<String> = self
-            .worlds
+    let tree = FleetTree { ui, verbose };
+    let groups = groups(worlds);
+    // One id column for the whole fleet: every world's service rows share it, so a long id in one
+    // world never leaves another world's state column ragged.
+    let id_width = column_width(
+        0,
+        groups
             .iter()
-            .map(|world| self.ui.url(world.origin.url()))
-            .collect();
-        column_width(MIN_ORIGIN_COLUMN, urls.iter().map(String::as_str))
+            .flat_map(|group| group.iter())
+            .flat_map(|world| world.services.iter())
+            .map(|service| service.info.id.as_str()),
+    );
+    let mut out = String::new();
+    for (index, group) in groups.into_iter().enumerate() {
+        if index > 0 {
+            out.push('\n');
+        }
+        tree.push_group(&mut out, &group, id_width);
+    }
+    out
+}
+
+impl FleetTree<'_> {
+    /// One canonical world (or a lone fork), its service rows, its forks, and its `-v` lineage.
+    fn push_group(&self, out: &mut String, group: &[&WorldSummary], id_width: usize) {
+        let Some((root, forks)) = group.split_first() else {
+            return;
+        };
+        out.push_str(&self.root_line(root));
+        let services = &root.services;
+        let children = services.len() + forks.len();
+        for (index, service) in services.iter().enumerate() {
+            out.push_str(&self.service_line(&service.info, connector(index, children), id_width));
+        }
+        for (index, fork) in forks.iter().enumerate() {
+            out.push_str(&self.fork_line(fork, connector(services.len() + index, children)));
+        }
+        if self.verbose {
+            out.push_str(&format!(
+                "{DETAIL_INDENT}{} {}\n",
+                self.ui.secondary("lineage"),
+                render_lineage(&root.lineage, self.ui)
+            ));
+        }
     }
 
-    /// The `list` header row.
-    #[must_use]
-    pub fn header(&self) -> String {
+    /// `● demo  http://demo.localhost  /home/dev/demo` — never a `slipforkd <pid>` header.
+    fn root_line(&self, world: &WorldSummary) -> String {
         format!(
-            "{} {} {} WORKTREE\n",
-            self.ui.pad("WORLD", self.world_column()),
-            self.ui.pad("STATE", STATE_COLUMN),
-            self.ui.pad("ORIGIN", self.origin_column()),
-        )
-    }
-
-    /// One `WORLD  STATE  ORIGIN  WORKTREE` row at `indent`.
-    #[must_use]
-    pub fn row(&self, world: &WorldSummary, indent: &str) -> String {
-        format!(
-            "{indent}{} {} {} {}\n",
-            self.ui.pad(&world.world, self.world_column()),
-            self.ui
-                .pad(&self.ui.state(world_state_label(world.state)), STATE_COLUMN),
-            self.ui
-                .pad(&self.ui.url(world.origin.url()), self.origin_column()),
+            "{} {}  {}  {}\n",
+            self.marker(world.state),
+            self.ui.bold(&world.world),
+            self.ui.url(world.origin.url()),
             self.ui.secondary(&world.worktree.display().to_string()),
         )
     }
 
-    /// One rendered world row plus its `lineage` and `next` sub-lines.
-    pub(super) fn push_world(
-        &self,
-        out: &mut String,
-        world: &WorldSummary,
-        implemented: &BTreeSet<String>,
-    ) {
-        let indent = if world.parent.is_some() {
-            FORK_INDENT
-        } else {
-            PROJECT_INDENT
-        };
-        out.push_str(&self.row(world, indent));
-        let label_indent = " ".repeat(PROJECT_INDENT.len() + self.world_column());
-        out.push_str(&format!(
-            "{label_indent}lineage   {}\n",
-            render_lineage(&world.lineage, self.ui)
-        ));
-        out.push_str(&format!(
-            "{label_indent}next      {}\n",
-            self.ui.secondary(&next_hint(world, implemented))
-        ));
+    /// `├─ pg  running  :5432  12s` — an unrecorded port/age is `-`, never `0`.
+    fn service_line(&self, service: &WorldServiceInfo, connector: &str, id_width: usize) -> String {
+        let port = service
+            .port
+            .map_or_else(|| self.ui.secondary("-"), |port| format!(":{port}"));
+        let age = service
+            .uptime_secs
+            .map_or_else(|| self.ui.secondary("-"), |secs| format!("{secs}s"));
+        format!(
+            "{connector} {} {}  {port}  {age}\n",
+            self.ui.pad(&service.id, id_width),
+            self.ui.state(service_state_label(service.state)),
+        )
+    }
+
+    /// `└─ feat-auth  ● http://feat-auth.demo.localhost  /repo/.worktrees/feat-auth`.
+    fn fork_line(&self, world: &WorldSummary, connector: &str) -> String {
+        let name = world
+            .world
+            .rsplit_once(':')
+            .map_or(world.world.as_str(), |(_, fork)| fork);
+        format!(
+            "{connector} {}  {} {}  {}\n",
+            self.ui.bold(name),
+            self.marker(world.state),
+            self.ui.url(world.origin.url()),
+            self.ui.secondary(&world.worktree.display().to_string()),
+        )
+    }
+
+    /// The lifecycle glyph: `●` running, `✗` failed, `○` stopped.
+    fn marker(&self, state: WorldState) -> String {
+        match state {
+            WorldState::Running => self.ui.running("●"),
+            WorldState::Failed => self.ui.failed("✗"),
+            WorldState::Stopped => self.ui.secondary("○"),
+        }
+    }
+}
+
+/// The branch before child `index` of `total`.
+fn connector(index: usize, total: usize) -> &'static str {
+    if index + 1 == total {
+        LAST_BRANCH
+    } else {
+        BRANCH
+    }
+}
+
+/// Every canonical world followed by the forks the daemon names as its children.
+///
+/// Grouping uses `WorldSummary.parent` (never a split of the world id) and keeps the daemon's
+/// payload order inside a group; a fork whose parent has no row still renders as its own group.
+fn groups(worlds: &[WorldSummary]) -> Vec<Vec<&WorldSummary>> {
+    let mut groups: Vec<(String, Vec<&WorldSummary>)> = Vec::new();
+    for world in worlds {
+        let project = world.parent.clone().unwrap_or_else(|| world.world.clone());
+        match groups.iter_mut().find(|(key, _)| *key == project) {
+            Some((_, members)) => members.push(world),
+            None => groups.push((project, vec![world])),
+        }
+    }
+    groups
+        .into_iter()
+        .map(|(_, mut members)| {
+            // Stable: the canonical row (`parent: None`) always leads its own forks.
+            members.sort_by_key(|world| world.parent.is_some());
+            members
+        })
+        .collect()
+}
+
+/// A service's lifecycle label; `exited` = ended on its own, `stopped` = `down`/`restart`.
+fn service_state_label(state: ServiceState) -> &'static str {
+    match state {
+        ServiceState::Running => "running",
+        ServiceState::Exited => "exited",
+        ServiceState::Stopped => "stopped",
     }
 }
 
@@ -112,8 +173,11 @@ impl<'a> WorldTable<'a> {
 mod tests {
     use std::path::PathBuf;
 
-    use slipfork_wire::control::{WorldState, WorldSummary};
-    use slipfork_world::{LocalHostRoute, ProjectSlug, WorldLineage, WorldOrigin, WorldTarget};
+    use slipfork_wire::control::WorldServiceSummary;
+    use slipfork_world::{
+        LocalHostRoute, ProjectSlug, ServiceKind, WorldLineage, WorldOrigin, WorldServiceInfo,
+        WorldTarget,
+    };
 
     use super::*;
     use crate::ui::Capabilities;
@@ -127,66 +191,162 @@ mod tests {
         })
     }
 
-    fn world(id: &str, ingress_port: u16) -> WorldSummary {
-        let project = ProjectSlug::parse("demo").expect("a valid project slug");
-        let (parent, target) = match id.split_once(':') {
-            Some((project, fork)) => (
-                Some(project.to_owned()),
-                WorldTarget::UserFork(fork.to_owned()),
-            ),
-            None => (None, WorldTarget::Canonical),
+    fn origin(project: &str, fork: Option<&str>) -> WorldOrigin {
+        let project = ProjectSlug::parse(project).expect("a valid project slug");
+        let target = match fork {
+            Some(fork) => WorldTarget::UserFork(fork.to_owned()),
+            None => WorldTarget::Canonical,
         };
         let route = LocalHostRoute::new(project, target, None, &[]).expect("a routable route");
+        WorldOrigin::local(&route, 80).expect("a minted origin")
+    }
+
+    fn service(
+        world: &str,
+        id: &str,
+        state: ServiceState,
+        port: Option<u16>,
+    ) -> WorldServiceSummary {
+        WorldServiceSummary {
+            world: world.to_owned(),
+            info: WorldServiceInfo {
+                id: id.to_owned(),
+                kind: ServiceKind::Component,
+                state,
+                pid: Some(1_000),
+                port,
+                uptime_secs: port.map(|_| 12),
+            },
+        }
+    }
+
+    fn world(
+        id: &str,
+        parent: Option<&str>,
+        state: WorldState,
+        services: Vec<WorldServiceSummary>,
+    ) -> WorldSummary {
         WorldSummary {
             world: id.to_owned(),
-            parent,
-            state: WorldState::Running,
-            origin: WorldOrigin::local(&route, ingress_port).expect("a minted origin"),
-            worktree: PathBuf::from(format!("/home/dev/{id}")),
+            parent: parent.map(str::to_owned),
+            state,
+            origin: origin(
+                parent.unwrap_or(id),
+                id.split_once(':').map(|(_, fork)| fork),
+            ),
+            worktree: PathBuf::from(format!("/repo/{id}")),
             lineage: WorldLineage {
                 rootfs: None,
                 services: Vec::new(),
                 seed: None,
                 base: None,
             },
+            services,
         }
     }
 
     #[test]
-    fn header_widens_origin_for_a_long_url_while_world_and_state_keep_their_floors() {
-        let ui = plain();
+    fn an_empty_fleet_is_one_line() {
+        assert_eq!(render(&[], &plain(), false), "○ No worlds running\n");
+    }
+
+    #[test]
+    fn a_world_leads_its_services_and_forks_and_the_last_child_closes_the_branch() {
         let worlds = vec![
-            world("demo", 80),
-            world("demo:feat-with-a-very-long-fork-name", 40645),
+            world(
+                "demo",
+                None,
+                WorldState::Running,
+                vec![
+                    service("demo", "pg", ServiceState::Running, Some(5432)),
+                    service("demo", "api", ServiceState::Running, Some(8000)),
+                ],
+            ),
+            world(
+                "demo:feat-auth",
+                Some("demo"),
+                WorldState::Running,
+                Vec::new(),
+            ),
         ];
-        let table = WorldTable::new(&worlds, &ui);
-
-        let widest_id = column_width(0, worlds.iter().map(|world| world.world.as_str()));
-        assert_eq!(table.world_column(), widest_id);
-        let urls: Vec<String> = worlds
-            .iter()
-            .map(|world| ui.url(world.origin.url()))
-            .collect();
-        let widest_origin = column_width(0, urls.iter().map(String::as_str));
-        assert!(widest_origin > MIN_ORIGIN_COLUMN);
-        assert_eq!(table.origin_column(), widest_origin);
-
-        let header = table.header();
+        let tree = render(&worlds, &plain(), false);
+        let lines: Vec<&str> = tree.lines().collect();
+        assert_eq!(lines[0], "● demo  http://demo.localhost  /repo/demo");
+        assert_eq!(lines[1], "├─ pg  running  :5432  12s");
+        assert_eq!(lines[2], "├─ api running  :8000  12s");
         assert_eq!(
-            header.find("WORKTREE"),
-            Some(table.world_column() + 1 + STATE_COLUMN + 1 + table.origin_column() + 1),
-            "WORKTREE starts after the widened ORIGIN column: {header:?}"
+            lines[3],
+            "└─ feat-auth  ● http://feat-auth.demo.localhost  /repo/demo:feat-auth"
         );
-        assert!(header.starts_with("WORLD "));
+        assert!(!tree.contains("slipforkd"), "no daemon header: {tree}");
+        assert!(!tree.contains("next"), "no next spam: {tree}");
+        assert!(!tree.contains("lineage"), "no lineage unless -v: {tree}");
+    }
 
-        // Floors hold for an empty payload: `WORLD` and `ORIGIN` keep their minimum widths.
-        let empty: Vec<WorldSummary> = Vec::new();
-        let floor = WorldTable::new(&empty, &ui);
-        assert_eq!(floor.world_column(), MIN_WORLD_COLUMN);
-        assert_eq!(floor.origin_column(), MIN_ORIGIN_COLUMN);
+    #[test]
+    fn stops_and_failures_carry_their_own_glyph_and_word() {
+        let worlds = vec![world(
+            "demo",
+            None,
+            WorldState::Failed,
+            vec![service("demo", "api", ServiceState::Exited, None)],
+        )];
+        let tree = render(&worlds, &plain(), false);
+        let lines: Vec<&str> = tree.lines().collect();
+        assert!(lines[0].starts_with("✗ demo  "), "{tree}");
+        assert_eq!(lines[1], "└─ api exited  -  -");
+    }
+
+    #[test]
+    fn a_long_service_id_widens_the_id_column_without_shearing_the_state() {
+        let worlds = vec![world(
+            "demo",
+            None,
+            WorldState::Running,
+            vec![
+                service(
+                    "demo",
+                    "pg_clusters.primary_psql",
+                    ServiceState::Running,
+                    Some(5432),
+                ),
+                service("demo", "api", ServiceState::Running, Some(8000)),
+            ],
+        )];
+        let tree = render(&worlds, &plain(), false);
+        let lines: Vec<&str> = tree.lines().collect();
+        let long = lines[1];
+        let short = lines[2];
+        assert!(long.contains("pg_clusters.primary_psql running"), "{tree}");
         assert_eq!(
-            floor.header().find("WORKTREE"),
-            Some(MIN_WORLD_COLUMN + 1 + STATE_COLUMN + 1 + MIN_ORIGIN_COLUMN + 1)
+            short.find("running"),
+            long.find("running"),
+            "the state column stays aligned: {tree}"
+        );
+    }
+
+    #[test]
+    fn verbose_appends_the_one_compact_lineage_line() {
+        let worlds = vec![world("demo", None, WorldState::Running, Vec::new())];
+        let tree = render(&worlds, &plain(), true);
+        assert_eq!(
+            tree,
+            "● demo  http://demo.localhost  /repo/demo\n  lineage rootfs - - · seed - - · base - -\n"
+        );
+    }
+
+    #[test]
+    fn a_fork_without_its_parent_row_still_renders() {
+        let worlds = vec![world(
+            "demo:feat-api",
+            Some("demo"),
+            WorldState::Stopped,
+            Vec::new(),
+        )];
+        let tree = render(&worlds, &plain(), false);
+        assert_eq!(
+            tree,
+            "○ demo:feat-api  http://feat-api.demo.localhost  /repo/demo:feat-api\n"
         );
     }
 }

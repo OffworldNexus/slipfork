@@ -258,6 +258,7 @@ mod tests {
                 seed: None,
                 base: None,
             },
+            services: Vec::new(),
         }
     }
 

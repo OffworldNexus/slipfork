@@ -276,7 +276,10 @@ fn default_resource_id(
         Some(fork) => repo.vcs_root.join(WORKTREES_DIRECTORY).join(fork),
         None => repo.worktree_root.clone(),
     };
-    let fork = slipfork::project::load_project_fork(&worktree)?;
+    let fork = slipfork::project::load_project_fork(
+        &worktree,
+        &slipfork_wire::control::FeatureSelection::default(),
+    )?;
     let (prefix, ids) = match kind {
         ResourceKind::PgDatabase => (
             "pg_databases",

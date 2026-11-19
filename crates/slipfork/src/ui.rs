@@ -85,6 +85,16 @@ impl TerminalUi {
         self.caps.color
     }
 
+    /// A primary identifier (a world or fork id): bold on a colored terminal.
+    #[must_use]
+    pub fn bold(&self, text: &str) -> String {
+        if self.caps.color {
+            text.bold().to_string()
+        } else {
+            text.to_owned()
+        }
+    }
+
     /// A primary origin URL: bold cyan, with the default `:80` omitted.
     #[must_use]
     pub fn url(&self, url: &str) -> String {
@@ -337,6 +347,7 @@ mod tests {
                 ui.secondary("/home/dev/demo"),
                 ui.digest("a1b2c3d4e5f6a7b8"),
                 ui.state("stopped"),
+                ui.bold("demo"),
                 ui.pad("state", 10),
             ];
             for text in painted {
@@ -370,6 +381,7 @@ mod tests {
             ui.ok("✓ Ready"),
             "\u{1b}[1m\u{1b}[32m✓ Ready\u{1b}[39m\u{1b}[0m"
         );
+        assert_eq!(ui.bold("demo"), "\u{1b}[1mdemo\u{1b}[0m");
         assert_eq!(visible_width(&ui.digest("a1b2c3d4e5f6a7b8")), 12);
     }
 

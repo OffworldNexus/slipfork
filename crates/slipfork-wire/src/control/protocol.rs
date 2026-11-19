@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use super::request::{
     AuthSummary, DropForkRequest, ExecTargetRequest, ForkRequest, ForwardRequest, ForwardSummary,
-    HookRunRequest, LogsRequest, PruneReport, UpRequest, WorkspaceRefsRequest,
+    HookRunRequest, LogsRequest, PruneReport, RestartRequest, UpRequest, WorkspaceRefsRequest,
     WorkspaceRefsSummary, WorldExecTarget, WorldSelector,
 };
 use super::view::{BootEvent, DaemonStatus, WorldProcessReport, WorldSummary, WorldUpSummary};
@@ -72,7 +72,7 @@ pub enum DaemonRequest {
     Up(UpRequest),
     /// Stop the selected world's components and `crun` services in place, then boot it again;
     /// [`DaemonReply::Event`] frames precede the terminal [`DaemonReply::World`] reply.
-    Restart(WorldSelector),
+    Restart(RestartRequest),
     /// Stop a world's services while keeping its worktree.
     Down(WorldSelector),
     /// Create a fork worktree plus its CoW world.
