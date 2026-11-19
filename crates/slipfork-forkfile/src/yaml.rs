@@ -11,8 +11,17 @@ use std::fmt;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Node {
     Scalar(String),
-    Map(Vec<(String, Node)>),
+    Map(Vec<Entry>),
     Seq(Vec<Node>),
+}
+
+/// One map entry, carrying the 1-based line its key was declared on so a refusal can cite it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Entry {
+    pub(crate) key: String,
+    /// `0` for an inline flow map (`{ a: 1 }`): those never span a line of their own.
+    pub(crate) line: usize,
+    pub(crate) value: Node,
 }
 
 impl Node {
@@ -27,21 +36,17 @@ impl Node {
         match self {
             Self::Map(entries) => entries
                 .iter()
-                .find(|(name, _)| name == key)
-                .map(|(_, node)| node),
+                .find(|entry| entry.key == key)
+                .map(|entry| &entry.value),
             Self::Scalar(_) | Self::Seq(_) => None,
         }
     }
 
-    pub(crate) fn as_map(&self) -> Option<&[(String, Node)]> {
+    pub(crate) fn as_map(&self) -> Option<&[Entry]> {
         match self {
             Self::Map(entries) => Some(entries),
             Self::Scalar(_) | Self::Seq(_) => None,
         }
-    }
-
-    pub(crate) fn as_seq(&self) -> Option<&[Node]> {
-        self.seq()
     }
 
     pub(crate) fn seq(&self) -> Option<&[Node]> {
@@ -163,10 +168,12 @@ fn parse_sequence(lines: &[Line], index: &mut usize, indent: usize) -> Result<No
         if let Some((key, value)) = split_key(rest) {
             // `- key: value` starts a map entry; sibling keys are indented under the dash.
             let entry_indent = indent + (line.content.len() - rest.len());
-            let mut entries = vec![(
+            let line_number = line.number;
+            let mut entries = vec![Entry {
                 key,
-                parse_inline_or_nested(lines, index, value, entry_indent)?,
-            )];
+                line: line_number,
+                value: parse_inline_or_nested(lines, index, value, entry_indent)?,
+            }];
             while *index < lines.len()
                 && lines[*index].indent == entry_indent
                 && !lines[*index].content.starts_with("- ")
@@ -175,11 +182,12 @@ fn parse_sequence(lines: &[Line], index: &mut usize, indent: usize) -> Result<No
                 let Some((key, value)) = split_key(&current.content) else {
                     return Err(error(current, "expected a `key: value` map entry"));
                 };
-                let key = key.to_owned();
-                entries.push((
+                let line_number = current.number;
+                entries.push(Entry {
                     key,
-                    parse_inline_or_nested(lines, index, value, current.indent)?,
-                ));
+                    line: line_number,
+                    value: parse_inline_or_nested(lines, index, value, current.indent)?,
+                });
             }
             nodes.push(Node::Map(entries));
             continue;
@@ -200,7 +208,12 @@ fn parse_map(lines: &[Line], index: &mut usize, indent: usize) -> Result<Node, Y
         let Some((key, value)) = split_key(&current.content) else {
             return Err(error(current, "expected a `key: value` map entry"));
         };
-        entries.push((key, parse_inline_or_nested(lines, index, value, indent)?));
+        let line_number = current.number;
+        entries.push(Entry {
+            key,
+            line: line_number,
+            value: parse_inline_or_nested(lines, index, value, indent)?,
+        });
     }
     Ok(Node::Map(entries))
 }
@@ -273,7 +286,11 @@ fn parse_scalar(raw: &str) -> Node {
             split_flow(inner)
                 .into_iter()
                 .filter_map(|entry| {
-                    split_key(&entry).map(|(key, value)| (key, parse_scalar(value)))
+                    split_key(&entry).map(|(key, value)| Entry {
+                        key,
+                        line: 0,
+                        value: parse_scalar(value),
+                    })
                 })
                 .collect(),
         );

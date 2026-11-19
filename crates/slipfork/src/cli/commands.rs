@@ -25,6 +25,22 @@ pub enum Commands {
     /// Probe the Btrfs substrate, the live subvolume ioctl round-trip, and unprivileged namespaces.
     Doctor,
 
+    /// Convert an upstream `snow.yml` into a `Forkfile` (one-way, statically verified).
+    Migrate {
+        /// Upstream manifest (default: `./snow.yml`, then `./snow.yaml`).
+        #[arg(value_name = "FILE")]
+        file: Option<PathBuf>,
+        /// Where to write the converted `Forkfile` (default: `./Forkfile`).
+        #[arg(short = 'o', long, value_name = "PATH")]
+        output: Option<PathBuf>,
+        /// Print the converted text without writing anything (`--json` prints it as one JSON string).
+        #[arg(long, conflicts_with = "output")]
+        stdout: bool,
+        /// Replace an existing `Forkfile`.
+        #[arg(short = 'f', long)]
+        force: bool,
+    },
+
     /// Boot the world selected by `--world` (or `cwd`) through `slipforkd`.
     Up {
         #[arg(short = 'w', long, value_name = "WORLD", help = WORLD_HELP)]

@@ -3,9 +3,10 @@
 
 use std::collections::BTreeMap;
 
+use super::access::{Access, parent_ids, parent_sequence};
 use super::template::{render_template, split_command};
 use super::{MigrateError, schema};
-use crate::yaml::Node;
+use crate::yaml::{Entry, Node};
 
 /// The validated upstream document.
 pub struct Snow {
@@ -70,56 +71,57 @@ pub(super) struct Hook {
 
 impl Snow {
     pub(super) fn read(root: &Node) -> Result<Self, MigrateError> {
-        let images = sequence(root, "images")?
+        let images = root
+            .sequence("images")?
             .iter()
             .enumerate()
             .map(|(index, node)| Image::read(node, index))
             .collect::<Result<Vec<_>, _>>()?;
         let resources = root.get("resources");
-        let pg_clusters = sequence_opt(resources, "pg_clusters")?
+        let pg_clusters = parent_sequence(resources, "pg_clusters")?
             .iter()
             .enumerate()
             .map(|(index, node)| {
                 let path = format!("resources.pg_clusters[{index}]");
                 Ok((
-                    scalar(node, "id", &path)?,
-                    optional_scalar(node, "version").unwrap_or_else(|| "18".to_owned()),
+                    node.scalar("id", &path)?,
+                    node.text("version").unwrap_or_else(|| "18".to_owned()),
                 ))
             })
             .collect::<Result<Vec<_>, MigrateError>>()?;
-        let pg_databases = sequence_opt(resources, "pg_databases")?
+        let pg_databases = parent_sequence(resources, "pg_databases")?
             .iter()
             .enumerate()
             .map(|(index, node)| PgDatabase::read(node, index))
             .collect::<Result<Vec<_>, _>>()?;
-        let redis = sequence_opt(resources, "redis_clusters")?
+        let redis = parent_sequence(resources, "redis_clusters")?
             .iter()
             .enumerate()
             .map(|(index, node)| {
                 let path = format!("resources.redis_clusters[{index}]");
                 Ok((
-                    scalar(node, "id", &path)?,
-                    optional_scalar(node, "version").unwrap_or_else(|| "7".to_owned()),
+                    node.scalar("id", &path)?,
+                    node.text("version").unwrap_or_else(|| "7".to_owned()),
                 ))
             })
             .collect::<Result<Vec<_>, MigrateError>>()?;
-        let s3 = id_list(
-            sequence_opt(resources, "s3_buckets")?,
-            "resources.s3_buckets",
-        )?;
-        let domains = id_list(sequence(root, "domains")?, "domains")?;
+        let s3 = parent_ids(resources, "s3_buckets", "resources.s3_buckets")?;
+        let domains = root.ids("domains", "domains")?;
         let env_groups = read_env_groups(root)?;
-        let mut components = sequence(root, "components")?
+        let mut components = root
+            .sequence("components")?
             .iter()
             .enumerate()
             .map(|(index, node)| Component::read(node, index))
             .collect::<Result<Vec<_>, _>>()?;
-        let ingresses = sequence(root, "ingresses")?
+        let ingresses = root
+            .sequence("ingresses")?
             .iter()
             .enumerate()
             .map(|(index, node)| Ingress::read(node, index))
             .collect::<Result<Vec<_>, _>>()?;
-        let hooks = sequence(root, "hooks")?
+        let hooks = root
+            .sequence("hooks")?
             .iter()
             .enumerate()
             .map(|(index, node)| Hook::read(node, index))
@@ -143,27 +145,29 @@ impl Snow {
         })
     }
 }
+
 impl Image {
     fn read(node: &Node, index: usize) -> Result<Self, MigrateError> {
         let path = format!("images[{index}]");
-        let id = scalar(node, "id", &path)?;
+        let id = node.scalar("id", &path)?;
         let (context, dockerfile, reference) = if node.get("context").is_some() {
-            let context = scalar(node, "context", &path)?;
+            let context = node.scalar("context", &path)?;
             let context = context.trim_start_matches("./").to_owned();
-            let dockerfile =
-                optional_scalar(node, "dockerfile").unwrap_or_else(|| "Dockerfile".to_owned());
+            let dockerfile = node
+                .text("dockerfile")
+                .unwrap_or_else(|| "Dockerfile".to_owned());
             (Some(context), dockerfile, String::new())
         } else {
-            let registry = scalar(node, "registry", &path)?;
-            let repository = scalar(node, "repository", &path)?;
-            let tag = optional_scalar(node, "tag").unwrap_or_else(|| "latest".to_owned());
+            let registry = node.scalar("registry", &path)?;
+            let repository = node.scalar("repository", &path)?;
+            let tag = node.text("tag").unwrap_or_else(|| "latest".to_owned());
             (
                 None,
                 "Dockerfile".to_owned(),
                 format!("{registry}/{repository}:{tag}"),
             )
         };
-        let build_envs = string_list(node, "envs").map_err(|error| match error {
+        let build_envs = node.strings("envs").map_err(|error| match error {
             MigrateError::Schema { message, .. } => schema(
                 format!("{path}.envs"),
                 message,
@@ -186,9 +190,9 @@ impl PgDatabase {
     fn read(node: &Node, index: usize) -> Result<Self, MigrateError> {
         let path = format!("resources.pg_databases[{index}]");
         Ok(Self {
-            id: scalar(node, "id", &path)?,
-            cluster: scalar(node, "cluster", &path)?,
-            pool: optional_bool(node, "pool", &path)?.unwrap_or(true),
+            id: node.scalar("id", &path)?,
+            cluster: node.scalar("cluster", &path)?,
+            pool: node.boolean("pool", &path)?.unwrap_or(true),
         })
     }
 }
@@ -196,7 +200,7 @@ impl PgDatabase {
 impl Component {
     fn read(node: &Node, index: usize) -> Result<Self, MigrateError> {
         let path = format!("components[{index}]");
-        let run_command = scalar(node, "run_command", &path)?;
+        let run_command = node.scalar("run_command", &path)?;
         let run = split_command(&run_command, &format!("{path}.run_command"))?;
         if run.is_empty() {
             return Err(schema(
@@ -206,13 +210,14 @@ impl Component {
             ));
         }
         Ok(Self {
-            id: scalar(node, "id", &path)?,
+            id: node.scalar("id", &path)?,
             path: path.clone(),
-            image: scalar(node, "image", &path)?,
+            image: node.scalar("image", &path)?,
             run,
-            size_hint: optional_scalar(node, "size_hint").unwrap_or_else(|| "*".to_owned()),
-            envs: string_list(node, "envs")?,
-            internal_ports: optional_sequence(node, "internal_ports")
+            size_hint: node.text("size_hint").unwrap_or_else(|| "*".to_owned()),
+            envs: node.strings("envs")?,
+            internal_ports: node
+                .items("internal_ports")
                 .iter()
                 .map(|entry| {
                     entry
@@ -261,8 +266,8 @@ impl Ingress {
                 )
             })?;
         Ok(Self {
-            prefix: scalar(match_rule, "prefix", &format!("{path}.match"))?,
-            component: scalar(target, "component", &format!("{path}.target"))?,
+            prefix: match_rule.scalar("prefix", &format!("{path}.match"))?,
+            component: target.scalar("component", &format!("{path}.target"))?,
             port,
             path: path.clone(),
         })
@@ -272,10 +277,10 @@ impl Ingress {
 impl Hook {
     fn read(node: &Node, index: usize) -> Result<Self, MigrateError> {
         let path = format!("hooks[{index}]");
-        let run_command = scalar(node, "run_command", &path)?;
+        let run_command = node.scalar("run_command", &path)?;
         Ok(Self {
-            component: scalar(node, "component", &path)?,
-            phase: scalar(node, "when", &path)?,
+            component: node.scalar("component", &path)?,
+            phase: node.scalar("when", &path)?,
             argv: split_command(&run_command, &format!("{path}.run_command"))?,
             path: path.clone(),
         })
@@ -291,8 +296,10 @@ fn read_modes(
     let Some(modes) = root.get("modes").and_then(Node::as_map) else {
         return Ok(());
     };
-    for (mode, spec) in modes {
-        if mode == "all" {
+    for mode in modes {
+        let name = mode.key.as_str();
+        let spec = &mode.value;
+        if name == "all" {
             if spec
                 .get("components")
                 .and_then(Node::as_map)
@@ -310,20 +317,22 @@ fn read_modes(
         // group per name, and the active world mode selects it exactly like any other feature.
         if let Some(envs) = spec.get("envs").and_then(Node::as_map) {
             let mut groups = BTreeMap::new();
-            merge_group_entries(envs, &format!("modes.{mode}.envs"), &mut groups)?;
-            if !groups.is_empty() && !features.contains(mode) {
-                features.push(mode.clone());
+            merge_group_entries(envs, &format!("modes.{name}.envs"), &mut groups)?;
+            if !groups.is_empty() {
+                note_feature(features, name);
             }
             for (group, vars) in groups {
-                mode_envs.push((mode.clone(), group, vars));
+                mode_envs.push((name.to_owned(), group, vars));
             }
         }
         let Some(overrides) = spec.get("components").and_then(Node::as_map) else {
             continue;
         };
-        for (id, override_node) in overrides {
-            let path = format!("modes.{mode}.components.{id}");
-            if optional_bool(override_node, "disabled", &path)?.unwrap_or(false) {
+        for override_entry in overrides {
+            let id = override_entry.key.as_str();
+            let override_node = &override_entry.value;
+            let path = format!("modes.{name}.components.{id}");
+            if override_node.boolean("disabled", &path)?.unwrap_or(false) {
                 return Err(schema(
                     format!("{path}.disabled"),
                     "a Forkfile cannot remove a declared service for one mode",
@@ -336,7 +345,7 @@ fn read_modes(
             };
             let component = components
                 .iter_mut()
-                .find(|component| component.id == *id)
+                .find(|component| component.id == id)
                 .ok_or_else(|| {
                     schema(
                         format!("{path}.run_command"),
@@ -345,13 +354,18 @@ fn read_modes(
                     )
                 })?;
             let argv = split_command(run_command, &format!("{path}.run_command"))?;
-            component.mode_runs.push((mode.clone(), argv));
-            if !features.contains(mode) {
-                features.push(mode.clone());
-            }
+            component.mode_runs.push((name.to_owned(), argv));
+            note_feature(features, name);
         }
     }
     Ok(())
+}
+
+/// Record a feature name once, keeping first-use order.
+fn note_feature(features: &mut Vec<String>, name: &str) {
+    if !features.iter().any(|existing| existing == name) {
+        features.push(name.to_owned());
+    }
 }
 
 fn read_env_groups(
@@ -387,123 +401,32 @@ fn merge_groups(
 }
 
 fn merge_group_entries(
-    entries: &[(String, Node)],
+    entries: &[Entry],
     path: &str,
     groups: &mut BTreeMap<String, BTreeMap<String, String>>,
 ) -> Result<(), MigrateError> {
-    for (group, vars) in entries {
-        let Some(vars) = vars.as_map() else {
+    for group in entries {
+        let Some(vars) = group.value.as_map() else {
             return Err(schema(
-                format!("{path}.{group}"),
+                format!("{path}.{}", group.key),
                 "expected `KEY: value` entries",
                 "write each variable as `KEY: \"template\"`",
             ));
         };
-        let target = groups.entry(group.clone()).or_default();
-        for (key, value) in vars {
-            let Some(template) = value.as_scalar() else {
+        let target = groups.entry(group.key.clone()).or_default();
+        for var in vars {
+            let Some(template) = var.value.as_scalar() else {
                 return Err(schema(
-                    format!("{path}.{group}.{key}"),
+                    format!("{path}.{}.{}", group.key, var.key),
                     "expected a scalar template",
                     "write the value as a quoted string",
                 ));
             };
             target.insert(
-                key.clone(),
-                render_template(template, &format!("envs.{group}.{key}"))?,
+                var.key.clone(),
+                render_template(template, &format!("envs.{}.{}", group.key, var.key))?,
             );
         }
     }
     Ok(())
-}
-
-fn sequence<'a>(node: &'a Node, key: &str) -> Result<&'a [Node], MigrateError> {
-    match node.get(key) {
-        Some(Node::Seq(nodes)) => Ok(nodes),
-        Some(Node::Scalar(value)) if value.is_empty() => Ok(&[]),
-        Some(_) => Err(schema(
-            key,
-            "expected a sequence",
-            "write the entries as `- key: value` items",
-        )),
-        None => Ok(&[]),
-    }
-}
-
-fn sequence_opt<'a>(node: Option<&'a Node>, key: &str) -> Result<&'a [Node], MigrateError> {
-    match node {
-        Some(node) => sequence(node, key),
-        None => Ok(&[]),
-    }
-}
-
-fn optional_sequence<'a>(node: &'a Node, key: &str) -> &'a [Node] {
-    node.get(key).and_then(Node::as_seq).unwrap_or(&[])
-}
-
-fn id_list(nodes: &[Node], path: &str) -> Result<Vec<String>, MigrateError> {
-    nodes
-        .iter()
-        .enumerate()
-        .map(|(index, node)| match node {
-            Node::Scalar(id) => Ok(id.clone()),
-            Node::Map(_) => scalar(node, "id", &format!("{path}[{index}]")),
-            Node::Seq(_) => Err(schema(
-                format!("{path}[{index}]"),
-                "expected a bucket/domain map or id",
-                "write `- id: <name>`",
-            )),
-        })
-        .collect()
-}
-
-fn string_list(node: &Node, key: &str) -> Result<Vec<String>, MigrateError> {
-    optional_sequence(node, key)
-        .iter()
-        .map(|entry| {
-            entry
-                .as_scalar()
-                .map(str::to_owned)
-                .ok_or_else(|| schema(key, "expected a string list", "write the values as scalars"))
-        })
-        .collect()
-}
-
-fn scalar(node: &Node, key: &str, path: &str) -> Result<String, MigrateError> {
-    node.get(key)
-        .and_then(Node::as_scalar)
-        .map(str::to_owned)
-        .ok_or_else(|| {
-            schema(
-                format!("{path}.{key}"),
-                format!("missing `{key}`"),
-                format!("declare `{key}`"),
-            )
-        })
-}
-
-fn optional_scalar(node: &Node, key: &str) -> Option<String> {
-    node.get(key).and_then(Node::as_scalar).map(str::to_owned)
-}
-
-fn optional_bool(node: &Node, key: &str, path: &str) -> Result<Option<bool>, MigrateError> {
-    let Some(value) = node.get(key) else {
-        return Ok(None);
-    };
-    let Some(value) = value.as_scalar().map(str::trim) else {
-        return Err(schema(
-            format!("{path}.{key}"),
-            "expected `true` or `false`",
-            "write a boolean literal",
-        ));
-    };
-    match value {
-        "true" => Ok(Some(true)),
-        "false" => Ok(Some(false)),
-        other => Err(schema(
-            format!("{path}.{key}"),
-            format!("expected `true` or `false`, got `{other}`"),
-            "write `pool: false` (or `true`)",
-        )),
-    }
 }

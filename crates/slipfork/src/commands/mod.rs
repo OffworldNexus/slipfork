@@ -12,6 +12,7 @@ pub(crate) mod doctor;
 pub(crate) mod forward;
 pub(crate) mod inspect;
 pub(crate) mod interact;
+pub(crate) mod migrate;
 pub(crate) mod process;
 pub(crate) mod secret;
 
@@ -28,6 +29,12 @@ pub(crate) fn dispatch(app: &CliApp, command: Option<Commands>) -> Result<ExitCo
         // (`docs/design/dx-0.1.0-ux.md` §3), never a second render path.
         None | Some(Commands::Status) => inspect::status(app),
         Some(Commands::Doctor) => doctor::doctor(app),
+        Some(Commands::Migrate {
+            file,
+            output,
+            stdout,
+            force,
+        }) => migrate::run(app, file, output, stdout, force),
         Some(Commands::Daemon { action }) => match action {
             DaemonAction::Unit {
                 only,
