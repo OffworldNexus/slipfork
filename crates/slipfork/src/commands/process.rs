@@ -9,6 +9,7 @@ use slipfork_edge::DaemonControl;
 use slipfork_snow::SnowFile;
 use slipfork_vcs::WORKTREES_DIRECTORY;
 use slipfork_wire::control::{ExecTargetRequest, HookRunRequest, LogsRequest};
+use slipfork_world::EntryKind;
 use slipfork_world::StreamSource;
 
 use crate::CliApp;
@@ -33,6 +34,7 @@ pub(crate) fn exec(
             world,
             service: None,
             argv: argv.clone(),
+            entry_kind: EntryKind::Exec,
         })
         .map_err(|err| err.to_string())?;
     let status = spawn_entry(&target)?;
@@ -60,6 +62,13 @@ pub(crate) fn shell(app: &CliApp, world: Option<String>) -> Result<ExitCode, Str
             world,
             service: None,
             argv: vec![shell],
+            // A real interactive hand-over needs both ends: `shell | tee log` must stay
+            // byte-clean, so the engine only bakes a PTY when stdout is a terminal too.
+            entry_kind: if app.ui.stdout_tty {
+                EntryKind::Interactive
+            } else {
+                EntryKind::Exec
+            },
         })
         .map_err(|err| err.to_string())?;
     // One orientation line before the TTY is handed over, and never under `--json`: the world
@@ -207,6 +216,7 @@ fn service_entry(
             world,
             service: Some(service.clone()),
             argv,
+            entry_kind: EntryKind::Exec,
         })
         .map_err(|err| err.to_string())?;
     require_tty(

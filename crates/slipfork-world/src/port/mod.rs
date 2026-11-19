@@ -16,7 +16,7 @@ pub use values::{
 };
 
 use crate::{
-    ExecEnv, PodNamespaces, ServiceLogs, StreamChunk, WorldEntryCommand, WorldLineage,
+    EntryKind, ExecEnv, PodNamespaces, ServiceLogs, StreamChunk, WorldEntryCommand, WorldLineage,
     WorldServiceInfo,
 };
 
@@ -268,6 +268,20 @@ pub trait WorldEngine: Send + Sync {
         &self,
         world: &WorldHandle,
         cwd: &std::path::Path,
+    ) -> Result<WorldEntryCommand, EngineError>;
+
+    /// Like [`Self::entry_command`], but for a caller-declared [`EntryKind`].
+    ///
+    /// `Exec` keeps the plain bridge prefix (the CLI appends the target argv). `Interactive` lets
+    /// an engine bake a PTY relay into the prefix: the relay runs `script -qec 'exec <program>'`,
+    /// which `/bin/sh -c` re-parses, so `argv` must be exactly one **literal program path** and
+    /// the engine owns quoting and fails closed otherwise. Every engine must implement this.
+    fn entry_command_for(
+        &self,
+        world: &WorldHandle,
+        cwd: &std::path::Path,
+        kind: EntryKind,
+        argv: &[String],
     ) -> Result<WorldEntryCommand, EngineError>;
 
     /// Open a TCP stream to `127.0.0.1:<port>` **inside** `world`'s network namespace.

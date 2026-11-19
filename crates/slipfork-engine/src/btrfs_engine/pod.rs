@@ -291,6 +291,9 @@ fn make_private(config: &Path) -> Result<PathBuf, EngineError> {
 
 impl super::BtrfsEngine {
     /// `<ctl>/<world_id>/oci/<service>`: the engine-owned bundle directory of one service pod.
+    ///
+    /// The daemon cut-over plans a component pod with this path, the world's published
+    /// `world_pod_namespaces`, and a `VolumePlan` rooted on the world subvolume.
     pub fn pod_bundle_dir(
         &self,
         world: &WorldHandle,

@@ -8,9 +8,9 @@ use std::net::TcpStream;
 use std::path::Path;
 
 use slipfork_world::{
-    EngineError, ExecEnv, ExecOutput, PodNamespaces, ServiceHandle, ServiceLogs, ServiceSpec,
-    SnapshotId, StreamChunk, WorldEngine, WorldEntryCommand, WorldHandle, WorldLineage,
-    WorldServiceInfo, WorldSpec,
+    EngineError, EntryKind, ExecEnv, ExecOutput, PodNamespaces, ServiceHandle, ServiceLogs,
+    ServiceSpec, SnapshotId, StreamChunk, WorldEngine, WorldEntryCommand, WorldHandle,
+    WorldLineage, WorldServiceInfo, WorldSpec,
 };
 
 use super::BtrfsEngine;
@@ -139,6 +139,22 @@ impl WorldEngine for BtrfsEngine {
         cwd: &Path,
     ) -> Result<WorldEntryCommand, EngineError> {
         self.world_entry_command(world, cwd)
+    }
+
+    fn entry_command_for(
+        &self,
+        world: &WorldHandle,
+        cwd: &Path,
+        kind: EntryKind,
+        argv: &[String],
+    ) -> Result<WorldEntryCommand, EngineError> {
+        match (kind, argv) {
+            (EntryKind::Interactive, [program]) => {
+                self.interactive_entry_command(world, cwd, program)
+            }
+            (EntryKind::Interactive, _) => Err(super::interactive_arity_error(argv.len())),
+            (EntryKind::Exec, _) => self.world_entry_command(world, cwd),
+        }
     }
 
     fn dial_world_tcp(&self, world: &WorldHandle, port: u16) -> Result<TcpStream, EngineError> {

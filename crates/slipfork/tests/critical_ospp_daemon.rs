@@ -254,6 +254,7 @@ fn run_service_entry(
             world: None,
             service: Some(service.to_owned()),
             argv: argv.iter().map(|arg| (*arg).to_owned()).collect(),
+            entry_kind: slipfork_world::EntryKind::Exec,
         })
         .expect("a running service must be enterable through the typed control port");
     let mut args = target.entry.args_prefix.clone();

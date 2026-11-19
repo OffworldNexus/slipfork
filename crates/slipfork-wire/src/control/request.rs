@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use slipfork_world::WorldOrigin;
 
 use super::ControlSecret;
-use slipfork_world::{ExecEnv, WorldEntryCommand};
+use slipfork_world::{EntryKind, ExecEnv, WorldEntryCommand};
 
 /// Request body of the local `slipfork snow resolve` diagnostic (daemon-owned vault access).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -154,6 +154,9 @@ pub struct ExecTargetRequest {
     pub service: Option<String>,
     /// Argv the caller wants to run inside the world or service container.
     pub argv: Vec<String>,
+    /// Whether the caller holds a real terminal (`shell`) or not (`exec`, hooks, service clients).
+    #[serde(default)]
+    pub entry_kind: EntryKind,
 }
 
 /// Request body of `slipfork hook run --no-tty`.
@@ -251,6 +254,6 @@ pub struct WorldExecTarget {
     pub entry: WorldEntryCommand,
     /// Resolved world environment (redacted by `Debug`).
     pub env: ExecEnv,
-    /// Argv to run inside the world after `entry`.
+    /// Argv to run inside the world after `entry` (ignored when the entry consumes it).
     pub target_argv: Vec<String>,
 }

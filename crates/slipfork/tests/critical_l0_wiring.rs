@@ -133,6 +133,7 @@ fn container_backed_world_targets_redis_and_fails_closed_after_the_container_sto
         world: None,
         service: Some("redis_clusters.cache".to_owned()),
         argv: vec!["redis-cli".to_owned()],
+        entry_kind: slipfork_world::EntryKind::Exec,
     };
     let target = client
         .exec_target(&request)

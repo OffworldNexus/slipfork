@@ -303,6 +303,7 @@ impl BtrfsEngine {
             program: PathBuf::from("nsenter"),
             args_prefix,
             cwd: PathBuf::from("/"),
+            consumes_target_argv: false,
         })
     }
 }

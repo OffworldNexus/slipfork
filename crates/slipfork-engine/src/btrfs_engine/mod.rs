@@ -365,24 +365,6 @@ impl BtrfsEngine {
         bundle.execute(on_output)
     }
 
-    /// Interactive world entry is relayed through a fresh PTY created *inside* the world.
-    ///
-    /// A process that has joined the world's child PID namespace cannot adopt the caller's terminal:
-    /// the PTY's controlling session belongs to the parent PID namespace, so `tcsetpgrp` cannot
-    /// resolve an in-world process group and an interactive `dash` exits with `Cannot set tty
-    /// process group`. `script(1)` — util-linux, already required for `nsenter`, and reached through
-    /// the world's 1:1 host mount — allocates its own PTY after `setns` and makes its child the
-    /// session leader of it, restoring job control, signal keys, and exit-code propagation.
-    ///
-    /// The relay is entered only for a real interactive terminal on **both** ends, with exactly one
-    /// command; anything else (`exec`, `hook`, piped stdout) executes the target directly so its
-    /// argv, environment, and bytes are unchanged.
-    const INTERACTIVE_ENTRY_SHIM: &str = "\
-if [ -t 0 ] && [ -t 1 ] && [ \"$#\" -eq 1 ]; then \
-for s in /usr/bin/script /bin/script; do [ -x \"$s\" ] && exec \"$s\" -qec \"$1\" /dev/null; done; \
-printf 'error: no script(1) available to relay an interactive terminal\\n  fix: install util-linux or use `slipfork exec -- <cmd>`\\n' >&2; \
-exit 127; fi; exec \"$@\"";
-
     pub(crate) fn world_entry_command(
         &self,
         world: &WorldHandle,
@@ -393,19 +375,52 @@ exit 127; fi; exec \"$@\"";
             let record = self.live_record(&mut worlds, world)?;
             record.init_pid
         };
-        let mut args_prefix = self.entry_prefix(init_pid, cwd);
-        args_prefix.extend([
-            "/bin/sh".to_owned(),
-            "-c".to_owned(),
-            Self::INTERACTIVE_ENTRY_SHIM.to_owned(),
-            "slipfork-entry".to_owned(),
-        ]);
+        let args_prefix = self.entry_prefix(init_pid, cwd);
         Ok(WorldEntryCommand {
             program: PathBuf::from("nsenter"),
             args_prefix,
             // The thin CLI `chdir`s here before `exec`ing `nsenter`; the in-world start directory
             // is `--wdns=<cwd>` inside `args_prefix`.
             cwd: PathBuf::from("/"),
+            consumes_target_argv: false,
+        })
+    }
+
+    /// Interactive entry: a fresh PTY relayed by `script(1)` **after** `setns`.
+    ///
+    /// A process in the world's child PID namespace cannot adopt the caller's terminal
+    /// (`tcsetpgrp` resolves against the tty's own session), so `script` — util-linux, reached
+    /// through the world's 1:1 host mount — allocates a new PTY inside the world and makes its
+    /// child the session leader.
+    ///
+    /// The relay command is `exec '<program>'`: `script -qec` runs it through `/bin/sh -c`, so the
+    /// single program path is single-quoted (and therefore immediately `exec`ed as one literal
+    /// path, never re-parsed). Multi-argument interactive entry is not representable and fails
+    /// closed; the caller must pass exactly one program.
+    pub(crate) fn interactive_entry_command(
+        &self,
+        world: &WorldHandle,
+        cwd: &Path,
+        program: &str,
+    ) -> Result<WorldEntryCommand, EngineError> {
+        let script = script_relay_bin().ok_or_else(script_missing_error)?;
+        let init_pid = {
+            let mut worlds = self.lock()?;
+            let record = self.live_record(&mut worlds, world)?;
+            record.init_pid
+        };
+        let mut args_prefix = self.entry_prefix(init_pid, cwd);
+        args_prefix.extend([
+            script.to_owned(),
+            "-qec".to_owned(),
+            format!("exec {}", shell_single_quote(program)),
+            "/dev/null".to_owned(),
+        ]);
+        Ok(WorldEntryCommand {
+            program: PathBuf::from("nsenter"),
+            args_prefix,
+            cwd: PathBuf::from("/"),
+            consumes_target_argv: true,
         })
     }
 
@@ -426,5 +441,71 @@ pub(crate) fn io_error(path: &Path, err: &std::io::Error) -> EngineError {
     EngineError::Io {
         path: path.display().to_string(),
         message: err.to_string(),
+    }
+}
+
+/// The `script(1)` relay binary, probed on both util-linux locations.
+fn script_relay_bin() -> Option<&'static str> {
+    ["/usr/bin/script", "/bin/script"]
+        .into_iter()
+        .find(|path| Path::new(path).is_file())
+}
+
+/// Fail-closed diagnostic when the world has no `script(1)` to relay an interactive terminal.
+fn script_missing_error() -> EngineError {
+    EngineError::Execution(
+        "interactive entry needs `script(1)` inside the world\n  fix: install util-linux (script) \
+         or use `slipfork exec -- <cmd>`"
+            .to_owned(),
+    )
+}
+
+/// Fail-closed diagnostic for an interactive entry that is not exactly one program.
+pub(crate) fn interactive_arity_error(count: usize) -> EngineError {
+    EngineError::Execution(format!(
+        "interactive entry needs exactly one program (got {count})\n  fix: use `slipfork exec -- \
+         <cmd>` for multi-argument commands"
+    ))
+}
+
+/// Quote one literal path for `/bin/sh -c` as a single token (`'` becomes `'\''`).
+fn shell_single_quote(value: &str) -> String {
+    let mut quoted = String::from("'");
+    for ch in value.chars() {
+        if ch == '\'' {
+            quoted.push_str("'\\''");
+        } else {
+            quoted.push(ch);
+        }
+    }
+    quoted.push('\'');
+    quoted
+}
+
+#[cfg(test)]
+mod entry_tests {
+    use super::{interactive_arity_error, script_missing_error, shell_single_quote};
+
+    #[test]
+    fn a_single_quoted_program_is_one_literal_shell_token() {
+        assert_eq!(shell_single_quote("/bin/sh"), "'/bin/sh'");
+        assert_eq!(
+            shell_single_quote("/opt/it's here/sh"),
+            "'/opt/it'\\''s here/sh'"
+        );
+    }
+
+    #[test]
+    fn the_missing_script_remedy_names_the_fallback_command() {
+        let message = script_missing_error().to_string();
+        assert!(message.contains("install util-linux (script)"), "{message}");
+        assert!(message.contains("slipfork exec -- <cmd>"), "{message}");
+    }
+
+    #[test]
+    fn a_multi_argument_interactive_entry_fails_closed() {
+        let message = interactive_arity_error(2).to_string();
+        assert!(message.contains("exactly one program (got 2)"), "{message}");
+        assert!(message.contains("slipfork exec -- <cmd>"), "{message}");
     }
 }

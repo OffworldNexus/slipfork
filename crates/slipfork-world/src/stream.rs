@@ -42,6 +42,21 @@ impl ServiceState {
 
 /// Engine-supplied argv prefix for entering a live world inheriting the caller's native stdio.
 ///
+/// What the caller is about to do with the entry command.
+///
+/// `Exec` appends the requested argv to the bridge's prefix (hooks, one-shot `exec`, service
+/// clients); `Interactive` bakes the single requested program into a PTY relay inside the world,
+/// because a process in a child PID namespace cannot adopt the caller's terminal directly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum EntryKind {
+    /// Non-interactive: append the target argv to the entry prefix.
+    #[default]
+    Exec,
+    /// Interactive: the entry command carries the PTY relay and the single target program.
+    Interactive,
+}
+
 /// The thin `slipfork` CLI spawns `program` with `args_prefix` followed by the target argv,
 /// `cwd` as its working directory, and native `Stdio::inherit()` — zero `SCM_RIGHTS` descriptors
 /// cross the CLI <-> `slipforkd` boundary (`H-010` #1).
@@ -61,6 +76,9 @@ pub struct WorldEntryCommand {
     /// world rootfs, so the spawner can `chdir` before `exec`ing the entry program without
     /// touching a path the world owns.
     pub cwd: PathBuf,
+    /// Whether `args_prefix` already consumes the caller's target argv (e.g. an interactive relay).
+    #[serde(default)]
+    pub consumes_target_argv: bool,
 }
 
 /// Which child stream a chunk came from.

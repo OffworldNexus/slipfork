@@ -75,6 +75,8 @@ pub(crate) struct OutputMode {
 pub(crate) struct Ui {
     /// stdin is an interactive terminal (`shell`, `db`, `redis`, `hook run`, `secret set`).
     pub(crate) stdin_tty: bool,
+    /// stdout is an interactive terminal (an interactive `shell` needs both ends).
+    pub(crate) stdout_tty: bool,
     /// The invoking directory every daemon request carries.
     cwd: Result<PathBuf, String>,
     /// The developer's login shell (`slipfork shell`), or the one-line refusal.
@@ -109,6 +111,7 @@ impl CliApp {
         };
         let ui = Ui {
             stdin_tty: std::io::stdin().is_terminal(),
+            stdout_tty: std::io::stdout().is_terminal(),
             cwd: current_dir(),
             shell: shell_from_env(),
             exe_dir: exe_dir(),
