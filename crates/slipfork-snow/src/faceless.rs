@@ -12,6 +12,19 @@ use crate::provider::{EntropySource, Namespace, SecretProvider, SecretValue};
 
 const ALPHANUM: &[u8; 62] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
 
+/// The one expression opener `Faceless` v2 recognizes. Tokenizing, pass-through forwarding, and
+/// the [`has_expression`] probe all read it from here.
+const EXPR_OPEN: &str = "${{";
+
+/// Whether `template` still carries an unevaluated `Faceless` expression.
+///
+/// This is the single place that answers that question: callers that only need to reject an
+/// unresolved value (a Dockerfile build argument, a child-process environment) delegate here
+/// instead of scanning for the delimiter themselves.
+pub(crate) fn has_expression(template: &str) -> bool {
+    template.contains(EXPR_OPEN)
+}
+
 /// Supported `!!` secret generators in `Faceless` v2.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GeneratorSpec {
@@ -133,7 +146,7 @@ pub enum Token {
 pub fn parse_faceless(template: &str) -> Result<Vec<Token>, SnowError> {
     let mut tokens = Vec::new();
     let mut rest = template;
-    while let Some(start) = rest.find("${{") {
+    while let Some(start) = rest.find(EXPR_OPEN) {
         if start > 0 {
             tokens.push(Token::Literal(rest[..start].to_owned()));
         }
@@ -346,7 +359,8 @@ fn render(
                 if !policy.resolves(&namespace, &path) {
                     // The remote resolver's reply is template-free, so it must receive the exact
                     // expression the author wrote — never a locally re-evaluated value.
-                    rendered.push_str("${{ ");
+                    rendered.push_str(EXPR_OPEN);
+                    rendered.push(' ');
                     rendered.push_str(&raw);
                     rendered.push_str(" }}");
                     continue;
@@ -401,4 +415,18 @@ fn render(
         },
         missing,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn has_expression_recognizes_forwarded_templates_only() {
+        // A non-claiming pass forwards the author's exact expression, spaces included.
+        assert!(has_expression("${{ secrets::K }}"));
+        assert!(has_expression("prefix ${{ vars::A.B }} suffix"));
+        assert!(!has_expression("plain text"));
+        assert!(!has_expression(""));
+    }
 }

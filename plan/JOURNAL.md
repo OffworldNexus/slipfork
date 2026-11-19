@@ -1741,3 +1741,12 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-19T06:51 [M3] (strategist) edited fields
 - 2026-11-19T07:00 [M3.31] (strategist) created (task) 0.1.0 gate polish: purge --help DAG vaporware, align doctor transcripts & encapsulate snow expression check
 - 2026-11-19T07:00 [M3] (strategist) Milestone gate pass 1: ROADMAP.md + M3 updated; make check & docs-check & guard.py & plan.py validate all exit 0; Triad caught 0.2.0 DAG vaporware in cli.rs --h
+- 2026-11-19T07:02 [M3.31] (lead) status ready -> active
+- 2026-11-19T07:02 [M3.31] (lead) attempt 1/3 started
+- 2026-11-19T07:02 [M3.31] (lead) base 0e54f97f3e459204835ce0334f462cba7b25e322
+- 2026-11-19T07:05 [M3.31] (lead) status active -> review
+- 2026-11-19T07:07 [M3.31] (lead) status review -> ready: Triad: 1 BLOCKER (transcript drops sudo) + 3 doc/surface nits; one consolidated fix pass
+- 2026-11-19T07:07 [M3.31] (lead) attempt 2/3 started
+- 2026-11-19T07:07 [M3.31] (lead) base 0e54f97f3e459204835ce0334f462cba7b25e322
+- 2026-11-19T07:08 [M3.31] (lead) status ready -> review
+- 2026-11-19T07:09 [M3.31] (lead) status review -> done

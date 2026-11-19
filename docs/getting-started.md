@@ -71,18 +71,20 @@ Re-run the same command after moving the binaries; it rewrites only files whose 
 
 ```console
 $ slipfork doctor
-state_dir: /home/acme/.cache/slipfork
-filesystem: btrfs
-btrfs_super_magic: ok
-subvolume_ioctl: ok
-noatime: ok
-unshare_userns: ok
-netns: ok
-ingress: active :80
 ✓ Ready
+  state_dir: /home/acme/.cache/slipfork
+  filesystem: btrfs
+  btrfs_super_magic: ok
+  subvolume_ioctl: ok
+  unshare_userns: ok
+  netns: ok
+  noatime: ok
+  ingress: :80 active (port-less origins)
 ```
 
-`doctor` exits `0` only when the Btrfs checks and both namespace probes pass. On a non-Btrfs path it exits `1`, prints one `fix:` line per failed check, and writes nothing. `slipfork doctor --json` emits the same report as one object.
+`doctor` exits `0` only when the Btrfs checks and both namespace probes pass. On a non-Btrfs path it exits `1`, prints one `next:` line per failed check, and writes nothing.
+
+`slipfork doctor --json` emits the same report as one object.
 
 ## 3. Declare the world in `snow.yml`
 

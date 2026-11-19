@@ -108,7 +108,7 @@ impl DaemonService {
             .iter()
             .filter(|(name, _)| build_names.contains(*name))
         {
-            if value.expose().contains("${{") {
+            if value.has_unresolved_expression() {
                 return Err(runtime_error(format!(
                     "`snow.yml` build variable '{name}' has no locally resolvable value; a Dockerfile build cannot receive an OSPP-resolved template"
                 )));

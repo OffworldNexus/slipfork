@@ -29,7 +29,7 @@ const WORLD_HELP: &str =
 #[command(
     name = "slipfork",
     version,
-    about = "Instant CoW dev worlds & parallel test DAG orchestrator"
+    about = "Instant CoW Btrfs dev worlds & worktree forks from snow.yml"
 )]
 pub struct Cli {
     /// Emit machine-readable JSON on stdout.

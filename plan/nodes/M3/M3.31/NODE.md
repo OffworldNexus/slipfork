@@ -2,7 +2,7 @@
 id: M3.31
 title: "0.1.0 gate polish: purge --help DAG vaporware, align doctor transcripts & encapsulate snow expression check"
 kind: task
-status: ready
+status: done
 owner: implementer
 priority: 3
 depends_on: [M3.30]
@@ -13,11 +13,11 @@ paths:
   - "crates/slipfork-snow/src/**"
   - "docs/getting-started.md"
   - docs/reference/cli.md
-attempts: 0
+attempts: 2
 max_attempts: 3
 escalation: none
 created: "2026-11-19T07:00"
-updated: "2026-11-19T07:00"
+updated: "2026-11-19T07:09"
 ---
 
 # Goal

@@ -1,6 +1,6 @@
 [package]
 name = "slipfork"
-description = "Slipfork CLI & Composition Root: copy-on-write dev worlds, worktree forks, and snapshot-DAG test orchestration"
+description = "Slipfork CLI & Composition Root: copy-on-write Btrfs dev worlds, worktree forks, and OSPP v1 secrets"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

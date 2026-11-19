@@ -145,6 +145,14 @@ impl SecretValue {
         self.secret
     }
 
+    /// Return `true` when this value still carries a `Faceless` expression.
+    ///
+    /// A non-claiming pass forwards expressions it cannot resolve verbatim, so such a value has no
+    /// locally resolvable value and must never reach a build argument or child process.
+    pub fn has_unresolved_expression(&self) -> bool {
+        crate::faceless::has_expression(&self.raw)
+    }
+
     /// Explicitly expose the underlying plaintext at an execution/adapter boundary.
     pub fn expose(&self) -> &str {
         &self.raw

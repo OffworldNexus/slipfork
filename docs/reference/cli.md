@@ -22,18 +22,19 @@ slipfork: no slipforkd on /home/acme/.cache/slipfork/run/daemon.sock — run `sl
 
 ```console
 $ slipfork doctor
-state_dir: /home/acme/.cache/slipfork
-filesystem: xfs
-btrfs_super_magic: mismatch
-subvolume_ioctl: skipped
-noatime: missing
-unshare_userns: ok
-netns: ok
-ingress: not installed (ephemeral port; run `slipfork daemon install`)
-fix: sudo mount -o user_subvol_rm_allowed,noatime /dev/<device> <state_dir>
+✗ 1 issue
+  state_dir: /home/acme/.cache/slipfork
+  filesystem: xfs
+  btrfs_super_magic: mismatch
+  subvolume_ioctl: skipped
+  unshare_userns: ok
+  netns: ok
+  noatime: missing
+  ingress: not installed (ephemeral port; run `sudo slipfork daemon install`)
+  next: sudo mount -o user_subvol_rm_allowed,noatime /dev/<device> /home/acme/.cache/slipfork
 ```
 
-`doctor` runs before any daemon and never needs one. It exits `0` only when the Btrfs checks and both namespace probes pass, and `1` otherwise with one `fix:` line per failed check.
+`doctor` runs before any daemon and never needs one. It exits `0` only when the Btrfs checks and both namespace probes pass, and `1` otherwise with one `next:` line per failed check.
 
 `--json` prints the same report as one object:
 
