@@ -25,6 +25,7 @@ nav = [
 ]
 
 extra_css = ["stylesheets/extra.css"]
+extra_javascript = ["javascripts/forkfile-highlight.js"]
 
 exclude_docs = """
 /VISION.md

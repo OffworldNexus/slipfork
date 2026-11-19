@@ -6,3 +6,88 @@
 .md-typeset pre > code {
   font-size: 0.82rem;
 }
+
+/* ---------------------------------------------------------------------------
+ * Forkfile syntax highlighting (docs/javascripts/forkfile-highlight.js)
+ *
+ * Token colours are declared as `--ff-*` custom properties per Zensical colour
+ * scheme, and `--ff-bg` is painted onto the code block itself so the rendered
+ * background is the one `tools/tests/forkfile-highlight.test.js` measures:
+ * #f5f5f5 light, #14171f slate. Every token class also carries a
+ * weight/style/underline cue, so meaning never rests on colour alone.
+ * ------------------------------------------------------------------------- */
+
+body[data-md-color-scheme="default"] {
+  --ff-bg: #f5f5f5;
+  --ff-keyword: #6a1b9a;
+  --ff-builtin: #0b5f4b;
+  --ff-string: #1b5e20;
+  --ff-number: #8a4b00;
+  --ff-comment: #596464;
+  --ff-operator: #2e3d45;
+  --ff-reference: #0d47a1;
+  --ff-ident: #212121;
+}
+
+body[data-md-color-scheme="slate"] {
+  --ff-bg: #14171f;
+  --ff-keyword: #d7b3ff;
+  --ff-builtin: #7ee0c0;
+  --ff-string: #b2e88a;
+  --ff-number: #ffcf87;
+  --ff-comment: #a9b6c4;
+  --ff-operator: #e8eef4;
+  --ff-reference: #8fc7ff;
+  --ff-ident: #e6e8ec;
+}
+
+/* Paint the measured background instead of leaving it to the theme. */
+body[data-md-color-scheme="default"] .md-typeset pre > code {
+  background-color: var(--ff-bg);
+}
+
+body[data-md-color-scheme="slate"] .md-typeset pre > code {
+  background-color: var(--ff-bg);
+}
+
+.md-typeset .ff-keyword {
+  color: var(--ff-keyword);
+  font-weight: 600;
+}
+
+.md-typeset .ff-builtin {
+  color: var(--ff-builtin);
+  font-style: italic;
+}
+
+.md-typeset .ff-string {
+  color: var(--ff-string);
+  font-weight: 500;
+}
+
+.md-typeset .ff-number {
+  color: var(--ff-number);
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+.md-typeset .ff-comment {
+  color: var(--ff-comment);
+  font-style: italic;
+}
+
+.md-typeset .ff-operator {
+  color: var(--ff-operator);
+  font-weight: 600;
+}
+
+.md-typeset .ff-reference {
+  color: var(--ff-reference);
+  text-decoration: underline dotted;
+  text-underline-offset: 0.15em;
+}
+
+.md-typeset .ff-ident {
+  color: var(--ff-ident);
+  font-weight: 500;
+}

@@ -66,7 +66,7 @@ Services that share `(dir, dockerfile, stage, build_env)` build one cached rootf
 
 A hook accepts one line or a block. Each line runs in order and stops the boot on the first non-zero exit:
 
-```text
+```text title="Forkfile"
 service api ./api {
     pre-deploy: {
         uv run alembic upgrade head
@@ -77,7 +77,7 @@ service api ./api {
 
 ## Databases, caches, and domains
 
-```text
+```text title="Forkfile"
 postgres pg {
     version 18
     database app_db
@@ -95,7 +95,7 @@ Declare a resource and use its properties anywhere in `env`: `app_db.url`, `cach
 
 Top-level `env <group> { ... }` blocks merge into a service with `use env <group>`; inline `env { ... }` and `env.KEY = <expr>` override by key.
 
-```text
+```text title="Forkfile"
 env app {
     DATABASE_URL = app_db.url
     LOG_LEVEL    = var(LOG_LEVEL) ?? "info"
@@ -111,7 +111,7 @@ Generators (`random_hex(16)`, `random_base64(32)`, `random_string(50)`, `uuid4()
 
 ## Features and `on`
 
-```text
+```text title="Forkfile"
 features {
     default = [dev]
     dev     = [mail]
@@ -130,7 +130,7 @@ on mail {
 
 ## Tasks
 
-```text
+```text title="Forkfile"
 task migrate in api: uv run alembic upgrade head
 ```
 

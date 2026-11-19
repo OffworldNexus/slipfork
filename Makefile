@@ -17,7 +17,7 @@ export CARGO_BUILD_JOBS
 # `make rs-test-live` owns them; `make check` never runs them, so this non-Btrfs host stays green.
 # Run them on the lab VM: `uv run --no-project tools/do_vm.py test`.
 RS_LIVE_SUITES := slipfork-engine:critical_btrfs_live slipfork-engine:critical_engine slipfork-engine:critical_oci_runtime slipfork-engine:critical_pod_runtime slipfork:critical_btrfs_live slipfork:critical_cli slipfork:critical_l0_wiring slipfork:critical_ospp_daemon slipfork:critical_slug slipfork:critical_world_journey slipfork:critical_vcs_remote slipfork-edge:critical_edge_live
-.PHONY: help check fmt rs-fmt rs-lint rs-test rs-test-live ts-test py-lint py-test docs-check guard zed-check grammar-test plan-check bench bench-update docs-serve
+.PHONY: help check fmt rs-fmt rs-lint rs-test rs-test-live ts-test docs-js-test py-lint py-test docs-check guard zed-check grammar-test plan-check bench bench-update docs-serve
 
 $(TMPDIR):
 	mkdir -p $(TMPDIR)
@@ -25,7 +25,7 @@ $(TMPDIR):
 help: ## Show available targets
 	@grep -E '^[a-zA-Z0-9_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-22s\033[0m %s\n", $$1, $$2}'
 
-check: plan-check guard zed-check py-lint py-test ts-test rs-fmt rs-lint rs-test docs-check ## Run every static, unit, critical, plan, hygiene, TS, Rust, and docs check
+check: plan-check guard zed-check py-lint py-test ts-test docs-js-test rs-fmt rs-lint rs-test docs-check ## Run every static, unit, critical, plan, hygiene, TS, docs JS, Rust, and docs check
 
 fmt: rs-fmt | $(TMPDIR) ## Format Rust and Python tooling
 	uvx --offline ruff format tools poc
@@ -54,6 +54,9 @@ py-test: | $(TMPDIR) ## Run unit tests for tools/
 
 ts-test: | $(TMPDIR) ## Run critical tests for @slipfork/opencode plugin
 	bun test packages/opencode-slipfork/tests
+
+docs-js-test: | $(TMPDIR) ## Run the Forkfile doc highlighter tests (tokenizer + WCAG contrast)
+	bun test tools/tests/forkfile-highlight.test.js
 
 rs-fmt: | $(TMPDIR) ## Check Rust formatting across workspace
 	cargo fmt --all -- --check

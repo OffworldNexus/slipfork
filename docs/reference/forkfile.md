@@ -2,7 +2,7 @@
 
 Every project has one `Forkfile` at the repository root. It is parsed, checked as a whole file, then evaluated against a feature selection before `slipforkd` boots anything.
 
-```text
+```text title="Forkfile"
 project demo
 features { default = [dev]; dev; }
 postgres pg { database app_db }
@@ -60,7 +60,7 @@ task migrate in api: ./manage migrate
 
 ## Resources
 
-```text
+```text title="Forkfile"
 postgres pg {
     version 18
     database app_db
@@ -113,7 +113,7 @@ Generators are `random_hex(<bytes>)`, `random_base64(<bytes>)`, `random_string(<
 
 ## Features
 
-```text
+```text title="Forkfile"
 features {
     default = [dev, docs]
     dev     = [mail]
