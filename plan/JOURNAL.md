@@ -1891,3 +1891,32 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-19T18:42 [M3.32.2.2.1.3.2.1] (implementer) do_vm test RC=0 (12 suites): critical_btrfs_live 1, critical_engine 21, critical_oci_runtime 4, critical_pod_runtime 1, critical_edge_live 3, critical_btrfs_liv
 - 2026-11-19T18:42 [M3.32.2.2.1.3.2.1] (lead) arch PASS; defer one-line doc on write_pod_bundle (bundle-synthesis-only) to M3.32.2.2.1.3.2.2
 - 2026-11-19T18:42 [M3.32.2.2.1.3.2.1] (lead) status active -> done
+- 2026-11-19T18:43 [M3.32.2.2.1.3.2.2] (lead) status ready -> active
+- 2026-11-19T18:43 [M3.32.2.2.1.3.2.2] (lead) attempt 1/3 started
+- 2026-11-19T18:43 [M3.32.2.2.1.3.2.2] (lead) base 629a116dbe38eaccf8b24badae51f2ebcd10f57c
+- 2026-11-19T18:43 [M3.32.2.2.1.3.2.2] (lead) edited fields
+- 2026-11-19T18:43 [M3.32.2.2.1.3.2.2.1] (lead) created (task) Component ServicePod path in engine + journey rebase off WorldProcess
+- 2026-11-19T18:43 [M3.32.2.2.1.3.2.2.2] (lead) created (task) Delete WorldProcess/exec_in_world/entry_command once the daemon has cut over
+- 2026-11-19T18:43 [M3.32.2.2.1.3.2.2.1] (lead) status ready -> active
+- 2026-11-19T18:43 [M3.32.2.2.1.3.2.2.1] (lead) attempt 1/3 started
+- 2026-11-19T18:43 [M3.32.2.2.1.3.2.2.1] (lead) base 629a116dbe38eaccf8b24badae51f2ebcd10f57c
+- 2026-11-19T18:44 [M3.32.2.2.1.3.2.2.1] (lead) status active -> ready: deferred: component->pod parity is test-harness work; lands with the daemon cut-over. Keep WorldProcess bridge meanwhile.
+- 2026-11-19T18:44 [M3.32.2.2.1.3.2.2.1] (lead) edited fields
+- 2026-11-19T18:44 [M3.32.2.2.2] (lead) edited fields
+- 2026-11-19T18:44 [M3.32.2.2.1.3.2.2.1] (lead) lead: deferred until .2.2.3; bridge stays, no weakened journeys
+- 2026-11-19T18:44 [M3.32.2.2.2] (lead) status ready -> active
+- 2026-11-19T18:44 [M3.32.2.2.2] (lead) attempt 1/3 started
+- 2026-11-19T18:44 [M3.32.2.2.2] (lead) base 629a116dbe38eaccf8b24badae51f2ebcd10f57c
+- 2026-11-19T18:45 [M3.32.2.2.2] (lead) edited fields
+- 2026-11-19T18:45 [M3.32.2.2.2.1] (lead) created (task) slipfork-engine ForkfileRunner: sequential execve lifecycle, [1/N] progress, Forkfile:<line> fail-fast
+- 2026-11-19T18:45 [M3.32.2.2.2.1] (lead) status ready -> active
+- 2026-11-19T18:45 [M3.32.2.2.2.1] (lead) attempt 1/3 started
+- 2026-11-19T18:45 [M3.32.2.2.2.1] (lead) base 629a116dbe38eaccf8b24badae51f2ebcd10f57c
+- 2026-11-19T18:45 [M3.32.2.2.2.1] (lead) edited fields
+- 2026-11-19T18:45 [M3.32.2.2.2.1] (lead) unblocked: add canonical EvaluatedFork::resolve_argv in slipfork-forkfile (paths widened)
+- 2026-11-19T18:48 [M3.32.2.2.2.1] (lead) status active -> review
+- 2026-11-19T18:49 [M3.32.2.2.2.1] (lead) status review -> ready: triad: 4 UX MAJOR (missing next: remedies, retroactive [1/N], tail ordering)
+- 2026-11-19T18:49 [M3.32.2.2.2.1] (lead) attempt 2/3 started
+- 2026-11-19T18:49 [M3.32.2.2.2.1] (lead) status ready -> active
+- 2026-11-19T18:51 [M3.32.2.2.2.1] (lead) status active -> review
+- 2026-11-19T18:52 [M3.32.2.2.2.1] (lead) status review -> done

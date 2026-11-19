@@ -17,6 +17,7 @@ pub mod btrfs_engine;
 pub mod child_env;
 mod child_io;
 pub mod clock;
+pub mod lifecycle;
 pub mod linux_cow;
 pub mod oci;
 pub mod rootfs;

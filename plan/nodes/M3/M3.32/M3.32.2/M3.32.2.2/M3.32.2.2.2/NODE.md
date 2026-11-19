@@ -1,17 +1,16 @@
 ---
 id: M3.32.2.2.2
 title: "slipfork-engine direct-execve lifecycle runner ([1/N], Forkfile:<line> fail-fast, zero sh -c)"
-kind: task
-status: ready
-owner: implementer
+kind: epic
+status: active
 priority: 3
-depends_on: [M3.32.2.2.1]
+depends_on: [M3.32.2.2.1.3.2.1]
 paths: ["crates/slipfork-engine/**", Cargo.toml, Cargo.lock]
 attempts: 0
 max_attempts: 3
 escalation: none
 created: "2026-11-19T13:24"
-updated: "2026-11-19T13:24"
+updated: "2026-11-19T18:45"
 ---
 
 # Goal

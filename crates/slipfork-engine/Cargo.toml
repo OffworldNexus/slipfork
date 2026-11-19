@@ -13,6 +13,7 @@ libc.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
+slipfork-forkfile = { path = "../slipfork-forkfile" }
 slipfork-world = { path = "../slipfork-world" }
 slipfork-wire = { path = "../slipfork-wire" }
 tempfile.workspace = true
