@@ -1,7 +1,7 @@
 //! Shared diagnostic rendering for declared ids and stage names.
 //!
-//! `slipfork-dag` (`[world]` selection) and `slipfork-engine` (`Dockerfile` contract) both name
-//! the exact candidates a user can pick from in their `fix:` line; this is the one renderer.
+//! `slipfork-engine` (the `Dockerfile` stage contract) names the exact candidates a user can pick
+//! from in their `fix:` line; this is the one renderer.
 
 /// Render `items` as `'api', 'worker'` for diagnostics; `none` when the list is empty.
 pub fn quoted(items: &[String]) -> String {

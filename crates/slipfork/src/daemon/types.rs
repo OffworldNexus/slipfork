@@ -1,6 +1,6 @@
 //! Plain data the daemon index, boot pipeline, and protocol share.
 
-use slipfork_dag::{DumpPolicy, ResourcePlan, SlipforkConfig};
+use slipfork_dag::{DumpPolicy, ResourcePlan};
 use slipfork_edge::{EdgeError, IngressRoute};
 use slipfork_ospp::{OsppClaims, OsppSession};
 use slipfork_snow::{ResourceCoordinates, SecretProvider, SecretValue, SnowFile};
@@ -243,7 +243,6 @@ pub(super) struct BootPolicy {
 pub(super) struct RootfsInputs<'a> {
     pub(super) worktree: &'a Path,
     pub(super) snow: &'a SnowFile,
-    pub(super) config: &'a SlipforkConfig,
     pub(super) vault: &'a dyn SecretProvider,
     pub(super) coords: &'a ResourceCoordinates,
     pub(super) claims: &'a OsppClaims,
@@ -263,7 +262,6 @@ pub(super) struct WorldEnvInputs<'a> {
 
 pub(super) struct ResolvedWorld {
     pub(super) snow: SnowFile,
-    pub(super) config: SlipforkConfig,
     pub(super) vault: Arc<dyn SecretProvider>,
     pub(super) plan: ResourcePlan,
     pub(super) resources: Vec<ResourceSummary>,

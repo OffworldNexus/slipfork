@@ -1,6 +1,6 @@
 # Manifest Reference (`0.1.0`)
 
-Slipfork reads two files: `snow.yml` for the world and its services, and an optional `slipfork.toml` for project identity, the rootfs selector, and validated build/fixture intent.
+Slipfork reads two files: `snow.yml` for the world and its services, and an optional `slipfork.toml` for project identity and validated build/fixture intent.
 
 ```console
 $ slipfork snow resolve --file snow.yml --mode local   # validate and render one mode
@@ -113,11 +113,6 @@ generator := "random_string(" 1..=512 ")" | "random_hex(" 1..=256 ")"
 # Optional ProjectSlug override; defaults to the checkout directory's basename.
 project = "acme"
 
-# Optional world-rootfs selector: two keys only, both inferred when unambiguous.
-[world]
-image = "api"     # snow.yml BuildImage id; mandatory iff snow.yml declares two or more
-stage = "builder" # named `FROM ... AS <stage>`; keeps cargo/rustc in the world
-
 [artifacts.front]
 inputs = ["front/src/**", "front/package.json"]
 build = "pnpm --dir front build"
@@ -134,21 +129,6 @@ coverage_fail_under = 85          # optional integer 0..=100
 ```
 
 The whole file is optional: absent, `up` and `fork` boot with defaults. `artifacts` and `fixtures` are validated at boot, but `0.1.0` ships no command that materializes their plan. A malformed file always fails closed.
-
-### `[world]`: which rootfs a world boots
-
-| Key | Selects | Inferred when | Fails closed when |
-|---|---|---|---|
-| `image` | `snow.yml` build image id | Exactly one build image exists | None exists, or two or more exist and none is selected |
-| `stage` | Named `FROM ... AS <stage>` | The final `FROM` is named | The stage is unnamed or unknown |
-
-A project with two build images must set `world.image`; a Rust or Go project that needs the toolchain at runtime sets `world.stage = "builder"`.
-
-```console
-$ slipfork up
-slipfork: snow.yml declares 2 buildable images ('api', 'worker') and slipfork.toml does not select one
-  fix: add `world.image = "api"` under `[world]` in slipfork.toml
-```
 
 ### Other validation rules
 

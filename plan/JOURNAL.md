@@ -1781,3 +1781,20 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-19T13:14 [M3.32.1] (lead) attempt 2/3 started
 - 2026-11-19T13:14 [M3.32.1] (lead) status ready -> active
 - 2026-11-19T13:14 [M3.32.1] (lead) status active -> done
+- 2026-11-19T13:15 [M3.32.2] (lead) status ready -> active
+- 2026-11-19T13:15 [M3.32.2] (lead) attempt 1/3 started
+- 2026-11-19T13:15 [M3.32.2] (lead) base 8bbe34567f2ccd2c8611ea2c49c98c92789ce501
+- 2026-11-19T13:15 [M3.32.2] (lead) edited fields
+- 2026-11-19T13:15 [M3.32.2.1] (lead) created (task) slipfork-world pod primitives (VolumePlan/ServicePodSpec + crun argv) & dag [world] excision
+- 2026-11-19T13:15 [M3.32.2.2] (lead) created (task) slipfork-engine per-service crun pod runtime, shared ns init & direct execve lifecycle
+- 2026-11-19T13:15 [M3.32.2.3] (lead) created (task) Pod boot in crates/slipfork (PodBoot/ServicePod) + slipfork-testkit world harness
+- 2026-11-19T13:15 [M3.32.2.1] (lead) status ready -> active
+- 2026-11-19T13:15 [M3.32.2.1] (lead) attempt 1/3 started
+- 2026-11-19T13:15 [M3.32.2.1] (lead) base 8bbe34567f2ccd2c8611ea2c49c98c92789ce501
+- 2026-11-19T13:18 [M3.32.2.1] (lead) status active -> review
+- 2026-11-19T13:19 [M3.32.2.1] (lead) edited fields
+- 2026-11-19T13:19 [M3.32.2.1] (lead) status review -> ready: triad: 2 BLOCKER (bundle dir inside world subvol, crun_argv duplicates CrunSurface) + 9 MAJOR
+- 2026-11-19T13:19 [M3.32.2.1] (lead) attempt 2/3 started
+- 2026-11-19T13:19 [M3.32.2.1] (lead) status ready -> active
+- 2026-11-19T13:22 [M3.32.2.1] (lead) edited fields
+- 2026-11-19T13:23 [M3.32.2.1] (lead) status active -> done

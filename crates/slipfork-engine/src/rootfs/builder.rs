@@ -1,6 +1,6 @@
 //! The single production [`BaseImageBuilder`] (`ADR-0009` §1–§3).
 //!
-//! Flow: parse the selected `Dockerfile` (never rewriting it), resolve `world.stage`, check the
+//! Flow: parse the selected `Dockerfile` (never rewriting it), resolve the target stage, check the
 //! static contract rules, compute the `RootfsDigest`, and — on a cache miss — write a scratch
 //! `Dockerfile` **outside the worktree** that only appends `FROM <stage> AS slipfork-world` and
 //! copies the two static `/.slipfork/bin` payloads from a named build context. `docker buildx`

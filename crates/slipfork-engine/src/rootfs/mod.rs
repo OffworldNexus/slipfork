@@ -1,7 +1,7 @@
 //! `L0` world root filesystem materialization (`ADR-0009` §1–§3).
 //!
 //! One mechanism only, zero fallbacks: every [`WorldRootfs`] is extracted from the project's own
-//! `snow.yml` `images:` `Dockerfile` (the stage selected by `world.stage`), validated against the
+//! `snow.yml` `images:` `Dockerfile` (using its named target stage), validated against the
 //! 6-rule World Image Contract, and cached content-addressed under
 //! `<state_dir>/cache/{rootfs,oci,runtime}` on non-`tmpfs` disk. Slipfork never curates language
 //! base images, never shares the host `/usr`, and never installs backing services into the app
@@ -111,7 +111,7 @@ pub struct WorldRootfsRequest {
     pub context_label: String,
     /// Absolute path to the selected `Dockerfile`.
     pub dockerfile: PathBuf,
-    /// Resolved `world.stage`; `None` targets the final stage, which must then be named.
+    /// Requested target stage; `None` targets the final stage, which must then be named.
     pub target_stage: Option<String>,
     /// Resolved `snow.yml` `images[].envs`.
     pub build_envs: Vec<BuildEnvVar>,

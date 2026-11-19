@@ -117,7 +117,7 @@ fn rule_1_unnamed_final_stage_reports_the_exact_diagnostic() {
     ));
     expect_message(
         &error,
-        "error: World Image Contract #1 violated in Dockerfile:1: final stage `FROM alpine:3.21` has no stage name\n  fix: change Dockerfile:1 to `FROM alpine:3.21 AS app` (or set `world.stage = \"<stage>\"` in slipfork.toml)",
+        "error: World Image Contract #1 violated in Dockerfile:1: final stage `FROM alpine:3.21` has no stage name\n  fix: name the target stage in the Dockerfile as `FROM alpine:3.21 AS app`",
     );
 }
 
@@ -128,7 +128,7 @@ fn rule_1_unknown_stage_lists_the_declared_stages() {
     assert!(matches!(error, BaseImageError::UnknownTargetStage { .. }));
     expect_message(
         &error,
-        "error: World Image Contract #1 violated: `world.stage = \"dev\"` not found in Dockerfile (declared stages: 'builder', 'runtime')\n  fix: set `world.stage = \"builder\"` in slipfork.toml",
+        "error: World Image Contract #1 violated: stage 'dev' not found in Dockerfile (declared stages: 'builder', 'runtime')\n  fix: name a declared target stage in the Dockerfile as `FROM <base> AS builder`",
     );
 }
 
@@ -145,7 +145,7 @@ fn rule_2_unsupported_distro_names_the_supported_table() {
     ));
     expect_message(
         &error,
-        "error: World Image Contract #2 violated in stage 'runtime' (Dockerfile:1): detected distro 'fedora:41'; supported distros are debian (bookworm, trixie), ubuntu (jammy, noble), and alpine (3.20, 3.21)\n  fix: set `world.stage = \"builder\"` in slipfork.toml or switch `FROM` to a supported Debian, Ubuntu, or Alpine base",
+        "error: World Image Contract #2 violated in stage 'runtime' (Dockerfile:1): detected distro 'fedora:41'; supported distros are debian (bookworm, trixie), ubuntu (jammy, noble), and alpine (3.20, 3.21)\n  fix: name the target stage in the Dockerfile as `FROM <supported base> AS <stage>`, or switch `FROM` to a supported Debian, Ubuntu, or Alpine base",
     );
 }
 
@@ -157,7 +157,7 @@ fn rule_2_missing_os_release_and_shell_fails_closed() {
     assert!(matches!(error, BaseImageError::UnsupportedDistro { .. }));
     expect_message(
         &error,
-        "error: World Image Contract #2 violated in stage 'runtime' (Dockerfile:1): missing /etc/os-release + /bin/sh; supported distros are debian (bookworm, trixie), ubuntu (jammy, noble), and alpine (3.20, 3.21)\n  fix: set `world.stage = \"builder\"` in slipfork.toml or switch `FROM` to a supported Debian, Ubuntu, or Alpine base",
+        "error: World Image Contract #2 violated in stage 'runtime' (Dockerfile:1): missing /etc/os-release + /bin/sh; supported distros are debian (bookworm, trixie), ubuntu (jammy, noble), and alpine (3.20, 3.21)\n  fix: name the target stage in the Dockerfile as `FROM <supported base> AS <stage>`, or switch `FROM` to a supported Debian, Ubuntu, or Alpine base",
     );
 }
 

@@ -311,7 +311,7 @@ pub enum BaseImageError {
     NoBuildableImage,
     /// `ADR-0009` §5.4 — the selected final stage has no `AS <name>`.
     #[error(
-        "error: World Image Contract #1 violated in Dockerfile:{line}: final stage `FROM {from}` has no stage name\n  fix: change Dockerfile:{line} to `FROM {from} AS app` (or set `world.stage = \"<stage>\"` in slipfork.toml)"
+        "error: World Image Contract #1 violated in Dockerfile:{line}: final stage `FROM {from}` has no stage name\n  fix: name the target stage in the Dockerfile as `FROM {from} AS app`"
     )]
     UnnamedTargetStage {
         /// `Dockerfile` line of the unnamed final `FROM`.
@@ -319,9 +319,9 @@ pub enum BaseImageError {
         /// Base image of that `FROM`.
         from: String,
     },
-    /// `ADR-0009` §5.5 — `world.stage` names no declared stage.
+    /// `ADR-0009` §5.5 — the requested stage names no declared stage.
     #[error(
-        "error: World Image Contract #1 violated: `world.stage = \"{stage}\"` not found in Dockerfile (declared stages: {declared})\n  fix: set `world.stage = \"{suggested}\"` in slipfork.toml"
+        "error: World Image Contract #1 violated: stage '{stage}' not found in Dockerfile (declared stages: {declared})\n  fix: name a declared target stage in the Dockerfile as `FROM <base> AS {suggested}`"
     )]
     UnknownTargetStage {
         /// Selected stage.
@@ -333,7 +333,7 @@ pub enum BaseImageError {
     },
     /// `ADR-0009` §5.6 — unsupported distro or missing `/etc/os-release` + `/bin/sh`.
     #[error(
-        "error: World Image Contract #2 violated in stage '{stage}' (Dockerfile:{line}): {detail}; supported distros are debian (bookworm, trixie), ubuntu (jammy, noble), and alpine (3.20, 3.21)\n  fix: set `world.stage = \"builder\"` in slipfork.toml or switch `FROM` to a supported Debian, Ubuntu, or Alpine base"
+        "error: World Image Contract #2 violated in stage '{stage}' (Dockerfile:{line}): {detail}; supported distros are debian (bookworm, trixie), ubuntu (jammy, noble), and alpine (3.20, 3.21)\n  fix: name the target stage in the Dockerfile as `FROM <supported base> AS <stage>`, or switch `FROM` to a supported Debian, Ubuntu, or Alpine base"
     )]
     UnsupportedDistro {
         /// Selected stage.

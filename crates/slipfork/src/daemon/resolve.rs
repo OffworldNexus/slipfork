@@ -49,7 +49,7 @@ impl DaemonService {
 
 impl DaemonService {
     /// Materialize (or reuse) the selected `snow.yml` `Dockerfile` stage as the world's `L0`
-    /// rootfs (`ADR-0009` §1–§3), resolving `[world]` and every requested backing-service image.
+    /// rootfs (`ADR-0009` §1–§3), selecting its one buildable image and every backing service.
     pub(super) fn materialize_rootfs(
         &self,
         inputs: RootfsInputs<'_>,
@@ -58,7 +58,6 @@ impl DaemonService {
         let RootfsInputs {
             worktree,
             snow,
-            config,
             vault,
             coords,
             claims,
@@ -73,20 +72,10 @@ impl DaemonService {
             })
             .collect();
         let ids: Vec<String> = build_images.iter().map(|image| image.id.clone()).collect();
-        let image_id = config
-            .world
-            .select_image(&ids)
-            .map_err(|err| runtime_error(err.to_string()))?
-            .to_owned();
-        let image = build_images
-            .iter()
-            .find(|image| image.id == image_id)
-            .copied()
-            .ok_or_else(|| {
-                runtime_error(format!(
-                    "snow.yml images: selected image '{image_id}' is not a buildable Dockerfile image"
-                ))
-            })?;
+        // Per-service pods read their image from `Forkfile`; the transitional single-rootfs boot
+        // can only materialize a project that declares exactly one buildable Dockerfile.
+        let image = build_images[select_single_build_image(&ids)?];
+        let image_id = image.id.clone();
         let context_dir = worktree.join(&image.context);
         let dockerfile = context_dir.join(&image.dockerfile);
 
@@ -144,7 +133,7 @@ impl DaemonService {
             context_dir,
             context_label: image.context.clone(),
             dockerfile,
-            target_stage: config.world.stage.clone(),
+            target_stage: None,
             build_envs,
             target_arch: self.config.target_arch.clone(),
             services: requested_service_images(snow),
@@ -332,7 +321,6 @@ impl DaemonService {
         let domains = snow.domain_ids().into_iter().map(str::to_owned).collect();
         Ok(ResolvedWorld {
             snow,
-            config,
             vault,
             plan,
             resources,
@@ -367,7 +355,6 @@ impl DaemonService {
             RootfsInputs {
                 worktree,
                 snow: &resolved.snow,
-                config: &resolved.config,
                 vault: resolved.vault.as_ref(),
                 coords: &resolved.coords,
                 claims: &resolved.claims,
@@ -524,4 +511,63 @@ pub(super) fn plan_summaries(plan: &ResourcePlan) -> Vec<ResourceSummary> {
             reason: json_label(&diagnostic.reason),
         })
         .collect()
+}
+
+/// The one buildable image the transitional single-rootfs boot materializes.
+///
+/// Per-service pods select their own image from `Forkfile`; until that boot path lands, the world
+/// rootfs can only be materialized from exactly one `snow.yml` buildable Dockerfile.
+fn select_single_build_image(ids: &[String]) -> Result<usize, EdgeError> {
+    match ids {
+        [_] => Ok(0),
+        [] => Err(runtime_error(
+            "snow.yml declares no buildable Dockerfile under 'images:'; a project that cannot be built into an image is not a project Slipfork can fork\n  fix: add `images:` with one Dockerfile (id, context, dockerfile)",
+        )),
+        declared => Err(runtime_error(format!(
+            "snow.yml declares more than one buildable image ({}); the single-rootfs world boots exactly one\n  fix: declare exactly one buildable Dockerfile image in snow.yml",
+            declared.join(", ")
+        ))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::select_single_build_image;
+
+    fn ids(names: &[&str]) -> Vec<String> {
+        names.iter().map(|name| (*name).to_owned()).collect()
+    }
+
+    #[test]
+    fn one_buildable_image_is_selected() {
+        assert_eq!(
+            select_single_build_image(&ids(&["api"])).expect("one image"),
+            0
+        );
+    }
+
+    #[test]
+    fn zero_buildable_images_fail_closed_with_the_images_snippet() {
+        let error = select_single_build_image(&[]).expect_err("no buildable image");
+        let message = error.to_string();
+        assert!(
+            message.contains("declares no buildable Dockerfile"),
+            "{message}"
+        );
+        assert!(message.contains("fix: add `images:`"), "{message}");
+    }
+
+    #[test]
+    fn two_buildable_images_fail_closed_with_the_one_line_remedy() {
+        let error = select_single_build_image(&ids(&["api", "worker"])).expect_err("two images");
+        let message = error.to_string();
+        assert!(
+            message.contains("more than one buildable image (api, worker)"),
+            "{message}"
+        );
+        assert!(
+            message.contains("fix: declare exactly one buildable Dockerfile image in snow.yml"),
+            "{message}"
+        );
+    }
 }

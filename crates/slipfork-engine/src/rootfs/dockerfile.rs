@@ -1,7 +1,7 @@
 //! Pure `Dockerfile` stage parser (`ADR-0009` §4.2 rules 1, 3, 4, 6).
 //!
 //! Slipfork never rewrites the project's `Dockerfile`: it reads the raw bytes, resolves the stage
-//! selected by `world.stage` (or the final manual stage when unnamed), checks the static contract
+//! selected target stage (or the final manual stage when unnamed), checks the static contract
 //! rules, and appends one machine-generated stage outside the worktree. This module is pure — no
 //! filesystem, no environment.
 
@@ -108,7 +108,7 @@ impl Dockerfile {
         Ok(Self { stages })
     }
 
-    /// Resolve the requested stage (`world.stage`), failing closed with `ADR-0009` §5.4/§5.5.
+    /// Resolve the requested target stage, failing closed with `ADR-0009` §5.4/§5.5.
     ///
     /// `None` selects the final stage and requires it to be named; an explicit selector must match
     /// a declared stage name exactly.

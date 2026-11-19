@@ -490,6 +490,13 @@ ghost = "nope"
 }
 
 #[test]
+fn retired_world_table_is_rejected() {
+    let err = SlipforkConfig::parse_toml("[world]\nimage = \"api\"\n")
+        .expect_err("the retired [world] table must fail closed");
+    assert!(matches!(err, DagError::Toml(_)));
+}
+
+#[test]
 fn resources_defaults_are_mode_aware_hermetic_and_overrideable() {
     let cfg = SlipforkConfig::parse_toml(
         r#"

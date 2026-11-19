@@ -27,6 +27,7 @@ pub mod identity;
 pub mod lineage;
 pub mod logs;
 pub mod merkle;
+pub mod pod;
 pub mod port;
 pub mod rootfs;
 pub mod socket;
@@ -43,6 +44,10 @@ pub use lineage::{
     WorldLineage, WorldServiceInfo,
 };
 pub use logs::{SERVICE_LOG_CAP_BYTES, ServiceLogs};
+pub use pod::{
+    PodCommand, PodError, PodLocation, PodMount, PodNamespaces, PodVolume, ServicePodSpec,
+    VOLUMES_DIR, VolumePlan,
+};
 pub use port::{
     BootLineage, EngineError, ExecOutput, LocalIngressBridge, MountMode, ServiceHandle,
     ServiceRuntime, ServiceSpec, SnapshotId, StateSubdirMount, WorldEngine, WorldHandle,
