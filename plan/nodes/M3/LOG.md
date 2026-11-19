@@ -79,3 +79,11 @@ GATE PASSED (0.1.0, Btrfs Worlds): plain make check exit 0 (5m32s, 43 suites, 33
 ## 2026-11-17T17:40 [lead]
 
 Surface shrink (M3.28.15): 0.1.0 drops the unimplemented tunnel-sharing surface entirely — 'slipfork share', DaemonControl::share/unshare, UnavailableTunnelRegistrar + slipfork-edge/src/tunnel.rs, TunnelRegistrar/TunnelLease/TunnelError/TunnelRequest + their doubles, WorldOrigin::Shared (and the 308 shared-host redirect / 421 Upgrade paths / shared_hosts), and IntegrationCategory::Tunnel. Theme: 0.1.0 ships only what can succeed; 'tunnel sharing is unavailable' is not a feature. Re-entry point: M4.1 (blocked on H-006).
+
+## 2026-11-19T06:51 [strategist]
+
+edited fields
+
+## 2026-11-19T07:00 [strategist]
+
+Milestone gate pass 1: ROADMAP.md + M3 updated; make check & docs-check & guard.py & plan.py validate all exit 0; Triad caught 0.2.0 DAG vaporware in cli.rs --help, stale doctor transcripts in getting-started.md/cli.md, and downstream snow delimiter scan in resolve.rs -> queued surgical M3.31 before final done sign-off

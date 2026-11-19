@@ -15,7 +15,7 @@ updated: "2026-11-16T17:25"
 
 # Goal
 
-Deliver Slipfork `0.4.0`: dedicated `RunnerProtocol v1` language plugins (`Playwright`/`Vitest`, `PHPUnit`/`Pest`, `cargo nextest`), Blastit parallel wire learning, content-addressed remote CI/team Btrfs snapshot & artifact cache export/import, `llms.txt` + turnkey agent skills (OpenCode, Claude Code, Codex, Junie), and the isolated `WeavedRegistrar` IPC adapter (`M4.1`, gated on `H-006`).
+Deliver Slipfork `0.4.0`: extended `STP v1` language plugins (`Playwright`, `Pest`, `cargo nextest`), Blastit parallel wire learning over `SLIPFORK_OUTPUT_DIR`, content-addressed remote CI/team Btrfs snapshot & artifact cache export/import, `llms.txt` + turnkey agent skills (OpenCode, Claude Code, Codex, Junie), and the isolated `WeavedRegistrar` IPC adapter (`M4.1`, gated on `H-006`).
 
 # Acceptance
 

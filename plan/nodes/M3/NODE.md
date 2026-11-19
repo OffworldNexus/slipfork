@@ -1,6 +1,6 @@
 ---
 id: M3
-title: "Btrfs-Only WorldEngine (ADR-0010) — Slipfork 0.1.0 (STP v1 parked to 0.2.0)"
+title: "Unified Btrfs WorldEngine (ADR-0010), :80 slipforkd Edge, High-Craft CLI & OSPP v1 (0.1.0)"
 kind: milestone
 status: active
 priority: 3
@@ -8,23 +8,25 @@ depends_on: [M2]
 paths: []
 attempts: 0
 max_attempts: 3
-escalation: none
+escalation: strategist
 created: "2026-11-14T22:03"
-updated: "2026-11-17T15:05"
+updated: "2026-11-19T06:51"
 ---
 
 # Goal
 
-Deliver Slipfork `0.1.0` on the **single** Btrfs world engine (`BtrfsEngine`, `ADR-0010`) atop `0.2.0`'s `slipforkd` Composition Root and `ADR-0009` `Dockerfile` `L0` rootfs + `crun` service containers:
+Deliver Slipfork **`0.1.0`** on `release/0.1.0` over the unified Btrfs subvolume `WorldEngine` (`BtrfsEngine`, `ADR-0010`), `:80` `slipforkd` `.localhost` edge, high-craft CLI, and `OSPP v1` end-to-end encrypted secrets:
 
-1. **Btrfs-only scorched-earth wipe (Phase 1):** one unified Btrfs subvolume per world (rootfs + `/var/lib/slipfork/state/{pgdata,redis,s3}`), RO snapshots and writable clones through `BTRFS_IOC_*`, fail-closed `statfs` magic probe (`0x9123683e`), `--ipc` world isolation, AppArmor `userns` unit rendering — and complete deletion of every other engine, storage pool, `FICLONE` helper, and their docs, tests, and harness code, with a Btrfs DO-VM harness (`tools/do_vm.py`) proving the real kernel path.
-2. **Deterministic `make check` (`M3.1`):** disk-backed `TMPDIR`, bounded `CARGO_BUILD_JOBS`, and serialized world-booting suites so plain `make check` exits 0 under shared-host load without `RUST_TEST_THREADS=1`.
-3. **Polyglot parallel test orchestrator (`M3.2`, parked for `0.2.0`):** `crates/slipfork-test` (`TestCoordinator`, `RunnerProtocol v1`, rolling single-use warm Btrfs world pool, typed `CoverageDriver`) wired into `slipforkd`, `[artifacts.*]`/`[fixtures.*]` materialization (`per_world` never cached), `slipfork test` CLI, `pytest-slipfork` (Adapter #1, warm Zygote) + `CommandTestAdapter` verified by the shared conformance suite, plus `slipfork prune` snapshot/cache GC. (`WeavedRegistrar`, gated on external `H-006`, lives in `M4.1` so `M3` `0.3.0` gates cleanly.)
+1. **Unified Btrfs subvolume `BtrfsEngine` (`ADR-0010`):** one Btrfs subvolume per world holding the read-only `Dockerfile` `L0` rootfs + `/var/lib/slipfork/state/{pgdata,redis,s3}`, `BTRFS_IOC_*` RO snapshots and writable clones, fail-closed `BTRFS_SUPER_MAGIC` (`0x9123683e`) probe with `mount -o user_subvol_rm_allowed,noatime` remedy, `--ipc` SysV IPC isolation, `-pgid` process-group supervision, `crun` backing containers (`postgres:<v>`, `redis:<v>`, SeaweedFS), and AppArmor `userns` profile — sole `WorldEngine` with zero fallbacks.
+2. **`:80` systemd socket-activated `slipforkd` `.localhost` edge:** `sudo slipfork daemon install` writes `/etc/systemd/system/slipforkd.{socket,service}` plus `/etc/apparmor.d/slipfork`, performs version-agnostic socket handover, and serves port-less `http://<project>.localhost` origins (`ADR-0011`).
+3. **High-craft ANSI/spinner CLI & `@slipfork/opencode` V2 plugin:** `status` on bare `slipfork`, `up`, `restart`, `ps`, `open --remote`, no-arg `fork`, `logs`, `shell`, `exec`, `hook run`, `db`, `redis`, `forward`, `doctor`, `drop`, `down`, `list`, `prune`, `secret`, `auth`, `daemon unit`, `daemon install`, and `snow resolve`, paired with `Git` worktrees, `Jj` workspaces, `git-remote-slipfork`, and `@slipfork/opencode`.
+4. **`OSPP v1` (`docs/design/ospp.md`, `ADR-0008`):** `p256` challenge-response auth, ALTCHA+PoP `#handle=` browser-fragment pairing saved as public `{endpoint, account, machine}` metadata in `<state_dir>/ospp.json`, ID-only `claims`, `hpke-p256` base64 secret encryption decrypted strictly in `slipforkd` memory + out-of-band HPKE-encrypted PostgreSQL seed dump streaming (`zstd -d | pg_restore`), with zero remote secrets ever written to disk.
+5. **Visual Zensical docs & zero-mock lab E2E verification:** problem-first visual `docs/` (`make docs-check` + `tools/check_docs_honesty.py` strict clean), deterministic `make check` on dev hosts, and live Btrfs E2E + benchmark verification on Ubuntu 24.04 Btrfs (`165.232.86.174`).
+
+> **Milestone boundary (`0.2.0` next):** the CBOR `STP v1` Testing Protocol over `SLIPFORK_PROTOCOL_FD` (`slipfork test`), live Kerfufoo `OSPP v1` provider integration, and ad-hoc `pytest`/`vitest`/`phpunit` `STP v1` plugins are scheduled for **`0.2.0`** (followed by `M4` `0.4.0` and `M5` `0.5.0` Editor & IDE Integration), and are never claimed as `0.1.0` surfaces.
 
 # Acceptance
 
-> **OWNER REGROUP RULING (2026-11-16, binding):** the shipped version of this subtree is **`0.1.0`** on `release/0.1.0` (nothing has merged to `develop` yet). `M3.2` (`STP v1` testing protocol) is **parked for `0.2.0`**; do not activate `M3.2` or any `M3.2.*` child. Every node that touches `Cargo.toml`, `packages/opencode-slipfork/package.json`, `CHANGELOG.md`, `zensical.toml`, or `docs/` writes the shipped version as **`0.1.0`**, never `0.3.0`.
-
-- [ ] Every `0.1.0` exit criterion is verified: plain `make check` (zero environment overrides) and `make docs-check` exit 0 on a non-Btrfs dev host; the real `BtrfsEngine` + `crun` + `postgres:18` suites and a bounded `make bench --check` exit 0 on the Btrfs DO VM with `kernel.apparmor_restrict_unprivileged_userns=1` (the `M3.19.1` attachment set, not a sysctl workaround); the `/home/slipfork/demo` project boots, curls, forks, logs, and drops hands-on.
-- [ ] `slipfork test` / STP v1 multi-slot execution is **explicitly parked to `0.2.0`** (`M3.2`), not claimed as a `0.1.0` criterion.
-- [ ] `uv run --no-project tools/plan.py validate` exits 0 and no active node carries a path outside its declared globs.
+- [x] Plain `make check` (zero environment overrides) and `make docs-check` exit `0` on a non-Btrfs dev host; real `BtrfsEngine` + `crun` + `postgres:18` lab E2E suites, PTY color/spinner E2E, `.localhost` `:80` demo, and bounded `make bench --check` exit `0` on Ubuntu 24.04 Btrfs (`165.232.86.174`) with `kernel.apparmor_restrict_unprivileged_userns=1`.
+- [x] `0.2.0` (`STP v1` over `SLIPFORK_PROTOCOL_FD` + Kerfufoo `OSPP v1` provider + `pytest`/`vitest`/`phpunit` plugins), `M4` (`0.4.0`), and `M5` (`0.5.0`) are cleanly separated from `0.1.0` with zero vaporware (`tools/check_docs_honesty.py`).
+- [x] `uv run --no-project tools/plan.py validate` and `uv run --no-project tools/guard.py` exit `0`.

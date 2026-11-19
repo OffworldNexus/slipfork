@@ -1737,3 +1737,7 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-19T06:37 [M3.30.11] (lead) status active -> done
 - 2026-11-19T06:45 [M3.30] (lead) Gate PASS: make check exit 0 (32s warm: fmt, clippy -D warnings, rustdoc -D warnings, pure Rust suites, bun plugin tests, ruff+pytest 130, zensical --strict, do
 - 2026-11-19T06:45 [M3.30] (lead) status ready -> done
+- 2026-11-19T06:47 ESCALATION #26 -> strategist for M3 by conductor: 0.1.0 milestone gate
+- 2026-11-19T06:51 [M3] (strategist) edited fields
+- 2026-11-19T07:00 [M3.31] (strategist) created (task) 0.1.0 gate polish: purge --help DAG vaporware, align doctor transcripts & encapsulate snow expression check
+- 2026-11-19T07:00 [M3] (strategist) Milestone gate pass 1: ROADMAP.md + M3 updated; make check & docs-check & guard.py & plan.py validate all exit 0; Triad caught 0.2.0 DAG vaporware in cli.rs --h
