@@ -2147,3 +2147,4 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-19T22:17 [M3.32.11] (lead) status active -> review
 - 2026-11-19T22:17 [M3.32.11] (lead) attempt 2/3 started
 - 2026-11-19T22:17 [M3.32.11] (lead) Triad fix pass base 8fd0b0d9f5c7ed0c651b3d73edb188bd71b18b9b: grammar invented syntax vs shipped parser; corpus never executed; target/ 350M
+- 2026-11-19T22:20 [M3.32.11] (lead) status review -> done
