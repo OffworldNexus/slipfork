@@ -26,7 +26,7 @@ use slipfork_world::{
     BootLineage, CacheOutcome, EngineError, ExecEnv, MountMode, ServiceKind, ServiceRuntime,
     ServiceSpec, StateSubdirMount, WorldEngine, WorldMount, WorldSpec,
 };
-use support::{PG_DATA, WorldFixture, pg_state};
+use support::{ComponentPod, PG_DATA, WorldFixture, pg_state};
 
 /// The image's own `PATH` allowlist; this suite never executes a container.
 const SERVICE_PATH: &str = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
@@ -392,27 +392,8 @@ fn service_handles_and_logs_are_typed_and_never_fabricated() {
     let world = fixture.world_with_artifacts(WorldTarget::Canonical);
 
     // An app component is not a container: `exec_in_service` fails closed, typed.
-    let app = fixture
-        .engine
-        .spawn_service(
-            &world,
-            &ServiceSpec {
-                id: "app".to_owned(),
-                kind: ServiceKind::Component,
-                runtime: ServiceRuntime::WorldProcess {
-                    argv: vec![
-                        "sh".to_owned(),
-                        "-c".to_owned(),
-                        "exec sleep 300".to_owned(),
-                    ],
-                    cwd: fixture.repo.clone(),
-                },
-                env: ExecEnv::default(),
-                readiness_port: None,
-            },
-        )
-        .expect("spawn app component");
-    // A world process is a container: `exec_in_service` and `service_entry_command` work, and an
+    let app = fixture.component(&world, ComponentPod::script("app", "exec sleep 300"));
+    // A component pod is a container: `exec_in_service` and `service_entry_command` work, and an
     // unknown id still fails closed with a typed error (never a fabricated handle or log).
     let exec = fixture
         .engine
@@ -542,28 +523,12 @@ fn container_bundles_never_carry_the_world_environment() {
         }
     }
 
-    // A world process still receives the world env: it writes it into the shared repo mount.
+    // A component pod still receives the world env: it writes it into the shared repo mount.
     let dump = fixture.repo.join("world-env.dump");
-    let app = fixture
-        .engine
-        .spawn_service(
-            &world,
-            &ServiceSpec {
-                id: "app".to_owned(),
-                kind: ServiceKind::Component,
-                runtime: ServiceRuntime::WorldProcess {
-                    argv: vec![
-                        "sh".to_owned(),
-                        "-c".to_owned(),
-                        "env > world-env.dump && exec sleep 300".to_owned(),
-                    ],
-                    cwd: fixture.repo.clone(),
-                },
-                env: ExecEnv::default(),
-                readiness_port: None,
-            },
-        )
-        .expect("spawn the app component with the world environment");
+    let app = fixture.component(
+        &world,
+        ComponentPod::script("app", "env > world-env.dump && exec sleep 300"),
+    );
     // The shell truncates the dump before `env` writes it, so wait for the completed document
     // rather than for the file's mere existence.
     slipfork_testkit::poll_until(Duration::from_secs(20), || {

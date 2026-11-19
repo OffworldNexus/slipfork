@@ -24,15 +24,15 @@ use std::time::Duration;
 use slipfork_engine::btrfs::{BTRFS_SUPER_MAGIC, KernelBtrfsDriver};
 use slipfork_engine::{BtrfsEngine, current_uid_gid};
 use slipfork_testkit::conformance::assert_world_engine_conformance;
+use slipfork_testkit::pods::ComponentPod;
 use slipfork_world::WorldTarget;
 use slipfork_world::{
-    BootLineage, EngineError, ExecEnv, InheritedVar, LocalIngressBridge, MountMode, ServiceKind,
-    ServiceRuntime, ServiceSpec, ServiceState, SnapshotId, StreamChunk, WorldEngine,
-    WorldEntryCommand, WorldHandle, WorldMount, WorldSpec,
+    BootLineage, EngineError, ExecEnv, InheritedVar, LocalIngressBridge, MountMode, ServiceState,
+    SnapshotId, StreamChunk, WorldEngine, WorldEntryCommand, WorldHandle, WorldMount, WorldSpec,
 };
 use support::{
     POLL_INTERVAL, WorldFixture, engine_test_dir, inherited_env, log_text, observe_for, poll_until,
-    world_env,
+    service_spec, world_env,
 };
 
 const HELPER_PATH: &str = "/usr/local/bin:/usr/bin:/bin";
@@ -57,19 +57,6 @@ fn target_pid(entry: &WorldEntryCommand) -> u32 {
         .find_map(|arg| arg.strip_prefix("--target="))
         .and_then(|pid| pid.parse().ok())
         .expect("entry command must carry nsenter --target=<init_pid>")
-}
-
-fn service_spec(id: &str, cwd: &Path, port: Option<u16>, script: &str) -> ServiceSpec {
-    ServiceSpec {
-        id: id.to_owned(),
-        kind: ServiceKind::Component,
-        runtime: ServiceRuntime::WorldProcess {
-            argv: vec!["sh".to_owned(), "-c".to_owned(), script.to_owned()],
-            cwd: cwd.to_path_buf(),
-        },
-        env: ExecEnv::default(),
-        readiness_port: port,
-    }
 }
 
 /// Every host-visible descendant of `pid` (the container's process tree, crun included).
@@ -831,7 +818,7 @@ fn service_logs_survive_idempotent_stop_and_freeze_seals_only_after_stop() {
     let world = fx.world(WorldTarget::Canonical);
     let started_ms = slipfork_world::epoch_millis_now();
 
-    let greeter = fx.service(
+    let greeter = fx.component(
         &world,
         service_spec(
             "greeter",
@@ -895,27 +882,32 @@ fn service_logs_survive_idempotent_stop_and_freeze_seals_only_after_stop() {
     );
     assert!(logs.is_closed());
 
-    // A live writer is stopped before `state` is sealed, so the snapshot is consistent.
-    let writer = fx.service(
+    // A live writer is stopped before `state` is sealed, so the snapshot is consistent. The pod's
+    // only writable state is its declared CoW volume in the world subvolume (production pods carry
+    // no world-state mount), so the writer appends there and the seal captures that volume.
+    let writer = fx.component(
         &world,
         service_spec(
             "writer",
             &fx.repo,
             None,
-            "while :; do echo tick >> \"$SLIPFORK_WORLD_STATE/live.log\"; sleep 0.01; done",
-        ),
+            "while :; do echo tick >> data/live.log; sleep 0.01; done",
+        )
+        .volume("data"),
     );
-    let produced = poll_until(ENGINE_SETTLE_DEADLINE, POLL_INTERVAL, || {
-        if fx
-            .exec(&world, "test -s \"$SLIPFORK_WORLD_STATE/live.log\"")
-            .exit_code
-            == 0
-        {
-            Ok(())
-        } else {
-            Err("writer has not produced state yet".to_owned())
-        }
-    });
+    let live_log = fx
+        .engine
+        .world_subvolume(&world)
+        .expect("world subvolume")
+        .join("volumes/writer/data/live.log");
+    let produced = poll_until(
+        ENGINE_SETTLE_DEADLINE,
+        POLL_INTERVAL,
+        || match fs::metadata(&live_log) {
+            Ok(metadata) if metadata.len() > 0 => Ok(()),
+            _ => Err("writer has not produced state yet".to_owned()),
+        },
+    );
     assert!(
         produced.is_ok(),
         "writer must produce state before the freeze: {produced:?}"
@@ -929,23 +921,19 @@ fn service_logs_survive_idempotent_stop_and_freeze_seals_only_after_stop() {
         "freeze_world must stop live services before sealing the subvolume"
     );
 
-    let size_at_freeze = fx
-        .exec(&world, "wc -c < \"$SLIPFORK_WORLD_STATE/live.log\"")
-        .stdout
-        .trim()
-        .to_owned();
+    let size_at_freeze = fs::metadata(&live_log)
+        .expect("writer state after freeze")
+        .len();
     observe_for(QUIET_WINDOW);
-    let size_after = fx
-        .exec(&world, "wc -c < \"$SLIPFORK_WORLD_STATE/live.log\"")
-        .stdout
-        .trim()
-        .to_owned();
+    let size_after = fs::metadata(&live_log)
+        .expect("writer state after the window")
+        .len();
     assert_eq!(
         size_at_freeze, size_after,
         "no service may keep writing state after freeze_world returns"
     );
     assert!(
-        size_at_freeze.parse::<u64>().unwrap_or(0) > 0,
+        size_at_freeze > 0,
         "the frozen snapshot must contain the writer's state"
     );
 
@@ -955,10 +943,15 @@ fn service_logs_survive_idempotent_stop_and_freeze_seals_only_after_stop() {
         None,
         &snap("sealed-after-stop"),
     );
-    let out = fx.exec(&sealed, "wc -c < \"$SLIPFORK_WORLD_STATE/live.log\"");
-    assert_eq!(out.exit_code, 0, "stderr: {}", out.stderr);
+    let sealed_log = fx
+        .engine
+        .world_subvolume(&sealed)
+        .expect("sealed subvolume")
+        .join("volumes/writer/data/live.log");
     assert_eq!(
-        out.stdout.trim(),
+        fs::metadata(&sealed_log)
+            .expect("sealed writer state")
+            .len(),
         size_at_freeze,
         "the sealed snapshot must equal the state observed after the stop"
     );
@@ -976,22 +969,19 @@ fn a_sh_wrapped_component_is_stopped_as_a_process_group_not_only_its_first_child
 
     // The production shape: a distinct `sh -eu -c` container init with the real service forked
     // underneath it, so the port owner is a grandchild of the container init.
-    let spec = ServiceSpec {
-        id: "api".to_owned(),
-        kind: ServiceKind::Component,
-        runtime: ServiceRuntime::WorldProcess {
-            argv: vec![
-                "sh".to_owned(),
-                "-eu".to_owned(),
-                "-c".to_owned(),
-                format!("python3 -m http.server {PORT} --bind 0.0.0.0 & wait"),
+    let api = fx.component(
+        &world,
+        ComponentPod::new(
+            "api",
+            &[
+                "sh",
+                "-eu",
+                "-c",
+                &format!("python3 -m http.server {PORT} --bind 0.0.0.0 & wait"),
             ],
-            cwd: fx.repo.clone(),
-        },
-        env: ExecEnv::default(),
-        readiness_port: Some(PORT),
-    };
-    let api = fx.service(&world, spec);
+        )
+        .readiness_port(PORT),
+    );
     let supervisor = fx
         .engine
         .world_processes(&world)
@@ -1042,25 +1032,22 @@ fn stop_reaps_a_group_descendant_that_outlives_its_supervisor() {
     // `sh` backgrounds a `setsid`-escaped server (its own session/process group) and waits on a
     // file: the container init is the wrapper, the server a descendant that must never survive
     // the container, even with its own group.
-    let spec = ServiceSpec {
-        id: "orphan".to_owned(),
-        kind: ServiceKind::Component,
-        runtime: ServiceRuntime::WorldProcess {
-            argv: vec![
-                "sh".to_owned(),
-                "-eu".to_owned(),
-                "-c".to_owned(),
-                format!(
+    let orphan = fx.component(
+        &world,
+        ComponentPod::new(
+            "orphan",
+            &[
+                "sh",
+                "-eu",
+                "-c",
+                &format!(
                     "setsid python3 -m http.server {PORT} --bind 0.0.0.0 & \
                      while [ ! -f exit-now ]; do sleep 0.05; done"
                 ),
             ],
-            cwd: fx.repo.clone(),
-        },
-        env: ExecEnv::default(),
-        readiness_port: Some(PORT),
-    };
-    let orphan = fx.service(&world, spec);
+        )
+        .readiness_port(PORT),
+    );
     let supervisor = fx
         .engine
         .world_processes(&world)
@@ -1117,26 +1104,21 @@ fn stop_reaps_a_group_descendant_that_outlives_its_supervisor() {
     // The same `Exited` shape under the world-wide stop path: `freeze_world` stops every recorded
     // row, including this one, so the seal can never capture a live writer.
     const FREEZE_PORT: u16 = 18125;
-    let freezer = fx.service(
+    let freezer = fx.component(
         &world,
-        ServiceSpec {
-            id: "freezer".to_owned(),
-            kind: ServiceKind::Component,
-            runtime: ServiceRuntime::WorldProcess {
-                argv: vec![
-                    "sh".to_owned(),
-                    "-eu".to_owned(),
-                    "-c".to_owned(),
-                    format!(
-                        "python3 -m http.server {FREEZE_PORT} --bind 0.0.0.0 & \
-                         while [ ! -f exit-freeze ]; do sleep 0.05; done"
-                    ),
-                ],
-                cwd: fx.repo.clone(),
-            },
-            env: ExecEnv::default(),
-            readiness_port: Some(FREEZE_PORT),
-        },
+        ComponentPod::new(
+            "freezer",
+            &[
+                "sh",
+                "-eu",
+                "-c",
+                &format!(
+                    "python3 -m http.server {FREEZE_PORT} --bind 0.0.0.0 & \
+                     while [ ! -f exit-freeze ]; do sleep 0.05; done"
+                ),
+            ],
+        )
+        .readiness_port(FREEZE_PORT),
     );
     fs::write(fx.repo.join("exit-freeze"), b"exit\n").expect("ask the freezer wrapper to exit");
     let freezer_exited = poll_until(ENGINE_SETTLE_DEADLINE, POLL_INTERVAL, || {
@@ -1183,10 +1165,10 @@ fn readiness_timeout_stops_the_supervisor_and_releases_the_service_id() {
     let fx = WorldFixture::new("ready-timeout");
     let world = fx.world(WorldTarget::Canonical);
 
-    let stalled = service_spec("stall", &fx.repo, Some(18098), "exec sleep 300");
+    let stalled = ComponentPod::script("stall", "exec sleep 300").readiness_port(18098);
     let err = fx
         .engine
-        .spawn_service(&world, &stalled)
+        .spawn_service(&world, &fx.component_spec(&world, &stalled))
         .expect_err("nothing listens on the readiness port");
     assert!(
         format!("{err}").contains("did not accept connections"),
@@ -1209,12 +1191,8 @@ fn readiness_timeout_stops_the_supervisor_and_releases_the_service_id() {
          while True:\n\
          \x20   c, _ = s.accept()\n\
          \x20   c.close()\n";
-    let mut retry = service_spec("stall", &fx.repo, Some(18098), "");
-    retry.runtime = ServiceRuntime::WorldProcess {
-        argv: vec!["python3".to_owned(), "-c".to_owned(), server.to_owned()],
-        cwd: fx.repo.clone(),
-    };
-    let handle = fx.service(&world, retry);
+    let retry = ComponentPod::new("stall", &["python3", "-c", server]).readiness_port(18098);
+    let handle = fx.component(&world, retry);
     assert_eq!(handle.state(), ServiceState::Running);
 
     fx.engine
@@ -1242,14 +1220,11 @@ fn dial_world_tcp_reaches_in_world_listener_via_netns_sock_scm_rights() {
          \x20   c.close()\n",
         port = 18080
     );
-    let mut spec = service_spec("echo", &fx.repo, Some(18080), "");
-    spec.runtime = ServiceRuntime::WorldProcess {
-        argv: vec!["python3".to_owned(), "-c".to_owned(), echo_server],
-        cwd: fx.repo.clone(),
-    };
+    let echo_pod =
+        ComponentPod::new("echo", &["python3", "-c", echo_server.as_str()]).readiness_port(18080);
     // `spawn_service` only returns once the in-world port accepts connections through
     // `dial_world_tcp`, so readiness itself exercises the `SCM_RIGHTS` handoff.
-    let echo = fx.service(&world, spec);
+    let echo = fx.component(&world, echo_pod);
     assert_eq!(echo.state(), ServiceState::Running);
 
     let mut stream = fx
@@ -1316,12 +1291,11 @@ fn two_worlds_isolate_the_same_port_and_dial_independently() {
              \x20   c.sendall(b\"{payload}\")\n\
              \x20   c.close()\n"
         );
-        let mut spec = service_spec("same-port", &fx.repo, Some(18432), "");
-        spec.runtime = ServiceRuntime::WorldProcess {
-            argv: vec!["python3".to_owned(), "-c".to_owned(), server],
-            cwd: fx.repo.clone(),
-        };
-        fx.service(world, spec);
+        fx.component(
+            world,
+            ComponentPod::new("same-port", &["python3", "-c", server.as_str()])
+                .readiness_port(18432),
+        );
     }
 
     for (world, expected) in [(&world_a, b"world-a"), (&world_b, b"world-b")] {
@@ -1540,12 +1514,10 @@ fn in_netns_bridge_port_80_reaches_host_ingress_and_dials_back_into_the_world() 
          \x20   c.recv(4096)\n\
          \x20   c.sendall(b\"HTTP/1.1 200 OK\\r\\nContent-Length: 9\\r\\n\\r\\nbridge-ok\")\n\
          \x20   c.close()\n";
-    let mut spec = service_spec("app", &fx.repo, Some(18081), "");
-    spec.runtime = ServiceRuntime::WorldProcess {
-        argv: vec!["python3".to_owned(), "-c".to_owned(), app.to_owned()],
-        cwd: fx.repo.clone(),
-    };
-    fx.service(&world, spec);
+    fx.component(
+        &world,
+        ComponentPod::new("app", &["python3", "-c", app]).readiness_port(18081),
+    );
 
     // Host ingress stand-in for `slipforkd`: every request that arrives over the AF_UNIX socket is
     // routed back into the world through `dial_world_tcp` (exactly the `ingresses` prefix path).

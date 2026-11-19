@@ -10,7 +10,9 @@ pub mod conformance;
 pub mod live;
 pub mod pods;
 
-pub use pods::{PodPlan, ServicePod, group_members, host_pgrp, read_pod_config, world_init_pid};
+pub use pods::{
+    ComponentPod, PodPlan, ServicePod, group_members, host_pgrp, read_pod_config, world_init_pid,
+};
 
 use std::time::{Duration, Instant};
 

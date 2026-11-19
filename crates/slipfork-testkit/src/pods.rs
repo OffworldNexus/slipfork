@@ -37,6 +37,7 @@ pub struct PodPlan {
     argv: Vec<String>,
     volumes: Vec<String>,
     env: BTreeMap<String, String>,
+    readiness_port: Option<u16>,
 }
 
 impl PodPlan {
@@ -48,6 +49,7 @@ impl PodPlan {
             argv: argv.iter().map(|arg| (*arg).to_owned()).collect(),
             volumes: Vec::new(),
             env: BTreeMap::from([("PATH".to_owned(), POD_PATH.to_owned())]),
+            readiness_port: None,
         }
     }
 
@@ -69,9 +71,139 @@ impl PodPlan {
         self
     }
 
+    /// Require the pod to accept connections on `port` before the spawn returns.
+    pub fn readiness_port(mut self, port: u16) -> Self {
+        self.readiness_port = Some(port);
+        self
+    }
+
     /// The service id this plan boots.
     pub fn service(&self) -> &str {
         &self.service
+    }
+}
+
+/// One world component pod, planned exactly the way `slipforkd`'s `PodBoot::component` plans it.
+///
+/// Production composes a component's complete environment as `world base ⊕ service overlay`,
+/// injects the engine-owned bundle directory, the world's published namespace joins, and a
+/// [`VolumePlan`] rooted on the world subvolume. [`ComponentPod::spec`] does the same through the
+/// public [`WorldEngine`] port, so a suite boots a component through the exact path `slipfork up`
+/// uses instead of a test-only world process.
+#[derive(Debug, Clone)]
+pub struct ComponentPod {
+    service: String,
+    directory: PathBuf,
+    argv: Vec<String>,
+    overlay: ExecEnv,
+    base: Option<ExecEnv>,
+    volumes: Vec<String>,
+    readiness_port: Option<u16>,
+}
+
+impl ComponentPod {
+    /// A component pod for `service` running `argv` from the world worktree root.
+    pub fn new(service: &str, argv: &[&str]) -> Self {
+        Self {
+            service: service.to_owned(),
+            directory: PathBuf::new(),
+            argv: argv.iter().map(|arg| (*arg).to_owned()).collect(),
+            overlay: ExecEnv::default(),
+            base: None,
+            volumes: Vec::new(),
+            readiness_port: None,
+        }
+    }
+
+    /// A component pod running `sh -c <script>` from the world worktree root.
+    pub fn script(service: &str, script: &str) -> Self {
+        Self::new(service, &["sh", "-c", script])
+    }
+
+    /// Start the component in `directory`, relative to the world's read-write worktree.
+    pub fn in_directory(mut self, directory: impl Into<PathBuf>) -> Self {
+        self.directory = directory.into();
+        self
+    }
+
+    /// Give one declared `volume <rel_path>` its own CoW subvolume under the world subvolume.
+    pub fn volume(mut self, rel_path: &str) -> Self {
+        self.volumes.push(rel_path.to_owned());
+        self
+    }
+
+    /// Add one value to the service's own environment overlay.
+    pub fn env(mut self, name: &str, value: &str) -> Self {
+        self.overlay
+            .set(name, value)
+            .unwrap_or_else(|err| panic!("component env `{name}` is not a valid name: {err}"));
+        self
+    }
+
+    /// Use `base` as the world's component environment instead of the caller's default world env.
+    pub fn base_env(mut self, base: ExecEnv) -> Self {
+        self.base = Some(base);
+        self
+    }
+
+    /// Require the pod to accept connections on `port` before the spawn returns.
+    pub fn readiness_port(mut self, port: u16) -> Self {
+        self.readiness_port = Some(port);
+        self
+    }
+
+    /// The service id this pod boots.
+    pub fn service(&self) -> &str {
+        &self.service
+    }
+
+    /// Plan the engine spec through the public port: bundle outside the subvolume, published
+    /// joins, CoW volumes, and the exact `world base ⊕ service overlay` environment.
+    pub fn spec(
+        &self,
+        engine: &dyn WorldEngine,
+        world: &WorldHandle,
+        worktree: &Path,
+        rootfs: &Path,
+        default_base: &ExecEnv,
+    ) -> Result<ServiceSpec, EngineError> {
+        if self.directory.is_absolute() {
+            return Err(EngineError::InvalidWorldSpec {
+                reason: format!(
+                    "component pod '{}' directory '{}' must be relative to the world worktree\n  \
+                     fix: name it relative to the worktree root",
+                    self.service,
+                    self.directory.display()
+                ),
+            });
+        }
+        let service_dir = worktree.join(&self.directory);
+        fs::create_dir_all(&service_dir).map_err(|err| EngineError::Io {
+            path: service_dir.display().to_string(),
+            message: format!("cannot create the component directory for its pod: {err}"),
+        })?;
+        let world_subvol = engine.world_subvolume(world)?;
+        let namespaces = engine.world_pod_namespaces(world)?;
+        let bundle_dir = engine.pod_bundle_dir(world, &self.service)?;
+        let volumes = VolumePlan::new(&world_subvol, &self.service, &service_dir, &self.volumes)
+            .map_err(pod_refusal)?;
+        let base = self.base.as_ref().unwrap_or(default_base);
+        let command = PodCommand::new(
+            service_dir,
+            self.argv.clone(),
+            base.overlaid(&self.overlay).expose_to_child_process(),
+        );
+        let location = PodLocation::new(&world_subvol, &bundle_dir, rootfs).map_err(pod_refusal)?;
+        let pod =
+            ServicePodSpec::new(location, namespaces, volumes, command).map_err(pod_refusal)?;
+        Ok(ServiceSpec {
+            id: self.service.clone(),
+            kind: ServiceKind::Component,
+            runtime: ServiceRuntime::ServicePod(pod),
+            // The pod's complete environment lives in its bundle command.
+            env: ExecEnv::default(),
+            readiness_port: self.readiness_port,
+        })
     }
 }
 
@@ -140,7 +272,7 @@ impl<'a> ServicePod<'a> {
                 runtime: ServiceRuntime::ServicePod(pod),
                 // The pod's complete environment lives in its bundle command.
                 env: ExecEnv::default(),
-                readiness_port: None,
+                readiness_port: plan.readiness_port,
             },
         )?;
 
