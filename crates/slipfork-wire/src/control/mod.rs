@@ -21,10 +21,10 @@ use thiserror::Error;
 pub use frame::{FrameReader, unexpected_reply, write_chunk, write_log, write_reply};
 pub use protocol::{ControlSecret, DaemonError, DaemonErrorKind, DaemonReply, DaemonRequest};
 pub use request::{
-    AuthSummary, DropForkRequest, DumpRequest, ExecTargetRequest, FeatureSelection, ForkRequest,
-    ForwardRequest, ForwardSummary, ForwardTarget, HookRunRequest, LogsRequest, PruneReport,
-    ResourceRequest, RestartRequest, UpRequest, WorkspaceRefsRequest, WorkspaceRefsSummary,
-    WorldExecTarget, WorldSelector,
+    AuthSummary, DropForkRequest, DumpRequest, ExecService, ExecTargetRequest, FeatureSelection,
+    ForkRequest, ForwardRequest, ForwardSummary, ForwardTarget, HookRunRequest, LogsRequest,
+    PruneReport, ResourceRequest, RestartRequest, UpRequest, WorkspaceRefsRequest,
+    WorkspaceRefsSummary, WorldExecTarget, WorldSelector, WorldSelectorRepo,
 };
 pub use socket::{CONTROL_SOCKET_FILE, control_socket_path};
 pub use view::{

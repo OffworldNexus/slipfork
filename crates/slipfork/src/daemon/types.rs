@@ -376,6 +376,8 @@ impl DaemonState {
 pub(super) struct ResolvedHook {
     /// `<service>:<phase>`, the id `slipfork hook run` names.
     pub(super) id: String,
+    /// The service that declared the hook (the canonical prompt component).
+    pub(super) service: String,
     pub(super) phase: HookPhase,
     pub(super) argv: Vec<String>,
     pub(super) overlay: ExecEnv,

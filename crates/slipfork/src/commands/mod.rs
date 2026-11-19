@@ -11,6 +11,7 @@ pub(crate) mod daemon;
 pub(crate) mod doctor;
 pub(crate) mod forward;
 pub(crate) mod inspect;
+pub(crate) mod interact;
 pub(crate) mod process;
 pub(crate) mod secret;
 
@@ -63,9 +64,19 @@ pub(crate) fn dispatch(app: &CliApp, command: Option<Commands>) -> Result<ExitCo
         Some(Commands::Prune { dry_run, yes }) => inspect::prune(app, dry_run, yes),
         Some(Commands::Secret { action }) => secret::secret(app, action),
         Some(Commands::Exec {
-            world, cwd, argv, ..
-        }) => process::exec(app, world, cwd, argv),
-        Some(Commands::Shell { world }) => process::shell(app, world),
+            world,
+            service,
+            cwd,
+            argv,
+        }) => process::exec(app, world, service, cwd, argv),
+        Some(Commands::Run { task, args, world }) => interact::run(app, world, task, args),
+        Some(Commands::Env {
+            service,
+            reveal,
+            features,
+            world,
+        }) => interact::env(app, world, service, reveal, features),
+        Some(Commands::Shell { service, world }) => process::shell(app, world, service),
         Some(Commands::Logs {
             world,
             target,

@@ -285,6 +285,7 @@ fn resolve_hooks(
                 .collect();
             hooks.push(ResolvedHook {
                 id: hook_id(&service.id, hook.phase),
+                service: service.id.clone(),
                 phase: hook.phase,
                 argv,
                 overlay: ExecEnv::default(),
@@ -454,6 +455,7 @@ mod tests {
     fn an_unknown_hook_id_fails_closed_with_the_declared_list() {
         let hooks = [ResolvedHook {
             id: hook_id("api", HookPhase::Setup),
+            service: "api".to_owned(),
             phase: HookPhase::Setup,
             argv: vec!["/bin/true".to_owned()],
             overlay: ExecEnv::default(),

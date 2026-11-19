@@ -234,7 +234,7 @@ impl DaemonService {
         req: &WorldSelector,
     ) -> Result<WorldProcessReport, EdgeError> {
         let selection = self.select(&req.cwd, req.world.as_deref())?;
-        let (state, worktree, handle) = {
+        let (state, worktree, handle, feature_selection) = {
             let world_state = self.lock();
             let Some(world) = world_state.world(&selection.repo.project, &selection.target) else {
                 return Err(Self::unknown_world(
@@ -242,7 +242,12 @@ impl DaemonService {
                     &selection.target,
                 ));
             };
-            (world.state, world.worktree.clone(), world.handle.clone())
+            (
+                world.state,
+                world.worktree.clone(),
+                world.handle.clone(),
+                world.feature_selection.clone(),
+            )
         };
         let world_text = world_id(&selection.repo.project, &selection.target);
         let lineage = self
@@ -261,7 +266,9 @@ impl DaemonService {
             lineage,
             services: services.clone(),
         };
-        WorldProcessReport::new(&summary, services).map_err(EdgeError::Control)
+        WorldProcessReport::new(&summary, services)
+            .map(|report| report.with_feature_selection(feature_selection))
+            .map_err(EdgeError::Control)
     }
 }
 

@@ -1,13 +1,15 @@
 //! Control request bodies and their rendered summaries.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
 use slipfork_world::WorldOrigin;
 
 use super::ControlSecret;
-use slipfork_world::{EntryKind, ExecEnv, WorldEntryCommand};
+use slipfork_world::{
+    EntryKind, ExecEnv, ProjectSlug, WorldEntryCommand, WorldTarget, validate_fork_name,
+};
 
 /// Endpoint selector shared by every world-scoped command (`--world <fork>` or explicit `cwd`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -16,6 +18,67 @@ pub struct WorldSelector {
     pub cwd: PathBuf,
     /// Explicit `--world <fork>`; `None` means "resolve from `cwd`".
     pub world: Option<String>,
+}
+
+/// The three repository facts a world selector resolves against.
+///
+/// A plain borrow bundle: `slipfork-vcs` owns [`slipfork_world::WorldTarget`]'s repository
+/// discovery, while this crate owns the one `<project>` / `<project>:<fork>` / `<fork>` grammar
+/// the CLI and the daemon share.
+#[derive(Debug, Clone, Copy)]
+pub struct WorldSelectorRepo<'a> {
+    /// Project slug of the checkout the caller is inside.
+    pub project: &'a ProjectSlug,
+    /// Repository root the worlds live under.
+    pub vcs_root: &'a Path,
+    /// Checkout containing the caller (`<vcs_root>/.worktrees/<fork>` or the root itself).
+    pub worktree_root: &'a Path,
+}
+
+impl WorldSelector {
+    /// Resolve the one accepted selector grammar against `repo`.
+    ///
+    /// - `<project>` selects the canonical world of `repo`.
+    /// - `<project>:<fork>` selects that fork, and the project must be `repo.project`.
+    /// - bare `<fork>` selects the fork in `repo` (repo-local CLI ergonomics).
+    ///
+    /// An empty selector, more than one `':'`, a foreign project prefix, or an invalid fork label
+    /// fails closed with one actionable line. Every caller (`slipfork env`, `slipfork list`,
+    /// `--world` requests) delegates here instead of re-parsing the grammar.
+    pub fn parse(raw: &str, repo: WorldSelectorRepo<'_>) -> Result<WorldTarget, String> {
+        let selector = raw.trim();
+        if selector.is_empty() {
+            return Err(
+                "a world selector must not be empty; pass `<fork>`, `<project>:<fork>`, or `<project>`"
+                    .to_owned(),
+            );
+        }
+        match selector.split_once(':') {
+            Some((project, fork)) => {
+                if fork.contains(':') {
+                    return Err(format!(
+                        "invalid world selector '{raw}': expected at most one ':' (`<project>:<fork>`)"
+                    ));
+                }
+                let project = ProjectSlug::parse(project).map_err(|err| err.to_string())?;
+                if project != *repo.project {
+                    return Err(format!(
+                        "world '{raw}' belongs to project '{project}', while '{}' belongs to project '{}'; cd into '{project}' or pass a world id printed by `slipfork list` for '{}'",
+                        repo.worktree_root.display(),
+                        repo.project,
+                        repo.project
+                    ));
+                }
+                validate_fork_name(fork, &[]).map_err(|err| err.to_string())?;
+                Ok(WorldTarget::UserFork(fork.to_owned()))
+            }
+            None if selector == repo.project.as_str() => Ok(WorldTarget::Canonical),
+            None => {
+                validate_fork_name(selector, &[]).map_err(|err| err.to_string())?;
+                Ok(WorldTarget::UserFork(selector.to_owned()))
+            }
+        }
+    }
 }
 
 /// The `-F/--features` + `--no-default-features` selection one invocation requested.
@@ -160,21 +223,41 @@ pub struct LogsRequest {
     pub lines: Option<usize>,
 }
 
-/// Request body of `slipfork exec` / `shell` / `db` / `redis`.
+/// The entry surface an [`ExecTargetRequest`] selects, typed instead of guessed from the id.
 ///
-/// `service` is the single typed selector between the two entry surfaces (`ADR-0009` §3):
-/// `None` enters the world rootfs (`exec` / `shell`), while `Some("pg_databases.main")` enters
-/// that running backing-service container through `WorldEngine::service_entry_command` (`db` /
-/// `redis`). A stopped container fails closed with [`DaemonErrorKind::ServiceNotRunning`](super::DaemonErrorKind::ServiceNotRunning); there
-/// is no app-rootfs fallback.
+/// The daemon resolves each variant against the world's own `Forkfile`: [`Self::App`] must name a
+/// declared app service and enters that container at its directory; [`Self::Backing`] must name a
+/// declared backing resource (`pg_databases.main`, `redis_clusters.cache`) and enters that running
+/// container; [`Self::World`] enters the world's app stage, whose service the daemon selects from
+/// the caller's `cwd` (or the world rootfs when the manifest declares none). No id is classified by
+/// its spelling, so a service named `api.v2` is never mistaken for a backing container.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "id", rename_all = "snake_case")]
+pub enum ExecService {
+    /// The world's app stage, with the service resolved from `cwd` (or the plain world rootfs).
+    #[default]
+    World,
+    /// One declared app service, entered at `<worktree>/<service_dir>`.
+    App(String),
+    /// One declared backing resource, entered through `WorldEngine::service_entry_command`.
+    Backing(String),
+}
+
+/// Request body of `slipfork exec` / `shell` / `run` / `db` / `redis`.
+///
+/// [`ExecService`] is the single typed selector between the entry surfaces (`ADR-0009` §3). A
+/// stopped container fails closed with
+/// [`DaemonErrorKind::ServiceNotRunning`](super::DaemonErrorKind::ServiceNotRunning); there is no
+/// app-rootfs fallback for an explicitly requested container.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExecTargetRequest {
     /// Caller working directory; the daemon resolves the nearest world from it.
     pub cwd: PathBuf,
     /// Explicit `--world <fork>`.
     pub world: Option<String>,
-    /// Declared backing-service id (`pg_databases.main`, `redis_clusters.cache`) to enter, if any.
-    pub service: Option<String>,
+    /// The typed entry surface this call enters.
+    #[serde(default)]
+    pub service: ExecService,
     /// Argv the caller wants to run inside the world or service container.
     pub argv: Vec<String>,
     /// Whether the caller holds a real terminal (`shell`) or not (`exec`, hooks, service clients).
@@ -271,6 +354,10 @@ pub struct AuthSummary {
 pub struct WorldExecTarget {
     /// World id (`<project>` or `<project>:<fork>`).
     pub world: String,
+    /// The service whose context this entry targets (`None` for the plain world rootfs), so an
+    /// interactive shell can render `(slipfork:<world>/<service>)` without re-deriving it.
+    #[serde(default)]
+    pub service: Option<String>,
     /// The world's single public origin.
     pub origin: WorldOrigin,
     /// Child argv prefix of the engine's entry program (for example `nsenter`) to spawn.

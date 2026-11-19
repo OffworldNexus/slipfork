@@ -13,6 +13,7 @@ use std::time::Duration;
 
 use slipfork_edge::{DaemonControl, DaemonControlClient, EdgeError};
 use slipfork_wire::control::DaemonErrorKind;
+use slipfork_wire::control::ExecService;
 use slipfork_wire::control::ExecTargetRequest;
 
 pub mod support;
@@ -131,7 +132,7 @@ fn container_backed_world_targets_redis_and_fails_closed_after_the_container_sto
     let request = ExecTargetRequest {
         cwd: repo.clone(),
         world: None,
-        service: Some("redis_clusters.cache".to_owned()),
+        service: ExecService::Backing("redis_clusters.cache".to_owned()),
         argv: vec!["redis-cli".to_owned()],
         entry_kind: slipfork_world::EntryKind::Exec,
     };

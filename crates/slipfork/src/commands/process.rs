@@ -6,9 +6,11 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use serde_json::json;
-use slipfork_edge::DaemonControl;
+use slipfork_edge::{DaemonControl, DaemonControlClient};
 use slipfork_vcs::WORKTREES_DIRECTORY;
-use slipfork_wire::control::{ExecTargetRequest, HookRunRequest, LogsRequest};
+use slipfork_wire::control::{
+    ExecService, ExecTargetRequest, HookRunRequest, LogsRequest, WorldSelector,
+};
 use slipfork_world::EntryKind;
 use slipfork_world::StreamSource;
 
@@ -16,39 +18,67 @@ use crate::CliApp;
 use crate::commands::control::{connect, repo_root};
 use crate::entry::spawn_entry;
 
-/// `slipfork exec`: run a command non-interactively inside a world.
+/// `slipfork exec`: run a command non-interactively inside a world or service container.
 pub(crate) fn exec(
     app: &CliApp,
     world: Option<String>,
+    service: Option<String>,
     cwd: Option<PathBuf>,
     argv: Vec<String>,
 ) -> Result<ExitCode, String> {
+    if app.output_mode.json {
+        return Err(
+            "`slipfork exec` mirrors the child's stdio and exit code and has no --json document; next: drop --json, or use `slipfork ps --json` for world state"
+                .to_owned(),
+        );
+    }
     let client = connect(&app.layout)?;
     let cwd = match cwd {
         Some(cwd) => cwd,
         None => app.ui.cwd()?,
     };
+    // `--` is optional: clap's trailing vararg may hand it through, and the daemon never expects it.
+    let argv = match argv.first().map(String::as_str) {
+        Some("--") => argv.into_iter().skip(1).collect(),
+        _ => argv,
+    };
+    let service = match service {
+        Some(id) => ExecService::App(id),
+        None => match selected_world_service(&client, &cwd, &world, &|id| {
+            format!("slipfork exec -s {id} -- <cmd>")
+        })? {
+            Some(id) => ExecService::App(id),
+            None => ExecService::World,
+        },
+    };
     let target = client
         .exec_target(&ExecTargetRequest {
             cwd,
             world,
-            service: None,
-            argv: argv.clone(),
+            service,
+            argv,
             entry_kind: EntryKind::Exec,
         })
         .map_err(|err| err.to_string())?;
     let status = spawn_entry(&target)?;
-    if app.output_mode.json {
-        println!(
-            "{}",
-            json!({ "ok": status.success(), "world": target.world, "exit_code": status.code() })
-        );
-    }
     Ok(exit_code(&status))
 }
 
-/// `slipfork shell`: enter a world with the developer's login shell and native terminal stdio.
-pub(crate) fn shell(app: &CliApp, world: Option<String>) -> Result<ExitCode, String> {
+/// `slipfork shell`: enter a service's container with the developer's login shell.
+///
+/// The prompt is the only orientation `shell` prints (`(slipfork:<world>/<service>)`); the entry
+/// itself is handed over byte-clean.
+pub(crate) fn shell(
+    app: &CliApp,
+    world: Option<String>,
+    service: Option<String>,
+) -> Result<ExitCode, String> {
+    if app.output_mode.json {
+        return Err(
+            "`slipfork shell` is an interactive terminal hand-over and has no --json document; next: drop --json, or use `slipfork exec -- <cmd>`"
+                .to_owned(),
+        );
+    }
     require_tty(
         app,
         "shell",
@@ -56,11 +86,21 @@ pub(crate) fn shell(app: &CliApp, world: Option<String>) -> Result<ExitCode, Str
     )?;
     let shell = app.ui.shell()?;
     let client = connect(&app.layout)?;
-    let target = client
+    let cwd = app.ui.cwd()?;
+    let service = match service {
+        Some(id) => ExecService::App(id),
+        None => match selected_world_service(&client, &cwd, &world, &|id| {
+            format!("slipfork shell {id}")
+        })? {
+            Some(id) => ExecService::App(id),
+            None => ExecService::World,
+        },
+    };
+    let mut target = client
         .exec_target(&ExecTargetRequest {
-            cwd: app.ui.cwd()?,
+            cwd,
             world,
-            service: None,
+            service,
             argv: vec![shell],
             // A real interactive hand-over needs both ends: `shell | tee log` must stay
             // byte-clean, so the engine only bakes a PTY when stdout is a terminal too.
@@ -71,19 +111,39 @@ pub(crate) fn shell(app: &CliApp, world: Option<String>) -> Result<ExitCode, Str
             },
         })
         .map_err(|err| err.to_string())?;
-    // One orientation line before the TTY is handed over, and never under `--json`: the world
-    // rootfs is the app stage, not the host, so `ps`/`curl` do not exist inside it.
-    if !app.output_mode.json {
-        eprintln!("world rootfs is the app stage (no host tools; use slipfork ps / logs / open)");
+    let prompt = match &target.service {
+        Some(service) => format!("(slipfork:{}/{service}) ", target.world),
+        None => format!("(slipfork:{}) ", target.world),
+    };
+    // Both dialects read one of these; an inherited shell prompt never survives `env_clear`.
+    for name in ["PS1", "PROMPT"] {
+        target
+            .env
+            .set(name, prompt.clone())
+            .map_err(|err| err.to_string())?;
     }
     let status = spawn_entry(&target)?;
-    if app.output_mode.json {
-        println!(
-            "{}",
-            json!({ "ok": status.success(), "world": target.world, "exit_code": status.code() })
-        );
-    }
     Ok(exit_code(&status))
+}
+
+/// The service the world's own `Forkfile` auto-selects for `cwd` (`None` = no declared service).
+///
+/// The daemon's report carries the world's real worktree and its active feature selection, so the
+/// CLI evaluates exactly the manifest the running world was booted from — not a default view.
+fn selected_world_service(
+    client: &DaemonControlClient,
+    cwd: &Path,
+    world: &Option<String>,
+    remedy: &dyn Fn(&str) -> String,
+) -> Result<Option<String>, String> {
+    let report = client
+        .world_processes(&WorldSelector {
+            cwd: cwd.to_path_buf(),
+            world: world.clone(),
+        })
+        .map_err(|err| err.to_string())?;
+    let fork = slipfork::project::load_project_fork(&report.worktree, &report.feature_selection)?;
+    slipfork::project::select_service(&fork, &report.worktree, cwd, None, remedy)
 }
 
 /// `slipfork logs`: read or follow retained component and hook logs.
@@ -220,7 +280,7 @@ fn service_entry(
         .exec_target(&ExecTargetRequest {
             cwd,
             world,
-            service: Some(service.clone()),
+            service: ExecService::Backing(service.clone()),
             argv,
             entry_kind: EntryKind::Exec,
         })
@@ -245,7 +305,7 @@ fn service_entry(
     Ok(exit_code(&status))
 }
 
-fn exit_code(status: &std::process::ExitStatus) -> ExitCode {
+pub(crate) fn exit_code(status: &std::process::ExitStatus) -> ExitCode {
     ExitCode::from(u8::try_from(status.code().unwrap_or(1)).unwrap_or(1))
 }
 

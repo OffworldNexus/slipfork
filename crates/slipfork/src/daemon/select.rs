@@ -6,51 +6,25 @@ use super::{rejected, runtime_error};
 use crate::status::world_next_commands;
 use slipfork_edge::{EdgeError, world_id};
 use slipfork_vcs::{RepoRoot, WORKTREES_DIRECTORY};
-use slipfork_wire::control::{WorldServiceSummary, WorldState, WorldUpSummary};
+use slipfork_wire::control::{
+    WorldSelector, WorldSelectorRepo, WorldServiceSummary, WorldState, WorldUpSummary,
+};
 use slipfork_world::{ProjectSlug, WorldHandle, WorldTarget, validate_fork_name};
 use std::path::Path;
 
 /// The minimal world-id round trip (`ADR-0005` §3, 0.1.0 subset; the typed `WorldId` lands in
-/// 0.2.0): accept exactly the forms `slipfork list` prints.
-///
-/// - `<project>` selects the canonical world of `repo`.
-/// - `<project>:<fork>` selects that fork, and the project must be `repo.project`.
-/// - bare `<fork>` selects the fork in `repo` (repo-local CLI ergonomics).
-///
-/// A foreign project prefix, more than one `':'`, an empty half, or an invalid fork label fails
-/// closed with a typed `Rejected` diagnostic.
+/// 0.2.0): accept exactly the forms `slipfork list` prints through the one grammar owner in
+/// [`slipfork_wire::control::WorldSelector::parse`].
 pub(super) fn resolve_world_selector(raw: &str, repo: &RepoRoot) -> Result<WorldTarget, EdgeError> {
-    let selector = raw.trim();
-    if selector.is_empty() {
-        return Err(rejected(
-            "a world selector must not be empty; pass `<fork>`, `<project>:<fork>`, or `<project>`",
-        ));
-    }
-    match selector.split_once(':') {
-        Some((project, fork)) => {
-            if fork.contains(':') {
-                return Err(rejected(format!(
-                    "invalid world selector '{raw}': expected at most one ':' (`<project>:<fork>`)"
-                )));
-            }
-            let project = ProjectSlug::parse(project).map_err(|err| rejected(err.to_string()))?;
-            if project != repo.project {
-                return Err(rejected(format!(
-                    "world '{raw}' belongs to project '{project}', while '{}' belongs to project '{}'; cd into '{project}' or pass a world id printed by `slipfork list` for '{}'",
-                    repo.worktree_root.display(),
-                    repo.project,
-                    repo.project
-                )));
-            }
-            validate_fork_name(fork, &[]).map_err(|err| rejected(err.to_string()))?;
-            Ok(WorldTarget::UserFork(fork.to_owned()))
-        }
-        None if selector == repo.project.as_str() => Ok(WorldTarget::Canonical),
-        None => {
-            validate_fork_name(selector, &[]).map_err(|err| rejected(err.to_string()))?;
-            Ok(WorldTarget::UserFork(selector.to_owned()))
-        }
-    }
+    WorldSelector::parse(
+        raw,
+        WorldSelectorRepo {
+            project: &repo.project,
+            vcs_root: &repo.vcs_root,
+            worktree_root: &repo.worktree_root,
+        },
+    )
+    .map_err(rejected)
 }
 
 impl DaemonService {

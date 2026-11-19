@@ -23,7 +23,7 @@ use std::time::{Duration, Instant};
 
 use slipfork_edge::{DaemonControl, DaemonControlClient};
 use slipfork_ospp_testkit::{ReferenceOsppServer, ReferenceServerConfig};
-use slipfork_wire::control::{ExecTargetRequest, WorldSelector};
+use slipfork_wire::control::{ExecService, ExecTargetRequest, WorldSelector};
 
 pub mod support;
 use support::{Daemon, assert_success, repo_with_manifest, run_git, stderr, stdout};
@@ -252,7 +252,7 @@ fn run_service_entry(
         .exec_target(&ExecTargetRequest {
             cwd: repo.to_path_buf(),
             world: None,
-            service: Some(service.to_owned()),
+            service: ExecService::Backing(service.to_owned()),
             argv: argv.iter().map(|arg| (*arg).to_owned()).collect(),
             entry_kind: slipfork_world::EntryKind::Exec,
         })

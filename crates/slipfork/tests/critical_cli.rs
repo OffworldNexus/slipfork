@@ -1206,46 +1206,54 @@ fn cli_on_a_pty(daemon: &Daemon, cwd: &Path, args: &[&str], stdin: &str) -> std:
     child.wait_with_output().expect("wait for script(1)")
 }
 
-/// The one orientation line `slipfork shell` prints before handing over the terminal.
-const SHELL_ORIENTATION: &str =
-    "world rootfs is the app stage (no host tools; use slipfork ps / logs / open)";
+/// The prompt `slipfork shell` hands over through `PS1`/`PROMPT` (`(slipfork:<world>/<service>)`).
+const SHELL_PROMPT_PREFIX: &str = "(slipfork:";
 
 #[test]
-fn interactive_shell_prints_one_orientation_line_and_json_never_does() {
+fn interactive_shell_hands_over_the_service_prompt_and_json_refuses() {
     let tmp = disk_tempdir();
     let scratch = tmp.path();
     let repo = repo_with_snow(scratch);
     let daemon = Daemon::start(scratch);
     assert_success(&daemon.cli(&repo, &["up"]), "up before shell");
 
-    let shell = cli_on_a_pty(&daemon, &repo, &["shell"], "exit\n");
+    // A real PTY, plus a command that reads the exported prompt the way a login shell does.
+    let shell = cli_on_a_pty(&daemon, &repo, &["shell"], "printenv PS1; exit\n");
     assert!(
         shell.status.success(),
         "interactive shell must hand over the terminal and exit cleanly: stdout={:?} stderr={:?}",
         stdout(&shell),
         stderr(&shell)
     );
-    assert_eq!(
-        stdout(&shell).matches(SHELL_ORIENTATION).count(),
-        1,
-        "shell must print the orientation line exactly once: {}",
-        stdout(&shell)
+    let out = stdout(&shell);
+    assert!(
+        out.contains(SHELL_PROMPT_PREFIX),
+        "shell must export the world prompt: {out}"
+    );
+    assert!(
+        out.contains("(slipfork:acme-app/api)"),
+        "the prompt must name the selected world and service: {out}"
+    );
+    assert!(
+        !out.contains("world rootfs is the app stage"),
+        "the retired orientation banner must be gone: {out}"
     );
 
+    // `--json` is a document mode: an interactive hand-over has no document, so it fails closed.
     let json = cli_on_a_pty(&daemon, &repo, &["--json", "shell"], "exit\n");
     assert!(
-        json.status.success(),
-        "--json shell must exit cleanly: stdout={:?} stderr={:?}",
+        !json.status.success(),
+        "--json shell must fail closed instead of mixing a hand-over into a document: stdout={:?} stderr={:?}",
         stdout(&json),
         stderr(&json)
     );
     assert!(
-        !stdout(&json).contains(SHELL_ORIENTATION),
-        "--json never mixes the human orientation line into its document: {}",
+        stdout(&json).contains("no --json document"),
+        "the refusal must name the remedy: {}",
         stdout(&json)
     );
 
-    // Non-interactive entry stays silent: `exec` shares the entry command, not the banner.
+    // Non-interactive entry stays silent: `exec` shares the entry command, not the prompt.
     let exec = daemon.cli(&repo, &["exec", "--", "true"]);
     assert_success(&exec, "exec -- true");
     assert!(

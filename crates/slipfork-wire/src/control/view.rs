@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use slipfork_world::WorldOrigin;
 
+use super::request::FeatureSelection;
 use super::{DaemonError, DaemonErrorKind};
 use slipfork_world::{StreamChunk, WorldLineage, WorldServiceInfo};
 
@@ -246,6 +247,10 @@ pub struct WorldProcessReport {
     pub lineage: WorldLineage,
     /// Every component and backing-service row of this world, ids unique.
     pub services: Vec<WorldServiceSummary>,
+    /// The `-F/--no-default-features` selection this world was booted with, so the thin CLI can
+    /// re-evaluate the same `Forkfile` view (`run`, auto-selected `exec`/`shell`).
+    #[serde(default)]
+    pub feature_selection: FeatureSelection,
 }
 
 impl WorldProcessReport {
@@ -287,7 +292,15 @@ impl WorldProcessReport {
             worktree: world.worktree.clone(),
             lineage: world.lineage.clone(),
             services,
+            feature_selection: FeatureSelection::default(),
         })
+    }
+
+    /// Attach the world's active feature selection (the daemon's own boot record).
+    #[must_use]
+    pub fn with_feature_selection(mut self, feature_selection: FeatureSelection) -> Self {
+        self.feature_selection = feature_selection;
+        self
     }
 }
 /// One live boot event streamed before [`WorldUpSummary`].

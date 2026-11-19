@@ -132,19 +132,49 @@ pub enum Commands {
     Exec {
         #[arg(short = 'w', long, value_name = "WORLD", help = WORLD_HELP)]
         world: Option<String>,
-        /// Service whose container runs the command (auto-selected for a single-service world).
+        /// Service whose container runs the command (auto-selected for a single-service world or
+        /// when `cwd` is inside that service's directory).
         #[arg(short = 's', long, value_name = "SERVICE")]
         service: Option<String>,
         /// Working directory used to resolve the world and to enter it.
         #[arg(long)]
         cwd: Option<PathBuf>,
-        /// Command and arguments to execute.
+        /// Command and arguments to execute (`--` is optional).
         #[arg(required = true, trailing_var_arg = true)]
         argv: Vec<String>,
     },
 
-    /// Enter a world interactively with native terminal stdio (requires a TTY).
+    /// Run a `Forkfile` `task <name> in <service>` inside that service, streaming its output.
+    Run {
+        /// Task name declared in the `Forkfile`.
+        #[arg(value_name = "TASK")]
+        task: String,
+        /// Extra arguments appended to a single-command task (rejected for a block task). The
+        /// `-w/--world` and `--json` flags belong to the CLI, so they must precede `<task>`.
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+        #[arg(short = 'w', long, value_name = "WORLD", help = WORLD_HELP)]
+        world: Option<String>,
+    },
+
+    /// Print one service's resolved environment (`[REDACTED]` unless `--reveal`).
+    Env {
+        #[arg(short = 's', long, value_name = "SERVICE")]
+        service: Option<String>,
+        /// Show secret values (requires an interactive terminal).
+        #[arg(long)]
+        reveal: bool,
+        #[command(flatten)]
+        features: FeatureArgs,
+        #[arg(short = 'w', long, value_name = "WORLD", help = WORLD_HELP)]
+        world: Option<String>,
+    },
+
+    /// Enter a service's container interactively with native terminal stdio (requires a TTY).
     Shell {
+        /// Service to enter (auto-selected for a single-service world or from `cwd`).
+        #[arg(value_name = "SERVICE")]
+        service: Option<String>,
         #[arg(short = 'w', long, value_name = "WORLD", help = WORLD_HELP)]
         world: Option<String>,
     },
