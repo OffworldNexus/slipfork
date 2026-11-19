@@ -7,6 +7,7 @@
 #![forbid(unsafe_code)]
 
 pub mod conformance;
+pub mod live;
 
 use std::time::{Duration, Instant};
 

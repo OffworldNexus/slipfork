@@ -158,6 +158,12 @@ SUITES = (
         "M3.14",
     ),
     (
+        "slipfork-edge",
+        "critical_edge_live",
+        "crates/slipfork-edge/tests/critical_edge_live.rs",
+        "M3.30.4.4",
+    ),
+    (
         "slipfork",
         "critical_btrfs_live",
         "crates/slipfork/tests/critical_btrfs_live.rs",

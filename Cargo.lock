@@ -1488,7 +1488,11 @@ dependencies = [
 name = "slipfork-testkit"
 version = "0.1.0"
 dependencies = [
+ "hex",
+ "sha2 0.10.9",
+ "slipfork-engine",
  "slipfork-world",
+ "tempfile",
 ]
 
 [[package]]

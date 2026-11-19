@@ -1688,3 +1688,12 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-19T02:39 [M3.30.4.3] (lead) status review -> active
 - 2026-11-19T02:39 [M3.30.4.3] (lead) triad: arch pass, tests pass, ux 1 MAJOR (3 lost UX assertions) -> 1 consolidated fix pass
 - 2026-11-19T02:39 [M3.30.4.3] (lead) status active -> done
+- 2026-11-19T02:40 [M3.30.4.4] (lead) status ready -> active
+- 2026-11-19T02:40 [M3.30.4.4] (lead) attempt 1/3 started
+- 2026-11-19T02:40 [M3.30.4.4] (lead) base 94d2d93f0d0929120bf5e247bfbd754de28c7b0a
+- 2026-11-19T02:40 [M3.30.4.4] (lead) edited fields
+- 2026-11-19T02:46 [M3.30.4.4] (lead) status active -> review
+- 2026-11-19T02:48 [M3.30.4.4] (lead) attempt 2/3 started
+- 2026-11-19T02:48 [M3.30.4.4] (lead) status review -> active
+- 2026-11-19T02:48 [M3.30.4.4] (lead) triad: arch 2 MAJOR, tests 2 BLOCKER + 4 MAJOR, ux 4 MAJOR -> 1 consolidated restore pass
+- 2026-11-19T02:52 [M3.30.4.4] (lead) status active -> done

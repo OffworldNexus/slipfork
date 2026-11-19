@@ -16,7 +16,7 @@ export CARGO_BUILD_JOBS
 # Suites that boot real Btrfs worlds (and therefore need a Btrfs state root and a serialized run).
 # `make rs-test-live` owns them; `make check` never runs them, so this non-Btrfs host stays green.
 # Run them on the lab VM: `uv run --no-project tools/do_vm.py test`.
-RS_LIVE_SUITES := slipfork-engine:critical_btrfs_live slipfork-engine:critical_engine slipfork-engine:critical_oci_runtime slipfork:critical_btrfs_live slipfork:critical_cli slipfork:critical_l0_wiring slipfork:critical_ospp_daemon slipfork:critical_slug slipfork:critical_world_journey slipfork:critical_vcs_remote
+RS_LIVE_SUITES := slipfork-engine:critical_btrfs_live slipfork-engine:critical_engine slipfork-engine:critical_oci_runtime slipfork:critical_btrfs_live slipfork:critical_cli slipfork:critical_l0_wiring slipfork:critical_ospp_daemon slipfork:critical_slug slipfork:critical_world_journey slipfork:critical_vcs_remote slipfork-edge:critical_edge_live
 .PHONY: help check fmt rs-fmt rs-lint rs-test rs-test-live ts-test py-lint py-test docs-check guard plan-check bench bench-update docs-serve
 
 $(TMPDIR):
@@ -79,6 +79,7 @@ rs-test: | $(TMPDIR) ## Run the pure/loopback Rust suites (compile once, no Btrf
 # The Btrfs world-booting journeys. A direct `cargo test --test …` on a non-Btrfs host fails closed
 # through `require_btrfs` (one line naming the missing substrate) — it never skips silently.
 rs-test-live: | $(TMPDIR) ## Run the Btrfs world-booting suites (needs Btrfs; lab VM: `tools/do_vm.py test`)
+	cargo build -p slipfork-engine --bins
 	cargo test --workspace --tests --no-run
 	cargo test -p slipfork-engine --test critical_btrfs_live -- --test-threads=1
 	cargo test -p slipfork-engine --test critical_engine -- --test-threads=1
@@ -88,6 +89,7 @@ rs-test-live: | $(TMPDIR) ## Run the Btrfs world-booting suites (needs Btrfs; la
 	cargo test -p slipfork --test critical_l0_wiring -- --test-threads=1
 	cargo test -p slipfork --test critical_ospp_daemon -- --test-threads=1
 	cargo test -p slipfork --test critical_slug -- --test-threads=1
+	cargo test -p slipfork-edge --test critical_edge_live -- --test-threads=1
 	cargo test -p slipfork --test critical_world_journey -- --test-threads=1
 	cargo test -p slipfork --test critical_vcs_remote -- --test-threads=1
 
