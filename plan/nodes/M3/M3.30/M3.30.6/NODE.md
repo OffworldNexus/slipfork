@@ -5,13 +5,13 @@ kind: task
 status: ready
 owner: implementer
 priority: 3
-depends_on: [M3.30.5]
+depends_on: [M3.30.4, M3.30.5]
 paths: [docs/knowledge/LESSONS.md, "plan/nodes/M3/M3.30/**"]
 attempts: 0
 max_attempts: 3
 escalation: none
 created: "2026-11-18T22:19"
-updated: "2026-11-18T22:19"
+updated: "2026-11-19T02:25"
 ---
 
 # Goal

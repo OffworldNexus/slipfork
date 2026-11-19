@@ -1677,3 +1677,14 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-19T02:19 [M3.30.4.2] (lead) base 582400347c35312c8e2042e4bb8c0f74e99e3b47
 - 2026-11-19T02:24 [M3.30.4.4] (lead) created (task) Edge live suite: replace StubWorldEngine with KernelBtrfsDriver in require_btrfs critical_edge_live
 - 2026-11-19T02:24 [M3.30.4.2] (lead) status active -> done: Journey A landed (RecordingEngine/StubRootfs deleted); StubWorldEngine edge-live split re-homed to M3.30.4.4
+- 2026-11-19T02:25 [M3.30.4.3] (lead) edited fields
+- 2026-11-19T02:25 [M3.30.6] (lead) edited fields
+- 2026-11-19T02:25 [M3.30.4.3] (lead) edited fields
+- 2026-11-19T02:25 [M3.30.4.3] (lead) status ready -> active
+- 2026-11-19T02:25 [M3.30.4.3] (lead) attempt 1/3 started
+- 2026-11-19T02:25 [M3.30.4.3] (lead) base b59b40543b1753d6b02f886d9fab0ab74846dddc
+- 2026-11-19T02:33 [M3.30.4.3] (lead) status active -> review
+- 2026-11-19T02:39 [M3.30.4.3] (lead) attempt 2/3 started
+- 2026-11-19T02:39 [M3.30.4.3] (lead) status review -> active
+- 2026-11-19T02:39 [M3.30.4.3] (lead) triad: arch pass, tests pass, ux 1 MAJOR (3 lost UX assertions) -> 1 consolidated fix pass
+- 2026-11-19T02:39 [M3.30.4.3] (lead) status active -> done

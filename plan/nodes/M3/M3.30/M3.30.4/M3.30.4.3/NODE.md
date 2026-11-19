@@ -2,16 +2,21 @@
 id: M3.30.4.3
 title: "Journey B: one rich OSPP v1 loopback E2E suite + pure algorithm tests"
 kind: task
-status: ready
+status: done
 owner: implementer
 priority: 3
 depends_on: [M3.30.4.1]
-paths: ["crates/slipfork/tests/**", "crates/slipfork-ospp/**", "crates/slipfork-ospp-testkit/**", Makefile]
-attempts: 0
+paths:
+  - "crates/slipfork/tests/**"
+  - "crates/slipfork-ospp/**"
+  - "crates/slipfork-ospp-testkit/**"
+  - Makefile
+  - tools/do_vm.py
+attempts: 2
 max_attempts: 3
 escalation: none
 created: "2026-11-19T02:19"
-updated: "2026-11-19T02:19"
+updated: "2026-11-19T02:39"
 ---
 
 # Goal

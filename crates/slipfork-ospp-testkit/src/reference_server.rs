@@ -263,6 +263,17 @@ impl ReferenceOsppServer {
             .insert(key.to_owned(), value.to_owned());
     }
 
+    /// Replace the sealed dump body served for one resource (`pg_databases.main`, …).
+    ///
+    /// A live `up` asks for the dump only when it has one to offer, and this setter lets one
+    /// journey produce the archive from the world's own `pg_dump` and then serve it back without
+    /// restarting the daemon or the server.
+    pub fn set_dump(&self, resource: &str, bytes: Vec<u8>) {
+        lock(&self.shared.config)
+            .dumps
+            .insert(resource.to_owned(), bytes);
+    }
+
     /// Re-resolve and push `env_updated` for every active subscription.
     pub fn push_update(&self) -> Result<(), OsppError> {
         let shared = Arc::clone(&self.shared);

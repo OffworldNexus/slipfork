@@ -146,6 +146,18 @@ SUITES = (
         "M3.14",
     ),
     (
+        "slipfork-engine",
+        "critical_engine",
+        "crates/slipfork-engine/tests/critical_engine.rs",
+        "M3.14",
+    ),
+    (
+        "slipfork-engine",
+        "critical_oci_runtime",
+        "crates/slipfork-engine/tests/critical_oci_runtime.rs",
+        "M3.14",
+    ),
+    (
         "slipfork",
         "critical_btrfs_live",
         "crates/slipfork/tests/critical_btrfs_live.rs",
@@ -159,6 +171,12 @@ SUITES = (
     ),
     (
         "slipfork",
+        "critical_l0_wiring",
+        "crates/slipfork/tests/critical_l0_wiring.rs",
+        "M2.29",
+    ),
+    (
+        "slipfork",
         "critical_slug",
         "crates/slipfork/tests/critical_slug.rs",
         "M3.15",
@@ -168,6 +186,18 @@ SUITES = (
         "critical_ospp_daemon",
         "crates/slipfork/tests/critical_ospp_daemon.rs",
         "M3.15",
+    ),
+    (
+        "slipfork",
+        "critical_world_journey",
+        "crates/slipfork/tests/critical_world_journey.rs",
+        "M3.30.4",
+    ),
+    (
+        "slipfork",
+        "critical_vcs_remote",
+        "crates/slipfork/tests/critical_vcs_remote.rs",
+        "M3.30.4",
     ),
 )
 AUTHORIZED_KEY_USERS = ("root", REMOTE_USER)

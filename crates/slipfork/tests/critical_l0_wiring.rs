@@ -1,11 +1,11 @@
 //! Protected `L0` wiring tests (`M2.29`, `ADR-0009` §1–§3).
 //!
-//! These tests boot real `BtrfsEngine` worlds through the harness `slipforkd` composition root
-//! (the real child, or the same in-process daemon graph over the real kernel driver), extract the
-//! real pinned `crun` + `redis:8` OCI image, and assert the container-scoped CLI contract: `db`/`redis`
-//! resolve only through `WorldEngine::service_entry_command`, a stopped container fails closed with
-//! `ServiceNotRunning`, and `--host-caches` refuses on the measured ELF/libc ABI mismatch while
-//! passing on a matching glibc world. No test skips: a missing Docker/crun dependency fails loudly.
+//! Two daemons cover the container contract: one boots a real `BtrfsEngine` world with the pinned
+//! static `crun` and a real `redis:8` OCI image (asserting that `db`/`redis` resolve only through
+//! `WorldEngine::service_entry_command`, and that a stopped container fails closed with the typed
+//! `ServiceNotRunning`), and one measures the `--host-caches` ELF/libc ABI on a musl world (refused)
+//! and on a matching glibc world (accepted). No test skips: a missing Docker/crun dependency fails
+//! loudly.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -98,7 +98,7 @@ fn run_entry(
 ) -> std::process::ExitStatus {
     let mut args = target.entry.args_prefix.clone();
     // `crun exec` takes the command directly after the container id; its own CLI does not strip a
-    // trailing `--` separator (recorded as an engine follow-up in RESULT.md).
+    // trailing `--` separator.
     if args.last().map(String::as_str) == Some("--") {
         args.pop();
     }
@@ -118,7 +118,7 @@ fn run_entry(
 }
 
 #[test]
-fn container_backed_world_boots_and_redis_targets_the_container() {
+fn container_backed_world_targets_redis_and_fails_closed_after_the_container_stops() {
     let tmp = support::disk_tempdir("l0-");
     let scratch = tmp.path();
     let repo = alpine_repo(scratch);
@@ -128,13 +128,14 @@ fn container_backed_world_boots_and_redis_targets_the_container() {
     assert_success(&up, "up with a real redis:8 backing-service container");
 
     let client = DaemonControlClient::bind(&daemon.runtime_dir);
+    let request = ExecTargetRequest {
+        cwd: repo.clone(),
+        world: None,
+        service: Some("redis_clusters.cache".to_owned()),
+        argv: vec!["redis-cli".to_owned()],
+    };
     let target = client
-        .exec_target(&ExecTargetRequest {
-            cwd: repo.clone(),
-            world: None,
-            service: Some("redis_clusters.cache".to_owned()),
-            argv: vec!["redis-cli".to_owned()],
-        })
+        .exec_target(&request)
         .expect("a running redis container is enterable through the typed control port");
     assert_eq!(target.entry.program, PathBuf::from("nsenter"));
     assert!(
@@ -156,24 +157,7 @@ fn container_backed_world_boots_and_redis_targets_the_container() {
         target.env.iter().all(|(name, _)| name != "PATH"),
         "the container's own OCI environment must not be replaced by the app rootfs PATH"
     );
-}
 
-#[test]
-fn redis_entry_fails_closed_with_service_not_running_after_the_container_stops() {
-    let tmp = support::disk_tempdir("l0-");
-    let scratch = tmp.path();
-    let repo = alpine_repo(scratch);
-    let daemon = Daemon::start(scratch);
-    assert_success(&daemon.cli(&repo, &["up"]), "up with redis");
-
-    let client = DaemonControlClient::bind(&daemon.runtime_dir);
-    let request = ExecTargetRequest {
-        cwd: repo.clone(),
-        world: None,
-        service: Some("redis_clusters.cache".to_owned()),
-        argv: vec!["redis-cli".to_owned()],
-    };
-    let target = client.exec_target(&request).expect("running redis entry");
     // `redis-cli shutdown` stops the container's PID 1, so the `crun exec` process itself is
     // reaped with it; the observable contract is the typed `ServiceNotRunning` below.
     let _status = run_entry(&target, &["redis-cli", "shutdown", "nosave"]);
@@ -221,13 +205,14 @@ fn redis_entry_fails_closed_with_service_not_running_after_the_container_stops()
 }
 
 #[test]
-fn host_caches_refuses_on_the_measured_abi_mismatch() {
+fn host_caches_abi_journey_refuses_musl_and_passes_a_matching_glibc_world() {
     let tmp = support::disk_tempdir("l0-");
     let scratch = tmp.path();
-    let repo = alpine_repo(scratch);
+    let alpine = alpine_repo(scratch);
+    let glibc = glibc_repo(scratch);
     let daemon = Daemon::start(scratch);
 
-    let up = daemon.cli(&repo, &["up", "--host-caches"]);
+    let up = daemon.cli(&alpine, &["up", "--host-caches"]);
     assert!(
         !up.status.success(),
         "an Alpine (musl) world must refuse glibc host caches"
@@ -243,15 +228,7 @@ fn host_caches_refuses_on_the_measured_abi_mismatch() {
             "the measured ABI mismatch must be reported verbatim ({needle}): {diagnostic}"
         );
     }
-}
 
-#[test]
-fn host_caches_pass_on_a_matching_glibc_world() {
-    let tmp = support::disk_tempdir("l0-");
-    let scratch = tmp.path();
-    let repo = glibc_repo(scratch);
-    let daemon = Daemon::start(scratch);
-
-    let up = daemon.cli(&repo, &["up", "--host-caches"]);
-    assert_success(&up, "up --host-caches on a matching glibc world");
+    let matched = daemon.cli(&glibc, &["up", "--host-caches"]);
+    assert_success(&matched, "up --host-caches on a matching glibc world");
 }
