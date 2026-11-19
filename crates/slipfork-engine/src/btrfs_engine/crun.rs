@@ -57,7 +57,7 @@ fn runtime_stderr_tail(log: &ServiceLogs) -> String {
     let text: String = log
         .snapshot()
         .iter()
-        .filter(|chunk| chunk.source == StreamSource::Stderr)
+        .filter(|chunk| chunk.stream == slipfork_world::LogStream::Stderr)
         .map(|chunk| String::from_utf8_lossy(&chunk.bytes).into_owned())
         .collect();
     let lines: Vec<&str> = text

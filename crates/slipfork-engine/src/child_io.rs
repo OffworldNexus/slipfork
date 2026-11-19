@@ -8,7 +8,9 @@ use std::process::{Child, Command};
 use std::sync::mpsc;
 use std::thread;
 
-use slipfork_world::{EngineError, ExecOutput, ServiceLogs, StreamChunk, StreamSource};
+use slipfork_world::{
+    EngineError, ExecOutput, ServiceLogs, StreamChunk, StreamSource, epoch_millis_now,
+};
 
 /// Run `command` to completion, streaming interleaved stdout/stderr chunks to `on_output`.
 pub(crate) fn run_streamed(
@@ -129,6 +131,10 @@ fn spawn_reader<R: Read + Send + 'static>(
 }
 
 /// Capture one service stream into its retained [`ServiceLogs`] window.
+///
+/// The timestamp is taken here, immediately after the `read(2)` that produced the bytes, so the
+/// retained chunk carries the **capture** instant: the daemon's later fan-in merges by this value,
+/// not by when it happened to forward the chunk over the control socket.
 pub(crate) fn spawn_log_reader<R: Read + Send + 'static>(
     source: R,
     kind: StreamSource,
@@ -136,7 +142,7 @@ pub(crate) fn spawn_log_reader<R: Read + Send + 'static>(
 ) {
     thread::spawn(move || {
         pump(source, |bytes| {
-            log.push(kind, bytes);
+            log.push_at(epoch_millis_now(), kind, bytes);
             true
         })
     });

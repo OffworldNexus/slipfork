@@ -32,6 +32,13 @@ pub use view::{
     WorldServiceSummary, WorldState, WorldSummary, WorldUpSummary,
 };
 
+/// Version of the retained-log wire shape (`LogChunk`, the `logs` reply, and its NDJSON document).
+///
+/// v2 stamps a capture-time `ts_ms` on every chunk and types the stream as `stdout` / `stderr` /
+/// `event` (the restart divider). A peer speaking another version fails closed: serde refuses the
+/// chunk rather than rendering output it cannot order or attribute.
+pub const CONTROL_PROTOCOL_VERSION: u32 = slipfork_world::CONTROL_PROTOCOL_VERSION;
+
 /// Hard cap on one JSON-line control frame (request or reply).
 pub const MAX_CONTROL_FRAME: usize = 64 * 1024;
 

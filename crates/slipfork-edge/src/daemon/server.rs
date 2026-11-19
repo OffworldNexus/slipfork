@@ -343,14 +343,20 @@ fn stream_chunks<T>(
 /// Run a streaming log call, splitting each attributed chunk under the frame cap.
 fn stream_logs<T>(
     writer: &mut impl Write,
-    call: impl FnOnce(&mut dyn FnMut(LogChunk)) -> Result<T, EdgeError>,
+    call: impl FnOnce(&mut dyn FnMut(LogChunk) -> std::ops::ControlFlow<()>) -> Result<T, EdgeError>,
 ) -> Result<T, EdgeError> {
     let mut failure: Option<EdgeError> = None;
     let value = call(&mut |log| {
-        if failure.is_none()
-            && let Err(err) = write_log(writer, log)
-        {
-            failure = Some(err);
+        if failure.is_some() {
+            // The peer is gone: keep telling the daemon to abort, never buffer for it.
+            return std::ops::ControlFlow::Break(());
+        }
+        match write_log(writer, log) {
+            Ok(()) => std::ops::ControlFlow::Continue(()),
+            Err(err) => {
+                failure = Some(err);
+                std::ops::ControlFlow::Break(())
+            }
         }
     })?;
     match failure {

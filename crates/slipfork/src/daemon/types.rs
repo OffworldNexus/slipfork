@@ -9,12 +9,17 @@ use slipfork_vcs::{RepoRoot, VcsWorkspace};
 use slipfork_wire::control::{ResourceSummary, WorldServiceSummary, WorldState};
 use slipfork_world::rootfs::WorldRootfs;
 use slipfork_world::{
-    BootLineage, ExecEnv, ProjectSlug, ServiceHandle, SnapshotId, StreamChunk, WorldHandle,
-    WorldTarget,
+    BootLineage, ExecEnv, LogChunk, ProjectSlug, ServiceHandle, SnapshotId, StreamChunk,
+    WorldHandle, WorldTarget, epoch_millis_now,
 };
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
+use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
+use std::time::Duration;
+
+/// Idle poll interval for a follower blocked on a hook window or the restart bus.
+const FOLLOW_POLL: Duration = Duration::from_millis(50);
 
 /// One live world owned by this daemon.
 ///
@@ -90,84 +95,104 @@ impl WorldFacts {
     }
 }
 
-/// One `slipfork logs` target: an engine-retained service log or a daemon-retained hook log.
-pub(super) enum RetainedTarget {
-    Service(String),
-    Hook(Arc<HookLog>),
-}
-
 /// Size-capped retained output plus its on-disk log for one hook run.
 ///
 /// Mirrors the engine's `ServiceLogs` retention so `slipfork logs <hook_id> --follow` behaves like
 /// a service log, while [`HookLog::path`] gives the rescue block a real file to point at. The
 /// `target` is the hook id the record was minted for, so `slipfork logs` attributes every chunk to
 /// its own hook record instead of the caller's request string.
-pub(super) struct HookLog {
+pub(crate) struct HookLog {
     pub(super) target: String,
     pub(super) path: PathBuf,
+    /// Identity of this window, so a hook log reused across a restart resumes at the follower's
+    /// cursor instead of re-emitting its whole retained history.
+    pub(super) token: Arc<()>,
     pub(super) state: Mutex<HookLogState>,
     pub(super) changed: Condvar,
 }
 
 #[derive(Default)]
 pub(super) struct HookLogState {
-    pub(super) chunks: Vec<StreamChunk>,
+    pub(super) chunks: Vec<LogChunk>,
     pub(super) closed: bool,
 }
 
 impl HookLog {
-    pub(super) fn new(target: String, path: PathBuf) -> Self {
+    pub(crate) fn new(target: String, path: PathBuf) -> Self {
         Self {
             target,
             path,
+            token: Arc::new(()),
             state: Mutex::new(HookLogState::default()),
             changed: Condvar::new(),
         }
     }
 
-    pub(super) fn target(&self) -> &str {
-        &self.target
+    pub(super) fn token(&self) -> Arc<()> {
+        Arc::clone(&self.token)
+    }
+
+    /// How many chunks this window has ever retained (hook logs are never evicted).
+    pub(super) fn cursor(&self) -> u64 {
+        self.lock().chunks.len() as u64
     }
 
     pub(super) fn lock(&self) -> MutexGuard<'_, HookLogState> {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    pub(super) fn push(&self, chunk: StreamChunk) {
+    pub(crate) fn push(&self, chunk: StreamChunk) {
         if chunk.bytes.is_empty() {
             return;
         }
-        self.lock().chunks.push(chunk);
+        let captured = LogChunk::output(self.target.clone(), epoch_millis_now(), chunk);
+        self.lock().chunks.push(captured);
         self.changed.notify_all();
     }
 
-    pub(super) fn close(&self) {
+    pub(crate) fn close(&self) {
         self.lock().closed = true;
         self.changed.notify_all();
     }
 
-    pub(super) fn snapshot(&self) -> Vec<StreamChunk> {
+    pub(super) fn snapshot(&self) -> Vec<LogChunk> {
         self.lock().chunks.clone()
     }
 
-    pub(super) fn follow(&self, on_chunk: &mut dyn FnMut(StreamChunk)) {
+    /// Replay from `start` (a [`HookLog::cursor`]), then stream until closed or cancelled.
+    ///
+    /// `keep_going` is polled through a bounded `Condvar::wait_timeout`, so a disconnected follower
+    /// releases its reader thread instead of pinning it for the hook's lifetime.
+    pub(super) fn follow_from(
+        &self,
+        start: u64,
+        keep_going: &dyn Fn() -> bool,
+        on_chunk: &mut dyn FnMut(LogChunk) -> ControlFlow<()>,
+    ) -> ControlFlow<()> {
         let mut state = self.lock();
-        let mut cursor = 0;
+        let mut cursor = start;
         loop {
-            while cursor < state.chunks.len() {
-                let chunk = state.chunks[cursor].clone();
+            if !keep_going() {
+                return ControlFlow::Break(());
+            }
+            while (cursor as usize) < state.chunks.len() {
+                let chunk = state.chunks[cursor as usize].clone();
                 cursor += 1;
                 drop(state);
-                on_chunk(chunk);
+                let flow = on_chunk(chunk);
+                if flow.is_break() {
+                    return flow;
+                }
                 state = self.lock();
             }
             if state.closed {
-                return;
+                return ControlFlow::Continue(());
             }
             state = self
                 .changed
-                .wait(state)
-                .unwrap_or_else(PoisonError::into_inner);
+                .wait_timeout(state, FOLLOW_POLL)
+                .unwrap_or_else(PoisonError::into_inner)
+                .0;
         }
     }
 }
@@ -191,9 +216,136 @@ pub(super) struct DaemonState {
     /// digest covers backing-service versions and every resolved seed-dump digest, so `--no-dump`
     /// and a restored dump never share a base.
     pub(super) bases: BTreeMap<(ProjectSlug, String), SealedBase>,
+    /// Restart epochs per world, keyed by world identity and **outliving** the world record so a
+    /// follower that attached before a `down` still learns about the next `up`.
+    pub(super) log_buses: Vec<(ProjectSlug, WorldTarget, Arc<LogBus>)>,
+}
+
+/// Broadcast of a world's restart epochs, shared by every attached `slipfork logs -f` follower.
+///
+/// The daemon owns exactly one bus per world identity. Each successful boot or in-place reload
+/// increments `boots`; every boot after the first is a restart epoch and appends its capture time,
+/// which wakes every follower with a typed [`LogChunk`] divider. A `down` removes the world record
+/// but not the bus, so `down` + `up` reports one epoch instead of EOF-ing the follower.
+#[derive(Default)]
+pub(super) struct LogBus {
+    state: Mutex<LogBusState>,
+    changed: Condvar,
+}
+
+/// How many recent restart epochs one bus retains. A world may restart for months; a follower that
+/// re-attaches keeps only this tail of dividers instead of pinning every epoch for the bus's life.
+const DIVIDERS_RETAINED: usize = 8;
+
+#[derive(Default)]
+struct LogBusState {
+    boots: u32,
+    /// Total restart epochs ever published. This monotonic counter outlives the bounded ring, so a
+    /// follower's `seen` mark never rewinds when the oldest dividers are trimmed.
+    epochs: u64,
+    /// The most recent [`DIVIDERS_RETAINED`] epoch capture times.
+    dividers: VecDeque<u64>,
+    closed: bool,
+}
+
+impl LogBus {
+    /// Record one successful boot/reload of this world, publishing a divider for every boot after
+    /// the first (the first boot has nothing to divide from).
+    pub(super) fn boot(&self, ts_ms: u64) {
+        let mut state = self.lock();
+        state.boots += 1;
+        if state.boots > 1 {
+            state.epochs += 1;
+            state.dividers.push_back(ts_ms);
+            while state.dividers.len() > DIVIDERS_RETAINED {
+                state.dividers.pop_front();
+            }
+        }
+        drop(state);
+        self.changed.notify_all();
+    }
+
+    /// How many restart epochs a fresh follower has already missed.
+    pub(super) fn mark(&self) -> u64 {
+        self.lock().epochs
+    }
+
+    /// Block until an epoch past `seen` exists; `None` once the daemon/request is shutting down.
+    ///
+    /// Returns the bus's new epoch mark beside every divider the follower has not seen, so a fast
+    /// restart sequence is never collapsed into a silent jump. A follower that fell behind by more
+    /// than the retained ring sees the ring's tail; the returned mark still advances it past them.
+    pub(super) fn wait_past(
+        &self,
+        seen: u64,
+        keep_going: &dyn Fn() -> bool,
+    ) -> Option<(u64, Vec<u64>)> {
+        let mut state = self.lock();
+        loop {
+            if state.epochs > seen {
+                let oldest = state.epochs - state.dividers.len() as u64;
+                let skip = seen.saturating_sub(oldest) as usize;
+                let dividers = state.dividers.iter().skip(skip).copied().collect();
+                return Some((state.epochs, dividers));
+            }
+            if state.closed || !keep_going() {
+                return None;
+            }
+            state = self
+                .changed
+                .wait_timeout(state, FOLLOW_POLL)
+                .unwrap_or_else(PoisonError::into_inner)
+                .0;
+        }
+    }
+
+    /// End every follower (daemon shutdown, or a permanently removed world).
+    pub(super) fn shutdown(&self) {
+        self.lock().closed = true;
+        self.changed.notify_all();
+    }
+
+    fn lock(&self) -> MutexGuard<'_, LogBusState> {
+        self.state.lock().unwrap_or_else(PoisonError::into_inner)
+    }
 }
 
 impl DaemonState {
+    /// The bus for `(project, target)`, minted on first use and never removed by `down`.
+    pub(super) fn log_bus(&mut self, project: &ProjectSlug, target: &WorldTarget) -> Arc<LogBus> {
+        if let Some((_, _, bus)) = self
+            .log_buses
+            .iter()
+            .find(|(bus_project, bus_target, _)| bus_project == project && bus_target == target)
+        {
+            return Arc::clone(bus);
+        }
+        let bus = Arc::new(LogBus::default());
+        self.log_buses
+            .push((project.clone(), target.clone(), Arc::clone(&bus)));
+        bus
+    }
+
+    /// Permanently forget a world identity: close every attached follower and drop the bus.
+    ///
+    /// `down` keeps the bus (so `down` + `up` still reports one divider); `drop`/`prune` remove the
+    /// identity for good, which is the one place a bus may be reaped.
+    pub(super) fn forget_log_bus(
+        &mut self,
+        project: &ProjectSlug,
+        target: &WorldTarget,
+    ) -> Option<Arc<LogBus>> {
+        let index = self
+            .log_buses
+            .iter()
+            .position(|(bus_project, bus_target, _)| {
+                bus_project == project && bus_target == target
+            })?;
+        let (_, _, bus) = self.log_buses.remove(index);
+        bus.shutdown();
+        Some(bus)
+    }
+
     pub(super) fn world(&self, project: &ProjectSlug, target: &WorldTarget) -> Option<&LiveWorld> {
         self.worlds
             .iter()

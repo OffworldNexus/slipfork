@@ -53,8 +53,9 @@ pub fn write_chunk(writer: &mut impl Write, chunk: StreamChunk) -> Result<(), Co
 
 /// Split one attributed log chunk into frame-sized pieces and write each as a `log` reply.
 ///
-/// The component/hook id and the stream are copied onto every piece, so a chunk larger than one
-/// frame stays attributable after the split; no piece is ever sent without its label.
+/// The target, capture time, protocol version, and stream are copied onto every piece, so a chunk
+/// larger than one frame stays attributable and chronologically ordered after the split; no piece
+/// is ever sent without its label or its capture instant.
 pub fn write_log(writer: &mut impl Write, log: LogChunk) -> Result<(), ControlError> {
     if log.bytes.len() <= MAX_STREAM_CHUNK {
         return write_reply(writer, &DaemonReply::Log { log });
@@ -64,8 +65,10 @@ pub fn write_log(writer: &mut impl Write, log: LogChunk) -> Result<(), ControlEr
             writer,
             &DaemonReply::Log {
                 log: LogChunk {
+                    protocol: log.protocol,
+                    ts_ms: log.ts_ms,
                     target: log.target.clone(),
-                    source: log.source,
+                    stream: log.stream,
                     bytes: piece.to_vec(),
                 },
             },
@@ -155,6 +158,7 @@ pub fn unexpected_reply(reply: &DaemonReply) -> ControlError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use slipfork_world::StreamSource;
 
     #[test]
     fn frames_split_across_reads_are_reassembled() {
@@ -169,6 +173,34 @@ mod tests {
             Some(b"{\"b\":2}".to_vec())
         );
         assert_eq!(reader.read_frame().expect("clean close"), None);
+    }
+
+    #[test]
+    fn a_log_chunk_round_trips_and_an_unknown_protocol_version_fails_closed() {
+        let log = LogChunk::output(
+            "api",
+            1_726_000_000_123,
+            StreamChunk {
+                source: StreamSource::Stdout,
+                bytes: b"listening\n".to_vec(),
+            },
+        );
+        let mut encoded = Vec::new();
+        write_reply(&mut encoded, &DaemonReply::Log { log: log.clone() }).expect("encode a log");
+        let text = String::from_utf8(encoded).expect("json is utf-8");
+        assert!(text.contains("\"ts_ms\":1726000000123"), "{text}");
+        assert!(text.contains("\"stream\":\"stdout\""), "{text}");
+        let decoded: DaemonReply = serde_json::from_str(text.trim_end()).expect("decode a log");
+        assert_eq!(decoded, DaemonReply::Log { log });
+
+        let forged = text.replace("\"protocol\":2", "\"protocol\":1");
+        let refused = serde_json::from_str::<DaemonReply>(forged.trim_end());
+        assert!(
+            refused
+                .as_ref()
+                .is_err_and(|err| err.to_string().contains("protocol")),
+            "an unknown logs protocol version must be refused: {refused:?}"
+        );
     }
 
     #[test]

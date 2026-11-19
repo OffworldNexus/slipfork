@@ -16,11 +16,13 @@
 //! [`support::require_btrfs`] (one line naming the missing substrate); it never skips.
 
 use std::fs;
-use std::io::{Read, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
 use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::time::Duration;
+use std::process::{Child, Command};
+use std::sync::mpsc;
+use std::thread;
+use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
@@ -260,6 +262,60 @@ fn service_output(daemon: &Daemon, cwd: &Path) -> String {
     let output = daemon.cli(cwd, &["logs", "api"]);
     assert_success(&output, "logs api");
     stdout(&output)
+}
+
+/// A live `slipfork logs -f` child whose stdout is drained by one reader thread, so the journey can
+/// assert what a real follower saw without blocking the CLI itself.
+struct Follower {
+    child: Child,
+    lines: mpsc::Receiver<String>,
+}
+
+impl Follower {
+    /// Attach to the live daemon; the first asserted line proves the attachment is real.
+    fn attach(daemon: &Daemon, cwd: &Path) -> Self {
+        let mut child = daemon.cli_spawn(cwd, &["logs", "-f"]);
+        let stdout = child.stdout.take().expect("the follower's stdout is piped");
+        let (sender, lines) = mpsc::channel();
+        thread::spawn(move || {
+            for line in BufReader::new(stdout).lines() {
+                let Ok(line) = line else { break };
+                if sender.send(line).is_err() {
+                    break;
+                }
+            }
+        });
+        Self { child, lines }
+    }
+
+    /// The next line matching `predicate`, bounded so a wedged daemon fails instead of hanging.
+    fn wait_for(&mut self, what: &str, predicate: impl Fn(&str) -> bool) -> String {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            match self.lines.recv_timeout(remaining) {
+                Ok(line) if predicate(&line) => return line,
+                Ok(_) => {}
+                Err(error) => panic!("the follower never saw {what} within 30s: {error}"),
+            }
+        }
+    }
+
+    /// Assert that no already-in-flight line repeats `needle` (the one-divider-per-epoch proof).
+    fn assert_no_line_containing(&mut self, needle: &str) {
+        while let Ok(line) = self.lines.recv_timeout(Duration::from_millis(300)) {
+            assert!(
+                !line.contains(needle),
+                "a restart epoch emitted more than one `{needle}` line: {line}"
+            );
+        }
+    }
+
+    /// Kill and reap the follower so no piped stdio outlives the journey.
+    fn stop(mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
 }
 
 /// One HTTP/1.0 request through a `slipfork forward` listener, returning the body.
@@ -509,6 +565,12 @@ fn world_lifecycle_journey_boots_edits_forks_and_reaps() {
         )
     });
 
+    // --- a live follower sees exactly one divider across `restart` ----------
+    let mut follower = Follower::attach(&daemon, &repo);
+    follower.wait_for("the pre-restart retained output", |line| {
+        line.contains("api") && line.contains("serving v1")
+    });
+
     // --- edited checkout: `restart` reaps the whole sh-wrapped component ----
     fs::write(repo.join("body.txt"), "v2\n").expect("edit the served body");
     let restart = daemon.cli(&repo, &["restart"]);
@@ -578,6 +640,16 @@ fn world_lifecycle_journey_boots_edits_forks_and_reaps() {
         !stdout(&daemon.cli(&repo, &["logs", "api"])).contains("serving v1"),
         "the restart must not serve the old body"
     );
+    let divider = follower.wait_for("a restart divider", |line| line.contains("── restarted "));
+    assert!(
+        divider.starts_with("── restarted "),
+        "the divider is its own line, never glued to component output: {divider:?}"
+    );
+    follower.wait_for("the post-restart retained output", |line| {
+        line.contains("api") && line.contains("serving v2")
+    });
+    follower.assert_no_line_containing("── restarted ");
+    follower.stop();
 
     // --- an edited `snow.yml` is applied by `restart`, never by `up` --------
     let snow = fs::read_to_string(repo.join("snow.yml")).expect("read snow.yml");
@@ -1001,6 +1073,28 @@ fn world_lifecycle_journey_boots_edits_forks_and_reaps() {
 
     let prune = daemon.cli(&repo, &["prune", "--dry-run"]);
     assert_success(&prune, "slipfork prune --dry-run");
+
+    // --- a follower survives `down` + `up`: one divider, stream continues --
+    let mut follower = Follower::attach(&daemon, &repo);
+    follower.wait_for("the canonical world's retained api output", |line| {
+        line.contains("api") && line.contains("serving v2")
+    });
+    let cycle_down = daemon.cli(&repo, &["down"]);
+    assert_success(&cycle_down, "down under a live follower");
+    let cycle_up = daemon.cli(&repo, &["up"]);
+    assert_success(&cycle_up, "up under a live follower");
+    let divider = follower.wait_for("the down + up divider", |line| {
+        line.contains("── restarted ")
+    });
+    assert!(
+        divider.starts_with("── restarted "),
+        "down + up emits one divider line to the attached follower: {divider:?}"
+    );
+    follower.wait_for("the re-booted api output", |line| {
+        line.contains("api") && line.contains("serving v2")
+    });
+    follower.assert_no_line_containing("── restarted ");
+    follower.stop();
 
     let down = daemon.cli(&repo, &["down"]);
     assert_success(&down, "slipfork down");

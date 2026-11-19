@@ -5,13 +5,11 @@ use super::super::boot::{
 use super::super::env::{parse_hook_id, validate_secret_key};
 use super::super::postgres::PostgresReady;
 use super::super::postgres::{await_postgres_ready, readiness_detail};
-use super::super::protocol::services::tail_lines;
 use super::super::types::BootPolicy;
 use slipfork_dag::DumpPolicy;
 use slipfork_edge::EdgeError;
 use slipfork_snow::HookPhase;
 use slipfork_wire::control::{DaemonErrorKind, WorldServiceSummary, WorldState};
-use slipfork_world::StreamChunk;
 use slipfork_world::{ProjectSlug, ServiceKind, WorldTarget};
 use std::time::Duration;
 
@@ -306,15 +304,4 @@ pub(super) fn readiness_detail_prefers_stderr_and_falls_back_to_stdout() {
         "127.0.0.1:5432 - rejecting connections"
     );
     assert_eq!(readiness_detail("", "  \n"), "");
-}
-
-#[test]
-pub(super) fn tail_lines_keeps_the_requested_tail() {
-    let chunk = StreamChunk {
-        source: slipfork_world::StreamSource::Stdout,
-        bytes: b"one\ntwo\nthree\n".to_vec(),
-    };
-    let out = tail_lines(vec![chunk], Some(2));
-    assert_eq!(out.len(), 1);
-    assert_eq!(String::from_utf8_lossy(&out[0].bytes), "two\nthree\n");
 }

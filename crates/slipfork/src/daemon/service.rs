@@ -230,6 +230,8 @@ impl DaemonService {
         if !dry_run {
             for (project, target, _) in &orphans {
                 self.release_only(project, target)?;
+                // The checkout is gone for good: close and drop this identity's restart bus.
+                self.forget_log_bus(project, target);
             }
         }
         Ok(PruneReport {
@@ -244,7 +246,20 @@ impl DaemonService {
 
 impl DaemonService {
     pub(super) fn shutdown(&self) -> Result<(), EdgeError> {
-        // The transport server stops accepting and releases `daemon.sock` after this ack.
+        // Wake every attached `logs -f` follower so its bus wait reaches the `None` arm and the
+        // reader threads are reaped before the process exits. The transport server stops
+        // accepting and releases `daemon.sock` after this ack.
+        let buses: Vec<Arc<super::types::LogBus>> = {
+            let state = self.lock();
+            state
+                .log_buses
+                .iter()
+                .map(|(_, _, bus)| Arc::clone(bus))
+                .collect()
+        };
+        for bus in buses {
+            bus.shutdown();
+        }
         Ok(())
     }
 }
@@ -265,6 +280,10 @@ impl DaemonService {
         let project = live.project.clone();
         let target = live.target.clone();
         self.insert_world(live);
+        // Publish the epoch **after** the record exists: a follower woken by `boot` re-resolves the
+        // world's sources and finds them immediately, with no re-resolve bridge race.
+        self.log_bus(&project, &target)
+            .boot(slipfork_world::epoch_millis_now());
         self.summary(&project, &target, &facts, rows, changed, restarted)
     }
 
@@ -308,6 +327,14 @@ impl DaemonService {
     ) -> Result<bool, EdgeError> {
         self.release_world(project, target)
             .map(|(released, _)| released)
+    }
+
+    /// Close every follower of a world identity that will never come back (`drop`/`prune`).
+    ///
+    /// `down` deliberately keeps the bus so `down` + `up` still reports one divider; this is the
+    /// only path that removes the identity from `log_buses`.
+    pub(super) fn forget_log_bus(&self, project: &ProjectSlug, target: &WorldTarget) {
+        self.lock().forget_log_bus(project, target);
     }
 
     /// Reject a request for a world this daemon does not hold (`code: unknown_world`).

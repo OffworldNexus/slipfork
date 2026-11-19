@@ -268,12 +268,25 @@ impl DaemonService {
             }
         };
         let restarted = restarted_service_ids(&rows_before, &rows_after);
+        // The restart epoch is published by `record_world`, after this world is inserted, so a
+        // woken follower always re-resolves a world that already exists.
         Ok(BootedWorld {
             live,
             rows: rows_after,
             changed: true,
             restarted,
         })
+    }
+}
+
+impl DaemonService {
+    /// The restart-epoch bus for one world identity (never removed by `down`).
+    pub(super) fn log_bus(
+        &self,
+        project: &ProjectSlug,
+        target: &WorldTarget,
+    ) -> Arc<super::types::LogBus> {
+        self.lock().log_bus(project, target)
     }
 }
 
@@ -469,6 +482,8 @@ impl DaemonService {
         let restarted = restarted_service_ids(&rows_before, &rows_after);
         let changed = !restarted.is_empty() || hooks > 0;
         live.state = WorldState::Running;
+        // `record_world` publishes the epoch after inserting the reloaded world; one divider per
+        // reload reaches every attached follower.
         self.record_world(live, rows_after, changed, restarted)
     }
 }

@@ -63,6 +63,13 @@ pub use service::DaemonService;
 #[cfg(test)]
 mod tests;
 
+/// The renderer's interleave proof drives the daemon's real retained-log merge, so the fan-in
+/// module and the hook window type are re-exported crate-wide **for tests only**.
+#[cfg(test)]
+pub(crate) use protocol::fan_in;
+#[cfg(test)]
+pub(crate) use types::HookLog;
+
 /// The world mode this daemon supervises (`snow.yml` `modes.local`, `ADR-0001` §1).
 pub(super) const WORLD_MODE: &str = "local";
 

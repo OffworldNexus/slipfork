@@ -3,7 +3,7 @@
 use slipfork_edge::EdgeError;
 use slipfork_snow::SnowFile;
 use slipfork_wire::control::{DaemonError, DaemonErrorKind};
-use slipfork_world::{EngineError, StreamChunk};
+use slipfork_world::EngineError;
 
 use super::super::{rejected, runtime_error};
 
@@ -108,32 +108,4 @@ pub(super) fn unknown_service(snow: &SnowFile, requested: &str) -> EdgeError {
             known.join(", ")
         }
     ))
-}
-
-/// Keep the last `lines` lines of the retained stdout/stderr selection.
-pub(crate) fn tail_lines(chunks: Vec<StreamChunk>, lines: Option<usize>) -> Vec<StreamChunk> {
-    let Some(lines) = lines else {
-        return chunks;
-    };
-    let joined: Vec<u8> = chunks
-        .iter()
-        .flat_map(|chunk| chunk.bytes.iter().copied())
-        .collect();
-    let text = String::from_utf8_lossy(&joined);
-    let kept: Vec<&str> = text
-        .lines()
-        .rev()
-        .take(lines)
-        .collect::<Vec<_>>()
-        .into_iter()
-        .rev()
-        .collect();
-    let mut bytes = kept.join("\n").into_bytes();
-    if !bytes.is_empty() {
-        bytes.push(b'\n');
-    }
-    let source = chunks
-        .first()
-        .map_or(slipfork_world::StreamSource::Stdout, |chunk| chunk.source);
-    vec![StreamChunk { source, bytes }]
 }

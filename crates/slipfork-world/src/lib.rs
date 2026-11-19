@@ -54,5 +54,8 @@ pub use port::{
     WorldMount, WorldSpec,
 };
 pub use socket::{UNIX_SOCKET_PATH_MAX, unix_socket_path_fits};
-pub use stream::{EntryKind, LogChunk, ServiceState, StreamChunk, StreamSource, WorldEntryCommand};
+pub use stream::{
+    CONTROL_PROTOCOL_VERSION, EntryKind, LogChunk, LogStream, ServiceState, StreamChunk,
+    StreamSource, WorldEntryCommand, epoch_millis_now,
+};
 pub use weaver::{SERVICE_NAME_MAX, WeaverServiceName, derive_weaver_service_name};

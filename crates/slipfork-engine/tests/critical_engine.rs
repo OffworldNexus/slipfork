@@ -829,6 +829,7 @@ fn persistent_init_pid_stays_stable_across_calls_and_is_reaped_on_destroy() {
 fn service_logs_survive_idempotent_stop_and_freeze_seals_only_after_stop() {
     let fx = WorldFixture::new("service");
     let world = fx.world(WorldTarget::Canonical);
+    let started_ms = slipfork_world::epoch_millis_now();
 
     let greeter = fx.service(
         &world,
@@ -857,7 +858,7 @@ fn service_logs_survive_idempotent_stop_and_freeze_seals_only_after_stop() {
     let follower = {
         let logs = logs.clone();
         thread::spawn(move || {
-            let mut chunks: Vec<StreamChunk> = Vec::new();
+            let mut chunks: Vec<slipfork_world::LogChunk> = Vec::new();
             logs.follow(&mut |chunk| chunks.push(chunk));
             chunks
         })
@@ -874,6 +875,18 @@ fn service_logs_survive_idempotent_stop_and_freeze_seals_only_after_stop() {
             .iter()
             .any(|chunk| String::from_utf8_lossy(&chunk.bytes).contains("service-hello")),
         "follow must stream the retained output"
+    );
+    // Capture time is stamped when the engine reads the bytes, never at render/replay time: every
+    // chunk is at or after this test started the service, and one window never runs backwards.
+    assert!(
+        followed.iter().all(|chunk| chunk.ts_ms >= started_ms),
+        "chunks are stamped at capture, not replayed with a fresh clock: {followed:?}"
+    );
+    assert!(
+        followed
+            .windows(2)
+            .all(|pair| pair[0].ts_ms <= pair[1].ts_ms),
+        "one retained window preserves capture order: {followed:?}"
     );
     // Logs survive stop_service (failed worlds stay inspectable).
     assert!(

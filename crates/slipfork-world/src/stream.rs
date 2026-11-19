@@ -99,30 +99,127 @@ pub struct StreamChunk {
     pub bytes: Vec<u8>,
 }
 
+/// Version of the retained-log wire shape (`LogChunk` + the `logs` NDJSON document).
+///
+/// v2 added the capture-time `ts_ms`, the typed `stream` (`stdout` / `stderr` / `event`), and the
+/// `restarted` divider event. A peer that speaks any other version fails closed: `LogChunk` refuses
+/// to deserialize rather than silently rendering a chunk whose time or stream it cannot trust.
+pub const CONTROL_PROTOCOL_VERSION: u32 = 2;
+
+/// Milliseconds since the Unix epoch, read once at capture time.
+pub fn epoch_millis_now() -> u64 {
+    let elapsed = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        // A clock set before the epoch is still a real instant: saturation keeps it monotonic
+        // rather than silently stamping `0` (which would sort a chunk before every real one).
+        .unwrap_or_default();
+    u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
+}
+
+/// The kind of line a retained [`LogChunk`] carries: one child stream, or a daemon lifecycle event.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LogStream {
+    /// Child stdout.
+    Stdout,
+    /// Child stderr.
+    Stderr,
+    /// A daemon-emitted lifecycle event (`── restarted <time> ──`), never child bytes.
+    Event,
+}
+
+impl From<StreamSource> for LogStream {
+    fn from(source: StreamSource) -> Self {
+        match source {
+            StreamSource::Stdout => Self::Stdout,
+            StreamSource::Stderr => Self::Stderr,
+        }
+    }
+}
+
 /// One attributed chunk of a **retained** component/hook log.
 ///
 /// [`StreamChunk`] is the un-attributed stream a live exec or hook run yields; a retained log chunk
-/// also names the component or hook id it came from, so `slipfork logs` can attribute interleaved
-/// output from several sources without the renderer guessing which service produced which line.
-/// The id is the engine's own record (`ServiceLogs::target`) for a service and the daemon's hook
-/// record for a hook — never the caller's request string.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// also names the component or hook id it came from and the wall-clock instant its bytes were read,
+/// so `slipfork logs` orders interleaved output across every service and hook without the renderer
+/// guessing which service produced which line or when. The id is the engine's own record
+/// (`ServiceLogs::target`) for a service and the daemon's hook record for a hook — never the
+/// caller's request string.
+///
+/// `stream == LogStream::Event` is the daemon's restart marker: `target` is empty and `bytes` are
+/// deliberately empty (the renderer formats `── restarted <time> ──`), so an event can never be
+/// mistaken for child output or carry bytes a prefix could shear.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct LogChunk {
-    /// Component id (`api`) or hook id (`api:pre-deploy`) that produced the bytes.
+    /// Wire shape version this chunk was produced for (always [`CONTROL_PROTOCOL_VERSION`]).
+    pub protocol: u32,
+    /// Capture time in milliseconds since the Unix epoch, stamped by the reader that read the bytes.
+    pub ts_ms: u64,
+    /// Component id (`api`) or hook id (`api:pre-deploy`); empty for a [`LogStream::Event`].
     pub target: String,
-    /// Originating stream.
-    pub source: StreamSource,
-    /// Raw bytes (not necessarily UTF-8).
+    /// Which stream (or daemon event) this chunk belongs to.
+    pub stream: LogStream,
+    /// Raw bytes (not necessarily UTF-8); empty for an event.
     pub bytes: Vec<u8>,
 }
 
+/// Wire shape [`LogChunk`] deserializes through, so an unknown protocol version is refused.
+#[derive(Deserialize)]
+struct LogChunkFrame {
+    protocol: u32,
+    ts_ms: u64,
+    target: String,
+    stream: LogStream,
+    bytes: Vec<u8>,
+}
+
+impl<'de> Deserialize<'de> for LogChunk {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let frame = LogChunkFrame::deserialize(deserializer)?;
+        if frame.protocol != CONTROL_PROTOCOL_VERSION {
+            return Err(serde::de::Error::custom(format!(
+                "unsupported logs protocol v{}: this build speaks v{CONTROL_PROTOCOL_VERSION}",
+                frame.protocol
+            )));
+        }
+        Ok(Self {
+            protocol: frame.protocol,
+            ts_ms: frame.ts_ms,
+            target: frame.target,
+            stream: frame.stream,
+            bytes: frame.bytes,
+        })
+    }
+}
+
 impl LogChunk {
-    /// Attribute one retained [`StreamChunk`] to the component/hook `target` that produced it.
-    pub fn attribute(target: impl Into<String>, chunk: StreamChunk) -> Self {
+    /// Attribute one capture-time [`StreamChunk`] to the component/hook `target` that produced it.
+    pub fn output(target: impl Into<String>, ts_ms: u64, chunk: StreamChunk) -> Self {
         Self {
+            protocol: CONTROL_PROTOCOL_VERSION,
+            ts_ms,
             target: target.into(),
-            source: chunk.source,
+            stream: chunk.source.into(),
             bytes: chunk.bytes,
         }
+    }
+
+    /// The daemon's restart/down+up epoch marker; the renderer owns its human formatting.
+    pub fn divider(ts_ms: u64) -> Self {
+        Self {
+            protocol: CONTROL_PROTOCOL_VERSION,
+            ts_ms,
+            target: String::new(),
+            stream: LogStream::Event,
+            bytes: Vec::new(),
+        }
+    }
+
+    /// `true` for a restart/down+up epoch marker.
+    pub fn is_event(&self) -> bool {
+        self.stream == LogStream::Event
     }
 }

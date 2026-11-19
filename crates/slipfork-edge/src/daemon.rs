@@ -135,7 +135,15 @@ pub trait DaemonControl: Send + Sync {
     fn secret_list(&self, repo_root: &Path) -> Result<Vec<String>, EdgeError>;
 
     /// Read or follow retained logs, streaming attributed chunks to `on_chunk`.
-    fn logs(&self, req: &LogsRequest, on_chunk: &mut dyn FnMut(LogChunk)) -> Result<(), EdgeError>;
+    ///
+    /// Returning [`std::ops::ControlFlow::Break`] means the peer is gone: the daemon must abort its
+    /// reader threads and stop waiting on the world's restart bus instead of accumulating output for
+    /// a client that will never read it.
+    fn logs(
+        &self,
+        req: &LogsRequest,
+        on_chunk: &mut dyn FnMut(LogChunk) -> std::ops::ControlFlow<()>,
+    ) -> Result<(), EdgeError>;
 
     /// Fetch the direct-execution target (the only `ExecEnv`-bearing reply).
     ///

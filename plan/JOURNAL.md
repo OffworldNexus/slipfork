@@ -1986,3 +1986,14 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-19T20:10 [M3.32.3.2] (lead) attempt 3/3 started
 - 2026-11-19T20:10 [M3.32.3.2] (lead) attempt 2 stopped mid-refactor (step cap); attempt 3 completes testkit+daemon+docs+tests
 - 2026-11-19T20:16 [M3.32.3.2] (lead) status active -> done
+- 2026-11-19T20:16 [M3.32.3.4] (lead) status ready -> active
+- 2026-11-19T20:16 [M3.32.3.4] (lead) attempt 1/3 started
+- 2026-11-19T20:16 [M3.32.3.4] (lead) base f74582c8c6de6085038db29c5746e1f012458cb9
+- 2026-11-19T20:22 [M3.32.3.4] (lead) status active -> review
+- 2026-11-19T20:22 [M3.32.3.4] (lead) implementer returned no report (step cap) but tree is green: fmt/clippy 0, engine 67, wire 3, CLI 112+5+18
+- 2026-11-19T20:23 [M3.32.3.4] (lead) edited fields
+- 2026-11-19T20:23 [M3.32.3.4] (lead) attempt 2/3 started
+- 2026-11-19T20:23 [M3.32.3.4] (lead) Triad fix pass base f74582c8c6de6085038db29c5746e1f012458cb9; widened to edge emit signature, main.rs/process.rs color+verbose injection, critical_world_journey
+- 2026-11-19T20:27 [M3.32.3.4] (lead) attempt 3/3 started
+- 2026-11-19T20:27 [M3.32.3.4] (lead) attempt 3: split protocol.rs 610 + logs.rs 546 under 500; add ts_ms/interleave/journey proofs
+- 2026-11-19T20:31 [M3.32.3.4] (lead) status review -> done

@@ -1,6 +1,7 @@
 //! Process verbs: `exec`, `shell`, `logs`, `hook run`, `db`, and `redis`.
 
 use std::io::{self, Write};
+use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -104,16 +105,22 @@ pub(crate) fn logs(
         stderr,
         lines,
     };
-    // A fan-out request streams every retained source, so each line must name its own source; one
-    // explicitly named target is printed byte-exact (`docs/design/dx-0.1.0-ux.md` §8.3).
+    // A fan-out request streams every retained source, so each line must carry its own gutter; one
+    // explicitly named target is printed byte-exact unless `-v` asks for attribution
+    // (`docs/design/dx-0.1.0-ux.md` §8.3).
+    let prefix = request.target.is_none() || app.terminal.verbose();
     let mut renderer = slipfork::logs::Renderer::new(
         app.output_mode.json,
-        request.target.is_none(),
+        prefix,
+        app.terminal.color(),
         Box::new(io::stdout()),
         Box::new(io::stderr()),
     );
     client
-        .logs(&request, &mut |log| renderer.chunk(log))
+        .logs(&request, &mut |log| {
+            renderer.chunk(log);
+            ControlFlow::Continue(())
+        })
         .map_err(|err| err.to_string())?;
     renderer.finish();
     Ok(ExitCode::SUCCESS)

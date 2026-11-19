@@ -79,6 +79,12 @@ impl TerminalUi {
         self.caps.verbose
     }
 
+    /// The one colour decision (`NO_COLOR`, TTY, `--json`), resolved by the composition root.
+    #[must_use]
+    pub fn color(&self) -> bool {
+        self.caps.color
+    }
+
     /// A primary origin URL: bold cyan, with the default `:80` omitted.
     #[must_use]
     pub fn url(&self, url: &str) -> String {

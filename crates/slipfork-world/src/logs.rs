@@ -8,9 +8,14 @@
 #![forbid(unsafe_code)]
 
 use std::collections::VecDeque;
+use std::ops::ControlFlow;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
+use std::time::Duration;
 
-use crate::{StreamChunk, StreamSource};
+use crate::{LogChunk, StreamChunk, StreamSource, epoch_millis_now};
+
+/// How long a follower sleeps before re-checking its cancellation predicate while idle.
+const FOLLOW_POLL: Duration = Duration::from_millis(50);
 
 /// Bytes of service output retained per service (oldest chunks are evicted first).
 pub const SERVICE_LOG_CAP_BYTES: usize = 64 * 1024;
@@ -29,6 +34,9 @@ pub const SERVICE_LOG_CAP_BYTES: usize = 64 * 1024;
 #[derive(Clone)]
 pub struct ServiceLogs {
     target: Arc<str>,
+    /// Stable identity of this retained window. A restarted service mints a new one, so a follower
+    /// never mistakes a fresh window's backfill for lines it already printed.
+    token: Arc<()>,
     inner: Arc<LogBuffer>,
 }
 
@@ -37,8 +45,22 @@ impl ServiceLogs {
     pub fn new(target: impl Into<Arc<str>>) -> Self {
         Self {
             target: target.into(),
+            token: Arc::new(()),
             inner: Arc::new(LogBuffer::default()),
         }
+    }
+
+    /// Identity of this retained window (pointer-stable for as long as any clone lives).
+    ///
+    /// A follower keys its cursor by this token, so a reused hook window skips what it already
+    /// printed while a window minted by a restart replays its own retained output.
+    pub fn token(&self) -> Arc<()> {
+        Arc::clone(&self.token)
+    }
+
+    /// How many chunks this window has ever appended (monotonic, survives retention eviction).
+    pub fn cursor(&self) -> u64 {
+        self.lock().appended
     }
 
     /// The component or hook id this retained window belongs to.
@@ -56,8 +78,8 @@ impl ServiceLogs {
             .unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Every retained chunk, oldest first, in capture order.
-    pub fn snapshot(&self) -> Vec<StreamChunk> {
+    /// Every retained chunk, oldest first, in capture order (each with its capture `ts_ms`).
+    pub fn snapshot(&self) -> Vec<LogChunk> {
         self.lock().chunks.iter().cloned().collect()
     }
 
@@ -74,10 +96,30 @@ impl ServiceLogs {
     ///
     /// Returns once the log is closed — i.e. after [`crate::WorldEngine::stop_service`], the
     /// service exiting on its own, or the parent world being destroyed.
-    pub fn follow(&self, on_chunk: &mut dyn FnMut(StreamChunk)) {
+    pub fn follow(&self, on_chunk: &mut dyn FnMut(LogChunk)) {
+        let _ = self.follow_from(0, &|| true, &mut |chunk| {
+            on_chunk(chunk);
+            ControlFlow::Continue(())
+        });
+    }
+
+    /// Replay from `start`, then stream new chunks until the window closes or `keep_going` is false.
+    ///
+    /// `start` is a [`ServiceLogs::cursor`] value, not an index: retention eviction clamps it to the
+    /// oldest surviving chunk. The predicate is polled with a bounded `Condvar::wait_timeout`, so a
+    /// disconnected `logs -f` client aborts this reader promptly instead of blocking forever.
+    pub fn follow_from(
+        &self,
+        start: u64,
+        keep_going: &dyn Fn() -> bool,
+        on_chunk: &mut dyn FnMut(LogChunk) -> ControlFlow<()>,
+    ) -> ControlFlow<()> {
         let mut state = self.lock();
-        let mut cursor = 0_u64;
+        let mut cursor = start;
         loop {
+            if !keep_going() {
+                return ControlFlow::Break(());
+            }
             let base = state.appended - state.chunks.len() as u64;
             if cursor < base {
                 // The retained window evicted chunks this follower never saw; skip what is gone.
@@ -88,17 +130,22 @@ impl ServiceLogs {
                 let chunk = state.chunks[index].clone();
                 cursor += 1;
                 drop(state);
-                on_chunk(chunk);
+                let flow = on_chunk(chunk);
+                if flow.is_break() {
+                    return flow;
+                }
                 state = self.lock();
                 continue;
             }
             if state.closed {
-                return;
+                return ControlFlow::Continue(());
             }
-            state = match self.inner.condvar.wait(state) {
-                Ok(state) => state,
-                Err(poisoned) => poisoned.into_inner(),
-            };
+            state = self
+                .inner
+                .condvar
+                .wait_timeout(state, FOLLOW_POLL)
+                .unwrap_or_else(PoisonError::into_inner)
+                .0;
         }
     }
 
@@ -107,11 +154,24 @@ impl ServiceLogs {
         self.lock().closed
     }
 
-    pub fn push(&self, source: StreamSource, bytes: Vec<u8>) {
+    /// Retain one chunk stamped at the reader's capture time.
+    ///
+    /// The engine's pipe reader calls this with the `ts_ms` it observed when the bytes arrived, so
+    /// the timestamp is the read instant — never the later moment a daemon forwards the chunk.
+    pub fn push_at(&self, ts_ms: u64, source: StreamSource, bytes: Vec<u8>) {
         if bytes.is_empty() {
             return;
         }
-        self.inner.push(StreamChunk { source, bytes });
+        self.inner.push(LogChunk::output(
+            self.target.to_string(),
+            ts_ms,
+            StreamChunk { source, bytes },
+        ));
+    }
+
+    /// Retain one chunk stamped at this call (the daemon's own hook capture path).
+    pub fn push(&self, source: StreamSource, bytes: Vec<u8>) {
+        self.push_at(epoch_millis_now(), source, bytes);
     }
 
     pub fn close(&self) {
@@ -140,14 +200,14 @@ struct LogBuffer {
 
 #[derive(Default)]
 struct LogState {
-    chunks: VecDeque<StreamChunk>,
+    chunks: VecDeque<LogChunk>,
     appended: u64,
     bytes: usize,
     closed: bool,
 }
 
 impl LogBuffer {
-    fn push(&self, chunk: StreamChunk) {
+    fn push(&self, chunk: LogChunk) {
         // Writer side also recovers a poisoned lock: captured output must never be dropped.
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         if state.closed {

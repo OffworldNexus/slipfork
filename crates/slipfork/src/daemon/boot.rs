@@ -379,6 +379,8 @@ impl DaemonService {
         let project = selection.repo.project.clone();
         let target = selection.target.clone();
         let (released, world) = self.release_world(&project, &target)?;
+        // A dropped fork never returns: reap its restart bus and every attached follower.
+        self.forget_log_bus(&project, &target);
         if let Some(world) = world {
             if let Some(workspace) = world.workspace {
                 workspace

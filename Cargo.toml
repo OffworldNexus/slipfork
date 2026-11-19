@@ -32,7 +32,7 @@ httparse = "1.10.1"
 indicatif = "0.17.11"
 libc = "0.2.190"
 listenfd = "1.0.2"
-owo-colors = "4.2.0"
+owo-colors = { version = "4.2.0", features = ["supports-colors"] }
 p256 = "0.14.0"
 serde = { version = "1.0.228", features = ["derive"] }
 serde-saphyr = "2.1.1"

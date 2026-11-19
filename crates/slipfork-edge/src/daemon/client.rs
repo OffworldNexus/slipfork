@@ -271,12 +271,24 @@ impl DaemonControl for DaemonControlClient {
         }
     }
 
-    fn logs(&self, req: &LogsRequest, on_chunk: &mut dyn FnMut(LogChunk)) -> Result<(), EdgeError> {
+    fn logs(
+        &self,
+        req: &LogsRequest,
+        on_chunk: &mut dyn FnMut(LogChunk) -> std::ops::ControlFlow<()>,
+    ) -> Result<(), EdgeError> {
+        // The transport keeps reading until the terminal frame; a broken consumer simply stops
+        // being handed further chunks while the daemon side sees the disconnect and aborts.
+        let mut stopped = false;
+        let mut forward = |log: LogChunk| {
+            if !stopped && on_chunk(log).is_break() {
+                stopped = true;
+            }
+        };
         match self.exchange(
             &DaemonRequest::Logs(req.clone()),
             &mut |_| {},
             &mut |_| {},
-            on_chunk,
+            &mut forward,
         )? {
             DaemonReply::Done => Ok(()),
             other => Err(crate::daemon::transport_error(unexpected_reply(&other))),

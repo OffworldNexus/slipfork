@@ -86,7 +86,11 @@ impl DaemonControl for DaemonService {
         DaemonService::secret_list(self, repo_root)
     }
 
-    fn logs(&self, req: &LogsRequest, on_chunk: &mut dyn FnMut(LogChunk)) -> Result<(), EdgeError> {
+    fn logs(
+        &self,
+        req: &LogsRequest,
+        on_chunk: &mut dyn FnMut(LogChunk) -> std::ops::ControlFlow<()>,
+    ) -> Result<(), EdgeError> {
         DaemonService::logs(self, req, on_chunk)
     }
 
