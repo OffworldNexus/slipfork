@@ -2,16 +2,16 @@
 id: M3.30.6
 title: "Live lab VM proof (165.232.86.174): PTY color/spinner E2E, .localhost :80 demo & before/after llvm-cov audit"
 kind: task
-status: ready
+status: done
 owner: implementer
 priority: 3
 depends_on: [M3.30.4, M3.30.5]
 paths: [docs/knowledge/LESSONS.md, "plan/nodes/M3/M3.30/**"]
-attempts: 0
+attempts: 1
 max_attempts: 3
 escalation: none
 created: "2026-11-18T22:19"
-updated: "2026-11-19T02:25"
+updated: "2026-11-19T06:18"
 ---
 
 # Goal

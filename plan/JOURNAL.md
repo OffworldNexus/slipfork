@@ -1723,3 +1723,5 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-19T04:59 [M3.30.8] (lead) status active -> done
 - 2026-11-19T05:14 [M3.30.9] (lead) VM: critical_world_journey 7/7 and the whole do_vm.py test suite exits 0 (11 suites, 782s wall)
 - 2026-11-19T05:14 [M3.30.9] (lead) status active -> done
+- 2026-11-19T06:16 [M3.30.6] (lead) VM proof: do_vm.py test exit 0 (11 suites, 97 tests, 782s wall; per suite: engine-btrfs 32s/1, engine 50s/21, oci 4s/4, edge-live 4s/3, slipfork-btrfs 33s/7, cl
+- 2026-11-19T06:18 [M3.30.6] (lead) status active -> done
