@@ -297,7 +297,7 @@ mod tests {
     use std::process::Command;
 
     use slipfork_forkfile::{
-        EvaluatedFork, Facts, FeatureSet, FileVaultProvider, HookPhase, OsCsprngEntropy, Resolvers,
+        EvaluatedFork, FeatureSet, FileVaultProvider, HookPhase, OsCsprngEntropy, Resolvers,
         parse_forkfile,
     };
 
@@ -323,12 +323,12 @@ mod tests {
         })
     }
 
-    fn with_runner(source: &str, facts: Facts, run: impl FnOnce(&ForkfileRunner<'_>)) {
+    fn with_runner(source: &str, run: impl FnOnce(&ForkfileRunner<'_>)) {
         let fork = evaluate(source);
         let dir = tempfile::tempdir().expect("disk vault dir");
         let vault = FileVaultProvider::open(dir.path().join("vault.json")).expect("vault");
         let entropy = OsCsprngEntropy;
-        let resolvers = Resolvers::new(&vault, &entropy, &facts);
+        let resolvers = Resolvers::new(&vault, &entropy);
         run(&ForkfileRunner::new(&fork, &resolvers));
     }
 
@@ -355,9 +355,8 @@ mod tests {
         );
         let dir = tempfile::tempdir().expect("disk vault dir");
         let vault = FileVaultProvider::open(dir.path().join("vault.json")).expect("vault");
-        let facts = Facts::default();
         let entropy = OsCsprngEntropy;
-        let resolvers = Resolvers::new(&vault, &entropy, &facts);
+        let resolvers = Resolvers::new(&vault, &entropy);
         let runner = ForkfileRunner::new(&fork, &resolvers);
 
         let mut ran: Vec<String> = Vec::new();
@@ -413,9 +412,8 @@ mod tests {
         let fork = evaluate(&source);
         let dir = tempfile::tempdir().expect("disk vault dir");
         let vault = FileVaultProvider::open(dir.path().join("vault.json")).expect("vault");
-        let facts = Facts::default();
         let entropy = OsCsprngEntropy;
-        let resolvers = Resolvers::new(&vault, &entropy, &facts);
+        let resolvers = Resolvers::new(&vault, &entropy);
         let runner = ForkfileRunner::new(&fork, &resolvers);
         let mut execute = |command: &[String]| real_executor(command);
         let error = runner
@@ -438,7 +436,7 @@ mod tests {
     fn a_quoted_space_stays_one_argv_element() {
         let source =
             "features {}\nservice api ./api {\n    setup: /bin/printf [%s] \"hello world\"\n}\n";
-        with_runner(source, Facts::default(), |runner| {
+        with_runner(source, |runner| {
             let mut ran: Vec<Vec<String>> = Vec::new();
             let mut execute = |command: &[String]| {
                 ran.push(command.to_vec());
@@ -472,9 +470,8 @@ mod tests {
         assert_eq!(fork.tasks[0].commands.len(), 2);
         let dir = tempfile::tempdir().expect("disk vault dir");
         let vault = FileVaultProvider::open(dir.path().join("vault.json")).expect("vault");
-        let facts = Facts::default();
         let entropy = OsCsprngEntropy;
-        let resolvers = Resolvers::new(&vault, &entropy, &facts);
+        let resolvers = Resolvers::new(&vault, &entropy);
         let runner = ForkfileRunner::new(&fork, &resolvers);
 
         let mut ran: Vec<String> = Vec::new();
@@ -506,7 +503,7 @@ mod tests {
     #[test]
     fn unknown_services_and_tasks_name_what_is_declared() {
         let source = "features {}\nservice api ./api { setup: /bin/echo hi }\n";
-        with_runner(source, Facts::default(), |runner| {
+        with_runner(source, |runner| {
             let mut execute = |_command: &[String]| real_executor(&["/bin/true".to_owned()]);
             let error = runner
                 .run_phase("nope", HookPhase::Setup, &mut execute, &mut |_| {})
@@ -524,20 +521,18 @@ mod tests {
     #[test]
     fn an_unresolvable_hook_folds_the_diagnostic_remedy() {
         let source = "features {}\n\
-                      postgres pg { database app_db }\n\
-                      service api ./api { setup: /bin/echo $app_db.url }\n";
-        // No facts were injected: the reference is schema-valid but unavailable at runtime.
-        with_runner(source, Facts::default(), |runner| {
+                      service api ./api { setup: /bin/echo $app.url }\n";
+        // No `project <slug>` means the `app.*` facts are not published: the reference is
+        // schema-valid but unavailable at runtime, and the remedy names the manifest fix.
+        with_runner(source, |runner| {
             let mut execute = |command: &[String]| real_executor(command);
             let error = runner
                 .run_phase("api", HookPhase::Setup, &mut execute, &mut |_| {})
                 .expect_err("the property is not resolved");
             let message = error.to_string();
-            assert!(message.contains("Forkfile:3"), "{message}");
+            assert!(message.contains("Forkfile:2"), "{message}");
             assert!(
-                message.contains(
-                    "next: the daemon resolves resource properties before the world starts"
-                ),
+                message.contains("next: add `project <slug>` to the Forkfile"),
                 "the diagnostic hint becomes the remedy: {message}"
             );
         });

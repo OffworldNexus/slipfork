@@ -59,7 +59,7 @@ impl FeatureSet {
 #[derive(Default)]
 struct Builder {
     project: Option<String>,
-    groups: BTreeMap<String, Vec<EnvAssignment>>,
+    groups: Vec<EvaluatedEnvGroup>,
     postgres: Vec<EvaluatedPg>,
     redis: Vec<EvaluatedRedis>,
     s3: Vec<String>,
@@ -69,6 +69,14 @@ struct Builder {
 }
 
 impl Builder {
+    /// The authoritative declaration of an env group: the **last** declaration wins.
+    fn group_vars(&self, name: &str) -> Option<&Vec<EnvAssignment>> {
+        self.groups
+            .iter()
+            .rev()
+            .find(|group| group.name == name)
+            .map(|group| &group.vars)
+    }
     fn walk(&mut self, statements: &[Stmt], active: &BTreeSet<String>) {
         for statement in statements {
             match statement {
@@ -156,8 +164,10 @@ impl Builder {
     }
 
     fn apply_env_group(&mut self, group: &EnvGroup) {
-        self.groups
-            .insert(group.name.value.clone(), group.vars.clone());
+        self.groups.push(EvaluatedEnvGroup {
+            name: group.name.value.clone(),
+            vars: group.vars.clone(),
+        });
     }
 
     fn apply_service(&mut self, definition: &ServiceDef, active: &BTreeSet<String>) {
@@ -220,7 +230,7 @@ impl Builder {
                 ServiceDirective::Route(route) => service.routes.push(route.value.clone()),
                 ServiceDirective::Volume(volume) => service.volumes.push(volume.value.clone()),
                 ServiceDirective::UseEnv(group) => {
-                    if let Some(vars) = self.groups.get(&group.value) {
+                    if let Some(vars) = self.group_vars(&group.value) {
                         service.env.extend(vars.iter().cloned());
                     }
                 }
@@ -287,11 +297,7 @@ impl ForkFile {
             redis: builder.redis,
             s3: builder.s3,
             domains: builder.domains,
-            env_groups: builder
-                .groups
-                .into_iter()
-                .map(|(name, vars)| EvaluatedEnvGroup { name, vars })
-                .collect(),
+            env_groups: builder.groups,
             services: builder.services,
             tasks: builder.tasks,
         })

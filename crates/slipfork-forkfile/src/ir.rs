@@ -1,40 +1,10 @@
 //! Canonical evaluated-manifest IR shared with `slipforkd` and Kerfufoo.
 
-use std::collections::BTreeMap;
-
 use serde::{Deserialize, Serialize};
 
 use crate::syntax::{Argv, EnvAssignment, HookPhase};
 use crate::vault::{EntropySource, SecretProvider};
 
-/// A resolved property value supplied by the daemon for one entity.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct FactsValue {
-    /// The resolved text.
-    pub value: String,
-    /// Whether the value must be redacted everywhere it is displayed.
-    pub secret: bool,
-}
-/// Dotted property paths (`url`, `env.branch.name`) to their resolved values.
-pub type PropertyMap = BTreeMap<String, FactsValue>;
-/// Every concrete world fact an expression can reference.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Facts {
-    /// `app.*`
-    pub app: PropertyMap,
-    /// `deployment.*`
-    pub deployment: PropertyMap,
-    /// Postgres property maps keyed by database id.
-    pub postgres: BTreeMap<String, PropertyMap>,
-    /// Redis property maps keyed by cluster id.
-    pub redis: BTreeMap<String, PropertyMap>,
-    /// S3 property maps keyed by bucket id.
-    pub s3: BTreeMap<String, PropertyMap>,
-    /// Domain property maps keyed by domain id.
-    pub domains: BTreeMap<String, PropertyMap>,
-    /// Service property maps keyed by service id.
-    pub services: BTreeMap<String, PropertyMap>,
-}
 /// The kind of one concrete manifest entity an expression can reference.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EntityKind {
@@ -65,21 +35,6 @@ impl EntityKind {
             Self::Domain => Some("domains"),
             Self::Service => Some("components"),
         }
-    }
-}
-impl Facts {
-    pub(crate) fn lookup(&self, kind: EntityKind, id: &str, property: &str) -> Option<&FactsValue> {
-        let table = match kind {
-            EntityKind::PgDatabase => &self.postgres,
-            EntityKind::Redis => &self.redis,
-            EntityKind::S3 => &self.s3,
-            EntityKind::Domain => &self.domains,
-            EntityKind::Service => &self.services,
-            EntityKind::PgCluster => return None,
-        };
-        table
-            .get(id)
-            .and_then(|properties| properties.get(property))
     }
 }
 /// A resolved string that redacts itself whenever a secret contributed to it.
@@ -163,27 +118,61 @@ mod tests {
         assert!(!restored.is_tainted());
     }
 }
-/// The injected ports and concrete facts used by [`EvaluatedFork::resolve_env`].
+/// Deployment metadata a daemon knows about the world it is resolving.
+///
+/// This is a plain value struct, not a port: production callers fill it from their own boot
+/// context (commit, event, environment, product), tests fill it literally, and an empty value
+/// simply publishes no `deployment.*` fact.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeploymentFacts {
+    /// `deployment.id`.
+    pub id: Option<String>,
+    /// `deployment.date_create`.
+    pub date_create: Option<String>,
+    /// `deployment.date_event`.
+    pub date_event: Option<String>,
+    /// `deployment.cause`.
+    pub cause: Option<String>,
+    /// `deployment.commit_sha`.
+    pub commit_sha: Option<String>,
+    /// `deployment.is_production`.
+    pub is_production: Option<bool>,
+    /// `deployment.is_leader`.
+    pub is_leader: Option<bool>,
+    /// `deployment.env.name`.
+    pub env_name: Option<String>,
+    /// `deployment.env.branch.name`.
+    pub env_branch_name: Option<String>,
+    /// `deployment.env.branch.repo`.
+    pub env_branch_repo: Option<String>,
+    /// `deployment.product.name`.
+    pub product_name: Option<String>,
+    /// `deployment.product.slug`.
+    pub product_slug: Option<String>,
+}
+/// The injected ports used by [`EvaluatedFork::resolve_env`].
 pub struct Resolvers<'a> {
     /// Local `0600` vault (or a read-only OSPP-backed provider).
     pub provider: &'a dyn SecretProvider,
     /// CSPRNG used by write-once generators.
     pub entropy: &'a dyn EntropySource,
-    /// Concrete resource/service facts resolved by the daemon.
-    pub facts: &'a Facts,
+    /// Deployment metadata; empty unless the caller knows the deployment (`DeploymentFacts`).
+    pub deployment: DeploymentFacts,
 }
 impl<'a> Resolvers<'a> {
-    /// Assemble the resolver bundle.
-    pub fn new(
-        provider: &'a dyn SecretProvider,
-        entropy: &'a dyn EntropySource,
-        facts: &'a Facts,
-    ) -> Self {
+    /// Assemble the resolver bundle without deployment metadata.
+    pub fn new(provider: &'a dyn SecretProvider, entropy: &'a dyn EntropySource) -> Self {
         Self {
             provider,
             entropy,
-            facts,
+            deployment: DeploymentFacts::default(),
         }
+    }
+
+    /// Attach the deployment facts consulted as the fourth precedence tier.
+    pub fn with_deployment(mut self, deployment: DeploymentFacts) -> Self {
+        self.deployment = deployment;
+        self
     }
 }
 /// One evaluated lifecycle command.

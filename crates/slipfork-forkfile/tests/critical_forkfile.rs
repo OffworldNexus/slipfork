@@ -6,8 +6,8 @@
 use std::collections::BTreeMap;
 
 use slipfork_forkfile::{
-    ArgPart, ArgRef, ArgRefKind, EvaluatedFork, ExternalCheck, Facts, FactsValue, FeatureSet,
-    FileVaultProvider, Namespace, OsCsprngEntropy, PropertyMap, Resolvers, parse_forkfile,
+    ArgPart, ArgRef, ArgRefKind, EvaluatedFork, ExternalCheck, FeatureSet, FileVaultProvider,
+    Namespace, OsCsprngEntropy, Resolvers, parse_forkfile,
 };
 
 const INVALID: &str = "\
@@ -105,29 +105,6 @@ on mail {
 
 task migrate in api: uv run alembic upgrade head
 ";
-
-fn facts() -> Facts {
-    let mut facts = Facts::default();
-    let mut postgres = PropertyMap::new();
-    postgres.insert(
-        "url".to_owned(),
-        FactsValue {
-            value: "postgres://slipfork:secret@app_db".to_owned(),
-            secret: true,
-        },
-    );
-    facts.postgres.insert("app_db".to_owned(), postgres);
-    let mut redis = PropertyMap::new();
-    redis.insert(
-        "url".to_owned(),
-        FactsValue {
-            value: "redis://cache:6379".to_owned(),
-            secret: false,
-        },
-    );
-    facts.redis.insert("cache".to_owned(), redis);
-    facts
-}
 
 #[test]
 fn every_branch_reports_all_static_errors_with_rustc_carets() {
@@ -227,22 +204,44 @@ fn evaluation_and_resolution_keep_secret_taint_off_disk_and_out_of_logs() {
         .tempdir_in("/var/tmp")
         .expect("disk scratch");
     let vault = FileVaultProvider::open(dir.path().join("vault.json")).expect("open vault");
-    let facts = facts();
-    let resolvers = Resolvers::new(&vault, &OsCsprngEntropy, &facts);
+    let resolvers = Resolvers::new(&vault, &OsCsprngEntropy);
 
     let env: BTreeMap<String, _> = evaluated
         .resolve_env("api", &resolvers)
         .expect("resolve env");
-    assert_eq!(env["DATABASE_URL"].redacted(), "[REDACTED]");
-    assert!(env["DATABASE_URL"].is_tainted());
+    // Without a declared local password the coordinate stays a plaintext, passwordless URL.
+    assert_eq!(
+        env["DATABASE_URL"].expose(),
+        "postgres://slipfork@127.0.0.1:5432/app_db",
+        "the world projection supplies `$app_db.url` with no injected bag"
+    );
+    assert!(
+        !env["DATABASE_URL"].is_tainted(),
+        "a passwordless coordinate carries no secret"
+    );
     assert_eq!(env["PLAIN"].redacted(), "hello-world");
     assert!(!env["PLAIN"].is_tainted());
-    assert_eq!(env["REDIS_URL"].expose(), "redis://cache:6379");
+    assert_eq!(env["REDIS_URL"].expose(), "redis://127.0.0.1:6379");
 
     let generated = env["SECRET_KEY"].expose().to_owned();
     assert_eq!(generated.len(), 64, "random_hex(32) is 32 bytes");
     assert!(env["SECRET_KEY"].is_tainted());
     assert!(!generated.contains("[REDACTED]"));
+
+    // A declared local password is composed into the coordinate and taints it end to end.
+    vault
+        .put(Namespace::Secrets, "APP_DB_PASSWORD", "pg-s3cret")
+        .expect("declare the local database password");
+    let secret_env: BTreeMap<String, _> = evaluated
+        .resolve_env("api", &resolvers)
+        .expect("resolve env with a declared password");
+    assert_eq!(secret_env["DATABASE_URL"].redacted(), "[REDACTED]");
+    assert!(secret_env["DATABASE_URL"].is_tainted());
+    assert_eq!(
+        secret_env["DATABASE_URL"].expose(),
+        "postgres://slipfork:pg-s3cret@127.0.0.1:5432/app_db",
+        "the coordinate composes the declared password"
+    );
 
     // Write-once: the second resolution returns the same stored value.
     let second: BTreeMap<String, _> = evaluated.resolve_env("api", &resolvers).expect("resolve");

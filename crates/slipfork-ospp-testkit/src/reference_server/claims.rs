@@ -1,14 +1,14 @@
 //! Claim-aware environment resolution over the canonical `Forkfile` evaluator.
 //!
 //! The reference server owns **no** expression evaluation: it supplies authoritative values through
-//! the [`SecretProvider`] port and concrete [`Facts`], and delegates claim selection, fallback
-//! evaluation, taint propagation and verbatim passthrough to `slipfork-forkfile`.
+//! the [`SecretProvider`] port and delegates claim selection, fallback evaluation, taint
+//! propagation, and verbatim passthrough to `slipfork-forkfile`.
 
 use std::collections::BTreeMap;
 
 use slipfork_forkfile::{
-    EvaluatedFork, Facts, FactsValue, Namespace, OsCsprngEntropy, ProviderError, Resolvers,
-    SecretProvider, TaintedString,
+    EvaluatedFork, Namespace, OsCsprngEntropy, ProviderError, Resolvers, SecretProvider,
+    TaintedString,
 };
 use slipfork_ospp::{OsppClaims, codes};
 
@@ -39,70 +39,21 @@ impl SecretProvider for ConfigVault<'_> {
     }
 }
 
-/// Concrete resource/service facts derived from the configured authoritative values.
-fn facts(config: &ReferenceServerConfig) -> Facts {
-    let mut facts = Facts::default();
-    for (path, record) in &config.resources {
-        let Some((namespace, id)) = path.split_once('.') else {
-            continue;
-        };
-        let properties = BTreeMap::from([
-            (
-                "url".to_owned(),
-                FactsValue {
-                    value: record.url.clone(),
-                    secret: false,
-                },
-            ),
-            (
-                "password".to_owned(),
-                FactsValue {
-                    value: record.password.clone(),
-                    secret: true,
-                },
-            ),
-        ]);
-        match namespace {
-            "pg_databases" => {
-                facts.postgres.insert(id.to_owned(), properties);
-            }
-            "redis_clusters" => {
-                facts.redis.insert(id.to_owned(), properties);
-            }
-            "s3_buckets" => {
-                facts.s3.insert(id.to_owned(), properties);
-            }
-            _ => {}
-        }
-    }
-    for (id, value) in &config.domains {
-        facts.domains.insert(
-            id.clone(),
-            BTreeMap::from([(
-                "name".to_owned(),
-                FactsValue {
-                    value: value.clone(),
-                    secret: false,
-                },
-            )]),
-        );
-    }
-    facts
-}
-
 /// Resolve every unclaimed service environment from the already feature-evaluated manifest.
 ///
 /// A claimed expression comes back as canonical `Forkfile` source (never evaluated here); every
 /// other expression goes through `resolve_env_with_claims` and the reference server's values.
+///
+/// Resource coordinates come from the manifest projection (`EvaluatedFork::world_facts`), so the
+/// reference server never invents an alternative world view.
 pub(super) fn resolve_components(
     config: &ReferenceServerConfig,
     claims: &OsppClaims,
     forkfile: &EvaluatedFork,
 ) -> Result<BTreeMap<String, BTreeMap<String, TaintedString>>, (String, String)> {
-    let facts = facts(config);
     let vault = ConfigVault { config };
     let entropy = OsCsprngEntropy;
-    let resolvers = Resolvers::new(&vault, &entropy, &facts);
+    let resolvers = Resolvers::new(&vault, &entropy);
     let owns = |namespace: &str, path: &[String]| claims.owns(namespace, path);
     let is_claimed = |expr: &slipfork_forkfile::Expr| forkfile.expr_is_claimed(expr, &owns);
     let mut components = BTreeMap::new();

@@ -1997,3 +1997,25 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-19T20:27 [M3.32.3.4] (lead) attempt 3/3 started
 - 2026-11-19T20:27 [M3.32.3.4] (lead) attempt 3: split protocol.rs 610 + logs.rs 546 under 500; add ts_ms/interleave/journey proofs
 - 2026-11-19T20:31 [M3.32.3.4] (lead) status review -> done
+- 2026-11-19T20:31 [M3.32.3.3] (lead) edited fields
+- 2026-11-19T20:31 [M3.32.3.3] (lead) status ready -> active
+- 2026-11-19T20:31 [M3.32.3.3] (lead) attempt 1/3 started
+- 2026-11-19T20:31 [M3.32.3.3] (lead) base 8ef3a5ef8070f2db9460bb66da53cf70216751c5; widened to Makefile/test_tools for the snow suite excision; support/demo conversion stays with M3.32.5
+- 2026-11-19T20:33 [M3.32.3.3] (lead) edited fields
+- 2026-11-19T20:33 [M3.32.3.3] (lead) needs_split: spans daemon retype + forkfile canonical projection + edge/wire snow-resolve retirement + crate deletion + protected live fixtures; decomposed into
+- 2026-11-19T20:34 [M3.32.3.3.1] (planner) created (task) EvaluatedFork canonical world projection + ported snow assertions
+- 2026-11-19T20:34 [M3.32.3.3.2] (planner) created (task) Retype slipforkd on EvaluatedFork, VCS project identity, delete slipfork.toml loader
+- 2026-11-19T20:34 [M3.32.3.3.3] (planner) created (task) Remove snow resolve verb, delete slipfork-snow, port protected fixtures to Forkfile
+- 2026-11-19T20:34 [M3.32.3.3] (lead) status active -> active
+- 2026-11-19T20:34 [M3.32.3.3.1] (lead) status ready -> active
+- 2026-11-19T20:34 [M3.32.3.3.1] (lead) attempt 1/3 started
+- 2026-11-19T20:34 [M3.32.3.3.1] (lead) base 8ef3a5ef8070f2db9460bb66da53cf70216751c5
+- 2026-11-19T20:38 [M3.32.3.3.1] (lead) edited fields
+- 2026-11-19T20:38 [M3.32.3.3.1] (lead) attempt 2/3 started
+- 2026-11-19T20:38 [M3.32.3.3.1] (lead) attempt 2: split resolve.rs 653 -> <=500 (build-env vs runtime resolution)
+- 2026-11-19T20:39 [M3.32.3.3.1] (lead) status active -> review
+- 2026-11-19T20:40 [M3.32.3.3.1] (lead) edited fields
+- 2026-11-19T20:40 [M3.32.3.3.1] (lead) status review -> active
+- 2026-11-19T20:40 [M3.32.3.3.1] (lead) attempt 3/3 started
+- 2026-11-19T20:40 [M3.32.3.3.1] (lead) Triad fix pass base 8ef3a5ef8070f2db9460bb66da53cf70216751c5; critical_ospp is RED (authoritative resource URLs ignored)
+- 2026-11-19T20:44 [M3.32.3.3.1] (lead) status active -> done

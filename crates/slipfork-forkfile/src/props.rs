@@ -5,26 +5,17 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::check::{Checker, ExternalCheck, IdKind};
 use crate::diag::{Diagnostic, Span};
 use crate::lookup::each_stmt;
+use crate::projection::password_key;
 use crate::syntax::{EnvAssignment, Expr, ForkFile, ServiceDirective, Stmt};
 
-const PG_DB_PROPERTIES: [&str; 8] = [
-    "host", "port", "user", "password", "db_name", "url", "jdbc", "ca_cert",
-];
-const REDIS_PROPERTIES: [&str; 6] = ["host", "port", "user", "password", "url", "ca_cert"];
-const S3_PROPERTIES: [&str; 6] = [
-    "endpoint",
-    "bucket",
-    "region",
-    "access_key",
-    "secret_key",
-    "url",
-];
-const DOMAIN_PROPERTIES: [&str; 3] = ["name", "leader_name", "url"];
-const SERVICE_PROPERTIES: [&str; 6] = [
+const PG_DB_PROPERTIES: [&str; 6] = ["host", "port", "user", "db_name", "url", "jdbc"];
+const REDIS_PROPERTIES: [&str; 4] = ["host", "port", "user", "url"];
+const S3_PROPERTIES: [&str; 4] = ["endpoint", "bucket", "region", "url"];
+const DOMAIN_PROPERTIES: [&str; 2] = ["name", "url"];
+const SERVICE_PROPERTIES: [&str; 5] = [
     "private_domain",
     "private_url",
     "private_port",
-    "commit_hash",
     "public_route_path",
     "public_url",
 ];
@@ -124,9 +115,17 @@ impl Checker<'_> {
         if allowed.contains(&property) {
             return;
         }
+        let hint = if matches!(property, "password" | "secret_key" | "access_key") {
+            format!(
+                "read it as `secret(<KEY>)` (e.g. `secret({})`)",
+                password_key(entity)
+            )
+        } else {
+            format!("expected one of: {}", allowed.join(", "))
+        };
         self.diags.push(
             Diagnostic::new(span, format!("`{entity}` has no property `{property}`"))
-                .with_hint(format!("expected one of: {}", allowed.join(", "))),
+                .with_hint(hint),
         );
     }
     pub(crate) fn check_scope_path(&mut self, scope: &str, segments: &[String], span: Span) {

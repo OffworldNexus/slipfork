@@ -23,6 +23,7 @@ mod lexer;
 mod lookup;
 mod migrate;
 mod parser;
+mod projection;
 mod props;
 mod resolve;
 mod resources;
@@ -35,12 +36,13 @@ pub use check::ExternalCheck;
 pub use diag::{Diagnostic, Span};
 pub use eval::FeatureSet;
 pub use ir::{
-    EntityKind, EvaluatedEnvGroup, EvaluatedFork, EvaluatedImage, EvaluatedPg, EvaluatedPgDatabase,
-    EvaluatedRedis, EvaluatedService, EvaluatedTask, Facts, FactsValue, HookRun, PropertyMap,
-    Resolvers, TaintedString,
+    DeploymentFacts, EntityKind, EvaluatedEnvGroup, EvaluatedFork, EvaluatedImage, EvaluatedPg,
+    EvaluatedPgDatabase, EvaluatedRedis, EvaluatedService, EvaluatedTask, HookRun, Resolvers,
+    TaintedString,
 };
 pub use migrate::{MigrateError, migrate_snow_yaml};
 pub use parser::parse_forkfile;
+pub use projection::{BuildImage, IngressRoute, WorldFact, WorldPgDatabase};
 pub use syntax::{
     ArgPart, ArgRef, ArgRefKind, Argv, ArgvSlot, Condition, DomainDef, EnvAssignment, EnvGroup,
     EnvPrefix, Expr, FeatureDef, ForkFile, GeneratorKind, HookPhase, ImageSource, OnBlock,

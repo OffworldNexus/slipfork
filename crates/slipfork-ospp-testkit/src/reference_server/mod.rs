@@ -38,15 +38,6 @@ const POLL_SLICE: Duration = Duration::from_millis(25);
 const IO_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_HTTP_HEADERS: usize = 16 * 1024;
 
-/// One server-resolved resource (`pg_databases.main`, `s3_buckets.media`, …).
-#[derive(Debug, Clone)]
-pub struct ResourceRecord {
-    /// Non-sensitive coordinate (`url`, `endpoint`, …), returned in plaintext.
-    pub url: String,
-    /// Sensitive credential (`password`, `secret_key`), sealed when unclaimed.
-    pub password: String,
-}
-
 /// Browser verdict a pending pairing resolves to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PairOutcome {
@@ -83,8 +74,6 @@ pub struct ReferenceServerConfig {
     pub vars: BTreeMap<String, String>,
     /// Resolvable `secrets::<KEY>` values (always sealed to the client).
     pub secrets: BTreeMap<String, String>,
-    /// Resolvable `resources::<kind>.<id>` records.
-    pub resources: BTreeMap<String, ResourceRecord>,
     /// Resolvable `domains::<ID>` values.
     pub domains: BTreeMap<String, String>,
     /// Resource dumps by resource path.
@@ -101,7 +90,6 @@ impl Default for ReferenceServerConfig {
             accepted_keys: Vec::new(),
             vars: BTreeMap::new(),
             secrets: BTreeMap::new(),
-            resources: BTreeMap::new(),
             domains: BTreeMap::new(),
             dumps: BTreeMap::new(),
             pair_outcome: PairOutcome::approved(),

@@ -16,7 +16,7 @@ use slipfork_ospp::{
 };
 use slipfork_ospp_testkit::{
     FixedEntropy, MisSigningSigner, PairOutcome, ReferenceOsppServer, ReferenceServerConfig,
-    ResourceRecord, seal_dump, seal_secret, software_signer,
+    seal_dump, seal_secret, software_signer,
 };
 
 const FORKFILE: &str = r#"
@@ -63,24 +63,6 @@ fn config(signer_public_key: &str) -> ReferenceServerConfig {
         secrets: [("SECRET_KEY".to_owned(), "s3cr3t-value".to_owned())]
             .into_iter()
             .collect(),
-        resources: [
-            (
-                "pg_databases.main".to_owned(),
-                ResourceRecord {
-                    url: "postgres://api@127.0.0.1/main".to_owned(),
-                    password: "pg-password".to_owned(),
-                },
-            ),
-            (
-                "pg_databases.reporting".to_owned(),
-                ResourceRecord {
-                    url: "postgres://reporting@127.0.0.1/reporting".to_owned(),
-                    password: "reporting-password".to_owned(),
-                },
-            ),
-        ]
-        .into_iter()
-        .collect(),
         ..ReferenceServerConfig::default()
     }
 }
@@ -155,11 +137,11 @@ fn handshake_and_subscribe_resolve_id_only_claims() {
     assert_eq!(api["LOCAL_DEV_KEY"].expose(), "secret(LOCAL_DEV_KEY)");
     assert!(!api["LOCAL_DEV_KEY"].is_tainted());
     // A claimed resource keeps its reference verbatim (the uniform claim rule);
-    // an unclaimed resource coordinate resolves to plaintext.
+    // an unclaimed resource coordinate resolves from the manifest projection.
     assert_eq!(api["DATABASE_URL"].expose(), "main.url");
     assert_eq!(
         api["REPORTING_URL"].expose(),
-        "postgres://reporting@127.0.0.1/reporting"
+        "postgres://slipfork@127.0.0.1:5432/reporting"
     );
     assert_eq!(api["SECRET_KEY"].expose(), "s3cr3t-value");
     assert!(api["SECRET_KEY"].is_tainted());
@@ -176,7 +158,6 @@ fn handshake_and_subscribe_resolve_id_only_claims() {
     // Only identifiers cross the wire, never server values.
     let claims_json = serde_json::to_string(&recorded.claims).expect("claims json");
     assert!(!claims_json.contains("s3cr3t-value"));
-    assert!(!claims_json.contains("pg-password"));
 }
 
 #[test]

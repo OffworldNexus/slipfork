@@ -11,8 +11,8 @@ pub mod reference_server;
 pub mod signers;
 
 pub use reference_server::{
-    PairOutcome, ReferenceOsppServer, ReferenceServerConfig, ResourceRecord, ServerRequest,
-    ServerState, SubscriptionRecord, seal_dump, seal_secret,
+    PairOutcome, ReferenceOsppServer, ReferenceServerConfig, ServerRequest, ServerState,
+    SubscriptionRecord, seal_dump, seal_secret,
 };
 pub use signers::{
     FixedEntropy, MisSigningSigner, SeededEntropy, known_software_key, software_signer,
