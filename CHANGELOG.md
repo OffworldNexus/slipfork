@@ -20,7 +20,10 @@ copying `.env` files.
 - **`slipfork lsp`** — the same checker and hover documentation over stdio for
   Zed, Neovim, and VS Code.
 - **`slipfork migrate`** — one-way, statically verified conversion of an
-  upstream Snow manifest into a `Forkfile`.
+  upstream Snow manifest into a `Forkfile`: `snow.yml` (else `snow.yaml`, or a
+  named file) in, a checked `Forkfile` out, `--stdout` to preview, `-o` to pick
+  the destination, `-f` to replace an existing file, and `{"ok":true,...}`
+  counts under `--json`.
 - **Btrfs world engine** — one unprivileged subvolume per world holding the
   read-only service rootfs plus PostgreSQL, Redis, and S3 state. Sealing a base
   and cloning a world are metadata-only subvolume operations.

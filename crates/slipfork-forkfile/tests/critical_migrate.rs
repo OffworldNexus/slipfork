@@ -230,6 +230,17 @@ fn a_realistic_upstream_file_round_trips_into_a_valid_forkfile() {
 }
 
 #[test]
+fn the_demo_fixture_migrates_into_a_valid_forkfile() {
+    let demo = include_str!("../../../support/demo/migrate/snow.yml");
+    let out = migrate_snow_yaml(demo).expect("demo fixture migrates");
+    parse_forkfile(&out)
+        .expect("parses")
+        .evaluate(&FeatureSet::new())
+        .expect("evaluates");
+    assert!(out.contains("secret(SECRET_KEY) ?? random_string(50)"));
+}
+
+#[test]
 fn unsupported_templates_shell_syntax_and_two_ports_fail_closed() {
     let unsupported = UPSTREAM.replace(
         "${{ resources::pg_databases.app_db.url }}",

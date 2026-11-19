@@ -36,6 +36,7 @@ $ slipfork fork demo-a          # second world at http://demo-a.demo.localhost
 | `api/migrate.py` | Applies `db/*.sql`; the `pre-deploy` hook and the `migrate` task |
 | `front/index.html` | The page served on `/`, reading `/api/db` |
 | `db/*.sql` | Schema and seed, applied idempotently on every boot |
+| `migrate/snow.yml` | Legacy-shaped upstream manifest for a `slipfork migrate` rehearsal |
 
 The services run their sources **from this checkout**, bind-mounted at the same path inside the world. Edit `api/server.py` or the SQL and run `slipfork restart`; there is no Docker rebuild.
 

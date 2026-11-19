@@ -103,12 +103,58 @@ service api ./api {
     setup: python3 -m venv .venv
     run .venv/bin/python -m uvicorn app.main:app --host 0.0.0.0 --port $port
 }
+
+task migrate in api: .venv/bin/python -m app.migrate
 ```
 
 `service api ./api` builds `api/Dockerfile` and runs the container with `api/` as its working directory. The origin is `/`, `/api` is routed to this service, and `$port` expands to `8000` without word splitting.
 
 !!! info "One container per service"
     Every `service` block becomes its own `crun` container in one network namespace. `postgres`, `redis`, and S3 run as separate backing containers in the same world.
+
+## Coming from `snow.yml`?
+
+One command converts an upstream Snow manifest into the `Forkfile` the runtime reads:
+
+```mermaid
+flowchart LR
+  S["snow.yml<br/>upstream manifest"] --> M["slipfork migrate"]
+  M --> F["Forkfile<br/>canonical manifest"]
+  F --> U["slipfork up"]
+```
+
+```console
+$ cd /path/to/your/project
+$ slipfork migrate
+✓ Migrated snow.yml → Forkfile (2 services, 1 postgres cluster, 2 env groups)
+```
+
+With no argument, `migrate` uses `./snow.yml`, then `./snow.yaml`. Name one explicitly as `slipfork migrate path/to/snow.yml`; `-o` chooses the destination and `--stdout` previews the conversion without writing.
+
+That output is real: it comes from the two-service fixture in `support/demo/migrate/snow.yml`. Here is the head of the `Forkfile` it wrote.
+
+```text title="Forkfile"
+# migrated from snow.yml
+
+postgres psql {
+    version 18;
+    database app_db;
+}
+
+env app {
+    DATABASE_URL = app_db.url
+    SECRET_KEY = secret(SECRET_KEY) ?? random_string(50)
+}
+
+env frontend {
+    PUBLIC_API = app.url + "/api"
+}
+```
+
+The conversion is one-way and statically verified: `migrate` re-parses its own output with the whole-file checker, so the `Forkfile` is valid before it lands. After that the runtime reads only `Forkfile`; continue with boot and fork below.
+
+!!! info "Secrets survive the conversion"
+    `secret(SECRET_KEY) ?? random_string(50)` carries over verbatim: the generator runs once on first boot and the value lands in your local `0600` vault.
 
 ## 4. Boot and fork
 

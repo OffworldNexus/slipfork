@@ -106,7 +106,7 @@ Most world verbs accept `--world <WORLD>`: a bare `<fork>`, the `<project>:<fork
 $ slipfork exec -s api -- env | grep DATABASE_URL
 $ slipfork exec --cwd .worktrees/feat-billing -- pytest -q
 $ slipfork shell api
-$ slipfork run migrate
+$ slipfork run <task>
 $ slipfork env -s api                  # [REDACTED] for secret-tainted values
 $ slipfork logs api -f
 $ slipfork db demo
@@ -177,15 +177,36 @@ The restored result is sealed as a read-only `<project>-base-<digest>` snapshot.
 
 Unpaired, `--refresh-dump` fails closed with `requires an authenticated OSPP session`.
 
-## Migration and editor integration
+## `slipfork migrate`
 
 ```console
-$ slipfork migrate --stdout          # preview the converted Forkfile
-$ slipfork migrate -o Forkfile       # write it (refuses an existing Forkfile without -f)
-$ slipfork lsp                       # Forkfile language server over stdio
+$ slipfork migrate                     # ./snow.yml (else ./snow.yaml) -> ./Forkfile
+✓ Migrated snow.yml → Forkfile (2 services, 1 postgres cluster, 2 env groups)
+$ slipfork migrate ../billing/snow.yml -o billing/Forkfile
+$ slipfork migrate --stdout            # print the conversion, write nothing
 ```
 
-`migrate` reads an upstream Snow manifest (or a file you name), converts it, and runs the whole-file checker on the result. `lsp` implements the same diagnostics plus hover for editors that speak LSP over stdio.
+One command, one direction: an upstream Snow manifest in, a statically valid `Forkfile` out. `migrate` re-parses its own output with the whole-file checker, so a file it writes always parses. A refusal prints one `error:` line plus a `next:` remedy.
+
+| Flag | Behaviour |
+|---|---|
+| `[FILE]` | Upstream manifest; defaults to `./snow.yml`, then `./snow.yaml` |
+| `-o, --output <PATH>` | Destination; defaults to `./Forkfile` |
+| `--stdout` | Print the converted text and write nothing (`--json` prints it as one JSON string) |
+| `-f, --force` | Replace an existing `Forkfile` |
+
+`migrate`, `doctor`, and `lsp` run locally and need no `slipforkd`. Under `--json` the write reports counts instead of the summary line:
+
+```console
+$ slipfork --json migrate
+{"env_groups":2,"input":"snow.yml","ok":true,"output":"Forkfile","pg_clusters":1,"services":2}
+```
+
+Failures keep the standard shape with a stable `code`: `missing_input`, `output_exists`, `unknown_key`, `invalid_manifest`, `no_cwd`, or `write_failed`.
+
+## `slipfork lsp`
+
+`lsp` serves the same whole-file diagnostics plus hover documentation over stdio for Zed, Neovim, and VS Code. Your editor's LSP client starts it; you do not run it by hand.
 
 ## `git-remote-slipfork`
 

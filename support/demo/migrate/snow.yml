@@ -1,0 +1,39 @@
+images:
+  - id: api
+    context: ./api
+    dockerfile: Dockerfile
+  - id: front
+    context: ./front
+
+components:
+  - id: api
+    image: api
+    run_command: python3 -m uvicorn app.main:app --host 0.0.0.0 --port 8000
+    envs: [app]
+    internal_ports: [8000]
+  - id: front
+    image: front
+    run_command: node server.js
+    envs: [app, frontend]
+    internal_ports: [5173]
+
+ingresses:
+  - match: { prefix: "/api" }
+    target: { component: api, port: 8000 }
+  - match: { prefix: "/" }
+    target: { component: front, port: 5173 }
+
+resources:
+  pg_clusters: [{ id: psql, version: "18" }]
+  pg_databases: [{ id: app_db, cluster: psql }]
+
+envs:
+  app:
+    DATABASE_URL: '${{ resources::pg_databases.app_db.url }}'
+    SECRET_KEY: '${{ secrets::SECRET_KEY ?? random_string(50) }}'
+
+modes:
+  all:
+    envs:
+      frontend:
+        PUBLIC_API: '${{ resources::app.url }}/api'
