@@ -7,11 +7,11 @@ owner: implementer
 priority: 3
 depends_on: [M3.30.2.2]
 paths: [Cargo.toml, Cargo.lock, "crates/slipfork-engine/**", "crates/slipfork-testkit/**"]
-attempts: 0
+attempts: 2
 max_attempts: 3
 escalation: none
 created: "2026-11-19T00:03"
-updated: "2026-11-19T00:03"
+updated: "2026-11-19T01:10"
 ---
 
 # Goal

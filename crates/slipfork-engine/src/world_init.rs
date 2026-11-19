@@ -108,6 +108,23 @@ pub(crate) fn world_init_mount(mount: &WorldMount) -> WorldInitMount {
     }
 }
 
+/// Translate one host path into the guest path the world sees after `pivot_root`.
+pub(crate) fn world_guest_for_host(mounts: &[WorldMount], host_path: &Path) -> Option<PathBuf> {
+    mounts.iter().find_map(|mount| {
+        host_path
+            .strip_prefix(&mount.host_path)
+            .ok()
+            .map(|relative| {
+                // `join("")` would append a trailing separator; the mount root maps to itself.
+                if relative.as_os_str().is_empty() {
+                    mount.guest_path.clone()
+                } else {
+                    mount.guest_path.join(relative)
+                }
+            })
+    })
+}
+
 /// Guest mount of one extracted OCI rootfs, keyed by its immutable image digest.
 pub(crate) fn image_guest_rootfs(digest: &str) -> Result<PathBuf, EngineError> {
     let hex = digest

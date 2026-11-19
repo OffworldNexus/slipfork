@@ -1,15 +1,39 @@
 //! Composition of the child-process environment at the adapter boundary.
 //!
-//! [`slipfork_world::ExecEnv`] stays free of ambient state. Each adapter supplies the *inherited allowlist*
-//! lookup (`PATH`, `TERM`, `LANG`) from its own process environment — the same way every adapter
-//! reads OS state — while values explicitly recorded in the effective [`slipfork_world::ExecEnv`] always
-//! win. No variable outside [`InheritedVar::ALL`] is ever inherited.
+//! [`slipfork_world::ExecEnv`] stays free of ambient state. [`InheritedEnv`] carries the *inherited
+//! allowlist* (`PATH`, `TERM`, `LANG`) that the composition root resolved from its own process
+//! environment once, at construction; the engine never reads `std::env`. Values explicitly
+//! recorded in the effective [`slipfork_world::ExecEnv`] always win, and no variable outside
+//! [`InheritedVar::ALL`] is ever inherited.
 
 #![forbid(unsafe_code)]
 
 use std::collections::BTreeMap;
 
 use slipfork_world::{ExecEnv, InheritedVar};
+
+/// Ambient allowlist values the composition root resolved from its own process environment.
+///
+/// The library never reads `std::env`: [`crate::BtrfsEngine::new`] receives this value, and it is
+/// the only source of the inherited `PATH`/`TERM`/`LANG` values handed to world processes.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct InheritedEnv {
+    values: BTreeMap<String, String>,
+}
+
+impl InheritedEnv {
+    /// Build from explicitly supplied `name=value` pairs; the composition root reads them.
+    pub fn new(values: impl IntoIterator<Item = (String, String)>) -> Self {
+        Self {
+            values: values.into_iter().collect(),
+        }
+    }
+
+    /// The value of one allowlisted variable, as resolved by the composition root.
+    pub fn get(&self, var: InheritedVar) -> Option<String> {
+        self.values.get(var.name()).cloned()
+    }
+}
 
 /// Effective child environment: `ambient` allowlist overridden by `base ⊕ overlay`.
 pub(crate) fn materialize(

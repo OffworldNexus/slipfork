@@ -90,6 +90,7 @@ fn assert_fail_closed_contract(state_dir: &Path, probe: &ProbeFacts) {
         gid,
         env!("CARGO_BIN_EXE_slipfork-world-init"),
         KernelBtrfsDriver::new(),
+        support::inherited_env(),
     )
     .expect_err("a non-Btrfs state dir must refuse the engine");
     match err {
@@ -139,6 +140,7 @@ fn run_kernel_suite(root: &Path, state_dir: &Path, driver: KernelBtrfsDriver) {
         gid,
         env!("CARGO_BIN_EXE_slipfork-world-init"),
         driver,
+        support::inherited_env(),
     )
     .expect("BtrfsEngine over KernelBtrfsDriver");
     let rootfs = backing_service_rootfs(state_dir);

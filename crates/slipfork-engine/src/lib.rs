@@ -15,16 +15,19 @@
 pub mod btrfs;
 pub mod btrfs_engine;
 pub mod child_env;
+mod child_io;
 pub mod clock;
 pub mod linux_cow;
 pub mod oci;
 pub mod rootfs;
-pub mod service;
+mod supervise;
+mod wait;
 pub mod world_init;
 
 use std::path::Path;
 
 pub use btrfs_engine::BtrfsEngine;
+pub use child_env::InheritedEnv;
 pub use clock::elapsed_millis;
 pub use linux_cow::current_uid_gid;
 

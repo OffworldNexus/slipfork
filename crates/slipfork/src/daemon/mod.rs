@@ -3,9 +3,11 @@
 //! Every collaborator is wired by [`compose_daemon`], the one composition function `slipforkd` and
 //! the integration harness both call: the CoW engine over the concrete [`KernelBtrfsDriver`], the
 //! HTTP ingress `WorldRegistry`, the VCS repository resolver and workspace factory, the explicit
-//! state/data roots, and the inherited allowlist the engine hands to world processes. This module
-//! never reads `std::env`, never calls `current_dir()`, and never guesses a path: every request
-//! carries its explicit `cwd`.
+//! state/data roots, and the inherited allowlist the engine hands to world processes.
+//! `compose_daemon` is this binary's composition root: it resolves the inherited `PATH`/`TERM`/`LANG`
+//! allowlist from `std::env` once, before the engine exists. Nothing else here reads ambient state:
+//! the module never calls `current_dir()` and never guesses a path — every request carries its
+//! explicit `cwd`.
 //!
 //! World handles live only here (`H-010` #1): `up`/`fork` clone and attach a world, `down`/`drop`
 //! release it, and the thin CLI only ever receives serializable summaries and the direct-entry
@@ -18,12 +20,12 @@ use crate::vaults::{LayoutProjectVaults, ProjectVaults};
 use crate::vcs::RepositoryWorkspaces;
 use postgres::PostgresReady;
 use slipfork_edge::{EdgeError, WorldRegistry};
-use slipfork_engine::BtrfsEngine;
 use slipfork_engine::btrfs::KernelBtrfsDriver;
 use slipfork_engine::rootfs::{
     BaseImageBuilder, DockerBuildx, DockerImageStore, DockerfileStageBuilder, ElfProbe,
     FsInputHasher, RuntimeAssets,
 };
+use slipfork_engine::{BtrfsEngine, InheritedEnv};
 use slipfork_ospp::{
     DeviceKeyPath, DeviceKeySigner, FileDeviceKeyStore, OsppClient, OsppEndpoint, OsppTimeouts,
     SoftwareP256Key, SoftwareP256Signer, WsOsppClient,
@@ -239,6 +241,9 @@ pub fn compose_daemon(wiring: DaemonWiring) -> Result<DaemonGraph, String> {
             gid,
             runtime.world_init.clone(),
             driver,
+            InheritedEnv::new(std::env::vars().filter_map(|(name, value)| {
+                InheritedVar::parse(&name).map(|var| (var.name().to_owned(), value))
+            })),
         )
         .map_err(|err| format!("cannot start the Btrfs world engine: {err}"))?,
     );

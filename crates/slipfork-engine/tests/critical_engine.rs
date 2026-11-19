@@ -31,7 +31,8 @@ use slipfork_world::{
     WorldEntryCommand, WorldHandle, WorldMount, WorldSpec,
 };
 use support::{
-    POLL_INTERVAL, WorldFixture, engine_test_dir, log_text, observe_for, poll_until, world_env,
+    POLL_INTERVAL, WorldFixture, engine_test_dir, inherited_env, log_text, observe_for, poll_until,
+    world_env,
 };
 
 const HELPER_PATH: &str = "/usr/local/bin:/usr/bin:/bin";
@@ -120,6 +121,7 @@ fn r10_a_non_btrfs_state_dir_fails_closed_without_a_silent_fallback() {
         gid,
         env!("CARGO_BIN_EXE_slipfork-world-init"),
         driver,
+        inherited_env(),
     )
     .expect_err("a non-Btrfs state dir must fail the boot gate closed");
     match err {

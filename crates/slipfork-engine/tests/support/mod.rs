@@ -21,7 +21,7 @@ use slipfork_engine::rootfs::{
 use slipfork_engine::rootfs::{
     DockerBuildx, DockerImageStore, DockerfileStageBuilder, ElfProbe, FsInputHasher,
 };
-use slipfork_engine::{BtrfsEngine, current_uid_gid};
+use slipfork_engine::{BtrfsEngine, InheritedEnv, current_uid_gid};
 use slipfork_world::rootfs::{OciRootfs, WorldRootfs};
 use slipfork_world::{
     BootLineage, ExecEnv, ExecOutput, InheritedVar, LocalIngressBridge, MountMode, ServiceHandle,
@@ -336,16 +336,26 @@ pub fn require_btrfs(state_dir: &Path) -> KernelBtrfsDriver {
     driver
 }
 
+/// The inherited allowlist this test process would hand to a world. The library never reads
+/// `std::env`; every suite resolves it here, exactly as the daemon's composition root does.
+pub fn inherited_env() -> InheritedEnv {
+    InheritedEnv::new(std::env::vars().filter_map(|(name, value)| {
+        InheritedVar::parse(&name).map(|var| (var.name().to_owned(), value))
+    }))
+}
+
 /// The real engine over [`require_btrfs`]'s driver; every other construction error is a hard fail.
 pub fn require_engine(state_dir: &Path, world_init: PathBuf) -> BtrfsEngine {
     let driver = require_btrfs(state_dir);
     let (uid, gid) = current_uid_gid();
-    BtrfsEngine::new(state_dir, uid, gid, world_init, driver).unwrap_or_else(|error| {
-        panic!(
-            "cannot construct the Btrfs engine at {}: {error}",
-            state_dir.display()
-        )
-    })
+    BtrfsEngine::new(state_dir, uid, gid, world_init, driver, inherited_env()).unwrap_or_else(
+        |error| {
+            panic!(
+                "cannot construct the Btrfs engine at {}: {error}",
+                state_dir.display()
+            )
+        },
+    )
 }
 
 impl WorldFixture {

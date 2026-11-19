@@ -20,6 +20,8 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use serde_json::json;
+use slipfork_world::EngineError;
+use slipfork_world::rootfs::{BackingServiceKey, OciRootfs};
 
 /// Directory name of the synthesized OCI bundle inside the world's OCI state directory.
 pub const OCI_CONFIG_FILE: &str = "config.json";
@@ -225,6 +227,49 @@ pub fn validate_state_subdir(path: &Path) -> Result<(), String> {
             "state subdirectory '{}' must be a plain relative path (no '..')",
             path.display()
         ));
+    }
+    Ok(())
+}
+
+/// Stable `crun` container id derived from the world sequence and service id.
+pub(crate) fn container_id(world_seq: u64, service_id: &str) -> String {
+    let slug: String = service_id
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, '-' | '_') {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let slug = slug.trim_matches('_');
+    let slug = if slug.is_empty() { "service" } else { slug };
+    format!("sf{world_seq}-{}", &slug[..slug.len().min(48)])
+}
+
+/// Refuse a container mount destination the backing-service image does not carry.
+pub(crate) fn ensure_container_destination(
+    image: &OciRootfs,
+    image_key: &BackingServiceKey,
+    container_path: &Path,
+) -> Result<(), EngineError> {
+    let relative = container_path
+        .strip_prefix("/")
+        .map_err(|_| EngineError::InvalidWorldSpec {
+            reason: format!(
+                "container path '{}' must be absolute",
+                container_path.display()
+            ),
+        })?;
+    if !image.rootfs.join(relative).exists() {
+        return Err(EngineError::InvalidWorldSpec {
+            reason: format!(
+                "container path '{}' does not exist in backing-service image {image_key}; \
+                 the image rootfs must carry the mount destination",
+                container_path.display()
+            ),
+        });
     }
     Ok(())
 }
