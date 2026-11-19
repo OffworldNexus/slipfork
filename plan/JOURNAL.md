@@ -1766,3 +1766,18 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-19T13:02 [M3.32.4] (planner) created (task) Clean-sheet 0.1.0 CLI surface (dx-cli-0.1.0.md §1-§3) & @slipfork/opencode status --json sync
 - 2026-11-19T13:02 [M3.32.5] (planner) created (task) Forkfile visual docs, CHANGELOG & multi-service (api + front + postgres) support/demo
 - 2026-11-19T13:02 [M3.32.6] (planner) created (task) Zero-mock lab E2E + live multi-service PTY proof on 165.232.86.174, demo left on :80
+- 2026-11-19T13:02 [M3.32.1] (lead) edited fields
+- 2026-11-19T13:02 [M3.32.2] (lead) edited fields
+- 2026-11-19T13:02 [M3.32.3] (lead) edited fields
+- 2026-11-19T13:02 [M3.32.4] (lead) edited fields
+- 2026-11-19T13:02 [M3.32.5] (lead) edited fields
+- 2026-11-19T13:02 [M3.32.6] (lead) edited fields
+- 2026-11-19T13:03 [M3.32.1] (lead) status ready -> active
+- 2026-11-19T13:03 [M3.32.1] (lead) attempt 1/3 started
+- 2026-11-19T13:03 [M3.32.1] (lead) base 0dd8f5dcbc2e8c972a2253d002cbb95becb6e160
+- 2026-11-19T13:03 [M3.32.5] (lead) edited fields
+- 2026-11-19T13:13 [M3.32.1] (lead) status active -> review
+- 2026-11-19T13:14 [M3.32.1] (lead) status review -> ready: triad: 1 BLOCKER (TaintedString serde leak) + 5 MAJOR (diag sort/merge, check gating, ExternalCheck coverage, inactive-branch fixture)
+- 2026-11-19T13:14 [M3.32.1] (lead) attempt 2/3 started
+- 2026-11-19T13:14 [M3.32.1] (lead) status ready -> active
+- 2026-11-19T13:14 [M3.32.1] (lead) status active -> done

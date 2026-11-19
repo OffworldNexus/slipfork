@@ -6,7 +6,7 @@ status: ready
 owner: implementer
 priority: 3
 depends_on: [M3.32.3]
-paths: ["packages/opencode-slipfork/**"]
+paths: ["crates/slipfork/**", "packages/opencode-slipfork/**", Cargo.toml, Cargo.lock]
 attempts: 0
 max_attempts: 3
 escalation: none

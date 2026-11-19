@@ -1,21 +1,20 @@
 //! The injected project-vault factory used by `slipforkd` (composition layer).
 //!
 //! `DaemonService` never constructs a concrete vault adapter: it asks this capability for the
-//! project's [`SecretProvider`] (the narrow read/ensure input to `SnowFile` evaluation) and its
+//! project's [`SecretProvider`] (the narrow read/ensure input to `snow.yml` evaluation) and its
 //! [`SecretVault`] (the `secret set|unset|list` surface plus the ID-only keys that feed OSPP
 //! `claims`). Both open the same project's `0600` vault at the explicit `Layout::vault_path`.
 //!
 //! The vault is deliberately **local-only** (`docs/design/ospp.md`, `ADR-0001` §3): it persists
-//! locally provisioned backing-service credentials, local `!!` secrets, and `slipfork secret`
+//! locally provisioned backing-service credentials, local generated secrets, and `slipfork secret`
 //! overrides. Remote OSPP values are decrypted in `slipforkd` memory and never reach this file.
 
 use std::sync::Arc;
 
 use slipfork_edge::vault::already_exists;
 use slipfork_edge::{EdgeError, SecretVault};
-use slipfork_snow::{
-    FileVaultProvider, MutableSecretStore, Namespace, ProviderError, SecretProvider, SnowError,
-};
+use slipfork_forkfile::{FileVaultProvider, Namespace, ProviderError};
+use slipfork_snow::{SecretProvider, SnowError};
 use slipfork_wire::control::{DaemonError, DaemonErrorKind};
 use slipfork_world::ProjectSlug;
 
@@ -30,7 +29,7 @@ pub trait ProjectVaults: Send + Sync {
     fn store(&self, project: &ProjectSlug) -> Result<Arc<dyn SecretVault>, EdgeError>;
 }
 
-/// [`ProjectVaults`] over an explicit [`Layout`] and the `0600` [`FileVaultProvider`].
+/// [`ProjectVaults`] over an explicit [`Layout`] and the canonical `0600` [`FileVaultProvider`].
 #[derive(Debug, Clone)]
 pub struct LayoutProjectVaults {
     layout: Layout,
@@ -43,11 +42,11 @@ impl LayoutProjectVaults {
     }
 
     fn open(&self, project: &ProjectSlug) -> Result<FileVaultProvider, EdgeError> {
-        FileVaultProvider::open(self.layout.vault_path(project)).map_err(|err| {
+        FileVaultProvider::open(self.layout.vault_path(project)).map_err(|error| {
             EdgeError::Control(DaemonError::new(
                 DaemonErrorKind::Internal,
                 format!(
-                    "cannot open the 0600 vault {} for project '{project}': {err}",
+                    "cannot open the 0600 vault {} for project '{project}': {error}",
                     self.layout.vault_path(project).display()
                 ),
             ))
@@ -57,13 +56,57 @@ impl LayoutProjectVaults {
 
 impl ProjectVaults for LayoutProjectVaults {
     fn provider(&self, project: &ProjectSlug) -> Result<Arc<dyn SecretProvider>, EdgeError> {
-        Ok(Arc::new(self.open(project)?))
+        Ok(Arc::new(SnowVault(self.open(project)?)))
     }
 
     fn store(&self, project: &ProjectSlug) -> Result<Arc<dyn SecretVault>, EdgeError> {
         Ok(Arc::new(FileSecretVault {
             provider: self.open(project)?,
         }))
+    }
+}
+
+/// Bridge the canonical `slipfork-forkfile` vault onto the legacy `slipfork-snow` read port.
+///
+/// `slipfork-snow` is retired in `M3.32.3`; until then the daemon's `snow.yml` resolvers still
+/// consume its `SecretProvider`, so this composition-root adapter keeps exactly one on-disk vault.
+struct SnowVault(FileVaultProvider);
+
+impl SecretProvider for SnowVault {
+    fn get(
+        &self,
+        namespace: slipfork_snow::Namespace,
+        key: &str,
+    ) -> Result<Option<String>, slipfork_snow::ProviderError> {
+        self.0
+            .get(translate_namespace(namespace), key)
+            .map_err(translate_error)
+    }
+
+    fn ensure_secret(
+        &self,
+        key: &str,
+        proposed: &str,
+    ) -> Result<String, slipfork_snow::ProviderError> {
+        self.0.ensure_secret(key, proposed).map_err(translate_error)
+    }
+}
+
+fn translate_namespace(namespace: slipfork_snow::Namespace) -> Namespace {
+    match namespace {
+        slipfork_snow::Namespace::Secrets => Namespace::Secrets,
+        slipfork_snow::Namespace::Vars => Namespace::Vars,
+        slipfork_snow::Namespace::Domains => Namespace::Domains,
+    }
+}
+
+fn translate_error(error: ProviderError) -> slipfork_snow::ProviderError {
+    match error {
+        ProviderError::Io { path, message } => slipfork_snow::ProviderError::Io { path, message },
+        ProviderError::CorruptVault { path, message } => {
+            slipfork_snow::ProviderError::CorruptVault { path, message }
+        }
+        ProviderError::Entropy(message) => slipfork_snow::ProviderError::Entropy(message),
     }
 }
 
@@ -165,7 +208,8 @@ mod tests {
 
         let read = vaults.provider(&project).expect("read vault");
         assert_eq!(
-            read.get(Namespace::Secrets, "ALPHA").expect("get"),
+            read.get(slipfork_snow::Namespace::Secrets, "ALPHA")
+                .expect("get"),
             Some("two".to_owned())
         );
 
@@ -189,5 +233,25 @@ mod tests {
             vec!["DEBUG".to_owned()]
         );
         assert_eq!(store.keys(&project).expect("secrets"), Vec::<String>::new());
+    }
+
+    #[test]
+    fn the_bridge_satisfies_the_legacy_read_port() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let vaults = LayoutProjectVaults::new(layout(dir.path()));
+        let project = ProjectSlug::parse("acme").expect("slug");
+        let store = vaults.store(&project).expect("vault store");
+        store.put(&project, "KEY", "value", false).expect("put");
+
+        let read = vaults.provider(&project).expect("read vault");
+        assert_eq!(
+            read.ensure_secret("KEY", "ignored").expect("ensure"),
+            "value"
+        );
+        assert_eq!(
+            read.get(slipfork_snow::Namespace::Secrets, "KEY")
+                .expect("get"),
+            Some("value".to_owned())
+        );
     }
 }

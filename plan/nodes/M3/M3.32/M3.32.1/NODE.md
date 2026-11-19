@@ -2,16 +2,24 @@
 id: M3.32.1
 title: "slipfork-forkfile: purpose-made Forkfile parser, whole-file caret checker, evaluator & JSON IR"
 kind: task
-status: ready
+status: done
 owner: implementer
 priority: 3
 depends_on: []
-paths: ["docs/decisions/ADR-0009*"]
-attempts: 0
+paths:
+  - "crates/slipfork-forkfile/**"
+  - "crates/slipfork-snow/**"
+  - crates/slipfork/src/vaults.rs
+  - Cargo.toml
+  - Cargo.lock
+  - "docs/design/**"
+  - "docs/decisions/**"
+  - ARCHITECTURE.md
+attempts: 2
 max_attempts: 3
 escalation: none
 created: "2026-11-19T13:02"
-updated: "2026-11-19T13:02"
+updated: "2026-11-19T13:14"
 ---
 
 # Goal

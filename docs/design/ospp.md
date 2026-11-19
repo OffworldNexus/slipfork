@@ -1,6 +1,6 @@
 # Open Secret Provider Protocol (OSPP v1)
 
-Slipfork is a local "cloud in a box"; CI (Kerfufoo) creates and manages the real cloud environments and holds their authoritative variables, secrets, and managed infrastructure. OSPP v1 is the persistent WebSocket protocol Slipfork uses as a clutch to configure a local world from CI: the client sends its `snow.yml`, the names/IDs of entries it claims locally, and an ephemeral encryption public key; receives per-component environment variables with server-resolved secrets encrypted end-to-end (decrypted and finalized in memory, injected directly into managed processes, and never stored on disk); stays subscribed over the open WebSocket so upstream secret or configuration changes push live updates (allowing Slipfork to restart affected services); and requests on-demand resource dumps.
+Slipfork is a local "cloud in a box"; CI (Kerfufoo) creates and manages the real cloud environments and holds their authoritative variables, secrets, and managed infrastructure. OSPP v1 is the persistent WebSocket protocol Slipfork uses as a clutch to configure a local world from CI: the client sends its evaluated active `Forkfile` manifest (`EvaluatedFork` JSON for the active feature set), the names/IDs of entries it claims locally, and an ephemeral encryption public key; receives per-service environment variables with server-resolved secrets encrypted end-to-end (decrypted and finalized in memory, injected directly into managed processes, and never stored on disk); stays subscribed over the open WebSocket so upstream secret or configuration changes push live updates (allowing Slipfork to restart affected services); and requests on-demand resource dumps.
 
 ## Transport & Framing
 
@@ -112,15 +112,15 @@ If valid, the server supplies the full browser pairing URL (without `#`, since t
 sequenceDiagram
   participant C as Slipfork
   participant S as Kerfufoo
-  C->>S: subscribe { id, remote, encryption, snow, claims }
+  C->>S: subscribe { id, remote, encryption, forkfile, claims }
   S->>C: env_resolved { id, components }
   S-->>C: env_updated { id, components }
-  C->>S: subscribe { id, remote, encryption, snow, claims }
+  C->>S: subscribe { id, remote, encryption, forkfile, claims }
   S->>C: env_resolved { id, components }
   C->>S: unsubscribe { id }
 ```
 
-Project identity is the Git remote string and only the Git remote string (`"remote": "git@github.com:acme/web.git"`), sent verbatim with no client-side slug, hash, mode, or canonicalization rules; Kerfufoo resolves the remote internally at its discretion. For each subscription, the client picks one method from `encryption_methods`, generates an ephemeral encryption keypair in memory (never stored on disk), and sends `subscribe`:
+Project identity is the Git remote string and only the Git remote string (`"remote": "git@github.com:acme/web.git"`), sent verbatim with no client-side slug, hash, mode, or canonicalization rules; Kerfufoo resolves the remote internally at its discretion. Locally, Slipfork evaluates its `Forkfile` for the active feature set (`ForkFile::evaluate(&features)` -> canonical `EvaluatedFork` JSON, with all `on <feat>` conditionals already flattened so Kerfufoo never needs local feature flags), generates an ephemeral encryption keypair in memory (never stored on disk), and sends `subscribe`:
 
 ```json
 {
@@ -131,19 +131,32 @@ Project identity is the Git remote string and only the Git remote string (`"remo
     "method": "hpke-p256",
     "public_key": "<hex>"
   },
-  "snow": "<raw snow.yml content>",
+  "forkfile": {
+    "postgres": [{ "id": "pg", "version": "18", "databases": [{ "id": "app_db", "pool": true }] }],
+    "domains": [{ "id": "main" }],
+    "services": {
+      "api": {
+        "env": {
+          "LOG_LEVEL": "\"info\"",
+          "DEBUG": "var(DEBUG)",
+          "DATABASE_URL": "app_db.url",
+          "SECRET_KEY": "secret(SECRET_KEY)"
+        }
+      }
+    }
+  },
   "claims": {
     "vars": ["DEBUG"],
     "secrets": ["LOCAL_DEV_KEY"],
     "resources": {
-      "pg_databases": ["main"]
+      "pg_databases": ["app_db"]
     },
     "domains": ["main"]
   }
 }
 ```
 
-`claims` follows one uniform rule across all `snow.yml` namespaces (`vars`, `secrets`, `resources.<kind>`, `domains`, and `components`): any claimed entry tells the server not to resolve it and to leave its `${{ ... }}` expression untouched in the output string without failing on it, while everything not in `claims` is resolved by the server (or refused if missing). This lets a local world own local services, override a variable such as `vars::DEBUG`, or introduce a new `secrets::` key on a feature branch before it exists in CI, without ever sending local values or credentials to the server. In `env_resolved` and `env_updated`, plain non-secret values are strings, whereas any variable whose server evaluation touched an unclaimed `secrets::` key or a sensitive server-resolved resource credential ("secrets contaminate") is returned as `{ "encrypted": "<base64>" }`:
+`claims` follows one uniform rule across all `Forkfile` namespaces (`vars`, `secrets`, `resources.<kind>`, `domains`, and `components`): any claimed entry tells the server not to resolve it and to leave its claimed expression untouched in the output string without failing on it, while everything not in `claims` is resolved by the server (or refused if missing). This lets a local world own local services, override `var(DEBUG)`, or introduce a new `secret(...)` key on a feature branch before it exists in CI, without ever sending local values or credentials to the server. In `env_resolved` and `env_updated`, plain non-secret values are strings, whereas any variable whose server evaluation touched an unclaimed `secret(...)` key or a sensitive server-resolved resource credential ("secrets contaminate") is returned as `{ "encrypted": "<base64>" }`:
 
 ```json
 {
@@ -152,15 +165,15 @@ Project identity is the Git remote string and only the Git remote string (`"remo
   "components": {
     "api": {
       "LOG_LEVEL": "info",
-      "DEBUG": "${{ vars::DEBUG }}",
-      "DATABASE_URL": "${{ resources::pg_databases.main.url }}",
+      "DEBUG": "var(DEBUG)",
+      "DATABASE_URL": "app_db.url",
       "SECRET_KEY": { "encrypted": "<base64>" }
     }
   }
 }
 ```
 
-Slipfork decrypts `{ "encrypted": "<base64>" }` values in memory using the subscription's ephemeral private key, substitutes local values for any remaining claimed `${{ ... }}` expressions, and injects the resulting plaintext strings directly into child process environments (never writing them to disk). The WebSocket stays open while worlds run: whenever secrets or variables change upstream, the server pushes `env_updated` (`{ "type": "env_updated", "id": "sub-1", "components": { ... } }`), and Slipfork restarts affected services with the updated environment. Updating `snow.yml` or local claims re-sends `subscribe` with the same `id`; stopping the world sends `unsubscribe` (`{ "type": "unsubscribe", "id": "sub-1" }`).
+Slipfork decrypts `{ "encrypted": "<base64>" }` values in memory using the subscription's ephemeral private key, resolves any remaining claimed `Forkfile` expressions locally via `EvaluatedFork::resolve_env`, and injects the resulting plaintext strings directly into child container environments (never writing them to disk). The WebSocket stays open while worlds run: whenever secrets or variables change upstream, the server pushes `env_updated` (`{ "type": "env_updated", "id": "sub-1", "components": { ... } }`), and Slipfork restarts affected services with the updated environment. Updating `Forkfile`, active features, or local claims re-sends `subscribe` with the same `id`; stopping the world sends `unsubscribe` (`{ "type": "unsubscribe", "id": "sub-1" }`).
 
 ### `hpke-p256` Encryption
 
@@ -183,7 +196,7 @@ sequenceDiagram
 To seed a local resource, the client sends `dump_request` referencing an active `subscription_id` (which already binds both the Git `remote` and the subscription's `encryption` `{ method, public_key }`):
 
 ```json
-{ "type": "dump_request", "id": "dump-1", "subscription_id": "sub-1", "resource": "pg_databases.main" }
+{ "type": "dump_request", "id": "dump-1", "subscription_id": "sub-1", "resource": "pg_databases.app_db" }
 ```
 
 If available and permitted, the server replies with a short-lived download URL (otherwise `error`), and the client streams the dump via an out-of-band `HTTPS GET` without the server caching whole dumps in memory or on disk:

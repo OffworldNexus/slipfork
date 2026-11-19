@@ -9,6 +9,7 @@ rust-version.workspace = true
 default-run = "slipfork"
 
 [dependencies]
+slipfork-forkfile = { path = "../slipfork-forkfile" }
 clap.workspace = true
 hex.workspace = true
 indicatif.workspace = true

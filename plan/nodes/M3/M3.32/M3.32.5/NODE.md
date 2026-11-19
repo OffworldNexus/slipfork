@@ -6,12 +6,21 @@ status: ready
 owner: "doc-writer"
 priority: 3
 depends_on: [M3.32.4]
-paths: ["poc/**"]
+paths:
+  - "docs/**"
+  - README.md
+  - CHANGELOG.md
+  - AGENTS.md
+  - "support/demo/**"
+  - "poc/**"
+  - zensical.toml
+  - tools/check_docs_honesty.py
+  - "crates/slipfork-forkfile/tests/**"
 attempts: 0
 max_attempts: 3
 escalation: none
 created: "2026-11-19T13:02"
-updated: "2026-11-19T13:02"
+updated: "2026-11-19T13:03"
 ---
 
 # Goal

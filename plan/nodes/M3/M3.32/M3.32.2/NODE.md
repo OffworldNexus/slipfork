@@ -6,7 +6,13 @@ status: ready
 owner: implementer
 priority: 3
 depends_on: [M3.32.1]
-paths: ["crates/slipfork/**"]
+paths:
+  - "crates/slipfork-world/**"
+  - "crates/slipfork-engine/**"
+  - "crates/slipfork/**"
+  - "crates/slipfork-testkit/**"
+  - Cargo.toml
+  - Cargo.lock
 attempts: 0
 max_attempts: 3
 escalation: none

@@ -1380,6 +1380,7 @@ dependencies = [
  "slipfork-dag",
  "slipfork-edge",
  "slipfork-engine",
+ "slipfork-forkfile",
  "slipfork-ospp",
  "slipfork-ospp-testkit",
  "slipfork-snow",
@@ -1430,6 +1431,19 @@ dependencies = [
  "slipfork-testkit",
  "slipfork-wire",
  "slipfork-world",
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
+name = "slipfork-forkfile"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "getrandom 0.3.4",
+ "hex",
+ "serde",
+ "serde_json",
  "tempfile",
  "thiserror",
 ]

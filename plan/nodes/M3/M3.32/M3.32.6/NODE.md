@@ -6,7 +6,14 @@ status: ready
 owner: implementer
 priority: 3
 depends_on: [M3.32.5]
-paths: [docs/knowledge/LESSONS.md]
+paths:
+  - "crates/**/tests/**"
+  - "crates/slipfork-testkit/**"
+  - "crates/slipfork-ospp-testkit/**"
+  - "docs/knowledge/**"
+  - "docs/research/**"
+  - Makefile
+  - "tools/**"
 attempts: 0
 max_attempts: 3
 escalation: none

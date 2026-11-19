@@ -3,6 +3,7 @@ resolver = "3"
 members = [
   "crates/slipfork-world",
   "crates/slipfork-snow",
+  "crates/slipfork-forkfile",
   "crates/slipfork-wire",
   "crates/slipfork-dag",
   "crates/slipfork-engine",
