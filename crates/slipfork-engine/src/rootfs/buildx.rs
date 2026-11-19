@@ -1,9 +1,9 @@
 //! `docker buildx build` exporter with a local (`type=local`) output (`ADR-0009` §1.1).
 //!
 //! The builder hands a scratch `Dockerfile` and two named build contexts to [`DockerBuildx`]; the
-//! concrete struct shells out to the real `docker buildx` binary and captures its stderr so a
-//! failure is reported with the exact command context. Nothing else in the tree spawns
-//! `docker buildx`.
+//! concrete struct shells out to the real `docker buildx` binary, streams every `--progress=plain`
+//! line to its caller, and reports a failure with the exact command context. Nothing else in the
+//! tree spawns `docker buildx`.
 //!
 //! The `crun` + `slipfork-world-init` binaries reach the appended stage through the
 //! `slipfork-runtime` **named build context** (`--build-context`), so Slipfork never writes into
@@ -12,8 +12,8 @@
 #![forbid(unsafe_code)]
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
+use crate::stream::ChildCommand;
 use slipfork_world::rootfs::{BaseImageError, BuildEnvVar};
 
 /// Name of the local build context carrying `/.slipfork/bin` payloads.
@@ -89,29 +89,29 @@ impl DockerBuildx {
         args
     }
 
-    /// Build `request.target` from `request.dockerfile` into `request.dest_dir`.
-    pub fn build_local(&self, request: &BuildxRequest<'_>) -> Result<(), BaseImageError> {
-        let mut command = Command::new(&self.program);
-        command.args(self.args(request));
+    /// Build `request.target` into `request.dest_dir`, forwarding every progress line to `on_line`.
+    pub fn build_local(
+        &self,
+        request: &BuildxRequest<'_>,
+        on_line: &mut dyn FnMut(&str),
+    ) -> Result<(), BaseImageError> {
+        let mut command = ChildCommand::new(self.program.clone(), self.args(request));
         for env in request.build_envs {
-            command.env(&env.name, &env.value);
+            command = command.env(&env.name, &env.value);
         }
-        let output = command.output().map_err(|error| BaseImageError::Buildx {
+        let output = command.stream(on_line).map_err(|error| BaseImageError::Buildx {
             reason: format!(
                 "`{}` could not be started ({error}); is Docker installed with the buildx plugin?",
                 self.program.display()
             ),
         })?;
-        if output.status.success() {
+        if output.success() {
             return Ok(());
         }
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let tail: Vec<&str> = stderr.lines().rev().take(20).collect();
-        let tail = tail.into_iter().rev().collect::<Vec<_>>().join("\n");
         Err(BaseImageError::Buildx {
             reason: format!(
-                "`docker buildx build` exited with {}: {tail}",
-                output.status
+                "`docker buildx build` exited with {}: {}",
+                output.status, output.tail
             ),
         })
     }

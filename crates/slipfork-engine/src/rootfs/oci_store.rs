@@ -5,17 +5,18 @@
 //! construction), records the upstream image config as `config.json`, and reuses the cached tree on
 //! every later call — zero network or Docker work once a digest is on disk.
 //!
-//! The builder never runs `docker` itself: [`DockerImageStore`] is the only structure that spawns
-//! the CLI, exactly like [`crate::rootfs::DockerBuildx`] does for builds. Both are plain structs
-//! wired by the Composition Root and passed by value.
+//! `docker pull`, `docker export`, and `tar -xf` stream every line to the caller (a `pull -q` would
+//! hide a multi-second download). The builder never runs `docker` itself: [`DockerImageStore`] is
+//! the only structure that spawns the CLI, exactly like [`crate::rootfs::DockerBuildx`] does for
+//! builds. Both are plain structs wired by the Composition Root and passed by value.
 
 #![forbid(unsafe_code)]
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 
 use crate::clock::elapsed_millis;
+use crate::stream::ChildCommand;
 use slipfork_world::CacheOutcome;
 use slipfork_world::rootfs::{BackingServiceKey, BaseImageError, OciRootfs};
 
@@ -42,13 +43,21 @@ impl DockerImageStore {
     }
 
     /// Materialize `image` under `<state_dir>/cache/oci/<sha256>` (or return the cached copy).
-    pub fn materialize(&self, image: &BackingServiceKey) -> Result<OciRootfs, BaseImageError> {
-        self.materialize_reference(&self.image_reference(image))
+    pub fn materialize(
+        &self,
+        image: &BackingServiceKey,
+        on_line: &mut dyn FnMut(&str),
+    ) -> Result<OciRootfs, BaseImageError> {
+        self.materialize_reference(&self.image_reference(image), on_line)
     }
 
     /// Materialize one image reference (tag or `repository@sha256:<hex>`) into the cache.
-    pub fn materialize_reference(&self, reference: &str) -> Result<OciRootfs, BaseImageError> {
-        let digest = self.resolve_digest(reference)?;
+    pub fn materialize_reference(
+        &self,
+        reference: &str,
+        on_line: &mut dyn FnMut(&str),
+    ) -> Result<OciRootfs, BaseImageError> {
+        let digest = self.resolve_digest(reference, on_line)?;
         let hex = digest
             .strip_prefix("sha256:")
             .expect("resolve_digest validates the sha256: prefix");
@@ -61,7 +70,7 @@ impl DockerImageStore {
         })?;
         if !rootfs.is_dir() || !config.is_file() {
             let started = std::time::Instant::now();
-            self.export(reference, &digest, &rootfs, &config)?;
+            self.export(reference, &digest, &rootfs, &config, on_line)?;
             self.record_tag(reference, &digest);
             return Ok(OciRootfs {
                 digest,
@@ -95,20 +104,29 @@ impl DockerImageStore {
         }
     }
 
-    fn run(&self, args: &[&str]) -> Result<String, BaseImageError> {
-        let output = Command::new(&self.docker)
-            .args(args)
-            .stdin(Stdio::null())
-            .output()
-            .map_err(|error| BaseImageError::Io {
-                path: self.docker.display().to_string(),
-                message: format!(
-                    "cannot run `{} {}`: {error}; is Docker installed and on PATH?",
-                    self.docker.display(),
-                    args.join(" ")
-                ),
-            })?;
-        if !output.status.success() {
+    /// Run one `docker` verb, streaming its lines to `on_line` when given, and return its stdout.
+    fn run(
+        &self,
+        args: &[&str],
+        on_line: Option<&mut dyn FnMut(&str)>,
+    ) -> Result<String, BaseImageError> {
+        let command = ChildCommand::new(self.docker.clone(), owned_args(args));
+        let invoked = || {
+            format!(
+                "cannot run `{} {}`; is Docker installed and on PATH?",
+                self.docker.display(),
+                args.join(" ")
+            )
+        };
+        let output = match on_line {
+            Some(on_line) => command.stream(on_line),
+            None => command.capture(),
+        }
+        .map_err(|error| BaseImageError::Io {
+            path: self.docker.display().to_string(),
+            message: format!("{} ({error})", invoked()),
+        })?;
+        if !output.success() {
             return Err(BaseImageError::Io {
                 path: self.docker.display().to_string(),
                 message: format!(
@@ -116,29 +134,26 @@ impl DockerImageStore {
                     self.docker.display(),
                     args.join(" "),
                     output.status,
-                    String::from_utf8_lossy(&output.stderr).trim()
+                    output.tail.trim()
                 ),
             });
         }
-        Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+        Ok(output.stdout.trim().to_owned())
     }
 
     /// Resolve `reference` to `sha256:<64 lowercase hex>`, pulling it once when absent.
-    fn resolve_digest(&self, reference: &str) -> Result<String, BaseImageError> {
-        let inspect = || {
-            self.run(&[
-                "image",
-                "inspect",
-                reference,
-                "--format",
-                "{{index .RepoDigests 0}}",
-            ])
-        };
-        let mut repo_digest = inspect().unwrap_or_default();
-        if repo_digest.is_empty() {
-            self.run(&["pull", "-q", reference])?;
-            repo_digest = inspect()?;
+    fn resolve_digest(
+        &self,
+        reference: &str,
+        on_line: &mut dyn FnMut(&str),
+    ) -> Result<String, BaseImageError> {
+        let mut repo_digest = self.inspect_repo_digest(reference)?;
+        if repo_digest.is_none() {
+            // No `-q`: a multi-second download must stream its layers instead of a silent wait.
+            self.run(&["pull", reference], Some(&mut *on_line))?;
+            repo_digest = self.inspect_repo_digest(reference)?;
         }
+        let repo_digest = repo_digest.unwrap_or_default();
         let digest = repo_digest
             .rsplit_once('@')
             .map(|(_, digest)| digest.to_owned())
@@ -155,6 +170,34 @@ impl DockerImageStore {
                 ),
             })?;
         Ok(digest)
+    }
+
+    /// The first `RepoDigests` entry, or `None` when the image is absent.
+    ///
+    /// A spawn failure propagates: turning "docker is not on PATH" into a `pull` failure would hide
+    /// the real remedy behind a second, confusing error.
+    fn inspect_repo_digest(&self, reference: &str) -> Result<Option<String>, BaseImageError> {
+        let command = ChildCommand::new(
+            self.docker.clone(),
+            owned_args(&[
+                "image",
+                "inspect",
+                reference,
+                "--format",
+                "{{index .RepoDigests 0}}",
+            ]),
+        );
+        let output = command.capture().map_err(|error| BaseImageError::Io {
+            path: self.docker.display().to_string(),
+            message: format!(
+                "cannot run `{} image inspect {reference}`; is Docker installed and on PATH? ({error})",
+                self.docker.display()
+            ),
+        })?;
+        if !output.success() {
+            return Ok(None);
+        }
+        Ok(Some(output.stdout.trim().to_owned()))
     }
 
     fn record_tag(&self, reference: &str, digest: &str) {
@@ -176,6 +219,7 @@ impl DockerImageStore {
         digest: &str,
         rootfs: &Path,
         config: &Path,
+        on_line: &mut dyn FnMut(&str),
     ) -> Result<(), BaseImageError> {
         let pinned = match reference.rsplit_once(':') {
             Some((repository, _)) => format!("{repository}@{digest}"),
@@ -188,30 +232,43 @@ impl DockerImageStore {
             path: staging.display().to_string(),
             message: error.to_string(),
         })?;
-        let container = self.run(&["create", &pinned])?;
-        let exported = self.run(&["export", "-o", &archive.display().to_string(), &container]);
-        let _ = self.run(&["rm", "-f", &container]);
+        let container = self.run(&["create", pinned.as_str()], None)?;
+        let archive_path = archive.display().to_string();
+        let exported = self.run(
+            &["export", "-o", archive_path.as_str(), container.as_str()],
+            Some(&mut *on_line),
+        );
+        let _ = self.run(&["rm", "-f", container.as_str()], None);
         exported?;
-        let status = Command::new("tar")
-            .args(["-xf"])
-            .arg(&archive)
-            .arg("-C")
-            .arg(&staging)
-            .stdin(Stdio::null())
-            .status()
-            .map_err(|error| BaseImageError::Io {
-                path: "tar".to_owned(),
-                message: format!("cannot extract {pinned}: {error}"),
-            })?;
+        let extracted = ChildCommand::new(
+            "tar",
+            vec![
+                "-xf".to_owned(),
+                archive_path,
+                "-C".to_owned(),
+                staging.display().to_string(),
+            ],
+        )
+        .stream(&mut *on_line)
+        .map_err(|error| BaseImageError::Io {
+            path: "tar".to_owned(),
+            message: format!("cannot extract {pinned}: {error}"),
+        })?;
         let _ = std::fs::remove_file(&archive);
-        if !status.success() {
+        if !extracted.success() {
             return Err(BaseImageError::Io {
                 path: archive.display().to_string(),
-                message: format!("tar extraction of {pinned} failed with {status}"),
+                message: format!(
+                    "tar extraction of {pinned} failed with {}: {}",
+                    extracted.status,
+                    extracted.tail.trim()
+                ),
             });
         }
-        let image_config =
-            self.run(&["image", "inspect", &pinned, "--format", "{{json .Config}}"])?;
+        let image_config = self.run(
+            &["image", "inspect", &pinned, "--format", "{{json .Config}}"],
+            None,
+        )?;
         let _ = std::fs::remove_dir_all(rootfs);
         std::fs::rename(&staging, rootfs).map_err(|error| BaseImageError::Io {
             path: rootfs.display().to_string(),
@@ -222,4 +279,9 @@ impl DockerImageStore {
             message: error.to_string(),
         })
     }
+}
+
+/// Own the argv a [`ChildCommand`] takes (it stores `String`s, one allocation per verb).
+fn owned_args(args: &[&str]) -> Vec<String> {
+    args.iter().map(|arg| (*arg).to_owned()).collect()
 }

@@ -44,6 +44,7 @@ pub mod browser;
 pub mod cli;
 pub mod daemon;
 pub mod daemon_handover;
+pub mod daemon_install_report;
 pub mod daemon_unit_install;
 pub mod doctor;
 pub mod layout;

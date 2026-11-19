@@ -23,6 +23,7 @@ pub(crate) fn up(
     host_caches: bool,
 ) -> Result<ExitCode, String> {
     let client = connect_or_spawn(app)?;
+    app.terminal.start_progress("booting the world…");
     let options = block_options(app.terminal.verbose(), world.is_some());
     let request = UpRequest {
         cwd: app.ui.cwd()?,
@@ -34,13 +35,13 @@ pub(crate) fn up(
     let mut failure = None;
     match client.up(&request, &mut |event| {
         note_hook_failure(&event, &mut failure);
-        print_event(app.output_mode.json, event);
+        print_event(app, event);
     }) {
         Ok(summary) => {
             print_world_up(app, &client, slipfork::restart::Verb::Up, options, &summary)?;
             Ok(ExitCode::SUCCESS)
         }
-        Err(err) => fail_with_rescue(app.output_mode.json, failure.as_ref(), err),
+        Err(err) => fail_with_rescue(app, failure.as_ref(), err),
     }
 }
 
@@ -51,6 +52,7 @@ pub(crate) fn up(
 /// rescue path — the daemon re-runs the same boot pipeline in place.
 pub(crate) fn restart(app: &CliApp, world: Option<String>) -> Result<ExitCode, String> {
     let client = connect(&app.layout)?;
+    app.terminal.start_progress("restarting the world…");
     let options = block_options(app.terminal.verbose(), world.is_some());
     let selector = WorldSelector {
         cwd: app.ui.cwd()?,
@@ -59,7 +61,7 @@ pub(crate) fn restart(app: &CliApp, world: Option<String>) -> Result<ExitCode, S
     let mut failure = None;
     match client.restart(&selector, &mut |event| {
         note_hook_failure(&event, &mut failure);
-        print_event(app.output_mode.json, event);
+        print_event(app, event);
     }) {
         Ok(summary) => {
             print_world_up(
@@ -71,7 +73,7 @@ pub(crate) fn restart(app: &CliApp, world: Option<String>) -> Result<ExitCode, S
             )?;
             Ok(ExitCode::SUCCESS)
         }
-        Err(err) => fail_with_rescue(app.output_mode.json, failure.as_ref(), err),
+        Err(err) => fail_with_rescue(app, failure.as_ref(), err),
     }
 }
 
@@ -88,6 +90,7 @@ pub(crate) fn fork(
     host_caches: bool,
 ) -> Result<ExitCode, String> {
     let client = connect_or_spawn(app)?;
+    app.terminal.start_progress("forking the world…");
     let options = block_options(app.terminal.verbose(), true);
     let request = ForkRequest {
         cwd: app.ui.cwd()?,
@@ -100,7 +103,7 @@ pub(crate) fn fork(
     let mut failure = None;
     match client.fork(&request, &mut |event| {
         note_hook_failure(&event, &mut failure);
-        print_event(app.output_mode.json, event);
+        print_event(app, event);
     }) {
         Ok(summary) => {
             print_world_up(
@@ -112,7 +115,7 @@ pub(crate) fn fork(
             )?;
             Ok(ExitCode::SUCCESS)
         }
-        Err(err) => fail_with_rescue(app.output_mode.json, failure.as_ref(), err),
+        Err(err) => fail_with_rescue(app, failure.as_ref(), err),
     }
 }
 
@@ -161,10 +164,11 @@ fn note_hook_failure(event: &BootEvent, failure: &mut Option<BootEvent>) {
 
 /// Print the full hook failure and its one-line rescue commands, then exit non-zero.
 fn fail_with_rescue(
-    json: bool,
+    app: &CliApp,
     failure: Option<&BootEvent>,
     error: EdgeError,
 ) -> Result<ExitCode, String> {
+    app.terminal.finish_progress();
     let Some(BootEvent::HookFailed {
         id,
         argv,
@@ -175,7 +179,7 @@ fn fail_with_rescue(
     else {
         return Err(error.to_string());
     };
-    if json {
+    if app.output_mode.json {
         return Err(error.to_string());
     }
     let world_selector = world
@@ -202,11 +206,20 @@ fn fail_with_rescue(
 /// `[resources]` resolution rows are developer diagnostics on an otherwise healthy boot, so they
 /// never stream: the block's `-v` detail renders the daemon's recorded `resources` instead
 /// (`docs/design/dx-0.1.0-ux.md` §1, §8.2).
-fn print_event(json: bool, event: BootEvent) {
-    if json {
+fn print_event(app: &CliApp, event: BootEvent) {
+    if app.output_mode.json {
         return;
     }
     match event {
+        BootEvent::Progress {
+            step,
+            total,
+            phase,
+            detail,
+        } => {
+            app.terminal
+                .progress(step, total, &phase, detail.as_deref());
+        }
         BootEvent::Resources { .. } => {
             // Rendered once, from the returned summary, and only under `-v`.
         }
@@ -251,6 +264,7 @@ fn print_world_up(
     options: slipfork::restart::Options,
     summary: &WorldUpSummary,
 ) -> Result<(), String> {
+    app.terminal.finish_progress();
     if app.output_mode.json {
         println!("{}", render_json(&slipfork::restart::json(summary)?)?);
         return Ok(());

@@ -142,6 +142,17 @@ pub enum RootfsBuildEvent {
     ContractValidated { digest: RootfsDigest },
     /// One backing-service OCI rootfs is being extracted.
     MaterializingService { image: BackingServiceKey },
+    /// One long rootfs step emitted a line (`[step/total] phase …`); `detail` is live child output.
+    Progress {
+        /// 1-based step inside the rootfs pipeline.
+        step: u8,
+        /// Number of steps in the rootfs pipeline.
+        total: u8,
+        /// Human phase name (`docker buildx build`).
+        phase: String,
+        /// Latest child output line, when the step streams one.
+        detail: Option<String>,
+    },
     /// The rootfs is installed and addressable by `digest`.
     Installed {
         digest: RootfsDigest,

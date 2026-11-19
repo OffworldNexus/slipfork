@@ -34,6 +34,9 @@ use slipfork_world::rootfs::{
     BaseImageError, ImageContractMetadata, OciRootfs, RootfsDigest, RootfsDigestInputs, WorldRootfs,
 };
 
+/// Steps one rootfs materialization reports: backing images, buildx, contract + install.
+const ROOTFS_STEPS: u8 = 3;
+
 /// Production [`BaseImageBuilder`]: `Dockerfile` stage -> verified local rootfs tree.
 pub struct DockerfileStageBuilder {
     exporter: DockerBuildx,
@@ -72,7 +75,14 @@ impl DockerfileStageBuilder {
             on_event(RootfsBuildEvent::MaterializingService {
                 image: image.clone(),
             });
-            let rootfs = self.oci_store.materialize(image)?;
+            let rootfs = self.oci_store.materialize(image, &mut |line| {
+                on_event(RootfsBuildEvent::Progress {
+                    step: 1,
+                    total: ROOTFS_STEPS,
+                    phase: format!("backing image {}", image.image_repository()),
+                    detail: Some(line.to_owned()),
+                });
+            })?;
             images.insert(image.clone(), rootfs);
         }
         Ok(images)
@@ -114,15 +124,25 @@ impl DockerfileStageBuilder {
         )?;
 
         let platform = buildx_platform(&request.target_arch)?;
-        self.exporter.build_local(&BuildxRequest {
-            dockerfile: &dockerfile_path,
-            context_dir: &request.context_dir,
-            target: "slipfork-world",
-            dest_dir: &staging,
-            build_envs: &request.build_envs,
-            platform,
-            runtime_context: &runtime_context,
-        })?;
+        self.exporter.build_local(
+            &BuildxRequest {
+                dockerfile: &dockerfile_path,
+                context_dir: &request.context_dir,
+                target: "slipfork-world",
+                dest_dir: &staging,
+                build_envs: &request.build_envs,
+                platform,
+                runtime_context: &runtime_context,
+            },
+            &mut |line| {
+                on_event(RootfsBuildEvent::Progress {
+                    step: 2,
+                    total: ROOTFS_STEPS,
+                    phase: "docker buildx build".to_owned(),
+                    detail: Some(line.to_owned()),
+                });
+            },
+        )?;
 
         let (os_release, elf_abi, exposed_ports) =
             contract::validate_extracted(request, stage, &staging, &self.elf_probe)?;
@@ -238,6 +258,12 @@ impl BaseImageBuilder for DockerfileStageBuilder {
         )?;
         let service_images = self.materialize_services(request, on_event)?;
 
+        on_event(RootfsBuildEvent::Progress {
+            step: ROOTFS_STEPS,
+            total: ROOTFS_STEPS,
+            phase: "validated contract; installed rootfs cache".to_owned(),
+            detail: None,
+        });
         on_event(RootfsBuildEvent::Installed {
             digest: digest.clone(),
             app_rootfs: final_app.clone(),

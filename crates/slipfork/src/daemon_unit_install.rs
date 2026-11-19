@@ -29,18 +29,22 @@ use std::fs;
 use std::io::{self, Write as _};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use tempfile::NamedTempFile;
 
 use crate::apparmor::render_userns_profile;
 use crate::layout::Layout;
 use crate::user::{ResolvedAccount, UserIdentity};
-use slipfork_edge::{INGRESS_ADDRS, UnitSpec, render_service_unit, render_socket_unit};
+use slipfork_edge::{render_service_unit, render_socket_unit};
+use slipfork_engine::stream::ChildCommand;
 
 pub use crate::daemon_handover::{
     DAEMON_GRACE, DAEMON_HANDOVER, DAEMON_POLL, HandoverBudget, HoldOutcome, HolderFacts,
     ManagedUnit, PeerOwner, SocketHolder, hold_outcome, probe_socket_holder, release_daemon,
+};
+
+pub use crate::daemon_install_report::{
+    FileStatus, InstallPaths, InstallReport, ingress_unit_spec,
 };
 
 /// `/etc/systemd/system` — PID 1 reads the two unit files here (`ADR-0011` §1).
@@ -63,14 +67,6 @@ const NON_ROOT_REMEDY: &str = "daemon install writes /etc and enables system uni
 /// The one non-root refusal line, produced before any account-database read.
 pub fn non_root_remedy(account: &str) -> String {
     format!("{NON_ROOT_REMEDY}{account})")
-}
-
-/// The three absolute file paths one install writes, derived from the installer's directories.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct InstallPaths {
-    pub socket: PathBuf,
-    pub service: PathBuf,
-    pub apparmor: PathBuf,
 }
 
 /// The one installer for `slipfork daemon install`: real files, real unit manager.
@@ -155,73 +151,100 @@ impl UnitInstaller {
     }
 
     /// `systemctl daemon-reload`.
-    fn daemon_reload(&self) -> Result<(), String> {
-        self.run_tool(&[OsStr::new("daemon-reload")])
+    fn daemon_reload(&self, on_line: &mut dyn FnMut(&str)) -> Result<(), String> {
+        self.run_streamed(&self.systemctl, &[OsStr::new("daemon-reload")], on_line)
+            .map(|_| ())
     }
 
     /// `apparmor_parser -r <profile_path>`.
-    fn apparmor_replace(&self, profile_path: &Path) -> Result<(), String> {
-        self.run_program(
+    fn apparmor_replace(
+        &self,
+        profile_path: &Path,
+        on_line: &mut dyn FnMut(&str),
+    ) -> Result<(), String> {
+        self.run_streamed(
             &self.apparmor_parser,
             &[OsStr::new("-r"), profile_path.as_os_str()],
+            on_line,
         )
         .map(|_| ())
     }
 
     /// `systemctl enable --now <units>`.
-    fn enable_now(&self, units: &[ManagedUnit]) -> Result<(), String> {
+    fn enable_now(
+        &self,
+        units: &[ManagedUnit],
+        on_line: &mut dyn FnMut(&str),
+    ) -> Result<(), String> {
         let mut args = vec![OsStr::new("enable"), OsStr::new("--now")];
         args.extend(units.iter().map(|unit| OsStr::new(unit.unit_name())));
-        self.run_tool(&args)
+        self.run_streamed(&self.systemctl, &args, on_line)
+            .map(|_| ())
     }
 
     /// `systemctl restart slipforkd.service`.
-    fn restart_service(&self) -> Result<(), String> {
-        self.run_tool(&[
-            OsStr::new("restart"),
-            OsStr::new(ManagedUnit::Service.unit_name()),
-        ])
+    fn restart_service(&self, on_line: &mut dyn FnMut(&str)) -> Result<(), String> {
+        self.run_streamed(
+            &self.systemctl,
+            &[
+                OsStr::new("restart"),
+                OsStr::new(ManagedUnit::Service.unit_name()),
+            ],
+            on_line,
+        )
+        .map(|_| ())
     }
 
-    /// Run one `systemctl` verb with a cleared environment and the fixed tool path.
-    pub(crate) fn run_tool(&self, args: &[&OsStr]) -> Result<(), String> {
-        self.run_capture(args).map(|_| ())
+    /// Run one `systemctl` verb with a cleared environment, streaming its lines.
+    pub(crate) fn run_tool(
+        &self,
+        args: &[&OsStr],
+        on_line: &mut dyn FnMut(&str),
+    ) -> Result<(), String> {
+        self.run_capture(args, on_line).map(|_| ())
     }
 
     /// Run one `systemctl` verb the same way, returning its stdout.
-    pub(crate) fn run_capture(&self, args: &[&OsStr]) -> Result<String, String> {
-        self.run_program(&self.systemctl, args)
+    pub(crate) fn run_capture(
+        &self,
+        args: &[&OsStr],
+        on_line: &mut dyn FnMut(&str),
+    ) -> Result<String, String> {
+        self.run_streamed(&self.systemctl, args, on_line)
     }
 
-    /// Run one install tool with a cleared environment and the fixed tool path.
-    fn run_program(&self, program: &Path, args: &[&OsStr]) -> Result<String, String> {
-        let output = Command::new(program)
-            .args(args)
-            .env_clear()
-            .env("PATH", INSTALL_TOOL_PATH)
-            .output()
-            .map_err(|err| {
-                format!(
-                    "cannot run `{}`: {err}; next: install apparmor, or run `slipfork daemon unit` to preview the files",
-                    program.display()
-                )
-            })?;
-        if !output.status.success() {
-            // Exactly one line: the tool's first stderr line is the whole context.
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            let first = stderr.lines().next().unwrap_or("").trim();
+    /// Run one install tool with a cleared environment and the fixed tool path, streaming every
+    /// line to `on_line` (a slow `enable --now` must never look like a hung terminal).
+    fn run_streamed(
+        &self,
+        program: &Path,
+        args: &[&OsStr],
+        on_line: &mut dyn FnMut(&str),
+    ) -> Result<String, String> {
+        let argv: Vec<String> = args
+            .iter()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        let command = ChildCommand::new(program.to_path_buf(), argv.clone())
+            .cleared_env()
+            .env("PATH", INSTALL_TOOL_PATH);
+        let output = command.stream(on_line).map_err(|err| {
+            format!(
+                "cannot run `{}`: {err}; next: install apparmor, or run `slipfork daemon unit` to preview the files",
+                program.display()
+            )
+        })?;
+        if !output.success() {
+            // Exactly one line: the tool's own first diagnostic is the whole context.
+            let first = output.tail.lines().next().unwrap_or("").trim();
             return Err(format!(
                 "`{} {}` exited with {}: {first}",
                 program.display(),
-                args.iter()
-                    .map(|arg| arg.to_string_lossy())
-                    .collect::<Vec<_>>()
-                    .join(" "),
+                argv.join(" "),
                 output.status
             ));
         }
-        String::from_utf8(output.stdout)
-            .map_err(|err| format!("`{}` printed non-UTF-8 on stdout: {err}", program.display()))
+        Ok(output.stdout)
     }
 }
 
@@ -264,106 +287,10 @@ impl InstallRequest {
 }
 
 /// Per-file outcome of an install run (`wrote` or `unchanged`; never `skipped`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FileStatus {
-    /// The file was created or its bytes changed.
-    Wrote,
-    /// The file already contained the exact rendered bytes.
-    Unchanged,
-}
-
-impl FileStatus {
-    /// The single word the human and `--json` documents use.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Wrote => "wrote",
-            Self::Unchanged => "unchanged",
-        }
-    }
-}
-
-/// One completed install: the account the daemon runs as plus each file's outcome.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct InstallReport {
-    /// The unprivileged developer account rendered into `User=`.
-    pub user: String,
-    /// `slipforkd.socket` outcome.
-    pub socket: FileStatus,
-    /// `slipforkd.service` outcome.
-    pub service: FileStatus,
-    /// `/etc/apparmor.d/slipfork` outcome.
-    pub apparmor: FileStatus,
-    /// The exact paths this run wrote (the installer's own derivation).
-    pub paths: InstallPaths,
-}
-
-impl InstallReport {
-    /// The three `(path, status)` rows, declared once for the human transcript.
-    fn rows(&self) -> [(&Path, FileStatus); 3] {
-        [
-            (self.paths.socket.as_path(), self.socket),
-            (self.paths.service.as_path(), self.service),
-            (self.paths.apparmor.as_path(), self.apparmor),
-        ]
-    }
-
-    /// `true` when every file already carried the rendered bytes.
-    fn all_unchanged(&self) -> bool {
-        self.rows()
-            .iter()
-            .all(|(_, status)| *status == FileStatus::Unchanged)
-    }
-
-    /// The first-run transcript (`docs/design/dx-0.1.0-ux.md` §2).
-    pub fn render_text(&self) -> String {
-        if self.all_unchanged() {
-            return format!(
-                "unchanged {}, {}, {}; enabled\n",
-                ManagedUnit::Socket.unit_name(),
-                ManagedUnit::Service.unit_name(),
-                self.paths.apparmor.display()
-            );
-        }
-        let mut text = String::new();
-        for (path, status) in self.rows() {
-            text.push_str(&format!("{:<9} {}\n", status.as_str(), path.display()));
-        }
-        text.push_str(&format!(
-            "enabled   slipforkd.socket + slipforkd.service as {}, ingress 127.0.0.1:80 + [::1]:80\n",
-            self.user
-        ));
-        text.push_str("next      slipfork up\n");
-        text
-    }
-}
-
 /// The one ingress `UnitSpec` derivation shared by `daemon unit` and `daemon install`.
 ///
 /// Both commands resolve the same [`ResolvedAccount`] and [`Layout`] first, so the preview and the
 /// installed bytes can never disagree.
-pub fn ingress_unit_spec(
-    account: &ResolvedAccount,
-    layout: &Layout,
-    executable: PathBuf,
-    forward_port: u16,
-) -> Result<UnitSpec, String> {
-    let listen_addrs = INGRESS_ADDRS
-        .iter()
-        .map(|addr| {
-            addr.parse()
-                .map_err(|err| format!("invalid loopback ingress '{addr}': {err}"))
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    Ok(UnitSpec {
-        user: account.name.clone(),
-        listen_addrs,
-        forward_port,
-        executable,
-        state_dir: layout.state_dir().to_path_buf(),
-        runtime_dir: layout.runtime_dir().to_path_buf(),
-    })
-}
-
 /// Render and install the three files, then reload/enable the units (`ADR-0011` §1).
 ///
 /// The function reads no environment and resolves no account database; every effect runs through
@@ -372,11 +299,21 @@ pub fn ingress_unit_spec(
 ///
 /// A failure halfway through leaves already-written files in place; because every write is
 /// idempotent, re-running the same command converges (and `enable --now` is safe to repeat).
-pub fn install(
+/// One step of a streamed install: a phase label, or a line from the tool running in that phase.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InstallProgress<'a> {
+    /// The phase about to run (`reloading systemd units`).
+    Phase(&'a str),
+    /// One live line from the tool running inside the current phase.
+    Line(&'a str),
+}
+
+pub fn install_streamed(
     identity: &UserIdentity,
     installer: &UnitInstaller,
     budget: HandoverBudget,
     request: &InstallRequest,
+    on_step: &mut dyn FnMut(InstallProgress<'_>),
 ) -> Result<InstallReport, String> {
     if !request.is_root {
         return Err(non_root_remedy(&identity.account));
@@ -430,21 +367,38 @@ pub fn install(
     let service = statuses[1];
     let apparmor = statuses[2];
 
-    installer.daemon_reload().map_err(converge_after_failure)?;
+    on_step(InstallProgress::Phase("reloading systemd units"));
     installer
-        .apparmor_replace(&paths.apparmor)
+        .daemon_reload(&mut |line| on_step(InstallProgress::Line(line)))
+        .map_err(converge_after_failure)?;
+    on_step(InstallProgress::Phase(
+        "loading the AppArmor userns profile",
+    ));
+    installer
+        .apparmor_replace(&paths.apparmor, &mut |line| {
+            on_step(InstallProgress::Line(line));
+        })
         .map_err(converge_after_failure)?;
     // A zero-setup daemon (of any build) may hold `<runtime_dir>/daemon.sock`; hand it over before
     // `enable --now`.
+    on_step(InstallProgress::Phase(
+        "stopping any daemon holding the control socket",
+    ));
     release_daemon(installer, budget, layout.runtime_dir()).map_err(converge_after_failure)?;
+    on_step(InstallProgress::Phase(
+        "enabling slipforkd.socket + slipforkd.service",
+    ));
     installer
-        .enable_now(&[ManagedUnit::Socket, ManagedUnit::Service])
+        .enable_now(&[ManagedUnit::Socket, ManagedUnit::Service], &mut |line| {
+            on_step(InstallProgress::Line(line));
+        })
         .map_err(converge_after_failure)?;
     // An already-installed service keeps running the old `ExecStart=` after `daemon-reload`;
     // restart it only when its bytes actually changed so a no-op re-run never bounces the daemon.
     if service == FileStatus::Wrote && service_existed {
+        on_step(InstallProgress::Phase("restarting slipforkd.service"));
         installer
-            .restart_service()
+            .restart_service(&mut |line| on_step(InstallProgress::Line(line)))
             .map_err(converge_after_failure)?;
     }
 
@@ -461,3 +415,7 @@ pub fn install(
 fn converge_after_failure(message: String) -> String {
     format!("{message} — re-run to converge")
 }
+
+#[cfg(test)]
+#[path = "daemon_unit_install_tests.rs"]
+mod tests;

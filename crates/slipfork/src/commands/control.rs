@@ -2,6 +2,7 @@
 
 use std::fs::{self, OpenOptions};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::Instant;
@@ -69,6 +70,8 @@ pub(crate) fn connect_or_spawn(app: &CliApp) -> Result<DaemonControlClient, Stri
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(stderr)
+        // Its own group, so a timeout kill reaches every descendant of the daemon.
+        .process_group(0)
         .spawn()
         .map_err(|err| {
             format!(
@@ -79,27 +82,38 @@ pub(crate) fn connect_or_spawn(app: &CliApp) -> Result<DaemonControlClient, Stri
             )
         })?;
 
+    let ui = &app.terminal;
+    ui.start_progress("starting slipforkd…");
     let deadline = Instant::now() + DAEMON_GRACE;
     loop {
         if client.is_served() {
+            ui.finish_progress();
             return Ok(client);
         }
         if let Ok(Some(status)) = child.try_wait() {
             // A concurrent CLI may have won the socket race while this child exited cleanly.
             if client.is_served() {
+                ui.finish_progress();
                 return Ok(client);
             }
+            ui.finish_progress();
             return Err(format!(
-                "slipforkd exited with {status} before serving {}; see {}",
+                "slipforkd exited with {status} before serving {}; next: see {}",
                 client.socket_path().display(),
                 log_path.display()
             ));
         }
         if Instant::now() >= deadline {
+            // The daemon leads its own group: kill the group, then reap the leader.
+            let _ = slipfork_engine::linux_cow::signal_process_group(
+                child.id(),
+                slipfork_engine::linux_cow::ProcessSignal::Kill,
+            );
             let _ = child.kill();
             let _ = child.wait();
+            ui.finish_progress();
             return Err(format!(
-                "slipforkd did not serve {} within {}s; see {}",
+                "slipforkd did not serve {} within {}s; next: sudo slipfork daemon install (or read {})",
                 client.socket_path().display(),
                 DAEMON_GRACE.as_secs(),
                 log_path.display()

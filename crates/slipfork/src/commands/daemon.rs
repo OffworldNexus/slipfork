@@ -7,8 +7,8 @@ use serde_json::json;
 use slipfork::apparmor::render_userns_profile;
 use slipfork::cli::UnitKind;
 use slipfork::daemon_unit_install::{
-    self, APPARMOR_DIR, APPARMOR_PARSER, DAEMON_HANDOVER, InstallRequest, SYSTEM_UNIT_DIR,
-    SYSTEMCTL, UnitInstaller, ingress_unit_spec,
+    self, APPARMOR_DIR, APPARMOR_PARSER, DAEMON_HANDOVER, InstallProgress, InstallRequest,
+    SYSTEM_UNIT_DIR, SYSTEMCTL, UnitInstaller, ingress_unit_spec,
 };
 use slipfork_edge::{render_service_unit, render_socket_unit};
 
@@ -97,7 +97,23 @@ pub(crate) fn install(
         PathBuf::from(SYSTEMCTL),
         PathBuf::from(APPARMOR_PARSER),
     );
-    let report = daemon_unit_install::install(&identity, &installer, DAEMON_HANDOVER, &request)?;
+    let mut phase = String::new();
+    let report = daemon_unit_install::install_streamed(
+        &identity,
+        &installer,
+        DAEMON_HANDOVER,
+        &request,
+        &mut |step| match step {
+            InstallProgress::Phase(label) => {
+                phase = label.to_owned();
+                app.terminal.start_progress(label);
+            }
+            InstallProgress::Line(line) => {
+                app.terminal.update_progress(&format!("{phase} — {line}"));
+            }
+        },
+    )?;
+    app.terminal.finish_progress();
     if app.output_mode.json {
         println!(
             "{}",

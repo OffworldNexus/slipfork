@@ -7,11 +7,14 @@
 
 use std::time::Duration;
 
-use indicatif::{ProgressBar, ProgressDrawTarget};
+use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 use owo_colors::OwoColorize;
 
 /// Width of one short lineage digest (`<digest12>`, `docs/design/dx-0.1.0-ux.md` §8.2).
 pub const SHORT_DIGEST: usize = 12;
+
+/// Longest child line the spinner echoes (a `docker` step line is often a full command).
+const DETAIL_WIDTH: usize = 120;
 
 /// The terminal capability snapshot the composition root takes exactly once.
 ///
@@ -28,6 +31,9 @@ pub struct Capabilities {
     /// `--json`: the machine-pure document.
     pub json: bool,
 }
+
+/// The spinner template: a live frame, the phase message, and the elapsed clock.
+const SPINNER_TEMPLATE: &str = "{spinner} {msg} ({elapsed})";
 
 /// The one terminal capability snapshot every human renderer paints through.
 ///
@@ -48,6 +54,11 @@ impl TerminalUi {
         let spinner = if color {
             let spinner = ProgressBar::new_spinner();
             spinner.set_draw_target(ProgressDrawTarget::stderr());
+            // `{elapsed}` is the whole point of a spinner: a silent wait never says how long.
+            spinner.set_style(
+                ProgressStyle::with_template(SPINNER_TEMPLATE)
+                    .unwrap_or_else(|_| ProgressStyle::default_spinner()),
+            );
             spinner
         } else {
             ProgressBar::hidden()
@@ -169,12 +180,44 @@ impl TerminalUi {
             self.spinner.finish_and_clear();
         }
     }
+
+    /// Paint one `BootEvent::Progress` (`[step/total] phase — latest line`) on the spinner.
+    ///
+    /// Silent whenever color is off (`--json`, non-TTY, `NO_COLOR=1`): stdout stays machine-pure.
+    pub fn progress(&self, step: u8, total: u8, phase: &str, detail: Option<&str>) {
+        if !self.caps.color {
+            return;
+        }
+        let mut message = format!("[{step}/{total}] {phase}");
+        if let Some(detail) = detail.map(str::trim).filter(|detail| !detail.is_empty()) {
+            message.push_str(" — ");
+            message.push_str(&truncate(detail, DETAIL_WIDTH));
+        }
+        self.spinner.set_message(message);
+    }
+
+    /// Replace the spinner message for a wait whose phase does not change (`starting slipforkd…`).
+    pub fn update_progress(&self, message: &str) {
+        if self.caps.color {
+            self.spinner.set_message(message.to_owned());
+        }
+    }
 }
 
 /// The first [`SHORT_DIGEST`] characters of a full 64-hex digest.
 #[must_use]
 pub fn short_digest(digest: &str) -> String {
     digest.chars().take(SHORT_DIGEST).collect()
+}
+
+/// The first `width` characters of `text` (an ellipsis marks a trimmed child line).
+fn truncate(text: &str, width: usize) -> String {
+    if text.chars().count() <= width {
+        return text.to_owned();
+    }
+    let mut trimmed: String = text.chars().take(width.saturating_sub(1)).collect();
+    trimmed.push('…');
+    trimmed
 }
 
 /// The visible width of `text`: CSI (SGR) sequences occupy no column.
@@ -306,6 +349,24 @@ mod tests {
     }
 
     #[test]
+    fn a_progress_phase_renders_its_message_and_the_elapsed_clock() {
+        let ui = terminal();
+        ui.progress(2, 4, "docker pull", Some("layer 3/8"));
+        assert_eq!(ui.spinner.message(), "[2/4] docker pull — layer 3/8");
+        assert!(
+            SPINNER_TEMPLATE.contains("{elapsed}"),
+            "the spinner template carries the elapsed clock"
+        );
+        let long = "x".repeat(400);
+        ui.progress(2, 4, "docker pull", Some(&long));
+        assert_eq!(
+            ui.spinner.message().chars().count(),
+            "[2/4] docker pull — ".chars().count() + DETAIL_WIDTH
+        );
+        assert!(ui.spinner.message().ends_with('…'));
+    }
+
+    #[test]
     fn progress_stays_hidden_whenever_color_is_off() {
         for caps in [
             Capabilities {
@@ -323,6 +384,8 @@ mod tests {
             let ui = TerminalUi::new(caps);
             assert!(ui.spinner.is_hidden());
             ui.start_progress("probing namespaces and :80 ingress…");
+            ui.progress(1, 4, "docker pull", Some("layer 3/8"));
+            ui.update_progress("starting slipforkd…");
             assert!(
                 ui.spinner.is_hidden(),
                 "a colorless capability snapshot gets no spinner bytes"

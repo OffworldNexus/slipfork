@@ -1644,3 +1644,10 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-19T01:35 [M3.30.3.1] (lead) status review -> ready: triad: 5 MAJOR (argv scan, tautological palette tests, spinner span, restart styling, no-color progress) — one pass
 - 2026-11-19T01:35 [M3.30.3.1] (lead) attempt 2/3 started
 - 2026-11-19T01:43 [M3.30.3.1] (lead) status ready -> done
+- 2026-11-19T01:43 [M3.30.3.2] (lead) status ready -> active
+- 2026-11-19T01:43 [M3.30.3.2] (lead) attempt 1/3 started
+- 2026-11-19T01:43 [M3.30.3.2] (lead) base 77cf05e4b5614ddb12b16443de248215e1d179e4
+- 2026-11-19T01:47 [M3.30.3.2] (lead) status active -> review
+- 2026-11-19T01:48 [M3.30.3.2] (lead) status review -> ready: triad: 3 BLOCKER (progress never started, no child-group stop/timeout) + MAJORs, one pass
+- 2026-11-19T01:48 [M3.30.3.2] (lead) attempt 2/3 started
+- 2026-11-19T01:53 [M3.30.3.2] (lead) status ready -> done

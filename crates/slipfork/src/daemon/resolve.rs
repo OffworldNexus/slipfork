@@ -53,6 +53,7 @@ impl DaemonService {
     pub(super) fn materialize_rootfs(
         &self,
         inputs: RootfsInputs<'_>,
+        on_event: &mut dyn FnMut(BootEvent),
     ) -> Result<WorldRootfs, EdgeError> {
         let RootfsInputs {
             worktree,
@@ -162,8 +163,22 @@ impl DaemonService {
         };
         self.builder
             .materialize(&request, &mut |event: RootfsBuildEvent| {
-                // Progress reaches the CLI through `BootEvent`; a cache hit/miss is silent for now.
-                let _ = event;
+                // One live line of buildx/pull/export progress, numbered by the engine's own
+                // rootfs pipeline; cache hit/miss stays silent.
+                if let RootfsBuildEvent::Progress {
+                    step,
+                    total,
+                    phase,
+                    detail,
+                } = event
+                {
+                    on_event(BootEvent::Progress {
+                        step,
+                        total,
+                        phase,
+                        detail,
+                    });
+                }
             })
             .map_err(|err| runtime_error(err.to_string()))
     }
@@ -348,15 +363,18 @@ impl DaemonService {
         on_event: &mut dyn FnMut(BootEvent),
     ) -> Result<PreparedWorld, EdgeError> {
         let resolved = self.resolve_world(repo, target, worktree, policy, on_event)?;
-        let rootfs = self.materialize_rootfs(RootfsInputs {
-            worktree,
-            snow: &resolved.snow,
-            config: &resolved.config,
-            vault: resolved.vault.as_ref(),
-            coords: &resolved.coords,
-            claims: &resolved.claims,
-            host_caches: policy.host_caches,
-        })?;
+        let rootfs = self.materialize_rootfs(
+            RootfsInputs {
+                worktree,
+                snow: &resolved.snow,
+                config: &resolved.config,
+                vault: resolved.vault.as_ref(),
+                coords: &resolved.coords,
+                claims: &resolved.claims,
+                host_caches: policy.host_caches,
+            },
+            on_event,
+        )?;
         let (snapshot, boot) =
             self.ensure_base_snapshot(&repo.project, &resolved.snow, &resolved.plan, &rootfs)?;
         Ok(PreparedWorld {

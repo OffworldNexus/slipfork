@@ -2,16 +2,16 @@
 id: M3.30.3.2
 title: "Live streamed progress on rootfs buildx/pull/export, daemon wait and install legs"
 kind: task
-status: ready
+status: done
 owner: implementer
 priority: 3
 depends_on: [M3.30.3.1]
 paths: [Cargo.toml, Cargo.lock, "crates/slipfork/**", "crates/slipfork-engine/**"]
-attempts: 0
+attempts: 2
 max_attempts: 3
 escalation: none
 created: "2026-11-19T01:25"
-updated: "2026-11-19T01:25"
+updated: "2026-11-19T01:53"
 ---
 
 # Goal

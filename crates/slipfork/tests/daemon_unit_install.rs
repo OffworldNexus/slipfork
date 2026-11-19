@@ -26,13 +26,23 @@ use std::time::Duration;
 
 use slipfork::daemon_unit_install::{
     DAEMON_HANDOVER, FileStatus, HandoverBudget, HoldOutcome, HolderFacts, InstallPaths,
-    InstallRequest, PeerOwner, SocketHolder, UnitInstaller, hold_outcome, ingress_unit_spec,
-    install, probe_socket_holder, release_daemon,
+    InstallReport, InstallRequest, PeerOwner, SocketHolder, UnitInstaller, hold_outcome,
+    ingress_unit_spec, install_streamed, probe_socket_holder, release_daemon,
 };
 use slipfork::layout::Layout;
 use slipfork::user::{ResolvedAccount, UNPRIVILEGED_ACCOUNT_REMEDY, UserIdentity, lookup_account};
 use slipfork_edge::{DaemonControlServer, UnitSpec, render_service_unit};
 use slipfork_engine::linux_cow::ProcessSignal;
+
+/// The quiet install these assertions drive: the streamed installer with a no-op sink.
+fn install(
+    identity: &UserIdentity,
+    installer: &UnitInstaller,
+    budget: HandoverBudget,
+    request: &InstallRequest,
+) -> Result<InstallReport, String> {
+    install_streamed(identity, installer, budget, request, &mut |_| {})
+}
 
 /// The real, non-runner passwd row every install path must resolve.
 fn target_account_row() -> ResolvedAccount {

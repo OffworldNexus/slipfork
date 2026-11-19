@@ -116,7 +116,7 @@ pub fn release_daemon(
 ) -> Result<(), String> {
     let socket = DaemonControlServer::socket_path_in(runtime_dir);
 
-    installer.stop_units(&[ManagedUnit::Socket, ManagedUnit::Service])?;
+    installer.stop_units(&[ManagedUnit::Socket, ManagedUnit::Service], &mut |_| {})?;
 
     // A leftover socket file nobody bound is not a holder: only a successful connect counts.
     if !installer.is_served(runtime_dir)? {
@@ -323,21 +323,28 @@ impl UnitInstaller {
     ///
     /// Runs before `enable --now`, so `systemctl start slipforkd.service` never races a
     /// unit-managed daemon of an older build for the control socket.
-    pub(crate) fn stop_units(&self, units: &[ManagedUnit]) -> Result<(), String> {
+    pub(crate) fn stop_units(
+        &self,
+        units: &[ManagedUnit],
+        on_line: &mut dyn FnMut(&str),
+    ) -> Result<(), String> {
         for unit in units {
             let name = unit.unit_name();
             // `LoadState=not-found` is a unit this installer never wrote; every other state is a
             // unit the host knows, and `systemctl stop` is a no-op when it is already inactive.
-            let load_state = self.run_capture(&[
-                OsStr::new("show"),
-                OsStr::new("--property=LoadState"),
-                OsStr::new("--value"),
-                OsStr::new(name),
-            ])?;
+            let load_state = self.run_capture(
+                &[
+                    OsStr::new("show"),
+                    OsStr::new("--property=LoadState"),
+                    OsStr::new("--value"),
+                    OsStr::new(name),
+                ],
+                &mut *on_line,
+            )?;
             if load_state.trim() == "not-found" {
                 continue;
             }
-            self.run_tool(&[OsStr::new("stop"), OsStr::new(name)])?;
+            self.run_tool(&[OsStr::new("stop"), OsStr::new(name)], on_line)?;
         }
         Ok(())
     }

@@ -270,6 +270,18 @@ pub enum BootEvent {
         /// Retained log file holding the full un-truncated output.
         log_path: PathBuf,
     },
+    /// One long rootfs/boot step emitted a line (`[step/total] phase …`).
+    Progress {
+        /// 1-based step index.
+        step: u8,
+        /// Number of steps in the pipeline.
+        total: u8,
+        /// Human phase name (`docker buildx build`).
+        phase: String,
+        /// Latest child output line, when the step streams one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        detail: Option<String>,
+    },
     /// A component's `internal_ports` entry accepts connections.
     Ready {
         /// Component id.

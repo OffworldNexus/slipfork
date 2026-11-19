@@ -1494,7 +1494,7 @@ fn daemon_install_bytes_equal_a_real_daemon_unit_preview() {
         recording_tool(&install_root, "systemctl", &log),
         recording_tool(&install_root, "apparmor_parser", &log),
     );
-    daemon_unit_install::install(
+    daemon_unit_install::install_streamed(
         &slipfork::user::UserIdentity::resolve().expect("the test runner's real OS identity"),
         &installer,
         daemon_unit_install::DAEMON_HANDOVER,
@@ -1509,6 +1509,7 @@ fn daemon_install_bytes_equal_a_real_daemon_unit_preview() {
             xdg_cache_home: None,
             xdg_data_home: None,
         },
+        &mut |_| {},
     )
     .expect("the concrete installer writes the preview's bytes");
     let paths = installer.paths();

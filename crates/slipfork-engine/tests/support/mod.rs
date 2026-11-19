@@ -512,7 +512,7 @@ fn link_tree(from: &Path, to: &Path) -> std::io::Result<()> {
 pub fn oci_rootfs(image_ref: &str, extra_paths: &[&str]) -> OciRootfs {
     let store = DockerImageStore::new(disk_scratch_root().join("oci-state"));
     let image = store
-        .materialize_reference(image_ref)
+        .materialize_reference(image_ref, &mut |_| {})
         .unwrap_or_else(|error| {
             panic!("cannot materialize {image_ref} through DockerImageStore:\n{error}")
         });

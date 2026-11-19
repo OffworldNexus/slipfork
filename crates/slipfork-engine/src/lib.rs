@@ -20,6 +20,7 @@ pub mod clock;
 pub mod linux_cow;
 pub mod oci;
 pub mod rootfs;
+pub mod stream;
 mod supervise;
 mod wait;
 pub mod world_init;
