@@ -68,6 +68,7 @@ rs-test: | $(TMPDIR) ## Run the pure/loopback Rust suites (compile once, no Btrf
 	cargo test -p slipfork-engine --test critical_rootfs_contract
 	cargo test -p slipfork-engine --test critical_rootfs_live
 	cargo test -p slipfork-forkfile --test critical_forkfile
+	cargo test -p slipfork-forkfile --test critical_migrate
 	cargo test -p slipfork-ospp --test critical_ospp
 	cargo test -p slipfork-snow --test claimed_eval
 	cargo test -p slipfork-snow --test critical_snow

@@ -23,3 +23,7 @@ base 629a116dbe38eaccf8b24badae51f2ebcd10f57c
 ## 2026-11-19T18:45 [lead]
 
 edited fields
+
+## 2026-11-19T18:52 [lead]
+
+status active -> done

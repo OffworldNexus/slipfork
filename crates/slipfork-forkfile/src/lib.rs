@@ -21,6 +21,7 @@ mod expr;
 mod ir;
 mod lexer;
 mod lookup;
+mod migrate;
 mod parser;
 mod props;
 mod resolve;
@@ -28,6 +29,7 @@ mod resources;
 mod service;
 mod syntax;
 mod vault;
+mod yaml;
 
 pub use check::ExternalCheck;
 pub use diag::{Diagnostic, Span};
@@ -37,6 +39,7 @@ pub use ir::{
     EvaluatedRedis, EvaluatedService, EvaluatedTask, Facts, FactsValue, HookRun, PropertyMap,
     Resolvers, TaintedString,
 };
+pub use migrate::{MigrateError, migrate_snow_yaml};
 pub use parser::parse_forkfile;
 pub use syntax::{
     ArgPart, ArgRef, ArgRefKind, Argv, ArgvSlot, Condition, DomainDef, EnvAssignment, EnvGroup,

@@ -2,16 +2,16 @@
 id: M3.32.7
 title: "slipfork-forkfile: lossless snow.yml -> Forkfile converter (upstream Kerfufoo schema, ${{ }} templates, self-verified)"
 kind: task
-status: ready
+status: done
 owner: implementer
 priority: 2
 depends_on: [M3.32.1]
-paths: ["crates/slipfork-forkfile/**", "crates/slipfork-snow/src/**", Cargo.toml, Cargo.lock]
-attempts: 0
+paths: ["crates/slipfork-forkfile/**", "crates/slipfork-snow/src/**", Makefile, Cargo.toml, Cargo.lock]
+attempts: 2
 max_attempts: 3
 escalation: none
 created: "2026-11-19T16:00"
-updated: "2026-11-19T16:00"
+updated: "2026-11-19T19:03"
 ---
 
 # Goal
