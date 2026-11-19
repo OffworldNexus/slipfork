@@ -41,6 +41,9 @@ pub enum Commands {
         force: bool,
     },
 
+    /// Run the Forkfile language server over stdio (Zed, Neovim, VS Code).
+    Lsp,
+
     /// Boot the world selected by `--world` (or `cwd`) through `slipforkd`.
     Up {
         #[arg(short = 'w', long, value_name = "WORLD", help = WORLD_HELP)]

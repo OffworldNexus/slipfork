@@ -1305,6 +1305,7 @@ dependencies = [
  "slipfork-edge",
  "slipfork-engine",
  "slipfork-forkfile",
+ "slipfork-lsp",
  "slipfork-ospp",
  "slipfork-ospp-testkit",
  "slipfork-testkit",
@@ -1370,6 +1371,14 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror",
+]
+
+[[package]]
+name = "slipfork-lsp"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "slipfork-forkfile",
 ]
 
 [[package]]

@@ -12,6 +12,7 @@ pub(crate) mod doctor;
 pub(crate) mod forward;
 pub(crate) mod inspect;
 pub(crate) mod interact;
+pub(crate) mod lsp;
 pub(crate) mod migrate;
 pub(crate) mod process;
 pub(crate) mod secret;
@@ -35,6 +36,7 @@ pub(crate) fn dispatch(app: &CliApp, command: Option<Commands>) -> Result<ExitCo
             stdout,
             force,
         }) => migrate::run(app, file, output, stdout, force),
+        Some(Commands::Lsp) => lsp::run(app),
         Some(Commands::Daemon { action }) => match action {
             DaemonAction::Unit {
                 only,

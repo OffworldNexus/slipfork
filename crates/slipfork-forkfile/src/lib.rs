@@ -21,6 +21,8 @@ mod condition;
 mod diag;
 mod eval;
 mod expr;
+mod fmt;
+mod hover;
 mod ir;
 mod lexer;
 mod lookup;
@@ -38,6 +40,8 @@ mod yaml;
 pub use check::ExternalCheck;
 pub use diag::{Diagnostic, Span};
 pub use eval::FeatureSet;
+pub use fmt::fmt;
+pub use hover::{Word, hover, word_at};
 pub use ir::{
     DeploymentFacts, EntityKind, EvaluatedEnvGroup, EvaluatedFork, EvaluatedImage, EvaluatedPg,
     EvaluatedPgDatabase, EvaluatedRedis, EvaluatedService, EvaluatedTask, HookRun, Resolvers,

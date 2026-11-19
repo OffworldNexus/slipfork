@@ -10,6 +10,7 @@ default-run = "slipfork"
 
 [dependencies]
 slipfork-forkfile = { path = "../slipfork-forkfile" }
+slipfork-lsp = { path = "../slipfork-lsp" }
 clap.workspace = true
 hex.workspace = true
 indicatif.workspace = true

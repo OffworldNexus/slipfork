@@ -14,39 +14,7 @@ pub(crate) fn each_stmt<'a>(statements: &'a [Stmt], visit: &mut dyn FnMut(&'a St
 impl ForkFile {
     /// `true` when `id` names any declared entity (project, feature, resource, service, task).
     pub fn has_id(&self, id: &str) -> bool {
-        let mut found = false;
-        each_stmt(&self.statements, &mut |statement| {
-            if found {
-                return;
-            }
-            found = match statement {
-                Stmt::Project(value) => value.value == id,
-                Stmt::Features { definitions, .. } => definitions
-                    .iter()
-                    .any(|definition| definition.name.value == id),
-                Stmt::Postgres(cluster) => {
-                    cluster.id.value == id
-                        || cluster
-                            .databases
-                            .iter()
-                            .any(|database| database.id.value == id)
-                        || cluster.on.iter().any(|block| {
-                            block
-                                .databases
-                                .iter()
-                                .any(|database| database.id.value == id)
-                        })
-                }
-                Stmt::Redis(cluster) => cluster.id.value == id,
-                Stmt::S3(bucket) => bucket.id.value == id,
-                Stmt::Domain(domain) => domain.id.value == id,
-                Stmt::EnvGroup(group) => group.name.value == id,
-                Stmt::Service(service) => service.id.value == id,
-                Stmt::Task(task) => task.name.value == id,
-                Stmt::On(_) => false,
-            };
-        });
-        found
+        self.entity_kind(id).is_some()
     }
 
     /// Find a declared service by id.
@@ -130,6 +98,55 @@ impl ForkFile {
             {
                 found = Some(cluster);
             }
+        });
+        found
+    }
+}
+
+impl ForkFile {
+    /// The kind of entity `id` names, or `None` when it is not declared.
+    pub fn entity_kind(&self, id: &str) -> Option<&'static str> {
+        let mut found = None;
+        each_stmt(&self.statements, &mut |statement| {
+            if found.is_some() {
+                return;
+            }
+            found = match statement {
+                Stmt::Project(value) if value.value == id => Some("project"),
+                Stmt::Features { definitions, .. }
+                    if definitions
+                        .iter()
+                        .any(|definition| definition.name.value == id) =>
+                {
+                    Some("feature")
+                }
+                Stmt::Postgres(cluster)
+                    if cluster.id.value == id
+                        || cluster
+                            .databases
+                            .iter()
+                            .any(|database| database.id.value == id)
+                        || cluster.on.iter().any(|block| {
+                            block
+                                .databases
+                                .iter()
+                                .any(|database| database.id.value == id)
+                        }) =>
+                {
+                    Some(if cluster.id.value == id {
+                        "postgres cluster"
+                    } else {
+                        "postgres database"
+                    })
+                }
+                Stmt::Redis(cluster) if cluster.id.value == id => Some("redis cluster"),
+                Stmt::S3(bucket) if bucket.id.value == id => Some("s3 bucket"),
+                Stmt::Domain(domain) if domain.id.value == id => Some("domain"),
+                Stmt::EnvGroup(group) if group.name.value == id => Some("env group"),
+                Stmt::Service(service) if service.id.value == id => Some("service"),
+                Stmt::Task(task) if task.name.value == id => Some("task"),
+                _ => None,
+            };
         });
         found
     }
