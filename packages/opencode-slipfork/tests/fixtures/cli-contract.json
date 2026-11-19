@@ -1,0 +1,40 @@
+{
+  "recordedFrom": "slipfork --help (M3.28.10)",
+  "topLevel": {
+    "argv": ["--help"],
+    "requiredTokens": ["Usage: slipfork", "fork", "drop", "exec", "list"]
+  },
+  "subcommands": {
+    "fork": {
+      "argv": ["fork", "--help"],
+      "requiredTokens": [
+        "Usage: slipfork fork",
+        "[FORK]",
+        "Fork name (default: the current branch)",
+        "--base <BASE>",
+        "--json"
+      ]
+    },
+    "drop": {
+      "argv": ["drop", "--help"],
+      "requiredTokens": ["Usage: slipfork drop", "<FORK>", "Fork name to destroy"]
+    },
+    "exec": {
+      "argv": ["exec", "--help"],
+      "requiredTokens": [
+        "Usage: slipfork exec",
+        "<ARGV>...",
+        "--world <WORLD>",
+        "--cwd <CWD>"
+      ]
+    },
+    "list": {
+      "argv": ["list", "--help"],
+      "requiredTokens": ["Usage: slipfork list", "--json", "exactly one origin URL"]
+    }
+  },
+  "jsonFields": {
+    "fork": ["world", "origin"],
+    "list": ["world", "state", "origin", "worktree"]
+  }
+}

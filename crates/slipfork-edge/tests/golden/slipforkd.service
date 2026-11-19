@@ -1,0 +1,19 @@
+[Unit]
+Description=Slipfork daemon (unprivileged HTTP/WS ingress, world registry, and daemon control)
+Requires=slipforkd.socket
+After=slipforkd.socket
+
+[Service]
+Type=simple
+User=slipforktest
+ExecStart=/usr/local/bin/slipforkd --state-dir /home/slipforktest/.local/share/slipfork --runtime-dir /run/user/1000/slipfork
+CapabilityBoundingSet=
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/home/slipforktest/.local/share/slipfork /run/user/1000/slipfork
+PrivateTmp=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

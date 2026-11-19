@@ -1,0 +1,7 @@
+pg_clusters.psql: 
+pg_clusters.psql: PostgreSQL Database directory appears to contain a database; Skipping initialization
+pg_clusters.psql: 
+api: demo-api: world=demo db=ready
+api: demo-api: listening on 0.0.0.0:8000
+EXIT=0
+OUTER_EXIT=0

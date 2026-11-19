@@ -1,0 +1,92 @@
+   Compiling slipfork-world v0.1.0 (/home/slipfork/slipfork/crates/slipfork-world)
+   Compiling slipfork-engine v0.1.0 (/home/slipfork/slipfork/crates/slipfork-engine)
+   Compiling slipfork-testkit v0.1.0 (/home/slipfork/slipfork/crates/slipfork-testkit)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 8.58s
+     Running tests/critical_btrfs_live.rs (target/debug/deps/critical_btrfs_live-8d5e3720f4561f1e)
+
+running 1 test
+test btrfs_kernel_ro_snapshot_two_clones_same_port_services_and_ipc_isolation ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 31.63s
+
+   Compiling slipfork-ospp-testkit v0.1.0 (/home/slipfork/slipfork/crates/slipfork-ospp-testkit)
+   Compiling slipfork-testkit v0.1.0 (/home/slipfork/slipfork/crates/slipfork-testkit)
+   Compiling slipfork v0.1.0 (/home/slipfork/slipfork/crates/slipfork)
+
+running 1 test
+test production_slipforkd_is_btrfs_only_and_boots_a_real_world_on_btrfs ...     Finished `test` profile [unoptimized + debuginfo] target(s) in 6.98s
+     Running tests/critical_btrfs_live.rs (target/debug/deps/critical_btrfs_live-e92de28fb464dfa4)
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 31.49s
+
+   Compiling slipfork v0.1.0 (/home/slipfork/slipfork/crates/slipfork)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.04s
+     Running tests/critical_cli.rs (target/debug/deps/critical_cli-b098109aeaa20016)
+
+running 30 tests
+test a_branch_fork_name_that_collides_with_a_project_or_a_domain_fails_closed ... ok
+test a_branch_named_fork_that_already_exists_fails_closed_naming_up ... ok
+test auth_prints_the_server_supplied_fragment_url_and_never_echoes_a_secret ... ok
+test bare_slipfork_and_status_render_one_dashboard_and_json_stays_pure ... ok
+test daemon_install_bytes_equal_a_real_daemon_unit_preview ... ok
+test daemon_unit_apparmor_lists_every_bin_dir_in_one_four_line_profile ... ok
+test daemon_unit_refuses_an_apparmor_injecting_bin_dir_without_writing ... ok
+test daemon_unit_renders_the_resolved_user_and_never_a_template_specifier ... ok
+test db_redis_exec_resolve_container_entries_and_require_a_tty ... ok
+test doctor_json_carries_the_typed_ingress_document ... ok
+test fork_help_marks_the_name_optional_while_drop_still_requires_one ... ok
+test forward_bridge_streams_a_real_request_and_closes_on_disconnect ... ok
+test home_unset_fails_closed_before_any_mutation ... ok
+test hook_failure_keeps_the_world_and_prints_the_full_diagnostic ... ok
+test interactive_shell_prints_one_orientation_line_and_json_never_does ... ok
+test logs_fan_out_attributes_every_line_to_its_component ... ok
+test logs_follow_streams_new_component_output ... ok
+test one_url_per_world_holds_for_canonical_and_fork ... ok
+test read_verbs_never_spawn_a_daemon_and_fail_closed_in_one_line ... ok
+test rescue_commands_re_run_and_inspect_the_failed_world ... ok
+test restart_applies_an_edited_snow_file_and_names_what_came_back ... ok
+test restart_refuses_a_never_booted_world_and_rescues_a_failed_one ... ok
+test restart_reports_no_change_when_the_pipeline_starts_nothing ... ok
+test secret_set_refuses_an_existing_double_bang_key_and_never_echoes_values ... ok
+test status_with_zero_worlds_prints_one_line_plus_up ... ok
+test support_json_lists_required_evidence_for_every_integration ... ok
+test up_down_lifecycle_is_idempotent_and_one_url_per_world ... ok
+test zero_argument_fork_derives_the_branch_name_and_prints_worktree_and_cd ... ok
+test zero_argument_fork_fails_closed_without_a_branch_or_from_inside_a_fork ... ok
+test zero_setup_auto_spawn_serves_up_without_a_prestarted_daemon ... ok
+
+test result: ok. 30 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 190.34s
+
+   Compiling slipfork v0.1.0 (/home/slipfork/slipfork/crates/slipfork)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.42s
+     Running tests/critical_slug.rs (target/debug/deps/critical_slug-5b6e89e6b2f59380)
+
+running 6 tests
+test git_submodule_bare_and_separate_git_dir_fail_closed_with_actionable_override_hints ... ok
+test invalid_project_label_fails_closed_until_rescued_by_valid_slipfork_toml_override ... ok
+test jj_workspace_uses_the_shared_git_resolver_and_never_shells_out_to_jj ... ok
+test missing_snow_file_names_the_unreadable_path ... ok
+test non_vcs_directory_fails_closed_and_corrupt_git_surfaces_real_git_stderr ... ok
+test worktree_resolves_to_canonical_repo_slug_and_honors_only_vcs_root_slipfork_toml ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.53s
+
+   Compiling slipfork v0.1.0 (/home/slipfork/slipfork/crates/slipfork)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.55s
+     Running tests/critical_ospp_daemon.rs (target/debug/deps/critical_ospp_daemon-ba9cfe35154b50d1)
+
+running 6 tests
+test dot_jj_repository_routes_to_jujutsu_and_never_falls_back_to_git ... Done importing changes from the underlying Git repo.
+Initialized repo in "."
+ok
+test optional_slipfork_toml_boots_and_malformed_config_fails_closed ... ok
+test pushed_env_update_restarts_only_the_affected_component ... ok
+test remote_secrets_never_reach_disk_and_claimed_vars_resolve_from_the_local_vault ... ok
+test sealed_dump_restores_into_postgres_without_a_plaintext_file ... ok
+test unpaired_remote_strategy_and_refresh_dump_fail_closed ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 211.90s
+
+unchanged slipforkd.socket, slipforkd.service, /etc/apparmor.d/slipfork; enabled
+EXIT=0

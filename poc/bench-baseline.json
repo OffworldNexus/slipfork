@@ -1,0 +1,18 @@
+{
+  "source_report": "docs/research/m1-poc-benchmark.md",
+  "source_report_sha256": "cd28597a89851f4edd4992b2107cbbd56b63af0d90bd97d633b03ad0c52a0cb2",
+  "measured": "2026-11-15",
+  "note": "Projection of the committed report; only metrics whose measurement semantics are stable are pinned, and `make bench-update` re-pins them on the host that measured.",
+  "metrics": {
+    "pgdata_logical_mib": {
+      "value": 41.5,
+      "max_factor": 1.15,
+      "min_factor": 1.15
+    },
+    "pgdata_files": {
+      "value": 1000,
+      "max_factor": 1.5,
+      "min_factor": 1.5
+    }
+  }
+}

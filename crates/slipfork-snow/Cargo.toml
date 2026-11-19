@@ -1,0 +1,21 @@
+[package]
+name = "slipfork-snow"
+description = "snow.yml v2 parser (modes.all + modes.<mode>), Faceless v2 template engine (?? & !!), and SecretProvider IoC traits"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+base64.workspace = true
+getrandom.workspace = true
+hex.workspace = true
+serde.workspace = true
+serde-saphyr.workspace = true
+serde_json.workspace = true
+slipfork-world = { path = "../slipfork-world" }
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

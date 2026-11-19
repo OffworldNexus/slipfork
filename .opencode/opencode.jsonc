@@ -93,8 +93,12 @@
     { "action": "shell", "resource": "python *", "effect": "deny" },
     { "action": "shell", "resource": "python3 *", "effect": "deny" },
 
-    // 5. External directory confinement (repo + standard caches + /tmp/opencode + system read-only).
+    // 5. External directory confinement (repo + standard caches + /tmp/opencode + sibling integrations read-only).
     { "action": "external_directory", "resource": "*", "effect": "deny" },
+    { "action": "external_directory", "resource": "~/offworld-nexus/tunnel-weaver/*", "effect": "allow" },
+    { "action": "external_directory", "resource": "~/offworld-nexus/blastit/*", "effect": "allow" },
+    { "action": "edit", "resource": "~/offworld-nexus/tunnel-weaver/*", "effect": "deny" },
+    { "action": "edit", "resource": "~/offworld-nexus/blastit/*", "effect": "deny" },
     { "action": "external_directory", "resource": "/tmp/opencode/*", "effect": "allow" },
     { "action": "external_directory", "resource": "~/.cache/*", "effect": "allow" },
     { "action": "external_directory", "resource": "~/.cargo/*", "effect": "allow" },

@@ -1,0 +1,9 @@
+WORLD            STATE     ORIGIN                                   WORKTREE
+demo             running   http://demo.localhost                    /home/slipfork/demo
+state     running
+lineage   rootfs 479f73c1a7b0 cached · postgres:18 cached · seed - - · base 4570132bffb8 reused
+KIND             ID                STATE    PID    PORT  UPTIME
+component        api               running  78362  8000  176s
+backing_service  pg_clusters.psql  running  78330  5432  176s
+EXIT=0
+OUTER_EXIT=0

@@ -1,0 +1,14 @@
+[ready]     api (internal :8000 in world netns)
+world     demo (running, changed)
+app       http://demo.localhost
+worktree  /home/slipfork/demo
+next      slipfork open | slipfork db | slipfork logs | slipfork restart | slipfork down
+lineage   rootfs 71e00bc47fe4 rebuilt 7.7s · postgres:18 cached · seed - - · base 4570132bffb8 reused
+state     running
+lineage   rootfs 71e00bc47fe4 rebuilt 7.7s · postgres:18 cached · seed - - · base 4570132bffb8 reused
+KIND             ID                STATE    PID    PORT  UPTIME
+component        api               running  64170  8000  2s
+backing_service  pg_clusters.psql  running  64137  5432  2s
+{"debug": true, "hello": "world-M3.28.13", "host": "slipfork-dev-vm", "secret_len": 32, "world": "demo"}
+EXIT=0
+OUTER_EXIT=0

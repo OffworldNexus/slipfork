@@ -1,0 +1,5 @@
+world   demo
+ssh     ssh -N -L 8080:127.0.0.1:80 slipfork@slipfork-dev-vm
+app     http://demo.localhost:8080
+EXIT=0
+OUTER_EXIT=0

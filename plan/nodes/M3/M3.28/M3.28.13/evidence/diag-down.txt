@@ -1,0 +1,3 @@
+[down] world stopped (worktree kept)
+EXIT=0
+OUTER_EXIT=0

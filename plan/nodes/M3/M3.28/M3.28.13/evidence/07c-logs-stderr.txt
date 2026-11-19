@@ -1,0 +1,27 @@
+pg_clusters.psql: 2026-11-18 04:07:07.887 UTC [1] LOG:  starting PostgreSQL 18.7 (Debian 18.7-1.pgdg13+2) on x86_64-pc-linux-gnu, compiled by gcc (Debian 14.2.0-19) 14.2.0, 64-bit
+pg_clusters.psql: 2026-11-18 04:07:07.887 UTC [1] LOG:  listening on IPv4 address "0.0.0.0", port 5432
+pg_clusters.psql: 2026-11-18 04:07:07.887 UTC [1] LOG:  listening on IPv6 address "::", port 5432
+pg_clusters.psql: 2026-11-18 04:07:07.892 UTC [1] LOG:  listening on Unix socket "/var/run/postgresql/.s.PGSQL.5432"
+pg_clusters.psql: 2026-11-18 04:07:07.906 UTC [14] LOG:  database system was interrupted; last known up at 2026-11-18 04:06:38 UTC
+pg_clusters.psql: 2026-11-18 04:07:08.155 UTC [14] LOG:  database system was not properly shut down; automatic recovery in progress
+pg_clusters.psql: 2026-11-18 04:07:08.160 UTC [14] LOG:  redo starts at 0/1BC6E80
+pg_clusters.psql: 2026-11-18 04:07:08.163 UTC [14] LOG:  invalid record length at 0/1C05050: expected at least 24, got 0
+pg_clusters.psql: 2026-11-18 04:07:08.163 UTC [14] LOG:  redo done at 0/1C05018 system usage: CPU: user: 0.00 s, system: 0.00 s, elapsed: 0.00 s
+pg_clusters.psql: 2026-11-18 04:07:08.239 UTC [12] LOG:  checkpoint starting: end-of-recovery immediate wait
+pg_clusters.psql: 2026-11-18 04:07:08.458 UTC [12] LOG:  checkpoint complete: wrote 56 buffers (0.3%), wrote 3 SLRU buffers; 0 WAL file(s) added, 0 removed, 0 recycled; write=0.005 s, sync=0.194 s, total=0.224 s; sync files=45, longest=0.007 s, average=0.005 s; distance=248 kB, estimate=248 kB; lsn=0/1C05050, redo lsn=0/1C05050
+pg_clusters.psql: 2026-11-18 04:07:08.466 UTC [1] LOG:  database system is ready to accept connections
+api: Traceback (most recent call last):
+apiEXIT=0
+:   File "/app/server.py", line 106, in <module>
+api:     main()
+api:   File "/app/server.py", line 100, in main
+api:     server = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
+api:              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+api:   File "/usr/local/lib/python3.12/socketserver.py", line 457, in __init__
+api:     self.server_bind()
+api:   File "/usr/local/lib/python3.12/http/server.py", line 140, in server_bind
+api:     socketserver.TCPServer.server_bind(self)
+api:   File "/usr/local/lib/python3.12/socketserver.py", line 478, in server_bind
+api:     self.socket.bind(self.server_address)
+api: OSError: [Errno 98] Address already in use
+OUTER_EXIT=0

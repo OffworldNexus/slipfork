@@ -1,56 +1,50 @@
 ---
-name: Engineering Laws (Legality, Upward IoC/DI, Zero Pre-1.0 Compat)
-description: MANDATORY for all Slipfork design, coding, planning, and review tasks. Defines the three non-negotiable engineering invariants and exact code smells rejected by review-legality, review-ioc, and review-cruft.
+name: Engineering Laws (True Constructor IoC/DI, Lab-First Zero Mocks, High-Craft UX, Scorched-Earth Pre-1.0)
+description: MANDATORY for all Slipfork design, coding, planning, and review tasks. Defines the Five Non-Negotiable Engineering Laws enforced by the Triad Review Gate (review-arch, review-tests, review-ux).
 ---
 
-# The Three Engineering Iron Laws
+# The Five Non-Negotiable Engineering Laws
 
-Every artifact in Slipfork is audited by three dedicated narrow-context smell reviewers (`review-legality`, `review-ioc`, `review-cruft`). Memorize these rules and smells before writing a line of design or code.
-
----
-
-## Law 1: Zero "Illegal" Solutions — Block on Missing Inputs (`review-legality`)
-
-An **Illegal Solution** is any code, spec, or workaround that makes a task appear "done" locally while creating negative value, technical debt, or false guarantees afterwards.
-
-### Forbidden Smells (`BLOCKER`):
-- **Inventing missing inputs:** Guessing design values (`[derived]`, `[guessed]`), fabricating API schemas, or inventing placeholder behavior when an external system, credential, or host capability (`incusd` socket, remote secret vault) is unavailable.
-- **Silent degraded fallbacks:** Catching a missing capability (e.g., CoW reflink unsupported, Incus unreachable, missing required `secrets::KEY` with no `??`/`!!`) and silently running unisolated on the host or substituting an empty string. **Fail closed with a clear, actionable error!**
-- **Contract monkey-patching:** Bypassing framework/library configuration contracts with raw `std::env::var` / `os.environ` side-doors, mutating private internals, or weakening lints (`#[allow(...)]`, `# noqa`, `@ts-ignore`) instead of fixing the root contract.
-- **Ignoring declared dependencies:** Hand-rolling YAML/TOML/CLI parsers, temp-dir cleaners, or UI/protocol helpers already provided by workspace crates or `Cargo.toml`/`package.json`.
-
-### Mandatory Action When Blocked:
-Stop immediately, leave no half-baked shim on disk, and return `STATUS: blocked` with the exact missing input so `lead`/`conductor` files:
-```bash
-uv run --no-project tools/plan.py --agent <role> human add --kind missing-input "<exact missing resource/credential/decision and how to provide it>" --node <ID>
-```
+Every slice in Slipfork passes the parallel **Triad Review Gate** (`review-arch`, `review-tests`, `review-ux`). Internalize these laws before designing or writing code.
 
 ---
 
-## Law 2: Strict IoC / DI & Upward Direction Challenge (`review-ioc`)
+## Law 1: True Constructor IoC/DI, Cohesive OOP & Canonical Module Ownership (`review-arch`)
 
-LLMs naturally think **downwards** (*"how do I bolt feature X onto existing files?"*) and fail to think **upwards** (*"what is the global trait/DI architecture across all backends and languages, and is the specification complete?"*).
-
-### Mandatory IoC / DI Rules:
-1. **Single Composition Root:** Only `crates/slipfork/src/main.rs` (for the CLI/daemon) and `packages/opencode-slipfork/src/index.ts` (for the OpenCode plugin) read `std::env` / `process.env`, bind real OS sockets/filesystems, and wire concrete adapters into traits.
-2. **Zero Global State:** No mutable `static`, `lazy_static!`/`OnceLock` caches hiding I/O, or module-level mutable maps. Pass collaborators explicitly through constructors.
-3. **Capability-Honest Traits, Never `match kind` Sprawl:**
-   - Adding a new hypervisor (`IncusEngine`, `ReflinkNetnsEngine`), secret backend (`FileVaultProvider`, `HttpSecretProvider`), or language runner (`PytestAdapter`, `PlaywrightAdapter`, `PhpUnitAdapter`, `CargoAdapter`) **must** implement the shared domain trait (`WorldEngine`, `SecretProvider`, `TestAdapter`) and pass the **shared conformance test suite** for that trait.
-   - Never build a parallel pipeline alongside an existing one.
-
-### Mandatory Upward Direction Challenge:
-**If you cannot draw a clean, non-leaky DI tree for a feature, there is a blind spot in the specification.**
-- Symptoms of a spec blind spot: a trait method needs a `downcast_ref`, an opaque `extra: Map<String, Value>` bag, boolean mode flags (`is_local_hack: bool`), or incompatible lifecycle assumptions between two implementations.
-- **Action:** Do NOT paper over the blind spot! Stop and escalate upwards (`STATUS: blocked` -> `plan.py human add --kind direction-challenge`) stating: (1) the exact DI conflict, (2) 2 concrete architectural options with trade-offs, and (3) your recommended option.
+1. **Single Composition Root:** Only `crates/slipfork/src/main.rs` (CLI/daemon) and `packages/opencode-slipfork/src/index.ts` (OpenCode plugin) read `std::env` / `process.env`, probe `/proc`, or bind ambient OS sockets/filesystems. Library crates contain **zero** `std::env::var`, `OnceLock`/`LazyLock`, or `static` mutable/atomic state.
+2. **Cohesive OOP Structs (`<= 500` LOC) Over Free-Function Sprawl:** Group related state + behavior into cohesive structs (`SupervisedProcess`, `WorldManager`, `FileVault`) with methods — never 6-argument free-function galaxies or `*Inputs` parameter bags. Split files cleanly before exceeding `500` LOC.
+3. **Architectural Port Traits ONLY — Zero Mock-Only Traits:** Introduce traits **strictly** at genuine multi-implementation architectural boundaries (`WorldEngine`, `SecretProvider`, `SubvolumeDriver`, `UnitPort`, `TunnelRegistrar`, `VcsWorkspace`). **NEVER** invent single-implementation mock-only traits (`MonotonicClock`, `HandoverClock`, `HostLoadProbe`, `FakeClock`) when a plain value struct (`Duration`, `StopBudget`) suffices.
+4. **Extend Canonical Modules Instead of Leaking Internals:** Keep all syntax parsing, token/AST traversal, fallback evaluation, secret-taint rules, and protocol framing strictly inside their canonical owner module (`slipfork-snow`, `wire`, `relay`, `slipfork-edge`; keep `slipfork-edge` pure of CLI tables; reuse declared `Cargo.toml` crates like `tempfile`, `httparse`, `serde_json`). When a caller needs filtered or partial evaluation, add a predicate/visitor helper inside the canonical module — **never** re-scan `${{` delimiters, HTTP headers, or tokens downstream.
+5. **Mandatory Upward Direction Challenge:** If a cross-backend DI conflict makes a clean non-leaky tree impossible without `downcast_ref` or mode-flag hacks, **STOP** and escalate (`STATUS: blocked`, `BLOCK_KIND: direction-challenge`) with 2 concrete architectural options and a recommendation.
 
 ---
 
-## Law 3: SemVer Honesty — Zero Pre-`1.0` Compat & Zero Cruft (`review-cruft`)
+## Law 2: Lab-First E2E Testing & Coverage Economy — Zero Mocks (`review-tests`)
 
-Check `version` in root `Cargo.toml`. While `< 1.0.0`, **backward compatibility is NOT assumed**. The goal is the smallest possible codebase with the fewest edge cases.
+1. **Real Lab Infrastructure Only:** Test against real disk directories (`.slipfork/`, `~/.cache/slipfork`, `/var/tmp`, or disk `tempfile` — never heavy state on RAM `/tmp`), real `git`/shell subprocesses, real Btrfs/daemon paths, and (for OSPP) the minimal `127.0.0.1:0` loopback reference server.
+2. **Zero Mock Theater (`BLOCKER`):** **NEVER** write `Mock*`, `Fake*`, `Recording*`, `Stub*`, `MemorySecretProvider` shims, or `TestTreeDriver` `chmod 0o555` root-dir theater (`0o555` on a directory root fails to seal nested files and proves zero real Btrfs ioctl or `-pgid` process-group semantics).
+3. **Consolidated Lifecycle Journeys & Algorithm-Only Unit Tests:** Consolidate multiple slow daemon/world boots into 1 rich, cohesive E2E lifecycle journey (asserting both happy path and fail-closed refusal + reaping worlds and `-pgid` process groups). Write unit tests strictly for subtle pure algorithms (DAG cycles/waves, Merkle hashing, `snow.yml` secret taint). Delete 0%-covered fallback dead code (`LayeredSecretProvider`, `.ok().unwrap_or_default()`) instead of writing tests for it.
 
-### Forbidden Smells (`BLOCKER` / `MAJOR`):
-- **Pre-`1.0` compatibility shims:** Keeping deprecated config keys, dual syntaxes (e.g., supporting both `modes.*` and `modes.all`, or both `::` and `.` in `${{ ... }}`), or `#[deprecated]` wrappers for unreleased/pre-1.0 ideas.
-- **Dual-way / fallback execution:** Supporting two ways to configure or run the same thing ("if `slipfork.yml` missing, try `.slipforkrc`, else..."). Pick **one** canonical contract and delete everything else.
-- **Incomplete cleanup of scrapped ideas:** Leaving dead types, unused enum variants, stale ADRs marked current, or leftover terminology in `docs/` and `plan/nodes/` after a pivot. When a direction changes, sweep code + tests + docs + plan nodes atomically.
-- **When in doubt about breaking an already-published `0.x` user workflow:** Ask via `plan.py human add --kind compat-question` — never silently add a compatibility layer.
+---
+
+## Law 3: High-Craft CLI & Scannable Visual Docs (`review-ux`)
+
+1. **Dynamic Terminal Tables & ANSI Purity:** Compute dynamic visible column widths (`.max()`, stripping ANSI when measuring) — never shear long IDs with hardcoded `{:<16}`/`{:<24}`. Style primary URLs bold/cyan, `running` green, `failed` red, and 12-char digests dimmed; emit **zero** `\x1b[` when color is disabled (`NO_COLOR` / non-TTY) or in `--json`.
+2. **Live Streamed Progress & Crisp Ergonomics:** Never swallow slow child operations (`> 200ms`) in blocking `.output()`, silent `sleep` poll loops, or `pull -q` — use `spawn()` and stream live lines with `[step/total]` phase headers, spinners, and elapsed time. Pin `GIT_AUTHOR_*`/`GIT_COMMITTER_*` on internal git plumbing, format errors as `1 line + next:` remedy, lead `doctor` with `✓ Ready` / `✗ N issue(s)`, omit `:80` on port-80 URLs, warn on stderr when ephemeral (`sudo slipfork daemon install`), and gate `[resources]` plumbing behind `-v`.
+3. **Visual, Problem-First Docs:** Lead user pages with value (*"Slipfork runs your cloud environment locally in a box; CI is the clutch"*) + a working snippet in the first 25 lines, include Mermaid diagrams + Zensical `!!!` admonitions + `<= 2`-sentence paragraphs, and ban `ADR-*` lawyer prose.
+
+---
+
+## Law 4: Anti-Vaporware, Upstream Grounding & Pre-`1.0` Scorched-Earth Deletion
+
+1. **Read Upstream First & Block on Missing Inputs:** Inspect `Cargo.toml`, `package.json`, and `vendor/` before designing or coding. If an external daemon/webhook/wire spec is absent, **STOP immediately** (zero `[derived]`/`[guessed]` markers, zero `Unavailable*` CLI vaporware, zero silent degraded fallbacks) and return a `<= 12`-line `STATUS: blocked` (`BLOCK_KIND: missing-input`).
+2. **Zero Vaporware in Published Docs:** Published `docs/` (`zensical.toml`) and `README.md` document strictly what runs in the shipped binary (`tools/check_docs_honesty.py`). Pre-code DX blueprints live in `docs/design/dx-*.md`.
+3. **Pre-`1.0` Scorched-Earth Deletion:** While workspace `version < 1.0.0`, delete superseded commands, config keys, fallback branches, tests, and docs atomically — zero legacy aliases, zero `#[deprecated]`, and zero `"chose Option A over Option B"` pivot archaeology.
+
+---
+
+## Law 5: Adaptive Scope & Batched Execution Economy
+
+1. **1-Call Discovery & Zero Meta-Snooping:** Batch initial file discovery into 1 call; never inspect `.opencode/**`, `candidate_meta.json`, `tools/*.py` source, `.gitignore`, or `git log`.
+2. **Complete Authoring & Targeted Verification:** Write complete, clippy-clean files in 1 `write` per file over chained micro-`edit`s; run targeted crate checks per slice and full `make check` once at the epic gate; write **zero `RESULT.md` essays**.
+3. **Coarse Vertical Slices:** Decompose epics into 2–6 cohesive vertical slices with serialized `--depends` on shared files (`cli.rs`, `main.rs`, `Cargo.toml`), splitting dynamically (`STATUS: needs_split`) only when a leaf breaks across `>= 4` subsystems.

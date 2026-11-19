@@ -30,6 +30,7 @@ def _load_tool(name: str) -> ModuleType:
 plan_mod = _load_tool("plan")
 guard_mod = _load_tool("guard")
 crit_mod = _load_tool("critical_guard")
+docs_honesty_mod = _load_tool("check_docs_honesty")
 
 
 def _init_plan(tmp_path: Path):
@@ -133,7 +134,7 @@ def test_typed_human_inbox_lifecycle(tmp_path: Path) -> None:
     # Simulate human writing an answer
     human_md = tree.root / "HUMAN.md"
     human_md.write_text(
-        human_md.read_text(encoding="utf-8") + "Use Option A.\n", encoding="utf-8"
+        human_md.read_text(encoding="utf-8") + "Use local mode.\n", encoding="utf-8"
     )
     assert tree.human_answered() == ["H-001"]
 
@@ -211,3 +212,21 @@ def test_critical_guard_allows_untracked_addition_and_blocks_unauthorized_edit(
         encoding="utf-8",
     )
     assert crit_mod.main(["--repo", str(repo), "--base", base, "--node", "M1.1"]) == 0
+
+
+def test_docs_honesty_rejects_vaporware_subcommands_in_published_docs(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "docs" / "design").mkdir(parents=True)
+    (tmp_path / "docs" / "index.md").write_text(
+        "```console\n$ slipfork doctor\n$ slipfork up\n```\n", encoding="utf-8"
+    )
+    (tmp_path / "docs" / "design" / "target-dx.md").write_text(
+        "```console\n$ slipfork up\n$ slipfork test\n```\n", encoding="utf-8"
+    )
+    help_out = "Usage: slipfork <COMMAND>\n\nCommands:\n  doctor  Probe host\n  fork    Clone world\n"
+    valid = docs_honesty_mod.extract_help_subcommands(help_out)
+    published = docs_honesty_mod.published_doc_files(tmp_path)
+    errs = docs_honesty_mod.find_vaporware_commands(published, valid, tmp_path)
+    assert len(errs) == 1
+    assert "slipfork up" in errs[0]
