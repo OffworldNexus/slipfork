@@ -1725,3 +1725,13 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-19T05:14 [M3.30.9] (lead) status active -> done
 - 2026-11-19T06:16 [M3.30.6] (lead) VM proof: do_vm.py test exit 0 (11 suites, 97 tests, 782s wall; per suite: engine-btrfs 32s/1, engine 50s/21, oci 4s/4, edge-live 4s/3, slipfork-btrfs 33s/7, cl
 - 2026-11-19T06:18 [M3.30.6] (lead) status active -> done
+- 2026-11-19T06:25 [M3.30.10] (lead) created (task) Keep the do_vm harness unit test aligned with the consolidated SUITES list
+- 2026-11-19T06:25 [M3.30.10] (lead) status ready -> active
+- 2026-11-19T06:25 [M3.30.10] (lead) attempt 1/3 started
+- 2026-11-19T06:25 [M3.30.10] (lead) base c98989321f3ff26e2e429be0dbcb861a653cfe31
+- 2026-11-19T06:34 [M3.30.11] (lead) created (task) Harden the browser opener test against ETXTBSY under parallel test load
+- 2026-11-19T06:34 [M3.30.11] (lead) status ready -> active
+- 2026-11-19T06:34 [M3.30.11] (lead) attempt 1/3 started
+- 2026-11-19T06:34 [M3.30.11] (lead) base c98989321f3ff26e2e429be0dbcb861a653cfe31
+- 2026-11-19T06:37 [M3.30.10] (lead) status active -> done
+- 2026-11-19T06:37 [M3.30.11] (lead) status active -> done

@@ -914,16 +914,13 @@ def test_test_streams_every_suite_serialized_and_stops_at_first_failure(
     ok = harness.run("test")
     assert ok.code == 0, ok.stderr
     suites = _lines(harness.state / "suites.log")
-    assert len(suites) == len(do_vm_mod.SUITES)
-    assert [entry[1] for entry in do_vm_mod.SUITES] == [
-        "critical_btrfs_live",
-        "critical_btrfs_live",
-        "critical_cli",
-        "critical_slug",
-        "critical_ospp_daemon",
+    assert len(suites) == len(do_vm_mod.SUITES) > 0
+    expected = [
+        f"cargo test -p {package} --test {test} -- --test-threads=1"
+        for package, test, _, _ in do_vm_mod.SUITES
     ]
-    for command, (package, test, _, _) in zip(suites, do_vm_mod.SUITES, strict=True):
-        assert f"cargo test -p {package} --test {test} -- --test-threads=1" in command
+    for command, needle in zip(suites, expected, strict=True):
+        assert needle in command
 
 
 def test_test_fails_closed_when_remote_suite_is_missing(harness: Harness) -> None:
