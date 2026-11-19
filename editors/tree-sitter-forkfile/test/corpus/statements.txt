@@ -1,0 +1,461 @@
+==================
+Top-level statements
+==================
+
+project demo
+s3 assets
+domain main
+
+---
+
+(source_file
+  (project_statement
+    name: (identifier))
+  (s3_statement
+    name: (identifier))
+  (domain_statement
+    name: (identifier)))
+
+==================
+Feature declarations
+==================
+
+features {
+    default = [dev]
+    dev     = [mail]
+    mail
+}
+
+---
+
+(source_file
+  (features_statement
+    (features_block
+      (feature_declaration
+        name: (identifier)
+        (feature_list
+          (identifier)))
+      (feature_declaration
+        name: (identifier)
+        (feature_list
+          (identifier)))
+      (feature_declaration
+        name: (identifier)))))
+
+==================
+Backing resources
+==================
+
+postgres pg {
+    version 18
+    database app_db
+    database analytics {
+        pool = false
+    }
+}
+
+redis cache {
+    version 7
+}
+
+---
+
+(source_file
+  (postgres_statement
+    name: (identifier)
+    (resource_block
+      (version_statement
+        value: (integer))
+      (database_statement
+        name: (identifier))
+      (database_statement
+        name: (identifier)
+        (database_block
+          (assignment
+            key: (identifier)
+            value: (boolean))))))
+  (redis_statement
+    name: (identifier)
+    (resource_block
+      (version_statement
+        value: (integer)))))
+
+==================
+Environment groups
+==================
+
+env common {
+    DATABASE_URL = app_db.url
+    REDIS_URL    = cache.url
+    SECRET_KEY   = secret(SECRET_KEY) ?? random_hex(32)
+    MESSAGE      = "hello " + var(GREETING)
+}
+
+---
+
+(source_file
+  (env_group
+    name: (identifier)
+    (env_block
+      (env_assignment
+        key: (identifier)
+        value: (reference_path
+          (identifier)
+          (identifier)))
+      (env_assignment
+        key: (identifier)
+        value: (reference_path
+          (identifier)
+          (identifier)))
+      (env_assignment
+        key: (identifier)
+        value: (binary_expression
+          (function_call
+            (identifier)
+            (arguments
+              (identifier)))
+          (function_call
+            (identifier)
+            (arguments
+              (integer)))))
+      (env_assignment
+        key: (identifier)
+        value: (binary_expression
+          (string)
+          (function_call
+            (identifier)
+            (arguments
+              (identifier))))))))
+
+==================
+Service directives
+==================
+
+service api ./api {
+    use env common
+    port 8000
+    route /api
+    internal_ports [8000, 8001]
+    volume .venv
+    dockerfile ./Dockerfile
+    stage builder
+    size "medium"
+    env {
+        LOG_LEVEL = "debug"
+    }
+    build_env {
+        NODE_ENV = "production"
+    }
+    setup: uv sync --frozen
+    pre-deploy {
+        uv run alembic upgrade head
+        uv run python -m app.migrate
+    }
+    run uv run gunicorn app.main:app --bind 0.0.0.0:$port
+    on dev: run uv run uvicorn app.main:app --host 0.0.0.0 --port $port --reload
+}
+
+---
+
+(source_file
+  (service_statement
+    name: (identifier)
+    source: (path)
+    (service_block
+      (use_env_statement
+        group: (identifier))
+      (port_statement
+        value: (integer))
+      (route_statement
+        value: (path))
+      (internal_ports_statement
+        (integer_list
+          (integer)
+          (integer)))
+      (volume_statement
+        value: (path))
+      (dockerfile_statement
+        value: (path))
+      (stage_statement
+        value: (identifier))
+      (size_statement
+        value: (string))
+      (env_section
+        (env_block
+          (env_assignment
+            key: (identifier)
+            value: (string))))
+      (build_env_block
+        (env_block
+          (env_assignment
+            key: (identifier)
+            value: (string))))
+      (hook_statement
+        (hook_name)
+        (command_line
+          (identifier)
+          (identifier)
+          (flag)))
+      (hook_statement
+        (hook_name)
+        (command_line
+          (identifier)
+          (identifier)
+          (identifier)
+          (identifier)
+          (identifier))
+        (command_line
+          (identifier)
+          (identifier)
+          (identifier)
+          (flag)
+          (identifier)
+          (path)))
+      (run_statement
+        (command_line
+          (identifier)
+          (identifier)
+          (identifier)
+          (identifier)
+          (path)
+          (flag)
+          (integer)
+          (integer)
+          (integer)
+          (integer)
+          (reference)))
+      (on_statement
+        condition: (condition_identifier
+          (identifier))
+        (run_statement
+          (command_line
+            (identifier)
+            (identifier)
+            (identifier)
+            (identifier)
+            (path)
+            (flag)
+            (integer)
+            (integer)
+            (integer)
+            (integer)
+            (flag)
+            (reference)
+            (flag)))))))
+
+==================
+Tasks
+==================
+
+task migrate in api: uv run alembic upgrade head
+
+task shell in api {
+    bash -lc 'echo ready'
+}
+
+---
+
+(source_file
+  (task_statement
+    name: (identifier)
+    service: (identifier)
+    (command_line
+      (identifier)
+      (identifier)
+      (identifier)
+      (identifier)
+      (identifier)))
+  (task_statement
+    name: (identifier)
+    service: (identifier)
+    (command_line
+      (identifier)
+      (flag)
+      (raw_string))))
+
+==================
+Feature conditionals
+==================
+
+on mail {
+    service mailpit from axllent/mailpit:latest {
+        port 8025
+        route mail.*
+    }
+}
+
+on dev & !mail: domain preview
+
+---
+
+(source_file
+  (on_statement
+    condition: (condition_identifier
+      (identifier))
+    (body_block
+      (service_statement
+        name: (identifier)
+        source: (image_ref)
+        (service_block
+          (port_statement
+            value: (integer))
+          (route_statement
+            value: (route_suffix))))))
+  (on_statement
+    condition: (and_condition
+      (condition_identifier
+        (identifier))
+      (negated_condition
+        (condition_identifier
+          (identifier))))
+    (domain_statement
+      name: (identifier))))
+
+==================
+Comments
+==================
+
+# leading comment
+project demo
+
+service api ./api {
+    # inside service
+    port 8000 # trailing port
+    run sh -c "echo ready" # trailing run
+}
+
+env common {
+    # inside env
+    A = 1
+}
+
+features {
+    # inside features
+    dev = [mail]
+}
+
+---
+
+(source_file
+  (comment)
+  (project_statement
+    name: (identifier))
+  (service_statement
+    name: (identifier)
+    source: (path)
+    (service_block
+      (comment)
+      (port_statement
+        value: (integer))
+      (comment)
+      (run_statement
+        (command_line
+          (identifier)
+          (flag)
+          (string)))
+      (comment)))
+  (env_group
+    name: (identifier)
+    (env_block
+      (comment)
+      (env_assignment
+        key: (identifier)
+        value: (integer))))
+  (features_statement
+    (features_block
+      (comment)
+      (feature_declaration
+        name: (identifier)
+        (feature_list
+          (identifier))))))
+
+==================
+Lifecycle hooks and quoted commands
+==================
+
+service api ./api {
+    post-deploy: echo "done"
+    failed-deploy {
+        notify "failed"
+    }
+}
+
+task greet in api: echo "hi"
+
+---
+
+(source_file
+  (service_statement
+    name: (identifier)
+    source: (path)
+    (service_block
+      (hook_statement
+        (hook_name)
+        (command_line
+          (identifier)
+          (string)))
+      (hook_statement
+        (hook_name)
+        (command_line
+          (identifier)
+          (string)))))
+  (task_statement
+    name: (identifier)
+    service: (identifier)
+    (command_line
+      (identifier)
+      (string))))
+
+==================
+String resource versions
+==================
+
+postgres pg {
+    version "18"
+}
+
+redis cache {
+    version "7" # string form
+}
+
+---
+
+(source_file
+  (postgres_statement
+    name: (identifier)
+    (resource_block
+      (version_statement
+        value: (string))))
+  (redis_statement
+    name: (identifier)
+    (resource_block
+      (version_statement
+        value: (string))
+      (comment))))
+
+==================
+Service env overrides
+==================
+
+service api ./api {
+    env.DEBUG = "1"
+    env {
+        LOG_LEVEL = "debug"
+    }
+}
+
+---
+
+(source_file
+  (service_statement
+    name: (identifier)
+    source: (path)
+    (service_block
+      (env_key_assignment
+        key: (identifier)
+        value: (string))
+      (env_section
+        (env_block
+          (env_assignment
+            key: (identifier)
+            value: (string)))))))

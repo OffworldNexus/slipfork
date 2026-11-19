@@ -2,16 +2,20 @@
 id: M3.32.8
 title: "slipfork migrate CLI (file/output/--stdout/--force, crisp summary) + dx-cli-0.1.0 spec row"
 kind: task
-status: ready
+status: done
 owner: implementer
 priority: 2
 depends_on: [M3.32.4, M3.32.7]
-paths: ["crates/slipfork/**", "docs/design/dx-cli-0.1.0.md", Cargo.toml, Cargo.lock]
-attempts: 0
+paths:
+  - "crates/slipfork/src/**"
+  - "crates/slipfork/tests/**"
+  - "crates/slipfork-forkfile/src/migrate/**"
+  - "docs/design/dx-cli-0.1.0.md"
+attempts: 2
 max_attempts: 3
 escalation: none
 created: "2026-11-19T16:00"
-updated: "2026-11-19T16:00"
+updated: "2026-11-19T21:55"
 ---
 
 # Goal

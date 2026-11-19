@@ -2,16 +2,16 @@
 id: M3.32.3.3.4
 title: Port protected live fixtures from snow resolve onto the shipped env/migrate verbs
 kind: task
-status: ready
+status: done
 owner: implementer
 priority: 3
 depends_on: [M3.32.3.3.3, M3.32.8]
-paths: ["crates/slipfork/tests/**", Makefile]
-attempts: 0
+paths: ["crates/slipfork/tests/**", "crates/slipfork-vcs/src/repo_root.rs", Makefile]
+attempts: 3
 max_attempts: 3
 escalation: none
 created: "2026-11-19T20:58"
-updated: "2026-11-19T20:58"
+updated: "2026-11-19T22:04"
 ---
 
 # Goal

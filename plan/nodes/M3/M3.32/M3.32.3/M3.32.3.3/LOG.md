@@ -31,3 +31,7 @@ needs_split: spans daemon retype + forkfile canonical projection + edge/wire sno
 ## 2026-11-19T20:34 [lead]
 
 status active -> active
+
+## 2026-11-19T22:04 [lead]
+
+status active -> done

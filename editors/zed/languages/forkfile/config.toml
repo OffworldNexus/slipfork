@@ -1,0 +1,14 @@
+name = "Forkfile"
+grammar = "forkfile"
+path_suffixes = ["Forkfile", "forkfile"]
+line_comments = ["# "]
+autoclose_before = ";:.,=}])"
+word_characters = ["$", "-"]
+
+brackets = [
+  { start = "{", end = "}", close = true, newline = true },
+  { start = "[", end = "]", close = true, newline = false },
+  { start = "(", end = ")", close = true, newline = false },
+  { start = "\"", end = "\"", close = true, newline = false, not_in = ["string", "comment"] },
+  { start = "'", end = "'", close = true, newline = false, not_in = ["string", "comment"] },
+]

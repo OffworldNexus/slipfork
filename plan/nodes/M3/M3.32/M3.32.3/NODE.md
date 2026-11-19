@@ -2,7 +2,7 @@
 id: M3.32.3
 title: "slipforkd Forkfile/OSPP EvaluatedFork cut-over, port-agnostic .localhost ingress & multiplexed logs -f"
 kind: epic
-status: active
+status: done
 priority: 3
 depends_on: [M3.32.2, M3.32.7]
 paths: ["crates/**", Cargo.toml, Cargo.lock]
@@ -10,7 +10,7 @@ attempts: 0
 max_attempts: 3
 escalation: none
 created: "2026-11-19T13:02"
-updated: "2026-11-19T19:49"
+updated: "2026-11-19T22:04"
 ---
 
 # Goal

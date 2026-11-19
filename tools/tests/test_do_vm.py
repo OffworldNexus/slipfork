@@ -1944,7 +1944,7 @@ def test_login_banner_states_the_account_and_the_shipped_verbs() -> None:
         "cd ~/demo",
         "  slipfork\n",
         "  slipfork up\n",
-        "  slipfork list\n",
+        "  slipfork ps\n",
     ):
         assert needle in banner, banner
     # Guarded, not advertised before it exists: the demo directory and the installed CLI.

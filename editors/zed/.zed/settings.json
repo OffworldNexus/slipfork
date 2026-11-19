@@ -1,0 +1,8 @@
+{
+  "languages": {
+    "Forkfile": {
+      "format_on_save": "on",
+      "language_servers": ["slipfork-lsp"]
+    }
+  }
+}

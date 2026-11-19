@@ -1,23 +1,16 @@
 ---
 id: M3.32.4.2
 title: "Command behaviours: env, run, per-service shell/exec, piped db/redis, secret set, 3-row doctor, drop guard, open"
-kind: task
-status: ready
-owner: implementer
+kind: epic
+status: done
 priority: 3
 depends_on: [M3.32.4.1]
-paths:
-  - crates/slipfork/src/cli.rs
-  - "crates/slipfork/src/commands/**"
-  - crates/slipfork/src/logs.rs
-  - crates/slipfork/src/open.rs
-  - crates/slipfork/src/restart.rs
-  - "crates/slipfork/src/daemon/**"
+paths: ["crates/slipfork/src/**", "packages/opencode-slipfork/**"]
 attempts: 0
 max_attempts: 3
 escalation: none
 created: "2026-11-19T21:01"
-updated: "2026-11-19T21:01"
+updated: "2026-11-19T21:48"
 ---
 
 # Goal

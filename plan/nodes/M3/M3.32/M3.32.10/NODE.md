@@ -2,7 +2,7 @@
 id: M3.32.10
 title: "slipfork_forkfile::fmt + crates/slipfork-lsp (zero-tokio framed stdio, UTF-16) + slipfork lsp"
 kind: task
-status: ready
+status: done
 owner: implementer
 priority: 2
 depends_on: [M3.32.8]
@@ -13,11 +13,11 @@ paths:
   - "docs/design/dx-cli-0.1.0.md"
   - Cargo.toml
   - Cargo.lock
-attempts: 0
+attempts: 2
 max_attempts: 3
 escalation: none
 created: "2026-11-19T16:03"
-updated: "2026-11-19T16:03"
+updated: "2026-11-19T22:11"
 ---
 
 # Goal

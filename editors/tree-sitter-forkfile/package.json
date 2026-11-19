@@ -1,0 +1,15 @@
+{
+  "name": "tree-sitter-forkfile",
+  "version": "0.1.0",
+  "description": "Tree-sitter grammar for Slipfork's Forkfile manifest",
+  "main": "bindings/node",
+  "keywords": ["tree-sitter", "forkfile", "slipfork"],
+  "license": "Apache-2.0",
+  "scripts": {
+    "generate": "tree-sitter generate",
+    "test": "tree-sitter test"
+  },
+  "devDependencies": {
+    "tree-sitter-cli": "^0.27.2"
+  }
+}

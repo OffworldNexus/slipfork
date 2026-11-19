@@ -15,3 +15,7 @@ edited fields
 ## 2026-11-19T21:01 [lead]
 
 status ready -> active
+
+## 2026-11-19T21:48 [lead]
+
+status active -> done

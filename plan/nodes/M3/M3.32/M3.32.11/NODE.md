@@ -2,16 +2,22 @@
 id: M3.32.11
 title: "editors/tree-sitter-forkfile grammar + editors/zed extension + tools/check_zed_extension.py"
 kind: task
-status: ready
+status: review
 owner: implementer
 priority: 2
 depends_on: [M3.32.10]
-paths: ["editors/**", "tools/**", Makefile]
-attempts: 0
+paths:
+  - "editors/**"
+  - tools/check_zed_extension.py
+  - "tools/tests/**"
+  - tools/do_vm.py
+  - support/demo/README.md
+  - Makefile
+attempts: 2
 max_attempts: 3
 escalation: none
 created: "2026-11-19T16:03"
-updated: "2026-11-19T16:03"
+updated: "2026-11-19T22:17"
 ---
 
 # Goal

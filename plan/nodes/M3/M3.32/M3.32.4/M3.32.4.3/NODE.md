@@ -2,16 +2,16 @@
 id: M3.32.4.3
 title: "Move @slipfork/opencode to slipfork status --json"
 kind: task
-status: ready
+status: done
 owner: implementer
 priority: 3
 depends_on: [M3.32.4.1]
 paths: ["packages/opencode-slipfork/**"]
-attempts: 0
+attempts: 2
 max_attempts: 3
 escalation: none
 created: "2026-11-19T21:01"
-updated: "2026-11-19T21:01"
+updated: "2026-11-19T21:22"
 ---
 
 # Goal

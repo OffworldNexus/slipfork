@@ -7,12 +7,12 @@ $ cd ~/demo
 $ slipfork up
 $ curl -fsS -o /dev/null -w '%{http_code}\n' -H 'Host: demo.localhost' http://127.0.0.1/
 200
-$ slipfork list
+$ slipfork ps
 $ slipfork fork demo-a            # second world at http://demo-a.demo.localhost
 ```
 
 !!! info "No port to remember"
-    `slipfork daemon install` gives systemd ownership of `:80`, so the origin is `http://demo.localhost`. When a world runs on an ephemeral port instead, `slipfork list` prints the port.
+    `slipfork daemon install` gives systemd ownership of `:80`, so the origin is `http://demo.localhost`. When a world runs on an ephemeral port instead, `slipfork ps` prints the port.
 
 `tools/do_vm.py sync` seeds this directory once at `/home/slipfork/demo` as one Git commit. Later edits are yours; a later `sync` never overwrites a seeded demo.
 

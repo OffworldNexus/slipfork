@@ -14,6 +14,9 @@
 **/node_modules/
 /mutants*/
 
+# Zed extension build output
+editors/zed/target/
+
 # Secrets (never commit real .env files; commit .env.example or snow.yml)
 .env
 .env.*

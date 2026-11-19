@@ -558,7 +558,7 @@ Slipfork demo — account: {config.remote_user} (from root: sudo -iu {config.rem
   cd ~/demo
   slipfork
   slipfork up
-  slipfork list
+  slipfork ps
 SLIPFORK
   fi
   unset _slipfork_account

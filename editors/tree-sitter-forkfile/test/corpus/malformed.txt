@@ -1,0 +1,18 @@
+==================
+Malformed service block
+==================
+
+service api ./api {
+    port
+    route
+}
+
+---
+
+(source_file
+  (service_statement
+    name: (identifier)
+    source: (path)
+    (service_block
+      (ERROR)
+      (ERROR))))

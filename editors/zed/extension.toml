@@ -1,0 +1,18 @@
+id = "forkfile"
+name = "Forkfile"
+version = "0.1.0"
+schema_version = 1
+authors = ["Slipfork contributors"]
+description = "Forkfile language support with tree-sitter highlighting and the shipped `slipfork lsp` server."
+repository = "https://github.com/OffworldNexus/slipfork"
+
+[grammars.forkfile]
+path = "../tree-sitter-forkfile"
+rev = "8fd0b0d"
+
+[language_servers.slipfork-lsp]
+name = "Slipfork LSP"
+languages = ["Forkfile"]
+
+[language_servers.slipfork-lsp.language_ids]
+Forkfile = "forkfile"

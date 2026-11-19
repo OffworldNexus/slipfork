@@ -2068,3 +2068,82 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-19T21:18 [M3.32.4.1] (lead) attempt 5/6 started
 - 2026-11-19T21:18 [M3.32.4.1] (lead) attempt 5: split cli.rs 670 under 500 (Commands into cli/commands.rs)
 - 2026-11-19T21:19 [M3.32.4.1] (lead) status review -> done
+- 2026-11-19T21:19 [M3.32.4.2] (lead) status ready -> active
+- 2026-11-19T21:19 [M3.32.4.2] (lead) attempt 1/3 started
+- 2026-11-19T21:19 [M3.32.4.2] (lead) base 9f7a2340d84c5f75f96576b8692f4a4e350bac88
+- 2026-11-19T21:19 [M3.32.4.3] (lead) status ready -> active
+- 2026-11-19T21:19 [M3.32.4.3] (lead) attempt 1/3 started
+- 2026-11-19T21:19 [M3.32.4.3] (lead) base 9f7a2340d84c5f75f96576b8692f4a4e350bac88
+- 2026-11-19T21:21 [M3.32.4.3] (lead) status active -> review
+- 2026-11-19T21:21 [M3.32.4.3] (lead) attempt 2/3 started
+- 2026-11-19T21:21 [M3.32.4.3] (lead) Triad: ux PASS, tests PASS; micro-pass pins ingress_port and collapses duplicate helper
+- 2026-11-19T21:22 [M3.32.4.3] (lead) status review -> done
+- 2026-11-19T21:22 [M3.32.4.2] (lead) edited fields
+- 2026-11-19T21:22 [M3.32.4.2] (lead) attempt 1 produced no edits; split into 4.2.1 (env/run/shell/exec) and 4.2.2 (db/redis/secret/doctor/drop/open/hooks)
+- 2026-11-19T21:22 [M3.32.4.2.1] (lead) created (task) Interaction verbs: env, run, per-service shell and exec
+- 2026-11-19T21:22 [M3.32.4.2.2] (lead) created (task) Ops verbs: piped db/redis, secret set, 3-row doctor, drop guard, open, hook failure tail
+- 2026-11-19T21:22 [M3.32.4.2] (lead) status active -> active
+- 2026-11-19T21:22 [M3.32.4.2.1] (lead) status ready -> active
+- 2026-11-19T21:22 [M3.32.4.2.1] (lead) attempt 1/3 started
+- 2026-11-19T21:22 [M3.32.4.2.1] (lead) base 38065e5e41c64886a0c46cf9d5199b333619751f
+- 2026-11-19T21:28 [M3.32.4.2.1] (lead) status active -> review
+- 2026-11-19T21:28 [M3.32.4.2.1] (lead) edited fields
+- 2026-11-19T21:28 [M3.32.4.2.1] (lead) attempt 2/3 started
+- 2026-11-19T21:28 [M3.32.4.2.1] (lead) Triad fix pass base 38065e5e41c64886a0c46cf9d5199b333619751f: critical_cli shell banner red; dot heuristic; duplicated selectors
+- 2026-11-19T21:33 [M3.32.4.2.1] (lead) attempt 3/3 started
+- 2026-11-19T21:33 [M3.32.4.2.1] (lead) attempt 3: ux majors — shell remedy, run flag swallowing, run feature set
+- 2026-11-19T21:36 [M3.32.4.2.1] (lead) status review -> done
+- 2026-11-19T21:36 [M3.32.4.2.2] (lead) status ready -> active
+- 2026-11-19T21:36 [M3.32.4.2.2] (lead) attempt 1/3 started
+- 2026-11-19T21:36 [M3.32.4.2.2] (lead) base 89e58ff8b8f46e010d085a96d630bc7381cc8816
+- 2026-11-19T21:39 [M3.32.4.2.2] (lead) attempt 2/3 started
+- 2026-11-19T21:39 [M3.32.4.2.2] (lead) attempt 1 left bin-only hook_failure.rs importing crate::ui; attempt 2 fixes placement and finishes
+- 2026-11-19T21:41 [M3.32.4.2.2] (lead) attempt 3/3 started
+- 2026-11-19T21:41 [M3.32.4.2.2] (lead) attempt 3: qualified-id normalization + journey insertions + verify
+- 2026-11-19T21:42 [M3.32.4.2.2] (unknown) edited fields
+- 2026-11-19T21:42 [M3.32.4.2.2] (unknown) edited fields
+- 2026-11-19T21:44 [M3.32.4.2.2] (lead) status active -> review
+- 2026-11-19T21:44 [M3.32.4.2.2] (lead) edited fields
+- 2026-11-19T21:44 [M3.32.4.2.2] (lead) attempt 4/6 started
+- 2026-11-19T21:44 [M3.32.4.2.2] (lead) Triad fix pass base 89e58ff8b8f46e010d085a96d630bc7381cc8816: 2 protected-journey blockers, noatime lie, doc claims
+- 2026-11-19T21:46 [M3.32.4.2.2] (lead) attempt 5/6 started
+- 2026-11-19T21:46 [M3.32.4.2.2] (lead) attempt 4 stopped mid-edit (service_entry call sites); attempt 5 finishes
+- 2026-11-19T21:48 [M3.32.4.2.2] (lead) status review -> done
+- 2026-11-19T21:48 [M3.32.4.2.2] (lead) deferred: A4 stty/EchoGuard hoist; docs-honesty debt in docs/reference/** + support/demo/** is M3.32.5/M3.32.9
+- 2026-11-19T21:48 [M3.32.4.2] (lead) status active -> done
+- 2026-11-19T21:48 [M3.32.4] (lead) status active -> done
+- 2026-11-19T21:48 [M3.32.8] (lead) status ready -> active
+- 2026-11-19T21:48 [M3.32.8] (lead) attempt 1/3 started
+- 2026-11-19T21:48 [M3.32.8] (lead) base f1f691de203d2d1d076ae6eb1e37548c9fe50c86
+- 2026-11-19T21:51 [M3.32.8] (lead) status active -> review
+- 2026-11-19T21:51 [M3.32.8] (lead) edited fields
+- 2026-11-19T21:51 [M3.32.8] (lead) attempt 2/3 started
+- 2026-11-19T21:51 [M3.32.8] (lead) Triad fix pass base f1f691de203d2d1d076ae6eb1e37548c9fe50c86: move unknown-key validation + remedy into slipfork-forkfile; split migrate/snow.rs 509
+- 2026-11-19T21:55 [M3.32.8] (lead) status review -> done
+- 2026-11-19T21:55 [M3.32.3.3.4] (lead) status ready -> active
+- 2026-11-19T21:55 [M3.32.3.3.4] (lead) attempt 1/3 started
+- 2026-11-19T21:55 [M3.32.3.3.4] (lead) base a3795b06efb80aaaaea393fcf983a0d8e0b07f7c
+- 2026-11-19T21:57 [M3.32.3.3.4] (lead) attempt 2/3 started
+- 2026-11-19T21:57 [M3.32.3.3.4] (lead) ruling: disabled + [resources] overrides are deleted pre-1.0 features; tests/migrate.rs exempt from snow.yml grep; env PATH is a client contract
+- 2026-11-19T22:00 [M3.32.3.3.4] (lead) status active -> review
+- 2026-11-19T22:01 [M3.32.3.3.4] (lead) edited fields
+- 2026-11-19T22:01 [M3.32.3.3.4] (lead) attempt 3/3 started
+- 2026-11-19T22:01 [M3.32.3.3.4] (lead) Triad fix pass base a3795b06efb80aaaaea393fcf983a0d8e0b07f7c: slipfork.toml hints left in slipfork-vcs; app.url fixtures lost
+- 2026-11-19T22:04 [M3.32.3.3.4] (lead) status review -> done
+- 2026-11-19T22:04 [M3.32.3.3] (lead) status active -> done
+- 2026-11-19T22:04 [M3.32.3] (lead) status active -> done
+- 2026-11-19T22:04 [M3.32.10] (lead) status ready -> active
+- 2026-11-19T22:04 [M3.32.10] (lead) attempt 1/3 started
+- 2026-11-19T22:04 [M3.32.10] (lead) base 2008fc3558b6c7128dae736cbf9141e1ffe55a64
+- 2026-11-19T22:09 [M3.32.10] (lead) status active -> review
+- 2026-11-19T22:09 [M3.32.10] (lead) attempt 2/3 started
+- 2026-11-19T22:09 [M3.32.10] (lead) Triad fix pass base 2008fc3558b6c7128dae736cbf9141e1ffe55a64
+- 2026-11-19T22:11 [M3.32.10] (lead) status review -> done
+- 2026-11-19T22:11 [M3.32.11] (lead) status ready -> active
+- 2026-11-19T22:11 [M3.32.11] (lead) attempt 1/3 started
+- 2026-11-19T22:11 [M3.32.11] (lead) base 8fd0b0d9f5c7ed0c651b3d73edb188bd71b18b9b
+- 2026-11-19T22:17 [M3.32.11] (lead) edited fields
+- 2026-11-19T22:17 [M3.32.11] (lead) lead: widened to tools/do_vm.py + support/demo/README.md for the deleted-`list` honesty fix
+- 2026-11-19T22:17 [M3.32.11] (lead) status active -> review
+- 2026-11-19T22:17 [M3.32.11] (lead) attempt 2/3 started
+- 2026-11-19T22:17 [M3.32.11] (lead) Triad fix pass base 8fd0b0d9f5c7ed0c651b3d73edb188bd71b18b9b: grammar invented syntax vs shipped parser; corpus never executed; target/ 350M
