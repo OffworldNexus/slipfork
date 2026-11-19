@@ -16,6 +16,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use crate::ui::TerminalUi;
 use serde_json::{Value, json};
 use slipfork_engine::btrfs::{BtrfsProbeReport, mount_hint};
 use slipfork_engine::userns_remediation_hint;
@@ -457,41 +458,65 @@ fn filesystem_name(fstype: i64) -> String {
 }
 
 impl DoctorReport {
-    /// Render the human report (`ADR-0010` §4 field order, then one `fix:` line per remediation).
-    pub fn render_text(&self) -> String {
+    /// Render the human report: the one-line verdict, the required checks, the advisory checks,
+    /// then one `next:` line per remediation (`ADR-0010` §4 order preserved).
+    pub fn render_text(&self, ui: &TerminalUi) -> String {
         let mut text = String::new();
-        text.push_str(&format!("state_dir: {}\n", self.btrfs.state_dir.display()));
-        text.push_str(&format!("filesystem: {}\n", self.filesystem));
+        text.push_str(&self.verdict(ui));
+        text.push('\n');
         text.push_str(&format!(
-            "btrfs_super_magic: {}\n",
+            "  state_dir: {}\n",
+            ui.secondary(&self.btrfs.state_dir.display().to_string())
+        ));
+        text.push_str(&format!("  filesystem: {}\n", self.filesystem));
+        text.push_str(&format!(
+            "  btrfs_super_magic: {}\n",
             if self.btrfs.btrfs_super_magic {
-                "ok"
+                ui.ok("ok")
             } else {
-                "mismatch"
+                ui.failed("mismatch")
             }
         ));
         text.push_str(&format!(
-            "subvolume_ioctl: {}\n",
+            "  subvolume_ioctl: {}\n",
             match self.btrfs.user_subvol_rm_allowed {
-                None => "skipped".to_owned(),
-                Some(Ok(())) => "ok".to_owned(),
-                Some(Err(errno)) => format!("failed (errno {errno})"),
+                None => ui.warn("skipped"),
+                Some(Ok(())) => ui.ok("ok"),
+                Some(Err(errno)) => ui.failed(&format!("failed (errno {errno})")),
             }
         ));
         text.push_str(&format!(
-            "noatime: {}\n",
-            if self.btrfs.noatime { "ok" } else { "missing" }
+            "  unshare_userns: {}\n",
+            check_label(&self.unshare_userns, ui)
+        ));
+        text.push_str(&format!("  netns: {}\n", netns_label(&self.netns, ui)));
+        // Advisory facts render after every required check and stay dimmed on a terminal.
+        let noatime = if self.btrfs.noatime { "ok" } else { "missing" };
+        text.push_str(&format!(
+            "  {}\n",
+            ui.secondary(&format!("noatime: {noatime}"))
         ));
         text.push_str(&format!(
-            "unshare_userns: {}\n",
-            check_label(&self.unshare_userns)
+            "  {}\n",
+            ui.secondary(&format!("ingress: {}", self.ingress.label()))
         ));
-        text.push_str(&format!("netns: {}\n", netns_label(&self.netns)));
-        text.push_str(&format!("ingress: {}\n", self.ingress.label()));
         for fix in &self.fixes {
-            text.push_str(&format!("fix: {fix}\n"));
+            text.push_str(&format!("  next: {fix}\n"));
         }
         text
+    }
+
+    /// The one-line verdict `doctor` leads with: `✓ Ready`, `✗ N issue(s)`, or `✗ not ready`.
+    fn verdict(&self, ui: &TerminalUi) -> String {
+        if self.ok {
+            return ui.ok("✓ Ready");
+        }
+        let count = self.fixes.len();
+        ui.failed(&match count {
+            0 => "✗ not ready".to_owned(),
+            1 => "✗ 1 issue".to_owned(),
+            count => format!("✗ {count} issues"),
+        })
     }
 
     /// Project the report into the single `--json` shape (`ADR-0010` §4).
@@ -516,18 +541,18 @@ impl DoctorReport {
 }
 
 /// `unshare_userns` text label (`ok` | `failed`); the subprocess detail stays in `--json`.
-fn check_label(outcome: &HostCheckOutcome) -> String {
+fn check_label(outcome: &HostCheckOutcome, ui: &TerminalUi) -> String {
     match outcome {
-        HostCheckOutcome::Ok => "ok".to_owned(),
-        HostCheckOutcome::Failed { .. } => "failed".to_owned(),
+        HostCheckOutcome::Ok => ui.ok("ok"),
+        HostCheckOutcome::Failed { .. } => ui.failed("failed"),
     }
 }
 
 /// `netns` text label (`ok` | `skipped` | `failed`).
-fn netns_label(netns: &NetnsCheck) -> String {
+fn netns_label(netns: &NetnsCheck, ui: &TerminalUi) -> String {
     match netns {
-        NetnsCheck::Executed(outcome) => check_label(outcome),
-        NetnsCheck::Skipped => "skipped".to_owned(),
+        NetnsCheck::Executed(outcome) => check_label(outcome, ui),
+        NetnsCheck::Skipped => ui.warn("skipped"),
     }
 }
 
@@ -571,7 +596,17 @@ fn netns_json(netns: &NetnsCheck) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ui::Capabilities;
     use slipfork_engine::btrfs::{BTRFS_SUPER_MAGIC, BtrfsProbeReport};
+
+    fn plain() -> TerminalUi {
+        TerminalUi::new(Capabilities {
+            tty: false,
+            color: false,
+            verbose: false,
+            json: false,
+        })
+    }
 
     const XFS_SUPER_MAGIC: i64 = 0x5846_5342;
     const EXT4_SUPER_MAGIC: i64 = 0xef53;
@@ -649,16 +684,17 @@ mod tests {
             ]
         );
 
-        let text = report.render_text();
+        let text = report.render_text(&plain());
+        assert_eq!(text.lines().next(), Some("✗ 3 issues"), "{text}");
         let mount_at = text
-            .find(&format!("fix: {}", mount_hint(&report.btrfs.probed_path)))
+            .find(&format!("next: {}", mount_hint(&report.btrfs.probed_path)))
             .expect("mount hint line");
         let userns_at = text
-            .find(&format!("fix: {UNINSTALLED_HINT}"))
-            .expect("userns fix line");
+            .find(&format!("next: {UNINSTALLED_HINT}"))
+            .expect("userns next line");
         let netns_at = text
-            .find(&format!("fix: {IPROUTE2_HINT}"))
-            .expect("netns fix line");
+            .find(&format!("next: {IPROUTE2_HINT}"))
+            .expect("netns next line");
         assert!(
             mount_at < userns_at && userns_at < netns_at,
             "btrfs -> userns -> netns order: {text}"
@@ -683,8 +719,21 @@ mod tests {
 
         assert!(!report.ok);
         assert_eq!(report.fixes, vec![UNINSTALLED_HINT.to_owned()]);
-        assert!(report.render_text().contains("netns: skipped\n"));
+        assert!(report.render_text(&plain()).contains("netns: skipped\n"));
         assert_eq!(report.to_json()["netns"], json!({ "status": "skipped" }));
+
+        // A failing report that produced no remedy never degrades into `✗ 0 issues`.
+        let mut unremedied = super::run(
+            evidence(tmp.path(), BTRFS_SUPER_MAGIC),
+            healthy_facts(),
+            1000,
+            1000,
+        );
+        unremedied.ok = false;
+        assert_eq!(
+            unremedied.render_text(&plain()).lines().next(),
+            Some("✗ not ready")
+        );
     }
 
     #[test]
@@ -798,6 +847,7 @@ mod tests {
         assert_eq!(report.filesystem, "btrfs");
         assert!(report.fixes.is_empty());
         assert_eq!(report.netns, NetnsCheck::Executed(HostCheckOutcome::Ok));
+        assert_eq!(report.render_text(&plain()).lines().next(), Some("✓ Ready"));
     }
 
     #[test]
@@ -829,15 +879,15 @@ mod tests {
         assert!(!report.ok, "ingress never makes a non-Btrfs host healthy");
         assert_eq!(report.fixes, vec![mount_hint(&report.btrfs.probed_path)]);
 
-        let text = report.render_text();
+        let text = report.render_text(&plain());
         let label = report.ingress.label();
         assert!(text.contains(&format!("ingress: {label}\n")), "{text}");
         let userns_at = text.find("unshare_userns: ").expect("userns line");
         let ingress_at = text.find("ingress: ").expect("ingress line");
-        let fix_at = text.find("fix: ").expect("mount hint line");
+        let fix_at = text.find("next: ").expect("mount hint line");
         assert!(
             userns_at < ingress_at && ingress_at < fix_at,
-            "fatal probes precede the advisory ingress line, which precedes fixes: {text}"
+            "fatal probes precede the advisory ingress line, which precedes next remedies: {text}"
         );
 
         let value = report.to_json();

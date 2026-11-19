@@ -10,7 +10,9 @@
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
-use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
+use clap::builder::Styles;
+use clap::builder::styling::{AnsiColor, Effects};
+use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
 use slipfork_wire::control::{DumpRequest, ResourceRequest};
 
 /// Shared `--world` help text for every world-scoped command. Carries no trailing period because
@@ -47,6 +49,38 @@ pub struct Cli {
 
     #[command(subcommand)]
     pub command: Option<Commands>,
+}
+
+impl Cli {
+    /// Parse argv once, painting `clap`'s help/errors with the same palette as [`crate::ui`].
+    ///
+    /// The composition root decides `color` (TTY + `NO_COLOR` + `--json`); this constructor never
+    /// probes the terminal itself.
+    #[must_use]
+    pub fn parse_styled(args: &[std::ffi::OsString], color: bool) -> Self {
+        let command = Cli::command().styles(styles(color));
+        let matches = command.get_matches_from(args);
+        Self::from_arg_matches(&matches).unwrap_or_else(|err| err.exit())
+    }
+}
+
+/// The `clap` help/error `Styles` for one capability snapshot.
+///
+/// Color off is `Styles::plain()`, so a piped call, `NO_COLOR=1`, and `--json` share the same
+/// byte-identical help text.
+#[must_use]
+pub fn styles(color: bool) -> Styles {
+    if !color {
+        return Styles::plain();
+    }
+    Styles::styled()
+        .header(AnsiColor::Cyan.on_default().effects(Effects::BOLD))
+        .usage(AnsiColor::Cyan.on_default().effects(Effects::BOLD))
+        .literal(AnsiColor::Cyan.on_default())
+        .placeholder(AnsiColor::Green.on_default())
+        .error(AnsiColor::Red.on_default().effects(Effects::BOLD))
+        .valid(AnsiColor::Green.on_default())
+        .invalid(AnsiColor::Yellow.on_default())
 }
 
 /// Every top-level verb this binary really implements, taken from the `clap` table itself.

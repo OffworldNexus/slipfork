@@ -23,7 +23,7 @@ pub(crate) fn up(
     host_caches: bool,
 ) -> Result<ExitCode, String> {
     let client = connect_or_spawn(app)?;
-    let options = block_options(app.ui.verbose, world.is_some());
+    let options = block_options(app.terminal.verbose(), world.is_some());
     let request = UpRequest {
         cwd: app.ui.cwd()?,
         world,
@@ -51,7 +51,7 @@ pub(crate) fn up(
 /// rescue path — the daemon re-runs the same boot pipeline in place.
 pub(crate) fn restart(app: &CliApp, world: Option<String>) -> Result<ExitCode, String> {
     let client = connect(&app.layout)?;
-    let options = block_options(app.ui.verbose, world.is_some());
+    let options = block_options(app.terminal.verbose(), world.is_some());
     let selector = WorldSelector {
         cwd: app.ui.cwd()?,
         world,
@@ -88,7 +88,7 @@ pub(crate) fn fork(
     host_caches: bool,
 ) -> Result<ExitCode, String> {
     let client = connect_or_spawn(app)?;
-    let options = block_options(app.ui.verbose, true);
+    let options = block_options(app.terminal.verbose(), true);
     let request = ForkRequest {
         cwd: app.ui.cwd()?,
         fork,
@@ -256,7 +256,10 @@ fn print_world_up(
         return Ok(());
     }
     note_ingress(client);
-    print!("{}", slipfork::restart::render(verb, summary, options));
+    print!(
+        "{}",
+        slipfork::restart::render(verb, summary, options, &app.terminal)
+    );
     Ok(())
 }
 

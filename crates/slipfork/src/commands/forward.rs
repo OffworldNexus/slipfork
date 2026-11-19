@@ -7,6 +7,8 @@ use serde_json::json;
 use slipfork_edge::DaemonControl;
 use slipfork_wire::control::{ForwardRequest, ForwardSummary};
 
+use slipfork::ui::TerminalUi;
+
 use crate::CliApp;
 use crate::commands::control::connect;
 
@@ -24,7 +26,7 @@ pub(crate) fn forward(
     };
     client
         .forward(&request, &mut |summary: ForwardSummary| {
-            print_forward(app.output_mode.json, &summary);
+            print_forward(app.output_mode.json, &summary, &app.terminal);
             // The open control connection *is* the bridge lifetime (`ADR-0008` §4): hold it until
             // the process is interrupted, at which point the socket closes and `slipforkd` drops
             // every host listener.
@@ -36,7 +38,7 @@ pub(crate) fn forward(
     Ok(ExitCode::SUCCESS)
 }
 
-fn print_forward(json: bool, summary: &ForwardSummary) {
+fn print_forward(json: bool, summary: &ForwardSummary, ui: &TerminalUi) {
     if json {
         println!(
             "{}",
@@ -50,10 +52,18 @@ fn print_forward(json: bool, summary: &ForwardSummary) {
             })
         );
     } else {
+        let id_width = summary
+            .targets
+            .iter()
+            .map(|target| target.id.chars().count())
+            .max()
+            .unwrap_or(0);
         for target in &summary.targets {
             println!(
-                "[forward] {:<24} {} ({})",
-                target.id, target.uri, target.host_addr
+                "[forward] {} {} ({})",
+                ui.pad(&target.id, id_width),
+                ui.url(&target.uri),
+                ui.secondary(&target.host_addr),
             );
         }
     }

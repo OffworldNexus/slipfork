@@ -18,22 +18,33 @@
 mod commands;
 pub(crate) mod entry;
 
+use std::ffi::OsString;
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use clap::Parser;
 use serde_json::json;
 use slipfork::browser::Browser;
 use slipfork::cli::{Cli, Commands};
 use slipfork::layout::{Layout, absolute_path};
+use slipfork::ui::{Capabilities, TerminalUi};
 use slipfork::user::{ResolvedAccount, UserIdentity, account_name, kernel_hostname};
 use slipfork_engine::current_uid_gid;
 
 fn main() -> ExitCode {
-    let cli = Cli::parse();
-    let json = cli.json;
-    let outcome = CliApp::compose(cli).and_then(|(app, command)| commands::dispatch(&app, command));
+    let args: Vec<OsString> = std::env::args_os().collect();
+    let tty = std::io::stdout().is_terminal();
+    let no_color = std::env::var_os("NO_COLOR").is_some_and(|value| !value.is_empty());
+    let cli = Cli::parse_styled(&args, tty && !no_color);
+    let capabilities = Capabilities {
+        tty,
+        color: !no_color,
+        verbose: cli.verbose,
+        json: cli.json,
+    };
+    let json = capabilities.json;
+    let outcome = CliApp::compose(cli, capabilities)
+        .and_then(|(app, command)| commands::dispatch(&app, command));
     match outcome {
         Ok(code) => code,
         Err(message) => {
@@ -51,6 +62,7 @@ fn main() -> ExitCode {
 pub(crate) struct CliApp {
     pub(crate) output_mode: OutputMode,
     pub(crate) layout: Layout,
+    pub(crate) terminal: TerminalUi,
     pub(crate) ui: Ui,
 }
 
@@ -61,12 +73,8 @@ pub(crate) struct OutputMode {
 
 /// Ambient host facts, snapshotted by [`CliApp::compose`] and never re-read.
 pub(crate) struct Ui {
-    /// `-v`: per-node lineage and `[resources]` detail.
-    pub(crate) verbose: bool,
     /// stdin is an interactive terminal (`shell`, `db`, `redis`, `hook run`, `secret set`).
     pub(crate) stdin_tty: bool,
-    /// stdout is a terminal (the `doctor` progress line).
-    pub(crate) stdout_tty: bool,
     /// The invoking directory every daemon request carries.
     cwd: Result<PathBuf, String>,
     /// The developer's login shell (`slipfork shell`), or the one-line refusal.
@@ -85,7 +93,7 @@ pub(crate) struct Ui {
 
 impl CliApp {
     /// Resolve every ambient host fact once, then hand the parsed verb to the dispatch table.
-    fn compose(cli: Cli) -> Result<(Self, Option<Commands>), String> {
+    fn compose(cli: Cli, capabilities: Capabilities) -> Result<(Self, Option<Commands>), String> {
         let home = home_dir()?;
         let xdg_cache = absolute_path(std::env::var_os("XDG_CACHE_HOME"));
         let xdg_data = absolute_path(std::env::var_os("XDG_DATA_HOME"));
@@ -95,11 +103,12 @@ impl CliApp {
             xdg_cache.as_deref(),
             xdg_data.as_deref(),
         );
-        let output_mode = OutputMode { json: cli.json };
+        let terminal = TerminalUi::new(capabilities);
+        let output_mode = OutputMode {
+            json: capabilities.json,
+        };
         let ui = Ui {
-            verbose: cli.verbose,
             stdin_tty: std::io::stdin().is_terminal(),
-            stdout_tty: std::io::stdout().is_terminal(),
             cwd: current_dir(),
             shell: shell_from_env(),
             exe_dir: exe_dir(),
@@ -113,6 +122,7 @@ impl CliApp {
             Self {
                 output_mode,
                 layout,
+                terminal,
                 ui,
             },
             cli.command,

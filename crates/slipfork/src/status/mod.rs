@@ -6,14 +6,23 @@
 //! environment, or log directory, and nothing here can start a daemon — `status` is a read verb, so
 //! a bare `slipfork` never leaves a mystery `--listen 127.0.0.1:0` process behind (§1, `M3.28.1`
 //! R5).
+//!
+//! The table and the lineage line live in [`table`] and [`lineage`] so each file stays one cohesive
+//! renderer; both are re-exported from here because `status`, `list`, `ps`, and `restart` share them.
 
 use std::collections::BTreeSet;
 
 use slipfork_edge::INGRESS_PORT;
 use slipfork_wire::control::{DaemonStatus, WorldState, WorldSummary};
-use slipfork_world::{CacheOutcome, SeedLineage, WorldLineage};
 
 use crate::cli::implemented_commands;
+use crate::ui::TerminalUi;
+
+mod lineage;
+mod table;
+
+pub(crate) use lineage::render_lineage;
+pub use table::WorldTable;
 
 /// The `next` commands of one world state (`docs/design/dx-0.1.0-ux.md` §1 is the only table).
 ///
@@ -41,39 +50,30 @@ pub fn world_state_label(state: WorldState) -> &'static str {
     }
 }
 
-/// Width of one lineage digest in human output (`<digest12>` / `<key12>`, §8.2).
-const SHORT_DIGEST: usize = 12;
-
-/// Narrowest world-id column; a longer id widens the column instead of shifting the rest.
-const MIN_WORLD_COLUMN: usize = 16;
-
-/// Indentation of one canonical project row (a fork row adds two more spaces).
-const PROJECT_INDENT: &str = "  ";
-
-/// Indentation of one fork row under its project.
-const FORK_INDENT: &str = "    ";
-
 /// The human dashboard for one daemon status: the daemon line, then the project/world tree.
 ///
 /// Each world row carries its state, origin, and worktree; its `lineage` and `next` sub-lines carry
 /// the world's own build lineage (§8.2) and its [`world_next_commands`] hints (§1's single table),
 /// filtered to the verbs this binary actually implements. A daemon that knows no world renders one
 /// line plus the command that creates one.
-pub fn render(status: &DaemonStatus) -> String {
+pub fn render(status: &DaemonStatus, ui: &TerminalUi) -> String {
     let mut out = format!(
         "slipforkd {}, ingress {}\n",
         status.pid,
         ingress_addrs(status)
     );
     if status.worlds.is_empty() {
-        out.push_str("  no worlds — run `slipfork up` inside a project checkout\n");
+        out.push_str(&format!(
+            "  {}\n",
+            ui.secondary("no worlds — run `slipfork up` inside a project checkout")
+        ));
         return out;
     }
-    let column = world_column(&status.worlds);
+    let table = WorldTable::new(&status.worlds, ui);
     let implemented = implemented_commands();
     for project in project_groups(&status.worlds) {
         for world in project {
-            render_world(&mut out, world, column, &implemented);
+            table.push_world(&mut out, world, &implemented);
         }
     }
     out
@@ -116,90 +116,6 @@ pub fn ingress_hint(port: u16) -> Option<String> {
              once for port-less origins"
         )
     })
-}
-
-/// The single human lineage line body (`docs/design/dx-0.1.0-ux.md` §8.2).
-///
-/// Order is `rootfs`, one entry per resolved service image, `seed`, `base`; a fact the daemon never
-/// recorded is `-`, and only the four outcome words appear (`cached`, `rebuilt <dur>`, `reused`,
-/// `sealed <dur>`) — never the wire `hit`/`miss`. This is the one renderer of that line: `status`
-/// and the `up` / `fork` / `restart` block ([`crate::restart`]) both call it, so the compact line
-/// can never drift between the fleet view and the actionable block.
-pub(crate) fn render_lineage(lineage: &WorldLineage) -> String {
-    let mut parts = vec![match &lineage.rootfs {
-        Some(rootfs) => format!(
-            "rootfs {} {}",
-            short_digest(&rootfs.digest),
-            cache_outcome(rootfs.cache, rootfs.millis)
-        ),
-        None => "rootfs - -".to_owned(),
-    }];
-    for service in &lineage.services {
-        parts.push(format!(
-            "{} {}",
-            service.id,
-            cache_outcome(service.cache, service.millis)
-        ));
-    }
-    parts.push(match &lineage.seed {
-        Some(seed) => format!(
-            "seed {} {}",
-            seed.digest
-                .as_deref()
-                .map(short_digest)
-                .unwrap_or_else(unknown),
-            seed_outcome(seed)
-        ),
-        None => "seed - -".to_owned(),
-    });
-    parts.push(match &lineage.base {
-        Some(base) => format!(
-            "base {} {}",
-            short_digest(&base.key),
-            base_outcome(base.millis)
-        ),
-        None => "base - -".to_owned(),
-    });
-    parts.join(" · ")
-}
-
-/// One `WORLD  STATE  ORIGIN  WORKTREE` row — the single row formatter of `status` and `list`.
-///
-/// `indent` is the row's tree indentation (`""` for the flat `list` table, the fork indent on the
-/// dashboard) and `world_column` is the world-id column width of the whole payload, so every row of
-/// one render shares one alignment instead of each caller re-typing a width.
-pub fn world_row(world: &WorldSummary, indent: &str, world_column: usize) -> String {
-    format!(
-        "{indent}{:<world_column$} {:<9} {:<40} {}\n",
-        world.world,
-        world_state_label(world.state),
-        world.origin.url(),
-        world.worktree.display(),
-    )
-}
-
-/// One rendered world row plus its `lineage` and `next` sub-lines.
-fn render_world(
-    out: &mut String,
-    world: &WorldSummary,
-    column: usize,
-    implemented: &BTreeSet<String>,
-) {
-    let indent = if world.parent.is_some() {
-        FORK_INDENT
-    } else {
-        PROJECT_INDENT
-    };
-    out.push_str(&world_row(world, indent, column));
-    let label_indent = " ".repeat(PROJECT_INDENT.len() + column);
-    out.push_str(&format!(
-        "{label_indent}lineage   {}\n",
-        render_lineage(&world.lineage)
-    ));
-    out.push_str(&format!(
-        "{label_indent}next      {}\n",
-        next_hint(world, implemented)
-    ));
 }
 
 /// One world's `next` hint from the single membership table (§1), filtered to real verbs.
@@ -250,16 +166,6 @@ fn project_groups(worlds: &[WorldSummary]) -> Vec<Vec<&WorldSummary>> {
         .collect()
 }
 
-/// The world-id column width of this payload, roomy enough for the widest id it prints.
-pub fn world_column(worlds: &[WorldSummary]) -> usize {
-    worlds
-        .iter()
-        .map(|world| world.world.chars().count())
-        .max()
-        .unwrap_or(MIN_WORLD_COLUMN)
-        .max(MIN_WORLD_COLUMN)
-}
-
 /// The daemon's bound ingress listeners (`127.0.0.1:80, [::1]:80` under socket activation).
 fn ingress_addrs(status: &DaemonStatus) -> String {
     status
@@ -269,50 +175,6 @@ fn ingress_addrs(status: &DaemonStatus) -> String {
         .map(ToString::to_string)
         .collect::<Vec<_>>()
         .join(", ")
-}
-
-/// One short digest: the first [`SHORT_DIGEST`] characters of the full 64-hex value.
-pub(crate) fn short_digest(digest: &str) -> String {
-    digest.chars().take(SHORT_DIGEST).collect()
-}
-
-/// The unknown-fact placeholder: never `0`, never an empty string.
-fn unknown() -> String {
-    "-".to_owned()
-}
-
-/// Rootfs/service-image outcome: `cached` for a hit, `rebuilt <dur>` for a miss.
-fn cache_outcome(cache: CacheOutcome, millis: Option<u64>) -> String {
-    match cache {
-        CacheOutcome::Hit => "cached".to_owned(),
-        CacheOutcome::Miss => format!("rebuilt {}", human_duration(millis)),
-    }
-}
-
-/// Seed outcome: `cached` when the base was reused, `rebuilt <dur>` when it was restored.
-fn seed_outcome(seed: &SeedLineage) -> String {
-    match seed.rebuilt {
-        Some(false) => "cached".to_owned(),
-        Some(true) => format!("rebuilt {}", human_duration(seed.millis)),
-        None => unknown(),
-    }
-}
-
-/// Base outcome: `reused` when the sealed snapshot already existed, `sealed <dur>` otherwise.
-fn base_outcome(millis: Option<u64>) -> String {
-    match millis {
-        None => "reused".to_owned(),
-        Some(_) => format!("sealed {}", human_duration(millis)),
-    }
-}
-
-/// A measured duration, or `-` when the daemon recorded none.
-fn human_duration(millis: Option<u64>) -> String {
-    match millis {
-        None => unknown(),
-        Some(millis) if millis < 1_000 => format!("{millis}ms"),
-        Some(millis) => format!("{:.1}s", millis as f64 / 1_000.0),
-    }
 }
 
 #[cfg(test)]
@@ -362,14 +224,27 @@ mod next_table_tests {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::path::PathBuf;
 
     use slipfork_wire::control::{DaemonStatus, IngressInfo, WorldState};
-    use slipfork_world::{
-        BaseLineage, RootfsLineage, SeedLineage, ServiceImageLineage, WorldLineage,
-    };
-    use slipfork_world::{LocalHostRoute, ProjectSlug, WorldOrigin, WorldTarget};
+    use slipfork_world::{BaseLineage, RootfsLineage, SeedLineage, WorldLineage};
+    use slipfork_world::{CacheOutcome, LocalHostRoute, ProjectSlug, WorldOrigin, WorldTarget};
+
+    use super::*;
+    use crate::ui::Capabilities;
+
+    fn plain() -> TerminalUi {
+        TerminalUi::new(Capabilities {
+            tty: false,
+            color: false,
+            verbose: false,
+            json: false,
+        })
+    }
+
+    fn render_plain(status: &DaemonStatus) -> String {
+        render(status, &plain())
+    }
 
     fn origin(project: &str, fork: Option<&str>, ingress_port: u16) -> WorldOrigin {
         let project = ProjectSlug::parse(project).expect("a valid project slug");
@@ -450,7 +325,7 @@ mod tests {
                 Some(&digest("45")),
             )
         };
-        let dashboard = render(&status(
+        let dashboard = render_plain(&status(
             80,
             vec![
                 world("demo", None, WorldState::Running, 80, all_known()),
@@ -513,7 +388,7 @@ mod tests {
             "the command set is the clap table: {implemented:?}"
         );
         for state in [WorldState::Running, WorldState::Failed, WorldState::Stopped] {
-            let dashboard = render(&status(
+            let dashboard = render_plain(&status(
                 80,
                 vec![world("demo", None, state, 80, lineage(None, None, None))],
             ));
@@ -540,7 +415,7 @@ mod tests {
 
     #[test]
     fn status_renders_zero_worlds_as_one_line_plus_the_up_command() {
-        let dashboard = render(&status(80, Vec::new()));
+        let dashboard = render_plain(&status(80, Vec::new()));
         assert_eq!(
             dashboard,
             "slipforkd 1420, ingress 127.0.0.1:80\n  no worlds — run `slipfork up` inside a project checkout\n"
@@ -550,7 +425,7 @@ mod tests {
     #[test]
     fn status_renders_port_less_origins_at_80_and_one_hint_on_any_other_port() {
         let canonical = |port: u16| {
-            render(&status(
+            render_plain(&status(
                 port,
                 vec![world(
                     "demo",
@@ -572,56 +447,6 @@ mod tests {
             "slipfork: ingress is :40645, not :80 — run `sudo slipfork daemon install` once for port-less origins"
         );
         assert_eq!(hint.lines().count(), 1, "exactly one line");
-    }
-
-    #[test]
-    fn status_lineage_prints_short_digests_and_a_dash_for_an_unknown_fact() {
-        assert_eq!(
-            render_lineage(&WorldLineage {
-                rootfs: None,
-                services: Vec::new(),
-                seed: None,
-                base: None,
-            }),
-            "rootfs - - · seed - - · base - -"
-        );
-
-        let full = WorldLineage {
-            rootfs: Some(RootfsLineage {
-                digest: digest("a1b2c3d4e5f6"),
-                cache: CacheOutcome::Miss,
-                millis: Some(2_104),
-            }),
-            services: vec![ServiceImageLineage {
-                id: "postgres:18".to_owned(),
-                cache: CacheOutcome::Hit,
-                millis: None,
-            }],
-            seed: Some(SeedLineage {
-                digest: Some(digest("9f8e7d6c5b4a")),
-                rebuilt: Some(true),
-                millis: Some(10),
-            }),
-            base: Some(BaseLineage {
-                key: digest("4570132bffb8"),
-                millis: Some(10),
-            }),
-        };
-        assert_eq!(
-            render_lineage(&full),
-            "rootfs a1b2c3d4e5f6 rebuilt 2.1s · postgres:18 cached · seed 9f8e7d6c5b4a rebuilt 10ms · base 4570132bffb8 sealed 10ms"
-        );
-
-        // An unrecorded verdict stays `-` instead of inventing a rebuild.
-        let unmeasured = WorldLineage {
-            seed: Some(SeedLineage {
-                digest: Some(digest("aa")),
-                rebuilt: Some(true),
-                millis: None,
-            }),
-            ..full
-        };
-        assert!(render_lineage(&unmeasured).contains("seed aa0000000000 rebuilt -"));
     }
 
     #[test]

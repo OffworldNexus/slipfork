@@ -54,6 +54,7 @@ pub mod ps;
 pub mod restart;
 pub mod runtime;
 pub mod status;
+pub mod ui;
 pub mod user;
 pub mod vaults;
 pub mod vcs;

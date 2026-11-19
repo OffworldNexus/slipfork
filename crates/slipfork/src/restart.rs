@@ -15,7 +15,8 @@ use serde_json::Value;
 use slipfork_wire::control::{WorldState, WorldUpSummary};
 use slipfork_world::{CacheOutcome, WorldLineage};
 
-use crate::status::{render_lineage, short_digest};
+use crate::status::render_lineage;
+use crate::ui::TerminalUi;
 
 /// Width of the block's label column (`world     `, `worktree  `, `lineage   `).
 const LABEL_WIDTH: usize = 10;
@@ -54,20 +55,20 @@ pub struct Options {
 
 /// Render the whole human block: verdict, `world`, `app`, `worktree`, `cd`/verdict row, `next`,
 /// the one compact `lineage` line, and — only under `-v` — the `[resources]` and `[lineage]` detail.
-pub fn render(verb: Verb, summary: &WorldUpSummary, options: Options) -> String {
+pub fn render(verb: Verb, summary: &WorldUpSummary, options: Options, ui: &TerminalUi) -> String {
     let mut out = String::new();
     if verb == Verb::Restart {
         out.push_str(&verdict(summary));
         out.push('\n');
     }
-    out.push_str(&row("world", &world_value(verb, summary)));
-    out.push_str(&row("app", summary.origin.url()));
+    out.push_str(&row("world", &world_value(verb, summary, ui)));
+    out.push_str(&row("app", &ui.url(summary.origin.url())));
     out.push_str(&row("worktree", &summary.worktree.display().to_string()));
     if verb == Verb::Fork {
         out.push_str(&row("cd", &format!("cd {}", summary.worktree.display())));
     }
     out.push_str(&row("next", &next_line(summary, options.qualify_next)));
-    out.push_str(&row("lineage", &render_lineage(&summary.lineage)));
+    out.push_str(&row("lineage", &render_lineage(&summary.lineage, ui)));
     if options.verbose {
         for resource in &summary.resources {
             out.push_str(&format!(
@@ -75,7 +76,7 @@ pub fn render(verb: Verb, summary: &WorldUpSummary, options: Options) -> String 
                 resource.id, resource.strategy, resource.resolved, resource.reason
             ));
         }
-        out.push_str(&detail(&summary.lineage));
+        out.push_str(&detail(&summary.lineage, ui));
     }
     out
 }
@@ -96,20 +97,20 @@ fn verdict(summary: &WorldUpSummary) -> String {
 }
 
 /// The `world` row value: the canonical id, its lifecycle state, and whether this run changed it.
-fn world_value(verb: Verb, summary: &WorldUpSummary) -> String {
-    let state = match summary.state {
+fn world_value(verb: Verb, summary: &WorldUpSummary, ui: &TerminalUi) -> String {
+    let state = ui.state(match summary.state {
         WorldState::Running => "running",
         WorldState::Failed => "failed",
         WorldState::Stopped => "stopped",
-    };
+    });
     let changed = if summary.changed {
-        "changed"
+        "changed".to_owned()
     } else if verb == Verb::Up {
-        "unchanged — run `slipfork restart` to apply edits"
+        "unchanged — run `slipfork restart` to apply edits".to_owned()
     } else {
-        "unchanged"
+        "unchanged".to_owned()
     };
-    format!("{} ({state}, {changed})", summary.world)
+    format!("{} ({state}, {})", summary.world, ui.secondary(&changed))
 }
 
 /// The `next` row: the daemon's one state table, optionally qualified for a non-`cwd` world.
@@ -138,18 +139,19 @@ fn row(label: &str, value: &str) -> String {
 /// One row per node in the same order as the compact line — `rootfs`, every service image, `seed`,
 /// `base` — with the digest, the four-word human outcome, and the measured milliseconds. An
 /// unknown fact is `-`; the wire words `hit`/`miss` never appear.
-fn detail(lineage: &WorldLineage) -> String {
+fn detail(lineage: &WorldLineage, ui: &TerminalUi) -> String {
     let mut out = String::new();
     match &lineage.rootfs {
         Some(rootfs) => {
             out.push_str(&detail_row(
                 "rootfs",
-                &short_digest(&rootfs.digest),
+                &rootfs.digest,
                 cache_word(rootfs.cache),
                 rootfs.millis,
+                ui,
             ));
         }
-        None => out.push_str(&detail_row("rootfs", "-", "-", None)),
+        None => out.push_str(&detail_row("rootfs", "-", "-", None, ui)),
     }
     for service in &lineage.services {
         // A service-image row records no digest; only its cache verdict and duration.
@@ -158,44 +160,55 @@ fn detail(lineage: &WorldLineage) -> String {
             "-",
             cache_word(service.cache),
             service.millis,
+            ui,
         ));
     }
     match &lineage.seed {
         Some(seed) => out.push_str(&detail_row(
             "seed",
-            seed.digest
-                .as_deref()
-                .map(short_digest)
-                .as_deref()
-                .unwrap_or("-"),
+            seed.digest.as_deref().unwrap_or("-"),
             seed_word(seed.rebuilt),
             seed.millis,
+            ui,
         )),
-        None => out.push_str(&detail_row("seed", "-", "-", None)),
+        None => out.push_str(&detail_row("seed", "-", "-", None, ui)),
     }
     match &lineage.base {
         Some(base) => out.push_str(&detail_row(
             "base",
-            &short_digest(&base.key),
+            &base.key,
             if base.millis.is_none() {
                 "reused"
             } else {
                 "sealed"
             },
             base.millis,
+            ui,
         )),
-        None => out.push_str(&detail_row("base", "-", "-", None)),
+        None => out.push_str(&detail_row("base", "-", "-", None, ui)),
     }
     out
 }
 
 /// One `[lineage]` detail row, columns aligned with the §8.2 transcript.
-fn detail_row(node: &str, digest: &str, outcome: &str, millis: Option<u64>) -> String {
+fn detail_row(
+    node: &str,
+    digest: &str,
+    outcome: &str,
+    millis: Option<u64>,
+    ui: &TerminalUi,
+) -> String {
     let duration = millis
         .map(|millis| format!("{millis}ms"))
         .unwrap_or_else(|| "-".to_owned());
+    let digest = if digest == "-" {
+        ui.secondary("-")
+    } else {
+        ui.digest(digest)
+    };
     format!(
-        "[lineage]   {node:<NODE_WIDTH$} {digest:<DIGEST_WIDTH$} {outcome:<OUTCOME_WIDTH$} {duration}\n"
+        "[lineage]   {node:<NODE_WIDTH$} {} {outcome:<OUTCOME_WIDTH$} {duration}\n",
+        ui.pad(&digest, DIGEST_WIDTH)
     )
 }
 
@@ -249,6 +262,16 @@ mod tests {
     use slipfork_world::{ServiceKind, ServiceState, WorldServiceInfo};
 
     use super::*;
+    use crate::ui::Capabilities;
+
+    fn plain() -> TerminalUi {
+        TerminalUi::new(Capabilities {
+            tty: false,
+            color: false,
+            verbose: false,
+            json: false,
+        })
+    }
 
     fn origin(project: &str, fork: Option<&str>, ingress_port: u16) -> WorldOrigin {
         let project = ProjectSlug::parse(project).expect("a valid project slug");
@@ -332,6 +355,7 @@ mod tests {
                 qualify_next: false,
                 verbose: false,
             },
+            &plain(),
         );
         let lines: Vec<&str> = block.lines().collect();
         assert_eq!(lines[0], "world     demo (running, changed)");
@@ -365,6 +389,7 @@ mod tests {
                 qualify_next: false,
                 verbose: false,
             },
+            &plain(),
         );
         let lines: Vec<&str> = restarted.lines().collect();
         assert_eq!(lines[0], "[restarted] api, postgres");
@@ -383,6 +408,7 @@ mod tests {
                 qualify_next: false,
                 verbose: false,
             },
+            &plain(),
         );
         let lines: Vec<&str> = unchanged.lines().collect();
         assert_eq!(lines[0], "[no change]");
@@ -401,6 +427,7 @@ mod tests {
                 qualify_next: false,
                 verbose: false,
             },
+            &plain(),
         );
         assert!(hook_only.starts_with("[changed]\n"), "{hook_only}");
     }
@@ -414,6 +441,7 @@ mod tests {
                 qualify_next: false,
                 verbose: false,
             },
+            &plain(),
         );
         assert!(
             block.starts_with(
@@ -443,6 +471,7 @@ mod tests {
                 qualify_next: true,
                 verbose: false,
             },
+            &plain(),
         );
         let lines: Vec<&str> = block.lines().collect();
         assert_eq!(lines[0], "world     demo:feat-ux (running, changed)");
@@ -504,6 +533,7 @@ mod tests {
                 qualify_next: false,
                 verbose: true,
             },
+            &plain(),
         );
         assert!(
             block.contains(
@@ -547,6 +577,7 @@ mod tests {
                 qualify_next: false,
                 verbose: true,
             },
+            &plain(),
         );
         for node in ["rootfs", "seed", "base"] {
             assert!(
@@ -636,8 +667,8 @@ mod tests {
                 millis: None,
             }),
         };
-        let compact = render_lineage(&lineage);
-        let table = detail(&lineage);
+        let compact = render_lineage(&lineage, &plain());
+        let table = detail(&lineage, &plain());
         for word in ["cached", "rebuilt", "reused"] {
             assert!(compact.contains(word), "compact: {compact}");
             assert!(table.contains(word), "detail: {table}");

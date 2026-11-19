@@ -1626,6 +1626,25 @@ fn doctor_json_carries_the_typed_ingress_document() {
         .output()
         .expect("doctor --json");
     let value: Value = serde_json::from_str(&stdout(&output)).expect("doctor json");
+    let human = Command::new(env!("CARGO_BIN_EXE_slipfork"))
+        .arg("--state-dir")
+        .arg(scratch.join("doctor-state"))
+        .arg("doctor")
+        .env("NO_COLOR", "1")
+        .current_dir(&repo)
+        .output()
+        .expect("doctor");
+    let text = stdout(&human);
+    assert!(
+        !text.contains('\x1b'),
+        "doctor piped under NO_COLOR carries zero escape bytes: {text:?}"
+    );
+    assert!(
+        text.lines()
+            .next()
+            .is_some_and(|line| line.starts_with('✓') || line.starts_with('✗')),
+        "doctor leads with its verdict: {text}"
+    );
     let ingress = value
         .get("ingress")
         .unwrap_or_else(|| panic!("doctor --json must carry `ingress`: {value}"));
@@ -2528,6 +2547,17 @@ fn bare_slipfork_and_status_render_one_dashboard_and_json_stays_pure() {
     );
 
     let dashboard = stdout(&bare);
+    assert!(
+        !dashboard.contains('\x1b'),
+        "a piped dashboard carries zero escape bytes: {dashboard:?}"
+    );
+    let no_color = daemon.cli_with_env(&repo, &["status"], "NO_COLOR", "1");
+    assert_success(&no_color, "NO_COLOR status");
+    assert_eq!(
+        stdout(&no_color),
+        dashboard,
+        "NO_COLOR changes nothing on a non-terminal stdout"
+    );
     let lines: Vec<&str> = dashboard.lines().collect();
     assert!(
         lines[0].starts_with("slipforkd ") && lines[0].contains(", ingress 127.0.0.1:"),

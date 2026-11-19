@@ -11,3 +11,7 @@ carry-over: delete stale BROWSER=/bin/true coupling in packages/opencode-slipfor
 ## 2026-11-18T23:44 [lead]
 
 carry-over: daemon install systemctl/apparmor legs block silently via .output(); add phase lines + spawn
+
+## 2026-11-19T01:25 [lead]
+
+edited fields

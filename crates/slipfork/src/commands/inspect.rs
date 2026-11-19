@@ -27,7 +27,7 @@ pub(crate) fn status(app: &CliApp) -> Result<ExitCode, String> {
     if let Some(hint) = slipfork::status::ingress_hint(payload.ingress.port()) {
         eprintln!("{hint}");
     }
-    print!("{}", slipfork::status::render(&payload));
+    print!("{}", slipfork::status::render(&payload, &app.terminal));
     Ok(ExitCode::SUCCESS)
 }
 
@@ -47,7 +47,7 @@ pub(crate) fn ps(app: &CliApp, world: Option<String>) -> Result<ExitCode, String
     if app.output_mode.json {
         println!("{}", render_json(&slipfork::ps::json(&report))?);
     } else {
-        print!("{}", slipfork::ps::render(&report));
+        print!("{}", slipfork::ps::render(&report, &app.terminal));
     }
     Ok(ExitCode::SUCCESS)
 }
@@ -129,13 +129,10 @@ pub(crate) fn list(app: &CliApp) -> Result<ExitCode, String> {
             .collect();
         println!("{}", render_json(&rows)?);
     } else {
-        let column = slipfork::status::world_column(&worlds);
-        println!(
-            "{:<column$} {:<9} {:<40} WORKTREE",
-            "WORLD", "STATE", "ORIGIN"
-        );
+        let table = slipfork::status::WorldTable::new(&worlds, &app.terminal);
+        print!("{}", table.header());
         for world in &worlds {
-            print!("{}", slipfork::status::world_row(world, "", column));
+            print!("{}", table.row(world, ""));
         }
     }
     Ok(ExitCode::SUCCESS)

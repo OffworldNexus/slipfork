@@ -2,7 +2,7 @@
 id: M3.30.2.4
 title: "Composition root <250 LOC + CliApp/commands split + VcsCli struct"
 kind: task
-status: ready
+status: done
 owner: implementer
 priority: 3
 depends_on: [M3.30.2.3]
@@ -11,7 +11,7 @@ attempts: 2
 max_attempts: 3
 escalation: none
 created: "2026-11-19T00:03"
-updated: "2026-11-19T01:23"
+updated: "2026-11-19T01:25"
 ---
 
 # Goal

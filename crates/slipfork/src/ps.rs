@@ -11,6 +11,7 @@ use slipfork_world::ServiceKind;
 use slipfork_world::ServiceState;
 
 use crate::status::{render_lineage, world_state_label};
+use crate::ui::TerminalUi;
 
 /// Width of the block's label column (`state     `, `lineage   `), shared with `restart`'s block.
 const LABEL_WIDTH: usize = 10;
@@ -18,23 +19,26 @@ const LABEL_WIDTH: usize = 10;
 /// Narrowest id column; a longer service id widens the column instead of shifting the rest.
 const MIN_ID_COLUMN: usize = 16;
 
+/// Width of the table's `STATE` column (`running` is the widest label).
+const STATE_COLUMN: usize = 7;
+
 /// The human `ps` block: the world's `state`, the one lineage line, then the process table.
 ///
 /// A `stopped` or `failed` world still prints its `state` and every retained row (the engine keeps
 /// stopped rows), so `ps` never fails for a world that exists.
-pub fn render(report: &WorldProcessReport) -> String {
+pub fn render(report: &WorldProcessReport, ui: &TerminalUi) -> String {
     let mut out = String::new();
     out.push_str(&format!(
-        "{:<LABEL_WIDTH$}{}\n",
-        "state",
-        world_state_label(report.state)
+        "{}{}\n",
+        ui.pad("state", LABEL_WIDTH),
+        ui.state(world_state_label(report.state))
     ));
     out.push_str(&format!(
-        "{:<LABEL_WIDTH$}{}\n",
-        "lineage",
-        render_lineage(&report.lineage)
+        "{}{}\n",
+        ui.pad("lineage", LABEL_WIDTH),
+        render_lineage(&report.lineage, ui)
     ));
-    out.push_str(&table(report));
+    out.push_str(&table(report, ui));
     out
 }
 
@@ -55,7 +59,7 @@ pub fn json(report: &WorldProcessReport) -> serde_json::Value {
 }
 
 /// The process table, aligned to the widest value in the report.
-fn table(report: &WorldProcessReport) -> String {
+fn table(report: &WorldProcessReport, ui: &TerminalUi) -> String {
     let kind_width = report
         .services
         .iter()
@@ -88,21 +92,29 @@ fn table(report: &WorldProcessReport) -> String {
     );
 
     let mut out = format!(
-        "{:<kind_width$}  {:<id_width$}  {:<7}  {:<pid_width$}  {:<port_width$}  {}\n",
-        "KIND", "ID", "STATE", "PID", "PORT", "UPTIME"
+        "{}  {}  {}  {}  {}  {}\n",
+        ui.secondary(&ui.pad("KIND", kind_width)),
+        ui.secondary(&ui.pad("ID", id_width)),
+        ui.secondary(&ui.pad("STATE", STATE_COLUMN)),
+        ui.secondary(&ui.pad("PID", pid_width)),
+        ui.secondary(&ui.pad("PORT", port_width)),
+        ui.secondary("UPTIME"),
     );
     for service in &report.services {
         out.push_str(&format!(
-            "{:<kind_width$}  {:<id_width$}  {:<7}  {:<pid_width$}  {:<port_width$}  {}\n",
-            service_kind_label(service.info.kind),
-            service.info.id,
-            service_state_label(service.info.state),
-            dash(service.info.pid),
-            dash(service.info.port),
+            "{}  {}  {}  {}  {}  {}\n",
+            ui.secondary(&ui.pad(service_kind_label(service.info.kind), kind_width)),
+            ui.pad(&service.info.id, id_width),
+            ui.pad(
+                &ui.state(service_state_label(service.info.state)),
+                STATE_COLUMN
+            ),
+            ui.pad(&dash(service.info.pid), pid_width),
+            ui.pad(&dash(service.info.port), port_width),
             service
                 .info
                 .uptime_secs
-                .map_or_else(|| "-".to_owned(), |secs| format!("{secs}s")),
+                .map_or_else(|| ui.secondary("-"), |secs| format!("{secs}s")),
         ));
     }
     out
@@ -143,6 +155,16 @@ mod tests {
     };
 
     use super::*;
+    use crate::ui::Capabilities;
+
+    fn plain() -> TerminalUi {
+        TerminalUi::new(Capabilities {
+            tty: false,
+            color: false,
+            verbose: false,
+            json: false,
+        })
+    }
 
     fn digest(prefix: &str) -> String {
         format!("{prefix}{}", "0".repeat(64 - prefix.len()))
@@ -220,7 +242,7 @@ mod tests {
                 running("demo", "api", ServiceKind::Component, 1_512, 8_000, 41),
             ],
         );
-        let block = render(&report);
+        let block = render(&report, &plain());
         let lines: Vec<&str> = block.lines().collect();
         assert_eq!(lines[0], "state     running");
         assert_eq!(
@@ -261,7 +283,7 @@ mod tests {
                 },
             )],
         );
-        let block = render(&report);
+        let block = render(&report, &plain());
         assert!(block.starts_with("state     stopped\n"), "{block}");
         let row = block.lines().last().expect("one service row");
         let columns: Vec<&str> = row.split_whitespace().collect();
@@ -271,7 +293,7 @@ mod tests {
     #[test]
     fn ps_renders_a_failed_world_with_no_rows_as_its_header_only() {
         let report = report(WorldState::Failed, Vec::new());
-        let block = render(&report);
+        let block = render(&report, &plain());
         assert_eq!(block.lines().count(), 3, "{block}");
         assert!(block.contains("state     failed"));
         assert!(block.contains("KIND"));

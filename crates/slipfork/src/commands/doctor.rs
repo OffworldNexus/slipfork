@@ -21,12 +21,9 @@ pub(crate) fn doctor(app: &CliApp) -> Result<ExitCode, String> {
     let (uid, gid) = app.ui.uid_gid();
     let driver = KernelBtrfsDriver::new();
     let host = OsHostProbe::new(app.ui.exe_dir()?);
-    if !app.output_mode.json && app.ui.stdout_tty {
-        eprintln!("probing namespaces and :80 ingress…");
-    }
-    let btrfs = driver
-        .probe(app.layout.state_dir())
-        .map_err(|err| err.to_string())?;
+    app.terminal
+        .start_progress("probing namespaces and :80 ingress…");
+    let btrfs = driver.probe(app.layout.state_dir());
     let unshare_userns = host.probe_userns(uid, gid);
     let netns = if unshare_userns == HostCheckOutcome::Ok {
         NetnsCheck::Executed(host.probe_netns(uid, gid))
@@ -38,11 +35,13 @@ pub(crate) fn doctor(app: &CliApp) -> Result<ExitCode, String> {
         netns,
         ingress: SystemdIngressProbe.probe_ingress(),
     };
+    app.terminal.finish_progress();
+    let btrfs = btrfs.map_err(|err| err.to_string())?;
     let report = slipfork::doctor::run(btrfs, facts, uid, gid);
     if app.output_mode.json {
         println!("{}", render_json(&report.to_json())?);
     } else {
-        print!("{}", report.render_text());
+        print!("{}", report.render_text(&app.terminal));
     }
     Ok(if report.ok {
         ExitCode::SUCCESS

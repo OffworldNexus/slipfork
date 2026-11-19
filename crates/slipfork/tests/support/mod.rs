@@ -685,6 +685,14 @@ impl Daemon {
         self.command(cwd, args).output().expect("spawn slipfork")
     }
 
+    /// The same CLI invocation with one extra environment variable (for example `NO_COLOR=1`).
+    pub fn cli_with_env(&self, cwd: &Path, args: &[&str], key: &str, value: &str) -> Output {
+        self.command(cwd, args)
+            .env(key, value)
+            .output()
+            .expect("spawn slipfork")
+    }
+
     /// The same CLI invocation with `PATH` pointed at `path` (a missing-opener host).
     pub fn cli_with_path(&self, cwd: &Path, path: &Path, args: &[&str]) -> Output {
         self.command(cwd, args)
