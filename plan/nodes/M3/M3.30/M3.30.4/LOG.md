@@ -15,3 +15,11 @@ also replace daemon/tests/engine.rs RecordingEngine/StubRootfs/FixedRepo doubles
 ## 2026-11-19T02:02 [lead]
 
 edited fields
+
+## 2026-11-19T02:52 [lead]
+
+Epic acceptance green: no nested cargo build, no dag plan, one compile per target set; fmt/clippy; dag/snow/ospp/engine lib tests (5/4/17/52) pass; critical_edge 14 pass + critical_edge_live registered; l0 fail-closed off-Btrfs (BtrfsRequired) -> real positives proven on VM in M3.30.6
+
+## 2026-11-19T02:52 [lead]
+
+status ready -> done

@@ -1697,3 +1697,5 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-19T02:48 [M3.30.4.4] (lead) status review -> active
 - 2026-11-19T02:48 [M3.30.4.4] (lead) triad: arch 2 MAJOR, tests 2 BLOCKER + 4 MAJOR, ux 4 MAJOR -> 1 consolidated restore pass
 - 2026-11-19T02:52 [M3.30.4.4] (lead) status active -> done
+- 2026-11-19T02:52 [M3.30.4] (lead) Epic acceptance green: no nested cargo build, no dag plan, one compile per target set; fmt/clippy; dag/snow/ospp/engine lib tests (5/4/17/52) pass; critical_edg
+- 2026-11-19T02:52 [M3.30.4] (lead) status ready -> done
