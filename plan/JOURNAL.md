@@ -1822,3 +1822,14 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-19T13:28 [M3.32.2.2.1.1] (lead) attempt 2/3 started
 - 2026-11-19T13:28 [M3.32.2.2.1.1] (lead) status ready -> active
 - 2026-11-19T13:30 [M3.32.2.2.1.1] (lead) status active -> done
+- 2026-11-19T13:30 [M3.32.2.2.1.2] (lead) status ready -> active
+- 2026-11-19T13:30 [M3.32.2.2.1.2] (lead) attempt 1/3 started
+- 2026-11-19T13:30 [M3.32.2.2.1.2] (lead) base 24e558aad0c76a0ad4a83d85f20f2fc2249d6d2b
+- 2026-11-19T13:34 [M3.32.2.2.1.2] (lead) status active -> review
+- 2026-11-19T13:35 [M3.32.2.2.1.2] (lead) edited fields
+- 2026-11-19T13:35 [M3.32.2.2.1.2] (lead) also owners Makefile registration for critical_pod_bundle + the critical_forkfile gap from M3.32.1
+- 2026-11-19T13:36 [M3.32.2.2.1.2] (lead) edited fields
+- 2026-11-19T13:36 [M3.32.2.2.1.2] (lead) status review -> ready: triad: Makefile registration BLOCKER + dedupe key/coordinate MAJORs + guest-path bundle root
+- 2026-11-19T13:36 [M3.32.2.2.1.2] (lead) attempt 2/3 started
+- 2026-11-19T13:36 [M3.32.2.2.1.2] (lead) status ready -> active
+- 2026-11-19T13:39 [M3.32.2.2.1.2] (lead) status active -> done

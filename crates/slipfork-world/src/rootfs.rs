@@ -20,6 +20,56 @@ use crate::{CacheOutcome, WorldMount};
 /// SHA-256 prefix of the `L0` rootfs Merkle key (`ADR-0009` §3).
 const ROOTFS_DIGEST_DOMAIN: &[u8] = b"slipfork-l0-rootfs:v1\0";
 
+/// Merkle prefix of one declared Dockerfile build's identity (`docs/design/forkfile.md` §3).
+const BUILD_KEY_DOMAIN: &[u8] = b"slipfork-pod-build-key:v1\0";
+
+/// Identity of one declared Dockerfile build, shared by the cache digest and the pod dedupe key.
+///
+/// The inputs are **declaration-only** and worktree-independent: a stable project identity, the
+/// repo-relative context directory, the Dockerfile path, the target stage, and the sorted build
+/// environment. The same service therefore keys identically in every worktree of one repository,
+/// while two repositories never collide, and a fork can never miss the cache it just sealed.
+/// Build-environment values are hashed and never stored.
+#[derive(Debug, Clone, Copy)]
+pub struct BuildKey<'a> {
+    /// Stable identity of the declaring project/image (`snow.yml` image id or project slug),
+    /// never a filesystem path.
+    pub project: &'a str,
+    /// Repo-relative build context directory, as declared (`./api`, `.`).
+    pub context: &'a str,
+    /// `Dockerfile` path relative to its build context, as declared.
+    pub dockerfile: &'a str,
+    /// Selected target stage; the empty string selects the final stage.
+    pub stage: &'a str,
+    /// Resolved build arguments; sorted by name before hashing.
+    pub build_env: &'a [BuildEnvVar],
+}
+
+impl BuildKey<'_> {
+    /// Lowercase hex SHA-256 of the build's declared inputs — the one build-identity formula.
+    pub fn hex(&self) -> String {
+        let mut hash = Sha256::new();
+        hash.update(BUILD_KEY_DOMAIN);
+        let mut push = |bytes: &[u8]| {
+            hash.update((bytes.len() as u64).to_be_bytes());
+            hash.update(bytes);
+        };
+        push(self.project.as_bytes());
+        push(self.context.as_bytes());
+        push(self.dockerfile.as_bytes());
+        push(self.stage.as_bytes());
+        let mut envs: Vec<&BuildEnvVar> = self.build_env.iter().collect();
+        envs.sort_by(|left, right| left.name.cmp(&right.name));
+        push(&(envs.len() as u64).to_be_bytes());
+        for env in envs {
+            push(env.name.as_bytes());
+            let value_hash = Sha256::digest(env.value.as_bytes());
+            push(&value_hash);
+        }
+        hex::encode(hash.finalize())
+    }
+}
+
 /// Content-addressed identifier of one extracted `L0` app rootfs (`ADR-0009` §3).
 ///
 /// Rendered as `sha256:<64 lowercase hex>`; the cache directory uses [`Self::hex`] alone.
@@ -52,24 +102,22 @@ impl RootfsDigest {
 
     /// Compute the `ADR-0009` §3 Merkle key over the exact listed components.
     pub fn compute(inputs: &RootfsDigestInputs<'_>) -> Self {
+        let build = BuildKey {
+            project: inputs.image_id,
+            context: inputs.context_rel_path,
+            dockerfile: inputs.dockerfile_rel_path,
+            stage: inputs.target_stage,
+            build_env: inputs.build_envs,
+        };
         let mut hash = Sha256::new();
         hash.update(ROOTFS_DIGEST_DOMAIN);
         let mut push = |bytes: &[u8]| {
             hash.update(bytes);
             hash.update(b"\0");
         };
-        push(inputs.image_id.as_bytes());
-        push(inputs.dockerfile_rel_path.as_bytes());
+        push(build.hex().as_bytes());
         push(sha256_hex(inputs.dockerfile_bytes).as_bytes());
-        push(inputs.context_rel_path.as_bytes());
         push(inputs.context_merkle_sha256.as_bytes());
-        push(inputs.target_stage.as_bytes());
-        let mut envs: Vec<&BuildEnvVar> = inputs.build_envs.iter().collect();
-        envs.sort_by(|a, b| a.name.cmp(&b.name));
-        for env in envs {
-            push(env.name.as_bytes());
-            push(sha256_hex(env.value.as_bytes()).as_bytes());
-        }
         push(inputs.crun_binary_sha256.as_bytes());
         push(inputs.world_init_sha256.as_bytes());
         push(inputs.target_arch.as_bytes());

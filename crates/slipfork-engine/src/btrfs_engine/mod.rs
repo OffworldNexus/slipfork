@@ -36,6 +36,8 @@ mod snapshots;
 mod teardown;
 mod worlds;
 
+pub use container::{CrunSurface, pod_bundle_guest};
+
 use std::collections::BTreeMap;
 use std::fmt;
 use std::path::{Path, PathBuf};

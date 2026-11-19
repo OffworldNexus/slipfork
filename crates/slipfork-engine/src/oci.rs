@@ -1,15 +1,20 @@
-//! OCI runtime bundles for daemonless `crun` backing services (`ADR-0009` §2–§3).
+//! OCI runtime bundles for daemonless `crun` backing services **and** shared-namespace service
+//! pods (`ADR-0009` §2–§3, `ARCHITECTURE.md` §3.3).
 //!
 //! This module is the **only** place a container `config.json` is synthesized. It is pure
 //! `#![forbid(unsafe_code)]` data: the caller supplies already-resolved guest paths (the image
 //! rootfs, the CoW state subdirectories, verified read-only dumps) and the invoking `$UID:$GID`.
 //! The `crun` probe in `docs/design/world-base-image.md` §7 fixes the shape:
 //!
-//! - identity `uidMappings`/`gidMappings` (`$UID -> $UID`) and explicit `user`, `pid`, `mount`,
-//!   `ipc`, and `uts` namespaces, **never** a `network` namespace (all containers share the
-//!   world's `127.0.0.1`);
+//! - a **backing service** declares identity `uidMappings`/`gidMappings` (`$UID -> $UID`) and
+//!   explicit `user`, `pid`, `mount`, `ipc`, and `uts` namespaces — **never** a `network`
+//!   namespace, because every backing container shares the world's `127.0.0.1`;
+//! - a **service pod** joins the shared world init's `user`, `network`, and `ipc` namespaces by
+//!   path and creates only `pid`, `mount`, and `uts`, so it listens on the world's `127.0.0.1`
+//!   without declaring its own identity map;
 //! - read-only image rootfs (`root.readonly = true`);
-//! - read-only `/etc/passwd` + `/etc/group` overlays so `initdb` can resolve `getpwuid($UID)`;
+//! - read-only `/etc/passwd` + `/etc/group` overlays when the container needs host identity
+//!   (`initdb` resolves `getpwuid($UID)`);
 //! - `--cgroup-manager=disabled` belongs to the `crun` invocation, not this document.
 
 #![forbid(unsafe_code)]
@@ -42,9 +47,7 @@ pub struct ContainerMount {
 pub struct ContainerBundle<'a> {
     /// Directory the bundle is written to (host path inside the world's OCI state dir).
     pub bundle_dir: &'a Path,
-    /// Host path of the extracted image rootfs (read-only container `/`).
-    pub image_rootfs: &'a Path,
-    /// Guest path the same image rootfs is mounted at inside the world.
+    /// Guest path of the extracted image rootfs (read-only container `/`).
     pub image_rootfs_guest: &'a Path,
     /// Container command and arguments.
     pub argv: &'a [String],
@@ -56,15 +59,33 @@ pub struct ContainerBundle<'a> {
     pub gid: u32,
     /// State and read-only bind mounts.
     pub mounts: &'a [ContainerMount],
-    /// Guest path of the synthesized `/etc/passwd`.
-    pub passwd_guest: &'a Path,
-    /// Guest path of the synthesized `/etc/group`.
-    pub group_guest: &'a Path,
+    /// Namespaces joined **by path** from the world's shared init instead of created fresh
+    /// (`("user" | "network" | "ipc", path)`); joined kinds are never emitted twice.
+    pub namespace_joins: &'a [(&'a str, &'a Path)],
+    /// `process.cwd` inside the container (absolute, and bound in by `mounts` when host-owned).
+    pub cwd: &'a Path,
+    /// Guest path of the synthesized `/etc/passwd`, when the container needs host identity.
+    pub passwd_guest: Option<&'a Path>,
+    /// Guest path of the synthesized `/etc/group`, when the container needs host identity.
+    pub group_guest: Option<&'a Path>,
 }
 
 /// Write the OCI runtime bundle for one `crun` container.
 pub fn write_bundle(bundle: &ContainerBundle<'_>) -> io::Result<()> {
     fs::create_dir_all(bundle.bundle_dir)?;
+    let joins_userns = bundle
+        .namespace_joins
+        .iter()
+        .any(|(kind, _path)| *kind == "user");
+    // Identity mappings apply only when the container *creates* its user namespace. A container
+    // joining the world init's `user` namespace inherits that map and must not declare its own.
+    let mut linux = json!({ "namespaces": namespaces(bundle) });
+    if !joins_userns {
+        linux["uidMappings"] =
+            json!([{ "containerID": bundle.uid, "hostID": bundle.uid, "size": 1 }]);
+        linux["gidMappings"] =
+            json!([{ "containerID": bundle.gid, "hostID": bundle.gid, "size": 1 }]);
+    }
     let config = json!({
         "ociVersion": "1.0.2",
         "hostname": format!("slipfork-{}", bundle.uid),
@@ -78,26 +99,39 @@ pub fn write_bundle(bundle: &ContainerBundle<'_>) -> io::Result<()> {
                 .iter()
                 .map(|(name, value)| format!("{name}={value}"))
                 .collect::<Vec<_>>(),
-            "cwd": "/",
+            "cwd": bundle.cwd,
             "noNewPrivileges": true,
         },
         "mounts": container_mounts(bundle),
-        "linux": {
-            // Omitting `network` is deliberate: every container shares the world's `127.0.0.1`
-            // (`ADR-0009` §2), so `postgres:18` and `redis:8` talk to an `alpine:3.21` app.
-            "namespaces": [
-                { "type": "user" },
-                { "type": "pid" },
-                { "type": "mount" },
-                { "type": "ipc" },
-                { "type": "uts" }
-            ],
-            "uidMappings": [{ "containerID": bundle.uid, "hostID": bundle.uid, "size": 1 }],
-            "gidMappings": [{ "containerID": bundle.gid, "hostID": bundle.gid, "size": 1 }],
-        },
+        "linux": linux,
     });
     let bytes = serde_json::to_vec_pretty(&config).map_err(io::Error::other)?;
     fs::write(bundle.bundle_dir.join(OCI_CONFIG_FILE), bytes)
+}
+
+/// The container's `linux.namespaces`: every joined namespace first (with its injected `path`),
+/// then the freshly created kinds the container still owns.
+///
+/// A backing service declares no joins, so it creates `user`/`pid`/`mount`/`ipc`/`uts` and — by
+/// design — **no** `network` namespace: it shares the world's `127.0.0.1` (`ADR-0009` §2), so
+/// `postgres:18` and `redis:8` talk to an `alpine:3.21` app. A service pod joins `user`, `network`,
+/// and `ipc` by path and creates the rest.
+fn namespaces(bundle: &ContainerBundle<'_>) -> Vec<serde_json::Value> {
+    let mut namespaces: Vec<serde_json::Value> = bundle
+        .namespace_joins
+        .iter()
+        .map(|(kind, path)| json!({ "type": kind, "path": path }))
+        .collect();
+    for kind in ["user", "pid", "mount", "ipc", "uts"] {
+        if !bundle
+            .namespace_joins
+            .iter()
+            .any(|(joined, _path)| *joined == kind)
+        {
+            namespaces.push(json!({ "type": kind }));
+        }
+    }
+    namespaces
 }
 
 fn container_mounts(bundle: &ContainerBundle<'_>) -> Vec<serde_json::Value> {
@@ -152,9 +186,16 @@ fn container_mounts(bundle: &ContainerBundle<'_>) -> Vec<serde_json::Value> {
             "source": "/sys",
             "options": ["ro", "rbind"]
         }),
-        bind_mount(bundle.passwd_guest, Path::new("/etc/passwd"), true),
-        bind_mount(bundle.group_guest, Path::new("/etc/group"), true),
     ];
+    // Identity files are only bound when the container needs host `$UID:$GID` resolution: a
+    // backing service joins no namespaces and synthesizes its own `/etc/passwd`, while a shared-ns
+    // service pod inherits the world init's identity and carries no synthesized file.
+    if let Some(passwd_guest) = bundle.passwd_guest {
+        mounts.push(bind_mount(passwd_guest, Path::new("/etc/passwd"), true));
+    }
+    if let Some(group_guest) = bundle.group_guest {
+        mounts.push(bind_mount(group_guest, Path::new("/etc/group"), true));
+    }
     for mount in bundle.mounts {
         mounts.push(bind_mount(
             &mount.source,
@@ -285,15 +326,16 @@ mod tests {
         let argv = vec!["postgres".to_owned()];
         write_bundle(&ContainerBundle {
             bundle_dir: dir.path(),
-            image_rootfs: Path::new("/cache/oci/abc/rootfs"),
             image_rootfs_guest: Path::new("/.slipfork/images/abc/rootfs"),
             argv: &argv,
             env: &env,
             uid: 1000,
             gid: 1000,
             mounts: &[],
-            passwd_guest: Path::new("/.slipfork/etc/passwd"),
-            group_guest: Path::new("/.slipfork/etc/group"),
+            namespace_joins: &[],
+            cwd: Path::new("/"),
+            passwd_guest: Some(Path::new("/.slipfork/etc/passwd")),
+            group_guest: Some(Path::new("/.slipfork/etc/group")),
         })
         .expect("write bundle");
 

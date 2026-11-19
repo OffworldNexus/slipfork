@@ -5,14 +5,15 @@
 
 use std::collections::BTreeMap;
 use std::fs;
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::Ordering;
 
 use slipfork_world::rootfs::BackingServiceKey;
 use slipfork_world::{
-    EngineError, ExecEnv, ExecOutput, MountMode, ServiceHandle, ServiceState, StateSubdirMount,
-    StreamChunk, WorldEntryCommand, WorldMount,
+    EngineError, ExecEnv, ExecOutput, MountMode, ServiceHandle, ServicePodSpec, ServiceState,
+    StateSubdirMount, StreamChunk, WorldEntryCommand, WorldMount,
 };
 
 use crate::child_env;
@@ -33,19 +34,24 @@ pub(crate) struct ContainerProcess {
     /// Stable `crun` container id.
     pub(crate) id: String,
     /// The world's `crun` execution surface.
-    pub(crate) runtime: OciContainerRuntime,
+    pub(crate) runtime: CrunSurface,
     /// Host path of the synthesized bundle (removed after the container exits).
     pub(crate) bundle_host: PathBuf,
 }
 
 /// One world's `crun` execution surface: the exact `nsenter` → `crun` prefix resolved once at
 /// construction (world PID 1, pinned static `crun`, disabled cgroup manager, state root).
+///
+/// This type is the **sole** `crun` argv owner in the engine, and it is also the single writer of
+/// per-service OCI bundles: a backing-service container gets an id-addressed bundle in the world
+/// control dir, and a `ServicePod` gets `ctl/<world_id>/oci/<service>/config.json` from its
+/// injected [`ServicePodSpec`].
 #[derive(Debug, Clone)]
-pub(crate) struct OciContainerRuntime {
+pub struct CrunSurface {
     prefix: Vec<String>,
 }
 
-impl OciContainerRuntime {
+impl CrunSurface {
     pub(crate) fn new(
         engine: &BtrfsEngine,
         init_pid: u32,
@@ -115,6 +121,106 @@ impl OciContainerRuntime {
     pub(crate) fn delete(&self, id: &str) -> Result<(), EngineError> {
         self.run_control(&["delete", "--force", id], "delete", id)
     }
+
+    /// Materialize one `Forkfile` service pod's OCI bundle from its injected spec.
+    ///
+    /// The spec is the sole source of every value, and **every path in the emitted document is a
+    /// world-visible guest path**: `root.path`, `process.cwd`, and each bind `source` are resolved
+    /// through the world's own mount table ([`world_guest_for_host`]), while the bundle itself is
+    /// addressed by [`OCI_BUNDLES_GUEST`] (the engine boots `<ctl>/<world_id>/oci` there). A path
+    /// the world does not expose fails closed with a remedy instead of leaking a host path that
+    /// only happens to resolve because a mount is 1:1.
+    ///
+    /// `world_mounts` is the live world's [`WorldMount`] table (`WorldSpec.mounts`); `worktree` is
+    /// the host checkout whose volumes override. The bundle directory is the spec's own
+    /// `ctl/<world_id>/oci/<service>/` (never the world subvolume: [`slipfork_world::PodLocation`]
+    /// enforced that when the pod was planned). It is created `0700` and `config.json` is left
+    /// `0600`, because the environment may carry resolved secrets. Returns the `config.json` path.
+    pub fn write_pod_bundle(
+        host_uid: u32,
+        host_gid: u32,
+        world_mounts: &[WorldMount],
+        worktree: &Path,
+        spec: &ServicePodSpec,
+    ) -> Result<PathBuf, EngineError> {
+        let guest = |host: &Path, what: &str, fix: &str| {
+            world_guest_for_host(world_mounts, host).ok_or_else(|| EngineError::InvalidWorldSpec {
+                reason: format!(
+                    "service pod '{}' {what} '{}' is not visible inside the world\n  fix: {fix}",
+                    spec.service,
+                    host.display()
+                ),
+            })
+        };
+        let mut mounts = Vec::new();
+        for mount in spec
+            .mounts(worktree)
+            .map_err(|err| EngineError::InvalidWorldSpec {
+                reason: err.to_string(),
+            })?
+        {
+            let source = guest(
+                &mount.source,
+                "mount source",
+                "mount the live worktree and the world subvolume (`volumes/`) in \
+                 WorldSpec.mounts",
+            )?;
+            mounts.push(ContainerMount {
+                source,
+                destination: mount.target,
+                read_only: mount.mode == MountMode::ReadOnly,
+            });
+        }
+        let image_rootfs_guest = guest(
+            &spec.rootfs,
+            "rootfs",
+            "mount the rootfs cache read-only in WorldSpec.mounts at a `/.slipfork/images/…` \
+             guest path",
+        )?;
+        let cwd = guest(
+            spec.cwd(),
+            "working directory",
+            "add the worktree to WorldSpec.mounts as MountMode::ReadWrite",
+        )?;
+        create_private_bundle_dir(&spec.bundle_dir)?;
+        let joins: Vec<(&str, &Path)> = spec
+            .namespace_joins()
+            .iter()
+            .map(|(kind, path)| (*kind, *path))
+            .collect();
+        oci::write_bundle(&ContainerBundle {
+            bundle_dir: &spec.bundle_dir,
+            image_rootfs_guest: &image_rootfs_guest,
+            argv: spec.argv(),
+            env: &spec.command.env,
+            uid: host_uid,
+            gid: host_gid,
+            mounts: &mounts,
+            namespace_joins: &joins,
+            cwd: &cwd,
+            // A pod inherits the world init's identity map, so it carries no synthesized
+            // `/etc/passwd` of its own.
+            passwd_guest: None,
+            group_guest: None,
+        })
+        .map_err(|err| io_error(&spec.bundle_dir, &err))?;
+        let config = spec.bundle_dir.join(oci::OCI_CONFIG_FILE);
+        fs::set_permissions(&config, fs::Permissions::from_mode(0o600))
+            .map_err(|err| io_error(&config, &err))?;
+        Ok(config)
+    }
+}
+
+/// Guest path of one service's bundle: the engine boots `<ctl>/<world_id>/oci` at
+/// [`OCI_BUNDLES_GUEST`], so `crun -b` addresses the bundle by service id alone.
+pub fn pod_bundle_guest(service: &str) -> PathBuf {
+    PathBuf::from(OCI_BUNDLES_GUEST).join(service)
+}
+
+/// Create (or reuse) a bundle directory only the invoking developer can traverse or list.
+fn create_private_bundle_dir(dir: &Path) -> Result<(), EngineError> {
+    fs::create_dir_all(dir).map_err(|err| io_error(dir, &err))?;
+    fs::set_permissions(dir, fs::Permissions::from_mode(0o700)).map_err(|err| io_error(dir, &err))
 }
 
 impl BtrfsEngine {
@@ -212,19 +318,20 @@ impl BtrfsEngine {
 
         oci::write_bundle(&ContainerBundle {
             bundle_dir: &bundle_host,
-            image_rootfs: &oci.rootfs,
             image_rootfs_guest: &image_guest,
             argv,
             env: spawn.env,
             uid: self.host_uid,
             gid: self.host_gid,
             mounts: &mounts,
-            passwd_guest: Path::new(PASSWD_GUEST),
-            group_guest: Path::new(GROUP_GUEST),
+            namespace_joins: &[],
+            cwd: Path::new("/"),
+            passwd_guest: Some(Path::new(PASSWD_GUEST)),
+            group_guest: Some(Path::new(GROUP_GUEST)),
         })
         .map_err(|err| io_error(&bundle_host, &err))?;
 
-        let runtime = OciContainerRuntime::new(
+        let runtime = CrunSurface::new(
             self,
             spawn.init_pid,
             spawn.rootfs.crun_bin.clone(),

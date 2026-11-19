@@ -2,16 +2,16 @@
 id: M3.32.2.2.1.2
 title: "slipfork-engine: per-service OCI bundles via CrunSurface + rootfs dedupe"
 kind: task
-status: ready
+status: done
 owner: implementer
 priority: 3
 depends_on: [M3.32.2.2.1.1]
-paths: ["crates/slipfork-engine/**", Cargo.toml, Cargo.lock]
-attempts: 0
+paths: ["crates/slipfork-engine/**", "crates/slipfork-world/src/rootfs/**", Makefile, Cargo.toml, Cargo.lock]
+attempts: 2
 max_attempts: 3
 escalation: none
 created: "2026-11-19T13:26"
-updated: "2026-11-19T13:26"
+updated: "2026-11-19T13:39"
 ---
 
 # Goal

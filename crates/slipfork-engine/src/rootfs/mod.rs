@@ -27,6 +27,7 @@ pub mod builder;
 pub mod buildx;
 pub(crate) mod cache;
 pub(crate) mod contract;
+pub mod dedupe;
 pub(crate) mod dockerfile;
 pub mod input;
 pub(crate) mod oci_store;
@@ -40,6 +41,7 @@ use sha2::{Digest, Sha256};
 pub use abi::ElfProbe;
 pub use builder::DockerfileStageBuilder;
 pub use buildx::{BuildxRequest, DockerBuildx};
+pub use dedupe::{BuildSource, PodImageSource, RootfsEntry, RootfsKey, RootfsPlan};
 pub use input::FsInputHasher;
 pub use oci_store::DockerImageStore;
 
