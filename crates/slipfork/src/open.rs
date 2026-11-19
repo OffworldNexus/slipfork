@@ -19,8 +19,13 @@ use slipfork_vcs::{RepoRoot, WORKTREES_DIRECTORY};
 use slipfork_wire::control::WorldSummary;
 use slipfork_world::WorldOrigin;
 
+use crate::ui::{TerminalUi, column_width};
+
 /// The fixed laptop-side forward port of the `open --remote` recipe (there is no `--local-port`).
 pub const LOCAL_PORT: u16 = 8080;
+
+/// Narrowest label column of the `open --remote` block (`world   `, `ssh     `, `app     `).
+const MIN_REMOTE_LABEL: usize = 8;
 
 /// One world the CLI selected: its canonical id and the daemon's typed origin.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -171,10 +176,19 @@ pub fn remote_recipe(
 }
 
 /// The human `open --remote` block: the world, the line to paste on the laptop, and its URL.
-pub fn render_remote(selection: &WorldSelection, recipe: &RemoteRecipe) -> String {
+///
+/// The label column is measured from its visible cells (never a literal width), and a long world
+/// id widens only its own value, so `ssh` and `app` stay on their documented columns.
+pub fn render_remote(selection: &WorldSelection, recipe: &RemoteRecipe, ui: &TerminalUi) -> String {
+    let label_width = column_width(MIN_REMOTE_LABEL, ["world", "ssh", "app"]);
     format!(
-        "{:<8}{}\n{:<8}{}\n{:<8}{}\n",
-        "world", selection.world, "ssh", recipe.ssh, "app", recipe.url
+        "{}{}\n{}{}\n{}{}\n",
+        ui.pad("world", label_width),
+        selection.world,
+        ui.pad("ssh", label_width),
+        recipe.ssh,
+        ui.pad("app", label_width),
+        recipe.url,
     )
 }
 
@@ -203,6 +217,16 @@ mod tests {
     use slipfork_world::{LocalHostRoute, ProjectSlug, WorldTarget};
 
     use super::*;
+    use crate::ui::Capabilities;
+
+    fn plain() -> TerminalUi {
+        TerminalUi::new(Capabilities {
+            tty: false,
+            color: false,
+            verbose: false,
+            json: false,
+        })
+    }
 
     fn slug(name: &str) -> ProjectSlug {
         ProjectSlug::parse(name).expect("a valid project slug")
@@ -359,10 +383,22 @@ mod tests {
         let recipe = remote_recipe(&selected.origin, 40645, "slipfork", "slipfork-dev-vm")
             .expect("a bound ingress port");
         assert_eq!(
-            render_remote(&selected, &recipe),
+            render_remote(&selected, &recipe, &plain()),
             "world   demo\n\
              ssh     ssh -N -L 8080:127.0.0.1:40645 slipfork@slipfork-dev-vm\n\
              app     http://demo.localhost:8080\n"
+        );
+
+        // The label column keeps its floor for short labels; a long world id stays on its own
+        // `world` row, so `ssh`/`app` remain aligned instead of re-flowing the block.
+        let long = WorldSelection {
+            world: "demo:feat-with-a-very-long-fork-name".to_owned(),
+            origin: selected.origin.clone(),
+        };
+        let long_block = render_remote(&long, &recipe, &plain());
+        assert!(
+            long_block.starts_with("world   demo:feat-with-a-very-long-fork-name\nssh     "),
+            "{long_block}"
         );
 
         let document = json(&selected, Some(&recipe));

@@ -2,16 +2,16 @@
 id: M3.30.3.3
 title: "Dynamic ANSI-stripped column widths across status/ps/list/forward/secret + plugin ANSI purity"
 kind: task
-status: ready
+status: done
 owner: implementer
 priority: 3
 depends_on: [M3.30.3.2]
 paths: [Cargo.toml, Cargo.lock, "crates/slipfork/**", "packages/opencode-slipfork/**"]
-attempts: 0
+attempts: 2
 max_attempts: 3
 escalation: none
 created: "2026-11-19T01:25"
-updated: "2026-11-19T01:25"
+updated: "2026-11-19T02:02"
 ---
 
 # Goal

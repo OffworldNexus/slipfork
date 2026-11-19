@@ -2,7 +2,7 @@
 id: M3.30.3
 title: "High-craft terminal UX: TerminalUi palette, live streamed progress/spinners, dynamic column alignment"
 kind: epic
-status: ready
+status: done
 priority: 3
 depends_on: [M3.30.2]
 paths: [Cargo.toml, Cargo.lock, "crates/**", "packages/opencode-slipfork/**"]
@@ -10,7 +10,7 @@ attempts: 0
 max_attempts: 3
 escalation: none
 created: "2026-11-18T22:19"
-updated: "2026-11-19T01:25"
+updated: "2026-11-19T02:02"
 ---
 
 # Goal

@@ -11,10 +11,7 @@ use slipfork_world::ServiceKind;
 use slipfork_world::ServiceState;
 
 use crate::status::{render_lineage, world_state_label};
-use crate::ui::TerminalUi;
-
-/// Width of the block's label column (`state     `, `lineage   `), shared with `restart`'s block.
-const LABEL_WIDTH: usize = 10;
+use crate::ui::{TerminalUi, block_label_width, column_width};
 
 /// Narrowest id column; a longer service id widens the column instead of shifting the rest.
 const MIN_ID_COLUMN: usize = 16;
@@ -27,15 +24,16 @@ const STATE_COLUMN: usize = 7;
 /// A `stopped` or `failed` world still prints its `state` and every retained row (the engine keeps
 /// stopped rows), so `ps` never fails for a world that exists.
 pub fn render(report: &WorldProcessReport, ui: &TerminalUi) -> String {
+    let label_width = block_label_width(&["state", "lineage"]);
     let mut out = String::new();
     out.push_str(&format!(
         "{}{}\n",
-        ui.pad("state", LABEL_WIDTH),
+        ui.pad("state", label_width),
         ui.state(world_state_label(report.state))
     ));
     out.push_str(&format!(
         "{}{}\n",
-        ui.pad("lineage", LABEL_WIDTH),
+        ui.pad("lineage", label_width),
         render_lineage(&report.lineage, ui)
     ));
     out.push_str(&table(report, ui));
@@ -60,36 +58,32 @@ pub fn json(report: &WorldProcessReport) -> serde_json::Value {
 
 /// The process table, aligned to the widest value in the report.
 fn table(report: &WorldProcessReport, ui: &TerminalUi) -> String {
-    let kind_width = report
-        .services
-        .iter()
-        .map(|service| service_kind_label(service.info.kind).len())
-        .max()
-        .unwrap_or(0)
-        .max("KIND".len());
-    let id_width = report
-        .services
-        .iter()
-        .map(|service| service.info.id.chars().count())
-        .max()
-        .unwrap_or(0)
-        .max(MIN_ID_COLUMN);
-    let pid_width = "PID".len().max(
+    let kind_width = column_width(
+        "KIND".len(),
         report
             .services
             .iter()
-            .map(|service| dash_len(service.info.pid))
-            .max()
-            .unwrap_or(0),
+            .map(|service| service_kind_label(service.info.kind)),
     );
-    let port_width = "PORT".len().max(
+    let id_width = column_width(
+        MIN_ID_COLUMN,
         report
             .services
             .iter()
-            .map(|service| dash_len(service.info.port))
-            .max()
-            .unwrap_or(0),
+            .map(|service| service.info.id.as_str()),
     );
+    let pids: Vec<String> = report
+        .services
+        .iter()
+        .map(|service| dash(service.info.pid))
+        .collect();
+    let pid_width = column_width("PID".len(), pids.iter().map(String::as_str));
+    let ports: Vec<String> = report
+        .services
+        .iter()
+        .map(|service| dash(service.info.port))
+        .collect();
+    let port_width = column_width("PORT".len(), ports.iter().map(String::as_str));
 
     let mut out = format!(
         "{}  {}  {}  {}  {}  {}\n",
@@ -140,10 +134,6 @@ fn service_kind_label(kind: ServiceKind) -> &'static str {
 /// One optional fact as text, with `-` for `None` (never `0`).
 fn dash<T: std::fmt::Display>(value: Option<T>) -> String {
     value.map_or_else(|| "-".to_owned(), |value| value.to_string())
-}
-
-fn dash_len<T: std::fmt::Display>(value: Option<T>) -> usize {
-    value.map_or(1, |value| value.to_string().len())
 }
 
 #[cfg(test)]
@@ -359,5 +349,34 @@ mod tests {
         let document = json(&report(WorldState::Failed, Vec::new()));
         assert!(document["world"].is_null(), "{document}");
         assert_eq!(document["services"], serde_json::json!([]));
+    }
+
+    #[test]
+    fn a_long_service_id_widens_the_id_column_without_shearing_later_columns() {
+        let long_id = "pg_clusters.primary_psql";
+        let report = report(
+            WorldState::Running,
+            vec![running(
+                "demo",
+                long_id,
+                ServiceKind::BackingService,
+                1_488,
+                5_432,
+                42,
+            )],
+        );
+        let block = render(&report, &plain());
+        let lines: Vec<&str> = block.lines().collect();
+        let header = lines[2];
+        let row = lines[3];
+
+        assert!(
+            block.starts_with("state     running\n"),
+            "label floor: {block}"
+        );
+        assert_eq!(row.find(long_id), header.find("ID"), "{block}");
+        assert_eq!(row.find("running"), header.find("STATE"), "{block}");
+        assert_eq!(row.find("1488"), header.find("PID"), "{block}");
+        assert_eq!(row.find("5432"), header.find("PORT"), "{block}");
     }
 }

@@ -151,7 +151,7 @@ describe("opencode-slipfork live world (M2.18)", () => {
   let contextHook: (event: { sessionID: string; system: { type: "text"; text: string }[] }) => Promise<void> | void;
   let sessionDirectory = "";
   let dispose: (() => Promise<void>) | undefined;
-  let savedEnv: { XDG_CACHE_HOME?: string; XDG_DATA_HOME?: string; XDG_RUNTIME_DIR?: string; BROWSER?: string };
+  let savedEnv: { XDG_CACHE_HOME?: string; XDG_DATA_HOME?: string; XDG_RUNTIME_DIR?: string };
   /** The refusal the production daemon surfaced on a non-Btrfs state dir. */
   let forkError: Error | undefined;
 
@@ -192,11 +192,9 @@ describe("opencode-slipfork live world (M2.18)", () => {
       XDG_CACHE_HOME: process.env.XDG_CACHE_HOME,
       XDG_DATA_HOME: process.env.XDG_DATA_HOME,
       XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR,
-      BROWSER: process.env.BROWSER,
     };
     process.env.XDG_CACHE_HOME = join(scratch, "xdg-cache");
     process.env.XDG_DATA_HOME = join(scratch, "xdg-data");
-    process.env.BROWSER = "/bin/true";
     // The daemon runtime keeps living on disk under `<state_dir>/run`; the plugin itself never
     // reads the environment, the `slipfork` composition root does.
     delete process.env.XDG_RUNTIME_DIR;
@@ -258,12 +256,23 @@ describe("opencode-slipfork live world (M2.18)", () => {
     else process.env.XDG_DATA_HOME = savedEnv.XDG_DATA_HOME;
     if (savedEnv.XDG_RUNTIME_DIR === undefined) delete process.env.XDG_RUNTIME_DIR;
     else process.env.XDG_RUNTIME_DIR = savedEnv.XDG_RUNTIME_DIR;
-    if (savedEnv.BROWSER === undefined) delete process.env.BROWSER;
-    else process.env.BROWSER = savedEnv.BROWSER;
     rmSync(scratch, { recursive: true, force: true });
   }, 120_000);
 
   if (LIVE) {
+    test("piped human tables the plugin forwards stay ANSI-free and --json parses", () => {
+      // The daemon is up and the fork exists; a piped `list` renders the real `WorldTable` path
+      // (`TerminalUi` built off a non-TTY), so any stray escape byte or spinner would fail here.
+      const human = cli(["list"]);
+      expect(human).toContain("WORLD");
+      expect(human).toContain(FORK);
+      expect(human).not.toContain("\x1b");
+
+      const rows = JSON.parse(cli(["--json", "list"])) as SlipforkWorldRow[];
+      expect(Array.isArray(rows)).toBe(true);
+      expect(rows.some((row) => row.worktree === worktree)).toBe(true);
+    });
+
     test("forking through the plugin creates the CLI-owned worktree world", () => {
       expect(worktree).toBe(join(repo, ".worktrees", FORK));
       expect(existsSync(join(worktree, "snow.yml"))).toBe(true);
@@ -318,6 +327,7 @@ describe("opencode-slipfork live world (M2.18)", () => {
       expect(hint).toContain(FORK);
       expect(hint).toContain(origin);
       expect(hint).toContain(":5432");
+      expect(hint).not.toContain("\x1b");
     });
 
     test("the same world URL is reachable from the host through the daemon ingress", async () => {

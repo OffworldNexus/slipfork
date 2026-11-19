@@ -13,22 +13,9 @@
 
 use serde_json::Value;
 use slipfork_wire::control::{WorldState, WorldUpSummary};
-use slipfork_world::{CacheOutcome, WorldLineage};
 
-use crate::status::render_lineage;
-use crate::ui::TerminalUi;
-
-/// Width of the block's label column (`world     `, `worktree  `, `lineage   `).
-const LABEL_WIDTH: usize = 10;
-
-/// Width of the verbose table's node column (`rootfs      `, `postgres:18 `).
-const NODE_WIDTH: usize = 12;
-
-/// Width of the verbose table's digest column (a `<digest12>` or `-`).
-const DIGEST_WIDTH: usize = 14;
-
-/// Width of the verbose table's outcome column (`cached`, `rebuilt`, ...).
-const OUTCOME_WIDTH: usize = 13;
+use crate::status::{render_lineage, render_lineage_table};
+use crate::ui::{TerminalUi, block_label_width};
 
 /// The three verbs that print the actionable block.
 ///
@@ -56,19 +43,45 @@ pub struct Options {
 /// Render the whole human block: verdict, `world`, `app`, `worktree`, `cd`/verdict row, `next`,
 /// the one compact `lineage` line, and — only under `-v` — the `[resources]` and `[lineage]` detail.
 pub fn render(verb: Verb, summary: &WorldUpSummary, options: Options, ui: &TerminalUi) -> String {
+    let label_width = block_label_width(&["world", "app", "worktree", "cd", "next", "lineage"]);
     let mut out = String::new();
     if verb == Verb::Restart {
         out.push_str(&verdict(summary));
         out.push('\n');
     }
-    out.push_str(&row("world", &world_value(verb, summary, ui)));
-    out.push_str(&row("app", &ui.url(summary.origin.url())));
-    out.push_str(&row("worktree", &summary.worktree.display().to_string()));
+    out.push_str(&row(
+        ui,
+        "world",
+        &world_value(verb, summary, ui),
+        label_width,
+    ));
+    out.push_str(&row(ui, "app", &ui.url(summary.origin.url()), label_width));
+    out.push_str(&row(
+        ui,
+        "worktree",
+        &summary.worktree.display().to_string(),
+        label_width,
+    ));
     if verb == Verb::Fork {
-        out.push_str(&row("cd", &format!("cd {}", summary.worktree.display())));
+        out.push_str(&row(
+            ui,
+            "cd",
+            &format!("cd {}", summary.worktree.display()),
+            label_width,
+        ));
     }
-    out.push_str(&row("next", &next_line(summary, options.qualify_next)));
-    out.push_str(&row("lineage", &render_lineage(&summary.lineage, ui)));
+    out.push_str(&row(
+        ui,
+        "next",
+        &next_line(summary, options.qualify_next),
+        label_width,
+    ));
+    out.push_str(&row(
+        ui,
+        "lineage",
+        &render_lineage(&summary.lineage, ui),
+        label_width,
+    ));
     if options.verbose {
         for resource in &summary.resources {
             out.push_str(&format!(
@@ -76,7 +89,7 @@ pub fn render(verb: Verb, summary: &WorldUpSummary, options: Options, ui: &Termi
                 resource.id, resource.strategy, resource.resolved, resource.reason
             ));
         }
-        out.push_str(&detail(&summary.lineage, ui));
+        out.push_str(&render_lineage_table(&summary.lineage, ui));
     }
     out
 }
@@ -129,104 +142,9 @@ fn next_line(summary: &WorldUpSummary, qualify: bool) -> String {
         .join(" | ")
 }
 
-/// One `label     value` block row (`world     demo`, `lineage   rootfs ...`).
-fn row(label: &str, value: &str) -> String {
-    format!("{label:<LABEL_WIDTH$}{value}\n")
-}
-
-/// The `-v` per-node lineage table (`docs/design/dx-0.1.0-ux.md` §8.2).
-///
-/// One row per node in the same order as the compact line — `rootfs`, every service image, `seed`,
-/// `base` — with the digest, the four-word human outcome, and the measured milliseconds. An
-/// unknown fact is `-`; the wire words `hit`/`miss` never appear.
-fn detail(lineage: &WorldLineage, ui: &TerminalUi) -> String {
-    let mut out = String::new();
-    match &lineage.rootfs {
-        Some(rootfs) => {
-            out.push_str(&detail_row(
-                "rootfs",
-                &rootfs.digest,
-                cache_word(rootfs.cache),
-                rootfs.millis,
-                ui,
-            ));
-        }
-        None => out.push_str(&detail_row("rootfs", "-", "-", None, ui)),
-    }
-    for service in &lineage.services {
-        // A service-image row records no digest; only its cache verdict and duration.
-        out.push_str(&detail_row(
-            &service.id,
-            "-",
-            cache_word(service.cache),
-            service.millis,
-            ui,
-        ));
-    }
-    match &lineage.seed {
-        Some(seed) => out.push_str(&detail_row(
-            "seed",
-            seed.digest.as_deref().unwrap_or("-"),
-            seed_word(seed.rebuilt),
-            seed.millis,
-            ui,
-        )),
-        None => out.push_str(&detail_row("seed", "-", "-", None, ui)),
-    }
-    match &lineage.base {
-        Some(base) => out.push_str(&detail_row(
-            "base",
-            &base.key,
-            if base.millis.is_none() {
-                "reused"
-            } else {
-                "sealed"
-            },
-            base.millis,
-            ui,
-        )),
-        None => out.push_str(&detail_row("base", "-", "-", None, ui)),
-    }
-    out
-}
-
-/// One `[lineage]` detail row, columns aligned with the §8.2 transcript.
-fn detail_row(
-    node: &str,
-    digest: &str,
-    outcome: &str,
-    millis: Option<u64>,
-    ui: &TerminalUi,
-) -> String {
-    let duration = millis
-        .map(|millis| format!("{millis}ms"))
-        .unwrap_or_else(|| "-".to_owned());
-    let digest = if digest == "-" {
-        ui.secondary("-")
-    } else {
-        ui.digest(digest)
-    };
-    format!(
-        "[lineage]   {node:<NODE_WIDTH$} {} {outcome:<OUTCOME_WIDTH$} {duration}\n",
-        ui.pad(&digest, DIGEST_WIDTH)
-    )
-}
-
-/// Rootfs/service-image outcome: the human word for the daemon's cache verdict.
-fn cache_word(cache: CacheOutcome) -> &'static str {
-    match cache {
-        CacheOutcome::Hit => "cached",
-        CacheOutcome::Miss => "rebuilt",
-    }
-}
-
-/// Seed outcome: `cached` when the base was reused, `rebuilt` when it was restored, `-` unknown.
-fn seed_word(rebuilt: Option<bool>) -> &'static str {
-    match rebuilt {
-        Some(false) => "cached",
-        Some(true) => "rebuilt",
-        None => "-",
-    }
+/// One `label value` block row, padded to the measured label column (`world     demo`).
+fn row(ui: &TerminalUi, label: &str, value: &str, label_width: usize) -> String {
+    format!("{}{value}\n", ui.pad(label, label_width))
 }
 
 /// The `up` / `fork` / `restart` `--json` document: the daemon's [`WorldUpSummary`] as-is, plus the
@@ -255,7 +173,9 @@ mod tests {
     use std::path::PathBuf;
 
     use slipfork_wire::control::{ResourceSummary, WorldServiceSummary};
-    use slipfork_world::{BaseLineage, RootfsLineage, SeedLineage, ServiceImageLineage};
+    use slipfork_world::{
+        BaseLineage, CacheOutcome, RootfsLineage, SeedLineage, ServiceImageLineage, WorldLineage,
+    };
 
     use crate::status::world_next_commands;
     use slipfork_world::{LocalHostRoute, ProjectSlug, WorldOrigin, WorldTarget};
@@ -580,10 +500,13 @@ mod tests {
             &plain(),
         );
         for node in ["rootfs", "seed", "base"] {
-            assert!(
-                unknown.contains(&format!(
-                    "[lineage]   {node:<NODE_WIDTH$} -              -             -"
-                )),
+            let line = unknown
+                .lines()
+                .find(|line| line.starts_with(&format!("[lineage]   {node}")))
+                .unwrap_or_else(|| panic!("missing `{node}` row: {unknown}"));
+            assert_eq!(
+                line.split_whitespace().collect::<Vec<_>>(),
+                ["[lineage]", node, "-", "-", "-"],
                 "the unknown `{node}` fact is `-`: {unknown}"
             );
         }
@@ -668,7 +591,7 @@ mod tests {
             }),
         };
         let compact = render_lineage(&lineage, &plain());
-        let table = detail(&lineage, &plain());
+        let table = render_lineage_table(&lineage, &plain());
         for word in ["cached", "rebuilt", "reused"] {
             assert!(compact.contains(word), "compact: {compact}");
             assert!(table.contains(word), "detail: {table}");
@@ -679,5 +602,47 @@ mod tests {
                 "no wire enum"
             );
         }
+    }
+
+    #[test]
+    fn a_long_service_id_widens_the_verbose_node_column_without_shearing_columns() {
+        let mut long = summary(
+            "demo",
+            WorldState::Running,
+            true,
+            &["api"],
+            lineage(Some(&digest("a1")), None, None),
+        );
+        long.lineage.services = vec![ServiceImageLineage {
+            id: "pg_clusters.primary_psql".to_owned(),
+            cache: CacheOutcome::Hit,
+            millis: None,
+        }];
+        let block = render(
+            Verb::Up,
+            &long,
+            Options {
+                qualify_next: false,
+                verbose: true,
+            },
+            &plain(),
+        );
+
+        let node_width = "pg_clusters.primary_psql".len();
+        let digest_column = "[lineage]   ".len() + node_width + 1;
+        let rootfs = block
+            .lines()
+            .find(|line| line.starts_with("[lineage]   rootfs"))
+            .expect("rootfs row");
+        let service = block
+            .lines()
+            .find(|line| line.starts_with("[lineage]") && line.contains("pg_clusters.primary_psql"))
+            .expect("service row");
+        assert_eq!(rootfs.find("a10000000000"), Some(digest_column), "{block}");
+        assert_eq!(service.find("- "), Some(digest_column), "{block}");
+        assert!(
+            block.starts_with("world     demo (running, changed)"),
+            "the label column keeps its documented floor: {block}"
+        );
     }
 }

@@ -9,6 +9,7 @@ use slipfork_edge::{INGRESS_ADDRS, UnitSpec};
 
 use crate::daemon_handover::ManagedUnit;
 use crate::layout::Layout;
+use crate::ui::column_width;
 use crate::user::ResolvedAccount;
 
 /// The three absolute file paths one install writes, derived from the installer's directories.
@@ -83,15 +84,25 @@ impl InstallReport {
                 self.paths.apparmor.display()
             );
         }
+        // Size the status column for the widest legal outcome, so every transcript aligns without
+        // a literal width and a future longer status cannot shear the path column.
+        let status_width = column_width(
+            0,
+            [FileStatus::Wrote.as_str(), FileStatus::Unchanged.as_str()],
+        );
         let mut text = String::new();
         for (path, status) in self.rows() {
-            text.push_str(&format!("{:<9} {}\n", status.as_str(), path.display()));
+            text.push_str(&format!(
+                "{:<status_width$} {}\n",
+                status.as_str(),
+                path.display()
+            ));
         }
         text.push_str(&format!(
-            "enabled   slipforkd.socket + slipforkd.service as {}, ingress 127.0.0.1:80 + [::1]:80\n",
-            self.user
+            "{:<status_width$} slipforkd.socket + slipforkd.service as {}, ingress 127.0.0.1:80 + [::1]:80\n",
+            "enabled", self.user
         ));
-        text.push_str("next      slipfork up\n");
+        text.push_str(&format!("{:<status_width$} slipfork up\n", "next"));
         text
     }
 }

@@ -19,9 +19,11 @@ use crate::cli::implemented_commands;
 use crate::ui::TerminalUi;
 
 mod lineage;
+mod lineage_table;
 mod table;
 
 pub(crate) use lineage::render_lineage;
+pub(crate) use lineage_table::render as render_lineage_table;
 pub use table::WorldTable;
 
 /// The `next` commands of one world state (`docs/design/dx-0.1.0-ux.md` §1 is the only table).

@@ -16,6 +16,10 @@ pub const SHORT_DIGEST: usize = 12;
 /// Longest child line the spinner echoes (a `docker` step line is often a full command).
 const DETAIL_WIDTH: usize = 120;
 
+/// Narrowest block-label column shared by the `up`/`fork`/`restart` and `ps` transcripts
+/// (`world     `, `lineage   `); a longer label widens it instead of shearing the row.
+const MIN_BLOCK_LABEL: usize = 10;
+
 /// The terminal capability snapshot the composition root takes exactly once.
 ///
 /// `color` is the developer's preference (`NO_COLOR` absent); [`TerminalUi::new`] additionally
@@ -243,6 +247,21 @@ pub fn visible_width(text: &str) -> usize {
     width
 }
 
+/// The widest visible cell in `cells`, never narrower than `floor`.
+///
+/// Escape sequences never count as columns, so a colored cell and its plain twin measure the same;
+/// a cell longer than the floor widens its column instead of shearing the row.
+#[must_use]
+pub fn column_width<'a>(floor: usize, cells: impl IntoIterator<Item = &'a str>) -> usize {
+    cells.into_iter().map(visible_width).fold(floor, usize::max)
+}
+
+/// The one block-label column width shared by the `up`/`fork`/`restart` and `ps` transcripts.
+#[must_use]
+pub fn block_label_width(labels: &[&str]) -> usize {
+    column_width(MIN_BLOCK_LABEL, labels.iter().copied())
+}
+
 /// Drop the default `:80` from a rendered origin (`http://demo.localhost:80` becomes
 /// `http://demo.localhost`); every other port is a real port and stays.
 fn without_default_port(url: &str) -> String {
@@ -360,8 +379,8 @@ mod tests {
         let long = "x".repeat(400);
         ui.progress(2, 4, "docker pull", Some(&long));
         assert_eq!(
-            ui.spinner.message().chars().count(),
-            "[2/4] docker pull — ".chars().count() + DETAIL_WIDTH
+            visible_width(&ui.spinner.message()),
+            visible_width("[2/4] docker pull — ") + DETAIL_WIDTH
         );
         assert!(ui.spinner.message().ends_with('…'));
     }
@@ -433,5 +452,14 @@ mod tests {
         assert_eq!(visible_width("\u{1b}[1;36mdemo\u{1b}[0m"), 4);
         assert_eq!(visible_width("plain"), 5);
         assert_eq!(visible_width(""), 0);
+    }
+
+    #[test]
+    fn column_width_measures_visible_cells_and_keeps_the_floor() {
+        assert_eq!(column_width(4, ["ab", "abcd"]), 4);
+        assert_eq!(column_width(4, ["abcdef"]), 6);
+        let colored = "\u{1b}[1;36mdemo:feat-ux\u{1b}[0m";
+        assert_eq!(column_width(0, [colored, "short"]), "demo:feat-ux".len());
+        assert_eq!(column_width(10, std::iter::empty::<&str>()), 10);
     }
 }

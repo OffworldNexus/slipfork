@@ -7,7 +7,7 @@ use serde_json::json;
 use slipfork_edge::DaemonControl;
 use slipfork_wire::control::{ForwardRequest, ForwardSummary};
 
-use slipfork::ui::TerminalUi;
+use slipfork::ui::{TerminalUi, column_width};
 
 use crate::CliApp;
 use crate::commands::control::connect;
@@ -52,12 +52,7 @@ fn print_forward(json: bool, summary: &ForwardSummary, ui: &TerminalUi) {
             })
         );
     } else {
-        let id_width = summary
-            .targets
-            .iter()
-            .map(|target| target.id.chars().count())
-            .max()
-            .unwrap_or(0);
+        let id_width = column_width(0, summary.targets.iter().map(|target| target.id.as_str()));
         for target in &summary.targets {
             println!(
                 "[forward] {} {} ({})",

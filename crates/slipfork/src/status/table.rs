@@ -5,7 +5,7 @@ use std::collections::BTreeSet;
 use slipfork_wire::control::WorldSummary;
 
 use super::{next_hint, render_lineage, world_state_label};
-use crate::ui::{TerminalUi, visible_width};
+use crate::ui::{TerminalUi, column_width};
 
 /// Narrowest world-id column; a longer id widens the column instead of shifting the rest.
 const MIN_WORLD_COLUMN: usize = 16;
@@ -42,22 +42,20 @@ impl<'a> WorldTable<'a> {
     /// The world-id column width: the widest id, never narrower than [`MIN_WORLD_COLUMN`].
     #[must_use]
     pub fn world_column(&self) -> usize {
-        self.worlds
-            .iter()
-            .map(|world| world.world.chars().count())
-            .max()
-            .unwrap_or(MIN_WORLD_COLUMN)
-            .max(MIN_WORLD_COLUMN)
+        column_width(
+            MIN_WORLD_COLUMN,
+            self.worlds.iter().map(|world| world.world.as_str()),
+        )
     }
 
     /// The origin column width: the widest rendered URL, never narrower than `ORIGIN`.
     fn origin_column(&self) -> usize {
-        self.worlds
+        let urls: Vec<String> = self
+            .worlds
             .iter()
-            .map(|world| visible_width(&self.ui.url(world.origin.url())))
-            .max()
-            .unwrap_or(MIN_ORIGIN_COLUMN)
-            .max(MIN_ORIGIN_COLUMN)
+            .map(|world| self.ui.url(world.origin.url()))
+            .collect();
+        column_width(MIN_ORIGIN_COLUMN, urls.iter().map(String::as_str))
     }
 
     /// The `list` header row.
@@ -163,17 +161,13 @@ mod tests {
         ];
         let table = WorldTable::new(&worlds, &ui);
 
-        let widest_id = worlds
-            .iter()
-            .map(|world| world.world.chars().count())
-            .max()
-            .expect("a world");
+        let widest_id = column_width(0, worlds.iter().map(|world| world.world.as_str()));
         assert_eq!(table.world_column(), widest_id);
-        let widest_origin = worlds
+        let urls: Vec<String> = worlds
             .iter()
-            .map(|world| visible_width(&ui.url(world.origin.url())))
-            .max()
-            .expect("an origin");
+            .map(|world| ui.url(world.origin.url()))
+            .collect();
+        let widest_origin = column_width(0, urls.iter().map(String::as_str));
         assert!(widest_origin > MIN_ORIGIN_COLUMN);
         assert_eq!(table.origin_column(), widest_origin);
 

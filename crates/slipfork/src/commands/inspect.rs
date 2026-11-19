@@ -88,7 +88,10 @@ pub(crate) fn open(app: &CliApp, world: Option<String>, remote: bool) -> Result<
                 render_json(&slipfork::open::json(&selection, Some(&recipe)))?
             );
         } else {
-            print!("{}", slipfork::open::render_remote(&selection, &recipe));
+            print!(
+                "{}",
+                slipfork::open::render_remote(&selection, &recipe, &app.terminal)
+            );
         }
         return Ok(ExitCode::SUCCESS);
     }

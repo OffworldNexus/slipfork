@@ -1651,3 +1651,11 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-19T01:48 [M3.30.3.2] (lead) status review -> ready: triad: 3 BLOCKER (progress never started, no child-group stop/timeout) + MAJORs, one pass
 - 2026-11-19T01:48 [M3.30.3.2] (lead) attempt 2/3 started
 - 2026-11-19T01:53 [M3.30.3.2] (lead) status ready -> done
+- 2026-11-19T01:53 [M3.30.3.3] (lead) status ready -> active
+- 2026-11-19T01:53 [M3.30.3.3] (lead) attempt 1/3 started
+- 2026-11-19T01:53 [M3.30.3.3] (lead) base 96a87f319ca6ebf793bcee413c698f1755dc4d91
+- 2026-11-19T01:57 [M3.30.3.3] (lead) status active -> review
+- 2026-11-19T01:58 [M3.30.3.3] (lead) status review -> ready: triad: 1 BLOCKER (hand-rolled width) + 2 MAJOR (width owner, plugin purity test) — one pass
+- 2026-11-19T01:58 [M3.30.3.3] (lead) attempt 2/3 started
+- 2026-11-19T02:02 [M3.30.3.3] (lead) status ready -> done
+- 2026-11-19T02:02 [M3.30.3] (lead) status ready -> done: 3/3 children done: palette, streamed progress, dynamic tables

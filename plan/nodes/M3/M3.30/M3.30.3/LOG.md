@@ -15,3 +15,7 @@ carry-over: daemon install systemctl/apparmor legs block silently via .output();
 ## 2026-11-19T01:25 [lead]
 
 edited fields
+
+## 2026-11-19T02:02 [lead]
+
+status ready -> done: 3/3 children done: palette, streamed progress, dynamic tables
