@@ -64,3 +64,11 @@ OSPP endpoint has no durable source of truth in 0.1.0. 'slipforkd --ospp-endpoin
 
 **Answer:**
 
+## H-008 [open] [release-gate] (node M3)
+
+- asked: 2026-11-19T07:17 by conductor
+
+Review & merge Release 0.1.0 PR (https://github.com/OffworldNexus/slipfork/pull/2, superseding #1) into develop; live demo running on http://demo.localhost (:80) on 165.232.86.174.
+
+**Answer:**
+
