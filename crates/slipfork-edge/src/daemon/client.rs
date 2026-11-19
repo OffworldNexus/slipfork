@@ -157,7 +157,7 @@ impl DaemonControl for DaemonControlClient {
 
     fn restart(
         &self,
-        req: &WorldSelector,
+        req: &slipfork_wire::control::RestartRequest,
         on_event: &mut dyn FnMut(BootEvent),
     ) -> Result<WorldUpSummary, EdgeError> {
         match self.exchange(

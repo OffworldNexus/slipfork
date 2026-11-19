@@ -79,7 +79,7 @@ pub trait DaemonControl: Send + Sync {
     /// with [`DaemonErrorKind::NotRunning`] and one line naming `slipfork up`.
     fn restart(
         &self,
-        req: &WorldSelector,
+        req: &slipfork_wire::control::RestartRequest,
         on_event: &mut dyn FnMut(BootEvent),
     ) -> Result<WorldUpSummary, EdgeError>;
 
