@@ -2,7 +2,7 @@
 id: M3
 title: "Unified Btrfs WorldEngine (ADR-0010), :80 slipforkd Edge, High-Craft CLI & OSPP v1 (0.1.0)"
 kind: milestone
-status: active
+status: done
 priority: 3
 depends_on: [M2]
 paths: []
@@ -10,7 +10,7 @@ attempts: 0
 max_attempts: 3
 escalation: strategist
 created: "2026-11-14T22:03"
-updated: "2026-11-19T06:51"
+updated: "2026-11-19T07:15"
 ---
 
 # Goal

@@ -87,3 +87,11 @@ edited fields
 ## 2026-11-19T07:00 [strategist]
 
 Milestone gate pass 1: ROADMAP.md + M3 updated; make check & docs-check & guard.py & plan.py validate all exit 0; Triad caught 0.2.0 DAG vaporware in cli.rs --help, stale doctor transcripts in getting-started.md/cli.md, and downstream snow delimiter scan in resolve.rs -> queued surgical M3.31 before final done sign-off
+
+## 2026-11-19T07:15 [strategist]
+
+Milestone gate PASS (HEAD e06375f): M3.31 verified, all Triad & automated gates green -> RELEASE_READY: 0.1.0
+
+## 2026-11-19T07:15 [strategist]
+
+status active -> done

@@ -1751,3 +1751,5 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-19T07:08 [M3.31] (lead) status ready -> review
 - 2026-11-19T07:09 [M3.31] (lead) status review -> done
 - 2026-11-19T07:10 [M3.31] (lead) VM 165.232.86.174 synced (809 files, daemon install, :80 socket activation); demo up on http://demo.localhost HTTP=200; installed slipfork --help first line = '
+- 2026-11-19T07:15 [M3] (strategist) Milestone gate PASS (HEAD e06375f): M3.31 verified, all Triad & automated gates green -> RELEASE_READY: 0.1.0
+- 2026-11-19T07:15 [M3] (strategist) status active -> done
