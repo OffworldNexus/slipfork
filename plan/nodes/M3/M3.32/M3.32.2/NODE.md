@@ -2,7 +2,7 @@
 id: M3.32.2
 title: "Per-service crun pod engine: shared userns/netns/ipcns, Btrfs volume CoW submounts & direct execve argv"
 kind: epic
-status: active
+status: done
 priority: 3
 depends_on: [M3.32.1]
 paths:
@@ -16,7 +16,7 @@ attempts: 0
 max_attempts: 3
 escalation: none
 created: "2026-11-19T13:02"
-updated: "2026-11-19T13:15"
+updated: "2026-11-19T22:58"
 ---
 
 # Goal

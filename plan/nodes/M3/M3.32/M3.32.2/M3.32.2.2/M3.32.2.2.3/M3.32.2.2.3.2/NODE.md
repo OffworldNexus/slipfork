@@ -2,16 +2,16 @@
 id: M3.32.2.2.3.2
 title: "PodBoot/ServicePod daemon boot on EvaluatedFork with per-service exec targets"
 kind: task
-status: ready
+status: done
 owner: implementer
 priority: 2
 depends_on: [M3.32.2.2.3.1, M3.32.3]
 paths: ["crates/slipfork/**", Cargo.toml, Cargo.lock]
-attempts: 0
+attempts: 2
 max_attempts: 3
 escalation: none
 created: "2026-11-19T19:03"
-updated: "2026-11-19T19:03"
+updated: "2026-11-19T22:40"
 ---
 
 # Goal

@@ -97,8 +97,13 @@
     { "action": "external_directory", "resource": "*", "effect": "deny" },
     { "action": "external_directory", "resource": "~/offworld-nexus/tunnel-weaver/*", "effect": "allow" },
     { "action": "external_directory", "resource": "~/offworld-nexus/blastit/*", "effect": "allow" },
+    // Read-only packaging-parity reference (native distro packages + systemd units).
+    { "action": "external_directory", "resource": "~/offworld-nexus/tpmd/*", "effect": "allow" },
+    { "action": "external_directory", "resource": "~/offworld-nexus/tpmd/**", "effect": "allow" },
     { "action": "edit", "resource": "~/offworld-nexus/tunnel-weaver/*", "effect": "deny" },
     { "action": "edit", "resource": "~/offworld-nexus/blastit/*", "effect": "deny" },
+    { "action": "edit", "resource": "~/offworld-nexus/tpmd/*", "effect": "deny" },
+    { "action": "edit", "resource": "~/offworld-nexus/tpmd/**", "effect": "deny" },
     { "action": "external_directory", "resource": "/tmp/opencode/*", "effect": "allow" },
     { "action": "external_directory", "resource": "~/.cache/*", "effect": "allow" },
     { "action": "external_directory", "resource": "~/.cargo/*", "effect": "allow" },

@@ -8,9 +8,11 @@
 Inspects tracked + staged + untracked non-ignored files and refuses:
 1. Any `.env` or `.env.*` secret file (only `.env.example` allowed).
 2. Any file > 5 MiB or compiled archive/binary artefact outside `tests/golden/`.
-3. Any `[derived]`, `[guessed]`, or `[hallucinated]` marker inside `docs/` specs/designs/research
+3. Any `[derived]`, `[guessed]`, or `[hallucinated]` marker inside `specs/` or `docs/`
    (learned from an unrelated external audit: missing external facts must halt in `HUMAN.md`,
    never be invented!).
+
+The guard never assumes `docs/` still exists: the clean-sheet tree carries `specs/` first.
 """
 
 from __future__ import annotations
@@ -38,6 +40,7 @@ BANNED_EXTENSIONS = (
 GOLDEN_FOLDER = ("tests", "golden")
 ALLOWED_ENV_FILES = frozenset({".env.example"})
 SPEC_GUESS_RE = re.compile(r"\[(?:derived|guessed|hallucinated)\]", re.IGNORECASE)
+SPEC_ROOTS = frozenset({"specs", "docs"})
 
 EXIT_OK = 0
 EXIT_VIOLATIONS = 1
@@ -116,13 +119,24 @@ def banned_extension(path: PurePosixPath) -> str | None:
     return None
 
 
+def _is_spec_markdown(path: PurePosixPath) -> bool:
+    return (
+        bool(path.parts)
+        and path.parts[0] in SPEC_ROOTS
+        and path.suffix.lower() == ".md"
+    )
+
+
 def check_file(
     root: Path, path: PurePosixPath, size: int | None
 ) -> tuple[Violation, ...]:
     violations: list[Violation] = []
     if is_secret_env(path):
         violations.append(
-            Violation(str(path), "secret file: commit .env.example or snow.yml instead")
+            Violation(
+                str(path),
+                "secret file: commit .env.example or a Forkfile instead",
+            )
         )
     ext = banned_extension(path)
     if ext is not None:
@@ -146,20 +160,14 @@ def check_file(
                 str(path), f"{_mib(size)} exceeds {_mib(MAX_FILE_BYTES)} hard limit"
             )
         )
-    if (
-        path.parts
-        and path.parts[0] == "docs"
-        and path.parts != ("docs", "knowledge", "LESSONS.md")
-        and path.suffix.lower() == ".md"
-        and (root / path).is_file()
-    ):
+    if _is_spec_markdown(path) and (root / path).is_file():
         text = (root / path).read_text(encoding="utf-8", errors="replace")
         match = SPEC_GUESS_RE.search(text)
         if match is not None:
             violations.append(
                 Violation(
                     str(path),
-                    f"forbidden {match.group(0)!r} guess marker in docs — block in HUMAN.md instead of inventing specs",
+                    f"forbidden {match.group(0)!r} guess marker in specs — block in HUMAN.md instead of inventing specs",
                 )
             )
     return tuple(violations)

@@ -14,10 +14,7 @@
 **/node_modules/
 /mutants*/
 
-# Zed extension build output
-editors/zed/target/
-
-# Secrets (never commit real .env files; commit .env.example or snow.yml)
+# Secrets (never commit real .env files; commit .env.example or a Forkfile)
 .env
 .env.*
 !.env.example
@@ -26,4 +23,3 @@ editors/zed/target/
 *.swp
 *~
 .DS_Store
-/poc/.bench-scratch/

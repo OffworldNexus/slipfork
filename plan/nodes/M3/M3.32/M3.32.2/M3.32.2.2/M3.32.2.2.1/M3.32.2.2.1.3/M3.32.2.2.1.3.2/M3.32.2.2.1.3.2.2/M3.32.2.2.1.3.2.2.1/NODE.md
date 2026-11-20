@@ -2,7 +2,7 @@
 id: M3.32.2.2.1.3.2.2.1
 title: Component ServicePod path in engine + journey rebase off WorldProcess
 kind: task
-status: ready
+status: done
 owner: implementer
 priority: 2
 depends_on: [M3.32.2.2.3]
@@ -13,11 +13,11 @@ paths:
   - Makefile
   - Cargo.toml
   - Cargo.lock
-attempts: 1
+attempts: 3
 max_attempts: 3
 escalation: none
 created: "2026-11-19T18:43"
-updated: "2026-11-19T18:44"
+updated: "2026-11-19T22:49"
 ---
 
 # Goal

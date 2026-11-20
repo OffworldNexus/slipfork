@@ -4,7 +4,9 @@
 
 Slipfork is verified **end-to-end through real developer workflows**: real Btrfs filesystems and subvolumes, real `crun` OCI containers, real native OCI pulls and `Dockerfile` builds, real PostgreSQL, Redis, and S3 services, real full-stack web applications, and the real `slipfork` binary. Every test verifies both the **promised developer experience** and the **containment or fail-closed safety boundary** when something goes wrong.
 
-Focused non-E2E tests exist **only** for self-contained language, protocol, and editor rules whose edge cases are clearer to verify directly: `# forkfile: 0.1` header validation, `Forkfile` grammar and whole-file type checking, `@<tool>` / `before-start` DAG construction, secret-taint propagation, `OSPP v1` message framing, the language server, and the Zed extension. **No test exists unless it protects one of the user stories below.**
+Focused non-E2E tests exist **only** for self-contained language, protocol, and editor rules whose edge cases are clearer to verify directly: `# forkfile: 0.1` header validation, `Forkfile` grammar and whole-file type checking, `@<tool>` / `before-start` DAG construction, secret-taint propagation, Merkle input-hash stamping, `OSPP v1` message framing, the language server, and the Zed extension. **No test exists unless it protects one of the user stories below.**
+
+**Harness exceptions:** zero mocks — no `Mock*`, `Fake*`, `Stub*`, `Recording*`, in-memory vault, or `TestTreeDriver` shims; the only stand-in is the minimal `127.0.0.1:0` loopback OSPP reference server, and everything else uses real disk, subprocesses, and `crun` pods. Slow daemon/world boots consolidate into one journey per workflow, reaping `-pgid` process groups and Btrfs snapshots, and 0%-covered fallback code is deleted rather than tested.
 
 ---
 
@@ -24,9 +26,13 @@ Focused non-E2E tests exist **only** for self-contained language, protocol, and 
 ## 3. Installation, Btrfs Readiness & Migration
 
 - **Single-binary install and `:80` `.localhost` ingress:**
-  Install `slipfork` and `sudo slipfork daemon install` on supported Linux distributions, routing port-less `http://<world>.localhost`, domain/CDN subdomains, and WebSocket traffic through the socket-activated `:80` proxy while keeping every world under the single per-user daemon with zero root/user split-brain.
+  Install `slipfork`, run `slipfork daemon install` for the per-user unit, and `sudo slipfork daemon install --ingress` for the system `:80` socket and AppArmor profile on supported Linux distributions, routing port-less `http://<world>.localhost`, domain/CDN subdomains, and WebSocket traffic through the socket-activated `:80` proxy while keeping every world under the single per-user daemon with zero root/user split-brain.
 - **Transparent Btrfs setup and daemon-free `slipfork doctor`:**
   Convert a plain git checkout on a Btrfs drive into a Btrfs subvolume automatically on first `slipfork up`, and surface clear `✓ Ready` / `✗` remedies in `slipfork doctor` across the only three host requirements: Btrfs filesystem support, unprivileged namespaces / AppArmor, and `crun` + `:80` ingress.
+- **Native packages across every Linux distribution (`x86_64` / `aarch64`):**
+  Install `.deb`, `.rpm`, `.pkg.tar.zst` (plus AUR `PKGBUILD`), and `.apk` from the signed repositories, and the portable `gnu` / `musl` `.tar.gz` archives, on Debian/Ubuntu, Fedora/RHEL/Rocky/Alma/openSUSE, Arch, and Alpine — each verified by its own package manager, by `scripts/check-portable-elf.sh` (measured `GLIBC_X.Y` floor, no `NEEDED libpython*`, no build-host `RUNPATH`), and by booting one world after install.
+- **Universal `docs/install.sh` and `.localhost` `:80` ingress:**
+  Take the native signed-repository path when a package manager and usable `sudo` exist (Cloudsmith primary, Forgejo mirror), and the SHA-256-verified standalone archive path for `--user`, `--prefix`, `--develop`, musl hosts, or a missing package manager — then confirm the OpenRC/systemd ingress still answers port-less `http://<world>.localhost` and WebSocket traffic.
 - **Legacy `snow.yml` migration (`slipfork migrate`):**
   Convert real-world `snow.yml` manifests into clean, canonically formatted `# forkfile: 0.1` `Forkfile`s with nested `image` scopes and `route` / `domain` rules that pass whole-file checking and boot without manual edits.
 

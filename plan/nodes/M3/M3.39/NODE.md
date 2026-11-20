@@ -30,3 +30,4 @@ Implement `specs/03-under-the-hood.md` §1–§3 cleanly in `crates/slipfork-eng
 # Acceptance
 
 - `make check` exits `0` cleanly on the local XFS host, and real Btrfs kernel/OCI/`Dockerfile`/pod/fork tests are wired for live execution on `165.232.86.174` and loop-backed Btrfs GHA runners with zero `Mock*`/`Fake*`/`TestTreeDriver` shims.
+- Protected `crates/*/tests/critical_btrfs_live.rs` and `crates/slipfork/tests/critical_world_journey.rs` run against real Btrfs + `crun` and fail closed on a non-Btrfs host.

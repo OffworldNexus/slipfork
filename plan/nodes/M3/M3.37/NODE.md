@@ -2,7 +2,7 @@
 id: M3.37
 title: "Scorched-earth clean-sheet wipe: keep only specs/ & agentic setup (AGENTS.md, TESTING_PLAN.md, .opencode/, plan/, tools/)"
 kind: task
-status: ready
+status: done
 owner: implementer
 priority: 3
 depends_on: []
@@ -32,11 +32,11 @@ paths:
   - "packages/**"
   - "poc/**"
   - "support/**"
-attempts: 0
+attempts: 1
 max_attempts: 3
 escalation: none
 created: "2026-11-21T00:44"
-updated: "2026-11-21T00:44"
+updated: "2026-11-21T00:57"
 ---
 
 # Goal

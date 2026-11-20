@@ -2,7 +2,7 @@
 id: M3.32.2.2.1
 title: "slipfork-world pod port surface + slipfork-engine shared-ns init & per-service CrunSurface bundles"
 kind: epic
-status: active
+status: done
 priority: 3
 depends_on: []
 paths: ["crates/slipfork-world/**", "crates/slipfork-engine/**", Cargo.toml, Cargo.lock]
@@ -10,7 +10,7 @@ attempts: 0
 max_attempts: 3
 escalation: none
 created: "2026-11-19T13:24"
-updated: "2026-11-19T13:26"
+updated: "2026-11-19T22:58"
 ---
 
 # Goal

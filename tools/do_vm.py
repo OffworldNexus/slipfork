@@ -3,13 +3,13 @@
 # requires-python = ">=3.12"
 # dependencies = []
 # ///
-"""DigitalOcean dev-VM harness: Btrfs volume, docker/Rust, `:80` socket activation (`M3.16`).
+"""DigitalOcean dev-VM harness: Btrfs volume, Docker-free/Rust, `:80` socket activation.
 
 Boots one disposable Ubuntu 24.04 droplet, attaches a 100 GiB block-storage volume formatted
 **Btrfs** at `/var/lib/slipfork` (`user_subvol_rm_allowed,noatime`), provisions `btrfs-progs`,
-`docker.io`/`docker-buildx`, and a Rust toolchain, links the account's `~/.cache` onto that
+AppArmor, and a Rust toolchain (no Docker), links the account's `~/.cache` onto that
 volume, syncs the working tree, builds the product binaries (named by `cargo metadata`) and
-installs them into `/usr/local/bin`, and runs `slipfork daemon install` so `slipforkd.socket`
+installs them into `/usr/local/bin`, and runs `slipfork daemon install` so `slipfork.socket`
 owns `:80` (the `userns` AppArmor profile and the control-socket handover are rendered by that
 product command only; this harness never writes either). `sync` also stamps the tracked
 `support/demo` template at `/home/slipfork/demo` once.
@@ -37,12 +37,12 @@ keeps it unless `--delete-volume` is given.
 product binaries (their names come from `cargo metadata`, in the `debug` profile), installs them
 into `/usr/local/bin`, and runs `slipfork daemon install --user slipfork --bin-dir
 /usr/local/bin --bin-dir <tree>/target/{debug,release}` — the single writer of the units and the
-single owner of the socket handover — before asserting `systemctl is-active slipforkd.socket`.
+single owner of the socket handover — before asserting `systemctl is-active slipfork.socket`.
 Both `sync` and `test` therefore stop the installed units and hand the control socket over from
-any running `slipforkd`, so every running world's processes stop until the next `slipfork up`. A
+any running `slipfork daemon`, so every running world's processes stop until the next `slipfork up`. A
 missing binary fails closed naming `tools/do_vm.py test`.
 
-Design notes: `docs/design/do-vm-harness.md`. This is a test harness, never a supported
+Design notes: `specs/03-under-the-hood.md`. This is a test harness, never a supported
 deployment path.
 """
 
@@ -101,9 +101,7 @@ PRODUCT_BUILD_PACKAGES = ("slipfork", "slipfork-engine")
 # The exact binary targets those packages must provide (asserted against `cargo metadata`).
 PRODUCT_BINARIES = (
     "slipfork",
-    "slipforkd",
     "slipfork-world-init",
-    "git-remote-slipfork",
 )
 BUILD_PROFILE = "debug"
 # `cargo metadata --format-version 1 --no-deps` is the one source of the binary target list.
@@ -128,8 +126,7 @@ FSTAB = "/etc/fstab"
 UDEV_AUTOMOUNT_RULE = "/etc/udev/rules.d/99-digitalocean-automount.rules"
 UNIT_DIRS = ("/etc/systemd/system", "/run/systemd/system")
 PACKAGES = (
-    "btrfs-progs docker.io docker-buildx openssh-server apparmor curl "
-    "ca-certificates build-essential git"
+    "btrfs-progs openssh-server apparmor curl ca-certificates build-essential git"
 )
 RUSTUP_VERSION = "1.29.3"
 RUSTUP_INIT_URL = (
@@ -140,7 +137,7 @@ RUSTUP_INIT_SHA256 = "b1c8cb14e30889e7e2999e6b69e62d9e9b9ffc0f4df8180564d306d968
 RUST_MIN_VERSION = "1.94.0"
 # Every entry is `(cargo package, integration test binary, repo-relative file, owning node)`.
 # The list runs one at a time (`--test-threads=1`): each suite boots real worlds through the
-# production `slipforkd`, so the VM exercises the Btrfs-only positive halves of the CLI suites too.
+# production daemon, so the VM exercises the Btrfs-only positive halves of the CLI suites too.
 SUITES = (
     (
         "slipfork-engine",
@@ -573,9 +570,9 @@ fi
 
 
 def render_product_install(config: ProvisionConfig = PROVISION) -> str:
-    """Install the four binaries, release a daemon from an older build, then hand `:80` over.
+    """Install the product binaries, release a daemon from an older build, then hand `:80` over.
 
-    `slipfork daemon install` is the only writer of `slipforkd.{socket,service}` and of
+    `slipfork daemon install` is the only writer of `slipfork.{socket,service}` and of
     `/etc/apparmor.d/slipfork`; this script never renders a unit or a profile body, it installs
     the executables the AppArmor attachment names, and then asserts the product's own verbs
     took effect. `slipfork daemon install` owns the socket handover (any holder, including a
@@ -616,13 +613,13 @@ for _binary in {" ".join(config.binaries)}; do
 {installs}
 done
 {daemon_install}
-if _socket_state=$(systemctl is-active slipforkd.socket); then
+if _socket_state=$(systemctl is-active slipfork.socket); then
   _socket_rc=0
 else
   _socket_rc=$?
 fi
 if [ "$_socket_rc" -ne 0 ] || [ "$_socket_state" != "active" ]; then
-  echo "slipfork: systemctl is-active slipforkd.socket reported '${{_socket_state:-no output}}' (rc $_socket_rc), not active" >&2
+  echo "slipfork: systemctl is-active slipfork.socket reported '${{_socket_state:-no output}}' (rc $_socket_rc), not active" >&2
   exit 1
 fi
 if _aa_status=$(aa-status); then
@@ -730,8 +727,6 @@ fi
 if ! id -u {_q(config.remote_user)} >/dev/null 2>&1; then
   useradd --create-home --shell /bin/bash {_q(config.remote_user)}
 fi
-usermod -aG docker {_q(config.remote_user)}
-
 {render_volume_discovery(config)}
 {render_automount_teardown(config)}
 {render_volume_signature_step(config)}
@@ -829,8 +824,10 @@ if [ "$(printf '%s\\n%s\\n' "{config.rust_min}" "$_cargo_number" | sort -V | hea
   exit 1
 fi
 
-systemctl enable --now docker
-docker buildx version
+if command -v docker >/dev/null 2>&1; then
+  echo "slipfork: docker is installed; the lab VM must prove the Docker-free path" >&2
+  exit 1
+fi
 apparmor_parser --version
 
 # One harness-owned login banner. The AppArmor `userns` profile is not rendered here: it is a
@@ -1757,7 +1754,7 @@ def _build_product(droplet: Droplet, known_hosts: Path, identity: Identity) -> N
 
 
 def _install_product(droplet: Droplet, known_hosts: Path, identity: Identity) -> None:
-    """Install the four binaries, then let `slipfork daemon install` own `:80`."""
+    """Install the product binaries, then let `slipfork daemon install` own `:80`."""
     _step_failed(
         "product install",
         _run_remote_script(
@@ -2274,12 +2271,12 @@ def cmd_test(args: argparse.Namespace) -> int:
         )
 
     docker = _run(
-        ssh_argv(droplet, known_hosts, identity, suite_command("docker info")),
+        ssh_argv(droplet, known_hosts, identity, suite_command("command -v docker")),
         check=False,
     )
-    if docker.returncode != 0:
+    if docker.returncode == 0:
         raise HarnessError(
-            f"docker did not answer `docker info` as {REMOTE_USER}: {_detail(docker)}"
+            f"docker is installed on {droplet.ip}; the lab VM must prove the Docker-free path"
         )
 
     _build_product(droplet, known_hosts, identity)
@@ -2411,9 +2408,9 @@ def build_parser(home: Path) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="tools/do_vm.py",
         description=(
-            "DigitalOcean dev-VM harness: Btrfs volume, docker/Rust, :80 socket activation."
+            "DigitalOcean dev-VM harness: Btrfs volume, Docker-free/Rust, :80 socket activation."
         ),
-        epilog="See docs/design/do-vm-harness.md.",
+        epilog="See specs/03-under-the-hood.md.",
     )
     commands = parser.add_subparsers(dest="command", required=True, metavar="command")
 
@@ -2472,9 +2469,9 @@ def build_parser(home: Path) -> argparse.ArgumentParser:
         description=(
             "Replace the remote tree, seed support/demo once, build the product binaries "
             "(derived from `cargo metadata`), install them into /usr/local/bin, and run "
-            "`slipfork daemon install` so slipforkd.socket owns :80. "
-            "Disclosure: this stops slipforkd.socket/slipforkd.service and `daemon install` hands "
-            "the control socket over from any running slipforkd, so every running world's "
+            "`slipfork daemon install` so slipfork.socket owns :80. "
+            "Disclosure: this stops slipfork.socket/slipfork.service and `daemon install` hands "
+            "the control socket over from any running slipfork daemon, so every running world's "
             "processes stop until the next `slipfork up`."
         ),
     )

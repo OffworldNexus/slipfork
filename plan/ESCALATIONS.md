@@ -32,3 +32,4 @@ Every call to an expensive-tier agent (`strategist`, `architect`, `expert`) is r
 | 2026-11-19T06:47 | M3 | strategist | conductor | 0.1.0 milestone gate |
 | 2026-11-19T12:42 | M3 | architect | conductor | Lock Snowfile DSL grammar, per-service crun pod model, and clean-sheet CLI UX spec |
 | 2026-11-19T15:00 | M3.32.2.2.1.3.2.1 | architect | lead | pod flip writes resolved remote secrets into OCI config.json under state_dir; crun copies it into its --root, so critical_ospp_daemon no-plaintext-on-disk invariant fails. Need DI decision: tmpfs runtime-root for bundles vs env transport channel. |
+| 2026-11-19T23:06 | M3.32.6 | expert | lead | critical_btrfs_live: namespaces.json publishes /proc/1/ns/ipc (host PID 1); nsenter Permission denied + crun kill leak on teardown |

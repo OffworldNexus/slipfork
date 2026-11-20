@@ -2,16 +2,16 @@
 id: M3.32.12
 title: "Forkfile syntax highlighting in Zensical docs (forkfile-highlight.js + WCAG AA CSS + JS tests)"
 kind: task
-status: ready
+status: done
 owner: implementer
 priority: 2
 depends_on: [M3.32.9]
 paths: ["docs/**", "packages/**", "tools/tests/**", zensical.toml, Makefile]
-attempts: 0
+attempts: 2
 max_attempts: 3
 escalation: none
 created: "2026-11-19T16:03"
-updated: "2026-11-19T16:03"
+updated: "2026-11-19T22:31"
 ---
 
 # Goal

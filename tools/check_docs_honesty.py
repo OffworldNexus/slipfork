@@ -3,13 +3,16 @@
 # requires-python = ">=3.12"
 # dependencies = []
 # ///
-"""Verify that published documentation (`README.md` and non-excluded `docs/**/*.md`) and the
-seeded demo doc (`support/demo/README.md`) never advertise unimplemented `slipfork <subcommand>`
-CLI commands (Zero Vaporware rule).
+"""Verify published user documentation never advertises unimplemented `slipfork <subcommand>`
+commands (Zero Vaporware rule).
 
-Target vision and pre-implementation DX blueprints belong strictly in `docs/VISION.md`
-and `docs/design/` (which are excluded from the public Zensical documentation site). The demo
-README is included because `tools/do_vm.py sync` stamps it onto the dev VM as user-facing proof.
+Published docs are `README.md` and the non-excluded `docs/**/*.md` pages; `specs/` drafts and
+`VISION`/design/research notes are excluded because they describe target behaviour before it
+ships. The clean-sheet interim has no `docs/` yet, so the checker no-ops successfully instead of
+failing (and never builds the binary just to prove there is nothing to check).
+
+The shipped surface is the single `slipfork` binary plus its `slipfork-world-init` boot helper;
+there is no separate daemon or git-remote executable.
 """
 
 from __future__ import annotations
@@ -29,7 +32,6 @@ EXCLUDED_PREFIXES = (
     "design/",
     "decisions/",
     "research/",
-    "knowledge/",
     "testing/",
 )
 
@@ -114,13 +116,19 @@ def find_vaporware_commands(
                 errors.append(
                     f"{rel}: published doc advertises unimplemented command 'slipfork {sub}' "
                     f"(shipped commands: {', '.join(sorted(valid_subcommands - {'--help', '-h', '--version', '-V'}))}; "
-                    f"move future UX to docs/design/ or docs/VISION.md)"
+                    f"move future UX to specs/)"
                 )
     return errors
 
 
 def main() -> int:
     repo = Path(__file__).resolve().parent.parent
+    docs_dir = repo / "docs"
+    if not docs_dir.is_dir():
+        print(
+            "check_docs_honesty: no published docs/ yet (clean-sheet interim) — nothing to check"
+        )
+        return 0
     completed = subprocess.run(
         ["cargo", "run", "-q", "-p", "slipfork", "--", "--help"],
         cwd=repo,

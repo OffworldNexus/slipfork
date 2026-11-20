@@ -2,7 +2,7 @@
 id: M3.32.2.2.3
 title: "slipforkd pod boot cut-over in crates/slipfork (PodBoot/ServicePod, per-service exec targets, live suites)"
 kind: epic
-status: active
+status: done
 priority: 3
 depends_on: [M3.32.2.2.2]
 paths: ["crates/slipfork/**", Cargo.toml, Cargo.lock]
@@ -10,7 +10,7 @@ attempts: 0
 max_attempts: 3
 escalation: none
 created: "2026-11-19T13:24"
-updated: "2026-11-19T19:03"
+updated: "2026-11-19T22:40"
 ---
 
 # Goal

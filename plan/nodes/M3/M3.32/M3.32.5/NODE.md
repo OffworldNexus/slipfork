@@ -2,7 +2,7 @@
 id: M3.32.5
 title: "Forkfile visual docs, CHANGELOG & multi-service (api + front + postgres) support/demo"
 kind: task
-status: ready
+status: done
 owner: "doc-writer"
 priority: 3
 depends_on: [M3.32.4]
@@ -11,16 +11,16 @@ paths:
   - README.md
   - CHANGELOG.md
   - AGENTS.md
+  - zensical.toml
   - "support/demo/**"
   - "poc/**"
-  - zensical.toml
   - tools/check_docs_honesty.py
   - "crates/slipfork-forkfile/tests/**"
-attempts: 0
-max_attempts: 3
+attempts: 3
+max_attempts: 4
 escalation: none
 created: "2026-11-19T13:02"
-updated: "2026-11-19T13:03"
+updated: "2026-11-19T22:25"
 ---
 
 # Goal

@@ -42,3 +42,4 @@ Scaffold the clean-sheet Rust 2024 workspace (`Cargo.toml`, `Makefile`, `ARCHITE
 
 - `make check` exits `0` (`cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`).
 - Focused `TESTING_PLAN.md` §7 tests cover `# forkfile: 0.1`, `image`/`arg` taint rejection, `s3 { cdn <id> }`, DO-aligned `route` rules, `@<tool>` deduplication, `fmt`, `migrate`, `slipfork-lsp`, and Tree-sitter/Zed grammar.
+- Protected `crates/slipfork-forkfile/tests/critical_forkfile.rs` and `crates/slipfork-world/tests/critical_world.rs` exist, are wired, and stay green.

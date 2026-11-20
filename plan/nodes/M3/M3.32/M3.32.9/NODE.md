@@ -2,16 +2,23 @@
 id: M3.32.9
 title: "Migrate docs: docs/reference/cli.md, getting-started, CHANGELOG + legacy demo migration rehearsal"
 kind: task
-status: ready
+status: done
 owner: "doc-writer"
 priority: 2
 depends_on: [M3.32.5, M3.32.8]
-paths: ["docs/**", README.md, CHANGELOG.md, "support/demo/**", zensical.toml, tools/check_docs_honesty.py]
-attempts: 0
+paths:
+  - "docs/**"
+  - README.md
+  - CHANGELOG.md
+  - "support/demo/**"
+  - zensical.toml
+  - tools/check_docs_honesty.py
+  - "crates/slipfork-forkfile/tests/**"
+attempts: 2
 max_attempts: 3
 escalation: none
 created: "2026-11-19T16:00"
-updated: "2026-11-19T16:00"
+updated: "2026-11-19T22:27"
 ---
 
 # Goal

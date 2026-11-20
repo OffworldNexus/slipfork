@@ -2,7 +2,7 @@
 id: M3.32.2.2.1.3.2
 title: "slipfork-engine/world init flip: retire pivot_root & WorldProcess, real world_pod_namespaces, migrate protected suites"
 kind: epic
-status: active
+status: done
 priority: 3
 depends_on: [M3.32.2.2.1.3.1]
 paths:
@@ -16,7 +16,7 @@ attempts: 0
 max_attempts: 3
 escalation: none
 created: "2026-11-19T13:39"
-updated: "2026-11-19T13:50"
+updated: "2026-11-19T22:57"
 ---
 
 # Goal

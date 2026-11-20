@@ -2247,3 +2247,8 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-21T00:44 [M3.41] (conductor) created (epic) Proper visual Zensical documentation & native packaged distribution for all Linux distros (tpmd + blastit parity)
 - 2026-11-21T00:44 [M3.42] (conductor) created (epic) Full TESTING_PLAN.md user-story E2E verification, make coverage dead-code sweep & live Btrfs proof on 165.232.86.174
 - 2026-11-21T00:44 AUTOPILOT on by conductor Owner approved clean-sheet wipe + full implementation, visual docs & multi-distro Linux packaging
+- 2026-11-21T00:45 [M3.37] (lead) status ready -> active
+- 2026-11-21T00:45 [M3.37] (lead) attempt 1/3 started
+- 2026-11-21T00:45 [M3.37] (lead) base 36097b0ea117e3f3c68da4e531b5601ff3ad94bf
+- 2026-11-21T00:57 [M3.37] (lead) status active -> review
+- 2026-11-21T00:57 [M3.37] (lead) status review -> done

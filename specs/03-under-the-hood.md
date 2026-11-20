@@ -98,13 +98,55 @@ flowchart LR
 ```mermaid
 flowchart LR
   Browser["Browser / Agent\nhttp://demo.localhost\nhttp://mail.demo.localhost\nhttp://static_cdn.demo.localhost"]
-  Proxy["Stateless :80 Ingress Proxy\nsystemd socket-activated (127.0.0.1:80)"]
-  Daemon["Per-User Slipfork Daemon\n$XDG_RUNTIME_DIR/slipfork.sock"]
+  Proxy["Stateless :80 Ingress\nsystemd socket-activated (127.0.0.1:80)\nbound listener injected via LISTEN_FDS"]
+  Daemon["Per-User slipfork daemon\n<runtime_dir>/daemon.sock"]
   Pod["World Namespace (crun)\napi :8000 | front :5173 | s3 :8333"]
 
-  Browser --> Proxy --> Daemon --> Pod
+  Browser -->|"HTTP/WS"| Proxy
+  Proxy -->|"ingress.accept: accepted fd"| Daemon
+  Daemon -->|"routes + relays"| Pod
 ```
 
-- **Single binary & cloud-identical `:80` ingress:** One `slipfork` binary powers the CLI, the **single per-user daemon** (`$XDG_RUNTIME_DIR/slipfork.sock`) owning all worlds/forks under your user account, and the tiny **stateless `systemd` socket-activated `:80` proxy** (`sudo slipfork daemon install`). Local routing mirrors `Forkfile` -> cloud `ingress.rules` 1:1 — preserving path prefixes by default (`preserve_path_prefix: true`), supporting explicit `strip-prefix`, `rewrite`, and `exact` paths, and matching `domain <id>` / `domain <prefix>.*` authorities across HTTP and WebSockets.
+- **Single binary & cloud-identical `:80` ingress:** One `slipfork` binary powers the CLI and the **single per-user daemon** (`<runtime_dir>/daemon.sock`) owning all worlds/forks under your user account. `slipfork daemon install` writes the user unit; `sudo slipfork daemon install --ingress` additionally installs the system `:80` socket and AppArmor profile. The stateless ingress accepts the connection and forwards its fd to the daemon, whose ingress module makes every route decision — preserving path prefixes by default (`preserve_path_prefix: true`), supporting explicit `strip-prefix`, `rewrite`, and `exact` paths, and matching `domain <id>` / `domain <prefix>.*` authorities across HTTP and WebSockets.
 - **Remote Cloud Clutch (`OSPP v1`):** When paired via `slipfork auth <url>`, the user daemon authenticates over WebSocket with a device P-256 keypair, sends the evaluated `Forkfile`, decrypts `hpke-p256` cloud secrets strictly in memory, auto-restarts affected services on live `env_updated` pushes, and streams encrypted DB seed dumps over HTTPS straight into your Btrfs world subvolume.
 - **Coding-Agent Integration (`@slipfork/opencode`):** Hooks OpenCode worktrees directly to `slipfork fork` and `slipfork drop`, giving every parallel agent session its own `< 50ms` Btrfs checkout + DB/S3 clone + `http://<branch>--<world>.localhost` URL with pre-warmed dependencies.
+
+---
+
+## 5. Crate & Port Map
+
+`crates/slipfork/src/main.rs` is the **single Composition Root**: the only place that reads `std::env`, probes `/proc`, or binds ambient sockets and filesystems. `slipfork daemon` is a mode of that same binary and builds the same Constructor-DI tree — there is no second composition root and no separate daemon executable.
+
+| Crate | Owns | Port → adapter |
+| :--- | :--- | :--- |
+| `slipfork` | CLI parsing, rendering, daemon composition; daemon-side `SecretVault` + `DaemonControl` wiring | builds the tree |
+| `slipfork-forkfile` | `Forkfile` parse, typecheck, evaluate, `migrate`, `fmt` | — |
+| `slipfork-world` | Btrfs subvolumes, snapshots, world boot/reap, ioctls | `WorldEngine` → `BtrfsEngine` |
+| `slipfork-image` | OCI pulls and native `Dockerfile` builds | `BaseImageBuilder` → `NativeImageBuilder` |
+| `slipfork-ingress` | HTTP/WS framing and `.localhost` route matching | injected `TcpListener` |
+| `slipfork-ospp` | `OSPP v1` frames, device keys, HPKE, dumps | `OsppClient` → `WsOsppClient` |
+| `slipfork-vcs` | worktrees, branch topology, dirty snapshots | `VcsWorkspace` → `GitWorkspace` / `JjWorkspace` |
+| `slipfork-lsp` | language server over stdio | no port |
+
+The canonical port set is exactly `WorldEngine`, `BaseImageBuilder`, `SecretVault`, `DaemonControl`, `OsppClient`, and `VcsWorkspace`. No single-impl mock trait sits beside them; a plain value struct covers anything that is only data.
+
+### Local daemon control plane
+
+Every local command talks to one socket at `<runtime_dir>/daemon.sock`, and the direction is always client → daemon.
+
+| Element | Contract |
+| :--- | :--- |
+| Path | `<runtime_dir>/daemon.sock` (mode `0600`, owned by the developer) |
+| Request | One NEWLINE-delimited JSON frame: `{"v":1,"id":<string>,"method":<string>,"params":{…}}` |
+| Success | `{"v":1,"id":<string>,"ok":<object>}` |
+| Failure | `{"v":1,"id":<string>,"error":{"code":<string>,"message":<string>}}` |
+| Unknown `v` or `method` | A typed `error` frame; the connection stays open |
+| Descriptors | `SCM_RIGHTS` carries **only** the accepted `:80` connection fd (`ingress.accept`) |
+
+The CLI and the ingress always **connect to** `daemon.sock`; the daemon never dials out to a client, and no second control socket exists.
+
+### Ingress ownership
+
+`slipfork-ingress` owns HTTP/WebSocket framing and route matching: preserve-by-default prefixes, `strip-prefix`, `rewrite`, `exact`, and `domain` authority filters.
+
+The composition root injects an already-bound `TcpListener` — from `LISTEN_FDS` under systemd, or a direct bind under OpenRC. The systemd `slipfork-ingress@.service` template instance is stateless: it accepts and forwards that one connection fd to `daemon.sock`, and the daemon's ingress module makes the routing decision. That handoff is the single direction; nothing pushes traffic the other way.

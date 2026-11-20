@@ -38,3 +38,5 @@ Prove every single user story in `TESTING_PLAN.md` (§2–§7) end-to-end with z
 
 - `make check`, `make docs-check`, `make packages-test`, and `make coverage` all exit `0` locally.
 - Live Btrfs E2E suite + `.deb` install + PTY/HTTP `:80` multi-service demo + `< 50ms` `fork` proof pass `100%` on `165.232.86.174`, leaving `/home/slipfork/demo` running cleanly on `:80`.
+- Consolidated one rich E2E journey per user story, clean `-pgid`/snapshot reaping, and deletion of 0%-covered dead fallbacks.
+- Protected `critical_ospp.rs`, `critical_world_journey.rs`, and `critical_btrfs_live.rs` remain green.

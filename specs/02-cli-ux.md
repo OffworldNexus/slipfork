@@ -70,6 +70,7 @@ If a setup step, hook, or service fails, Slipfork prints the failure in red with
 
 - **`slipfork restart [service]`** re-checks `@<tool>` and `before-start when changed(...)` inputs, re-runs affected hooks, and restarts one or all services in place.
 - **`slipfork down`** stops the world's containers cleanly while keeping its Btrfs data subvolumes intact.
+- **Live child progress:** Any child step that can exceed `200 ms` — image `pull`, `RUN`, and `down`/`restart` teardown — is `spawn()`ed and streams `[step/total]` phase headers with elapsed time; nothing blocks on `.output()` or `pull -q`.
 
 ---
 
@@ -107,6 +108,17 @@ api    │ INFO:     Application startup complete.
   ✓ Runtime     crun 1.20, :80 .localhost ingress active
 ```
 
+When a requirement fails, the verdict counts rows and every failing row carries its own remedy — AppArmor is named explicitly rather than folded into namespaces:
+
+```text
+✗ 2 issue(s)
+  ✓ Btrfs       /home is btrfs (subvolume snapshots enabled)
+  ✗ Namespaces  unprivileged user + netns unavailable
+     next: sudo sysctl -w kernel.unprivileged_userns_clone=1
+  ✗ AppArmor    profile loaded but not enforcing
+     next: sudo slipfork daemon install --ingress
+```
+
 | Command | Behavior |
 | :--- | :--- |
 | `slipfork logs [-f] [service]` | Colored per-service gutter, chronological merged output, stays attached across `restart`. |
@@ -117,8 +129,12 @@ api    │ INFO:     Application startup complete.
 | `slipfork env [service]` | Prints resolved runtime variables; secrets show `[REDACTED]` unless `--reveal` is passed on a TTY. |
 | `slipfork secret list\|set\|unset` | Lists or overrides local offline secrets for the current world. |
 | `slipfork open [service]` | Opens the world or route URL in your browser (headless/SSH-aware, zero `sudo` env-stripping bugs). |
-| `slipfork auth <url>` | Pairs your machine with a remote `OSPP v1` cloud endpoint for live secrets and DB seeds. |
+| `slipfork auth [<endpoint-url>]` | Pairs your machine with a remote `OSPP v1` endpoint; precedence is `--ospp-endpoint` > positional URL > `<state_dir>/ospp.json`. |
+| `slipfork daemon install` | Writes the per-user daemon unit; no `sudo`, and worlds stay in the developer's session. |
+| `slipfork daemon install --ingress` | Adds the system `:80` socket and AppArmor profile; the only daemon verb that needs `sudo`. |
 | `slipfork migrate` | Converts a legacy `snow.yml` manifest into a formatted `# forkfile: 0.1` `Forkfile`. |
+
+After pairing, `slipfork auth` prints the settled pair and one `next: slipfork up` line; with no endpoint and no saved record it fails with `this daemon has no OSPP endpoint` and names the flag to pass.
 
 ---
 

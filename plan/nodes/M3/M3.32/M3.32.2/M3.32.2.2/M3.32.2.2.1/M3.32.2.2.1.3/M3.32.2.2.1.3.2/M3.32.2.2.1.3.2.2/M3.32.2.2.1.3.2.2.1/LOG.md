@@ -27,3 +27,27 @@ edited fields
 ## 2026-11-19T18:44 [lead]
 
 lead: deferred until .2.2.3; bridge stays, no weakened journeys
+
+## 2026-11-19T22:45 [lead]
+
+status ready -> active
+
+## 2026-11-19T22:45 [lead]
+
+attempt 2/3 started
+
+## 2026-11-19T22:45 [lead]
+
+base b7a4e961cafcd2b297ad96fa193a6ed182dd9952
+
+## 2026-11-19T22:48 [lead]
+
+attempt 3/3 started
+
+## 2026-11-19T22:48 [lead]
+
+attempt 2 removed fx.service/service_spec and broke 11 engine test sites; attempt 3 restores pod-backed shims first
+
+## 2026-11-19T22:49 [lead]
+
+status active -> done

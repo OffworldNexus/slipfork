@@ -33,3 +33,5 @@ $ slipfork fork feat-auth
 - **[02 — The CLI UX](./02-cli-ux.md)** — Visual status trees, live boot DAG progress, `< 50ms` forking, daily developer commands (`exec`, `shell`, `logs`, `db`), `doctor`, and strict terminal hygiene.
 - **[03 — How It Works Under the Hood](./03-under-the-hood.md)** — Pure Btrfs subvolume layout, native Docker-free image engine, parallel World Boot & `@<tool>` DAG, per-service `crun` pods, single per-user daemon + `:80` ingress, `OSPP v1`, and OpenCode integration.
 - **[04 — The Testing Plan](./04-testing-plan.md)** — End-to-end user stories and fail-closed safety boundaries verified against real containers, databases, and Btrfs snapshots.
+- **[05 — The `OSPP v1` Wire Specification](./05-ospp-v1.md)** — Closed 16-frame JSON protocol, P-256 pairing and proof of possession, `hpke-p256` secrets, sealed dump streams, and `snow.yml` migration.
+- **[06 — Distribution & Documentation](./06-distribution-and-docs.md)** — Native `.deb`/`.rpm`/Arch/Alpine/portable artifacts, the universal `install.sh`, and the honesty-gated Zensical docs site.

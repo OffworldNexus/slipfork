@@ -2,7 +2,7 @@
 id: M3.32.2.3
 title: "slipfork-testkit per-service pod harness & Btrfs live-suite migration"
 kind: task
-status: ready
+status: done
 owner: implementer
 priority: 3
 depends_on: [M3.32.2.2.3]
@@ -13,11 +13,11 @@ paths:
   - Makefile
   - Cargo.toml
   - Cargo.lock
-attempts: 0
+attempts: 1
 max_attempts: 3
 escalation: none
 created: "2026-11-19T13:15"
-updated: "2026-11-19T13:24"
+updated: "2026-11-19T22:44"
 ---
 
 # Goal

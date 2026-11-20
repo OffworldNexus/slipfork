@@ -1,5 +1,5 @@
 ---
-description: Orchestrates one Slipfork plan subtree (ROOT=<id>). Dispatches implementer/writer, runs the parallel Triad Review Gate (review-arch + review-tests + review-ux), filters cosmetic nits into at most 1 consolidated fix pass, runs targeted crate tests per slice and full make check at the epic gate, and commits explicit paths.
+description: Orchestrates one Slipfork plan subtree (ROOT=<id>). Dispatches implementer/writer, runs the parallel Triad Review Gate (review-arch + review-tests + review-ux), filters cosmetic nits into at most 1 consolidated fix pass, runs targeted crate tests per slice and the full workspace check at the epic gate, and commits explicit paths.
 mode: subagent
 model: openrouter/deepseek/deepseek-v4.1-flash-1017#high
 color: "#2563eb"
@@ -66,7 +66,7 @@ Repeat until `uv run --no-project tools/plan.py next --under <ROOT>` has nothing
      * `STATUS: failed` -> `set <id> ready --note "<why>"`.
 
 4. **`review <task>` — Parallel Triad Review Gate & Anti-Churn Triage:**
-   - Run targeted slice verification (`cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings` + targeted `cargo test -p <touched-crates>` or `zensical build --strict`, `tools/guard.py`, `tools/critical_guard.py --base <base> --node <id>`) AND spawn **all 3 reviewers in parallel**:
+   - Run targeted slice verification (`cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings` + targeted `cargo test -p <touched-crates>` or `uv run --no-project tools/guard.py`, `tools/guard.py`, `tools/critical_guard.py --base <base> --node <id>`) AND spawn **all 3 reviewers in parallel**:
      1. **`review-arch`** (Constructor IoC/DI, single Composition Root, cohesive structs `<= 500` LOC, canonical module extension, zero single-impl mock traits)
      2. **`review-tests`** (zero mocks except OSPP loopback ref server, consolidated lab E2E journeys, algorithm-only unit tests, 0%-covered fallback deletion)
      3. **`review-ux`** (ANSI hierarchy + `NO_COLOR`/`--json` purity, live spinners/progress on `> 200ms` ops, dynamic column widths, visual Mermaid/admonition docs, zero vaporware)
@@ -75,4 +75,4 @@ Repeat until `uv run --no-project tools/plan.py next --under <ROOT>` has nothing
    - **Commit Slice Explicitly:** Once green, `set <id> done && plan.py state && plan.py validate`, inspect `git status --short`, stage **explicit file paths only** (`git add -- <explicit files>`), and commit `[<id>] <title>`.
 
 5. **`gate <epic>`:**
-   - Run the full repository **`make check`** + epic `# Acceptance` commands **once** at the epic gate, verify `plan.py validate` + `guard.py`, mark the epic `done`, and commit `[<epic>] Gate passed: <title>`.
+   - Run the full workspace check (`cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace`) + epic `# Acceptance` commands **once** at the epic gate, verify `plan.py validate` + `guard.py`, mark the epic `done`, and commit `[<epic>] Gate passed: <title>`.
