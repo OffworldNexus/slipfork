@@ -2148,3 +2148,102 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-19T22:17 [M3.32.11] (lead) attempt 2/3 started
 - 2026-11-19T22:17 [M3.32.11] (lead) Triad fix pass base 8fd0b0d9f5c7ed0c651b3d73edb188bd71b18b9b: grammar invented syntax vs shipped parser; corpus never executed; target/ 350M
 - 2026-11-19T22:20 [M3.32.11] (lead) status review -> done
+- 2026-11-19T22:20 [M3.32.5] (lead) status ready -> active
+- 2026-11-19T22:20 [M3.32.5] (lead) attempt 1/3 started
+- 2026-11-19T22:20 [M3.32.5] (lead) base 5eef927e76e744ee559c0bdac205065fa32b3f2c
+- 2026-11-19T22:22 [M3.32.5] (lead) edited fields
+- 2026-11-19T22:22 [M3.32.5] (lead) attempt 2/4 started
+- 2026-11-19T22:22 [M3.32.5] (lead) attempt 2: demo done+tested; docs remain. Acceptance grep narrowed: snow.yml allowed only in migrate-input docs and docs/design+decisions blueprints
+- 2026-11-19T22:23 [M3.32.5] (writer) Demo rehearsal (VM-deferred; host is not Btrfs): support/demo ships api ./api (port 8000, route /api, volume .venv, task migrate) + front ./front (port 5173, ro
+- 2026-11-19T22:24 [M3.32.5] (lead) status active -> review
+- 2026-11-19T22:24 [M3.32.5] (lead) attempt 3/4 started
+- 2026-11-19T22:24 [M3.32.5] (lead) Triad fix pass base 5eef927e76e744ee559c0bdac205065fa32b3f2c
+- 2026-11-19T22:25 [M3.32.5] (lead) status review -> done
+- 2026-11-19T22:25 [M3.32.9] (lead) status ready -> active
+- 2026-11-19T22:25 [M3.32.9] (lead) attempt 1/3 started
+- 2026-11-19T22:25 [M3.32.9] (lead) base f81072a2f76471366c314c4076e9dbc6ea2b5045
+- 2026-11-19T22:26 [M3.32.9] (writer) Rehearsed migration on the real binary from /tmp/opencode/m3-32-9-migrate: `slipfork migrate` => `✓ Migrated snow.yml → Forkfile (2 services, 1 postgres cluster
+- 2026-11-19T22:26 [M3.32.9] (lead) status active -> review
+- 2026-11-19T22:26 [M3.32.9] (lead) edited fields
+- 2026-11-19T22:26 [M3.32.9] (lead) attempt 2/3 started
+- 2026-11-19T22:26 [M3.32.9] (lead) Triad fix pass base f81072a2f76471366c314c4076e9dbc6ea2b5045
+- 2026-11-19T22:27 [M3.32.9] (lead) status review -> done
+- 2026-11-19T22:27 [M3.32.12] (lead) status ready -> active
+- 2026-11-19T22:27 [M3.32.12] (lead) attempt 1/3 started
+- 2026-11-19T22:27 [M3.32.12] (lead) base 9067e0571c6ce7078e9bfb3254c371d8ce41dc90
+- 2026-11-19T22:29 [M3.32.12] (lead) status active -> review
+- 2026-11-19T22:30 [M3.32.12] (lead) attempt 2/3 started
+- 2026-11-19T22:30 [M3.32.12] (lead) Triad fix pass: paint --ff-bg, narrow annotation bail-out, drop dead language-forkfile branch, real classify coverage
+- 2026-11-19T22:31 [M3.32.12] (lead) status review -> done
+- 2026-11-19T22:32 [M3.32.6] (lead) status ready -> active
+- 2026-11-19T22:32 [M3.32.6] (lead) gate run 1: make check RC=2 — 2 rustdoc private-intra-doc-link errors (registry.rs ingress_table, projection.rs world_projection)
+- 2026-11-19T22:32 [M3.32.6] (lead) status active -> ready: held: M3.32.2.2.3.2 + M3.32.2.3 must land first (per-service crun pods)
+- 2026-11-19T22:32 [M3.32.2.2.3.2] (lead) status ready -> active
+- 2026-11-19T22:32 [M3.32.2.2.3.2] (lead) attempt 1/3 started
+- 2026-11-19T22:32 [M3.32.2.2.3.2] (lead) base 510b59477672cf3a1480c9d0be913f5b945e4d04; lead: required before the M3.32 gate so api/front boot in separate crun pods
+- 2026-11-19T22:37 [M3.32.2.2.3.2] (lead) status active -> review
+- 2026-11-19T22:37 [M3.32.2.2.3.2] (lead) attempt 2/3 started
+- 2026-11-19T22:37 [M3.32.2.2.3.2] (lead) Triad fix pass base 50efd2f04dd3723dc6571c63cee73b081fbedacc: env double-layer, no progress events, no pod-span; WorldProcess deletion deferred to M3.32.2.2.1.3
+- 2026-11-19T22:40 [M3.32.2.2.3.2] (lead) status review -> done
+- 2026-11-19T22:40 [M3.32.2.2.3] (lead) status active -> done
+- 2026-11-19T22:40 [M3.32.2.3] (lead) status ready -> active
+- 2026-11-19T22:40 [M3.32.2.3] (lead) attempt 1/3 started
+- 2026-11-19T22:40 [M3.32.2.3] (lead) base 0403bf81878cad54dd9ec112dcaaedce82da5994
+- 2026-11-19T22:41 [M3.32.6.1] (lead) created (task) Port slipfork-vcs critical suite off the deleted slipfork.toml loader
+- 2026-11-19T22:41 [M3.32.6] (lead) edited fields
+- 2026-11-19T22:41 [M3.32.6.1] (lead) base 0403bf81878cad54dd9ec112dcaaedce82da5994; created as gate hygiene
+- 2026-11-19T22:41 [M3.32.6.1] (lead) status ready -> done
+- 2026-11-19T22:44 [M3.32.2.3] (lead) guard re-run against base 8093e3d (concurrent vcs commit) — OK, no protected change
+- 2026-11-19T22:44 [M3.32.2.3] (lead) status active -> done
+- 2026-11-19T22:45 [M3.32.2.2.1.3.2.2] (lead) status active -> active
+- 2026-11-19T22:45 [M3.32.2.2.1.3.2.2.1] (lead) status ready -> active
+- 2026-11-19T22:45 [M3.32.2.2.1.3.2.2.1] (lead) attempt 2/3 started
+- 2026-11-19T22:45 [M3.32.2.2.1.3.2.2.1] (lead) base b7a4e961cafcd2b297ad96fa193a6ed182dd9952
+- 2026-11-19T22:48 [M3.32.2.2.1.3.2.2.1] (lead) attempt 3/3 started
+- 2026-11-19T22:48 [M3.32.2.2.1.3.2.2.1] (lead) attempt 2 removed fx.service/service_spec and broke 11 engine test sites; attempt 3 restores pod-backed shims first
+- 2026-11-19T22:49 [M3.32.2.2.1.3.2.2.1] (lead) status active -> done
+- 2026-11-19T22:49 [M3.32.2.2.1.3.2.2.2] (lead) status ready -> active
+- 2026-11-19T22:49 [M3.32.2.2.1.3.2.2.2] (lead) attempt 1/3 started
+- 2026-11-19T22:49 [M3.32.2.2.1.3.2.2.2] (lead) base ce8023a08a77e889af53cd51b133f956c32dd0e0
+- 2026-11-19T22:54 [M3.32.2.2.1.3.2.2.2] (lead) attempt 2/3 started
+- 2026-11-19T22:54 [M3.32.2.2.1.3.2.2.2] (lead) attempt 1 left 3 unused imports + 3 test call sites (exec_in_world/entry_command) + fmt drift
+- 2026-11-19T22:57 [M3.32.2.2.1.3.2.2.2] (implementer) edited fields
+- 2026-11-19T22:57 [M3.32.2.2.1.3.2.2.2] (lead) status active -> done
+- 2026-11-19T22:57 [M3.32.2.2.1.3.2.2] (lead) status active -> done
+- 2026-11-19T22:57 [M3.32.2.2.1.3.2] (lead) status active -> done
+- 2026-11-19T22:58 [M3.32.2.2.1.3] (lead) status active -> done
+- 2026-11-19T22:58 [M3.32.2.2.1] (lead) status active -> done
+- 2026-11-19T22:58 [M3.32.2.2] (lead) status active -> done
+- 2026-11-19T22:58 [M3.32.2] (lead) status active -> done
+- 2026-11-19T23:06 ESCALATION #29 -> expert for M3.32.6 by lead: critical_btrfs_live: namespaces.json publishes /proc/1/ns/ipc (host PID 1); nsenter Permission denied + crun kill leak o
+- 2026-11-19T23:06 [M3.32.6] (lead) VM test RC=101: critical_btrfs_live ipc join publishes /proc/1/ns/ipc; leaked worlds on drop
+- 2026-11-20T16:12 [M3.33] (conductor) created (task) Author TESTING_PLAN.md pure user-story testing vision
+- 2026-11-20T16:12 [M3.34] (conductor) created (task) Enforce TESTING_PLAN.md human gate, E2E-first tests & make coverage audit
+- 2026-11-20T16:12 [M3.35] (conductor) created (epic) Execute TESTING_PLAN.md test & codebase cleanup: E2E consolidation, GHA multi-platform stories & dead-code removal
+- 2026-11-20T16:14 [M3.35.1] (planner) created (task) Delete unused 0.1.0 crate surface, dead harnesses & meta-linters
+- 2026-11-20T16:14 [M3.35.2] (planner) created (task) Prune all non-§7 inline cfg(test) modules; keep tight §7 focused suites
+- 2026-11-20T16:14 [M3.35.3] (planner) created (task) Consolidate Rust & OpenCode integration suites into crisp user-story E2E binaries
+- 2026-11-20T16:14 [M3.35.4] (planner) created (task) Multi-service polyglot E2E stories & GitHub Actions multi-platform workflows
+- 2026-11-20T16:14 [M3.35.5] (planner) created (task) Coverage-driven dead-code deletion, comment stripping & live 165.232.86.174 gate
+- 2026-11-20T16:17 AUTOPILOT off by conductor User halted: Forkfile image concept & CLI UX/TTY/colors diverged from agreed design
+- 2026-11-20T16:24 [M3.36] (conductor) created (task) Clean-sheet high-level specs/ folder: Forkfile (with image), CLI UX, Under the Hood (pure Btrfs) & Testing Plan
+- 2026-11-20T16:24 [M3.36] (conductor) status ready -> active
+- 2026-11-20T16:32 [M3.36] (conductor) status active -> done
+- 2026-11-21T00:43 [M3.32.6] (conductor) status ready -> superseded: Superseded by clean-sheet wipe & rebuild from specs/ (M3.37..M3.42)
+- 2026-11-21T00:43 [M3.32] (conductor) status ready -> superseded: Superseded by clean-sheet wipe & rebuild from specs/ (M3.37..M3.42)
+- 2026-11-21T00:43 [M3.33] (conductor) status ready -> superseded: Superseded by clean-sheet wipe & rebuild from specs/ (M3.37..M3.42)
+- 2026-11-21T00:43 [M3.34] (conductor) status ready -> superseded: Superseded by clean-sheet wipe & rebuild from specs/ (M3.37..M3.42)
+- 2026-11-21T00:43 [M3.35.5] (conductor) status ready -> superseded: Superseded by clean-sheet wipe & rebuild from specs/ (M3.37..M3.42)
+- 2026-11-21T00:43 [M3.35.4] (conductor) status ready -> superseded: Superseded by clean-sheet wipe & rebuild from specs/ (M3.37..M3.42)
+- 2026-11-21T00:43 [M3.35.3] (conductor) status ready -> superseded: Superseded by clean-sheet wipe & rebuild from specs/ (M3.37..M3.42)
+- 2026-11-21T00:43 [M3.35.2] (conductor) status ready -> superseded: Superseded by clean-sheet wipe & rebuild from specs/ (M3.37..M3.42)
+- 2026-11-21T00:43 [M3.35.1] (conductor) status ready -> superseded: Superseded by clean-sheet wipe & rebuild from specs/ (M3.37..M3.42)
+- 2026-11-21T00:43 [M3.35] (conductor) status ready -> superseded: Superseded by clean-sheet wipe & rebuild from specs/ (M3.37..M3.42)
+- 2026-11-21T00:43 [M3] (conductor) edited fields
+- 2026-11-21T00:44 [M3.37] (conductor) created (task) Scorched-earth clean-sheet wipe: keep only specs/ & agentic setup (AGENTS.md, TESTING_PLAN.md, .opencode/, plan/, tools/)
+- 2026-11-21T00:44 [M3.38] (conductor) created (epic) Clean-sheet workspace, Constructor DI ARCHITECTURE.md, Forkfile compiler (# forkfile: 0.1), slipfork-lsp & Zed/Tree-sitter
+- 2026-11-21T00:44 [M3.39] (conductor) created (epic) Pure-Btrfs engine, 100% Docker-free native OCI/Dockerfile builder, per-service crun pods & World Boot DAG
+- 2026-11-21T00:44 [M3.40] (conductor) created (epic) OSPP v1 cloud clutch, stateless :80 .localhost ingress, single per-user daemon, colorful CLI UX & @slipfork/opencode
+- 2026-11-21T00:44 [M3.41] (conductor) created (epic) Proper visual Zensical documentation & native packaged distribution for all Linux distros (tpmd + blastit parity)
+- 2026-11-21T00:44 [M3.42] (conductor) created (epic) Full TESTING_PLAN.md user-story E2E verification, make coverage dead-code sweep & live Btrfs proof on 165.232.86.174
+- 2026-11-21T00:44 AUTOPILOT on by conductor Owner approved clean-sheet wipe + full implementation, visual docs & multi-distro Linux packaging

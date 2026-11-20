@@ -1,6 +1,6 @@
 ---
 id: M3
-title: "Unified Btrfs WorldEngine (ADR-0010), :80 slipforkd Edge, High-Craft CLI & OSPP v1 (0.1.0)"
+title: "Clean-Sheet Slipfork 0.1.0: Pure-Btrfs Native Engine, Enclosing Image Forkfile, High-Craft CLI, Visual Zensical Docs & All-Distro Linux Packaging"
 kind: milestone
 status: active
 priority: 3
@@ -10,7 +10,7 @@ attempts: 0
 max_attempts: 3
 escalation: architect
 created: "2026-11-14T22:03"
-updated: "2026-11-19T12:42"
+updated: "2026-11-21T00:43"
 ---
 
 # Goal

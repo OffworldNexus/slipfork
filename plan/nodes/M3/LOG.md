@@ -99,3 +99,7 @@ status active -> done
 ## 2026-11-19T12:42 [conductor]
 
 status done -> active: Reopening 0.1.0 for Snowfile DSL + per-service crun pod rootfs + clean-sheet CLI UX redesign
+
+## 2026-11-21T00:43 [conductor]
+
+edited fields

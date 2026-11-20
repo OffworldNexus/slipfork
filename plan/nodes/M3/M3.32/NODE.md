@@ -2,7 +2,7 @@
 id: M3.32
 title: "Forkfile DSL, Per-Service crun Pod Engine & Clean-Sheet 0.1.0 CLI UX"
 kind: epic
-status: ready
+status: superseded
 priority: 3
 depends_on: []
 paths: []
@@ -10,7 +10,7 @@ attempts: 0
 max_attempts: 3
 escalation: none
 created: "2026-11-19T13:02"
-updated: "2026-11-19T13:02"
+updated: "2026-11-21T00:43"
 ---
 
 # Goal

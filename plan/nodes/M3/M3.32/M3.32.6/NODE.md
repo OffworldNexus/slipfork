@@ -1,9 +1,8 @@
 ---
 id: M3.32.6
 title: "Zero-mock lab E2E + live multi-service PTY proof on 165.232.86.174, demo left on :80"
-kind: task
-status: ready
-owner: implementer
+kind: epic
+status: superseded
 priority: 3
 depends_on: [M3.32.5, M3.32.9, M3.32.11, M3.32.12]
 paths:
@@ -16,9 +15,9 @@ paths:
   - "tools/**"
 attempts: 0
 max_attempts: 3
-escalation: none
+escalation: expert
 created: "2026-11-19T13:02"
-updated: "2026-11-19T16:03"
+updated: "2026-11-21T00:43"
 ---
 
 # Goal
