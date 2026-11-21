@@ -1,0 +1,232 @@
+name: CI
+
+# The pull-request gate. Every job proves a story from `TESTING_PLAN.md` and
+# `specs/06` on the runner that can actually prove it: the Btrfs/crun live suites
+# on a loop-backed Btrfs file, the editors and plugin on the toolchains they
+# ship with, and the language server natively on all six desktop targets.
+#
+# The live job runs `make live-test` unchanged, so the Btrfs/tmpfs/crun
+# preconditions and the suite list stay in the Makefile rather than being
+# re-implemented here. A runner that cannot host the loop mount fails the job
+# with the Makefile's own `next:` line instead of silently skipping it.
+
+on:
+  push:
+    branches: [develop]
+  pull_request:
+    branches: [develop]
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/develop' }}
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  lint-test:
+    name: 'fmt + clippy -D warnings + workspace tests + zed + plugin'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      # Full history: the protected-critical guard diffs against `origin/develop`.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - uses: astral-sh/setup-uv@v5
+      # `tools/critical_guard.py` fails closed when a `tests/critical_*` file
+      # (or `tests/critical/**`) changed shape without authorization.
+      - name: Guard the protected critical tests
+        run: uv run --no-project tools/critical_guard.py --base origin/develop
+      # Fast packaging checks only: `make packages-test` needs a bundle built by
+      # `make packages`, which this job does not produce.
+      - name: Shell syntax and publisher unit tests
+        run: |
+          set -euo pipefail
+          bash -n scripts/*.sh docs/install.sh
+          uv run --no-project python -m unittest discover -s scripts/tests
+      # `make check` covers what used to be five separate jobs: fmt, clippy,
+      # `cargo test --workspace`, `editors/zed/check.sh` and `packages-check`
+      # (tsc + the plugin suite that spawns the real binary). Node and Bun are
+      # therefore required here, not only in their own jobs.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - uses: oven-sh/setup-bun@v2
+      - name: make check
+        run: make check
+
+  live:
+    name: 'live: Btrfs loop mount + crun + /dev/shm tmpfs'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install crun and btrfs-progs
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq crun btrfs-progs
+          crun --version
+          mkfs.btrfs --version
+      # Ubuntu 24.04 blocks unprivileged user namespaces through AppArmor, which
+      # is what the per-service pods need. The sysctl only exists on the kernels
+      # that restrict it, so the `-e` leaves older images untouched.
+      - name: Allow unprivileged user namespaces
+        run: |
+          set -euo pipefail
+          if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+            sudo --non-interactive sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+      # `make live-test` refuses a non-Btrfs root and a non-tmpfs /dev/shm, so
+      # this step gives it the real thing: an 8 GiB loop file formatted Btrfs and
+      # mounted where the Makefile expects it.
+      - name: Mount a loop-backed Btrfs at /mnt/slipfork-live
+        run: |
+          set -euo pipefail
+          image=/mnt/slipfork-live.img
+          sudo truncate -s 8G "$image"
+          sudo mkfs.btrfs -f "$image" >/dev/null
+          sudo mkdir -p /mnt/slipfork-live
+          sudo mount -o loop "$image" /mnt/slipfork-live
+          sudo chown "$(id -u):$(id -g)" /mnt/slipfork-live
+          stat -f -c 'live root fstype magic: %t' /mnt/slipfork-live
+          # The runtime dirs live on tmpfs and the live suites keep pod state
+          # there, so the size is asserted, not just the filesystem type.
+          shm_kb=$(df -Pk /dev/shm | awk 'NR==2 {print $2}')
+          if [ "$shm_kb" -lt 2097152 ]; then
+            sudo mount -t tmpfs -o size=4G tmpfs /dev/shm
+          fi
+          [ "$(stat -f -c %t /dev/shm)" = 1021994 ] || { echo "error: /dev/shm is not tmpfs; next: mount a tmpfs there" >&2; exit 1; }
+          shm_gb=$(( $(df -Pk /dev/shm | awk 'NR==2 {print $2}') / 1048576 ))
+          [ "$shm_gb" -ge 2 ] || { echo "error: /dev/shm is ${shm_gb}G, below the 2G the live suites need; next: mount a larger tmpfs" >&2; exit 1; }
+          stat -f -c 'dev/shm fstype magic: %t' /dev/shm
+      - name: Live suites (make live-test)
+        run: SLIPFORK_TEST_ROOT=/mnt/slipfork-live make live-test
+      - name: Unmount the loop file
+        if: always()
+        run: |
+          sudo umount /mnt/slipfork-live || true
+          rm -f /mnt/slipfork-live.img || true
+
+  cross-os:
+    name: 'lsp + forkfile (${{ matrix.platform }}/${{ matrix.arch }})'
+    runs-on: ${{ matrix.runs_on }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Native runners only: a cross-linked aarch64 binary built under
+          # emulation is not evidence that the archive runs on that desktop.
+          - platform: linux
+            arch: x86_64
+            triple: x86_64-unknown-linux-gnu
+            runs_on: ubuntu-24.04
+          - platform: linux
+            arch: aarch64
+            triple: aarch64-unknown-linux-gnu
+            runs_on: ubuntu-24.04-arm
+          - platform: darwin
+            arch: x86_64
+            triple: x86_64-apple-darwin
+            runs_on: macos-15-intel
+          - platform: darwin
+            arch: aarch64
+            triple: aarch64-apple-darwin
+            runs_on: macos-15
+          - platform: windows
+            arch: x86_64
+            triple: x86_64-pc-windows-msvc
+            runs_on: windows-2022
+          - platform: windows
+            arch: aarch64
+            triple: aarch64-pc-windows-msvc
+            runs_on: windows-11-arm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.triple }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: cross-${{ matrix.triple }}
+      # `make lsp-assets` is the one path that names the archive: the Makefile
+      # maps the triple to `slipfork-lsp-<platform>-<arch>` and refuses a target
+      # whose linker is missing. Windows runners ship neither `make` nor `zip`.
+      - name: Toolchain for the archive (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          choco install make zip -y --no-progress
+      - name: Build and test the crates that ship on every desktop
+        run: >-
+          cargo build --target ${{ matrix.triple }} -p slipfork-lsp -p slipfork-forkfile
+          && cargo test --target ${{ matrix.triple }} -p slipfork-lsp -p slipfork-forkfile
+      - name: Build the Zed asset
+        shell: bash
+        run: make lsp-assets LSP_TARGET=${{ matrix.triple }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lsp-${{ matrix.platform }}-${{ matrix.arch }}
+          path: dist/slipfork-lsp-${{ matrix.platform }}-${{ matrix.arch }}.*
+          if-no-files-found: error
+
+  docs:
+    name: 'docs: zensical --strict + honesty gate'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      # The honesty gate runs the real binary, so this job needs Rust too.
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: docs
+      - uses: astral-sh/setup-uv@v5
+      # `make docs-check` builds with `uvx --offline`; warm the tool cache once
+      # so the offline build is a real offline gate rather than a fetch.
+      - name: Warm the Zensical tool cache
+        run: uvx zensical --version
+      - name: make docs-check
+        run: make docs-check
+
+  opencode:
+    name: 'plugin: tsc + bun test against the real binary'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - uses: oven-sh/setup-bun@v2
+      # `make typecheck` and `make js-test` install the plugin's dependencies and
+      # run its suite against `target/debug/slipfork`, never a stand-in.
+      - name: make packages-check
+        run: make packages-check
+
+  zed:
+    name: 'zed: extension manifest, lsp wiring, highlights'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: zed
+      - name: editors/zed/check.sh
+        run: bash editors/zed/check.sh

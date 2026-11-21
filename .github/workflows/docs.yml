@@ -1,0 +1,132 @@
+name: Docs
+
+# Builds the documentation site on every pull request and every push to
+# `develop`, and deploys it there (and on dispatch) so the URL the README's hero
+# advertises is the site this repository reviewed.
+#
+# This workflow owns the docs leg: the `--strict` build, the honesty gate, the
+# served `install.sh`, and the installer/workspace version consistency check.
+# `ci.yml` runs `make docs-check` too, on the pull-request path, because that is
+# where a broken link should stop a change.
+
+on:
+  push:
+    branches: [develop]
+    tags: ["v*"]
+  pull_request:
+    branches: [develop]
+  workflow_dispatch:
+
+concurrency:
+  group: docs-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/develop' }}
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: 'strict build + honesty + served install.sh'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      # `make docs-check`'s honesty gate runs the real binary (`cargo run -p
+      # slipfork -- --help`), so this job needs the toolchain, not just Zensical.
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: docs
+      - uses: astral-sh/setup-uv@v5
+      - name: Warm the Zensical tool cache
+        run: uvx zensical --version
+      # A warning is a failure, and `validation.invalid_links = true` means every
+      # internal link and anchor is resolved. The honesty gate then proves every
+      # `slipfork <verb>` printed in published docs exists in `--help`.
+      - name: Build the site with --strict
+        run: make docs-check
+      # The installer resolves its release at run time (`VERSION=""`), so there
+      # is no stale literal to compare; what must hold is that nothing pins a
+      # version, that the site publishes the reviewed bytes, and that a `v*` tag
+      # is the workspace version. A tag that disagrees with Cargo.toml would
+      # advertise a release nobody can identify afterwards.
+      - name: Installer and workspace version agree
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          version=$(uv run --no-project scripts/publish_packages.py base-version)
+          [ -n "$version" ] || { echo "::error file=Cargo.toml::no [workspace.package] version"; exit 1; }
+          pinned=$(sed -n 's/^VERSION="\([^"]\+\)"/\1/p' docs/install.sh | head -n 1)
+          if [ -n "$pinned" ]; then
+            if [ "$pinned" != "$version" ]; then
+              echo "::error file=docs/install.sh::pins $pinned but Cargo.toml says $version: remove the pin (the installer resolves the release at run time) or bump it with the release"
+              exit 1
+            fi
+          fi
+          if grep -qE 'slipfork-[0-9]+\.[0-9]+\.[0-9]+' docs/install.sh; then
+            echo "::error file=docs/install.sh::carries a hardcoded archive version; the installer must resolve the release it installs"
+            exit 1
+          fi
+          if [ "$REF_TYPE" = tag ] && [ "$REF_NAME" != "v$version" ]; then
+            echo "::error file=Cargo.toml::tag $REF_NAME is not the workspace version $version: bump [workspace.package] before tagging"
+            exit 1
+          fi
+          sh -n docs/install.sh
+          echo "install.sh: runtime-resolved, POSIX-clean, workspace version $version"
+      # The hero's `curl … | sh` is served from the site root, so the served
+      # bytes must be the reviewed bytes. Zensical happens to copy `docs/`
+      # verbatim; the copy, the `cmp`, and the HTTP GET make that a fact this
+      # gate can lean on.
+      - name: Publish and prove install.sh
+        run: |
+          set -euo pipefail
+          cp docs/install.sh site/install.sh
+          chmod 0755 site/install.sh
+          cmp docs/install.sh site/install.sh
+          uv run --no-project python -m http.server 8731 --bind 127.0.0.1 --directory site &
+          server=$!
+          trap 'kill "$server" 2>/dev/null || true' EXIT
+          url=http://127.0.0.1:8731/install.sh
+          ready=0
+          for _ in $(seq 1 50); do
+            if curl -fsS -o /dev/null "$url" 2>/dev/null; then ready=1; break; fi
+            sleep 0.2
+          done
+          [ "$ready" -eq 1 ] || { echo "::error::the built site does not serve /install.sh"; exit 1; }
+          curl -fsSL "$url" | cmp - docs/install.sh
+          curl -fsSL "$url" | sh -s -- --help >/dev/null
+          echo "install.sh: served byte-identical and 'curl … | sh -s -- --help' exits 0"
+      - if: github.event_name != 'pull_request'
+        uses: actions/configure-pages@v5
+      - if: github.event_name != 'pull_request'
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    name: deploy to GitHub Pages
+    needs: build
+    # A pull request builds the site and stops there: the `github-pages`
+    # environment refuses a deployment from a feature branch.
+    if: >-
+      !cancelled() &&
+      needs.build.result == 'success' &&
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event_name == 'push' && github.ref == 'refs/heads/develop'))
+    runs-on: ubuntu-24.04
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v4

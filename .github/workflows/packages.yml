@@ -1,0 +1,342 @@
+name: Packages
+
+# The release graph for the six distribution families in `specs/06` §1.
+#
+# A `v*` tag builds native `amd64` and `arm64` artifacts from the measured
+# bundle, installs each format in the distribution it targets, builds the six
+# `slipfork-lsp` archives Zed consumes, and only then publishes: Cloudsmith is
+# primary and fails closed without `CLOUDSMITH_API_KEY`; the Forgejo mirror is
+# best effort. `workflow_dispatch` runs the same graph with every publish command
+# printed (`--dry-run`) unless the `publish` input says otherwise.
+#
+# Every artifact is produced by `make packages` / `make lsp-assets`, so the
+# script that computes a version, floor, or archive name is the only copy of
+# that knowledge. No token is ever echoed.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: >-
+          Publish (or replace) this ref's packages in the signed repositories.
+          A rehearsal prints every command and uploads nothing.
+        type: boolean
+        default: false
+
+concurrency:
+  group: packages-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  plan:
+    name: version, tag and whether this run publishes
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.plan.outputs.version }}
+      tag: ${{ steps.plan.outputs.tag }}
+      should_publish: ${{ steps.plan.outputs.should_publish }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - name: The version, and whether this run may publish
+        id: plan
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+          PUBLISH_INPUT: ${{ inputs.publish }}
+        run: |
+          set -euo pipefail
+          version=$(uv run --no-project scripts/publish_packages.py base-version)
+          tag="v$version"
+          publish=false
+          if [ "$REF_TYPE" = tag ]; then
+            # The tag and the manifest may not disagree: a `v0.1.0` tag on a
+            # 0.1.1 tree is a release nobody can identify afterwards.
+            if [ "$REF_NAME" != "$tag" ]; then
+              echo "::error::tag $REF_NAME is not the workspace version $version"
+              exit 1
+            fi
+            tag=$REF_NAME
+            # A tag **push** publishes. A dispatch on a tag rehearses unless it
+            # asked for the replacement explicitly: `gh workflow run --ref v0.1.0`
+            # also reports `ref_type=tag`.
+            if [ "$EVENT_NAME" = push ] || [ "$PUBLISH_INPUT" = true ]; then
+              publish=true
+            fi
+          fi
+          {
+            echo "version=$version"
+            echo "tag=$tag"
+            echo "should_publish=$publish"
+          } >> "$GITHUB_OUTPUT"
+          echo "packages: tag $tag, event $EVENT_NAME/$REF_TYPE, publishes: $publish"
+
+  packages:
+    name: 'build every format natively (${{ matrix.arch }})'
+    needs: [plan]
+    runs-on: ${{ matrix.runs_on }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runs_on: ubuntu-24.04
+          - arch: arm64
+            runs_on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: packages-${{ matrix.arch }}
+      - name: Install the host tools `make packages` needs
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq zstd rpm
+      # `make packages` measures the glibc floor from the shipped ELF, builds the
+      # musl bundle in Alpine, and uses `rockylinux:9` only because the runner
+      # has no `abuild`/`rpmbuild` for the target layout. `packages-probe`
+      # refuses an empty, truncated, or malformed artifact before upload.
+      - name: make packages
+        run: make packages VERSION=${{ needs.plan.outputs.version }} PACKAGES_OUT=dist/packages
+      # One checksum file per architecture: `merge-multiple` would otherwise let
+      # the arm64 job's `SHA256SUMS` overwrite the amd64 job's.
+      - name: Name the checksums after this architecture
+        run: mv dist/packages/SHA256SUMS dist/packages/SHA256SUMS-${{ matrix.arch }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: packages-${{ matrix.arch }}
+          path: dist/packages/*
+          if-no-files-found: error
+
+  install:
+    name: '${{ matrix.image }} installs and runs it (${{ matrix.arch }})'
+    needs: [packages]
+    runs-on: ${{ matrix.runs_on }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: debian:trixie
+            arch: amd64
+            runs_on: ubuntu-24.04
+            verify: apt-get update -qq && apt-get install -y -qq crun btrfs-progs && dpkg -i /pkg/*.deb && /usr/bin/slipfork --version && slipfork-lsp --version
+          - image: debian:trixie
+            arch: arm64
+            runs_on: ubuntu-24.04-arm
+            verify: apt-get update -qq && apt-get install -y -qq crun btrfs-progs && dpkg -i /pkg/*.deb && /usr/bin/slipfork --version && slipfork-lsp --version
+          - image: ubuntu:24.04
+            arch: amd64
+            runs_on: ubuntu-24.04
+            verify: apt-get update -qq && apt-get install -y -qq crun btrfs-progs && dpkg -i /pkg/*.deb && /usr/bin/slipfork --version && slipfork-lsp --version
+          - image: ubuntu:24.04
+            arch: arm64
+            runs_on: ubuntu-24.04-arm
+            verify: apt-get update -qq && apt-get install -y -qq crun btrfs-progs && dpkg -i /pkg/*.deb && /usr/bin/slipfork --version && slipfork-lsp --version
+          - image: fedora:41
+            arch: amd64
+            runs_on: ubuntu-24.04
+            verify: dnf -y -q install /pkg/*.rpm && /usr/bin/slipfork --version && slipfork-lsp --version
+          - image: fedora:41
+            arch: arm64
+            runs_on: ubuntu-24.04-arm
+            verify: dnf -y -q install /pkg/*.rpm && /usr/bin/slipfork --version && slipfork-lsp --version
+          - image: rockylinux:9
+            arch: amd64
+            runs_on: ubuntu-24.04
+            verify: dnf -y -q install /pkg/*.rpm && /usr/bin/slipfork --version && slipfork-lsp --version
+          - image: rockylinux:9
+            arch: arm64
+            runs_on: ubuntu-24.04-arm
+            verify: dnf -y -q install /pkg/*.rpm && /usr/bin/slipfork --version && slipfork-lsp --version
+          - image: archlinux:latest
+            arch: amd64
+            runs_on: ubuntu-24.04
+            verify: pacman -Sy --noconfirm --needed glibc crun btrfs-progs && pacman -U --noconfirm /pkg/*.pkg.tar.zst && /usr/bin/slipfork --version && slipfork-lsp --version
+          # `archlinux:latest` is amd64-only; the ARM port is the arm64 image.
+          - image: menci/archlinuxarm:latest
+            arch: arm64
+            runs_on: ubuntu-24.04-arm
+            verify: pacman -Sy --noconfirm --needed glibc crun btrfs-progs && pacman -U --noconfirm /pkg/*.pkg.tar.zst && /usr/bin/slipfork --version && slipfork-lsp --version
+          - image: alpine:3.21
+            arch: amd64
+            runs_on: ubuntu-24.04
+            verify: apk update -q && apk add --no-cache crun btrfs-progs && apk add --allow-untrusted /pkg/*.apk && /usr/bin/slipfork --version && slipfork-lsp --version
+          - image: alpine:3.21
+            arch: arm64
+            runs_on: ubuntu-24.04-arm
+            verify: apk update -q && apk add --no-cache crun btrfs-progs && apk add --allow-untrusted /pkg/*.apk && /usr/bin/slipfork --version && slipfork-lsp --version
+    steps:
+      - uses: actions/checkout@v4
+      # Only this architecture's artifacts: the other arch's package has the
+      # same name and would make the deb/rpm/apk glob ambiguous.
+      - uses: actions/download-artifact@v4
+        with:
+          name: packages-${{ matrix.arch }}
+          path: dist/packages
+      - name: Install in ${{ matrix.image }} and run
+        run: |
+          set -euo pipefail
+          docker run --rm -v "$PWD/dist/packages:/pkg:ro" "${{ matrix.image }}" \
+            sh -c "${{ matrix.verify }}"
+
+  lsp:
+    name: 'slipfork-lsp archive (${{ matrix.platform }}/${{ matrix.arch }})'
+    runs-on: ${{ matrix.runs_on }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The six names `editors/zed/src/lib.rs` requests, each built natively.
+          - platform: linux
+            arch: x86_64
+            triple: x86_64-unknown-linux-gnu
+            runs_on: ubuntu-24.04
+          - platform: linux
+            arch: aarch64
+            triple: aarch64-unknown-linux-gnu
+            runs_on: ubuntu-24.04-arm
+          - platform: darwin
+            arch: x86_64
+            triple: x86_64-apple-darwin
+            runs_on: macos-15-intel
+          - platform: darwin
+            arch: aarch64
+            triple: aarch64-apple-darwin
+            runs_on: macos-15
+          - platform: windows
+            arch: x86_64
+            triple: x86_64-pc-windows-msvc
+            runs_on: windows-2022
+          - platform: windows
+            arch: aarch64
+            triple: aarch64-pc-windows-msvc
+            runs_on: windows-11-arm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.triple }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: lsp-${{ matrix.triple }}
+      - name: Toolchain for the archive (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: choco install make zip -y --no-progress
+      - name: Build the Zed asset
+        shell: bash
+        run: make lsp-assets LSP_TARGET=${{ matrix.triple }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lsp-${{ matrix.platform }}-${{ matrix.arch }}
+          path: dist/slipfork-lsp-${{ matrix.platform }}-${{ matrix.arch }}.*
+          if-no-files-found: error
+
+  publish:
+    name: 'Cloudsmith + Forgejo + GitHub release (dry-run first)'
+    needs: [plan, packages, install, lsp]
+    if: >-
+      !cancelled() &&
+      github.repository == 'offworld-nexus/slipfork' &&
+      needs.plan.result == 'success' &&
+      needs.packages.result == 'success' &&
+      needs.install.result == 'success' &&
+      needs.lsp.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: packages-*
+          path: dist/packages
+          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: lsp-*
+          path: dist/lsp
+          merge-multiple: true
+      - name: Rehearse every publish command (--dry-run)
+        env:
+          CLOUDSMITH_API_KEY: ${{ secrets.CLOUDSMITH_API_KEY }}
+          FORGEJO_TOKEN: ${{ secrets.FORGEJO_TOKEN }}
+          COMPONENT: main
+        run: |
+          set -euo pipefail
+          publish_format() {
+            format=$1; pattern=$2; shift 2
+            shopt -s nullglob
+            files=(dist/packages/$pattern)
+            if [ "${#files[@]}" -eq 0 ]; then
+              echo "::error::no $format artifact matched dist/packages/$pattern"
+              exit 1
+            fi
+            for file in "${files[@]}"; do
+              uv run --no-project scripts/publish_packages.py push \
+                --format "$format" --file "$file" --component "$COMPONENT" "$@"
+              uv run --no-project scripts/publish_packages.py forgejo \
+                --format "$format" --file "$file" --component "$COMPONENT" "$@"
+            done
+          }
+          # The dry run is printed on every run, tag or rehearsal, so the exact
+          # request a real publish sends is in the log beside it.
+          publish_format deb '*.deb' --dry-run
+          publish_format rpm '*.rpm' --dry-run
+          publish_format arch '*.pkg.tar.zst' --dry-run
+          publish_format apk '*.apk' --dry-run
+      - name: Publish to Cloudsmith and mirror to Forgejo
+        if: needs.plan.outputs.should_publish == 'true'
+        env:
+          CLOUDSMITH_API_KEY: ${{ secrets.CLOUDSMITH_API_KEY }}
+          FORGEJO_TOKEN: ${{ secrets.FORGEJO_TOKEN }}
+          COMPONENT: main
+        run: |
+          set -euo pipefail
+          publish_format() {
+            format=$1; pattern=$2
+            shopt -s nullglob
+            files=(dist/packages/$pattern)
+            if [ "${#files[@]}" -eq 0 ]; then
+              echo "::error::no $format artifact matched dist/packages/$pattern"
+              exit 1
+            fi
+            for file in "${files[@]}"; do
+              uv run --no-project scripts/publish_packages.py push \
+                --format "$format" --file "$file" --component "$COMPONENT"
+              uv run --no-project scripts/publish_packages.py forgejo \
+                --format "$format" --file "$file" --component "$COMPONENT"
+            done
+          }
+          publish_format deb '*.deb'
+          publish_format rpm '*.rpm'
+          publish_format arch '*.pkg.tar.zst'
+          publish_format apk '*.apk'
+      - name: Attach the packages and editor assets to the GitHub release
+        if: needs.plan.outputs.should_publish == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.plan.outputs.tag }}
+          VERSION: ${{ needs.plan.outputs.version }}
+        run: |
+          set -euo pipefail
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" --title "Slipfork $VERSION" --generate-notes --verify-tag
+          fi
+          gh release upload "$TAG" dist/packages/* dist/lsp/* --clobber

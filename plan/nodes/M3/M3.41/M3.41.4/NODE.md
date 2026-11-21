@@ -2,16 +2,16 @@
 id: M3.41.4
 title: "GitHub Actions: CI, docs deploy, distro package matrix, nightly"
 kind: task
-status: ready
+status: done
 owner: implementer
 priority: 3
 depends_on: [M3.41.2, M3.41.3]
 paths: [".github/**"]
-attempts: 0
+attempts: 1
 max_attempts: 3
 escalation: none
 created: "2026-11-21T16:35"
-updated: "2026-11-21T16:35"
+updated: "2026-11-21T17:26"
 ---
 
 # Goal
