@@ -124,6 +124,10 @@ fn help_and_version_are_the_shipped_surface() {
             "exec",
             "db",
             "redis",
+            "env",
+            "secret",
+            "open",
+            "auth",
             "fmt",
             "migrate",
             "completions",
@@ -198,6 +202,29 @@ fn help_and_version_are_the_shipped_surface() {
     let stderr = String::from_utf8(unknown.stderr).expect("errors are UTF-8");
     assert!(stderr.contains("error:"), "{stderr}");
     assert!(stderr.contains("next:"), "{stderr}");
+}
+
+#[test]
+fn host_verbs_ship_help_and_keep_json_clean() {
+    for (verb, flags) in [
+        ("env", &["--reveal", "--json"][..]),
+        ("secret", &["list", "set", "unset", "--json"][..]),
+        ("open", &["--json"][..]),
+        ("auth", &["--ospp-endpoint", "--json"][..]),
+    ] {
+        let help = run(&[verb, "--help"]);
+        assert!(help.status.success(), "`{verb} --help` must succeed");
+        let text = String::from_utf8_lossy(&help.stdout);
+        assert!(text.contains(&format!("slipfork {verb}")), "{text}");
+        for flag in flags {
+            assert!(
+                text.contains(flag),
+                "`{verb} --help` is missing {flag}: {text}"
+            );
+        }
+        assert_eq!(text.matches("--help").count(), 1, "{text}");
+        assert!(!text.contains(ANSI), "piped help must stay plain: {text}");
+    }
 }
 
 #[test]

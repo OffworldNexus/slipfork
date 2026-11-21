@@ -98,6 +98,30 @@ pub(super) const VERBS: &[VerbSpec] = &[
         flags: &["--json", "-h", "--help"],
     },
     VerbSpec {
+        name: "env",
+        summary: "Print resolved runtime variables; secrets stay redacted unless revealed",
+        subcommands: &[],
+        flags: &["--reveal", "--json", "-h", "--help"],
+    },
+    VerbSpec {
+        name: "secret",
+        summary: "List, override, or remove local offline secrets",
+        subcommands: &["list", "set", "unset"],
+        flags: &["--json", "-h", "--help"],
+    },
+    VerbSpec {
+        name: "open",
+        summary: "Open the world or service URL in your browser, headless-aware",
+        subcommands: &[],
+        flags: &["--json", "-h", "--help"],
+    },
+    VerbSpec {
+        name: "auth",
+        summary: "Pair this machine with a remote OSPP v1 endpoint",
+        subcommands: &[],
+        flags: &["--ospp-endpoint", "--json", "-h", "--help"],
+    },
+    VerbSpec {
         name: "fmt",
         summary: "Format a Forkfile in place",
         subcommands: &[],

@@ -280,6 +280,86 @@ pub(super) fn help_text(topic: HelpTopic, color: bool) -> String {
                  \x20 slipfork redis\n"
             )
         }
+        HelpTopic::Env => {
+            let title = paint("slipfork env", "1;36", color);
+            format!(
+                "{title}\n\
+                 Print resolved runtime variables; secrets stay redacted by default.\n\
+                 \n\
+                 Usage: slipfork env [SERVICE] [--reveal] [--json]\n\
+                 \n\
+                 Arguments:\n\
+                 \x20 SERVICE   Only this service's variables (default: every component)\n\
+                 \n\
+                 Options:\n\
+                 \x20 --reveal  Show real secret values; requires an interactive terminal\n\
+                 \x20 --json    Emit {{component: {{key: value}}}} with zero ANSI\n\
+                 \x20 -h, --help\n\
+                 \n\
+                 Example:\n\
+                 \x20 slipfork env api\n"
+            )
+        }
+        HelpTopic::Secret => {
+            let title = paint("slipfork secret", "1;36", color);
+            format!(
+                "{title}\n\
+                 List, override, or remove local offline secrets for this world.\n\
+                 \n\
+                 Usage: slipfork secret <list|set|unset> [COMPONENT.KEY] [--json]\n\
+                 \n\
+                 Commands:\n\
+                 \x20 list              Show declared secrets, always redacted\n\
+                 \x20 set COMPONENT.KEY Store one value read from stdin (never echoed)\n\
+                 \x20 unset COMPONENT.KEY Remove exactly one stored key\n\
+                 \n\
+                 Options:\n\
+                 \x20 --json   Emit objects or arrays with zero ANSI\n\
+                 \x20 -h, --help\n\
+                 \n\
+                 Example:\n\
+                 \x20 printf '%s' \"$KEY\" | slipfork secret set api.SECRET_KEY\n"
+            )
+        }
+        HelpTopic::Open => {
+            let title = paint("slipfork open", "1;36", color);
+            format!(
+                "{title}\n\
+                 Open the world or service URL in your browser, printing it when headless.\n\
+                 \n\
+                 Usage: slipfork open [SERVICE] [--json]\n\
+                 \n\
+                 Arguments:\n\
+                 \x20 SERVICE   Open this service's route (default: the primary route)\n\
+                 \n\
+                 Options:\n\
+                 \x20 --json   Emit {{\"url\",\"opened\"}} with zero ANSI\n\
+                 \x20 -h, --help\n\
+                 \n\
+                 Example:\n\
+                 \x20 slipfork open api\n"
+            )
+        }
+        HelpTopic::Auth => {
+            let title = paint("slipfork auth", "1;36", color);
+            format!(
+                "{title}\n\
+                 Pair this machine with an OSPP v1 endpoint, or reuse the saved record.\n\
+                 \n\
+                 Usage: slipfork auth [URL] [--ospp-endpoint URL] [--json]\n\
+                 \n\
+                 Arguments:\n\
+                 \x20 URL                Endpoint to pair with (default: the saved record)\n\
+                 \n\
+                 Options:\n\
+                 \x20 --ospp-endpoint URL Endpoint that wins over both URL and record\n\
+                 \x20 --json              Emit {{\"endpoint\",\"account\",\"machine\"}} with zero ANSI\n\
+                 \x20 -h, --help\n\
+                 \n\
+                 Example:\n\
+                 \x20 slipfork auth wss://ci.example.com/ospp\n"
+            )
+        }
         HelpTopic::Fmt => {
             let title = paint("slipfork fmt", "1;36", color);
             format!(

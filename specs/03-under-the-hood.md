@@ -123,7 +123,7 @@ flowchart LR
 
 | Crate | Owns | Port → adapter |
 | :--- | :--- | :--- |
-| `slipfork` | CLI parsing, rendering, daemon composition; daemon-side `SecretVault` + `DaemonControl` wiring | builds the tree |
+| `slipfork` | CLI parsing, rendering, daemon composition; daemon-side `SecretVault` at `<state_dir>/secrets.json` (`0600`) + `DaemonControl` wiring | builds the tree |
 | `slipfork-forkfile` | `Forkfile` parse, typecheck, evaluate, `migrate`, `fmt` | — |
 | `slipfork-world` | Btrfs subvolumes, snapshots, world boot/reap, ioctls | `WorldEngine` → `BtrfsEngine` |
 | `slipfork-image` | OCI pulls and native `Dockerfile` builds | `BaseImageBuilder` → `NativeImageBuilder` |

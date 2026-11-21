@@ -2437,3 +2437,8 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-21T14:34 [M3.40.6] (lead) base 4fa662645d7c449650a1e40ab7a83340a0dd1742
 - 2026-11-21T14:35 [M3.40.11] (lead) created (task) slipfork-vcs GitWorkspace VcsWorkspace port + daemon BootSession consolidation
 - 2026-11-21T14:37 [M3.40.8] (lead) status review -> done
+- 2026-11-21T14:37 [M3.40.9] (lead) edited fields
+- 2026-11-21T14:37 [M3.40.9] (lead) status ready -> active
+- 2026-11-21T14:37 [M3.40.9] (lead) attempt 1/3 started
+- 2026-11-21T14:37 [M3.40.9] (lead) base b4ead62a6e8b416d42119ffa804060174399c0a7
+- 2026-11-21T14:41 [M3.40.9] (lead) status active -> done

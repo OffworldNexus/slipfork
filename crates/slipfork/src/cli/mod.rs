@@ -7,7 +7,10 @@ mod surface;
 use std::fmt;
 use std::process::ExitCode;
 
-use crate::commands::{ExecArgs, FmtArgs, LogsArgs, MigrateArgs, Session, TargetArgs, emit};
+use crate::commands::{
+    AuthArgs, EnvArgs, ExecArgs, FmtArgs, LogsArgs, MigrateArgs, OpenArgs, SecretArgs, Session,
+    TargetArgs, emit,
+};
 use crate::world::{DownArgs, DropArgs, ForkArgs, RestartArgs, SuperviseArgs, UpArgs};
 
 pub(super) const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -36,6 +39,10 @@ enum Verb {
     Exec(ExecArgs),
     Db(TargetArgs),
     Redis(TargetArgs),
+    Env(EnvArgs),
+    Secret(SecretArgs),
+    Open(OpenArgs),
+    Auth(AuthArgs),
     Fmt(FmtArgs),
     Migrate(MigrateArgs),
     Completions(surface::Shell),
@@ -77,6 +84,10 @@ enum HelpTopic {
     Exec,
     Db,
     Redis,
+    Env,
+    Secret,
+    Open,
+    Auth,
     Fmt,
     Migrate,
     Completions,
@@ -122,6 +133,10 @@ impl CommandLine {
             Verb::Exec(args) => session.exec(&args),
             Verb::Db(args) => session.db(&args),
             Verb::Redis(args) => session.redis(&args),
+            Verb::Env(args) => session.env(&args),
+            Verb::Secret(args) => session.secret(&args),
+            Verb::Open(args) => session.open(&args),
+            Verb::Auth(args) => session.auth(&args),
             Verb::Fmt(args) => session.fmt(&args),
             Verb::Migrate(args) => session.migrate(&args),
             Verb::Completions(shell) => emit(&shell.script()),

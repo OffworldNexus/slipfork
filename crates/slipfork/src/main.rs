@@ -24,8 +24,8 @@ use std::process::ExitCode;
 fn main() -> ExitCode {
     let args: Vec<OsString> = std::env::args_os().skip(1).collect();
     let term_is_dumb = std::env::var_os("TERM").is_some_and(|term| term == "dumb");
-    let color =
-        std::io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none() && !term_is_dumb;
+    let tty = std::io::stdout().is_terminal();
+    let color = tty && std::env::var_os("NO_COLOR").is_none() && !term_is_dumb;
     let cwd = match std::env::current_dir() {
         Ok(cwd) => cwd,
         Err(error) => {
@@ -109,7 +109,7 @@ fn main() -> ExitCode {
         return daemon::run_handoff(&host);
     }
     match cli::CommandLine::parse(&args) {
-        Ok(line) => line.run(commands::Session::new(cwd, color, host)),
+        Ok(line) => line.run(commands::Session::new(cwd, color, tty, host)),
         Err(error) => {
             eprintln!("error: {error}");
             eprintln!("next: run `slipfork --help` to see the available surface.");

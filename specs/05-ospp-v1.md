@@ -90,7 +90,7 @@ sequenceDiagram
 | Auth transcript | `b"ospp-v1" ‖ server_nonce ‖ client_nonce` |
 | Pairing transcript | `b"ospp-v1-pair" ‖ server_nonce ‖ client_nonce` |
 
-The machine key is a `0600` file (`~/.local/share/slipfork/device-key-software.json`) and authenticates the machine only. It is never the per-subscription encryption key.
+The machine key is a `0600` file (`<state_dir>/device-key.json`) and authenticates the machine only. It is never the per-subscription encryption key.
 
 ---
 

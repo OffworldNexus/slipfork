@@ -47,28 +47,12 @@ pub struct HostEnv {
     /// Prefix for system paths (`SLIPFORK_INSTALL_ROOT`, `/` by default).
     pub install_root: PathBuf,
     /// Host name from `gethostname(2)`, read once by the composition root.
-    #[expect(
-        dead_code,
-        reason = "read by the `open` and `auth` verbs that land next"
-    )]
     pub hostname: String,
     /// `$DISPLAY` or `$WAYLAND_DISPLAY` is set, so a browser can be launched.
-    #[expect(
-        dead_code,
-        reason = "read by the `open` and `auth` verbs that land next"
-    )]
     pub display: bool,
     /// `$SSH_CONNECTION` or `$SSH_TTY` is set, so the session is remote.
-    #[expect(
-        dead_code,
-        reason = "read by the `open` and `auth` verbs that land next"
-    )]
     pub ssh: bool,
     /// The first `xdg-open`/`open` on the injected `PATH`, if any.
-    #[expect(
-        dead_code,
-        reason = "read by the `open` and `auth` verbs that land next"
-    )]
     pub opener: Option<PathBuf>,
 }
 

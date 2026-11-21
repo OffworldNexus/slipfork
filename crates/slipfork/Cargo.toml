@@ -36,4 +36,14 @@ serde_json.workspace = true
 slipfork-forkfile = { path = "../slipfork-forkfile" }
 slipfork-image = { path = "../slipfork-image" }
 slipfork-ingress = { path = "../slipfork-ingress" }
+slipfork-ospp = { path = "../slipfork-ospp" }
 slipfork-world = { path = "../slipfork-world" }
+
+[dev-dependencies]
+getrandom.workspace = true
+hex.workspace = true
+hpke.workspace = true
+p256.workspace = true
+sha2.workspace = true
+tempfile.workspace = true
+tungstenite.workspace = true

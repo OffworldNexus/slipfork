@@ -3,7 +3,10 @@
 use std::ffi::OsString;
 use std::path::PathBuf;
 
-use crate::commands::{ExecArgs, FmtArgs, LogsArgs, MigrateArgs, TargetArgs};
+use crate::commands::{
+    AuthArgs, EnvArgs, ExecArgs, FmtArgs, LogsArgs, MigrateArgs, OpenArgs, SecretArgs, SecretVerb,
+    TargetArgs,
+};
 use crate::world::{DownArgs, DropArgs, ForkArgs, RestartArgs, SuperviseArgs, UpArgs};
 
 use super::surface::Shell;
@@ -62,6 +65,10 @@ impl CommandLine {
             "exec" => exec_verb(rest)?,
             "db" => db_verb(rest)?,
             "redis" => redis_verb(rest)?,
+            "env" => env_verb(rest)?,
+            "secret" => secret_verb(rest)?,
+            "open" => open_verb(rest)?,
+            "auth" => auth_verb(rest)?,
             "fmt" => fmt_verb(rest)?,
             "migrate" => migrate_verb(rest)?,
             "completions" => completions_verb(rest)?,
@@ -352,6 +359,117 @@ fn target_args(args: &[&str], verb: &str) -> Result<(Option<String>, bool), Usag
         }
     }
     Ok((target, json))
+}
+
+fn env_verb(args: &[&str]) -> Result<Verb, UsageError> {
+    if args.iter().any(|arg| matches!(*arg, "-h" | "--help")) {
+        return Ok(Verb::Help(HelpTopic::Env));
+    }
+    let mut reveal = false;
+    let mut json = false;
+    let mut component = None;
+    for arg in args {
+        match *arg {
+            "--reveal" => reveal = true,
+            "--json" => json = true,
+            other if other.starts_with('-') => {
+                return Err(UsageError::new(format!("unknown flag `{other}` for `env`")));
+            }
+            other => {
+                if component.replace(other.to_owned()).is_some() {
+                    return Err(UsageError::new("`env` takes at most one service"));
+                }
+            }
+        }
+    }
+    Ok(Verb::Env(EnvArgs {
+        component,
+        reveal,
+        json,
+    }))
+}
+
+fn secret_verb(args: &[&str]) -> Result<Verb, UsageError> {
+    if args.iter().any(|arg| matches!(*arg, "-h" | "--help")) {
+        return Ok(Verb::Help(HelpTopic::Secret));
+    }
+    let Some((sub, rest)) = args.split_first() else {
+        return Err(UsageError::new(
+            "`secret` needs a subcommand: list, set, or unset",
+        ));
+    };
+    let verb = match *sub {
+        "list" => SecretVerb::List,
+        "set" => SecretVerb::Set,
+        "unset" => SecretVerb::Unset,
+        other => {
+            return Err(UsageError::new(format!(
+                "unknown secret command `{other}` (expected list, set, or unset)"
+            )));
+        }
+    };
+    let mut json = false;
+    let mut target = None;
+    for arg in rest {
+        match *arg {
+            "--json" => json = true,
+            other if other.starts_with('-') => {
+                return Err(UsageError::new(format!(
+                    "unknown flag `{other}` for `secret`"
+                )));
+            }
+            other => {
+                if target.replace((*other).to_owned()).is_some() {
+                    return Err(UsageError::new("`secret` takes at most one component.KEY"));
+                }
+            }
+        }
+    }
+    Ok(Verb::Secret(SecretArgs { verb, target, json }))
+}
+
+fn open_verb(args: &[&str]) -> Result<Verb, UsageError> {
+    if args.iter().any(|arg| matches!(*arg, "-h" | "--help")) {
+        return Ok(Verb::Help(HelpTopic::Open));
+    }
+    let (service, json) = target_args(args, "open")?;
+    Ok(Verb::Open(OpenArgs { service, json }))
+}
+
+fn auth_verb(args: &[&str]) -> Result<Verb, UsageError> {
+    if args.iter().any(|arg| matches!(*arg, "-h" | "--help")) {
+        return Ok(Verb::Help(HelpTopic::Auth));
+    }
+    let mut endpoint = None;
+    let mut positional = None;
+    let mut json = false;
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        match *arg {
+            "--json" => json = true,
+            "--ospp-endpoint" => {
+                let value = iter
+                    .next()
+                    .ok_or_else(|| UsageError::new("`--ospp-endpoint` needs a URL"))?;
+                endpoint = Some((*value).to_owned());
+            }
+            other if other.starts_with('-') => {
+                return Err(UsageError::new(format!(
+                    "unknown flag `{other}` for `auth`"
+                )));
+            }
+            other => {
+                if positional.replace(other.to_owned()).is_some() {
+                    return Err(UsageError::new("`auth` takes at most one URL"));
+                }
+            }
+        }
+    }
+    Ok(Verb::Auth(AuthArgs {
+        endpoint,
+        positional,
+        json,
+    }))
 }
 
 fn exec_verb(args: &[&str]) -> Result<Verb, UsageError> {

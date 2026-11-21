@@ -16,7 +16,9 @@ use crate::render::paint;
 use crate::world::HostEnv;
 use crate::{doctor, status};
 
+mod host;
 mod streams;
+pub use host::{AuthArgs, EnvArgs, OpenArgs, SecretArgs, SecretVerb};
 pub use streams::{ExecArgs, LogsArgs, TargetArgs};
 
 /// Parsed `slipfork fmt` arguments.
@@ -48,6 +50,7 @@ pub struct MigrateArgs {
 pub struct Session {
     cwd: PathBuf,
     color: bool,
+    tty: bool,
     host: HostEnv,
 }
 
@@ -64,16 +67,28 @@ impl Session {
         &self.host
     }
 
-    /// Builds a session from the injected working directory, color decision, and host state.
+    /// Builds a session from the injected working directory, colour decision, terminal state, and
+    /// host state.
     #[must_use]
-    pub fn new(cwd: PathBuf, color: bool, host: HostEnv) -> Self {
-        Self { cwd, color, host }
+    pub fn new(cwd: PathBuf, color: bool, tty: bool, host: HostEnv) -> Self {
+        Self {
+            cwd,
+            color,
+            tty,
+            host,
+        }
     }
 
     /// Whether ANSI styling is allowed for this invocation.
     #[must_use]
     pub fn color(&self) -> bool {
         self.color
+    }
+
+    /// Whether stdout is a real terminal, decided once by the composition root.
+    #[must_use]
+    pub fn tty(&self) -> bool {
+        self.tty
     }
 
     /// Renders every running world as the `specs/02` status tree.

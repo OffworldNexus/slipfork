@@ -132,8 +132,8 @@ The three rows are always `Btrfs`, `Namespaces`, and `Runtime`, and `--json` emi
 | `slipfork exec [service\|image] -- <cmd>` | Runs any ad-hoc command (`pytest`, `pnpm test`, scripts) inside the target container, forwards stdin, and forwards the command's exit code. |
 | `slipfork db [database]` | Opens interactive `psql` (or executes piped SQL when `stdin` is redirected). |
 | `slipfork redis [id]` | Opens interactive `redis-cli` against the world's Redis instance. |
-| `slipfork env [service]` | Prints resolved runtime variables; secrets show `[REDACTED]` unless `--reveal` is passed on a TTY. |
-| `slipfork secret list\|set\|unset` | Lists or overrides local offline secrets for the current world. |
+| `slipfork env [service]` | Prints resolved runtime variables; secrets show `[REDACTED]` unless `--reveal` is passed on a TTY. `--reveal` is refused on a pipe, and `--json` keeps the same redaction gate. |
+| `slipfork secret list\|set\|unset` | Lists, overrides, or removes local offline secrets for the current world. `set` reads the value from stdin and never echoes it; `unset` removes exactly one key. |
 | `slipfork open [service]` | Opens the world or route URL in your browser (headless/SSH-aware, zero `sudo` env-stripping bugs). |
 | `slipfork auth [<endpoint-url>]` | Pairs your machine with a remote `OSPP v1` endpoint; precedence is `--ospp-endpoint` > positional URL > `<state_dir>/ospp.json`. |
 | `slipfork daemon install` | Writes the per-user daemon unit; no `sudo`, and worlds stay in the developer's session. |

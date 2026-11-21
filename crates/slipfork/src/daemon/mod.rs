@@ -8,6 +8,7 @@ mod boot;
 mod client;
 mod frames;
 mod handoff;
+mod host;
 mod ingress;
 mod lifecycle;
 mod registry;
@@ -312,6 +313,10 @@ impl Daemon {
             }
             "down" => self.core()?.down(&request.params, emit).map(Some),
             "restart" => self.core()?.restart(&request.params, emit).map(Some),
+            "env" => host::env(&self.state_dir, &request.params),
+            "secret.list" => host::secret_list(&self.state_dir, &request.params),
+            "secret.set" => host::secret_set(&self.state_dir, &request.params),
+            "secret.unset" => host::secret_unset(&self.state_dir, &request.params),
             other => Err(Failure::new(
                 "unknown-method",
                 format!("unknown method `{other}`"),
