@@ -24,6 +24,7 @@ flate2 = "1"
 getrandom = "0.3.3"
 hex = "0.4.3"
 hpke = { version = "0.15.1", default-features = false, features = ["aes", "alloc", "hkdfsha2", "nistp"] }
+httparse = "1"
 libc = "0.2"
 p256 = "0.14.0"
 percent-encoding = "2"

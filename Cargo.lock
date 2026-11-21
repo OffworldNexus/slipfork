@@ -1148,6 +1148,13 @@ dependencies = [
 [[package]]
 name = "slipfork-ingress"
 version = "0.1.0"
+dependencies = [
+ "httparse",
+ "libc",
+ "serde_json",
+ "slipfork-forkfile",
+ "thiserror",
+]
 
 [[package]]
 name = "slipfork-lsp"

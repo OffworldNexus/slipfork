@@ -113,10 +113,10 @@ Each HTTP `service` declares one public `port <u16>` (exposed as `$port` in `For
 
 | `Forkfile` Route | Path Match & Prefix Handling | Authority (`Host`) Filter |
 | :--- | :--- | :--- |
-| `route /api` | Prefix `/api` — **preserves `/api` by default** (`/api/users` -> `/api/users`) | Any declared app `domain` |
-| `route /api strip-prefix` | Prefix `/api` — strips `/api` (`/api/users` -> `/users`) | Any declared app `domain` |
-| `route /api rewrite /v1` | Prefix `/api` — rewrites prefix (`/api/users` -> `/v1/users`) | Any declared app `domain` |
-| `route exact /healthz` | Exact path `/healthz` only (no regex rules) | Any declared app `domain` |
+| `route /api` | Prefix `/api` — **preserves `/api` by default** (`/api/users` -> `/api/users`) | Primary `<world>.localhost` and every declared app `domain` |
+| `route /api strip-prefix` | Prefix `/api` — strips `/api` (`/api/users` -> `/users`) | Primary `<world>.localhost` and every declared app `domain` |
+| `route /api rewrite /v1` | Prefix `/api` — rewrites prefix (`/api/users` -> `/v1/users`) | Primary `<world>.localhost` and every declared app `domain` |
+| `route exact /healthz` | Exact path `/healthz` only (no regex rules) | Primary `<world>.localhost` and every declared app `domain` |
 | `route / domain admin` | Prefix `/` | Exact declared `domain admin` (`admin.<world>.localhost`) |
 | `route / domain mail.*` | Prefix `/` | Subdomain prefix `mail.` (`mail.<world>.localhost`) |
 

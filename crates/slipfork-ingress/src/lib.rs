@@ -1,13 +1,18 @@
-//! HTTP/WebSocket framing and `.localhost` route matching over an injected listener.
+//! `.localhost` ingress: route tables, a streaming HTTP/1.1 + WebSocket relay, and the
+//! single-descriptor handoff of an accepted `:80` connection to the daemon.
+//!
+//! Library code here never reads environment variables, probes the process table, or binds a
+//! socket: the composition root injects the accepted stream, the route table, and the upstream
+//! dialer, and the daemon's ingress module makes the routing decision.
 
-/// Entry marker for the route matcher owned by this crate.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub struct IngressRouter;
+#![deny(unsafe_code)]
 
-impl IngressRouter {
-    /// Builds the router marker.
-    #[must_use]
-    pub const fn new() -> Self {
-        Self
-    }
-}
+pub mod fdpass;
+pub mod handoff;
+pub mod proxy;
+pub mod route;
+
+pub use fdpass::{PAYLOAD_CAP, recv_fd, send_fd};
+pub use handoff::{ACCEPT_METHOD, IngressHandoff};
+pub use proxy::{HEADER_CAP, ProxyError, RELAY_CAP, serve_connection};
+pub use route::{IngressRegistry, IngressRoute, IngressTable, RouteError, RouteMatch, TableError};

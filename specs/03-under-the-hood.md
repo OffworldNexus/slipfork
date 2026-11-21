@@ -107,7 +107,9 @@ flowchart LR
   Daemon -->|"routes + relays"| Pod
 ```
 
-- **Single binary & cloud-identical `:80` ingress:** One `slipfork` binary powers the CLI and the **single per-user daemon** (`<runtime_dir>/daemon.sock`) owning all worlds/forks under your user account. `slipfork daemon install` writes the user unit; `sudo slipfork daemon install --ingress` additionally installs the system `:80` socket and AppArmor profile. The stateless ingress accepts the connection and forwards its fd to the daemon, whose ingress module makes every route decision — preserving path prefixes by default (`preserve_path_prefix: true`), supporting explicit `strip-prefix`, `rewrite`, and `exact` paths, and matching `domain <id>` / `domain <prefix>.*` authorities across HTTP and WebSockets.
+- **Single binary & cloud-identical `:80` ingress:** One `slipfork` binary powers the CLI and the **single per-user daemon** (`<runtime_dir>/daemon.sock`) owning all worlds/forks under your user account. `slipfork daemon install` writes the user unit; `sudo slipfork daemon install --ingress` additionally installs the system `:80` socket and AppArmor profile.
+- **Authority resolution & streaming:** The stateless ingress forwards the accepted fd and the daemon's ingress module makes every route decision — preserving path prefixes by default (`preserve_path_prefix: true`), supporting explicit `strip-prefix`, `rewrite`, and `exact`, and matching `domain <id>` / `domain <prefix>.*` authorities across HTTP and WebSockets. Authorities resolve against `<world>.localhost`, `<domain>.<world>.localhost`, `<prefix>.<world>.localhost`, and `<fork>--<world>.localhost`, with the longest path prefix winning.
+- **Bounded framing:** Request and response heads are capped at 16 KiB, and bodies plus upgraded WebSocket bytes stream through a fixed 64 KiB buffer, so no upload is ever buffered in full.
 - **Remote Cloud Clutch (`OSPP v1`):** When paired via `slipfork auth <url>`, the user daemon authenticates over WebSocket with a device P-256 keypair, sends the evaluated `Forkfile`, decrypts `hpke-p256` cloud secrets strictly in memory, auto-restarts affected services on live `env_updated` pushes, and streams encrypted DB seed dumps over HTTPS straight into your Btrfs world subvolume.
 - **Coding-Agent Integration (`@slipfork/opencode`):** Hooks OpenCode worktrees directly to `slipfork fork` and `slipfork drop`, giving every parallel agent session its own `< 50ms` Btrfs checkout + DB/S3 clone + `http://<branch>--<world>.localhost` URL with pre-warmed dependencies.
 
@@ -147,6 +149,6 @@ The CLI and the ingress always **connect to** `daemon.sock`; the daemon never di
 
 ### Ingress ownership
 
-`slipfork-ingress` owns HTTP/WebSocket framing and route matching: preserve-by-default prefixes, `strip-prefix`, `rewrite`, `exact`, and `domain` authority filters.
+`slipfork-ingress` owns HTTP/WebSocket framing and route matching: preserve-by-default prefixes, `strip-prefix`, `rewrite`, `exact`, and `domain` authority filters. A table that would route the same request two ways — duplicate prefixes, two catch-alls, port `0`, or a `domain <id>` that is not declared — is refused before it serves a connection; a non-`.localhost` host answers `400`, an unknown `.localhost` world answers `421`, and an unmatched authority or path inside a known world answers `404`, never a fallback.
 
 The composition root injects an already-bound `TcpListener` — from `LISTEN_FDS` under systemd, or a direct bind under OpenRC. The systemd `slipfork-ingress@.service` template instance is stateless: it accepts and forwards that one connection fd to `daemon.sock`, and the daemon's ingress module makes the routing decision. That handoff is the single direction; nothing pushes traffic the other way.

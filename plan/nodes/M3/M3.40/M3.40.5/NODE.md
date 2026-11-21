@@ -5,21 +5,25 @@ kind: task
 status: ready
 owner: implementer
 priority: 3
-depends_on: [M3.40.4]
+depends_on: [M3.40.7]
 paths:
+  - "crates/slipfork-world/**"
+  - "crates/slipfork-vcs/**"
+  - "crates/slipfork-ospp/**"
   - "crates/slipfork/src/**"
   - "crates/slipfork/tests/**"
   - crates/slipfork/Cargo.toml
   - Cargo.toml
   - Cargo.lock
   - Makefile
+  - ARCHITECTURE.md
   - "specs/02-cli-ux.md"
   - TESTING_PLAN.md
 attempts: 0
 max_attempts: 3
 escalation: none
 created: "2026-11-21T12:50"
-updated: "2026-11-21T12:50"
+updated: "2026-11-21T13:11"
 ---
 
 # Goal

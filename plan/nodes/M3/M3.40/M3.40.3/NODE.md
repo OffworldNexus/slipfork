@@ -2,16 +2,16 @@
 id: M3.40.3
 title: "Stateless :80 .localhost HTTP + WebSocket ingress router and streaming proxy"
 kind: task
-status: ready
+status: done
 owner: implementer
 priority: 3
 depends_on: [M3.40.2]
 paths: ["crates/slipfork-ingress/**", Cargo.toml, Cargo.lock, "specs/03-under-the-hood.md", TESTING_PLAN.md]
-attempts: 0
+attempts: 1
 max_attempts: 3
 escalation: none
 created: "2026-11-21T12:50"
-updated: "2026-11-21T12:50"
+updated: "2026-11-21T13:18"
 ---
 
 # Goal

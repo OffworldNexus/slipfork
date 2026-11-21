@@ -2392,3 +2392,14 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-21T12:56 [M3.40.2] (lead) attempt 1/3 started
 - 2026-11-21T12:56 [M3.40.2] (lead) base efe9068d3e1345b47f1230fe6ef5badeaafbda82
 - 2026-11-21T13:04 [M3.40.2] (lead) status active -> done
+- 2026-11-21T13:04 [M3.40.3] (lead) status ready -> active
+- 2026-11-21T13:04 [M3.40.3] (lead) attempt 1/3 started
+- 2026-11-21T13:04 [M3.40.3] (lead) base e67f9cb9aa83969ba0aaed55f77b6cf28423153a
+- 2026-11-21T13:07 [M3.40] (conductor) edited fields
+- 2026-11-21T13:07 [M3.40.4] (conductor) edited fields
+- 2026-11-21T13:07 [M3.40.5] (conductor) edited fields
+- 2026-11-21T13:10 [M4] (conductor) OWNER 0.2.0 REQUIREMENT: NO manual 'slipfork prune' command in 0.1.0 or 0.2.0 — instead, in 0.2.0 the per-user daemon actively watches upstream OCI images in th
+- 2026-11-21T13:11 [M3.40.5] (lead) edited fields
+- 2026-11-21T13:11 [M3.40.7] (lead) created (task) status/ps dynamic tree, doctor rows, and daemon install user+ingress units
+- 2026-11-21T13:11 [M3.40.5] (lead) edited fields
+- 2026-11-21T13:18 [M3.40.3] (lead) status active -> done

@@ -7,16 +7,16 @@ owner: implementer
 priority: 3
 depends_on: [M3.40.3]
 paths:
-  - "crates/slipfork/src/daemon/**"
-  - "crates/slipfork/src/cli/**"
-  - "crates/slipfork/src/commands/**"
-  - crates/slipfork/src/render.rs
-  - crates/slipfork/src/main.rs
+  - "crates/slipfork-world/**"
+  - "crates/slipfork-ingress/**"
+  - "crates/slipfork-ospp/**"
+  - "crates/slipfork/src/**"
   - crates/slipfork/Cargo.toml
   - "crates/slipfork/tests/**"
   - Cargo.toml
   - Cargo.lock
   - Makefile
+  - ARCHITECTURE.md
   - "specs/03-under-the-hood.md"
   - "specs/02-cli-ux.md"
   - TESTING_PLAN.md
@@ -24,7 +24,7 @@ attempts: 0
 max_attempts: 3
 escalation: none
 created: "2026-11-21T12:50"
-updated: "2026-11-21T12:50"
+updated: "2026-11-21T13:07"
 ---
 
 # Goal

@@ -12,19 +12,14 @@ paths:
   - ARCHITECTURE.md
   - "specs/**"
   - TESTING_PLAN.md
-  - "crates/slipfork-forkfile/**"
-  - "crates/slipfork-lsp/**"
-  - "crates/slipfork-ospp/**"
-  - "crates/slipfork-edge/**"
-  - "crates/slipfork-ingress/**"
-  - "crates/slipfork/**"
+  - "crates/**"
   - "editors/**"
   - "packages/opencode-slipfork/**"
 attempts: 0
 max_attempts: 3
 escalation: none
 created: "2026-11-21T00:44"
-updated: "2026-11-21T11:29"
+updated: "2026-11-21T13:07"
 ---
 
 # Goal
