@@ -191,6 +191,13 @@ impl WorldEngine for BtrfsEngine {
         BtrfsEngine::create_subvolume(path)
     }
 
+    fn clone_subvolume(&self, source: &Path, dest: &Path) -> Result<()> {
+        if let Some(parent) = dest.parent() {
+            fs::create_dir_all(parent).map_err(|source| Error::io("create", parent, source))?;
+        }
+        Self::snapshot(source, dest)
+    }
+
     fn fork(&self, project: &Path, world: &WorldName, fork: &ForkName) -> Result<ForkPaths> {
         self.ensure_store()?;
         // Probe only: the project must already be a converted subvolume.

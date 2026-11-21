@@ -25,6 +25,7 @@ flate2.workspace = true
 libc.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
+slipfork-forkfile = { path = "../slipfork-forkfile" }
 slipfork-world = { path = "../slipfork-world" }
 tar.workspace = true
 zstd.workspace = true
@@ -32,4 +33,9 @@ zstd.workspace = true
 [[test]]
 name = "critical_oci_live"
 path = "tests/critical_oci_live.rs"
+required-features = ["live"]
+
+[[test]]
+name = "critical_dockerfile_live"
+path = "tests/critical_dockerfile_live.rs"
 required-features = ["live"]

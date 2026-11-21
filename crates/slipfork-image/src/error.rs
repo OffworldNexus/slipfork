@@ -57,6 +57,23 @@ pub enum Error {
         path: PathBuf,
         source: io::Error,
     },
+    /// The `Dockerfile` could not be parsed at `line`.
+    Dockerfile {
+        line: usize,
+        message: String,
+        next: &'static str,
+    },
+    /// A build instruction failed at `line` (bad source path, failed `RUN`, …).
+    StepFailed {
+        line: usize,
+        instruction: String,
+        message: String,
+        next: String,
+    },
+    /// A `--from` stage or `stage <name>` target does not exist.
+    UnknownStage { name: String },
+    /// `crun` is not installed, so no `RUN` instruction can execute.
+    CrunMissing { path: PathBuf },
     /// The Btrfs engine refused a subvolume operation.
     World(slipfork_world::Error),
 }
@@ -141,6 +158,29 @@ impl fmt::Display for Error {
                 "layer `{digest}` has no media type\nnext: pull from a registry that labels OCI layers"
             ),
             Self::Io { action, path, .. } => write!(f, "could not {action} `{}`", path.display()),
+            Self::Dockerfile {
+                line,
+                message,
+                next,
+            } => write!(f, "Dockerfile:{line}: {message}\nnext: {next}"),
+            Self::StepFailed {
+                line,
+                instruction,
+                message,
+                next,
+            } => write!(
+                f,
+                "Dockerfile:{line}: `{instruction}` failed: {message}\nnext: {next}"
+            ),
+            Self::UnknownStage { name } => write!(
+                f,
+                "no build stage named `{name}`\nnext: add `FROM <image> AS {name}` above this stage or fix the `--from=` argument"
+            ),
+            Self::CrunMissing { path } => write!(
+                f,
+                "`RUN` needs `crun`, but `{}` is missing\nnext: install crun from your distribution (`apt install crun`, `dnf install crun`, `pacman -S crun`) and retry",
+                path.display()
+            ),
             Self::World(err) => fmt::Display::fmt(err, f),
         }
     }

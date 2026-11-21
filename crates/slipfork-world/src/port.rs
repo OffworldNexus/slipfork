@@ -52,6 +52,12 @@ pub trait WorldEngine: Send + Sync {
     /// Creates a fresh read-write subvolume at `path` (parent directory must exist).
     fn create_subvolume(&self, path: &Path) -> Result<()>;
 
+    /// Creates a writable CoW snapshot at `dest` from `source` (`BTRFS_IOC_SNAP_CREATE_V2`).
+    ///
+    /// Image builds clone the parent step subvolume before every filesystem instruction, so this
+    /// is the single snapshot primitive behind `< 1ms` cached `Dockerfile` steps.
+    fn clone_subvolume(&self, source: &Path, dest: &Path) -> Result<()>;
+
     /// Seals a subvolume read-only with `BTRFS_SUBVOL_RDONLY`.
     fn seal(&self, subvolume: &Path) -> Result<()>;
 
