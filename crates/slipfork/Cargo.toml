@@ -23,6 +23,11 @@ name = "critical_status_live"
 path = "tests/critical_status_live.rs"
 required-features = ["live"]
 
+[[test]]
+name = "critical_fork_live"
+path = "tests/critical_fork_live.rs"
+required-features = ["live"]
+
 [dependencies]
 base64.workspace = true
 libc.workspace = true

@@ -52,6 +52,8 @@ flowchart LR
 3. Snapshots the **world data subvolume** (PostgreSQL 18, Redis 7, and S3 buckets).
 4. Boots the fork's DAG in a fresh network namespace (skipping `uv sync` / `pnpm install` in `< 1ms` unless the branch changed lockfiles) and registers `http://feat-auth--demo.localhost` (plus extra app domains, `mail.*` routes, and CDN subdomains like `http://static_cdn.feat-auth--demo.localhost`).
 
+`slipfork fork` creates the branch on the snapshot when the parent never had it, and `slipfork drop` removes both snapshots after stopping the fork world. A dirty fork checkout is discarded only with `slipfork drop <name> -f`.
+
 ---
 
 ## 2. Native Image Engine, S3 Policies & Per-Service `crun` Pods
@@ -168,6 +170,8 @@ Every detached pod's stdout and stderr are piped through one pump per stream, wh
 `up` spawns the detached `__supervise` child in its own session and relays its events while `ps`
 and `ingress.accept` keep answering. `down` sends the world `Shutdown`, waits for the process group
 to exit, then `SIGKILL`s it; `restart` reuses the world control socket and streams its phases.
+
+`fork` and `drop` ride that same connection. `fork` streams its snapshot and branch phases, boots the fork through the ordinary `up` path, and answers `{fork, project, url, elapsed_ms}`; `drop` stops the fork world first, refuses a dirty checkout with code `dirty-fork`, deletes both snapshots, and answers `{dropped, elapsed_ms}`.
 
 Every owned world is recorded in `<state_dir>/worlds.json` (`project`, `world`, `fork`, `pods_dir`,
 `supervisor_pid`, `started_at_ms`) and rewritten atomically. On start the daemon re-attaches worlds whose socket

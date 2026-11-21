@@ -62,7 +62,19 @@ impl StoreLayout {
     #[must_use]
     pub fn fork_world(&self, world: &WorldName, fork: &ForkName) -> PathBuf {
         self.worlds_root()
-            .join(format!("{}--{}", fork.as_str(), world.as_str()))
+            .join(Self::fork_world_name(world, fork).as_str())
+    }
+
+    /// `<project>/.forks/<fork>`: the fork's own checkout snapshot.
+    #[must_use]
+    pub fn project_fork(project: &Path, fork: &ForkName) -> PathBuf {
+        project_fork_path(project, fork)
+    }
+
+    /// `<fork>--<world>`: the world id a fork boots under.
+    #[must_use]
+    pub fn fork_world_name(world: &WorldName, fork: &ForkName) -> WorldName {
+        WorldName(format!("{}--{}", fork.as_str(), world.as_str()))
     }
 
     /// Splits a `worlds/` entry name back into its `<fork>--<world>` pair.

@@ -5,6 +5,8 @@
 //! `TERM=dumb`. The PTY assertion reports a skip message when `script` is absent;
 //! it never substitutes a mock.
 
+use std::io::{Read, Write};
+use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -115,6 +117,8 @@ fn help_and_version_are_the_shipped_surface() {
             "up",
             "down",
             "restart",
+            "fork",
+            "drop",
             "logs",
             "shell",
             "exec",
@@ -228,6 +232,55 @@ fn streaming_verbs_ship_help_and_fail_with_next() {
             !String::from_utf8_lossy(&output.stdout).contains(ANSI),
             "{args:?} must stay plain"
         );
+    }
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn fork_and_drop_ship_help_and_fail_with_one_next() {
+    for verb in ["fork", "drop"] {
+        let help = run(&[verb, "--help"]);
+        assert!(help.status.success(), "`{verb} --help` must succeed");
+        let text = String::from_utf8_lossy(&help.stdout);
+        assert!(text.contains(&format!("slipfork {verb}")), "{text}");
+        assert!(text.contains("-h, --help"), "{text}");
+        assert!(!text.contains(ANSI), "piped help must stay plain: {text}");
+    }
+    let root = scratch("forkdrop");
+    let run_in = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_slipfork"))
+            .args(args)
+            .current_dir(&root)
+            .env("NO_COLOR", "1")
+            .env("TERM", "dumb")
+            .env("XDG_RUNTIME_DIR", root.join("run"))
+            .env("XDG_STATE_HOME", root.join("state"))
+            .output()
+            .expect("the slipfork binary must be runnable")
+    };
+    for args in [&["fork", "feat-auth"][..], &["drop", "feat-auth"][..]] {
+        let output = run_in(args);
+        assert_eq!(output.status.code(), Some(1), "{args:?}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(stderr.matches("next:").count(), 1, "{args:?}: {stderr}");
+        assert!(!stderr.contains(ANSI), "{args:?} must stay plain: {stderr}");
+        assert!(
+            !String::from_utf8_lossy(&output.stdout).contains(ANSI),
+            "{args:?} must stay plain"
+        );
+    }
+    let missing = run(&["drop"]);
+    assert_eq!(missing.status.code(), Some(2));
+    assert_eq!(
+        String::from_utf8_lossy(&missing.stderr)
+            .matches("next:")
+            .count(),
+        1
+    );
+    if let Ok(mut stream) = UnixStream::connect(root.join("run/daemon.sock")) {
+        let _ = stream.write_all(b"{\"v\":1,\"id\":\"bye\",\"method\":\"shutdown\"}\n");
+        let mut reply = [0_u8; 128];
+        let _ = stream.read(&mut reply);
     }
     let _ = std::fs::remove_dir_all(&root);
 }

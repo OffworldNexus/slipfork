@@ -14,7 +14,7 @@ use crate::commands::Session;
 use crate::daemon::{DaemonClient, DaemonError};
 use crate::render::paint;
 
-use super::{DownArgs, RestartArgs, UpArgs, fail};
+use super::{DownArgs, DropArgs, ForkArgs, RestartArgs, UpArgs, fail};
 
 impl Session {
     /// Boots the world through the daemon and renders every boot phase until ready.
@@ -107,6 +107,148 @@ impl Session {
             args.json,
             "run `slipfork up` if the world is no longer running",
         )
+    }
+
+    /// Forks the running world into its own CoW snapshots and boots it behind its own URL.
+    pub fn fork(&self, args: &ForkArgs) -> ExitCode {
+        let mut client = match DaemonClient::connect(self.host()) {
+            Ok(client) => client,
+            Err(error) => {
+                return self.lifecycle_failure(&error, "run `slipfork up` first", args.json, false);
+            }
+        };
+        let color = self.color();
+        let json_mode = args.json;
+        let began = std::time::Instant::now();
+        let mut forked = false;
+        let outcome = client.call_streaming(
+            "fork",
+            json!({ "project": self.cwd(), "name": args.name }),
+            &mut |event| {
+                if json_mode {
+                    return;
+                }
+                if event["event"].as_str() == Some("ready") {
+                    let name = event["fork"].as_str().unwrap_or("fork");
+                    let url = event["url"].as_str().unwrap_or_default();
+                    let elapsed = u64::try_from(began.elapsed().as_millis()).unwrap_or(u64::MAX);
+                    println!(
+                        "{} Forked {} {} -> {}",
+                        paint("✓", "32", color),
+                        paint(name, "1", color),
+                        paint(&format!("({})", elapsed_text(elapsed)), "2", color),
+                        paint(url, "1;36", color)
+                    );
+                    forked = true;
+                    return;
+                }
+                let _ = render_event(event, color, false);
+            },
+        );
+        match outcome {
+            Ok(reply) => {
+                if json_mode {
+                    println!(
+                        "{}",
+                        json!({
+                            "fork": reply["fork"],
+                            "project": reply["project"],
+                            "url": reply["url"],
+                            "elapsed_ms": reply["elapsed_ms"],
+                        })
+                    );
+                    return ExitCode::SUCCESS;
+                }
+                if !forked {
+                    let name = reply["fork"].as_str().unwrap_or("fork");
+                    let elapsed = reply["elapsed_ms"].as_u64().unwrap_or(0);
+                    let url = reply["url"].as_str().unwrap_or_default();
+                    println!(
+                        "{} Forked {} {} -> {}",
+                        paint("✓", "32", color),
+                        paint(name, "1", color),
+                        paint(&format!("({})", elapsed_text(elapsed)), "2", color),
+                        paint(url, "1;36", color)
+                    );
+                }
+                ExitCode::SUCCESS
+            }
+            Err(error) => {
+                let next = match error.code.as_str() {
+                    "not-btrfs" => {
+                        "move the project onto a btrfs mount, then retry `slipfork fork`".to_owned()
+                    }
+                    "git-branch" | "git-missing" => {
+                        "pass a fork name: `slipfork fork <name>`".to_owned()
+                    }
+                    "no-world" => "run `slipfork up` first".to_owned(),
+                    "world-running" => {
+                        "pick another name, or drop the existing fork first".to_owned()
+                    }
+                    "boot-failed" => {
+                        "read `.slipfork/supervisor.log`, then run `slipfork up`".to_owned()
+                    }
+                    _ => "run `slipfork status` to inspect the world".to_owned(),
+                };
+                self.lifecycle_failure(&error, &next, json_mode, false)
+            }
+        }
+    }
+
+    /// Stops a fork and deletes both of its snapshots.
+    pub fn drop(&self, args: &DropArgs) -> ExitCode {
+        let mut client = match DaemonClient::connect(self.host()) {
+            Ok(client) => client,
+            Err(error) => {
+                return self.lifecycle_failure(
+                    &error,
+                    "run `slipfork status` to inspect the world",
+                    args.json,
+                    false,
+                );
+            }
+        };
+        let color = self.color();
+        let json_mode = args.json;
+        let outcome = client.call_streaming(
+            "drop",
+            json!({ "project": self.cwd(), "name": args.name, "force": args.force }),
+            &mut |event| {
+                if !json_mode {
+                    render_phase(event, color, false);
+                }
+            },
+        );
+        match outcome {
+            Ok(reply) => {
+                let elapsed = reply["elapsed_ms"].as_u64().unwrap_or(0);
+                if json_mode {
+                    println!(
+                        "{}",
+                        json!({ "dropped": reply["dropped"], "elapsed_ms": elapsed })
+                    );
+                    return ExitCode::SUCCESS;
+                }
+                println!(
+                    "{} Dropped {} {}",
+                    paint("✓", "32", color),
+                    paint(&args.name, "1", color),
+                    paint(&format!("({})", elapsed_text(elapsed)), "2", color)
+                );
+                ExitCode::SUCCESS
+            }
+            Err(error) => {
+                let next = match error.code.as_str() {
+                    "dirty-fork" => format!("slipfork drop {} -f", args.name),
+                    "not-btrfs" => {
+                        "move the project onto a btrfs mount, then retry `slipfork drop`".to_owned()
+                    }
+                    "no-fork" => "run `slipfork ps` to list this world's forks".to_owned(),
+                    _ => "run `slipfork status` to inspect the world".to_owned(),
+                };
+                self.lifecycle_failure(&error, &next, json_mode, false)
+            }
+        }
     }
 
     fn stream_lifecycle(

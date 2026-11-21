@@ -46,6 +46,30 @@ pub struct HostEnv {
     pub ingress_uid: u32,
     /// Prefix for system paths (`SLIPFORK_INSTALL_ROOT`, `/` by default).
     pub install_root: PathBuf,
+    /// Host name from `gethostname(2)`, read once by the composition root.
+    #[expect(
+        dead_code,
+        reason = "read by the `open` and `auth` verbs that land next"
+    )]
+    pub hostname: String,
+    /// `$DISPLAY` or `$WAYLAND_DISPLAY` is set, so a browser can be launched.
+    #[expect(
+        dead_code,
+        reason = "read by the `open` and `auth` verbs that land next"
+    )]
+    pub display: bool,
+    /// `$SSH_CONNECTION` or `$SSH_TTY` is set, so the session is remote.
+    #[expect(
+        dead_code,
+        reason = "read by the `open` and `auth` verbs that land next"
+    )]
+    pub ssh: bool,
+    /// The first `xdg-open`/`open` on the injected `PATH`, if any.
+    #[expect(
+        dead_code,
+        reason = "read by the `open` and `auth` verbs that land next"
+    )]
+    pub opener: Option<PathBuf>,
 }
 
 impl HostEnv {
@@ -62,7 +86,7 @@ impl HostEnv {
         }
     }
 
-    pub(super) fn tool(&self, name: &str) -> Result<PathBuf, String> {
+    pub(crate) fn tool(&self, name: &str) -> Result<PathBuf, String> {
         for directory in &self.path {
             let candidate = directory.join(name);
             if candidate.is_file() {
@@ -107,6 +131,26 @@ pub struct RestartArgs {
     /// Restart one service, or every service when `None`.
     pub service: Option<String>,
     /// Emit `{"restarted": n}` instead of the human line.
+    pub json: bool,
+}
+
+/// Parsed `slipfork fork [name]` arguments.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ForkArgs {
+    /// Fork name; defaults to the checkout's current git branch.
+    pub name: Option<String>,
+    /// Emit `{"fork","project","url","elapsed_ms"}` instead of the summary line.
+    pub json: bool,
+}
+
+/// Parsed `slipfork drop <name> [-f]` arguments.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DropArgs {
+    /// Fork to stop and delete.
+    pub name: String,
+    /// Discard uncommitted changes in the fork checkout.
+    pub force: bool,
+    /// Emit `{"dropped","elapsed_ms"}` instead of the summary line.
     pub json: bool,
 }
 

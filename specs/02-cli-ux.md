@@ -80,12 +80,15 @@ If a setup step, hook, or service fails, Slipfork prints the failure in red with
 `slipfork fork` takes an atomic Btrfs snapshot of **both** your project subvolume (including `.venv`, `node_modules`, and `.slipfork/` input-hash stamps) and your world's database/cache/S3 subvolumes in `< 50ms`, then boots the fork behind its own `.localhost` URL:
 
 ```text
-✓ Forked demo -> feat-auth in 38ms
+✓ Forked feat-auth (38ms) -> http://feat-auth--demo.localhost
   path  ~/projects/demo/.forks/feat-auth
-  url   http://feat-auth--demo.localhost
 ```
 
 `slipfork drop feat-auth` stops the fork and deletes its Btrfs snapshots instantly, refusing with a yellow warning if `.forks/feat-auth` has uncommitted or untracked git changes unless `-f` / `--force` is passed.
+
+`slipfork fork` derives the name from the current git branch when it is omitted, creates that branch on the snapshot when the parent never had it, and prints `✓ Forked <name> (<elapsed>) -> http://<fork>--<world>.localhost`, where `<elapsed>` renders as `38ms` or `1.4s`. Under `--json` it answers exactly `{fork, project, url, elapsed_ms}` with zero ANSI.
+
+`slipfork drop <name>` answers `--json` with `{dropped, elapsed_ms}`. A dirty checkout without `-f` fails closed with one `next: slipfork drop <name> -f`, and both verbs name the Btrfs remedy on a project that is not a Btrfs subvolume.
 
 ---
 

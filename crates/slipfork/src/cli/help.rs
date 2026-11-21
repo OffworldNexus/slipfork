@@ -151,6 +151,45 @@ pub(super) fn help_text(topic: HelpTopic, color: bool) -> String {
                  \x20 slipfork restart worker\n"
             )
         }
+        HelpTopic::Fork => {
+            let title = paint("slipfork fork", "1;36", color);
+            format!(
+                "{title}\n\
+                 Snapshot the project and its world data, then boot the fork on its own URL.\n\
+                 \n\
+                 Usage: slipfork fork [NAME] [--json]\n\
+                 \n\
+                 Arguments:\n\
+                 \x20 NAME     Fork and branch name (default: the checkout's git branch)\n\
+                 \n\
+                 Options:\n\
+                 \x20 --json   Emit {{\"fork\",\"project\",\"url\",\"elapsed_ms\"}} as JSON\n\
+                 \x20 -h, --help\n\
+                 \n\
+                 Example:\n\
+                 \x20 slipfork fork feat-auth\n"
+            )
+        }
+        HelpTopic::Drop => {
+            let title = paint("slipfork drop", "1;36", color);
+            format!(
+                "{title}\n\
+                 Stop a fork and delete its project and world-data snapshots.\n\
+                 \n\
+                 Usage: slipfork drop NAME [-f] [--json]\n\
+                 \n\
+                 Arguments:\n\
+                 \x20 NAME        Fork to stop and delete\n\
+                 \n\
+                 Options:\n\
+                 \x20 -f, --force Discard uncommitted changes in the fork checkout\n\
+                 \x20 --json      Emit {{\"dropped\",\"elapsed_ms\"}} as JSON\n\
+                 \x20 -h, --help\n\
+                 \n\
+                 Example:\n\
+                 \x20 slipfork drop feat-auth\n"
+            )
+        }
         HelpTopic::Logs => {
             let title = paint("slipfork logs", "1;36", color);
             format!(

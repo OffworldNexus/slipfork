@@ -8,7 +8,7 @@ use std::fmt;
 use std::process::ExitCode;
 
 use crate::commands::{ExecArgs, FmtArgs, LogsArgs, MigrateArgs, Session, TargetArgs, emit};
-use crate::world::{DownArgs, RestartArgs, SuperviseArgs, UpArgs};
+use crate::world::{DownArgs, DropArgs, ForkArgs, RestartArgs, SuperviseArgs, UpArgs};
 
 pub(super) const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -29,6 +29,8 @@ enum Verb {
     Up(UpArgs),
     Down(DownArgs),
     Restart(RestartArgs),
+    Fork(ForkArgs),
+    Drop(DropArgs),
     Logs(LogsArgs),
     Shell(TargetArgs),
     Exec(ExecArgs),
@@ -68,6 +70,8 @@ enum HelpTopic {
     Up,
     Down,
     Restart,
+    Fork,
+    Drop,
     Logs,
     Shell,
     Exec,
@@ -111,6 +115,8 @@ impl CommandLine {
             Verb::Up(args) => session.up(&args),
             Verb::Down(args) => session.down(&args),
             Verb::Restart(args) => session.restart(&args),
+            Verb::Fork(args) => session.fork(&args),
+            Verb::Drop(args) => session.drop(&args),
             Verb::Logs(args) => session.logs(&args),
             Verb::Shell(args) => session.shell(&args),
             Verb::Exec(args) => session.exec(&args),

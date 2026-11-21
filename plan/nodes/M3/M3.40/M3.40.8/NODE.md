@@ -1,8 +1,8 @@
 ---
 id: M3.40.8
-title: fork/drop/env/secret/open/auth/completions verbs + lifecycle UX polish + ANSI matrix
+title: "Host injection + slipfork fork/drop (daemon CoW snapshot, git switch, fork boot, live journey)"
 kind: task
-status: active
+status: done
 owner: implementer
 priority: 3
 depends_on: [M3.40.5]
@@ -21,7 +21,7 @@ attempts: 1
 max_attempts: 3
 escalation: none
 created: "2026-11-21T14:02"
-updated: "2026-11-21T14:28"
+updated: "2026-11-21T14:37"
 ---
 
 # Goal

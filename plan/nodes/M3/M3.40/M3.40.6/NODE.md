@@ -2,22 +2,21 @@
 id: M3.40.6
 title: "packages/opencode-slipfork (@slipfork/opencode) V2 plugin + lsp/opencode docs sweep"
 kind: task
-status: ready
+status: active
 owner: implementer
 priority: 3
 depends_on: [M3.40.8]
 paths:
   - "packages/opencode-slipfork/**"
-  - "specs/02-cli-ux.md"
   - "specs/06-distribution-and-docs.md"
   - ARCHITECTURE.md
   - TESTING_PLAN.md
   - Makefile
-attempts: 0
+attempts: 1
 max_attempts: 3
 escalation: none
 created: "2026-11-21T12:50"
-updated: "2026-11-21T14:02"
+updated: "2026-11-21T14:34"
 ---
 
 # Goal

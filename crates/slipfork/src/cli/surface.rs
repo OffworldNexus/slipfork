@@ -56,6 +56,18 @@ pub(super) const VERBS: &[VerbSpec] = &[
         flags: &["--json", "-h", "--help"],
     },
     VerbSpec {
+        name: "fork",
+        summary: "Snapshot the project and world data, then boot the fork on its own URL",
+        subcommands: &[],
+        flags: &["--json", "-h", "--help"],
+    },
+    VerbSpec {
+        name: "drop",
+        summary: "Stop a fork and delete its project and world-data snapshots",
+        subcommands: &[],
+        flags: &["-f", "--force", "--json", "-h", "--help"],
+    },
+    VerbSpec {
         name: "logs",
         summary: "Stream merged stdout + stderr with per-service gutters",
         subcommands: &[],

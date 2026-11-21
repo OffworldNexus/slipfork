@@ -23,6 +23,7 @@ pub(super) fn finish_boot(
     log: PathBuf,
     mut child: Child,
     project: PathBuf,
+    fork: Option<String>,
     emit: &mut dyn FnMut(Value),
 ) -> Result<Value, Failure> {
     let stdout = child.stdout.take().ok_or_else(|| {
@@ -68,7 +69,7 @@ pub(super) fn finish_boot(
                 let entry = RegistryEntry {
                     project,
                     world,
-                    fork: None,
+                    fork,
                     pods_dir,
                     supervisor_pid: child.id(),
                     started_at_ms: std::time::SystemTime::now()

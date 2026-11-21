@@ -4,7 +4,7 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 
 use crate::commands::{ExecArgs, FmtArgs, LogsArgs, MigrateArgs, TargetArgs};
-use crate::world::{DownArgs, RestartArgs, SuperviseArgs, UpArgs};
+use crate::world::{DownArgs, DropArgs, ForkArgs, RestartArgs, SuperviseArgs, UpArgs};
 
 use super::surface::Shell;
 use super::{CommandLine, DaemonInstallArgs, HelpTopic, StatusArgs, UsageError, Verb};
@@ -55,6 +55,8 @@ impl CommandLine {
             "up" => up_verb(rest)?,
             "down" => down_verb(rest)?,
             "restart" => restart_verb(rest)?,
+            "fork" => fork_verb(rest)?,
+            "drop" => drop_verb(rest)?,
             "logs" => logs_verb(rest)?,
             "shell" => shell_verb(rest)?,
             "exec" => exec_verb(rest)?,
@@ -220,6 +222,59 @@ fn restart_verb(args: &[&str]) -> Result<Verb, UsageError> {
         }
     }
     Ok(Verb::Restart(RestartArgs { service, json }))
+}
+
+fn fork_verb(args: &[&str]) -> Result<Verb, UsageError> {
+    if args.iter().any(|arg| matches!(*arg, "-h" | "--help")) {
+        return Ok(Verb::Help(HelpTopic::Fork));
+    }
+    let mut json = false;
+    let mut name = None;
+    for arg in args {
+        match *arg {
+            "--json" => json = true,
+            other if other.starts_with('-') => {
+                return Err(UsageError::new(format!(
+                    "unknown flag `{other}` for `fork`"
+                )));
+            }
+            other => {
+                if name.replace(other.to_owned()).is_some() {
+                    return Err(UsageError::new("`fork` takes at most one name"));
+                }
+            }
+        }
+    }
+    Ok(Verb::Fork(ForkArgs { name, json }))
+}
+
+fn drop_verb(args: &[&str]) -> Result<Verb, UsageError> {
+    if args.iter().any(|arg| matches!(*arg, "-h" | "--help")) {
+        return Ok(Verb::Help(HelpTopic::Drop));
+    }
+    let mut json = false;
+    let mut force = false;
+    let mut name = None;
+    for arg in args {
+        match *arg {
+            "--json" => json = true,
+            "-f" | "--force" => force = true,
+            other if other.starts_with('-') => {
+                return Err(UsageError::new(format!(
+                    "unknown flag `{other}` for `drop`"
+                )));
+            }
+            other => {
+                if name.replace(other.to_owned()).is_some() {
+                    return Err(UsageError::new("`drop` takes exactly one fork name"));
+                }
+            }
+        }
+    }
+    let Some(name) = name else {
+        return Err(UsageError::new("`drop` needs a fork name"));
+    };
+    Ok(Verb::Drop(DropArgs { name, force, json }))
 }
 
 fn logs_verb(args: &[&str]) -> Result<Verb, UsageError> {

@@ -32,6 +32,7 @@ use frames::{FrameReader, write_frame};
 use lifecycle::core::Core;
 use serde_json::{Value, json};
 use slipfork_world::control::{StreamFrame, StreamInput};
+use slipfork_world::{BtrfsEngine, Dirtiness, StoreLayout, WorldEngine};
 
 /// A typed control-plane failure rendered as an `error` frame with a bare message.
 #[derive(Debug, Clone)]
@@ -293,6 +294,8 @@ impl Daemon {
         match request.method.as_str() {
             "ingress.accept" => self.dispatch_ingress(descriptor),
             "up" => self.dispatch_up(&request.params, emit),
+            "fork" => self.dispatch_fork(&request.params, emit),
+            "drop" => self.core()?.drop_fork(&request.params, emit).map(Some),
             "ping" => {
                 let core = self.core()?;
                 Ok(Some(json!({
@@ -343,7 +346,58 @@ impl Daemon {
                 .ok_or_else(|| Failure::new("bad-params", "`project` is required"))?,
         );
         let (key, child, log) = self.core()?.begin_up(params)?;
-        boot::finish_boot(self, key, log, child, project, emit).map(Some)
+        boot::finish_boot(self, key, log, child, project, None, emit).map(Some)
+    }
+
+    /// Snapshots the fork, then boots it through the same `up` path and answers its coordinates.
+    fn dispatch_fork(
+        &self,
+        params: &Value,
+        emit: &mut dyn FnMut(Value),
+    ) -> Result<Option<Value>, Failure> {
+        let prepared = self.core()?.fork_snapshot(params, emit)?;
+        let fork_name = prepared.fork.clone();
+        let mut annotate = |mut event: Value| {
+            if event.get("event").and_then(Value::as_str) == Some("ready") {
+                event["fork"] = Value::String(fork_name.clone());
+            }
+            emit(event);
+        };
+        let boot = json!({
+            "project": prepared.project.clone(),
+            "world": prepared.world.clone(),
+        });
+        let outcome = self.core()?.begin_up(&boot).and_then(|(key, child, log)| {
+            boot::finish_boot(
+                self,
+                key,
+                log,
+                child,
+                prepared.project.clone(),
+                Some(prepared.fork.clone()),
+                &mut annotate,
+            )
+        });
+        if let Err(failure) = outcome {
+            // A failed branch switch or boot must not leave a half-fork that blocks a retry.
+            let engine = BtrfsEngine::new(StoreLayout::new(&prepared.parent));
+            let _ = engine.drop_fork(
+                &prepared.parent,
+                &prepared.world_name,
+                &prepared.fork_name,
+                Dirtiness::Clean,
+                true,
+            );
+            return Err(failure);
+        }
+        Ok(Some(json!({
+            "fork": prepared.fork,
+            "world": prepared.world.clone(),
+            "project": prepared.project,
+            "url": format!("http://{}.localhost", prepared.world),
+            "elapsed_ms": prepared.started.elapsed().as_millis() as u64,
+            "snapshot_ms": prepared.snapshot_ms,
+        })))
     }
 
     /// Relays one `exec`: world frames go out as `event`s, client `input` frames go in.

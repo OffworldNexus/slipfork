@@ -2422,3 +2422,18 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-21T14:28 [M3.40.8] (lead) status ready -> active
 - 2026-11-21T14:28 [M3.40.8] (lead) attempt 1/3 started
 - 2026-11-21T14:28 [M3.40.8] (lead) base 47f76165037a2dbba7b93fb7c6e43cef39895974
+- 2026-11-21T14:29 [M3.40.8] (lead) edited fields
+- 2026-11-21T14:29 [M3.40.9] (lead) created (task) env/secret verbs over the 0600 vault, headless-safe open, and OSPP auth pairing
+- 2026-11-21T14:29 [M3.40.10] (lead) created (task) Streamed up/restart/down phases, failure tails, ANSI matrix and spec convergence sweep
+- 2026-11-21T14:29 [M3.40.6] (lead) edited fields
+- 2026-11-21T14:29 [M3.40.8] (lead) status active -> active
+- 2026-11-21T14:29 [M3.40.8] (lead) attempt 1/3 started
+- 2026-11-21T14:29 [M3.40.8] (lead) base 4fa662645d7c449650a1e40ab7a83340a0dd1742
+- 2026-11-21T14:34 [M3.40.8] (lead) status active -> review
+- 2026-11-21T14:34 [M3.40.8] (lead) review: fork/drop green; entering triad
+- 2026-11-21T14:34 [M3.40.6] (lead) edited fields
+- 2026-11-21T14:34 [M3.40.6] (lead) status ready -> active
+- 2026-11-21T14:34 [M3.40.6] (lead) attempt 1/3 started
+- 2026-11-21T14:34 [M3.40.6] (lead) base 4fa662645d7c449650a1e40ab7a83340a0dd1742
+- 2026-11-21T14:35 [M3.40.11] (lead) created (task) slipfork-vcs GitWorkspace VcsWorkspace port + daemon BootSession consolidation
+- 2026-11-21T14:37 [M3.40.8] (lead) status review -> done
