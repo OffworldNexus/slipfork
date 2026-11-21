@@ -2500,3 +2500,18 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-21T17:01 [M3.41.5] (lead) fix pass 1: u32 _IOC encoder, ios request at call sites
 - 2026-11-21T17:02 [M3.41.5] (lead) status active -> review
 - 2026-11-21T17:02 [M3.41.5] (lead) status review -> done
+- 2026-11-21T17:05 [M3.41.3] (lead) status active -> review
+- 2026-11-21T17:07 [M3.41.6] (lead) created (task) Real OpenRC :80 listen mode and non-root handoff guard
+- 2026-11-21T17:07 [M3.41.3] (lead) edited fields
+- 2026-11-21T17:07 [M3.41.6] (lead) status ready -> active
+- 2026-11-21T17:07 [M3.41.6] (lead) attempt 1/3 started
+- 2026-11-21T17:07 [M3.41.6] (lead) base ed98dcbbd5be5b50a33a9e9731086ee43696dec3
+- 2026-11-21T17:07 [M3.41.3] (lead) attempt 2/3 started
+- 2026-11-21T17:07 [M3.41.3] (lead) fix pass 2: unit name, installer trust/UX, payload assertions, prune grouping
+- 2026-11-21T17:09 [M3.41.6] (lead) status active -> review
+- 2026-11-21T17:10 [M3.41.6] (lead) edited fields
+- 2026-11-21T17:10 [M3.41.6] (lead) status review -> active
+- 2026-11-21T17:10 [M3.41.6] (lead) attempt 2/3 started
+- 2026-11-21T17:10 [M3.41.6] (lead) fix pass 1: compose root injection, bind in main, tests unconditional, EACCES remedy
+- 2026-11-21T17:12 [M3.41.6] (lead) status active -> review
+- 2026-11-21T17:12 [M3.41.6] (lead) status review -> done

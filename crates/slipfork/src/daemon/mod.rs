@@ -67,7 +67,7 @@ impl Startup {
 }
 
 /// Runs the socket-activated `:80` handoff in this process; called from the composition root.
-pub use handoff::run as run_handoff;
+pub use handoff::{Mode as IngressMode, run as run_handoff};
 
 /// `<runtime_dir>/daemon.sock`.
 #[must_use]

@@ -1,4 +1,4 @@
-//! `slipfork daemon install [--ingress]`: the systemd units and the AppArmor userns profile.
+//! `slipfork daemon install [--ingress]`: the systemd units, the OpenRC conf, and AppArmor.
 //!
 //! The plan is pure data ([`UnitWriter::plan`]) so tests can write every unit under `/var/tmp`
 //! without root; the CLI validates the privilege boundary before a single byte is written.
@@ -26,6 +26,10 @@ pub struct InstallHost {
     pub uid: u32,
     /// UID the system ingress runs as.
     pub ingress_uid: u32,
+    /// Passwd name of [`Self::ingress_uid`], resolved in the composition root.
+    pub ingress_user: String,
+    /// This install root runs OpenRC, resolved in the composition root.
+    pub openrc: bool,
 }
 
 /// The per-user daemon unit.
@@ -90,6 +94,8 @@ pub const SOCKET_UNIT: &str = "slipfork-ingress.socket";
 pub const SERVICE_UNIT: &str = "slipfork-ingress@.service";
 /// AppArmor profile file name.
 pub const APPARMOR_FILE: &str = "slipfork";
+/// OpenRC conf file name (the packaged init script sources it).
+pub const OPENRC_CONF: &str = "slipfork-ingress";
 
 /// Builds the exact write plan; no I/O happens here.
 #[derive(Debug, Clone)]
@@ -102,14 +108,20 @@ pub struct UnitWriter {
     pub config_root: PathBuf,
     /// `<install_root>/etc/apparmor.d`.
     pub apparmor_root: PathBuf,
+    /// `<install_root>/etc/conf.d`.
+    pub conf_d_root: PathBuf,
     /// The running binary.
     pub exe: PathBuf,
     /// UID the system ingress runs as.
     pub ingress_uid: u32,
+    /// Passwd name of [`Self::ingress_uid`], resolved in the composition root.
+    pub ingress_user: String,
+    /// This install root runs OpenRC, resolved in the composition root.
+    pub openrc: bool,
 }
 
 impl UnitWriter {
-    /// Resolves every root from the injected host state.
+    /// Resolves every root from the injected host state; no filesystem probing happens here.
     #[must_use]
     pub fn from_host(host: &InstallHost) -> Self {
         Self {
@@ -117,8 +129,11 @@ impl UnitWriter {
             user_root: host.config_dir.join("systemd/user"),
             config_root: host.config_dir.clone(),
             apparmor_root: host.install_root.join("etc/apparmor.d"),
+            conf_d_root: host.install_root.join("etc/conf.d"),
             exe: host.exe.clone(),
             ingress_uid: host.ingress_uid,
+            ingress_user: host.ingress_user.clone(),
+            openrc: host.openrc,
         }
     }
 
@@ -144,18 +159,61 @@ impl UnitWriter {
                 self.apparmor_root.join(APPARMOR_FILE),
                 APPARMOR_PROFILE.to_owned(),
             ));
+            if let Some((path, contents)) = self.openrc_conf() {
+                files.push((path, contents));
+            }
         }
         files
     }
 
+    /// The OpenRC conf that makes the packaged init script run as the invoking user.
+    fn openrc_conf(&self) -> Option<(PathBuf, String)> {
+        if !self.openrc {
+            return None;
+        }
+        Some((
+            self.conf_d_root.join(OPENRC_CONF),
+            format!(
+                "\
+# Slipfork :80 ingress (OpenRC). The packaged /etc/init.d/slipfork-ingress
+# sources this file and runs `slipfork __ingress --listen 127.0.0.1:80` as
+# this user; the ingress refuses to run as root.
+SLIPFORK_INGRESS_USER={}
+",
+                self.ingress_user
+            ),
+        ))
+    }
+
+    /// The conf that a user already pinned to someone other than `root`, so it is left alone.
+    #[must_use]
+    pub fn preserved_conf(&self, ingress: bool) -> Option<PathBuf> {
+        if !ingress {
+            return None;
+        }
+        let (path, _) = self.openrc_conf()?;
+        let existing = fs::read_to_string(&path).ok()?;
+        let edited = existing
+            .lines()
+            .find_map(|line| line.trim().strip_prefix("SLIPFORK_INGRESS_USER="))
+            .is_some_and(|value| value.trim() != "root");
+        edited.then_some(path)
+    }
+
     /// Writes every planned file atomically with mode `0644`.
+    ///
+    /// A user-edited OpenRC conf is kept as-is: only the packaged `root` value is replaced.
     ///
     /// # Errors
     ///
     /// Propagates directory creation, write, chmod, and rename failures.
     pub fn write_all(&self, ingress: bool) -> io::Result<Vec<PathBuf>> {
+        let preserved = self.preserved_conf(ingress);
         let mut written = Vec::new();
         for (path, contents) in self.plan(ingress) {
+            if preserved.as_deref() == Some(path.as_path()) {
+                continue;
+            }
             write_unit(&path, &contents)?;
             written.push(path);
         }
@@ -179,6 +237,7 @@ pub fn install(host: &InstallHost, ingress: bool, json: bool, color: bool) -> Ex
         );
     }
     let writer = UnitWriter::from_host(host);
+    let preserved = writer.preserved_conf(ingress);
     let installed = match writer.write_all(ingress) {
         Ok(paths) => paths,
         Err(error) => {
@@ -209,15 +268,39 @@ pub fn install(host: &InstallHost, ingress: bool, json: bool, color: bool) -> Ex
             paint(&path.display().to_string(), "2", color)
         ));
     }
+    if let Some(path) = &preserved {
+        out.push_str(&format!(
+            "{} {}\n",
+            paint("✓ kept", "32", color),
+            paint(
+                &format!(
+                    "{} (kept: your SLIPFORK_INGRESS_USER=… setting)",
+                    path.display()
+                ),
+                "2",
+                color
+            )
+        ));
+    }
     if let Some(profile) = profile {
         out.push_str(&profile.render(color));
     }
     let status = emit(&out);
-    eprintln!(
-        "{}",
-        paint("! systemd has not reloaded the new units yet", "33", color)
-    );
-    eprintln!("next: systemctl --user daemon-reload && systemctl --user enable --now slipfork");
+    if writer.openrc && ingress {
+        eprintln!(
+            "{}",
+            paint("! OpenRC has not started the :80 ingress yet", "33", color)
+        );
+        eprintln!(
+            "next: rc-update add slipfork-ingress default && rc-service slipfork-ingress start"
+        );
+    } else {
+        eprintln!(
+            "{}",
+            paint("! systemd has not reloaded the new units yet", "33", color)
+        );
+        eprintln!("next: systemctl --user daemon-reload && systemctl --user enable --now slipfork");
+    }
     if !ingress {
         eprintln!(
             "{}",
@@ -329,4 +412,103 @@ fn fail(json: bool, message: &str, next: &str) -> ExitCode {
         ));
     }
     ExitCode::FAILURE
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn scratch(prefix: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |since| since.as_nanos());
+        let root = PathBuf::from("/var/tmp").join(format!(
+            "slipfork-install-{prefix}-{}-{nanos}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&root).expect("create the install scratch directory on disk");
+        root
+    }
+
+    fn host(root: &Path, openrc: bool) -> InstallHost {
+        // SAFETY: `geteuid(2)` only reads this process's credentials.
+        let uid = unsafe { libc::geteuid() };
+        InstallHost {
+            exe: PathBuf::from("/usr/bin/slipfork"),
+            path: Vec::new(),
+            config_dir: root.join("config"),
+            install_root: root.to_path_buf(),
+            uid,
+            ingress_uid: uid,
+            ingress_user: "builder".to_owned(),
+            openrc,
+        }
+    }
+
+    #[test]
+    fn openrc_ingress_conf_names_the_injected_user_and_keeps_user_edits() {
+        let root = scratch("openrc");
+        let writer = UnitWriter::from_host(&host(&root, true));
+
+        let planned = writer.plan(true);
+        let service = planned
+            .iter()
+            .find(|(path, _)| path.ends_with(SERVICE_UNIT))
+            .map(|(_, contents)| contents.clone())
+            .expect("the systemd ingress service is still planned");
+        assert!(service.contains(&format!("User={}\n", writer.ingress_uid)));
+        assert!(service.contains(&format!(
+            "Environment=XDG_RUNTIME_DIR=/run/user/{}\n",
+            writer.ingress_uid
+        )));
+        let conf = planned
+            .iter()
+            .find(|(path, _)| path.ends_with(OPENRC_CONF))
+            .map(|(_, contents)| contents.clone())
+            .expect("the OpenRC conf is planned on an OpenRC host");
+        assert!(conf.contains("SLIPFORK_INGRESS_USER=builder\n"));
+        assert!(conf.contains("/etc/init.d/slipfork-ingress"));
+        assert!(
+            !writer
+                .plan(false)
+                .iter()
+                .any(|(path, _)| path.ends_with(OPENRC_CONF))
+        );
+
+        let written = writer.write_all(true).expect("write the install plan");
+        let conf_path = root.join("etc/conf.d").join(OPENRC_CONF);
+        assert!(written.contains(&conf_path));
+
+        // The packaged `root` default is replaced; any other pinned user is preserved.
+        fs::write(&conf_path, "SLIPFORK_INGRESS_USER=root\n").expect("packaged default");
+        writer
+            .write_all(true)
+            .expect("replace the packaged root value");
+        let refreshed = fs::read_to_string(&conf_path).expect("re-read the conf");
+        assert!(refreshed.contains("SLIPFORK_INGRESS_USER=builder\n"));
+
+        fs::write(&conf_path, "SLIPFORK_INGRESS_USER=alice\n").expect("user edit");
+        writer.write_all(true).expect("keep the user edit");
+        assert_eq!(
+            fs::read_to_string(&conf_path).expect("re-read the kept conf"),
+            "SLIPFORK_INGRESS_USER=alice\n"
+        );
+        assert_eq!(writer.preserved_conf(true), Some(conf_path.clone()));
+
+        fs::remove_dir_all(&root).expect("remove the scratch directory");
+    }
+
+    #[test]
+    fn systemd_only_host_plans_no_openrc_conf() {
+        let root = scratch("systemd");
+        let writer = UnitWriter::from_host(&host(&root, false));
+        assert_eq!(writer.plan(true).len(), 4);
+        let written = writer.write_all(true).expect("write the install plan");
+        assert!(
+            !written.contains(&root.join("etc/conf.d").join(OPENRC_CONF)),
+            "{written:?}"
+        );
+        fs::remove_dir_all(&root).expect("remove the scratch directory");
+    }
 }

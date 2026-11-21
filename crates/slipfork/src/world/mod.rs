@@ -49,6 +49,10 @@ pub struct HostEnv {
     pub now_ms: u64,
     /// UID the system `:80` ingress runs as (`SUDO_UID` when installing as root).
     pub ingress_uid: u32,
+    /// Passwd name of [`Self::ingress_uid`], resolved once by the composition root.
+    pub ingress_user: String,
+    /// The install root runs OpenRC (`/sbin/openrc-run` or `/etc/conf.d`).
+    pub openrc: bool,
     /// Prefix for system paths (`SLIPFORK_INSTALL_ROOT`, `/` by default).
     pub install_root: PathBuf,
     /// Host name from `gethostname(2)`, read once by the composition root.
@@ -81,6 +85,8 @@ impl HostEnv {
             install_root: self.install_root.clone(),
             uid: self.uid,
             ingress_uid: self.ingress_uid,
+            ingress_user: self.ingress_user.clone(),
+            openrc: self.openrc,
         }
     }
 

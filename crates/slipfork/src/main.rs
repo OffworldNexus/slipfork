@@ -15,8 +15,9 @@ mod render;
 mod status;
 mod world;
 
-use std::ffi::OsString;
+use std::ffi::{CStr, OsString};
 use std::io::IsTerminal;
+use std::net::{SocketAddr, TcpListener};
 use std::os::unix::ffi::OsStringExt;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -77,6 +78,18 @@ fn main() -> ExitCode {
         .unwrap_or_default();
     let project = active_project(&args, &cwd);
     let store_root = world::store_root_for_mounts(&mounts, &project);
+    // Resolve the ingress principal and OpenRC flavour exactly once here; `install` and the
+    // handoff receive plain values and never probe ambient host state themselves.
+    let ingress_uid = std::env::var("SUDO_UID")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(uid);
+    let install_root = std::env::var_os("SLIPFORK_INSTALL_ROOT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/"));
+    let ingress_user = passwd_name(ingress_uid);
+    let openrc =
+        install_root.join("sbin/openrc-run").exists() || install_root.join("etc/conf.d").is_dir();
     let host = world::HostEnv {
         exe,
         path,
@@ -98,13 +111,10 @@ fn main() -> ExitCode {
         now_ms: std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |since| since.as_millis() as u64),
-        ingress_uid: std::env::var("SUDO_UID")
-            .ok()
-            .and_then(|value| value.parse().ok())
-            .unwrap_or(uid),
-        install_root: std::env::var_os("SLIPFORK_INSTALL_ROOT")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("/")),
+        ingress_uid,
+        ingress_user,
+        openrc,
+        install_root,
         hostname: host_name(),
         display: std::env::var_os("DISPLAY").is_some()
             || std::env::var_os("WAYLAND_DISPLAY").is_some(),
@@ -124,7 +134,39 @@ fn main() -> ExitCode {
         return daemon::run(host, Arc::new(GitWorkspace::new(git)));
     }
     if args.first().is_some_and(|arg| arg == "__ingress") {
-        return daemon::run_handoff(&host);
+        let mode = match daemon::IngressMode::parse(&args[1..]) {
+            Ok(mode) => mode,
+            Err(message) => {
+                eprintln!("error: {message}");
+                eprintln!(
+                    "next: run `slipfork __ingress --listen 127.0.0.1:80`, or let systemd pass the socket on stdin."
+                );
+                return ExitCode::from(2);
+            }
+        };
+        let listener = match mode {
+            daemon::IngressMode::Listen(address) if uid != 0 => match bind_ingress(address) {
+                Ok((listener, bound)) => {
+                    println!("slipfork: ingress listening on {bound}");
+                    Some(listener)
+                }
+                Err(error) => {
+                    eprintln!("error: cannot bind {address}: {error}");
+                    if error.kind() == std::io::ErrorKind::PermissionDenied {
+                        eprintln!(
+                            "next: sudo slipfork daemon install --ingress  # or set net.ipv4.ip_unprivileged_port_start=0"
+                        );
+                    } else {
+                        eprintln!(
+                            "next: choose a free address or stop the process holding {address}"
+                        );
+                    }
+                    return ExitCode::FAILURE;
+                }
+            },
+            _ => None,
+        };
+        return daemon::run_handoff(&host, mode, listener);
     }
     match cli::CommandLine::parse(&args) {
         Ok(line) => line.run(commands::Session::new(cwd, color, tty, host)),
@@ -212,6 +254,45 @@ fn host_name() -> String {
         .position(|byte| *byte == 0)
         .unwrap_or(buffer.len());
     String::from_utf8_lossy(&buffer[..end]).into_owned()
+}
+
+/// Binds the `--listen` ingress and reports the address the kernel actually assigned.
+fn bind_ingress(address: SocketAddr) -> std::io::Result<(TcpListener, SocketAddr)> {
+    let listener = TcpListener::bind(address)?;
+    let bound = listener.local_addr()?;
+    Ok((listener, bound))
+}
+
+/// Resolves the passwd name for the injected ingress uid, falling back to the number.
+fn passwd_name(uid: u32) -> String {
+    let mut record = std::mem::MaybeUninit::<libc::passwd>::uninit();
+    let mut result = std::ptr::null_mut();
+    let mut buffer = vec![0_u8; 16 * 1024];
+    // SAFETY: `getpwuid_r` only reads the live uid and writes into `record`/`buffer`; `result`
+    // points back at `record` on success, which is then initialized.
+    let status = unsafe {
+        libc::getpwuid_r(
+            uid,
+            record.as_mut_ptr(),
+            buffer.as_mut_ptr().cast(),
+            buffer.len(),
+            &mut result,
+        )
+    };
+    if status != 0 || result.is_null() {
+        return uid.to_string();
+    }
+    // SAFETY: `result` is non-null and only set after a successful `getpwuid_r`.
+    let record = unsafe { record.assume_init() };
+    // SAFETY: `pw_name` is a NUL-terminated string owned by the live passwd record.
+    let name = unsafe { CStr::from_ptr(record.pw_name) }
+        .to_string_lossy()
+        .into_owned();
+    if name.is_empty() {
+        uid.to_string()
+    } else {
+        name
+    }
 }
 
 #[cfg(test)]

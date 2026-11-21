@@ -403,8 +403,11 @@ fn daemon_install_writes_every_unit_byte_for_byte() {
         user_root: root.join("config/systemd/user"),
         config_root: root.join("config"),
         apparmor_root: root.join("etc/apparmor.d"),
+        conf_d_root: root.join("etc/conf.d"),
         exe: exe.clone(),
         ingress_uid: 1000,
+        ingress_user: "builder".to_owned(),
+        openrc: false,
     };
     let written = writer.write_all(true).expect("write every unit");
     assert_eq!(written.len(), 4, "{written:?}");
