@@ -62,6 +62,7 @@ impl LayerUnpacker {
 
     /// Applies one compressed layer; `compressed` is the raw registry blob stream.
     pub fn apply(&self, compressed: &mut dyn Read, media_type: &str) -> Result<()> {
+        fs::create_dir_all(&self.root).map_err(|source| Error::io("create", &self.root, source))?;
         let compression =
             Compression::from_media_type(media_type).ok_or_else(|| Error::UnsupportedLayer {
                 media_type: media_type.to_owned(),
@@ -163,7 +164,7 @@ impl LayerUnpacker {
     }
 
     fn write_symlink(&self, rel: &Path, target: &Path) -> Result<()> {
-        resolve_relative(rel, target)?;
+        validate_symlink_target(rel, target)?;
         let path = self.entry_path(rel)?;
         remove_path(&path)?;
         std::os::unix::fs::symlink(target, &path).map_err(|source| Error::io("link", &path, source))
@@ -176,15 +177,12 @@ impl LayerUnpacker {
         fs::hard_link(&source, &path).map_err(|source_err| Error::io("link", &path, source_err))
     }
 
-    /// Resolves a hardlink target, which tar expresses relative to the image root.
+    /// Resolves a hardlink target: root-relative even when tar wrote it absolute.
     fn archive_path(&self, rel: &Path, target: &Path) -> Result<PathBuf> {
-        if target.is_absolute() {
-            return Err(Error::UnsafeLink {
-                entry: rel.display().to_string(),
-                target: target.display().to_string(),
-            });
-        }
-        let clean = sanitize(target)?;
+        let rooted = hardlink_target(&self.root, rel, target)?;
+        let clean = rooted
+            .strip_prefix(&self.root)
+            .expect("hardlink target is rooted");
         let mut current = self.root.clone();
         for component in clean.components() {
             current.push(component);
@@ -254,6 +252,11 @@ impl LayerUnpacker {
         Some(current)
     }
 
+    /// Creates every parent of `rel` inside the root before a non-directory entry is written.
+    ///
+    /// Layers routinely omit `dir` entries or list a link before its directory, so parents are
+    /// created on demand: `ensure_dir` walks one sanitized component at a time and never follows
+    /// a symlink out of the root.
     fn entry_path(&self, rel: &Path) -> Result<PathBuf> {
         let name = rel.file_name().ok_or_else(|| Error::UnsafePath {
             entry: rel.display().to_string(),
@@ -274,8 +277,17 @@ fn kind_label(entry_type: tar::EntryType) -> String {
     }
 }
 
-/// Rejects absolute paths and `..` components.
+/// Normalizes one tar entry name into a path relative to the image root.
+///
+/// Real archives carry a leading `./` and a `./` (or `.`) entry for the root itself, so empty and
+/// `.` components are dropped and an all-`.` name normalizes to the empty path (the root).
+/// Absolute names and any `..` component are still refused, and `usr//bin` folds to `usr/bin`.
 fn sanitize(path: &Path) -> Result<PathBuf> {
+    if path.as_os_str().is_empty() {
+        return Err(Error::UnsafePath {
+            entry: path.display().to_string(),
+        });
+    }
     let mut clean = PathBuf::new();
     for component in path.components() {
         match component {
@@ -288,45 +300,29 @@ fn sanitize(path: &Path) -> Result<PathBuf> {
             }
         }
     }
-    if clean.as_os_str().is_empty() {
-        return Err(Error::UnsafePath {
-            entry: path.display().to_string(),
-        });
-    }
     Ok(clean)
 }
 
-/// Keeps a relative symlink target inside the image root once resolved from `entry`.
-fn resolve_relative(entry: &Path, target: &Path) -> Result<()> {
-    if target.is_absolute() {
+/// Rebases a tar hardlink target onto the image root: `/bin/busybox` -> `<root>/bin/busybox`.
+fn hardlink_target(root: &Path, entry: &Path, target: &Path) -> Result<PathBuf> {
+    let relative = target.strip_prefix("/").unwrap_or(target);
+    let clean = sanitize(relative).map_err(|_| Error::UnsafeLink {
+        entry: entry.display().to_string(),
+        target: target.display().to_string(),
+    })?;
+    Ok(root.join(clean))
+}
+
+/// Symlink targets are container-absolute and stored verbatim; only empty or NUL is invalid.
+fn validate_symlink_target(entry: &Path, target: &Path) -> Result<()> {
+    use std::os::unix::ffi::OsStrExt;
+
+    let bytes = target.as_os_str().as_bytes();
+    if bytes.is_empty() || bytes.contains(&0) {
         return Err(Error::UnsafeLink {
             entry: entry.display().to_string(),
             target: target.display().to_string(),
         });
-    }
-    let mut depth = entry
-        .parent()
-        .map_or(0i64, |parent| parent.components().count() as i64);
-    for component in target.components() {
-        match component {
-            Component::Normal(_) => depth += 1,
-            Component::ParentDir => {
-                depth -= 1;
-                if depth < 0 {
-                    return Err(Error::UnsafeLink {
-                        entry: entry.display().to_string(),
-                        target: target.display().to_string(),
-                    });
-                }
-            }
-            Component::CurDir => {}
-            Component::RootDir | Component::Prefix(_) => {
-                return Err(Error::UnsafeLink {
-                    entry: entry.display().to_string(),
-                    target: target.display().to_string(),
-                });
-            }
-        }
     }
     Ok(())
 }
@@ -387,6 +383,69 @@ mod tests {
     }
 
     #[test]
+    fn leading_dot_entries_normalize_to_the_image_root() {
+        for root in [".", "./", "././"] {
+            assert_eq!(
+                sanitize(Path::new(root)).expect("root directory entry"),
+                PathBuf::new(),
+                "{root}"
+            );
+        }
+        assert_eq!(
+            sanitize(Path::new("./usr/")).expect("leading dot directory"),
+            PathBuf::from("usr")
+        );
+        assert_eq!(
+            sanitize(Path::new("./usr/./bin")).expect("nested leading dots"),
+            PathBuf::from("usr/bin")
+        );
+        assert_eq!(
+            sanitize(Path::new("usr//bin")).expect("double slash"),
+            PathBuf::from("usr/bin")
+        );
+        for escape in ["../x", "usr/../../x", "/etc/passwd"] {
+            assert!(
+                sanitize(Path::new(escape)).is_err(),
+                "`{escape}` must be refused"
+            );
+        }
+    }
+
+    #[test]
+    fn a_python_style_archive_with_a_dot_root_entry_unpacks() {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock after the epoch")
+            .as_nanos();
+        let root =
+            Path::new("/var/tmp").join(format!("slipfork-unpack-{}-{nanos}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let mut builder = tar::Builder::new(Vec::new());
+        for (name, kind, body) in [
+            ("./", tar::EntryType::Directory, &b""[..]),
+            ("./usr/", tar::EntryType::Directory, &b""[..]),
+            ("./usr/bin/python", tar::EntryType::Regular, b"#!/bin/sh\n"),
+        ] {
+            let mut header = tar::Header::new_gnu();
+            header.set_entry_type(kind);
+            header.set_size(body.len() as u64);
+            header.set_mode(0o755);
+            header.set_path(name).expect("tar entry name");
+            header.set_cksum();
+            builder.append(&header, body).expect("append a tar entry");
+        }
+        let bytes = builder.into_inner().expect("tar bytes");
+        LayerUnpacker::new(&root)
+            .apply(&mut &bytes[..], "application/vnd.oci.image.layer.v1.tar")
+            .expect("a leading `./` root entry must unpack");
+        assert_eq!(
+            fs::read_to_string(root.join("usr/bin/python")).expect("read the unpacked file"),
+            "#!/bin/sh\n"
+        );
+        fs::remove_dir_all(&root).expect("remove the unpack scratch tree");
+    }
+
+    #[test]
     fn entry_paths_must_stay_inside_the_root() {
         assert_eq!(
             sanitize(Path::new("app/./keep.txt")).expect("clean path"),
@@ -406,10 +465,27 @@ mod tests {
     }
 
     #[test]
-    fn links_may_not_escape_the_root() {
-        assert!(resolve_relative(Path::new("app/link"), Path::new("../keep.txt")).is_ok());
-        assert!(resolve_relative(Path::new("app/link"), Path::new("../../etc")).is_err());
-        assert!(resolve_relative(Path::new("app/deep/link"), Path::new("../../../etc")).is_err());
-        assert!(resolve_relative(Path::new("app/link"), Path::new("/etc/passwd")).is_err());
+    fn absolute_hardlinks_rebase_onto_the_image_root() {
+        let root = Path::new("/rootfs");
+        for target in ["/bin/busybox", "bin/busybox"] {
+            assert_eq!(
+                hardlink_target(root, Path::new("bin/arch"), Path::new(target))
+                    .expect("a root-relative target"),
+                PathBuf::from("/rootfs/bin/busybox"),
+                "{target}"
+            );
+        }
+        assert!(
+            hardlink_target(root, Path::new("bin/evil"), Path::new("../../etc/shadow")).is_err()
+        );
+        assert!(hardlink_target(root, Path::new("bin/evil"), Path::new("/../etc/shadow")).is_err());
+    }
+
+    #[test]
+    fn symlink_targets_are_container_absolute_and_stored_verbatim() {
+        assert!(validate_symlink_target(Path::new("bin/sh"), Path::new("/bin/busybox")).is_ok());
+        assert!(validate_symlink_target(Path::new("app/link"), Path::new("../../etc")).is_ok());
+        assert!(validate_symlink_target(Path::new("app/link"), Path::new("")).is_err());
+        assert!(validate_symlink_target(Path::new("app/link"), Path::new("a\0b")).is_err());
     }
 }

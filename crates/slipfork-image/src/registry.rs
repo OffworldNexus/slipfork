@@ -129,12 +129,45 @@ impl RegistryClient {
     }
 }
 
-/// One pull against one reference: the token is fetched once and reused.
+/// One pull against one reference: a bearer token is cached until a challenge asks for another.
 pub struct RegistrySession<'a> {
     client: &'a RegistryClient,
     reference: &'a ImageReference,
-    token: Option<String>,
+    token: Option<Bearer>,
     probed: bool,
+}
+
+/// A cached bearer token plus the exact `service`/`scope` it was minted for.
+#[derive(Debug, Clone)]
+struct Bearer {
+    value: String,
+    service: Option<String>,
+    scope: Option<String>,
+}
+
+impl Bearer {
+    fn minted_for(challenge: &Challenge, value: String) -> Self {
+        Self {
+            value,
+            service: challenge.service.clone(),
+            scope: challenge.scope.clone(),
+        }
+    }
+
+    /// The token is only reusable for the challenge whose `service` and `scope` it encodes.
+    fn matches(&self, challenge: &Challenge) -> bool {
+        self.service == challenge.service && self.scope == challenge.scope
+    }
+}
+
+/// A 401 challenge justifies a new token only when the cached one was minted for other terms.
+fn needs_fresh_token(current: Option<&Bearer>, challenge: &Challenge) -> bool {
+    current.is_none_or(|bearer| !bearer.matches(challenge))
+}
+
+/// One re-fetch and one retry per request; a second 401 with the same terms is terminal.
+fn may_retry(retried: bool, current: Option<&Bearer>, challenge: &Challenge) -> bool {
+    !retried && needs_fresh_token(current, challenge)
 }
 
 impl RegistrySession<'_> {
@@ -228,15 +261,21 @@ impl RegistrySession<'_> {
         Ok(body)
     }
 
-    /// `GET` with the bearer token, fetching one token on the first `401`.
+    /// `GET` with the bearer token, re-minting it once when a `401` names other auth terms.
     fn get(&mut self, url: &str, accept: Option<&str>) -> Result<ureq::Response> {
+        self.get_once(url, accept, false)
+    }
+
+    fn get_once(
+        &mut self,
+        url: &str,
+        accept: Option<&str>,
+        retried: bool,
+    ) -> Result<ureq::Response> {
         match self.send(url, accept) {
             Ok(response) => Ok(response),
             Err(err) => match *err {
                 ureq::Error::Status(401, response) => {
-                    if self.token.is_some() {
-                        return Err(self.unauthorized());
-                    }
                     let header = response
                         .header("WWW-Authenticate")
                         .ok_or_else(|| Error::Challenge {
@@ -244,9 +283,14 @@ impl RegistrySession<'_> {
                         })?
                         .to_owned();
                     let challenge = Challenge::parse(&header).ok_or(Error::Challenge { header })?;
-                    self.token = Some(self.fetch_token(&challenge)?);
-                    self.send(url, accept)
-                        .map_err(|retry| self.map_error(url, *retry))
+                    // The `/v2/` ping challenges without a scope, so its token can never
+                    // authorize a pull; the scoped manifest challenge mints a fresh one.
+                    if !may_retry(retried, self.token.as_ref(), &challenge) {
+                        return Err(self.unauthorized());
+                    }
+                    let value = self.fetch_token(&challenge)?;
+                    self.token = Some(Bearer::minted_for(&challenge, value));
+                    self.get_once(url, accept, true)
                 }
                 err => Err(self.map_error(url, err)),
             },
@@ -267,24 +311,13 @@ impl RegistrySession<'_> {
             request = request.set("Accept", accept);
         }
         if let Some(token) = &self.token {
-            request = request.set("Authorization", &format!("Bearer {token}"));
+            request = request.set("Authorization", &format!("Bearer {}", token.value));
         }
         request.call().map_err(Box::new)
     }
 
     fn fetch_token(&self, challenge: &Challenge) -> Result<String> {
-        let mut query: Vec<String> = Vec::new();
-        if let Some(service) = &challenge.service {
-            query.push(format!("service={}", encode_query(service)));
-        }
-        if let Some(scope) = &challenge.scope {
-            query.push(format!("scope={}", encode_query(scope)));
-        }
-        let url = if query.is_empty() {
-            challenge.realm.clone()
-        } else {
-            format!("{}?{}", challenge.realm, query.join("&"))
-        };
+        let url = token_url(challenge);
         let mut request = self
             .client
             .agent
@@ -396,6 +429,23 @@ impl Challenge {
     }
 }
 
+/// The challenge's `realm`, `service`, and `scope` verbatim: Docker Hub's realm is
+/// `https://auth.docker.io/token` and its service is `registry.docker.io`.
+fn token_url(challenge: &Challenge) -> String {
+    let mut query: Vec<String> = Vec::new();
+    if let Some(service) = &challenge.service {
+        query.push(format!("service={}", encode_query(service)));
+    }
+    if let Some(scope) = &challenge.scope {
+        query.push(format!("scope={}", encode_query(scope)));
+    }
+    if query.is_empty() {
+        challenge.realm.clone()
+    } else {
+        format!("{}?{}", challenge.realm, query.join("&"))
+    }
+}
+
 /// Query values keep token scopes readable: only what breaks a query string is escaped.
 const QUERY: &AsciiSet = &NON_ALPHANUMERIC
     .remove(b'-')
@@ -444,6 +494,59 @@ mod tests {
             Some("repository:library/postgres:pull")
         );
         assert!(Challenge::parse("Basic realm=\"x\"").is_none());
+    }
+
+    #[test]
+    fn docker_hub_token_url_keeps_realm_service_and_scope() {
+        let challenge = Challenge::parse(
+            "Bearer realm=\"https://auth.docker.io/token\",service=\"registry.docker.io\",scope=\"repository:library/python:pull\", Basic realm=\"ignored\"",
+        )
+        .expect("bearer challenge");
+        assert_eq!(challenge.realm, "https://auth.docker.io/token");
+        assert_eq!(
+            token_url(&challenge),
+            "https://auth.docker.io/token?service=registry.docker.io&scope=repository:library/python:pull"
+        );
+        let bare = Challenge::parse("Bearer realm=\"https://example.test/token\"").expect("bare");
+        assert_eq!(token_url(&bare), "https://example.test/token");
+    }
+
+    #[test]
+    fn scope_less_challenges_never_authorize_a_pull() {
+        // Ground truth from Docker Hub: `GET /v2/` answers 401 with no `scope` in the challenge.
+        let ping = Challenge::parse(
+            "Bearer realm=\"https://auth.docker.io/token\",service=\"registry.docker.io\"",
+        )
+        .expect("ping challenge");
+        assert_eq!(ping.scope, None);
+        let pull = Challenge::parse(
+            "Bearer realm=\"https://auth.docker.io/token\",service=\"registry.docker.io\",scope=\"repository:library/alpine:pull\"",
+        )
+        .expect("pull challenge");
+
+        assert!(may_retry(false, None, &ping), "the ping may mint a token");
+        let ping_token = Bearer::minted_for(&ping, "scope-less".to_owned());
+        assert!(
+            !may_retry(false, Some(&ping_token), &ping),
+            "a matching token must never be re-fetched"
+        );
+        assert!(
+            may_retry(false, Some(&ping_token), &pull),
+            "a scope-less token must be replaced for a scoped pull"
+        );
+        let pull_token = Bearer::minted_for(&pull, "scoped".to_owned());
+        assert!(
+            !may_retry(false, Some(&pull_token), &pull),
+            "the scoped token authorizes exactly one retry"
+        );
+        assert!(
+            !may_retry(true, Some(&ping_token), &pull),
+            "a second 401 must fail closed instead of looping"
+        );
+        assert!(
+            may_retry(false, Some(&pull_token), &ping),
+            "a scope-less challenge never reuses a pull token"
+        );
     }
 
     #[test]

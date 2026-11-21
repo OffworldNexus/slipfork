@@ -55,6 +55,7 @@ pub(crate) struct Fault {
     action: String,
     remedy: &'static str,
     source: Option<Box<dyn std::error::Error + Send + Sync>>,
+    timeout: bool,
 }
 
 impl Fault {
@@ -63,6 +64,7 @@ impl Fault {
             action: action.into(),
             remedy,
             source: None,
+            timeout: false,
         }
     }
 
@@ -75,12 +77,33 @@ impl Fault {
             action: action.into(),
             remedy,
             source: Some(Box::new(source)),
+            timeout: false,
         }
     }
 
+    /// A deadline was missed after the container was already killed and reaped.
+    pub(crate) fn timed_out(action: impl Into<String>, remedy: &'static str) -> Self {
+        Self {
+            action: action.into(),
+            remedy,
+            source: None,
+            timeout: true,
+        }
+    }
+
+    pub(crate) fn is_timeout(&self) -> bool {
+        self.timeout
+    }
+
     /// Single-line form for the NDJSON reply; `Display` adds the remedy on a second line.
+    ///
+    /// The underlying OS detail is part of the summary so an `EPERM`/`ENOENT` class is
+    /// diagnosable from the boot log instead of hiding behind the generic action.
     pub(crate) fn summary(&self) -> String {
-        format!("{} failed", self.action)
+        match self.source.as_deref() {
+            Some(source) => format!("{} failed: {source}", self.action),
+            None => format!("{} failed", self.action),
+        }
     }
 }
 
@@ -150,7 +173,9 @@ fn run() -> Result<(), Fault> {
         }
         let request = wire::decode_request(line)
             .map_err(|source| Fault::cause("control request decoding", REMEDY_PROTOCOL, source))?;
-        let (frame, shutdown) = respond(&mut world, request);
+        let (frame, shutdown) = respond(&mut world, request, &mut |frame| {
+            write_frame(&frame, "control reply write")
+        })?;
         write_frame(&frame, "control reply write")?;
         if shutdown {
             break;
@@ -169,7 +194,13 @@ fn run() -> Result<(), Fault> {
 }
 
 /// Builds the typed reply for one request; the boolean means "the world must exit".
-pub(crate) fn respond(world: &mut pod::InitWorld, request: Request) -> (InitFrame, bool) {
+///
+/// `emit` writes intermediate frames (live [`InitFrame::Output`] lines) while a request runs.
+pub(crate) fn respond(
+    world: &mut pod::InitWorld,
+    request: Request,
+    emit: &mut dyn FnMut(InitFrame) -> Result<(), Fault>,
+) -> Result<(InitFrame, bool), Fault> {
     let (reply, shutdown) = match request {
         Request::Launch { id, pod, .. } => match world.launch(&pod) {
             Ok(pid) => (
@@ -194,6 +225,51 @@ pub(crate) fn respond(world: &mut pod::InitWorld, request: Request) -> (InitFram
             world.stop_all();
             (stopped_frame(id), true)
         }
+        Request::RunOnce {
+            id,
+            pod,
+            timeout_ms,
+            ..
+        } => {
+            let frame_id = id.clone();
+            let mut on_line = |stream: slipfork_world::Stream, line: &str| {
+                emit(InitFrame::Output {
+                    v: PROTOCOL_VERSION,
+                    id: frame_id.clone(),
+                    stream,
+                    line: line.to_owned(),
+                })
+            };
+            match world.run_once_streaming(&pod, timeout_ms, &mut on_line) {
+                Ok(code) => (
+                    InitFrame::Reply {
+                        v: PROTOCOL_VERSION,
+                        id,
+                        ok: Some(serde_json::json!({ "exit_code": code })),
+                        error: None,
+                    },
+                    false,
+                ),
+                Err(fault) => {
+                    eprintln!("slipfork-world-init: {fault}");
+                    let code = if fault.is_timeout() {
+                        "run-timeout"
+                    } else {
+                        "run-failed"
+                    };
+                    (failure_frame(id, code, &fault), false)
+                }
+            }
+        }
+        Request::List { id, .. } => (
+            InitFrame::Reply {
+                v: PROTOCOL_VERSION,
+                id,
+                ok: Some(serde_json::json!({ "pods": world.list() })),
+                error: None,
+            },
+            false,
+        ),
         Request::Restart { id, service, .. } => match world.restart(service.as_deref()) {
             Ok(restarted) => (
                 InitFrame::Reply {
@@ -215,11 +291,20 @@ pub(crate) fn respond(world: &mut pod::InitWorld, request: Request) -> (InitFram
             timeout_ms,
             ..
         } => match world.wait(pid, timeout_ms) {
-            Ok(code) => (
+            Ok(Some(code)) => (
                 InitFrame::Reply {
                     v: PROTOCOL_VERSION,
                     id,
                     ok: Some(serde_json::json!({ "exit_code": code })),
+                    error: None,
+                },
+                false,
+            ),
+            Ok(None) => (
+                InitFrame::Reply {
+                    v: PROTOCOL_VERSION,
+                    id,
+                    ok: Some(serde_json::json!({ "running": true })),
                     error: None,
                 },
                 false,
@@ -230,7 +315,7 @@ pub(crate) fn respond(world: &mut pod::InitWorld, request: Request) -> (InitFram
             }
         },
     };
-    (reply, shutdown)
+    Ok((reply, shutdown))
 }
 
 /// The `{"stopped": true}` reply shared by `StopAll` and `Shutdown`.

@@ -65,7 +65,7 @@ pub(crate) fn handle(listener: &UnixListener, world: &mut InitWorld) -> Result<b
         wire::decode_request(line.trim())
             .map_err(|source| Fault::cause("control socket decode", REMEDY_PROTOCOL, source))?
     };
-    let (frame, shutdown) = respond(world, request);
+    let (frame, shutdown) = respond(world, request, &mut |frame| reply(&mut stream, &frame))?;
     reply(&mut stream, &frame)?;
     Ok(shutdown)
 }

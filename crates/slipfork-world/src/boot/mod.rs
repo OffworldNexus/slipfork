@@ -14,7 +14,10 @@ mod stamp;
 mod tests;
 
 pub use plan::world_plan;
-pub use schedule::{BootEvent, BootFailure, EventSink, StepExecutor, StepOutcome, run_plan};
+pub use schedule::{
+    BootEvent, BootFailure, EventSink, ServiceHealth, StepExecutor, StepOutcome, classify_service,
+    run_plan,
+};
 pub use stamp::{StampStore, StepStamp};
 
 use std::path::PathBuf;

@@ -108,7 +108,6 @@ impl Session {
             eprintln!("progress: {}", log_path.display());
         }
         let mut line = String::new();
-        let mut progress = (0_u64, 0_u64);
         loop {
             line.clear();
             match reader.read_line(&mut line) {
@@ -142,7 +141,6 @@ impl Session {
                 "started" => {
                     let step = event["step"].as_u64().unwrap_or(0);
                     let total = event["total"].as_u64().unwrap_or(0);
-                    progress = (step, total);
                     let line = format!(
                         "{} [{step}/{total}] {} {}",
                         paint("→", "1;36", self.color()),
@@ -160,11 +158,11 @@ impl Session {
                 }
                 "log" => {
                     let text = event["line"].as_str().unwrap_or_default();
-                    let (step, total) = progress;
-                    let prefix = if total > 0 {
-                        format!("[{step}/{total}] ")
-                    } else {
-                        String::new()
+                    // The event carries its own step: a wave with two setup steps never labels
+                    // step 1 output with step 2's index.
+                    let prefix = match (event["step"].as_u64(), event["total"].as_u64()) {
+                        (Some(step), Some(total)) if total > 0 => format!("[{step}/{total}] "),
+                        _ => String::new(),
                     };
                     println!("{}", paint(&format!("{prefix}{text}"), "2", self.color()));
                 }
@@ -198,9 +196,13 @@ impl Session {
                     println!("{} {label}", paint("✗", "31", self.color()));
                     let message = event["message"].as_str().unwrap_or("step failed");
                     eprintln!("error: {message}");
-                    eprintln!(
-                        "next: fix Forkfile:{line}, then run `slipfork up`; the world stays up for inspection"
-                    );
+                    match event["remedy"].as_str() {
+                        // The step's own remedy wins: a valid Forkfile is not the thing to fix.
+                        Some(remedy) => eprintln!("next: {remedy}"),
+                        None => eprintln!(
+                            "next: fix Forkfile:{line}, then run `slipfork up`; the world stays up for inspection"
+                        ),
+                    }
                     return ExitCode::FAILURE;
                 }
                 "ready" => {
@@ -234,6 +236,10 @@ impl Session {
                 "run `slipfork up` to start one",
             );
         };
+        // The in-world oracle answers first: a typed `List` says how many pods are about to go.
+        let pods = SuperviseClient::pods(&state.socket)
+            .ok()
+            .map(|pods| pods.len());
         match SuperviseClient::shutdown(&state.socket) {
             Ok(_) => {
                 // The supervisor removes `world.json` after its init exits; wait for it so the
@@ -241,12 +247,22 @@ impl Session {
                 await_exit(state.pid, Duration::from_secs(30));
                 let _ = fs::remove_file(state_path(&project));
                 if args.json {
-                    println!(
-                        "{}",
-                        serde_json::json!({ "stopped": true, "world": state.world })
-                    );
+                    let mut reply = serde_json::json!({ "stopped": true, "world": state.world });
+                    if let Some(count) = pods {
+                        reply["pods"] = serde_json::json!(count);
+                    }
+                    println!("{reply}");
                 } else {
-                    println!("{} Stopped {}", paint("✓", "32", self.color()), state.world);
+                    let detail = match pods {
+                        Some(0) => "(none)".to_owned(),
+                        Some(count) => format!("{count} pod{}", if count == 1 { "" } else { "s" }),
+                        None => "(unknown)".to_owned(),
+                    };
+                    println!(
+                        "{} Stopped {} {detail}",
+                        paint("✓", "32", self.color()),
+                        state.world
+                    );
                 }
                 ExitCode::SUCCESS
             }
@@ -338,6 +354,9 @@ impl SuperviseClient {
             }
             InitFrame::Reply { id, .. } => Err(format!("unexpected reply id `{id}`")),
             InitFrame::Stopped { .. } => Err("the world stopped before replying".to_owned()),
+            InitFrame::Output { .. } => {
+                Err("unexpected output frame on a reply-only channel".to_owned())
+            }
             InitFrame::Ready { .. } => Err("the world sent an unexpected ready frame".to_owned()),
         }
     }
@@ -348,6 +367,16 @@ impl SuperviseClient {
             id: "cli-shutdown".to_owned(),
         };
         Self::connect(socket)?.call(&request)
+    }
+
+    /// Lists the pods the world init still tracks, through the one canonical reply parser.
+    fn pods(socket: &Path) -> Result<Vec<slipfork_world::PodStatus>, String> {
+        let request = Request::List {
+            v: PROTOCOL_VERSION,
+            id: "cli-list".to_owned(),
+        };
+        let reply = Self::connect(socket)?.call(&request)?;
+        slipfork_world::pod_statuses(&reply).map_err(|error| error.to_string())
     }
 
     fn restart(socket: &Path, service: Option<&str>) -> Result<Value, String> {

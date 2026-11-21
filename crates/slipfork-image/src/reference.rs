@@ -5,6 +5,9 @@ use std::fmt;
 use crate::error::{Error, Result};
 
 const DOCKER_HUB: &str = "docker.io";
+/// Docker Hub's Distribution API host: `docker.io`/`index.docker.io` are web aliases
+/// that do not serve `/v2/`, so every Hub reference is normalized to this host.
+const DOCKER_HUB_API: &str = "registry-1.docker.io";
 const MAX_TAG: usize = 128;
 
 /// A parsed OCI image reference.
@@ -40,14 +43,14 @@ impl ImageReference {
             return Err(invalid(raw, "the repository has an empty path segment"));
         }
         let registry = if is_registry(parts[0]) {
-            parts.remove(0).to_owned()
+            canonical_registry(parts.remove(0))
         } else {
-            DOCKER_HUB.to_owned()
+            DOCKER_HUB_API.to_owned()
         };
         if parts.is_empty() {
             return Err(invalid(raw, "the repository is empty"));
         }
-        if registry == DOCKER_HUB && parts.len() == 1 {
+        if registry == DOCKER_HUB_API && parts.len() == 1 {
             parts.insert(0, "library");
         }
         for part in &parts {
@@ -112,6 +115,14 @@ fn invalid(reference: &str, reason: &'static str) -> Error {
     Error::InvalidReference {
         reference: reference.to_owned(),
         reason,
+    }
+}
+
+/// Maps Docker Hub's aliases onto the one host that serves the Distribution API.
+fn canonical_registry(host: &str) -> String {
+    match host {
+        DOCKER_HUB | "index.docker.io" | "registry.hub.docker.com" => DOCKER_HUB_API.to_owned(),
+        other => other.to_owned(),
     }
 }
 
@@ -182,11 +193,32 @@ mod tests {
     #[test]
     fn bare_names_resolve_to_docker_hub_library() {
         let reference = ImageReference::parse("postgres:18").expect("valid reference");
-        assert_eq!(reference.registry(), "docker.io");
+        assert_eq!(reference.registry(), "registry-1.docker.io");
         assert_eq!(reference.repository(), "library/postgres");
         assert_eq!(reference.tag(), Some("18"));
         assert_eq!(reference.reference(), "18");
-        assert_eq!(reference.to_string(), "docker.io/library/postgres:18");
+        assert_eq!(
+            reference.to_string(),
+            "registry-1.docker.io/library/postgres:18"
+        );
+    }
+
+    #[test]
+    fn docker_hub_aliases_normalize_to_the_api_host() {
+        for raw in [
+            "docker.io/library/alpine:3.20",
+            "index.docker.io/library/alpine:3.20",
+            "registry.hub.docker.com/library/alpine:3.20",
+        ] {
+            let reference = ImageReference::parse(raw).expect("valid Hub reference");
+            assert_eq!(reference.registry(), "registry-1.docker.io", "{raw}");
+            assert_eq!(reference.repository(), "library/alpine", "{raw}");
+        }
+        for raw in ["ghcr.io/o/i:t", "quay.io/o/i:t", "localhost:5000/o/i:t"] {
+            let reference = ImageReference::parse(raw).expect("valid reference");
+            let expected = raw.split('/').next().expect("host");
+            assert_eq!(reference.registry(), expected, "{raw}");
+        }
     }
 
     #[test]

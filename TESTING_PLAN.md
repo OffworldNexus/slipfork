@@ -75,3 +75,25 @@ Focused non-E2E tests exist **only** for self-contained language, protocol, and 
   Verify `# forkfile: 0.1` version checking, `route` grammar (`exact`, `strip-prefix` vs `rewrite` mutual exclusion, `domain <id | prefix.*>` authority checks), `s3 { cdn <id> }` and `domain <id>` `.domain` / `.url` typing, flat global symbol uniqueness, secret-taint rejection in `arg`, workspace lockfile discovery and `(image, lockfile_dir)` DAG deduplication, boolean `on` expressions, multi-branch `line:col` checking, and comment-preserving `slipfork fmt` / `slipfork fmt --check`.
 - **`OSPP v1` wire framing, `slipfork lsp` & Zed extension:**
   Verify `OSPP v1` P-256 challenge-response authentication, fail-closed `version: 2` validation, and live `Forkfile` diagnostics, `@<tool>` hover tooltips, go-to-definition, and format-on-save in `slipfork lsp` and the Zed extension.
+
+---
+
+## 8. Running the Live Lab Gate
+
+The live suites need a real Btrfs mount, `crun`, unprivileged namespaces, and HTTPS egress; when any of them is missing the suite **fails closed with a one-line remedy** instead of skipping.
+
+Push your working tree to the throwaway lab droplet at `165.232.86.174` and run every protected live suite there, one at a time:
+
+```bash
+tools/do_vm.py sync && tools/do_vm.py test
+```
+
+The exact five suites, in order, are `critical_btrfs_live` (`slipfork-world`), `critical_oci_live` (`slipfork-image`), `critical_dockerfile_live` (`slipfork-image`), `critical_pod_runtime` (`slipfork-world`), and `critical_world_journey` (`slipfork`).
+
+If you have no droplet, loop-back a file on a real Btrfs filesystem, mount it, and run the same five suites locally:
+
+```bash
+SLIPFORK_TEST_ROOT=/mnt/slipfork-live make live-test
+```
+
+`make live-test` refuses to start when `SLIPFORK_TEST_ROOT` is unset, is not on Btrfs, or `crun` is absent, so a green tick always means the real journey executed, never a skipped one.

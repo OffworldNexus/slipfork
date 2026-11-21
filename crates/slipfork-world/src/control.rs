@@ -41,6 +41,16 @@ pub struct ControlError {
     pub message: String,
 }
 
+/// Which stream one [`InitFrame::Output`] line came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Stream {
+    /// Standard output.
+    Stdout,
+    /// Standard error.
+    Stderr,
+}
+
 /// Frames the world init writes to stdout.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
@@ -66,6 +76,17 @@ pub enum InitFrame {
         /// Failure detail on error.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         error: Option<ControlError>,
+    },
+    /// One live stdout/stderr line from a running [`Request::RunOnce`].
+    Output {
+        /// Protocol version.
+        v: u32,
+        /// The request id this line belongs to.
+        id: String,
+        /// Which stream produced the line.
+        stream: Stream,
+        /// The line, without its terminator.
+        line: String,
     },
     /// Teardown is complete; the process exits `0` immediately after.
     Stopped {
@@ -112,6 +133,27 @@ pub enum Request {
         /// Upper bound in milliseconds.
         timeout_ms: u64,
     },
+    /// Run one pod to completion (setup/hook step) while streaming its output.
+    ///
+    /// The init enforces `timeout_ms` itself: the single-threaded loop must never block forever
+    /// on a silent step, because `StopAll`/`Shutdown` arrive on that same loop.
+    RunOnce {
+        /// Protocol version.
+        v: u32,
+        /// Request id echoed back in the reply.
+        id: String,
+        /// Fully resolved pod value (config.json already written by the supervisor).
+        pod: PodSpec,
+        /// Upper bound in milliseconds for the whole run, enforced inside the world.
+        timeout_ms: u64,
+    },
+    /// Report every tracked pod and whether its process still exists.
+    List {
+        /// Protocol version.
+        v: u32,
+        /// Request id echoed back in the reply.
+        id: String,
+    },
     /// Restart one pod from its existing tmpfs bundle, or every pod when `service` is `None`.
     Restart {
         /// Protocol version.
@@ -133,6 +175,8 @@ impl Request {
             | Self::StopAll { id, .. }
             | Self::Shutdown { id, .. }
             | Self::Restart { id, .. }
+            | Self::List { id, .. }
+            | Self::RunOnce { id, .. }
             | Self::Wait { id, .. } => id,
         }
     }
@@ -153,7 +197,10 @@ pub fn decode_init_frame(line: &str) -> Result<InitFrame> {
         message: format!("bad init frame: {source}"),
     })?;
     let version = match &frame {
-        InitFrame::Ready { v, .. } | InitFrame::Reply { v, .. } | InitFrame::Stopped { v } => *v,
+        InitFrame::Ready { v, .. }
+        | InitFrame::Reply { v, .. }
+        | InitFrame::Output { v, .. }
+        | InitFrame::Stopped { v } => *v,
     };
     check_version(version)?;
     Ok(frame)
@@ -169,6 +216,8 @@ pub fn decode_request(line: &str) -> Result<Request> {
         | Request::StopAll { v, .. }
         | Request::Shutdown { v, .. }
         | Request::Restart { v, .. }
+        | Request::List { v, .. }
+        | Request::RunOnce { v, .. }
         | Request::Wait { v, .. } => *v,
     };
     check_version(version)?;
@@ -197,6 +246,7 @@ mod tests {
             rootfs: "/images/alpine".into(),
             workdir: "/project".to_owned(),
             argv: vec!["/bin/sh".to_owned(), "-c".to_owned(), "true".to_owned()],
+            inherited_env: Vec::new(),
             env: vec![PodEnv::new("PORT", "8000")],
             binds: Vec::new(),
             files: Vec::new(),
@@ -239,6 +289,36 @@ mod tests {
         let decoded = decode_init_frame(std::str::from_utf8(&bytes).expect("utf8").trim())
             .expect("decode reply");
         assert_eq!(decoded, reply);
+    }
+
+    #[test]
+    fn list_reports_tracked_pods_running_or_exited() {
+        let request = Request::List {
+            v: PROTOCOL_VERSION,
+            id: "req-7".to_owned(),
+        };
+        let bytes = encode(&request).expect("encode");
+        let decoded =
+            decode_request(std::str::from_utf8(&bytes).expect("utf8").trim()).expect("decode");
+        assert_eq!(decoded, request);
+        assert_eq!(decoded.id(), "req-7");
+        let reply = InitFrame::Reply {
+            v: PROTOCOL_VERSION,
+            id: "req-7".to_owned(),
+            ok: Some(serde_json::json!({"pods": [
+                {"id": "pg", "pid": 42, "running": true},
+                {"id": "svc", "pid": 7, "running": false}
+            ]})),
+            error: None,
+        };
+        let encoded = encode(&reply).expect("encode reply");
+        let decoded = decode_init_frame(std::str::from_utf8(&encoded).expect("utf8").trim())
+            .expect("decode reply");
+        let InitFrame::Reply { ok: Some(ok), .. } = decoded else {
+            panic!("expected a reply with an ok payload");
+        };
+        assert_eq!(ok["pods"][0]["running"], true);
+        assert_eq!(ok["pods"][1]["running"], false);
     }
 
     #[test]

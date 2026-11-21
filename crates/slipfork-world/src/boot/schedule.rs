@@ -18,6 +18,8 @@ pub struct StepOutcome {
 pub struct BootFailure {
     /// One human line; never contains secret values.
     pub message: String,
+    /// Concrete next action when the step's `Forkfile` line is not the thing to fix.
+    pub remedy: Option<String>,
 }
 
 impl BootFailure {
@@ -26,13 +28,23 @@ impl BootFailure {
     pub fn new(message: impl Into<String>) -> Self {
         Self {
             message: message.into(),
+            remedy: None,
+        }
+    }
+
+    /// Builds a failure whose cure is not "edit this `Forkfile` line".
+    #[must_use]
+    pub fn with_remedy(message: impl Into<String>, remedy: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            remedy: Some(remedy.into()),
         }
     }
 }
 
 /// Executes one ready step; the composition root injects the real implementation.
 pub type StepExecutor<'a> =
-    dyn Fn(&BootStep) -> std::result::Result<StepOutcome, BootFailure> + Sync + 'a;
+    dyn Fn(usize, &BootStep) -> std::result::Result<StepOutcome, BootFailure> + Sync + 'a;
 
 /// Receives live boot events; the CLI renders them, tests collect them.
 pub type EventSink<'a> = dyn Fn(BootEvent) + Sync + 'a;
@@ -87,6 +99,8 @@ pub enum BootEvent {
         line: u32,
         /// One human line.
         message: String,
+        /// Concrete next action when editing `line` is not the fix.
+        remedy: Option<String>,
     },
 }
 
@@ -95,6 +109,24 @@ pub enum BootEvent {
 /// A failure stops all later waves, emits [`BootEvent::Failed`], and returns [`Error::Boot`]
 /// with the first failure's line. Stamped steps that match are skipped and reported as
 /// [`BootEvent::UpToDate`]; a successful conditional step records its stamp.
+/// A launched service either stayed up through the readiness window or exited early.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ServiceHealth {
+    /// The process was still alive when the readiness window elapsed.
+    Running,
+    /// The process exited inside the window with this code.
+    Exited(i32),
+}
+
+/// Classifies a service liveness probe: an exit inside the window is a failed service.
+#[must_use]
+pub fn classify_service(exit_within_window: Option<i32>) -> ServiceHealth {
+    match exit_within_window {
+        Some(code) => ServiceHealth::Exited(code),
+        None => ServiceHealth::Running,
+    }
+}
+
 pub fn run_plan(
     plan: &WorldPlan,
     stamps: &StampStore,
@@ -127,11 +159,13 @@ pub fn run_plan(
                 label: step.label.clone(),
                 line: step.line,
                 message: failure.message.clone(),
+                remedy: failure.remedy.clone(),
             });
             return Err(Error::Boot {
                 step: step.label.clone(),
                 line: step.line,
                 message: failure.message.clone(),
+                remedy: failure.remedy.clone(),
             });
         }
     }
@@ -172,7 +206,7 @@ fn run_step(
         label: step.label.clone(),
     });
     let started = Instant::now();
-    let outcome = execute(step);
+    let outcome = execute(index, step);
     let elapsed = started.elapsed();
     if outcome.is_ok()
         && let Some(stamp) = &step.stamp

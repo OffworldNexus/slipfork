@@ -11,9 +11,12 @@ use std::cell::RefCell;
 use std::fs;
 use std::net::{TcpStream, ToSocketAddrs};
 use std::os::fd::AsRawFd;
+use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+use slipfork_world::{BtrfsEngine, Dirtiness, StoreLayout, WorldEngine, is_subvolume_path};
 
 const BTRFS_SUPER_MAGIC: u64 = 0x9123_683E;
 const TMPFS_MAGIC: u64 = 0x0102_1994;
@@ -25,8 +28,13 @@ WORKDIR /project
 CMD [\"python3\", \"--version\"]
 ";
 
-// `pre` and `post` are written by the hooks; `svc` is written by the service itself, so
-// `presvcpost` proves the service ran strictly between the two hooks.
+// A real `uv` project: `uv sync` creates the venv both services share.
+const PYPROJECT: &str = "[project]\nname = \"good\"\nversion = \"0.1.0\"\nrequires-python = \">=3.12\"\ndependencies = []\n";
+// A committed lockfile is what makes the stamped `uv sync` skip on the second boot.
+const UV_LOCK: &str = "version = 1\nrevision = 5\nrequires-python = \">=3.12\"\n\n[[package]]\nname = \"good\"\nversion = \"0.1.0\"\nsource = { virtual = \".\" }\n";
+
+// `pre` is written by the hook, `svc` by the service's own startup, `post` by the hook that
+// waits for it, so `presvcpost` proves the service ran strictly between the two hooks.
 const GOOD_FORKFILE: &str = r#"# forkfile: 0.1
 image app . {
   dockerfile Dockerfile
@@ -34,13 +42,35 @@ image app . {
   post-deploy: sh -c 'for i in $(seq 50); do grep -q svc order.txt && break; sleep 0.1; done; grep -q svc order.txt && printf post >> order.txt'
   service api {
     port 8000
-    run: @uv run python -c "open('order.txt','a').write('svc'); import time; time.sleep(3600)"
+    run: @uv run python app.py
   }
   service worker {
-    run: @uv run python -c "import time; time.sleep(3600)"
+    run: @uv run python worker.py
   }
 }
 "#;
+
+const APP_PY: &str = r#"import os, pathlib
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+with pathlib.Path("order.txt").open("a") as order:
+    order.write("svc")
+
+class Handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        body = b"ok"
+        self.send_response(200)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *args):
+        pass
+
+HTTPServer(("127.0.0.1", int(os.environ["PORT"])), Handler).serve_forever()
+"#;
+
+const WORKER_PY: &str = "import time\n\nwhile True:\n    time.sleep(3600)\n";
 
 const BROKEN_FORKFILE: &str = r#"# forkfile: 0.1
 image app . {
@@ -174,6 +204,12 @@ impl Journey {
         fs::create_dir_all(&dir).expect("create project directory");
         fs::write(dir.join("Dockerfile"), DOCKERFILE).expect("write Dockerfile");
         fs::write(dir.join("Forkfile"), forkfile).expect("write Forkfile");
+        fs::write(dir.join("pyproject.toml"), PYPROJECT).expect("write pyproject.toml");
+        fs::write(dir.join("uv.lock"), UV_LOCK).expect("write uv.lock");
+        fs::write(dir.join(".dockerignore"), ".venv/\n__pycache__/\n")
+            .expect("write .dockerignore");
+        fs::write(dir.join("app.py"), APP_PY).expect("write app.py");
+        fs::write(dir.join("worker.py"), WORKER_PY).expect("write worker.py");
         self.projects.borrow_mut().push(dir.clone());
         dir
     }
@@ -199,10 +235,23 @@ impl Drop for Journey {
                 .env("XDG_RUNTIME_DIR", &self.runtime)
                 .output();
         }
-        let _ = wait_until(
-            || processes_mentioning(b"slipfork-world-init").is_empty(),
+        let scope = self.run.as_os_str().as_bytes();
+        let survived = !wait_until(
+            || {
+                processes_mentioning(b"slipfork-world-init")
+                    .into_iter()
+                    .all(|pid| !belongs_to_run(pid, scope))
+            },
             Duration::from_secs(10),
         );
+        if survived {
+            let leaked: Vec<u32> = processes_mentioning(b"slipfork-world-init")
+                .into_iter()
+                .filter(|pid| belongs_to_run(*pid, scope))
+                .collect();
+            eprintln!("journey cleanup: fail closed: `slipfork-world-init` survived in {leaked:?}");
+        }
+        self.destroy_subvolumes();
         if let Err(error) = fs::remove_dir_all(&self.run) {
             eprintln!(
                 "journey cleanup: cannot remove `{}`: {error}",
@@ -210,6 +259,91 @@ impl Drop for Journey {
             );
         }
     }
+}
+
+impl Journey {
+    /// Sealed subvolumes (the project root included) need `SNAP_DESTROY_V2`, not `rmdir`.
+    fn destroy_subvolumes(&self) {
+        let engine = BtrfsEngine::new(StoreLayout::new(&self.run));
+        let mut subvolumes = Vec::new();
+        let mut stack = vec![self.run.clone()];
+        while let Some(dir) = stack.pop() {
+            let Ok(entries) = fs::read_dir(&dir) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let Ok(file_type) = entry.file_type() else {
+                    continue;
+                };
+                if !file_type.is_dir() || file_type.is_symlink() {
+                    continue;
+                }
+                let path = entry.path();
+                if is_subvolume_path(&path).expect("fail closed: probe the journey subvolume") {
+                    subvolumes.push(path.clone());
+                }
+                stack.push(path);
+            }
+        }
+        // Deepest first: a child subvolume must be gone before its parent is destroyed.
+        subvolumes.sort_by_key(|path| std::cmp::Reverse(path.components().count()));
+        for path in &subvolumes {
+            if let Err(error) = engine.destroy(path, Dirtiness::Clean, true) {
+                eprintln!(
+                    "journey cleanup: destroy `{}` failed: {error}",
+                    path.display()
+                );
+            }
+        }
+        let leftovers: Vec<PathBuf> = subvolumes
+            .into_iter()
+            .filter(|path| {
+                // A destroyed subvolume answers ENOENT, which is the success case; any other
+                // probe failure must stop the journey instead of being swallowed.
+                match is_subvolume_path(path) {
+                    Ok(subvolume) => subvolume,
+                    Err(slipfork_world::Error::Io { source, .. })
+                        if source.kind() == std::io::ErrorKind::NotFound =>
+                    {
+                        false
+                    }
+                    Err(error) => {
+                        panic!("fail closed: probe the journey subvolume: {error}")
+                    }
+                }
+            })
+            .collect();
+        if !leftovers.is_empty() {
+            let message =
+                format!("fail closed: subvolume(s) survived the Btrfs teardown: {leftovers:?}");
+            if std::thread::panicking() {
+                eprintln!("{message}");
+            } else {
+                panic!("{message}");
+            }
+        }
+    }
+}
+
+/// The last 80 lines of a project's supervisor log, for a failing `up` panic message.
+fn supervisor_tail(project: &Path) -> String {
+    let log = project.join(".slipfork/supervisor.log");
+    let Ok(text) = fs::read_to_string(&log) else {
+        return format!("<no {}>", log.display());
+    };
+    let lines: Vec<&str> = text.lines().collect();
+    let start = lines.len().saturating_sub(80);
+    lines[start..].join("\n")
+}
+
+/// One failing-`up` message carrying stdout, stderr, and the supervisor log tail.
+fn up_failure(label: &str, project: &Path, output: &Output) -> String {
+    format!(
+        "{label}:\nstdout:\n{}\nstderr:\n{}\n--- .slipfork/supervisor.log (tail) ---\n{}",
+        stdout(output),
+        stderr(output),
+        supervisor_tail(project)
+    )
 }
 
 fn stdout(output: &Output) -> String {
@@ -231,6 +365,52 @@ fn crun_list(crun: &Path) -> String {
         String::from_utf8_lossy(&output.stderr).trim()
     );
     String::from_utf8_lossy(&output.stdout).into_owned()
+}
+
+/// True when `pid` or any ancestor's cmdline names this journey's unique run root.
+fn belongs_to_run(pid: u32, scope: &[u8]) -> bool {
+    let mut current = Some(pid);
+    while let Some(pid) = current {
+        if let Ok(cmdline) = fs::read(format!("/proc/{pid}/cmdline")) {
+            if cmdline.windows(scope.len()).any(|window| window == scope) {
+                return true;
+            }
+        }
+        let Ok(stat) = fs::read_to_string(format!("/proc/{pid}/stat")) else {
+            return false;
+        };
+        // `pid (comm) state ppid …`; `comm` may contain spaces, so split after the final `)`.
+        let Some(rest) = stat.rsplit_once(')').map(|(_, rest)| rest) else {
+            return false;
+        };
+        current = rest
+            .split_whitespace()
+            .nth(1)
+            .and_then(|ppid| ppid.parse::<u32>().ok())
+            .filter(|ppid| *ppid > 0);
+    }
+    false
+}
+
+/// Every process this journey leaked: the needle matches and the run root is in the ancestry.
+fn scoped_leaks(run: &Path) -> Vec<(String, u32)> {
+    let scope = run.as_os_str().as_bytes();
+    let mut leaked = Vec::new();
+    for needle in [
+        b"slipfork-world-init".as_slice(),
+        b"postgres".as_slice(),
+        b"redis-server".as_slice(),
+        b"weed".as_slice(),
+        b"uv".as_slice(),
+        b"python".as_slice(),
+    ] {
+        for pid in processes_mentioning(needle) {
+            if belongs_to_run(pid, scope) {
+                leaked.push((String::from_utf8_lossy(needle).into_owned(), pid));
+            }
+        }
+    }
+    leaked
 }
 
 fn processes_mentioning(needle: &[u8]) -> Vec<u32> {
@@ -281,14 +461,15 @@ fn world_up_restart_down_journey() {
     let first_err = stderr(&first);
     assert!(
         first.status.success(),
-        "first `up` failed:\nstdout:\n{first_out}\nstderr:\n{first_err}"
+        "{}",
+        up_failure("first `up` failed", &good, &first)
     );
     assert!(
         first_out.contains("✓ Ready -> http://good.localhost"),
         "ready line missing:\n{first_out}"
     );
     assert!(
-        first_err.contains("progress: .slipfork/supervisor.log"),
+        first_err.contains("progress: ") && first_err.contains(".slipfork/supervisor.log"),
         "human mode must name the supervisor log:\n{first_err}"
     );
     assert!(
@@ -319,8 +500,8 @@ fn world_up_restart_down_journey() {
     assert_eq!(
         failed.status.code(),
         Some(1),
-        "a failing service must fail `up`:\n{}",
-        stdout(&failed)
+        "{}",
+        up_failure("a failing service must fail `up`", &broken, &failed)
     );
     let failed_err = stderr(&failed);
     assert!(failed_err.contains("error:"), "{failed_err}");
@@ -343,8 +524,8 @@ fn world_up_restart_down_journey() {
     let second_out = stdout(&second);
     assert!(
         second.status.success(),
-        "second `up` failed:\n{second_out}\n{}",
-        stderr(&second)
+        "{}",
+        up_failure("second `up` failed", &good, &second)
     );
     let stamp_line = second_out
         .lines()
@@ -359,9 +540,8 @@ fn world_up_restart_down_journey() {
     let restart = journey.slipfork(&good, &["restart", "api"]);
     assert!(
         restart.status.success(),
-        "restart: {}\n{}",
-        stdout(&restart),
-        stderr(&restart)
+        "{}",
+        up_failure("restart failed", &good, &restart)
     );
     assert!(
         stdout(&restart).contains("Restarted api"),
@@ -370,12 +550,14 @@ fn world_up_restart_down_journey() {
     );
     let down = journey.slipfork(&good, &["down"]);
     assert!(down.status.success(), "final down: {}", stderr(&down));
+    let _ = wait_until(
+        || scoped_leaks(&journey.run).is_empty(),
+        Duration::from_secs(10),
+    );
+    let leaked = scoped_leaks(&journey.run);
     assert!(
-        wait_until(
-            || processes_mentioning(b"slipfork-world-init").is_empty(),
-            Duration::from_secs(10)
-        ),
-        "slipfork-world-init survived teardown"
+        leaked.is_empty(),
+        "processes survived teardown (needle, pid): {leaked:?}"
     );
     let listed = crun_list(&crun);
     for id in ["api", "worker", "broken"] {

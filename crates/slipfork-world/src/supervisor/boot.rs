@@ -38,6 +38,9 @@ pub(super) fn boot(host: WorldHost, world: &WorldName) -> Result<WorldSupervisor
         .args([
             "--user",
             "--map-current-user",
+            // Identity mapping alone clears the capability sets on `setresuid`, so `lo` setup
+            // needs the explicit keep; this is verified live on the lab VM.
+            "--keep-caps",
             "--net",
             "--ipc",
             "--pid",
@@ -108,8 +111,9 @@ pub(super) fn boot(host: WorldHost, world: &WorldName) -> Result<WorldSupervisor
 }
 
 fn await_ready(live: &mut LiveWorld, timeout: Duration) -> Result<(u32, NamespaceIdentity)> {
+    let deadline = Instant::now() + timeout;
     loop {
-        let line = read_line(&mut live.stdout, timeout)?.ok_or_else(|| Error::Init {
+        let line = read_line(&mut live.stdout, deadline)?.ok_or_else(|| Error::Init {
             message: "slipfork-world-init exited before its ready handshake".to_owned(),
         })?;
         match control::decode_init_frame(line.trim())? {
@@ -122,7 +126,56 @@ fn await_ready(live: &mut LiveWorld, timeout: Duration) -> Result<(u32, Namespac
                     message: "world init stopped during boot".to_owned(),
                 });
             }
-            InitFrame::Reply { .. } => {}
+            InitFrame::Reply { .. } | InitFrame::Output { .. } => {}
+        }
+    }
+}
+
+/// Reads one run-once exchange: `Output` frames stream live, the `Reply` ends it.
+///
+/// One total deadline covers the whole request: a chatty step cannot extend its own budget by
+/// emitting a line every few seconds.
+pub(super) fn await_run_once(
+    live: &mut LiveWorld,
+    request_id: &str,
+    timeout: Duration,
+    on_line: &mut dyn FnMut(control::Stream, &str),
+) -> Result<i32> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let line = read_line(&mut live.stdout, deadline)?.ok_or_else(|| Error::Init {
+            message: "world init closed its control channel".to_owned(),
+        })?;
+        match control::decode_init_frame(line.trim())? {
+            InitFrame::Output {
+                id, stream, line, ..
+            } if id == request_id => {
+                on_line(stream, &line);
+            }
+            InitFrame::Reply { id, ok, error, .. } if id == request_id => {
+                if let Some(error) = error {
+                    // `run-timeout` means the init already killed and reaped the container.
+                    return Err(Error::PodLaunch {
+                        message: if error.message.is_empty() {
+                            error.code
+                        } else {
+                            error.message
+                        },
+                    });
+                }
+                return ok
+                    .and_then(|ok| ok.get("exit_code").and_then(serde_json::Value::as_i64))
+                    .and_then(|code| i32::try_from(code).ok())
+                    .ok_or_else(|| Error::Protocol {
+                        message: "run-once reply carried no exit code".to_owned(),
+                    });
+            }
+            InitFrame::Stopped { .. } => {
+                return Err(Error::Init {
+                    message: "world init stopped while a run-once was pending".to_owned(),
+                });
+            }
+            InitFrame::Ready { .. } | InitFrame::Reply { .. } | InitFrame::Output { .. } => {}
         }
     }
 }
@@ -156,8 +209,9 @@ pub(super) fn await_reply(
     request_id: &str,
     timeout: Duration,
 ) -> Result<serde_json::Value> {
+    let deadline = Instant::now() + timeout;
     loop {
-        let line = read_line(&mut live.stdout, timeout)?.ok_or_else(|| Error::Init {
+        let line = read_line(&mut live.stdout, deadline)?.ok_or_else(|| Error::Init {
             message: "world init closed its control channel".to_owned(),
         })?;
         match control::decode_init_frame(line.trim())? {
@@ -183,16 +237,15 @@ pub(super) fn await_reply(
                     message: "world init stopped while a request was pending".to_owned(),
                 });
             }
-            InitFrame::Ready { .. } => {}
+            InitFrame::Ready { .. } | InitFrame::Output { .. } => {}
         }
     }
 }
 
 fn read_line(
     reader: &mut BufReader<std::process::ChildStdout>,
-    timeout: Duration,
+    deadline: Instant,
 ) -> Result<Option<String>> {
-    let deadline = Instant::now() + timeout;
     loop {
         let remaining = deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {

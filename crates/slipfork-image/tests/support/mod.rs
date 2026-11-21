@@ -352,7 +352,9 @@ fn handle(mut stream: TcpStream, state: Arc<Mutex<State>>) {
             .images
             .get(repo)
             .and_then(|image| image.blobs.get(digest))
-            .cloned();
+            .cloned()
+            // Every fixture manifest names the same `{}` image config; serve it on demand.
+            .or_else(|| (digest == sha256_hex(b"{}")).then(|| b"{}".to_vec()));
         drop(guard);
         match blob {
             Some(bytes) => respond(
@@ -414,6 +416,8 @@ fn seed_images(state: &mut State) {
     seed_corrupt(state);
     seed_escape(state);
     seed_symlink(state);
+    seed_links(state);
+    seed_hardlink_escape(state);
 }
 
 fn seed_demo(state: &mut State) {
@@ -524,6 +528,25 @@ fn seed_symlink(state: &mut State) {
         },
     );
     state.images.insert("library/symlink".to_owned(), image);
+}
+
+/// Container-absolute links: a hardlink to `/bin/busybox` and a symlink to the same path.
+fn seed_links(state: &mut State) {
+    let mut tar = TarBuilder::new();
+    // No `bin/` directory entry: the symlink comes first and pins on-demand parent creation.
+    // A hardlink can never precede its target, so the file lands before `bin/arch`.
+    tar.raw_symlink("bin/sh", "/bin/busybox");
+    tar.file("bin/busybox", 0o755, b"#!/bin/sh\n");
+    tar.raw_hardlink("bin/arch", "/bin/busybox");
+    serve_single_layer(state, "library/links", gzip(&tar.finish()));
+}
+
+/// A hardlink that climbs out of the image root must still be refused.
+fn seed_hardlink_escape(state: &mut State) {
+    let mut tar = TarBuilder::new();
+    tar.file("bin/busybox", 0o755, b"#!/bin/sh\n");
+    tar.raw_hardlink("bin/evil", "../../etc/shadow");
+    serve_single_layer(state, "library/link-escape", gzip(&tar.finish()));
 }
 
 /// Unauthenticated mirror image: `public/demo` serves direct 200s with no challenge.
@@ -704,6 +727,20 @@ impl TarBuilder {
         self.builder
             .append(&header, data)
             .expect("append a raw file entry");
+    }
+
+    fn raw_hardlink(&mut self, name: &str, target: &str) {
+        let mut header = tar::Header::new_gnu();
+        header.set_entry_type(tar::EntryType::Link);
+        header.set_size(0);
+        header.set_mode(0o644);
+        let bytes = header.as_mut_bytes();
+        bytes[..name.len()].copy_from_slice(name.as_bytes());
+        bytes[157..157 + target.len()].copy_from_slice(target.as_bytes());
+        header.set_cksum();
+        self.builder
+            .append(&header, io::empty())
+            .expect("append a raw hardlink entry");
     }
 
     fn raw_symlink(&mut self, name: &str, target: &str) {

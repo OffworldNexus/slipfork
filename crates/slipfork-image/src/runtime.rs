@@ -164,7 +164,8 @@ impl CrunStepRuntime {
         log: &mut dyn Write,
     ) -> Result<std::process::ExitStatus> {
         let mut child = StdCommand::new(&self.host.crun)
-            .args(["run", "--cgroup-manager=disabled", "--bundle"])
+            // `--cgroup-manager` is a crun global option: it must precede the subcommand.
+            .args(["--cgroup-manager=disabled", "run", "--bundle"])
             .arg(bundle)
             .arg(id)
             .stdin(Stdio::null())
@@ -208,7 +209,7 @@ impl CrunStepRuntime {
 
     fn cleanup(&self, id: &str, bundle: &Path) {
         let _ = StdCommand::new(&self.host.crun)
-            .args(["delete", "--force", id])
+            .args(["--cgroup-manager=disabled", "delete", "--force", id])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())

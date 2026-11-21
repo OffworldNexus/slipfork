@@ -8,14 +8,65 @@
 mod support;
 
 use std::io::Read;
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use slipfork_image::{Credentials, Error, ImageLayout, OciPuller, RegistryClient, RegistryScheme};
+use slipfork_image::{
+    Credentials, Error, ImageLayout, ImageReference, OciPuller, RegistryClient, RegistryScheme,
+};
 use slipfork_world::{BtrfsEngine, Dirtiness, StoreLayout, WorldEngine};
 use support::{Fixture, GZIP, OCI_MANIFEST, read_text, sha256_hex};
+
+/// A real Docker Hub pull: proves the `registry-1.docker.io` API host and the
+/// `auth.docker.io` bearer flow, which a loopback fixture can never exercise.
+#[test]
+fn real_docker_hub_pull() {
+    let run = support::live_run_root("oci-hub");
+    let store = StoreLayout::new(&run);
+    let engine = Arc::new(BtrfsEngine::new(store.clone()));
+    engine.ensure_store().expect("create the Btrfs image store");
+    let images = ImageLayout::new(store.images_root());
+    let arch = support::host_architecture();
+    let puller = OciPuller::new(
+        Arc::clone(&engine) as Arc<dyn WorldEngine>,
+        images,
+        Credentials::Anonymous,
+        arch,
+        "slipfork-tests/0.1".to_owned(),
+    );
+    let reference =
+        ImageReference::parse("docker.io/library/alpine:3.20").expect("valid Hub reference");
+    assert_eq!(
+        reference.registry(),
+        "registry-1.docker.io",
+        "Docker Hub aliases must normalize to the Distribution API host"
+    );
+    let pulled = puller.pull(&reference).unwrap_or_else(|error| {
+        panic!(
+            "fail closed: could not pull {reference} from Docker Hub: {error}\nnext: allow HTTPS egress to registry-1.docker.io and auth.docker.io, then re-run the live suite"
+        )
+    });
+    assert_eq!(
+        pulled.architecture,
+        arch,
+        "the multi-arch index must resolve to linux/{}",
+        arch.oci()
+    );
+    assert!(
+        engine.is_sealed(&pulled.rootfs).expect("probe the seal"),
+        "the real image rootfs must be sealed"
+    );
+    assert!(
+        pulled.rootfs.join("etc/alpine-release").is_file(),
+        "the alpine rootfs must unpack its release marker"
+    );
+    engine
+        .destroy(&pulled.rootfs, Dirtiness::Clean, false)
+        .expect("destroy the real image rootfs");
+    std::fs::remove_dir_all(&run).expect("remove the real-pull scratch run");
+}
 
 #[test]
 fn native_oci_pull_lifecycle() {
@@ -162,12 +213,32 @@ fn native_oci_pull_lifecycle() {
         matches!(escape, Error::UnsafePath { .. }),
         "unexpected error: {escape}"
     );
-    let link = puller
-        .pull(&fixture.reference("library/symlink"))
-        .expect_err("an escaping symlink must be refused");
+    // Container-absolute links are legitimate: a hardlink rebases onto the rootfs, a symlink
+    // is stored verbatim, and an absolute target is never followed while extracting.
+    let links = puller
+        .pull(&fixture.reference("library/links"))
+        .expect("pull the container-absolute link image");
+    let busybox = links.rootfs.join("bin/busybox");
+    let arch_bin = links.rootfs.join("bin/arch");
+    let stat = |path: &Path| std::fs::symlink_metadata(path).expect("stat a pulled link");
+    assert_eq!(
+        stat(&busybox).ino(),
+        stat(&arch_bin).ino(),
+        "`bin/arch -> /bin/busybox` must share one inode inside the rootfs"
+    );
+    assert_eq!(read_text(&arch_bin), read_text(&busybox));
+    assert_eq!(
+        std::fs::read_link(links.rootfs.join("bin/sh")).expect("read the absolute symlink"),
+        Path::new("/bin/busybox"),
+        "an absolute symlink must be stored verbatim, never rebased or followed"
+    );
+    // A hardlink that climbs out of the rootfs is still refused, and staging is rolled back.
+    let link_escape = puller
+        .pull(&fixture.reference("library/link-escape"))
+        .expect_err("a `..` hardlink must be refused");
     assert!(
-        matches!(link, Error::UnsafeLink { .. }),
-        "unexpected error: {link}"
+        matches!(link_escape, Error::UnsafeLink { .. }),
+        "unexpected error: {link_escape}"
     );
     assert!(partial_entries(images.root()).is_empty());
 
@@ -246,21 +317,29 @@ fn oci_wire_protocol_reference_registry() {
         "unexpected error: {error}"
     );
 
-    let link_reference = fixture.reference("library/symlink");
+    let link_reference = fixture.reference("library/links");
     let mut link = client.session(&link_reference);
-    let evil = link.manifest(arch).expect("resolve the symlink image");
+    let evil = link.manifest(arch).expect("resolve the links image");
     let mut blob = link
         .blob(&evil.manifest.layers[0].digest)
-        .expect("stream the symlink layer");
+        .expect("stream the links layer");
     let mut bytes = Vec::new();
-    blob.read_to_end(&mut bytes)
-        .expect("read the symlink layer");
-    let error = slipfork_image::LayerUnpacker::new(scratch.join("link-root"))
+    blob.read_to_end(&mut bytes).expect("read the links layer");
+    let link_root = scratch.join("link-root");
+    slipfork_image::LayerUnpacker::new(&link_root)
         .apply(&mut &bytes[..], GZIP)
-        .expect_err("an escaping symlink must be refused");
-    assert!(
-        matches!(error, Error::UnsafeLink { .. }),
-        "unexpected error: {error}"
+        .expect("a container-absolute layer unpacks");
+    assert_eq!(
+        std::fs::read_link(link_root.join("bin/sh")).expect("read the stored symlink"),
+        Path::new("/bin/busybox")
+    );
+    assert_eq!(
+        std::fs::symlink_metadata(link_root.join("bin/arch"))
+            .expect("stat the rebased hardlink")
+            .ino(),
+        std::fs::symlink_metadata(link_root.join("bin/busybox"))
+            .expect("stat the hardlink target")
+            .ino()
     );
 
     // The demo manifest is a real OCI manifest document, not a fixture shortcut.

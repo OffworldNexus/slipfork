@@ -50,15 +50,12 @@ fn supervisor_main(project: &Path, world: &str, env: &HostEnv, json: bool) -> Re
     let plan = world_plan(&doc, project);
     let stamps = StampStore::new(project);
     let emitter = Arc::new(Mutex::new(Emitter { open: true }));
-    let log: Box<dyn Write + Send> = if json {
+    let log = if json {
         // Under `--json` the typed stream stays machine-readable; builder output goes to the
         // supervisor log, which is this process's stderr.
-        Box::new(std::io::stderr())
+        BootSink::Plain(std::io::stderr())
     } else {
-        Box::new(EventLog {
-            emitter: Arc::clone(&emitter),
-            pending: Vec::new(),
-        })
+        BootSink::Events(EventLog::new(Arc::clone(&emitter)))
     };
     let runtime = Mutex::new(WorldRuntime::new(project, world.clone(), &plan, env, log)?);
     // The world init binds `<pods>/control.sock`; this process only records its path.
@@ -76,8 +73,8 @@ fn supervisor_main(project: &Path, world: &str, env: &HostEnv, json: bool) -> Re
             emitter.send(boot_event_json(&event));
         }
     };
-    let execute = |step: &BootStep| match runtime.lock() {
-        Ok(mut runtime) => runtime.execute(step),
+    let execute = |index: usize, step: &BootStep| match runtime.lock() {
+        Ok(mut runtime) => runtime.execute(index, step),
         Err(_) => Err(BootFailure::new("world runtime lock poisoned")),
     };
     let outcome = run_plan(&plan, &stamps, &execute, &sink);
@@ -93,16 +90,21 @@ fn supervisor_main(project: &Path, world: &str, env: &HostEnv, json: bool) -> Re
             }
         }
         Err(error) => {
+            let (line, remedy) = match error {
+                slipfork_world::Error::Boot { line, remedy, .. } => (*line, remedy.clone()),
+                _ => (0, None),
+            };
             if let Ok(mut emitter) = emitter.lock() {
-                emitter.send(json!({
+                let mut event = json!({
                     "event": "failed",
                     "label": error.to_string().lines().next().unwrap_or("boot failed"),
-                    "line": match error {
-                        slipfork_world::Error::Boot { line, .. } => *line,
-                        _ => 0,
-                    },
+                    "line": line,
                     "message": error.to_string().lines().next().unwrap_or_default(),
-                }));
+                });
+                if let Some(remedy) = remedy {
+                    event["remedy"] = json!(remedy);
+                }
+                emitter.send(event);
             }
         }
     }
@@ -156,13 +158,20 @@ fn boot_event_json(event: &BootEvent) -> Value {
             label,
             line,
             message,
+            remedy,
             ..
-        } => json!({
-            "event": "failed",
-            "label": label,
-            "line": line,
-            "message": message,
-        }),
+        } => {
+            let mut event = json!({
+                "event": "failed",
+                "label": label,
+                "line": line,
+                "message": message,
+            });
+            if let Some(remedy) = remedy {
+                event["remedy"] = json!(remedy);
+            }
+            event
+        }
     }
 }
 
@@ -191,7 +200,7 @@ fn write_state(project: &Path, world: &WorldName, socket: &Path) -> Result<(), S
     fs::rename(&temporary, &path).map_err(|error| format!("rename `{}`: {error}", path.display()))
 }
 
-struct Emitter {
+pub(super) struct Emitter {
     open: bool,
 }
 
@@ -214,24 +223,80 @@ impl Emitter {
     }
 }
 
+/// Where boot progress lines go: typed `log` events on stdout, or the supervisor log under `--json`.
+pub(super) enum BootSink {
+    Events(EventLog),
+    Plain(std::io::Stderr),
+}
+
+impl BootSink {
+    /// Tags subsequent lines with the step that is executing right now.
+    pub(super) fn focus(&mut self, step: usize, total: usize, label: &str) {
+        if let Self::Events(log) = self {
+            log.focus(step, total, label);
+        }
+    }
+}
+
+impl Write for BootSink {
+    fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+        match self {
+            Self::Events(log) => log.write(buffer),
+            Self::Plain(sink) => sink.write(buffer),
+        }
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        match self {
+            Self::Events(log) => log.flush(),
+            Self::Plain(sink) => sink.flush(),
+        }
+    }
+}
+
 /// Line-splitting writer that forwards ongoing build output as typed `log` frames.
 ///
 /// Every complete line is flushed as its own NDJSON frame, so a multi-minute `RUN` step never
-/// looks stalled; partial writes stay buffered until their newline arrives.
-struct EventLog {
+/// looks stalled; partial writes stay buffered until their newline arrives. Each frame carries
+/// the step that produced it, so two setup steps in one wave never mislabel each other.
+pub(super) struct EventLog {
     emitter: Arc<Mutex<Emitter>>,
     pending: Vec<u8>,
+    focus: Option<(usize, usize, String)>,
 }
 
 impl EventLog {
+    pub(super) fn new(emitter: Arc<Mutex<Emitter>>) -> Self {
+        Self {
+            emitter,
+            pending: Vec::new(),
+            focus: None,
+        }
+    }
+
+    /// Points every following line at one step; a trailing partial line stays with its producer.
+    pub(super) fn focus(&mut self, step: usize, total: usize, label: &str) {
+        if !self.pending.is_empty() {
+            let line = std::mem::take(&mut self.pending);
+            self.forward(&line);
+        }
+        self.focus = Some((step, total, label.to_owned()));
+    }
+
     fn forward(&mut self, line: &[u8]) {
         let text = String::from_utf8_lossy(line);
         let text = text.trim_end_matches('\r');
         if text.trim().is_empty() {
             return;
         }
+        let mut frame = json!({ "event": "log", "line": text });
+        if let Some((step, total, label)) = &self.focus {
+            frame["step"] = json!(step);
+            frame["total"] = json!(total);
+            frame["label"] = json!(label);
+        }
         if let Ok(mut emitter) = self.emitter.lock() {
-            emitter.send(json!({ "event": "log", "line": text }));
+            emitter.send(frame);
         }
     }
 }

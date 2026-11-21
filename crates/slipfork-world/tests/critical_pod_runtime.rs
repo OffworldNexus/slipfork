@@ -8,6 +8,7 @@
 
 use std::fs;
 use std::net::{SocketAddr, TcpStream};
+use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
@@ -15,15 +16,18 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use slipfork_image::{Architecture, Credentials, ImageLayout, ImageReference, OciPuller};
 use slipfork_world::{
-    Bind, BindSource, BtrfsEngine, PodEnv, PodSpec, ResourceKind, S3Bucket, S3Credentials,
-    S3Policy, SeaweedfsPlan, StoreLayout, WorldEngine, WorldHost, WorldName, WorldSupervisor,
-    is_btrfs_path, is_subvolume_path, postgres, redis, seaweedfs,
+    Bind, BindSource, BtrfsEngine, Dirtiness, ImageFacts, PodEnv, PodHost, PodSpec, ResourceKind,
+    S3Bucket, S3Credentials, S3Policy, SeaweedfsPlan, StoreLayout, WorldEngine, WorldHost,
+    WorldName, WorldSupervisor, is_btrfs_path, is_subvolume_path, postgres, redis, seaweedfs,
+    write_bundle,
 };
 
 const SECRET: &str = "slipfork-probe-secret-9d3f1c";
-const SVC_PORT: u16 = 18_080;
+// SeaweedFS's volume gRPC default is 18080 inside the same world netns; never collide.
+const SVC_PORT: u16 = 18_099;
+/// Placeholder both probe scripts replace with [`SVC_PORT`], so the port lives once.
+const SVC_PORT_PLACEHOLDER: &str = "__SVC_PORT__";
 const MOUNT_REMEDY: &str = "mount -o user_subvol_rm_allowed,noatime <device> <mount>";
-const POD_IDS: [&str; 5] = ["m339svc", "m339clienta", "m339pg", "m339cache", "m339s3"];
 
 const SERVER_PY: &str = r#"
 import http.server, pathlib
@@ -37,8 +41,18 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def log_message(self, *args):
         pass
 pathlib.Path('/project/probe/svc.ready').write_text('ready')
-http.server.HTTPServer(('127.0.0.1', 18080), Handler).serve_forever()
+http.server.HTTPServer(('127.0.0.1', __SVC_PORT__), Handler).serve_forever()
 "#;
+
+/// The probe server script with [`SVC_PORT`] interpolated.
+fn server_py() -> String {
+    SERVER_PY.replace(SVC_PORT_PLACEHOLDER, &SVC_PORT.to_string())
+}
+
+/// The probe client script with [`SVC_PORT`] interpolated.
+fn client_py() -> String {
+    CLIENT_PY.replace(SVC_PORT_PLACEHOLDER, &SVC_PORT.to_string())
+}
 
 const CLIENT_PY: &str = r#"
 import ctypes, json, os, pathlib, socket, sys, time, urllib.request, urllib.error
@@ -70,7 +84,7 @@ if address and address != ctypes.c_void_p(-1).value:
 else:
     out['shm'] = 'unavailable'
 
-out['svc'] = connect(18080, 5.0)
+out['svc'] = connect(__SVC_PORT__, 5.0)
 if role == 'a':
     deadline = time.time() + 90
     while time.time() < deadline and not (connect(5432) and connect(6379) and connect(8333)):
@@ -212,6 +226,10 @@ struct Images {
     pg: PathBuf,
     redis: PathBuf,
     s3: PathBuf,
+    toolbox_facts: ImageFacts,
+    pg_facts: ImageFacts,
+    redis_facts: ImageFacts,
+    s3_facts: ImageFacts,
     /// Writable per-pod CoW clones made for this run; destroyed before the leak proof.
     clones: Vec<PathBuf>,
 }
@@ -266,6 +284,11 @@ fn require_images(engine: &BtrfsEngine, run: &Path) -> Images {
             pg,
             redis,
             s3,
+            // Exported rootfs carry no config document; the pod still gets the default PATH.
+            toolbox_facts: ImageFacts::default(),
+            pg_facts: ImageFacts::default(),
+            redis_facts: ImageFacts::default(),
+            s3_facts: ImageFacts::default(),
             clones: Vec::new(),
         };
     }
@@ -298,11 +321,22 @@ fn require_images(engine: &BtrfsEngine, run: &Path) -> Images {
         pull(ResourceKind::Redis.image()),
         pull(ResourceKind::Seaweedfs.image()),
     ];
+    let facts = |image: &slipfork_image::PulledImage| image.facts.clone();
     let [toolbox_sealed, pg_sealed, redis_sealed, s3_sealed] = sealed;
+    let [toolbox_facts, pg_facts, redis_facts, s3_facts] = [
+        facts(&toolbox_sealed),
+        facts(&pg_sealed),
+        facts(&redis_sealed),
+        facts(&s3_sealed),
+    ];
     let clone_root = run.join("images");
     fs::create_dir_all(&clone_root).expect("create image clone root");
     let mut clones = Vec::new();
     let images = Images {
+        toolbox_facts,
+        pg_facts,
+        redis_facts,
+        s3_facts,
         toolbox: clone_image(
             engine,
             &toolbox_sealed.rootfs,
@@ -337,20 +371,6 @@ fn require_images(engine: &BtrfsEngine, run: &Path) -> Images {
 ///
 /// `world_init` never passes `--root`, so `list` must not either; a different root would hide
 /// every container instead of proving the store is empty.
-fn crun_list(crun: &Path) -> String {
-    let output = Command::new(crun)
-        .arg("list")
-        .output()
-        .expect("fail closed: could not execute crun list");
-    assert!(
-        output.status.success(),
-        "fail closed: `crun list` exited with {}\nnext: confirm `crun --version` runs and `$XDG_RUNTIME_DIR` is the same tmpfs for launch and list; stderr: {}",
-        output.status,
-        String::from_utf8_lossy(&output.stderr).trim()
-    );
-    String::from_utf8_lossy(&output.stdout).into_owned()
-}
-
 struct ProbeWorld {
     name: WorldName,
     project: PathBuf,
@@ -387,6 +407,7 @@ fn project_bind(project: &Path) -> Bind {
 
 fn client_pod(
     rootfs: &Path,
+    facts: &ImageFacts,
     project: &Path,
     id: &str,
     role: &str,
@@ -404,10 +425,11 @@ fn client_pod(
         argv: vec![
             "python3".to_owned(),
             "-c".to_owned(),
-            CLIENT_PY.to_owned(),
+            client_py(),
             role.to_owned(),
             result.to_owned(),
         ],
+        inherited_env: facts.env.clone(),
         env,
         binds: vec![project_bind(project)],
         files: Vec::new(),
@@ -434,7 +456,13 @@ fn wait_json(path: &Path, timeout: Duration) -> serde_json::Value {
     serde_json::from_slice(&bytes).expect("parse pod result")
 }
 
-fn processes_mentioning(needle: &[u8]) -> Vec<u32> {
+/// Pids whose cmdline mentions `needle` **and** belong to this journey.
+///
+/// A fresh run root is unique, and every world process lives in one of the journey's pid
+/// namespaces, so a stray `slipfork-world-init`/`postgres`/`weed` from an older lab run (with a
+/// different run root and namespace) can never fail this journey, while a real leak always does.
+fn processes_mentioning(needle: &[u8], run: &Path, worlds: &[PathBuf]) -> Vec<u32> {
+    let scope = run.as_os_str().as_bytes();
     let mut found = Vec::new();
     for entry in fs::read_dir("/proc").expect("read /proc") {
         let entry = entry.expect("read /proc entry");
@@ -448,7 +476,13 @@ fn processes_mentioning(needle: &[u8]) -> Vec<u32> {
         let Ok(cmdline) = fs::read(format!("/proc/{pid}/cmdline")) else {
             continue;
         };
-        if cmdline.windows(needle.len()).any(|window| window == needle) {
+        if !cmdline.windows(needle.len()).any(|window| window == needle) {
+            continue;
+        }
+        let in_run = cmdline.windows(scope.len()).any(|window| window == scope);
+        let in_world = fs::read_link(format!("/proc/{pid}/ns/pid"))
+            .is_ok_and(|namespace| worlds.iter().any(|world| world == &namespace));
+        if in_run || in_world {
             found.push(pid);
         }
     }
@@ -479,6 +513,13 @@ fn subvolumes_under(root: &Path) -> Vec<PathBuf> {
 fn world_pod_lifecycle() {
     let run = live_run_root();
     let runtime = require_tmpfs_runtime_dir();
+    // A unique fresh root must not be named by any live process; fail closed if it is.
+    let stale = processes_mentioning(run.as_os_str().as_bytes(), &run, &[]);
+    assert!(
+        stale.is_empty(),
+        "fail closed: `{}` already appears in the cmdline of {stale:?}; a stale journey owns it",
+        run.display()
+    );
     let crun = require_tool("crun");
     let unshare = require_tool("unshare");
     require_userns(&unshare);
@@ -512,6 +553,12 @@ fn world_pod_lifecycle() {
     };
     let mut supervisor_a = WorldSupervisor::boot(host(), &world_a.name).expect("boot world a");
     let mut supervisor_b = WorldSupervisor::boot(host(), &world_b.name).expect("boot world b");
+    // The two worlds' pid namespaces scope every leak scan to this journey.
+    let world_pid_namespaces: Vec<PathBuf> = [supervisor_a.init_pid(), supervisor_b.init_pid()]
+        .into_iter()
+        .flatten()
+        .filter_map(|pid| fs::read_link(format!("/proc/{pid}/ns/pid")).ok())
+        .collect();
 
     // 1. Host-resolvable namespaces: `/proc/<init-pid>/ns/*`, verified by inode identity.
     let table = supervisor_a
@@ -533,12 +580,54 @@ fn world_pod_lifecycle() {
         );
     }
 
+    // 1b. A run-once step streams both pipes and reports the real exit code.
+    let run_once_root = run.join("images/run-once");
+    engine
+        .clone_subvolume(&images.toolbox, &run_once_root)
+        .expect("clone a rootfs for the run-once probe");
+    let run_once = PodSpec {
+        id: "m339runonce".to_owned(),
+        rootfs: run_once_root.clone(),
+        workdir: "/".to_owned(),
+        argv: vec![
+            "sh".to_owned(),
+            "-c".to_owned(),
+            "printf 'only-once\\n'; printf 'boom\\n' >&2; exit 7".to_owned(),
+        ],
+        inherited_env: images.toolbox_facts.env.clone(),
+        env: Vec::new(),
+        binds: Vec::new(),
+        files: Vec::new(),
+    };
+    let mut out_lines = Vec::new();
+    let mut err_lines = Vec::new();
+    let mut sink = |stream: slipfork_world::Stream, line: &str| match stream {
+        slipfork_world::Stream::Stdout => out_lines.push(line.to_owned()),
+        slipfork_world::Stream::Stderr => err_lines.push(line.to_owned()),
+    };
+    let code = supervisor_a
+        .run_once(&run_once, &mut sink)
+        .expect("run the one-shot probe");
+    assert_eq!(code, 7, "run-once must report the command's exit code");
+    assert!(
+        out_lines.iter().any(|line| line == "only-once"),
+        "stdout must stream live: {out_lines:?}"
+    );
+    assert!(
+        err_lines.iter().any(|line| line == "boom"),
+        "stderr must stream live: {err_lines:?}"
+    );
+    engine
+        .destroy(&run_once_root, Dirtiness::Clean, true)
+        .expect("destroy the run-once rootfs");
+
     // 2. One in-namespace loopback server plus the real backing resources.
     let server = PodSpec {
         id: "m339svc".to_owned(),
         rootfs: images.toolbox.clone(),
         workdir: "/project".to_owned(),
-        argv: vec!["python3".to_owned(), "-c".to_owned(), SERVER_PY.to_owned()],
+        argv: vec!["python3".to_owned(), "-c".to_owned(), server_py()],
+        inherited_env: images.toolbox_facts.env.clone(),
         env: Vec::new(),
         binds: vec![project_bind(&world_a.project)],
         files: Vec::new(),
@@ -551,14 +640,60 @@ fn world_pod_lifecycle() {
         Duration::from_secs(60),
     );
 
-    supervisor_a
-        .launch(&postgres("m339pg", &images.pg, &world_a.data.join("pg")))
-        .expect("launch postgres");
+    let pg_spec = postgres(
+        "m339pg",
+        &images.pg,
+        &world_a.data.join("pg"),
+        &images.pg_facts,
+    );
+    assert_eq!(
+        pg_spec.argv,
+        ["docker-entrypoint.sh", "postgres"],
+        "postgres:18's own entrypoint/cmd must drive the pod"
+    );
+    let pg_bundle_dir = run.join("pg-bundle");
+    let pg_bundle = write_bundle(
+        &pg_spec,
+        &PodHost {
+            crun: crun.clone(),
+            resolv_conf: Some(PathBuf::from("/etc/resolv.conf")),
+            uid,
+            gid,
+        },
+        &pg_bundle_dir,
+    )
+    .expect("render the postgres bundle");
+    let pg_config: serde_json::Value =
+        serde_json::from_slice(&fs::read(&pg_bundle.config).expect("read the postgres config"))
+            .expect("parse the postgres config");
+    let pg_env: Vec<&str> = pg_config["process"]["env"]
+        .as_array()
+        .expect("postgres env")
+        .iter()
+        .filter_map(|value| value.as_str())
+        .collect();
+    assert!(
+        pg_env.iter().any(|value| value.starts_with("PG_MAJOR=")),
+        "postgres must inherit the image's PG_MAJOR: {pg_env:?}"
+    );
+    assert!(
+        pg_env
+            .iter()
+            .any(|value| value.starts_with("PATH=") && value.contains("/usr/local/bin")),
+        "postgres must inherit the image PATH: {pg_env:?}"
+    );
+    assert!(
+        !pg_env.iter().any(|value| value.contains(SECRET)),
+        "a world component secret must never reach a backing-resource bundle: {pg_env:?}"
+    );
+    let _ = fs::remove_dir_all(&pg_bundle_dir);
+    supervisor_a.launch(&pg_spec).expect("launch postgres");
     supervisor_a
         .launch(&redis(
             "m339cache",
             &images.redis,
             &world_a.data.join("redis"),
+            &images.redis_facts,
         ))
         .expect("launch redis");
     let plan = SeaweedfsPlan::render(
@@ -575,6 +710,7 @@ fn world_pod_lifecycle() {
             &images.s3,
             &world_a.data.join("s3"),
             &plan,
+            &images.s3_facts,
         ))
         .expect("launch seaweedfs");
 
@@ -582,6 +718,7 @@ fn world_pod_lifecycle() {
     supervisor_a
         .launch(&client_pod(
             &images.toolbox,
+            &images.toolbox_facts,
             &world_a.project,
             "m339clienta",
             "a",
@@ -592,6 +729,7 @@ fn world_pod_lifecycle() {
     supervisor_b
         .launch(&client_pod(
             &images.toolbox,
+            &images.toolbox_facts,
             &world_b.project,
             "m339clientb",
             "b",
@@ -662,34 +800,42 @@ fn world_pod_lifecycle() {
         Some(false),
         "world b argv must stay clean"
     );
-    let leaked = processes_mentioning(SECRET.as_bytes());
+    let leaked = processes_mentioning(SECRET.as_bytes(), &run, &world_pid_namespaces);
     assert!(leaked.is_empty(), "secret leaked into argv of {leaked:?}");
     fs::write(world_a.project.join("probe/a.release"), b"go").expect("release world a client");
     fs::write(world_b.project.join("probe/b.release"), b"go").expect("release world b client");
 
-    // 7. `crun` registers all five pods under the same store the launcher used.
-    let listed = crun_list(&crun);
-    for id in POD_IDS {
-        assert!(
-            listed.contains(id),
-            "container `{id}` must be listed before teardown; `crun list` said:\n{listed}"
-        );
+    // 7. The init inside the world reports every tracked pod (host-side `crun list` cannot:
+    // containers live in the world's user namespace and answer `kill: Operation not permitted`).
+    let pods = supervisor_a.pods().expect("list the world's pods");
+    for id in ["m339svc", "m339pg", "m339cache", "m339s3"] {
+        let pod = pods
+            .iter()
+            .find(|pod| pod.id == id)
+            .unwrap_or_else(|| panic!("pod `{id}` must be tracked before teardown: {pods:?}"));
+        assert!(pod.running, "pod `{id}` must still be running: {pods:?}");
     }
 
-    // 8. Clean teardown: zero pods and zero leaked processes, not just the init.
+    // 8. Clean teardown: the init refuses `List` once it is gone, and no process survives.
     supervisor_a.stop().expect("stop world a");
     supervisor_b.stop().expect("stop world b");
-    let listed = crun_list(&crun);
-    for id in POD_IDS {
-        assert!(!listed.contains(id), "container `{id}` survived teardown");
-    }
+    let error = supervisor_a
+        .pods()
+        .expect_err("a stopped world must refuse to report pods");
+    assert!(
+        matches!(
+            &error,
+            slipfork_world::Error::Init { message } if message == "world is not running"
+        ),
+        "a stopped world must fail closed with a typed init error: {error}"
+    );
     for needle in [
         b"slipfork-world-init".as_slice(),
         b"postgres".as_slice(),
         b"redis-server".as_slice(),
         b"weed".as_slice(),
     ] {
-        let survivors = processes_mentioning(needle);
+        let survivors = processes_mentioning(needle, &run, &world_pid_namespaces);
         assert!(
             survivors.is_empty(),
             "`{}` survived teardown in {survivors:?}",

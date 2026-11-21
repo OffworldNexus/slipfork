@@ -36,9 +36,11 @@ mod supervisor;
 
 pub use boot::{
     BootEvent, BootFailure, BootKind, BootStep, FailedHook, HookPhase, ImageNode, ResourceNode,
-    ServiceNode, StampStore, StepOutcome, StepStamp, WorldPlan, run_plan, world_plan,
+    ServiceHealth, ServiceNode, StampStore, StepOutcome, StepStamp, WorldPlan, classify_service,
+    run_plan, world_plan,
 };
 pub use btrfs::{is_btrfs_path, is_subvolume_path};
+pub use control::Stream;
 pub use control::{
     ControlError, InitFrame, PROTOCOL_VERSION, Request, decode_init_frame, decode_request, encode,
 };
@@ -50,7 +52,8 @@ pub use pod::{Bind, BindSource, PodBundle, PodEnv, PodFile, PodHost, PodSpec, wr
 pub use port::{Dirtiness, ForkPaths, WorldEngine};
 pub use reap::kill_group;
 pub use resources::{
-    ResourceKind, S3Bucket, S3Credentials, S3Policy, SeaweedfsPlan, postgres, redis, seaweedfs,
+    ImageFacts, ResourceKind, S3Bucket, S3Credentials, S3Policy, SeaweedfsPlan, postgres, redis,
+    seaweedfs,
 };
 pub use runtime_dir::RuntimePods;
-pub use supervisor::{WorldHost, WorldSupervisor};
+pub use supervisor::{PodStatus, WorldHost, WorldSupervisor, pod_statuses};

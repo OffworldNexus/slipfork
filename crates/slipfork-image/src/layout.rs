@@ -44,6 +44,12 @@ impl ImageLayout {
             .join(format!("{STAGING_PREFIX}{}", digest_component(digest)))
     }
 
+    /// `<root>/<manifest-digest>.json`: the public OCI image config beside the sealed rootfs.
+    #[must_use]
+    pub fn config(&self, digest: &str) -> PathBuf {
+        self.root.join(format!("{}.json", digest_component(digest)))
+    }
+
     /// Creates the cache root when missing.
     pub fn ensure(&self) -> Result<()> {
         fs::create_dir_all(&self.root).map_err(|source| Error::io("create", &self.root, source))

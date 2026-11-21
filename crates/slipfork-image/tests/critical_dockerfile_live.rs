@@ -21,6 +21,13 @@ use slipfork_image::{
 };
 use slipfork_world::{BtrfsEngine, Dirtiness, StoreLayout, WorldEngine, is_subvolume_path};
 
+/// The last few KiB of a build log, so a failing `crun` step is never silent.
+fn output_tail(log: &[u8]) -> String {
+    const LIMIT: usize = 4096;
+    let start = log.len().saturating_sub(LIMIT);
+    String::from_utf8_lossy(&log[start..]).trim().to_owned()
+}
+
 #[test]
 fn native_dockerfile_multistage_build_lifecycle() {
     let crun = crun_path();
@@ -74,9 +81,15 @@ fn native_dockerfile_multistage_build_lifecycle() {
         args: BuildArgs::new(),
         target: None,
     };
+    let mut first_log = Vec::new();
     let first = builder
-        .build(&request, &mut std::io::sink())
-        .expect("first multi-stage build");
+        .build(&request, &mut first_log)
+        .unwrap_or_else(|error| {
+            panic!(
+                "first multi-stage build: {error}\nbuild output tail:\n{}",
+                output_tail(&first_log)
+            )
+        });
     assert_eq!(first.cache_hits, 0, "a cold build serves no sealed step");
     assert_eq!(first.cache_misses, 5, "five filesystem instructions");
     let cache_file = steps.cache_mount("/root/.cache/x").join("out.txt");
@@ -90,9 +103,15 @@ fn native_dockerfile_multistage_build_lifecycle() {
     // Second build: the cache mount survives, so the RUN appends instead of starting empty.
     fs::write(&dockerfile, dockerfile_source(&base, "run-two", uid, gid))
         .expect("rewrite the Dockerfile");
+    let mut second_log = Vec::new();
     let second = builder
-        .build(&request, &mut std::io::sink())
-        .expect("second build");
+        .build(&request, &mut second_log)
+        .unwrap_or_else(|error| {
+            panic!(
+                "second build: {error}\nbuild output tail:\n{}",
+                output_tail(&second_log)
+            )
+        });
     assert_eq!(second.cache_misses, 1, "only the changed RUN re-executes");
     assert_eq!(second.cache_hits, 4, "the final stage steps are reused");
     assert_eq!(
@@ -102,9 +121,15 @@ fn native_dockerfile_multistage_build_lifecycle() {
     );
 
     // Third build: byte-identical to the second, so every step is a sealed cache hit.
+    let mut cached_log = Vec::new();
     let cached = builder
-        .build(&request, &mut std::io::sink())
-        .expect("cached build");
+        .build(&request, &mut cached_log)
+        .unwrap_or_else(|error| {
+            panic!(
+                "cached build: {error}\nbuild output tail:\n{}",
+                output_tail(&cached_log)
+            )
+        });
     assert_eq!(cached.cache_misses, 0, "an identical rebuild never re-runs");
     assert_eq!(cached.cache_hits, 5, "every step must hit the sealed cache");
     assert!(

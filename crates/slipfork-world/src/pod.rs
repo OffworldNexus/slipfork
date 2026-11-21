@@ -98,6 +98,9 @@ pub struct PodSpec {
     pub workdir: String,
     /// Entrypoint argv (never carries secrets).
     pub argv: Vec<String>,
+    /// Environment inherited verbatim from the image config (`PATH`, `PG_MAJOR`, …).
+    #[serde(default)]
+    pub inherited_env: Vec<String>,
     /// Runtime environment, materialised only in tmpfs `config.json`.
     #[serde(default)]
     pub env: Vec<PodEnv>,
@@ -132,6 +135,15 @@ impl PodSpec {
             });
         }
         absolute(&self.id, "workdir", &self.workdir)?;
+        for pair in &self.inherited_env {
+            let key = pair.split_once('=').map(|(key, _)| key).unwrap_or(pair);
+            if key.is_empty() || key.contains('\u{0}') || pair.contains('\u{0}') {
+                return Err(Error::InvalidPod {
+                    id: self.id.clone(),
+                    reason: format!("invalid inherited env `{pair}`"),
+                });
+            }
+        }
         for env in &self.env {
             if env.key.is_empty()
                 || env.key.contains('=')
@@ -198,6 +210,8 @@ pub fn write_bundle(spec: &PodSpec, host: &PodHost, dir: &Path) -> Result<PodBun
     }
     let passwd = dir.join("passwd");
     write_private(&passwd, passwd_contents(host.uid, host.gid).as_bytes())?;
+    // The host path only materialises the mountpoint; `process.cwd` must stay the *container*
+    // path (`/project`), or the pod starts in an empty directory inside the rootfs clone.
     let workdir = rooted(&spec.rootfs, &spec.workdir);
     fs::create_dir_all(&workdir).map_err(|source| Error::io("create", &workdir, source))?;
     for bind in &spec.binds {
@@ -217,16 +231,47 @@ pub fn write_bundle(spec: &PodSpec, host: &PodHost, dir: &Path) -> Result<PodBun
         }
     }
     let config = dir.join("config.json");
-    let rendered = serde_json::to_vec_pretty(&oci_config(spec, host, dir, &passwd, &workdir))
-        .map_err(|source| Error::Json {
-            path: config.clone(),
-            source,
-        })?;
+    let rendered = serde_json::to_vec_pretty(&oci_config(
+        spec,
+        host,
+        dir,
+        &passwd,
+        Path::new(&spec.workdir),
+    ))
+    .map_err(|source| Error::Json {
+        path: config.clone(),
+        source,
+    })?;
     write_private(&config, &rendered)?;
     Ok(PodBundle {
         dir: dir.to_path_buf(),
         config,
     })
+}
+
+/// Image env first, the pod's own env last, so an own entry overrides the same key.
+fn merged_env(spec: &PodSpec) -> Vec<String> {
+    let mut ordered: Vec<(String, String)> = Vec::new();
+    let mut upsert = |key: &str, value: &str| {
+        if let Some(slot) = ordered.iter_mut().find(|(existing, _)| existing == key) {
+            slot.1 = value.to_owned();
+        } else {
+            ordered.push((key.to_owned(), value.to_owned()));
+        }
+    };
+    upsert("PATH", DEFAULT_PATH);
+    for pair in &spec.inherited_env {
+        if let Some((key, value)) = pair.split_once('=') {
+            upsert(key, value);
+        }
+    }
+    for entry in &spec.env {
+        upsert(&entry.key, &entry.value);
+    }
+    ordered
+        .into_iter()
+        .map(|(key, value)| format!("{key}={value}"))
+        .collect()
 }
 
 /// Renders the minimal OCI config: world-inherited net/ipc, per-pod pid/mount/uts/user.
@@ -237,12 +282,7 @@ fn oci_config(
     passwd: &Path,
     workdir: &Path,
 ) -> serde_json::Value {
-    let mut env = vec![format!("PATH={DEFAULT_PATH}")];
-    env.extend(
-        spec.env
-            .iter()
-            .map(|entry| format!("{}={}", entry.key, entry.value)),
-    );
+    let env = merged_env(spec);
     let mut mounts = vec![
         json!({"destination": "/proc", "type": "proc", "source": "proc"}),
         json!({
@@ -362,6 +402,7 @@ mod tests {
             rootfs: root.to_path_buf(),
             workdir: "/project".to_owned(),
             argv: vec!["python3".to_owned(), "-V".to_owned()],
+            inherited_env: vec!["PATH=/usr/local/bin:/usr/bin".to_owned()],
             env: vec![PodEnv::new("PORT", "8000"), PodEnv::new("SECRET", "s3cr3t")],
             binds: vec![
                 Bind {
@@ -408,8 +449,8 @@ mod tests {
         assert_eq!(json["linux"]["gidMappings"][0]["hostID"], 1001);
         assert_eq!(json["process"]["user"]["uid"], 1000);
         assert_eq!(
-            json["process"]["cwd"],
-            root.join("project").display().to_string()
+            json["process"]["cwd"], "/project",
+            "the OCI cwd is a container path, never the host rootfs path"
         );
         assert_eq!(json["hostname"], "api");
         assert!(

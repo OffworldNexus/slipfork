@@ -1,6 +1,7 @@
 //! Algorithm-only DAG tests: wave ordering, dedupe, stamps, failure propagation, cycles.
 
 use super::*;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -112,7 +113,7 @@ fn stamps_skip_unchanged_steps_in_under_a_millisecond() {
     let stamps = StampStore::new(scratch.path());
     let runs = AtomicUsize::new(0);
     let (events, sink) = collecting_sink();
-    let execute = |step: &BootStep| {
+    let execute = |_index: usize, step: &BootStep| {
         if step.kind == BootKind::Setup && step.stamp.is_some() {
             runs.fetch_add(1, Ordering::SeqCst);
         }
@@ -171,7 +172,7 @@ fn a_failed_step_stops_later_waves_and_keeps_the_line() {
     let stamps = StampStore::new(scratch.path());
     let (events, sink) = collecting_sink();
     let services = AtomicUsize::new(0);
-    let execute = |step: &BootStep| {
+    let execute = |_index: usize, step: &BootStep| {
         if step.phase == Some(HookPhase::PreDeploy) {
             return Err(BootFailure::new("exit 1"));
         }

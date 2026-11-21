@@ -1,6 +1,6 @@
 //! The injected runtime that executes one boot step: images, resources, setup, hooks, services.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use slipfork_image::{
     Architecture, BuildArgs, BuildRequest, Credentials, ImageLayout, ImageReference,
-    NativeImageBuilder, OciPuller, StepHost, StepLayout,
+    NativeImageBuilder, OciPuller, PulledImage, StepHost, StepLayout,
 };
 use slipfork_world::{
     Bind, BindSource, BootFailure, BootKind, BootStep, BtrfsEngine, Dirtiness, ImageNode, PodEnv,
@@ -18,6 +18,7 @@ use slipfork_world::{
 };
 
 use super::HostEnv;
+use super::supervise::BootSink;
 
 pub(super) struct WorldRuntime {
     engine: BtrfsEngine,
@@ -31,10 +32,11 @@ pub(super) struct WorldRuntime {
     services: Vec<ServiceNode>,
     resources: Vec<slipfork_world::ResourceNode>,
     sealed: BTreeMap<String, PathBuf>,
-    pulled: BTreeMap<String, PathBuf>,
+    pulled: BTreeMap<String, PulledImage>,
     clones: Vec<PathBuf>,
     counter: usize,
-    log: Box<dyn Write + Send>,
+    total_steps: usize,
+    log: BootSink,
 }
 
 impl WorldRuntime {
@@ -43,7 +45,7 @@ impl WorldRuntime {
         world: WorldName,
         plan: &WorldPlan,
         env: &HostEnv,
-        log: Box<dyn Write + Send>,
+        log: BootSink,
     ) -> Result<Self, String> {
         let engine = BtrfsEngine::new(StoreLayout::new(project));
         engine
@@ -114,20 +116,28 @@ impl WorldRuntime {
             pulled: BTreeMap::new(),
             clones: Vec::new(),
             counter: 0,
+            total_steps: plan.steps.len(),
             log,
         })
     }
 
-    pub(super) fn execute(&mut self, step: &BootStep) -> Result<StepOutcome, BootFailure> {
+    /// Executes one ready step, tagging every live log line with the step that produced it.
+    pub(super) fn execute(
+        &mut self,
+        index: usize,
+        step: &BootStep,
+    ) -> Result<StepOutcome, BootFailure> {
+        self.log.focus(index + 1, self.total_steps, &step.label);
         let outcome = match step.kind {
-            BootKind::Image => self.build_image(&step.subject).map(|_| "built".to_owned()),
-            BootKind::Resource => self.start_resource(&step.subject),
+            BootKind::Image => self
+                .build_image(&step.subject)
+                .map(|_| "built".to_owned())
+                .map_err(BootFailure::new),
+            BootKind::Resource => self.start_resource(&step.subject).map_err(BootFailure::new),
             BootKind::Setup | BootKind::Hook => self.run_once(step),
-            BootKind::Service => self.start_service(step),
+            BootKind::Service => self.start_service(step).map_err(BootFailure::new),
         };
-        outcome
-            .map(|detail| StepOutcome { detail })
-            .map_err(BootFailure::new)
+        outcome.map(|detail| StepOutcome { detail })
     }
 
     fn build_image(&mut self, image: &str) -> Result<PathBuf, String> {
@@ -186,19 +196,23 @@ impl WorldRuntime {
         self.build_image(image)
     }
 
-    fn run_once(&mut self, step: &BootStep) -> Result<String, String> {
+    fn run_once(&mut self, step: &BootStep) -> Result<String, BootFailure> {
         if step.uses_env {
-            return Err(
-                "this step reads `$env.`; the M3.40 daemon env resolver is not wired yet"
-                    .to_owned(),
-            );
+            return Err(BootFailure::with_remedy(
+                "this step reads `$env.`, which this build cannot resolve",
+                "replace `$env.<KEY>` with a literal value, or export the variable inside the step's own `run:` shell",
+            ));
         }
         let command = step
             .command
             .clone()
-            .ok_or_else(|| format!("`{}` has no command", step.label))?;
-        let sealed = self.image_rootfs(step.image.as_ref())?;
-        let rootfs = self.clone_rootfs(&sealed, &format!("boot{}", step.line))?;
+            .ok_or_else(|| BootFailure::new(format!("`{}` has no command", step.label)))?;
+        let sealed = self
+            .image_rootfs(step.image.as_ref())
+            .map_err(BootFailure::new)?;
+        let rootfs = self
+            .clone_rootfs(&sealed, &format!("boot{}", step.line))
+            .map_err(BootFailure::new)?;
         let spec = PodSpec {
             id: format!("boot-{}", self.counter),
             rootfs,
@@ -208,22 +222,35 @@ impl WorldRuntime {
                 "-c".to_owned(),
                 shell_command(&command),
             ],
+            inherited_env: Vec::new(),
             env: Vec::new(),
             binds: vec![project_bind(&self.project)],
             files: Vec::new(),
         };
-        let pid = self
-            .supervisor
-            .launch(&spec)
-            .map_err(|error| error.to_string())?;
+        // Setup and hook pods run to completion with their pipes attached, so a failing
+        // command's own diagnostics stream live and ride the failure message.
+        let mut tail: VecDeque<String> = VecDeque::new();
+        let log = &mut self.log;
         let code = self
             .supervisor
-            .wait(pid, Duration::from_secs(600))
-            .map_err(|error| error.to_string())?;
+            .run_once(&spec, &mut |_stream, line| {
+                let _ = writeln!(log, "{line}");
+                let _ = log.flush();
+                if tail.len() == 10 {
+                    tail.pop_front();
+                }
+                tail.push_back(line.to_owned());
+            })
+            .map_err(|error| BootFailure::new(error.to_string()))?;
         if code == 0 {
             Ok("ok".to_owned())
         } else {
-            Err(format!("`{command}` exited with {code}"))
+            let mut message = format!("`{command}` exited with {code}");
+            for line in tail {
+                message.push_str("\n  ");
+                message.push_str(&line);
+            }
+            Err(BootFailure::new(message))
         }
     }
 
@@ -250,14 +277,28 @@ impl WorldRuntime {
                 "-c".to_owned(),
                 shell_command(&command),
             ],
+            inherited_env: Vec::new(),
             env,
             binds: vec![project_bind(&self.project)],
             files: Vec::new(),
         };
-        self.supervisor
+        let pid = self
+            .supervisor
             .launch(&spec)
             .map_err(|error| error.to_string())?;
-        Ok("started".to_owned())
+        // A service that leaves inside the readiness window never started: surface it as failed
+        // while the world stays up for inspection. A survivor is reported as running.
+        let health = slipfork_world::classify_service(
+            self.supervisor
+                .wait(pid, Duration::from_millis(750))
+                .map_err(|error| error.to_string())?,
+        );
+        match health {
+            slipfork_world::ServiceHealth::Running => Ok("started".to_owned()),
+            slipfork_world::ServiceHealth::Exited(code) => Err(format!(
+                "`{command}` exited with {code} before it became ready"
+            )),
+        }
     }
 
     fn start_resource(&mut self, id: &str) -> Result<String, String> {
@@ -268,20 +309,20 @@ impl WorldRuntime {
             .cloned()
             .ok_or_else(|| format!("unknown resource `{id}`"))?;
         let reference = node.resource.image();
-        let sealed = if let Some(rootfs) = self.pulled.get(reference) {
-            rootfs.clone()
+        let image = if let Some(image) = self.pulled.get(reference) {
+            image.clone()
         } else {
             let parsed = ImageReference::parse(reference).map_err(|error| error.to_string())?;
             self.note(format!("pull {reference}"));
-            let rootfs = self
+            let image = self
                 .puller
                 .pull_into(&parsed, &mut self.log)
-                .map_err(|error| error.to_string())?
-                .rootfs;
-            self.pulled.insert(reference.to_owned(), rootfs.clone());
-            rootfs
+                .map_err(|error| error.to_string())?;
+            self.pulled.insert(reference.to_owned(), image.clone());
+            image
         };
-        let rootfs = self.clone_rootfs(&sealed, &format!("res-{id}"))?;
+        let rootfs = self.clone_rootfs(&image.rootfs, &format!("res-{id}"))?;
+        let facts = image.facts.clone();
         let data = self.layout.world(&self.world).join(id);
         if !data.exists() {
             self.engine
@@ -289,15 +330,15 @@ impl WorldRuntime {
                 .map_err(|error| error.to_string())?;
         }
         let spec = match node.resource {
-            ResourceKind::Postgres => postgres(id, &rootfs, &data),
-            ResourceKind::Redis => redis(id, &rootfs, &data),
+            ResourceKind::Postgres => postgres(id, &rootfs, &data, &facts),
+            ResourceKind::Redis => redis(id, &rootfs, &data, &facts),
             ResourceKind::Seaweedfs => {
                 let plan = SeaweedfsPlan::render(
                     &S3Credentials::new(&format!("slipfork-{id}"), &format!("slipfork-{id}")),
                     &[],
                 )
                 .map_err(|error| error.to_string())?;
-                seaweedfs(id, &rootfs, &data, &plan)
+                seaweedfs(id, &rootfs, &data, &plan, &facts)
             }
         };
         self.supervisor

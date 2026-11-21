@@ -45,6 +45,12 @@ pub enum Error {
     RefusedDirtyCheckout { target: String },
     /// Leftover `.slipfork-adopt*` siblings blocked the in-place conversion.
     AdoptionCollision { path: PathBuf },
+    /// The in-place conversion met a mount point nested inside the checkout.
+    NestedMount { path: PathBuf },
+    /// The in-place conversion met a FIFO, socket, or device node it cannot copy.
+    UnsupportedEntry { path: PathBuf },
+    /// The converted subvolume could not replace the checkout and survives at `path`.
+    LeftoverSubvolume { path: PathBuf, target: PathBuf },
     /// The tmpfs-only pod runtime directory sits on persistent disk.
     RuntimeNotTmpfs { path: PathBuf },
     /// A required host tool is missing.
@@ -76,6 +82,8 @@ pub enum Error {
         step: String,
         line: u32,
         message: String,
+        /// Concrete next action when `Forkfile` line numbers are not the remedy.
+        remedy: Option<String>,
     },
     /// A JSON control/config payload could not be encoded or decoded.
     Json {
@@ -151,6 +159,24 @@ impl fmt::Display for Error {
                 "`{}` is not on tmpfs\nnext: export XDG_RUNTIME_DIR to a tmpfs such as /run/user/$UID so pod secrets never reach disk",
                 path.display()
             ),
+            Self::NestedMount { path } => write!(
+                f,
+                "`{}` is a mount point inside the checkout\nnext: unmount it and re-run `slipfork up`; in-place conversion never copies across a mount",
+                path.display()
+            ),
+            Self::UnsupportedEntry { path } => write!(
+                f,
+                "`{}` is a FIFO, socket, or device node\nnext: remove it and re-run `slipfork up`; only directories, files, and symlinks convert in place",
+                path.display()
+            ),
+            Self::LeftoverSubvolume { path, target } => write!(
+                f,
+                "the converted checkout survives at `{}` but could not replace `{}`\nnext: move `{}` onto `{}` yourself; every file is intact",
+                path.display(),
+                target.display(),
+                path.display(),
+                target.display()
+            ),
             Self::MissingTool { tool, path } => write!(
                 f,
                 "`{tool}` is missing at `{}`\nnext: install {tool} or pass its path in the injected host values",
@@ -201,6 +227,7 @@ impl fmt::Display for Error {
                 step,
                 line,
                 message,
+                ..
             } => write!(
                 f,
                 "`{step}` failed at Forkfile:{line}: {message}\nnext: fix the step and re-run `slipfork up`; the world stays up for inspection"

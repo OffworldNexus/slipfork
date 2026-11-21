@@ -88,6 +88,17 @@ pub(super) struct LiveWorld {
     pub(super) pods: Vec<String>,
 }
 
+/// One tracked pod as reported by the world init itself.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PodStatus {
+    /// Pod id (`m339pg`, …).
+    pub id: String,
+    /// Host-visible pid of the pod's init process.
+    pub pid: i32,
+    /// `false` once the process is gone (a client that finished, say).
+    pub running: bool,
+}
+
 /// One booted world namespace plus its init control channel.
 pub struct WorldSupervisor {
     host: WorldHost,
@@ -126,6 +137,66 @@ impl WorldSupervisor {
         self.pods.path()
     }
 
+    /// Runs one setup/hook pod to completion, streaming every stdout/stderr line live.
+    ///
+    /// The init owns the non-detached `crun run`, so a failing command's own diagnostics reach
+    /// `on_line` instead of being swallowed by a detached container. The deadline is passed to the
+    /// init (which kills and reaps a silent step) and the host waits a grace period longer, so a
+    /// timeout arrives as the init's typed `run-timeout` reply rather than a bare local timeout.
+    pub fn run_once(
+        &mut self,
+        spec: &PodSpec,
+        on_line: &mut dyn FnMut(control::Stream, &str),
+    ) -> Result<i32> {
+        write_bundle(spec, &self.host.pod_host(), &self.pods.pod_dir(&spec.id))?;
+        let Some(live) = self.live.as_mut() else {
+            return Err(Error::Init {
+                message: "world is not running".to_owned(),
+            });
+        };
+        let timeout = self.host.boot_timeout;
+        live.next_request += 1;
+        let id = format!("req-{}", live.next_request);
+        let request = Request::RunOnce {
+            v: control::PROTOCOL_VERSION,
+            id: id.clone(),
+            pod: spec.clone(),
+            timeout_ms: u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX),
+        };
+        let bytes = control::encode(&request)?;
+        live.stdin
+            .write_all(&bytes)
+            .and_then(|()| live.stdin.flush())
+            .map_err(|source| Error::io("write", self.pods.path(), source))?;
+        boot::await_run_once(live, &id, timeout + Duration::from_secs(5), on_line)
+    }
+
+    /// Asks the init inside the world which pods it still tracks.
+    ///
+    /// Host-side `crun list` cannot inspect containers created in the world's user namespace
+    /// (`kill: Operation not permitted`), so this is the only trustworthy in-world oracle. A
+    /// stopped world refuses the question instead of pretending it has zero pods.
+    pub fn pods(&mut self) -> Result<Vec<PodStatus>> {
+        let Some(live) = self.live.as_mut() else {
+            return Err(Error::Init {
+                message: "world is not running".to_owned(),
+            });
+        };
+        live.next_request += 1;
+        let id = format!("req-{}", live.next_request);
+        let request = Request::List {
+            v: control::PROTOCOL_VERSION,
+            id: id.clone(),
+        };
+        let bytes = control::encode(&request)?;
+        live.stdin
+            .write_all(&bytes)
+            .and_then(|()| live.stdin.flush())
+            .map_err(|source| Error::io("write", self.pods.path(), source))?;
+        let reply = boot::await_reply(live, &id, self.host.boot_timeout)?;
+        pod_statuses(&reply)
+    }
+
     /// Writes one bundle on tmpfs and asks the init to run `crun`; returns the container pid.
     pub fn launch(&mut self, spec: &PodSpec) -> Result<u32> {
         let live = self.live.as_mut().ok_or_else(|| Error::Init {
@@ -158,7 +229,7 @@ impl WorldSupervisor {
     }
 
     /// Waits up to `timeout` for one launched pod and returns its exit code.
-    pub fn wait(&mut self, pid: u32, timeout: Duration) -> Result<i32> {
+    pub fn wait(&mut self, pid: u32, timeout: Duration) -> Result<Option<i32>> {
         let live = self.live.as_mut().ok_or_else(|| Error::Init {
             message: "world is not running".to_owned(),
         })?;
@@ -174,11 +245,15 @@ impl WorldSupervisor {
             timeout_ms,
         };
         let ok = exchange(live, &request, timeout + Duration::from_secs(5))?;
+        if ok.get("running").and_then(serde_json::Value::as_bool) == Some(true) {
+            return Ok(None);
+        }
         ok.get("exit_code")
             .and_then(serde_json::Value::as_i64)
             .and_then(|code| i32::try_from(code).ok())
+            .map(Some)
             .ok_or_else(|| Error::Protocol {
-                message: "wait reply carried no exit code".to_owned(),
+                message: "wait reply carried neither an exit code nor `running`".to_owned(),
             })
     }
 
@@ -289,6 +364,43 @@ impl Drop for WorldSupervisor {
             eprintln!("slipfork-world: teardown failed: {error}");
         }
     }
+}
+
+/// Parses one `List` reply into typed rows; the supervisor and the `down` CLI client share it so
+/// the wire shape is decoded in exactly one place.
+pub fn pod_statuses(reply: &serde_json::Value) -> Result<Vec<PodStatus>> {
+    let pods = reply
+        .get("pods")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| Error::Protocol {
+            message: "list reply carried no `pods` array".to_owned(),
+        })?;
+    pods.iter()
+        .map(|pod| {
+            let id = pod
+                .get("id")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| Error::Protocol {
+                    message: "list entry carried no `id`".to_owned(),
+                })?;
+            let pid = pod
+                .get("pid")
+                .and_then(serde_json::Value::as_i64)
+                .and_then(|pid| i32::try_from(pid).ok())
+                .ok_or_else(|| Error::Protocol {
+                    message: "list entry carried no `pid`".to_owned(),
+                })?;
+            let running = pod
+                .get("running")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false);
+            Ok(PodStatus {
+                id: id.to_owned(),
+                pid,
+                running,
+            })
+        })
+        .collect()
 }
 
 /// Writes one request frame and waits for the matching typed reply.

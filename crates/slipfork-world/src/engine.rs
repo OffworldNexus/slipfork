@@ -1,6 +1,6 @@
 use std::ffi::{OsStr, OsString};
 use std::fs::{self, File};
-use std::io;
+use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
 
 use crate::btrfs::{self, SubvolumeFlags};
@@ -110,23 +110,34 @@ impl BtrfsEngine {
         }
     }
 
-    /// Zero-copy conversion: move every child into a sibling subvolume, then rename it into place.
+    /// In-place conversion: copy the checkout into a sibling subvolume, then rename it in.
+    ///
+    /// Btrfs answers `EXDEV` to `rename(2)` across a subvolume root for every inode, not only
+    /// directories, so the payload is reproduced instead: directories with their mode, regular
+    /// files through `copy_file_range` (`fs::copy` is CoW/remap-backed on Btrfs), and symlinks as
+    /// links. The original is untouched until the whole copy has landed.
     fn convert_in_place(project: &Path) -> Result<()> {
+        use std::os::unix::fs::MetadataExt;
+
         let (parent, name) = layout::split_dir(project)?;
         let parent_dir = Self::open_dir(&parent)?;
         let temp_name = free_sibling_name(&parent, &name)?;
         let temp_path = parent.join(&temp_name);
         btrfs::create_subvolume(&parent_dir, &temp_path, &temp_name)?;
-        if let Err(failure) = move_children(project, &temp_path) {
-            let _ = fs::remove_dir(&temp_path);
-            return Err(Error::io("rename", project, failure));
+        let root_device = fs::metadata(project)
+            .map_err(|source| Error::io("inspect", project, source))?
+            .dev();
+        if let Err(failure) = copy_tree(project, &temp_path, root_device) {
+            let _ = btrfs::destroy(&parent_dir, &temp_path, &temp_name);
+            return Err(failure);
         }
-        if let Err(failure) = fs::remove_dir(project) {
-            let _ = move_children(&temp_path, project);
-            let _ = fs::remove_dir(&temp_path);
-            return Err(Error::io("rmdir", project, failure));
+        if let Err(failure) = fs::remove_dir_all(project) {
+            return Err(Error::io("remove", project, failure));
         }
-        fs::rename(&temp_path, project).map_err(|failure| Error::io("rename", &temp_path, failure))
+        fs::rename(&temp_path, project).map_err(|_| Error::LeftoverSubvolume {
+            path: temp_path.clone(),
+            target: project.to_path_buf(),
+        })
     }
 
     fn require_same_filesystem(&self, project: &Path) -> Result<()> {
@@ -292,30 +303,44 @@ fn free_sibling_name(parent: &Path, name: &OsStr) -> Result<OsString> {
     })
 }
 
-/// `rename(2)` every child of `from` into `to`, rolling back on the first failure.
-fn move_children(from: &Path, to: &Path) -> io::Result<()> {
-    let mut moved: Vec<OsString> = Vec::new();
-    let mut failure = None;
-    for entry in fs::read_dir(from)? {
-        let entry = match entry {
-            Ok(entry) => entry,
-            Err(err) => {
-                failure = Some(err);
-                break;
-            }
-        };
+/// Reproduces `from`'s tree inside `to`, refusing to cross a nested mount point.
+///
+/// Directories are recreated with their mode, regular files are copied with `fs::copy` (Btrfs
+/// serves that from `copy_file_range`, so payloads stay CoW/remap-backed rather than being
+/// rewritten by hand), and symlinks are recreated from `read_link` so they are never followed.
+/// FIFOs, sockets, and device nodes have no meaning in a checkout and fail closed.
+fn copy_tree(from: &Path, to: &Path, root_device: u64) -> Result<()> {
+    use std::os::unix::fs::MetadataExt;
+
+    for entry in fs::read_dir(from).map_err(|source| Error::io("read", from, source))? {
+        let entry = entry.map_err(|source| Error::io("read", from, source))?;
         let name = entry.file_name();
-        if let Err(err) = fs::rename(entry.path(), to.join(&name)) {
-            failure = Some(err);
-            break;
+        let source_path = from.join(&name);
+        let target_path = to.join(&name);
+        let metadata = fs::symlink_metadata(&source_path)
+            .map_err(|source| Error::io("inspect", &source_path, source))?;
+        if metadata.is_dir() {
+            if metadata.dev() != root_device {
+                return Err(Error::NestedMount { path: source_path });
+            }
+            fs::create_dir(&target_path)
+                .map_err(|source| Error::io("create", &target_path, source))?;
+            fs::set_permissions(&target_path, metadata.permissions())
+                .map_err(|source| Error::io("chmod", &target_path, source))?;
+            copy_tree(&source_path, &target_path, root_device)?;
+        } else if metadata.is_file() {
+            fs::copy(&source_path, &target_path)
+                .map_err(|source| Error::io("copy", &source_path, source))?;
+            fs::set_permissions(&target_path, metadata.permissions())
+                .map_err(|source| Error::io("chmod", &target_path, source))?;
+        } else if metadata.file_type().is_symlink() {
+            let target = fs::read_link(&source_path)
+                .map_err(|source| Error::io("read", &source_path, source))?;
+            symlink(&target, &target_path)
+                .map_err(|source| Error::io("symlink", &target_path, source))?;
+        } else {
+            return Err(Error::UnsupportedEntry { path: source_path });
         }
-        moved.push(name);
-    }
-    if let Some(err) = failure {
-        for name in moved.iter().rev() {
-            let _ = fs::rename(to.join(name), from.join(name));
-        }
-        return Err(err);
     }
     Ok(())
 }

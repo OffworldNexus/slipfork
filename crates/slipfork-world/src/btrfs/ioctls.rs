@@ -23,7 +23,8 @@ const SUBVOL_GETFLAGS: libc::c_ulong = request(IOC_READ, 25, 8);
 const SUBVOL_SETFLAGS: libc::c_ulong = request(IOC_WRITE, 26, 8);
 const SUBVOL_CREATE: libc::c_ulong = request(IOC_WRITE, 14, 4096);
 const SNAP_CREATE_V2: libc::c_ulong = request(IOC_WRITE, 23, 4096);
-const SNAP_DESTROY_V2: libc::c_ulong = request(IOC_WRITE, 47, 4096);
+/// `BTRFS_IOC_SNAP_DESTROY_V2` is command **63** in `linux/btrfs.h`, not 47.
+const SNAP_DESTROY_V2: libc::c_ulong = request(IOC_WRITE, 63, 4096);
 
 /// `struct btrfs_ioctl_vol_args` from `fs/btrfs/ioctl.h` (4096 bytes).
 #[allow(dead_code)] // Fields mirror the kernel ABI and are read by the kernel, not by us.
@@ -131,17 +132,32 @@ mod tests {
 
     #[test]
     fn ioctl_requests_match_linux_btrfs_h() {
-        assert_eq!(SUBVOL_GETFLAGS, 0x8008_9419);
-        assert_eq!(SUBVOL_SETFLAGS, 0x4008_941a);
-        assert_eq!(SUBVOL_CREATE, 0x5000_940e);
-        assert_eq!(SNAP_CREATE_V2, 0x5000_9417);
-        assert_eq!(SNAP_DESTROY_V2, 0x5000_942f);
+        // Command numbers straight from `<linux/btrfs.h>`; every one is a compile-time encoding.
+        assert_eq!(request(IOC_WRITE, 14, 4096), 0x5000_940e, "SUBVOL_CREATE");
+        assert_eq!(request(IOC_WRITE, 23, 4096), 0x5000_9417, "SNAP_CREATE_V2");
+        assert_eq!(
+            request(IOC_WRITE, 24, 4096),
+            0x5000_9418,
+            "SUBVOL_CREATE_V2"
+        );
+        assert_eq!(request(IOC_READ, 25, 8), 0x8008_9419, "SUBVOL_GETFLAGS");
+        assert_eq!(request(IOC_WRITE, 26, 8), 0x4008_941a, "SUBVOL_SETFLAGS");
+        assert_eq!(request(IOC_WRITE, 63, 4096), 0x5000_943f, "SNAP_DESTROY_V2");
+        assert_eq!(SUBVOL_CREATE, request(IOC_WRITE, 14, 4096));
+        assert_eq!(SNAP_CREATE_V2, request(IOC_WRITE, 23, 4096));
+        assert_eq!(SUBVOL_GETFLAGS, request(IOC_READ, 25, 8));
+        assert_eq!(SUBVOL_SETFLAGS, request(IOC_WRITE, 26, 8));
+        // `47` was the command that answered `ENOTTY`; keep a hard pin on the real number.
+        assert_eq!(SNAP_DESTROY_V2, 0x5000_943f);
     }
 
     #[test]
     fn ioctl_argument_structs_match_the_kernel_layout() {
         assert_eq!(std::mem::size_of::<VolArgs>(), 4096);
         assert_eq!(std::mem::size_of::<VolArgsV2>(), 4096);
+        assert_eq!(std::mem::offset_of!(VolArgsV2, fd), 0);
+        assert_eq!(std::mem::offset_of!(VolArgsV2, name), 56);
+        assert_eq!(std::mem::offset_of!(VolArgs, name), 8);
     }
 
     #[test]

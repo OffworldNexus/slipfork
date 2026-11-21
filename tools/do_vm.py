@@ -97,7 +97,7 @@ CACHE_TARGET = f"{STATE_DIR}/home/.cache"
 # exactly this path as `--state-dir`/`--runtime-dir`.
 INSTALL_BIN_DIR = "/usr/local/bin"
 # The workspace packages whose binary targets are the shipped product.
-PRODUCT_BUILD_PACKAGES = ("slipfork", "slipfork-engine")
+PRODUCT_BUILD_PACKAGES = ("slipfork", "slipfork-world")
 # The exact binary targets those packages must provide (asserted against `cargo metadata`).
 PRODUCT_BINARIES = (
     "slipfork",
@@ -117,9 +117,12 @@ SUITE_HOME = f"{STATE_DIR}/home"
 # One short disk-backed test root on the Btrfs volume: `<state>/ctl/<world>/netns.sock` must fit
 # the 107-byte `AF_UNIX` limit, so the suites never build it under the deeper suite `HOME`.
 SUITE_TEST_ROOT = f"{STATE_DIR}/t"
+# A real tmpfs `XDG_RUNTIME_DIR` for suite session sockets: never `/tmp` and never disk.
+SUITE_RUNTIME_DIR = "/dev/shm/slipfork-runtime"
 OWNER_HOME = f"{STATE_DIR}/root-home"
 MOUNT_OPTIONS = "user_subvol_rm_allowed,noatime,nofail"
 BTRFS_MAGIC = "9123683e"
+TMPFS_MAGIC = "1021994"
 MARKER = f"{STATE_DIR}/.slipfork-ready"
 VOLUME_GLOB = "/dev/disk/by-id/scsi-0DO_Volume_*"
 FSTAB = "/etc/fstab"
@@ -136,86 +139,38 @@ RUSTUP_INIT_URL = (
 RUSTUP_INIT_SHA256 = "b1c8cb14e30889e7e2999e6b69e62d9e9b9ffc0f4df8180564d306d9680e6c55"
 RUST_MIN_VERSION = "1.94.0"
 # Every entry is `(cargo package, integration test binary, repo-relative file, owning node)`.
-# The list runs one at a time (`--test-threads=1`): each suite boots real worlds through the
-# production daemon, so the VM exercises the Btrfs-only positive halves of the CLI suites too.
+# The five protected live suites run one at a time (`--test-threads=1`): each one boots real
+# worlds on real Btrfs, so they must never share a scratch root or a pod namespace.
 SUITES = (
     (
-        "slipfork-engine",
+        "slipfork-world",
         "critical_btrfs_live",
-        "crates/slipfork-engine/tests/critical_btrfs_live.rs",
-        "M3.14",
+        "crates/slipfork-world/tests/critical_btrfs_live.rs",
+        "M3.39.1",
     ),
     (
-        "slipfork-engine",
-        "critical_engine",
-        "crates/slipfork-engine/tests/critical_engine.rs",
-        "M3.14",
+        "slipfork-image",
+        "critical_oci_live",
+        "crates/slipfork-image/tests/critical_oci_live.rs",
+        "M3.39.2",
     ),
     (
-        "slipfork-engine",
-        "critical_oci_runtime",
-        "crates/slipfork-engine/tests/critical_oci_runtime.rs",
-        "M3.14",
+        "slipfork-image",
+        "critical_dockerfile_live",
+        "crates/slipfork-image/tests/critical_dockerfile_live.rs",
+        "M3.39.3",
     ),
     (
-        "slipfork-engine",
+        "slipfork-world",
         "critical_pod_runtime",
-        "crates/slipfork-engine/tests/critical_pod_runtime.rs",
-        "M3.32.2.2.1.3.2.1",
-    ),
-    (
-        "slipfork-edge",
-        "critical_edge_live",
-        "crates/slipfork-edge/tests/critical_edge_live.rs",
-        "M3.30.4.4",
-    ),
-    (
-        "slipfork",
-        "critical_btrfs_live",
-        "crates/slipfork/tests/critical_btrfs_live.rs",
-        "M3.15",
-    ),
-    (
-        "slipfork",
-        "critical_cli",
-        "crates/slipfork/tests/critical_cli.rs",
-        "M3.15",
-    ),
-    (
-        "slipfork",
-        "critical_l0_wiring",
-        "crates/slipfork/tests/critical_l0_wiring.rs",
-        "M2.29",
-    ),
-    (
-        "slipfork",
-        "critical_slug",
-        "crates/slipfork/tests/critical_slug.rs",
-        "M3.15",
-    ),
-    (
-        "slipfork",
-        "critical_ospp_daemon",
-        "crates/slipfork/tests/critical_ospp_daemon.rs",
-        "M3.15",
+        "crates/slipfork-world/tests/critical_pod_runtime.rs",
+        "M3.39.4",
     ),
     (
         "slipfork",
         "critical_world_journey",
         "crates/slipfork/tests/critical_world_journey.rs",
-        "M3.30.4",
-    ),
-    (
-        "slipfork",
-        "critical_vcs_remote",
-        "crates/slipfork/tests/critical_vcs_remote.rs",
-        "M3.30.4",
-    ),
-    (
-        "slipfork",
-        "interact_lab",
-        "crates/slipfork/tests/interact_lab.rs",
-        "M3.32.4.2.1",
+        "M3.39.5",
     ),
 )
 AUTHORIZED_KEY_USERS = ("root", REMOTE_USER)
@@ -578,7 +533,9 @@ def render_product_install(config: ProvisionConfig = PROVISION) -> str:
     took effect. `slipfork daemon install` owns the socket handover (any holder, including a
     daemon from an older build), so this step adds no daemon lifecycle of its own. Every branch
     fails closed: a missing binary, a non-`active` socket unit, an unloaded profile, or a
-    denied unprivileged `CLONE_NEWUSER` exits non-zero.
+    denied unprivileged `CLONE_NEWUSER` exits non-zero. Builds that do not ship a
+    `daemon` verb yet are probed with `daemon install --help`: they install the binaries,
+    print one skip line, and leave the socket/profile/userns assertions to M3.40.
     """
     sources = f'  _source={_q(f"{config.remote_tree}/target/{config.build_profile}")}/"$_binary"'
     installs = "\n".join(
@@ -612,38 +569,42 @@ for _binary in {" ".join(config.binaries)}; do
 {sources}
 {installs}
 done
+if {_q(config.install_bin_dir)}/slipfork daemon install --help >/dev/null 2>&1; then
 {daemon_install}
-if _socket_state=$(systemctl is-active slipfork.socket); then
-  _socket_rc=0
-else
-  _socket_rc=$?
-fi
-if [ "$_socket_rc" -ne 0 ] || [ "$_socket_state" != "active" ]; then
-  echo "slipfork: systemctl is-active slipfork.socket reported '${{_socket_state:-no output}}' (rc $_socket_rc), not active" >&2
-  exit 1
-fi
-if _aa_status=$(aa-status); then
-  _aa_rc=0
-else
-  _aa_rc=$?
-fi
-if [ "$_aa_rc" -ne 0 ]; then
-  echo "slipfork: aa-status failed (rc $_aa_rc): $_aa_status" >&2
-  exit 1
-fi
-case "$_aa_status" in
-  *slipfork*) ;;
-  *)
-    echo "slipfork: the slipfork userns profile is not loaded (aa-status has no slipfork profile):" >&2
-    printf '%s\\n' "$_aa_status" >&2
+  if _socket_state=$(systemctl is-active slipfork.socket); then
+    _socket_rc=0
+  else
+    _socket_rc=$?
+  fi
+  if [ "$_socket_rc" -ne 0 ] || [ "$_socket_state" != "active" ]; then
+    echo "slipfork: systemctl is-active slipfork.socket reported '${{_socket_state:-no output}}' (rc $_socket_rc), not active" >&2
     exit 1
-    ;;
-esac
-if ! runuser -u {_q(config.remote_user)} -- unshare --user \\
-  --map-user="$(id -u {_q(config.remote_user)})" \\
-  --map-group="$(id -g {_q(config.remote_user)})" -- true; then
-  echo "slipfork: unprivileged userns creation is still denied for {config.remote_user}" >&2
-  exit 1
+  fi
+  if _aa_status=$(aa-status); then
+    _aa_rc=0
+  else
+    _aa_rc=$?
+  fi
+  if [ "$_aa_rc" -ne 0 ]; then
+    echo "slipfork: aa-status failed (rc $_aa_rc): $_aa_status" >&2
+    exit 1
+  fi
+  case "$_aa_status" in
+    *slipfork*) ;;
+    *)
+      echo "slipfork: the slipfork userns profile is not loaded (aa-status has no slipfork profile):" >&2
+      printf '%s\\n' "$_aa_status" >&2
+      exit 1
+      ;;
+  esac
+  if ! runuser -u {_q(config.remote_user)} -- unshare --user \\
+    --map-user="$(id -u {_q(config.remote_user)})" \\
+    --map-group="$(id -g {_q(config.remote_user)})" -- true; then
+    echo "slipfork: unprivileged userns creation is still denied for {config.remote_user}" >&2
+    exit 1
+  fi
+else
+  echo 'product install: this build has no `daemon` mode yet; skipping :80 socket activation (M3.40)' >&2
 fi
 """
 
@@ -829,6 +790,20 @@ if command -v docker >/dev/null 2>&1; then
   exit 1
 fi
 apparmor_parser --version
+
+# Ubuntu restricts unprivileged user namespaces through AppArmor; a world needs them to create
+# its own net/ipc/pid namespaces with `--keep-caps`.
+install -d -m 0755 /etc/sysctl.d
+cat > /etc/sysctl.d/99-slipfork-userns.conf <<'SLIPFORK_SYSCTL'
+kernel.apparmor_restrict_unprivileged_userns=0
+SLIPFORK_SYSCTL
+if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+  sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+fi
+if ! runuser -u {_q(config.remote_user)} -- unshare --user --map-current-user --keep-caps --net -- true; then
+  echo "slipfork: unprivileged user namespaces are denied for {config.remote_user}; set kernel.apparmor_restrict_unprivileged_userns=0 and re-run provisioning" >&2
+  exit 1
+fi
 
 # One harness-owned login banner. The AppArmor `userns` profile is not rendered here: it is a
 # product artifact written by `slipfork daemon install` (see `render_product_install`).
@@ -1754,7 +1729,7 @@ def _build_product(droplet: Droplet, known_hosts: Path, identity: Identity) -> N
 
 
 def _install_product(droplet: Droplet, known_hosts: Path, identity: Identity) -> None:
-    """Install the product binaries, then let `slipfork daemon install` own `:80`."""
+    """Install the product binaries, then hand `:80` to `slipfork daemon install` if it exists."""
     _step_failed(
         "product install",
         _run_remote_script(
@@ -2173,8 +2148,14 @@ def cmd_sync(args: argparse.Namespace) -> int:
 def suite_command(command: str) -> str:
     """One fixed envelope for every unprivileged remote suite command."""
     inner = (
-        f"cd {REMOTE_TREE} && exec env -i "
+        f"cd {REMOTE_TREE} && "
+        f'runtime={SUITE_RUNTIME_DIR} && rm -rf "$runtime" && install -d -m 700 "$runtime" && '
+        f'if [ "$(stat -f -c %t "$runtime")" != {TMPFS_MAGIC} ]; then '
+        "echo 'slipfork: XDG_RUNTIME_DIR must be tmpfs; re-run `tools/do_vm.py up`' >&2; "
+        "exit 1; fi; "
+        f"exec env -i "
         f"HOME={SUITE_HOME} TMPDIR={SUITE_HOME}/tmp "
+        f"XDG_RUNTIME_DIR={SUITE_RUNTIME_DIR} "
         f"SLIPFORK_TEST_ROOT={SUITE_TEST_ROOT} "
         f"CARGO_HOME={REMOTE_HOME}/.cargo RUSTUP_HOME={REMOTE_HOME}/.rustup "
         f"PATH={REMOTE_HOME}/.cargo/bin:/usr/local/bin:/usr/bin:/bin "
@@ -2283,7 +2264,10 @@ def cmd_test(args: argparse.Namespace) -> int:
     _install_product(droplet, known_hosts, identity)
 
     for package, test, _, _ in SUITES:
-        command = f"cargo test -p {package} --test {test} -- --test-threads=1"
+        command = (
+            f"cargo test -p {package} --features {package}/live "
+            f"--test {test} -- --test-threads=1"
+        )
         result = _run(
             ssh_argv(droplet, known_hosts, identity, suite_command(command)),
             capture=False,
@@ -2469,7 +2453,8 @@ def build_parser(home: Path) -> argparse.ArgumentParser:
         description=(
             "Replace the remote tree, seed support/demo once, build the product binaries "
             "(derived from `cargo metadata`), install them into /usr/local/bin, and run "
-            "`slipfork daemon install` so slipfork.socket owns :80. "
+            "`slipfork daemon install` so slipfork.socket owns :80 (a build without the "
+            "verb installs the binaries and skips :80 with one stderr line). "
             "Disclosure: this stops slipfork.socket/slipfork.service and `daemon install` hands "
             "the control socket over from any running slipfork daemon, so every running world's "
             "processes stop until the next `slipfork up`."

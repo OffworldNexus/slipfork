@@ -3,9 +3,11 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::io;
+use std::io::{BufRead, BufReader};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::mpsc::{self, RecvTimeoutError};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -37,8 +39,22 @@ impl InitWorld {
         &self.pods_root
     }
 
-    /// Bounded wait for one launched pod; replies with its exit code or a typed timeout.
-    pub(crate) fn wait(&self, pid: i32, timeout_ms: u64) -> Result<i32, Fault> {
+    /// Every tracked pod with its pid and whether `/proc/<pid>` still exists in the world.
+    pub(crate) fn list(&self) -> Vec<serde_json::Value> {
+        self.pods
+            .iter()
+            .map(|(id, container)| {
+                serde_json::json!({
+                    "id": id,
+                    "pid": container.pid,
+                    "running": Path::new(&format!("/proc/{}", container.pid)).exists(),
+                })
+            })
+            .collect()
+    }
+
+    /// Bounded wait: `Some(code)` when the pod exited, `None` while it is still running.
+    pub(crate) fn wait(&self, pid: i32, timeout_ms: u64) -> Result<Option<i32>, Fault> {
         if !self.pods.values().any(|container| container.pid == pid) {
             return Err(Fault::new(
                 format!("pid {pid} is not a launched pod"),
@@ -51,7 +67,7 @@ impl InitWorld {
             // SAFETY: `waitpid` writes one `c_int` through the valid pointer.
             let reaped = unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) };
             if reaped == pid {
-                return Ok(exit_code(status));
+                return Ok(Some(exit_code(status)));
             }
             if reaped < 0 {
                 let error = io::Error::last_os_error();
@@ -68,10 +84,7 @@ impl InitWorld {
                 ));
             }
             if Instant::now() >= deadline {
-                return Err(Fault::new(
-                    format!("pod pid {pid} did not exit within {timeout_ms}ms"),
-                    "raise the wait timeout, or stop the service with `slipfork down`",
-                ));
+                return Ok(None);
             }
             thread::sleep(Duration::from_millis(10));
         }
@@ -113,13 +126,13 @@ impl InitWorld {
             let bundle = container.bundle.clone();
             slipfork_world::kill_group(container.pid);
             let _ = Command::new(&self.crun)
-                .args(["kill", "--all", id])
+                .args(["--cgroup-manager=disabled", "kill", "--all", id])
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
                 .status();
             let _ = Command::new(&self.crun)
-                .args(["delete", "--force", id])
+                .args(["--cgroup-manager=disabled", "delete", "--force", id])
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
@@ -136,13 +149,13 @@ impl InitWorld {
     pub(crate) fn stop_all(&mut self) {
         for (id, container) in std::mem::take(&mut self.pods) {
             let _ = Command::new(&self.crun)
-                .args(["kill", "--all", &id])
+                .args(["--cgroup-manager=disabled", "kill", "--all", &id])
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
                 .status();
             let _ = Command::new(&self.crun)
-                .args(["delete", "--force", &id])
+                .args(["--cgroup-manager=disabled", "delete", "--force", &id])
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
@@ -151,6 +164,135 @@ impl InitWorld {
             let _ = fs::remove_dir_all(&container.bundle);
         }
         reap_zombies();
+    }
+    /// Runs one bundle to completion while forwarding every stdout/stderr line.
+    ///
+    /// Unlike `launch` this never detaches: the container's pipes stay open, so a failing `uv sync`
+    /// reports its own stderr instead of vanishing behind an exit code.
+    ///
+    /// `timeout_ms` is enforced here, inside PID 1. The init loop is single-threaded, so a silent
+    /// step must never block it: on expiry the process group is killed, the container is deleted,
+    /// zombies are reaped, and a typed timeout fault is returned. The `on_line` early return path
+    /// runs the same teardown so an undeliverable reply never orphans a container.
+    pub(crate) fn run_once_streaming(
+        &self,
+        pod: &PodSpec,
+        timeout_ms: u64,
+        on_line: &mut dyn FnMut(slipfork_world::Stream, &str) -> Result<(), Fault>,
+    ) -> Result<i32, Fault> {
+        let bundle = self.pods_root.join(&pod.id);
+        if !bundle.starts_with(&self.pods_root) {
+            return Err(Fault::new(
+                format!("pod `{}` bundle escapes the runtime root", pod.id),
+                REMEDY_CRUN,
+            ));
+        }
+        let action = format!("pod `{}` run-once with crun", pod.id);
+        let mut child = Command::new(&self.crun)
+            .args(["--cgroup-manager=disabled", "run", "--bundle"])
+            .arg(&bundle)
+            .arg(&pod.id)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .process_group(0)
+            .spawn()
+            .map_err(|source| Fault::cause(action.clone(), REMEDY_CRUN, source))?;
+        let child_pid = child.id();
+        let (sender, receiver) = mpsc::channel::<(slipfork_world::Stream, String)>();
+        let mut readers = Vec::new();
+        if let Some(stdout) = child.stdout.take() {
+            let sender = sender.clone();
+            readers.push(thread::spawn(move || {
+                for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+                    let _ = sender.send((slipfork_world::Stream::Stdout, line));
+                }
+            }));
+        }
+        if let Some(stderr) = child.stderr.take() {
+            let sender = sender.clone();
+            readers.push(thread::spawn(move || {
+                for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+                    let _ = sender.send((slipfork_world::Stream::Stderr, line));
+                }
+            }));
+        }
+        drop(sender);
+        let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                self.abort(&pod.id, child_pid, &mut child, &mut readers);
+                return Err(Fault::timed_out(
+                    format!(
+                        "pod `{}` still running after {timeout_ms}ms; killed its process group",
+                        pod.id
+                    ),
+                    REMEDY_POD,
+                ));
+            }
+            match receiver.recv_timeout(remaining) {
+                Ok((stream, line)) => {
+                    if let Err(fault) = on_line(stream, &line) {
+                        self.abort(&pod.id, child_pid, &mut child, &mut readers);
+                        return Err(fault);
+                    }
+                }
+                Err(RecvTimeoutError::Timeout) => continue,
+                Err(RecvTimeoutError::Disconnected) => break,
+            }
+        }
+        for (reader, kind) in readers.into_iter().zip(["stdout", "stderr"]) {
+            if reader.join().is_err() {
+                self.delete(&pod.id);
+                reap_zombies();
+                return Err(Fault::new(
+                    format!("pod `{}` {kind} reader panicked", pod.id),
+                    REMEDY_CRUN,
+                ));
+            }
+        }
+        let status = child
+            .wait()
+            .map_err(|source| Fault::cause(action, REMEDY_CRUN, source))?;
+        self.delete(&pod.id);
+        reap_zombies();
+        Ok(status.code().unwrap_or(128))
+    }
+
+    /// Kills the whole run-once group, deletes the container, reaps, and joins its readers.
+    fn abort(
+        &self,
+        id: &str,
+        pid: u32,
+        child: &mut std::process::Child,
+        readers: &mut Vec<thread::JoinHandle<()>>,
+    ) {
+        if let Ok(pid) = i32::try_from(pid) {
+            slipfork_world::kill_group(pid);
+        }
+        self.delete(id);
+        let _ = child.wait();
+        reap_zombies();
+        for reader in readers.drain(..) {
+            let _ = reader.join();
+        }
+    }
+
+    /// `crun kill --all` then `crun delete --force`; both are best effort teardown.
+    fn delete(&self, id: &str) {
+        let _ = Command::new(&self.crun)
+            .args(["--cgroup-manager=disabled", "kill", "--all", id])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+        let _ = Command::new(&self.crun)
+            .args(["--cgroup-manager=disabled", "delete", "--force", id])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
     }
 }
 
@@ -171,7 +313,8 @@ fn crun_run(crun: &Path, bundle: &Path, id: &str) -> Result<i32, Fault> {
     let pid_file = bundle.join("init.pid");
     let _ = fs::remove_file(&pid_file);
     let status = Command::new(crun)
-        .args(["run", "--cgroup-manager=disabled", "--detach", "--bundle"])
+        // `--cgroup-manager` is a crun global option: it must precede the subcommand.
+        .args(["--cgroup-manager=disabled", "run", "--detach", "--bundle"])
         .arg(bundle)
         .arg("--pid-file")
         .arg(&pid_file)

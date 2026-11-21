@@ -242,10 +242,10 @@ if "cargo metadata --format-version" in remote:
                 {"name": "slipfork", "kind": ["bin"]},
                 {"name": "slipfork", "kind": ["test"]},
             ]},
-            {"name": "slipfork-engine", "targets": [
+            {"name": "slipfork-world", "targets": [
                 {"name": "slipfork-world-init", "kind": ["bin"]},
             ]},
-            {"name": "slipfork-edge", "targets": [
+            {"name": "slipfork-ingress", "targets": [
                 {"name": "unrelated", "kind": ["bin"]},
             ]},
         ]}))
@@ -257,8 +257,8 @@ if "cargo build" in remote:
 if "cargo test -p " in remote:
     with (state / "suites.log").open("a", encoding="utf-8") as log:
         log.write(remote + "\\n")
-    if "slipfork-engine" in remote:
-        sys.exit(env_int("FAKE_ENGINE_EXIT"))
+    if "slipfork-world" in remote:
+        sys.exit(env_int("FAKE_WORLD_EXIT"))
     sys.exit(env_int("FAKE_CLI_EXIT"))
 sys.exit(0)
 """
@@ -508,6 +508,12 @@ from pathlib import Path
 
 with Path(os.environ["FAKE_COMMAND_LOG"]).open("a", encoding="utf-8") as log:
     log.write("slipfork " + " ".join(sys.argv[1:]) + "\\n")
+argv = sys.argv[1:]
+if argv == ["daemon", "install", "--help"]:
+    if os.environ.get("FAKE_SLIPFORK_NO_DAEMON"):
+        print("error: unknown argument 'daemon'", file=sys.stderr)
+        sys.exit(2)
+    sys.exit(int(os.environ.get("FAKE_SLIPFORK_HELP_EXIT", "0")))
 sys.exit(int(os.environ.get("FAKE_SLIPFORK_EXIT", "0")))
 """
 )
@@ -1121,10 +1127,10 @@ class HarnessTests(unittest.TestCase):
         result = harness.run("test")
         assert result.code == 2
         for needle in (
-            "crates/slipfork-engine/tests/critical_btrfs_live.rs",
-            "crates/slipfork/tests/critical_btrfs_live.rs",
-            "M3.14",
-            "M3.15",
+            "crates/slipfork-world/tests/critical_btrfs_live.rs",
+            "crates/slipfork/tests/critical_world_journey.rs",
+            "M3.39.1",
+            "M3.39.5",
         ):
             assert needle in result.stderr
         assert harness.ssh_calls() == []
@@ -1134,15 +1140,20 @@ class HarnessTests(unittest.TestCase):
         harness.suite_files()
         harness.write_state("droplet.json", _droplet_state())
         harness.materialize_identity()
-        failed = harness.run("test", env={"FAKE_ENGINE_EXIT": "101"})
+        failed = harness.run("test", env={"FAKE_WORLD_EXIT": "101"})
         assert failed.code == 101
         suites = _lines(harness.state / "suites.log")
         assert len(suites) == 1
-        assert "cargo test -p slipfork-engine --test critical_btrfs_live" in suites[0]
+        assert (
+            "cargo test -p slipfork-world --features slipfork-world/live "
+            "--test critical_btrfs_live"
+        ) in suites[0]
         assert "-- --test-threads=1" in suites[0]
         assert "--nocapture" not in suites[0]
         assert "HOME=/var/lib/slipfork/home" in suites[0]
         assert "TMPDIR=/var/lib/slipfork/home/tmp" in suites[0]
+        assert "XDG_RUNTIME_DIR=/dev/shm/slipfork-runtime" in suites[0]
+        assert "SLIPFORK_TEST_ROOT=/var/lib/slipfork/t" in suites[0]
         assert "runuser -u slipfork" in suites[0]
         assert any("command -v docker" in call for call in harness.ssh_calls())
 
@@ -1152,7 +1163,8 @@ class HarnessTests(unittest.TestCase):
         suites = _lines(harness.state / "suites.log")
         assert len(suites) == len(do_vm_mod.SUITES) > 0
         expected = [
-            f"cargo test -p {package} --test {test} -- --test-threads=1"
+            f"cargo test -p {package} --features {package}/live "
+            f"--test {test} -- --test-threads=1"
             for package, test, _, _ in do_vm_mod.SUITES
         ]
         for command, needle in zip(suites, expected, strict=True):
@@ -1637,6 +1649,17 @@ class HarnessTests(unittest.TestCase):
         assert "9123683e" in script
         assert "_format_allowed=0" in script
 
+    def test_provisioning_clears_the_apparmor_userns_restriction(self):
+        script = do_vm_mod.render_provision_script()
+        assert "/etc/sysctl.d/99-slipfork-userns.conf" in script
+        assert "kernel.apparmor_restrict_unprivileged_userns=0" in script
+        assert "sysctl -w kernel.apparmor_restrict_unprivileged_userns=0" in script
+        assert (
+            "runuser -u slipfork -- unshare --user --map-current-user --keep-caps --net -- true"
+            in script
+        ), "provisioning must prove keep-caps userns creation"
+        assert "unprivileged user namespaces are denied" in script
+
     def test_install_authorized_keys_targets_both_users(self):
         script = do_vm_mod.render_install_authorized_keys()
         assert (
@@ -1676,6 +1699,10 @@ class HarnessTests(unittest.TestCase):
             f"--bin-dir {do_vm_mod.REMOTE_TREE}/target/debug "
             f"--bin-dir {do_vm_mod.REMOTE_TREE}/target/release"
         ) in script
+        assert (
+            "/usr/local/bin/slipfork daemon install --help >/dev/null 2>&1"
+        ) in script
+        assert "this build has no `daemon` mode yet" in script
         assert "systemctl is-active slipfork.socket" in script
         assert '!= "active"' in script
         assert "aa-status" in script
@@ -1694,11 +1721,11 @@ class HarnessTests(unittest.TestCase):
                         ],
                     },
                     {
-                        "name": "slipfork-engine",
+                        "name": "slipfork-world",
                         "targets": [{"name": "slipfork-world-init", "kind": ["bin"]}],
                     },
                     {
-                        "name": "slipfork-edge",
+                        "name": "slipfork-ingress",
                         "targets": [{"name": "not-a-product-bin", "kind": ["bin"]}],
                     },
                 ]
@@ -1708,11 +1735,11 @@ class HarnessTests(unittest.TestCase):
         assert binaries == ["slipfork", "slipfork-world-init"]
         assert set(binaries) == set(do_vm_mod.PRODUCT_BINARIES)
         assert do_vm_mod.product_build_command(binaries, "debug") == (
-            "cargo build -p slipfork -p slipfork-engine "
+            "cargo build -p slipfork -p slipfork-world "
             "--bin slipfork --bin slipfork-world-init"
         )
         assert do_vm_mod.product_build_command(binaries, "release").startswith(
-            "cargo build --release -p slipfork -p slipfork-engine "
+            "cargo build --release -p slipfork -p slipfork-world "
         )
         for broken, message in (
             ("", "did not emit JSON"),
@@ -1768,8 +1795,11 @@ class HarnessTests(unittest.TestCase):
         assert len(installs) == len(do_vm_mod.PRODUCT_BINARIES)
         for entry in installs:
             assert "-m 0755" in entry
+        assert "slipfork daemon install --help" in commands
         daemon = [
-            entry for entry in commands if entry.startswith("slipfork daemon install")
+            entry
+            for entry in commands
+            if entry.startswith("slipfork daemon install --user")
         ]
         assert len(daemon) == 1
         for binary in do_vm_mod.PRODUCT_BINARIES:
@@ -1780,7 +1810,9 @@ class HarnessTests(unittest.TestCase):
         assert second.returncode == 0, second.stderr
         commands = _lines(tmp_path / "commands.log")
         assert [entry for entry in commands if entry.startswith("install ")] == []
-        assert any(entry.startswith("slipfork daemon install") for entry in commands)
+        assert any(
+            entry.startswith("slipfork daemon install --user") for entry in commands
+        )
 
     def test_product_install_fails_closed_without_the_binaries(self):
         tmp_path = self.tmp_path
@@ -1824,6 +1856,49 @@ class HarnessTests(unittest.TestCase):
         )
         assert result.returncode == 1
         assert "aa-status failed" in result.stderr
+
+    def test_product_install_skips_socket_activation_without_a_daemon_verb(self):
+        tmp_path = self.tmp_path
+        installed = tmp_path / "usr-local-bin"
+        installed.mkdir()
+        config = _demo_config(tmp_path, install_bin_dir=str(installed))
+        sources = _product_binaries_tree(config)
+        _write_executable(sources / "slipfork", FAKE_SLIPFORK)
+        bin_dir = _fake_bin(tmp_path)
+        result = _run_step(
+            do_vm_mod.render_product_install(config),
+            bin_dir,
+            tmp_path,
+            FAKE_SLIPFORK_NO_DAEMON="1",
+        )
+        assert result.returncode == 0, result.stderr
+        assert (
+            "product install: this build has no `daemon` mode yet; "
+            "skipping :80 socket activation" in result.stderr
+        )
+        commands = _lines(tmp_path / "commands.log")
+        assert not any("--user" in entry for entry in commands)
+        assert not any(entry.startswith("systemctl") for entry in commands)
+        assert not any(entry.startswith("aa-status") for entry in commands)
+        for binary in do_vm_mod.PRODUCT_BINARIES:
+            assert (installed / binary).is_file()
+
+    def test_product_install_propagates_a_real_daemon_install_failure(self):
+        tmp_path = self.tmp_path
+        installed = tmp_path / "usr-local-bin"
+        installed.mkdir()
+        config = _demo_config(tmp_path, install_bin_dir=str(installed))
+        sources = _product_binaries_tree(config)
+        _write_executable(sources / "slipfork", FAKE_SLIPFORK)
+        bin_dir = _fake_bin(tmp_path)
+        result = _run_step(
+            do_vm_mod.render_product_install(config),
+            bin_dir,
+            tmp_path,
+            FAKE_SLIPFORK_EXIT="2",
+        )
+        assert result.returncode == 2
+        assert "skipping :80" not in result.stderr
 
     def test_demo_seed_copies_once_and_keeps_owner_edits(self):
         tmp_path = self.tmp_path
@@ -1921,7 +1996,7 @@ class HarnessTests(unittest.TestCase):
         build = calls.index(
             _only(
                 calls,
-                "cargo build -p slipfork -p slipfork-engine --bin slipfork --bin slipfork-world-init",
+                "cargo build -p slipfork -p slipfork-world --bin slipfork --bin slipfork-world-init",
             )
         )
         install = calls.index(_only(calls, "bash -s product-install"))
@@ -1963,7 +2038,7 @@ class HarnessTests(unittest.TestCase):
         build = calls.index(
             _only(
                 calls,
-                "cargo build -p slipfork -p slipfork-engine --bin slipfork --bin slipfork-world-init",
+                "cargo build -p slipfork -p slipfork-world --bin slipfork --bin slipfork-world-init",
             )
         )
         install = calls.index(_only(calls, "bash -s product-install"))
