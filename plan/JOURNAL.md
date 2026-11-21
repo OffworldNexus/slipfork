@@ -2464,3 +2464,15 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-21T16:31 [M3.40] (lead) gate: make check 0; live lab 7/7 suites (11 tests) green; guard+critical_guard+validate+docs honesty OK; zero mocks
 - 2026-11-21T16:31 [M3.40] (lead) status ready -> done
 - 2026-11-21T16:32 [M3.41] (conductor) edited fields
+- 2026-11-21T16:35 [M3.41.1] (planner) created (task) Docs site scaffold, core pages, README/CHANGELOG & docs gate
+- 2026-11-21T16:35 [M3.41.2] (planner) created (task) Reference docs: under-the-hood, OSPP, agents/OpenCode, troubleshooting
+- 2026-11-21T16:35 [M3.41.3] (planner) created (task) Linux distro packages, portable standalone archives, installer & publisher
+- 2026-11-21T16:35 [M3.41.4] (planner) created (task) GitHub Actions: CI, docs deploy, distro package matrix, nightly
+- 2026-11-21T16:35 [M3.41.1] (lead) status ready -> active
+- 2026-11-21T16:35 [M3.41.1] (lead) attempt 1/3 started
+- 2026-11-21T16:35 [M3.41.1] (lead) base 2a7df10ee97f46820f1222d8a480f946c8309601
+- 2026-11-21T16:38 [M3.41.1] (lead) status active -> review
+- 2026-11-21T16:39 [M3.41.1] (lead) status review -> active
+- 2026-11-21T16:39 [M3.41.1] (lead) attempt 2/3 started
+- 2026-11-21T16:39 [M3.41.1] (lead) fix pass 1: honesty fence attrs, exclusion single-source, README buttons, fork JSON
+- 2026-11-21T16:40 [M3.41.1] (lead) status active -> done

@@ -6,13 +6,13 @@
 """Verify published user documentation never advertises unimplemented `slipfork <subcommand>`
 commands (Zero Vaporware rule).
 
-Published docs are `README.md` and the non-excluded `docs/**/*.md` pages; `specs/` drafts and
-`VISION`/design/research notes are excluded because they describe target behaviour before it
-ships. The clean-sheet interim has no `docs/` yet, so the checker no-ops successfully instead of
-failing (and never builds the binary just to prove there is nothing to check).
+Published docs are `README.md` and the `docs/**/*.md` pages not named by `zensical.toml`'s
+`[project] exclude_docs`; `specs/` drafts and design/research notes are excluded because they
+describe target behaviour before it ships. Every page named in the site nav is required to exist,
+so a nav entry can never point at a page the site does not build.
 
-The shipped surface is the single `slipfork` binary plus its `slipfork-world-init` boot helper;
-there is no separate daemon or git-remote executable.
+The shipped surface is the single `slipfork` binary plus its `slipfork-world-init` boot helper and
+the standalone `slipfork-lsp` language server; neither is a `slipfork` subcommand.
 """
 
 from __future__ import annotations
@@ -23,17 +23,11 @@ import sys
 import tomllib
 from pathlib import Path
 
-FENCE_RE = re.compile(r"```(?:console|bash|sh|shell|text)?\n(.*?)```", re.DOTALL)
+# Any fenced block, whatever language tag it carries: `console`, `bash`, but also `forkfile`,
+# `json` and `text`, so a fence never hides a command from the gate.
+FENCE_RE = re.compile(r"```[^\n]*\n(.*?)```", re.DOTALL)
 CMD_LINE_RE = re.compile(r"^\s*(?:\$\s+)?slipfork\s+([a-z][a-z0-9_-]*)", re.MULTILINE)
 INLINE_TABLE_CMD_RE = re.compile(r"\|\s*`slipfork\s+([a-z][a-z0-9_-]*)")
-
-EXCLUDED_PREFIXES = (
-    "VISION.md",
-    "design/",
-    "decisions/",
-    "research/",
-    "testing/",
-)
 
 # Seeded user-facing docs that ship to the dev VM: same Zero-Vaporware rule as published docs.
 SEEDED_DOCS = ("support/demo/README.md",)
@@ -55,34 +49,24 @@ def extract_help_subcommands(help_text: str) -> set[str]:
     return cmds
 
 
-def published_doc_files(repo: Path) -> list[Path]:
-    files: list[Path] = []
-    readme = repo / "README.md"
-    if readme.is_file():
-        files.append(readme)
-    docs_dir = repo / "docs"
-    if docs_dir.is_dir():
-        for md in sorted(docs_dir.rglob("*.md")):
-            rel = md.relative_to(docs_dir).as_posix()
-            if any(
-                rel == p.rstrip("/") or rel.startswith(p) for p in EXCLUDED_PREFIXES
-            ):
-                continue
-            files.append(md)
-    # Also ensure every file referenced in zensical.toml nav exists.
+def _nav(repo: Path) -> list[object]:
     z_path = repo / "zensical.toml"
-    if z_path.is_file():
-        data = tomllib.loads(z_path.read_text(encoding="utf-8"))
-        nav = data.get("project", {}).get("nav", [])
-        for rel in _iter_nav_paths(nav):
-            p = docs_dir / rel
-            if p not in files and p.is_file():
-                files.append(p)
-    for rel in SEEDED_DOCS:
-        seeded = repo / rel
-        if seeded.is_file():
-            files.append(seeded)
-    return files
+    if not z_path.is_file():
+        return []
+    data = tomllib.loads(z_path.read_text(encoding="utf-8"))
+    nav = data.get("project", {}).get("nav", [])
+    return nav if isinstance(nav, list) else []
+
+
+def nav_pages(repo: Path) -> list[str]:
+    """Every docs-relative page path named by the site nav."""
+    return _iter_nav_paths(_nav(repo))
+
+
+def missing_nav_pages(repo: Path) -> list[str]:
+    """Nav entries whose page does not exist on disk, in nav order."""
+    docs_dir = repo / "docs"
+    return [rel for rel in nav_pages(repo) if not (docs_dir / rel).is_file()]
 
 
 def _iter_nav_paths(node: object) -> list[str]:
@@ -96,6 +80,54 @@ def _iter_nav_paths(node: object) -> list[str]:
         for val in node.values():
             out.extend(_iter_nav_paths(val))
     return out
+
+
+def excluded_prefixes(repo: Path) -> tuple[str, ...]:
+    """`zensical.toml`'s `exclude_docs` entries as docs-relative prefixes.
+
+    The site config is the single source of truth: `/archive/` becomes
+    `archive/` and `/VISION.md` becomes `VISION.md`. A missing key means
+    nothing is excluded.
+    """
+    z_path = repo / "zensical.toml"
+    if not z_path.is_file():
+        return ()
+    data = tomllib.loads(z_path.read_text(encoding="utf-8"))
+    raw = data.get("project", {}).get("exclude_docs", "")
+    if not isinstance(raw, str):
+        return ()
+    out: list[str] = []
+    for line in raw.splitlines():
+        entry = line.strip().lstrip("/")
+        if entry:
+            out.append(entry)
+    return tuple(out)
+
+
+def published_doc_files(repo: Path) -> list[Path]:
+    files: list[Path] = []
+    exclusions = excluded_prefixes(repo)
+    readme = repo / "README.md"
+    if readme.is_file():
+        files.append(readme)
+    docs_dir = repo / "docs"
+    if docs_dir.is_dir():
+        for md in sorted(docs_dir.rglob("*.md")):
+            rel = md.relative_to(docs_dir).as_posix()
+            if any(rel == p.rstrip("/") or rel.startswith(p) for p in exclusions):
+                continue
+            files.append(md)
+    # Nav pages are required even when a broad `exclude_docs` pattern or a stray suffix would
+    # otherwise keep them out of the scan.
+    for rel in nav_pages(repo):
+        p = docs_dir / rel
+        if p not in files and p.is_file():
+            files.append(p)
+    for rel in SEEDED_DOCS:
+        seeded = repo / rel
+        if seeded.is_file():
+            files.append(seeded)
+    return files
 
 
 def find_vaporware_commands(
@@ -126,9 +158,22 @@ def main() -> int:
     docs_dir = repo / "docs"
     if not docs_dir.is_dir():
         print(
-            "check_docs_honesty: no published docs/ yet (clean-sheet interim) — nothing to check"
+            "check_docs_honesty: docs/ is missing; next: restore the published docs tree",
+            file=sys.stderr,
         )
-        return 0
+        return 1
+    missing = missing_nav_pages(repo)
+    if missing:
+        print(
+            f"check_docs_honesty: FAILED ({len(missing)} nav page(s) missing):",
+            file=sys.stderr,
+        )
+        for rel in missing:
+            print(
+                f"  X docs/{rel} is in zensical.toml nav but does not exist",
+                file=sys.stderr,
+            )
+        return 1
     completed = subprocess.run(
         ["cargo", "run", "-q", "-p", "slipfork", "--", "--help"],
         cwd=repo,

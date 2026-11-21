@@ -1,0 +1,60 @@
+/*
+ * Two things the theme cannot express on its own.
+ *
+ * 1. Layout: reference tables carry four or five columns of prose, and on a
+ *    phone that is wider than the viewport. Below the tablet breakpoint the
+ *    table scrolls inside its own box instead of stretching the page.
+ *
+ * 2. The Forkfile token palette. These rules only colour the spans
+ *    `docs/javascripts/forkfile-highlight.js` creates, and every rule is scoped
+ *    through `code[data-forkfile-highlighted]`, the marker the lexer sets on a
+ *    fence it classified as a Forkfile. A `console`, `json` or `python` block
+ *    never matches and keeps the theme's own colour.
+ *
+ *    Every value clears WCAG AA (4.5:1) against the code surface of its own
+ *    scheme: near-white for light, the slate code surface for dark. The classes
+ *    are Zensical's own Pygments names (`.k`, `.kd`, `.s2`, ...), so no rule
+ *    invents a selector the theme ignores.
+ */
+@media screen and (max-width: 44.9375em) {
+  .md-typeset__table {
+    display: block;
+    max-width: 100%;
+    overflow-x: auto;
+    padding-bottom: 0.2rem;
+  }
+
+  .md-typeset__table table:not([class]) {
+    min-width: max-content;
+  }
+}
+
+/* Light scheme: every token >= 4.5:1 on the light code surface. */
+[data-md-color-scheme="default"] .highlight code[data-forkfile-highlighted] .c1 { color: #56616b; font-style: italic; }
+[data-md-color-scheme="default"] .highlight code[data-forkfile-highlighted] .k { color: #223846; font-weight: 600; }
+[data-md-color-scheme="default"] .highlight code[data-forkfile-highlighted] .kd { color: #81371c; }
+[data-md-color-scheme="default"] .highlight code[data-forkfile-highlighted] .kc { color: #9b4723; }
+[data-md-color-scheme="default"] .highlight code[data-forkfile-highlighted] .kt { color: #5a2f70; }
+[data-md-color-scheme="default"] .highlight code[data-forkfile-highlighted] .nf { color: #3f3a36; }
+[data-md-color-scheme="default"] .highlight code[data-forkfile-highlighted] .nv { color: #2f5670; }
+[data-md-color-scheme="default"] .highlight code[data-forkfile-highlighted] .s1 { color: #2a6b4f; }
+[data-md-color-scheme="default"] .highlight code[data-forkfile-highlighted] .s2 { color: #1f5c63; }
+[data-md-color-scheme="default"] .highlight code[data-forkfile-highlighted] .se { color: #7a2f6b; }
+[data-md-color-scheme="default"] .highlight code[data-forkfile-highlighted] .p { color: #56616b; }
+[data-md-color-scheme="default"] .highlight code[data-forkfile-highlighted] .mi { color: #8a5a00; }
+[data-md-color-scheme="default"] .highlight code[data-forkfile-highlighted] .o { color: #3f3a36; }
+
+/* Dark scheme: every token >= 4.5:1 on the slate code surface. */
+[data-md-color-scheme="slate"] .highlight code[data-forkfile-highlighted] .c1 { color: #a5b0b8; font-style: italic; }
+[data-md-color-scheme="slate"] .highlight code[data-forkfile-highlighted] .k { color: #f3c997; font-weight: 600; }
+[data-md-color-scheme="slate"] .highlight code[data-forkfile-highlighted] .kd { color: #eb9a6c; }
+[data-md-color-scheme="slate"] .highlight code[data-forkfile-highlighted] .kc { color: #ff9ecb; }
+[data-md-color-scheme="slate"] .highlight code[data-forkfile-highlighted] .kt { color: #d7a8e8; }
+[data-md-color-scheme="slate"] .highlight code[data-forkfile-highlighted] .nf { color: #a8c7dd; }
+[data-md-color-scheme="slate"] .highlight code[data-forkfile-highlighted] .nv { color: #8fd6b4; }
+[data-md-color-scheme="slate"] .highlight code[data-forkfile-highlighted] .s1 { color: #b8e0a0; }
+[data-md-color-scheme="slate"] .highlight code[data-forkfile-highlighted] .s2 { color: #a9d3d8; }
+[data-md-color-scheme="slate"] .highlight code[data-forkfile-highlighted] .se { color: #e0b0d8; }
+[data-md-color-scheme="slate"] .highlight code[data-forkfile-highlighted] .p { color: #b9c6cf; }
+[data-md-color-scheme="slate"] .highlight code[data-forkfile-highlighted] .mi { color: #f0c07a; }
+[data-md-color-scheme="slate"] .highlight code[data-forkfile-highlighted] .o { color: #cbd5dc; }

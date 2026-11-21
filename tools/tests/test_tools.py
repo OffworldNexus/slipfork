@@ -241,6 +241,9 @@ class ToolsTests(unittest.TestCase):
     def test_docs_honesty_rejects_vaporware_subcommands_in_published_docs(self) -> None:
         tmp_path = self.tmp_path
         (tmp_path / "docs" / "design").mkdir(parents=True)
+        (tmp_path / "zensical.toml").write_text(
+            '[project]\nexclude_docs = """/design/\n"""\n', encoding="utf-8"
+        )
         (tmp_path / "docs" / "index.md").write_text(
             "```console\n$ slipfork doctor\n$ slipfork up\n```\n", encoding="utf-8"
         )
@@ -253,6 +256,27 @@ class ToolsTests(unittest.TestCase):
         errs = docs_honesty_mod.find_vaporware_commands(published, valid, tmp_path)
         self.assertEqual(len(errs), 1)
         self.assertIn("slipfork up", errs[0])
+
+    def test_docs_honesty_scans_forkfile_fences_and_requires_nav_pages(self) -> None:
+        tmp_path = self.tmp_path
+        (tmp_path / "docs").mkdir()
+        (tmp_path / "docs" / "index.md").write_text(
+            "```forkfile\n# forkfile: 0.1\nimage api . {\n  service web { port 8000 }\n}\n```\n\n"
+            "```console\n$ slipfork up\n$ slipfork doctor\n```\n\n"
+            '```bash linenums="1"\n$ slipfork prune\n```\n',
+            encoding="utf-8",
+        )
+        (tmp_path / "zensical.toml").write_text(
+            '[project]\nnav = [{ "Home" = "index.md" }, { "Install" = "install.md" }]\n',
+            encoding="utf-8",
+        )
+        help_out = "Usage: slipfork <COMMAND>\n\nCommands:\n  up  Boot a world\n  doctor  Probe host\n"
+        valid = docs_honesty_mod.extract_help_subcommands(help_out)
+        published = docs_honesty_mod.published_doc_files(tmp_path)
+        errs = docs_honesty_mod.find_vaporware_commands(published, valid, tmp_path)
+        self.assertEqual(len(errs), 1)
+        self.assertIn("slipfork prune", errs[0])
+        self.assertEqual(docs_honesty_mod.missing_nav_pages(tmp_path), ["install.md"])
 
 
 if __name__ == "__main__":

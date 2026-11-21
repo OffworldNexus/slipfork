@@ -1,0 +1,131 @@
+# Slipfork's documentation site.
+#
+# Build it with `make docs-check` (Zensical strict plus the Zero-Vaporware
+# gate) and preview it with `make docs-serve`. Nav lists only pages that ship;
+# `exclude_docs` keeps blueprints and working material off the public site.
+[project]
+site_name = "slipfork"
+site_url = "https://offworldnexus.github.io/slipfork/"
+site_description = "A copy-on-write Btrfs environment for polyglot apps and AI coding agents — your cloud locally in a box."
+site_author = "Offworld Nexus"
+copyright = "&copy; 2026 Offworld Nexus"
+
+repo_url = "https://github.com/OffworldNexus/slipfork"
+repo_name = "OffworldNexus/slipfork"
+edit_uri = "edit/develop/docs/"
+
+docs_dir = "docs"
+site_dir = "site"
+
+nav = [
+  { "Home" = "index.md" },
+  { "Getting started" = "getting-started.md" },
+  { "Install" = "install.md" },
+  { "The Forkfile" = "forkfile.md" },
+  { "CLI" = "cli.md" },
+]
+
+extra_css = ["stylesheets/extra.css"]
+
+# One classic script, no build step: it colours a `forkfile` fence and nothing
+# else. It loads after the theme bundle, including pages `navigation.instant`
+# swaps in.
+extra_javascript = ["javascripts/forkfile-highlight.js"]
+
+exclude_docs = """
+/archive/
+/spikes/
+/VISION.md
+/design/
+/decisions/
+/research/
+/knowledge/
+/testing/
+"""
+
+[project.theme]
+language = "en"
+features = [
+  "announce.dismiss",
+  "content.action.edit",
+  "content.code.annotate",
+  "content.code.copy",
+  "content.code.select",
+  "content.footnote.tooltips",
+  "content.tabs.link",
+  "content.tooltips",
+  "navigation.footer",
+  "navigation.indexes",
+  "navigation.instant",
+  "navigation.instant.prefetch",
+  "navigation.path",
+  "navigation.sections",
+  "navigation.tabs",
+  "navigation.tabs.sticky",
+  "navigation.top",
+  "navigation.tracking",
+  "search.highlight",
+  "search.share",
+  "toc.follow",
+]
+
+[project.theme.icon]
+edit = "material/pencil"
+view = "material/eye"
+
+[[project.theme.palette]]
+media = "(prefers-color-scheme)"
+primary = "teal"
+accent = "cyan"
+toggle.icon = "lucide/sun-moon"
+toggle.name = "Switch to light mode"
+
+[[project.theme.palette]]
+media = "(prefers-color-scheme: light)"
+scheme = "default"
+primary = "teal"
+accent = "cyan"
+toggle.icon = "lucide/sun"
+toggle.name = "Switch to dark mode"
+
+[[project.theme.palette]]
+media = "(prefers-color-scheme: dark)"
+scheme = "slate"
+primary = "teal"
+accent = "cyan"
+toggle.icon = "lucide/moon"
+toggle.name = "Switch to system preference"
+
+# A broken link or a link to a missing anchor fails `--strict`, which is what
+# `make docs-check` runs.
+[project.validation]
+invalid_links = true
+invalid_link_anchors = true
+
+[project.markdown_extensions]
+abbr = {}
+admonition = {}
+attr_list = {}
+def_list = {}
+footnotes = {}
+md_in_html = {}
+toc.permalink = true
+pymdownx.betterem = {}
+pymdownx.caret = {}
+pymdownx.details = {}
+pymdownx.emoji.emoji_generator = "zensical.extensions.emoji.to_svg"
+pymdownx.emoji.emoji_index = "zensical.extensions.emoji.twemoji"
+pymdownx.highlight.pygments_lang_class = true
+pymdownx.inlinehilite = {}
+pymdownx.keys = {}
+pymdownx.magiclink = {}
+pymdownx.mark = {}
+pymdownx.smartsymbols = {}
+pymdownx.superfences.custom_fences = [
+  { name = "mermaid", class = "mermaid", format = "pymdownx.superfences.fence_code_format" },
+  { name = "forkfile", class = "forkfile", format = "pymdownx.superfences.fence_code_format" },
+]
+pymdownx.tabbed.alternate_style = true
+pymdownx.tabbed.combine_header_slug = true
+pymdownx.tasklist.custom_checkbox = true
+pymdownx.tilde = {}

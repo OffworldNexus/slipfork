@@ -1,5 +1,6 @@
 CARGO ?= cargo
 UV ?= uv
+UVX ?= uvx
 
 # Point this at a directory on a real Btrfs mount (a loop file is fine); never `/tmp`.
 SLIPFORK_TEST_ROOT ?=
@@ -13,7 +14,7 @@ LIVE_SUITES := \
 	slipfork/critical_status_live \
 	slipfork/critical_fork_live
 
-.PHONY: fmt clippy test check guard test-tools live-test lsp-assets js-test typecheck packages-check
+.PHONY: fmt clippy test check guard test-tools live-test lsp-assets js-test typecheck packages-check docs-check docs-serve
 
 fmt:
 	$(CARGO) fmt --all
@@ -48,6 +49,15 @@ guard:
 
 test-tools:
 	$(UV) run --no-project -m unittest discover -s tools/tests
+
+# A strict build treats any warning as a failure; the honesty gate then proves
+# every published `slipfork <verb>` exists in `slipfork --help`.
+docs-check:
+	$(UVX) --offline zensical build --strict
+	$(UV) run --no-project tools/check_docs_honesty.py
+
+docs-serve:
+	$(UVX) --offline zensical serve
 
 # Builds the Zed extension's release asset for one target. The name (and the
 # archive's top-level directory) must match `asset_for` in editors/zed/src/lib.rs.
