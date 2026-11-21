@@ -2289,3 +2289,9 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-21T01:52 [M3.38.5] (lead) edited fields
 - 2026-11-21T01:52 [M3.38.5] (lead) status review -> done
 - 2026-11-21T01:52 [M3.38] (lead) status ready -> done
+- 2026-11-21T01:53 [M3.39.1] (planner) created (task) Pure Btrfs layout: host probe, transparent subvolume conversion, RO image/world store, CoW fork & safe destroy
+- 2026-11-21T01:53 [M3.39.2] (planner) created (task) Native OCI Distribution v2 puller: bearer auth, multi-arch manifests, streaming sha256 layers into RO Btrfs subvolumes
+- 2026-11-21T01:53 [M3.39.3] (planner) created (task) Native Dockerfile step builder on Btrfs + crun: multi-stage, COPY --from/--chown, RUN heredocs & --mount=type=cache, .dockerignore
+- 2026-11-21T01:53 [M3.39.4] (planner) created (task) Unprivileged world namespaces: slipfork-world-init lifeline + per-service crun pods for pg/redis/s3
+- 2026-11-21T01:53 [M3.39.5] (planner) created (task) Parallel World Boot DAG: resources/images, deduped @tool + when-changed setup, pre/post/failed deploy hooks, minimal up/down/restart wiring
+- 2026-11-21T01:53 [M3.39.6] (planner) created (task) Live Btrfs/OCI/crun lab gate: consolidated real E2E, VM target docs, zero-mock sweep, green make check on XFS
