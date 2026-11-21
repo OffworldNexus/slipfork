@@ -21,9 +21,9 @@ use slipfork_world::uapi::{
 use slipfork_world::{
     Bind, BindSource, BootKind, BootStep, Error, ForkName, FrameLines, ImageFacts, LogKind,
     LogLine, LogReader, LogSink, NamespaceIdentity, NamespaceTable, PROTOCOL_VERSION, PodEnv,
-    PodFile, PodHost, PodSpec, Request, RuntimePods, S3Bucket, S3Credentials, StoreLayout,
-    WorldName, WorldPlan, control, decode_request, pod_log::LogMerge, postgres, recv_fd, redis,
-    send_fd, write_bundle,
+    PodFile, PodHost, PodSpec, PostgresLauncher, RedisLauncher, Request, RuntimePods, S3Bucket,
+    S3Credentials, StoreLayout, WorldName, WorldPlan, control, decode_request, pod_log::LogMerge,
+    recv_fd, send_fd, write_bundle,
 };
 
 fn lab(prefix: &str) -> PathBuf {
@@ -184,20 +184,45 @@ fn backing_resource_specs_validate_and_native_s3_has_no_pod() {
     assert_eq!(s3.port(), 8333);
     assert_eq!(s3.data_dir(), "s3");
 
-    let rootfs = Path::new("/images/pg");
-    let data = Path::new("/store/worlds/demo/pg");
+    let rootfs = lab("pg-rootfs");
+    fs::create_dir_all(rootfs.join("usr/lib/postgresql/18/bin")).expect("rootfs bin dir");
+    fs::write(rootfs.join("usr/lib/postgresql/18/bin/postgres"), b"ELF").expect("seed postgres");
+    fs::create_dir_all(rootfs.join("usr/local/bin")).expect("rootfs bin dir");
+    fs::write(rootfs.join("usr/local/bin/redis-server"), b"ELF").expect("seed redis-server");
+    let store = StoreLayout::at(lab("resources-store"));
+    let world = WorldName::parse("demo").expect("valid world");
     let facts = ImageFacts {
         env: vec!["PATH=/usr/local/bin:/usr/bin".to_owned()],
         entrypoint: vec!["docker-entrypoint.sh".to_owned()],
         cmd: vec!["postgres".to_owned()],
     };
-    let pg = postgres("pg", rootfs, data, &facts);
-    assert_eq!(pg.argv, ["docker-entrypoint.sh", "postgres"]);
-    assert_eq!(pg.binds[0].source, BindSource::Host(data.to_path_buf()));
+    let pg = PostgresLauncher::new(store.clone(), world.clone())
+        .spec("pg", &rootfs, &rootfs.join("shm"), &facts)
+        .expect("render the postgres pod");
+    assert_eq!(
+        pg.argv[0], "/usr/lib/postgresql/18/bin/postgres",
+        "the launcher execs postgres itself, never docker-entrypoint.sh"
+    );
+    assert_eq!(pg.argv[1..3], ["-D", "/var/lib/postgresql/data"]);
+    assert!(
+        !pg.argv
+            .iter()
+            .any(|arg| arg.ends_with("docker-entrypoint.sh")),
+        "the image entrypoint must be bypassed"
+    );
+    assert_eq!(
+        pg.binds[0].source,
+        BindSource::Host(store.world_clone(&world, "pg", "pg"))
+    );
     assert!(pg.validate().is_ok());
-    let cache = redis("cache", rootfs, data, &facts);
+    let cache = RedisLauncher::new(store.clone(), world.clone())
+        .spec("cache", &rootfs, &facts)
+        .expect("render the redis pod");
     assert!(cache.argv.iter().any(|arg| arg == "127.0.0.1"));
+    assert_eq!(cache.binds[0].destination, "/data");
     assert!(cache.validate().is_ok());
+    let _ = fs::remove_dir_all(&rootfs);
+    let _ = fs::remove_dir_all(store.store_root());
 }
 
 /// Store layout, tmpfs runtime roots, and namespace identity are derived, never global.

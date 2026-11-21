@@ -2619,3 +2619,19 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-21T20:53 [M3.44.2] (lead) attempt 6/7 started
 - 2026-11-21T20:53 [M3.44.2] (lead) attempt 6: host-first resolve double-prefix via ingress; served policy inferred from has_cdn instead of policy_at
 - 2026-11-21T20:55 [M3.44.2] (lead) status review -> done
+- 2026-11-21T20:55 [M3.44.3] (lead) status ready -> active
+- 2026-11-21T20:55 [M3.44.3] (lead) attempt 1/3 started
+- 2026-11-21T20:55 [M3.44.3] (lead) base 0de7380506799cb64bb1db6ec54ef4af35fcc879
+- 2026-11-21T21:02 [M3.44.3] (lead) edited fields
+- 2026-11-21T21:02 [M3.44.3] (lead) status active -> review
+- 2026-11-21T21:03 [M3.44.3] (lead) edited fields
+- 2026-11-21T21:03 [M3.44.3] (lead) attempt 2/3 started
+- 2026-11-21T21:03 [M3.44.3] (lead) triad: launchers not wired into shipped path + lock/staging/remedy/readiness/test gaps
+- 2026-11-21T21:07 [M3.44.3] (lead) edited fields
+- 2026-11-21T21:07 [M3.44.3] (lead) attempt 3/4 started
+- 2026-11-21T21:07 [M3.44.3] (lead) attempt 3: finish compile + split pg.rs (536 LOC) + run gates
+- 2026-11-21T21:10 [M3.44.3] (lead) edited fields
+- 2026-11-21T21:11 [M3.44.3] (lead) attempt 4/4 started
+- 2026-11-21T21:11 [M3.44.3] (lead) attempt 4: PG socket wording, wait_tcp fail-closed, on_wait ticking, cached-path staging reap
+- 2026-11-21T21:12 [M3.44.4] (lead) edited fields
+- 2026-11-21T21:14 [M3.44.3] (lead) status review -> done

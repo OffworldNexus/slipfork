@@ -11,8 +11,8 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use slipfork_world::{
-    BtrfsEngine, Dirtiness, Error, ForkName, StoreLayout, WorldEngine, WorldName, is_btrfs_path,
-    is_subvolume_path,
+    BtrfsEngine, Dirtiness, Error, ForkName, PostgresLauncher, PostgresTemplate, StoreLayout,
+    WorldEngine, WorldName, is_btrfs_path, is_subvolume_path,
 };
 
 /// Two kernel snapshots plus path bookkeeping must stay well under this budget.
@@ -341,6 +341,74 @@ fn btrfs_lifecycle() {
         "fork cleanup must not leak the project snapshot"
     );
 
+    // 7b. Golden postgres-18 template and its flat-sibling PGDATA clone, on real Btrfs. The real
+    // `initdb` runs in the protected pod suite (`critical_pod_runtime`); here the seal, the
+    // `< 1ms` snapshot, the flat sibling layout, and the stale-lock strip are the subject.
+    let store = StoreLayout::at(run.join(".slipfork-store"));
+    let template = PostgresTemplate::new(store.clone());
+    fs::create_dir_all(template.root()).expect("create templates/");
+    engine
+        .create_subvolume(&template.path())
+        .expect("create the golden cluster subvolume");
+    fs::create_dir_all(template.path().join("base/1")).expect("seed the cluster tree");
+    fs::write(template.path().join("PG_VERSION"), "18\n").expect("seed PG_VERSION");
+    fs::write(template.path().join("postmaster.pid"), "4242\n").expect("seed a stale lock");
+    engine
+        .seal(&template.path())
+        .expect("seal the golden template");
+    assert!(engine.is_sealed(&template.path()).expect("probe the seal"));
+    let denied = fs::write(template.path().join("intruder"), b"x")
+        .expect_err("a sealed template must refuse writes");
+    assert_eq!(denied.raw_os_error(), Some(libc::EROFS), "{denied:?}");
+
+    let launcher = PostgresLauncher::new(store.clone(), world.clone());
+    let warm = launcher
+        .clone(&engine, &template.path(), "warm")
+        .expect("warm the snapshot path");
+    engine
+        .destroy(&warm.path, Dirtiness::Clean, true)
+        .expect("destroy the warm clone");
+    let pgdata = launcher
+        .clone(&engine, &template.path(), "boot")
+        .expect("clone PGDATA for the world");
+    let worlds_root = run.join(".slipfork-store/worlds");
+    assert_eq!(
+        pgdata.path,
+        worlds_root.join("demo.pg.boot"),
+        "PGDATA must be a flat sibling of the world, never nested inside it"
+    );
+    assert_eq!(
+        pgdata.path.parent(),
+        Some(worlds_root.as_path()),
+        "the clone must never land inside the world subvolume"
+    );
+    assert!(
+        pgdata.elapsed < Duration::from_millis(1),
+        "PGDATA clone took {:?}, budget 1ms",
+        pgdata.elapsed
+    );
+    assert!(
+        pgdata.path.join("PG_VERSION").is_file(),
+        "the clone must carry the sealed cluster payload"
+    );
+    assert!(
+        !pgdata.path.join("postmaster.pid").exists(),
+        "a clone must never inherit postmaster.pid from its parent"
+    );
+    fs::write(pgdata.path.join("postmaster.pid"), "4242\n").expect("plant a stale lock");
+    let reused = launcher
+        .clone(&engine, &template.path(), "boot")
+        .expect("reuse the existing clone");
+    assert_eq!(
+        reused.elapsed,
+        Duration::ZERO,
+        "a reboot must not pay a second snapshot"
+    );
+    assert!(
+        !pgdata.path.join("postmaster.pid").exists(),
+        "a reused PGDATA must strip the stale lock too"
+    );
+
     // 8. Dropping a world sweeps `<fork>--<world>` snapshots and the data subvolume.
     let keeping = ForkName::parse("feat-keep").expect("valid fork name");
     let kept = engine
@@ -351,6 +419,10 @@ fn btrfs_lifecycle() {
         !run.join(".slipfork-store/worlds/feat-keep--demo").exists(),
         "world drop must sweep `<fork>--<world>` snapshots"
     );
+    assert!(
+        !pgdata.path.exists(),
+        "world drop must sweep the flat `<world>.pg.<pod>` PGDATA clones"
+    );
     engine
         .destroy(&kept.project, Dirtiness::Clean, false)
         .expect("destroy the leftover project snapshot");
@@ -359,6 +431,11 @@ fn btrfs_lifecycle() {
     engine
         .destroy(&project, Dirtiness::Clean, false)
         .expect("destroy the project subvolume");
+    // The store-global golden template survives every world drop by design; this scratch store
+    // owns it, so the leftover proof must reap it explicitly.
+    engine
+        .destroy(&template.path(), Dirtiness::Clean, true)
+        .expect("destroy the sealed golden template");
     let leftovers = subvolumes_under(&run);
     assert!(leftovers.is_empty(), "leaked subvolumes: {leftovers:?}");
     fs::remove_dir_all(&run).expect("remove scratch run");

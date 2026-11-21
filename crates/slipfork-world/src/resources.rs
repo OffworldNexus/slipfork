@@ -1,12 +1,14 @@
 //! Real backing-resource pods (`postgres:18`, `redis:7`) plus the native S3 registry.
 
+mod cache;
+mod pg;
 mod s3;
 
 use std::path::Path;
 
+pub use cache::RedisLauncher;
+pub use pg::{PostgresClone, PostgresLauncher, PostgresTemplate, TemplateState};
 pub use s3::{S3Bucket, S3Credentials, S3Server};
-
-use crate::pod::{Bind, BindSource, PodEnv, PodSpec};
 
 /// A backing service backed by `worlds/<world>/<data_dir>`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -62,70 +64,13 @@ pub struct ImageFacts {
     pub cmd: Vec<String>,
 }
 
-/// Builds the resource argv: the image entrypoint/cmd unless the spec overrides it.
-fn compose(facts: &ImageFacts, args: &[&str], fallback: &[&str]) -> Vec<String> {
-    if facts.entrypoint.is_empty() {
-        let chosen = if args.is_empty() { fallback } else { args };
-        return chosen.iter().map(|arg| (*arg).to_owned()).collect();
-    }
-    let mut argv = facts.entrypoint.clone();
-    if args.is_empty() {
-        argv.extend(facts.cmd.iter().cloned());
-        if argv.len() == facts.entrypoint.len() {
-            argv.extend(fallback.iter().map(|arg| (*arg).to_owned()));
-        }
-    } else {
-        argv.extend(args.iter().map(|arg| (*arg).to_owned()));
-    }
-    argv
-}
-
-/// `postgres:18` pod: trust auth locally, data on `/var/lib/postgresql/data`.
-#[must_use]
-pub fn postgres(id: &str, rootfs: &Path, data: &Path, facts: &ImageFacts) -> PodSpec {
-    PodSpec {
-        id: id.to_owned(),
-        rootfs: rootfs.to_path_buf(),
-        workdir: "/".to_owned(),
-        argv: compose(facts, &[], &["docker-entrypoint.sh", "postgres"]),
-        inherited_env: facts.env.clone(),
-        env: vec![
-            PodEnv::new("PGDATA", "/var/lib/postgresql/data"),
-            PodEnv::new("POSTGRES_HOST_AUTH_METHOD", "trust"),
-        ],
-        binds: vec![Bind {
-            source: BindSource::Host(data.to_path_buf()),
-            destination: "/var/lib/postgresql/data".to_owned(),
-            read_only: false,
-        }],
-        files: Vec::new(),
-    }
-}
-
-/// `redis:7` pod: append-only persistence on `/data`, loopback only.
-#[must_use]
-pub fn redis(id: &str, rootfs: &Path, data: &Path, facts: &ImageFacts) -> PodSpec {
-    let flags = [
-        "redis-server",
-        "--bind",
-        "127.0.0.1",
-        "--dir",
-        "/data",
-        "--appendonly",
-        "yes",
-    ];
-    PodSpec {
-        id: id.to_owned(),
-        rootfs: rootfs.to_path_buf(),
-        workdir: "/".to_owned(),
-        argv: compose(facts, &flags, &flags),
-        inherited_env: facts.env.clone(),
-        env: Vec::new(),
-        binds: vec![Bind {
-            source: BindSource::Host(data.to_path_buf()),
-            destination: "/data".to_owned(),
-            read_only: false,
-        }],
-        files: Vec::new(),
-    }
+/// The first rootfs-relative binary among `candidates`, as an in-container absolute path.
+///
+/// The launchers exec one binary each, so they never depend on the image's `PATH` and a missing
+/// `initdb`/`redis-server` fails closed before a pod bundle is drawn.
+pub(crate) fn binary_in(rootfs: &Path, candidates: &[&'static str]) -> Option<String> {
+    candidates
+        .iter()
+        .find(|relative| rootfs.join(relative).is_file())
+        .map(|relative| format!("/{relative}"))
 }

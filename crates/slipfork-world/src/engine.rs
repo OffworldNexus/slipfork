@@ -1,6 +1,8 @@
-use std::ffi::{OsStr, OsString};
+mod convert;
+pub(crate) mod readiness;
+mod teardown;
+
 use std::fs::{self, File};
-use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
 
 use crate::btrfs::{self, SubvolumeFlags};
@@ -112,76 +114,6 @@ impl BtrfsEngine {
         btrfs::destroy(&parent, path, &name)
     }
 
-    fn destroy_if_present(path: &Path) -> Result<()> {
-        if path.exists() {
-            Self::destroy_subvolume(path)
-        } else {
-            Ok(())
-        }
-    }
-
-    /// Destroys a managed `worlds/<id>` subvolume after clearing any nested pod clones inside it.
-    fn destroy_world_if_present(path: &Path) -> Result<()> {
-        if !path.exists() {
-            return Ok(());
-        }
-        let mut children = Vec::new();
-        let mut stack = vec![path.to_path_buf()];
-        while let Some(dir) = stack.pop() {
-            let Ok(entries) = fs::read_dir(&dir) else {
-                continue;
-            };
-            for entry in entries.flatten() {
-                let Ok(file_type) = entry.file_type() else {
-                    continue;
-                };
-                if !file_type.is_dir() || file_type.is_symlink() {
-                    continue;
-                }
-                let child = entry.path();
-                if btrfs::is_subvolume_path(&child)? {
-                    children.push(child.clone());
-                }
-                stack.push(child);
-            }
-        }
-        children.sort_by_key(|child| std::cmp::Reverse(child.components().count()));
-        for child in children {
-            Self::destroy_subvolume(&child)?;
-        }
-        Self::destroy_subvolume(path)
-    }
-
-    /// In-place conversion: copy the checkout into a sibling subvolume, then rename it in.
-    ///
-    /// Btrfs answers `EXDEV` to `rename(2)` across a subvolume root for every inode, not only
-    /// directories, so the payload is reproduced instead: directories with their mode, regular
-    /// files through `copy_file_range` (`fs::copy` is CoW/remap-backed on Btrfs), and symlinks as
-    /// links. The original is untouched until the whole copy has landed.
-    fn convert_in_place(project: &Path) -> Result<()> {
-        use std::os::unix::fs::MetadataExt;
-
-        let (parent, name) = layout::split_dir(project)?;
-        let parent_dir = Self::open_dir(&parent)?;
-        let temp_name = free_sibling_name(&parent, &name)?;
-        let temp_path = parent.join(&temp_name);
-        btrfs::create_subvolume(&parent_dir, &temp_path, &temp_name)?;
-        let root_device = fs::metadata(project)
-            .map_err(|source| Error::io("inspect", project, source))?
-            .dev();
-        if let Err(failure) = copy_tree(project, &temp_path, root_device) {
-            let _ = btrfs::destroy(&parent_dir, &temp_path, &temp_name);
-            return Err(failure);
-        }
-        if let Err(failure) = fs::remove_dir_all(project) {
-            return Err(Error::io("remove", project, failure));
-        }
-        fs::rename(&temp_path, project).map_err(|_| Error::LeftoverSubvolume {
-            path: temp_path.clone(),
-            target: project.to_path_buf(),
-        })
-    }
-
     /// Compares Btrfs `fsid` UUIDs rather than `st_dev` (which differs across Btrfs subvolumes).
     fn require_same_filesystem(&self, project: &Path) -> Result<()> {
         let anchor = self.store_anchor();
@@ -232,7 +164,7 @@ impl WorldEngine for BtrfsEngine {
             return Ok(());
         }
         self.require_same_filesystem(project)?;
-        Self::convert_in_place(project)
+        convert::convert_in_place(project)
     }
 
     fn create_world(&self, world: &WorldName) -> Result<PathBuf> {
@@ -284,11 +216,11 @@ impl WorldEngine for BtrfsEngine {
                 world: world_snapshot,
             }),
             (Err(err), Ok(())) => {
-                let _ = Self::destroy_if_present(&world_snapshot);
+                let _ = teardown::destroy_if_present(&world_snapshot);
                 Err(err)
             }
             (Ok(()), Err(err)) => {
-                let _ = Self::destroy_if_present(&project_snapshot);
+                let _ = teardown::destroy_if_present(&project_snapshot);
                 Err(err)
             }
             (Err(err), Err(_)) => Err(err),
@@ -330,8 +262,8 @@ impl WorldEngine for BtrfsEngine {
                 target: format!("fork {fork}"),
             });
         }
-        Self::destroy_if_present(&layout::project_fork_path(project, fork))?;
-        Self::destroy_world_if_present(&self.layout.fork_world(world, fork))
+        teardown::destroy_if_present(&layout::project_fork_path(project, fork))?;
+        teardown::destroy_world_if_present(&self.layout.fork_world(world, fork))
     }
 
     fn drop_world(&self, world: &WorldName) -> Result<()> {
@@ -341,76 +273,19 @@ impl WorldEngine for BtrfsEngine {
                 fs::read_dir(&worlds).map_err(|source| Error::io("read", &worlds, source))?;
             for entry in entries {
                 let entry = entry.map_err(|source| Error::io("read", &worlds, source))?;
-                // `StoreLayout` owns the `<fork>--<world>` format; comparing the parsed pair exactly
-                // keeps `drop_world("a--b")` from sweeping an unrelated `x--a--b` snapshot.
-                let owned = StoreLayout::parse_fork_world(&entry.file_name())
-                    .is_some_and(|(_, parsed)| &parsed == world);
+                // `StoreLayout` owns the `<fork>--<world>` and `<world>.<kind>.<pod>` formats;
+                // comparing the parsed pair exactly keeps `drop_world("a--b")` from sweeping an
+                // unrelated `x--a--b` snapshot or clone.
+                let name = entry.file_name();
+                let owned = StoreLayout::parse_fork_world(&name)
+                    .is_some_and(|(_, parsed)| &parsed == world)
+                    || StoreLayout::parse_world_clone(&name)
+                        .is_some_and(|(parsed, _, _)| &parsed == world);
                 if owned {
-                    Self::destroy_world_if_present(&entry.path())?;
+                    teardown::destroy_world_if_present(&entry.path())?;
                 }
             }
         }
-        Self::destroy_world_if_present(&self.layout.world(world))
+        teardown::destroy_world_if_present(&self.layout.world(world))
     }
-}
-
-/// Finds an unused `.slipfork-adopt*` sibling name next to `name`.
-fn free_sibling_name(parent: &Path, name: &OsStr) -> Result<OsString> {
-    let stem = name.to_string_lossy();
-    for attempt in 0..64 {
-        let candidate = if attempt == 0 {
-            format!("{stem}.slipfork-adopt")
-        } else {
-            format!("{stem}.slipfork-adopt.{attempt}")
-        };
-        let candidate = OsString::from(candidate);
-        if !parent.join(&candidate).exists() {
-            return Ok(candidate);
-        }
-    }
-    Err(Error::AdoptionCollision {
-        path: parent.join(name),
-    })
-}
-
-/// Reproduces `from`'s tree inside `to`, refusing to cross a nested mount point.
-///
-/// Directories are recreated with their mode, regular files are copied with `fs::copy` (Btrfs
-/// serves that from `copy_file_range`, so payloads stay CoW/remap-backed rather than being
-/// rewritten by hand), and symlinks are recreated from `read_link` so they are never followed.
-/// FIFOs, sockets, and device nodes have no meaning in a checkout and fail closed.
-fn copy_tree(from: &Path, to: &Path, root_device: u64) -> Result<()> {
-    use std::os::unix::fs::MetadataExt;
-
-    for entry in fs::read_dir(from).map_err(|source| Error::io("read", from, source))? {
-        let entry = entry.map_err(|source| Error::io("read", from, source))?;
-        let name = entry.file_name();
-        let source_path = from.join(&name);
-        let target_path = to.join(&name);
-        let metadata = fs::symlink_metadata(&source_path)
-            .map_err(|source| Error::io("inspect", &source_path, source))?;
-        if metadata.is_dir() {
-            if metadata.dev() != root_device {
-                return Err(Error::NestedMount { path: source_path });
-            }
-            fs::create_dir(&target_path)
-                .map_err(|source| Error::io("create", &target_path, source))?;
-            fs::set_permissions(&target_path, metadata.permissions())
-                .map_err(|source| Error::io("chmod", &target_path, source))?;
-            copy_tree(&source_path, &target_path, root_device)?;
-        } else if metadata.is_file() {
-            fs::copy(&source_path, &target_path)
-                .map_err(|source| Error::io("copy", &source_path, source))?;
-            fs::set_permissions(&target_path, metadata.permissions())
-                .map_err(|source| Error::io("chmod", &target_path, source))?;
-        } else if metadata.file_type().is_symlink() {
-            let target = fs::read_link(&source_path)
-                .map_err(|source| Error::io("read", &source_path, source))?;
-            symlink(&target, &target_path)
-                .map_err(|source| Error::io("symlink", &target_path, source))?;
-        } else {
-            return Err(Error::UnsupportedEntry { path: source_path });
-        }
-    }
-    Ok(())
 }

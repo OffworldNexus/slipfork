@@ -10,19 +10,23 @@ paths:
   - "crates/slipfork-world/src/boot/**"
   - "crates/slipfork-world/src/supervisor/**"
   - "crates/slipfork-world/src/bin/world_init/**"
+  - "crates/slipfork-world/src/engine.rs"
+  - "crates/slipfork-world/src/engine/**"
+  - "crates/slipfork-world/src/layout.rs"
+  - "crates/slipfork-world/tests/**"
   - crates/slipfork/src/world/up.rs
   - "crates/slipfork/src/world/up/**"
   - crates/slipfork/src/world/runtime.rs
+  - "crates/slipfork/src/world/runtime/**"
   - crates/slipfork/src/world/supervise.rs
   - "crates/slipfork/src/daemon/lifecycle/**"
   - crates/slipfork/tests/critical_fork_live.rs
   - crates/slipfork/tests/critical_world_journey.rs
-  - "crates/slipfork-world/tests/**"
 attempts: 0
 max_attempts: 3
 escalation: none
 created: "2026-11-21T20:17"
-updated: "2026-11-21T20:17"
+updated: "2026-11-21T21:12"
 ---
 
 # Goal

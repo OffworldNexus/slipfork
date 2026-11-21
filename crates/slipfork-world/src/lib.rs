@@ -73,6 +73,9 @@ pub use pod::{Bind, BindSource, PodBundle, PodEnv, PodFile, PodHost, PodSpec, wr
 pub use pod_log::{CHUNK, DIVIDER_CLOSE, DIVIDER_OPEN, LogKind, LogLine, LogReader, LogSink};
 pub use port::{Dirtiness, ForkPaths, WorldEngine};
 pub use reap::kill_group;
-pub use resources::{ImageFacts, ResourceKind, S3Bucket, S3Credentials, S3Server, postgres, redis};
+pub use resources::{
+    ImageFacts, PostgresClone, PostgresLauncher, PostgresTemplate, RedisLauncher, ResourceKind,
+    S3Bucket, S3Credentials, S3Server, TemplateState,
+};
 pub use runtime_dir::RuntimePods;
 pub use supervisor::{PodStatus, WorldHost, WorldSupervisor, pod_statuses};

@@ -12,6 +12,8 @@ pub const IMAGES_DIR: &str = "images";
 pub const WORLDS_DIR: &str = "worlds";
 /// Project-relative directory holding project snapshots.
 pub const FORKS_DIR: &str = ".forks";
+/// Resource data dirs whose per-world clones live as flat siblings of the world subvolume.
+const WORLD_CLONE_KINDS: [&str; 3] = ["pg", "redis", "s3"];
 
 /// Absolute Btrfs store paths owned by Slipfork (`<mount>/.slipfork-store/{images,worlds}`).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -86,6 +88,34 @@ impl StoreLayout {
     #[must_use]
     pub fn fork_world_name(world: &WorldName, fork: &ForkName) -> WorldName {
         WorldName(format!("{}--{}", fork.as_str(), world.as_str()))
+    }
+
+    /// `<mount>/.slipfork-store/worlds/<world>.<kind>.<pod>`: a flat sibling of the world so a
+    /// world never contains a nested subvolume (`fork` snapshots would turn it into a stub).
+    #[must_use]
+    pub fn world_clone(&self, world: &WorldName, kind: &str, pod: &str) -> PathBuf {
+        self.worlds_root()
+            .join(format!("{}.{kind}.{pod}", world.as_str()))
+    }
+
+    /// Splits a `worlds/` entry name back into its `<world>.<kind>.<pod>` triple.
+    ///
+    /// Splitting on the **last** two `.` keeps world names that themselves contain `.` intact;
+    /// only the three resource kinds owned by Slipfork are accepted, so unrelated entries survive.
+    #[must_use]
+    pub fn parse_world_clone(entry: &std::ffi::OsStr) -> Option<(WorldName, &'static str, String)> {
+        let name = entry.to_str()?;
+        let (prefix, pod) = name.rsplit_once('.')?;
+        let (world, kind) = prefix.rsplit_once('.')?;
+        let kind = WORLD_CLONE_KINDS
+            .iter()
+            .copied()
+            .find(|known| *known == kind)?;
+        Some((
+            WorldName::parse(world).ok()?,
+            kind,
+            validate_name(NameKind::Pod, pod).ok()?,
+        ))
     }
 
     /// Splits a `worlds/` entry name back into its `<fork>--<world>` pair.

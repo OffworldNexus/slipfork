@@ -2,7 +2,7 @@
 id: M3.44.3
 title: "Golden postgres-18 template + <1ms PGDATA CoW clone, Redis AOF clone, 2ms readiness polls"
 kind: task
-status: ready
+status: done
 owner: implementer
 priority: 3
 depends_on: [M3.44.2]
@@ -10,14 +10,20 @@ paths:
   - "crates/slipfork-world/src/engine.rs"
   - "crates/slipfork-world/src/engine/**"
   - "crates/slipfork-world/src/resources.rs"
+  - "crates/slipfork-world/src/resources/**"
   - "crates/slipfork-world/src/boot/**"
+  - "crates/slipfork-world/src/layout.rs"
+  - "crates/slipfork-world/src/lib.rs"
   - "crates/slipfork-world/tests/critical_pod_runtime.rs"
   - "crates/slipfork-world/tests/critical_btrfs_live.rs"
-attempts: 0
-max_attempts: 3
+  - "crates/slipfork-world/tests/pod_control_lab.rs"
+  - "crates/slipfork/src/world/runtime/**"
+  - crates/slipfork/src/world/runtime.rs
+attempts: 4
+max_attempts: 4
 escalation: none
 created: "2026-11-21T20:17"
-updated: "2026-11-21T20:17"
+updated: "2026-11-21T21:14"
 ---
 
 # Goal

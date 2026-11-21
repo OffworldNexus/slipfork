@@ -73,6 +73,15 @@ pub enum Error {
     },
     /// An operation missed its deadline.
     Timeout { action: &'static str },
+    /// A resource pod never answered on its endpoint (loopback port or unix socket).
+    NotReady {
+        tool: &'static str,
+        endpoint: String,
+    },
+    /// The golden template exists but is neither sealed nor version-stamped.
+    StaleTemplate { path: PathBuf },
+    /// Another `slipfork up` kept the golden-template lock past the wait budget.
+    TemplateWait { path: PathBuf },
     /// Teardown left processes alive in the world's process group.
     LeftoverProcesses { count: usize, pgid: i32 },
     /// The world boot DAG contains a dependency cycle.
@@ -213,6 +222,21 @@ impl fmt::Display for Error {
             Self::Timeout { action } => write!(
                 f,
                 "timed out trying to {action}\nnext: inspect `dmesg` for unprivileged user-namespace denials"
+            ),
+            Self::NotReady { tool, endpoint } => write!(
+                f,
+                "`{tool}` did not answer on `{endpoint}`\nnext: run `slipfork logs -a`"
+            ),
+            Self::StaleTemplate { path } => write!(
+                f,
+                "the golden template `{}` is neither sealed nor version-stamped\nnext: delete it with `btrfs subvolume delete {}` and re-run `slipfork up`",
+                path.display(),
+                path.display()
+            ),
+            Self::TemplateWait { path } => write!(
+                f,
+                "another `slipfork up` is still building the golden template `{}`\nnext: wait for it to finish, then re-run `slipfork up`",
+                path.display()
             ),
             Self::LeftoverProcesses { count, pgid } => write!(
                 f,

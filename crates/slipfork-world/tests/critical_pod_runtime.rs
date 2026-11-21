@@ -18,8 +18,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use slipfork_image::{Architecture, Credentials, ImageLayout, ImageReference, OciPuller};
 use slipfork_world::{
     Bind, BindSource, BtrfsEngine, Dirtiness, ImageFacts, OutputKind, PodEnv, PodHost, PodSpec,
-    ResourceKind, StoreLayout, Stream, WorldEngine, WorldHost, WorldName, WorldSupervisor,
-    is_btrfs_path, is_subvolume_path, postgres, redis, write_bundle,
+    PostgresLauncher, PostgresTemplate, RedisLauncher, ResourceKind, StoreLayout, Stream,
+    TemplateState, WorldEngine, WorldHost, WorldName, WorldSupervisor, is_btrfs_path,
+    is_subvolume_path, write_bundle,
 };
 
 const SECRET: &str = "slipfork-probe-secret-9d3f1c";
@@ -86,9 +87,8 @@ else:
 out['svc'] = connect(__SVC_PORT__, 5.0)
 if role == 'a':
     deadline = time.time() + 90
-    while time.time() < deadline and not (connect(5432) and connect(6379)):
+    while time.time() < deadline and not connect(6379):
         time.sleep(0.5)
-    out['pg'] = connect(5432)
     out['redis'] = connect(6379)
 
 expected_path = pathlib.Path('/project/probe/expected_secret')
@@ -293,8 +293,12 @@ fn require_images(engine: &BtrfsEngine, run: &Path) -> Images {
     };
     let sealed = [
         pull("python:3.13-slim"),
-        pull(ResourceKind::Postgres.image()),
-        pull(ResourceKind::Redis.image()),
+        pull(
+            ResourceKind::Postgres
+                .image()
+                .expect("postgres:18 has an image"),
+        ),
+        pull(ResourceKind::Redis.image().expect("redis:7 has an image")),
     ];
     let facts = |image: &slipfork_image::PulledImage| image.facts.clone();
     let [toolbox_sealed, pg_sealed, redis_sealed] = sealed;
@@ -347,11 +351,9 @@ struct ProbeWorld {
 fn prepare_world(engine: &BtrfsEngine, run: &Path, name: &str) -> ProbeWorld {
     let world = WorldName::parse(name).expect("valid world name");
     let data = engine.create_world(&world).expect("create world subvolume");
-    for child in ["pg", "redis"] {
-        engine
-            .create_subvolume(&data.join(child))
-            .expect("create resource data subvolume");
-    }
+    // `redis/` is a plain directory: a nested subvolume would snapshot as an empty `ino == 2`
+    // stub, and the AOF must travel with the world on `fork`. `PGDATA` lives flat beside the world.
+    fs::create_dir_all(data.join("redis")).expect("create the redis parent directory");
     let project = run.join(format!("project-{name}"));
     engine
         .create_subvolume(&project)
@@ -362,6 +364,17 @@ fn prepare_world(engine: &BtrfsEngine, run: &Path, name: &str) -> ProbeWorld {
         project,
         data,
     }
+}
+
+/// A pod-local `/dev/shm` on a real tmpfs, so `dynamic_shared_memory_type=posix` has a backend.
+fn shm_dir(tag: &str) -> PathBuf {
+    assert!(
+        is_tmpfs(Path::new("/dev/shm")),
+        "fail closed: /dev/shm is not a tmpfs; postgres needs one for `dynamic_shared_memory_type=posix`"
+    );
+    let dir = PathBuf::from("/dev/shm").join(format!("slipfork-test-{}-{tag}", std::process::id()));
+    fs::create_dir_all(&dir).expect("create the pod-local /dev/shm");
+    dir
 }
 
 fn project_bind(project: &Path) -> Bind {
@@ -742,16 +755,159 @@ fn world_pod_lifecycle() {
         "a restart must append a `restarted` divider to the same log"
     );
 
-    let pg_spec = postgres(
-        "m339pg",
-        &images.pg,
-        &world_a.data.join("pg"),
-        &images.pg_facts,
+    // 1d. Golden `postgres:18` template: the real `initdb` runs once inside world a as a
+    // run-once crun pod, then the cluster is sealed `BTRFS_SUBVOL_RDONLY` and version-stamped.
+    let layout = engine.layout().clone();
+    let template = PostgresTemplate::new(layout.clone());
+    let mut initdb_output: Vec<String> = Vec::new();
+    let created = template
+        .ensure(
+            &engine,
+            &images.pg,
+            &mut |spec| {
+                let code = supervisor_a
+                    .run_once(spec, &mut |_, line| initdb_output.push(line.to_owned()))?;
+                if code == 0 {
+                    Ok(())
+                } else {
+                    Err(slipfork_world::Error::PodLaunch {
+                        message: format!("initdb exited {code}: {initdb_output:?}"),
+                    })
+                }
+            },
+            &mut |_| {},
+        )
+        .unwrap_or_else(|error| {
+            fail_closed(&format!(
+                "could not build the golden postgres-18 template: {error}\nnext: boot from a postgres:18 rootfs (it must contain `initdb`)"
+            ))
+        });
+    assert_eq!(
+        created,
+        TemplateState::Created,
+        "the first boot must run the one `initdb`"
+    );
+    assert!(
+        engine
+            .is_sealed(&template.path())
+            .expect("probe the golden template"),
+        "the golden template must be sealed with BTRFS_SUBVOL_RDONLY"
+    );
+    let denied = fs::write(template.path().join("intruder"), b"x")
+        .expect_err("a sealed template must refuse writes");
+    assert_eq!(denied.raw_os_error(), Some(libc::EROFS), "{denied:?}");
+    let cached = template
+        .ensure(
+            &engine,
+            &images.pg,
+            &mut |_| panic!("initdb must never run twice"),
+            &mut |_| {},
+        )
+        .expect("a sealed, version-stamped template is cached");
+    assert_eq!(cached, TemplateState::Cached);
+
+    // 1e. `< 1ms` per-world PGDATA clone: a flat sibling beside the world, stale locks stripped.
+    let pg_a = PostgresLauncher::new(layout.clone(), world_a.name.clone());
+    let pg_b = PostgresLauncher::new(layout.clone(), world_b.name.clone());
+    let warm = pg_a
+        .clone(&engine, &template.path(), "m339pgwarm")
+        .expect("warm the snapshot path");
+    engine
+        .destroy(&warm.path, Dirtiness::Clean, true)
+        .expect("destroy the warm clone");
+    let pgdata = pg_a
+        .clone(&engine, &template.path(), "m339pg")
+        .expect("clone PGDATA for world a");
+    assert_eq!(
+        pgdata.path,
+        run.join(".slipfork-store/worlds/probe-a.pg.m339pg"),
+        "PGDATA must be a flat sibling of the world, never nested inside it"
+    );
+    assert!(
+        pgdata.elapsed < Duration::from_millis(1),
+        "PGDATA clone took {:?}, budget 1ms",
+        pgdata.elapsed
+    );
+    assert!(
+        pgdata.path.join("PG_VERSION").is_file(),
+        "the clone must carry the curated initdb payload"
+    );
+    fs::write(pgdata.path.join("postmaster.pid"), b"4242\n").expect("plant a stale lock");
+    let reused = pg_a
+        .clone(&engine, &template.path(), "m339pg")
+        .expect("reuse the clone");
+    assert_eq!(
+        reused.elapsed,
+        Duration::ZERO,
+        "a reboot must not pay a second snapshot"
+    );
+    assert!(
+        !pgdata.path.join("postmaster.pid").exists(),
+        "a reused PGDATA must never inherit postmaster.pid"
+    );
+    let pgdata_b = pg_b
+        .clone(&engine, &template.path(), "m339pg")
+        .expect("clone PGDATA for world b");
+    assert_ne!(
+        pgdata.path, pgdata_b.path,
+        "every world owns its own PGDATA clone"
+    );
+
+    // 1f. The launcher runs `postgres` directly with the exact dev flag set, no entrypoint script.
+    let shm_a = shm_dir("a");
+    let shm_b = shm_dir("b");
+    let pg_spec = pg_a
+        .spec("m339pg", &images.pg, &shm_a, &images.pg_facts)
+        .expect("render the postgres pod");
+    assert!(
+        pg_spec.argv[0].ends_with("/postgres"),
+        "the launcher must exec postgres itself, not docker-entrypoint.sh: {:?}",
+        pg_spec.argv[0]
     );
     assert_eq!(
-        pg_spec.argv,
-        ["docker-entrypoint.sh", "postgres"],
-        "postgres:18's own entrypoint/cmd must drive the pod"
+        pg_spec.argv[1..],
+        [
+            "-D",
+            "/var/lib/postgresql/data",
+            "-c",
+            "fsync=off",
+            "-c",
+            "synchronous_commit=off",
+            "-c",
+            "full_page_writes=off",
+            "-c",
+            "wal_level=minimal",
+            "-c",
+            "max_wal_senders=0",
+            "-c",
+            "autovacuum=off",
+            "-c",
+            "shared_buffers=32MB",
+            "-c",
+            "dynamic_shared_memory_type=posix",
+            "-c",
+            "unix_socket_directories=/var/lib/postgresql/data/.sock",
+            "-c",
+            "listen_addresses=",
+        ],
+        "postgres must run the exact dev flag set"
+    );
+    assert_eq!(
+        pg_spec.binds[0].source,
+        BindSource::Host(pgdata.path.clone()),
+        "PGDATA binds the flat clone"
+    );
+    assert_eq!(pg_spec.binds[0].destination, "/var/lib/postgresql/data");
+    assert_eq!(
+        pg_spec.binds[1].destination, "/dev/shm",
+        "postgres needs a pod-local /dev/shm for `dynamic_shared_memory_type=posix`"
+    );
+    assert!(
+        pg_spec
+            .env
+            .iter()
+            .any(|env| env.key == "POSTGRES_HOST_AUTH_METHOD" && env.value == "trust"),
+        "local auth must stay trust"
     );
     let pg_bundle_dir = run.join("pg-bundle");
     let pg_bundle = write_bundle(
@@ -790,14 +946,165 @@ fn world_pod_lifecycle() {
     );
     let _ = fs::remove_dir_all(&pg_bundle_dir);
     supervisor_a.launch(&pg_spec).expect("launch postgres");
+    let pg_isready = Path::new(&pg_spec.argv[0])
+        .parent()
+        .expect("postgres binary has a directory")
+        .join("pg_isready")
+        .to_string_lossy()
+        .into_owned();
+    let waited = pg_a
+        .await_ready("m339pg", &mut || {
+            // The real client binary, against the pod's unix socket: never a bare TCP accept.
+            supervisor_a
+                .exec(
+                    "m339pg",
+                    &[
+                        pg_isready.clone(),
+                        "-h".to_owned(),
+                        "/var/lib/postgresql/data/.sock".to_owned(),
+                    ],
+                    &mut |_| {},
+                )
+                .is_ok_and(|code| code == 0)
+        })
+        .expect("pg_isready must accept the pod's unix socket");
+    assert!(
+        waited <= PostgresLauncher::READINESS_BUDGET,
+        "readiness took {waited:?}"
+    );
+    assert_eq!(
+        PostgresLauncher::READINESS_INTERVAL,
+        Duration::from_millis(2),
+        "readiness must poll every 2ms, never a fixed sleep"
+    );
+
+    // 1g. Redis: AOF on `<world>/redis/<id>` (a plain directory inside the world subvolume) so
+    // live keys survive `fork`, and `--save "" --appendfsync no` so a dev world never stalls.
+    let cache_a = RedisLauncher::new(layout.clone(), world_a.name.clone());
+    let cache_b = RedisLauncher::new(layout.clone(), world_b.name.clone());
+    let aof_a = cache_a
+        .prepare("m339cache")
+        .expect("create world a's AOF directory");
+    assert_eq!(
+        aof_a,
+        world_a.data.join("redis/m339cache"),
+        "AOF files must live inside the world so a fork carries them"
+    );
+    assert!(
+        !is_subvolume_path(&aof_a).expect("probe the AOF directory"),
+        "a nested subvolume would snapshot as an empty stub"
+    );
+    let redis_spec = cache_a
+        .spec("m339cache", &images.redis, &images.redis_facts)
+        .expect("render the redis pod");
+    assert!(
+        redis_spec.argv[0].ends_with("/redis-server"),
+        "the launcher must exec redis-server itself: {:?}",
+        redis_spec.argv[0]
+    );
+    assert_eq!(
+        redis_spec.argv[1..],
+        [
+            "--bind",
+            "127.0.0.1",
+            "--dir",
+            "/data",
+            "--save",
+            "",
+            "--appendonly",
+            "yes",
+            "--appendfsync",
+            "no",
+        ],
+        "redis must never save an RDB or fsync in a dev world"
+    );
+    assert_eq!(redis_spec.binds[0].source, BindSource::Host(aof_a.clone()));
+    let redis_cli = Path::new(&redis_spec.argv[0])
+        .parent()
+        .expect("redis-server has a directory")
+        .join("redis-cli")
+        .to_string_lossy()
+        .into_owned();
     supervisor_a
-        .launch(&redis(
+        .launch(&redis_spec)
+        .expect("launch redis in world a");
+    cache_a
+        .await_ready(&mut || {
+            supervisor_a
+                .exec(
+                    "m339cache",
+                    &[redis_cli.clone(), "PING".to_owned()],
+                    &mut |_| {},
+                )
+                .is_ok_and(|code| code == 0)
+        })
+        .expect("redis-cli PING must succeed inside world a");
+    let aof_b = cache_b
+        .prepare("m339cache")
+        .expect("create world b's AOF directory");
+    assert_ne!(aof_a, aof_b, "each world stamps its own AOF directory");
+    let redis_b = cache_b
+        .spec("m339cache", &images.redis, &images.redis_facts)
+        .expect("render world b's redis pod");
+    supervisor_b
+        .launch(&redis_b)
+        .expect("launch redis in world b");
+    cache_b
+        .await_ready(&mut || {
+            supervisor_b
+                .exec(
+                    "m339cache",
+                    &[redis_cli.clone(), "PING".to_owned()],
+                    &mut |_| {},
+                )
+                .is_ok_and(|code| code == 0)
+        })
+        .expect("redis-cli PING must succeed inside world b");
+    let mut ignore = |_: slipfork_world::control::OutputEvent| {};
+    let set = supervisor_a
+        .exec(
             "m339cache",
-            &images.redis,
-            &world_a.data.join("redis"),
-            &images.redis_facts,
-        ))
-        .expect("launch redis");
+            &[
+                "redis-cli".to_owned(),
+                "SET".to_owned(),
+                "fork-key".to_owned(),
+                "world-a".to_owned(),
+            ],
+            &mut ignore,
+        )
+        .expect("write a live key through world a's redis");
+    assert_eq!(set, 0, "redis-cli SET must succeed");
+    let mut seen = Vec::new();
+    let mut capture = |event: slipfork_world::control::OutputEvent| {
+        if event.kind == OutputKind::Line {
+            seen.push(event.line);
+        }
+    };
+    let get = supervisor_b
+        .exec(
+            "m339cache",
+            &[
+                "redis-cli".to_owned(),
+                "GET".to_owned(),
+                "fork-key".to_owned(),
+            ],
+            &mut capture,
+        )
+        .expect("read through world b's redis");
+    assert_eq!(get, 0, "redis-cli GET must succeed in world b");
+    assert!(
+        !seen.iter().any(|line| line.contains("world-a")),
+        "world b must never see world a's live keys: {seen:?}"
+    );
+    let appendonly = aof_a.join("appendonlydir");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !appendonly.is_dir() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(
+        appendonly.is_dir(),
+        "redis must append its AOF under `<world>/redis/<id>`, never under /tmp"
+    );
 
     // 3. Identity + loopback + cross-world isolation + System V IPC isolation.
     supervisor_a
@@ -918,21 +1225,23 @@ fn world_pod_lifecycle() {
     }
 
     for world in [&world_a, &world_b] {
-        for child in ["pg", "redis"] {
-            engine
-                .destroy(
-                    &world.data.join(child),
-                    slipfork_world::Dirtiness::Clean,
-                    false,
-                )
-                .expect("destroy data subvolume");
-        }
         engine
             .destroy(&world.data, slipfork_world::Dirtiness::Clean, false)
             .expect("destroy world subvolume");
         engine
             .destroy(&world.project, slipfork_world::Dirtiness::Clean, false)
             .expect("destroy project subvolume");
+    }
+    for clone in [pgdata.path, pgdata_b.path] {
+        engine
+            .destroy(&clone, slipfork_world::Dirtiness::Clean, true)
+            .expect("destroy the per-world PGDATA clone");
+    }
+    engine
+        .destroy(&template.path(), slipfork_world::Dirtiness::Clean, true)
+        .expect("destroy the sealed golden template");
+    for shm in [&shm_a, &shm_b] {
+        fs::remove_dir_all(shm).expect("remove the pod-local /dev/shm");
     }
     for clone in &images.clones {
         engine

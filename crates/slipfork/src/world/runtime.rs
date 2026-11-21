@@ -1,14 +1,14 @@
 //! The injected runtime that executes one boot step: images, resources, setup, hooks, services.
 
+use std::cell::RefCell;
 use std::collections::{BTreeMap, VecDeque};
 use std::fs;
 use std::io::Write;
-use std::net::{Shutdown, SocketAddr};
+use std::net::Shutdown;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use slipfork_forkfile::SecretValue;
 use slipfork_forkfile::ast::Forkfile;
 use slipfork_image::{
     Architecture, BuildArgs, BuildRequest, Credentials, ImageLayout, ImageReference,
@@ -17,17 +17,17 @@ use slipfork_image::{
 use slipfork_ospp::{FileSecretVault, SecretVault};
 use slipfork_world::{
     BootFailure, BootKind, BootStep, BtrfsEngine, Dirtiness, ImageNode, PodEnv, PodSpec,
-    ResourceKind, S3BucketSpec, S3Credentials, S3WorldConfig, ServiceNode, StepOutcome,
-    StoreLayout, WorldEngine, WorldHost, WorldName, WorldPlan, WorldSupervisor, classify_service,
-    control,
+    ServiceNode, StepOutcome, StoreLayout, WorldEngine, WorldHost, WorldName, WorldPlan,
+    WorldSupervisor, classify_service, control,
 };
 
 use super::HostEnv;
 use super::supervise::BootSink;
 
 mod helpers;
+mod resources;
 
-use helpers::{build_resource_spec, merge_env, project_bind, shell_command, sweep_stale_pods};
+use helpers::{merge_env, project_bind, shell_command, sweep_stale_pods};
 
 /// One sealed image plus the OCI metadata every pod derived from it inherits.
 #[derive(Clone)]
@@ -57,7 +57,7 @@ pub(super) struct WorldRuntime {
     clones: Vec<PathBuf>,
     counter: usize,
     total_steps: usize,
-    log: BootSink,
+    log: RefCell<BootSink>,
 }
 
 impl WorldRuntime {
@@ -157,7 +157,7 @@ impl WorldRuntime {
             clones: Vec::new(),
             counter: 0,
             total_steps: plan.steps.len(),
-            log,
+            log: RefCell::new(log),
         })
     }
 
@@ -167,7 +167,9 @@ impl WorldRuntime {
         index: usize,
         step: &BootStep,
     ) -> Result<StepOutcome, BootFailure> {
-        self.log.focus(index + 1, self.total_steps, &step.label);
+        self.log
+            .get_mut()
+            .focus(index + 1, self.total_steps, &step.label);
         let outcome = match step.kind {
             BootKind::Image => self
                 .build_image(&step.subject)
@@ -195,7 +197,7 @@ impl WorldRuntime {
             self.note(format!("pull {reference}"));
             let pulled = self
                 .puller
-                .pull_into(&parsed, &mut self.log)
+                .pull_into(&parsed, &mut *self.log.get_mut())
                 .map_err(|error| error.to_string())?;
             let mut argv = pulled.facts.entrypoint.clone();
             argv.extend(pulled.facts.cmd.iter().cloned());
@@ -224,7 +226,7 @@ impl WorldRuntime {
             };
             let report = self
                 .builder
-                .build(&request, &mut self.log)
+                .build(&request, &mut *self.log.get_mut())
                 .map_err(|error| error.to_string())?;
             self.note(format!(
                 "dockerfile {image}: {} cached, {} built",
@@ -310,7 +312,7 @@ impl WorldRuntime {
         // Setup and hook pods run to completion with their pipes attached, so a failing
         // command's own diagnostics stream live and ride the failure message.
         let mut tail: VecDeque<String> = VecDeque::new();
-        let log = &mut self.log;
+        let log = self.log.get_mut();
         let code = self
             .supervisor
             .run_once(&spec, &mut |_stream, line| {
@@ -387,72 +389,20 @@ impl WorldRuntime {
             ));
         }
         if let Some(port) = port {
-            self.wait_tcp(pid, port, &display, Duration::from_secs(10))?;
+            self.wait_tcp(pid, port, &spec.id, &display, Duration::from_secs(10))?;
         }
         Ok("started".to_owned())
     }
 
     fn start_resource(&mut self, id: &str) -> Result<String, String> {
-        let node = self
-            .resources
-            .iter()
-            .find(|candidate| candidate.id == id)
-            .cloned()
-            .ok_or_else(|| format!("unknown resource `{id}`"))?;
-        let world_dir = self.layout.world(&self.world);
-        if node.resource == ResourceKind::S3 {
-            // Native S3: no image, no pod. The world init binds the listener inside the world
-            // netns and the daemon never sees the signing secret again.
-            let credentials = S3Credentials::local(self.world.as_str());
-            let buckets = node
-                .buckets
-                .iter()
-                .map(|bucket| S3BucketSpec {
-                    name: bucket.name().to_owned(),
-                    policy: bucket.policy(),
-                    access_key: credentials.access_key().to_owned(),
-                    secret_key: SecretValue::new(credentials.secret_key()),
-                })
-                .collect();
-            let config = S3WorldConfig {
-                listen_addr: SocketAddr::from(([127, 0, 0, 1], node.resource.port())),
-                s3_root: world_dir.join(node.resource.data_dir()),
-                buckets,
-            };
-            control::configure_s3(self.supervisor.pods_dir(), config)
-                .map_err(|error| error.to_string())?;
-            return Ok("started".to_owned());
-        }
-        let reference = node
-            .resource
-            .image()
-            .ok_or_else(|| format!("resource `{id}` has no OCI image"))?;
-        let image = if let Some(image) = self.pulled.get(reference) {
-            image.clone()
-        } else {
-            let parsed = ImageReference::parse(reference).map_err(|error| error.to_string())?;
-            self.note(format!("pull {reference}"));
-            let image = self
-                .puller
-                .pull_into(&parsed, &mut self.log)
-                .map_err(|error| error.to_string())?;
-            self.pulled.insert(reference.to_owned(), image.clone());
-            image
-        };
-        let rootfs = self.clone_rootfs(&image.rootfs, &format!("res-{id}"))?;
-        let spec = build_resource_spec(&node, &world_dir, &rootfs, &image.facts)?;
-        let pid = self
-            .supervisor
-            .launch(&spec)
-            .map_err(|error| error.to_string())?;
-        self.wait_tcp(pid, node.resource.port(), id, Duration::from_secs(30))?;
-        Ok("started".to_owned())
+        resources::start_resource(self, id)
     }
 
     fn wait_tcp(
         &mut self,
         pid: u32,
         port: u16,
+        service: &str,
         label: &str,
         timeout: Duration,
     ) -> Result<(), String> {
@@ -474,7 +424,10 @@ impl WorldRuntime {
                 ));
             }
         }
-        Ok(())
+        Err(format!(
+            "`{label}` never opened `:{port}` within {}s\nnext: run `slipfork logs {service}`",
+            timeout.as_secs()
+        ))
     }
 
     pub(super) fn cleanup(&mut self) {
@@ -486,7 +439,8 @@ impl WorldRuntime {
 
     /// Writes one already-formatted progress line and flushes it; sink errors are not fatal.
     fn note(&mut self, line: String) {
-        let _ = writeln!(self.log, "{line}");
-        let _ = self.log.flush();
+        let log = self.log.get_mut();
+        let _ = writeln!(log, "{line}");
+        let _ = log.flush();
     }
 }
