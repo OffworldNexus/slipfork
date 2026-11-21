@@ -2529,3 +2529,4 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-21T17:27 [M3.41.7] (lead) status active -> done
 - 2026-11-21T17:28 [M3.41] (lead) gate: make docs-check/packages/packages-test/check 0; guard+critical_guard+validate OK; 7 distro artifacts + 6-target lsp assets
 - 2026-11-21T17:28 [M3.41] (lead) status ready -> done
+- 2026-11-21T17:29 [M3.42] (conductor) edited fields

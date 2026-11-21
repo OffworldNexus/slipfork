@@ -6,20 +6,29 @@ status: ready
 priority: 3
 depends_on: [M3.41]
 paths:
+  - Cargo.toml
+  - Cargo.lock
   - Makefile
+  - ARCHITECTURE.md
   - TESTING_PLAN.md
+  - "specs/**"
   - "crates/**"
+  - "editors/**"
   - "packages/**"
   - "packaging/**"
   - "scripts/**"
+  - ".github/**"
+  - "support/**"
   - "tools/**"
   - "docs/**"
   - README.md
+  - CHANGELOG.md
+  - zensical.toml
 attempts: 0
 max_attempts: 3
 escalation: none
 created: "2026-11-21T00:44"
-updated: "2026-11-21T00:57"
+updated: "2026-11-21T17:29"
 ---
 
 # Goal
