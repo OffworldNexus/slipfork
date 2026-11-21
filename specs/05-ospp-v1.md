@@ -164,7 +164,7 @@ Claims are **IDs only** — never a value. A claimed entry is left untouched by 
 
 The recipient keypair is generated per subscription, sent as `encryption.public_key` (130 hex), and lives only in the `slipfork` daemon's memory. The AAD binding is what stops a ciphertext for `api:SECRET_KEY` from opening as `worker:SECRET_KEY`.
 
-The daemon is a mode of the single `slipfork` binary (`slipfork daemon`); there is no separate `slipforkd` executable.
+The per-user unit runs the same `slipfork` binary in its daemon mode; there is no separate `slipforkd` executable.
 
 ---
 

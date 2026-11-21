@@ -1,8 +1,10 @@
 //! Machine-checked ANSI purity over the one shipped verb table.
 //!
 //! Every verb in `slipfork::surface::VERBS` runs against the real binary with `NO_COLOR=1`,
-//! `TERM=dumb`, and a piped stdout; every `--json` verb must also emit one parseable object.
-//! A real PTY (`script -qec`) proves colour appears only on an interactive terminal.
+//! `TERM=dumb`, and a piped stdout, then again with `NO_COLOR` unset and `TERM=xterm-256color`
+//! still piped; a pipe must never carry an escape in either permutation. Every `--json` verb must
+//! also emit one parseable object. A real PTY (`script -qec`) proves colour appears only on an
+//! interactive terminal — and that `--json` stays one plain object even there.
 
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
@@ -13,7 +15,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use serde_json::Value;
 use slipfork::surface::VERBS;
 
-const ANSI: &str = "\u{1b}[";
+const ESCAPE: char = '\u{1b}';
 
 fn scratch() -> PathBuf {
     let nanos = SystemTime::now()
@@ -39,7 +41,18 @@ fn command(root: &Path) -> Command {
         .env("XDG_STATE_HOME", root.join("state"))
         .env("XDG_CONFIG_HOME", root.join("config"))
         .env_remove("SLIPFORK_TEST_ROOT")
+        .env_remove("DISPLAY")
+        .env_remove("WAYLAND_DISPLAY")
+        .env_remove("SSH_CONNECTION")
+        .env_remove("SSH_TTY")
         .stdin(Stdio::null());
+    command
+}
+
+/// The pipe-only permutation: a colour-capable terminal name, but stdout is still a pipe.
+fn command_pipe(root: &Path) -> Command {
+    let mut command = command(root);
+    command.env_remove("NO_COLOR").env("TERM", "xterm-256color");
     command
 }
 
@@ -57,7 +70,7 @@ fn assert_plain(output: &Output, args: &[&str]) {
     ] {
         let text = String::from_utf8_lossy(bytes);
         assert!(
-            !text.contains(ANSI),
+            !text.contains(ESCAPE),
             "{args:?} emitted ANSI on {stream}: {text:?}"
         );
     }
@@ -105,23 +118,83 @@ fn shutdown_daemon(root: &Path) {
     }
 }
 
+/// Kills any `__daemon` still carrying this lab's runtime directory, so no survivor leaks.
+fn kill_daemons(root: &Path) {
+    use std::os::unix::ffi::OsStrExt;
+    let scope = root.as_os_str().as_bytes();
+    for entry in std::fs::read_dir("/proc").into_iter().flatten().flatten() {
+        let Some(pid) = entry
+            .file_name()
+            .to_str()
+            .and_then(|name| name.parse::<u32>().ok())
+        else {
+            continue;
+        };
+        let Ok(cmdline) = std::fs::read(format!("/proc/{pid}/cmdline")) else {
+            continue;
+        };
+        if !cmdline.windows(b"__daemon".len()).any(|w| w == b"__daemon") {
+            continue;
+        }
+        let Ok(environ) = std::fs::read(format!("/proc/{pid}/environ")) else {
+            continue;
+        };
+        if environ.windows(scope.len()).any(|window| window == scope) {
+            if let Ok(pid) = i32::try_from(pid) {
+                // SAFETY: `kill(2)` never dereferences memory.
+                unsafe {
+                    libc::kill(pid, libc::SIGKILL);
+                }
+            }
+        }
+    }
+}
+
+/// One scratch root that reaps the daemon it may have started and then removes the disk tree.
+struct Lab {
+    root: PathBuf,
+}
+
+impl Lab {
+    fn new() -> Self {
+        Self { root: scratch() }
+    }
+}
+
+impl Drop for Lab {
+    fn drop(&mut self) {
+        shutdown_daemon(&self.root);
+        kill_daemons(&self.root);
+        let _ = std::fs::remove_dir_all(&self.root);
+    }
+}
+
 #[test]
 fn every_shipped_verb_is_plain_and_json_is_parseable() {
-    let root = scratch();
+    let lab = Lab::new();
+    let root = lab.root.as_path();
     for verb in VERBS {
         let help = [verb.name, "--help"];
-        assert_plain(&run(&root, &help), &help);
+        assert_plain(&run(root, &help), &help);
+        assert_plain(
+            &command_pipe(root).args(help).output().expect("pipe"),
+            &help,
+        );
 
         let mut bare = vec![verb.name];
         if verb.name == "drop" {
             bare.push("feat-auth");
         }
-        assert_plain(&run(&root, &bare), &bare);
+        assert_plain(&run(root, &bare), &bare);
+        assert_plain(
+            &command_pipe(root).args(&bare).output().expect("pipe"),
+            &bare,
+        );
 
         if verb.flags.contains(&"--json") {
             let probe = json_probe(verb.name)
                 .unwrap_or_else(|| panic!("`{}` needs a JSON probe", verb.name));
-            let output = run(&root, &probe);
+            let output = run(root, &probe);
             assert_plain(&output, &probe);
             let text = String::from_utf8(output.stdout).expect("stdout is UTF-8");
             let value: Value = serde_json::from_str(text.trim()).unwrap_or_else(|error| {
@@ -147,20 +220,20 @@ fn every_shipped_verb_is_plain_and_json_is_parseable() {
             }
         }
     }
-    shutdown_daemon(&root);
-    let _ = std::fs::remove_dir_all(&root);
 }
 
-fn pty(root: &Path, args: &[&str], envs: &[(&str, &str)]) -> Option<String> {
-    if !Command::new("script")
+/// Runs `args` under a real PTY; fails (never passes vacuously) when `script` is unavailable.
+fn pty(root: &Path, args: &[&str], envs: &[(&str, &str)]) -> String {
+    let available = Command::new("script")
         .arg("--version")
         .output()
-        .ok()?
+        .expect("the ANSI matrix needs `script`(1) for its PTY probe")
         .status
-        .success()
-    {
-        return None;
-    }
+        .success();
+    assert!(
+        available,
+        "`script --version` must succeed for the PTY probe"
+    );
     let bin = env!("CARGO_BIN_EXE_slipfork");
     let line = format!("'{}' {}", bin.replace('\'', r"'\''"), args.join(" "));
     let mut command = Command::new("script");
@@ -176,30 +249,37 @@ fn pty(root: &Path, args: &[&str], envs: &[(&str, &str)]) -> Option<String> {
     for (key, value) in envs {
         command.env(key, value);
     }
-    let output = command.output().ok()?;
+    let output = command.output().expect("run the PTY probe");
     assert!(output.status.success(), "pty run of {args:?} must succeed");
-    Some(String::from_utf8_lossy(&output.stdout).replace('\r', ""))
+    String::from_utf8_lossy(&output.stdout).replace('\r', "")
 }
 
 #[test]
 fn colour_appears_only_on_a_terminal_that_allows_it() {
-    let root = scratch();
+    let lab = Lab::new();
+    let root = lab.root.as_path();
     for args in [&["--help"][..], &["status"][..]] {
-        if let Some(text) = pty(&root, args, &[]) {
-            assert!(
-                text.contains(ANSI),
-                "a TTY must get colour for {args:?}: {text:?}"
-            );
-        }
-        if let Some(text) = pty(&root, args, &[("NO_COLOR", "1")]) {
-            assert!(!text.contains(ANSI), "NO_COLOR must win for {args:?}");
-        }
-        if let Some(text) = pty(&root, args, &[("TERM", "dumb")]) {
-            assert!(
-                !text.contains(ANSI),
-                "TERM=dumb must stay plain for {args:?}"
-            );
-        }
+        let text = pty(root, args, &[]);
+        assert!(
+            text.contains(ESCAPE),
+            "a TTY must get colour for {args:?}: {text:?}"
+        );
+        let plain = pty(root, args, &[("NO_COLOR", "1")]);
+        assert!(!plain.contains(ESCAPE), "NO_COLOR must win for {args:?}");
+        let dumb = pty(root, args, &[("TERM", "dumb")]);
+        assert!(
+            !dumb.contains(ESCAPE),
+            "TERM=dumb must stay plain for {args:?}"
+        );
     }
-    let _ = std::fs::remove_dir_all(&root);
+
+    // `--json` on a real terminal is still one plain, parseable object.
+    let json = pty(root, &["status", "--json"], &[]);
+    assert!(
+        !json.contains(ESCAPE),
+        "`--json` must stay plain on a PTY: {json:?}"
+    );
+    let value: Value = serde_json::from_str(json.trim())
+        .unwrap_or_else(|error| panic!("`status --json` must emit one object ({error}): {json:?}"));
+    assert!(value.is_object(), "{value}");
 }

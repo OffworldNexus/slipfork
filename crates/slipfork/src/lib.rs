@@ -9,7 +9,6 @@ pub mod ps;
 mod render;
 
 /// The shipped verb/flag table shared by `--help`, completions, and the ANSI matrix test.
-#[path = "cli/surface.rs"]
 pub mod surface;
 
 pub mod install;

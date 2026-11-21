@@ -23,6 +23,10 @@ fn git(dir: &Path, args: &[&str]) {
     );
 }
 
+fn workspace() -> GitWorkspace {
+    GitWorkspace::new(Some(PathBuf::from("git")))
+}
+
 /// A real repository on disk (`/var/tmp`, never RAM `/tmp`) with one commit on `main`.
 fn repository() -> (tempfile::TempDir, PathBuf) {
     let root = tempfile::Builder::new()
@@ -43,7 +47,7 @@ fn repository() -> (tempfile::TempDir, PathBuf) {
 #[test]
 fn branch_switch_and_dirtiness_track_a_real_checkout() {
     let (root, project) = repository();
-    let workspace = GitWorkspace::new("git");
+    let workspace = workspace();
 
     assert_eq!(workspace.branch(&project).expect("branch"), "main");
     assert_eq!(workspace.dirtiness(&project).expect("clean"), Dirty::Clean);
@@ -77,4 +81,65 @@ fn branch_switch_and_dirtiness_track_a_real_checkout() {
     let message = error.to_string();
     assert_eq!(message.lines().count(), 1, "{message}");
     assert!(message.contains("detached HEAD"), "{message}");
+}
+
+#[test]
+fn a_conflicting_untracked_file_turns_switch_into_a_typed_refusal() {
+    let (_root, project) = repository();
+    let workspace = workspace();
+    git(&project, &["checkout", "-b", "feat-conflict"]);
+    fs::write(project.join("conflict.txt"), "from the branch\n").expect("branch file");
+    git(&project, &["add", "conflict.txt"]);
+    git(&project, &["commit", "-m", "conflict"]);
+    git(&project, &["checkout", "main"]);
+    fs::write(project.join("conflict.txt"), "untracked\n").expect("untracked file");
+
+    let error = workspace
+        .switch(&project, "feat-conflict")
+        .expect_err("git refuses to overwrite the untracked file");
+    assert!(matches!(error, VcsError::Switch { .. }), "{error:?}");
+    let message = error.to_string();
+    assert_eq!(message.lines().count(), 1, "{message}");
+    assert!(message.contains("feat-conflict"), "{message}");
+    assert_eq!(
+        fs::read_to_string(project.join("conflict.txt")).expect("untouched file"),
+        "untracked\n"
+    );
+}
+
+#[test]
+fn dirtiness_of_an_existing_non_repository_is_a_typed_refusal() {
+    let root = tempfile::Builder::new()
+        .prefix("slipfork-vcs-plain-")
+        .tempdir_in("/var/tmp")
+        .expect("the vcs lab root must be writable disk");
+    let plain = root.path().join("plain");
+    fs::create_dir_all(&plain).expect("create a plain directory");
+
+    let error = workspace().dirtiness(&plain).expect_err("not a repository");
+    assert!(
+        matches!(
+            error,
+            VcsError::Command {
+                action: "status",
+                ..
+            }
+        ),
+        "{error:?}"
+    );
+    assert_eq!(error.to_string().lines().count(), 1, "{error}");
+}
+
+#[test]
+fn a_missing_git_executable_is_typed_unavailable() {
+    let (_root, project) = repository();
+    let workspace = GitWorkspace::new(None);
+    for error in [
+        workspace.branch(&project).expect_err("branch"),
+        workspace.switch(&project, "anything").expect_err("switch"),
+        workspace.dirtiness(&project).expect_err("dirtiness"),
+    ] {
+        assert!(matches!(error, VcsError::Unavailable { .. }), "{error:?}");
+        assert!(error.to_string().contains("git"), "{error}");
+    }
 }

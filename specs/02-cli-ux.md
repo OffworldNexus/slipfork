@@ -46,7 +46,7 @@ Running bare `slipfork` (alias `slipfork status`) displays every active world on
 
 ## 2. `slipfork up`, `restart` & `down`
 
-`slipfork up` drives animated spinners across the boot DAG — images, backing resources, `@<tool>` / `before-start` setup nodes, `pre-deploy` hooks, and services — replacing each line cleanly with a green `✓` and timing as it finishes:
+`slipfork up` prints replaced-in-place `→ [i/n]` phase lines across the boot DAG — images, backing resources, `@<tool>` / `before-start` setup nodes, `pre-deploy` hooks, and services — replacing each line in place with a green `✓` and timing as it finishes:
 
 ```text
 ✓ Image backend (cached 0.1s)
@@ -152,7 +152,7 @@ After pairing, `slipfork auth` prints the settled pair and one `next: slipfork u
 
 ## 5. Strict Terminal Hygiene
 
-- **TTY-aware styling:** ANSI colors and spinners run **only** when the output stream is a real TTY, `NO_COLOR` is unset, and `TERM != dumb`.
+- **TTY-aware styling:** ANSI colors run **only** when the output stream is a real TTY, `NO_COLOR` is unset, and `TERM != dumb`.
 - **Clean scrollback:** Active spinner frames clear completely before every status or log line — zero raw carriage-return or `ESC[2K` line-clear garbage in scrollback or redirected files.
 - **Machine parity (`--json`):** Every verb that accepts `--json` emits the exact same fields as structured JSON with zero ANSI escapes; failures emit one `{"error":{code,message,next}}` object on stdout.
 - **Actionable errors:** Every human-mode failure prints `error: <one sentence>` followed by exactly one `next: <exact command to fix it>`; a failing step also names its `Forkfile:<line>`.

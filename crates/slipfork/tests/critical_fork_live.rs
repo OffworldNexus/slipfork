@@ -245,12 +245,47 @@ impl Drop for Lab {
                 .find(|candidate| candidate.is_file())
         });
         if let Some(btrfs) = btrfs {
-            let _ = Command::new(btrfs)
-                .args(["subvolume", "delete", "--recursive"])
-                .arg(self.project.parent().unwrap_or(&self.project))
-                .status();
+            let root = self.project.parent().unwrap_or(&self.project).to_path_buf();
+            // The droplet's `btrfs-progs` has no `delete --recursive`: empty each subvolume, then
+            // delete the deepest ones first so parents are empty when their turn comes.
+            let _ = fs::remove_dir_all(&root);
+            let mut subvolumes = Vec::new();
+            collect_subvolumes(&btrfs, &root, &mut subvolumes);
+            subvolumes.sort_by_key(|path| std::cmp::Reverse(path.components().count()));
+            for subvolume in subvolumes {
+                let _ = fs::remove_dir_all(&subvolume);
+                let _ = Command::new(&btrfs)
+                    .args(["subvolume", "delete"])
+                    .arg(&subvolume)
+                    .status();
+            }
         }
         let _ = fs::remove_dir_all(self.project.parent().unwrap_or(&self.project));
+    }
+}
+
+/// Collects every real Btrfs subvolume below `directory` (nested ones included).
+fn collect_subvolumes(
+    btrfs: &std::path::Path,
+    directory: &std::path::Path,
+    found: &mut Vec<PathBuf>,
+) {
+    if !directory.is_dir() {
+        return;
+    }
+    let is_subvolume = Command::new(btrfs)
+        .args(["subvolume", "show"])
+        .arg(directory)
+        .status()
+        .is_ok_and(|status| status.success());
+    if is_subvolume {
+        found.push(directory.to_path_buf());
+    }
+    for entry in fs::read_dir(directory).into_iter().flatten().flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_subvolumes(btrfs, &path, found);
+        }
     }
 }
 

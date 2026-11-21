@@ -18,6 +18,7 @@ mod control;
 mod fault;
 mod pod;
 mod respond;
+mod shared;
 mod stream;
 
 use std::fs;
@@ -70,7 +71,7 @@ fn run() -> Result<(), Fault> {
         "ready handshake write",
     )?;
     let pods_root = canonical(&args.pods, "pod runtime root resolution", REMEDY_RUNTIME)?;
-    let mut world = pod::InitWorld::new(args.crun, pods_root);
+    let mut world = pod::InitWorld::new(args.crun, pods_root)?;
     let (listener, socket_path) = control::bind(world.pods_root())?;
     let stdin = io::stdin();
     let mut reader = BufReader::new(stdin.lock());

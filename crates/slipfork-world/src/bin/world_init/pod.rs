@@ -2,14 +2,13 @@
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::io;
-use std::io::{BufRead, BufReader, Read};
+use std::io::{self, BufRead, BufReader, Read};
+use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
-use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::process::Stdio;
 use std::sync::mpsc::{self, RecvTimeoutError};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -17,122 +16,37 @@ use slipfork_world::PodSpec;
 use slipfork_world::control::FrameLines;
 use slipfork_world::pod_log::{CHUNK, LogKind, LogSink};
 
+pub(crate) use crate::shared::{PodInfo, WorldShared, exit_code, reap_zombies};
 use crate::{Fault, REMEDY_CRUN, REMEDY_POD, REMEDY_RUNTIME, canonical};
 
-/// Immutable facts a stream thread needs about one running pod.
-#[derive(Debug, Clone)]
-pub(crate) struct PodInfo {
-    /// tmpfs bundle directory (`config.json` lives here).
-    pub bundle: PathBuf,
-    /// Absolute in-container working directory.
-    pub workdir: String,
-    /// `<pods>/logs/<id>.log`.
-    pub log: PathBuf,
-    /// How many times this pod was launched (1 = started, >1 = restarted).
-    pub launches: usize,
-}
-
-/// State shared between the init loop and the streaming threads it spawns.
-pub(crate) struct WorldShared {
-    crun: PathBuf,
-    pods_root: PathBuf,
-    pods: Mutex<BTreeMap<String, PodInfo>>,
-    /// Exit statuses reaped by the main loop, retained for an `exec` child that races it.
-    reaped: Mutex<BTreeMap<i32, i32>>,
-    exec_pids: Mutex<Vec<i32>>,
-    stop: AtomicBool,
-}
-
-impl WorldShared {
-    pub(crate) fn crun(&self) -> &Path {
-        &self.crun
-    }
-
-    pub(crate) fn pods_root(&self) -> &Path {
-        &self.pods_root
-    }
-
-    pub(crate) fn info(&self, id: &str) -> Option<PodInfo> {
-        self.pods.lock().ok()?.get(id).cloned()
-    }
-
-    pub(crate) fn ids(&self) -> Vec<String> {
-        self.pods
-            .lock()
-            .map(|pods| pods.keys().cloned().collect())
-            .unwrap_or_default()
-    }
-
-    pub(crate) fn stopped(&self) -> bool {
-        self.stop.load(Ordering::Relaxed)
-    }
-
-    pub(crate) fn mark_stopped(&self) {
-        self.stop.store(true, Ordering::Relaxed);
-    }
-
-    pub(crate) fn record(&self, pid: i32, status: i32) {
-        if let Ok(mut reaped) = self.reaped.lock() {
-            reaped.insert(pid, status);
-        }
-    }
-
-    pub(crate) fn take_status(&self, pid: i32) -> Option<i32> {
-        self.reaped.lock().ok()?.remove(&pid)
-    }
-
-    pub(crate) fn register_exec(&self, pid: i32) {
-        if let Ok(mut pids) = self.exec_pids.lock() {
-            pids.push(pid);
-        }
-    }
-
-    pub(crate) fn unregister_exec(&self, pid: i32) {
-        if let Ok(mut pids) = self.exec_pids.lock() {
-            pids.retain(|candidate| *candidate != pid);
-        }
-    }
-
-    fn exec_pids(&self) -> Vec<i32> {
-        self.exec_pids
-            .lock()
-            .map(|pids| pids.clone())
-            .unwrap_or_default()
-    }
-}
-
 pub(crate) struct InitWorld {
-    shared: std::sync::Arc<WorldShared>,
+    shared: Arc<WorldShared>,
     /// Open append sinks; the descriptor stays in the init across restarts.
-    logs: BTreeMap<String, std::sync::Arc<Mutex<LogSink>>>,
+    logs: BTreeMap<String, Arc<Mutex<LogSink>>>,
     pids: BTreeMap<String, i32>,
 }
 
 impl InitWorld {
-    pub(crate) fn new(crun: PathBuf, pods_root: PathBuf) -> Self {
-        Self {
-            shared: std::sync::Arc::new(WorldShared {
-                crun,
-                pods_root,
-                pods: Mutex::new(BTreeMap::new()),
-                reaped: Mutex::new(BTreeMap::new()),
-                exec_pids: Mutex::new(Vec::new()),
-                stop: AtomicBool::new(false),
-            }),
+    pub(crate) fn new(crun: PathBuf, pods_root: PathBuf) -> Result<Self, Fault> {
+        let crun_root = pods_root.join("crun");
+        fs::create_dir_all(&crun_root)
+            .and_then(|()| fs::set_permissions(&crun_root, fs::Permissions::from_mode(0o700)))
+            .map_err(|source| Fault::cause("crun state root setup", REMEDY_RUNTIME, source))?;
+        Ok(Self {
+            shared: Arc::new(WorldShared::new(crun, crun_root, pods_root)),
             logs: BTreeMap::new(),
             pids: BTreeMap::new(),
-        }
+        })
     }
 
-    pub(crate) fn shared(&self) -> std::sync::Arc<WorldShared> {
-        std::sync::Arc::clone(&self.shared)
+    pub(crate) fn shared(&self) -> Arc<WorldShared> {
+        Arc::clone(&self.shared)
     }
 
     pub(crate) fn pods_root(&self) -> &Path {
         self.shared.pods_root()
     }
 
-    /// `<pods>/logs`.
     fn logs_dir(&self) -> PathBuf {
         self.shared.pods_root().join("logs")
     }
@@ -195,8 +109,11 @@ impl InitWorld {
         let action = format!("pod `{}` launch with crun", pod.id);
         pod.validate()
             .map_err(|source| Fault::cause(action.clone(), REMEDY_POD, source))?;
-        let bundle = self.pods_root().join(&pod.id);
-        let bundle = canonical(&bundle, action.clone(), REMEDY_RUNTIME)?;
+        let bundle = canonical(
+            &self.pods_root().join(&pod.id),
+            action.clone(),
+            REMEDY_RUNTIME,
+        )?;
         if !bundle.starts_with(self.pods_root()) {
             return Err(Fault::new(
                 action,
@@ -206,26 +123,17 @@ impl InitWorld {
         let sink = LogSink::open(&self.logs_dir(), &pod.id)
             .map_err(|source| Fault::cause(action.clone(), REMEDY_RUNTIME, source))?;
         let restarted = self.logs.contains_key(&pod.id);
-        let sink = std::sync::Arc::new(Mutex::new(sink));
+        let log = sink.path().to_path_buf();
+        let sink = Arc::new(Mutex::new(sink));
         {
             let mut guard = sink
                 .lock()
                 .map_err(|_| Fault::new(format!("pod `{}` log lock", pod.id), REMEDY_RUNTIME))?;
             guard
                 .divider(&pod.id, restarted)
-                .map_err(|source| Fault::cause(action.clone(), REMEDY_RUNTIME, source))?;
+                .map_err(|source| Fault::cause(action, REMEDY_RUNTIME, source))?;
         }
-        let log = sink
-            .lock()
-            .map_err(|_| Fault::new(format!("pod `{}` log lock", pod.id), REMEDY_RUNTIME))?
-            .path()
-            .to_path_buf();
-        let pid = crun_run(
-            &self.shared.crun,
-            &bundle,
-            &pod.id,
-            std::sync::Arc::clone(&sink),
-        )?;
+        let pid = crun_run(&self.shared, &bundle, &pod.id, Arc::clone(&sink))?;
         self.logs.insert(pod.id.clone(), sink);
         self.pids.insert(pod.id.clone(), pid);
         if let Ok(mut pods) = self.shared.pods.lock() {
@@ -255,13 +163,11 @@ impl InitWorld {
             None => self.pids.keys().cloned().collect(),
         };
         for id in &ids {
-            let Some(&pid) = self.pids.get(id) else {
-                continue;
-            };
-            let Some(info) = self.shared.info(id) else {
-                continue;
-            };
-            let Some(sink) = self.logs.get(id).cloned() else {
+            let (Some(&pid), Some(info), Some(sink)) = (
+                self.pids.get(id),
+                self.shared.info(id),
+                self.logs.get(id).cloned(),
+            ) else {
                 continue;
             };
             slipfork_world::kill_group(pid);
@@ -278,12 +184,7 @@ impl InitWorld {
                     )
                 })?;
             }
-            let pid = crun_run(
-                &self.shared.crun,
-                &info.bundle,
-                id,
-                std::sync::Arc::clone(&sink),
-            )?;
+            let pid = crun_run(&self.shared, &info.bundle, id, Arc::clone(&sink))?;
             self.pids.insert(id.clone(), pid);
             if let Ok(mut pods) = self.shared.pods.lock()
                 && let Some(row) = pods.get_mut(id)
@@ -314,14 +215,6 @@ impl InitWorld {
     }
 
     /// Runs one bundle to completion while forwarding every stdout/stderr line.
-    ///
-    /// Unlike `launch` this never detaches: the container's pipes stay open, so a failing `uv sync`
-    /// reports its own stderr instead of vanishing behind an exit code.
-    ///
-    /// `timeout_ms` is enforced here, inside PID 1. The init loop is single-threaded, so a silent
-    /// step must never block it: on expiry the process group is killed, the container is deleted,
-    /// zombies are reaped, and a typed timeout fault is returned. The `on_line` early return path
-    /// runs the same teardown so an undeliverable reply never orphans a container.
     pub(crate) fn run_once_streaming(
         &self,
         pod: &PodSpec,
@@ -336,8 +229,10 @@ impl InitWorld {
             ));
         }
         let action = format!("pod `{}` run-once with crun", pod.id);
-        let mut child = Command::new(&self.shared.crun)
-            .args(["--cgroup-manager=disabled", "run", "--bundle"])
+        let mut child = self
+            .shared
+            .crun_command()
+            .args(["run", "--bundle"])
             .arg(&bundle)
             .arg(&pod.id)
             .stdin(Stdio::null())
@@ -350,20 +245,18 @@ impl InitWorld {
         let (sender, receiver) = mpsc::channel::<(slipfork_world::Stream, String)>();
         let mut readers = Vec::new();
         if let Some(stdout) = child.stdout.take() {
-            let sender = sender.clone();
-            readers.push(thread::spawn(move || {
-                for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-                    let _ = sender.send((slipfork_world::Stream::Stdout, line));
-                }
-            }));
+            readers.push(spawn_line_reader(
+                stdout,
+                slipfork_world::Stream::Stdout,
+                sender.clone(),
+            ));
         }
         if let Some(stderr) = child.stderr.take() {
-            let sender = sender.clone();
-            readers.push(thread::spawn(move || {
-                for line in BufReader::new(stderr).lines().map_while(Result::ok) {
-                    let _ = sender.send((slipfork_world::Stream::Stderr, line));
-                }
-            }));
+            readers.push(spawn_line_reader(
+                stderr,
+                slipfork_world::Stream::Stderr,
+                sender.clone(),
+            ));
         }
         drop(sender);
         let deadline = Instant::now() + Duration::from_millis(timeout_ms);
@@ -408,7 +301,6 @@ impl InitWorld {
         Ok(status.code().unwrap_or(128))
     }
 
-    /// Kills the whole run-once group, deletes the container, reaps, and joins its readers.
     fn abort(
         &self,
         id: &str,
@@ -427,50 +319,37 @@ impl InitWorld {
         }
     }
 
-    /// `crun kill --all` then `crun delete --force`; both are best effort teardown.
+    /// `crun kill --all` then `crun delete --force`; both are best-effort teardown.
     fn delete(&self, id: &str) {
-        let _ = Command::new(&self.shared.crun)
-            .args(["--cgroup-manager=disabled", "kill", "--all", id])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
-        let _ = Command::new(&self.shared.crun)
-            .args(["--cgroup-manager=disabled", "delete", "--force", id])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
-    }
-}
-
-/// Normalizes a raw `waitpid(2)` status into a shell-style exit code.
-pub(crate) fn exit_code(status: i32) -> i32 {
-    if libc::WIFEXITED(status) {
-        libc::WEXITSTATUS(status)
-    } else if libc::WIFSIGNALED(status) {
-        128 + libc::WTERMSIG(status)
-    } else {
-        -1
+        for args in [
+            ["kill", "--all", id].as_slice(),
+            ["delete", "--force", id].as_slice(),
+        ] {
+            let _ = self
+                .shared
+                .crun_command()
+                .args(args)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
+        }
     }
 }
 
 /// Runs one already-written bundle to container start and returns its host pid.
-///
-/// The container's stdout/stderr stay piped, and one pump per stream appends timestamped lines to
-/// the pod's capture file, so two pods merge chronologically and secrets never reach disk.
 fn crun_run(
-    crun: &Path,
+    shared: &WorldShared,
     bundle: &Path,
     id: &str,
-    sink: std::sync::Arc<Mutex<LogSink>>,
+    sink: Arc<Mutex<LogSink>>,
 ) -> Result<i32, Fault> {
     let action = format!("pod `{id}` launch with crun");
     let pid_file = bundle.join("init.pid");
     let _ = fs::remove_file(&pid_file);
-    let mut child = Command::new(crun)
-        // `--cgroup-manager` is a crun global option: it must precede the subcommand.
-        .args(["--cgroup-manager=disabled", "run", "--detach", "--bundle"])
+    let mut child = shared
+        .crun_command()
+        .args(["run", "--detach", "--bundle"])
         .arg(bundle)
         .arg("--pid-file")
         .arg(&pid_file)
@@ -482,10 +361,10 @@ fn crun_run(
         .spawn()
         .map_err(|source| Fault::cause(action.clone(), REMEDY_CRUN, source))?;
     if let Some(stdout) = child.stdout.take() {
-        spawn_pump(stdout, std::sync::Arc::clone(&sink));
+        spawn_pump(stdout, Arc::clone(&sink));
     }
     if let Some(stderr) = child.stderr.take() {
-        spawn_pump(stderr, std::sync::Arc::clone(&sink));
+        spawn_pump(stderr, Arc::clone(&sink));
     }
     let status = child
         .wait()
@@ -503,8 +382,19 @@ fn crun_run(
         .map_err(|source| Fault::cause(action, REMEDY_CRUN, source))
 }
 
-/// Appends every line of one container stream to the timestamped capture.
-fn spawn_pump<R: Read + Send + 'static>(mut reader: R, sink: std::sync::Arc<Mutex<LogSink>>) {
+fn spawn_line_reader<R: Read + Send + 'static>(
+    pipe: R,
+    kind: slipfork_world::Stream,
+    sender: mpsc::Sender<(slipfork_world::Stream, String)>,
+) -> thread::JoinHandle<()> {
+    thread::spawn(move || {
+        for line in BufReader::new(pipe).lines().map_while(Result::ok) {
+            let _ = sender.send((kind, line));
+        }
+    })
+}
+
+fn spawn_pump<R: Read + Send + 'static>(mut reader: R, sink: Arc<Mutex<LogSink>>) {
     thread::spawn(move || {
         let mut lines = FrameLines::new();
         let mut chunk = [0_u8; 8192];
@@ -531,18 +421,5 @@ fn append(sink: &Mutex<LogSink>, raw: &[u8]) {
     let text = text.trim_end_matches('\r');
     if let Ok(mut sink) = sink.lock() {
         let _ = sink.append(LogKind::Line, text);
-    }
-}
-
-/// Reaps every exited child without blocking, recording each status for a racing `exec` waiter.
-pub(crate) fn reap_zombies(shared: &WorldShared) {
-    loop {
-        let mut status = 0;
-        // SAFETY: `waitpid` writes one `c_int` through the valid pointer.
-        let reaped = unsafe { libc::waitpid(-1, &mut status, libc::WNOHANG) };
-        if reaped <= 0 {
-            return;
-        }
-        shared.record(reaped, exit_code(status));
     }
 }

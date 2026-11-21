@@ -310,6 +310,13 @@ impl Session {
     }
 }
 
+/// Clears an in-place, colour-only phase frame before the next full line prints.
+fn clear_phase(color: bool) {
+    if color {
+        print!("\r\u{1b}[K");
+    }
+}
+
 /// Renders one boot `event`; returns `true` when it reported a failure.
 fn render_event(event: &Value, color: bool, json: bool) -> bool {
     if json {
@@ -339,6 +346,7 @@ fn render_event(event: &Value, color: bool, json: bool) -> bool {
             false
         }
         "log" => {
+            clear_phase(color);
             let text = event["line"].as_str().unwrap_or_default();
             let prefix = match (event["step"].as_u64(), event["total"].as_u64()) {
                 (Some(step), Some(total)) if total > 0 => format!("[{step}/{total}] "),
@@ -358,6 +366,7 @@ fn render_event(event: &Value, color: bool, json: bool) -> bool {
             false
         }
         "stopped" => {
+            clear_phase(color);
             let world = event["world"].as_str().unwrap_or("world");
             let elapsed = event["elapsed_ms"].as_u64().unwrap_or(0);
             println!(
@@ -385,6 +394,7 @@ fn render_event(event: &Value, color: bool, json: bool) -> bool {
             true
         }
         "ready" => {
+            clear_phase(color);
             let url = event["url"].as_str().unwrap_or_default();
             println!(
                 "{} {}",
@@ -458,6 +468,7 @@ fn render_phase(event: &Value, color: bool, json: bool) {
             eprintln!("next: {next}");
         }
         "stopped" => {
+            clear_phase(color);
             let elapsed = event["elapsed_ms"].as_u64().unwrap_or(0);
             println!(
                 "{} Stopped {} {}",

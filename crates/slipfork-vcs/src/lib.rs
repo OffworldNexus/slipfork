@@ -1,9 +1,11 @@
-//! Worktrees, branch topology, and dirty snapshots for Git and Jujutsu backends.
+//! Worktrees, branch topology, and dirty snapshots for the Git backend.
 //!
 //! `VcsWorkspace` is the canonical `specs/03-under-the-hood.md` §5 port: the daemon asks this crate
 //! which branch a checkout is on, switches it, and asks whether it carries uncommitted work. The
 //! adapter never reads the environment and never shells out through `/bin/sh`; the composition root
 //! injects the executable path, so `GIT_DIR` and friends cannot redirect a call.
+//!
+//! Only [`GitWorkspace`] ships in 0.1.0; a Jujutsu adapter is future work and has no type here.
 
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -95,20 +97,26 @@ pub trait VcsWorkspace: Send + Sync {
 /// The `git` adapter behind [`VcsWorkspace`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GitWorkspace {
-    git: PathBuf,
+    git: Option<PathBuf>,
 }
 
 impl GitWorkspace {
-    /// Builds the adapter around the injected `git` executable.
+    /// Builds the adapter around the executable the composition root resolved.
+    ///
+    /// `None` is a typed refusal for a host without `git`: every method then returns
+    /// [`VcsError::Unavailable`] instead of falling back to an ambient `PATH` lookup.
     #[must_use]
-    pub fn new(git: impl Into<PathBuf>) -> Self {
-        Self { git: git.into() }
+    pub fn new(git: Option<PathBuf>) -> Self {
+        Self { git }
     }
 
     /// Runs one plumbing call with a clean environment, so an inherited `GIT_DIR` cannot point it
     /// at another repository.
     fn run(&self, project: &Path, args: &[&str]) -> Result<Output, VcsError> {
-        Command::new(&self.git)
+        let git = self.git.as_ref().ok_or_else(|| VcsError::Unavailable {
+            reason: "no `git` executable was found on PATH".to_owned(),
+        })?;
+        Command::new(git)
             .env_clear()
             .arg("-C")
             .arg(project)

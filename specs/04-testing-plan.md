@@ -73,3 +73,12 @@ Focused non-E2E tests exist **only** for self-contained language, protocol, and 
   Verify `# forkfile: 0.1` version checking, `route` grammar (`exact`, `strip-prefix` vs `rewrite` mutual exclusion, `domain <id | prefix.*>` authority checks), `s3 { cdn <id> }` and `domain <id>` `.domain` / `.url` typing, flat global symbol uniqueness, secret-taint rejection in `arg`, workspace lockfile discovery and `(image, lockfile_dir)` DAG deduplication, boolean `on` expressions, multi-branch `line:col` checking, and comment-preserving `slipfork fmt` / `slipfork fmt --check`.
 - **`OSPP v1` wire framing, `slipfork-lsp` & Zed extension:**
   Verify `OSPP v1` P-256 challenge-response authentication, fail-closed `version: 2` validation, and live `Forkfile` diagnostics, `@<tool>` hover tooltips, go-to-definition, and format-on-save in the standalone `slipfork-lsp` binary and the Zed extension that resolves it.
+
+---
+
+## 8. Running the Live Lab Gate
+
+- **Protected live suites, one at a time on real Btrfs + `crun`:**
+  Run `critical_btrfs_live` (`slipfork-world`), `critical_oci_live` (`slipfork-image`), `critical_dockerfile_live` (`slipfork-image`), `critical_pod_runtime` (`slipfork-world`), `critical_world_journey` (`slipfork`), `critical_fork_live` (`slipfork`), and `critical_status_live` (`slipfork`) via `tools/do_vm.py sync && tools/do_vm.py test`.
+  Without a droplet, `SLIPFORK_TEST_ROOT=<btrfs mount> make live-test` runs the same seven suites locally and fails closed when the mount is not Btrfs or `crun` is absent.
+

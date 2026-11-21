@@ -92,9 +92,9 @@ Push your working tree to the throwaway lab droplet at `165.232.86.174` and run 
 tools/do_vm.py sync && tools/do_vm.py test
 ```
 
-The exact five suites, in order, are `critical_btrfs_live` (`slipfork-world`), `critical_oci_live` (`slipfork-image`), `critical_dockerfile_live` (`slipfork-image`), `critical_pod_runtime` (`slipfork-world`), and `critical_world_journey` (`slipfork`).
+The exact seven suites, in order, are `critical_btrfs_live` (`slipfork-world`), `critical_oci_live` (`slipfork-image`), `critical_dockerfile_live` (`slipfork-image`), `critical_pod_runtime` (`slipfork-world`), `critical_world_journey` (`slipfork`), `critical_fork_live` (`slipfork`), and `critical_status_live` (`slipfork`).
 
-If you have no droplet, loop-back a file on a real Btrfs filesystem, mount it, and run the same five suites locally:
+If you have no droplet, loop-back a file on a real Btrfs filesystem, mount it, and run the same seven suites locally:
 
 ```bash
 SLIPFORK_TEST_ROOT=/mnt/slipfork-live make live-test

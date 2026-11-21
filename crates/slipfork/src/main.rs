@@ -22,6 +22,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
 
+use slipfork::surface;
 use slipfork_vcs::GitWorkspace;
 
 fn main() -> ExitCode {
@@ -106,9 +107,10 @@ fn main() -> ExitCode {
 
     // The daemon is the same binary in a hidden mode; it owns every world under this UID.
     if args.first().is_some_and(|arg| arg == "__daemon") {
-        // One `git` adapter for the whole daemon: only the composition root resolves the binary,
-        // and a missing `git` surfaces as a typed `git-missing` refusal on `fork`/`drop`.
-        let git = host.tool("git").unwrap_or_else(|_| PathBuf::from("git"));
+        // One `git` adapter for the whole daemon: only the composition root resolves the binary.
+        // A host without `git` yields `None`, so `fork`/`drop` surface the typed `git-missing`
+        // refusal instead of silently falling back to an ambient `PATH` lookup.
+        let git = host.tool("git").ok();
         return daemon::run(host, Arc::new(GitWorkspace::new(git)));
     }
     if args.first().is_some_and(|arg| arg == "__ingress") {

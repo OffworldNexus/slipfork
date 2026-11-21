@@ -2,8 +2,8 @@
 
 use crate::render::paint;
 
-use super::surface;
 use super::{HelpTopic, VERSION};
+use crate::surface;
 
 pub(super) fn help_text(topic: HelpTopic, color: bool) -> String {
     match topic {
@@ -286,10 +286,10 @@ pub(super) fn help_text(topic: HelpTopic, color: bool) -> String {
                 "{title}\n\
                  Print resolved runtime variables; secrets stay redacted by default.\n\
                  \n\
-                 Usage: slipfork env [SERVICE] [--reveal] [--json]\n\
+                 Usage: slipfork env [COMPONENT] [--reveal] [--json]\n\
                  \n\
                  Arguments:\n\
-                 \x20 SERVICE   Only this service's variables (default: every component)\n\
+                 \x20 COMPONENT   Only this component's variables (default: every component)\n\
                  \n\
                  Options:\n\
                  \x20 --reveal  Show real secret values; requires an interactive terminal\n\

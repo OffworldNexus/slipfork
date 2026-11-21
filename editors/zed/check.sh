@@ -2,6 +2,10 @@
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 
+# Build into the ignored root target so a local run never dirties editors/zed/.
+export CARGO_TARGET_DIR="$here/../../target/zed"
+mkdir -p "$CARGO_TARGET_DIR"
+
 fail() {
   echo "error: $1"
   echo "next: $2"

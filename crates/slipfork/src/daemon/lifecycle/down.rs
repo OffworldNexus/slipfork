@@ -40,12 +40,12 @@ impl Core {
         let name = world.name().to_owned();
         let started = Instant::now();
         emit(json!({
-            "event": "started", "step": 1, "total": 2, "kind": "service",
+            "event": "started", "step": 1, "total": 1, "kind": "service",
             "label": format!("stopping {name}"),
         }));
         let stopped = self.stop_world(&key, Duration::from_secs(60))?;
         emit(json!({
-            "event": "finished", "step": 1, "total": 2, "kind": "service",
+            "event": "finished", "step": 1, "total": 1, "kind": "service",
             "label": "pods stopped", "detail": "stopped",
             "elapsed_ms": started.elapsed().as_millis() as u64,
         }));

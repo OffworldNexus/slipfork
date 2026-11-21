@@ -746,7 +746,10 @@ fn world_pod_lifecycle() {
             &mut on_exec,
         )
         .expect("exec inside the live server pod");
-    assert_eq!(code, 3, "exec must forward the child's exit code");
+    assert_eq!(
+        code, 3,
+        "exec must forward the child's exit code: {exec_lines:?}"
+    );
     assert!(
         exec_lines.iter().any(|line| line == "exec-ok"),
         "exec must stream stdout: {exec_lines:?}"

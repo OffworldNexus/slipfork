@@ -11,14 +11,20 @@ use std::process::ExitCode;
 use serde_json::json;
 use slipfork_forkfile::format_check;
 
-use crate::daemon::DaemonClient;
+use crate::daemon::{DaemonClient, DaemonError};
 use crate::render::paint;
 use crate::world::HostEnv;
 use crate::{doctor, status};
 
-mod host;
+mod auth;
+mod env;
+mod open;
+mod secret;
 mod streams;
-pub use host::{AuthArgs, EnvArgs, OpenArgs, SecretArgs, SecretVerb};
+pub use auth::AuthArgs;
+pub use env::EnvArgs;
+pub use open::OpenArgs;
+pub use secret::{SecretArgs, SecretVerb};
 pub use streams::{ExecArgs, LogsArgs, TargetArgs};
 
 /// Parsed `slipfork fmt` arguments.
@@ -83,12 +89,6 @@ impl Session {
     #[must_use]
     pub fn color(&self) -> bool {
         self.color
-    }
-
-    /// Whether stdout is a real terminal, decided once by the composition root.
-    #[must_use]
-    pub fn tty(&self) -> bool {
-        self.tty
     }
 
     /// Renders every running world as the `specs/02` status tree.
@@ -321,6 +321,30 @@ impl Session {
             eprintln!("next: slipfork fmt --check Forkfile");
         }
         status
+    }
+
+    /// The one refusal for a host verb that never reached the daemon.
+    fn daemon_failure(&self, error: &DaemonError, json: bool) -> ExitCode {
+        self.report(
+            &error.code,
+            &error.message,
+            "start it with `slipfork up` and retry",
+            json,
+        )
+    }
+
+    /// The one refusal renderer for `env`/`secret` control-plane failures.
+    fn env_failure(&self, error: &DaemonError, json: bool) -> ExitCode {
+        let next = match error.code.as_str() {
+            "no-forkfile" => "create a Forkfile in this directory, then run `slipfork up`",
+            "invalid-forkfile" => "fix the Forkfile, then retry",
+            "unknown-component" => "run `slipfork env` to list this Forkfile's components",
+            "unknown-secret" => "run `slipfork secret list` to see declared keys",
+            "no-secret" => "run `slipfork secret list` to see stored keys",
+            "vault" => "check that the state directory is writable and not group-readable",
+            _ => "run `slipfork status` to inspect the daemon",
+        };
+        self.report(&error.code, &error.message, next, json)
     }
 
     fn fail(&self, message: &str, next: &str) -> ExitCode {

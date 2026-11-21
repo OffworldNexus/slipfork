@@ -1,7 +1,7 @@
 //! The world's single control plane: `<pods>/control.sock`, mode `0600`, NDJSON `Request` frames.
 
 use std::fs;
-use std::io::{self, BufRead, BufReader, Write};
+use std::io::{self, Read, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::os::fd::AsFd;
 use std::os::unix::fs::PermissionsExt;
@@ -9,7 +9,7 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use slipfork_world::control::{self as wire, InitFrame};
+use slipfork_world::control::{self as wire, FrameLines, InitFrame};
 
 use crate::pod::InitWorld;
 use crate::stream::{serve_exec, serve_logs};
@@ -17,6 +17,8 @@ use crate::{Fault, REMEDY_PROTOCOL, REMEDY_RUNTIME, respond};
 
 /// Longest a dial may block before the world reports a refused port.
 const DIAL_TIMEOUT: Duration = Duration::from_secs(2);
+/// Upper bound on a single NDJSON control request frame.
+const FRAME_CAP: usize = 1 << 20;
 
 /// Binds `<pods>/control.sock` mode `0600`, replacing a stale socket from a killed world.
 pub(crate) fn bind(pods_root: &Path) -> Result<(UnixListener, PathBuf), Fault> {
@@ -56,21 +58,8 @@ pub(crate) fn handle(listener: &UnixListener, world: &mut InitWorld) -> Result<b
             ));
         }
     };
-    let request = {
-        let mut reader = BufReader::new(
-            stream
-                .try_clone()
-                .map_err(|source| Fault::cause("control socket clone", REMEDY_PROTOCOL, source))?,
-        );
-        let mut line = String::new();
-        let read = reader
-            .read_line(&mut line)
-            .map_err(|source| Fault::cause("control socket read", REMEDY_PROTOCOL, source))?;
-        if read == 0 {
-            return Ok(false);
-        }
-        wire::decode_request(line.trim())
-            .map_err(|source| Fault::cause("control socket decode", REMEDY_PROTOCOL, source))?
+    let Some((request, buffered)) = read_request(&mut stream)? else {
+        return Ok(false);
     };
     // A dial reply is a status byte plus an optional descriptor, not an NDJSON `InitFrame`.
     match request {
@@ -85,11 +74,8 @@ pub(crate) fn handle(listener: &UnixListener, world: &mut InitWorld) -> Result<b
             ..
         } => {
             let shared = world.shared();
-            let out = stream.try_clone().map_err(|source| {
-                Fault::cause("streaming socket clone", REMEDY_PROTOCOL, source)
-            })?;
             std::thread::spawn(move || {
-                if let Err(fault) = serve_logs(shared, id, service, follow, out) {
+                if let Err(fault) = serve_logs(shared, id, service, follow, stream) {
                     eprintln!("slipfork-world-init: {fault}");
                 }
             });
@@ -103,11 +89,8 @@ pub(crate) fn handle(listener: &UnixListener, world: &mut InitWorld) -> Result<b
             ..
         } => {
             let shared = world.shared();
-            let out = stream.try_clone().map_err(|source| {
-                Fault::cause("streaming socket clone", REMEDY_PROTOCOL, source)
-            })?;
             std::thread::spawn(move || {
-                if let Err(fault) = serve_exec(shared, id, pod, argv, stdin, out) {
+                if let Err(fault) = serve_exec(shared, id, pod, argv, stdin, stream, buffered) {
                     eprintln!("slipfork-world-init: {fault}");
                 }
             });
@@ -118,6 +101,38 @@ pub(crate) fn handle(listener: &UnixListener, world: &mut InitWorld) -> Result<b
                 respond(world, request, &mut |frame| reply(&mut stream, &frame))?;
             reply(&mut stream, &frame)?;
             Ok(shutdown)
+        }
+    }
+}
+
+/// Reads the opening request frame while retaining any pipelined `ExecInput` bytes in `FrameLines`.
+fn read_request(stream: &mut UnixStream) -> Result<Option<(wire::Request, FrameLines)>, Fault> {
+    let mut lines = FrameLines::new();
+    let mut chunk = [0_u8; 4096];
+    loop {
+        if let Some(raw) = lines.next_line() {
+            let text = std::str::from_utf8(&raw)
+                .map_err(|source| Fault::cause("control socket utf-8", REMEDY_PROTOCOL, source))?
+                .trim();
+            if text.is_empty() {
+                continue;
+            }
+            let request = wire::decode_request(text)
+                .map_err(|source| Fault::cause("control socket decode", REMEDY_PROTOCOL, source))?;
+            return Ok(Some((request, lines)));
+        }
+        match stream.read(&mut chunk) {
+            Ok(0) => return Ok(None),
+            Ok(read) => {
+                lines.extend(&chunk[..read]);
+                if lines.pending_len() > FRAME_CAP {
+                    return Err(Fault::new("control frame exceeds 1 MiB", REMEDY_PROTOCOL));
+                }
+            }
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(source) => {
+                return Err(Fault::cause("control socket read", REMEDY_PROTOCOL, source));
+            }
         }
     }
 }

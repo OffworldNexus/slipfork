@@ -91,16 +91,21 @@ impl BootSession {
             emit(event.clone());
             match event["event"].as_str().unwrap_or_default() {
                 "ready" => {
-                    let pods_dir =
-                        event["pods_dir"]
-                            .as_str()
-                            .map(PathBuf::from)
-                            .ok_or_else(|| {
-                                Failure::new("world-state", "the world published no pod directory")
-                            })?;
+                    let Some(pods_dir) = event["pods_dir"].as_str().map(PathBuf::from) else {
+                        self.fail_boot(daemon)?;
+                        return Err(Failure::new(
+                            "world-state",
+                            "the world published no pod directory",
+                        ));
+                    };
+                    let Some(world) = event["world"].as_str().filter(|world| !world.is_empty())
+                    else {
+                        self.fail_boot(daemon)?;
+                        return Err(Failure::new("world-state", "the world published no name"));
+                    };
                     let entry = RegistryEntry {
                         project: self.project.clone(),
-                        world: event["world"].as_str().unwrap_or_default().to_owned(),
+                        world: world.to_owned(),
                         fork: self.fork.clone(),
                         pods_dir,
                         supervisor_pid: self.child.as_ref().map_or(0, Child::id),
@@ -113,7 +118,7 @@ impl BootSession {
                     })?;
                     daemon.core()?.publish(&self.key, entry, child)?;
                     return Ok(json!({
-                        "world": event["world"],
+                        "world": world,
                         "url": event["url"],
                     }));
                 }
@@ -136,5 +141,12 @@ impl BootSession {
         if let Some(child) = self.child.as_mut() {
             kill_and_wait(child);
         }
+    }
+
+    /// Stops an unusable half-boot and drops its placeholder before the failure is reported.
+    fn fail_boot(&mut self, daemon: &Daemon) -> Result<(), Failure> {
+        self.stop();
+        daemon.core()?.forget(&self.key);
+        Ok(())
     }
 }

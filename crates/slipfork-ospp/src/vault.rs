@@ -25,6 +25,9 @@ pub trait SecretVault: Send + Sync {
 
     /// Atomically store one value in a `0600` record.
     fn store(&self, component: &str, key: &str, value: &Secret) -> Result<(), OsppError>;
+
+    /// Atomically remove one stored value, returning whether it existed.
+    fn unset(&self, component: &str, key: &str) -> Result<bool, OsppError>;
 }
 
 /// `0600` JSON-file [`SecretVault`] at a caller-injected path.
@@ -61,6 +64,23 @@ impl FileSecretVault {
             .map_err(|error| state_error(&self.path, error.to_string()))?;
         write_private(&self.path, &bytes)
     }
+
+    fn unset_entry(&self, component: &str, key: &str) -> Result<bool, OsppError> {
+        let mut entries = self.entries()?;
+        let Some(values) = entries.get_mut(component) else {
+            return Ok(false);
+        };
+        if values.remove(key).is_none() {
+            return Ok(false);
+        }
+        if values.is_empty() {
+            entries.remove(component);
+        }
+        let bytes = serde_json::to_vec_pretty(&entries)
+            .map_err(|error| state_error(&self.path, error.to_string()))?;
+        write_private(&self.path, &bytes)?;
+        Ok(true)
+    }
 }
 
 impl fmt::Debug for FileSecretVault {
@@ -82,6 +102,10 @@ impl SecretVault for FileSecretVault {
 
     fn store(&self, component: &str, key: &str, value: &Secret) -> Result<(), OsppError> {
         self.store_entry(component, key, value)
+    }
+
+    fn unset(&self, component: &str, key: &str) -> Result<bool, OsppError> {
+        self.unset_entry(component, key)
     }
 }
 
@@ -160,5 +184,38 @@ mod tests {
             .expect("chmod 0644");
         let error = vault.load("api", "SECRET_KEY").expect_err("refused");
         assert!(error.to_string().contains("0600"), "{error}");
+    }
+
+    #[test]
+    fn unset_removes_exactly_one_key_and_keeps_the_file_private() {
+        let directory = tempfile::TempDir::new_in("/var/tmp").expect("disk temp dir");
+        let vault = FileSecretVault::new(directory.path().join("vault.json"));
+        vault
+            .store("api", "FIRST", &Secret::new("one"))
+            .expect("store first");
+        vault
+            .store("api", "SECOND", &Secret::new("two"))
+            .expect("store second");
+
+        assert!(vault.unset("api", "FIRST").expect("unset"));
+        assert!(vault.load("api", "FIRST").expect("load").is_none());
+        assert_eq!(
+            vault
+                .load("api", "SECOND")
+                .expect("load")
+                .expect("kept")
+                .expose(),
+            "two"
+        );
+        assert!(!vault.unset("api", "FIRST").expect("already gone"));
+        assert!(!vault.unset("nobody", "FIRST").expect("unknown component"));
+        assert_eq!(
+            std::fs::metadata(vault.path())
+                .expect("metadata")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
     }
 }

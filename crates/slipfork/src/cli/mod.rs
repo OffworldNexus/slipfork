@@ -2,7 +2,6 @@
 
 mod help;
 mod parse;
-mod surface;
 
 use std::fmt;
 use std::process::ExitCode;
@@ -11,6 +10,7 @@ use crate::commands::{
     AuthArgs, EnvArgs, ExecArgs, FmtArgs, LogsArgs, MigrateArgs, OpenArgs, SecretArgs, Session,
     TargetArgs, emit,
 };
+use crate::surface::Shell;
 use crate::world::{DownArgs, DropArgs, ForkArgs, RestartArgs, SuperviseArgs, UpArgs};
 
 pub(super) const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -45,7 +45,7 @@ enum Verb {
     Auth(AuthArgs),
     Fmt(FmtArgs),
     Migrate(MigrateArgs),
-    Completions(surface::Shell),
+    Completions(Shell),
     Supervise(SuperviseArgs),
 }
 

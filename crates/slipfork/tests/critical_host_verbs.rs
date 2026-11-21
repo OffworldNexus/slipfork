@@ -309,6 +309,12 @@ fn auth_pairs_through_the_loopback_reference_server() {
     assert!(stdout.contains("dev-laptop"), "{stdout}");
     assert!(stdout.contains(&url), "{stdout}");
     assert!(stdout.contains("next: slipfork up"), "{stdout}");
+    assert_eq!(
+        next_lines(&output),
+        1,
+        "a successful pairing prints exactly one next:\n{}",
+        text(&output)
+    );
     assert_clean(&output);
 
     let state = lab.state();

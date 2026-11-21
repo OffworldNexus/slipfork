@@ -1,12 +1,16 @@
-//! Read-only `on`-aware visitors: services with resolved ports/routes, resources, authorities.
+//! Read-only `on`-aware visitors: services with resolved ports/routes, resources, authorities,
+//! and every runtime variable a component declares.
 //!
 //! Every consumer that needs the declared surface walks these visitors instead of re-implementing
 //! the `on <expr> { ... }` recursion. The walk is AST-only and never reads source text.
 
+use std::collections::BTreeMap;
+
 use crate::ast::{
-    Forkfile, ImageItem, On, OnBody, PostgresItem, RedisItem, Route, S3Item, Service, ServiceItem,
-    TopItem,
+    EnvItem, Forkfile, ImageItem, On, OnBody, PostgresItem, RedisItem, Route, S3Item, Service,
+    ServiceItem, TopItem,
 };
+use crate::{Expr, ExprKind};
 
 /// One service declaration with the port and routes that apply to it.
 #[derive(Debug, Clone)]
@@ -41,6 +45,23 @@ pub struct ResourceDecl<'a> {
     pub version: Option<&'a str>,
     /// `cdn <id>` inside an S3 block.
     pub cdn: Option<&'a str>,
+}
+
+/// One declared runtime variable, classified for the vault without a source re-scan.
+#[derive(Debug, Clone)]
+pub struct EnvBinding<'a> {
+    /// The first `secret(KEY)` reachable through fallbacks or concatenation.
+    pub secret: Option<&'a str>,
+    /// The static literal the declaration resolves to without the vault.
+    pub literal: Option<String>,
+}
+
+impl EnvBinding<'_> {
+    /// Whether the declaration resolves through the secret vault.
+    #[must_use]
+    pub fn is_secret(&self) -> bool {
+        self.secret.is_some()
+    }
 }
 
 impl Forkfile {
@@ -78,6 +99,24 @@ impl Forkfile {
             top(item, &mut services, &mut resources, &mut domains);
         }
         domains
+    }
+
+    /// Every runtime variable per component.
+    ///
+    /// A component is a top-level `env <group>` (keyed by group id), an image, or a service that
+    /// inherits its image's inline `env { … }` blocks and `use env <group>` groups. Nested `on`
+    /// blocks are flattened at every level.
+    #[must_use]
+    pub fn env_bindings(&self) -> BTreeMap<String, BTreeMap<String, EnvBinding<'_>>> {
+        let mut groups: BTreeMap<String, BTreeMap<String, EnvBinding<'_>>> = BTreeMap::new();
+        for item in &self.items.items {
+            env_groups(item, &mut groups);
+        }
+        let mut components = groups.clone();
+        for item in &self.items.items {
+            env_images(item, &groups, &mut components);
+        }
+        components
     }
 }
 
@@ -221,5 +260,202 @@ fn s3_cdns<'a>(items: &'a [S3Item], domains: &mut Vec<&'a str>, cdns: &mut Vec<&
                 OnBody::Block(block) => s3_cdns(&block.items, domains, cdns),
             },
         }
+    }
+}
+
+fn env_groups<'a>(
+    item: &'a TopItem,
+    groups: &mut BTreeMap<String, BTreeMap<String, EnvBinding<'a>>>,
+) {
+    match item {
+        TopItem::Env(env) => {
+            let entry = groups.entry(env.group.clone()).or_default();
+            env_items(&env.entries.items, entry);
+        }
+        TopItem::On(on) => match &on.body {
+            OnBody::Inline(inner) => env_groups(inner, groups),
+            OnBody::Block(block) => {
+                for item in &block.items {
+                    env_groups(item, groups);
+                }
+            }
+        },
+        _ => {}
+    }
+}
+
+fn env_images<'a>(
+    item: &'a TopItem,
+    groups: &BTreeMap<String, BTreeMap<String, EnvBinding<'a>>>,
+    components: &mut BTreeMap<String, BTreeMap<String, EnvBinding<'a>>>,
+) {
+    match item {
+        TopItem::Image(image) => {
+            let mut bindings = BTreeMap::new();
+            image_env(&image.body.items, groups, &mut bindings);
+            components.insert(image.id.clone(), bindings.clone());
+            image_services(&image.body.items, &bindings, components);
+        }
+        TopItem::On(on) => match &on.body {
+            OnBody::Inline(inner) => env_images(inner, groups, components),
+            OnBody::Block(block) => {
+                for item in &block.items {
+                    env_images(item, groups, components);
+                }
+            }
+        },
+        _ => {}
+    }
+}
+
+fn image_env<'a>(
+    items: &'a [ImageItem],
+    groups: &BTreeMap<String, BTreeMap<String, EnvBinding<'a>>>,
+    bindings: &mut BTreeMap<String, EnvBinding<'a>>,
+) {
+    for item in items {
+        match item {
+            ImageItem::Env(block) => env_items(&block.entries.items, bindings),
+            ImageItem::UseEnv(group) => {
+                if let Some(inherited) = groups.get(group) {
+                    bindings.extend(inherited.clone());
+                }
+            }
+            ImageItem::On(on) => match &on.body {
+                OnBody::Inline(inner) => {
+                    image_env(std::slice::from_ref(inner.as_ref()), groups, bindings);
+                }
+                OnBody::Block(block) => image_env(&block.items, groups, bindings),
+            },
+            _ => {}
+        }
+    }
+}
+
+fn image_services<'a>(
+    items: &'a [ImageItem],
+    bindings: &BTreeMap<String, EnvBinding<'a>>,
+    components: &mut BTreeMap<String, BTreeMap<String, EnvBinding<'a>>>,
+) {
+    for item in items {
+        match item {
+            ImageItem::Service(service) => {
+                components.insert(service.id.clone(), bindings.clone());
+            }
+            ImageItem::On(on) => match &on.body {
+                OnBody::Inline(inner) => {
+                    image_services(std::slice::from_ref(inner.as_ref()), bindings, components);
+                }
+                OnBody::Block(block) => image_services(&block.items, bindings, components),
+            },
+            _ => {}
+        }
+    }
+}
+
+fn env_items<'a>(items: &'a [EnvItem], bindings: &mut BTreeMap<String, EnvBinding<'a>>) {
+    for item in items {
+        match item {
+            EnvItem::Entry(entry) => {
+                bindings.insert(
+                    entry.key.clone(),
+                    EnvBinding {
+                        secret: secret_key(&entry.value),
+                        literal: literal(&entry.value),
+                    },
+                );
+            }
+            EnvItem::On(on) => match &on.body {
+                OnBody::Inline(inner) => {
+                    env_items(std::slice::from_ref(inner.as_ref()), bindings);
+                }
+                OnBody::Block(block) => env_items(&block.items, bindings),
+            },
+        }
+    }
+}
+
+/// The first `secret(...)` reachable through fallbacks or concatenation.
+fn secret_key(expr: &Expr) -> Option<&str> {
+    match &expr.kind {
+        ExprKind::Secret(key) => Some(key),
+        ExprKind::Fallback(left, right) => secret_key(left).or_else(|| secret_key(right)),
+        ExprKind::Concat(left, right) => secret_key(left).or_else(|| secret_key(right)),
+        _ => None,
+    }
+}
+
+/// The static literal a declaration would resolve to without the vault.
+fn literal(expr: &Expr) -> Option<String> {
+    match &expr.kind {
+        ExprKind::String(text) => Some(text.clone()),
+        ExprKind::Bool(value) => Some(value.to_string()),
+        ExprKind::Int(value) => Some(value.to_string()),
+        ExprKind::Fallback(left, right) => literal(left).or_else(|| literal(right)),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    const SOURCE: &str = r#"# forkfile: 0.1
+
+env base {
+  LOG_LEVEL = "info"
+  SECRET_KEY = secret(SECRET_KEY)
+  TURN = 2
+}
+
+image app . {
+  use env base
+  env {
+    EXTRA = true
+  }
+  service api {
+    route /
+  }
+  on dev {
+    service worker {
+      run: serve
+    }
+  }
+}
+"#;
+
+    #[test]
+    fn env_bindings_flatten_groups_images_services_and_on_blocks() {
+        let document = slipfork_forkfile_parse(SOURCE);
+        let bindings = document.env_bindings();
+
+        assert!(bindings["base"]["SECRET_KEY"].is_secret());
+        assert_eq!(
+            bindings["base"]["LOG_LEVEL"].literal.as_deref(),
+            Some("info")
+        );
+        assert_eq!(bindings["base"]["TURN"].literal.as_deref(), Some("2"));
+
+        // The image and both of its services inherit the group plus the inline block.
+        for component in ["app", "api", "worker"] {
+            assert_eq!(
+                bindings[component]["LOG_LEVEL"].literal.as_deref(),
+                Some("info"),
+                "{component} must inherit `use env base`"
+            );
+            assert_eq!(
+                bindings[component]["TURN"].literal.as_deref(),
+                Some("2"),
+                "{component}"
+            );
+            assert_eq!(
+                bindings[component]["EXTRA"].literal.as_deref(),
+                Some("true"),
+                "{component} must inherit the inline env block"
+            );
+            assert!(bindings[component]["SECRET_KEY"].is_secret(), "{component}");
+        }
+    }
+
+    fn slipfork_forkfile_parse(source: &str) -> crate::ast::Forkfile {
+        crate::parse(source).expect("the visitor fixture must be a valid Forkfile")
     }
 }

@@ -53,7 +53,7 @@ Two architectures only — `x86_64`/`amd64` and `aarch64`/`arm64` — and every 
 | `lintian` | Clean — no errors and no warnings that name a real packaging defect |
 | Reproducibility | `SOURCE_DATE_EPOCH` fixes ar-member timestamps; two builds of one commit are byte-identical |
 
-The package never enables a root daemon. `slipfork daemon install` writes the **user** unit, so worlds stay in the developer's session. There is one binary: the per-user daemon unit runs `slipfork daemon`, never a separate `slipforkd`. `sudo slipfork daemon install --ingress` is the one privileged step: it installs the system `slipfork-ingress.socket` + template instance and the AppArmor profile, and that instance forwards the accepted connection fd to `daemon.sock` while the daemon does the routing.
+The package never enables a root daemon. `slipfork daemon install` writes the **user** unit, so worlds stay in the developer's session. There is one binary: the per-user unit runs the same `slipfork` binary in its daemon mode, never a separate `slipforkd`. `sudo slipfork daemon install --ingress` is the one privileged step: it installs the system `slipfork-ingress.socket` + template instance and the AppArmor profile, and that instance forwards the accepted connection fd to `daemon.sock` while the daemon does the routing.
 
 ---
 

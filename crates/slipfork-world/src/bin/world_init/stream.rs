@@ -3,12 +3,15 @@
 //! Both handlers run on a detached thread so the init loop keeps reaping pods and answering the
 //! lifeline. They never touch `InitWorld` directly: [`WorldShared`] exposes only cloned facts.
 
+use std::fs::{self, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::Shutdown;
 use std::os::fd::AsRawFd;
+use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::net::UnixStream;
-use std::os::unix::process::CommandExt;
-use std::process::{Child, ChildStdin, Command, Stdio};
+use std::os::unix::process::{CommandExt, ExitStatusExt};
+use std::path::{Path, PathBuf};
+use std::process::{Child, ChildStdin, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Arc, Mutex};
@@ -21,11 +24,55 @@ use slipfork_world::control::{
 };
 use slipfork_world::pod_log::{LogLine, LogMerge, LogReader, REORDER_MS, now_ms};
 
-use crate::pod::{WorldShared, reap_zombies};
-use crate::{Fault, REMEDY_CRUN, REMEDY_PROTOCOL};
+use crate::pod::{PodInfo, WorldShared, reap_zombies};
+use crate::{Fault, REMEDY_CRUN, REMEDY_PROTOCOL, REMEDY_RUNTIME};
 
 /// How long an idle follower sleeps before checking its stop conditions again.
 const IDLE: Duration = Duration::from_millis(80);
+
+/// Mode-`0600` tmpfs OCI `process.json` derived from a pod's `config.json`, unlinked on drop.
+struct TempProcessSpec(PathBuf);
+
+impl TempProcessSpec {
+    fn write(info: &PodInfo, seq: u64, argv: &[String]) -> Result<Self, Fault> {
+        let config_path = info.bundle.join("config.json");
+        let raw = fs::read(&config_path)
+            .map_err(|source| Fault::cause("pod config read for exec", REMEDY_RUNTIME, source))?;
+        let mut config: serde_json::Value = serde_json::from_slice(&raw)
+            .map_err(|source| Fault::cause("pod config parse for exec", REMEDY_RUNTIME, source))?;
+        let process = config
+            .get_mut("process")
+            .and_then(serde_json::Value::as_object_mut)
+            .ok_or_else(|| Fault::new("pod config missing `process`", REMEDY_RUNTIME))?;
+        process.insert("args".to_owned(), serde_json::json!(argv));
+        process.insert("cwd".to_owned(), serde_json::json!(info.workdir));
+        process.insert("terminal".to_owned(), serde_json::Value::Bool(false));
+        let rendered = serde_json::to_vec(&serde_json::Value::Object(std::mem::take(process)))
+            .map_err(|source| Fault::cause("exec process encode", REMEDY_RUNTIME, source))?;
+        let path = info.bundle.join(format!("exec-{seq}.json"));
+        let _ = fs::remove_file(&path);
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&path)
+            .map_err(|source| Fault::cause("exec process spec create", REMEDY_RUNTIME, source))?;
+        let guard = Self(path);
+        file.write_all(&rendered)
+            .map_err(|source| Fault::cause("exec process spec write", REMEDY_RUNTIME, source))?;
+        Ok(guard)
+    }
+
+    fn path(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for TempProcessSpec {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.0);
+    }
+}
 
 /// Replays (and optionally follows) `<pods>/logs/<id>.log` into `stream`, merged by timestamp.
 pub(crate) fn serve_logs(
@@ -66,11 +113,7 @@ pub(crate) fn serve_logs(
             match reader.read_lines(&mut route) {
                 Ok(read) => progress |= read > 0,
                 Err(source) => {
-                    let _ = Fault::cause(
-                        format!("replay pod `{id}` log"),
-                        crate::REMEDY_RUNTIME,
-                        source,
-                    );
+                    let _ = Fault::cause(format!("replay pod `{id}` log"), REMEDY_RUNTIME, source);
                     closed = true;
                     break;
                 }
@@ -137,6 +180,7 @@ pub(crate) fn serve_exec(
     argv: Vec<String>,
     stdin: bool,
     mut stream: UnixStream,
+    buffered: FrameLines,
 ) -> Result<(), Fault> {
     let Some(info) = shared.info(&pod) else {
         return refuse(
@@ -154,23 +198,38 @@ pub(crate) fn serve_exec(
             "no command given".into(),
         );
     }
-    let mut command = Command::new(shared.crun());
+    // `crun exec` without `--process` defaults to uid 0 / gid 0 (unmapped in our identity-mapped
+    // rootless pod userns -> `setresgid(0): EINVAL`, exit 255) and drops `config.json` `env`.
+    // Deriving a mode-`0600` tmpfs `process.json` preserves identity uid/gid + pod env without
+    // exposing secrets in `/proc/<pid>/cmdline`.
+    let spec_file = match TempProcessSpec::write(&info, shared.next_exec_seq(), &argv) {
+        Ok(file) => file,
+        Err(fault) => {
+            eprintln!("slipfork-world-init: {fault}");
+            return refuse(&mut stream, &request_id, "exec-failed", fault.summary());
+        }
+    };
+    let mut command = shared.crun_command();
     command
-        .args(["--cgroup-manager=disabled", "exec", "--cwd"])
-        .arg(&info.workdir)
+        .args(["exec", "--process"])
+        .arg(spec_file.path())
         .arg(&pod)
-        .args(&argv)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .stdin(if stdin { Stdio::piped() } else { Stdio::null() })
         .process_group(0);
-    let mut child = command.spawn().map_err(|source| {
-        Fault::cause(
-            format!("exec in pod `{pod}` with crun"),
-            REMEDY_CRUN,
-            source,
-        )
-    })?;
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(source) => {
+            let fault = Fault::cause(
+                format!("exec in pod `{pod}` with crun"),
+                REMEDY_CRUN,
+                source,
+            );
+            eprintln!("slipfork-world-init: {fault}");
+            return refuse(&mut stream, &request_id, "exec-failed", fault.summary());
+        }
+    };
     let child_pid = i32::try_from(child.id()).unwrap_or_default();
     shared.register_exec(child_pid);
     let client_gone = Arc::new(AtomicBool::new(false));
@@ -178,13 +237,15 @@ pub(crate) fn serve_exec(
         .stdin
         .take()
         .map(|stdin| Arc::new(Mutex::new(Some(stdin))));
-    let input_thread = match slot.clone() {
+    let input_thread = match slot {
         Some(slot) => {
             let input = stream
                 .try_clone()
                 .map_err(|source| Fault::cause("exec input clone", REMEDY_PROTOCOL, source))?;
             let gone = Arc::clone(&client_gone);
-            Some(thread::spawn(move || pump_input(input, slot, gone)))
+            Some(thread::spawn(move || {
+                pump_input(input, buffered, slot, gone)
+            }))
         }
         None => None,
     };
@@ -228,7 +289,8 @@ pub(crate) fn serve_exec(
                 }
             }
             Err(RecvTimeoutError::Timeout) => {
-                if shared.stopped() || client_gone.load(Ordering::Relaxed) {
+                if shared.stopped() || client_gone.load(Ordering::Relaxed) || peer_closed(&stream) {
+                    deliver = false;
                     break;
                 }
             }
@@ -239,6 +301,7 @@ pub(crate) fn serve_exec(
         slipfork_world::kill_group(child_pid);
     }
     let code = wait_child(&mut child, &shared, child_pid);
+    drop(spec_file);
     shared.unregister_exec(child_pid);
     // Unblock the stdin pump (it blocks on this socket, not on the child) and its readers.
     let _ = stream.shutdown(Shutdown::Read);
@@ -265,11 +328,19 @@ pub(crate) fn serve_exec(
 
 /// Reads `ExecInput` frames from a cloned connection and feeds the child's stdin.
 ///
-/// A socket EOF (the daemon vanished) marks `gone` so the exec child is killed instead of hanging
-/// the init. An explicit empty input frame is a normal stdin close and leaves the child running.
-fn pump_input(mut stream: UnixStream, slot: Arc<Mutex<Option<ChildStdin>>>, gone: Arc<AtomicBool>) {
+/// Any frames already buffered alongside the opening `Exec` request are drained first. A socket
+/// EOF (the daemon vanished) marks `gone` so the exec child is killed instead of hanging the init;
+/// an explicit empty input frame is a normal stdin close and leaves the child running.
+fn pump_input(
+    mut stream: UnixStream,
+    mut lines: FrameLines,
+    slot: Arc<Mutex<Option<ChildStdin>>>,
+    gone: Arc<AtomicBool>,
+) {
+    while let Some(raw) = lines.next_line() {
+        forward_input(&raw, &slot);
+    }
     let mut bytes = [0_u8; 4096];
-    let mut lines = FrameLines::new();
     loop {
         let read = match stream.read(&mut bytes) {
             Ok(0) => {
@@ -286,28 +357,30 @@ fn pump_input(mut stream: UnixStream, slot: Arc<Mutex<Option<ChildStdin>>>, gone
             }
         };
         for raw in lines.feed(&bytes[..read], slipfork_world::pod_log::CHUNK) {
-            let Ok(text) = std::str::from_utf8(&raw) else {
-                continue;
-            };
-            let Ok(Request::ExecInput { data, .. }) = control::decode_request(text.trim()) else {
-                continue;
-            };
-            if data.is_empty() || data == "EOF" {
-                // An explicit empty frame is a normal stdin close; keep watching for a socket EOF
-                // so a vanished daemon still kills an exec child that ignores EOF.
-                close_stdin(&slot);
-                continue;
-            }
-            let Ok(payload) = base64::engine::general_purpose::STANDARD.decode(data) else {
-                continue;
-            };
-            if let Ok(mut guard) = slot.lock()
-                && let Some(stdin) = guard.as_mut()
-            {
-                let _ = stdin.write_all(&payload);
-                let _ = stdin.flush();
-            }
+            forward_input(&raw, &slot);
         }
+    }
+}
+
+fn forward_input(raw: &[u8], slot: &Arc<Mutex<Option<ChildStdin>>>) {
+    let Ok(text) = std::str::from_utf8(raw) else {
+        return;
+    };
+    let Ok(Request::ExecInput { data, .. }) = control::decode_request(text.trim()) else {
+        return;
+    };
+    if data.is_empty() || data == "EOF" {
+        close_stdin(slot);
+        return;
+    }
+    let Ok(payload) = base64::engine::general_purpose::STANDARD.decode(data) else {
+        return;
+    };
+    if let Ok(mut guard) = slot.lock()
+        && let Some(stdin) = guard.as_mut()
+    {
+        let _ = stdin.write_all(&payload);
+        let _ = stdin.flush();
     }
 }
 
@@ -320,7 +393,13 @@ fn close_stdin(slot: &Arc<Mutex<Option<ChildStdin>>>) {
 /// Waits for the exec child, recovering a status the init loop may have reaped first.
 fn wait_child(child: &mut Child, shared: &WorldShared, pid: i32) -> i32 {
     match child.wait() {
-        Ok(status) => status.code().unwrap_or(128),
+        Ok(status) => {
+            let _ = shared.take_status(pid);
+            status
+                .code()
+                .or_else(|| status.signal().map(|sig| 128 + sig))
+                .unwrap_or(128)
+        }
         Err(_) => {
             let deadline = Instant::now() + Duration::from_secs(2);
             while Instant::now() < deadline {
@@ -395,11 +474,6 @@ fn reply(stream: &mut UnixStream, frame: &InitFrame) -> Result<(), Fault> {
         .write_all(&bytes)
         .and_then(|()| stream.flush())
         .map_err(|source| Fault::cause("stream frame write", REMEDY_PROTOCOL, source))
-}
-
-#[allow(dead_code)]
-fn base64_decode(data: &str) -> Option<Vec<u8>> {
-    base64::engine::general_purpose::STANDARD.decode(data).ok()
 }
 
 /// Maps a capture line kind onto its wire frame kind.

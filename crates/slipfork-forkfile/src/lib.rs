@@ -42,7 +42,7 @@ pub use expr::*;
 pub use fmt::FormatCheck;
 pub use migrate::migrate;
 pub use span::{Position, Span};
-pub use visit::{ResourceDecl, ResourceDeclKind, ServiceDecl};
+pub use visit::{EnvBinding, ResourceDecl, ResourceDeclKind, ServiceDecl};
 
 /// Parses a `Forkfile`, returning every diagnostic when it is invalid.
 pub fn parse(source: &str) -> Result<Forkfile, Diagnostics> {

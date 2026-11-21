@@ -85,8 +85,14 @@ fn supervisor_main(project: &Path, world: &str, env: &HostEnv, json: bool) -> Re
     match &outcome {
         Ok(()) => {
             let url = format!("http://{}.localhost", world.as_str());
+            let pods_dir = runtime.supervisor.pods_dir().display().to_string();
             if let Ok(mut emitter) = emitter.lock() {
-                emitter.send(json!({ "event": "ready", "url": url }));
+                emitter.send(json!({
+                    "event": "ready",
+                    "url": url,
+                    "world": world.as_str(),
+                    "pods_dir": pods_dir,
+                }));
             }
         }
         Err(error) => {

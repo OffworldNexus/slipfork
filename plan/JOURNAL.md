@@ -2455,3 +2455,9 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-21T14:52 [M3.40.11] (lead) attempt 1/3 started
 - 2026-11-21T14:52 [M3.40.11] (lead) base 4dc0cbb615b2e249cb1c0a02c7560da915786afe
 - 2026-11-21T14:55 [M3.40.11] (lead) status active -> done
+- 2026-11-21T14:58 [M3.40.12] (lead) created (task) Live Btrfs lab green (crun exec/forks/status) and repo hygiene for the M3.40 gate
+- 2026-11-21T14:58 [M3.40.12] (lead) status ready -> active
+- 2026-11-21T14:58 [M3.40.12] (lead) attempt 1/3 started
+- 2026-11-21T14:58 [M3.40.12] (lead) base 9387d65dd22302f2f54db00762e6134d5f6e292e expert probing live crun exec
+- 2026-11-21T14:59 [M3.40.12] (lead) hygiene half done: zed target dir, spec consistency, 7 live suites
+- 2026-11-21T15:20 [M3.40.12] (lead) status active -> done

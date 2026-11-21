@@ -378,6 +378,16 @@ fn stderr(output: &Output) -> String {
     String::from_utf8_lossy(&output.stderr).into_owned()
 }
 
+/// True when some `Forkfile:<n>` names a real line number.
+fn forkfile_line(text: &str) -> bool {
+    text.match_indices("Forkfile:").any(|(index, marker)| {
+        text[index + marker.len()..]
+            .chars()
+            .next()
+            .is_some_and(|next| next.is_ascii_digit())
+    })
+}
+
 fn crun_list(crun: &Path) -> String {
     let output = Command::new(crun)
         .arg("list")
@@ -524,7 +534,7 @@ fn world_up_restart_down_journey() {
     );
     assert_ingress(&journey.runtime, "good");
     assert!(
-        first_out.contains("[1/") && first_out.contains("→ [1/"),
+        first_out.contains("→ [1/"),
         "progress lines must carry a real `→ [i/n]` prefix:\n{first_out}"
     );
     assert!(
@@ -614,8 +624,8 @@ fn world_up_restart_down_journey() {
         "failure must keep a phase header:\n{failed_out}"
     );
     assert!(
-        failed_out.contains("Forkfile:"),
-        "the failure tail must name the Forkfile line:\n{failed_out}"
+        forkfile_line(&failed_out),
+        "the failure tail must name a numbered Forkfile line:\n{failed_out}"
     );
     assert!(failed_err.contains("error:"), "{failed_err}");
     assert_eq!(
@@ -628,10 +638,16 @@ fn world_up_restart_down_journey() {
         "the world must stay up after a failed service"
     );
     let listed = journey.slipfork(&broken, &["status"]);
+    let listed_text = stdout(&listed);
     assert!(
-        listed.status.success() && stdout(&listed).contains("broken"),
-        "the failed world must stay listed by status:\n{}",
-        stdout(&listed)
+        listed.status.success() && listed_text.contains("broken"),
+        "the failed world must stay listed by status:\n{listed_text}"
+    );
+    assert!(
+        listed_text
+            .lines()
+            .any(|line| line.contains("broken") && line.contains("failed")),
+        "the failed service row must render its `failed` state:\n{listed_text}"
     );
     let down = journey.slipfork(&broken, &["down"]);
     assert!(
@@ -640,7 +656,7 @@ fn world_up_restart_down_journey() {
         stderr(&down)
     );
     assert!(
-        stdout(&down).contains("→ [1/2] stopping broken"),
+        stdout(&down).contains("→ [1/1] stopping broken"),
         "down must stream its phase header:\n{}",
         stdout(&down)
     );
@@ -649,7 +665,7 @@ fn world_up_restart_down_journey() {
     let down = journey.slipfork(&good, &["down"]);
     assert!(down.status.success(), "down: {}", stderr(&down));
     assert!(
-        stdout(&down).contains("→ [1/2] stopping good"),
+        stdout(&down).contains("→ [1/1] stopping good"),
         "down must stream its phase header:\n{}",
         stdout(&down)
     );
