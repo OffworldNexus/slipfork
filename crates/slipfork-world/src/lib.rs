@@ -44,9 +44,11 @@ mod secure_file;
 mod supervisor;
 
 pub use boot::{
-    BootEvent, BootFailure, BootKind, BootStep, FailedHook, HookPhase, ImageNode, ResourceNode,
-    ServiceHealth, ServiceNode, StampStore, StepOutcome, StepStamp, WorldPlan, classify_service,
-    run_plan, world_plan,
+    BootEvent, BootFailure, BootGraph, BootKind, BootScheduler, BootState, BootStep, EpochState,
+    EventSink, FailedHook, HookPhase, ImageNode, PG_STAMP_FILE, ResourceNode, ServiceHealth,
+    ServiceNode, StampStore, StepExecutor, StepOutcome, StepStamp, WORLD_STAMP_FILE, WorldPlan,
+    WorldStamp, WorldStampStore, classify_service, epoch_for, plan_epoch, world_plan,
+    write_pg_checkpoint, write_pg_checkpoints,
 };
 pub use btrfs::{is_btrfs_path, is_subvolume_path};
 

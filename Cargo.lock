@@ -1225,6 +1225,7 @@ dependencies = [
  "base64",
  "getrandom 0.3.4",
  "hex",
+ "hmac 0.12.1",
  "hpke",
  "libc",
  "p256",
@@ -1238,6 +1239,7 @@ dependencies = [
  "slipfork-vcs",
  "slipfork-world",
  "tempfile",
+ "tokio",
  "tungstenite",
 ]
 

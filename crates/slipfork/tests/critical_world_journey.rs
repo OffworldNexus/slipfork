@@ -47,7 +47,7 @@ image app . {
     S3_ACCESS = uploads.access_key
     S3_SECRET = uploads.secret_key
   }
-  pre-deploy: sh -c 'printf pre > order.txt'
+  pre-deploy: sh -c 'printf pre > order.txt && echo pre-deploy hook ran'
   post-deploy: sh -c 'for i in $(seq 50); do grep -q svc order.txt && break; sleep 0.1; done; grep -q svc order.txt && printf post >> order.txt'
   service api {
     port 8000
@@ -875,6 +875,69 @@ fn world_up_restart_down_journey() {
     );
     let down = journey.slipfork(&good, &["down"]);
     assert!(down.status.success(), "final down: {}", stderr(&down));
+
+    // 5a. The typed `--json` boot stream: every node frame carries its kind, bare subject, a
+    // contract state, and its own duration; a hook's live output rides the stream as a `log` line.
+    let json_boot = journey.slipfork(&good, &["up", "--json"]);
+    assert!(
+        json_boot.status.success(),
+        "{}",
+        up_failure("`up --json` failed", &good, &json_boot)
+    );
+    let boot_events: Vec<serde_json::Value> = stdout(&json_boot)
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("each boot line is JSON"))
+        .collect();
+    for event in &boot_events {
+        let Some(kind) = event["kind"].as_str() else {
+            continue;
+        };
+        assert!(
+            ["image", "resource", "setup", "hook", "service"].contains(&kind),
+            "off-contract boot kind: {event}"
+        );
+        let name = event["name"]
+            .as_str()
+            .unwrap_or_else(|| panic!("node frame without a name: {event}"));
+        assert!(
+            !name.is_empty() && !name.starts_with("Hook ") && !name.starts_with("Setup "),
+            "the name column must be the bare subject, never the label: {event}"
+        );
+        let state = event["state"]
+            .as_str()
+            .unwrap_or_else(|| panic!("node frame without a state: {event}"));
+        assert!(
+            [
+                "running",
+                "cached",
+                "pulled",
+                "built",
+                "ready",
+                "up to date",
+                "failed"
+            ]
+            .contains(&state),
+            "off-contract boot state: {event}"
+        );
+        if event["event"].as_str() != Some("started") {
+            assert!(
+                event["duration_ms"].is_u64(),
+                "a finished node must carry its own duration_ms: {event}"
+            );
+        }
+    }
+    assert!(
+        boot_events.iter().any(|event| {
+            event["event"] == "log"
+                && event["line"]
+                    .as_str()
+                    .is_some_and(|line| line.contains("pre-deploy hook ran"))
+        }),
+        "the `--json` stream must carry a hook's live output line:\n{}",
+        stdout(&json_boot)
+    );
+    let down = journey.slipfork(&good, &["down"]);
+    assert!(down.status.success(), "json-boot down: {}", stderr(&down));
     let _ = wait_until(
         || scoped_leaks(&journey.run).is_empty(),
         Duration::from_secs(10),

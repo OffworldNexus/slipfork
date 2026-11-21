@@ -1,4 +1,11 @@
-//! Stamp persistence for conditional `@<tool>` / `when changed(...)` boot steps.
+//! Stamp persistence: per-step digests plus the epoch-paired world/PG checkpoint stamps.
+
+mod epoch;
+
+pub use epoch::{
+    EpochState, PG_STAMP_FILE, WORLD_STAMP_FILE, WorldStamp, WorldStampStore, epoch_for,
+    plan_epoch, write_pg_checkpoint, write_pg_checkpoints,
+};
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -40,24 +47,31 @@ pub(crate) fn stamp_key(node: &SetupNode) -> String {
 }
 
 /// `<project>/.slipfork`: stamps live in the project subvolume and survive `fork`.
+///
+/// A stamp is only trusted when the world and its PG sibling carry the same `world_epoch`;
+/// otherwise every conditional step re-runs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StampStore {
     root: PathBuf,
+    trusted: bool,
 }
 
 impl StampStore {
-    /// Builds the store under the project root's `.slipfork` directory.
+    /// Builds a store whose stamps are honoured only when the epoch pair matches.
     #[must_use]
-    pub fn new(project: &Path) -> Self {
+    pub fn gated(project: &Path, trusted: bool) -> Self {
         Self {
             root: project.join(".slipfork"),
+            trusted,
         }
     }
 
     /// Whether the recorded stamp equals the planned digest.
     #[must_use]
     pub fn is_current(&self, stamp: &StepStamp) -> bool {
-        fs::read_to_string(self.root.join(&stamp.key)).is_ok_and(|text| text.trim() == stamp.digest)
+        self.trusted
+            && fs::read_to_string(self.root.join(&stamp.key))
+                .is_ok_and(|text| text.trim() == stamp.digest)
     }
 
     /// Persists the digest atomically after a successful conditional step.

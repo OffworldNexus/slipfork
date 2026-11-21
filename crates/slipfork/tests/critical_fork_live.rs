@@ -1,10 +1,12 @@
 //! Protected live journey for `slipfork fork` and `slipfork drop`.
 //!
-//! A real Btrfs scratch project (`SLIPFORK_TEST_ROOT`), a real daemon, and a real `crun` world:
-//! `fork` must snapshot both subvolumes, reuse the per-mount `.slipfork-store/images` cache with
-//! zero re-pull, switch the checkout's branch, boot the fork behind its own `.localhost` host, and
-//! `drop` must refuse dirty work, then remove both snapshots. Every missing host capability FAILS
-//! CLOSED.
+//! A real Btrfs scratch project (`SLIPFORK_TEST_ROOT`), a real daemon, and a real `crun` world
+//! running a full stack (image + service, PostgreSQL, Redis, and native S3 behind a CDN): `fork`
+//! must snapshot the project and every resource clone, reuse the shared image cache with zero
+//! re-pull, re-run zero hooks on a matching `world_epoch`, switch the checkout's branch, and prove
+//! that live PG rows, Redis keys, and S3 objects survive CoW while later parent writes stay
+//! isolated. Breaking the paired epoch must force both hooks to run again. Every missing host
+//! capability FAILS CLOSED.
 
 use std::ffi::OsString;
 use std::fs;
@@ -17,9 +19,12 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use hmac::{Hmac, Mac};
+use sha2::{Digest, Sha256};
 use slipfork_ingress::IngressHandoff;
 use slipfork_world::{
-    BtrfsEngine, Dirtiness, STORE_DIR, StoreLayout, WorldEngine, WorldName, is_subvolume_path,
+    BtrfsEngine, Dirtiness, ForkName, ResourceKind, STORE_DIR, StoreLayout, WorldEngine, WorldName,
+    is_subvolume_path,
 };
 
 const BTRFS_SUPER_MAGIC: u64 = 0x9123_683E;
@@ -33,8 +38,15 @@ CMD [\"python3\", \"-m\", \"http.server\", \"8000\"]
 ";
 
 const FORKFILE: &str = r#"# forkfile: 0.1
+postgres pg { database app }
+redis cache
+s3 assets {
+  policy public-read
+  cdn assets-cdn
+}
 image app . {
-  dockerfile Dockerfile
+  before-start: mkdir -p /project/.slipfork && echo before-start >> /project/.slipfork/hooks.log
+  pre-deploy: mkdir -p /project/.slipfork && echo pre-deploy >> /project/.slipfork/hooks.log
   service api {
     port 8000
     route /
@@ -42,6 +54,12 @@ image app . {
   }
 }
 "#;
+
+const S3_ACCESS: &str = "slipfork";
+const S3_SECRET: &str = "slipfork-demo-s3";
+const S3_REGION: &str = "us-east-1";
+const S3_DATE: &str = "20260101";
+const S3_AMZ_DATE: &str = "20260101T000000Z";
 
 fn fail_closed(message: &str) -> ! {
     panic!("fail closed: {message}");
@@ -161,39 +179,62 @@ fn daemons_for(runtime: &Path) -> Vec<u32> {
     found
 }
 
-/// A real `:80` connection is handed to `ingress.accept`, routed by `Host`, and answered by the
-/// fork pod, so the assertion proves both the fork world's route table and its own files.
-fn assert_fork_ingress(runtime: &Path, world: &str, marker: &str) {
-    let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind the ingress probe listener");
-    let mut client = TcpStream::connect(listener.local_addr().expect("probe address"))
-        .expect("connect the ingress probe");
-    let (accepted, _) = listener.accept().expect("accept the probe connection");
-    let daemon = UnixStream::connect(runtime.join("daemon.sock")).expect("connect daemon.sock");
-    IngressHandoff::new(1)
-        .send(&daemon, accepted.as_fd())
-        .expect("hand the accepted :80 descriptor to the daemon");
-    drop(accepted);
-    client
-        .set_read_timeout(Some(Duration::from_secs(30)))
-        .expect("configure the ingress probe");
-    client
-        .write_all(
-            format!("GET / HTTP/1.1\r\nHost: {world}.localhost\r\nConnection: close\r\n\r\n")
-                .as_bytes(),
-        )
-        .expect("write the ingress request");
-    let mut response = String::new();
-    client
-        .read_to_string(&mut response)
-        .expect("read the ingress response");
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn hmac(key: &[u8], data: &str) -> Vec<u8> {
+    let mut mac = Hmac::<Sha256>::new_from_slice(key).expect("HMAC key");
+    mac.update(data.as_bytes());
+    mac.finalize().into_bytes().to_vec()
+}
+
+/// Signs one request exactly like an AWS SDK: header auth over the given payload digest.
+fn signed_headers(
+    method: &str,
+    path: &str,
+    host: &str,
+    payload: &str,
+) -> Vec<(&'static str, String)> {
+    let headers =
+        format!("host:{host}\nx-amz-content-sha256:{payload}\nx-amz-date:{S3_AMZ_DATE}\n");
+    let signed = "host;x-amz-content-sha256;x-amz-date";
+    let canonical = format!("{method}\n{path}\n\n{headers}\n{signed}\n{payload}");
+    let scope = format!("{S3_DATE}/{S3_REGION}/s3/aws4_request");
+    let to_sign = format!(
+        "AWS4-HMAC-SHA256\n{S3_AMZ_DATE}\n{scope}\n{}",
+        hex(&Sha256::digest(canonical.as_bytes()))
+    );
+    let key = hmac(
+        &hmac(
+            &hmac(
+                &hmac(format!("AWS4{S3_SECRET}").as_bytes(), S3_DATE),
+                S3_REGION,
+            ),
+            "s3",
+        ),
+        "aws4_request",
+    );
+    let signature = hex(&hmac(&key, &to_sign));
+    vec![
+        ("x-amz-date", S3_AMZ_DATE.to_owned()),
+        ("x-amz-content-sha256", payload.to_owned()),
+        (
+            "Authorization",
+            format!(
+                "AWS4-HMAC-SHA256 Credential={S3_ACCESS}/{scope}, SignedHeaders={signed}, Signature={signature}"
+            ),
+        ),
+    ]
+}
+
+/// Asserts a `200` plus the expected body text from one ingress exchange.
+fn assert_object(response: &str, body: &str) {
     assert!(
         response.starts_with("HTTP/1.1 200"),
-        "the fork world must answer on its own host: {response}"
+        "expected `200 OK` carrying `{body}`: {response}"
     );
-    assert!(
-        response.contains(marker),
-        "the fork pod's own files must return: {response}"
-    );
+    assert!(response.contains(body), "expected `{body}`: {response}");
 }
 
 struct Lab {
@@ -263,14 +304,87 @@ impl Lab {
     }
 
     fn run(&self, args: &[&str]) -> Output {
+        self.run_in(&self.project, args)
+    }
+
+    fn run_in(&self, directory: &Path, args: &[&str]) -> Output {
         Command::new(env!("CARGO_BIN_EXE_slipfork"))
             .args(args)
-            .current_dir(&self.project)
+            .current_dir(directory)
             .env("NO_COLOR", "1")
             .env("XDG_RUNTIME_DIR", &self.runtime)
             .env("TERM", "dumb")
             .output()
             .expect("run slipfork")
+    }
+
+    /// Runs one command inside a live pod through the real `slipfork exec` control path.
+    fn exec(&self, directory: &Path, target: &str, argv: &[&str]) -> String {
+        let mut args = vec!["exec", target, "--"];
+        args.extend_from_slice(argv);
+        let output = self.run_in(directory, &args);
+        assert!(
+            output.status.success(),
+            "exec {target} {argv:?} failed: {}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).trim().to_owned()
+    }
+
+    /// Hands one accepted `:80` descriptor to the daemon and returns the raw response.
+    fn ingress(&self, request: &str) -> String {
+        let listener =
+            TcpListener::bind(("127.0.0.1", 0)).expect("bind the ingress probe listener");
+        let mut client = TcpStream::connect(listener.local_addr().expect("probe address"))
+            .expect("connect the ingress probe");
+        let (accepted, _) = listener.accept().expect("accept the probe connection");
+        let daemon = UnixStream::connect(self.runtime.join("daemon.sock")).expect("daemon.sock");
+        IngressHandoff::new(1)
+            .send(&daemon, accepted.as_fd())
+            .expect("hand the accepted :80 descriptor to the daemon");
+        drop(accepted);
+        client
+            .set_read_timeout(Some(Duration::from_secs(30)))
+            .expect("configure the ingress probe");
+        client
+            .write_all(request.as_bytes())
+            .expect("write the ingress request");
+        let mut response = String::new();
+        client
+            .read_to_string(&mut response)
+            .expect("read the ingress response");
+        response
+    }
+
+    fn get(&self, host: &str, path: &str) -> String {
+        self.ingress(&format!(
+            "GET {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n"
+        ))
+    }
+
+    /// A real SigV4 `PUT`; `key_path` is the bucket-qualified target the S3 verifier sees after
+    /// the CDN rewrite, `send_path` is the bare object path the CDN authority receives.
+    fn signed_put(&self, host: &str, key_path: &str, send_path: &str, body: &str) -> String {
+        let payload = hex(&Sha256::digest(body.as_bytes()));
+        let headers = signed_headers("PUT", key_path, host, &payload);
+        let mut request = format!(
+            "PUT {send_path} HTTP/1.1\r\nHost: {host}\r\nContent-Length: {}\r\nConnection: close\r\n",
+            body.len()
+        );
+        for (name, value) in headers {
+            request.push_str(&format!("{name}: {value}\r\n"));
+        }
+        request.push_str("\r\n");
+        request.push_str(body);
+        self.ingress(&request)
+    }
+
+    /// Lines in the ledger a `before-start` or `pre-deploy` hook appended.
+    fn hook_lines(&self, project: &Path) -> usize {
+        fs::read_to_string(project.join(".slipfork/hooks.log"))
+            .map(|text| text.lines().count())
+            .unwrap_or(0)
     }
 
     fn shutdown_daemon(&self) {
@@ -354,7 +468,49 @@ fn fork_and_drop_a_live_world_without_leaving_snapshots() {
         is_subvolume_path(&lab.store_root.join("worlds/demo")).unwrap_or(false),
         "parent world data must live under `<mount>/.slipfork-store/worlds/demo`"
     );
+    let parent_hooks = lab.hook_lines(&lab.project);
+    assert_eq!(
+        parent_hooks, 2,
+        "`up` must run the declared `before-start` and `pre-deploy` hooks exactly once"
+    );
 
+    // Seed the full stack through the real CLI/control plane before forking.
+    lab.exec(
+        &lab.project,
+        "pg",
+        &[
+            "psql",
+            "-U",
+            "postgres",
+            "-d",
+            "postgres",
+            "-tAc",
+            "CREATE TABLE seed (id int PRIMARY KEY, note text); INSERT INTO seed VALUES (1, 'parent')",
+        ],
+    );
+    assert_eq!(
+        lab.exec(
+            &lab.project,
+            "cache",
+            &["redis-cli", "SET", "cache:key", "parent-value"]
+        ),
+        "OK",
+        "the parent redis must accept the seeded key"
+    );
+    let seeded = lab.signed_put(
+        "assets-cdn.demo.localhost",
+        "/assets/seed.txt",
+        "/seed.txt",
+        "parent object",
+    );
+    assert!(
+        seeded.starts_with("HTTP/1.1 200"),
+        "seeding the bucket must succeed: {seeded}"
+    );
+
+    // Wall clock starts at the `Command::spawn` boundary; the daemon's own `elapsed_ms` is only
+    // secondary evidence because the ceiling is `spawn` -> the fork's first `200 OK` (`specs/03` §3).
+    let started = std::time::Instant::now();
     let fork = lab.run(&["fork", "feat-auth", "--json"]);
     assert!(
         fork.status.success(),
@@ -365,6 +521,7 @@ fn fork_and_drop_a_live_world_without_leaving_snapshots() {
     let stdout = String::from_utf8_lossy(&fork.stdout);
     let reply: serde_json::Value = serde_json::from_str(stdout.trim()).expect("fork --json object");
     assert_eq!(reply["fork"], "feat-auth", "{stdout}");
+    assert_eq!(reply["world"], "feat-auth--demo", "{stdout}");
     assert_eq!(reply["url"], "http://feat-auth--demo.localhost", "{stdout}");
     assert!(reply["elapsed_ms"].as_u64().unwrap_or(0) > 0, "{stdout}");
     assert!(
@@ -388,6 +545,25 @@ fn fork_and_drop_a_live_world_without_leaving_snapshots() {
         "`{}` must be a Btrfs subvolume",
         fork_world.display()
     );
+    // The fork snapshot carries the parent's `world_epoch` checkpoint, so stamped work is reused.
+    let parent_stamp = lab
+        .store_root
+        .join("worlds/demo/.slipfork-world-stamp.json");
+    let fork_stamp = fork_world.join(".slipfork-world-stamp.json");
+    assert!(
+        parent_stamp.is_file() && fork_stamp.is_file(),
+        "both the parent and the fork must carry `.slipfork-world-stamp.json`"
+    );
+    let parent_epoch: serde_json::Value =
+        serde_json::from_slice(&fs::read(&parent_stamp).expect("read parent stamp"))
+            .expect("parent stamp JSON");
+    let fork_epoch: serde_json::Value =
+        serde_json::from_slice(&fs::read(&fork_stamp).expect("read fork stamp"))
+            .expect("fork stamp JSON");
+    assert_eq!(
+        parent_epoch["world_epoch"], fork_epoch["world_epoch"],
+        "a fork must reuse the parent's epoch, so hooks stay at 0ms"
+    );
     let fork_log = fs::read_to_string(fork_project.join(".slipfork/supervisor.log"))
         .expect("read fork supervisor.log");
     assert!(
@@ -410,12 +586,176 @@ fn fork_and_drop_a_live_world_without_leaving_snapshots() {
         "the fork checkout must switch branches"
     );
 
+    // A matched epoch means zero hook re-runs.
+    assert_eq!(
+        lab.hook_lines(&fork_project),
+        parent_hooks,
+        "a matching `world_epoch` must not re-run `before-start`/`pre-deploy`"
+    );
+
     // The fork's own pod must serve the fork's files, and the parent must not see them.
     fs::write(fork_project.join("fork-only.txt"), "fork bytes\n").expect("write the fork marker");
-    assert_fork_ingress(&lab.runtime, "feat-auth--demo", "fork-only.txt");
+    assert_object(&lab.get("feat-auth--demo.localhost", "/"), "fork-only.txt");
+    // The protected ceiling: `spawn` -> the fork's own first `200 OK` from the ingress.
+    let wall = started.elapsed();
+    assert!(
+        wall < Duration::from_secs(1),
+        "fork must serve its first 200 within 1.0s of spawn (took {wall:?})"
+    );
     assert!(
         !lab.project.join("fork-only.txt").exists(),
         "the parent checkout must stay untouched"
+    );
+
+    // Live PostgreSQL rows, Redis keys, and S3 objects all survive the CoW snapshot.
+    assert_eq!(
+        lab.exec(
+            &fork_project,
+            "pg",
+            &[
+                "psql",
+                "-U",
+                "postgres",
+                "-d",
+                "postgres",
+                "-tAc",
+                "SELECT note FROM seed WHERE id = 1",
+            ],
+        ),
+        "parent",
+        "the seeded PG row must exist inside the fork"
+    );
+    assert_eq!(
+        lab.exec(&fork_project, "cache", &["redis-cli", "GET", "cache:key"]),
+        "parent-value",
+        "the seeded redis key must exist inside the fork"
+    );
+    assert_object(
+        &lab.get("assets-cdn.feat-auth--demo.localhost", "/seed.txt"),
+        "parent object",
+    );
+
+    // Post-fork parent writes must stay on the parent's side of the CoW boundary.
+    lab.exec(
+        &lab.project,
+        "pg",
+        &[
+            "psql",
+            "-U",
+            "postgres",
+            "-d",
+            "postgres",
+            "-tAc",
+            "INSERT INTO seed VALUES (2, 'late')",
+        ],
+    );
+    assert_eq!(
+        lab.exec(
+            &fork_project,
+            "pg",
+            &[
+                "psql",
+                "-U",
+                "postgres",
+                "-d",
+                "postgres",
+                "-tAc",
+                "SELECT count(*) FROM seed",
+            ],
+        ),
+        "1",
+        "a parent INSERT after `fork` must not appear inside the fork"
+    );
+    assert_eq!(
+        lab.exec(
+            &lab.project,
+            "cache",
+            &["redis-cli", "SET", "cache:key", "mutated"],
+        ),
+        "OK"
+    );
+    assert_eq!(
+        lab.exec(&fork_project, "cache", &["redis-cli", "GET", "cache:key"]),
+        "parent-value",
+        "a parent redis write after `fork` must not appear inside the fork"
+    );
+    let late = lab.signed_put(
+        "assets-cdn.demo.localhost",
+        "/assets/parent-only.txt",
+        "/parent-only.txt",
+        "late object",
+    );
+    assert!(
+        late.starts_with("HTTP/1.1 200"),
+        "the parent bucket must accept the late object: {late}"
+    );
+    assert!(
+        lab.get("assets-cdn.feat-auth--demo.localhost", "/parent-only.txt")
+            .starts_with("HTTP/1.1 404"),
+        "a parent S3 PUT after `fork` must not appear inside the fork"
+    );
+
+    // Breaking the paired `world_epoch` forces both hooks to run again; the data still survives.
+    let layout = StoreLayout::at(&lab.store_root);
+    let demo = WorldName::parse("demo").expect("valid world");
+    let feat = ForkName::parse("feat-auth").expect("valid fork");
+    let fork_pg = layout.fork_world_clone(&demo, &feat, ResourceKind::Postgres, "pg");
+    let pg_stamp = fork_pg.join(".slipfork-postgres-stamp.json");
+    let mut stamp: serde_json::Value =
+        serde_json::from_slice(&fs::read(&pg_stamp).expect("read the fork's paired PG stamp"))
+            .expect("PG stamp JSON");
+    stamp["world_epoch"] = serde_json::Value::String("mismatched".to_owned());
+    fs::write(
+        &pg_stamp,
+        serde_json::to_vec(&stamp).expect("encode the altered PG stamp"),
+    )
+    .expect("break the fork's paired epoch");
+    let down = lab.run_in(&fork_project, &["down"]);
+    assert!(
+        down.status.success(),
+        "down failed: {}",
+        String::from_utf8_lossy(&down.stderr)
+    );
+    let reup = lab.run_in(
+        &fork_project,
+        &["up", "--world", "feat-auth--demo", "--json"],
+    );
+    assert!(
+        reup.status.success(),
+        "re-up failed: stdout={}\nstderr={}",
+        String::from_utf8_lossy(&reup.stdout),
+        String::from_utf8_lossy(&reup.stderr)
+    );
+    assert_eq!(
+        lab.hook_lines(&fork_project),
+        parent_hooks + 2,
+        "a mismatched paired `world_epoch` must re-run both hooks"
+    );
+    assert_eq!(
+        lab.exec(
+            &fork_project,
+            "pg",
+            &[
+                "psql",
+                "-U",
+                "postgres",
+                "-d",
+                "postgres",
+                "-tAc",
+                "SELECT note FROM seed WHERE id = 1",
+            ],
+        ),
+        "parent",
+        "the fork's PG data must survive a reboot"
+    );
+    assert_eq!(
+        lab.exec(&fork_project, "cache", &["redis-cli", "GET", "cache:key"]),
+        "parent-value",
+        "the fork's redis key must survive a reboot"
+    );
+    assert_object(
+        &lab.get("assets-cdn.feat-auth--demo.localhost", "/seed.txt"),
+        "parent object",
     );
 
     // Dirty work is refused before anything stops, with exactly one remedy.

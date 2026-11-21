@@ -165,8 +165,6 @@ pub struct SuperviseArgs {
     pub project: PathBuf,
     /// Validated world name.
     pub world: String,
-    /// Keep boot log lines inside the typed NDJSON stream instead of the supervisor log.
-    pub json: bool,
 }
 
 /// The on-disk handle a separate `down`/`restart` process uses.

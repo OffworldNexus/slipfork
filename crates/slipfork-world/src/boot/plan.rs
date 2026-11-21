@@ -1,17 +1,14 @@
-//! Pure world-boot planning: node collection, phase ordering, and dependency indexes.
-
-use std::path::{Path, PathBuf};
-
-use slipfork_forkfile::ast::*;
-use slipfork_forkfile::boot::{SetupNode, boot_plan};
-use slipfork_forkfile::{Command, CommandPart, FeatureSet, each_enabled};
-
-use super::stamp::{StepStamp, stamp_key};
-use super::{
-    BootKind, BootStep, FailedHook, HookPhase, ImageNode, ResourceNode, ServiceNode, WorldPlan,
-};
+//! Declaration walking: collects every `image`, resource, hook, and service into plain values.
+//!
+//! Node emission, edge wiring, and in-degree bookkeeping live in [`super::graph`]; this module
+//! only consumes the checked syntax tree so the plan stays a pure data transform.
+use super::graph;
+use super::{BootStep, FailedHook, HookPhase, ImageNode, ResourceNode, ServiceNode, WorldPlan};
 use crate::resources::{ResourceKind, S3Bucket};
-
+use slipfork_forkfile::ast::*;
+use slipfork_forkfile::boot::SetupNode;
+use slipfork_forkfile::{Command, CommandPart, FeatureSet, each_enabled};
+use std::path::{Path, PathBuf};
 /// Builds the world boot plan from a checked `Forkfile` and its project root.
 pub fn world_plan(doc: &Forkfile, root: &Path) -> crate::Result<WorldPlan> {
     let features = doc.active_features();
@@ -23,23 +20,30 @@ pub fn world_plan(doc: &Forkfile, root: &Path) -> crate::Result<WorldPlan> {
         resources: Vec::new(),
         services: Vec::new(),
         hooks: Vec::new(),
-        steps: Vec::new(),
-        failed_deploy: Vec::new(),
     };
     each_enabled(&doc.items.items, &features, &mut |item| {
         builder.top(item);
     });
     builder.finish(doc)
 }
-
-struct HookRecord {
-    image: String,
-    owner: String,
-    phase: HookPhase,
-    command: String,
-    line: u32,
+/// Declarations collected by [`PlanBuilder`], handed to [`graph::finish`].
+pub(super) struct Parts<'a> {
+    pub(super) root: &'a Path,
+    pub(super) images: Vec<ImageNode>,
+    pub(super) resources: Vec<ResourceNode>,
+    pub(super) services: Vec<ServiceNode>,
+    pub(super) hooks: Vec<HookRecord>,
+    pub(super) steps: Vec<BootStep>,
+    pub(super) failed_deploy: Vec<FailedHook>,
 }
-
+/// One declared hook command, kept for image/phase attribution during edge wiring.
+pub(super) struct HookRecord {
+    pub(super) image: String,
+    pub(super) owner: String,
+    pub(super) phase: HookPhase,
+    pub(super) command: String,
+    pub(super) line: u32,
+}
 struct PlanBuilder<'a> {
     features: &'a FeatureSet,
     error: Option<crate::Error>,
@@ -48,10 +52,7 @@ struct PlanBuilder<'a> {
     resources: Vec<ResourceNode>,
     services: Vec<ServiceNode>,
     hooks: Vec<HookRecord>,
-    steps: Vec<BootStep>,
-    failed_deploy: Vec<FailedHook>,
 }
-
 impl PlanBuilder<'_> {
     fn top(&mut self, item: &TopItem) {
         match item {
@@ -114,7 +115,6 @@ impl PlanBuilder<'_> {
             _ => {}
         }
     }
-
     fn image_items(&mut self, image: &str, items: &[ImageItem]) {
         let features = self.features;
         each_enabled(items, features, &mut |item| match item {
@@ -134,7 +134,6 @@ impl PlanBuilder<'_> {
             _ => {}
         });
     }
-
     fn service_items(&mut self, image: &str, service: &str, items: &[ServiceItem]) {
         let features = self.features;
         each_enabled(items, features, &mut |item| match item {
@@ -153,7 +152,6 @@ impl PlanBuilder<'_> {
             _ => {}
         });
     }
-
     fn service(&mut self, image: &str, service: &Service) {
         let mut port = None;
         let mut internal_ports = Vec::new();
@@ -176,7 +174,6 @@ impl PlanBuilder<'_> {
         });
         self.service_items(image, &service.id, &service.body.items);
     }
-
     fn hook(&mut self, image: &str, owner: &str, phase: HookPhase, hook: &Hook) {
         for command in hook_commands(hook) {
             self.hooks.push(HookRecord {
@@ -188,179 +185,48 @@ impl PlanBuilder<'_> {
             });
         }
     }
-
-    fn finish(mut self, doc: &Forkfile) -> crate::Result<WorldPlan> {
+    fn finish(self, doc: &Forkfile) -> crate::Result<WorldPlan> {
         if let Some(error) = self.error {
             return Err(error);
         }
-        let mut image_steps = Vec::new();
-        for image in &self.images {
-            self.steps.push(BootStep {
-                kind: BootKind::Image,
-                image: Some(image.id.clone()),
-                subject: image.id.clone(),
-                phase: None,
-                label: format!("Image {}", image.id),
-                command: None,
-                stamp: None,
-                uses_env: false,
-                line: image.line,
-                deps: Vec::new(),
-            });
-            image_steps.push(self.steps.len() - 1);
-        }
-
-        let mut resource_steps = Vec::new();
-        for resource in &self.resources {
-            self.steps.push(BootStep {
-                kind: BootKind::Resource,
-                image: None,
-                subject: resource.id.clone(),
-                phase: None,
-                label: format!("Resource {}", resource.id),
-                command: None,
-                stamp: None,
-                uses_env: false,
-                line: resource.line,
-                deps: Vec::new(),
-            });
-            resource_steps.push(self.steps.len() - 1);
-        }
-
-        for node in boot_plan(doc, self.root).nodes {
-            let image_idx = image_of(&self.images, &image_steps, &node.image);
-            let (phase, subject, line) = match self.lookup(&node) {
-                Some((HookPhase::FailedDeploy, owner, image, line)) => {
-                    self.failed_deploy.push(FailedHook {
-                        owner,
-                        image,
-                        command: node.command.clone(),
-                        line,
-                    });
-                    continue;
-                }
-                Some((phase, owner, _image, line)) => (Some(phase), owner, line),
-                None => (None, node.image.clone(), 1),
-            };
-            let conditional = phase.is_none_or(|phase| phase == HookPhase::BeforeStart)
-                && (node.tool.is_some() || !node.patterns.is_empty());
-            let label = match phase {
-                Some(HookPhase::BeforeStart) => format!("Hook {subject}:before-start"),
-                Some(phase) => format!("Hook {subject}:{}", phase.as_str()),
-                None => format!("Setup {}: {}", node.image, node.command),
-            };
-            self.steps.push(BootStep {
-                kind: match phase {
-                    Some(HookPhase::BeforeStart) | None => BootKind::Setup,
-                    Some(_) => BootKind::Hook,
-                },
-                image: Some(node.image.clone()),
-                subject,
-                phase,
-                label,
-                command: Some(node.command.clone()),
-                stamp: conditional.then(|| StepStamp {
-                    key: stamp_key(&node),
-                    digest: node.stamp.clone(),
-                }),
-                uses_env: node.uses_env,
-                line,
-                deps: image_idx.into_iter().collect(),
-            });
-        }
-
-        let setup_range = (image_steps.len() + resource_steps.len())..self.steps.len();
-        let mut service_steps = Vec::new();
-        for service in &self.services {
-            let mut deps = image_of(&self.images, &image_steps, &service.image)
-                .into_iter()
-                .chain(resource_steps.iter().copied())
-                .collect::<Vec<_>>();
-            for index in setup_range.clone() {
-                let step = &self.steps[index];
-                if step.image.as_deref() != Some(service.image.as_str()) {
-                    continue;
-                }
-                match step.phase {
-                    None | Some(HookPhase::BeforeStart) => deps.push(index),
-                    Some(HookPhase::PreDeploy)
-                        if step.subject == service.id || step.subject == service.image =>
-                    {
-                        deps.push(index);
-                    }
-                    _ => {}
-                }
-            }
-            deps.sort_unstable();
-            deps.dedup();
-            self.steps.push(BootStep {
-                kind: BootKind::Service,
-                image: Some(service.image.clone()),
-                subject: service.id.clone(),
-                phase: None,
-                label: format!("Service {}", service.id),
-                command: service.command.clone(),
-                stamp: None,
-                uses_env: false,
-                line: service.line,
-                deps,
-            });
-            service_steps.push(self.steps.len() - 1);
-        }
-
-        for index in setup_range.clone() {
-            if self.steps[index].phase != Some(HookPhase::PreDeploy) {
-                continue;
-            }
-            let image = self.steps[index].image.clone();
-            let mut deps = image
-                .as_deref()
-                .and_then(|id| image_of(&self.images, &image_steps, id))
-                .into_iter()
-                .chain(resource_steps.iter().copied())
-                .collect::<Vec<_>>();
-            for candidate in setup_range.clone() {
-                let step = &self.steps[candidate];
-                let before_start = matches!(step.phase, None | Some(HookPhase::BeforeStart));
-                if before_start && step.image == image {
-                    deps.push(candidate);
-                }
-            }
-            deps.sort_unstable();
-            deps.dedup();
-            self.steps[index].deps = deps;
-        }
-
-        for index in setup_range {
-            if self.steps[index].phase == Some(HookPhase::PostDeploy) {
-                self.steps[index].deps = service_steps.clone();
-            }
-        }
-
-        Ok(WorldPlan {
-            steps: self.steps,
-            failed_deploy: self.failed_deploy,
-            images: self.images,
-            resources: self.resources,
-            services: self.services,
-        })
-    }
-
-    fn lookup(&self, node: &SetupNode) -> Option<(HookPhase, String, String, u32)> {
-        self.hooks
-            .iter()
-            .find(|hook| hook.image == node.image && hook.command == node.command)
-            .map(|hook| {
-                (
-                    hook.phase,
-                    hook.owner.clone(),
-                    hook.image.clone(),
-                    hook.line,
-                )
-            })
+        graph::finish(
+            doc,
+            Parts {
+                root: self.root,
+                images: self.images,
+                resources: self.resources,
+                services: self.services,
+                hooks: self.hooks,
+                steps: Vec::new(),
+                failed_deploy: Vec::new(),
+            },
+        )
     }
 }
-
+/// Matches one deduplicated setup node back to its declared hook command.
+pub(super) fn lookup(
+    hooks: &[HookRecord],
+    node: &SetupNode,
+) -> Option<(HookPhase, String, String, u32)> {
+    hooks
+        .iter()
+        .find(|hook| hook.image == node.image && hook.command == node.command)
+        .map(|hook| {
+            (
+                hook.phase,
+                hook.owner.clone(),
+                hook.image.clone(),
+                hook.line,
+            )
+        })
+}
+/// The step index of `image`, when the plan declares it.
+pub(super) fn image_of(images: &[ImageNode], indexes: &[usize], image: &str) -> Option<usize> {
+    images
+        .iter()
+        .position(|candidate| candidate.id == image)
+        .and_then(|position| indexes.get(position).copied())
+}
 fn collect_pg_databases(items: &[PostgresItem], features: &FeatureSet, out: &mut Vec<String>) {
     each_enabled(items, features, &mut |item| {
         if let PostgresItem::Database(db) = item {
@@ -368,7 +234,6 @@ fn collect_pg_databases(items: &[PostgresItem], features: &FeatureSet, out: &mut
         }
     });
 }
-
 fn collect_service_run<'a>(
     items: &'a [ServiceItem],
     features: &FeatureSet,
@@ -383,35 +248,24 @@ fn collect_service_run<'a>(
         _ => {}
     });
 }
-
-fn image_of(images: &[ImageNode], indexes: &[usize], image: &str) -> Option<usize> {
-    images
-        .iter()
-        .position(|candidate| candidate.id == image)
-        .and_then(|position| indexes.get(position).copied())
-}
-
 fn image_directory(image: &Image) -> PathBuf {
     match &image.source {
         ImageSource::Dir(directory) => PathBuf::from(directory),
         ImageSource::From(_) => PathBuf::from("."),
     }
 }
-
 fn image_dockerfile(image: &Image) -> Option<PathBuf> {
     image.body.items.iter().find_map(|item| match item {
         ImageItem::Dockerfile(path) => Some(PathBuf::from(path)),
         _ => None,
     })
 }
-
 fn hook_commands(hook: &Hook) -> Vec<&Command> {
     match &hook.body {
         HookBody::Inline(command) => vec![command],
         HookBody::Block(block) => block.items.iter().collect(),
     }
 }
-
 fn render_hook(hook: &Hook, port: Option<u16>) -> Option<String> {
     let command = match &hook.body {
         HookBody::Inline(command) => command,

@@ -2,31 +2,35 @@
 id: M3.44.4
 title: "Reactive tokio boot DAG, per-node elapsed, world_epoch stamp & zero-rebuild <500ms fork"
 kind: task
-status: ready
+status: done
 owner: implementer
 priority: 3
 depends_on: [M3.44.3]
 paths:
+  - Cargo.toml
+  - Cargo.lock
+  - crates/slipfork/Cargo.toml
+  - "crates/slipfork-world/Cargo.toml"
   - "crates/slipfork-world/src/boot/**"
   - "crates/slipfork-world/src/supervisor/**"
   - "crates/slipfork-world/src/bin/world_init/**"
   - "crates/slipfork-world/src/engine.rs"
   - "crates/slipfork-world/src/engine/**"
   - "crates/slipfork-world/src/layout.rs"
+  - "crates/slipfork-world/src/lib.rs"
+  - "crates/slipfork-world/src/resources.rs"
+  - "crates/slipfork-world/src/resources/**"
   - "crates/slipfork-world/tests/**"
-  - crates/slipfork/src/world/up.rs
-  - "crates/slipfork/src/world/up/**"
-  - crates/slipfork/src/world/runtime.rs
-  - "crates/slipfork/src/world/runtime/**"
-  - crates/slipfork/src/world/supervise.rs
+  - "crates/slipfork/src/world/**"
   - "crates/slipfork/src/daemon/lifecycle/**"
+  - crates/slipfork/src/cli/parse/lifecycle.rs
   - crates/slipfork/tests/critical_fork_live.rs
   - crates/slipfork/tests/critical_world_journey.rs
-attempts: 0
-max_attempts: 3
+attempts: 5
+max_attempts: 5
 escalation: none
 created: "2026-11-21T20:17"
-updated: "2026-11-21T21:12"
+updated: "2026-11-21T21:48"
 ---
 
 # Goal

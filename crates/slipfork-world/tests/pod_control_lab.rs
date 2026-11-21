@@ -19,11 +19,11 @@ use slipfork_world::uapi::{
     SUBVOL_GETFLAGS, SUBVOL_SETFLAGS, VolArgs, VolArgsV2, request,
 };
 use slipfork_world::{
-    Bind, BindSource, BootKind, BootStep, Error, ForkName, FrameLines, ImageFacts, LogKind,
-    LogLine, LogReader, LogSink, NamespaceIdentity, NamespaceTable, PROTOCOL_VERSION, PodEnv,
-    PodFile, PodHost, PodSpec, PostgresLauncher, RedisLauncher, Request, RuntimePods, S3Bucket,
-    S3Credentials, StoreLayout, WorldName, WorldPlan, control, decode_request, pod_log::LogMerge,
-    recv_fd, send_fd, write_bundle,
+    Bind, BindSource, BootGraph, BootKind, BootStep, Error, ForkName, FrameLines, ImageFacts,
+    LogKind, LogLine, LogReader, LogSink, NamespaceIdentity, NamespaceTable, PROTOCOL_VERSION,
+    PodEnv, PodFile, PodHost, PodSpec, PostgresLauncher, RedisLauncher, Request, RuntimePods,
+    S3Bucket, S3Credentials, StoreLayout, WorldName, WorldPlan, control, decode_request,
+    pod_log::LogMerge, recv_fd, send_fd, write_bundle,
 };
 
 fn lab(prefix: &str) -> PathBuf {
@@ -212,7 +212,7 @@ fn backing_resource_specs_validate_and_native_s3_has_no_pod() {
     );
     assert_eq!(
         pg.binds[0].source,
-        BindSource::Host(store.world_clone(&world, "pg", "pg"))
+        BindSource::Host(store.world_clone(&world, slipfork_world::ResourceKind::Postgres, "pg"))
     );
     assert!(pg.validate().is_ok());
     let cache = RedisLauncher::new(store.clone(), world.clone())
@@ -430,9 +430,9 @@ fn pod_logs_merge_by_timestamp_across_two_real_files() {
     let _ = fs::remove_dir_all(&lab);
 }
 
-/// Boot waves: independent nodes run together, dependencies gate, and a cycle is refused.
+/// Boot graph: dependencies gate, and a cycle is refused before any node is released.
 #[test]
-fn boot_plan_waves_parallelize_independent_steps_and_refuse_cycles() {
+fn boot_graph_refuses_a_dependency_cycle() {
     let step = |label: &str, deps: Vec<usize>| BootStep {
         kind: BootKind::Setup,
         image: None,
@@ -445,24 +445,14 @@ fn boot_plan_waves_parallelize_independent_steps_and_refuse_cycles() {
         line: 1,
         deps,
     };
-    let plan = WorldPlan {
-        steps: vec![
-            step("image", vec![]),
-            step("db", vec![0]),
-            step("cache", vec![0]),
-            step("api", vec![1, 2]),
-        ],
-        ..WorldPlan::default()
-    };
-    assert_eq!(
-        plan.waves().expect("acyclic"),
-        vec![vec![0], vec![1, 2], vec![3]]
-    );
     let cyclic = WorldPlan {
         steps: vec![step("a", vec![1]), step("b", vec![0])],
         ..WorldPlan::default()
     };
-    assert!(matches!(cyclic.waves(), Err(Error::BootCycle { .. })));
+    assert!(matches!(
+        BootGraph::new(&cyclic.steps),
+        Err(Error::BootCycle { .. })
+    ));
 }
 
 /// Frame scanning splits complete lines and bounds an oversized line at `cap`.

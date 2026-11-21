@@ -48,7 +48,7 @@ impl PostgresLauncher {
     #[must_use]
     pub fn clone_path(&self, pod: &str) -> PathBuf {
         self.layout
-            .world_clone(&self.world, ResourceKind::Postgres.data_dir(), pod)
+            .world_clone(&self.world, ResourceKind::Postgres, pod)
     }
 
     /// Host path of the pod's unix socket (`<clone>/.sock/.s.PGSQL.5432`).
@@ -233,7 +233,7 @@ mod tests {
         let parsed = StoreLayout::parse_world_clone(OsStr::new("demo.pg.pg"))
             .expect("the layout owns the clone name");
         assert_eq!(parsed.0, world);
-        assert_eq!(parsed.1, "pg");
+        assert_eq!(parsed.1, ResourceKind::Postgres);
         assert_eq!(parsed.2, "pg");
         assert!(StoreLayout::parse_world_clone(OsStr::new("demo.pgx.pg")).is_none());
         assert!(StoreLayout::parse_world_clone(OsStr::new("demo.pg.")).is_none());

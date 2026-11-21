@@ -8,8 +8,9 @@ use std::sync::{Arc, Mutex};
 
 use serde_json::{Value, json};
 use slipfork_world::{
-    BootEvent, BootFailure, BootKind, BootStep, StampStore, WorldName, control, is_btrfs_path,
-    run_plan, world_plan,
+    BootEvent, BootFailure, BootKind, BootScheduler, BootState, BootStep, ResourceKind, StampStore,
+    StepOutcome, WorldName, WorldStamp, WorldStampStore, control, is_btrfs_path, plan_epoch,
+    world_plan, write_pg_checkpoints,
 };
 
 use crate::commands::Session;
@@ -24,14 +25,14 @@ impl Session {
         unsafe {
             libc::setsid();
         }
-        match supervisor_main(&args.project, &args.world, self.host(), args.json) {
+        match supervisor_main(&args.project, &args.world, self.host()) {
             Ok(()) => ExitCode::SUCCESS,
             Err(message) => fail(message, "inspect `.slipfork/supervisor.log`"),
         }
     }
 }
 
-fn supervisor_main(project: &Path, world: &str, env: &HostEnv, json: bool) -> Result<(), String> {
+fn supervisor_main(project: &Path, world: &str, env: &HostEnv) -> Result<(), String> {
     let world = WorldName::parse(world).map_err(|error| error.to_string())?;
     let source = fs::read_to_string(project.join("Forkfile"))
         .map_err(|error| format!("read Forkfile: {error}"))?;
@@ -48,37 +49,53 @@ fn supervisor_main(project: &Path, world: &str, env: &HostEnv, json: bool) -> Re
         ));
     }
     let plan = world_plan(&doc, project).map_err(|error| error.to_string())?;
-    let stamps = StampStore::new(project);
     let emitter = Arc::new(Mutex::new(Emitter { open: true }));
-    let log = if json {
-        // Under `--json` the typed stream stays machine-readable; builder output goes to the
-        // supervisor log, which is this process's stderr.
-        BootSink::Plain(std::io::stderr())
-    } else {
-        BootSink::Events(EventLog::new(Arc::clone(&emitter)))
-    };
-    let runtime = Mutex::new(WorldRuntime::new(
+    // Raw builder/hook lines ride the same typed NDJSON stream as `log` frames, so a `--json`
+    // consumer sees live `Dockerfile`/hook output instead of a silent supervisor log.
+    let log = BootSink::new(Arc::clone(&emitter));
+    let runtime = Arc::new(Mutex::new(WorldRuntime::new(
         project,
         world.clone(),
         &doc,
         &plan,
         env,
         log,
-    )?);
+    )?));
     // The world init binds `<pods>/control.sock`; this process only records its path.
-    let (socket, pods_dir) = {
+    let (socket, pods_dir, world_dir) = {
         let runtime = runtime
             .lock()
             .map_err(|_| "world runtime lock poisoned".to_owned())?;
         let pods_dir = runtime.supervisor.pods_dir().to_path_buf();
         let socket = control::control_socket_path(&pods_dir).map_err(|error| error.to_string())?;
-        (socket, pods_dir)
+        (socket, pods_dir, runtime.world_dir())
     };
     write_state(project, &world, &socket)?;
+    // Epoch-paired stamps gate every conditional skip: `fork` snapshots the world and each typed
+    // PG sibling together, so matching pairs reuse `@<tool>`/hook digests in 0ms while any stale
+    // sibling forces the hooks to run again.
+    let pg_clones = runtime
+        .lock()
+        .ok()
+        .map(|runtime| {
+            let layout = runtime.store_layout();
+            plan.resources
+                .iter()
+                .filter(|resource| resource.resource == ResourceKind::Postgres)
+                .map(|resource| layout.world_clone(&world, resource.resource, &resource.id))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let stamp_store = WorldStampStore::new(&world_dir);
+    let trusted = stamp_store
+        .verify_all(pg_clones.iter().map(|clone| clone.as_path()))
+        .is_matched();
+    let epoch = plan_epoch(&plan);
+    let stamps = StampStore::gated(project, trusted);
     let sink_emitter = Arc::clone(&emitter);
     let sink_world = world.as_str().to_owned();
     let sink_pods = pods_dir.display().to_string();
-    let sink = move |event: BootEvent| {
+    let sink: Arc<slipfork_world::EventSink> = Arc::new(move |event: BootEvent| {
         if let Ok(mut emitter) = sink_emitter.lock() {
             let mut frame = boot_event_json(&event);
             if matches!(event, BootEvent::Failed { .. }) {
@@ -87,31 +104,61 @@ fn supervisor_main(project: &Path, world: &str, env: &HostEnv, json: bool) -> Re
             }
             emitter.send(frame);
         }
+    });
+    let executor: Arc<slipfork_world::StepExecutor> = {
+        let runtime = Arc::clone(&runtime);
+        Arc::new(
+            move |index: usize, step: &BootStep| -> Result<StepOutcome, BootFailure> {
+                let staged = match runtime.lock() {
+                    Ok(mut runtime) => runtime.stage(index, step),
+                    Err(_) => return Err(BootFailure::new("world runtime lock poisoned")),
+                }?;
+                // The readiness probe runs with the runtime mutex released, so a 40ms PG wait
+                // never serializes a concurrent Redis or service boot behind it.
+                staged.await_ready()
+            },
+        )
     };
-    let execute = |index: usize, step: &BootStep| match runtime.lock() {
-        Ok(mut runtime) => runtime.execute(index, step),
-        Err(_) => Err(BootFailure::new("world runtime lock poisoned")),
-    };
-    let outcome = run_plan(&plan, &stamps, &execute, &sink);
-    let mut runtime = match runtime.into_inner() {
-        Ok(runtime) => runtime,
-        Err(poisoned) => poisoned.into_inner(),
-    };
+    // One composition-root runtime owns every worker; the library only ever receives a `Handle`.
+    let tokio_runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(4)
+        .enable_all()
+        .build()
+        .map_err(|error| format!("build the boot runtime: {error}"))?;
+    let scheduler = Arc::new(BootScheduler::new(
+        tokio_runtime.handle().clone(),
+        stamps,
+        executor,
+        sink,
+    ));
+    let outcome = scheduler.run(&plan);
+    drop(scheduler);
+    drop(tokio_runtime);
     match &outcome {
         Ok(()) => {
+            let images = runtime
+                .lock()
+                .map(|runtime| runtime.image_paths())
+                .unwrap_or_default();
+            let checkpoint = WorldStamp::checkpoint(&plan, epoch.clone(), images);
+            if let Err(error) = stamp_store.save(&checkpoint) {
+                eprintln!("slipfork: write world stamp: {error}");
+            }
+            if let Err(error) = write_pg_checkpoints(&pg_clones, &epoch) {
+                eprintln!("slipfork: write pg stamp: {error}");
+            }
             let url = format!("http://{}.localhost", world.as_str());
-            let pods_dir = runtime.supervisor.pods_dir().display().to_string();
             if let Ok(mut emitter) = emitter.lock() {
                 emitter.send(json!({
                     "event": "ready",
                     "url": url,
                     "world": world.as_str(),
-                    "pods_dir": pods_dir,
+                    "pods_dir": pods_dir.display().to_string(),
                 }));
             }
         }
         Err(error) => {
-            // `run_plan` already emitted `BootEvent::Failed` for a `Boot` error; plan-level
+            // The scheduler already emitted `BootEvent::Failed` for a boot failure; plan-level
             // failures (cycles, poisoned runtime) still need one failure frame.
             if !matches!(error, slipfork_world::Error::Boot { .. })
                 && let Ok(mut emitter) = emitter.lock()
@@ -122,14 +169,20 @@ fn supervisor_main(project: &Path, world: &str, env: &HostEnv, json: bool) -> Re
                     "line": 0,
                     "message": error.to_string().lines().next().unwrap_or_default(),
                     "world": world.as_str(),
-                    "pods_dir": pods_dir,
+                    "pods_dir": pods_dir.display().to_string(),
                 }));
             }
         }
     }
     // `down` reaches the init, which stops every pod and exits; this process follows.
-    let awaited = runtime.supervisor.await_exit();
-    runtime.cleanup();
+    let awaited = {
+        let mut runtime = runtime
+            .lock()
+            .map_err(|_| "world runtime lock poisoned".to_owned())?;
+        let awaited = runtime.supervisor.await_exit();
+        runtime.cleanup();
+        awaited
+    };
     let _ = fs::remove_file(state_path(project));
     awaited.map_err(|error| error.to_string())
 }
@@ -140,51 +193,63 @@ fn boot_event_json(event: &BootEvent) -> Value {
             step,
             total,
             kind,
-            label,
+            name,
         } => json!({
             "event": "started",
             "step": step + 1,
             "total": total,
             "kind": kind_name(*kind),
-            "label": label,
+            "name": name,
+            "state": "running",
         }),
         BootEvent::Finished {
             kind,
-            label,
+            name,
             elapsed,
+            state,
             detail,
             ..
         } => json!({
             "event": "finished",
             "kind": kind_name(*kind),
-            "label": label,
+            "name": name,
+            "state": state.as_str(),
             "detail": detail,
             "elapsed_ms": elapsed.as_millis(),
+            "duration_ms": elapsed.as_millis(),
         }),
         BootEvent::UpToDate {
             kind,
-            label,
+            name,
             elapsed,
             ..
         } => json!({
             "event": "up-to-date",
             "kind": kind_name(*kind),
-            "label": label,
+            "name": name,
+            "state": BootState::UpToDate.as_str(),
             "detail": "up to date",
             "elapsed_ms": elapsed.as_millis(),
+            "duration_ms": elapsed.as_millis(),
         }),
         BootEvent::Failed {
-            label,
+            kind,
+            name,
             line,
             message,
             remedy,
+            elapsed,
             ..
         } => {
             let mut event = json!({
                 "event": "failed",
-                "label": label,
+                "kind": kind_name(*kind),
+                "name": name,
+                "state": BootState::Failed.as_str(),
                 "line": line,
                 "message": message,
+                "elapsed_ms": elapsed.as_millis(),
+                "duration_ms": elapsed.as_millis(),
             });
             if let Some(remedy) = remedy {
                 event["remedy"] = json!(remedy);
@@ -242,34 +307,60 @@ impl Emitter {
     }
 }
 
-/// Where boot progress lines go: typed `log` events on stdout, or the supervisor log under `--json`.
-pub(super) enum BootSink {
-    Events(EventLog),
-    Plain(std::io::Stderr),
+/// Typed NDJSON writer for every boot line; raw pod/build output becomes `log` frames.
+///
+/// The same bytes are mirrored to stderr (the supervisor log), so `up` streams live progress
+/// while `.slipfork/supervisor.log` keeps the full transcript for post-mortems.
+pub(super) struct BootSink {
+    log: EventLog,
+    mirror: std::io::Stderr,
+}
+
+impl Clone for BootSink {
+    fn clone(&self) -> Self {
+        Self {
+            log: self.log.clone(),
+            mirror: std::io::stderr(),
+        }
+    }
 }
 
 impl BootSink {
+    pub(super) fn new(emitter: Arc<Mutex<Emitter>>) -> Self {
+        Self {
+            log: EventLog::new(emitter),
+            mirror: std::io::stderr(),
+        }
+    }
+
     /// Tags subsequent lines with the step that is executing right now.
     pub(super) fn focus(&mut self, step: usize, total: usize, label: &str) {
-        if let Self::Events(log) = self {
-            log.focus(step, total, label);
-        }
+        self.log.focus(step, total, label);
+    }
+
+    /// Emits one readiness frame pinned to its own step, even if another wave moved the focus.
+    pub(super) fn progress(&mut self, step: usize, total: usize, label: &str, message: &str) {
+        self.log.focus(step, total, label);
+        let _ = writeln!(self.log, "{message}");
+        let _ = self.log.flush();
+    }
+
+    /// A clone that first flushes any partial raw line, so a wait never drops or duplicates it.
+    pub(super) fn teed(&mut self) -> Self {
+        let _ = self.log.flush();
+        self.clone()
     }
 }
 
 impl Write for BootSink {
     fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
-        match self {
-            Self::Events(log) => log.write(buffer),
-            Self::Plain(sink) => sink.write(buffer),
-        }
+        let _ = self.mirror.write_all(buffer);
+        self.log.write(buffer)
     }
 
     fn flush(&mut self) -> std::io::Result<()> {
-        match self {
-            Self::Events(log) => log.flush(),
-            Self::Plain(sink) => sink.flush(),
-        }
+        let _ = self.mirror.flush();
+        self.log.flush()
     }
 }
 
@@ -278,6 +369,7 @@ impl Write for BootSink {
 /// Every complete line is flushed as its own NDJSON frame, so a multi-minute `RUN` step never
 /// looks stalled; partial writes stay buffered until their newline arrives. Each frame carries
 /// the step that produced it, so two setup steps in one wave never mislabel each other.
+#[derive(Clone)]
 pub(super) struct EventLog {
     emitter: Arc<Mutex<Emitter>>,
     pending: Vec<u8>,
@@ -304,6 +396,7 @@ impl EventLog {
 
     fn forward(&mut self, line: &[u8]) {
         let text = String::from_utf8_lossy(line);
+        let text = strip_ansi(&text);
         let text = text.trim_end_matches('\r');
         if text.trim().is_empty() {
             return;
@@ -318,6 +411,36 @@ impl EventLog {
             emitter.send(frame);
         }
     }
+}
+
+/// Strips CSI escape sequences from a child's raw line, so a `log` frame never carries ANSI.
+fn strip_ansi(text: &str) -> std::borrow::Cow<'_, str> {
+    if !text.contains('\u{1b}') {
+        return std::borrow::Cow::Borrowed(text);
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch != '\u{1b}' {
+            out.push(ch);
+            continue;
+        }
+        match chars.peek() {
+            Some('[') => {
+                chars.next();
+                for ch in chars.by_ref() {
+                    if ('@'..='~').contains(&ch) {
+                        break;
+                    }
+                }
+            }
+            Some(_) => {
+                chars.next();
+            }
+            None => {}
+        }
+    }
+    std::borrow::Cow::Owned(out)
 }
 
 impl Write for EventLog {

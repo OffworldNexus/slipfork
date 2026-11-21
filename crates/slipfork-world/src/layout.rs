@@ -3,6 +3,7 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 
 use crate::error::{Error, NameKind, Result};
+use crate::resources::ResourceKind;
 
 /// Name of the store directory Slipfork owns on the Btrfs mount.
 pub const STORE_DIR: &str = ".slipfork-store";
@@ -12,8 +13,6 @@ pub const IMAGES_DIR: &str = "images";
 pub const WORLDS_DIR: &str = "worlds";
 /// Project-relative directory holding project snapshots.
 pub const FORKS_DIR: &str = ".forks";
-/// Resource data dirs whose per-world clones live as flat siblings of the world subvolume.
-const WORLD_CLONE_KINDS: [&str; 3] = ["pg", "redis", "s3"];
 
 /// Absolute Btrfs store paths owned by Slipfork (`<mount>/.slipfork-store/{images,worlds}`).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -92,25 +91,38 @@ impl StoreLayout {
 
     /// `<mount>/.slipfork-store/worlds/<world>.<kind>.<pod>`: a flat sibling of the world so a
     /// world never contains a nested subvolume (`fork` snapshots would turn it into a stub).
+    ///
+    /// [`ResourceKind`] is the only accepted kind, so an entry outside the clone vocabulary can
+    /// never be addressed (or accidentally created) through this path.
     #[must_use]
-    pub fn world_clone(&self, world: &WorldName, kind: &str, pod: &str) -> PathBuf {
+    pub fn world_clone(&self, world: &WorldName, kind: ResourceKind, pod: &str) -> PathBuf {
         self.worlds_root()
-            .join(format!("{}.{kind}.{pod}", world.as_str()))
+            .join(format!("{}.{}.{pod}", world.as_str(), kind.data_dir()))
+    }
+
+    /// `<mount>/.slipfork-store/worlds/<fork>--<world>.<kind>.<pod>`: the fork's clone of one
+    /// flat resource sibling, snapshotted alongside the world so live databases survive `fork`.
+    #[must_use]
+    pub fn fork_world_clone(
+        &self,
+        world: &WorldName,
+        fork: &ForkName,
+        kind: ResourceKind,
+        pod: &str,
+    ) -> PathBuf {
+        self.world_clone(&Self::fork_world_name(world, fork), kind, pod)
     }
 
     /// Splits a `worlds/` entry name back into its `<world>.<kind>.<pod>` triple.
     ///
     /// Splitting on the **last** two `.` keeps world names that themselves contain `.` intact;
-    /// only the three resource kinds owned by Slipfork are accepted, so unrelated entries survive.
+    /// only the kinds [`ResourceKind::data_dir`] owns are accepted, so unrelated entries survive.
     #[must_use]
-    pub fn parse_world_clone(entry: &std::ffi::OsStr) -> Option<(WorldName, &'static str, String)> {
+    pub fn parse_world_clone(entry: &std::ffi::OsStr) -> Option<(WorldName, ResourceKind, String)> {
         let name = entry.to_str()?;
         let (prefix, pod) = name.rsplit_once('.')?;
-        let (world, kind) = prefix.rsplit_once('.')?;
-        let kind = WORLD_CLONE_KINDS
-            .iter()
-            .copied()
-            .find(|known| *known == kind)?;
+        let (world, directory) = prefix.rsplit_once('.')?;
+        let kind = ResourceKind::from_data_dir(directory)?;
         Some((
             WorldName::parse(world).ok()?,
             kind,

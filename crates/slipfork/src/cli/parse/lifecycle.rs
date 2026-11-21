@@ -219,11 +219,9 @@ pub(super) fn exec_verb(args: &[&str]) -> Result<Verb, UsageError> {
 pub(super) fn supervise_verb(args: &[&str]) -> Result<Verb, UsageError> {
     let mut project = None;
     let mut world = None;
-    let mut json = false;
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
         match *arg {
-            "--json" => json = true,
             "--project" => {
                 project =
                     Some(PathBuf::from(iter.next().ok_or_else(|| {
@@ -248,6 +246,5 @@ pub(super) fn supervise_verb(args: &[&str]) -> Result<Verb, UsageError> {
     Ok(Verb::Supervise(SuperviseArgs {
         project: project.ok_or_else(|| UsageError::new("`--project` is required"))?,
         world: world.ok_or_else(|| UsageError::new("`--world` is required"))?,
-        json,
     }))
 }

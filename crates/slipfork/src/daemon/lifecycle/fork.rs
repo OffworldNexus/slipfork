@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
+use slipfork_forkfile::ResourceDeclKind;
 use slipfork_vcs::{Dirty, VcsError};
 use slipfork_world::{
     BtrfsEngine, Dirtiness, Error as WorldError, ForkName, StoreLayout, WorldEngine, WorldName,
@@ -79,6 +80,7 @@ impl Core {
         params: &Value,
         emit: &mut dyn FnMut(Value),
     ) -> Result<PreparedFork, Failure> {
+        let started = Instant::now();
         let project = project_param(params)?;
         // Probe before touching the mount store: a refusal must not create `.slipfork-store`.
         if !is_subvolume_path(&project).unwrap_or(false) {
@@ -122,11 +124,19 @@ impl Core {
             "event": "started", "step": 1, "total": 3, "kind": "fork",
             "label": format!("snapshotting {}", fork.as_str()),
         }));
-        let started = Instant::now();
+        let pods_dir = self
+            .worlds
+            .get(&key_of(&project))
+            .and_then(|entity| match entity {
+                World::Live { entry, .. } => Some(entry.pods_dir.clone()),
+                World::Booting { .. } => None,
+            });
+        checkpoint_postgres(&project, pods_dir.as_deref())?;
+        let snapshot_started = Instant::now();
         let paths = engine
             .fork(&project, &world, &fork)
             .map_err(|error| btrfs_failure(&error, &project))?;
-        let snapshot_ms = elapsed_ms(started);
+        let snapshot_ms = elapsed_ms(snapshot_started);
         // Keep `.slipfork/*.stamp` hashes intact while stripping the parent world's live handle
         // and supervisor log so the fork starts with its own clean boot log.
         let _ = std::fs::remove_file(paths.project.join(".slipfork/world.json"));
@@ -136,6 +146,7 @@ impl Core {
             "label": "snapshot", "detail": "project + world data",
             "elapsed_ms": snapshot_ms,
         }));
+        let git_started = Instant::now();
         emit(json!({
             "event": "started", "step": 2, "total": 3, "kind": "git",
             "label": format!("switching the fork to {name}"),
@@ -151,7 +162,7 @@ impl Core {
         emit(json!({
             "event": "finished", "step": 2, "total": 3, "kind": "git",
             "label": format!("branch {name}"), "detail": "checked out",
-            "elapsed_ms": elapsed_ms(started),
+            "elapsed_ms": elapsed_ms(git_started),
         }));
         Ok(PreparedFork {
             parent: project,
@@ -320,4 +331,53 @@ fn vcs_failure(error: &VcsError) -> Failure {
 
 fn first_line(text: &str) -> String {
     text.lines().next().unwrap_or("fork failed").to_owned()
+}
+
+/// Flushes PostgreSQL's WAL into the shared `PGDATA` clone before the CoW snapshot.
+///
+/// The pod and its control plane belong to `slipfork-world`; this composition root only knows a
+/// `Forkfile` may declare postgres and asks it to checkpoint through the same world `Exec` plane
+/// `slipfork exec` uses, outside the snapshot's critical section. Redis AOF is append-only, so a
+/// fork needs no flush there.
+fn checkpoint_postgres(project: &Path, pods_dir: Option<&Path>) -> Result<(), Failure> {
+    let Some(pods_dir) = pods_dir else {
+        return Ok(());
+    };
+    let Ok(source) = std::fs::read_to_string(project.join("Forkfile")) else {
+        return Ok(());
+    };
+    let Ok(document) = slipfork_forkfile::parse(&source) else {
+        return Ok(());
+    };
+    let Some(postgres) = document
+        .resources()
+        .into_iter()
+        .find(|resource| resource.kind == ResourceDeclKind::Postgres)
+    else {
+        return Ok(());
+    };
+    // `specs/03` §3 pins `PGDATA` and its unix socket directory inside every postgres pod.
+    const SOCKET: &str = "/var/lib/postgresql/data/.sock";
+    let argv = [
+        "psql",
+        "-h",
+        SOCKET,
+        "-U",
+        "postgres",
+        "-d",
+        "postgres",
+        "-c",
+        "CHECKPOINT",
+    ]
+    .map(str::to_owned)
+    .to_vec();
+    let code = slipfork_world::control::exec(pods_dir, postgres.id, &argv, &mut |_| {})
+        .map_err(|error| Failure::new("checkpoint-failed", first_line(&error.to_string())))?;
+    if code != 0 {
+        return Err(Failure::new(
+            "checkpoint-failed",
+            format!("postgres could not flush its WAL before the snapshot (exit {code})"),
+        ));
+    }
+    Ok(())
 }

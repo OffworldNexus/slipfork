@@ -1,24 +1,28 @@
 //! Resource step driver: golden postgres template, per-world `PGDATA`/AOF clones, readiness.
+//!
+//! Each resource is *staged* here (clone + launch) and its long readiness wait runs later through
+//! [`super::Staged::await_ready`], with no runtime lock held, so PG, Redis, and app pods boot
+//! concurrently instead of serializing behind one mutex.
 
 use std::collections::VecDeque;
 use std::fs;
 use std::io::Write;
 use std::net::SocketAddr;
-use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
 use slipfork_forkfile::SecretValue;
 use slipfork_image::ImageReference;
 use slipfork_world::{
-    ImageFacts, PostgresLauncher, PostgresTemplate, RedisLauncher, ResourceKind, ResourceNode,
-    S3BucketSpec, S3Credentials, S3WorldConfig, control,
+    BootState, ImageFacts, PostgresLauncher, PostgresTemplate, RedisLauncher, ResourceKind,
+    ResourceNode, S3BucketSpec, S3Credentials, S3WorldConfig, control,
 };
 
 use super::WorldRuntime;
+use super::ready::{Ready, Staged};
 
 /// Starts one backing resource: native S3, or a launched postgres/redis pod.
-pub(super) fn start_resource(runtime: &mut WorldRuntime, id: &str) -> Result<String, String> {
+pub(super) fn start_resource(runtime: &mut WorldRuntime, id: &str) -> Result<Staged, String> {
     let node = runtime
         .resources
         .iter()
@@ -47,7 +51,12 @@ pub(super) fn start_resource(runtime: &mut WorldRuntime, id: &str) -> Result<Str
         };
         control::configure_s3(runtime.supervisor.pods_dir(), config)
             .map_err(|error| error.to_string())?;
-        return Ok("started".to_owned());
+        return Ok(Staged {
+            state: BootState::Ready,
+            detail: "started".to_owned(),
+            ready: Ready::None,
+            progress: None,
+        });
     }
     let reference = node
         .resource
@@ -66,19 +75,25 @@ pub(super) fn start_resource(runtime: &mut WorldRuntime, id: &str) -> Result<Str
         image
     };
     let rootfs = runtime.clone_rootfs(&image.rootfs, &format!("res-{id}"))?;
-    match node.resource {
-        ResourceKind::Postgres => start_postgres(runtime, &node, &rootfs, &image.facts),
-        ResourceKind::Redis => start_redis(runtime, &node, &rootfs, &image.facts),
+    let ready = match node.resource {
+        ResourceKind::Postgres => stage_postgres(runtime, &node, &rootfs, &image.facts)?,
+        ResourceKind::Redis => stage_redis(runtime, &node, &rootfs, &image.facts)?,
         ResourceKind::S3 => unreachable!("the native S3 server has no pod"),
-    }
+    };
+    Ok(Staged {
+        state: BootState::Ready,
+        detail: "started".to_owned(),
+        ready,
+        progress: None,
+    })
 }
 
-fn start_postgres(
+fn stage_postgres(
     runtime: &mut WorldRuntime,
     node: &ResourceNode,
     rootfs: &Path,
     facts: &ImageFacts,
-) -> Result<String, String> {
+) -> Result<Ready, String> {
     let template = PostgresTemplate::new(runtime.layout.clone());
     let launcher = PostgresLauncher::new(runtime.layout.clone(), runtime.world.clone());
     // `dynamic_shared_memory_type=posix` needs a tmpfs; the world pod root already is one.
@@ -144,20 +159,19 @@ fn start_postgres(
         .supervisor
         .launch(&spec)
         .map_err(|error| error.to_string())?;
-    let socket = launcher.socket_path(&node.id);
-    let waited = launcher
-        .await_ready(&node.id, &mut || UnixStream::connect(&socket).is_ok())
-        .map_err(|error| error.to_string())?;
-    runtime.note(format!("postgres ready in {waited:?}"));
-    Ok("started".to_owned())
+    Ok(Ready::Unix {
+        socket: launcher.socket_path(&node.id),
+        label: format!("postgres {}", node.id),
+        service: node.id.clone(),
+    })
 }
 
-fn start_redis(
+fn stage_redis(
     runtime: &mut WorldRuntime,
     node: &ResourceNode,
     rootfs: &Path,
     facts: &ImageFacts,
-) -> Result<String, String> {
+) -> Result<Ready, String> {
     let launcher = RedisLauncher::new(runtime.layout.clone(), runtime.world.clone());
     launcher
         .prepare(&node.id)
@@ -169,32 +183,10 @@ fn start_redis(
         .supervisor
         .launch(&spec)
         .map_err(|error| error.to_string())?;
-    let cli = Path::new(&spec.argv[0])
-        .parent()
-        .and_then(Path::to_str)
-        .map_or_else(
-            || "/usr/local/bin/redis-cli".to_owned(),
-            |dir| format!("{dir}/redis-cli"),
-        );
-    let supervisor = &runtime.supervisor;
-    let waited = launcher
-        .await_ready(&mut || {
-            supervisor
-                .exec(
-                    &node.id,
-                    &[
-                        cli.clone(),
-                        "-h".to_owned(),
-                        "127.0.0.1".to_owned(),
-                        "-p".to_owned(),
-                        "6379".to_owned(),
-                        "PING".to_owned(),
-                    ],
-                    &mut |_| {},
-                )
-                .is_ok_and(|code| code == 0)
-        })
-        .map_err(|error| error.to_string())?;
-    runtime.note(format!("redis ready in {waited:?}"));
-    Ok("started".to_owned())
+    Ok(Ready::Service {
+        pods_dir: runtime.supervisor.pods_dir().to_path_buf(),
+        port: 6379,
+        label: format!("redis {}", node.id),
+        service: node.id.clone(),
+    })
 }

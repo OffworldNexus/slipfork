@@ -9,6 +9,7 @@ use crate::btrfs::{self, SubvolumeFlags};
 use crate::error::{Error, Result};
 use crate::layout::{self, ForkName, StoreLayout, WorldName};
 use crate::port::{Dirtiness, ForkPaths, WorldEngine};
+use crate::resources::ResourceKind;
 
 /// Btrfs adapter behind the [`WorldEngine`] port.
 ///
@@ -139,6 +140,47 @@ impl BtrfsEngine {
     }
 }
 
+impl BtrfsEngine {
+    fn world_clones(&self, world: &WorldName) -> Result<Vec<(ResourceKind, String)>> {
+        let worlds = self.layout.worlds_root();
+        if !worlds.is_dir() {
+            return Ok(Vec::new());
+        }
+        let entries = fs::read_dir(&worlds).map_err(|source| Error::io("read", &worlds, source))?;
+        let mut clones = Vec::new();
+        for entry in entries {
+            let entry = entry.map_err(|source| Error::io("read", &worlds, source))?;
+            if let Some((parsed, kind, pod)) = StoreLayout::parse_world_clone(&entry.file_name())
+                && &parsed == world
+            {
+                clones.push((kind, pod));
+            }
+        }
+        Ok(clones)
+    }
+
+    fn snapshots(jobs: &[(PathBuf, PathBuf)]) -> Vec<Result<()>> {
+        std::thread::scope(|scope| {
+            let handles: Vec<_> = jobs
+                .iter()
+                .map(|(source, target)| scope.spawn(move || Self::snapshot(source, target)))
+                .collect();
+            handles
+                .into_iter()
+                .map(|handle| {
+                    handle.join().unwrap_or_else(|_| {
+                        Err(Error::io(
+                            "snapshot",
+                            Path::new("."),
+                            std::io::Error::other("snapshot thread panicked"),
+                        ))
+                    })
+                })
+                .collect()
+        })
+    }
+}
+
 impl WorldEngine for BtrfsEngine {
     fn ensure_store(&self) -> Result<()> {
         let anchor = self.store_anchor();
@@ -196,37 +238,43 @@ impl WorldEngine for BtrfsEngine {
         let project_snapshot = layout::project_fork_path(project, fork);
         let world_source = self.layout.world(world);
         let world_snapshot = self.layout.fork_world(world, fork);
-        // Issue both `SNAP_CREATE_V2` ioctls concurrently so they join the same Btrfs transaction
-        // (`cur_trans->transaction->pending_snapshots`) and share one superblock barrier commit.
-        let (project_outcome, world_outcome) = std::thread::scope(|scope| {
-            let left = scope.spawn(|| Self::snapshot(project, &project_snapshot));
-            let right = Self::snapshot(&world_source, &world_snapshot);
-            let left = left.join().unwrap_or_else(|_| {
-                Err(Error::io(
-                    "snapshot",
-                    &project_snapshot,
-                    std::io::Error::other("snapshot thread panicked"),
-                ))
-            });
-            (left, right)
-        });
-        match (project_outcome, world_outcome) {
-            (Ok(()), Ok(())) => Ok(ForkPaths {
-                project: project_snapshot,
-                world: world_snapshot,
-            }),
-            (Err(err), Ok(())) => {
-                let _ = teardown::destroy_if_present(&world_snapshot);
-                Err(err)
-            }
-            (Ok(()), Err(err)) => {
-                let _ = teardown::destroy_if_present(&project_snapshot);
-                Err(err)
-            }
-            (Err(err), Err(_)) => Err(err),
+        // Every flat sibling resource clone belongs to the fork too (live PGDATA, AOF, buckets).
+        let mut jobs = vec![
+            (project.to_path_buf(), project_snapshot.clone()),
+            (world_source, world_snapshot.clone()),
+        ];
+        for (kind, pod) in self.world_clones(world)? {
+            jobs.push((
+                self.layout.world_clone(world, kind, &pod),
+                self.layout.fork_world_clone(world, fork, kind, &pod),
+            ));
         }
+        // Issue every `SNAP_CREATE_V2` ioctl concurrently so they join the same Btrfs transaction
+        // (`cur_trans->transaction->pending_snapshots`) and share one superblock barrier commit.
+        let outcomes = Self::snapshots(&jobs);
+        if let Some(failed) = outcomes.iter().position(|outcome| outcome.is_err()) {
+            for (_, target) in &jobs {
+                let _ = teardown::destroy_if_present(target);
+            }
+            return Err(outcomes
+                .into_iter()
+                .nth(failed)
+                .and_then(Result::err)
+                .unwrap_or_else(|| {
+                    Error::io(
+                        "snapshot",
+                        project,
+                        std::io::Error::other("snapshot failed"),
+                    )
+                }));
+        }
+        Ok(ForkPaths {
+            project: project_snapshot,
+            world: world_snapshot,
+        })
     }
 
+    /// Every `<world>.<kind>.<pod>` flat sibling currently owned by `world`.
     fn seal(&self, subvolume: &Path) -> Result<()> {
         let flags = Self::subvolume_flags(subvolume)?;
         if flags.is_read_only() {
@@ -263,7 +311,25 @@ impl WorldEngine for BtrfsEngine {
             });
         }
         teardown::destroy_if_present(&layout::project_fork_path(project, fork))?;
-        teardown::destroy_world_if_present(&self.layout.fork_world(world, fork))
+        teardown::destroy_world_if_present(&self.layout.fork_world(world, fork))?;
+        let forked = StoreLayout::fork_world_name(world, fork);
+        let worlds = self.layout.worlds_root();
+        if worlds.is_dir() {
+            let entries =
+                fs::read_dir(&worlds).map_err(|source| Error::io("read", &worlds, source))?;
+            for entry in entries {
+                let entry = entry.map_err(|source| Error::io("read", &worlds, source))?;
+                if let Some((parsed, kind, pod)) =
+                    StoreLayout::parse_world_clone(&entry.file_name())
+                    && parsed == forked
+                {
+                    teardown::destroy_world_if_present(
+                        &self.layout.world_clone(&forked, kind, &pod),
+                    )?;
+                }
+            }
+        }
+        Ok(())
     }
 
     fn drop_world(&self, world: &WorldName) -> Result<()> {

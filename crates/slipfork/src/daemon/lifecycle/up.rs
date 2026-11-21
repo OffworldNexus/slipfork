@@ -78,7 +78,6 @@ impl Core {
             .arg(&project)
             .arg("--world")
             .arg(world.as_str())
-            .arg("--json")
             .current_dir(&project)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())

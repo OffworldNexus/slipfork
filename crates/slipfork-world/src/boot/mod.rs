@@ -1,25 +1,27 @@
-//! One parallel world boot DAG: images, resources, deduplicated setup, hooks, services.
+//! One reactive world boot DAG: images, resources, deduplicated setup, hooks, services.
 //!
-//! Planning is pure data: [`world_plan`] consumes `slipfork_forkfile::boot_plan` for the
-//! deduplicated `@<tool>` / `when changed(...)` nodes and walks the syntax tree only for phase
-//! ordering. [`run_plan`] schedules ready nodes on `std::thread::scope` workers, skips stamped
-//! setup steps, persists `<project>/.slipfork/<key>.stamp` after success, and streams typed
-//! [`BootEvent`]s into an injected sink. Nothing here reads the environment or caches a global.
+//! Planning is pure data: [`world_plan`] walks the checked syntax tree, [`graph`] emits nodes and
+//! wires edges, and [`BootScheduler`] releases every node the instant its own upstream edges
+//! resolve on an injected `tokio` runtime. Nothing here reads the environment or caches a global.
 
+mod graph;
 mod plan;
 mod schedule;
 mod stamp;
 
+pub use graph::BootGraph;
 pub use plan::world_plan;
 pub use schedule::{
-    BootEvent, BootFailure, EventSink, ServiceHealth, StepExecutor, StepOutcome, classify_service,
-    run_plan,
+    BootEvent, BootFailure, BootScheduler, BootState, EventSink, ServiceHealth, StepExecutor,
+    StepOutcome, classify_service,
 };
-pub use stamp::{StampStore, StepStamp};
+pub use stamp::{
+    EpochState, PG_STAMP_FILE, StampStore, StepStamp, WORLD_STAMP_FILE, WorldStamp,
+    WorldStampStore, epoch_for, plan_epoch, write_pg_checkpoint, write_pg_checkpoints,
+};
 
 use std::path::PathBuf;
 
-use crate::error::{Error, Result};
 use crate::resources::{ResourceKind, S3Bucket};
 
 /// The kind of work one boot node performs.
@@ -148,6 +150,21 @@ pub struct BootStep {
     pub deps: Vec<usize>,
 }
 
+impl BootStep {
+    /// Bare node name: the image/resource/service id, the hook's `subject:phase`, or the setup
+    /// command. The kind is rendered as its own column, so the name never repeats it.
+    #[must_use]
+    pub fn node_name(&self) -> String {
+        match self.kind {
+            BootKind::Image | BootKind::Resource | BootKind::Service => self.subject.clone(),
+            BootKind::Setup | BootKind::Hook => match self.phase {
+                Some(phase) => format!("{}:{}", self.subject, phase.as_str()),
+                None => self.command.clone().unwrap_or_else(|| self.subject.clone()),
+            },
+        }
+    }
+}
+
 /// The whole world boot plan, flattened into dependency-indexed steps.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct WorldPlan {
@@ -174,46 +191,5 @@ impl WorldPlan {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.steps.is_empty()
-    }
-
-    /// Groups steps into parallel waves; a dependency cycle is refused here.
-    pub fn waves(&self) -> Result<Vec<Vec<usize>>> {
-        let mut remaining = vec![0_usize; self.steps.len()];
-        let mut downstream: Vec<Vec<usize>> = vec![Vec::new(); self.steps.len()];
-        for (index, step) in self.steps.iter().enumerate() {
-            remaining[index] = step.deps.len();
-            for &dep in &step.deps {
-                let Some(slot) = downstream.get_mut(dep) else {
-                    return Err(Error::BootCycle {
-                        steps: vec![step.label.clone()],
-                    });
-                };
-                slot.push(index);
-            }
-        }
-        let mut done = vec![false; self.steps.len()];
-        let mut waves = Vec::new();
-        let mut emitted = 0;
-        while emitted < self.steps.len() {
-            let wave: Vec<usize> = (0..self.steps.len())
-                .filter(|&index| !done[index] && remaining[index] == 0)
-                .collect();
-            if wave.is_empty() {
-                let steps = (0..self.steps.len())
-                    .filter(|&index| !done[index])
-                    .map(|index| self.steps[index].label.clone())
-                    .collect();
-                return Err(Error::BootCycle { steps });
-            }
-            for &index in &wave {
-                done[index] = true;
-                emitted += 1;
-                for &next in &downstream[index] {
-                    remaining[next] -= 1;
-                }
-            }
-            waves.push(wave);
-        }
-        Ok(waves)
     }
 }

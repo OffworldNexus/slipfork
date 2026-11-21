@@ -32,6 +32,14 @@ impl ResourceKind {
         }
     }
 
+    /// The kind owning `directory` (`pg`, `redis`, `s3`), so clone-name parsing has one source.
+    #[must_use]
+    pub fn from_data_dir(directory: &str) -> Option<Self> {
+        [Self::Postgres, Self::Redis, Self::S3]
+            .into_iter()
+            .find(|kind| kind.data_dir() == directory)
+    }
+
     /// Loopback port inside the world namespace.
     #[must_use]
     pub const fn port(self) -> u16 {

@@ -4,10 +4,8 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, VecDeque};
 use std::fs;
 use std::io::Write;
-use std::net::Shutdown;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
 
 use slipfork_forkfile::ast::Forkfile;
 use slipfork_image::{
@@ -16,18 +14,19 @@ use slipfork_image::{
 };
 use slipfork_ospp::{FileSecretVault, SecretVault};
 use slipfork_world::{
-    BootFailure, BootKind, BootStep, BtrfsEngine, Dirtiness, ImageNode, PodEnv, PodSpec,
-    ServiceNode, StepOutcome, StoreLayout, WorldEngine, WorldHost, WorldName, WorldPlan,
-    WorldSupervisor, classify_service, control,
+    BootFailure, BootKind, BootState, BootStep, BtrfsEngine, Dirtiness, ImageNode, PodEnv, PodSpec,
+    ServiceNode, StoreLayout, WorldEngine, WorldHost, WorldName, WorldPlan, WorldSupervisor,
 };
 
 use super::HostEnv;
 use super::supervise::BootSink;
 
 mod helpers;
+mod ready;
 mod resources;
 
 use helpers::{merge_env, project_bind, shell_command, sweep_stale_pods};
+use ready::{Ready, Staged};
 
 /// One sealed image plus the OCI metadata every pod derived from it inherits.
 #[derive(Clone)]
@@ -161,30 +160,50 @@ impl WorldRuntime {
         })
     }
 
-    /// Executes one ready step, tagging every live log line with the step that produced it.
-    pub(super) fn execute(
-        &mut self,
-        index: usize,
-        step: &BootStep,
-    ) -> Result<StepOutcome, BootFailure> {
+    /// Prepares one ready step: builds/launches under the lock, then returns a readiness probe.
+    ///
+    /// The caller awaits [`Staged::await_ready`] after this returns, so a slow database start
+    /// never holds the runtime mutex and independent nodes boot concurrently.
+    pub(super) fn stage(&mut self, index: usize, step: &BootStep) -> Result<Staged, BootFailure> {
         self.log
             .get_mut()
             .focus(index + 1, self.total_steps, &step.label);
-        let outcome = match step.kind {
+        let mut staged = match step.kind {
             BootKind::Image => self
                 .build_image(&step.subject)
-                .map(|_| "built".to_owned())
-                .map_err(BootFailure::new),
-            BootKind::Resource => self.start_resource(&step.subject).map_err(BootFailure::new),
-            BootKind::Setup | BootKind::Hook => self.run_once(step),
-            BootKind::Service => self.start_service(step).map_err(BootFailure::new),
+                .map(|(_, state)| Staged {
+                    state,
+                    detail: "built".to_owned(),
+                    ready: Ready::None,
+                    progress: None,
+                })
+                .map_err(BootFailure::new)?,
+            BootKind::Resource => self
+                .start_resource(&step.subject)
+                .map_err(BootFailure::new)?,
+            BootKind::Setup | BootKind::Hook => {
+                let detail = self.run_once(step)?;
+                Staged {
+                    state: BootState::Ready,
+                    detail,
+                    ready: Ready::None,
+                    progress: None,
+                }
+            }
+            BootKind::Service => self.start_service(step).map_err(BootFailure::new)?,
         };
-        outcome.map(|detail| StepOutcome { detail })
+        staged.attach_progress(
+            self.log.get_mut().teed(),
+            index + 1,
+            self.total_steps,
+            &step.label,
+        );
+        Ok(staged)
     }
 
-    fn build_image(&mut self, image: &str) -> Result<BuiltImage, String> {
+    fn build_image(&mut self, image: &str) -> Result<(BuiltImage, BootState), String> {
         if let Some(built) = self.sealed.get(image) {
-            return Ok(built.clone());
+            return Ok((built.clone(), BootState::Cached));
         }
         let node = self
             .images
@@ -192,7 +211,7 @@ impl WorldRuntime {
             .find(|candidate| candidate.id == image)
             .cloned()
             .ok_or_else(|| format!("unknown image `{image}`"))?;
-        let built = if let Some(reference) = &node.from {
+        let (built, state) = if let Some(reference) = &node.from {
             let parsed = ImageReference::parse(reference).map_err(|error| error.to_string())?;
             self.note(format!("pull {reference}"));
             let pulled = self
@@ -201,12 +220,15 @@ impl WorldRuntime {
                 .map_err(|error| error.to_string())?;
             let mut argv = pulled.facts.entrypoint.clone();
             argv.extend(pulled.facts.cmd.iter().cloned());
-            BuiltImage {
-                rootfs: pulled.rootfs,
-                inherited_env: pulled.facts.env,
-                argv,
-                workdir: "/".to_owned(),
-            }
+            (
+                BuiltImage {
+                    rootfs: pulled.rootfs,
+                    inherited_env: pulled.facts.env,
+                    argv,
+                    workdir: "/".to_owned(),
+                },
+                BootState::Pulled,
+            )
         } else {
             let context = self.project.join(&node.directory);
             let dockerfile = context.join(
@@ -232,20 +254,27 @@ impl WorldRuntime {
                 "dockerfile {image}: {} cached, {} built",
                 report.cache_hits, report.cache_misses
             ));
-            BuiltImage {
-                rootfs: report.rootfs,
-                inherited_env: report
-                    .config
-                    .env
-                    .iter()
-                    .map(|(key, value)| format!("{key}={value}"))
-                    .collect(),
-                argv: report.config.exec_argv(),
-                workdir: report.config.workdir,
-            }
+            (
+                BuiltImage {
+                    rootfs: report.rootfs,
+                    inherited_env: report
+                        .config
+                        .env
+                        .iter()
+                        .map(|(key, value)| format!("{key}={value}"))
+                        .collect(),
+                    argv: report.config.exec_argv(),
+                    workdir: report.config.workdir,
+                },
+                if report.cache_misses == 0 && report.cache_hits > 0 {
+                    BootState::Cached
+                } else {
+                    BootState::Built
+                },
+            )
         };
         self.sealed.insert(image.to_owned(), built.clone());
-        Ok(built)
+        Ok((built, state))
     }
 
     fn clone_rootfs(&mut self, sealed: &Path, prefix: &str) -> Result<PathBuf, String> {
@@ -270,7 +299,7 @@ impl WorldRuntime {
 
     fn built_for(&mut self, image: Option<&String>) -> Result<BuiltImage, String> {
         let image = image.ok_or_else(|| "step has no enclosing image".to_owned())?;
-        self.build_image(image)
+        self.build_image(image).map(|(built, _)| built)
     }
 
     /// Merges image-level and subject-level runtime `env`, plus the declared `PORT`.
@@ -336,7 +365,7 @@ impl WorldRuntime {
         }
     }
 
-    fn start_service(&mut self, step: &BootStep) -> Result<String, String> {
+    fn start_service(&mut self, step: &BootStep) -> Result<Staged, String> {
         let sigma = step.subject.clone();
         let built = self.built_for(step.image.as_ref())?;
         let rootfs = self.clone_rootfs(&built.rootfs, &format!("svc-{sigma}"))?;
@@ -371,63 +400,46 @@ impl WorldRuntime {
             binds: vec![project_bind(&self.project)],
             files: Vec::new(),
         };
-        let pid = self
-            .supervisor
+        self.supervisor
             .launch(&spec)
             .map_err(|error| error.to_string())?;
-        // A service that leaves inside the readiness window never started: surface it as failed
-        // while the world stays up for inspection. When `port` is declared, also wait until
-        // `127.0.0.1:<port>` accepts inside the world netns so `ready` never races cold startup.
-        let health = classify_service(
-            self.supervisor
-                .wait(pid, Duration::from_millis(750))
-                .map_err(|error| error.to_string())?,
-        );
-        if let slipfork_world::ServiceHealth::Exited(code) = health {
-            return Err(format!(
-                "`{display}` exited with {code} before it became ready"
-            ));
-        }
-        if let Some(port) = port {
-            self.wait_tcp(pid, port, &spec.id, &display, Duration::from_secs(10))?;
-        }
-        Ok("started".to_owned())
+        let ready = match port {
+            Some(port) => Ready::Service {
+                pods_dir: self.supervisor.pods_dir().to_path_buf(),
+                port,
+                label: display,
+                service: spec.id.clone(),
+            },
+            None => Ready::None,
+        };
+        Ok(Staged {
+            state: BootState::Ready,
+            detail: "started".to_owned(),
+            ready,
+            progress: None,
+        })
     }
 
-    fn start_resource(&mut self, id: &str) -> Result<String, String> {
+    fn start_resource(&mut self, id: &str) -> Result<Staged, String> {
         resources::start_resource(self, id)
     }
 
-    fn wait_tcp(
-        &mut self,
-        pid: u32,
-        port: u16,
-        service: &str,
-        label: &str,
-        timeout: Duration,
-    ) -> Result<(), String> {
-        let pods_dir = self.supervisor.pods_dir().to_path_buf();
-        let deadline = Instant::now() + timeout;
-        while Instant::now() < deadline {
-            if let Ok(stream) = control::dial_tcp(&pods_dir, port) {
-                let _ = stream.shutdown(Shutdown::Both);
-                return Ok(());
-            }
-            let tick = classify_service(
-                self.supervisor
-                    .wait(pid, Duration::from_millis(100))
-                    .map_err(|error| error.to_string())?,
-            );
-            if let slipfork_world::ServiceHealth::Exited(code) = tick {
-                return Err(format!(
-                    "`{label}` exited with {code} before it became ready"
-                ));
-            }
-        }
-        Err(format!(
-            "`{label}` never opened `:{port}` within {}s\nnext: run `slipfork logs {service}`",
-            timeout.as_secs()
-        ))
+    /// The injected store layout (used to resolve sibling resource clones).
+    pub(super) fn store_layout(&self) -> StoreLayout {
+        self.layout.clone()
+    }
+
+    /// `<mount>/.slipfork-store/worlds/<world>`.
+    pub(super) fn world_dir(&self) -> PathBuf {
+        self.layout.world(&self.world)
+    }
+
+    /// Resolved rootfs subvolume per image id, recorded in the world stamp.
+    pub(super) fn image_paths(&self) -> BTreeMap<String, String> {
+        self.sealed
+            .iter()
+            .map(|(image, built)| (image.clone(), built.rootfs.display().to_string()))
+            .collect()
     }
 
     pub(super) fn cleanup(&mut self) {

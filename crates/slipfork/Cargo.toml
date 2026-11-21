@@ -39,10 +39,12 @@ slipfork-ingress = { path = "../slipfork-ingress" }
 slipfork-ospp = { path = "../slipfork-ospp" }
 slipfork-vcs = { path = "../slipfork-vcs" }
 slipfork-world = { path = "../slipfork-world" }
+tokio.workspace = true
 
 [dev-dependencies]
 getrandom.workspace = true
 hex.workspace = true
+hmac.workspace = true
 hpke.workspace = true
 p256.workspace = true
 sha2.workspace = true
