@@ -2488,3 +2488,15 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-21T16:45 [M3.41.2] (lead) fix pass 1: snapshot count, ingress prerequisite, no fabricated up output
 - 2026-11-21T16:45 [M3.41.2] (lead) status active -> review
 - 2026-11-21T16:45 [M3.41.2] (lead) status review -> done
+- 2026-11-21T16:56 [M3.41.5] (lead) created (task) Musl-clean slipfork-world fdpass CMSG widths for dynamic-musl .apk
+- 2026-11-21T16:56 [M3.41.5] (lead) status ready -> active
+- 2026-11-21T16:56 [M3.41.5] (lead) attempt 1/3 started
+- 2026-11-21T16:56 [M3.41.5] (lead) base d1a92f76b8239c57e987140964b5a376aa2e391b
+- 2026-11-21T16:56 [M3.41] (lead) edited fields
+- 2026-11-21T16:59 [M3.41] (lead) edited fields
+- 2026-11-21T16:59 [M3.41.5] (lead) status active -> review
+- 2026-11-21T17:01 [M3.41.5] (lead) status review -> active
+- 2026-11-21T17:01 [M3.41.5] (lead) attempt 2/3 started
+- 2026-11-21T17:01 [M3.41.5] (lead) fix pass 1: u32 _IOC encoder, ios request at call sites
+- 2026-11-21T17:02 [M3.41.5] (lead) status active -> review
+- 2026-11-21T17:02 [M3.41.5] (lead) status review -> done

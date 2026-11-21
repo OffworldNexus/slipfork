@@ -18,6 +18,7 @@ paths:
   - tools/check_docs_honesty.py
   - "crates/slipfork/**"
   - "crates/slipfork-lsp/**"
+  - "crates/slipfork-world/src/**"
   - "editors/zed/**"
   - Cargo.toml
   - Cargo.lock
@@ -25,7 +26,7 @@ attempts: 0
 max_attempts: 3
 escalation: none
 created: "2026-11-21T00:44"
-updated: "2026-11-21T16:32"
+updated: "2026-11-21T16:59"
 ---
 
 # Goal

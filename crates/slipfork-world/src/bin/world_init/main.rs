@@ -138,8 +138,9 @@ fn bring_loopback_up() -> io::Result<()> {
     }
     const SIOCGIFFLAGS: libc::c_ulong = 0x8913;
     const SIOCSIFFLAGS: libc::c_ulong = 0x8914;
-    // SAFETY: `request` outlives both ioctls and mirrors `struct ifreq`.
-    let read = unsafe { libc::ioctl(fd, SIOCGIFFLAGS, &mut request) };
+    // SAFETY: `request` outlives both ioctls and mirrors `struct ifreq`. `as _` adapts to the
+    // platform `ioctl` request width (`c_ulong` on glibc, `c_int` on musl); both fit 0x8913.
+    let read = unsafe { libc::ioctl(fd, SIOCGIFFLAGS as _, &mut request) };
     if read < 0 {
         let error = io::Error::last_os_error();
         // SAFETY: `fd` is an owned socket descriptor.
@@ -147,8 +148,9 @@ fn bring_loopback_up() -> io::Result<()> {
         return Err(error);
     }
     request.flags |= libc::IFF_UP as libc::c_short;
-    // SAFETY: `request` outlives the ioctl and mirrors `struct ifreq`.
-    let written = unsafe { libc::ioctl(fd, SIOCSIFFLAGS, &request) };
+    // SAFETY: `request` outlives the ioctl and mirrors `struct ifreq`; `as _` adapts the request
+    // width as above.
+    let written = unsafe { libc::ioctl(fd, SIOCSIFFLAGS as _, &request) };
     let outcome = if written < 0 {
         Err(io::Error::last_os_error())
     } else {

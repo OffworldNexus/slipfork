@@ -11,11 +11,42 @@ use std::os::unix::net::UnixStream;
 /// Largest control payload one `sendmsg`/`recvmsg` carries.
 pub const PAYLOAD_CAP: usize = 4096;
 
+/// Narrows a `usize` length into a platform control-message field.
+///
+/// glibc types `cmsg_len`/`msg_controllen` as `size_t` while musl types them as `socklen_t`; the
+/// target field type is inferred at each call site and an over-wide length is refused rather than
+/// truncated.
+fn narrow<T>(len: usize) -> io::Result<T>
+where
+    T: TryFrom<usize>,
+{
+    T::try_from(len).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "socket control length exceeds the platform's field width",
+        )
+    })
+}
+
+/// Widens a platform control-message field into the `usize` lengths this module works with.
+fn widen<T>(len: T) -> io::Result<usize>
+where
+    T: TryInto<usize>,
+{
+    len.try_into().map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "socket control length does not fit in usize",
+        )
+    })
+}
+
 /// Control-message buffer large enough for exactly one `SCM_RIGHTS` descriptor.
-fn cmsg_space() -> usize {
+fn cmsg_space() -> io::Result<usize> {
+    let payload = narrow::<libc::c_uint>(size_of::<RawFd>())?;
     // SAFETY: `CMSG_SPACE` is pure arithmetic over a byte length; it reads no memory and the
     // length is the constant `size_of::<RawFd>()`.
-    unsafe { libc::CMSG_SPACE(size_of::<RawFd>() as libc::c_uint) as usize }
+    widen(unsafe { libc::CMSG_SPACE(payload) })
 }
 
 /// Send one payload plus, when `fd` is `Some`, exactly one `SCM_RIGHTS` descriptor.
@@ -37,16 +68,15 @@ pub fn send_fd(socket: &UnixStream, payload: &[u8], fd: Option<BorrowedFd<'_>>) 
         iov_base: payload.as_ptr().cast_mut().cast(),
         iov_len: payload.len(),
     };
-    let mut control = vec![0_u8; cmsg_space()];
+    let mut control = vec![0_u8; cmsg_space()?];
     // SAFETY: an all-zero `msghdr` is a valid empty value; every field this function relies on is
     // overwritten below before `sendmsg` reads it.
     let mut message: libc::msghdr = unsafe { mem::zeroed() };
     message.msg_iov = &raw mut iov;
     message.msg_iovlen = 1;
     if let Some(fd) = fd {
-        let capacity = control.len() as libc::size_t;
         message.msg_control = control.as_mut_ptr().cast();
-        message.msg_controllen = capacity;
+        message.msg_controllen = narrow(control.len())?;
         // SAFETY: `message` references `control`, which is `CMSG_SPACE(size_of::<RawFd>())` bytes,
         // so the single control header and its data slot fit; `CMSG_DATA` then points at the
         // `RawFd` slot this block writes exactly once before `sendmsg` reads it.
@@ -57,9 +87,11 @@ pub fn send_fd(socket: &UnixStream, payload: &[u8], fd: Option<BorrowedFd<'_>>) 
             }
             (*header).cmsg_level = libc::SOL_SOCKET;
             (*header).cmsg_type = libc::SCM_RIGHTS;
-            (*header).cmsg_len = libc::CMSG_LEN(size_of::<RawFd>() as libc::c_uint) as usize;
+            let field = narrow::<libc::c_uint>(size_of::<RawFd>())?;
+            let control_len = widen(libc::CMSG_LEN(field))?;
+            (*header).cmsg_len = narrow(control_len)?;
             std::ptr::write_unaligned(libc::CMSG_DATA(header).cast::<RawFd>(), fd.as_raw_fd());
-            message.msg_controllen = (*header).cmsg_len;
+            message.msg_controllen = narrow(control_len)?;
         }
     }
     // SAFETY: `message` points at the initialized `iov`/`control` buffers above, `msg_iovlen` is 1,
@@ -94,14 +126,14 @@ pub fn recv_fd(socket: &UnixStream) -> io::Result<(Vec<u8>, Option<OwnedFd>)> {
         iov_base: payload.as_mut_ptr().cast(),
         iov_len: payload.len(),
     };
-    let mut control = vec![0_u8; cmsg_space()];
+    let mut control = vec![0_u8; cmsg_space()?];
     // SAFETY: an all-zero `msghdr` is a valid empty value; every field `recvmsg` reads is set below
     // before the call.
     let mut message: libc::msghdr = unsafe { mem::zeroed() };
     message.msg_iov = &raw mut iov;
     message.msg_iovlen = 1;
     message.msg_control = control.as_mut_ptr().cast();
-    message.msg_controllen = control.len() as libc::size_t;
+    message.msg_controllen = narrow(control.len())?;
     // SAFETY: `message` references the live `iov`/`control` buffers above; `recvmsg` writes at most
     // `msg_controllen` bytes into `control` and at most the payload length into `payload`.
     let received =
@@ -122,12 +154,11 @@ pub fn recv_fd(socket: &UnixStream) -> io::Result<(Vec<u8>, Option<OwnedFd>)> {
     // from `cmsg_len`, and each `SCM_RIGHTS` data slot is read as one `RawFd`.
     // `OwnedFd::from_raw_fd` takes ownership of every freshly received descriptor exactly once.
     unsafe {
+        let header_len = widen(libc::CMSG_LEN(0))?;
         let mut header = libc::CMSG_FIRSTHDR(&message);
         while !header.is_null() {
             if (*header).cmsg_level == libc::SOL_SOCKET && (*header).cmsg_type == libc::SCM_RIGHTS {
-                let data_len = (*header)
-                    .cmsg_len
-                    .saturating_sub(libc::CMSG_LEN(0) as usize);
+                let data_len = widen((*header).cmsg_len)?.saturating_sub(header_len);
                 let count = data_len / size_of::<RawFd>();
                 let data = libc::CMSG_DATA(header).cast::<RawFd>();
                 for index in 0..count {
@@ -196,14 +227,15 @@ mod tests {
             iov_len: payload.len(),
         };
         let space = std::mem::size_of_val(fds);
+        let declared = narrow::<libc::c_uint>(space).expect("test descriptor block fits");
         // SAFETY: `CMSG_SPACE` is pure arithmetic over the declared byte length.
-        let mut control = vec![0_u8; unsafe { libc::CMSG_SPACE(space as libc::c_uint) as usize }];
+        let mut control = vec![0_u8; widen(unsafe { libc::CMSG_SPACE(declared) }).expect("fits")];
         // SAFETY: an all-zero `msghdr` is valid; every read field is set below.
         let mut message: libc::msghdr = unsafe { mem::zeroed() };
         message.msg_iov = &raw mut iov;
         message.msg_iovlen = 1;
         message.msg_control = control.as_mut_ptr().cast();
-        message.msg_controllen = control.len() as libc::size_t;
+        message.msg_controllen = narrow(control.len()).expect("test control buffer fits");
         // SAFETY: `control` is exactly `CMSG_SPACE(n * sizeof(RawFd))` bytes, so the single header
         // and its `n` data slots fit; each slot is written exactly once.
         unsafe {
@@ -211,12 +243,13 @@ mod tests {
             assert!(!header.is_null());
             (*header).cmsg_level = libc::SOL_SOCKET;
             (*header).cmsg_type = libc::SCM_RIGHTS;
-            (*header).cmsg_len = libc::CMSG_LEN(space as libc::c_uint) as usize;
+            let control_len = widen(libc::CMSG_LEN(declared)).expect("test control length fits");
+            (*header).cmsg_len = narrow(control_len).expect("test control length fits");
             let data = libc::CMSG_DATA(header).cast::<RawFd>();
             for (index, fd) in fds.iter().enumerate() {
                 std::ptr::write_unaligned(data.add(index), *fd);
             }
-            message.msg_controllen = (*header).cmsg_len;
+            message.msg_controllen = narrow(control_len).expect("test control length fits");
         }
         // SAFETY: the live `message` references initialized buffers for the call's duration.
         let sent = unsafe { libc::sendmsg(socket.as_raw_fd(), &message, 0) };

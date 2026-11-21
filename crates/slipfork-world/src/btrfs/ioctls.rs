@@ -16,17 +16,20 @@ const IOC_WRITE: u32 = 1;
 const IOC_READ: u32 = 2;
 
 /// Encodes a `_IOC(dir, type, nr, size)` request exactly like `linux/ioctl.h`.
-const fn request(dir: u32, nr: u32, size: u32) -> libc::c_ulong {
-    ((dir << 30) | (size << 16) | (BTRFS_IOCTL_MAGIC << 8) | nr) as libc::c_ulong
+///
+/// Kept as `u32`: `ioctl(2)` takes `c_ulong` on glibc and `c_int` on musl, and each call site adapts
+/// with `as _` because the kernel only reads the low 32 bits of the request word.
+const fn request(dir: u32, nr: u32, size: u32) -> u32 {
+    (dir << 30) | (size << 16) | (BTRFS_IOCTL_MAGIC << 8) | nr
 }
 
-const SUBVOL_GETFLAGS: libc::c_ulong = request(IOC_READ, 25, 8);
-const SUBVOL_SETFLAGS: libc::c_ulong = request(IOC_WRITE, 26, 8);
-const SUBVOL_CREATE: libc::c_ulong = request(IOC_WRITE, 14, 4096);
-const SNAP_CREATE_V2: libc::c_ulong = request(IOC_WRITE, 23, 4096);
-const FS_INFO: libc::c_ulong = request(IOC_READ, 31, 1024);
+const SUBVOL_GETFLAGS: u32 = request(IOC_READ, 25, 8);
+const SUBVOL_SETFLAGS: u32 = request(IOC_WRITE, 26, 8);
+const SUBVOL_CREATE: u32 = request(IOC_WRITE, 14, 4096);
+const SNAP_CREATE_V2: u32 = request(IOC_WRITE, 23, 4096);
+const FS_INFO: u32 = request(IOC_READ, 31, 1024);
 /// `BTRFS_IOC_SNAP_DESTROY_V2` is command **63** in `linux/btrfs.h`, not 47.
-const SNAP_DESTROY_V2: libc::c_ulong = request(IOC_WRITE, 63, 1024 * 4);
+const SNAP_DESTROY_V2: u32 = request(IOC_WRITE, 63, 1024 * 4);
 
 /// `struct btrfs_ioctl_vol_args` from `fs/btrfs/ioctl.h` (4096 bytes).
 #[allow(dead_code)] // Fields mirror the kernel ABI and are read by the kernel, not by us.
@@ -82,7 +85,7 @@ pub(crate) fn fsid(dir: &File, path: &Path) -> Result<[u8; BTRFS_FSID_SIZE]> {
     };
     // SAFETY: `dir` is a live Btrfs directory fd and `args` matches `btrfs_ioctl_fs_info_args`.
     check("read btrfs filesystem uuid", path, unsafe {
-        libc::ioctl(dir.as_raw_fd(), FS_INFO, &mut args)
+        libc::ioctl(dir.as_raw_fd(), FS_INFO as _, &mut args)
     })?;
     Ok(args.fsid)
 }
@@ -91,7 +94,7 @@ pub(crate) fn get_flags(dir: &File, path: &Path) -> Result<SubvolumeFlags> {
     let mut flags: u64 = 0;
     // SAFETY: `dir` holds a live descriptor and the kernel writes exactly one `u64` through it.
     check("read subvolume flags", path, unsafe {
-        libc::ioctl(dir.as_raw_fd(), SUBVOL_GETFLAGS, &mut flags)
+        libc::ioctl(dir.as_raw_fd(), SUBVOL_GETFLAGS as _, &mut flags)
     })?;
     Ok(SubvolumeFlags::from_raw(flags))
 }
@@ -100,7 +103,7 @@ pub(crate) fn set_flags(dir: &File, path: &Path, flags: SubvolumeFlags) -> Resul
     let mut raw = flags.raw();
     // SAFETY: `dir` holds a live descriptor and the kernel only reads the `u64` behind it.
     check("set subvolume flags", path, unsafe {
-        libc::ioctl(dir.as_raw_fd(), SUBVOL_SETFLAGS, &mut raw)
+        libc::ioctl(dir.as_raw_fd(), SUBVOL_SETFLAGS as _, &mut raw)
     })
 }
 
@@ -112,7 +115,7 @@ pub(crate) fn create_subvolume(parent: &File, path: &Path, name: &OsStr) -> Resu
     set_name(&mut args.name, name, path, "create subvolume")?;
     // SAFETY: `parent` is a live directory descriptor and `args` mirrors `btrfs_ioctl_vol_args`.
     check("create subvolume", path, unsafe {
-        libc::ioctl(parent.as_raw_fd(), SUBVOL_CREATE, &mut args)
+        libc::ioctl(parent.as_raw_fd(), SUBVOL_CREATE as _, &mut args)
     })
 }
 
@@ -127,7 +130,7 @@ pub(crate) fn snapshot(parent: &File, source: &File, path: &Path, name: &OsStr) 
     set_name(&mut args.name, name, path, "snapshot")?;
     // SAFETY: `parent`/`source` are live descriptors and `args` mirrors `btrfs_ioctl_vol_args_v2`.
     check("snapshot", path, unsafe {
-        libc::ioctl(parent.as_raw_fd(), SNAP_CREATE_V2, &mut args)
+        libc::ioctl(parent.as_raw_fd(), SNAP_CREATE_V2 as _, &mut args)
     })
 }
 
@@ -142,7 +145,7 @@ pub(crate) fn destroy(parent: &File, path: &Path, name: &OsStr) -> Result<()> {
     set_name(&mut args.name, name, path, "delete subvolume")?;
     // SAFETY: `parent` is a live directory descriptor and `args` mirrors its kernel ABI struct.
     check("delete subvolume", path, unsafe {
-        libc::ioctl(parent.as_raw_fd(), SNAP_DESTROY_V2, &mut args)
+        libc::ioctl(parent.as_raw_fd(), SNAP_DESTROY_V2 as _, &mut args)
     })
 }
 
