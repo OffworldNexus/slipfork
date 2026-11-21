@@ -2,16 +2,16 @@
 id: M3.42.3
 title: "Close §2–§6 story gaps and green all local gates (check/docs/packages/packages-test/coverage)"
 kind: task
-status: ready
+status: superseded
 owner: implementer
 priority: 3
-depends_on: [M3.42.5]
+depends_on: [M3.42.6]
 paths: ["crates/**", "scripts/**", "packaging/**", "docs/**", ".github/**", Makefile, TESTING_PLAN.md]
 attempts: 0
 max_attempts: 3
 escalation: none
 created: "2026-11-21T17:30"
-updated: "2026-11-21T18:06"
+updated: "2026-11-21T19:40"
 ---
 
 # Goal

@@ -125,6 +125,14 @@ pub struct Command {
 ast_eq!(Command { tool, parts });
 
 impl Command {
+    /// Whether any part interpolates a `$env.<key>` site.
+    #[must_use]
+    pub fn uses_env(&self) -> bool {
+        self.parts
+            .iter()
+            .any(|part| matches!(part, CommandPart::Env { .. }))
+    }
+
     /// Renders the command back to `Forkfile` source text.
     #[must_use]
     pub fn text(&self) -> String {

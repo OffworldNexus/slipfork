@@ -76,6 +76,31 @@ impl ImageConfig {
         }
     }
 
+    /// The argv a `service` without `run:` execs: OCI `ENTRYPOINT` then `CMD`.
+    ///
+    /// Shell-form `ENTRYPOINT` owns the whole runtime command, so `CMD` is ignored, exactly as
+    /// the OCI runtime spec requires.
+    #[must_use]
+    pub fn exec_argv(&self) -> Vec<String> {
+        match &self.entrypoint {
+            Some(crate::Command::Exec(argv)) => {
+                let mut argv = argv.clone();
+                if let Some(cmd) = &self.cmd {
+                    argv.extend(cmd.to_argv());
+                }
+                argv
+            }
+            Some(crate::Command::Shell(script)) => {
+                vec!["/bin/sh".to_owned(), "-c".to_owned(), script.clone()]
+            }
+            None => self
+                .cmd
+                .as_ref()
+                .map(crate::Command::to_argv)
+                .unwrap_or_default(),
+        }
+    }
+
     /// Stable fingerprint so metadata changes invalidate later filesystem steps.
     #[must_use]
     pub fn fingerprint(&self) -> String {

@@ -8,9 +8,9 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use slipfork_image::{
-    Architecture, BuildArgs, BuildContext, BuildRequest, Credentials, DockerfileParser,
-    Dockerignore, ImageLayout, ImageReference, LayerUnpacker, NativeImageBuilder, OciPuller,
-    StepHost, StepLayout, Variables,
+    Architecture, BuildArgs, BuildContext, BuildRequest, Command, Credentials, DockerfileParser,
+    Dockerignore, ImageConfig, ImageLayout, ImageReference, Instruction, LayerUnpacker,
+    NativeImageBuilder, OciPuller, StepHost, StepLayout, Variables,
 };
 use slipfork_world::{BtrfsEngine, StoreLayout, WorldEngine};
 
@@ -242,4 +242,23 @@ fn a_real_tar_layer_unpacks_a_dot_root_entry_onto_disk() {
         "#!/bin/sh\n"
     );
     let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn entrypoint_and_cmd_compose_into_one_exec_argv() {
+    let mut config = ImageConfig::default();
+    assert!(config.exec_argv().is_empty());
+    config.apply(&Instruction::Entrypoint(Command::Exec(vec![
+        "node".to_owned(),
+        "server.js".to_owned(),
+    ])));
+    config.apply(&Instruction::Cmd(Command::Exec(vec![
+        "--port".to_owned(),
+        "3000".to_owned(),
+    ])));
+    assert_eq!(config.exec_argv(), ["node", "server.js", "--port", "3000"]);
+    config.apply(&Instruction::Entrypoint(Command::Shell(
+        "exec python3".to_owned(),
+    )));
+    assert_eq!(config.exec_argv(), ["/bin/sh", "-c", "exec python3"]);
 }

@@ -36,7 +36,7 @@ flowchart LR
 | `slipfork down` | Stop pods and delete run subvolumes, keeping data |
 | `slipfork fork [name]` | Snapshot code and world data, boot the fork on its own URL |
 | `slipfork drop <name>` | Stop a fork and delete its snapshots; `-f` discards a dirty checkout |
-| `slipfork logs [-f] [service]` | Merged `stdout` + `stderr` with per-service gutters |
+| `slipfork logs [-f] [-a] [service]` | Merged service `stdout` + `stderr` gutters; `-a` adds resources, or name one |
 | `slipfork shell [service\|image]` | `sh -i` inside a pod with its user, workdir and env |
 | `slipfork exec [service\|image] -- <cmd>` | Run any command in a pod and forward its exit code |
 | `slipfork db [database]` | Interactive `psql`, or piped SQL |

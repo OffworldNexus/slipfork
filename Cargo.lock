@@ -1134,8 +1134,11 @@ dependencies = [
 name = "slipfork-forkfile"
 version = "0.1.0"
 dependencies = [
+ "base64",
+ "hex",
  "serde",
  "serde_yaml_ng",
+ "sha2 0.10.9",
 ]
 
 [[package]]

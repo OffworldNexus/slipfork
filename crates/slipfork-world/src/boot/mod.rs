@@ -20,7 +20,7 @@ pub use stamp::{StampStore, StepStamp};
 use std::path::PathBuf;
 
 use crate::error::{Error, Result};
-use crate::resources::ResourceKind;
+use crate::resources::{ResourceKind, S3Bucket};
 
 /// The kind of work one boot node performs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -85,6 +85,10 @@ pub struct ResourceNode {
     pub id: String,
     /// Which real backend to start.
     pub resource: ResourceKind,
+    /// Declared PostgreSQL child databases.
+    pub databases: Vec<String>,
+    /// Coalesced S3 buckets with private vs `public-read` policies.
+    pub buckets: Vec<S3Bucket>,
     /// `Forkfile` line of the declaration.
     pub line: u32,
 }
@@ -98,6 +102,8 @@ pub struct ServiceNode {
     pub image: String,
     /// Public `port`, when declared.
     pub port: Option<u16>,
+    /// Extra world-private `internal_ports`, when declared.
+    pub internal_ports: Vec<u16>,
     /// The `run:` command with `$port` resolved, when declared.
     pub command: Option<String>,
     /// `Forkfile` line of the `service` keyword.
@@ -168,6 +174,23 @@ impl WorldPlan {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.steps.is_empty()
+    }
+
+    /// Every `port` and `internal_ports` entry claimed by application services in this world.
+    #[must_use]
+    pub fn reserved_ports(&self) -> Vec<u16> {
+        let mut ports: Vec<u16> = self
+            .services
+            .iter()
+            .flat_map(|svc| {
+                svc.port
+                    .into_iter()
+                    .chain(svc.internal_ports.iter().copied())
+            })
+            .collect();
+        ports.sort_unstable();
+        ports.dedup();
+        ports
     }
 
     /// Groups steps into parallel waves; a dependency cycle is refused here.

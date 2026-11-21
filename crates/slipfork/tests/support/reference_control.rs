@@ -81,30 +81,57 @@ fn handle(
         Request::Logs {
             id,
             service,
+            pods: filter,
             follow,
             ..
         } => {
-            let pod = service.unwrap_or_else(|| "api".to_owned());
-            send(
-                stream,
-                &output(
-                    &id,
-                    &pod,
-                    Stream::Combined,
-                    OutputKind::Divider,
-                    &format!("── {pod} started ──"),
-                ),
-            )?;
-            send(
-                stream,
-                &output(
-                    &id,
-                    &pod,
-                    Stream::Combined,
-                    OutputKind::Line,
-                    "hello from the pod",
-                ),
-            )?;
+            let selected: Vec<String> = if let Some(target) = service {
+                if !pods.iter().any(|pod| pod.id == target && pod.running) {
+                    let reply = InitFrame::Reply {
+                        v: PROTOCOL_VERSION,
+                        id,
+                        ok: None,
+                        error: Some(slipfork_world::ControlError {
+                            code: "no-pod".to_owned(),
+                            message: format!("pod `{target}` is not running"),
+                        }),
+                    };
+                    return send(stream, &reply);
+                }
+                vec![target]
+            } else {
+                pods.iter()
+                    .filter(|pod| pod.running)
+                    .map(|pod| pod.id.clone())
+                    .filter(|id| {
+                        filter
+                            .as_ref()
+                            .is_none_or(|wanted| wanted.iter().any(|w| w == id))
+                    })
+                    .collect()
+            };
+            for pod in &selected {
+                send(
+                    stream,
+                    &output(
+                        &id,
+                        pod,
+                        Stream::Combined,
+                        OutputKind::Divider,
+                        &format!("── {pod} started ──"),
+                    ),
+                )?;
+                send(
+                    stream,
+                    &output(
+                        &id,
+                        pod,
+                        Stream::Combined,
+                        OutputKind::Line,
+                        "hello from the pod",
+                    ),
+                )?;
+            }
             if follow {
                 // Hold the world stream until the follower closes, like the real init.
                 let _ = stream.set_read_timeout(Some(Duration::from_millis(50)));
@@ -126,14 +153,16 @@ fn handle(
                 }
                 return Ok(());
             }
-            send(
-                stream,
-                &output(&id, &pod, Stream::Combined, OutputKind::Eof, ""),
-            )?;
+            for pod in &selected {
+                send(
+                    stream,
+                    &output(&id, pod, Stream::Combined, OutputKind::Eof, ""),
+                )?;
+            }
             let reply = InitFrame::Reply {
                 v: PROTOCOL_VERSION,
                 id,
-                ok: Some(json!({ "pods": [pod], "follow": false })),
+                ok: Some(json!({ "pods": selected, "follow": false })),
                 error: None,
             };
             send(stream, &reply)

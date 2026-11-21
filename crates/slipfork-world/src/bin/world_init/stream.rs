@@ -79,6 +79,7 @@ pub(crate) fn serve_logs(
     shared: Arc<WorldShared>,
     request_id: String,
     service: Option<String>,
+    pods: Option<Vec<String>>,
     follow: bool,
     mut stream: UnixStream,
 ) -> Result<(), Fault> {
@@ -94,6 +95,8 @@ pub(crate) fn serve_logs(
             );
         }
         ids = vec![service.clone()];
+    } else if let Some(selected) = pods {
+        ids.retain(|id| selected.iter().any(|wanted| wanted == id));
     }
     let mut readers: Vec<(String, LogReader)> = Vec::new();
     for id in &ids {

@@ -16,6 +16,16 @@ use super::super::rpc::key_of;
 use super::core::{Core, World};
 use crate::ps::{PsKind, PsReply, PsWorld};
 
+/// Kinds bare `slipfork logs` merges by default (application services only).
+const SERVICES: &[PsKind] = &[PsKind::Service];
+/// Kinds `slipfork logs -a` merges (services plus backing resources).
+const ALL_LOGS: &[PsKind] = &[
+    PsKind::Service,
+    PsKind::Image,
+    PsKind::Postgres,
+    PsKind::Redis,
+    PsKind::S3,
+];
 /// Kinds a plain `shell`/`exec` may target.
 const ANY: &[PsKind] = &[
     PsKind::Service,
@@ -37,17 +47,29 @@ impl Core {
         alive: &mut dyn FnMut() -> bool,
     ) -> Result<Value, Failure> {
         let project = project_param(params)?;
-        let (pods_dir, ids) = self.live_pods(&project, ANY)?;
-        let service = params
+        let all = params.get("all").and_then(Value::as_bool).unwrap_or(false);
+        let requested = params
             .get("service")
             .and_then(Value::as_str)
             .map(str::to_owned);
-        if ids.is_empty() && service.is_none() {
-            return Err(Failure::new(
-                "no-target",
-                "no pods are running in this world",
-            ));
-        }
+        let (pods_dir, roster_ids, service, filter_pods) = match requested {
+            Some(target) => {
+                let (pods_dir, resolved) = self.resolve_log_target(&project, &target)?;
+                (pods_dir, vec![resolved.clone()], Some(resolved), None)
+            }
+            None => {
+                let kinds = if all { ALL_LOGS } else { SERVICES };
+                let (pods_dir, ids) = self.live_pods(&project, kinds)?;
+                if ids.is_empty() {
+                    return Err(Failure::new(
+                        "no-target",
+                        "no pods are running in this world",
+                    ));
+                }
+                let filter = Some(ids.clone());
+                (pods_dir, ids, None, filter)
+            }
+        };
         let follow = params
             .get("follow")
             .and_then(Value::as_bool)
@@ -59,6 +81,7 @@ impl Core {
                 v: PROTOCOL_VERSION,
                 id: "daemon-logs".to_owned(),
                 service,
+                pods: filter_pods,
                 follow,
             })
             .map_err(|error| Failure::new("world-unavailable", error.to_string()))?;
@@ -68,7 +91,7 @@ impl Core {
             "pod": "",
             "stream": "combined",
             "line": "",
-            "pods": ids,
+            "pods": roster_ids,
         });
         if !emit(roster) {
             client.close();
@@ -153,32 +176,74 @@ impl Core {
         Ok((client, stdin))
     }
 
+    /// Maps an explicit `logs <target>` onto its pod id, translating secondary S3 buckets onto the
+    /// world's shared SeaweedFS pod while letting unknown ids fail closed inside `world_init`.
+    fn resolve_log_target(
+        &mut self,
+        project: &Path,
+        target: &str,
+    ) -> Result<(PathBuf, String), Failure> {
+        let pods_dir = self.live_pods_dir(project)?;
+        let reply = self.ps()?;
+        for world in world_rows(&reply, project) {
+            let primary_s3 = world
+                .services
+                .iter()
+                .find(|svc| svc.kind == PsKind::S3 && svc.running)
+                .map(|svc| svc.id.clone());
+            if world
+                .services
+                .iter()
+                .any(|svc| svc.id == target && svc.kind == PsKind::S3 && svc.running)
+                && let Some(primary) = primary_s3
+            {
+                return Ok((pods_dir, primary));
+            }
+        }
+        Ok((pods_dir, target.to_owned()))
+    }
+
     /// The live world's pod root and the running pod ids of the requested kinds.
     fn live_pods(
         &mut self,
         project: &Path,
         kinds: &[PsKind],
     ) -> Result<(PathBuf, Vec<String>), Failure> {
+        let pods_dir = self.live_pods_dir(project)?;
+        let reply = self.ps()?;
+        let mut ids = Vec::new();
+        for world in world_rows(&reply, project) {
+            let mut saw_s3 = false;
+            for service in &world.services {
+                if !kinds.contains(&service.kind) || !service.running {
+                    continue;
+                }
+                if service.kind == PsKind::S3 {
+                    if saw_s3 {
+                        continue;
+                    }
+                    saw_s3 = true;
+                }
+                if !ids.contains(&service.id) {
+                    ids.push(service.id.clone());
+                }
+            }
+        }
+        Ok((pods_dir, ids))
+    }
+
+    fn live_pods_dir(&self, project: &Path) -> Result<PathBuf, Failure> {
         let entity = self
             .worlds
             .get(&key_of(project))
             .ok_or_else(|| Failure::new("no-world", "no world is running in this directory"))?;
-        let entry = match entity {
-            World::Booting { world, .. } => {
-                return Err(Failure::new(
-                    "world-booting",
-                    format!("world `{world}` is still starting"),
-                ));
-            }
-            World::Live { entry, .. } => entry.clone(),
-        };
-        let reply = self.ps()?;
-        let ids = world_rows(&reply, project)
-            .flat_map(|world| world.services.iter())
-            .filter(|service| kinds.contains(&service.kind) && service.running)
-            .map(|service| service.id.clone())
-            .collect();
-        Ok((entry.pods_dir, ids))
+        match entity {
+            World::Booting { world, .. } => Err(Failure::new(
+                "world-booting",
+                format!("world `{world}` is still starting"),
+            )),
+            World::Live { entry, .. } => Ok(entry.pods_dir.clone()),
+        }
     }
 }
 

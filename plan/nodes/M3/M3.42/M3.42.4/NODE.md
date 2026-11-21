@@ -2,7 +2,7 @@
 id: M3.42.4
 title: Live Btrfs proof on 165.232.86.174 without disturbing the owner demo
 kind: task
-status: ready
+status: superseded
 owner: implementer
 priority: 3
 depends_on: [M3.42.3]
@@ -11,7 +11,7 @@ attempts: 0
 max_attempts: 3
 escalation: none
 created: "2026-11-21T17:30"
-updated: "2026-11-21T17:30"
+updated: "2026-11-21T19:40"
 ---
 
 # Goal

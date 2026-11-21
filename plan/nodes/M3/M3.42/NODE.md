@@ -2,7 +2,7 @@
 id: M3.42
 title: "Full TESTING_PLAN.md user-story E2E verification, make coverage dead-code sweep & live Btrfs proof on 165.232.86.174"
 kind: epic
-status: ready
+status: superseded
 priority: 3
 depends_on: [M3.41]
 paths:
@@ -28,7 +28,7 @@ attempts: 0
 max_attempts: 3
 escalation: none
 created: "2026-11-21T00:44"
-updated: "2026-11-21T17:29"
+updated: "2026-11-21T19:40"
 ---
 
 # Goal

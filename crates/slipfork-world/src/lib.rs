@@ -75,8 +75,8 @@ pub use pod_log::{CHUNK, DIVIDER_CLOSE, DIVIDER_OPEN, LogKind, LogLine, LogReade
 pub use port::{Dirtiness, ForkPaths, WorldEngine};
 pub use reap::kill_group;
 pub use resources::{
-    ImageFacts, ResourceKind, S3Bucket, S3Credentials, S3Policy, SeaweedfsPlan, postgres, redis,
-    seaweedfs,
+    ImageFacts, ResourceKind, S3Bucket, S3Credentials, S3Policy, SeaweedfsPlan, SeaweedfsPorts,
+    postgres, redis, seaweedfs,
 };
 pub use runtime_dir::RuntimePods;
 pub use supervisor::{PodStatus, WorldHost, WorldSupervisor, pod_statuses};

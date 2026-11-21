@@ -9,7 +9,9 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 
 use crate::ast::*;
+use crate::eval::FeatureSet;
 use crate::expr::Command;
+use crate::gate::each_enabled;
 
 /// One auto-prequel tool, its install command, and its workspace-root lockfile.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -99,6 +101,8 @@ pub struct SetupNode {
     pub patterns: Vec<PathBuf>,
     /// Content hash of `patterns` when the plan was built.
     pub stamp: String,
+    /// Whether the command interpolates `$env.<key>` at runtime.
+    pub uses_env: bool,
 }
 
 impl SetupNode {
@@ -143,14 +147,18 @@ impl BootPlan {
 /// Synthesizes the deduplicated `@<tool>` / `when changed(...)` setup nodes.
 #[must_use]
 pub fn boot_plan(doc: &Forkfile, root: &Path) -> BootPlan {
+    let features = doc.active_features();
     let mut planner = Planner {
         root,
+        features: &features,
         seen: BTreeSet::new(),
         nodes: Vec::new(),
     };
-    for item in &doc.items.items {
-        planner.top(item);
-    }
+    each_enabled(&doc.items.items, &features, &mut |item| {
+        if let TopItem::Image(image) = item {
+            planner.image(image);
+        }
+    });
     BootPlan {
         nodes: planner.nodes,
     }
@@ -190,26 +198,12 @@ fn read_inputs(root: &Path, patterns: &[PathBuf]) -> Vec<(PathBuf, Option<Vec<u8
 
 struct Planner<'a> {
     root: &'a Path,
+    features: &'a FeatureSet,
     nodes: Vec<SetupNode>,
     seen: BTreeSet<(String, PathBuf, String, Vec<PathBuf>)>,
 }
 
 impl Planner<'_> {
-    fn top(&mut self, item: &TopItem) {
-        match item {
-            TopItem::Image(image) => self.image(image),
-            TopItem::On(on) => match &on.body {
-                OnBody::Inline(inner) => self.top(inner),
-                OnBody::Block(block) => {
-                    for item in &block.items {
-                        self.top(item);
-                    }
-                }
-            },
-            _ => {}
-        }
-    }
-
     fn image(&mut self, image: &Image) {
         let directory = match &image.source {
             ImageSource::Dir(dir) => clean(Path::new(dir)),
@@ -219,42 +213,40 @@ impl Planner<'_> {
     }
 
     fn image_items(&mut self, image: &str, directory: &Path, items: &[ImageItem]) {
-        for item in items {
-            match item {
-                ImageItem::BeforeStart(hook)
-                | ImageItem::PreDeploy(hook)
-                | ImageItem::PostDeploy(hook)
-                | ImageItem::FailedDeploy(hook) => self.hook(image, directory, hook, true),
-                ImageItem::Service(service) => {
-                    self.service_items(image, directory, &service.body.items);
-                }
-                ImageItem::On(on) => match &on.body {
-                    OnBody::Inline(inner) => {
-                        self.image_items(image, directory, std::slice::from_ref(inner.as_ref()));
-                    }
-                    OnBody::Block(block) => self.image_items(image, directory, &block.items),
-                },
-                _ => {}
+        let features = self.features;
+        each_enabled(items, features, &mut |item| {
+            self.image_item(image, directory, item);
+        });
+    }
+
+    fn image_item(&mut self, image: &str, directory: &Path, item: &ImageItem) {
+        match item {
+            ImageItem::BeforeStart(hook)
+            | ImageItem::PreDeploy(hook)
+            | ImageItem::PostDeploy(hook)
+            | ImageItem::FailedDeploy(hook) => self.hook(image, directory, hook, true),
+            ImageItem::Service(service) => {
+                self.service_items(image, directory, &service.body.items);
             }
+            _ => {}
         }
     }
 
     fn service_items(&mut self, image: &str, directory: &Path, items: &[ServiceItem]) {
-        for item in items {
-            match item {
-                ServiceItem::BeforeStart(hook)
-                | ServiceItem::PreDeploy(hook)
-                | ServiceItem::PostDeploy(hook)
-                | ServiceItem::FailedDeploy(hook) => self.hook(image, directory, hook, true),
-                ServiceItem::Run(hook) => self.hook(image, directory, hook, false),
-                ServiceItem::On(on) => match &on.body {
-                    OnBody::Inline(inner) => {
-                        self.service_items(image, directory, std::slice::from_ref(inner.as_ref()));
-                    }
-                    OnBody::Block(block) => self.service_items(image, directory, &block.items),
-                },
-                _ => {}
-            }
+        let features = self.features;
+        each_enabled(items, features, &mut |item| {
+            self.service_item(image, directory, item);
+        });
+    }
+
+    fn service_item(&mut self, image: &str, directory: &Path, item: &ServiceItem) {
+        match item {
+            ServiceItem::BeforeStart(hook)
+            | ServiceItem::PreDeploy(hook)
+            | ServiceItem::PostDeploy(hook)
+            | ServiceItem::FailedDeploy(hook) => self.hook(image, directory, hook, true),
+            ServiceItem::Run(hook) => self.hook(image, directory, hook, false),
+            _ => {}
         }
     }
 
@@ -285,6 +277,7 @@ impl Planner<'_> {
                 patterns.push(clean(&image_dir.join(pattern)));
             }
             patterns.dedup();
+            let uses_env = tool.is_none() && command.uses_env();
             let command = tool.map_or_else(|| command.text(), |tool| tool.install.to_string());
             let stamp = stamp_of(&read_inputs(self.root, &patterns));
             let key = (
@@ -303,6 +296,7 @@ impl Planner<'_> {
                 tool: tool.map(|tool| tool.name.to_string()),
                 patterns,
                 stamp,
+                uses_env,
             });
         }
     }

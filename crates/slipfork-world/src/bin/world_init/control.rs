@@ -70,12 +70,13 @@ pub(crate) fn handle(listener: &UnixListener, world: &mut InitWorld) -> Result<b
         wire::Request::Logs {
             id,
             service,
+            pods,
             follow,
             ..
         } => {
             let shared = world.shared();
             std::thread::spawn(move || {
-                if let Err(fault) = serve_logs(shared, id, service, follow, stream) {
+                if let Err(fault) = serve_logs(shared, id, service, pods, follow, stream) {
                     eprintln!("slipfork-world-init: {fault}");
                 }
             });

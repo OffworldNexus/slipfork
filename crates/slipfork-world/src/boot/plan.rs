@@ -4,18 +4,20 @@ use std::path::{Path, PathBuf};
 
 use slipfork_forkfile::ast::*;
 use slipfork_forkfile::boot::{SetupNode, boot_plan};
-use slipfork_forkfile::{Command, CommandPart};
+use slipfork_forkfile::{Command, CommandPart, FeatureSet, each_enabled};
 
 use super::stamp::{StepStamp, stamp_key};
 use super::{
     BootKind, BootStep, FailedHook, HookPhase, ImageNode, ResourceNode, ServiceNode, WorldPlan,
 };
-use crate::resources::ResourceKind;
+use crate::resources::{ResourceKind, S3Bucket, S3Policy};
 
 /// Builds the world boot plan from a checked `Forkfile` and its project root.
-#[must_use]
-pub fn world_plan(doc: &Forkfile, root: &Path) -> WorldPlan {
+pub fn world_plan(doc: &Forkfile, root: &Path) -> crate::Result<WorldPlan> {
+    let features = doc.active_features();
     let mut builder = PlanBuilder {
+        features: &features,
+        error: None,
         root,
         images: Vec::new(),
         resources: Vec::new(),
@@ -24,9 +26,9 @@ pub fn world_plan(doc: &Forkfile, root: &Path) -> WorldPlan {
         steps: Vec::new(),
         failed_deploy: Vec::new(),
     };
-    for item in &doc.items.items {
+    each_enabled(&doc.items.items, &features, &mut |item| {
         builder.top(item);
-    }
+    });
     builder.finish(doc)
 }
 
@@ -39,6 +41,8 @@ struct HookRecord {
 }
 
 struct PlanBuilder<'a> {
+    features: &'a FeatureSet,
+    error: Option<crate::Error>,
     root: &'a Path,
     images: Vec<ImageNode>,
     resources: Vec<ResourceNode>,
@@ -64,100 +68,113 @@ impl PlanBuilder<'_> {
                 });
                 self.image_items(&image.id, &image.body.items);
             }
-            TopItem::Postgres(postgres) => self.resources.push(ResourceNode {
-                id: postgres.id.clone(),
-                resource: ResourceKind::Postgres,
-                line: postgres.span.line(),
-            }),
+            TopItem::Postgres(postgres) => {
+                let mut databases = Vec::new();
+                collect_pg_databases(&postgres.body.items, self.features, &mut databases);
+                self.resources.push(ResourceNode {
+                    id: postgres.id.clone(),
+                    resource: ResourceKind::Postgres,
+                    databases,
+                    buckets: Vec::new(),
+                    line: postgres.span.line(),
+                });
+            }
             TopItem::Redis(redis) => self.resources.push(ResourceNode {
                 id: redis.id.clone(),
                 resource: ResourceKind::Redis,
+                databases: Vec::new(),
+                buckets: Vec::new(),
                 line: redis.span.line(),
             }),
-            TopItem::S3(s3) => self.resources.push(ResourceNode {
-                id: s3.bucket.clone(),
-                resource: ResourceKind::Seaweedfs,
-                line: s3.span.line(),
-            }),
-            TopItem::On(on) => match &on.body {
-                OnBody::Inline(inner) => self.top(inner),
-                OnBody::Block(block) => {
-                    for item in &block.items {
-                        self.top(item);
+            TopItem::S3(s3) => {
+                let policy = if has_cdn(&s3.body.items, self.features) {
+                    S3Policy::PublicRead
+                } else {
+                    S3Policy::Private
+                };
+                let bucket = match S3Bucket::new(&s3.bucket, policy) {
+                    Ok(bucket) => bucket,
+                    Err(error) => {
+                        self.error.get_or_insert(error);
+                        return;
                     }
+                };
+                if let Some(existing) = self
+                    .resources
+                    .iter_mut()
+                    .find(|node| node.resource == ResourceKind::Seaweedfs)
+                {
+                    existing.buckets.push(bucket);
+                } else {
+                    self.resources.push(ResourceNode {
+                        id: s3.bucket.clone(),
+                        resource: ResourceKind::Seaweedfs,
+                        databases: Vec::new(),
+                        buckets: vec![bucket],
+                        line: s3.span.line(),
+                    });
                 }
-            },
+            }
             _ => {}
         }
     }
 
     fn image_items(&mut self, image: &str, items: &[ImageItem]) {
-        for item in items {
-            match item {
-                ImageItem::BeforeStart(hook) => {
-                    self.hook(image, image, HookPhase::BeforeStart, hook);
-                }
-                ImageItem::PreDeploy(hook) => {
-                    self.hook(image, image, HookPhase::PreDeploy, hook);
-                }
-                ImageItem::PostDeploy(hook) => {
-                    self.hook(image, image, HookPhase::PostDeploy, hook);
-                }
-                ImageItem::FailedDeploy(hook) => {
-                    self.hook(image, image, HookPhase::FailedDeploy, hook);
-                }
-                ImageItem::Service(service) => self.service(image, service),
-                ImageItem::On(on) => match &on.body {
-                    OnBody::Inline(inner) => {
-                        self.image_items(image, std::slice::from_ref(inner.as_ref()));
-                    }
-                    OnBody::Block(block) => self.image_items(image, &block.items),
-                },
-                _ => {}
+        let features = self.features;
+        each_enabled(items, features, &mut |item| match item {
+            ImageItem::BeforeStart(hook) => {
+                self.hook(image, image, HookPhase::BeforeStart, hook);
             }
-        }
+            ImageItem::PreDeploy(hook) => {
+                self.hook(image, image, HookPhase::PreDeploy, hook);
+            }
+            ImageItem::PostDeploy(hook) => {
+                self.hook(image, image, HookPhase::PostDeploy, hook);
+            }
+            ImageItem::FailedDeploy(hook) => {
+                self.hook(image, image, HookPhase::FailedDeploy, hook);
+            }
+            ImageItem::Service(service) => self.service(image, service),
+            _ => {}
+        });
     }
 
     fn service_items(&mut self, image: &str, service: &str, items: &[ServiceItem]) {
-        for item in items {
-            match item {
-                ServiceItem::BeforeStart(hook) => {
-                    self.hook(image, service, HookPhase::BeforeStart, hook);
-                }
-                ServiceItem::PreDeploy(hook) => {
-                    self.hook(image, service, HookPhase::PreDeploy, hook);
-                }
-                ServiceItem::PostDeploy(hook) => {
-                    self.hook(image, service, HookPhase::PostDeploy, hook);
-                }
-                ServiceItem::FailedDeploy(hook) => {
-                    self.hook(image, service, HookPhase::FailedDeploy, hook);
-                }
-                ServiceItem::On(on) => match &on.body {
-                    OnBody::Inline(inner) => {
-                        self.service_items(image, service, std::slice::from_ref(inner.as_ref()));
-                    }
-                    OnBody::Block(block) => self.service_items(image, service, &block.items),
-                },
-                _ => {}
+        let features = self.features;
+        each_enabled(items, features, &mut |item| match item {
+            ServiceItem::BeforeStart(hook) => {
+                self.hook(image, service, HookPhase::BeforeStart, hook);
             }
-        }
+            ServiceItem::PreDeploy(hook) => {
+                self.hook(image, service, HookPhase::PreDeploy, hook);
+            }
+            ServiceItem::PostDeploy(hook) => {
+                self.hook(image, service, HookPhase::PostDeploy, hook);
+            }
+            ServiceItem::FailedDeploy(hook) => {
+                self.hook(image, service, HookPhase::FailedDeploy, hook);
+            }
+            _ => {}
+        });
     }
 
     fn service(&mut self, image: &str, service: &Service) {
         let mut port = None;
-        let mut command = None;
-        for item in &service.body.items {
-            match item {
-                ServiceItem::Port(value) => port = Some(*value),
-                ServiceItem::Run(hook) => command = render_hook(hook, port),
-                _ => {}
-            }
-        }
+        let mut internal_ports = Vec::new();
+        let mut raw_run: Option<&Hook> = None;
+        collect_service_run(
+            &service.body.items,
+            self.features,
+            &mut port,
+            &mut internal_ports,
+            &mut raw_run,
+        );
+        let command = raw_run.and_then(|hook| render_hook(hook, port));
         self.services.push(ServiceNode {
             id: service.id.clone(),
             image: image.to_owned(),
             port,
+            internal_ports,
             command,
             line: service.span.line(),
         });
@@ -176,7 +193,10 @@ impl PlanBuilder<'_> {
         }
     }
 
-    fn finish(mut self, doc: &Forkfile) -> WorldPlan {
+    fn finish(mut self, doc: &Forkfile) -> crate::Result<WorldPlan> {
+        if let Some(error) = self.error {
+            return Err(error);
+        }
         let mut image_steps = Vec::new();
         for image in &self.images {
             self.steps.push(BootStep {
@@ -211,9 +231,8 @@ impl PlanBuilder<'_> {
             resource_steps.push(self.steps.len() - 1);
         }
 
-        // The canonical deduplicated setup list comes from `boot_plan`; the AST walk only
-        // supplies the phase and owner for each node it already produced.
         for node in boot_plan(doc, self.root).nodes {
+            let image_idx = image_of(&self.images, &image_steps, &node.image);
             let (phase, subject, line) = match self.lookup(&node) {
                 Some((HookPhase::FailedDeploy, owner, image, line)) => {
                     self.failed_deploy.push(FailedHook {
@@ -229,7 +248,6 @@ impl PlanBuilder<'_> {
             };
             let conditional = phase.is_none_or(|phase| phase == HookPhase::BeforeStart)
                 && (node.tool.is_some() || !node.patterns.is_empty());
-            let image = image_of(&self.images, &image_steps, &node.image);
             let label = match phase {
                 Some(HookPhase::BeforeStart) => format!("Hook {subject}:before-start"),
                 Some(phase) => format!("Hook {subject}:{}", phase.as_str()),
@@ -249,18 +267,19 @@ impl PlanBuilder<'_> {
                     key: stamp_key(&node),
                     digest: node.stamp.clone(),
                 }),
-                uses_env: node.command.contains("$env."),
+                uses_env: node.uses_env,
                 line,
-                deps: image.into_iter().collect(),
+                deps: image_idx.into_iter().collect(),
             });
         }
 
         let setup_range = (image_steps.len() + resource_steps.len())..self.steps.len();
-
-        // Services depend on this image's before-start/pre-deploy steps and every resource.
         let mut service_steps = Vec::new();
         for service in &self.services {
-            let mut deps = resource_steps.clone();
+            let mut deps = image_of(&self.images, &image_steps, &service.image)
+                .into_iter()
+                .chain(resource_steps.iter().copied())
+                .collect::<Vec<_>>();
             for index in setup_range.clone() {
                 let step = &self.steps[index];
                 if step.image.as_deref() != Some(service.image.as_str()) {
@@ -268,8 +287,11 @@ impl PlanBuilder<'_> {
                 }
                 match step.phase {
                     None | Some(HookPhase::BeforeStart) => deps.push(index),
-                    Some(HookPhase::PreDeploy) if step.subject == service.id => deps.push(index),
-                    Some(HookPhase::PreDeploy) if step.subject == service.image => deps.push(index),
+                    Some(HookPhase::PreDeploy)
+                        if step.subject == service.id || step.subject == service.image =>
+                    {
+                        deps.push(index);
+                    }
                     _ => {}
                 }
             }
@@ -290,13 +312,17 @@ impl PlanBuilder<'_> {
             service_steps.push(self.steps.len() - 1);
         }
 
-        // Pre-deploy hooks need their image's setup nodes plus every resource.
         for index in setup_range.clone() {
             if self.steps[index].phase != Some(HookPhase::PreDeploy) {
                 continue;
             }
             let image = self.steps[index].image.clone();
-            let mut deps = resource_steps.clone();
+            let mut deps = image
+                .as_deref()
+                .and_then(|id| image_of(&self.images, &image_steps, id))
+                .into_iter()
+                .chain(resource_steps.iter().copied())
+                .collect::<Vec<_>>();
             for candidate in setup_range.clone() {
                 let step = &self.steps[candidate];
                 let before_start = matches!(step.phase, None | Some(HookPhase::BeforeStart));
@@ -309,20 +335,19 @@ impl PlanBuilder<'_> {
             self.steps[index].deps = deps;
         }
 
-        // Post-deploy hooks run only after every service is up.
         for index in setup_range {
             if self.steps[index].phase == Some(HookPhase::PostDeploy) {
                 self.steps[index].deps = service_steps.clone();
             }
         }
 
-        WorldPlan {
+        Ok(WorldPlan {
             steps: self.steps,
             failed_deploy: self.failed_deploy,
             images: self.images,
             resources: self.resources,
             services: self.services,
-        }
+        })
     }
 
     fn lookup(&self, node: &SetupNode) -> Option<(HookPhase, String, String, u32)> {
@@ -338,6 +363,39 @@ impl PlanBuilder<'_> {
                 )
             })
     }
+}
+
+fn collect_pg_databases(items: &[PostgresItem], features: &FeatureSet, out: &mut Vec<String>) {
+    each_enabled(items, features, &mut |item| {
+        if let PostgresItem::Database(db) = item {
+            out.push(db.id.clone());
+        }
+    });
+}
+
+fn has_cdn(items: &[S3Item], features: &FeatureSet) -> bool {
+    let mut found = false;
+    each_enabled(items, features, &mut |item| {
+        if matches!(item, S3Item::Cdn(_)) {
+            found = true;
+        }
+    });
+    found
+}
+
+fn collect_service_run<'a>(
+    items: &'a [ServiceItem],
+    features: &FeatureSet,
+    port: &mut Option<u16>,
+    internal_ports: &mut Vec<u16>,
+    run: &mut Option<&'a Hook>,
+) {
+    each_enabled(items, features, &mut |item| match item {
+        ServiceItem::Port(value) => *port = Some(*value),
+        ServiceItem::InternalPorts(ports) => internal_ports.extend(ports.iter().copied()),
+        ServiceItem::Run(hook) => *run = Some(hook),
+        _ => {}
+    });
 }
 
 fn image_of(images: &[ImageNode], indexes: &[usize], image: &str) -> Option<usize> {
@@ -368,7 +426,6 @@ fn hook_commands(hook: &Hook) -> Vec<&Command> {
     }
 }
 
-/// Renders a `run:` command, resolving `$port` from the service's declared port.
 fn render_hook(hook: &Hook, port: Option<u16>) -> Option<String> {
     let command = match &hook.body {
         HookBody::Inline(command) => command,

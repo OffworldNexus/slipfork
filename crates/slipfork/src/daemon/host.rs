@@ -29,25 +29,44 @@ pub(super) fn env(state_dir: &Path, params: &Value) -> Result<Option<Value>, Fai
     let document = document(&project)?;
     let components = document.env_bindings();
     let vault = FileSecretVault::new(vault_path(state_dir));
+    let world = inferred_world(&project);
+    let evaluated = document.eval_all_env(
+        &world,
+        &|comp, key| {
+            vault
+                .load(comp, key)
+                .ok()
+                .flatten()
+                .map(|secret| secret.expose().to_owned())
+        },
+        &|key| std::env::var(key).ok(),
+    );
     let mut reply = serde_json::Map::new();
     for (component, declared) in components {
         if wanted.is_some_and(|id| id != component) {
             continue;
         }
+        let eval_comp = evaluated.get(&component);
         let mut values = serde_json::Map::new();
         for (key, binding) in declared {
             let stored = load(&vault, &component, &key)?;
-            // Only secret values need the reveal gate; a literal is not a credential.
-            let value = if binding.is_secret() && !reveal {
+            let eval_entry = eval_comp.and_then(|map| map.get(&key));
+            let tainted = binding.is_secret() || eval_entry.is_some_and(|(_, t)| *t);
+            let set = stored.is_some() || eval_entry.is_some();
+            let value = if tainted && !reveal {
                 None
             } else {
-                resolve(&binding, stored.as_ref())
+                stored
+                    .as_ref()
+                    .map(|s| s.expose().to_owned())
+                    .or_else(|| eval_entry.map(|(v, _)| v.clone()))
+                    .or_else(|| resolve(&binding, None))
             };
             values.insert(
                 key,
                 json!({
-                    "secret": binding.is_secret(),
-                    "set": stored.is_some(),
+                    "secret": tainted,
+                    "set": set,
                     "value": value,
                 }),
             );
@@ -198,6 +217,23 @@ fn resolve(binding: &EnvBinding<'_>, stored: Option<&Secret>) -> Option<String> 
 }
 
 /// Reads `<project>/Forkfile`; the visitor classifies every declared variable.
+fn inferred_world(project: &Path) -> String {
+    if let (Some(fork), Some(forks_dir)) = (project.file_name(), project.parent())
+        && forks_dir.file_name().is_some_and(|n| n == ".forks")
+        && let Some(parent) = forks_dir.parent()
+        && let Ok(parent_world) = crate::world::world_name(parent, None)
+        && let Some(fork) = fork.to_str()
+        && let Ok(fork_name) = slipfork_world::ForkName::parse(fork)
+    {
+        return slipfork_world::StoreLayout::fork_world_name(&parent_world, &fork_name)
+            .as_str()
+            .to_owned();
+    }
+    crate::world::world_name(project, None)
+        .map(|name| name.as_str().to_owned())
+        .unwrap_or_else(|_| "world".to_owned())
+}
+
 fn document(project: &Path) -> Result<slipfork_forkfile::Forkfile, Failure> {
     let path = project.join("Forkfile");
     let source = std::fs::read_to_string(&path).map_err(|error| {

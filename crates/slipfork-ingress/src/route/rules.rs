@@ -24,6 +24,7 @@ pub(crate) struct Entry {
 /// subdomain family. Path and target syntax is already validated by the `Forkfile` compiler.
 pub(crate) fn entries_for(
     world: &str,
+    app_domains: &BTreeSet<String>,
     declared_domains: &BTreeSet<String>,
     routes: impl IntoIterator<Item = IngressRoute>,
 ) -> Result<Vec<Entry>, TableError> {
@@ -38,7 +39,12 @@ pub(crate) fn entries_for(
                 world: world.to_owned(),
             });
         }
-        let authorities = authorities_for(world, declared_domains, declared.domain.as_ref())?;
+        let authorities = authorities_for(
+            world,
+            app_domains,
+            declared_domains,
+            declared.domain.as_ref(),
+        )?;
         let matcher = matcher_for(&declared);
         for authority in authorities {
             entries.push(Entry {
@@ -86,12 +92,13 @@ pub(crate) fn resolve(
 /// The authorities one route owns.
 fn authorities_for(
     world: &str,
+    app_domains: &BTreeSet<String>,
     declared_domains: &BTreeSet<String>,
     filter: Option<&DomainFilter>,
 ) -> Result<Vec<String>, TableError> {
     match filter {
         None => Ok(std::iter::once(String::new())
-            .chain(declared_domains.iter().cloned())
+            .chain(app_domains.iter().cloned())
             .collect()),
         Some(DomainFilter::Domain { name, .. }) => {
             if !declared_domains.contains(name) {

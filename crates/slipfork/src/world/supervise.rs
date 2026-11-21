@@ -47,7 +47,7 @@ fn supervisor_main(project: &Path, world: &str, env: &HostEnv, json: bool) -> Re
             project.display()
         ));
     }
-    let plan = world_plan(&doc, project);
+    let plan = world_plan(&doc, project).map_err(|error| error.to_string())?;
     let stamps = StampStore::new(project);
     let emitter = Arc::new(Mutex::new(Emitter { open: true }));
     let log = if json {
@@ -57,7 +57,14 @@ fn supervisor_main(project: &Path, world: &str, env: &HostEnv, json: bool) -> Re
     } else {
         BootSink::Events(EventLog::new(Arc::clone(&emitter)))
     };
-    let runtime = Mutex::new(WorldRuntime::new(project, world.clone(), &plan, env, log)?);
+    let runtime = Mutex::new(WorldRuntime::new(
+        project,
+        world.clone(),
+        &doc,
+        &plan,
+        env,
+        log,
+    )?);
     // The world init binds `<pods>/control.sock`; this process only records its path.
     let (socket, pods_dir) = {
         let runtime = runtime

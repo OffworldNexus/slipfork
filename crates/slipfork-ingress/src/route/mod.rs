@@ -75,7 +75,22 @@ impl IngressTable {
             return Err(TableError::InvalidWorld { world });
         }
         let declared: BTreeSet<String> = declared_domains.into_iter().collect();
-        let entries = rules::entries_for(&world, &declared, routes)?;
+        Self::from_parts(world, declared.clone(), declared, routes)
+    }
+
+    pub(crate) fn from_parts(
+        world: impl Into<String>,
+        app_domains: impl IntoIterator<Item = String>,
+        declared_domains: impl IntoIterator<Item = String>,
+        routes: impl IntoIterator<Item = IngressRoute>,
+    ) -> Result<Self, TableError> {
+        let world = world.into();
+        if !rules::is_authority_label(&world) {
+            return Err(TableError::InvalidWorld { world });
+        }
+        let app: BTreeSet<String> = app_domains.into_iter().collect();
+        let declared: BTreeSet<String> = declared_domains.into_iter().collect();
+        let entries = rules::entries_for(&world, &app, &declared, routes)?;
         Ok(Self { world, entries })
     }
 

@@ -56,7 +56,7 @@ fn client_py() -> String {
 }
 
 const CLIENT_PY: &str = r#"
-import ctypes, json, os, pathlib, socket, sys, time, urllib.request, urllib.error
+import ctypes, datetime, hashlib, hmac, json, os, pathlib, socket, sys, time, urllib.request, urllib.error
 
 role = sys.argv[1]
 name = sys.argv[2]
@@ -72,6 +72,35 @@ def connect(port, timeout=1.0):
         return False
     finally:
         sock.close()
+
+def sign(key, msg):
+    return hmac.new(key, msg.encode(), hashlib.sha256).digest()
+
+def s3_call(method, path, body=b'', auth=True):
+    url = 'http://127.0.0.1:8333' + path
+    req = urllib.request.Request(url, data=body if method == 'PUT' else None, method=method)
+    if auth:
+        now = datetime.datetime.now(datetime.timezone.utc)
+        amz = now.strftime('%Y%m%dT%H%M%SZ')
+        date = now.strftime('%Y%m%d')
+        payload_hash = hashlib.sha256(body if method == 'PUT' else b'').hexdigest()
+        host = '127.0.0.1:8333'
+        canon_headers = f'host:{host}\nx-amz-content-sha256:{payload_hash}\nx-amz-date:{amz}\n'
+        signed_headers = 'host;x-amz-content-sha256;x-amz-date'
+        canon_req = f'{method}\n{path}\n\n{canon_headers}\n{signed_headers}\n{payload_hash}'
+        scope = f'{date}/us-east-1/s3/aws4_request'
+        sts = f'AWS4-HMAC-SHA256\n{amz}\n{scope}\n' + hashlib.sha256(canon_req.encode()).hexdigest()
+        k_signing = sign(sign(sign(sign(b'AWS4slipfork-probe-value', date), 'us-east-1'), 's3'), 'aws4_request')
+        sig = hmac.new(k_signing, sts.encode(), hashlib.sha256).hexdigest()
+        req.add_header('Host', host)
+        req.add_header('x-amz-date', amz)
+        req.add_header('x-amz-content-sha256', payload_hash)
+        req.add_header('Authorization', f'AWS4-HMAC-SHA256 Credential=slipfork-probe-key/{scope}, SignedHeaders={signed_headers}, Signature={sig}')
+    try:
+        with urllib.request.urlopen(req, timeout=10) as response:
+            return response.status, response.read().decode()
+    except urllib.error.HTTPError as error:
+        return error.code, ''
 
 libc = ctypes.CDLL(None, use_errno=True)
 libc.shmat.restype = ctypes.c_void_p
@@ -94,22 +123,16 @@ if role == 'a':
     out['redis'] = connect(6379)
     out['s3'] = connect(8333)
     if out['s3']:
-        try:
-            request = urllib.request.Request(
-                'http://127.0.0.1:8888/buckets/cdn/hello.txt', data=b'hello', method='PUT')
-            urllib.request.urlopen(request, timeout=10).read()
-            out['upload'] = 'ok'
-        except Exception as error:
-            out['upload'] = repr(error)
-        for bucket in ('private', 'cdn'):
-            try:
-                response = urllib.request.urlopen(
-                    'http://127.0.0.1:8333/%s/hello.txt' % bucket, timeout=10)
-                out[bucket] = response.status
-            except urllib.error.HTTPError as error:
-                out[bucket] = error.code
-            except Exception as error:
-                out[bucket] = repr(error)
+        deadline = time.time() + 20
+        while time.time() < deadline:
+            if s3_call('GET', '/uploads/', auth=False)[0] == 403 and s3_call('GET', '/assets/', auth=False)[0] == 200:
+                break
+            time.sleep(0.2)
+        out['put_uploads'] = s3_call('PUT', '/uploads/x', b'secret-obj', auth=True)[0]
+        out['auth_get_uploads'] = list(s3_call('GET', '/uploads/x', auth=True))
+        out['anon_get_uploads'] = s3_call('GET', '/uploads/x', auth=False)[0]
+        out['put_assets'] = s3_call('PUT', '/assets/x', b'public-obj', auth=True)[0]
+        out['anon_get_assets'] = list(s3_call('GET', '/assets/x', auth=False))
 
 expected_path = pathlib.Path('/project/probe/expected_secret')
 expected = expected_path.read_text().strip() if expected_path.is_file() else None
@@ -835,8 +858,8 @@ fn world_pod_lifecycle() {
     let plan = SeaweedfsPlan::render(
         &S3Credentials::new("slipfork-probe-key", "slipfork-probe-value"),
         &[
-            S3Bucket::new("private", S3Policy::Private).expect("valid bucket"),
-            S3Bucket::new("cdn", S3Policy::PublicRead).expect("valid bucket"),
+            S3Bucket::new("uploads", S3Policy::Private).expect("valid bucket"),
+            S3Bucket::new("assets", S3Policy::PublicRead).expect("valid bucket"),
         ],
     )
     .expect("render seaweedfs plan");
@@ -906,14 +929,36 @@ fn world_pod_lifecycle() {
     assert_eq!(a["redis"].as_bool(), Some(true), "redis must accept :6379");
     assert_eq!(a["s3"].as_bool(), Some(true), "seaweedfs must accept :8333");
 
-    // 5. S3 policy: private -> 403, cdn -> public-read 200.
+    // 5. Real multi-bucket S3 roundtrips: `uploads` private (403 anon, 200 auth), `assets` cdn (200 anon),
+    // and zero topology/volume-growth failures in the SeaweedFS boot log.
+    assert_eq!(a["put_uploads"], 200, "PUT /uploads/x must return 200: {a}");
     assert_eq!(
-        a["upload"].as_str(),
-        Some("ok"),
-        "filer upload must succeed"
+        a["auth_get_uploads"],
+        serde_json::json!([200, "secret-obj"]),
+        "authenticated GET /uploads/x must return 200 and payload: {a}"
     );
-    assert_eq!(a["private"], 403, "private bucket denies anonymous GET");
-    assert_eq!(a["cdn"], 200, "cdn bucket is public-read");
+    assert_eq!(
+        a["anon_get_uploads"], 403,
+        "anonymous GET /uploads/x must return 403: {a}"
+    );
+    assert_eq!(a["put_assets"], 200, "PUT /assets/x must return 200: {a}");
+    assert_eq!(
+        a["anon_get_assets"],
+        serde_json::json!([200, "public-obj"]),
+        "anonymous GET /assets/x must return 200 and payload: {a}"
+    );
+    let (s3_lines, _) = collect_logs(&supervisor_a, "m339s3");
+    let s3_log = s3_lines.join("\n");
+    for forbidden in [
+        "topo failed to pick",
+        "Not enough data nodes",
+        "create 7 volume, created 0",
+    ] {
+        assert!(
+            !s3_log.contains(forbidden),
+            "SeaweedFS boot log must not contain `{forbidden}`:\n{s3_log}"
+        );
+    }
 
     // 6. The OCI env carried the secret while both clients stayed alive; argv never carries it.
     assert_eq!(

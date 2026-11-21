@@ -11,3 +11,7 @@ edited fields
 ## 2026-11-21T17:29 [conductor]
 
 edited fields
+
+## 2026-11-21T19:40 [conductor]
+
+status ready -> superseded: Superseded by M3.43..M3.45 CLI/TUI (clap+indicatif), native Btrfs S3, fast PG/Redis & reactive <500ms fork overhaul

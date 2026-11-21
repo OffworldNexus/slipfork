@@ -135,11 +135,13 @@ pub(super) fn logs_verb(args: &[&str]) -> Result<Verb, UsageError> {
         return Ok(Verb::Help(HelpTopic::Logs));
     }
     let mut follow = false;
+    let mut all = false;
     let mut json = false;
     let mut service = None;
     for arg in args {
         match *arg {
             "-f" | "--follow" => follow = true,
+            "-a" | "--all" => all = true,
             "--json" => json = true,
             other if other.starts_with('-') => {
                 return Err(UsageError::new(format!(
@@ -153,8 +155,14 @@ pub(super) fn logs_verb(args: &[&str]) -> Result<Verb, UsageError> {
             }
         }
     }
+    if all && service.is_some() {
+        return Err(UsageError::new(
+            "`--all` cannot be combined with a target name",
+        ));
+    }
     Ok(Verb::Logs(LogsArgs {
         follow,
+        all,
         service,
         json,
     }))

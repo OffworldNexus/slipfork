@@ -126,9 +126,12 @@ pub enum Request {
         v: u32,
         /// Request id echoed back in the reply.
         id: String,
-        /// Only this pod id; `None` merges every pod.
+        /// Only this pod id; `None` merges `pods` (or every pod when `pods` is `None`).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         service: Option<String>,
+        /// Optional pod allowlist when `service` is `None`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pods: Option<Vec<String>>,
         /// Keep the stream open after the current tail until a stop or client close.
         #[serde(default)]
         follow: bool,

@@ -208,6 +208,14 @@ fn backing_resource_plans_validate_and_scope_anonymous_s3_access() {
     let script = &s3.argv[2];
     assert!(script.contains("exec /usr/bin/weed server"), "{script}");
     assert!(
+        script.contains("-ip=127.0.0.1 -ip.bind=127.0.0.1"),
+        "{script}"
+    );
+    assert!(
+        !script.contains("8080"),
+        "SeaweedFS must never claim :8080 or :18080: {script}"
+    );
+    assert!(
         script.contains("< /etc/seaweedfs/bootstrap.txt"),
         "{script}"
     );
@@ -223,8 +231,14 @@ fn backing_resource_plans_validate_and_scope_anonymous_s3_access() {
         !script.contains("s3.anonymous"),
         "no version-dependent policy verb may remain: {script}"
     );
-    assert_eq!(s3.files.len(), 2);
+    assert_eq!(s3.files.len(), 3);
+    assert!(s3.files.iter().any(|file| file.name == "master.toml"));
+    assert!(plan.master_config.contains("copy_1 = 1"));
     assert!(s3.validate().is_ok());
+    let shifted = plan.clone().avoiding_ports(&[29_333, 29_380, 29_888]);
+    assert_ne!(shifted.ports().master_http, 29_333);
+    assert_ne!(shifted.ports().volume_http, 29_380);
+    assert_ne!(shifted.ports().filer_http, 29_888);
     assert_eq!(
         slipfork_world::ResourceKind::Seaweedfs.image(),
         "chrislusf/seaweedfs:3.80"

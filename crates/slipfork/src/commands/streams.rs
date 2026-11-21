@@ -26,7 +26,9 @@ const PALETTE: [&str; 8] = ["36", "35", "33", "32", "34", "96", "95", "31"];
 pub struct LogsArgs {
     /// Keep the stream attached (`-f`).
     pub follow: bool,
-    /// Only this service, or every pod when `None`.
+    /// Include backing-resource pods (`-a` / `--all`).
+    pub all: bool,
+    /// Explicit service or resource id, or application services when `None`.
     pub service: Option<String>,
     /// Emit one JSON object per line plus a final `{"exit":0}`.
     pub json: bool,
@@ -70,7 +72,7 @@ fn install_sigint() {
 }
 
 impl Session {
-    /// `slipfork logs [-f] [service]`.
+    /// `slipfork logs [-f] [-a] [service]`.
     pub fn logs(&self, args: &LogsArgs) -> ExitCode {
         install_sigint();
         let Some(mut client) = self.existing_daemon(args.json) else {
@@ -79,6 +81,7 @@ impl Session {
         let params = json!({
             "project": self.cwd(),
             "follow": args.follow,
+            "all": args.all,
             "service": args.service,
         });
         let mut renderer = Renderer::new(self.color(), args.json);

@@ -42,6 +42,11 @@ const UV_LOCK: &str = "version = 1\nrevision = 5\nrequires-python = \">=3.12\"\n
 const GOOD_FORKFILE: &str = r#"# forkfile: 0.1
 image app . {
   dockerfile Dockerfile
+  env {
+    GREETING = "hello"
+    S3_ACCESS = uploads.access_key
+    S3_SECRET = uploads.secret_key
+  }
   pre-deploy: sh -c 'printf pre > order.txt'
   post-deploy: sh -c 'for i in $(seq 50); do grep -q svc order.txt && break; sleep 0.1; done; grep -q svc order.txt && printf post >> order.txt'
   service api {
@@ -52,7 +57,12 @@ image app . {
   service worker {
     run: @uv run python worker.py
   }
+  service probe {
+    run: @uv run python probe.py
+  }
 }
+s3 uploads
+s3 assets { cdn static_cdn }
 "#;
 
 const APP_PY: &str = r#"import os, pathlib
@@ -249,7 +259,7 @@ impl Journey {
         let run = live_run_root();
         let store_root = mount_store_for(&run);
         let engine = BtrfsEngine::new(StoreLayout::at(&store_root));
-        for world in ["good", "broken"] {
+        for world in ["good", "baked", "broken"] {
             if let Ok(world) = WorldName::parse(world) {
                 let _ = engine.drop_world(&world);
             }
@@ -337,7 +347,7 @@ impl Drop for Journey {
             }
         }
         let store_engine = BtrfsEngine::new(StoreLayout::at(&self.store_root));
-        for world in ["good", "broken"] {
+        for world in ["good", "baked", "broken"] {
             if let Ok(world) = WorldName::parse(world) {
                 let _ = store_engine.drop_world(&world);
             }
@@ -590,6 +600,14 @@ fn assert_ingress(runtime: &Path, world: &str) {
 
 #[test]
 fn world_up_restart_down_journey() {
+    for (label, source) in [("good", GOOD_FORKFILE), ("baked", BAKED_FORKFILE)] {
+        let doc =
+            slipfork_forkfile::parse(source).unwrap_or_else(|_| panic!("`{label}` must parse"));
+        assert!(
+            slipfork_forkfile::check(&doc).is_ok(),
+            "`{label}` must pass static validation"
+        );
+    }
     let journey = Journey::new();
     let crun = require_tool("crun");
     let unshare = require_tool("unshare");
@@ -597,6 +615,7 @@ fn world_up_restart_down_journey() {
     require_registry_egress();
 
     let good = journey.project("good", GOOD_FORKFILE);
+    fs::write(good.join("probe.py"), S3_PROBE).expect("write probe.py");
 
     // 1. First boot: exactly one deduplicated `uv sync`, then hooks and both services.
     let first = journey.slipfork(&good, &["up"]);
@@ -638,6 +657,33 @@ fn world_up_restart_down_journey() {
         "the service must run strictly between its hooks: {order:?}"
     );
 
+    // 1a. Multi-S3 object roundtrips (`PUT /uploads/x` 200, auth `GET` 200, anon `GET` 403;
+    // `PUT /assets/x` 200, anon `GET` 200), image-level `env`, and clean SeaweedFS boot logs.
+    let probe = good.join("s3.codes");
+    let probed = wait_until(
+        || {
+            fs::read_to_string(&probe)
+                .is_ok_and(|codes| codes == "200 200:priv 403 200 200:cdn hello")
+        },
+        Duration::from_secs(30),
+    );
+    assert!(
+        probed,
+        "the S3 probe never wrote `200 200:priv 403 200 200:cdn hello`: {:?}",
+        fs::read_to_string(&probe)
+    );
+    let s3_logs = stdout(&journey.slipfork(&good, &["logs", "uploads"]));
+    for forbidden in [
+        "topo failed to pick",
+        "Not enough data nodes",
+        "create 7 volume, created 0",
+    ] {
+        assert!(
+            !s3_logs.contains(forbidden),
+            "SeaweedFS boot log must not contain `{forbidden}`:\n{s3_logs}"
+        );
+    }
+
     // 1b. Captured logs and ad-hoc exec against the real pod. Capture is asynchronous, so poll
     // the follow-less read until the pod's own startup line has landed.
     let mut log_text = String::new();
@@ -663,6 +709,16 @@ fn world_up_restart_down_journey() {
         "logs must render an aligned gutter per pod: {log_text}"
     );
     assert!(!log_text.contains('\u{1b}'), "NO_COLOR logs stay plain");
+    let bare_logs = stdout(&journey.slipfork(&good, &["logs"]));
+    assert!(
+        bare_logs.contains("api") && !bare_logs.contains("uploads"),
+        "bare `logs` must stream services only and exclude S3 resources:\n{bare_logs}"
+    );
+    let all_logs = stdout(&journey.slipfork(&good, &["logs", "-a"]));
+    assert!(
+        all_logs.contains("api") && all_logs.contains("uploads"),
+        "`logs -a` must include both services and resources:\n{all_logs}"
+    );
 
     let logs_json = journey.slipfork(&good, &["logs", "--json", "api"]);
     assert!(logs_json.status.success(), "{}", stderr(&logs_json));
@@ -699,7 +755,24 @@ fn world_up_restart_down_journey() {
     assert!(missing_err.contains("not running"), "{missing_err}");
     assert!(missing_err.contains("next:"), "{missing_err}");
 
-    // 2. A failed service keeps the world running; `down` must still work.
+    // 2. An image's baked `CMD` runs when the service declares no `run:`.
+    let baked = journey.project("baked", BAKED_FORKFILE);
+    fs::write(baked.join("Dockerfile"), BAKED_DOCKERFILE).expect("write baked Dockerfile");
+    let baked_up = journey.slipfork(&baked, &["up"]);
+    assert!(
+        baked_up.status.success(),
+        "{}",
+        up_failure("a baked entrypoint must boot", &baked, &baked_up)
+    );
+    assert_eq!(
+        fs::read_to_string(baked.join("entrypoint.txt")).unwrap_or_default(),
+        "entrypoint",
+        "the image's `CMD` must be exec'd by crun, not replaced by `true`"
+    );
+    let baked_down = journey.slipfork(&baked, &["down"]);
+    assert!(baked_down.status.success(), "{}", stderr(&baked_down));
+
+    // 3. A failed service keeps the world running; `down` must still work.
     let broken = journey.project("broken", BROKEN_FORKFILE);
     let failed = journey.slipfork(&broken, &["up"]);
     assert_eq!(
@@ -752,7 +825,7 @@ fn world_up_restart_down_journey() {
         stdout(&down)
     );
 
-    // 3. Down and re-up: the stamped `uv sync` is skipped and named as such.
+    // 4. Down and re-up: the stamped `uv sync` is skipped and named as such.
     let down = journey.slipfork(&good, &["down"]);
     assert!(down.status.success(), "down: {}", stderr(&down));
     assert!(
@@ -776,7 +849,7 @@ fn world_up_restart_down_journey() {
         "stamped step must report its skip: {stamp_line}"
     );
 
-    // 4. Restart one service, then prove teardown leaves nothing behind.
+    // 5. Restart one service, then prove teardown leaves nothing behind.
     let restart = journey.slipfork(&good, &["restart", "api"]);
     assert!(
         restart.status.success(),
@@ -805,7 +878,7 @@ fn world_up_restart_down_journey() {
         "processes survived teardown (needle, pid): {leaked:?}"
     );
     let listed = crun_list(&crun);
-    for id in ["api", "worker", "broken"] {
+    for id in ["api", "worker", "probe", "broken"] {
         assert!(
             !listed.contains(id),
             "container `{id}` survived teardown:\n{listed}"
@@ -814,7 +887,7 @@ fn world_up_restart_down_journey() {
     assert!(!good.join(".slipfork/world.json").exists());
     assert!(!broken.join(".slipfork/world.json").exists());
 
-    // 5. No per-project `.slipfork-store` exists, and no run subvolume survives in the mount store.
+    // 6. No per-project `.slipfork-store` exists, and no run subvolume survives in the mount store.
     for project in [&good, &broken] {
         assert!(
             !project.join(STORE_DIR).exists(),
@@ -865,3 +938,71 @@ fn help_lists_the_daily_verbs() {
         );
     }
 }
+
+const BAKED_DOCKERFILE: &str = "\
+FROM python:3.13-slim
+RUN pip install --no-cache-dir uv
+WORKDIR /project
+CMD [\"sh\", \"-c\", \"printf entrypoint > entrypoint.txt; exec python3 -m http.server 8010\"]
+";
+
+const BAKED_FORKFILE: &str = r#"# forkfile: 0.1
+image app . {
+  dockerfile Dockerfile
+  service web {
+    port 8010
+    route /
+  }
+}
+"#;
+
+// Real SigV4 PUT + auth/anon GET roundtrips on `uploads` (private) and `assets` (cdn public-read).
+const S3_PROBE: &str = r#"import datetime, hashlib, hmac, os, pathlib, time, urllib.error, urllib.request
+
+def sign(key, msg):
+    return hmac.new(key, msg.encode(), hashlib.sha256).digest()
+
+def s3(method, path, body=b"", auth=True):
+    req = urllib.request.Request(
+        "http://127.0.0.1:8333" + path,
+        data=body if method == "PUT" else None,
+        method=method,
+    )
+    if auth:
+        now = datetime.datetime.now(datetime.timezone.utc)
+        amz = now.strftime("%Y%m%dT%H%M%SZ")
+        date = now.strftime("%Y%m%d")
+        payload = hashlib.sha256(body if method == "PUT" else b"").hexdigest()
+        host = "127.0.0.1:8333"
+        headers = f"host:{host}\nx-amz-content-sha256:{payload}\nx-amz-date:{amz}\n"
+        signed = "host;x-amz-content-sha256;x-amz-date"
+        canon = f"{method}\n{path}\n\n{headers}\n{signed}\n{payload}"
+        scope = f"{date}/us-east-1/s3/aws4_request"
+        sts = f"AWS4-HMAC-SHA256\n{amz}\n{scope}\n" + hashlib.sha256(canon.encode()).hexdigest()
+        secret = ("AWS4" + os.environ["S3_SECRET"]).encode()
+        key = sign(sign(sign(sign(secret, date), "us-east-1"), "s3"), "aws4_request")
+        sig = hmac.new(key, sts.encode(), hashlib.sha256).hexdigest()
+        access = os.environ["S3_ACCESS"]
+        req.add_header("Host", host)
+        req.add_header("x-amz-date", amz)
+        req.add_header("x-amz-content-sha256", payload)
+        req.add_header(
+            "Authorization",
+            f"AWS4-HMAC-SHA256 Credential={access}/{scope}, SignedHeaders={signed}, Signature={sig}",
+        )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as reply:
+            return reply.status, reply.read().decode()
+    except urllib.error.HTTPError as error:
+        return error.code, ""
+
+put_priv, _ = s3("PUT", "/uploads/x", b"priv", auth=True)
+get_priv, body_priv = s3("GET", "/uploads/x", auth=True)
+anon_priv, _ = s3("GET", "/uploads/x", auth=False)
+put_cdn, _ = s3("PUT", "/assets/x", b"cdn", auth=True)
+anon_cdn, body_cdn = s3("GET", "/assets/x", auth=False)
+pathlib.Path("s3.codes").write_text(
+    f"{put_priv} {get_priv}:{body_priv} {anon_priv} {put_cdn} {anon_cdn}:{body_cdn} {os.getenv('GREETING')}"
+)
+time.sleep(600)
+"#;

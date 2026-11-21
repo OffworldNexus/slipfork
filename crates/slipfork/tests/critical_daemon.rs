@@ -460,6 +460,69 @@ fn daemon_control_plane_and_status_tree_lifecycle() {
     assert!(human_text.contains("api │"), "{human_text:?}");
     assert!(human_text.contains("── api started ──"), "{human_text:?}");
 
+    // Bare `logs` merges application services only; explicit resource names work; `-a` includes all.
+    let default_logs = Command::new(env!("CARGO_BIN_EXE_slipfork"))
+        .arg("logs")
+        .current_dir(&project)
+        .env("XDG_RUNTIME_DIR", &runtime)
+        .env("XDG_STATE_HOME", &state)
+        .env("NO_COLOR", "1")
+        .output()
+        .expect("bare logs must run");
+    assert!(default_logs.status.success(), "{default_logs:?}");
+    let default_text = String::from_utf8_lossy(&default_logs.stdout);
+    assert!(!default_text.contains('\u{1b}'), "{default_text:?}");
+    assert!(
+        default_text.contains("api │ hello from the pod"),
+        "{default_text:?}"
+    );
+    assert!(
+        !default_text.contains("pg") && !default_text.contains("uploads"),
+        "bare `logs` must exclude backing resources: {default_text:?}"
+    );
+
+    for resource in ["pg", "uploads"] {
+        let res_logs = Command::new(env!("CARGO_BIN_EXE_slipfork"))
+            .args(["logs", resource])
+            .current_dir(&project)
+            .env("XDG_RUNTIME_DIR", &runtime)
+            .env("XDG_STATE_HOME", &state)
+            .env("NO_COLOR", "1")
+            .output()
+            .expect("explicit resource logs must run");
+        assert!(res_logs.status.success(), "{res_logs:?}");
+        let res_text = String::from_utf8_lossy(&res_logs.stdout);
+        assert!(!res_text.contains('\u{1b}'), "{res_text:?}");
+        assert!(
+            res_text.contains(&format!("{resource} │ hello from the pod")),
+            "explicit `logs {resource}` must stream that resource: {res_text:?}"
+        );
+    }
+
+    let all_logs = Command::new(env!("CARGO_BIN_EXE_slipfork"))
+        .args(["logs", "-a"])
+        .current_dir(&project)
+        .env("XDG_RUNTIME_DIR", &runtime)
+        .env("XDG_STATE_HOME", &state)
+        .env("NO_COLOR", "1")
+        .output()
+        .expect("logs -a must run");
+    assert!(all_logs.status.success(), "{all_logs:?}");
+    let all_text = String::from_utf8_lossy(&all_logs.stdout);
+    assert!(!all_text.contains('\u{1b}'), "{all_text:?}");
+    assert!(
+        all_text.contains("api     │ hello from the pod"),
+        "{all_text:?}"
+    );
+    assert!(
+        all_text.contains("pg      │ hello from the pod"),
+        "{all_text:?}"
+    );
+    assert!(
+        all_text.contains("uploads │ hello from the pod"),
+        "{all_text:?}"
+    );
+
     let ambiguous = Command::new(env!("CARGO_BIN_EXE_slipfork"))
         .arg("shell")
         .current_dir(&project)

@@ -2,16 +2,16 @@
 id: M3.42.5
 title: "Fold live-demo multi-S3/CDN/OCI-entrypoint/runtime-env fixes with §2 E2E assertions"
 kind: task
-status: ready
-owner: implementer
+status: superseded
+owner: expert
 priority: 3
 depends_on: [M3.42.2]
 paths: ["crates/**"]
-attempts: 0
+attempts: 3
 max_attempts: 3
-escalation: none
+escalation: expert
 created: "2026-11-21T18:06"
-updated: "2026-11-21T18:06"
+updated: "2026-11-21T19:40"
 ---
 
 # Goal

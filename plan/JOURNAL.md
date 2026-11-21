@@ -2551,3 +2551,24 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-21T18:06 [M3.42.3] (lead) edited fields
 - 2026-11-21T18:18 [M3.42.2] (lead) make coverage exit 0; 0 rows at 0.0%; 46 live-gated files named; low rows are live-only (image registry/puller/steps, daemon, btrfs ioctls) proven by make live-
 - 2026-11-21T18:18 [M3.42.2] (lead) status ready -> done
+- 2026-11-21T18:18 [M3.42.5] (lead) status ready -> active
+- 2026-11-21T18:18 [M3.42.5] (lead) attempt 1/3 started
+- 2026-11-21T18:18 [M3.42.5] (lead) base e6a1cd0f67e932f66779c0a946866bfe9df2d9f1
+- 2026-11-21T18:36 [M3.42.5] (lead) status active -> review
+- 2026-11-21T18:41 [M3.42.5] (lead) status review -> ready
+- 2026-11-21T18:41 [M3.42.5] (lead) attempt 2/3 started
+- 2026-11-21T19:06 ESCALATION #30 -> expert for M3.42.5 by lead: half-applied feature-gate refactor (2 compile errors) + live SeaweedFS multi-bucket topology and logs default-filter bug
+- 2026-11-21T19:06 [M3.42.5] (lead) edited fields
+- 2026-11-21T19:06 [M3.42.5] (lead) attempt 3/3 started
+- 2026-11-21T19:18 AUTOPILOT off by conductor Owner review: unacceptable CLI UX, hand-rolled CLI/TTY code, 38.5s fork & SeaweedFS bloat
+- 2026-11-21T19:21 [M3.42.3] (lead) edited fields
+- 2026-11-21T19:21 [M3.42.6] (lead) created (task) RFC 1123 DNS/bucket label validation, hyphen identifiers, and static_cdn -> static-cdn sweep
+- 2026-11-21T19:40 [M3.42.4] (conductor) status ready -> superseded: Superseded by M3.43..M3.45 CLI/TUI (clap+indicatif), native Btrfs S3, fast PG/Redis & reactive <500ms fork overhaul
+- 2026-11-21T19:40 [M3.42.3] (conductor) status ready -> superseded: Superseded by M3.43..M3.45 CLI/TUI (clap+indicatif), native Btrfs S3, fast PG/Redis & reactive <500ms fork overhaul
+- 2026-11-21T19:40 [M3.42.6] (conductor) status ready -> superseded: Superseded by M3.43..M3.45 CLI/TUI (clap+indicatif), native Btrfs S3, fast PG/Redis & reactive <500ms fork overhaul
+- 2026-11-21T19:40 [M3.42.5] (conductor) status ready -> superseded: Superseded by M3.43..M3.45 CLI/TUI (clap+indicatif), native Btrfs S3, fast PG/Redis & reactive <500ms fork overhaul
+- 2026-11-21T19:40 [M3.42] (conductor) status ready -> superseded: Superseded by M3.43..M3.45 CLI/TUI (clap+indicatif), native Btrfs S3, fast PG/Redis & reactive <500ms fork overhaul
+- 2026-11-21T19:40 [M3.43] (conductor) created (task) Overhaul specs/ & ARCHITECTURE.md: clap + frozen-pane indicatif TUI, explicit s3 policy + native Btrfs S3, speed-of-light PG/Redis & reactive <50
+- 2026-11-21T19:40 [M3.44] (conductor) created (epic) Implement clap + frozen-pane indicatif TUI, explicit s3 policy + native Btrfs S3, fast PG/Redis & reactive <500ms fork
+- 2026-11-21T19:40 [M3.45] (conductor) created (epic) Final TESTING_PLAN.md E2E verification, make coverage sweep & live <1s fork + frozen-pane PTY demo gate on 165.232.86.174
+- 2026-11-21T19:40 AUTOPILOT on by conductor Executing owner-approved CLI/TUI (clap+indicatif), native Btrfs S3, fast PG/Redis & reactive <500ms fork overhaul

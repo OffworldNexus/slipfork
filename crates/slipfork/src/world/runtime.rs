@@ -3,35 +3,55 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::fs;
 use std::io::Write;
+use std::net::Shutdown;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
+use slipfork_forkfile::ast::Forkfile;
 use slipfork_image::{
     Architecture, BuildArgs, BuildRequest, Credentials, ImageLayout, ImageReference,
     NativeImageBuilder, OciPuller, PulledImage, StepHost, StepLayout,
 };
+use slipfork_ospp::{FileSecretVault, SecretVault};
 use slipfork_world::{
-    Bind, BindSource, BootFailure, BootKind, BootStep, BtrfsEngine, Dirtiness, ImageNode, PodEnv,
-    PodSpec, ResourceKind, S3Credentials, SeaweedfsPlan, ServiceNode, StepOutcome, StoreLayout,
-    WorldEngine, WorldHost, WorldName, WorldPlan, WorldSupervisor, postgres, redis, seaweedfs,
+    BootFailure, BootKind, BootStep, BtrfsEngine, Dirtiness, ImageNode, PodEnv, PodSpec,
+    ServiceNode, StepOutcome, StoreLayout, WorldEngine, WorldHost, WorldName, WorldPlan,
+    WorldSupervisor, classify_service, control,
 };
 
 use super::HostEnv;
 use super::supervise::BootSink;
+
+mod helpers;
+
+use helpers::{build_resource_spec, merge_env, project_bind, shell_command, sweep_stale_pods};
+
+/// One sealed image plus the OCI metadata every pod derived from it inherits.
+#[derive(Clone)]
+struct BuiltImage {
+    rootfs: PathBuf,
+    inherited_env: Vec<String>,
+    /// `ENTRYPOINT` followed by `CMD`; empty when the image defines neither.
+    argv: Vec<String>,
+    workdir: String,
+}
 
 pub(super) struct WorldRuntime {
     engine: BtrfsEngine,
     layout: StoreLayout,
     world: WorldName,
     project: PathBuf,
+    doc: Forkfile,
+    resolved_env: BTreeMap<String, BTreeMap<String, (String, bool)>>,
     pub(super) supervisor: WorldSupervisor,
     puller: OciPuller,
     builder: NativeImageBuilder,
     images: Vec<ImageNode>,
     services: Vec<ServiceNode>,
     resources: Vec<slipfork_world::ResourceNode>,
-    sealed: BTreeMap<String, PathBuf>,
+    reserved_ports: Vec<u16>,
+    sealed: BTreeMap<String, BuiltImage>,
     pulled: BTreeMap<String, PulledImage>,
     clones: Vec<PathBuf>,
     counter: usize,
@@ -43,6 +63,7 @@ impl WorldRuntime {
     pub(super) fn new(
         project: &Path,
         world: WorldName,
+        doc: &Forkfile,
         plan: &WorldPlan,
         env: &HostEnv,
         log: BootSink,
@@ -57,19 +78,20 @@ impl WorldRuntime {
         let architecture = Architecture::from_oci(env.arch)
             .ok_or_else(|| format!("unsupported host architecture `{}`", env.arch))?;
         let credentials = Credentials::Anonymous;
+        let agent = format!("slipfork/{}", env!("CARGO_PKG_VERSION"));
         let puller = OciPuller::new(
             Arc::clone(&world_engine),
             ImageLayout::new(layout.images_root()),
             credentials.clone(),
             architecture,
-            format!("slipfork/{}", env!("CARGO_PKG_VERSION")),
+            agent.clone(),
         );
         let build_puller = OciPuller::new(
             Arc::clone(&world_engine),
             ImageLayout::new(layout.images_root()),
             credentials,
             architecture,
-            format!("slipfork/{}", env!("CARGO_PKG_VERSION")),
+            agent,
         );
         let crun = env.tool("crun")?;
         let host = StepHost::new(
@@ -102,17 +124,34 @@ impl WorldRuntime {
                 .map_err(|error| error.to_string())?;
         }
         sweep_stale_pods(&engine, &layout.world(&world).join("pods"))?;
+        // The `Forkfile` compiler owns every `arg`/`env` expression; this composition root only
+        // supplies the world name and the vault lookup the compiler asks for.
+        let vault = FileSecretVault::new(env.state_dir.join("secrets.json"));
+        let resolved_env = doc.eval_all_env(
+            world.as_str(),
+            &|component, key| {
+                vault
+                    .load(component, key)
+                    .ok()
+                    .flatten()
+                    .map(|secret| secret.expose().to_owned())
+            },
+            &|key| std::env::var(key).ok(),
+        );
         Ok(Self {
             engine,
             layout,
             world,
             project: project.to_path_buf(),
+            doc: doc.clone(),
+            resolved_env,
             supervisor,
             puller,
             builder,
             images: plan.images.clone(),
             services: plan.services.clone(),
             resources: plan.resources.clone(),
+            reserved_ports: plan.reserved_ports(),
             sealed: BTreeMap::new(),
             pulled: BTreeMap::new(),
             clones: Vec::new(),
@@ -141,9 +180,9 @@ impl WorldRuntime {
         outcome.map(|detail| StepOutcome { detail })
     }
 
-    fn build_image(&mut self, image: &str) -> Result<PathBuf, String> {
-        if let Some(rootfs) = self.sealed.get(image) {
-            return Ok(rootfs.clone());
+    fn build_image(&mut self, image: &str) -> Result<BuiltImage, String> {
+        if let Some(built) = self.sealed.get(image) {
+            return Ok(built.clone());
         }
         let node = self
             .images
@@ -151,13 +190,21 @@ impl WorldRuntime {
             .find(|candidate| candidate.id == image)
             .cloned()
             .ok_or_else(|| format!("unknown image `{image}`"))?;
-        let rootfs = if let Some(reference) = &node.from {
+        let built = if let Some(reference) = &node.from {
             let parsed = ImageReference::parse(reference).map_err(|error| error.to_string())?;
             self.note(format!("pull {reference}"));
-            self.puller
+            let pulled = self
+                .puller
                 .pull_into(&parsed, &mut self.log)
-                .map_err(|error| error.to_string())?
-                .rootfs
+                .map_err(|error| error.to_string())?;
+            let mut argv = pulled.facts.entrypoint.clone();
+            argv.extend(pulled.facts.cmd.iter().cloned());
+            BuiltImage {
+                rootfs: pulled.rootfs,
+                inherited_env: pulled.facts.env,
+                argv,
+                workdir: "/".to_owned(),
+            }
         } else {
             let context = self.project.join(&node.directory);
             let dockerfile = context.join(
@@ -165,11 +212,15 @@ impl WorldRuntime {
                     .clone()
                     .unwrap_or_else(|| PathBuf::from("Dockerfile")),
             );
+            let mut args = BuildArgs::new();
+            for (key, value) in self.doc.eval_image_args(self.world.as_str(), image) {
+                args.declare(key, value);
+            }
             let request = BuildRequest {
                 context,
                 dockerfile,
-                args: BuildArgs::default(),
-                target: None,
+                args,
+                target: self.doc.eval_image_stage(image),
             };
             let report = self
                 .builder
@@ -179,10 +230,20 @@ impl WorldRuntime {
                 "dockerfile {image}: {} cached, {} built",
                 report.cache_hits, report.cache_misses
             ));
-            report.rootfs
+            BuiltImage {
+                rootfs: report.rootfs,
+                inherited_env: report
+                    .config
+                    .env
+                    .iter()
+                    .map(|(key, value)| format!("{key}={value}"))
+                    .collect(),
+                argv: report.config.exec_argv(),
+                workdir: report.config.workdir,
+            }
         };
-        self.sealed.insert(image.to_owned(), rootfs.clone());
-        Ok(rootfs)
+        self.sealed.insert(image.to_owned(), built.clone());
+        Ok(built)
     }
 
     fn clone_rootfs(&mut self, sealed: &Path, prefix: &str) -> Result<PathBuf, String> {
@@ -190,8 +251,6 @@ impl WorldRuntime {
         let dir = self.layout.world(&self.world).join("pods");
         fs::create_dir_all(&dir).map_err(|error| format!("create `{}`: {error}", dir.display()))?;
         let dest = dir.join(format!("{prefix}-{}", self.counter));
-        // A previous failed boot can leave a subvolume behind, and snapshotting a live parent
-        // world leaves empty `ino == 2` directory stubs; clear either before cloning.
         if slipfork_world::is_subvolume_path(&dest).unwrap_or(false) {
             self.engine
                 .destroy(&dest, Dirtiness::Clean, true)
@@ -207,9 +266,14 @@ impl WorldRuntime {
         Ok(dest)
     }
 
-    fn image_rootfs(&mut self, image: Option<&String>) -> Result<PathBuf, String> {
+    fn built_for(&mut self, image: Option<&String>) -> Result<BuiltImage, String> {
         let image = image.ok_or_else(|| "step has no enclosing image".to_owned())?;
         self.build_image(image)
+    }
+
+    /// Merges image-level and subject-level runtime `env`, plus the declared `PORT`.
+    fn pod_env_for(&self, subject: &str, image: Option<&str>, port: Option<u16>) -> Vec<PodEnv> {
+        merge_env(&self.resolved_env, subject, image, port)
     }
 
     fn run_once(&mut self, step: &BootStep) -> Result<String, BootFailure> {
@@ -223,23 +287,23 @@ impl WorldRuntime {
             .command
             .clone()
             .ok_or_else(|| BootFailure::new(format!("`{}` has no command", step.label)))?;
-        let sealed = self
-            .image_rootfs(step.image.as_ref())
+        let built = self
+            .built_for(step.image.as_ref())
             .map_err(BootFailure::new)?;
         let rootfs = self
-            .clone_rootfs(&sealed, &format!("boot{}", step.line))
+            .clone_rootfs(&built.rootfs, &format!("boot{}", step.line))
             .map_err(BootFailure::new)?;
         let spec = PodSpec {
             id: format!("boot-{}", self.counter),
             rootfs,
-            workdir: "/project".to_owned(),
+            workdir: built.workdir,
             argv: vec![
                 "/bin/sh".to_owned(),
                 "-c".to_owned(),
                 shell_command(&command),
             ],
-            inherited_env: Vec::new(),
-            env: Vec::new(),
+            inherited_env: built.inherited_env,
+            env: self.pod_env_for(&step.subject, step.image.as_deref(), None),
             binds: vec![project_bind(&self.project)],
             files: Vec::new(),
         };
@@ -272,29 +336,36 @@ impl WorldRuntime {
 
     fn start_service(&mut self, step: &BootStep) -> Result<String, String> {
         let sigma = step.subject.clone();
-        let sealed = self.image_rootfs(step.image.as_ref())?;
-        let rootfs = self.clone_rootfs(&sealed, &format!("svc-{sigma}"))?;
-        let command = step.command.clone().unwrap_or_else(|| "true".to_owned());
-        let mut env = Vec::new();
+        let built = self.built_for(step.image.as_ref())?;
+        let rootfs = self.clone_rootfs(&built.rootfs, &format!("svc-{sigma}"))?;
         let port = self
             .services
             .iter()
             .find(|service| service.id == sigma)
             .and_then(|service| service.port);
-        if let Some(port) = port {
-            env.push(PodEnv::new("PORT", &port.to_string()));
-        }
+        let (argv, display) = if let Some(command) = &step.command {
+            (
+                vec![
+                    "/bin/sh".to_owned(),
+                    "-c".to_owned(),
+                    shell_command(command),
+                ],
+                command.clone(),
+            )
+        } else if built.argv.is_empty() {
+            return Err(format!(
+                "service `{sigma}` declares no `run:` and its image has no `ENTRYPOINT`/`CMD`"
+            ));
+        } else {
+            (built.argv.clone(), built.argv.join(" "))
+        };
         let spec = PodSpec {
             id: sigma,
             rootfs,
-            workdir: "/project".to_owned(),
-            argv: vec![
-                "/bin/sh".to_owned(),
-                "-c".to_owned(),
-                shell_command(&command),
-            ],
-            inherited_env: Vec::new(),
-            env,
+            workdir: built.workdir,
+            argv,
+            inherited_env: built.inherited_env,
+            env: self.pod_env_for(&step.subject, step.image.as_deref(), port),
             binds: vec![project_bind(&self.project)],
             files: Vec::new(),
         };
@@ -305,35 +376,18 @@ impl WorldRuntime {
         // A service that leaves inside the readiness window never started: surface it as failed
         // while the world stays up for inspection. When `port` is declared, also wait until
         // `127.0.0.1:<port>` accepts inside the world netns so `ready` never races cold startup.
-        let health = slipfork_world::classify_service(
+        let health = classify_service(
             self.supervisor
                 .wait(pid, Duration::from_millis(750))
                 .map_err(|error| error.to_string())?,
         );
         if let slipfork_world::ServiceHealth::Exited(code) = health {
             return Err(format!(
-                "`{command}` exited with {code} before it became ready"
+                "`{display}` exited with {code} before it became ready"
             ));
         }
         if let Some(port) = port {
-            let pods_dir = self.supervisor.pods_dir().to_path_buf();
-            let deadline = std::time::Instant::now() + Duration::from_secs(5);
-            while std::time::Instant::now() < deadline {
-                if let Ok(stream) = slipfork_world::control::dial_tcp(&pods_dir, port) {
-                    let _ = stream.shutdown(std::net::Shutdown::Both);
-                    break;
-                }
-                let tick = slipfork_world::classify_service(
-                    self.supervisor
-                        .wait(pid, Duration::from_millis(50))
-                        .map_err(|error| error.to_string())?,
-                );
-                if let slipfork_world::ServiceHealth::Exited(code) = tick {
-                    return Err(format!(
-                        "`{command}` exited with {code} before it became ready"
-                    ));
-                }
-            }
+            self.wait_tcp(pid, port, &display, Duration::from_secs(10))?;
         }
         Ok("started".to_owned())
     }
@@ -359,28 +413,54 @@ impl WorldRuntime {
             image
         };
         let rootfs = self.clone_rootfs(&image.rootfs, &format!("res-{id}"))?;
-        let facts = image.facts.clone();
-        // Resource dirs stay plain directories inside the `worlds/<world>` subvolume so one
-        // `BTRFS_IOC_SNAP_CREATE_V2` clones PostgreSQL, Redis, and S3 data atomically on `fork`.
-        let data = self.layout.world(&self.world).join(id);
-        fs::create_dir_all(&data)
-            .map_err(|error| format!("create `{}`: {error}", data.display()))?;
-        let spec = match node.resource {
-            ResourceKind::Postgres => postgres(id, &rootfs, &data, &facts),
-            ResourceKind::Redis => redis(id, &rootfs, &data, &facts),
-            ResourceKind::Seaweedfs => {
-                let plan = SeaweedfsPlan::render(
-                    &S3Credentials::new(&format!("slipfork-{id}"), &format!("slipfork-{id}")),
-                    &[],
-                )
-                .map_err(|error| error.to_string())?;
-                seaweedfs(id, &rootfs, &data, &plan, &facts)
-            }
-        };
-        self.supervisor
+        let world_dir = self.layout.world(&self.world);
+        let (spec, policies) = build_resource_spec(
+            &node,
+            self.world.as_str(),
+            &world_dir,
+            &rootfs,
+            &image.facts,
+            &self.reserved_ports,
+        )?;
+        let pid = self
+            .supervisor
             .launch(&spec)
             .map_err(|error| error.to_string())?;
+        self.wait_tcp(pid, node.resource.port(), id, Duration::from_secs(30))?;
+        if let Some(plan) = policies {
+            // Bucket policies live in `s3.json`, applied by the pod's bootstrap helper; callers
+            // only get a bucket once its anonymous policy answers.
+            plan.await_policies(self.supervisor.pods_dir(), Duration::from_secs(15))?;
+        }
         Ok("started".to_owned())
+    }
+
+    fn wait_tcp(
+        &mut self,
+        pid: u32,
+        port: u16,
+        label: &str,
+        timeout: Duration,
+    ) -> Result<(), String> {
+        let pods_dir = self.supervisor.pods_dir().to_path_buf();
+        let deadline = Instant::now() + timeout;
+        while Instant::now() < deadline {
+            if let Ok(stream) = control::dial_tcp(&pods_dir, port) {
+                let _ = stream.shutdown(Shutdown::Both);
+                return Ok(());
+            }
+            let tick = classify_service(
+                self.supervisor
+                    .wait(pid, Duration::from_millis(100))
+                    .map_err(|error| error.to_string())?,
+            );
+            if let slipfork_world::ServiceHealth::Exited(code) = tick {
+                return Err(format!(
+                    "`{label}` exited with {code} before it became ready"
+                ));
+            }
+        }
+        Ok(())
     }
 
     pub(super) fn cleanup(&mut self) {
@@ -395,42 +475,4 @@ impl WorldRuntime {
         let _ = writeln!(self.log, "{line}");
         let _ = self.log.flush();
     }
-}
-
-/// Clears leftover pod rootfs clones or `ino == 2` snapshot stubs before a world boots.
-fn sweep_stale_pods(engine: &BtrfsEngine, pods_dir: &Path) -> Result<(), String> {
-    if !pods_dir.exists() {
-        return Ok(());
-    }
-    let entries = fs::read_dir(pods_dir)
-        .map_err(|error| format!("read `{}`: {error}", pods_dir.display()))?;
-    for entry in entries {
-        let entry = entry.map_err(|error| format!("read `{}`: {error}", pods_dir.display()))?;
-        let path = entry.path();
-        if slipfork_world::is_subvolume_path(&path).unwrap_or(false) {
-            engine
-                .destroy(&path, Dirtiness::Clean, true)
-                .map_err(|error| error.to_string())?;
-        } else if path.is_dir() {
-            fs::remove_dir_all(&path)
-                .map_err(|error| format!("remove `{}`: {error}", path.display()))?;
-        } else {
-            fs::remove_file(&path)
-                .map_err(|error| format!("remove `{}`: {error}", path.display()))?;
-        }
-    }
-    let _ = fs::remove_dir(pods_dir);
-    Ok(())
-}
-
-fn project_bind(project: &Path) -> Bind {
-    Bind {
-        source: BindSource::Host(project.to_path_buf()),
-        destination: "/project".to_owned(),
-        read_only: false,
-    }
-}
-
-fn shell_command(command: &str) -> String {
-    command.strip_prefix('@').unwrap_or(command).to_owned()
 }

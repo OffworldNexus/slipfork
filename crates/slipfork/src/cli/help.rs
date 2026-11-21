@@ -196,13 +196,14 @@ pub(super) fn help_text(topic: HelpTopic, color: bool) -> String {
                 "{title}\n\
                  Stream merged stdout + stderr with a colored gutter per service.\n\
                  \n\
-                 Usage: slipfork logs [-f] [--json] [SERVICE]\n\
+                 Usage: slipfork logs [-f] [-a] [--json] [SERVICE]\n\
                  \n\
                  Arguments:\n\
-                 \x20 SERVICE   Only this service; omit to merge every pod\n\
+                 \x20 SERVICE   Service or resource id; omit to merge application services\n\
                  \n\
                  Options:\n\
                  \x20 -f, --follow  Stay attached across restarts (Ctrl-C exits 0)\n\
+                 \x20 -a, --all     Include postgres, redis, and s3 resource pods\n\
                  \x20 --json        One {{\"pod\",\"stream\",\"line\",\"kind\"}} per line, then {{\"exit\":0}}\n\
                  \x20 -h, --help\n\
                  \n\

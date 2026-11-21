@@ -71,6 +71,17 @@ impl Command {
             Self::Exec(argv) => format!("exec {argv:?}"),
         }
     }
+
+    /// The argv this command expands to at exec time; shell form runs through `/bin/sh -c`.
+    #[must_use]
+    pub fn to_argv(&self) -> Vec<String> {
+        match self {
+            Self::Shell(script) => {
+                vec!["/bin/sh".to_owned(), "-c".to_owned(), script.clone()]
+            }
+            Self::Exec(argv) => argv.clone(),
+        }
+    }
 }
 
 /// Port protocol for `EXPOSE`.

@@ -69,9 +69,9 @@ pub const VERBS: &[VerbSpec] = &[
     },
     VerbSpec {
         name: "logs",
-        summary: "Stream merged stdout + stderr with per-service gutters",
+        summary: "Stream merged service stdout + stderr (-a includes resources)",
         subcommands: &[],
-        flags: &["-f", "--follow", "--json", "-h", "--help"],
+        flags: &["-f", "--follow", "-a", "--all", "--json", "-h", "--help"],
     },
     VerbSpec {
         name: "shell",

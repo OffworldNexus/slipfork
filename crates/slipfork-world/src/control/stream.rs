@@ -252,6 +252,7 @@ pub fn logs(
         v: PROTOCOL_VERSION,
         id: "logs".to_owned(),
         service: service.map(str::to_owned),
+        pods: None,
         follow,
     })?;
     loop {
