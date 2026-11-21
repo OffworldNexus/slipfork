@@ -2,7 +2,7 @@
 id: M3.40.11
 title: "slipfork-vcs GitWorkspace VcsWorkspace port + daemon BootSession consolidation"
 kind: task
-status: ready
+status: done
 owner: implementer
 priority: 3
 depends_on: [M3.40.10]
@@ -14,11 +14,11 @@ paths:
   - Cargo.toml
   - Cargo.lock
   - "specs/03-under-the-hood.md"
-attempts: 0
+attempts: 1
 max_attempts: 3
 escalation: none
 created: "2026-11-21T14:35"
-updated: "2026-11-21T14:35"
+updated: "2026-11-21T14:55"
 ---
 
 # Goal

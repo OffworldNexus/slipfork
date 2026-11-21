@@ -1,18 +1,22 @@
-//! Spawning `__supervise` and leaving the booting placeholder.
+//! Spawning `__supervise` and reserving the booting placeholder.
 
 use std::fs::{self, OpenOptions};
 use std::path::PathBuf;
-use std::process::{Child, Command, Stdio};
+use std::process::{Command, Stdio};
 
 use serde_json::Value;
 
 use super::core::{Core, World};
 use crate::daemon::Failure;
+use crate::daemon::boot::BootSession;
 use crate::daemon::rpc::{key_of, pid_alive, world_answers};
 
 impl Core {
-    /// Spawns `__supervise` and leaves a `Booting` placeholder; the guard is dropped by the caller.
-    pub(crate) fn begin_up(&mut self, params: &Value) -> Result<(String, Child, PathBuf), Failure> {
+    /// Spawns `__supervise` and leaves a `Booting` placeholder; the returned session owns the boot.
+    ///
+    /// The caller holds one `Core` guard for the reservation, so a fork snapshot and its boot can
+    /// never observe two different world maps.
+    pub(crate) fn begin_up(&mut self, params: &Value) -> Result<BootSession, Failure> {
         let project = PathBuf::from(
             params
                 .get("project")
@@ -46,7 +50,7 @@ impl Core {
         project: PathBuf,
         key: String,
         params: &Value,
-    ) -> Result<(String, Child, PathBuf), Failure> {
+    ) -> Result<BootSession, Failure> {
         let requested = params.get("world").and_then(Value::as_str);
         let world = crate::world::world_name(&project, requested)
             .map_err(|message| Failure::new("invalid-world", message))?;
@@ -68,7 +72,7 @@ impl Core {
                     format!("open `{}`: {error}", log_path.display()),
                 )
             })?;
-        let mut child = Command::new(&self.host.exe)
+        let child = Command::new(&self.host.exe)
             .arg("__supervise")
             .arg("--project")
             .arg(&project)
@@ -85,20 +89,14 @@ impl Core {
                     format!("cannot start `__supervise`: {error}"),
                 )
             })?;
-        child.stdout.take().ok_or_else(|| {
-            Failure::new(
-                "supervisor-spawn",
-                "the world supervisor gave no event stream",
-            )
-        })?;
         self.worlds.insert(
             key.clone(),
             World::Booting {
-                project,
+                project: project.clone(),
                 world: world.as_str().to_owned(),
                 supervisor_pid: child.id(),
             },
         );
-        Ok((key, child, log_path))
+        Ok(BootSession::new(key, log_path, child, project))
     }
 }

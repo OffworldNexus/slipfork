@@ -20,6 +20,9 @@ use std::ffi::OsString;
 use std::io::IsTerminal;
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::sync::Arc;
+
+use slipfork_vcs::GitWorkspace;
 
 fn main() -> ExitCode {
     let args: Vec<OsString> = std::env::args_os().skip(1).collect();
@@ -103,7 +106,10 @@ fn main() -> ExitCode {
 
     // The daemon is the same binary in a hidden mode; it owns every world under this UID.
     if args.first().is_some_and(|arg| arg == "__daemon") {
-        return daemon::run(host);
+        // One `git` adapter for the whole daemon: only the composition root resolves the binary,
+        // and a missing `git` surfaces as a typed `git-missing` refusal on `fork`/`drop`.
+        let git = host.tool("git").unwrap_or_else(|_| PathBuf::from("git"));
+        return daemon::run(host, Arc::new(GitWorkspace::new(git)));
     }
     if args.first().is_some_and(|arg| arg == "__ingress") {
         return daemon::run_handoff(&host);

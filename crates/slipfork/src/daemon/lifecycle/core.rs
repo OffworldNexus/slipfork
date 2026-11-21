@@ -4,10 +4,12 @@ use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::path::PathBuf;
 use std::process::Child;
+use std::sync::Arc;
 use std::time::Instant;
 
 use serde_json::{Value, json};
 use slipfork_ingress::{IngressRegistry, IngressTable};
+use slipfork_vcs::VcsWorkspace;
 use slipfork_world::control::{PROTOCOL_VERSION, Request};
 
 use super::super::Failure;
@@ -47,6 +49,8 @@ impl World {
 /// The daemon's mutable world state.
 pub(crate) struct Core {
     pub(super) host: HostEnv,
+    /// The canonical `specs/03` §5 branch/dirty port, injected by the composition root.
+    pub(super) vcs: Arc<dyn VcsWorkspace>,
     pub(super) state_dir: PathBuf,
     pub(super) worlds: BTreeMap<String, World>,
     pub(super) ingress: Option<(IngressRegistry, BTreeMap<String, PathBuf>)>,
@@ -56,6 +60,7 @@ pub(crate) struct Core {
 impl Core {
     pub(crate) fn new(
         host: HostEnv,
+        vcs: Arc<dyn VcsWorkspace>,
         state_dir: PathBuf,
         lock: File,
         entries: Vec<RegistryEntry>,
@@ -68,6 +73,7 @@ impl Core {
         }
         Self {
             host,
+            vcs,
             state_dir,
             worlds,
             ingress: None,

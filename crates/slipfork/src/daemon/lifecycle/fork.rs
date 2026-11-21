@@ -1,14 +1,15 @@
-//! `fork` and `drop`: one CoW snapshot of project + world data, a git branch switch, and one boot.
+//! `fork` and `drop`: one CoW snapshot of project + world data, a branch switch, and one boot.
 //!
-//! The Btrfs ioctls stay in `slipfork_world`; this module only sequences them, reads the branch
-//! through the injected `PATH`, and maps every refusal to a typed `error` frame.
+//! The Btrfs ioctls stay in `slipfork_world` and branch topology stays behind the injected
+//! `VcsWorkspace` port; this module only sequences them and maps every refusal to a typed `error`
+//! frame. A fork's snapshot and its boot reservation happen under one `Core` guard.
 
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
+use slipfork_vcs::{Dirty, VcsError};
 use slipfork_world::{
     BtrfsEngine, Dirtiness, Error as WorldError, ForkName, StoreLayout, WorldEngine, WorldName,
     is_subvolume_path,
@@ -16,8 +17,8 @@ use slipfork_world::{
 
 use super::core::{Core, World};
 use crate::daemon::Failure;
+use crate::daemon::boot::BootSession;
 use crate::daemon::rpc::key_of;
-use crate::world::HostEnv;
 
 /// One project snapshot that is ready to boot as its own world.
 pub(crate) struct PreparedFork {
@@ -32,12 +33,47 @@ pub(crate) struct PreparedFork {
 }
 
 impl Core {
-    /// Snapshots the project and its world data, then switches the fork checkout to its branch.
+    /// Snapshots the fork and reserves its boot in the same locked step.
     ///
-    /// The daemon boots the returned project through the ordinary `up` path, so a fork is never a
+    /// The daemon boots the returned session through the ordinary `up` path, so a fork is never a
     /// second boot implementation. Any failure after the snapshot deletes both snapshots again.
-    pub(crate) fn fork_snapshot(
+    pub(crate) fn begin_fork(
         &mut self,
+        params: &Value,
+        emit: &mut dyn FnMut(Value),
+    ) -> Result<(BootSession, PreparedFork), Failure> {
+        let prepared = self.snapshot(params, emit)?;
+        let boot = json!({
+            "project": prepared.project.clone(),
+            "world": prepared.world.clone(),
+        });
+        match self.begin_up(&boot) {
+            Ok(mut session) => {
+                session.reserve_fork(prepared.fork.clone());
+                Ok((session, prepared))
+            }
+            Err(failure) => {
+                self.discard_fork(&prepared);
+                Err(failure)
+            }
+        }
+    }
+
+    /// Deletes both snapshots of a fork that never published, so a retry is never blocked.
+    pub(crate) fn discard_fork(&self, prepared: &PreparedFork) {
+        let engine = BtrfsEngine::new(StoreLayout::new(&prepared.parent));
+        let _ = engine.drop_fork(
+            &prepared.parent,
+            &prepared.world_name,
+            &prepared.fork_name,
+            Dirtiness::Clean,
+            true,
+        );
+    }
+
+    /// Snapshots the project and its world data, then switches the fork checkout to its branch.
+    fn snapshot(
+        &self,
         params: &Value,
         emit: &mut dyn FnMut(Value),
     ) -> Result<PreparedFork, Failure> {
@@ -58,7 +94,10 @@ impl Core {
             .map_err(|error| Failure::new("invalid-world", first_line(&error.to_string())))?;
         let name = match param_name(params) {
             Some(name) => name.to_owned(),
-            None => git_branch(&self.host, &project)?,
+            None => self
+                .vcs
+                .branch(&project)
+                .map_err(|error| vcs_failure(&error))?,
         };
         let fork = ForkName::parse(&name)
             .map_err(|error| Failure::new("invalid-fork", error.to_string()))?;
@@ -81,7 +120,11 @@ impl Core {
             "event": "started", "step": 2, "total": 3, "kind": "git",
             "label": format!("switching the fork to {name}"),
         }));
-        if let Err(failure) = git_switch(&self.host, &paths.project, &name) {
+        if let Err(failure) = self
+            .vcs
+            .switch(&paths.project, &name)
+            .map_err(|error| vcs_failure(&error))
+        {
             let _ = engine.drop_fork(&project, &world, &fork, Dirtiness::Clean, true);
             return Err(failure);
         }
@@ -139,7 +182,11 @@ impl Core {
         let dirtiness = if force {
             Dirtiness::Clean
         } else {
-            git_dirtiness(&self.host, &fork_project)
+            match self.vcs.dirtiness(&fork_project) {
+                Ok(Dirty::Clean) => Dirtiness::Clean,
+                // A failed probe is dirty work: never discard what cannot be proven clean.
+                Ok(Dirty::Dirty) | Err(_) => Dirtiness::Dirty,
+            }
         };
         if dirtiness.is_dirty() {
             return Err(Failure::new(
@@ -240,66 +287,17 @@ fn btrfs_failure(error: &WorldError, project: &Path) -> Failure {
     }
 }
 
+/// Maps a `VcsWorkspace` refusal to the daemon's typed frame codes.
+fn vcs_failure(error: &VcsError) -> Failure {
+    match error {
+        VcsError::Unavailable { .. } => Failure::new("git-missing", "`git` is not on PATH"),
+        VcsError::NoBranch { .. } => Failure::new("git-branch", first_line(&error.to_string())),
+        VcsError::Switch { .. } | VcsError::Command { .. } => {
+            Failure::new("git-switch", first_line(&error.to_string()))
+        }
+    }
+}
+
 fn first_line(text: &str) -> String {
     text.lines().next().unwrap_or("fork failed").to_owned()
-}
-
-fn git(host: &HostEnv, project: &Path, args: &[&str]) -> Result<Output, Failure> {
-    let git = host
-        .tool("git")
-        .map_err(|message| Failure::new("git-missing", first_line(&message)))?;
-    Command::new(git)
-        .arg("-C")
-        .arg(project)
-        .args(args)
-        .output()
-        .map_err(|error| Failure::new("git", format!("cannot run git: {error}")))
-}
-
-/// The checkout's current branch; `HEAD`/empty is a detached checkout, which needs a name.
-fn git_branch(host: &HostEnv, project: &Path) -> Result<String, Failure> {
-    let output = git(host, project, &["rev-parse", "--abbrev-ref", "HEAD"])?;
-    let branch = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-    if !output.status.success() || branch.is_empty() || branch == "HEAD" {
-        return Err(Failure::new(
-            "git-branch",
-            format!("`{}` has no git branch (detached HEAD)", project.display()),
-        ));
-    }
-    Ok(branch)
-}
-
-/// Switches the fork checkout to `branch`, creating it when the parent never had it.
-fn git_switch(host: &HostEnv, project: &Path, branch: &str) -> Result<(), Failure> {
-    let reference = format!("refs/heads/{branch}");
-    let exists = git(host, project, &["rev-parse", "--verify", &reference])?;
-    let args: Vec<&str> = if exists.status.success() {
-        vec!["switch", branch]
-    } else {
-        vec!["switch", "-c", branch]
-    };
-    let output = git(host, project, &args)?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(Failure::new(
-            "git-switch",
-            format!(
-                "cannot switch `{}` to {branch}: {}",
-                project.display(),
-                first_line(stderr.trim())
-            ),
-        ));
-    }
-    Ok(())
-}
-
-/// Whether the fork checkout carries uncommitted or untracked work.
-fn git_dirtiness(host: &HostEnv, project: &Path) -> Dirtiness {
-    if !project.is_dir() {
-        return Dirtiness::Clean;
-    }
-    match git(host, project, &["status", "--porcelain"]) {
-        Ok(output) if output.status.success() && output.stdout.is_empty() => Dirtiness::Clean,
-        _ => Dirtiness::Dirty,
-    }
 }

@@ -2451,3 +2451,7 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-21T14:47 [M3.40.10] (lead) attempt 1/3 started
 - 2026-11-21T14:47 [M3.40.10] (lead) base 87f6ae3d0d215b190349a1da750af4feee4a2d84
 - 2026-11-21T14:52 [M3.40.10] (lead) status active -> done
+- 2026-11-21T14:52 [M3.40.11] (lead) status ready -> active
+- 2026-11-21T14:52 [M3.40.11] (lead) attempt 1/3 started
+- 2026-11-21T14:52 [M3.40.11] (lead) base 4dc0cbb615b2e249cb1c0a02c7560da915786afe
+- 2026-11-21T14:55 [M3.40.11] (lead) status active -> done

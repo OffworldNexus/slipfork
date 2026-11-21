@@ -37,6 +37,7 @@ slipfork-forkfile = { path = "../slipfork-forkfile" }
 slipfork-image = { path = "../slipfork-image" }
 slipfork-ingress = { path = "../slipfork-ingress" }
 slipfork-ospp = { path = "../slipfork-ospp" }
+slipfork-vcs = { path = "../slipfork-vcs" }
 slipfork-world = { path = "../slipfork-world" }
 
 [dev-dependencies]

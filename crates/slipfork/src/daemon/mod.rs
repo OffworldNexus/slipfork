@@ -25,15 +25,15 @@ use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::thread;
 
 use crate::world::HostEnv;
 use frames::{FrameReader, write_frame};
 use lifecycle::core::Core;
 use serde_json::{Value, json};
+use slipfork_vcs::VcsWorkspace;
 use slipfork_world::control::{StreamFrame, StreamInput};
-use slipfork_world::{BtrfsEngine, Dirtiness, StoreLayout, WorldEngine};
 
 /// A typed control-plane failure rendered as an `error` frame with a bare message.
 #[derive(Debug, Clone)]
@@ -76,8 +76,8 @@ pub fn socket_path(host: &HostEnv) -> PathBuf {
 }
 
 /// Runs the daemon in this process; returns only when startup fails.
-pub fn run(host: HostEnv) -> ExitCode {
-    match Daemon::start(host) {
+pub fn run(host: HostEnv, vcs: Arc<dyn VcsWorkspace>) -> ExitCode {
+    match Daemon::start(host, vcs) {
         Ok(Some(daemon)) => match daemon.serve() {
             Ok(()) => ExitCode::SUCCESS,
             Err(startup) => {
@@ -105,7 +105,7 @@ struct Daemon {
 }
 
 impl Daemon {
-    fn start(host: HostEnv) -> Result<Option<Self>, Startup> {
+    fn start(host: HostEnv, vcs: Arc<dyn VcsWorkspace>) -> Result<Option<Self>, Startup> {
         fs::create_dir_all(&host.state_dir).map_err(|error| {
             Startup::new(
                 format!("create `{}`: {error}", host.state_dir.display()),
@@ -139,7 +139,7 @@ impl Daemon {
                 format!("fix or delete `{}`", registry::path(&state_dir).display()),
             )
         })?;
-        let core = Core::new(host, state_dir.clone(), lock, entries);
+        let core = Core::new(host, vcs, state_dir.clone(), lock, entries);
         let retained = core.retained();
         let _ = registry::store(&state_dir, &retained);
         Ok(Some(Self {
@@ -344,14 +344,8 @@ impl Daemon {
         params: &Value,
         emit: &mut dyn FnMut(Value),
     ) -> Result<Option<Value>, Failure> {
-        let project = PathBuf::from(
-            params
-                .get("project")
-                .and_then(Value::as_str)
-                .ok_or_else(|| Failure::new("bad-params", "`project` is required"))?,
-        );
-        let (key, child, log) = self.core()?.begin_up(params)?;
-        boot::finish_boot(self, key, log, child, project, None, emit).map(Some)
+        let mut session = self.core()?.begin_up(params)?;
+        session.run(self, emit).map(Some)
     }
 
     /// Snapshots the fork, then boots it through the same `up` path and answers its coordinates.
@@ -360,7 +354,7 @@ impl Daemon {
         params: &Value,
         emit: &mut dyn FnMut(Value),
     ) -> Result<Option<Value>, Failure> {
-        let prepared = self.core()?.fork_snapshot(params, emit)?;
+        let (mut session, prepared) = self.core()?.begin_fork(params, emit)?;
         let fork_name = prepared.fork.clone();
         let mut annotate = |mut event: Value| {
             if event.get("event").and_then(Value::as_str) == Some("ready") {
@@ -368,31 +362,11 @@ impl Daemon {
             }
             emit(event);
         };
-        let boot = json!({
-            "project": prepared.project.clone(),
-            "world": prepared.world.clone(),
-        });
-        let outcome = self.core()?.begin_up(&boot).and_then(|(key, child, log)| {
-            boot::finish_boot(
-                self,
-                key,
-                log,
-                child,
-                prepared.project.clone(),
-                Some(prepared.fork.clone()),
-                &mut annotate,
-            )
-        });
-        if let Err(failure) = outcome {
+        if let Err(failure) = session.run(self, &mut annotate) {
             // A failed branch switch or boot must not leave a half-fork that blocks a retry.
-            let engine = BtrfsEngine::new(StoreLayout::new(&prepared.parent));
-            let _ = engine.drop_fork(
-                &prepared.parent,
-                &prepared.world_name,
-                &prepared.fork_name,
-                Dirtiness::Clean,
-                true,
-            );
+            if let Ok(core) = self.core() {
+                core.discard_fork(&prepared);
+            }
             return Err(failure);
         }
         Ok(Some(json!({
