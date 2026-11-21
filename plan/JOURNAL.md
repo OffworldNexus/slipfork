@@ -2463,3 +2463,4 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-21T15:20 [M3.40.12] (lead) status active -> done
 - 2026-11-21T16:31 [M3.40] (lead) gate: make check 0; live lab 7/7 suites (11 tests) green; guard+critical_guard+validate+docs honesty OK; zero mocks
 - 2026-11-21T16:31 [M3.40] (lead) status ready -> done
+- 2026-11-21T16:32 [M3.41] (conductor) edited fields

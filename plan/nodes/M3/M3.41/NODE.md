@@ -16,11 +16,16 @@ paths:
   - "scripts/**"
   - ".github/**"
   - tools/check_docs_honesty.py
+  - "crates/slipfork/**"
+  - "crates/slipfork-lsp/**"
+  - "editors/zed/**"
+  - Cargo.toml
+  - Cargo.lock
 attempts: 0
 max_attempts: 3
 escalation: none
 created: "2026-11-21T00:44"
-updated: "2026-11-21T11:29"
+updated: "2026-11-21T16:32"
 ---
 
 # Goal
