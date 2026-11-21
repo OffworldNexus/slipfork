@@ -1,0 +1,10 @@
+[package]
+name = "slipfork"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Copy-on-write Btrfs environments for polyglot apps and AI coding agents"
+
+[[bin]]
+name = "slipfork"
+path = "src/main.rs"

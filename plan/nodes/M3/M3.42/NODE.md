@@ -12,16 +12,14 @@ paths:
   - "packages/**"
   - "packaging/**"
   - "scripts/**"
-  - "support/**"
   - "tools/**"
   - "docs/**"
   - README.md
-  - CHANGELOG.md
 attempts: 0
 max_attempts: 3
 escalation: none
 created: "2026-11-21T00:44"
-updated: "2026-11-21T00:44"
+updated: "2026-11-21T00:57"
 ---
 
 # Goal

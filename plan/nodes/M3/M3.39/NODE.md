@@ -5,17 +5,24 @@ kind: epic
 status: ready
 priority: 3
 depends_on: [M3.38]
-paths: [Cargo.toml, Cargo.lock, Makefile, ARCHITECTURE.md, "crates/slipfork-engine/**", "crates/slipfork/**"]
+paths:
+  - Cargo.toml
+  - Cargo.lock
+  - Makefile
+  - ARCHITECTURE.md
+  - "crates/slipfork-world/**"
+  - "crates/slipfork-image/**"
+  - "crates/slipfork/**"
 attempts: 0
 max_attempts: 3
 escalation: none
 created: "2026-11-21T00:44"
-updated: "2026-11-21T00:44"
+updated: "2026-11-21T00:57"
 ---
 
 # Goal
 
-Implement `specs/03-under-the-hood.md` §1–§3 cleanly in `crates/slipfork-engine` with **zero Docker/BuildKit dependency** and **pure Btrfs subvolumes end-to-end** (consulting `.opencode/LESSONS.md` for verified Linux namespace, Btrfs ioctl, and `crun` invariants):
+Implement `specs/03-under-the-hood.md` §1–§3 cleanly in `crates/slipfork-world` (Btrfs lifecycle/snapshots) + `crates/slipfork-image` (native OCI puller/`Dockerfile` builder) with **zero Docker/BuildKit dependency** and **pure Btrfs subvolumes end-to-end** (consulting `.opencode/LESSONS.md` for verified Linux namespace, Btrfs ioctl, and `crun` invariants):
 1. **Pure Btrfs Subvolume Layout:**
    - Btrfs filesystem verification (`BTRFS_SUPER_MAGIC`), transparent in-place conversion of a plain git checkout directory on Btrfs into a Btrfs subvolume on first `up`, `.slipfork-store/{images,worlds}` management, `BTRFS_SUBVOL_RDONLY` sealing & flag-clearing before `BTRFS_IOC_SNAP_DESTROY_V2`, and `< 50ms` atomic CoW `fork` of BOTH `<project>/.forks/<name>` (including `.venv`, `node_modules`, `.slipfork/` input stamps + git branch switch) AND `worlds/<fork>--<world>` data subvolumes, plus dirty-checkout refusal on `drop` without `--force`.
 2. **100% Docker-Free Native OCI Registry Puller & Btrfs + `crun` `Dockerfile` Builder:**
