@@ -1,13 +1,30 @@
-//! Btrfs subvolumes, snapshots, world boot and reap, and the ioctls behind them.
+//! Btrfs subvolumes, CoW snapshots, and the ioctls behind them.
+//!
+//! [`BtrfsEngine`] is the real adapter behind the [`WorldEngine`] port from
+//! `specs/03-under-the-hood.md` §5. Every root is injected by the caller: this crate never reads
+//! the environment, caches no global state, and never guesses a mount point.
+//!
+//! ```no_run
+//! use std::path::PathBuf;
+//!
+//! use slipfork_world::{BtrfsEngine, StoreLayout, WorldEngine};
+//!
+//! # fn main() -> slipfork_world::Result<()> {
+//! let engine = BtrfsEngine::new(StoreLayout::new(PathBuf::from("/mnt/btrfs")));
+//! engine.ensure_store()?;
+//! engine.adopt_project(&PathBuf::from("/mnt/btrfs/projects/demo"))?;
+//! # Ok(())
+//! # }
+//! ```
 
-/// Entry marker for the world store owned by this crate.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub struct WorldStore;
+mod btrfs;
+mod engine;
+mod error;
+mod layout;
+mod port;
 
-impl WorldStore {
-    /// Builds the world store marker.
-    #[must_use]
-    pub const fn new() -> Self {
-        Self
-    }
-}
+pub use btrfs::{is_btrfs_path, is_subvolume_path};
+pub use engine::BtrfsEngine;
+pub use error::{Error, NameKind, Result};
+pub use layout::{ForkName, StoreLayout, WorldName};
+pub use port::{Dirtiness, ForkPaths, WorldEngine};

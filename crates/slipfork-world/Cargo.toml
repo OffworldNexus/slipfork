@@ -4,4 +4,17 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 
+[features]
+# Live Btrfs suite: it needs a real Btrfs scratch root, so it never joins the default test run.
+live = []
+
 [dependencies]
+libc.workspace = true
+
+[dev-dependencies]
+libc.workspace = true
+
+[[test]]
+name = "critical_btrfs_live"
+path = "tests/critical_btrfs_live.rs"
+required-features = ["live"]
