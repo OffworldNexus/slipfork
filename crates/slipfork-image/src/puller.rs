@@ -1,0 +1,139 @@
+//! The puller: resolve, stream, verify, unpack, seal, cache.
+
+use std::fs;
+use std::io;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use slipfork_world::{Dirtiness, WorldEngine};
+
+use crate::digest::DigestReader;
+use crate::error::{Error, Result};
+use crate::layout::ImageLayout;
+use crate::manifest::ImageManifest;
+use crate::reference::ImageReference;
+use crate::registry::{Credentials, RegistryClient, RegistryScheme};
+use crate::unpack::LayerUnpacker;
+use crate::{Architecture, BaseImageBuilder};
+
+/// A sealed read-only image subvolume ready to snapshot for containers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PulledImage {
+    /// Path of the sealed `images/oci/<digest>` subvolume.
+    pub rootfs: PathBuf,
+    /// `sha256:<hex>` of the per-architecture manifest.
+    pub digest: String,
+    /// Architecture the manifest list was resolved for.
+    pub architecture: Architecture,
+}
+
+/// Docker-free OCI Distribution v2 puller behind the [`BaseImageBuilder`] port.
+pub struct OciPuller {
+    world: Arc<dyn WorldEngine>,
+    layout: ImageLayout,
+    architecture: Architecture,
+    client: RegistryClient,
+}
+
+impl OciPuller {
+    /// Builds the puller; the composition root injects every root and the architecture.
+    #[must_use]
+    pub fn new(
+        world: Arc<dyn WorldEngine>,
+        layout: ImageLayout,
+        credentials: Credentials,
+        architecture: Architecture,
+        user_agent: String,
+    ) -> Self {
+        Self {
+            world,
+            layout,
+            architecture,
+            client: RegistryClient::new(credentials, user_agent),
+        }
+    }
+
+    /// Uses `scheme` for registry base URLs (`Http` only for loopback lab registries).
+    #[must_use]
+    pub fn with_scheme(mut self, scheme: RegistryScheme) -> Self {
+        self.client = self.client.with_scheme(scheme);
+        self
+    }
+
+    /// Pulls `reference`, reusing a sealed cache entry without downloading a blob again.
+    pub fn pull(&self, reference: &ImageReference) -> Result<PulledImage> {
+        let mut session = self.client.session(reference);
+        let resolved = session.manifest(self.architecture)?;
+        let digest = resolved.digest.clone();
+        let image = self.layout.image(&digest);
+        if image.exists() {
+            if self.world.is_sealed(&image)? {
+                return Ok(self.pulled(image, digest));
+            }
+            self.world.destroy(&image, Dirtiness::Dirty, true)?;
+        }
+        self.layout.ensure()?;
+        let staging = self.layout.staging(&digest);
+        if staging.exists() {
+            self.world.destroy(&staging, Dirtiness::Dirty, true)?;
+        }
+        self.world.create_subvolume(&staging)?;
+        let outcome = self
+            .unpack(&mut session, &resolved.manifest, &staging)
+            .and_then(|()| self.world.seal(&staging).map_err(Error::from))
+            .and_then(|()| {
+                fs::rename(&staging, &image).map_err(|source| Error::io("install", &image, source))
+            });
+        if let Err(err) = outcome {
+            let _ = self.world.destroy(&staging, Dirtiness::Dirty, true);
+            return Err(err);
+        }
+        Ok(self.pulled(image, digest))
+    }
+
+    fn pulled(&self, rootfs: PathBuf, digest: String) -> PulledImage {
+        PulledImage {
+            rootfs,
+            digest,
+            architecture: self.architecture,
+        }
+    }
+
+    fn unpack(
+        &self,
+        session: &mut crate::registry::RegistrySession<'_>,
+        manifest: &ImageManifest,
+        root: &Path,
+    ) -> Result<()> {
+        let unpacker = LayerUnpacker::new(root);
+        for layer in &manifest.layers {
+            let media_type =
+                layer
+                    .media_type
+                    .as_deref()
+                    .ok_or_else(|| Error::MissingMediaType {
+                        digest: layer.digest.clone(),
+                    })?;
+            let mut source = DigestReader::new(session.blob(&layer.digest)?);
+            unpacker.apply(&mut source, media_type)?;
+            // A tar reader may stop before the compressed trailer; hash the rest too.
+            io::copy(&mut source, &mut io::sink())
+                .map_err(|source_err| Error::io("drain", root, source_err))?;
+            let actual = source.digest();
+            if actual != layer.digest {
+                return Err(Error::DigestMismatch {
+                    subject: format!("layer {}", layer.digest),
+                    expected: layer.digest.clone(),
+                    actual,
+                });
+            }
+        }
+        Ok(())
+    }
+}
+
+impl BaseImageBuilder for OciPuller {
+    fn pull(&self, reference: &ImageReference) -> Result<PulledImage> {
+        OciPuller::pull(self, reference)
+    }
+}

@@ -36,7 +36,7 @@ pub struct ForkPaths {
 ///
 /// Every method is absolute-path in, typed error out: the adapter never reads the environment and
 /// never caches a mount point.
-pub trait WorldEngine {
+pub trait WorldEngine: Send + Sync {
     /// Creates `<mount>/.slipfork-store/{images,worlds}` when missing.
     fn ensure_store(&self) -> Result<()>;
 
@@ -48,6 +48,9 @@ pub trait WorldEngine {
 
     /// CoW-clones the project and world data subvolumes in under 50ms.
     fn fork(&self, project: &Path, world: &WorldName, fork: &ForkName) -> Result<ForkPaths>;
+
+    /// Creates a fresh read-write subvolume at `path` (parent directory must exist).
+    fn create_subvolume(&self, path: &Path) -> Result<()>;
 
     /// Seals a subvolume read-only with `BTRFS_SUBVOL_RDONLY`.
     fn seal(&self, subvolume: &Path) -> Result<()>;

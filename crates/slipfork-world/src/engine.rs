@@ -187,6 +187,10 @@ impl WorldEngine for BtrfsEngine {
         Ok(path)
     }
 
+    fn create_subvolume(&self, path: &Path) -> Result<()> {
+        BtrfsEngine::create_subvolume(path)
+    }
+
     fn fork(&self, project: &Path, world: &WorldName, fork: &ForkName) -> Result<ForkPaths> {
         self.ensure_store()?;
         // Probe only: the project must already be a converted subvolume.
