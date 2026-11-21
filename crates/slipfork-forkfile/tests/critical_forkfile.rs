@@ -3,7 +3,9 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use slipfork_forkfile::{boot_plan, check, format_check, migrate, parse};
+use slipfork_forkfile::{
+    BucketPolicy, DnsLabel, SecretValue, boot_plan, check, format_check, migrate, parse,
+};
 
 const SNOW: &str = r#"images:
   - id: backend
@@ -185,6 +187,111 @@ fn duplicate_routes_in_one_branch_are_rejected() {
             .any(|d| d.message.contains("duplicate `route`")),
         "{diags:?}"
     );
+}
+
+#[test]
+fn cdn_requires_explicit_public_read_with_a_caret_and_remedy() {
+    let source = "# forkfile: 0.1\n\ns3 assets { cdn static-cdn }\n";
+    let (_, diags) = check(&parse(source).expect("parses")).expect_err("cdn needs public-read");
+    let rendered = diags.render(source);
+    let expected = "Forkfile:3:13\ns3 assets { cdn static-cdn }\n            ^\n'cdn static-cdn' inside 's3 assets' requires 'policy public-read'\nnext: add 'policy public-read' inside 's3 assets' to enable 'cdn static-cdn'";
+    assert_eq!(rendered, expected);
+
+    let guarded = "# forkfile: 0.1\n\nfeatures {\n  dev\n}\n\ns3 assets {\n  on dev: policy public-read\n  on dev: cdn static-cdn\n}\n";
+    check(&parse(guarded).expect("parses")).expect("a branch policy legitimises its cdn");
+
+    let unselected = "# forkfile: 0.1\n\nfeatures {\n  dev\n  staging\n}\n\ns3 assets {\n  on staging: policy public-read\n  cdn static-cdn\n}\n";
+    let (_, diags) = check(&parse(unselected).expect("parses")).expect_err("unselected policy");
+    assert!(
+        diags
+            .items
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("requires 'policy public-read'")),
+        "{diags:?}"
+    );
+
+    let mut features = String::from("# forkfile: 0.1\n\nfeatures {\n");
+    for index in 1..=13 {
+        features.push_str(&format!("  f{index}\n"));
+    }
+    features.push_str("}\n\ns3 assets {\n  on f1: cdn static-cdn\n}\n");
+    let (_, diags) = check(&parse(&features).expect("parses")).expect_err("13-feature branch");
+    assert!(
+        diags
+            .items
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("requires 'policy public-read'")),
+        "{diags:?}"
+    );
+}
+
+#[test]
+fn policy_parses_formats_canonically_and_round_trips() {
+    let source = "# forkfile: 0.1\n\ns3 assets {\n  cdn static-cdn\n  policy public-read\n}\n";
+    let document = parse(source).expect("parses");
+    let formatted = slipfork_forkfile::format(&document);
+    let expected = "# forkfile: 0.1\ns3 assets {\n  policy public-read\n  cdn static-cdn\n}\n";
+    assert_eq!(formatted, expected);
+    let reparsed = parse(&formatted).expect("reparses");
+    assert_eq!(slipfork_forkfile::format(&reparsed), formatted);
+    let bucket = match &reparsed.items.items[0] {
+        slipfork_forkfile::TopItem::S3(bucket) => bucket,
+        _ => panic!("expected an s3 bucket"),
+    };
+    assert_eq!(
+        bucket.policy_at(&std::collections::BTreeSet::new()),
+        BucketPolicy::PublicRead
+    );
+}
+
+#[test]
+fn rfc1123_authorities_fail_closed_at_the_compiler() {
+    for source in [
+        "# forkfile: 0.1\n\ndomain bad_name\n",
+        "# forkfile: 0.1\n\ndomain -cdn\n",
+        "# forkfile: 0.1\n\ndomain cdn-\n",
+        "# forkfile: 0.1\n\ns3 ab\n",
+        "# forkfile: 0.1\n\ns3 1.2.3.4\n",
+        "# forkfile: 0.1\n\ns3 assets {\n  policy public-read\n  cdn bad_name\n}\n",
+    ] {
+        let parsed = parse(source);
+        let refused = match parsed {
+            Err(_) => true,
+            Ok(document) => check(&document).is_err(),
+        };
+        assert!(refused, "must reject:\n{source}");
+    }
+    assert!(DnsLabel::new("static-cdn").is_ok());
+    assert!(DnsLabel::bucket("1.2.3.4").is_err());
+}
+
+#[test]
+fn secret_values_redact_and_bucket_taint_follows_policy() {
+    let secret = SecretValue::new("hunter2");
+    assert_eq!(format!("{secret:?}"), "[REDACTED]");
+    assert_eq!(secret.to_string(), "[REDACTED]");
+    assert_eq!(secret.expose_secret(), "hunter2");
+
+    let private = parse(
+        "# forkfile: 0.1\n\ns3 uploads\n\nenv common {\n  URL = uploads.url\n  KEY = uploads.secret_key\n  ACCESS = uploads.access_key\n  ENDPOINT = uploads.endpoint\n}\n",
+    )
+    .expect("parses");
+    let env = private.eval_all_env("demo", &|_, _| None, &|_| None);
+    assert!(
+        env["common"]["URL"].1,
+        "private bucket url is secret-tainted"
+    );
+    assert!(env["common"]["KEY"].1, "secret_key is always tainted");
+    assert!(!env["common"]["ACCESS"].1, "access_key is non-secret");
+    assert!(!env["common"]["ENDPOINT"].1, "endpoint is non-secret");
+    assert_eq!(env["common"]["URL"].0, "http://uploads.demo.localhost");
+
+    let public = parse(
+        "# forkfile: 0.1\n\ns3 uploads { policy public-read }\n\nenv common {\n  URL = uploads.url\n}\n",
+    )
+    .expect("parses");
+    let env = public.eval_all_env("demo", &|_, _| None, &|_| None);
+    assert!(!env["common"]["URL"].1, "public-read url is non-secret");
 }
 
 #[test]

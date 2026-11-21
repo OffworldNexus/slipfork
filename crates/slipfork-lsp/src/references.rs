@@ -34,6 +34,15 @@ pub struct ToolSite {
     pub name: String,
 }
 
+/// One `policy <private|public-read>` declaration.
+#[derive(Debug, Clone)]
+pub struct PolicySite {
+    /// The `policy` keyword.
+    pub range: Range,
+    /// The declared bucket policy.
+    pub policy: slipfork_forkfile::BucketPolicy,
+}
+
 /// A `$env.KEY`, `var(KEY)`, or `secret(KEY)` site.
 #[derive(Debug, Clone)]
 pub struct EnvRefSite {
@@ -48,6 +57,7 @@ pub(crate) struct Collected {
     pub references: Vec<SymbolRef>,
     pub properties: Vec<PropertySite>,
     pub tools: Vec<ToolSite>,
+    pub policies: Vec<PolicySite>,
     pub env_refs: Vec<EnvRefSite>,
 }
 
@@ -152,6 +162,10 @@ fn redis_item(item: &RedisItem, text: &TextDocument, out: &mut Collected) {
 
 fn s3_item(item: &S3Item, text: &TextDocument, out: &mut Collected) {
     match item {
+        S3Item::Policy(decl) => out.policies.push(PolicySite {
+            range: text.range(decl.span),
+            policy: decl.policy,
+        }),
         S3Item::Cdn(_) => {}
         S3Item::On(on_item) => walk_on(&on_item.cond, &on_item.body, s3_item, text, out),
     }

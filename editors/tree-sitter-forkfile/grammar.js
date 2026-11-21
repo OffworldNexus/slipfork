@@ -168,7 +168,11 @@ module.exports = grammar({
       field('bucket', $.identifier),
       optional(seq('{', repeat($._s3_item), '}')),
     ),
-    _s3_item: $ => choice($.cdn_declaration, $.on_s3_item),
+    _s3_item: $ => choice($.policy_declaration, $.cdn_declaration, $.on_s3_item),
+    policy_declaration: $ => seq(
+      'policy',
+      field('policy', choice('private', 'public-read')),
+    ),
     cdn_declaration: $ => seq('cdn', field('id', $.identifier)),
 
     version_declaration: $ => seq('version', $._version),

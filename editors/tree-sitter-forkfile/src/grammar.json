@@ -1194,11 +1194,41 @@
       "members": [
         {
           "type": "SYMBOL",
+          "name": "policy_declaration"
+        },
+        {
+          "type": "SYMBOL",
           "name": "cdn_declaration"
         },
         {
           "type": "SYMBOL",
           "name": "on_s3_item"
+        }
+      ]
+    },
+    "policy_declaration": {
+      "type": "SEQ",
+      "members": [
+        {
+          "type": "STRING",
+          "value": "policy"
+        },
+        {
+          "type": "FIELD",
+          "name": "policy",
+          "content": {
+            "type": "CHOICE",
+            "members": [
+              {
+                "type": "STRING",
+                "value": "private"
+              },
+              {
+                "type": "STRING",
+                "value": "public-read"
+              }
+            ]
+          }
         }
       ]
     },

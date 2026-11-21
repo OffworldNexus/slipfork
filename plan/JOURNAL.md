@@ -2578,3 +2578,25 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-21T19:41 ESCALATION #31 -> architect for M3.43 by lead: owner-mandated spec overhaul: clap+frozen-pane indicatif TUI, explicit s3 policy + native Btrfs S3, speed-of-light PG/Re
 - 2026-11-21T20:06 [M3.43] (lead) status active -> review
 - 2026-11-21T20:15 [M3.43] (lead) status review -> done
+- 2026-11-21T20:15 [M3.44] (lead) status ready -> active
+- 2026-11-21T20:16 [M3.44] (lead) attempt 1/3 started
+- 2026-11-21T20:16 [M3.44] (lead) base 6dcb82098b12fb832cee4833c25ab96eab306cb3
+- 2026-11-21T20:17 [M3.44.1] (planner) created (task) probe
+- 2026-11-21T20:17 [M3.44.1] (planner) created (task) Forkfile s3 policy/cdn surface, RFC 1123 DnsLabel & static-cdn purge
+- 2026-11-21T20:17 [M3.44.2] (planner) created (task) Delete SeaweedFS, native Rust Btrfs S3 server with SigV4 & per-bucket policy
+- 2026-11-21T20:17 [M3.44.3] (planner) created (task) Golden postgres-18 template + <1ms PGDATA CoW clone, Redis AOF clone, 2ms readiness polls
+- 2026-11-21T20:17 [M3.44.4] (planner) created (task) Reactive tokio boot DAG, per-node elapsed, world_epoch stamp & zero-rebuild <500ms fork
+- 2026-11-21T20:17 [M3.44.5] (planner) created (task) clap 4.6 derive CLI: completions, manpage, logs -a/--all, UiMode & --json schemas
+- 2026-11-21T20:17 [M3.44.6] (planner) created (task) Frozen-bottom-pane indicatif MultiProgress TUI with PTY/NO_COLOR/TERM=dumb/--json gates
+- 2026-11-21T20:17 [M3.44.1] (lead) status ready -> active
+- 2026-11-21T20:17 [M3.44.1] (lead) attempt 1/3 started
+- 2026-11-21T20:17 [M3.44.1] (lead) base 6dcb82098b12fb832cee4833c25ab96eab306cb3
+- 2026-11-21T20:21 [M3.44.1] (lead) status active -> review
+- 2026-11-21T20:23 [M3.44.5] (lead) edited fields
+- 2026-11-21T20:25 [M3.44.1] (lead) edited fields
+- 2026-11-21T20:25 [M3.44.1] (lead) edited fields
+- 2026-11-21T20:27 [M3.44.1] (lead) edited fields
+- 2026-11-21T20:27 [M3.44.5] (lead) edited fields
+- 2026-11-21T20:27 [M3.44.2] (lead) edited fields
+- 2026-11-21T20:27 [M3.44.1] (lead) accepted after 1 fix pass; deferred to M3.44.5: split crates/slipfork-forkfile/src/fmt.rs (496/500) into fmt/ submodule and route symbols/eval cdn collectors th
+- 2026-11-21T20:27 [M3.44.1] (lead) status review -> done

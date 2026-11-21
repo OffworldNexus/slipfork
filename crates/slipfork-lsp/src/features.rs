@@ -1,8 +1,10 @@
 //! Definition, hover, and formatting responses.
 
 use serde_json::{Value, json};
+use slipfork_forkfile::BucketPolicy;
 use slipfork_forkfile::SymbolKind;
 use slipfork_forkfile::boot::PrequelTool;
+use slipfork_forkfile::secret_property;
 
 use crate::document::Analysis;
 use crate::references::PropertySite;
@@ -49,6 +51,16 @@ pub fn hover(analysis: &Analysis, position: Position) -> Value {
         return json!({
             "contents": { "kind": "markdown", "value": tool_hover(&tool.name) },
             "range": tool.range.to_value(),
+        });
+    }
+    if let Some(site) = analysis
+        .policies
+        .iter()
+        .find(|site| site.range.contains(position))
+    {
+        return json!({
+            "contents": { "kind": "markdown", "value": policy_hover(site.policy) },
+            "range": site.range.to_value(),
         });
     }
     if let Some(site) = analysis
@@ -110,13 +122,24 @@ fn tool_hover(name: &str) -> String {
     }
 }
 
+fn policy_hover(policy: BucketPolicy) -> String {
+    match policy {
+        BucketPolicy::Private => "**`policy private`** · the default: anonymous `GET`/`HEAD` answer `403`.\n\n`cdn <id>` requires `policy public-read`.".to_owned(),
+        BucketPolicy::PublicRead => "**`policy public-read`** · anonymous `GET`/`HEAD` answer `200`; writes still require SigV4.\n\n`policy private` is the default; `cdn <id>` requires this policy.".to_owned(),
+    }
+}
+
 fn property_hover(analysis: &Analysis, site: &PropertySite) -> String {
     let kind = analysis.symbols.get(&site.base).map(|symbol| symbol.kind);
     let label = kind.map_or("resource", SymbolKind::label);
     let value_type = kind
         .and_then(|kind| kind.property_type(&site.property))
         .unwrap_or("string");
-    let visibility = if kind.is_some_and(|kind| kind.is_secret_property(&site.property)) {
+    let visibility = if analysis
+        .symbols
+        .get(&site.base)
+        .is_some_and(|symbol| secret_property(symbol.kind, symbol.policy, &site.property))
+    {
         "Secret-tainted — redacted in logs and CLI output"
     } else {
         "Non-secret"

@@ -72,7 +72,7 @@ fn mode(kind: &RouteKind) -> PsRouteMode {
 fn domain(filter: &DomainFilter) -> PsDomain {
     match filter {
         DomainFilter::Domain { name, .. } => PsDomain::Domain(name.clone()),
-        DomainFilter::Prefix(prefix) => PsDomain::Prefix(prefix.clone()),
+        DomainFilter::Prefix { prefix, .. } => PsDomain::Prefix(prefix.clone()),
     }
 }
 

@@ -248,7 +248,10 @@ fn duplicate_route_modifier(span: Span) -> Diagnostic {
 
 fn parse_domain_filter(word: &str, span: Span) -> Result<DomainFilter, Diagnostic> {
     match word.strip_suffix(".*") {
-        Some(prefix) if !prefix.is_empty() => Ok(DomainFilter::Prefix(prefix.to_string())),
+        Some(prefix) if !prefix.is_empty() => Ok(DomainFilter::Prefix {
+            prefix: prefix.to_string(),
+            span,
+        }),
         Some(_) => Err(Diagnostic::new(
             span,
             "empty domain prefix",

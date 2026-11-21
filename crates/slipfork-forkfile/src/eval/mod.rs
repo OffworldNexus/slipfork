@@ -21,6 +21,12 @@ pub struct FeatureSet {
 }
 
 impl FeatureSet {
+    /// The active feature names.
+    #[must_use]
+    pub fn active(&self) -> &BTreeSet<String> {
+        &self.active
+    }
+
     /// Evaluates an `on <cond>` expression; when no `features` block exists, bare features pass.
     #[must_use]
     pub fn matches(&self, cond: &Expr) -> bool {
@@ -118,7 +124,7 @@ impl Forkfile {
                     &|k| secret_lookup(group, k),
                     var_lookup,
                 ) {
-                    map.insert(key.clone(), (val, is_tainted(expr)));
+                    map.insert(key.clone(), (val, is_tainted(expr, &symbols)));
                 }
             }
             out.insert(group.clone(), map);
@@ -335,7 +341,7 @@ impl EnvEval<'_> {
                 self.var_lookup,
             );
             if let Some(val) = resolved {
-                map.insert(key.clone(), (val, is_tainted(expr)));
+                map.insert(key.clone(), (val, is_tainted(expr, self.symbols)));
             }
         }
         map
@@ -422,6 +428,7 @@ fn collect_symbols(
                 s3.bucket.clone(),
                 BoundSymbol::S3 {
                     bucket: s3.bucket.clone(),
+                    policy: s3.policy_at(features.active()),
                 },
             );
             collect_s3_cdns(&s3.body.items, features, map);
@@ -469,7 +476,7 @@ fn collect_s3_cdns(
                 }
                 OnBody::Block(block) => collect_s3_cdns(&block.items, features, map),
             },
-            S3Item::On(_) => {}
+            S3Item::On(_) | S3Item::Policy(_) => {}
         }
     }
 }

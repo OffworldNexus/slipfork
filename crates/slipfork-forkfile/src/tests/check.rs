@@ -7,7 +7,7 @@ fn spec_sample_typechecks_and_resolves_cdn_properties() {
     assert!(
         checked
             .symbols
-            .get("static_cdn")
+            .get("static-cdn")
             .is_some_and(|symbol| symbol.kind == crate::check::SymbolKind::Cdn)
     );
     assert!(

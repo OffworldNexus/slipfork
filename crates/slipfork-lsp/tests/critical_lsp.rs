@@ -14,6 +14,8 @@ const FORMAT_SOURCE: &str =
     "# forkfile: 0.1\n\nimage app . {\nservice web {\nport 8080\nrun: @uv run main.py\n}\n}\n";
 const HOVER_URI: &str = "file:///lab/Hover.Forkfile";
 const HOVER_SOURCE: &str = "# forkfile: 0.1\ndomain mail\npostgres pg {\n  database db\n}\nimage app . {\n  arg BUILD_DOMAIN = mail.domain\n  env {\n    GREETING = \"hello\"\n    DB_PASSWORD = db.password\n  }\n  service web {\n    port 8080\n    run: @uv run main.py\n    before-start: echo $env.GREETING\n  }\n}\n";
+const POLICY_URI: &str = "file:///lab/Policy.Forkfile";
+const POLICY_SOURCE: &str = "# forkfile: 0.1\n\ns3 uploads\ns3 assets { policy public-read }\n\nenv common {\n  PRIVATE_URL = uploads.url\n  PUBLIC_URL = assets.url\n  SECRET = uploads.secret_key\n}\n";
 
 struct Client {
     child: Child,
@@ -275,6 +277,45 @@ fn live_stdio_journey_publishes_diagnostics_hover_definition_and_formatting() {
         }),
     );
     assert_eq!(env_definition[0]["range"]["start"]["line"], json!(8));
+
+    client.notify(
+        "textDocument/didOpen",
+        json!({
+            "textDocument": { "uri": POLICY_URI, "languageId": "forkfile", "version": 1, "text": POLICY_SOURCE },
+        }),
+    );
+    let diagnostics = client.notification("textDocument/publishDiagnostics");
+    assert_eq!(diagnostics["diagnostics"], json!([]));
+
+    let policy = client.request(
+        "textDocument/hover",
+        json!({
+            "textDocument": { "uri": POLICY_URI },
+            "position": position_of(POLICY_SOURCE, "policy", 0),
+        }),
+    );
+    let contents = policy["contents"]["value"].as_str().expect("policy hover");
+    assert!(contents.contains("private"), "{contents}");
+    assert!(contents.contains("public-read"), "{contents}");
+    assert!(contents.contains("cdn"), "{contents}");
+
+    for (needle, expected) in [
+        ("uploads.url", "Secret-tainted"),
+        ("assets.url", "Non-secret"),
+        ("uploads.secret_key", "Secret-tainted"),
+    ] {
+        let hover = client.request(
+            "textDocument/hover",
+            json!({
+                "textDocument": { "uri": POLICY_URI },
+                "position": position_of(POLICY_SOURCE, needle, 0),
+            }),
+        );
+        let contents = hover["contents"]["value"]
+            .as_str()
+            .unwrap_or_else(|| panic!("hover for {needle}"));
+        assert!(contents.contains(expected), "{needle}: {contents}");
+    }
 
     client.notify(
         "textDocument/didClose",

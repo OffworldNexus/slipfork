@@ -1148,6 +1148,10 @@
         {
           "type": "on_s3_item",
           "named": true
+        },
+        {
+          "type": "policy_declaration",
+          "named": true
         }
       ]
     }
@@ -1326,6 +1330,26 @@
           "named": true
         }
       ]
+    }
+  },
+  {
+    "type": "policy_declaration",
+    "named": true,
+    "fields": {
+      "policy": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "private",
+            "named": false
+          },
+          {
+            "type": "public-read",
+            "named": false
+          }
+        ]
+      }
     }
   },
   {
@@ -1510,6 +1534,10 @@
         },
         {
           "type": "on_s3_item",
+          "named": true
+        },
+        {
+          "type": "policy_declaration",
           "named": true
         }
       ]
@@ -1883,6 +1911,10 @@
     "named": true
   },
   {
+    "type": "policy",
+    "named": false
+  },
+  {
     "type": "port",
     "named": false
   },
@@ -1900,6 +1932,14 @@
   },
   {
     "type": "pre-deploy",
+    "named": false
+  },
+  {
+    "type": "private",
+    "named": false
+  },
+  {
+    "type": "public-read",
     "named": false
   },
   {

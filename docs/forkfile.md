@@ -16,13 +16,16 @@ domain main
 postgres pg { database app_db }
 redis cache
 s3 uploads
-s3 assets { cdn static_cdn }
+s3 assets {
+  policy public-read
+  cdn static-cdn
+}
 
 env common {
   DATABASE_URL         = app_db.url
   REDIS_URL            = cache.url
   UPLOADS_URL          = uploads.url
-  AWS_S3_CUSTOM_DOMAIN = static_cdn.domain
+  AWS_S3_CUSTOM_DOMAIN = static-cdn.domain
   SECRET_KEY           = secret(SECRET_KEY) ?? random_hex(32)
 }
 
@@ -81,17 +84,25 @@ Top-level resources and named child resources share one flat, globally unique sy
 | `postgres pg { database app_db }` | PostgreSQL 18 (`version` optional) | `app_db.url`, `.host`, `.port`, `.name`, `.user`, `.password` |
 | `redis cache` | Redis 7 (`version` optional) | `cache.url`, `.host`, `.port` |
 | `s3 uploads` | Private: anonymous `GET` answers `403` | `uploads.url`, `.endpoint`, `.bucket`, `.access_key`, `.secret_key` |
-| `s3 assets { cdn static_cdn }` | `public-read` bucket plus a CDN | bucket properties + `static_cdn.domain`, `.url` |
+| <code>s3 assets {<br>  policy public-read<br>  cdn static-cdn<br>}</code> | `public-read` bucket plus a CDN | bucket properties + `static-cdn.domain`, `.url` |
 | `domain main` | Primary `<world>.localhost` | `main.domain`, `main.url` |
 
-A plain `s3` bucket mirrors a private cloud bucket. Adding `cdn <id>` switches it to `public-read`
-and serves `http://static_cdn.<world>.localhost`, like cloud Spaces.
+A plain `s3` bucket is `policy private` by default: anonymous `GET`/`HEAD` answer `403`.
+
+!!! warning "`cdn` never silently publicizes a bucket"
+    `cdn <id>` requires an explicit `policy public-read` inside the same `s3`; otherwise the file fails at `Forkfile:line:col`, and `http://static-cdn.<world>.localhost` stays unused.
+
+Any `domain`, `cdn`, bucket, or `route ... domain <prefix>.*` label outside RFC 1123 (`1..=63`, lowercase `[a-z0-9-]`, alphanumeric edges; buckets `3..=63` and never IPv4-shaped) fails statically.
 
 ## Runtime `env` and secrets
 
 `env` is strictly runtime: it reaches services and lifecycle hooks, never a `Dockerfile` build.
 
 ```forkfile
+# forkfile: 0.1
+
+domain main
+
 env common {
   PUBLIC_URL = main.url
   SECRET_KEY = secret(SECRET_KEY) ?? random_hex(32)
@@ -120,15 +131,19 @@ A `service` declares one public `port`, exposed as `$port` and injected as `PORT
 fails statically.
 
 ```forkfile
-service api {
-  port 8000
-  internal_ports [8081]
-  route exact /healthz
-  before-start when changed(prisma/schema.prisma): @pnpm exec prisma generate
-  pre-deploy: @uv run alembic upgrade head
-  run {
-    uv run python -m app.migrate
-    uv run gunicorn app.main:app -b 0.0.0.0:$port
+# forkfile: 0.1
+
+image backend . {
+  service api {
+    port 8000
+    internal_ports [8081]
+    route exact /healthz
+    before-start when changed(prisma/schema.prisma): @pnpm exec prisma generate
+    pre-deploy: @uv run alembic upgrade head
+    run {
+      uv run python -m app.migrate
+      uv run gunicorn app.main:app -b 0.0.0.0:$port
+    }
   }
 }
 ```

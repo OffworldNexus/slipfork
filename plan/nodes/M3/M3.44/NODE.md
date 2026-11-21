@@ -2,7 +2,7 @@
 id: M3.44
 title: "Implement clap + frozen-pane indicatif TUI, explicit s3 policy + native Btrfs S3, fast PG/Redis & reactive <500ms fork"
 kind: epic
-status: ready
+status: active
 priority: 3
 depends_on: [M3.43]
 paths:
@@ -20,11 +20,11 @@ paths:
   - "packaging/**"
   - "scripts/**"
   - "tools/**"
-attempts: 0
+attempts: 1
 max_attempts: 3
 escalation: none
 created: "2026-11-21T19:40"
-updated: "2026-11-21T19:40"
+updated: "2026-11-21T20:16"
 ---
 
 # Goal

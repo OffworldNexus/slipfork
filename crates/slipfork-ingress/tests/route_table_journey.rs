@@ -153,7 +153,13 @@ fn the_registry_dispatches_primary_domains_and_forks_over_localhost() {
                 IngressRoute::new(81, domain_route("/", declared("main"))),
                 IngressRoute::new(
                     82,
-                    domain_route("/", DomainFilter::Prefix("mail".to_owned())),
+                    domain_route(
+                        "/",
+                        DomainFilter::Prefix {
+                            prefix: "mail".to_owned(),
+                            span: Span::at(Position::new(1, 1, 0)),
+                        },
+                    ),
                 ),
             ],
         )
@@ -215,16 +221,19 @@ fn the_registry_dispatches_primary_domains_and_forks_over_localhost() {
     ));
 }
 
-/// `s3 uploads` stays private while `s3 assets { cdn static_cdn }` publishes its CDN authority, and
-/// the compiler-owned symbol table hands back the matching `.domain`/`.url` values.
+/// `s3 uploads` stays private while `s3 assets { policy public-read; cdn static-cdn }` publishes its
+/// CDN authority, and the compiler-owned symbol table hands back the matching `.domain`/`.url` values.
 const MULTI_S3: &str = r#"# forkfile: 0.1
 env common {
-  CDN_DOMAIN = static_cdn.domain
-  CDN_URL = static_cdn.url
+  CDN_DOMAIN = static-cdn.domain
+  CDN_URL = static-cdn.url
 }
 
 s3 uploads
-s3 assets { cdn static_cdn }
+s3 assets {
+  policy public-read
+  cdn static-cdn
+}
 
 image app . {
   dockerfile Dockerfile
@@ -251,8 +260,8 @@ fn s3_buckets_and_cdn_authorities_rewrite_to_seaweedfs() {
     assert_eq!(private.target, "/uploads/notes/a.txt");
 
     let cdn = table
-        .resolve("static_cdn", "/logo.png")
-        .expect("`cdn static_cdn` mounts its own authority");
+        .resolve("static-cdn", "/logo.png")
+        .expect("`cdn static-cdn` mounts its own authority");
     assert_eq!(cdn.port, 8333);
     assert_eq!(cdn.target, "/assets/logo.png");
 
@@ -263,6 +272,6 @@ fn s3_buckets_and_cdn_authorities_rewrite_to_seaweedfs() {
 
     let env = doc.eval_all_env("demo", &|_, _| None, &|_| None);
     let common = env.get("common").expect("`env common` was visited");
-    assert_eq!(common["CDN_DOMAIN"].0, "static_cdn.demo.localhost");
-    assert_eq!(common["CDN_URL"].0, "http://static_cdn.demo.localhost");
+    assert_eq!(common["CDN_DOMAIN"].0, "static-cdn.demo.localhost");
+    assert_eq!(common["CDN_URL"].0, "http://static-cdn.demo.localhost");
 }

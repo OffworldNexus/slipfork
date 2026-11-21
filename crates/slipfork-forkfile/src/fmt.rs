@@ -172,7 +172,7 @@ fn render_top(renderer: &mut Renderer, item: &TopItem) {
                 renderer.line(&format!("s3 {}", s3.bucket));
             } else {
                 renderer.line(&format!("s3 {} {{", s3.bucket));
-                renderer.indented(|renderer| render_block(renderer, &s3.body, render_s3_item));
+                renderer.indented(|renderer| render_s3_body(renderer, &s3.body));
                 renderer.line("}");
             }
         }
@@ -299,7 +299,7 @@ fn render_route(renderer: &mut Renderer, route: &Route) {
             line.push_str(" domain ");
             line.push_str(domain);
         }
-        Some(DomainFilter::Prefix(prefix)) => {
+        Some(DomainFilter::Prefix { prefix, .. }) => {
             line.push_str(" domain ");
             line.push_str(prefix);
             line.push_str(".*");
@@ -337,8 +337,21 @@ fn render_redis_item(renderer: &mut Renderer, item: &RedisItem) {
     }
 }
 
+fn render_s3_body(renderer: &mut Renderer, body: &Block<S3Item>) {
+    if body.comments.is_empty() {
+        let mut ordered: Vec<&S3Item> = body.items.iter().collect();
+        ordered.sort_by_key(|item: &&S3Item| !matches!(**item, S3Item::Policy(_)));
+        for item in ordered {
+            render_s3_item(renderer, item);
+        }
+    } else {
+        render_block(renderer, body, render_s3_item);
+    }
+}
+
 fn render_s3_item(renderer: &mut Renderer, item: &S3Item) {
     match item {
+        S3Item::Policy(decl) => renderer.line(&format!("policy {}", decl.policy.keyword())),
         S3Item::Cdn(cdn) => renderer.line(&format!("cdn {}", cdn.id)),
         S3Item::On(on) => render_on(renderer, on, render_s3_item),
     }

@@ -299,14 +299,21 @@ pub enum DomainFilter {
         span: Span,
     },
     /// Subdomain prefix such as `mail.` in `mail.*`.
-    Prefix(String),
+    Prefix {
+        /// The validated prefix text.
+        prefix: String,
+        /// The prefix token span in the `route` declaration.
+        span: Span,
+    },
 }
 
 impl PartialEq for DomainFilter {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
             (Self::Domain { name: left, .. }, Self::Domain { name: right, .. }) => left == right,
-            (Self::Prefix(left), Self::Prefix(right)) => left == right,
+            (Self::Prefix { prefix: left, .. }, Self::Prefix { prefix: right, .. }) => {
+                left == right
+            }
             _ => false,
         }
     }

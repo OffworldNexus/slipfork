@@ -109,7 +109,7 @@ fn authorities_for(
             }
             Ok(vec![name.clone()])
         }
-        Some(DomainFilter::Prefix(prefix)) => Ok(vec![prefix.clone()]),
+        Some(DomainFilter::Prefix { prefix, .. }) => Ok(vec![prefix.clone()]),
     }
 }
 

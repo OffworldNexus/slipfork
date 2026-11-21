@@ -166,8 +166,10 @@ impl<'a> Parser<'a> {
     }
 
     pub(crate) fn parse_s3(&mut self, span: Span) -> Result<S3, Diagnostic> {
-        let (bucket, id_span) =
-            self.expect_ident_spanned("a bucket name", "write `s3 <bucket> { cdn <id> }`")?;
+        let (bucket, id_span) = self.expect_ident_spanned(
+            "a bucket name",
+            "write `s3 <bucket> { policy public-read; cdn <id> }`",
+        )?;
         let body = self.parse_optional_block(|parser| parser.parse_s3_item())?;
         Ok(S3 {
             bucket,
@@ -185,13 +187,14 @@ impl<'a> Parser<'a> {
                 return Err(Diagnostic::new(
                     token.span,
                     format!("expected an s3 property, found {}", other.describe()),
-                    "use `cdn <id>` or `on <expr>`",
+                    "use `policy private|public-read`, `cdn <id>`, or `on <expr>`",
                 ));
             }
         };
         match name.as_str() {
+            "policy" => self.parse_bucket_policy(token.span).map(S3Item::Policy),
             "cdn" => {
-                let span = self.current_span()?;
+                let span = token.span;
                 self.expect_ident_spanned("a cdn id", "write `cdn <id>`")
                     .map(|(id, id_span)| S3Item::Cdn(CdnDecl { id, id_span, span }))
             }
@@ -201,9 +204,31 @@ impl<'a> Parser<'a> {
             other => Err(Diagnostic::new(
                 token.span,
                 format!("unknown s3 property `{other}`"),
-                "use `cdn <id>` or `on <expr>`",
+                "use `policy private|public-read`, `cdn <id>`, or `on <expr>`",
             )),
         }
+    }
+
+    fn parse_bucket_policy(&mut self, span: Span) -> Result<PolicyDecl, Diagnostic> {
+        let token = self.bump()?;
+        let keyword = match token.kind {
+            TokenKind::Ident(keyword) => keyword,
+            other => {
+                return Err(Diagnostic::new(
+                    token.span,
+                    format!("expected a bucket policy, found {}", other.describe()),
+                    "use `policy private` or `policy public-read`",
+                ));
+            }
+        };
+        let policy = BucketPolicy::parse(&keyword).ok_or_else(|| {
+            Diagnostic::new(
+                token.span,
+                format!("unknown bucket policy `{keyword}`"),
+                "use `policy private` or `policy public-read`",
+            )
+        })?;
+        Ok(PolicyDecl { policy, span })
     }
 
     fn parse_version(&mut self) -> Result<String, Diagnostic> {

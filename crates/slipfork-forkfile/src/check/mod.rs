@@ -2,6 +2,7 @@
 //! secret rejection, and route/port rules over one flat symbol namespace.
 
 mod expr;
+mod policy;
 mod services;
 mod symbols;
 
@@ -204,7 +205,8 @@ impl Checker {
         env_groups: &BTreeSet<String>,
     ) {
         match item {
-            TopItem::Features(_) | TopItem::Domain(_) => {}
+            TopItem::Features(_) => {}
+            TopItem::Domain(domain) => policy::check_domain(domain, &mut self.diags),
             TopItem::Image(image) => {
                 for item in &image.body.items {
                     self.check_image_item(item, symbols, features, env_groups, image.span);
@@ -227,7 +229,7 @@ impl Checker {
                 self.check_postgres_items(&postgres.body.items, features);
             }
             TopItem::Redis(redis) => self.check_redis_items(&redis.body.items, features),
-            TopItem::S3(s3) => self.check_s3_items(&s3.body.items, features),
+            TopItem::S3(s3) => policy::check_s3(s3, features, &mut self.diags),
             TopItem::Env(env) => {
                 for item in &env.entries.items {
                     self.check_env_item(item, symbols, features);
@@ -402,20 +404,6 @@ impl Checker {
                         self.check_redis_items(std::slice::from_ref(inner.as_ref()), features);
                     }
                     OnBody::Block(block) => self.check_redis_items(&block.items, features),
-                }
-            }
-        }
-    }
-
-    fn check_s3_items(&mut self, items: &[S3Item], features: &BTreeSet<String>) {
-        for item in items {
-            if let S3Item::On(on) = item {
-                expr::check_condition(&on.cond, features, &mut self.diags);
-                match &on.body {
-                    OnBody::Inline(inner) => {
-                        self.check_s3_items(std::slice::from_ref(inner.as_ref()), features);
-                    }
-                    OnBody::Block(block) => self.check_s3_items(&block.items, features),
                 }
             }
         }

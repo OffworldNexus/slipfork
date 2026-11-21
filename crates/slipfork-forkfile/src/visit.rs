@@ -259,6 +259,7 @@ fn s3_cdns<'a>(items: &'a [S3Item], domains: &mut Vec<&'a str>, cdns: &mut Vec<&
                 }
                 OnBody::Block(block) => s3_cdns(&block.items, domains, cdns),
             },
+            S3Item::Policy(_) => {}
         }
     }
 }

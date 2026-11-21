@@ -1,6 +1,6 @@
 //! The flat, globally unique `Forkfile` symbol namespace and its collectors.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::ast::*;
 use crate::diag::{Diagnostic, Diagnostics};
@@ -69,15 +69,6 @@ impl SymbolKind {
             _ => None,
         }
     }
-
-    /// Whether reading this property yields a secret-tainted value.
-    #[must_use]
-    pub fn is_secret_property(self, property: &str) -> bool {
-        matches!(
-            (self, property),
-            (Self::Postgres | Self::Database, "password") | (Self::S3, "access_key" | "secret_key")
-        )
-    }
 }
 
 /// One declaration in the flat namespace.
@@ -85,6 +76,8 @@ impl SymbolKind {
 pub struct Symbol {
     /// What kind of declaration this is.
     pub kind: SymbolKind,
+    /// The declared `s3` bucket policy; `Private` for every other kind.
+    pub policy: BucketPolicy,
     /// Where the id was declared.
     pub span: Span,
 }
@@ -112,7 +105,14 @@ impl SymbolTable {
                 "rename one declaration so every `postgres`, `database`, `redis`, `s3`, `cdn`, `domain`, `image`, and `service` id stays globally unique",
             ));
         }
-        self.entries.insert(name.to_string(), Symbol { kind, span });
+        self.entries.insert(
+            name.to_string(),
+            Symbol {
+                kind,
+                policy: BucketPolicy::Private,
+                span,
+            },
+        );
         Ok(())
     }
 
@@ -196,6 +196,9 @@ impl SymbolTable {
             }
             TopItem::S3(s3) => {
                 self.record(diagnostics, &s3.bucket, SymbolKind::S3, s3.id_span);
+                if let Some(symbol) = self.entries.get_mut(&s3.bucket) {
+                    symbol.policy = s3.policy_at(&BTreeSet::new());
+                }
                 self.collect_s3_items(&s3.body.items, diagnostics);
             }
         }
@@ -266,6 +269,7 @@ impl SymbolTable {
                     }
                     OnBody::Block(block) => self.collect_s3_items(&block.items, diagnostics),
                 },
+                S3Item::Policy(_) => {}
             }
         }
     }

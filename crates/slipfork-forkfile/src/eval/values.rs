@@ -5,28 +5,53 @@ use std::collections::{BTreeMap, BTreeSet};
 use base64::Engine;
 use sha2::{Digest, Sha256};
 
+use crate::ast::{BucketPolicy, secret_property};
 use crate::check::SymbolKind;
 use crate::expr::{Expr, ExprKind, RandomKind};
 
 /// Symbol metadata needed to evaluate `<base>.<prop>` inside one world.
 #[derive(Debug, Clone)]
 pub(super) enum BoundSymbol {
-    Postgres { first_db: String },
-    Database { name: String },
+    Postgres {
+        first_db: String,
+    },
+    Database {
+        name: String,
+    },
     Redis,
-    S3 { bucket: String },
-    Cdn { id: String },
-    Domain { id: String, primary: bool },
+    S3 {
+        bucket: String,
+        policy: BucketPolicy,
+    },
+    Cdn {
+        id: String,
+    },
+    Domain {
+        id: String,
+        primary: bool,
+    },
 }
 
-pub(super) fn is_tainted(expr: &Expr) -> bool {
+impl BoundSymbol {
+    fn is_secret_property(&self, property: &str) -> bool {
+        match self {
+            Self::S3 { policy, .. } => secret_property(SymbolKind::S3, *policy, property),
+            Self::Postgres { .. } | Self::Database { .. } => {
+                secret_property(SymbolKind::Postgres, BucketPolicy::Private, property)
+            }
+            Self::Redis | Self::Cdn { .. } | Self::Domain { .. } => false,
+        }
+    }
+}
+
+pub(super) fn is_tainted(expr: &Expr, symbols: &BTreeMap<String, BoundSymbol>) -> bool {
     match &expr.kind {
         ExprKind::Secret(_) | ExprKind::Random { .. } => true,
-        ExprKind::Property { prop, .. } => {
-            SymbolKind::Postgres.is_secret_property(prop) || SymbolKind::S3.is_secret_property(prop)
-        }
+        ExprKind::Property { base, prop } => symbols
+            .get(base)
+            .is_some_and(|symbol| symbol.is_secret_property(prop)),
         ExprKind::Fallback(left, right) | ExprKind::Concat(left, right) => {
-            is_tainted(left) || is_tainted(right)
+            is_tainted(left, symbols) || is_tainted(right, symbols)
         }
         _ => false,
     }
@@ -71,7 +96,7 @@ fn eval_property(symbol: &BoundSymbol, prop: &str, world: &str) -> Option<String
             "port" => Some("6379".to_owned()),
             _ => None,
         },
-        BoundSymbol::S3 { bucket } => match prop {
+        BoundSymbol::S3 { bucket, .. } => match prop {
             "url" => Some(format!("http://{bucket}.{world}.localhost")),
             "endpoint" => Some("http://127.0.0.1:8333".to_owned()),
             "bucket" => Some(bucket.clone()),

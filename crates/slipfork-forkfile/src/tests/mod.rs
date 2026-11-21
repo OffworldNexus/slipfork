@@ -16,13 +16,16 @@ domain main
 postgres pg { database app_db }
 redis cache
 s3 uploads
-s3 assets { cdn static_cdn }
+s3 assets {
+  policy public-read
+  cdn static-cdn
+}
 
 env common {
   DATABASE_URL         = app_db.url
   REDIS_URL            = cache.url
   UPLOADS_URL          = uploads.url
-  AWS_S3_CUSTOM_DOMAIN = static_cdn.domain
+  AWS_S3_CUSTOM_DOMAIN = static-cdn.domain
   PUBLIC_URL           = main.url
   SECRET_KEY           = secret(SECRET_KEY) ?? random_hex(32)
   on mail: SMTP_ADDR   = "127.0.0.1:1025"
@@ -47,7 +50,7 @@ on dev: run: @uv run celery -A app.worker worker
 }
 
 image frontend ./front {
-  arg VITE_CDN_URL = static_cdn.url
+  arg VITE_CDN_URL = static-cdn.url
   on dev: stage dev
 
   service front {

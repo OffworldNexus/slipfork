@@ -22,7 +22,7 @@ $ slipfork up
 !!! info "One URL, cloud-identical routes"
 
     `http://acme-shop.localhost` is the front door. `route /api` keeps its prefix, `domain mail`
-    answers on `mail.acme-shop.localhost`, and an `s3` CDN on `static_cdn.acme-shop.localhost`.
+    answers on `mail.acme-shop.localhost`, and an `s3` CDN on `static-cdn.acme-shop.localhost`.
 
 ## Worlds and forks
 

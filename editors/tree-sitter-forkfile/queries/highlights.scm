@@ -32,6 +32,7 @@
   "redis"
   "s3"
   "cdn"
+  "policy"
   "on"
 ] @keyword
 

@@ -19,7 +19,8 @@ postgres db {
 redis cache
 
 s3 assets {
-  cdn static_cdn
+  policy public-read
+  cdn static-cdn
 }
 
 env shared {
@@ -73,6 +74,7 @@ on !dev {
     (identifier))
   (s3
     (identifier)
+    (policy_declaration)
     (cdn_declaration
       (identifier)))
   (env
@@ -157,7 +159,7 @@ Routed properties and inline conditions
 image app . {
   env {
     PUBLIC_DOMAIN = main.domain
-    CDN_URL = static_cdn.url
+    CDN_URL = static-cdn.url
     REDIS_URL = cache.url
   }
   service api {
@@ -208,3 +210,29 @@ image app . {
           (command
             (tool)
             (command_text)))))))
+
+==================
+S3 bucket policies
+==================
+
+# forkfile: 0.1
+
+s3 b { policy private }
+
+s3 assets {
+  on dev {
+    policy public-read
+  }
+}
+---
+
+(source_file
+  (header)
+  (s3
+    (identifier)
+    (policy_declaration))
+  (s3
+    (identifier)
+    (on_s3_item
+      (identifier)
+      (policy_declaration))))

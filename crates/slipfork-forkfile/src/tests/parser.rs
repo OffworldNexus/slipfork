@@ -12,11 +12,11 @@ fn declaration_and_expression_nodes_carry_spans() {
         (3, 4)
     );
     let image = first_image(&doc);
-    assert_eq!(image.span.line(), 25);
+    assert_eq!(image.span.line(), 28);
     let service = first_service(image);
     assert_eq!(
         (service.span.line(), service_routes(service)[0].span.line()),
-        (29, 31)
+        (32, 34)
     );
     let env = doc
         .items
@@ -30,7 +30,7 @@ fn declaration_and_expression_nodes_carry_spans() {
     let EnvItem::Entry(entry) = &env.entries.items[0] else {
         panic!("expected an env entry");
     };
-    assert_eq!((entry.span.line(), entry.value.span.line()), (16, 16));
+    assert_eq!((entry.span.line(), entry.value.span.line()), (19, 19));
 }
 #[test]
 fn missing_header_is_reported_at_line_one() {
@@ -145,16 +145,20 @@ fn route_kinds_strip_prefix_preserve_exact_and_rewrite() {
 
 #[test]
 fn s3_cdn_child_resource_is_parsed() {
-    let source = "# forkfile: 0.1\n\ns3 assets { cdn static_cdn }\n";
+    let source = "# forkfile: 0.1\n\ns3 assets {\n  policy public-read\n  cdn static-cdn\n}\n";
     let doc = parse(source).expect("parses");
     let TopItem::S3(bucket) = &doc.items.items[0] else {
         panic!("expected an s3 bucket");
     };
     assert_eq!(bucket.bucket, "assets");
-    let Some(S3Item::Cdn(cdn)) = bucket.body.items.first() else {
-        panic!("expected a cdn");
-    };
-    assert_eq!(cdn.id, "static_cdn");
+    assert!(matches!(
+        bucket.body.items.first(),
+        Some(S3Item::Policy(decl)) if decl.policy == BucketPolicy::PublicRead
+    ));
+    assert!(matches!(
+        bucket.body.items.get(1),
+        Some(S3Item::Cdn(cdn)) if cdn.id == "static-cdn"
+    ));
 }
 
 #[test]

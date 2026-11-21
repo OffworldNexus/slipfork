@@ -140,8 +140,8 @@ fn validate_route(route: &Route, symbols: &SymbolTable, diags: &mut Diagnostics)
             format!("add `domain {id}` or filter with `domain {id}.*`"),
         ));
     }
+    super::policy::check_route_prefix(route, diags);
 }
-
 fn collect_feature_names(block: &Block<ServiceItem>, out: &mut BTreeSet<String>) {
     for item in &block.items {
         if let ServiceItem::On(on) = item {

@@ -3,6 +3,7 @@
 use std::collections::BTreeSet;
 
 use super::SymbolTable;
+use crate::ast::secret_property;
 use crate::diag::{Diagnostic, Diagnostics};
 use crate::expr::{Expr, ExprKind};
 use crate::span::Span;
@@ -138,5 +139,5 @@ fn property_taint(
         ));
         return false;
     }
-    symbol.kind.is_secret_property(prop)
+    secret_property(symbol.kind, symbol.policy, prop)
 }
