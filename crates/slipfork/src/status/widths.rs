@@ -53,18 +53,5 @@ pub fn pad(text: &str, width: usize) -> String {
 /// Character count with every `ESC[ … m` sequence excluded.
 #[must_use]
 pub fn visible_width(text: &str) -> usize {
-    let mut width = 0;
-    let mut escaping = false;
-    for character in text.chars() {
-        if escaping {
-            if character == 'm' {
-                escaping = false;
-            }
-        } else if character == '\u{1b}' {
-            escaping = true;
-        } else {
-            width += 1;
-        }
-    }
-    width
+    console::measure_text_width(text)
 }

@@ -14,7 +14,7 @@ use serde_json::{Value, json};
 
 use crate::commands::{Session, emit};
 use crate::daemon::{DaemonClient, DaemonError};
-use crate::render::paint;
+use crate::ui::paint;
 
 /// Set by the SIGINT handler so a followed stream exits `0` on Ctrl-C.
 static INTERRUPTED: AtomicBool = AtomicBool::new(false);

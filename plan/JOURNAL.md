@@ -2660,3 +2660,20 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-21T21:56 [M3.44.5] (lead) attempt 2/3 started
 - 2026-11-21T21:56 [M3.44.5] (lead) triad fix pass: fork json fields, JSON-aware usage errors, single compile(), env snapshot, run(session), json scan, matrix drift, slug boundary, manpage drift, 
 - 2026-11-21T22:03 [M3.44.5] (lead) status review -> done
+- 2026-11-21T22:03 [M3.44.6] (lead) status ready -> active
+- 2026-11-21T22:03 [M3.44.6] (lead) attempt 1/3 started
+- 2026-11-21T22:03 [M3.44.6] (lead) base beb44661891338d08230798950d48fd3274dce37
+- 2026-11-21T22:09 [M3.44.6] (lead) edited fields
+- 2026-11-21T22:09 [M3.44.6] (lead) attempt 2/3 started
+- 2026-11-21T22:09 [M3.44.6] (lead) attempt 2: widened paths to crates/slipfork/src/** + crate Cargo.toml; ASCII pane = single-line \r status (zero CSI)
+- 2026-11-21T22:14 [M3.44.6] (lead) attempt 3/3 started
+- 2026-11-21T22:14 [M3.44.6] (lead) attempt 3: tests-only — renderer contract unit tests + real PTY doctor/status color & NO_COLOR purity + non-TTY replay; run full gates
+- 2026-11-21T22:19 [M3.44.6] (lead) status active -> review
+- 2026-11-21T22:22 [M3.44.6] (lead) edited fields
+- 2026-11-21T22:22 [M3.44.6] (lead) attempt 4/6 started
+- 2026-11-21T22:22 [M3.44.6] (lead) attempt 4: inject terminal width, move presentation to render, down per-pod timing, ASCII ticker, clamp tail, bold URL, failure clear/kind, PTY live test, reap 
+- 2026-11-21T22:28 [M3.44.6] (lead) attempt 5/6 started
+- 2026-11-21T22:28 [M3.44.6] (lead) attempt 5: split boot.rs (531), move stream/failure strings to render, render live tail, fix PTY CSI stripper
+- 2026-11-21T22:33 [M3.44.6] (lead) attempt 6/6 started
+- 2026-11-21T22:33 [M3.44.6] (lead) attempt 6: add render::tail_rows, fix glued doc attribute, clear tails, verify LOC+gates
+- 2026-11-21T22:36 [M3.44.6] (lead) status review -> done

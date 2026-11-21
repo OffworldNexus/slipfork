@@ -4,6 +4,7 @@
 //! terminal, the working directory) and assembles the constructor-injected tree. Library crates
 //! stay pure: they receive their dependencies as arguments and never inspect the environment.
 
+mod boot;
 mod cli;
 mod commands;
 mod compose;
@@ -13,7 +14,6 @@ mod install;
 mod mounts;
 #[path = "daemon/ps.rs"]
 mod ps;
-mod render;
 mod status;
 mod ui;
 mod world;
@@ -28,7 +28,7 @@ use slipfork_vcs::GitWorkspace;
 fn main() -> ExitCode {
     let argv: Vec<OsString> = std::env::args_os().collect();
     let args = argv.get(1..).unwrap_or_default();
-    let (ui, interactive) = compose::detect_ui(args);
+    let terminal = compose::terminal(args);
     let cwd = match std::env::current_dir() {
         Ok(cwd) => cwd,
         Err(error) => {
@@ -92,7 +92,7 @@ fn main() -> ExitCode {
         };
         return daemon::run_handoff(&host, mode, listener);
     }
-    cli::run(argv, commands::Session::new(cwd, ui, interactive, host))
+    cli::run(argv, commands::Session::new(cwd, terminal, host))
 }
 
 /// Binds the `--listen` ingress and reports the address the kernel actually assigned.

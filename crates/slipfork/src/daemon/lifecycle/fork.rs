@@ -239,7 +239,7 @@ impl Core {
             "label": format!("stopping {}", fork.as_str()),
         }));
         if registered {
-            self.stop_world(&fork_key, Duration::from_secs(60))
+            self.stop_world(&fork_key, Duration::from_secs(60), &mut |_, _| {})
                 .map_err(|failure| Failure::new("fork-busy", first_line(&failure.message)))?;
         }
         emit(json!({

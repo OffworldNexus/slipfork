@@ -6,7 +6,7 @@ use serde_json::{Value, json};
 
 use crate::commands::{Session, emit};
 use crate::daemon::DaemonClient;
-use crate::render::paint;
+use crate::ui::paint;
 
 /// Parsed `slipfork env` arguments.
 #[derive(Debug, Clone, PartialEq, Eq)]

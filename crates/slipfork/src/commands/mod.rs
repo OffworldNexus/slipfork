@@ -11,9 +11,10 @@ use std::process::ExitCode;
 use serde_json::{Value, json};
 use slipfork_forkfile::Diagnostics;
 
+use crate::compose::Terminal;
 use crate::daemon::{DaemonClient, DaemonError};
-use crate::render::paint;
 use crate::ui::UiMode;
+use crate::ui::paint;
 use crate::world::HostEnv;
 use crate::{doctor, status};
 
@@ -56,8 +57,7 @@ pub struct MigrateArgs {
 #[derive(Debug, Clone)]
 pub struct Session {
     cwd: PathBuf,
-    ui: UiMode,
-    interactive: bool,
+    terminal: Terminal,
     host: HostEnv,
 }
 
@@ -74,41 +74,52 @@ impl Session {
         &self.host
     }
 
-    /// Builds a session from the injected working directory, output mode, terminal state, and host
-    /// state. No handler below ever re-probes stdio.
+    /// Builds a session from the injected working directory, terminal, and host state. No handler
+    /// below ever re-probes stdio.
     #[must_use]
-    pub fn new(cwd: PathBuf, ui: UiMode, interactive: bool, host: HostEnv) -> Self {
+    pub fn new(cwd: PathBuf, terminal: Terminal, host: HostEnv) -> Self {
         Self {
             cwd,
-            ui,
-            interactive,
+            terminal,
             host,
         }
+    }
+
+    /// The output mode resolved once by the composition root.
+    #[must_use]
+    pub(crate) fn ui(&self) -> UiMode {
+        self.terminal.mode
+    }
+
+    /// The terminal geometry and mode resolved once by the composition root.
+    #[must_use]
+    pub(crate) fn terminal(&self) -> Terminal {
+        self.terminal
     }
 
     /// Whether ANSI styling is allowed for this invocation.
     #[must_use]
     pub fn color(&self) -> bool {
-        self.ui.color()
+        self.terminal.mode.color()
     }
 
     /// Whether this invocation asked for the machine-readable object.
     #[must_use]
     pub fn json_requested(&self) -> bool {
-        matches!(self.ui, UiMode::Json)
+        self.terminal.mode.json()
     }
 
     /// Switches to `--json` once clap has confirmed the flag was really typed.
     #[must_use]
     pub fn force_json(mut self) -> Self {
-        self.ui = UiMode::Json;
+        self.terminal.mode = UiMode::Json;
         self
     }
 
     /// Whether stdout is a real terminal, independent of the colour decision.
     #[must_use]
     pub fn interactive(&self) -> bool {
-        self.interactive
+        self.terminal.mode.interactive()
     }
 
     /// Renders every running world as the `specs/02` status tree.

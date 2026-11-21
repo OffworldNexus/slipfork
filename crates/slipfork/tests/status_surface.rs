@@ -8,9 +8,10 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde_json::{Value, json};
+use slipfork::boot::{Node, completed_row, elapsed_text, pane_geometry, status_line, summary_line};
 use slipfork::install::{self, InstallHost, UnitWriter};
 use slipfork::status::{self, Options};
 
@@ -102,6 +103,99 @@ fn openrc_install_names_the_injected_user_and_keeps_a_user_edit() {
 }
 
 const ANSI: &str = "\u{1b}[";
+
+#[test]
+fn the_live_boot_pane_renders_exact_rows_and_bars() {
+    let node = Node {
+        kind: "image",
+        name: "base",
+        state: "Cached",
+        millis: 420,
+        success: true,
+    };
+    assert_eq!(
+        completed_row(&node, true),
+        "\u{1b}[32m✓\u{1b}[0m \u{1b}[2mimage   \u{1b}[0m  \u{1b}[1mbase\u{1b}[0m cached  \u{1b}[2m  420ms\u{1b}[0m"
+    );
+    assert_eq!(completed_row(&node, false), "✓ image base cached  420ms");
+    assert!(!completed_row(&node, false).contains(ANSI));
+    assert!(!completed_row(&node, false).contains('\r'));
+
+    let cached = Node {
+        state: "Up-to-date",
+        success: false,
+        ..node
+    };
+    assert_eq!(
+        completed_row(&cached, true),
+        "\u{1b}[2m•\u{1b}[0m \u{1b}[2mimage   \u{1b}[0m  \u{1b}[1mbase\u{1b}[0m up-to-date  \u{1b}[2m  420ms\u{1b}[0m"
+    );
+    assert_eq!(
+        completed_row(&cached, false),
+        "• image base up-to-date  420ms"
+    );
+
+    // A malformed frame fails closed instead of inventing `step`/`ready`/`0` fiction.
+    assert!(
+        Node::from_event(&json!({ "event": "finished" })).is_none(),
+        "a frame without kind/name/duration must not render a row"
+    );
+    let real_frame = json!({
+        "event": "finished", "kind": "image", "name": "base",
+        "state": "Cached", "duration_ms": 420,
+    });
+    let real = Node::from_event(&real_frame).expect("a complete frame parses");
+    assert_eq!(real, node);
+
+    assert_eq!(elapsed_text(0), "<1ms");
+    assert_eq!(elapsed_text(420), "420ms");
+    assert_eq!(elapsed_text(1_200), "1.2s");
+
+    assert_eq!(pane_geometry(120), Some(16));
+    assert_eq!(pane_geometry(48), Some(16));
+    assert_eq!(pane_geometry(47), None);
+
+    let elapsed = Duration::from_millis(1_200);
+    let bar = summary_line(10, 6, "Booting demo", elapsed, 80);
+    assert_eq!(bar, "[██████████░░░░░░] 6/10  Booting demo  1.2s");
+    assert_eq!(bar.matches(['█', '░']).count(), 16, "{bar}");
+    assert_eq!(
+        summary_line(10, 6, "Booting demo", elapsed, 40),
+        "6/10  Booting demo  1.2s"
+    );
+
+    let ascii = status_line('|', 6, 10, "Booting demo", "api", elapsed, 80);
+    assert_eq!(ascii, "| [##########......] 6/10  Booting demo  api  1.2s");
+    assert!(!ascii.contains(ANSI), "{ascii}");
+    assert!(!ascii.contains('\r'), "{ascii}");
+    assert_eq!(
+        status_line('|', 6, 10, "Booting demo", "", elapsed, 40),
+        "6/10  Booting demo  1.2s"
+    );
+    for spinner in ['|', '/', '-', '\\'] {
+        let line = status_line(
+            spinner,
+            3,
+            10,
+            "Restarting demo",
+            "db",
+            Duration::from_millis(50),
+            80,
+        );
+        assert!(line.starts_with(spinner), "{line}");
+        assert!(!line.contains(ANSI) && !line.contains('\r'), "{line}");
+        let cells = line
+            .split_once('[')
+            .and_then(|(_, rest)| rest.split_once(']'))
+            .map(|(bar, _)| bar)
+            .unwrap_or_else(|| panic!("the ASCII line keeps its bar: {line}"));
+        assert_eq!(
+            cells.matches('#').count() + cells.matches('.').count(),
+            16,
+            "{line}"
+        );
+    }
+}
 
 fn scratch(prefix: &str) -> PathBuf {
     let nanos = SystemTime::now()

@@ -7,7 +7,7 @@ use serde_json::{Value, json};
 
 use crate::commands::{Session, emit};
 use crate::daemon::DaemonClient;
-use crate::render::paint;
+use crate::ui::paint;
 
 /// Which `secret` subcommand to run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

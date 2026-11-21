@@ -5,7 +5,7 @@ use std::process::{Command, ExitCode, Stdio};
 use serde_json::json;
 
 use crate::commands::{Session, emit};
-use crate::render::paint;
+use crate::ui::paint;
 
 /// Parsed `slipfork open` arguments.
 #[derive(Debug, Clone, PartialEq, Eq)]

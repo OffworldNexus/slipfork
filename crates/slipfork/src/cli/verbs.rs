@@ -102,6 +102,8 @@ pub enum Command {
     },
 
     /// Snapshot the project and world data, then boot the fork on its own URL.
+    ///
+    /// `--json` emits `{"fork","world","project","url","elapsed_ms","snapshot_ms"}`.
     Fork {
         /// Fork and branch name (default: the checkout's git branch).
         name: Option<String>,

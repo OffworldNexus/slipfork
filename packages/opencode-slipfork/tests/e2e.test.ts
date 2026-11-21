@@ -283,7 +283,7 @@ function harness(project: string, sessionDirectory: string): Harness {
 
 test("composition root: Plugin.define registers every hook and this binary documents world", async () => {
   const help = spawnSync(binary(), ["fork", "--help"], { encoding: "utf8" });
-  expect(String(help.stdout)).toContain('{"fork","world","project","url","elapsed_ms"}');
+  expect(String(help.stdout)).toContain('{"fork","world","project","url","elapsed_ms","snapshot_ms"}');
 
   const probe = lab(scratch());
   const hooks = harness(probe.project, probe.project);

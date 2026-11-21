@@ -10,7 +10,7 @@ use slipfork_ospp::{
 };
 
 use crate::commands::{Session, emit};
-use crate::render::paint;
+use crate::ui::paint;
 
 /// Parsed `slipfork auth` arguments.
 #[derive(Debug, Clone, PartialEq, Eq)]

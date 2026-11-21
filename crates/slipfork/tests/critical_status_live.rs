@@ -1,8 +1,10 @@
-//! Live lab journey: a real world's services, ports, and routes through `status` and `ps`.
+//! Live lab journey: a real world's services, ports, and routes through `status` and `ps`, plus a
+//! real PTY boot pane that proves Braille/bar colour appears only when the terminal allows it.
 //!
-//! Builds a real Btrfs subvolume world from a `Forkfile`, boots it with `slipfork up`, and asserts
-//! the status tree and scoped `ps` show exactly the declared resources. The lab is opt-in: without
-//! `SLIPFORK_TEST_ROOT` the test fails closed with the exact remedy instead of degrading.
+//! Builds a real Btrfs subvolume world from a `Forkfile`, boots it with `slipfork up` under
+//! `script -qec`, and asserts the status tree and scoped `ps` show exactly the declared resources.
+//! The lab is opt-in: without `SLIPFORK_TEST_ROOT` the test fails closed with the exact remedy
+//! instead of degrading.
 
 use std::ffi::OsString;
 use std::fs;
@@ -19,6 +21,8 @@ const FORKFILE: &str = "# forkfile: 0.1\n\
 postgres pg {\n  version 18\n}\n\
 redis cache\n\
 s3 uploads {\n  policy public-read\n  cdn assets-cdn\n}\n";
+
+const BRAILLE: &str = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏";
 
 fn test_root() -> PathBuf {
     let Some(root) = std::env::var_os("SLIPFORK_TEST_ROOT") else {
@@ -93,6 +97,81 @@ fn run(project: &Path, runtime: &Path, args: &[&str]) -> Output {
         .expect("the slipfork binary must run")
 }
 
+/// Runs `args` under a real 120-column PTY; `script` is a lab requirement, never a mock.
+fn run_pty(project: &Path, runtime: &Path, args: &[&str], envs: &[(&str, &str)]) -> Output {
+    let available = Command::new("script")
+        .arg("--version")
+        .output()
+        .expect("the live PTY journey needs `script`(1)")
+        .status
+        .success();
+    assert!(
+        available,
+        "`script --version` must succeed for the PTY probe"
+    );
+    let bin = binary().replace('\'', r"'\''");
+    let line = format!(
+        "stty cols 120 rows 40 2>/dev/null; '{bin}' {}",
+        args.join(" ")
+    );
+    let mut command = Command::new("script");
+    command.args(["-qec", &line, "/dev/null"]);
+    command
+        .current_dir(project)
+        .env("XDG_RUNTIME_DIR", runtime)
+        .env_remove("NO_COLOR")
+        .env("TERM", "xterm-256color");
+    for (key, value) in envs {
+        command.env(key, value);
+    }
+    command.output().expect("run the PTY probe")
+}
+
+/// Every maximal run of bar cells, so a sheared or multi-width bar cannot pass unnoticed.
+fn bar_runs(text: &str) -> Vec<usize> {
+    let mut runs = Vec::new();
+    let mut run = 0;
+    for character in text.chars() {
+        if matches!(character, '█' | '░') {
+            run += 1;
+        } else if run > 0 {
+            runs.push(run);
+            run = 0;
+        }
+    }
+    if run > 0 {
+        runs.push(run);
+    }
+    runs
+}
+
+/// Removes every escape sequence so rows can be asserted exactly as a user reads them.
+///
+/// A CSI is `ESC [` then parameter/intermediate bytes and only ends on the final byte
+/// `0x40..=0x7e`; treating `[` itself as the final byte would leak `0;36m` into the row.
+fn plain(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars();
+    while let Some(character) = chars.next() {
+        if character != '\u{1b}' {
+            out.push(character);
+            continue;
+        }
+        if chars.clone().next() == Some('[') {
+            let _ = chars.next();
+            for byte in chars.by_ref() {
+                if ('\u{40}'..='\u{7e}').contains(&byte) {
+                    break;
+                }
+            }
+        } else {
+            // A two-byte escape (`ESC =`, `ESC O …`): drop the introducer payload.
+            let _ = chars.next();
+        }
+    }
+    out
+}
+
 fn daemon_alive(runtime: &Path) -> bool {
     let scope = runtime.as_os_str().as_bytes();
     let Ok(entries) = fs::read_dir("/proc") else {
@@ -165,12 +244,32 @@ fn live_status_and_ps_show_the_real_world() {
         store_root,
     };
 
-    let up = run(&project, &runtime, &["up"]);
+    // The first boot is observed on a real colour PTY: Braille, one 16-cell bar, and a finished row.
+    let boot = run_pty(&project, &runtime, &["up"], &[]);
     assert!(
-        up.status.success(),
-        "slipfork up failed\nstdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&up.stdout),
-        String::from_utf8_lossy(&up.stderr)
+        boot.status.success(),
+        "PTY `slipfork up` failed\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&boot.stdout),
+        String::from_utf8_lossy(&boot.stderr)
+    );
+    let captured = String::from_utf8_lossy(&boot.stdout).replace('\r', "");
+    assert!(
+        BRAILLE.chars().any(|glyph| captured.contains(glyph)),
+        "a colour PTY must show the Braille spinner: {captured:?}"
+    );
+    let runs = bar_runs(&captured);
+    assert!(
+        !runs.is_empty(),
+        "a colour PTY must show the bar: {captured:?}"
+    );
+    assert!(
+        runs.iter().all(|cells| *cells == 16),
+        "every bar draw is exactly 16 cells: {runs:?} in {captured:?}"
+    );
+    let readable = plain(&captured);
+    assert!(
+        readable.lines().any(|line| line.starts_with("✓ image")),
+        "the boot must print a `✓ image` row: {readable}"
     );
 
     let status = run(&project, &runtime, &["status", "--json"]);
@@ -216,6 +315,24 @@ fn live_status_and_ps_show_the_real_world() {
     let scoped = run(&project, &runtime, &["ps"]);
     assert!(scoped.status.success());
     assert!(String::from_utf8_lossy(&scoped.stdout).contains("postgres 18"));
+
+    // A colourless PTY stays ASCII: zero `ESC[` bytes on both the replay and a live restart.
+    for (args, envs) in [
+        (&["up"][..], &[("NO_COLOR", "1")][..]),
+        (&["restart"][..], &[("TERM", "dumb")][..]),
+    ] {
+        let output = run_pty(&project, &runtime, args, envs);
+        assert!(
+            output.status.success(),
+            "{args:?} on a plain PTY failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            !String::from_utf8_lossy(&output.stdout).contains("\u{1b}["),
+            "{args:?} with {envs:?} emitted an escape: {:?}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+    }
 
     // A bounded wait proves the world is reaped before this test returns.
     let deadline = Instant::now() + Duration::from_secs(60);

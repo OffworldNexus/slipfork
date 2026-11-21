@@ -9,7 +9,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use crate::render::paint;
+use crate::ui::paint;
 
 /// The host facts `daemon install` needs, injected by the composition root.
 #[derive(Debug, Clone)]

@@ -10,7 +10,7 @@ use std::process::ExitCode;
 use serde_json::json;
 
 use crate::commands::emit;
-use crate::render::paint;
+use crate::ui::paint;
 use crate::world::HostEnv;
 
 pub use probe::Doctor;

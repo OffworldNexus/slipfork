@@ -2,27 +2,23 @@
 id: M3.44.6
 title: "Frozen-bottom-pane indicatif MultiProgress TUI with PTY/NO_COLOR/TERM=dumb/--json gates"
 kind: task
-status: ready
+status: done
 owner: implementer
 priority: 3
 depends_on: [M3.44.5]
 paths:
   - Cargo.toml
-  - "crates/slipfork/src/cli/**"
-  - crates/slipfork/src/render.rs
-  - "crates/slipfork/src/status/**"
-  - "crates/slipfork/src/daemon/lifecycle/**"
-  - crates/slipfork/src/world/up.rs
-  - "crates/slipfork/src/world/up/**"
-  - crates/slipfork/tests/critical_status_live.rs
-  - crates/slipfork/tests/critical_cli_surface.rs
-  - crates/slipfork/tests/ansi_matrix.rs
-  - crates/slipfork/tests/status_surface.rs
-attempts: 0
-max_attempts: 3
+  - Cargo.lock
+  - crates/slipfork/Cargo.toml
+  - "crates/slipfork/src/**"
+  - "crates/slipfork/tests/**"
+  - "packages/**"
+  - "crates/slipfork-world/src/**"
+attempts: 6
+max_attempts: 6
 escalation: none
 created: "2026-11-21T20:17"
-updated: "2026-11-21T20:17"
+updated: "2026-11-21T22:36"
 ---
 
 # Goal

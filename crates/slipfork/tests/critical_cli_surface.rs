@@ -5,12 +5,13 @@
 //! `TERM=dumb`. The PTY assertion reports a skip message when `script` is absent;
 //! it never substitutes a mock.
 
-use std::io::{Read, Write};
-use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
+
+#[path = "support/daemon_reap.rs"]
+mod reap;
 
 const ANSI: &str = "\u{1b}[";
 
@@ -102,6 +103,15 @@ fn pty_stdout(binary: &[&str], envs: &[(&str, &str)]) -> String {
             String::new()
         }
     }
+}
+
+/// A PTY capture that tolerates a failing exit code (`doctor` exits 1 on an unprepared host).
+fn pty_text(args: &[&str], envs: &[(&str, &str)]) -> Option<String> {
+    run_in_pty(args, envs).map(|output| {
+        let mut text = String::from_utf8_lossy(&output.stdout).replace('\r', "");
+        text.push_str(&String::from_utf8_lossy(&output.stderr));
+        text
+    })
 }
 
 #[test]
@@ -303,6 +313,8 @@ fn fork_and_drop_ship_help_and_fail_with_one_next() {
             "{args:?} must stay plain"
         );
     }
+    // `drop` still spawns the per-user daemon, so reap it before deleting the scratch root.
+    reap::reap(&root);
     let missing = run(&["drop"]);
     assert_eq!(missing.status.code(), Some(2));
     assert_eq!(
@@ -311,11 +323,6 @@ fn fork_and_drop_ship_help_and_fail_with_one_next() {
             .count(),
         1
     );
-    if let Ok(mut stream) = UnixStream::connect(root.join("run/daemon.sock")) {
-        let _ = stream.write_all(b"{\"v\":1,\"id\":\"bye\",\"method\":\"shutdown\"}\n");
-        let mut reply = [0_u8; 128];
-        let _ = stream.read(&mut reply);
-    }
     let _ = std::fs::remove_dir_all(&root);
 }
 
@@ -335,4 +342,88 @@ fn colour_only_appears_on_a_terminal_that_allows_it() {
     if !dumb.is_empty() {
         assert!(!dumb.contains(ANSI), "TERM=dumb must stay plain: {dumb}");
     }
+}
+
+#[test]
+fn doctor_and_status_own_a_real_terminal() {
+    let Some(doctor) = pty_text(&["doctor"], &[]) else {
+        eprintln!("skipping PTY verdict assertion: `script` (util-linux) is not available");
+        return;
+    };
+    assert!(
+        doctor.starts_with("\u{1b}[3"),
+        "the verdict must lead and be styled: {doctor:?}"
+    );
+    assert!(
+        doctor.contains('✓') || doctor.contains('✗'),
+        "every doctor row keeps its mark: {doctor:?}"
+    );
+    let status = pty_text(&["status"], &[]).expect("script must still be available");
+    assert!(
+        status.contains(ANSI),
+        "`status` must style a real terminal: {status:?}"
+    );
+
+    for envs in [vec![("NO_COLOR", "1")], vec![("TERM", "dumb")]] {
+        let doctor = pty_text(&["doctor"], &envs).expect("script must still be available");
+        assert!(
+            !doctor.contains(ANSI),
+            "{envs:?} must stay plain: {doctor:?}"
+        );
+        assert!(
+            doctor.starts_with("✓ Ready") || doctor.starts_with("✗ "),
+            "the verdict leads even when plain: {doctor:?}"
+        );
+        let status = pty_text(&["status"], &envs).expect("script must still be available");
+        assert!(
+            !status.contains(ANSI),
+            "{envs:?} must stay plain: {status:?}"
+        );
+    }
+}
+
+#[test]
+fn piped_lifecycle_verbs_replay_plain_rows_and_fail_closed() {
+    let root = scratch("replay");
+    for args in [&["up"][..], &["restart"][..], &["down"][..]] {
+        let output = Command::new(env!("CARGO_BIN_EXE_slipfork"))
+            .args(args)
+            .current_dir(&root)
+            .env("NO_COLOR", "1")
+            .env("TERM", "dumb")
+            .env("XDG_RUNTIME_DIR", root.join("run"))
+            .env("XDG_STATE_HOME", root.join("state"))
+            .stdin(std::process::Stdio::null())
+            .output()
+            .expect("the slipfork binary must be runnable");
+        let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+        let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+        for text in [&stdout, &stderr] {
+            assert!(
+                !text.contains(ANSI),
+                "{args:?} emitted ANSI under a pipe: {text:?}"
+            );
+            assert!(
+                !text.contains('\r'),
+                "{args:?} emitted a carriage return: {text:?}"
+            );
+        }
+        assert!(
+            stderr.starts_with("error: "),
+            "{args:?} must name the failure: {stderr}"
+        );
+        assert_eq!(
+            output.status.code(),
+            Some(1),
+            "no daemon must fail closed, never fake a boot: {args:?}"
+        );
+        assert_eq!(
+            stderr.matches("next:").count(),
+            1,
+            "{args:?} needs exactly one remedy: {stderr}"
+        );
+    }
+    // `restart` and `down` spawn the per-user daemon, so reap it before deleting the scratch root.
+    reap::reap(&root);
+    let _ = std::fs::remove_dir_all(&root);
 }

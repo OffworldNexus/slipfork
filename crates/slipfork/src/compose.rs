@@ -11,27 +11,48 @@ use crate::mounts;
 use crate::ui::UiMode;
 use crate::world::HostEnv;
 
-/// Resolves the one output mode for this invocation and whether stdout is a real terminal.
+/// The terminal contract resolved once for this invocation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Terminal {
+    /// How this invocation renders its result.
+    pub mode: UiMode,
+    /// Visible columns for live panes; `80` for every non-interactive invocation.
+    pub width: usize,
+}
+
+/// Resolves the output mode and the terminal width exactly once, so no library module has to
+/// probe `/dev/tty` for itself.
+pub fn terminal(args: &[OsString]) -> Terminal {
+    let mode = detect_ui(args);
+    let width = if mode.interactive() {
+        crossterm::terminal::size().map_or(80, |(width, _)| usize::from(width))
+    } else {
+        80
+    };
+    Terminal { mode, width }
+}
+
+/// Resolves the one output mode for this invocation.
 ///
-/// `--json` wins over everything; a TTY with `NO_COLOR` or `TERM=dumb` degrades to [`UiMode::Plain`]
-/// while still counting as interactive for `env --reveal`.
-pub fn detect_ui(args: &[OsString]) -> (UiMode, bool) {
+/// `--json` wins over everything; a real terminal becomes [`UiMode::Interactive`] with `color`
+/// gated by `NO_COLOR` and `TERM=dumb`; anything else is [`UiMode::Plain`], so a pipe can never
+/// carry an escape or a carriage return.
+pub fn detect_ui(args: &[OsString]) -> UiMode {
     let tty = std::io::stdout().is_terminal();
-    let allowed = tty
+    let color = tty
         && std::env::var_os("NO_COLOR").is_none()
         && !std::env::var_os("TERM").is_some_and(|term| term == "dumb");
     let json = args
         .iter()
         .take_while(|argument| argument.as_os_str() != OsStr::new("--"))
         .any(|argument| argument == "--json");
-    let mode = if json {
+    if json {
         UiMode::Json
-    } else if allowed {
-        UiMode::InteractiveTty
+    } else if tty {
+        UiMode::Interactive { color }
     } else {
         UiMode::Plain
-    };
-    (mode, tty)
+    }
 }
 
 /// Assembles the injected host environment for this invocation.

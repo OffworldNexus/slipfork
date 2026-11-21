@@ -5,7 +5,7 @@ use std::path::Path;
 use serde_json::Value;
 
 use crate::ps::{PsReply, PsWorld};
-use crate::render::paint;
+use crate::ui::paint;
 
 use super::model::{Options, display_name, display_path, human_age, parse as decode};
 use super::rows::columns;

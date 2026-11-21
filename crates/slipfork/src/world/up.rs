@@ -1,8 +1,8 @@
-//! `up`, `down`, and `restart`: one daemon client, one event renderer.
+//! `up`, `down`, `restart`, `fork`, and `drop`: one daemon client, one live boot pane.
 //!
 //! The daemon owns the detached `__supervise` process, its process group, and every world socket.
-//! This module only sends the request, renders the typed `event` frames, and prints exactly one
-//! `next:` remedy (or one `specs/02` JSON object under `--json`).
+//! This module only sends the request, feeds the typed `event` frames into [`BootTui`], and prints
+//! exactly one `next:` remedy (or one `specs/02` JSON object under `--json`).
 
 use std::fs;
 use std::process::ExitCode;
@@ -11,18 +11,16 @@ use std::time::Instant;
 use serde_json::{Value, json};
 use slipfork_forkfile::Diagnostics;
 
+use crate::boot::BootTui;
+use crate::boot::elapsed_text;
 use crate::commands::{Session, emit};
 use crate::daemon::{DaemonClient, DaemonError};
-use crate::render::paint;
+use crate::ui::paint;
 
-use super::{DownArgs, ForkArgs, RestartArgs, UpArgs, fail};
-
-mod nodes;
-
-use nodes::{elapsed_text, render_event, render_phase};
+use super::{DownArgs, DropArgs, ForkArgs, RestartArgs, UpArgs, fail};
 
 impl Session {
-    /// Boots the world through the daemon and renders every boot phase until ready.
+    /// Boots the world through the daemon and renders every boot node until ready.
     pub fn up(&self, args: &UpArgs) -> ExitCode {
         let project = self.cwd().to_path_buf();
         let source = match fs::read_to_string(project.join("Forkfile")) {
@@ -48,18 +46,20 @@ impl Session {
                 return self.lifecycle_failure(&error, "retry `slipfork up`", args.json, false);
             }
         };
-        let color = self.color();
-        let json_mode = args.json;
         let began = Instant::now();
-        let mut failed = false;
         let mut remedy: Option<String> = None;
         let mut line = 0_u32;
         let mut nodes = Vec::new();
+        let mut tui = BootTui::boot(
+            self.ui(),
+            self.terminal().width,
+            &format!("Booting {}", self.world_label(None)),
+        );
         let outcome = client.call_streaming(
             "up",
             json!({ "project": project, "world": args.world }),
             &mut |event| {
-                if event["event"].as_str() == Some("failed") && failed {
+                if event["event"].as_str() == Some("failed") && tui.failed() {
                     return;
                 }
                 if let Some(value) = event["remedy"].as_str() {
@@ -71,16 +71,13 @@ impl Session {
                 if let Some(node) = boot_node(event) {
                     nodes.push(node);
                 }
-                if json_mode {
-                    failed |= event["event"].as_str() == Some("failed");
-                } else {
-                    failed |= render_event(event, color, false);
-                }
+                tui.observe(event);
             },
         );
+        tui.finish();
         match outcome {
-            Ok(reply) if !failed => {
-                if json_mode {
+            Ok(reply) if !tui.failed() => {
+                if args.json {
                     let elapsed = u64::try_from(began.elapsed().as_millis()).unwrap_or(u64::MAX);
                     return emit_json(&json!({
                         "world": reply["world"],
@@ -100,12 +97,12 @@ impl Session {
                         "read `.slipfork/supervisor.log`, then run `slipfork up`".to_owned()
                     }
                 });
-                self.lifecycle_failure(&error, &next, json_mode, failed)
+                self.lifecycle_failure(&error, &next, args.json, tui.failed())
             }
         }
     }
 
-    /// Stops the world through the daemon; its Btrfs data subvolumes stay intact.
+    /// Stops the world through the daemon, streaming one row per known pod and the final world row.
     pub fn down(&self, args: &DownArgs) -> ExitCode {
         let json_mode = args.json;
         let mut client = match DaemonClient::connect(self.host()) {
@@ -119,9 +116,13 @@ impl Session {
                 );
             }
         };
-        let color = self.color();
         let mut elapsed_ms = 0_u64;
-        let mut world = String::new();
+        let mut world = self.world_label(None);
+        let mut tui = BootTui::rows(
+            self.ui(),
+            self.terminal().width,
+            &format!("Stopping {world}"),
+        );
         let outcome =
             client.call_streaming("down", json!({ "project": self.cwd() }), &mut |event| {
                 if event["event"].as_str() == Some("stopped") {
@@ -129,10 +130,10 @@ impl Session {
                     if let Some(name) = event["world"].as_str() {
                         world = name.to_owned();
                     }
-                } else if !json_mode {
-                    render_phase(event, color, false);
                 }
+                tui.observe(event);
             });
+        tui.finish();
         match outcome {
             Ok(reply) => {
                 if json_mode {
@@ -147,7 +148,7 @@ impl Session {
                 &error,
                 "run `slipfork up` to start a world",
                 json_mode,
-                false,
+                tui.failed(),
             ),
         }
     }
@@ -166,10 +167,14 @@ impl Session {
                 );
             }
         };
-        let color = self.color();
         let began = Instant::now();
         let mut elapsed_ms = 0_u64;
         let mut nodes = Vec::new();
+        let mut tui = BootTui::boot(
+            self.ui(),
+            self.terminal().width,
+            &format!("Restarting {}", self.world_label(None)),
+        );
         let outcome = client.call_streaming(
             "restart",
             json!({ "project": self.cwd(), "service": args.service }),
@@ -180,11 +185,10 @@ impl Session {
                 if let Some(millis) = event["elapsed_ms"].as_u64() {
                     elapsed_ms = millis;
                 }
-                if !json_mode {
-                    render_phase(event, color, false);
-                }
+                tui.observe(event);
             },
         );
+        tui.finish();
         match outcome {
             Ok(reply) => {
                 if json_mode {
@@ -207,7 +211,7 @@ impl Session {
                 &error,
                 "run `slipfork up` if the world is no longer running",
                 json_mode,
-                false,
+                tui.failed(),
             ),
         }
     }
@@ -220,37 +224,20 @@ impl Session {
                 return self.lifecycle_failure(&error, "run `slipfork up` first", args.json, false);
             }
         };
-        let color = self.color();
-        let json_mode = args.json;
-        let began = Instant::now();
-        let mut forked = false;
+        let mut tui = BootTui::boot(
+            self.ui(),
+            self.terminal().width,
+            &format!("Forking {}", args.name.as_deref().unwrap_or("fork")),
+        );
         let outcome = client.call_streaming(
             "fork",
             json!({ "project": self.cwd(), "name": args.name }),
-            &mut |event| {
-                if json_mode {
-                    return;
-                }
-                if event["event"].as_str() == Some("ready") {
-                    let name = event["fork"].as_str().unwrap_or("fork");
-                    let url = event["url"].as_str().unwrap_or_default();
-                    let elapsed = u64::try_from(began.elapsed().as_millis()).unwrap_or(u64::MAX);
-                    println!(
-                        "{} Forked {} {} -> {}",
-                        paint("✓", "32", color),
-                        paint(name, "1", color),
-                        paint(&format!("({})", elapsed_text(elapsed)), "2", color),
-                        paint(url, "1;36", color)
-                    );
-                    forked = true;
-                    return;
-                }
-                let _ = render_event(event, color, false);
-            },
+            &mut |event| tui.observe(event),
         );
         match outcome {
             Ok(reply) => {
-                if json_mode {
+                if args.json {
+                    tui.finish();
                     return emit_json(&json!({
                         "fork": reply["fork"],
                         "world": reply["world"],
@@ -260,21 +247,11 @@ impl Session {
                         "snapshot_ms": reply["snapshot_ms"],
                     }));
                 }
-                if !forked {
-                    let name = reply["fork"].as_str().unwrap_or("fork");
-                    let elapsed = reply["elapsed_ms"].as_u64().unwrap_or(0);
-                    let url = reply["url"].as_str().unwrap_or_default();
-                    println!(
-                        "{} Forked {} {} -> {}",
-                        paint("✓", "32", color),
-                        paint(name, "1", color),
-                        paint(&format!("({})", elapsed_text(elapsed)), "2", color),
-                        paint(url, "1;36", color)
-                    );
-                }
+                tui.finish();
                 ExitCode::SUCCESS
             }
             Err(error) => {
+                tui.finish();
                 let next = match error.code.as_str() {
                     "not-btrfs" => {
                         "move the project onto a btrfs mount, then retry `slipfork fork`".to_owned()
@@ -294,9 +271,73 @@ impl Session {
                     }
                     _ => "run `slipfork status` to inspect the world".to_owned(),
                 };
-                self.lifecycle_failure(&error, &next, json_mode, false)
+                self.lifecycle_failure(&error, &next, args.json, tui.failed())
             }
         }
+    }
+
+    /// Stops a fork and deletes both of its snapshots.
+    pub fn drop(&self, args: &DropArgs) -> ExitCode {
+        let mut client = match DaemonClient::connect(self.host()) {
+            Ok(client) => client,
+            Err(error) => {
+                return self.lifecycle_failure(
+                    &error,
+                    "run `slipfork status` to inspect the world",
+                    args.json,
+                    false,
+                );
+            }
+        };
+        let mut tui = BootTui::rows(
+            self.ui(),
+            self.terminal().width,
+            &format!("Dropping {}", args.name),
+        );
+        let outcome = client.call_streaming(
+            "drop",
+            json!({ "project": self.cwd(), "name": args.name, "force": args.force }),
+            &mut |event| tui.observe(event),
+        );
+        match outcome {
+            Ok(reply) => {
+                let elapsed = reply["elapsed_ms"].as_u64().unwrap_or(0);
+                if args.json {
+                    tui.finish();
+                    return emit_json(
+                        &json!({ "dropped": reply["dropped"], "elapsed_ms": elapsed }),
+                    );
+                }
+                let color = self.color();
+                tui.line(&format!(
+                    "{} Dropped {} {}",
+                    paint("✓", "32", color),
+                    paint(&args.name, "1", color),
+                    paint(&format!("({})", elapsed_text(elapsed)), "2", color)
+                ));
+                tui.finish();
+                ExitCode::SUCCESS
+            }
+            Err(error) => {
+                tui.finish();
+                let next = match error.code.as_str() {
+                    "dirty-fork" => format!("slipfork drop {} -f", args.name),
+                    "not-btrfs" => {
+                        "move the project onto a btrfs mount, then retry `slipfork drop`".to_owned()
+                    }
+                    "no-fork" => "run `slipfork ps` to list this world's forks".to_owned(),
+                    _ => "run `slipfork status` to inspect the world".to_owned(),
+                };
+                self.lifecycle_failure(&error, &next, args.json, tui.failed())
+            }
+        }
+    }
+
+    /// The `.localhost` world label for this project, or `world` when it cannot be derived.
+    fn world_label(&self, requested: Option<&str>) -> String {
+        super::world_name(self.cwd(), requested)
+            .map(|name| name.as_str().to_owned())
+            .unwrap_or_else(|_| "world".to_owned())
     }
 
     /// Renders the first compiler diagnostic as `Forkfile:line:col`, plus its one `next:`.

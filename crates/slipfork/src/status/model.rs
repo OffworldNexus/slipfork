@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use serde_json::Value;
 
 use crate::ps::{PsReply, PsWorld};
-use crate::render::paint;
+use crate::ui::paint;
 
 /// How one status render should look.
 #[derive(Debug, Clone, Default)]
