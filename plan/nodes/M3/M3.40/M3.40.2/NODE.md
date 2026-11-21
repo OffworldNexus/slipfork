@@ -2,16 +2,16 @@
 id: M3.40.2
 title: "OSPP v1 client, <state_dir>/ospp.json pairing, 0600 offline vault, loopback reference server"
 kind: task
-status: ready
+status: done
 owner: implementer
 priority: 3
 depends_on: [M3.40.1]
 paths: ["crates/slipfork-ospp/**", Cargo.toml, Cargo.lock, "specs/05-ospp-v1.md", TESTING_PLAN.md]
-attempts: 0
+attempts: 1
 max_attempts: 3
 escalation: none
 created: "2026-11-21T12:50"
-updated: "2026-11-21T12:50"
+updated: "2026-11-21T13:04"
 ---
 
 # Goal

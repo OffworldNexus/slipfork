@@ -38,7 +38,7 @@ Fail-closed means exactly this: no version negotiation, no weaker auth, no local
 | `auth_response` | `response: AuthResponse` | Answer `auth_challenge` |
 | `pair_hello` | `version: u32`, `key_methods: string[]` | Open first-time enrolment |
 | `pair_begin` | `altcha: string`, `hostname: string`, `response: AuthResponse` | Proof of work + proof of possession |
-| `subscribe` | `id: string`, `remote: string`, `encryption: Encryption`, `forkfile: EvaluatedFork`, `claims: Claims` | Attach a project environment |
+| `subscribe` | `id: string`, `remote: string`, `encryption: Encryption`, `forkfile: string`, `claims: Claims` | Attach a project environment |
 | `unsubscribe` | `id: string` | Release a subscription |
 | `dump_request` | `id: string`, `subscription_id: string`, `resource: string` | Ask for a sealed resource dump |
 
