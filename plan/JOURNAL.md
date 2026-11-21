@@ -2681,3 +2681,8 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-21T22:40 [M3.45.2] (planner) created (task) Live Btrfs VM gate: .deb, 7 critical suites, <1.0s fork, S3 matrix, frozen-pane PTY
 - 2026-11-21T22:40 [M3.45.3] (planner) created (task) Demo /home/slipfork/demo + feat-auth refresh, probe cleanup & final live proof
 - 2026-11-21T22:43 [M3.44] (lead) status active -> done
+- 2026-11-21T22:43 [M3.45.1] (lead) status ready -> active
+- 2026-11-21T22:43 [M3.45.1] (lead) attempt 1/3 started
+- 2026-11-21T22:43 [M3.45.1] (lead) base f14688f7c606078ab20b52871c653a7748121549
+- 2026-11-21T22:52 [M3.45.1] (lead) accepted; namespaces.json publisher kept as documented host-nsenter debug artifact (no in-tree reader) — not churn
+- 2026-11-21T22:52 [M3.45.1] (lead) status active -> done

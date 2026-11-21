@@ -2,16 +2,16 @@
 id: M3.45.1
 title: "make coverage sweep, dead-code deletion & <=500 LOC / clippy clean"
 kind: task
-status: ready
+status: done
 owner: implementer
 priority: 3
 depends_on: []
 paths: ["crates/**", Makefile, "tools/**", TESTING_PLAN.md]
-attempts: 0
+attempts: 1
 max_attempts: 3
 escalation: none
 created: "2026-11-21T22:40"
-updated: "2026-11-21T22:40"
+updated: "2026-11-21T22:52"
 ---
 
 # Goal

@@ -136,13 +136,6 @@ impl WorldSupervisor {
         self.pods.path()
     }
 
-    /// The single `<pods>/control.sock` path a separate daemon process dials.
-    #[must_use]
-    pub fn dial_socket(&self) -> PathBuf {
-        control::control_socket_path(self.pods.path())
-            .unwrap_or_else(|_| self.pods.path().join(control::CONTROL_SOCKET))
-    }
-
     /// Dials one world-loopback port through the init's `Dial` request.
     pub fn dial_tcp(&self, port: u16) -> Result<std::net::TcpStream> {
         control::dial_tcp(self.pods.path(), port)

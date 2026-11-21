@@ -137,23 +137,4 @@ impl NamespaceTable {
         })?;
         write_private(path, &bytes)
     }
-
-    /// Reads a canonical table written by [`Self::write_json`].
-    pub fn read_json(path: &Path) -> Result<Self> {
-        let bytes = fs::read(path).map_err(|source| Error::io("read", path, source))?;
-        let paths: BTreeMap<String, PathBuf> =
-            serde_json::from_slice(&bytes).map_err(|source| Error::Json {
-                path: path.to_path_buf(),
-                source,
-            })?;
-        if NAMESPACE_KINDS
-            .iter()
-            .any(|kind| !paths.contains_key(*kind))
-        {
-            return Err(Error::Protocol {
-                message: format!("`{}` is missing a namespace entry", path.display()),
-            });
-        }
-        Ok(Self { paths })
-    }
 }

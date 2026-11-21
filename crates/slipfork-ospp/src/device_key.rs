@@ -46,17 +46,6 @@ impl DeviceSignature {
     pub fn to_hex(&self) -> String {
         hex::encode(self.0)
     }
-
-    /// Parse exactly 128 hex digits.
-    pub fn from_hex(value: &str) -> Result<Self, OsppError> {
-        if value.len() != SIGNATURE_HEX_LEN {
-            return Err(OsppError::InvalidSignature);
-        }
-        let bytes = hex::decode(value).map_err(|_| OsppError::InvalidSignature)?;
-        let raw: [u8; SIGNATURE_BYTES] =
-            bytes.try_into().map_err(|_| OsppError::InvalidSignature)?;
-        Ok(Self(raw))
-    }
 }
 
 impl fmt::Debug for DeviceSignature {

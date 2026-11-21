@@ -209,15 +209,6 @@ impl Instruction {
             Self::Entrypoint(command) => format!("ENTRYPOINT {}", command.render()),
         }
     }
-
-    /// Whether this instruction changes the filesystem and therefore needs a cached step.
-    #[must_use]
-    pub const fn is_filesystem(&self) -> bool {
-        matches!(
-            self,
-            Self::Workdir(_) | Self::Copy(_) | Self::Add(_) | Self::Run(_)
-        )
-    }
 }
 
 fn render_copy(op: &str, spec: &CopySpec) -> String {

@@ -147,18 +147,6 @@ impl TextDocument {
             .unwrap_or(self.text.len())
     }
 
-    /// The text of a zero-based line without its terminator.
-    #[must_use]
-    pub fn line_text(&self, line: u32) -> &str {
-        let start = self.line_start(line);
-        let end = self
-            .line_starts
-            .get(line as usize + 1)
-            .copied()
-            .unwrap_or(self.text.len());
-        self.text[start..end].trim_end_matches(['\r', '\n'])
-    }
-
     /// The position one past the final byte.
     #[must_use]
     pub fn end_position(&self) -> Position {
