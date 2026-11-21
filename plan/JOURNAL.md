@@ -2541,3 +2541,13 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-21T17:45 [M3.42.1] (lead) status review -> ready
 - 2026-11-21T17:45 [M3.42.1] (lead) attempt 2/3 started
 - 2026-11-21T17:53 [M3.42.1] (lead) status ready -> done
+- 2026-11-21T17:53 [M3.42.2] (lead) status ready -> active
+- 2026-11-21T17:53 [M3.42.2] (lead) attempt 1/3 started
+- 2026-11-21T17:53 [M3.42.2] (lead) base 83ac95c58801d152c4f4bb91268181d207491902
+- 2026-11-21T18:03 [M3.42.2] (lead) status active -> review
+- 2026-11-21T18:06 [M3.42.2] (lead) status review -> ready
+- 2026-11-21T18:06 [M3.42.2] (lead) attempt 2/3 started
+- 2026-11-21T18:06 [M3.42.5] (lead) created (task) Fold live-demo multi-S3/CDN/OCI-entrypoint/runtime-env fixes with §2 E2E assertions
+- 2026-11-21T18:06 [M3.42.3] (lead) edited fields
+- 2026-11-21T18:18 [M3.42.2] (lead) make coverage exit 0; 0 rows at 0.0%; 46 live-gated files named; low rows are live-only (image registry/puller/steps, daemon, btrfs ioctls) proven by make live-
+- 2026-11-21T18:18 [M3.42.2] (lead) status ready -> done

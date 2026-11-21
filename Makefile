@@ -14,7 +14,7 @@ LIVE_SUITES := \
 	slipfork/critical_status_live \
 	slipfork/critical_fork_live
 
-.PHONY: fmt clippy test check guard test-tools live-test lsp-assets js-test typecheck packages-check docs-check docs-serve
+.PHONY: fmt clippy test check coverage guard test-tools live-test lsp-assets js-test typecheck packages-check docs-check docs-serve
 
 fmt:
 	$(CARGO) fmt --all
@@ -24,6 +24,17 @@ clippy:
 
 test:
 	$(CARGO) test --workspace
+
+# Local line coverage only: this builds and runs the suites that need no `live`
+# feature. Rows whose proving story lives in §2/§5/§6 (Btrfs, crun, OSPP live)
+# are proven by `make live-test` on a real Btrfs mount; `make coverage` implies
+# no `make coverage-live`. Profiles and reports land in `target/cov` (the tool
+# sets CARGO_TARGET_DIR); the first instrumented build takes ~20 minutes once.
+COVERAGE_TESTS ?= --workspace --tests
+COVERAGE_FILES ?= $(shell find crates -path '*/src/*' -name '*.rs' | sort)
+
+coverage:
+	$(UV) run --no-project tools/coverage_report.py --tests "$(COVERAGE_TESTS)" --files "$(COVERAGE_FILES)" --live-suites "$(LIVE_SUITES)"
 
 check:
 	$(CARGO) fmt --all -- --check

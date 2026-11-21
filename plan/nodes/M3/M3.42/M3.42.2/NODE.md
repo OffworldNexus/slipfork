@@ -2,16 +2,16 @@
 id: M3.42.2
 title: "make coverage target, dead-code sweep, comment diet & >500 LOC splits"
 kind: task
-status: ready
+status: done
 owner: implementer
 priority: 3
 depends_on: [M3.42.1]
 paths: ["crates/**", Makefile, "tools/**"]
-attempts: 0
+attempts: 2
 max_attempts: 3
 escalation: none
 created: "2026-11-21T17:30"
-updated: "2026-11-21T17:30"
+updated: "2026-11-21T18:18"
 ---
 
 # Goal

@@ -5,13 +5,13 @@ kind: task
 status: ready
 owner: implementer
 priority: 3
-depends_on: [M3.42.2]
+depends_on: [M3.42.5]
 paths: ["crates/**", "scripts/**", "packaging/**", "docs/**", ".github/**", Makefile, TESTING_PLAN.md]
 attempts: 0
 max_attempts: 3
 escalation: none
 created: "2026-11-21T17:30"
-updated: "2026-11-21T17:30"
+updated: "2026-11-21T18:06"
 ---
 
 # Goal

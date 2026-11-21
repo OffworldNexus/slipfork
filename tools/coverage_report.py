@@ -3,19 +3,29 @@
 # requires-python = ">=3.12"
 # dependencies = []
 # ///
-"""Line/region coverage for instrumented Slipfork Rust tests.
+"""Line coverage for instrumented Slipfork Rust tests.
 
 Builds `cargo test <TESTS> --no-run --locked` with `-C instrument-coverage` into `target/cov`
 (never `target/debug`), runs the resulting test executables, merges their profiles with rustup's
 `llvm-profdata`, and prints, per file in `--files`:
 
-- line and region percentages (`llvm-cov report --format=text`);
+- the line percentage (covered lines / executable lines);
 - the exact uncovered line ranges (`llvm-cov export --format=lcov`).
 
-Non-test `bin` artefacts built for those tests (for example the `slipfork` daemon an integration
-test spawns) are passed to `llvm-cov` as well, so code reached only through a spawned binary is
-measured instead of reading 0%. A test that spawns that binary with `env_clear()` hides
-`LLVM_PROFILE_FILE`, so a `0.0%` row prints a caveat rather than meaning dead code.
+Every slow child is spawned and its progress forwarded live with an elapsed-time column, so a
+20-minute instrumented rebuild reads as work in flight rather than a hang. Output carries no ANSI
+escapes unless stderr is a terminal and `NO_COLOR` is unset.
+
+Non-test `bin` artefacts built for those tests (for example the `slipfork` daemon or
+`slipfork-world-init` that an integration test spawns) are measured as well, so code reached only
+through a spawned binary is counted instead of reading 0%. A file seen only in such a bin object
+with no executed line is reported as `not exercised in this run (live suite gated)` — never as
+0% dead code — and `--live-suites` names the gated suites in the summary. A test-owned file that
+still reads `0.0%` prints the `env_clear()` caveat instead.
+
+Each object is read on its own and the per-line execution counts are unioned: `llvm-cov export`
+given many objects at once silently reports only a couple of them, which understates or drops whole
+crates.
 
 Python sources are not measured offline: `uvx --offline coverage` is not cached, so `.py` entries
 are skipped with a stderr note; audit each one against its `TESTING_PLAN.md` story and E2E test.
@@ -42,28 +52,35 @@ import re
 import shlex
 import subprocess
 import sys
-from dataclasses import dataclass
+import threading
+import time
 from pathlib import Path
+from typing import TextIO
 
 TARGET_DIR = Path("target/cov")
 PROFRAW_DIR = TARGET_DIR / "profraw"
 PASSED = re.compile(r"(\d+) passed")
+COLOR = sys.stderr.isatty() and "NO_COLOR" not in os.environ
 
 
 class CoverageError(RuntimeError):
     """The instrumented build, test run or report could not complete."""
 
 
-@dataclass(frozen=True, slots=True)
-class Summary:
-    """Per-file percentages as printed by `llvm-cov report`."""
+def _paint(text: str, code: str) -> str:
+    return f"\x1b[{code}m{text}\x1b[0m" if COLOR else text
 
-    lines: float
-    regions: float
+
+def _clock(started: float) -> str:
+    seconds = time.monotonic() - started
+    if seconds < 60:
+        return f"{seconds:5.1f}s"
+    minutes, rest = divmod(int(seconds), 60)
+    return f"{minutes}m{rest:02d}s"
 
 
 def _capture(argv: list[str], env: dict[str, str]) -> str:
-    """Run ``argv`` to completion and return stdout, refusing a non-zero exit."""
+    """Run a quick ``argv`` to completion and return stdout, refusing a non-zero exit."""
     done = subprocess.run(argv, env=env, text=True, capture_output=True, check=False)
     if done.returncode != 0:
         tail = (done.stderr or done.stdout).strip().splitlines()[-12:]
@@ -71,9 +88,52 @@ def _capture(argv: list[str], env: dict[str, str]) -> str:
     return done.stdout
 
 
+def _pump(
+    pipe: TextIO, echo: bool, collected: list[str] | None, started: float
+) -> None:
+    """Drain one child pipe, optionally echoing each line with its elapsed stamp."""
+    for line in iter(pipe.readline, ""):
+        if collected is not None:
+            collected.append(line)
+        if echo:
+            print(f"{_clock(started)} │ {line.rstrip()}", file=sys.stderr, flush=True)
+
+
+def _spawn(
+    argv: list[str], env: dict[str, str], *, echo_stdout: bool
+) -> tuple[int, str, float]:
+    """Run one slow child, streaming both pipes live; return (exit, stdout, seconds)."""
+    started = time.monotonic()
+    process = subprocess.Popen(
+        argv,
+        env=env,
+        text=True,
+        bufsize=1,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    stdout: list[str] = []
+    readers = [
+        threading.Thread(
+            target=_pump,
+            args=(process.stdout, echo_stdout, stdout, started),
+            daemon=True,
+        ),
+        threading.Thread(
+            target=_pump, args=(process.stderr, True, None, started), daemon=True
+        ),
+    ]
+    for reader in readers:
+        reader.start()
+    code = process.wait()
+    for reader in readers:
+        reader.join()
+    return code, "".join(stdout), time.monotonic() - started
+
+
 def _phase(message: str) -> None:
     """Announce a wait on stderr before it starts (charter CLI rule)."""
-    print(f"coverage: {message}", file=sys.stderr, flush=True)
+    print(f"{_paint('coverage:', '1;36')} {message}", file=sys.stderr, flush=True)
 
 
 def _plural(count: int, noun: str) -> str:
@@ -105,10 +165,18 @@ def _build_targets(
     tests: list[str], env: dict[str, str]
 ) -> tuple[list[Path], list[Path]]:
     """Build the requested targets; return (test executables, bin objects)."""
-    output = _capture(
-        ["cargo", "test", *tests, "--no-run", "--locked", "--message-format=json"],
-        env,
+    _phase(
+        "building instrumented test targets into target/cov "
+        "(first run rebuilds the dependency graph)…"
     )
+    argv = ["cargo", "test", *tests, "--no-run", "--locked", "--message-format=json"]
+    code, output, seconds = _spawn(argv, env, echo_stdout=False)
+    if code != 0:
+        raise CoverageError(
+            f"cargo test --no-run exited {code} after {_clock_done(seconds)}; "
+            "next: fix the build error printed above"
+        )
+    _phase(f"instrumented build finished in {_clock_done(seconds)}")
     executables: list[Path] = []
     binaries: list[Path] = []
     for line in output.splitlines():
@@ -128,23 +196,33 @@ def _build_targets(
     if not executables:
         raise CoverageError("cargo test --no-run built no test executable")
     target = TARGET_DIR.resolve()
-    # Binaries first: `llvm-cov` keeps a file's absolute-path row only when the object that spells
-    # it absolutely is read before one that spells it by bare file name (a `--test` harness of the
-    # same crate does), so a test-first list silently drops every library row to `lib.rs`.
-    objects = list(dict.fromkeys([*binaries, *executables]))
-    for artifact in objects:
+    for artifact in [*binaries, *executables]:
         if target not in artifact.resolve().parents:
             raise CoverageError(
                 f"{artifact} is outside {TARGET_DIR}: set CARGO_TARGET_DIR"
             )
-    return executables, list(dict.fromkeys(binaries))
+    return list(dict.fromkeys(executables)), list(dict.fromkeys(binaries))
+
+
+def _clock_done(seconds: float) -> str:
+    if seconds < 60:
+        return f"{seconds:.1f}s"
+    minutes, rest = divmod(int(seconds), 60)
+    return f"{minutes}m{rest:02d}s"
 
 
 def _run_tests(executables: list[Path], env: dict[str, str]) -> int:
     """Run every test binary under the profraw sink and count passing tests."""
     passed = 0
-    for executable in executables:
-        output = _capture([str(executable)], env)
+    total = len(executables)
+    for index, executable in enumerate(executables, start=1):
+        _phase(f"[{index}/{total}] running {executable.name}")
+        code, output, seconds = _spawn([str(executable)], env, echo_stdout=True)
+        if code != 0:
+            raise CoverageError(
+                f"{executable.name} exited {code} after {_clock_done(seconds)}; "
+                "next: fix the failing test printed above"
+            )
         passed += sum(int(count) for count in PASSED.findall(output))
     return passed
 
@@ -153,31 +231,25 @@ def _merge(profdata_tool: Path, output: Path, env: dict[str, str]) -> None:
     profraws = sorted(PROFRAW_DIR.glob("*.profraw"))
     if not profraws:
         raise CoverageError(f"no .profraw under {PROFRAW_DIR}: did the tests run?")
+    _phase(f"merging {_plural(len(profraws), 'profile')}…")
     argv = [str(profdata_tool), "merge", "-sparse", "-o", str(output)]
-    _capture([*argv, *(str(profraw) for profraw in profraws)], env)
+    code, _, seconds = _spawn(
+        [*argv, *(str(profraw) for profraw in profraws)], env, echo_stdout=False
+    )
+    if code != 0:
+        raise CoverageError(
+            f"llvm-profdata merge exited {code} after {_clock_done(seconds)}"
+        )
 
 
-def _report(
-    cov_tool: Path, profdata: Path, objects: list[Path], env: dict[str, str]
-) -> str:
-    argv = [
-        str(cov_tool),
-        "report",
-        f"-instr-profile={profdata}",
-        *(str(obj) for obj in objects),
-    ]
-    return _capture(argv, env)
-
-
-def _lcov(
-    cov_tool: Path, profdata: Path, objects: list[Path], env: dict[str, str]
-) -> str:
+def _lcov(cov_tool: Path, profdata: Path, obj: Path, env: dict[str, str]) -> str:
+    """Per-line execution counts for one instrumented object, as lcov text."""
     argv = [
         str(cov_tool),
         "export",
         "-format=lcov",
         f"-instr-profile={profdata}",
-        *(str(obj) for obj in objects),
+        str(obj),
     ]
     return _capture(argv, env)
 
@@ -187,40 +259,40 @@ def _same_file(reported: str, wanted: str) -> bool:
     return normalized == wanted or normalized.endswith("/" + wanted)
 
 
-def _summaries(report: str, files: list[str]) -> dict[str, Summary]:
-    """Pick the requested rows out of the aligned `llvm-cov report` text."""
-    summaries: dict[str, Summary] = {}
-    for line in report.splitlines():
-        columns = line.split()
-        if len(columns) < 10:
-            continue
-        for wanted in files:
-            if wanted in summaries or not _same_file(columns[0], wanted):
-                continue
-            try:
-                regions = float(columns[3].rstrip("%"))
-                coverage = float(columns[9].rstrip("%"))
-            except ValueError:
-                continue
-            summaries[wanted] = Summary(lines=coverage, regions=regions)
-    return summaries
+def _profile(
+    cov_tool: Path,
+    profdata: Path,
+    objects: list[tuple[bool, Path]],
+    files: list[str],
+    env: dict[str, str],
+) -> tuple[dict[str, dict[int, int]], set[str]]:
+    """Union per-line counts across every object, remembering which files bins own.
 
-
-def _uncovered(lcov: str, files: list[str]) -> dict[str, list[int]]:
-    """Collect `DA:<line>,0` records per requested file from lcov output."""
-    hits: dict[str, list[int]] = {wanted: [] for wanted in files}
-    current: str | None = None
-    for row in lcov.splitlines():
-        if row.startswith("SF:"):
-            reported = row[len("SF:") :]
-            current = next(
-                (wanted for wanted in files if _same_file(reported, wanted)), None
-            )
-        elif row.startswith("DA:") and current is not None:
-            number, count = row[len("DA:") :].split(",")[:2]
-            if int(count) == 0:
-                hits[current].append(int(number))
-    return hits
+    ``objects`` is ``(is_test, path)``; the bin-owner set lets the report tell a file that only a
+    spawned binary would exercise (live-gated) from code no object ever reaches.
+    """
+    hits: dict[str, dict[int, int]] = {wanted: {} for wanted in files}
+    in_bin: set[str] = set()
+    total = len(objects)
+    for index, (is_test, obj) in enumerate(objects, start=1):
+        _phase(f"[{index}/{total}] reading {obj.name}")
+        seen: set[str] = set()
+        current: str | None = None
+        for row in _lcov(cov_tool, profdata, obj, env).splitlines():
+            if row.startswith("SF:"):
+                current = next(
+                    (wanted for wanted in files if _same_file(row[3:], wanted)), None
+                )
+                if current is not None:
+                    seen.add(current)
+            elif row.startswith("DA:") and current is not None:
+                number, count = row[len("DA:") :].split(",")[:2]
+                line = int(number)
+                counted = hits[current]
+                counted[line] = max(counted.get(line, 0), int(count))
+        if not is_test:
+            in_bin.update(seen)
+    return hits, in_bin
 
 
 def _compress(lines: list[int]) -> str:
@@ -250,6 +322,11 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         required=True,
         help="sources to report, e.g. 'crates/slipfork/src/lib.rs'",
     )
+    parser.add_argument(
+        "--live-suites",
+        default="",
+        help="space-separated `make live-test` suite names to name in the summary",
+    )
     return parser.parse_args(argv)
 
 
@@ -273,6 +350,7 @@ def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
     tests = shlex.split(args.tests)
     requested = shlex.split(args.files)
+    live_suites = shlex.split(args.live_suites)
     if not tests or not requested:
         raise CoverageError("--tests and --files must both name something")
     files = _rust_files(requested)
@@ -294,10 +372,6 @@ def main(argv: list[str] | None = None) -> int:
     PROFRAW_DIR.mkdir(parents=True, exist_ok=True)
 
     profdata_tool, cov_tool = _toolchain(env)
-    _phase(
-        "building instrumented test targets into target/cov "
-        "(first run rebuilds the dependency graph)…"
-    )
     executables, binaries = _build_targets(tests, env)
     _phase(f"running {_plural(len(executables), 'test executable')}…")
     passed = _run_tests(executables, env)
@@ -306,12 +380,24 @@ def main(argv: list[str] | None = None) -> int:
     profdata = TARGET_DIR / "coverage.profdata"
     _merge(profdata_tool, profdata, env)
 
-    objects = [*binaries, *executables]
-    summaries = _summaries(_report(cov_tool, profdata, objects, env), files)
-    uncovered = _uncovered(_lcov(cov_tool, profdata, objects, env), files)
-    missing = [wanted for wanted in files if wanted not in summaries]
-    if missing:
-        raise CoverageError(f"no instrumented coverage for: {', '.join(missing)}")
+    objects = [
+        *((False, binary) for binary in binaries),
+        *((True, executable) for executable in executables),
+    ]
+    hits, in_bin = _profile(cov_tool, profdata, objects, files, env)
+    measured = [wanted for wanted in files if hits[wanted]]
+    if not measured:
+        raise CoverageError(
+            "no requested file appears in any instrumented object; "
+            "next: check that --files names compiled sources"
+        )
+    unmeasured = [wanted for wanted in files if not hits[wanted]]
+    if unmeasured:
+        print(
+            "coverage: unmeasured (no instrumented object contains them): "
+            + ", ".join(unmeasured),
+            file=sys.stderr,
+        )
 
     extra = f" + {_plural(len(binaries), 'bin object')}" if binaries else ""
     noun = "test" if passed == 1 else "tests"
@@ -319,17 +405,38 @@ def main(argv: list[str] | None = None) -> int:
         f"coverage: {_plural(len(executables), 'test executable')}{extra}, "
         f"{passed} {noun} passed"
     )
-    for wanted in files:
-        summary = summaries[wanted]
-        print(f"  {wanted}  lines {summary.lines:.1f}%  regions {summary.regions:.1f}%")
-        print(f"  uncovered lines: {_compress(uncovered[wanted])}")
-        if summary.lines == 0.0:
+    gated = 0
+    for wanted in measured:
+        counts = hits[wanted]
+        total = len(counts)
+        covered = sum(1 for count in counts.values() if count)
+        if covered == 0 and wanted in in_bin:
+            gated += 1
+            print(f"  {wanted}  not exercised in this run (live suite gated)")
+            continue
+        share = 100.0 * covered / total
+        print(f"  {wanted}  lines {share:.1f}%  ({covered}/{total})")
+        print(
+            "  uncovered lines: "
+            + _compress([line for line, count in counts.items() if count == 0])
+        )
+        if share == 0.0:
             print(
                 f"coverage: {wanted} reports 0.0% lines — the story test may spawn "
                 "the binary with env_clear() so no .profraw is inherited; confirm "
                 "its bin object is included before calling anything dead",
                 file=sys.stderr,
             )
+    if gated:
+        print(
+            f"coverage: {_plural(gated, 'file')} measured only through a spawned "
+            "binary that this run never exercised"
+        )
+    if live_suites:
+        print(
+            "coverage: live-gated suites, proven only by `make live-test` on Btrfs "
+            "(this run implies no `make coverage-live`): " + ", ".join(live_suites)
+        )
     return 0
 
 
