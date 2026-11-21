@@ -5,7 +5,7 @@ mod expr;
 mod services;
 mod symbols;
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::ast::*;
 use crate::boot::{PREQUEL_TOOLS, PrequelTool};
@@ -22,11 +22,21 @@ pub struct CheckedForkfile {
     pub symbols: SymbolTable,
     /// Every declared feature name.
     pub features: BTreeSet<String>,
+    /// Runtime `env` keys, including their declaration spans.
+    pub env_keys: BTreeMap<String, Span>,
+    /// Build-time `arg` keys, including their declaration spans.
+    pub arg_keys: BTreeMap<String, Span>,
 }
 
 /// Type-checks every branch of a parsed document.
-pub fn check(doc: &Forkfile) -> Result<CheckedForkfile, Diagnostics> {
+///
+/// The symbol table and declaration map are returned even when checking fails,
+/// so editors can keep resolving names in a document that has errors.
+pub fn check(doc: &Forkfile) -> Result<CheckedForkfile, (CheckedForkfile, Diagnostics)> {
     let features = declared_features(&doc.items.items);
+    let mut env_keys = BTreeMap::new();
+    let mut arg_keys = BTreeMap::new();
+    collect_bindings(&doc.items.items, &mut env_keys, &mut arg_keys);
     let mut checker = Checker {
         diags: Diagnostics::new(),
     };
@@ -36,11 +46,96 @@ pub fn check(doc: &Forkfile) -> Result<CheckedForkfile, Diagnostics> {
     for item in &doc.items.items {
         checker.check_top(item, &symbols, &features, &env_groups);
     }
+    let checked = CheckedForkfile {
+        symbols,
+        features,
+        env_keys,
+        arg_keys,
+    };
     if checker.diags.is_empty() {
-        Ok(CheckedForkfile { symbols, features })
+        Ok(checked)
     } else {
         dedupe(&mut checker.diags);
-        Err(checker.diags)
+        Err((checked, checker.diags))
+    }
+}
+
+fn collect_bindings(
+    items: &[TopItem],
+    env_keys: &mut BTreeMap<String, Span>,
+    arg_keys: &mut BTreeMap<String, Span>,
+) {
+    for item in items {
+        match item {
+            TopItem::Image(image) => {
+                for item in &image.body.items {
+                    collect_image_binding(item, env_keys, arg_keys);
+                }
+            }
+            TopItem::On(on) => match &on.body {
+                OnBody::Inline(inner) => {
+                    collect_bindings(std::slice::from_ref(inner.as_ref()), env_keys, arg_keys)
+                }
+                OnBody::Block(block) => collect_bindings(&block.items, env_keys, arg_keys),
+            },
+            TopItem::Env(env) => collect_env_bindings(&env.entries.items, env_keys),
+            TopItem::Features(_)
+            | TopItem::Domain(_)
+            | TopItem::Postgres(_)
+            | TopItem::Redis(_)
+            | TopItem::S3(_) => {}
+        }
+    }
+}
+
+fn collect_image_binding(
+    item: &ImageItem,
+    env_keys: &mut BTreeMap<String, Span>,
+    arg_keys: &mut BTreeMap<String, Span>,
+) {
+    match item {
+        ImageItem::Arg(arg) => {
+            arg_keys.entry(arg.key.clone()).or_insert(arg.key_span);
+        }
+        ImageItem::ArgBlock(block) => {
+            for arg in &block.args.items {
+                arg_keys.entry(arg.key.clone()).or_insert(arg.key_span);
+            }
+        }
+        ImageItem::Env(env) => collect_env_bindings(&env.entries.items, env_keys),
+        ImageItem::On(on) => match &on.body {
+            OnBody::Inline(inner) => collect_image_binding(inner, env_keys, arg_keys),
+            OnBody::Block(block) => {
+                for item in &block.items {
+                    collect_image_binding(item, env_keys, arg_keys);
+                }
+            }
+        },
+        ImageItem::Dockerfile(_)
+        | ImageItem::Stage(_)
+        | ImageItem::Workdir(_)
+        | ImageItem::UseEnv(_)
+        | ImageItem::BeforeStart(_)
+        | ImageItem::PreDeploy(_)
+        | ImageItem::PostDeploy(_)
+        | ImageItem::FailedDeploy(_)
+        | ImageItem::Service(_) => {}
+    }
+}
+
+fn collect_env_bindings(items: &[EnvItem], env_keys: &mut BTreeMap<String, Span>) {
+    for item in items {
+        match item {
+            EnvItem::Entry(entry) => {
+                env_keys.entry(entry.key.clone()).or_insert(entry.span);
+            }
+            EnvItem::On(on) => match &on.body {
+                OnBody::Inline(inner) => {
+                    collect_env_bindings(std::slice::from_ref(inner.as_ref()), env_keys);
+                }
+                OnBody::Block(block) => collect_env_bindings(&block.items, env_keys),
+            },
+        }
     }
 }
 
@@ -269,7 +364,7 @@ impl Checker {
 
     fn check_command(&mut self, command: &Command) {
         if let Some(tool) = &command.tool
-            && PrequelTool::lookup(tool).is_none()
+            && PrequelTool::lookup(&tool.name).is_none()
         {
             let names = PREQUEL_TOOLS
                 .iter()
@@ -278,7 +373,7 @@ impl Checker {
                 .join("`, `");
             self.diags.push(Diagnostic::new(
                 command.span,
-                format!("unknown `@{tool}` auto-prequel"),
+                format!("unknown `@{}` auto-prequel", tool.name),
                 format!("use one of `{names}`"),
             ));
         }
@@ -335,7 +430,7 @@ mod tests {
     #[test]
     fn every_on_branch_reports_taint_at_its_own_span() {
         let source = "# forkfile: 0.1\n\nfeatures {\n  dev\n}\n\nimage backend . {\n  on dev: arg A = secret(A)\n  on !dev: arg B = secret(B)\n}\n";
-        let diags = check(&parse(source).expect("parses")).expect_err("both branches tainted");
+        let (_, diags) = check(&parse(source).expect("parses")).expect_err("both branches tainted");
         let tainted: Vec<&Diagnostic> = diags
             .items
             .iter()
@@ -349,7 +444,7 @@ mod tests {
     #[test]
     fn tools_changed_patterns_and_env_groups_have_exact_remedies() {
         let source = "# forkfile: 0.1\n\nimage backend . {\n  before-start when changed(): @python run\n  use env nope\n}\n";
-        let diags = check(&parse(source).expect("parses")).expect_err("three diagnostics");
+        let (_, diags) = check(&parse(source).expect("parses")).expect_err("three diagnostics");
         let tool = diags
             .items
             .iter()

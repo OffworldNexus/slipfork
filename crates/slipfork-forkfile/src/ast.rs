@@ -120,6 +120,8 @@ ast_eq!(FeatureGroup { name, features });
 pub struct Image {
     /// Image id.
     pub id: String,
+    /// Where the id token was declared.
+    pub id_span: Span,
     /// Where the rootfs comes from.
     pub source: ImageSource,
     /// Image body.
@@ -172,6 +174,8 @@ pub enum ImageItem {
 #[derive(Debug, Clone)]
 pub struct ArgDecl {
     pub key: String,
+    /// Where the argument key token was declared.
+    pub key_span: Span,
     pub value: Expr,
     pub span: Span,
 }
@@ -229,6 +233,8 @@ ast_eq!(EnvEntry { key, value });
 #[derive(Debug, Clone)]
 pub struct Service {
     pub id: String,
+    /// Where the service id token was declared.
+    pub id_span: Span,
     pub body: Block<ServiceItem>,
     pub span: Span,
 }
@@ -283,13 +289,30 @@ pub enum RouteKind {
 }
 
 /// A route authority filter.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub enum DomainFilter {
     /// Exact declared domain id.
-    Domain(String),
+    Domain {
+        /// The declared domain id.
+        name: String,
+        /// The id token span in the `route` declaration.
+        span: Span,
+    },
     /// Subdomain prefix such as `mail.` in `mail.*`.
     Prefix(String),
 }
+
+impl PartialEq for DomainFilter {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Domain { name: left, .. }, Self::Domain { name: right, .. }) => left == right,
+            (Self::Prefix(left), Self::Prefix(right)) => left == right,
+            _ => false,
+        }
+    }
+}
+
+impl Eq for DomainFilter {}
 
 /// A lifecycle hook.
 #[derive(Debug, Clone)]

@@ -12,3 +12,4 @@ path = "src/main.rs"
 [dependencies]
 serde_json.workspace = true
 slipfork-forkfile = { path = "../slipfork-forkfile" }
+slipfork-lsp = { path = "../slipfork-lsp" }

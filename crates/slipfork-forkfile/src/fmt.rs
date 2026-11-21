@@ -295,7 +295,7 @@ fn render_route(renderer: &mut Renderer, route: &Route) {
         }
     }
     match &route.domain {
-        Some(DomainFilter::Domain(domain)) => {
+        Some(DomainFilter::Domain { name: domain, .. }) => {
             line.push_str(" domain ");
             line.push_str(domain);
         }

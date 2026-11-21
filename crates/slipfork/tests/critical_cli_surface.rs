@@ -80,7 +80,7 @@ fn help_and_version_are_the_whole_shipped_surface() {
     assert!(help.contains("Usage: slipfork <command>"), "{help}");
     assert_eq!(
         shipped_verbs(&help),
-        ["fmt", "migrate", "help", "version"],
+        ["fmt", "migrate", "lsp", "help", "version"],
         "{help}"
     );
     assert!(

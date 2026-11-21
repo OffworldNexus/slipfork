@@ -7,6 +7,8 @@ use crate::span::Span;
 #[derive(Debug, Clone)]
 pub struct Domain {
     pub id: String,
+    /// Where the id token was declared.
+    pub id_span: Span,
     pub span: Span,
 }
 
@@ -16,6 +18,8 @@ ast_eq!(Domain { id });
 #[derive(Debug, Clone)]
 pub struct DatabaseDecl {
     pub id: String,
+    /// Where the database id token was declared.
+    pub id_span: Span,
     pub span: Span,
 }
 
@@ -25,6 +29,8 @@ ast_eq!(DatabaseDecl { id });
 #[derive(Debug, Clone)]
 pub struct CdnDecl {
     pub id: String,
+    /// Where the cdn id token was declared.
+    pub id_span: Span,
     pub span: Span,
 }
 
@@ -34,6 +40,8 @@ ast_eq!(CdnDecl { id });
 #[derive(Debug, Clone)]
 pub struct Postgres {
     pub id: String,
+    /// Where the postgres id token was declared.
+    pub id_span: Span,
     pub body: Block<PostgresItem>,
     pub span: Span,
 }
@@ -55,6 +63,8 @@ pub enum PostgresItem {
 #[derive(Debug, Clone)]
 pub struct Redis {
     pub id: String,
+    /// Where the redis id token was declared.
+    pub id_span: Span,
     pub body: Block<RedisItem>,
     pub span: Span,
 }
@@ -74,6 +84,8 @@ pub enum RedisItem {
 #[derive(Debug, Clone)]
 pub struct S3 {
     pub bucket: String,
+    /// Where the bucket id token was declared.
+    pub id_span: Span,
     pub body: Block<S3Item>,
     pub span: Span,
 }

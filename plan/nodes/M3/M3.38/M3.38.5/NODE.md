@@ -2,16 +2,22 @@
 id: M3.38.5
 title: "slipfork-lsp framed-stdio server, Tree-sitter grammar/queries & Zed extension 1:1 with specs/01"
 kind: task
-status: ready
+status: done
 owner: implementer
 priority: 3
 depends_on: [M3.38.4]
-paths: ["crates/slipfork-lsp/**", "editors/**", "crates/slipfork/**", Cargo.toml, Cargo.lock]
-attempts: 0
+paths:
+  - "crates/slipfork-lsp/**"
+  - "editors/**"
+  - "crates/slipfork/**"
+  - "crates/slipfork-forkfile/**"
+  - Cargo.toml
+  - Cargo.lock
+attempts: 1
 max_attempts: 3
 escalation: none
 created: "2026-11-21T00:58"
-updated: "2026-11-21T00:58"
+updated: "2026-11-21T01:52"
 ---
 
 # Goal

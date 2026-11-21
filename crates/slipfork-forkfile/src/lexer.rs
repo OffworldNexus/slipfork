@@ -357,7 +357,7 @@ impl<'a> Lexer<'a> {
 /// Splits a raw shell command into verbatim text and `$port` / `$env.KEY` sites.
 ///
 /// This is the single owner of `Forkfile` shell interpolation scanning.
-pub(crate) fn command_parts(body: &str) -> Vec<CommandPart> {
+pub(crate) fn command_parts(body: &str, start: Position) -> Vec<CommandPart> {
     let mut parts = Vec::new();
     let mut text = String::new();
     let mut chars = body.char_indices().peekable();
@@ -389,7 +389,13 @@ pub(crate) fn command_parts(body: &str) -> Vec<CommandPart> {
                 if !text.is_empty() {
                     parts.push(CommandPart::Text(std::mem::take(&mut text)));
                 }
-                parts.push(CommandPart::Env(key.to_string()));
+                parts.push(CommandPart::Env {
+                    key: key.to_string(),
+                    span: Span::new(
+                        command_position(start, &body[..index]),
+                        command_position(start, &body[..index + 4 + key.len()]),
+                    ),
+                });
                 for _ in 0..4 + key.len() {
                     chars.next();
                 }
@@ -402,4 +408,14 @@ pub(crate) fn command_parts(body: &str) -> Vec<CommandPart> {
         parts.push(CommandPart::Text(text));
     }
     parts
+}
+
+fn command_position(start: Position, prefix: &str) -> Position {
+    Position::new(
+        start.line,
+        start
+            .col
+            .saturating_add(u32::try_from(prefix.chars().count()).unwrap_or(u32::MAX)),
+        start.offset + prefix.len(),
+    )
 }

@@ -39,11 +39,13 @@ fn document(model: &Model) -> Forkfile {
         for database in &postgres.databases {
             body.push(PostgresItem::Database(DatabaseDecl {
                 id: database.clone(),
+                id_span: at,
                 span: at,
             }));
         }
         items.push(TopItem::Postgres(Postgres {
             id: postgres.id.clone(),
+            id_span: at,
             body: Block {
                 items: body,
                 comments: Vec::new(),
@@ -61,6 +63,7 @@ fn document(model: &Model) -> Forkfile {
         };
         items.push(TopItem::Redis(Redis {
             id: redis.id.clone(),
+            id_span: at,
             body,
             span: at,
         }));
@@ -68,6 +71,7 @@ fn document(model: &Model) -> Forkfile {
     for bucket in &model.s3 {
         items.push(TopItem::S3(S3 {
             bucket: bucket.clone(),
+            id_span: at,
             body: Block::default(),
             span: at,
         }));
@@ -75,6 +79,7 @@ fn document(model: &Model) -> Forkfile {
     for domain in &model.domains {
         items.push(TopItem::Domain(Domain {
             id: domain.clone(),
+            id_span: at,
             span: at,
         }));
     }
@@ -150,6 +155,7 @@ fn image_ast(image: &ImageOut, at: Span) -> Image {
     }
     Image {
         id: image.id.clone(),
+        id_span: at,
         source: match &image.source {
             SourceOut::Dir(dir) => ImageSource::Dir(dir.clone()),
             SourceOut::From(reference) => ImageSource::From(reference.clone()),
@@ -190,6 +196,7 @@ fn service_ast(service: &ServiceOut, at: Span) -> Service {
     items.push(ServiceItem::Run(hook(&service.run, at)));
     Service {
         id: service.id.clone(),
+        id_span: at,
         body: Block {
             items,
             comments: Vec::new(),

@@ -1,7 +1,7 @@
 //! `Forkfile` expressions, secret generators, and shell interpolation parts.
 
 use crate::diag::Diagnostic;
-use crate::span::Span;
+use crate::span::{Position, Span};
 
 /// A `Forkfile` expression annotated with its source span.
 #[derive(Debug, Clone)]
@@ -69,18 +69,53 @@ pub enum RandomKind {
 }
 
 /// One segment of an interpolated shell command.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub enum CommandPart {
     Text(String),
     Port,
-    Env(String),
+    Env {
+        /// The referenced key.
+        key: String,
+        /// The exact `$env.KEY` span.
+        span: Span,
+    },
 }
+
+impl PartialEq for CommandPart {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Text(left), Self::Text(right)) => left == right,
+            (Self::Port, Self::Port) => true,
+            (Self::Env { key: left, .. }, Self::Env { key: right, .. }) => left == right,
+            _ => false,
+        }
+    }
+}
+
+impl Eq for CommandPart {}
+
+/// An `@<tool>` prequel with its exact source span.
+#[derive(Debug, Clone)]
+pub struct Tool {
+    /// The tool name without `@`.
+    pub name: String,
+    /// The exact `@tool` span.
+    pub span: Span,
+}
+
+impl PartialEq for Tool {
+    fn eq(&self, other: &Self) -> bool {
+        self.name == other.name
+    }
+}
+
+impl Eq for Tool {}
 
 /// A shell command with `$port` / `$env.KEY` interpolation already parsed.
 #[derive(Debug, Clone)]
 pub struct Command {
     /// The `@tool` prequel, when declared.
-    pub tool: Option<String>,
+    pub tool: Option<Tool>,
     /// Verbatim text interleaved with interpolation sites.
     pub parts: Vec<CommandPart>,
     /// The command source span.
@@ -96,7 +131,7 @@ impl Command {
         let mut out = String::new();
         if let Some(tool) = &self.tool {
             out.push('@');
-            out.push_str(tool);
+            out.push_str(&tool.name);
             if !self.parts.is_empty() {
                 out.push(' ');
             }
@@ -105,7 +140,7 @@ impl Command {
             match part {
                 CommandPart::Text(text) => out.push_str(text),
                 CommandPart::Port => out.push_str("$port"),
-                CommandPart::Env(key) => {
+                CommandPart::Env { key, .. } => {
                     out.push_str("$env.");
                     out.push_str(key);
                 }
@@ -124,7 +159,9 @@ impl Command {
                 "add a shell command after `:`",
             ));
         }
-        let (tool, body) = match text.strip_prefix('@') {
+        let leading_bytes = raw.len() - raw.trim_start().len();
+        let leading = &raw[..leading_bytes];
+        let (tool, body, body_start) = match text.strip_prefix('@') {
             Some(rest) => {
                 let end = rest.find(char::is_whitespace).unwrap_or(rest.len());
                 let name = &rest[..end];
@@ -135,22 +172,41 @@ impl Command {
                         "write `@uv run ...`",
                     ));
                 }
-                let body = rest[end..].trim_start();
-                if body.is_empty() {
+                if rest[end..].trim().is_empty() {
                     return Err(Diagnostic::new(
                         span,
                         format!("expected a command after `@{name}`"),
                         format!("write `@{name} <command>`"),
                     ));
                 }
-                (Some(name.to_string()), body)
+                let tool_start = advance(span.start, &format!("{leading}@"));
+                let skipped = rest[end..].len() - rest[end..].trim_start().len();
+                let body_offset = leading_bytes + 1 + end + skipped;
+                (
+                    Some(Tool {
+                        name: name.to_string(),
+                        span: Span::new(tool_start, advance(tool_start, name)),
+                    }),
+                    &raw[body_offset..],
+                    advance(span.start, &raw[..body_offset]),
+                )
             }
-            None => (None, text),
+            None => (None, text, advance(span.start, leading)),
         };
         Ok(Self {
             tool,
-            parts: crate::lexer::command_parts(body),
+            parts: crate::lexer::command_parts(body, body_start),
             span,
         })
     }
+}
+
+fn advance(start: Position, prefix: &str) -> Position {
+    Position::new(
+        start.line,
+        start
+            .col
+            .saturating_add(u32::try_from(prefix.chars().count()).unwrap_or(u32::MAX)),
+        start.offset + prefix.len(),
+    )
 }

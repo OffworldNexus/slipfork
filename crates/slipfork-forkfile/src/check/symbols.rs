@@ -44,7 +44,8 @@ impl SymbolKind {
     }
 
     /// Typed properties exposed by this symbol, if any.
-    pub(crate) const fn properties(self) -> Option<&'static [&'static str]> {
+    #[must_use]
+    pub const fn properties(self) -> Option<&'static [&'static str]> {
         match self {
             Self::Postgres | Self::Database => {
                 Some(&["url", "host", "port", "name", "user", "password"])
@@ -56,8 +57,22 @@ impl SymbolKind {
         }
     }
 
+    /// The typed value type of a property on this symbol.
+    #[must_use]
+    pub fn property_type(self, property: &str) -> Option<&'static str> {
+        match (self, property) {
+            (Self::Postgres | Self::Database | Self::Redis, "port") => Some("number"),
+            (Self::Postgres | Self::Database, "url" | "host" | "name" | "user" | "password")
+            | (Self::Redis, "url" | "host")
+            | (Self::S3, "url" | "endpoint" | "bucket" | "access_key" | "secret_key")
+            | (Self::Cdn | Self::Domain, "domain" | "url") => Some("string"),
+            _ => None,
+        }
+    }
+
     /// Whether reading this property yields a secret-tainted value.
-    pub(crate) fn is_secret_property(self, property: &str) -> bool {
+    #[must_use]
+    pub fn is_secret_property(self, property: &str) -> bool {
         matches!(
             (self, property),
             (Self::Postgres | Self::Database, "password") | (Self::S3, "access_key" | "secret_key")
@@ -151,7 +166,7 @@ impl SymbolTable {
         match item {
             TopItem::Features(_) | TopItem::Env(_) => {}
             TopItem::Image(image) => {
-                self.record(diagnostics, &image.id, SymbolKind::Image, image.span);
+                self.record(diagnostics, &image.id, SymbolKind::Image, image.id_span);
                 for item in &image.body.items {
                     self.collect_image_item(item, diagnostics, &image.id);
                 }
@@ -165,22 +180,22 @@ impl SymbolTable {
                 }
             },
             TopItem::Domain(domain) => {
-                self.record(diagnostics, &domain.id, SymbolKind::Domain, domain.span);
+                self.record(diagnostics, &domain.id, SymbolKind::Domain, domain.id_span);
             }
             TopItem::Postgres(postgres) => {
                 self.record(
                     diagnostics,
                     &postgres.id,
                     SymbolKind::Postgres,
-                    postgres.span,
+                    postgres.id_span,
                 );
                 self.collect_postgres_items(&postgres.body.items, diagnostics);
             }
             TopItem::Redis(redis) => {
-                self.record(diagnostics, &redis.id, SymbolKind::Redis, redis.span);
+                self.record(diagnostics, &redis.id, SymbolKind::Redis, redis.id_span);
             }
             TopItem::S3(s3) => {
-                self.record(diagnostics, &s3.bucket, SymbolKind::S3, s3.span);
+                self.record(diagnostics, &s3.bucket, SymbolKind::S3, s3.id_span);
                 self.collect_s3_items(&s3.body.items, diagnostics);
             }
         }
@@ -192,7 +207,12 @@ impl SymbolTable {
                 // A service may reuse its enclosing image's slot (`image x { service x }`);
                 // any other cross-kind collision is still a duplicate.
                 if service.id != owner {
-                    self.record(diagnostics, &service.id, SymbolKind::Service, service.span);
+                    self.record(
+                        diagnostics,
+                        &service.id,
+                        SymbolKind::Service,
+                        service.id_span,
+                    );
                 }
             }
             ImageItem::On(on) => match &on.body {
@@ -215,7 +235,7 @@ impl SymbolTable {
                         diagnostics,
                         &database.id,
                         SymbolKind::Database,
-                        database.span,
+                        database.id_span,
                     );
                 }
                 PostgresItem::On(on) => match &on.body {
@@ -238,7 +258,7 @@ impl SymbolTable {
         for item in items {
             match item {
                 S3Item::Cdn(cdn) => {
-                    self.record(diagnostics, &cdn.id, SymbolKind::Cdn, cdn.span);
+                    self.record(diagnostics, &cdn.id, SymbolKind::Cdn, cdn.id_span);
                 }
                 S3Item::On(on) => match &on.body {
                     OnBody::Inline(inner) => {

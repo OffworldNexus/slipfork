@@ -131,7 +131,7 @@ fn lab_dir(name: &str) -> PathBuf {
 fn build_time_arg_rejects_secret_native_taint() {
     let source = "# forkfile: 0.1\n\npostgres pg { database app_db }\n\nimage backend . {\n  arg TOKEN = secret(TOKEN)\n  arg PASSWORD = app_db.password\n  env {\n    TOKEN = secret(TOKEN)\n  }\n}\n";
     let document = parse(source).expect("parses");
-    let diags = check(&document).expect_err("tainted args are refused");
+    let (_, diags) = check(&document).expect_err("tainted args are refused");
     assert!(
         diags
             .items
@@ -153,18 +153,18 @@ fn build_time_arg_rejects_secret_native_taint() {
 #[test]
 fn flat_namespace_duplicates_name_both_kinds_and_spans() {
     let source = "# forkfile: 0.1\n\ndomain cache\nredis cache\n";
-    let diags = check(&parse(source).expect("parses")).expect_err("duplicate symbols");
+    let (_, diags) = check(&parse(source).expect("parses")).expect_err("duplicate symbols");
     let first = diags.first().expect("one diagnostic");
     assert!(first.message.contains("duplicate symbol `cache`"));
     assert!(first.message.contains("`domain`"));
     assert!(first.message.contains("`redis`"));
-    assert!(first.message.contains("Forkfile:3:1"), "{}", first.message);
+    assert!(first.message.contains("Forkfile:3:8"), "{}", first.message);
 }
 
 #[test]
 fn every_on_branch_is_typed_even_when_not_selected() {
     let source = "# forkfile: 0.1\n\nfeatures {\n  dev\n}\n\nimage backend . {\n  on !dev: arg TOKEN = secret(TOKEN)\n}\n";
-    let diags = check(&parse(source).expect("parses")).expect_err("branch is typed");
+    let (_, diags) = check(&parse(source).expect("parses")).expect_err("branch is typed");
     assert!(
         diags
             .items
@@ -177,7 +177,7 @@ fn every_on_branch_is_typed_even_when_not_selected() {
 #[test]
 fn duplicate_routes_in_one_branch_are_rejected() {
     let source = "# forkfile: 0.1\n\nimage backend . {\n  service api {\n    port 8000\n    route /api\n    route /api\n  }\n}\n";
-    let diags = check(&parse(source).expect("parses")).expect_err("route conflict");
+    let (_, diags) = check(&parse(source).expect("parses")).expect_err("route conflict");
     assert!(
         diags
             .items

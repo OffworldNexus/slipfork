@@ -122,6 +122,7 @@ version = "0.1.0"
 dependencies = [
  "serde_json",
  "slipfork-forkfile",
+ "slipfork-lsp",
 ]
 
 [[package]]
@@ -143,6 +144,10 @@ version = "0.1.0"
 [[package]]
 name = "slipfork-lsp"
 version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "slipfork-forkfile",
+]
 
 [[package]]
 name = "slipfork-ospp"

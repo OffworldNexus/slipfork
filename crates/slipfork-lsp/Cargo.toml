@@ -5,3 +5,5 @@ edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+serde_json.workspace = true
+slipfork-forkfile = { path = "../slipfork-forkfile" }

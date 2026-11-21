@@ -129,7 +129,7 @@ fn validate_route(route: &Route, symbols: &SymbolTable, diags: &mut Diagnostics)
             format!("write `route /api {keyword} /v1`"),
         ));
     }
-    if let Some(DomainFilter::Domain(id)) = &route.domain
+    if let Some(DomainFilter::Domain { name: id, .. }) = &route.domain
         && !symbols
             .get(id)
             .is_some_and(|symbol| symbol.kind == SymbolKind::Domain)
@@ -236,7 +236,9 @@ mod tests {
     use crate::parse;
 
     fn diagnostics(source: &str) -> Diagnostics {
-        check(&parse(source).expect("parses")).expect_err("expected diagnostics")
+        check(&parse(source).expect("parses"))
+            .expect_err("expected diagnostics")
+            .1
     }
 
     #[test]

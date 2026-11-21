@@ -22,6 +22,7 @@ enum Verb {
     Version,
     Fmt(FmtArgs),
     Migrate(MigrateArgs),
+    Lsp,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -29,6 +30,7 @@ enum HelpTopic {
     Global,
     Fmt,
     Migrate,
+    Lsp,
 }
 
 /// A rejected command line, rendered as one line.
@@ -83,6 +85,7 @@ impl CommandLine {
             }
             "fmt" => fmt_verb(rest)?,
             "migrate" => migrate_verb(rest)?,
+            "lsp" => lsp_verb(rest)?,
             other => return Err(UsageError::new(format!("unknown argument `{other}`"))),
         };
         Ok(Self { verb })
@@ -95,6 +98,7 @@ impl CommandLine {
             Verb::Version => emit(&format!("slipfork {VERSION}\n")),
             Verb::Fmt(args) => session.fmt(&args),
             Verb::Migrate(args) => session.migrate(&args),
+            Verb::Lsp => session.lsp(),
         }
     }
 }
@@ -160,25 +164,39 @@ fn migrate_verb(args: &[&str]) -> Result<Verb, UsageError> {
     }))
 }
 
+fn lsp_verb(args: &[&str]) -> Result<Verb, UsageError> {
+    if args.iter().any(|arg| matches!(*arg, "-h" | "--help")) {
+        return Ok(Verb::Help(HelpTopic::Lsp));
+    }
+    match args.first() {
+        None => Ok(Verb::Lsp),
+        Some(other) => Err(UsageError::new(format!(
+            "unexpected argument `{other}` for `lsp`"
+        ))),
+    }
+}
+
 fn help_text(topic: HelpTopic, color: bool) -> String {
     match topic {
         HelpTopic::Global => {
             let title = paint(&format!("slipfork {VERSION}"), "1;36", color);
             format!(
                 "{title}\n\
-                 Format and migrate Forkfile documents for Slipfork.\n\
+                 Format, migrate, and edit Forkfile documents for Slipfork.\n\
                  \n\
                  Usage: slipfork <command> [options]\n\
                  \n\
                  Commands:\n\
                  \x20 fmt       Format a Forkfile in place\n\
                  \x20 migrate   Convert a legacy snow.yml into a Forkfile\n\
+                 \x20 lsp       Serve Forkfile editor features over stdio\n\
                  \x20 help      Print this overview\n\
                  \x20 version   Print the version\n\
                  \n\
                  Examples:\n\
                  \x20 slipfork fmt --check Forkfile\n\
                  \x20 slipfork migrate --write snow.yml\n\
+                 \x20 slipfork lsp\n\
                  \n\
                  Options:\n\
                  \x20 -h, --help      Print this overview\n\
@@ -226,6 +244,25 @@ fn help_text(topic: HelpTopic, color: bool) -> String {
                  \x20 slipfork migrate --write snow.yml\n"
             )
         }
+        HelpTopic::Lsp => {
+            let title = paint("slipfork lsp", "1;36", color);
+            format!(
+                "{title}\n\
+                 Serve Forkfile editor features over stdio (Language Server Protocol).\n\
+                 \n\
+                 Usage: slipfork lsp\n\
+                 \n\
+                 Editors:\n\
+                 \x20 Point your LSP client at `slipfork lsp`; diagnostics, hover,\n\
+                 \x20 go-to-definition, and format-on-save use the open document.\n\
+                 \n\
+                 Options:\n\
+                 \x20 -h, --help\n\
+                 \n\
+                 Example:\n\
+                 \x20 slipfork lsp\n"
+            )
+        }
     }
 }
 
@@ -263,6 +300,16 @@ mod tests {
                 json: true,
                 path: PathBuf::from("snow.yml"),
             })
+        );
+        assert_eq!(parse(&["lsp"]).unwrap().verb, Verb::Lsp);
+        assert_eq!(
+            parse(&["lsp", "--help"]).unwrap().verb,
+            Verb::Help(HelpTopic::Lsp)
+        );
+        assert!(
+            parse(&["lsp", "--stdio"])
+                .unwrap_err()
+                .contains("unexpected argument `--stdio` for `lsp`")
         );
         assert!(
             parse(&["up"])
@@ -306,10 +353,14 @@ mod tests {
             migrate.contains("slipfork migrate --write snow.yml"),
             "{migrate}"
         );
+        let lsp = help_text(HelpTopic::Lsp, false);
+        assert!(lsp.contains("Usage: slipfork lsp"), "{lsp}");
+        assert!(lsp.contains("format-on-save"), "{lsp}");
         let global = help_text(HelpTopic::Global, false);
         assert!(!global.contains('\u{1b}'), "{global}");
         assert!(global.contains("  fmt "), "{global}");
         assert!(global.contains("  migrate "), "{global}");
+        assert!(global.contains("  lsp "), "{global}");
         assert!(
             global.contains("Examples:\n  slipfork fmt --check Forkfile\n"),
             "{global}"

@@ -88,9 +88,15 @@ impl<'a> Parser<'a> {
     }
 
     pub(crate) fn parse_postgres(&mut self, span: Span) -> Result<Postgres, Diagnostic> {
-        let id = self.expect_ident("a postgres id", "write `postgres <id> { database <db> }`")?;
+        let (id, id_span) =
+            self.expect_ident_spanned("a postgres id", "write `postgres <id> { database <db> }`")?;
         let body = self.parse_optional_block(|parser| parser.parse_postgres_item())?;
-        Ok(Postgres { id, body, span })
+        Ok(Postgres {
+            id,
+            id_span,
+            body,
+            span,
+        })
     }
 
     fn parse_postgres_item(&mut self) -> Result<PostgresItem, Diagnostic> {
@@ -108,8 +114,8 @@ impl<'a> Parser<'a> {
         match name.as_str() {
             "database" => {
                 let span = self.current_span()?;
-                self.expect_ident("a database name", "write `database <db>`")
-                    .map(|id| PostgresItem::Database(DatabaseDecl { id, span }))
+                self.expect_ident_spanned("a database name", "write `database <db>`")
+                    .map(|(id, id_span)| PostgresItem::Database(DatabaseDecl { id, id_span, span }))
             }
             "version" => self.parse_version().map(PostgresItem::Version),
             "on" => self
@@ -124,9 +130,14 @@ impl<'a> Parser<'a> {
     }
 
     pub(crate) fn parse_redis(&mut self, span: Span) -> Result<Redis, Diagnostic> {
-        let id = self.expect_ident("a redis id", "write `redis <id>`")?;
+        let (id, id_span) = self.expect_ident_spanned("a redis id", "write `redis <id>`")?;
         let body = self.parse_optional_block(|parser| parser.parse_redis_item())?;
-        Ok(Redis { id, body, span })
+        Ok(Redis {
+            id,
+            id_span,
+            body,
+            span,
+        })
     }
 
     fn parse_redis_item(&mut self) -> Result<RedisItem, Diagnostic> {
@@ -155,9 +166,15 @@ impl<'a> Parser<'a> {
     }
 
     pub(crate) fn parse_s3(&mut self, span: Span) -> Result<S3, Diagnostic> {
-        let bucket = self.expect_ident("a bucket name", "write `s3 <bucket> { cdn <id> }`")?;
+        let (bucket, id_span) =
+            self.expect_ident_spanned("a bucket name", "write `s3 <bucket> { cdn <id> }`")?;
         let body = self.parse_optional_block(|parser| parser.parse_s3_item())?;
-        Ok(S3 { bucket, body, span })
+        Ok(S3 {
+            bucket,
+            id_span,
+            body,
+            span,
+        })
     }
 
     fn parse_s3_item(&mut self) -> Result<S3Item, Diagnostic> {
@@ -175,8 +192,8 @@ impl<'a> Parser<'a> {
         match name.as_str() {
             "cdn" => {
                 let span = self.current_span()?;
-                self.expect_ident("a cdn id", "write `cdn <id>`")
-                    .map(|id| S3Item::Cdn(CdnDecl { id, span }))
+                self.expect_ident_spanned("a cdn id", "write `cdn <id>`")
+                    .map(|(id, id_span)| S3Item::Cdn(CdnDecl { id, id_span, span }))
             }
             "on" => self
                 .parse_on_after_keyword(token.span, |parser| parser.parse_s3_item())

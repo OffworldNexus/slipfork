@@ -307,7 +307,10 @@ fn internal_ports_and_rewrite_routes_parse() {
     assert_eq!(route.kind, RouteKind::Rewrite("/v1".to_string()));
     assert_eq!(
         route.domain,
-        Some(DomainFilter::Domain("admin".to_string()))
+        Some(DomainFilter::Domain {
+            name: "admin".to_string(),
+            span: crate::span::Span::at(crate::span::Position::new(1, 1, 0)),
+        })
     );
 }
 

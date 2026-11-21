@@ -265,7 +265,10 @@ impl Planner<'_> {
         };
         let changed = hook.when_changed.as_deref().unwrap_or(&[]);
         for command in commands {
-            let tool = command.tool.as_deref().and_then(PrequelTool::lookup);
+            let tool = command
+                .tool
+                .as_ref()
+                .and_then(|tool| PrequelTool::lookup(&tool.name));
             if tool.is_none() && changed.is_empty() && !always_due {
                 continue;
             }

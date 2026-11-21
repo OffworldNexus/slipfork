@@ -9,9 +9,15 @@ use crate::token::TokenKind;
 
 impl<'a> Parser<'a> {
     pub(crate) fn parse_service(&mut self, span: Span) -> Result<Service, Diagnostic> {
-        let id = self.expect_ident("a service id", "write `service <id> { ... }`")?;
+        let (id, id_span) =
+            self.expect_ident_spanned("a service id", "write `service <id> { ... }`")?;
         let body = self.parse_block(|parser| parser.parse_service_item())?;
-        Ok(Service { id, body, span })
+        Ok(Service {
+            id,
+            id_span,
+            body,
+            span,
+        })
     }
 
     fn parse_service_item(&mut self) -> Result<ServiceItem, Diagnostic> {
@@ -248,6 +254,9 @@ fn parse_domain_filter(word: &str, span: Span) -> Result<DomainFilter, Diagnosti
             "empty domain prefix",
             "write `domain <id>` or `domain <prefix>.*`",
         )),
-        None => Ok(DomainFilter::Domain(word.to_string())),
+        None => Ok(DomainFilter::Domain {
+            name: word.to_string(),
+            span,
+        }),
     }
 }

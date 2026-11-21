@@ -29,6 +29,7 @@ impl<'a> Parser<'a> {
         let body = self.parse_block(|parser| parser.parse_image_item())?;
         Ok(Image {
             id,
+            id_span,
             source,
             body,
             span,
@@ -62,6 +63,7 @@ impl<'a> Parser<'a> {
             }
             "arg" => {
                 let value = self.bump()?;
+                let key_span = value.span;
                 match value.kind {
                     TokenKind::LBrace => {
                         let args = self.parse_block_body(|parser| parser.parse_arg())?;
@@ -70,7 +72,12 @@ impl<'a> Parser<'a> {
                     TokenKind::Ident(key) => {
                         self.expect_punct(TokenKind::Eq, "`=`", "write `arg KEY = <expr>`")?;
                         let value = self.parse_expr()?;
-                        Ok(ImageItem::Arg(ArgDecl { key, value, span }))
+                        Ok(ImageItem::Arg(ArgDecl {
+                            key,
+                            key_span,
+                            value,
+                            span,
+                        }))
                     }
                     other => Err(Diagnostic::new(
                         value.span,
@@ -117,9 +124,15 @@ impl<'a> Parser<'a> {
 
     fn parse_arg(&mut self) -> Result<ArgDecl, Diagnostic> {
         let span = self.current_span()?;
-        let key = self.expect_ident("an argument name", "write `KEY = <expr>`")?;
+        let (key, key_span) =
+            self.expect_ident_spanned("an argument name", "write `KEY = <expr>`")?;
         self.expect_punct(TokenKind::Eq, "`=`", "write `KEY = <expr>`")?;
         let value = self.parse_expr()?;
-        Ok(ArgDecl { key, value, span })
+        Ok(ArgDecl {
+            key,
+            key_span,
+            value,
+            span,
+        })
     }
 }

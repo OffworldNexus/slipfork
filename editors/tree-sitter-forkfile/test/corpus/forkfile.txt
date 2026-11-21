@@ -1,0 +1,210 @@
+==================
+Full document
+==================
+
+# forkfile: 0.1
+
+features {
+  default = [dev, mail]
+  staging
+}
+
+domain main
+
+postgres db {
+  version 18
+  database analytics
+}
+
+redis cache
+
+s3 assets {
+  cdn static_cdn
+}
+
+env shared {
+  DATABASE_URL = "postgres://localhost"
+  TOKEN = secret(DB_TOKEN) ?? random_hex(32)
+}
+
+image backend . {
+  dockerfile Dockerfile
+  workdir app
+  arg BUILD_MODE = dev ?? "release"
+  arg VERSION = "1.0"
+  use env shared
+  before-start when changed(package.json): @pnpm install
+  service web {
+    port 8080
+    internal_ports [8081, 8082]
+    route /api strip-prefix domain main
+    run: @pnpm dev --port $port
+    pre-deploy: echo $env.DATABASE_URL
+  }
+}
+
+on !dev {
+  image tools from alpine:3.20 {
+    service shell {
+      port 9000
+      route exact /healthz
+    }
+  }
+}
+---
+
+(source_file
+  (header)
+  (features
+    (feature_group
+      (identifier)
+      (identifier))
+    (feature_group
+      (identifier)))
+  (domain_declaration
+    (identifier))
+  (postgres
+    (identifier)
+    (version_declaration
+      (integer))
+    (database_declaration
+      (identifier)))
+  (redis
+    (identifier))
+  (s3
+    (identifier)
+    (cdn_declaration
+      (identifier)))
+  (env
+    (identifier)
+    (env_entry
+      (identifier)
+      (string))
+    (env_entry
+      (identifier)
+      (fallback_expression
+        (call
+          (identifier))
+        (call
+          (integer)))))
+  (image
+    (identifier)
+    (image_source
+      (directory))
+    (dockerfile
+      (path))
+    (workdir
+      (path))
+    (arg_item
+      (identifier)
+      (fallback_expression
+        (identifier)
+        (string)))
+    (arg_item
+      (identifier)
+      (string))
+    (use_env
+      (identifier))
+    (hook
+      (change_guard
+        (path))
+      (command
+        (tool)
+        (command_text)))
+    (service
+      (identifier)
+      (port
+        (integer))
+      (internal_ports
+        (integer)
+        (integer))
+      (route
+        (route_path)
+        (route_modifier)
+        (route_modifier
+          (domain_clause
+            (domain_filter
+              (identifier)))))
+      (hook
+        (command
+          (tool)
+          (command_text)))
+      (hook
+        (command
+          (command_text)))))
+  (on_statement
+    (unary_expression
+      (identifier))
+    (image
+      (identifier)
+      (image_source
+        (image_from
+          (image_reference)))
+      (service
+        (identifier)
+        (port
+          (integer))
+        (route
+          (route_modifier
+            (route_path)))))))
+
+==================
+Routed properties and inline conditions
+==================
+
+# forkfile: 0.1
+
+image app . {
+  env {
+    PUBLIC_DOMAIN = main.domain
+    CDN_URL = static_cdn.url
+    REDIS_URL = cache.url
+  }
+  service api {
+    port 3000
+    route / rewrite /v1 domain main
+    on dev: run: @uv run fastapi dev
+  }
+}
+---
+
+(source_file
+  (header)
+  (image
+    (identifier)
+    (image_source
+      (directory))
+    (env_block
+      (env_entry
+        (identifier)
+        (property
+          (identifier)
+          (identifier)))
+      (env_entry
+        (identifier)
+        (property
+          (identifier)
+          (identifier)))
+      (env_entry
+        (identifier)
+        (property
+          (identifier)
+          (identifier))))
+    (service
+      (identifier)
+      (port
+        (integer))
+      (route
+        (route_path)
+        (route_modifier
+          (route_path))
+        (route_modifier
+          (domain_clause
+            (domain_filter
+              (identifier)))))
+      (on_service_item
+        (identifier)
+        (hook
+          (command
+            (tool)
+            (command_text)))))))

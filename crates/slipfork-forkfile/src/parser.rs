@@ -109,9 +109,18 @@ impl<'a> Parser<'a> {
     }
 
     pub(crate) fn expect_ident(&mut self, what: &str, remedy: &str) -> Result<String, Diagnostic> {
+        self.expect_ident_spanned(what, remedy)
+            .map(|(name, _)| name)
+    }
+
+    pub(crate) fn expect_ident_spanned(
+        &mut self,
+        what: &str,
+        remedy: &str,
+    ) -> Result<(String, Span), Diagnostic> {
         let token = self.bump()?;
         match token.kind {
-            TokenKind::Ident(name) => Ok(name),
+            TokenKind::Ident(name) => Ok((name, token.span)),
             other => Err(Diagnostic::new(
                 token.span,
                 format!("expected {what}, found {}", other.describe()),
@@ -329,8 +338,8 @@ impl<'a> Parser<'a> {
                 .parse_on_after_keyword(span, |parser| parser.parse_top())
                 .map(TopItem::On),
             "domain" => self
-                .expect_ident("a domain name", "write `domain <id>`")
-                .map(|id| TopItem::Domain(Domain { id, span })),
+                .expect_ident_spanned("a domain name", "write `domain <id>`")
+                .map(|(id, id_span)| TopItem::Domain(Domain { id, id_span, span })),
             "postgres" => self.parse_postgres(span).map(TopItem::Postgres),
             "redis" => self.parse_redis(span).map(TopItem::Redis),
             "s3" => self.parse_s3(span).map(TopItem::S3),
