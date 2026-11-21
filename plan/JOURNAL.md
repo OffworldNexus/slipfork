@@ -2677,3 +2677,7 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-21T22:33 [M3.44.6] (lead) attempt 6/6 started
 - 2026-11-21T22:33 [M3.44.6] (lead) attempt 6: add render::tail_rows, fix glued doc attribute, clear tails, verify LOC+gates
 - 2026-11-21T22:36 [M3.44.6] (lead) status review -> done
+- 2026-11-21T22:40 [M3.45.1] (planner) created (task) make coverage sweep, dead-code deletion & <=500 LOC / clippy clean
+- 2026-11-21T22:40 [M3.45.2] (planner) created (task) Live Btrfs VM gate: .deb, 7 critical suites, <1.0s fork, S3 matrix, frozen-pane PTY
+- 2026-11-21T22:40 [M3.45.3] (planner) created (task) Demo /home/slipfork/demo + feat-auth refresh, probe cleanup & final live proof
+- 2026-11-21T22:43 [M3.44] (lead) status active -> done
