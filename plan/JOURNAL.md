@@ -2476,3 +2476,15 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-21T16:39 [M3.41.1] (lead) attempt 2/3 started
 - 2026-11-21T16:39 [M3.41.1] (lead) fix pass 1: honesty fence attrs, exclusion single-source, README buttons, fork JSON
 - 2026-11-21T16:40 [M3.41.1] (lead) status active -> done
+- 2026-11-21T16:41 [M3.41.2] (lead) status ready -> active
+- 2026-11-21T16:41 [M3.41.2] (lead) attempt 1/3 started
+- 2026-11-21T16:41 [M3.41.2] (lead) base e006dae37e8e767ed7ff3ea56de3e2abf5cb4722
+- 2026-11-21T16:41 [M3.41.3] (lead) status ready -> active
+- 2026-11-21T16:41 [M3.41.3] (lead) attempt 1/3 started
+- 2026-11-21T16:41 [M3.41.3] (lead) base e006dae37e8e767ed7ff3ea56de3e2abf5cb4722
+- 2026-11-21T16:43 [M3.41.2] (lead) status active -> review
+- 2026-11-21T16:45 [M3.41.2] (lead) status review -> active
+- 2026-11-21T16:45 [M3.41.2] (lead) attempt 2/3 started
+- 2026-11-21T16:45 [M3.41.2] (lead) fix pass 1: snapshot count, ingress prerequisite, no fabricated up output
+- 2026-11-21T16:45 [M3.41.2] (lead) status active -> review
+- 2026-11-21T16:45 [M3.41.2] (lead) status review -> done

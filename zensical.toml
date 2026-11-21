@@ -23,6 +23,10 @@ nav = [
   { "Install" = "install.md" },
   { "The Forkfile" = "forkfile.md" },
   { "CLI" = "cli.md" },
+  { "Under the hood" = "under-the-hood.md" },
+  { "OSPP v1" = "ospp.md" },
+  { "Agents & OpenCode" = "agents-and-opencode.md" },
+  { "Troubleshooting" = "troubleshooting.md" },
 ]
 
 extra_css = ["stylesheets/extra.css"]

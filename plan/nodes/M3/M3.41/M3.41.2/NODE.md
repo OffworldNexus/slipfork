@@ -2,7 +2,7 @@
 id: M3.41.2
 title: "Reference docs: under-the-hood, OSPP, agents/OpenCode, troubleshooting"
 kind: task
-status: ready
+status: done
 owner: "doc-writer"
 priority: 3
 depends_on: [M3.41.1]
@@ -12,11 +12,11 @@ paths:
   - "docs/agents-and-opencode.md"
   - docs/troubleshooting.md
   - zensical.toml
-attempts: 0
+attempts: 2
 max_attempts: 3
 escalation: none
 created: "2026-11-21T16:35"
-updated: "2026-11-21T16:35"
+updated: "2026-11-21T16:45"
 ---
 
 # Goal
