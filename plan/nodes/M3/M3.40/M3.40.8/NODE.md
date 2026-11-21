@@ -2,7 +2,7 @@
 id: M3.40.8
 title: fork/drop/env/secret/open/auth/completions verbs + lifecycle UX polish + ANSI matrix
 kind: task
-status: ready
+status: active
 owner: implementer
 priority: 3
 depends_on: [M3.40.5]
@@ -17,11 +17,11 @@ paths:
   - "specs/03-under-the-hood.md"
   - "specs/05-ospp-v1.md"
   - TESTING_PLAN.md
-attempts: 0
+attempts: 1
 max_attempts: 3
 escalation: none
 created: "2026-11-21T14:02"
-updated: "2026-11-21T14:02"
+updated: "2026-11-21T14:28"
 ---
 
 # Goal

@@ -136,6 +136,7 @@ The three rows are always `Btrfs`, `Namespaces`, and `Runtime`, and `--json` emi
 | `slipfork daemon install` | Writes the per-user daemon unit; no `sudo`, and worlds stay in the developer's session. |
 | `slipfork daemon install --ingress` | Adds the system `:80` socket and AppArmor profile; the only daemon verb that needs `sudo`. |
 | `slipfork migrate` | Converts a legacy `snow.yml` manifest into a formatted `# forkfile: 0.1` `Forkfile`. |
+| `slipfork completions <bash\|zsh\|fish>` | Prints a completion script generated from the same verb/flag table that renders `--help`, so help and completions never drift; an unknown shell fails with one `next:` line. |
 
 After pairing, `slipfork auth` prints the settled pair and one `next: slipfork up` line; with no endpoint and no saved record it fails with `this daemon has no OSPP endpoint` and names the flag to pass.
 

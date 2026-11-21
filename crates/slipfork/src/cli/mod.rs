@@ -2,6 +2,7 @@
 
 mod help;
 mod parse;
+mod surface;
 
 use std::fmt;
 use std::process::ExitCode;
@@ -35,6 +36,7 @@ enum Verb {
     Redis(TargetArgs),
     Fmt(FmtArgs),
     Migrate(MigrateArgs),
+    Completions(surface::Shell),
     Supervise(SuperviseArgs),
 }
 
@@ -73,6 +75,7 @@ enum HelpTopic {
     Redis,
     Fmt,
     Migrate,
+    Completions,
 }
 
 /// A rejected command line, rendered as one line.
@@ -115,6 +118,7 @@ impl CommandLine {
             Verb::Redis(args) => session.redis(&args),
             Verb::Fmt(args) => session.fmt(&args),
             Verb::Migrate(args) => session.migrate(&args),
+            Verb::Completions(shell) => emit(&shell.script()),
             Verb::Supervise(args) => session.supervise(&args),
         }
     }

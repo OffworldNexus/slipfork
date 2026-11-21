@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use crate::commands::{ExecArgs, FmtArgs, LogsArgs, MigrateArgs, TargetArgs};
 use crate::world::{DownArgs, RestartArgs, SuperviseArgs, UpArgs};
 
+use super::surface::Shell;
 use super::{CommandLine, DaemonInstallArgs, HelpTopic, StatusArgs, UsageError, Verb};
 
 impl CommandLine {
@@ -61,6 +62,7 @@ impl CommandLine {
             "redis" => redis_verb(rest)?,
             "fmt" => fmt_verb(rest)?,
             "migrate" => migrate_verb(rest)?,
+            "completions" => completions_verb(rest)?,
             // The server ships as its own binary; say where it went.
             "lsp" => {
                 return Err(UsageError::new(
@@ -383,6 +385,27 @@ fn fmt_verb(args: &[&str]) -> Result<Verb, UsageError> {
         json,
         path: path.unwrap_or_else(|| PathBuf::from("Forkfile")),
     }))
+}
+
+fn completions_verb(args: &[&str]) -> Result<Verb, UsageError> {
+    if args.iter().any(|arg| matches!(*arg, "-h" | "--help")) {
+        return Ok(Verb::Help(HelpTopic::Completions));
+    }
+    let Some((shell, rest)) = args.split_first() else {
+        return Err(UsageError::new(
+            "`completions` needs a shell: bash, zsh, or fish",
+        ));
+    };
+    if let Some(extra) = rest.first() {
+        return Err(UsageError::new(format!(
+            "unknown argument `{extra}` for `completions`"
+        )));
+    }
+    Shell::parse(shell).map(Verb::Completions).ok_or_else(|| {
+        UsageError::new(format!(
+            "`{shell}` is not a shell; expected bash, zsh, or fish"
+        ))
+    })
 }
 
 fn migrate_verb(args: &[&str]) -> Result<Verb, UsageError> {

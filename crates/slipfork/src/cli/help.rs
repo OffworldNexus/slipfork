@@ -2,6 +2,7 @@
 
 use crate::render::paint;
 
+use super::surface;
 use super::{HelpTopic, VERSION};
 
 pub(super) fn help_text(topic: HelpTopic, color: bool) -> String {
@@ -15,22 +16,7 @@ pub(super) fn help_text(topic: HelpTopic, color: bool) -> String {
                  Usage: slipfork <command> [options]\n\
                  \n\
                  Commands:\n\
-                 \x20 status    Show every running world as a tree (the bare `slipfork` verb)\n\
-                 \x20 ps        Show only this directory's world or fork\n\
-                 \x20 doctor    Check Btrfs, namespaces, and the crun + :80 runtime\n\
-                 \x20 up        Boot the world declared by ./Forkfile and return when ready\n\
-                 \x20 down      Stop this directory's running world\n\
-                 \x20 restart   Restart one service, or every service\n\
-                 \x20 logs      Stream merged stdout + stderr with per-service gutters\n\
-                 \x20 shell     Open a shell inside a service or image pod\n\
-                 \x20 exec      Run a command inside a pod and forward its exit code\n\
-                 \x20 db        Open psql against the world's postgres\n\
-                 \x20 redis     Open redis-cli against the world's redis\n\
-                 \x20 fmt       Format a Forkfile in place\n\
-                 \x20 migrate   Convert a legacy snow.yml into a Forkfile\n\
-                 \x20 daemon    Install the per-user unit (and with sudo the system :80 socket)\n\
-                 \x20 help      Print this overview\n\
-                 \x20 version   Print the version\n\
+                 {}\
                  \n\
                  Examples:\n\
                  \x20 slipfork\n\
@@ -42,7 +28,8 @@ pub(super) fn help_text(topic: HelpTopic, color: bool) -> String {
                  \n\
                  Options:\n\
                  \x20 -h, --help      Print this overview\n\
-                 \x20 -V, --version   Print the version\n"
+                 \x20 -V, --version   Print the version\n",
+                surface::commands_block()
             )
         }
         HelpTopic::Status => {
@@ -272,6 +259,24 @@ pub(super) fn help_text(topic: HelpTopic, color: bool) -> String {
                  \n\
                  Example:\n\
                  \x20 slipfork fmt --check Forkfile\n"
+            )
+        }
+        HelpTopic::Completions => {
+            let title = paint("slipfork completions", "1;36", color);
+            format!(
+                "{title}\n\
+                 Print a completion script for bash, zsh, or fish.\n\
+                 \n\
+                 Usage: slipfork completions <bash|zsh|fish>\n\
+                 \n\
+                 Arguments:\n\
+                 \x20 SHELL   bash, zsh, or fish\n\
+                 \n\
+                 Options:\n\
+                 \x20 -h, --help\n\
+                 \n\
+                 Example:\n\
+                 \x20 slipfork completions bash > /etc/bash_completion.d/slipfork\n"
             )
         }
         HelpTopic::Migrate => {

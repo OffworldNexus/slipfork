@@ -109,14 +109,51 @@ fn help_and_version_are_the_shipped_surface() {
     assert_eq!(
         shipped_verbs(&help),
         [
-            "status", "ps", "doctor", "up", "down", "restart", "logs", "shell", "exec", "db",
-            "redis", "fmt", "migrate", "daemon", "help", "version"
+            "status",
+            "ps",
+            "doctor",
+            "up",
+            "down",
+            "restart",
+            "logs",
+            "shell",
+            "exec",
+            "db",
+            "redis",
+            "fmt",
+            "migrate",
+            "completions",
+            "daemon",
+            "help",
+            "version"
         ],
         "{help}"
     );
     assert!(!help.contains("  lsp "), "no lsp row may ship: {help}");
     assert!(help.contains("Examples:\n  slipfork\n"), "{help}");
     assert!(!help.contains(ANSI), "piped output must stay plain");
+
+    // One table drives the help rows and all three scripts, so every verb appears in each.
+    for shell in ["bash", "zsh", "fish"] {
+        let script = run(&["completions", shell]);
+        assert!(
+            script.status.success(),
+            "`completions {shell}` must succeed"
+        );
+        let text = String::from_utf8(script.stdout).expect("completions are UTF-8");
+        assert!(!text.contains(ANSI), "{shell} must stay plain: {text}");
+        for verb in shipped_verbs(&help) {
+            assert!(
+                text.contains(&verb),
+                "{shell} script is missing {verb}: {text}"
+            );
+        }
+    }
+    let unknown = run(&["completions", "pwsh"]);
+    assert_eq!(unknown.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&unknown.stderr);
+    assert!(stderr.contains("is not a shell"), "{stderr}");
+    assert_eq!(stderr.matches("next:").count(), 1, "{stderr}");
 
     let version = run(&["--version"]);
     assert!(version.status.success());
