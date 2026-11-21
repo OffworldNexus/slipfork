@@ -1,152 +1,102 @@
-.TH SLIPFORK 1 "2026-11-21" "slipfork 0.1.0" "User Commands"
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH slipfork 1  "slipfork 0.1.0" 
 .SH NAME
-slipfork \- copy-on-write Btrfs worlds for polyglot apps and coding agents
+slipfork \- Copy\-on\-write Btrfs environments for polyglot apps and AI coding agents.
 .SH SYNOPSIS
-.B slipfork
-.RI [ verb ]
-.RI [ options ]
+\fBslipfork\fR [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-\-json\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] [\fIsubcommands\fR]
 .SH DESCRIPTION
-.B slipfork
-reads a
-.I Forkfile
-in the current directory and runs its images, databases, caches, buckets, and
-workers on native Btrfs subvolumes and
-.BR crun ,
-behind one
-.I .localhost
-domain.
-No Docker daemon is involved.
-Every world starts through a single per-user daemon that the CLI starts on demand.
-.SH VERBS
+Copy\-on\-write Btrfs environments for polyglot apps and AI coding agents.
+.SH OPTIONS
 .TP
-.B status
-Show every running world as a tree.
-Flags: \fB--json\fR, \fB-v\fR, \fB--verbose\fR.
+\fB\-v\fR, \fB\-\-verbose\fR
+Add supervisor lineage and resource detail to status rows
 .TP
-.B ps
-Show only the world or fork rooted in this directory.
-Flags: \fB--json\fR, \fB-v\fR, \fB--verbose\fR.
+\fB\-\-json\fR
+Emit machine\-readable JSON with zero ANSI
 .TP
-.B doctor
-Check Btrfs, namespaces, and the crun + \fB:80\fR runtime, and print
-\fB\(check Ready\fR or \fB\(cross N issue(s)\fR first.
-Flags: \fB--json\fR.
+\fB\-h\fR, \fB\-\-help\fR
+Print help
 .TP
-.B up
-Boot the world declared by \fI./Forkfile\fR and return when it is ready.
-Flags: \fB--world\fR, \fB--json\fR.
+\fB\-V\fR, \fB\-\-version\fR
+Print version
+.SH SUBCOMMANDS
 .TP
-.B down
-Stop the running world in this directory.
-Flags: \fB--json\fR.
+\fBslipfork status\fR
+Show every running world as one tree; bare `slipfork` is this verb
 .TP
-.B restart
-Restart one service, or every service.
-Flags: \fB--json\fR.
+\fBslipfork ps\fR
+Show only the world or fork rooted in this directory
 .TP
-.B fork
-Snapshot the project and world data, then boot the fork on its own URL.
-Flags: \fB--json\fR.
+\fBslipfork doctor\fR
+Check Btrfs, namespaces, and the crun + :80 runtime
 .TP
-.B drop
-Stop a fork and delete its project and world-data snapshots.
-Flags: \fB-f\fR, \fB--force\fR, \fB--json\fR.
+\fBslipfork up\fR
+Boot images, resources, setup, hooks, and services from ./Forkfile
 .TP
-.B logs
-Stream merged stdout and stderr with per-service gutters.
-Flags: \fB-f\fR, \fB--follow\fR, \fB--json\fR.
+\fBslipfork down\fR
+Stop this directory\*(Aqs running world and every pod in it
 .TP
-.B shell
-Open a shell inside a service or image pod.
-Flags: \fB--json\fR.
+\fBslipfork restart\fR
+Restart one service from its existing bundle, or every service
 .TP
-.B exec
-Run a command inside a pod and forward its exit code.
-Flags: \fB--json\fR.
+\fBslipfork fork\fR
+Snapshot the project and world data, then boot the fork on its own URL
 .TP
-.B db
-Open psql against the world postgres.
-Flags: \fB--json\fR.
+\fBslipfork drop\fR
+Stop a fork and delete its project and world\-data snapshots
 .TP
-.B redis
-Open redis-cli against the world redis.
-Flags: \fB--json\fR.
+\fBslipfork logs\fR
+Stream merged stdout and stderr with a colored gutter per service
 .TP
-.B env
-Print resolved runtime variables; secrets stay redacted unless revealed.
-Flags: \fB--reveal\fR, \fB--json\fR.
+\fBslipfork shell\fR
+Open `sh \-i` inside a service or image pod (no PTY is allocated)
 .TP
-.B secret
-List, override, or remove local offline secrets.
-Subcommands: \fBlist\fR, \fBset\fR, \fBunset\fR.
-Flags: \fB--json\fR.
+\fBslipfork exec\fR
+Run a command inside a pod and forward its exit code
 .TP
-.B open
-Open the world or service URL in your browser, headless-aware.
-Flags: \fB--json\fR.
+\fBslipfork db\fR
+Open psql against the world\*(Aqs postgres; piped stdin executes SQL
 .TP
-.B auth
-Pair this machine with a remote OSPP v1 endpoint.
-Flags: \fB--ospp-endpoint\fR, \fB--json\fR.
+\fBslipfork redis\fR
+Open redis\-cli against the world\*(Aqs redis; piped stdin runs commands
 .TP
-.B fmt
-Format a Forkfile in place.
-Flags: \fB--check\fR, \fB--json\fR.
+\fBslipfork env\fR
+Print resolved runtime variables; secrets stay redacted by default
 .TP
-.B migrate
-Convert a legacy \fIsnow.yml\fR into a Forkfile.
-Flags: \fB--write\fR, \fB--force\fR, \fB--json\fR.
+\fBslipfork secret\fR
+List, override, or remove local offline secrets for this world
 .TP
-.B completions
-Print a shell completion script for \fBbash\fR, \fBzsh\fR, or \fBfish\fR.
+\fBslipfork open\fR
+Open the world or service URL in your browser, printing it when headless
 .TP
-.B daemon install
-Write the per-user unit under \fB$XDG_CONFIG_HOME/systemd/user\fR.
-With \fB--ingress\fR and root, also install \fBslipfork-ingress.socket\fR,
-\fBslipfork-ingress@.service\fR, and the AppArmor profile.
-Flags: \fB--ingress\fR, \fB--json\fR.
+\fBslipfork auth\fR
+Pair this machine with an OSPP v1 endpoint, or reuse the saved record
 .TP
-.B help
-Print the overview.
+\fBslipfork fmt\fR
+Format a Forkfile in place, or report with `\-\-check`
 .TP
-.B version
-Print the version.
-.SH FILES
+\fBslipfork migrate\fR
+Convert a legacy snow.yml manifest into a Forkfile
 .TP
-.I ./Forkfile
-The world declaration read by \fBup\fR.
+\fBslipfork completions\fR
+Print a completion script for bash, zsh, or fish
 .TP
-.I $XDG_CONFIG_HOME/systemd/user/slipfork.service
-The per-user daemon unit \fBdaemon install\fR writes.
+\fBslipfork daemon\fR
+Install the per\-user unit (and with sudo the system :80 socket)
 .TP
-.I /usr/lib/systemd/user/slipfork.service
-The package's per-user unit copy; enable it with \fBsystemctl --user enable slipfork\fR.
+\fBslipfork help\fR
+Print this overview, or one verb\*(Aqs help
 .TP
-.I /usr/lib/systemd/system/slipfork-ingress.socket
-The \fB127.0.0.1:80\fR socket unit the package ships.
-.TP
-.I /usr/lib/systemd/system/slipfork-ingress@.service
-The per-connection handoff template; \fBdaemon install --ingress\fR rewrites its
-\fBUser=\fR for the invoking developer.
-.TP
-.I /etc/systemd/system/slipfork-ingress.socket
-Where \fBdaemon install --ingress\fR writes the runtime socket unit.
-.TP
-.I /etc/apparmor.d/slipfork
-The user-namespace profile the package ships.
-.SH ENVIRONMENT
-.TP
-.B NO_COLOR
-Disable every ANSI escape; \fB--json\fR does the same for machine output.
-.TP
-.B SLIPFORK_WORLD
-The world a shell or plugin command targets.
-.TP
-.B SLIPFORK_URL
-The URL a fork or world is reachable at.
-.SH SEE ALSO
-.BR slipfork-lsp (1),
-.BR crun (1),
-.BR btrfs (8)
-.SH BUGS
-Report issues at https://github.com/OffworldNexus/slipfork/issues.
+\fBslipfork version\fR
+Print the version
+.SH EXTRA
+Examples:
+  slipfork
+  slipfork up
+  slipfork restart worker
+  slipfork logs \-f api
+  slipfork exec api \-\- pytest \-q
+  slipfork daemon install
+.SH VERSION
+v0.1.0

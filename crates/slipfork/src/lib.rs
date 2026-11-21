@@ -8,7 +8,7 @@ pub mod ps;
 
 mod render;
 
-/// The shipped verb/flag table shared by `--help`, completions, and the ANSI matrix test.
+/// Compile-time descriptor the ANSI matrix test iterates; the shipped surface is `cli`'s clap tree.
 pub mod surface;
 
 pub mod install;

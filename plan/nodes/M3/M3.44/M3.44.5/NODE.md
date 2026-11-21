@@ -2,7 +2,7 @@
 id: M3.44.5
 title: "clap 4.6 derive CLI: completions, manpage, logs -a/--all, UiMode & --json schemas"
 kind: task
-status: ready
+status: done
 owner: implementer
 priority: 3
 depends_on: [M3.44.4]
@@ -10,17 +10,18 @@ paths:
   - Cargo.toml
   - Cargo.lock
   - "crates/slipfork/src/**"
+  - "crates/slipfork/tests/**"
   - "crates/slipfork-forkfile/src/dns.rs"
   - "crates/slipfork-forkfile/src/lib.rs"
   - "packaging/**"
   - "scripts/**"
   - "docs/**"
   - README.md
-attempts: 0
+attempts: 2
 max_attempts: 3
 escalation: none
 created: "2026-11-21T20:17"
-updated: "2026-11-21T20:27"
+updated: "2026-11-21T22:03"
 ---
 
 # Goal

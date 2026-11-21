@@ -40,7 +40,7 @@ impl Session {
                 if !args.json {
                     let mut text = String::new();
                     for candidate in &candidates {
-                        text.push_str(&format!("{}\n", paint(candidate, "1;36", self.color)));
+                        text.push_str(&format!("{}\n", paint(candidate, "1;36", self.color())));
                     }
                     let _ = emit(&text);
                 }
@@ -65,20 +65,20 @@ impl Session {
         if headless {
             return emit(&format!(
                 "{}\nnext: open it on a machine with a browser\n",
-                paint(&url, "1;36", self.color)
+                paint(&url, "1;36", self.color())
             ));
         }
         let Some(opener) = &self.host.opener else {
             return emit(&format!(
                 "{}\nnext: install xdg-open, or open the URL in a browser\n",
-                paint(&url, "1;36", self.color)
+                paint(&url, "1;36", self.color())
             ));
         };
         match Command::new(opener).arg(&url).stdin(Stdio::null()).status() {
             Ok(status) if status.success() => emit(&format!(
                 "{} Opened {}\n",
-                paint("✓", "32", self.color),
-                paint(&url, "1;36", self.color)
+                paint("✓", "32", self.color()),
+                paint(&url, "1;36", self.color())
             )),
             _ => self.report(
                 "open-failed",
@@ -99,13 +99,13 @@ fn route_candidates(
     let path = cwd.join("Forkfile");
     let source = std::fs::read_to_string(&path)
         .map_err(|error| format!("cannot read `{}`: {error}", path.display()))?;
-    let document = slipfork_forkfile::parse(&source).map_err(|diagnostics| {
+    let checked = slipfork_forkfile::compile(&source).map_err(|diagnostics| {
         diagnostics.first().map_or_else(
             || "invalid Forkfile".to_owned(),
             |item| format!("Forkfile:{}: {}", item.span.line(), item.message),
         )
     })?;
-    let declared = document.services();
+    let declared = checked.document.services();
     if let Some(name) = service
         && !declared.iter().any(|declared| declared.id == name)
     {

@@ -105,7 +105,8 @@ impl WorldView {
     ) -> Self {
         let document = fs::read_to_string(project.join("Forkfile"))
             .ok()
-            .and_then(|source| slipfork_forkfile::parse(&source).ok());
+            .and_then(|source| slipfork_forkfile::compile(&source).ok())
+            .map(|checked| *checked.document);
         let mut services = document.as_ref().map(view::services).unwrap_or_default();
         for service in &mut services {
             if let Some(pod) = pods.iter().find(|pod| pod.id == service.id) {

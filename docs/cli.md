@@ -88,7 +88,7 @@ next: fix Forkfile:32, then run `slipfork up`
 | :--- | :--- |
 | TTY-aware colour | ANSI only on a real terminal, `NO_COLOR` unset, `TERM` not `dumb` |
 | Clean scrollback | Spinner frames clear before every status or log line |
-| `--json` parity | The same fields with zero escapes; failures emit `{"error":{code,message,next}}` |
+| `--json` parity | The same fields with zero escapes; failures emit `{"error":{code,message,next}}` with `details` when a path or span exists |
 | Actionable errors | `error: <one sentence>` plus exactly one `next: <command>` |
 | Auto-selection | `shell`, `exec`, `db` and `redis` pick the only candidate, else name the ids |
 
@@ -97,8 +97,10 @@ $ NO_COLOR=1 slipfork status
 $ slipfork up --json
 ```
 
-Under `--json`, `up` streams typed boot events as NDJSON and `fork` answers
-`{fork, world, project, url, elapsed_ms, snapshot_ms}`. No renderer ever parses human text.
+Under `--json`, `up` prints one final object
+`{world, url, elapsed_ms, nodes: [{kind, name, state, duration_ms}]}`; `restart` answers the
+same shape, and `fork` answers `{fork, world, project, url, elapsed_ms, snapshot_ms}`.
+No renderer ever parses human text.
 
 !!! warning "`shell` allocates no TTY"
 

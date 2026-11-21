@@ -8,11 +8,12 @@ use std::io::{self, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use serde_json::json;
-use slipfork_forkfile::format_check;
+use serde_json::{Value, json};
+use slipfork_forkfile::Diagnostics;
 
 use crate::daemon::{DaemonClient, DaemonError};
 use crate::render::paint;
+use crate::ui::UiMode;
 use crate::world::HostEnv;
 use crate::{doctor, status};
 
@@ -55,8 +56,8 @@ pub struct MigrateArgs {
 #[derive(Debug, Clone)]
 pub struct Session {
     cwd: PathBuf,
-    color: bool,
-    tty: bool,
+    ui: UiMode,
+    interactive: bool,
     host: HostEnv,
 }
 
@@ -73,14 +74,14 @@ impl Session {
         &self.host
     }
 
-    /// Builds a session from the injected working directory, colour decision, terminal state, and
-    /// host state.
+    /// Builds a session from the injected working directory, output mode, terminal state, and host
+    /// state. No handler below ever re-probes stdio.
     #[must_use]
-    pub fn new(cwd: PathBuf, color: bool, tty: bool, host: HostEnv) -> Self {
+    pub fn new(cwd: PathBuf, ui: UiMode, interactive: bool, host: HostEnv) -> Self {
         Self {
             cwd,
-            color,
-            tty,
+            ui,
+            interactive,
             host,
         }
     }
@@ -88,7 +89,26 @@ impl Session {
     /// Whether ANSI styling is allowed for this invocation.
     #[must_use]
     pub fn color(&self) -> bool {
-        self.color
+        self.ui.color()
+    }
+
+    /// Whether this invocation asked for the machine-readable object.
+    #[must_use]
+    pub fn json_requested(&self) -> bool {
+        matches!(self.ui, UiMode::Json)
+    }
+
+    /// Switches to `--json` once clap has confirmed the flag was really typed.
+    #[must_use]
+    pub fn force_json(mut self) -> Self {
+        self.ui = UiMode::Json;
+        self
+    }
+
+    /// Whether stdout is a real terminal, independent of the colour decision.
+    #[must_use]
+    pub fn interactive(&self) -> bool {
+        self.interactive
     }
 
     /// Renders every running world as the `specs/02` status tree.
@@ -145,10 +165,10 @@ impl Session {
             return emit(&status::no_world_line(
                 &self.cwd,
                 self.host.home.as_deref(),
-                self.color,
+                self.color(),
             ));
         }
-        let options = status::Options::new(self.color)
+        let options = status::Options::new(self.color())
             .with_now(self.host.now_ms)
             .with_home(self.host.home.clone())
             .with_verbose(verbose);
@@ -157,12 +177,12 @@ impl Session {
 
     /// Prints the three host requirements and their remedies.
     pub fn doctor(&self, json: bool) -> ExitCode {
-        doctor::run(&self.host, &self.cwd, json, self.color)
+        doctor::run(&self.host, &self.cwd, json, self.color())
     }
 
     /// Writes the per-user unit, and with root the system `:80` socket and profile.
     pub fn daemon_install(&self, ingress: bool, json: bool) -> ExitCode {
-        crate::install::install(&self.host.install_host(), ingress, json, self.color)
+        crate::install::install(&self.host.install_host(), ingress, json, self.color())
     }
 
     /// Formats a `Forkfile` in place, or reports whether it needs formatting.
@@ -174,43 +194,37 @@ impl Session {
             Err(error) => {
                 let message = format!("cannot read {label}: {error}");
                 let next = format!("create {label} or pass the path of an existing Forkfile");
-                return if args.json {
-                    fail_json(&label, &message, None, None, &next)
-                } else {
-                    self.fail(&message, &next)
-                };
+                return self.report_details(
+                    "io",
+                    &message,
+                    Some(json!({ "path": label })),
+                    &next,
+                    args.json,
+                );
             }
         };
-        let formatted = match format_check(&source) {
-            Ok(formatted) => formatted,
-            Err(diags) => {
-                if args.json {
-                    let first = diags.first();
-                    return fail_json(
-                        &label,
-                        first.map_or("invalid Forkfile", |item| item.message.as_str()),
-                        first.map(|item| item.span.line()),
-                        first.map(|item| item.span.col()),
-                        first.map_or("fix the Forkfile", |item| item.next.as_str()),
-                    );
-                }
-                eprintln!("{}", diags.render_as(&source, &label));
-                return ExitCode::FAILURE;
+        let checked = match slipfork_forkfile::compile(&source) {
+            Ok(checked) => checked,
+            Err(diagnostics) => {
+                return self.fmt_failure(&label, &diagnostics, &source, args.json);
             }
         };
-        let canonical = formatted.is_formatted();
+        let formatted = slipfork_forkfile::format(&checked.document);
+        let canonical = formatted == source;
         let changed = !canonical;
         if !args.check
             && changed
-            && let Err(error) = fs::write(&path, &formatted.formatted)
+            && let Err(error) = fs::write(&path, &formatted)
         {
             let message = format!("cannot write {label}: {error}");
             let next = format!("check that {} is writable", path.display());
-            return if args.json {
-                fail_json(&label, &message, None, None, &next)
-            } else {
-                self.fail(&message, &next)
-            };
+            return self.report_details(
+                "io",
+                &message,
+                Some(json!({ "path": label })),
+                &next,
+                args.json,
+            );
         }
         if args.json {
             let status = emit(&format!(
@@ -227,25 +241,51 @@ impl Session {
             if canonical {
                 return emit(&format!(
                     "{} {label} is formatted\n",
-                    paint("✓", "32", self.color)
+                    paint("✓", "32", self.color())
                 ));
             }
-            let diff = slipfork_forkfile::fmt::render_diff(&source, &formatted.formatted, &label);
-            eprint!("{}", tint_diff(&diff, self.color));
+            let diff = slipfork_forkfile::fmt::render_diff(&source, &formatted, &label);
+            eprint!("{}", tint_diff(&diff, self.color()));
             eprintln!("next: slipfork fmt {label}");
             return ExitCode::FAILURE;
         }
         if changed {
             emit(&format!(
                 "{} formatted {label}\n",
-                paint("✓", "32", self.color)
+                paint("✓", "32", self.color())
             ))
         } else {
             emit(&format!(
                 "{} {label} is already formatted\n",
-                paint("✓", "32", self.color)
+                paint("✓", "32", self.color())
             ))
         }
+    }
+
+    /// Renders the compiler's first diagnostic for `fmt`, as a caret block or one JSON object.
+    fn fmt_failure(
+        &self,
+        label: &str,
+        diagnostics: &Diagnostics,
+        source: &str,
+        json: bool,
+    ) -> ExitCode {
+        if json {
+            let first = diagnostics.first();
+            return self.report_details(
+                "forkfile",
+                first.map_or("invalid Forkfile", |item| item.message.as_str()),
+                Some(json!({
+                    "path": label,
+                    "line": first.map(|item| item.span.line()),
+                    "col": first.map(|item| item.span.col()),
+                })),
+                first.map_or("fix the Forkfile", |item| item.next.as_str()),
+                true,
+            );
+        }
+        eprintln!("{}", diagnostics.render_as(source, label));
+        ExitCode::FAILURE
     }
 
     /// Converts a legacy `snow.yml` manifest into a canonical `Forkfile`.
@@ -257,11 +297,13 @@ impl Session {
             Err(error) => {
                 let message = format!("cannot read {label}: {error}");
                 let next = format!("create {label} or pass the path of an existing snow.yml");
-                return if args.json {
-                    fail_json(&label, &message, None, None, &next)
-                } else {
-                    self.fail(&message, &next)
-                };
+                return self.report_details(
+                    "io",
+                    &message,
+                    Some(json!({ "path": label })),
+                    &next,
+                    args.json,
+                );
             }
         };
         let forkfile = match slipfork_forkfile::migrate(&source) {
@@ -269,12 +311,16 @@ impl Session {
             Err(diags) => {
                 if args.json {
                     let first = diags.first();
-                    return fail_json(
-                        &label,
+                    return self.report_details(
+                        "forkfile",
                         first.map_or("invalid snow.yml", |item| item.message.as_str()),
-                        first.map(|item| item.span.line()),
-                        first.map(|item| item.span.col()),
+                        Some(json!({
+                            "path": label,
+                            "line": first.map(|item| item.span.line()),
+                            "col": first.map(|item| item.span.col()),
+                        })),
                         first.map_or("fix the manifest", |item| item.next.as_str()),
+                        true,
                     );
                 }
                 eprintln!("{}", diags.render_as(&source, &label));
@@ -286,21 +332,25 @@ impl Session {
         if args.write && existed && !args.force {
             let message = "refusing to overwrite an existing Forkfile".to_string();
             let next = format!("mv Forkfile {}", "Forkfile.old");
-            return if args.json {
-                fail_json(&label, &message, None, None, &next)
-            } else {
-                self.fail(&message, &next)
-            };
+            return self.report_details(
+                "usage",
+                &message,
+                Some(json!({ "path": label })),
+                &next,
+                args.json,
+            );
         }
         if args.write {
             if let Err(error) = fs::write(&output, &forkfile) {
                 let message = format!("cannot write {}: {error}", output.display());
                 let next = format!("check that {} is writable", output.display());
-                return if args.json {
-                    fail_json(&label, &message, None, None, &next)
-                } else {
-                    self.fail(&message, &next)
-                };
+                return self.report_details(
+                    "io",
+                    &message,
+                    Some(json!({ "path": label })),
+                    &next,
+                    args.json,
+                );
             }
             if existed {
                 eprintln!("overwriting Forkfile (--force)");
@@ -364,6 +414,26 @@ impl Session {
         }
         self.fail(message, next)
     }
+
+    /// The `fmt`/`migrate` failure renderer: the same nested error object plus a `details` map.
+    fn report_details(
+        &self,
+        code: &str,
+        message: &str,
+        details: Option<Value>,
+        next: &str,
+        json: bool,
+    ) -> ExitCode {
+        if json {
+            let mut error = json!({ "code": code, "message": message, "next": next });
+            if let Some(details) = details {
+                error["details"] = details;
+            }
+            let _ = emit(&format!("{}\n", json!({ "error": error })));
+            return ExitCode::FAILURE;
+        }
+        self.fail(message, next)
+    }
 }
 
 /// Writes one already-rendered chunk to stdout without panicking on a closed pipe.
@@ -380,19 +450,6 @@ pub(crate) fn emit(text: &str) -> ExitCode {
             ExitCode::FAILURE
         }
     }
-}
-
-fn fail_json(path: &str, error: &str, line: Option<u32>, col: Option<u32>, next: &str) -> ExitCode {
-    let value = json!({
-        "error": error,
-        "path": path,
-        "line": line,
-        "col": col,
-        "next": next,
-    });
-    let status = emit(&format!("{value}\n"));
-    let _ = status;
-    ExitCode::FAILURE
 }
 
 /// Tints diff removals red and additions green; never emits an escape otherwise.

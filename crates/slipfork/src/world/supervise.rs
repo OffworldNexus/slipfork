@@ -36,12 +36,12 @@ fn supervisor_main(project: &Path, world: &str, env: &HostEnv) -> Result<(), Str
     let world = WorldName::parse(world).map_err(|error| error.to_string())?;
     let source = fs::read_to_string(project.join("Forkfile"))
         .map_err(|error| format!("read Forkfile: {error}"))?;
-    let doc: slipfork_forkfile::ast::Forkfile =
-        slipfork_forkfile::parse(&source).map_err(|diagnostics| {
-            diagnostics
-                .first()
-                .map_or("invalid Forkfile".to_owned(), |item| item.message.clone())
-        })?;
+    let checked = slipfork_forkfile::compile(&source).map_err(|diagnostics| {
+        diagnostics
+            .first()
+            .map_or("invalid Forkfile".to_owned(), |item| item.message.clone())
+    })?;
+    let doc: slipfork_forkfile::ast::Forkfile = *checked.document;
     if !is_btrfs_path(project).unwrap_or(false) {
         return Err(format!(
             "`{}` is not on Btrfs\nnext: move the project onto a Btrfs mount",

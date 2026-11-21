@@ -22,7 +22,7 @@ pub struct EnvArgs {
 impl Session {
     /// Prints resolved runtime variables; the daemon only sends values on `--reveal` at a TTY.
     pub fn env(&self, args: &EnvArgs) -> ExitCode {
-        if args.reveal && !self.tty {
+        if args.reveal && !self.interactive() {
             return self.report(
                 "reveal-needs-tty",
                 "`--reveal` needs an interactive terminal",
@@ -31,7 +31,7 @@ impl Session {
             );
         }
         // `--json` is machine data: it never carries a plaintext secret, even from a TTY.
-        let reveal = args.reveal && self.tty && !args.json;
+        let reveal = args.reveal && self.interactive() && !args.json;
         let mut client = match DaemonClient::connect(&self.host) {
             Ok(client) => client,
             Err(error) => return self.daemon_failure(&error, args.json),
@@ -75,12 +75,12 @@ impl Session {
                 .collect();
             let width = rows.iter().map(|(key, _)| key.len()).max().unwrap_or(0);
             if multiple {
-                text.push_str(&format!("{}\n", paint(component, "1", self.color)));
+                text.push_str(&format!("{}\n", paint(component, "1", self.color())));
             }
             for (key, info) in rows {
                 let value = display(info);
                 let shown = if is_secret(info) && info["set"].as_bool() == Some(true) {
-                    paint(&value, "2", self.color)
+                    paint(&value, "2", self.color())
                 } else {
                     value
                 };

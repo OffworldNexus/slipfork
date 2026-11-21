@@ -231,18 +231,20 @@ fn migrate_render_errors_point_at_snow_yml_with_a_caret() {
     let body = text(&json.stdout);
     assert!(!body.contains('^') && !body.contains(ANSI), "{body}");
     let value = parse_json(&body);
+    let error = &value["error"];
+    assert_eq!(error["code"], serde_json::Value::String("forkfile".into()));
     assert_eq!(
-        value["path"],
+        error["details"]["path"],
         serde_json::Value::String("broken.yml".into())
     );
-    assert_eq!(value["line"], serde_json::Value::from(2));
+    assert_eq!(error["details"]["line"], serde_json::Value::from(2));
     assert!(
-        value["error"]
+        error["message"]
             .as_str()
             .is_some_and(|m| m.contains("mystery"))
     );
     assert!(
-        value["next"]
+        error["next"]
             .as_str()
             .is_some_and(|n| n.contains("unknown key"))
     );

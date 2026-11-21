@@ -85,14 +85,14 @@ impl Session {
                 .max()
                 .unwrap_or(0);
             if multiple {
-                text.push_str(&format!("{}\n", paint(&component, "1", self.color)));
+                text.push_str(&format!("{}\n", paint(&component, "1", self.color())));
             }
             for entry in rows {
                 let Some(key) = entry.get("key").and_then(Value::as_str) else {
                     continue;
                 };
                 let value = if entry["set"].as_bool() == Some(true) {
-                    paint("[REDACTED]", "2", self.color)
+                    paint("[REDACTED]", "2", self.color())
                 } else {
                     "<unset>".to_owned()
                 };
@@ -114,7 +114,7 @@ impl Session {
                 args.json,
             );
         };
-        let value = match read_secret_value(self.tty, &format!("{component}.{key}")) {
+        let value = match read_secret_value(self.interactive(), &format!("{component}.{key}")) {
             Ok(value) => value,
             Err(message) => {
                 return self.report(
@@ -158,7 +158,7 @@ impl Session {
         }
         emit(&format!(
             "{} Set {component}.{key}\n",
-            paint("✓", "32", self.color)
+            paint("✓", "32", self.color())
         ))
     }
 
@@ -188,7 +188,7 @@ impl Session {
         }
         emit(&format!(
             "{} Unset {component}.{key}\n",
-            paint("✓", "32", self.color)
+            paint("✓", "32", self.color())
         ))
     }
 }

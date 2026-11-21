@@ -19,6 +19,8 @@ pub use symbols::{Symbol, SymbolKind, SymbolTable};
 /// A document that passed whole-file static semantics.
 #[derive(Debug, Clone)]
 pub struct CheckedForkfile {
+    /// The checked syntax tree every later stage evaluates.
+    pub document: Box<Forkfile>,
     /// The flat symbol table, ready for evaluation by later stages.
     pub symbols: SymbolTable,
     /// Every declared feature name.
@@ -33,6 +35,8 @@ pub struct CheckedForkfile {
 ///
 /// The symbol table and declaration map are returned even when checking fails,
 /// so editors can keep resolving names in a document that has errors.
+// The checked tree is deliberately returned on failure; boxing it would only move the allocation.
+#[allow(clippy::result_large_err)]
 pub fn check(doc: &Forkfile) -> Result<CheckedForkfile, (CheckedForkfile, Diagnostics)> {
     let features = declared_features(&doc.items.items);
     let mut env_keys = BTreeMap::new();
@@ -48,6 +52,7 @@ pub fn check(doc: &Forkfile) -> Result<CheckedForkfile, (CheckedForkfile, Diagno
         checker.check_top(item, &symbols, &features, &env_groups);
     }
     let checked = CheckedForkfile {
+        document: Box::new(doc.clone()),
         symbols,
         features,
         env_keys,

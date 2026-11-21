@@ -18,6 +18,7 @@ mod wire;
 
 pub use client::{DaemonClient, DaemonError};
 
+use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::os::fd::AsRawFd;
@@ -102,6 +103,8 @@ struct Daemon {
     core: Mutex<Core>,
     socket: PathBuf,
     state_dir: PathBuf,
+    /// The invoking process environment, snapshotted by the composition root.
+    env: BTreeMap<String, String>,
 }
 
 impl Daemon {
@@ -130,6 +133,7 @@ impl Daemon {
         let socket = socket_path(&host);
         let _ = fs::remove_file(&socket);
         let state_dir = host.state_dir.clone();
+        let env = host.env.clone();
         let entries = registry::load(&state_dir).map_err(|error| {
             Startup::new(
                 format!(
@@ -146,6 +150,7 @@ impl Daemon {
             core: Mutex::new(core),
             socket,
             state_dir,
+            env,
         }))
     }
 
@@ -314,7 +319,7 @@ impl Daemon {
             }
             "down" => self.core()?.down(&request.params, emit).map(Some),
             "restart" => self.core()?.restart(&request.params, emit).map(Some),
-            "env" => host::env(&self.state_dir, &request.params),
+            "env" => host::env(&self.state_dir, &self.env, &request.params),
             "secret.list" => host::secret_list(&self.state_dir, &request.params),
             "secret.set" => host::secret_set(&self.state_dir, &request.params),
             "secret.unset" => host::secret_unset(&self.state_dir, &request.params),

@@ -5,6 +5,7 @@
 //! real terminal. Components and keys come from [`Forkfile::env_bindings`], the canonical
 //! `on`-aware visitor — never from a re-scan of source text.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
@@ -22,7 +23,11 @@ fn vault_path(state_dir: &Path) -> PathBuf {
 ///
 /// Values stay `null` unless `reveal` is true; the CLI only asks for them on `--reveal` at a TTY,
 /// so plaintext is never sent to a piped or `--json` caller.
-pub(super) fn env(state_dir: &Path, params: &Value) -> Result<Option<Value>, Failure> {
+pub(super) fn env(
+    state_dir: &Path,
+    process_env: &BTreeMap<String, String>,
+    params: &Value,
+) -> Result<Option<Value>, Failure> {
     let project = project_of(params)?;
     let wanted = params.get("component").and_then(Value::as_str);
     let reveal = params.get("reveal").and_then(Value::as_bool) == Some(true);
@@ -39,7 +44,7 @@ pub(super) fn env(state_dir: &Path, params: &Value) -> Result<Option<Value>, Fai
                 .flatten()
                 .map(|secret| secret.expose().to_owned())
         },
-        &|key| std::env::var(key).ok(),
+        &|key| process_env.get(key).cloned(),
     );
     let mut reply = serde_json::Map::new();
     for (component, declared) in components {
@@ -242,11 +247,13 @@ fn document(project: &Path) -> Result<slipfork_forkfile::Forkfile, Failure> {
             format!("cannot read `{}`: {error}", path.display()),
         )
     })?;
-    slipfork_forkfile::parse(&source).map_err(|diagnostics| {
-        let detail = diagnostics.first().map_or_else(
-            || "invalid Forkfile".to_owned(),
-            |item| format!("Forkfile:{}: {}", item.span.line(), item.message),
-        );
-        Failure::new("invalid-forkfile", detail)
-    })
+    slipfork_forkfile::compile(&source)
+        .map(|checked| *checked.document)
+        .map_err(|diagnostics| {
+            let detail = diagnostics.first().map_or_else(
+                || "invalid Forkfile".to_owned(),
+                |item| format!("Forkfile:{}: {}", item.span.line(), item.message),
+            );
+            Failure::new("invalid-forkfile", detail)
+        })
 }

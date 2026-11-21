@@ -70,7 +70,7 @@ impl Session {
             Some(self.host.state_dir.join("ospp.json")),
             OsppTimeouts::default(),
         );
-        let color = self.color;
+        let color = self.color();
         let json_mode = args.json;
         let mut phase = |phase: PairPhase| {
             if json_mode {

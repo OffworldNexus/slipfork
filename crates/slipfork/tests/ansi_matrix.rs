@@ -170,6 +170,39 @@ impl Drop for Lab {
 }
 
 #[test]
+fn verb_table_matches_the_real_help_surface() {
+    let lab = Lab::new();
+    let root = lab.root.as_path();
+    let help = run(root, &["--help"]);
+    assert!(help.status.success(), "`slipfork --help` must succeed");
+    let text = String::from_utf8(help.stdout).expect("help is UTF-8");
+    let listed: Vec<&str> = text
+        .lines()
+        .skip_while(|line| line.trim() != "Commands:")
+        .skip(1)
+        .take_while(|line| !line.trim().is_empty())
+        .map(|line| line.split_whitespace().next().unwrap_or_default())
+        .collect();
+    let table: Vec<&str> = VERBS.iter().map(|verb| verb.name).collect();
+    assert_eq!(
+        listed, table,
+        "`slipfork::surface::VERBS` drifted from `slipfork --help`; a new verb must join the matrix"
+    );
+    for verb in VERBS {
+        let help = run(root, &[verb.name, "--help"]);
+        assert!(help.status.success(), "`{} --help` must succeed", verb.name);
+        let text = String::from_utf8(help.stdout).expect("help is UTF-8");
+        for flag in verb.flags {
+            assert!(
+                text.contains(*flag),
+                "`{} --help` is missing {flag}: {text}",
+                verb.name
+            );
+        }
+    }
+}
+
+#[test]
 fn every_shipped_verb_is_plain_and_json_is_parseable() {
     let lab = Lab::new();
     let root = lab.root.as_path();

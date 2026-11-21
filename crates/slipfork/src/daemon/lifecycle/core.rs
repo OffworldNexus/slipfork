@@ -184,8 +184,10 @@ impl Core {
             .map_err(|message| Failure::new("restart-failed", message))?;
         emit(json!({
             "event": "finished", "step": 1, "total": 1, "kind": "service",
+            "name": subject, "state": "running",
             "label": format!("Restarted {subject}"), "detail": format!("{} pod(s)", reply["restarted"]),
             "elapsed_ms": started.elapsed().as_millis() as u64,
+            "duration_ms": started.elapsed().as_millis() as u64,
         }));
         self.ingress = None;
         Ok(json!({ "restarted": reply["restarted"], "world": world }))
@@ -207,14 +209,14 @@ impl Core {
             let Ok(source) = fs::read_to_string(entry.project.join("Forkfile")) else {
                 continue;
             };
-            let Ok(document) = slipfork_forkfile::parse(&source) else {
+            let Ok(checked) = slipfork_forkfile::compile(&source) else {
                 eprintln!(
                     "slipfork daemon: skipped ingress for `{}`: invalid Forkfile",
                     entry.world
                 );
                 continue;
             };
-            match IngressTable::from_forkfile(entry.world.clone(), &document) {
+            match IngressTable::from_forkfile(entry.world.clone(), &checked.document) {
                 Ok(table) => {
                     pods.insert(entry.world.clone(), entry.pods_dir.clone());
                     tables.push(table);

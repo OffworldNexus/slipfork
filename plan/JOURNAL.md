@@ -2652,3 +2652,11 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-21T21:48 [M3.44.4] (lead) accepted; deferred to M3.45: per-collaborator lock sharding in world/supervise.rs (perf-only, fork skips builds)
 - 2026-11-21T21:48 [M3.44.4] (lead) status review -> done
 - 2026-11-21T21:48 [M3.44.4] (lead) edited fields
+- 2026-11-21T21:48 [M3.44.5] (lead) status ready -> active
+- 2026-11-21T21:48 [M3.44.5] (lead) attempt 1/3 started
+- 2026-11-21T21:48 [M3.44.5] (lead) base d624fbfe7c24a123180b319ec5b8abbdf0db68ff
+- 2026-11-21T21:54 [M3.44.5] (lead) status active -> review
+- 2026-11-21T21:56 [M3.44.5] (lead) edited fields
+- 2026-11-21T21:56 [M3.44.5] (lead) attempt 2/3 started
+- 2026-11-21T21:56 [M3.44.5] (lead) triad fix pass: fork json fields, JSON-aware usage errors, single compile(), env snapshot, run(session), json scan, matrix drift, slug boundary, manpage drift, 
+- 2026-11-21T22:03 [M3.44.5] (lead) status review -> done

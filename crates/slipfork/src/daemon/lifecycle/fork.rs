@@ -98,10 +98,16 @@ impl Core {
             .map_err(|error| Failure::new("invalid-world", first_line(&error.to_string())))?;
         let name = match param_name(params) {
             Some(name) => name.to_owned(),
-            None => self
-                .vcs
-                .branch(&project)
-                .map_err(|error| vcs_failure(&error))?,
+            None => {
+                let branch = self
+                    .vcs
+                    .branch(&project)
+                    .map_err(|error| vcs_failure(&error))?;
+                // Branch names are user territory (`Feat/Auth`); normalize them with the one
+                // `Forkfile` slug rule before validating the resulting `.localhost` label.
+                slipfork_forkfile::DnsLabel::slug(&branch)
+                    .map_err(|error| Failure::new("invalid-fork", error.message(&branch)))?
+            }
         };
         let fork = ForkName::parse(&name)
             .map_err(|error| Failure::new("invalid-fork", error.to_string()))?;
@@ -346,10 +352,11 @@ fn checkpoint_postgres(project: &Path, pods_dir: Option<&Path>) -> Result<(), Fa
     let Ok(source) = std::fs::read_to_string(project.join("Forkfile")) else {
         return Ok(());
     };
-    let Ok(document) = slipfork_forkfile::parse(&source) else {
+    let Ok(checked) = slipfork_forkfile::compile(&source) else {
         return Ok(());
     };
-    let Some(postgres) = document
+    let Some(postgres) = checked
+        .document
         .resources()
         .into_iter()
         .find(|resource| resource.kind == ResourceDeclKind::Postgres)

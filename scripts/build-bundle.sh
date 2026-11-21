@@ -108,6 +108,8 @@ fi
 install -m 0644 packaging/systemd/slipfork.service packaging/systemd/slipfork-ingress.socket \
     packaging/systemd/slipfork-ingress@.service "$out/share/slipfork/systemd/"
 install -m 0644 packaging/apparmor/slipfork "$out/share/slipfork/apparmor/slipfork"
+# Regenerate slipfork(1) from the freshly built clap tree so the shipped page cannot drift.
+"$bindir/slipfork" --manpage >packaging/man/slipfork.1
 for page in packaging/man/*.1; do
     gzip -9 -n -c "$page" >"$out/share/slipfork/man/$(basename "$page").gz"
 done

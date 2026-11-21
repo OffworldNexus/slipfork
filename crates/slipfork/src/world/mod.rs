@@ -9,6 +9,7 @@ mod runtime;
 mod supervise;
 mod up;
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -63,6 +64,8 @@ pub struct HostEnv {
     pub ssh: bool,
     /// The first `xdg-open`/`open` on the injected `PATH`, if any.
     pub opener: Option<PathBuf>,
+    /// The process environment snapshot, read once by the composition root.
+    pub env: BTreeMap<String, String>,
 }
 
 impl HostEnv {
@@ -143,7 +146,7 @@ pub struct RestartArgs {
 pub struct ForkArgs {
     /// Fork name; defaults to the checkout's current git branch.
     pub name: Option<String>,
-    /// Emit `{"fork","project","url","elapsed_ms"}` instead of the summary line.
+    /// Emit `{"fork","world","project","url","elapsed_ms","snapshot_ms"}` instead of the summary.
     pub json: bool,
 }
 
@@ -180,27 +183,22 @@ pub(super) fn state_path(project: &Path) -> PathBuf {
     project.join(".slipfork/world.json")
 }
 
-/// Derives the world name from `--world` or the project directory, sanitized to `[a-z0-9._-]`.
+/// Derives the world name from `--world` or the project directory, normalized as an RFC 1123
+/// `.localhost` label by the `Forkfile` compiler's one slug rule.
 pub(crate) fn world_name(
     project: &Path,
     requested: Option<&str>,
 ) -> Result<slipfork_world::WorldName, String> {
     let raw = match requested {
         Some(name) => name.to_owned(),
-        None => project
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("world")
-            .to_lowercase()
-            .chars()
-            .map(|ch| {
-                if ch.is_ascii_alphanumeric() || ch == '-' || ch == '.' || ch == '_' {
-                    ch
-                } else {
-                    '-'
-                }
-            })
-            .collect(),
+        None => {
+            let directory = project
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("world");
+            slipfork_forkfile::DnsLabel::slug(directory)
+                .map_err(|error| error.message(directory))?
+        }
     };
     slipfork_world::WorldName::parse(&raw).map_err(|error| error.to_string())
 }

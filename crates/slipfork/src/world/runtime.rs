@@ -136,7 +136,7 @@ impl WorldRuntime {
                     .flatten()
                     .map(|secret| secret.expose().to_owned())
             },
-            &|key| std::env::var(key).ok(),
+            &|key| env.env.get(key).cloned(),
         );
         Ok(Self {
             engine,

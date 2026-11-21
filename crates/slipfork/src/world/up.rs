@@ -2,14 +2,16 @@
 //!
 //! The daemon owns the detached `__supervise` process, its process group, and every world socket.
 //! This module only sends the request, renders the typed `event` frames, and prints exactly one
-//! `next:` remedy (or one JSON error object under `--json`).
+//! `next:` remedy (or one `specs/02` JSON object under `--json`).
 
 use std::fs;
 use std::process::ExitCode;
+use std::time::Instant;
 
 use serde_json::{Value, json};
+use slipfork_forkfile::Diagnostics;
 
-use crate::commands::Session;
+use crate::commands::{Session, emit};
 use crate::daemon::{DaemonClient, DaemonError};
 use crate::render::paint;
 
@@ -37,20 +39,8 @@ impl Session {
                 );
             }
         };
-        if let Err(diagnostics) = slipfork_forkfile::parse(&source) {
-            return self.lifecycle_failure(
-                &DaemonError {
-                    code: "forkfile".to_owned(),
-                    message: diagnostics
-                        .first()
-                        .map_or("invalid Forkfile".to_owned(), |item| item.message.clone()),
-                },
-                diagnostics
-                    .first()
-                    .map_or("fix the Forkfile", |item| item.next.as_str()),
-                args.json,
-                false,
-            );
+        if let Err(diagnostics) = slipfork_forkfile::compile(&source) {
+            return self.forkfile_failure(&diagnostics, args.json);
         }
         let mut client = match DaemonClient::connect(self.host()) {
             Ok(client) => client,
@@ -60,9 +50,11 @@ impl Session {
         };
         let color = self.color();
         let json_mode = args.json;
+        let began = Instant::now();
         let mut failed = false;
         let mut remedy: Option<String> = None;
         let mut line = 0_u32;
+        let mut nodes = Vec::new();
         let outcome = client.call_streaming(
             "up",
             json!({ "project": project, "world": args.world }),
@@ -76,11 +68,29 @@ impl Session {
                 if let Some(value) = event["line"].as_u64() {
                     line = u32::try_from(value).unwrap_or(0);
                 }
-                failed |= render_event(event, color, json_mode);
+                if let Some(node) = boot_node(event) {
+                    nodes.push(node);
+                }
+                if json_mode {
+                    failed |= event["event"].as_str() == Some("failed");
+                } else {
+                    failed |= render_event(event, color, false);
+                }
             },
         );
         match outcome {
-            Ok(_) if !failed => ExitCode::SUCCESS,
+            Ok(reply) if !failed => {
+                if json_mode {
+                    let elapsed = u64::try_from(began.elapsed().as_millis()).unwrap_or(u64::MAX);
+                    return emit_json(&json!({
+                        "world": reply["world"],
+                        "url": reply["url"],
+                        "elapsed_ms": elapsed,
+                        "nodes": nodes,
+                    }));
+                }
+                ExitCode::SUCCESS
+            }
             Ok(_) => ExitCode::FAILURE,
             Err(error) => {
                 let next = remedy.unwrap_or_else(|| {
@@ -97,22 +107,109 @@ impl Session {
 
     /// Stops the world through the daemon; its Btrfs data subvolumes stay intact.
     pub fn down(&self, args: &DownArgs) -> ExitCode {
-        self.stream_lifecycle(
-            "down",
-            json!({ "project": self.cwd() }),
-            args.json,
-            "run `slipfork up` to start a world",
-        )
+        let json_mode = args.json;
+        let mut client = match DaemonClient::connect(self.host()) {
+            Ok(client) => client,
+            Err(error) => {
+                return self.lifecycle_failure(
+                    &error,
+                    "run `slipfork up` to start a world",
+                    json_mode,
+                    false,
+                );
+            }
+        };
+        let color = self.color();
+        let mut elapsed_ms = 0_u64;
+        let mut world = String::new();
+        let outcome =
+            client.call_streaming("down", json!({ "project": self.cwd() }), &mut |event| {
+                if event["event"].as_str() == Some("stopped") {
+                    elapsed_ms = event["elapsed_ms"].as_u64().unwrap_or(elapsed_ms);
+                    if let Some(name) = event["world"].as_str() {
+                        world = name.to_owned();
+                    }
+                } else if !json_mode {
+                    render_phase(event, color, false);
+                }
+            });
+        match outcome {
+            Ok(reply) => {
+                if json_mode {
+                    if world.is_empty() {
+                        world = reply["world"].as_str().unwrap_or_default().to_owned();
+                    }
+                    return emit_json(&json!({ "world": world, "elapsed_ms": elapsed_ms }));
+                }
+                ExitCode::SUCCESS
+            }
+            Err(error) => self.lifecycle_failure(
+                &error,
+                "run `slipfork up` to start a world",
+                json_mode,
+                false,
+            ),
+        }
     }
 
     /// Restarts one service or every service in place through the daemon.
     pub fn restart(&self, args: &RestartArgs) -> ExitCode {
-        self.stream_lifecycle(
+        let json_mode = args.json;
+        let mut client = match DaemonClient::connect(self.host()) {
+            Ok(client) => client,
+            Err(error) => {
+                return self.lifecycle_failure(
+                    &error,
+                    "run `slipfork up` if the world is no longer running",
+                    json_mode,
+                    false,
+                );
+            }
+        };
+        let color = self.color();
+        let began = Instant::now();
+        let mut elapsed_ms = 0_u64;
+        let mut nodes = Vec::new();
+        let outcome = client.call_streaming(
             "restart",
             json!({ "project": self.cwd(), "service": args.service }),
-            args.json,
-            "run `slipfork up` if the world is no longer running",
-        )
+            &mut |event| {
+                if let Some(node) = boot_node(event) {
+                    nodes.push(node);
+                }
+                if let Some(millis) = event["elapsed_ms"].as_u64() {
+                    elapsed_ms = millis;
+                }
+                if !json_mode {
+                    render_phase(event, color, false);
+                }
+            },
+        );
+        match outcome {
+            Ok(reply) => {
+                if json_mode {
+                    let world = reply["world"].as_str().unwrap_or_default();
+                    let elapsed_ms = if elapsed_ms == 0 {
+                        u64::try_from(began.elapsed().as_millis()).unwrap_or(u64::MAX)
+                    } else {
+                        elapsed_ms
+                    };
+                    return emit_json(&json!({
+                        "world": world,
+                        "url": format!("http://{world}.localhost"),
+                        "elapsed_ms": elapsed_ms,
+                        "nodes": nodes,
+                    }));
+                }
+                ExitCode::SUCCESS
+            }
+            Err(error) => self.lifecycle_failure(
+                &error,
+                "run `slipfork up` if the world is no longer running",
+                json_mode,
+                false,
+            ),
+        }
     }
 
     /// Forks the running world into its own CoW snapshots and boots it behind its own URL.
@@ -125,7 +222,7 @@ impl Session {
         };
         let color = self.color();
         let json_mode = args.json;
-        let began = std::time::Instant::now();
+        let began = Instant::now();
         let mut forked = false;
         let outcome = client.call_streaming(
             "fork",
@@ -154,18 +251,14 @@ impl Session {
         match outcome {
             Ok(reply) => {
                 if json_mode {
-                    println!(
-                        "{}",
-                        json!({
-                            "fork": reply["fork"],
-                            "world": reply["world"],
-                            "project": reply["project"],
-                            "url": reply["url"],
-                            "elapsed_ms": reply["elapsed_ms"],
-                            "snapshot_ms": reply["snapshot_ms"],
-                        })
-                    );
-                    return ExitCode::SUCCESS;
+                    return emit_json(&json!({
+                        "fork": reply["fork"],
+                        "world": reply["world"],
+                        "project": reply["project"],
+                        "url": reply["url"],
+                        "elapsed_ms": reply["elapsed_ms"],
+                        "snapshot_ms": reply["snapshot_ms"],
+                    }));
                 }
                 if !forked {
                     let name = reply["fork"].as_str().unwrap_or("fork");
@@ -186,7 +279,7 @@ impl Session {
                     "not-btrfs" => {
                         "move the project onto a btrfs mount, then retry `slipfork fork`".to_owned()
                     }
-                    "git-branch" | "git-missing" => {
+                    "git-branch" | "git-missing" | "invalid-fork" => {
                         "pass a fork name: `slipfork fork <name>`".to_owned()
                     }
                     "no-world" => "run `slipfork up` first".to_owned(),
@@ -206,33 +299,30 @@ impl Session {
         }
     }
 
-    fn stream_lifecycle(
-        &self,
-        method: &str,
-        params: Value,
-        json_mode: bool,
-        next: &str,
-    ) -> ExitCode {
-        let mut client = match DaemonClient::connect(self.host()) {
-            Ok(client) => client,
-            Err(error) => return self.lifecycle_failure(&error, next, json_mode, false),
-        };
-        let color = self.color();
-        let raised = std::cell::Cell::new(false);
-        let outcome = client.call_streaming(method, params, &mut |event| {
-            raised.set(true);
-            render_phase(event, color, json_mode);
-        });
-        match outcome {
-            Ok(reply) => {
-                if json_mode && raised.get() {
-                    // Progress frames already carried the story; echo the final payload once.
-                    println!("{reply}");
-                }
-                ExitCode::SUCCESS
-            }
-            Err(error) => self.lifecycle_failure(&error, next, json_mode, false),
-        }
+    /// Renders the first compiler diagnostic as `Forkfile:line:col`, plus its one `next:`.
+    fn forkfile_failure(&self, diagnostics: &Diagnostics, json_mode: bool) -> ExitCode {
+        let first = diagnostics.first();
+        let message = first.map_or_else(
+            || "invalid Forkfile".to_owned(),
+            |item| {
+                format!(
+                    "Forkfile:{}:{}: {}",
+                    item.span.line(),
+                    item.span.col(),
+                    item.message
+                )
+            },
+        );
+        let next = first.map_or("fix the Forkfile", |item| item.next.as_str());
+        self.lifecycle_failure(
+            &DaemonError {
+                code: "forkfile".to_owned(),
+                message,
+            },
+            next,
+            json_mode,
+            false,
+        )
     }
 
     /// Prints exactly one `next:` remedy, or one JSON error object under `--json`.
@@ -259,4 +349,27 @@ impl Session {
         }
         fail(&error.message, next)
     }
+}
+
+/// One completed boot node, projected into the `specs/02` `nodes` array.
+fn boot_node(event: &Value) -> Option<Value> {
+    if !matches!(
+        event["event"].as_str(),
+        Some("finished") | Some("up-to-date")
+    ) {
+        return None;
+    }
+    let kind = event["kind"].as_str()?;
+    let name = event["name"].as_str()?;
+    Some(json!({
+        "kind": kind,
+        "name": name,
+        "state": event["state"],
+        "duration_ms": event["duration_ms"],
+    }))
+}
+
+/// Emits one already-built JSON object with zero ANSI.
+fn emit_json(value: &Value) -> ExitCode {
+    emit(&format!("{value}\n"))
 }

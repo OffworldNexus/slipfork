@@ -30,6 +30,46 @@ impl<'a> DnsLabel<'a> {
     pub fn as_str(self) -> &'a str {
         self.0
     }
+
+    /// Normalizes a repository folder or git branch into one RFC 1123 `.localhost` label.
+    ///
+    /// Per `specs/01-forkfile.md`: `_` and `/` become `-`, ASCII lowercases, interior dash runs
+    /// collapse to one `-`, edge dashes trim, and the result is capped at the 63-byte DNS limit.
+    /// The normalized value is re-validated through [`DnsLabel::new`] before it is returned.
+    pub fn slug(value: &str) -> Result<String, DnsError> {
+        let mut slug = String::with_capacity(value.len());
+        let mut last_dash = false;
+        for character in value.chars() {
+            let mapped = if character.is_ascii_alphanumeric() {
+                character.to_ascii_lowercase()
+            } else {
+                '-'
+            };
+            if mapped == '-' {
+                if slug.is_empty() || last_dash {
+                    continue;
+                }
+                last_dash = true;
+            } else {
+                last_dash = false;
+            }
+            slug.push(mapped);
+        }
+        while slug.ends_with('-') {
+            slug.pop();
+        }
+        if slug.len() > 63 {
+            slug.truncate(63);
+            while slug.ends_with('-') {
+                slug.pop();
+            }
+        }
+        if slug.is_empty() {
+            return Err(DnsError::TooShort { min: 1 });
+        }
+        let _ = DnsLabel::new(&slug)?;
+        Ok(slug)
+    }
 }
 
 impl DnsError {
@@ -119,5 +159,55 @@ mod tests {
         assert!(DnsLabel::new(&"a".repeat(64)).is_err());
         assert!(DnsLabel::bucket("ab").is_err());
         assert!(DnsLabel::bucket("1.2.3.4").is_err());
+    }
+
+    #[test]
+    fn slugs_repository_and_branch_names_into_localhost_labels() {
+        assert_eq!(
+            DnsLabel::slug("static_cdn").expect("normalized"),
+            "static-cdn"
+        );
+        assert_eq!(
+            DnsLabel::slug("Feat/Auth").expect("normalized"),
+            "feat-auth"
+        );
+        assert_eq!(
+            DnsLabel::slug("--My  Repo--").expect("normalized"),
+            "my-repo"
+        );
+        assert_eq!(DnsLabel::slug(&"a".repeat(80)).expect("capped").len(), 63);
+        assert!(DnsLabel::slug("///").is_err());
+    }
+
+    #[test]
+    fn labels_hold_the_exact_63_byte_boundary() {
+        let at_limit = "a".repeat(63);
+        assert_eq!(
+            DnsLabel::new(&at_limit).expect("63 bytes fits").as_str(),
+            at_limit
+        );
+        assert_eq!(
+            DnsLabel::bucket(&at_limit)
+                .expect("63 bytes fits a bucket")
+                .as_str(),
+            at_limit
+        );
+        assert_eq!(
+            DnsLabel::new(&"a".repeat(64)),
+            Err(DnsError::TooLong { max: 63 })
+        );
+        assert_eq!(
+            DnsLabel::bucket(&"a".repeat(64)),
+            Err(DnsError::TooLong { max: 63 })
+        );
+    }
+
+    #[test]
+    fn slug_truncation_drops_a_trailing_dash() {
+        // 62 `a`s, a dash, and two letters: 65 bytes truncate to 63, landing on the dash.
+        let normalized = DnsLabel::slug(&format!("{}-bc", "a".repeat(62))).expect("capped");
+        assert_eq!(normalized, "a".repeat(62));
+        assert!(!normalized.ends_with('-'));
+        assert_eq!(DnsLabel::slug(&"a".repeat(63)).expect("fits").len(), 63);
     }
 }

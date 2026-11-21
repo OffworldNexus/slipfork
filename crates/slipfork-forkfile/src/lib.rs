@@ -57,6 +57,15 @@ pub fn parse(source: &str) -> Result<Forkfile, Diagnostics> {
     parser::parse(source)
 }
 
+/// The one load path for a `Forkfile`: parse, then run whole-file static semantics.
+///
+/// Every caller (`up`, `fmt`, the daemon, the supervisor, and `open`) must use this so a document
+/// can never pass one load path and fail another.
+pub fn compile(source: &str) -> Result<CheckedForkfile, Diagnostics> {
+    let document = parse(source)?;
+    check(&document).map_err(|(_, diagnostics)| diagnostics)
+}
+
 /// Renders a parsed document canonically.
 #[must_use]
 pub fn format(doc: &Forkfile) -> String {
