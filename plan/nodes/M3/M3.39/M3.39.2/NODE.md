@@ -2,16 +2,21 @@
 id: M3.39.2
 title: "Native OCI Distribution v2 puller: bearer auth, multi-arch manifests, streaming sha256 layers into RO Btrfs subvolumes"
 kind: task
-status: ready
+status: done
 owner: implementer
 priority: 3
 depends_on: [M3.39.1]
-paths: ["crates/slipfork-image/**", Cargo.toml, Cargo.lock]
-attempts: 0
+paths:
+  - "crates/slipfork-image/**"
+  - "crates/slipfork-world/src/port.rs"
+  - "crates/slipfork-world/src/engine.rs"
+  - Cargo.toml
+  - Cargo.lock
+attempts: 2
 max_attempts: 3
 escalation: none
 created: "2026-11-21T01:53"
-updated: "2026-11-21T01:53"
+updated: "2026-11-21T10:10"
 ---
 
 # Goal

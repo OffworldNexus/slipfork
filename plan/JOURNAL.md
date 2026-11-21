@@ -2295,3 +2295,61 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-21T01:53 [M3.39.4] (planner) created (task) Unprivileged world namespaces: slipfork-world-init lifeline + per-service crun pods for pg/redis/s3
 - 2026-11-21T01:53 [M3.39.5] (planner) created (task) Parallel World Boot DAG: resources/images, deduped @tool + when-changed setup, pre/post/failed deploy hooks, minimal up/down/restart wiring
 - 2026-11-21T01:53 [M3.39.6] (planner) created (task) Live Btrfs/OCI/crun lab gate: consolidated real E2E, VM target docs, zero-mock sweep, green make check on XFS
+- 2026-11-21T01:54 [M3.39.1] (lead) status ready -> active
+- 2026-11-21T01:54 [M3.39.1] (lead) attempt 1/3 started
+- 2026-11-21T01:54 [M3.39.1] (lead) base 2e22dcba7589856ca0db22c341951359abd17395
+- 2026-11-21T01:54 [M3.39] (lead) started M3.39.1 under lead
+- 2026-11-21T01:58 [M3.39.1] (lead) status active -> review
+- 2026-11-21T01:58 [M3.39.1] (lead) status review -> ready: triad: 1 consolidated fix pass (drop_world suffix bug, Io Display remedy, test fail-closed probe, doc trim)
+- 2026-11-21T01:58 [M3.39.1] (lead) attempt 2/3 started
+- 2026-11-21T01:59 [M3.39.1] (lead) status ready -> done
+- 2026-11-21T01:59 [M3.39.2] (lead) edited fields
+- 2026-11-21T01:59 [M3.39.2] (lead) status ready -> active
+- 2026-11-21T01:59 [M3.39.2] (lead) attempt 1/3 started
+- 2026-11-21T01:59 [M3.39.2] (lead) base 1b449c21f59a9889d54b1382a62bd6109622b942
+- 2026-11-21T10:07 [M3.39.2] (lead) status active -> review
+- 2026-11-21T10:08 [M3.39.2] (lead) status review -> ready: triad: 1 consolidated fix pass (doc vaporware, HTTP remedies, drop unused clone_subvolume, real base64/percent-encoding, anon-auth cover
+- 2026-11-21T10:08 [M3.39.2] (lead) attempt 2/3 started
+- 2026-11-21T10:10 [M3.39.2] (lead) status ready -> done
+- 2026-11-21T10:10 [M3.39.3] (lead) edited fields
+- 2026-11-21T10:10 [M3.39.3] (lead) status ready -> active
+- 2026-11-21T10:10 [M3.39.3] (lead) attempt 1/3 started
+- 2026-11-21T10:10 [M3.39.3] (lead) base 3747d4c0645c343ed16a21b30512b256878f0889
+- 2026-11-21T10:14 [M3.39.3] (lead) attempt 2/3 started
+- 2026-11-21T10:14 [M3.39.3] (lead) attempt 1 hit step cap: engine+parser+runtime land; live journey, fmt/clippy outstanding
+- 2026-11-21T10:17 [M3.39.3] (lead) status active -> review
+- 2026-11-21T10:17 [M3.39.3] (lead) status review -> ready: triad: 1 consolidated fix pass (2 blockers: 500-LOC split + unsupported-entry E2E; hex/glob dedupe, dev-dep, at_line folding, streamed R
+- 2026-11-21T10:17 [M3.39.3] (lead) attempt 3/3 started
+- 2026-11-21T10:21 [M3.39.3] (lead) status ready -> done
+- 2026-11-21T10:21 [M3.39.4] (lead) status ready -> active
+- 2026-11-21T10:21 [M3.39.4] (lead) attempt 1/3 started
+- 2026-11-21T10:21 [M3.39.4] (lead) base 61b3bdf073caf124cd304766c7b699978c652f16
+- 2026-11-21T10:29 [M3.39.4] (lead) status active -> review
+- 2026-11-21T10:30 [M3.39.4] (lead) status review -> ready: triad: 1 consolidated fix pass (init/pod error causes, explicit WorldHost fields, escalate teardown kill, non-vacuous secret+crun-list a
+- 2026-11-21T10:30 [M3.39.4] (lead) attempt 2/3 started
+- 2026-11-21T10:34 [M3.39.4] (lead) status ready -> done
+- 2026-11-21T10:34 [M3.39.5] (lead) status ready -> active
+- 2026-11-21T10:34 [M3.39.5] (lead) attempt 1/3 started
+- 2026-11-21T10:34 [M3.39.5] (lead) base 953427d12b072a11dc2aa50ffd37ad1fb5fb824b
+- 2026-11-21T10:39 [M3.39.5] (lead) attempt 2/3 started
+- 2026-11-21T10:39 [M3.39.5] (lead) attempt 1 hit step cap: world boot/{plan,stamp,schedule} written (lib green), init bin non-exhaustive matches, CLI + live journey missing
+- 2026-11-21T10:44 [M3.39.5] (lead) status active -> review
+- 2026-11-21T10:45 [M3.39.5] (lead) status review -> ready: triad: 1 consolidated fix pass (live streaming, stamp timer, journey guards, HostEnv injection, module splits, single control/reap owner
+- 2026-11-21T10:45 [M3.39.5] (lead) attempt 3/3 started
+- 2026-11-21T10:47 [M3.39.5] (lead) edited fields
+- 2026-11-21T10:50 [M3.39.5] (lead) status ready -> done
+- 2026-11-21T10:51 [M3.39.6] (lead) edited fields
+- 2026-11-21T10:51 [M3.39.6] (lead) status ready -> active
+- 2026-11-21T10:51 [M3.39.6] (lead) attempt 1/3 started
+- 2026-11-21T10:51 [M3.39.6] (lead) base 43706733e8507411d7db5d20f5adc268936a734e
+- 2026-11-21T11:26 [M3.39.6] (lead) edited fields
+- 2026-11-21T11:29 [M3.40] (conductor) edited fields
+- 2026-11-21T11:29 [M3.40] (conductor) OWNER REQUIREMENT: slipfork-lsp MUST be a separate standalone multi-platform binary (Linux + macOS + Windows; zero Linux-only deps in slipfork-forkfile & slipfo
+- 2026-11-21T11:29 [M3.41] (conductor) edited fields
+- 2026-11-21T11:29 [M3.41] (conductor) OWNER REQUIREMENT: slipfork itself is strictly Linux-only (.deb, .rpm, Arch, Alpine, Linux portable tarballs + install.sh bundling /usr/bin/slipfork + /usr/bin/
+- 2026-11-21T12:32 [M3.39.6] (lead) status active -> review
+- 2026-11-21T12:33 [M3.39.6] (lead) status review -> ready: triad: 1 consolidated fix pass (RunOnce deadline+cleanup, fold ImageFacts, use pods() in down, fail-closed probes, step-labelled log lin
+- 2026-11-21T12:33 [M3.39.6] (lead) attempt 2/3 started
+- 2026-11-21T12:47 [M3.39.6] (lead) status ready -> done
+- 2026-11-21T12:47 [M3.39] (lead) status ready -> done
+- 2026-11-21T12:47 [M3.39] (lead) gate: make check 0; live VM gate 5/5 suites ok; zero-mock grep 0; guard+critical_guard+validate OK

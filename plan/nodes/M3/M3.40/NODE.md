@@ -1,6 +1,6 @@
 ---
 id: M3.40
-title: "OSPP v1 cloud clutch, stateless :80 .localhost ingress, single per-user daemon, colorful CLI UX & @slipfork/opencode"
+title: "Standalone multi-platform slipfork-lsp, OSPP v1, stateless :80 ingress, single per-user daemon, CLI UX & @slipfork/opencode"
 kind: epic
 status: ready
 priority: 3
@@ -10,15 +10,21 @@ paths:
   - Cargo.lock
   - Makefile
   - ARCHITECTURE.md
+  - "specs/**"
+  - TESTING_PLAN.md
+  - "crates/slipfork-forkfile/**"
+  - "crates/slipfork-lsp/**"
   - "crates/slipfork-ospp/**"
+  - "crates/slipfork-edge/**"
   - "crates/slipfork-ingress/**"
   - "crates/slipfork/**"
+  - "editors/**"
   - "packages/opencode-slipfork/**"
 attempts: 0
 max_attempts: 3
 escalation: none
 created: "2026-11-21T00:44"
-updated: "2026-11-21T00:57"
+updated: "2026-11-21T11:29"
 ---
 
 # Goal

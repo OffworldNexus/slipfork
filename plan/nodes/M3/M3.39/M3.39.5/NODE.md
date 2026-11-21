@@ -2,16 +2,22 @@
 id: M3.39.5
 title: "Parallel World Boot DAG: resources/images, deduped @tool + when-changed setup, pre/post/failed deploy hooks, minimal up/down/restart wiring"
 kind: task
-status: ready
+status: done
 owner: implementer
 priority: 3
 depends_on: [M3.39.4]
-paths: ["crates/slipfork-world/**", "crates/slipfork/**", Cargo.toml, Cargo.lock]
-attempts: 0
+paths:
+  - "crates/slipfork-world/**"
+  - "crates/slipfork/**"
+  - "crates/slipfork-image/src/puller.rs"
+  - "crates/slipfork-image/src/registry.rs"
+  - Cargo.toml
+  - Cargo.lock
+attempts: 3
 max_attempts: 3
 escalation: none
 created: "2026-11-21T01:53"
-updated: "2026-11-21T01:53"
+updated: "2026-11-21T10:50"
 ---
 
 # Goal

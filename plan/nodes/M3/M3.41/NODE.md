@@ -1,6 +1,6 @@
 ---
 id: M3.41
-title: "Proper visual Zensical documentation & native packaged distribution for all Linux distros (tpmd + blastit parity)"
+title: "Visual Zensical docs, Linux-only slipfork distro packages + multi-platform slipfork-lsp releases (tpmd + blastit parity)"
 kind: epic
 status: ready
 priority: 3
@@ -10,6 +10,7 @@ paths:
   - README.md
   - CHANGELOG.md
   - zensical.toml
+  - "specs/**"
   - "docs/**"
   - "packaging/**"
   - "scripts/**"
@@ -19,7 +20,7 @@ attempts: 0
 max_attempts: 3
 escalation: none
 created: "2026-11-21T00:44"
-updated: "2026-11-21T00:44"
+updated: "2026-11-21T11:29"
 ---
 
 # Goal

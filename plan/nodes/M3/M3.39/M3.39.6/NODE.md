@@ -2,16 +2,22 @@
 id: M3.39.6
 title: "Live Btrfs/OCI/crun lab gate: consolidated real E2E, VM target docs, zero-mock sweep, green make check on XFS"
 kind: task
-status: ready
+status: done
 owner: implementer
 priority: 3
 depends_on: [M3.39.5]
-paths: ["crates/**", Makefile, tools/do_vm.py, TESTING_PLAN.md]
-attempts: 0
+paths:
+  - "crates/**"
+  - Makefile
+  - tools/do_vm.py
+  - tools/tests/test_do_vm.py
+  - TESTING_PLAN.md
+  - .opencode/LESSONS.md
+attempts: 2
 max_attempts: 3
 escalation: none
 created: "2026-11-21T01:53"
-updated: "2026-11-21T01:53"
+updated: "2026-11-21T12:47"
 ---
 
 # Goal

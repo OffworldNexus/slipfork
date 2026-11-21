@@ -2,7 +2,7 @@
 id: M3.39
 title: "Pure-Btrfs engine, 100% Docker-free native OCI/Dockerfile builder, per-service crun pods & World Boot DAG"
 kind: epic
-status: ready
+status: done
 priority: 3
 depends_on: [M3.38]
 paths:
@@ -17,7 +17,7 @@ attempts: 0
 max_attempts: 3
 escalation: none
 created: "2026-11-21T00:44"
-updated: "2026-11-21T00:57"
+updated: "2026-11-21T12:47"
 ---
 
 # Goal

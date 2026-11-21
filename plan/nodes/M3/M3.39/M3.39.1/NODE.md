@@ -2,16 +2,16 @@
 id: M3.39.1
 title: "Pure Btrfs layout: host probe, transparent subvolume conversion, RO image/world store, CoW fork & safe destroy"
 kind: task
-status: ready
+status: done
 owner: implementer
 priority: 3
 depends_on: []
 paths: ["crates/slipfork-world/**", Cargo.toml, Cargo.lock]
-attempts: 0
+attempts: 2
 max_attempts: 3
 escalation: none
 created: "2026-11-21T01:53"
-updated: "2026-11-21T01:53"
+updated: "2026-11-21T01:59"
 ---
 
 # Goal

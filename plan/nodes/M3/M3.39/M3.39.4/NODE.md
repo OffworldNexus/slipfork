@@ -2,16 +2,16 @@
 id: M3.39.4
 title: "Unprivileged world namespaces: slipfork-world-init lifeline + per-service crun pods for pg/redis/s3"
 kind: task
-status: ready
+status: done
 owner: implementer
 priority: 3
 depends_on: [M3.39.3]
 paths: ["crates/slipfork-world/**", Cargo.toml, Cargo.lock]
-attempts: 0
+attempts: 2
 max_attempts: 3
 escalation: none
 created: "2026-11-21T01:53"
-updated: "2026-11-21T01:53"
+updated: "2026-11-21T10:34"
 ---
 
 # Goal

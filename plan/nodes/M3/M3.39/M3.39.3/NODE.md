@@ -2,16 +2,21 @@
 id: M3.39.3
 title: "Native Dockerfile step builder on Btrfs + crun: multi-stage, COPY --from/--chown, RUN heredocs & --mount=type=cache, .dockerignore"
 kind: task
-status: ready
+status: done
 owner: implementer
 priority: 3
 depends_on: [M3.39.2]
-paths: ["crates/slipfork-image/**", Cargo.toml, Cargo.lock]
-attempts: 0
+paths:
+  - "crates/slipfork-image/**"
+  - "crates/slipfork-world/src/port.rs"
+  - "crates/slipfork-world/src/engine.rs"
+  - Cargo.toml
+  - Cargo.lock
+attempts: 3
 max_attempts: 3
 escalation: none
 created: "2026-11-21T01:53"
-updated: "2026-11-21T01:53"
+updated: "2026-11-21T10:21"
 ---
 
 # Goal
