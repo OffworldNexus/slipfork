@@ -2,6 +2,6 @@
 
 - status: OK
 - expensive spent: $364.04 of $750.00 cap (49%)
-- updated: 2026-11-21T11:42:22.491Z
+- updated: 2026-11-21T11:47:40.046Z
 
 Within budget.
