@@ -2,7 +2,7 @@
 id: M3.41
 title: "Visual Zensical docs, Linux-only slipfork distro packages + multi-platform slipfork-lsp releases (tpmd + blastit parity)"
 kind: epic
-status: ready
+status: done
 priority: 3
 depends_on: [M3.40]
 paths:
@@ -26,7 +26,7 @@ attempts: 0
 max_attempts: 3
 escalation: none
 created: "2026-11-21T00:44"
-updated: "2026-11-21T16:59"
+updated: "2026-11-21T17:28"
 ---
 
 # Goal

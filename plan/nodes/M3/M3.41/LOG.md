@@ -23,3 +23,11 @@ edited fields
 ## 2026-11-21T16:59 [lead]
 
 edited fields
+
+## 2026-11-21T17:28 [lead]
+
+gate: make docs-check/packages/packages-test/check 0; guard+critical_guard+validate OK; 7 distro artifacts + 6-target lsp assets
+
+## 2026-11-21T17:28 [lead]
+
+status ready -> done

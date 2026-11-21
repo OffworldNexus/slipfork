@@ -2527,3 +2527,5 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-21T17:26 [M3.41.7] (lead) attempt 1/3 started
 - 2026-11-21T17:26 [M3.41.7] (lead) base f38f77e4251f0499e0b7306b286c475efe5175cb
 - 2026-11-21T17:27 [M3.41.7] (lead) status active -> done
+- 2026-11-21T17:28 [M3.41] (lead) gate: make docs-check/packages/packages-test/check 0; guard+critical_guard+validate OK; 7 distro artifacts + 6-target lsp assets
+- 2026-11-21T17:28 [M3.41] (lead) status ready -> done
