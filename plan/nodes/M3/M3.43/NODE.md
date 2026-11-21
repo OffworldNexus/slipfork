@@ -2,16 +2,16 @@
 id: M3.43
 title: "Overhaul specs/ & ARCHITECTURE.md: clap + frozen-pane indicatif TUI, explicit s3 policy + native Btrfs S3, speed-of-light PG/Redis & reactive <500ms fork"
 kind: task
-status: ready
+status: done
 owner: architect
 priority: 3
 depends_on: []
 paths: ["specs/**", TESTING_PLAN.md, ARCHITECTURE.md, .opencode/LESSONS.md]
-attempts: 0
+attempts: 1
 max_attempts: 3
-escalation: none
+escalation: architect
 created: "2026-11-21T19:40"
-updated: "2026-11-21T19:40"
+updated: "2026-11-21T20:15"
 ---
 
 # Goal

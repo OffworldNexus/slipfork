@@ -34,3 +34,4 @@ Every call to an expensive-tier agent (`strategist`, `architect`, `expert`) is r
 | 2026-11-19T15:00 | M3.32.2.2.1.3.2.1 | architect | lead | pod flip writes resolved remote secrets into OCI config.json under state_dir; crun copies it into its --root, so critical_ospp_daemon no-plaintext-on-disk invariant fails. Need DI decision: tmpfs runtime-root for bundles vs env transport channel. |
 | 2026-11-19T23:06 | M3.32.6 | expert | lead | critical_btrfs_live: namespaces.json publishes /proc/1/ns/ipc (host PID 1); nsenter Permission denied + crun kill leak on teardown |
 | 2026-11-21T19:06 | M3.42.5 | expert | lead | half-applied feature-gate refactor (2 compile errors) + live SeaweedFS multi-bucket topology and logs default-filter bugs found on 165.232.86.174 |
+| 2026-11-21T19:41 | M3.43 | architect | lead | owner-mandated spec overhaul: clap+frozen-pane indicatif TUI, explicit s3 policy + native Btrfs S3, speed-of-light PG/Redis & reactive <500ms fork |

@@ -1,193 +1,127 @@
 # 03 — How It Works Under the Hood
 
-Slipfork achieves cloud parity, instant incremental builds, zero-config dependency deduplication, and `< 50ms` branch cloning **100% free of any external container daemon** by combining five focused building blocks:
+Slipfork runs your cloud environment locally in a box; CI is the clutch. It boots full-stack worlds and clones live branches in **`< 500ms`** (`100%` Docker-free) by combining Btrfs subvolumes, a native Rust S3 engine, a golden PG18 template, a reactive `tokio` DAG, and one per-user daemon.
 
-1. **Pure Btrfs subvolumes** for source code, `.slipfork/` input stamps, cached image steps, and live databases/buckets
-2. **Native OCI registry pulls & a Btrfs + `crun` `Dockerfile` builder** (with build-time `arg`s strictly separated from runtime `env`)
-3. **A parallel World Boot DAG** with deduplicated `@<tool>` and `before-start when changed(...)` setup nodes
-4. **Per-service `crun` OCI pods** managed by **one per-user daemon** behind a cloud-identical `:80` `.localhost` edge
-5. **In-memory `OSPP v1` secret streaming** and automatic worktree hooks for AI coding agents
+<!-- sample output -->
+```console
+$ slipfork up
+✓ Ready -> http://demo.localhost  (<elapsed_ms>)
+$ slipfork fork feat-auth
+✓ Forked feat-auth (<elapsed_ms>) -> http://feat-auth--demo.localhost
+```
+
+*Sample transcript above; real `< 500ms` target / `< 1.0s` wall-clock ceiling is asserted via `std::time::Instant` in `critical_fork_live`.*
 
 ---
 
-## 1. Pure Btrfs Layout (Zero Hybrid Filesystem Tricks)
+## 1. Pure Btrfs Layout, `<world>/.slipfork-world-stamp.json` & `world_epoch`
 
-Everything lives natively on a single Btrfs filesystem — there are no loopback disk files, ext4-to-Btrfs copy layers, or per-folder workarounds.
-
-- **Project directory = Btrfs subvolume:** Your checkout (`~/projects/demo`) is itself a Btrfs subvolume containing `.git`, source code, `.venv`, `node_modules`, and `.slipfork/` input-hash stamps. If you clone a repo as a regular directory on your Btrfs drive, `slipfork up` transparently converts it in-place into a Btrfs subvolume once on first run.
-- **Slipfork store on the same Btrfs mount:** Under `<btrfs_mount>/.slipfork-store` (or `/var/lib/slipfork`), Slipfork stores unpacked read-only `image` and build-step subvolumes, build cache mounts, and per-world database/cache/bucket state subvolumes:
+Everything lives natively on one Btrfs mount — your checkout (`~/projects/demo`) is a Btrfs subvolume (converted transparently on first `slipfork up`), and `<btrfs_mount>/.slipfork-store` holds flat sibling subvolumes so snapshots never nest (`ino == 2` stubs and `ENOTEMPTY` are impossible):
 
 ```text
-<btrfs-drive>/
-├── home/you/projects/demo/                 # Btrfs subvolume (code + .venv + node_modules + .slipfork/stamps)
-│   └── .forks/
-│       └── feat-auth/                      # Instant CoW snapshot (inherits deps + input stamps!)
+<btrfs-mount>/
+├── home/you/projects/demo/                       # Project subvolume (code + .venv + node_modules + .slipfork/)
+│   └── .forks/feat-auth/                         # <1ms CoW project snapshot
 └── .slipfork-store/
-    ├── images/                             # Cached read-only OCI & Dockerfile step subvolumes
+    ├── images/                                   # Read-only OCI & Dockerfile step subvolumes
+    ├── templates/postgres-18/                    # Golden initdb subvolume (sealed BTRFS_SUBVOL_RDONLY)
     └── worlds/
-        ├── demo/                           # World state subvolume (pg + redis + s3 + container rootfs)
-        └── feat-auth--demo/                # Instant CoW snapshot of world state subvolume
+        ├── demo/                                 # World subvolume: s3/ + redis/ + .slipfork-world-stamp.json
+        ├── demo.pg.pg/                           # Sibling PGDATA subvolume + .slipfork-pg-stamp.json
+        ├── feat-auth--demo/                      # <1ms CoW snapshot of world subvolume + world stamp
+        └── feat-auth--demo.pg.pg/                # <1ms CoW snapshot of live PGDATA + PG epoch stamp
 ```
 
 ```mermaid
 flowchart LR
-  subgraph Btrfs["Single Btrfs Filesystem"]
-    Img["Cached Image Subvolumes\n(backend, frontend, mailpit)"]
-    Proj["Project Subvolume\n~/projects/demo\n(code + deps + stamps)"]
-    State["World Data Subvolume\nworlds/demo (pg, redis, s3)"]
-
-    ForkProj["Fork Project Snapshot\n~/projects/demo/.forks/feat-auth"]
-    ForkState["Fork Data Snapshot\nworlds/feat-auth--demo"]
-
-    Proj ==>|"CoW snapshot (<50ms)"| ForkProj
-    State ==>|"CoW snapshot (<50ms)"| ForkState
-    Img -.->|"writable rootfs snapshot"| State
-    Img -.->|"writable rootfs snapshot"| ForkState
-  end
+  Tpl["templates/postgres-18\n(BTRFS_SUBVOL_RDONLY)"] -.->|"up (<1ms snap)"| Pg["worlds/demo.pg.pg\n(+ world_epoch)"]
+  Proj["~/projects/demo\n(code + deps + .slipfork/)"] ==>|"fork (<1ms snap)"| FProj[".forks/feat-auth"]
+  World["worlds/demo\n(s3 + redis + .slipfork-world-stamp.json)"] ==>|"fork (<1ms snap)"| FWorld["worlds/feat-auth--demo"]
+  Pg ==>|"CHECKPOINT + world_epoch + fork"| FPg["worlds/feat-auth--demo.pg.pg"]
 ```
 
-**What `slipfork fork feat-auth` does in `< 50ms`:**
-1. Flushes/checkpoints active databases cleanly so on-disk pages are consistent.
-2. Snapshots the **project subvolume** at `~/projects/demo/.forks/feat-auth` and switches git to branch `feat-auth` — `.venv`, `node_modules`, and `.slipfork/` stamps exist immediately with zero disk duplication and complete CoW separation.
-3. Snapshots the **world data subvolume** (PostgreSQL 18, Redis 7, and S3 buckets).
-4. Boots the fork's DAG in a fresh network namespace (skipping `uv sync` / `pnpm install` in `< 1ms` unless the branch changed lockfiles) and registers `http://feat-auth--demo.localhost` (plus extra app domains, `mail.*` routes, and CDN subdomains like `http://static_cdn.feat-auth--demo.localhost`).
-
-`slipfork fork` creates the branch on the snapshot when the parent never had it, and `slipfork drop` removes both snapshots after stopping the fork world. A dirty fork checkout is discarded only with `slipfork drop <name> -f`.
+!!! info "Epoch-paired world & PG stamps (`world_epoch`)"
+    `<world>/.slipfork-world-stamp.json` records resolved `image` subvolume paths plus completed `@<tool>`, `before-start`, and `pre-deploy` Merkle digests. At `CHECKPOINT`, Slipfork writes one `world_epoch` into **both** `<world>/.slipfork-world-stamp.json` and `worlds/<world>.pg.<id>/.slipfork-pg-stamp.json` (e.g. `worlds/demo.pg.pg`); `slipfork fork` reuses stamps in `0ms` when both epochs match and refuses stamp reuse (re-running hooks) if they differ.
 
 ---
 
-## 2. Native Image Engine, S3 Policies & Per-Service `crun` Pods
+## 2. Native Btrfs-Backed Rust S3 (`< 1ms` Boot, Zero Extra Containers)
 
-- **Direct OCI Registry Pulls:** Upstream images (`postgres:18`, `redis:7`, `python:3.13-slim`, `axllent/mailpit:latest`, etc.) are pulled directly over HTTPS via the standard OCI Distribution API, unpacking and caching layers once as read-only Btrfs subvolumes.
-- **Native Btrfs + `crun` `Dockerfile` Builder (`arg` Only, Zero Secrets):** Slipfork evaluates `Dockerfile`s (`FROM ... AS`, `ARG`, `ENV`, `WORKDIR`, `COPY [--from] [--chown]`, `ADD`, `RUN` including heredocs and `--mount=type=cache`, `USER`, `EXPOSE`, `CMD`/`ENTRYPOINT`, and `.dockerignore`) natively, passing only declared non-secret `image` `arg` values (`arg VITE_CDN_URL = static_cdn.url`). Every `FROM` starts as a `< 1ms` Btrfs CoW snapshot and every `RUN` snapshots into a cached Btrfs step subvolume.
-- **Cloud-accurate S3 (`private` vs `cdn <id>`):** Plain `s3 uploads` runs locally with bucket policy `private` (anonymous HTTP `GET` returns `403`, matching DigitalOcean Spaces). `s3 assets { cdn static_cdn }` sets bucket policy `public-read` and mounts `http://static_cdn.<world>.localhost` matching `static_cdn.domain` and `static_cdn.url`.
-- **Shared world namespace & individual `crun` containers:** Each world creates one unprivileged **User + Network + IPC namespace** (`127.0.0.1` shared inside the world, separated from the host and sibling forks). Every service (`port` auto-injected as `PORT` + optional `internal_ports`), setup step, and resource runs in its own `crun` container backed by a writable Btrfs snapshot of its enclosing `image` subvolume, bind-mounting the project subvolume as `$UID:$GID`:
+Slipfork pulls zero external S3 images and runs zero distributed master, Raft, volume, or filer daemons. Detached `__supervise` builds the `S3WorldConfig` value and sends **one typed `Request::ConfigureS3(S3WorldConfig)` frame** over the `0600` world `control.sock` (never via argv or `/proc`), and `slipfork-world-init`'s own composition root constructs `S3Server::new(config)` on `127.0.0.1:8333` in `< 1ms`:
 
-| Container | Enclosing `image` Rootfs | Default `workdir` / Mount | Network (`127.0.0.1` Inside Pod) |
-| :--- | :--- | :--- | :--- |
-| `api`, `worker` | `image backend .` | `.` on project subvolume (`$UID:$GID`) | `:8000` (`/api`), outbound |
-| `front` | `image frontend ./front` | `./front` on project subvolume (`$UID:$GID`) | `:5173` (`/`) |
-| `pg`, `cache`, `uploads`, `assets` | `postgres:18`, `redis:7`, `s3` | `worlds/<world>/*` data subvolumes | `:5432`, `:6379`, `:8333` (`static_cdn.*`) |
-
-- **Tmpfs-only runtime `env` & clean teardown:** Runtime `env` variables, secrets, and OCI `config.json` bundles live strictly on a mode-`0700` in-memory `tmpfs` mount (`$XDG_RUNTIME_DIR/slipfork/pods/<world>`) — secrets never touch persistent disk, image layers, or `/proc/<pid>/cmdline`. Stopping or dropping a world signals the entire container process tree cleanly.
+| Capability | Exact Contract (`resources/s3/{server.rs,object_ops.rs,listing.rs,policy.rs}`) |
+| :--- | :--- |
+| `object_ops.rs` | Payload at `<world>/s3/<bucket>/objects/<key>` and atomic sidecar JSON at `<world>/s3/<bucket>/meta/<key>.json` (`content_type`, quoted `etag`, `content_length`, `last_modified`) — plain files cloned instantly on `fork`. |
+| `server.rs` | `hyper` `1` (`http1`, `server`) on `127.0.0.1:8333` dispatching path-style (`/<bucket>/<key>`) and virtual-host (`<bucket>.s3.localhost`, plus `:80` CDN `<cdn-id>.<world>.localhost`) `PUT`, `GET`, `HEAD`, `DELETE`, `HeadBucket`, and `?list-type=2`. |
+| `listing.rs` | `ListObjectsV2` XML (`prefix`, `delimiter`, `max-keys`, `continuation-token`) sorted lexicographically over Btrfs bucket keys. |
+| `policy.rs` | `BucketPolicy` (`Private` \| `PublicRead`) + `SigV4Verifier` (`hmac = "0.12"` `Mac::verify_slice` + `sha2 = "0.10"`, `SecretValue` from `slipfork-forkfile`, `<sha256-hex>` & `UNSIGNED-PAYLOAD`): `Private` denies anonymous `GET` (`403`); `PublicRead` allows anonymous `GET`/`HEAD` (`200`) and denies anonymous `PUT`/`DELETE`/list (`403`). |
 
 ---
 
-## 3. World Boot & Auto-Prequel DAG (`@<tool>` & `before-start`)
+## 3. Speed-of-Light Dev Databases, Reactive `tokio` DAG & `< 500ms` Fork Budget
 
-When Slipfork evaluates an `image` block, every `@<tool>` command (`@uv`, `@pnpm`, etc.) automatically synthesizes a `before-start when changed(<lockfiles>)` node keyed by `(image, lockfile_dir)` (walking up to detect workspace root lockfiles), scheduled alongside explicit `before-start` hooks in a parallel DAG:
+- **PostgreSQL 18 (`~30–50ms` start, `0ms` per-world `initdb`):** Built once at `<btrfs_mount>/.slipfork-store/templates/postgres-18` and sealed `BTRFS_SUBVOL_RDONLY`. `PostgresLauncher` clones `PGDATA` in `< 1ms`, unlinks stale `postmaster.pid`, mounts `/dev/shm`, runs `postgres -c fsync=off -c synchronous_commit=off -c full_page_writes=off -c wal_level=minimal -c max_wal_senders=0 -c autovacuum=off -c shared_buffers=32MB -c dynamic_shared_memory_type=posix`, writes `world_epoch` at `CHECKPOINT`, and polls readiness every **`2ms`**.
+- **Redis 7 (`~5–10ms` start, live keys preserved on `fork`):** `RedisLauncher` runs `redis-server --dir /data --save "" --appendonly yes --appendfsync no` on `<world>/redis/<id>` and polls `:6379` every **`2ms`**.
+- **Single `tokio::Runtime` owner & `spawn_blocking`:** Detached `__supervise` owns the **one** boot `tokio::Runtime` and injects `tokio::runtime::Handle` into `BootScheduler::new` (zero `Runtime::new()` inside `slipfork-world` library code); blocking steps (Btrfs ioctls, `unshare`, `crun` spawn) run via `spawn_blocking` around the injected sync step executor.
 
 ```mermaid
 flowchart LR
-  Res["Resources\n(pg, cache, uploads, assets)"] --> ImgF["Image: frontend\n(arg VITE_CDN_URL)"]
-  ImgB["Image: backend"] --> Uv["@uv auto-setup: uv sync\n(changed pyproject.toml, uv.lock)"]
-  ImgF --> Pnpm["@pnpm auto-setup: pnpm install\n(changed front/pnpm-lock.yaml)"]
-  Res --> Hook["Hook: api:pre-deploy\n(alembic upgrade)"]
-  Uv --> Hook
+  S3["Resource: s3 (:8333)\n(<1ms ConfigureS3)"] --> Front["Service: front"]
+  ImgB["Image: backend"] --> Uv["Setup: uv sync\n(0ms stamped)"]
+  ImgF["Image: frontend\n(arg static-cdn.url)"] --> Pnpm["Setup: pnpm install\n(0ms stamped)"]
+  Pg["Resource: pg (:5432)\n(~40ms template snap)"] & Cache["Resource: cache (:6379)\n(~8ms AOF)"] & Uv --> Pre["Hook: api:pre-deploy\n(0ms epoch-stamped on fork)"]
   Uv --> Worker["Service: worker"]
-  Hook --> Api["Service: api\n(:8000 -> /api)"]
-  Pnpm --> Front["Service: front\n(:5173 -> /)"]
-  Api & Worker & Front --> Post["post-deploy Hooks\n& .localhost Ready"]
+  Pre --> Api["Service: api (:8000)"]
+  Pnpm & Cache & Pg --> Front
 ```
 
-- **Deduplicated & race-free:** Even though `api` (`pre-deploy` + `run`) and `worker` (`run`) all invoke `@uv`, Slipfork creates **one** `(backend, .)` `uv sync` node and waits for it before running any downstream hook or service.
-- **Sub-millisecond `when changed(...)` check:** Before launching a conditional setup container, Slipfork hashes its watched files against `.slipfork/` stamps inside the Btrfs project subvolume — skipping unchanged steps in `< 1ms` and carrying valid stamps across `slipfork fork` automatically.
+**True reactive `tokio` DAG (zero phase barriers):** Every node awaits strictly its own upstream `tokio::sync::watch` parent edges and records `node_start.elapsed()` once those edges resolve — never `dag_t0.elapsed()`.
+
+| `slipfork fork <name>` Stage | Target | Hard Ceiling |
+| :--- | :--- | :--- |
+| `CHECKPOINT` + `world_epoch` + parallel Btrfs snapshots (project, world, PG) + branch switch | `25–55ms` | — |
+| World `unshare` + `slipfork-world-init` + `ConfigureS3` `:8333` + epoch-verified stamp hit (`0` rebuilds/hooks) | `15–35ms` | — |
+| Reactive `tokio` pod boot (PG18 `~40ms`, Redis `~8ms`, app services `2ms` poll) + `:80` route swap | `150–300ms` | — |
+| **End-to-end (`Command::spawn` -> `http://<fork>--<world>.localhost` `200 OK`)** | **`< 500ms`** | **`< 1.0s` (`1000ms`)** |
 
 ---
 
-## 4. Single Per-User Daemon, Cloud-Identical `:80` Ingress, `OSPP v1` & OpenCode
+## 4. Daemon `daemon.sock` & World `control.sock` Wire Contracts
 
 ```mermaid
 flowchart LR
-  Browser["Browser / Agent\nhttp://demo.localhost\nhttp://mail.demo.localhost\nhttp://static_cdn.demo.localhost"]
-  Proxy["Stateless :80 Ingress\nsystemd socket-activated (127.0.0.1:80)\nbound listener injected via LISTEN_FDS"]
-  Daemon["Per-User slipfork daemon\n<runtime_dir>/daemon.sock"]
-  Pod["World Namespace (crun)\napi :8000 | front :5173 | s3 :8333"]
-
-  Browser -->|"HTTP/WS"| Proxy
-  Proxy -->|"ingress.accept: accepted fd"| Daemon
-  Daemon -->|"routes + relays"| Pod
+  Browser["Browser / Agent\nhttp://static-cdn.demo.localhost"] -->|"HTTP/WS"| Proxy["__ingress (:80)\nstateless LISTEN_FDS"]
+  Proxy -->|"daemon.sock: ingress.accept\n(SCM_RIGHTS client fd ->)"| Daemon["__daemon\nIngressRouter"]
+  Daemon -->|"control.sock: Dial { port: 8333 }\n(<- SCM_RIGHTS netns stream fd)"| Init["slipfork-world-init\nPID 1 (:8333 S3 + pods)"]
 ```
 
-- **Single binary & cloud-identical `:80` ingress:** One `slipfork` binary powers the CLI and the **single per-user daemon** (`<runtime_dir>/daemon.sock`) owning all worlds/forks under your user account. `slipfork daemon install` writes `~/.config/systemd/user/slipfork.service`; `sudo slipfork daemon install --ingress` additionally writes `/etc/systemd/system/slipfork-ingress.socket`, `/etc/systemd/system/slipfork-ingress@.service`, and `/etc/apparmor.d/slipfork`.
-- **Authority resolution & streaming:** The stateless ingress forwards the accepted fd and the daemon's ingress module makes every route decision — preserving path prefixes by default (`preserve_path_prefix: true`), supporting explicit `strip-prefix`, `rewrite`, and `exact`, and matching `domain <id>` / `domain <prefix>.*` authorities across HTTP and WebSockets. Authorities resolve against `<world>.localhost`, `<domain>.<world>.localhost`, `<prefix>.<world>.localhost`, and `<fork>--<world>.localhost`, with the longest path prefix winning.
-- **Bounded framing:** Request and response heads are capped at 16 KiB, and bodies plus upgraded WebSocket bytes stream through a fixed 64 KiB buffer, so no upload is ever buffered in full.
-- **Remote Cloud Clutch (`OSPP v1`):** When paired via `slipfork auth <url>`, the user daemon authenticates over WebSocket with a device P-256 keypair, sends the evaluated `Forkfile`, decrypts `hpke-p256` cloud secrets strictly in memory, auto-restarts affected services on live `env_updated` pushes, and streams encrypted DB seed dumps over HTTPS straight into your Btrfs world subvolume.
-- **Coding-Agent Integration (`@slipfork/opencode`):** Hooks OpenCode worktrees directly to `slipfork fork` and `slipfork drop`, giving every parallel agent session its own `< 50ms` Btrfs checkout + DB/S3 clone + `http://<branch>--<world>.localhost` URL with pre-warmed dependencies.
+| Socket (`0600`) | Direction & `SCM_RIGHTS` | Canonical Frames |
+| :--- | :--- | :--- |
+| `<runtime_dir>/daemon.sock` | CLI / `__ingress` → `__daemon`; `SCM_RIGHTS` passes accepted `:80` fd on `ingress.accept` (client → daemon). | Request `{"v":1,"id","method","params"}` → streamed `event` frames (`started`, `log`, `finished`, `failed`, `ready`, `stopped`) → final `ok` / `error`. |
+| `<pods_dir>/control.sock` | `__supervise` / `__daemon` → PID 1 `slipfork-world-init`; `SCM_RIGHTS` returns connected world-netns stream fd on `Dial` (init → daemon). | `ConfigureS3(S3WorldConfig)`, `Dial { port }` (incl. `:8333` CDN & service `:port`s), `List`, `Shutdown`, `Exec` (+ base64 `ExecInput`), `Logs` (250 ms merge over `<pods>/logs/<id>.log`). |
+
+Paired `__daemon` sessions also maintain `OSPP v1` in-memory `hpke-p256` secrets and DB dump streams, while `@slipfork/opencode` shells `slipfork fork` and `slipfork drop` per agent session.
 
 ---
 
-## 5. Crate & Port Map
+## 5. Composition Roots, Crate Map & Canonical Ports
 
-`crates/slipfork/src/main.rs` is the **single Composition Root**: the only place that reads `std::env`, probes `/proc`, or binds ambient sockets and filesystems. `slipfork daemon` is a mode of that same binary and builds the same Constructor-DI tree — there is no second composition root and no separate daemon executable.
+Slipfork has **five explicit composition roots** and **zero** ambient probes in library crates:
+1. `crates/slipfork/src/main.rs` (CLI, `__daemon`, `__ingress`) — parses `Cli`, builds `UiMode`, `DaemonServer`, and `FileVault`.
+2. Detached `__supervise` (`crates/slipfork/src/main.rs` child mode) — owns the single boot `tokio::Runtime` and constructs `BootScheduler` (injecting `tokio::runtime::Handle`), `PostgresLauncher`, `RedisLauncher`, `WorldStampStore`, `BtrfsEngine`, `NativeImageBuilder`, and `S3WorldConfig`.
+3. `crates/slipfork-world/src/bin/world_init/main.rs` (world PID 1) — binds `0600` `control.sock`, serves `Dial`/`List`/`Shutdown`/`Exec`/`Logs`, and constructs `S3Server::new(config)` on `:8333` from `Request::ConfigureS3`.
+4. `crates/slipfork-lsp/src/main.rs` — standalone cross-platform stdio language server.
+5. `packages/opencode-slipfork/src/index.ts` — OpenCode V2 plugin shelling the `slipfork` binary.
 
-| Crate | Owns | Port → adapter |
+| Crate | Canonical Cohesive Structs / Modules (`<= 500` LOC each) | Port → Adapter |
 | :--- | :--- | :--- |
-| `slipfork` | CLI parsing, rendering, daemon composition; daemon-side `SecretVault` at `<state_dir>/secrets.json` (`0600`) + `DaemonControl` wiring | builds the tree |
-| `slipfork-forkfile` | `Forkfile` parse, typecheck, evaluate, `migrate`, `fmt` | — |
-| `slipfork-world` | Btrfs subvolumes, snapshots, world boot/reap, ioctls | `WorldEngine` → `BtrfsEngine` |
-| `slipfork-image` | OCI pulls and native `Dockerfile` builds | `BaseImageBuilder` → `NativeImageBuilder` |
-| `slipfork-ingress` | HTTP/WS framing and `.localhost` route matching | injected `TcpListener` |
-| `slipfork-ospp` | `OSPP v1` frames, device keys, HPKE, dumps | `OsppClient` → `WsOsppClient` |
-| `slipfork-vcs` | worktrees, branch topology, dirty snapshots | `VcsWorkspace` → `GitWorkspace` (a Jujutsu adapter is future work, not shipped in 0.1.0) |
-| `slipfork-lsp` | language server over stdio | no port |
+| `slipfork` | `Cli` (`clap` 4.6 + `clap_complete` + `clap_mangen`), `UiMode`, `BootTui`, `TableLayout`, `FileVault`, `DaemonServer` | `SecretVault`, `DaemonControl` |
+| `slipfork-forkfile` | `ForkfileCompiler`, `SecretValue` (redacted `Debug`, zeroize-on-drop), `BucketPolicy`, `DnsLabel`, `Formatter`, `SnowMigrator` | — |
+| `slipfork-world` | `BtrfsEngine`, `BootScheduler` (`Handle` + `spawn_blocking`), `WorldStampStore` (`world_epoch`), `PostgresLauncher`, `RedisLauncher`, `resources/s3/{server.rs,object_ops.rs,listing.rs,policy.rs}` (`S3Server`, `S3BucketStore`, `SigV4Verifier`), `WorldSupervisor` | `WorldEngine` → `BtrfsEngine` |
+| `slipfork-image` | `NativeImageBuilder`, `OciRegistryClient`, `DockerfileExecutor` | `BaseImageBuilder` → `NativeImageBuilder` |
+| `slipfork-ingress` | `IngressRouter`, `HttpRelay` (`httparse` raw byte/WS proxy) | — |
+| `slipfork-ospp` | `WsOsppClient`, `DeviceIdentity`, `DumpStreamReader` | `OsppClient` → `WsOsppClient` |
+| `slipfork-vcs` | `GitWorkspace` | `VcsWorkspace` → `GitWorkspace` |
+| `slipfork-lsp` | `LspServer` | — |
 
-The canonical port set is exactly `WorldEngine`, `BaseImageBuilder`, `SecretVault`, `DaemonControl`, `OsppClient`, and `VcsWorkspace`. No single-impl mock trait sits beside them; a plain value struct covers anything that is only data.
-
-### Local daemon control plane
-
-Every local command talks to one socket at `<runtime_dir>/daemon.sock`, and the direction is always client → daemon.
-
-| Element | Contract |
-| :--- | :--- |
-| Path | `<runtime_dir>/daemon.sock` (mode `0600`, owned by the developer) |
-| Request | One NEWLINE-delimited JSON frame: `{"v":1,"id":<string>,"method":<string>,"params":{…}}` |
-| Success | `{"v":1,"id":<string>,"ok":<object>}` |
-| Failure | `{"v":1,"id":<string>,"error":{"code":<string>,"message":<string>}}` |
-| Unknown `v` or `method` | A typed `error` frame; the connection stays open |
-| Descriptors | `SCM_RIGHTS` carries **only** the accepted `:80` connection fd (`ingress.accept`) |
-
-The CLI and the ingress always **connect to** `daemon.sock`; the daemon never dials out to a client, and no second control socket exists.
-
-`up`, `down`, and `restart` stream progress on that same connection: zero or more
-`{"v":1,"id":<string>,"event":{…}}` frames precede exactly one final `ok` or `error` frame. A
-renderer never parses human text, and an unknown `v` or `method` answers a typed `error` while the
-connection stays open.
-
-`logs` and `exec` reuse that framing: each `event` carries `{"kind":"line"|"divider"|"eof","pod","stream","line"}`, and the final `ok` carries `{"exit":n}`. Both are relayed from the world init's single `control.sock`; the daemon never allocates a second socket, and `exec` forwards base64 `input` frames while its stdin is open.
-
-Every detached pod's stdout and stderr are piped through one pump per stream, which appends `<epoch_ms>\tL|D\t<text>` lines to `<pods>/logs/<id>.log` mode `0600`; `L` marks output and `D` marks a divider. Each launch and restart writes a `── <id> started ──` divider first, and the init keeps the file open so a restart appends instead of truncating. `Request::Logs` replays and follows that capture, merging pods by timestamp with a 250 ms reorder window; `Request::Exec` runs `crun exec --cwd <pod workdir> <pod> <argv…>` from the init, which owns the world's user namespace, streams its stdio, and returns the child's exit code. `ExecInput` frames carry base64 stdin; an empty frame closes it.
-
-| Event | Fields |
-| :--- | :--- |
-| `started` | `step`, `total`, `kind`, `label` |
-| `log` | `line`, `step`, `total`, `label` |
-| `finished` / `up-to-date` | `kind`, `label`, `detail`, `elapsed_ms` |
-| `failed` | `label`, `line`, `message`, optional `remedy` |
-| `ready` | `world`, `url`, `pods_dir` |
-| `stopped` | `world`, `elapsed_ms` |
-
-`up` spawns the detached `__supervise` child in its own session and relays its events while `ps`
-and `ingress.accept` keep answering. `down` sends the world `Shutdown`, waits for the process group
-to exit, then `SIGKILL`s it; `restart` reuses the world control socket and streams its phases.
-
-`fork` and `drop` ride that same connection. `fork` streams its snapshot and branch phases, boots the fork through the ordinary `up` path, and answers `{fork, project, url, elapsed_ms}`; `drop` stops the fork world first, refuses a dirty checkout with code `dirty-fork`, deletes both snapshots, and answers `{dropped, elapsed_ms}`.
-
-Every owned world is recorded in `<state_dir>/worlds.json` (`project`, `world`, `fork`, `pods_dir`,
-`supervisor_pid`, `started_at_ms`) and rewritten atomically. On start the daemon re-attaches worlds whose socket
-answers and forgets the rest, while `<project>/.slipfork/world.json` remains a cache.
-
-`ps` answers `{worlds:[{project, path, world, fork, url, started_at_ms, supervisor_pid, alive,
-booting, services, forks}]}` where each service carries `{id, kind, running, port?, version?, cdn?,
-pid?, routes:[{prefix, port, mode, domain?}]}`; a fork is nested under its parent world and keeps the
-same service shape. Declared services, resources, and routes come from the evaluated `Forkfile` AST,
-and liveness comes from the world's own `List` reply, so the tree never shows a service the daemon
-cannot prove.
-
-`slipfork __daemon` is the hidden mode of the same binary, and the client owns its lifetime.
-
-### Ingress ownership
-
-`slipfork-ingress` owns HTTP/WebSocket framing and route matching: preserve-by-default prefixes, `strip-prefix`, `rewrite`, `exact`, and `domain` authority filters. A table that would route the same request two ways — duplicate prefixes, two catch-alls, port `0`, or a `domain <id>` that is not declared — is refused before it serves a connection; a non-`.localhost` host answers `400`, an unknown `.localhost` world answers `421`, and an unmatched authority or path inside a known world answers `404`, never a fallback.
-
-The composition root injects an already-bound `TcpListener` — from `LISTEN_FDS` under systemd, or a direct bind under OpenRC. The systemd `slipfork-ingress@.service` template instance is stateless: `slipfork __ingress` forwards that one accepted connection fd to `daemon.sock`, and the daemon's ingress module makes the routing decision. That handoff is the single direction; nothing pushes traffic the other way.
+The canonical port set is strictly `WorldEngine`, `BaseImageBuilder`, `SecretVault`, `DaemonControl`, `OsppClient`, and `VcsWorkspace` — zero single-impl mock traits sit beside them.

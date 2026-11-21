@@ -2572,3 +2572,9 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-21T19:40 [M3.44] (conductor) created (epic) Implement clap + frozen-pane indicatif TUI, explicit s3 policy + native Btrfs S3, fast PG/Redis & reactive <500ms fork
 - 2026-11-21T19:40 [M3.45] (conductor) created (epic) Final TESTING_PLAN.md E2E verification, make coverage sweep & live <1s fork + frozen-pane PTY demo gate on 165.232.86.174
 - 2026-11-21T19:40 AUTOPILOT on by conductor Executing owner-approved CLI/TUI (clap+indicatif), native Btrfs S3, fast PG/Redis & reactive <500ms fork overhaul
+- 2026-11-21T19:41 [M3.43] (lead) status ready -> active
+- 2026-11-21T19:41 [M3.43] (lead) attempt 1/3 started
+- 2026-11-21T19:41 [M3.43] (lead) base f124c68edd69dcd593a7a2ad9d4d062f21c64100
+- 2026-11-21T19:41 ESCALATION #31 -> architect for M3.43 by lead: owner-mandated spec overhaul: clap+frozen-pane indicatif TUI, explicit s3 policy + native Btrfs S3, speed-of-light PG/Re
+- 2026-11-21T20:06 [M3.43] (lead) status active -> review
+- 2026-11-21T20:15 [M3.43] (lead) status review -> done

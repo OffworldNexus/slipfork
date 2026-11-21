@@ -1,112 +1,97 @@
 # Architecture
 
-Slipfork is eight focused crates around **one** composition root. Nothing else reads the
-environment, probes `/proc`, or binds ambient sockets, so the rules below are enforced by type
-signatures rather than by convention.
+Slipfork runs your cloud environment locally in a box; CI is the clutch. The workspace is eight focused Rust crates wired around explicit process composition roots so Constructor IoC/DI, ANSI purity, and module boundaries are enforced by type signatures rather than convention.
+
+<!-- sample output -->
+```console
+$ cargo clippy --workspace --all-targets -- -D warnings
+$ slipfork up
+✓ Ready -> http://demo.localhost  (<elapsed_ms>)
+```
 
 ```mermaid
 flowchart TD
-  Root["slipfork (binary, daemon mode)<br/>single Composition Root"]
-  FF["slipfork-forkfile"]
-  World["slipfork-world"]
-  Image["slipfork-image"]
-  Ingress["slipfork-ingress"]
-  Ospp["slipfork-ospp"]
-  Vcs["slipfork-vcs"]
-  Lsp["slipfork-lsp"]
+  Root["slipfork (CLI + __daemon + __ingress + detached __supervise)<br/>clap 4.6 + UiMode + BootTui + tokio::Runtime owner"]
+  Init["slipfork-world-init (PID 1 binary)<br/>control.sock + :8333 S3Server"]
+  FF["slipfork-forkfile<br/>AST, SecretValue, BucketPolicy, DnsLabel, fmt, migrate"]
+  World["slipfork-world<br/>BtrfsEngine, BootScheduler, WorldStampStore,<br/>PostgresLauncher, RedisLauncher, resources/s3/*"]
+  Image["slipfork-image<br/>NativeImageBuilder (OCI + Dockerfile)"]
+  Ingress["slipfork-ingress<br/>httparse HTTP/WS relay + .localhost / CDN router"]
+  Ospp["slipfork-ospp<br/>WsOsppClient (P-256 + HPKE)"]
+  Vcs["slipfork-vcs<br/>GitWorkspace"]
+  Lsp["slipfork-lsp<br/>standalone portable stdio binary"]
 
-  Root --> FF
-  Root --> World
-  Root --> Image
-  Root --> Ingress
-  Root --> Ospp
-  Root --> Vcs
+  Root --> FF & World & Image & Ingress & Ospp & Vcs
+  Init --> World & FF
 ```
 
-## Crate map
+---
 
-`crates/slipfork/src/main.rs` is the **single Composition Root**: the only place that reads
-`std::env`, probes `/proc`, or binds ambient sockets and filesystems. `slipfork daemon` is a mode
-of that same binary and builds the same constructor-injected tree — there is no second composition
-root and no separate daemon executable.
+## 1. Explicit Composition Roots, `clap` CLI & `BootTui`
 
-`crates/slipfork-lsp/src/main.rs` is the one other composition root: it reads only argv and the
-process stdio, so `slipfork-lsp` ships as a standalone binary on Linux, macOS, and Windows with no
-Btrfs, `crun`, or daemon dependency. The `slipfork` binary never links the language server.
+Library crates contain **zero** `std::env::var`, `OnceLock`/`LazyLock`, `tokio::runtime::Runtime::new()`, or mutable `static` state; ambient OS wiring happens strictly in five composition roots:
 
-`packages/opencode-slipfork/src/index.ts` is the third composition root: the OpenCode V2 plugin
-reads `PATH` and `SYSTEMROOT` (the same allowlist as `editors/zed/src/lib.rs`) and shells the
-shipped `slipfork` binary. Its coordinator is pure, and every worktree, shell, and session hook
-forks, routes, or reaps a world through that injected CLI boundary — the plugin embeds no Btrfs or
-daemon logic.
+1. **`crates/slipfork/src/main.rs` (CLI, `__daemon`, `__ingress`):** Parses `Cli` (`clap` 4.6 derive + `clap_complete` + `clap_mangen`), builds `UiMode` (`ColorTty`, `AsciiTty` for TTY `NO_COLOR`/`TERM=dumb`, `PlainPipe`, `Json`), and wires `BootTui`, `TableLayout`, `FileVault`, and `DaemonServer`.
+2. **Detached `__supervise` (`crates/slipfork/src/main.rs` child mode):** Owns the **single** boot `tokio::Runtime` and constructs `BootScheduler::new(handle, ...)` (`tokio::runtime::Handle`), `PostgresLauncher`, `RedisLauncher`, `WorldStampStore`, `BtrfsEngine`, `NativeImageBuilder`, and the `S3WorldConfig` value.
+3. **`crates/slipfork-world/src/bin/world_init/main.rs` (world PID 1):** Binds `0600` `<pods_dir>/control.sock`, serves `Dial`/`List`/`Shutdown`/`Exec`/`Logs`, and constructs `S3Server::new(config)` on `127.0.0.1:8333` from `Request::ConfigureS3`.
+4. **`crates/slipfork-lsp/src/main.rs`:** Reads only argv and stdio so `slipfork-lsp` ships across Linux, macOS, and Windows with zero Btrfs or `crun` dependency.
+5. **`packages/opencode-slipfork/src/index.ts`:** Reads `PATH`/`SYSTEMROOT` and shells the `slipfork` binary with zero embedded world logic.
 
-| Crate | Owns | Port → adapter |
+| Crate | Cohesive Structs / Modules (`<= 500` LOC per file) | Port → Adapter |
 | :--- | :--- | :--- |
-| `slipfork` | CLI parsing, rendering, daemon composition; daemon-side `SecretVault` + `DaemonControl` wiring | builds the tree |
-| `slipfork-forkfile` | `Forkfile` parse, typecheck, evaluate, `migrate`, `fmt` | — |
-| `slipfork-world` | Btrfs subvolumes, snapshots, world boot/reap, ioctls | `WorldEngine` → `BtrfsEngine` |
-| `slipfork-image` | OCI pulls and native `Dockerfile` builds | `BaseImageBuilder` → `NativeImageBuilder` |
-| `slipfork-ingress` | HTTP/WS framing and `.localhost` route matching | injected `TcpListener` |
-| `slipfork-ospp` | `OSPP v1` frames, device keys, HPKE, dumps | `OsppClient` → `WsOsppClient` |
-| `slipfork-vcs` | worktrees, branch topology, dirty snapshots | `VcsWorkspace` → `GitWorkspace` / `JjWorkspace` |
-| `slipfork-lsp` | standalone language server over stdio; own composition root and portable binary | no port |
+| `slipfork` | `Cli`, `UiMode`, `BootTui` (`indicatif::MultiProgress`), `TableLayout` (`console` widths), `FileVault`, `DaemonServer` | `SecretVault`, `DaemonControl` |
+| `slipfork-forkfile` | `ForkfileCompiler`, `SecretValue` (redacted `Debug`, zeroize-on-drop), `BucketPolicy`, `DnsLabel`, `Formatter`, `SnowMigrator` | — |
+| `slipfork-world` | `BtrfsEngine`, `BootScheduler` (`Handle` + `spawn_blocking`), `WorldStampStore` (`world_epoch`), `PostgresLauncher`, `RedisLauncher`, `resources/s3/{server.rs,object_ops.rs,listing.rs,policy.rs}` (`S3Server`, `S3BucketStore`, `SigV4Verifier`), `WorldSupervisor` | `WorldEngine` → `BtrfsEngine` |
+| `slipfork-image` | `NativeImageBuilder`, `OciRegistryClient`, `DockerfileExecutor` | `BaseImageBuilder` → `NativeImageBuilder` |
+| `slipfork-ingress` | `IngressRouter`, `HttpRelay` (`httparse` raw byte/WS proxy over injected `TcpListener`) | — |
+| `slipfork-ospp` | `WsOsppClient`, `DeviceIdentity`, `DumpStreamReader` | `OsppClient` → `WsOsppClient` |
+| `slipfork-vcs` | `GitWorkspace` | `VcsWorkspace` → `GitWorkspace` |
+| `slipfork-lsp` | `LspServer` | — |
 
-The canonical port set is exactly `WorldEngine`, `BaseImageBuilder`, `SecretVault`,
-`DaemonControl`, `OsppClient`, and `VcsWorkspace`. No single-impl mock trait sits beside them; a
-plain value struct covers anything that is only data.
+The canonical port set is strictly `WorldEngine`, `BaseImageBuilder`, `SecretVault`, `DaemonControl`, `OsppClient`, and `VcsWorkspace` — zero single-impl mock traits sit beside them.
 
-!!! note "Target shape"
-    The daemon, `daemon.sock`, and ingress sections below describe the target shape of Slipfork
-    0.1.0. The current scaffold ships only `slipfork help` and `slipfork version`; the remaining
-    verbs and the port adapters arrive in later slices.
+---
 
-## Local daemon control plane
+## 2. Reactive `tokio` Boot DAG, Native S3 & Epoch-Stamped Fork
 
-Every local command talks to one socket at `<runtime_dir>/daemon.sock`, and the direction is always
-client → daemon.
+`BootScheduler` executes a **reactive `tokio` task graph** using the injected `tokio::runtime::Handle` with zero phase barriers: blocking steps (Btrfs ioctls, `unshare`, `crun` spawn) run via `spawn_blocking` around the injected sync step executor, and each node records `node_start.elapsed()` once its own `tokio::sync::watch` parent edges resolve.
 
-| Element | Contract |
-| :--- | :--- |
-| Path | `<runtime_dir>/daemon.sock` (mode `0600`, owned by the developer) |
-| Request | One NEWLINE-delimited JSON frame: `{"v":1,"id":<string>,"method":<string>,"params":{…}}` |
-| Success | `{"v":1,"id":<string>,"ok":<object>}` |
-| Failure | `{"v":1,"id":<string>,"error":{"code":<string>,"message":<string>}}` |
-| Unknown `v` or `method` | A typed `error` frame; the connection stays open |
-| Descriptors | `SCM_RIGHTS` carries **only** the accepted `:80` connection fd (`ingress.accept`) |
-
-The CLI and the ingress always **connect to** `daemon.sock`; the daemon never dials out to a
-client, and no second control socket exists.
-
-```json
-{"v":1,"id":"b3f1","method":"world.status","params":{"world":"demo"}}
-{"v":1,"id":"b3f1","ok":{"world":"demo","running":true}}
+```mermaid
+sequenceDiagram
+  participant Sup as __supervise (tokio::Runtime owner)
+  participant Sched as BootScheduler (Handle + spawn_blocking)
+  participant Init as world_init (PID 1 control.sock)
+  participant Daemon as DaemonServer -> BootTui
+  Sup->>Sched: BootScheduler::new(handle, executors, stamps)
+  Sched->>Init: Request::ConfigureS3(S3WorldConfig) over 0600 control.sock
+  Init-->>Sched: S3Server::new(config) listening on 127.0.0.1:8333 (<1ms)
+  Sched->>Daemon: BootEvent (Started / Log / Finished / Ready) -> daemon.sock
 ```
 
-## Ingress ownership
+- **Process-boundary S3 (`resources/s3/{server.rs,object_ops.rs,listing.rs,policy.rs}`):** `__supervise` sends `S3WorldConfig` (carrying `BucketPolicy` and `SecretValue` credentials) in one typed `Request::ConfigureS3` frame over `0600` `control.sock` — never via argv or `/proc` — and `world_init` serves HTTP/1.1 via `hyper` `1` on `:8333` (`hmac = "0.12"` + `sha2 = "0.10"`).
+- **Golden PG18 template & `world_epoch` stamps:** `BtrfsEngine` clones `templates/postgres-18` (`BTRFS_SUBVOL_RDONLY`) into sibling `worlds/<world>.pg.<id>` subvolumes in `< 1ms`; at `CHECKPOINT`, Slipfork writes one `world_epoch` into both `<world>/.slipfork-world-stamp.json` and `worlds/<world>.pg.<id>/.slipfork-pg-stamp.json`, refusing stamp reuse on `fork` if epochs diverge.
 
-`slipfork-ingress` owns HTTP/WebSocket framing and route matching: preserve-by-default prefixes,
-`strip-prefix`, `rewrite`, `exact`, and `domain` authority filters.
+---
 
-The composition root injects an already-bound `TcpListener` — from `LISTEN_FDS` under systemd, or a
-direct bind under OpenRC. The systemd `slipfork-ingress@.service` template instance is stateless: it
-accepts and forwards that one connection fd to `daemon.sock`, and the daemon's ingress module makes
-the routing decision. That handoff is the single direction; nothing pushes traffic the other way.
+## 3. Dual Control Sockets (`daemon.sock` & `control.sock`) & `:80` Ingress
+
+| Socket (`0600`) | Direction & `SCM_RIGHTS` | Canonical Frames |
+| :--- | :--- | :--- |
+| `<runtime_dir>/daemon.sock` | CLI / `__ingress` → `__daemon`; `SCM_RIGHTS` passes accepted `:80` client fd on `ingress.accept` (`__ingress` → `__daemon`). | `{"v":1,"id","method","params"}` → zero or more `event` frames → final `ok` or `error`. |
+| `<pods_dir>/control.sock` | `__supervise` / `__daemon` → PID 1 `world_init`; `SCM_RIGHTS` returns connected world-netns stream fd on `Dial` (`world_init` → `__daemon`). | `ConfigureS3`, `Dial { port }` (incl. `:8333` for CDN ingress), `List`, `Shutdown`, `Exec` (+ `ExecInput`), `Logs`. |
 
 ```mermaid
 sequenceDiagram
   participant Browser
-  participant Ingress as slipfork-ingress@.service (stateless)
-  participant Daemon as slipfork daemon (composition root)
-  Browser->>Ingress: GET app.demo.localhost
-  Ingress->>Daemon: SCM_RIGHTS over daemon.sock (one accepted fd)
-  Daemon-->>Browser: routed response through that fd
+  participant Ingress as slipfork __ingress (stateless :80)
+  participant Daemon as slipfork __daemon (IngressRouter)
+  participant Init as slipfork-world-init (PID 1)
+  Browser->>Ingress: GET http://static-cdn.demo.localhost/logo.svg
+  Ingress->>Daemon: ingress.accept + SCM_RIGHTS client fd (daemon.sock)
+  Daemon->>Init: Request::Dial { port: 8333 } (control.sock)
+  Init-->>Daemon: SCM_RIGHTS connected 127.0.0.1:8333 fd
+  Daemon-->>Browser: HttpRelay streams bucket response
 ```
 
-!!! warning "One socket, one direction"
-    The ingress never routes on its own and never opens a second control socket. If a design needs
-    the daemon to call back into the ingress, it is the wrong design.
-
-## Dependency rule
-
-Crates never depend on `slipfork` and never on each other's internals. The binary depends on all
-seven libraries; libraries depend on plain values and the port traits they define or consume.
+!!! warning "One direction per socket, strict crate layering"
+    Clients connect to `daemon.sock` and `__daemon`/`__supervise` connect to `control.sock`; neither server ever dials back, and library crates never depend on `slipfork` or each other's internals.
