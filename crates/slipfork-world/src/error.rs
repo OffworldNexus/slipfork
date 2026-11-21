@@ -5,13 +5,15 @@ use std::path::{Path, PathBuf};
 /// Result alias for every fallible world operation.
 pub type Result<T, E = Error> = std::result::Result<T, E>;
 
-/// Which namespace an invalid world/fork name belongs to.
+/// Which namespace an invalid world/fork/pod name belongs to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NameKind {
     /// A `worlds/<world>` world data subvolume.
     World,
     /// A `<project>/.forks/<fork>` + `worlds/<fork>--<world>` snapshot pair.
     Fork,
+    /// An OCI pod id (also its UTS hostname).
+    Pod,
 }
 
 impl NameKind {
@@ -19,11 +21,12 @@ impl NameKind {
         match self {
             Self::World => "world",
             Self::Fork => "fork",
+            Self::Pod => "pod",
         }
     }
 }
 
-/// Everything the Btrfs engine can refuse to do.
+/// Everything the Btrfs engine, pod renderer, and world supervisor can refuse to do.
 #[derive(Debug)]
 pub enum Error {
     /// The path is not on a `BTRFS_SUPER_MAGIC` filesystem.
@@ -36,12 +39,41 @@ pub enum Error {
     NotADirectory { path: PathBuf },
     /// The path has no final component to derive sibling paths from.
     UnsupportedPath { path: PathBuf },
-    /// A world/fork name violates `[a-z0-9][a-z0-9._-]*`.
+    /// A world/fork/pod name violates `[a-z0-9][a-z0-9._-]*`.
     InvalidName { kind: NameKind, name: String },
     /// `drop`/`destroy` met uncommitted changes without `--force`.
     RefusedDirtyCheckout { target: String },
     /// Leftover `.slipfork-adopt*` siblings blocked the in-place conversion.
     AdoptionCollision { path: PathBuf },
+    /// The tmpfs-only pod runtime directory sits on persistent disk.
+    RuntimeNotTmpfs { path: PathBuf },
+    /// A required host tool is missing.
+    MissingTool { tool: &'static str, path: PathBuf },
+    /// A pod value failed validation.
+    InvalidPod { id: String, reason: String },
+    /// An S3 bucket name is not a legal bucket.
+    InvalidBucket { name: String },
+    /// The init handshake or the world namespaces failed.
+    Init { message: String },
+    /// The container runtime rejected a pod launch inside a booted world.
+    PodLaunch { message: String },
+    /// The NDJSON control protocol was violated.
+    Protocol { message: String },
+    /// `/proc/<init-pid>/ns/*` did not match the observed namespace identities.
+    NamespaceMismatch {
+        kind: String,
+        expected: String,
+        actual: String,
+    },
+    /// An operation missed its deadline.
+    Timeout { action: &'static str },
+    /// Teardown left processes alive in the world's process group.
+    LeftoverProcesses { count: usize, pgid: i32 },
+    /// A JSON control/config payload could not be encoded or decoded.
+    Json {
+        path: PathBuf,
+        source: serde_json::Error,
+    },
     /// A filesystem or ioctl operation failed.
     Io {
         action: &'static str,
@@ -106,6 +138,57 @@ impl fmt::Display for Error {
                 "`{}` already has 64 `.slipfork-adopt*` siblings\nnext: remove the leftover conversion siblings and retry",
                 path.display()
             ),
+            Self::RuntimeNotTmpfs { path } => write!(
+                f,
+                "`{}` is not on tmpfs\nnext: export XDG_RUNTIME_DIR to a tmpfs such as /run/user/$UID so pod secrets never reach disk",
+                path.display()
+            ),
+            Self::MissingTool { tool, path } => write!(
+                f,
+                "`{tool}` is missing at `{}`\nnext: install {tool} or pass its path in the injected host values",
+                path.display()
+            ),
+            Self::InvalidPod { id, reason } => write!(
+                f,
+                "invalid pod `{id}`: {reason}\nnext: use lowercase ids and absolute in-container paths"
+            ),
+            Self::InvalidBucket { name } => write!(
+                f,
+                "invalid S3 bucket `{name}`\nnext: use 3-63 lowercase letters, digits, `.`, `-`, starting and ending alphanumeric"
+            ),
+            Self::Init { message } => write!(
+                f,
+                "world init failed: {message}\nnext: check `unshare --user --map-current-user -- true` works for this user"
+            ),
+            Self::PodLaunch { message } => write!(
+                f,
+                "{message}\nnext: install crun (e.g. `apt install crun`) and confirm `crun --version` runs, then retry"
+            ),
+            Self::Protocol { message } => write!(
+                f,
+                "control protocol error: {message}\nnext: re-run with the `slipfork-world-init` binary from this build"
+            ),
+            Self::NamespaceMismatch {
+                kind,
+                expected,
+                actual,
+            } => write!(
+                f,
+                "world `{kind}` namespace identity changed (`{expected}` -> `{actual}`)\nnext: stop the world and boot it again"
+            ),
+            Self::Timeout { action } => write!(
+                f,
+                "timed out trying to {action}\nnext: inspect `dmesg` for unprivileged user-namespace denials"
+            ),
+            Self::LeftoverProcesses { count, pgid } => write!(
+                f,
+                "{count} process(es) survived teardown in process group {pgid}\nnext: kill the group with `pkill -g {pgid}` and re-run"
+            ),
+            Self::Json { path, .. } => write!(
+                f,
+                "could not encode or decode JSON for `{}`\nnext: remove the stale runtime file and re-run",
+                path.display()
+            ),
             // Raw errno and ioctl detail stay on `source()`/`Debug`; users get action plus path.
             Self::Io { action, path, .. } => {
                 write!(f, "could not {action} `{}`", path.display())
@@ -118,6 +201,7 @@ impl std::error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Io { source, .. } => Some(source),
+            Self::Json { source, .. } => Some(source),
             _ => None,
         }
     }

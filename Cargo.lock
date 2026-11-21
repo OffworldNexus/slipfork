@@ -612,6 +612,9 @@ name = "slipfork-world"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "serde",
+ "serde_json",
+ "slipfork-image",
 ]
 
 [[package]]

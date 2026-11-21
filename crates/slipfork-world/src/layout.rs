@@ -83,7 +83,7 @@ pub struct WorldName(String);
 impl WorldName {
     /// Parses `raw` (`[a-z0-9][a-z0-9._-]*`) into a world name.
     pub fn parse(raw: &str) -> Result<Self> {
-        validate(NameKind::World, raw).map(Self)
+        validate_name(NameKind::World, raw).map(Self)
     }
 
     /// The validated name.
@@ -106,7 +106,7 @@ pub struct ForkName(String);
 impl ForkName {
     /// Parses `raw` (`[a-z0-9][a-z0-9._-]*`) into a fork name.
     pub fn parse(raw: &str) -> Result<Self> {
-        validate(NameKind::Fork, raw).map(Self)
+        validate_name(NameKind::Fork, raw).map(Self)
     }
 
     /// The validated name.
@@ -122,7 +122,7 @@ impl fmt::Display for ForkName {
     }
 }
 
-fn validate(kind: NameKind, raw: &str) -> Result<String> {
+pub(crate) fn validate_name(kind: NameKind, raw: &str) -> Result<String> {
     let mut bytes = raw.bytes();
     let starts_well = bytes
         .next()

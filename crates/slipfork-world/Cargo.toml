@@ -5,16 +5,31 @@ edition.workspace = true
 rust-version.workspace = true
 
 [features]
-# Live Btrfs suite: it needs a real Btrfs scratch root, so it never joins the default test run.
+# Live Btrfs/crun suite: it needs a real Btrfs scratch root and real namespace-capable host.
 live = []
 
 [dependencies]
 libc.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 
 [dev-dependencies]
 libc.workspace = true
+# Dev-only cycle (`slipfork-image` depends on this crate) so the live gate can pull its own
+# image rootfs instead of demanding four operator-exported paths.
+slipfork-image = { path = "../slipfork-image" }
+serde_json.workspace = true
+
+[[bin]]
+name = "slipfork-world-init"
+path = "src/bin/world_init.rs"
 
 [[test]]
 name = "critical_btrfs_live"
 path = "tests/critical_btrfs_live.rs"
+required-features = ["live"]
+
+[[test]]
+name = "critical_pod_runtime"
+path = "tests/critical_pod_runtime.rs"
 required-features = ["live"]
