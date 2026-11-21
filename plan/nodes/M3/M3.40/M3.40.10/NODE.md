@@ -2,7 +2,7 @@
 id: M3.40.10
 title: "Streamed up/restart/down phases, failure tails, ANSI matrix and spec convergence sweep"
 kind: task
-status: ready
+status: done
 owner: implementer
 priority: 3
 depends_on: [M3.40.9]
@@ -12,15 +12,14 @@ paths:
   - crates/slipfork/Cargo.toml
   - Cargo.toml
   - Cargo.lock
-  - Makefile
   - "specs/02-cli-ux.md"
   - "specs/03-under-the-hood.md"
   - TESTING_PLAN.md
-attempts: 0
+attempts: 1
 max_attempts: 3
 escalation: none
 created: "2026-11-21T14:29"
-updated: "2026-11-21T14:29"
+updated: "2026-11-21T14:52"
 ---
 
 # Goal

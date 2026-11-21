@@ -524,12 +524,12 @@ fn world_up_restart_down_journey() {
     );
     assert_ingress(&journey.runtime, "good");
     assert!(
-        first_err.contains("progress: ") && first_err.contains(".slipfork/supervisor.log"),
-        "human mode must name the supervisor log:\n{first_err}"
+        first_out.contains("[1/") && first_out.contains("→ [1/"),
+        "progress lines must carry a real `→ [i/n]` prefix:\n{first_out}"
     );
     assert!(
-        first_out.contains("[1/"),
-        "progress lines must carry a real `[i/n]` prefix:\n{first_out}"
+        !first_err.contains("error:"),
+        "a successful boot must print no error tail:\n{first_err}"
     );
     let sync_lines = first_out
         .lines()
@@ -608,11 +608,30 @@ fn world_up_restart_down_journey() {
         up_failure("a failing service must fail `up`", &broken, &failed)
     );
     let failed_err = stderr(&failed);
+    let failed_out = stdout(&failed);
+    assert!(
+        failed_out.contains("→ ["),
+        "failure must keep a phase header:\n{failed_out}"
+    );
+    assert!(
+        failed_out.contains("Forkfile:"),
+        "the failure tail must name the Forkfile line:\n{failed_out}"
+    );
     assert!(failed_err.contains("error:"), "{failed_err}");
-    assert!(failed_err.contains("next:"), "{failed_err}");
+    assert_eq!(
+        failed_err.matches("next:").count(),
+        1,
+        "a failure prints exactly one next:\n{failed_err}"
+    );
     assert!(
         broken.join(".slipfork/world.json").is_file(),
         "the world must stay up after a failed service"
+    );
+    let listed = journey.slipfork(&broken, &["status"]);
+    assert!(
+        listed.status.success() && stdout(&listed).contains("broken"),
+        "the failed world must stay listed by status:\n{}",
+        stdout(&listed)
     );
     let down = journey.slipfork(&broken, &["down"]);
     assert!(
@@ -620,10 +639,20 @@ fn world_up_restart_down_journey() {
         "down after failure: {}",
         stderr(&down)
     );
+    assert!(
+        stdout(&down).contains("→ [1/2] stopping broken"),
+        "down must stream its phase header:\n{}",
+        stdout(&down)
+    );
 
     // 3. Down and re-up: the stamped `uv sync` is skipped and named as such.
     let down = journey.slipfork(&good, &["down"]);
     assert!(down.status.success(), "down: {}", stderr(&down));
+    assert!(
+        stdout(&down).contains("→ [1/2] stopping good"),
+        "down must stream its phase header:\n{}",
+        stdout(&down)
+    );
     let second = journey.slipfork(&good, &["up"]);
     let second_out = stdout(&second);
     assert!(
@@ -646,6 +675,11 @@ fn world_up_restart_down_journey() {
         restart.status.success(),
         "{}",
         up_failure("restart failed", &good, &restart)
+    );
+    assert!(
+        stdout(&restart).contains("→ [1/1] restarting api"),
+        "restart must stream its phase header:\n{}",
+        stdout(&restart)
     );
     assert!(
         stdout(&restart).contains("Restarted api"),

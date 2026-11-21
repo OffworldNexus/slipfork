@@ -90,21 +90,17 @@ fn supervisor_main(project: &Path, world: &str, env: &HostEnv, json: bool) -> Re
             }
         }
         Err(error) => {
-            let (line, remedy) = match error {
-                slipfork_world::Error::Boot { line, remedy, .. } => (*line, remedy.clone()),
-                _ => (0, None),
-            };
-            if let Ok(mut emitter) = emitter.lock() {
-                let mut event = json!({
+            // `run_plan` already emitted `BootEvent::Failed` for a `Boot` error; plan-level
+            // failures (cycles, poisoned runtime) still need one failure frame.
+            if !matches!(error, slipfork_world::Error::Boot { .. })
+                && let Ok(mut emitter) = emitter.lock()
+            {
+                emitter.send(json!({
                     "event": "failed",
                     "label": error.to_string().lines().next().unwrap_or("boot failed"),
-                    "line": line,
+                    "line": 0,
                     "message": error.to_string().lines().next().unwrap_or_default(),
-                });
-                if let Some(remedy) = remedy {
-                    event["remedy"] = json!(remedy);
-                }
-                emitter.send(event);
+                }));
             }
         }
     }

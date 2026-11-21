@@ -289,9 +289,11 @@ impl Session {
         let candidates = match route_candidates(&self.cwd, &base, args.service.as_deref()) {
             Ok(candidates) => candidates,
             Err(message) => {
-                return fail(
+                return self.report(
+                    "forkfile",
                     &message,
-                    "run `slipfork status` to list this world's services",
+                    "create a Forkfile in this directory, then run `slipfork up`",
+                    args.json,
                 );
             }
         };
@@ -301,9 +303,11 @@ impl Session {
                 text.push_str(&format!("{}\n", paint(url, "1;36", self.color)));
             }
             let _ = emit(&text);
-            return fail(
+            return self.report(
+                "ambiguous-target",
                 "several routes match",
                 "pass a service: `slipfork open <service>`",
+                args.json,
             );
         }
         let url = candidates.first().cloned().unwrap_or(base);
@@ -346,12 +350,19 @@ impl Session {
             None => match PairingStore::new(&self.host.state_dir).load() {
                 Ok(Some(state)) => state.endpoint,
                 Ok(None) => {
-                    return fail("this daemon has no OSPP endpoint", "slipfork auth <url>");
+                    return self.report(
+                        "no-endpoint",
+                        "this daemon has no OSPP endpoint",
+                        "slipfork auth <url>",
+                        args.json,
+                    );
                 }
                 Err(error) => {
-                    return fail(
+                    return self.report(
+                        "pairing-store",
                         &format!("cannot read the pairing record: {error}"),
                         "delete `<state_dir>/ospp.json` and run `slipfork auth <url>`",
+                        args.json,
                     );
                 }
             },
@@ -359,9 +370,11 @@ impl Session {
         let endpoint = match OsppEndpoint::parse(&raw) {
             Ok(endpoint) => endpoint,
             Err(error) => {
-                return fail(
+                return self.report(
+                    "bad-endpoint",
                     &format!("`{raw}` is not a valid OSPP endpoint: {error}"),
                     "pass a `wss://` URL (or `ws://` on loopback)",
+                    args.json,
                 );
             }
         };
@@ -472,17 +485,6 @@ impl Session {
         };
         let code = error.code().unwrap_or("ospp");
         self.report(code, &message, &next, json)
-    }
-
-    fn report(&self, code: &str, message: &str, next: &str, json: bool) -> ExitCode {
-        if json {
-            let _ = emit(&format!(
-                "{}\n",
-                json!({ "error": { "code": code, "message": message, "next": next } })
-            ));
-            return ExitCode::FAILURE;
-        }
-        fail(message, next)
     }
 }
 

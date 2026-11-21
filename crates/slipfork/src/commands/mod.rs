@@ -328,6 +328,18 @@ impl Session {
         eprintln!("next: {next}");
         ExitCode::FAILURE
     }
+
+    /// One failure renderer: a JSON object under `--json`, `error:`/`next:` lines otherwise.
+    pub(crate) fn report(&self, code: &str, message: &str, next: &str, json: bool) -> ExitCode {
+        if json {
+            let _ = emit(&format!(
+                "{}\n",
+                json!({ "error": { "code": code, "message": message, "next": next } })
+            ));
+            return ExitCode::FAILURE;
+        }
+        self.fail(message, next)
+    }
 }
 
 /// Writes one already-rendered chunk to stdout without panicking on a closed pipe.

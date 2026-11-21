@@ -178,7 +178,7 @@ impl Core {
             .map_err(|message| Failure::new("restart-failed", message))?;
         emit(json!({
             "event": "finished", "step": 1, "total": 1, "kind": "service",
-            "label": "restarted", "detail": format!("{} pod(s)", reply["restarted"]),
+            "label": format!("Restarted {subject}"), "detail": format!("{} pod(s)", reply["restarted"]),
             "elapsed_ms": started.elapsed().as_millis() as u64,
         }));
         self.ingress = None;

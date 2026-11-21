@@ -59,19 +59,22 @@ Running bare `slipfork` (alias `slipfork status`) displays every active world on
 ✓ Ready -> http://demo.localhost
 ```
 
-On subsequent `slipfork up`, `slipfork restart`, or `slipfork fork` runs where watched lockfiles and `when changed(...)` inputs are unchanged, setup nodes skip in `< 1ms` (`(up to date)`).
+On subsequent `slipfork up` or `slipfork fork` runs where watched lockfiles and `when changed(...)` inputs are unchanged, setup nodes skip in `< 1ms` and render a dim `(up to date)` badge.
 
-If a setup step, hook, or service fails, Slipfork prints the failure in red with inline logs and **leaves the world running** so you can inspect it right away:
+If a setup step, hook, or service fails, Slipfork prints the failing step in red with the `Forkfile` line and **leaves the world running** so you can inspect it right away:
 
 ```text
-✗ Hook api:pre-deploy failed (exit 1) — Forkfile:32
-  │ sqlalchemy.exc.ProgrammingError: column "org_id" does not exist
-  next: slipfork logs api  or  slipfork shell api
+✗ service api
+  Forkfile:32
+error: `@uv run python app.py` exited with 1 before it became ready
+next: fix Forkfile:32, then run `slipfork up`
 ```
 
-- **`slipfork restart [service]`** re-checks `@<tool>` and `before-start when changed(...)` inputs, re-runs affected hooks, and restarts one or all services in place.
-- **`slipfork down`** stops the world's containers cleanly while keeping its Btrfs data subvolumes intact.
-- **Live child progress:** Any child step that can exceed `200 ms` — image `pull`, `RUN`, and `down`/`restart` teardown — is `spawn()`ed and streams `[step/total]` phase headers with elapsed time; nothing blocks on `.output()` or `pull -q`.
+A failure always prints exactly one `next:` line, and `slipfork status` still lists the world while the daemon entry stays live.
+
+- **`slipfork restart [service]`** restarts one or all services in place from their existing rootfs; run `slipfork up` to re-check `@<tool>` / `when changed(...)` inputs and re-run changed setup and hooks.
+- **`slipfork down`** stops the world's pods cleanly and deletes its run subvolumes while keeping the Btrfs data subvolumes intact.
+- **Streamed phases:** `up`, `restart`, and `down` print `→ [step/total] label` while a step runs and replace it with `✓ label (detail, elapsed)` as it finishes; `up`'s long child steps and teardown stream live instead of blocking on `.output()`.
 
 ---
 
@@ -132,7 +135,7 @@ The three rows are always `Btrfs`, `Namespaces`, and `Runtime`, and `--json` emi
 | `slipfork exec [service\|image] -- <cmd>` | Runs any ad-hoc command (`pytest`, `pnpm test`, scripts) inside the target container, forwards stdin, and forwards the command's exit code. |
 | `slipfork db [database]` | Opens interactive `psql` (or executes piped SQL when `stdin` is redirected). |
 | `slipfork redis [id]` | Opens interactive `redis-cli` against the world's Redis instance. |
-| `slipfork env [service]` | Prints resolved runtime variables; secrets show `[REDACTED]` unless `--reveal` is passed on a TTY. `--reveal` is refused on a pipe, and `--json` keeps the same redaction gate. |
+| `slipfork env [component]` | Prints resolved runtime variables; secrets show `[REDACTED]` unless `--reveal` is passed on a TTY. `--reveal` is refused on a pipe, and `--json` keeps the same redaction gate. |
 | `slipfork secret list\|set\|unset` | Lists, overrides, or removes local offline secrets for the current world. `set` reads the value from stdin and never echoes it; `unset` removes exactly one key. |
 | `slipfork open [service]` | Opens the world or route URL in your browser (headless/SSH-aware, zero `sudo` env-stripping bugs). |
 | `slipfork auth [<endpoint-url>]` | Pairs your machine with a remote `OSPP v1` endpoint; precedence is `--ospp-endpoint` > positional URL > `<state_dir>/ospp.json`. |
@@ -151,5 +154,5 @@ After pairing, `slipfork auth` prints the settled pair and one `next: slipfork u
 
 - **TTY-aware styling:** ANSI colors and spinners run **only** when the output stream is a real TTY, `NO_COLOR` is unset, and `TERM != dumb`.
 - **Clean scrollback:** Active spinner frames clear completely before every status or log line — zero raw carriage-return or `ESC[2K` line-clear garbage in scrollback or redirected files.
-- **Machine parity (`--json`):** Every inspection and lifecycle command supports `--json`, emitting the exact same fields as structured JSON with zero ANSI escapes.
-- **Actionable errors:** Every error prints **one clear sentence** followed by `next: <exact command to fix it>`.
+- **Machine parity (`--json`):** Every verb that accepts `--json` emits the exact same fields as structured JSON with zero ANSI escapes; failures emit one `{"error":{code,message,next}}` object on stdout.
+- **Actionable errors:** Every human-mode failure prints `error: <one sentence>` followed by exactly one `next: <exact command to fix it>`; a failing step also names its `Forkfile:<line>`.

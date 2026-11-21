@@ -6,19 +6,19 @@
 use std::fmt::Write as _;
 
 /// One shipped verb: its command word, its `--help` summary, and the words it accepts.
-pub(super) struct VerbSpec {
+pub struct VerbSpec {
     /// The command word typed after `slipfork`.
-    pub(super) name: &'static str,
+    pub name: &'static str,
     /// The single help line that follows the verb.
-    pub(super) summary: &'static str,
+    pub summary: &'static str,
     /// Subcommands such as `daemon install`.
-    pub(super) subcommands: &'static [&'static str],
+    pub subcommands: &'static [&'static str],
     /// Every flag the verb parses, exactly as its help page spells it.
-    pub(super) flags: &'static [&'static str],
+    pub flags: &'static [&'static str],
 }
 
 /// Every verb that ships in this binary, in help order.
-pub(super) const VERBS: &[VerbSpec] = &[
+pub const VERBS: &[VerbSpec] = &[
     VerbSpec {
         name: "status",
         summary: "Show every running world as a tree (the bare `slipfork` verb)",
@@ -161,7 +161,7 @@ pub(super) const VERBS: &[VerbSpec] = &[
 
 /// The three shells that ship completion scripts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum Shell {
+pub enum Shell {
     /// POSIX bash.
     Bash,
     /// zsh with `#compdef`.
@@ -172,7 +172,7 @@ pub(super) enum Shell {
 
 impl Shell {
     /// The shell named by `word`, or `None` for anything else.
-    pub(super) fn parse(word: &str) -> Option<Self> {
+    pub fn parse(word: &str) -> Option<Self> {
         match word {
             "bash" => Some(Self::Bash),
             "zsh" => Some(Self::Zsh),
@@ -182,7 +182,7 @@ impl Shell {
     }
 
     /// The completion script for this shell.
-    pub(super) fn script(self) -> String {
+    pub fn script(self) -> String {
         match self {
             Self::Bash => bash(),
             Self::Zsh => zsh(),
@@ -192,7 +192,7 @@ impl Shell {
 }
 
 /// The `Commands:` block of the global help, aligned on the widest verb name.
-pub(super) fn commands_block() -> String {
+pub fn commands_block() -> String {
     let width = VERBS.iter().map(|verb| verb.name.len()).max().unwrap_or(0) + 2;
     let mut block = String::new();
     for verb in VERBS {

@@ -252,13 +252,20 @@ fn streaming_verbs_ship_help_and_fail_with_next() {
         let output = run_isolated(args, &root);
         assert_eq!(output.status.code(), Some(1), "{args:?}");
         let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(stderr.contains("error:"), "{stderr}");
-        assert!(stderr.contains("next:"), "{stderr}");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        if args.contains(&"--json") {
+            let value: serde_json::Value = serde_json::from_str(stdout.trim())
+                .unwrap_or_else(|error| panic!("{args:?} must emit JSON ({error}): {stdout:?}"));
+            assert!(
+                value["error"]["next"].is_string(),
+                "{args:?} JSON failure needs one `next`: {value}"
+            );
+        } else {
+            assert!(stderr.contains("error:"), "{stderr}");
+            assert!(stderr.contains("next:"), "{stderr}");
+        }
         assert!(!stderr.contains(ANSI), "{stderr}");
-        assert!(
-            !String::from_utf8_lossy(&output.stdout).contains(ANSI),
-            "{args:?} must stay plain"
-        );
+        assert!(!stdout.contains(ANSI), "{args:?} must stay plain");
     }
     let _ = std::fs::remove_dir_all(&root);
 }

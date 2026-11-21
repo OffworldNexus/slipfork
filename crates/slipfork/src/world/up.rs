@@ -64,6 +64,9 @@ impl Session {
             "up",
             json!({ "project": project, "world": args.world }),
             &mut |event| {
+                if event["event"].as_str() == Some("failed") && failed {
+                    return;
+                }
                 if let Some(value) = event["remedy"].as_str() {
                     remedy = Some(value.to_owned());
                 }
@@ -345,22 +348,7 @@ fn render_event(event: &Value, color: bool, json: bool) -> bool {
             false
         }
         "finished" | "up-to-date" => {
-            let label = event["label"].as_str().unwrap_or("step");
-            let detail = if event["event"] == "up-to-date" {
-                "up to date".to_owned()
-            } else {
-                let elapsed = event["elapsed_ms"].as_u64().unwrap_or(0);
-                format!(
-                    "{}, {}",
-                    event["detail"].as_str().unwrap_or_default(),
-                    elapsed_text(elapsed)
-                )
-            };
-            let line = format!(
-                "{} {label} {}",
-                paint("✓", "32", color),
-                paint(&format!("({detail})"), "2", color)
-            );
+            let line = finish_line(event, color);
             if color {
                 print!("\r\u{1b}[K{line}\n");
             } else {
@@ -383,12 +371,17 @@ fn render_event(event: &Value, color: bool, json: bool) -> bool {
             let label = event["label"].as_str().unwrap_or("step");
             let line = event["line"].as_u64().unwrap_or(0);
             println!("{} {label}", paint("✗", "31", color));
+            if line > 0 {
+                println!("{}", paint(&format!("  Forkfile:{line}"), "2", color));
+            }
             let message = event["message"].as_str().unwrap_or("step failed");
             eprintln!("error: {message}");
-            match event["remedy"].as_str() {
-                Some(remedy) => eprintln!("next: {remedy}"),
-                None => eprintln!("next: fix Forkfile:{line}, then run `slipfork up`"),
-            }
+            let next = match event["remedy"].as_str() {
+                Some(remedy) => remedy.to_owned(),
+                None if line > 0 => format!("fix Forkfile:{line}, then run `slipfork up`"),
+                None => "read `.slipfork/supervisor.log`, then run `slipfork up`".to_owned(),
+            };
+            eprintln!("next: {next}");
             true
         }
         "ready" => {
@@ -437,25 +430,32 @@ fn render_phase(event: &Value, color: bool, json: bool) {
                 );
             }
         }
-        "finished" => {
-            let elapsed = event["elapsed_ms"].as_u64().unwrap_or(0);
-            let detail = event["detail"].as_str().unwrap_or_default();
-            let line = format!(
-                "{} {} {}",
-                paint("✓", "32", color),
-                event["label"].as_str().unwrap_or("step"),
-                paint(
-                    &format!("({detail}, {})", elapsed_text(elapsed)),
-                    "2",
-                    color
-                )
-            );
+        "finished" | "up-to-date" => {
+            let line = finish_line(event, color);
             if color {
                 print!("\r\u{1b}[K{line}\n");
             } else {
                 println!("{line}");
             }
             let _ = std::io::stdout().flush();
+        }
+        "failed" => {
+            let label = event["label"].as_str().unwrap_or("step");
+            let line = event["line"].as_u64().unwrap_or(0);
+            println!("{} {label}", paint("✗", "31", color));
+            if line > 0 {
+                println!("{}", paint(&format!("  Forkfile:{line}"), "2", color));
+            }
+            eprintln!(
+                "error: {}",
+                event["message"].as_str().unwrap_or("step failed")
+            );
+            let next = match event["remedy"].as_str() {
+                Some(remedy) => remedy.to_owned(),
+                None if line > 0 => format!("fix Forkfile:{line}, then run `slipfork up`"),
+                None => "read `.slipfork/supervisor.log`, then run `slipfork up`".to_owned(),
+            };
+            eprintln!("next: {next}");
         }
         "stopped" => {
             let elapsed = event["elapsed_ms"].as_u64().unwrap_or(0);
@@ -468,6 +468,24 @@ fn render_phase(event: &Value, color: bool, json: bool) {
         }
         _ => {}
     }
+}
+
+fn finish_line(event: &Value, color: bool) -> String {
+    let label = event["label"].as_str().unwrap_or("step");
+    let detail = if event["event"] == "up-to-date" {
+        "up to date".to_owned()
+    } else {
+        let elapsed = elapsed_text(event["elapsed_ms"].as_u64().unwrap_or(0));
+        match event["detail"].as_str().filter(|detail| !detail.is_empty()) {
+            Some(detail) => format!("{detail}, {elapsed}"),
+            None => elapsed,
+        }
+    };
+    format!(
+        "{} {label} {}",
+        paint("✓", "32", color),
+        paint(&format!("({detail})"), "2", color)
+    )
 }
 
 fn elapsed_text(millis: u64) -> String {

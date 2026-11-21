@@ -189,13 +189,14 @@ pub(crate) fn world_name(
 
 pub(super) fn fail(message: impl std::fmt::Display, next: &str) -> ExitCode {
     let text = message.to_string();
+    let mut embedded = None;
     for line in text.lines() {
         if let Some(remedy) = line.strip_prefix("next: ") {
-            eprintln!("next: {remedy}");
+            embedded.get_or_insert(remedy.to_owned());
         } else if !line.is_empty() {
             eprintln!("error: {line}");
         }
     }
-    eprintln!("next: {next}");
+    eprintln!("next: {}", embedded.as_deref().unwrap_or(next));
     ExitCode::FAILURE
 }

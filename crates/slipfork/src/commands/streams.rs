@@ -73,7 +73,7 @@ impl Session {
     /// `slipfork logs [-f] [service]`.
     pub fn logs(&self, args: &LogsArgs) -> ExitCode {
         install_sigint();
-        let Some(mut client) = self.existing_daemon() else {
+        let Some(mut client) = self.existing_daemon(args.json) else {
             return ExitCode::FAILURE;
         };
         let params = json!({
@@ -91,7 +91,7 @@ impl Session {
                 renderer.finish(0);
                 ExitCode::SUCCESS
             }
-            Err(error) => self.stream_fail(&error, "logs"),
+            Err(error) => self.stream_fail(&error, "logs", args.json),
         }
     }
 
@@ -145,7 +145,7 @@ impl Session {
 
     fn exec_like(&self, method: &str, params: Value, json: bool, verb: &str) -> ExitCode {
         install_sigint();
-        let Some(mut client) = self.existing_daemon() else {
+        let Some(mut client) = self.existing_daemon(json) else {
             return ExitCode::FAILURE;
         };
         let mut renderer = Renderer::new(self.color(), json);
@@ -165,31 +165,35 @@ impl Session {
                 renderer.finish(130);
                 ExitCode::from(130)
             }
-            Err(error) => self.stream_fail(&error, verb),
+            Err(error) => self.stream_fail(&error, verb, json),
         }
     }
 
-    fn existing_daemon(&self) -> Option<DaemonClient> {
+    fn existing_daemon(&self, json: bool) -> Option<DaemonClient> {
         match DaemonClient::connect_existing(self.host()) {
             Ok(Some(client)) => Some(client),
             Ok(None) => {
-                let _ = self.fail(
+                let _ = self.report(
+                    "no-world",
                     "no world is running in this directory",
                     "run `slipfork up` first",
+                    json,
                 );
                 None
             }
             Err(error) => {
-                let _ = self.fail(
+                let _ = self.report(
+                    "daemon",
                     &error.to_string(),
                     "check that XDG_RUNTIME_DIR is readable and retry",
+                    json,
                 );
                 None
             }
         }
     }
 
-    fn stream_fail(&self, error: &DaemonError, verb: &str) -> ExitCode {
+    fn stream_fail(&self, error: &DaemonError, verb: &str, json: bool) -> ExitCode {
         let next = match error.code.as_str() {
             "ambiguous-target" => {
                 format!("pass one of the ids above, e.g. `slipfork {verb} <id>`")
@@ -199,7 +203,7 @@ impl Session {
             "world-booting" => "wait for `slipfork up` to finish, then retry".to_owned(),
             _ => "run `slipfork status` to inspect the world".to_owned(),
         };
-        self.fail(&error.to_string(), &next)
+        self.report(&error.code, &error.message, &next, json)
     }
 }
 
