@@ -20,4 +20,5 @@ rust-version = "1.85"
 # inherits them with `foo.workspace = true` so versions never drift.
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 serde_yaml_ng = "0.10"

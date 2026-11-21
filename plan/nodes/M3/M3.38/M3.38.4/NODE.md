@@ -2,16 +2,16 @@
 id: M3.38.4
 title: "Deduplicated @<tool> (image, lockfile_dir) DAG synthesis, single-root CLI fmt/migrate wiring & lab E2E + critical tests"
 kind: task
-status: ready
+status: done
 owner: implementer
 priority: 3
 depends_on: [M3.38.3]
 paths: ["crates/slipfork-forkfile/**", "crates/slipfork/**", Cargo.toml, Cargo.lock]
-attempts: 0
+attempts: 1
 max_attempts: 3
 escalation: none
 created: "2026-11-21T00:58"
-updated: "2026-11-21T00:58"
+updated: "2026-11-21T01:40"
 ---
 
 # Goal

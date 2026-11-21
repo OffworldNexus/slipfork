@@ -20,6 +20,12 @@ impl FormatCheck {
     }
 }
 
+/// Line diff from `original` to `formatted`, headed by the real `label`.
+#[must_use]
+pub fn render_diff(original: &str, formatted: &str, label: &str) -> String {
+    crate::diff::line_diff(original, formatted, label)
+}
+
 /// Renders a parsed document canonically: 2-space indents, one blank line
 /// between top-level blocks, comments and declaration order preserved.
 #[must_use]
@@ -256,13 +262,13 @@ fn render_hook(renderer: &mut Renderer, keyword: &str, hook: &Hook) {
     }
     match &hook.body {
         HookBody::Inline(command) => {
-            renderer.line(&format!("{head}: {}", render_command(command)));
+            renderer.line(&format!("{head}: {}", command.text()));
         }
         HookBody::Block(block) => {
             renderer.line(&format!("{head} {{"));
             renderer.indented(|renderer| {
                 render_block(renderer, block, |renderer, command| {
-                    renderer.line(&render_command(command));
+                    renderer.line(&command.text());
                 });
             });
             renderer.line("}");
@@ -344,28 +350,6 @@ fn render_version(version: &str) -> String {
     } else {
         quote(version)
     }
-}
-
-fn render_command(command: &Command) -> String {
-    let mut out = String::new();
-    if let Some(tool) = &command.tool {
-        out.push('@');
-        out.push_str(tool);
-        if !command.parts.is_empty() {
-            out.push(' ');
-        }
-    }
-    for part in &command.parts {
-        match part {
-            CommandPart::Text(text) => out.push_str(text),
-            CommandPart::Port => out.push_str("$port"),
-            CommandPart::Env(key) => {
-                out.push_str("$env.");
-                out.push_str(key);
-            }
-        }
-    }
-    out
 }
 
 fn render_expr(expr: &Expr) -> String {

@@ -1,10 +1,13 @@
 //! The `slipfork` binary: the single Composition Root for the whole system.
 //!
-//! Only this entry point reads ambient process state (`std::env`, `/proc`, bound
-//! sockets) and assembles the constructor-injected tree. Library crates stay pure:
-//! they receive their dependencies as arguments and never inspect the environment.
+//! Only this entry point reads ambient process state (`std::env`, the terminal,
+//! the working directory) and assembles the constructor-injected tree. Library
+//! crates stay pure: they receive their dependencies as arguments and never
+//! inspect the environment.
 
 mod cli;
+mod commands;
+mod render;
 
 use std::ffi::OsString;
 use std::io::IsTerminal;
@@ -15,9 +18,17 @@ fn main() -> ExitCode {
     let term_is_dumb = std::env::var_os("TERM").is_some_and(|term| term == "dumb");
     let color =
         std::io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none() && !term_is_dumb;
+    let cwd = match std::env::current_dir() {
+        Ok(cwd) => cwd,
+        Err(error) => {
+            eprintln!("error: cannot determine the working directory: {error}");
+            eprintln!("next: cd into a readable directory and run `slipfork --help`.");
+            return ExitCode::from(2);
+        }
+    };
 
     match cli::CommandLine::parse(&args) {
-        Ok(line) => line.run(color),
+        Ok(line) => line.run(commands::Session::new(cwd, color)),
         Err(error) => {
             eprintln!("error: {error}");
             eprintln!("next: run `slipfork --help` to see the available surface.");

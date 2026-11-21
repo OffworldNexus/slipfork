@@ -1,7 +1,7 @@
 //! Minimal line diff for `format_check`.
 
 /// Returns an empty string when `original` already equals `formatted`.
-pub(crate) fn line_diff(original: &str, formatted: &str) -> String {
+pub(crate) fn line_diff(original: &str, formatted: &str, label: &str) -> String {
     if original == formatted {
         return String::new();
     }
@@ -18,7 +18,7 @@ pub(crate) fn line_diff(original: &str, formatted: &str) -> String {
     {
         suffix += 1;
     }
-    let mut out = String::from("--- Forkfile\n+++ Forkfile (formatted)\n");
+    let mut out = format!("--- {label}\n+++ {label} (formatted)\n");
     if prefix == before.len() && prefix == after.len() {
         // Only the presence of a final newline differs: still emit a real hunk.
         out.push_str(&format!("@@ line {} @@\n", prefix.max(1)));

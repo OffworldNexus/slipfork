@@ -3,7 +3,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use slipfork_forkfile::{check, format_check, migrate, parse};
+use slipfork_forkfile::{boot_plan, check, format_check, migrate, parse};
 
 const SNOW: &str = r#"images:
   - id: backend
@@ -270,4 +270,114 @@ fn migration_refuses_shell_pipelines_and_unknown_template_namespaces() {
             .any(|d| d.message.contains("envs.common.URL")),
         "{diags:?}"
     );
+}
+
+#[test]
+fn uv_prequels_dedupe_per_image_and_lockfile_dir() {
+    let dir = lab_dir("prequel-dedupe");
+    fs::write(dir.join("uv.lock"), "version = 1\n").expect("write lockfile");
+    let source = "# forkfile: 0.1\n\nimage backend . {\n  service api {\n    run: @uv run app\n  }\n  service worker {\n    run: @uv run worker\n  }\n}\n";
+    let plan = boot_plan(&parse(source).expect("parses"), &dir);
+    assert_eq!(plan.len(), 1, "{plan:?}");
+    let node = &plan.nodes[0];
+    assert_eq!(node.image, "backend");
+    assert_eq!(node.command, "uv sync");
+    assert_eq!(node.directory, PathBuf::from("."));
+    assert_eq!(node.patterns, vec![PathBuf::from("uv.lock")]);
+    assert!(node.is_current(&dir));
+
+    let source = "# forkfile: 0.1\n\nimage backend . {\n  service api {\n    run: @uv run app\n  }\n}\n\nimage front ./front {\n  service web {\n    run: @uv run dev\n  }\n}\n";
+    fs::create_dir_all(dir.join("front")).expect("front directory");
+    fs::write(dir.join("front/uv.lock"), "version = 1\n").expect("write front lockfile");
+    let plan = boot_plan(&parse(source).expect("parses"), &dir);
+    assert_eq!(plan.len(), 2, "{plan:?}");
+    assert_eq!(plan.nodes[0].directory, PathBuf::from("."));
+    assert_eq!(plan.nodes[1].directory, PathBuf::from("front"));
+    fs::remove_dir_all(&dir).expect("clean lab dir");
+}
+
+#[test]
+fn pnpm_prequel_walks_up_to_the_workspace_root_lockfile() {
+    let dir = lab_dir("prequel-workspace");
+    fs::write(dir.join("pnpm-lock.yaml"), "lockfileVersion: 9\n").expect("write lockfile");
+    fs::create_dir_all(dir.join("apps/web")).expect("workspace directory");
+    let source =
+        "# forkfile: 0.1\n\nimage web ./apps/web {\n  service web {\n    run: @pnpm dev\n  }\n}\n";
+    let plan = boot_plan(&parse(source).expect("parses"), &dir);
+    assert_eq!(plan.len(), 1, "{plan:?}");
+    let node = &plan.nodes[0];
+    assert_eq!(node.command, "pnpm install");
+    assert_eq!(node.directory, PathBuf::from("."));
+    assert_eq!(node.patterns, vec![PathBuf::from("pnpm-lock.yaml")]);
+    fs::remove_dir_all(&dir).expect("clean lab dir");
+}
+
+#[test]
+fn when_changed_stamps_rerun_only_after_inputs_change() {
+    let dir = lab_dir("prequel-stamp");
+    fs::create_dir_all(dir.join("prisma")).expect("prisma directory");
+    let schema = dir.join("prisma/schema.prisma");
+    fs::write(&schema, "model User {}\n").expect("write schema");
+    let source = "# forkfile: 0.1\n\nimage backend . {\n  service api {\n    before-start when changed(prisma/schema.prisma): alembic upgrade head\n    run: gunicorn app:app\n  }\n}\n";
+    let plan = boot_plan(&parse(source).expect("parses"), &dir);
+    assert_eq!(plan.len(), 1, "{plan:?}");
+    let node = &plan.nodes[0];
+    assert_eq!(node.patterns, vec![PathBuf::from("prisma/schema.prisma")]);
+    assert!(node.is_current(&dir));
+    fs::write(&schema, "model Org {}\n").expect("change schema");
+    assert!(
+        !node.is_current(&dir),
+        "changed input must invalidate the stamp"
+    );
+    fs::write(&schema, "model User {}\n").expect("restore schema");
+    assert!(node.is_current(&dir), "restored content restores the stamp");
+    let again = boot_plan(&parse(source).expect("parses"), &dir);
+    assert_eq!(plan, again);
+    fs::remove_dir_all(&dir).expect("clean lab dir");
+}
+
+#[test]
+fn unconditional_hooks_are_always_due_and_run_is_skipped() {
+    let dir = lab_dir("prequel-unconditional");
+    let source = "# forkfile: 0.1\n\nimage backend . {\n  service api {\n    before-start: alembic upgrade head\n    run: gunicorn app:app\n  }\n}\n";
+    let plan = boot_plan(&parse(source).expect("parses"), &dir);
+    assert_eq!(plan.len(), 1, "{plan:?}");
+    let node = &plan.nodes[0];
+    assert_eq!(node.command, "alembic upgrade head");
+    assert!(node.patterns.is_empty(), "{node:?}");
+    assert!(!node.is_current(&dir), "unconditional hooks are always due");
+    fs::remove_dir_all(&dir).expect("clean lab dir");
+}
+
+#[test]
+fn from_images_plan_against_the_project_root_and_missing_inputs_are_due() {
+    let dir = lab_dir("prequel-from");
+    let source = "# forkfile: 0.1\n\nimage base from python:3.12 {\n  service api {\n    before-start when changed(prisma/missing.prisma): alembic upgrade head\n    run: gunicorn app:app\n  }\n}\n";
+    let plan = boot_plan(&parse(source).expect("parses"), &dir);
+    assert_eq!(plan.len(), 1, "{plan:?}");
+    let node = &plan.nodes[0];
+    assert_eq!(node.directory, PathBuf::from("."));
+    assert_eq!(node.patterns, vec![PathBuf::from("prisma/missing.prisma")]);
+    assert!(
+        !node.is_current(&dir),
+        "a missing input can never be current"
+    );
+    fs::remove_dir_all(&dir).expect("clean lab dir");
+}
+
+#[test]
+fn same_command_with_different_watched_inputs_stays_two_nodes() {
+    let dir = lab_dir("prequel-watched");
+    fs::create_dir_all(dir.join("a")).expect("a directory");
+    fs::create_dir_all(dir.join("b")).expect("b directory");
+    fs::write(dir.join("a/one.txt"), "1\n").expect("first input");
+    fs::write(dir.join("b/two.txt"), "2\n").expect("second input");
+    let source = "# forkfile: 0.1\n\nimage backend . {\n  service api {\n    before-start when changed(a/one.txt): make generate\n    before-start when changed(b/two.txt): make generate\n  }\n}\n";
+    let plan = boot_plan(&parse(source).expect("parses"), &dir);
+    assert_eq!(plan.len(), 2, "{plan:?}");
+    assert_eq!(plan.nodes[0].patterns, vec![PathBuf::from("a/one.txt")]);
+    assert_eq!(plan.nodes[1].patterns, vec![PathBuf::from("b/two.txt")]);
+    assert!(plan.nodes[0].is_current(&dir));
+    assert!(plan.nodes[1].is_current(&dir));
+    fs::remove_dir_all(&dir).expect("clean lab dir");
 }

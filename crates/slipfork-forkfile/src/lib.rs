@@ -16,6 +16,7 @@ macro_rules! ast_eq {
 }
 
 pub mod ast;
+pub mod boot;
 pub mod check;
 mod decls;
 pub mod diag;
@@ -33,6 +34,7 @@ mod span;
 mod token;
 
 pub use ast::*;
+pub use boot::{BootPlan, PrequelTool, SetupNode, boot_plan};
 pub use check::{CheckedForkfile, Symbol, SymbolKind, SymbolTable, check};
 pub use diag::{Diagnostic, Diagnostics};
 pub use expr::*;
@@ -56,7 +58,7 @@ pub fn format(doc: &Forkfile) -> String {
 pub fn format_check(source: &str) -> Result<FormatCheck, Diagnostics> {
     let document = parse(source)?;
     let formatted = fmt::format(&document);
-    let diff = diff::line_diff(source, &formatted);
+    let diff = diff::line_diff(source, &formatted, "Forkfile");
     Ok(FormatCheck { formatted, diff })
 }
 

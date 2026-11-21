@@ -90,6 +90,30 @@ pub struct Command {
 ast_eq!(Command { tool, parts });
 
 impl Command {
+    /// Renders the command back to `Forkfile` source text.
+    #[must_use]
+    pub fn text(&self) -> String {
+        let mut out = String::new();
+        if let Some(tool) = &self.tool {
+            out.push('@');
+            out.push_str(tool);
+            if !self.parts.is_empty() {
+                out.push(' ');
+            }
+        }
+        for part in &self.parts {
+            match part {
+                CommandPart::Text(text) => out.push_str(text),
+                CommandPart::Port => out.push_str("$port"),
+                CommandPart::Env(key) => {
+                    out.push_str("$env.");
+                    out.push_str(key);
+                }
+            }
+        }
+        out
+    }
+
     /// Parses a raw command line, splitting the `@tool` prequel and interpolations.
     pub fn parse(raw: &str, span: Span) -> Result<Self, Diagnostic> {
         let text = raw.trim();

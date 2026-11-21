@@ -8,16 +8,12 @@ mod symbols;
 use std::collections::BTreeSet;
 
 use crate::ast::*;
+use crate::boot::{PREQUEL_TOOLS, PrequelTool};
 use crate::diag::{Diagnostic, Diagnostics};
 use crate::expr::Command;
 use crate::span::Span;
 
 pub use symbols::{Symbol, SymbolKind, SymbolTable};
-
-/// Every tool that may prefix a command with `@`.
-pub const AUTO_PREQUEL_TOOLS: &[&str] = &[
-    "uv", "poetry", "pnpm", "npm", "yarn", "bun", "composer", "bundle", "go", "cargo",
-];
 
 /// A document that passed whole-file static semantics.
 #[derive(Debug, Clone)]
@@ -273,12 +269,17 @@ impl Checker {
 
     fn check_command(&mut self, command: &Command) {
         if let Some(tool) = &command.tool
-            && !AUTO_PREQUEL_TOOLS.contains(&tool.as_str())
+            && PrequelTool::lookup(tool).is_none()
         {
+            let names = PREQUEL_TOOLS
+                .iter()
+                .map(|tool| format!("@{}", tool.name))
+                .collect::<Vec<_>>()
+                .join("`, `");
             self.diags.push(Diagnostic::new(
                 command.span,
                 format!("unknown `@{tool}` auto-prequel"),
-                format!("use one of `@{}`", AUTO_PREQUEL_TOOLS.join("`, `@")),
+                format!("use one of `{names}`"),
             ));
         }
     }

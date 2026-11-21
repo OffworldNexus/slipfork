@@ -78,8 +78,15 @@ fn pty_stdout(binary: &[&str], envs: &[(&str, &str)]) -> String {
 fn help_and_version_are_the_whole_shipped_surface() {
     let help = help_text();
     assert!(help.contains("Usage: slipfork <command>"), "{help}");
-    assert_eq!(shipped_verbs(&help), ["help", "version"], "{help}");
-    assert!(help.contains("Example:\n  slipfork --version\n"), "{help}");
+    assert_eq!(
+        shipped_verbs(&help),
+        ["fmt", "migrate", "help", "version"],
+        "{help}"
+    );
+    assert!(
+        help.contains("Examples:\n  slipfork fmt --check Forkfile\n"),
+        "{help}"
+    );
     assert!(!help.contains(ANSI), "piped output must stay plain");
 
     let version = run(&["--version"]);

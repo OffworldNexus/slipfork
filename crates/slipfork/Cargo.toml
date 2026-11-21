@@ -8,3 +8,7 @@ description = "Copy-on-write Btrfs environments for polyglot apps and AI coding 
 [[bin]]
 name = "slipfork"
 path = "src/main.rs"
+
+[dependencies]
+serde_json.workspace = true
+slipfork-forkfile = { path = "../slipfork-forkfile" }
