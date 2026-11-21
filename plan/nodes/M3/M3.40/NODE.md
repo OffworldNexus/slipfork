@@ -2,7 +2,7 @@
 id: M3.40
 title: "Standalone multi-platform slipfork-lsp, OSPP v1, stateless :80 ingress, single per-user daemon, CLI UX & @slipfork/opencode"
 kind: epic
-status: ready
+status: done
 priority: 3
 depends_on: [M3.39]
 paths:
@@ -19,7 +19,7 @@ attempts: 0
 max_attempts: 3
 escalation: none
 created: "2026-11-21T00:44"
-updated: "2026-11-21T13:07"
+updated: "2026-11-21T16:31"
 ---
 
 # Goal

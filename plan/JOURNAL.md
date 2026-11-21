@@ -2461,3 +2461,5 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-21T14:58 [M3.40.12] (lead) base 9387d65dd22302f2f54db00762e6134d5f6e292e expert probing live crun exec
 - 2026-11-21T14:59 [M3.40.12] (lead) hygiene half done: zed target dir, spec consistency, 7 live suites
 - 2026-11-21T15:20 [M3.40.12] (lead) status active -> done
+- 2026-11-21T16:31 [M3.40] (lead) gate: make check 0; live lab 7/7 suites (11 tests) green; guard+critical_guard+validate+docs honesty OK; zero mocks
+- 2026-11-21T16:31 [M3.40] (lead) status ready -> done
