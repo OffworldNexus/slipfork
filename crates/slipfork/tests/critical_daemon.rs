@@ -64,6 +64,51 @@ fn wait_for_socket(socket: &Path, log: &Path, daemon: &mut Child) {
     panic!("the daemon never bound `{}`", socket.display());
 }
 
+struct DaemonGuard {
+    pid: u32,
+}
+
+impl Drop for DaemonGuard {
+    fn drop(&mut self) {
+        if let Ok(pid) = i32::try_from(self.pid) {
+            // SAFETY: `kill(2)` with a recorded pid never dereferences memory.
+            unsafe {
+                libc::kill(pid, libc::SIGKILL);
+            }
+        }
+    }
+}
+
+/// Every `__daemon` whose environment names this test's runtime directory.
+fn daemons_for(runtime: &Path) -> Vec<u32> {
+    use std::os::unix::ffi::OsStrExt;
+    let scope = runtime.as_os_str().as_bytes();
+    let mut found = Vec::new();
+    for entry in fs::read_dir("/proc").expect("read /proc") {
+        let entry = entry.expect("read a /proc entry");
+        let Some(pid) = entry
+            .file_name()
+            .to_str()
+            .and_then(|name| name.parse::<u32>().ok())
+        else {
+            continue;
+        };
+        let Ok(cmdline) = fs::read(format!("/proc/{pid}/cmdline")) else {
+            continue;
+        };
+        if !cmdline.windows(b"__daemon".len()).any(|w| w == b"__daemon") {
+            continue;
+        }
+        let Ok(environ) = fs::read(format!("/proc/{pid}/environ")) else {
+            continue;
+        };
+        if environ.windows(scope.len()).any(|window| window == scope) {
+            found.push(pid);
+        }
+    }
+    found
+}
+
 struct Client {
     stream: UnixStream,
     reader: BufReader<UnixStream>,
@@ -198,6 +243,7 @@ fn daemon_control_plane_and_status_tree_lifecycle() {
     .expect("seed the registry");
 
     let mut daemon = daemon_command(&runtime, &state);
+    let guard = DaemonGuard { pid: daemon.id() };
     wait_for_socket(&socket, &state_root.join("daemon.stderr"), &mut daemon);
     let daemon_pid = {
         let mut client = Client::connect(&socket);
@@ -278,6 +324,162 @@ fn daemon_control_plane_and_status_tree_lifecycle() {
     let parsed: serde_json::Value = serde_json::from_slice(&scoped.stdout).expect("ps --json");
     assert_eq!(parsed["worlds"].as_array().map(Vec::len), Some(1));
 
+    // Streaming verbs relay the world's typed frames, never re-rendered text.
+    let logs = Command::new(env!("CARGO_BIN_EXE_slipfork"))
+        .args(["logs", "--json", "api"])
+        .current_dir(&project)
+        .env("XDG_RUNTIME_DIR", &runtime)
+        .env("XDG_STATE_HOME", &state)
+        .env("NO_COLOR", "1")
+        .output()
+        .expect("logs must run");
+    assert!(logs.status.success(), "{logs:?}");
+    let logs_text = String::from_utf8_lossy(&logs.stdout);
+    assert!(!logs_text.contains('\u{1b}'));
+    let mut frames: Vec<serde_json::Value> = logs_text
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("each logs line is JSON"))
+        .collect();
+    let exit = frames.pop().expect("logs ends with an exit frame");
+    assert_eq!(exit["exit"], 0, "{exit:?}");
+    assert!(
+        frames
+            .iter()
+            .any(|frame| frame["kind"] == "divider" && frame["pod"] == "api"),
+        "logs must carry the divider: {frames:?}"
+    );
+    assert!(
+        frames
+            .iter()
+            .any(|frame| frame["kind"] == "line" && frame["line"] == "hello from the pod"),
+        "logs must carry the captured line: {frames:?}"
+    );
+    assert!(
+        frames.iter().all(|frame| frame["stream"].is_string()),
+        "every frame names its stream: {frames:?}"
+    );
+
+    let exec = Command::new(env!("CARGO_BIN_EXE_slipfork"))
+        .args(["exec", "api", "--", "echo", "hi"])
+        .current_dir(&project)
+        .env("XDG_RUNTIME_DIR", &runtime)
+        .env("XDG_STATE_HOME", &state)
+        .env("NO_COLOR", "1")
+        .stdin(Stdio::null())
+        .output()
+        .expect("exec must run");
+    assert_eq!(
+        exec.status.code(),
+        Some(7),
+        "exec must forward the world's exit code: {exec:?}"
+    );
+    assert!(
+        String::from_utf8_lossy(&exec.stdout).contains("exec-ok"),
+        "exec must stream the child's stdout: {exec:?}"
+    );
+
+    // Duplex stdin: piped bytes reach the world and are echoed back.
+    let mut piped = Command::new(env!("CARGO_BIN_EXE_slipfork"))
+        .args(["exec", "api", "--", "cat"])
+        .current_dir(&project)
+        .env("XDG_RUNTIME_DIR", &runtime)
+        .env("XDG_STATE_HOME", &state)
+        .env("NO_COLOR", "1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("piped exec must start");
+    piped
+        .stdin
+        .take()
+        .expect("exec stdin")
+        .write_all(b"ping\n")
+        .expect("write exec stdin");
+    let echoed = piped.wait_with_output().expect("piped exec must finish");
+    assert_eq!(
+        echoed.status.code(),
+        Some(7),
+        "piped exec must forward the exit code: {echoed:?}"
+    );
+    let echoed_text = String::from_utf8_lossy(&echoed.stdout);
+    assert!(echoed_text.contains("ping"), "{echoed_text:?}");
+
+    // A followed stream exits 0 on SIGINT and the daemon observes the closed client.
+    let follower = Command::new(env!("CARGO_BIN_EXE_slipfork"))
+        .args(["logs", "-f", "api"])
+        .current_dir(&project)
+        .env("XDG_RUNTIME_DIR", &runtime)
+        .env("XDG_STATE_HOME", &state)
+        .env("NO_COLOR", "1")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("logs -f must start");
+    thread::sleep(Duration::from_millis(400));
+    // SAFETY: `kill(2)` targets the child we spawned.
+    unsafe {
+        libc::kill(follower.id() as i32, libc::SIGINT);
+    }
+    let followed = follower.wait_with_output().expect("logs -f must exit");
+    assert_eq!(
+        followed.status.code(),
+        Some(0),
+        "Ctrl-C on `logs -f` must exit 0: {followed:?}"
+    );
+    let daemon_log = state_root.join("daemon.stderr");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut closed = false;
+    while Instant::now() < deadline {
+        if fs::read_to_string(&daemon_log)
+            .unwrap_or_default()
+            .contains("{\"closed\":true}")
+        {
+            closed = true;
+            break;
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+    assert!(
+        closed,
+        "the daemon must observe the follower close: {}",
+        fs::read_to_string(&daemon_log).unwrap_or_default()
+    );
+
+    let human = Command::new(env!("CARGO_BIN_EXE_slipfork"))
+        .args(["logs", "api"])
+        .current_dir(&project)
+        .env("XDG_RUNTIME_DIR", &runtime)
+        .env("XDG_STATE_HOME", &state)
+        .env("NO_COLOR", "1")
+        .output()
+        .expect("human logs must run");
+    assert!(human.status.success(), "{human:?}");
+    let human_text = String::from_utf8_lossy(&human.stdout);
+    assert!(!human_text.contains('\u{1b}'), "{human_text:?}");
+    assert!(human_text.contains("api │"), "{human_text:?}");
+    assert!(human_text.contains("── api started ──"), "{human_text:?}");
+
+    let ambiguous = Command::new(env!("CARGO_BIN_EXE_slipfork"))
+        .arg("shell")
+        .current_dir(&project)
+        .env("XDG_RUNTIME_DIR", &runtime)
+        .env("XDG_STATE_HOME", &state)
+        .env("NO_COLOR", "1")
+        .stdin(Stdio::null())
+        .output()
+        .expect("ambiguous shell must run");
+    assert_eq!(ambiguous.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&ambiguous.stderr);
+    assert!(
+        stderr.contains("error: 2 candidates: api, pg"),
+        "ambiguity must name the count and ids first: {stderr}"
+    );
+    assert!(
+        stderr.contains("next: pass one of the ids above"),
+        "{stderr}"
+    );
+
     // Two concurrent clients get coherent ping/ps replies.
     let mut handles = Vec::new();
     for index in 0..2 {
@@ -335,6 +537,11 @@ fn daemon_control_plane_and_status_tree_lifecycle() {
     assert!(
         processes_mentioning(needle.as_bytes()).is_empty(),
         "no daemon/supervisor may survive shutdown"
+    );
+    std::mem::forget(guard);
+    assert!(
+        daemons_for(&runtime).is_empty(),
+        "every `__daemon` for this runtime must be reaped"
     );
 
     drop(control);

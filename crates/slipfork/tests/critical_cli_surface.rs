@@ -109,8 +109,8 @@ fn help_and_version_are_the_shipped_surface() {
     assert_eq!(
         shipped_verbs(&help),
         [
-            "status", "ps", "doctor", "up", "down", "restart", "fmt", "migrate", "daemon", "help",
-            "version"
+            "status", "ps", "doctor", "up", "down", "restart", "logs", "shell", "exec", "db",
+            "redis", "fmt", "migrate", "daemon", "help", "version"
         ],
         "{help}"
     );
@@ -157,6 +157,42 @@ fn help_and_version_are_the_shipped_surface() {
     let stderr = String::from_utf8(unknown.stderr).expect("errors are UTF-8");
     assert!(stderr.contains("error:"), "{stderr}");
     assert!(stderr.contains("next:"), "{stderr}");
+}
+
+#[test]
+fn streaming_verbs_ship_help_and_fail_with_next() {
+    for verb in ["logs", "shell", "exec", "db", "redis"] {
+        let help = run(&[verb, "--help"]);
+        assert!(help.status.success(), "`{verb} --help` must succeed");
+        let text = String::from_utf8_lossy(&help.stdout);
+        assert!(text.contains(&format!("slipfork {verb}")), "{text}");
+        assert!(!text.contains(ANSI), "piped help must stay plain: {text}");
+    }
+    let exec = run(&["exec", "api"]);
+    assert_eq!(exec.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&exec.stderr);
+    assert!(stderr.contains("needs `--`"), "{stderr}");
+
+    let root = scratch("streams");
+    for args in [
+        &["logs", "--json"][..],
+        &["shell"][..],
+        &["exec", "api", "--", "true"][..],
+        &["db"][..],
+        &["redis"][..],
+    ] {
+        let output = run_isolated(args, &root);
+        assert_eq!(output.status.code(), Some(1), "{args:?}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("error:"), "{stderr}");
+        assert!(stderr.contains("next:"), "{stderr}");
+        assert!(!stderr.contains(ANSI), "{stderr}");
+        assert!(
+            !String::from_utf8_lossy(&output.stdout).contains(ANSI),
+            "{args:?} must stay plain"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]

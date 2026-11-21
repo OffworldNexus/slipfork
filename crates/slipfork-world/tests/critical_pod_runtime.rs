@@ -17,10 +17,10 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use slipfork_image::{Architecture, Credentials, ImageLayout, ImageReference, OciPuller};
 use slipfork_world::{
-    Bind, BindSource, BtrfsEngine, Dirtiness, ImageFacts, PodEnv, PodHost, PodSpec, ResourceKind,
-    S3Bucket, S3Credentials, S3Policy, SeaweedfsPlan, StoreLayout, WorldEngine, WorldHost,
-    WorldName, WorldSupervisor, is_btrfs_path, is_subvolume_path, postgres, redis, seaweedfs,
-    write_bundle,
+    Bind, BindSource, BtrfsEngine, Dirtiness, ImageFacts, OutputKind, PodEnv, PodHost, PodSpec,
+    ResourceKind, S3Bucket, S3Credentials, S3Policy, SeaweedfsPlan, StoreLayout, Stream,
+    WorldEngine, WorldHost, WorldName, WorldSupervisor, is_btrfs_path, is_subvolume_path, postgres,
+    redis, seaweedfs, write_bundle,
 };
 
 const SECRET: &str = "slipfork-probe-secret-9d3f1c";
@@ -457,6 +457,20 @@ fn wait_json(path: &Path, timeout: Duration) -> serde_json::Value {
     serde_json::from_slice(&bytes).expect("parse pod result")
 }
 
+fn collect_logs(supervisor: &WorldSupervisor, service: &str) -> (Vec<String>, Vec<String>) {
+    let mut lines = Vec::new();
+    let mut dividers = Vec::new();
+    let mut on_output = |event: slipfork_world::control::OutputEvent| match event.kind {
+        OutputKind::Divider => dividers.push(event.line),
+        OutputKind::Line => lines.push(event.line),
+        OutputKind::Eof => {}
+    };
+    supervisor
+        .logs(Some(service), false, &mut on_output)
+        .expect("replay captured logs");
+    (lines, dividers)
+}
+
 /// Pids whose cmdline mentions `needle` **and** belong to this journey.
 ///
 /// A fresh run root is unique, and every world process lives in one of the journey's pid
@@ -605,6 +619,7 @@ fn world_pod_lifecycle() {
     let mut sink = |stream: slipfork_world::Stream, line: &str| match stream {
         slipfork_world::Stream::Stdout => out_lines.push(line.to_owned()),
         slipfork_world::Stream::Stderr => err_lines.push(line.to_owned()),
+        slipfork_world::Stream::Combined => {}
     };
     let code = supervisor_a
         .run_once(&run_once, &mut sink)
@@ -669,6 +684,93 @@ fn world_pod_lifecycle() {
     assert!(
         refused.to_string().contains("dial-refused"),
         "a refused dial must carry the init's code: {refused}"
+    );
+
+    // 1c. Detached output is captured on disk, replayable, and exec runs in the pod.
+    let printer = PodSpec {
+        id: "m339print".to_owned(),
+        rootfs: images.toolbox.clone(),
+        workdir: "/project".to_owned(),
+        argv: vec![
+            "python3".to_owned(),
+            "-u".to_owned(),
+            "-c".to_owned(),
+            "print('printed', flush=True)\nimport time\ntime.sleep(120)".to_owned(),
+        ],
+        inherited_env: images.toolbox_facts.env.clone(),
+        env: Vec::new(),
+        binds: vec![project_bind(&world_a.project)],
+        files: Vec::new(),
+    };
+    supervisor_a
+        .launch(&printer)
+        .expect("launch the printer pod");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let mut printed = false;
+    let mut dividers = Vec::new();
+    while Instant::now() < deadline {
+        let (lines, seen) = collect_logs(&supervisor_a, "m339print");
+        dividers = seen;
+        if lines.iter().any(|line| line == "printed") {
+            printed = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert!(
+        printed,
+        "the detached pod's stdout must land in <pods>/logs/m339print.log"
+    );
+    assert!(
+        dividers
+            .iter()
+            .any(|line| line.contains("m339print") && line.contains("started")),
+        "the capture must open with a started divider: {dividers:?}"
+    );
+
+    let mut exec_lines = Vec::new();
+    let mut on_exec = |event: slipfork_world::control::OutputEvent| {
+        if event.kind == OutputKind::Line && matches!(event.stream, Stream::Stdout | Stream::Stderr)
+        {
+            exec_lines.push(event.line);
+        }
+    };
+    let code = supervisor_a
+        .exec(
+            "m339svc",
+            &[
+                "python3".to_owned(),
+                "-c".to_owned(),
+                "import sys; print('exec-ok'); sys.exit(3)".to_owned(),
+            ],
+            &mut on_exec,
+        )
+        .expect("exec inside the live server pod");
+    assert_eq!(code, 3, "exec must forward the child's exit code");
+    assert!(
+        exec_lines.iter().any(|line| line == "exec-ok"),
+        "exec must stream stdout: {exec_lines:?}"
+    );
+
+    supervisor_a
+        .restart(Some("m339print"))
+        .expect("restart the printer pod");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let mut restarted = false;
+    while Instant::now() < deadline {
+        let (_, seen) = collect_logs(&supervisor_a, "m339print");
+        if seen
+            .iter()
+            .any(|line| line.contains("m339print") && line.contains("restarted"))
+        {
+            restarted = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert!(
+        restarted,
+        "a restart must append a `restarted` divider to the same log"
     );
 
     let pg_spec = postgres(

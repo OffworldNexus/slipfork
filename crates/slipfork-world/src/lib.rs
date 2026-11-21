@@ -32,6 +32,7 @@ pub mod fdpass;
 mod layout;
 pub mod namespaces;
 mod pod;
+pub mod pod_log;
 mod port;
 #[allow(unsafe_code)]
 mod reap;
@@ -50,7 +51,8 @@ pub use boot::{
 pub use btrfs::{is_btrfs_path, is_subvolume_path};
 pub use control::Stream;
 pub use control::{
-    ControlError, InitFrame, PROTOCOL_VERSION, Request, decode_init_frame, decode_request, encode,
+    ControlError, FrameLines, InitFrame, OutputKind, PROTOCOL_VERSION, Request, decode_init_frame,
+    decode_request, encode,
 };
 pub use engine::BtrfsEngine;
 pub use error::{Error, NameKind, Result};
@@ -58,6 +60,7 @@ pub use fdpass::{PAYLOAD_CAP, recv_fd, send_fd};
 pub use layout::{ForkName, StoreLayout, WorldName};
 pub use namespaces::{NAMESPACE_KINDS, NamespaceIdentity, NamespaceTable};
 pub use pod::{Bind, BindSource, PodBundle, PodEnv, PodFile, PodHost, PodSpec, write_bundle};
+pub use pod_log::{CHUNK, DIVIDER_CLOSE, DIVIDER_OPEN, LogKind, LogLine, LogReader, LogSink};
 pub use port::{Dirtiness, ForkPaths, WorldEngine};
 pub use reap::kill_group;
 pub use resources::{

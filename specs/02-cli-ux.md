@@ -124,9 +124,9 @@ The three rows are always `Btrfs`, `Namespaces`, and `Runtime`, and `--json` emi
 
 | Command | Behavior |
 | :--- | :--- |
-| `slipfork logs [-f] [service]` | Colored per-service gutter, chronological merged output, stays attached across `restart`. |
-| `slipfork shell [service\|image]` | Interactive shell inside the service or image container with its exact user, `workdir`, and runtime `env` (defaults automatically when unambiguous). |
-| `slipfork exec [service\|image] -- <cmd>` | Runs any ad-hoc command (`pytest`, `pnpm test`, scripts) inside the target container and forwards its exit code. |
+| `slipfork logs [-f] [service]` | Colored per-service gutter, chronological merge by capture timestamp, stays attached across `restart`; `-f` exits `0` on Ctrl-C. `--json` emits one `{"pod","stream","line","kind"}` object per line and a final `{"exit":0}`. |
+| `slipfork shell [service\|image]` | Interactive shell inside the service or image container with its exact user, `workdir`, and runtime `env` (defaults automatically when unambiguous). `shell` allocates **no TTY**: it pipes stdio to `sh -i`, so prompts and job control are limited. |
+| `slipfork exec [service\|image] -- <cmd>` | Runs any ad-hoc command (`pytest`, `pnpm test`, scripts) inside the target container, forwards stdin, and forwards the command's exit code. |
 | `slipfork db [database]` | Opens interactive `psql` (or executes piped SQL when `stdin` is redirected). |
 | `slipfork redis [id]` | Opens interactive `redis-cli` against the world's Redis instance. |
 | `slipfork env [service]` | Prints resolved runtime variables; secrets show `[REDACTED]` unless `--reveal` is passed on a TTY. |
@@ -138,6 +138,8 @@ The three rows are always `Btrfs`, `Namespaces`, and `Runtime`, and `--json` emi
 | `slipfork migrate` | Converts a legacy `snow.yml` manifest into a formatted `# forkfile: 0.1` `Forkfile`. |
 
 After pairing, `slipfork auth` prints the settled pair and one `next: slipfork up` line; with no endpoint and no saved record it fails with `this daemon has no OSPP endpoint` and names the flag to pass.
+
+`shell`, `exec`, `db`, and `redis` auto-select their target when exactly one candidate is running. When several match, they fail with one `error: N candidates: <ids>` line and a `next:` naming the invoked verb and an id to pass. `logs` without a service merges every pod in capture-timestamp order, with a 250 ms reorder window while following.
 
 ---
 

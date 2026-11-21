@@ -149,6 +149,26 @@ impl WorldSupervisor {
         control::dial_tcp(self.pods.path(), port)
     }
 
+    /// Replays (and optionally follows) captured pod output from `<pods>/logs/<id>.log`.
+    pub fn logs(
+        &self,
+        service: Option<&str>,
+        follow: bool,
+        on_output: &mut dyn FnMut(control::OutputEvent),
+    ) -> Result<serde_json::Value> {
+        control::logs(self.pods.path(), service, follow, on_output)
+    }
+
+    /// Runs one command inside a live pod and returns its exit code.
+    pub fn exec(
+        &self,
+        pod: &str,
+        argv: &[String],
+        on_output: &mut dyn FnMut(control::OutputEvent),
+    ) -> Result<i32> {
+        control::exec(self.pods.path(), pod, argv, on_output)
+    }
+
     /// Runs one setup/hook pod to completion, streaming every stdout/stderr line live.
     ///
     /// The init owns the non-detached `crun run`, so a failing command's own diagnostics reach

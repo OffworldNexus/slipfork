@@ -1,22 +1,23 @@
 //! A real reference `<pods>/control.sock` server speaking the canonical control frames.
 //!
 //! It decodes requests with `slipfork_world::control::decode_request` and answers with typed
-//! `InitFrame::Reply` frames, exactly like `slipfork-world-init` does. No test inspects or builds a
+//! `InitFrame` frames, exactly like `slipfork-world-init` does. No test inspects or builds a
 //! frame by hand.
 
 use std::fs;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::fs::PermissionsExt;
-use std::os::unix::net::UnixListener;
+use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
+use base64::Engine as _;
 use serde_json::{Value, json};
 use slipfork_world::PodStatus;
-use slipfork_world::control::{self, InitFrame, PROTOCOL_VERSION, Request};
+use slipfork_world::control::{self, InitFrame, OutputKind, PROTOCOL_VERSION, Request, Stream};
 
 /// A loopback `control.sock` reference server for one retained world.
 pub struct ReferenceWorldControl {
@@ -25,7 +26,7 @@ pub struct ReferenceWorldControl {
 }
 
 impl ReferenceWorldControl {
-    /// Binds `<pods_dir>/control.sock` and answers `List`, `Restart`, and `Shutdown`.
+    /// Binds `<pods_dir>/control.sock` and answers `List`, `Restart`, `Logs`, `Exec`, `Shutdown`.
     pub fn bind(pods_dir: &Path, pods: Vec<PodStatus>) -> Self {
         fs::create_dir_all(pods_dir).expect("create the pod root");
         let path = pods_dir.join("control.sock");
@@ -43,26 +44,18 @@ impl ReferenceWorldControl {
                         stream
                             .set_nonblocking(false)
                             .expect("blocking reply stream");
+                        // Keep one reader for the request *and* any `ExecInput` frames: a
+                        // dropped `BufReader` would discard bytes already read into its buffer.
+                        let mut reader =
+                            BufReader::new(stream.try_clone().expect("clone the request stream"));
                         let mut line = String::new();
-                        if BufReader::new(stream.try_clone().expect("clone"))
-                            .read_line(&mut line)
-                            .is_err()
-                        {
+                        if reader.read_line(&mut line).is_err() {
                             continue;
                         }
                         let Ok(request) = control::decode_request(line.trim()) else {
                             continue;
                         };
-                        let reply = InitFrame::Reply {
-                            v: PROTOCOL_VERSION,
-                            id: request.id().to_owned(),
-                            ok: Some(payload(&request, &pods)),
-                            error: None,
-                        };
-                        if let Ok(bytes) = control::encode(&reply) {
-                            let _ = stream.write_all(&bytes);
-                            let _ = stream.flush();
-                        }
+                        let _ = handle(&mut stream, &mut reader, request, &pods);
                     }
                     Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                         thread::sleep(Duration::from_millis(20));
@@ -76,6 +69,139 @@ impl ReferenceWorldControl {
             handle: Some(handle),
         }
     }
+}
+
+fn handle(
+    stream: &mut UnixStream,
+    reader: &mut BufReader<UnixStream>,
+    request: Request,
+    pods: &[PodStatus],
+) -> std::io::Result<()> {
+    match request {
+        Request::Logs {
+            id,
+            service,
+            follow,
+            ..
+        } => {
+            let pod = service.unwrap_or_else(|| "api".to_owned());
+            send(
+                stream,
+                &output(
+                    &id,
+                    &pod,
+                    Stream::Combined,
+                    OutputKind::Divider,
+                    &format!("── {pod} started ──"),
+                ),
+            )?;
+            send(
+                stream,
+                &output(
+                    &id,
+                    &pod,
+                    Stream::Combined,
+                    OutputKind::Line,
+                    "hello from the pod",
+                ),
+            )?;
+            if follow {
+                // Hold the world stream until the follower closes, like the real init.
+                let _ = stream.set_read_timeout(Some(Duration::from_millis(50)));
+                let mut buffer = [0_u8; 64];
+                let deadline = Instant::now() + Duration::from_secs(10);
+                while Instant::now() < deadline {
+                    match stream.read(&mut buffer) {
+                        Ok(0) => break,
+                        Ok(_) => {}
+                        Err(error)
+                            if matches!(
+                                error.kind(),
+                                std::io::ErrorKind::WouldBlock
+                                    | std::io::ErrorKind::TimedOut
+                                    | std::io::ErrorKind::Interrupted
+                            ) => {}
+                        Err(_) => break,
+                    }
+                }
+                return Ok(());
+            }
+            send(
+                stream,
+                &output(&id, &pod, Stream::Combined, OutputKind::Eof, ""),
+            )?;
+            let reply = InitFrame::Reply {
+                v: PROTOCOL_VERSION,
+                id,
+                ok: Some(json!({ "pods": [pod], "follow": false })),
+                error: None,
+            };
+            send(stream, &reply)
+        }
+        Request::Exec { id, pod, stdin, .. } => {
+            if stdin {
+                loop {
+                    let mut line = String::new();
+                    if reader.read_line(&mut line)? == 0 {
+                        break;
+                    }
+                    let Ok(Request::ExecInput { data, .. }) = control::decode_request(line.trim())
+                    else {
+                        continue;
+                    };
+                    if data.is_empty() || data == "EOF" {
+                        break;
+                    }
+                    let bytes = base64::engine::general_purpose::STANDARD
+                        .decode(data)
+                        .unwrap_or_default();
+                    let text = String::from_utf8_lossy(&bytes).into_owned();
+                    send(
+                        stream,
+                        &output(&id, &pod, Stream::Stdout, OutputKind::Line, &text),
+                    )?;
+                }
+            }
+            send(
+                stream,
+                &output(&id, &pod, Stream::Stdout, OutputKind::Line, "exec-ok"),
+            )?;
+            let reply = InitFrame::Reply {
+                v: PROTOCOL_VERSION,
+                id,
+                ok: Some(json!({ "exit_code": 7, "pod": pod })),
+                error: None,
+            };
+            send(stream, &reply)
+        }
+        other => {
+            let id = other.id().to_owned();
+            let reply = InitFrame::Reply {
+                v: PROTOCOL_VERSION,
+                id,
+                ok: Some(payload(&other, pods)),
+                error: None,
+            };
+            send(stream, &reply)
+        }
+    }
+}
+
+fn output(id: &str, pod: &str, stream: Stream, kind: OutputKind, line: &str) -> InitFrame {
+    InitFrame::Output {
+        v: PROTOCOL_VERSION,
+        id: id.to_owned(),
+        pod: Some(pod.to_owned()),
+        stream,
+        kind,
+        line: line.to_owned(),
+    }
+}
+
+fn send(stream: &mut UnixStream, frame: &InitFrame) -> std::io::Result<()> {
+    let bytes = control::encode(frame).map_err(std::io::Error::other)?;
+    stream.write_all(&bytes)?;
+    stream.flush()
 }
 
 fn payload(request: &Request, pods: &[PodStatus]) -> Value {

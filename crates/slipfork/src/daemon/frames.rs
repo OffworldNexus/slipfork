@@ -54,6 +54,19 @@ impl FrameReader {
     }
 }
 
+/// True once the peer closed its end of a daemon connection.
+pub(super) fn peer_closed(stream: &UnixStream) -> bool {
+    let mut pollfd = libc::pollfd {
+        fd: std::os::fd::AsRawFd::as_raw_fd(stream),
+        events: libc::POLLRDHUP,
+        revents: 0,
+    };
+    // SAFETY: one valid `pollfd` lives across the call; zero timeout never blocks.
+    let ret = unsafe { libc::poll(&mut pollfd, 1, 0) };
+    ret > 0
+        && pollfd.revents & (libc::POLLHUP | libc::POLLRDHUP | libc::POLLERR | libc::POLLNVAL) != 0
+}
+
 pub(super) fn write_frame(writer: &mut UnixStream, bytes: &[u8]) -> io::Result<()> {
     writer.write_all(bytes).and_then(|()| writer.flush())
 }

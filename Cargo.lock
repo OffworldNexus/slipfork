@@ -1111,6 +1111,7 @@ checksum = "3a219298ac11a56ea9a6d2120044824d6f01aeb034955e7af7bc16858527deea"
 name = "slipfork"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "libc",
  "serde",
  "serde_json",
@@ -1193,6 +1194,7 @@ version = "0.1.0"
 name = "slipfork-world"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "libc",
  "serde",
  "serde_json",

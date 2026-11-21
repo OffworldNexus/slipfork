@@ -8,6 +8,7 @@
 
 mod dial;
 mod frames;
+mod stream;
 
 use std::path::{Path, PathBuf};
 
@@ -15,7 +16,11 @@ use serde::{Deserialize, Serialize};
 
 pub use dial::dial_tcp;
 pub use frames::{
-    ControlError, InitFrame, PROTOCOL_VERSION, Stream, check_version, decode_init_frame, encode,
+    ControlError, FrameLines, InitFrame, OutputKind, PROTOCOL_VERSION, Stream, check_version,
+    decode_init_frame, encode,
+};
+pub use stream::{
+    OutputEvent, StreamClient, StreamFrame, StreamInput, exec, exit_code, finish, logs,
 };
 
 use crate::error::{Error, Result};
@@ -115,6 +120,42 @@ pub enum Request {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         service: Option<String>,
     },
+    /// Replay captured pod output, optionally following it live.
+    Logs {
+        /// Protocol version.
+        v: u32,
+        /// Request id echoed back in the reply.
+        id: String,
+        /// Only this pod id; `None` merges every pod.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        service: Option<String>,
+        /// Keep the stream open after the current tail until a stop or client close.
+        #[serde(default)]
+        follow: bool,
+    },
+    /// Run one command inside a live pod through `crun exec` from the init.
+    Exec {
+        /// Protocol version.
+        v: u32,
+        /// Request id echoed back in the reply.
+        id: String,
+        /// Pod id to exec into.
+        pod: String,
+        /// Command and arguments.
+        argv: Vec<String>,
+        /// Pipe stdin so the client can send [`Request::ExecInput`] frames.
+        #[serde(default)]
+        stdin: bool,
+    },
+    /// Bytes for a live `Exec` stdin; empty data closes the child's stdin.
+    ExecInput {
+        /// Protocol version.
+        v: u32,
+        /// Request id of the owning `Exec`.
+        id: String,
+        /// Base64 payload, or an empty string for EOF.
+        data: String,
+    },
 }
 
 impl Request {
@@ -129,7 +170,10 @@ impl Request {
             | Self::Dial { id, .. }
             | Self::List { id, .. }
             | Self::RunOnce { id, .. }
-            | Self::Wait { id, .. } => id,
+            | Self::Wait { id, .. }
+            | Self::Logs { id, .. }
+            | Self::Exec { id, .. }
+            | Self::ExecInput { id, .. } => id,
         }
     }
 }
@@ -147,7 +191,10 @@ pub fn decode_request(line: &str) -> Result<Request> {
         | Request::Dial { v, .. }
         | Request::List { v, .. }
         | Request::RunOnce { v, .. }
-        | Request::Wait { v, .. } => *v,
+        | Request::Wait { v, .. }
+        | Request::Logs { v, .. }
+        | Request::Exec { v, .. }
+        | Request::ExecInput { v, .. } => *v,
     };
     check_version(version)?;
     Ok(request)
@@ -213,6 +260,24 @@ mod tests {
                 id: "req-8".to_owned(),
                 service: Some("api".to_owned()),
             },
+            Request::Logs {
+                v: PROTOCOL_VERSION,
+                id: "req-9".to_owned(),
+                service: Some("api".to_owned()),
+                follow: true,
+            },
+            Request::Exec {
+                v: PROTOCOL_VERSION,
+                id: "req-10".to_owned(),
+                pod: "api".to_owned(),
+                argv: vec!["psql".to_owned()],
+                stdin: true,
+            },
+            Request::ExecInput {
+                v: PROTOCOL_VERSION,
+                id: "req-10".to_owned(),
+                data: String::new(),
+            },
         ] {
             let bytes = encode(&request).expect("encode");
             assert_eq!(bytes.last(), Some(&b'\n'));
@@ -250,7 +315,7 @@ mod tests {
         assert!(
             std::str::from_utf8(&ready)
                 .expect("utf8")
-                .contains("\"kind\":\"ready\"")
+                .contains("\"frame\":\"ready\"")
         );
         let reply = InitFrame::Reply {
             v: PROTOCOL_VERSION,

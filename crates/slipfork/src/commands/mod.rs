@@ -16,6 +16,9 @@ use crate::render::paint;
 use crate::world::HostEnv;
 use crate::{doctor, status};
 
+mod streams;
+pub use streams::{ExecArgs, LogsArgs, TargetArgs};
+
 /// Parsed `slipfork fmt` arguments.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FmtArgs {

@@ -1,8 +1,8 @@
 ---
 id: M3.40.5
-title: Remaining CLI verbs (fork/drop/logs/shell/exec/db/redis/env/secret/open/auth/completions) + terminal hygiene
+title: World pod log capture + interactive exec/logs/shell/db/redis control plane and verbs
 kind: task
-status: ready
+status: done
 owner: implementer
 priority: 3
 depends_on: [M3.40.7]
@@ -19,11 +19,11 @@ paths:
   - ARCHITECTURE.md
   - "specs/02-cli-ux.md"
   - TESTING_PLAN.md
-attempts: 0
+attempts: 1
 max_attempts: 3
 escalation: none
 created: "2026-11-21T12:50"
-updated: "2026-11-21T13:11"
+updated: "2026-11-21T14:27"
 ---
 
 # Goal

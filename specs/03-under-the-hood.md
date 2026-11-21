@@ -152,6 +152,10 @@ The CLI and the ingress always **connect to** `daemon.sock`; the daemon never di
 renderer never parses human text, and an unknown `v` or `method` answers a typed `error` while the
 connection stays open.
 
+`logs` and `exec` reuse that framing: each `event` carries `{"kind":"line"|"divider"|"eof","pod","stream","line"}`, and the final `ok` carries `{"exit":n}`. Both are relayed from the world init's single `control.sock`; the daemon never allocates a second socket, and `exec` forwards base64 `input` frames while its stdin is open.
+
+Every detached pod's stdout and stderr are piped through one pump per stream, which appends `<epoch_ms>\tL|D\t<text>` lines to `<pods>/logs/<id>.log` mode `0600`; `L` marks output and `D` marks a divider. Each launch and restart writes a `── <id> started ──` divider first, and the init keeps the file open so a restart appends instead of truncating. `Request::Logs` replays and follows that capture, merging pods by timestamp with a 250 ms reorder window; `Request::Exec` runs `crun exec --cwd <pod workdir> <pod> <argv…>` from the init, which owns the world's user namespace, streams its stdio, and returns the child's exit code. `ExecInput` frames carry base64 stdin; an empty frame closes it.
+
 | Event | Fields |
 | :--- | :--- |
 | `started` | `step`, `total`, `kind`, `label` |

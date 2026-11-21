@@ -6,7 +6,7 @@ mod parse;
 use std::fmt;
 use std::process::ExitCode;
 
-use crate::commands::{FmtArgs, MigrateArgs, Session, emit};
+use crate::commands::{ExecArgs, FmtArgs, LogsArgs, MigrateArgs, Session, TargetArgs, emit};
 use crate::world::{DownArgs, RestartArgs, SuperviseArgs, UpArgs};
 
 pub(super) const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -28,6 +28,11 @@ enum Verb {
     Up(UpArgs),
     Down(DownArgs),
     Restart(RestartArgs),
+    Logs(LogsArgs),
+    Shell(TargetArgs),
+    Exec(ExecArgs),
+    Db(TargetArgs),
+    Redis(TargetArgs),
     Fmt(FmtArgs),
     Migrate(MigrateArgs),
     Supervise(SuperviseArgs),
@@ -61,6 +66,11 @@ enum HelpTopic {
     Up,
     Down,
     Restart,
+    Logs,
+    Shell,
+    Exec,
+    Db,
+    Redis,
     Fmt,
     Migrate,
 }
@@ -98,6 +108,11 @@ impl CommandLine {
             Verb::Up(args) => session.up(&args),
             Verb::Down(args) => session.down(&args),
             Verb::Restart(args) => session.restart(&args),
+            Verb::Logs(args) => session.logs(&args),
+            Verb::Shell(args) => session.shell(&args),
+            Verb::Exec(args) => session.exec(&args),
+            Verb::Db(args) => session.db(&args),
+            Verb::Redis(args) => session.redis(&args),
             Verb::Fmt(args) => session.fmt(&args),
             Verb::Migrate(args) => session.migrate(&args),
             Verb::Supervise(args) => session.supervise(&args),

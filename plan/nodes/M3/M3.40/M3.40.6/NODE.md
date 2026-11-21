@@ -5,7 +5,7 @@ kind: task
 status: ready
 owner: implementer
 priority: 3
-depends_on: [M3.40.5]
+depends_on: [M3.40.8]
 paths:
   - "packages/opencode-slipfork/**"
   - "specs/02-cli-ux.md"
@@ -17,7 +17,7 @@ attempts: 0
 max_attempts: 3
 escalation: none
 created: "2026-11-21T12:50"
-updated: "2026-11-21T12:50"
+updated: "2026-11-21T14:02"
 ---
 
 # Goal

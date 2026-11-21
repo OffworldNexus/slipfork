@@ -3,4 +3,5 @@
 pub(super) mod core;
 mod down;
 mod ps;
+pub(super) mod stream;
 mod up;

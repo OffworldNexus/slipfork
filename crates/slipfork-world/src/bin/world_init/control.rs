@@ -12,6 +12,7 @@ use std::time::Duration;
 use slipfork_world::control::{self as wire, InitFrame};
 
 use crate::pod::InitWorld;
+use crate::stream::{serve_exec, serve_logs};
 use crate::{Fault, REMEDY_PROTOCOL, REMEDY_RUNTIME, respond};
 
 /// Longest a dial may block before the world reports a refused port.
@@ -72,13 +73,53 @@ pub(crate) fn handle(listener: &UnixListener, world: &mut InitWorld) -> Result<b
             .map_err(|source| Fault::cause("control socket decode", REMEDY_PROTOCOL, source))?
     };
     // A dial reply is a status byte plus an optional descriptor, not an NDJSON `InitFrame`.
-    if let wire::Request::Dial { port, .. } = request {
-        dial(&mut stream, port)?;
-        return Ok(false);
+    match request {
+        wire::Request::Dial { port, .. } => {
+            dial(&mut stream, port)?;
+            Ok(false)
+        }
+        wire::Request::Logs {
+            id,
+            service,
+            follow,
+            ..
+        } => {
+            let shared = world.shared();
+            let out = stream.try_clone().map_err(|source| {
+                Fault::cause("streaming socket clone", REMEDY_PROTOCOL, source)
+            })?;
+            std::thread::spawn(move || {
+                if let Err(fault) = serve_logs(shared, id, service, follow, out) {
+                    eprintln!("slipfork-world-init: {fault}");
+                }
+            });
+            Ok(false)
+        }
+        wire::Request::Exec {
+            id,
+            pod,
+            argv,
+            stdin,
+            ..
+        } => {
+            let shared = world.shared();
+            let out = stream.try_clone().map_err(|source| {
+                Fault::cause("streaming socket clone", REMEDY_PROTOCOL, source)
+            })?;
+            std::thread::spawn(move || {
+                if let Err(fault) = serve_exec(shared, id, pod, argv, stdin, out) {
+                    eprintln!("slipfork-world-init: {fault}");
+                }
+            });
+            Ok(false)
+        }
+        request => {
+            let (frame, shutdown) =
+                respond(world, request, &mut |frame| reply(&mut stream, &frame))?;
+            reply(&mut stream, &frame)?;
+            Ok(shutdown)
+        }
     }
-    let (frame, shutdown) = respond(world, request, &mut |frame| reply(&mut stream, &frame))?;
-    reply(&mut stream, &frame)?;
-    Ok(shutdown)
 }
 
 /// Connects to `127.0.0.1:<port>` inside this world netns and hands the fd to the client.

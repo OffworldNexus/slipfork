@@ -549,6 +549,55 @@ fn world_up_restart_down_journey() {
         "the service must run strictly between its hooks: {order:?}"
     );
 
+    // 1b. Captured logs and ad-hoc exec against the real pod.
+    let logs = journey.slipfork(&good, &["logs", "api"]);
+    assert!(logs.status.success(), "{}", stderr(&logs));
+    let log_text = stdout(&logs);
+    assert!(
+        log_text.contains("── api started ──"),
+        "logs must draw the capture divider: {log_text}"
+    );
+    assert!(
+        log_text.contains("api │"),
+        "logs must render a greedy gutter: {log_text}"
+    );
+    assert!(!log_text.contains('\u{1b}'), "NO_COLOR logs stay plain");
+
+    let logs_json = journey.slipfork(&good, &["logs", "--json", "api"]);
+    assert!(logs_json.status.success(), "{}", stderr(&logs_json));
+    let mut frames: Vec<serde_json::Value> = stdout(&logs_json)
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("each logs line is JSON"))
+        .collect();
+    let exit = frames.pop().expect("logs ends with an exit frame");
+    assert_eq!(exit["exit"], 0, "{exit:?}");
+    assert!(
+        frames.iter().any(|frame| frame["kind"] == "divider"),
+        "{frames:?}"
+    );
+
+    let exec = journey.slipfork(
+        &good,
+        &["exec", "api", "--", "sh", "-c", "printf exec-ok; exit 5"],
+    );
+    assert_eq!(
+        exec.status.code(),
+        Some(5),
+        "exec must forward the pod's exit code: {}",
+        stderr(&exec)
+    );
+    assert!(
+        stdout(&exec).contains("exec-ok"),
+        "exec must stream the pod's stdout: {}",
+        stdout(&exec)
+    );
+
+    let missing = journey.slipfork(&good, &["logs", "nope"]);
+    assert!(!missing.status.success(), "an unknown pod must fail closed");
+    let missing_err = stderr(&missing);
+    assert!(missing_err.contains("not running"), "{missing_err}");
+    assert!(missing_err.contains("next:"), "{missing_err}");
+
     // 2. A failed service keeps the world running; `down` must still work.
     let broken = journey.project("broken", BROKEN_FORKFILE);
     let failed = journey.slipfork(&broken, &["up"]);

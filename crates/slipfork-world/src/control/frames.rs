@@ -25,11 +25,50 @@ pub enum Stream {
     Stdout,
     /// Standard error.
     Stderr,
+    /// The merged `<pods>/logs/<id>.log` capture (replayed by `logs`).
+    Combined,
 }
 
-/// Frames the world init writes to stdout.
+impl Stream {
+    /// The wire name shared by the daemon and the CLI.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Stdout => "stdout",
+            Self::Stderr => "stderr",
+            Self::Combined => "combined",
+        }
+    }
+}
+
+/// What one output line represents.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum OutputKind {
+    /// A normal stdout/stderr line.
+    #[default]
+    Line,
+    /// A `── <id> started|restarted ──` divider.
+    Divider,
+    /// No more lines for this pod in the current replay.
+    Eof,
+}
+
+impl OutputKind {
+    /// The wire name shared by the daemon and the CLI.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Line => "line",
+            Self::Divider => "divider",
+            Self::Eof => "eof",
+        }
+    }
+}
+
+/// Frames the world init writes to its control channel.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "kebab-case")]
+#[serde(tag = "frame", rename_all = "kebab-case")]
 pub enum InitFrame {
     /// Handshake: namespaces are live and loopback is up.
     Ready {
@@ -53,14 +92,20 @@ pub enum InitFrame {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         error: Option<ControlError>,
     },
-    /// One live stdout/stderr line from a running run-once request.
+    /// One live output line from a run-once, `logs`, or `exec` request.
     Output {
         /// Protocol version.
         v: u32,
         /// The request id this line belongs to.
         id: String,
+        /// Pod that produced the line.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pod: Option<String>,
         /// Which stream produced the line.
         stream: Stream,
+        /// Whether this is pod output, a divider, or the end of a pod's replay.
+        #[serde(default)]
+        kind: OutputKind,
         /// The line, without its terminator.
         line: String,
     },
@@ -103,5 +148,96 @@ pub fn check_version(version: u32) -> Result<()> {
         Err(Error::Protocol {
             message: format!("control protocol v{version} != v{PROTOCOL_VERSION}"),
         })
+    }
+}
+
+/// One newline scanner for every NDJSON frame and captured log.
+///
+/// The pending buffer is the only place a partial line lives, so callers never re-scan
+/// delimiters or hold a second copy. `feed` bounds the buffer at `cap` bytes by emitting
+/// oversized pieces as their own line.
+#[derive(Debug, Default)]
+pub struct FrameLines {
+    pending: Vec<u8>,
+}
+
+impl FrameLines {
+    /// An empty scanner.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Appends raw bytes.
+    pub fn extend(&mut self, bytes: &[u8]) {
+        self.pending.extend_from_slice(bytes);
+    }
+
+    /// Bytes held for an incomplete trailing line.
+    #[must_use]
+    pub fn pending_len(&self) -> usize {
+        self.pending.len()
+    }
+
+    /// Pops one complete line without its `\n`.
+    pub fn next_line(&mut self) -> Option<Vec<u8>> {
+        let position = self.pending.iter().position(|byte| *byte == b'\n')?;
+        let rest = self.pending.split_off(position + 1);
+        let mut line = std::mem::replace(&mut self.pending, rest);
+        line.truncate(position);
+        Some(line)
+    }
+
+    /// Appends bytes and returns every completed line, cutting oversized lines at `cap`.
+    pub fn feed(&mut self, bytes: &[u8], cap: usize) -> Vec<Vec<u8>> {
+        self.extend(bytes);
+        let mut lines = Vec::new();
+        loop {
+            if let Some(line) = self.next_line() {
+                lines.push(line);
+                continue;
+            }
+            if self.pending.len() > cap {
+                lines.push(self.pending.drain(..cap).collect());
+                continue;
+            }
+            break;
+        }
+        lines
+    }
+
+    /// Takes a trailing partial line (used when a producer stops without a newline).
+    pub fn take_partial(&mut self) -> Option<Vec<u8>> {
+        if self.pending.is_empty() {
+            None
+        } else {
+            Some(std::mem::take(&mut self.pending))
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn frame_lines_split_frames_and_bound_oversized_lines() {
+        let mut lines = FrameLines::new();
+        let fed = lines.feed(b"one\ntwo\npart", 16);
+        assert_eq!(fed, [b"one".to_vec(), b"two".to_vec()]);
+        let rest = lines.feed(b"ial\n", 16);
+        assert_eq!(rest, [b"partial".to_vec()]);
+        let long = vec![b'x'; 40];
+        let cut = lines.feed(&long, 16);
+        assert_eq!(cut.len(), 2);
+        assert!(cut.iter().all(|line| line.len() == 16));
+    }
+
+    #[test]
+    fn wire_names_are_the_single_table() {
+        assert_eq!(Stream::Stdout.as_str(), "stdout");
+        assert_eq!(Stream::Combined.as_str(), "combined");
+        assert_eq!(OutputKind::Divider.as_str(), "divider");
+        assert_eq!(OutputKind::Eof.as_str(), "eof");
     }
 }

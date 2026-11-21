@@ -21,6 +21,11 @@ pub(super) fn help_text(topic: HelpTopic, color: bool) -> String {
                  \x20 up        Boot the world declared by ./Forkfile and return when ready\n\
                  \x20 down      Stop this directory's running world\n\
                  \x20 restart   Restart one service, or every service\n\
+                 \x20 logs      Stream merged stdout + stderr with per-service gutters\n\
+                 \x20 shell     Open a shell inside a service or image pod\n\
+                 \x20 exec      Run a command inside a pod and forward its exit code\n\
+                 \x20 db        Open psql against the world's postgres\n\
+                 \x20 redis     Open redis-cli against the world's redis\n\
                  \x20 fmt       Format a Forkfile in place\n\
                  \x20 migrate   Convert a legacy snow.yml into a Forkfile\n\
                  \x20 daemon    Install the per-user unit (and with sudo the system :80 socket)\n\
@@ -31,6 +36,8 @@ pub(super) fn help_text(topic: HelpTopic, color: bool) -> String {
                  \x20 slipfork\n\
                  \x20 slipfork up\n\
                  \x20 slipfork restart worker\n\
+                 \x20 slipfork logs -f api\n\
+                 \x20 slipfork exec api -- pytest -q\n\
                  \x20 slipfork daemon install\n\
                  \n\
                  Options:\n\
@@ -155,6 +162,96 @@ pub(super) fn help_text(topic: HelpTopic, color: bool) -> String {
                  \n\
                  Example:\n\
                  \x20 slipfork restart worker\n"
+            )
+        }
+        HelpTopic::Logs => {
+            let title = paint("slipfork logs", "1;36", color);
+            format!(
+                "{title}\n\
+                 Stream merged stdout + stderr with a colored gutter per service.\n\
+                 \n\
+                 Usage: slipfork logs [-f] [--json] [SERVICE]\n\
+                 \n\
+                 Arguments:\n\
+                 \x20 SERVICE   Only this service; omit to merge every pod\n\
+                 \n\
+                 Options:\n\
+                 \x20 -f, --follow  Stay attached across restarts (Ctrl-C exits 0)\n\
+                 \x20 --json        One {{\"pod\",\"stream\",\"line\",\"kind\"}} per line, then {{\"exit\":0}}\n\
+                 \x20 -h, --help\n\
+                 \n\
+                 Example:\n\
+                 \x20 slipfork logs -f api\n"
+            )
+        }
+        HelpTopic::Shell => {
+            let title = paint("slipfork shell", "1;36", color);
+            format!(
+                "{title}\n\
+                 Open `sh -i` inside a service or image pod.\n\
+                 \n\
+                 Usage: slipfork shell [--json] [SERVICE|IMAGE]\n\
+                 \n\
+                 The shell runs over plain pipes: no PTY is allocated, so prompts and job\n\
+                 control are limited, but `cd` and exports behave normally.\n\
+                 \n\
+                 Options:\n\
+                 \x20 --json   Emit events and a final {{\"exit\":n}}\n\
+                 \x20 -h, --help\n\
+                 \n\
+                 Example:\n\
+                 \x20 slipfork shell api\n"
+            )
+        }
+        HelpTopic::Exec => {
+            let title = paint("slipfork exec", "1;36", color);
+            format!(
+                "{title}\n\
+                 Run a command inside a pod and forward its exit code.\n\
+                 \n\
+                 Usage: slipfork exec [--json] [SERVICE|IMAGE] -- <CMD...>\n\
+                 \n\
+                 Options:\n\
+                 \x20 --json   Emit events and a final {{\"exit\":n}}\n\
+                 \x20 -h, --help\n\
+                 \n\
+                 Stdin is forwarded to the command on a pipe, so `cat`, `pytest -q`, and scripts\n\
+                 read redirected input exactly as they would locally.\n\
+                 \n\
+                 Example:\n\
+                 \x20 slipfork exec api -- pytest -q\n"
+            )
+        }
+        HelpTopic::Db => {
+            let title = paint("slipfork db", "1;36", color);
+            format!(
+                "{title}\n\
+                 Open psql against the world's postgres; piped stdin executes SQL.\n\
+                 \n\
+                 Usage: slipfork db [--json] [DATABASE]\n\
+                 \n\
+                 Options:\n\
+                 \x20 --json   Emit events and a final {{\"exit\":n}}\n\
+                 \x20 -h, --help\n\
+                 \n\
+                 Example:\n\
+                 \x20 slipfork db < schema.sql\n"
+            )
+        }
+        HelpTopic::Redis => {
+            let title = paint("slipfork redis", "1;36", color);
+            format!(
+                "{title}\n\
+                 Open redis-cli against the world's redis; piped stdin runs commands.\n\
+                 \n\
+                 Usage: slipfork redis [--json] [ID]\n\
+                 \n\
+                 Options:\n\
+                 \x20 --json   Emit events and a final {{\"exit\":n}}\n\
+                 \x20 -h, --help\n\
+                 \n\
+                 Example:\n\
+                 \x20 slipfork redis\n"
             )
         }
         HelpTopic::Fmt => {

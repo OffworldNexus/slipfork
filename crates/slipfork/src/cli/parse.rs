@@ -3,7 +3,7 @@
 use std::ffi::OsString;
 use std::path::PathBuf;
 
-use crate::commands::{FmtArgs, MigrateArgs};
+use crate::commands::{ExecArgs, FmtArgs, LogsArgs, MigrateArgs, TargetArgs};
 use crate::world::{DownArgs, RestartArgs, SuperviseArgs, UpArgs};
 
 use super::{CommandLine, DaemonInstallArgs, HelpTopic, StatusArgs, UsageError, Verb};
@@ -54,6 +54,11 @@ impl CommandLine {
             "up" => up_verb(rest)?,
             "down" => down_verb(rest)?,
             "restart" => restart_verb(rest)?,
+            "logs" => logs_verb(rest)?,
+            "shell" => shell_verb(rest)?,
+            "exec" => exec_verb(rest)?,
+            "db" => db_verb(rest)?,
+            "redis" => redis_verb(rest)?,
             "fmt" => fmt_verb(rest)?,
             "migrate" => migrate_verb(rest)?,
             // The server ships as its own binary; say where it went.
@@ -213,6 +218,107 @@ fn restart_verb(args: &[&str]) -> Result<Verb, UsageError> {
         }
     }
     Ok(Verb::Restart(RestartArgs { service, json }))
+}
+
+fn logs_verb(args: &[&str]) -> Result<Verb, UsageError> {
+    if args.iter().any(|arg| matches!(*arg, "-h" | "--help")) {
+        return Ok(Verb::Help(HelpTopic::Logs));
+    }
+    let mut follow = false;
+    let mut json = false;
+    let mut service = None;
+    for arg in args {
+        match *arg {
+            "-f" | "--follow" => follow = true,
+            "--json" => json = true,
+            other if other.starts_with('-') => {
+                return Err(UsageError::new(format!(
+                    "unknown flag `{other}` for `logs`"
+                )));
+            }
+            other => {
+                if service.replace(other.to_owned()).is_some() {
+                    return Err(UsageError::new("`logs` takes at most one service"));
+                }
+            }
+        }
+    }
+    Ok(Verb::Logs(LogsArgs {
+        follow,
+        service,
+        json,
+    }))
+}
+
+fn shell_verb(args: &[&str]) -> Result<Verb, UsageError> {
+    if args.iter().any(|arg| matches!(*arg, "-h" | "--help")) {
+        return Ok(Verb::Help(HelpTopic::Shell));
+    }
+    let (target, json) = target_args(args, "shell")?;
+    Ok(Verb::Shell(TargetArgs { target, json }))
+}
+
+fn db_verb(args: &[&str]) -> Result<Verb, UsageError> {
+    if args.iter().any(|arg| matches!(*arg, "-h" | "--help")) {
+        return Ok(Verb::Help(HelpTopic::Db));
+    }
+    let (target, json) = target_args(args, "db")?;
+    Ok(Verb::Db(TargetArgs { target, json }))
+}
+
+fn redis_verb(args: &[&str]) -> Result<Verb, UsageError> {
+    if args.iter().any(|arg| matches!(*arg, "-h" | "--help")) {
+        return Ok(Verb::Help(HelpTopic::Redis));
+    }
+    let (target, json) = target_args(args, "redis")?;
+    Ok(Verb::Redis(TargetArgs { target, json }))
+}
+
+fn target_args(args: &[&str], verb: &str) -> Result<(Option<String>, bool), UsageError> {
+    let mut target = None;
+    let mut json = false;
+    for arg in args {
+        match *arg {
+            "--json" => json = true,
+            other if other.starts_with('-') => {
+                return Err(UsageError::new(format!(
+                    "unknown flag `{other}` for `{verb}`"
+                )));
+            }
+            other => {
+                if target.replace(other.to_owned()).is_some() {
+                    return Err(UsageError::new(format!(
+                        "`{verb}` takes at most one target"
+                    )));
+                }
+            }
+        }
+    }
+    Ok((target, json))
+}
+
+fn exec_verb(args: &[&str]) -> Result<Verb, UsageError> {
+    if args.iter().any(|arg| matches!(*arg, "-h" | "--help")) {
+        return Ok(Verb::Help(HelpTopic::Exec));
+    }
+    let split = args.iter().position(|arg| *arg == "--");
+    let (head, argv) = match split {
+        Some(index) => (&args[..index], &args[index + 1..]),
+        None => {
+            return Err(UsageError::new(
+                "`exec` needs `--` before the command, e.g. `slipfork exec api -- pytest -q`",
+            ));
+        }
+    };
+    let (target, json) = target_args(head, "exec")?;
+    if argv.is_empty() {
+        return Err(UsageError::new("`exec` needs a command after `--`"));
+    }
+    Ok(Verb::Exec(ExecArgs {
+        target,
+        json,
+        argv: argv.iter().map(|arg| (*arg).to_owned()).collect(),
+    }))
 }
 
 fn supervise_verb(args: &[&str]) -> Result<Verb, UsageError> {

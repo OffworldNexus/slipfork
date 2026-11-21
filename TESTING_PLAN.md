@@ -45,7 +45,7 @@ Focused non-E2E tests exist **only** for self-contained language, protocol, and 
 - **Visual status tree and scoped `ps`:**
   Render active worlds, services, backing resources (`s3 (private)` vs `s3 + cdn`), route rules (`:8000 -> /api`, `:8025 -> mail.*/`), ages, and nested forks in bare `slipfork` and `slipfork ps`, emitting semantic ANSI colors on interactive TTYs, zero escape sequences under `NO_COLOR`, `TERM=dumb`, or pipes, and identical data under `--json`.
 - **Live logs, `exec` / `shell` ad-hoc commands, and database consoles:**
-  Stream merged multi-service logs in `slipfork logs -f` seamlessly across `slipfork restart` with zero raw spinner escape garbage; run ad-hoc test suites and CLI commands directly via `slipfork exec [service|image] -- <cmd>` and `slipfork shell [service|image]`; and attach to databases via `slipfork db` and `slipfork redis`.
+  Stream merged multi-service logs in `slipfork logs -f` seamlessly across `slipfork restart` with zero raw spinner escape garbage; run ad-hoc test suites and CLI commands directly via `slipfork exec [service|image] -- <cmd>` and `slipfork shell [service|image]`; and attach to databases via `slipfork db` and `slipfork redis`. The protected live journey asserts a real pod's captured stdout merged by timestamp, a restart divider, a forwarded `exec` exit code, and a `no-pod` remedy.
 - **Headless-safe browser launch (`slipfork open`):**
   Open world and service URLs cleanly on desktop sessions while handling SSH/headless terminals gracefully without `sudo` environment-stripping regressions.
 

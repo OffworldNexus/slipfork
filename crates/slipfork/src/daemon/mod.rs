@@ -31,6 +31,7 @@ use crate::world::HostEnv;
 use frames::{FrameReader, write_frame};
 use lifecycle::core::Core;
 use serde_json::{Value, json};
+use slipfork_world::control::{StreamFrame, StreamInput};
 
 /// A typed control-plane failure rendered as an `error` frame with a bare message.
 #[derive(Debug, Clone)]
@@ -229,8 +230,46 @@ impl Daemon {
                 let _ = writer.flush();
                 self.shutdown();
             }
+            if request.method == "exec" {
+                let outcome = self.handle_exec(&request, &mut reader, &mut writer);
+                match outcome {
+                    Ok(value) => write_frame(&mut writer, &wire::ok(&id, value))?,
+                    Err(failure) => write_frame(
+                        &mut writer,
+                        &wire::error(&id, failure.code, &failure.message),
+                    )?,
+                }
+                return Ok(());
+            }
+            if request.method == "logs" {
+                let value = {
+                    let probe = writer.try_clone()?;
+                    let mut emit =
+                        |event: Value| write_frame(&mut writer, &wire::event(&id, event)).is_ok();
+                    let mut alive = || !frames::peer_closed(&probe);
+                    match self.core() {
+                        Ok(mut core) => core.logs(&request.params, &mut emit, &mut alive),
+                        Err(failure) => Err(failure),
+                    }
+                };
+                match value {
+                    Ok(value) => {
+                        if value.get("closed").and_then(Value::as_bool) == Some(true) {
+                            eprintln!("slipfork daemon: logs follower closed {{\"closed\":true}}");
+                        }
+                        write_frame(&mut writer, &wire::ok(&id, value))?;
+                    }
+                    Err(failure) => write_frame(
+                        &mut writer,
+                        &wire::error(&id, failure.code, &failure.message),
+                    )?,
+                }
+                continue;
+            }
             let outcome = self.dispatch(&request, descriptor, &mut |event| {
-                let _ = write_frame(&mut writer, &wire::event(&id, event));
+                if write_frame(&mut writer, &wire::event(&id, event)).is_err() {
+                    eprintln!("slipfork daemon: client closed during `{}`", request.method);
+                }
             });
             match outcome {
                 Ok(Some(value)) => write_frame(&mut writer, &wire::ok(&id, value))?,
@@ -307,12 +346,89 @@ impl Daemon {
         boot::finish_boot(self, key, log, child, project, emit).map(Some)
     }
 
+    /// Relays one `exec`: world frames go out as `event`s, client `input` frames go in.
+    fn handle_exec(
+        &self,
+        request: &wire::Request,
+        reader: &mut FrameReader,
+        writer: &mut UnixStream,
+    ) -> Result<Value, Failure> {
+        let (mut client, stdin) = self.core()?.open_exec(&request.params)?;
+        let id = request.id.clone();
+        let pump = if stdin {
+            Some(
+                client
+                    .input_writer()
+                    .map_err(|error| Failure::new("world-unavailable", error.to_string()))?,
+            )
+        } else {
+            None
+        };
+        std::thread::scope(|scope| {
+            let handle = pump.map(|input| scope.spawn(move || pump_daemon_input(reader, input)));
+            let result = (|| -> Result<Value, Failure> {
+                loop {
+                    match client.poll() {
+                        Ok(Some(StreamFrame::Output(event))) => {
+                            let frame = wire::event(
+                                &id,
+                                json!({
+                                    "kind": event.kind.as_str(),
+                                    "pod": event.pod,
+                                    "stream": event.stream.as_str(),
+                                    "line": event.line,
+                                }),
+                            );
+                            if write_frame(writer, &frame).is_err() {
+                                return Err(Failure::new(
+                                    "client-gone",
+                                    "the client closed during `exec`",
+                                ));
+                            }
+                        }
+                        Ok(Some(StreamFrame::Reply { ok, error })) => {
+                            let value = lifecycle::stream::finish(ok, error)?;
+                            let code = value.get("exit_code").and_then(Value::as_i64).unwrap_or(-1);
+                            return Ok(json!({ "exit": code }));
+                        }
+                        Ok(None) => thread::sleep(std::time::Duration::from_millis(40)),
+                        Err(error) => {
+                            return Err(Failure::new("world-stream", error.to_string()));
+                        }
+                    }
+                }
+            })();
+            let _ = writer.shutdown(std::net::Shutdown::Read);
+            if let Some(handle) = handle {
+                let _ = handle.join();
+            }
+            result
+        })
+    }
+
     fn shutdown(&self) -> ! {
         if let Ok(mut core) = self.core.lock() {
             core.stop_all();
             let _ = fs::remove_file(&self.socket);
         }
         std::process::exit(0)
+    }
+}
+
+/// Reads client `input` frames and forwards them to the world's exec stdin.
+fn pump_daemon_input(reader: &mut FrameReader, mut input: StreamInput) {
+    loop {
+        let Ok(Some((payload, _))) = reader.next() else {
+            break;
+        };
+        let Ok(frame) = serde_json::from_slice::<wire::InputFrame>(&payload) else {
+            continue;
+        };
+        let eof = frame.input.as_deref().is_none_or(str::is_empty);
+        let data = frame.input.unwrap_or_default();
+        if input.send_base64(&data).is_err() || eof {
+            break;
+        }
     }
 }
 

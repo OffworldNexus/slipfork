@@ -45,6 +45,13 @@ pub struct Failure {
     pub message: String,
 }
 
+/// One client input frame for a live `exec`; `input` is base64 or empty for EOF.
+#[derive(Debug, Clone, Deserialize)]
+pub struct InputFrame {
+    #[serde(default)]
+    pub input: Option<String>,
+}
+
 /// A success frame: `{"v":1,"id":<id>,"ok":<object>}`.
 #[must_use]
 pub fn ok(id: &str, value: Value) -> Vec<u8> {
@@ -71,6 +78,12 @@ pub fn event(id: &str, value: Value) -> Vec<u8> {
 #[must_use]
 pub fn request(id: &str, method: &str, params: Value) -> Vec<u8> {
     frame(json!({ "v": VERSION, "id": id, "method": method, "params": params }))
+}
+
+/// Encodes one client `input` frame for a live `exec`.
+#[must_use]
+pub fn input(id: &str, data: &str) -> Vec<u8> {
+    frame(json!({ "v": VERSION, "id": id, "input": data }))
 }
 
 fn frame(value: Value) -> Vec<u8> {
