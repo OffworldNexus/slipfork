@@ -215,29 +215,3 @@ impl FrameLines {
         }
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn frame_lines_split_frames_and_bound_oversized_lines() {
-        let mut lines = FrameLines::new();
-        let fed = lines.feed(b"one\ntwo\npart", 16);
-        assert_eq!(fed, [b"one".to_vec(), b"two".to_vec()]);
-        let rest = lines.feed(b"ial\n", 16);
-        assert_eq!(rest, [b"partial".to_vec()]);
-        let long = vec![b'x'; 40];
-        let cut = lines.feed(&long, 16);
-        assert_eq!(cut.len(), 2);
-        assert!(cut.iter().all(|line| line.len() == 16));
-    }
-
-    #[test]
-    fn wire_names_are_the_single_table() {
-        assert_eq!(Stream::Stdout.as_str(), "stdout");
-        assert_eq!(Stream::Combined.as_str(), "combined");
-        assert_eq!(OutputKind::Divider.as_str(), "divider");
-        assert_eq!(OutputKind::Eof.as_str(), "eof");
-    }
-}

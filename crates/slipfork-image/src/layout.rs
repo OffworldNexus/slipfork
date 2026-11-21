@@ -72,28 +72,3 @@ fn digest_component(digest: &str) -> String {
         })
         .collect()
 }
-
-#[cfg(test)]
-mod tests {
-    use std::path::Path;
-
-    use super::ImageLayout;
-
-    #[test]
-    fn digests_become_single_filesystem_components() {
-        let layout = ImageLayout::new("/store/images");
-        assert_eq!(layout.root(), Path::new("/store/images/oci"));
-        let digest = "sha256:0123456789abcdef";
-        assert_eq!(
-            layout.image(digest),
-            Path::new("/store/images/oci/sha256-0123456789abcdef")
-        );
-        assert_eq!(
-            layout.staging(digest),
-            Path::new("/store/images/oci/.partial-sha256-0123456789abcdef")
-        );
-        let hostile = layout.image("sha256:../evil");
-        assert_eq!(hostile.parent(), Some(Path::new("/store/images/oci")));
-        assert_eq!(hostile.components().count(), 5);
-    }
-}

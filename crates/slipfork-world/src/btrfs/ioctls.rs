@@ -12,60 +12,84 @@ const BTRFS_IOCTL_MAGIC: u32 = 0x94;
 /// `BTRFS_SUBVOL_NAME_MAX` from `linux/btrfs.h`: one path component, no `/`.
 const BTRFS_SUBVOL_NAME_MAX: usize = 4039;
 const BTRFS_FSID_SIZE: usize = 16;
-const IOC_WRITE: u32 = 1;
-const IOC_READ: u32 = 2;
+/// `_IOC_WRITE` direction bit from `linux/ioctl.h`.
+pub const IOC_WRITE: u32 = 1;
+/// `_IOC_READ` direction bit from `linux/ioctl.h`.
+pub const IOC_READ: u32 = 2;
 
 /// Encodes a `_IOC(dir, type, nr, size)` request exactly like `linux/ioctl.h`.
 ///
 /// Kept as `u32`: `ioctl(2)` takes `c_ulong` on glibc and `c_int` on musl, and each call site adapts
 /// with `as _` because the kernel only reads the low 32 bits of the request word.
-const fn request(dir: u32, nr: u32, size: u32) -> u32 {
+#[must_use]
+pub const fn request(dir: u32, nr: u32, size: u32) -> u32 {
     (dir << 30) | (size << 16) | (BTRFS_IOCTL_MAGIC << 8) | nr
 }
 
-const SUBVOL_GETFLAGS: u32 = request(IOC_READ, 25, 8);
-const SUBVOL_SETFLAGS: u32 = request(IOC_WRITE, 26, 8);
-const SUBVOL_CREATE: u32 = request(IOC_WRITE, 14, 4096);
-const SNAP_CREATE_V2: u32 = request(IOC_WRITE, 23, 4096);
-const FS_INFO: u32 = request(IOC_READ, 31, 1024);
+/// `BTRFS_IOC_SUBVOL_GETFLAGS` (`linux/btrfs.h`).
+pub const SUBVOL_GETFLAGS: u32 = request(IOC_READ, 25, 8);
+/// `BTRFS_IOC_SUBVOL_SETFLAGS` (`linux/btrfs.h`).
+pub const SUBVOL_SETFLAGS: u32 = request(IOC_WRITE, 26, 8);
+/// `BTRFS_IOC_SUBVOL_CREATE` (`linux/btrfs.h`).
+pub const SUBVOL_CREATE: u32 = request(IOC_WRITE, 14, 4096);
+/// `BTRFS_IOC_SNAP_CREATE_V2` (`linux/btrfs.h`).
+pub const SNAP_CREATE_V2: u32 = request(IOC_WRITE, 23, 4096);
+/// `BTRFS_IOC_FS_INFO` (`linux/btrfs.h`).
+pub const FS_INFO: u32 = request(IOC_READ, 31, 1024);
 /// `BTRFS_IOC_SNAP_DESTROY_V2` is command **63** in `linux/btrfs.h`, not 47.
-const SNAP_DESTROY_V2: u32 = request(IOC_WRITE, 63, 1024 * 4);
+pub const SNAP_DESTROY_V2: u32 = request(IOC_WRITE, 63, 1024 * 4);
 
 /// `struct btrfs_ioctl_vol_args` from `fs/btrfs/ioctl.h` (4096 bytes).
-#[allow(dead_code)] // Fields mirror the kernel ABI and are read by the kernel, not by us.
 #[repr(C)]
-struct VolArgs {
-    fd: i64,
-    name: [u8; 4088],
+pub struct VolArgs {
+    /// Parent directory descriptor (kernel-owned for create).
+    pub fd: i64,
+    /// NUL-padded subvolume/snapshot name.
+    pub name: [u8; 4088],
 }
 
 /// `struct btrfs_ioctl_vol_args_v2` from `fs/btrfs/ioctl.h` (4096 bytes).
-#[allow(dead_code)] // Fields mirror the kernel ABI and are read by the kernel, not by us.
 #[repr(C)]
-struct VolArgsV2 {
-    fd: i64,
-    transid: u64,
-    flags: u64,
-    unused: [u64; 4],
-    name: [u8; 4040],
+pub struct VolArgsV2 {
+    /// Source subvolume descriptor.
+    pub fd: i64,
+    /// Transaction id (kernel-owned).
+    pub transid: u64,
+    /// Snapshot flags.
+    pub flags: u64,
+    /// Reserved for future kernel use.
+    pub unused: [u64; 4],
+    /// NUL-padded name.
+    pub name: [u8; 4040],
 }
 
 /// `struct btrfs_ioctl_fs_info_args` from `<linux/btrfs.h>` (1024 bytes).
-#[allow(dead_code)] // Fields mirror the kernel ABI; only `fsid` is inspected by userspace.
 #[repr(C)]
-struct FsInfoArgs {
-    max_id: u64,
-    num_devices: u64,
-    fsid: [u8; BTRFS_FSID_SIZE],
-    nodesize: u32,
-    sectorsize: u32,
-    clone_alignment: u32,
-    csum_type: u16,
-    csum_size: u16,
-    flags: u64,
-    generation: u64,
-    metadata_uuid: [u8; BTRFS_FSID_SIZE],
-    reserved: [u8; 944],
+pub struct FsInfoArgs {
+    /// Highest subvolume id.
+    pub max_id: u64,
+    /// Number of devices.
+    pub num_devices: u64,
+    /// Filesystem uuid.
+    pub fsid: [u8; BTRFS_FSID_SIZE],
+    /// Node size.
+    pub nodesize: u32,
+    /// Sector size.
+    pub sectorsize: u32,
+    /// Clone alignment.
+    pub clone_alignment: u32,
+    /// Checksum type.
+    pub csum_type: u16,
+    /// Checksum size.
+    pub csum_size: u16,
+    /// Filesystem flags.
+    pub flags: u64,
+    /// Generation.
+    pub generation: u64,
+    /// Metadata uuid.
+    pub metadata_uuid: [u8; BTRFS_FSID_SIZE],
+    /// Reserved for future kernel use.
+    pub reserved: [u8; 944],
 }
 
 pub(crate) fn fsid(dir: &File, path: &Path) -> Result<[u8; BTRFS_FSID_SIZE]> {
@@ -168,63 +192,5 @@ fn check(action: &'static str, path: &Path, ret: libc::c_int) -> Result<()> {
         Err(Error::io(action, path, io::Error::last_os_error()))
     } else {
         Ok(())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn ioctl_requests_match_linux_btrfs_h() {
-        // Command numbers straight from `<linux/btrfs.h>`; every one is a compile-time encoding.
-        assert_eq!(request(IOC_WRITE, 14, 4096), 0x5000_940e, "SUBVOL_CREATE");
-        assert_eq!(request(IOC_WRITE, 23, 4096), 0x5000_9417, "SNAP_CREATE_V2");
-        assert_eq!(
-            request(IOC_WRITE, 24, 4096),
-            0x5000_9418,
-            "SUBVOL_CREATE_V2"
-        );
-        assert_eq!(request(IOC_READ, 25, 8), 0x8008_9419, "SUBVOL_GETFLAGS");
-        assert_eq!(request(IOC_WRITE, 26, 8), 0x4008_941a, "SUBVOL_SETFLAGS");
-        assert_eq!(request(IOC_READ, 31, 1024), 0x8400_941f, "FS_INFO");
-        assert_eq!(request(IOC_WRITE, 63, 4096), 0x5000_943f, "SNAP_DESTROY_V2");
-        assert_eq!(SUBVOL_CREATE, request(IOC_WRITE, 14, 4096));
-        assert_eq!(SNAP_CREATE_V2, request(IOC_WRITE, 23, 4096));
-        assert_eq!(SUBVOL_GETFLAGS, request(IOC_READ, 25, 8));
-        assert_eq!(SUBVOL_SETFLAGS, request(IOC_WRITE, 26, 8));
-        assert_eq!(FS_INFO, 0x8400_941f);
-        // `47` was the command that answered `ENOTTY`; keep a hard pin on the real number.
-        assert_eq!(SNAP_DESTROY_V2, 0x5000_943f);
-    }
-
-    #[test]
-    fn ioctl_argument_structs_match_the_kernel_layout() {
-        assert_eq!(std::mem::size_of::<VolArgs>(), 4096);
-        assert_eq!(std::mem::size_of::<VolArgsV2>(), 4096);
-        assert_eq!(std::mem::size_of::<FsInfoArgs>(), 1024);
-        assert_eq!(std::mem::offset_of!(VolArgsV2, fd), 0);
-        assert_eq!(std::mem::offset_of!(VolArgsV2, name), 56);
-        assert_eq!(std::mem::offset_of!(VolArgs, name), 8);
-        assert_eq!(std::mem::offset_of!(FsInfoArgs, fsid), 16);
-        assert_eq!(std::mem::offset_of!(FsInfoArgs, reserved), 80);
-    }
-
-    #[test]
-    fn names_must_be_one_bounded_component() {
-        let mut buf = [0u8; 4040];
-        assert!(
-            set_name(
-                &mut buf,
-                OsStr::new("feat-auth"),
-                Path::new("x"),
-                "snapshot"
-            )
-            .is_ok()
-        );
-        assert!(set_name(&mut buf, OsStr::new("a/b"), Path::new("x"), "snapshot").is_err());
-        assert!(set_name(&mut buf, OsStr::new(""), Path::new("x"), "snapshot").is_err());
-        let too_long = "x".repeat(4040);
-        assert!(set_name(&mut buf, OsStr::new(&too_long), Path::new("x"), "snapshot").is_err());
     }
 }

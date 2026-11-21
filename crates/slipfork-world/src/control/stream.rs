@@ -311,29 +311,3 @@ pub fn exit_code(value: &serde_json::Value) -> Result<i32> {
             message: "streaming reply carried no exit code".to_owned(),
         })
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn exit_codes_and_typed_errors_round_trip() {
-        assert_eq!(
-            exit_code(&serde_json::json!({"exit_code": 7})).expect("exit code"),
-            7
-        );
-        assert!(matches!(
-            exit_code(&serde_json::json!({})),
-            Err(Error::Protocol { .. })
-        ));
-        let failure = finish(
-            None,
-            Some(ControlError {
-                code: "no-pod".to_owned(),
-                message: "pod `api` is not running".to_owned(),
-            }),
-        )
-        .expect_err("typed error");
-        assert!(failure.to_string().contains("no-pod"), "{failure}");
-    }
-}

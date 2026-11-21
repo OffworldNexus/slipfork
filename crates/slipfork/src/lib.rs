@@ -12,4 +12,5 @@ mod render;
 pub mod surface;
 
 pub mod install;
+pub mod mounts;
 pub mod status;

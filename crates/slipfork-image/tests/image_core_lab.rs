@@ -1,0 +1,245 @@
+//! Lab journey over the native image engine's pure edges: registry reference normalization, a real
+//! build context on disk with `.dockerignore`, and a real layer unpack onto disk.
+
+use std::collections::BTreeMap;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use slipfork_image::{
+    Architecture, BuildArgs, BuildContext, BuildRequest, Credentials, DockerfileParser,
+    Dockerignore, ImageLayout, ImageReference, LayerUnpacker, NativeImageBuilder, OciPuller,
+    StepHost, StepLayout, Variables,
+};
+use slipfork_world::{BtrfsEngine, StoreLayout, WorldEngine};
+
+fn lab(prefix: &str) -> PathBuf {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |since| since.as_nanos());
+    let root = PathBuf::from("/var/tmp").join(format!(
+        "slipfork-image-{prefix}-{}-{nanos}",
+        std::process::id()
+    ));
+    fs::create_dir_all(&root).expect("the lab needs real disk under /var/tmp");
+    root
+}
+
+#[test]
+fn docker_hub_references_normalize_and_hostile_names_are_refused() {
+    let reference = ImageReference::parse("postgres:18").expect("valid reference");
+    assert_eq!(reference.registry(), "registry-1.docker.io");
+    assert_eq!(reference.repository(), "library/postgres");
+    assert_eq!(reference.tag(), Some("18"));
+    assert_eq!(
+        reference.to_string(),
+        "registry-1.docker.io/library/postgres:18"
+    );
+    for raw in [
+        "docker.io/library/alpine:3.20",
+        "index.docker.io/library/alpine:3.20",
+        "registry.hub.docker.com/library/alpine:3.20",
+    ] {
+        let reference = ImageReference::parse(raw).expect("valid Hub reference");
+        assert_eq!(reference.registry(), "registry-1.docker.io", "{raw}");
+        assert_eq!(reference.repository(), "library/alpine", "{raw}");
+    }
+    let digest = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    let pinned = ImageReference::parse(&format!("quay.io/o/i@{digest}")).expect("digest ref");
+    assert_eq!(pinned.registry(), "quay.io");
+    assert_eq!(pinned.tag(), None);
+    assert_eq!(pinned.digest(), Some(digest));
+    for bad in [
+        "",
+        "Postgres",
+        "postgres:",
+        "docker.io/",
+        "docker.io//x",
+        "repo@sha256:XYZ",
+        "repo@sha256",
+        "repo:tag:bad",
+        "repo:with space",
+        "..",
+    ] {
+        assert!(ImageReference::parse(bad).is_err(), "`{bad}`");
+    }
+    let layout = ImageLayout::new("/store/images");
+    assert_eq!(layout.root(), Path::new("/store/images/oci"));
+    assert_eq!(
+        layout.image("sha256:0123456789abcdef"),
+        Path::new("/store/images/oci/sha256-0123456789abcdef")
+    );
+    assert_eq!(
+        layout.staging("sha256:0123456789abcdef"),
+        Path::new("/store/images/oci/.partial-sha256-0123456789abcdef")
+    );
+}
+
+#[test]
+fn a_real_build_context_hashes_stably_and_honours_dockerignore() {
+    let root = lab("context");
+    fs::create_dir_all(root.join("src")).expect("create the context");
+    fs::write(root.join("src/main.rs"), "fn main() {}\n").expect("write source");
+    fs::write(root.join("debug.log"), "noise\n").expect("write log");
+    fs::write(root.join(".dockerignore"), "*.log\n").expect("write ignore");
+    fs::create_dir_all(root.join(".slipfork-store/images/oci/sha256-x")).expect("seed store");
+    fs::create_dir_all(root.join(".forks/feat")).expect("seed forks");
+
+    let context = BuildContext::load(&root).expect("load the context");
+    let paths: Vec<String> = context
+        .entries()
+        .iter()
+        .map(|entry| entry.relative.to_string_lossy().into_owned())
+        .collect();
+    assert!(paths.contains(&"src/main.rs".to_owned()), "{paths:?}");
+    assert!(!paths.contains(&"debug.log".to_owned()), "{paths:?}");
+    assert!(!paths.contains(&".dockerignore".to_owned()), "{paths:?}");
+    assert!(
+        !paths
+            .iter()
+            .any(|path| path.starts_with(".slipfork") || path.starts_with(".forks")),
+        "managed state is never part of the context: {paths:?}"
+    );
+    let first = context.hash().expect("hash");
+    assert_eq!(first, context.hash().expect("hash again"));
+    fs::write(root.join("src/main.rs"), "fn main() { }\n").expect("edit the source");
+    let edited = BuildContext::load(&root).expect("reload");
+    assert_ne!(first, edited.hash().expect("new hash"));
+
+    let ignore = Dockerignore::parse(
+        "# comment lines are not patterns\nnode_modules/\nsrc/[a-c]*.rs\n/root.txt\n*.log\n!keep.log\n**/*.tmp\n",
+    );
+    assert!(ignore.is_ignored(Path::new("node_modules/react/index.js")));
+    let question = Dockerignore::parse("debug?.log\n");
+    assert!(question.is_ignored(Path::new("debug1.log")));
+    assert!(
+        !question.is_ignored(Path::new("debug10.log")),
+        "`?` matches exactly one character"
+    );
+    assert!(ignore.is_ignored(Path::new("src/apple.rs")));
+    assert!(!ignore.is_ignored(Path::new("src/zebra.rs")));
+    assert!(
+        ignore.is_ignored(Path::new("root.txt")),
+        "a leading `/` anchors at the context root"
+    );
+    assert!(
+        !ignore.is_ignored(Path::new("vendor/root.txt")),
+        "an anchored pattern never matches a nested copy"
+    );
+    assert!(ignore.is_ignored(Path::new("app/debug.log")));
+    assert!(!ignore.is_ignored(Path::new("app/keep.log")));
+    assert!(ignore.is_ignored(Path::new("src/a/b/c.tmp")));
+    assert!(!ignore.is_ignored(Path::new("src/main.rs")));
+    assert!(!ignore.is_ignored(Path::new("comment")));
+    let _ = fs::remove_dir_all(&root);
+}
+
+/// Dockerfile variables keep unknown references verbatim, and an unknown instruction fails closed.
+#[test]
+fn dockerfile_variables_keep_unknown_refs_and_bogus_instructions_error() {
+    let mut args = BuildArgs::new();
+    args.declare("VITE_CDN_URL", "http://static.localhost");
+    let mut env = BTreeMap::new();
+    env.insert("APP_MODE".to_owned(), "production".to_owned());
+    let variables = Variables::new(&args, &env);
+    assert_eq!(
+        variables.expand("$VITE_CDN_URL/${APP_MODE}/$MISSING"),
+        "http://static.localhost/production/$MISSING"
+    );
+    assert_eq!(
+        variables.expand("${UNSET}/x"),
+        "${UNSET}/x",
+        "unknown `${{...}}` references stay verbatim"
+    );
+    assert_eq!(
+        variables.expand("$UNSET/x"),
+        "$UNSET/x",
+        "unknown `$NAME` references stay verbatim"
+    );
+
+    let error = DockerfileParser::parse("FROM base\nFROBNICATE x\n")
+        .expect_err("an unknown instruction must fail");
+    assert!(
+        error
+            .to_string()
+            .contains("unknown instruction `FROBNICATE`"),
+        "{error}"
+    );
+}
+
+/// A missing `crun` is a typed failure before any build step touches a subvolume.
+#[test]
+fn a_missing_crun_fails_typed_before_any_step_runs() {
+    let root = lab("crun");
+    let dockerfile = root.join("Dockerfile");
+    fs::write(&dockerfile, "FROM scratch\nRUN true\n").expect("write the Dockerfile");
+    let store = StoreLayout::new(root.join("store"));
+    let engine = Arc::new(BtrfsEngine::new(store.clone()));
+    let puller = OciPuller::new(
+        Arc::clone(&engine) as Arc<dyn WorldEngine>,
+        ImageLayout::new(store.images_root()),
+        Credentials::Anonymous,
+        Architecture::X86_64,
+        "slipfork-tests/0.1".to_owned(),
+    );
+    let builder = NativeImageBuilder::new(
+        Arc::clone(&engine) as Arc<dyn WorldEngine>,
+        puller,
+        StepLayout::new(store.images_root()),
+        Architecture::X86_64,
+        StepHost::new(
+            "/nonexistent/crun",
+            "/etc/resolv.conf",
+            root.join("bundles"),
+            1000,
+            1000,
+        ),
+    );
+    let request = BuildRequest {
+        context: root.clone(),
+        dockerfile,
+        args: BuildArgs::new(),
+        target: None,
+    };
+    let error = builder
+        .build(&request, &mut std::io::sink())
+        .expect_err("a missing crun must fail closed");
+    assert!(
+        matches!(error, slipfork_image::Error::CrunMissing { .. }),
+        "unexpected error: {error}"
+    );
+    assert!(
+        !store.images_root().join("oci").exists(),
+        "zero build steps may run before the runtime check"
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn a_real_tar_layer_unpacks_a_dot_root_entry_onto_disk() {
+    let root = lab("unpack");
+    let mut builder = tar::Builder::new(Vec::new());
+    for (name, kind, body) in [
+        ("./", tar::EntryType::Directory, &b""[..]),
+        ("./usr/", tar::EntryType::Directory, &b""[..]),
+        ("./usr/bin/python", tar::EntryType::Regular, b"#!/bin/sh\n"),
+    ] {
+        let mut header = tar::Header::new_gnu();
+        header.set_entry_type(kind);
+        header.set_size(body.len() as u64);
+        header.set_mode(0o755);
+        header.set_path(name).expect("tar entry name");
+        header.set_cksum();
+        builder.append(&header, body).expect("append the tar entry");
+    }
+    let bytes = builder.into_inner().expect("tar bytes");
+    LayerUnpacker::new(root.join("rootfs"))
+        .apply(&mut &bytes[..], "application/vnd.oci.image.layer.v1.tar")
+        .expect("a leading `./` root entry must unpack");
+    assert_eq!(
+        fs::read_to_string(root.join("rootfs/usr/bin/python")).expect("read the unpacked file"),
+        "#!/bin/sh\n"
+    );
+    let _ = fs::remove_dir_all(&root);
+}

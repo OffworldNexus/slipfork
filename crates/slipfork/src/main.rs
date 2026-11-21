@@ -9,6 +9,7 @@ mod commands;
 mod daemon;
 mod doctor;
 mod install;
+mod mounts;
 #[path = "daemon/ps.rs"]
 mod ps;
 mod render;
@@ -18,7 +19,6 @@ mod world;
 use std::ffi::{CStr, OsString};
 use std::io::IsTerminal;
 use std::net::{SocketAddr, TcpListener};
-use std::os::unix::ffi::OsStringExt;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -74,10 +74,10 @@ fn main() -> ExitCode {
             .find(|candidate| candidate.is_file())
     });
     let mounts = std::fs::read_to_string("/proc/self/mountinfo")
-        .map(|text| parse_mountinfo(&text))
+        .map(|text| mounts::parse_mountinfo(&text))
         .unwrap_or_default();
     let project = active_project(&args, &cwd);
-    let store_root = world::store_root_for_mounts(&mounts, &project);
+    let store_root = mounts::store_root(&mounts, &project);
     // Resolve the ingress principal and OpenRC flavour exactly once here; `install` and the
     // handoff receive plain values and never probe ambient host state themselves.
     let ingress_uid = std::env::var("SUDO_UID")
@@ -194,53 +194,6 @@ fn active_project(args: &[OsString], cwd: &Path) -> PathBuf {
     cwd.to_path_buf()
 }
 
-/// Extracts mount points (field 5) in kernel stacking order from `/proc/self/mountinfo`.
-fn parse_mountinfo(text: &str) -> Vec<PathBuf> {
-    let mut mounts = Vec::new();
-    for line in text.lines() {
-        let Some((head, _)) = line.split_once(" - ") else {
-            continue;
-        };
-        let Some(mangled) = head.split_ascii_whitespace().nth(4) else {
-            continue;
-        };
-        mounts.push(unmangle_mount_path(mangled));
-    }
-    mounts
-}
-
-/// Decodes Linux `mangle_path` `\NNN` octal escapes (`\040`, `\011`, `\012`, `\134`).
-fn unmangle_mount_path(raw: &str) -> PathBuf {
-    let bytes = raw.as_bytes();
-    let mut decoded = Vec::with_capacity(bytes.len());
-    let mut index = 0;
-    while index < bytes.len() {
-        if bytes[index] == b'\\'
-            && index + 3 < bytes.len()
-            && let (Some(a), Some(b), Some(c)) = (
-                octal_digit(bytes[index + 1]),
-                octal_digit(bytes[index + 2]),
-                octal_digit(bytes[index + 3]),
-            )
-        {
-            decoded.push((a << 6) | (b << 3) | c);
-            index += 4;
-        } else {
-            decoded.push(bytes[index]);
-            index += 1;
-        }
-    }
-    PathBuf::from(OsString::from_vec(decoded))
-}
-
-const fn octal_digit(byte: u8) -> Option<u8> {
-    if byte >= b'0' && byte <= b'7' {
-        Some(byte - b'0')
-    } else {
-        None
-    }
-}
-
 /// Reads this host's name once; the kernel truncates anything longer than 255 bytes.
 fn host_name() -> String {
     let mut buffer = [0_u8; 256];
@@ -292,50 +245,5 @@ fn passwd_name(uid: u32) -> String {
         uid.to_string()
     } else {
         name
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    const SAMPLE_MOUNTINFO: &str = "\
-29 1 253:1 / / rw,relatime shared:1 - ext4 /dev/vda1 rw
-49 29 0:34 / /var/lib/slipfork rw,noatime shared:46 - btrfs /dev/sda rw,user_subvol_rm_allowed
-50 29 0:35 / /var/lib/slipfork2 rw,noatime - btrfs /dev/sdb rw
-55 29 0:41 / /mnt/my\\040drive\\134data rw,relatime - btrfs /dev/sdc rw
-";
-
-    #[test]
-    fn mountinfo_resolves_longest_component_mount_and_unescapes_octal() {
-        let mounts = parse_mountinfo(SAMPLE_MOUNTINFO);
-        assert_eq!(
-            mounts,
-            vec![
-                PathBuf::from("/"),
-                PathBuf::from("/var/lib/slipfork"),
-                PathBuf::from("/var/lib/slipfork2"),
-                PathBuf::from(r"/mnt/my drive\data"),
-            ]
-        );
-        assert_eq!(
-            world::store_root_for_mounts(
-                &mounts,
-                Path::new("/var/lib/slipfork/t/fork-live-1/demo")
-            ),
-            PathBuf::from("/var/lib/slipfork/.slipfork-store")
-        );
-        assert_eq!(
-            world::store_root_for_mounts(&mounts, Path::new("/var/lib/slipfork2/demo")),
-            PathBuf::from("/var/lib/slipfork2/.slipfork-store")
-        );
-        assert_eq!(
-            world::store_root_for_mounts(&mounts, Path::new("/var/lib/slipfork-other/demo")),
-            PathBuf::from("/.slipfork-store")
-        );
-        assert_eq!(
-            world::store_root_for_mounts(&mounts, Path::new(r"/mnt/my drive\data/app")),
-            PathBuf::from(r"/mnt/my drive\data/.slipfork-store")
-        );
     }
 }

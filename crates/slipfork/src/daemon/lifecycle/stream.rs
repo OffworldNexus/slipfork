@@ -241,32 +241,3 @@ pub(crate) fn finish(
         (None, None) => Err(Failure::new("world-refused", "the world sent no reply")),
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn target_choice_is_unambiguous_or_typed() {
-        let ids = vec!["api".to_owned(), "worker".to_owned()];
-        assert_eq!(
-            choose(Some("api"), &ids, "any").expect("explicit target"),
-            "api"
-        );
-        let ambiguous = choose(None, &ids, "any").expect_err("two candidates");
-        assert_eq!(ambiguous.code, "ambiguous-target");
-        assert!(
-            ambiguous.message.contains("api, worker"),
-            "{}",
-            ambiguous.message
-        );
-        assert_eq!(
-            choose(None, &["api".to_owned()], "any").expect("one candidate"),
-            "api"
-        );
-        assert_eq!(
-            choose(None, &[], "postgres").expect_err("empty").code,
-            "no-target"
-        );
-    }
-}

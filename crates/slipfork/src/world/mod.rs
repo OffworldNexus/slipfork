@@ -72,7 +72,7 @@ impl HostEnv {
         if project.as_os_str().is_empty() || self.mounts.is_empty() {
             return self.store_root.clone();
         }
-        store_root_for_mounts(&self.mounts, project)
+        crate::mounts::store_root(&self.mounts, project)
     }
 
     /// The minimal install view the shared unit writer needs.
@@ -111,22 +111,6 @@ impl HostEnv {
         }
         self.tool("slipfork-world-init")
     }
-}
-
-/// Selects `<mount>/.slipfork-store` for the longest mount point containing `project`.
-#[must_use]
-pub(crate) fn store_root_for_mounts(mounts: &[PathBuf], project: &Path) -> PathBuf {
-    let mut best: Option<(&Path, usize)> = None;
-    for mount in mounts {
-        if project.starts_with(mount) {
-            let depth = mount.components().count();
-            if best.is_none_or(|(_, best_depth)| depth >= best_depth) {
-                best = Some((mount.as_path(), depth));
-            }
-        }
-    }
-    let mount = best.map_or_else(|| Path::new("/"), |(mount, _)| mount);
-    mount.join(slipfork_world::STORE_DIR)
 }
 
 /// Parsed `slipfork up` arguments.

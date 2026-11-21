@@ -338,39 +338,3 @@ pub(crate) fn rooted(rootfs: &Path, destination: &str) -> PathBuf {
     let trimmed = destination.trim_start_matches('/');
     rootfs.join(trimmed)
 }
-
-#[cfg(test)]
-mod tests {
-    use crate::dockerfile::{Command, ImageConfig, RunSpec};
-
-    use super::StepHost;
-
-    #[test]
-    fn oci_config_maps_the_invoking_identity_and_skips_network_namespace() {
-        let host = StepHost::new(
-            "/usr/bin/crun",
-            "/etc/resolv.conf",
-            "/var/tmp/build",
-            1000,
-            1001,
-        );
-        let runtime = super::CrunStepRuntime::new(host);
-        let config = ImageConfig::default();
-        let run = RunSpec {
-            mounts: Vec::new(),
-            command: Command::Shell("true".to_owned()),
-        };
-        let json = runtime.oci_config(
-            std::path::Path::new("/rootfs"),
-            &config,
-            &run,
-            &[],
-            std::path::Path::new("/bundle/passwd"),
-        );
-        let namespaces = json["linux"]["namespaces"].as_array().expect("namespaces");
-        assert!(!namespaces.iter().any(|ns| ns["type"] == "network"));
-        assert_eq!(json["linux"]["uidMappings"][0]["hostID"], 1000);
-        assert_eq!(json["linux"]["gidMappings"][0]["hostID"], 1001);
-        assert_eq!(json["process"]["args"][2], "true");
-    }
-}

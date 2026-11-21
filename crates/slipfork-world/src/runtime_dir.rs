@@ -68,33 +68,3 @@ fn verify_tmpfs(path: &Path) -> Result<()> {
         })
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn prepares_a_private_world_directory_on_tmpfs() {
-        let base = PathBuf::from(format!("/dev/shm/slipfork-rt-{}", std::process::id()));
-        let world = WorldName::parse("demo").expect("valid world");
-        let pods = RuntimePods::prepare(&base, &world).expect("prepare on /dev/shm");
-        assert_eq!(pods.path(), base.join("slipfork/pods/demo").as_path());
-        let mode = fs::metadata(pods.path())
-            .expect("stat pod root")
-            .permissions()
-            .mode()
-            & 0o777;
-        assert_eq!(mode, 0o700);
-        assert_eq!(pods.pod_dir("api"), pods.path().join("api"));
-        let _ = fs::remove_dir_all(&base);
-    }
-
-    #[test]
-    fn refuses_a_persistent_runtime_directory() {
-        let base = PathBuf::from(format!("/var/tmp/slipfork-rt-{}", std::process::id()));
-        let world = WorldName::parse("demo").expect("valid world");
-        let err = RuntimePods::prepare(&base, &world).expect_err("must refuse a disk path");
-        assert!(matches!(err, Error::RuntimeNotTmpfs { .. }));
-        let _ = fs::remove_dir_all(&base);
-    }
-}

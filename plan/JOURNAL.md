@@ -2530,3 +2530,14 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-21T17:28 [M3.41] (lead) gate: make docs-check/packages/packages-test/check 0; guard+critical_guard+validate OK; 7 distro artifacts + 6-target lsp assets
 - 2026-11-21T17:28 [M3.41] (lead) status ready -> done
 - 2026-11-21T17:29 [M3.42] (conductor) edited fields
+- 2026-11-21T17:30 [M3.42.1] (planner) created (task) Test-shape convergence: prune non-§7 inline tests into lab E2E journeys
+- 2026-11-21T17:30 [M3.42.2] (planner) created (task) make coverage target, dead-code sweep, comment diet & >500 LOC splits
+- 2026-11-21T17:30 [M3.42.3] (planner) created (task) Close §2–§6 story gaps and green all local gates (check/docs/packages/packages-test/coverage)
+- 2026-11-21T17:30 [M3.42.4] (planner) created (task) Live Btrfs proof on 165.232.86.174 without disturbing the owner demo
+- 2026-11-21T17:32 [M3.42.1] (lead) status ready -> active
+- 2026-11-21T17:32 [M3.42.1] (lead) attempt 1/3 started
+- 2026-11-21T17:32 [M3.42.1] (lead) base 6fbb0a2bca740d801b0aa8f74b43a53b8b4d4fa1
+- 2026-11-21T17:42 [M3.42.1] (lead) status active -> review
+- 2026-11-21T17:45 [M3.42.1] (lead) status review -> ready
+- 2026-11-21T17:45 [M3.42.1] (lead) attempt 2/3 started
+- 2026-11-21T17:53 [M3.42.1] (lead) status ready -> done

@@ -1,7 +1,7 @@
 //! CLI-level check for `slipfork __ingress` usage errors.
 //!
-//! The descriptor handoff itself is proven by the module tests in `src/daemon/handoff.rs`,
-//! which call `run` with real loopback sockets and no privileged port.
+//! The descriptor handoff itself is proven by the protected `critical_daemon.rs` journey,
+//! which forwards real loopback connections through a live daemon socket.
 
 use std::fs;
 use std::path::PathBuf;

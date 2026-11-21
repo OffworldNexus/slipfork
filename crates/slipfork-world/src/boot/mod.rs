@@ -10,9 +10,6 @@ mod plan;
 mod schedule;
 mod stamp;
 
-#[cfg(test)]
-mod tests;
-
 pub use plan::world_plan;
 pub use schedule::{
     BootEvent, BootFailure, EventSink, ServiceHealth, StepExecutor, StepOutcome, classify_service,

@@ -11,8 +11,95 @@ use std::process::{Command, Output};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::{Value, json};
-use slipfork::install::{self, UnitWriter};
+use slipfork::install::{self, InstallHost, UnitWriter};
 use slipfork::status::{self, Options};
+
+#[test]
+fn mountinfo_unescapes_octal_and_picks_the_longest_containing_mount() {
+    const SAMPLE: &str = "\
+29 1 253:1 / / rw,relatime shared:1 - ext4 /dev/vda1 rw
+49 29 0:34 / /var/lib/slipfork rw,noatime shared:46 - btrfs /dev/sda rw,user_subvol_rm_allowed
+50 29 0:35 / /var/lib/slipfork2 rw,noatime - btrfs /dev/sdb rw
+55 29 0:41 / /mnt/my\\040drive\\134data rw,relatime - btrfs /dev/sdc rw
+";
+    let mounts = slipfork::mounts::parse_mountinfo(SAMPLE);
+    assert_eq!(
+        mounts,
+        vec![
+            PathBuf::from("/"),
+            PathBuf::from("/var/lib/slipfork"),
+            PathBuf::from("/var/lib/slipfork2"),
+            PathBuf::from(r"/mnt/my drive\data"),
+        ]
+    );
+    let store = |project: &str| slipfork::mounts::store_root(&mounts, Path::new(project));
+    assert_eq!(
+        store("/var/lib/slipfork/t/fork-live-1/demo"),
+        PathBuf::from("/var/lib/slipfork/.slipfork-store")
+    );
+    assert_eq!(
+        store("/var/lib/slipfork2/demo"),
+        PathBuf::from("/var/lib/slipfork2/.slipfork-store"),
+        "the nested mount must win over its parent"
+    );
+    assert_eq!(
+        store("/var/lib/slipfork-other/demo"),
+        PathBuf::from("/.slipfork-store")
+    );
+    assert_eq!(
+        store(r"/mnt/my drive\data/app"),
+        PathBuf::from(r"/mnt/my drive\data/.slipfork-store"),
+        "octal-unescaped mounts stay matchable"
+    );
+}
+
+#[test]
+fn openrc_install_names_the_injected_user_and_keeps_a_user_edit() {
+    let root = scratch("openrc");
+    let host = InstallHost {
+        exe: PathBuf::from("/usr/bin/slipfork"),
+        path: Vec::new(),
+        config_dir: root.join("config"),
+        install_root: root.clone(),
+        uid: 1000,
+        ingress_uid: 1000,
+        ingress_user: "builder".to_owned(),
+        openrc: true,
+    };
+    let writer = UnitWriter::from_host(&host);
+    let planned = writer.plan(true);
+    let conf_d = root.join("etc/conf.d");
+    let (conf_path, conf) = planned
+        .iter()
+        .find(|(path, _)| path.parent().is_some_and(|parent| parent == conf_d))
+        .expect("an OpenRC host plans a conf.d file");
+    assert!(
+        conf.contains("SLIPFORK_INGRESS_USER=builder\n"),
+        "the conf must name the injected user: {conf}"
+    );
+    let service = planned
+        .iter()
+        .find(|(path, _)| path.ends_with(install::SERVICE_UNIT))
+        .map(|(_, contents)| contents)
+        .expect("the ingress service is still planned on an OpenRC host");
+    assert!(service.contains("User=1000\n"), "{service}");
+
+    let written = writer.write_all(true).expect("write the install plan");
+    assert!(written.contains(conf_path), "{written:?}");
+    assert_eq!(
+        fs::read_to_string(conf_path).expect("read the conf"),
+        conf.clone()
+    );
+
+    fs::write(conf_path, "SLIPFORK_INGRESS_USER=alice\n").expect("simulate a user edit");
+    writer.write_all(true).expect("keep the user edit");
+    assert_eq!(
+        fs::read_to_string(conf_path).expect("re-read the kept conf"),
+        "SLIPFORK_INGRESS_USER=alice\n"
+    );
+    assert_eq!(writer.preserved_conf(true), Some(conf_path.clone()));
+    fs::remove_dir_all(&root).expect("remove the scratch directory");
+}
 
 const ANSI: &str = "\u{1b}[";
 

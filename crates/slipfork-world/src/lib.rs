@@ -49,6 +49,17 @@ pub use boot::{
     run_plan, world_plan,
 };
 pub use btrfs::{is_btrfs_path, is_subvolume_path};
+
+/// Kernel Btrfs UAPI pins: ioctl request words and ABI struct layouts.
+///
+/// Exported so the lab can assert the exact `linux/ioctl.h` encoding and struct offsets on any
+/// host, without depending on `<linux/btrfs.h>` being installed.
+pub mod uapi {
+    pub use crate::btrfs::ioctls::{
+        FS_INFO, FsInfoArgs, IOC_READ, IOC_WRITE, SNAP_CREATE_V2, SNAP_DESTROY_V2, SUBVOL_CREATE,
+        SUBVOL_GETFLAGS, SUBVOL_SETFLAGS, VolArgs, VolArgsV2, request,
+    };
+}
 pub use control::Stream;
 pub use control::{
     ControlError, FrameLines, InitFrame, OutputKind, PROTOCOL_VERSION, Request, decode_init_frame,

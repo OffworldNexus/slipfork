@@ -45,8 +45,9 @@ impl Dockerignore {
                     None => (false, line),
                 };
                 let dir_only = line.ends_with('/');
-                let line = line.trim_end_matches('/').trim_start_matches("./");
-                let line = line.trim_start_matches('/');
+                let trimmed = line.trim_end_matches('/').trim_start_matches("./");
+                let rooted = trimmed.starts_with('/');
+                let line = trimmed.trim_start_matches('/');
                 if line.is_empty() {
                     return None;
                 }
@@ -54,7 +55,7 @@ impl Dockerignore {
                     segments: segments(line),
                     negated,
                     dir_only,
-                    anchored: line.contains('/'),
+                    anchored: rooted || line.contains('/'),
                 })
             })
             .collect();
@@ -248,61 +249,4 @@ fn class_matches(class: &[char], character: char) -> bool {
         }
     }
     matched != negated
-}
-
-#[cfg(test)]
-mod tests {
-    use std::path::Path;
-
-    use super::{Dockerignore, SourcePattern};
-
-    #[test]
-    fn excludes_globs_directories_and_negations() {
-        let ignore = Dockerignore::parse(
-            "# dependencies\n\
-             node_modules/\n\
-             *.log\n\
-             build\n\
-             **/*.tmp\n\
-             !keep.log\n\
-             !node_modules/keep.js\n",
-        );
-        assert!(ignore.is_ignored(Path::new("node_modules/react/index.js")));
-        assert!(ignore.is_ignored(Path::new("app/debug.log")));
-        assert!(!ignore.is_ignored(Path::new("app/keep.log")));
-        assert!(ignore.is_ignored(Path::new("build")));
-        assert!(ignore.is_ignored(Path::new("src/a/b/c.tmp")));
-        assert!(!ignore.is_ignored(Path::new("src/main.rs")));
-        assert!(!ignore.is_ignored(Path::new(".")));
-        assert!(!ignore.is_ignored(Path::new("")));
-    }
-
-    #[test]
-    fn question_mark_and_anchored_paths() {
-        let ignore = Dockerignore::parse("?.txt\nlogs/**\n");
-        assert!(ignore.is_ignored(Path::new("a.txt")));
-        assert!(!ignore.is_ignored(Path::new("ab.txt")));
-        assert!(ignore.is_ignored(Path::new("logs/one/two.txt")));
-        assert!(!ignore.is_ignored(Path::new("mylogs/one.txt")));
-    }
-
-    #[test]
-    fn copy_sources_match_character_classes_and_cross_directories() {
-        let class = SourcePattern::parse("app[0-9].txt").expect("glob source");
-        assert!(class.is_glob());
-        assert!(class.matches(Path::new("app7.txt")));
-        assert!(!class.matches(Path::new("appx.txt")));
-
-        let deep = SourcePattern::parse("assets/**").expect("recursive glob");
-        assert!(deep.matches(Path::new("assets/css/app.css")));
-        assert!(!deep.matches(Path::new("other/css/app.css")));
-
-        let any = SourcePattern::parse("**/*.json").expect("globstar prefix");
-        assert!(any.matches(Path::new("a/b/c.json")));
-        assert!(!any.matches(Path::new("a/b/c.txt")));
-
-        let literal = SourcePattern::parse("src/main.rs").expect("literal source");
-        assert!(!literal.is_glob());
-        assert!(literal.matches(Path::new("src/main.rs")));
-    }
 }
