@@ -49,11 +49,14 @@ on Alpine). A package never enables a root daemon.
 
 | Distro | Install | Upgrade |
 | :--- | :--- | :--- |
-| Debian, Ubuntu | `sudo apt-get install ./slipfork_0.1.0_amd64.deb` | `sudo apt-get upgrade slipfork` |
-| Fedora, RHEL, Rocky, Alma | `sudo dnf install ./slipfork-0.1.0-1.x86_64.rpm` | `sudo dnf upgrade slipfork` |
-| openSUSE | `sudo zypper install ./slipfork-0.1.0-1.x86_64.rpm` | `sudo zypper update slipfork` |
-| Arch Linux | `sudo pacman -U ./slipfork-0.1.0-1-x86_64.pkg.tar.zst` | `yay -S slipfork-bin` (AUR) |
-| Alpine | `sudo apk add ./slipfork-0.1.0-r0.apk` | `sudo apk upgrade slipfork` |
+| Debian, Ubuntu | `sudo apt-get install ./slipfork_0.1.0_<arch>.deb` | `sudo apt-get upgrade slipfork` |
+| Fedora, RHEL, Rocky, Alma | `sudo dnf install ./slipfork-0.1.0-1.<arch>.rpm` | `sudo dnf upgrade slipfork` |
+| openSUSE | `sudo zypper install ./slipfork-0.1.0-1.<arch>.rpm` | `sudo zypper update slipfork` |
+| Arch Linux | `sudo pacman -U ./slipfork-0.1.0-1-<arch>.pkg.tar.zst` | `yay -S slipfork-bin` (AUR) |
+| Alpine | `sudo apk add ./slipfork-0.1.0-r0-<arch>.apk` | `sudo apk upgrade slipfork` |
+
+`<arch>` is `amd64` (`.deb`) or `x86_64` (`.rpm`, `.pkg.tar.zst`, `.apk`) on 64-bit x86; ARM uses
+`arm64` and `aarch64`.
 
 Verify the same way on every row:
 
@@ -66,7 +69,13 @@ $ slipfork doctor
 !!! note "Alpine runs OpenRC"
 
     On Alpine the `:80` ingress is the `slipfork-ingress` OpenRC service, not a systemd socket.
-    Enable it with `rc-update add slipfork-ingress default` after the daemon step below.
+    `sudo slipfork daemon install --ingress` writes `/etc/conf.d/slipfork-ingress` with the invoking
+    user and grants that user the unprivileged `:80` bind; then enable and start it:
+
+    ```console
+    $ sudo rc-update add slipfork-ingress default
+    $ sudo rc-service slipfork-ingress start
+    ```
 
 ## The daemon and the `:80` ingress
 
