@@ -18,7 +18,7 @@ use slipfork_world::{BtrfsEngine, Dirtiness, STORE_DIR, StoreLayout, WorldEngine
 const FORKFILE: &str = "# forkfile: 0.1\n\
 postgres pg {\n  version 18\n}\n\
 redis cache\n\
-s3 uploads {\n  cdn static_cdn\n}\n";
+s3 uploads {\n  policy public-read\n  cdn assets-cdn\n}\n";
 
 fn test_root() -> PathBuf {
     let Some(root) = std::env::var_os("SLIPFORK_TEST_ROOT") else {
@@ -194,7 +194,8 @@ fn live_status_and_ps_show_the_real_world() {
         .iter()
         .find(|service| service["id"] == "uploads")
         .expect("uploads row");
-    assert_eq!(uploads["cdn"], "static_cdn");
+    assert_eq!(uploads["cdn"], "assets-cdn");
+    assert_eq!(uploads["policy"], "public-read");
     assert_eq!(uploads["running"], true);
 
     let human = run(&project, &runtime, &["status"]);
@@ -203,7 +204,7 @@ fn live_status_and_ps_show_the_real_world() {
     assert!(human.contains("● status-live-demo"), "{human}");
     assert!(human.contains("postgres 18"), "{human}");
     assert!(human.contains("redis 7"), "{human}");
-    assert!(human.contains("s3 + cdn"), "{human}");
+    assert!(human.contains("s3 (public-read)"), "{human}");
     assert!(!human.contains('\u{1b}'), "{human}");
 
     let ps = run(&project, &runtime, &["ps", "--json"]);

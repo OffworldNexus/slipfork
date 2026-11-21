@@ -245,7 +245,7 @@ image app . {
 "#;
 
 #[test]
-fn s3_buckets_and_cdn_authorities_rewrite_to_seaweedfs() {
+fn s3_buckets_and_cdn_authorities_rewrite_to_native_s3() {
     let doc = slipfork_forkfile::parse(MULTI_S3).expect("the multi-S3 Forkfile parses");
     assert!(
         slipfork_forkfile::check(&doc).is_ok(),

@@ -6,7 +6,7 @@ use std::path::Path;
 
 use slipfork_world::{
     Bind, BindSource, BtrfsEngine, Dirtiness, ImageFacts, PodEnv, PodSpec, ResourceKind,
-    ResourceNode, S3Credentials, SeaweedfsPlan, WorldEngine, postgres, redis, seaweedfs,
+    ResourceNode, WorldEngine, postgres, redis,
 };
 
 /// Clears leftover pod rootfs clones or `ino == 2` snapshot stubs before a world boots.
@@ -72,19 +72,13 @@ pub(super) fn shell_command(command: &str) -> String {
 
 pub(super) fn build_resource_spec(
     node: &ResourceNode,
-    world: &str,
     world_dir: &Path,
     rootfs: &Path,
     facts: &ImageFacts,
-    reserved_ports: &[u16],
-) -> Result<(PodSpec, Option<SeaweedfsPlan>), String> {
+) -> Result<PodSpec, String> {
     // Resource dirs stay plain directories inside the `worlds/<world>` subvolume so one
-    // `BTRFS_IOC_SNAP_CREATE_V2` clones PostgreSQL, Redis, and S3 data atomically on `fork`.
-    let dir_name = match node.resource {
-        ResourceKind::Seaweedfs => node.resource.data_dir(),
-        ResourceKind::Postgres | ResourceKind::Redis => node.id.as_str(),
-    };
-    let data = world_dir.join(dir_name);
+    // `BTRFS_IOC_SNAP_CREATE_V2` clones PostgreSQL and Redis data atomically on `fork`.
+    let data = world_dir.join(node.id.as_str());
     fs::create_dir_all(&data).map_err(|error| format!("create `{}`: {error}", data.display()))?;
     match node.resource {
         ResourceKind::Postgres => {
@@ -92,15 +86,9 @@ pub(super) fn build_resource_spec(
             if let Some(database) = node.databases.first() {
                 spec.env.push(PodEnv::new("POSTGRES_DB", database));
             }
-            Ok((spec, None))
+            Ok(spec)
         }
-        ResourceKind::Redis => Ok((redis(&node.id, rootfs, &data, facts), None)),
-        ResourceKind::Seaweedfs => {
-            let plan = SeaweedfsPlan::render(&S3Credentials::local(world), &node.buckets)
-                .map_err(|error| error.to_string())?
-                .avoiding_ports(reserved_ports);
-            let spec = seaweedfs(&node.id, rootfs, &data, &plan, facts);
-            Ok((spec, Some(plan)))
-        }
+        ResourceKind::Redis => Ok(redis(&node.id, rootfs, &data, facts)),
+        ResourceKind::S3 => Err("the native S3 server has no pod".to_owned()),
     }
 }

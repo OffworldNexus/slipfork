@@ -6,6 +6,7 @@
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
+use slipfork_forkfile::BucketPolicy;
 
 /// The whole `ps` reply.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -64,6 +65,9 @@ pub struct PsService {
     /// CDN authority attached to an S3 bucket.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cdn: Option<String>,
+    /// Anonymous-read policy of an `s3` bucket; `None` for every other row.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy: Option<PsBucketPolicy>,
     /// Host-visible pod pid, when the world reported one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pid: Option<i32>,
@@ -129,12 +133,31 @@ pub enum PsDomain {
 }
 
 impl PsDomain {
-    /// The authority label as the status tree prints it (`mail.*`, `static_cdn.*`).
+    /// The authority label as the status tree prints it (`mail.*`, `static-cdn.*`).
     #[must_use]
     pub fn label(&self) -> String {
         match self {
             Self::Domain(name) => format!("{name}.*"),
             Self::Prefix(prefix) => format!("{prefix}.*"),
+        }
+    }
+}
+
+/// The anonymous-read policy of one native S3 bucket, as `ps --json` exposes it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum PsBucketPolicy {
+    /// Anonymous reads are refused with `403`.
+    Private,
+    /// Anonymous `GET`/`HEAD` succeed; writes still need SigV4.
+    PublicRead,
+}
+
+impl From<BucketPolicy> for PsBucketPolicy {
+    fn from(policy: BucketPolicy) -> Self {
+        match policy {
+            BucketPolicy::Private => Self::Private,
+            BucketPolicy::PublicRead => Self::PublicRead,
         }
     }
 }

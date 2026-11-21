@@ -3,6 +3,7 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::{self, BufRead, BufReader, Read};
+use std::net::SocketAddr;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -13,9 +14,11 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use slipfork_world::PodSpec;
-use slipfork_world::control::FrameLines;
+use slipfork_world::control::{FrameLines, S3WorldConfig};
 use slipfork_world::pod_log::{CHUNK, LogKind, LogSink};
+use tokio::runtime::Handle;
 
+use crate::s3::S3Host;
 pub(crate) use crate::shared::{PodInfo, WorldShared, exit_code, reap_zombies};
 use crate::{Fault, REMEDY_CRUN, REMEDY_POD, REMEDY_RUNTIME, canonical};
 
@@ -24,10 +27,13 @@ pub(crate) struct InitWorld {
     /// Open append sinks; the descriptor stays in the init across restarts.
     logs: BTreeMap<String, Arc<Mutex<LogSink>>>,
     pids: BTreeMap<String, i32>,
+    /// The one runtime the native S3 endpoint is served on; never constructed in library code.
+    runtime: Handle,
+    s3: Option<S3Host>,
 }
 
 impl InitWorld {
-    pub(crate) fn new(crun: PathBuf, pods_root: PathBuf) -> Result<Self, Fault> {
+    pub(crate) fn new(crun: PathBuf, pods_root: PathBuf, runtime: Handle) -> Result<Self, Fault> {
         let crun_root = pods_root.join("crun");
         fs::create_dir_all(&crun_root)
             .and_then(|()| fs::set_permissions(&crun_root, fs::Permissions::from_mode(0o700)))
@@ -36,6 +42,8 @@ impl InitWorld {
             shared: Arc::new(WorldShared::new(crun, crun_root, pods_root)),
             logs: BTreeMap::new(),
             pids: BTreeMap::new(),
+            runtime,
+            s3: None,
         })
     }
 
@@ -196,7 +204,27 @@ impl InitWorld {
         Ok(ids.len())
     }
 
+    /// Binds and serves the declared buckets on the injected runtime, replacing any previous
+    /// endpoint. Returns the bound address and the bucket count.
+    pub(crate) fn configure_s3(
+        &mut self,
+        config: S3WorldConfig,
+    ) -> Result<(SocketAddr, usize), Fault> {
+        self.stop_s3();
+        let host = S3Host::bind(&self.runtime, config)?;
+        let reply = (host.listen_addr(), host.buckets());
+        self.s3 = Some(host);
+        Ok(reply)
+    }
+
+    fn stop_s3(&mut self) {
+        if let Some(host) = self.s3.take() {
+            host.shutdown();
+        }
+    }
+
     pub(crate) fn stop_all(&mut self) {
+        self.stop_s3();
         self.shared.mark_stopped();
         for pid in self.shared.exec_pids() {
             slipfork_world::kill_group(pid);

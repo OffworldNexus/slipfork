@@ -62,7 +62,10 @@ image app . {
   }
 }
 s3 uploads
-s3 assets { cdn static_cdn }
+s3 assets {
+  policy public-read
+  cdn assets-cdn
+}
 "#;
 
 const APP_PY: &str = r#"import os, pathlib
@@ -523,7 +526,6 @@ fn scoped_leaks(run: &Path) -> Vec<(String, u32)> {
         b"slipfork-world-init".as_slice(),
         b"postgres".as_slice(),
         b"redis-server".as_slice(),
-        b"weed".as_slice(),
         b"uv".as_slice(),
         b"python".as_slice(),
     ] {
@@ -657,32 +659,21 @@ fn world_up_restart_down_journey() {
         "the service must run strictly between its hooks: {order:?}"
     );
 
-    // 1a. Multi-S3 object roundtrips (`PUT /uploads/x` 200, auth `GET` 200, anon `GET` 403;
-    // `PUT /assets/x` 200, anon `GET` 200), image-level `env`, and clean SeaweedFS boot logs.
+    // 1a. Multi-S3 object roundtrips on a private bucket (`PUT`/auth `GET` 200, anon `GET`/`PUT`/
+    // `DELETE` and tampered SigV4 403) and a public-read bucket (`PUT` 200, anon `GET` 200).
     let probe = good.join("s3.codes");
     let probed = wait_until(
         || {
             fs::read_to_string(&probe)
-                .is_ok_and(|codes| codes == "200 200:priv 403 200 200:cdn hello")
+                .is_ok_and(|codes| codes == "200 200:priv 403 403 403 403 200 200:cdn hello")
         },
         Duration::from_secs(30),
     );
     assert!(
         probed,
-        "the S3 probe never wrote `200 200:priv 403 200 200:cdn hello`: {:?}",
+        "the S3 probe never wrote `200 200:priv 403 403 403 403 200 200:cdn hello`: {:?}",
         fs::read_to_string(&probe)
     );
-    let s3_logs = stdout(&journey.slipfork(&good, &["logs", "uploads"]));
-    for forbidden in [
-        "topo failed to pick",
-        "Not enough data nodes",
-        "create 7 volume, created 0",
-    ] {
-        assert!(
-            !s3_logs.contains(forbidden),
-            "SeaweedFS boot log must not contain `{forbidden}`:\n{s3_logs}"
-        );
-    }
 
     // 1b. Captured logs and ad-hoc exec against the real pod. Capture is asynchronous, so poll
     // the follow-less read until the pod's own startup line has landed.
@@ -714,10 +705,26 @@ fn world_up_restart_down_journey() {
         bare_logs.contains("api") && !bare_logs.contains("uploads"),
         "bare `logs` must stream services only and exclude S3 resources:\n{bare_logs}"
     );
-    let all_logs = stdout(&journey.slipfork(&good, &["logs", "-a"]));
+    let all_logs = journey.slipfork(&good, &["logs", "-a"]);
+    assert!(all_logs.status.success(), "{}", stderr(&all_logs));
+    let all_logs = stdout(&all_logs);
     assert!(
-        all_logs.contains("api") && all_logs.contains("uploads"),
-        "`logs -a` must include both services and resources:\n{all_logs}"
+        all_logs.contains("api"),
+        "`logs -a` streams pod-backed resources:\n{all_logs}"
+    );
+    assert!(
+        !all_logs.contains("uploads"),
+        "native S3 has no pod logs, so `logs -a` never targets a bucket:\n{all_logs}"
+    );
+    let bucket_logs = journey.slipfork(&good, &["logs", "uploads"]);
+    assert!(
+        !bucket_logs.status.success(),
+        "a bucket has no pod log stream"
+    );
+    let bucket_text = format!("{}{}", stdout(&bucket_logs), stderr(&bucket_logs));
+    assert!(
+        bucket_text.contains("native S3 has no pod logs") && bucket_text.contains("next:"),
+        "bucket logs must fail with the one-line remedy:\n{bucket_text}"
     );
 
     let logs_json = journey.slipfork(&good, &["logs", "--json", "api"]);
@@ -962,7 +969,7 @@ const S3_PROBE: &str = r#"import datetime, hashlib, hmac, os, pathlib, time, url
 def sign(key, msg):
     return hmac.new(key, msg.encode(), hashlib.sha256).digest()
 
-def s3(method, path, body=b"", auth=True):
+def s3(method, path, body=b"", auth=True, tamper=False):
     req = urllib.request.Request(
         "http://127.0.0.1:8333" + path,
         data=body if method == "PUT" else None,
@@ -982,6 +989,8 @@ def s3(method, path, body=b"", auth=True):
         secret = ("AWS4" + os.environ["S3_SECRET"]).encode()
         key = sign(sign(sign(sign(secret, date), "us-east-1"), "s3"), "aws4_request")
         sig = hmac.new(key, sts.encode(), hashlib.sha256).hexdigest()
+        if tamper:
+            sig = sig[:-1] + ("0" if sig[-1] != "0" else "1")
         access = os.environ["S3_ACCESS"]
         req.add_header("Host", host)
         req.add_header("x-amz-date", amz)
@@ -999,10 +1008,13 @@ def s3(method, path, body=b"", auth=True):
 put_priv, _ = s3("PUT", "/uploads/x", b"priv", auth=True)
 get_priv, body_priv = s3("GET", "/uploads/x", auth=True)
 anon_priv, _ = s3("GET", "/uploads/x", auth=False)
+anon_put, _ = s3("PUT", "/uploads/y", b"nope", auth=False)
+anon_del, _ = s3("DELETE", "/uploads/x", auth=False)
+tampered, _ = s3("GET", "/uploads/x", auth=True, tamper=True)
 put_cdn, _ = s3("PUT", "/assets/x", b"cdn", auth=True)
 anon_cdn, body_cdn = s3("GET", "/assets/x", auth=False)
 pathlib.Path("s3.codes").write_text(
-    f"{put_priv} {get_priv}:{body_priv} {anon_priv} {put_cdn} {anon_cdn}:{body_cdn} {os.getenv('GREETING')}"
+    f"{put_priv} {get_priv}:{body_priv} {anon_priv} {anon_put} {anon_del} {tampered} {put_cdn} {anon_cdn}:{body_cdn} {os.getenv('GREETING')}"
 )
 time.sleep(600)
 "#;

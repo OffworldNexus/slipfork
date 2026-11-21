@@ -184,7 +184,7 @@ fn daemon_control_plane_and_status_tree_lifecycle() {
         project.join("Forkfile"),
         "# forkfile: 0.1\n\
          postgres pg {\n  version 18\n}\n\
-         s3 uploads {\n  cdn static_cdn\n}\n\
+         s3 uploads {\n  policy public-read\n  cdn assets-cdn\n}\n\
          image app backend {\n\
          \x20 service api {\n    port 8000\n    route /api\n  }\n}\n",
     )
@@ -290,7 +290,7 @@ fn daemon_control_plane_and_status_tree_lifecycle() {
     assert_eq!(by_id("pg")["kind"], "postgres");
     assert_eq!(by_id("pg")["version"], "18");
     assert_eq!(by_id("uploads")["kind"], "s3");
-    assert_eq!(by_id("uploads")["cdn"], "static_cdn");
+    assert_eq!(by_id("uploads")["cdn"], "assets-cdn");
 
     let stored: serde_json::Value =
         serde_json::from_slice(&fs::read(&worlds_file).expect("read the registry"))
@@ -481,23 +481,42 @@ fn daemon_control_plane_and_status_tree_lifecycle() {
         "bare `logs` must exclude backing resources: {default_text:?}"
     );
 
-    for resource in ["pg", "uploads"] {
-        let res_logs = Command::new(env!("CARGO_BIN_EXE_slipfork"))
-            .args(["logs", resource])
-            .current_dir(&project)
-            .env("XDG_RUNTIME_DIR", &runtime)
-            .env("XDG_STATE_HOME", &state)
-            .env("NO_COLOR", "1")
-            .output()
-            .expect("explicit resource logs must run");
-        assert!(res_logs.status.success(), "{res_logs:?}");
-        let res_text = String::from_utf8_lossy(&res_logs.stdout);
-        assert!(!res_text.contains('\u{1b}'), "{res_text:?}");
-        assert!(
-            res_text.contains(&format!("{resource} │ hello from the pod")),
-            "explicit `logs {resource}` must stream that resource: {res_text:?}"
-        );
-    }
+    let pg_logs = Command::new(env!("CARGO_BIN_EXE_slipfork"))
+        .args(["logs", "pg"])
+        .current_dir(&project)
+        .env("XDG_RUNTIME_DIR", &runtime)
+        .env("XDG_STATE_HOME", &state)
+        .env("NO_COLOR", "1")
+        .output()
+        .expect("explicit resource logs must run");
+    assert!(pg_logs.status.success(), "{pg_logs:?}");
+    let pg_text = String::from_utf8_lossy(&pg_logs.stdout);
+    assert!(!pg_text.contains('\u{1b}'), "{pg_text:?}");
+    assert!(
+        pg_text.contains("pg │ hello from the pod"),
+        "explicit `logs pg` must stream that resource: {pg_text:?}"
+    );
+
+    // A native S3 bucket has no pod, so `logs uploads` must fail with the one-line remedy.
+    let bucket_logs = Command::new(env!("CARGO_BIN_EXE_slipfork"))
+        .args(["logs", "uploads"])
+        .current_dir(&project)
+        .env("XDG_RUNTIME_DIR", &runtime)
+        .env("XDG_STATE_HOME", &state)
+        .env("NO_COLOR", "1")
+        .output()
+        .expect("explicit bucket logs must run");
+    assert_eq!(bucket_logs.status.code(), Some(1), "{bucket_logs:?}");
+    let bucket_err = String::from_utf8_lossy(&bucket_logs.stderr);
+    assert!(!bucket_err.contains('\u{1b}'), "{bucket_err:?}");
+    assert!(
+        bucket_err.contains("error: native S3 has no pod logs; use `slipfork status`"),
+        "{bucket_err:?}"
+    );
+    assert!(
+        bucket_err.contains("next: run `slipfork status` to inspect the world"),
+        "{bucket_err:?}"
+    );
 
     let all_logs = Command::new(env!("CARGO_BIN_EXE_slipfork"))
         .args(["logs", "-a"])
@@ -511,16 +530,16 @@ fn daemon_control_plane_and_status_tree_lifecycle() {
     let all_text = String::from_utf8_lossy(&all_logs.stdout);
     assert!(!all_text.contains('\u{1b}'), "{all_text:?}");
     assert!(
-        all_text.contains("api     │ hello from the pod"),
+        all_text.contains("api │ hello from the pod"),
         "{all_text:?}"
     );
     assert!(
-        all_text.contains("pg      │ hello from the pod"),
+        all_text.contains("pg  │ hello from the pod"),
         "{all_text:?}"
     );
     assert!(
-        all_text.contains("uploads │ hello from the pod"),
-        "{all_text:?}"
+        !all_text.contains("uploads"),
+        "native S3 has no pod logs, so `logs -a` never targets a bucket: {all_text:?}"
     );
 
     let ambiguous = Command::new(env!("CARGO_BIN_EXE_slipfork"))

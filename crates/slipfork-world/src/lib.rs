@@ -60,10 +60,9 @@ pub mod uapi {
         SUBVOL_GETFLAGS, SUBVOL_SETFLAGS, VolArgs, VolArgsV2, request,
     };
 }
-pub use control::Stream;
 pub use control::{
-    ControlError, FrameLines, InitFrame, OutputKind, PROTOCOL_VERSION, Request, decode_init_frame,
-    decode_request, encode,
+    ControlError, FrameLines, InitFrame, OutputKind, PROTOCOL_VERSION, Request, S3BucketSpec,
+    S3WorldConfig, Stream, configure_s3, decode_init_frame, decode_request, encode,
 };
 pub use engine::BtrfsEngine;
 pub use error::{Error, NameKind, Result};
@@ -74,9 +73,6 @@ pub use pod::{Bind, BindSource, PodBundle, PodEnv, PodFile, PodHost, PodSpec, wr
 pub use pod_log::{CHUNK, DIVIDER_CLOSE, DIVIDER_OPEN, LogKind, LogLine, LogReader, LogSink};
 pub use port::{Dirtiness, ForkPaths, WorldEngine};
 pub use reap::kill_group;
-pub use resources::{
-    ImageFacts, ResourceKind, S3Bucket, S3Credentials, S3Policy, SeaweedfsPlan, SeaweedfsPorts,
-    postgres, redis, seaweedfs,
-};
+pub use resources::{ImageFacts, ResourceKind, S3Bucket, S3Credentials, S3Server, postgres, redis};
 pub use runtime_dir::RuntimePods;
 pub use supervisor::{PodStatus, WorldHost, WorldSupervisor, pod_statuses};

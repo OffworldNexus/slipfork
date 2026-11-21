@@ -1,10 +1,10 @@
 //! Protected live E2E journey for world namespaces, `crun` pods, resources, and reap.
 //!
-//! Everything runs on real Btrfs subvolumes, a real tmpfs runtime directory, real `unshare`,
-//! real `crun` pods, and a real SeaweedFS S3 policy. On a host without Btrfs, `crun`, unprivileged
-//! user namespaces, or a tmpfs `$XDG_RUNTIME_DIR` this suite FAILS CLOSED with one remedy line
-//! instead of skipping. When `SLIPFORK_TEST_{TOOLBOX,PG,REDIS,S3}_ROOTFS` are unset it pulls and
-//! seals `python:3.13-slim`, `postgres:18`, `redis:7`, and SeaweedFS into the test store itself.
+//! Everything runs on real Btrfs subvolumes, a real tmpfs runtime directory, real `unshare`, and
+//! real `crun` pods. On a host without Btrfs, `crun`, unprivileged user namespaces, or a tmpfs
+//! `$XDG_RUNTIME_DIR` this suite FAILS CLOSED with one remedy line instead of skipping. When
+//! `SLIPFORK_TEST_{TOOLBOX,PG,REDIS}_ROOTFS` are unset it pulls and seals `python:3.13-slim`,
+//! `postgres:18`, and `redis:7` into the test store itself.
 
 use std::fs;
 use std::io::{Read, Write};
@@ -18,13 +18,11 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use slipfork_image::{Architecture, Credentials, ImageLayout, ImageReference, OciPuller};
 use slipfork_world::{
     Bind, BindSource, BtrfsEngine, Dirtiness, ImageFacts, OutputKind, PodEnv, PodHost, PodSpec,
-    ResourceKind, S3Bucket, S3Credentials, S3Policy, SeaweedfsPlan, StoreLayout, Stream,
-    WorldEngine, WorldHost, WorldName, WorldSupervisor, is_btrfs_path, is_subvolume_path, postgres,
-    redis, seaweedfs, write_bundle,
+    ResourceKind, StoreLayout, Stream, WorldEngine, WorldHost, WorldName, WorldSupervisor,
+    is_btrfs_path, is_subvolume_path, postgres, redis, write_bundle,
 };
 
 const SECRET: &str = "slipfork-probe-secret-9d3f1c";
-// SeaweedFS's volume gRPC default is 18080 inside the same world netns; never collide.
 const SVC_PORT: u16 = 18_099;
 /// Placeholder both probe scripts replace with [`SVC_PORT`], so the port lives once.
 const SVC_PORT_PLACEHOLDER: &str = "__SVC_PORT__";
@@ -73,35 +71,6 @@ def connect(port, timeout=1.0):
     finally:
         sock.close()
 
-def sign(key, msg):
-    return hmac.new(key, msg.encode(), hashlib.sha256).digest()
-
-def s3_call(method, path, body=b'', auth=True):
-    url = 'http://127.0.0.1:8333' + path
-    req = urllib.request.Request(url, data=body if method == 'PUT' else None, method=method)
-    if auth:
-        now = datetime.datetime.now(datetime.timezone.utc)
-        amz = now.strftime('%Y%m%dT%H%M%SZ')
-        date = now.strftime('%Y%m%d')
-        payload_hash = hashlib.sha256(body if method == 'PUT' else b'').hexdigest()
-        host = '127.0.0.1:8333'
-        canon_headers = f'host:{host}\nx-amz-content-sha256:{payload_hash}\nx-amz-date:{amz}\n'
-        signed_headers = 'host;x-amz-content-sha256;x-amz-date'
-        canon_req = f'{method}\n{path}\n\n{canon_headers}\n{signed_headers}\n{payload_hash}'
-        scope = f'{date}/us-east-1/s3/aws4_request'
-        sts = f'AWS4-HMAC-SHA256\n{amz}\n{scope}\n' + hashlib.sha256(canon_req.encode()).hexdigest()
-        k_signing = sign(sign(sign(sign(b'AWS4slipfork-probe-value', date), 'us-east-1'), 's3'), 'aws4_request')
-        sig = hmac.new(k_signing, sts.encode(), hashlib.sha256).hexdigest()
-        req.add_header('Host', host)
-        req.add_header('x-amz-date', amz)
-        req.add_header('x-amz-content-sha256', payload_hash)
-        req.add_header('Authorization', f'AWS4-HMAC-SHA256 Credential=slipfork-probe-key/{scope}, SignedHeaders={signed_headers}, Signature={sig}')
-    try:
-        with urllib.request.urlopen(req, timeout=10) as response:
-            return response.status, response.read().decode()
-    except urllib.error.HTTPError as error:
-        return error.code, ''
-
 libc = ctypes.CDLL(None, use_errno=True)
 libc.shmat.restype = ctypes.c_void_p
 shmid = libc.shmget(90000, 4096, 0o1666)
@@ -117,22 +86,10 @@ else:
 out['svc'] = connect(__SVC_PORT__, 5.0)
 if role == 'a':
     deadline = time.time() + 90
-    while time.time() < deadline and not (connect(5432) and connect(6379) and connect(8333)):
+    while time.time() < deadline and not (connect(5432) and connect(6379)):
         time.sleep(0.5)
     out['pg'] = connect(5432)
     out['redis'] = connect(6379)
-    out['s3'] = connect(8333)
-    if out['s3']:
-        deadline = time.time() + 20
-        while time.time() < deadline:
-            if s3_call('GET', '/uploads/', auth=False)[0] == 403 and s3_call('GET', '/assets/', auth=False)[0] == 200:
-                break
-            time.sleep(0.2)
-        out['put_uploads'] = s3_call('PUT', '/uploads/x', b'secret-obj', auth=True)[0]
-        out['auth_get_uploads'] = list(s3_call('GET', '/uploads/x', auth=True))
-        out['anon_get_uploads'] = s3_call('GET', '/uploads/x', auth=False)[0]
-        out['put_assets'] = s3_call('PUT', '/assets/x', b'public-obj', auth=True)[0]
-        out['anon_get_assets'] = list(s3_call('GET', '/assets/x', auth=False))
 
 expected_path = pathlib.Path('/project/probe/expected_secret')
 expected = expected_path.read_text().strip() if expected_path.is_file() else None
@@ -249,11 +206,9 @@ struct Images {
     toolbox: PathBuf,
     pg: PathBuf,
     redis: PathBuf,
-    s3: PathBuf,
     toolbox_facts: ImageFacts,
     pg_facts: ImageFacts,
     redis_facts: ImageFacts,
-    s3_facts: ImageFacts,
     /// Writable per-pod CoW clones made for this run; destroyed before the leak proof.
     clones: Vec<PathBuf>,
 }
@@ -296,29 +251,26 @@ fn require_images(engine: &BtrfsEngine, run: &Path) -> Images {
             .map(PathBuf::from)
             .filter(|path| path.is_dir())
     };
-    if let (Some(toolbox), Some(pg), Some(redis), Some(s3)) = (
+    if let (Some(toolbox), Some(pg), Some(redis)) = (
         from_env("SLIPFORK_TEST_TOOLBOX_ROOTFS"),
         from_env("SLIPFORK_TEST_PG_ROOTFS"),
         from_env("SLIPFORK_TEST_REDIS_ROOTFS"),
-        from_env("SLIPFORK_TEST_S3_ROOTFS"),
     ) {
         require_python(&toolbox);
         return Images {
             toolbox,
             pg,
             redis,
-            s3,
             // Exported rootfs carry no config document; the pod still gets the default PATH.
             toolbox_facts: ImageFacts::default(),
             pg_facts: ImageFacts::default(),
             redis_facts: ImageFacts::default(),
-            s3_facts: ImageFacts::default(),
             clones: Vec::new(),
         };
     }
 
-    // No exported rootfs: pull and seal the four upstream images into a Btrfs cache beside the
-    // run, then clone each sealed rootfs writable (the `PodSpec::rootfs` contract).
+    // No exported rootfs: pull and seal the upstream images into a Btrfs cache beside the run,
+    // then clone each sealed rootfs writable (the `PodSpec::rootfs` contract).
     let cache = scratch_root().join("images");
     let store = StoreLayout::new(&cache);
     let puller = OciPuller::new(
@@ -335,7 +287,7 @@ fn require_images(engine: &BtrfsEngine, run: &Path) -> Images {
         });
         puller.pull(&reference).unwrap_or_else(|error| {
             fail_closed(&format!(
-                "could not pull `{raw}`: {error}\nnext: this suite needs docker.io egress; connect the host and re-run, or export SLIPFORK_TEST_{{TOOLBOX,PG,REDIS,S3}}_ROOTFS"
+                "could not pull `{raw}`: {error}\nnext: this suite needs docker.io egress; connect the host and re-run, or export SLIPFORK_TEST_{{TOOLBOX,PG,REDIS}}_ROOTFS"
             ))
         })
     };
@@ -343,15 +295,13 @@ fn require_images(engine: &BtrfsEngine, run: &Path) -> Images {
         pull("python:3.13-slim"),
         pull(ResourceKind::Postgres.image()),
         pull(ResourceKind::Redis.image()),
-        pull(ResourceKind::Seaweedfs.image()),
     ];
     let facts = |image: &slipfork_image::PulledImage| image.facts.clone();
-    let [toolbox_sealed, pg_sealed, redis_sealed, s3_sealed] = sealed;
-    let [toolbox_facts, pg_facts, redis_facts, s3_facts] = [
+    let [toolbox_sealed, pg_sealed, redis_sealed] = sealed;
+    let [toolbox_facts, pg_facts, redis_facts] = [
         facts(&toolbox_sealed),
         facts(&pg_sealed),
         facts(&redis_sealed),
-        facts(&s3_sealed),
     ];
     let clone_root = run.join("images");
     fs::create_dir_all(&clone_root).expect("create image clone root");
@@ -360,7 +310,6 @@ fn require_images(engine: &BtrfsEngine, run: &Path) -> Images {
         toolbox_facts,
         pg_facts,
         redis_facts,
-        s3_facts,
         toolbox: clone_image(
             engine,
             &toolbox_sealed.rootfs,
@@ -377,12 +326,6 @@ fn require_images(engine: &BtrfsEngine, run: &Path) -> Images {
             engine,
             &redis_sealed.rootfs,
             &clone_root.join("redis"),
-            &mut clones,
-        ),
-        s3: clone_image(
-            engine,
-            &s3_sealed.rootfs,
-            &clone_root.join("s3"),
             &mut clones,
         ),
         clones,
@@ -404,7 +347,7 @@ struct ProbeWorld {
 fn prepare_world(engine: &BtrfsEngine, run: &Path, name: &str) -> ProbeWorld {
     let world = WorldName::parse(name).expect("valid world name");
     let data = engine.create_world(&world).expect("create world subvolume");
-    for child in ["pg", "redis", "s3"] {
+    for child in ["pg", "redis"] {
         engine
             .create_subvolume(&data.join(child))
             .expect("create resource data subvolume");
@@ -497,7 +440,7 @@ fn collect_logs(supervisor: &WorldSupervisor, service: &str) -> (Vec<String>, Ve
 /// Pids whose cmdline mentions `needle` **and** belong to this journey.
 ///
 /// A fresh run root is unique, and every world process lives in one of the journey's pid
-/// namespaces, so a stray `slipfork-world-init`/`postgres`/`weed` from an older lab run (with a
+/// namespaces, so a stray `slipfork-world-init`/`postgres` from an older lab run (with a
 /// different run root and namespace) can never fail this journey, while a real leak always does.
 fn processes_mentioning(needle: &[u8], run: &Path, worlds: &[PathBuf]) -> Vec<u32> {
     let scope = run.as_os_str().as_bytes();
@@ -855,23 +798,6 @@ fn world_pod_lifecycle() {
             &images.redis_facts,
         ))
         .expect("launch redis");
-    let plan = SeaweedfsPlan::render(
-        &S3Credentials::new("slipfork-probe-key", "slipfork-probe-value"),
-        &[
-            S3Bucket::new("uploads", S3Policy::Private).expect("valid bucket"),
-            S3Bucket::new("assets", S3Policy::PublicRead).expect("valid bucket"),
-        ],
-    )
-    .expect("render seaweedfs plan");
-    supervisor_a
-        .launch(&seaweedfs(
-            "m339s3",
-            &images.s3,
-            &world_a.data.join("s3"),
-            &plan,
-            &images.s3_facts,
-        ))
-        .expect("launch seaweedfs");
 
     // 3. Identity + loopback + cross-world isolation + System V IPC isolation.
     supervisor_a
@@ -927,40 +853,8 @@ fn world_pod_lifecycle() {
     // 4. Real resources answer on the shared world loopback.
     assert_eq!(a["pg"].as_bool(), Some(true), "postgres must accept :5432");
     assert_eq!(a["redis"].as_bool(), Some(true), "redis must accept :6379");
-    assert_eq!(a["s3"].as_bool(), Some(true), "seaweedfs must accept :8333");
 
-    // 5. Real multi-bucket S3 roundtrips: `uploads` private (403 anon, 200 auth), `assets` cdn (200 anon),
-    // and zero topology/volume-growth failures in the SeaweedFS boot log.
-    assert_eq!(a["put_uploads"], 200, "PUT /uploads/x must return 200: {a}");
-    assert_eq!(
-        a["auth_get_uploads"],
-        serde_json::json!([200, "secret-obj"]),
-        "authenticated GET /uploads/x must return 200 and payload: {a}"
-    );
-    assert_eq!(
-        a["anon_get_uploads"], 403,
-        "anonymous GET /uploads/x must return 403: {a}"
-    );
-    assert_eq!(a["put_assets"], 200, "PUT /assets/x must return 200: {a}");
-    assert_eq!(
-        a["anon_get_assets"],
-        serde_json::json!([200, "public-obj"]),
-        "anonymous GET /assets/x must return 200 and payload: {a}"
-    );
-    let (s3_lines, _) = collect_logs(&supervisor_a, "m339s3");
-    let s3_log = s3_lines.join("\n");
-    for forbidden in [
-        "topo failed to pick",
-        "Not enough data nodes",
-        "create 7 volume, created 0",
-    ] {
-        assert!(
-            !s3_log.contains(forbidden),
-            "SeaweedFS boot log must not contain `{forbidden}`:\n{s3_log}"
-        );
-    }
-
-    // 6. The OCI env carried the secret while both clients stayed alive; argv never carries it.
+    // 5. The OCI env carried the secret while both clients stayed alive; argv never carries it.
     assert_eq!(
         a["secret_env"].as_bool(),
         Some(true),
@@ -989,7 +883,7 @@ fn world_pod_lifecycle() {
     // 7. The init inside the world reports every tracked pod (host-side `crun list` cannot:
     // containers live in the world's user namespace and answer `kill: Operation not permitted`).
     let pods = supervisor_a.pods().expect("list the world's pods");
-    for id in ["m339svc", "m339pg", "m339cache", "m339s3"] {
+    for id in ["m339svc", "m339pg", "m339cache"] {
         let pod = pods
             .iter()
             .find(|pod| pod.id == id)
@@ -1014,7 +908,6 @@ fn world_pod_lifecycle() {
         b"slipfork-world-init".as_slice(),
         b"postgres".as_slice(),
         b"redis-server".as_slice(),
-        b"weed".as_slice(),
     ] {
         let survivors = processes_mentioning(needle, &run, &world_pid_namespaces);
         assert!(
@@ -1025,7 +918,7 @@ fn world_pod_lifecycle() {
     }
 
     for world in [&world_a, &world_b] {
-        for child in ["pg", "redis", "s3"] {
+        for child in ["pg", "redis"] {
             engine
                 .destroy(
                     &world.data.join(child),

@@ -107,23 +107,14 @@ impl WorldView {
             .ok()
             .and_then(|source| slipfork_forkfile::parse(&source).ok());
         let mut services = document.as_ref().map(view::services).unwrap_or_default();
-        let s3_ids: Vec<String> = services
-            .iter()
-            .filter(|svc| svc.kind == PsKind::S3)
-            .map(|svc| svc.id.clone())
-            .collect();
-        let s3_pod = pods
-            .iter()
-            .find(|pod| s3_ids.iter().any(|id| id == &pod.id));
         for service in &mut services {
             if let Some(pod) = pods.iter().find(|pod| pod.id == service.id) {
                 service.pid = Some(pod.pid);
                 service.running = alive && pod.running;
-            } else if service.kind == PsKind::S3
-                && let Some(pod) = s3_pod
-            {
-                service.pid = Some(pod.pid);
-                service.running = alive && pod.running;
+            } else if service.kind == PsKind::S3 {
+                // Native S3 runs in-process inside the world init: no pod exists to look up, and
+                // the bucket is healthy exactly while its world is up.
+                service.running = alive;
             }
         }
         Self {

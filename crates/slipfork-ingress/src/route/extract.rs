@@ -2,7 +2,7 @@
 //!
 //! Declared authorities and service routes are read from the evaluated AST once through the
 //! `slipfork-forkfile` visitors; S3 buckets and `cdn <id>` authorities rewrite cleanly to the
-//! world's SeaweedFS S3 endpoint (`:8333/<bucket>`).
+//! world's native S3 endpoint (`:8333/<bucket>`).
 
 use std::collections::BTreeSet;
 
@@ -16,8 +16,8 @@ impl IngressTable {
     /// Builds a world's table directly from an evaluated `Forkfile` document.
     ///
     /// Unfiltered service routes serve `<world>.localhost` and every declared app `domain <id>`;
-    /// S3 bucket and `cdn <id>` authorities route to SeaweedFS (`:8333/<bucket>`) unless a service
-    /// explicitly claimed that `domain` filter.
+    /// S3 bucket and `cdn <id>` authorities route to the native S3 endpoint (`:8333/<bucket>`)
+    /// unless a service explicitly claimed that `domain` filter.
     ///
     /// # Errors
     ///
@@ -49,7 +49,7 @@ impl IngressTable {
                 declared.insert(authority.to_owned());
                 if claimed.insert(authority.to_owned()) {
                     routes.push(IngressRoute::new(
-                        ResourceKind::Seaweedfs.port(),
+                        ResourceKind::S3.port(),
                         Route {
                             path: None,
                             kind: RouteKind::Rewrite(format!("/{bucket}")),

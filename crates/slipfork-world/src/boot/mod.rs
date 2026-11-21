@@ -176,23 +176,6 @@ impl WorldPlan {
         self.steps.is_empty()
     }
 
-    /// Every `port` and `internal_ports` entry claimed by application services in this world.
-    #[must_use]
-    pub fn reserved_ports(&self) -> Vec<u16> {
-        let mut ports: Vec<u16> = self
-            .services
-            .iter()
-            .flat_map(|svc| {
-                svc.port
-                    .into_iter()
-                    .chain(svc.internal_ports.iter().copied())
-            })
-            .collect();
-        ports.sort_unstable();
-        ports.dedup();
-        ports
-    }
-
     /// Groups steps into parallel waves; a dependency cycle is refused here.
     pub fn waves(&self) -> Result<Vec<Vec<usize>>> {
         let mut remaining = vec![0_usize; self.steps.len()];

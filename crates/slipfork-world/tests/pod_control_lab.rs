@@ -13,6 +13,7 @@ use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use slipfork_forkfile::BucketPolicy;
 use slipfork_world::uapi::{
     FS_INFO, FsInfoArgs, IOC_READ, IOC_WRITE, SNAP_CREATE_V2, SNAP_DESTROY_V2, SUBVOL_CREATE,
     SUBVOL_GETFLAGS, SUBVOL_SETFLAGS, VolArgs, VolArgsV2, request,
@@ -20,9 +21,9 @@ use slipfork_world::uapi::{
 use slipfork_world::{
     Bind, BindSource, BootKind, BootStep, Error, ForkName, FrameLines, ImageFacts, LogKind,
     LogLine, LogReader, LogSink, NamespaceIdentity, NamespaceTable, PROTOCOL_VERSION, PodEnv,
-    PodFile, PodHost, PodSpec, Request, RuntimePods, S3Bucket, S3Credentials, S3Policy,
-    SeaweedfsPlan, StoreLayout, WorldName, WorldPlan, control, decode_request, pod_log::LogMerge,
-    postgres, recv_fd, redis, seaweedfs, send_fd, write_bundle,
+    PodFile, PodHost, PodSpec, Request, RuntimePods, S3Bucket, S3Credentials, StoreLayout,
+    WorldName, WorldPlan, control, decode_request, pod_log::LogMerge, postgres, recv_fd, redis,
+    send_fd, write_bundle,
 };
 
 fn lab(prefix: &str) -> PathBuf {
@@ -61,14 +62,14 @@ fn spec(root: &Path) -> PodSpec {
                 read_only: false,
             },
             Bind {
-                source: BindSource::Bundle("s3.json".to_owned()),
-                destination: "/etc/seaweedfs/s3.json".to_owned(),
+                source: BindSource::Bundle("app.json".to_owned()),
+                destination: "/etc/example/app.json".to_owned(),
                 read_only: true,
             },
         ],
         files: vec![PodFile {
-            name: "s3.json".to_owned(),
-            contents: "{\"identities\":[]}".to_owned(),
+            name: "app.json".to_owned(),
+            contents: "{\"name\":\"api\"}".to_owned(),
         }],
     }
 }
@@ -80,7 +81,7 @@ fn a_pod_bundle_keeps_the_world_network_and_never_leaks_secrets() {
     let root = lab.join("rootfs");
     let bundle_dir = lab.join("bundle");
     fs::create_dir_all(root.join("project")).expect("seed rootfs");
-    fs::create_dir_all(root.join("etc/seaweedfs")).expect("seed config dir");
+    fs::create_dir_all(root.join("etc/example")).expect("seed config dir");
     let pod = spec(&root);
     pod.validate().expect("the sample spec is valid");
 
@@ -120,7 +121,7 @@ fn a_pod_bundle_keeps_the_world_network_and_never_leaks_secrets() {
     let passwd = fs::read_to_string(bundle_dir.join("passwd")).expect("read passwd");
     assert!(passwd.contains("slipfork:x:1000:1001:"));
     assert!(
-        bundle_dir.join("s3.json").is_file(),
+        bundle_dir.join("app.json").is_file(),
         "declared files ride the bundle"
     );
 
@@ -150,45 +151,38 @@ fn a_pod_bundle_keeps_the_world_network_and_never_leaks_secrets() {
     let _ = fs::remove_dir_all(&lab);
 }
 
-/// Backing resources: private S3 buckets get no anonymous grant, CDN buckets get one.
+/// Backing resources: bucket identities validate, policies gate anonymous reads, and the native
+/// S3 endpoint is container-free while postgres/redis still render real pods.
 #[test]
-fn backing_resource_plans_validate_and_scope_anonymous_s3_access() {
+fn backing_resource_specs_validate_and_native_s3_has_no_pod() {
     let buckets = [
-        S3Bucket::new("uploads", S3Policy::Private).expect("valid bucket"),
-        S3Bucket::new("assets", S3Policy::PublicRead).expect("valid bucket"),
+        S3Bucket::new("uploads", BucketPolicy::Private).expect("valid bucket"),
+        S3Bucket::new("assets", BucketPolicy::PublicRead).expect("valid bucket"),
     ];
+    assert_eq!(buckets[0].policy(), BucketPolicy::Private);
+    assert!(!buckets[0].public_read());
+    assert!(!buckets[0].permits_anonymous("GET"));
+    assert!(buckets[1].public_read());
+    assert!(buckets[1].permits_anonymous("GET"));
+    assert!(buckets[1].permits_anonymous("HEAD"));
+    assert!(!buckets[1].permits_anonymous("PUT"));
     let credentials = S3Credentials::new("AKIA", "topsecret");
     assert!(!format!("{credentials:?}").contains("AKIA"));
     assert!(!format!("{credentials:?}").contains("topsecret"));
+    let local = S3Credentials::local("demo");
+    assert_eq!(local.access_key(), "slipfork");
+    assert_eq!(local.secret_key(), "slipfork-demo-s3");
     for bad in ["", "ab", "UPPER", "-lead", "trail-", "with space"] {
-        assert!(S3Bucket::new(bad, S3Policy::Private).is_err(), "`{bad}`");
+        assert!(
+            S3Bucket::new(bad, BucketPolicy::Private).is_err(),
+            "`{bad}`"
+        );
     }
-    let plan = SeaweedfsPlan::render(&credentials, &buckets).expect("render the plan");
-    let config: serde_json::Value = serde_json::from_str(&plan.s3_config).expect("parse s3.json");
-    let anonymous: Vec<&serde_json::Value> = config["identities"]
-        .as_array()
-        .expect("identities")
-        .iter()
-        .filter(|identity| identity["name"] == "anonymous")
-        .collect();
-    assert_eq!(anonymous.len(), 1, "exactly one anonymous identity");
-    assert!(anonymous[0].get("credentials").is_none());
-    assert_eq!(
-        anonymous[0]["actions"]
-            .as_array()
-            .expect("actions")
-            .iter()
-            .filter_map(|action| action.as_str())
-            .collect::<Vec<_>>(),
-        ["Read:assets"],
-        "anonymous access is scoped to the public bucket only"
-    );
-    assert!(!plan.bootstrap.contains("s3.anonymous"));
-    assert!(
-        !plan.bootstrap.contains("s3.configure"),
-        "the packed 3.80 shell has no `s3.configure` verb"
-    );
-    assert!(plan.bootstrap.contains("s3.bucket.create -name uploads"));
+    // Native S3 lives at the fixed loopback port and needs no image or pod.
+    let s3 = slipfork_world::ResourceKind::S3;
+    assert_eq!(s3.image(), None);
+    assert_eq!(s3.port(), 8333);
+    assert_eq!(s3.data_dir(), "s3");
 
     let rootfs = Path::new("/images/pg");
     let data = Path::new("/store/worlds/demo/pg");
@@ -204,45 +198,6 @@ fn backing_resource_plans_validate_and_scope_anonymous_s3_access() {
     let cache = redis("cache", rootfs, data, &facts);
     assert!(cache.argv.iter().any(|arg| arg == "127.0.0.1"));
     assert!(cache.validate().is_ok());
-    let s3 = seaweedfs("uploads", Path::new("/images/s3"), data, &plan, &facts);
-    let script = &s3.argv[2];
-    assert!(script.contains("exec /usr/bin/weed server"), "{script}");
-    assert!(
-        script.contains("-ip=127.0.0.1 -ip.bind=127.0.0.1"),
-        "{script}"
-    );
-    assert!(
-        !script.contains("8080"),
-        "SeaweedFS must never claim :8080 or :18080: {script}"
-    );
-    assert!(
-        script.contains("< /etc/seaweedfs/bootstrap.txt"),
-        "{script}"
-    );
-    assert!(
-        script.contains("until printf 's3.bucket.list"),
-        "readiness must be retried before the bootstrap: {script}"
-    );
-    assert!(
-        !script.contains(" -f "),
-        "`weed shell` 3.80 has no `-f` flag: {script}"
-    );
-    assert!(
-        !script.contains("s3.anonymous"),
-        "no version-dependent policy verb may remain: {script}"
-    );
-    assert_eq!(s3.files.len(), 3);
-    assert!(s3.files.iter().any(|file| file.name == "master.toml"));
-    assert!(plan.master_config.contains("copy_1 = 1"));
-    assert!(s3.validate().is_ok());
-    let shifted = plan.clone().avoiding_ports(&[29_333, 29_380, 29_888]);
-    assert_ne!(shifted.ports().master_http, 29_333);
-    assert_ne!(shifted.ports().volume_http, 29_380);
-    assert_ne!(shifted.ports().filer_http, 29_888);
-    assert_eq!(
-        slipfork_world::ResourceKind::Seaweedfs.image(),
-        "chrislusf/seaweedfs:3.80"
-    );
 }
 
 /// Store layout, tmpfs runtime roots, and namespace identity are derived, never global.

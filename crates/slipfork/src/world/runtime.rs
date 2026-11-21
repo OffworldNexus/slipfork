@@ -3,11 +3,12 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::fs;
 use std::io::Write;
-use std::net::Shutdown;
+use std::net::{Shutdown, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use slipfork_forkfile::SecretValue;
 use slipfork_forkfile::ast::Forkfile;
 use slipfork_image::{
     Architecture, BuildArgs, BuildRequest, Credentials, ImageLayout, ImageReference,
@@ -16,8 +17,9 @@ use slipfork_image::{
 use slipfork_ospp::{FileSecretVault, SecretVault};
 use slipfork_world::{
     BootFailure, BootKind, BootStep, BtrfsEngine, Dirtiness, ImageNode, PodEnv, PodSpec,
-    ServiceNode, StepOutcome, StoreLayout, WorldEngine, WorldHost, WorldName, WorldPlan,
-    WorldSupervisor, classify_service, control,
+    ResourceKind, S3BucketSpec, S3Credentials, S3WorldConfig, ServiceNode, StepOutcome,
+    StoreLayout, WorldEngine, WorldHost, WorldName, WorldPlan, WorldSupervisor, classify_service,
+    control,
 };
 
 use super::HostEnv;
@@ -50,7 +52,6 @@ pub(super) struct WorldRuntime {
     images: Vec<ImageNode>,
     services: Vec<ServiceNode>,
     resources: Vec<slipfork_world::ResourceNode>,
-    reserved_ports: Vec<u16>,
     sealed: BTreeMap<String, BuiltImage>,
     pulled: BTreeMap<String, PulledImage>,
     clones: Vec<PathBuf>,
@@ -151,7 +152,6 @@ impl WorldRuntime {
             images: plan.images.clone(),
             services: plan.services.clone(),
             resources: plan.resources.clone(),
-            reserved_ports: plan.reserved_ports(),
             sealed: BTreeMap::new(),
             pulled: BTreeMap::new(),
             clones: Vec::new(),
@@ -399,7 +399,34 @@ impl WorldRuntime {
             .find(|candidate| candidate.id == id)
             .cloned()
             .ok_or_else(|| format!("unknown resource `{id}`"))?;
-        let reference = node.resource.image();
+        let world_dir = self.layout.world(&self.world);
+        if node.resource == ResourceKind::S3 {
+            // Native S3: no image, no pod. The world init binds the listener inside the world
+            // netns and the daemon never sees the signing secret again.
+            let credentials = S3Credentials::local(self.world.as_str());
+            let buckets = node
+                .buckets
+                .iter()
+                .map(|bucket| S3BucketSpec {
+                    name: bucket.name().to_owned(),
+                    policy: bucket.policy(),
+                    access_key: credentials.access_key().to_owned(),
+                    secret_key: SecretValue::new(credentials.secret_key()),
+                })
+                .collect();
+            let config = S3WorldConfig {
+                listen_addr: SocketAddr::from(([127, 0, 0, 1], node.resource.port())),
+                s3_root: world_dir.join(node.resource.data_dir()),
+                buckets,
+            };
+            control::configure_s3(self.supervisor.pods_dir(), config)
+                .map_err(|error| error.to_string())?;
+            return Ok("started".to_owned());
+        }
+        let reference = node
+            .resource
+            .image()
+            .ok_or_else(|| format!("resource `{id}` has no OCI image"))?;
         let image = if let Some(image) = self.pulled.get(reference) {
             image.clone()
         } else {
@@ -413,25 +440,12 @@ impl WorldRuntime {
             image
         };
         let rootfs = self.clone_rootfs(&image.rootfs, &format!("res-{id}"))?;
-        let world_dir = self.layout.world(&self.world);
-        let (spec, policies) = build_resource_spec(
-            &node,
-            self.world.as_str(),
-            &world_dir,
-            &rootfs,
-            &image.facts,
-            &self.reserved_ports,
-        )?;
+        let spec = build_resource_spec(&node, &world_dir, &rootfs, &image.facts)?;
         let pid = self
             .supervisor
             .launch(&spec)
             .map_err(|error| error.to_string())?;
         self.wait_tcp(pid, node.resource.port(), id, Duration::from_secs(30))?;
-        if let Some(plan) = policies {
-            // Bucket policies live in `s3.json`, applied by the pod's bootstrap helper; callers
-            // only get a bucket once its anonymous policy answers.
-            plan.await_policies(self.supervisor.pods_dir(), Duration::from_secs(15))?;
-        }
         Ok("started".to_owned())
     }
 

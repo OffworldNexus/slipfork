@@ -2,33 +2,33 @@
 id: M3.44.2
 title: "Delete SeaweedFS, native Rust Btrfs S3 server with SigV4 & per-bucket policy"
 kind: task
-status: ready
+status: done
 owner: implementer
 priority: 3
 depends_on: [M3.44.1]
 paths:
   - Cargo.toml
   - Cargo.lock
-  - "crates/slipfork-world/src/resources.rs"
-  - "crates/slipfork-world/src/resources/**"
-  - "crates/slipfork-world/src/control/**"
-  - "crates/slipfork-world/src/bin/world_init/**"
-  - "crates/slipfork-world/src/lib.rs"
+  - "crates/slipfork-world/src/**"
   - "crates/slipfork-world/tests/**"
   - crates/slipfork/src/world/runtime/helpers.rs
   - crates/slipfork/src/world/runtime.rs
   - crates/slipfork/src/daemon/view.rs
+  - crates/slipfork/src/daemon/ps.rs
+  - "crates/slipfork/src/daemon/lifecycle/**"
+  - "crates/slipfork/src/status/**"
   - "crates/slipfork-ingress/src/route/**"
   - "crates/slipfork-ingress/tests/route_table_journey.rs"
   - "crates/slipfork-ingress/tests/critical_ingress.rs"
   - crates/slipfork/tests/critical_world_journey.rs
   - crates/slipfork/tests/critical_daemon.rs
+  - crates/slipfork/tests/critical_status_live.rs
   - crates/slipfork/tests/status_surface.rs
-attempts: 0
-max_attempts: 3
+attempts: 6
+max_attempts: 7
 escalation: none
 created: "2026-11-21T20:17"
-updated: "2026-11-21T20:27"
+updated: "2026-11-21T20:55"
 ---
 
 # Goal

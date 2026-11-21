@@ -88,6 +88,24 @@ pub(crate) fn respond(
             ),
             false,
         ),
+        Request::ConfigureS3 { id, config, .. } => match world.configure_s3(config) {
+            Ok((listen, buckets)) => (
+                InitFrame::Reply {
+                    v: PROTOCOL_VERSION,
+                    id,
+                    ok: Some(serde_json::json!({
+                        "listen": listen.to_string(),
+                        "buckets": buckets,
+                    })),
+                    error: None,
+                },
+                false,
+            ),
+            Err(fault) => {
+                eprintln!("slipfork-world-init: {fault}");
+                (failure_frame(id, "s3-configure-failed", &fault), false)
+            }
+        },
         Request::List { id, .. } => (
             InitFrame::Reply {
                 v: PROTOCOL_VERSION,

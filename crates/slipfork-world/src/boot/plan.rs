@@ -10,7 +10,7 @@ use super::stamp::{StepStamp, stamp_key};
 use super::{
     BootKind, BootStep, FailedHook, HookPhase, ImageNode, ResourceNode, ServiceNode, WorldPlan,
 };
-use crate::resources::{ResourceKind, S3Bucket, S3Policy};
+use crate::resources::{ResourceKind, S3Bucket};
 
 /// Builds the world boot plan from a checked `Forkfile` and its project root.
 pub fn world_plan(doc: &Forkfile, root: &Path) -> crate::Result<WorldPlan> {
@@ -87,11 +87,7 @@ impl PlanBuilder<'_> {
                 line: redis.span.line(),
             }),
             TopItem::S3(s3) => {
-                let policy = if has_cdn(&s3.body.items, self.features) {
-                    S3Policy::PublicRead
-                } else {
-                    S3Policy::Private
-                };
+                let policy = s3.policy_at(self.features.active());
                 let bucket = match S3Bucket::new(&s3.bucket, policy) {
                     Ok(bucket) => bucket,
                     Err(error) => {
@@ -102,13 +98,13 @@ impl PlanBuilder<'_> {
                 if let Some(existing) = self
                     .resources
                     .iter_mut()
-                    .find(|node| node.resource == ResourceKind::Seaweedfs)
+                    .find(|node| node.resource == ResourceKind::S3)
                 {
                     existing.buckets.push(bucket);
                 } else {
                     self.resources.push(ResourceNode {
                         id: s3.bucket.clone(),
-                        resource: ResourceKind::Seaweedfs,
+                        resource: ResourceKind::S3,
                         databases: Vec::new(),
                         buckets: vec![bucket],
                         line: s3.span.line(),
@@ -371,16 +367,6 @@ fn collect_pg_databases(items: &[PostgresItem], features: &FeatureSet, out: &mut
             out.push(db.id.clone());
         }
     });
-}
-
-fn has_cdn(items: &[S3Item], features: &FeatureSet) -> bool {
-    let mut found = false;
-    each_enabled(items, features, &mut |item| {
-        if matches!(item, S3Item::Cdn(_)) {
-            found = true;
-        }
-    });
-    found
 }
 
 fn collect_service_run<'a>(

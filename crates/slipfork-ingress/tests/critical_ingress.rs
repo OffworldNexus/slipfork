@@ -38,7 +38,7 @@ image backend . {
     route / domain mail.*
   }
   service cdn { port 9004
-    route /cdn-assets domain static_cdn
+    route /cdn-assets domain assets-cdn
   }
 }
 "#;
@@ -117,7 +117,7 @@ fn registry_with_port(port: u16) -> IngressRegistry {
     IngressRegistry::new([
         IngressTable::new(
             "demo",
-            vec!["static_cdn".to_owned(), "main".to_owned()],
+            vec!["assets-cdn".to_owned(), "main".to_owned()],
             retarget(routes(BASE), port),
         )
         .expect("demo table is routable"),
@@ -359,11 +359,11 @@ fn every_authority_and_route_mode_maps_to_the_expected_upstream_path() {
         ("main.demo.localhost", "/everything", "/everything"),
         ("mail.demo.localhost", "/inbox", "/inbox"),
         (
-            "static_cdn.demo.localhost",
+            "assets-cdn.demo.localhost",
             "/cdn-assets/logo.svg",
             "/cdn-assets/logo.svg",
         ),
-        ("static_cdn.demo.localhost", "/assets/x", "/assets/x"),
+        ("assets-cdn.demo.localhost", "/assets/x", "/assets/x"),
         ("feat-auth--demo.localhost", "/x", "/x"),
     ];
     for (host, target, expected) in cases {

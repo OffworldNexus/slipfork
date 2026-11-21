@@ -155,8 +155,8 @@ fn demo_reply(now_ms: u64) -> slipfork::ps::PsReply {
                                "domain": { "kind": "prefix", "value": "mail" } }] },
                 { "id": "pg", "kind": "postgres", "running": true, "port": 5432, "version": "18" },
                 { "id": "cache", "kind": "redis", "running": true, "port": 6379, "version": "7" },
-                { "id": "uploads", "kind": "s3", "running": true, "port": 8333 },
-                { "id": "assets", "kind": "s3", "running": true, "port": 8333, "cdn": "static_cdn" }
+                { "id": "uploads", "kind": "s3", "running": true, "port": 8333, "policy": "private" },
+                { "id": "assets", "kind": "s3", "running": true, "port": 8333, "policy": "public-read", "cdn": "assets-cdn" }
             ],
             "forks": [{
                 "project": "/home/me/projects/demo/.forks/feat-auth",
@@ -190,21 +190,23 @@ fn the_tree_contract_holds_for_every_row_shape() {
         text.starts_with("● demo  http://demo.localhost  ~/projects/demo\n"),
         "{text}"
     );
-    assert!(
-        text.contains("├─ api      running      :8000 -> /api"),
-        "{text}"
-    );
-    assert!(text.contains("├─ worker   running      -"), "{text}");
-    assert!(
-        text.contains("├─ mailpit  running      :8025 -> mail.*/"),
-        "{text}"
-    );
-    assert!(text.contains("├─ pg       postgres 18  :5432"), "{text}");
-    assert!(text.contains("├─ cache    redis 7      :6379"), "{text}");
-    assert!(text.contains("├─ uploads  s3 (private) :8333"), "{text}");
-    assert!(
-        text.contains("├─ assets   s3 + cdn     -> static_cdn.*"),
-        "{text}"
+    let row = |id: &str| -> String {
+        text.lines()
+            .find(|line| line.contains(&format!(" {id} ")))
+            .unwrap_or_else(|| panic!("no `{id}` row in:\n{text}"))
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    assert_eq!(row("api"), "├─ api running :8000 -> /api 12m");
+    assert_eq!(row("worker"), "├─ worker running - 12m");
+    assert_eq!(row("mailpit"), "├─ mailpit running :8025 -> mail.*/ 12m");
+    assert_eq!(row("pg"), "├─ pg postgres 18 :5432 12m");
+    assert_eq!(row("cache"), "├─ cache redis 7 :6379 12m");
+    assert_eq!(row("uploads"), "├─ uploads s3 (private) :8333 12m");
+    assert_eq!(
+        row("assets"),
+        "├─ assets s3 (public-read) -> assets-cdn.* 12m"
     );
     assert!(text.contains("  └─ forks"), "{text}");
     assert!(

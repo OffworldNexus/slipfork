@@ -1,6 +1,6 @@
 //! One status row's middle and target columns, and their colour.
 
-use crate::ps::{PsKind, PsRoute, PsService};
+use crate::ps::{PsBucketPolicy, PsKind, PsRoute, PsService};
 
 /// The uncoloured columns of one row.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -49,7 +49,9 @@ fn descriptor(service: &PsService) -> String {
     match service.kind {
         PsKind::Postgres => format!("postgres {}", service.version.as_deref().unwrap_or("18")),
         PsKind::Redis => format!("redis {}", service.version.as_deref().unwrap_or("7")),
-        PsKind::S3 if service.cdn.is_some() => "s3 + cdn".to_owned(),
+        PsKind::S3 if service.policy == Some(PsBucketPolicy::PublicRead) => {
+            "s3 (public-read)".to_owned()
+        }
         PsKind::S3 => "s3 (private)".to_owned(),
         PsKind::Cdn => "cdn".to_owned(),
         PsKind::Image => "image".to_owned(),

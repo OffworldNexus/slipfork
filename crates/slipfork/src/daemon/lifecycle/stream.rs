@@ -18,13 +18,12 @@ use crate::ps::{PsKind, PsReply, PsWorld};
 
 /// Kinds bare `slipfork logs` merges by default (application services only).
 const SERVICES: &[PsKind] = &[PsKind::Service];
-/// Kinds `slipfork logs -a` merges (services plus backing resources).
+/// Kinds `slipfork logs -a` merges (services plus pod-backed resources).
 const ALL_LOGS: &[PsKind] = &[
     PsKind::Service,
     PsKind::Image,
     PsKind::Postgres,
     PsKind::Redis,
-    PsKind::S3,
 ];
 /// Kinds a plain `shell`/`exec` may target.
 const ANY: &[PsKind] = &[
@@ -176,8 +175,8 @@ impl Core {
         Ok((client, stdin))
     }
 
-    /// Maps an explicit `logs <target>` onto its pod id, translating secondary S3 buckets onto the
-    /// world's shared SeaweedFS pod while letting unknown ids fail closed inside `world_init`.
+    /// Maps an explicit `logs <target>` onto its pod id; a native S3 bucket has no pod stream, so
+    /// it fails with the one-line remedy instead of an opaque init error.
     fn resolve_log_target(
         &mut self,
         project: &Path,
@@ -186,18 +185,15 @@ impl Core {
         let pods_dir = self.live_pods_dir(project)?;
         let reply = self.ps()?;
         for world in world_rows(&reply, project) {
-            let primary_s3 = world
-                .services
-                .iter()
-                .find(|svc| svc.kind == PsKind::S3 && svc.running)
-                .map(|svc| svc.id.clone());
             if world
                 .services
                 .iter()
-                .any(|svc| svc.id == target && svc.kind == PsKind::S3 && svc.running)
-                && let Some(primary) = primary_s3
+                .any(|svc| svc.id == target && svc.kind == PsKind::S3)
             {
-                return Ok((pods_dir, primary));
+                return Err(Failure::new(
+                    "no-pod",
+                    "native S3 has no pod logs; use `slipfork status`",
+                ));
             }
         }
         Ok((pods_dir, target.to_owned()))
@@ -213,16 +209,9 @@ impl Core {
         let reply = self.ps()?;
         let mut ids = Vec::new();
         for world in world_rows(&reply, project) {
-            let mut saw_s3 = false;
             for service in &world.services {
                 if !kinds.contains(&service.kind) || !service.running {
                     continue;
-                }
-                if service.kind == PsKind::S3 {
-                    if saw_s3 {
-                        continue;
-                    }
-                    saw_s3 = true;
                 }
                 if !ids.contains(&service.id) {
                     ids.push(service.id.clone());

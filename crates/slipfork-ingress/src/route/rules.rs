@@ -273,9 +273,9 @@ fn describe(world: &str, entry: &Entry) -> String {
 
 /// A world or declared-domain authority label.
 ///
-/// Declared domains such as `static_cdn` are valid `.localhost` authorities even though the
-/// underscore is outside the DNS host-letter set, so authority ids are deliberately a touch wider
-/// than the `domain <prefix>.*` route filters, which stay strict DNS labels.
+/// Declared domains such as `assets-cdn` are valid `.localhost` authorities, so authority ids are
+/// deliberately a touch wider than the `domain <prefix>.*` route filters, which stay strict DNS
+/// labels.
 pub(crate) fn is_authority_label(label: &str) -> bool {
     !label.is_empty()
         && label.len() <= 63

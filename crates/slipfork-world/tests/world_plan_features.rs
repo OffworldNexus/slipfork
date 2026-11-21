@@ -80,3 +80,27 @@ fn on_dev_services_appear_only_when_dev_is_active() {
         "`on dev` stays out when the active set is empty"
     );
 }
+
+const S3_PUBLIC_READ: &str = r#"# forkfile: 0.1
+s3 docs {
+  policy public-read
+}
+"#;
+
+#[test]
+fn declared_s3_policy_reaches_the_world_plan() {
+    let planned = plan("s3-policy", S3_PUBLIC_READ);
+    let buckets: Vec<&slipfork_world::S3Bucket> = planned
+        .resources
+        .iter()
+        .filter(|node| node.resource == slipfork_world::ResourceKind::S3)
+        .flat_map(|node| node.buckets.iter())
+        .collect();
+    assert_eq!(buckets.len(), 1, "one bucket resource");
+    assert_eq!(buckets[0].name(), "docs");
+    assert_eq!(
+        buckets[0].policy(),
+        slipfork_forkfile::BucketPolicy::PublicRead,
+        "`policy public-read` without `cdn` must stay public-read in the boot plan"
+    );
+}

@@ -3,11 +3,13 @@
 //! Ports and default resource versions come from `slipfork-world`'s [`ResourceKind`], so the status
 //! rows cannot drift from the pods that actually boot. No `on`-block recursion lives here.
 
-use slipfork_forkfile::ResourceDeclKind;
-use slipfork_forkfile::ast::{DomainFilter, Forkfile, RouteKind};
+use std::collections::BTreeSet;
+
+use slipfork_forkfile::ast::{DomainFilter, Forkfile, RouteKind, TopItem};
+use slipfork_forkfile::{BucketPolicy, ResourceDeclKind};
 use slipfork_world::ResourceKind;
 
-use crate::ps::{PsDomain, PsKind, PsRoute, PsRouteMode, PsService};
+use crate::ps::{PsBucketPolicy, PsDomain, PsKind, PsRoute, PsRouteMode, PsService};
 
 /// Projects every declared service and backing resource into typed rows.
 pub(super) fn services(doc: &Forkfile) -> Vec<PsService> {
@@ -21,6 +23,7 @@ pub(super) fn services(doc: &Forkfile) -> Vec<PsService> {
             port: service.port,
             version: None,
             cdn: None,
+            policy: None,
             pid: None,
             routes: service
                 .routes
@@ -38,10 +41,14 @@ pub(super) fn services(doc: &Forkfile) -> Vec<PsService> {
         })
         .collect();
     for resource in doc.resources() {
+        let policy = match resource.kind {
+            ResourceDeclKind::S3 => Some(PsBucketPolicy::from(bucket_policy(doc, resource.id))),
+            ResourceDeclKind::Postgres | ResourceDeclKind::Redis => None,
+        };
         let (kind, backend) = match resource.kind {
             ResourceDeclKind::Postgres => (PsKind::Postgres, ResourceKind::Postgres),
             ResourceDeclKind::Redis => (PsKind::Redis, ResourceKind::Redis),
-            ResourceDeclKind::S3 => (PsKind::S3, ResourceKind::Seaweedfs),
+            ResourceDeclKind::S3 => (PsKind::S3, ResourceKind::S3),
         };
         out.push(PsService {
             id: resource.id.to_owned(),
@@ -51,13 +58,26 @@ pub(super) fn services(doc: &Forkfile) -> Vec<PsService> {
             version: resource
                 .version
                 .map(str::to_owned)
-                .or_else(|| Some(resource_version(backend))),
+                .or_else(|| backend.image().map(resource_version)),
             cdn: resource.cdn.map(str::to_owned),
+            policy,
             pid: None,
             routes: Vec::new(),
         });
     }
     out
+}
+
+/// The bucket policy the `Forkfile` declares for `id`, resolving through active `on` branches.
+fn bucket_policy(doc: &Forkfile, id: &str) -> BucketPolicy {
+    doc.items
+        .items
+        .iter()
+        .find_map(|item| match item {
+            TopItem::S3(s3) if s3.bucket == id => Some(s3.policy_at(&BTreeSet::new())),
+            _ => None,
+        })
+        .unwrap_or_default()
 }
 
 fn mode(kind: &RouteKind) -> PsRouteMode {
@@ -76,9 +96,8 @@ fn domain(filter: &DomainFilter) -> PsDomain {
     }
 }
 
-fn resource_version(kind: ResourceKind) -> String {
-    kind.image().rsplit_once(':').map_or_else(
-        || kind.image().to_owned(),
-        |(_, version)| version.to_owned(),
-    )
+fn resource_version(image: &str) -> String {
+    image
+        .rsplit_once(':')
+        .map_or_else(|| image.to_owned(), |(_, version)| version.to_owned())
 }

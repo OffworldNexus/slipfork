@@ -18,6 +18,7 @@ mod control;
 mod fault;
 mod pod;
 mod respond;
+mod s3;
 mod shared;
 mod stream;
 
@@ -71,7 +72,14 @@ fn run() -> Result<(), Fault> {
         "ready handshake write",
     )?;
     let pods_root = canonical(&args.pods, "pod runtime root resolution", REMEDY_RUNTIME)?;
-    let mut world = pod::InitWorld::new(args.crun, pods_root)?;
+    // The single composition root: the world init owns one multi-thread runtime for the native
+    // S3 endpoint. `slipfork-world` itself never constructs a runtime.
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .map_err(|source| Fault::cause("native S3 runtime setup", REMEDY_RUNTIME, source))?;
+    let mut world = pod::InitWorld::new(args.crun, pods_root, runtime.handle().clone())?;
     let (listener, socket_path) = control::bind(world.pods_root())?;
     let stdin = io::stdin();
     let mut reader = BufReader::new(stdin.lock());
