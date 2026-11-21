@@ -106,9 +106,11 @@ impl<'a> Parser<'a> {
             }
         };
         match name.as_str() {
-            "database" => self
-                .expect_ident("a database name", "write `database <db>`")
-                .map(PostgresItem::Database),
+            "database" => {
+                let span = self.current_span()?;
+                self.expect_ident("a database name", "write `database <db>`")
+                    .map(|id| PostgresItem::Database(DatabaseDecl { id, span }))
+            }
             "version" => self.parse_version().map(PostgresItem::Version),
             "on" => self
                 .parse_on_after_keyword(token.span, |parser| parser.parse_postgres_item())
@@ -171,9 +173,11 @@ impl<'a> Parser<'a> {
             }
         };
         match name.as_str() {
-            "cdn" => self
-                .expect_ident("a cdn id", "write `cdn <id>`")
-                .map(S3Item::Cdn),
+            "cdn" => {
+                let span = self.current_span()?;
+                self.expect_ident("a cdn id", "write `cdn <id>`")
+                    .map(|id| S3Item::Cdn(CdnDecl { id, span }))
+            }
             "on" => self
                 .parse_on_after_keyword(token.span, |parser| parser.parse_s3_item())
                 .map(S3Item::On),

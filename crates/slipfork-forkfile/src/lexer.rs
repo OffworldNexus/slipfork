@@ -140,6 +140,7 @@ impl<'a> Lexer<'a> {
             ':' => self.single(TokenKind::Colon),
             '=' => self.single(TokenKind::Eq),
             ',' => self.single(TokenKind::Comma),
+            '+' => self.single(TokenKind::Plus),
             '.' => self.single(TokenKind::Dot),
             '*' => self.single(TokenKind::Star),
             '!' => self.single(TokenKind::Bang),

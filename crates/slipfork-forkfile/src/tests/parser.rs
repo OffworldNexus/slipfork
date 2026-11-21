@@ -1,111 +1,5 @@
 use super::*;
 
-const SAMPLE: &str = r#"# forkfile: 0.1
-
-features {
-  default = [dev]
-  dev = [mail]
-  mail
-}
-
-domain main
-postgres pg { database app_db }
-redis cache
-s3 uploads
-s3 assets { cdn static_cdn }
-
-env common {
-  DATABASE_URL         = app_db.url
-  REDIS_URL            = cache.url
-  UPLOADS_URL          = uploads.url
-  AWS_S3_CUSTOM_DOMAIN = static_cdn.domain
-  PUBLIC_URL           = main.url
-  SECRET_KEY           = secret(SECRET_KEY) ?? random_hex(32)
-  on mail: SMTP_ADDR   = "127.0.0.1:1025"
-}
-
-image backend . {
-  on dev: stage dev
-  use env common
-
-  service api {
-port 8000
-route /api
-pre-deploy: @uv run alembic upgrade head
-run: uv run gunicorn app.main:app --bind 0.0.0.0:$port
-on dev: run: @uv run uvicorn app.main:app --reload --host 0.0.0.0 --port $port
-  }
-
-  service worker {
-run: uv run celery -A app.worker worker
-on dev: run: @uv run celery -A app.worker worker
-  }
-}
-
-image frontend ./front {
-  arg VITE_CDN_URL = static_cdn.url
-  on dev: stage dev
-
-  service front {
-port 4173
-route /
-run: pnpm run preview -- --host 0.0.0.0 --port $port
-on dev {
-  port 5173
-  run: @pnpm run dev -- --host 0.0.0.0 --port $port
-}
-  }
-}
-
-on mail {
-  image mailpit from axllent/mailpit:latest {
-service mailpit {
-  port 8025
-  route / domain mail.*
-}
-  }
-}
-"#;
-
-fn expect_render(source: &str) -> String {
-    let diagnostics = parse(source).expect_err("expected diagnostics");
-    diagnostics.render(source)
-}
-
-fn first_image(doc: &Forkfile) -> &Image {
-    doc.items
-        .items
-        .iter()
-        .find_map(|item| match item {
-            TopItem::Image(image) => Some(image),
-            _ => None,
-        })
-        .expect("expected an image")
-}
-
-fn first_service(image: &Image) -> &Service {
-    image
-        .body
-        .items
-        .iter()
-        .find_map(|item| match item {
-            ImageItem::Service(service) => Some(service),
-            _ => None,
-        })
-        .expect("expected a service")
-}
-
-fn service_routes(service: &Service) -> Vec<&Route> {
-    service
-        .body
-        .items
-        .iter()
-        .filter_map(|item| match item {
-            ServiceItem::Route(route) => Some(route),
-            _ => None,
-        })
-        .collect()
-}
 #[test]
 fn declaration_and_expression_nodes_carry_spans() {
     let doc = parse(SAMPLE).expect("sample parses");
@@ -260,7 +154,7 @@ fn s3_cdn_child_resource_is_parsed() {
     let Some(S3Item::Cdn(cdn)) = bucket.body.items.first() else {
         panic!("expected a cdn");
     };
-    assert_eq!(cdn, "static_cdn");
+    assert_eq!(cdn.id, "static_cdn");
 }
 
 #[test]
@@ -388,25 +282,6 @@ fn image_knobs_parse_and_round_trip() {
 }
 
 #[test]
-fn nested_block_comments_survive_format() {
-    let source = "# forkfile: 0.1\n\nenv common {\n  # runtime vars\n  A = \"1\"\n}\n\nimage backend . {\n  service api {\n    # the api service\n    port 8000\n  }\n}\n";
-    let doc = parse(source).expect("parses");
-    let formatted = format(&doc);
-    assert!(formatted.contains("# runtime vars"), "{formatted}");
-    assert!(formatted.contains("# the api service"), "{formatted}");
-    assert_eq!(doc, parse(&formatted).expect("reparses"));
-}
-
-#[test]
-fn trailing_comments_stay_on_their_item_line() {
-    let source = "# forkfile: 0.1\n\nimage backend . {\n  stage prod # note\n  service api {\n    port 8000\n  }\n}\n";
-    let doc = parse(source).expect("parses");
-    let formatted = format(&doc);
-    assert!(formatted.contains("stage prod # note"), "{formatted}");
-    assert_eq!(doc, parse(&formatted).expect("reparses"));
-}
-
-#[test]
 fn recovery_stops_at_the_end_of_the_bad_line() {
     let source =
         "# forkfile: 0.1\n\nimage backend . {\n  stage\n  service api {\n    port 8000\n  }\n}\n";
@@ -415,68 +290,6 @@ fn recovery_stops_at_the_end_of_the_bad_line() {
     assert!(
         diagnostics.items[0].message.contains("a stage name"),
         "{diagnostics:?}"
-    );
-}
-
-#[test]
-fn full_spec_sample_round_trips_through_format() {
-    let doc = parse(SAMPLE).expect("sample parses");
-    let formatted = format(&doc);
-    let reparsed = parse(&formatted).expect("formatted sample parses");
-    assert_eq!(
-        doc, reparsed,
-        "formatted output changed the tree:\n{formatted}"
-    );
-}
-
-#[test]
-fn format_is_idempotent() {
-    let once = format(&parse(SAMPLE).expect("sample parses"));
-    let twice = format(&parse(&once).expect("formatted sample parses"));
-    assert_eq!(once, twice);
-}
-
-#[test]
-fn format_preserves_comments_at_every_level() {
-    let source = "# forkfile: 0.1\n\n# backing services\ns3 uploads\n\nimage backend . {\n  # build step\n  stage prod\n}\n";
-    let doc = parse(source).expect("parses");
-    assert!(
-        doc.items
-            .comments
-            .iter()
-            .any(|comment| comment.text.contains("backing services"))
-    );
-    let formatted = format(&doc);
-    assert!(formatted.contains("# backing services"), "{formatted}");
-    assert!(formatted.contains("# build step"), "{formatted}");
-    assert_eq!(doc, parse(&formatted).expect("formatted parses"));
-}
-
-#[test]
-fn format_check_reports_a_diff_until_canonical() {
-    let check = format_check(SAMPLE).expect("sample parses");
-    assert_eq!(check.formatted, format(&parse(SAMPLE).expect("parses")));
-    assert!(!check.is_formatted());
-    assert!(check.diff.contains("--- Forkfile"), "{}", check.diff);
-    let canonical = format_check(&check.formatted).expect("formatted parses");
-    assert!(canonical.is_formatted());
-    assert!(canonical.diff.is_empty());
-}
-
-#[test]
-fn missing_final_newline_still_produces_a_real_hunk() {
-    let source = "# forkfile: 0.1\ndomain main";
-    let check = format_check(source).expect("parses");
-    assert!(!check.is_formatted());
-    assert!(
-        check.diff.lines().any(|line| line == "-domain main"),
-        "{}",
-        check.diff
-    );
-    assert!(
-        check.diff.lines().any(|line| line == "+domain main"),
-        "{}",
-        check.diff
     );
 }
 
@@ -496,4 +309,17 @@ fn internal_ports_and_rewrite_routes_parse() {
         route.domain,
         Some(DomainFilter::Domain("admin".to_string()))
     );
+}
+
+#[test]
+fn conflicting_route_modifiers_report_the_second_modifier() {
+    let source = "# forkfile: 0.1\n\nimage backend . {\n  service api {\n    port 8000\n    route /api strip-prefix rewrite /v1\n  }\n}\n";
+    let diagnostics = parse(source).expect_err("conflicting modifiers");
+    let first = diagnostics.first().expect("one diagnostic");
+    assert_eq!(first.message, "duplicate route modifier");
+    assert_eq!(
+        first.next,
+        "keep only one of `strip-prefix`, `rewrite`, or `exact`"
+    );
+    assert_eq!(first.span.line(), 6);
 }

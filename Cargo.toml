@@ -19,3 +19,5 @@ rust-version = "1.85"
 # Shared third-party versions land here as crates start using them; every member
 # inherits them with `foo.workspace = true` so versions never drift.
 [workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_yaml_ng = "0.10"

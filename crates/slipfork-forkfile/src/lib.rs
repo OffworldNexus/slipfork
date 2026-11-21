@@ -1,5 +1,6 @@
 //! The `Forkfile` language front end: lexer, parser, AST, caret diagnostics,
-//! and a comment-preserving canonical formatter (`format` / `format_check`).
+//! comment-preserving canonical formatting, whole-file static semantics, and
+//! deterministic legacy `snow.yml` migration.
 
 /// Implements span-insensitive structural equality for an AST struct.
 ///
@@ -15,6 +16,7 @@ macro_rules! ast_eq {
 }
 
 pub mod ast;
+pub mod check;
 mod decls;
 pub mod diag;
 mod diff;
@@ -23,6 +25,7 @@ mod expr_parse;
 pub mod fmt;
 mod image;
 mod lexer;
+pub mod migrate;
 mod parser;
 mod resources;
 mod service;
@@ -30,9 +33,11 @@ mod span;
 mod token;
 
 pub use ast::*;
+pub use check::{CheckedForkfile, Symbol, SymbolKind, SymbolTable, check};
 pub use diag::{Diagnostic, Diagnostics};
 pub use expr::*;
 pub use fmt::FormatCheck;
+pub use migrate::migrate;
 pub use span::{Position, Span};
 
 /// Parses a `Forkfile`, returning every diagnostic when it is invalid.

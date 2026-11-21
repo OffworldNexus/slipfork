@@ -31,6 +31,8 @@ pub enum ExprKind {
     And(Box<Expr>, Box<Expr>),
     /// `<expr> | <expr>`
     Or(Box<Expr>, Box<Expr>),
+    /// `<left> + <right>` string concatenation.
+    Concat(Box<Expr>, Box<Expr>),
     /// `<expr> ?? <expr>`
     Fallback(Box<Expr>, Box<Expr>),
     /// `var(KEY)`

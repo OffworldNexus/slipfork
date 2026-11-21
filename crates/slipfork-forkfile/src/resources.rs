@@ -12,6 +12,24 @@ pub struct Domain {
 
 ast_eq!(Domain { id });
 
+/// One `database <db>` declaration inside a postgres block.
+#[derive(Debug, Clone)]
+pub struct DatabaseDecl {
+    pub id: String,
+    pub span: Span,
+}
+
+ast_eq!(DatabaseDecl { id });
+
+/// One `cdn <id>` declaration inside an s3 block.
+#[derive(Debug, Clone)]
+pub struct CdnDecl {
+    pub id: String,
+    pub span: Span,
+}
+
+ast_eq!(CdnDecl { id });
+
 /// `postgres <id> { ... }`
 #[derive(Debug, Clone)]
 pub struct Postgres {
@@ -26,7 +44,7 @@ ast_eq!(Postgres { id, body });
 #[derive(Debug, Clone, PartialEq)]
 pub enum PostgresItem {
     /// `database <db>`
-    Database(String),
+    Database(DatabaseDecl),
     /// `version <n>`
     Version(String),
     /// `on <expr> ...`
@@ -66,7 +84,7 @@ ast_eq!(S3 { bucket, body });
 #[derive(Debug, Clone, PartialEq)]
 pub enum S3Item {
     /// `cdn <id>`
-    Cdn(String),
+    Cdn(CdnDecl),
     /// `on <expr> ...`
     On(On<S3Item>),
 }

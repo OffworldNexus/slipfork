@@ -314,7 +314,7 @@ fn render_env_item(renderer: &mut Renderer, item: &EnvItem) {
 
 fn render_postgres_item(renderer: &mut Renderer, item: &PostgresItem) {
     match item {
-        PostgresItem::Database(database) => renderer.line(&format!("database {database}")),
+        PostgresItem::Database(database) => renderer.line(&format!("database {}", database.id)),
         PostgresItem::Version(version) => {
             renderer.line(&format!("version {}", render_version(version)));
         }
@@ -333,7 +333,7 @@ fn render_redis_item(renderer: &mut Renderer, item: &RedisItem) {
 
 fn render_s3_item(renderer: &mut Renderer, item: &S3Item) {
     match item {
-        S3Item::Cdn(cdn) => renderer.line(&format!("cdn {cdn}")),
+        S3Item::Cdn(cdn) => renderer.line(&format!("cdn {}", cdn.id)),
         S3Item::On(on) => render_on(renderer, on, render_s3_item),
     }
 }
@@ -387,6 +387,9 @@ fn render_expr_at(expr: &Expr, minimum: u8) -> String {
             RandomKind::Base64 => format!("random_base64{}", render_count(*n)),
             RandomKind::Alnum => format!("random_alnum{}", render_count(*n)),
         },
+        ExprKind::Concat(left, right) => {
+            format!("{} + {}", render_expr_at(left, 4), render_expr_at(right, 5))
+        }
         ExprKind::Property { base, prop } => format!("{base}.{prop}"),
         ExprKind::Port => "$port".to_string(),
         ExprKind::EnvVar(key) => format!("$env.{key}"),
@@ -425,7 +428,7 @@ fn expr_precedence(kind: &ExprKind) -> u8 {
         ExprKind::Or(..) => 1,
         ExprKind::And(..) => 2,
         ExprKind::Not(_) => 3,
-        _ => 4,
+        _ => 5,
     }
 }
 

@@ -87,7 +87,28 @@ impl<'a> Parser<'a> {
                 kind: ExprKind::Not(Box::new(inner)),
             });
         }
-        self.parse_atom()
+        self.parse_concat()
+    }
+
+    fn parse_concat(&mut self) -> Result<Expr, Diagnostic> {
+        let mut left = self.parse_atom()?;
+        loop {
+            self.fill()?;
+            if !matches!(
+                &self.peeked.as_ref().expect("token filled").kind,
+                TokenKind::Plus
+            ) {
+                break;
+            }
+            self.peeked = None;
+            let right = self.parse_atom()?;
+            let span = left.span.merge(right.span);
+            left = Expr {
+                kind: ExprKind::Concat(Box::new(left), Box::new(right)),
+                span,
+            };
+        }
+        Ok(left)
     }
 
     fn parse_atom(&mut self) -> Result<Expr, Diagnostic> {

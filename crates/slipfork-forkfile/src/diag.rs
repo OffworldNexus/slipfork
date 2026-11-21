@@ -1,7 +1,6 @@
 //! `Forkfile:<line>:<col>` diagnostics with caret spans and `next:` remedies.
 
 use crate::span::Span;
-use std::fmt;
 
 /// One parse or lexical error.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -62,14 +61,23 @@ impl Diagnostics {
         self.items.first()
     }
 
-    /// Renders every diagnostic against the original source with a caret underline.
+    /// Renders every diagnostic against a `Forkfile` source with a caret.
     #[must_use]
     pub fn render(&self, source: &str) -> String {
+        self.render_as(source, "Forkfile")
+    }
+
+    /// Renders every diagnostic against `source`, labelled with `origin`.
+    ///
+    /// This is the single caret-layout renderer; `migrate` passes `snow.yml` so
+    /// YAML failures point at YAML lines rather than at a `Forkfile`.
+    #[must_use]
+    pub fn render_as(&self, source: &str, origin: &str) -> String {
         let mut out = String::new();
         for diagnostic in &self.items {
             let line = diagnostic.span.line().max(1);
             let column = diagnostic.span.col().max(1);
-            out.push_str(&format!("Forkfile:{line}:{column}\n"));
+            out.push_str(&format!("{origin}:{line}:{column}\n"));
             let text = source.lines().nth(line as usize - 1).unwrap_or("");
             out.push_str(text);
             out.push('\n');
@@ -86,21 +94,3 @@ impl Diagnostics {
         out.trim_end().to_string()
     }
 }
-
-impl fmt::Display for Diagnostics {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        for diagnostic in &self.items {
-            writeln!(
-                formatter,
-                "Forkfile:{}:{}: {}",
-                diagnostic.span.line(),
-                diagnostic.span.col(),
-                diagnostic.message
-            )?;
-            writeln!(formatter, "  next: {}", diagnostic.next)?;
-        }
-        Ok(())
-    }
-}
-
-impl std::error::Error for Diagnostics {}

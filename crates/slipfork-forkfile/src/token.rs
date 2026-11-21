@@ -35,6 +35,8 @@ pub enum TokenKind {
     Eq,
     /// `,`
     Comma,
+    /// `+`
+    Plus,
     /// `.`
     Dot,
     /// `*`
@@ -75,6 +77,7 @@ impl TokenKind {
             Self::Colon => "`:`".to_string(),
             Self::Eq => "`=`".to_string(),
             Self::Comma => "`,`".to_string(),
+            Self::Plus => "`+`".to_string(),
             Self::Dot => "`.`".to_string(),
             Self::Star => "`*`".to_string(),
             Self::QuestionQuestion => "`??`".to_string(),
