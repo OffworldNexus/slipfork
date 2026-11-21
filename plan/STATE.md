@@ -21,7 +21,7 @@
 
 ## Next actionable (top 12)
 
-- gate: M3.38 Clean-sheet workspace, Constructor DI ARCHITECTURE.md, Forkfile compiler (# forkfile: 0.1), slipfork-lsp & Zed/Tree-sitter
+- decompose: M3.39 Pure-Btrfs engine, 100% Docker-free native OCI/Dockerfile builder, per-service crun pods & World Boot DAG
 
 ## Stuck / attention
 
@@ -29,7 +29,6 @@
 
 ## Recent journal
 
-- 2026-11-21T01:21 [M3.38.3] (lead) attempt 1/3 started
 - 2026-11-21T01:21 [M3.38.3] (lead) base 7e76d9ee17cf9a619f7169c9b9cbbcdf7ee1e27c
 - 2026-11-21T01:28 [M3.38.3] (lead) status active -> review
 - 2026-11-21T01:33 [M3.38.3] (lead) status review -> done
@@ -44,3 +43,4 @@
 - 2026-11-21T01:46 [M3.38.5] (lead) status active -> review
 - 2026-11-21T01:52 [M3.38.5] (lead) edited fields
 - 2026-11-21T01:52 [M3.38.5] (lead) status review -> done
+- 2026-11-21T01:52 [M3.38] (lead) status ready -> done

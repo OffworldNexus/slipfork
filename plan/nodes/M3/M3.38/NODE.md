@@ -2,7 +2,7 @@
 id: M3.38
 title: "Clean-sheet workspace, Constructor DI ARCHITECTURE.md, Forkfile compiler (# forkfile: 0.1), slipfork-lsp & Zed/Tree-sitter"
 kind: epic
-status: ready
+status: done
 priority: 3
 depends_on: [M3.37]
 paths:
@@ -18,7 +18,7 @@ attempts: 0
 max_attempts: 3
 escalation: none
 created: "2026-11-21T00:44"
-updated: "2026-11-21T00:44"
+updated: "2026-11-21T01:52"
 ---
 
 # Goal
