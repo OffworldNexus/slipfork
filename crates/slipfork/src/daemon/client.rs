@@ -87,6 +87,23 @@ impl DaemonClient {
         }
     }
 
+    /// Connects only when a daemon already answers; read-only verbs never spawn one.
+    ///
+    /// # Errors
+    ///
+    /// Propagates transport failures other than an absent or refused socket.
+    pub fn connect_existing(host: &HostEnv) -> Result<Option<Self>, DaemonError> {
+        let socket = socket_path(host);
+        match UnixStream::connect(&socket) {
+            Ok(stream) => Ok(Some(Self::new(stream, socket))),
+            Err(error) if is_absent(&error) => Ok(None),
+            Err(error) => Err(DaemonError::new(
+                "daemon-unavailable",
+                format!("connect `{}`: {error}", socket.display()),
+            )),
+        }
+    }
+
     fn new(stream: UnixStream, socket: std::path::PathBuf) -> Self {
         Self {
             stream,

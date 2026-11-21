@@ -15,22 +15,94 @@ pub(super) fn help_text(topic: HelpTopic, color: bool) -> String {
                  Usage: slipfork <command> [options]\n\
                  \n\
                  Commands:\n\
+                 \x20 status    Show every running world as a tree (the bare `slipfork` verb)\n\
+                 \x20 ps        Show only this directory's world or fork\n\
+                 \x20 doctor    Check Btrfs, namespaces, and the crun + :80 runtime\n\
                  \x20 up        Boot the world declared by ./Forkfile and return when ready\n\
                  \x20 down      Stop this directory's running world\n\
                  \x20 restart   Restart one service, or every service\n\
                  \x20 fmt       Format a Forkfile in place\n\
                  \x20 migrate   Convert a legacy snow.yml into a Forkfile\n\
+                 \x20 daemon    Install the per-user unit (and with sudo the system :80 socket)\n\
                  \x20 help      Print this overview\n\
                  \x20 version   Print the version\n\
                  \n\
                  Examples:\n\
+                 \x20 slipfork\n\
                  \x20 slipfork up\n\
                  \x20 slipfork restart worker\n\
-                 \x20 slipfork down\n\
+                 \x20 slipfork daemon install\n\
                  \n\
                  Options:\n\
                  \x20 -h, --help      Print this overview\n\
                  \x20 -V, --version   Print the version\n"
+            )
+        }
+        HelpTopic::Status => {
+            let title = paint("slipfork status", "1;36", color);
+            format!(
+                "{title}\n\
+                 Show every running world as one tree; bare `slipfork` is this verb.\n\
+                 \n\
+                 Usage: slipfork status [--json] [-v]\n\
+                 \n\
+                 Options:\n\
+                 \x20 --json        Emit the raw ps object with zero ANSI\n\
+                 \x20 -v, --verbose Add each world's supervisor pid\n\
+                 \x20 -h, --help\n\
+                 \n\
+                 Example:\n\
+                 \x20 slipfork status\n"
+            )
+        }
+        HelpTopic::Ps => {
+            let title = paint("slipfork ps", "1;36", color);
+            format!(
+                "{title}\n\
+                 Show only the world or fork rooted at the current directory.\n\
+                 \n\
+                 Usage: slipfork ps [--json] [-v]\n\
+                 \n\
+                 Options:\n\
+                 \x20 --json        Emit the raw ps object with zero ANSI\n\
+                 \x20 -v, --verbose Add the supervisor pid\n\
+                 \x20 -h, --help\n\
+                 \n\
+                 Example:\n\
+                 \x20 slipfork ps --json\n"
+            )
+        }
+        HelpTopic::Doctor => {
+            let title = paint("slipfork doctor", "1;36", color);
+            format!(
+                "{title}\n\
+                 Check the only three host requirements: Btrfs, namespaces, and runtime.\n\
+                 \n\
+                 Usage: slipfork doctor [--json]\n\
+                 \n\
+                 Options:\n\
+                 \x20 --json   Emit {{\"ready\",\"checks\"}} with zero ANSI\n\
+                 \x20 -h, --help\n\
+                 \n\
+                 Example:\n\
+                 \x20 slipfork doctor\n"
+            )
+        }
+        HelpTopic::DaemonInstall => {
+            let title = paint("slipfork daemon install", "1;36", color);
+            format!(
+                "{title}\n\
+                 Write the per-user daemon unit; `--ingress` adds the system :80 socket.\n\
+                 \n\
+                 Usage: slipfork daemon install [--ingress] [--json]\n\
+                 \n\
+                 Options:\n\
+                 \x20 --ingress   Install slipfork-ingress.socket, its template unit, and AppArmor (sudo)\n\
+                 \x20 --json      Emit {{\"installed\",\"ingress\"}} with zero ANSI\n\
+                 \x20 -h, --help\n\
+                 \n\
+                 Example:\n\
+                 \x20 sudo slipfork daemon install --ingress\n"
             )
         }
         HelpTopic::Up => {

@@ -7,10 +7,12 @@
 mod boot;
 mod client;
 mod frames;
+mod handoff;
 mod ingress;
 mod lifecycle;
 mod registry;
 mod rpc;
+mod view;
 mod wire;
 
 pub use client::{DaemonClient, DaemonError};
@@ -27,7 +29,7 @@ use std::thread;
 
 use crate::world::HostEnv;
 use frames::{FrameReader, write_frame};
-use lifecycle::Core;
+use lifecycle::core::Core;
 use serde_json::{Value, json};
 
 /// A typed control-plane failure rendered as an `error` frame with a bare message.
@@ -60,6 +62,9 @@ impl Startup {
         }
     }
 }
+
+/// Runs the socket-activated `:80` handoff in this process; called from the composition root.
+pub use handoff::run as run_handoff;
 
 /// `<runtime_dir>/daemon.sock`.
 #[must_use]
@@ -257,7 +262,12 @@ impl Daemon {
                     "worlds": core.world_count(),
                 })))
             }
-            "ps" => self.core()?.ps().map(Some),
+            "ps" => {
+                let reply = self.core()?.ps()?;
+                let value = serde_json::to_value(reply)
+                    .map_err(|error| Failure::new("ps-encode", error.to_string()))?;
+                Ok(Some(value))
+            }
             "down" => self.core()?.down(&request.params, emit).map(Some),
             "restart" => self.core()?.restart(&request.params, emit).map(Some),
             other => Err(Failure::new(

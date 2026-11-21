@@ -21,6 +21,10 @@ pub struct CommandLine {
 enum Verb {
     Help(HelpTopic),
     Version,
+    Status(StatusArgs),
+    Ps(StatusArgs),
+    Doctor(StatusArgs),
+    DaemonInstall(DaemonInstallArgs),
     Up(UpArgs),
     Down(DownArgs),
     Restart(RestartArgs),
@@ -29,9 +33,31 @@ enum Verb {
     Supervise(SuperviseArgs),
 }
 
+/// Parsed `slipfork status`, `ps`, and `doctor` flags.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StatusArgs {
+    /// Emit the raw object with zero ANSI.
+    pub json: bool,
+    /// Add supervisor lineage.
+    pub verbose: bool,
+}
+
+/// Parsed `slipfork daemon install` flags.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DaemonInstallArgs {
+    /// Install the system `:80` socket and AppArmor profile (needs root).
+    pub ingress: bool,
+    /// Emit `{"installed":[…],"ingress":bool}` with zero ANSI.
+    pub json: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum HelpTopic {
     Global,
+    Status,
+    Ps,
+    Doctor,
+    DaemonInstall,
     Up,
     Down,
     Restart,
@@ -65,6 +91,10 @@ impl CommandLine {
         match self.verb {
             Verb::Help(topic) => emit(&help::help_text(topic, session.color())),
             Verb::Version => emit(&format!("slipfork {VERSION}\n")),
+            Verb::Status(args) => session.status(args.json, args.verbose),
+            Verb::Ps(args) => session.ps(args.json, args.verbose),
+            Verb::Doctor(args) => session.doctor(args.json),
+            Verb::DaemonInstall(args) => session.daemon_install(args.ingress, args.json),
             Verb::Up(args) => session.up(&args),
             Verb::Down(args) => session.down(&args),
             Verb::Restart(args) => session.restart(&args),
@@ -78,7 +108,7 @@ impl CommandLine {
 #[cfg(test)]
 mod tests {
     use super::help::help_text;
-    use super::{CommandLine, HelpTopic, Verb};
+    use super::{CommandLine, DaemonInstallArgs, HelpTopic, StatusArgs, Verb};
     use crate::commands::{FmtArgs, MigrateArgs};
     use crate::world::{DownArgs, RestartArgs, UpArgs};
     use std::ffi::OsString;
@@ -91,7 +121,50 @@ mod tests {
 
     #[test]
     fn the_shipped_surface_parses() {
-        assert_eq!(parse(&[]).unwrap().verb, Verb::Help(HelpTopic::Global));
+        assert_eq!(
+            parse(&[]).unwrap().verb,
+            Verb::Status(StatusArgs {
+                json: false,
+                verbose: false,
+            })
+        );
+        assert_eq!(
+            parse(&["status", "--json", "-v"]).unwrap().verb,
+            Verb::Status(StatusArgs {
+                json: true,
+                verbose: true,
+            })
+        );
+        assert_eq!(
+            parse(&["ps"]).unwrap().verb,
+            Verb::Ps(StatusArgs {
+                json: false,
+                verbose: false,
+            })
+        );
+        assert_eq!(
+            parse(&["doctor", "--json"]).unwrap().verb,
+            Verb::Doctor(StatusArgs {
+                json: true,
+                verbose: false,
+            })
+        );
+        assert_eq!(
+            parse(&["daemon", "install"]).unwrap().verb,
+            Verb::DaemonInstall(DaemonInstallArgs {
+                ingress: false,
+                json: false,
+            })
+        );
+        assert_eq!(
+            parse(&["daemon", "install", "--ingress", "--json"])
+                .unwrap()
+                .verb,
+            Verb::DaemonInstall(DaemonInstallArgs {
+                ingress: true,
+                json: true,
+            })
+        );
         assert_eq!(parse(&["--version"]).unwrap().verb, Verb::Version);
         assert_eq!(
             parse(&["up"]).unwrap().verb,
@@ -176,6 +249,30 @@ mod tests {
             parse(&["up", "--help"]).unwrap().verb,
             Verb::Help(HelpTopic::Up)
         );
+        assert_eq!(
+            parse(&["status", "--help"]).unwrap().verb,
+            Verb::Help(HelpTopic::Status)
+        );
+        assert_eq!(
+            parse(&["ps", "-h"]).unwrap().verb,
+            Verb::Help(HelpTopic::Ps)
+        );
+        assert_eq!(
+            parse(&["doctor", "--help"]).unwrap().verb,
+            Verb::Help(HelpTopic::Doctor)
+        );
+        assert_eq!(
+            parse(&["daemon", "install", "-h"]).unwrap().verb,
+            Verb::Help(HelpTopic::DaemonInstall)
+        );
+        let status = help_text(HelpTopic::Status, false);
+        for flag in ["--json", "-v, --verbose", "-h, --help"] {
+            assert!(status.contains(flag), "{status}");
+        }
+        let daemon = help_text(HelpTopic::DaemonInstall, false);
+        for flag in ["--ingress", "--json", "-h, --help"] {
+            assert!(daemon.contains(flag), "{daemon}");
+        }
         let up = help_text(HelpTopic::Up, false);
         for flag in ["--world", "--json", "-h, --help"] {
             assert!(up.contains(flag), "{up}");
@@ -200,9 +297,19 @@ mod tests {
         );
         let global = help_text(HelpTopic::Global, false);
         assert!(!global.contains('\u{1b}'), "{global}");
-        for verb in ["  up ", "  down ", "  restart ", "  fmt ", "  migrate "] {
+        for verb in [
+            "  status ",
+            "  ps ",
+            "  doctor ",
+            "  up ",
+            "  down ",
+            "  restart ",
+            "  fmt ",
+            "  migrate ",
+            "  daemon ",
+        ] {
             assert!(global.contains(verb), "missing {verb}: {global}");
         }
-        assert!(global.contains("Examples:\n  slipfork up\n"), "{global}");
+        assert!(global.contains("Examples:\n  slipfork\n"), "{global}");
     }
 }

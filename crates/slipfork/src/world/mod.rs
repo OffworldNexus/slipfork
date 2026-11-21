@@ -36,9 +36,32 @@ pub struct HostEnv {
     pub gid: u32,
     /// Host `resolv.conf` bound read-only into every pod.
     pub resolv_conf: PathBuf,
+    /// `$HOME`, used to shorten paths in the status tree.
+    pub home: Option<PathBuf>,
+    /// `$XDG_CONFIG_HOME` (or `~/.config`), where `daemon install` writes the user unit.
+    pub config_dir: PathBuf,
+    /// Milliseconds since the Unix epoch when this process started.
+    pub now_ms: u64,
+    /// UID the system `:80` ingress runs as (`SUDO_UID` when installing as root).
+    pub ingress_uid: u32,
+    /// Prefix for system paths (`SLIPFORK_INSTALL_ROOT`, `/` by default).
+    pub install_root: PathBuf,
 }
 
 impl HostEnv {
+    /// The minimal install view the shared unit writer needs.
+    #[must_use]
+    pub(crate) fn install_host(&self) -> crate::install::InstallHost {
+        crate::install::InstallHost {
+            exe: self.exe.clone(),
+            path: self.path.clone(),
+            config_dir: self.config_dir.clone(),
+            install_root: self.install_root.clone(),
+            uid: self.uid,
+            ingress_uid: self.ingress_uid,
+        }
+    }
+
     pub(super) fn tool(&self, name: &str) -> Result<PathBuf, String> {
         for directory in &self.path {
             let candidate = directory.join(name);

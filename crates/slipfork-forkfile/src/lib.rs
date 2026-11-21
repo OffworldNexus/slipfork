@@ -32,6 +32,7 @@ mod resources;
 mod service;
 mod span;
 mod token;
+mod visit;
 
 pub use ast::*;
 pub use boot::{BootPlan, PrequelTool, SetupNode, boot_plan};
@@ -41,6 +42,7 @@ pub use expr::*;
 pub use fmt::FormatCheck;
 pub use migrate::migrate;
 pub use span::{Position, Span};
+pub use visit::{ResourceDecl, ResourceDeclKind, ServiceDecl};
 
 /// Parses a `Forkfile`, returning every diagnostic when it is invalid.
 pub fn parse(source: &str) -> Result<Forkfile, Diagnostics> {

@@ -71,6 +71,9 @@ pub(super) fn finish_boot(
                     fork: None,
                     pods_dir,
                     supervisor_pid: child.id(),
+                    started_at_ms: std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map_or(0, |since| since.as_millis() as u64),
                 };
                 daemon.core()?.publish(&key, entry, child)?;
                 return Ok(json!({

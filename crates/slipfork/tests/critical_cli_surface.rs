@@ -5,14 +5,42 @@
 //! `TERM=dumb`. The PTY assertion reports a skip message when `script` is absent;
 //! it never substitutes a mock.
 
+use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 const ANSI: &str = "\u{1b}[";
+
+fn scratch(prefix: &str) -> PathBuf {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock reads after the epoch")
+        .as_nanos();
+    let root = PathBuf::from("/var/tmp").join(format!(
+        "slipfork-cli-{prefix}-{}-{nanos}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
+    std::fs::create_dir_all(&root).expect("create /var/tmp scratch directory");
+    root
+}
 
 fn run(args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_slipfork"))
         .args(args)
         .env("NO_COLOR", "1")
+        .output()
+        .expect("the slipfork binary must be runnable")
+}
+
+fn run_isolated(args: &[&str], root: &Path) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_slipfork"))
+        .args(args)
+        .env("NO_COLOR", "1")
+        .env("XDG_RUNTIME_DIR", root.join("run"))
+        .env("XDG_STATE_HOME", root.join("state"))
         .output()
         .expect("the slipfork binary must be runnable")
 }
@@ -80,11 +108,14 @@ fn help_and_version_are_the_shipped_surface() {
     assert!(help.contains("Usage: slipfork <command>"), "{help}");
     assert_eq!(
         shipped_verbs(&help),
-        ["up", "down", "restart", "fmt", "migrate", "help", "version"],
+        [
+            "status", "ps", "doctor", "up", "down", "restart", "fmt", "migrate", "daemon", "help",
+            "version"
+        ],
         "{help}"
     );
     assert!(!help.contains("  lsp "), "no lsp row may ship: {help}");
-    assert!(help.contains("Examples:\n  slipfork up\n"), "{help}");
+    assert!(help.contains("Examples:\n  slipfork\n"), "{help}");
     assert!(!help.contains(ANSI), "piped output must stay plain");
 
     let version = run(&["--version"]);
@@ -96,9 +127,15 @@ fn help_and_version_are_the_shipped_surface() {
         format!("slipfork {}", env!("CARGO_PKG_VERSION"))
     );
 
-    let bare = run(&[]);
+    // Bare `slipfork` is the status tree; with no daemon it is the empty state, exit 0.
+    let root = scratch("bare");
+    let bare = run_isolated(&[], &root);
     assert!(bare.status.success());
-    assert_eq!(bare.stdout, help.as_bytes());
+    assert_eq!(
+        String::from_utf8(bare.stdout).expect("status is UTF-8"),
+        "○ No worlds running\n"
+    );
+    let _ = std::fs::remove_dir_all(&root);
 
     // The language server is its own binary; the CLI verb is gone for good.
     let retired = run(&["lsp"]);

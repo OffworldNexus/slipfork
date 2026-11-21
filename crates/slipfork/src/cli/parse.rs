@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use crate::commands::{FmtArgs, MigrateArgs};
 use crate::world::{DownArgs, RestartArgs, SuperviseArgs, UpArgs};
 
-use super::{CommandLine, HelpTopic, UsageError, Verb};
+use super::{CommandLine, DaemonInstallArgs, HelpTopic, StatusArgs, UsageError, Verb};
 
 impl CommandLine {
     /// Parses `args` (argv with the program name already removed).
@@ -22,7 +22,10 @@ impl CommandLine {
             .collect::<Result<_, _>>()?;
         let Some((verb, rest)) = texts.split_first() else {
             return Ok(Self {
-                verb: Verb::Help(HelpTopic::Global),
+                verb: Verb::Status(StatusArgs {
+                    json: false,
+                    verbose: false,
+                }),
             });
         };
         let verb = match *verb {
@@ -38,6 +41,16 @@ impl CommandLine {
                 }
                 Verb::Version
             }
+            "status" => match status_verb(rest, HelpTopic::Status)? {
+                Some(topic) => Verb::Help(topic),
+                None => Verb::Status(status_args(rest)?),
+            },
+            "ps" => match status_verb(rest, HelpTopic::Ps)? {
+                Some(topic) => Verb::Help(topic),
+                None => Verb::Ps(status_args(rest)?),
+            },
+            "doctor" => doctor_verb(rest)?,
+            "daemon" => daemon_verb(rest)?,
             "up" => up_verb(rest)?,
             "down" => down_verb(rest)?,
             "restart" => restart_verb(rest)?,
@@ -54,6 +67,84 @@ impl CommandLine {
         };
         Ok(Self { verb })
     }
+}
+
+fn status_verb(args: &[&str], topic: HelpTopic) -> Result<Option<HelpTopic>, UsageError> {
+    if args.iter().any(|arg| matches!(*arg, "-h" | "--help")) {
+        return Ok(Some(topic));
+    }
+    Ok(None)
+}
+
+fn status_args(args: &[&str]) -> Result<StatusArgs, UsageError> {
+    let mut json = false;
+    let mut verbose = false;
+    for arg in args {
+        match *arg {
+            "--json" => json = true,
+            "-v" | "--verbose" => verbose = true,
+            other => {
+                return Err(UsageError::new(format!("unknown flag `{other}`")));
+            }
+        }
+    }
+    Ok(StatusArgs { json, verbose })
+}
+
+fn doctor_verb(args: &[&str]) -> Result<Verb, UsageError> {
+    if args.iter().any(|arg| matches!(*arg, "-h" | "--help")) {
+        return Ok(Verb::Help(HelpTopic::Doctor));
+    }
+    let mut json = false;
+    for arg in args {
+        match *arg {
+            "--json" => json = true,
+            other => {
+                return Err(UsageError::new(format!(
+                    "unknown flag `{other}` for `doctor`"
+                )));
+            }
+        }
+    }
+    Ok(Verb::Doctor(StatusArgs {
+        json,
+        verbose: false,
+    }))
+}
+
+fn daemon_verb(args: &[&str]) -> Result<Verb, UsageError> {
+    let Some((sub, rest)) = args.split_first() else {
+        return Err(UsageError::new(
+            "`daemon` needs a subcommand: `daemon install`",
+        ));
+    };
+    match *sub {
+        "-h" | "--help" => Ok(Verb::Help(HelpTopic::DaemonInstall)),
+        "install" => daemon_install_verb(rest),
+        other => Err(UsageError::new(format!(
+            "unknown daemon command `{other}` (expected `install`)"
+        ))),
+    }
+}
+
+fn daemon_install_verb(args: &[&str]) -> Result<Verb, UsageError> {
+    if args.iter().any(|arg| matches!(*arg, "-h" | "--help")) {
+        return Ok(Verb::Help(HelpTopic::DaemonInstall));
+    }
+    let mut ingress = false;
+    let mut json = false;
+    for arg in args {
+        match *arg {
+            "--ingress" => ingress = true,
+            "--json" => json = true,
+            other => {
+                return Err(UsageError::new(format!(
+                    "unknown flag `{other}` for `daemon install`"
+                )));
+            }
+        }
+    }
+    Ok(Verb::DaemonInstall(DaemonInstallArgs { ingress, json }))
 }
 
 fn up_verb(args: &[&str]) -> Result<Verb, UsageError> {

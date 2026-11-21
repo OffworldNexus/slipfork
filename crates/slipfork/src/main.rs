@@ -8,7 +8,12 @@
 mod cli;
 mod commands;
 mod daemon;
+mod doctor;
+mod install;
+#[path = "daemon/ps.rs"]
+mod ps;
 mod render;
+mod status;
 mod world;
 
 use std::ffi::OsString;
@@ -43,6 +48,18 @@ fn main() -> ExitCode {
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/state")))
         .unwrap_or_else(|| PathBuf::from(format!("/var/tmp/slipfork-state-{uid}")));
+    // Under `sudo`, install into the invoking user's config dir, never `/root`.
+    let invoking_home = std::env::var("SUDO_USER")
+        .ok()
+        .map(|user| PathBuf::from("/home").join(user));
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .or_else(|| invoking_home.clone());
+    let config_base = if uid == 0 {
+        invoking_home.or_else(|| home.clone())
+    } else {
+        home.clone()
+    };
     let host = world::HostEnv {
         exe,
         path: std::env::var_os("PATH")
@@ -56,11 +73,29 @@ fn main() -> ExitCode {
         uid,
         gid,
         resolv_conf: PathBuf::from("/etc/resolv.conf"),
+        home,
+        config_dir: std::env::var_os("XDG_CONFIG_HOME")
+            .map(PathBuf::from)
+            .or_else(|| config_base.map(|base| base.join(".config")))
+            .unwrap_or_else(|| PathBuf::from(format!("/var/tmp/slipfork-config-{uid}"))),
+        now_ms: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |since| since.as_millis() as u64),
+        ingress_uid: std::env::var("SUDO_UID")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(uid),
+        install_root: std::env::var_os("SLIPFORK_INSTALL_ROOT")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("/")),
     };
 
     // The daemon is the same binary in a hidden mode; it owns every world under this UID.
     if args.first().is_some_and(|arg| arg == "__daemon") {
         return daemon::run(host);
+    }
+    if args.first().is_some_and(|arg| arg == "__ingress") {
+        return daemon::run_handoff(&host);
     }
     match cli::CommandLine::parse(&args) {
         Ok(line) => line.run(commands::Session::new(cwd, color, host)),

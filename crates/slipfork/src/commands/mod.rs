@@ -11,8 +11,10 @@ use std::process::ExitCode;
 use serde_json::json;
 use slipfork_forkfile::format_check;
 
+use crate::daemon::DaemonClient;
 use crate::render::paint;
 use crate::world::HostEnv;
+use crate::{doctor, status};
 
 /// Parsed `slipfork fmt` arguments.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -69,6 +71,80 @@ impl Session {
     #[must_use]
     pub fn color(&self) -> bool {
         self.color
+    }
+
+    /// Renders every running world as the `specs/02` status tree.
+    pub fn status(&self, json: bool, verbose: bool) -> ExitCode {
+        self.render_status(json, verbose, false)
+    }
+
+    /// Renders only this directory's world or fork.
+    pub fn ps(&self, json: bool, verbose: bool) -> ExitCode {
+        self.render_status(json, verbose, true)
+    }
+
+    fn render_status(&self, json: bool, verbose: bool, scoped: bool) -> ExitCode {
+        let value = match DaemonClient::connect_existing(&self.host) {
+            Ok(Some(mut client)) => match client.call_streaming("ps", json!({}), &mut |_| {}) {
+                Ok(value) => value,
+                Err(error) => {
+                    return self.fail(&error.to_string(), "start it with `slipfork up` and retry");
+                }
+            },
+            Ok(None) => json!({ "worlds": [] }),
+            Err(error) => {
+                return self.fail(
+                    &error.to_string(),
+                    "check that XDG_RUNTIME_DIR is readable and retry",
+                );
+            }
+        };
+        let reply = match status::parse(&value) {
+            Ok(reply) => reply,
+            Err(error) => {
+                return self.fail(
+                    &format!("cannot decode the daemon's ps reply: {error}"),
+                    "run `slipfork status --json` and report the payload",
+                );
+            }
+        };
+        let other_worlds = !reply.worlds.is_empty();
+        let reply = if scoped {
+            status::scope(&reply, &self.cwd)
+        } else {
+            reply
+        };
+        if json {
+            return match serde_json::to_string(&reply) {
+                Ok(text) => emit(&format!("{text}\n")),
+                Err(error) => self.fail(
+                    &format!("cannot encode the ps reply: {error}"),
+                    "run `slipfork status --json` and report the payload",
+                ),
+            };
+        }
+        if scoped && other_worlds && reply.worlds.is_empty() {
+            return emit(&status::no_world_line(
+                &self.cwd,
+                self.host.home.as_deref(),
+                self.color,
+            ));
+        }
+        let options = status::Options::new(self.color)
+            .with_now(self.host.now_ms)
+            .with_home(self.host.home.clone())
+            .with_verbose(verbose);
+        emit(&status::render(&reply, &options))
+    }
+
+    /// Prints the three host requirements and their remedies.
+    pub fn doctor(&self, json: bool) -> ExitCode {
+        doctor::run(&self.host, &self.cwd, json, self.color)
+    }
+
+    /// Writes the per-user unit, and with root the system `:80` socket and profile.
+    pub fn daemon_install(&self, ingress: bool, json: bool) -> ExitCode {
+        crate::install::install(&self.host.install_host(), ingress, json, self.color)
     }
 
     /// Formats a `Forkfile` in place, or reports whether it needs formatting.

@@ -18,6 +18,11 @@ name = "critical_world_journey"
 path = "tests/critical_world_journey.rs"
 required-features = ["live"]
 
+[[test]]
+name = "critical_status_live"
+path = "tests/critical_status_live.rs"
+required-features = ["live"]
+
 [dependencies]
 libc.workspace = true
 serde.workspace = true

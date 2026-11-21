@@ -19,6 +19,9 @@ pub struct RegistryEntry {
     pub fork: Option<String>,
     pub pods_dir: PathBuf,
     pub supervisor_pid: u32,
+    /// Milliseconds since the Unix epoch when the world became ready; `0` for older registries.
+    #[serde(default)]
+    pub started_at_ms: u64,
 }
 
 /// `<state_dir>/worlds.json`.

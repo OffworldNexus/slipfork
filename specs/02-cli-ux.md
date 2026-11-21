@@ -40,6 +40,7 @@ Running bare `slipfork` (alias `slipfork status`) displays every active world on
 - Column widths size dynamically to fit long service and fork names without shearing.
 - When nothing is running, `slipfork` prints a dim `○ No worlds running` and exits `0`.
 - `slipfork ps` renders the exact same tree scoped strictly to the current directory's world or fork.
+- `status` and `ps` accept `--json` (zero ANSI) and `-v` adds the supervisor pid lineage.
 
 ---
 
@@ -108,16 +109,18 @@ api    │ INFO:     Application startup complete.
   ✓ Runtime     crun 1.20, :80 .localhost ingress active
 ```
 
-When a requirement fails, the verdict counts rows and every failing row carries its own remedy — AppArmor is named explicitly rather than folded into namespaces:
+When a requirement fails, the verdict counts rows and every failing row carries its own remedy; AppArmor is named inside the namespace remedy rather than adding a fourth row:
 
 ```text
 ✗ 2 issue(s)
   ✓ Btrfs       /home is btrfs (subvolume snapshots enabled)
   ✗ Namespaces  unprivileged user + netns unavailable
      next: sudo sysctl -w kernel.unprivileged_userns_clone=1
-  ✗ AppArmor    profile loaded but not enforcing
-     next: sudo slipfork daemon install --ingress
+  ✗ Runtime     crun is not on PATH
+     next: install crun (for example `sudo apt-get install crun`) and retry
 ```
+
+The three rows are always `Btrfs`, `Namespaces`, and `Runtime`, and `--json` emits `{ready, checks:[{name, ok, detail, next?}]}` with zero ANSI.
 
 | Command | Behavior |
 | :--- | :--- |
