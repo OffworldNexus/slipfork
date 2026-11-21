@@ -1,27 +1,33 @@
 //! Protected live journey for `slipfork fork` and `slipfork drop`.
 //!
 //! A real Btrfs scratch project (`SLIPFORK_TEST_ROOT`), a real daemon, and a real `crun` world:
-//! `fork` must snapshot both subvolumes, switch the checkout's branch, boot the fork behind its own
-//! `.localhost` host, and `drop` must refuse dirty work, then remove both snapshots. Every missing
-//! host capability FAILS CLOSED.
+//! `fork` must snapshot both subvolumes, reuse the per-mount `.slipfork-store/images` cache with
+//! zero re-pull, switch the checkout's branch, boot the fork behind its own `.localhost` host, and
+//! `drop` must refuse dirty work, then remove both snapshots. Every missing host capability FAILS
+//! CLOSED.
 
+use std::ffi::OsString;
 use std::fs;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::os::fd::{AsFd, AsRawFd};
+use std::os::unix::ffi::OsStringExt;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use slipfork_ingress::IngressHandoff;
-use slipfork_world::is_subvolume_path;
+use slipfork_world::{
+    BtrfsEngine, Dirtiness, STORE_DIR, StoreLayout, WorldEngine, WorldName, is_subvolume_path,
+};
 
 const BTRFS_SUPER_MAGIC: u64 = 0x9123_683E;
 const TMPFS_MAGIC: u64 = 0x0102_1994;
 
 const DOCKERFILE: &str = "\
 FROM python:3.13-slim
+RUN printf cached > /etc/slipfork-fork-cache
 WORKDIR /project
 CMD [\"python3\", \"-m\", \"http.server\", \"8000\"]
 ";
@@ -50,6 +56,52 @@ fn fs_magic(path: &Path) -> u64 {
     // SAFETY: the kernel writes one `statfs` through the valid pointer.
     let ret = unsafe { libc::fstatfs(file.as_raw_fd(), &mut stat) };
     if ret == 0 { stat.f_type as u64 } else { 0 }
+}
+
+fn mount_store_for(path: &Path) -> PathBuf {
+    let canonical = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let mountinfo = fs::read_to_string("/proc/self/mountinfo").expect("read /proc/self/mountinfo");
+    let mut best: Option<(PathBuf, usize)> = None;
+    for line in mountinfo.lines() {
+        let Some((head, _)) = line.split_once(" - ") else {
+            continue;
+        };
+        let Some(raw) = head.split_ascii_whitespace().nth(4) else {
+            continue;
+        };
+        let mount = unmangle(raw);
+        if canonical.starts_with(&mount) {
+            let depth = mount.components().count();
+            if best.as_ref().is_none_or(|(_, prev)| depth >= *prev) {
+                best = Some((mount, depth));
+            }
+        }
+    }
+    best.map_or_else(|| PathBuf::from("/"), |(mount, _)| mount)
+        .join(STORE_DIR)
+}
+
+fn unmangle(raw: &str) -> PathBuf {
+    let bytes = raw.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'\\'
+            && i + 3 < bytes.len()
+            && bytes[i + 1..=i + 3]
+                .iter()
+                .all(|b| (b'0'..=b'7').contains(b))
+        {
+            out.push(
+                ((bytes[i + 1] - b'0') << 6) | ((bytes[i + 2] - b'0') << 3) | (bytes[i + 3] - b'0'),
+            );
+            i += 4;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    PathBuf::from(OsString::from_vec(out))
 }
 
 fn require_tool(name: &str) -> PathBuf {
@@ -92,13 +144,13 @@ fn daemons_for(runtime: &Path) -> Vec<u32> {
         let Ok(cmdline) = fs::read(entry.path().join("cmdline")) else {
             continue;
         };
-        let names_the_scope = cmdline.windows(scope.len()).any(|window| window == scope);
-        let is_daemon = cmdline
-            .windows(b"__daemon".len())
-            .any(|window| window == b"__daemon");
-        if !is_daemon && !names_the_scope {
+        let is_target = cmdline.split(|byte| *byte == 0).any(|arg| {
+            arg == b"__daemon" || arg == b"__supervise" || arg.ends_with(b"slipfork-world-init")
+        });
+        if !is_target {
             continue;
         }
+        let names_the_scope = cmdline.windows(scope.len()).any(|window| window == scope);
         let Ok(environ) = fs::read(entry.path().join("environ")) else {
             continue;
         };
@@ -147,6 +199,7 @@ fn assert_fork_ingress(runtime: &Path, world: &str, marker: &str) {
 struct Lab {
     project: PathBuf,
     runtime: PathBuf,
+    store_root: PathBuf,
 }
 
 impl Lab {
@@ -174,12 +227,16 @@ impl Lab {
         for tool in ["crun", "unshare", "git"] {
             let _ = require_tool(tool);
         }
+        let store_root = mount_store_for(&test_root);
+        let world = WorldName::parse("demo").expect("valid world");
+        let _ = BtrfsEngine::new(StoreLayout::at(&store_root)).drop_world(&world);
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("clock reads after the epoch")
             .as_nanos();
         let project = test_root.join(format!("fork-live-{nanos}")).join("demo");
         fs::create_dir_all(&project).expect("create the scratch project");
+        fs::write(project.join(".dockerignore"), ".git/\n").expect("write .dockerignore");
         fs::write(project.join("Dockerfile"), DOCKERFILE).expect("write Dockerfile");
         fs::write(project.join("Forkfile"), FORKFILE).expect("write Forkfile");
         let git = require_tool("git");
@@ -198,7 +255,11 @@ impl Lab {
                 .expect("run git");
             assert!(status.success(), "git {args:?} failed");
         }
-        Self { project, runtime }
+        Self {
+            project,
+            runtime,
+            store_root,
+        }
     }
 
     fn run(&self, args: &[&str]) -> Output {
@@ -226,65 +287,51 @@ impl Lab {
     }
 
     fn fork_world(&self) -> PathBuf {
-        self.project.join(".slipfork-store/worlds/feat-auth--demo")
+        self.store_root.join("worlds/feat-auth--demo")
     }
 }
 
 impl Drop for Lab {
     fn drop(&mut self) {
-        let _ = self.run(&["down"]);
-        self.shutdown_daemon();
+        if self.runtime.join("daemon.sock").exists() {
+            let _ = self.run(&["drop", "feat-auth", "-f"]);
+            let _ = self.run(&["down"]);
+            self.shutdown_daemon();
+        }
         let _ = wait_until(
             || daemons_for(&self.runtime).is_empty(),
             Duration::from_secs(10),
         );
-        let _ = self.run(&["drop", "feat-auth", "-f"]);
-        let btrfs = std::env::var_os("PATH").and_then(|paths| {
-            std::env::split_paths(&paths)
-                .map(|directory| directory.join("btrfs"))
-                .find(|candidate| candidate.is_file())
-        });
-        if let Some(btrfs) = btrfs {
-            let root = self.project.parent().unwrap_or(&self.project).to_path_buf();
-            // The droplet's `btrfs-progs` has no `delete --recursive`: empty each subvolume, then
-            // delete the deepest ones first so parents are empty when their turn comes.
-            let _ = fs::remove_dir_all(&root);
-            let mut subvolumes = Vec::new();
-            collect_subvolumes(&btrfs, &root, &mut subvolumes);
-            subvolumes.sort_by_key(|path| std::cmp::Reverse(path.components().count()));
-            for subvolume in subvolumes {
-                let _ = fs::remove_dir_all(&subvolume);
-                let _ = Command::new(&btrfs)
-                    .args(["subvolume", "delete"])
-                    .arg(&subvolume)
-                    .status();
-            }
+        let engine = BtrfsEngine::new(StoreLayout::at(&self.store_root));
+        if let Ok(world) = WorldName::parse("demo") {
+            let _ = engine.drop_world(&world);
         }
-        let _ = fs::remove_dir_all(self.project.parent().unwrap_or(&self.project));
+        let root = self.project.parent().unwrap_or(&self.project).to_path_buf();
+        let mut subvolumes = Vec::new();
+        collect_subvolumes(&root, &mut subvolumes);
+        subvolumes.sort_by_key(|path| std::cmp::Reverse(path.components().count()));
+        for subvolume in subvolumes {
+            let _ = engine.destroy(&subvolume, Dirtiness::Clean, true);
+        }
+        let _ = fs::remove_dir_all(&root);
     }
 }
 
 /// Collects every real Btrfs subvolume below `directory` (nested ones included).
-fn collect_subvolumes(
-    btrfs: &std::path::Path,
-    directory: &std::path::Path,
-    found: &mut Vec<PathBuf>,
-) {
+fn collect_subvolumes(directory: &Path, found: &mut Vec<PathBuf>) {
     if !directory.is_dir() {
         return;
     }
-    let is_subvolume = Command::new(btrfs)
-        .args(["subvolume", "show"])
-        .arg(directory)
-        .status()
-        .is_ok_and(|status| status.success());
-    if is_subvolume {
+    if is_subvolume_path(directory).unwrap_or(false) {
         found.push(directory.to_path_buf());
     }
     for entry in fs::read_dir(directory).into_iter().flatten().flatten() {
         let path = entry.path();
-        if path.is_dir() {
-            collect_subvolumes(btrfs, &path, found);
+        if entry
+            .file_type()
+            .is_ok_and(|kind| kind.is_dir() && !kind.is_symlink())
+        {
+            collect_subvolumes(&path, found);
         }
     }
 }
@@ -295,14 +342,24 @@ fn fork_and_drop_a_live_world_without_leaving_snapshots() {
     let up = lab.run(&["up", "--json"]);
     assert!(
         up.status.success(),
-        "up failed: {}",
+        "up failed: stdout={}\nstderr={}",
+        String::from_utf8_lossy(&up.stdout),
         String::from_utf8_lossy(&up.stderr)
+    );
+    assert!(
+        !lab.project.join(STORE_DIR).exists(),
+        "the store must live at `<mount>/.slipfork-store`, never inside the project subvolume"
+    );
+    assert!(
+        is_subvolume_path(&lab.store_root.join("worlds/demo")).unwrap_or(false),
+        "parent world data must live under `<mount>/.slipfork-store/worlds/demo`"
     );
 
     let fork = lab.run(&["fork", "feat-auth", "--json"]);
     assert!(
         fork.status.success(),
-        "fork failed: {}",
+        "fork failed: stdout={}\nstderr={}",
+        String::from_utf8_lossy(&fork.stdout),
         String::from_utf8_lossy(&fork.stderr)
     );
     let stdout = String::from_utf8_lossy(&fork.stdout);
@@ -318,6 +375,10 @@ fn fork_and_drop_a_live_world_without_leaving_snapshots() {
     let fork_project = lab.fork_project();
     let fork_world = lab.fork_world();
     assert!(
+        !fork_project.join(STORE_DIR).exists(),
+        "fork snapshot must not recreate a nested `.slipfork-store`"
+    );
+    assert!(
         is_subvolume_path(&fork_project).unwrap_or(false),
         "`{}` must be a Btrfs subvolume",
         fork_project.display()
@@ -326,6 +387,16 @@ fn fork_and_drop_a_live_world_without_leaving_snapshots() {
         is_subvolume_path(&fork_world).unwrap_or(false),
         "`{}` must be a Btrfs subvolume",
         fork_world.display()
+    );
+    let fork_log = fs::read_to_string(fork_project.join(".slipfork/supervisor.log"))
+        .expect("read fork supervisor.log");
+    assert!(
+        fork_log.contains("dockerfile app: 2 cached, 0 built"),
+        "fork must reuse the shared image cache without rebuilding: {fork_log}"
+    );
+    assert!(
+        !fork_log.contains("streaming") && !fork_log.contains("pull "),
+        "fork must not re-download base image layers: {fork_log}"
     );
     let branch = Command::new(require_tool("git"))
         .arg("-C")

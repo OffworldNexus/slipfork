@@ -77,13 +77,13 @@ impl BootSession {
             if read == 0 {
                 self.stop();
                 daemon.core()?.forget(&self.key);
-                return Err(Failure::new(
-                    "supervisor-exited",
-                    format!(
-                        "the world supervisor exited before the world was ready (see `{}`)",
-                        self.log.display()
-                    ),
-                ));
+                let tail = self.log_tail();
+                let reason = if tail.is_empty() {
+                    "the world supervisor exited before the world was ready".to_owned()
+                } else {
+                    format!("the world supervisor exited before the world was ready:\n{tail}")
+                };
+                return Err(Failure::new("supervisor-exited", reason));
             }
             let Ok(event) = serde_json::from_str::<Value>(line.trim()) else {
                 continue;
@@ -123,12 +123,32 @@ impl BootSession {
                     }));
                 }
                 "failed" => {
-                    self.stop();
-                    daemon.core()?.forget(&self.key);
                     let message = event["message"]
                         .as_str()
                         .unwrap_or("the world failed to boot")
                         .to_owned();
+                    if self.fork.is_none()
+                        && let (Some(pods_dir), Some(world), Some(child)) = (
+                            event["pods_dir"].as_str().map(PathBuf::from),
+                            event["world"].as_str().filter(|world| !world.is_empty()),
+                            self.child.take(),
+                        )
+                    {
+                        let entry = RegistryEntry {
+                            project: self.project.clone(),
+                            world: world.to_owned(),
+                            fork: None,
+                            pods_dir,
+                            supervisor_pid: child.id(),
+                            started_at_ms: std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .map_or(0, |since| since.as_millis() as u64),
+                        };
+                        daemon.core()?.publish(&self.key, entry, child)?;
+                    } else {
+                        self.stop();
+                        daemon.core()?.forget(&self.key);
+                    }
                     return Err(Failure::new("boot-failed", message));
                 }
                 _ => {}
@@ -148,5 +168,21 @@ impl BootSession {
         self.stop();
         daemon.core()?.forget(&self.key);
         Ok(())
+    }
+
+    /// The last ~20 non-empty lines of this boot's supervisor log, so the cause is not lost with
+    /// the scratch tree that fork cleanup removes.
+    fn log_tail(&self) -> String {
+        let Ok(text) = std::fs::read_to_string(&self.log) else {
+            return String::new();
+        };
+        let lines: Vec<&str> = text
+            .lines()
+            .map(str::trim_end)
+            .filter(|line| !line.is_empty())
+            .map(|line| line.strip_prefix("error: ").unwrap_or(line))
+            .collect();
+        let start = lines.len().saturating_sub(20);
+        lines[start..].join("\n")
     }
 }

@@ -5,6 +5,8 @@
 //! frame. A fork's snapshot and its boot reservation happen under one `Core` guard.
 
 use std::ffi::OsStr;
+use std::fs::File;
+use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -61,7 +63,7 @@ impl Core {
 
     /// Deletes both snapshots of a fork that never published, so a retry is never blocked.
     pub(crate) fn discard_fork(&self, prepared: &PreparedFork) {
-        let engine = BtrfsEngine::new(StoreLayout::new(&prepared.parent));
+        let engine = BtrfsEngine::new(StoreLayout::at(self.host.store_root_for(&prepared.parent)));
         let _ = engine.drop_fork(
             &prepared.parent,
             &prepared.world_name,
@@ -78,7 +80,7 @@ impl Core {
         emit: &mut dyn FnMut(Value),
     ) -> Result<PreparedFork, Failure> {
         let project = project_param(params)?;
-        // Probe before touching the project: a refusal must not create `.slipfork-store`.
+        // Probe before touching the mount store: a refusal must not create `.slipfork-store`.
         if !is_subvolume_path(&project).unwrap_or(false) {
             return Err(Failure::new(
                 "not-btrfs",
@@ -101,7 +103,21 @@ impl Core {
         };
         let fork = ForkName::parse(&name)
             .map_err(|error| Failure::new("invalid-fork", error.to_string()))?;
-        let engine = BtrfsEngine::new(StoreLayout::new(&project));
+        let engine = BtrfsEngine::new(StoreLayout::at(self.host.store_root_for(&project)));
+        engine
+            .ensure_store()
+            .map_err(|error| btrfs_failure(&error, &project))?;
+        if let Some(forks_dir) = StoreLayout::project_fork(&project, &fork).parent() {
+            let _ = std::fs::create_dir_all(forks_dir);
+        }
+        // `specs/03` §1 step 1: flush dirty filesystem pages before snapshotting so on-disk pages
+        // are consistent and `SNAP_CREATE_V2` commits only the snapshot metadata.
+        if let Ok(dir) = File::open(&project) {
+            // SAFETY: `dir` is a live directory descriptor; `syncfs` only flushes its filesystem.
+            unsafe {
+                libc::syncfs(dir.as_raw_fd());
+            }
+        }
         emit(json!({
             "event": "started", "step": 1, "total": 3, "kind": "fork",
             "label": format!("snapshotting {}", fork.as_str()),
@@ -111,6 +127,10 @@ impl Core {
             .fork(&project, &world, &fork)
             .map_err(|error| btrfs_failure(&error, &project))?;
         let snapshot_ms = elapsed_ms(started);
+        // Keep `.slipfork/*.stamp` hashes intact while stripping the parent world's live handle
+        // and supervisor log so the fork starts with its own clean boot log.
+        let _ = std::fs::remove_file(paths.project.join(".slipfork/world.json"));
+        let _ = std::fs::remove_file(paths.project.join(".slipfork/supervisor.log"));
         emit(json!({
             "event": "finished", "step": 1, "total": 3, "kind": "fork",
             "label": "snapshot", "detail": "project + world data",
@@ -214,7 +234,7 @@ impl Core {
             "event": "started", "step": 2, "total": 2, "kind": "fork",
             "label": "deleting snapshots",
         }));
-        let engine = BtrfsEngine::new(StoreLayout::new(&project));
+        let engine = BtrfsEngine::new(StoreLayout::at(self.host.store_root_for(&project)));
         engine
             .drop_fork(&project, &world, &fork, dirtiness, force)
             .map_err(|error| btrfs_failure(&error, &project))?;

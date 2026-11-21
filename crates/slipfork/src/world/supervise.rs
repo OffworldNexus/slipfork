@@ -59,18 +59,26 @@ fn supervisor_main(project: &Path, world: &str, env: &HostEnv, json: bool) -> Re
     };
     let runtime = Mutex::new(WorldRuntime::new(project, world.clone(), &plan, env, log)?);
     // The world init binds `<pods>/control.sock`; this process only records its path.
-    let socket = {
+    let (socket, pods_dir) = {
         let runtime = runtime
             .lock()
             .map_err(|_| "world runtime lock poisoned".to_owned())?;
-        control::control_socket_path(runtime.supervisor.pods_dir())
-            .map_err(|error| error.to_string())?
+        let pods_dir = runtime.supervisor.pods_dir().to_path_buf();
+        let socket = control::control_socket_path(&pods_dir).map_err(|error| error.to_string())?;
+        (socket, pods_dir)
     };
     write_state(project, &world, &socket)?;
     let sink_emitter = Arc::clone(&emitter);
+    let sink_world = world.as_str().to_owned();
+    let sink_pods = pods_dir.display().to_string();
     let sink = move |event: BootEvent| {
         if let Ok(mut emitter) = sink_emitter.lock() {
-            emitter.send(boot_event_json(&event));
+            let mut frame = boot_event_json(&event);
+            if matches!(event, BootEvent::Failed { .. }) {
+                frame["world"] = json!(sink_world);
+                frame["pods_dir"] = json!(sink_pods);
+            }
+            emitter.send(frame);
         }
     };
     let execute = |index: usize, step: &BootStep| match runtime.lock() {
@@ -106,6 +114,8 @@ fn supervisor_main(project: &Path, world: &str, env: &HostEnv, json: bool) -> Re
                     "label": error.to_string().lines().next().unwrap_or("boot failed"),
                     "line": 0,
                     "message": error.to_string().lines().next().unwrap_or_default(),
+                    "world": world.as_str(),
+                    "pods_dir": pods_dir,
                 }));
             }
         }

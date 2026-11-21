@@ -11,6 +11,7 @@ use crate::error::{Error, Result};
 const BTRFS_IOCTL_MAGIC: u32 = 0x94;
 /// `BTRFS_SUBVOL_NAME_MAX` from `linux/btrfs.h`: one path component, no `/`.
 const BTRFS_SUBVOL_NAME_MAX: usize = 4039;
+const BTRFS_FSID_SIZE: usize = 16;
 const IOC_WRITE: u32 = 1;
 const IOC_READ: u32 = 2;
 
@@ -23,8 +24,9 @@ const SUBVOL_GETFLAGS: libc::c_ulong = request(IOC_READ, 25, 8);
 const SUBVOL_SETFLAGS: libc::c_ulong = request(IOC_WRITE, 26, 8);
 const SUBVOL_CREATE: libc::c_ulong = request(IOC_WRITE, 14, 4096);
 const SNAP_CREATE_V2: libc::c_ulong = request(IOC_WRITE, 23, 4096);
+const FS_INFO: libc::c_ulong = request(IOC_READ, 31, 1024);
 /// `BTRFS_IOC_SNAP_DESTROY_V2` is command **63** in `linux/btrfs.h`, not 47.
-const SNAP_DESTROY_V2: libc::c_ulong = request(IOC_WRITE, 63, 4096);
+const SNAP_DESTROY_V2: libc::c_ulong = request(IOC_WRITE, 63, 1024 * 4);
 
 /// `struct btrfs_ioctl_vol_args` from `fs/btrfs/ioctl.h` (4096 bytes).
 #[allow(dead_code)] // Fields mirror the kernel ABI and are read by the kernel, not by us.
@@ -43,6 +45,46 @@ struct VolArgsV2 {
     flags: u64,
     unused: [u64; 4],
     name: [u8; 4040],
+}
+
+/// `struct btrfs_ioctl_fs_info_args` from `<linux/btrfs.h>` (1024 bytes).
+#[allow(dead_code)] // Fields mirror the kernel ABI; only `fsid` is inspected by userspace.
+#[repr(C)]
+struct FsInfoArgs {
+    max_id: u64,
+    num_devices: u64,
+    fsid: [u8; BTRFS_FSID_SIZE],
+    nodesize: u32,
+    sectorsize: u32,
+    clone_alignment: u32,
+    csum_type: u16,
+    csum_size: u16,
+    flags: u64,
+    generation: u64,
+    metadata_uuid: [u8; BTRFS_FSID_SIZE],
+    reserved: [u8; 944],
+}
+
+pub(crate) fn fsid(dir: &File, path: &Path) -> Result<[u8; BTRFS_FSID_SIZE]> {
+    let mut args = FsInfoArgs {
+        max_id: 0,
+        num_devices: 0,
+        fsid: [0; BTRFS_FSID_SIZE],
+        nodesize: 0,
+        sectorsize: 0,
+        clone_alignment: 0,
+        csum_type: 0,
+        csum_size: 0,
+        flags: 0,
+        generation: 0,
+        metadata_uuid: [0; BTRFS_FSID_SIZE],
+        reserved: [0; 944],
+    };
+    // SAFETY: `dir` is a live Btrfs directory fd and `args` matches `btrfs_ioctl_fs_info_args`.
+    check("read btrfs filesystem uuid", path, unsafe {
+        libc::ioctl(dir.as_raw_fd(), FS_INFO, &mut args)
+    })?;
+    Ok(args.fsid)
 }
 
 pub(crate) fn get_flags(dir: &File, path: &Path) -> Result<SubvolumeFlags> {
@@ -142,11 +184,13 @@ mod tests {
         );
         assert_eq!(request(IOC_READ, 25, 8), 0x8008_9419, "SUBVOL_GETFLAGS");
         assert_eq!(request(IOC_WRITE, 26, 8), 0x4008_941a, "SUBVOL_SETFLAGS");
+        assert_eq!(request(IOC_READ, 31, 1024), 0x8400_941f, "FS_INFO");
         assert_eq!(request(IOC_WRITE, 63, 4096), 0x5000_943f, "SNAP_DESTROY_V2");
         assert_eq!(SUBVOL_CREATE, request(IOC_WRITE, 14, 4096));
         assert_eq!(SNAP_CREATE_V2, request(IOC_WRITE, 23, 4096));
         assert_eq!(SUBVOL_GETFLAGS, request(IOC_READ, 25, 8));
         assert_eq!(SUBVOL_SETFLAGS, request(IOC_WRITE, 26, 8));
+        assert_eq!(FS_INFO, 0x8400_941f);
         // `47` was the command that answered `ENOTTY`; keep a hard pin on the real number.
         assert_eq!(SNAP_DESTROY_V2, 0x5000_943f);
     }
@@ -155,9 +199,12 @@ mod tests {
     fn ioctl_argument_structs_match_the_kernel_layout() {
         assert_eq!(std::mem::size_of::<VolArgs>(), 4096);
         assert_eq!(std::mem::size_of::<VolArgsV2>(), 4096);
+        assert_eq!(std::mem::size_of::<FsInfoArgs>(), 1024);
         assert_eq!(std::mem::offset_of!(VolArgsV2, fd), 0);
         assert_eq!(std::mem::offset_of!(VolArgsV2, name), 56);
         assert_eq!(std::mem::offset_of!(VolArgs, name), 8);
+        assert_eq!(std::mem::offset_of!(FsInfoArgs, fsid), 16);
+        assert_eq!(std::mem::offset_of!(FsInfoArgs, reserved), 80);
     }
 
     #[test]

@@ -13,43 +13,54 @@ pub const WORLDS_DIR: &str = "worlds";
 /// Project-relative directory holding project snapshots.
 pub const FORKS_DIR: &str = ".forks";
 
-/// Absolute Btrfs paths owned by Slipfork, derived from one injected mount root.
+/// Absolute Btrfs store paths owned by Slipfork (`<mount>/.slipfork-store/{images,worlds}`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StoreLayout {
-    btrfs_mount: PathBuf,
+    store_root: PathBuf,
 }
 
 impl StoreLayout {
-    /// Builds a layout rooted at `btrfs_mount` (a filesystem root or any directory on it).
+    /// Builds a layout whose store is `<btrfs_mount>/.slipfork-store`.
     #[must_use]
     pub fn new(btrfs_mount: impl Into<PathBuf>) -> Self {
         Self {
-            btrfs_mount: btrfs_mount.into(),
+            store_root: btrfs_mount.into().join(STORE_DIR),
         }
     }
 
-    /// The Btrfs mount every other path is derived from.
+    /// Builds a layout directly at an injected `store_root` (`<mount>/.slipfork-store`).
+    #[must_use]
+    pub fn at(store_root: impl Into<PathBuf>) -> Self {
+        Self {
+            store_root: store_root.into(),
+        }
+    }
+
+    /// The Btrfs mount (or parent directory) owning [`Self::store_root`].
     #[must_use]
     pub fn btrfs_mount(&self) -> &Path {
-        &self.btrfs_mount
+        self.store_root
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or(&self.store_root)
     }
 
     /// `<mount>/.slipfork-store`.
     #[must_use]
     pub fn store_root(&self) -> PathBuf {
-        self.btrfs_mount.join(STORE_DIR)
+        self.store_root.clone()
     }
 
     /// `<mount>/.slipfork-store/images`.
     #[must_use]
     pub fn images_root(&self) -> PathBuf {
-        self.store_root().join(IMAGES_DIR)
+        self.store_root.join(IMAGES_DIR)
     }
 
     /// `<mount>/.slipfork-store/worlds`.
     #[must_use]
     pub fn worlds_root(&self) -> PathBuf {
-        self.store_root().join(WORLDS_DIR)
+        self.store_root.join(WORLDS_DIR)
     }
 
     /// `<mount>/.slipfork-store/worlds/<world>`.
@@ -185,25 +196,31 @@ mod tests {
     use super::*;
 
     #[test]
-    fn layout_derives_every_store_path_from_the_mount() {
-        let layout = StoreLayout::new("/mnt/btrfs");
-        assert_eq!(layout.store_root(), Path::new("/mnt/btrfs/.slipfork-store"));
+    fn layout_derives_every_store_path_from_the_mount_or_injected_store_root() {
+        let from_mount = StoreLayout::new("/mnt/btrfs");
+        let from_store = StoreLayout::at("/mnt/btrfs/.slipfork-store");
+        assert_eq!(from_mount, from_store);
+        assert_eq!(from_store.btrfs_mount(), Path::new("/mnt/btrfs"));
         assert_eq!(
-            layout.images_root(),
+            from_store.store_root(),
+            Path::new("/mnt/btrfs/.slipfork-store")
+        );
+        assert_eq!(
+            from_store.images_root(),
             Path::new("/mnt/btrfs/.slipfork-store/images")
         );
         assert_eq!(
-            layout.worlds_root(),
+            from_store.worlds_root(),
             Path::new("/mnt/btrfs/.slipfork-store/worlds")
         );
         let world = WorldName::parse("demo").expect("valid world");
         let fork = ForkName::parse("feat-auth").expect("valid fork");
         assert_eq!(
-            layout.world(&world),
+            from_store.world(&world),
             Path::new("/mnt/btrfs/.slipfork-store/worlds/demo")
         );
         assert_eq!(
-            layout.fork_world(&world, &fork),
+            from_store.fork_world(&world, &fork),
             Path::new("/mnt/btrfs/.slipfork-store/worlds/feat-auth--demo")
         );
         assert_eq!(

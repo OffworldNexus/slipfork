@@ -10,7 +10,7 @@ use crate::port::{Dirtiness, ForkPaths, WorldEngine};
 
 /// Btrfs adapter behind the [`WorldEngine`] port.
 ///
-/// The mount root arrives once through [`StoreLayout`] and every operation takes an absolute path,
+/// The store root arrives once through [`StoreLayout`] and every operation takes an absolute path,
 /// so this crate never reads the environment or caches a global.
 #[derive(Debug, Clone)]
 pub struct BtrfsEngine {
@@ -18,7 +18,7 @@ pub struct BtrfsEngine {
 }
 
 impl BtrfsEngine {
-    /// Builds the engine for one Btrfs mount.
+    /// Builds the engine for one Btrfs mount store.
     #[must_use]
     pub fn new(layout: StoreLayout) -> Self {
         Self { layout }
@@ -28,6 +28,16 @@ impl BtrfsEngine {
     #[must_use]
     pub fn layout(&self) -> &StoreLayout {
         &self.layout
+    }
+
+    /// Existing directory used to probe the Btrfs superblock before creating `.slipfork-store`.
+    fn store_anchor(&self) -> PathBuf {
+        let store = self.layout.store_root();
+        if store.exists() {
+            store
+        } else {
+            self.layout.btrfs_mount().to_path_buf()
+        }
     }
 
     fn open_dir(path: &Path) -> Result<File> {
@@ -110,6 +120,38 @@ impl BtrfsEngine {
         }
     }
 
+    /// Destroys a managed `worlds/<id>` subvolume after clearing any nested pod clones inside it.
+    fn destroy_world_if_present(path: &Path) -> Result<()> {
+        if !path.exists() {
+            return Ok(());
+        }
+        let mut children = Vec::new();
+        let mut stack = vec![path.to_path_buf()];
+        while let Some(dir) = stack.pop() {
+            let Ok(entries) = fs::read_dir(&dir) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let Ok(file_type) = entry.file_type() else {
+                    continue;
+                };
+                if !file_type.is_dir() || file_type.is_symlink() {
+                    continue;
+                }
+                let child = entry.path();
+                if btrfs::is_subvolume_path(&child)? {
+                    children.push(child.clone());
+                }
+                stack.push(child);
+            }
+        }
+        children.sort_by_key(|child| std::cmp::Reverse(child.components().count()));
+        for child in children {
+            Self::destroy_subvolume(&child)?;
+        }
+        Self::destroy_subvolume(path)
+    }
+
     /// In-place conversion: copy the checkout into a sibling subvolume, then rename it in.
     ///
     /// Btrfs answers `EXDEV` to `rename(2)` across a subvolume root for every inode, not only
@@ -140,17 +182,21 @@ impl BtrfsEngine {
         })
     }
 
+    /// Compares Btrfs `fsid` UUIDs rather than `st_dev` (which differs across Btrfs subvolumes).
     fn require_same_filesystem(&self, project: &Path) -> Result<()> {
-        use std::os::unix::fs::MetadataExt;
-
+        let anchor = self.store_anchor();
         let mount = self.layout.btrfs_mount();
-        let project_device = fs::metadata(project)
-            .map_err(|source| Error::io("inspect", project, source))?
-            .dev();
-        let mount_device = fs::metadata(mount)
-            .map_err(|source| Error::io("inspect", mount, source))?
-            .dev();
-        if project_device == mount_device {
+        let project_dir = Self::open_dir(project)?;
+        let anchor_dir = Self::open_dir(&anchor)?;
+        if !btrfs::is_btrfs(&anchor_dir, &anchor)? {
+            return Err(Error::CrossDevice {
+                path: project.to_path_buf(),
+                mount: mount.to_path_buf(),
+            });
+        }
+        let project_fsid = btrfs::fsid(&project_dir, project)?;
+        let anchor_fsid = btrfs::fsid(&anchor_dir, &anchor)?;
+        if project_fsid == anchor_fsid {
             Ok(())
         } else {
             Err(Error::CrossDevice {
@@ -163,9 +209,9 @@ impl BtrfsEngine {
 
 impl WorldEngine for BtrfsEngine {
     fn ensure_store(&self) -> Result<()> {
-        let mount = self.layout.btrfs_mount();
-        let dir = Self::open_dir(mount)?;
-        Self::require_btrfs(&dir, mount)?;
+        let anchor = self.store_anchor();
+        let dir = Self::open_dir(&anchor)?;
+        Self::require_btrfs(&dir, &anchor)?;
         drop(dir);
         for path in [
             self.layout.store_root(),
@@ -216,13 +262,37 @@ impl WorldEngine for BtrfsEngine {
         let forks_dir = layout::project_forks_dir(project);
         fs::create_dir_all(&forks_dir).map_err(|source| Error::io("create", &forks_dir, source))?;
         let project_snapshot = layout::project_fork_path(project, fork);
-        Self::snapshot(project, &project_snapshot)?;
+        let world_source = self.layout.world(world);
         let world_snapshot = self.layout.fork_world(world, fork);
-        Self::snapshot(&self.layout.world(world), &world_snapshot)?;
-        Ok(ForkPaths {
-            project: project_snapshot,
-            world: world_snapshot,
-        })
+        // Issue both `SNAP_CREATE_V2` ioctls concurrently so they join the same Btrfs transaction
+        // (`cur_trans->transaction->pending_snapshots`) and share one superblock barrier commit.
+        let (project_outcome, world_outcome) = std::thread::scope(|scope| {
+            let left = scope.spawn(|| Self::snapshot(project, &project_snapshot));
+            let right = Self::snapshot(&world_source, &world_snapshot);
+            let left = left.join().unwrap_or_else(|_| {
+                Err(Error::io(
+                    "snapshot",
+                    &project_snapshot,
+                    std::io::Error::other("snapshot thread panicked"),
+                ))
+            });
+            (left, right)
+        });
+        match (project_outcome, world_outcome) {
+            (Ok(()), Ok(())) => Ok(ForkPaths {
+                project: project_snapshot,
+                world: world_snapshot,
+            }),
+            (Err(err), Ok(())) => {
+                let _ = Self::destroy_if_present(&world_snapshot);
+                Err(err)
+            }
+            (Ok(()), Err(err)) => {
+                let _ = Self::destroy_if_present(&project_snapshot);
+                Err(err)
+            }
+            (Err(err), Err(_)) => Err(err),
+        }
     }
 
     fn seal(&self, subvolume: &Path) -> Result<()> {
@@ -261,7 +331,7 @@ impl WorldEngine for BtrfsEngine {
             });
         }
         Self::destroy_if_present(&layout::project_fork_path(project, fork))?;
-        Self::destroy_if_present(&self.layout.fork_world(world, fork))
+        Self::destroy_world_if_present(&self.layout.fork_world(world, fork))
     }
 
     fn drop_world(&self, world: &WorldName) -> Result<()> {
@@ -276,11 +346,11 @@ impl WorldEngine for BtrfsEngine {
                 let owned = StoreLayout::parse_fork_world(&entry.file_name())
                     .is_some_and(|(_, parsed)| &parsed == world);
                 if owned {
-                    Self::destroy_if_present(&entry.path())?;
+                    Self::destroy_world_if_present(&entry.path())?;
                 }
             }
         }
-        Self::destroy_if_present(&self.layout.world(world))
+        Self::destroy_world_if_present(&self.layout.world(world))
     }
 }
 

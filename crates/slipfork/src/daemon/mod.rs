@@ -228,9 +228,10 @@ impl Daemon {
                 continue;
             }
             if request.method == "shutdown" {
-                write_frame(&mut writer, &wire::ok(&id, json!({ "stopped": true })))?;
+                self.stop_and_unlink();
+                let _ = write_frame(&mut writer, &wire::ok(&id, json!({ "stopped": true })));
                 let _ = writer.flush();
-                self.shutdown();
+                std::process::exit(0);
             }
             if request.method == "exec" {
                 let outcome = self.handle_exec(&request, &mut reader, &mut writer);
@@ -439,12 +440,11 @@ impl Daemon {
         })
     }
 
-    fn shutdown(&self) -> ! {
+    fn stop_and_unlink(&self) {
         if let Ok(mut core) = self.core.lock() {
             core.stop_all();
             let _ = fs::remove_file(&self.socket);
         }
-        std::process::exit(0)
     }
 }
 

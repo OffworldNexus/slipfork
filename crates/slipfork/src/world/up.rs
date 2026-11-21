@@ -159,6 +159,7 @@ impl Session {
                             "project": reply["project"],
                             "url": reply["url"],
                             "elapsed_ms": reply["elapsed_ms"],
+                            "snapshot_ms": reply["snapshot_ms"],
                         })
                     );
                     return ExitCode::SUCCESS;
@@ -377,20 +378,7 @@ fn render_event(event: &Value, color: bool, json: bool) -> bool {
             false
         }
         "failed" => {
-            let label = event["label"].as_str().unwrap_or("step");
-            let line = event["line"].as_u64().unwrap_or(0);
-            println!("{} {label}", paint("✗", "31", color));
-            if line > 0 {
-                println!("{}", paint(&format!("  Forkfile:{line}"), "2", color));
-            }
-            let message = event["message"].as_str().unwrap_or("step failed");
-            eprintln!("error: {message}");
-            let next = match event["remedy"].as_str() {
-                Some(remedy) => remedy.to_owned(),
-                None if line > 0 => format!("fix Forkfile:{line}, then run `slipfork up`"),
-                None => "read `.slipfork/supervisor.log`, then run `slipfork up`".to_owned(),
-            };
-            eprintln!("next: {next}");
+            render_failed(event, color);
             true
         }
         "ready" => {
@@ -449,24 +437,7 @@ fn render_phase(event: &Value, color: bool, json: bool) {
             }
             let _ = std::io::stdout().flush();
         }
-        "failed" => {
-            let label = event["label"].as_str().unwrap_or("step");
-            let line = event["line"].as_u64().unwrap_or(0);
-            println!("{} {label}", paint("✗", "31", color));
-            if line > 0 {
-                println!("{}", paint(&format!("  Forkfile:{line}"), "2", color));
-            }
-            eprintln!(
-                "error: {}",
-                event["message"].as_str().unwrap_or("step failed")
-            );
-            let next = match event["remedy"].as_str() {
-                Some(remedy) => remedy.to_owned(),
-                None if line > 0 => format!("fix Forkfile:{line}, then run `slipfork up`"),
-                None => "read `.slipfork/supervisor.log`, then run `slipfork up`".to_owned(),
-            };
-            eprintln!("next: {next}");
-        }
+        "failed" => render_failed(event, color),
         "stopped" => {
             clear_phase(color);
             let elapsed = event["elapsed_ms"].as_u64().unwrap_or(0);
@@ -479,6 +450,25 @@ fn render_phase(event: &Value, color: bool, json: bool) {
         }
         _ => {}
     }
+}
+
+fn render_failed(event: &Value, color: bool) {
+    let label = event["label"].as_str().unwrap_or("step");
+    let line = event["line"].as_u64().unwrap_or(0);
+    println!("{} {label}", paint("✗", "31", color));
+    if line > 0 {
+        println!("{}", paint(&format!("  Forkfile:{line}"), "2", color));
+    }
+    eprintln!(
+        "error: {}",
+        event["message"].as_str().unwrap_or("step failed")
+    );
+    let next = match event["remedy"].as_str() {
+        Some(remedy) => remedy.to_owned(),
+        None if line > 0 => format!("fix Forkfile:{line}, then run `slipfork up`"),
+        None => "read `.slipfork/supervisor.log`, then run `slipfork up`".to_owned(),
+    };
+    eprintln!("next: {next}");
 }
 
 fn finish_line(event: &Value, color: bool) -> String {

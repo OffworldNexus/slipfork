@@ -237,10 +237,12 @@ impl fmt::Display for Error {
                 "could not encode or decode JSON for `{}`\nnext: remove the stale runtime file and re-run",
                 path.display()
             ),
-            // Raw errno and ioctl detail stay on `source()`/`Debug`; users get action plus path.
-            Self::Io { action, path, .. } => {
-                write!(f, "could not {action} `{}`", path.display())
-            }
+            // The errno stays in the message: the lab only ever shows `Display`.
+            Self::Io {
+                action,
+                path,
+                source,
+            } => write!(f, "could not {action} `{}`: {source}", path.display()),
         }
     }
 }

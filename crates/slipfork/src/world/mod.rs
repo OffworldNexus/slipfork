@@ -17,7 +17,8 @@ use serde::{Deserialize, Serialize};
 /// Ambient host state, resolved exactly once in `main.rs` and injected everywhere below.
 ///
 /// Library crates never see this type: it exists so the composition root names `PATH`, the
-/// running executable, the tmpfs runtime directory, and the invoking credentials exactly once.
+/// running executable, the Btrfs mount store, the tmpfs runtime directory, and the invoking
+/// credentials exactly once.
 #[derive(Debug, Clone)]
 pub struct HostEnv {
     /// The running `slipfork` binary, used to re-exec `__supervise`.
@@ -28,6 +29,10 @@ pub struct HostEnv {
     pub runtime_dir: PathBuf,
     /// `$XDG_STATE_HOME/slipfork`, or `~/.local/state/slipfork`.
     pub state_dir: PathBuf,
+    /// `<mount>/.slipfork-store` resolved by `main.rs` for the active project directory.
+    pub store_root: PathBuf,
+    /// Host mount points read once by `main.rs` from `/proc/self/mountinfo`.
+    pub mounts: Vec<PathBuf>,
     /// Host architecture name (`std::env::consts::ARCH`).
     pub arch: &'static str,
     /// Invoking uid.
@@ -57,6 +62,15 @@ pub struct HostEnv {
 }
 
 impl HostEnv {
+    /// `<mount>/.slipfork-store` for `project`, selected from the mount table injected by `main.rs`.
+    #[must_use]
+    pub(crate) fn store_root_for(&self, project: &Path) -> PathBuf {
+        if project.as_os_str().is_empty() || self.mounts.is_empty() {
+            return self.store_root.clone();
+        }
+        store_root_for_mounts(&self.mounts, project)
+    }
+
     /// The minimal install view the shared unit writer needs.
     #[must_use]
     pub(crate) fn install_host(&self) -> crate::install::InstallHost {
@@ -91,6 +105,22 @@ impl HostEnv {
         }
         self.tool("slipfork-world-init")
     }
+}
+
+/// Selects `<mount>/.slipfork-store` for the longest mount point containing `project`.
+#[must_use]
+pub(crate) fn store_root_for_mounts(mounts: &[PathBuf], project: &Path) -> PathBuf {
+    let mut best: Option<(&Path, usize)> = None;
+    for mount in mounts {
+        if project.starts_with(mount) {
+            let depth = mount.components().count();
+            if best.is_none_or(|(_, best_depth)| depth >= best_depth) {
+                best = Some((mount.as_path(), depth));
+            }
+        }
+    }
+    let mount = best.map_or_else(|| Path::new("/"), |(mount, _)| mount);
+    mount.join(slipfork_world::STORE_DIR)
 }
 
 /// Parsed `slipfork up` arguments.

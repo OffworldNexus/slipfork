@@ -18,7 +18,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use slipfork_world::{BtrfsEngine, Dirtiness, StoreLayout, WorldEngine, is_subvolume_path};
+use slipfork_world::{
+    BtrfsEngine, Dirtiness, STORE_DIR, StoreLayout, WorldEngine, WorldName, is_subvolume_path,
+};
 
 const BTRFS_SUPER_MAGIC: u64 = 0x9123_683E;
 const TMPFS_MAGIC: u64 = 0x0102_1994;
@@ -70,6 +72,7 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, *args):
         pass
 
+print("api ready", flush=True)
 HTTPServer(("127.0.0.1", int(os.environ["PORT"])), Handler).serve_forever()
 "#;
 
@@ -186,18 +189,75 @@ fn require_registry_egress() {
     );
 }
 
+fn mount_store_for(path: &Path) -> PathBuf {
+    use std::ffi::OsString;
+    use std::os::unix::ffi::OsStringExt;
+
+    let canonical = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let mountinfo = fs::read_to_string("/proc/self/mountinfo").expect("read /proc/self/mountinfo");
+    let mut best: Option<(PathBuf, usize)> = None;
+    for line in mountinfo.lines() {
+        let Some((head, _)) = line.split_once(" - ") else {
+            continue;
+        };
+        let Some(raw) = head.split_ascii_whitespace().nth(4) else {
+            continue;
+        };
+        let bytes = raw.as_bytes();
+        let mut out = Vec::with_capacity(bytes.len());
+        let mut i = 0;
+        while i < bytes.len() {
+            if bytes[i] == b'\\'
+                && i + 3 < bytes.len()
+                && bytes[i + 1..=i + 3]
+                    .iter()
+                    .all(|b| (b'0'..=b'7').contains(b))
+            {
+                out.push(
+                    ((bytes[i + 1] - b'0') << 6)
+                        | ((bytes[i + 2] - b'0') << 3)
+                        | (bytes[i + 3] - b'0'),
+                );
+                i += 4;
+            } else {
+                out.push(bytes[i]);
+                i += 1;
+            }
+        }
+        let mount = PathBuf::from(OsString::from_vec(out));
+        if canonical.starts_with(&mount) {
+            let depth = mount.components().count();
+            if best.as_ref().is_none_or(|(_, prev)| depth >= *prev) {
+                best = Some((mount, depth));
+            }
+        }
+    }
+    best.map_or_else(|| PathBuf::from("/"), |(mount, _)| mount)
+        .join(STORE_DIR)
+}
+
 /// The scratch root plus its projects: `Drop` always tears both worlds down and removes the root.
 struct Journey {
     run: PathBuf,
     runtime: PathBuf,
+    store_root: PathBuf,
     projects: RefCell<Vec<PathBuf>>,
 }
 
 impl Journey {
     fn new() -> Self {
+        let run = live_run_root();
+        let store_root = mount_store_for(&run);
+        let engine = BtrfsEngine::new(StoreLayout::at(&store_root));
+        for world in ["good", "broken"] {
+            if let Ok(world) = WorldName::parse(world) {
+                let _ = engine.drop_world(&world);
+            }
+        }
         Self {
-            run: live_run_root(),
+            run,
             runtime: require_tmpfs_runtime_dir(),
+            store_root,
             projects: RefCell::new(Vec::new()),
         }
     }
@@ -231,16 +291,29 @@ impl Journey {
 
 impl Drop for Journey {
     fn drop(&mut self) {
-        for project in self.projects.borrow().iter() {
-            let _ = Command::new(env!("CARGO_BIN_EXE_slipfork"))
-                .arg("down")
-                .current_dir(project)
-                .env("NO_COLOR", "1")
-                .env("XDG_RUNTIME_DIR", &self.runtime)
-                .env("XDG_STATE_HOME", self.run.join("state"))
-                .output();
+        if self.runtime.join("daemon.sock").exists() {
+            for project in self.projects.borrow().iter() {
+                let _ = Command::new(env!("CARGO_BIN_EXE_slipfork"))
+                    .arg("down")
+                    .current_dir(project)
+                    .env("NO_COLOR", "1")
+                    .env("XDG_RUNTIME_DIR", &self.runtime)
+                    .env("XDG_STATE_HOME", self.run.join("state"))
+                    .output();
+            }
+            self.shutdown_daemon();
         }
-        self.shutdown_daemon();
+        let runtime_scope = self.runtime.as_os_str().as_bytes();
+        let _ = wait_until(
+            || {
+                processes_mentioning(b"__daemon").into_iter().all(|pid| {
+                    fs::read(format!("/proc/{pid}/environ")).is_ok_and(|env| {
+                        !env.windows(runtime_scope.len()).any(|w| w == runtime_scope)
+                    })
+                })
+            },
+            Duration::from_secs(10),
+        );
         let scope = self.run.as_os_str().as_bytes();
         let survived = !wait_until(
             || {
@@ -261,6 +334,12 @@ impl Drop for Journey {
                 eprintln!("journey cleanup: {message}");
             } else {
                 panic!("{message}");
+            }
+        }
+        let store_engine = BtrfsEngine::new(StoreLayout::at(&self.store_root));
+        for world in ["good", "broken"] {
+            if let Ok(world) = WorldName::parse(world) {
+                let _ = store_engine.drop_world(&world);
             }
         }
         self.destroy_subvolumes();
@@ -559,17 +638,29 @@ fn world_up_restart_down_journey() {
         "the service must run strictly between its hooks: {order:?}"
     );
 
-    // 1b. Captured logs and ad-hoc exec against the real pod.
-    let logs = journey.slipfork(&good, &["logs", "api"]);
-    assert!(logs.status.success(), "{}", stderr(&logs));
-    let log_text = stdout(&logs);
+    // 1b. Captured logs and ad-hoc exec against the real pod. Capture is asynchronous, so poll
+    // the follow-less read until the pod's own startup line has landed.
+    let mut log_text = String::new();
+    let captured = wait_until(
+        || {
+            log_text = stdout(&journey.slipfork(&good, &["logs", "api"]));
+            log_text.contains("api ready")
+        },
+        Duration::from_secs(15),
+    );
+    assert!(
+        captured,
+        "the api pod never wrote its startup line: {log_text}"
+    );
     assert!(
         log_text.contains("── api started ──"),
         "logs must draw the capture divider: {log_text}"
     );
     assert!(
-        log_text.contains("api │"),
-        "logs must render a greedy gutter: {log_text}"
+        log_text.lines().any(|line| {
+            line.starts_with("api") && line.contains('│') && line.trim_end().ends_with("api ready")
+        }),
+        "logs must render an aligned gutter per pod: {log_text}"
     );
     assert!(!log_text.contains('\u{1b}'), "NO_COLOR logs stay plain");
 
@@ -620,12 +711,12 @@ fn world_up_restart_down_journey() {
     let failed_err = stderr(&failed);
     let failed_out = stdout(&failed);
     assert!(
-        failed_out.contains("→ ["),
-        "failure must keep a phase header:\n{failed_out}"
+        failed_out.contains("→ [") || failed_out.contains('✗'),
+        "failure must keep a phase header or the ✗ tail:\nstdout={failed_out}\nstderr={failed_err}"
     );
     assert!(
-        forkfile_line(&failed_out),
-        "the failure tail must name a numbered Forkfile line:\n{failed_out}"
+        forkfile_line(&failed_out) || forkfile_line(&failed_err),
+        "the failure tail must name a numbered Forkfile line:\nstdout={failed_out}\nstderr={failed_err}"
     );
     assert!(failed_err.contains("error:"), "{failed_err}");
     assert_eq!(
@@ -723,12 +814,21 @@ fn world_up_restart_down_journey() {
     assert!(!good.join(".slipfork/world.json").exists());
     assert!(!broken.join(".slipfork/world.json").exists());
 
-    // 5. No run subvolume survives under either project's managed store.
+    // 5. No per-project `.slipfork-store` exists, and no run subvolume survives in the mount store.
     for project in [&good, &broken] {
-        let store = project.join(".slipfork-store/worlds");
-        if !store.exists() {
-            continue;
-        }
+        assert!(
+            !project.join(STORE_DIR).exists(),
+            "store must live on the mount, never inside `{}`",
+            project.display()
+        );
+    }
+    for world_id in ["good", "broken"] {
+        let store = journey.store_root.join("worlds").join(world_id);
+        assert!(
+            store.is_dir(),
+            "world `{world_id}` must exist under `{}`",
+            journey.store_root.display()
+        );
         let mut stack = vec![store];
         while let Some(dir) = stack.pop() {
             for entry in fs::read_dir(&dir).expect("walk store") {

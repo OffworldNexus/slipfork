@@ -47,7 +47,7 @@ impl WorldRuntime {
         env: &HostEnv,
         log: BootSink,
     ) -> Result<Self, String> {
-        let engine = BtrfsEngine::new(StoreLayout::new(project));
+        let engine = BtrfsEngine::new(StoreLayout::at(env.store_root_for(project)));
         engine
             .adopt_project(project)
             .and_then(|()| engine.ensure_store())
@@ -101,6 +101,7 @@ impl WorldRuntime {
                 .create_world(&world)
                 .map_err(|error| error.to_string())?;
         }
+        sweep_stale_pods(&engine, &layout.world(&world).join("pods"))?;
         Ok(Self {
             engine,
             layout,
@@ -170,10 +171,15 @@ impl WorldRuntime {
                 args: BuildArgs::default(),
                 target: None,
             };
-            self.builder
+            let report = self
+                .builder
                 .build(&request, &mut self.log)
-                .map_err(|error| error.to_string())?
-                .rootfs
+                .map_err(|error| error.to_string())?;
+            self.note(format!(
+                "dockerfile {image}: {} cached, {} built",
+                report.cache_hits, report.cache_misses
+            ));
+            report.rootfs
         };
         self.sealed.insert(image.to_owned(), rootfs.clone());
         Ok(rootfs)
@@ -184,6 +190,16 @@ impl WorldRuntime {
         let dir = self.layout.world(&self.world).join("pods");
         fs::create_dir_all(&dir).map_err(|error| format!("create `{}`: {error}", dir.display()))?;
         let dest = dir.join(format!("{prefix}-{}", self.counter));
+        // A previous failed boot can leave a subvolume behind, and snapshotting a live parent
+        // world leaves empty `ino == 2` directory stubs; clear either before cloning.
+        if slipfork_world::is_subvolume_path(&dest).unwrap_or(false) {
+            self.engine
+                .destroy(&dest, Dirtiness::Clean, true)
+                .map_err(|error| error.to_string())?;
+        } else if dest.is_dir() {
+            fs::remove_dir(&dest)
+                .map_err(|error| format!("remove `{}`: {error}", dest.display()))?;
+        }
         self.engine
             .clone_subvolume(sealed, &dest)
             .map_err(|error| error.to_string())?;
@@ -260,12 +276,12 @@ impl WorldRuntime {
         let rootfs = self.clone_rootfs(&sealed, &format!("svc-{sigma}"))?;
         let command = step.command.clone().unwrap_or_else(|| "true".to_owned());
         let mut env = Vec::new();
-        if let Some(port) = self
+        let port = self
             .services
             .iter()
             .find(|service| service.id == sigma)
-            .and_then(|service| service.port)
-        {
+            .and_then(|service| service.port);
+        if let Some(port) = port {
             env.push(PodEnv::new("PORT", &port.to_string()));
         }
         let spec = PodSpec {
@@ -287,18 +303,39 @@ impl WorldRuntime {
             .launch(&spec)
             .map_err(|error| error.to_string())?;
         // A service that leaves inside the readiness window never started: surface it as failed
-        // while the world stays up for inspection. A survivor is reported as running.
+        // while the world stays up for inspection. When `port` is declared, also wait until
+        // `127.0.0.1:<port>` accepts inside the world netns so `ready` never races cold startup.
         let health = slipfork_world::classify_service(
             self.supervisor
                 .wait(pid, Duration::from_millis(750))
                 .map_err(|error| error.to_string())?,
         );
-        match health {
-            slipfork_world::ServiceHealth::Running => Ok("started".to_owned()),
-            slipfork_world::ServiceHealth::Exited(code) => Err(format!(
+        if let slipfork_world::ServiceHealth::Exited(code) = health {
+            return Err(format!(
                 "`{command}` exited with {code} before it became ready"
-            )),
+            ));
         }
+        if let Some(port) = port {
+            let pods_dir = self.supervisor.pods_dir().to_path_buf();
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            while std::time::Instant::now() < deadline {
+                if let Ok(stream) = slipfork_world::control::dial_tcp(&pods_dir, port) {
+                    let _ = stream.shutdown(std::net::Shutdown::Both);
+                    break;
+                }
+                let tick = slipfork_world::classify_service(
+                    self.supervisor
+                        .wait(pid, Duration::from_millis(50))
+                        .map_err(|error| error.to_string())?,
+                );
+                if let slipfork_world::ServiceHealth::Exited(code) = tick {
+                    return Err(format!(
+                        "`{command}` exited with {code} before it became ready"
+                    ));
+                }
+            }
+        }
+        Ok("started".to_owned())
     }
 
     fn start_resource(&mut self, id: &str) -> Result<String, String> {
@@ -323,12 +360,11 @@ impl WorldRuntime {
         };
         let rootfs = self.clone_rootfs(&image.rootfs, &format!("res-{id}"))?;
         let facts = image.facts.clone();
+        // Resource dirs stay plain directories inside the `worlds/<world>` subvolume so one
+        // `BTRFS_IOC_SNAP_CREATE_V2` clones PostgreSQL, Redis, and S3 data atomically on `fork`.
         let data = self.layout.world(&self.world).join(id);
-        if !data.exists() {
-            self.engine
-                .create_subvolume(&data)
-                .map_err(|error| error.to_string())?;
-        }
+        fs::create_dir_all(&data)
+            .map_err(|error| format!("create `{}`: {error}", data.display()))?;
         let spec = match node.resource {
             ResourceKind::Postgres => postgres(id, &rootfs, &data, &facts),
             ResourceKind::Redis => redis(id, &rootfs, &data, &facts),
@@ -351,6 +387,7 @@ impl WorldRuntime {
         for clone in std::mem::take(&mut self.clones) {
             let _ = self.engine.destroy(&clone, Dirtiness::Clean, true);
         }
+        let _ = fs::remove_dir(self.layout.world(&self.world).join("pods"));
     }
 
     /// Writes one already-formatted progress line and flushes it; sink errors are not fatal.
@@ -358,6 +395,32 @@ impl WorldRuntime {
         let _ = writeln!(self.log, "{line}");
         let _ = self.log.flush();
     }
+}
+
+/// Clears leftover pod rootfs clones or `ino == 2` snapshot stubs before a world boots.
+fn sweep_stale_pods(engine: &BtrfsEngine, pods_dir: &Path) -> Result<(), String> {
+    if !pods_dir.exists() {
+        return Ok(());
+    }
+    let entries = fs::read_dir(pods_dir)
+        .map_err(|error| format!("read `{}`: {error}", pods_dir.display()))?;
+    for entry in entries {
+        let entry = entry.map_err(|error| format!("read `{}`: {error}", pods_dir.display()))?;
+        let path = entry.path();
+        if slipfork_world::is_subvolume_path(&path).unwrap_or(false) {
+            engine
+                .destroy(&path, Dirtiness::Clean, true)
+                .map_err(|error| error.to_string())?;
+        } else if path.is_dir() {
+            fs::remove_dir_all(&path)
+                .map_err(|error| format!("remove `{}`: {error}", path.display()))?;
+        } else {
+            fs::remove_file(&path)
+                .map_err(|error| format!("remove `{}`: {error}", path.display()))?;
+        }
+    }
+    let _ = fs::remove_dir(pods_dir);
+    Ok(())
 }
 
 fn project_bind(project: &Path) -> Bind {

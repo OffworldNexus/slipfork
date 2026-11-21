@@ -92,7 +92,7 @@ fn subvolumes_under(root: &Path) -> Vec<PathBuf> {
 #[test]
 fn btrfs_lifecycle() {
     let run = live_run_root();
-    let engine = BtrfsEngine::new(StoreLayout::new(&run));
+    let engine = BtrfsEngine::new(StoreLayout::at(run.join(".slipfork-store")));
 
     // 1. BTRFS_SUPER_MAGIC probe already passed; the store is ours to create.
     engine.ensure_store().expect("create .slipfork-store");
@@ -104,6 +104,26 @@ fn btrfs_lifecycle() {
         engine.layout().worlds_root().is_dir(),
         "worlds/ must be owned"
     );
+
+    // 1b. Adoption inside an unmounted parent subvolume (distinct `st_dev`, same `BTRFS_IOC_FS_INFO`
+    // `fsid`) must succeed without falsely reporting `CrossDevice`.
+    let parent_subvol = run.join("home-subvol");
+    engine
+        .create_subvolume(&parent_subvol)
+        .expect("create parent subvolume");
+    let nested_checkout = parent_subvol.join("checkout");
+    fs::create_dir_all(&nested_checkout).expect("seed nested checkout");
+    fs::write(nested_checkout.join("Forkfile"), "# forkfile: 0.1\n").expect("seed Forkfile");
+    engine
+        .adopt_project(&nested_checkout)
+        .expect("adopt checkout inside an unmounted subvolume on the same Btrfs mount");
+    assert!(is_subvolume_path(&nested_checkout).expect("nested checkout becomes a subvolume"));
+    engine
+        .destroy(&nested_checkout, Dirtiness::Clean, false)
+        .expect("destroy nested checkout");
+    engine
+        .destroy(&parent_subvol, Dirtiness::Clean, false)
+        .expect("destroy parent subvolume");
 
     // 2. Plain checkout -> in-place subvolume conversion with zero copying.
     let project = run.join("demo");

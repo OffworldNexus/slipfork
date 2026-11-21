@@ -376,6 +376,8 @@ fn spawn_daemon(host: &HostEnv) -> Result<(), DaemonError> {
         })?;
     Command::new(&host.exe)
         .arg("__daemon")
+        // A vanished cwd must never outlive the CLI that auto-spawned the daemon.
+        .current_dir("/")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::from(log))
