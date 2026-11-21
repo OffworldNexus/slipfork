@@ -1,0 +1,25 @@
+# Maintainer: Offworld Nexus <hello@offworld.nexus>
+# AUR `slipfork-bin`: installs the released Arch package; it never rebuilds from
+# source and never references a `payload/` staging tree. Release automation
+# substitutes the sha256 of each architecture's published `.pkg.tar.zst`.
+pkgname=slipfork-bin
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="Copy-on-write Btrfs development environments, Docker-free"
+arch=('x86_64' 'aarch64')
+url="https://github.com/OffworldNexus/slipfork"
+license=('custom')
+depends=('glibc' 'crun' 'btrfs-progs')
+provides=('slipfork')
+conflicts=('slipfork')
+options=('!strip')
+_asset="slipfork-${pkgver}-1-${CARCH}.pkg.tar.zst"
+source_x86_64=("${_asset}::${url}/releases/download/v${pkgver}/${_asset}")
+source_aarch64=("${_asset}::${url}/releases/download/v${pkgver}/${_asset}")
+# REPLACE_WITH_RELEASE_SHA256 is replaced by scripts/publish_packages.py at release.
+sha256sums_x86_64=('REPLACE_WITH_RELEASE_SHA256')
+sha256sums_aarch64=('REPLACE_WITH_RELEASE_SHA256')
+
+package() {
+  tar -xf "${srcdir}/${_asset}" -C "${pkgdir}"
+}

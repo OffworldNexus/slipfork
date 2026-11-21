@@ -115,3 +115,56 @@ live-test:
 		XDG_RUNTIME_DIR="$(LIVE_RUNTIME_DIR)" SLIPFORK_TEST_ROOT="$(SLIPFORK_TEST_ROOT)" \
 			$(CARGO) test -p "$$pkg" --features "$$pkg/live" --test "$$test" -- --test-threads=1; \
 	done
+
+# ---------------------------------------------------------------------------
+# Distribution artifacts (specs/06-distribution-and-docs.md §1-§8).
+# ---------------------------------------------------------------------------
+VERSION ?= 0.1.0
+PACKAGES_OUT ?= dist/packages
+PACKAGES_BUNDLE ?= target/package-bundle
+PACKAGES_MUSL_BUNDLE ?= target/package-bundle-musl
+MUSL_TARGET ?= $(shell uname -m)-unknown-linux-musl
+MUSL_IMAGE ?= rust:1.100-alpine
+
+.PHONY: packages packages-test packages-bundle packages-probe
+
+# Every artifact must be non-empty and parse as its own format. A truncated
+# download or a half-written package fails here, not at install time.
+packages-probe:
+	@set -e; \
+	[ -s $(PACKAGES_OUT)/SHA256SUMS ] || { echo "error: $(PACKAGES_OUT)/SHA256SUMS is missing; next: run make packages" >&2; exit 1; }; \
+	for f in $(PACKAGES_OUT)/*.deb; do [ -s "$$f" ] || { echo "error: missing or empty $$f; next: run make packages" >&2; exit 1; }; dpkg-deb -I "$$f" >/dev/null || { echo "error: $$f is not a valid .deb; next: re-run make packages" >&2; exit 1; }; done; \
+	for f in $(PACKAGES_OUT)/*.rpm; do [ -s "$$f" ] || { echo "error: missing or empty $$f; next: run make packages" >&2; exit 1; }; if command -v rpm >/dev/null 2>&1; then rpm -qpl "$$f" >/dev/null || { echo "error: $$f is not a valid .rpm" >&2; exit 1; }; else docker run --rm -v "$(PWD)/$(PACKAGES_OUT)":/pkg:ro rockylinux:9 rpm -qpl "/pkg/$$(basename "$$f")" >/dev/null || { echo "error: $$f is not a valid .rpm" >&2; exit 1; }; fi; done; \
+	for f in $(PACKAGES_OUT)/*.pkg.tar.zst; do [ -s "$$f" ] || { echo "error: missing or empty $$f; next: run make packages" >&2; exit 1; }; tar --zstd -tf "$$f" >/dev/null || { echo "error: $$f is not a valid pacman package" >&2; exit 1; }; done; \
+	for f in $(PACKAGES_OUT)/*.apk $(PACKAGES_OUT)/*.tar.gz; do [ -s "$$f" ] || { echo "error: missing or empty $$f; next: run make packages" >&2; exit 1; }; tar -tzf "$$f" >/dev/null || { echo "error: $$f is not a valid gzip archive" >&2; exit 1; }; done; \
+	printf "artifacts in %s:\n" "$(PACKAGES_OUT)"; ls -1 $(PACKAGES_OUT)
+
+packages-bundle:
+	scripts/build-bundle.sh --out $(PACKAGES_BUNDLE) --max-glibc auto
+
+# Real host-arch artifacts from one measured bundle. rpm and apk use a container
+# only because this host has neither rpmbuild nor abuild; the musl bundle is
+# compiled in Alpine because the host has no musl toolchain.
+packages:
+	rm -f $(PACKAGES_OUT)/PKGBUILD $(PACKAGES_OUT)/.SRCINFO $(PACKAGES_OUT)/slipfork-*-r0.apk
+	scripts/build-bundle.sh --out $(PACKAGES_BUNDLE) --max-glibc auto
+	scripts/build-deb.sh --version $(VERSION) --bundle $(PACKAGES_BUNDLE) --out $(PACKAGES_OUT)
+	scripts/build-rpm.sh --version $(VERSION) --bundle $(PACKAGES_BUNDLE) --out $(PACKAGES_OUT)
+	scripts/build-arch.sh --version $(VERSION) --bundle $(PACKAGES_BUNDLE) --out $(PACKAGES_OUT)
+	scripts/build-standalone.sh --bundle $(PACKAGES_BUNDLE) --out $(PACKAGES_OUT)
+	scripts/build-bundle.sh --out $(PACKAGES_MUSL_BUNDLE) --target $(MUSL_TARGET) --max-glibc auto --container $(MUSL_IMAGE)
+	scripts/build-apk.sh --version $(VERSION) --bundle $(PACKAGES_MUSL_BUNDLE) --out $(PACKAGES_OUT)
+	scripts/build-standalone.sh --bundle $(PACKAGES_MUSL_BUNDLE) --out $(PACKAGES_OUT)
+	rm -f $(PACKAGES_OUT)/PKGBUILD $(PACKAGES_OUT)/.SRCINFO $(PACKAGES_OUT)/slipfork-*-r0.apk
+	cd $(PACKAGES_OUT) && sha256sum *.deb *.rpm *.pkg.tar.zst *.apk *.tar.gz *.tar.gz.sha256 > SHA256SUMS
+	$(MAKE) --no-print-directory packages-probe
+
+# Fast, no-container checks: layout, portable ELF, shell syntax, publisher unit
+# tests, and a real file:// install into a throwaway prefix.
+packages-test: packages-bundle
+	scripts/check-bundle-layout.sh $(PACKAGES_BUNDLE)
+	bash -n scripts/*.sh docs/install.sh
+	dash -n docs/install.sh
+	$(UV) run --no-project python -m unittest discover -s scripts/tests
+	scripts/check-install.sh --bundle $(PACKAGES_BUNDLE)
+	$(MAKE) --no-print-directory packages-probe

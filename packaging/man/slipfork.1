@@ -1,0 +1,152 @@
+.TH SLIPFORK 1 "2026-11-21" "slipfork 0.1.0" "User Commands"
+.SH NAME
+slipfork \- copy-on-write Btrfs worlds for polyglot apps and coding agents
+.SH SYNOPSIS
+.B slipfork
+.RI [ verb ]
+.RI [ options ]
+.SH DESCRIPTION
+.B slipfork
+reads a
+.I Forkfile
+in the current directory and runs its images, databases, caches, buckets, and
+workers on native Btrfs subvolumes and
+.BR crun ,
+behind one
+.I .localhost
+domain.
+No Docker daemon is involved.
+Every world starts through a single per-user daemon that the CLI starts on demand.
+.SH VERBS
+.TP
+.B status
+Show every running world as a tree.
+Flags: \fB--json\fR, \fB-v\fR, \fB--verbose\fR.
+.TP
+.B ps
+Show only the world or fork rooted in this directory.
+Flags: \fB--json\fR, \fB-v\fR, \fB--verbose\fR.
+.TP
+.B doctor
+Check Btrfs, namespaces, and the crun + \fB:80\fR runtime, and print
+\fB\(check Ready\fR or \fB\(cross N issue(s)\fR first.
+Flags: \fB--json\fR.
+.TP
+.B up
+Boot the world declared by \fI./Forkfile\fR and return when it is ready.
+Flags: \fB--world\fR, \fB--json\fR.
+.TP
+.B down
+Stop the running world in this directory.
+Flags: \fB--json\fR.
+.TP
+.B restart
+Restart one service, or every service.
+Flags: \fB--json\fR.
+.TP
+.B fork
+Snapshot the project and world data, then boot the fork on its own URL.
+Flags: \fB--json\fR.
+.TP
+.B drop
+Stop a fork and delete its project and world-data snapshots.
+Flags: \fB-f\fR, \fB--force\fR, \fB--json\fR.
+.TP
+.B logs
+Stream merged stdout and stderr with per-service gutters.
+Flags: \fB-f\fR, \fB--follow\fR, \fB--json\fR.
+.TP
+.B shell
+Open a shell inside a service or image pod.
+Flags: \fB--json\fR.
+.TP
+.B exec
+Run a command inside a pod and forward its exit code.
+Flags: \fB--json\fR.
+.TP
+.B db
+Open psql against the world postgres.
+Flags: \fB--json\fR.
+.TP
+.B redis
+Open redis-cli against the world redis.
+Flags: \fB--json\fR.
+.TP
+.B env
+Print resolved runtime variables; secrets stay redacted unless revealed.
+Flags: \fB--reveal\fR, \fB--json\fR.
+.TP
+.B secret
+List, override, or remove local offline secrets.
+Subcommands: \fBlist\fR, \fBset\fR, \fBunset\fR.
+Flags: \fB--json\fR.
+.TP
+.B open
+Open the world or service URL in your browser, headless-aware.
+Flags: \fB--json\fR.
+.TP
+.B auth
+Pair this machine with a remote OSPP v1 endpoint.
+Flags: \fB--ospp-endpoint\fR, \fB--json\fR.
+.TP
+.B fmt
+Format a Forkfile in place.
+Flags: \fB--check\fR, \fB--json\fR.
+.TP
+.B migrate
+Convert a legacy \fIsnow.yml\fR into a Forkfile.
+Flags: \fB--write\fR, \fB--force\fR, \fB--json\fR.
+.TP
+.B completions
+Print a shell completion script for \fBbash\fR, \fBzsh\fR, or \fBfish\fR.
+.TP
+.B daemon install
+Write the per-user unit under \fB$XDG_CONFIG_HOME/systemd/user\fR.
+With \fB--ingress\fR and root, also install \fBslipfork-ingress.socket\fR,
+\fBslipfork-ingress@.service\fR, and the AppArmor profile.
+Flags: \fB--ingress\fR, \fB--json\fR.
+.TP
+.B help
+Print the overview.
+.TP
+.B version
+Print the version.
+.SH FILES
+.TP
+.I ./Forkfile
+The world declaration read by \fBup\fR.
+.TP
+.I $XDG_CONFIG_HOME/systemd/user/slipfork.service
+The per-user daemon unit \fBdaemon install\fR writes.
+.TP
+.I /usr/lib/systemd/user/slipfork.service
+The package's per-user unit copy; enable it with \fBsystemctl --user enable slipfork\fR.
+.TP
+.I /usr/lib/systemd/system/slipfork-ingress.socket
+The \fB127.0.0.1:80\fR socket unit the package ships.
+.TP
+.I /usr/lib/systemd/system/slipfork-ingress@.service
+The per-connection handoff template; \fBdaemon install --ingress\fR rewrites its
+\fBUser=\fR for the invoking developer.
+.TP
+.I /etc/systemd/system/slipfork-ingress.socket
+Where \fBdaemon install --ingress\fR writes the runtime socket unit.
+.TP
+.I /etc/apparmor.d/slipfork
+The user-namespace profile the package ships.
+.SH ENVIRONMENT
+.TP
+.B NO_COLOR
+Disable every ANSI escape; \fB--json\fR does the same for machine output.
+.TP
+.B SLIPFORK_WORLD
+The world a shell or plugin command targets.
+.TP
+.B SLIPFORK_URL
+The URL a fork or world is reachable at.
+.SH SEE ALSO
+.BR slipfork-lsp (1),
+.BR crun (1),
+.BR btrfs (8)
+.SH BUGS
+Report issues at https://github.com/OffworldNexus/slipfork/issues.

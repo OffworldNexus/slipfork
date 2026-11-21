@@ -1,0 +1,14 @@
+.TH SLIPFORK-LSP 1 "2026-11-21" "slipfork 0.1.0" "User Commands"
+.SH NAME
+slipfork-lsp \- language server for Slipfork Forkfiles
+.SH SYNOPSIS
+.B slipfork-lsp
+.SH DESCRIPTION
+.B slipfork-lsp
+speaks the Language Server Protocol over stdio and edits Forkfiles: diagnostics,
+completion, hover for keys and service fields, and formatting.
+It never touches Btrfs, \fBcrun\fR, or the network, so it runs on Linux, macOS,
+and Windows; \fIslipfork\fR itself runs only on Linux.
+Editors launch it through the Zed extension or any LSP client.
+.SH SEE ALSO
+.BR slipfork (1)

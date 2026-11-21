@@ -1,0 +1,15 @@
+# The stateless per-connection handoff the socket unit starts.
+# `sudo slipfork daemon install --ingress` rewrites `User=` and
+# `XDG_RUNTIME_DIR=` for the invoking developer before the socket is enabled.
+# Starting this packaged copy as root fails closed in `__ingress`: the daemon
+# socket lives in a user runtime dir this template cannot name.
+[Unit]
+Description=Slipfork ingress connection handoff
+After=slipfork-ingress.socket
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/slipfork __ingress
+StandardInput=socket
+StandardOutput=socket
+NoNewPrivileges=true

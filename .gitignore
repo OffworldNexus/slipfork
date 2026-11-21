@@ -24,3 +24,5 @@
 *.swp
 *~
 .DS_Store
+scripts/__pycache__/
+scripts/tests/__pycache__/

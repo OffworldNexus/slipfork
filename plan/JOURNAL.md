@@ -2515,3 +2515,5 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-21T17:10 [M3.41.6] (lead) fix pass 1: compose root injection, bind in main, tests unconditional, EACCES remedy
 - 2026-11-21T17:12 [M3.41.6] (lead) status active -> review
 - 2026-11-21T17:12 [M3.41.6] (lead) status review -> done
+- 2026-11-21T17:15 [M3.41.3] (lead) status review -> review
+- 2026-11-21T17:20 [M3.41.3] (lead) status review -> done
