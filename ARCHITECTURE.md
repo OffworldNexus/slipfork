@@ -34,6 +34,12 @@ root and no separate daemon executable.
 process stdio, so `slipfork-lsp` ships as a standalone binary on Linux, macOS, and Windows with no
 Btrfs, `crun`, or daemon dependency. The `slipfork` binary never links the language server.
 
+`packages/opencode-slipfork/src/index.ts` is the third composition root: the OpenCode V2 plugin
+reads `PATH` and `SYSTEMROOT` (the same allowlist as `editors/zed/src/lib.rs`) and shells the
+shipped `slipfork` binary. Its coordinator is pure, and every worktree, shell, and session hook
+forks, routes, or reaps a world through that injected CLI boundary — the plugin embeds no Btrfs or
+daemon logic.
+
 | Crate | Owns | Port → adapter |
 | :--- | :--- | :--- |
 | `slipfork` | CLI parsing, rendering, daemon composition; daemon-side `SecretVault` + `DaemonControl` wiring | builds the tree |

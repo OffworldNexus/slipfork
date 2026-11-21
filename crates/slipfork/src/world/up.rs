@@ -152,6 +152,7 @@ impl Session {
                         "{}",
                         json!({
                             "fork": reply["fork"],
+                            "world": reply["world"],
                             "project": reply["project"],
                             "url": reply["url"],
                             "elapsed_ms": reply["elapsed_ms"],

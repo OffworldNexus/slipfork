@@ -56,7 +56,7 @@ Focused non-E2E tests exist **only** for self-contained language, protocol, and 
 - **Atomic project, stamp & database/S3 CoW forks (`slipfork fork` & `drop`):**
   Fork a running world with populated `.venv` / `node_modules`, `.slipfork/` input-hash stamps, and live PostgreSQL/Redis/S3 state in milliseconds — skipping unchanged `@<tool>` and `when changed(...)` steps on fork boot, re-running them only when the fork edits a lockfile or watched input, keeping code, bucket objects, and database rows completely separated from the parent world, and refusing `slipfork drop` on dirty checkouts without `--force`.
 - **Parallel AI coding-agent sessions (`@slipfork/opencode`):**
-  Open and close concurrent OpenCode agent worktrees against one repository, giving each agent session its own Btrfs fork and `.localhost` domain and reaping all containers, process groups, and snapshots cleanly when the session ends.
+  Open and close concurrent OpenCode agent worktrees against one repository, giving each agent session its own Btrfs fork at `<project>/.forks/<fork>` and `.localhost` domain, verifying that `create.before` exports `SLIPFORK_WORLD` + `SLIPFORK_URL` without rewriting the command, that the session context line names the fork's URL, and that idle sessions (with no background shell or subagent) reap only the forks the plugin created — with `slipfork`'s refusal remedies surfaced verbatim off Btrfs and a live fork/drop journey gated on `SLIPFORK_TEST_ROOT`.
 
 ---
 

@@ -163,7 +163,7 @@ pub(super) fn help_text(topic: HelpTopic, color: bool) -> String {
                  \x20 NAME     Fork and branch name (default: the checkout's git branch)\n\
                  \n\
                  Options:\n\
-                 \x20 --json   Emit {{\"fork\",\"project\",\"url\",\"elapsed_ms\"}} as JSON\n\
+                 \x20 --json   Emit {{\"fork\",\"world\",\"project\",\"url\",\"elapsed_ms\"}} as JSON\n\
                  \x20 -h, --help\n\
                  \n\
                  Example:\n\

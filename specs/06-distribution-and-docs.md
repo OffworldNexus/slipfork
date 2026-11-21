@@ -192,3 +192,38 @@ Every published command, flag, and output line is executed by the test plan in [
 ## 10. Repository Layout
 
 One home per artifact: build/check/publish helpers live in `scripts/` (`build-deb`, `build-rpm`, `build-standalone`, `check-portable-elf.sh`, `publish_packages.py`), the universal installer is `docs/install.sh`, and distro recipes plus systemd units live in `packaging/`. `packaging/` never carries a second installer implementation, and `scripts/` never hardcodes a dependency floor that `check-portable-elf.sh` did not measure.
+
+## 11. OpenCode Plugin (`@slipfork/opencode`)
+
+Parallel agents editing one checkout collide on files, ports, and databases. `@slipfork/opencode` gives every OpenCode session its own Btrfs fork — code, `.venv`/`node_modules`, and live PostgreSQL/S3 state — behind one `http://<fork>--<world>.localhost` URL.
+
+```console
+$ bun add -d @slipfork/opencode
+```
+
+```jsonc
+// .opencode/opencode.jsonc
+{
+  "plugin": ["@slipfork/opencode"]
+}
+```
+
+The plugin shells out to the `slipfork` binary already on your `PATH` (or the `binary` option), so it adds no second CLI and no embedded world logic. Boot the parent world once with `slipfork up`; every fork then appears under it in `slipfork status`.
+
+```mermaid
+flowchart LR
+  Session["OpenCode session"] --> WT["worktree.transform"]
+  WT -->|"slipfork fork <fork>"| Checkout["<project>/.forks/<fork>"]
+  Checkout --> URL["http://<fork>--<world>.localhost"]
+  Session --> Shell["shell create.before"]
+  Shell --> Env["SLIPFORK_WORLD + SLIPFORK_URL"]
+  Session --> Idle["experimental.idle"]
+  Idle -->|"slipfork drop <fork>"| Gone["fork reaped"]
+```
+
+Inside a fork checkout the plugin exports `SLIPFORK_WORLD` and `SLIPFORK_URL` so your shell commands and previews can target the fork. It also appends one context line naming that URL and reaps the fork with `slipfork drop <fork>` when the session goes idle.
+
+!!! warning "Sessions are ephemeral"
+    A fork is snapshotted at create time. Commit work you need to keep before ending the session; the plugin drops only the forks it created and never touches an existing `.forks/<name>` checkout.
+
+When the CLI refuses — a non-Btrfs project, a dirty checkout — the plugin surfaces the CLI's own `message` + `next:` remedy verbatim. Run `slipfork doctor` when no decoded remedy arrives, and set `binary` in the plugin options when `slipfork` is not on `PATH`.

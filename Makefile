@@ -9,9 +9,11 @@ LIVE_SUITES := \
 	slipfork-image/critical_oci_live \
 	slipfork-image/critical_dockerfile_live \
 	slipfork-world/critical_pod_runtime \
-	slipfork/critical_world_journey
+	slipfork/critical_world_journey \
+	slipfork/critical_status_live \
+	slipfork/critical_fork_live
 
-.PHONY: fmt clippy test check guard test-tools live-test lsp-assets
+.PHONY: fmt clippy test check guard test-tools live-test lsp-assets js-test typecheck packages-check
 
 fmt:
 	$(CARGO) fmt --all
@@ -27,6 +29,19 @@ check:
 	$(CARGO) clippy --workspace --all-targets -- -D warnings
 	$(CARGO) test --workspace
 	bash editors/zed/check.sh
+	$(MAKE) packages-check
+
+# The plugin's tests spawn the real binary from this workspace, never a stand-in.
+js-test:
+	$(CARGO) build -p slipfork
+	cd packages/opencode-slipfork && test -d node_modules || bun install --silent
+	cd packages/opencode-slipfork && SLIPFORK_BIN=$(CURDIR)/target/debug/slipfork bun test
+
+typecheck:
+	cd packages/opencode-slipfork && test -d node_modules || bun install --silent
+	cd packages/opencode-slipfork && npx tsc --noEmit
+
+packages-check: typecheck js-test
 
 guard:
 	$(UV) run --no-project tools/guard.py
