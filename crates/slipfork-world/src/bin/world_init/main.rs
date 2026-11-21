@@ -261,6 +261,17 @@ pub(crate) fn respond(
                 }
             }
         }
+        Request::Dial { id, .. } => (
+            failure_frame(
+                id,
+                "dial-requires-socket",
+                &Fault::new(
+                    "dial must use the world control socket",
+                    "send the dial request to `<pods>/control.sock`, not the supervisor stdin",
+                ),
+            ),
+            false,
+        ),
         Request::List { id, .. } => (
             InitFrame::Reply {
                 v: PROTOCOL_VERSION,
@@ -436,11 +447,25 @@ pub(crate) fn canonical(
     fs::canonicalize(path).map_err(|source| Fault::cause(action, remedy, source))
 }
 
+/// This init's argv, read from `/proc/self/cmdline`; the supervisor injects every path.
+fn argv() -> Result<Vec<std::ffi::OsString>, Fault> {
+    use std::os::unix::ffi::OsStringExt;
+
+    let bytes = fs::read("/proc/self/cmdline")
+        .map_err(|source| Fault::cause("argv read", REMEDY_ARGS, source))?;
+    Ok(bytes
+        .split(|byte| *byte == 0)
+        .filter(|part| !part.is_empty())
+        .skip(1)
+        .map(|part| std::ffi::OsString::from_vec(part.to_vec()))
+        .collect())
+}
+
 fn parse_args() -> Result<Args, Fault> {
     let mut namespaces = None;
     let mut pods = None;
     let mut crun = None;
-    let mut args = std::env::args_os().skip(1);
+    let mut args = argv()?.into_iter();
     while let Some(flag) = args.next() {
         let flag = flag
             .to_str()

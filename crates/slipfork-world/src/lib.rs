@@ -19,19 +19,27 @@
 //! # }
 //! ```
 
+#![deny(unsafe_code)]
+
 pub mod boot;
+#[allow(unsafe_code)]
 mod btrfs;
 pub mod control;
 mod engine;
 mod error;
+#[allow(unsafe_code)]
+pub mod fdpass;
 mod layout;
 pub mod namespaces;
 mod pod;
 mod port;
+#[allow(unsafe_code)]
 mod reap;
 mod resources;
+#[allow(unsafe_code)]
 mod runtime_dir;
 mod secure_file;
+#[allow(unsafe_code)]
 mod supervisor;
 
 pub use boot::{
@@ -46,6 +54,7 @@ pub use control::{
 };
 pub use engine::BtrfsEngine;
 pub use error::{Error, NameKind, Result};
+pub use fdpass::{PAYLOAD_CAP, recv_fd, send_fd};
 pub use layout::{ForkName, StoreLayout, WorldName};
 pub use namespaces::{NAMESPACE_KINDS, NamespaceIdentity, NamespaceTable};
 pub use pod::{Bind, BindSource, PodBundle, PodEnv, PodFile, PodHost, PodSpec, write_bundle};

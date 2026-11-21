@@ -1116,6 +1116,7 @@ dependencies = [
  "serde_json",
  "slipfork-forkfile",
  "slipfork-image",
+ "slipfork-ingress",
  "slipfork-world",
 ]
 
@@ -1153,6 +1154,7 @@ dependencies = [
  "libc",
  "serde_json",
  "slipfork-forkfile",
+ "slipfork-world",
  "thiserror",
 ]
 

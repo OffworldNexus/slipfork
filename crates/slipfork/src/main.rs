@@ -7,6 +7,7 @@
 
 mod cli;
 mod commands;
+mod daemon;
 mod render;
 mod world;
 
@@ -38,6 +39,10 @@ fn main() -> ExitCode {
     };
     // SAFETY: `geteuid(2)`/`getegid(2)` only read this process's credentials.
     let (uid, gid) = unsafe { (libc::geteuid(), libc::getegid()) };
+    let state_home = std::env::var_os("XDG_STATE_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/state")))
+        .unwrap_or_else(|| PathBuf::from(format!("/var/tmp/slipfork-state-{uid}")));
     let host = world::HostEnv {
         exe,
         path: std::env::var_os("PATH")
@@ -46,12 +51,17 @@ fn main() -> ExitCode {
         runtime_dir: std::env::var_os("XDG_RUNTIME_DIR")
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from(format!("/run/user/{uid}"))),
+        state_dir: state_home.join("slipfork"),
         arch: std::env::consts::ARCH,
         uid,
         gid,
         resolv_conf: PathBuf::from("/etc/resolv.conf"),
     };
 
+    // The daemon is the same binary in a hidden mode; it owns every world under this UID.
+    if args.first().is_some_and(|arg| arg == "__daemon") {
+        return daemon::run(host);
+    }
     match cli::CommandLine::parse(&args) {
         Ok(line) => line.run(commands::Session::new(cwd, color, host)),
         Err(error) => {

@@ -9,9 +9,11 @@
 
 use std::cell::RefCell;
 use std::fs;
-use std::net::{TcpStream, ToSocketAddrs};
-use std::os::fd::AsRawFd;
+use std::io::{Read, Write};
+use std::net::{TcpListener, TcpStream, ToSocketAddrs};
+use std::os::fd::{AsFd, AsRawFd};
 use std::os::unix::ffi::OsStrExt;
+use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -42,6 +44,7 @@ image app . {
   post-deploy: sh -c 'for i in $(seq 50); do grep -q svc order.txt && break; sleep 0.1; done; grep -q svc order.txt && printf post >> order.txt'
   service api {
     port 8000
+    route /
     run: @uv run python app.py
   }
   service worker {
@@ -220,6 +223,7 @@ impl Journey {
             .current_dir(project)
             .env("NO_COLOR", "1")
             .env("XDG_RUNTIME_DIR", &self.runtime)
+            .env("XDG_STATE_HOME", self.run.join("state"))
             .output()
             .expect("the slipfork binary must be runnable")
     }
@@ -233,8 +237,10 @@ impl Drop for Journey {
                 .current_dir(project)
                 .env("NO_COLOR", "1")
                 .env("XDG_RUNTIME_DIR", &self.runtime)
+                .env("XDG_STATE_HOME", self.run.join("state"))
                 .output();
         }
+        self.shutdown_daemon();
         let scope = self.run.as_os_str().as_bytes();
         let survived = !wait_until(
             || {
@@ -249,7 +255,13 @@ impl Drop for Journey {
                 .into_iter()
                 .filter(|pid| belongs_to_run(*pid, scope))
                 .collect();
-            eprintln!("journey cleanup: fail closed: `slipfork-world-init` survived in {leaked:?}");
+            let message =
+                format!("fail closed: `slipfork-world-init` survived teardown in {leaked:?}");
+            if std::thread::panicking() {
+                eprintln!("journey cleanup: {message}");
+            } else {
+                panic!("{message}");
+            }
         }
         self.destroy_subvolumes();
         if let Err(error) = fs::remove_dir_all(&self.run) {
@@ -262,6 +274,18 @@ impl Drop for Journey {
 }
 
 impl Journey {
+    /// Stops the per-user daemon this journey spawned, so the next run starts clean.
+    fn shutdown_daemon(&self) {
+        let Ok(mut socket) = UnixStream::connect(self.runtime.join("daemon.sock")) else {
+            return;
+        };
+        let _ = socket
+            .write_all(b"{\"v\":1,\"id\":\"cleanup\",\"method\":\"shutdown\",\"params\":{}}\n");
+        let _ = socket.flush();
+        let mut reply = String::new();
+        let _ = socket.read_to_string(&mut reply);
+    }
+
     /// Sealed subvolumes (the project root included) need `SNAP_DESTROY_V2`, not `rmdir`.
     fn destroy_subvolumes(&self) {
         let engine = BtrfsEngine::new(StoreLayout::new(&self.run));
@@ -445,6 +469,36 @@ fn wait_until(mut condition: impl FnMut() -> bool, timeout: Duration) -> bool {
     false
 }
 
+/// A real `:80` connection is handed to `ingress.accept`, routed, and answered by the world pod.
+fn assert_ingress(runtime: &Path, world: &str) {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind the ingress probe listener");
+    let mut client = TcpStream::connect(listener.local_addr().expect("probe address"))
+        .expect("connect the ingress probe");
+    let (accepted, _) = listener.accept().expect("accept the probe connection");
+    let daemon = UnixStream::connect(runtime.join("daemon.sock")).expect("connect daemon.sock");
+    slipfork_ingress::IngressHandoff::new(1)
+        .send(&daemon, accepted.as_fd())
+        .expect("hand the accepted :80 descriptor to the daemon");
+    drop(accepted);
+    client
+        .set_read_timeout(Some(Duration::from_secs(30)))
+        .expect("configure the ingress probe");
+    client
+        .write_all(
+            format!("GET / HTTP/1.1\r\nHost: {world}.localhost\r\nConnection: close\r\n\r\n")
+                .as_bytes(),
+        )
+        .expect("write the ingress request");
+    let mut response = String::new();
+    client
+        .read_to_string(&mut response)
+        .expect("read the ingress response");
+    assert!(
+        response.starts_with("HTTP/1.1 200") && response.contains("ok"),
+        "the world's own bytes must return through `dial_tcp`: {response}"
+    );
+}
+
 #[test]
 fn world_up_restart_down_journey() {
     let journey = Journey::new();
@@ -468,6 +522,7 @@ fn world_up_restart_down_journey() {
         first_out.contains("✓ Ready -> http://good.localhost"),
         "ready line missing:\n{first_out}"
     );
+    assert_ingress(&journey.runtime, "good");
     assert!(
         first_err.contains("progress: ") && first_err.contains(".slipfork/supervisor.log"),
         "human mode must name the supervisor log:\n{first_err}"

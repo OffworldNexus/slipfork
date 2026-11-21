@@ -147,6 +147,30 @@ Every local command talks to one socket at `<runtime_dir>/daemon.sock`, and the 
 
 The CLI and the ingress always **connect to** `daemon.sock`; the daemon never dials out to a client, and no second control socket exists.
 
+`up`, `down`, and `restart` stream progress on that same connection: zero or more
+`{"v":1,"id":<string>,"event":{…}}` frames precede exactly one final `ok` or `error` frame. A
+renderer never parses human text, and an unknown `v` or `method` answers a typed `error` while the
+connection stays open.
+
+| Event | Fields |
+| :--- | :--- |
+| `started` | `step`, `total`, `kind`, `label` |
+| `log` | `line`, `step`, `total`, `label` |
+| `finished` / `up-to-date` | `kind`, `label`, `detail`, `elapsed_ms` |
+| `failed` | `label`, `line`, `message`, optional `remedy` |
+| `ready` | `world`, `url`, `pods_dir` |
+| `stopped` | `world`, `elapsed_ms` |
+
+`up` spawns the detached `__supervise` child in its own session and relays its events while `ps`
+and `ingress.accept` keep answering. `down` sends the world `Shutdown`, waits for the process group
+to exit, then `SIGKILL`s it; `restart` reuses the world control socket and streams its phases.
+
+Every owned world is recorded in `<state_dir>/worlds.json` (`project`, `world`, `fork`, `pods_dir`,
+`supervisor_pid`) and rewritten atomically. On start the daemon re-attaches worlds whose socket
+answers and forgets the rest, while `<project>/.slipfork/world.json` remains a cache.
+
+`slipfork __daemon` is the hidden mode of the same binary, and the client owns its lifetime.
+
 ### Ingress ownership
 
 `slipfork-ingress` owns HTTP/WebSocket framing and route matching: preserve-by-default prefixes, `strip-prefix`, `rewrite`, `exact`, and `domain` authority filters. A table that would route the same request two ways — duplicate prefixes, two catch-alls, port `0`, or a `domain <id>` that is not declared — is refused before it serves a connection; a non-`.localhost` host answers `400`, an unknown `.localhost` world answers `421`, and an unmatched authority or path inside a known world answers `404`, never a fallback.

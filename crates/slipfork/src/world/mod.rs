@@ -9,7 +9,6 @@ mod runtime;
 mod supervise;
 mod up;
 
-use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -27,6 +26,8 @@ pub struct HostEnv {
     pub path: Vec<PathBuf>,
     /// `$XDG_RUNTIME_DIR` (a tmpfs mount), or `/run/user/<uid>`.
     pub runtime_dir: PathBuf,
+    /// `$XDG_STATE_HOME/slipfork`, or `~/.local/state/slipfork`.
+    pub state_dir: PathBuf,
     /// Host architecture name (`std::env::consts::ARCH`).
     pub arch: &'static str,
     /// Invoking uid.
@@ -110,9 +111,29 @@ pub(super) fn state_path(project: &Path) -> PathBuf {
     project.join(".slipfork/world.json")
 }
 
-pub(super) fn read_state(project: &Path) -> Option<WorldState> {
-    let bytes = fs::read(state_path(project)).ok()?;
-    serde_json::from_slice(&bytes).ok()
+/// Derives the world name from `--world` or the project directory, sanitized to `[a-z0-9._-]`.
+pub(crate) fn world_name(
+    project: &Path,
+    requested: Option<&str>,
+) -> Result<slipfork_world::WorldName, String> {
+    let raw = match requested {
+        Some(name) => name.to_owned(),
+        None => project
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("world")
+            .to_lowercase()
+            .chars()
+            .map(|ch| {
+                if ch.is_ascii_alphanumeric() || ch == '-' || ch == '.' || ch == '_' {
+                    ch
+                } else {
+                    '-'
+                }
+            })
+            .collect(),
+    };
+    slipfork_world::WorldName::parse(&raw).map_err(|error| error.to_string())
 }
 
 pub(super) fn fail(message: impl std::fmt::Display, next: &str) -> ExitCode {

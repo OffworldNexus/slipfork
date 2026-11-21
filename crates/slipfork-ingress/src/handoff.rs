@@ -13,7 +13,7 @@ use std::os::unix::net::UnixStream;
 
 use serde_json::{Value, json};
 
-use crate::fdpass::{recv_fd, send_fd};
+use slipfork_world::fdpass::{recv_fd, send_fd};
 
 /// Method name of the control frame that carries the accepted connection.
 pub const ACCEPT_METHOD: &str = "ingress.accept";

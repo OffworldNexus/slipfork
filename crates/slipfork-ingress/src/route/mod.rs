@@ -10,6 +10,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use slipfork_forkfile::Route;
 
 mod error;
+mod extract;
 mod rules;
 
 pub use error::{RouteError, TableError};

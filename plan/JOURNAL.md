@@ -2403,3 +2403,7 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-21T13:11 [M3.40.7] (lead) created (task) status/ps dynamic tree, doctor rows, and daemon install user+ingress units
 - 2026-11-21T13:11 [M3.40.5] (lead) edited fields
 - 2026-11-21T13:18 [M3.40.3] (lead) status active -> done
+- 2026-11-21T13:18 [M3.40.4] (lead) status ready -> active
+- 2026-11-21T13:18 [M3.40.4] (lead) attempt 1/3 started
+- 2026-11-21T13:18 [M3.40.4] (lead) base 4537cb2019901ae230d3b2813133697142c7d040
+- 2026-11-21T13:48 [M3.40.4] (lead) status active -> done

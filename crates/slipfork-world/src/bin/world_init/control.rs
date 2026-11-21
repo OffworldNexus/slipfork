@@ -2,14 +2,20 @@
 
 use std::fs;
 use std::io::{self, BufRead, BufReader, Write};
+use std::net::{SocketAddr, TcpStream};
+use std::os::fd::AsFd;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use slipfork_world::control::{self as wire, InitFrame};
 
 use crate::pod::InitWorld;
 use crate::{Fault, REMEDY_PROTOCOL, REMEDY_RUNTIME, respond};
+
+/// Longest a dial may block before the world reports a refused port.
+const DIAL_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Binds `<pods>/control.sock` mode `0600`, replacing a stale socket from a killed world.
 pub(crate) fn bind(pods_root: &Path) -> Result<(UnixListener, PathBuf), Fault> {
@@ -65,9 +71,39 @@ pub(crate) fn handle(listener: &UnixListener, world: &mut InitWorld) -> Result<b
         wire::decode_request(line.trim())
             .map_err(|source| Fault::cause("control socket decode", REMEDY_PROTOCOL, source))?
     };
+    // A dial reply is a status byte plus an optional descriptor, not an NDJSON `InitFrame`.
+    if let wire::Request::Dial { port, .. } = request {
+        dial(&mut stream, port)?;
+        return Ok(false);
+    }
     let (frame, shutdown) = respond(world, request, &mut |frame| reply(&mut stream, &frame))?;
     reply(&mut stream, &frame)?;
     Ok(shutdown)
+}
+
+/// Connects to `127.0.0.1:<port>` inside this world netns and hands the fd to the client.
+///
+/// Success is one `sendmsg` carrying payload `[0]` plus the descriptor; a refused or unreachable
+/// port is payload `[1]` plus one JSON `ControlError`, so the daemon never invents an fd.
+fn dial(stream: &mut UnixStream, port: u16) -> Result<(), Fault> {
+    let address = SocketAddr::from(([127, 0, 0, 1], port));
+    match TcpStream::connect_timeout(&address, DIAL_TIMEOUT) {
+        Ok(upstream) => slipfork_world::fdpass::send_fd(stream, &[0], Some(upstream.as_fd()))
+            .map_err(|source| Fault::cause("dial descriptor reply", REMEDY_PROTOCOL, source)),
+        Err(source) => {
+            let error = slipfork_world::ControlError {
+                code: "dial-refused".to_owned(),
+                message: format!("cannot connect to 127.0.0.1:{port}: {source}"),
+            };
+            let mut payload = vec![1_u8];
+            payload.extend(
+                wire::encode(&error)
+                    .map_err(|error| Fault::cause("dial error encode", REMEDY_PROTOCOL, error))?,
+            );
+            slipfork_world::fdpass::send_fd(stream, &payload, None)
+                .map_err(|source| Fault::cause("dial error reply", REMEDY_PROTOCOL, source))
+        }
+    }
 }
 
 fn reply(stream: &mut UnixStream, frame: &InitFrame) -> Result<(), Fault> {

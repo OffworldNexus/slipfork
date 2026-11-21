@@ -7,6 +7,7 @@
 //! seals `python:3.13-slim`, `postgres:18`, `redis:7`, and SeaweedFS into the test store itself.
 
 use std::fs;
+use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
@@ -638,6 +639,36 @@ fn world_pod_lifecycle() {
     wait_for_file(
         &world_a.project.join("probe/svc.ready"),
         Duration::from_secs(60),
+    );
+    // The daemon reaches a world pod by asking the init for a `Dial`ed descriptor, never by
+    // connecting from the host (the service port is not reachable outside the world netns).
+    let mut dialed = supervisor_a
+        .dial_tcp(SVC_PORT)
+        .expect("the init must hand back a world-loopback connection");
+    dialed
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .expect("configure the dialed stream");
+    dialed
+        .write_all(b"GET / HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")
+        .expect("write the dialed request");
+    let mut response = String::new();
+    dialed
+        .read_to_string(&mut response)
+        .expect("read the dialed response");
+    assert!(
+        response.contains("world-ok"),
+        "dial_tcp must return the pod's own bytes: {response:?}"
+    );
+    let refused = supervisor_a
+        .dial_tcp(1)
+        .expect_err("a closed world port must be refused");
+    assert!(
+        matches!(refused, slipfork_world::Error::Protocol { .. }),
+        "a refused dial must be typed: {refused}"
+    );
+    assert!(
+        refused.to_string().contains("dial-refused"),
+        "a refused dial must carry the init's code: {refused}"
     );
 
     let pg_spec = postgres(
