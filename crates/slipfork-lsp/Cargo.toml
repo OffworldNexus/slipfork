@@ -3,6 +3,11 @@ name = "slipfork-lsp"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+description = "Forkfile language server (standalone, editor-agnostic)"
+
+[[bin]]
+name = "slipfork-lsp"
+path = "src/main.rs"
 
 [dependencies]
 serde_json.workspace = true

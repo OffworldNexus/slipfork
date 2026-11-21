@@ -73,8 +73,8 @@ Focused non-E2E tests exist **only** for self-contained language, protocol, and 
 
 - **`Forkfile` header, ingress / `arg` / `s3 { cdn <id> }` rules, `@<tool>` expansion & formatting:**
   Verify `# forkfile: 0.1` version checking, `route` grammar (`exact`, `strip-prefix` vs `rewrite` mutual exclusion, `domain <id | prefix.*>` authority checks), `s3 { cdn <id> }` and `domain <id>` `.domain` / `.url` typing, flat global symbol uniqueness, secret-taint rejection in `arg`, workspace lockfile discovery and `(image, lockfile_dir)` DAG deduplication, boolean `on` expressions, multi-branch `line:col` checking, and comment-preserving `slipfork fmt` / `slipfork fmt --check`.
-- **`OSPP v1` wire framing, `slipfork lsp` & Zed extension:**
-  Verify `OSPP v1` P-256 challenge-response authentication, fail-closed `version: 2` validation, and live `Forkfile` diagnostics, `@<tool>` hover tooltips, go-to-definition, and format-on-save in `slipfork lsp` and the Zed extension.
+- **`OSPP v1` wire framing, `slipfork-lsp` & Zed extension:**
+  Verify `OSPP v1` P-256 challenge-response authentication, fail-closed `version: 2` validation, and live `Forkfile` diagnostics, `@<tool>` hover tooltips, go-to-definition, and format-on-save in the standalone `slipfork-lsp` binary and the Zed extension that resolves it.
 
 ---
 

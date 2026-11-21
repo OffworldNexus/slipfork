@@ -2,7 +2,8 @@
 //! `slipfork-forkfile` parser, checker, and formatter.
 //!
 //! The library never reads the process environment or binds a socket. The
-//! composition root (`slipfork lsp`) passes its stdin/stdout handles in.
+//! composition root (`crates/slipfork-lsp/src/main.rs`) passes its stdin/stdout
+//! handles in.
 
 mod document;
 mod features;

@@ -11,7 +11,7 @@ LIVE_SUITES := \
 	slipfork-world/critical_pod_runtime \
 	slipfork/critical_world_journey
 
-.PHONY: fmt clippy test check guard test-tools live-test
+.PHONY: fmt clippy test check guard test-tools live-test lsp-assets
 
 fmt:
 	$(CARGO) fmt --all
@@ -26,12 +26,53 @@ check:
 	$(CARGO) fmt --all -- --check
 	$(CARGO) clippy --workspace --all-targets -- -D warnings
 	$(CARGO) test --workspace
+	bash editors/zed/check.sh
 
 guard:
 	$(UV) run --no-project tools/guard.py
 
 test-tools:
 	$(UV) run --no-project -m unittest discover -s tools/tests
+
+# Builds the Zed extension's release asset for one target. The name (and the
+# archive's top-level directory) must match `asset_for` in editors/zed/src/lib.rs.
+LSP_TARGET ?=
+lsp-assets:
+	@set -eu; \
+	target="$(LSP_TARGET)"; \
+	if [ -z "$$target" ]; then target=$$(rustc -vV | sed -n 's/^host: //p'); fi; \
+	case "$$target" in \
+	  x86_64-*-linux-*) platform=linux; arch=x86_64 ;; \
+	  aarch64-*-linux-*) platform=linux; arch=aarch64 ;; \
+	  x86_64-apple-darwin) platform=darwin; arch=x86_64 ;; \
+	  aarch64-apple-darwin) platform=darwin; arch=aarch64 ;; \
+	  x86_64-*-windows-*) platform=windows; arch=x86_64 ;; \
+	  aarch64-*-windows-*) platform=windows; arch=aarch64 ;; \
+	  *) echo "lsp-assets: no release asset for $$target; next: pass TARGET=<linux|darwin|windows triple> on x86_64 or aarch64" >&2; exit 2 ;; \
+	esac; \
+	name="slipfork-lsp-$$platform-$$arch"; \
+	$(CARGO) build -p slipfork-lsp --bin slipfork-lsp --release --target "$$target"; \
+	stage="dist/$$name"; \
+	rm -rf "$$stage"; \
+	mkdir -p "$$stage"; \
+	if [ "$$platform" = windows ]; then \
+	  cp "target/$$target/release/slipfork-lsp.exe" "$$stage/slipfork-lsp.exe"; \
+	else \
+	  cp "target/$$target/release/slipfork-lsp" "$$stage/slipfork-lsp"; \
+	fi; \
+	if [ -f LICENSE ]; then \
+	  cp LICENSE "$$stage/LICENSE"; \
+	else \
+	  printf 'Slipfork is distributed under the terms published with the source at\nhttps://github.com/OffworldNexus/slipfork\n' > "$$stage/LICENSE"; \
+	fi; \
+	if [ "$$platform" = windows ]; then \
+	  command -v zip >/dev/null 2>&1 || { echo "lsp-assets: zip is missing; next: install zip to build the Windows archive" >&2; exit 2; }; \
+	  ( cd dist && zip -qr "$$name.zip" "$$name" ); \
+	  echo "dist/$$name.zip"; \
+	else \
+	  tar -czf "dist/$$name.tar.gz" -C dist "$$name"; \
+	  echo "dist/$$name.tar.gz"; \
+	fi
 
 live-test:
 	@test -n "$(SLIPFORK_TEST_ROOT)" || { \

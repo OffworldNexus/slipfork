@@ -21,7 +21,6 @@ flowchart TD
   Root --> Ingress
   Root --> Ospp
   Root --> Vcs
-  Root --> Lsp
 ```
 
 ## Crate map
@@ -30,6 +29,10 @@ flowchart TD
 `std::env`, probes `/proc`, or binds ambient sockets and filesystems. `slipfork daemon` is a mode
 of that same binary and builds the same constructor-injected tree — there is no second composition
 root and no separate daemon executable.
+
+`crates/slipfork-lsp/src/main.rs` is the one other composition root: it reads only argv and the
+process stdio, so `slipfork-lsp` ships as a standalone binary on Linux, macOS, and Windows with no
+Btrfs, `crun`, or daemon dependency. The `slipfork` binary never links the language server.
 
 | Crate | Owns | Port → adapter |
 | :--- | :--- | :--- |
@@ -40,7 +43,7 @@ root and no separate daemon executable.
 | `slipfork-ingress` | HTTP/WS framing and `.localhost` route matching | injected `TcpListener` |
 | `slipfork-ospp` | `OSPP v1` frames, device keys, HPKE, dumps | `OsppClient` → `WsOsppClient` |
 | `slipfork-vcs` | worktrees, branch topology, dirty snapshots | `VcsWorkspace` → `GitWorkspace` / `JjWorkspace` |
-| `slipfork-lsp` | language server over stdio | no port |
+| `slipfork-lsp` | standalone language server over stdio; own composition root and portable binary | no port |
 
 The canonical port set is exactly `WorldEngine`, `BaseImageBuilder`, `SecretVault`,
 `DaemonControl`, `OsppClient`, and `VcsWorkspace`. No single-impl mock trait sits beside them; a

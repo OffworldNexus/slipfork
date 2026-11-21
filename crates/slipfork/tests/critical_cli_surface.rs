@@ -80,11 +80,10 @@ fn help_and_version_are_the_shipped_surface() {
     assert!(help.contains("Usage: slipfork <command>"), "{help}");
     assert_eq!(
         shipped_verbs(&help),
-        [
-            "up", "down", "restart", "fmt", "migrate", "lsp", "help", "version"
-        ],
+        ["up", "down", "restart", "fmt", "migrate", "help", "version"],
         "{help}"
     );
+    assert!(!help.contains("  lsp "), "no lsp row may ship: {help}");
     assert!(help.contains("Examples:\n  slipfork up\n"), "{help}");
     assert!(!help.contains(ANSI), "piped output must stay plain");
 
@@ -100,6 +99,21 @@ fn help_and_version_are_the_shipped_surface() {
     let bare = run(&[]);
     assert!(bare.status.success());
     assert_eq!(bare.stdout, help.as_bytes());
+
+    // The language server is its own binary; the CLI verb is gone for good.
+    let retired = run(&["lsp"]);
+    assert_eq!(retired.status.code(), Some(2));
+    let stderr = String::from_utf8(retired.stderr).expect("errors are UTF-8");
+    assert!(stderr.contains("unknown argument `lsp`"), "{stderr}");
+    assert!(
+        stderr.contains("standalone slipfork-lsp binary"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("next:"), "{stderr}");
+    let retired_help = run(&["lsp", "--help"]);
+    assert_eq!(retired_help.status.code(), Some(2));
+    let stderr = String::from_utf8(retired_help.stderr).expect("errors are UTF-8");
+    assert!(stderr.contains("unknown argument `lsp`"), "{stderr}");
 
     let unknown = run(&["frobnicate"]);
     assert_eq!(unknown.status.code(), Some(2));

@@ -130,4 +130,4 @@ Each HTTP `service` declares one public `port <u16>` (exposed as `$port` in `For
 
 ## 8. Static Validation, Formatting & Editor Support
 
-Slipfork validates `# forkfile: 0.1` and type-checks **every `on` feature branch at once** before starting any container (`Forkfile:line:col` caret spans) and ships first-party `slipfork fmt`, `slipfork lsp`, and a Zed extension.
+Slipfork validates `# forkfile: 0.1` and type-checks **every `on` feature branch at once** before starting any container (`Forkfile:line:col` caret spans) and ships first-party `slipfork fmt`, a standalone `slipfork-lsp` language server, and a Zed extension that finds or downloads that binary.

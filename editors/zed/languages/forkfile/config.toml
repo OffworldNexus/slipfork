@@ -4,7 +4,7 @@ path_suffixes = ["Forkfile", "forkfile"]
 line_comments = ["# "]
 tab_size = 2
 autoclose_before = "}])>"
-language_servers = ["slipfork"]
+language_servers = ["slipfork-lsp"]
 brackets = [
   { start = "{", end = "}", close = true, newline = true },
   { start = "[", end = "]", close = true, newline = false },

@@ -1,7 +1,7 @@
-//! Protected end-to-end journey: the real `slipfork lsp` child over stdio.
+//! Protected end-to-end journey: the real standalone `slipfork-lsp` child over
+//! stdio.
 
 use std::io::{BufRead, BufReader, Read, Write};
-use std::path::PathBuf;
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::time::Duration;
 
@@ -24,13 +24,12 @@ struct Client {
 
 impl Client {
     fn spawn() -> Self {
-        let mut child = Command::new(slipfork_binary())
-            .arg("lsp")
+        let mut child = Command::new(env!("CARGO_BIN_EXE_slipfork-lsp"))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .expect("spawn `slipfork lsp`");
+            .expect("spawn `slipfork-lsp`");
         let stdin = child.stdin.take().expect("stdin");
         let stdout = BufReader::new(child.stdout.take().expect("stdout"));
         Self {
@@ -111,7 +110,7 @@ impl Client {
         drop(self.stdin);
         for _ in 0..100 {
             if let Some(status) = self.child.try_wait().expect("wait") {
-                assert!(status.success(), "`slipfork lsp` exited with {status}");
+                assert!(status.success(), "`slipfork-lsp` exited with {status}");
                 return;
             }
             std::thread::sleep(Duration::from_millis(50));
@@ -121,7 +120,7 @@ impl Client {
         if let Some(mut pipe) = self.child.stderr.take() {
             let _ = pipe.read_to_string(&mut stderr);
         }
-        panic!("`slipfork lsp` did not exit after `exit`; stderr:\n{stderr}");
+        panic!("`slipfork-lsp` did not exit after `exit`; stderr:\n{stderr}");
     }
 }
 
@@ -295,31 +294,4 @@ fn position_of(source: &str, needle: &str, extra: usize) -> Value {
         .map(char::len_utf16)
         .sum();
     json!({ "line": line, "character": character })
-}
-
-fn slipfork_binary() -> PathBuf {
-    if let Ok(path) = std::env::var("CARGO_BIN_EXE_slipfork") {
-        return PathBuf::from(path);
-    }
-    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let workspace = manifest
-        .parent()
-        .and_then(|path| path.parent())
-        .expect("workspace root");
-    let target = std::env::var_os("CARGO_TARGET_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| workspace.join("target"));
-    let profile = std::env::var("PROFILE").unwrap_or_else(|_| "debug".into());
-    let binary = target.join(&profile).join("slipfork");
-    let mut command = Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".into()));
-    command
-        .args(["build", "-p", "slipfork"])
-        .current_dir(workspace);
-    if profile == "release" {
-        command.arg("--release");
-    }
-    let status = command.status().expect("run `cargo build -p slipfork`");
-    assert!(status.success(), "`cargo build -p slipfork` failed");
-    assert!(binary.is_file(), "missing {}", binary.display());
-    binary
 }

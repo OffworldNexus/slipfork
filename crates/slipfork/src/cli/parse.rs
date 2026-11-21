@@ -43,7 +43,12 @@ impl CommandLine {
             "restart" => restart_verb(rest)?,
             "fmt" => fmt_verb(rest)?,
             "migrate" => migrate_verb(rest)?,
-            "lsp" => lsp_verb(rest)?,
+            // The server ships as its own binary; say where it went.
+            "lsp" => {
+                return Err(UsageError::new(
+                    "unknown argument `lsp` (the language server is now the standalone slipfork-lsp binary)",
+                ));
+            }
             "__supervise" => supervise_verb(rest)?,
             other => return Err(UsageError::new(format!("unknown argument `{other}`"))),
         };
@@ -214,16 +219,4 @@ fn migrate_verb(args: &[&str]) -> Result<Verb, UsageError> {
         json,
         path: path.unwrap_or_else(|| PathBuf::from("snow.yml")),
     }))
-}
-
-fn lsp_verb(args: &[&str]) -> Result<Verb, UsageError> {
-    if args.iter().any(|arg| matches!(*arg, "-h" | "--help")) {
-        return Ok(Verb::Help(HelpTopic::Lsp));
-    }
-    match args.first() {
-        None => Ok(Verb::Lsp),
-        Some(other) => Err(UsageError::new(format!(
-            "unexpected argument `{other}` for `lsp`"
-        ))),
-    }
 }

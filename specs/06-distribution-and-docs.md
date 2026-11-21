@@ -113,6 +113,18 @@ needed: libc.so.6 libgcc_s.so.1 libm.so.6 ld-linux-x86-64.so.2
 
 It refuses `NEEDED libpython*`/`libphp*`, any absolute `RPATH`/`RUNPATH` into a build host, and any `DT_NEEDED` that is not libc, libm, libgcc, the loader, or a pre-2.34 glibc object. `--allow-origin-rpath` is the single exception, for `$ORIGIN`-relative layouts only.
 
+### `slipfork-lsp` language server
+
+`slipfork-lsp` ships as a standalone portable binary, separate from `slipfork` (which stays Linux-only): it touches argv and stdio, never Btrfs or `crun`, so it builds for every desktop an editor runs on.
+
+| Platform | Architecture | Asset |
+| :--- | :--- | :--- |
+| Linux | `x86_64`, `aarch64` | `slipfork-lsp-linux-<arch>.tar.gz` |
+| macOS | `x86_64`, `aarch64` | `slipfork-lsp-darwin-<arch>.tar.gz` |
+| Windows | `x86_64`, `aarch64` | `slipfork-lsp-windows-<arch>.zip` |
+
+Each archive holds one top-level `slipfork-lsp-<platform>-<arch>/` directory with the executable and `LICENSE`. The Zed extension consumes these assets directly; a `cargo install --path crates/slipfork-lsp` build is the documented local override via `lsp.slipfork-lsp.binary.path`.
+
 ---
 
 ## 7. Universal `docs/install.sh`

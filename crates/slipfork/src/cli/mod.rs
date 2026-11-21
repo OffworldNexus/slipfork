@@ -26,7 +26,6 @@ enum Verb {
     Restart(RestartArgs),
     Fmt(FmtArgs),
     Migrate(MigrateArgs),
-    Lsp,
     Supervise(SuperviseArgs),
 }
 
@@ -38,7 +37,6 @@ enum HelpTopic {
     Restart,
     Fmt,
     Migrate,
-    Lsp,
 }
 
 /// A rejected command line, rendered as one line.
@@ -72,7 +70,6 @@ impl CommandLine {
             Verb::Restart(args) => session.restart(&args),
             Verb::Fmt(args) => session.fmt(&args),
             Verb::Migrate(args) => session.migrate(&args),
-            Verb::Lsp => session.lsp(),
             Verb::Supervise(args) => session.supervise(&args),
         }
     }
@@ -140,15 +137,11 @@ mod tests {
                 path: PathBuf::from("snow.yml"),
             })
         );
-        assert_eq!(parse(&["lsp"]).unwrap().verb, Verb::Lsp);
-        assert_eq!(
-            parse(&["lsp", "--help"]).unwrap().verb,
-            Verb::Help(HelpTopic::Lsp)
-        );
+        let retired = parse(&["lsp"]).unwrap_err();
+        assert!(retired.starts_with("unknown argument `lsp`"), "{retired}");
         assert!(
-            parse(&["lsp", "--stdio"])
-                .unwrap_err()
-                .contains("unexpected argument `--stdio` for `lsp`")
+            retired.contains("standalone slipfork-lsp binary"),
+            "{retired}"
         );
         assert!(
             parse(&["frobnicate"])
@@ -205,19 +198,9 @@ mod tests {
             migrate.contains("slipfork migrate --write snow.yml"),
             "{migrate}"
         );
-        let lsp = help_text(HelpTopic::Lsp, false);
-        assert!(lsp.contains("Usage: slipfork lsp"), "{lsp}");
-        assert!(lsp.contains("format-on-save"), "{lsp}");
         let global = help_text(HelpTopic::Global, false);
         assert!(!global.contains('\u{1b}'), "{global}");
-        for verb in [
-            "  up ",
-            "  down ",
-            "  restart ",
-            "  fmt ",
-            "  migrate ",
-            "  lsp ",
-        ] {
+        for verb in ["  up ", "  down ", "  restart ", "  fmt ", "  migrate "] {
             assert!(global.contains(verb), "missing {verb}: {global}");
         }
         assert!(global.contains("Examples:\n  slipfork up\n"), "{global}");

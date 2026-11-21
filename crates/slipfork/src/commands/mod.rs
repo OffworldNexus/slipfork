@@ -71,20 +71,6 @@ impl Session {
         self.color
     }
 
-    /// Serves `Forkfile` editor features over the process stdio.
-    pub fn lsp(&self) -> ExitCode {
-        let stdin = io::stdin();
-        let stdout = io::stdout();
-        match slipfork_lsp::Server::new(stdin.lock(), stdout.lock()).serve() {
-            Ok(()) => ExitCode::SUCCESS,
-            Err(error) => {
-                eprintln!("error: the language server stopped: {error}");
-                eprintln!("next: rerun `slipfork lsp` from your editor client.");
-                ExitCode::FAILURE
-            }
-        }
-    }
-
     /// Formats a `Forkfile` in place, or reports whether it needs formatting.
     pub fn fmt(&self, args: &FmtArgs) -> ExitCode {
         let path = self.cwd.join(&args.path);

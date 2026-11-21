@@ -2353,3 +2353,38 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-21T12:47 [M3.39.6] (lead) status ready -> done
 - 2026-11-21T12:47 [M3.39] (lead) status ready -> done
 - 2026-11-21T12:47 [M3.39] (lead) gate: make check 0; live VM gate 5/5 suites ok; zero-mock grep 0; guard+critical_guard+validate OK
+- 2026-11-21T12:49 [M3.40.1] (planner) created (task) Standalone multi-platform slipfork-lsp binary; delete the slipfork lsp verb; Zed PATH/download
+- 2026-11-21T12:49 [M3.40.2] (planner) created (task) OSPP v1 client, <state_dir>/ospp.json pairing, 0600 offline vault, loopback reference server
+- 2026-11-21T12:49 [M3.40.3] (planner) created (task) Stateless :80 .localhost HTTP + WebSocket ingress router and streaming proxy
+- 2026-11-21T12:49 [M3.40.4] (planner) created (task) Single per-user daemon (daemon.sock 0600, NDJSON), status/ps tree, doctor, daemon install
+- 2026-11-21T12:49 [M3.40.5] (planner) created (task) Remaining CLI verbs (fork/drop/logs/shell/exec/db/redis/env/secret/open/auth/completions) + terminal hygiene
+- 2026-11-21T12:49 [M3.40.6] (planner) created (task) packages/opencode-slipfork (@slipfork/opencode) V2 plugin + lsp/opencode docs sweep
+- 2026-11-21T12:50 [M3.40.1] (planner) created (task) "Standalone multi-platform slipfork-lsp binary; delete the slipfork lsp verb; Zed PATH/download"
+- 2026-11-21T12:50 [M3.40.1] (planner) created (task) "Standalone multi-platform slipfork-lsp binary; delete the slipfork lsp verb; Zed PATH/download"
+- 2026-11-21T12:50 [M3.40.1] (planner) created (task) "Standalone multi-platform slipfork-lsp binary; delete the slipfork lsp verb; Zed PATH/download"
+- 2026-11-21T12:50 [M3.40.2] (planner) created (task) "OSPP v1 client, <state_dir>/ospp.json pairing, 0600 offline vault, loopback reference server"
+- 2026-11-21T12:50 [M3.40.2] (planner) created (task) "OSPP v1 client, <state_dir>/ospp.json pairing, 0600 offline vault, loopback reference server"
+- 2026-11-21T12:50 [M3.40.2] (planner) created (task) "OSPP v1 client, <state_dir>/ospp.json pairing, 0600 offline vault, loopback reference server"
+- 2026-11-21T12:50 [M3.40.3] (planner) created (task) "Stateless :80 .localhost HTTP + WebSocket ingress router and streaming proxy"
+- 2026-11-21T12:50 [M3.40.3] (planner) created (task) "Stateless :80 .localhost HTTP + WebSocket ingress router and streaming proxy"
+- 2026-11-21T12:50 [M3.40.3] (planner) created (task) "Stateless :80 .localhost HTTP + WebSocket ingress router and streaming proxy"
+- 2026-11-21T12:50 [M3.40.4] (planner) created (task) "Single per-user daemon (daemon.sock 0600, NDJSON), status/ps tree, doctor, daemon install"
+- 2026-11-21T12:50 [M3.40.4] (planner) created (task) "Single per-user daemon (daemon.sock 0600, NDJSON), status/ps tree, doctor, daemon install"
+- 2026-11-21T12:50 [M3.40.4] (planner) created (task) "Single per-user daemon (daemon.sock 0600, NDJSON), status/ps tree, doctor, daemon install"
+- 2026-11-21T12:50 [M3.40.5] (planner) created (task) Remaining CLI verbs (fork/drop/logs/shell/exec/db/redis/env/secret/open/auth/completions) + terminal hygiene
+- 2026-11-21T12:50 [M3.40.5] (planner) created (task) Remaining CLI verbs (fork/drop/logs/shell/exec/db/redis/env/secret/open/auth/completions) + terminal hygiene
+- 2026-11-21T12:50 [M3.40.5] (planner) created (task) Remaining CLI verbs (fork/drop/logs/shell/exec/db/redis/env/secret/open/auth/completions) + terminal hygiene
+- 2026-11-21T12:50 [M3.40.6] (planner) created (task) "packages/opencode-slipfork (@slipfork/opencode) V2 plugin + lsp/opencode docs sweep"
+- 2026-11-21T12:50 [M3.40.1] (planner) created (task) Standalone multi-platform slipfork-lsp binary; delete the slipfork lsp verb; Zed PATH/download
+- 2026-11-21T12:50 [M3.40.2] (planner) created (task) OSPP v1 client, <state_dir>/ospp.json pairing, 0600 offline vault, loopback reference server
+- 2026-11-21T12:50 [M3.40.3] (planner) created (task) Stateless :80 .localhost HTTP + WebSocket ingress router and streaming proxy
+- 2026-11-21T12:50 [M3.40.4] (planner) created (task) Single per-user daemon (daemon.sock 0600, NDJSON), status/ps tree, doctor, daemon install
+- 2026-11-21T12:50 [M3.40.5] (planner) created (task) Remaining CLI verbs (fork/drop/logs/shell/exec/db/redis/env/secret/open/auth/completions) + terminal hygiene
+- 2026-11-21T12:50 [M3.40.6] (planner) created (task) packages/opencode-slipfork (@slipfork/opencode) V2 plugin + lsp/opencode docs sweep
+- 2026-11-21T12:50 [M3.40.1] (lead) status ready -> active
+- 2026-11-21T12:50 [M3.40.1] (lead) attempt 1/3 started
+- 2026-11-21T12:50 [M3.40.1] (lead) base 74f097a9c5f148d775cb04e7a2f35e7f369d7a3c
+- 2026-11-21T12:51 [M3.40.1] (lead) status active -> ready: attempt 1 ended silently: only src/main.rs created; no CLI deletion/Zed/docs
+- 2026-11-21T12:51 [M3.40.1] (lead) status ready -> active
+- 2026-11-21T12:51 [M3.40.1] (lead) attempt 2/3 started
+- 2026-11-21T12:56 [M3.40.1] (lead) status active -> done

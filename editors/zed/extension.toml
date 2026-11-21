@@ -1,17 +1,17 @@
 id = "forkfile"
 name = "Forkfile"
-description = "First-party Forkfile support for Slipfork: live diagnostics, @tool hover, go-to-definition, and format-on-save through the shipped `slipfork lsp` binary."
+description = "First-party Forkfile support for Slipfork: live diagnostics, @tool hover, go-to-definition, and format-on-save through the standalone `slipfork-lsp` binary."
 version = "0.1.0"
 schema_version = 1
 authors = ["Slipfork contributors"]
-repository = "https://github.com/slipfork/slipfork"
+repository = "https://github.com/OffworldNexus/slipfork"
 languages = ["languages/forkfile"]
-language_servers = ["slipfork"]
+language_servers = ["slipfork-lsp"]
 
 [grammars.forkfile]
 repository = "file://../tree-sitter-forkfile"
 rev = "HEAD"
 
-[language_servers.slipfork]
-name = "slipfork lsp"
+[language_servers.slipfork-lsp]
+name = "Slipfork LSP"
 languages = ["Forkfile"]

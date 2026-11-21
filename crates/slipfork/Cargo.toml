@@ -24,5 +24,4 @@ serde.workspace = true
 serde_json.workspace = true
 slipfork-forkfile = { path = "../slipfork-forkfile" }
 slipfork-image = { path = "../slipfork-image" }
-slipfork-lsp = { path = "../slipfork-lsp" }
 slipfork-world = { path = "../slipfork-world" }

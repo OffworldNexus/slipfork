@@ -20,7 +20,6 @@ pub(super) fn help_text(topic: HelpTopic, color: bool) -> String {
                  \x20 restart   Restart one service, or every service\n\
                  \x20 fmt       Format a Forkfile in place\n\
                  \x20 migrate   Convert a legacy snow.yml into a Forkfile\n\
-                 \x20 lsp       Serve Forkfile editor features over stdio\n\
                  \x20 help      Print this overview\n\
                  \x20 version   Print the version\n\
                  \n\
@@ -125,25 +124,6 @@ pub(super) fn help_text(topic: HelpTopic, color: bool) -> String {
                  \n\
                  Example:\n\
                  \x20 slipfork migrate --write snow.yml\n"
-            )
-        }
-        HelpTopic::Lsp => {
-            let title = paint("slipfork lsp", "1;36", color);
-            format!(
-                "{title}\n\
-                 Serve Forkfile editor features over stdio (Language Server Protocol).\n\
-                 \n\
-                 Usage: slipfork lsp\n\
-                 \n\
-                 Editors:\n\
-                 \x20 Point your LSP client at `slipfork lsp`; diagnostics, hover,\n\
-                 \x20 go-to-definition, and format-on-save use the open document.\n\
-                 \n\
-                 Options:\n\
-                 \x20 -h, --help\n\
-                 \n\
-                 Example:\n\
-                 \x20 slipfork lsp\n"
             )
         }
     }

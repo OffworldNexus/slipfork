@@ -70,7 +70,7 @@ impl<R: Read, W: Write> Server<R, W> {
                     id,
                     json!({
                         "capabilities": capabilities(),
-                        "serverInfo": { "name": "slipfork lsp", "version": VERSION },
+                        "serverInfo": { "name": "slipfork-lsp", "version": VERSION },
                     }),
                 )?;
             }
