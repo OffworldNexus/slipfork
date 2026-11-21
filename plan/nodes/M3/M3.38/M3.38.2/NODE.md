@@ -2,16 +2,16 @@
 id: M3.38.2
 title: "slipfork-forkfile: header gate, lexer/parser/AST for all specs/01 constructs, caret diagnostics & comment-preserving fmt"
 kind: task
-status: ready
+status: done
 owner: implementer
 priority: 3
 depends_on: [M3.38.1]
 paths: ["crates/slipfork-forkfile/**", Cargo.toml, Cargo.lock]
-attempts: 0
+attempts: 1
 max_attempts: 3
 escalation: none
 created: "2026-11-21T00:58"
-updated: "2026-11-21T00:58"
+updated: "2026-11-21T01:21"
 ---
 
 # Goal
@@ -27,5 +27,5 @@ Implement the `slipfork-forkfile` front end: line-1 `# forkfile: 0.1` gate, lexe
 # Acceptance
 - `cargo test -p slipfork-forkfile` green: header mismatch, unterminated string, unknown property, caret column, `on` expression precedence, and `route exact` parser cases (algorithm-only unit tests, zero mocks).
 - Round-trip: `parse(fmt(parse(src))) == parse(src)` for the full sample at `specs/01-forkfile.md:6-71`.
-- `cargo run -p slipfork -- fmt --check` exits non-zero on unformatted input and zero after `fmt`.
+- Library API `parse`, `fmt`, and `fmt_check` are public and idempotent; CLI wiring (`cargo run -p slipfork -- fmt --check`) lands in M3.38.4.
 - `cargo clippy -p slipfork-forkfile --all-targets -- -D warnings`, `cargo fmt --all -- --check`, `uv run --no-project tools/guard.py`.
