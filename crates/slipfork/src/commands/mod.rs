@@ -12,6 +12,7 @@ use serde_json::json;
 use slipfork_forkfile::format_check;
 
 use crate::render::paint;
+use crate::world::HostEnv;
 
 /// Parsed `slipfork fmt` arguments.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -42,13 +43,26 @@ pub struct MigrateArgs {
 pub struct Session {
     cwd: PathBuf,
     color: bool,
+    host: HostEnv,
 }
 
 impl Session {
-    /// Builds a session from the injected working directory and color decision.
+    /// The injected working directory.
     #[must_use]
-    pub fn new(cwd: PathBuf, color: bool) -> Self {
-        Self { cwd, color }
+    pub(crate) fn cwd(&self) -> &std::path::Path {
+        &self.cwd
+    }
+
+    /// The host state resolved once by the composition root.
+    #[must_use]
+    pub(crate) fn host(&self) -> &HostEnv {
+        &self.host
+    }
+
+    /// Builds a session from the injected working directory, color decision, and host state.
+    #[must_use]
+    pub fn new(cwd: PathBuf, color: bool, host: HostEnv) -> Self {
+        Self { cwd, color, host }
     }
 
     /// Whether ANSI styling is allowed for this invocation.

@@ -1,7 +1,7 @@
 //! The puller: resolve, stream, verify, unpack, seal, cache.
 
 use std::fs;
-use std::io;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -62,12 +62,32 @@ impl OciPuller {
 
     /// Pulls `reference`, reusing a sealed cache entry without downloading a blob again.
     pub fn pull(&self, reference: &ImageReference) -> Result<PulledImage> {
+        self.pull_into(reference, &mut io::sink())
+    }
+
+    /// Pulls `reference`, flushing one progress line per registry phase into `log`.
+    ///
+    /// The caller supplies the sink: the CLI forwards each line as a typed boot event, tests
+    /// pass [`io::sink`]. Every line is flushed immediately so a slow layer never looks stalled.
+    pub fn pull_into(
+        &self,
+        reference: &ImageReference,
+        log: &mut dyn Write,
+    ) -> Result<PulledImage> {
         let mut session = self.client.session(reference);
         let resolved = session.manifest(self.architecture)?;
         let digest = resolved.digest.clone();
+        note(
+            log,
+            format!(
+                "manifest {digest}: {} layer(s)",
+                resolved.manifest.layers.len()
+            ),
+        );
         let image = self.layout.image(&digest);
         if image.exists() {
             if self.world.is_sealed(&image)? {
+                note(log, format!("sealed {digest}: reusing cache"));
                 return Ok(self.pulled(image, digest));
             }
             self.world.destroy(&image, Dirtiness::Dirty, true)?;
@@ -79,7 +99,7 @@ impl OciPuller {
         }
         self.world.create_subvolume(&staging)?;
         let outcome = self
-            .unpack(&mut session, &resolved.manifest, &staging)
+            .unpack(&mut session, &resolved.manifest, &staging, log)
             .and_then(|()| self.world.seal(&staging).map_err(Error::from))
             .and_then(|()| {
                 fs::rename(&staging, &image).map_err(|source| Error::io("install", &image, source))
@@ -104,9 +124,11 @@ impl OciPuller {
         session: &mut crate::registry::RegistrySession<'_>,
         manifest: &ImageManifest,
         root: &Path,
+        log: &mut dyn Write,
     ) -> Result<()> {
         let unpacker = LayerUnpacker::new(root);
-        for layer in &manifest.layers {
+        let total = manifest.layers.len();
+        for (index, layer) in manifest.layers.iter().enumerate() {
             let media_type =
                 layer
                     .media_type
@@ -114,6 +136,10 @@ impl OciPuller {
                     .ok_or_else(|| Error::MissingMediaType {
                         digest: layer.digest.clone(),
                     })?;
+            note(
+                log,
+                format!("layer {}/{total} {} streaming", index + 1, layer.digest),
+            );
             let mut source = DigestReader::new(session.blob(&layer.digest)?);
             unpacker.apply(&mut source, media_type)?;
             // A tar reader may stop before the compressed trailer; hash the rest too.
@@ -127,9 +153,19 @@ impl OciPuller {
                     actual,
                 });
             }
+            note(
+                log,
+                format!("layer {}/{total} {} verified", index + 1, layer.digest),
+            );
         }
         Ok(())
     }
+}
+
+/// Writes one already-formatted progress line and flushes it; sink errors are not fatal.
+fn note(log: &mut dyn Write, line: String) {
+    let _ = writeln!(log, "{line}");
+    let _ = log.flush();
 }
 
 impl BaseImageBuilder for OciPuller {

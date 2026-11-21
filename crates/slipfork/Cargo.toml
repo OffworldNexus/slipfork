@@ -9,7 +9,20 @@ description = "Copy-on-write Btrfs environments for polyglot apps and AI coding 
 name = "slipfork"
 path = "src/main.rs"
 
+[features]
+# Live Btrfs/crun/registry journey: fails closed on hosts without the full lab.
+live = []
+
+[[test]]
+name = "critical_world_journey"
+path = "tests/critical_world_journey.rs"
+required-features = ["live"]
+
 [dependencies]
+libc.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 slipfork-forkfile = { path = "../slipfork-forkfile" }
+slipfork-image = { path = "../slipfork-image" }
 slipfork-lsp = { path = "../slipfork-lsp" }
+slipfork-world = { path = "../slipfork-world" }

@@ -2,7 +2,8 @@
 //!
 //! One newline-delimited JSON frame travels over the init's stdin/stdout. stdin is also the
 //! `O_CLOEXEC` lifeline: when the supervisor closes it (or exits), PID 1 stops every pod and exits.
-//! No pathname socket exists, so the 107-byte `sun_path` limit never applies.
+//! The same frames are also served over `<pods>/control.sock` (mode `0600`) so a separate
+//! `slipfork down` / `slipfork restart` process can reach the world without the supervisor.
 
 use serde::{Deserialize, Serialize};
 
@@ -12,6 +13,24 @@ use crate::pod::PodSpec;
 
 /// Frame version; both peers reject anything else.
 pub const PROTOCOL_VERSION: u32 = 1;
+
+/// Socket name inside the world's tmpfs pod directory.
+pub const CONTROL_SOCKET: &str = "control.sock";
+
+/// `<pods>/control.sock`, refused before `bind(2)` when `sun_path` would overflow.
+pub fn control_socket_path(pods_root: &std::path::Path) -> Result<std::path::PathBuf> {
+    let path = pods_root.join(CONTROL_SOCKET);
+    // `sockaddr_un.sun_path` is 108 bytes including the trailing NUL; keep a safety margin.
+    if path.as_os_str().as_encoded_bytes().len() >= 100 {
+        return Err(Error::Protocol {
+            message: format!(
+                "control socket `{}` exceeds the AF_UNIX path limit",
+                path.display()
+            ),
+        });
+    }
+    Ok(path)
+}
 
 /// A typed failure returned by the world init.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -75,6 +94,34 @@ pub enum Request {
         /// Request id echoed back in the reply.
         id: String,
     },
+    /// Stop every pod and exit; `slipfork down` sends this over the pathname socket.
+    Shutdown {
+        /// Protocol version.
+        v: u32,
+        /// Request id echoed back in the reply.
+        id: String,
+    },
+    /// Wait for one launched pod to exit and report its status code.
+    Wait {
+        /// Protocol version.
+        v: u32,
+        /// Request id echoed back in the reply.
+        id: String,
+        /// Host pid returned by `launch`.
+        pid: i32,
+        /// Upper bound in milliseconds.
+        timeout_ms: u64,
+    },
+    /// Restart one pod from its existing tmpfs bundle, or every pod when `service` is `None`.
+    Restart {
+        /// Protocol version.
+        v: u32,
+        /// Request id echoed back in the reply.
+        id: String,
+        /// Pod id to restart; `None` restarts every pod.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        service: Option<String>,
+    },
 }
 
 impl Request {
@@ -82,7 +129,11 @@ impl Request {
     #[must_use]
     pub fn id(&self) -> &str {
         match self {
-            Self::Launch { id, .. } | Self::StopAll { id, .. } => id,
+            Self::Launch { id, .. }
+            | Self::StopAll { id, .. }
+            | Self::Shutdown { id, .. }
+            | Self::Restart { id, .. }
+            | Self::Wait { id, .. } => id,
         }
     }
 }
@@ -114,7 +165,11 @@ pub fn decode_request(line: &str) -> Result<Request> {
         message: format!("bad request frame: {source}"),
     })?;
     let version = match &request {
-        Request::Launch { v, .. } | Request::StopAll { v, .. } => *v,
+        Request::Launch { v, .. }
+        | Request::StopAll { v, .. }
+        | Request::Shutdown { v, .. }
+        | Request::Restart { v, .. }
+        | Request::Wait { v, .. } => *v,
     };
     check_version(version)?;
     Ok(request)
@@ -199,5 +254,87 @@ mod tests {
             decode_init_frame("not json"),
             Err(Error::Protocol { .. })
         ));
+    }
+
+    #[test]
+    fn shutdown_and_restart_frames_round_trip() {
+        for request in [
+            Request::Shutdown {
+                v: PROTOCOL_VERSION,
+                id: "req-9".to_owned(),
+            },
+            Request::Restart {
+                v: PROTOCOL_VERSION,
+                id: "req-10".to_owned(),
+                service: Some("api".to_owned()),
+            },
+            Request::Restart {
+                v: PROTOCOL_VERSION,
+                id: "req-11".to_owned(),
+                service: None,
+            },
+        ] {
+            let bytes = encode(&request).expect("encode");
+            let decoded =
+                decode_request(std::str::from_utf8(&bytes).expect("utf8").trim()).expect("decode");
+            assert_eq!(decoded, request);
+            assert_eq!(decoded.id(), request.id());
+        }
+    }
+
+    #[test]
+    fn control_socket_paths_stay_inside_the_af_unix_limit() {
+        let path = control_socket_path(std::path::Path::new("/run/user/1000/slipfork/pods/demo"))
+            .expect("short tmpfs path");
+        assert!(path.ends_with(CONTROL_SOCKET));
+        let long = format!("/run/user/1000/{}", "a".repeat(120));
+        let error = control_socket_path(std::path::Path::new(&long))
+            .expect_err("overlong sun_path must be refused");
+        assert!(matches!(error, Error::Protocol { .. }));
+    }
+}
+
+#[cfg(test)]
+mod socket_tests {
+    use super::{
+        CONTROL_SOCKET, PROTOCOL_VERSION, Request, control_socket_path, decode_request, encode,
+    };
+    use crate::error::Error;
+
+    #[test]
+    fn shutdown_and_restart_frames_round_trip() {
+        for request in [
+            Request::Shutdown {
+                v: PROTOCOL_VERSION,
+                id: "req-9".to_owned(),
+            },
+            Request::Restart {
+                v: PROTOCOL_VERSION,
+                id: "req-10".to_owned(),
+                service: Some("api".to_owned()),
+            },
+            Request::Restart {
+                v: PROTOCOL_VERSION,
+                id: "req-11".to_owned(),
+                service: None,
+            },
+        ] {
+            let bytes = encode(&request).expect("encode");
+            let decoded =
+                decode_request(std::str::from_utf8(&bytes).expect("utf8").trim()).expect("decode");
+            assert_eq!(decoded, request);
+            assert_eq!(decoded.id(), request.id());
+        }
+    }
+
+    #[test]
+    fn control_socket_paths_stay_inside_the_af_unix_limit() {
+        let path = control_socket_path(std::path::Path::new("/run/user/1000/slipfork/pods/demo"))
+            .expect("short tmpfs path");
+        assert!(path.ends_with(CONTROL_SOCKET));
+        let long = format!("/run/user/1000/{}", "a".repeat(120));
+        let error = control_socket_path(std::path::Path::new(&long))
+            .expect_err("overlong sun_path must be refused");
+        assert!(matches!(error, Error::Protocol { .. }));
     }
 }

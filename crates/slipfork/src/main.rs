@@ -8,9 +8,11 @@
 mod cli;
 mod commands;
 mod render;
+mod world;
 
 use std::ffi::OsString;
 use std::io::IsTerminal;
+use std::path::PathBuf;
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
@@ -26,9 +28,32 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
+    let exe = match std::env::current_exe() {
+        Ok(exe) => exe,
+        Err(error) => {
+            eprintln!("error: cannot locate the slipfork binary: {error}");
+            eprintln!("next: run `slipfork` from an installed binary.");
+            return ExitCode::from(2);
+        }
+    };
+    // SAFETY: `geteuid(2)`/`getegid(2)` only read this process's credentials.
+    let (uid, gid) = unsafe { (libc::geteuid(), libc::getegid()) };
+    let host = world::HostEnv {
+        exe,
+        path: std::env::var_os("PATH")
+            .map(|paths| std::env::split_paths(&paths).collect())
+            .unwrap_or_default(),
+        runtime_dir: std::env::var_os("XDG_RUNTIME_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(format!("/run/user/{uid}"))),
+        arch: std::env::consts::ARCH,
+        uid,
+        gid,
+        resolv_conf: PathBuf::from("/etc/resolv.conf"),
+    };
 
     match cli::CommandLine::parse(&args) {
-        Ok(line) => line.run(commands::Session::new(cwd, color)),
+        Ok(line) => line.run(commands::Session::new(cwd, color, host)),
         Err(error) => {
             eprintln!("error: {error}");
             eprintln!("next: run `slipfork --help` to see the available surface.");

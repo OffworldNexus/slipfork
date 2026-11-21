@@ -75,18 +75,17 @@ fn pty_stdout(binary: &[&str], envs: &[(&str, &str)]) -> String {
 }
 
 #[test]
-fn help_and_version_are_the_whole_shipped_surface() {
+fn help_and_version_are_the_shipped_surface() {
     let help = help_text();
     assert!(help.contains("Usage: slipfork <command>"), "{help}");
     assert_eq!(
         shipped_verbs(&help),
-        ["fmt", "migrate", "lsp", "help", "version"],
+        [
+            "up", "down", "restart", "fmt", "migrate", "lsp", "help", "version"
+        ],
         "{help}"
     );
-    assert!(
-        help.contains("Examples:\n  slipfork fmt --check Forkfile\n"),
-        "{help}"
-    );
+    assert!(help.contains("Examples:\n  slipfork up\n"), "{help}");
     assert!(!help.contains(ANSI), "piped output must stay plain");
 
     let version = run(&["--version"]);
@@ -102,7 +101,7 @@ fn help_and_version_are_the_whole_shipped_surface() {
     assert!(bare.status.success());
     assert_eq!(bare.stdout, help.as_bytes());
 
-    let unknown = run(&["up"]);
+    let unknown = run(&["frobnicate"]);
     assert_eq!(unknown.status.code(), Some(2));
     let stderr = String::from_utf8(unknown.stderr).expect("errors are UTF-8");
     assert!(stderr.contains("error:"), "{stderr}");

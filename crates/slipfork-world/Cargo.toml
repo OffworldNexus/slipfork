@@ -12,6 +12,7 @@ live = []
 libc.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+slipfork-forkfile = { path = "../slipfork-forkfile" }
 
 [dev-dependencies]
 libc.workspace = true
@@ -22,7 +23,7 @@ serde_json.workspace = true
 
 [[bin]]
 name = "slipfork-world-init"
-path = "src/bin/world_init.rs"
+path = "src/bin/world_init/main.rs"
 
 [[test]]
 name = "critical_btrfs_live"

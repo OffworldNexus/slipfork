@@ -14,29 +14,30 @@
 //!
 //! Only argv and its own descriptors are read; no environment variable is consulted.
 
-use std::collections::BTreeMap;
+mod control;
+mod pod;
+
 use std::fmt;
 use std::fs;
 use std::io::{self, BufRead, BufReader, Write};
-use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 use std::time::Duration;
 
-use slipfork_world::control::{self, InitFrame, PROTOCOL_VERSION, Request};
+use slipfork_world::control::{self as wire, InitFrame, PROTOCOL_VERSION, Request};
 use slipfork_world::namespaces::NamespaceIdentity;
-use slipfork_world::{ControlError, PodSpec};
 
-const REMEDY_ARGS: &str =
+pub(crate) const REMEDY_ARGS: &str =
     "run pods through `slipfork`; it passes --namespaces, --pods, and --crun explicitly";
-const REMEDY_PROTOCOL: &str =
+pub(crate) const REMEDY_PROTOCOL: &str =
     "re-run with the `slipfork` and `slipfork-world-init` binaries from this build";
-const REMEDY_CRUN: &str =
+pub(crate) const REMEDY_CRUN: &str =
     "install crun (e.g. `apt install crun`) and confirm `crun --version` runs, then retry";
-const REMEDY_USERNS: &str = "install util-linux and check that unprivileged user namespaces are enabled (`sysctl kernel.unprivileged_userns_clone=1`); then confirm `unshare --user --map-current-user -- true` succeeds for this user";
-const REMEDY_RUNTIME: &str =
+pub(crate) const REMEDY_USERNS: &str = "install util-linux and check that unprivileged user namespaces are enabled (`sysctl kernel.unprivileged_userns_clone=1`); then confirm `unshare --user --map-current-user -- true` succeeds for this user";
+pub(crate) const REMEDY_RUNTIME: &str =
     "point `$XDG_RUNTIME_DIR` at a writable tmpfs owned by this user (`slipfork daemon install`)";
-const REMEDY_POD: &str = "use a lowercase pod id and absolute in-container paths";
+pub(crate) const REMEDY_POD: &str = "use a lowercase pod id and absolute in-container paths";
+
+const TICK: Duration = Duration::from_millis(200);
 
 fn main() {
     if let Err(fault) = run() {
@@ -50,14 +51,14 @@ fn main() {
 /// `Display` is exactly two lines (action + `next:`); the raw `io::Error` lives on `source()`
 /// and `Debug` so errno text never reaches the operator without a way forward.
 #[derive(Debug)]
-struct Fault {
+pub(crate) struct Fault {
     action: String,
     remedy: &'static str,
     source: Option<Box<dyn std::error::Error + Send + Sync>>,
 }
 
 impl Fault {
-    fn new(action: impl Into<String>, remedy: &'static str) -> Self {
+    pub(crate) fn new(action: impl Into<String>, remedy: &'static str) -> Self {
         Self {
             action: action.into(),
             remedy,
@@ -65,7 +66,7 @@ impl Fault {
         }
     }
 
-    fn cause(
+    pub(crate) fn cause(
         action: impl Into<String>,
         remedy: &'static str,
         source: impl std::error::Error + Send + Sync + 'static,
@@ -78,7 +79,7 @@ impl Fault {
     }
 
     /// Single-line form for the NDJSON reply; `Display` adds the remedy on a second line.
-    fn summary(&self) -> String {
+    pub(crate) fn summary(&self) -> String {
         format!("{} failed", self.action)
     }
 }
@@ -123,15 +124,16 @@ fn run() -> Result<(), Fault> {
         },
         "ready handshake write",
     )?;
-    let mut world = InitWorld {
-        crun: args.crun,
-        pods_root: canonical(&args.pods, "pod runtime root resolution", REMEDY_RUNTIME)?,
-        pods: BTreeMap::new(),
-    };
+    let pods_root = canonical(&args.pods, "pod runtime root resolution", REMEDY_RUNTIME)?;
+    let mut world = pod::InitWorld::new(args.crun, pods_root);
+    let (listener, socket_path) = control::bind(world.pods_root())?;
     let stdin = io::stdin();
     let mut reader = BufReader::new(stdin.lock());
     loop {
-        reap_zombies();
+        pod::reap_zombies();
+        if control::handle(&listener, &mut world)? {
+            break;
+        }
         if !poll_stdin(TICK)? {
             continue;
         }
@@ -146,50 +148,16 @@ fn run() -> Result<(), Fault> {
         if line.is_empty() {
             continue;
         }
-        let request = control::decode_request(line)
+        let request = wire::decode_request(line)
             .map_err(|source| Fault::cause("control request decoding", REMEDY_PROTOCOL, source))?;
-        match request {
-            Request::Launch { id, pod, .. } => match world.launch(&pod) {
-                Ok(pid) => write_frame(
-                    &InitFrame::Reply {
-                        v: PROTOCOL_VERSION,
-                        id,
-                        ok: Some(serde_json::json!({ "pid": pid })),
-                        error: None,
-                    },
-                    "control reply write",
-                )?,
-                Err(fault) => {
-                    eprintln!("slipfork-world-init: {fault}");
-                    write_frame(
-                        &InitFrame::Reply {
-                            v: PROTOCOL_VERSION,
-                            id,
-                            ok: None,
-                            error: Some(ControlError {
-                                code: "launch-failed".to_owned(),
-                                message: fault.summary(),
-                            }),
-                        },
-                        "control reply write",
-                    )?
-                }
-            },
-            Request::StopAll { id, .. } => {
-                world.stop_all();
-                write_frame(
-                    &InitFrame::Reply {
-                        v: PROTOCOL_VERSION,
-                        id,
-                        ok: Some(serde_json::json!({ "stopped": true })),
-                        error: None,
-                    },
-                    "control reply write",
-                )?;
-            }
+        let (frame, shutdown) = respond(&mut world, request);
+        write_frame(&frame, "control reply write")?;
+        if shutdown {
+            break;
         }
     }
-    // Lifeline EOF: stop everything and leave the namespaces with a clean exit.
+    // Lifeline EOF or `slipfork down`: stop everything and leave the namespaces cleanly.
+    let _ = fs::remove_file(&socket_path);
     world.stop_all();
     write_frame(
         &InitFrame::Stopped {
@@ -200,106 +168,91 @@ fn run() -> Result<(), Fault> {
     Ok(())
 }
 
-struct InitWorld {
-    crun: PathBuf,
-    pods_root: PathBuf,
-    pods: BTreeMap<String, Container>,
+/// Builds the typed reply for one request; the boolean means "the world must exit".
+pub(crate) fn respond(world: &mut pod::InitWorld, request: Request) -> (InitFrame, bool) {
+    let (reply, shutdown) = match request {
+        Request::Launch { id, pod, .. } => match world.launch(&pod) {
+            Ok(pid) => (
+                InitFrame::Reply {
+                    v: PROTOCOL_VERSION,
+                    id,
+                    ok: Some(serde_json::json!({ "pid": pid })),
+                    error: None,
+                },
+                false,
+            ),
+            Err(fault) => {
+                eprintln!("slipfork-world-init: {fault}");
+                (failure_frame(id, "launch-failed", &fault), false)
+            }
+        },
+        Request::StopAll { id, .. } => {
+            world.stop_all();
+            (stopped_frame(id), false)
+        }
+        Request::Shutdown { id, .. } => {
+            world.stop_all();
+            (stopped_frame(id), true)
+        }
+        Request::Restart { id, service, .. } => match world.restart(service.as_deref()) {
+            Ok(restarted) => (
+                InitFrame::Reply {
+                    v: PROTOCOL_VERSION,
+                    id,
+                    ok: Some(serde_json::json!({ "restarted": restarted })),
+                    error: None,
+                },
+                false,
+            ),
+            Err(fault) => {
+                eprintln!("slipfork-world-init: {fault}");
+                (failure_frame(id, "restart-failed", &fault), false)
+            }
+        },
+        Request::Wait {
+            id,
+            pid,
+            timeout_ms,
+            ..
+        } => match world.wait(pid, timeout_ms) {
+            Ok(code) => (
+                InitFrame::Reply {
+                    v: PROTOCOL_VERSION,
+                    id,
+                    ok: Some(serde_json::json!({ "exit_code": code })),
+                    error: None,
+                },
+                false,
+            ),
+            Err(fault) => {
+                eprintln!("slipfork-world-init: {fault}");
+                (failure_frame(id, "wait-failed", &fault), false)
+            }
+        },
+    };
+    (reply, shutdown)
 }
 
-struct Container {
-    bundle: PathBuf,
-    pid: i32,
-}
-
-impl InitWorld {
-    fn launch(&mut self, pod: &PodSpec) -> Result<i32, Fault> {
-        let action = format!("pod `{}` launch with crun", pod.id);
-        pod.validate()
-            .map_err(|source| Fault::cause(action.clone(), REMEDY_POD, source))?;
-        let bundle = self.pods_root.join(&pod.id);
-        let bundle = canonical(&bundle, action.clone(), REMEDY_RUNTIME)?;
-        if !bundle.starts_with(&self.pods_root) {
-            return Err(Fault::new(
-                action,
-                "keep the pod runtime root on a tmpfs owned by this user",
-            ));
-        }
-        let pid_file = bundle.join("init.pid");
-        let _ = fs::remove_file(&pid_file);
-        let status = Command::new(&self.crun)
-            .args(["run", "--cgroup-manager=disabled", "--detach", "--bundle"])
-            .arg(&bundle)
-            .arg("--pid-file")
-            .arg(&pid_file)
-            .arg(&pod.id)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::inherit())
-            .process_group(0)
-            .status()
-            .map_err(|source| Fault::cause(action.clone(), REMEDY_CRUN, source))?;
-        if !status.success() {
-            return Err(Fault::new(
-                format!(
-                    "pod `{}` launch with crun (`crun run` exited with {status})",
-                    pod.id
-                ),
-                REMEDY_CRUN,
-            ));
-        }
-        let pid = fs::read_to_string(&pid_file)
-            .map_err(|source| Fault::cause(action.clone(), REMEDY_CRUN, source))?
-            .trim()
-            .parse::<i32>()
-            .map_err(|source| Fault::cause(action, REMEDY_CRUN, source))?;
-        self.pods.insert(pod.id.clone(), Container { bundle, pid });
-        Ok(pid)
-    }
-
-    fn stop_all(&mut self) {
-        for (id, container) in std::mem::take(&mut self.pods) {
-            let _ = Command::new(&self.crun)
-                .args(["kill", "--all", &id])
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status();
-            let _ = Command::new(&self.crun)
-                .args(["delete", "--force", &id])
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status();
-            kill_container(container.pid);
-            let _ = fs::remove_dir_all(&container.bundle);
-        }
-        reap_zombies();
+/// The `{"stopped": true}` reply shared by `StopAll` and `Shutdown`.
+pub(crate) fn stopped_frame(id: String) -> InitFrame {
+    InitFrame::Reply {
+        v: PROTOCOL_VERSION,
+        id,
+        ok: Some(serde_json::json!({ "stopped": true })),
+        error: None,
     }
 }
 
-/// Kills the container's whole group only when it really leads one.
-fn kill_container(pid: i32) {
-    if pid <= 0 {
-        return;
-    }
-    // SAFETY: `kill(2)`/`getpgid(2)` never dereference memory.
-    unsafe {
-        if libc::getpgid(pid) == pid {
-            libc::kill(-pid, libc::SIGKILL);
-        } else {
-            libc::kill(pid, libc::SIGKILL);
-        }
-    }
-}
-
-fn reap_zombies() {
-    loop {
-        let mut status = 0;
-        // SAFETY: `waitpid` writes one `c_int` through the valid pointer.
-        let reaped = unsafe { libc::waitpid(-1, &mut status, libc::WNOHANG) };
-        if reaped <= 0 {
-            return;
-        }
+/// A typed failure frame carrying only a one-line summary.
+pub(crate) fn failure_frame(id: String, code: &str, fault: &Fault) -> InitFrame {
+    InitFrame::Reply {
+        v: PROTOCOL_VERSION,
+        id,
+        ok: None,
+        error: Some(slipfork_world::ControlError {
+            code: code.to_owned(),
+            message: fault.summary(),
+        }),
     }
 }
 
@@ -346,8 +299,6 @@ fn bring_loopback_up() -> io::Result<()> {
     outcome
 }
 
-const TICK: Duration = Duration::from_millis(200);
-
 fn poll_stdin(timeout: Duration) -> Result<bool, Fault> {
     let millis = i32::try_from(timeout.as_millis().max(1)).unwrap_or(i32::MAX);
     let mut pollfd = libc::pollfd {
@@ -382,9 +333,9 @@ fn set_cloexec(fd: i32) -> io::Result<()> {
     }
 }
 
-fn write_frame(frame: &InitFrame, action: &'static str) -> Result<(), Fault> {
+pub(crate) fn write_frame(frame: &InitFrame, action: &'static str) -> Result<(), Fault> {
     let bytes =
-        control::encode(frame).map_err(|source| Fault::cause(action, REMEDY_PROTOCOL, source))?;
+        wire::encode(frame).map_err(|source| Fault::cause(action, REMEDY_PROTOCOL, source))?;
     let mut stdout = io::stdout();
     stdout
         .write_all(&bytes)
@@ -392,7 +343,7 @@ fn write_frame(frame: &InitFrame, action: &'static str) -> Result<(), Fault> {
         .map_err(|source| Fault::cause(action, REMEDY_PROTOCOL, source))
 }
 
-fn canonical(
+pub(crate) fn canonical(
     path: &Path,
     action: impl Into<String>,
     remedy: &'static str,

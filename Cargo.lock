@@ -556,9 +556,13 @@ checksum = "3a219298ac11a56ea9a6d2120044824d6f01aeb034955e7af7bc16858527deea"
 name = "slipfork"
 version = "0.1.0"
 dependencies = [
+ "libc",
+ "serde",
  "serde_json",
  "slipfork-forkfile",
+ "slipfork-image",
  "slipfork-lsp",
+ "slipfork-world",
 ]
 
 [[package]]
@@ -614,6 +618,7 @@ dependencies = [
  "libc",
  "serde",
  "serde_json",
+ "slipfork-forkfile",
  "slipfork-image",
 ]
 

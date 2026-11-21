@@ -69,6 +69,14 @@ pub enum Error {
     Timeout { action: &'static str },
     /// Teardown left processes alive in the world's process group.
     LeftoverProcesses { count: usize, pgid: i32 },
+    /// The world boot DAG contains a dependency cycle.
+    BootCycle { steps: Vec<String> },
+    /// One world boot step failed and left the world running.
+    Boot {
+        step: String,
+        line: u32,
+        message: String,
+    },
     /// A JSON control/config payload could not be encoded or decoded.
     Json {
         path: PathBuf,
@@ -183,6 +191,19 @@ impl fmt::Display for Error {
             Self::LeftoverProcesses { count, pgid } => write!(
                 f,
                 "{count} process(es) survived teardown in process group {pgid}\nnext: kill the group with `pkill -g {pgid}` and re-run"
+            ),
+            Self::BootCycle { steps } => write!(
+                f,
+                "world boot dependency cycle: {}\nnext: remove the circular `@<tool>` or hook dependency and re-run `slipfork up`",
+                steps.join(" -> ")
+            ),
+            Self::Boot {
+                step,
+                line,
+                message,
+            } => write!(
+                f,
+                "`{step}` failed at Forkfile:{line}: {message}\nnext: fix the step and re-run `slipfork up`; the world stays up for inspection"
             ),
             Self::Json { path, .. } => write!(
                 f,
