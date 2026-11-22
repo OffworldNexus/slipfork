@@ -3090,3 +3090,6 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-22T23:46 [M3.59] (lead) status review -> ready: 1 consolidated fix pass: gid-leg EPERM regression, doc, uid/gid transposition coverage
 - 2026-11-22T23:46 [M3.59] (lead) status ready -> review
 - 2026-11-22T23:48 [M3.59] (lead) status review -> done
+- 2026-11-22T23:49 [M3] (conductor) status active -> done
+- 2026-11-22T23:49 HUMAN H-016 [release-gate] opened by conductor (node M3)
+- 2026-11-22T23:49 AUTOPILOT off by conductor Awaiting GHA 38/38 green confirmation & human review/merge of PR #2 into develop
