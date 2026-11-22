@@ -1,5 +1,6 @@
 //! Hidden detached-supervisor mode: boot the world, stream typed events, wait for the init.
 
+use std::ffi::OsStr;
 use std::fs;
 use std::io::Write;
 use std::path::Path;
@@ -8,9 +9,9 @@ use std::sync::{Arc, Mutex};
 
 use serde_json::{Value, json};
 use slipfork_world::{
-    BootEvent, BootFailure, BootKind, BootScheduler, BootState, BootStep, ResourceKind, StampStore,
-    StepOutcome, WorldName, WorldStamp, WorldStampStore, control, is_btrfs_path, plan_epoch,
-    world_plan, write_pg_checkpoints,
+    BootEvent, BootFailure, BootKind, BootScheduler, BootState, BootStep, EpochState, ResourceKind,
+    StampStore, StepOutcome, StoreLayout, WorldName, WorldStamp, WorldStampStore, control,
+    is_btrfs_path, plan_epoch, world_plan, write_pg_checkpoints,
 };
 
 use crate::commands::Session;
@@ -50,48 +51,42 @@ fn supervisor_main(project: &Path, world: &str, env: &HostEnv) -> Result<(), Str
     }
     let plan = world_plan(&doc, project).map_err(|error| error.to_string())?;
     let emitter = Arc::new(Mutex::new(Emitter { open: true }));
-    // Raw builder/hook lines ride the same typed NDJSON stream as `log` frames, so a `--json`
-    // consumer sees live `Dockerfile`/hook output instead of a silent supervisor log.
-    let log = BootSink::new(Arc::clone(&emitter));
-    let runtime = Arc::new(Mutex::new(WorldRuntime::new(
+    let runtime = Arc::new(WorldRuntime::new(
         project,
         world.clone(),
         &doc,
         &plan,
         env,
-        log,
-    )?));
-    // The world init binds `<pods>/control.sock`; this process only records its path.
-    let (socket, pods_dir, world_dir) = {
-        let runtime = runtime
-            .lock()
-            .map_err(|_| "world runtime lock poisoned".to_owned())?;
-        let pods_dir = runtime.supervisor.pods_dir().to_path_buf();
-        let socket = control::control_socket_path(&pods_dir).map_err(|error| error.to_string())?;
-        (socket, pods_dir, runtime.world_dir())
-    };
+        Arc::clone(&emitter),
+    )?);
+    let pods_dir = runtime.pods_dir().to_path_buf();
+    let socket = control::control_socket_path(&pods_dir).map_err(|error| error.to_string())?;
+    let world_dir = runtime.world_dir();
     write_state(project, &world, &socket)?;
+
     // Epoch-paired stamps gate every conditional skip: `fork` snapshots the world and each typed
-    // PG sibling together, so matching pairs reuse `@<tool>`/hook digests in 0ms while any stale
-    // sibling forces the hooks to run again.
-    let pg_clones = runtime
-        .lock()
-        .ok()
-        .map(|runtime| {
-            let layout = runtime.store_layout();
-            plan.resources
-                .iter()
-                .filter(|resource| resource.resource == ResourceKind::Postgres)
-                .map(|resource| layout.world_clone(&world, resource.resource, &resource.id))
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-    let stamp_store = WorldStampStore::new(&world_dir);
-    let trusted = stamp_store
-        .verify_all(pg_clones.iter().map(|clone| clone.as_path()))
-        .is_matched();
+    // PG sibling together, so matching pairs reuse `@<tool>` and `before-start`/`pre-deploy`
+    // digests in 0ms while any stale sibling or modified plan forces the hooks to run again.
+    let layout = runtime.store_layout();
+    let pg_clones: Vec<_> = plan
+        .resources
+        .iter()
+        .filter(|resource| resource.resource == ResourceKind::Postgres)
+        .map(|resource| layout.world_clone(&world, resource.resource, &resource.id))
+        .collect();
     let epoch = plan_epoch(&plan);
-    let stamps = StampStore::gated(project, trusted);
+    let stamp_store = WorldStampStore::new(&world_dir);
+    let trusted = matches!(
+        stamp_store.verify_all(pg_clones.iter().map(|clone| clone.as_path())),
+        EpochState::Matched(ref stored) if stored == &epoch
+    );
+    let is_fork = StoreLayout::parse_fork_world(OsStr::new(world.as_str())).is_some();
+    let stamps = if is_fork {
+        StampStore::for_fork(project, trusted, stamp_store.load())
+    } else {
+        StampStore::gated(project, trusted)
+    };
+
     let sink_emitter = Arc::clone(&emitter);
     let sink_world = world.as_str().to_owned();
     let sink_pods = pods_dir.display().to_string();
@@ -109,13 +104,7 @@ fn supervisor_main(project: &Path, world: &str, env: &HostEnv) -> Result<(), Str
         let runtime = Arc::clone(&runtime);
         Arc::new(
             move |index: usize, step: &BootStep| -> Result<StepOutcome, BootFailure> {
-                let staged = match runtime.lock() {
-                    Ok(mut runtime) => runtime.stage(index, step),
-                    Err(_) => return Err(BootFailure::new("world runtime lock poisoned")),
-                }?;
-                // The readiness probe runs with the runtime mutex released, so a 40ms PG wait
-                // never serializes a concurrent Redis or service boot behind it.
-                staged.await_ready()
+                runtime.execute(index, step)
             },
         )
     };
@@ -136,11 +125,7 @@ fn supervisor_main(project: &Path, world: &str, env: &HostEnv) -> Result<(), Str
     drop(tokio_runtime);
     match &outcome {
         Ok(()) => {
-            let images = runtime
-                .lock()
-                .map(|runtime| runtime.image_paths())
-                .unwrap_or_default();
-            let checkpoint = WorldStamp::checkpoint(&plan, epoch.clone(), images);
+            let checkpoint = WorldStamp::checkpoint(&plan, epoch.clone(), runtime.image_paths());
             if let Err(error) = stamp_store.save(&checkpoint) {
                 eprintln!("slipfork: write world stamp: {error}");
             }
@@ -175,16 +160,9 @@ fn supervisor_main(project: &Path, world: &str, env: &HostEnv) -> Result<(), Str
         }
     }
     // `down` reaches the init, which stops every pod and exits; this process follows.
-    let awaited = {
-        let mut runtime = runtime
-            .lock()
-            .map_err(|_| "world runtime lock poisoned".to_owned())?;
-        let awaited = runtime.supervisor.await_exit();
-        runtime.cleanup();
-        awaited
-    };
+    let awaited = runtime.await_exit_and_cleanup();
     let _ = fs::remove_file(state_path(project));
-    awaited.map_err(|error| error.to_string())
+    awaited
 }
 
 fn boot_event_json(event: &BootEvent) -> Value {
@@ -307,10 +285,8 @@ impl Emitter {
     }
 }
 
-/// Typed NDJSON writer for every boot line; raw pod/build output becomes `log` frames.
-///
-/// The same bytes are mirrored to stderr (the supervisor log), so `up` streams live progress
-/// while `.slipfork/supervisor.log` keeps the full transcript for post-mortems.
+/// Step-scoped NDJSON writer: each concurrent DAG node owns its own line buffer and step identity,
+/// locking [`Emitter`] only to flush one complete `log` frame.
 pub(super) struct BootSink {
     log: EventLog,
     mirror: std::io::Stderr,
@@ -326,29 +302,23 @@ impl Clone for BootSink {
 }
 
 impl BootSink {
-    pub(super) fn new(emitter: Arc<Mutex<Emitter>>) -> Self {
+    pub(super) fn for_step(
+        emitter: Arc<Mutex<Emitter>>,
+        step: usize,
+        total: usize,
+        label: &str,
+        name: &str,
+    ) -> Self {
         Self {
-            log: EventLog::new(emitter),
+            log: EventLog::for_step(emitter, step, total, label, name),
             mirror: std::io::stderr(),
         }
     }
 
-    /// Tags subsequent lines with the step that is executing right now.
-    pub(super) fn focus(&mut self, step: usize, total: usize, label: &str) {
-        self.log.focus(step, total, label);
-    }
-
-    /// Emits one readiness frame pinned to its own step, even if another wave moved the focus.
-    pub(super) fn progress(&mut self, step: usize, total: usize, label: &str, message: &str) {
-        self.log.focus(step, total, label);
+    /// Emits one readiness frame pinned to this step.
+    pub(super) fn progress(&mut self, message: &str) {
         let _ = writeln!(self.log, "{message}");
         let _ = self.log.flush();
-    }
-
-    /// A clone that first flushes any partial raw line, so a wait never drops or duplicates it.
-    pub(super) fn teed(&mut self) -> Self {
-        let _ = self.log.flush();
-        self.clone()
     }
 }
 
@@ -364,49 +334,49 @@ impl Write for BootSink {
     }
 }
 
-/// Line-splitting writer that forwards ongoing build output as typed `log` frames.
-///
-/// Every complete line is flushed as its own NDJSON frame, so a multi-minute `RUN` step never
-/// looks stalled; partial writes stay buffered until their newline arrives. Each frame carries
-/// the step that produced it, so two setup steps in one wave never mislabel each other.
 #[derive(Clone)]
-pub(super) struct EventLog {
+struct EventLog {
     emitter: Arc<Mutex<Emitter>>,
     pending: Vec<u8>,
-    focus: Option<(usize, usize, String)>,
+    step: usize,
+    total: usize,
+    label: String,
+    name: String,
 }
 
 impl EventLog {
-    pub(super) fn new(emitter: Arc<Mutex<Emitter>>) -> Self {
+    fn for_step(
+        emitter: Arc<Mutex<Emitter>>,
+        step: usize,
+        total: usize,
+        label: &str,
+        name: &str,
+    ) -> Self {
         Self {
             emitter,
             pending: Vec::new(),
-            focus: None,
+            step,
+            total,
+            label: label.to_owned(),
+            name: name.to_owned(),
         }
     }
 
-    /// Points every following line at one step; a trailing partial line stays with its producer.
-    pub(super) fn focus(&mut self, step: usize, total: usize, label: &str) {
-        if !self.pending.is_empty() {
-            let line = std::mem::take(&mut self.pending);
-            self.forward(&line);
-        }
-        self.focus = Some((step, total, label.to_owned()));
-    }
-
-    fn forward(&mut self, line: &[u8]) {
+    fn forward(&self, line: &[u8]) {
         let text = String::from_utf8_lossy(line);
         let text = strip_ansi(&text);
         let text = text.trim_end_matches('\r');
         if text.trim().is_empty() {
             return;
         }
-        let mut frame = json!({ "event": "log", "line": text });
-        if let Some((step, total, label)) = &self.focus {
-            frame["step"] = json!(step);
-            frame["total"] = json!(total);
-            frame["label"] = json!(label);
-        }
+        let frame = json!({
+            "event": "log",
+            "line": text,
+            "step": self.step,
+            "total": self.total,
+            "label": self.label,
+            "name": self.name,
+        });
         if let Ok(mut emitter) = self.emitter.lock() {
             emitter.send(frame);
         }

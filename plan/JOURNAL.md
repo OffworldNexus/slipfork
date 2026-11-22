@@ -2686,3 +2686,11 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-21T22:43 [M3.45.1] (lead) base f14688f7c606078ab20b52871c653a7748121549
 - 2026-11-21T22:52 [M3.45.1] (lead) accepted; namespaces.json publisher kept as documented host-nsenter debug artifact (no in-tree reader) — not churn
 - 2026-11-21T22:52 [M3.45.1] (lead) status active -> done
+- 2026-11-21T22:52 [M3.45.2] (lead) status ready -> active
+- 2026-11-21T22:52 [M3.45.2] (lead) attempt 1/3 started
+- 2026-11-21T22:52 [M3.45.2] (lead) base 75b45541fed9d2b0d5150f87d5cdaa55fd990eff
+- 2026-11-22T00:24 [M3.45.2] (lead) attempt 2/3 started
+- 2026-11-22T00:24 [M3.45.2] (lead) attempt 2: recover demo on VM, profile fork 1.87s -> <1s, fix world_journey hook log frame; no further budget/spec edits
+- 2026-11-22T00:35 ESCALATION #32 -> expert for M3.45.2 by lead: fork 1.9-5.1s vs <1s: global WorldRuntime mutex serializes DAG nodes; before_start/pre_deploy hook digests never recorde
+- 2026-11-22T00:35 [M3.45.2] (lead) attempt 3/3 started
+- 2026-11-22T00:35 [M3.45.2] (lead) attempt 3 (expert): shard executor locks, persist+gate hook stamps, fork <1s, drop cleanup

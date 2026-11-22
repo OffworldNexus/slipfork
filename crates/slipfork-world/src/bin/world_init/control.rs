@@ -9,9 +9,11 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use slipfork_world::control::{self as wire, FrameLines, InitFrame};
+use slipfork_world::PodSpec;
+use slipfork_world::control::{self as wire, FrameLines, InitFrame, PROTOCOL_VERSION};
 
-use crate::pod::InitWorld;
+use crate::fault::failure_frame;
+use crate::pod::{InitWorld, WorldShared, run_once_on_shared};
 use crate::stream::{serve_exec, serve_logs};
 use crate::{Fault, REMEDY_PROTOCOL, REMEDY_RUNTIME, respond};
 
@@ -45,65 +47,139 @@ pub(crate) fn bind(pods_root: &Path) -> Result<(UnixListener, PathBuf), Fault> {
     Ok((listener, path))
 }
 
-/// Serves one NDJSON request over the pathname socket; returns `true` for `shutdown`.
+/// Drains every pending pathname-socket connection; returns `true` once `shutdown` is requested.
 pub(crate) fn handle(listener: &UnixListener, world: &mut InitWorld) -> Result<bool, Fault> {
-    let (mut stream, _) = match listener.accept() {
-        Ok(accepted) => accepted,
-        Err(error) if error.kind() == io::ErrorKind::WouldBlock => return Ok(false),
-        Err(source) => {
-            return Err(Fault::cause(
-                "control socket accept",
-                REMEDY_PROTOCOL,
-                source,
-            ));
-        }
-    };
-    let Some((request, buffered)) = read_request(&mut stream)? else {
-        return Ok(false);
-    };
-    // A dial reply is a status byte plus an optional descriptor, not an NDJSON `InitFrame`.
-    match request {
-        wire::Request::Dial { port, .. } => {
-            dial(&mut stream, port)?;
-            Ok(false)
-        }
-        wire::Request::Logs {
-            id,
-            service,
-            pods,
-            follow,
-            ..
-        } => {
-            let shared = world.shared();
-            std::thread::spawn(move || {
-                if let Err(fault) = serve_logs(shared, id, service, pods, follow, stream) {
-                    eprintln!("slipfork-world-init: {fault}");
+    loop {
+        let (mut stream, _) = match listener.accept() {
+            Ok(accepted) => accepted,
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => return Ok(false),
+            Err(source) => {
+                return Err(Fault::cause(
+                    "control socket accept",
+                    REMEDY_PROTOCOL,
+                    source,
+                ));
+            }
+        };
+        let Some((request, buffered)) = read_request(&mut stream)? else {
+            continue;
+        };
+        // A dial reply is a status byte plus an optional descriptor, not an NDJSON `InitFrame`.
+        match request {
+            wire::Request::Dial { port, .. } => {
+                dial(&mut stream, port)?;
+            }
+            wire::Request::Launch { id, pod, .. } => {
+                let shared = world.shared();
+                std::thread::spawn(move || {
+                    let frame = match crate::pod::launch_on_shared(&shared, &pod) {
+                        Ok(pid) => InitFrame::Reply {
+                            v: PROTOCOL_VERSION,
+                            id,
+                            ok: Some(serde_json::json!({ "pid": pid })),
+                            error: None,
+                        },
+                        Err(fault) => {
+                            eprintln!("slipfork-world-init: {fault}");
+                            failure_frame(id, "launch-failed", &fault)
+                        }
+                    };
+                    let _ = reply(&mut stream, &frame);
+                });
+            }
+            wire::Request::RunOnce {
+                id,
+                pod,
+                timeout_ms,
+                ..
+            } => {
+                let shared = world.shared();
+                std::thread::spawn(move || {
+                    if let Err(fault) = serve_run_once(&shared, id, pod, timeout_ms, stream) {
+                        eprintln!("slipfork-world-init: {fault}");
+                    }
+                });
+            }
+            wire::Request::Logs {
+                id,
+                service,
+                pods,
+                follow,
+                ..
+            } => {
+                let shared = world.shared();
+                std::thread::spawn(move || {
+                    if let Err(fault) = serve_logs(shared, id, service, pods, follow, stream) {
+                        eprintln!("slipfork-world-init: {fault}");
+                    }
+                });
+            }
+            wire::Request::Exec {
+                id,
+                pod,
+                argv,
+                stdin,
+                ..
+            } => {
+                let shared = world.shared();
+                std::thread::spawn(move || {
+                    if let Err(fault) = serve_exec(shared, id, pod, argv, stdin, stream, buffered) {
+                        eprintln!("slipfork-world-init: {fault}");
+                    }
+                });
+            }
+            request => {
+                let (frame, shutdown) =
+                    respond(world, request, &mut |frame| reply(&mut stream, &frame))?;
+                reply(&mut stream, &frame)?;
+                if shutdown {
+                    return Ok(true);
                 }
-            });
-            Ok(false)
-        }
-        wire::Request::Exec {
-            id,
-            pod,
-            argv,
-            stdin,
-            ..
-        } => {
-            let shared = world.shared();
-            std::thread::spawn(move || {
-                if let Err(fault) = serve_exec(shared, id, pod, argv, stdin, stream, buffered) {
-                    eprintln!("slipfork-world-init: {fault}");
-                }
-            });
-            Ok(false)
-        }
-        request => {
-            let (frame, shutdown) =
-                respond(world, request, &mut |frame| reply(&mut stream, &frame))?;
-            reply(&mut stream, &frame)?;
-            Ok(shutdown)
+            }
         }
     }
+}
+
+fn serve_run_once(
+    shared: &WorldShared,
+    id: String,
+    pod: PodSpec,
+    timeout_ms: u64,
+    mut stream: UnixStream,
+) -> Result<(), Fault> {
+    let frame_id = id.clone();
+    let pod_id = pod.id.clone();
+    let outcome = run_once_on_shared(shared, &pod, timeout_ms, &mut |kind, line| {
+        reply(
+            &mut stream,
+            &InitFrame::Output {
+                v: PROTOCOL_VERSION,
+                id: frame_id.clone(),
+                pod: Some(pod_id.clone()),
+                stream: kind,
+                kind: slipfork_world::OutputKind::Line,
+                line: line.to_owned(),
+            },
+        )
+    });
+    let final_frame = match outcome {
+        Ok(code) => InitFrame::Reply {
+            v: PROTOCOL_VERSION,
+            id,
+            ok: Some(serde_json::json!({ "exit_code": code })),
+            error: None,
+        },
+        Err(fault) => {
+            eprintln!("slipfork-world-init: {fault}");
+            let code = if fault.is_timeout() {
+                "run-timeout"
+            } else {
+                "run-failed"
+            };
+            failure_frame(id, code, &fault)
+        }
+    };
+    reply(&mut stream, &final_frame)
 }
 
 /// Reads the opening request frame while retaining any pipelined `ExecInput` bytes in `FrameLines`.

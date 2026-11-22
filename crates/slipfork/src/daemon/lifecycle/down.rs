@@ -39,6 +39,11 @@ impl Core {
             ));
         }
         let started = Instant::now();
+        // The phase header names the world: one row per pod follows, then the final verdict.
+        emit(json!({
+            "event": "started", "kind": "stopping", "name": world.name(),
+            "step": 1, "total": 1,
+        }));
         // The pod roster is read inside `stop_world` before teardown: once the control plane is
         // gone there is nothing left to ask, and every streamed row names a pod the world had.
         let stopped = self.stop_world(&key, Duration::from_secs(60), &mut |pod, millis| {
@@ -48,7 +53,7 @@ impl Core {
             }));
         })?;
         // `sweep_ms` is the control plane's own teardown time, measured from the shutdown request
-        // until its reply lands; it never re-uses a pod's elapsed time.
+        // until the supervisor sweeps ephemeral pod rootfs clones and exits.
         let sweep_ms = stopped["sweep_ms"].as_u64().unwrap_or(0);
         emit(json!({
             "event": "finished", "kind": "removed", "name": "run subvolumes",
@@ -77,8 +82,12 @@ impl Core {
             .unwrap_or_default()
     }
 
-    /// Stops one world, reporting each pod the moment it is observed gone with its own elapsed
-    /// time, then the sweep's own duration. `on_pod` receives `(pod id, elapsed millis)`.
+    /// Stops one world through `Request::Shutdown` on `<pods>/control.sock`.
+    ///
+    /// Pod PIDs reported by `List` belong to the child PID namespace (where `2..50` alias host
+    /// `kworker` threads!), so host `/proc/<pod_pid>` must NEVER be polled here: `world_init`
+    /// kills, `crun delete`s, and `waitpid`s every pod inside the namespace before answering
+    /// `Shutdown`.
     pub(crate) fn stop_world(
         &mut self,
         key: &str,
@@ -106,41 +115,27 @@ impl Core {
                 child.take(),
             ),
         };
-        // Each pod is timed from its own start, so one slow pod never lends its duration to a pod
-        // that was already gone when the world began stopping.
-        let mut pending: Vec<Pod> = pods.into_iter().map(Pod::new).collect();
+        let pod_started = Instant::now();
+        let mut live_pods = Vec::with_capacity(pods.len());
+        for pod in pods {
+            if !pod.running {
+                on_pod(&pod.id, 0);
+            } else {
+                live_pods.push(pod.id);
+            }
+        }
         let sweep_started = Instant::now();
-        let shutdown = pods_dir.map(|pods_dir| {
-            thread::spawn(move || {
-                let shutdown = Request::Shutdown {
-                    v: PROTOCOL_VERSION,
-                    id: "daemon-down".to_owned(),
-                };
-                let _ = world_call(&pods_dir, &shutdown);
-            })
-        });
-        let deadline = Instant::now() + timeout;
-        while !pending.is_empty() && Instant::now() < deadline {
-            let mut index = 0;
-            while index < pending.len() {
-                if pending[index].gone() {
-                    let pod = pending.remove(index);
-                    on_pod(&pod.id, pod.elapsed());
-                    continue;
-                }
-                index += 1;
-            }
-            if !pending.is_empty() {
-                thread::sleep(Duration::from_millis(50));
-            }
+        if let Some(pods_dir) = pods_dir {
+            let shutdown = Request::Shutdown {
+                v: PROTOCOL_VERSION,
+                id: "daemon-down".to_owned(),
+            };
+            let _ = world_call(&pods_dir, &shutdown);
         }
-        for pod in pending {
-            on_pod(&pod.id, pod.elapsed());
+        let pod_ms = millis(pod_started);
+        for id in live_pods {
+            on_pod(&id, pod_ms);
         }
-        if let Some(shutdown) = shutdown {
-            let _ = shutdown.join();
-        }
-        let sweep_ms = millis(sweep_started);
         wait_exit(pid, child.as_mut(), timeout);
         if pid_alive(pid)
             && let Ok(pid) = i32::try_from(pid)
@@ -150,6 +145,7 @@ impl Core {
         if let Some(child) = child.as_mut() {
             let _ = child.wait();
         }
+        let sweep_ms = millis(sweep_started);
         let _ = fs::remove_file(project.join(".slipfork/world.json"));
         self.ingress = None;
         Ok(json!({ "stopped": true, "world": name, "sweep_ms": sweep_ms }))
@@ -161,33 +157,6 @@ impl Core {
             let _ = self.stop_world(&key, Duration::from_secs(10), &mut |_, _| {});
         }
         let _ = self.persist();
-    }
-}
-
-/// One pod's own stop clock.
-struct Pod {
-    id: String,
-    pid: i32,
-    running: bool,
-    started: Instant,
-}
-
-impl Pod {
-    fn new(status: PodStatus) -> Self {
-        Self {
-            id: status.id,
-            pid: status.pid,
-            running: status.running,
-            started: Instant::now(),
-        }
-    }
-
-    fn gone(&self) -> bool {
-        !self.running || !u32::try_from(self.pid).is_ok_and(pid_alive)
-    }
-
-    fn elapsed(&self) -> u64 {
-        millis(self.started)
     }
 }
 
@@ -209,6 +178,6 @@ fn wait_exit(pid: u32, mut child: Option<&mut Child>, timeout: Duration) {
         if Instant::now() >= deadline {
             return;
         }
-        thread::sleep(Duration::from_millis(50));
+        thread::sleep(Duration::from_millis(15));
     }
 }

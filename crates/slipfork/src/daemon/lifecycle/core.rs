@@ -169,8 +169,8 @@ impl Core {
             .to_owned();
         let started = Instant::now();
         emit(json!({
-            "event": "started", "step": 1, "total": 1, "kind": "service",
-            "label": format!("restarting {subject}"),
+            "event": "started", "step": 1, "total": 1, "kind": "restarting",
+            "label": subject,
         }));
         let request = Request::Restart {
             v: PROTOCOL_VERSION,

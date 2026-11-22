@@ -34,7 +34,7 @@ pub struct BootTui {
     done: usize,
     started: Instant,
     current: String,
-    /// Tails of the drivers without an `indicatif` pane (ASCII line and pipes).
+    /// Tails per active node, keyed by `name` so concurrent nodes never overwrite each other.
     tails: BTreeMap<String, VecDeque<TailLine>>,
     pane: Option<Arc<Mutex<Pane>>>,
     ascii: Option<Arc<Mutex<AsciiLine>>>,
@@ -119,11 +119,9 @@ impl BootTui {
             }
             return;
         }
-        if self.mode.interactive() {
-            println!("{text}");
-        } else {
-            eprintln!("{text}");
-        }
+        // The boot tree is the product's answer, so a pipe gets it on stdout too; only the typed
+        // failure remedy is written to stderr (`failed_node`).
+        println!("{text}");
     }
 
     /// Stops the ticker and clears the status line; the pane's printed rows stay visible.
@@ -177,7 +175,12 @@ impl BootTui {
         let Some(line) = TailLine::from_event(event) else {
             return;
         };
-        let tail = self.tails.entry(self.current.clone()).or_default();
+        let target = event["name"]
+            .as_str()
+            .filter(|name| !name.is_empty())
+            .unwrap_or(&self.current)
+            .to_owned();
+        let tail = self.tails.entry(target.clone()).or_default();
         tail.push_back(line);
         while tail.len() > text::TAIL_LINES {
             tail.pop_front();
@@ -185,7 +188,7 @@ impl BootTui {
         if let Some(pane) = &self.pane
             && let Ok(mut pane) = pane.lock()
         {
-            pane.set_tail(&self.current, tail);
+            pane.set_tail(&target, tail);
         }
     }
 
@@ -196,8 +199,6 @@ impl BootTui {
         let name = node.name.to_owned();
         self.done += 1;
         let tail = self.tails.remove(&name);
-        // Any other buffered tail is stale: a finished node must never bleed into the next one.
-        self.tails.clear();
         let rows = text::tail_rows(tail, self.width, self.mode.color());
         if let Some(pane) = &self.pane
             && let Ok(mut pane) = pane.lock()
@@ -231,6 +232,7 @@ impl BootTui {
         let line = event["line"].as_u64().unwrap_or(0);
         let message = event["message"].as_str().unwrap_or("step failed");
         let tail = self.tails.remove(name);
+        self.tails.clear();
         let rows = text::tail_rows(tail, self.width, self.mode.color());
         // Every running bar is cleared before the verdict so the failure reads as one statement.
         if let Some(pane) = &self.pane

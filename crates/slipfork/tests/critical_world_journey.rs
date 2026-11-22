@@ -64,7 +64,7 @@ image app . {
 s3 uploads
 s3 assets {
   policy public-read
-  cdn assets-cdn
+  cdn static-cdn
 }
 "#;
 
@@ -570,8 +570,8 @@ fn wait_until(mut condition: impl FnMut() -> bool, timeout: Duration) -> bool {
     false
 }
 
-/// A real `:80` connection is handed to `ingress.accept`, routed, and answered by the world pod.
-fn assert_ingress(runtime: &Path, world: &str) {
+/// Hands one accepted `:80` descriptor to `ingress.accept` and returns the raw HTTP response.
+fn ingress_exchange(runtime: &Path, request: &str) -> String {
     let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind the ingress probe listener");
     let mut client = TcpStream::connect(listener.local_addr().expect("probe address"))
         .expect("connect the ingress probe");
@@ -585,15 +585,21 @@ fn assert_ingress(runtime: &Path, world: &str) {
         .set_read_timeout(Some(Duration::from_secs(30)))
         .expect("configure the ingress probe");
     client
-        .write_all(
-            format!("GET / HTTP/1.1\r\nHost: {world}.localhost\r\nConnection: close\r\n\r\n")
-                .as_bytes(),
-        )
+        .write_all(request.as_bytes())
         .expect("write the ingress request");
     let mut response = String::new();
     client
         .read_to_string(&mut response)
         .expect("read the ingress response");
+    response
+}
+
+/// A real `:80` connection is handed to `ingress.accept`, routed, and answered by the world pod.
+fn assert_ingress(runtime: &Path, world: &str) {
+    let response = ingress_exchange(
+        runtime,
+        &format!("GET / HTTP/1.1\r\nHost: {world}.localhost\r\nConnection: close\r\n\r\n"),
+    );
     assert!(
         response.starts_with("HTTP/1.1 200") && response.contains("ok"),
         "the world's own bytes must return through `dial_tcp`: {response}"
@@ -673,6 +679,22 @@ fn world_up_restart_down_journey() {
         probed,
         "the S3 probe never wrote `200 200:priv 403 403 403 403 200 200:cdn hello`: {:?}",
         fs::read_to_string(&probe)
+    );
+    let cdn_get = ingress_exchange(
+        &journey.runtime,
+        "GET /x HTTP/1.1\r\nHost: static-cdn.good.localhost\r\nConnection: close\r\n\r\n",
+    );
+    assert!(
+        cdn_get.starts_with("HTTP/1.1 200") && cdn_get.ends_with("cdn"),
+        "public-read CDN must serve anonymous GET 200 on static-cdn.<world>.localhost: {cdn_get}"
+    );
+    let cdn_put = ingress_exchange(
+        &journey.runtime,
+        "PUT /x HTTP/1.1\r\nHost: static-cdn.good.localhost\r\nContent-Length: 4\r\nConnection: close\r\n\r\nnope",
+    );
+    assert!(
+        cdn_put.starts_with("HTTP/1.1 403"),
+        "public-read CDN must refuse anonymous PUT with 403 on static-cdn.<world>.localhost: {cdn_put}"
     );
 
     // 1b. Captured logs and ad-hoc exec against the real pod. Capture is asynchronous, so poll
@@ -849,7 +871,7 @@ fn world_up_restart_down_journey() {
     );
     let stamp_line = second_out
         .lines()
-        .find(|line| line.contains("uv sync") && line.starts_with('✓'))
+        .find(|line| line.contains("uv sync"))
         .unwrap_or_else(|| panic!("no stamped setup line:\n{second_out}"));
     assert!(
         stamp_line.contains("up to date"),

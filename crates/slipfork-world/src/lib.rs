@@ -47,7 +47,7 @@ pub use boot::{
     BootEvent, BootFailure, BootGraph, BootKind, BootScheduler, BootState, BootStep, EpochState,
     EventSink, FailedHook, HookPhase, ImageNode, PG_STAMP_FILE, ResourceNode, ServiceHealth,
     ServiceNode, StampStore, StepExecutor, StepOutcome, StepStamp, WORLD_STAMP_FILE, WorldPlan,
-    WorldStamp, WorldStampStore, classify_service, epoch_for, plan_epoch, world_plan,
+    WorldStamp, WorldStampStore, classify_service, epoch_for, plan_epoch, step_digest, world_plan,
     write_pg_checkpoint, write_pg_checkpoints,
 };
 pub use btrfs::{is_btrfs_path, is_subvolume_path};
@@ -64,12 +64,13 @@ pub mod uapi {
 }
 pub use control::{
     ControlError, FrameLines, InitFrame, OutputKind, PROTOCOL_VERSION, Request, S3BucketSpec,
-    S3WorldConfig, Stream, configure_s3, decode_init_frame, decode_request, encode,
+    S3WorldConfig, Stream, configure_s3, decode_init_frame, decode_request, encode, launch_pod,
+    list_pods, run_once,
 };
 pub use engine::BtrfsEngine;
 pub use error::{Error, NameKind, Result};
 pub use fdpass::{PAYLOAD_CAP, recv_fd, send_fd};
-pub use layout::{ForkName, STORE_DIR, StoreLayout, WorldName};
+pub use layout::{ForkName, PODS_DIR, STORE_DIR, StoreLayout, WorldName};
 pub use namespaces::{NAMESPACE_KINDS, NamespaceIdentity, NamespaceTable};
 pub use pod::{Bind, BindSource, PodBundle, PodEnv, PodFile, PodHost, PodSpec, write_bundle};
 pub use pod_log::{CHUNK, DIVIDER_CLOSE, DIVIDER_OPEN, LogKind, LogLine, LogReader, LogSink};
@@ -77,7 +78,7 @@ pub use port::{Dirtiness, ForkPaths, WorldEngine};
 pub use reap::kill_group;
 pub use resources::{
     ImageFacts, PostgresClone, PostgresLauncher, PostgresTemplate, RedisLauncher, ResourceKind,
-    S3Bucket, S3Credentials, S3Server, TemplateState,
+    S3Bucket, S3Credentials, S3Server, TemplateState, pg_checkpoint,
 };
 pub use runtime_dir::RuntimePods;
 pub use supervisor::{PodStatus, WorldHost, WorldSupervisor, pod_statuses};

@@ -151,7 +151,7 @@ impl Session {
         let Some(mut client) = self.existing_daemon(json) else {
             return ExitCode::FAILURE;
         };
-        let mut renderer = Renderer::new(self.color(), json);
+        let mut renderer = Renderer::exec(self.color(), json);
         let stdin = std::io::stdin();
         let input_fd = stdin.as_raw_fd();
         let mut input = stdin.lock();
@@ -214,15 +214,27 @@ impl Session {
 struct Renderer {
     color: bool,
     json: bool,
+    /// `logs` prefixes every line with its pod gutter; `exec` stays verbatim like `docker exec`.
+    gutter: bool,
     pods: BTreeMap<String, &'static str>,
     width: usize,
 }
 
 impl Renderer {
     fn new(color: bool, json: bool) -> Self {
+        Self::with_gutter(color, json, true)
+    }
+
+    /// The `exec`/`db`/`redis` renderer: the command's own stdout and stderr, byte for byte.
+    fn exec(color: bool, json: bool) -> Self {
+        Self::with_gutter(color, json, false)
+    }
+
+    fn with_gutter(color: bool, json: bool, gutter: bool) -> Self {
         Self {
             color,
             json,
+            gutter,
             pods: BTreeMap::new(),
             width: 0,
         }
@@ -254,6 +266,9 @@ impl Renderer {
             "eof" => {}
             "divider" => {
                 let _ = emit(&format!("{}\n", paint(line, "2", self.color)));
+            }
+            _ if !self.gutter => {
+                let _ = emit(&format!("{line}\n"));
             }
             _ => {
                 let code = self.color_for(pod);

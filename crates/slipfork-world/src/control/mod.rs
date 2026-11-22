@@ -19,7 +19,7 @@ use serde::de::{self, Visitor};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use slipfork_forkfile::{BucketPolicy, SecretValue};
 
-pub use config::configure_s3;
+pub use config::{configure_s3, launch_pod, list_pods, run_once};
 pub use dial::dial_tcp;
 pub use frames::{
     ControlError, FrameLines, InitFrame, OutputKind, PROTOCOL_VERSION, Stream, check_version,

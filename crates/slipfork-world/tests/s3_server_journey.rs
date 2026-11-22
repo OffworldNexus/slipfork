@@ -351,6 +351,21 @@ fn native_s3_serves_real_objects_with_sigv4_and_bucket_policy() {
         anonymous.status, 403,
         "private buckets refuse anonymous GET"
     );
+    let anon_priv_head = request(addr, "HEAD", "/uploads/hello.txt", &host, &[], b"");
+    assert_eq!(
+        anon_priv_head.status, 403,
+        "private buckets refuse anonymous HEAD"
+    );
+    let anon_priv_put = request(addr, "PUT", "/uploads/intruder.txt", &host, &[], b"x");
+    assert_eq!(
+        anon_priv_put.status, 403,
+        "private buckets refuse anonymous PUT"
+    );
+    let anon_priv_del = request(addr, "DELETE", "/uploads/hello.txt", &host, &[], b"");
+    assert_eq!(
+        anon_priv_del.status, 403,
+        "private buckets refuse anonymous DELETE"
+    );
 
     let mut tampered = signed("GET", "/uploads/hello.txt", "", &host, b"");
     if let Some((_, value)) = tampered
@@ -512,6 +527,21 @@ fn native_s3_serves_real_objects_with_sigv4_and_bucket_policy() {
     let public_get = request(addr, "GET", "/assets/logo.png", &host, &[], b"");
     assert_eq!(public_get.status, 200, "public-read serves anonymous GET");
     assert_eq!(public_get.body, b"png");
+    let public_head = request(addr, "HEAD", "/assets/logo.png", &host, &[], b"");
+    assert_eq!(public_head.status, 200, "public-read serves anonymous HEAD");
+    assert!(public_head.body.is_empty());
+    let signed_public_list = request(
+        addr,
+        "GET",
+        "/assets?list-type=2",
+        &host,
+        &signed("GET", "/assets", "list-type=2", &host, b""),
+        b"",
+    );
+    assert_eq!(
+        signed_public_list.status, 200,
+        "signed ListObjectsV2 on public-read succeeds"
+    );
     let anon_put = request(addr, "PUT", "/assets/other.txt", &host, &[], b"nope");
     assert_eq!(anon_put.status, 403, "anonymous PUT is refused");
     let anon_delete = request(addr, "DELETE", "/assets/logo.png", &host, &[], b"");
@@ -521,6 +551,18 @@ fn native_s3_serves_real_objects_with_sigv4_and_bucket_policy() {
     assert!(
         !store.join("assets/objects/other.txt").exists(),
         "a refused PUT must leave no object behind"
+    );
+    let signed_public_del = request(
+        addr,
+        "DELETE",
+        "/assets/logo.png",
+        &host,
+        &signed("DELETE", "/assets/logo.png", "", &host, b""),
+        b"",
+    );
+    assert_eq!(
+        signed_public_del.status, 204,
+        "signed DELETE on public-read succeeds"
     );
 
     // Signed DELETE removes the object and its sidecar; the next read is 404 with S3's message.

@@ -11,10 +11,12 @@ pub const STORE_DIR: &str = ".slipfork-store";
 pub const IMAGES_DIR: &str = "images";
 /// Per-world data subvolumes live here.
 pub const WORLDS_DIR: &str = "worlds";
+/// Ephemeral per-pod writable rootfs clones live here, outside `worlds/<world>`.
+pub const PODS_DIR: &str = "pods";
 /// Project-relative directory holding project snapshots.
 pub const FORKS_DIR: &str = ".forks";
 
-/// Absolute Btrfs store paths owned by Slipfork (`<mount>/.slipfork-store/{images,worlds}`).
+/// Absolute Btrfs store paths owned by Slipfork (`<mount>/.slipfork-store/{images,worlds,pods}`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StoreLayout {
     store_root: PathBuf,
@@ -62,6 +64,19 @@ impl StoreLayout {
     #[must_use]
     pub fn worlds_root(&self) -> PathBuf {
         self.store_root.join(WORLDS_DIR)
+    }
+
+    /// `<mount>/.slipfork-store/pods`.
+    #[must_use]
+    pub fn pods_root(&self) -> PathBuf {
+        self.store_root.join(PODS_DIR)
+    }
+
+    /// `<mount>/.slipfork-store/pods/<world>`: ephemeral pod rootfs clones for one world, kept
+    /// outside `worlds/<world>` so snapshotting a live world never creates `ino == 2` stubs.
+    #[must_use]
+    pub fn world_pods(&self, world: &WorldName) -> PathBuf {
+        self.pods_root().join(world.as_str())
     }
 
     /// `<mount>/.slipfork-store/worlds/<world>`.

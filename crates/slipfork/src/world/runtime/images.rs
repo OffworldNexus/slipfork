@@ -1,11 +1,12 @@
 //! Image collaborator: `from` pulls and `Dockerfile` builds into sealed, read-only rootfs clones.
 //!
-//! The cache owns every OCI and build handle, so a black-box image build never holds the pod
-//! registry and a pod launch never waits behind a long `RUN` step.
+//! Independent images pull and build concurrently with no global lock; per-key singleflight slots
+//! deduplicate concurrent requests for the same image id or OCI reference.
 
 use std::collections::BTreeMap;
+use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Condvar, Mutex};
 
 use slipfork_forkfile::ast::Forkfile;
 use slipfork_image::{
@@ -14,7 +15,7 @@ use slipfork_image::{
 };
 use slipfork_world::{BootState, ImageNode, StoreLayout, WorldEngine, WorldName};
 
-use crate::world::supervise::SharedLog;
+use crate::world::supervise::BootSink;
 
 /// One sealed image plus the OCI metadata every pod derived from it inherits.
 #[derive(Clone)]
@@ -29,6 +30,51 @@ pub(super) struct BuiltImage {
     pub(super) workdir: String,
 }
 
+enum FlightState<T> {
+    Running,
+    Done(Result<T, String>),
+}
+
+type Flight<T> = Arc<(Mutex<FlightState<T>>, Condvar)>;
+type FlightTable<T> = Arc<Mutex<BTreeMap<String, Flight<T>>>>;
+
+struct FlightGuard<T: Clone> {
+    key: String,
+    table: FlightTable<T>,
+    flight: Flight<T>,
+    completed: bool,
+}
+
+impl<T: Clone> FlightGuard<T> {
+    fn finish(mut self, outcome: Result<T, String>) {
+        self.completed = true;
+        if let Ok(mut table) = self.table.lock() {
+            table.remove(&self.key);
+        }
+        let (lock, cvar) = &*self.flight;
+        if let Ok(mut slot) = lock.lock() {
+            *slot = FlightState::Done(outcome);
+            cvar.notify_all();
+        }
+    }
+}
+
+impl<T: Clone> Drop for FlightGuard<T> {
+    fn drop(&mut self) {
+        if self.completed {
+            return;
+        }
+        if let Ok(mut table) = self.table.lock() {
+            table.remove(&self.key);
+        }
+        let (lock, cvar) = &*self.flight;
+        if let Ok(mut slot) = lock.lock() {
+            *slot = FlightState::Done(Err("an image worker panicked".to_owned()));
+            cvar.notify_all();
+        }
+    }
+}
+
 /// The sealed-image cache plus its puller and native builder.
 pub(super) struct ImageCache {
     world: WorldName,
@@ -37,11 +83,14 @@ pub(super) struct ImageCache {
     puller: OciPuller,
     builder: NativeImageBuilder,
     images: Vec<ImageNode>,
-    sealed: BTreeMap<String, BuiltImage>,
-    pulled: BTreeMap<String, PulledImage>,
+    sealed: Mutex<BTreeMap<String, BuiltImage>>,
+    pulled: Mutex<BTreeMap<String, PulledImage>>,
+    inflight_builds: FlightTable<(BuiltImage, BootState)>,
+    inflight_pulls: FlightTable<PulledImage>,
 }
 
 impl ImageCache {
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn new(
         engine: Arc<dyn WorldEngine>,
         layout: &StoreLayout,
@@ -83,37 +132,75 @@ impl ImageCache {
             puller,
             builder,
             images,
-            sealed: BTreeMap::new(),
-            pulled: BTreeMap::new(),
+            sealed: Mutex::new(BTreeMap::new()),
+            pulled: Mutex::new(BTreeMap::new()),
+            inflight_builds: Arc::new(Mutex::new(BTreeMap::new())),
+            inflight_pulls: Arc::new(Mutex::new(BTreeMap::new())),
         }
     }
 
     /// Seals one image and reports whether it was cached, pulled, or built.
     pub(super) fn build(
-        &mut self,
+        &self,
         image: &str,
-        log: &SharedLog,
+        log: &mut BootSink,
     ) -> Result<(BuiltImage, BootState), String> {
-        if let Some(built) = self.sealed.get(image) {
-            return Ok((built.clone(), BootState::Cached));
+        if let Some(built) = self
+            .sealed
+            .lock()
+            .map_err(|_| "image cache lock poisoned".to_owned())?
+            .get(image)
+            .cloned()
+        {
+            return Ok((built, BootState::Cached));
         }
+        let guard = match acquire_flight(&self.inflight_builds, image.to_owned())? {
+            FlightRole::Wait(flight) => {
+                return wait_flight(&flight).map(|(built, _)| (built, BootState::Cached));
+            }
+            FlightRole::Lead(guard) => guard,
+        };
+        if let Some(built) = self
+            .sealed
+            .lock()
+            .map_err(|_| "image cache lock poisoned".to_owned())?
+            .get(image)
+            .cloned()
+        {
+            let outcome = Ok((built, BootState::Cached));
+            guard.finish(outcome.clone());
+            return outcome;
+        }
+        let outcome = self.build_uncached(image, log);
+        if let Ok((built, _)) = &outcome
+            && let Ok(mut sealed) = self.sealed.lock()
+        {
+            sealed.insert(image.to_owned(), built.clone());
+        }
+        guard.finish(outcome.clone());
+        outcome
+    }
+
+    fn build_uncached(
+        &self,
+        image: &str,
+        log: &mut BootSink,
+    ) -> Result<(BuiltImage, BootState), String> {
         let node = self
             .images
             .iter()
             .find(|candidate| candidate.id == image)
             .cloned()
             .ok_or_else(|| format!("unknown image `{image}`"))?;
-        let mut out = log.clone();
-        let (built, state) = if let Some(reference) = &node.from {
+        if let Some(reference) = &node.from {
             let parsed = ImageReference::parse(reference).map_err(|error| error.to_string())?;
-            log.note(format!("pull {reference}"));
             let pulled = self
                 .puller
-                .pull_into(&parsed, &mut out)
+                .pull_into(&parsed, log)
                 .map_err(|error| error.to_string())?;
-            let mut argv = pulled.facts.entrypoint.clone();
-            argv.extend(pulled.facts.cmd.iter().cloned());
-            (
+            let mut argv = pulled.facts.entrypoint;
+            argv.extend(pulled.facts.cmd);
+            Ok((
                 BuiltImage {
                     rootfs: pulled.rootfs,
                     inherited_env: pulled.facts.env,
@@ -121,7 +208,7 @@ impl ImageCache {
                     workdir: "/".to_owned(),
                 },
                 BootState::Pulled,
-            )
+            ))
         } else {
             let context = self.project.join(&node.directory);
             let dockerfile = context.join(
@@ -141,18 +228,20 @@ impl ImageCache {
             };
             let report = self
                 .builder
-                .build(&request, &mut out)
+                .build(&request, log)
                 .map_err(|error| error.to_string())?;
-            log.note(format!(
+            let _ = writeln!(
+                log,
                 "dockerfile {image}: {} cached, {} built",
                 report.cache_hits, report.cache_misses
-            ));
+            );
+            let _ = log.flush();
             let state = if report.cache_misses == 0 && report.cache_hits > 0 {
                 BootState::Cached
             } else {
                 BootState::Built
             };
-            (
+            Ok((
                 BuiltImage {
                     rootfs: report.rootfs,
                     inherited_env: report
@@ -165,34 +254,101 @@ impl ImageCache {
                     workdir: report.config.workdir,
                 },
                 state,
-            )
-        };
-        self.sealed.insert(image.to_owned(), built.clone());
-        Ok((built, state))
+            ))
+        }
     }
 
     /// Pulls one resource image (`postgres:18`, `redis:7`) once and reuses it afterwards.
-    pub(super) fn pull(&mut self, reference: &str, log: &SharedLog) -> Result<PulledImage, String> {
-        if let Some(image) = self.pulled.get(reference) {
-            return Ok(image.clone());
+    pub(super) fn pull(&self, reference: &str, log: &mut BootSink) -> Result<PulledImage, String> {
+        if let Some(image) = self
+            .pulled
+            .lock()
+            .map_err(|_| "pulled image lock poisoned".to_owned())?
+            .get(reference)
+            .cloned()
+        {
+            return Ok(image);
         }
-        let parsed = ImageReference::parse(reference).map_err(|error| error.to_string())?;
-        log.note(format!("pull {reference}"));
-        let mut out = log.clone();
-        let image = self
-            .puller
-            .pull_into(&parsed, &mut out)
-            .map_err(|error| error.to_string())?;
-        self.pulled.insert(reference.to_owned(), image.clone());
-        Ok(image)
-    }
+        let guard = match acquire_flight(&self.inflight_pulls, reference.to_owned())? {
+            FlightRole::Wait(flight) => return wait_flight(&flight),
+            FlightRole::Lead(guard) => guard,
+        };
+        if let Some(image) = self
+            .pulled
+            .lock()
+            .map_err(|_| "pulled image lock poisoned".to_owned())?
+            .get(reference)
+            .cloned()
+        {
+            let outcome = Ok(image);
+            guard.finish(outcome.clone());
+            return outcome;
+        }
+        let outcome = ImageReference::parse(reference)
+            .map_err(|error| error.to_string())
+            .and_then(|parsed| {
+                self.puller
+                    .pull_into(&parsed, log)
+                    .map_err(|error| error.to_string())
+            });
+        if let Ok(image) = &outcome
+            && let Ok(mut pulled) = self.pulled.lock()
+        {
+            pulled.insert(reference.to_owned(), image.clone());
+        }
+        guard.finish(outcome.clone());
+        outcome
     }
 
     /// Resolved rootfs subvolume per image id, recorded in the world stamp.
     pub(super) fn paths(&self) -> BTreeMap<String, String> {
         self.sealed
-            .iter()
-            .map(|(image, built)| (image.clone(), built.rootfs.display().to_string()))
-            .collect()
+            .lock()
+            .map(|sealed| {
+                sealed
+                    .iter()
+                    .map(|(image, built)| (image.clone(), built.rootfs.display().to_string()))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+}
+
+enum FlightRole<T: Clone> {
+    Lead(FlightGuard<T>),
+    Wait(Flight<T>),
+}
+
+fn acquire_flight<T: Clone>(table: &FlightTable<T>, key: String) -> Result<FlightRole<T>, String> {
+    let mut guard = table
+        .lock()
+        .map_err(|_| "singleflight lock poisoned".to_owned())?;
+    if let Some(existing) = guard.get(&key) {
+        return Ok(FlightRole::Wait(Arc::clone(existing)));
+    }
+    let flight = Arc::new((Mutex::new(FlightState::Running), Condvar::new()));
+    guard.insert(key.clone(), Arc::clone(&flight));
+    Ok(FlightRole::Lead(FlightGuard {
+        key,
+        table: Arc::clone(table),
+        flight,
+        completed: false,
+    }))
+}
+
+fn wait_flight<T: Clone>(flight: &Flight<T>) -> Result<T, String> {
+    let (lock, cvar) = &**flight;
+    let mut guard = lock
+        .lock()
+        .map_err(|_| "singleflight state poisoned".to_owned())?;
+    loop {
+        match &*guard {
+            FlightState::Running => {
+                guard = cvar
+                    .wait(guard)
+                    .map_err(|_| "singleflight wait poisoned".to_owned())?;
+            }
+            FlightState::Done(outcome) => return outcome.clone(),
+        }
     }
 }

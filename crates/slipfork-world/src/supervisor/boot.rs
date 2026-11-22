@@ -131,55 +131,6 @@ fn await_ready(live: &mut LiveWorld, timeout: Duration) -> Result<(u32, Namespac
     }
 }
 
-/// Reads one run-once exchange: `Output` frames stream live, the `Reply` ends it.
-///
-/// One total deadline covers the whole request: a chatty step cannot extend its own budget by
-/// emitting a line every few seconds.
-pub(super) fn await_run_once(
-    live: &mut LiveWorld,
-    request_id: &str,
-    timeout: Duration,
-    on_line: &mut dyn FnMut(control::Stream, &str),
-) -> Result<i32> {
-    let deadline = Instant::now() + timeout;
-    loop {
-        let line = read_line(&mut live.stdout, deadline)?.ok_or_else(|| Error::Init {
-            message: "world init closed its control channel".to_owned(),
-        })?;
-        match control::decode_init_frame(line.trim())? {
-            InitFrame::Output {
-                id, stream, line, ..
-            } if id == request_id => {
-                on_line(stream, &line);
-            }
-            InitFrame::Reply { id, ok, error, .. } if id == request_id => {
-                if let Some(error) = error {
-                    // `run-timeout` means the init already killed and reaped the container.
-                    return Err(Error::PodLaunch {
-                        message: if error.message.is_empty() {
-                            error.code
-                        } else {
-                            error.message
-                        },
-                    });
-                }
-                return ok
-                    .and_then(|ok| ok.get("exit_code").and_then(serde_json::Value::as_i64))
-                    .and_then(|code| i32::try_from(code).ok())
-                    .ok_or_else(|| Error::Protocol {
-                        message: "run-once reply carried no exit code".to_owned(),
-                    });
-            }
-            InitFrame::Stopped { .. } => {
-                return Err(Error::Init {
-                    message: "world init stopped while a run-once was pending".to_owned(),
-                });
-            }
-            InitFrame::Ready { .. } | InitFrame::Reply { .. } | InitFrame::Output { .. } => {}
-        }
-    }
-}
-
 /// Finds the launcher's child whose `pid` namespace inode matches the reported identity.
 fn resolve_init_pid(launcher_pid: u32, timeout: Duration) -> Result<u32> {
     let deadline = Instant::now() + timeout;
@@ -200,7 +151,7 @@ fn resolve_init_pid(launcher_pid: u32, timeout: Duration) -> Result<u32> {
                 message: format!("no init process below launcher {launcher_pid}"),
             });
         }
-        thread::sleep(Duration::from_millis(10));
+        thread::sleep(Duration::from_millis(1));
     }
 }
 

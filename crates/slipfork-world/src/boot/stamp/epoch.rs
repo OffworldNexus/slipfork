@@ -2,15 +2,17 @@
 //!
 //! A stamp is only reused when the world subvolume and every flat PG clone it was written with
 //! carry the same epoch. `slipfork fork` snapshots both, so a cloned world skips every rebuild,
-//! `@<tool>` install, and hook; a mismatched pair forces the hooks to run again.
+//! `@<tool>` install, and `before-start`/`pre-deploy` hook in 0ms; a mismatched pair forces the
+//! hooks to run again.
 
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+use slipfork_forkfile::boot::stamp_of;
 
-use crate::boot::{HookPhase, WorldPlan};
+use crate::boot::{BootKind, BootStep, HookPhase, WorldPlan};
 use crate::error::{Error, Result};
 
 /// The world checkpoint written at `<world>/.slipfork-world-stamp.json`.
@@ -30,10 +32,10 @@ pub struct WorldStamp {
     /// Completed `@<tool>` / `when changed(...)` digests.
     #[serde(default)]
     pub tools: BTreeMap<String, String>,
-    /// `before-start` input digests.
+    /// `before-start` input + image/command digests.
     #[serde(default)]
     pub before_start: BTreeMap<String, String>,
-    /// `pre-deploy` input digests.
+    /// `pre-deploy` input + image/command digests.
     #[serde(default)]
     pub pre_deploy: BTreeMap<String, String>,
 }
@@ -47,30 +49,91 @@ impl WorldStamp {
             images,
             ..Self::default()
         };
-        for step in &plan.steps {
-            let Some(conditional) = &step.stamp else {
+        for (index, step) in plan.steps.iter().enumerate() {
+            let Some(digest) = step_digest(step) else {
                 continue;
             };
+            let key = step_slot_key(&plan.steps, index);
             match step.phase {
                 Some(HookPhase::PreDeploy) => {
-                    stamp
-                        .pre_deploy
-                        .insert(step.label.clone(), conditional.digest.clone());
+                    stamp.pre_deploy.insert(key, digest);
                 }
                 Some(HookPhase::BeforeStart) => {
-                    stamp
-                        .before_start
-                        .insert(step.label.clone(), conditional.digest.clone());
+                    stamp.before_start.insert(key, digest);
                 }
                 Some(HookPhase::PostDeploy | HookPhase::FailedDeploy) => {}
                 None => {
-                    stamp
-                        .tools
-                        .insert(step.label.clone(), conditional.digest.clone());
+                    stamp.tools.insert(key, digest);
                 }
             }
         }
         stamp
+    }
+
+    /// Whether `step` at `index` in `steps` matches its recorded `before-start`/`pre-deploy`
+    /// digest in this checkpoint.
+    #[must_use]
+    pub fn matches_hook(&self, steps: &[BootStep], index: usize) -> bool {
+        let Some(step) = steps.get(index) else {
+            return false;
+        };
+        let Some(expected) = step_digest(step) else {
+            return false;
+        };
+        let key = step_slot_key(steps, index);
+        match step.phase {
+            Some(HookPhase::BeforeStart) => self.before_start.get(&key) == Some(&expected),
+            Some(HookPhase::PreDeploy) => self.pre_deploy.get(&key) == Some(&expected),
+            None => self.tools.get(&key) == Some(&expected),
+            Some(HookPhase::PostDeploy | HookPhase::FailedDeploy) => false,
+        }
+    }
+}
+
+/// Deterministic digest of one setup/hook step: its enclosing image, rendered command, and any
+/// matched input-file Merkle digest.
+#[must_use]
+pub fn step_digest(step: &BootStep) -> Option<String> {
+    if !matches!(step.kind, BootKind::Setup | BootKind::Hook) {
+        return None;
+    }
+    let inputs = vec![
+        (
+            PathBuf::from("image"),
+            step.image.as_ref().map(|value| value.as_bytes().to_vec()),
+        ),
+        (
+            PathBuf::from("command"),
+            step.command.as_ref().map(|value| value.as_bytes().to_vec()),
+        ),
+        (
+            PathBuf::from("inputs"),
+            step.stamp
+                .as_ref()
+                .map(|conditional| conditional.digest.as_bytes().to_vec()),
+        ),
+    ];
+    Some(stamp_of(&inputs))
+}
+
+/// Stable map key for one setup/hook node; disambiguates multi-command blocks by ordinal.
+fn step_slot_key(steps: &[BootStep], index: usize) -> String {
+    let step = &steps[index];
+    let base = match step.phase {
+        Some(_) => step.node_name(),
+        None => match &step.image {
+            Some(image) => format!("{image}:{}", step.node_name()),
+            None => step.node_name(),
+        },
+    };
+    let ordinal = steps[..index]
+        .iter()
+        .filter(|prior| prior.phase == step.phase && prior.node_name() == step.node_name())
+        .count();
+    if ordinal == 0 {
+        base
+    } else {
+        format!("{base}#{}", ordinal + 1)
     }
 }
 

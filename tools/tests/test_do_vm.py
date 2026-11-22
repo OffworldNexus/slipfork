@@ -550,6 +550,9 @@ if [ "$1" = "show" ]; then
   fi
   exit 0
 fi
+case "$*" in
+  *enable*|*disable*|*daemon-reload*) exit 0 ;;
+esac
 echo "${FAKE_SYSTEMCTL_STATE:-active}"
 if [ -n "${FAKE_SYSTEMCTL_STDERR:-}" ]; then
   printf '%s\\n' "$FAKE_SYSTEMCTL_STDERR" >&2
@@ -558,6 +561,10 @@ case "${FAKE_SYSTEMCTL_STATE:-active}" in
   active) exit 0 ;;
   *) exit 3 ;;
 esac
+"""
+
+FAKE_LOGINCTL = """#!/bin/sh
+echo "loginctl $*" >> "$FAKE_COMMAND_LOG"
 """
 
 FAKE_AA_STATUS = """#!/bin/sh
@@ -585,6 +592,7 @@ def _fake_bin(tmp_path: Path) -> Path:
         "systemctl": FAKE_SYSTEMCTL,
         "aa-status": FAKE_AA_STATUS,
         "id": FAKE_ID,
+        "loginctl": FAKE_LOGINCTL,
         "runuser": FAKE_RUNUSER,
     }.items():
         _write_executable(bin_dir / name, body)
@@ -1694,16 +1702,19 @@ class HarnessTests(unittest.TestCase):
             assert f'target/{do_vm_mod.BUILD_PROFILE}/"$_binary"' in script
         assert f"for _binary in {' '.join(do_vm_mod.PRODUCT_BINARIES)}; do" in script
         assert 'if ! cmp -s "$_source"' in script
+        assert "/usr/local/bin/slipfork daemon install --ingress" in script
         assert (
-            "/usr/local/bin/slipfork daemon install --user slipfork --bin-dir /usr/local/bin "
-            f"--bin-dir {do_vm_mod.REMOTE_TREE}/target/debug "
-            f"--bin-dir {do_vm_mod.REMOTE_TREE}/target/release"
+            'SUDO_UID="$_slipfork_uid" SUDO_GID="$(id -g slipfork)" '
+            "/usr/local/bin/slipfork daemon install --ingress"
         ) in script
+        assert "loginctl enable-linger slipfork" in script
+        assert "systemctl --user enable --now slipfork" in script
         assert (
             "/usr/local/bin/slipfork daemon install --help >/dev/null 2>&1"
         ) in script
         assert "this build has no `daemon` mode yet" in script
-        assert "systemctl is-active slipfork.socket" in script
+        assert "systemctl is-active slipfork-ingress.socket" in script
+        assert "systemctl --user is-active slipfork" in script
         assert '!= "active"' in script
         assert "aa-status" in script
         assert "runuser -u slipfork -- unshare --user" in script
@@ -1796,12 +1807,9 @@ class HarnessTests(unittest.TestCase):
         for entry in installs:
             assert "-m 0755" in entry
         assert "slipfork daemon install --help" in commands
-        daemon = [
-            entry
-            for entry in commands
-            if entry.startswith("slipfork daemon install --user")
-        ]
-        assert len(daemon) == 1
+        assert "slipfork daemon install" in commands
+        assert "slipfork daemon install --ingress" in commands
+        assert any(entry.startswith("loginctl enable-linger") for entry in commands)
         for binary in do_vm_mod.PRODUCT_BINARIES:
             assert (installed / binary).is_file()
 
@@ -1810,9 +1818,7 @@ class HarnessTests(unittest.TestCase):
         assert second.returncode == 0, second.stderr
         commands = _lines(tmp_path / "commands.log")
         assert [entry for entry in commands if entry.startswith("install ")] == []
-        assert any(
-            entry.startswith("slipfork daemon install --user") for entry in commands
-        )
+        assert "slipfork daemon install --ingress" in commands
 
     def test_product_install_fails_closed_without_the_binaries(self):
         tmp_path = self.tmp_path
@@ -1941,6 +1947,18 @@ class HarnessTests(unittest.TestCase):
         assert do_vm_mod.DEMO_STAMP in result.stderr
         assert (demo / "README.md").read_text(encoding="utf-8") == "someone's work\n"
 
+    def test_demo_seed_skips_when_the_tree_has_no_template(self):
+        tmp_path = self.tmp_path
+        config = _demo_config(tmp_path)
+        template = Path(config.remote_tree) / do_vm_mod.DEMO_TEMPLATE
+        template.rename(tmp_path / "template-aside")
+        result = _run_step(
+            do_vm_mod.render_demo_seed(config), _fake_bin(tmp_path), tmp_path
+        )
+        assert result.returncode == 0, result.stderr
+        assert "skipped" in result.stdout
+        assert not Path(config.remote_demo).exists()
+
     def test_login_banner_states_the_account_and_the_shipped_verbs(self):
         banner = do_vm_mod.render_login_banner()
         for needle in (
@@ -2008,7 +2026,7 @@ class HarnessTests(unittest.TestCase):
         install_script = (harness.state / "product-install.sh").read_text(
             encoding="utf-8"
         )
-        assert "daemon install --user slipfork" in install_script
+        assert "daemon install --ingress" in install_script
 
     def test_sync_fails_closed_when_the_product_install_refuses(self):
         harness = self.harness

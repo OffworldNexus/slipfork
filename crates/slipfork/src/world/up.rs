@@ -71,6 +71,9 @@ impl Session {
                 if let Some(node) = boot_node(event) {
                     nodes.push(node);
                 }
+                if args.json {
+                    let _ = emit_json(event);
+                }
                 tui.observe(event);
             },
         );
@@ -205,6 +208,11 @@ impl Session {
                         "nodes": nodes,
                     }));
                 }
+                let subject = args
+                    .service
+                    .clone()
+                    .unwrap_or_else(|| reply["world"].as_str().unwrap_or_default().to_owned());
+                tui.line(&format!("✓ Restarted {subject}"));
                 ExitCode::SUCCESS
             }
             Err(error) => self.lifecycle_failure(

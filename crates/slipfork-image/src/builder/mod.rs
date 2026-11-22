@@ -116,7 +116,20 @@ impl NativeImageBuilder {
         {
             runtime.ensure_crun()?;
         }
-        let context = BuildContext::load(&request.context)?;
+        let needs_context = stages
+            .iter()
+            .flat_map(|stage| &stage.instructions)
+            .any(|parsed| {
+                matches!(
+                    &parsed.instruction,
+                    Instruction::Copy(spec) | Instruction::Add(spec) if spec.from.is_none()
+                )
+            });
+        let context = if needs_context {
+            BuildContext::load(&request.context)?
+        } else {
+            BuildContext::empty(&request.context)
+        };
         let context_hash = context.hash()?;
         self.layout.ensure()?;
         let target = request

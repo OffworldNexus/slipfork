@@ -249,6 +249,28 @@ impl WorldEngine for BtrfsEngine {
                 self.layout.fork_world_clone(world, fork, kind, &pod),
             ));
         }
+        // Snapshot live `svc-*` service rootfses in the same Btrfs transaction so the fork pays
+        // zero extra `SNAP_CREATE_V2` commits for services and inherits warm runtime caches.
+        let parent_pods = self.layout.world_pods(world);
+        if parent_pods.is_dir() {
+            let forked = StoreLayout::fork_world_name(world, fork);
+            let fork_pods = self.layout.world_pods(&forked);
+            fs::create_dir_all(&fork_pods)
+                .map_err(|source| Error::io("create", &fork_pods, source))?;
+            for entry in fs::read_dir(&parent_pods)
+                .map_err(|source| Error::io("read", &parent_pods, source))?
+            {
+                let entry = entry.map_err(|source| Error::io("read", &parent_pods, source))?;
+                let file_name = entry.file_name();
+                let reusable = file_name
+                    .to_str()
+                    .is_some_and(|name| name.starts_with("res-") || name.starts_with("svc-"));
+                let source_path = entry.path();
+                if reusable && btrfs::is_subvolume_path(&source_path).unwrap_or(false) {
+                    jobs.push((source_path, fork_pods.join(file_name)));
+                }
+            }
+        }
         // Issue every `SNAP_CREATE_V2` ioctl concurrently so they join the same Btrfs transaction
         // (`cur_trans->transaction->pending_snapshots`) and share one superblock barrier commit.
         let outcomes = Self::snapshots(&jobs);
@@ -274,7 +296,7 @@ impl WorldEngine for BtrfsEngine {
         })
     }
 
-    /// Every `<world>.<kind>.<pod>` flat sibling currently owned by `world`.
+    /// Seals `subvolume` read-only with `BTRFS_SUBVOL_RDONLY`.
     fn seal(&self, subvolume: &Path) -> Result<()> {
         let flags = Self::subvolume_flags(subvolume)?;
         if flags.is_read_only() {
@@ -310,9 +332,11 @@ impl WorldEngine for BtrfsEngine {
                 target: format!("fork {fork}"),
             });
         }
-        teardown::destroy_if_present(&layout::project_fork_path(project, fork))?;
-        teardown::destroy_world_if_present(&self.layout.fork_world(world, fork))?;
+        // Sweep pod clones, flat resource clones, and `worlds/<fork>--<world>` BEFORE unlinking
+        // `.forks/<fork>`, so an interrupted drop keeps the fork addressable on retry instead of
+        // stranding orphan world subvolumes.
         let forked = StoreLayout::fork_world_name(world, fork);
+        teardown::sweep_pods_dir(&self.layout.world_pods(&forked))?;
         let worlds = self.layout.worlds_root();
         if worlds.is_dir() {
             let entries =
@@ -329,10 +353,24 @@ impl WorldEngine for BtrfsEngine {
                 }
             }
         }
-        Ok(())
+        teardown::destroy_world_if_present(&self.layout.fork_world(world, fork))?;
+        teardown::destroy_if_present(&layout::project_fork_path(project, fork))
     }
 
     fn drop_world(&self, world: &WorldName) -> Result<()> {
+        teardown::sweep_pods_dir(&self.layout.world_pods(world))?;
+        let pods = self.layout.pods_root();
+        if pods.is_dir() {
+            let entries = fs::read_dir(&pods).map_err(|source| Error::io("read", &pods, source))?;
+            for entry in entries {
+                let entry = entry.map_err(|source| Error::io("read", &pods, source))?;
+                if StoreLayout::parse_fork_world(&entry.file_name())
+                    .is_some_and(|(_, parent)| &parent == world)
+                {
+                    teardown::sweep_pods_dir(&entry.path())?;
+                }
+            }
+        }
         let worlds = self.layout.worlds_root();
         if worlds.is_dir() {
             let entries =
@@ -345,8 +383,11 @@ impl WorldEngine for BtrfsEngine {
                 let name = entry.file_name();
                 let owned = StoreLayout::parse_fork_world(&name)
                     .is_some_and(|(_, parsed)| &parsed == world)
-                    || StoreLayout::parse_world_clone(&name)
-                        .is_some_and(|(parsed, _, _)| &parsed == world);
+                    || StoreLayout::parse_world_clone(&name).is_some_and(|(parsed, _, _)| {
+                        &parsed == world
+                            || StoreLayout::parse_fork_world(std::ffi::OsStr::new(parsed.as_str()))
+                                .is_some_and(|(_, parent)| &parent == world)
+                    });
                 if owned {
                     teardown::destroy_world_if_present(&entry.path())?;
                 }

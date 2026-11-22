@@ -24,6 +24,7 @@ mod stream;
 
 use std::fs;
 use std::io::{self, BufRead, BufReader};
+use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -81,6 +82,7 @@ fn run() -> Result<(), Fault> {
         .map_err(|source| Fault::cause("native S3 runtime setup", REMEDY_RUNTIME, source))?;
     let mut world = pod::InitWorld::new(args.crun, pods_root, runtime.handle().clone())?;
     let (listener, socket_path) = control::bind(world.pods_root())?;
+    let listener_fd = listener.as_raw_fd();
     let stdin = io::stdin();
     let mut reader = BufReader::new(stdin.lock());
     loop {
@@ -88,7 +90,11 @@ fn run() -> Result<(), Fault> {
         if control::handle(&listener, &mut world)? {
             break;
         }
-        if !poll_stdin(TICK)? {
+        let stdin_ready = reader.buffer().contains(&b'\n') || poll_channels(listener_fd, TICK)?;
+        if control::handle(&listener, &mut world)? {
+            break;
+        }
+        if !stdin_ready {
             continue;
         }
         let mut line = String::new();
@@ -121,6 +127,7 @@ fn run() -> Result<(), Fault> {
         },
         "stopped handshake write",
     )?;
+    runtime.shutdown_background();
     Ok(())
 }
 
@@ -169,15 +176,25 @@ fn bring_loopback_up() -> io::Result<()> {
     outcome
 }
 
-fn poll_stdin(timeout: Duration) -> Result<bool, Fault> {
+/// Polls both the lifeline `stdin` and `control.sock` at once, waking in 0µs on either channel
+/// instead of stalling `Dial`/`ConfigureS3`/`RunOnce` behind a 200ms stdin sleep. Returns `true`
+/// when `stdin` is readable (or hit EOF/HUP).
+fn poll_channels(listener_fd: i32, timeout: Duration) -> Result<bool, Fault> {
     let millis = i32::try_from(timeout.as_millis().max(1)).unwrap_or(i32::MAX);
-    let mut pollfd = libc::pollfd {
-        fd: libc::STDIN_FILENO,
-        events: libc::POLLIN,
-        revents: 0,
-    };
-    // SAFETY: one valid `pollfd` lives across the call.
-    let ret = unsafe { libc::poll(&mut pollfd, 1, millis) };
+    let mut fds = [
+        libc::pollfd {
+            fd: libc::STDIN_FILENO,
+            events: libc::POLLIN,
+            revents: 0,
+        },
+        libc::pollfd {
+            fd: listener_fd,
+            events: libc::POLLIN,
+            revents: 0,
+        },
+    ];
+    // SAFETY: `fds` holds two valid `pollfd` entries across the call.
+    let ret = unsafe { libc::poll(fds.as_mut_ptr(), 2, millis) };
     if ret < 0 {
         let error = io::Error::last_os_error();
         if error.kind() == io::ErrorKind::Interrupted {
@@ -185,7 +202,7 @@ fn poll_stdin(timeout: Duration) -> Result<bool, Fault> {
         }
         return Err(Fault::cause("control channel poll", REMEDY_PROTOCOL, error));
     }
-    Ok(ret > 0)
+    Ok(ret > 0 && fds[0].revents & (libc::POLLIN | libc::POLLHUP | libc::POLLERR) != 0)
 }
 
 fn set_cloexec(fd: i32) -> io::Result<()> {

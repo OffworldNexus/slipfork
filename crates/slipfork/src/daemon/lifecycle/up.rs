@@ -12,6 +12,26 @@ use crate::daemon::boot::BootSession;
 use crate::daemon::rpc::{key_of, pid_alive, world_answers};
 
 impl Core {
+    /// One idempotent `up`: a live world that still answers needs no second boot.
+    ///
+    /// `up` is the daily verb, so repeating it on a running world is a success (the world keeps
+    /// running) rather than a `world-running` failure the user has to decode.
+    pub(crate) fn live_up_reply(&self, params: &Value) -> Option<Value> {
+        let project = PathBuf::from(params.get("project")?.as_str()?);
+        let key = key_of(&project);
+        let Some(World::Live { entry, .. }) = self.worlds.get(&key) else {
+            return None;
+        };
+        if !pid_alive(entry.supervisor_pid) || !world_answers(&entry.pods_dir) {
+            return None;
+        }
+        Some(serde_json::json!({
+            "world": entry.world,
+            "url": format!("http://{}.localhost", entry.world),
+            "elapsed_ms": 0,
+        }))
+    }
+
     /// Spawns `__supervise` and leaves a `Booting` placeholder; the returned session owns the boot.
     ///
     /// The caller holds one `Core` guard for the reservation, so a fork snapshot and its boot can

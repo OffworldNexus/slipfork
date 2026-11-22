@@ -382,9 +382,13 @@ fn btrfs_lifecycle() {
         Some(worlds_root.as_path()),
         "the clone must never land inside the world subvolume"
     );
+    // One `SNAP_CREATE_V2` ioctl commits one Btrfs transaction: measured 8.6ms here and 9–27ms in
+    // a bare C probe against this volume (network-attached block storage), ~0.3ms on local NVMe.
+    // The ceiling guards against added user-space work (a second ioctl, a copy, a syncfs), not
+    // against the block device's commit latency.
     assert!(
-        pgdata.elapsed < Duration::from_millis(1),
-        "PGDATA clone took {:?}, budget 1ms",
+        pgdata.elapsed < Duration::from_millis(50),
+        "PGDATA clone took {:?}, budget 50ms (one kernel snapshot ioctl)",
         pgdata.elapsed
     );
     assert!(

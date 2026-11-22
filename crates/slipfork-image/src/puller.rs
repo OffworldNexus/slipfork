@@ -94,9 +94,23 @@ impl OciPuller {
         reference: &ImageReference,
         log: &mut dyn Write,
     ) -> Result<PulledImage> {
+        // A recorded digest with a sealed rootfs means the whole pull is served from disk: no
+        // registry session, no manifest request, and no "pull" line in the boot log.
+        let key = reference.to_string();
+        if let Some(digest) = self.layout.cached_ref(&key) {
+            let image = self.layout.image(&digest);
+            if image.exists() && self.world.is_sealed(&image)? {
+                let path = self.layout.config(&digest);
+                let bytes = fs::read(&path).map_err(|source| Error::io("read", &path, source))?;
+                let facts = parse_config(&bytes, &path)?;
+                note(log, format!("sealed {digest}: reusing cache"));
+                return Ok(self.pulled(image, digest, facts));
+            }
+        }
         let mut session = self.client.session(reference);
         let resolved = session.manifest(self.architecture)?;
         let digest = resolved.digest.clone();
+        self.layout.remember_ref(&key, &digest);
         note(
             log,
             format!(

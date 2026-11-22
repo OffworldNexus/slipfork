@@ -104,7 +104,14 @@ impl PostgresLauncher {
             workdir: "/".to_owned(),
             argv,
             inherited_env: facts.env.clone(),
-            env: vec![PodEnv::new("POSTGRES_HOST_AUTH_METHOD", "trust")],
+            env: vec![
+                PodEnv::new("POSTGRES_HOST_AUTH_METHOD", "trust"),
+                // The world loopback is served on PostgreSQL's default `localhost` binding, so the
+                // stock `psql`/libpq clients resolve `PGHOST` without a `-h` flag.
+                PodEnv::new("PGHOST", "127.0.0.1"),
+                PodEnv::new("PGPORT", "5432"),
+                PodEnv::new("PGUSER", "postgres"),
+            ],
             binds: vec![
                 Bind {
                     source: BindSource::Host(self.clone_path(pod)),
@@ -150,6 +157,15 @@ pub(super) fn clear_stale_state(data: &Path) -> Result<()> {
     if stats.is_dir() {
         fs::remove_dir_all(&stats).map_err(|source| Error::io("remove", &stats, source))?;
     }
+    let sock_dir = data.join(SOCKET_DIR);
+    if sock_dir.is_dir() {
+        for entry in fs::read_dir(&sock_dir)
+            .map_err(|source| Error::io("read", &sock_dir, source))?
+            .flatten()
+        {
+            let _ = fs::remove_file(entry.path());
+        }
+    }
     Ok(())
 }
 
@@ -183,8 +199,6 @@ mod tests {
                 "dynamic_shared_memory_type=posix",
                 "-c",
                 "unix_socket_directories=/var/lib/postgresql/data/.sock",
-                "-c",
-                "listen_addresses=",
             ]
         );
         assert_eq!(PGDATA, "/var/lib/postgresql/data");

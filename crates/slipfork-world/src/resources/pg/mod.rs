@@ -1,8 +1,10 @@
 //! Golden `postgres:18` `initdb` template and the `< 1ms` per-world `PGDATA` clone.
 
+mod checkpoint;
 mod launcher;
 mod template;
 
+pub use checkpoint::checkpoint;
 pub use launcher::{PostgresClone, PostgresLauncher};
 pub use template::{PostgresTemplate, TemplateState};
 
@@ -19,7 +21,7 @@ pub const PGDATA: &str = "/var/lib/postgresql/data";
 /// Unix-socket directory inside the cloned `PGDATA`; readiness never opens a TCP port.
 pub const SOCKET_DIR: &str = ".sock";
 /// Dev-server flags (`specs/03-under-the-hood.md` §3): no fsync, minimal WAL, POSIX shm.
-const DEV_FLAGS: [&str; 20] = [
+const DEV_FLAGS: [&str; 18] = [
     "-c",
     "fsync=off",
     "-c",
@@ -38,8 +40,6 @@ const DEV_FLAGS: [&str; 20] = [
     "dynamic_shared_memory_type=posix",
     "-c",
     "unix_socket_directories=/var/lib/postgresql/data/.sock",
-    "-c",
-    "listen_addresses=",
 ];
 /// Rootfs-relative `initdb` locations of the PGDG, source-built, and distro images.
 const INITDB_CANDIDATES: [&str; 4] = [

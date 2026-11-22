@@ -3,17 +3,17 @@
 use std::io::{BufRead, BufReader};
 use std::net::Shutdown;
 use std::os::unix::net::UnixStream;
-use std::os::unix::process::{CommandExt, ExitStatusExt};
-use std::process::{Child, Stdio};
+use std::os::unix::process::CommandExt;
+use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::{Duration, Instant};
 
 use slipfork_world::control::{FrameLines, InitFrame, PROTOCOL_VERSION, Stream};
 
 use crate::pod::{WorldShared, reap_zombies};
+use crate::shared::wait_child;
 use crate::{Fault, REMEDY_CRUN, REMEDY_PROTOCOL};
 
 use super::lines::{IDLE, TempProcessSpec, peer_closed, pump_input, refuse, reply, write_output};
@@ -170,27 +170,4 @@ pub(crate) fn serve_exec(
             error: None,
         },
     )
-}
-
-/// Waits for the exec child, recovering a status the init loop may have reaped first.
-fn wait_child(child: &mut Child, shared: &WorldShared, pid: i32) -> i32 {
-    match child.wait() {
-        Ok(status) => {
-            let _ = shared.take_status(pid);
-            status
-                .code()
-                .or_else(|| status.signal().map(|sig| 128 + sig))
-                .unwrap_or(128)
-        }
-        Err(_) => {
-            let deadline = Instant::now() + Duration::from_secs(2);
-            while Instant::now() < deadline {
-                if let Some(code) = shared.take_status(pid) {
-                    return code;
-                }
-                thread::sleep(Duration::from_millis(10));
-            }
-            -1
-        }
-    }
 }

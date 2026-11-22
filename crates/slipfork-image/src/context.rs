@@ -29,6 +29,17 @@ pub struct BuildContext {
 }
 
 impl BuildContext {
+    /// An empty context for `Dockerfile`s with zero host `COPY`/`ADD` instructions, avoiding
+    /// unnecessary directory walks across mounted dev checkouts.
+    #[must_use]
+    pub fn empty(root: &Path) -> Self {
+        Self {
+            root: root.to_path_buf(),
+            ignore: Dockerignore::default(),
+            entries: Vec::new(),
+        }
+    }
+
     /// Loads `<root>/.dockerignore` and indexes the included entries.
     pub fn load(root: &Path) -> Result<Self> {
         let ignore_path = root.join(".dockerignore");

@@ -13,38 +13,20 @@ use super::WorldSupervisor;
 use super::{boot, exchange};
 
 impl WorldSupervisor {
-    /// Runs one setup/hook pod to completion, streaming every stdout/stderr line live.
-    ///
-    /// The init owns the non-detached `crun run`, so a failing command's own diagnostics reach
-    /// `on_line` instead of being swallowed by a detached container. The deadline is passed to the
-    /// init (which kills and reaps a silent step) and the host waits a grace period longer, so a
-    /// timeout arrives as the init's typed `run-timeout` reply rather than a bare local timeout.
+    /// Runs one setup/hook pod to completion over `<pods>/control.sock`, streaming every
+    /// stdout/stderr line live.
     pub fn run_once(
         &mut self,
         spec: &PodSpec,
         on_line: &mut dyn FnMut(control::Stream, &str),
     ) -> Result<i32> {
-        write_bundle(spec, &self.host.pod_host(), &self.pods.pod_dir(&spec.id))?;
-        let Some(live) = self.live.as_mut() else {
+        if self.live.is_none() {
             return Err(Error::Init {
                 message: "world is not running".to_owned(),
             });
-        };
-        let timeout = self.host.boot_timeout;
-        live.next_request += 1;
-        let id = format!("req-{}", live.next_request);
-        let request = Request::RunOnce {
-            v: control::PROTOCOL_VERSION,
-            id: id.clone(),
-            pod: spec.clone(),
-            timeout_ms: u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX),
-        };
-        let bytes = control::encode(&request)?;
-        live.stdin
-            .write_all(&bytes)
-            .and_then(|()| live.stdin.flush())
-            .map_err(|source| Error::io("write", self.pods.path(), source))?;
-        boot::await_run_once(live, &id, timeout + Duration::from_secs(5), on_line)
+        }
+        write_bundle(spec, &self.host.pod_host(), &self.pods.pod_dir(&spec.id))?;
+        control::run_once(self.pods.path(), spec, self.host.boot_timeout, on_line)
     }
 
     /// Asks the init inside the world which pods it still tracks.
@@ -75,6 +57,12 @@ impl WorldSupervisor {
 
     /// Writes one bundle on tmpfs and asks the init to run `crun`; returns the container pid.
     pub fn launch(&mut self, spec: &PodSpec) -> Result<u32> {
+        write_bundle(spec, &self.host.pod_host(), &self.pods.pod_dir(&spec.id))?;
+        self.launch_bundled(spec)
+    }
+
+    /// Launches a pod whose `<pods>/<id>/config.json` bundle was already written outside any lock.
+    pub fn launch_bundled(&mut self, spec: &PodSpec) -> Result<u32> {
         let live = self.live.as_mut().ok_or_else(|| Error::Init {
             message: "world is not running".to_owned(),
         })?;
@@ -84,7 +72,6 @@ impl WorldSupervisor {
                 reason: "a pod with this id is already running".to_owned(),
             });
         }
-        write_bundle(spec, &self.host.pod_host(), &self.pods.pod_dir(&spec.id))?;
         live.next_request += 1;
         let id = format!("req-{}", live.next_request);
         let request = Request::Launch {
@@ -177,7 +164,7 @@ impl WorldSupervisor {
             {
                 return Ok(());
             }
-            thread::sleep(Duration::from_millis(100));
+            thread::sleep(Duration::from_millis(25));
         }
     }
 

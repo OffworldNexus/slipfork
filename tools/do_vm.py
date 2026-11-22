@@ -9,10 +9,11 @@ Boots one disposable Ubuntu 24.04 droplet, attaches a 100 GiB block-storage volu
 **Btrfs** at `/var/lib/slipfork` (`user_subvol_rm_allowed,noatime`), provisions `btrfs-progs`,
 AppArmor, and a Rust toolchain (no Docker), links the account's `~/.cache` onto that
 volume, syncs the working tree, builds the product binaries (named by `cargo metadata`) and
-installs them into `/usr/local/bin`, and runs `slipfork daemon install` so `slipfork.socket`
+installs them into `/usr/local/bin`, and runs `slipfork daemon install` (per-user unit) plus
+`slipfork daemon install --ingress` so `slipfork-ingress.socket`
 owns `:80` (the `userns` AppArmor profile and the control-socket handover are rendered by that
 product command only; this harness never writes either). `sync` also stamps the tracked
-`support/demo` template at `/home/slipfork/demo` once.
+`support/demo` template at `/home/slipfork/demo` once when the tree carries it.
 No host `crun` is installed: the pinned static binary ships inside the `L0` world rootfs.
 
 `up` is idempotent by the tag `slipfork-dev-vm` and never reformats a device that carries a
@@ -33,11 +34,13 @@ keeps it unless `--delete-volume` is given.
   tools/do_vm.py ssh     [--identity PATH ...] [-- <remote command> ...]
   tools/do_vm.py down    [--yes] [--delete-volume]
 
-`sync` is also the install step: it seeds `support/demo` at `/home/slipfork/demo` once, builds the
+`sync` is also the install step: it seeds `support/demo` at `/home/slipfork/demo` once when the
+tree carries that template (a tree without it skips the seed), builds the
 product binaries (their names come from `cargo metadata`, in the `debug` profile), installs them
-into `/usr/local/bin`, and runs `slipfork daemon install --user slipfork --bin-dir
-/usr/local/bin --bin-dir <tree>/target/{debug,release}` — the single writer of the units and the
-single owner of the socket handover — before asserting `systemctl is-active slipfork.socket`.
+into `/usr/local/bin`, runs `slipfork daemon install` as the suite user and
+`slipfork daemon install --ingress` as root (with `SUDO_UID` naming the suite user) — the single
+writer of the units — then enables both units and asserts
+`systemctl is-active slipfork-ingress.socket` and `systemctl --user is-active slipfork`.
 Both `sync` and `test` therefore stop the installed units and hand the control socket over from
 any running `slipfork daemon`, so every running world's processes stop until the next `slipfork up`. A
 missing binary fails closed naming `tools/do_vm.py test`.
@@ -527,11 +530,11 @@ fi
 def render_product_install(config: ProvisionConfig = PROVISION) -> str:
     """Install the product binaries, release a daemon from an older build, then hand `:80` over.
 
-    `slipfork daemon install` is the only writer of `slipfork.{socket,service}` and of
-    `/etc/apparmor.d/slipfork`; this script never renders a unit or a profile body, it installs
-    the executables the AppArmor attachment names, and then asserts the product's own verbs
-    took effect. `slipfork daemon install` owns the socket handover (any holder, including a
-    daemon from an older build), so this step adds no daemon lifecycle of its own. Every branch
+    `slipfork daemon install` is the only writer of `slipfork-ingress.socket` +
+    `slipfork.service` and of `/etc/apparmor.d/slipfork`; this script never renders a unit or a
+    profile body, it installs the executables the AppArmor attachment names, then enables the
+    product's own units (`systemctl --user` for the per-user daemon, `systemctl` for `:80`) and
+    asserts they are active. Every branch
     fails closed: a missing binary, a non-`active` socket unit, an unloaded profile, or a
     denied unprivileged `CLONE_NEWUSER` exits non-zero. Builds that do not ship a
     `daemon` verb yet are probed with `daemon install --help`: they install the binaries,
@@ -549,19 +552,13 @@ def render_product_install(config: ProvisionConfig = PROVISION) -> str:
             "  fi",
         ]
     )
-    bin_dirs = " ".join(
-        f"--bin-dir {_q(directory)}"
-        for directory in (
-            config.install_bin_dir,
-            *(
-                f"{config.remote_tree}/target/{profile}"
-                for profile in config.bin_profiles
-            ),
-        )
-    )
-    daemon_install = (
-        f"{_q(config.install_bin_dir)}/slipfork daemon install "
-        f"--user {_q(config.remote_user)} {bin_dirs}"
+    exe = f"{_q(config.install_bin_dir)}/slipfork"
+    user = _q(config.remote_user)
+    user_home = _q(config.remote_home)
+    as_user = (
+        f"runuser -u {user} -- env HOME={user_home} "
+        'XDG_RUNTIME_DIR="/run/user/$_slipfork_uid" '
+        'DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$_slipfork_uid/bus" '
     )
     return f"""\
 set -euo pipefail
@@ -569,15 +566,29 @@ for _binary in {" ".join(config.binaries)}; do
 {sources}
 {installs}
 done
-if {_q(config.install_bin_dir)}/slipfork daemon install --help >/dev/null 2>&1; then
-{daemon_install}
-  if _socket_state=$(systemctl is-active slipfork.socket); then
+if {exe} daemon install --help >/dev/null 2>&1; then
+  _slipfork_uid=$(id -u {user})
+  # A linger-enabled user manager owns `slipfork.service`; `--ingress` names the same account
+  # through SUDO_UID so the template unit's `User=` is the suite user, never root.
+  loginctl enable-linger {user}
+  install -d -o {user} -g {user} -m 700 "/run/user/$_slipfork_uid"
+  {as_user}{exe} daemon install
+  {as_user}systemctl --user daemon-reload
+  {as_user}systemctl --user enable --now slipfork
+  SUDO_UID="$_slipfork_uid" SUDO_GID="$(id -g {user})" {exe} daemon install --ingress
+  systemctl daemon-reload
+  systemctl enable --now slipfork-ingress.socket
+  if _socket_state=$(systemctl is-active slipfork-ingress.socket); then
     _socket_rc=0
   else
     _socket_rc=$?
   fi
   if [ "$_socket_rc" -ne 0 ] || [ "$_socket_state" != "active" ]; then
-    echo "slipfork: systemctl is-active slipfork.socket reported '${{_socket_state:-no output}}' (rc $_socket_rc), not active" >&2
+    echo "slipfork: systemctl is-active slipfork-ingress.socket reported '${{_socket_state:-no output}}' (rc $_socket_rc), not active" >&2
+    exit 1
+  fi
+  if ! {as_user}systemctl --user is-active slipfork >/dev/null; then
+    echo "slipfork: the per-user slipfork.service is not active; next: loginctl enable-linger {user} && sudo -iu {user} systemctl --user enable --now slipfork" >&2
     exit 1
   fi
   if _aa_status=$(aa-status); then
@@ -635,8 +646,8 @@ if [ -e "$_demo" ]; then
   exit 1
 fi
 if [ ! -d {template} ]; then
-  echo "slipfork: {template} is missing; run 'tools/do_vm.py sync' from the repository root" >&2
-  exit 1
+  echo "demo     skipped (no tracked template at {template}; author it to seed the demo)"
+  exit 0
 fi
 install -d -o {_q(config.remote_user)} -g {_q(config.remote_user)} -m 755 "$_demo"
 cp -a {template}/. "$_demo"/
@@ -807,14 +818,17 @@ fi
 
 # One harness-owned login banner. The AppArmor `userns` profile is not rendered here: it is a
 # product artifact written by `slipfork daemon install` (see `render_product_install`).
-_banner_tmp=$(mktemp)
-cat > "$_banner_tmp" <<'SLIPFORK_BANNER'
+# The banner names `~/demo`, so it is installed only while the tree carries that template.
+if [ -d {_q(config.remote_tree)}/{config.demo_template} ]; then
+  _banner_tmp=$(mktemp)
+  cat > "$_banner_tmp" <<'SLIPFORK_BANNER'
 {banner_body.rstrip()}
 SLIPFORK_BANNER
-if [ ! -f {_q(config.login_banner)} ] || ! cmp -s {_q(config.login_banner)} "$_banner_tmp"; then
-  install -o root -g root -m 644 "$_banner_tmp" {_q(config.login_banner)}
+  if [ ! -f {_q(config.login_banner)} ] || ! cmp -s {_q(config.login_banner)} "$_banner_tmp"; then
+    install -o root -g root -m 644 "$_banner_tmp" {_q(config.login_banner)}
+  fi
+  rm -f "$_banner_tmp"
 fi
-rm -f "$_banner_tmp"
 
 printf 'ready\\n' > {_q(config.marker)}
 chown {_q(config.remote_user)}:{_q(config.remote_user)} {_q(config.marker)}

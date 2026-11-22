@@ -17,7 +17,7 @@ pub use schedule::{
 };
 pub use stamp::{
     EpochState, PG_STAMP_FILE, StampStore, StepStamp, WORLD_STAMP_FILE, WorldStamp,
-    WorldStampStore, epoch_for, plan_epoch, write_pg_checkpoint, write_pg_checkpoints,
+    WorldStampStore, epoch_for, plan_epoch, step_digest, write_pg_checkpoint, write_pg_checkpoints,
 };
 
 use std::path::PathBuf;

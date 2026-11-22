@@ -179,7 +179,7 @@ enum NodeState {
 struct NodeTask {
     index: usize,
     total: usize,
-    step: BootStep,
+    steps: Arc<[BootStep]>,
     node_start: Instant,
 }
 
@@ -222,6 +222,7 @@ impl BootScheduler {
         if total == 0 {
             return Ok(());
         }
+        let steps: Arc<[BootStep]> = plan.steps.clone().into();
         let mut senders = Vec::with_capacity(total);
         let mut receivers = Vec::with_capacity(total);
         for _ in 0..total {
@@ -233,14 +234,13 @@ impl BootScheduler {
         let failure: Arc<Mutex<Option<(usize, BootFailure)>>> = Arc::new(Mutex::new(None));
         let mut tasks = Vec::with_capacity(total);
 
-        for index in 0..total {
-            let step = plan.steps[index].clone();
+        for (index, state_tx) in senders.into_iter().enumerate() {
+            let steps = Arc::clone(&steps);
             let deps: Vec<watch::Receiver<NodeState>> = graph
                 .deps(index)
                 .iter()
                 .map(|&dep| receivers[dep].clone())
                 .collect();
-            let state_tx = senders[index].clone();
             let mut cancel = cancel_rx.clone();
             let failure = Arc::clone(&failure);
             let cancel_tx = cancel_tx.clone();
@@ -271,7 +271,7 @@ impl BootScheduler {
                 let task = NodeTask {
                     index,
                     total,
-                    step,
+                    steps,
                     node_start: Instant::now(),
                 };
                 let worker = Arc::clone(&scheduler);
@@ -322,13 +322,12 @@ impl BootScheduler {
         let NodeTask {
             index,
             total,
-            step,
+            steps,
             node_start,
         } = task;
+        let step = &steps[index];
         let name = step.node_name();
-        if let Some(stamp) = &step.stamp
-            && self.stamps.is_current(stamp)
-        {
+        if self.stamps.is_step_current(&steps, index) {
             (*self.sink)(BootEvent::UpToDate {
                 step: index,
                 kind: step.kind,
@@ -343,7 +342,7 @@ impl BootScheduler {
             kind: step.kind,
             name: name.clone(),
         });
-        match (*self.execute)(index, &step) {
+        match (*self.execute)(index, step) {
             Ok(done) => {
                 if let Some(stamp) = &step.stamp
                     && let Err(error) = self.stamps.record(stamp)

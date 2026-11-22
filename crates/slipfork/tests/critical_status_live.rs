@@ -22,6 +22,12 @@ postgres pg {\n  version 18\n}\n\
 redis cache\n\
 s3 uploads {\n  policy public-read\n  cdn assets-cdn\n}\n";
 
+const TAIL_FORKFILE: &str = "# forkfile: 0.1\n\
+postgres pg {\n  version 18\n}\n\
+redis cache\n\
+s3 uploads {\n  policy public-read\n  cdn assets-cdn\n}\n\
+image box from python:3.13-slim {\n  pre-deploy: sh -c 'echo rolling-tail-1; sleep 0.3; echo rolling-tail-2'\n  service worker {\n    run: sleep 3600\n  }\n}\n";
+
 const BRAILLE: &str = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏";
 
 fn test_root() -> PathBuf {
@@ -267,9 +273,11 @@ fn live_status_and_ps_show_the_real_world() {
         "every bar draw is exactly 16 cells: {runs:?} in {captured:?}"
     );
     let readable = plain(&captured);
+    // The world declares no image, so the finished-row proof names the golden PostgreSQL resource
+    // the pane actually drew (`\r` is stripped above, so rows can follow bar remnants on a line).
     assert!(
-        readable.lines().any(|line| line.starts_with("✓ image")),
-        "the boot must print a `✓ image` row: {readable}"
+        readable.contains("✓ resource") && readable.contains("pg ready"),
+        "the boot must print a finished row for the golden PostgreSQL resource: {readable}"
     );
 
     let status = run(&project, &runtime, &["status", "--json"]);
@@ -316,7 +324,25 @@ fn live_status_and_ps_show_the_real_world() {
     assert!(scoped.status.success());
     assert!(String::from_utf8_lossy(&scoped.stdout).contains("postgres 18"));
 
-    // A colourless PTY stays ASCII: zero `ESC[` bytes on both the replay and a live restart.
+    // A hook-bearing boot on the colour PTY must also render the rolling `│` tail, while
+    // `NO_COLOR=1` and `TERM=dumb` PTY runs emit zero `ESC[` bytes.
+    let stop_initial = run(&project, &runtime, &["down"]);
+    assert!(stop_initial.status.success(), "{stop_initial:?}");
+    fs::write(project.join("Forkfile"), TAIL_FORKFILE).expect("write the hook Forkfile");
+    let tail_boot = run_pty(&project, &runtime, &["up"], &[]);
+    assert!(
+        tail_boot.status.success(),
+        "PTY `slipfork up` with hook failed: {}",
+        String::from_utf8_lossy(&tail_boot.stderr)
+    );
+    let tail_readable = plain(&String::from_utf8_lossy(&tail_boot.stdout).replace('\r', ""));
+    assert!(
+        tail_readable.contains('│') && tail_readable.contains("rolling-tail-"),
+        "the colour PTY must render the hook's rolling tail behind its `│` gutter: {tail_readable}"
+    );
+
+    let down_for_plain = run(&project, &runtime, &["down"]);
+    assert!(down_for_plain.status.success(), "{down_for_plain:?}");
     for (args, envs) in [
         (&["up"][..], &[("NO_COLOR", "1")][..]),
         (&["restart"][..], &[("TERM", "dumb")][..]),

@@ -199,16 +199,19 @@ fn daemon_control_plane_and_status_tree_lifecycle() {
                 id: "api".to_owned(),
                 pid: 4101,
                 running: true,
+                exit_code: None,
             },
             PodStatus {
                 id: "pg".to_owned(),
                 pid: 4102,
                 running: true,
+                exit_code: None,
             },
             PodStatus {
                 id: "uploads".to_owned(),
                 pid: 4103,
                 running: true,
+                exit_code: None,
             },
         ],
     );

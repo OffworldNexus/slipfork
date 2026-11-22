@@ -1,10 +1,15 @@
-//! Shared world state between PID 1's main loop and detached streaming (`logs`/`exec`) threads.
+//! Shared world state between PID 1's main loop and detached control-socket threads.
 
 use std::collections::BTreeMap;
+use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::sync::Mutex;
+use std::process::{Child, Command};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+use std::thread;
+use std::time::{Duration, Instant};
+
+use slipfork_world::pod_log::LogSink;
 
 /// Immutable facts a stream thread needs about one running pod.
 #[derive(Debug, Clone)]
@@ -19,13 +24,15 @@ pub(crate) struct PodInfo {
     pub launches: usize,
 }
 
-/// State shared between the init loop and the streaming threads it spawns.
+/// State shared between the init loop and the socket threads it spawns.
 pub(crate) struct WorldShared {
     crun: PathBuf,
     crun_root: PathBuf,
     pods_root: PathBuf,
     pub(crate) pods: Mutex<BTreeMap<String, PodInfo>>,
-    /// Exit statuses reaped by the main loop, retained for an `exec` child that races it.
+    pub(crate) logs: Mutex<BTreeMap<String, Arc<Mutex<LogSink>>>>,
+    pub(crate) pids: Mutex<BTreeMap<String, i32>>,
+    /// Exit statuses reaped by the main loop, retained for a child waiter that races it.
     reaped: Mutex<BTreeMap<i32, i32>>,
     exec_pids: Mutex<Vec<i32>>,
     exec_seq: AtomicU64,
@@ -39,6 +46,8 @@ impl WorldShared {
             crun_root,
             pods_root,
             pods: Mutex::new(BTreeMap::new()),
+            logs: Mutex::new(BTreeMap::new()),
+            pids: Mutex::new(BTreeMap::new()),
             reaped: Mutex::new(BTreeMap::new()),
             exec_pids: Mutex::new(Vec::new()),
             exec_seq: AtomicU64::new(0),
@@ -90,8 +99,23 @@ impl WorldShared {
         }
     }
 
+    /// Non-destructive read of a reaped exit status (the `list` reply needs it repeatedly).
+    pub(crate) fn peek_status(&self, pid: i32) -> Option<i32> {
+        self.reaped
+            .lock()
+            .ok()
+            .and_then(|reaped| reaped.get(&pid).copied())
+    }
+
     pub(crate) fn take_status(&self, pid: i32) -> Option<i32> {
         self.reaped.lock().ok()?.remove(&pid)
+    }
+
+    /// Records an exit status reaped by `list` so a later reply keeps reporting it.
+    pub(crate) fn record_status(&self, pid: i32, code: i32) {
+        if let Ok(mut reaped) = self.reaped.lock() {
+            reaped.insert(pid, code);
+        }
     }
 
     pub(crate) fn register_exec(&self, pid: i32) {
@@ -125,7 +149,7 @@ pub(crate) fn exit_code(status: i32) -> i32 {
     }
 }
 
-/// Reaps every exited child without blocking, recording each status for a racing `exec` waiter.
+/// Reaps every exited child without blocking, recording each status for a racing waiter.
 pub(crate) fn reap_zombies(shared: &WorldShared) {
     loop {
         let mut status = 0;
@@ -135,5 +159,28 @@ pub(crate) fn reap_zombies(shared: &WorldShared) {
             return;
         }
         shared.record(reaped, exit_code(status));
+    }
+}
+
+/// Waits for `child`, recovering an exit status that `reap_zombies` may have collected first.
+pub(crate) fn wait_child(child: &mut Child, shared: &WorldShared, pid: i32) -> i32 {
+    match child.wait() {
+        Ok(status) => {
+            let _ = shared.take_status(pid);
+            status
+                .code()
+                .or_else(|| status.signal().map(|sig| 128 + sig))
+                .unwrap_or(128)
+        }
+        Err(_) => {
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while Instant::now() < deadline {
+                if let Some(code) = shared.take_status(pid) {
+                    return code;
+                }
+                thread::sleep(Duration::from_millis(5));
+            }
+            -1
+        }
     }
 }

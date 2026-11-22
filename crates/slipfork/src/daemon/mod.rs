@@ -350,6 +350,15 @@ impl Daemon {
         params: &Value,
         emit: &mut dyn FnMut(Value),
     ) -> Result<Option<Value>, Failure> {
+        if let Some(reply) = self.core()?.live_up_reply(params) {
+            emit(json!({
+                "event": "ready",
+                "url": reply["url"],
+                "world": reply["world"],
+                "elapsed_ms": 0,
+            }));
+            return Ok(Some(reply));
+        }
         let mut session = self.core()?.begin_up(params)?;
         session.run(self, emit).map(Some)
     }
@@ -360,7 +369,11 @@ impl Daemon {
         params: &Value,
         emit: &mut dyn FnMut(Value),
     ) -> Result<Option<Value>, Failure> {
-        let (mut session, prepared) = self.core()?.begin_fork(params, emit)?;
+        let target = self.core()?.inspect_fork(params)?;
+        let (raw_name, fork, checkpoint_ms) = target.prepare_outside_locks()?;
+        let (mut session, prepared) =
+            self.core()?
+                .begin_fork(target, &raw_name, fork, checkpoint_ms, emit)?;
         let fork_name = prepared.fork.clone();
         let mut annotate = |mut event: Value| {
             if event.get("event").and_then(Value::as_str) == Some("ready") {
@@ -382,6 +395,7 @@ impl Daemon {
             "url": format!("http://{}.localhost", prepared.world),
             "elapsed_ms": prepared.started.elapsed().as_millis() as u64,
             "snapshot_ms": prepared.snapshot_ms,
+            "checkpoint_ms": prepared.checkpoint_ms,
         })))
     }
 

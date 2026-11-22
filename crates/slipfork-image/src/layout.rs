@@ -50,6 +50,37 @@ impl ImageLayout {
         self.root.join(format!("{}.json", digest_component(digest)))
     }
 
+    /// `<root>/refs.json`: `reference -> manifest digest`, so a reboot never needs the registry.
+    #[must_use]
+    pub fn refs(&self) -> PathBuf {
+        self.root.join("refs.json")
+    }
+
+    /// The digest a previous pull recorded for this reference, if any.
+    #[must_use]
+    pub fn cached_ref(&self, reference: &str) -> Option<String> {
+        let bytes = fs::read(self.refs()).ok()?;
+        let map: std::collections::BTreeMap<String, String> =
+            serde_json::from_slice(&bytes).ok()?;
+        map.get(reference).cloned()
+    }
+
+    /// Records `reference -> digest`; a lost write only costs one future registry round trip.
+    pub fn remember_ref(&self, reference: &str, digest: &str) {
+        let path = self.refs();
+        let mut map: std::collections::BTreeMap<String, String> = fs::read(&path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            .unwrap_or_default();
+        if map.get(reference).map(String::as_str) == Some(digest) {
+            return;
+        }
+        map.insert(reference.to_owned(), digest.to_owned());
+        if let Ok(bytes) = serde_json::to_vec_pretty(&map) {
+            let _ = fs::write(&path, bytes);
+        }
+    }
+
     /// Creates the cache root when missing.
     pub fn ensure(&self) -> Result<()> {
         fs::create_dir_all(&self.root).map_err(|source| Error::io("create", &self.root, source))

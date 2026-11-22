@@ -66,7 +66,9 @@ impl WorldHost {
         }
     }
 
-    fn pod_host(&self) -> PodHost {
+    /// Projects the pod-bundle credentials and `crun` path.
+    #[must_use]
+    pub fn pod_host(&self) -> PodHost {
         PodHost {
             crun: self.crun.clone(),
             resolv_conf: self.resolv_conf.clone(),
@@ -96,6 +98,8 @@ pub struct PodStatus {
     pub pid: i32,
     /// `false` once the process is gone (a client that finished, say).
     pub running: bool,
+    /// Exit status once the init reaped the process; `None` while it runs.
+    pub exit_code: Option<i32>,
 }
 
 /// One booted world namespace plus its init control channel.
@@ -134,6 +138,18 @@ impl WorldSupervisor {
     #[must_use]
     pub fn pods_dir(&self) -> &Path {
         self.pods.path()
+    }
+
+    /// Pod-bundle host description, used by lock-free `run_once` and `launch` bundle writers.
+    #[must_use]
+    pub fn pod_host(&self) -> PodHost {
+        self.host.pod_host()
+    }
+
+    /// The configured timeout for one boot/hook request.
+    #[must_use]
+    pub const fn boot_timeout(&self) -> Duration {
+        self.host.boot_timeout
     }
 
     /// Dials one world-loopback port through the init's `Dial` request.
@@ -194,6 +210,10 @@ pub fn pod_statuses(reply: &serde_json::Value) -> Result<Vec<PodStatus>> {
                 id: id.to_owned(),
                 pid,
                 running,
+                exit_code: pod
+                    .get("exit_code")
+                    .and_then(serde_json::Value::as_i64)
+                    .and_then(|code| i32::try_from(code).ok()),
             })
         })
         .collect()

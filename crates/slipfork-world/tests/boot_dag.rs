@@ -249,3 +249,65 @@ fn plan_epoch_is_stable_for_one_shape_and_changes_with_the_command() {
     changed.steps[0].command = Some("false".to_owned());
     assert_ne!(plan_epoch(&first), plan_epoch(&changed));
 }
+
+#[test]
+fn fork_world_stamp_persists_and_gates_before_start_and_pre_deploy_hooks() {
+    let dir = lab("fork-hooks");
+    let mut before = step("Hook app:before-start", Vec::new());
+    before.kind = BootKind::Setup;
+    before.image = Some("app".to_owned());
+    before.subject = "app".to_owned();
+    before.phase = Some(slipfork_world::HookPhase::BeforeStart);
+    before.command = Some("echo before".to_owned());
+
+    let mut pre = step("Hook api:pre-deploy", vec![0]);
+    pre.kind = BootKind::Hook;
+    pre.image = Some("app".to_owned());
+    pre.subject = "api".to_owned();
+    pre.phase = Some(slipfork_world::HookPhase::PreDeploy);
+    pre.command = Some("echo pre".to_owned());
+
+    let world_plan = plan(vec![before, pre]);
+    let epoch = plan_epoch(&world_plan);
+    let checkpoint = WorldStamp::checkpoint(&world_plan, epoch, Default::default());
+    assert_eq!(checkpoint.before_start.len(), 1);
+    assert_eq!(checkpoint.pre_deploy.len(), 1);
+
+    let runs = Arc::new(AtomicUsize::new(0));
+    let executor: Arc<StepExecutor> = {
+        let runs = Arc::clone(&runs);
+        Arc::new(move |_: usize, _: &BootStep| {
+            runs.fetch_add(1, Ordering::SeqCst);
+            Ok(done("ran"))
+        })
+    };
+    let rt = runtime();
+    let matched = Arc::new(BootScheduler::new(
+        rt.handle().clone(),
+        StampStore::for_fork(&dir, true, Some(checkpoint.clone())),
+        Arc::clone(&executor),
+        collector(),
+    ));
+    matched.run(&world_plan).expect("matched fork skips hooks");
+    assert_eq!(
+        runs.load(Ordering::SeqCst),
+        0,
+        "matching epoch + hook digest must skip in 0ms without calling executor"
+    );
+
+    let mismatched = Arc::new(BootScheduler::new(
+        rt.handle().clone(),
+        StampStore::for_fork(&dir, false, Some(checkpoint)),
+        executor,
+        collector(),
+    ));
+    mismatched
+        .run(&world_plan)
+        .expect("mismatched epoch re-runs hooks");
+    assert_eq!(
+        runs.load(Ordering::SeqCst),
+        2,
+        "epoch mismatch must re-run both hooks"
+    );
+    let _ = fs::remove_dir_all(&dir);
+}

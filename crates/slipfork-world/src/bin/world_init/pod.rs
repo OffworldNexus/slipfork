@@ -1,6 +1,5 @@
 //! Launched containers inside the world: `crun run`, captured logs, waits, restart, teardown.
 
-use std::collections::BTreeMap;
 use std::fs;
 use std::io::{self, BufRead, BufReader, Read};
 use std::net::SocketAddr;
@@ -19,14 +18,11 @@ use slipfork_world::pod_log::{CHUNK, LogKind, LogSink};
 use tokio::runtime::Handle;
 
 use crate::s3::S3Host;
-pub(crate) use crate::shared::{PodInfo, WorldShared, exit_code, reap_zombies};
+pub(crate) use crate::shared::{PodInfo, WorldShared, exit_code, reap_zombies, wait_child};
 use crate::{Fault, REMEDY_CRUN, REMEDY_POD, REMEDY_RUNTIME, canonical};
 
 pub(crate) struct InitWorld {
     shared: Arc<WorldShared>,
-    /// Open append sinks; the descriptor stays in the init across restarts.
-    logs: BTreeMap<String, Arc<Mutex<LogSink>>>,
-    pids: BTreeMap<String, i32>,
     /// The one runtime the native S3 endpoint is served on; never constructed in library code.
     runtime: Handle,
     s3: Option<S3Host>,
@@ -40,8 +36,6 @@ impl InitWorld {
             .map_err(|source| Fault::cause("crun state root setup", REMEDY_RUNTIME, source))?;
         Ok(Self {
             shared: Arc::new(WorldShared::new(crun, crun_root, pods_root)),
-            logs: BTreeMap::new(),
-            pids: BTreeMap::new(),
             runtime,
             s3: None,
         })
@@ -55,27 +49,20 @@ impl InitWorld {
         self.shared.pods_root()
     }
 
-    fn logs_dir(&self) -> PathBuf {
-        self.shared.pods_root().join("logs")
-    }
-
-    /// Every tracked pod with its pid and whether `/proc/<pid>` still exists in the world.
+    /// Every tracked pod with its pid, reaping status, and exit code.
     pub(crate) fn list(&self) -> Vec<serde_json::Value> {
-        self.pids
-            .iter()
-            .map(|(id, pid)| {
-                serde_json::json!({
-                    "id": id,
-                    "pid": pid,
-                    "running": Path::new(&format!("/proc/{pid}")).exists(),
-                })
-            })
-            .collect()
+        list_on_shared(&self.shared)
     }
 
     /// Bounded wait: `Some(code)` when the pod exited, `None` while it is still running.
     pub(crate) fn wait(&self, pid: i32, timeout_ms: u64) -> Result<Option<i32>, Fault> {
-        if !self.pids.values().any(|candidate| *candidate == pid) {
+        let tracked = self
+            .shared
+            .pids
+            .lock()
+            .map(|pids| pids.values().any(|candidate| *candidate == pid))
+            .unwrap_or(false);
+        if !tracked {
             return Err(Fault::new(
                 format!("pid {pid} is not a launched pod"),
                 "pass the pid returned by the launch reply, or restart the world",
@@ -114,72 +101,46 @@ impl InitWorld {
     }
 
     pub(crate) fn launch(&mut self, pod: &PodSpec) -> Result<i32, Fault> {
-        let action = format!("pod `{}` launch with crun", pod.id);
-        pod.validate()
-            .map_err(|source| Fault::cause(action.clone(), REMEDY_POD, source))?;
-        let bundle = canonical(
-            &self.pods_root().join(&pod.id),
-            action.clone(),
-            REMEDY_RUNTIME,
-        )?;
-        if !bundle.starts_with(self.pods_root()) {
-            return Err(Fault::new(
-                action,
-                "keep the pod runtime root on a tmpfs owned by this user",
-            ));
-        }
-        let sink = LogSink::open(&self.logs_dir(), &pod.id)
-            .map_err(|source| Fault::cause(action.clone(), REMEDY_RUNTIME, source))?;
-        let restarted = self.logs.contains_key(&pod.id);
-        let log = sink.path().to_path_buf();
-        let sink = Arc::new(Mutex::new(sink));
-        {
-            let mut guard = sink
-                .lock()
-                .map_err(|_| Fault::new(format!("pod `{}` log lock", pod.id), REMEDY_RUNTIME))?;
-            guard
-                .divider(&pod.id, restarted)
-                .map_err(|source| Fault::cause(action, REMEDY_RUNTIME, source))?;
-        }
-        let pid = crun_run(&self.shared, &bundle, &pod.id, Arc::clone(&sink))?;
-        self.logs.insert(pod.id.clone(), sink);
-        self.pids.insert(pod.id.clone(), pid);
-        if let Ok(mut pods) = self.shared.pods.lock() {
-            pods.insert(
-                pod.id.clone(),
-                PodInfo {
-                    bundle,
-                    workdir: pod.workdir.clone(),
-                    log,
-                    launches: 1,
-                },
-            );
-        }
-        Ok(pid)
+        launch_on_shared(&self.shared, pod)
     }
 
     /// Restarts one pod or every pod from its existing tmpfs bundle.
     pub(crate) fn restart(&mut self, service: Option<&str>) -> Result<usize, Fault> {
-        let ids: Vec<String> = match service {
-            Some(id) if self.pids.contains_key(id) => vec![id.to_owned()],
-            Some(id) => {
-                return Err(Fault::new(
-                    format!("pod `{id}` is not running"),
-                    "pick a service from `slipfork up` output or omit the service name",
-                ));
+        let ids: Vec<String> = {
+            let pids = self
+                .shared
+                .pids
+                .lock()
+                .map_err(|_| Fault::new("pod pid lock", REMEDY_RUNTIME))?;
+            match service {
+                Some(id) if pids.contains_key(id) => vec![id.to_owned()],
+                Some(id) => {
+                    return Err(Fault::new(
+                        format!("pod `{id}` is not running"),
+                        "pick a service from `slipfork up` output or omit the service name",
+                    ));
+                }
+                None => pids.keys().cloned().collect(),
             }
-            None => self.pids.keys().cloned().collect(),
         };
         for id in &ids {
-            let (Some(&pid), Some(info), Some(sink)) = (
-                self.pids.get(id),
-                self.shared.info(id),
-                self.logs.get(id).cloned(),
-            ) else {
+            let pid = self
+                .shared
+                .pids
+                .lock()
+                .ok()
+                .and_then(|pids| pids.get(id).copied());
+            let sink = self
+                .shared
+                .logs
+                .lock()
+                .ok()
+                .and_then(|logs| logs.get(id).cloned());
+            let (Some(pid), Some(info), Some(sink)) = (pid, self.shared.info(id), sink) else {
                 continue;
             };
             slipfork_world::kill_group(pid);
-            self.delete(id);
+            crun_delete(&self.shared, id);
             {
                 let mut guard = sink
                     .lock()
@@ -193,7 +154,9 @@ impl InitWorld {
                 })?;
             }
             let pid = crun_run(&self.shared, &info.bundle, id, Arc::clone(&sink))?;
-            self.pids.insert(id.clone(), pid);
+            if let Ok(mut pids) = self.shared.pids.lock() {
+                pids.insert(id.clone(), pid);
+            }
             if let Ok(mut pods) = self.shared.pods.lock()
                 && let Some(row) = pods.get_mut(id)
             {
@@ -229,8 +192,14 @@ impl InitWorld {
         for pid in self.shared.exec_pids() {
             slipfork_world::kill_group(pid);
         }
-        for (id, pid) in std::mem::take(&mut self.pids) {
-            self.delete(&id);
+        let pids = self
+            .shared
+            .pids
+            .lock()
+            .map(|mut guard| std::mem::take(&mut *guard))
+            .unwrap_or_default();
+        for (id, pid) in pids {
+            crun_delete(&self.shared, &id);
             slipfork_world::kill_group(pid);
             if let Ok(mut pods) = self.shared.pods.lock()
                 && let Some(container) = pods.remove(&id)
@@ -238,7 +207,9 @@ impl InitWorld {
                 let _ = fs::remove_dir_all(&container.bundle);
             }
         }
-        self.logs.clear();
+        if let Ok(mut logs) = self.shared.logs.lock() {
+            logs.clear();
+        }
         reap_zombies(&self.shared);
     }
 
@@ -249,119 +220,223 @@ impl InitWorld {
         timeout_ms: u64,
         on_line: &mut dyn FnMut(slipfork_world::Stream, &str) -> Result<(), Fault>,
     ) -> Result<i32, Fault> {
-        let bundle = self.pods_root().join(&pod.id);
-        if !bundle.starts_with(self.pods_root()) {
+        run_once_on_shared(&self.shared, pod, timeout_ms, on_line)
+    }
+}
+
+/// Launches one detached pod concurrently against `WorldShared` without holding a lock across
+/// `crun run --detach`.
+pub(crate) fn launch_on_shared(shared: &WorldShared, pod: &PodSpec) -> Result<i32, Fault> {
+    let action = format!("pod `{}` launch with crun", pod.id);
+    pod.validate()
+        .map_err(|source| Fault::cause(action.clone(), REMEDY_POD, source))?;
+    if shared
+        .pids
+        .lock()
+        .is_ok_and(|pids| pids.contains_key(&pod.id))
+    {
+        return Err(Fault::new(
+            format!("pod `{}` is already running", pod.id),
+            REMEDY_POD,
+        ));
+    }
+    let bundle = canonical(
+        &shared.pods_root().join(&pod.id),
+        action.clone(),
+        REMEDY_RUNTIME,
+    )?;
+    if !bundle.starts_with(shared.pods_root()) {
+        return Err(Fault::new(
+            action,
+            "keep the pod runtime root on a tmpfs owned by this user",
+        ));
+    }
+    let logs_dir = shared.pods_root().join("logs");
+    let sink = LogSink::open(&logs_dir, &pod.id)
+        .map_err(|source| Fault::cause(action.clone(), REMEDY_RUNTIME, source))?;
+    let restarted = shared
+        .logs
+        .lock()
+        .is_ok_and(|logs| logs.contains_key(&pod.id));
+    let log = sink.path().to_path_buf();
+    let sink = Arc::new(Mutex::new(sink));
+    {
+        let mut guard = sink
+            .lock()
+            .map_err(|_| Fault::new(format!("pod `{}` log lock", pod.id), REMEDY_RUNTIME))?;
+        guard
+            .divider(&pod.id, restarted)
+            .map_err(|source| Fault::cause(action, REMEDY_RUNTIME, source))?;
+    }
+    let pid = crun_run(shared, &bundle, &pod.id, Arc::clone(&sink))?;
+    if let Ok(mut logs) = shared.logs.lock() {
+        logs.insert(pod.id.clone(), sink);
+    }
+    if let Ok(mut pids) = shared.pids.lock() {
+        pids.insert(pod.id.clone(), pid);
+    }
+    if let Ok(mut pods) = shared.pods.lock() {
+        pods.insert(
+            pod.id.clone(),
+            PodInfo {
+                bundle,
+                workdir: pod.workdir.clone(),
+                log,
+                launches: 1,
+            },
+        );
+    }
+    Ok(pid)
+}
+
+pub(crate) fn list_on_shared(shared: &WorldShared) -> Vec<serde_json::Value> {
+    let entries: Vec<(String, i32)> = shared
+        .pids
+        .lock()
+        .map(|pids| pids.iter().map(|(id, pid)| (id.clone(), *pid)).collect())
+        .unwrap_or_default();
+    entries
+        .into_iter()
+        .map(|(id, pid)| {
+            let mut status = 0;
+            // SAFETY: `waitpid` writes one `c_int` through the valid pointer.
+            let reaped = unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) };
+            if reaped == pid {
+                shared.record_status(pid, exit_code(status));
+            }
+            serde_json::json!({
+                "id": id,
+                "pid": pid,
+                "running": reaped != pid
+                    && shared.peek_status(pid).is_none()
+                    && Path::new(&format!("/proc/{pid}")).exists(),
+                "exit_code": shared.peek_status(pid),
+            })
+        })
+        .collect()
+}
+
+/// Runs one bundle to completion against `WorldShared`, safe to invoke from detached socket
+/// threads while PID 1 continues serving `Dial` and `Launch` requests.
+pub(crate) fn run_once_on_shared(
+    shared: &WorldShared,
+    pod: &PodSpec,
+    timeout_ms: u64,
+    on_line: &mut dyn FnMut(slipfork_world::Stream, &str) -> Result<(), Fault>,
+) -> Result<i32, Fault> {
+    let bundle = shared.pods_root().join(&pod.id);
+    if !bundle.starts_with(shared.pods_root()) {
+        return Err(Fault::new(
+            format!("pod `{}` bundle escapes the runtime root", pod.id),
+            REMEDY_CRUN,
+        ));
+    }
+    let action = format!("pod `{}` run-once with crun", pod.id);
+    let mut child = shared
+        .crun_command()
+        .args(["run", "--bundle"])
+        .arg(&bundle)
+        .arg(&pod.id)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .process_group(0)
+        .spawn()
+        .map_err(|source| Fault::cause(action, REMEDY_CRUN, source))?;
+    let child_pid = i32::try_from(child.id()).unwrap_or_default();
+    shared.register_exec(child_pid);
+    let (sender, receiver) = mpsc::channel::<(slipfork_world::Stream, String)>();
+    let mut readers = Vec::new();
+    if let Some(stdout) = child.stdout.take() {
+        readers.push(spawn_line_reader(
+            stdout,
+            slipfork_world::Stream::Stdout,
+            sender.clone(),
+        ));
+    }
+    if let Some(stderr) = child.stderr.take() {
+        readers.push(spawn_line_reader(
+            stderr,
+            slipfork_world::Stream::Stderr,
+            sender.clone(),
+        ));
+    }
+    drop(sender);
+    let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            abort_run_once(shared, &pod.id, child_pid, &mut child, &mut readers);
+            return Err(Fault::timed_out(
+                format!(
+                    "pod `{}` still running after {timeout_ms}ms; killed its process group",
+                    pod.id
+                ),
+                REMEDY_POD,
+            ));
+        }
+        match receiver.recv_timeout(remaining) {
+            Ok((stream, line)) => {
+                if let Err(fault) = on_line(stream, &line) {
+                    abort_run_once(shared, &pod.id, child_pid, &mut child, &mut readers);
+                    return Err(fault);
+                }
+            }
+            Err(RecvTimeoutError::Timeout) => continue,
+            Err(RecvTimeoutError::Disconnected) => break,
+        }
+    }
+    for (reader, kind) in readers.into_iter().zip(["stdout", "stderr"]) {
+        if reader.join().is_err() {
+            let _ = wait_child(&mut child, shared, child_pid);
+            shared.unregister_exec(child_pid);
+            crun_delete(shared, &pod.id);
+            reap_zombies(shared);
             return Err(Fault::new(
-                format!("pod `{}` bundle escapes the runtime root", pod.id),
+                format!("pod `{}` {kind} reader panicked", pod.id),
                 REMEDY_CRUN,
             ));
         }
-        let action = format!("pod `{}` run-once with crun", pod.id);
-        let mut child = self
-            .shared
+    }
+    let code = wait_child(&mut child, shared, child_pid);
+    shared.unregister_exec(child_pid);
+    crun_delete(shared, &pod.id);
+    reap_zombies(shared);
+    Ok(code)
+}
+
+fn abort_run_once(
+    shared: &WorldShared,
+    id: &str,
+    pid: i32,
+    child: &mut std::process::Child,
+    readers: &mut Vec<thread::JoinHandle<()>>,
+) {
+    if pid != 0 {
+        slipfork_world::kill_group(pid);
+    }
+    crun_delete(shared, id);
+    let _ = wait_child(child, shared, pid);
+    shared.unregister_exec(pid);
+    reap_zombies(shared);
+    for reader in readers.drain(..) {
+        let _ = reader.join();
+    }
+}
+
+/// `crun kill --all SIGKILL` then `crun delete --force`; both are best-effort teardown.
+fn crun_delete(shared: &WorldShared, id: &str) {
+    for args in [
+        ["kill", "--all", id, "SIGKILL"].as_slice(),
+        ["delete", "--force", id].as_slice(),
+    ] {
+        let _ = shared
             .crun_command()
-            .args(["run", "--bundle"])
-            .arg(&bundle)
-            .arg(&pod.id)
+            .args(args)
             .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .process_group(0)
-            .spawn()
-            .map_err(|source| Fault::cause(action.clone(), REMEDY_CRUN, source))?;
-        let child_pid = child.id();
-        let (sender, receiver) = mpsc::channel::<(slipfork_world::Stream, String)>();
-        let mut readers = Vec::new();
-        if let Some(stdout) = child.stdout.take() {
-            readers.push(spawn_line_reader(
-                stdout,
-                slipfork_world::Stream::Stdout,
-                sender.clone(),
-            ));
-        }
-        if let Some(stderr) = child.stderr.take() {
-            readers.push(spawn_line_reader(
-                stderr,
-                slipfork_world::Stream::Stderr,
-                sender.clone(),
-            ));
-        }
-        drop(sender);
-        let deadline = Instant::now() + Duration::from_millis(timeout_ms);
-        loop {
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
-                self.abort(&pod.id, child_pid, &mut child, &mut readers);
-                return Err(Fault::timed_out(
-                    format!(
-                        "pod `{}` still running after {timeout_ms}ms; killed its process group",
-                        pod.id
-                    ),
-                    REMEDY_POD,
-                ));
-            }
-            match receiver.recv_timeout(remaining) {
-                Ok((stream, line)) => {
-                    if let Err(fault) = on_line(stream, &line) {
-                        self.abort(&pod.id, child_pid, &mut child, &mut readers);
-                        return Err(fault);
-                    }
-                }
-                Err(RecvTimeoutError::Timeout) => continue,
-                Err(RecvTimeoutError::Disconnected) => break,
-            }
-        }
-        for (reader, kind) in readers.into_iter().zip(["stdout", "stderr"]) {
-            if reader.join().is_err() {
-                self.delete(&pod.id);
-                reap_zombies(&self.shared);
-                return Err(Fault::new(
-                    format!("pod `{}` {kind} reader panicked", pod.id),
-                    REMEDY_CRUN,
-                ));
-            }
-        }
-        let status = child
-            .wait()
-            .map_err(|source| Fault::cause(action, REMEDY_CRUN, source))?;
-        self.delete(&pod.id);
-        reap_zombies(&self.shared);
-        Ok(status.code().unwrap_or(128))
-    }
-
-    fn abort(
-        &self,
-        id: &str,
-        pid: u32,
-        child: &mut std::process::Child,
-        readers: &mut Vec<thread::JoinHandle<()>>,
-    ) {
-        if let Ok(pid) = i32::try_from(pid) {
-            slipfork_world::kill_group(pid);
-        }
-        self.delete(id);
-        let _ = child.wait();
-        reap_zombies(&self.shared);
-        for reader in readers.drain(..) {
-            let _ = reader.join();
-        }
-    }
-
-    /// `crun kill --all` then `crun delete --force`; both are best-effort teardown.
-    fn delete(&self, id: &str) {
-        for args in [
-            ["kill", "--all", id].as_slice(),
-            ["delete", "--force", id].as_slice(),
-        ] {
-            let _ = self
-                .shared
-                .crun_command()
-                .args(args)
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status();
-        }
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
     }
 }
 
@@ -388,18 +463,17 @@ fn crun_run(
         .process_group(0)
         .spawn()
         .map_err(|source| Fault::cause(action.clone(), REMEDY_CRUN, source))?;
+    let launcher_pid = i32::try_from(child.id()).unwrap_or_default();
     if let Some(stdout) = child.stdout.take() {
         spawn_pump(stdout, Arc::clone(&sink));
     }
     if let Some(stderr) = child.stderr.take() {
         spawn_pump(stderr, Arc::clone(&sink));
     }
-    let status = child
-        .wait()
-        .map_err(|source| Fault::cause(action.clone(), REMEDY_CRUN, source))?;
-    if !status.success() {
+    let code = wait_child(&mut child, shared, launcher_pid);
+    if code != 0 {
         return Err(Fault::new(
-            format!("pod `{id}` launch with crun (`crun run` exited with {status})"),
+            format!("pod `{id}` launch with crun (`crun run` exited with {code})"),
             REMEDY_CRUN,
         ));
     }

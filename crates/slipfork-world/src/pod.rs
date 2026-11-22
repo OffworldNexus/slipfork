@@ -210,16 +210,25 @@ pub fn write_bundle(spec: &PodSpec, host: &PodHost, dir: &Path) -> Result<PodBun
     }
     let passwd = dir.join("passwd");
     write_private(&passwd, passwd_contents(host.uid, host.gid).as_bytes())?;
+    let hosts = dir.join("hosts");
+    write_private(&hosts, hosts_contents(&spec.id).as_bytes())?;
+    if spec.rootfs.join("etc").is_dir() && !spec.rootfs.join("etc/hosts").exists() {
+        let _ = touch_private(&spec.rootfs.join("etc/hosts"));
+    }
     // The host path only materialises the mountpoint; `process.cwd` must stay the *container*
     // path (`/project`), or the pod starts in an empty directory inside the rootfs clone.
     let workdir = rooted(&spec.rootfs, &spec.workdir);
-    fs::create_dir_all(&workdir).map_err(|source| Error::io("create", &workdir, source))?;
+    if !workdir.is_dir() {
+        fs::create_dir_all(&workdir).map_err(|source| Error::io("create", &workdir, source))?;
+    }
     for bind in &spec.binds {
         let destination = rooted(&spec.rootfs, &bind.destination);
         match &bind.source {
             BindSource::Host(_) => {
-                fs::create_dir_all(&destination)
-                    .map_err(|source| Error::io("create", &destination, source))?;
+                if !destination.is_dir() {
+                    fs::create_dir_all(&destination)
+                        .map_err(|source| Error::io("create", &destination, source))?;
+                }
             }
             BindSource::Bundle(_) => {
                 if let Some(parent) = destination.parent() {
@@ -236,6 +245,7 @@ pub fn write_bundle(spec: &PodSpec, host: &PodHost, dir: &Path) -> Result<PodBun
         host,
         dir,
         &passwd,
+        &hosts,
         Path::new(&spec.workdir),
     ))
     .map_err(|source| Error::Json {
@@ -280,6 +290,7 @@ fn oci_config(
     host: &PodHost,
     bundle: &Path,
     passwd: &Path,
+    hosts: &Path,
     workdir: &Path,
 ) -> serde_json::Value {
     let env = merged_env(spec);
@@ -295,6 +306,12 @@ fn oci_config(
             "destination": "/etc/passwd",
             "type": "bind",
             "source": passwd,
+            "options": ["ro", "rbind"]
+        }),
+        json!({
+            "destination": "/etc/hosts",
+            "type": "bind",
+            "source": hosts,
             "options": ["ro", "rbind"]
         }),
     ];
@@ -355,6 +372,14 @@ fn oci_config(
 /// `/etc/passwd` must contain `$UID`, or `postgres:18` `initdb` exits `1`.
 fn passwd_contents(uid: u32, gid: u32) -> String {
     format!("root:x:0:0:root:/root:/sbin/nologin\nslipfork:x:{uid}:{gid}:slipfork:/:/bin/sh\n")
+}
+
+/// `/etc/hosts` maps `<hostname>.localhost`, `localhost`, and the pod's UTS `hostname` locally
+/// so `socket.getfqdn("0.0.0.0")` resolves in microseconds without hitting `127.0.0.53` DNS.
+fn hosts_contents(hostname: &str) -> String {
+    format!(
+        "127.0.0.1 {hostname}.localhost localhost {hostname}\n::1 {hostname}.localhost localhost ip6-localhost ip6-loopback {hostname}\n"
+    )
 }
 
 fn rooted(rootfs: &Path, destination: &str) -> PathBuf {

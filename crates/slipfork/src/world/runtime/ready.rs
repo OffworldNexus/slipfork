@@ -1,18 +1,21 @@
-//! Readiness probes for one staged boot node: service ports and PostgreSQL unix sockets.
+//! Readiness probes for one staged boot node: service ports, PostgreSQL unix sockets, and
+//! short-lived liveness checks for portless background workers.
 //!
-//! Each probe is returned as a [`Ready`] value, so the caller awaits it after the runtime lock is
-//! dropped and a slow database never serialises independent nodes. The wait streams one progress
-//! frame per second through the [`Progress`] handle attached by [`Staged::attach_progress`].
+//! Every probe runs in [`Staged::await_ready`] with zero runtime locks held, so PG, Redis, and
+//! independent services boot in parallel.
 
 use std::net::Shutdown;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use slipfork_world::control::dial_tcp;
-use slipfork_world::{BootFailure, BootState, StepOutcome};
+use slipfork_world::control::{dial_tcp, list_pods};
+use slipfork_world::{BootFailure, BootState, ServiceHealth, StepOutcome, classify_service};
 
 use crate::world::supervise::BootSink;
+
+/// Window during which an immediate crash of a portless service fails `up`.
+const PORTLESS_WINDOW: Duration = Duration::from_millis(650);
 
 /// A launched node whose readiness is awaited with no runtime lock held.
 pub(in crate::world) struct Staged {
@@ -39,42 +42,29 @@ pub(in crate::world) enum Ready {
         label: String,
         service: String,
     },
+    /// A portless worker/probe pod watched briefly for an immediate non-zero crash.
+    Portless { pods_dir: PathBuf, service: String },
 }
 
 /// One readiness poll's typed sink plus the step it must stay pinned to.
 pub(in crate::world) struct Progress {
     sink: BootSink,
-    step: usize,
-    total: usize,
-    label: String,
 }
 
 impl Progress {
-    pub(in crate::world) fn new(sink: BootSink, step: usize, total: usize, label: &str) -> Self {
-        Self {
-            sink,
-            step,
-            total,
-            label: label.to_owned(),
-        }
+    pub(in crate::world) fn new(sink: BootSink) -> Self {
+        Self { sink }
     }
 
     fn frame(&mut self, message: &str) {
-        self.sink
-            .progress(self.step, self.total, &self.label, message);
+        self.sink.progress(message);
     }
 }
 
 impl Staged {
-    /// Attaches the boot sink so a multi-second wait can stream its own progress line.
-    pub(in crate::world) fn attach_progress(
-        &mut self,
-        sink: BootSink,
-        step: usize,
-        total: usize,
-        label: &str,
-    ) {
-        self.progress = Some(Progress::new(sink, step, total, label));
+    /// Attaches the step-scoped boot sink so a multi-second wait can stream its own progress line.
+    pub(in crate::world) fn attach_progress(&mut self, sink: BootSink) {
+        self.progress = Some(Progress::new(sink));
     }
 
     /// Finishes the node once its own readiness probe succeeds.
@@ -93,6 +83,7 @@ impl Staged {
                 label,
                 service,
             } => wait_unix(&socket, &label, &service, progress)?,
+            Ready::Portless { pods_dir, service } => wait_portless(&pods_dir, &service)?,
         }
         Ok(StepOutcome {
             state: self.state,
@@ -149,6 +140,28 @@ fn wait_unix(
         format!("`{label}` never opened `{}` within 10s", socket.display()),
         format!("run `slipfork logs {service}`"),
     ))
+}
+
+fn wait_portless(pods_dir: &Path, service: &str) -> Result<(), BootFailure> {
+    let deadline = Instant::now() + PORTLESS_WINDOW;
+    while Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+        if let Ok(statuses) = list_pods(pods_dir)
+            && let Some(status) = statuses.iter().find(|status| status.id == service)
+            && (!status.running || status.exit_code.is_some())
+        {
+            return match classify_service(status.exit_code) {
+                ServiceHealth::Exited(0) => Ok(()),
+                ServiceHealth::Exited(code) => Err(BootFailure::new(format!(
+                    "service `{service}` exited with code {code} during boot (its output is in `slipfork logs {service}`)"
+                ))),
+                ServiceHealth::Running => Err(BootFailure::new(format!(
+                    "service `{service}` exited during boot (its output is in `slipfork logs {service}`)"
+                ))),
+            };
+        }
+    }
+    Ok(())
 }
 
 /// Emits one frame per whole second spent waiting, never a per-2ms poll storm.

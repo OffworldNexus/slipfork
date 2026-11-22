@@ -1,27 +1,37 @@
 //! `fork` and `drop`: one CoW snapshot of project + world data, a branch switch, and one boot.
 //!
-//! The Btrfs ioctls stay in `slipfork_world` and branch topology stays behind the injected
-//! `VcsWorkspace` port; this module only sequences them and maps every refusal to a typed `error`
-//! frame. A fork's snapshot and its boot reservation happen under one `Core` guard.
+//! PostgreSQL `CHECKPOINT` runs directly over the pod's host-visible unix socket outside all
+//! daemon locks (zero `crun exec`, zero mount-wide `syncfs`); Btrfs `SNAP_CREATE_V2` ioctls stay
+//! inside `slipfork_world` and branch topology stays behind the injected `VcsWorkspace` port.
 
 use std::ffi::OsStr;
-use std::fs::File;
-use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 use slipfork_forkfile::ResourceDeclKind;
-use slipfork_vcs::{Dirty, VcsError};
+use slipfork_vcs::{Dirty, VcsError, VcsWorkspace};
 use slipfork_world::{
-    BtrfsEngine, Dirtiness, Error as WorldError, ForkName, StoreLayout, WorldEngine, WorldName,
-    is_subvolume_path,
+    BtrfsEngine, Dirtiness, Error as WorldError, ForkName, PostgresLauncher, StoreLayout,
+    WorldEngine, WorldName, is_subvolume_path, pg_checkpoint,
 };
 
 use super::core::{Core, World};
 use crate::daemon::Failure;
 use crate::daemon::boot::BootSession;
 use crate::daemon::rpc::key_of;
+
+/// Validated fork target resolved under a brief `Core` lock so `CHECKPOINT` and `git` branch
+/// discovery run with zero daemon locks held.
+pub(crate) struct ForkTarget {
+    pub(crate) project: PathBuf,
+    pub(crate) world: WorldName,
+    pub(crate) store_root: PathBuf,
+    pub(crate) requested_name: Option<String>,
+    pub(crate) vcs: Arc<dyn VcsWorkspace>,
+    pub(crate) started: Instant,
+}
 
 /// One project snapshot that is ready to boot as its own world.
 pub(crate) struct PreparedFork {
@@ -32,54 +42,37 @@ pub(crate) struct PreparedFork {
     pub(crate) world: String,
     pub(crate) world_name: WorldName,
     pub(crate) snapshot_ms: u64,
+    pub(crate) checkpoint_ms: u64,
     pub(crate) started: Instant,
 }
 
+impl ForkTarget {
+    /// Resolves the fork slug and flushes PostgreSQL WAL over the host unix socket outside all
+    /// locks, returning `(branch_name, fork, checkpoint_ms)`.
+    pub(crate) fn prepare_outside_locks(&self) -> Result<(String, ForkName, u64), Failure> {
+        let raw_name = match &self.requested_name {
+            Some(name) => name.clone(),
+            None => {
+                let branch = self
+                    .vcs
+                    .branch(&self.project)
+                    .map_err(|error| vcs_failure(&error))?;
+                slipfork_forkfile::DnsLabel::slug(&branch)
+                    .map_err(|error| Failure::new("invalid-fork", error.message(&branch)))?
+            }
+        };
+        let fork = ForkName::parse(&raw_name)
+            .map_err(|error| Failure::new("invalid-fork", error.to_string()))?;
+        let checkpoint_started = Instant::now();
+        checkpoint_postgres(&self.project, &self.store_root, &self.world)?;
+        let checkpoint_ms = elapsed_ms(checkpoint_started);
+        Ok((raw_name, fork, checkpoint_ms))
+    }
+}
+
 impl Core {
-    /// Snapshots the fork and reserves its boot in the same locked step.
-    ///
-    /// The daemon boots the returned session through the ordinary `up` path, so a fork is never a
-    /// second boot implementation. Any failure after the snapshot deletes both snapshots again.
-    pub(crate) fn begin_fork(
-        &mut self,
-        params: &Value,
-        emit: &mut dyn FnMut(Value),
-    ) -> Result<(BootSession, PreparedFork), Failure> {
-        let prepared = self.snapshot(params, emit)?;
-        let boot = json!({
-            "project": prepared.project.clone(),
-            "world": prepared.world.clone(),
-        });
-        match self.begin_up(&boot) {
-            Ok(mut session) => {
-                session.reserve_fork(prepared.fork.clone());
-                Ok((session, prepared))
-            }
-            Err(failure) => {
-                self.discard_fork(&prepared);
-                Err(failure)
-            }
-        }
-    }
-
-    /// Deletes both snapshots of a fork that never published, so a retry is never blocked.
-    pub(crate) fn discard_fork(&self, prepared: &PreparedFork) {
-        let engine = BtrfsEngine::new(StoreLayout::at(self.host.store_root_for(&prepared.parent)));
-        let _ = engine.drop_fork(
-            &prepared.parent,
-            &prepared.world_name,
-            &prepared.fork_name,
-            Dirtiness::Clean,
-            true,
-        );
-    }
-
-    /// Snapshots the project and its world data, then switches the fork checkout to its branch.
-    fn snapshot(
-        &self,
-        params: &Value,
-        emit: &mut dyn FnMut(Value),
-    ) -> Result<PreparedFork, Failure> {
+    /// Validates the live parent world under a short lock before `CHECKPOINT` runs unlocked.
+    pub(crate) fn inspect_fork(&self, params: &Value) -> Result<ForkTarget, Failure> {
         let started = Instant::now();
         let project = project_param(params)?;
         // Probe before touching the mount store: a refusal must not create `.slipfork-store`.
@@ -96,48 +89,91 @@ impl Core {
             .ok_or_else(|| Failure::new("no-world", "no world is running in this directory"))?;
         let world = WorldName::parse(&parent)
             .map_err(|error| Failure::new("invalid-world", first_line(&error.to_string())))?;
-        let name = match param_name(params) {
-            Some(name) => name.to_owned(),
-            None => {
-                let branch = self
-                    .vcs
-                    .branch(&project)
-                    .map_err(|error| vcs_failure(&error))?;
-                // Branch names are user territory (`Feat/Auth`); normalize them with the one
-                // `Forkfile` slug rule before validating the resulting `.localhost` label.
-                slipfork_forkfile::DnsLabel::slug(&branch)
-                    .map_err(|error| Failure::new("invalid-fork", error.message(&branch)))?
+        Ok(ForkTarget {
+            store_root: self.host.store_root_for(&project),
+            project,
+            world,
+            requested_name: param_name(params).map(str::to_owned),
+            vcs: Arc::clone(&self.vcs),
+            started,
+        })
+    }
+
+    /// Snapshots the fork and reserves its boot in one locked step after `CHECKPOINT` finished.
+    ///
+    /// The daemon boots the returned session through the ordinary `up` path, so a fork is never a
+    /// second boot implementation. Any failure after the snapshot deletes every fork subvolume.
+    pub(crate) fn begin_fork(
+        &mut self,
+        target: ForkTarget,
+        raw_name: &str,
+        fork: ForkName,
+        checkpoint_ms: u64,
+        emit: &mut dyn FnMut(Value),
+    ) -> Result<(BootSession, PreparedFork), Failure> {
+        if !self.worlds.contains_key(&key_of(&target.project)) {
+            return Err(Failure::new(
+                "no-world",
+                "no world is running in this directory",
+            ));
+        }
+        let prepared = self.snapshot(target, raw_name, fork, checkpoint_ms, emit)?;
+        let boot = json!({
+            "project": prepared.project.clone(),
+            "world": prepared.world.clone(),
+        });
+        match self.begin_up(&boot) {
+            Ok(mut session) => {
+                session.reserve_fork(prepared.fork.clone());
+                Ok((session, prepared))
             }
-        };
-        let fork = ForkName::parse(&name)
-            .map_err(|error| Failure::new("invalid-fork", error.to_string()))?;
-        let engine = BtrfsEngine::new(StoreLayout::at(self.host.store_root_for(&project)));
+            Err(failure) => {
+                self.discard_fork(&prepared);
+                Err(failure)
+            }
+        }
+    }
+
+    /// Deletes all snapshots of a fork that never published, so a retry is never blocked.
+    pub(crate) fn discard_fork(&self, prepared: &PreparedFork) {
+        let engine = BtrfsEngine::new(StoreLayout::at(self.host.store_root_for(&prepared.parent)));
+        let _ = engine.drop_fork(
+            &prepared.parent,
+            &prepared.world_name,
+            &prepared.fork_name,
+            Dirtiness::Clean,
+            true,
+        );
+    }
+
+    /// Snapshots the project and its world data, then switches the fork checkout to its branch.
+    fn snapshot(
+        &self,
+        target: ForkTarget,
+        name: &str,
+        fork: ForkName,
+        checkpoint_ms: u64,
+        emit: &mut dyn FnMut(Value),
+    ) -> Result<PreparedFork, Failure> {
+        let ForkTarget {
+            project,
+            world,
+            store_root,
+            vcs,
+            started,
+            ..
+        } = target;
+        let engine = BtrfsEngine::new(StoreLayout::at(store_root));
         engine
             .ensure_store()
             .map_err(|error| btrfs_failure(&error, &project))?;
         if let Some(forks_dir) = StoreLayout::project_fork(&project, &fork).parent() {
             let _ = std::fs::create_dir_all(forks_dir);
         }
-        // `specs/03` §1 step 1: flush dirty filesystem pages before snapshotting so on-disk pages
-        // are consistent and `SNAP_CREATE_V2` commits only the snapshot metadata.
-        if let Ok(dir) = File::open(&project) {
-            // SAFETY: `dir` is a live directory descriptor; `syncfs` only flushes its filesystem.
-            unsafe {
-                libc::syncfs(dir.as_raw_fd());
-            }
-        }
         emit(json!({
             "event": "started", "step": 1, "total": 3, "kind": "fork",
             "label": format!("snapshotting {}", fork.as_str()),
         }));
-        let pods_dir = self
-            .worlds
-            .get(&key_of(&project))
-            .and_then(|entity| match entity {
-                World::Live { entry, .. } => Some(entry.pods_dir.clone()),
-                World::Booting { .. } => None,
-            });
-        checkpoint_postgres(&project, pods_dir.as_deref())?;
         let snapshot_started = Instant::now();
         let paths = engine
             .fork(&project, &world, &fork)
@@ -151,15 +187,15 @@ impl Core {
             "event": "finished", "step": 1, "total": 3, "kind": "fork",
             "label": "snapshot", "detail": "project + world data",
             "elapsed_ms": snapshot_ms,
+            "checkpoint_ms": checkpoint_ms,
         }));
         let git_started = Instant::now();
         emit(json!({
             "event": "started", "step": 2, "total": 3, "kind": "git",
             "label": format!("switching the fork to {name}"),
         }));
-        if let Err(failure) = self
-            .vcs
-            .switch(&paths.project, &name)
+        if let Err(failure) = vcs
+            .switch(&paths.project, name)
             .map_err(|error| vcs_failure(&error))
         {
             let _ = engine.drop_fork(&project, &world, &fork, Dirtiness::Clean, true);
@@ -180,11 +216,12 @@ impl Core {
                 .to_owned(),
             world_name: world,
             snapshot_ms,
+            checkpoint_ms,
             started,
         })
     }
 
-    /// Stops the fork when live, then removes both snapshots and its registry entry.
+    /// Stops the fork when live, then removes all fork subvolumes and its registry entry.
     pub(crate) fn drop_fork(
         &mut self,
         params: &Value,
@@ -206,17 +243,24 @@ impl Core {
             .unwrap_or(false);
         let fork = ForkName::parse(name)
             .map_err(|error| Failure::new("invalid-fork", error.to_string()))?;
+        let parent = self.parent_world(&project, fork.as_str())?;
+        let world = WorldName::parse(&parent)
+            .map_err(|error| Failure::new("invalid-world", first_line(&error.to_string())))?;
+        let layout = StoreLayout::at(self.host.store_root_for(&project));
         let fork_project = StoreLayout::project_fork(&project, &fork);
+        let fork_world = layout.fork_world(&world, &fork);
         let fork_key = key_of(&fork_project);
         let registered = self.worlds.contains_key(&fork_key);
-        if !registered && !is_subvolume_path(&fork_project).unwrap_or(false) {
+        let has_checkout = is_subvolume_path(&fork_project).unwrap_or(false);
+        let has_world = is_subvolume_path(&fork_world).unwrap_or(false);
+        if !registered && !has_checkout && !has_world {
             return Err(Failure::new(
                 "no-fork",
                 format!("no fork named `{}` exists", fork.as_str()),
             ));
         }
         // Refuse dirty work before stopping anything: a refusal leaves the fork running.
-        let dirtiness = if force {
+        let dirtiness = if force || !has_checkout {
             Dirtiness::Clean
         } else {
             match self.vcs.dirtiness(&fork_project) {
@@ -231,9 +275,6 @@ impl Core {
                 format!("fork `{}` has uncommitted changes", fork.as_str()),
             ));
         }
-        let parent = self.parent_world(&project, fork.as_str())?;
-        let world = WorldName::parse(&parent)
-            .map_err(|error| Failure::new("invalid-world", first_line(&error.to_string())))?;
         emit(json!({
             "event": "started", "step": 1, "total": 2, "kind": "fork",
             "label": format!("stopping {}", fork.as_str()),
@@ -251,7 +292,7 @@ impl Core {
             "event": "started", "step": 2, "total": 2, "kind": "fork",
             "label": "deleting snapshots",
         }));
-        let engine = BtrfsEngine::new(StoreLayout::at(self.host.store_root_for(&project)));
+        let engine = BtrfsEngine::new(layout);
         engine
             .drop_fork(&project, &world, &fork, dirtiness, force)
             .map_err(|error| btrfs_failure(&error, &project))?;
@@ -339,52 +380,28 @@ fn first_line(text: &str) -> String {
     text.lines().next().unwrap_or("fork failed").to_owned()
 }
 
-/// Flushes PostgreSQL's WAL into the shared `PGDATA` clone before the CoW snapshot.
-///
-/// The pod and its control plane belong to `slipfork-world`; this composition root only knows a
-/// `Forkfile` may declare postgres and asks it to checkpoint through the same world `Exec` plane
-/// `slipfork exec` uses, outside the snapshot's critical section. Redis AOF is append-only, so a
-/// fork needs no flush there.
-fn checkpoint_postgres(project: &Path, pods_dir: Option<&Path>) -> Result<(), Failure> {
-    let Some(pods_dir) = pods_dir else {
-        return Ok(());
-    };
+/// Flushes every PostgreSQL pod's WAL directly over its host-visible unix socket (`< 2ms`, zero
+/// `crun exec`, zero locks held) before `SNAP_CREATE_V2` snapshots the `PGDATA` clone.
+fn checkpoint_postgres(
+    project: &Path,
+    store_root: &Path,
+    world: &WorldName,
+) -> Result<(), Failure> {
     let Ok(source) = std::fs::read_to_string(project.join("Forkfile")) else {
         return Ok(());
     };
     let Ok(checked) = slipfork_forkfile::compile(&source) else {
         return Ok(());
     };
-    let Some(postgres) = checked
+    let launcher = PostgresLauncher::new(StoreLayout::at(store_root), world.clone());
+    for resource in checked
         .document
         .resources()
         .into_iter()
-        .find(|resource| resource.kind == ResourceDeclKind::Postgres)
-    else {
-        return Ok(());
-    };
-    // `specs/03` §3 pins `PGDATA` and its unix socket directory inside every postgres pod.
-    const SOCKET: &str = "/var/lib/postgresql/data/.sock";
-    let argv = [
-        "psql",
-        "-h",
-        SOCKET,
-        "-U",
-        "postgres",
-        "-d",
-        "postgres",
-        "-c",
-        "CHECKPOINT",
-    ]
-    .map(str::to_owned)
-    .to_vec();
-    let code = slipfork_world::control::exec(pods_dir, postgres.id, &argv, &mut |_| {})
-        .map_err(|error| Failure::new("checkpoint-failed", first_line(&error.to_string())))?;
-    if code != 0 {
-        return Err(Failure::new(
-            "checkpoint-failed",
-            format!("postgres could not flush its WAL before the snapshot (exit {code})"),
-        ));
+        .filter(|resource| resource.kind == ResourceDeclKind::Postgres)
+    {
+        pg_checkpoint(&launcher.socket_path(resource.id))
+            .map_err(|error| Failure::new("checkpoint-failed", first_line(&error.to_string())))?;
     }
     Ok(())
 }

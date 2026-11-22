@@ -4,7 +4,7 @@ mod epoch;
 
 pub use epoch::{
     EpochState, PG_STAMP_FILE, WORLD_STAMP_FILE, WorldStamp, WorldStampStore, epoch_for,
-    plan_epoch, write_pg_checkpoint, write_pg_checkpoints,
+    plan_epoch, step_digest, write_pg_checkpoint, write_pg_checkpoints,
 };
 
 use std::fs;
@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 
 use slipfork_forkfile::boot::{SetupNode, stamp_of};
 
+use crate::boot::{BootStep, HookPhase};
 use crate::error::{Error, Result};
 
 /// The stamp a conditional setup step must match to be skipped.
@@ -49,11 +50,12 @@ pub(crate) fn stamp_key(node: &SetupNode) -> String {
 /// `<project>/.slipfork`: stamps live in the project subvolume and survive `fork`.
 ///
 /// A stamp is only trusted when the world and its PG sibling carry the same `world_epoch`;
-/// otherwise every conditional step re-runs.
+/// otherwise every conditional step and fork hook re-runs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StampStore {
     root: PathBuf,
     trusted: bool,
+    fork_stamp: Option<WorldStamp>,
 }
 
 impl StampStore {
@@ -63,6 +65,18 @@ impl StampStore {
         Self {
             root: project.join(".slipfork"),
             trusted,
+            fork_stamp: None,
+        }
+    }
+
+    /// Builds a store for a forked world: when `trusted` is true, `fork_stamp` also gates
+    /// `before-start` and `pre-deploy` hooks in 0ms against `<world>/.slipfork-world-stamp.json`.
+    #[must_use]
+    pub fn for_fork(project: &Path, trusted: bool, fork_stamp: Option<WorldStamp>) -> Self {
+        Self {
+            root: project.join(".slipfork"),
+            trusted,
+            fork_stamp: trusted.then_some(fork_stamp).flatten(),
         }
     }
 
@@ -72,6 +86,27 @@ impl StampStore {
         self.trusted
             && fs::read_to_string(self.root.join(&stamp.key))
                 .is_ok_and(|text| text.trim() == stamp.digest)
+    }
+
+    /// Whether `steps[index]` may be skipped in 0ms on this boot.
+    #[must_use]
+    pub fn is_step_current(&self, steps: &[BootStep], index: usize) -> bool {
+        let Some(step) = steps.get(index) else {
+            return false;
+        };
+        if let Some(stamp) = &step.stamp {
+            return self.is_current(stamp);
+        }
+        if matches!(
+            step.phase,
+            Some(HookPhase::BeforeStart | HookPhase::PreDeploy)
+        ) {
+            return self
+                .fork_stamp
+                .as_ref()
+                .is_some_and(|world| world.matches_hook(steps, index));
+        }
+        false
     }
 
     /// Persists the digest atomically after a successful conditional step.
