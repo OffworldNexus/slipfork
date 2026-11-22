@@ -105,11 +105,15 @@ pub(crate) fn handle(listener: &UnixListener, world: &mut InitWorld) -> Result<b
                 service,
                 pods,
                 follow,
+                since_ms,
+                until_ms,
                 ..
             } => {
                 let shared = world.shared();
                 std::thread::spawn(move || {
-                    if let Err(fault) = serve_logs(shared, id, service, pods, follow, stream) {
+                    if let Err(fault) = serve_logs(
+                        shared, id, service, pods, follow, since_ms, until_ms, stream,
+                    ) {
                         eprintln!("slipfork-world-init: {fault}");
                     }
                 });
@@ -181,6 +185,7 @@ fn serve_run_once(
                 pod: Some(pod_id.clone()),
                 stream: kind,
                 kind: slipfork_world::OutputKind::Line,
+                ts_ms: None,
                 line: line.to_owned(),
             },
         )

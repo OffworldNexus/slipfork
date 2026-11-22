@@ -2841,3 +2841,6 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-22T13:27 [M3.50.4] (lead) OWNER PALETTE: consume ui::Palette roles — task icon green/cyan/red; dim kind; bold white name; status colors; dim right-aligned duration; bottom bar spinner cy
 - 2026-11-22T13:27 [M3.50.7] (lead) OWNER PALETTE: tree connectors/arrows dim; world header green dot + bold white name + bold cyan ~path; domain URLs bold cyan underlined; route paths bold yellow
 - 2026-11-22T13:28 [M3.50.3] (lead) status ready -> done
+- 2026-11-22T13:29 [M3.50.8] (lead) edited fields
+- 2026-11-22T13:29 [M3.50.6] (lead) OWNER LOG CASE: prove historical logs replay while DOWN and follow across down->up. Real-PTY steps: up -> down -> logs / logs api / logs --since 5m / logs -a al
+- 2026-11-22T13:35 [M3.50.8] (lead) status active -> done

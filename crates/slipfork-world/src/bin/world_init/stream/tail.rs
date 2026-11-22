@@ -1,15 +1,15 @@
-//! Rolling `logs` replay: always-open readers merged by timestamp, with a short reorder window.
+//! Rolling `logs` replay: indexed readers merged by timestamp, with a short reorder window.
 //!
-//! Live pods replay the capture opened by the launch pump (`PodInfo.log`); a pod that already
-//! stopped replays the canonical `<store>/logs/<world>/<id>.log` root the init recorded on its
-//! first launch, so a failed `up`, a `down`, or a cloned `fork` still answers from persistent disk.
+//! Every id, live or stopped, reads the canonical `<store>/logs/<world>/<id>.log` through
+//! [`read_range`], so a `--since`/`--until` window seeks past the head of a large capture instead
+//! of scanning it. Live pods additionally stay open and stream new lines as the pumps append them.
 
 use std::os::unix::net::UnixStream;
 use std::sync::Arc;
 use std::thread;
 
 use slipfork_world::control::{InitFrame, PROTOCOL_VERSION, Stream};
-use slipfork_world::pod_log::{LogLine, LogMerge, LogReader, REORDER_MS, log_path, now_ms};
+use slipfork_world::pod_log::{LogMerge, LogRange, REORDER_MS, log_path, now_ms, read_range};
 
 use crate::Fault;
 use crate::pod::WorldShared;
@@ -17,12 +17,15 @@ use crate::pod::WorldShared;
 use super::lines::{IDLE, output_kind, peer_closed, refuse, reply, write_output};
 
 /// Replays (and optionally follows) captured pod output into `stream`, merged by timestamp.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn serve_logs(
     shared: Arc<WorldShared>,
     request_id: String,
     service: Option<String>,
     pods: Option<Vec<String>>,
     follow: bool,
+    since_ms: Option<u64>,
+    until_ms: Option<u64>,
     mut stream: UnixStream,
 ) -> Result<(), Fault> {
     let logs_root = shared.logs_root();
@@ -55,25 +58,35 @@ pub(crate) fn serve_logs(
     } else if let Some(selected) = pods {
         ids.retain(|id| selected.iter().any(|wanted| wanted == id));
     }
-    let mut readers: Vec<(String, LogReader)> = Vec::new();
-    for id in &ids {
-        let path = shared.info(id).map_or_else(
-            || logs_root.as_ref().map(|root| log_path(root, id)),
-            |info| Some(info.log),
-        );
-        if let Some(path) = path
-            && let Ok(reader) = LogReader::open(&path)
-        {
-            readers.push((id.clone(), reader));
+    let mut readers: Vec<(String, LogRange)> = Vec::new();
+    let mut failure = None;
+    if let Some(root) = &logs_root {
+        for id in &ids {
+            let path = shared
+                .info(id)
+                .map_or_else(|| log_path(root, id), |info| info.log);
+            if !path.is_file() {
+                continue;
+            }
+            match read_range(root, id, since_ms, until_ms) {
+                Ok(reader) => readers.push((id.clone(), reader)),
+                Err(source) => {
+                    failure = Some(Fault::cause(
+                        format!("replay pod `{id}` log"),
+                        "inspect the pod log and its `.idx` under `<store>/logs/<world>`",
+                        source,
+                    ));
+                    break;
+                }
+            }
         }
     }
     let live = |id: &str| shared.info(id).is_some();
     let mut merge = LogMerge::default();
-    let mut failure = None;
     loop {
         let mut progress = false;
         for (id, reader) in &mut readers {
-            let mut route = |line: LogLine| merge.push(id, line);
+            let mut route = |line| merge.push(id, line);
             match reader.read_lines(&mut route) {
                 Ok(read) => progress |= read > 0,
                 Err(source) => {
@@ -98,6 +111,7 @@ pub(crate) fn serve_logs(
                 &pod,
                 Stream::Combined,
                 output_kind(line.kind),
+                Some(line.ts_ms),
                 &line.text,
             )?;
         }
@@ -121,6 +135,7 @@ pub(crate) fn serve_logs(
             &pod,
             Stream::Combined,
             output_kind(line.kind),
+            Some(line.ts_ms),
             &line.text,
         )?;
     }
@@ -136,6 +151,7 @@ pub(crate) fn serve_logs(
             id,
             Stream::Combined,
             slipfork_world::OutputKind::Eof,
+            Some(now_ms()),
             "",
         )?;
     }

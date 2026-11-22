@@ -53,6 +53,7 @@ pub(crate) fn respond(
                     pod: Some(pod_id.clone()),
                     stream,
                     kind: slipfork_world::OutputKind::Line,
+                    ts_ms: None,
                     line: line.to_owned(),
                 })
             };

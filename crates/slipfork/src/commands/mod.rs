@@ -28,7 +28,7 @@ pub use auth::AuthArgs;
 pub use env::EnvArgs;
 pub use open::OpenArgs;
 pub use secret::{SecretArgs, SecretVerb};
-pub use streams::{ExecArgs, LogsArgs, TargetArgs};
+pub use streams::{ExecArgs, LogsArgs, TargetArgs, parse_since, parse_until};
 
 /// Parsed `slipfork fmt` arguments.
 #[derive(Debug, Clone, PartialEq, Eq)]

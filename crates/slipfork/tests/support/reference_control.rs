@@ -223,6 +223,7 @@ fn output(id: &str, pod: &str, stream: Stream, kind: OutputKind, line: &str) -> 
         pod: Some(pod.to_owned()),
         stream,
         kind,
+        ts_ms: None,
         line: line.to_owned(),
     }
 }

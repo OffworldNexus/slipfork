@@ -120,15 +120,24 @@ pub enum Command {
 
     /// Stream merged stdout and stderr with a colored gutter per service.
     Logs {
-        /// Service or resource id; omit to merge application services.
-        #[arg(conflicts_with = "all")]
-        service: Option<String>,
+        /// Service or resource ids; omit to merge application services.
+        #[arg(value_name = "TARGETS")]
+        targets: Vec<String>,
         /// Stay attached across restarts (Ctrl-C exits 0).
         #[arg(short = 'f', long)]
         follow: bool,
         /// Include postgres, redis, and s3 resource pods.
         #[arg(short = 'a', long)]
         all: bool,
+        /// Only lines at or after this time (`30s|5m|2h|1d` or RFC 3339).
+        #[arg(long, value_name = "TIME", value_parser = crate::commands::parse_since)]
+        since: Option<u64>,
+        /// Only lines at or before this time (`30s|5m|2h|1d` or RFC 3339).
+        #[arg(long, value_name = "TIME", value_parser = crate::commands::parse_until)]
+        until: Option<u64>,
+        /// Prefix every line with a human timestamp gutter.
+        #[arg(short = 't', long)]
+        timestamps: bool,
     },
 
     /// Attach a real PTY: bash/sh, psql, or redis-cli for one declared target.

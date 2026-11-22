@@ -23,7 +23,10 @@ use slipfork_world::{
     LogKind, LogLine, LogReader, LogSink, NamespaceIdentity, NamespaceTable, PROTOCOL_VERSION,
     PodEnv, PodFile, PodHost, PodSpec, PostgresLauncher, RedisLauncher, Request, RuntimePods,
     S3Bucket, S3Credentials, StoreLayout, WorldName, WorldPlan, control, decode_request,
-    pod_log::LogMerge, recv_fd, send_fd, write_bundle,
+    pod_log::{
+        INDEX_BYTES, INDEX_ENTRY_BYTES, INDEX_LINES, LogMerge, index_path, load_index, read_range,
+    },
+    recv_fd, send_fd, write_bundle,
 };
 
 fn lab(prefix: &str) -> PathBuf {
@@ -546,6 +549,85 @@ fn pod_logs_merge_by_timestamp_across_two_real_files() {
     let _ = fs::remove_dir_all(&lab);
 }
 
+/// The `.idx` stays dense and a `since` window seeks past the head of a real capture file.
+#[test]
+fn indexed_read_range_seeks_past_the_head_of_a_real_capture() {
+    let lab = lab("podlog-window");
+    let mut sink = LogSink::open(&lab, "api").expect("api sink");
+    for step in 0..200_u64 {
+        sink.append_at(1_000 + step * 10, LogKind::Line, &format!("line-{step:03}"))
+            .expect("append line");
+    }
+    drop(sink);
+
+    let index = index_path(&lab, "api");
+    let meta = fs::metadata(&index).expect("the .idx is written beside the log");
+    assert_eq!(meta.mode() & 0o777, 0o600, "the index is private");
+    assert_eq!(
+        meta.len() % INDEX_ENTRY_BYTES as u64,
+        0,
+        "fixed 16-byte entries"
+    );
+    let entries = load_index(&lab, "api").expect("valid index");
+    assert_eq!(
+        entries[0].byte_offset, 0,
+        "the first line is always indexed"
+    );
+    assert!(
+        entries.len() >= 4,
+        "one entry per <= {INDEX_LINES} lines: {entries:?}"
+    );
+    for pair in entries.windows(2) {
+        assert!(
+            pair[1].byte_offset - pair[0].byte_offset <= INDEX_BYTES,
+            "indexed gaps stay <= {INDEX_BYTES} bytes: {entries:?}"
+        );
+    }
+
+    let since = 1_000 + 130 * 10;
+    let mut range = read_range(&lab, "api", Some(since), None).expect("windowed reader");
+    assert!(
+        range.start_offset() > 0,
+        "a `since` window must seek to the indexed boundary, not byte zero"
+    );
+    let mut seen = Vec::new();
+    while range
+        .read_lines(&mut |line| seen.push(line))
+        .expect("read window")
+        > 0
+    {}
+    range.flush(&mut |line| seen.push(line));
+    assert_eq!(seen.len(), 70, "only lines at/after {since}");
+    assert_eq!(
+        seen[0].text, "line-130",
+        "the first returned line starts the window"
+    );
+    assert!(seen.iter().all(|line| line.ts_ms >= since));
+
+    let until = 1_000 + 160 * 10;
+    let mut bounded = read_range(&lab, "api", Some(since), Some(until)).expect("bounded reader");
+    let mut window = Vec::new();
+    while bounded
+        .read_lines(&mut |line| window.push(line))
+        .expect("read bounded window")
+        > 0
+    {}
+    bounded.flush(&mut |line| window.push(line));
+    assert_eq!(window.len(), 31, "strictly inside [{since}, {until}]");
+    assert!(
+        window
+            .iter()
+            .all(|line| line.ts_ms >= since && line.ts_ms <= until)
+    );
+
+    // A deleted index is rebuilt explicitly, never silently bypassed.
+    fs::remove_file(&index).expect("drop the index");
+    assert_eq!(load_index(&lab, "api").expect("rebuilt index"), entries);
+    let rebuilt = read_range(&lab, "api", Some(since), None).expect("rebuilt reader");
+    assert!(rebuilt.start_offset() > 0);
+    let _ = fs::remove_dir_all(&lab);
+}
+
 /// Boot graph: dependencies gate, and a cycle is refused before any node is released.
 #[test]
 fn boot_graph_refuses_a_dependency_cycle() {
@@ -1033,6 +1115,8 @@ mod pty_lab {
                 service: Some("api".to_owned()),
                 pods: None,
                 follow: false,
+                since_ms: None,
+                until_ms: None,
             },
         );
         let mut log_lines = FrameLines::new();

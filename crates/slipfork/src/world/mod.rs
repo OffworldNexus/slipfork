@@ -10,6 +10,7 @@ mod supervise;
 mod up;
 
 use std::collections::BTreeMap;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -185,24 +186,52 @@ pub(super) fn state_path(project: &Path) -> PathBuf {
     project.join(".slipfork/world.json")
 }
 
-/// Derives the world name from `--world` or the project directory, normalized as an RFC 1123
-/// `.localhost` label by the `Forkfile` compiler's one slug rule.
+/// Derives the world name for a project, in resolution order: an explicit `--world`, the world
+/// recorded in `<project>/.slipfork/world.json`, the canonical `<project>/.forks/<fork>` id
+/// (`<fork>--<parent>`), then the directory's RFC 1123 slug.
 pub(crate) fn world_name(
     project: &Path,
     requested: Option<&str>,
 ) -> Result<slipfork_world::WorldName, String> {
-    let raw = match requested {
-        Some(name) => name.to_owned(),
-        None => {
-            let directory = project
-                .file_name()
-                .and_then(|name| name.to_str())
-                .unwrap_or("world");
-            slipfork_forkfile::DnsLabel::slug(directory)
-                .map_err(|error| error.message(directory))?
-        }
-    };
+    if let Some(name) = requested {
+        return slipfork_world::WorldName::parse(name).map_err(|error| error.to_string());
+    }
+    if let Some(recorded) = recorded_world(project) {
+        return Ok(recorded);
+    }
+    if let Some(forked) = fork_world(project) {
+        return Ok(forked);
+    }
+    let directory = project
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("world");
+    let raw =
+        slipfork_forkfile::DnsLabel::slug(directory).map_err(|error| error.message(directory))?;
     slipfork_world::WorldName::parse(&raw).map_err(|error| error.to_string())
+}
+
+/// The world a live or stopped project recorded in `<project>/.slipfork/world.json`.
+fn recorded_world(project: &Path) -> Option<slipfork_world::WorldName> {
+    let raw = fs::read_to_string(state_path(project)).ok()?;
+    let state: WorldState = serde_json::from_str(&raw).ok()?;
+    slipfork_world::WorldName::parse(&state.world).ok()
+}
+
+/// The canonical `<fork>--<parent>` world id when `project` is `<parent>/.forks/<fork>`.
+fn fork_world(project: &Path) -> Option<slipfork_world::WorldName> {
+    let fork = project.file_name()?.to_str()?;
+    let forks_dir = project.parent()?;
+    if !forks_dir.file_name().is_some_and(|name| name == ".forks") {
+        return None;
+    }
+    let parent = forks_dir.parent()?;
+    let parent_world = world_name(parent, None).ok()?;
+    let fork = slipfork_world::ForkName::parse(fork).ok()?;
+    Some(slipfork_world::StoreLayout::fork_world_name(
+        &parent_world,
+        &fork,
+    ))
 }
 
 pub(super) fn fail(message: impl std::fmt::Display, next: &str) -> ExitCode {
@@ -217,4 +246,82 @@ pub(super) fn fail(message: impl std::fmt::Display, next: &str) -> ExitCode {
     }
     eprintln!("next: {}", embedded.as_deref().unwrap_or(next));
     ExitCode::FAILURE
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp(prefix: &str) -> tempfile::TempDir {
+        tempfile::Builder::new()
+            .prefix(prefix)
+            .tempdir_in("/var/tmp")
+            .expect("create a disk temp directory")
+    }
+
+    fn record(project: &Path, world: &str) {
+        fs::create_dir_all(project.join(".slipfork")).expect("create .slipfork");
+        fs::write(
+            state_path(project),
+            format!(
+                "{{\"world\":\"{world}\",\"socket\":\"/run/s\",\"project\":\"{}\",\"pid\":1}}",
+                project.display()
+            ),
+        )
+        .expect("write world.json");
+    }
+
+    /// A stopped project resolves its world from the record, the `.forks` layout, or the slug.
+    #[test]
+    fn world_name_resolves_recorded_forks_then_the_directory_slug() {
+        let root = temp("slipfork-world-name");
+
+        let plain = root.path().join("plainworld");
+        fs::create_dir_all(&plain).expect("create plain project");
+        assert_eq!(
+            world_name(&plain, None).expect("slug").as_str(),
+            "plainworld",
+            "an unrecorded project falls back to its directory slug"
+        );
+        assert_eq!(
+            world_name(&plain, Some("explicit"))
+                .expect("requested")
+                .as_str(),
+            "explicit",
+            "an explicit --world always wins"
+        );
+
+        let recorded = root.path().join("demo");
+        fs::create_dir_all(&recorded).expect("create recorded project");
+        record(&recorded, "feat-auth--demo");
+        assert_eq!(
+            world_name(&recorded, None).expect("recorded").as_str(),
+            "feat-auth--demo",
+            "the recorded world beats the directory slug"
+        );
+        assert_eq!(
+            world_name(&recorded, Some("explicit"))
+                .expect("requested")
+                .as_str(),
+            "explicit",
+            "an explicit --world beats the recorded world"
+        );
+
+        let parent = root.path().join("app");
+        fs::create_dir_all(&parent).expect("create fork parent");
+        let fork = parent.join(".forks").join("feat-auth");
+        fs::create_dir_all(&fork).expect("create fork checkout");
+        assert_eq!(
+            world_name(&fork, None).expect("fork layout").as_str(),
+            "feat-auth--app",
+            "a fork checkout without a record uses the canonical <fork>--<parent> id"
+        );
+
+        record(&fork, "chosen--app");
+        assert_eq!(
+            world_name(&fork, None).expect("fork record").as_str(),
+            "chosen--app",
+            "a fork's own record still beats the layout derivation"
+        );
+    }
 }

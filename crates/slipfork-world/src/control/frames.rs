@@ -106,6 +106,9 @@ pub enum InitFrame {
         /// Whether this is pod output, a divider, or the end of a pod's replay.
         #[serde(default)]
         kind: OutputKind,
+        /// Epoch milliseconds when the line was captured, when known.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ts_ms: Option<u64>,
         /// The line, without its terminator.
         line: String,
     },

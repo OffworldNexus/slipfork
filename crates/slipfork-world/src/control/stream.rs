@@ -32,6 +32,8 @@ pub struct OutputEvent {
     pub stream: Stream,
     /// Line, divider, or end-of-replay marker.
     pub kind: OutputKind,
+    /// Epoch milliseconds when the line was captured, when the producer knew it.
+    pub ts_ms: Option<u64>,
     /// Text without its terminator (empty for `eof`).
     pub line: String,
 }
@@ -158,6 +160,7 @@ impl StreamClient {
                     pod,
                     stream,
                     kind,
+                    ts_ms,
                     line,
                     ..
                 } if id == self.id => {
@@ -165,6 +168,7 @@ impl StreamClient {
                         pod: pod.unwrap_or_default(),
                         stream,
                         kind,
+                        ts_ms,
                         line,
                     })));
                 }
@@ -249,6 +253,18 @@ pub fn logs(
     follow: bool,
     on_output: &mut dyn FnMut(OutputEvent),
 ) -> Result<serde_json::Value> {
+    logs_window(pods_root, service, follow, None, None, on_output)
+}
+
+/// Replays (and optionally follows) captured pod output inside an optional time window.
+pub fn logs_window(
+    pods_root: &Path,
+    service: Option<&str>,
+    follow: bool,
+    since_ms: Option<u64>,
+    until_ms: Option<u64>,
+    on_output: &mut dyn FnMut(OutputEvent),
+) -> Result<serde_json::Value> {
     let mut client = StreamClient::open(pods_root)?;
     client.send(&Request::Logs {
         v: PROTOCOL_VERSION,
@@ -256,6 +272,8 @@ pub fn logs(
         service: service.map(str::to_owned),
         pods: None,
         follow,
+        since_ms,
+        until_ms,
     })?;
     loop {
         match client.recv()? {

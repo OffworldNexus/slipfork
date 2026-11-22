@@ -443,3 +443,41 @@ fn piped_lifecycle_verbs_replay_plain_rows_and_fail_closed() {
     reap::reap(&root);
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// `logs --since/--until` rejects unparseable time values with clap's exit `2` and one remedy line.
+#[test]
+fn logs_rejects_bad_time_windows_and_accepts_relative_and_rfc3339() {
+    for (flag, value) in [("--since", "banana"), ("--until", "5x")] {
+        let output = run(&["logs", flag, value]);
+        assert_eq!(
+            output.status.code(),
+            Some(2),
+            "`logs {flag} {value}` must be a usage error"
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("invalid value") && stderr.contains(flag),
+            "{stderr}"
+        );
+        assert!(
+            stderr.contains("next:") || stderr.contains("try '--help'"),
+            "the usage error carries one remedy: {stderr}"
+        );
+        assert!(!stderr.contains(ANSI), "piped errors stay plain: {stderr}");
+        assert!(
+            !String::from_utf8_lossy(&output.stdout).contains(ANSI),
+            "piped output stays plain"
+        );
+    }
+    let root = scratch("logs-window");
+    for value in ["30s", "5m", "2h", "1d", "2026-11-22T12:00:00Z"] {
+        let output = run_isolated(&["logs", "--since", value, "--json"], &root);
+        assert_ne!(
+            output.status.code(),
+            Some(2),
+            "`--since {value}` must parse: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let _ = std::fs::remove_dir_all(&root);
+}

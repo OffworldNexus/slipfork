@@ -99,6 +99,7 @@ pub(super) fn write_output(
     pod: &str,
     stream_kind: Stream,
     kind: slipfork_world::OutputKind,
+    ts_ms: Option<u64>,
     line: &str,
 ) -> Result<(), Fault> {
     reply(
@@ -109,6 +110,7 @@ pub(super) fn write_output(
             pod: Some(pod.to_owned()),
             stream: stream_kind,
             kind,
+            ts_ms,
             line: line.to_owned(),
         },
     )

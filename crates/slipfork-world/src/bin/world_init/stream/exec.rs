@@ -126,6 +126,7 @@ pub(crate) fn serve_exec(
                     &pod,
                     kind,
                     slipfork_world::OutputKind::Line,
+                    None,
                     &line,
                 )
                 .is_err()

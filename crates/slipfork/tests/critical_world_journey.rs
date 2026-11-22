@@ -95,7 +95,18 @@ print("api ready", flush=True)
 HTTPServer(("127.0.0.1", int(os.environ["PORT"])), Handler).serve_forever()
 "#;
 
-const WORKER_PY: &str = "import time\n\nwhile True:\n    time.sleep(3600)\n";
+const WORKER_PY: &str =
+    "import time\n\nprint(\"worker ready\", flush=True)\nwhile True:\n    time.sleep(3600)\n";
+
+// A minimal service-only world: it proves log history and following without a backing database.
+const LOGS_FORKFILE: &str = r#"# forkfile: 0.1
+image app . {
+  dockerfile Dockerfile
+  service api {
+    run: @uv run python app.py
+  }
+}
+"#;
 
 const BROKEN_FORKFILE: &str = r#"# forkfile: 0.1
 image app . {
@@ -284,7 +295,7 @@ impl Journey {
         let run = live_run_root();
         let store_root = mount_store_for(&run);
         let engine = BtrfsEngine::new(StoreLayout::at(&store_root));
-        for world in ["good", "baked", "broken"] {
+        for world in ["good", "baked", "broken", "logs"] {
             if let Ok(world) = WorldName::parse(world) {
                 let _ = engine.drop_world(&world);
             }
@@ -399,10 +410,16 @@ impl Pty {
                 ws_ypixel: 0,
             };
             assert_eq!(libc::ioctl(master_fd, libc::TIOCSWINSZ, &winsize), 0);
+            // SAFETY: `master_fd` is the live PTY master created just above.
+            let flags = libc::fcntl(master_fd, libc::F_GETFL);
+            assert!(flags >= 0, "F_GETFL: {}", io::Error::last_os_error());
+            assert_eq!(
+                libc::fcntl(master_fd, libc::F_SETFL, flags | libc::O_NONBLOCK),
+                0,
+                "F_SETFL O_NONBLOCK: {}",
+                io::Error::last_os_error()
+            );
             let master = File::from_raw_fd(master_fd);
-            master
-                .set_nonblocking(true)
-                .expect("configure the harness PTY master");
             let slave = OpenOptions::new()
                 .read(true)
                 .write(true)
@@ -608,7 +625,7 @@ impl Drop for Journey {
             }
         }
         let store_engine = BtrfsEngine::new(StoreLayout::at(&self.store_root));
-        for world in ["good", "baked", "broken"] {
+        for world in ["good", "baked", "broken", "logs"] {
             if let Ok(world) = WorldName::parse(world) {
                 let _ = store_engine.drop_world(&world);
             }
@@ -1003,11 +1020,12 @@ fn world_up_restart_down_journey() {
     );
     let bucket_text = format!("{}{}", stdout(&bucket_logs), stderr(&bucket_logs));
     assert!(
-        bucket_text.contains("native S3 has no pod logs") && bucket_text.contains("next:"),
+        bucket_text.contains("native S3 bucket 'uploads' has no pod logs")
+            && bucket_text.contains("next:"),
         "bucket logs must fail with the one-line remedy:\n{bucket_text}"
     );
 
-    let logs_json = journey.slipfork(&good, &["logs", "--json", "api"]);
+    let logs_json = journey.slipfork(&good, &["logs", "--json", "api", "worker", "--since", "5m"]);
     assert!(logs_json.status.success(), "{}", stderr(&logs_json));
     let mut frames: Vec<serde_json::Value> = stdout(&logs_json)
         .lines()
@@ -1018,6 +1036,90 @@ fn world_up_restart_down_journey() {
     assert!(
         frames.iter().any(|frame| frame["kind"] == "divider"),
         "{frames:?}"
+    );
+    for frame in &frames {
+        if matches!(frame["kind"].as_str(), Some("line" | "divider" | "eof")) {
+            assert!(
+                frame["ts_ms"].is_u64(),
+                "every piped `--json` log frame carries `ts_ms`: {frame:?}"
+            );
+        }
+    }
+    assert!(
+        !stdout(&logs_json).contains('\u{1b}'),
+        "`--json` stays plain"
+    );
+
+    // The same window on a real kernel PTY: aligned timestamp gutter, one row per capture entry,
+    // no escape leakage, and no unexpected stderr text merged into the scrollback.
+    let (pty_code, scrollback) = journey
+        .pty(
+            &good,
+            &["logs", "api", "worker", "--since", "5m", "-t"],
+            140,
+            40,
+        )
+        .finish();
+    assert_eq!(
+        pty_code, 0,
+        "`logs api worker --since 5m -t` on a PTY must exit 0:\n{scrollback}"
+    );
+    assert!(
+        !scrollback.contains('\u{1b}'),
+        "NO_COLOR PTY scrollback stays plain:\n{scrollback}"
+    );
+    assert!(
+        !scrollback.contains("error:"),
+        "unexpected stderr merged into the scrollback:\n{scrollback}"
+    );
+    let rows: Vec<&str> = scrollback
+        .lines()
+        .filter(|line| line.contains('│'))
+        .collect();
+    assert!(rows.len() >= 2, "both targets render rows:\n{scrollback}");
+    assert!(
+        rows.iter().any(|row| row.contains("api")),
+        "the api gutter is missing:\n{scrollback}"
+    );
+    assert!(
+        rows.iter().any(|row| row.contains("worker")),
+        "the worker gutter is missing:\n{scrollback}"
+    );
+    let columns: Vec<usize> = rows
+        .iter()
+        .map(|row| row.find('│').expect("every row has a gutter"))
+        .collect();
+    assert!(
+        columns.windows(2).all(|pair| pair[0] == pair[1]),
+        "the timestamp and pod gutters stay aligned:\n{scrollback}"
+    );
+    for row in &rows {
+        let stamp = row.as_bytes();
+        assert!(stamp.len() >= 20, "row is too short: {row:?}");
+        assert!(
+            stamp[4] == b'-'
+                && stamp[7] == b'-'
+                && stamp[10] == b' '
+                && stamp[13] == b':'
+                && stamp[16] == b':',
+            "expected a `YYYY-MM-DD HH:MM:SS` gutter: {row:?}"
+        );
+        assert_eq!(
+            stamp[19], b' ',
+            "the timestamp gutter ends before the pod: {row:?}"
+        );
+        assert_eq!(
+            row.matches('│').count(),
+            1,
+            "one capture entry renders one row: {row:?}"
+        );
+    }
+
+    let future = journey.slipfork(&good, &["logs", "api", "--since", "2999-01-01T00:00:00Z"]);
+    assert!(future.status.success(), "{}", stderr(&future));
+    assert!(
+        !stdout(&future).contains("api ready"),
+        "an RFC 3339 future window must empty the replay"
     );
 
     let exec = journey.slipfork(
@@ -1048,7 +1150,8 @@ fn world_up_restart_down_journey() {
     assert_eq!(
         sql.status.code(),
         Some(0),
-        "piped `shell app_db` must succeed: {}",
+        "piped `shell app_db` must succeed:\nstdout={}\nstderr={}",
+        stdout(&sql),
         stderr(&sql)
     );
     assert!(
@@ -1232,7 +1335,58 @@ fn world_up_restart_down_journey() {
         "down must stream its phase header:\n{}",
         stdout(&down)
     );
+
+    // 4a. A stopped world still replays its whole history from `<store>/logs/<world>/*.log`:
+    // bare, one target, an all-target merge, and a relative window.
+    for args in [
+        &["logs"][..],
+        &["logs", "api"][..],
+        &["logs", "--since", "5m"][..],
+        &["logs", "-a"][..],
+    ] {
+        let replay = journey.slipfork(&good, args);
+        assert!(
+            replay.status.success(),
+            "`{args:?}` after down must replay history: {}",
+            stderr(&replay)
+        );
+        let text = stdout(&replay);
+        assert!(
+            text.contains("api"),
+            "`{args:?}` lost the api history:\n{text}"
+        );
+        assert!(!text.contains('\u{1b}'), "`{args:?}` stays plain:\n{text}");
+    }
+
+    // 4b. A follower started while the world is down keeps the canonical captures open and picks
+    // up the next boot's lines once `up` runs again.
+    let mut follow = journey.pty(&good, &["logs", "-f", "api"], 120, 40);
+    follow.expect("api ready", Duration::from_secs(10));
+    let before_up = follow.seen.matches("api ready").count();
     let second = journey.slipfork(&good, &["up"]);
+    assert!(
+        follow.seen.matches("api ready").count() >= before_up,
+        "the follower keeps its history while `up` runs"
+    );
+    let resumed = wait_until(
+        || {
+            let _ = follow.wait_for("api ready", Duration::from_millis(250));
+            follow.seen.matches("api ready").count() > before_up
+        },
+        Duration::from_secs(30),
+    );
+    assert!(
+        resumed,
+        "`logs -f` must pick up new lines after `up`:\n{}",
+        follow.seen
+    );
+    follow.send("\u{3}");
+    let (follow_code, follow_seen) = follow.finish();
+    assert_eq!(
+        follow_code, 0,
+        "Ctrl-C on a followed log exits 0:\n{follow_seen}"
+    );
+
     let second_out = stdout(&second);
     assert!(
         second.status.success(),

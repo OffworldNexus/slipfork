@@ -26,7 +26,7 @@ pub use frames::{
     decode_init_frame, encode,
 };
 pub use stream::{
-    OutputEvent, StreamClient, StreamFrame, StreamInput, exec, exit_code, finish, logs,
+    OutputEvent, StreamClient, StreamFrame, StreamInput, exec, exit_code, finish, logs, logs_window,
 };
 
 use crate::error::{Error, Result};
@@ -260,6 +260,12 @@ pub enum Request {
         /// Keep the stream open after the current tail until a stop or client close.
         #[serde(default)]
         follow: bool,
+        /// Only replay lines at or after this epoch-millisecond timestamp.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        since_ms: Option<u64>,
+        /// Only replay lines at or before this epoch-millisecond timestamp.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        until_ms: Option<u64>,
     },
     /// Run one command inside a live pod through `crun exec` from the init.
     Exec {

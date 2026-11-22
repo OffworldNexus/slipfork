@@ -1,8 +1,10 @@
-//! `logs`: one plan struct for the live world stream and the capture-file replay.
+//! `logs`: one plan struct for the live world stream and the indexed capture-file replay.
 //!
 //! Bare `slipfork logs` merges application service captures; `-a` adds images and pod-backed
-//! resources. A live target with its own pod streams the world socket, while an image id without a
-//! pod (or a world that is not live) replays `<store>/logs/<world>/<id>.log`.
+//! resources; explicit targets (`slipfork logs api worker`) merge exactly those ids. A live target
+//! with its own pod streams the world socket, while an image id without a pod (or a world that is
+//! not live) replays `<store>/logs/<world>/<id>.log` through the `.idx`-backed window reader, so
+//! `--since`/`--until` seek instead of scanning from byte zero.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -12,7 +14,7 @@ use std::time::Duration;
 use serde_json::{Value, json};
 use slipfork_forkfile::Forkfile;
 use slipfork_world::control::{PROTOCOL_VERSION, Request, StreamClient, StreamFrame};
-use slipfork_world::pod_log::{LogKind, LogMerge, LogReader, REORDER_MS, log_path, now_ms};
+use slipfork_world::pod_log::{LogKind, LogMerge, REORDER_MS, now_ms, read_range};
 use slipfork_world::{StoreLayout, WorldName};
 
 use super::super::Failure;
@@ -33,7 +35,7 @@ const ALL_LOGS: &[PsKind] = &[
 ];
 
 /// One resolved log plan: a live world stream or a capture replay.
-pub(super) struct LogStream {
+pub(crate) struct LogStream {
     /// Live world's pod root; `None` replays capture files instead.
     pods_dir: Option<PathBuf>,
     /// `<store>/logs/<world>` capture directory used by replay.
@@ -48,45 +50,65 @@ pub(super) struct LogStream {
     pods: Option<Vec<String>>,
     /// Keep the stream attached (`-f`).
     follow: bool,
+    /// Lower bound in epoch milliseconds.
+    since_ms: Option<u64>,
+    /// Upper bound in epoch milliseconds.
+    until_ms: Option<u64>,
     /// The id came from the command line, so a missing capture file is an error.
     explicit: bool,
 }
 
 impl Core {
-    /// Streams captured pod output; `alive` reports whether the CLI connection still exists.
-    pub(crate) fn logs(
-        &mut self,
-        params: &Value,
-        emit: &mut dyn FnMut(Value) -> bool,
-        alive: &mut dyn FnMut() -> bool,
-    ) -> Result<Value, Failure> {
+    /// Resolves one `logs` request into a plan; the caller runs it without holding the core lock
+    /// so a followed stream never blocks a concurrent `up`/`down`.
+    pub(crate) fn plan_logs_stream(&mut self, params: &Value) -> Result<LogStream, Failure> {
         let project = project_param(params)?;
         let all = params.get("all").and_then(Value::as_bool).unwrap_or(false);
-        let requested = params
-            .get("service")
-            .and_then(Value::as_str)
-            .map(str::to_owned);
+        let targets: Vec<String> = params
+            .get("targets")
+            .and_then(Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default();
         let follow = params
             .get("follow")
             .and_then(Value::as_bool)
             .unwrap_or(false);
+        let since_ms = params.get("since_ms").and_then(Value::as_u64);
+        let until_ms = params.get("until_ms").and_then(Value::as_u64);
         let document = load_document(&project);
-        self.plan_logs(&project, document.as_ref(), requested, follow, all)?
-            .run(emit, alive)
+        self.plan_logs(
+            &project,
+            document.as_ref(),
+            targets,
+            follow,
+            all,
+            since_ms,
+            until_ms,
+        )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn plan_logs(
         &mut self,
         project: &Path,
         document: Option<&Forkfile>,
-        requested: Option<String>,
+        targets: Vec<String>,
         follow: bool,
         all: bool,
+        since_ms: Option<u64>,
+        until_ms: Option<u64>,
     ) -> Result<LogStream, Failure> {
         let Some((pods_dir, _world, rows)) = self.live_world(project)? else {
-            return self.capture_stream(project, document, requested, follow, all);
+            return self
+                .capture_stream(project, document, targets, follow, all, since_ms, until_ms);
         };
-        let Some(target) = requested.as_deref() else {
+        if targets.is_empty() {
             let kinds = if all { ALL_LOGS } else { SERVICES };
             let ids: Vec<String> = rows
                 .iter()
@@ -94,7 +116,8 @@ impl Core {
                 .map(|(_, id, _)| id.clone())
                 .collect();
             if ids.is_empty() {
-                return self.capture_stream(project, document, None, follow, all);
+                return self
+                    .capture_stream(project, document, targets, follow, all, since_ms, until_ms);
             }
             return Ok(LogStream::live(
                 pods_dir,
@@ -102,30 +125,84 @@ impl Core {
                 None,
                 Some(ids),
                 follow,
+                since_ms,
+                until_ms,
             ));
-        };
-        match rows.iter().find(|(_, id, _)| id == target) {
-            Some((PsKind::S3, id, _)) => Err(s3_refusal(id, &shellable(&rows))),
-            Some((kind, _, true)) if SHELLABLE.contains(kind) => Ok(LogStream::live(
-                pods_dir,
-                vec![target.to_owned()],
-                Some(target.to_owned()),
-                None,
-                follow,
-            )),
-            _ => self.capture_stream(project, document, Some(target.to_owned()), follow, all),
         }
+        if let Some(id) = targets.iter().find(|target| {
+            rows.iter()
+                .any(|(kind, id, _)| id == *target && *kind == PsKind::S3)
+        }) {
+            return Err(s3_refusal(id, &shellable(&rows)));
+        }
+        let capture_dir = self.logs_dir(project)?;
+        let captured = capture_ids(&capture_dir);
+        for target in &targets {
+            let known = rows.iter().any(|(_, id, _)| id == target)
+                || captured.iter().any(|id| id == target);
+            if !known {
+                return Err(unknown_target(target));
+            }
+        }
+        if targets.len() == 1 {
+            let target = targets[0].clone();
+            if let Some((kind, _, true)) = rows.iter().find(|(_, id, _)| id == &target)
+                && SHELLABLE.contains(kind)
+            {
+                return Ok(LogStream::live(
+                    pods_dir,
+                    vec![target.clone()],
+                    Some(target),
+                    None,
+                    follow,
+                    since_ms,
+                    until_ms,
+                ));
+            }
+            return self
+                .capture_stream(project, document, targets, follow, all, since_ms, until_ms);
+        }
+        Ok(LogStream::live(
+            pods_dir,
+            targets.clone(),
+            None,
+            Some(targets),
+            follow,
+            since_ms,
+            until_ms,
+        ))
     }
 
     /// A replay plan over `<store>/logs/<world>`; bare `logs` keeps service captures only.
+    #[allow(clippy::too_many_arguments)]
     fn capture_stream(
         &self,
         project: &Path,
         document: Option<&Forkfile>,
-        requested: Option<String>,
+        targets: Vec<String>,
         follow: bool,
         all: bool,
+        since_ms: Option<u64>,
+        until_ms: Option<u64>,
     ) -> Result<LogStream, Failure> {
+        let dir = self.logs_dir(project)?;
+        let (ids, explicit) = if targets.is_empty() {
+            let mut ids = capture_ids(&dir);
+            if !all {
+                let services = service_ids(document);
+                ids.retain(|id| services.contains(id));
+            }
+            (ids, false)
+        } else {
+            (targets, true)
+        };
+        Ok(LogStream::captures(
+            dir, ids, explicit, follow, since_ms, until_ms,
+        ))
+    }
+
+    /// The canonical `<store>/logs/<world>` directory, live or stopped.
+    fn logs_dir(&self, project: &Path) -> Result<PathBuf, Failure> {
         let world = match self.worlds.get(&key_of(project)) {
             Some(World::Live { entry, .. }) => entry.world.clone(),
             _ => crate::world::world_name(project, None)
@@ -136,19 +213,7 @@ impl Core {
         let layout = StoreLayout::at(self.host.store_root_for(project));
         let parsed = WorldName::parse(&world)
             .map_err(|error| Failure::new("no-world", error.to_string()))?;
-        let dir = layout.world_logs(&parsed);
-        let (ids, explicit) = match requested {
-            Some(target) => (vec![target], true),
-            None => {
-                let mut ids = capture_ids(&dir);
-                if !all {
-                    let services = service_ids(document);
-                    ids.retain(|id| services.contains(id));
-                }
-                (ids, false)
-            }
-        };
-        Ok(LogStream::captures(dir, ids, explicit, follow))
+        Ok(layout.world_logs(&parsed))
     }
 
     /// The live world's pod root, name, and `(kind, id, running)` roster.
@@ -181,12 +246,15 @@ impl Core {
 }
 
 impl LogStream {
+    #[allow(clippy::too_many_arguments)]
     fn live(
         pods_dir: PathBuf,
         roster: Vec<String>,
         service: Option<String>,
         pods: Option<Vec<String>>,
         follow: bool,
+        since_ms: Option<u64>,
+        until_ms: Option<u64>,
     ) -> Self {
         Self {
             pods_dir: Some(pods_dir),
@@ -196,11 +264,20 @@ impl LogStream {
             service,
             pods,
             follow,
+            since_ms,
+            until_ms,
             explicit: false,
         }
     }
 
-    fn captures(logs_dir: PathBuf, replay_ids: Vec<String>, explicit: bool, follow: bool) -> Self {
+    fn captures(
+        logs_dir: PathBuf,
+        replay_ids: Vec<String>,
+        explicit: bool,
+        follow: bool,
+        since_ms: Option<u64>,
+        until_ms: Option<u64>,
+    ) -> Self {
         Self {
             pods_dir: None,
             logs_dir,
@@ -209,11 +286,13 @@ impl LogStream {
             service: None,
             pods: None,
             follow,
+            since_ms,
+            until_ms,
             explicit,
         }
     }
 
-    fn run(
+    pub(crate) fn run(
         &self,
         emit: &mut dyn FnMut(Value) -> bool,
         alive: &mut dyn FnMut() -> bool,
@@ -240,6 +319,8 @@ impl LogStream {
                 service: self.service.clone(),
                 pods: self.pods.clone(),
                 follow: self.follow,
+                since_ms: self.since_ms,
+                until_ms: self.until_ms,
             })
             .map_err(|error| Failure::new("world-unavailable", error.to_string()))?;
         if !emit(json!({
@@ -259,12 +340,12 @@ impl LogStream {
             }
             match client.poll() {
                 Ok(Some(StreamFrame::Output(event))) => {
-                    if !emit(json!({
-                        "kind": event.kind.as_str(),
-                        "pod": event.pod,
-                        "stream": event.stream.as_str(),
-                        "line": event.line,
-                    })) {
+                    if !emit(line_event(
+                        &event.pod,
+                        event.kind.as_str(),
+                        &event.line,
+                        event.ts_ms,
+                    )) {
                         client.close();
                         return Ok(json!({ "closed": true }));
                     }
@@ -278,24 +359,26 @@ impl LogStream {
         }
     }
 
-    /// Replays `<store>/logs/<world>/<id>.log` without a live world.
+    /// Replays `<store>/logs/<world>/<id>.log` through the indexed window reader.
     fn read_captures(
         &self,
         emit: &mut dyn FnMut(Value) -> bool,
         alive: &mut dyn FnMut() -> bool,
     ) -> Result<Value, Failure> {
-        let mut readers: Vec<(String, LogReader)> = Vec::new();
+        let mut readers = Vec::new();
         for id in &self.replay_ids {
-            if let Ok(reader) = LogReader::open(&log_path(&self.logs_dir, id)) {
-                readers.push((id.clone(), reader));
-            } else if self.explicit {
-                return Err(Failure::new(
-                    "no-log",
-                    format!(
-                        "no captured logs for `{id}` in `{}`",
-                        self.logs_dir.display()
-                    ),
-                ));
+            match read_range(&self.logs_dir, id, self.since_ms, self.until_ms) {
+                Ok(reader) => readers.push((id.clone(), reader)),
+                Err(_) if !self.explicit => {}
+                Err(error) => {
+                    return Err(Failure::new(
+                        "no-log",
+                        format!(
+                            "no captured logs for `{id}` in `{}` ({error})",
+                            self.logs_dir.display()
+                        ),
+                    ));
+                }
             }
         }
         if readers.is_empty() {
@@ -324,24 +407,24 @@ impl LogStream {
                 });
             }
             for (pod, line) in merge.drain(now_ms().saturating_sub(REORDER_MS)) {
-                emit(json!({
-                    "kind": kind_name(line.kind),
-                    "pod": pod,
-                    "stream": "combined",
-                    "line": line.text,
-                }));
+                emit(line_event(
+                    &pod,
+                    kind_name(line.kind),
+                    &line.text,
+                    Some(line.ts_ms),
+                ));
             }
             if !self.follow {
                 for (id, reader) in &mut readers {
                     reader.flush(&mut |line| merge.push(id, line));
                 }
                 for (pod, line) in merge.flush() {
-                    emit(json!({
-                        "kind": kind_name(line.kind),
-                        "pod": pod,
-                        "stream": "combined",
-                        "line": line.text,
-                    }));
+                    emit(line_event(
+                        &pod,
+                        kind_name(line.kind),
+                        &line.text,
+                        Some(line.ts_ms),
+                    ));
                 }
                 return Ok(json!({ "closed": false }));
             }
@@ -353,6 +436,20 @@ impl LogStream {
             }
         }
     }
+}
+
+/// One daemon event carrying `ts_ms` only when the capture knew it.
+fn line_event(pod: &str, kind: &str, line: &str, ts_ms: Option<u64>) -> Value {
+    let mut event = json!({
+        "kind": kind,
+        "pod": pod,
+        "stream": "combined",
+        "line": line,
+    });
+    if let Some(ts_ms) = ts_ms {
+        event["ts_ms"] = json!(ts_ms);
+    }
+    event
 }
 
 fn kind_name(kind: LogKind) -> &'static str {
@@ -382,6 +479,14 @@ fn s3_refusal(id: &str, shellable: &[String]) -> Failure {
     Failure::new(
         "shell-refused",
         format!("✗ native S3 bucket '{id}' has no pod logs\n  next: {next}"),
+    )
+}
+
+/// An explicit id that is neither in the world roster nor backed by a capture file.
+fn unknown_target(id: &str) -> Failure {
+    Failure::new(
+        "no-log",
+        format!("✗ '{id}' is not running and has no captured logs"),
     )
 }
 

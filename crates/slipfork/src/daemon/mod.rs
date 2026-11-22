@@ -262,13 +262,18 @@ impl Daemon {
                 continue;
             }
             if request.method == "logs" {
+                let plan = match self.core() {
+                    Ok(mut core) => core.plan_logs_stream(&request.params),
+                    Err(failure) => Err(failure),
+                };
+                // The core lock is released here: a followed stream must never block `up`/`down`.
                 let value = {
                     let probe = writer.try_clone()?;
                     let mut emit =
                         |event: Value| write_frame(&mut writer, &wire::event(&id, event)).is_ok();
                     let mut alive = || !frames::peer_closed(&probe);
-                    match self.core() {
-                        Ok(mut core) => core.logs(&request.params, &mut emit, &mut alive),
+                    match plan {
+                        Ok(plan) => plan.run(&mut emit, &mut alive),
                         Err(failure) => Err(failure),
                     }
                 };
