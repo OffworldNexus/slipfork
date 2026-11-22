@@ -76,6 +76,20 @@ costs a snapshot rather than a rebuild.
 | `slipfork shell pg` | Real PTY `psql`; `shell api` for bash, `shell cache` for redis-cli |
 | `slipfork down` | Stop the world, keep the data subvolumes |
 
+## Install
+
+One command adds the signed repository for your distro, or unpacks the verified tarball with
+`--user`. The copy-paste blocks per package manager live in [Install](docs/install.md).
+
+| Distro | Repository | Install |
+| :--- | :--- | :--- |
+| Debian, Ubuntu | `apt.offworld-nexus.app` | `sudo apt-get install -y slipfork` |
+| Fedora, RHEL, Rocky, Alma | `rpm.offworld-nexus.app` | `sudo dnf install -y slipfork` |
+| openSUSE | `rpm.offworld-nexus.app` | `sudo zypper install -y slipfork` |
+| Alpine | `apk.offworld-nexus.app` | `sudo apk add slipfork` |
+| Arch Linux | `arch.offworld-nexus.app` | `sudo pacman -S --needed slipfork` |
+| Any Linux, no root | `dl.offworld-nexus.app` | Installer with `--user` |
+
 ## Requirements
 
 `slipfork` needs a Linux host with a Btrfs filesystem and `crun` on `PATH`. `slipfork doctor` checks

@@ -2,16 +2,16 @@
 id: M3.53.2
 title: "Rewrite install docs & installer to canonical *.offworld-nexus.app repositories"
 kind: task
-status: ready
+status: done
 owner: "doc-writer"
 priority: 3
 depends_on: [M3.53.1]
 paths: ["docs/** README.md specs/06-distribution-and-docs.md AGENTS.md CHANGELOG.md"]
-attempts: 0
+attempts: 2
 max_attempts: 3
 escalation: none
 created: "2026-11-22T19:20"
-updated: "2026-11-22T19:20"
+updated: "2026-11-22T19:36"
 ---
 
 # Goal

@@ -128,7 +128,7 @@ Each archive holds one top-level `slipfork-lsp-<platform>-<arch>/` directory wit
 
 ## 7. Universal `docs/install.sh`
 
-One POSIX `sh` script, published at `https://offworldnexus.github.io/slipfork/install.sh`, with `set -eu` and no bashisms.
+One POSIX `sh` script, published at `https://offworldnexus.github.io/slipfork/install.sh`, with `set -eu` and no bashisms. It adds exactly one signed repository from one `*.offworld-nexus.app` host per package manager and otherwise installs a TLS-trusted tarball, with the published `.sha256` verified when present.
 
 ```console
 $ curl -fsSL https://offworldnexus.github.io/slipfork/install.sh | sh
@@ -136,24 +136,34 @@ $ curl -fsSL https://offworldnexus.github.io/slipfork/install.sh | sh -s -- --us
 $ curl -fsSL https://offworldnexus.github.io/slipfork/install.sh | sh -s -- --prefix "$HOME/.local"
 ```
 
+| Host | What it serves |
+| :--- | :--- |
+| `apt.offworld-nexus.app` | Debian/Ubuntu repo: `Suites: any-distro`, `Components: main` (stable) or `nightly`, `Signed-By: /etc/apt/keyrings/offworld-nexus.gpg` |
+| `rpm.offworld-nexus.app` | `.rpm` repo at `{stable,nightly}/$basearch/` with `gpgcheck=1`, `repo_gpgcheck=1`, `gpgkey=…/gpg.key` |
+| `apk.offworld-nexus.app` | Alpine repo signed by `packages@offworld.nexus.rsa.pub`, at `{stable,nightly}` |
+| `arch.offworld-nexus.app` | pacman `[offworld]` at `{stable,nightly}/$arch`, key `E9DD32C63321505EBBCF86386E08120B3306C720` |
+| `dl.offworld-nexus.app` | `tarballs/{stable,nightly}/…` plus `macos/` and `windows/` LSP builds |
+
 | Path | When it is taken | What it does |
 | :--- | :--- | :--- |
-| Native repo (default) | Root or usable `sudo`, `apt-get`/`dnf`/`zypper` present | Adds the GPG-signed repo and installs the package, so upgrades come from the package manager |
-| Cloudsmith primary | Default repository | `https://dl.cloudsmith.io/public/offworld-nexus/{apt,rpm}` — the install path |
-| Forgejo mirror | `--mirror forgejo` or Cloudsmith unreachable | `https://forge.offworld.nexus` package registry, best-effort |
-| Standalone archive | `--user`, `--prefix`, `--develop`, a musl host, no supported package manager, or no usable `sudo` | Verifies SHA-256 **before** unpacking, then stages under a prefix with `bin/` symlinks |
+| Native package (default) | Root or usable `sudo`, with `apt-get`/`dnf`/`zypper`/`pacman`/`apk` | Writes the key + repository file for that manager, then installs `slipfork`, so upgrades come from the package manager |
+| Standalone tarball | `--user`, `--prefix`, `--develop`, a musl host, no supported package manager, or no usable `sudo` | Verifies the published `.sha256` when present; an overridden origin requires a digest, then stages under a prefix with `bin/` |
 
 | Flag | Effect |
 | :--- | :--- |
 | `--version <ver>` | Install exactly this version |
-| `--nightly` | Use the `nightly` component; re-run without it to return to releases |
-| `--mirror cloudsmith\|forgejo` | Choose the repository |
-| `--user` | No root; archive under `~/.local` |
-| `--prefix <dir>` | No root; archive under an absolute directory you own |
-| `--develop [ref]` | Archive CI built for that ref; the origin is unsigned, so a digest is mandatory |
+| `--nightly` | Use the `nightly` channel; re-run without it to return to releases |
+| `--user` | No root; tarball under `~/.local` |
+| `--prefix <dir>` | No root; tarball under an absolute directory you own |
+| `--develop [ref]` | Use the CI archive named by `SLIPFORK_ARCHIVE_URL`; unsigned, so a digest is mandatory |
 | `-y`, `--yes` | Do not ask for confirmation |
 
-Trust rules: the trust anchor is the package signature, never the setup script; `apt`/`dnf` verification is never disabled. An overridden release origin requires `SLIPFORK_SHA256` or `SLIPFORK_SHA256SUMS_FILE`. `stdin` carries the piped script, so questions and `sudo` read `/dev/tty` only and every non-interactive child gets `/dev/null`. `NO_COLOR`/`TERM=dumb` produce zero escape sequences; usage errors exit `2`.
+!!! info "Trust rules"
+
+    - Package managers verify signatures through the repository key, and that verification is never disabled.
+    - The default tarball origin is HTTPS on `dl.offworld-nexus.app`, and its published `.sha256` is checked when present.
+    - An overridden origin (`SLIPFORK_ARCHIVE_URL`, `--develop`) requires `SLIPFORK_SHA256` or `SLIPFORK_SHA256SUMS_FILE`, and a mismatch always aborts.
+    - `stdin` carries the piped script, so prompts read `/dev/tty` only; `NO_COLOR`/`TERM=dumb` emit zero escapes.
 
 ---
 
@@ -164,10 +174,20 @@ Trust rules: the trust anchor is the package signature, never the setup script; 
 | Build bundle | native runner per arch, in the declared floor image | `check-portable-elf.sh --max-glibc` passes; layout assert finds no strays |
 | Package | `.deb` × 2 arch, `.rpm` × 2 arch, `.pkg.tar.zst`, `.apk`, 4 archives | Each artifact is built from that bundle, never from a host build |
 | Install | Debian/Ubuntu, Fedora, Rocky, openSUSE, Arch, Alpine × 2 arch | Install the package in the distro image, boot one world, `slipfork doctor` reports `✓ Ready`, tear down |
-| Publish | Cloudsmith primary + Forgejo mirror | `--dry-run` prints the exact request; a missing token fails closed for the primary and warns for the mirror |
+| Stage | one `stage-dist.py --dry-run` on every run; `offworld-dist` uploaded only when `should_publish` | One validated bundle carries every format and architecture, and the workflow itself holds no publishing secret |
 | Docs | `zensical build --strict` | Honesty check passes; nav files exist |
 
-Retention counts **runs**, not packages: a nightly produces two packages per format with one version string, so pruning deletes whole `(date, run)` groups and never splits an architecture.
+```mermaid
+flowchart LR
+  V["version"] --> B["build bundle"]
+  B --> P["packages"]
+  P --> I["install + verify per distro"]
+  I --> L["lsp assets"]
+  L --> S["stage offworld-dist"]
+  S -.->|"workflow_run"| X["org publisher signs + syncs"]
+```
+
+The pipeline runs with `permissions: contents: read`. An external organization publisher verifies branch/tag policy, signs the packages and repository indexes, then syncs `*.offworld-nexus.app`; a `release_set` retains the newest 7 nightlies and every stable release, so retention lives server-side rather than in this repository.
 
 ---
 
@@ -190,7 +210,7 @@ Every published command, flag, and output line is executed by the test plan in [
 
 ## 10. Repository Layout
 
-One home per artifact: build/check/publish helpers live in `scripts/` (`build-deb`, `build-rpm`, `build-standalone`, `check-portable-elf.sh`, `publish_packages.py`), the universal installer is `docs/install.sh`, and distro recipes plus systemd units live in `packaging/`. `packaging/` never carries a second installer implementation, and `scripts/` never hardcodes a dependency floor that `check-portable-elf.sh` did not measure.
+One home per artifact: build/check helpers live in `scripts/` (`build-bundle`, `build-deb`, `build-rpm`, `build-arch`, `build-apk`, `build-lsp`, `build-standalone`, `check-bundle-layout.sh`, `check-install.sh`, `check-portable-elf.sh`, `release_stamp.py`), the universal installer is `docs/install.sh`, and distro recipes, systemd units plus `packaging/stage-dist.py` live in `packaging/`. `stage-dist.py` validates naming, nightly sort stamps and control headers before emitting the single `offworld-dist` bundle, and `release_stamp.py` derives the stable or nightly version stamp. `packaging/` never carries a second installer implementation, and `scripts/` never hardcodes a dependency floor that `check-portable-elf.sh` did not measure.
 
 ## 11. OpenCode Plugin (`@slipfork/opencode`)
 

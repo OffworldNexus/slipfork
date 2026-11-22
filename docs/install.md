@@ -13,28 +13,28 @@ $ slipfork up
 
 ```mermaid
 flowchart LR
-  SH["install.sh"] -- "root + apt/dnf/zypper" --> Repo["signed package repository"]
-  SH -- "--user · no sudo · musl" --> Archive["~/.local + release archive"]
+  SH["install.sh"] -- "apt · dnf · zypper · pacman · apk" --> Repo["*.offworld-nexus.app packages"]
+  SH -- "--user · no sudo · musl" --> Archive["dl.offworld-nexus.app tarball"]
   Repo --> Bin["slipfork on PATH"]
   Archive --> Bin
   Bin --> Doctor["slipfork doctor"]
   Doctor --> Up["slipfork up"]
 ```
 
-## One installer, every distro
+## One command, every distro
 
-The installer prefers your package manager and falls back to the release archive. Upgrades then come
-from the repository, so the installer is a one-time command.
+The installer prefers your package manager and falls back to the signed tarball. Upgrades then come
+from the same repository, so `install.sh` is a one-time command.
 
 | Flag | Effect |
 | :--- | :--- |
 | `--version <ver>` | Install exactly this release |
-| `--nightly` | Use the nightly component |
-| `--mirror cloudsmith\|forgejo` | Pick the package mirror |
-| `--user` | No root: archive under `~/.local` |
-| `--prefix <dir>` | No root: archive under a directory you own |
-| `--develop [ref]` | The unsigned CI archive for that ref; a digest is mandatory |
+| `--nightly` | Use the nightly channel; re-run without it for releases |
+| `--user` | No root: tarball under `~/.local` |
+| `--prefix <dir>` | No root: tarball under a directory you own |
+| `--develop [ref]` | Use the CI archive named by `SLIPFORK_ARCHIVE_URL`; unsigned, so a digest is mandatory |
 | `-y`, `--yes` | Do not ask for confirmation |
+| `-h`, `--help` | Print the flags |
 
 Pass flags through the pipe with `sh -s --`:
 
@@ -42,28 +42,92 @@ Pass flags through the pipe with `sh -s --`:
 $ curl -fsSL https://offworldnexus.github.io/slipfork/install.sh | sh -s -- --user
 ```
 
+!!! info "What the installer trusts"
+
+    `apt`, `dnf`, `zypper`, `pacman` and `apk` verify package signatures and never disable that
+    verification, while the default tarball origin is HTTPS with its published `.sha256` checked
+    when present. An overridden origin (`--develop` or `SLIPFORK_ARCHIVE_URL`) requires
+    `SLIPFORK_SHA256`, and any digest mismatch aborts before unpacking.
+
 ## Native packages
 
+Five hosts serve every channel: `apt.`, `rpm.`, `apk.` and `arch.offworld-nexus.app` for package
+managers, and `dl.offworld-nexus.app` for tarballs and editor builds. Pick your distro and paste the
+block; `<arch>` is `x86_64` unless your host says `aarch64`.
+
+### Debian, Ubuntu
+
+```console
+$ sudo install -d -m 0755 /etc/apt/keyrings
+$ sudo curl -fsSL https://apt.offworld-nexus.app/keyring.gpg \
+    -o /etc/apt/keyrings/offworld-nexus.gpg
+$ sudo tee /etc/apt/sources.list.d/offworld-nexus.sources >/dev/null <<'EOF'
+Types: deb
+URIs: https://apt.offworld-nexus.app
+Suites: any-distro
+Components: main
+Signed-By: /etc/apt/keyrings/offworld-nexus.gpg
+EOF
+$ sudo apt-get update && sudo apt-get install -y slipfork
+```
+
+Use `Components: nightly` instead of `main` to follow nightlies.
+
+### Fedora, RHEL, Rocky, Alma, openSUSE
+
+```console
+$ sudo tee /etc/yum.repos.d/offworld-nexus.repo >/dev/null <<'EOF'
+[offworld-nexus]
+name=Offworld Nexus (Stable)
+baseurl=https://rpm.offworld-nexus.app/stable/$basearch/
+enabled=1
+gpgcheck=1
+repo_gpgcheck=1
+gpgkey=https://rpm.offworld-nexus.app/gpg.key
+EOF
+$ sudo dnf install -y slipfork
+```
+
+Replace `/stable/` with `/nightly/` for nightlies; on openSUSE run `sudo zypper install slipfork`
+after the same repo file.
+
+### Alpine
+
+```console
+$ sudo wget -O /etc/apk/keys/packages@offworld.nexus.rsa.pub \
+    https://apk.offworld-nexus.app/packages@offworld.nexus.rsa.pub
+$ echo "https://apk.offworld-nexus.app/stable" | sudo tee -a /etc/apk/repositories
+$ sudo apk update && sudo apk add slipfork
+```
+
+Swap `/stable` for `/nightly` on the repository line to follow nightlies.
+
+### Arch Linux
+
+```console
+$ curl -fsSL https://arch.offworld-nexus.app/gpg.key | sudo pacman-key --add -
+$ sudo pacman-key --lsign-key E9DD32C63321505EBBCF86386E08120B3306C720
+$ sudo tee -a /etc/pacman.conf >/dev/null <<'EOF'
+
+[offworld]
+Server = https://arch.offworld-nexus.app/stable/$arch
+EOF
+$ sudo pacman -Sy --needed --noconfirm slipfork
+```
+
+Use `/nightly/$arch` in the `Server` line to follow nightlies.
+
 Every package declares `crun` and `btrfs-progs`, and ships the systemd units (or the OpenRC service
-on Alpine). A package never enables a root daemon.
-
-| Distro | Install | Upgrade |
-| :--- | :--- | :--- |
-| Debian, Ubuntu | `sudo apt-get install ./slipfork_0.1.0_<arch>.deb` | `sudo apt-get upgrade slipfork` |
-| Fedora, RHEL, Rocky, Alma | `sudo dnf install ./slipfork-0.1.0-1.<arch>.rpm` | `sudo dnf upgrade slipfork` |
-| openSUSE | `sudo zypper install ./slipfork-0.1.0-1.<arch>.rpm` | `sudo zypper update slipfork` |
-| Arch Linux | `sudo pacman -U ./slipfork-0.1.0-1-<arch>.pkg.tar.zst` | `yay -S slipfork-bin` (AUR) |
-| Alpine | `sudo apk add ./slipfork-0.1.0-r0-<arch>.apk` | `sudo apk upgrade slipfork` |
-
-`<arch>` is `amd64` (`.deb`) or `x86_64` (`.rpm`, `.pkg.tar.zst`, `.apk`) on 64-bit x86; ARM uses
-`arm64` and `aarch64`.
-
-Verify the same way on every row:
+on Alpine). A package never enables a root daemon; that stays your explicit choice.
 
 ```console
 $ slipfork --version
 $ slipfork doctor
 ✓ Ready
+$ slipfork daemon install                 # per-user unit, no sudo
+$ systemctl --user enable --now slipfork
+$ sudo slipfork daemon install --ingress  # system :80 socket + AppArmor
+$ systemctl enable --now slipfork-ingress.socket
 ```
 
 !!! note "Alpine runs OpenRC"
@@ -76,6 +140,17 @@ $ slipfork doctor
     $ sudo rc-update add slipfork-ingress default
     $ sudo rc-service slipfork-ingress start
     ```
+
+## Portable tarballs
+
+On a glibc host the tarball is `slipfork-x86_64-unknown-linux-gnu.tar.gz`; musl hosts use the
+`-musl` build. Both live under `https://dl.offworld-nexus.app/tarballs/stable/` (or `/nightly/`) and
+are installed through the same one-liner:
+
+```console
+$ curl -fsSL https://offworldnexus.github.io/slipfork/install.sh | sh -s -- --user
+$ ~/.local/bin/slipfork doctor
+```
 
 ## On ext4 or XFS? Mount a Btrfs Workspace Image in Your Home Folder
 
@@ -186,16 +261,19 @@ decision.
 
 ## Editor language server
 
-`slipfork-lsp` is a separate binary from the `slipfork` CLI, and it needs no Btrfs or `crun`:
+`slipfork-lsp` is a separate binary from the `slipfork` CLI, and it needs no Btrfs or `crun`. Editor
+builds live on `dl.offworld-nexus.app` under `macos/{stable,nightly}/` and
+`windows/{stable,nightly}/`:
 
-| Platform | Release assets |
+| Platform | Asset |
 | :--- | :--- |
-| Linux | `slipfork-lsp-linux-x86_64.tar.gz`, `slipfork-lsp-linux-aarch64.tar.gz` |
-| macOS | `slipfork-lsp-darwin-x86_64.tar.gz`, `slipfork-lsp-darwin-aarch64.tar.gz` |
-| Windows | `slipfork-lsp-windows-x86_64.zip`, `slipfork-lsp-windows-aarch64.zip` |
+| Linux | `slipfork-lsp-linux-<arch>.tar.gz` (the `slipfork` tarball already ships `slipfork-lsp`) |
+| macOS | `slipfork-lsp-darwin-<arch>.tar.gz` |
+| Windows | `slipfork-lsp-windows-<arch>.zip` |
 
-A local build is `cargo install --path crates/slipfork-lsp`. The Zed extension finds the binary or
-downloads the matching asset.
+The installer prints the exact URL for your host on a non-Linux machine. A local build is
+`cargo install --path crates/slipfork-lsp`, and the Zed extension finds the binary or downloads the
+matching asset.
 
 ## Where next
 

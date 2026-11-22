@@ -7,19 +7,18 @@
 #
 # stdin carries this script, so nothing here reads stdin: questions and sudo read
 # /dev/tty, and every child gets /dev/null. The trust anchor is the package
-# signature (apt/dnf verification is never disabled), and an overridden archive
-# origin requires SLIPFORK_SHA256 (or SLIPFORK_SHA256SUMS_FILE).
+# signature (apt/dnf/pacman/apk verification is never disabled); an overridden
+# archive origin requires SLIPFORK_SHA256 (or SLIPFORK_SHA256SUMS_FILE).
 set -eu
 
-REPO_ORG=offworld-nexus
-REPO_NAME=slipfork
-CLOUDSMITH_BASE=${SLIPFORK_CLOUDSMITH_BASE:-https://dl.cloudsmith.io/public/$REPO_ORG/$REPO_NAME}
-FORGEJO_BASE=${SLIPFORK_FORGEJO_BASE:-https://forge.offworld.nexus/api/packages/$REPO_ORG/generic/$REPO_NAME}
-RELEASES_BASE=${SLIPFORK_RELEASES_BASE:-https://github.com/OffworldNexus/slipfork/releases}
+APT_BASE=${SLIPFORK_APT_BASE:-https://apt.offworld-nexus.app}
+RPM_BASE=${SLIPFORK_RPM_BASE:-https://rpm.offworld-nexus.app}
+APK_BASE=${SLIPFORK_APK_BASE:-https://apk.offworld-nexus.app}
+ARCH_BASE=${SLIPFORK_ARCH_BASE:-https://arch.offworld-nexus.app}
+DL_BASE=${SLIPFORK_DL_BASE:-https://dl.offworld-nexus.app}
 
 VERSION=""
 NIGHTLY=0
-MIRROR=cloudsmith
 PREFIX=""
 USER_INSTALL=0
 ASSUME_YES=0
@@ -36,7 +35,11 @@ fi
 
 say() { printf '%s\n' "$*"; }
 info() { printf '%s%s%s\n' "$cyan" "$*" "$reset"; }
-warn() { printf '%s%swarning:%s %s\n' "$yellow" "$dim" "$reset" "$*" >&2; }
+warn() {
+    printf '%s%swarning:%s %s\n' "$yellow" "$dim" "$reset" "$1" >&2
+    shift
+    [ "$#" -eq 0 ] || printf '%s\n' "$@" >&2
+}
 die() {
     printf '%serror:%s %s\n' "$red" "$reset" "$1" >&2
     printf 'next: %s\n' "$2" >&2
@@ -46,11 +49,10 @@ help() {
     cat <<'USAGE'
 usage: install.sh [options]
   --version <ver>          install exactly this release
-  --nightly                use the nightly build; re-run without it for releases
-  --mirror cloudsmith|forgejo  choose the repository (default: cloudsmith)
+  --nightly                use the nightly channel; re-run without it for releases
   --user                   no root; unpack under ~/.local
   --prefix <dir>           no root; unpack under an absolute directory you own
-  --develop [ref]          use the archive built for that ref (requires SLIPFORK_SHA256)
+  --develop [ref]          use the CI archive in SLIPFORK_ARCHIVE_URL (digest mandatory)
   -y, --yes                do not ask for confirmation
   -h, --help               print this help
 USAGE
@@ -67,7 +69,6 @@ while [ "$#" -gt 0 ]; do
     case "$1" in
         --version) [ "$#" -ge 2 ] || usage "option --version needs a value"; VERSION=$2; shift 2 ;;
         --nightly) NIGHTLY=1; shift ;;
-        --mirror) [ "$#" -ge 2 ] || usage "option --mirror needs a value"; MIRROR=$2; shift 2 ;;
         --user) USER_INSTALL=1; shift ;;
         --prefix) [ "$#" -ge 2 ] || usage "option --prefix needs a value"; PREFIX=$2; shift 2 ;;
         --develop)
@@ -80,9 +81,15 @@ while [ "$#" -gt 0 ]; do
         *) usage "unknown option $1" ;;
     esac
 done
-case "$MIRROR" in cloudsmith | forgejo) ;; *) usage "--mirror $MIRROR is not cloudsmith|forgejo" ;; esac
 [ -z "$PREFIX" ] || case "$PREFIX" in /*) ;; *) die "--prefix $PREFIX is not absolute" "pass an absolute directory you own, e.g. --prefix $HOME/.local" ;; esac
 [ "$USER_INSTALL" -eq 0 ] || PREFIX=${PREFIX:-$HOME/.local}
+if [ "$DEVELOP" -eq 1 ] && [ -z "${SLIPFORK_ARCHIVE_URL:-}" ]; then
+    die "--develop needs the CI archive URL" \
+        "set SLIPFORK_ARCHIVE_URL=<archive> and SLIPFORK_SHA256=<digest>, then re-run"
+fi
+
+component=stable
+if [ "$NIGHTLY" -eq 1 ]; then component=nightly; fi
 
 os=$(uname -s)
 arch=$(uname -m)
@@ -93,15 +100,15 @@ case "$arch" in
 esac
 if [ "$os" != Linux ]; then
     case "$os" in
-        Darwin) asset="slipfork-lsp-darwin-$arch.tar.gz" ;;
-        *NT* | MINGW* | MSYS* | CYGWIN*) asset="slipfork-lsp-windows-$arch.zip" ;;
+        Darwin) platform=macos; asset="slipfork-lsp-darwin-$arch.tar.gz" ;;
+        *NT* | MINGW* | MSYS* | CYGWIN*) platform=windows; asset="slipfork-lsp-windows-$arch.zip" ;;
         *)
             say "no editor asset for $os: slipfork needs Linux Btrfs and crun, and"
             say "slipfork-lsp is published only for Linux, macOS, and Windows."
             exit 0 ;;
     esac
     say "slipfork needs Linux Btrfs and crun, so it is not installed on $os."
-    info "Your editor still works: download $asset from $RELEASES_BASE/latest"
+    info "Your editor still works: download $asset from $DL_BASE/$platform/$component/$asset"
     exit 0
 fi
 
@@ -109,8 +116,6 @@ libc=gnu
 if ldd --version 2>&1 | grep -qi musl || [ -e "/lib/ld-musl-$arch.so.1" ]; then
     libc=musl
 fi
-triple="$arch-unknown-linux-$libc"
-
 RUN=""
 if [ "$(id -u)" -ne 0 ]; then
     if command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
@@ -144,20 +149,14 @@ fetch() {
 }
 
 archive_url() {
-    base=$RELEASES_BASE
     asset="slipfork-$arch-unknown-linux-$libc.tar.gz"
     if [ -n "${SLIPFORK_ARCHIVE_URL:-}" ]; then
         printf '%s\n' "$SLIPFORK_ARCHIVE_URL"
-    elif [ "$DEVELOP" -eq 1 ]; then
-        [ -n "$DEVELOP_REF" ] || die "--develop needs a ref or SLIPFORK_ARCHIVE_URL" \
-            "re-run with --develop <ref>, or set SLIPFORK_ARCHIVE_URL to a CI archive"
-        printf '%s/download/nightly-%s/%s\n' "$base" "$DEVELOP_REF" "$asset"
-    elif [ "$NIGHTLY" -eq 1 ]; then
-        printf '%s/download/nightly/%s\n' "$base" "$asset"
     elif [ -n "$VERSION" ]; then
-        printf '%s/download/v%s/%s\n' "$base" "$VERSION" "$asset"
+        die "--version needs a package repository or an explicit archive" \
+            "set SLIPFORK_ARCHIVE_URL=<versioned tarball> and SLIPFORK_SHA256=<digest>, then re-run (or drop --version)"
     else
-        printf '%s/latest/download/%s\n' "$base" "$asset"
+        printf '%s/tarballs/%s/%s\n' "$DL_BASE" "$component" "$asset"
     fi
 }
 
@@ -174,17 +173,6 @@ expected_sha() {
     printf ''
 }
 
-digest_for() {
-    url=$1
-    path=$2
-    want=$(expected_sha "$url")
-    if [ -z "$want" ]; then
-        fetch "$url.sha256" "$tmp/sidecar.sha256" 2>/dev/null || true
-        [ -s "$tmp/sidecar.sha256" ] && want=$(cut -d' ' -f1 "$tmp/sidecar.sha256")
-    fi
-    printf '%s\n' "$want"
-}
-
 sha256_of() {
     if command -v sha256sum >/dev/null 2>&1; then
         sha256sum "$1" | cut -d' ' -f1
@@ -196,19 +184,31 @@ sha256_of() {
 install_archive() {
     url=$(archive_url)
     tmp=$(mktemp -d "${TMPDIR:-/var/tmp}/slipfork-install.XXXXXX")
-    trap 'rm -rf "$tmp"' EXIT INT TERM
+    trap 'rm -rf "$tmp"' EXIT
+    trap 'rm -rf "$tmp"; exit 130' INT TERM
     info "Downloading $url"
     fetch "$url" "$tmp/archive.tar.gz" || die "the archive did not download" "check the URL and your network, then re-run"
     want=$(expected_sha "$url")
-    if [ -z "$want" ] && [ -z "${SLIPFORK_ARCHIVE_URL:-}" ] && [ "$DEVELOP" -eq 0 ]; then
+    overridden=0
+    if [ -n "${SLIPFORK_ARCHIVE_URL:-}" ] || [ "$DEVELOP" -eq 1 ]; then overridden=1; fi
+    if [ -z "$want" ]; then
+        if [ "$overridden" -eq 1 ]; then
+            die "no SHA-256 is published for $(basename "$url") from an overridden origin" \
+                "set SLIPFORK_SHA256 to the CI digest, then re-run"
+        fi
         fetch "$url.sha256" "$tmp/archive.sha256" 2>/dev/null || true
-        [ -s "$tmp/archive.sha256" ] && want=$(cut -d' ' -f1 "$tmp/archive.sha256")
+        if [ -s "$tmp/archive.sha256" ]; then
+            want=$(cut -d' ' -f1 "$tmp/archive.sha256")
+        else
+            warn "no published SHA-256 for $(basename "$url"); trusting HTTPS on $DL_BASE" \
+                "next: set SLIPFORK_SHA256 to pin the digest"
+        fi
     fi
-    [ -n "$want" ] || die "no SHA-256 was published for $(basename "$url")" \
-        "set SLIPFORK_SHA256 (an overridden origin is unsigned), then re-run"
-    got=$(sha256_of "$tmp/archive.tar.gz")
-    [ "$want" = "$got" ] || die "SHA-256 mismatch: expected $want, got $got" \
-        "delete the download and re-run; do not install an unverified archive"
+    if [ -n "$want" ]; then
+        got=$(sha256_of "$tmp/archive.tar.gz")
+        [ "$want" = "$got" ] || die "SHA-256 mismatch: expected $want, got $got" \
+            "delete the download and re-run; do not install an unverified archive"
+    fi
     mkdir -p "$tmp/unpack"
     tar -xzf "$tmp/archive.tar.gz" -C "$tmp/unpack" </dev/null
     root=$(find "$tmp/unpack" -mindepth 1 -maxdepth 1 -type d | head -n 1)
@@ -233,6 +233,115 @@ install_archive() {
     say "next: run ${bold}slipfork doctor${reset} inside your project, then ${bold}slipfork up${reset}"
 }
 
+install_apt() {
+    $RUN install -d -m 0755 /etc/apt/keyrings ||
+        die "cannot create /etc/apt/keyrings" "re-run with sudo, or install the tarball with --user"
+    fetch "$APT_BASE/keyring.gpg" "$tmp/keyring.gpg" ||
+        die "the Offworld Nexus apt keyring did not download" "check that $APT_BASE is reachable, then re-run"
+    $RUN install -m 0644 "$tmp/keyring.gpg" /etc/apt/keyrings/offworld-nexus.gpg ||
+        die "cannot write /etc/apt/keyrings/offworld-nexus.gpg" "re-run with sudo, then install slipfork"
+    cat > "$tmp/offworld-nexus.sources" <<EOF
+Types: deb
+URIs: $APT_BASE
+Suites: any-distro
+Components: $component
+Signed-By: /etc/apt/keyrings/offworld-nexus.gpg
+EOF
+    $RUN install -m 0644 "$tmp/offworld-nexus.sources" /etc/apt/sources.list.d/offworld-nexus.sources ||
+        die "cannot write /etc/apt/sources.list.d/offworld-nexus.sources" "re-run with sudo, then install slipfork"
+    $RUN apt-get update </dev/null ||
+        die "apt-get update rejected $APT_BASE" "read the log above, then re-run"
+    if [ -n "$VERSION" ]; then
+        $RUN apt-get install -y "slipfork=$VERSION" </dev/null ||
+            die "apt-get install slipfork=$VERSION failed" "check that $VERSION is in $APT_BASE/$component, then re-run"
+    else
+        $RUN apt-get install -y slipfork </dev/null ||
+            die "apt-get install slipfork failed" "read the log above, then re-run with --user"
+    fi
+}
+
+install_rpm() {
+    channel_name=Stable
+    if [ "$NIGHTLY" -eq 1 ]; then channel_name=Nightly; fi
+    $RUN install -d -m 0755 /etc/yum.repos.d ||
+        die "cannot create /etc/yum.repos.d" "re-run with sudo, or install the tarball with --user"
+    cat > "$tmp/offworld-nexus.repo" <<EOF
+[offworld-nexus]
+name=Offworld Nexus ($channel_name)
+baseurl=$RPM_BASE/$component/\$basearch/
+enabled=1
+gpgcheck=1
+repo_gpgcheck=1
+gpgkey=$RPM_BASE/gpg.key
+EOF
+    $RUN install -m 0644 "$tmp/offworld-nexus.repo" /etc/yum.repos.d/offworld-nexus.repo ||
+        die "cannot write /etc/yum.repos.d/offworld-nexus.repo" "re-run with sudo, then install slipfork"
+    if [ "$pm" = zypper ]; then
+        if [ -n "$VERSION" ]; then
+            $RUN zypper --non-interactive install "slipfork-$VERSION" </dev/null ||
+                die "zypper install slipfork-$VERSION failed" "check that $VERSION is in $RPM_BASE/$component, then re-run"
+        else
+            $RUN zypper --non-interactive install slipfork </dev/null ||
+                die "zypper install slipfork failed" "read the log above, then re-run with --user"
+        fi
+    elif [ -n "$VERSION" ]; then
+        $RUN "$pm" install -y "slipfork-$VERSION" </dev/null ||
+            die "$pm install slipfork-$VERSION failed" "check that $VERSION is in $RPM_BASE/$component, then re-run"
+    else
+        $RUN "$pm" install -y slipfork </dev/null ||
+            die "$pm install slipfork failed" "read the log above, then re-run with --user"
+    fi
+}
+
+install_pacman() {
+    fetch "$ARCH_BASE/gpg.key" "$tmp/gpg.key" ||
+        die "the Offworld Nexus pacman key did not download" "check that $ARCH_BASE is reachable, then re-run"
+    $RUN pacman-key --add "$tmp/gpg.key" </dev/null ||
+        die "pacman-key --add failed" "re-run with sudo, then install slipfork"
+    $RUN pacman-key --lsign-key E9DD32C63321505EBBCF86386E08120B3306C720 </dev/null ||
+        die "pacman-key --lsign-key failed" "re-run with sudo, then install slipfork"
+    if $RUN grep -q '^\[offworld\]' /etc/pacman.conf 2>/dev/null; then
+        $RUN sed -i "s|^Server = $ARCH_BASE/.*|Server = $ARCH_BASE/$component/\$arch|" /etc/pacman.conf ||
+            die "cannot update [offworld] in /etc/pacman.conf" "re-run with sudo, then install slipfork"
+    else
+        printf '\n[offworld]\nServer = %s/%s/$arch\n' "$ARCH_BASE" "$component" |
+            $RUN tee -a /etc/pacman.conf >/dev/null ||
+            die "cannot append [offworld] to /etc/pacman.conf" "re-run with sudo, then install slipfork"
+    fi
+    if [ -n "$VERSION" ]; then
+        $RUN pacman -Sy --needed --noconfirm "slipfork=$VERSION-1" </dev/null ||
+            die "pacman install slipfork=$VERSION-1 failed" "check that $VERSION is in $ARCH_BASE/$component, then re-run"
+    else
+        $RUN pacman -Sy --needed --noconfirm slipfork </dev/null ||
+            die "pacman install slipfork failed" "read the log above, then re-run with --user"
+    fi
+}
+
+install_apk() {
+    fetch "$APK_BASE/packages@offworld.nexus.rsa.pub" "$tmp/packages@offworld.nexus.rsa.pub" ||
+        die "the Offworld Nexus apk key did not download" "check that $APK_BASE is reachable, then re-run"
+    $RUN install -d -m 0755 /etc/apk/keys ||
+        die "cannot create /etc/apk/keys" "re-run with sudo, or install the tarball with --user"
+    $RUN install -m 0644 "$tmp/packages@offworld.nexus.rsa.pub" /etc/apk/keys/packages@offworld.nexus.rsa.pub ||
+        die "cannot write /etc/apk/keys/packages@offworld.nexus.rsa.pub" "re-run with sudo, then install slipfork"
+    if $RUN grep -q "^$APK_BASE/" /etc/apk/repositories 2>/dev/null; then
+        $RUN sed -i "s|^$APK_BASE/.*|$APK_BASE/$component|" /etc/apk/repositories ||
+            die "cannot update $APK_BASE in /etc/apk/repositories" "re-run with sudo, then install slipfork"
+    else
+        printf '%s\n' "$APK_BASE/$component" | $RUN tee -a /etc/apk/repositories >/dev/null ||
+            die "cannot append $APK_BASE/$component to /etc/apk/repositories" "re-run with sudo, then install slipfork"
+    fi
+    $RUN apk update </dev/null ||
+        die "apk update rejected $APK_BASE" "read the log above, then re-run"
+    if [ -n "$VERSION" ]; then
+        $RUN apk add "slipfork=$VERSION-r0" </dev/null ||
+            die "apk add slipfork=$VERSION-r0 failed" "check that $VERSION is in $APK_BASE/$component, then re-run"
+    else
+        $RUN apk add slipfork </dev/null ||
+            die "apk add slipfork failed" "read the log above, then re-run with --user"
+    fi
+}
+
 install_package() {
     [ -z "$PREFIX" ] || return 1
     [ "$DEVELOP" -eq 0 ] || return 1
@@ -246,64 +355,15 @@ install_package() {
         ask "Install Slipfork system-wide with sudo?" || return 1
         RUN=sudo
     fi
-    if [ "$MIRROR" = forgejo ]; then
-        warn "the Forgejo mirror publishes archives only; installing the signed Cloudsmith package instead"
-    fi
     tmp=$(mktemp -d "${TMPDIR:-/var/tmp}/slipfork-repo.XXXXXX")
+    trap 'rm -rf "$tmp"' EXIT
+    trap 'rm -rf "$tmp"; exit 130' INT TERM
     case "$pm" in
-        apt-get)
-            fetch "$CLOUDSMITH_BASE/setup.deb.sh" "$tmp/setup.sh" || return 1
-            $RUN sh "$tmp/setup.sh" </dev/null || return 1
-            if [ -n "$VERSION" ]; then
-                $RUN apt-get install -y "slipfork=$VERSION" </dev/null ||
-                    die "apt-get install failed" "read the log above, then re-run with --user"
-            else
-                $RUN apt-get install -y slipfork </dev/null ||
-                    die "apt-get install failed" "read the log above, then re-run with --user"
-            fi ;;
-        dnf | yum)
-            fetch "$CLOUDSMITH_BASE/setup.rpm.sh" "$tmp/setup.sh" || return 1
-            $RUN sh "$tmp/setup.sh" </dev/null || return 1
-            $RUN "$pm" install -y slipfork </dev/null ||
-                die "$pm install failed" "read the log above, then re-run with --user" ;;
-        zypper)
-            fetch "$CLOUDSMITH_BASE/setup.rpm.sh" "$tmp/setup.sh" || return 1
-            $RUN sh "$tmp/setup.sh" </dev/null || return 1
-            $RUN zypper --non-interactive install slipfork </dev/null ||
-                die "zypper install failed" "read the log above, then re-run with --user" ;;
-        pacman)
-            [ -n "$VERSION" ] || return 1
-            artifact="slipfork-$VERSION-1-$arch.pkg.tar.zst"
-            artifact_url="$RELEASES_BASE/download/v$VERSION/$artifact"
-            fetch "$artifact_url" "$tmp/$artifact" || return 1
-            want=$(digest_for "$artifact_url" "$tmp/$artifact") || return 1
-            [ -n "$want" ] || die "no SHA-256 was published for $artifact" \
-                "set SLIPFORK_SHA256=<digest>, then re-run"
-            [ "$want" = "$(sha256_of "$tmp/$artifact")" ] || die "SHA-256 mismatch for $artifact" \
-                "delete the download and re-run; do not install an unverified package"
-            $RUN pacman -U --noconfirm "$tmp/$artifact" </dev/null ||
-                die "pacman install failed" "read the log above, then re-run with --user" ;;
-        apk)
-            # An unsigned local .apk is trusted only by its published digest: there
-            # is no repository key on this path, so the SHA-256 is the anchor.
-            [ -n "$VERSION" ] || return 1
-            component=stable; [ "$NIGHTLY" -eq 1 ] && component=nightly
-            apk_file=""
-            for candidate in "slipfork-$VERSION-r0-$arch.apk"; do
-                candidate_url="$FORGEJO_BASE/$component/$candidate"
-                fetch "$candidate_url" "$tmp/$candidate" 2>/dev/null || continue
-                want=$(digest_for "$candidate_url" "$tmp/$candidate") || return 1
-                [ -n "$want" ] || die "no SHA-256 was published for $candidate" \
-                    "set SLIPFORK_SHA256=<digest>, then re-run"
-                [ "$want" = "$(sha256_of "$tmp/$candidate")" ] || die "SHA-256 mismatch for $candidate" \
-                    "delete the download and re-run; do not install an unverified package"
-                apk_file="$tmp/$candidate"
-                break
-            done
-            [ -n "$apk_file" ] || die "no slipfork $VERSION .apk was published" \
-                "check --version and the Forgejo mirror, then re-run"
-            $RUN apk add --allow-untrusted "$apk_file" </dev/null ||
-                die "apk install failed" "read the log above, then re-run with --user" ;;
+        apt-get) install_apt ;;
+        dnf | yum | zypper) install_rpm ;;
+        pacman) install_pacman ;;
+        apk) install_apk ;;
+        *) die "no install path for $pm" "install the tarball with --user" ;;
     esac
     rm -rf "$tmp"
     command -v slipfork >/dev/null 2>&1 ||
@@ -312,11 +372,11 @@ install_package() {
     say "next: run ${bold}slipfork doctor${reset} inside your project, then ${bold}slipfork up${reset}"
 }
 
-if [ "$DEVELOP" -eq 1 ] || [ "$USER_INSTALL" -eq 1 ] || [ -n "$PREFIX" ] || [ "$MIRROR" = forgejo ]; then
+if [ "$DEVELOP" -eq 1 ] || [ "$USER_INSTALL" -eq 1 ] || [ -n "$PREFIX" ]; then
     install_archive
 elif install_package; then
     :
 else
-    warn "no usable package manager or sudo; falling back to the SHA-256-verified archive"
+    warn "no usable package manager or sudo; falling back to the archive install"
     install_archive
 fi

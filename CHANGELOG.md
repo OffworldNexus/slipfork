@@ -27,6 +27,9 @@ follow Semantic Versioning while the `# forkfile: 0.1` format is pre-`1.0`.
 
 ### Changed
 
+- Packaging is zero-secret: CI builds and install-verifies every package, then stages one
+  `offworld-dist` bundle that the organization publisher signs and syncs. Install docs and
+  `install.sh` now use only `apt|rpm|apk|arch|dl.offworld-nexus.app`.
 - Boot progress uses a fixed `DECSTBM` bottom bar instead of multi-progress: one aligned row per
   task, zero sha256/Dockerfile/hook lines in the terminal, truthful `cached`, and all raw output in
   `<store>/logs/<world>/<id>.log`. `slipfork logs <image>` reads an image build log.

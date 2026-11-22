@@ -125,9 +125,9 @@ When `plan/AUTOPILOT` is `on`, `deepseek-v4.1-flash` executes coarse vertical sl
 | `plan/` | Autonomous plan tree: `ROADMAP.md`, `STATE.md`, `HUMAN.md`, `ESCALATIONS.md`, `JOURNAL.md`, `BUDGET.json`, `AUTOPILOT`, `nodes/`. |
 | `crates/` | Rust workspace: `slipfork` CLI/daemon, `Forkfile` compiler, world/Btrfs engine, native image engine, ingress, OSPP, and VCS crates. |
 | `@slipfork/opencode` | OpenCode V2 plugin (`ctx.worktree.transform` + `ctx.shell.hook` + `ctx.session.hook`). |
-| `scripts/` | Release scripts: `build-deb`, `build-rpm`, `build-standalone`, `check-portable-elf.sh`, `publish_packages.py`. |
+| `scripts/` | Release scripts: `build-bundle`, `build-deb`, `build-rpm`, `build-arch`, `build-apk`, `build-lsp`, `build-standalone`, `check-bundle-layout.sh`, `check-install.sh`, `check-portable-elf.sh`, `release_stamp.py`. |
 | `docs/install.sh` | Universal installer entry point (`curl … | sh`) for every distro. |
-| `packaging/` | Distro recipes and systemd units consumed by `scripts/`; never a second installer implementation. |
+| `packaging/` | Distro recipes, systemd units and `stage-dist.py` (validates the `offworld-dist` bundle) consumed by `scripts/`; never a second installer implementation. |
 | `tools/` | Stdlib-only harness: `plan.py`, `guard.py`, `critical_guard.py`, `check_docs_honesty.py`, `coverage_report.py`, `do_vm.py`. |
 
 ## Skills Index (load with `skill`)
