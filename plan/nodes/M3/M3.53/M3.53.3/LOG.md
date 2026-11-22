@@ -23,3 +23,23 @@ status active -> review
 ## 2026-11-22T19:32 [lead]
 
 status review -> done
+
+## 2026-11-22T19:37 [lead]
+
+status done -> ready: live run exposed stale pre-M3.50.4 assertions
+
+## 2026-11-22T19:37 [lead]
+
+attempt 2/3 started
+
+## 2026-11-22T19:37 [lead]
+
+status ready -> active
+
+## 2026-11-22T19:37 [lead]
+
+VM live: world_journey still expects Forkfile line + error:/next:
+
+## 2026-11-22T19:37 [lead]
+
+status active -> done

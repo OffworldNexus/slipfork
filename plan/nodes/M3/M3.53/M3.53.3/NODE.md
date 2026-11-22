@@ -7,11 +7,11 @@ owner: implementer
 priority: 3
 depends_on: []
 paths: ["crates/slipfork/tests/critical_*.rs"]
-attempts: 1
+attempts: 2
 max_attempts: 3
 escalation: none
 created: "2026-11-22T19:20"
-updated: "2026-11-22T19:32"
+updated: "2026-11-22T19:37"
 ---
 
 # Goal

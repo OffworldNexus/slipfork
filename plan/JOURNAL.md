@@ -2982,3 +2982,8 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-22T19:35 [M3.53.2] (lead) fix pass: develop URL, digest honesty, --version pinning, channel flip, pacman, trap
 - 2026-11-22T19:36 [M3.53.2] (lead) status active -> review
 - 2026-11-22T19:36 [M3.53.2] (lead) status review -> done
+- 2026-11-22T19:37 [M3.53.3] (lead) status done -> ready: live run exposed stale pre-M3.50.4 assertions
+- 2026-11-22T19:37 [M3.53.3] (lead) attempt 2/3 started
+- 2026-11-22T19:37 [M3.53.3] (lead) status ready -> active
+- 2026-11-22T19:37 [M3.53.3] (lead) VM live: world_journey still expects Forkfile line + error:/next:
+- 2026-11-22T19:37 [M3.53.3] (lead) status active -> done

@@ -746,16 +746,6 @@ fn stderr(output: &Output) -> String {
     String::from_utf8_lossy(&output.stderr).into_owned()
 }
 
-/// True when some `Forkfile:<n>` names a real line number.
-fn forkfile_line(text: &str) -> bool {
-    text.match_indices("Forkfile:").any(|(index, marker)| {
-        text[index + marker.len()..]
-            .chars()
-            .next()
-            .is_some_and(|next| next.is_ascii_digit())
-    })
-}
-
 fn crun_list(crun: &Path) -> String {
     let output = Command::new(crun)
         .arg("list")
@@ -1310,23 +1300,24 @@ fn world_up_restart_down_journey() {
         failed_out.contains("→ [") || failed_out.contains('✗'),
         "failure must keep a phase header or the ✗ tail:\nstdout={failed_out}\nstderr={failed_err}"
     );
-    assert!(
-        forkfile_line(&failed_out) || forkfile_line(&failed_err),
-        "the failure tail must name a numbered Forkfile line:\nstdout={failed_out}\nstderr={failed_err}"
-    );
-    assert!(failed_err.contains("error:"), "{failed_err}");
+    // A service failure is one crisp plain remedy line (`boot::render::failure_sentence`) and
+    // nothing else: no `error:`, no `next:`, and no numbered `Forkfile:` line.
+    let stderr_lines: Vec<&str> = failed_err
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect();
     assert_eq!(
-        failed_err.matches("next:").count(),
-        1,
-        "a failure prints exactly one next:\n{failed_err}"
+        stderr_lines,
+        ["✗ Failed to start service broken — check logs with: slipfork logs broken"],
+        "a service failure prints exactly one crisp remedy line:\nstdout={failed_out}\nstderr={failed_err}"
     );
-    // The shipped remedy is `boot::render::failure_sentence`, one crisp plain line naming the
-    // failing service and the exact `logs` command the user must run.
-    assert!(
-        failed_err.lines().any(|line| line.trim()
-            == "✗ Failed to start service broken — check logs with: slipfork logs broken"),
-        "the failed service must print the exact remedy line:\nstdout={failed_out}\nstderr={failed_err}"
-    );
+    for forbidden in ["error:", "next:", "Forkfile:"] {
+        assert!(
+            !failed_err.contains(forbidden),
+            "a service failure must not print `{forbidden}`:\n{failed_err}"
+        );
+    }
     assert!(
         broken.join(".slipfork/world.json").is_file(),
         "the world must stay up after a failed service"
