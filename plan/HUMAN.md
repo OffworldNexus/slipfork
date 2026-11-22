@@ -120,7 +120,7 @@ Slipfork 0.1.0 ready on release/0.1.0 -> develop (PR #2): pure-Btrfs native OCI/
 
 **Answer:**
 
-## H-015 [open] [release-gate] (node M3)
+## H-015 [closed] [release-gate] (node M3)
 
 - asked: 2026-11-22T23:37 by conductor
 

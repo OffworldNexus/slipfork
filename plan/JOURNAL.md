@@ -3079,3 +3079,7 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-22T23:36 [M3] (lead) GATE PASSED: live /home/slipfork/demo runs real uv+FastAPI + pnpm+SvelteKit with fork isolation, run-id logs, parallel teardown and cross-domain ps
 - 2026-11-22T23:37 HUMAN H-015 [release-gate] opened by conductor (node M3)
 - 2026-11-22T23:37 AUTOPILOT off by conductor Awaiting GHA green confirmation & human review/merge of PR #2 into develop
+- 2026-11-22T23:44 HUMAN H-015 closed by conductor
+- 2026-11-22T23:44 [M3] (conductor) status done -> active
+- 2026-11-22T23:44 [M3.59] (conductor) created (task) Fix write_bundle home chown on non-1000 unprivileged UIDs & pod_control_lab.rs:91
+- 2026-11-22T23:44 AUTOPILOT on by conductor Fixing pod_control_lab.rs:91 hardcoded UID 1000 chown for GitHub Actions UID 1001
