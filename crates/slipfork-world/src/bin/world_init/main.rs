@@ -64,14 +64,6 @@ fn run() -> Result<(), Fault> {
     identity
         .write(&args.namespaces)
         .map_err(|source| Fault::cause("namespace identity write", REMEDY_RUNTIME, source))?;
-    write_frame(
-        &InitFrame::Ready {
-            v: PROTOCOL_VERSION,
-            init_pid: std::process::id(),
-            namespaces: identity,
-        },
-        "ready handshake write",
-    )?;
     let pods_root = canonical(&args.pods, "pod runtime root resolution", REMEDY_RUNTIME)?;
     // The single composition root: the world init owns one multi-thread runtime for the native
     // S3 endpoint. `slipfork-world` itself never constructs a runtime.
@@ -81,7 +73,17 @@ fn run() -> Result<(), Fault> {
         .build()
         .map_err(|source| Fault::cause("native S3 runtime setup", REMEDY_RUNTIME, source))?;
     let mut world = pod::InitWorld::new(args.crun, pods_root, runtime.handle().clone())?;
+    // Bind `<pods>/control.sock` BEFORE publishing `Ready` so fast DAG roots (such as native S3
+    // `ConfigureS3`, which needs no image pull or subvolume clone) can never race `bind(2)`.
     let (listener, socket_path) = control::bind(world.pods_root())?;
+    write_frame(
+        &InitFrame::Ready {
+            v: PROTOCOL_VERSION,
+            init_pid: std::process::id(),
+            namespaces: identity,
+        },
+        "ready handshake write",
+    )?;
     let listener_fd = listener.as_raw_fd();
     let stdin = io::stdin();
     let mut reader = BufReader::new(stdin.lock());

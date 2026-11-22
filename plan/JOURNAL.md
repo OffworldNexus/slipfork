@@ -2883,3 +2883,10 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-22T15:45 [M3.50.7] (lead) attempt 1/3 started
 - 2026-11-22T15:45 [M3.50.7] (lead) base a96d4241c247e95d724a2a78f7f96e71343ea62b
 - 2026-11-22T15:49 [M3.50.7] (lead) status active -> done
+- 2026-11-22T15:54 [M3.50.6] (lead) edited fields
+- 2026-11-22T15:58 [M3.50.6] (lead) edited fields
+- 2026-11-22T15:58 [M3.50.6] (lead) status ready -> active
+- 2026-11-22T15:58 [M3.50.6] (lead) attempt 1/3 started
+- 2026-11-22T15:58 [M3.50.6] (lead) base 3df87cb2d19bf2601b9a53e92ef35e34477751e6; ROOT CAUSE CONFIRMED: unsynced PGDATA at snapshot time (app_db CREATE not durable) -> fork pg panic; host 'sync' 
+- 2026-11-22T16:16 [M3.50.10] (lead) edited fields
+- 2026-11-22T16:18 [M3.50.10] (lead) status active -> done

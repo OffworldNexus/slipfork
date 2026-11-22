@@ -9,9 +9,10 @@
 
 use std::ffi::OsString;
 use std::fs;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd};
 use std::os::unix::ffi::OsStringExt;
+use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
@@ -51,6 +52,31 @@ image box from python:3.13-slim {\n\
 
 const BRAILLE: &str = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏";
 
+/// Isolated daemon runtime (`tmpfs`, short `< 107`-byte `AF_UNIX` path) and state directory
+/// (`SLIPFORK_TEST_ROOT` disk) so the suite never shares `~/.local/state/slipfork/worlds.json`
+/// with a host user daemon.
+#[derive(Clone)]
+struct LabEnv {
+    runtime: PathBuf,
+    state: PathBuf,
+}
+
+impl LabEnv {
+    fn isolated(root: &Path) -> Self {
+        let base = std::env::var_os("XDG_RUNTIME_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("/dev/shm/slipfork-live-runtime"));
+        fs::create_dir_all(&base).expect("create the live runtime base");
+        let base = fs::canonicalize(&base).unwrap_or(base);
+        let pid = std::process::id();
+        let runtime = base.join(format!("t{pid}"));
+        let state = root.join(format!(".state-{pid}"));
+        fs::create_dir_all(&runtime).expect("create the isolated runtime directory");
+        fs::create_dir_all(&state).expect("create the isolated state directory");
+        Self { runtime, state }
+    }
+}
+
 fn test_root() -> PathBuf {
     let Some(root) = std::env::var_os("SLIPFORK_TEST_ROOT").filter(|root| !root.is_empty()) else {
         panic!(
@@ -65,6 +91,7 @@ fn test_root() -> PathBuf {
             root.display()
         );
     }
+    let root = fs::canonicalize(&root).unwrap_or(root);
     assert!(
         is_btrfs_path(&root).unwrap_or(false),
         "fail closed: `{}` is not on Btrfs.\nnext: SLIPFORK_TEST_ROOT=/mnt/slipfork-live make live-test",
@@ -73,24 +100,14 @@ fn test_root() -> PathBuf {
     root
 }
 
-/// The one runtime/daemon shared by every test in this binary (`:80` can have a single owner).
-fn runtime_dir() -> PathBuf {
-    std::env::var_os("XDG_RUNTIME_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("/dev/shm/slipfork-live-runtime"))
-}
-
-/// A `{pid}-{nanos}` suffix so two live tests never share a project or world.
+/// A `{pid}-{nanos:x}` suffix so two live tests never share a project or world while keeping
+/// `AF_UNIX` `control.sock` paths well under 107 bytes.
 fn unique_suffix() -> String {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .expect("clock reads after the epoch")
         .as_nanos();
-    format!("{}-{nanos}", std::process::id())
-}
-
-fn scoped_world(suffix: &str) -> String {
-    format!("live{}", suffix.replace('-', ""))
+    format!("{}-{nanos:x}", std::process::id())
 }
 
 fn mount_store_for(path: &Path) -> PathBuf {
@@ -144,11 +161,12 @@ fn binary() -> &'static str {
 /// Longest any CLI invocation may take before the harness fails with a remedy.
 const RUN_TIMEOUT: Duration = Duration::from_secs(240);
 
-fn run(project: &Path, runtime: &Path, args: &[&str]) -> Output {
+fn run(project: &Path, env: &LabEnv, args: &[&str]) -> Output {
     let mut child = Command::new(binary())
         .args(args)
         .current_dir(project)
-        .env("XDG_RUNTIME_DIR", runtime)
+        .env("XDG_RUNTIME_DIR", &env.runtime)
+        .env("XDG_STATE_HOME", &env.state)
         .env("NO_COLOR", "1")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -218,7 +236,7 @@ struct PtyRun {
 /// Runs `args` under a real `openpty` PTY (120x40 unless resized); `script` is not needed.
 fn run_pty(
     project: &Path,
-    runtime: &Path,
+    env: &LabEnv,
     args: &[&str],
     envs: &[(&str, &str)],
     resize: Option<(Duration, u16, u16)>,
@@ -251,7 +269,8 @@ fn run_pty(
     command
         .args(args)
         .current_dir(project)
-        .env("XDG_RUNTIME_DIR", runtime)
+        .env("XDG_RUNTIME_DIR", &env.runtime)
+        .env("XDG_STATE_HOME", &env.state)
         .env_remove("NO_COLOR")
         .env("TERM", "xterm-256color")
         .stdin(Stdio::from(slave.try_clone().expect("clone PTY slave")))
@@ -425,13 +444,11 @@ fn plain(text: &str) -> String {
     out
 }
 
-/// Stops **this world** and deletes **this project** on every exit path.
-///
-/// The runtime/daemon is shared by the whole binary (one `:80` owner), so the guard never shuts it
-/// down or kills it; the outer lab cleanup owns that process.
+/// Stops **this world**, shuts down **this isolated test daemon**, and deletes **this project** on
+/// every exit path without ever touching the host user's `~/.local/state/slipfork` worlds.
 struct WorldGuard {
     project: PathBuf,
-    runtime: PathBuf,
+    env: LabEnv,
     store_root: PathBuf,
     world: String,
     /// Set when step 1 fails: leave the project on disk for the lab diagnosis.
@@ -440,8 +457,10 @@ struct WorldGuard {
 
 impl Drop for WorldGuard {
     fn drop(&mut self) {
-        if self.runtime.join("daemon.sock").exists() {
-            let _ = run_quiet(&self.project, &self.runtime, &["down"]);
+        let socket = self.env.runtime.join("daemon.sock");
+        if socket.exists() {
+            let _ = run_quiet(&self.project, &self.env, &["down"]);
+            shutdown_isolated_daemon(&socket);
         }
         if self.keep {
             return;
@@ -452,15 +471,32 @@ impl Drop for WorldGuard {
         }
         let _ = engine.destroy(&self.project, Dirtiness::Clean, true);
         let _ = fs::remove_dir_all(&self.project);
+        let _ = fs::remove_dir_all(&self.env.runtime);
+        let _ = fs::remove_dir_all(&self.env.state);
+    }
+}
+
+fn shutdown_isolated_daemon(socket: &Path) {
+    if let Ok(mut stream) = UnixStream::connect(socket) {
+        let _ = stream
+            .write_all(b"{\"v\":1,\"id\":\"guard-bye\",\"method\":\"shutdown\",\"params\":{}}\n");
+        let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+        let mut reply = [0_u8; 128];
+        let _ = stream.read(&mut reply);
+    }
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while socket.exists() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(25));
     }
 }
 
 /// One best-effort CLI run with a short budget; the guard must never hang or panic.
-fn run_quiet(project: &Path, runtime: &Path, args: &[&str]) -> bool {
+fn run_quiet(project: &Path, env: &LabEnv, args: &[&str]) -> bool {
     let Ok(mut child) = Command::new(binary())
         .args(args)
         .current_dir(project)
-        .env("XDG_RUNTIME_DIR", runtime)
+        .env("XDG_RUNTIME_DIR", &env.runtime)
+        .env("XDG_STATE_HOME", &env.state)
         .env("NO_COLOR", "1")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -527,9 +563,14 @@ fn pty_helper_closes_the_slave_and_never_hangs() {
         "slipfork-pty-helper-{}-{nanos}",
         std::process::id()
     ));
-    fs::create_dir_all(&dir).expect("create the PTY scratch directory");
+    let env = LabEnv {
+        runtime: dir.join("run"),
+        state: dir.join("state"),
+    };
+    fs::create_dir_all(&env.runtime).expect("create the PTY scratch runtime");
+    fs::create_dir_all(&env.state).expect("create the PTY scratch state");
     let began = Instant::now();
-    let out = run_pty(&dir, &dir, &["--help"], &[], None);
+    let out = run_pty(&dir, &env, &["--help"], &[], None);
     let elapsed = began.elapsed();
     assert!(
         out.status.success(),
@@ -552,8 +593,7 @@ fn pty_helper_closes_the_slave_and_never_hangs() {
 fn live_boots_once_paints_the_panel_reconciles_orphans_and_replays_logs() {
     let root = test_root();
     let store_root = mount_store_for(&root);
-    let runtime = runtime_dir();
-    fs::create_dir_all(&runtime).expect("create the live runtime directory");
+    let env = LabEnv::isolated(&root);
     let suffix = unique_suffix();
     let project_name = format!("live-{suffix}");
     let world_id = project_name.clone();
@@ -561,14 +601,14 @@ fn live_boots_once_paints_the_panel_reconciles_orphans_and_replays_logs() {
     prepare(&project, &store_root, &world_id, SUITE_FORKFILE);
     let mut guard = WorldGuard {
         project: project.clone(),
-        runtime: runtime.clone(),
+        env: env.clone(),
         store_root,
         world: world_id.clone(),
         keep: false,
     };
 
     // 1. One rich colour-PTY boot: DECSTBM region, 24-cell panel maths, one row per task.
-    let boot = run_pty(&project, &runtime, &["up"], &[], None);
+    let boot = run_pty(&project, &env, &["up"], &[], None);
     if !boot.status.success() {
         guard.keep = true;
         let supervisor = fs::read_to_string(project.join(".slipfork/supervisor.log"))
@@ -650,7 +690,7 @@ fn live_boots_once_paints_the_panel_reconciles_orphans_and_replays_logs() {
     );
 
     // 2. The typed status/ps surfaces: rows, resources, colours, and `--json` fields.
-    let status = run(&project, &runtime, &["status", "--json"]);
+    let status = run(&project, &env, &["status", "--json"]);
     assert!(status.status.success(), "{status:?}");
     let status_json: serde_json::Value =
         serde_json::from_slice(&status.stdout).expect("status --json parses");
@@ -673,7 +713,7 @@ fn live_boots_once_paints_the_panel_reconciles_orphans_and_replays_logs() {
     assert_eq!(uploads["running"], true);
     assert_eq!(uploads["orphaned"], false);
 
-    let human = run(&project, &runtime, &["status"]);
+    let human = run(&project, &env, &["status"]);
     assert!(human.status.success());
     let human = String::from_utf8(human.stdout).expect("status is UTF-8");
     assert!(human.contains(&format!("● {world_id}")), "{human}");
@@ -682,7 +722,7 @@ fn live_boots_once_paints_the_panel_reconciles_orphans_and_replays_logs() {
     assert!(human.contains("s3 (public-read)"), "{human}");
     assert!(!human.contains('\u{1b}'), "{human}");
 
-    let ps = run(&project, &runtime, &["ps", "--json"]);
+    let ps = run(&project, &env, &["ps", "--json"]);
     assert!(ps.status.success(), "{ps:?}");
     let reply: serde_json::Value = serde_json::from_slice(&ps.stdout).expect("ps --json");
     let rows = services(&reply["worlds"][0]);
@@ -696,14 +736,14 @@ fn live_boots_once_paints_the_panel_reconciles_orphans_and_replays_logs() {
     }
     let pg = rows.iter().find(|row| row["id"] == "pg").expect("pg row");
     assert_eq!(pg["kind"], "postgres");
-    let scoped = run(&project, &runtime, &["ps"]);
+    let scoped = run(&project, &env, &["ps"]);
     assert!(scoped.status.success());
     assert!(String::from_utf8_lossy(&scoped.stdout).contains("postgres 18"));
 
     // 3. Delete `beta`: the live pod stays visible yellow `orphaned`, then `up` reaps it.
     fs::write(project.join("Forkfile"), ONE_SERVICE).expect("write the reduced Forkfile");
     assert!(project.join("Forkfile").is_file());
-    let ps = run(&project, &runtime, &["ps", "--json"]);
+    let ps = run(&project, &env, &["ps", "--json"]);
     let reply: serde_json::Value = serde_json::from_slice(&ps.stdout).expect("ps --json");
     let rows = services(&reply["worlds"][0]);
     let beta = rows
@@ -712,24 +752,24 @@ fn live_boots_once_paints_the_panel_reconciles_orphans_and_replays_logs() {
         .unwrap_or_else(|| panic!("orphaned `beta` must stay visible: {rows:?}"));
     assert_eq!(beta["orphaned"], true, "{beta}");
     assert_eq!(beta["running"], true, "{beta}");
-    let human = run(&project, &runtime, &["ps"]);
+    let human = run(&project, &env, &["ps"]);
     let human = String::from_utf8(human.stdout).expect("ps is UTF-8");
     assert!(human.contains("orphaned"), "{human}");
-    let coloured = run_pty(&project, &runtime, &["ps"], &[], None);
+    let coloured = run_pty(&project, &env, &["ps"], &[], None);
     assert!(
-        coloured.output.contains("\u{1b}[33morphaned"),
-        "`orphaned` must be yellow on a colour TTY: {:?}",
+        coloured.output.contains("\u{1b}[1;33morphaned\u{1b}[0m"),
+        "`orphaned` must be bold yellow on a colour TTY: {:?}",
         coloured.output
     );
 
-    let up = run(&project, &runtime, &["up"]);
+    let up = run(&project, &env, &["up"]);
     assert!(
         up.status.success(),
         "reconcile `up` failed: {}",
         String::from_utf8_lossy(&up.stderr)
     );
     assert!(!String::from_utf8_lossy(&up.stdout).contains('\u{1b}'));
-    let ps = run(&project, &runtime, &["ps", "--json"]);
+    let ps = run(&project, &env, &["ps", "--json"]);
     let reply: serde_json::Value = serde_json::from_slice(&ps.stdout).expect("ps --json");
     let rows = services(&reply["worlds"][0]);
     assert!(
@@ -743,7 +783,7 @@ fn live_boots_once_paints_the_panel_reconciles_orphans_and_replays_logs() {
     assert_eq!(alpha["running"], true, "{alpha}");
     let http = run(
         &project,
-        &runtime,
+        &env,
         &[
             "exec",
             "alpha",
@@ -769,7 +809,7 @@ fn live_boots_once_paints_the_panel_reconciles_orphans_and_replays_logs() {
     assert!(project.join("Forkfile").is_file());
     let hook_boot = run_pty(
         &project,
-        &runtime,
+        &env,
         &["up"],
         &[],
         Some((Duration::from_millis(700), 30, 100)),
@@ -801,11 +841,11 @@ fn live_boots_once_paints_the_panel_reconciles_orphans_and_replays_logs() {
     );
 
     // 4b. A failing hook restores the region before the one crisp failure line.
-    let stopped = run(&project, &runtime, &["down"]);
+    let stopped = run(&project, &env, &["down"]);
     assert!(stopped.status.success(), "{stopped:?}");
     fs::write(project.join("Forkfile"), FAIL_FORKFILE).expect("write the failing Forkfile");
     assert!(project.join("Forkfile").is_file());
-    let failed = run_pty(&project, &runtime, &["up"], &[], None);
+    let failed = run_pty(&project, &env, &["up"], &[], None);
     assert!(
         !failed.status.success(),
         "a failing hook must fail `up`: {:?}",
@@ -827,7 +867,7 @@ fn live_boots_once_paints_the_panel_reconciles_orphans_and_replays_logs() {
         "the one failure sentence must point at the log: {failed_readable}"
     );
     // A failed boot may have no published live entry; best-effort cleanup before the next boot.
-    let _ = run(&project, &runtime, &["down"]);
+    let _ = run(&project, &env, &["down"]);
 
     // 4c. `NO_COLOR`/`TERM=dumb` on a real PTY emit zero escape bytes.
     fs::write(project.join("Forkfile"), ONE_SERVICE).expect("restore the service Forkfile");
@@ -836,7 +876,7 @@ fn live_boots_once_paints_the_panel_reconciles_orphans_and_replays_logs() {
         (&["up"][..], &[("NO_COLOR", "1")][..]),
         (&["restart"][..], &[("TERM", "dumb")][..]),
     ] {
-        let output = run_pty(&project, &runtime, args, envs, None);
+        let output = run_pty(&project, &env, args, envs, None);
         assert!(
             output.status.success(),
             "{args:?} on a plain PTY failed: {:?}",
@@ -850,10 +890,10 @@ fn live_boots_once_paints_the_panel_reconciles_orphans_and_replays_logs() {
     }
 
     // 5. `down` keeps captures: every logs shape replays history, and `-f` follows the next `up`.
-    let stopped = run(&project, &runtime, &["down"]);
+    let stopped = run(&project, &env, &["down"]);
     assert!(stopped.status.success(), "{stopped:?}");
     fs::write(project.join("Forkfile"), ONE_SERVICE).expect("restore the service Forkfile");
-    let history = run(&project, &runtime, &["logs", "alpha"]);
+    let history = run(&project, &env, &["logs", "alpha"]);
     assert!(history.status.success(), "{history:?}");
     let history_text = String::from_utf8_lossy(&history.stdout).into_owned();
     assert!(history_text.contains("alpha"), "{history_text:?}");
@@ -863,24 +903,24 @@ fn live_boots_once_paints_the_panel_reconciles_orphans_and_replays_logs() {
         "alpha history must carry a boot divider: {history_text:?}"
     );
 
-    let bare = run(&project, &runtime, &["logs"]);
+    let bare = run(&project, &env, &["logs"]);
     assert!(bare.status.success(), "{bare:?}");
     assert!(
         String::from_utf8_lossy(&bare.stdout).contains("alpha │"),
         "{:?}",
         String::from_utf8_lossy(&bare.stdout)
     );
-    let windowed = run(&project, &runtime, &["logs", "--since", "5m"]);
+    let windowed = run(&project, &env, &["logs", "--since", "5m"]);
     assert!(windowed.status.success(), "{windowed:?}");
     assert!(
         String::from_utf8_lossy(&windowed.stdout).contains("alpha │"),
         "{:?}",
         String::from_utf8_lossy(&windowed.stdout)
     );
-    let all = run(&project, &runtime, &["logs", "-a"]);
+    let all = run(&project, &env, &["logs", "-a"]);
     assert!(all.status.success(), "{all:?}");
     assert!(
-        String::from_utf8_lossy(&all.stdout).contains("alpha │"),
+        String::from_utf8_lossy(&all.stdout).contains("alpha  │"),
         "{:?}",
         String::from_utf8_lossy(&all.stdout)
     );
@@ -889,7 +929,8 @@ fn live_boots_once_paints_the_panel_reconciles_orphans_and_replays_logs() {
     let mut follower = Command::new(binary())
         .args(["logs", "-f", "alpha"])
         .current_dir(&project)
-        .env("XDG_RUNTIME_DIR", &runtime)
+        .env("XDG_RUNTIME_DIR", &env.runtime)
+        .env("XDG_STATE_HOME", &env.state)
         .env("NO_COLOR", "1")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -915,7 +956,7 @@ fn live_boots_once_paints_the_panel_reconciles_orphans_and_replays_logs() {
         }
     });
     std::thread::sleep(Duration::from_millis(600));
-    let up = run(&project, &runtime, &["up"]);
+    let up = run(&project, &env, &["up"]);
     assert!(
         up.status.success(),
         "follower `up` failed: {}",
@@ -950,13 +991,13 @@ fn live_boots_once_paints_the_panel_reconciles_orphans_and_replays_logs() {
     let _ = reader.join();
     assert_eq!(status.code(), Some(0), "Ctrl-C on `logs -f` must exit 0");
 
-    let stopped = run(&project, &runtime, &["down"]);
+    let stopped = run(&project, &env, &["down"]);
     assert!(stopped.status.success(), "{stopped:?}");
     wait_until(
         "the world to disappear from `ps`",
         Duration::from_secs(60),
         || {
-            let ps = run(&project, &runtime, &["ps", "--json"]);
+            let ps = run(&project, &env, &["ps", "--json"]);
             ps.status.success() && String::from_utf8_lossy(&ps.stdout).contains("\"worlds\":[]")
         },
     );

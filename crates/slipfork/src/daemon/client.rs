@@ -48,6 +48,7 @@ pub struct DaemonClient {
     stream: UnixStream,
     socket: std::path::PathBuf,
     next: u64,
+    interrupt: Option<&'static std::sync::atomic::AtomicBool>,
 }
 
 impl DaemonClient {
@@ -121,7 +122,21 @@ impl DaemonClient {
             stream,
             socket,
             next: 0,
+            interrupt: None,
         }
+    }
+
+    /// Aborts blocking polls as `"interrupted"` once `flag` is set by a `SIGINT` handler, while
+    /// retrying benign `EINTR` wakeups such as `SIGWINCH`.
+    #[must_use]
+    pub fn with_interrupt(mut self, flag: &'static std::sync::atomic::AtomicBool) -> Self {
+        self.interrupt = Some(flag);
+        self
+    }
+
+    fn is_interrupted(&self) -> bool {
+        self.interrupt
+            .is_some_and(|flag| flag.load(std::sync::atomic::Ordering::SeqCst))
     }
 
     /// Sends one request, forwards every `event` frame, and returns the final `ok` payload.
@@ -155,6 +170,12 @@ impl DaemonClient {
         let mut lines = slipfork_world::control::FrameLines::new();
         let mut input_done = false;
         loop {
+            if self.is_interrupted() {
+                return Err(DaemonError::new(
+                    "interrupted",
+                    format!("`{method}` interrupted"),
+                ));
+            }
             let mut fds = [
                 libc::pollfd {
                     fd: std::os::fd::AsRawFd::as_raw_fd(&self.stream),
@@ -201,12 +222,16 @@ impl DaemonClient {
             }
             if fds[0].revents & readable != 0 {
                 let mut buffer = [0_u8; 8192];
-                let read = self.stream.read(&mut buffer).map_err(|error| {
-                    DaemonError::new(
-                        "daemon-unavailable",
-                        format!("read `{method}` reply: {error}"),
-                    )
-                })?;
+                let read = match self.stream.read(&mut buffer) {
+                    Ok(read) => read,
+                    Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                    Err(error) => {
+                        return Err(DaemonError::new(
+                            "daemon-unavailable",
+                            format!("read `{method}` reply: {error}"),
+                        ));
+                    }
+                };
                 if read == 0 {
                     return Err(DaemonError::new(
                         "daemon-unavailable",
@@ -324,6 +349,12 @@ impl DaemonClient {
     ) -> Result<Value, DaemonError> {
         let mut lines = slipfork_world::control::FrameLines::new();
         loop {
+            if self.is_interrupted() {
+                return Err(DaemonError::new(
+                    "interrupted",
+                    format!("`{method}` interrupted"),
+                ));
+            }
             let mut pollfd = libc::pollfd {
                 fd: std::os::fd::AsRawFd::as_raw_fd(&self.stream),
                 events: libc::POLLIN,
@@ -334,10 +365,7 @@ impl DaemonClient {
             if ret < 0 {
                 let error = std::io::Error::last_os_error();
                 if error.kind() == std::io::ErrorKind::Interrupted {
-                    return Err(DaemonError::new(
-                        "interrupted",
-                        format!("`{method}` interrupted"),
-                    ));
+                    continue;
                 }
                 return Err(DaemonError::new(
                     "daemon-unavailable",
@@ -349,12 +377,16 @@ impl DaemonClient {
                 continue;
             }
             let mut buffer = [0_u8; 8192];
-            let read = self.stream.read(&mut buffer).map_err(|error| {
-                DaemonError::new(
-                    "daemon-unavailable",
-                    format!("read `{method}` reply: {error}"),
-                )
-            })?;
+            let read = match self.stream.read(&mut buffer) {
+                Ok(read) => read,
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(error) => {
+                    return Err(DaemonError::new(
+                        "daemon-unavailable",
+                        format!("read `{method}` reply: {error}"),
+                    ));
+                }
+            };
             if read == 0 {
                 return Err(DaemonError::new(
                     "daemon-unavailable",

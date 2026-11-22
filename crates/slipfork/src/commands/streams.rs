@@ -69,6 +69,7 @@ extern "C" fn on_sigint(_signal: libc::c_int) {
 }
 
 fn install_sigint() {
+    INTERRUPTED.store(false, Ordering::SeqCst);
     // SAFETY: the handler only stores into an atomic. `signal` installs it (with `SA_RESTART`
     // under glibc); the follow-up `sigaction` clears that flag so a blocking read returns `EINTR`.
     unsafe {
@@ -236,7 +237,7 @@ impl Session {
 
     fn existing_daemon(&self, json: bool) -> Option<DaemonClient> {
         match DaemonClient::connect_existing(self.host()) {
-            Ok(Some(client)) => Some(client),
+            Ok(Some(client)) => Some(client.with_interrupt(&INTERRUPTED)),
             Ok(None) => {
                 let _ = self.report(
                     "no-world",
