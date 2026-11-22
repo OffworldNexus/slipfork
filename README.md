@@ -10,18 +10,10 @@ buckets and background workers — behind one `.localhost` URL. It runs natively
 $ curl -fsSL https://offworldnexus.github.io/slipfork/install.sh | sh
 $ slipfork up
 ✓ Ready -> http://acme-shop.localhost
-```
 
-Then branch off the whole world in under a second:
-
-```console
 $ slipfork fork billing-api
 ✓ Forked billing-api (0.8s) -> http://billing-api--acme-shop.localhost
 ```
-
-The `0.8s` is the whole fork; `≤50ms` of it is CoW snapshotting and the rest boots the cloned stack.
-
-[Get started](docs/getting-started.md) · [The Forkfile](docs/forkfile.md)
 
 ## One file declares the topology
 
@@ -52,10 +44,15 @@ image api . {
 Services live inside the image that runs them, runtime `env` stays separate from build-time `arg`s,
 and `@uv` / `@pnpm` wire lockfile-watched installs automatically.
 
+The `0.8s` fork is the whole operation: `≤50ms` snapshotting and the rest booting the cloned stack.
+Branch off, test a risky migration, and the parent world keeps serving.
+
+[Get started](docs/getting-started.md) · [The Forkfile](docs/forkfile.md)
+
 ## Worlds and forks
 
 A **world** is the running stack declared by one `Forkfile`. A **fork** is an atomic copy-on-write
-snapshot of the world and your checkout, booted on its own URL.
+snapshot of that world and your checkout, booted on its own URL.
 
 ```mermaid
 flowchart LR
@@ -67,16 +64,16 @@ flowchart LR
 ```
 
 Because `.venv`, `node_modules`, database pages and bucket objects already exist on Btrfs, the fork
-costs a snapshot rather than a rebuild. Test a migration on the fork and the parent world keeps
-serving.
+costs a snapshot rather than a rebuild.
 
 | Verb | What it does |
 | :--- | :--- |
 | `slipfork up` | Boot the world and print `✓ Ready -> <url>` |
 | `slipfork fork feat-auth` | Snapshot code and data, boot a fork on its own URL |
 | `slipfork drop feat-auth` | Stop the fork and delete its snapshots |
-| `slipfork status` | One tree of every world, service, port and fork |
+| `slipfork status` | One tree of every world and domain, forks included |
 | `slipfork logs -f api` | Stream merged logs with per-service gutters |
+| `slipfork shell pg` | Real PTY `psql`; `shell api` for bash, `shell cache` for redis-cli |
 | `slipfork down` | Stop the world, keep the data subvolumes |
 
 ## Requirements
@@ -94,6 +91,6 @@ exactly those things and prints one `next:` remedy per failing row — zero Dock
 * [Getting started](docs/getting-started.md) — install, Forkfile, `up`, `fork`, `drop`, `down`.
 * [Install](docs/install.md) — `.deb`, `.rpm`, pacman, APK, the daemon and the `:80` ingress.
 * [The Forkfile](docs/forkfile.md) — the complete `# forkfile: 0.1` language.
-* [CLI](docs/cli.md) — daily verbs, visual trees, progress and `NO_COLOR`.
+* [CLI](docs/cli.md) — daily verbs, domain trees, progress and `NO_COLOR`.
 
 Release history lives in [CHANGELOG.md](CHANGELOG.md).

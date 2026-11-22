@@ -42,6 +42,8 @@ flowchart TD
 | Userns still blocked on Ubuntu | `sudo slipfork daemon install --ingress`, then `sudo apparmor_parser -r /etc/apparmor.d/slipfork` |
 | `Forkfile:<line>` with one `next:` | Fix that line, then `slipfork up` again |
 | Boot says a step failed while the world stays up | `slipfork logs <service>`, then `slipfork restart <service>` |
+| An image build failed | `slipfork logs <image>`, fix the Dockerfile, then `slipfork up` |
+| A row shows `orphaned` after a `Forkfile` edit | `slipfork up` stops undeclared pods and boots the new ones |
 
 !!! warning "Do not run worlds under `sudo`"
 

@@ -50,16 +50,10 @@ Stop a fork and delete its project and world\-data snapshots
 Stream merged stdout and stderr with a colored gutter per service
 .TP
 \fBslipfork shell\fR
-Open `sh \-i` inside a service or image pod (no PTY is allocated)
+Attach a real PTY: bash/sh, psql, or redis\-cli for one declared target
 .TP
 \fBslipfork exec\fR
 Run a command inside a pod and forward its exit code
-.TP
-\fBslipfork db\fR
-Open psql against the world\*(Aqs postgres; piped stdin executes SQL
-.TP
-\fBslipfork redis\fR
-Open redis\-cli against the world\*(Aqs redis; piped stdin runs commands
 .TP
 \fBslipfork env\fR
 Print resolved runtime variables; secrets stay redacted by default

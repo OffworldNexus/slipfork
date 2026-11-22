@@ -158,3 +158,39 @@ Request and response heads are capped at 16 KiB; bodies and WebSocket bytes stre
 * [OSPP v1](ospp.md) — pairing, encrypted secrets and sealed dumps.
 * [Agents & OpenCode](agents-and-opencode.md) — one fork per agent session.
 * [Troubleshooting](troubleshooting.md) — the real message behind every failed boot.
+
+## One PTY, one log file
+
+`slipfork shell <target>` never nests a shell wrapper. The daemon asks `crun exec` for a console
+socket, receives the PTY master over `SCM_RIGHTS`, and a `crossterm` raw-mode guard restores your
+terminal on exit. Resizes are forwarded as `TIOCSWINSZ` on `SIGWINCH`.
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant T as terminal
+  participant D as per-user daemon
+  participant C as crun exec
+  participant P as pod
+  T->>D: slipfork shell pg
+  D->>C: exec --tty --console-socket sock
+  C-->>D: /dev/pts/N master via SCM_RIGHTS
+  D->>P: psql on the app_db database
+  P-->>T: bytes over the forwarded PTY
+  T->>D: SIGWINCH cols rows
+  D->>P: ioctl(TIOCSWINSZ)
+```
+
+Service and image targets open `bash` when the rootfs has it (prompt `(<world>:<target>) \w$ `) and
+`sh` otherwise; postgres targets open `psql`, redis targets `redis-cli`. A bucket is refused with one
+`next:` line.
+
+Every build, setup, hook and pod byte lands in `<store>/logs/<world>/<id>.log`, never the terminal.
+The boot bar keeps exactly one row per task, which is why `slipfork logs <image>` can still read a
+build log after a failed cold `up`.
+
+## Where next
+
+* [OSPP v1](ospp.md) — pairing, encrypted secrets and sealed dumps.
+* [Agents & OpenCode](agents-and-opencode.md) — one fork per agent session.
+* [Troubleshooting](troubleshooting.md) — the real message behind every failed boot.

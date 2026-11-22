@@ -56,23 +56,25 @@ value. [The Forkfile](forkfile.md) covers the rest of the language.
 
 ```console
 $ slipfork up
-→ [1/5] Image api
-✓ Image api (built 1.4s)
-✓ Resources pg, cache, uploads ready (0.4s)
-✓ Setup api: uv sync (1.1s)
-✓ Services web running (0.2s)
-✓ Ready -> http://acme-shop.localhost
+• image     api       cached                     1ms
+✓ resource  pg        postgres 18 ready         38ms
+✓ resource  cache     redis 7 ready              7ms
+✓ resource  uploads   s3 (private) ready         1ms
+✓ setup     api       uv sync (up to date)       0ms
+✓ service   web       running -> /api           42ms
+✓ Ready -> http://acme-shop.localhost  (218ms)
 ```
 
-Open the URL, let Slipfork open it, or follow the logs:
+Each finished task is one aligned row; all build and hook output goes to the world log. Open the URL,
+let Slipfork open it, or follow the logs:
 
 ```console
 $ slipfork open
 $ slipfork logs -f web
 ```
 
-Boot progress replaces each line in place. On the next run the unchanged `uv sync` node prints a dim
-`(up to date)` and finishes in under 1 ms.
+Repeating `slipfork up` with an unchanged file returns in `0ms`. After an edit it reconciles: pods no
+longer declared stop and show `orphaned` until reaped, and new services boot.
 
 ## 4. Fork the world
 
@@ -92,12 +94,20 @@ stamps came along, so nothing installs again. Throw the experiment away when you
 $ slipfork drop billing-api
 ```
 
-## 5. Stop and start again
+`slipfork status` lists worlds flat, each with its domains; `slipfork ps` shows only the world rooted
+in the current directory.
+
+## 5. Stop, start and poke around
 
 ```console
 $ slipfork down        # stop pods, keep data subvolumes
 $ slipfork up          # back on http://acme-shop.localhost
+$ slipfork shell pg    # real psql PTY
+(acme-shop:pg) / #
 ```
+
+`slipfork shell api` opens `bash` (or `sh`) in a service pod, and `slipfork shell cache` opens
+`redis-cli`. A bucket is not a shell: `slipfork shell uploads` refuses with one `next:` line.
 
 ```mermaid
 flowchart LR

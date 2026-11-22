@@ -22,7 +22,7 @@ $ slipfork up
 !!! info "One URL, cloud-identical routes"
 
     `http://acme-shop.localhost` is the front door. `route /api` keeps its prefix, `domain mail`
-    answers on `mail.acme-shop.localhost`, and an `s3` CDN on `static-cdn.acme-shop.localhost`.
+    answers on `mail.acme-shop.localhost`, and each `s3` bucket on `<bucket>.acme-shop.localhost`.
 
 ## Worlds and forks
 
@@ -76,7 +76,7 @@ and `@uv` / `@pnpm` wire lockfile-watched installs automatically.
 | `slipfork up` | Boot the world and print `✓ Ready -> <url>` |
 | `slipfork fork feat-auth` | Snapshot code and data, boot a fork on its own URL |
 | `slipfork drop feat-auth` | Stop the fork and delete its snapshots |
-| `slipfork status` | One tree of every world, service, port and fork |
+| `slipfork status` | One tree of every world and domain, forks included |
 | `slipfork logs -f api` | Stream merged logs with per-service gutters |
 | `slipfork down` | Stop the world, keep the data subvolumes |
 

@@ -64,9 +64,13 @@ When `slipfork` is not on `PATH`, set the plugin's `binary` option to its absolu
 $ slipfork fork billing-api
 ✓ Forked billing-api (0.8s) -> http://billing-api--acme-shop.localhost
 $ slipfork status
-● acme-shop  http://acme-shop.localhost
-  └─ forks
-     └─ ● billing-api  http://billing-api--acme-shop.localhost
+● acme-shop  ~/projects/acme-shop
+  http://acme-shop.localhost
+    /     -> web      service              running
+
+● billing-api  ~/projects/acme-shop/.forks/billing-api
+  http://billing-api--acme-shop.localhost
+    /     -> web      service              running
 $ slipfork drop billing-api
 ```
 

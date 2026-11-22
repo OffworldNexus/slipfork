@@ -2819,3 +2819,16 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-22T13:15 [M3.50.7] (lead) OWNER REFINEMENT (uniform domains): every domain uses the SAME 2-level shape — 'http://<domain>' then '<path> -> <target>  <status>'; ZERO inline S3-only domain
 - 2026-11-22T13:15 [M3.50.5] (lead) OWNER REFINEMENT: specs/02 + docs/cli.md show the uniform domain->path->target shape for ALL domains including S3 buckets (no special-case inline bucket rows).
 - 2026-11-22T13:18 [M3.50.2] (lead) status ready -> done
+- 2026-11-22T13:18 [M3.50.5] (lead) status ready -> active
+- 2026-11-22T13:18 [M3.50.5] (lead) attempt 1/3 started
+- 2026-11-22T13:18 [M3.50.5] (lead) base fe0c1c8aeb39a2e3ff81a82ac9fa9d14c36e3873
+- 2026-11-22T13:21 [M3.50.8] (lead) created (task) Timestamped log index (<id>.idx) + slipfork logs multi-target --since/--until/-t
+- 2026-11-22T13:21 [M3.50.6] (lead) edited fields
+- 2026-11-22T13:21 [M3.50.5] (lead) OWNER ADDENDUM (logs): document the timestamped canonical log index (<id>.idx, 16-byte (ts_ms, offset) entries, O(log N) seek) and the new CLI: slipfork logs [T
+- 2026-11-22T13:21 [M3.50.8] (lead) edited fields
+- 2026-11-22T13:21 [M3.50.8] (lead) status ready -> active
+- 2026-11-22T13:21 [M3.50.8] (lead) attempt 1/3 started
+- 2026-11-22T13:21 [M3.50.8] (lead) base fe0c1c8aeb39a2e3ff81a82ac9fa9d14c36e3873
+- 2026-11-22T13:22 [M3.50.5] (lead) edited fields
+- 2026-11-22T13:22 [M3.50.5] (lead) edited fields
+- 2026-11-22T13:23 [M3.50.5] (lead) status active -> done

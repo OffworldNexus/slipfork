@@ -18,22 +18,22 @@ redis cache
 s3 uploads
 s3 assets {
   policy public-read
-  cdn static-cdn
+  cdn edge
 }
 
 env common {
   DATABASE_URL         = app_db.url
   REDIS_URL            = cache.url
   UPLOADS_URL          = uploads.url
-  AWS_S3_CUSTOM_DOMAIN = static-cdn.domain
+  ASSETS_CDN_URL       = edge.url
   SECRET_KEY           = secret(SECRET_KEY) ?? random_hex(32)
 }
 
-image backend . {
+image api . {
   on dev: stage dev
   use env common
 
-  service api {
+  service web {
     port 8000
     route /api
     pre-deploy: @uv run alembic upgrade head
@@ -54,7 +54,6 @@ starts, with a `Forkfile:<line>:<col>` caret span naming the token.
 `features` declares named switches, and `default` is active for local commands. `on <expr>` accepts
 `dev`, `!dev`, `dev & mail`, and `staging | preview`; it can select a Dockerfile `stage`, add a
 conditional `arg`, swap in a hot-reloading `@`-prefixed `run:`, or add a dev-only tool like `mailpit`.
-
 Slipfork type-checks every `on` branch at once before booting anything.
 
 ## `image` scopes
@@ -84,15 +83,23 @@ Top-level resources and named child resources share one flat, globally unique sy
 | `postgres pg { database app_db }` | PostgreSQL 18 (`version` optional) | `app_db.url`, `.host`, `.port`, `.name`, `.user`, `.password` |
 | `redis cache` | Redis 7 (`version` optional) | `cache.url`, `.host`, `.port` |
 | `s3 uploads` | Private: anonymous `GET` answers `403` | `uploads.url`, `.endpoint`, `.bucket`, `.access_key`, `.secret_key` |
-| <code>s3 assets {<br>  policy public-read<br>  cdn static-cdn<br>}</code> | `public-read` bucket plus a CDN | bucket properties + `static-cdn.domain`, `.url` |
-| `domain main` | Primary `<world>.localhost` | `main.domain`, `main.url` |
+| <code>s3 assets {<br>  policy public-read<br>  cdn edge<br>}</code> | `public-read` bucket plus a cloud CDN binding | bucket properties + `edge.domain`, `edge.url` |
+| `domain main` | Primary plus extra `<id>.<world>.localhost` | `main.domain`, `main.url` |
 
 A plain `s3` bucket is `policy private` by default: anonymous `GET`/`HEAD` answer `403`.
 
-!!! warning "`cdn` never silently publicizes a bucket"
-    `cdn <id>` requires an explicit `policy public-read` inside the same `s3`; otherwise the file fails at `Forkfile:line:col`, and `http://static-cdn.<world>.localhost` stays unused.
+Every `s3` bucket serves at `http://<bucket>.<world>.localhost`; a fork serves it at
+`http://<bucket>.<fork>--<world>.localhost`. `cdn <id>` is a **cloud** binding only: locally
+`<id>.domain` and `<id>.url` resolve to the bucket's own URL, and no separate `<id>.localhost`
+hostname exists.
 
-Any `domain`, `cdn`, bucket, or `route ... domain <prefix>.*` label outside RFC 1123 (`1..=63`, lowercase `[a-z0-9-]`, alphanumeric edges; buckets `3..=63` and never IPv4-shaped) fails statically.
+!!! warning "`cdn` never silently publicizes a bucket"
+
+    `cdn <id>` requires an explicit `policy public-read` inside the same `s3`; otherwise the file
+    fails at `Forkfile:line:col` with one `next:` remedy.
+
+Any `domain`, `cdn`, bucket, or `route ... domain <prefix>.*` label outside RFC 1123 (`1..=63`,
+lowercase `[a-z0-9-]`, alphanumeric edges; buckets `3..=63` and never IPv4-shaped) fails statically.
 
 ## Runtime `env` and secrets
 
