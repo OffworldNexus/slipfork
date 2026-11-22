@@ -39,3 +39,23 @@ triad fix pass: apk rm, docs.yml, lsp linux stage, rehearsal release/*, stamp re
 ## 2026-11-22T19:31 [lead]
 
 status active -> done
+
+## 2026-11-22T19:46 [lead]
+
+status done -> ready: live gate: default LIVE_RUNTIME_DIR exceeds AF_UNIX path limit for fork pods
+
+## 2026-11-22T19:46 [lead]
+
+attempt 3/3 started
+
+## 2026-11-22T19:46 [lead]
+
+status ready -> active
+
+## 2026-11-22T19:46 [lead]
+
+shorten LIVE_RUNTIME_DIR to /dev/shm/sf-live-runtime (108-byte sockaddr limit)
+
+## 2026-11-22T19:46 [lead]
+
+status active -> done

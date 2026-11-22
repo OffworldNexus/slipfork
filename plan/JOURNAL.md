@@ -2992,3 +2992,8 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-22T19:43 [M3.53.3] (lead) status ready -> active
 - 2026-11-22T19:43 [M3.53.3] (lead) root cause: Pty::wait_for short-circuits on pre-seen api ready, never drains post-up bytes
 - 2026-11-22T19:44 [M3.53.3] (lead) status active -> done
+- 2026-11-22T19:46 [M3.53.1] (lead) status done -> ready: live gate: default LIVE_RUNTIME_DIR exceeds AF_UNIX path limit for fork pods
+- 2026-11-22T19:46 [M3.53.1] (lead) attempt 3/3 started
+- 2026-11-22T19:46 [M3.53.1] (lead) status ready -> active
+- 2026-11-22T19:46 [M3.53.1] (lead) shorten LIVE_RUNTIME_DIR to /dev/shm/sf-live-runtime (108-byte sockaddr limit)
+- 2026-11-22T19:46 [M3.53.1] (lead) status active -> done

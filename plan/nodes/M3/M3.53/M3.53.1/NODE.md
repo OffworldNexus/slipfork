@@ -7,11 +7,11 @@ owner: implementer
 priority: 3
 depends_on: []
 paths: [".github/workflows/** scripts/** packaging/** Makefile .opencode/**"]
-attempts: 2
+attempts: 3
 max_attempts: 3
 escalation: none
 created: "2026-11-22T19:20"
-updated: "2026-11-22T19:31"
+updated: "2026-11-22T19:46"
 ---
 
 # Goal

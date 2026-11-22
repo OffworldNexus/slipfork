@@ -4,7 +4,7 @@ UVX ?= uvx
 
 # Point this at a directory on a real Btrfs mount (a loop file is fine); never `/tmp`.
 SLIPFORK_TEST_ROOT ?=
-LIVE_RUNTIME_DIR ?= /dev/shm/slipfork-live-runtime
+LIVE_RUNTIME_DIR ?= /dev/shm/sf-live-runtime
 LIVE_SUITES := \
 	slipfork-world/critical_btrfs_live \
 	slipfork-image/critical_oci_live \
