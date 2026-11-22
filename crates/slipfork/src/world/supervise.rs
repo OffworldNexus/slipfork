@@ -1,6 +1,5 @@
 //! Hidden detached-supervisor mode: boot the world, stream typed events, wait for the init.
 
-use std::ffi::OsStr;
 use std::fs;
 use std::io::Write;
 use std::path::Path;
@@ -10,8 +9,8 @@ use std::sync::{Arc, Mutex};
 use serde_json::{Value, json};
 use slipfork_world::{
     BootEvent, BootFailure, BootKind, BootScheduler, BootState, BootStep, ResourceKind, StampStore,
-    StepOutcome, StoreLayout, WorldName, WorldStamp, WorldStampStore, control, is_btrfs_path,
-    plan_epoch, world_plan, write_pg_checkpoints,
+    StepOutcome, WorldName, WorldStamp, WorldStampStore, control, is_btrfs_path, plan_epoch,
+    world_plan, write_pg_checkpoints,
 };
 
 use crate::commands::Session;
@@ -79,12 +78,10 @@ fn supervisor_main(project: &Path, world: &str, env: &HostEnv) -> Result<(), Str
     let trusted = stamp_store
         .trusted_stamp(&plan, pg_clones.iter().map(|clone| clone.as_path()))
         .is_some();
-    let is_fork = StoreLayout::parse_fork_world(OsStr::new(world.as_str())).is_some();
-    let stamps = if is_fork {
-        StampStore::for_fork(project, trusted, stamp_store.load())
-    } else {
-        StampStore::gated(project, trusted)
-    };
+    // A root world that was `down` and then `up` with an unchanged `Forkfile`, lockfiles, and
+    // `PGDATA` carries the same paired checkpoint a fork does, so it reuses the trusted hook path
+    // instead of re-running `pg` -> `pre-deploy` -> `api` serially.
+    let stamps = stamps_for(project, &stamp_store, trusted);
 
     let sink_emitter = Arc::clone(&emitter);
     let sink_world = world.as_str().to_owned();
@@ -171,6 +168,20 @@ fn supervisor_main(project: &Path, world: &str, env: &HostEnv) -> Result<(), Str
     let awaited = runtime.await_exit_and_cleanup();
     let _ = fs::remove_file(state_path(project));
     awaited
+}
+
+/// The stamp store this boot may trust.
+///
+/// Only a checkpoint whose `world_epoch` still matches the planned DAG **and** whose PG siblings
+/// carry the same epoch is trusted; that single trusted value decides `for_fork` for every world,
+/// root or fork. A stale epoch (edited `Forkfile`, changed `PGDATA` pair) or a stale input digest
+/// (changed lockfile) therefore still re-runs `@<tool>`/`before-start`/`pre-deploy`.
+fn stamps_for(project: &Path, store: &WorldStampStore, trusted: bool) -> StampStore {
+    if trusted {
+        StampStore::for_fork(project, true, store.load())
+    } else {
+        StampStore::gated(project, false)
+    }
 }
 
 fn boot_event_json(event: &BootEvent) -> Value {
@@ -444,5 +455,131 @@ impl Write for EventLog {
             self.forward(&line);
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+    use std::fs;
+    use std::path::{Path, PathBuf};
+
+    use slipfork_world::{
+        BootKind, BootStep, HookPhase, StepStamp, WorldPlan, WorldStamp, WorldStampStore,
+        plan_epoch, write_pg_checkpoint,
+    };
+
+    use super::stamps_for;
+
+    /// The conditional-stamp key a `pre-deploy when changed(uv.lock)` hook records.
+    const LOCK_STAMP: &str = "pre-deploy-lock";
+
+    fn temp(prefix: &str) -> tempfile::TempDir {
+        tempfile::Builder::new()
+            .prefix(prefix)
+            .tempdir_in("/var/tmp")
+            .expect("create a disk temp directory")
+    }
+
+    fn hook_plan(command: &str, lock: Option<&str>) -> WorldPlan {
+        WorldPlan {
+            steps: vec![BootStep {
+                kind: BootKind::Hook,
+                image: None,
+                subject: "api".to_owned(),
+                phase: Some(HookPhase::PreDeploy),
+                label: "hook api:pre-deploy".to_owned(),
+                command: Some(command.to_owned()),
+                stamp: lock.map(|digest| StepStamp {
+                    key: LOCK_STAMP.to_owned(),
+                    digest: digest.to_owned(),
+                }),
+                uses_env: false,
+                line: 7,
+                deps: Vec::new(),
+            }],
+            ..WorldPlan::default()
+        }
+    }
+
+    /// Writes a real world checkpoint plus the paired PG sibling `slipfork fork` also copies.
+    fn checkpoint(root: &Path, plan: &WorldPlan) -> (WorldStampStore, PathBuf) {
+        let world_dir = root.join("worlds/demo");
+        let pg_clone = root.join("worlds/demo.pg.pg");
+        fs::create_dir_all(&world_dir).expect("create the world dir");
+        fs::create_dir_all(&pg_clone).expect("create the PG clone");
+        let store = WorldStampStore::new(&world_dir);
+        let epoch = plan_epoch(plan);
+        store
+            .save(&WorldStamp::checkpoint(
+                plan,
+                epoch.clone(),
+                BTreeMap::new(),
+            ))
+            .expect("write the world stamp");
+        write_pg_checkpoint(&pg_clone, &epoch).expect("write the PG stamp");
+        (store, pg_clone)
+    }
+
+    /// A warm root world reuses its paired checkpoint; a changed `Forkfile` or lockfile re-runs it.
+    #[test]
+    fn a_paired_world_stamp_skips_pre_deploy_and_any_change_reruns_it() {
+        let root = temp("slipfork-warm-stamp");
+        let project = root.path().join("demo");
+        fs::create_dir_all(project.join(".slipfork")).expect("create .slipfork");
+
+        let warm = hook_plan("uv run seed", None);
+        let (store, pg_clone) = checkpoint(root.path(), &warm);
+        let trusted = |plan: &WorldPlan| store.trusted_stamp(plan, [pg_clone.as_path()]).is_some();
+        assert!(
+            trusted(&warm),
+            "an unchanged plan + paired PG stamp is trusted"
+        );
+        let stamps = stamps_for(&project, &store, trusted(&warm));
+        assert!(
+            stamps.is_step_current(&warm.steps, 0),
+            "a warm `up` must print `hook api:pre-deploy up to date`"
+        );
+
+        // An edited `Forkfile` changes `world_epoch`, so nothing is trusted and the hook runs.
+        let edited = hook_plan("uv run seed --fresh", None);
+        assert!(
+            !trusted(&edited),
+            "an edited Forkfile invalidates the checkpoint"
+        );
+        let stamps = stamps_for(&project, &store, trusted(&edited));
+        assert!(
+            !stamps.is_step_current(&edited.steps, 0),
+            "an edited Forkfile must re-run `pre-deploy`"
+        );
+
+        // A lockfile edit keeps the epoch but makes the recorded conditional digest stale.
+        let lock = project.join(".slipfork").join(LOCK_STAMP);
+        fs::write(&lock, "uv.lock@aaa\n").expect("write the lockfile stamp");
+        let pinned = hook_plan("uv run seed", Some("uv.lock@aaa"));
+        let (pinned_store, pinned_pg) = checkpoint(root.path(), &pinned);
+        let pinned_trusted = |plan: &WorldPlan| {
+            pinned_store
+                .trusted_stamp(plan, [pinned_pg.as_path()])
+                .is_some()
+        };
+        assert!(pinned_trusted(&pinned));
+        let stamps = stamps_for(&project, &pinned_store, pinned_trusted(&pinned));
+        assert!(
+            stamps.is_step_current(&pinned.steps, 0),
+            "an unchanged lockfile stays `up to date`"
+        );
+
+        let relocked = hook_plan("uv run seed", Some("uv.lock@bbb"));
+        assert_eq!(
+            plan_epoch(&relocked),
+            plan_epoch(&pinned),
+            "same plan shape, same epoch"
+        );
+        let stamps = stamps_for(&project, &pinned_store, pinned_trusted(&relocked));
+        assert!(
+            !stamps.is_step_current(&relocked.steps, 0),
+            "a changed lockfile must re-run `pre-deploy`"
+        );
     }
 }

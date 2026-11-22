@@ -3041,3 +3041,17 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-22T22:15 [M3.55] (lead) attempt 2/3 started
 - 2026-11-22T22:15 [M3.55] (lead) triad fix pass: BuildLog split, WorldTools cohesion, egress log location, doctor remedy, corpus+stage+tee tests, failure-detail polish
 - 2026-11-22T22:30 [M3.55] (lead) status active -> done
+- 2026-11-22T22:30 [M3.57] (lead) status ready -> active
+- 2026-11-22T22:30 [M3.57] (lead) attempt 1/3 started
+- 2026-11-22T22:30 [M3.57] (lead) base 1e09e17fc55de7f6cd757afed1b46b637fcf4b3c
+- 2026-11-22T22:37 [M3.57] (lead) edited fields
+- 2026-11-22T22:37 [M3.57] (lead) edited fields
+- 2026-11-22T22:37 [M3.57.1] (lead) created (task) Parallelism: warm-up stamp reuse + concurrent pod teardown
+- 2026-11-22T22:37 [M3.57.2] (lead) created (task) One borderless ANSI-aware table engine across boot/doctor/env/secret/status
+- 2026-11-22T22:37 [M3.57.3] (lead) created (task) plan frame at t=0, precomputed widths, live spinner rows & DECSTBM summary
+- 2026-11-22T22:37 [M3.57.1] (lead) status ready -> active
+- 2026-11-22T22:37 [M3.57.1] (lead) attempt 1/3 started
+- 2026-11-22T22:37 [M3.57.1] (lead) base 1e09e17fc55de7f6cd757afed1b46b637fcf4b3c
+- 2026-11-22T22:37 [M3.57.2] (lead) status ready -> active
+- 2026-11-22T22:37 [M3.57.2] (lead) attempt 1/3 started
+- 2026-11-22T22:37 [M3.57.2] (lead) base 1e09e17fc55de7f6cd757afed1b46b637fcf4b3c

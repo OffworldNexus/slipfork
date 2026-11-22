@@ -80,24 +80,21 @@ impl WorldRuntime {
             env.uid,
             env.gid,
         );
-        // A fork whose `world_epoch` and paired PG stamps match the copied parent stamp adopts
-        // the parent's sealed image subvolumes directly: no Dockerfile arg re-evaluation (so
-        // `arg VITE_CDN_URL = static-cdn.url` keeps its digest), no context walk, no re-seal.
-        let adopted = if is_fork {
-            let stamps = WorldStampStore::new(layout.world(&world));
-            let pg_clones: Vec<_> = plan
-                .resources
-                .iter()
-                .filter(|resource| resource.resource == ResourceKind::Postgres)
-                .map(|resource| layout.world_clone(&world, resource.resource, &resource.id))
-                .collect();
-            stamps
-                .trusted_stamp(plan, pg_clones.iter().map(PathBuf::as_path))
-                .map(|stamp| stamp.images)
-                .unwrap_or_default()
-        } else {
-            BTreeMap::new()
-        };
+        // A world whose `world_epoch` and paired PG stamps match its planned DAG adopts its sealed
+        // image subvolumes directly: no Dockerfile arg re-evaluation (so `arg VITE_CDN_URL =
+        // static-cdn.url` keeps its digest), no context walk, no re-seal. A warm root world after
+        // `down` qualifies exactly like a fork; `ImageCache` still refuses a vanished subvolume.
+        let stamps = WorldStampStore::new(layout.world(&world));
+        let pg_clones: Vec<_> = plan
+            .resources
+            .iter()
+            .filter(|resource| resource.resource == ResourceKind::Postgres)
+            .map(|resource| layout.world_clone(&world, resource.resource, &resource.id))
+            .collect();
+        let adopted = stamps
+            .trusted_stamp(plan, pg_clones.iter().map(PathBuf::as_path))
+            .map(|stamp| stamp.images)
+            .unwrap_or_default();
         let images = ImageCache::new(
             world_engine,
             &layout,

@@ -230,17 +230,46 @@ fn abort_run_once(
 
 /// `crun kill --all SIGKILL` then `crun delete --force`; both are best-effort teardown.
 pub(super) fn crun_delete(shared: &WorldShared, id: &str) {
+    let deadline = Instant::now() + Duration::from_secs(10);
     for args in [
         ["kill", "--all", id, "SIGKILL"].as_slice(),
         ["delete", "--force", id].as_slice(),
     ] {
-        let _ = shared
-            .crun_command()
-            .args(args)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
+        let _ = crun_in(shared, args, deadline);
+    }
+}
+
+/// Runs one `crun` subcommand under a shared deadline.
+///
+/// A wedged `crun` is killed and reaped at the deadline, so one slow pod can never stretch the
+/// whole world's teardown past its budget; the failure names the subcommand instead of vanishing.
+pub(super) fn crun_in(
+    shared: &WorldShared,
+    args: &[&str],
+    deadline: Instant,
+) -> Result<(), String> {
+    let action = args.first().copied().unwrap_or("run");
+    let mut child = shared
+        .crun_command()
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|source| format!("`crun {action}` could not start: {source}"))?;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) if status.success() => return Ok(()),
+            Ok(Some(status)) => return Err(format!("`crun {action}` exited with {status}")),
+            Ok(None) => {}
+            Err(source) => return Err(format!("`crun {action}` wait: {source}")),
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(format!("`crun {action}` exceeded the teardown deadline"));
+        }
+        thread::sleep(Duration::from_millis(5));
     }
 }
 

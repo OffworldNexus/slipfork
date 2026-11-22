@@ -1,9 +1,8 @@
 ---
 id: M3.57
 title: "True & visible parallelism: warm-up stamp reuse (not is_fork-only), parallel pod stop on down & live in-place spinner rows above DECSTBM bar"
-kind: task
-status: ready
-owner: implementer
+kind: epic
+status: active
 priority: 3
 depends_on: [M3.55]
 paths: ["crates/slipfork-world/**", "crates/slipfork/**", "specs/02-cli-ux.md", "docs/**"]
@@ -11,7 +10,7 @@ attempts: 0
 max_attempts: 3
 escalation: none
 created: "2026-11-22T21:44"
-updated: "2026-11-22T21:44"
+updated: "2026-11-22T22:37"
 ---
 
 # Goal
