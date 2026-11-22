@@ -57,6 +57,35 @@ pub struct BuildReport {
     pub build_time: Duration,
 }
 
+/// Declaration-ordered span of stages one build must evaluate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StageWalk {
+    /// Index of the last stage to evaluate; its sealed state is the build report's result.
+    pub end: usize,
+}
+
+/// Resolves real `--target` semantics: stages are evaluated in declaration order, the walk stops
+/// after the requested stage, and a targetless build walks through the final stage.
+pub fn stage_walk(stages: &[Stage], target: Option<&str>) -> Result<StageWalk> {
+    let Some(target) = target else {
+        return stages
+            .len()
+            .checked_sub(1)
+            .map(|end| StageWalk { end })
+            .ok_or_else(|| Error::UnknownStage {
+                name: "final".to_owned(),
+            });
+    };
+    let wanted = target.to_ascii_lowercase();
+    stages
+        .iter()
+        .position(|stage| stage.alias.as_deref() == Some(wanted.as_str()))
+        .map(|end| StageWalk { end })
+        .ok_or_else(|| Error::UnknownStage {
+            name: target.to_owned(),
+        })
+}
+
 /// Native `Dockerfile` builder behind the [`BaseImageBuilder`] port.
 pub struct NativeImageBuilder {
     world: Arc<dyn WorldEngine>,
@@ -108,15 +137,19 @@ impl NativeImageBuilder {
         let source = fs::read_to_string(&request.dockerfile)
             .map_err(|source| Error::io("read", &request.dockerfile, source))?;
         let stages = DockerfileParser::parse(&source)?;
+        let walk = stage_walk(&stages, request.target.as_deref())?;
+        // Only the requested prefix runs, so a stage past `--target` must never force `crun` or
+        // pull context files into this build.
+        let walked = &stages[..=walk.end];
         let runtime = CrunStepRuntime::new(self.host.clone());
-        if stages
+        if walked
             .iter()
             .flat_map(|stage| &stage.instructions)
             .any(|parsed| matches!(parsed.instruction, Instruction::Run(_)))
         {
             runtime.ensure_crun()?;
         }
-        let needs_context = stages
+        let needs_context = walked
             .iter()
             .flat_map(|stage| &stage.instructions)
             .any(|parsed| {
@@ -132,19 +165,6 @@ impl NativeImageBuilder {
         };
         let context_hash = context.hash()?;
         self.layout.ensure()?;
-        let target = request
-            .target
-            .as_ref()
-            .map(|name| name.to_ascii_lowercase());
-        if let Some(target) = &target
-            && !stages
-                .iter()
-                .any(|stage| stage.alias.as_deref() == Some(target.as_str()))
-        {
-            return Err(Error::UnknownStage {
-                name: target.clone(),
-            });
-        }
         let mut run = BuildRun::new(
             self,
             request,
@@ -154,7 +174,7 @@ impl NativeImageBuilder {
             log,
             &stages,
         );
-        let state = self.build_stages(&mut run, &stages, target.as_deref())?;
+        let state = self.build_stages(&mut run, &stages, walk.end)?;
         Ok(BuildReport {
             rootfs: state.rootfs,
             key: state.key,
@@ -165,24 +185,19 @@ impl NativeImageBuilder {
         })
     }
 
-    /// Walks every stage in declaration order and returns the requested (or final) stage state.
+    /// Evaluates the stages a [`stage_walk`] selected and returns the walked stage's state.
     fn build_stages(
         &self,
         run: &mut BuildRun<'_>,
         stages: &[Stage],
-        target: Option<&str>,
+        end: usize,
     ) -> Result<StageState> {
-        let mut final_state = None;
-        for stage in stages {
+        for stage in &stages[..end] {
             let state = run.stage(stage)?;
-            if target.is_none_or(|target| stage.alias.as_deref() == Some(target)) {
-                final_state = Some(state.clone());
-            }
             run.finish_stage(stage, state);
         }
-        final_state.ok_or_else(|| Error::UnknownStage {
-            name: target.unwrap_or("final").to_owned(),
-        })
+        // `stage_walk` proved `end < stages.len()`, so the target stage always exists.
+        run.stage(&stages[end])
     }
 
     fn base_state(

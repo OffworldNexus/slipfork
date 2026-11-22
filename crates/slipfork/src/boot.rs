@@ -31,6 +31,7 @@ pub use self::render::elapsed_text;
 /// One live boot pane; drop it (via [`BootTui::finish`]) before printing the final result.
 pub struct BootTui {
     mode: UiMode,
+    width: usize,
     total: usize,
     done: usize,
     started: Instant,
@@ -148,6 +149,7 @@ impl BootTui {
             .or_else(|| ascii.clone().map(Screen::Ascii));
         Self {
             mode,
+            width,
             total: 0,
             done: 0,
             started: Instant::now(),
@@ -295,13 +297,24 @@ impl BootTui {
             return;
         }
         let row = text::failed_row(kind, name, self.mode.color());
+        let details = text::failure_details(
+            event["message"].as_str().unwrap_or_default(),
+            event["remedy"].as_str(),
+            event["line"].as_u64(),
+            self.width,
+            self.mode.color(),
+        );
         let sentence = text::failure_sentence(kind, name);
         if self.pane.is_some() {
             self.verdict.push(row);
+            self.verdict.extend(details);
             self.diagnostics.push(sentence);
             return;
         }
         self.line(&row);
+        for detail in details {
+            self.line(&detail);
+        }
         eprintln!("{sentence}");
     }
 

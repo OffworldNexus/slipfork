@@ -2,16 +2,16 @@
 id: M3.55
 title: "Upgrade support/demo & live /home/slipfork/demo on 165.232.86.174 to a real Python (uv + FastAPI) & SvelteKit (pnpm) full-stack app"
 kind: task
-status: active
+status: done
 owner: implementer
 priority: 3
 depends_on: [M3.54, M3.56]
 paths: ["support/demo/**", "docs/**", README.md, "crates/**", "editors/**", "specs/**"]
-attempts: 1
+attempts: 2
 max_attempts: 3
 escalation: none
 created: "2026-11-22T20:59"
-updated: "2026-11-22T21:40"
+updated: "2026-11-22T22:30"
 ---
 
 # Goal

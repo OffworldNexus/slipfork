@@ -70,6 +70,26 @@ impl<'a> Lexer<'a> {
         self.peek_significant_char() == Some(expected)
     }
 
+    /// Whether the source at the cursor starts with the single word `word`.
+    pub(crate) fn starts_word(&self, word: &str) -> bool {
+        match self.src[self.pos..].strip_prefix(word) {
+            Some(tail) => tail.is_empty() || tail.starts_with(|c: char| c.is_whitespace()),
+            None => false,
+        }
+    }
+
+    /// Captures the cursor so a speculative parse can be rewound.
+    pub(crate) const fn mark(&self) -> (usize, u32, u32) {
+        (self.pos, self.line, self.col)
+    }
+
+    /// Rewinds to a [`Lexer::mark`] capture.
+    pub(crate) fn reset(&mut self, mark: (usize, u32, u32)) {
+        self.pos = mark.0;
+        self.line = mark.1;
+        self.col = mark.2;
+    }
+
     /// Reads one bare word (path, image reference, route path, change pattern).
     pub(crate) fn raw_word(&mut self) -> Result<(String, Span), Diagnostic> {
         self.skip_inline_space();

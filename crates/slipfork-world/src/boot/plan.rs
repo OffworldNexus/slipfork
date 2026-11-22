@@ -7,7 +7,7 @@ use super::{BootStep, FailedHook, HookPhase, ImageNode, ResourceNode, ServiceNod
 use crate::resources::{ResourceKind, S3Bucket};
 use slipfork_forkfile::ast::*;
 use slipfork_forkfile::boot::SetupNode;
-use slipfork_forkfile::{Command, CommandPart, FeatureSet, each_enabled};
+use slipfork_forkfile::{CommandPart, FeatureSet, each_enabled};
 use std::path::{Path, PathBuf};
 /// Builds the world boot plan from a checked `Forkfile` and its project root.
 pub fn world_plan(doc: &Forkfile, root: &Path) -> crate::Result<WorldPlan> {
@@ -157,7 +157,7 @@ impl PlanBuilder<'_> {
             &mut internal_ports,
             &mut raw_run,
         );
-        let command = raw_run.and_then(|hook| render_hook(hook, port));
+        let command = raw_run.and_then(|hook| render_hook(hook, port, self.features));
         self.services.push(ServiceNode {
             id: service.id.clone(),
             image: image.to_owned(),
@@ -169,7 +169,7 @@ impl PlanBuilder<'_> {
         self.service_items(image, &service.id, &service.body.items);
     }
     fn hook(&mut self, image: &str, owner: &str, phase: HookPhase, hook: &Hook) {
-        for command in hook_commands(hook) {
+        for command in hook.commands(self.features) {
             self.hooks.push(HookRecord {
                 image: image.to_owned(),
                 owner: owner.to_owned(),
@@ -254,17 +254,8 @@ fn image_dockerfile(image: &Image) -> Option<PathBuf> {
         _ => None,
     })
 }
-fn hook_commands(hook: &Hook) -> Vec<&Command> {
-    match &hook.body {
-        HookBody::Inline(command) => vec![command],
-        HookBody::Block(block) => block.items.iter().collect(),
-    }
-}
-fn render_hook(hook: &Hook, port: Option<u16>) -> Option<String> {
-    let command = match &hook.body {
-        HookBody::Inline(command) => command,
-        HookBody::Block(block) => block.items.last()?,
-    };
+fn render_hook(hook: &Hook, port: Option<u16>, features: &FeatureSet) -> Option<String> {
+    let command = hook.commands(features).pop()?;
     let mut out = String::new();
     if let Some(tool) = &command.tool {
         out.push('@');

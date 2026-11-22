@@ -1,79 +1,84 @@
-"""Background worker polling PostgreSQL 18, updating Redis 7, and notifying Mailpit."""
+"""Background worker: BRPOP on the Redis `jobs` list, event rows, 15s heartbeat."""
 
 from __future__ import annotations
 
-import datetime as dt
+import json
 import os
 import signal
-import smtplib
-import sys
 import time
-from email.message import EmailMessage
 
-from clients import pg_query, redis_cmd
+import redis
 
-running = True
+from app import db
+from app.world import world_id
 
-
-def _stop(_sig: int, _frame: object) -> None:
-    global running
-    running = False
-
-
-signal.signal(signal.SIGTERM, _stop)
-signal.signal(signal.SIGINT, _stop)
+HEARTBEAT_SECONDS = 15
+SCHEMA_WAIT_SECONDS = 30.0
+STOP = False
 
 
-def notify_mailpit(world: str, count: str) -> None:
-    smtp_addr = os.environ.get("SMTP_ADDR")
-    if not smtp_addr or redis_cmd("GET", "slipfork:mail_sent"):
-        return
-    host, port_s = smtp_addr.split(":", 1)
-    public_url = os.environ.get("PUBLIC_URL", "")
-    cdn_url = os.environ.get("CDN_URL", "")
-    msg = EmailMessage()
-    msg["Subject"] = f"[Slipfork] World `{world}` is live ({count} releases)"
-    msg["From"] = "worker@slipfork.localhost"
-    msg["To"] = "dev@slipfork.localhost"
-    msg.set_content(
-        f"World `{world}` booted cleanly on Btrfs + crun.\n"
-        f"URL: {public_url}\n"
-        f"CDN: {cdn_url}/badge.svg\n"
-    )
-    with smtplib.SMTP(host, int(port_s), timeout=3.0) as smtp:
-        smtp.send_message(msg)
-    redis_cmd("SET", "slipfork:mail_sent", "1")
-    print(f"[worker] delivered ready email to Mailpit ({smtp_addr})", flush=True)
+def _stop(_signum: int, _frame: object) -> None:
+    global STOP
+    STOP = True
+
+
+def wait_for_schema(world: str) -> bool:
+    """Bounded wait for the api `pre-deploy` migration; log at most once per boot."""
+    deadline = time.monotonic() + SCHEMA_WAIT_SECONDS
+    announced = False
+    while not STOP and time.monotonic() < deadline:
+        try:
+            rows = db.query("SELECT to_regclass('public.events') IS NOT NULL AS ready")
+            if rows[0]["ready"]:
+                return True
+        except Exception:
+            pass
+        if not announced:
+            print(
+                f"[worker] waiting for `events` in `{world}` (api pre-deploy migrates it)",
+                flush=True,
+            )
+            announced = True
+        time.sleep(0.25)
+    if announced:
+        print(
+            f"[worker] `events` still missing after {SCHEMA_WAIT_SECONDS:.0f}s; jobs retry",
+            flush=True,
+        )
+    return False
+
+
+def handle(client: redis.Redis, world: str, raw: str) -> None:
+    try:
+        job = json.loads(raw)
+    except json.JSONDecodeError:
+        job = {"kind": "raw"}
+    kind = str(job.get("kind", "job"))
+    activity = client.incr("activity")
+    db.execute("INSERT INTO events (kind, world) VALUES (%s, %s)", (kind, world))
+    print(f"[worker] handled {kind} in `{world}` (activity={activity})", flush=True)
 
 
 def main() -> None:
-    world = os.environ.get("SLIPFORK_WORLD", "demo")
-    tick = 0
-    print(f"[worker] started in world `{world}`", flush=True)
-    while running:
-        tick += 1
+    signal.signal(signal.SIGTERM, _stop)
+    signal.signal(signal.SIGINT, _stop)
+    world = world_id()
+    client = redis.Redis.from_url(os.environ["REDIS_URL"], decode_responses=True)
+    print(f"[worker] listening on Redis `jobs` for `{world}`", flush=True)
+    wait_for_schema(world)
+    last_beat = 0.0
+    while not STOP:
+        if time.monotonic() - last_beat >= HEARTBEAT_SECONDS:
+            client.rpush("jobs", json.dumps({"kind": "heartbeat", "world": world}))
+            last_beat = time.monotonic()
+        popped = client.brpop("jobs", timeout=1)
+        if popped is None:
+            continue
         try:
-            rows = pg_query("SELECT COUNT(*) AS count FROM releases;")
-            count = rows[0]["count"] if rows else "0"
-            stamp = dt.datetime.now(dt.UTC).strftime("%H:%M:%SZ")
-            redis_cmd(
-                "SET",
-                "slipfork:worker:heartbeat",
-                f"tick={tick} rows={count} at={stamp}",
-            )
-            notify_mailpit(world, count or "0")
-            if tick == 1 or tick % 6 == 0:
-                print(
-                    f"[worker] heartbeat tick={tick} world={world} releases={count}",
-                    flush=True,
-                )
+            handle(client, world, popped[1])
         except Exception as exc:
-            print(f"[worker] transient check error: {exc}", file=sys.stderr, flush=True)
-        for _ in range(50):
-            if not running:
-                break
-            time.sleep(0.2)
-    print(f"[worker] shutting down cleanly in world `{world}`", flush=True)
+            print(f"[worker] job failed: {exc}", flush=True)
+    print(f"[worker] stopped cleanly in `{world}`", flush=True)
 
 
 if __name__ == "__main__":

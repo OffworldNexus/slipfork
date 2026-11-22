@@ -193,7 +193,10 @@ impl PodSpec {
 pub struct PodHost {
     /// `crun` executable path.
     pub crun: PathBuf,
-    /// Optional host `resolv.conf` bound read-only into each pod.
+    /// Optional resolver file bound read-only into each pod as `/etc/resolv.conf`.
+    ///
+    /// Must hold a non-loopback `nameserver`: the pod's own netns has no systemd-resolved
+    /// stub on `127.0.0.53`, so a loopback-only file breaks all egress DNS.
     pub resolv_conf: Option<PathBuf>,
     /// Invoking uid, identity-mapped inside the world user namespace.
     pub uid: u32,

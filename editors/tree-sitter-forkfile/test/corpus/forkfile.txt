@@ -236,3 +236,90 @@ s3 assets {
     (on_s3_item
       (identifier)
       (policy_declaration))))
+
+==================
+Nested on guards inside a command block
+==================
+
+# forkfile: 0.1
+
+image backend . {
+  service web {
+    run {
+      echo one
+      on dev {
+        echo dev only
+      }
+      on !dev: echo prod only
+    }
+  }
+}
+---
+
+(source_file
+  (header)
+  (image
+    (identifier)
+    (image_source
+      (directory))
+    (service
+      (identifier)
+      (hook
+        (command_block
+          (command
+            (command_text))
+          (on_command_item
+            (identifier)
+            (command_block
+              (command
+                (command_text))))
+          (on_command_item
+            (unary_expression
+              (identifier))
+            (command
+              (command_text))))))))
+
+==================
+Change-guarded hook with a command block
+==================
+
+# forkfile: 0.1
+
+features {
+  dev
+}
+
+image backend . {
+  service web {
+    before-start when changed(package.json, pnpm-lock.yaml) {
+      @pnpm install
+      on dev: @pnpm install --frozen-lockfile
+    }
+  }
+}
+---
+
+(source_file
+  (header)
+  (features
+    (feature_group
+      (identifier)))
+  (image
+    (identifier)
+    (image_source
+      (directory))
+    (service
+      (identifier)
+      (hook
+        (change_guard
+          (path)
+          (path))
+        (command_block
+          (command
+            (tool)
+            (command_text))
+          (on_command_item
+            (identifier)
+            (command
+              (tool)
+              (command_text))))))))

@@ -151,7 +151,7 @@ impl WorldSupervisor {
 
     /// Blocks until the world init exits (any `down`, crash, or lifeline EOF).
     pub fn await_exit(&mut self) -> Result<()> {
-        let unshare = self.host.unshare.clone();
+        let unshare = self.host.tools.unshare.clone();
         let Some(live) = self.live.as_mut() else {
             return Ok(());
         };
@@ -170,7 +170,11 @@ impl WorldSupervisor {
 
     /// Stops every pod through the init, then waits, kills the group, and proves it empty.
     pub fn stop(&mut self) -> Result<()> {
+        let egress = self.egress.take();
         let Some(mut live) = self.live.take() else {
+            if let Some(mut egress) = egress {
+                egress.reap()?;
+            }
             return Ok(());
         };
         live.next_request += 1;
@@ -190,7 +194,7 @@ impl WorldSupervisor {
             if live
                 .launcher
                 .try_wait()
-                .map_err(|source| Error::io("wait", &self.host.unshare, source))?
+                .map_err(|source| Error::io("wait", &self.host.tools.unshare, source))?
                 .is_some()
             {
                 exited = true;
@@ -219,6 +223,12 @@ impl WorldSupervisor {
             }
         }
         let _ = fs::remove_dir_all(self.pods.path());
-        outcome
+        outcome?;
+        // The forwarder runs in its own process group, so the group-empty proof never covers it;
+        // reap it explicitly so no `slirp4netns` outlives the world.
+        if let Some(mut egress) = egress {
+            egress.reap()?;
+        }
+        Ok(())
     }
 }

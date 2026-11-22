@@ -88,4 +88,4 @@ pub use resources::{
     TemplateState,
 };
 pub use runtime_dir::RuntimePods;
-pub use supervisor::{PodStatus, WorldHost, WorldSupervisor, pod_statuses};
+pub use supervisor::{PodStatus, WorldHost, WorldSupervisor, WorldTools, pod_statuses};

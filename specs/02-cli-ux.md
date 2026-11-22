@@ -122,8 +122,13 @@ On error the guard clears the panel, restores the screen, prints the failed row 
 
 ```text
 ✗ image     backend   failed                    84ms
+  Forkfile:12: `RUN pnpm run build` failed: `crun` exited with code 1
+  next: fix the `RUN` command above, then rerun `slipfork up`
 ✗ Failed to build image backend — check logs with: slipfork logs backend
 ```
+
+The indented detail rows carry the `Forkfile:<line>:` context the daemon reported and exactly one
+`next:` remedy (`next:` dim, the command bold), so a failure never ends in prose.
 
 `NO_COLOR`, `TERM=dumb` and pipes emit zero `\x1b[` bytes and zero SGR; the ASCII path uses `\r` only and `--json` is pure JSON.
 

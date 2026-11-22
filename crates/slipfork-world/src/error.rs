@@ -65,6 +65,12 @@ pub enum Error {
     PodLaunch { message: String },
     /// The NDJSON control protocol was violated.
     Protocol { message: String },
+    /// The world's `slirp4netns` forwarder exited, or its `tap0` never came up.
+    Egress {
+        /// Forwarder exit code, `None` when it is still running but never attached.
+        status: Option<i32>,
+        message: String,
+    },
     /// `/proc/<init-pid>/ns/*` did not match the observed namespace identities.
     NamespaceMismatch {
         kind: String,
@@ -215,6 +221,13 @@ impl fmt::Display for Error {
                 f,
                 "control protocol error: {message}\nnext: re-run with the `slipfork-world-init` binary from this build"
             ),
+            Self::Egress { status, message } => {
+                let status = status.map_or_else(String::new, |code| format!(", exit {code}"));
+                write!(
+                    f,
+                    "world egress `slirp4netns` failed{status}: {message}\nnext: install slirp4netns (and retry); pods cannot reach PyPI, npm, or HTTPS without it"
+                )
+            }
             Self::NamespaceMismatch {
                 kind,
                 expected,

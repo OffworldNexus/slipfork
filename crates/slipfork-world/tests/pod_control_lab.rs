@@ -806,7 +806,7 @@ mod pty_lab {
     use std::sync::Arc;
     use std::time::{Duration, Instant};
 
-    use slipfork_world::{WorldHost, WorldSupervisor};
+    use slipfork_world::{WorldHost, WorldSupervisor, WorldTools};
 
     fn require_tool(name: &str) -> PathBuf {
         std::env::var_os("PATH")
@@ -977,6 +977,7 @@ mod pty_lab {
     fn a_real_pty_is_handed_off_resized_and_logs_outlive_the_pod() {
         let crun = require_tool("crun");
         let unshare = require_tool("unshare");
+        let slirp4netns = require_tool("slirp4netns");
         let runtime = tmpfs_dir("rt");
         let store = StoreLayout::new(lab("live-pty"));
         let world = WorldName::parse("ptylab").expect("valid world");
@@ -987,10 +988,14 @@ mod pty_lab {
         let uid = unsafe { libc::getuid() };
         let gid = unsafe { libc::getgid() };
         let host = WorldHost::new(
-            crun.clone(),
-            unshare,
-            PathBuf::from(env!("CARGO_BIN_EXE_slipfork-world-init")),
+            WorldTools {
+                crun: crun.clone(),
+                unshare,
+                slirp4netns,
+                world_init: PathBuf::from(env!("CARGO_BIN_EXE_slipfork-world-init")),
+            },
             runtime.clone(),
+            store.logs_root(),
             uid,
             gid,
             None,
@@ -1160,6 +1165,7 @@ mod pty_lab {
     fn concurrent_launches_overlap_and_same_id_coalesces() {
         let crun = require_tool("crun");
         let unshare = require_tool("unshare");
+        let slirp4netns = require_tool("slirp4netns");
         let runtime = tmpfs_dir("rt-launch");
         let store = StoreLayout::new(lab("live-launch"));
         let world = WorldName::parse("launchlab").expect("valid world");
@@ -1170,10 +1176,14 @@ mod pty_lab {
         let uid = unsafe { libc::getuid() };
         let gid = unsafe { libc::getgid() };
         let host = WorldHost::new(
-            crun,
-            unshare,
-            PathBuf::from(env!("CARGO_BIN_EXE_slipfork-world-init")),
+            WorldTools {
+                crun,
+                unshare,
+                slirp4netns,
+                world_init: PathBuf::from(env!("CARGO_BIN_EXE_slipfork-world-init")),
+            },
             runtime.clone(),
+            store.logs_root(),
             uid,
             gid,
             None,

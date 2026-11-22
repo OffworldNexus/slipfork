@@ -1,6 +1,7 @@
 use super::*;
 
 mod check;
+mod commands;
 mod format;
 mod parser;
 

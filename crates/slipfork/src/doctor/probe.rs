@@ -151,9 +151,8 @@ fn containers(host: &HostEnv) -> Check {
         })
         .unwrap_or_else(|| "installed".to_owned());
     let label = format!("crun {version}");
-    match sandbox(&host.path) {
-        Sandbox::Enabled => Check::new(
-            "Containers",
+    let (mut ready, mut parts, mut remedy) = match sandbox(&host.path) {
+        Sandbox::Enabled => (
             true,
             vec![
                 Part::Bold(label),
@@ -161,8 +160,7 @@ fn containers(host: &HostEnv) -> Check {
             ],
             None,
         ),
-        Sandbox::AppArmor => Check::new(
-            "Containers",
+        Sandbox::AppArmor => (
             false,
             vec![
                 Part::Bold(label),
@@ -173,8 +171,7 @@ fn containers(host: &HostEnv) -> Check {
                     .to_owned(),
             ),
         ),
-        Sandbox::Unavailable => Check::new(
-            "Containers",
+        Sandbox::Unavailable => (
             false,
             vec![
                 Part::Bold(label),
@@ -182,7 +179,23 @@ fn containers(host: &HostEnv) -> Check {
             ],
             Some("sudo sysctl -w user.max_user_namespaces=2147483647 and retry".to_owned()),
         ),
+    };
+    // One row carries both tools a rootless world needs: `crun` for pods and `slirp4netns` for
+    // world egress. Missing egress demotes the row but never hides the sandbox verdict.
+    if find(&host.path, "slirp4netns").is_none() {
+        ready = false;
+        parts.push(Part::Bold("slirp4netns not installed".to_owned()));
+        parts.push(Part::Dim(
+            "pods cannot reach PyPI, npm, or HTTPS".to_owned(),
+        ));
+        let egress_remedy =
+            "install slirp4netns (for example `sudo apt install slirp4netns`) and retry";
+        remedy = Some(match remedy {
+            Some(sandbox) => format!("{sandbox}; {egress_remedy}"),
+            None => egress_remedy.to_owned(),
+        });
     }
+    Check::new("Containers", ready, parts, remedy)
 }
 
 fn sandbox(path: &[PathBuf]) -> Sandbox {

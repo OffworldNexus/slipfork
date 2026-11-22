@@ -3035,3 +3035,9 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-22T21:40 [M3.55] (conductor) edited fields
 - 2026-11-22T21:44 [M3.57] (conductor) created (task) True & visible parallelism: warm-up stamp reuse (not is_fork-only), parallel pod stop on down & live in-place spinner rows above DECSTBM bar
 - 2026-11-22T21:46 [M3.58] (conductor) created (task) Run-ID log model (slipfork logs --run <id>) for build/setup/hook runs, slirp4netns outbound world networking & single-✗ error formatting
+- 2026-11-22T22:13 [M3.55] (lead) status active -> review
+- 2026-11-22T22:15 [M3.55] (lead) status review -> ready
+- 2026-11-22T22:15 [M3.55] (lead) status ready -> active
+- 2026-11-22T22:15 [M3.55] (lead) attempt 2/3 started
+- 2026-11-22T22:15 [M3.55] (lead) triad fix pass: BuildLog split, WorldTools cohesion, egress log location, doctor remedy, corpus+stage+tee tests, failure-detail polish
+- 2026-11-22T22:30 [M3.55] (lead) status active -> done

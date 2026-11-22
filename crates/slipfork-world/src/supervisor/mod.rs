@@ -7,6 +7,7 @@
 //! `slipfork down`/`restart` speak to, so no second socket exists.
 
 mod boot;
+mod egress;
 mod r#loop;
 
 use std::io::{BufReader, Write};
@@ -21,17 +22,28 @@ use crate::namespaces::NamespaceTable;
 use crate::pod::PodHost;
 use crate::runtime_dir::RuntimePods;
 
+/// The host executables one world needs; the composition root resolves every path.
+#[derive(Debug, Clone)]
+pub struct WorldTools {
+    /// `crun` container runtime.
+    pub crun: PathBuf,
+    /// `unshare` launcher.
+    pub unshare: PathBuf,
+    /// `slirp4netns` user-mode NAT forwarder that gives every pod world egress.
+    pub slirp4netns: PathBuf,
+    /// `slipfork-world-init` executable (second binary of this crate).
+    pub world_init: PathBuf,
+}
+
 /// Host values the supervisor needs; the composition root injects every one of them.
 #[derive(Debug, Clone)]
 pub struct WorldHost {
-    /// `crun` executable.
-    pub crun: PathBuf,
-    /// `unshare` executable.
-    pub unshare: PathBuf,
-    /// `slipfork-world-init` executable (second binary of this crate).
-    pub world_init: PathBuf,
+    /// The host executables one world needs.
+    pub tools: WorldTools,
     /// `$XDG_RUNTIME_DIR` (must be a tmpfs mount).
     pub runtime_dir: PathBuf,
+    /// `<store>/logs`: the durable capture root every world log survives in.
+    pub logs_root: PathBuf,
     /// Invoking uid; identity-mapped inside the world user namespace.
     pub uid: u32,
     /// Invoking gid; identity-mapped inside the world user namespace.
@@ -46,19 +58,17 @@ impl WorldHost {
     /// Assembles the injected host description; the composition root resolves every path.
     #[must_use]
     pub fn new(
-        crun: PathBuf,
-        unshare: PathBuf,
-        world_init: PathBuf,
+        tools: WorldTools,
         runtime_dir: PathBuf,
+        logs_root: PathBuf,
         uid: u32,
         gid: u32,
         resolv_conf: Option<PathBuf>,
     ) -> Self {
         Self {
-            crun,
-            unshare,
-            world_init,
+            tools,
             runtime_dir,
+            logs_root,
             uid,
             gid,
             resolv_conf,
@@ -70,7 +80,7 @@ impl WorldHost {
     #[must_use]
     pub fn pod_host(&self) -> PodHost {
         PodHost {
-            crun: self.crun.clone(),
+            crun: self.tools.crun.clone(),
             resolv_conf: self.resolv_conf.clone(),
             uid: self.uid,
             gid: self.gid,
@@ -87,6 +97,19 @@ pub(super) struct LiveWorld {
     pub(super) namespaces: NamespaceTable,
     pub(super) next_request: u64,
     pub(super) pods: Vec<String>,
+}
+
+impl LiveWorld {
+    /// Tears down a half-booted world: kills the launcher's whole process group, reaps it, and
+    /// proves the group is empty. Every boot failure path funnels through this one teardown.
+    pub(super) fn abort(&mut self) -> Result<()> {
+        // SAFETY: a negative pid addresses the launcher's own group and never dereferences memory.
+        unsafe {
+            libc::kill(-self.pgid, libc::SIGKILL);
+        }
+        let _ = self.launcher.wait();
+        boot::wait_for_empty_group(self.pgid, Duration::from_secs(5))
+    }
 }
 
 /// One tracked pod as reported by the world init itself.
@@ -108,6 +131,8 @@ pub struct WorldSupervisor {
     world: WorldName,
     pods: RuntimePods,
     live: Option<LiveWorld>,
+    /// The world's one `slirp4netns` forwarder; reaped with the world.
+    egress: Option<egress::WorldEgress>,
 }
 
 impl WorldSupervisor {

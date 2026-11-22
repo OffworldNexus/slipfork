@@ -134,6 +134,25 @@ on mail {
 ## 7. Services, hooks and `@<tool>` prequels
 
 - **Hooks and `run`:** `service <id>` supports `before-start`, `pre-deploy`, `post-deploy`, `failed-deploy`, and `run:` / `run { ... }` (optional with an OCI `ENTRYPOINT`/`CMD`), expanding `$port` and `$env.KEY` without shell word-splitting.
+- **`on <expr>` inside command blocks:**
+
+  ```forkfile
+  service front {
+    before-start when changed(package.json, pnpm-lock.yaml) {
+      pnpm install
+      on !dev: pnpm run build
+    }
+    run {
+      on dev: @pnpm exec vite dev --host 0.0.0.0 --port $port
+      on !dev {
+        pnpm install
+        node build
+      }
+    }
+  }
+  ```
+
+  `on <expr>: <cmd>` and `on <expr> { ... }` guard individual lines inside every hook block, nesting to any depth. Each guarded condition is type-checked statically and inactive branches never run, while `on` stays a literal command word unless a complete condition is followed by `:` or `{`.
 - **`before-start when changed(...)`:** hashes inputs against `.slipfork/` stamps, so an unchanged step skips in under 1 ms and the stamps travel into every fork.
 - **`@<tool>` auto-prequels:** `@uv`, `@poetry`, `@pnpm`, `@npm`, `@yarn`, `@bun`, `@composer`, `@bundle`, `@go` and `@cargo` synthesize one deduplicated `(image, lockfile_dir)` install node.
 

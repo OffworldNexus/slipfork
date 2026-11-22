@@ -935,12 +935,71 @@
           "type": "REPEAT",
           "content": {
             "type": "SYMBOL",
-            "name": "command"
+            "name": "_command_item"
           }
         },
         {
           "type": "STRING",
           "value": "}"
+        }
+      ]
+    },
+    "_command_item": {
+      "type": "CHOICE",
+      "members": [
+        {
+          "type": "SYMBOL",
+          "name": "command"
+        },
+        {
+          "type": "SYMBOL",
+          "name": "on_command_item"
+        }
+      ]
+    },
+    "on_command_item": {
+      "type": "SEQ",
+      "members": [
+        {
+          "type": "TOKEN",
+          "content": {
+            "type": "PREC",
+            "value": 1,
+            "content": {
+              "type": "STRING",
+              "value": "on"
+            }
+          }
+        },
+        {
+          "type": "FIELD",
+          "name": "condition",
+          "content": {
+            "type": "SYMBOL",
+            "name": "_expression"
+          }
+        },
+        {
+          "type": "CHOICE",
+          "members": [
+            {
+              "type": "SEQ",
+              "members": [
+                {
+                  "type": "STRING",
+                  "value": ":"
+                },
+                {
+                  "type": "SYMBOL",
+                  "name": "_command_item"
+                }
+              ]
+            },
+            {
+              "type": "SYMBOL",
+              "name": "command_block"
+            }
+          ]
         }
       ]
     },
@@ -980,10 +1039,10 @@
       "type": "TOKEN",
       "content": {
         "type": "PREC",
-        "value": -1,
+        "value": 0,
         "content": {
           "type": "PATTERN",
-          "value": "[^@\\n][^\\n]*"
+          "value": "[^@#}\\n][^\\n]*"
         }
       }
     },

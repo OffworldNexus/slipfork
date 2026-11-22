@@ -15,14 +15,15 @@ use crate::layout::WorldName;
 use crate::namespaces::{NamespaceIdentity, NamespaceTable};
 use crate::runtime_dir::RuntimePods;
 
-use super::{LiveWorld, WorldHost, WorldSupervisor};
+use super::{LiveWorld, WorldHost, WorldSupervisor, egress};
 
 /// Spawns `unshare` around the world init and proves the ready handshake.
 pub(super) fn boot(host: WorldHost, world: &WorldName) -> Result<WorldSupervisor> {
     for (tool, path) in [
-        ("crun", &host.crun),
-        ("unshare", &host.unshare),
-        ("slipfork-world-init", &host.world_init),
+        ("crun", &host.tools.crun),
+        ("unshare", &host.tools.unshare),
+        ("slirp4netns", &host.tools.slirp4netns),
+        ("slipfork-world-init", &host.tools.world_init),
     ] {
         if !path.is_file() {
             return Err(Error::MissingTool {
@@ -33,7 +34,7 @@ pub(super) fn boot(host: WorldHost, world: &WorldName) -> Result<WorldSupervisor
     }
     let pods = RuntimePods::prepare(&host.runtime_dir, world)?;
     let inside_file = pods.path().join("namespaces.inside.json");
-    let mut command = Command::new(&host.unshare);
+    let mut command = Command::new(&host.tools.unshare);
     command
         .args([
             "--user",
@@ -49,13 +50,13 @@ pub(super) fn boot(host: WorldHost, world: &WorldName) -> Result<WorldSupervisor
             "--kill-child=SIGKILL",
             "--",
         ])
-        .arg(&host.world_init)
+        .arg(&host.tools.world_init)
         .arg("--namespaces")
         .arg(&inside_file)
         .arg("--pods")
         .arg(pods.path())
         .arg("--crun")
-        .arg(&host.crun)
+        .arg(&host.tools.crun)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
@@ -64,10 +65,10 @@ pub(super) fn boot(host: WorldHost, world: &WorldName) -> Result<WorldSupervisor
         if source.kind() == std::io::ErrorKind::NotFound {
             Error::MissingTool {
                 tool: "unshare",
-                path: host.unshare.clone(),
+                path: host.tools.unshare.clone(),
             }
         } else {
-            Error::io("spawn", &host.unshare, source)
+            Error::io("spawn", &host.tools.unshare, source)
         }
     })?;
     let pgid = i32::try_from(launcher.id()).unwrap_or(i32::MAX);
@@ -92,8 +93,7 @@ pub(super) fn boot(host: WorldHost, world: &WorldName) -> Result<WorldSupervisor
     let (init_pid, identity) = match ready {
         Ok(ready) => ready,
         Err(err) => {
-            let _ = live.launcher.kill();
-            let _ = live.launcher.wait();
+            let _ = live.abort();
             return Err(err);
         }
     };
@@ -102,11 +102,29 @@ pub(super) fn boot(host: WorldHost, world: &WorldName) -> Result<WorldSupervisor
     namespaces.write_json(&pods.path().join("namespaces.json"))?;
     live.init_pid = init_pid;
     live.namespaces = namespaces;
+    // The world netns ships only `lo`, so one supervised `slirp4netns` forwarder adds `tap0` on
+    // `10.0.2.100/24` plus a default route before any pod starts. `--disable-host-loopback` keeps
+    // the host's `127.0.0.1` dark from pods. The forwarder log lands in the durable world capture
+    // directory, not the tmpfs pod root the fork path unlinks per entry right after boot.
+    let egress = match egress::WorldEgress::attach(
+        &host.tools.slirp4netns,
+        init_pid,
+        &egress::net_dev_path(init_pid),
+        &egress::log_path(&host.logs_root, world),
+        egress::READY_TIMEOUT,
+    ) {
+        Ok(egress) => egress,
+        Err(error) => {
+            let _ = live.abort();
+            return Err(error);
+        }
+    };
     Ok(WorldSupervisor {
         host,
         world: world.clone(),
         pods,
         live: Some(live),
+        egress: Some(egress),
     })
 }
 

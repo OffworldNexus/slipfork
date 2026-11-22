@@ -10,7 +10,6 @@ use std::path::{Component, Path, PathBuf};
 
 use crate::ast::*;
 use crate::eval::FeatureSet;
-use crate::expr::Command;
 use crate::gate::each_enabled;
 
 /// One auto-prequel tool, its install command, and its workspace-root lockfile.
@@ -251,10 +250,7 @@ impl Planner<'_> {
     }
 
     fn hook(&mut self, image: &str, image_dir: &Path, hook: &Hook, always_due: bool) {
-        let commands: Vec<&Command> = match &hook.body {
-            HookBody::Inline(command) => vec![command],
-            HookBody::Block(block) => block.items.iter().collect(),
-        };
+        let commands = hook.commands(self.features);
         let changed = hook.when_changed.as_deref().unwrap_or(&[]);
         for command in commands {
             let tool = command

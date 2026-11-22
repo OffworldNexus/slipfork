@@ -57,7 +57,7 @@ impl<'a> Parser<'a> {
     }
 
     /// Raw reads are only legal with no buffered token, so flush first.
-    fn assert_raw(&self) {
+    pub(crate) fn assert_raw(&self) {
         debug_assert!(
             self.peeked.is_none(),
             "raw reads require a flushed lookahead"

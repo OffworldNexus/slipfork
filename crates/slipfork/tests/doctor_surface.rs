@@ -157,8 +157,14 @@ fn doctor_has_four_plain_rows_and_styled_roles_on_a_terminal() {
             "{needle} must carry its SGR role: {raw:?}"
         );
     }
+    // The `slirp4netns` package name is the one string a user must copy verbatim; the jargon
+    // guard still covers every other occurrence of `netns`.
+    let readable = plain.replace("slirp4netns", "");
     for word in JARGON {
-        assert!(!plain.contains(word), "doctor leaked `{word}`: {plain:?}");
+        assert!(
+            !readable.contains(word),
+            "doctor leaked `{word}`: {plain:?}"
+        );
     }
 
     let no_color = pty(&lab, &["doctor"], &[("NO_COLOR", "1")]);

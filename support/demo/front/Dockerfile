@@ -1,4 +1,9 @@
-FROM python:3.13-slim
-ARG VITE_CDN_URL=http://static-cdn.demo.localhost
-ENV PYTHONUNBUFFERED=1 VITE_CDN_URL=$VITE_CDN_URL
+FROM node:22-slim AS dev
+RUN npm install -g pnpm@10
 WORKDIR /project/front
+
+FROM dev AS prod
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+RUN pnpm install --frozen-lockfile
+COPY . .
+RUN pnpm run build

@@ -1,4 +1,9 @@
 .git
 .slipfork
 .forks
-__pycache__
+**/.venv/**
+**/node_modules/**
+**/build/**
+**/.svelte-kit/**
+**/__pycache__/**
+**/*.pyc

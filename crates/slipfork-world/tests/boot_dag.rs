@@ -351,6 +351,42 @@ fn current_epoch_services_carry_no_resource_edges_and_skip_the_pre_deploy_barrie
         .position(|step| step.phase == Some(slipfork_world::HookPhase::PreDeploy))
         .expect("a pre-deploy node");
 
+    // The demo runs both `backend` services through `@uv`, so the compiler emits exactly one
+    // deduplicated `uv sync` setup node per image. Derive its index instead of hardcoding it.
+    let setups = |image: &str| -> Vec<usize> {
+        (0..plan.steps.len())
+            .filter(|&index| {
+                let step = &plan.steps[index];
+                step.kind == BootKind::Setup && step.image.as_deref() == Some(image)
+            })
+            .collect()
+    };
+    let backend_setups = setups("backend");
+    assert_eq!(
+        backend_setups.len(),
+        1,
+        "`@uv` deduplicates `api` and `worker` into exactly one `uv sync` node"
+    );
+    let backend_setup = backend_setups[0];
+    assert_eq!(
+        plan.steps[backend_setup].command.as_deref(),
+        Some("uv sync"),
+        "the shared backend setup node installs the uv workspace"
+    );
+    let frontend_setups = setups("frontend");
+    assert_eq!(
+        frontend_setups.len(),
+        1,
+        "the shipped demo has one `pnpm install` before-start node for `frontend`"
+    );
+    assert!(
+        plan.steps[frontend_setups[0]]
+            .command
+            .as_deref()
+            .is_some_and(|command| command.contains("pnpm install")),
+        "the frontend setup node is its `pnpm install` before-start"
+    );
+
     let rows: Vec<&str> = plan
         .steps
         .iter()
@@ -369,11 +405,12 @@ fn current_epoch_services_carry_no_resource_edges_and_skip_the_pre_deploy_barrie
         .collect();
     assert_eq!(resources.len(), 4, "the shipped demo has four resources");
     assert!(
-        resources
-            .iter()
-            .all(|dep| !plan.steps[api].deps.contains(dep)),
-        "a service node must not wait for resources: {:?}",
-        plan.steps[api].deps
+        resources.iter().all(
+            |dep| !plan.steps[api].deps.contains(dep) && !plan.steps[worker].deps.contains(dep)
+        ),
+        "a service node must not wait for backing resources: api {:?}, worker {:?}",
+        plan.steps[api].deps,
+        plan.steps[worker].deps
     );
     assert_eq!(
         plan.gated.get(&pre).map(Vec::as_slice),
@@ -386,10 +423,19 @@ fn current_epoch_services_carry_no_resource_edges_and_skip_the_pre_deploy_barrie
             .all(|dep| !plan.steps[pre].deps.contains(dep)),
         "resources gate `pre-deploy` only through the stamped edge"
     );
+    // A service's unconditional edges are exactly its image, its image's setup node(s), and its
+    // own hooks — never a resource, which stays behind `plan.gated`.
+    let mut expected_api = vec![backend, backend_setup, pre];
+    expected_api.sort_unstable();
     assert_eq!(
-        plan.steps[worker].deps,
-        vec![backend],
-        "`worker` carries only its image edge"
+        plan.steps[api].deps, expected_api,
+        "`api` waits for its image, the shared `uv sync`, and its own pre-deploy only"
+    );
+    let mut expected_worker = vec![backend, backend_setup];
+    expected_worker.sort_unstable();
+    assert_eq!(
+        plan.steps[worker].deps, expected_worker,
+        "`worker` carries its image edge plus the shared `uv sync` and no resource edges"
     );
     let graph =
         BootGraph::with_gated(&plan.steps, &plan.gated).expect("the shipped plan is acyclic");

@@ -269,10 +269,10 @@ impl Checker {
             ImageItem::BeforeStart(hook)
             | ImageItem::PreDeploy(hook)
             | ImageItem::PostDeploy(hook)
-            | ImageItem::FailedDeploy(hook) => self.check_hook(hook),
+            | ImageItem::FailedDeploy(hook) => self.check_hook(hook, features),
             ImageItem::Service(service) => {
                 services::check_service(service, symbols, &mut self.diags);
-                self.check_service_items(&service.body.items);
+                self.check_service_items(&service.body.items, features);
             }
             ImageItem::On(on) => {
                 expr::check_condition(&on.cond, features, &mut self.diags);
@@ -291,19 +291,19 @@ impl Checker {
         }
     }
 
-    fn check_service_items(&mut self, items: &[ServiceItem]) {
+    fn check_service_items(&mut self, items: &[ServiceItem], features: &BTreeSet<String>) {
         for item in items {
             match item {
                 ServiceItem::BeforeStart(hook)
                 | ServiceItem::PreDeploy(hook)
                 | ServiceItem::PostDeploy(hook)
                 | ServiceItem::FailedDeploy(hook)
-                | ServiceItem::Run(hook) => self.check_hook(hook),
+                | ServiceItem::Run(hook) => self.check_hook(hook, features),
                 ServiceItem::On(on) => match &on.body {
                     OnBody::Inline(inner) => {
-                        self.check_service_items(std::slice::from_ref(inner.as_ref()));
+                        self.check_service_items(std::slice::from_ref(inner.as_ref()), features);
                     }
-                    OnBody::Block(block) => self.check_service_items(&block.items),
+                    OnBody::Block(block) => self.check_service_items(&block.items, features),
                 },
                 _ => {}
             }
@@ -349,7 +349,7 @@ impl Checker {
         }
     }
 
-    fn check_hook(&mut self, hook: &Hook) {
+    fn check_hook(&mut self, hook: &Hook, features: &BTreeSet<String>) {
         if let Some(paths) = &hook.when_changed
             && paths.is_empty()
         {
@@ -361,9 +361,23 @@ impl Checker {
         }
         match &hook.body {
             HookBody::Inline(command) => self.check_command(command),
-            HookBody::Block(block) => {
-                for command in &block.items {
-                    self.check_command(command);
+            HookBody::Block(block) => self.check_command_items(&block.items, features),
+        }
+    }
+
+    /// Visits every command of a block, validating each nested `on` condition.
+    fn check_command_items(&mut self, items: &[CommandItem], features: &BTreeSet<String>) {
+        for item in items {
+            match item {
+                CommandItem::Command(command) => self.check_command(command),
+                CommandItem::On(on) => {
+                    expr::check_condition(&on.cond, features, &mut self.diags);
+                    match &on.body {
+                        OnBody::Inline(inner) => {
+                            self.check_command_items(std::slice::from_ref(inner.as_ref()), features)
+                        }
+                        OnBody::Block(block) => self.check_command_items(&block.items, features),
+                    }
                 }
             }
         }

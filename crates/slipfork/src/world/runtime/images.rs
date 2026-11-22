@@ -4,7 +4,7 @@
 //! deduplicate concurrent requests for the same image id or OCI reference.
 
 use std::collections::BTreeMap;
-use std::io::{self, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex};
 
@@ -13,13 +13,16 @@ use slipfork_image::{
     Architecture, BuildArgs, BuildRequest, Credentials, ImageLayout, ImageReference,
     NativeImageBuilder, OciPuller, PulledImage, StepHost, StepLayout,
 };
-use slipfork_world::pod_log;
 use slipfork_world::{BootState, ImageNode, ImageStamp, StoreLayout, WorldEngine, WorldName};
 
-use crate::world::supervise::{BootSink, strip_ansi};
+use crate::world::supervise::BootSink;
+
+mod log;
+
+use log::BuildLog;
 
 /// One sealed image plus the OCI metadata every pod derived from it inherits.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub(super) struct BuiltImage {
     /// Read-only rootfs subvolume drawn from the cache.
     pub(super) rootfs: PathBuf,
@@ -223,10 +226,19 @@ impl ImageCache {
         if let Some(reference) = &node.from {
             let parsed = ImageReference::parse(reference).map_err(|error| error.to_string())?;
             let mut tee = BuildLog::new(log, &self.logs_root, image);
-            let pulled = self.puller.pull_into(&parsed, &mut tee).map_err(|error| {
-                format!("pull `{reference}` failed: {error}\nnext: run `slipfork logs {image}`")
-            })?;
-            tee.finish();
+            let pulled = match self.puller.pull_into(&parsed, &mut tee) {
+                Ok(pulled) => {
+                    tee.finish();
+                    pulled
+                }
+                Err(error) => {
+                    let message = format!(
+                        "pull `{reference}` failed: {error}\nnext: run `slipfork logs {image}`"
+                    );
+                    tee.fail(&message);
+                    return Err(message);
+                }
+            };
             let state = if pulled.cached {
                 BootState::Cached
             } else {
@@ -261,10 +273,22 @@ impl ImageCache {
                 target: self.doc.eval_image_stage(image),
             };
             let mut tee = BuildLog::new(log, &self.logs_root, image);
-            let report = self.builder.build(&request, &mut tee).map_err(|error| {
-                format!("build `{image}` failed: {error}\nnext: run `slipfork logs {image}`")
-            })?;
-            tee.finish();
+            let report = match self.builder.build(&request, &mut tee) {
+                Ok(report) => {
+                    tee.finish();
+                    report
+                }
+                Err(error) => {
+                    // A `RUN` writes its output line by line, but its last unterminated tail
+                    // (and pull/`COPY` failures with no output) would otherwise never reach the
+                    // capture, leaving `slipfork logs <image>` empty exactly when it matters.
+                    let message = format!(
+                        "build `{image}` failed: {error}\nnext: run `slipfork logs {image}`"
+                    );
+                    tee.fail(&message);
+                    return Err(message);
+                }
+            };
             let _ = writeln!(
                 log,
                 "dockerfile {image}: {} cached, {} built",
@@ -361,71 +385,6 @@ impl ImageCache {
     }
 }
 
-/// A `Write` tee: build progress goes to the live boot sink **and** to
-/// `<store>/logs/<world>/<image>.log`, so `slipfork logs <image>` reads failed-build output.
-struct BuildLog<'a> {
-    sink: &'a mut BootSink,
-    logs_root: PathBuf,
-    id: String,
-    pending: Vec<u8>,
-}
-
-impl<'a> BuildLog<'a> {
-    fn new(sink: &'a mut BootSink, logs_root: &Path, id: &str) -> Self {
-        Self {
-            sink,
-            logs_root: logs_root.to_path_buf(),
-            id: id.to_owned(),
-            pending: Vec::new(),
-        }
-    }
-
-    /// Writes one cleaned line to the live sink and the `slipfork logs` capture.
-    fn emit(&mut self, line: &[u8]) -> io::Result<()> {
-        let Some(text) = clean_line(line) else {
-            return Ok(());
-        };
-        self.sink.write_all(text.as_bytes())?;
-        let _ = pod_log::append(&self.logs_root, &self.id, text.as_bytes());
-        Ok(())
-    }
-
-    /// Flushes a trailing unterminated line into the capture file.
-    fn finish(&mut self) {
-        let pending = std::mem::take(&mut self.pending);
-        let _ = self.emit(&pending);
-    }
-}
-
-impl Write for BuildLog<'_> {
-    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
-        self.pending.extend_from_slice(buffer);
-        let mut start = 0;
-        while let Some(offset) = self.pending[start..].iter().position(|byte| *byte == b'\n') {
-            let end = start + offset;
-            let line = self.pending[start..end].to_vec();
-            self.emit(&line)?;
-            start = end + 1;
-        }
-        if start > 0 {
-            self.pending.drain(..start);
-        }
-        Ok(buffer.len())
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        self.sink.flush()
-    }
-}
-
-/// Strips CSI escapes and bare `\r` progress from one raw child line, so neither the `--json`
-/// stream nor `<image>.log` ever carries terminal control bytes.
-fn clean_line(bytes: &[u8]) -> Option<String> {
-    let raw = String::from_utf8_lossy(bytes);
-    let text = strip_ansi(&raw).replace('\r', "");
-    (!text.trim().is_empty()).then_some(text)
-}
-
 enum FlightRole<T: Clone> {
     Lead(FlightGuard<T>),
     Wait(Flight<T>),
@@ -462,5 +421,80 @@ fn wait_flight<T: Clone>(flight: &Flight<T>) -> Result<T, String> {
             }
             FlightState::Done(outcome) => return outcome.clone(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+    use std::path::PathBuf;
+    use std::sync::{Arc, Mutex};
+
+    use slipfork_forkfile::parse;
+    use slipfork_image::{Architecture, StepHost};
+    use slipfork_world::{BtrfsEngine, ImageNode, StoreLayout, WorldEngine, WorldName};
+
+    use super::ImageCache;
+    use crate::world::supervise::{BootSink, Emitter};
+
+    /// A real failing build reaches `<store>/logs/<world>/<image>.log` through the cache's own
+    /// error wiring: deleting `tee.fail(&message)` leaves the capture empty when it matters.
+    #[test]
+    fn a_failed_build_lands_in_the_world_image_log() {
+        let root = tempfile::Builder::new()
+            .prefix("image-cache-log")
+            .tempdir_in("/var/tmp")
+            .expect("disk-backed scratch root");
+        let project = root.path().join("project");
+        std::fs::create_dir_all(&project).expect("create the build context");
+        std::fs::write(project.join("Dockerfile"), "FROM scratch\nRUN false\n")
+            .expect("write the Dockerfile");
+        let store = StoreLayout::new(root.path().join("store"));
+        let engine = Arc::new(BtrfsEngine::new(store.clone()));
+        let world = WorldName::parse("demo").expect("valid world name");
+        let doc = parse("# forkfile: 0.1\n\nimage web . {\n  dockerfile Dockerfile\n}\n")
+            .expect("the Forkfile parses");
+        let cache = ImageCache::new(
+            Arc::clone(&engine) as Arc<dyn WorldEngine>,
+            &store,
+            world.clone(),
+            &project,
+            &doc,
+            vec![ImageNode {
+                id: "web".to_owned(),
+                directory: PathBuf::from("."),
+                dockerfile: None,
+                from: None,
+                line: 3,
+            }],
+            BTreeMap::new(),
+            Architecture::X86_64,
+            "slipfork-tests/0.1",
+            StepHost::new(
+                "/nonexistent/crun",
+                "/etc/resolv.conf",
+                root.path().join("bundles"),
+                1000,
+                1000,
+            ),
+        );
+        let mut sink = BootSink::for_step(
+            Arc::new(Mutex::new(Emitter::closed())),
+            1,
+            1,
+            "image",
+            "web",
+        );
+        let error = cache
+            .build("web", &mut sink)
+            .expect_err("a missing crun must fail the image build");
+        assert!(error.contains("build `web` failed"), "{error}");
+        let captured = std::fs::read_to_string(store.pod_log(&world, "web"))
+            .expect("the failed build must leave a log capture");
+        assert!(captured.contains("build `web` failed"), "{captured}");
+        assert!(
+            captured.contains("next: run `slipfork logs web`"),
+            "{captured}"
+        );
     }
 }

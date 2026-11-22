@@ -329,5 +329,14 @@ pub enum HookBody {
     /// `: <cmd>`
     Inline(Command),
     /// `{ ... }`, executed fail-fast line by line.
-    Block(Block<Command>),
+    Block(Block<CommandItem>),
+}
+
+/// A line inside a command block: a command, or an `on <expr>` guard around one.
+#[derive(Debug, Clone, PartialEq)]
+pub enum CommandItem {
+    /// A plain shell command.
+    Command(Command),
+    /// `on <expr>: <item>` or `on <expr> { ... }`, nested to any depth.
+    On(On<CommandItem>),
 }

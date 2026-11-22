@@ -199,7 +199,7 @@ impl<'a> Parser<'a> {
         })
     }
 
-    fn parse_command_block(&mut self) -> Result<Block<Command>, Diagnostic> {
+    fn parse_command_block(&mut self) -> Result<Block<CommandItem>, Diagnostic> {
         let mut block = Block::default();
         let mut pending = Vec::new();
         loop {
@@ -225,16 +225,66 @@ impl<'a> Parser<'a> {
                     pending.push(text);
                 }
                 Some(_) => {
-                    let (raw, command_span) = self.raw_to_line_end()?;
-                    if raw.is_empty() {
-                        continue;
-                    }
-                    let command = Command::parse(&raw, command_span)?;
+                    let item = match self.parse_on_command_item()? {
+                        Some(on) => CommandItem::On(on),
+                        None => {
+                            let (raw, command_span) = self.raw_to_line_end()?;
+                            if raw.is_empty() {
+                                continue;
+                            }
+                            CommandItem::Command(Command::parse(&raw, command_span)?)
+                        }
+                    };
                     Self::flush_comments(&mut block, &mut pending);
-                    block.items.push(command);
+                    block.items.push(item);
                 }
             }
         }
+    }
+
+    /// Parses a leading `on <expr>: <item>` or `on <expr> { ... }` inside a command block.
+    ///
+    /// A line whose leading `on <expr>` never resolves to `:` or `{` is a diagnostic, not a shell
+    /// command: silently running `sh -c 'on dev'` hid a missing guard body.
+    fn parse_on_command_item(&mut self) -> Result<Option<On<CommandItem>>, Diagnostic> {
+        self.assert_raw();
+        self.lexer.skip_inline_space();
+        if !self.lexer.starts_word("on") {
+            return Ok(None);
+        }
+        let mark = self.lexer.mark();
+        let (word, span) = self.raw_word()?;
+        debug_assert_eq!(word, "on");
+        let Ok(cond) = self.parse_expr() else {
+            self.peeked = None;
+            self.lexer.reset(mark);
+            return Ok(None);
+        };
+        let token = self.bump()?;
+        let body = match token.kind {
+            TokenKind::Colon => OnBody::Inline(Box::new(self.parse_command_item_inline()?)),
+            TokenKind::LBrace => OnBody::Block(self.parse_command_block()?),
+            other => {
+                return Err(Diagnostic::new(
+                    token.span,
+                    format!(
+                        "expected `:` or `{{` after the `on` condition, found {}",
+                        other.describe()
+                    ),
+                    "write `on <expr>: <command>` or `on <expr> { ... }`",
+                ));
+            }
+        };
+        Ok(Some(On { cond, body, span }))
+    }
+
+    /// One inline command item: another nested `on <expr>: ...`, or a shell command line.
+    fn parse_command_item_inline(&mut self) -> Result<CommandItem, Diagnostic> {
+        if let Some(on) = self.parse_on_command_item()? {
+            return Ok(CommandItem::On(on));
+        }
+        let (raw, span) = self.raw_to_line_end()?;
+        Command::parse(&raw, span).map(CommandItem::Command)
     }
 }
 

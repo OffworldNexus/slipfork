@@ -10,7 +10,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use slipfork_image::{
     Architecture, BuildArgs, BuildContext, BuildRequest, Command, Credentials, DockerfileParser,
     Dockerignore, ImageConfig, ImageLayout, ImageReference, Instruction, LayerUnpacker,
-    NativeImageBuilder, OciPuller, StepHost, StepLayout, Variables,
+    NativeImageBuilder, OciPuller, StepHost, StepLayout, Variables, stage_walk,
 };
 use slipfork_world::{BtrfsEngine, StoreLayout, WorldEngine};
 
@@ -132,6 +132,28 @@ fn a_real_build_context_hashes_stably_and_honours_dockerignore() {
     assert!(ignore.is_ignored(Path::new("src/a/b/c.tmp")));
     assert!(!ignore.is_ignored(Path::new("src/main.rs")));
     assert!(!ignore.is_ignored(Path::new("comment")));
+
+    // The demo's nested-output rules must prune a dependency tree that lives below the root.
+    let nested = Dockerignore::parse(
+        "**/.venv/**\n**/node_modules/**\n**/build/**\n**/.svelte-kit/**\n**/__pycache__/**\n**/*.pyc\n",
+    );
+    for path in [
+        ".venv/lib/python3.13/site-packages/x.py",
+        "front/node_modules/svelte/index.js",
+        "front/build/index.js",
+        "front/.svelte-kit/output/server.js",
+        "app/__pycache__/main.cpython-313.pyc",
+        "app/legacy.pyc",
+    ] {
+        assert!(nested.is_ignored(Path::new(path)), "{path} must be ignored");
+    }
+    for path in [
+        "front/package.json",
+        "front/src/routes/+page.svelte",
+        "app/main.py",
+    ] {
+        assert!(!nested.is_ignored(Path::new(path)), "{path} must survive");
+    }
     let _ = fs::remove_dir_all(&root);
 }
 
@@ -240,6 +262,114 @@ fn a_real_tar_layer_unpacks_a_dot_root_entry_onto_disk() {
     assert_eq!(
         fs::read_to_string(root.join("rootfs/usr/bin/python")).expect("read the unpacked file"),
         "#!/bin/sh\n"
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+/// Real `--target` semantics: stages walk in declaration order and stop right after the requested
+/// one, so a later stage's failing `RUN` is never reached.
+#[test]
+fn a_target_stage_stops_the_walk_before_later_failing_stages() {
+    let source = "FROM scratch AS dev\n\
+                  ENV APP_MODE=dev\n\
+                  FROM scratch AS builder\n\
+                  RUN echo built > /out.txt\n\
+                  FROM scratch AS prod\n\
+                  RUN sh -c 'pnpm run build'\n";
+    let stages = DockerfileParser::parse(source).expect("the three-stage fixture parses");
+    assert_eq!(stages.len(), 3);
+    let prod = stages.last().expect("three stages");
+    assert_eq!(prod.alias.as_deref(), Some("prod"));
+    assert!(
+        prod.instructions
+            .iter()
+            .any(|parsed| matches!(parsed.instruction, Instruction::Run(_))),
+        "the fixture's final stage must carry the failing RUN"
+    );
+
+    let dev = stage_walk(&stages, Some("dev")).expect("`dev` is declared");
+    assert_eq!(dev.end, 0, "a `dev` target must stop after the first stage");
+    assert!(
+        dev.end < stages.len() - 1,
+        "the walk must never reach the prod RUN"
+    );
+
+    // Targeting the last stage still walks there, exactly like a targetless build.
+    assert_eq!(
+        stage_walk(&stages, Some("prod"))
+            .expect("`prod` is declared")
+            .end,
+        2
+    );
+    assert_eq!(
+        stage_walk(&stages, None)
+            .expect("a Dockerfile has a final stage")
+            .end,
+        2
+    );
+    assert_eq!(
+        stage_walk(&stages, Some("DEV"))
+            .expect("aliases match case-insensitively")
+            .end,
+        0
+    );
+
+    let error = stage_walk(&stages, Some("staging")).expect_err("an absent alias must fail");
+    assert!(
+        matches!(error, slipfork_image::Error::UnknownStage { ref name } if name == "staging"),
+        "unexpected error: {error}"
+    );
+}
+
+/// The builder rejects an absent `--target` before `crun`, the context, or any base image is touched,
+/// even when a later, unreachable stage carries a `RUN`.
+#[test]
+fn an_absent_target_alias_fails_before_any_build_work() {
+    let root = lab("target");
+    let dockerfile = root.join("Dockerfile");
+    fs::write(
+        &dockerfile,
+        "FROM scratch AS dev\nENV APP_MODE=dev\nFROM scratch AS prod\nRUN true\n",
+    )
+    .expect("write the Dockerfile");
+    let store = StoreLayout::new(root.join("store"));
+    let engine = Arc::new(BtrfsEngine::new(store.clone()));
+    let puller = OciPuller::new(
+        Arc::clone(&engine) as Arc<dyn WorldEngine>,
+        ImageLayout::new(store.images_root()),
+        Credentials::Anonymous,
+        Architecture::X86_64,
+        "slipfork-tests/0.1".to_owned(),
+    );
+    let builder = NativeImageBuilder::new(
+        Arc::clone(&engine) as Arc<dyn WorldEngine>,
+        puller,
+        StepLayout::new(store.images_root()),
+        Architecture::X86_64,
+        StepHost::new(
+            "/nonexistent/crun",
+            "/etc/resolv.conf",
+            root.join("bundles"),
+            1000,
+            1000,
+        ),
+    );
+    let request = BuildRequest {
+        context: root.clone(),
+        dockerfile,
+        args: BuildArgs::new(),
+        target: Some("staging".to_owned()),
+    };
+    let error = builder
+        .build(&request, &mut std::io::sink())
+        .expect_err("an absent target alias must fail closed");
+    assert!(
+        matches!(error, slipfork_image::Error::UnknownStage { ref name } if name == "staging"),
+        "unexpected error: {error}"
+    );
+    assert!(
+        !store.images_root().join("oci").exists(),
+        "resolving the target must precede every pull and step"
     );
     let _ = fs::remove_dir_all(&root);
 }

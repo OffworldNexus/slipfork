@@ -131,10 +131,20 @@ module.exports = grammar({
       choice(seq(':', $.command), $.command_block),
     ),
     change_guard: $ => seq('when', 'changed', '(', commaSep($.path), ')'),
-    command_block: $ => seq('{', repeat($.command), '}'),
+    command_block: $ => seq('{', repeat($._command_item), '}'),
+    _command_item: $ => choice($.command, $.on_command_item),
+    on_command_item: $ => seq(
+      // `on` outranks `command_text` so a guard line is never swallowed as a shell line.
+      token(prec(1, 'on')),
+      field('condition', $._expression),
+      choice(
+        seq(':', $._command_item),
+        $.command_block,
+      ),
+    ),
     command: $ => seq(optional($.tool), $.command_text),
     tool: $ => token(prec(1, /@[A-Za-z_][A-Za-z0-9_-]*/)),
-    command_text: $ => token(prec(-1, /[^@\n][^\n]*/)),
+    command_text: $ => token(prec(0, /[^@#}\n][^\n]*/)),
 
     domain_declaration: $ => seq('domain', field('id', $.identifier)),
 

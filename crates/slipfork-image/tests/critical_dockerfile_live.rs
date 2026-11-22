@@ -232,6 +232,113 @@ fn native_dockerfile_multistage_build_lifecycle() {
     let _ = fs::remove_dir_all(&run);
 }
 
+/// Real `--target` semantics on sealed subvolumes: a `dev` target stops after its stage, so the
+/// later `prod` stage's always-failing `RUN` is never reached; targeting `prod` fails on that
+/// `RUN`; and an unknown alias is refused before any pull or step.
+#[test]
+fn a_target_stage_never_reaches_a_later_failing_stage() {
+    let crun = crun_path();
+    let run = support::live_run_root("dockerfile-target");
+    // SAFETY: `getuid`/`getgid` only read the caller's identity and cannot fail.
+    let uid = unsafe { libc::getuid() };
+    // SAFETY: as above; `getgid` has no preconditions.
+    let gid = unsafe { libc::getgid() };
+
+    let store = StoreLayout::new(&run);
+    let engine = Arc::new(BtrfsEngine::new(store.clone()));
+    engine.ensure_store().expect("create the Btrfs image store");
+    let images = ImageLayout::new(store.images_root());
+    let steps = StepLayout::new(store.images_root());
+    let scratch = run.join("bundles");
+
+    let fixture = support::Fixture::start();
+    let arch = support::host_architecture();
+    let puller = OciPuller::new(
+        Arc::clone(&engine) as Arc<dyn WorldEngine>,
+        images,
+        Credentials::Anonymous,
+        arch,
+        "slipfork-tests/0.1".to_owned(),
+    )
+    .with_scheme(RegistryScheme::Http);
+    let builder = NativeImageBuilder::new(
+        Arc::clone(&engine) as Arc<dyn WorldEngine>,
+        puller,
+        steps.clone(),
+        arch,
+        StepHost::new(crun, "/etc/resolv.conf", &scratch, uid, gid),
+    );
+
+    let base = fixture.reference_text("library/shell");
+    let context = run.join("context");
+    fs::create_dir_all(&context).expect("create the build context");
+    let dockerfile = context.join("Dockerfile");
+    fs::write(
+        &dockerfile,
+        format!(
+            "FROM {base} AS dev\n\
+             ENV APP_MODE=dev\n\
+             FROM {base} AS prod\n\
+             RUN sh -c 'exit 7'\n"
+        ),
+    )
+    .expect("write the two-stage Dockerfile");
+
+    let dev_request = BuildRequest {
+        context: context.clone(),
+        dockerfile: dockerfile.clone(),
+        args: BuildArgs::new(),
+        target: Some("dev".to_owned()),
+    };
+    let mut dev_log = Vec::new();
+    let dev = builder
+        .build(&dev_request, &mut dev_log)
+        .unwrap_or_else(|error| {
+            panic!(
+                "`--target dev` must never reach the prod RUN: {error}\nbuild output tail:\n{}",
+                output_tail(&dev_log)
+            )
+        });
+    assert_eq!(dev.cache_misses, 0, "the dev stage is metadata only");
+
+    let prod_request = BuildRequest {
+        target: Some("prod".to_owned()),
+        ..dev_request.clone()
+    };
+    let mut prod_log = Vec::new();
+    let error = builder
+        .build(&prod_request, &mut prod_log)
+        .expect_err("the prod stage's failing RUN must fail the build");
+    assert!(
+        matches!(error, slipfork_image::Error::StepFailed { line: 4, .. }),
+        "unexpected error: {error}\nbuild output tail:\n{}",
+        output_tail(&prod_log)
+    );
+
+    let blobs_before = fixture.blob_requests();
+    let unknown = BuildRequest {
+        target: Some("staging".to_owned()),
+        ..dev_request
+    };
+    let error = builder
+        .build(&unknown, &mut Vec::new())
+        .expect_err("an absent target alias must fail");
+    assert!(
+        matches!(error, slipfork_image::Error::UnknownStage { ref name } if name == "staging"),
+        "unexpected error: {error}"
+    );
+    assert_eq!(
+        fixture.blob_requests(),
+        blobs_before,
+        "an unknown alias must fail before any pull"
+    );
+
+    drop(fixture);
+    destroy_children(&engine, &steps.steps());
+    destroy_children(&engine, &store.images_root().join("oci"));
+    let _ = fs::remove_dir_all(&run);
+}
+
 /// The `Forkfile` compiler is the canonical owner of secret taint: a secret can never become a
 /// build-time `arg`, and [`BuildArgs`] only accepts plain strings.
 #[test]

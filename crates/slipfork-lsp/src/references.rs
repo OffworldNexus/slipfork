@@ -200,10 +200,17 @@ fn hook_body(hook: &Hook, text: &TextDocument, out: &mut Collected) {
     match &hook.body {
         HookBody::Inline(command) => command_site(command, text, out),
         HookBody::Block(block) => {
-            for command in &block.items {
-                command_site(command, text, out);
+            for item in &block.items {
+                command_item(item, text, out);
             }
         }
+    }
+}
+
+fn command_item(item: &CommandItem, text: &TextDocument, out: &mut Collected) {
+    match item {
+        CommandItem::Command(command) => command_site(command, text, out),
+        CommandItem::On(on_item) => walk_on(&on_item.cond, &on_item.body, command_item, text, out),
     }
 }
 

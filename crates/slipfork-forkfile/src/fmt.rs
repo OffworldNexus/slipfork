@@ -267,12 +267,17 @@ fn render_hook(renderer: &mut Renderer, keyword: &str, hook: &Hook) {
         HookBody::Block(block) => {
             renderer.line(&format!("{head} {{"));
             renderer.indented(|renderer| {
-                render_block(renderer, block, |renderer, command| {
-                    renderer.line(&command.text());
-                });
+                render_block(renderer, block, render_command_item);
             });
             renderer.line("}");
         }
+    }
+}
+
+fn render_command_item(renderer: &mut Renderer, item: &CommandItem) {
+    match item {
+        CommandItem::Command(command) => renderer.line(&command.text()),
+        CommandItem::On(on) => render_on(renderer, on, render_command_item),
     }
 }
 

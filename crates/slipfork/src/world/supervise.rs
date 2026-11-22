@@ -275,6 +275,12 @@ pub(super) struct Emitter {
 }
 
 impl Emitter {
+    /// A closed emitter, so unit tests never write NDJSON to a terminal.
+    #[cfg(test)]
+    pub(super) fn closed() -> Self {
+        Self { open: false }
+    }
+
     fn send(&mut self, value: Value) {
         if !self.open {
             return;

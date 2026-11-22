@@ -44,7 +44,11 @@ pub struct HostEnv {
     pub uid: u32,
     /// Invoking gid.
     pub gid: u32,
-    /// Host `resolv.conf` bound read-only into every pod.
+    /// Resolver file bound read-only as `/etc/resolv.conf` in every pod and image step.
+    ///
+    /// Selected once by [`crate::compose::pod_resolv_conf`]: a pod lives in its own network
+    /// namespace, where the systemd-resolved stub (`nameserver 127.0.0.53`) listens on a
+    /// loopback socket that only exists in the host namespace, so it must never reach a pod.
     pub resolv_conf: PathBuf,
     /// `$HOME`, used to shorten paths in the status tree.
     pub home: Option<PathBuf>,

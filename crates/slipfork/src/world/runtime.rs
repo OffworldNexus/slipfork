@@ -16,7 +16,7 @@ use slipfork_world::{
     BootFailure, BootKind, BootState, BootStep, BtrfsEngine, Dirtiness, ImageStamp, PodEnv,
     PodHost, PodSpec, PostgresLauncher, ResourceKind, ResourceNode, ServiceNode, StepOutcome,
     StoreLayout, Stream, WorldEngine, WorldHost, WorldName, WorldPlan, WorldStampStore,
-    WorldSupervisor, control, write_bundle,
+    WorldSupervisor, WorldTools, control, write_bundle,
 };
 
 use super::HostEnv;
@@ -111,10 +111,14 @@ impl WorldRuntime {
             step_host,
         );
         let host = WorldHost::new(
-            crun,
-            env.tool("unshare")?,
-            env.init_binary()?,
+            WorldTools {
+                crun,
+                unshare: env.tool("unshare")?,
+                slirp4netns: env.tool("slirp4netns")?,
+                world_init: env.init_binary()?,
+            },
             env.runtime_dir.clone(),
+            layout.logs_root(),
             env.uid,
             env.gid,
             Some(env.resolv_conf.clone()),

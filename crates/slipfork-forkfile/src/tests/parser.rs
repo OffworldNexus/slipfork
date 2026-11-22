@@ -181,6 +181,26 @@ fn nested_on_block_guards_service_items() {
 }
 
 #[test]
+fn an_on_condition_inside_a_run_block_must_end_in_a_colon_or_block() {
+    // A bare `on dev` line used to fall through to a literal `sh -c 'on dev'` command.
+    let source = "# forkfile: 0.1\n\nimage backend . {\n  service api {\n    run {\n      on dev\n    }\n  }\n}\n";
+    let rendered = expect_render(source);
+    assert!(rendered.contains("Forkfile:6:"), "{rendered}");
+    assert!(
+        rendered.contains("expected `:` or `{` after the `on` condition"),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains("write `on <expr>: <command>` or `on <expr> { ... }`"),
+        "{rendered}"
+    );
+    assert!(
+        !rendered.contains("on dev`"),
+        "no silent shell line: {rendered}"
+    );
+}
+
+#[test]
 fn before_start_changed_patterns_and_run_block_hook() {
     let source = "# forkfile: 0.1\n\nimage backend . {\n  service api {\n    before-start when changed(prisma/schema.prisma, package.json): @pnpm exec prisma generate\n    run {\n      echo one\n      echo two\n    }\n  }\n}\n";
     let doc = parse(source).expect("parses");

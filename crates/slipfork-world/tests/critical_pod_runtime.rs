@@ -19,7 +19,7 @@ use slipfork_image::{Architecture, Credentials, ImageLayout, ImageReference, Oci
 use slipfork_world::{
     Bind, BindSource, BtrfsEngine, Dirtiness, ImageFacts, OutputKind, PodEnv, PodHost, PodSpec,
     PostgresLauncher, PostgresTemplate, RedisLauncher, ResourceKind, StoreLayout, Stream,
-    TemplateState, WorldEngine, WorldHost, WorldName, WorldSupervisor, is_btrfs_path,
+    TemplateState, WorldEngine, WorldHost, WorldName, WorldSupervisor, WorldTools, is_btrfs_path,
     is_subvolume_path, write_bundle,
 };
 
@@ -521,6 +521,7 @@ fn world_pod_lifecycle() {
     );
     let crun = require_tool("crun");
     let unshare = require_tool("unshare");
+    let slirp4netns = require_tool("slirp4netns");
     require_userns(&unshare);
     let init = PathBuf::from(env!("CARGO_BIN_EXE_slipfork-world-init"));
     assert!(
@@ -540,15 +541,23 @@ fn world_pod_lifecycle() {
     fs::write(world_a.project.join("probe/expected_secret"), SECRET)
         .expect("seed the expected secret");
 
-    let host = || WorldHost {
-        crun: crun.clone(),
-        unshare: unshare.clone(),
-        world_init: init.clone(),
-        runtime_dir: runtime.clone(),
-        uid,
-        gid,
-        resolv_conf: Some(PathBuf::from("/etc/resolv.conf")),
-        boot_timeout: Duration::from_secs(30),
+    let store_root = StoreLayout::new(&run);
+    let host = || {
+        let mut host = WorldHost::new(
+            WorldTools {
+                crun: crun.clone(),
+                unshare: unshare.clone(),
+                slirp4netns: slirp4netns.clone(),
+                world_init: init.clone(),
+            },
+            runtime.clone(),
+            store_root.logs_root(),
+            uid,
+            gid,
+            Some(PathBuf::from("/etc/resolv.conf")),
+        );
+        host.boot_timeout = Duration::from_secs(30);
+        host
     };
     let mut supervisor_a = WorldSupervisor::boot(host(), &world_a.name).expect("boot world a");
     let mut supervisor_b = WorldSupervisor::boot(host(), &world_b.name).expect("boot world b");

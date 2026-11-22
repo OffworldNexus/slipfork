@@ -59,6 +59,7 @@
 
 (property property: (identifier) @property)
 (property base: (identifier) @variable)
+(on_command_item "on" @keyword)
 (env_entry key: (identifier) @property)
 (arg_item name: (identifier) @property)
 (arg_entry name: (identifier) @property)
