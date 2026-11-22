@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use super::model::display_path;
+use super::model::{display_name, display_path};
 use super::rows::WorldRows;
 
 /// Column widths shared by every flattened world in one render.
@@ -18,19 +18,19 @@ pub struct Widths {
     pub name: usize,
     /// Support descriptor column.
     pub descriptor: usize,
-    /// Stopped fork name column.
-    pub stopped_name: usize,
-    /// Stopped fork path column.
-    pub stopped_path: usize,
+    /// Header name column, shared by every `●` and `○` header.
+    pub header_name: usize,
+    /// Header path column, shared by every `●` and `○` header.
+    pub header_path: usize,
 }
 
 impl Widths {
-    /// Measures every routed, support, and stopped-fork row of every world and fork.
+    /// Measures every routed, support, and header row of every world and fork.
     #[must_use]
     pub fn measure(worlds: &[WorldRows<'_>], home: Option<&Path>) -> Self {
         let mut widths = Self::default();
-        for world in worlds {
-            for domain in &world.domains {
+        for rows in worlds {
+            for domain in &rows.domains {
                 for row in &domain.rows {
                     widths.path = widths.path.max(visible_width(&row.path));
                     widths.target = widths.target.max(visible_width(&row.target));
@@ -39,14 +39,19 @@ impl Widths {
                     }
                 }
             }
-            for row in &world.support {
+            for row in &rows.support {
                 widths.name = widths.name.max(visible_width(&row.id));
                 widths.descriptor = widths.descriptor.max(visible_width(&row.descriptor));
             }
-            for fork in &world.world.stopped_forks {
-                widths.stopped_name = widths.stopped_name.max(visible_width(&fork.name));
-                widths.stopped_path = widths
-                    .stopped_path
+            let world = rows.world;
+            widths.header_name = widths.header_name.max(visible_width(display_name(world)));
+            widths.header_path = widths
+                .header_path
+                .max(visible_width(&display_path(&world.path, home)));
+            for fork in &world.stopped_forks {
+                widths.header_name = widths.header_name.max(visible_width(&fork.name));
+                widths.header_path = widths
+                    .header_path
                     .max(visible_width(&display_path(&fork.path, home)));
             }
         }

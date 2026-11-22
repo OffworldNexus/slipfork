@@ -1087,6 +1087,201 @@ fn live_boots_once_paints_the_panel_reconciles_orphans_and_replays_logs() {
     );
 }
 
+#[test]
+fn live_ps_keeps_running_and_stopped_forks_when_the_root_world_is_down() {
+    let root = test_root();
+    let store_root = mount_store_for(&root);
+    let env = LabEnv::isolated(&root);
+    let suffix = unique_suffix();
+    let project_name = format!("scope-{suffix}");
+    let world_id = project_name.clone();
+    let project = root.join(&project_name);
+    prepare(&project, &store_root, &world_id, ONE_SERVICE);
+    let _guard = WorldGuard {
+        project: project.clone(),
+        env: env.clone(),
+        store_root,
+        world: world_id.clone(),
+        keep: false,
+    };
+    assert_socket_fits(&env, &format!("feat-auth--{world_id}"));
+    assert_socket_fits(&env, &format!("youpi--{world_id}"));
+
+    let up = run(&project, &env, &["up"]);
+    assert!(
+        up.status.success(),
+        "root `up` failed:\n{}",
+        failure_detail(&env, &up)
+    );
+
+    let git = |args: &[&str]| {
+        Command::new("git")
+            .args(args)
+            .current_dir(&project)
+            .env("GIT_AUTHOR_NAME", "slipfork-lab")
+            .env("GIT_AUTHOR_EMAIL", "lab@slipfork.invalid")
+            .env("GIT_COMMITTER_NAME", "slipfork-lab")
+            .env("GIT_COMMITTER_EMAIL", "lab@slipfork.invalid")
+            .output()
+            .expect("git must run for the fork scope journey")
+    };
+    assert!(git(&["init", "-q"]).status.success(), "git init");
+    assert!(git(&["add", "-A"]).status.success(), "git add");
+    assert!(
+        git(&["commit", "-qm", "fork scope baseline"])
+            .status
+            .success(),
+        "git commit"
+    );
+
+    for fork in ["feat-auth", "youpi"] {
+        let forked = run(&project, &env, &["fork", fork, "--json"]);
+        assert!(
+            forked.status.success(),
+            "fork `{fork}` failed:\n{}",
+            failure_detail(&env, &forked)
+        );
+    }
+    let down = run(&project, &env, &["down", "youpi"]);
+    assert!(
+        down.status.success(),
+        "`down youpi` failed:\n{}",
+        failure_detail(&env, &down)
+    );
+    let down = run(&project, &env, &["down"]);
+    assert!(
+        down.status.success(),
+        "root `down` failed:\n{}",
+        failure_detail(&env, &down)
+    );
+
+    // 1. The project root still names the stopped root, the stopped sibling, and the live fork.
+    let human = String::from_utf8(run(&project, &env, &["ps"]).stdout).expect("ps is UTF-8");
+    for row in [
+        format!("○ {world_id}"),
+        "○ youpi".to_owned(),
+        "● feat-auth".to_owned(),
+    ] {
+        assert!(human.contains(&row), "missing `{row}`:\n{human}");
+    }
+    for row in [
+        format!("○ {world_id}"),
+        "○ youpi".to_owned(),
+        "● feat-auth".to_owned(),
+    ] {
+        assert_eq!(
+            human.matches(&row).count(),
+            1,
+            "`{row}` must render exactly once:\n{human}"
+        );
+    }
+    assert!(!human.contains('\u{1b}'), "{human}");
+    // A stopped header owns a literal `stopped` column, and the live fork still carries its
+    // domain and service rows from the fixture.
+    let stopped_header = human
+        .lines()
+        .find(|line| line.starts_with("○ ") && line.contains(&world_id))
+        .unwrap_or_else(|| panic!("no stopped root header:\n{human}"));
+    assert!(
+        stopped_header.trim_end().ends_with("stopped"),
+        "the stopped column must be literal: {stopped_header:?}"
+    );
+    assert!(
+        human.contains(&format!("http://feat-auth--{world_id}.localhost")),
+        "the live fork keeps its domain:\n{human}"
+    );
+    assert!(
+        human.contains("/alpha") && human.contains("running"),
+        "the live fork keeps its service row:\n{human}"
+    );
+
+    // 2. A cwd inside the stopped fork scopes strictly to its one dim row.
+    let human = String::from_utf8(run(&project.join(".forks/youpi"), &env, &["ps"]).stdout)
+        .expect("ps is UTF-8");
+    assert!(human.contains("○ youpi"), "{human}");
+    assert!(
+        !human.contains("feat-auth") && !human.contains(&format!("○ {world_id}")),
+        "a stopped fork scope never leaks its siblings:\n{human}"
+    );
+
+    // 3. A cwd inside the running fork scopes strictly to that live row.
+    let human = String::from_utf8(run(&project.join(".forks/feat-auth"), &env, &["ps"]).stdout)
+        .expect("ps is UTF-8");
+    assert!(human.contains("● feat-auth"), "{human}");
+    assert!(
+        !human.contains("youpi") && !human.contains(&format!("○ {world_id}")),
+        "a running fork scope never leaks its parent or siblings:\n{human}"
+    );
+
+    // 4. Bare unscoped `status` from an unrelated cwd shows the same set exactly once.
+    let elsewhere = root.join(format!("elsewhere-{suffix}"));
+    fs::create_dir_all(&elsewhere).expect("create an unrelated directory");
+    let human =
+        String::from_utf8(run(&elsewhere, &env, &["status"]).stdout).expect("status is UTF-8");
+    for row in [
+        format!("○ {world_id}"),
+        "○ youpi".to_owned(),
+        "● feat-auth".to_owned(),
+    ] {
+        assert_eq!(
+            human.matches(&row).count(),
+            1,
+            "unscoped status must not duplicate `{row}`:\n{human}"
+        );
+    }
+
+    // 5. Dropping the last live fork leaves only dim `stopped` rows: no world and no `-pgid`
+    // process group survives.
+    let down = run(&project, &env, &["down", "feat-auth"]);
+    assert!(
+        down.status.success(),
+        "`down feat-auth` failed:\n{}",
+        failure_detail(&env, &down)
+    );
+    let down = run(&project, &env, &["down"]);
+    assert!(
+        down.status.success(),
+        "root `down` failed:\n{}",
+        failure_detail(&env, &down)
+    );
+    wait_until(
+        "every world to report stopped",
+        Duration::from_secs(60),
+        || {
+            let ps = run(&project, &env, &["ps", "--json"]);
+            let text = String::from_utf8_lossy(&ps.stdout).into_owned();
+            ps.status.success()
+                && text.contains("\"state\":\"stopped\"")
+                && !text.contains("\"state\":\"live\"")
+        },
+    );
+    let human = String::from_utf8(run(&project, &env, &["ps"]).stdout).expect("ps is UTF-8");
+    assert!(
+        !human.lines().any(|line| line.starts_with('●')),
+        "no world may stay live:\n{human}"
+    );
+    for row in [
+        format!("○ {world_id}"),
+        "○ feat-auth".to_owned(),
+        "○ youpi".to_owned(),
+    ] {
+        assert!(human.contains(&row), "missing `{row}`:\n{human}");
+    }
+    assert!(
+        human
+            .lines()
+            .filter(|line| line.starts_with('○'))
+            .all(|line| line.trim_end().ends_with("stopped")),
+        "every remaining header is a stopped row:\n{human}"
+    );
+    assert!(
+        !human.contains("\"state\""),
+        "the human tree never prints wire keys:\n{human}"
+    );
+    assert!(!human.contains('\u{1b}'), "{human}");
+    fs::remove_dir_all(&elsewhere).expect("remove the unrelated directory");
+}
+
 /// A user's shell prompt is data: every lifecycle verb must leave every prompt cell untouched.
 const PROMPT: &str = "slipfork@slipfork-dev-vm:~/demo$ slipfork up";
 /// The same line after Enter: the cursor starts on the row below the prompt, as in a real shell.

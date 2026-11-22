@@ -123,7 +123,13 @@ orphans. An uncompilable or missing `Forkfile` does the same while live pods sta
 
 `orphaned` (yellow) appears only after a successful recompile that no longer declares a live pod,
 and the next `up` clears it. A stopped fork row works with `slipfork up feat-auth` or
-`slipfork drop feat-auth`; `ps` from inside `~/demo/.forks/feat-auth` still finds its parent world.
+`slipfork drop feat-auth`.
+
+Stopping the root world never hides its forks: the root row turns dim
+(`○ demo  ~/demo  stopped`), every stopped `.forks/*` sibling prints the same dim row, and every
+running fork keeps its `●` header.
+
+Inside `~/demo/.forks/<fork>`, `ps` scopes strictly to that one fork, running or stopped.
 
 ## Visual hierarchy
 

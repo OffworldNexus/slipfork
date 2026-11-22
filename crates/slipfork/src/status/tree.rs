@@ -4,11 +4,10 @@
 //! unrouted service, resource, or orphaned pod lands in one trailing `support` group. Ports and
 //! ages stay in `--json` and never reach a human line.
 
-use std::path::Path;
-
 use serde_json::Value;
+use slipfork_world::{FORKS_DIR, ProjectScope};
 
-use crate::ps::{PsReply, PsWorld};
+use crate::ps::{PsReply, PsStoppedFork, PsWorld, PsWorldState};
 use crate::ui::Palette;
 
 use super::model::{Options, display_name, display_path, parse as decode};
@@ -50,18 +49,80 @@ pub fn render(reply: &PsReply, options: &Options) -> String {
     out
 }
 
-/// Keeps only the world or fork whose project contains `cwd`; forks are searched first.
+/// Keeps the canonical project or the one fork that contains the caller's cwd.
+///
+/// The layout is resolved once by the composition root into a [`ProjectScope`]; this renderer only
+/// reads the reply and that value struct, so a scope never probes the filesystem twice. In a
+/// project root the scope carries the root row (running or dim `stopped`), every live fork, and
+/// every stopped sibling discovered on disk, so a `down` root never hides a running fork.
 #[must_use]
-pub fn scope(reply: &PsReply, cwd: &Path) -> PsReply {
-    let mut best: Option<(usize, &PsWorld)> = None;
-    for world in &reply.worlds {
-        consider(world, cwd, &mut best);
+pub fn scope(reply: &PsReply, scope: &ProjectScope) -> PsReply {
+    match scope {
+        ProjectScope::None => PsReply::default(),
+        ProjectScope::Fork { path, name, world } => scope_fork(reply, path, name, world),
+        ProjectScope::Root {
+            root,
+            world,
+            forks,
+            problem,
+        } => scope_project(reply, root, world, forks, problem.as_deref()),
     }
-    match best {
-        Some((_, world)) => PsReply {
-            worlds: vec![world.clone()],
-        },
-        None => PsReply::default(),
+}
+
+/// Scopes strictly to one fork checkout: its live row, or its dim stopped row.
+fn scope_fork(reply: &PsReply, fork_path: &std::path::Path, name: &str, world: &str) -> PsReply {
+    let mut worlds = Vec::new();
+    flatten(&reply.worlds, &mut worlds);
+    if let Some(found) = worlds.iter().find(|world| world.project == fork_path) {
+        return PsReply {
+            worlds: vec![(*found).clone()],
+        };
+    }
+    // The scope already proved the checkout exists, so no second disk probe happens here.
+    PsReply {
+        worlds: vec![PsWorld::stopped(fork_path, world, Some(name))],
+    }
+}
+
+/// Scopes to the project root: its own row plus every live and stopped `.forks` checkout.
+fn scope_project(
+    reply: &PsReply,
+    root: &std::path::Path,
+    world: &str,
+    forks: &[slipfork_world::ForkDir],
+    problem: Option<&str>,
+) -> PsReply {
+    let mut live = Vec::new();
+    flatten(&reply.worlds, &mut live);
+    let forks_dir = root.join(FORKS_DIR);
+    let mut rows: Vec<PsWorld> = live
+        .iter()
+        .filter(|world| world.project.starts_with(&forks_dir))
+        .map(|world| (*world).clone())
+        .collect();
+    rows.sort_by(|left, right| left.project.cmp(&right.project));
+    let stopped: Vec<PsStoppedFork> = forks
+        .iter()
+        .filter(|fork| !rows.iter().any(|row| row.project == fork.path))
+        .map(|fork| PsStoppedFork {
+            name: fork.name.clone(),
+            path: fork.path.clone(),
+        })
+        .collect();
+    let mut root_row = live
+        .iter()
+        .find(|row| row.project == root)
+        .map_or_else(|| PsWorld::stopped(root, world, None), |row| (*row).clone());
+    root_row.forks = rows;
+    root_row.stopped_forks = stopped;
+    if let Some(problem) = problem {
+        root_row.problem = Some(match root_row.problem.take() {
+            Some(existing) => format!("{existing}; {problem}"),
+            None => problem.to_owned(),
+        });
+    }
+    PsReply {
+        worlds: vec![root_row],
     }
 }
 
@@ -69,18 +130,6 @@ fn flatten<'a>(worlds: &'a [PsWorld], out: &mut Vec<&'a PsWorld>) {
     for world in worlds {
         out.push(world);
         flatten(&world.forks, out);
-    }
-}
-
-fn consider<'a>(world: &'a PsWorld, cwd: &Path, best: &mut Option<(usize, &'a PsWorld)>) {
-    if cwd.starts_with(&world.path) {
-        let score = world.path.as_os_str().len();
-        if best.as_ref().is_none_or(|(previous, _)| score >= *previous) {
-            *best = Some((score, world));
-        }
-    }
-    for fork in &world.forks {
-        consider(fork, cwd, best);
     }
 }
 
@@ -92,15 +141,30 @@ fn render_world(
     widths: Widths,
 ) {
     let world = rows.world;
-    out.push_str(&palette.tint("●", "32"));
-    out.push(' ');
-    out.push_str(&palette.value(display_name(world)));
-    out.push_str("  ");
-    out.push_str(&palette.path(&display_path(&world.path, options.home.as_deref())));
-    if options.verbose {
-        out.push_str(&palette.dim(&format!("  pid {}", world.supervisor_pid)));
+    if world.state == PsWorldState::Stopped {
+        out.push_str(&palette.dim("○ "));
+        out.push_str(&palette.dim(&pad(display_name(world), widths.header_name)));
+        out.push_str("  ");
+        out.push_str(&palette.dim(&pad(
+            &display_path(&world.path, options.home.as_deref()),
+            widths.header_path,
+        )));
+        out.push_str("  ");
+        out.push_str(&palette.dim("stopped"));
+        out.push('\n');
+    } else {
+        out.push_str(&palette.tint("●", "32"));
+        out.push(' ');
+        out.push_str(&palette.value(&pad(display_name(world), widths.header_name)));
+        out.push_str("  ");
+        out.push_str(&palette.path(&display_path(&world.path, options.home.as_deref())));
+        if options.verbose
+            && let Some(pid) = world.supervisor_pid
+        {
+            out.push_str(&palette.dim(&format!("  pid {pid}")));
+        }
+        out.push('\n');
     }
-    out.push('\n');
 
     if let Some(problem) = &world.problem {
         out.push_str(&palette.error(&format!("! {problem}")));
@@ -108,11 +172,11 @@ fn render_world(
     }
     for fork in &world.stopped_forks {
         out.push_str(&palette.dim("○ "));
-        out.push_str(&palette.dim(&pad(&fork.name, widths.stopped_name)));
+        out.push_str(&palette.dim(&pad(&fork.name, widths.header_name)));
         out.push_str("  ");
         out.push_str(&palette.dim(&pad(
             &display_path(&fork.path, options.home.as_deref()),
-            widths.stopped_path,
+            widths.header_path,
         )));
         out.push_str("  ");
         out.push_str(&palette.dim("stopped"));

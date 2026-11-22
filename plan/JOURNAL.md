@@ -3012,3 +3012,10 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-22T21:00 [M3.54] (lead) base 8cd1e30236d6437d1ae8812080cc026742090449
 - 2026-11-22T21:01 [M3.56] (conductor) created (task) Scorched-earth delete domain <prefix>.* wildcard syntax: require declared domain <id> everywhere (Forkfile, ingress, LSP, editors, specs & docs)
 - 2026-11-22T21:01 [M3.55] (conductor) edited fields
+- 2026-11-22T21:05 [M3.54] (lead) status active -> review
+- 2026-11-22T21:06 [M3.54] (lead) status review -> ready
+- 2026-11-22T21:06 [M3.54] (lead) status ready -> active
+- 2026-11-22T21:06 [M3.54] (lead) attempt 2/3 started
+- 2026-11-22T21:06 [M3.54] (lead) triad fix pass: pure scope injection, canonical layout owner, phantom-fork guard, header widths, journey teardown
+- 2026-11-22T21:09 [M3.54] (lead) status active -> review
+- 2026-11-22T21:10 [M3.54] (lead) status review -> done

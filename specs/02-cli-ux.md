@@ -78,18 +78,23 @@ Worlds are **flat**: one header per world, a blank line between worlds, and no p
   ○ feat-auth  ~/demo/.forks/feat-auth  stopped
 ```
 
-A non-default route mode is the only suffix: `(strip-prefix)`, `(rewrite /v1)` or `(exact)`. `support` holds workers and resources; `--json` keeps `port`, `started_at_ms`, `url`, `routes`, `orphaned` and `stopped_forks` for automation.
+A non-default route mode is the only suffix: `(strip-prefix)`, `(rewrite /v1)` or `(exact)`. `support` holds workers and resources; `--json` keeps `state` (`live`/`stopped`), `port`, `started_at_ms`, `url`, `routes`, `orphaned` and `stopped_forks` for automation.
+
+A `stopped_forks[]` entry is stopped by membership alone — no duplicate boolean rides on it — and a stopped row carries no `supervisor_pid` or `started_at_ms`.
 
 When state cannot be honest, `ps` names the one real problem instead of inventing rows:
 
 | Situation | Row |
 | :--- | :--- |
 | Stopped fork still on disk | dim `○ <fork>  ~/demo/.forks/<fork>  stopped` |
+| Stopped root world still on disk | dim `○ <world>  ~/<world>  stopped` (its `.forks` family stays visible) |
 | Fork checkout vanished | `! checkout missing — run \`slipfork drop <fork>\`` |
 | World checkout vanished | `! checkout missing — restore it or run \`slipfork down <world>\`` |
 | Uncompilable or missing `Forkfile` | `! Forkfile invalid: <line>:<col>: <message>` |
 
-A `!` row sits directly under its world header. Live pods keep their `running` rows and no `orphaned` row is fabricated. A stopped fork row is directly usable with `slipfork up <fork>` or `slipfork drop <fork>`, and a scoped `ps` inside that checkout still finds its parent world.
+A `!` row sits directly under its world header. Live pods keep their `running` rows and no `orphaned` row is fabricated. A stopped fork row is directly usable with `slipfork up <fork>` or `slipfork drop <fork>`.
+
+A project root keeps its whole family visible after `slipfork down`: the root row becomes a dim `○ demo  ~/demo  stopped`, every stopped `.forks/*` sibling prints the same dim row, and every running fork keeps its `●` header (even when the daemon was restarted without the root). Inside `~/demo/.forks/<fork>`, `ps` scopes strictly to that one fork, running or stopped.
 
 `orphaned` (yellow) appears only after a successful recompile that no longer declares a live pod, and the next `up` clears it. Bare `slipfork` is `status`; with nothing running it prints a dim `○ No worlds running` and exits `0`.
 
@@ -146,5 +151,5 @@ A failed `fork` rolls back atomically: it stops its supervisor and pods and drop
 ## 7. Terminal gate split and `--json`
 
 - **Modes:** colour TTY uses the `DECSTBM` region and panel; ASCII TTY rewrites one `\r` plain line with zero `\x1b[`; a pipe emits `→ [i/n] kind name` headers plus `✓`/`•` rows; `--json` is pure JSON.
-- **Payloads:** `up`/`restart` → `{world, url, elapsed_ms, nodes:[{kind,name,state,duration_ms}]}`; `down` → `{world, elapsed_ms}`; `fork` → `{fork, world, project, url, elapsed_ms, snapshot_ms}`; `drop` → `{dropped, elapsed_ms}`; `doctor` → `{ready, checks:[{name,ok,detail,next?}]}`; `status`/`ps` → `{worlds:[...]}` including `port`, `started_at_ms`, `url`, `routes`, `orphaned` and `stopped_forks`; failures → `{"error":{code,message,next}}`.
+- **Payloads:** `up`/`restart` → `{world, url, elapsed_ms, nodes:[{kind,name,state,duration_ms}]}`; `down` → `{world, elapsed_ms}`; `fork` → `{fork, world, project, url, elapsed_ms, snapshot_ms}`; `drop` → `{dropped, elapsed_ms}`; `doctor` → `{ready, checks:[{name,ok,detail,next?}]}`; `status`/`ps` → `{worlds:[...]}` including `state` (`live`/`stopped`), `port`, `started_at_ms`, `url`, `routes`, `orphaned` and `stopped_forks` (membership means stopped; stopped rows omit `supervisor_pid`/`started_at_ms`); failures → `{"error":{code,message,next}}`.
 - **Ephemeral daemon:** auto-start warns on stderr and names `slipfork daemon install`.

@@ -223,14 +223,10 @@ fn resolve(binding: &EnvBinding<'_>, stored: Option<&Secret>) -> Option<String> 
 
 /// Reads `<project>/Forkfile`; the visitor classifies every declared variable.
 fn inferred_world(project: &Path) -> String {
-    if let (Some(fork), Some(forks_dir)) = (project.file_name(), project.parent())
-        && forks_dir.file_name().is_some_and(|n| n == ".forks")
-        && let Some(parent) = forks_dir.parent()
-        && let Ok(parent_world) = crate::world::world_name(parent, None)
-        && let Some(fork) = fork.to_str()
-        && let Ok(fork_name) = slipfork_world::ForkName::parse(fork)
+    if let Some((parent, fork)) = slipfork_world::fork_checkout(project)
+        && let Ok(parent_world) = crate::world::world_name(&parent, None)
     {
-        return slipfork_world::StoreLayout::fork_world_name(&parent_world, &fork_name)
+        return slipfork_world::StoreLayout::fork_world_name(&parent_world, &fork)
             .as_str()
             .to_owned();
     }

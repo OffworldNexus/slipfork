@@ -3,7 +3,7 @@
 //! Nothing downstream inspects `serde_json::Value` keys or sniffs authority strings: every field is
 //! typed here, including the `Forkfile` domain filter mirror.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use slipfork_forkfile::BucketPolicy;
@@ -30,11 +30,15 @@ pub struct PsWorld {
     pub fork: Option<String>,
     /// Primary URL, `<world>.localhost`.
     pub url: String,
-    /// Milliseconds since the Unix epoch when the world became ready; `0` when unknown.
+    /// Whether this world is live or only a stopped checkout on disk.
     #[serde(default)]
-    pub started_at_ms: u64,
-    /// Supervisor process id.
-    pub supervisor_pid: u32,
+    pub state: PsWorldState,
+    /// Milliseconds since the Unix epoch when the world became ready; absent on a stopped row.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_at_ms: Option<u64>,
+    /// Supervisor process id; absent on a stopped row instead of a fabricated `0`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supervisor_pid: Option<u32>,
     /// The supervisor still owns its control socket.
     pub alive: bool,
     /// The world is still booting.
@@ -51,6 +55,40 @@ pub struct PsWorld {
     /// Forks nested under this world.
     #[serde(default)]
     pub forks: Vec<PsWorld>,
+}
+
+impl PsWorld {
+    /// A project or fork checkout that still exists on disk but is not running.
+    #[must_use]
+    pub(crate) fn stopped(project: &Path, world: &str, fork: Option<&str>) -> Self {
+        Self {
+            project: project.to_path_buf(),
+            path: project.to_path_buf(),
+            world: world.to_owned(),
+            fork: fork.map(str::to_owned),
+            url: format!("http://{world}.localhost"),
+            state: PsWorldState::Stopped,
+            started_at_ms: None,
+            supervisor_pid: None,
+            alive: false,
+            booting: false,
+            services: Vec::new(),
+            problem: None,
+            stopped_forks: Vec::new(),
+            forks: Vec::new(),
+        }
+    }
+}
+
+/// Whether one `ps` world is live or a stopped checkout still on disk.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum PsWorldState {
+    /// A supervisor and its control socket answer for this world.
+    #[default]
+    Live,
+    /// The checkout exists on disk but nothing runs for it.
+    Stopped,
 }
 
 /// One stopped fork found under a parent world's `.forks` directory.

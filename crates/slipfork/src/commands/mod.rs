@@ -159,7 +159,9 @@ impl Session {
         };
         let other_worlds = !reply.worlds.is_empty();
         let reply = if scoped {
-            status::scope(&reply, &self.cwd)
+            // The `.forks` layout is resolved exactly once here, in the composition root: the
+            // renderer only ever receives the resulting value struct.
+            status::scope(&reply, &slipfork_world::ProjectScope::resolve(&self.cwd))
         } else {
             reply
         };

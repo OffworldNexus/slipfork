@@ -225,17 +225,8 @@ fn recorded_world(project: &Path) -> Option<slipfork_world::WorldName> {
 
 /// The canonical `<fork>--<parent>` world id when `project` is `<parent>/.forks/<fork>`.
 fn fork_world(project: &Path) -> Option<slipfork_world::WorldName> {
-    let fork = project.file_name()?.to_str()?;
-    let forks_dir = project.parent()?;
-    if !forks_dir
-        .file_name()
-        .is_some_and(|name| name == slipfork_world::FORKS_DIR)
-    {
-        return None;
-    }
-    let parent = forks_dir.parent()?;
-    let parent_world = world_name(parent, None).ok()?;
-    let fork = slipfork_world::ForkName::parse(fork).ok()?;
+    let (parent, fork) = slipfork_world::fork_checkout(project)?;
+    let parent_world = world_name(&parent, None).ok()?;
     Some(slipfork_world::StoreLayout::fork_world_name(
         &parent_world,
         &fork,

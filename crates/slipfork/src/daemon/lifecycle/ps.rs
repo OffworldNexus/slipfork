@@ -5,6 +5,7 @@
 //! `<project>/.forks` stay visible until they are reaped or dropped.
 
 use std::collections::BTreeSet;
+use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -16,7 +17,7 @@ use super::core::{Core, World};
 use crate::daemon::Failure;
 use crate::daemon::rpc::{pid_alive, world_answers, world_call};
 use crate::daemon::view;
-use crate::ps::{PsKind, PsReply, PsService, PsStoppedFork, PsWorld};
+use crate::ps::{PsKind, PsReply, PsService, PsStoppedFork, PsWorld, PsWorldState};
 
 impl Core {
     pub(crate) fn ps(&mut self) -> Result<PsReply, Failure> {
@@ -45,10 +46,10 @@ impl Core {
                     .and_then(|reply| slipfork_world::pod_statuses(&reply).ok())
                     .unwrap_or_default();
                     let parent = entry.fork.as_ref().and_then(|fork| {
-                        entry
-                            .world
-                            .strip_prefix(&format!("{fork}--"))
-                            .map(str::to_owned)
+                        let (parsed, parent) = slipfork_world::StoreLayout::parse_fork_world(
+                            OsStr::new(entry.world.as_str()),
+                        )?;
+                        (parsed.as_str() == fork).then(|| parent.as_str().to_owned())
                     });
                     rows.push((
                         parent,
@@ -72,20 +73,81 @@ impl Core {
             .filter(|(parent, _)| parent.is_none())
             .map(|(_, world)| world.clone())
             .collect();
+        let mut orphans: Vec<(String, PsWorld)> = Vec::new();
         for (parent, world) in &rows {
             let Some(parent) = parent else {
                 continue;
             };
-            match worlds.iter().position(|row| &row.world == parent) {
-                Some(index) => worlds[index].forks.push(world.clone()),
-                None => worlds.push(world.clone()),
+            match find_world_mut(&mut worlds, parent) {
+                Some(row) => push_fork(row, world.clone()),
+                None => orphans.push((parent.clone(), world.clone())),
             }
+        }
+        for (parent, fork) in orphans {
+            attach_orphan(&mut worlds, &parent, fork);
         }
         let live = live_worlds(&worlds);
         for world in &mut worlds {
             attach_stopped(world, &live);
         }
         Ok(PsReply { worlds })
+    }
+}
+
+/// Depth-first search for the world registered under `id`.
+fn find_world_mut<'a>(worlds: &'a mut [PsWorld], id: &str) -> Option<&'a mut PsWorld> {
+    for world in worlds.iter_mut() {
+        if world.world == id {
+            return Some(world);
+        }
+        if let Some(found) = find_world_mut(&mut world.forks, id) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+/// Depth-first search for the world booted from `project`.
+fn find_project_mut<'a>(worlds: &'a mut [PsWorld], project: &Path) -> Option<&'a mut PsWorld> {
+    for world in worlds.iter_mut() {
+        if world.project == project {
+            return Some(world);
+        }
+        if let Some(found) = find_project_mut(&mut world.forks, project) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+fn push_fork(row: &mut PsWorld, fork: PsWorld) {
+    row.forks.push(fork);
+    row.forks
+        .sort_by(|left, right| left.project.cmp(&right.project));
+}
+
+/// Nests a fork whose parent world is no longer registered under the canonical parent project.
+///
+/// A root world stopped with `slipfork down` leaves its running forks in the registry: without
+/// this, they would pose as top-level worlds and every sibling stopped checkout would vanish.
+fn attach_orphan(worlds: &mut Vec<PsWorld>, parent: &str, fork: PsWorld) {
+    let Some((root, _)) =
+        slipfork_world::fork_checkout(&fork.project).filter(|(root, _)| root.is_dir())
+    else {
+        worlds.push(fork);
+        return;
+    };
+    if let Some(row) = find_project_mut(worlds, &root) {
+        push_fork(row, fork);
+        return;
+    }
+    match find_world_mut(worlds, parent) {
+        Some(row) => push_fork(row, fork),
+        None => {
+            let mut placeholder = PsWorld::stopped(&root, parent, None);
+            push_fork(&mut placeholder, fork);
+            worlds.push(placeholder);
+        }
     }
 }
 
@@ -101,41 +163,41 @@ fn live_worlds(worlds: &[PsWorld]) -> BTreeSet<String> {
 
 /// Attaches every stopped fork found under this world and its nested forks.
 fn attach_stopped(world: &mut PsWorld, live: &BTreeSet<String>) {
-    world.stopped_forks = discover_stopped(&world.project, &world.world, live);
+    match discover_stopped(&world.project, &world.world, live) {
+        Ok(forks) => world.stopped_forks = forks,
+        Err(problem) => {
+            world.problem = Some(match world.problem.take() {
+                Some(existing) => format!("{existing}; {problem}"),
+                None => problem,
+            });
+        }
+    }
     for fork in &mut world.forks {
         attach_stopped(fork, live);
     }
 }
 
-/// Btrfs subvolume entries under `<project>/.forks` that no registered world already owns.
+/// `.forks` subvolume checkouts under `<project>` that no registered world already owns.
+///
+/// A `read_dir` failure is returned so the caller can print one honest `problem` row instead of an
+/// empty family.
 fn discover_stopped(
     project: &Path,
     parent_world: &str,
     live: &BTreeSet<String>,
-) -> Vec<PsStoppedFork> {
-    let Ok(entries) = fs::read_dir(project.join(slipfork_world::FORKS_DIR)) else {
-        return Vec::new();
-    };
-    let mut stopped = Vec::new();
-    for entry in entries.flatten() {
-        let path = entry.path();
-        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
-            continue;
-        };
-        if live.contains(&format!("{name}--{parent_world}")) {
-            continue;
-        }
-        if !slipfork_world::is_subvolume_path(&path).unwrap_or(false) {
-            continue;
-        }
-        stopped.push(PsStoppedFork {
-            name: name.to_owned(),
-            path,
-        });
-    }
-    stopped.sort_by(|left, right| left.name.cmp(&right.name));
-    stopped.dedup_by(|left, right| left.name == right.name);
-    stopped
+) -> Result<Vec<PsStoppedFork>, String> {
+    let forks = slipfork_world::fork_checkouts(project).map_err(|error| error.to_string())?;
+    Ok(forks
+        .into_iter()
+        .filter(|fork| {
+            slipfork_world::fork_world_id(parent_world, &fork.name)
+                .is_none_or(|id| !live.contains(id.as_str()))
+        })
+        .map(|fork| PsStoppedFork {
+            name: fork.name,
+            path: fork.path,
+        })
+        .collect())
 }
 
 /// One world's evaluated rows plus the live facts the daemon can prove.
@@ -226,7 +288,7 @@ impl WorldView {
         &self.services
     }
 
-    /// The wire object for this world.
+    /// The wire object for this live world.
     #[must_use]
     pub(crate) fn ps_json(&self) -> PsWorld {
         PsWorld {
@@ -235,8 +297,9 @@ impl WorldView {
             world: self.world.clone(),
             fork: self.fork.clone(),
             url: format!("http://{}.localhost", self.world),
-            started_at_ms: self.started_at_ms,
-            supervisor_pid: self.supervisor_pid,
+            state: PsWorldState::Live,
+            started_at_ms: (self.started_at_ms > 0).then_some(self.started_at_ms),
+            supervisor_pid: Some(self.supervisor_pid),
             alive: self.alive,
             booting: self.booting,
             services: self.service_rows().to_vec(),

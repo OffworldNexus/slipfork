@@ -319,7 +319,7 @@ fn the_tree_contract_holds_for_every_row_shape() {
         &demo_reply(),
         &Options::new(false).with_home(Some(PathBuf::from("/home/me"))),
     );
-    assert!(text.starts_with("● demo  ~/projects/demo\n"), "{text}");
+    assert!(text.starts_with("● demo       ~/projects/demo\n"), "{text}");
     for line in [
         "  ├─ http://demo.localhost",
         "  │  ├─ /api  -> api",
@@ -753,11 +753,16 @@ fn stopped_forks_and_honest_problems_render_without_fabrication() {
     let coloured = status::render(&stopped, &Options::new(true).with_home(home.clone()));
     assert!(coloured.contains("\u{1b}[2m○ "), "{coloured}");
     assert!(coloured.contains("\u{1b}[2mstopped\u{1b}[0m"), "{coloured}");
-    // A scoped `ps` from inside the stopped checkout still finds its parent world row.
-    let scoped = status::scope(&stopped, Path::new("/home/me/demo/.forks/feat-auth"));
-    assert_eq!(scoped.worlds.len(), 1);
-    assert_eq!(scoped.worlds[0].stopped_forks.len(), 1);
-    assert_eq!(scoped.worlds[0].stopped_forks[0].name, "feat-auth");
+    // A cwd outside any project root fails closed: no legacy path match resurrects a row.
+    assert!(
+        status::scope(
+            &stopped,
+            &slipfork_world::ProjectScope::resolve(Path::new("/home/me/demo/.forks/feat-auth")),
+        )
+        .worlds
+        .is_empty(),
+        "a missing project root never fabricates a scoped world"
+    );
 
     let invalid = reply(json!({
         "worlds": [{
@@ -809,4 +814,105 @@ fn stopped_forks_and_honest_problems_render_without_fabrication() {
             .expect("serialize")
             .contains('\u{1b}')
     );
+}
+
+#[test]
+fn a_down_root_still_scopes_running_forks_and_stopped_siblings_from_disk() {
+    let root = scratch("scope-down");
+    let demo = root.join("demo");
+    let forks = demo.join(".forks");
+    for (path, name) in [
+        (&demo, "demo"),
+        (&forks.join("youpi"), "youpi"),
+        (&forks.join("feat-auth"), "feat-auth"),
+    ] {
+        fs::create_dir_all(path).expect("create the lab project");
+        fs::write(
+            path.join("Forkfile"),
+            format!("# forkfile: 0.1\n# {name}\n"),
+        )
+        .expect("write the lab Forkfile");
+    }
+    fs::create_dir_all(demo.join(".slipfork")).expect("create the root record directory");
+
+    // The daemon is running the fork only: the root world was `down`, so its row is absent.
+    let fork_path = forks.join("feat-auth");
+    let live = reply(json!({
+        "worlds": [{
+            "project": fork_path,
+            "path": fork_path,
+            "world": "feat-auth--demo",
+            "fork": "feat-auth",
+            "url": "http://feat-auth--demo.localhost",
+            "started_at_ms": 42,
+            "supervisor_pid": 77,
+            "alive": true,
+            "booting": false,
+            "services": [{
+                "id": "api", "kind": "service", "running": true,
+                "routes": [{ "prefix": "/", "port": 8000, "mode": "preserve" }]
+            }]
+        }]
+    }));
+    let options = Options::new(false).with_home(Some(root.clone()));
+
+    // The project root shows the stopped root and the live fork, but a plain directory under
+    // `.forks` is not a subvolume checkout and never poses as a phantom stopped fork.
+    let scoped = status::scope(&live, &slipfork_world::ProjectScope::resolve(&demo));
+    assert_eq!(
+        scoped.worlds.len(),
+        1,
+        "one canonical project root: {scoped:?}"
+    );
+    assert_eq!(
+        scoped.worlds[0].state,
+        slipfork::ps::PsWorldState::Stopped,
+        "the down root renders stopped"
+    );
+    assert_eq!(scoped.worlds[0].world, "demo");
+    assert_eq!(scoped.worlds[0].forks.len(), 1);
+    assert_eq!(scoped.worlds[0].forks[0].fork.as_deref(), Some("feat-auth"));
+    assert!(
+        scoped.worlds[0].stopped_forks.is_empty(),
+        "a plain directory is not a fork checkout: {scoped:?}"
+    );
+    let text = status::render(&scoped, &options);
+    assert!(text.contains("○ demo"), "{text}");
+    assert!(text.contains("● feat-auth"), "{text}");
+    assert!(
+        !text.contains("○ youpi"),
+        "a plain directory must not pose as a stopped fork: {text}"
+    );
+    assert_eq!(text.matches("○ demo").count(), 1, "{text}");
+    assert_eq!(text.matches("● feat-auth").count(), 1, "{text}");
+    assert!(!text.contains('\u{1b}'), "{text}");
+
+    // A cwd inside a stopped checkout (a real directory on disk) scopes to that one dim row.
+    let inside = status::scope(
+        &live,
+        &slipfork_world::ProjectScope::resolve(&forks.join("youpi")),
+    );
+    assert_eq!(inside.worlds.len(), 1);
+    assert_eq!(inside.worlds[0].state, slipfork::ps::PsWorldState::Stopped);
+    assert_eq!(inside.worlds[0].fork.as_deref(), Some("youpi"));
+    let text = status::render(&inside, &options);
+    assert!(
+        text.contains("○ youpi") && !text.contains("feat-auth"),
+        "{text}"
+    );
+
+    // A cwd deep inside the running fork still scopes strictly to that fork.
+    let running = status::scope(
+        &live,
+        &slipfork_world::ProjectScope::resolve(&fork_path.join("src")),
+    );
+    assert_eq!(running.worlds.len(), 1);
+    assert_eq!(running.worlds[0].state, slipfork::ps::PsWorldState::Live);
+    let text = status::render(&running, &options);
+    assert!(
+        text.contains("● feat-auth") && !text.contains("● demo") && !text.contains("○ demo"),
+        "{text}"
+    );
+
+    fs::remove_dir_all(&root).expect("remove the scratch lab");
 }

@@ -66,7 +66,7 @@ fn plain() -> String {
 #[test]
 fn the_flat_domain_tree_renders_exact_aligned_lines() {
     let expected = concat!(
-        "● demo  ~/demo\n",
+        "● demo       ~/demo\n",
         "  ├─ http://demo.localhost\n",
         "  │  ├─ /api  -> api                       running\n",
         "  │  └─ /     -> front                     running\n",
@@ -134,7 +134,7 @@ fn palette_roles_style_the_tree_and_plain_renders_have_zero_ansi() {
         "\u{1b}[36ms3 (private)\u{1b}[0m",
         "\u{1b}[32mrunning\u{1b}[0m",
         "\u{1b}[2msupport\u{1b}[0m",
-        "\u{1b}[1;37mdemo\u{1b}[0m",
+        "\u{1b}[1;37mdemo",
         "\u{1b}[1;36m~/demo\u{1b}[0m",
     ] {
         assert!(
