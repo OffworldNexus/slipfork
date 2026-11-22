@@ -1,35 +1,36 @@
 name: Packages
 
-# The release graph for the six distribution families in `specs/06` §1.
+# One release graph for every distribution family in `specs/06` §1, built on the
+# org `offworld-packaging` standard: GitHub Actions builds and install-verifies
+# every artifact with `permissions: contents: read`, then stages a single
+# `offworld-dist` bundle for the external publisher. No publishing credential is
+# ever read here.
 #
-# A `v*` tag builds native `amd64` and `arm64` artifacts from the measured
-# bundle, installs each format in the distribution it targets, builds the six
-# `slipfork-lsp` archives Zed consumes, and only then publishes: Cloudsmith is
-# primary and fails closed without `CLOUDSMITH_API_KEY`; the Forgejo mirror is
-# best effort. `workflow_dispatch` runs the same graph with every publish command
-# printed (`--dry-run`) unless the `publish` input says otherwise.
+# Channels:
+#   push: tags: ['v*']        stable   (annotated tag, Cargo.toml version match)
+#   schedule (37 3 * * *)     nightly  (develop; per-ecosystem nightly stamps)
+#   workflow_dispatch         rehearsal by default; `rehearsal: false` publishes
+#   pull_request: develop     full build + install + staging rehearsal, no upload
 #
-# A `pull_request` is a full dry-run rehearsal — both arch package builds, the
-# 6-distro, 12-cell install matrix and the 6-target `slipfork-lsp` matrix — that publishes
-# nothing: the `plan` step keeps `should_publish=false` for any non-tag ref.
-#
-# Every artifact is produced by `make packages` / `make lsp-assets`, so the
-# script that computes a version, floor, or archive name is the only copy of
-# that knowledge. No token is ever echoed.
+# `scripts/release_stamp.py` is the only copy of the stamp grammar; the Makefile
+# evals its `env` output and hands each builder its own field.
 
 on:
   push:
     tags: ["v*"]
-  pull_request:
-    branches: [develop]
+  schedule:
+    # 03:37 UTC: staggered off the other Offworld repositories.
+    - cron: "37 3 * * *"
   workflow_dispatch:
     inputs:
-      publish:
+      rehearsal:
         description: >-
-          Publish (or replace) this ref's packages in the signed repositories.
-          A rehearsal prints every command and uploads nothing.
+          Rehearse only: build, verify and stage in --dry-run without uploading
+          offworld-dist. Uncheck to publish this ref's packages.
         type: boolean
-        default: false
+        default: true
+  pull_request:
+    branches: [develop]
 
 concurrency:
   group: packages-${{ github.ref }}
@@ -42,53 +43,106 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  plan:
-    name: version, tag and whether this run publishes
+  version:
+    name: channel, version and whether this run publishes
     runs-on: ubuntu-24.04
     outputs:
-      version: ${{ steps.plan.outputs.version }}
-      tag: ${{ steps.plan.outputs.tag }}
-      should_publish: ${{ steps.plan.outputs.should_publish }}
+      base: ${{ steps.version.outputs.base }}
+      channel: ${{ steps.version.outputs.channel }}
+      version: ${{ steps.version.outputs.version }}
+      date: ${{ steps.version.outputs.date }}
+      sha7: ${{ steps.version.outputs.sha7 }}
+      should_publish: ${{ steps.version.outputs.should_publish }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: astral-sh/setup-uv@v5
-      - name: The version, and whether this run may publish
-        id: plan
+      - name: Resolve the channel, tag and version
+        id: version
         env:
           EVENT_NAME: ${{ github.event_name }}
+          REF: ${{ github.ref }}
           REF_TYPE: ${{ github.ref_type }}
           REF_NAME: ${{ github.ref_name }}
-          PUBLISH_INPUT: ${{ inputs.publish }}
+          REHEARSAL: ${{ inputs.rehearsal }}
+          RUN_NUMBER: ${{ github.run_number }}
+          COMMIT_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
-          version=$(uv run --no-project scripts/publish_packages.py base-version)
-          tag="v$version"
+          base=$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n 1)
+          [ -n "$base" ] || { echo "::error::Cargo.toml has no workspace version; next: add version = \"0.1.0\" under [workspace.package]"; exit 1; }
+          sha7=${COMMIT_SHA:0:7}
+          date=$(date -u +%Y%m%d)
+          channel=nightly
           publish=false
-          if [ "$REF_TYPE" = tag ]; then
-            # The tag and the manifest may not disagree: a `v0.1.0` tag on a
-            # 0.1.1 tree is a release nobody can identify afterwards.
-            if [ "$REF_NAME" != "$tag" ]; then
-              echo "::error::tag $REF_NAME is not the workspace version $version"
-              exit 1
-            fi
-            tag=$REF_NAME
-            # A tag **push** publishes. A dispatch on a tag rehearses unless it
-            # asked for the replacement explicitly: `gh workflow run --ref v0.1.0`
-            # also reports `ref_type=tag`.
-            if [ "$EVENT_NAME" = push ] || [ "$PUBLISH_INPUT" = true ]; then
+
+          case "$EVENT_NAME" in
+            push)
+              [ "$REF_TYPE" = tag ] || { echo "::error::packages pushes must be v* tags"; exit 1; }
+              channel=stable
+              [ "$REF_NAME" = "v$base" ] ||
+                { echo "::error::tag $REF_NAME does not match the workspace version v$base"; exit 1; }
+              [ "$(git cat-file -t "$REF_NAME" 2>/dev/null || true)" = tag ] ||
+                { echo "::error::$REF_NAME is a lightweight tag; next: git tag -a --cleanup=verbatim $REF_NAME"; exit 1; }
               publish=true
-            fi
+              ;;
+            schedule)
+              [ "$REF" = refs/heads/develop ] ||
+                { echo "::error::nightlies are cut from develop (this run is $REF); next: merge to develop"; exit 1; }
+              channel=nightly
+              publish=true
+              ;;
+            workflow_dispatch)
+              if [ "$REHEARSAL" = "false" ]; then
+                if [ "$REF_TYPE" = tag ]; then
+                  channel=stable
+                  [ "$REF_NAME" = "v$base" ] ||
+                    { echo "::error::tag $REF_NAME does not match the workspace version v$base"; exit 1; }
+                  [ "$(git cat-file -t "$REF_NAME" 2>/dev/null || true)" = tag ] ||
+                    { echo "::error::$REF_NAME is a lightweight tag; next: git tag -a --cleanup=verbatim $REF_NAME"; exit 1; }
+                else
+                  [ "$REF" = refs/heads/develop ] ||
+                    { echo "::error::publishing nightlies requires develop (this run is $REF); next: dispatch a rehearsal on this ref, or publish from develop"; exit 1; }
+                  channel=nightly
+                fi
+                publish=true
+              else
+                # A rehearsal runs the whole matrix on ANY ref and never publishes.
+                channel=nightly
+                publish=false
+              fi
+              ;;
+            pull_request)
+              channel=nightly
+              publish=false
+              ;;
+            *)
+              echo "::error::unsupported event $EVENT_NAME"
+              exit 1
+              ;;
+          esac
+
+          if [ "$channel" = nightly ]; then
+            version=$(uv run --no-project scripts/release_stamp.py stamp \
+              --field version --base "$base" --channel nightly \
+              --date "$date" --run "$RUN_NUMBER" --sha "$sha7")
+          else
+            version=$base
           fi
           {
+            echo "base=$base"
+            echo "channel=$channel"
             echo "version=$version"
-            echo "tag=$tag"
+            echo "date=$date"
+            echo "sha7=$sha7"
             echo "should_publish=$publish"
-          } >> "$GITHUB_OUTPUT"
-          echo "packages: tag $tag, event $EVENT_NAME/$REF_TYPE, publishes: $publish"
+          } >>"$GITHUB_OUTPUT"
+          echo "packages: $channel $version (publish: $publish)"
 
   packages:
     name: 'build every format natively (${{ matrix.arch }})'
-    needs: [plan]
+    needs: [version]
     runs-on: ${{ matrix.runs_on }}
     timeout-minutes: 60
     strategy:
@@ -111,22 +165,31 @@ jobs:
           set -euo pipefail
           sudo apt-get update -qq
           sudo apt-get install -y -qq zstd rpm dpkg-dev
-          # Fail here, not mid-build, if a tool the packaging scripts shell out to
-          # is missing.
           dpkg-deb --version
           zstd --version
           docker --version
           uv --version
           rpm --version
           rpmbuild --version
-      # `make packages` compiles the gnu bundle in `rockylinux:9` so it is linked
-      # against glibc 2.34 and stamps that ceiling into Depends/Requires; the musl
-      # bundle is built in Alpine. `packages-probe` refuses an empty, truncated,
-      # or malformed artifact before upload.
+      # The Makefile builds the gnu bundle on glibc 2.34 (`rockylinux:9` or the
+      # host when it is already that old) and the musl bundle in Alpine, then
+      # stamps deb/rpm/apk/pacman from `scripts/release_stamp.py`. `packages-probe`
+      # refuses an empty, truncated or malformed artifact before upload.
       - name: make packages
-        run: make packages VERSION=${{ needs.plan.outputs.version }} PACKAGES_OUT=dist/packages
-      # One checksum file per architecture: `merge-multiple` would otherwise let
-      # the arm64 job's `SHA256SUMS` overwrite the amd64 job's.
+        env:
+          VERSION: ${{ needs.version.outputs.base }}
+          CHANNEL: ${{ needs.version.outputs.channel }}
+          STAMP_DATE: ${{ needs.version.outputs.date }}
+          STAMP_RUN: ${{ github.run_number }}
+          STAMP_SHA: ${{ needs.version.outputs.sha7 }}
+        run: make packages
+      # The tarballs and the installer are the fallback every user hits when no
+      # package manager fits, so prove both here, from the artifacts just built.
+      - name: Prove the bundle layout and the portable install
+        run: |
+          set -euo pipefail
+          scripts/check-bundle-layout.sh target/package-bundle
+          scripts/check-install.sh --bundle target/package-bundle
       - name: Name the checksums after this architecture
         run: mv dist/packages/SHA256SUMS dist/packages/SHA256SUMS-${{ matrix.arch }}
       - uses: actions/upload-artifact@v4
@@ -135,7 +198,7 @@ jobs:
           path: dist/packages/*
           if-no-files-found: error
 
-  install:
+  verify:
     name: '${{ matrix.image }} installs and runs it (${{ matrix.arch }})'
     needs: [packages]
     runs-on: ${{ matrix.runs_on }}
@@ -144,72 +207,22 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - image: debian:trixie
-            arch: amd64
-            runs_on: ubuntu-24.04
-            verify: apt-get update -qq && apt-get install -y -qq crun btrfs-progs && dpkg -i /pkg/*.deb && /usr/bin/slipfork --version && slipfork-lsp --version
-          - image: debian:trixie
-            arch: arm64
-            runs_on: ubuntu-24.04-arm
-            verify: apt-get update -qq && apt-get install -y -qq crun btrfs-progs && dpkg -i /pkg/*.deb && /usr/bin/slipfork --version && slipfork-lsp --version
-          - image: ubuntu:24.04
-            arch: amd64
-            runs_on: ubuntu-24.04
-            verify: apt-get update -qq && apt-get install -y -qq crun btrfs-progs && dpkg -i /pkg/*.deb && /usr/bin/slipfork --version && slipfork-lsp --version
-          - image: ubuntu:24.04
-            arch: arm64
-            runs_on: ubuntu-24.04-arm
-            verify: apt-get update -qq && apt-get install -y -qq crun btrfs-progs && dpkg -i /pkg/*.deb && /usr/bin/slipfork --version && slipfork-lsp --version
-          - image: fedora:41
-            arch: amd64
-            runs_on: ubuntu-24.04
-            verify: dnf -y -q install /pkg/*.rpm && /usr/bin/slipfork --version && slipfork-lsp --version
-          - image: fedora:41
-            arch: arm64
-            runs_on: ubuntu-24.04-arm
-            verify: dnf -y -q install /pkg/*.rpm && /usr/bin/slipfork --version && slipfork-lsp --version
-          - image: rockylinux:9
-            arch: amd64
-            runs_on: ubuntu-24.04
-            verify: dnf -y -q install /pkg/*.rpm && /usr/bin/slipfork --version && slipfork-lsp --version
-          - image: rockylinux:9
-            arch: arm64
-            runs_on: ubuntu-24.04-arm
-            verify: dnf -y -q install /pkg/*.rpm && /usr/bin/slipfork --version && slipfork-lsp --version
-          # `pacman -Sy` is a partial upgrade, which rolling Arch refuses when a
-          # dependency moved; `-Syu` upgrades the whole image first. pacman 7's
-          # `DownloadUser`/Landlock sandbox cannot run inside Docker, so both are
-          # disabled before the transaction.
-          - image: archlinux:latest
-            arch: amd64
-            runs_on: ubuntu-24.04
-            verify: >-
-              sed -i 's/^DownloadUser/#DownloadUser/' /etc/pacman.conf &&
-              (grep -q '^DisableSandbox' /etc/pacman.conf ||
-              sed -i '/^\[options\]/a DisableSandbox' /etc/pacman.conf) &&
-              pacman -Syu --noconfirm --needed glibc crun btrfs-progs &&
-              pacman -U --noconfirm /pkg/*.pkg.tar.zst &&
-              /usr/bin/slipfork --version && slipfork-lsp --version
-          # `archlinux:latest` is amd64-only; the ARM port is the arm64 image and
-          # needs the same sandbox-off prefix.
-          - image: menci/archlinuxarm:latest
-            arch: arm64
-            runs_on: ubuntu-24.04-arm
-            verify: >-
-              sed -i 's/^DownloadUser/#DownloadUser/' /etc/pacman.conf &&
-              (grep -q '^DisableSandbox' /etc/pacman.conf ||
-              sed -i '/^\[options\]/a DisableSandbox' /etc/pacman.conf) &&
-              pacman -Syu --noconfirm --needed glibc crun btrfs-progs &&
-              pacman -U --noconfirm /pkg/*.pkg.tar.zst &&
-              /usr/bin/slipfork --version && slipfork-lsp --version
-          - image: alpine:3.21
-            arch: amd64
-            runs_on: ubuntu-24.04
-            verify: apk update -q && apk add --no-cache crun btrfs-progs && apk add --allow-untrusted /pkg/*.apk && /usr/bin/slipfork --version && slipfork-lsp --version
-          - image: alpine:3.21
-            arch: arm64
-            runs_on: ubuntu-24.04-arm
-            verify: apk update -q && apk add --no-cache crun btrfs-progs && apk add --allow-untrusted /pkg/*.apk && /usr/bin/slipfork --version && slipfork-lsp --version
+          - { image: "debian:12", arch: amd64, runs_on: ubuntu-24.04 }
+          - { image: "debian:12", arch: arm64, runs_on: ubuntu-24.04-arm }
+          - { image: "debian:trixie", arch: amd64, runs_on: ubuntu-24.04 }
+          - { image: "debian:trixie", arch: arm64, runs_on: ubuntu-24.04-arm }
+          - { image: "ubuntu:22.04", arch: amd64, runs_on: ubuntu-24.04 }
+          - { image: "ubuntu:22.04", arch: arm64, runs_on: ubuntu-24.04-arm }
+          - { image: "ubuntu:24.04", arch: amd64, runs_on: ubuntu-24.04 }
+          - { image: "ubuntu:24.04", arch: arm64, runs_on: ubuntu-24.04-arm }
+          - { image: "rockylinux:9", arch: amd64, runs_on: ubuntu-24.04 }
+          - { image: "rockylinux:9", arch: arm64, runs_on: ubuntu-24.04-arm }
+          - { image: "fedora:41", arch: amd64, runs_on: ubuntu-24.04 }
+          - { image: "fedora:41", arch: arm64, runs_on: ubuntu-24.04-arm }
+          - { image: "archlinux:latest", arch: amd64, runs_on: ubuntu-24.04 }
+          - { image: "menci/archlinuxarm:latest", arch: arm64, runs_on: ubuntu-24.04-arm }
+          - { image: "alpine:3.21", arch: amd64, runs_on: ubuntu-24.04 }
+          - { image: "alpine:3.21", arch: arm64, runs_on: ubuntu-24.04-arm }
     steps:
       - uses: actions/checkout@v4
       # Only this architecture's artifacts: the other arch's package has the
@@ -221,8 +234,49 @@ jobs:
       - name: Install in ${{ matrix.image }} and run
         run: |
           set -euo pipefail
-          docker run --rm -v "$PWD/dist/packages:/pkg:ro" "${{ matrix.image }}" \
-            sh -c "${{ matrix.verify }}"
+          case "${{ matrix.image }}" in
+            debian:* | ubuntu:*)
+              docker run --rm -v "$PWD/dist/packages:/pkg:ro" "${{ matrix.image }}" sh -eu -c '
+                apt-get update -qq
+                DEBIAN_FRONTEND=noninteractive apt-get install -y -qq crun btrfs-progs
+                dpkg -i /pkg/*.deb
+                /usr/bin/slipfork --version
+                slipfork-lsp --version
+                /usr/bin/slipfork --help | grep -q "^  up "'
+              ;;
+            rockylinux:* | fedora:*)
+              docker run --rm -v "$PWD/dist/packages:/pkg:ro" "${{ matrix.image }}" sh -eu -c '
+                dnf -y -q install /pkg/*.rpm
+                /usr/bin/slipfork --version
+                slipfork-lsp --version
+                /usr/bin/slipfork --help | grep -q "^  up "'
+              ;;
+            alpine:*)
+              docker run --rm -v "$PWD/dist/packages:/pkg:ro" "${{ matrix.image }}" sh -eu -c '
+                apk update -q
+                apk add --no-cache crun btrfs-progs
+                apk add --allow-untrusted /pkg/*.apk
+                /usr/bin/slipfork --version
+                slipfork-lsp --version
+                /usr/bin/slipfork --help | grep -q "^  up "'
+              ;;
+            archlinux:* | menci/archlinuxarm:*)
+              # `pacman -Sy` is a partial upgrade, which rolling Arch refuses;
+              # pacman 7's Landlock sandbox cannot run inside Docker, so disable it.
+              docker run --rm -v "$PWD/dist/packages:/pkg:ro" "${{ matrix.image }}" sh -eu -c '
+                sed -i "s/^DownloadUser/#DownloadUser/" /etc/pacman.conf
+                grep -q "^DisableSandbox" /etc/pacman.conf || sed -i "/^\[options\]/a DisableSandbox" /etc/pacman.conf
+                pacman -Syu --noconfirm --needed glibc crun btrfs-progs
+                pacman -U --noconfirm /pkg/*.pkg.tar.zst
+                /usr/bin/slipfork --version
+                slipfork-lsp --version
+                /usr/bin/slipfork --help | grep -q "^  up "'
+              ;;
+            *)
+              echo "::error::no install recipe for ${{ matrix.image }}"
+              exit 1
+              ;;
+          esac
 
   lsp:
     name: 'slipfork-lsp archive (${{ matrix.platform }}/${{ matrix.arch }})'
@@ -272,26 +326,43 @@ jobs:
       - name: Build the Zed asset
         shell: bash
         run: make lsp-assets LSP_TARGET=${{ matrix.triple }}
+      # The archive is what Zed downloads, so run the binary out of the archive
+      # itself: a missing executable bit or a bad top-level directory fails here.
+      - name: Run the language server from the archive (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          name=slipfork-lsp-${{ matrix.platform }}-${{ matrix.arch }}
+          mkdir -p dist/check
+          tar -xzf "dist/$name.tar.gz" -C dist/check
+          "dist/check/$name/slipfork-lsp" --version
+      - name: Run the language server from the archive (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          name=slipfork-lsp-${{ matrix.platform }}-${{ matrix.arch }}
+          mkdir -p dist/check
+          unzip -q "dist/$name.zip" -d dist/check
+          "./dist/check/$name/slipfork-lsp.exe" --version
       - uses: actions/upload-artifact@v4
         with:
           name: lsp-${{ matrix.platform }}-${{ matrix.arch }}
           path: dist/slipfork-lsp-${{ matrix.platform }}-${{ matrix.arch }}.*
           if-no-files-found: error
 
-  publish:
-    name: 'Cloudsmith + Forgejo + GitHub release (dry-run first)'
-    needs: [plan, packages, install, lsp]
+  stage:
+    name: stage the offworld-dist bundle
+    needs: [version, packages, verify, lsp]
     if: >-
       !cancelled() &&
-      github.repository == 'OffworldNexus/slipfork' &&
-      needs.plan.result == 'success' &&
+      needs.version.result == 'success' &&
       needs.packages.result == 'success' &&
-      needs.install.result == 'success' &&
+      needs.verify.result == 'success' &&
       needs.lsp.result == 'success'
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
-    permissions:
-      contents: write
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
@@ -303,72 +374,106 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           pattern: lsp-*
-          path: dist/lsp
+          path: dist
           merge-multiple: true
-      - name: Rehearse every publish command (--dry-run)
+      # The dry-run runs on every healthy run, tag or rehearsal, so the manifest
+      # the publisher would receive is always in the log. `--github-release` is a
+      # stable-only flag; nightly artifacts never attach to a tag release.
+      - name: Validate the bundle with stage-dist.py --dry-run
         env:
-          CLOUDSMITH_API_KEY: ${{ secrets.CLOUDSMITH_API_KEY }}
-          FORGEJO_TOKEN: ${{ secrets.FORGEJO_TOKEN }}
-          COMPONENT: main
+          CHANNEL: ${{ needs.version.outputs.channel }}
+          VERSION: ${{ needs.version.outputs.version }}
+          HOMEBREW: >-
+            {"formula":"slipfork-lsp","desc":"Language server for Slipfork Forkfiles","license":"custom","bin":["slipfork-lsp"]}
+          SCOOP: >-
+            {"app":"slipfork-lsp","desc":"Language server for Slipfork Forkfiles","license":"custom","bin":["slipfork-lsp.exe"]}
         run: |
           set -euo pipefail
-          publish_format() {
-            format=$1; pattern=$2; shift 2
-            shopt -s nullglob
-            files=(dist/packages/$pattern)
-            if [ "${#files[@]}" -eq 0 ]; then
-              echo "::error::no $format artifact matched dist/packages/$pattern"
-              exit 1
-            fi
-            for file in "${files[@]}"; do
-              uv run --no-project scripts/publish_packages.py push \
-                --format "$format" --file "$file" --component "$COMPONENT" "$@"
-              uv run --no-project scripts/publish_packages.py forgejo \
-                --format "$format" --file "$file" --component "$COMPONENT" "$@"
-            done
-          }
-          # The dry run is printed on every run, tag or rehearsal, so the exact
-          # request a real publish sends is in the log beside it.
-          publish_format deb '*.deb' --dry-run
-          publish_format rpm '*.rpm' --dry-run
-          publish_format arch '*.pkg.tar.zst' --dry-run
-          publish_format apk '*.apk' --dry-run
-      - name: Publish to Cloudsmith and mirror to Forgejo
-        if: needs.plan.outputs.should_publish == 'true'
+          files=(
+            --file "deb:amd64:dist/packages/*_amd64.deb"
+            --file "deb:arm64:dist/packages/*_arm64.deb"
+            --file "rpm:x86_64:dist/packages/*.x86_64.rpm"
+            --file "rpm:aarch64:dist/packages/*.aarch64.rpm"
+            --file "apk:x86_64:dist/packages/*x86_64.apk"
+            --file "apk:aarch64:dist/packages/*aarch64.apk"
+            --file "arch:x86_64:dist/packages/*x86_64.pkg.tar.zst"
+            --file "arch:aarch64:dist/packages/*aarch64.pkg.tar.zst"
+            --file "tarball:x86_64:dist/packages/slipfork-x86_64-unknown-linux-gnu.tar.gz"
+            --file "tarball:x86_64:dist/packages/slipfork-x86_64-unknown-linux-musl.tar.gz"
+            --file "tarball:aarch64:dist/packages/slipfork-aarch64-unknown-linux-gnu.tar.gz"
+            --file "tarball:aarch64:dist/packages/slipfork-aarch64-unknown-linux-musl.tar.gz"
+            --file "macos:x86_64:dist/slipfork-lsp-darwin-x86_64.tar.gz"
+            --file "macos:arm64:dist/slipfork-lsp-darwin-aarch64.tar.gz"
+            --file "windows:x86_64:dist/slipfork-lsp-windows-x86_64.zip"
+            --file "windows:aarch64:dist/slipfork-lsp-windows-aarch64.zip"
+            --file "tarball:x86_64:dist/slipfork-lsp-linux-x86_64.tar.gz"
+            --file "tarball:aarch64:dist/slipfork-lsp-linux-aarch64.tar.gz"
+          )
+          release=()
+          [ "$CHANNEL" = stable ] && release+=(--github-release)
+          uv run --no-project packaging/stage-dist.py \
+            --source slipfork \
+            --channel "$CHANNEL" \
+            --version "$VERSION" \
+            --ref "$GITHUB_REF" \
+            --commit "$GITHUB_SHA" \
+            --repository "$GITHUB_REPOSITORY" \
+            --run-id "$GITHUB_RUN_ID" \
+            --run-number "$GITHUB_RUN_NUMBER" \
+            --homebrew-json "$HOMEBREW" \
+            --scoop-json "$SCOOP" \
+            "${files[@]}" "${release[@]}" \
+            --dry-run
+      - name: Stage the offworld-dist bundle
+        if: needs.version.outputs.should_publish == 'true'
         env:
-          CLOUDSMITH_API_KEY: ${{ secrets.CLOUDSMITH_API_KEY }}
-          FORGEJO_TOKEN: ${{ secrets.FORGEJO_TOKEN }}
-          COMPONENT: main
+          CHANNEL: ${{ needs.version.outputs.channel }}
+          VERSION: ${{ needs.version.outputs.version }}
+          HOMEBREW: >-
+            {"formula":"slipfork-lsp","desc":"Language server for Slipfork Forkfiles","license":"custom","bin":["slipfork-lsp"]}
+          SCOOP: >-
+            {"app":"slipfork-lsp","desc":"Language server for Slipfork Forkfiles","license":"custom","bin":["slipfork-lsp.exe"]}
         run: |
           set -euo pipefail
-          publish_format() {
-            format=$1; pattern=$2
-            shopt -s nullglob
-            files=(dist/packages/$pattern)
-            if [ "${#files[@]}" -eq 0 ]; then
-              echo "::error::no $format artifact matched dist/packages/$pattern"
-              exit 1
-            fi
-            for file in "${files[@]}"; do
-              uv run --no-project scripts/publish_packages.py push \
-                --format "$format" --file "$file" --component "$COMPONENT"
-              uv run --no-project scripts/publish_packages.py forgejo \
-                --format "$format" --file "$file" --component "$COMPONENT"
-            done
-          }
-          publish_format deb '*.deb'
-          publish_format rpm '*.rpm'
-          publish_format arch '*.pkg.tar.zst'
-          publish_format apk '*.apk'
-      - name: Attach the packages and editor assets to the GitHub release
-        if: needs.plan.outputs.should_publish == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ needs.plan.outputs.tag }}
-          VERSION: ${{ needs.plan.outputs.version }}
-        run: |
-          set -euo pipefail
-          if ! gh release view "$TAG" >/dev/null 2>&1; then
-            gh release create "$TAG" --title "Slipfork $VERSION" --generate-notes --verify-tag
-          fi
-          gh release upload "$TAG" dist/packages/* dist/lsp/* --clobber
+          files=(
+            --file "deb:amd64:dist/packages/*_amd64.deb"
+            --file "deb:arm64:dist/packages/*_arm64.deb"
+            --file "rpm:x86_64:dist/packages/*.x86_64.rpm"
+            --file "rpm:aarch64:dist/packages/*.aarch64.rpm"
+            --file "apk:x86_64:dist/packages/*x86_64.apk"
+            --file "apk:aarch64:dist/packages/*aarch64.apk"
+            --file "arch:x86_64:dist/packages/*x86_64.pkg.tar.zst"
+            --file "arch:aarch64:dist/packages/*aarch64.pkg.tar.zst"
+            --file "tarball:x86_64:dist/packages/slipfork-x86_64-unknown-linux-gnu.tar.gz"
+            --file "tarball:x86_64:dist/packages/slipfork-x86_64-unknown-linux-musl.tar.gz"
+            --file "tarball:aarch64:dist/packages/slipfork-aarch64-unknown-linux-gnu.tar.gz"
+            --file "tarball:aarch64:dist/packages/slipfork-aarch64-unknown-linux-musl.tar.gz"
+            --file "macos:x86_64:dist/slipfork-lsp-darwin-x86_64.tar.gz"
+            --file "macos:arm64:dist/slipfork-lsp-darwin-aarch64.tar.gz"
+            --file "windows:x86_64:dist/slipfork-lsp-windows-x86_64.zip"
+            --file "windows:aarch64:dist/slipfork-lsp-windows-aarch64.zip"
+            --file "tarball:x86_64:dist/slipfork-lsp-linux-x86_64.tar.gz"
+            --file "tarball:aarch64:dist/slipfork-lsp-linux-aarch64.tar.gz"
+          )
+          release=()
+          [ "$CHANNEL" = stable ] && release+=(--github-release)
+          uv run --no-project packaging/stage-dist.py \
+            --source slipfork \
+            --channel "$CHANNEL" \
+            --version "$VERSION" \
+            --out "$RUNNER_TEMP/offworld-dist" \
+            --ref "$GITHUB_REF" \
+            --commit "$GITHUB_SHA" \
+            --repository "$GITHUB_REPOSITORY" \
+            --run-id "$GITHUB_RUN_ID" \
+            --run-number "$GITHUB_RUN_NUMBER" \
+            --homebrew-json "$HOMEBREW" \
+            --scoop-json "$SCOOP" \
+            "${files[@]}" "${release[@]}"
+      - uses: actions/upload-artifact@v4
+        if: needs.version.outputs.should_publish == 'true'
+        with:
+          name: offworld-dist
+          path: ${{ runner.temp }}/offworld-dist
+          if-no-files-found: error
+          retention-days: 7

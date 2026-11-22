@@ -48,11 +48,12 @@ jobs:
         run: uv run --no-project tools/critical_guard.py --base origin/develop
       # Fast packaging checks only: `make packages-test` needs a bundle built by
       # `make packages`, which this job does not produce.
-      - name: Shell syntax and publisher unit tests
+      - name: Shell syntax and release-stamp grammar
         run: |
           set -euo pipefail
           bash -n scripts/*.sh docs/install.sh
-          uv run --no-project python -m unittest discover -s scripts/tests
+          dash -n docs/install.sh
+          uv run --no-project scripts/release_stamp.py self-test
       # `make check` covers what used to be five separate jobs: fmt, clippy,
       # `cargo test --workspace`, `editors/zed/check.sh` and `packages-check`
       # (tsc + the plugin suite that spawns the real binary). Node and Bun are

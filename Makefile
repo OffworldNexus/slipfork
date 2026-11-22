@@ -141,6 +141,12 @@ live-test:
 # Distribution artifacts (specs/06-distribution-and-docs.md §1-§8).
 # ---------------------------------------------------------------------------
 VERSION ?= 0.1.0
+# `CHANNEL=nightly` needs the run, UTC date and commit that produced the build;
+# `scripts/release_stamp.py` turns them into the per-ecosystem stamps below.
+CHANNEL ?= stable
+STAMP_DATE ?= $(shell date -u +%Y%m%d)
+STAMP_RUN ?= 0
+STAMP_SHA ?= $(shell git rev-parse --short=7 HEAD 2>/dev/null || true)
 PACKAGES_OUT ?= dist/packages
 PACKAGES_BUNDLE ?= target/package-bundle
 PACKAGES_MUSL_BUNDLE ?= target/package-bundle-musl
@@ -182,25 +188,27 @@ packages-bundle:
 # compiled on glibc 2.34 (rockylinux:9 when the host is newer), and the builders
 # stamp that ceiling into Depends/Requires.
 packages:
-	rm -f $(PACKAGES_OUT)/PKGBUILD $(PACKAGES_OUT)/.SRCINFO $(PACKAGES_OUT)/slipfork-*-r0.apk
-	scripts/build-bundle.sh --out $(PACKAGES_BUNDLE) $(GNU_BUNDLE)
-	scripts/build-deb.sh --version $(VERSION) --bundle $(PACKAGES_BUNDLE) --max-glibc $(GNU_MAX_GLIBC) --out $(PACKAGES_OUT)
-	scripts/build-rpm.sh --version $(VERSION) --bundle $(PACKAGES_BUNDLE) --max-glibc $(GNU_MAX_GLIBC) --out $(PACKAGES_OUT)
-	scripts/build-arch.sh --version $(VERSION) --bundle $(PACKAGES_BUNDLE) --max-glibc $(GNU_MAX_GLIBC) --out $(PACKAGES_OUT)
-	scripts/build-standalone.sh --bundle $(PACKAGES_BUNDLE) --out $(PACKAGES_OUT)
-	scripts/build-bundle.sh --out $(PACKAGES_MUSL_BUNDLE) --target $(MUSL_TARGET) --max-glibc auto --container $(MUSL_IMAGE)
-	scripts/build-apk.sh --version $(VERSION) --bundle $(PACKAGES_MUSL_BUNDLE) --out $(PACKAGES_OUT)
-	scripts/build-standalone.sh --bundle $(PACKAGES_MUSL_BUNDLE) --out $(PACKAGES_OUT)
-	rm -f $(PACKAGES_OUT)/PKGBUILD $(PACKAGES_OUT)/.SRCINFO $(PACKAGES_OUT)/slipfork-*-r0.apk
-	cd $(PACKAGES_OUT) && sha256sum *.deb *.rpm *.pkg.tar.zst *.apk *.tar.gz *.tar.gz.sha256 > SHA256SUMS
+	@set -eu; \
+	stamps="$$($(UV) run --no-project scripts/release_stamp.py env --base '$(VERSION)' --channel '$(CHANNEL)' --date '$(STAMP_DATE)' --run '$(STAMP_RUN)' --sha '$(STAMP_SHA)')" || exit 1; \
+	eval "$$stamps"; \
+	rm -rf $(PACKAGES_OUT) && mkdir -p $(PACKAGES_OUT); \
+	scripts/build-bundle.sh --out $(PACKAGES_BUNDLE) $(GNU_BUNDLE); \
+	scripts/build-deb.sh --version "$$DEB_VERSION" --bundle $(PACKAGES_BUNDLE) --max-glibc $(GNU_MAX_GLIBC) --out $(PACKAGES_OUT); \
+	scripts/build-rpm.sh --version "$$RPM_VERSION" --release "$$RPM_RELEASE" --bundle $(PACKAGES_BUNDLE) --max-glibc $(GNU_MAX_GLIBC) --out $(PACKAGES_OUT); \
+	scripts/build-arch.sh --version "$$ARCH_VERSION" --release "$$ARCH_PKGREL" --bundle $(PACKAGES_BUNDLE) --max-glibc $(GNU_MAX_GLIBC) --out $(PACKAGES_OUT); \
+	scripts/build-standalone.sh --bundle $(PACKAGES_BUNDLE) --out $(PACKAGES_OUT); \
+	scripts/build-bundle.sh --out $(PACKAGES_MUSL_BUNDLE) --target $(MUSL_TARGET) --max-glibc auto --container $(MUSL_IMAGE); \
+	scripts/build-apk.sh --version "$$APK_VERSION" --pkgrel "$$APK_PKGREL" --bundle $(PACKAGES_MUSL_BUNDLE) --out $(PACKAGES_OUT); \
+	scripts/build-standalone.sh --bundle $(PACKAGES_MUSL_BUNDLE) --out $(PACKAGES_OUT); \
+	( cd $(PACKAGES_OUT) && sha256sum *.deb *.rpm *.pkg.tar.zst *.apk *.tar.gz *.tar.gz.sha256 > SHA256SUMS ); \
 	$(MAKE) --no-print-directory packages-probe
 
-# Fast, no-container checks: layout, portable ELF, shell syntax, publisher unit
-# tests, and a real file:// install into a throwaway prefix.
+# Fast, no-container checks: layout, portable ELF, shell syntax, the release
+# stamp grammar, and a real file:// install into a throwaway prefix.
 packages-test: packages-bundle
 	scripts/check-bundle-layout.sh $(PACKAGES_BUNDLE)
 	bash -n scripts/*.sh docs/install.sh
 	dash -n docs/install.sh
-	$(UV) run --no-project python -m unittest discover -s scripts/tests
+	$(UV) run --no-project scripts/release_stamp.py self-test
 	scripts/check-install.sh --bundle $(PACKAGES_BUNDLE)
 	$(MAKE) --no-print-directory packages-probe

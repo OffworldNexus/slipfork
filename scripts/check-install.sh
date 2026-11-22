@@ -38,7 +38,7 @@ archive=$(find "$tmp/archive" -name '*.tar.gz' -type f | head -n 1)
 sha=$(sha256sum "$archive" | cut -d' ' -f1)
 
 SLIPFORK_ARCHIVE_URL="file://$archive" SLIPFORK_SHA256="$sha" \
-    sh docs/install.sh --develop local --prefix "$prefix" --yes --mirror cloudsmith >/dev/null
+    sh docs/install.sh --develop local --prefix "$prefix" --yes >/dev/null
 "$prefix/bin/slipfork" --version || { echo "error: $prefix/bin/slipfork does not run; next: inspect the install prefix" >&2; exit 1; }
 [ -f "$prefix/share/man/man1/slipfork.1.gz" ] || { echo "error: the man page was not installed; next: ship man/ in the archive" >&2; exit 1; }
 echo "ok   install: $prefix/bin/slipfork runs and the man page landed under share/man"

@@ -104,6 +104,11 @@
     { "action": "edit", "resource": "~/offworld-nexus/blastit/*", "effect": "deny" },
     { "action": "edit", "resource": "~/offworld-nexus/tpmd/*", "effect": "deny" },
     { "action": "edit", "resource": "~/offworld-nexus/tpmd/**", "effect": "deny" },
+    // Read-only org packaging standard: packaging/stage-dist.py is copied verbatim from here.
+    { "action": "external_directory", "resource": "~/offworld-nexus/.opencode/skills/offworld-packaging/*", "effect": "allow" },
+    { "action": "external_directory", "resource": "~/offworld-nexus/.opencode/skills/offworld-packaging/**", "effect": "allow" },
+    { "action": "edit", "resource": "~/offworld-nexus/.opencode/skills/offworld-packaging/*", "effect": "deny" },
+    { "action": "edit", "resource": "~/offworld-nexus/.opencode/skills/offworld-packaging/**", "effect": "deny" },
     { "action": "external_directory", "resource": "/tmp/opencode/*", "effect": "allow" },
     { "action": "external_directory", "resource": "~/.cache/*", "effect": "allow" },
     { "action": "external_directory", "resource": "~/.cargo/*", "effect": "allow" },

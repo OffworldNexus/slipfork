@@ -60,8 +60,8 @@ jobs:
           REF_NAME: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          version=$(uv run --no-project scripts/publish_packages.py base-version)
-          [ -n "$version" ] || { echo "::error file=Cargo.toml::no [workspace.package] version"; exit 1; }
+          version=$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n 1)
+          [ -n "$version" ] || { echo "::error file=Cargo.toml::no [workspace.package] version; next: add version = \"0.1.0\" under [workspace.package]"; exit 1; }
           pinned=$(sed -n 's/^VERSION="\([^"]\+\)"/\1/p' docs/install.sh | head -n 1)
           if [ -n "$pinned" ]; then
             if [ "$pinned" != "$version" ]; then

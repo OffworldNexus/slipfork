@@ -2955,3 +2955,19 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-22T19:13 [M3.52] (lead) status active -> done
 - 2026-11-22T19:17 HUMAN H-013 closed by conductor
 - 2026-11-22T19:17 [M3.53] (conductor) created (epic) Migrate packaging & distribution to offworld-packaging (stage-dist.py, *.offworld-nexus.app, zero Cloudsmith/Forgejo) & align H-013 live-test ass
+- 2026-11-22T19:20 [M3.53.1] (planner) created (task) Unified offworld-packaging pipeline: verbatim stage-dist.py, zero-secret packages.yml, per-ecosystem nightly stamps
+- 2026-11-22T19:20 [M3.53.2] (planner) created (task) Rewrite install docs & installer to canonical *.offworld-nexus.app repositories
+- 2026-11-22T19:20 [M3.53.3] (planner) created (task) Align H-013 protected live-test assertions (crisp failed-service remedy, truthful mismatched-epoch rebuild)
+- 2026-11-22T19:20 [M3.53.1] (lead) status ready -> active
+- 2026-11-22T19:20 [M3.53.1] (lead) attempt 1/3 started
+- 2026-11-22T19:20 [M3.53.1] (lead) base 9778fb2fdbddcb93ca4cc2e7c87c5f839a7901e2
+- 2026-11-22T19:20 [M3.53.3] (lead) status ready -> active
+- 2026-11-22T19:20 [M3.53.3] (lead) attempt 1/3 started
+- 2026-11-22T19:20 [M3.53.3] (lead) base 9778fb2fdbddcb93ca4cc2e7c87c5f839a7901e2
+- 2026-11-22T19:22 [M3.53.3] (lead) status active -> review
+- 2026-11-22T19:24 [M3.53.1] (lead) status active -> review
+- 2026-11-22T19:28 [M3.53.1] (lead) status review -> ready: consolidated triad fix pass
+- 2026-11-22T19:28 [M3.53.1] (lead) attempt 2/3 started
+- 2026-11-22T19:28 [M3.53.1] (lead) status ready -> active
+- 2026-11-22T19:28 [M3.53.1] (lead) triad fix pass: apk rm, docs.yml, lsp linux stage, rehearsal release/*, stamp remedies, verify smoke
+- 2026-11-22T19:31 [M3.53.1] (lead) status active -> done

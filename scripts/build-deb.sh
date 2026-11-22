@@ -10,14 +10,15 @@ cd "$root"
 version=""
 bundle="target/package-bundle"
 arch=""
-release=0
 max_glibc="auto"
 out="dist/packages"
 
 help() {
     cat <<'USAGE'
 usage: scripts/build-deb.sh --version <ver> [--bundle <dir>] [--arch amd64|arm64]
-                            [--release] [--max-glibc <major>_<minor>|auto] [--out <dir>]
+                            [--max-glibc <major>_<minor>|auto] [--out <dir>]
+  --version may be a release (0.2.0) or a nightly stamp
+  (0.2.0~nightly20261122.r42+g90cb2db); both are legal dpkg versions.
 USAGE
 }
 
@@ -31,7 +32,6 @@ while [ "$#" -gt 0 ]; do
         --version) [ "$#" -ge 2 ] || usage; version=$2; shift 2 ;;
         --bundle) [ "$#" -ge 2 ] || usage; bundle=$2; shift 2 ;;
         --arch) [ "$#" -ge 2 ] || usage; arch=$2; shift 2 ;;
-        --release) release=1; shift ;;
         --max-glibc) [ "$#" -ge 2 ] || usage; max_glibc=$2; shift 2 ;;
         --out) [ "$#" -ge 2 ] || usage; out=$2; shift 2 ;;
         -h | --help) help; exit 0 ;;
@@ -40,11 +40,6 @@ while [ "$#" -gt 0 ]; do
 done
 [ -n "$version" ] || usage
 [ -d "$bundle/share/slipfork/lib" ] || { echo "error: $bundle is not a bundle; next: run scripts/build-bundle.sh --out $bundle" >&2; exit 2; }
-if [ "$release" -eq 1 ]; then
-    case "$version" in
-        *nightly*) echo "error: --release refuses the nightly version $version; next: pass the release version" >&2; exit 2 ;;
-    esac
-fi
 case "${arch:-}" in
     "") case "$(uname -m)" in x86_64) arch=amd64 ;; aarch64) arch=arm64 ;; *) echo "error: unsupported host $(uname -m); next: pass --arch amd64|arm64" >&2; exit 2 ;; esac ;;
     amd64 | arm64) ;;

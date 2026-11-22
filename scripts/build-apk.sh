@@ -8,13 +8,16 @@ root=$(cd "$(dirname "$0")/.." && pwd)
 cd "$root"
 
 version=""
+pkgrel=0
 bundle="target/package-bundle-musl"
 arch=""
 out="dist/packages"
 
 help() {
     cat <<'USAGE'
-usage: scripts/build-apk.sh --version <ver> --bundle <musl bundle> [--arch x86_64|aarch64] [--out <dir>]
+usage: scripts/build-apk.sh --version <ver> [--pkgrel <n>] --bundle <musl bundle> [--arch x86_64|aarch64] [--out <dir>]
+  --version is the Alpine pkgver: 0.2.0, or 0.2.0_alpha2026112242 for a nightly
+  (Alpine rejects `~` and `+`; release-stamp.py computes the value).
 USAGE
 }
 
@@ -25,6 +28,7 @@ usage() {
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --version) [ "$#" -ge 2 ] || usage; version=$2; shift 2 ;;
+        --pkgrel) [ "$#" -ge 2 ] || usage; pkgrel=$2; shift 2 ;;
         --bundle) [ "$#" -ge 2 ] || usage; bundle=$2; shift 2 ;;
         --arch) [ "$#" -ge 2 ] || usage; arch=$2; shift 2 ;;
         --out) [ "$#" -ge 2 ] || usage; out=$2; shift 2 ;;
@@ -70,7 +74,8 @@ install -d "$work/payload"
 cp -a "$stage/." "$work/payload/"
 tar --sort=name --mtime="@${SOURCE_DATE_EPOCH:-0}" --owner=0 --group=0 --numeric-owner \
     -czf "$work/payload.tar.gz" -C "$work" payload
-sed -e "s|^pkgver=.*|pkgver=$version|" packaging/alpine/APKBUILD >"$work/APKBUILD"
+sed -e "s|^pkgver=.*|pkgver=$version|" -e "s|^pkgrel=.*|pkgrel=$pkgrel|" \
+    packaging/alpine/APKBUILD >"$work/APKBUILD"
 docker run --rm -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" \
     -v "$work":/work -w /work alpine:3.21 sh -eu -c '
     trap "chown -R $HOST_UID:$HOST_GID /work || echo \"warning: could not restore /work ownership; next: sudo chown -R $HOST_UID:$HOST_GID <host work dir>\" >&2" EXIT
@@ -97,7 +102,7 @@ for expected in \
 done
 mkdir -p "$out"
 # One apk per architecture must have a unique asset name for the release.
-artifact="$out/slipfork-$version-r0-$arch.apk"
+artifact="$out/slipfork-$version-r$pkgrel-$arch.apk"
 cp "$built" "$artifact"
 ( cd "$out" && sha256sum "$(basename "$artifact")" >"$(basename "$artifact").sha256" )
 printf 'apk: %s\n' "$artifact"
