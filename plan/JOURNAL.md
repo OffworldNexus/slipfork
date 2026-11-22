@@ -3066,3 +3066,14 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-22T22:54 [M3.58.2] (lead) status ready -> active
 - 2026-11-22T22:54 [M3.58.2] (lead) attempt 1/3 started
 - 2026-11-22T22:54 [M3.58.2] (lead) base 6ed6a9160330f3848cc5033b75737726a2bf52a5
+- 2026-11-22T23:09 [M3.57.3] (lead) status active -> done
+- 2026-11-22T23:09 [M3.57] (lead) status active -> done
+- 2026-11-22T23:09 [M3.58.1] (lead) status ready -> active
+- 2026-11-22T23:09 [M3.58.1] (lead) attempt 1/3 started
+- 2026-11-22T23:09 [M3.58.1] (lead) base e2158c725eac9ee5258a2fb0d5208b84f119e989
+- 2026-11-22T23:22 [M3.58.1] (lead) status active -> done
+- 2026-11-22T23:22 [M3.58.2] (lead) status active -> done
+- 2026-11-22T23:36 [M3.58] (lead) status ready -> done
+- 2026-11-22T23:36 [M3.58] (lead) GATE PASSED: make check/docs-check/packages/packages-test exit 0; run_id logs + slirp packaging live-proven on 165.232.86.174
+- 2026-11-22T23:36 [M3] (lead) status active -> done
+- 2026-11-22T23:36 [M3] (lead) GATE PASSED: live /home/slipfork/demo runs real uv+FastAPI + pnpm+SvelteKit with fork isolation, run-id logs, parallel teardown and cross-domain ps

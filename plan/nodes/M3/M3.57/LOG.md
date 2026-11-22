@@ -23,3 +23,7 @@ edited fields
 ## 2026-11-22T22:37 [lead]
 
 edited fields
+
+## 2026-11-22T23:09 [lead]
+
+status active -> done

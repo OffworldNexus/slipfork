@@ -127,3 +127,11 @@ status active -> done
 ## 2026-11-22T20:59 [conductor]
 
 status done -> active
+
+## 2026-11-22T23:36 [lead]
+
+status active -> done
+
+## 2026-11-22T23:36 [lead]
+
+GATE PASSED: live /home/slipfork/demo runs real uv+FastAPI + pnpm+SvelteKit with fork isolation, run-id logs, parallel teardown and cross-domain ps

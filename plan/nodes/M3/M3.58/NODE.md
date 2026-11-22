@@ -1,9 +1,8 @@
 ---
 id: M3.58
 title: "Run-ID log model (slipfork logs --run <id>) for build/setup/hook runs, slirp4netns outbound world networking & single-✗ error formatting"
-kind: task
-status: ready
-owner: implementer
+kind: epic
+status: done
 priority: 3
 depends_on: [M3.57]
 paths: ["crates/**", "specs/**", "docs/**", "packaging/**", "scripts/**", ".github/workflows/**"]
@@ -11,7 +10,7 @@ attempts: 0
 max_attempts: 3
 escalation: none
 created: "2026-11-22T21:46"
-updated: "2026-11-22T21:46"
+updated: "2026-11-22T23:36"
 ---
 
 # Goal
