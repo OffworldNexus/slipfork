@@ -2953,3 +2953,5 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-22T19:13 [M3.52] (lead) live 165.232.86.174: wire CHECKPOINT proven (4/4 rows + checkpoint counter advanced), fork median 1.016s in clean run; 8 live suites all reached green except pr
 - 2026-11-22T19:13 HUMAN H-013 [release-gate] opened by lead (node M3.52)
 - 2026-11-22T19:13 [M3.52] (lead) status active -> done
+- 2026-11-22T19:17 HUMAN H-013 closed by conductor
+- 2026-11-22T19:17 [M3.53] (conductor) created (epic) Migrate packaging & distribution to offworld-packaging (stage-dist.py, *.offworld-nexus.app, zero Cloudsmith/Forgejo) & align H-013 live-test ass

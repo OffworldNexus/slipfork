@@ -104,7 +104,7 @@ Pre-existing live defect outside M3.51 scope, reproducible on 165.232.86.174: cr
 
 **Answer:**
 
-## H-013 [open] [release-gate] (node M3.52)
+## H-013 [closed] [release-gate] (node M3.52)
 
 - asked: 2026-11-22T19:13 by lead
 
