@@ -2944,3 +2944,5 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-22T18:23 [M3.51.2] (lead) status active -> done
 - 2026-11-22T18:25 HUMAN H-012 [release-gate] opened by lead (node M3.51)
 - 2026-11-22T18:25 [M3.51] (lead) status active -> done
+- 2026-11-22T18:27 HUMAN H-012 closed by conductor
+- 2026-11-22T18:27 [M3.52] (conductor) created (task) Flush Postgres shared_buffers via <5ms direct-TCP wire CHECKPOINT before fork syncfs & align specs/03 CDN prose

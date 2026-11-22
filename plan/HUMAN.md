@@ -96,7 +96,7 @@ M3.50 live demo fork median is 1.10s (5 warm samples 1.22/1.10/1.10/1.11/0.98) o
 
 **Answer:**
 
-## H-012 [open] [release-gate] (node M3.51)
+## H-012 [closed] [release-gate] (node M3.51)
 
 - asked: 2026-11-22T18:25 by lead
 
