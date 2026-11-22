@@ -33,6 +33,68 @@ pub fn boot_widths(rows: &[Vec<String>]) -> ColumnWidths {
     boot_table().widths(rows)
 }
 
+/// The widest state any finished row can carry.
+///
+/// A plan reserves this many cells for the state column, so a later `up to date` never widens it
+/// under a row that is already printed.
+const WIDEST_STATE: &str = "up to date";
+
+/// Measures the six boot columns from the complete announced plan: icon, kind, name, state,
+/// duration (>=6, right), and the reserved run-id slot (>=7).
+///
+/// Every column that depends on a name or a state is measured here and only here, so rows 1..N
+/// share one grid no matter which name or state the daemon reports later.
+#[must_use]
+pub fn plan_widths(rows: &[(String, String)]) -> ColumnWidths {
+    let cells: Vec<Vec<String>> = rows
+        .iter()
+        .map(|(kind, name)| {
+            vec![
+                String::new(),
+                kind.clone(),
+                name.clone(),
+                WIDEST_STATE.to_owned(),
+                String::new(),
+                String::new(),
+            ]
+        })
+        .collect();
+    boot_widths(&cells)
+}
+
+/// One live task row: cyan Braille spinner in the icon cell, dim kind, bold name, green
+/// `running`, right-aligned live elapsed, and the reserved run-id slot.
+///
+/// A running row and its later [`completed_row`] share one [`ColumnWidths`], so finishing a task
+/// rewrites its own slot and moves no other row.
+#[must_use]
+pub fn running_row(
+    kind: &str,
+    name: &str,
+    spinner: char,
+    millis: u64,
+    widths: &ColumnWidths,
+) -> String {
+    let palette = Palette::new(true);
+    boot_table().line(
+        widths,
+        &[
+            palette.tint(&spinner.to_string(), "1;36"),
+            palette.dim(kind),
+            palette.label(name),
+            palette.status("running"),
+            palette.dim(&elapsed_text(millis)),
+            String::new(),
+        ],
+    )
+}
+
+/// The panel's active summary when several tasks run at once: `4 running (pg, front, worker, api)`.
+#[must_use]
+pub fn running_summary(names: &[&str]) -> String {
+    format!("{} running ({})", names.len(), names.join(", "))
+}
+
 /// Below this many columns the anchored bar is dropped for the counter/percent/elapsed panel.
 pub const NARROW: usize = 80;
 /// The panel bar is exactly this many cells wide (`specs/02` §3).
@@ -419,7 +481,7 @@ pub fn elapsed_text(millis: u64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{failed_row, failure_details, failure_sentence};
+    use super::{Node, completed_row, failed_row, failure_details, failure_sentence, plan_widths};
 
     #[test]
     fn a_failure_block_prints_its_message_and_remedy_once_with_one_glyph_per_row() {
@@ -487,5 +549,65 @@ mod tests {
             );
             assert!(row.starts_with("  "), "`{row}` is not indented");
         }
+    }
+
+    /// Plan-derived widths keep every row in the same columns, even when a later row carries a
+    /// much longer name and an `up to date` state.
+    #[test]
+    fn plan_widths_hold_every_row_in_the_same_columns() {
+        let plan = vec![
+            ("resource".to_owned(), "pg".to_owned()),
+            ("service".to_owned(), "a-very-long-service-name".to_owned()),
+        ];
+        let widths = plan_widths(&plan);
+        let short = Node {
+            kind: "resource",
+            name: "pg",
+            state: "Ready",
+            millis: 420,
+            success: true,
+        };
+        let long = Node {
+            kind: "service",
+            name: "a-very-long-service-name",
+            state: "up to date",
+            millis: 0,
+            success: false,
+        };
+        let rows = [
+            completed_row(&short, &widths, false),
+            completed_row(&long, &widths, false),
+        ];
+
+        // Byte offsets (`✓` is three UTF-8 bytes): icon at 0, gap, kind at 5; kind 8 + gap =
+        // name at 15; name 24 + gap = state at 41; state 10 + gap + duration 6 ends at 59.
+        const KIND: usize = 5;
+        const NAME: usize = 15;
+        const STATE: usize = 41;
+        const DURATION_END: usize = 59;
+        assert_eq!(rows[0].find("resource"), Some(KIND), "{:?}", rows[0]);
+        assert_eq!(rows[1].find("service"), Some(KIND), "{:?}", rows[1]);
+        assert_eq!(rows[0].find("pg"), Some(NAME), "{:?}", rows[0]);
+        assert_eq!(
+            rows[1].find("a-very-long-service-name"),
+            Some(NAME),
+            "{:?}",
+            rows[1]
+        );
+        assert_eq!(rows[0].find("ready"), Some(STATE), "{:?}", rows[0]);
+        assert_eq!(rows[1].find("up to date"), Some(STATE), "{:?}", rows[1]);
+        assert_eq!(
+            rows[0].trim_end().len(),
+            DURATION_END,
+            "duration right edge: {:?}",
+            rows[0]
+        );
+        assert_eq!(
+            rows[1].trim_end().len(),
+            DURATION_END,
+            "duration right edge: {:?}",
+            rows[1]
+        );
+        assert!(!rows[1].contains('\u{1b}'), "plain rows stay colourless");
     }
 }

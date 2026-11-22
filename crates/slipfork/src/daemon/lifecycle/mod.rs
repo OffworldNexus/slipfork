@@ -4,6 +4,7 @@ pub(super) mod core;
 mod down;
 mod fork;
 mod logs;
+pub(crate) mod plan;
 mod ps;
 pub(super) mod stream;
 pub(super) mod up;

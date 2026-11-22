@@ -12,8 +12,8 @@ mod stamp;
 pub use graph::BootGraph;
 pub use plan::world_plan;
 pub use schedule::{
-    BootEvent, BootFailure, BootScheduler, BootState, EventSink, ServiceHealth, StepExecutor,
-    StepOutcome, classify_service,
+    BootEvent, BootFailure, BootScheduler, BootState, EventSink, PlanRow, ServiceHealth,
+    StepExecutor, StepOutcome, classify_service,
 };
 pub use stamp::{
     EpochState, ImageStamp, PG_STAMP_FILE, StampStore, StepStamp, WORLD_STAMP_FILE, WorldStamp,
@@ -38,6 +38,20 @@ pub enum BootKind {
     Hook,
     /// One long-running `service` pod.
     Service,
+}
+
+impl BootKind {
+    /// The one JSON/plan-frame spelling shared by the supervisor and the daemon's `plan` frame.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Image => "image",
+            Self::Resource => "resource",
+            Self::Setup => "setup",
+            Self::Hook => "hook",
+            Self::Service => "service",
+        }
+    }
 }
 
 /// The lifecycle phase of a hook node.

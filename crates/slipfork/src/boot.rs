@@ -1,9 +1,13 @@
 //! The one live boot pane shared by `up`, `restart`, `fork`, `down`, and `drop`.
 //!
-//! Three drivers, one event model: a colour terminal establishes a `DECSTBM` scroll region with
-//! one aligned row per finished node above a fixed `apt`-style panel on row `rows`; a
-//! `NO_COLOR`/`TERM=dumb` terminal rewrites one `\r` ASCII line with zero `ESC[` bytes; a pipe
-//! gets `→ [i/n] kind name` headers plus one `✓ …` row per node and zero `\r`.
+//! Three drivers, one event model: a colour terminal establishes a `DECSTBM` scroll region where
+//! every started task owns one fixed row (cyan Braille spinner plus live elapsed, rewritten in
+//! place when it finishes) above a fixed `apt`-style panel on row `rows`; a `NO_COLOR`/`TERM=dumb`
+//! terminal rewrites one `\r` ASCII line with zero `ESC[` bytes; a pipe gets `→ [i/n] kind name`
+//! headers plus one `✓ …` row per node and zero `\r`.
+//!
+//! The daemon's `plan` frame arrives before the first row and latches the six-column grid, so a
+//! long name or a later state can never shear a row that is already on screen.
 //!
 //! Every string lives in [`render`]; this module only schedules them. Mode and width arrive as
 //! plain values from the composition root. Log frames are never rendered here: every build, hook,
@@ -45,9 +49,14 @@ pub struct BootTui {
     verdict: Vec<String>,
     /// The one failure sentence, printed to stderr after the region is restored.
     diagnostics: Vec<String>,
-    /// The announced boot plan as raw `[kind, name, state]` cells, one row per started step.
+    /// The announced boot plan as raw `[icon, kind, name, state, duration, run-id]` cells, used
+    /// only when a stream arrives without a `plan` frame.
     plan: Vec<Vec<String>>,
-    /// The precomputed six-column grid shared by every completed row.
+    /// Whether the `plan` frame already latched the grid and the operation count.
+    announced: bool,
+    /// Every announced `(kind, name)`, so a `Started` row only allocates a slot when it was planned.
+    announced_rows: Vec<(String, String)>,
+    /// The precomputed six-column grid shared by every running and completed row.
     widths: ColumnWidths,
 }
 
@@ -166,6 +175,8 @@ impl BootTui {
             verdict: Vec::new(),
             diagnostics: Vec::new(),
             plan: Vec::new(),
+            announced: false,
+            announced_rows: Vec::new(),
             widths: text::boot_widths(&[]),
         }
     }
@@ -179,6 +190,7 @@ impl BootTui {
     /// Renders one typed daemon `event` frame.
     pub fn observe(&mut self, event: &Value) {
         match event["event"].as_str().unwrap_or_default() {
+            "plan" => self.plan_event(event),
             "started" => self.started_node(event),
             // Log frames are captured under `<store>/logs` and read with `slipfork logs`; they
             // never reach the terminal.
@@ -244,6 +256,44 @@ impl BootTui {
         }
     }
 
+    /// Latches the six-column grid and the operation count from the one `plan` frame.
+    ///
+    /// This happens before row 1 is printed, so a name or a state that arrives later can never
+    /// shift a row that is already on screen. A second plan frame is ignored.
+    fn plan_event(&mut self, event: &Value) {
+        if self.announced {
+            return;
+        }
+        let Some(rows) = event["rows"].as_array() else {
+            return;
+        };
+        let announced: Vec<(String, String)> = rows
+            .iter()
+            .filter_map(|row| {
+                Some((
+                    row["kind"].as_str()?.to_owned(),
+                    row["name"].as_str()?.to_owned(),
+                ))
+            })
+            .collect();
+        if announced.is_empty() {
+            return;
+        }
+        self.announced = true;
+        self.widths = text::plan_widths(&announced);
+        let total = event["total"]
+            .as_u64()
+            .and_then(|total| usize::try_from(total).ok())
+            .unwrap_or(announced.len());
+        self.total = self.total.max(total);
+        self.announced_rows = announced;
+        if let Some(pane) = &self.pane
+            && let Ok(mut pane) = pane.lock()
+        {
+            pane.set_widths(self.widths.clone());
+        }
+    }
+
     fn started_node(&mut self, event: &Value) {
         let kind = event["kind"].as_str().unwrap_or("step").to_owned();
         let name = event["name"]
@@ -255,19 +305,29 @@ impl BootTui {
         let total = event["total"].as_u64().unwrap_or(0);
         self.total = self.total.max(total as usize).max(step as usize);
         self.current.clone_from(&name);
-        // One plan row carries the same four leading cells `completed_row` renders — the reserved
-        // icon cell, kind, name, and state — so a row printed mid-stream lands in the same grid a
-        // batch render would produce once the state arrives.
-        self.plan.push(vec![
-            String::new(),
-            kind.clone(),
-            name.clone(),
-            String::new(),
-        ]);
-        self.widths = text::boot_widths(&self.plan);
+        // A `Started` for a row the plan never announced (a phase header such as `down`'s
+        // `stopping`) only updates the counters: it allocates no slot and no column width.
+        let live = !self.announced
+            || self
+                .announced_rows
+                .iter()
+                .any(|(planned_kind, planned_name)| planned_kind == &kind && planned_name == &name);
+        if !self.announced {
+            // No plan frame: fall back to the legacy growing row set, six cells wide.
+            self.plan.push(vec![
+                String::new(),
+                kind.clone(),
+                name.clone(),
+                String::new(),
+                String::new(),
+                String::new(),
+            ]);
+            self.widths = text::boot_widths(&self.plan);
+        }
         if let Some(pane) = &self.pane {
             if let Ok(mut pane) = pane.lock() {
-                pane.start(&name, self.total);
+                pane.set_widths(self.widths.clone());
+                pane.start(&kind, &name, self.total, live);
             }
             return;
         }
@@ -286,28 +346,32 @@ impl BootTui {
             return;
         };
         self.done += 1;
-        let state = node.state.to_lowercase();
-        match self
-            .plan
-            .iter_mut()
-            .rev()
-            .find(|row| row[1].as_str() == node.kind && row[2].as_str() == node.name)
-        {
-            Some(row) => row[3].clone_from(&state),
-            None => self.plan.push(vec![
-                String::new(),
-                node.kind.to_owned(),
-                node.name.to_owned(),
-                state,
-            ]),
+        if !self.announced {
+            let state = node.state.to_lowercase();
+            match self
+                .plan
+                .iter_mut()
+                .rev()
+                .find(|row| row[1].as_str() == node.kind && row[2].as_str() == node.name)
+            {
+                Some(row) => row[3].clone_from(&state),
+                None => self.plan.push(vec![
+                    String::new(),
+                    node.kind.to_owned(),
+                    node.name.to_owned(),
+                    state,
+                    String::new(),
+                    String::new(),
+                ]),
+            }
+            self.widths = text::boot_widths(&self.plan);
         }
-        self.widths = text::boot_widths(&self.plan);
         let row = completed_row(&node, &self.widths, self.mode.color());
         if let Some(pane) = &self.pane
             && let Ok(mut pane) = pane.lock()
         {
-            pane.finish(self.done);
-            pane.println(&row);
+            pane.set_widths(self.widths.clone());
+            pane.complete(node.kind, node.name, &row, self.done);
             return;
         }
         if self.mode.json() {
@@ -339,7 +403,12 @@ impl BootTui {
         );
         let sentence = text::failure_sentence(kind, name);
         if self.pane.is_some() {
-            self.verdict.push(row);
+            if let Some(pane) = &self.pane
+                && let Ok(mut pane) = pane.lock()
+            {
+                pane.set_widths(self.widths.clone());
+                pane.complete(kind, name, &row, self.done);
+            }
             self.verdict.extend(details);
             self.diagnostics.push(sentence);
             return;

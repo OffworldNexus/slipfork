@@ -2,7 +2,7 @@
 id: M3.57.2
 title: "One borderless ANSI-aware table engine across boot/doctor/env/secret/status"
 kind: task
-status: active
+status: done
 owner: implementer
 priority: 3
 depends_on: []
@@ -16,7 +16,7 @@ attempts: 1
 max_attempts: 3
 escalation: none
 created: "2026-11-22T22:37"
-updated: "2026-11-22T22:37"
+updated: "2026-11-22T22:54"
 ---
 
 # Goal

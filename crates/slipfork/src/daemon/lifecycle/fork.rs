@@ -21,6 +21,7 @@ use slipfork_world::{
 };
 
 use super::core::{Core, World};
+use super::plan;
 use crate::daemon::Failure;
 use crate::daemon::boot::BootSession;
 use crate::daemon::rpc::key_of;
@@ -130,6 +131,11 @@ impl Core {
                 "no world is running in this directory",
             ));
         }
+        // One plan frame, before the snapshot mutates anything: the fork's own prep rows plus
+        // every world step the fork will boot. The supervisor's own plan is suppressed below.
+        let mut rows = plan::fork_rows(raw_name);
+        rows.extend(plan::world_rows(&target.project));
+        plan::emit(&rows, rows.len(), emit);
         let prepared = self.snapshot(target, raw_name, fork, preflight_ms, emit)?;
         let boot = json!({
             "project": prepared.project.clone(),
@@ -138,6 +144,7 @@ impl Core {
         match self.begin_up(&boot) {
             Ok(mut session) => {
                 session.reserve_fork(prepared.fork.clone());
+                session.plan_already_announced();
                 Ok((session, prepared))
             }
             Err(failure) => {
@@ -213,6 +220,7 @@ impl Core {
             })?;
         emit(json!({
             "event": "started", "step": 1, "total": 3, "kind": "fork",
+            "name": "snapshot",
             "label": format!("snapshotting {}", fork.as_str()),
         }));
         let snapshot_started = Instant::now();
@@ -226,12 +234,13 @@ impl Core {
         let _ = std::fs::remove_file(paths.project.join(".slipfork/supervisor.log"));
         emit(json!({
             "event": "finished", "step": 1, "total": 3, "kind": "fork",
-            "label": "snapshot", "detail": "project + world data",
+            "name": "snapshot", "label": "snapshot", "detail": "project + world data",
             "elapsed_ms": snapshot_ms,
         }));
         let git_started = Instant::now();
         emit(json!({
             "event": "started", "step": 2, "total": 3, "kind": "git",
+            "name": format!("branch {name}"),
             "label": format!("switching the fork to {name}"),
         }));
         if let Err(failure) = vcs
@@ -243,8 +252,8 @@ impl Core {
         }
         emit(json!({
             "event": "finished", "step": 2, "total": 3, "kind": "git",
-            "label": format!("branch {name}"), "detail": "checked out",
-            "elapsed_ms": elapsed_ms(git_started),
+            "name": format!("branch {name}"), "label": format!("branch {name}"),
+            "detail": "checked out", "elapsed_ms": elapsed_ms(git_started),
         }));
         Ok(PreparedFork {
             parent: project,

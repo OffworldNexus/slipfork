@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 
 use serde_json::{Value, json};
 use slipfork_world::{
-    BootEvent, BootFailure, BootKind, BootScheduler, BootState, BootStep, ResourceKind, StampStore,
+    BootEvent, BootFailure, BootScheduler, BootState, BootStep, ResourceKind, StampStore,
     StepOutcome, WorldName, WorldStamp, WorldStampStore, control, is_btrfs_path, plan_epoch,
     world_plan, write_pg_checkpoints,
 };
@@ -186,6 +186,14 @@ fn stamps_for(project: &Path, store: &WorldStampStore, trusted: bool) -> StampSt
 
 fn boot_event_json(event: &BootEvent) -> Value {
     match event {
+        BootEvent::Plan { rows } => json!({
+            "event": "plan",
+            "rows": rows
+                .iter()
+                .map(|row| json!({ "kind": row.kind.as_str(), "name": row.name }))
+                .collect::<Vec<_>>(),
+            "total": rows.len(),
+        }),
         BootEvent::Started {
             step,
             total,
@@ -195,7 +203,7 @@ fn boot_event_json(event: &BootEvent) -> Value {
             "event": "started",
             "step": step + 1,
             "total": total,
-            "kind": kind_name(*kind),
+            "kind": kind.as_str(),
             "name": name,
             "state": "running",
         }),
@@ -208,7 +216,7 @@ fn boot_event_json(event: &BootEvent) -> Value {
             ..
         } => json!({
             "event": "finished",
-            "kind": kind_name(*kind),
+            "kind": kind.as_str(),
             "name": name,
             "state": state.as_str(),
             "detail": detail,
@@ -222,7 +230,7 @@ fn boot_event_json(event: &BootEvent) -> Value {
             ..
         } => json!({
             "event": "up-to-date",
-            "kind": kind_name(*kind),
+            "kind": kind.as_str(),
             "name": name,
             "state": BootState::UpToDate.as_str(),
             "detail": "up to date",
@@ -240,7 +248,7 @@ fn boot_event_json(event: &BootEvent) -> Value {
         } => {
             let mut event = json!({
                 "event": "failed",
-                "kind": kind_name(*kind),
+                "kind": kind.as_str(),
                 "name": name,
                 "state": BootState::Failed.as_str(),
                 "line": line,
@@ -253,16 +261,6 @@ fn boot_event_json(event: &BootEvent) -> Value {
             }
             event
         }
-    }
-}
-
-fn kind_name(kind: BootKind) -> &'static str {
-    match kind {
-        BootKind::Image => "image",
-        BootKind::Resource => "resource",
-        BootKind::Setup => "setup",
-        BootKind::Hook => "hook",
-        BootKind::Service => "service",
     }
 }
 
@@ -465,11 +463,11 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use slipfork_world::{
-        BootKind, BootStep, HookPhase, StepStamp, WorldPlan, WorldStamp, WorldStampStore,
-        plan_epoch, write_pg_checkpoint,
+        BootEvent, BootKind, BootStep, HookPhase, PlanRow, StepStamp, WorldPlan, WorldStamp,
+        WorldStampStore, plan_epoch, write_pg_checkpoint,
     };
 
-    use super::stamps_for;
+    use super::{boot_event_json, stamps_for};
 
     /// The conditional-stamp key a `pre-deploy when changed(uv.lock)` hook records.
     const LOCK_STAMP: &str = "pre-deploy-lock";
@@ -581,5 +579,46 @@ mod tests {
             !stamps.is_step_current(&relocked.steps, 0),
             "a changed lockfile must re-run `pre-deploy`"
         );
+    }
+
+    /// The `plan` frame is the first NDJSON line, lists every row, and carries zero escapes.
+    #[test]
+    fn the_plan_frame_comes_first_and_stays_ansi_free() {
+        let frames = [
+            boot_event_json(&BootEvent::Plan {
+                rows: vec![
+                    PlanRow {
+                        kind: BootKind::Image,
+                        name: "base".to_owned(),
+                    },
+                    PlanRow {
+                        kind: BootKind::Service,
+                        name: "api".to_owned(),
+                    },
+                ],
+            }),
+            boot_event_json(&BootEvent::Started {
+                step: 0,
+                total: 2,
+                kind: BootKind::Image,
+                name: "base".to_owned(),
+            }),
+        ];
+        let lines: Vec<String> = frames.iter().map(serde_json::Value::to_string).collect();
+        assert!(lines[0].starts_with("{\"event\":\"plan\""), "{}", lines[0]);
+        assert!(
+            lines[0].contains("\"kind\":\"image\",\"name\":\"base\"")
+                && lines[0].contains("\"kind\":\"service\",\"name\":\"api\""),
+            "{}",
+            lines[0]
+        );
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&lines[0]).expect("the plan parses")["total"],
+            2
+        );
+        assert!(lines[1].contains("\"event\":\"started\""));
+        for line in &lines {
+            assert!(!line.contains('\u{1b}'), "--json stays pure: {line:?}");
+        }
     }
 }

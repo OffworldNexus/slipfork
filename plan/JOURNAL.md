@@ -3055,3 +3055,14 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-22T22:37 [M3.57.2] (lead) status ready -> active
 - 2026-11-22T22:37 [M3.57.2] (lead) attempt 1/3 started
 - 2026-11-22T22:37 [M3.57.2] (lead) base 1e09e17fc55de7f6cd757afed1b46b637fcf4b3c
+- 2026-11-22T22:54 [M3.57.1] (lead) status active -> done
+- 2026-11-22T22:54 [M3.57.2] (lead) status active -> done
+- 2026-11-22T22:54 [M3.57.3] (lead) status ready -> active
+- 2026-11-22T22:54 [M3.57.3] (lead) attempt 1/3 started
+- 2026-11-22T22:54 [M3.57.3] (lead) base 6ed6a9160330f3848cc5033b75737726a2bf52a5
+- 2026-11-22T22:54 [M3.58] (lead) edited fields
+- 2026-11-22T22:54 [M3.58.1] (lead) created (task) Per-step run_id logs: #id rows, logs -r <id>|last|failed, logs --runs
+- 2026-11-22T22:54 [M3.58.2] (lead) created (task) slirp4netns packaging/GHA deps + install docs
+- 2026-11-22T22:54 [M3.58.2] (lead) status ready -> active
+- 2026-11-22T22:54 [M3.58.2] (lead) attempt 1/3 started
+- 2026-11-22T22:54 [M3.58.2] (lead) base 6ed6a9160330f3848cc5033b75737726a2bf52a5

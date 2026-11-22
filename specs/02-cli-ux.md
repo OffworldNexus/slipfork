@@ -106,12 +106,24 @@ On an interactive ANSI TTY with `rows >= 3`, `up`, `restart` and `fork` establis
 
 ```mermaid
 flowchart TD
-  Region["Rows 1..rows-1: ONE aligned line per finished task (✓ / • / ✗)<br/>zero sha256, dockerfile or hook lines"]
-  Panel["Row rows: never scrolls<br/>⠋ [██████████████████░░░░░░]  9/12  75% · Starting api… · 0.4s<br/>clamped to cols, SIGWINCH redraw, RAII clear"]
+  Region["Rows 1..rows-1: ONE fixed live row per task (cyan Braille spinner + live elapsed)<br/>rewritten in place to ✓ / • / ✗ · zero sha256, dockerfile or hook lines"]
+  Panel["Row rows: never scrolls<br/>⠋ [██████████████████░░░░░░]  9/12  75% · 4 running (pg, front, worker, api) · 0.4s<br/>clamped to cols, SIGWINCH redraw, RAII clear"]
   Region --- Panel
 ```
 
-- **Counter math:** `filled = round(done / total * 24)`, `pct = round(done / total * 100)`, rendered as `<spinner> [<24 cells>]  <done>/<total>  <pct>% · <active summary> · <elapsed>`.
+- **Six-column rows:** icon, kind, name, state, duration (right, `>= 6`), and the `#run_id` slot
+  (left, `>= 7`, reserved for a later release and empty today).
+- **`plan` frame first:** before the first `started`, the supervisor announces
+  `{"event":"plan","rows":[{"kind","name"}…],"total":N}` for every step it will run; `fork` prepends
+  its `snapshot` and `branch <name>` rows and `down` announces every known pod plus its final
+  `removed run subvolumes` row. The CLI measures all six columns from that one frame, so a later
+  long name or `up to date` state never shifts a row already printed.
+- **One fixed slot per task:** a `started` row allocates its own line immediately and spins there;
+  `finished`/`up-to-date`/`failed` rewrites that same slot. A full region scrolls one line and the
+  top task leaves it — no other row moves.
+- **Counter math:** `filled = round(done / total * 24)`, `pct = round(done / total * 100)`, rendered
+  as `<spinner> [<24 cells>]  <done>/<total>  <pct>% · <active summary> · <elapsed>`; the active
+  summary is `Starting <name>…` for one task and `N running (<a>, <b>, …)` for several.
 - **Flow cursor and resize:** finished rows advance through a real 2D VT100 grid, so the prompt returns to the row the shell expects; `SIGWINCH` re-queries `(cols, rows)`, re-applies the region and redraws.
 - **Narrow and short terminals:** below `cols < 80` the bar is omitted, then `· <summary>`; `done/total`, `pct%` and `elapsed` are never sheared. With `rows < 3` the panel rewrites one line with `\r`.
 - **Truthful rows, zero log spam:** all build, setup, hook and pod output goes to `<store>/logs/<world>/<id>.log`, read with `slipfork logs <id>`; a cache hit prints `cached`.
@@ -156,5 +168,8 @@ A failed `fork` rolls back atomically: it stops its supervisor and pods and drop
 ## 7. Terminal gate split and `--json`
 
 - **Modes:** colour TTY uses the `DECSTBM` region and panel; ASCII TTY rewrites one `\r` plain line with zero `\x1b[`; a pipe emits `→ [i/n] kind name` headers plus `✓`/`•` rows; `--json` is pure JSON.
+- **Plan frame:** `up`, `restart` and `fork` stream `{"event":"plan","rows":[{"kind","name"}…],"total":N}`
+  before the first `started`; `--json` forwards it verbatim (extra keys are forward-compatible) with
+  zero escapes. `down` carries the same frame on its event stream and still answers one final object.
 - **Payloads:** `up`/`restart` → `{world, url, elapsed_ms, nodes:[{kind,name,state,duration_ms}]}`; `down` → `{world, elapsed_ms}`; `fork` → `{fork, world, project, url, elapsed_ms, snapshot_ms}`; `drop` → `{dropped, elapsed_ms}`; `doctor` → `{ready, checks:[{name,ok,detail,next?}]}`; `status`/`ps` → `{worlds:[...]}` including `state` (`live`/`stopped`), `port`, `started_at_ms`, `url`, `routes` (each `{prefix, port, mode, domain?}`), `orphaned` and `stopped_forks` (membership means stopped; stopped rows omit `supervisor_pid`/`started_at_ms`); failures → `{"error":{code,message,next}}`.
 - **Ephemeral daemon:** auto-start warns on stderr and names `slipfork daemon install`.

@@ -29,6 +29,8 @@ pub(super) struct BootSession {
     project: PathBuf,
     /// Fork name when this boot is a fork world.
     fork: Option<String>,
+    /// The daemon already streamed a merged `plan` frame (a fork's prep rows plus world steps).
+    plan_announced: bool,
 }
 
 impl BootSession {
@@ -40,12 +42,18 @@ impl BootSession {
             child: Some(child),
             project,
             fork: None,
+            plan_announced: false,
         }
     }
 
     /// Records the fork this boot belongs to, so its published entry nests under the parent world.
     pub(super) fn reserve_fork(&mut self, fork: String) {
         self.fork = Some(fork);
+    }
+
+    /// Marks the `plan` frame as already streamed, so the supervisor's own frame is not repeated.
+    pub(super) fn plan_already_announced(&mut self) {
+        self.plan_announced = true;
     }
 
     /// Relays one boot's typed events, then publishes the live entry or forgets the placeholder.
@@ -88,6 +96,11 @@ impl BootSession {
             let Ok(event) = serde_json::from_str::<Value>(line.trim()) else {
                 continue;
             };
+            // A fork already streamed one merged plan frame (prep rows + world steps), so the
+            // supervisor's own frame would only be a duplicate width announcement.
+            if self.plan_announced && event["event"].as_str() == Some("plan") {
+                continue;
+            }
             // `ready` is published, not streamed: a registry write that fails after the world
             // booted must never let the CLI print `✓` for a fork that is about to be rolled back.
             let ready = event["event"].as_str() == Some("ready");

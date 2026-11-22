@@ -14,6 +14,7 @@ use slipfork_world::control::{PROTOCOL_VERSION, Request};
 
 use super::super::Failure;
 use super::super::rpc::{key_of, pid_alive, world_answers, world_call};
+use super::plan;
 use crate::daemon::registry::{self, RegistryEntry};
 use crate::world::HostEnv;
 
@@ -168,6 +169,9 @@ impl Core {
             .map(str::to_owned);
         let subject = service.clone().unwrap_or_else(|| world.clone());
         let started = Instant::now();
+        // Every declared step is announced before the first row so the CLI measures its six
+        // columns once; `restart` itself is one operation, hence `total = 1`.
+        plan::emit(&plan::world_rows(&project), 1, emit);
         emit(json!({
             "event": "started", "step": 1, "total": 1, "kind": "restarting",
             "label": subject,

@@ -11,6 +11,7 @@ use slipfork_world::PodStatus;
 use slipfork_world::control::{PROTOCOL_VERSION, Request};
 
 use super::core::{Core, World};
+use super::plan;
 use crate::daemon::Failure;
 use crate::daemon::rpc::{key_of, pid_alive, world_call};
 
@@ -40,6 +41,15 @@ impl Core {
             ));
         }
         let started = Instant::now();
+        // The plan frame is announced before the first row: every pod the world reports, plus the
+        // final run-subvolume sweep row this verb always prints.
+        let mut rows: Vec<plan::PlannedRow> = self
+            .known_pods(&key)
+            .into_iter()
+            .map(|pod| ("pod".to_owned(), pod.id))
+            .collect();
+        rows.push(("removed".to_owned(), "run subvolumes".to_owned()));
+        plan::emit(&rows, rows.len(), emit);
         // The phase header names the world: one row per pod follows, then the final verdict.
         emit(json!({
             "event": "started", "kind": "stopping", "name": world.name(),
