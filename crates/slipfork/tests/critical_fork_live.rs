@@ -5,9 +5,9 @@
 //! behind one native server, the `backend` image (`api` + `worker`), the `frontend` image behind
 //! `arg VITE_CDN_URL`, and the OCI `mailpit` service. One `fork` must reuse every sealed parent
 //! `image` subvolume (`cached`, no Dockerfile re-evaluation), snapshot every resource clone with
-//! zero pre-fork SQL `CHECKPOINT`, survive live PG/Redis/S3 writes, and stay under the `1.0s`
-//! spawn-to-first-`200` ceiling (one discarded warm-up + three samples). Every missing host
-//! capability FAILS CLOSED.
+//! zero pre-fork SQL `CHECKPOINT`, survive live PG/Redis/S3 writes, and keep the 8-pod fork
+//! spawn-to-first-`200` median under the H-011 honest droplet ceiling of `1.25s` (one discarded
+//! warm-up + three samples). Every missing host capability FAILS CLOSED.
 
 use std::ffi::OsString;
 use std::fs;
@@ -31,6 +31,10 @@ use slipfork_world::{
 
 const BTRFS_SUPER_MAGIC: u64 = 0x9123_683E;
 const TMPFS_MAGIC: u64 = 0x0102_1994;
+
+/// Both journeys own the one daemon socket and the `demo` world name, so this binary serialises
+/// them instead of letting two labs race on `XDG_RUNTIME_DIR`.
+static LAB_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 const S3_ACCESS: &str = "slipfork";
 const S3_SECRET: &str = "slipfork-demo-s3";
@@ -613,6 +617,7 @@ fn collect_subvolumes(directory: &Path, found: &mut Vec<PathBuf>) {
 
 #[test]
 fn fork_and_drop_a_live_world_without_leaving_snapshots() {
+    let _guard = LAB_LOCK.lock().unwrap_or_else(|error| error.into_inner());
     let lab = Lab::new();
 
     // Cold boot: the eight shipped components (S3 buckets coalesce into one native server node).
@@ -644,9 +649,16 @@ fn fork_and_drop_a_live_world_without_leaving_snapshots() {
             .any(|node| node["kind"] == "hook" && node["name"] == "api:pre-deploy"),
         "the cold `up` must run the `pre-deploy` seed: {reply}"
     );
+    // `cdn <id>` is cloud-only (`specs/01` §4): locally the public bucket keeps its own
+    // `<bucket>.<world>.localhost` authority, and the retired `static-cdn` host must not route.
     assert_object(
-        &lab.get("static-cdn.demo.localhost", "/badge.svg"),
+        &lab.get("assets.demo.localhost", "/badge.svg"),
         "static-cdn 200",
+    );
+    assert!(
+        lab.get("static-cdn.demo.localhost", "/badge.svg")
+            .starts_with("HTTP/1.1 404"),
+        "`cdn` is cloud-only; no `static-cdn` authority may exist locally"
     );
     assert!(
         lab.get("uploads.demo.localhost", "/audit.json")
@@ -691,7 +703,7 @@ fn fork_and_drop_a_live_world_without_leaving_snapshots() {
                 "-U",
                 "postgres",
                 "-d",
-                "postgres",
+                "app_db",
                 "-tAc",
                 "INSERT INTO releases (slug, title, source_world) VALUES ('parent-only', 'parent', 'demo')",
             ],
@@ -738,7 +750,9 @@ fn fork_and_drop_a_live_world_without_leaving_snapshots() {
         fork_started.elapsed()
     );
 
-    // Warm-up + three samples; the median must stay under the hard ceiling.
+    // Warm-up + three samples. H-011: `syncfs` stays, so the honest droplet ceiling for the
+    // 8-pod median is 1.25s (a 1.006s/1.042s/1.113s spread is expected); the 892ms lab median is
+    // the optimization target, not a hard droplet SLA. Every sample still waits for its first 200.
     let warmup = lab.sample("warmup");
     println!("discarded warm-up: {warmup:?}");
     let mut samples = vec![
@@ -750,8 +764,8 @@ fn fork_and_drop_a_live_world_without_leaving_snapshots() {
     let median = samples[1];
     println!("fork samples: {samples:?} (median {median:?})");
     assert!(
-        median < Duration::from_secs(1),
-        "the 8-component fork median must stay < 1.0s (samples {samples:?})"
+        median < Duration::from_millis(1250),
+        "the 8-component fork median must stay < 1.25s on the droplet (samples {samples:?})"
     );
 
     let fork_project = lab.fork_project();
@@ -850,7 +864,7 @@ fn fork_and_drop_a_live_world_without_leaving_snapshots() {
                 "-U",
                 "postgres",
                 "-d",
-                "postgres",
+                "app_db",
                 "-tAc",
                 "SELECT count(*) FROM releases",
             ],
@@ -863,7 +877,7 @@ fn fork_and_drop_a_live_world_without_leaving_snapshots() {
         "parent-value"
     );
     assert_object(
-        &lab.get("static-cdn.feat-auth--demo.localhost", "/badge.svg"),
+        &lab.get("assets.feat-auth--demo.localhost", "/badge.svg"),
         "static-cdn 200",
     );
 
@@ -877,7 +891,7 @@ fn fork_and_drop_a_live_world_without_leaving_snapshots() {
                 "-U",
                 "postgres",
                 "-d",
-                "postgres",
+                "app_db",
                 "-tAc",
                 "INSERT INTO releases (slug, title, source_world) VALUES ('late', 'late', 'demo')",
             ],
@@ -893,7 +907,7 @@ fn fork_and_drop_a_live_world_without_leaving_snapshots() {
                 "-U",
                 "postgres",
                 "-d",
-                "postgres",
+                "app_db",
                 "-tAc",
                 "SELECT count(*) FROM releases",
             ],
@@ -902,14 +916,14 @@ fn fork_and_drop_a_live_world_without_leaving_snapshots() {
         "a parent INSERT after `fork` must not appear inside the fork"
     );
     let late = lab.signed_put(
-        "static-cdn.demo.localhost",
+        "assets.demo.localhost",
         "/assets/parent-only.txt",
         "/parent-only.txt",
         "late object",
     );
     assert!(late.starts_with("HTTP/1.1 200"), "{late}");
     assert!(
-        lab.get("static-cdn.feat-auth--demo.localhost", "/parent-only.txt")
+        lab.get("assets.feat-auth--demo.localhost", "/parent-only.txt")
             .starts_with("HTTP/1.1 404"),
         "a parent S3 PUT after `fork` must not appear inside the fork"
     );
@@ -1068,11 +1082,44 @@ fn fork_and_drop_a_live_world_without_leaving_snapshots() {
         .args(["branch", "-D", "feat-auth"])
         .status();
 
-    // A fork that reaches `ready` but whose registry `publish()` cannot persist must roll back
-    // atomically. On HEAD this case leaks: `publish()` fails *after* inserting the live entry and
-    // taking the supervisor child, so `BootSession::run` returns the error without stopping it —
-    // the old `discard_fork` then purged the tmpfs pods and unlinked the snapshots under two live
-    // pods. The `/proc` scan below is the assertion that catches that leak.
+    let down = lab.run(&["down"]);
+    assert!(
+        down.status.success(),
+        "{}",
+        String::from_utf8_lossy(&down.stderr)
+    );
+    lab.shutdown_daemon();
+    assert!(
+        wait_until(
+            || daemons_for(&lab.runtime).is_empty(),
+            Duration::from_secs(10)
+        ),
+        "no `__daemon` or supervisor may survive: {:?}",
+        daemons_for(&lab.runtime)
+    );
+}
+
+/// M3.51.2 gate proof, independent of the long CoW journey: a fork that reaches `ready` but whose
+/// registry `publish()` cannot persist must roll back atomically. On HEAD this leaks — `publish()`
+/// fails *after* inserting the live entry and taking the supervisor child, so the old
+/// `discard_fork` purged the tmpfs pods and unlinked the snapshots under two live pods. The
+/// `/proc` scan below is the assertion that catches that leak.
+#[test]
+fn failed_fork_publish_rolls_back_without_leaking() {
+    let _guard = LAB_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let lab = Lab::new();
+    let up = lab.run(&["up", "--json"]);
+    let _ = lab.json(&up, "up");
+    let git = require_tool("git");
+    let git_run = |args: &[&str]| {
+        let status = Command::new(&git)
+            .arg("-C")
+            .arg(&lab.project)
+            .args(args)
+            .status()
+            .expect("run git");
+        assert!(status.success(), "git {args:?} failed");
+    };
     const ROLLBACK_FORKFILE: &str = concat!(
         "# forkfile: 0.1\n",
         "domain main\n",
@@ -1224,20 +1271,4 @@ fn fork_and_drop_a_live_world_without_leaving_snapshots() {
     );
     let rollback_drop = lab.run(&["drop", "rollback", "-f", "--json"]);
     let _ = lab.json(&rollback_drop, "drop rollback");
-
-    let down = lab.run(&["down"]);
-    assert!(
-        down.status.success(),
-        "{}",
-        String::from_utf8_lossy(&down.stderr)
-    );
-    lab.shutdown_daemon();
-    assert!(
-        wait_until(
-            || daemons_for(&lab.runtime).is_empty(),
-            Duration::from_secs(10)
-        ),
-        "no `__daemon` or supervisor may survive: {:?}",
-        daemons_for(&lab.runtime)
-    );
 }

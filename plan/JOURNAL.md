@@ -2938,3 +2938,7 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-22T18:11 [M3.51.3] (lead) attempt 2/3 started
 - 2026-11-22T18:11 [M3.51.3] (lead) gate-found: up <fork> publishes fork=None so ps from parent hides the live fork
 - 2026-11-22T18:12 [M3.51.3] (lead) status active -> done
+- 2026-11-22T18:18 [M3.51.2] (lead) status done -> active
+- 2026-11-22T18:18 [M3.51.2] (lead) attempt 2/3 started
+- 2026-11-22T18:18 [M3.51.2] (lead) gate: critical_fork_live expects the retired static-cdn local authority (specs/01 §4 says cdn is cloud-only)
+- 2026-11-22T18:23 [M3.51.2] (lead) status active -> done

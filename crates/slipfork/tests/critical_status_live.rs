@@ -69,7 +69,7 @@ impl LabEnv {
         fs::create_dir_all(&base).expect("create the live runtime base");
         let base = fs::canonicalize(&base).unwrap_or(base);
         let pid = std::process::id();
-        let runtime = base.join(format!("t{pid}"));
+        let runtime = base.join(format!("r{pid}"));
         let state = root.join(format!(".state-{pid}"));
         fs::create_dir_all(&runtime).expect("create the isolated runtime directory");
         fs::create_dir_all(&state).expect("create the isolated state directory");
@@ -107,7 +107,22 @@ fn unique_suffix() -> String {
         .duration_since(std::time::UNIX_EPOCH)
         .expect("clock reads after the epoch")
         .as_nanos();
-    format!("{}-{nanos:x}", std::process::id())
+    format!("{}-{:08x}", std::process::id(), nanos as u32)
+}
+
+/// Fails closed when a fork world's `control.sock` would overflow `sun_path`.
+fn assert_socket_fits(env: &LabEnv, world: &str) {
+    let path = env
+        .runtime
+        .join("slipfork/pods")
+        .join(world)
+        .join("control.sock");
+    let len = path.as_os_str().len();
+    assert!(
+        len < 108,
+        "control.sock path is {len} bytes (AF_UNIX limit is 108): {}\nnext: shorten XDG_RUNTIME_DIR so the path fits",
+        path.display()
+    );
 }
 
 fn mount_store_for(path: &Path) -> PathBuf {
@@ -443,6 +458,20 @@ fn prepare(project: &Path, store_root: &Path, world: &str, forkfile: &str) {
     fs::write(project.join("Forkfile"), forkfile).expect("write the live Forkfile");
 }
 
+/// Diagnostic for a failed lifecycle run: both pipes plus the tail of the isolated daemon log.
+fn failure_detail(env: &LabEnv, output: &Output) -> String {
+    let log = fs::read_to_string(env.state.join("slipfork/daemon.log"))
+        .unwrap_or_else(|error| format!("<no daemon.log: {error}>"));
+    let mut tail: Vec<&str> = log.lines().rev().take(20).collect();
+    tail.reverse();
+    format!(
+        "stdout: {:?}\nstderr: {:?}\ndaemon.log tail:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+        tail.join("\n")
+    )
+}
+
 fn services(world: &serde_json::Value) -> Vec<serde_json::Value> {
     world["services"].as_array().cloned().unwrap_or_default()
 }
@@ -517,6 +546,7 @@ fn live_boots_once_paints_the_panel_reconciles_orphans_and_replays_logs() {
         world: world_id.clone(),
         keep: false,
     };
+    assert_socket_fits(&env, &format!("feat-stopped--{world_id}"));
 
     // 1. One rich colour-PTY boot: DECSTBM region, 24-cell panel maths, one row per task.
     let boot = run_pty(&project, &env, &["up"], &[], None);
@@ -735,14 +765,14 @@ fn live_boots_once_paints_the_panel_reconciles_orphans_and_replays_logs() {
     let fork = run(&project, &env, &["fork", "feat-stopped", "--json"]);
     assert!(
         fork.status.success(),
-        "fork failed: {}",
-        String::from_utf8_lossy(&fork.stderr)
+        "fork failed:\n{}",
+        failure_detail(&env, &fork)
     );
     let stopped = run(&project, &env, &["down", "feat-stopped"]);
     assert!(
         stopped.status.success(),
-        "down feat-stopped failed: {}",
-        String::from_utf8_lossy(&stopped.stderr)
+        "down feat-stopped failed:\n{}",
+        failure_detail(&env, &stopped)
     );
     let ps = run(&project, &env, &["ps", "--json"]);
     let reply: serde_json::Value = serde_json::from_slice(&ps.stdout).expect("ps --json");

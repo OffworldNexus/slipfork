@@ -31,3 +31,19 @@ status review -> active
 ## 2026-11-22T17:47 [lead]
 
 status active -> done
+
+## 2026-11-22T18:18 [lead]
+
+status done -> active
+
+## 2026-11-22T18:18 [lead]
+
+attempt 2/3 started
+
+## 2026-11-22T18:18 [lead]
+
+gate: critical_fork_live expects the retired static-cdn local authority (specs/01 §4 says cdn is cloud-only)
+
+## 2026-11-22T18:23 [lead]
+
+status active -> done

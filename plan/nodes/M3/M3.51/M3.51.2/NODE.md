@@ -11,11 +11,11 @@ paths:
   - crates/slipfork/src/daemon/mod.rs
   - crates/slipfork/src/daemon/boot.rs
   - crates/slipfork/tests/critical_fork_live.rs
-attempts: 1
+attempts: 2
 max_attempts: 3
 escalation: none
 created: "2026-11-22T17:24"
-updated: "2026-11-22T17:47"
+updated: "2026-11-22T18:23"
 ---
 
 # Goal
