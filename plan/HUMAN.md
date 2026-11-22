@@ -112,3 +112,11 @@ Two pre-existing protected-test regressions block a 100% live gate, both outside
 
 **Answer:**
 
+## H-014 [open] [release-gate] (node M3)
+
+- asked: 2026-11-22T19:51 by conductor
+
+Slipfork 0.1.0 ready on release/0.1.0 -> develop (PR #2): pure-Btrfs native OCI/Dockerfile engine, DECSTBM bottom-bar 1-line-per-task TUI (2D VT100 verified), unified PTY slipfork shell, domain-first ps tree + .forks/* detection, indexed timestamped logs, <5ms wire PG CHECKPOINT, offworld-packaging (stage-dist.py + *.offworld-nexus.app, zero Cloudsmith/Forgejo), and 8/8 live suites green on 165.232.86.174.
+
+**Answer:**
+
