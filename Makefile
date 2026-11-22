@@ -113,17 +113,26 @@ lsp-assets:
 live-test:
 	@test -n "$(SLIPFORK_TEST_ROOT)" || { \
 		echo "live-test: SLIPFORK_TEST_ROOT is unset; next: SLIPFORK_TEST_ROOT=/mnt/slipfork-live make live-test" >&2; exit 2; }
+	@case "$(SLIPFORK_TEST_ROOT)" in /|/home|/home/*|/root|/root/*|/etc|/etc/*|/usr|/usr/*|"$$HOME") \
+		echo "live-test: refusing $(SLIPFORK_TEST_ROOT) as SLIPFORK_TEST_ROOT; next: SLIPFORK_TEST_ROOT=/mnt/slipfork-live make live-test" >&2; exit 2 ;; esac
 	@test "$$(stat -f -c %t "$(SLIPFORK_TEST_ROOT)" 2>/dev/null)" = 9123683e || { \
-		echo "live-test: $(SLIPFORK_TEST_ROOT) is not on Btrfs; next: mount a loop-backed Btrfs file there" >&2; exit 2; }
+		echo "live-test: $(SLIPFORK_TEST_ROOT) is not on Btrfs" >&2; \
+		echo "next: sudo mkdir -p $(SLIPFORK_TEST_ROOT) && sudo truncate -s 12G $(SLIPFORK_TEST_ROOT).img && sudo mkfs.btrfs -f $(SLIPFORK_TEST_ROOT).img && sudo mount -o loop,user_subvol_rm_allowed,noatime $(SLIPFORK_TEST_ROOT).img $(SLIPFORK_TEST_ROOT)" >&2; exit 2; }
 	@test "$$(stat -f -c %t /dev/shm 2>/dev/null)" = 1021994 || { \
 		echo "live-test: /dev/shm is not tmpfs; next: mount a tmpfs to hold XDG_RUNTIME_DIR" >&2; exit 2; }
 	@command -v crun >/dev/null 2>&1 || { \
 		echo "live-test: crun is missing; next: sudo apt-get install crun" >&2; exit 2; }
-	@install -d -m 700 "$(SLIPFORK_TEST_ROOT)" && rm -rf "$(LIVE_RUNTIME_DIR)" && install -d -m 700 "$(LIVE_RUNTIME_DIR)"
-	@set -e; for suite in $(LIVE_SUITES); do \
+	@rm -rf "$(SLIPFORK_TEST_ROOT)/home" "$(SLIPFORK_TEST_ROOT)/tmp" && install -d -m 700 "$(SLIPFORK_TEST_ROOT)" "$(SLIPFORK_TEST_ROOT)/home" "$(SLIPFORK_TEST_ROOT)/tmp" || { echo "live-test: cannot create $(SLIPFORK_TEST_ROOT)/home; next: sudo chown \"$$(id -u):$$(id -g)\" $(SLIPFORK_TEST_ROOT)" >&2; exit 2; } && \
+		chmod 700 "$(SLIPFORK_TEST_ROOT)/home" "$(SLIPFORK_TEST_ROOT)/tmp" && \
+		rm -rf "$(LIVE_RUNTIME_DIR)" && install -d -m 700 "$(LIVE_RUNTIME_DIR)"
+	@set -e; live_cargo_home="$${CARGO_HOME:-$$HOME/.cargo}"; \
+		live_rustup_home="$${RUSTUP_HOME:-$$HOME/.rustup}"; \
+		for suite in $(LIVE_SUITES); do \
 		pkg=$${suite%%/*}; test=$${suite##*/}; \
 		printf '[live] %s %s\n' "$$pkg" "$$test"; \
-		XDG_RUNTIME_DIR="$(LIVE_RUNTIME_DIR)" SLIPFORK_TEST_ROOT="$(SLIPFORK_TEST_ROOT)" \
+		HOME="$(SLIPFORK_TEST_ROOT)/home" TMPDIR="$(SLIPFORK_TEST_ROOT)/tmp" \
+			CARGO_HOME="$$live_cargo_home" RUSTUP_HOME="$$live_rustup_home" \
+			XDG_RUNTIME_DIR="$(LIVE_RUNTIME_DIR)" SLIPFORK_TEST_ROOT="$(SLIPFORK_TEST_ROOT)" \
 			$(CARGO) test -p "$$pkg" --features "$$pkg/live" --test "$$test" -- --test-threads=1; \
 	done
 

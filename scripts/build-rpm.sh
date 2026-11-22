@@ -53,8 +53,9 @@ if ! command -v rpmbuild >/dev/null 2>&1 && [ "$in_container" -eq 0 ]; then
     mkdir -p "$out"
     out_abs=$(cd "$out" && pwd)
     exec docker run --rm -e SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-0}" \
+        -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" \
         -v "$root":/src -v "$(cd "$bundle" && pwd)":/bundle:ro -v "$out_abs":/out -w /src rockylinux:9 \
-        bash -c 'dnf -y -q install rpm-build tar gzip >/dev/null && exec /src/scripts/build-rpm.sh --in-container --bundle /bundle --out /out "$@"' \
+        bash -c 'set -eu; trap "chown -R $HOST_UID:$HOST_GID /out || echo \"warning: could not restore /out ownership; next: sudo chown -R $HOST_UID:$HOST_GID <host out dir>\" >&2; chown -R $HOST_UID:$HOST_GID /src/target || echo \"warning: could not restore /src/target ownership; next: sudo chown -R $HOST_UID:$HOST_GID <host target dir>\" >&2" EXIT; dnf -y -q install rpm-build tar gzip >/dev/null; /src/scripts/build-rpm.sh --in-container --bundle /bundle --out /out "$@"' \
         _ --version "$version" --release "$release" --arch "$arch" --max-glibc "$max_glibc"
 fi
 

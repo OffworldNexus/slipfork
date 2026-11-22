@@ -56,13 +56,12 @@ if [ -n "$container" ] && [ "$in_container" -eq 0 ]; then
         { echo "error: $target needs a container build but docker is missing; next: install docker" >&2; exit 2; }
     mkdir -p "$out"
     out_abs=$(cd "$out" && pwd)
-    uid=$(id -u)
-    gid=$(id -g)
     exec docker run --rm -e CARGO_TARGET_DIR=/src/target \
+        -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" \
         -v "$root":/src -v "$out_abs":/out -w /src "$container" sh -c "
+            trap 'chown -R \"\$HOST_UID:\$HOST_GID\" /src/target || echo \"warning: could not restore /src/target ownership; next: sudo chown -R $(id -u):$(id -g) <host target dir>\" >&2; chown -R \"\$HOST_UID:\$HOST_GID\" /out || echo \"warning: could not restore /out ownership; next: sudo chown -R $(id -u):$(id -g) <host out dir>\" >&2' EXIT
             apk add --no-cache bash binutils musl-dev gcc >/dev/null &&
-            /src/scripts/build-bundle.sh --in-container --out /out --target $target --max-glibc $max_glibc &&
-            chown -R $uid:$gid /src/target /out"
+            /src/scripts/build-bundle.sh --in-container --out /out --target $target --max-glibc $max_glibc"
 fi
 
 if [ "$in_container" -eq 1 ] && command -v apk >/dev/null 2>&1; then

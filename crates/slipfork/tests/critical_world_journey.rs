@@ -104,10 +104,14 @@ fn fail_closed(message: &str) -> ! {
     panic!("fail closed: {message}");
 }
 
+/// CI and `make live-test` always set `SLIPFORK_TEST_ROOT`; there is no ambient fallback.
 fn scratch_root() -> PathBuf {
-    let home = std::env::var_os("HOME")
-        .unwrap_or_else(|| fail_closed("HOME is unset; export HOME before running this suite"));
-    PathBuf::from(home).join(".cache/slipfork/tests")
+    let Some(root) = std::env::var_os("SLIPFORK_TEST_ROOT").filter(|root| !root.is_empty()) else {
+        fail_closed(
+            "SLIPFORK_TEST_ROOT is unset or empty.\nnext: SLIPFORK_TEST_ROOT=/mnt/slipfork-live make live-test",
+        )
+    };
+    PathBuf::from(root)
 }
 
 fn fs_magic(path: &Path) -> u64 {
@@ -125,13 +129,19 @@ fn live_run_root() -> PathBuf {
     let scratch = scratch_root();
     assert!(
         !scratch.starts_with("/tmp"),
-        "fail closed: `{}` is RAM-backed tmpfs and has no Btrfs ioctls.\nnext: set HOME to a Btrfs-backed home such as /home/<user>",
+        "fail closed: `{}` is RAM-backed tmpfs and has no Btrfs ioctls.\nnext: SLIPFORK_TEST_ROOT=/mnt/slipfork-live make live-test",
         scratch.display()
     );
-    fs::create_dir_all(&scratch).expect("create scratch root");
+    if let Err(source) = fs::create_dir_all(&scratch) {
+        fail_closed(&format!(
+            "cannot create `{}`: {source}\nnext: sudo chown -R \"$(id -u):$(id -g)\" {}",
+            scratch.display(),
+            scratch.display()
+        ));
+    }
     assert!(
         fs_magic(&scratch) == BTRFS_SUPER_MAGIC,
-        "fail closed: `{}` is not on Btrfs.\nnext: mount a Btrfs filesystem at HOME (or a parent) with `-o user_subvol_rm_allowed,noatime`",
+        "fail closed: `{}` is not on Btrfs.\nnext: SLIPFORK_TEST_ROOT=/mnt/slipfork-live make live-test",
         scratch.display()
     );
     let nanos = SystemTime::now()
@@ -139,7 +149,13 @@ fn live_run_root() -> PathBuf {
         .expect("clock before epoch")
         .as_nanos();
     let run = scratch.join(format!("journey-{}-{nanos}", std::process::id()));
-    fs::create_dir_all(&run).expect("create journey root");
+    if let Err(source) = fs::create_dir_all(&run) {
+        fail_closed(&format!(
+            "cannot create `{}`: {source}\nnext: sudo chown -R \"$(id -u):$(id -g)\" {}",
+            run.display(),
+            run.display()
+        ));
+    }
     run
 }
 

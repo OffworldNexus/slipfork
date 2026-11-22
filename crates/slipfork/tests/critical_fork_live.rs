@@ -245,15 +245,25 @@ struct Lab {
 
 impl Lab {
     fn new() -> Self {
-        let Some(test_root) = std::env::var_os("SLIPFORK_TEST_ROOT").map(PathBuf::from) else {
+        let Some(test_root) =
+            std::env::var_os("SLIPFORK_TEST_ROOT").filter(|root| !root.is_empty())
+        else {
             fail_closed(
-                "SLIPFORK_TEST_ROOT is unset.\nnext: SLIPFORK_TEST_ROOT=/mnt/slipfork-live cargo test -p slipfork --features live --test critical_fork_live",
-            );
+                "SLIPFORK_TEST_ROOT is unset or empty.\nnext: SLIPFORK_TEST_ROOT=/mnt/slipfork-live make live-test",
+            )
         };
+        let test_root = PathBuf::from(test_root);
+        if let Err(source) = fs::create_dir_all(&test_root) {
+            fail_closed(&format!(
+                "cannot create `{}`: {source}\nnext: sudo chown -R \"$(id -u):$(id -g)\" {}",
+                test_root.display(),
+                test_root.display()
+            ));
+        }
         assert_eq!(
             fs_magic(&test_root),
             BTRFS_SUPER_MAGIC,
-            "fail closed: `{}` is not Btrfs.\nnext: mount a loop-backed Btrfs file there",
+            "fail closed: `{}` is not Btrfs.\nnext: SLIPFORK_TEST_ROOT=/mnt/slipfork-live make live-test",
             test_root.display()
         );
         let Some(runtime) = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from) else {

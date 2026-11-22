@@ -71,7 +71,9 @@ cp -a "$stage/." "$work/payload/"
 tar --sort=name --mtime="@${SOURCE_DATE_EPOCH:-0}" --owner=0 --group=0 --numeric-owner \
     -czf "$work/payload.tar.gz" -C "$work" payload
 sed -e "s|^pkgver=.*|pkgver=$version|" packaging/alpine/APKBUILD >"$work/APKBUILD"
-docker run --rm -v "$work":/work -w /work alpine:3.21 sh -eu -c '
+docker run --rm -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" \
+    -v "$work":/work -w /work alpine:3.21 sh -eu -c '
+    trap "chown -R $HOST_UID:$HOST_GID /work || echo \"warning: could not restore /work ownership; next: sudo chown -R $HOST_UID:$HOST_GID <host work dir>\" >&2" EXIT
     apk add --no-cache abuild sudo tar build-base crun btrfs-progs libgcc >/dev/null
     adduser -D -h /home/builder builder
     addgroup builder abuild

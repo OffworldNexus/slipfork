@@ -15,7 +15,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::time::{Duration, Instant};
 
-use slipfork_world::{BtrfsEngine, Dirtiness, STORE_DIR, StoreLayout, WorldEngine, WorldName};
+use slipfork_world::{
+    BtrfsEngine, Dirtiness, STORE_DIR, StoreLayout, WorldEngine, WorldName, is_btrfs_path,
+};
 
 const FORKFILE: &str = "# forkfile: 0.1\n\
 postgres pg {\n  version 18\n}\n\
@@ -31,10 +33,25 @@ image box from python:3.13-slim {\n  pre-deploy: sh -c 'echo rolling-tail-1; sle
 const BRAILLE: &str = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏";
 
 fn test_root() -> PathBuf {
-    let Some(root) = std::env::var_os("SLIPFORK_TEST_ROOT") else {
-        panic!("SLIPFORK_TEST_ROOT is unset\nnext: SLIPFORK_TEST_ROOT=/mnt/btrfs make live-test");
+    let Some(root) = std::env::var_os("SLIPFORK_TEST_ROOT").filter(|root| !root.is_empty()) else {
+        panic!(
+            "SLIPFORK_TEST_ROOT is unset or empty\nnext: SLIPFORK_TEST_ROOT=/mnt/slipfork-live make live-test"
+        )
     };
-    PathBuf::from(root)
+    let root = PathBuf::from(root);
+    if let Err(source) = fs::create_dir_all(&root) {
+        panic!(
+            "fail closed: cannot create `{}`: {source}\nnext: sudo chown -R \"$(id -u):$(id -g)\" {}",
+            root.display(),
+            root.display()
+        );
+    }
+    assert!(
+        is_btrfs_path(&root).unwrap_or(false),
+        "fail closed: `{}` is not on Btrfs.\nnext: SLIPFORK_TEST_ROOT=/mnt/slipfork-live make live-test",
+        root.display()
+    );
+    root
 }
 
 fn runtime_dir() -> PathBuf {

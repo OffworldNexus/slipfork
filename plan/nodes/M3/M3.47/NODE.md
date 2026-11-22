@@ -2,16 +2,16 @@
 id: M3.47
 title: "Fix CI live-test HOME/SLIPFORK_TEST_ROOT Btrfs wiring & container UID 1001 cleanup in build-apk.sh / scripts/*.sh"
 kind: task
-status: ready
+status: done
 owner: implementer
 priority: 3
 depends_on: []
 paths: [Makefile, "scripts/**", ".github/workflows/**", "crates/slipfork/tests/critical_*.rs"]
-attempts: 0
+attempts: 2
 max_attempts: 3
 escalation: none
 created: "2026-11-22T10:36"
-updated: "2026-11-22T10:36"
+updated: "2026-11-22T10:46"
 ---
 
 # Goal
