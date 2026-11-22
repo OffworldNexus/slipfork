@@ -41,12 +41,16 @@ fn lab(prefix: &str) -> PathBuf {
     root
 }
 
+/// The real calling identity: pods run as the invoking uid/gid, so the bundle must agree with it.
 fn host() -> PodHost {
     PodHost {
         crun: "/usr/bin/crun".into(),
         resolv_conf: Some("/etc/resolv.conf".into()),
-        uid: 1000,
-        gid: 1001,
+        // SAFETY: `geteuid`/`getegid` are pure syscalls returning the caller's identity.
+        uid: unsafe { libc::geteuid() },
+        // Deliberately distinct from the real egid so a uid↔gid transposition fails; the bundle
+        // writer never chowns, so a non-egid value stays EPERM-free.
+        gid: unsafe { libc::getegid() } ^ 1,
     }
 }
 
@@ -88,7 +92,9 @@ fn a_pod_bundle_keeps_the_world_network_and_never_leaks_secrets() {
     let pod = spec(&root);
     pod.validate().expect("the sample spec is valid");
 
-    let written = write_bundle(&pod, &host(), &bundle_dir).expect("write the OCI bundle");
+    let host = host();
+    assert_ne!(host.uid, host.gid, "the lab must keep uid and gid distinct");
+    let written = write_bundle(&pod, &host, &bundle_dir).expect("write the OCI bundle");
     assert_eq!(written.config, bundle_dir.join("config.json"));
     assert_eq!(
         fs::metadata(&written.config).expect("stat config").mode() & 0o777,
@@ -106,9 +112,12 @@ fn a_pod_bundle_keeps_the_world_network_and_never_leaks_secrets() {
     );
     assert!(namespaces.iter().any(|ns| ns["type"] == "ipc"));
     assert!(namespaces.iter().any(|ns| ns["type"] == "uts"));
-    assert_eq!(json["linux"]["uidMappings"][0]["hostID"], 1000);
-    assert_eq!(json["linux"]["gidMappings"][0]["hostID"], 1001);
-    assert_eq!(json["process"]["user"]["uid"], 1000);
+    assert_eq!(json["linux"]["uidMappings"][0]["containerID"], host.uid);
+    assert_eq!(json["linux"]["gidMappings"][0]["containerID"], host.gid);
+    assert_eq!(json["linux"]["uidMappings"][0]["hostID"], host.uid);
+    assert_eq!(json["linux"]["gidMappings"][0]["hostID"], host.gid);
+    assert_eq!(json["process"]["user"]["uid"], host.uid);
+    assert_eq!(json["process"]["user"]["gid"], host.gid);
     assert_eq!(
         json["process"]["cwd"], "/project",
         "the OCI cwd is a container path, never the host rootfs path"
@@ -122,7 +131,10 @@ fn a_pod_bundle_keeps_the_world_network_and_never_leaks_secrets() {
             .any(|value| value == "SECRET=s3cr3t")
     );
     let passwd = fs::read_to_string(bundle_dir.join("passwd")).expect("read passwd");
-    assert!(passwd.contains("slipfork:x:1000:1001:"));
+    assert!(
+        passwd.contains(&format!("slipfork:x:{}:{}:", host.uid, host.gid)),
+        "{passwd}"
+    );
     assert!(
         bundle_dir.join("app.json").is_file(),
         "declared files ride the bundle"

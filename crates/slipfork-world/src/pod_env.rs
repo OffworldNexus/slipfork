@@ -7,7 +7,7 @@
 //! an `ENV HOME` change.
 
 use std::fs;
-use std::os::unix::fs::{MetadataExt, PermissionsExt};
+use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
 use crate::error::{Error, Result};
@@ -34,18 +34,14 @@ pub(crate) fn passwd_contents(uid: u32, gid: u32) -> String {
 
 /// Creates a writable, world-traversable home inside the pod rootfs; idempotent.
 ///
-/// The pod runs as the invoking uid/gid (identity-mapped), so this process already creates the
-/// directory with the pod's ownership. An image-owned home with a foreign uid is repaired once;
-/// a foreign gid on a `0755` directory needs no repair, since the owner keeps write access.
-pub(crate) fn materialise_home(home: &Path, uid: u32, gid: u32) -> Result<()> {
+/// The bundle writer runs as the invoking identity and creates this `0755` directory with it, so
+/// the pod (identity-mapped to the caller) already owns a writable home. A foreign-owned home
+/// means the caller or composition root supplied a mismatched identity; it is a bug surfaced
+/// upstream, never repaired here.
+pub(crate) fn materialise_home(home: &Path) -> Result<()> {
     fs::create_dir_all(home).map_err(|source| Error::io("create", home, source))?;
     fs::set_permissions(home, fs::Permissions::from_mode(0o755))
         .map_err(|source| Error::io("chmod", home, source))?;
-    let owner = fs::metadata(home).map_err(|source| Error::io("stat", home, source))?;
-    if owner.uid() != uid {
-        std::os::unix::fs::chown(home, Some(uid), Some(gid))
-            .map_err(|source| Error::io("chown", home, source))?;
-    }
     Ok(())
 }
 

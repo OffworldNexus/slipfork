@@ -2,16 +2,16 @@
 id: M3.59
 title: "Fix write_bundle home chown on non-1000 unprivileged UIDs & pod_control_lab.rs:91"
 kind: task
-status: ready
+status: done
 owner: implementer
 priority: 3
 depends_on: []
 paths: ["crates/slipfork-world/**"]
-attempts: 0
+attempts: 1
 max_attempts: 3
 escalation: none
 created: "2026-11-22T23:44"
-updated: "2026-11-22T23:44"
+updated: "2026-11-22T23:48"
 ---
 
 # Goal

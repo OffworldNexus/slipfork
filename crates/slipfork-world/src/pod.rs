@@ -236,7 +236,7 @@ pub fn write_bundle(spec: &PodSpec, host: &PodHost, dir: &Path) -> Result<PodBun
     // Unprivileged pods get a real home inside their writable rootfs; without it `HOME` falls
     // back to `/root` (`0700`, uid 0), so `uv`, `git`, and `pnpm` fail with permission denied.
     if host.uid != 0 {
-        materialise_home(&rooted(&spec.rootfs, POD_HOME), host.uid, host.gid)?;
+        materialise_home(&rooted(&spec.rootfs, POD_HOME))?;
     }
     for bind in &spec.binds {
         let destination = rooted(&spec.rootfs, &bind.destination);
