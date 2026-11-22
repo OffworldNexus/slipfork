@@ -112,7 +112,7 @@ Two pre-existing protected-test regressions block a 100% live gate, both outside
 
 **Answer:**
 
-## H-014 [open] [release-gate] (node M3)
+## H-014 [closed] [release-gate] (node M3)
 
 - asked: 2026-11-22T19:51 by conductor
 

@@ -3001,3 +3001,7 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-22T19:51 [M3] (conductor) status active -> done
 - 2026-11-22T19:51 HUMAN H-014 [release-gate] opened by conductor (node M3)
 - 2026-11-22T19:51 AUTOPILOT off by conductor Awaiting GHA green confirmation & human review/merge of PR #2 into develop
+- 2026-11-22T20:59 HUMAN H-014 closed by conductor
+- 2026-11-22T20:59 [M3] (conductor) status done -> active
+- 2026-11-22T20:59 [M3.54] (conductor) created (task) Fix slipfork ps when root world is down: include running child .forks/* worlds & stopped root/forks in project scope
+- 2026-11-22T20:59 AUTOPILOT on by conductor Fixing slipfork ps scope when root world is down while .forks/* are running
