@@ -79,7 +79,7 @@ sed -e "s|^pkgver=.*|pkgver=$version|" -e "s|^pkgrel=.*|pkgrel=$pkgrel|" \
 docker run --rm -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" \
     -v "$work":/work -w /work alpine:3.21 sh -eu -c '
     trap "chown -R $HOST_UID:$HOST_GID /work || echo \"warning: could not restore /work ownership; next: sudo chown -R $HOST_UID:$HOST_GID <host work dir>\" >&2" EXIT
-    apk add --no-cache abuild sudo tar build-base crun btrfs-progs libgcc >/dev/null
+    apk add --no-cache abuild sudo tar build-base crun btrfs-progs slirp4netns libgcc >/dev/null
     adduser -D -h /home/builder builder
     addgroup builder abuild
     echo "builder ALL=(ALL) NOPASSWD: ALL" >/etc/sudoers.d/builder
@@ -100,6 +100,8 @@ for expected in \
     printf '%s\n' "$listing" | grep -qE "(^|/)$expected\$" ||
         { echo "error: $built is missing $expected; next: fix the build-apk staging list" >&2; exit 1; }
 done
+tar -xzOf "$built" .PKGINFO | grep -qx 'depend = slirp4netns' ||
+    { echo "error: $built does not depend on slirp4netns; next: add it to packaging/alpine/APKBUILD depends so world egress works" >&2; exit 1; }
 mkdir -p "$out"
 # One apk per architecture must have a unique asset name for the release.
 artifact="$out/slipfork-$version-r$pkgrel-$arch.apk"

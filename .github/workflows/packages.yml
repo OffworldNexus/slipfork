@@ -238,7 +238,7 @@ jobs:
             debian:* | ubuntu:*)
               docker run --rm -v "$PWD/dist/packages:/pkg:ro" "${{ matrix.image }}" sh -eu -c '
                 apt-get update -qq
-                DEBIAN_FRONTEND=noninteractive apt-get install -y -qq crun btrfs-progs
+                DEBIAN_FRONTEND=noninteractive apt-get install -y -qq crun btrfs-progs slirp4netns
                 dpkg -i /pkg/*.deb
                 /usr/bin/slipfork --version
                 slipfork-lsp --version
@@ -247,6 +247,7 @@ jobs:
             rockylinux:* | fedora:*)
               docker run --rm -v "$PWD/dist/packages:/pkg:ro" "${{ matrix.image }}" sh -eu -c '
                 dnf -y -q install /pkg/*.rpm
+                slirp4netns --version
                 /usr/bin/slipfork --version
                 slipfork-lsp --version
                 /usr/bin/slipfork --help | grep -q "^  up "'
@@ -254,7 +255,7 @@ jobs:
             alpine:*)
               docker run --rm -v "$PWD/dist/packages:/pkg:ro" "${{ matrix.image }}" sh -eu -c '
                 apk update -q
-                apk add --no-cache crun btrfs-progs
+                apk add --no-cache crun btrfs-progs slirp4netns
                 apk add --allow-untrusted /pkg/*.apk
                 /usr/bin/slipfork --version
                 slipfork-lsp --version
@@ -266,7 +267,7 @@ jobs:
               docker run --rm -v "$PWD/dist/packages:/pkg:ro" "${{ matrix.image }}" sh -eu -c '
                 sed -i "s/^DownloadUser/#DownloadUser/" /etc/pacman.conf
                 grep -q "^DisableSandbox" /etc/pacman.conf || sed -i "/^\[options\]/a DisableSandbox" /etc/pacman.conf
-                pacman -Syu --noconfirm --needed glibc crun btrfs-progs
+                pacman -Syu --noconfirm --needed glibc crun btrfs-progs slirp4netns
                 pacman -U --noconfirm /pkg/*.pkg.tar.zst
                 /usr/bin/slipfork --version
                 slipfork-lsp --version

@@ -117,8 +117,11 @@ $ sudo pacman -Sy --needed --noconfirm slipfork
 
 Use `/nightly/$arch` in the `Server` line to follow nightlies.
 
-Every package declares `crun` and `btrfs-progs`, and ships the systemd units (or the OpenRC service
-on Alpine). A package never enables a root daemon; that stays your explicit choice.
+Every package declares `crun`, `btrfs-progs`, and `slirp4netns`. The last one is the user-mode NAT
+that gives a world outbound network, so `@uv`, `@pnpm`, and HTTPS reach the internet.
+
+The packages also ship the systemd units (or the OpenRC service on Alpine), and never enable a root
+daemon; that stays your explicit choice.
 
 ```console
 $ slipfork --version
@@ -234,6 +237,9 @@ $ cd ~/projects && slipfork doctor
   ✓ Domains     http://*.localhost · local domain routing active
 ```
 
+A missing `slirp4netns` turns the `Containers` row red with
+`slirp4netns not installed · pods cannot reach PyPI, npm, or HTTPS`.
+
 ## The daemon and the `:80` ingress
 
 Worlds are served by **one per-user daemon**. Install it without `sudo`:
@@ -256,8 +262,9 @@ decision.
 
 !!! warning "`slipfork` needs Linux"
 
-    Worlds need Linux kernel namespaces, a Btrfs filesystem and `crun`. On macOS or Windows, run
-    Slipfork inside a Linux VM or container; editors there still get the standalone language server.
+    Worlds need Linux kernel namespaces, a Btrfs filesystem, `crun`, and `slirp4netns`. On macOS or
+    Windows, run Slipfork inside a Linux VM or container; editors there still get the standalone
+    language server.
 
 ## Editor language server
 

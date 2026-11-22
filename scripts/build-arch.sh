@@ -83,6 +83,7 @@ license = custom
 depend = glibc
 depend = crun
 depend = btrfs-progs
+depend = slirp4netns
 PKGINFO
 
 mkdir -p "$out"
@@ -100,5 +101,7 @@ for expected in \
     printf '%s\n' "$listing" | grep -qE "(^|/)$expected\$" ||
         { echo "error: $artifact is missing $expected; next: fix the build-arch staging list" >&2; exit 1; }
 done
+tar --zstd -xOf "$artifact" .PKGINFO | grep -qx 'depend = slirp4netns' ||
+    { echo "error: $artifact does not depend on slirp4netns; next: add it to the .PKGINFO depends so world egress works" >&2; exit 1; }
 ( cd "$out" && sha256sum "$(basename "$artifact")" >"$(basename "$artifact").sha256" )
 printf 'arch: %s\n' "$artifact"

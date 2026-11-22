@@ -92,7 +92,8 @@ One command adds the signed repository for your distro, or unpacks the verified 
 
 ## Requirements
 
-`slipfork` needs a Linux host with a Btrfs filesystem and `crun` on `PATH`. `slipfork doctor` checks
+`slipfork` needs a Linux host with a Btrfs filesystem, `crun`, and `slirp4netns` on `PATH`.
+`slipfork doctor` checks
 exactly those things and prints one `next:` remedy per failing row — zero Docker required anywhere.
 
 !!! warning "Editors on macOS and Windows"

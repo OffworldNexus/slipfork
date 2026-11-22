@@ -83,7 +83,8 @@ and `@uv` / `@pnpm` wire lockfile-watched installs automatically.
 
 !!! warning "Linux, Btrfs and crun"
 
-    `slipfork` needs a Linux host with a Btrfs filesystem and `crun` on `PATH`; `slipfork doctor`
+    `slipfork` needs a Linux host with a Btrfs filesystem, `crun`, and `slirp4netns` on `PATH`;
+    `slipfork doctor`
     checks exactly those three things. The editor language server `slipfork-lsp` runs on Linux,
     macOS and Windows.
 

@@ -101,6 +101,8 @@ if ! rpmbuild -bb --define "_topdir $top" --define "slipfork_version $version" \
 fi
 built=$(find "$top/RPMS" -name '*.rpm' -type f | head -n 1)
 [ -n "$built" ] || { echo "error: rpmbuild produced no .rpm; next: run rpmbuild -bb by hand to see why" >&2; exit 1; }
+{ rpm -qpR "$built"; rpm -qp --recommends "$built" 2>/dev/null || true; } | grep -qE '^(Recommends: )?slirp4netns' ||
+    { echo "error: the rpm does not carry slirp4netns; next: keep it in packaging/rpm/slipfork.spec so world egress works" >&2; exit 1; }
 mkdir -p "$out"
 listing=$(rpm -qpl "$built")
 for expected in \

@@ -42,4 +42,11 @@ for shell in bash zsh fish; do
         fail "the $shell completion is empty or missing" "generate it with slipfork completions $shell"
 done
 [ -s SHA256SUMS ] || fail "SHA256SUMS is missing" "rebuild the bundle; it checksums the three binaries"
+
+# World egress is a hard runtime requirement, so every package format must carry slirp4netns.
+root=$(cd "$scripts/.." && pwd)
+for recipe in packaging/rpm/slipfork.spec packaging/arch/PKGBUILD packaging/alpine/APKBUILD scripts/build-deb.sh; do
+    grep -q 'slirp4netns' "$root/$recipe" ||
+        fail "$recipe does not carry slirp4netns" "keep slirp4netns in every package's dependency list so worlds reach the network"
+done
 echo "ok   bundle $prefix: three binaries, payload, completions all present"

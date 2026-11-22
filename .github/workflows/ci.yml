@@ -73,12 +73,13 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - name: Install crun and btrfs-progs
+      - name: Install crun, slirp4netns and btrfs-progs
         run: |
           set -euo pipefail
           sudo apt-get update -qq
-          sudo apt-get install -y -qq crun btrfs-progs
+          sudo apt-get install -y -qq crun slirp4netns btrfs-progs
           crun --version
+          slirp4netns --version
           mkfs.btrfs --version
       # Ubuntu 24.04 blocks unprivileged user namespaces through AppArmor, which
       # is what the per-service pods need. The sysctl only exists on the kernels

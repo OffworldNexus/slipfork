@@ -56,7 +56,7 @@ needed=$(printf '%s\n' "$report" | sed -n 's/^needed: //p' | head -n 1)
     echo "next: rebuild the bundle on a glibc host, then re-run build-deb.sh" >&2; exit 1; }
 deps="libc6 (>= $glibc)"
 case " $needed " in *" libgcc_s.so.1 "*) deps="${deps:+$deps, }libgcc-s1" ;; esac
-deps="${deps:+$deps, }crun, btrfs-progs"
+deps="${deps:+$deps, }crun, btrfs-progs, slirp4netns"
 
 tmp=$(mktemp -d "${TMPDIR:-/var/tmp}/slipfork-deb.XXXXXX")
 trap 'rm -rf "$tmp"' EXIT INT TERM
@@ -84,6 +84,8 @@ install -m 0755 packaging/deb/postinst packaging/deb/prerm "$stage/DEBIAN/"
 mkdir -p "$out"
 artifact="$out/slipfork_${version}_${arch}.deb"
 dpkg-deb --root-owner-group -Zxz --build "$stage" "$artifact" >/dev/null
+dpkg-deb -f "$artifact" Depends | grep -q 'slirp4netns' ||
+    { echo "error: $artifact does not depend on slirp4netns; next: keep slirp4netns in the deb dependency list so world egress works" >&2; exit 1; }
 contents=$(dpkg-deb -c "$artifact")
 for expected in \
     usr/bin/slipfork usr/bin/slipfork-lsp usr/bin/slipfork-world-init \
