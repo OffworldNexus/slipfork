@@ -1,5 +1,8 @@
 //! Dynamic visible column widths, measured after stripping ANSI.
 
+use std::path::Path;
+
+use super::model::display_path;
 use super::rows::WorldRows;
 
 /// Column widths shared by every flattened world in one render.
@@ -15,12 +18,16 @@ pub struct Widths {
     pub name: usize,
     /// Support descriptor column.
     pub descriptor: usize,
+    /// Stopped fork name column.
+    pub stopped_name: usize,
+    /// Stopped fork path column.
+    pub stopped_path: usize,
 }
 
 impl Widths {
-    /// Measures every routed and support row of every world and fork.
+    /// Measures every routed, support, and stopped-fork row of every world and fork.
     #[must_use]
-    pub fn measure(worlds: &[WorldRows<'_>]) -> Self {
+    pub fn measure(worlds: &[WorldRows<'_>], home: Option<&Path>) -> Self {
         let mut widths = Self::default();
         for world in worlds {
             for domain in &world.domains {
@@ -35,6 +42,12 @@ impl Widths {
             for row in &world.support {
                 widths.name = widths.name.max(visible_width(&row.id));
                 widths.descriptor = widths.descriptor.max(visible_width(&row.descriptor));
+            }
+            for fork in &world.world.stopped_forks {
+                widths.stopped_name = widths.stopped_name.max(visible_width(&fork.name));
+                widths.stopped_path = widths
+                    .stopped_path
+                    .max(visible_width(&display_path(&fork.path, home)));
             }
         }
         widths

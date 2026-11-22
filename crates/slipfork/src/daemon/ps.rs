@@ -42,9 +42,24 @@ pub struct PsWorld {
     /// Declared services and resources, in declaration order.
     #[serde(default)]
     pub services: Vec<PsService>,
+    /// Why this world cannot be fully described: a missing checkout or an invalid `Forkfile`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub problem: Option<String>,
+    /// Forks that still exist under `<project>/.forks` but are no longer live.
+    #[serde(default)]
+    pub stopped_forks: Vec<PsStoppedFork>,
     /// Forks nested under this world.
     #[serde(default)]
     pub forks: Vec<PsWorld>,
+}
+
+/// One stopped fork found under a parent world's `.forks` directory.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PsStoppedFork {
+    /// Fork name, the `.forks/<name>` directory entry.
+    pub name: String,
+    /// Absolute fork checkout path on disk.
+    pub path: PathBuf,
 }
 
 /// One service, image, or backing resource row.

@@ -146,6 +146,10 @@ fn help_and_version_are_the_shipped_surface() {
         "{help}"
     );
     assert!(!help.contains("  lsp "), "no lsp row may ship: {help}");
+    assert!(
+        !help.contains(&format!("--{}", "world")),
+        "the retired world flag must be gone: {help}"
+    );
     assert!(help.contains("Examples:\n  slipfork\n"), "{help}");
     assert!(!help.contains(ANSI), "piped output must stay plain");
 
@@ -479,5 +483,73 @@ fn logs_rejects_bad_time_windows_and_accepts_relative_and_rfc3339() {
             String::from_utf8_lossy(&output.stderr)
         );
     }
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// `up`/`down`/`restart` take one positional target and never resurrect the retired flag.
+#[test]
+fn lifecycle_verbs_take_a_positional_target_and_refuse_unknown_names() {
+    let retired = format!("--{}", "world");
+    for verb in ["up", "down", "restart"] {
+        let help = run(&[verb, "--help"]);
+        assert!(help.status.success(), "`{verb} --help` must succeed");
+        let text = String::from_utf8_lossy(&help.stdout);
+        assert!(
+            text.contains("[TARGET]"),
+            "`{verb}` must document its optional positional target: {text}"
+        );
+        assert!(
+            !text.contains(&retired),
+            "`{verb}` must not keep the retired flag: {text}"
+        );
+    }
+    let restart = String::from_utf8_lossy(&run(&["restart", "--help"]).stdout).into_owned();
+    assert!(restart.contains("-s, --service"), "{restart}");
+    assert!(
+        !String::from_utf8_lossy(&run(&["up", "ghost", "--help"]).stdout).contains(&retired),
+        "help must not offer the retired flag"
+    );
+    let legacy = run(&["up", retired.as_str(), "demo"]);
+    assert_eq!(
+        legacy.status.code(),
+        Some(2),
+        "the retired flag is a usage error"
+    );
+    assert!(
+        String::from_utf8_lossy(&legacy.stderr).contains("unexpected argument"),
+        "clap must reject the retired flag"
+    );
+
+    let root = scratch("target");
+    for args in [
+        &["up", "ghost"][..],
+        &["down", "ghost"][..],
+        &["restart", "ghost"][..],
+    ] {
+        let output = run_isolated(args, &root);
+        assert_eq!(output.status.code(), Some(1), "{args:?}: {output:?}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr
+                .lines()
+                .any(|line| line == "error: no world or fork named `ghost` here"),
+            "{args:?} must print the one-line refusal: {stderr}"
+        );
+        assert!(
+            stderr.lines().any(|line| line == "next: run `slipfork ps`"),
+            "{args:?} must print the exact remedy: {stderr}"
+        );
+        assert_eq!(
+            stderr.matches("next:").count(),
+            1,
+            "{args:?} needs exactly one remedy: {stderr}"
+        );
+        assert!(!stderr.contains(ANSI), "{args:?} stays plain: {stderr}");
+        assert!(
+            !String::from_utf8_lossy(&output.stdout).contains(ANSI),
+            "{args:?} stays plain"
+        );
+    }
+    reap::reap(&root);
     let _ = std::fs::remove_dir_all(&root);
 }

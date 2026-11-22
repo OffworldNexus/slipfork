@@ -2,28 +2,31 @@
 id: M3.51.3
 title: "Positional [target] on up/down/restart (delete --world) + honest ps with stopped .forks discovery"
 kind: task
-status: ready
+status: done
 owner: implementer
 priority: 3
 depends_on: [M3.51.1, M3.51.2]
 paths:
+  - "crates/slipfork-world/src/lib.rs"
   - "crates/slipfork/src/cli/**"
   - "crates/slipfork/src/world/**"
   - crates/slipfork/src/daemon/lifecycle/up.rs
   - crates/slipfork/src/daemon/lifecycle/down.rs
   - crates/slipfork/src/daemon/lifecycle/ps.rs
   - crates/slipfork/src/daemon/lifecycle/stream.rs
+  - crates/slipfork/src/daemon/lifecycle/core.rs
   - crates/slipfork/src/daemon/ps.rs
   - crates/slipfork/src/daemon/mod.rs
   - crates/slipfork/src/ps.rs
   - "crates/slipfork/src/status/**"
   - crates/slipfork/src/surface.rs
   - "crates/slipfork/tests/**"
-attempts: 0
+  - "packaging/man/**"
+attempts: 1
 max_attempts: 3
 escalation: none
 created: "2026-11-22T17:24"
-updated: "2026-11-22T17:24"
+updated: "2026-11-22T17:58"
 ---
 
 # Goal

@@ -38,7 +38,7 @@ pub fn render(reply: &PsReply, options: &Options) -> String {
         );
     }
     let projected: Vec<WorldRows<'_>> = worlds.iter().map(|world| project(world)).collect();
-    let widths = Widths::measure(&projected);
+    let widths = Widths::measure(&projected, options.home.as_deref());
     let palette = Palette::new(options.color);
     let mut out = String::new();
     for (index, rows) in projected.iter().enumerate() {
@@ -101,6 +101,23 @@ fn render_world(
         out.push_str(&palette.dim(&format!("  pid {}", world.supervisor_pid)));
     }
     out.push('\n');
+
+    if let Some(problem) = &world.problem {
+        out.push_str(&palette.error(&format!("! {problem}")));
+        out.push('\n');
+    }
+    for fork in &world.stopped_forks {
+        out.push_str(&palette.dim("○ "));
+        out.push_str(&palette.dim(&pad(&fork.name, widths.stopped_name)));
+        out.push_str("  ");
+        out.push_str(&palette.dim(&pad(
+            &display_path(&fork.path, options.home.as_deref()),
+            widths.stopped_path,
+        )));
+        out.push_str("  ");
+        out.push_str(&palette.dim("stopped"));
+        out.push('\n');
+    }
 
     let support = !rows.support.is_empty();
     let groups = rows.domains.len() + usize::from(support);

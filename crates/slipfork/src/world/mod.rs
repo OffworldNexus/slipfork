@@ -7,7 +7,10 @@
 
 mod runtime;
 mod supervise;
+mod target;
 mod up;
+
+pub(crate) use target::{TargetError, Targets};
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -117,26 +120,30 @@ impl HostEnv {
     }
 }
 
-/// Parsed `slipfork up` arguments.
+/// Parsed `slipfork up [target]` arguments.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UpArgs {
     /// Emit the supervisor's typed events as NDJSON.
     pub json: bool,
-    /// Override the world name derived from the project directory.
-    pub world: Option<String>,
+    /// World, fork, or `.forks/<name>` to boot; `None` means this directory.
+    pub target: Option<String>,
 }
 
-/// Parsed `slipfork down` arguments.
+/// Parsed `slipfork down [target]` arguments.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DownArgs {
+    /// World or fork to stop; `None` means this directory's world.
+    pub target: Option<String>,
     /// Emit `{"stopped": true}` instead of the human line.
     pub json: bool,
 }
 
-/// Parsed `slipfork restart` arguments.
+/// Parsed `slipfork restart [target] [-s service]` arguments.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RestartArgs {
-    /// Restart one service, or every service when `None`.
+    /// Service, world, or fork to restart; `None` means every service here.
+    pub target: Option<String>,
+    /// Service id to restart; an explicit `-s` always wins over a positional target.
     pub service: Option<String>,
     /// Emit `{"restarted": n}` instead of the human line.
     pub json: bool,
@@ -184,7 +191,7 @@ pub(super) fn state_path(project: &Path) -> PathBuf {
     project.join(".slipfork/world.json")
 }
 
-/// Derives the world name for a project, in resolution order: an explicit `--world`, the world
+/// Derives the world name for a project, in resolution order: a requested name, the world
 /// recorded in `<project>/.slipfork/world.json`, the canonical `<project>/.forks/<fork>` id
 /// (`<fork>--<parent>`), then the directory's RFC 1123 slug.
 pub(crate) fn world_name(
@@ -220,7 +227,10 @@ fn recorded_world(project: &Path) -> Option<slipfork_world::WorldName> {
 fn fork_world(project: &Path) -> Option<slipfork_world::WorldName> {
     let fork = project.file_name()?.to_str()?;
     let forks_dir = project.parent()?;
-    if !forks_dir.file_name().is_some_and(|name| name == ".forks") {
+    if !forks_dir
+        .file_name()
+        .is_some_and(|name| name == slipfork_world::FORKS_DIR)
+    {
         return None;
     }
     let parent = forks_dir.parent()?;
@@ -286,7 +296,7 @@ mod tests {
                 .expect("requested")
                 .as_str(),
             "explicit",
-            "an explicit --world always wins"
+            "an explicit requested name always wins"
         );
 
         let recorded = root.path().join("demo");
@@ -302,7 +312,7 @@ mod tests {
                 .expect("requested")
                 .as_str(),
             "explicit",
-            "an explicit --world beats the recorded world"
+            "an explicit requested name beats the recorded world"
         );
 
         let parent = root.path().join("app");

@@ -721,3 +721,92 @@ fn a_real_pty_stays_plain_under_no_color_and_term_dumb() {
     }
     let _ = fs::remove_dir_all(&root);
 }
+
+#[test]
+fn stopped_forks_and_honest_problems_render_without_fabrication() {
+    let home = Some(PathBuf::from("/home/me"));
+    let stopped = reply(json!({
+        "worlds": [{
+            "project": "/home/me/demo", "path": "/home/me/demo", "world": "demo",
+            "url": "http://demo.localhost", "supervisor_pid": 11, "alive": true,
+            "booting": false,
+            "services": [{ "id": "api", "kind": "service", "running": true }],
+            "stopped_forks": [{
+                "name": "feat-auth",
+                "path": "/home/me/demo/.forks/feat-auth"
+            }]
+        }]
+    }));
+    let plain = status::render(&stopped, &Options::new(false).with_home(home.clone()));
+    assert!(
+        plain.contains("○ feat-auth  ~/demo/.forks/feat-auth  stopped"),
+        "a stopped fork renders one dim row with its shortened path: {plain}"
+    );
+    assert!(
+        plain.contains("api") && plain.contains("running"),
+        "{plain}"
+    );
+    assert!(
+        !plain.contains(ANSI),
+        "plain renders emit zero ANSI: {plain}"
+    );
+    let coloured = status::render(&stopped, &Options::new(true).with_home(home.clone()));
+    assert!(coloured.contains("\u{1b}[2m○ "), "{coloured}");
+    assert!(coloured.contains("\u{1b}[2mstopped\u{1b}[0m"), "{coloured}");
+    // A scoped `ps` from inside the stopped checkout still finds its parent world row.
+    let scoped = status::scope(&stopped, Path::new("/home/me/demo/.forks/feat-auth"));
+    assert_eq!(scoped.worlds.len(), 1);
+    assert_eq!(scoped.worlds[0].stopped_forks.len(), 1);
+    assert_eq!(scoped.worlds[0].stopped_forks[0].name, "feat-auth");
+
+    let invalid = reply(json!({
+        "worlds": [{
+            "project": "/home/me/demo", "path": "/home/me/demo", "world": "demo",
+            "url": "http://demo.localhost", "supervisor_pid": 11, "alive": true,
+            "booting": false,
+            "problem": "Forkfile invalid: 3:1: unknown resource",
+            "services": [{ "id": "api", "kind": "service", "running": true }]
+        }]
+    }));
+    let text = status::render(&invalid, &Options::new(false));
+    assert!(
+        text.contains("! Forkfile invalid: 3:1: unknown resource"),
+        "{text}"
+    );
+    assert!(
+        text.contains("api") && text.contains("running"),
+        "a live pod must stay running under an invalid Forkfile: {text}"
+    );
+
+    let missing = reply(json!({
+        "worlds": [{
+            "project": "/home/me/demo", "path": "/home/me/demo", "world": "demo",
+            "url": "http://demo.localhost", "supervisor_pid": 11, "alive": true,
+            "booting": false,
+            "problem": "checkout missing — run `slipfork drop feat-auth`",
+            "services": []
+        }]
+    }));
+    let text = status::render(&missing, &Options::new(false));
+    assert!(
+        text.contains("! checkout missing — run `slipfork drop feat-auth`"),
+        "{text}"
+    );
+    assert!(!text.contains("orphaned"), "no fabricated rows: {text}");
+
+    let value = serde_json::to_value(&stopped).expect("ps reply serializes");
+    assert_eq!(value["worlds"][0]["stopped_forks"][0]["name"], "feat-auth");
+    assert_eq!(
+        value["worlds"][0]["services"][0]["running"], true,
+        "JSON keeps the live service"
+    );
+    assert!(
+        value["worlds"][0].get("problem").is_none(),
+        "an absent problem stays out of the wire"
+    );
+    assert!(
+        !serde_json::to_string(&stopped)
+            .expect("serialize")
+            .contains('\u{1b}')
+    );
+}

@@ -33,8 +33,8 @@ pub const VERBS: &[VerbSpec] = &[
     },
     VerbSpec {
         name: "up",
-        summary: "Boot the world declared by ./Forkfile.",
-        flags: &["--world", "--json"],
+        summary: "Boot from ./Forkfile, or the world/fork named by TARGET.",
+        flags: &["--json"],
     },
     VerbSpec {
         name: "down",
@@ -44,7 +44,7 @@ pub const VERBS: &[VerbSpec] = &[
     VerbSpec {
         name: "restart",
         summary: "Restart one service, or every service.",
-        flags: &["--json"],
+        flags: &["-s", "--service", "--json"],
     },
     VerbSpec {
         name: "fork",

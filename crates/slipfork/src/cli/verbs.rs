@@ -15,7 +15,8 @@ pub const EXAMPLES: &str = "\
 Examples:
   slipfork
   slipfork up
-  slipfork restart worker
+  slipfork up feat-auth
+  slipfork restart -s worker
   slipfork logs -f api
   slipfork exec api -- pytest -q
   slipfork daemon install";
@@ -86,7 +87,7 @@ impl Cli {
 /// Every shipped verb, in help order.
 #[derive(Debug, Subcommand)]
 pub enum Command {
-    /// Show every running world as one tree; bare `slipfork` is this verb.
+    /// Show every running world as one tree; bare slipfork is this verb.
     Status,
 
     /// Show only the world or fork rooted in this directory.
@@ -95,25 +96,33 @@ pub enum Command {
     /// Check Btrfs, namespaces, and the crun + :80 runtime.
     Doctor,
 
-    /// Boot images, resources, setup, hooks, and services from ./Forkfile.
+    /// Boot from ./Forkfile, or the world/fork named by TARGET.
     Up {
-        /// World name (default: the project directory name).
-        #[arg(long, value_name = "NAME")]
-        world: Option<String>,
+        /// World, fork, or .forks/<name> to boot (default: this directory).
+        #[arg(value_name = "TARGET")]
+        target: Option<String>,
     },
 
-    /// Stop this directory's running world and every pod in it.
-    Down,
+    /// Stop this directory's world, or the named world/fork, and every pod in it.
+    Down {
+        /// World or fork to stop (default: this directory's world).
+        #[arg(value_name = "TARGET")]
+        target: Option<String>,
+    },
 
-    /// Restart one service from its existing bundle, or every service.
+    /// Restart a service, world, or fork; -s always means a service.
     Restart {
-        /// Service id to restart (default: every service).
+        /// Service, world, or fork to restart (default: every service here).
+        #[arg(value_name = "TARGET")]
+        target: Option<String>,
+        /// Service id to restart; always a service, never a world.
+        #[arg(short = 's', long, value_name = "SERVICE")]
         service: Option<String>,
     },
 
     /// Snapshot the project and world data, then boot the fork on its own URL.
     ///
-    /// `--json` emits `{"fork","world","project","url","elapsed_ms","snapshot_ms"}`.
+    /// --json emits {"fork","world","project","url","elapsed_ms","snapshot_ms"}.
     Fork {
         /// Fork and branch name (default: the checkout's git branch).
         name: Option<String>,
@@ -139,10 +148,10 @@ pub enum Command {
         /// Include postgres, redis, and s3 resource pods.
         #[arg(short = 'a', long)]
         all: bool,
-        /// Only lines at or after this time (`30s|5m|2h|1d` or RFC 3339).
+        /// Only lines at or after this time (30s|5m|2h|1d or RFC 3339).
         #[arg(long, value_name = "TIME", value_parser = crate::commands::parse_since)]
         since: Option<u64>,
-        /// Only lines at or before this time (`30s|5m|2h|1d` or RFC 3339).
+        /// Only lines at or before this time (30s|5m|2h|1d or RFC 3339).
         #[arg(long, value_name = "TIME", value_parser = crate::commands::parse_until)]
         until: Option<u64>,
         /// Prefix every line with a human timestamp gutter.
@@ -161,7 +170,7 @@ pub enum Command {
     Exec {
         /// Service or image id.
         target: Option<String>,
-        /// Command and arguments after `--`.
+        /// Command and arguments after --.
         #[arg(last = true, value_name = "CMD")]
         argv: Vec<String>,
     },
@@ -196,7 +205,7 @@ pub enum Command {
         ospp_endpoint: Option<String>,
     },
 
-    /// Format a Forkfile in place, or report with `--check`.
+    /// Format a Forkfile in place, or report with --check.
     Fmt {
         /// Forkfile to format (default: Forkfile).
         #[arg(value_name = "PATH")]
@@ -246,7 +255,7 @@ pub enum Command {
     Supervise {
         #[arg(long, value_name = "PATH")]
         project: PathBuf,
-        #[arg(long, value_name = "NAME")]
+        #[arg(long = "name", value_name = "NAME")]
         world: String,
     },
 }
@@ -254,7 +263,7 @@ pub enum Command {
 /// `slipfork daemon` subcommands.
 #[derive(Debug, Subcommand)]
 pub enum DaemonCommand {
-    /// Write the per-user daemon unit; `--ingress` adds the system :80 socket.
+    /// Write the per-user daemon unit; --ingress adds the system :80 socket.
     Install {
         /// Install the system :80 socket, its template unit, and AppArmor (needs root).
         #[arg(long)]
@@ -270,13 +279,13 @@ pub enum SecretCommand {
 
     /// Store one value read from stdin (never echoed).
     Set {
-        /// `COMPONENT.KEY` to store.
+        /// COMPONENT.KEY to store.
         target: String,
     },
 
     /// Remove exactly one stored key.
     Unset {
-        /// `COMPONENT.KEY` to remove.
+        /// COMPONENT.KEY to remove.
         target: String,
     },
 }

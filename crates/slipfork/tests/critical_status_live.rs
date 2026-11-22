@@ -21,7 +21,7 @@ use std::time::{Duration, Instant};
 mod pty;
 
 use slipfork_world::{
-    BtrfsEngine, Dirtiness, STORE_DIR, StoreLayout, WorldEngine, WorldName, is_btrfs_path,
+    BtrfsEngine, Dirtiness, ForkName, STORE_DIR, StoreLayout, WorldEngine, WorldName, is_btrfs_path,
 };
 
 const SUITE_FORKFILE: &str = "# forkfile: 0.1\n\
@@ -713,6 +713,109 @@ fn live_boots_once_paints_the_panel_reconciles_orphans_and_replays_logs() {
         String::from_utf8_lossy(&http.stdout).contains("200"),
         "the remaining service must answer HTTP: {:?}",
         String::from_utf8_lossy(&http.stdout)
+    );
+
+    // 3b. A real fork that is stopped stays visible as a dim `○ ... stopped` row from the parent.
+    let git = |args: &[&str]| {
+        Command::new("git")
+            .args(args)
+            .current_dir(&project)
+            .env("GIT_AUTHOR_NAME", "slipfork-lab")
+            .env("GIT_AUTHOR_EMAIL", "lab@slipfork.invalid")
+            .env("GIT_COMMITTER_NAME", "slipfork-lab")
+            .env("GIT_COMMITTER_EMAIL", "lab@slipfork.invalid")
+            .output()
+            .expect("git must run for the live fork journey")
+    };
+    assert!(git(&["init", "-q"]).status.success(), "git init");
+    let added = git(&["add", "-A"]);
+    assert!(added.status.success(), "git add");
+    let committed = git(&["commit", "-qm", "live baseline"]);
+    assert!(committed.status.success(), "git commit");
+    let fork = run(&project, &env, &["fork", "feat-stopped", "--json"]);
+    assert!(
+        fork.status.success(),
+        "fork failed: {}",
+        String::from_utf8_lossy(&fork.stderr)
+    );
+    let stopped = run(&project, &env, &["down", "feat-stopped"]);
+    assert!(
+        stopped.status.success(),
+        "down feat-stopped failed: {}",
+        String::from_utf8_lossy(&stopped.stderr)
+    );
+    let ps = run(&project, &env, &["ps", "--json"]);
+    let reply: serde_json::Value = serde_json::from_slice(&ps.stdout).expect("ps --json");
+    let stopped_forks = reply["worlds"][0]["stopped_forks"]
+        .as_array()
+        .unwrap_or_else(|| panic!("stopped_forks must be an array: {reply}"));
+    assert!(
+        stopped_forks
+            .iter()
+            .any(|fork| fork["name"] == "feat-stopped"),
+        "a stopped fork must stay discoverable from its parent: {reply}"
+    );
+    let human = run(&project, &env, &["ps"]);
+    let human = String::from_utf8(human.stdout).expect("ps is UTF-8");
+    assert!(
+        human.contains("○ feat-stopped") && human.contains("stopped"),
+        "the stopped fork row must render dim with its name: {human}"
+    );
+    assert!(!human.contains('\u{1b}'), "{human}");
+
+    // 3c. A live world whose checkout vanished reports `checkout missing`, not fake orphans.
+    let missing = run(&project, &env, &["fork", "feat-missing", "--json"]);
+    assert!(
+        missing.status.success(),
+        "fork failed: {}",
+        String::from_utf8_lossy(&missing.stderr)
+    );
+    let engine = BtrfsEngine::new(StoreLayout::at(&guard.store_root));
+    let parent_world = WorldName::parse(&world_id).expect("valid parent world");
+    let missing_fork = ForkName::parse("feat-missing").expect("valid fork name");
+    engine
+        .drop_fork(
+            &project,
+            &parent_world,
+            &missing_fork,
+            Dirtiness::Clean,
+            true,
+        )
+        .expect("remove the live fork checkout to simulate a vanished project");
+    let ps = run(&project, &env, &["ps", "--json"]);
+    let reply: serde_json::Value = serde_json::from_slice(&ps.stdout).expect("ps --json");
+    let fork_row = reply["worlds"][0]["forks"]
+        .as_array()
+        .and_then(|forks| forks.iter().find(|fork| fork["fork"] == "feat-missing"))
+        .unwrap_or_else(|| panic!("the live fork row must stay: {reply}"));
+    assert!(
+        fork_row["problem"]
+            .as_str()
+            .is_some_and(|problem| problem.contains("checkout missing")),
+        "a vanished checkout must name its problem: {fork_row}"
+    );
+    let services = fork_row["services"].as_array().cloned().unwrap_or_default();
+    assert!(
+        !services.is_empty(),
+        "live pods must stay visible under a missing checkout: {fork_row}"
+    );
+    assert!(
+        services
+            .iter()
+            .all(|service| service["running"] == true && service["orphaned"] == false),
+        "live pods are running, never fabricated orphans: {fork_row}"
+    );
+    let human = run(&project, &env, &["ps"]);
+    let human = String::from_utf8(human.stdout).expect("ps is UTF-8");
+    assert!(
+        human.contains("checkout missing"),
+        "the human tree must name the missing checkout: {human}"
+    );
+    let stopped = run(&project, &env, &["down", "feat-missing"]);
+    assert!(
+        stopped.status.success(),
+        "down feat-missing failed: {}",
+        String::from_utf8_lossy(&stopped.stderr)
     );
 
     // 4. A hook boot on the colour PTY: no hook bytes, and `SIGWINCH` re-applies the region.

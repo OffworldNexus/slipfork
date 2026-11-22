@@ -61,9 +61,13 @@ fn dispatch(cli: Cli, session: Session) -> ExitCode {
         Command::Status => session.status(json, verbose),
         Command::Ps => session.ps(json, verbose),
         Command::Doctor => session.doctor(json),
-        Command::Up { world } => session.up(&UpArgs { json, world }),
-        Command::Down => session.down(&DownArgs { json }),
-        Command::Restart { service } => session.restart(&RestartArgs { service, json }),
+        Command::Up { target } => session.up(&UpArgs { json, target }),
+        Command::Down { target } => session.down(&DownArgs { json, target }),
+        Command::Restart { target, service } => session.restart(&RestartArgs {
+            target,
+            service,
+            json,
+        }),
         Command::Fork { name } => session.fork(&ForkArgs { name, json }),
         Command::Drop { name, force } => session.drop(&DropArgs { name, force, json }),
         Command::Logs {

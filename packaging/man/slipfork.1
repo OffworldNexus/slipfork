@@ -23,7 +23,7 @@ Print version
 .SH SUBCOMMANDS
 .TP
 \fBslipfork status\fR
-Show every running world as one tree; bare `slipfork` is this verb
+Show every running world as one tree; bare slipfork is this verb
 .TP
 \fBslipfork ps\fR
 Show only the world or fork rooted in this directory
@@ -32,13 +32,13 @@ Show only the world or fork rooted in this directory
 Check Btrfs, namespaces, and the crun + :80 runtime
 .TP
 \fBslipfork up\fR
-Boot images, resources, setup, hooks, and services from ./Forkfile
+Boot from ./Forkfile, or the world/fork named by TARGET
 .TP
 \fBslipfork down\fR
-Stop this directory\*(Aqs running world and every pod in it
+Stop this directory\*(Aqs world, or the named world/fork, and every pod in it
 .TP
 \fBslipfork restart\fR
-Restart one service from its existing bundle, or every service
+Restart a service, world, or fork; \-s always means a service
 .TP
 \fBslipfork fork\fR
 Snapshot the project and world data, then boot the fork on its own URL
@@ -68,7 +68,7 @@ Open the world or service URL in your browser, printing it when headless
 Pair this machine with an OSPP v1 endpoint, or reuse the saved record
 .TP
 \fBslipfork fmt\fR
-Format a Forkfile in place, or report with `\-\-check`
+Format a Forkfile in place, or report with \-\-check
 .TP
 \fBslipfork migrate\fR
 Convert a legacy snow.yml manifest into a Forkfile
@@ -88,7 +88,8 @@ Print the version
 Examples:
   slipfork
   slipfork up
-  slipfork restart worker
+  slipfork up feat\-auth
+  slipfork restart \-s worker
   slipfork logs \-f api
   slipfork exec api \-\- pytest \-q
   slipfork daemon install

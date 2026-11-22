@@ -947,10 +947,7 @@ fn fork_and_drop_a_live_world_without_leaving_snapshots() {
         "{}",
         String::from_utf8_lossy(&down.stderr)
     );
-    let reup = lab.run_in(
-        &fork_project,
-        &["up", "--world", "feat-auth--demo", "--json"],
-    );
+    let reup = lab.run_in(&fork_project, &["up", "--json"]);
     let reup_reply = lab.json(&reup, "mismatched re-up");
     assert!(
         reup_reply["nodes"].as_array().is_some_and(|nodes| nodes

@@ -17,12 +17,50 @@ use crate::commands::{Session, emit};
 use crate::daemon::{DaemonClient, DaemonError};
 use crate::ui::paint;
 
-use super::{DownArgs, DropArgs, ForkArgs, RestartArgs, UpArgs, fail};
+use super::{DownArgs, DropArgs, ForkArgs, RestartArgs, Targets, UpArgs, fail};
 
 impl Session {
     /// Boots the world through the daemon and renders every boot node until ready.
     pub fn up(&self, args: &UpArgs) -> ExitCode {
-        let project = self.cwd().to_path_buf();
+        let local = Targets::new(self.cwd(), &crate::ps::PsReply::default())
+            .resolve_local(args.target.as_deref());
+        let mut client = None;
+        let resolved = match local {
+            Some(Ok(resolved)) => resolved,
+            Some(Err(error)) => return self.target_failure(&error, args.json),
+            None => {
+                let mut connected = match DaemonClient::connect(self.host()) {
+                    Ok(client) => client,
+                    Err(error) => {
+                        return self.lifecycle_failure(
+                            &error,
+                            "retry `slipfork up`",
+                            args.json,
+                            false,
+                        );
+                    }
+                };
+                let reply = match ps_reply(&mut connected) {
+                    Ok(reply) => reply,
+                    Err(error) => {
+                        return self.lifecycle_failure(
+                            &error,
+                            "retry `slipfork up`",
+                            args.json,
+                            false,
+                        );
+                    }
+                };
+                let resolved =
+                    match Targets::new(self.cwd(), &reply).resolve(args.target.as_deref()) {
+                        Ok(resolved) => resolved,
+                        Err(error) => return self.target_failure(&error, args.json),
+                    };
+                client = Some(connected);
+                resolved
+            }
+        };
+        let project = resolved.project;
         let source = match fs::read_to_string(project.join("Forkfile")) {
             Ok(source) => source,
             Err(error) => {
@@ -40,11 +78,14 @@ impl Session {
         if let Err(diagnostics) = slipfork_forkfile::compile(&source) {
             return self.forkfile_failure(&diagnostics, args.json);
         }
-        let mut client = match DaemonClient::connect(self.host()) {
-            Ok(client) => client,
-            Err(error) => {
-                return self.lifecycle_failure(&error, "retry `slipfork up`", args.json, false);
-            }
+        let mut client = match client {
+            Some(client) => client,
+            None => match DaemonClient::connect(self.host()) {
+                Ok(client) => client,
+                Err(error) => {
+                    return self.lifecycle_failure(&error, "retry `slipfork up`", args.json, false);
+                }
+            },
         };
         let began = Instant::now();
         let mut remedy: Option<String> = None;
@@ -53,11 +94,11 @@ impl Session {
         let mut tui = BootTui::boot(
             self.ui(),
             self.terminal().width,
-            &format!("Booting {}", self.world_label(None)),
+            &format!("Booting {}", resolved.world.as_str()),
         );
         let outcome = client.call_streaming(
             "up",
-            json!({ "project": project, "world": args.world }),
+            json!({ "project": project, "world": resolved.world.as_str() }),
             &mut |event| {
                 if event["event"].as_str() == Some("failed") && tui.failed() {
                     return;
@@ -119,15 +160,36 @@ impl Session {
                 );
             }
         };
+        let reply = if args.target.is_none() {
+            crate::ps::PsReply::default()
+        } else {
+            match ps_reply(&mut client) {
+                Ok(reply) => reply,
+                Err(error) => {
+                    return self.lifecycle_failure(
+                        &error,
+                        "run `slipfork up` to start a world",
+                        json_mode,
+                        false,
+                    );
+                }
+            }
+        };
+        let resolved = match Targets::new(self.cwd(), &reply).resolve(args.target.as_deref()) {
+            Ok(resolved) => resolved,
+            Err(error) => return self.target_failure(&error, json_mode),
+        };
         let mut elapsed_ms = 0_u64;
-        let mut world = self.world_label(None);
+        let mut world = resolved.world.as_str().to_owned();
         let mut tui = BootTui::rows(
             self.ui(),
             self.terminal().width,
             &format!("Stopping {world}"),
         );
-        let outcome =
-            client.call_streaming("down", json!({ "project": self.cwd() }), &mut |event| {
+        let outcome = client.call_streaming(
+            "down",
+            json!({ "project": resolved.project }),
+            &mut |event| {
                 if event["event"].as_str() == Some("stopped") {
                     elapsed_ms = event["elapsed_ms"].as_u64().unwrap_or(elapsed_ms);
                     if let Some(name) = event["world"].as_str() {
@@ -135,7 +197,8 @@ impl Session {
                     }
                 }
                 tui.observe(event);
-            });
+            },
+        );
         tui.finish();
         match outcome {
             Ok(reply) => {
@@ -170,17 +233,38 @@ impl Session {
                 );
             }
         };
+        let reply = if args.target.is_none() {
+            crate::ps::PsReply::default()
+        } else {
+            match ps_reply(&mut client) {
+                Ok(reply) => reply,
+                Err(error) => {
+                    return self.lifecycle_failure(
+                        &error,
+                        "run `slipfork up` if the world is no longer running",
+                        json_mode,
+                        false,
+                    );
+                }
+            }
+        };
+        let resolved = match Targets::new(self.cwd(), &reply)
+            .resolve_restart(args.target.as_deref(), args.service.as_deref())
+        {
+            Ok(resolved) => resolved,
+            Err(error) => return self.target_failure(&error, json_mode),
+        };
         let began = Instant::now();
         let mut elapsed_ms = 0_u64;
         let mut nodes = Vec::new();
         let mut tui = BootTui::boot(
             self.ui(),
             self.terminal().width,
-            &format!("Restarting {}", self.world_label(None)),
+            &format!("Restarting {}", resolved.world.as_str()),
         );
         let outcome = client.call_streaming(
             "restart",
-            json!({ "project": self.cwd(), "service": args.service }),
+            json!({ "project": resolved.project, "service": resolved.service }),
             &mut |event| {
                 if let Some(node) = boot_node(event) {
                     nodes.push(node);
@@ -208,7 +292,7 @@ impl Session {
                         "nodes": nodes,
                     }));
                 }
-                match &args.service {
+                match &resolved.service {
                     Some(service) => tui.line(&format!("✓ Restarted {service}")),
                     None => {
                         let restarted = reply["restarted"].as_u64().unwrap_or(0);
@@ -349,11 +433,17 @@ impl Session {
         }
     }
 
-    /// The `.localhost` world label for this project, or `world` when it cannot be derived.
-    fn world_label(&self, requested: Option<&str>) -> String {
-        super::world_name(self.cwd(), requested)
-            .map(|name| name.as_str().to_owned())
-            .unwrap_or_else(|_| "world".to_owned())
+    /// The one refusal for an unresolvable positional target.
+    fn target_failure(&self, error: &super::TargetError, json_mode: bool) -> ExitCode {
+        self.lifecycle_failure(
+            &DaemonError {
+                code: "no-target".to_owned(),
+                message: error.message.clone(),
+            },
+            error.next,
+            json_mode,
+            false,
+        )
     }
 
     /// Renders the first compiler diagnostic as `Forkfile:line:col`, plus its one `next:`.
@@ -406,6 +496,17 @@ impl Session {
         }
         fail(&error.message, next)
     }
+}
+
+/// Reads the daemon's typed `ps` reply so target resolution has one canonical registry view.
+fn ps_reply(client: &mut DaemonClient) -> Result<crate::ps::PsReply, DaemonError> {
+    let value = client.call_streaming("ps", json!({}), &mut |_| {})?;
+    crate::status::parse(&value).map_err(|error| {
+        DaemonError::new(
+            "ps-decode",
+            format!("cannot decode the daemon's ps reply: {error}"),
+        )
+    })
 }
 
 /// One completed boot node, projected into the `specs/02` `nodes` array.

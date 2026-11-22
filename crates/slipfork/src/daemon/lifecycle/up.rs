@@ -273,7 +273,7 @@ impl Core {
             .arg("__supervise")
             .arg("--project")
             .arg(&project)
-            .arg("--world")
+            .arg("--name")
             .arg(world.as_str())
             .current_dir(&project)
             .stdin(Stdio::null())
