@@ -16,17 +16,18 @@ paths:
   - crates/slipfork/src/daemon/lifecycle/stream.rs
   - crates/slipfork/src/daemon/lifecycle/core.rs
   - crates/slipfork/src/daemon/ps.rs
+  - crates/slipfork/src/daemon/boot.rs
   - crates/slipfork/src/daemon/mod.rs
   - crates/slipfork/src/ps.rs
   - "crates/slipfork/src/status/**"
   - crates/slipfork/src/surface.rs
   - "crates/slipfork/tests/**"
   - "packaging/man/**"
-attempts: 1
+attempts: 2
 max_attempts: 3
 escalation: none
 created: "2026-11-22T17:24"
-updated: "2026-11-22T17:58"
+updated: "2026-11-22T18:12"
 ---
 
 # Goal

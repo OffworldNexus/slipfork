@@ -763,6 +763,46 @@ fn live_boots_once_paints_the_panel_reconciles_orphans_and_replays_logs() {
     );
     assert!(!human.contains('\u{1b}'), "{human}");
 
+    // A plain `up <fork>` from the parent must publish the fork flag so `ps` nests it live.
+    let reup = run(&project, &env, &["up", "feat-stopped", "--json"]);
+    assert!(
+        reup.status.success(),
+        "up feat-stopped failed: {}",
+        String::from_utf8_lossy(&reup.stderr)
+    );
+    let ps = run(&project, &env, &["ps", "--json"]);
+    let reply: serde_json::Value = serde_json::from_slice(&ps.stdout).expect("ps --json");
+    let live_fork = reply["worlds"][0]["forks"]
+        .as_array()
+        .and_then(|forks| forks.iter().find(|fork| fork["fork"] == "feat-stopped"))
+        .unwrap_or_else(|| panic!("the live fork must nest under its parent: {reply}"));
+    assert_eq!(live_fork["alive"], true, "{live_fork}");
+    assert_eq!(
+        live_fork["world"],
+        format!("feat-stopped--{world_id}"),
+        "{live_fork}"
+    );
+    let human = run(&project, &env, &["ps"]);
+    let human = String::from_utf8(human.stdout).expect("ps is UTF-8");
+    assert!(
+        human.contains("● feat-stopped") && !human.contains("○ feat-stopped"),
+        "a live fork renders as a `●` world, never a stopped row: {human}"
+    );
+    let stopped = run(&project, &env, &["down", "feat-stopped"]);
+    assert!(
+        stopped.status.success(),
+        "down feat-stopped failed: {}",
+        String::from_utf8_lossy(&stopped.stderr)
+    );
+    let ps = run(&project, &env, &["ps", "--json"]);
+    let reply: serde_json::Value = serde_json::from_slice(&ps.stdout).expect("ps --json");
+    assert!(
+        reply["worlds"][0]["stopped_forks"]
+            .as_array()
+            .is_some_and(|forks| forks.iter().any(|fork| fork["name"] == "feat-stopped")),
+        "after `down` the fork returns to a stopped row: {reply}"
+    );
+
     // 3c. A live world whose checkout vanished reports `checkout missing`, not fake orphans.
     let missing = run(&project, &env, &["fork", "feat-missing", "--json"]);
     assert!(

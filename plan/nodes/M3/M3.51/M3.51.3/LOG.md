@@ -35,3 +35,23 @@ status review -> active
 ## 2026-11-22T17:58 [lead]
 
 status active -> done
+
+## 2026-11-22T18:11 [lead]
+
+edited fields
+
+## 2026-11-22T18:11 [lead]
+
+status done -> active
+
+## 2026-11-22T18:11 [lead]
+
+attempt 2/3 started
+
+## 2026-11-22T18:11 [lead]
+
+gate-found: up <fork> publishes fork=None so ps from parent hides the live fork
+
+## 2026-11-22T18:12 [lead]
+
+status active -> done

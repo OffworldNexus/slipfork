@@ -294,8 +294,30 @@ impl Core {
                 supervisor_pid: child.id(),
             },
         );
-        Ok(BootSession::new(key, log_path, child, project))
+        let mut session = BootSession::new(key, log_path, child, project.clone());
+        if let Some(fork) = layout_fork(&project) {
+            session.reserve_fork(fork);
+        }
+        Ok(session)
     }
+}
+
+/// The fork name when `project` is the canonical `<parent>/.forks/<fork>` checkout.
+///
+/// `up <fork>` re-boots an existing checkout through [`Core::begin_up`], so the published registry
+/// entry must still carry the fork name for `ps` to nest it under its parent world.
+fn layout_fork(project: &Path) -> Option<String> {
+    let forks = project.parent()?;
+    if !forks
+        .file_name()
+        .is_some_and(|name| name == slipfork_world::FORKS_DIR)
+    {
+        return None;
+    }
+    let fork = project.file_name()?.to_str()?;
+    slipfork_world::ForkName::parse(fork)
+        .ok()
+        .map(|fork| fork.as_str().to_owned())
 }
 
 /// The compiled `Forkfile`'s stable content digest plus its sorted active features.
@@ -329,4 +351,34 @@ fn forkfile_predates(project: &Path, started_at_ms: u64) -> bool {
         .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
         .map(|since| since.as_millis() as u64 <= started_at_ms)
         .unwrap_or(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use super::layout_fork;
+
+    fn temp(prefix: &str) -> tempfile::TempDir {
+        tempfile::Builder::new()
+            .prefix(prefix)
+            .tempdir_in("/var/tmp")
+            .expect("create a disk temp directory")
+    }
+
+    #[test]
+    fn layout_fork_reads_only_the_canonical_forks_directory() {
+        let root = temp("slipfork-layout-fork");
+        let parent = root.path().join("demo");
+        let fork = parent.join(slipfork_world::FORKS_DIR).join("feat-auth");
+        fs::create_dir_all(&fork).expect("create the fork checkout");
+        assert_eq!(layout_fork(&fork).as_deref(), Some("feat-auth"));
+        assert_eq!(layout_fork(&parent), None);
+        assert_eq!(layout_fork(&fork.join("nested")), None);
+        assert_eq!(
+            layout_fork(&parent.join(slipfork_world::FORKS_DIR).join("Bad_Name")),
+            None,
+            "an invalid fork name never reserves a fork"
+        );
+    }
 }
