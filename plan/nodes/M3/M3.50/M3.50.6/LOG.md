@@ -55,3 +55,7 @@ base 3df87cb2d19bf2601b9a53e92ef35e34477751e6; ROOT CAUSE CONFIRMED: unsynced PG
 ## 2026-11-22T16:36 [lead]
 
 status active -> blocked
+
+## 2026-11-22T17:21 [conductor]
+
+status blocked -> done

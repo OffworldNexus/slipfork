@@ -2,7 +2,7 @@
 id: M3.50.6
 title: "Rebuild .deb + live 165.232.86.174 proof: real-PTY shell, <1s 8-component fork"
 kind: task
-status: blocked
+status: done
 owner: implementer
 priority: 5
 depends_on: [M3.50.3, M3.50.4, M3.50.5, M3.50.7, M3.50.8, M3.50.9, M3.50.10]
@@ -23,7 +23,7 @@ attempts: 1
 max_attempts: 3
 escalation: none
 created: "2026-11-22T12:41"
-updated: "2026-11-22T16:36"
+updated: "2026-11-22T17:21"
 ---
 
 # Goal

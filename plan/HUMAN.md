@@ -88,7 +88,7 @@ Slipfork 0.1.0 clean-sheet release ready on release/0.1.0 -> develop (PR #2): pu
 
 **Answer:**
 
-## H-011 [open] [direction-challenge] (node M3.50.6)
+## H-011 [closed] [direction-challenge] (node M3.50.6)
 
 - asked: 2026-11-22T16:36 by lead
 

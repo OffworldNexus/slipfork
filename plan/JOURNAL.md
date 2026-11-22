@@ -2893,3 +2893,8 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-22T16:36 HUMAN H-011 [direction-challenge] opened by lead (node M3.50.6)
 - 2026-11-22T16:36 [M3.50.6] (lead) status active -> blocked
 - 2026-11-22T16:40 AUTOPILOT off by conductor Awaiting owner review of refreshed 165.232.86.174 UX & H-011 (1.10s 8-pod droplet fork vs syncfs)
+- 2026-11-22T17:21 HUMAN H-011 closed by conductor
+- 2026-11-22T17:21 [M3.50.6] (conductor) status blocked -> done
+- 2026-11-22T17:21 [M3.50] (conductor) status active -> done
+- 2026-11-22T17:21 [M3.51] (conductor) created (epic) Fix DECSTBM prompt mangling (+ 2D VT100 grid test), atomic fork rollback, positional up/down/restart [name] & stopped .forks/* detection
+- 2026-11-22T17:21 AUTOPILOT on by conductor Executing M3.51: DECSTBM prompt fix + 2D VT100 test, atomic fork rollback, positional up/down/restart [name] & .forks/* detection
