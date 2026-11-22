@@ -45,10 +45,10 @@ mod supervisor;
 
 pub use boot::{
     BootEvent, BootFailure, BootGraph, BootKind, BootScheduler, BootState, BootStep, EpochState,
-    EventSink, FailedHook, HookPhase, ImageNode, PG_STAMP_FILE, ResourceNode, ServiceHealth,
-    ServiceNode, StampStore, StepExecutor, StepOutcome, StepStamp, WORLD_STAMP_FILE, WorldPlan,
-    WorldStamp, WorldStampStore, classify_service, epoch_for, plan_epoch, step_digest, world_plan,
-    write_pg_checkpoint, write_pg_checkpoints,
+    EventSink, FailedHook, HookPhase, ImageNode, ImageStamp, PG_STAMP_FILE, ResourceNode,
+    ServiceHealth, ServiceNode, StampStore, StepExecutor, StepOutcome, StepStamp, WORLD_STAMP_FILE,
+    WorldPlan, WorldStamp, WorldStampStore, classify_service, epoch_for, plan_epoch, step_digest,
+    world_plan, write_pg_checkpoint, write_pg_checkpoints,
 };
 pub use btrfs::{is_btrfs_path, is_subvolume_path};
 
@@ -80,7 +80,7 @@ pub use port::{Dirtiness, ForkPaths, WorldEngine};
 pub use reap::kill_group;
 pub use resources::{
     ImageFacts, PostgresClone, PostgresLauncher, PostgresTemplate, RedisLauncher, ResourceKind,
-    S3Bucket, S3Credentials, S3Server, TemplateState, pg_checkpoint,
+    S3Bucket, S3Credentials, S3Server, TemplateState,
 };
 pub use runtime_dir::RuntimePods;
 pub use supervisor::{PodStatus, WorldHost, WorldSupervisor, pod_statuses};

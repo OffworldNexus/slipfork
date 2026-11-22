@@ -2832,3 +2832,12 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-22T13:22 [M3.50.5] (lead) edited fields
 - 2026-11-22T13:22 [M3.50.5] (lead) edited fields
 - 2026-11-22T13:23 [M3.50.5] (lead) status active -> done
+- 2026-11-22T13:23 [M3.50.6] (lead) edited fields
+- 2026-11-22T13:23 [M3.50.6] (lead) OWNER REALITY CHECK (mandatory): this gate must WALK EVERY SHIPPED VERB live over a REAL PTY in /home/slipfork/demo on 165.232.86.174 and inspect actual rendere
+- 2026-11-22T13:27 [M3.50.9] (lead) created (task) CLI design system: multi-tone palette, clap Styles, plain-English 4-row doctor (zero jargon)
+- 2026-11-22T13:27 [M3.50.4] (lead) edited fields
+- 2026-11-22T13:27 [M3.50.7] (lead) edited fields
+- 2026-11-22T13:27 [M3.50.6] (lead) edited fields
+- 2026-11-22T13:27 [M3.50.4] (lead) OWNER PALETTE: consume ui::Palette roles — task icon green/cyan/red; dim kind; bold white name; status colors; dim right-aligned duration; bottom bar spinner cy
+- 2026-11-22T13:27 [M3.50.7] (lead) OWNER PALETTE: tree connectors/arrows dim; world header green dot + bold white name + bold cyan ~path; domain URLs bold cyan underlined; route paths bold yellow
+- 2026-11-22T13:28 [M3.50.3] (lead) status ready -> done

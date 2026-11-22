@@ -1,0 +1,67 @@
+# forkfile: 0.1
+features {
+  default = [dev]
+  dev = [mail]
+  mail
+}
+
+domain main
+
+postgres pg {
+  database postgres
+}
+
+redis cache
+
+s3 uploads
+
+s3 assets {
+  policy public-read
+  cdn static-cdn
+}
+
+env common {
+  DATABASE_URL = postgres.url
+  REDIS_URL = cache.url
+  UPLOADS_URL = uploads.url
+  S3_ENDPOINT = uploads.endpoint
+  S3_ACCESS_KEY = uploads.access_key
+  S3_SECRET_KEY = uploads.secret_key
+  CDN_DOMAIN = static-cdn.domain
+  CDN_URL = static-cdn.url
+  PUBLIC_URL = main.url
+  SECRET_KEY = secret(SECRET_KEY) ?? random_hex(32)
+  on mail: SMTP_ADDR = "127.0.0.1:1025"
+}
+
+image backend . {
+  use env common
+  service api {
+    port 8000
+    route /api
+    pre-deploy: python3 app/seed.py
+    run: python3 app/api.py --port $port
+  }
+  service worker {
+    run: python3 app/worker.py
+  }
+}
+
+image frontend ./front {
+  arg VITE_CDN_URL = static-cdn.url
+  use env common
+  service front {
+    port 5173
+    route /
+    run: python3 server.py --port $port
+  }
+}
+
+on mail {
+  image mailpit from axllent/mailpit:latest {
+    service mailpit {
+      port 8025
+      route / domain mail.*
+    }
+  }
+}

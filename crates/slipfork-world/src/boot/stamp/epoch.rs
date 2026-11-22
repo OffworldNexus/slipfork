@@ -20,15 +20,35 @@ pub const WORLD_STAMP_FILE: &str = ".slipfork-world-stamp.json";
 /// The PG sibling checkpoint written at `worlds/<world>.pg.<pod>/.slipfork-pg-stamp.json`.
 pub const PG_STAMP_FILE: &str = ".slipfork-pg-stamp.json";
 
+/// One resolved image rootfs plus the runtime facts a fork reuses without rebuilding.
+///
+/// The parent stamp records these so a fork with a matching `world_epoch` adopts the already
+/// sealed subvolume (`cached`, `~1ms`) instead of re-evaluating `Dockerfile` args — keeping e.g.
+/// `arg VITE_CDN_URL = static-cdn.url` from changing the digest on every fork.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImageStamp {
+    /// Read-only subvolume the image resolved to.
+    pub rootfs: String,
+    /// Image `config.Env` entries inherited verbatim.
+    #[serde(default)]
+    pub env: Vec<String>,
+    /// `ENTRYPOINT` followed by `CMD`.
+    #[serde(default)]
+    pub argv: Vec<String>,
+    /// Image `config.WorkingDir`.
+    #[serde(default)]
+    pub workdir: String,
+}
+
 /// Resolved world state plus the epoch shared with every resource clone at `CHECKPOINT`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorldStamp {
     /// Epoch shared with every paired PG stamp.
     #[serde(default)]
     pub world_epoch: String,
-    /// Resolved image rootfs subvolume path per image id.
+    /// Resolved image rootfs + runtime facts per image id.
     #[serde(default)]
-    pub images: BTreeMap<String, String>,
+    pub images: BTreeMap<String, ImageStamp>,
     /// Completed `@<tool>` / `when changed(...)` digests.
     #[serde(default)]
     pub tools: BTreeMap<String, String>,
@@ -43,7 +63,11 @@ pub struct WorldStamp {
 impl WorldStamp {
     /// Builds the checkpoint for a completed boot: epoch, resolved images, and step digests.
     #[must_use]
-    pub fn checkpoint(plan: &WorldPlan, epoch: String, images: BTreeMap<String, String>) -> Self {
+    pub fn checkpoint(
+        plan: &WorldPlan,
+        epoch: String,
+        images: BTreeMap<String, ImageStamp>,
+    ) -> Self {
         let mut stamp = Self {
             world_epoch: epoch,
             images,
@@ -233,6 +257,20 @@ impl WorldStampStore {
             }
         }
         EpochState::Matched(world.world_epoch)
+    }
+
+    /// The stamp a fork may reuse: `Some` only when the stored `world_epoch` and every paired
+    /// clone match `plan`'s epoch, so no caller re-derives trust on its own.
+    #[must_use]
+    pub fn trusted_stamp<'a>(
+        &self,
+        plan: &WorldPlan,
+        clones: impl IntoIterator<Item = &'a Path>,
+    ) -> Option<WorldStamp> {
+        match self.verify_all(clones) {
+            EpochState::Matched(stored) if stored == plan_epoch(plan) => self.load(),
+            _ => None,
+        }
     }
 }
 

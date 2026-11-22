@@ -11,9 +11,9 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use slipfork_world::{
-    BootEvent, BootFailure, BootKind, BootScheduler, BootState, BootStep, EpochState, EventSink,
-    StampStore, StepExecutor, StepOutcome, StepStamp, WorldPlan, WorldStamp, WorldStampStore,
-    plan_epoch, write_pg_checkpoint,
+    BootEvent, BootFailure, BootGraph, BootKind, BootScheduler, BootState, BootStep, EpochState,
+    EventSink, StampStore, StepExecutor, StepOutcome, StepStamp, WorldPlan, WorldStamp,
+    WorldStampStore, plan_epoch, write_pg_checkpoint,
 };
 
 fn lab(name: &str) -> PathBuf {
@@ -309,5 +309,188 @@ fn fork_world_stamp_persists_and_gates_before_start_and_pre_deploy_hooks() {
         2,
         "epoch mismatch must re-run both hooks"
     );
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// The shipped eight-component `support/demo` plan, compiled from the real `Forkfile` on disk.
+fn demo_plan() -> WorldPlan {
+    let dir = lab("demo-plan");
+    let forkfile = dir.join("Forkfile");
+    fs::write(&forkfile, include_str!("../../../support/demo/Forkfile"))
+        .expect("write the shipped demo Forkfile into the lab");
+    let source = fs::read_to_string(&forkfile).expect("read the shipped demo Forkfile");
+    let checked = slipfork_forkfile::compile(&source).expect("the shipped demo Forkfile compiles");
+    let plan = slipfork_world::world_plan(&checked.document, &dir).expect("plan the shipped demo");
+    let _ = fs::remove_dir_all(&dir);
+    plan
+}
+
+fn index_of(plan: &WorldPlan, subject: &str) -> usize {
+    plan.steps
+        .iter()
+        .position(|step| step.subject == subject)
+        .unwrap_or_else(|| panic!("`{subject}` must be a node"))
+}
+
+#[test]
+fn current_epoch_services_carry_no_resource_edges_and_skip_the_pre_deploy_barrier() {
+    let plan = demo_plan();
+    let pg = index_of(&plan, "pg");
+    let service = |id: &str| {
+        plan.steps
+            .iter()
+            .position(|step| step.kind == BootKind::Service && step.subject == id)
+            .unwrap_or_else(|| panic!("`{id}` must be a service node"))
+    };
+    let api = service("api");
+    let worker = service("worker");
+    let backend = index_of(&plan, "backend");
+    let pre = plan
+        .steps
+        .iter()
+        .position(|step| step.phase == Some(slipfork_world::HookPhase::PreDeploy))
+        .expect("a pre-deploy node");
+
+    let rows: Vec<&str> = plan
+        .steps
+        .iter()
+        .filter(|step| matches!(step.kind, BootKind::Resource | BootKind::Service))
+        .map(|step| step.subject.as_str())
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            "pg", "cache", "uploads", "assets", "api", "worker", "front", "mailpit"
+        ],
+        "the shipped demo must boot exactly eight rows"
+    );
+    let resources: Vec<usize> = (0..plan.steps.len())
+        .filter(|&index| plan.steps[index].kind == BootKind::Resource)
+        .collect();
+    assert_eq!(resources.len(), 4, "the shipped demo has four resources");
+    assert!(
+        resources
+            .iter()
+            .all(|dep| !plan.steps[api].deps.contains(dep)),
+        "a service node must not wait for resources: {:?}",
+        plan.steps[api].deps
+    );
+    assert_eq!(
+        plan.gated.get(&pre).map(Vec::as_slice),
+        Some(resources.as_slice()),
+        "the pre-deploy resource barrier must stay explicit, not silently dropped"
+    );
+    assert!(
+        resources
+            .iter()
+            .all(|dep| !plan.steps[pre].deps.contains(dep)),
+        "resources gate `pre-deploy` only through the stamped edge"
+    );
+    assert_eq!(
+        plan.steps[worker].deps,
+        vec![backend],
+        "`worker` carries only its image edge"
+    );
+    let graph =
+        BootGraph::with_gated(&plan.steps, &plan.gated).expect("the shipped plan is acyclic");
+    assert!(
+        graph.downstream(backend).contains(&api) && graph.downstream(backend).contains(&worker),
+        "the shared `backend` image releases both services"
+    );
+    assert!(
+        !graph.downstream(pg).contains(&api),
+        "the downstream accessor must expose releases, not upstream deps"
+    );
+
+    let dir = lab("conditional-current");
+    let checkpoint = WorldStamp::checkpoint(&plan, plan_epoch(&plan), Default::default());
+    let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+    let release_rx = Arc::new(Mutex::new(release_rx));
+    let up_to_date = Arc::new(Mutex::new(Vec::new()));
+    let seen_sink = Arc::clone(&up_to_date);
+    let sink: Arc<EventSink> = Arc::new(move |event: BootEvent| {
+        if let BootEvent::UpToDate { step, .. } = event {
+            seen_sink.lock().expect("seen lock").push(step);
+        }
+    });
+    let executor: Arc<StepExecutor> = {
+        let release_rx = Arc::clone(&release_rx);
+        Arc::new(move |index: usize, _: &BootStep| {
+            if index == pg {
+                let released = release_rx
+                    .lock()
+                    .expect("release lock")
+                    .recv_timeout(Duration::from_secs(10));
+                if released.is_err() {
+                    return Err(BootFailure::new(
+                        "the service never started while `pg` was still booting",
+                    ));
+                }
+            }
+            if index == api {
+                release_tx.send(()).expect("release postgres");
+            }
+            Ok(done("ok"))
+        })
+    };
+    let rt = runtime();
+    let scheduler = Arc::new(BootScheduler::new(
+        rt.handle().clone(),
+        StampStore::for_fork(&dir, true, Some(checkpoint)),
+        executor,
+        sink,
+    ));
+    scheduler
+        .run(&plan)
+        .expect("a current epoch releases the service in parallel with postgres");
+    assert!(
+        up_to_date.lock().expect("seen lock").contains(&pre),
+        "the current pre-deploy stamp must resolve in 0ms without touching resources"
+    );
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn stale_epoch_gates_the_pre_deploy_on_every_resource() {
+    let plan = demo_plan();
+    let pre = plan
+        .steps
+        .iter()
+        .position(|step| step.phase == Some(slipfork_world::HookPhase::PreDeploy))
+        .expect("a pre-deploy node");
+    let resources: Vec<usize> = (0..plan.steps.len())
+        .filter(|&index| plan.steps[index].kind == BootKind::Resource)
+        .collect();
+
+    let dir = lab("conditional-stale");
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let executor: Arc<StepExecutor> = {
+        let seen = Arc::clone(&seen);
+        Arc::new(move |index: usize, _: &BootStep| {
+            if index == pre {
+                let done: Vec<usize> = seen.lock().expect("seen lock").clone();
+                for &resource in &resources {
+                    if !done.contains(&resource) {
+                        return Err(BootFailure::new(
+                            "a stale `pre-deploy` ran before every backing resource was ready",
+                        ));
+                    }
+                }
+            } else {
+                seen.lock().expect("seen lock").push(index);
+            }
+            Ok(done("ok"))
+        })
+    };
+    let rt = runtime();
+    let scheduler = Arc::new(BootScheduler::new(
+        rt.handle().clone(),
+        StampStore::gated(&dir, false),
+        executor,
+        collector(),
+    ));
+    scheduler
+        .run(&plan)
+        .expect("a stale epoch awaits pg/redis/s3 before `pre-deploy`");
     let _ = fs::remove_dir_all(&dir);
 }

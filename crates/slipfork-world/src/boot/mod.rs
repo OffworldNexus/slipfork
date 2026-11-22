@@ -16,10 +16,11 @@ pub use schedule::{
     StepOutcome, classify_service,
 };
 pub use stamp::{
-    EpochState, PG_STAMP_FILE, StampStore, StepStamp, WORLD_STAMP_FILE, WorldStamp,
+    EpochState, ImageStamp, PG_STAMP_FILE, StampStore, StepStamp, WORLD_STAMP_FILE, WorldStamp,
     WorldStampStore, epoch_for, plan_epoch, step_digest, write_pg_checkpoint, write_pg_checkpoints,
 };
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use crate::resources::{ResourceKind, S3Bucket};
@@ -178,6 +179,13 @@ pub struct WorldPlan {
     pub resources: Vec<ResourceNode>,
     /// Service declarations in declaration order.
     pub services: Vec<ServiceNode>,
+    /// Upstream edges a node awaits **only** while its stamp is stale.
+    ///
+    /// `specs/03-under-the-hood.md` §3 rule 2: `pre-deploy` gates on `pg`/`redis`/`s3` only when
+    /// its `world_epoch`/digest is stale; a current stamp releases it (and every service after it)
+    /// without waiting for the resources. Keeping the edges here — instead of silently dropping
+    /// them — lets [`BootGraph`] still validate cycles over the full conditional DAG.
+    pub gated: BTreeMap<usize, Vec<usize>>,
 }
 
 impl WorldPlan {

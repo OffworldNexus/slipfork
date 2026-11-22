@@ -3,6 +3,7 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
+use slipfork_forkfile::{no_sync_uv, tool_prefix};
 use slipfork_world::{Bind, BindSource, PodEnv};
 
 const DEFAULT_PATH: &str = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
@@ -42,10 +43,29 @@ pub(super) fn shell_command(command: &str) -> String {
     command.strip_prefix('@').unwrap_or(command).to_owned()
 }
 
+/// The `@<tool>` name of a declaration (`None` for a plain shell command).
+pub(super) fn tool(command: &str) -> Option<&str> {
+    tool_prefix(command).map(|(tool, _)| tool)
+}
+
+/// Environment that suppresses a tool's implicit sync step inside a service pod.
+///
+/// The `@`-setup node still owns syncing; a service that merely runs through `@uv` must not
+/// re-check the lockfile on every boot (`specs/03` §3).
+pub(super) fn tool_env(command: &str) -> Vec<PodEnv> {
+    match tool(command) {
+        Some("uv") => vec![PodEnv::new("UV_NO_SYNC", "1")],
+        _ => Vec::new(),
+    }
+}
+
 /// Resolves a metacharacter-free service `run:` command directly to an in-rootfs executable
 /// argv, avoiding an extra `/bin/sh -c` process while falling back to `/bin/sh -c` for shell syntax.
 pub(super) fn service_argv(rootfs: &Path, inherited_env: &[String], command: &str) -> Vec<String> {
-    let trimmed = shell_command(command);
+    let trimmed = match tool(command) {
+        Some("uv") => shell_command(&no_sync_uv(command)),
+        _ => shell_command(command),
+    };
     let has_shell_meta = trimmed.bytes().any(|byte| {
         matches!(
             byte,

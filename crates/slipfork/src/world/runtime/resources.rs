@@ -36,11 +36,27 @@ pub(super) fn start_resource(
     let world_dir = runtime.layout.world(&runtime.world);
     if node.resource == ResourceKind::S3 {
         // Native S3: no image, no pod. The world init binds the listener inside the world
-        // netns and the daemon never sees the signing secret again.
-        let credentials = S3Credentials::local(runtime.world.as_str());
-        let buckets = node
-            .buckets
+        // netns and the daemon never sees the signing secret again. A second `ConfigureS3`
+        // replaces the whole server, so only the first bucket node configures every bucket.
+        if runtime
+            .resources
             .iter()
+            .find(|candidate| candidate.resource == ResourceKind::S3)
+            .is_some_and(|candidate| candidate.id != node.id)
+        {
+            return Ok(Staged {
+                state: BootState::Ready,
+                detail: "shared native S3".to_owned(),
+                ready: Ready::None,
+                progress: None,
+            });
+        }
+        let credentials = S3Credentials::local(runtime.world.as_str());
+        let buckets = runtime
+            .resources
+            .iter()
+            .filter(|candidate| candidate.resource == ResourceKind::S3)
+            .flat_map(|candidate| candidate.buckets.iter())
             .map(|bucket| S3BucketSpec {
                 name: bucket.name().to_owned(),
                 policy: bucket.policy(),

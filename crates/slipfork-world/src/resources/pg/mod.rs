@@ -1,10 +1,8 @@
 //! Golden `postgres:18` `initdb` template and the `< 1ms` per-world `PGDATA` clone.
 
-mod checkpoint;
 mod launcher;
 mod template;
 
-pub use checkpoint::checkpoint;
 pub use launcher::{PostgresClone, PostgresLauncher};
 pub use template::{PostgresTemplate, TemplateState};
 

@@ -1,7 +1,7 @@
 //! `fork` and `drop`: one CoW snapshot of project + world data, a branch switch, and one boot.
 //!
-//! PostgreSQL `CHECKPOINT` runs directly over the pod's host-visible unix socket outside all
-//! daemon locks (zero `crun exec`, zero mount-wide `syncfs`); Btrfs `SNAP_CREATE_V2` ioctls stay
+//! Zero pre-fork SQL `CHECKPOINT`: `specs/02` §4 makes the `PGDATA` clone crash-consistent through
+//! `BTRFS_IOC_SNAP_CREATE_V2` alone (tail WAL replays in `< 5ms` on boot). Btrfs ioctls stay
 //! inside `slipfork_world` and branch topology stays behind the injected `VcsWorkspace` port.
 
 use std::ffi::OsStr;
@@ -10,11 +10,10 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
-use slipfork_forkfile::ResourceDeclKind;
 use slipfork_vcs::{Dirty, VcsError, VcsWorkspace};
 use slipfork_world::{
-    BtrfsEngine, Dirtiness, Error as WorldError, ForkName, PostgresLauncher, RuntimePods,
-    StoreLayout, WorldEngine, WorldName, is_subvolume_path, pg_checkpoint,
+    BtrfsEngine, Dirtiness, Error as WorldError, ForkName, RuntimePods, StoreLayout, WorldEngine,
+    WorldName, is_subvolume_path,
 };
 
 use super::core::{Core, World};
@@ -22,8 +21,8 @@ use crate::daemon::Failure;
 use crate::daemon::boot::BootSession;
 use crate::daemon::rpc::key_of;
 
-/// Validated fork target resolved under a brief `Core` lock so `CHECKPOINT` and `git` branch
-/// discovery run with zero daemon locks held.
+/// Validated fork target resolved under a brief `Core` lock so `git` branch discovery runs with
+/// zero daemon locks held.
 pub(crate) struct ForkTarget {
     pub(crate) project: PathBuf,
     pub(crate) world: WorldName,
@@ -42,14 +41,16 @@ pub(crate) struct PreparedFork {
     pub(crate) world: String,
     pub(crate) world_name: WorldName,
     pub(crate) snapshot_ms: u64,
+    /// Pre-fork preparation time (branch/slug resolution). Legacy field name kept until the
+    /// sibling `daemon/mod.rs` slice drops its `checkpoint_ms` reply key; no SQL runs here.
     pub(crate) checkpoint_ms: u64,
     pub(crate) started: Instant,
 }
 
 impl ForkTarget {
-    /// Resolves the fork slug and flushes PostgreSQL WAL over the host unix socket outside all
-    /// locks, returning `(branch_name, fork, checkpoint_ms)`.
+    /// Resolves the fork slug outside all locks, returning `(branch_name, fork, preflight_ms)`.
     pub(crate) fn prepare_outside_locks(&self) -> Result<(String, ForkName, u64), Failure> {
+        let started = Instant::now();
         let raw_name = match &self.requested_name {
             Some(name) => name.clone(),
             None => {
@@ -63,10 +64,7 @@ impl ForkTarget {
         };
         let fork = ForkName::parse(&raw_name)
             .map_err(|error| Failure::new("invalid-fork", error.to_string()))?;
-        let checkpoint_started = Instant::now();
-        checkpoint_postgres(&self.project, &self.store_root, &self.world)?;
-        let checkpoint_ms = elapsed_ms(checkpoint_started);
-        Ok((raw_name, fork, checkpoint_ms))
+        Ok((raw_name, fork, elapsed_ms(started)))
     }
 }
 
@@ -108,7 +106,7 @@ impl Core {
         target: ForkTarget,
         raw_name: &str,
         fork: ForkName,
-        checkpoint_ms: u64,
+        preflight_ms: u64,
         emit: &mut dyn FnMut(Value),
     ) -> Result<(BootSession, PreparedFork), Failure> {
         if !self.worlds.contains_key(&key_of(&target.project)) {
@@ -117,7 +115,7 @@ impl Core {
                 "no world is running in this directory",
             ));
         }
-        let prepared = self.snapshot(target, raw_name, fork, checkpoint_ms, emit)?;
+        let prepared = self.snapshot(target, raw_name, fork, preflight_ms, emit)?;
         let boot = json!({
             "project": prepared.project.clone(),
             "world": prepared.world.clone(),
@@ -157,7 +155,7 @@ impl Core {
         target: ForkTarget,
         name: &str,
         fork: ForkName,
-        checkpoint_ms: u64,
+        preflight_ms: u64,
         emit: &mut dyn FnMut(Value),
     ) -> Result<PreparedFork, Failure> {
         let ForkTarget {
@@ -192,7 +190,6 @@ impl Core {
             "event": "finished", "step": 1, "total": 3, "kind": "fork",
             "label": "snapshot", "detail": "project + world data",
             "elapsed_ms": snapshot_ms,
-            "checkpoint_ms": checkpoint_ms,
         }));
         let git_started = Instant::now();
         emit(json!({
@@ -221,7 +218,7 @@ impl Core {
                 .to_owned(),
             world_name: world,
             snapshot_ms,
-            checkpoint_ms,
+            checkpoint_ms: preflight_ms,
             started,
         })
     }
@@ -383,30 +380,4 @@ fn vcs_failure(error: &VcsError) -> Failure {
 
 fn first_line(text: &str) -> String {
     text.lines().next().unwrap_or("fork failed").to_owned()
-}
-
-/// Flushes every PostgreSQL pod's WAL directly over its host-visible unix socket (`< 2ms`, zero
-/// `crun exec`, zero locks held) before `SNAP_CREATE_V2` snapshots the `PGDATA` clone.
-fn checkpoint_postgres(
-    project: &Path,
-    store_root: &Path,
-    world: &WorldName,
-) -> Result<(), Failure> {
-    let Ok(source) = std::fs::read_to_string(project.join("Forkfile")) else {
-        return Ok(());
-    };
-    let Ok(checked) = slipfork_forkfile::compile(&source) else {
-        return Ok(());
-    };
-    let launcher = PostgresLauncher::new(StoreLayout::at(store_root), world.clone());
-    for resource in checked
-        .document
-        .resources()
-        .into_iter()
-        .filter(|resource| resource.kind == ResourceDeclKind::Postgres)
-    {
-        pg_checkpoint(&launcher.socket_path(resource.id))
-            .map_err(|error| Failure::new("checkpoint-failed", first_line(&error.to_string())))?;
-    }
-    Ok(())
 }

@@ -240,7 +240,12 @@ impl Session {
         let outcome = client.call_streaming(
             "fork",
             json!({ "project": self.cwd(), "name": args.name }),
-            &mut |event| tui.observe(event),
+            &mut |event| {
+                if args.json {
+                    let _ = emit_json(event);
+                }
+                tui.observe(event);
+            },
         );
         match outcome {
             Ok(reply) => {
@@ -401,6 +406,9 @@ impl Session {
 }
 
 /// One completed boot node, projected into the `specs/02` `nodes` array.
+///
+/// Exactly one row per node: live `started` frames feed `tui.observe` for the spinner only,
+/// never the published contract.
 fn boot_node(event: &Value) -> Option<Value> {
     if !matches!(
         event["event"].as_str(),
@@ -413,7 +421,7 @@ fn boot_node(event: &Value) -> Option<Value> {
     Some(json!({
         "kind": kind,
         "name": name,
-        "state": event["state"],
+        "state": event["state"].as_str().unwrap_or("unknown"),
         "duration_ms": event["duration_ms"],
     }))
 }

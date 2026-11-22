@@ -4,7 +4,7 @@
 //! deduplicate concurrent requests for the same image id or OCI reference.
 
 use std::collections::BTreeMap;
-use std::io::Write;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex};
 
@@ -13,9 +13,10 @@ use slipfork_image::{
     Architecture, BuildArgs, BuildRequest, Credentials, ImageLayout, ImageReference,
     NativeImageBuilder, OciPuller, PulledImage, StepHost, StepLayout,
 };
-use slipfork_world::{BootState, ImageNode, StoreLayout, WorldEngine, WorldName};
+use slipfork_world::pod_log;
+use slipfork_world::{BootState, ImageNode, ImageStamp, StoreLayout, WorldEngine, WorldName};
 
-use crate::world::supervise::BootSink;
+use crate::world::supervise::{BootSink, strip_ansi};
 
 /// One sealed image plus the OCI metadata every pod derived from it inherits.
 #[derive(Clone)]
@@ -83,6 +84,7 @@ pub(super) struct ImageCache {
     puller: OciPuller,
     builder: NativeImageBuilder,
     images: Vec<ImageNode>,
+    logs_root: PathBuf,
     sealed: Mutex<BTreeMap<String, BuiltImage>>,
     pulled: Mutex<BTreeMap<String, PulledImage>>,
     inflight_builds: FlightTable<(BuiltImage, BootState)>,
@@ -90,6 +92,8 @@ pub(super) struct ImageCache {
 }
 
 impl ImageCache {
+    /// Builds the cache; `adopted` carries a parent fork's already-sealed image subvolumes and
+    /// runtime facts, so a matching `world_epoch` resolves every image in `~1ms` as `cached`.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn new(
         engine: Arc<dyn WorldEngine>,
@@ -98,12 +102,32 @@ impl ImageCache {
         project: &Path,
         doc: &Forkfile,
         images: Vec<ImageNode>,
+        adopted: BTreeMap<String, ImageStamp>,
         architecture: Architecture,
         agent: &str,
         host: StepHost,
     ) -> Self {
         let credentials = Credentials::Anonymous;
         let images_root = layout.images_root();
+        let mut sealed = BTreeMap::new();
+        for (id, stamp) in adopted {
+            if !images.iter().any(|node| node.id == id) {
+                continue;
+            }
+            if !engine.is_sealed(Path::new(&stamp.rootfs)).unwrap_or(false) {
+                // A stamp whose subvolume disappeared falls back to the normal build path.
+                continue;
+            }
+            sealed.insert(
+                id,
+                BuiltImage {
+                    rootfs: PathBuf::from(stamp.rootfs),
+                    inherited_env: stamp.env,
+                    argv: stamp.argv,
+                    workdir: stamp.workdir,
+                },
+            );
+        }
         let puller = OciPuller::new(
             Arc::clone(&engine),
             ImageLayout::new(images_root.clone()),
@@ -117,7 +141,8 @@ impl ImageCache {
             credentials,
             architecture,
             agent.to_owned(),
-        );
+        )
+        .sharing_flights(&puller);
         let builder = NativeImageBuilder::new(
             engine,
             build_puller,
@@ -125,6 +150,7 @@ impl ImageCache {
             architecture,
             host,
         );
+        let logs_root = layout.world_logs(&world);
         Self {
             world,
             project: project.to_path_buf(),
@@ -132,7 +158,8 @@ impl ImageCache {
             puller,
             builder,
             images,
-            sealed: Mutex::new(BTreeMap::new()),
+            logs_root,
+            sealed: Mutex::new(sealed),
             pulled: Mutex::new(BTreeMap::new()),
             inflight_builds: Arc::new(Mutex::new(BTreeMap::new())),
             inflight_pulls: Arc::new(Mutex::new(BTreeMap::new())),
@@ -156,7 +183,8 @@ impl ImageCache {
         }
         let guard = match acquire_flight(&self.inflight_builds, image.to_owned())? {
             FlightRole::Wait(flight) => {
-                return wait_flight(&flight).map(|(built, _)| (built, BootState::Cached));
+                // A waiter inherits the leader's real state: a singleflight hit is not a build.
+                return wait_flight(&flight);
             }
             FlightRole::Lead(guard) => guard,
         };
@@ -194,10 +222,16 @@ impl ImageCache {
             .ok_or_else(|| format!("unknown image `{image}`"))?;
         if let Some(reference) = &node.from {
             let parsed = ImageReference::parse(reference).map_err(|error| error.to_string())?;
-            let pulled = self
-                .puller
-                .pull_into(&parsed, log)
-                .map_err(|error| error.to_string())?;
+            let mut tee = BuildLog::new(log, &self.logs_root, image);
+            let pulled = self.puller.pull_into(&parsed, &mut tee).map_err(|error| {
+                format!("pull `{reference}` failed: {error}\nnext: run `slipfork logs {image}`")
+            })?;
+            tee.finish();
+            let state = if pulled.cached {
+                BootState::Cached
+            } else {
+                BootState::Pulled
+            };
             let mut argv = pulled.facts.entrypoint;
             argv.extend(pulled.facts.cmd);
             Ok((
@@ -207,7 +241,7 @@ impl ImageCache {
                     argv,
                     workdir: "/".to_owned(),
                 },
-                BootState::Pulled,
+                state,
             ))
         } else {
             let context = self.project.join(&node.directory);
@@ -226,17 +260,20 @@ impl ImageCache {
                 args,
                 target: self.doc.eval_image_stage(image),
             };
-            let report = self
-                .builder
-                .build(&request, log)
-                .map_err(|error| error.to_string())?;
+            let mut tee = BuildLog::new(log, &self.logs_root, image);
+            let report = self.builder.build(&request, &mut tee).map_err(|error| {
+                format!("build `{image}` failed: {error}\nnext: run `slipfork logs {image}`")
+            })?;
+            tee.finish();
             let _ = writeln!(
                 log,
                 "dockerfile {image}: {} cached, {} built",
                 report.cache_hits, report.cache_misses
             );
             let _ = log.flush();
-            let state = if report.cache_misses == 0 && report.cache_hits > 0 {
+            // A sealed step cache hit is `cached`; only an actually applied step is `built`. A
+            // metadata-only `FROM`+`ENV` Dockerfile has zero hits, so it is still a real build.
+            let state = if report.cache_hits > 0 && report.cache_misses == 0 {
                 BootState::Cached
             } else {
                 BootState::Built
@@ -300,18 +337,93 @@ impl ImageCache {
         outcome
     }
 
-    /// Resolved rootfs subvolume per image id, recorded in the world stamp.
-    pub(super) fn paths(&self) -> BTreeMap<String, String> {
+    /// Resolved rootfs + runtime facts per image id, recorded in the world stamp.
+    pub(super) fn stamps(&self) -> BTreeMap<String, ImageStamp> {
         self.sealed
             .lock()
             .map(|sealed| {
                 sealed
                     .iter()
-                    .map(|(image, built)| (image.clone(), built.rootfs.display().to_string()))
+                    .map(|(image, built)| {
+                        (
+                            image.clone(),
+                            ImageStamp {
+                                rootfs: built.rootfs.display().to_string(),
+                                env: built.inherited_env.clone(),
+                                argv: built.argv.clone(),
+                                workdir: built.workdir.clone(),
+                            },
+                        )
+                    })
                     .collect()
             })
             .unwrap_or_default()
     }
+}
+
+/// A `Write` tee: build progress goes to the live boot sink **and** to
+/// `<store>/logs/<world>/<image>.log`, so `slipfork logs <image>` reads failed-build output.
+struct BuildLog<'a> {
+    sink: &'a mut BootSink,
+    logs_root: PathBuf,
+    id: String,
+    pending: Vec<u8>,
+}
+
+impl<'a> BuildLog<'a> {
+    fn new(sink: &'a mut BootSink, logs_root: &Path, id: &str) -> Self {
+        Self {
+            sink,
+            logs_root: logs_root.to_path_buf(),
+            id: id.to_owned(),
+            pending: Vec::new(),
+        }
+    }
+
+    /// Writes one cleaned line to the live sink and the `slipfork logs` capture.
+    fn emit(&mut self, line: &[u8]) -> io::Result<()> {
+        let Some(text) = clean_line(line) else {
+            return Ok(());
+        };
+        self.sink.write_all(text.as_bytes())?;
+        let _ = pod_log::append(&self.logs_root, &self.id, text.as_bytes());
+        Ok(())
+    }
+
+    /// Flushes a trailing unterminated line into the capture file.
+    fn finish(&mut self) {
+        let pending = std::mem::take(&mut self.pending);
+        let _ = self.emit(&pending);
+    }
+}
+
+impl Write for BuildLog<'_> {
+    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+        self.pending.extend_from_slice(buffer);
+        let mut start = 0;
+        while let Some(offset) = self.pending[start..].iter().position(|byte| *byte == b'\n') {
+            let end = start + offset;
+            let line = self.pending[start..end].to_vec();
+            self.emit(&line)?;
+            start = end + 1;
+        }
+        if start > 0 {
+            self.pending.drain(..start);
+        }
+        Ok(buffer.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.sink.flush()
+    }
+}
+
+/// Strips CSI escapes and bare `\r` progress from one raw child line, so neither the `--json`
+/// stream nor `<image>.log` ever carries terminal control bytes.
+fn clean_line(bytes: &[u8]) -> Option<String> {
+    let raw = String::from_utf8_lossy(bytes);
+    let text = strip_ansi(&raw).replace('\r', "");
+    (!text.trim().is_empty()).then_some(text)
 }
 
 enum FlightRole<T: Clone> {

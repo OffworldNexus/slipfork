@@ -217,7 +217,7 @@ impl BootScheduler {
     }
 
     async fn drive(self: &Arc<Self>, plan: &WorldPlan) -> Result<()> {
-        let graph = BootGraph::new(&plan.steps)?;
+        let graph = BootGraph::with_gated(&plan.steps, &plan.gated)?;
         let total = graph.len();
         if total == 0 {
             return Ok(());
@@ -241,6 +241,11 @@ impl BootScheduler {
                 .iter()
                 .map(|&dep| receivers[dep].clone())
                 .collect();
+            let gated: Vec<watch::Receiver<NodeState>> = graph
+                .gated_deps(index)
+                .iter()
+                .map(|&dep| receivers[dep].clone())
+                .collect();
             let mut cancel = cancel_rx.clone();
             let failure = Arc::clone(&failure);
             let cancel_tx = cancel_tx.clone();
@@ -260,6 +265,31 @@ impl BootScheduler {
                                 }
                             }
                             _ = cancel.changed() => return,
+                        }
+                    }
+                }
+                if *cancel.borrow() {
+                    return;
+                }
+                // Stamp-gated edges (`pre-deploy` -> `pg`/`redis`/`s3`) are awaited only while the
+                // node's own stamp is stale (`specs/03` §3 rule 2). On a current epoch the node is
+                // released — and every service behind it — in 0ms without touching the resources.
+                if !scheduler.stamps.is_step_current(&steps, index) {
+                    for mut edge in gated {
+                        loop {
+                            match *edge.borrow_and_update() {
+                                NodeState::Done => break,
+                                NodeState::Failed => return,
+                                NodeState::Pending => {}
+                            }
+                            tokio::select! {
+                                changed = edge.changed() => {
+                                    if changed.is_err() {
+                                        return;
+                                    }
+                                }
+                                _ = cancel.changed() => return,
+                            }
                         }
                     }
                 }

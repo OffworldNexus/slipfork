@@ -3,8 +3,8 @@
 mod epoch;
 
 pub use epoch::{
-    EpochState, PG_STAMP_FILE, WORLD_STAMP_FILE, WorldStamp, WorldStampStore, epoch_for,
-    plan_epoch, step_digest, write_pg_checkpoint, write_pg_checkpoints,
+    EpochState, ImageStamp, PG_STAMP_FILE, WORLD_STAMP_FILE, WorldStamp, WorldStampStore,
+    epoch_for, plan_epoch, step_digest, write_pg_checkpoint, write_pg_checkpoints,
 };
 
 use std::fs;

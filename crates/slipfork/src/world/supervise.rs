@@ -9,9 +9,9 @@ use std::sync::{Arc, Mutex};
 
 use serde_json::{Value, json};
 use slipfork_world::{
-    BootEvent, BootFailure, BootKind, BootScheduler, BootState, BootStep, EpochState, ResourceKind,
-    StampStore, StepOutcome, StoreLayout, WorldName, WorldStamp, WorldStampStore, control,
-    is_btrfs_path, plan_epoch, world_plan, write_pg_checkpoints,
+    BootEvent, BootFailure, BootKind, BootScheduler, BootState, BootStep, ResourceKind, StampStore,
+    StepOutcome, StoreLayout, WorldName, WorldStamp, WorldStampStore, control, is_btrfs_path,
+    plan_epoch, world_plan, write_pg_checkpoints,
 };
 
 use crate::commands::Session;
@@ -76,10 +76,9 @@ fn supervisor_main(project: &Path, world: &str, env: &HostEnv) -> Result<(), Str
         .collect();
     let epoch = plan_epoch(&plan);
     let stamp_store = WorldStampStore::new(&world_dir);
-    let trusted = matches!(
-        stamp_store.verify_all(pg_clones.iter().map(|clone| clone.as_path())),
-        EpochState::Matched(ref stored) if stored == &epoch
-    );
+    let trusted = stamp_store
+        .trusted_stamp(&plan, pg_clones.iter().map(|clone| clone.as_path()))
+        .is_some();
     let is_fork = StoreLayout::parse_fork_world(OsStr::new(world.as_str())).is_some();
     let stamps = if is_fork {
         StampStore::for_fork(project, trusted, stamp_store.load())
@@ -125,7 +124,7 @@ fn supervisor_main(project: &Path, world: &str, env: &HostEnv) -> Result<(), Str
     drop(tokio_runtime);
     match &outcome {
         Ok(()) => {
-            let checkpoint = WorldStamp::checkpoint(&plan, epoch.clone(), runtime.image_paths());
+            let checkpoint = WorldStamp::checkpoint(&plan, epoch.clone(), runtime.image_stamps());
             if let Err(error) = stamp_store.save(&checkpoint) {
                 eprintln!("slipfork: write world stamp: {error}");
             }
@@ -384,7 +383,7 @@ impl EventLog {
 }
 
 /// Strips CSI escape sequences from a child's raw line, so a `log` frame never carries ANSI.
-fn strip_ansi(text: &str) -> std::borrow::Cow<'_, str> {
+pub(super) fn strip_ansi(text: &str) -> std::borrow::Cow<'_, str> {
     if !text.contains('\u{1b}') {
         return std::borrow::Cow::Borrowed(text);
     }

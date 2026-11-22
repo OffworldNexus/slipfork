@@ -13,9 +13,10 @@ use slipfork_forkfile::ast::Forkfile;
 use slipfork_image::{Architecture, StepHost};
 use slipfork_ospp::{FileSecretVault, SecretVault};
 use slipfork_world::{
-    BootFailure, BootKind, BootState, BootStep, BtrfsEngine, Dirtiness, PodEnv, PodHost, PodSpec,
-    ResourceNode, ServiceNode, StepOutcome, StoreLayout, Stream, WorldEngine, WorldHost, WorldName,
-    WorldPlan, WorldSupervisor, control, write_bundle,
+    BootFailure, BootKind, BootState, BootStep, BtrfsEngine, Dirtiness, ImageStamp, PodEnv,
+    PodHost, PodSpec, ResourceKind, ResourceNode, ServiceNode, StepOutcome, StoreLayout, Stream,
+    WorldEngine, WorldHost, WorldName, WorldPlan, WorldStampStore, WorldSupervisor, control,
+    write_bundle,
 };
 
 use super::HostEnv;
@@ -26,7 +27,7 @@ mod images;
 mod ready;
 mod resources;
 
-use helpers::{merge_env, project_bind, service_argv, shell_command};
+use helpers::{merge_env, project_bind, service_argv, shell_command, tool_env};
 use images::{BuiltImage, ImageCache};
 use ready::{Ready, Staged};
 
@@ -79,6 +80,24 @@ impl WorldRuntime {
             env.uid,
             env.gid,
         );
+        // A fork whose `world_epoch` and paired PG stamps match the copied parent stamp adopts
+        // the parent's sealed image subvolumes directly: no Dockerfile arg re-evaluation (so
+        // `arg VITE_CDN_URL = static-cdn.url` keeps its digest), no context walk, no re-seal.
+        let adopted = if is_fork {
+            let stamps = WorldStampStore::new(layout.world(&world));
+            let pg_clones: Vec<_> = plan
+                .resources
+                .iter()
+                .filter(|resource| resource.resource == ResourceKind::Postgres)
+                .map(|resource| layout.world_clone(&world, resource.resource, &resource.id))
+                .collect();
+            stamps
+                .trusted_stamp(plan, pg_clones.iter().map(PathBuf::as_path))
+                .map(|stamp| stamp.images)
+                .unwrap_or_default()
+        } else {
+            BTreeMap::new()
+        };
         let images = ImageCache::new(
             world_engine,
             &layout,
@@ -86,6 +105,7 @@ impl WorldRuntime {
             project,
             doc,
             plan.images.clone(),
+            adopted,
             architecture,
             &agent,
             step_host,
@@ -188,7 +208,7 @@ impl WorldRuntime {
                 .build(&step.subject, &mut log)
                 .map(|(_, state)| Staged {
                     state,
-                    detail: "built".to_owned(),
+                    detail: state.as_str().to_owned(),
                     ready: Ready::None,
                     progress: None,
                 })
@@ -361,7 +381,7 @@ impl WorldRuntime {
         } else {
             (built.argv.clone(), built.argv.join(" "))
         };
-        let spec = PodSpec {
+        let mut spec = PodSpec {
             id: sigma,
             rootfs,
             workdir: built.workdir,
@@ -371,6 +391,9 @@ impl WorldRuntime {
             binds: vec![project_bind(&self.project)],
             files: Vec::new(),
         };
+        if let Some(command) = &step.command {
+            spec.env.extend(tool_env(command));
+        }
         self.launch_pod(&spec)?;
         let ready = match port {
             Some(port) => Ready::Service {
@@ -402,9 +425,9 @@ impl WorldRuntime {
         self.layout.world(&self.world)
     }
 
-    /// Resolved rootfs subvolume per image id, recorded in the world stamp.
-    pub(super) fn image_paths(&self) -> BTreeMap<String, String> {
-        self.images.paths()
+    /// Resolved rootfs + runtime facts per image id, recorded in the world stamp.
+    pub(super) fn image_stamps(&self) -> BTreeMap<String, ImageStamp> {
+        self.images.stamps()
     }
 
     /// Blocks until the world init exits, then sweeps ephemeral pod rootfs clones.

@@ -96,21 +96,15 @@ impl PlanBuilder<'_> {
                         return;
                     }
                 };
-                if let Some(existing) = self
-                    .resources
-                    .iter_mut()
-                    .find(|node| node.resource == ResourceKind::S3)
-                {
-                    existing.buckets.push(bucket);
-                } else {
-                    self.resources.push(ResourceNode {
-                        id: s3.bucket.clone(),
-                        resource: ResourceKind::S3,
-                        databases: Vec::new(),
-                        buckets: vec![bucket],
-                        line: s3.span.line(),
-                    });
-                }
+                // One row per bucket: the native S3 server is shared, but `assets` and `uploads`
+                // are separate boot rows with their own policy.
+                self.resources.push(ResourceNode {
+                    id: s3.bucket.clone(),
+                    resource: ResourceKind::S3,
+                    databases: Vec::new(),
+                    buckets: vec![bucket],
+                    line: s3.span.line(),
+                });
             }
             _ => {}
         }

@@ -156,12 +156,14 @@ fn wait_portless(pods_dir: &Path, service: &str) -> Result<(), BootFailure> {
         {
             return match classify_service(status.exit_code) {
                 ServiceHealth::Exited(0) => Ok(()),
-                ServiceHealth::Exited(code) => Err(BootFailure::new(format!(
-                    "service `{service}` exited with code {code} during boot (its output is in `slipfork logs {service}`)"
-                ))),
-                ServiceHealth::Running => Err(BootFailure::new(format!(
-                    "service `{service}` exited during boot (its output is in `slipfork logs {service}`)"
-                ))),
+                ServiceHealth::Exited(code) => Err(BootFailure::with_remedy(
+                    format!("service `{service}` exited with code {code} during boot"),
+                    format!("run `slipfork logs {service}`"),
+                )),
+                ServiceHealth::Running => Err(BootFailure::with_remedy(
+                    format!("service `{service}` exited during boot"),
+                    format!("run `slipfork logs {service}`"),
+                )),
             };
         }
     }

@@ -7,9 +7,7 @@ mod s3;
 use std::path::Path;
 
 pub use cache::RedisLauncher;
-pub use pg::{
-    PostgresClone, PostgresLauncher, PostgresTemplate, TemplateState, checkpoint as pg_checkpoint,
-};
+pub use pg::{PostgresClone, PostgresLauncher, PostgresTemplate, TemplateState};
 pub use s3::{S3Bucket, S3Credentials, S3Server};
 
 /// A backing service backed by `worlds/<world>/<data_dir>`.

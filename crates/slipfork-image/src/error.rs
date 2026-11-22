@@ -74,6 +74,8 @@ pub enum Error {
     UnknownStage { name: String },
     /// `crun` is not installed, so no `RUN` instruction can execute.
     CrunMissing { path: PathBuf },
+    /// An in-process image collaborator was poisoned or panicked.
+    Interrupted { message: String },
     /// The Btrfs engine refused a subvolume operation.
     World(slipfork_world::Error),
 }
@@ -180,6 +182,10 @@ impl fmt::Display for Error {
                 f,
                 "`RUN` needs `crun`, but `{}` is missing\nnext: install crun from your distribution (`apt install crun`, `dnf install crun`, `pacman -S crun`) and retry",
                 path.display()
+            ),
+            Self::Interrupted { message } => write!(
+                f,
+                "the image pull was interrupted: {message}\nnext: retry `slipfork up`"
             ),
             Self::World(err) => fmt::Display::fmt(err, f),
         }

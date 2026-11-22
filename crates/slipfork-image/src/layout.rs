@@ -37,11 +37,39 @@ impl ImageLayout {
         self.root.join(digest_component(digest))
     }
 
-    /// `<root>/.partial-<manifest-digest>` while the layers are still unpacking.
+    /// `<root>/.partial-<manifest-digest>` — the legacy fixed staging name.
     #[must_use]
     pub fn staging(&self, digest: &str) -> PathBuf {
         self.root
             .join(format!("{STAGING_PREFIX}{}", digest_component(digest)))
+    }
+
+    /// A unique staging sibling for one attempt, so concurrent pulls never share a directory.
+    #[must_use]
+    pub fn staging_attempt(&self, digest: &str, pid: u32, seq: usize) -> PathBuf {
+        self.root.join(format!(
+            "{STAGING_PREFIX}{}-{pid}-{seq}",
+            digest_component(digest)
+        ))
+    }
+
+    /// Every staging sibling for `digest`, including attempts a crash left behind.
+    #[must_use]
+    pub fn stale_staging(&self, digest: &str) -> Vec<PathBuf> {
+        let prefix = format!("{STAGING_PREFIX}{}", digest_component(digest));
+        let mut paths: Vec<PathBuf> = fs::read_dir(&self.root)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with(&prefix))
+            })
+            .collect();
+        paths.sort();
+        paths
     }
 
     /// `<root>/<manifest-digest>.json`: the public OCI image config beside the sealed rootfs.

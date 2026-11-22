@@ -1,0 +1,4 @@
+.slipfork/
+.forks/
+__pycache__/
+*.pyc
