@@ -6,4 +6,4 @@ mod fork;
 mod logs;
 mod ps;
 pub(super) mod stream;
-mod up;
+pub(super) mod up;

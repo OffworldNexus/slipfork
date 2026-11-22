@@ -2872,3 +2872,5 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-22T15:31 [M3.50.5] (lead) attempt 3/3 started
 - 2026-11-22T15:31 [M3.50.5] (lead) OWNER REFINEMENT: make the systemd .mount unit the primary permanent setup (systemd-escape --path --suffix=mount, What/Where/Type=btrfs/Options=loop,... enable 
 - 2026-11-22T15:31 [M3.50.5] (lead) status ready -> done
+- 2026-11-22T15:44 [M3.50.4] (lead) committed product+harness; live consolidated journey still red on lab VM (Forkfile disappears between write and PTY up; manual flow works) -> escalated to exper
+- 2026-11-22T15:44 [M3.50.4] (lead) status ready -> done

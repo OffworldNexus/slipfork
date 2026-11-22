@@ -245,6 +245,15 @@ pub enum Request {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         service: Option<String>,
     },
+    /// Stop one tracked pod: kill its process group, `crun delete` it, and remove its bundle.
+    Stop {
+        /// Protocol version.
+        v: u32,
+        /// Request id echoed back in the reply.
+        id: String,
+        /// Pod id to stop; must be a live tracked pod.
+        pod: String,
+    },
     /// Replay captured pod output, optionally following it live.
     Logs {
         /// Protocol version.
@@ -331,6 +340,7 @@ impl Request {
             | Self::StopAll { id, .. }
             | Self::Shutdown { id, .. }
             | Self::Restart { id, .. }
+            | Self::Stop { id, .. }
             | Self::Dial { id, .. }
             | Self::ConfigureS3 { id, .. }
             | Self::List { id, .. }
@@ -355,6 +365,7 @@ pub fn decode_request(line: &str) -> Result<Request> {
         | Request::StopAll { v, .. }
         | Request::Shutdown { v, .. }
         | Request::Restart { v, .. }
+        | Request::Stop { v, .. }
         | Request::Dial { v, .. }
         | Request::ConfigureS3 { v, .. }
         | Request::List { v, .. }

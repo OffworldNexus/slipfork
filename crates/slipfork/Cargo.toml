@@ -35,7 +35,6 @@ clap_complete.workspace = true
 clap_mangen.workspace = true
 console.workspace = true
 crossterm.workspace = true
-indicatif.workspace = true
 libc.workspace = true
 serde.workspace = true
 serde_json.workspace = true

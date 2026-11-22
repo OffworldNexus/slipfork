@@ -1,146 +1,260 @@
-//! The `indicatif` region: one spinner bar per running node, a live rolling tail per bar, and the
-//! anchored summary line, all refreshed by a 120ms ticker.
+//! The `DECSTBM` fixed bottom bar: rows `1..rows-1` scroll finished tasks while row `rows`
+//! stays a one-line `apt`-style panel, refreshed by a 120ms ticker and re-applied on `SIGWINCH`.
 //!
-//! Every byte comes from [`super::render`]; this module holds only terminal state.
+//! Every escape is written here only after the composition root resolved [`UiMode::ColorTty`];
+//! this module holds only terminal state and delegates every string to [`super::render`].
 
-use std::collections::{BTreeMap, VecDeque};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::io::Write;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
-
 use super::ascii::AsciiLine;
-use super::render::{self, TailLine};
+use super::render::panel_line;
 
 /// Braille spinner for a terminal that accepts ANSI.
 const BRAILLE: &str = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏";
 
-/// The shared `MultiProgress` region: one bar per running node plus the anchored summary.
-pub(super) struct Pane {
-    mp: MultiProgress,
-    summary: ProgressBar,
-    bars: BTreeMap<String, Run>,
-    title: String,
-    width: usize,
-    total: usize,
-    done: usize,
-    started: Instant,
+static RESIZED: AtomicBool = AtomicBool::new(false);
+static REGION_ROWS: AtomicUsize = AtomicUsize::new(0);
+static PREVIOUS_SIGINT: AtomicUsize = AtomicUsize::new(0);
+static PREVIOUS_SIGWINCH: AtomicUsize = AtomicUsize::new(0);
+
+extern "C" fn on_sigwinch(_: libc::c_int) {
+    RESIZED.store(true, Ordering::Relaxed);
 }
 
-/// One running node's spinner bar, its own start instant, and its bounded rolling tail.
-struct Run {
-    bar: ProgressBar,
-    kind: String,
-    name: String,
+extern "C" fn on_sigint(signal: libc::c_int) {
+    let rows = REGION_ROWS.load(Ordering::Relaxed);
+    if rows >= 3 {
+        let mut buffer = [0_u8; 32];
+        let mut length = 0;
+        buffer[length] = 0x1b;
+        length += 1;
+        buffer[length] = b'[';
+        length += 1;
+        length = push_decimal(&mut buffer, length, rows);
+        for byte in b";1H\x1b[2K\x1b[r" {
+            buffer[length] = *byte;
+            length += 1;
+        }
+        // SAFETY: `write(2)` only reads `buffer`; escape restoration is async-signal-safe.
+        unsafe {
+            libc::write(libc::STDOUT_FILENO, buffer.as_ptr().cast(), length);
+        }
+    }
+    // SAFETY: `_exit(2)` ends the process without touching shared state or unwinding.
+    unsafe { libc::_exit(128 + signal) };
+}
+
+fn push_decimal(buffer: &mut [u8], mut at: usize, mut value: usize) -> usize {
+    let start = at;
+    if value == 0 {
+        buffer[at] = b'0';
+        return at + 1;
+    }
+    let mut digits = [0_u8; 8];
+    let mut count = 0;
+    while value > 0 {
+        digits[count] = b'0' + (value % 10) as u8;
+        value /= 10;
+        count += 1;
+    }
+    while count > 0 {
+        count -= 1;
+        buffer[at] = digits[count];
+        at += 1;
+    }
+    let _ = start;
+    at
+}
+
+/// The one shared live region: the panel on row `rows` and its scroll-region guard.
+pub(super) struct Pane {
+    cols: usize,
+    rows: usize,
+    guard: Option<ScrollRegionGuard>,
+    total: usize,
+    done: usize,
+    summary: String,
     started: Instant,
-    tail: VecDeque<TailLine>,
+    frame: usize,
+    line_len: usize,
 }
 
 impl Pane {
-    pub(super) fn new(title: &str, width: usize) -> Self {
-        let mp = MultiProgress::new();
-        let summary = mp.add(ProgressBar::new(0));
-        summary.set_style(style("{msg}"));
-        Self {
-            mp,
-            summary,
-            bars: BTreeMap::new(),
-            title: title.to_owned(),
-            width,
+    pub(super) fn new(title: &str, cols: usize) -> Self {
+        let (width, rows) = terminal_size();
+        let cols = cols.max(width);
+        let title = title.to_owned();
+        let mut pane = Self {
+            cols,
+            rows,
+            guard: None,
             total: 0,
             done: 0,
+            summary: title.clone(),
             started: Instant::now(),
-        }
-    }
-
-    /// Prints one completed row above the live region.
-    pub(super) fn println(&self, text: &str) {
-        let _ = self.mp.println(text);
-    }
-
-    /// Erases the anchored summary once the boot verdict is printed.
-    pub(super) fn finish_and_clear(&self) {
-        self.summary.finish_and_clear();
-    }
-
-    pub(super) fn start(&mut self, name: &str, kind: &str, total: usize) {
-        let bar = ProgressBar::new(0);
-        bar.set_style(style("{spinner} {msg}"));
-        let bar = self.mp.insert_after(&self.summary, bar);
-        self.bars.insert(
-            name.to_owned(),
-            Run {
-                bar,
-                kind: kind.to_owned(),
-                name: name.to_owned(),
-                started: Instant::now(),
-                tail: VecDeque::new(),
-            },
-        );
-        self.total = self.total.max(total);
-        self.refresh();
-    }
-
-    /// Mirrors the scheduler's bounded tail so the active row draws it live instead of waiting for
-    /// completion.
-    pub(super) fn set_tail(&mut self, name: &str, tail: &VecDeque<TailLine>) {
-        let Some(run) = self.bars.get_mut(name) else {
-            return;
+            frame: 0,
+            line_len: 0,
         };
-        run.tail.clear();
-        run.tail.extend(tail.iter().cloned());
-        self.refresh();
+        pane.guard = ScrollRegionGuard::install(rows);
+        pane.draw();
+        pane
     }
 
-    pub(super) fn finish(&mut self, name: &str, done: usize) {
+    /// Re-queries the terminal after a resize and re-applies the scroll region.
+    pub(super) fn set_size(&mut self, cols: usize, rows: usize) {
+        if self.cols == cols && self.rows == rows {
+            return;
+        }
+        self.guard = None;
+        self.cols = cols;
+        self.rows = rows;
+        self.line_len = 0;
+        self.guard = ScrollRegionGuard::install(rows);
+        self.draw();
+    }
+
+    /// Prints one completed row above the panel.
+    pub(super) fn println(&mut self, text: &str) {
+        let mut stdout = std::io::stdout().lock();
+        if self.guard.is_some() {
+            let _ = write!(stdout, "\x1b[{};1H\x1b[2K", self.rows);
+            let _ = write!(stdout, "\x1b[{};1H{text}\r\n", self.rows - 1);
+        } else if self.line_len > 0 {
+            let _ = write!(stdout, "\r{}\r", " ".repeat(self.line_len));
+            self.line_len = 0;
+            let _ = writeln!(stdout, "{text}");
+        } else {
+            let _ = writeln!(stdout, "{text}");
+        }
+        let _ = stdout.flush();
+        self.draw();
+    }
+
+    pub(super) fn start(&mut self, name: &str, total: usize) {
+        self.total = self.total.max(total);
+        self.summary = format!("Starting {name}…");
+        self.draw();
+    }
+
+    pub(super) fn finish(&mut self, done: usize) {
         self.done = done;
-        if let Some(run) = self.bars.remove(name) {
-            self.mp.remove(&run.bar);
-        }
         self.total = self.total.max(done);
-        self.refresh();
+        self.draw();
     }
 
-    /// Clears every running bar (a failure renders as one verdict, not a field of stale spinners).
-    pub(super) fn clear_bars(&mut self) {
-        for (_, run) in std::mem::take(&mut self.bars) {
-            self.mp.remove(&run.bar);
+    /// Clears the panel row and restores the scrolling region; idempotent.
+    pub(super) fn restore(&mut self) {
+        self.guard = None;
+        let mut stdout = std::io::stdout().lock();
+        if self.rows >= 3 {
+            let _ = write!(
+                stdout,
+                "\x1b[{};1H\x1b[2K\x1b[r\x1b[{};1H",
+                self.rows, self.rows
+            );
+        } else if self.line_len > 0 {
+            let _ = write!(stdout, "\r{}\r", " ".repeat(self.line_len));
+            self.line_len = 0;
         }
+        let _ = stdout.flush();
     }
 
-    /// Live elapsed time for the anchored bar and every running row, tails included.
-    fn refresh(&self) {
-        self.summary.set_message(render::summary_line(
-            self.total,
+    fn draw(&mut self) {
+        self.frame = self.frame.wrapping_add(1);
+        let spinner = BRAILLE.chars().nth(self.frame % 10).unwrap_or('⠋');
+        let line = panel_line(
+            spinner,
             self.done,
-            &self.title,
+            self.total,
+            &self.summary,
             self.started.elapsed(),
-            self.width,
-        ));
-        // `indicatif` only paints a bar whose ticker advanced: without this tick the anchored
-        // 16-cell bar stays invisible while the spinner bars below it animate.
-        self.summary.tick();
-        let limit = render::stream_limit(self.width);
-        for run in self.bars.values() {
-            run.bar.set_message(render::running_row_with_tail(
-                &run.kind,
-                &run.name,
-                run.started.elapsed(),
-                &run.tail,
-                limit,
-                true,
-            ));
-            run.bar.tick();
+            self.cols,
+        );
+        let mut stdout = std::io::stdout().lock();
+        if self.guard.is_some() {
+            let _ = write!(stdout, "\x1b[{};1H\x1b[2K{line}\x1b[K", self.rows);
+        } else {
+            let visible = console::measure_text_width(&line);
+            if visible < self.line_len {
+                let _ = write!(stdout, "\r{line}{}", " ".repeat(self.line_len - visible));
+            } else {
+                let _ = write!(stdout, "\r{line}");
+            }
+            self.line_len = visible;
+        }
+        let _ = stdout.flush();
+    }
+}
+
+/// The RAII `DECSTBM` guard: applies `\x1b[1;{rows-1}r` once and always restores `\x1b[r`.
+///
+/// It is dropped on success, error, panic unwind, and the `SIGINT` handler; `rows < 3` creates no
+/// region at all, so `\x1b[1;1r` and `\x1b[1;2r` can never be written.
+pub(super) struct ScrollRegionGuard {
+    rows: usize,
+    active: bool,
+}
+
+impl ScrollRegionGuard {
+    fn install(rows: usize) -> Option<Self> {
+        if rows < 3 {
+            return None;
+        }
+        let mut stdout = std::io::stdout().lock();
+        let _ = write!(stdout, "\x1b[1;{}r\x1b[{};1H\x1b[2K", rows - 1, rows);
+        let _ = stdout.flush();
+        REGION_ROWS.store(rows, Ordering::Relaxed);
+        RESIZED.store(false, Ordering::Relaxed);
+        // SAFETY: signal handlers only set atomics or issue one async-signal-safe `write`.
+        unsafe {
+            PREVIOUS_SIGINT.store(
+                libc::signal(libc::SIGINT, on_sigint as *const () as libc::sighandler_t),
+                Ordering::Relaxed,
+            );
+            PREVIOUS_SIGWINCH.store(
+                libc::signal(
+                    libc::SIGWINCH,
+                    on_sigwinch as *const () as libc::sighandler_t,
+                ),
+                Ordering::Relaxed,
+            );
+        }
+        Some(Self { rows, active: true })
+    }
+}
+
+impl Drop for ScrollRegionGuard {
+    fn drop(&mut self) {
+        if !self.active {
+            return;
+        }
+        self.active = false;
+        let mut stdout = std::io::stdout().lock();
+        let _ = write!(stdout, "\x1b[{};1H\x1b[2K\x1b[r", self.rows);
+        let _ = stdout.flush();
+        REGION_ROWS.store(0, Ordering::Relaxed);
+        // SAFETY: restoring the handlers captured in `install` only rewrites process handlers.
+        unsafe {
+            let previous = PREVIOUS_SIGINT.load(Ordering::Relaxed);
+            if previous != 0 && previous != libc::SIG_ERR {
+                libc::signal(libc::SIGINT, previous);
+            }
+            let previous = PREVIOUS_SIGWINCH.load(Ordering::Relaxed);
+            if previous != 0 && previous != libc::SIG_ERR {
+                libc::signal(libc::SIGWINCH, previous);
+            }
         }
     }
 }
 
-fn style(template: &str) -> ProgressStyle {
-    ProgressStyle::with_template(template)
-        .unwrap_or_else(|_| ProgressStyle::default_spinner())
-        .tick_chars(BRAILLE)
+fn terminal_size() -> (usize, usize) {
+    crossterm::terminal::size().map_or((80, 0), |(cols, rows)| {
+        (usize::from(cols), usize::from(rows))
+    })
 }
 
 /// Which live region the ticker refreshes.
@@ -150,7 +264,7 @@ pub(super) enum Screen {
 }
 
 /// Refreshes the visible pane every 120ms so the spinner and elapsed time stay live even when the
-/// daemon is quiet: the colour bar (tails included), or the ASCII line of a `NO_COLOR` terminal.
+/// daemon is quiet: the colour panel, or the ASCII line of a `NO_COLOR` terminal.
 pub(super) struct Ticker {
     stop: Arc<AtomicBool>,
     handle: Option<JoinHandle<()>>,
@@ -162,10 +276,21 @@ impl Ticker {
         let flag = Arc::clone(&stop);
         let handle = thread::spawn(move || {
             while !flag.load(Ordering::Relaxed) {
+                if RESIZED.swap(false, Ordering::Relaxed) {
+                    let (cols, rows) = terminal_size();
+                    match &screen {
+                        Screen::Bars(pane) => {
+                            if let Ok(mut pane) = pane.lock() {
+                                pane.set_size(cols, rows);
+                            }
+                        }
+                        Screen::Ascii(_) => {}
+                    }
+                }
                 match &screen {
                     Screen::Bars(pane) => {
-                        if let Ok(pane) = pane.lock() {
-                            pane.refresh();
+                        if let Ok(mut pane) = pane.lock() {
+                            pane.draw();
                         }
                     }
                     Screen::Ascii(line) => {

@@ -1,18 +1,18 @@
 //! The one live boot pane shared by `up`, `restart`, `fork`, `down`, and `drop`.
 //!
-//! Three drivers, one event model: a colour terminal gets a frozen `indicatif` `MultiProgress`
-//! with one Braille spinner per node, a live rolling tail, and an anchored 16-cell bar refreshed
-//! every 120ms; `NO_COLOR`/`TERM=dumb` gets one `\r`-rewritten ASCII line with zero `ESC[` bytes;
-//! a pipe gets `→ [i/n] kind name` headers plus one `✓ …` row per node and zero `\r`.
+//! Three drivers, one event model: a colour terminal establishes a `DECSTBM` scroll region with
+//! one aligned row per finished node above a fixed `apt`-style panel on row `rows`; a
+//! `NO_COLOR`/`TERM=dumb` terminal rewrites one `\r` ASCII line with zero `ESC[` bytes; a pipe
+//! gets `→ [i/n] kind name` headers plus one `✓ …` row per node and zero `\r`.
 //!
 //! Every string lives in [`render`]; this module only schedules them. Mode and width arrive as
-//! plain values from the composition root: nothing here probes `/dev/tty`.
+//! plain values from the composition root. Log frames are never rendered here: every build, hook,
+//! and pod byte already tees to `<store>/logs/<world>/<id>.log` for `slipfork logs`.
 
 mod ascii;
 mod pane;
 mod render;
 
-use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -23,7 +23,7 @@ use crate::ui::UiMode;
 use self::ascii::AsciiLine;
 use self::pane::{Pane, Screen, Ticker};
 use self::render as text;
-use self::render::{Node, TailLine, completed_row};
+use self::render::{Node, completed_row};
 
 pub use self::render::elapsed_text;
 
@@ -34,15 +34,14 @@ pub struct BootTui {
     done: usize,
     started: Instant,
     current: String,
-    /// Tails per active node, keyed by `name` so concurrent nodes never overwrite each other.
-    tails: BTreeMap<String, VecDeque<TailLine>>,
     pane: Option<Arc<Mutex<Pane>>>,
     ascii: Option<Arc<Mutex<AsciiLine>>>,
     ticker: Option<Ticker>,
-    width: usize,
-    /// `up`/`restart`/`fork` draw an anchored bar; `down`/`drop` stream rows only.
-    summary: bool,
     failed: bool,
+    /// Verdict rows held until the scroll region is restored, so the final line never scrolls.
+    verdict: Vec<String>,
+    /// The one failure sentence, printed to stderr after the region is restored.
+    diagnostics: Vec<String>,
 }
 
 impl BootTui {
@@ -72,13 +71,12 @@ impl BootTui {
             done: 0,
             started: Instant::now(),
             current: String::new(),
-            tails: BTreeMap::new(),
             pane,
             ascii,
             ticker: screen.map(Ticker::start),
-            width,
-            summary,
             failed: false,
+            verdict: Vec::new(),
+            diagnostics: Vec::new(),
         }
     }
 
@@ -92,7 +90,9 @@ impl BootTui {
     pub fn observe(&mut self, event: &Value) {
         match event["event"].as_str().unwrap_or_default() {
             "started" => self.started_node(event),
-            "log" => self.stream_line(event),
+            // Log frames are captured under `<store>/logs` and read with `slipfork logs`; they
+            // never reach the terminal.
+            "log" => {}
             "finished" | "up-to-date" => self.finished_node(event),
             "failed" => self.failed_node(event),
             "ready" => self.ready_event(event),
@@ -107,7 +107,7 @@ impl BootTui {
             return;
         }
         if let Some(pane) = &self.pane {
-            if let Ok(pane) = pane.lock() {
+            if let Ok(mut pane) = pane.lock() {
                 pane.println(text);
             }
             return;
@@ -115,16 +115,12 @@ impl BootTui {
         if let Some(ascii) = &self.ascii {
             if let Ok(mut line) = ascii.lock() {
                 line.clear();
-                println!("{text}");
             }
-            return;
         }
-        // The boot tree is the product's answer, so a pipe gets it on stdout too; only the typed
-        // failure remedy is written to stderr (`failed_node`).
         println!("{text}");
     }
 
-    /// Stops the ticker and clears the status line; the pane's printed rows stay visible.
+    /// Stops the ticker, restores the scroll region, then prints the held verdict.
     pub fn finish(&mut self) {
         self.ticker = None;
         if let Some(ascii) = &self.ascii
@@ -133,11 +129,16 @@ impl BootTui {
             line.clear();
         }
         if let Some(pane) = &self.pane
-            && let Ok(pane) = pane.lock()
+            && let Ok(mut pane) = pane.lock()
         {
-            pane.finish_and_clear();
+            pane.restore();
         }
-        self.tails.clear();
+        for row in self.verdict.drain(..) {
+            println!("{row}");
+        }
+        for row in self.diagnostics.drain(..) {
+            eprintln!("{row}");
+        }
     }
 
     fn started_node(&mut self, event: &Value) {
@@ -153,7 +154,7 @@ impl BootTui {
         self.current.clone_from(&name);
         if let Some(pane) = &self.pane {
             if let Ok(mut pane) = pane.lock() {
-                pane.start(&name, &kind, self.total);
+                pane.start(&name, self.total);
             }
             return;
         }
@@ -167,56 +168,23 @@ impl BootTui {
         }
     }
 
-    /// Keeps a bounded rolling tail per active node instead of an unbounded stream of lines.
-    fn stream_line(&mut self, event: &Value) {
-        if !self.summary || self.mode.json() {
-            return;
-        }
-        let Some(line) = TailLine::from_event(event) else {
-            return;
-        };
-        let target = event["name"]
-            .as_str()
-            .filter(|name| !name.is_empty())
-            .unwrap_or(&self.current)
-            .to_owned();
-        let tail = self.tails.entry(target.clone()).or_default();
-        tail.push_back(line);
-        while tail.len() > text::TAIL_LINES {
-            tail.pop_front();
-        }
-        if let Some(pane) = &self.pane
-            && let Ok(mut pane) = pane.lock()
-        {
-            pane.set_tail(&target, tail);
-        }
-    }
-
     fn finished_node(&mut self, event: &Value) {
         let Some(node) = Node::from_event(event) else {
             return;
         };
-        let name = node.name.to_owned();
         self.done += 1;
-        let tail = self.tails.remove(&name);
-        let rows = text::tail_rows(tail, self.width, self.mode.color());
+        let row = completed_row(&node, self.mode.color());
         if let Some(pane) = &self.pane
             && let Ok(mut pane) = pane.lock()
         {
-            pane.finish(&name, self.done);
-            for row in rows {
-                pane.println(&row);
-            }
-            pane.println(&completed_row(&node, true));
+            pane.finish(self.done);
+            pane.println(&row);
             return;
         }
         if self.mode.json() {
             return;
         }
-        for row in rows {
-            self.line(&row);
-        }
-        self.line(&completed_row(&node, self.mode.color()));
+        self.line(&row);
         if self.ascii.is_some() {
             self.ascii_update();
         }
@@ -229,32 +197,18 @@ impl BootTui {
             .as_str()
             .or_else(|| event["label"].as_str())
             .unwrap_or("step");
-        let line = event["line"].as_u64().unwrap_or(0);
-        let message = event["message"].as_str().unwrap_or("step failed");
-        let tail = self.tails.remove(name);
-        self.tails.clear();
-        let rows = text::tail_rows(tail, self.width, self.mode.color());
-        // Every running bar is cleared before the verdict so the failure reads as one statement.
-        if let Some(pane) = &self.pane
-            && let Ok(mut pane) = pane.lock()
-        {
-            pane.clear_bars();
-            for row in rows {
-                pane.println(&row);
-            }
-            pane.println(&text::failed_row(kind, name, true));
-        } else {
-            for row in rows {
-                self.line(&row);
-            }
-            self.line(&text::failed_row(kind, name, self.mode.color()));
-        }
         if self.mode.json() {
             return;
         }
-        for row in text::failure_lines(line, message, event["remedy"].as_str()) {
-            eprintln!("{row}");
+        let row = text::failed_row(kind, name, self.mode.color());
+        let sentence = text::failure_sentence(kind, name);
+        if self.pane.is_some() {
+            self.verdict.push(row);
+            self.diagnostics.push(sentence);
+            return;
         }
+        self.line(&row);
+        eprintln!("{sentence}");
     }
 
     fn ready_event(&mut self, event: &Value) {
@@ -269,6 +223,13 @@ impl BootTui {
             ),
             None => text::ready_row(url, color),
         };
+        if self.pane.is_some() {
+            self.verdict.push(text);
+            if event["fork"].is_null() {
+                self.verdict.push(text::hint_line(color));
+            }
+            return;
+        }
         self.line(&text);
         if event["fork"].is_null() {
             self.line(&text::hint_line(color));

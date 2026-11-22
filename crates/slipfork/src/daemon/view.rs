@@ -38,6 +38,7 @@ pub(super) fn services(doc: &Forkfile) -> Vec<PsService> {
                     })
                 })
                 .collect(),
+            orphaned: false,
             image: service.image.map(str::to_owned),
         })
         .collect();
@@ -64,6 +65,7 @@ pub(super) fn services(doc: &Forkfile) -> Vec<PsService> {
             policy,
             pid: None,
             routes: Vec::new(),
+            orphaned: false,
             image: None,
         });
     }

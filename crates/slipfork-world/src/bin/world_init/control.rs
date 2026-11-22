@@ -7,6 +7,7 @@ use std::os::fd::AsFd;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
+use std::process::Stdio;
 use std::time::Duration;
 
 use slipfork_world::PodSpec;
@@ -15,7 +16,7 @@ use slipfork_world::control::{self as wire, FrameLines, InitFrame, PROTOCOL_VERS
 use crate::fault::failure_frame;
 use crate::pod::{InitWorld, WorldShared, run_once_on_shared};
 use crate::stream::{PtyRequest, serve_exec, serve_exec_pty, serve_logs};
-use crate::{Fault, REMEDY_PROTOCOL, REMEDY_RUNTIME, respond};
+use crate::{Fault, REMEDY_POD, REMEDY_PROTOCOL, REMEDY_RUNTIME, respond};
 
 /// Longest a dial may block before the world reports a refused port.
 const DIAL_TIMEOUT: Duration = Duration::from_secs(2);
@@ -70,6 +71,20 @@ pub(crate) fn handle(listener: &UnixListener, world: &mut InitWorld) -> Result<b
                 dial(&mut stream, port)?;
             }
             wire::Request::Launch { id, pod, .. } => {
+                // A launch of an already-live pod is ready, never an `already running` failure:
+                // the daemon's reconcile re-applies a plan over surviving pods.
+                if let Some(pid) = live_pid(world, &pod.id) {
+                    reply(
+                        &mut stream,
+                        &InitFrame::Reply {
+                            v: PROTOCOL_VERSION,
+                            id,
+                            ok: Some(serde_json::json!({ "pid": pid })),
+                            error: None,
+                        },
+                    )?;
+                    continue;
+                }
                 let shared = world.shared();
                 std::thread::spawn(move || {
                     let frame = match crate::pod::launch_on_shared(&shared, &pod) {
@@ -86,6 +101,21 @@ pub(crate) fn handle(listener: &UnixListener, world: &mut InitWorld) -> Result<b
                     };
                     let _ = reply(&mut stream, &frame);
                 });
+            }
+            wire::Request::Stop { id, pod, .. } => {
+                let frame = match stop_pod(world, &pod) {
+                    Ok(pid) => InitFrame::Reply {
+                        v: PROTOCOL_VERSION,
+                        id,
+                        ok: Some(serde_json::json!({ "pid": pid, "stopped": true })),
+                        error: None,
+                    },
+                    Err(fault) => {
+                        eprintln!("slipfork-world-init: {fault}");
+                        failure_frame(id, "stop-failed", &fault)
+                    }
+                };
+                reply(&mut stream, &frame)?;
             }
             wire::Request::RunOnce {
                 id,
@@ -265,6 +295,56 @@ fn dial(stream: &mut UnixStream, port: u16) -> Result<(), Fault> {
                 .map_err(|source| Fault::cause("dial error reply", REMEDY_PROTOCOL, source))
         }
     }
+}
+
+/// The pid of a live tracked pod, when the plan re-applies over a surviving pod.
+pub(crate) fn live_pid(world: &InitWorld, pod: &str) -> Option<i32> {
+    world.list().into_iter().find_map(|status| {
+        if status["id"] != pod || status["running"] != true {
+            return None;
+        }
+        status["pid"]
+            .as_i64()
+            .and_then(|pid| i32::try_from(pid).ok())
+    })
+}
+
+/// Stops one tracked pod: group kill, `crun delete`, bundle removal, and log-handle drop.
+pub(crate) fn stop_pod(world: &mut InitWorld, pod: &str) -> Result<i32, Fault> {
+    let shared = world.shared();
+    let pid = shared
+        .pids
+        .lock()
+        .map_err(|_| Fault::new(format!("pod `{pod}` pid lock"), REMEDY_RUNTIME))?
+        .remove(pod);
+    let Some(pid) = pid else {
+        return Err(Fault::new(
+            format!("pod `{pod}` is not running"),
+            REMEDY_POD,
+        ));
+    };
+    slipfork_world::kill_group(pid);
+    for args in [
+        ["kill", "--all", pod, "SIGKILL"].as_slice(),
+        ["delete", "--force", pod].as_slice(),
+    ] {
+        let _ = shared
+            .crun_command()
+            .args(args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+    if let Ok(mut pods) = shared.pods.lock()
+        && let Some(info) = pods.remove(pod)
+    {
+        let _ = fs::remove_dir_all(&info.bundle);
+    }
+    if let Ok(mut logs) = shared.logs.lock() {
+        logs.remove(pod);
+    }
+    Ok(pid)
 }
 
 fn reply(stream: &mut UnixStream, frame: &InitFrame) -> Result<(), Fault> {

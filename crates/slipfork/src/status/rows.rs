@@ -31,6 +31,13 @@ pub fn columns(service: &PsService, booting: bool) -> Columns {
             state: Some("31"),
         };
     }
+    if service.orphaned {
+        return Columns {
+            middle: "orphaned".to_owned(),
+            target: target(service),
+            state: Some("33"),
+        };
+    }
     if service.kind == PsKind::Service {
         return Columns {
             middle: "running".to_owned(),

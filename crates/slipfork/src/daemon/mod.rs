@@ -367,17 +367,29 @@ impl Daemon {
         params: &Value,
         emit: &mut dyn FnMut(Value),
     ) -> Result<Option<Value>, Failure> {
-        if let Some(reply) = self.core()?.live_up_reply(params) {
-            emit(json!({
-                "event": "ready",
-                "url": reply["url"],
-                "world": reply["world"],
-                "elapsed_ms": 0,
-            }));
-            return Ok(Some(reply));
+        // Decide under the daemon lock, then release it: reconcile runs typed world calls that
+        // must never block `ps`/`ping`, exactly like the `logs` stream path.
+        let action = self.core()?.up_plan(params)?;
+        match action {
+            lifecycle::up::UpAction::Idle(reply) => {
+                emit(json!({
+                    "event": "ready",
+                    "url": reply["url"],
+                    "world": reply["world"],
+                    "elapsed_ms": 0,
+                }));
+                Ok(Some(reply))
+            }
+            lifecycle::up::UpAction::Reconcile(plan) => {
+                lifecycle::up::reconcile(*plan);
+                let mut session = self.core()?.begin_up(params)?;
+                session.run(self, emit).map(Some)
+            }
+            lifecycle::up::UpAction::Boot => {
+                let mut session = self.core()?.begin_up(params)?;
+                session.run(self, emit).map(Some)
+            }
         }
-        let mut session = self.core()?.begin_up(params)?;
-        session.run(self, emit).map(Some)
     }
 
     /// Snapshots the fork, then boots it through the same `up` path and answers its coordinates.

@@ -11,7 +11,7 @@ use std::process::{Command, Output};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde_json::{Value, json};
-use slipfork::boot::{Node, completed_row, elapsed_text, pane_geometry, status_line, summary_line};
+use slipfork::boot::{Node, completed_row, elapsed_text, pane_geometry, status_line};
 use slipfork::install::{self, InstallHost, UnitWriter};
 use slipfork::status::{self, Options};
 
@@ -115,9 +115,12 @@ fn the_live_boot_pane_renders_exact_rows_and_bars() {
     };
     assert_eq!(
         completed_row(&node, true),
-        "\u{1b}[32m✓\u{1b}[0m \u{1b}[2mimage   \u{1b}[0m  \u{1b}[1mbase\u{1b}[0m cached  \u{1b}[2m  420ms\u{1b}[0m"
+        "\u{1b}[32m✓\u{1b}[0m \u{1b}[2mimage   \u{1b}[0m  \u{1b}[1mbase\u{1b}[0m \u{1b}[36mcached\u{1b}[0m  \u{1b}[2m  420ms\u{1b}[0m"
     );
-    assert_eq!(completed_row(&node, false), "✓ image base cached  420ms");
+    assert_eq!(
+        completed_row(&node, false),
+        "✓ image     base cached    420ms"
+    );
     assert!(!completed_row(&node, false).contains(ANSI));
     assert!(!completed_row(&node, false).contains('\r'));
 
@@ -128,11 +131,11 @@ fn the_live_boot_pane_renders_exact_rows_and_bars() {
     };
     assert_eq!(
         completed_row(&cached, true),
-        "\u{1b}[2m•\u{1b}[0m \u{1b}[2mimage   \u{1b}[0m  \u{1b}[1mbase\u{1b}[0m up-to-date  \u{1b}[2m  420ms\u{1b}[0m"
+        "\u{1b}[2m•\u{1b}[0m \u{1b}[2mimage   \u{1b}[0m  \u{1b}[1mbase\u{1b}[0m \u{1b}[36mup-to-date\u{1b}[0m  \u{1b}[2m  420ms\u{1b}[0m"
     );
     assert_eq!(
         completed_row(&cached, false),
-        "• image base up-to-date  420ms"
+        "• image     base up-to-date    420ms"
     );
 
     // A malformed frame fails closed instead of inventing `step`/`ready`/`0` fiction.
@@ -151,34 +154,40 @@ fn the_live_boot_pane_renders_exact_rows_and_bars() {
     assert_eq!(elapsed_text(420), "420ms");
     assert_eq!(elapsed_text(1_200), "1.2s");
 
-    assert_eq!(pane_geometry(120), Some(16));
-    assert_eq!(pane_geometry(48), Some(16));
-    assert_eq!(pane_geometry(47), None);
+    assert_eq!(pane_geometry(120), Some(24));
+    assert_eq!(pane_geometry(80), Some(24));
+    assert_eq!(pane_geometry(79), None);
 
     let elapsed = Duration::from_millis(1_200);
-    let bar = summary_line(10, 6, "Booting demo", elapsed, 80);
-    assert_eq!(bar, "[██████████░░░░░░] 6/10  Booting demo  1.2s");
-    assert_eq!(bar.matches(['█', '░']).count(), 16, "{bar}");
+    let panel = status_line('-', 6, 10, "Starting api…", elapsed, 120);
     assert_eq!(
-        summary_line(10, 6, "Booting demo", elapsed, 40),
-        "6/10  Booting demo  1.2s"
+        panel,
+        "- [##############..........]  6/10  60% · Starting api… · 1.2s"
     );
+    let cells = panel
+        .split_once('[')
+        .and_then(|(_, rest)| rest.split_once(']'))
+        .map(|(cells, _)| cells)
+        .expect("the panel keeps its bar");
+    assert_eq!(cells.chars().count(), 24, "{panel}");
+    assert_eq!(cells.matches('#').count(), 14, "{panel}");
+    assert_eq!(
+        status_line('-', 6, 10, "Starting api…", elapsed, 40),
+        "- 6/10  60% · Starting api… · 1.2s"
+    );
+    assert_eq!(
+        status_line('-', 6, 10, "Starting api…", elapsed, 79),
+        "- 6/10  60% · Starting api… · 1.2s"
+    );
+    assert!(!panel.contains(ANSI), "{panel}");
+    assert!(!panel.contains('\r'), "{panel}");
 
-    let ascii = status_line('|', 6, 10, "Booting demo", "api", elapsed, 80);
-    assert_eq!(ascii, "| [##########......] 6/10  Booting demo  api  1.2s");
-    assert!(!ascii.contains(ANSI), "{ascii}");
-    assert!(!ascii.contains('\r'), "{ascii}");
-    assert_eq!(
-        status_line('|', 6, 10, "Booting demo", "", elapsed, 40),
-        "6/10  Booting demo  1.2s"
-    );
     for spinner in ['|', '/', '-', '\\'] {
         let line = status_line(
             spinner,
             3,
             10,
-            "Restarting demo",
-            "db",
+            "Restarting api…",
             Duration::from_millis(50),
             80,
         );
@@ -191,10 +200,43 @@ fn the_live_boot_pane_renders_exact_rows_and_bars() {
             .unwrap_or_else(|| panic!("the ASCII line keeps its bar: {line}"));
         assert_eq!(
             cells.matches('#').count() + cells.matches('.').count(),
-            16,
+            24,
             "{line}"
         );
     }
+}
+
+#[test]
+fn orphaned_pods_render_yellow_and_serialize() {
+    let orphaned = reply(json!({
+        "worlds": [{
+            "project": "/home/me/demo", "path": "/home/me/demo", "world": "demo",
+            "url": "http://demo.localhost", "supervisor_pid": 1, "alive": true,
+            "booting": false,
+            "services": [
+                { "id": "api", "kind": "service", "running": true, "port": 8000 },
+                { "id": "beta", "kind": "service", "running": true, "orphaned": true }
+            ]
+        }]
+    }));
+    let plain = status::render(&orphaned, &Options::new(false));
+    assert!(plain.contains("orphaned"), "{plain}");
+    let coloured = status::render(&orphaned, &Options::new(true));
+    assert!(
+        coloured.contains("\u{1b}[33morphaned\u{1b}[0m"),
+        "orphaned must be yellow: {coloured}"
+    );
+    let value = serde_json::to_value(&orphaned).expect("ps reply serializes");
+    assert_eq!(value["worlds"][0]["services"][1]["orphaned"], true);
+    let defaulted = reply(json!({
+        "worlds": [{
+            "project": "/home/me/demo", "path": "/home/me/demo", "world": "demo",
+            "url": "http://demo.localhost", "supervisor_pid": 1, "alive": true,
+            "booting": false,
+            "services": [{ "id": "api", "kind": "service", "running": true }]
+        }]
+    }));
+    assert!(!defaulted.worlds[0].services[0].orphaned);
 }
 
 fn scratch(prefix: &str) -> PathBuf {

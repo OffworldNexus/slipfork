@@ -15,19 +15,48 @@ pub(crate) fn respond(
     emit: &mut dyn FnMut(InitFrame) -> Result<(), Fault>,
 ) -> Result<(InitFrame, bool), Fault> {
     let (reply, shutdown) = match request {
-        Request::Launch { id, pod, .. } => match world.launch(&pod) {
+        Request::Launch { id, pod, .. } => {
+            if let Some(pid) = crate::control::live_pid(world, &pod.id) {
+                (
+                    InitFrame::Reply {
+                        v: PROTOCOL_VERSION,
+                        id,
+                        ok: Some(serde_json::json!({ "pid": pid })),
+                        error: None,
+                    },
+                    false,
+                )
+            } else {
+                match world.launch(&pod) {
+                    Ok(pid) => (
+                        InitFrame::Reply {
+                            v: PROTOCOL_VERSION,
+                            id,
+                            ok: Some(serde_json::json!({ "pid": pid })),
+                            error: None,
+                        },
+                        false,
+                    ),
+                    Err(fault) => {
+                        eprintln!("slipfork-world-init: {fault}");
+                        (failure_frame(id, "launch-failed", &fault), false)
+                    }
+                }
+            }
+        }
+        Request::Stop { id, pod, .. } => match crate::control::stop_pod(world, &pod) {
             Ok(pid) => (
                 InitFrame::Reply {
                     v: PROTOCOL_VERSION,
                     id,
-                    ok: Some(serde_json::json!({ "pid": pid })),
+                    ok: Some(serde_json::json!({ "pid": pid, "stopped": true })),
                     error: None,
                 },
                 false,
             ),
             Err(fault) => {
                 eprintln!("slipfork-world-init: {fault}");
-                (failure_frame(id, "launch-failed", &fault), false)
+                (failure_frame(id, "stop-failed", &fault), false)
             }
         },
         Request::StopAll { id, .. } => {

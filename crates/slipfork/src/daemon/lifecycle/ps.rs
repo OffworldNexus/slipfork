@@ -108,6 +108,7 @@ impl WorldView {
             .and_then(|source| slipfork_forkfile::compile(&source).ok())
             .map(|checked| *checked.document);
         let mut services = document.as_ref().map(view::services).unwrap_or_default();
+        let declared: Vec<String> = services.iter().map(|service| service.id.clone()).collect();
         for service in &mut services {
             if let Some(pod) = pods.iter().find(|pod| pod.id == service.id) {
                 service.pid = Some(pod.pid);
@@ -116,6 +117,28 @@ impl WorldView {
                 // Native S3 runs in-process inside the world init: no pod exists to look up, and
                 // the bucket is healthy exactly while its world is up.
                 service.running = alive;
+            }
+        }
+        // UNION the live pods with the declared rows: a pod the edited `Forkfile` no longer
+        // declares stays visible (yellow `orphaned`) until `slipfork up` reaps it.
+        if alive {
+            for pod in pods.iter().filter(|pod| pod.running) {
+                if declared.iter().any(|id| id == &pod.id) {
+                    continue;
+                }
+                services.push(PsService {
+                    id: pod.id.clone(),
+                    kind: PsKind::Service,
+                    running: true,
+                    port: None,
+                    version: None,
+                    cdn: None,
+                    policy: None,
+                    pid: Some(pod.pid),
+                    routes: Vec::new(),
+                    orphaned: true,
+                    image: None,
+                });
             }
         }
         Self {

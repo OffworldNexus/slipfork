@@ -48,12 +48,16 @@ impl AsciiLine {
     pub(super) fn draw(&mut self) {
         self.frame = self.frame.wrapping_add(1);
         let spinner = ASCII_SPIN[self.frame % ASCII_SPIN.len()];
+        let summary = if self.current.is_empty() {
+            self.title.clone()
+        } else {
+            format!("Starting {}…", self.current)
+        };
         let line = status_line(
             spinner,
             self.done,
             self.total,
-            &self.title,
-            &self.current,
+            &summary,
             self.started.elapsed(),
             self.width,
         );
