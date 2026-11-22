@@ -3034,3 +3034,4 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-22T21:19 [M3.55] (lead) base e7facc24113d4e23502af4655e76a7eec850f788
 - 2026-11-22T21:40 [M3.55] (conductor) edited fields
 - 2026-11-22T21:44 [M3.57] (conductor) created (task) True & visible parallelism: warm-up stamp reuse (not is_fork-only), parallel pod stop on down & live in-place spinner rows above DECSTBM bar
+- 2026-11-22T21:46 [M3.58] (conductor) created (task) Run-ID log model (slipfork logs --run <id>) for build/setup/hook runs, slirp4netns outbound world networking & single-✗ error formatting
