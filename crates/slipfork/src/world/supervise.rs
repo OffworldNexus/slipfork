@@ -124,6 +124,15 @@ fn supervisor_main(project: &Path, world: &str, env: &HostEnv) -> Result<(), Str
     drop(tokio_runtime);
     match &outcome {
         Ok(()) => {
+            // A clean cluster at the end of `up` is what keeps a later fork's crash recovery
+            // sub-50ms: one SQL `CHECKPOINT` after post-deploy, then one `syncfs` so the
+            // checkpoint is durable in the Btrfs tree the fork will snapshot.
+            if let Err(error) = runtime.checkpoint_postgres() {
+                eprintln!("slipfork: postgres checkpoint: {error}");
+            }
+            if let Err(error) = runtime.flush_store() {
+                eprintln!("slipfork: store flush: {error}");
+            }
             let checkpoint = WorldStamp::checkpoint(&plan, epoch.clone(), runtime.image_stamps());
             if let Err(error) = stamp_store.save(&checkpoint) {
                 eprintln!("slipfork: write world stamp: {error}");

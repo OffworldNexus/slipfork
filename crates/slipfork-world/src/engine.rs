@@ -33,6 +33,17 @@ impl BtrfsEngine {
         &self.layout
     }
 
+    /// Flushes every pending write on the store's filesystem before a CoW snapshot.
+    ///
+    /// PostgreSQL runs with `fsync=off`, so a just-created database can still sit in page cache
+    /// when `SNAP_CREATE_V2` clones `PGDATA`. One `syncfs(2)` on a single directory descriptor
+    /// makes the fork crash-consistent without a SQL `CHECKPOINT` and stays well under a second.
+    pub fn flush_store(&self) -> Result<()> {
+        let anchor = self.store_anchor();
+        let dir = Self::open_dir(&anchor)?;
+        btrfs::syncfs(&dir, &anchor)
+    }
+
     /// Existing directory used to probe the Btrfs superblock before creating `.slipfork-store`.
     fn store_anchor(&self) -> PathBuf {
         let store = self.layout.store_root();
@@ -228,9 +239,12 @@ impl WorldEngine for BtrfsEngine {
         }
         Self::snapshot(source, dest)
     }
-
     fn fork(&self, project: &Path, world: &WorldName, fork: &ForkName) -> Result<ForkPaths> {
         self.ensure_store()?;
+        // Make the parent's last writes (a fresh `CREATE DATABASE`, AOF tail, bucket PUTs) durable
+        // before any `SNAP_CREATE_V2`: PG runs `fsync=off`, so page-cache-only data would be
+        // cloned as a torn `PGDATA` and the fork's postgres would panic on boot.
+        self.flush_store()?;
         // Probe only: the project must already be a converted subvolume.
         Self::open_subvolume(project)?;
         let forks_dir = layout::project_forks_dir(project);

@@ -22,7 +22,7 @@ slipfork drop my-experiment                   # Instant teardown + clone cleanup
 
 | Component | Kind | Port / Domain |
 | :--- | :--- | :--- |
-| `pg` | PostgreSQL 18 (direct `postgres` exec) | `postgres.url` |
+| `pg` | PostgreSQL 18 (direct `postgres` exec, database `app_db`) | `app_db.url` |
 | `cache` | Redis 7 (direct `redis-server`) | `cache.url` |
 | `uploads` | native S3 bucket, private | `uploads.url` (`403` anonymous) |
 | `assets` | native S3 bucket, `public-read` (`cdn static-cdn` aliases it locally) | `assets.demo.localhost` (`200` anonymous) |

@@ -5,6 +5,7 @@
 //! directory. The renderer never probes anything.
 
 use std::fs;
+use std::os::unix::fs::FileTypeExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -217,7 +218,10 @@ fn apparmor_enabled() -> bool {
 }
 
 fn daemon(host: &HostEnv) -> Check {
-    if host.runtime_dir.join("daemon.sock").is_file() {
+    // `daemon.sock` is a Unix socket, so `Path::is_file()` is always false; check the socket bit.
+    let listening = fs::metadata(host.runtime_dir.join("daemon.sock"))
+        .is_ok_and(|metadata| metadata.file_type().is_socket());
+    if listening {
         return Check::new(
             "Daemon",
             true,

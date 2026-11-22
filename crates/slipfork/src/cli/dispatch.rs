@@ -1,6 +1,7 @@
 //! Maps the parsed `clap` tree onto the injected [`Session`], and renders usage errors.
 
 use std::ffi::OsString;
+use std::io::Write;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -124,8 +125,22 @@ fn dispatch(cli: Cli, session: Session) -> ExitCode {
         }),
         Command::Completions { shell } => {
             let mut command = Cli::command();
-            clap_complete::generate(shell, &mut command, "slipfork", &mut std::io::stdout());
-            ExitCode::SUCCESS
+            let mut script = Vec::new();
+            clap_complete::generate(shell, &mut command, "slipfork", &mut script);
+            // `slipfork completions bash | head` closes the pipe early; that is normal shell
+            // usage, not a panic (clap_complete writes straight to stdout and unwraps).
+            let mut stdout = std::io::stdout().lock();
+            let result = stdout.write_all(&script).and_then(|()| stdout.flush());
+            match result {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe => ExitCode::SUCCESS,
+                Err(error) => {
+                    eprintln!(
+                        "error: could not write completions: {error}\nnext: re-run `slipfork completions {shell}` with stdout open"
+                    );
+                    ExitCode::from(1)
+                }
+            }
         }
         Command::Daemon {
             command: DaemonCommand::Install { ingress },

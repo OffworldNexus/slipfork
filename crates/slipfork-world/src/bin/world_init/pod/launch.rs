@@ -14,7 +14,7 @@ use slipfork_world::control::FrameLines;
 use slipfork_world::pod_log::{CHUNK, LogKind, LogSink};
 use slipfork_world::{PodSpec, StoreLayout};
 
-use crate::shared::{PodInfo, WorldShared, exit_code, reap_zombies, wait_child};
+use crate::shared::{LaunchClaim, PodInfo, WorldShared, exit_code, reap_zombies, wait_child};
 use crate::{Fault, REMEDY_CRUN, REMEDY_POD, REMEDY_RUNTIME, canonical};
 
 /// Launches one detached pod concurrently against `WorldShared` without holding a lock across
@@ -23,16 +23,12 @@ pub(crate) fn launch_on_shared(shared: &WorldShared, pod: &PodSpec) -> Result<i3
     let action = format!("pod `{}` launch with crun", pod.id);
     pod.validate()
         .map_err(|source| Fault::cause(action.clone(), REMEDY_POD, source))?;
-    if shared
-        .pids
-        .lock()
-        .is_ok_and(|pids| pids.contains_key(&pod.id))
-    {
-        return Err(Fault::new(
-            format!("pod `{}` is already running", pod.id),
-            REMEDY_POD,
-        ));
-    }
+    // Concurrent `Launch` frames for one id must share one `crun run`: the loser waits for the
+    // winner and reuses its pid instead of failing with `container already exists`.
+    let _slot = match shared.claim_launch(&pod.id)? {
+        LaunchClaim::Ready(pid) => return Ok(pid),
+        LaunchClaim::Lead(slot) => slot,
+    };
     let bundle = canonical(
         &shared.pods_root().join(&pod.id),
         action.clone(),

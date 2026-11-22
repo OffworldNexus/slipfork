@@ -803,6 +803,7 @@ fn a_foreign_namespace_identity_is_a_typed_mismatch() {
 mod pty_lab {
     use super::*;
     use std::os::fd::AsRawFd;
+    use std::sync::Arc;
     use std::time::{Duration, Instant};
 
     use slipfork_world::{WorldHost, WorldSupervisor};
@@ -1136,6 +1137,108 @@ mod pty_lab {
             "the stopped pod replay must come from `{}`: {texts:?}",
             log_path.display()
         );
+
+        drop(supervisor);
+        let _ = fs::remove_dir_all(&runtime);
+        let _ = fs::remove_dir_all(store.btrfs_mount());
+    }
+
+    fn launch_in_thread(
+        pods_dir: PathBuf,
+        spec: PodSpec,
+        barrier: Arc<std::sync::Barrier>,
+    ) -> std::thread::JoinHandle<slipfork_world::Result<u32>> {
+        std::thread::spawn(move || {
+            barrier.wait();
+            control::launch_pod(&pods_dir, &spec, Duration::from_secs(60))
+        })
+    }
+
+    /// Two `Launch` frames must overlap in the control plane, and a racing duplicate of one pod
+    /// id must resolve to a single `crun run` whose pid both callers reuse.
+    #[test]
+    fn concurrent_launches_overlap_and_same_id_coalesces() {
+        let crun = require_tool("crun");
+        let unshare = require_tool("unshare");
+        let runtime = tmpfs_dir("rt-launch");
+        let store = StoreLayout::new(lab("live-launch"));
+        let world = WorldName::parse("launchlab").expect("valid world");
+        let rootfs = store.world_pods(&world).join("api");
+        fs::create_dir_all(&rootfs).expect("create the pod rootfs");
+        assemble_rootfs(&rootfs);
+
+        let uid = unsafe { libc::getuid() };
+        let gid = unsafe { libc::getgid() };
+        let host = WorldHost::new(
+            crun,
+            unshare,
+            PathBuf::from(env!("CARGO_BIN_EXE_slipfork-world-init")),
+            runtime.clone(),
+            uid,
+            gid,
+            None,
+        );
+        let supervisor = WorldSupervisor::boot(host, &world).expect("boot a real world");
+        let pods_dir = supervisor.pods_dir().to_path_buf();
+        let spec = |id: &str| PodSpec {
+            id: id.to_owned(),
+            rootfs: rootfs.clone(),
+            workdir: "/".to_owned(),
+            argv: ["/bin/sh", "-c", "echo booted; while :; do sleep 1; done"]
+                .into_iter()
+                .map(str::to_owned)
+                .collect(),
+            inherited_env: vec!["PATH=/bin:/usr/bin".to_owned()],
+            env: Vec::new(),
+            binds: Vec::new(),
+            files: Vec::new(),
+        };
+        for id in ["api", "worker", "dup"] {
+            write_bundle(&spec(id), &supervisor.pod_host(), &pods_dir.join(id))
+                .expect("write the OCI bundle");
+        }
+
+        let barrier = Arc::new(std::sync::Barrier::new(2));
+        let api = launch_in_thread(pods_dir.clone(), spec("api"), Arc::clone(&barrier));
+        let worker = launch_in_thread(pods_dir.clone(), spec("worker"), Arc::clone(&barrier));
+        let api_pid = api.join().expect("api thread").expect("api launch");
+        let worker_pid = worker
+            .join()
+            .expect("worker thread")
+            .expect("worker launch");
+        assert_ne!(api_pid, worker_pid, "two ids must be separate pod pids");
+
+        let barrier = Arc::new(std::sync::Barrier::new(2));
+        let first = launch_in_thread(pods_dir.clone(), spec("dup"), Arc::clone(&barrier));
+        let second = launch_in_thread(pods_dir.clone(), spec("dup"), Arc::clone(&barrier));
+        let first_pid = first.join().expect("first dup thread").expect("first dup");
+        let second_pid = second
+            .join()
+            .expect("second dup thread")
+            .expect("second dup");
+        assert_eq!(
+            first_pid, second_pid,
+            "a racing duplicate Launch of one id must coalesce onto one crun run"
+        );
+
+        let statuses = control::list_pods(&pods_dir).expect("list the world's pods");
+        for id in ["api", "worker", "dup"] {
+            assert!(
+                statuses
+                    .iter()
+                    .any(|status| status.id == id && status.running),
+                "`{id}` must be running after the concurrent launches: {statuses:?}"
+            );
+        }
+        for id in ["api", "worker", "dup"] {
+            let path = store.pod_log(&world, id);
+            let deadline = Instant::now() + Duration::from_secs(10);
+            let booted = || fs::read_to_string(&path).is_ok_and(|text| text.contains("booted"));
+            while Instant::now() < deadline && !booted() {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            assert!(booted(), "`{id}` never became ready: {}", path.display());
+        }
 
         drop(supervisor);
         let _ = fs::remove_dir_all(&runtime);

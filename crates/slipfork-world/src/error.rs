@@ -99,6 +99,8 @@ pub enum Error {
         path: PathBuf,
         source: serde_json::Error,
     },
+    /// The pre-snapshot `syncfs(2)` on the store's filesystem failed.
+    FlushStore { path: PathBuf, source: io::Error },
     /// A filesystem or ioctl operation failed.
     Io {
         action: &'static str,
@@ -261,6 +263,11 @@ impl fmt::Display for Error {
                 "could not encode or decode JSON for `{}`\nnext: remove the stale runtime file and re-run",
                 path.display()
             ),
+            Self::FlushStore { path, source } => write!(
+                f,
+                "could not flush pending writes on `{}`: {source}\nnext: re-run the command; if it persists, check `dmesg` and `btrfs device stats` for I/O errors",
+                path.display()
+            ),
             // The errno stays in the message: the lab only ever shows `Display`.
             Self::Io {
                 action,
@@ -274,7 +281,7 @@ impl fmt::Display for Error {
 impl std::error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Self::Io { source, .. } => Some(source),
+            Self::FlushStore { source, .. } | Self::Io { source, .. } => Some(source),
             Self::Json { source, .. } => Some(source),
             _ => None,
         }

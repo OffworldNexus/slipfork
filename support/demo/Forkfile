@@ -8,7 +8,7 @@ features {
 domain main
 
 postgres pg {
-  database postgres
+  database app_db
 }
 
 redis cache
@@ -21,7 +21,7 @@ s3 assets {
 }
 
 env common {
-  DATABASE_URL = postgres.url
+  DATABASE_URL = app_db.url
   REDIS_URL = cache.url
   UPLOADS_URL = uploads.url
   S3_ENDPOINT = uploads.endpoint

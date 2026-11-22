@@ -1,15 +1,17 @@
 //! Shared world state between PID 1's main loop and detached control-socket threads.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use slipfork_world::pod_log::LogSink;
+
+use crate::{Fault, REMEDY_RUNTIME};
 
 /// Immutable facts a stream thread needs about one running pod.
 #[derive(Debug, Clone)]
@@ -36,6 +38,9 @@ pub(crate) struct WorldShared {
     logs_root: Mutex<Option<PathBuf>>,
     /// Exit statuses reaped by the main loop, retained for a child waiter that races it.
     reaped: Mutex<BTreeMap<i32, i32>>,
+    /// Pod ids whose `crun run` is in flight, so concurrent `Launch` frames coalesce.
+    launches: Mutex<BTreeSet<String>>,
+    launches_done: Condvar,
     exec_pids: Mutex<Vec<i32>>,
     exec_seq: AtomicU64,
     stop: AtomicBool,
@@ -52,6 +57,8 @@ impl WorldShared {
             pids: Mutex::new(BTreeMap::new()),
             logs_root: Mutex::new(None),
             reaped: Mutex::new(BTreeMap::new()),
+            launches: Mutex::new(BTreeSet::new()),
+            launches_done: Condvar::new(),
             exec_pids: Mutex::new(Vec::new()),
             exec_seq: AtomicU64::new(0),
             stop: AtomicBool::new(false),
@@ -83,6 +90,35 @@ impl WorldShared {
         if let Ok(mut slot) = self.logs_root.lock() {
             slot.get_or_insert(root);
         }
+    }
+
+    /// Claims the one in-flight launch slot for `id`, waiting for a racing launch of the same pod
+    /// and reusing its pid; the caller releases the slot on drop, success or failure.
+    pub(crate) fn claim_launch(&self, id: &str) -> Result<LaunchClaim<'_>, Fault> {
+        let mut inflight = self
+            .launches
+            .lock()
+            .map_err(|_| Fault::new("pod launch table lock", REMEDY_RUNTIME))?;
+        while inflight.contains(id) {
+            inflight = self
+                .launches_done
+                .wait(inflight)
+                .map_err(|_| Fault::new("pod launch table lock", REMEDY_RUNTIME))?;
+        }
+        if let Some(pid) = self
+            .pids
+            .lock()
+            .map_err(|_| Fault::new("pod pid table lock", REMEDY_RUNTIME))?
+            .get(id)
+            .copied()
+        {
+            return Ok(LaunchClaim::Ready(pid));
+        }
+        inflight.insert(id.to_owned());
+        Ok(LaunchClaim::Lead(LaunchSlot {
+            shared: self,
+            id: id.to_owned(),
+        }))
     }
 
     pub(crate) fn next_exec_seq(&self) -> u64 {
@@ -150,6 +186,29 @@ impl WorldShared {
             .lock()
             .map(|pids| pids.clone())
             .unwrap_or_default()
+    }
+}
+
+/// One claimed launch slot: [`LaunchSlot::drop`] releases the id and wakes same-id waiters.
+pub(crate) enum LaunchClaim<'a> {
+    /// This caller owns the launch for the id.
+    Lead(LaunchSlot<'a>),
+    /// A launch of the id is already live; its pid is ready to reuse.
+    Ready(i32),
+}
+
+/// RAII marker for the one in-flight `crun run` of a pod id.
+pub(crate) struct LaunchSlot<'a> {
+    shared: &'a WorldShared,
+    id: String,
+}
+
+impl Drop for LaunchSlot<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut inflight) = self.shared.launches.lock() {
+            inflight.remove(&self.id);
+        }
+        self.shared.launches_done.notify_all();
     }
 }
 

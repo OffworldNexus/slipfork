@@ -13,10 +13,10 @@ use slipfork_forkfile::ast::Forkfile;
 use slipfork_image::{Architecture, StepHost};
 use slipfork_ospp::{FileSecretVault, SecretVault};
 use slipfork_world::{
-    BootFailure, BootKind, BootState, BootStep, BtrfsEngine, Dirtiness, ImageStamp, PodEnv,
-    PodHost, PodSpec, ResourceKind, ResourceNode, ServiceNode, StepOutcome, StoreLayout, Stream,
-    WorldEngine, WorldHost, WorldName, WorldPlan, WorldStampStore, WorldSupervisor, control,
-    write_bundle,
+    BootFailure, BootKind, BootState, BootStep, BtrfsEngine, Dirtiness, ImageStamp, OutputKind,
+    PodEnv, PodHost, PodSpec, ResourceKind, ResourceNode, ServiceNode, StepOutcome, StoreLayout,
+    Stream, WorldEngine, WorldHost, WorldName, WorldPlan, WorldStampStore, WorldSupervisor,
+    control, write_bundle,
 };
 
 use super::HostEnv;
@@ -30,6 +30,23 @@ mod resources;
 use helpers::{merge_env, project_bind, service_argv, shell_command, tool_env};
 use images::{BuiltImage, ImageCache};
 use ready::{Ready, Staged};
+
+/// One live postgres pod plus the image rootfs that carries its `psql`.
+#[derive(Debug, Clone)]
+struct PgTarget {
+    pod: String,
+    rootfs: PathBuf,
+}
+
+/// In-container unix-socket directory of the world's `PGDATA` clone (`specs/03`).
+const PG_SOCKET: &str = "/var/lib/postgresql/data/.sock";
+/// Rootfs-relative `psql` locations, matching the `postgres:18` image layouts.
+const PSQL_CANDIDATES: [&str; 4] = [
+    "usr/lib/postgresql/18/bin/psql",
+    "usr/local/pgsql/bin/psql",
+    "usr/local/bin/psql",
+    "usr/bin/psql",
+];
 
 pub(super) struct WorldRuntime {
     engine: BtrfsEngine,
@@ -45,6 +62,7 @@ pub(super) struct WorldRuntime {
     services: Vec<ServiceNode>,
     resources: Vec<ResourceNode>,
     clones: Mutex<Vec<PathBuf>>,
+    pg_targets: Mutex<Vec<PgTarget>>,
     counter: AtomicUsize,
     total_steps: usize,
     emitter: Arc<Mutex<Emitter>>,
@@ -182,6 +200,7 @@ impl WorldRuntime {
             services: plan.services.clone(),
             resources: plan.resources.clone(),
             clones: Mutex::new(initial_clones),
+            pg_targets: Mutex::new(Vec::new()),
             counter: AtomicUsize::new(0),
             total_steps: plan.steps.len(),
             emitter,
@@ -235,6 +254,73 @@ impl WorldRuntime {
 
     pub(super) fn pods_dir(&self) -> &Path {
         &self.pods_dir
+    }
+
+    /// Records one running postgres pod so the successful `up` can checkpoint it after hooks.
+    pub(super) fn remember_postgres(&self, pod: &str, rootfs: &Path) {
+        if let Ok(mut targets) = self.pg_targets.lock() {
+            targets.push(PgTarget {
+                pod: pod.to_owned(),
+                rootfs: rootfs.to_path_buf(),
+            });
+        }
+    }
+
+    /// Runs one `CHECKPOINT` inside every live postgres pod, over its readiness-proven socket.
+    ///
+    /// The clone keeps `fsync=off`, so a checkpoint after post-deploy is what makes the next
+    /// `fork` recover in milliseconds instead of replaying minutes of WAL.
+    pub(super) fn checkpoint_postgres(&self) -> Result<(), String> {
+        let targets = self
+            .pg_targets
+            .lock()
+            .map_err(|_| "postgres target lock poisoned".to_owned())?
+            .clone();
+        for target in targets {
+            let Some(psql) = PSQL_CANDIDATES
+                .iter()
+                .find(|relative| target.rootfs.join(relative).is_file())
+                .map(|relative| format!("/{relative}"))
+            else {
+                continue;
+            };
+            let argv = [
+                psql,
+                "-X".to_owned(),
+                "-q".to_owned(),
+                "-h".to_owned(),
+                PG_SOCKET.to_owned(),
+                "-p".to_owned(),
+                "5432".to_owned(),
+                "-U".to_owned(),
+                "postgres".to_owned(),
+                "-d".to_owned(),
+                "postgres".to_owned(),
+                "-c".to_owned(),
+                "CHECKPOINT".to_owned(),
+            ];
+            let mut stderr = String::new();
+            let code = control::exec(&self.pods_dir, &target.pod, &argv, &mut |event| {
+                if event.kind == OutputKind::Line && event.stream == Stream::Stderr {
+                    stderr.push_str(&event.line);
+                    stderr.push('\n');
+                }
+            })
+            .map_err(|error| error.to_string())?;
+            if code != 0 {
+                return Err(format!(
+                    "`CHECKPOINT` in `{}` exited with {code}: {}",
+                    target.pod,
+                    stderr.trim()
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Flushes the store filesystem after the checkpoint so the next fork snapshots durable data.
+    pub(super) fn flush_store(&self) -> Result<(), String> {
+        self.engine.flush_store().map_err(|error| error.to_string())
     }
 
     /// Writes `<pods>/<id>/config.json` and launches the detached container concurrently over

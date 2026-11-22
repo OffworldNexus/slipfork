@@ -137,21 +137,28 @@ fn wait_unix(
     let started = Instant::now();
     let deadline = started + Duration::from_secs(10);
     let mut reported = 0_u32;
+    let mut last_fault = None;
     while Instant::now() < deadline {
         if UnixStream::connect(socket).is_ok() {
-            // The postgres node is only `Done` once every declared `database <db>` exists, and
-            // every `pre-deploy` hook waits on this node, so hooks never see a missing database.
-            if let Some(databases) = databases {
-                databases
-                    .ensure()
-                    .map_err(|fault| BootFailure::with_remedy(fault.to_string(), fault.remedy()))?;
+            // `connect` succeeds a few milliseconds before postgres accepts queries, so the
+            // database reconcile is retried until the socket's own deadline instead of failing
+            // the whole `fork` on `the database system is not yet accepting connections`.
+            if let Some(databases) = &databases {
+                match databases.ensure() {
+                    Ok(()) => return Ok(()),
+                    Err(fault) => last_fault = Some(fault),
+                }
+            } else {
+                return Ok(());
             }
-            return Ok(());
         }
         if let Some(progress) = progress.as_mut() {
             report_wait(progress, started, &mut reported, &format!("`{label}`"));
         }
         std::thread::sleep(Duration::from_millis(2));
+    }
+    if let Some(fault) = last_fault {
+        return Err(BootFailure::with_remedy(fault.to_string(), fault.remedy()));
     }
     Err(BootFailure::with_remedy(
         format!("`{label}` never opened `{}` within 10s", socket.display()),

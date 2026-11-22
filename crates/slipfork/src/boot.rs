@@ -13,6 +13,7 @@ mod ascii;
 mod pane;
 mod render;
 
+use std::io::Write;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -115,6 +116,10 @@ impl BootTui {
         if let Some(ascii) = &self.ascii {
             if let Ok(mut line) = ascii.lock() {
                 line.clear();
+                // Keep the ticker's lock until this row is on the wire: it redraws the same
+                // `\r` line from another thread and would otherwise erase characters mid-row.
+                println!("{text}");
+                return;
             }
         }
         println!("{text}");
@@ -133,9 +138,14 @@ impl BootTui {
         {
             pane.restore();
         }
+        // The ticker is joined and the pane mutex is free, so one stdout lock now serializes
+        // every remaining byte (verdicts and diagnostics) with no other writer alive.
+        let mut stdout = std::io::stdout().lock();
         for row in self.verdict.drain(..) {
-            println!("{row}");
+            let _ = writeln!(stdout, "{row}");
         }
+        let _ = stdout.flush();
+        drop(stdout);
         for row in self.diagnostics.drain(..) {
             eprintln!("{row}");
         }
