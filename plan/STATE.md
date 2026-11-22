@@ -3,7 +3,7 @@
 - generated: 2026-11-22T20:59
 - autopilot: on
 - current milestone: M3 Clean-Sheet Slipfork 0.1.0: Pure-Btrfs Native Engine, Enclosing Image Forkfile, High-Craft CLI, Visual Zensical Docs & All-Distro Linux Packaging [active]
-- tasks: ready=1, done=216, blocked=1, superseded=37
+- tasks: ready=2, done=216, blocked=1, superseded=37
 - open human requests: 0 (answered, awaiting pickup: 0)
 - escalations to expensive model so far: 33; expensive spent: $478.85 of $750.00 cap (64%)
 
@@ -29,7 +29,6 @@
 
 ## Recent journal
 
-- 2026-11-22T19:43 [M3.53.3] (lead) root cause: Pty::wait_for short-circuits on pre-seen api ready, never drains post-up bytes
 - 2026-11-22T19:44 [M3.53.3] (lead) status active -> done
 - 2026-11-22T19:46 [M3.53.1] (lead) status done -> ready: live gate: default LIVE_RUNTIME_DIR exceeds AF_UNIX path limit for fork pods
 - 2026-11-22T19:46 [M3.53.1] (lead) attempt 3/3 started
@@ -44,3 +43,4 @@
 - 2026-11-22T20:59 [M3] (conductor) status done -> active
 - 2026-11-22T20:59 [M3.54] (conductor) created (task) Fix slipfork ps when root world is down: include running child .forks/* worlds & stopped root/forks in project scope
 - 2026-11-22T20:59 AUTOPILOT on by conductor Fixing slipfork ps scope when root world is down while .forks/* are running
+- 2026-11-22T20:59 [M3.55] (conductor) created (task) Upgrade support/demo & live /home/slipfork/demo on 165.232.86.174 to a real Python (uv + FastAPI) & SvelteKit (pnpm) full-stack app
