@@ -3097,3 +3097,12 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-22T23:54 [M3] (conductor) status done -> active
 - 2026-11-22T23:54 [M3.60] (conductor) created (task) Align critical_world_journey.rs:1511 warm up --json hook assertion with M3.57 warm stamp reuse & verify all 8 live suites
 - 2026-11-22T23:54 AUTOPILOT on by conductor Aligning critical_world_journey:1511 warm up --json assertion with M3.57 stamp reuse
+- 2026-11-22T23:55 [M3.60] (lead) status ready -> active
+- 2026-11-22T23:55 [M3.60] (lead) attempt 1/3 started
+- 2026-11-22T23:55 [M3.60] (lead) base 7c8d240dd81c9ef4b8d5154e2e55c15b6cc66cb9
+- 2026-11-23T00:24 HUMAN H-017 [direction-challenge] opened by lead (node M3.60)
+- 2026-11-23T00:24 [M3.60] (lead) VM: world_journey 2/2 PASS 11.5s; status_live 5/5 PASS 20.4s; fork_live 1/2, blocked on H-011 demo boot median 6.272s vs 1.25s ceiling (snapshot 151-289ms)
+- 2026-11-23T00:24 [M3.60] (lead) status active -> blocked
+- 2026-11-23T00:28 HUMAN H-017 closed by conductor
+- 2026-11-23T00:28 [M3.60] (conductor) status blocked -> ready: Add direct .venv/bin + node_modules/.bin exec fast-paths for @uv/@pnpm & split CoW snapshot (<500ms) vs cold FastAPI+Vite SSR boot (<5s
+- 2026-11-23T00:28 [M3.60] (conductor) edited fields

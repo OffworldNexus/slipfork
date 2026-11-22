@@ -136,3 +136,11 @@ Slipfork 0.1.0 ready on release/0.1.0 -> develop (PR #2): pure-Btrfs engine, sli
 
 **Answer:**
 
+## H-017 [closed] [direction-challenge] (node M3.60)
+
+- asked: 2026-11-23T00:24 by lead
+
+M3.60 test alignment is proven green on the VM (critical_world_journey 2/2 in 11.5s; critical_status_live 5/5 in 20.4s under the make live-test contract), but critical_fork_live fails its protected H-011 gate: 8-component fork spawn->first-200 median 6.272s (6.090/6.272/6.318) vs the 1.25s ceiling, while the CoW snapshot itself is 151-289ms. Cause is the M3.55 FastAPI/SvelteKit demo boot readiness (SvelteKit vite dev + uvicorn first 200), outside M3.60's crates/slipfork/tests/critical_*.rs paths. Options: A (recommended) open a follow-up M3 task to make the demo fork-ready fast (prebuilt SvelteKit prod build instead of vite dev, parallel readiness), then rerun fork_live; B renegotiate the H-011 ceiling for the new 8-component demo composition. Raising the ceiling inside M3.60 would weaken a protected critical test, so I did not.
+
+**Answer:**
+

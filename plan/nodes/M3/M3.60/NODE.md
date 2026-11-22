@@ -6,12 +6,12 @@ status: ready
 owner: implementer
 priority: 3
 depends_on: []
-paths: ["crates/slipfork/tests/critical_*.rs"]
+paths: ["crates/slipfork/**", "specs/**", "docs/**"]
 attempts: 0
 max_attempts: 3
 escalation: none
 created: "2026-11-22T23:54"
-updated: "2026-11-22T23:54"
+updated: "2026-11-23T00:28"
 ---
 
 # Goal
