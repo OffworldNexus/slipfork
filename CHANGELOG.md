@@ -11,6 +11,13 @@ follow Semantic Versioning while the `# forkfile: 0.1` format is pre-`1.0`.
   real-PTY `bash`/`sh` for services and images, `psql` for postgres databases, `redis-cli` for
   redis, and an exact refusal for S3 buckets.
 
+### Fixed
+
+- The `DECSTBM` boot bar advances through a real 2D VT100 grid, so the prompt returns to the row
+  the shell expects and wide glyphs no longer drift the flow cursor.
+- A failed `slipfork fork` rolls back atomically: it stops its supervisor and pods and drops the
+  registry entry before unlinking snapshots, so no half-booted fork survives.
+
 ### Added
 
 - `slipfork shell <target>` requires its target and forwards terminal size over `SIGWINCH`; piped
@@ -30,6 +37,15 @@ follow Semantic Versioning while the `# forkfile: 0.1` format is pre-`1.0`.
   hostname.
 - `slipfork up` is idempotent while the `Forkfile` content digest and features are unchanged, and
   otherwise reconciles the world, reaping undeclared pods that showed as `orphaned`.
+- `up`, `down` and `restart` take positional targets: `slipfork up [TARGET]`, `down [TARGET]` and
+  `restart [TARGET] [-s|--service <SERVICE>]`, where `-s` always names a service. `up` preflights
+  the target's `Forkfile` before touching the daemon and ends at `✓ Ready` with no trailing
+  reminder.
+- `ps` and `status` are honest: stopped checkouts under `.forks/*` show a dim
+  `○ <fork>  ~/demo/.forks/<fork>  stopped` row and work with `up <fork>`/`drop <fork>`; a vanished
+  checkout shows `! checkout missing — …`; an uncompilable `Forkfile` shows
+  `! Forkfile invalid: line:col: …` while live pods stay `running`, with no fabricated `orphaned`
+  rows.
 
 ## [0.1.0] - 2026-11-21
 

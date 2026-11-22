@@ -7,6 +7,12 @@ Interactive terminals get colour and a fixed one-line bottom bar; pipes and `--j
 $ slipfork up
 ✓ Ready -> http://acme-shop.localhost
 
+$ slipfork up feat-auth
+✓ Ready -> http://feat-auth--acme-shop.localhost
+
+$ slipfork restart -s worker
+✓ Restarted worker
+
 $ slipfork status
 ● acme-shop  ~/projects/acme-shop
   http://acme-shop.localhost
@@ -14,6 +20,7 @@ $ slipfork status
   http://uploads.acme-shop.localhost
     /     -> uploads  s3 (private)         running
   support
+    worker  service       running
     pg      postgres 18   running
     cache   redis 7       running
 ```
@@ -34,9 +41,9 @@ flowchart LR
 | :--- | :--- |
 | `slipfork status` | Every world and domain as one tree; bare `slipfork` is the same verb |
 | `slipfork ps` | The same tree scoped to this directory's world or fork |
-| `slipfork up` | Boot images, resources, setup, hooks and services; idempotent while the file is unchanged |
-| `slipfork restart [service]` | Restart one service or all of them in place |
-| `slipfork down` | Stop pods and delete run subvolumes, keeping data and logs |
+| `slipfork up [TARGET]` | Boot this directory's `Forkfile`, a `.forks/<name>` checkout, or a registered world/fork |
+| `slipfork down [TARGET]` | Stop this directory's world, or the named world/fork, keeping data and logs |
+| `slipfork restart [TARGET] [-s SERVICE]` | Restart a service, a world/fork, or every service here |
 | `slipfork fork [name]` | Snapshot code and world data, boot the fork on its own URL |
 | `slipfork drop <name>` | Stop a fork and delete its snapshots; `-f` discards a dirty checkout |
 | `slipfork logs [-f] [-a] [-t] [--since <time>] [--until <time>] [targets]...` | Merged service logs; `-a` adds images and resources; several targets merge in time order |
@@ -52,28 +59,79 @@ flowchart LR
 | `slipfork completions <shell>` | Print bash, zsh or fish completions |
 | `slipfork daemon install` | Write the per-user unit; `--ingress` adds the system socket |
 
+## Naming a world, fork or service
+
+`up` and `down` take an optional positional target; `restart` takes one target and an optional
+`-s/--service`. Resolution runs in this order:
+
+1. For `restart` only, a declared or live service id in this directory's live world.
+2. `<cwd>/.forks/<TARGET>`, when that checkout exists on disk.
+3. A registered world or fork: exact project match, then a unique registry name.
+
+A live service id wins a name collision for `restart`; `up` and `down` never consider services.
+
+`-s/--service` always names a service, never a world. A bare `restart` target that matches a service
+in this directory's live world restarts that service; anything else resolves as a world or fork.
+With no target, `restart` restarts every service in this directory's world.
+
+```console
+$ slipfork down feat-auth
+✓ Stopped feat-auth (1.2s)
+
+$ slipfork restart web
+✓ Restarted web
+
+$ slipfork restart feat-auth -s worker
+✓ Restarted worker
+
+$ slipfork restart acme-shop
+✓ Restarted acme-shop (4 pods)
+```
+
+`up` reads and compiles the `Forkfile` of this directory or a `<cwd>/.forks/<name>` checkout before
+it contacts the daemon, so an invalid file fails in one line without booting or stopping anything. A
+registered world or fork is resolved through the daemon's `ps` first.
+
+!!! warning "Service or world?"
+
+    `slipfork restart -s worker` is unambiguous and always restarts the service. Use the positional
+    form for a world or fork: `slipfork restart feat-auth`.
+
+## Honest status rows
+
+`ps` and `status` never invent pods. A stopped fork that is still on disk gets one dim row and stays
+directly usable with `up` and `drop`:
+
+```console
+$ slipfork ps
+● acme-shop  ~/projects/acme-shop
+  http://acme-shop.localhost
+    /api  -> web      service              running
+  support
+    pg      postgres 18   running
+  ○ feat-auth  ~/demo/.forks/feat-auth  stopped
+```
+
+A registered world whose checkout vanished names the one real problem instead of showing fake
+orphans. An uncompilable or missing `Forkfile` does the same while live pods stay `running`:
+
+```console
+! checkout missing — run `slipfork drop feat-auth`
+! checkout missing — restore it or run `slipfork down acme-shop`
+! Forkfile invalid: 3:1: unknown resource
+```
+
+`orphaned` (yellow) appears only after a successful recompile that no longer declares a live pod,
+and the next `up` clears it. A stopped fork row works with `slipfork up feat-auth` or
+`slipfork drop feat-auth`; `ps` from inside `~/demo/.forks/feat-auth` still finds its parent world.
+
 ## Visual hierarchy
 
 Green marks `running` and `ready`; cyan marks `cached` and `up to date`; yellow marks `built`,
 `pulled` and `orphaned`; bold red marks `failed` and `stopped`. URLs are bold cyan and underlined,
-copyable `next:` commands are bold green, and paths and secondary prose stay dim.
+copyable `next:` commands are bold green, and paths, stopped forks and secondary prose stay dim.
 
 Columns size to the longest id, so a long target never shears the tree.
-
-## What a state means
-
-| State | Meaning | `next:` |
-| :--- | :--- | :--- |
-| `running` | The pod is alive and serving | `slipfork logs <id>` |
-| `stopped` | Declared, but no pod is running | `slipfork up` |
-| `cached` | Image or step resolved from cache with no rebuild | `slipfork logs <id>` |
-| `up to date` | A `when changed()` stamp matched and the step was skipped | `slipfork up` |
-| `orphaned` | A pod no longer declared after a `Forkfile` edit (yellow) | `slipfork up` |
-
-`orphaned` rows disappear on the next `up`: it reconciles the world by stopping undeclared pods and
-booting added or changed services. A repeat `up` with an unchanged file and feature set returns in
-`0ms`. Human output never shows ports or uptime ages; `--json` keeps `port`, `started_at_ms`, `url`,
-`routes` and `orphaned` for scripts.
 
 ## Boot progress
 
@@ -86,11 +144,12 @@ $ slipfork up
 ✓ resource  pg        postgres 18 ready         38ms
 ✓ setup     backend   uv sync (up to date)       0ms
 ✓ service   api       running -> /api           42ms
-✓ Ready -> http://acme-shop.localhost  (218ms)
+✓ Ready -> http://acme-shop.localhost
 ```
 
-A cache hit says `cached`, never `pulled` or `built`. A failure keeps its red row and points at the
-log, then leaves the world running for inspection:
+A successful run ends at `✓ Ready`; there is no trailing reminder. A cache hit says `cached`, never
+`pulled` or `built`. A failure keeps its red row and points at the log, then leaves the world running
+for inspection:
 
 ```console
 ✗ image     backend   failed                    84ms
@@ -131,6 +190,20 @@ $ slipfork shell uploads
 `slipfork logs -f api worker` follows and merges several targets. `--since 30m` / `--until 2h`
 accept `30s`, `5m`, `2h`, `1d` or RFC 3339, and `-t` adds a timestamp gutter; `--json` lines
 carry `ts_ms`.
+
+## Completions
+
+Completions are generated at runtime by `clap_complete` from the same verb tree as `--help`; there
+is no checked-in completion file. Adding a positional target changes the script automatically:
+
+```console
+$ slipfork completions zsh | grep -- '--service'
+'-s+[Service id to restart; always a service, never a world]:SERVICE:_default' \
+'--service=[Service id to restart; always a service, never a world]:SERVICE:_default' \
+```
+
+Install the script the way your shell expects, for example
+`slipfork completions zsh > "${fpath[1]}/_slipfork"`.
 
 ## Terminal hygiene
 

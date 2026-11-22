@@ -2929,3 +2929,7 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-22T17:55 [M3.51.3] (lead) edited fields
 - 2026-11-22T17:55 [M3.51.3] (lead) status review -> active
 - 2026-11-22T17:58 [M3.51.3] (lead) status active -> done
+- 2026-11-22T17:58 [M3.51.4] (lead) status ready -> active
+- 2026-11-22T17:58 [M3.51.4] (lead) attempt 1/3 started
+- 2026-11-22T17:58 [M3.51.4] (lead) base 3a3196e9aaad13f91e09b8985182bd5d1c9a46db
+- 2026-11-22T18:05 [M3.51.4] (lead) status active -> done

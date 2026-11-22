@@ -2,16 +2,16 @@
 id: M3.51.4
 title: Docs/spec/man/changelog/honesty sync for positional targets and honest ps
 kind: task
-status: ready
+status: done
 owner: "doc-writer"
 priority: 3
 depends_on: [M3.51.3]
 paths: ["specs/**", "docs/**", "packaging/man/**", README.md, CHANGELOG.md, tools/check_docs_honesty.py]
-attempts: 0
+attempts: 1
 max_attempts: 3
 escalation: none
 created: "2026-11-22T17:24"
-updated: "2026-11-22T17:24"
+updated: "2026-11-22T18:05"
 ---
 
 # Goal

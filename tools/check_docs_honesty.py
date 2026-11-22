@@ -7,9 +7,13 @@
 commands (Zero Vaporware rule).
 
 Published docs are `README.md` and the `docs/**/*.md` pages not named by `zensical.toml`'s
-`[project] exclude_docs`; `specs/` drafts and design/research notes are excluded because they
-describe target behaviour before it ships. Every page named in the site nav is required to exist,
-so a nav entry can never point at a page the site does not build.
+`[project] exclude_docs`; `specs/` drafts and design/research notes are excluded from the
+command check because they describe target behaviour before it ships. Every page named in the
+site nav is required to exist, so a nav entry can never point at a page the site does not build.
+
+Two shipped-surface gates also run here: no README/doc/spec/man page may keep advertising the
+removed world flag or the removed post-`up` reminder, and the CLI spec plus user CLI page must
+show today's positional `up [TARGET]` and `restart --service` forms.
 
 The shipped surface is the single `slipfork` binary plus its `slipfork-world-init` boot helper and
 the standalone `slipfork-lsp` language server; neither is a `slipfork` subcommand.
@@ -40,6 +44,21 @@ MEASURED_FORK_MS = 800.0
 
 # Seeded user-facing docs that ship to the dev VM: same Zero-Vaporware rule as published docs.
 SEEDED_DOCS = ("support/demo/README.md",)
+
+# Removed UX that must not come back through an example. `specs/` may explain a removal in one
+# sentence, so allow a stale term only there and only on a line that names the removal.
+STALE_UI_RE = re.compile(r"--world\b|world keeps running", re.IGNORECASE)
+REMOVAL_HINT_RE = re.compile(
+    r"(?i)\b(removed|gone|no longer|deleted|replaced|retired)\b"
+)
+STALE_UI_ALLOWED = ("specs/",)
+
+# Pages that must show the shipped positional surface. Which tokens they must carry is derived
+# from the real `slipfork <verb> --help` output, never typed twice.
+SURFACE_DOCS = {
+    "docs/cli.md": ("up", "restart"),
+    "specs/02-cli-ux.md": ("up", "restart"),
+}
 
 
 def extract_help_subcommands(help_text: str) -> set[str]:
@@ -139,6 +158,17 @@ def published_doc_files(repo: Path) -> list[Path]:
     return files
 
 
+def shipped_surface_files(repo: Path) -> list[Path]:
+    """README, published docs, every spec page, the changelog, and the generated man pages."""
+    files = published_doc_files(repo)
+    files.extend(sorted((repo / "specs").glob("*.md")))
+    changelog = repo / "CHANGELOG.md"
+    if changelog.is_file():
+        files.append(changelog)
+    files.extend(sorted((repo / "packaging" / "man").glob("*.1")))
+    return files
+
+
 def find_vaporware_commands(
     doc_files: list[Path], valid_subcommands: set[str], repo: Path
 ) -> list[str]:
@@ -181,6 +211,81 @@ def find_fast_fork_claims(doc_files: list[Path], repo: Path) -> list[str]:
     return errors
 
 
+def find_stale_ui(repo: Path) -> list[str]:
+    """Fail closed on removed world-flag and post-`up` reminder examples."""
+    errors: list[str] = []
+    for path in shipped_surface_files(repo):
+        rel = path.relative_to(repo).as_posix()
+        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            if not STALE_UI_RE.search(line):
+                continue
+            if rel.startswith(STALE_UI_ALLOWED) and REMOVAL_HINT_RE.search(line):
+                continue
+            errors.append(
+                f"{rel}:{number}: advertises removed CLI text '{line.strip()}'; "
+                f"use positional targets and end `up` at `✓ Ready`"
+            )
+    return errors
+
+
+def verb_help(repo: Path, verb: str) -> str:
+    """The real `slipfork <verb> --help` text, or empty when the verb cannot be asked."""
+    completed = subprocess.run(
+        ["cargo", "run", "-q", "-p", "slipfork", "--", verb, "--help"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return completed.stdout if completed.returncode == 0 else ""
+
+
+def surface_markers(help_text: str, verb: str) -> list[str]:
+    """Doc markers derived from real help output: `up [TARGET]` and `--service`."""
+    positionals: list[str] = []
+    in_arguments = False
+    for line in help_text.splitlines():
+        if line.strip() == "Arguments:":
+            in_arguments = True
+            continue
+        if in_arguments:
+            match = re.match(r"\s{2}\[?([A-Z][A-Z0-9_-]*)\]?\s{2}", line)
+            if match:
+                positionals.append(match.group(1))
+            elif not line.strip():
+                in_arguments = False
+    long_flags = set(re.findall(r"--([a-z][a-z0-9-]+)", help_text))
+    markers = [f"{verb} [{placeholder}]" for placeholder in positionals]
+    if "service" in long_flags:
+        markers.append("--service")
+    return markers
+
+
+def find_missing_surfaces(repo: Path) -> list[str]:
+    """The shipped positional `up`/`restart` forms must be documented, not omitted."""
+    errors: list[str] = []
+    helps: dict[str, str] = {}
+    for rel, verbs in SURFACE_DOCS.items():
+        path = repo / rel
+        text = path.read_text(encoding="utf-8") if path.is_file() else ""
+        for verb in verbs:
+            if verb not in helps:
+                helps[verb] = verb_help(repo, verb)
+            help_text = helps[verb]
+            if not help_text:
+                errors.append(
+                    f"{rel}: cannot read `slipfork {verb} --help` to verify the shipped surface"
+                )
+                continue
+            for marker in surface_markers(help_text, verb):
+                if marker not in text:
+                    errors.append(
+                        f"{rel}: missing shipped CLI marker '{marker}' "
+                        f"(derived from `slipfork {verb} --help`)"
+                    )
+    return errors
+
+
 def main() -> int:
     repo = Path(__file__).resolve().parent.parent
     docs_dir = repo / "docs"
@@ -219,17 +324,24 @@ def main() -> int:
     docs = published_doc_files(repo)
     errors = find_vaporware_commands(docs, valid, repo)
     errors.extend(find_fast_fork_claims(docs, repo))
+    errors.extend(find_stale_ui(repo))
+    errors.extend(find_missing_surfaces(repo))
     if errors:
         print(
-            f"check_docs_honesty: FAILED ({len(errors)} vaporware reference(s)):",
+            f"check_docs_honesty: FAILED ({len(errors)} stale reference(s)):",
             file=sys.stderr,
         )
         for err in errors:
             print(f"  X {err}", file=sys.stderr)
+        print(
+            "next: document positional `up [TARGET]` / `restart --service`, keep specs and "
+            "published docs on the shipped binary, and move future UX to specs/",
+            file=sys.stderr,
+        )
         return 1
     print(
-        f"check_docs_honesty: OK ({len(docs)} doc(s) match real CLI subcommands: published "
-        f"pages plus {', '.join(SEEDED_DOCS)})"
+        f"check_docs_honesty: OK ({len(docs)} doc(s) match real CLI subcommands; positional "
+        f"targets and removed UX verified in specs/, docs/, README and man pages)"
     )
     return 0
 
