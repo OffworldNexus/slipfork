@@ -72,7 +72,7 @@ Review & merge Release 0.1.0 PR (https://github.com/OffworldNexus/slipfork/pull/
 
 **Answer:**
 
-## H-009 [open] [release-gate] (node M3)
+## H-009 [closed] [release-gate] (node M3)
 
 - asked: 2026-11-22T09:43 by conductor
 

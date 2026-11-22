@@ -2714,3 +2714,7 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-22T09:42 [M3] (lead) status active -> done
 - 2026-11-22T09:43 HUMAN H-009 [release-gate] opened by conductor (node M3)
 - 2026-11-22T09:43 AUTOPILOT off by conductor Slipfork 0.1.0 release gate reached; awaiting human review & merge of PR #2 into develop
+- 2026-11-22T10:16 HUMAN H-009 closed by conductor
+- 2026-11-22T10:16 [M3] (conductor) status done -> active
+- 2026-11-22T10:16 [M3.46] (conductor) created (task) Fix GitHub Actions CI Btrfs loop-mount (user_subvol_rm_allowed) & enable packages.yml dry-run matrix on PRs
+- 2026-11-22T10:16 AUTOPILOT on by conductor Fixing GitHub Actions CI live Btrfs mount & verifying packages.yml matrix on PR #2

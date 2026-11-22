@@ -107,3 +107,7 @@ edited fields
 ## 2026-11-22T09:42 [lead]
 
 status active -> done
+
+## 2026-11-22T10:16 [conductor]
+
+status done -> active
