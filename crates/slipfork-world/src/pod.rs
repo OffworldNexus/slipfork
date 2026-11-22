@@ -311,6 +311,21 @@ fn oci_config(
             "source": "tmpfs",
             "options": ["nosuid", "strictatime", "mode=755", "size=65536k"]
         }),
+        // `crun exec --tty` allocates `/dev/ptmx` inside the pod mount namespace, so the pod
+        // needs its own devpts instance; without it every real-PTY `slipfork shell` fails with
+        // `open /dev/ptmx: No such file or directory`.
+        json!({
+            "destination": "/dev/pts",
+            "type": "devpts",
+            "source": "devpts",
+            "options": ["nosuid", "noexec", "newinstance", "ptmxmode=0666", "mode=0620"]
+        }),
+        json!({
+            "destination": "/dev/shm",
+            "type": "tmpfs",
+            "source": "shm",
+            "options": ["nosuid", "noexec", "nodev", "mode=1777", "size=65536k"]
+        }),
         json!({
             "destination": "/etc/passwd",
             "type": "bind",

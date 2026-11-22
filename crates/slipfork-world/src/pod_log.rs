@@ -1,13 +1,14 @@
-//! Detached-pod log capture: one append-only `<pods>/logs/<id>.log` per pod.
+//! Persistent capture files: one append-only `<store>/logs/<world>/<id>.log` per pod or image.
 //!
 //! Every line is written as `<epoch_ms>\tL|D\t<text>`, so replay can merge pods strictly by
 //! timestamp instead of file order. The init keeps every sink open and passes the pipe read ends
 //! to per-stream pump threads; a restart appends a fresh divider instead of truncating history.
-//! Replay never buffers more than [`CHUNK`] bytes in the scanner.
+//! Replay never buffers more than [`CHUNK`] bytes in the scanner. [`append`] is the raw writer the
+//! image builder will call for build logs.
 
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, DirBuilder, File, OpenOptions};
 use std::io::{Read, Write};
-use std::os::unix::fs::OpenOptionsExt;
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -114,17 +115,11 @@ pub struct LogSink {
 impl LogSink {
     /// Opens `<dir>/<id>.log` in append mode with mode `0600`.
     pub fn open(dir: &Path, id: &str) -> Result<Self> {
-        fs::create_dir_all(dir).map_err(|source| Error::io("create", dir, source))?;
-        std::fs::set_permissions(dir, std::os::unix::fs::PermissionsExt::from_mode(0o700))
-            .map_err(|source| Error::io("chmod", dir, source))?;
-        let path = dir.join(format!("{id}.log"));
-        let file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .mode(0o600)
-            .open(&path)
-            .map_err(|source| Error::io("open", &path, source))?;
-        Ok(Self { path, file })
+        let path = prepare_log(dir, id)?;
+        Ok(Self {
+            file: open_log(&path)?,
+            path,
+        })
     }
 
     /// The log file path.
@@ -153,6 +148,47 @@ impl LogSink {
         let line = format!("{DIVIDER_OPEN}{id} {verb}{DIVIDER_CLOSE}");
         self.append(LogKind::Divider, &line)
     }
+}
+
+/// `<logs_root>/<id>.log`: the canonical capture path for one pod or image id.
+#[must_use]
+pub fn log_path(logs_root: &Path, id: &str) -> PathBuf {
+    logs_root.join(format!("{id}.log"))
+}
+
+/// Appends raw `bytes` to `<logs_root>/<id>.log` as framed [`LogKind::Line`] rows.
+///
+/// This is the shared raw writer the next slice's image builder will call for build output, so a
+/// failed build reads back through the same `<ts_ms>\tL\t<text>` format as captured pod output.
+/// The directory chain is created mode `0700` and the file mode `0600`.
+pub fn append(logs_root: &Path, id: &str, bytes: &[u8]) -> Result<()> {
+    let mut sink = LogSink::open(logs_root, id)?;
+    let text = String::from_utf8_lossy(bytes);
+    for line in text.split_terminator('\n') {
+        sink.append(LogKind::Line, line.trim_end_matches('\r'))?;
+    }
+    Ok(())
+}
+
+fn prepare_log(dir: &Path, id: &str) -> Result<PathBuf> {
+    // The whole `<store>/logs/<world>` chain is private, not just the leaf directory.
+    DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(dir)
+        .map_err(|source| Error::io("create", dir, source))?;
+    fs::set_permissions(dir, fs::Permissions::from_mode(0o700))
+        .map_err(|source| Error::io("chmod", dir, source))?;
+    Ok(log_path(dir, id))
+}
+
+fn open_log(path: &Path) -> Result<File> {
+    OpenOptions::new()
+        .create(true)
+        .append(true)
+        .mode(0o600)
+        .open(path)
+        .map_err(|source| Error::io("open", path, source))
 }
 
 /// Reads one append-only log file incrementally, splitting bytes into timestamped lines.

@@ -10,6 +10,7 @@ LIVE_SUITES := \
 	slipfork-image/critical_oci_live \
 	slipfork-image/critical_dockerfile_live \
 	slipfork-world/critical_pod_runtime \
+	slipfork-world/pod_control_lab \
 	slipfork/critical_world_journey \
 	slipfork/critical_status_live \
 	slipfork/critical_fork_live

@@ -343,6 +343,122 @@ fn control_requests_round_trip_over_a_real_socket_and_refuse_bad_input() {
     );
 }
 
+/// Canonical log paths, `ExecPty`/`ExecResize` framing, and the console-socket path bound.
+#[test]
+fn pty_requests_and_canonical_log_paths_round_trip() {
+    let request = Request::ExecPty {
+        v: PROTOCOL_VERSION,
+        id: "pty-1".to_owned(),
+        pod: "api".to_owned(),
+        argv: vec!["/bin/sh".to_owned()],
+        cols: 120,
+        rows: 40,
+    };
+    let decoded = decode_request(
+        std::str::from_utf8(&slipfork_world::encode(&request).unwrap())
+            .unwrap()
+            .trim(),
+    )
+    .expect("decode exec-pty");
+    assert_eq!(decoded, request);
+    assert_eq!(decoded.id(), "pty-1");
+    let resize = Request::ExecResize {
+        v: PROTOCOL_VERSION,
+        id: "pty-1".to_owned(),
+        cols: 80,
+        rows: 24,
+    };
+    let decoded = decode_request(
+        std::str::from_utf8(&slipfork_world::encode(&resize).unwrap())
+            .unwrap()
+            .trim(),
+    )
+    .expect("decode exec-resize");
+    assert_eq!(decoded, resize);
+    assert_eq!(decoded.id(), "pty-1");
+    let wrong = Request::ExecPty {
+        v: PROTOCOL_VERSION + 1,
+        id: "pty-2".to_owned(),
+        pod: "api".to_owned(),
+        argv: vec!["/bin/sh".to_owned()],
+        cols: 80,
+        rows: 24,
+    };
+    assert!(
+        decode_request(
+            std::str::from_utf8(&slipfork_world::encode(&wrong).unwrap())
+                .unwrap()
+                .trim()
+        )
+        .is_err()
+    );
+
+    let store = StoreLayout::at("/var/tmp/store/.slipfork-store");
+    let world = WorldName::parse("demo").expect("valid world");
+    assert_eq!(
+        store.logs_root(),
+        Path::new("/var/tmp/store/.slipfork-store/logs")
+    );
+    assert_eq!(
+        store.world_logs(&world),
+        Path::new("/var/tmp/store/.slipfork-store/logs/demo")
+    );
+    assert_eq!(
+        store.pod_log(&world, "api"),
+        Path::new("/var/tmp/store/.slipfork-store/logs/demo/api.log")
+    );
+    let rootfs = store.world_pods(&world).join("svc-api");
+    assert_eq!(
+        StoreLayout::from_pod_rootfs(&rootfs),
+        Some((store.clone(), world.clone()))
+    );
+    assert!(
+        StoreLayout::from_pod_rootfs(Path::new("/run/user/1000/slipfork/pods/demo/api")).is_none(),
+        "a tmpfs run-once bundle is not a store rootfs"
+    );
+    let socket = control::console_socket_path(Path::new("/run/user/1000/slipfork/pods/demo"), 3)
+        .expect("short console socket path");
+    assert_eq!(
+        socket.file_name().and_then(|name| name.to_str()),
+        Some("pty-3.sock")
+    );
+
+    let lab = lab("canonical-log");
+    let dir = lab.join("store").join("logs").join("demo");
+    slipfork_world::pod_log::append(&dir, "api", b"build output\n").expect("append a build log");
+    let path = slipfork_world::pod_log::log_path(&dir, "api");
+    assert_eq!(
+        fs::metadata(&dir).expect("stat leaf").mode() & 0o777,
+        0o700,
+        "the world log directory stays private"
+    );
+    assert_eq!(
+        fs::metadata(dir.parent().expect("logs parent"))
+            .expect("stat parent")
+            .mode()
+            & 0o777,
+        0o700,
+        "the whole `<store>/logs` chain is created private"
+    );
+    let raw = fs::read_to_string(&path).expect("read the log");
+    let rows: Vec<&str> = raw.lines().collect();
+    assert_eq!(rows.len(), 1, "{raw:?}");
+    assert!(rows[0].ends_with("\tL\tbuild output"), "{raw:?}");
+    assert!(
+        rows[0]
+            .split_once('\t')
+            .is_some_and(|(ts, _)| ts.parse::<u64>().is_ok()),
+        "each append row carries a millisecond timestamp: {raw:?}"
+    );
+    slipfork_world::pod_log::append(&dir, "api", b"more\n").expect("append again");
+    let raw = fs::read_to_string(&path).expect("read the log");
+    let rows: Vec<&str> = raw.lines().collect();
+    assert_eq!(rows.len(), 2, "{raw:?}");
+    assert!(rows[1].ends_with("\tL\tmore"), "{raw:?}");
+    assert_eq!(fs::metadata(&path).expect("stat").mode() & 0o777, 0o600);
+    let _ = fs::remove_dir_all(&lab);
+}
+
 /// `SCM_RIGHTS` over a real socketpair: one descriptor survives, plain payloads do not invent one.
 #[test]
 fn descriptor_passing_moves_the_payload_and_the_file() {
@@ -594,4 +710,351 @@ fn a_foreign_namespace_identity_is_a_typed_mismatch() {
         table.verify(&foreign),
         Err(Error::NamespaceMismatch { .. })
     ));
+}
+
+/// Live PTY journey: a real pod, a real `/dev/pts/N` master over `SCM_RIGHTS`, a real
+/// `TIOCSWINSZ` resize observed by `stty size`, and a capture file that survives pod stop.
+///
+/// Runs only with `--features live` because it needs `crun`, unprivileged user namespaces, and a
+/// tmpfs runtime root; it fails closed with the missing capability otherwise.
+#[cfg(feature = "live")]
+mod pty_lab {
+    use super::*;
+    use std::os::fd::AsRawFd;
+    use std::time::{Duration, Instant};
+
+    use slipfork_world::{WorldHost, WorldSupervisor};
+
+    fn require_tool(name: &str) -> PathBuf {
+        std::env::var_os("PATH")
+            .into_iter()
+            .flat_map(|paths| std::env::split_paths(&paths).collect::<Vec<_>>())
+            .map(|dir| dir.join(name))
+            .find(|candidate| candidate.is_file())
+            .unwrap_or_else(|| panic!("`{name}` is not on PATH"))
+    }
+
+    fn tmpfs_dir(tag: &str) -> PathBuf {
+        let dir = PathBuf::from("/dev/shm").join(format!(
+            "slipfork-pty-{tag}-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_or(0, |since| since.as_nanos())
+        ));
+        fs::create_dir_all(&dir).expect("create the tmpfs runtime root");
+        let file = std::fs::File::open(&dir).expect("open the runtime root");
+        // SAFETY: the descriptor is live and `statfs` is plain-old-data.
+        let mut stat: libc::statfs = unsafe { std::mem::zeroed() };
+        // SAFETY: the descriptor is live and the kernel writes exactly one `statfs`.
+        let ret = unsafe { libc::fstatfs(file.as_raw_fd(), &mut stat) };
+        assert_eq!(ret, 0, "fstatfs the runtime root");
+        assert_eq!(
+            stat.f_type as u64, 0x0102_1994,
+            "the runtime root must be tmpfs"
+        );
+        dir
+    }
+
+    /// Copies one host binary and every shared object `ldd` reports into `rootfs`.
+    fn copy_bin(rootfs: &Path, binary: &str) {
+        let destination = rootfs.join(binary.trim_start_matches('/'));
+        fs::create_dir_all(destination.parent().expect("binary parent")).expect("create bin dir");
+        fs::copy(binary, &destination).unwrap_or_else(|error| panic!("copy `{binary}`: {error}"));
+        let output = std::process::Command::new("ldd")
+            .arg(binary)
+            .output()
+            .unwrap_or_else(|error| panic!("ldd `{binary}`: {error}"));
+        for line in String::from_utf8_lossy(&output.stdout).lines() {
+            let mut fields = line.split_whitespace();
+            let mut library = fields.next().unwrap_or_default();
+            if library == "linux-vdso.so.1" {
+                continue;
+            }
+            if !library.starts_with('/')
+                && let Some(next) = fields.next()
+                && next == "=>"
+            {
+                library = fields.next().unwrap_or_default();
+            }
+            if !library.starts_with('/') {
+                continue;
+            }
+            let target = rootfs.join(library.trim_start_matches('/'));
+            if let Some(parent) = target.parent() {
+                fs::create_dir_all(parent).expect("create library dir");
+            }
+            fs::copy(library, &target).unwrap_or_else(|error| panic!("copy `{library}`: {error}"));
+        }
+    }
+
+    fn assemble_rootfs(rootfs: &Path) {
+        for dir in ["bin", "usr/bin", "etc", "tmp", "dev", "proc", "sys", "root"] {
+            fs::create_dir_all(rootfs.join(dir)).expect("create rootfs dir");
+        }
+        copy_bin(rootfs, "/bin/sh");
+        copy_bin(rootfs, "/usr/bin/tty");
+        copy_bin(rootfs, "/usr/bin/stty");
+        let sleep = ["/bin/sleep", "/usr/bin/sleep"]
+            .into_iter()
+            .find(|candidate| Path::new(candidate).is_file())
+            .expect("the lab needs a `sleep` binary");
+        copy_bin(rootfs, sleep);
+    }
+
+    fn nonblocking(fd: RawFd) {
+        // SAFETY: `fd` is a live descriptor; F_GETFL/F_SETFL only inspect flags.
+        let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+        assert!(flags >= 0, "read fd flags");
+        // SAFETY: same live descriptor with the flags we just read.
+        let ret = unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) };
+        assert_eq!(ret, 0, "set O_NONBLOCK on the PTY master");
+    }
+
+    fn write_fd(fd: RawFd, bytes: &[u8]) {
+        let mut written = 0;
+        while written < bytes.len() {
+            // SAFETY: `bytes` is live for the call and `fd` is a live writable descriptor.
+            let ret =
+                unsafe { libc::write(fd, bytes[written..].as_ptr().cast(), bytes.len() - written) };
+            assert!(ret > 0, "write to the PTY master");
+            written += ret as usize;
+        }
+    }
+
+    /// Reads the master until `needle` appears or the budget runs out.
+    fn read_until(fd: RawFd, needle: &str, budget: Duration) -> String {
+        let deadline = Instant::now() + budget;
+        let mut seen = String::new();
+        let mut chunk = [0_u8; 1024];
+        while Instant::now() < deadline {
+            let mut pollfd = libc::pollfd {
+                fd,
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            // SAFETY: one valid `pollfd` lives across the call.
+            let ready = unsafe { libc::poll(&mut pollfd, 1, 100) };
+            if ready <= 0 {
+                continue;
+            }
+            // SAFETY: `chunk` is a live buffer and `fd` is a live readable descriptor.
+            let read = unsafe { libc::read(fd, chunk.as_mut_ptr().cast(), chunk.len()) };
+            if read <= 0 {
+                continue;
+            }
+            seen.push_str(&String::from_utf8_lossy(&chunk[..read as usize]));
+            if seen.contains(needle) {
+                return seen;
+            }
+        }
+        panic!("PTY never produced `{needle}`; saw: {seen:?}");
+    }
+
+    fn ptsname(fd: RawFd) -> String {
+        let mut buffer = [0_i8; 128];
+        // SAFETY: `buffer` is a live NUL-terminated target for `ptsname_r`.
+        let ret = unsafe { libc::ptsname_r(fd, buffer.as_mut_ptr(), buffer.len()) };
+        assert_eq!(ret, 0, "ptsname_r the PTY master");
+        // SAFETY: `ptsname_r` wrote a NUL-terminated string into `buffer`.
+        unsafe { std::ffi::CStr::from_ptr(buffer.as_ptr()) }
+            .to_string_lossy()
+            .into_owned()
+    }
+
+    fn send(stream: &mut UnixStream, request: &Request) {
+        let bytes = slipfork_world::encode(request).expect("encode a control request");
+        stream.write_all(&bytes).expect("write a control request");
+        stream.flush().expect("flush a control request");
+    }
+
+    fn recv_frame(stream: &mut UnixStream, lines: &mut FrameLines) -> slipfork_world::InitFrame {
+        loop {
+            if let Some(raw) = lines.next_line() {
+                let text = std::str::from_utf8(&raw).expect("control frame is UTF-8");
+                return slipfork_world::decode_init_frame(text.trim()).expect("decode a frame");
+            }
+            let mut chunk = [0_u8; 4096];
+            let read = stream.read(&mut chunk).expect("read a control frame");
+            assert!(read > 0, "the world closed its control socket");
+            lines.extend(&chunk[..read]);
+        }
+    }
+
+    fn connect(pods_dir: &Path) -> UnixStream {
+        let stream = UnixStream::connect(control::control_socket_path(pods_dir).unwrap())
+            .expect("connect to control.sock");
+        stream
+            .set_read_timeout(Some(Duration::from_secs(30)))
+            .expect("control read timeout");
+        stream
+    }
+
+    #[test]
+    fn a_real_pty_is_handed_off_resized_and_logs_outlive_the_pod() {
+        let crun = require_tool("crun");
+        let unshare = require_tool("unshare");
+        let runtime = tmpfs_dir("rt");
+        let store = StoreLayout::new(lab("live-pty"));
+        let world = WorldName::parse("ptylab").expect("valid world");
+        let rootfs = store.world_pods(&world).join("api");
+        fs::create_dir_all(&rootfs).expect("create the pod rootfs");
+        assemble_rootfs(&rootfs);
+
+        let uid = unsafe { libc::getuid() };
+        let gid = unsafe { libc::getgid() };
+        let host = WorldHost::new(
+            crun.clone(),
+            unshare,
+            PathBuf::from(env!("CARGO_BIN_EXE_slipfork-world-init")),
+            runtime.clone(),
+            uid,
+            gid,
+            None,
+        );
+        let supervisor = WorldSupervisor::boot(host, &world).expect("boot a real world");
+        let pods_dir = supervisor.pods_dir().to_path_buf();
+        let spec = PodSpec {
+            id: "api".to_owned(),
+            rootfs: rootfs.clone(),
+            workdir: "/".to_owned(),
+            argv: ["/bin/sh", "-c", "echo booted; while :; do sleep 1; done"]
+                .into_iter()
+                .map(str::to_owned)
+                .collect(),
+            inherited_env: vec!["PATH=/bin:/usr/bin".to_owned()],
+            env: Vec::new(),
+            binds: Vec::new(),
+            files: Vec::new(),
+        };
+        write_bundle(&spec, &supervisor.pod_host(), &pods_dir.join("api"))
+            .expect("write the OCI bundle");
+        control::launch_pod(&pods_dir, &spec, Duration::from_secs(60)).expect("launch the pod");
+
+        let log_path = store.pod_log(&world, "api");
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < deadline {
+            if fs::read_to_string(&log_path).is_ok_and(|text| text.contains("booted")) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(
+            fs::read_to_string(&log_path).is_ok_and(|text| text.contains("booted")),
+            "the launch pump must write `{}`",
+            log_path.display()
+        );
+
+        let mut pty = connect(&pods_dir);
+        send(
+            &mut pty,
+            &Request::ExecPty {
+                v: PROTOCOL_VERSION,
+                id: "pty-1".to_owned(),
+                pod: "api".to_owned(),
+                argv: vec!["/bin/sh".to_owned()],
+                cols: 80,
+                rows: 24,
+            },
+        );
+        let (payload, master) = recv_fd(&pty).expect("receive the PTY master over SCM_RIGHTS");
+        assert_eq!(payload, b"pty");
+        let master = master.expect("crun delivered a PTY master");
+        let fd = master.as_raw_fd();
+        // SAFETY: `fd` is the live PTY master received over SCM_RIGHTS.
+        assert_eq!(
+            unsafe { libc::isatty(fd) },
+            1,
+            "the handed-off fd is a terminal"
+        );
+        let device = ptsname(fd);
+        assert!(
+            device.starts_with("/dev/pts/"),
+            "real pts device, got {device}"
+        );
+        nonblocking(fd);
+        write_fd(fd, b"stty size\n");
+        let seen = read_until(fd, "24 80", Duration::from_secs(10));
+        assert!(seen.contains("24 80"), "{seen:?}");
+
+        send(
+            &mut pty,
+            &Request::ExecResize {
+                v: PROTOCOL_VERSION,
+                id: "pty-1".to_owned(),
+                cols: 120,
+                rows: 40,
+            },
+        );
+        std::thread::sleep(Duration::from_millis(100));
+        write_fd(fd, b"stty size\n");
+        let seen = read_until(fd, "40 120", Duration::from_secs(10));
+        assert!(
+            seen.contains("40 120"),
+            "TIOCSWINSZ did not reach the PTY: {seen:?}"
+        );
+
+        write_fd(fd, b"exit\n");
+        let mut lines = FrameLines::new();
+        let reply = recv_frame(&mut pty, &mut lines);
+        match reply {
+            slipfork_world::InitFrame::Reply { ok, error, .. } => {
+                assert!(error.is_none(), "{error:?}");
+                assert_eq!(ok.expect("reply payload")["exit_code"], 0);
+            }
+            other => panic!("expected a final PTY reply, got {other:?}"),
+        }
+        drop(pty);
+        drop(master);
+
+        let mut stop = connect(&pods_dir);
+        send(
+            &mut stop,
+            &Request::StopAll {
+                v: PROTOCOL_VERSION,
+                id: "stop".to_owned(),
+            },
+        );
+        let mut stop_lines = FrameLines::new();
+        let _ = recv_frame(&mut stop, &mut stop_lines);
+        drop(stop);
+        assert!(
+            log_path.is_file(),
+            "`down` must never delete `{}`",
+            log_path.display()
+        );
+
+        let mut logs = connect(&pods_dir);
+        send(
+            &mut logs,
+            &Request::Logs {
+                v: PROTOCOL_VERSION,
+                id: "logs-1".to_owned(),
+                service: Some("api".to_owned()),
+                pods: None,
+                follow: false,
+            },
+        );
+        let mut log_lines = FrameLines::new();
+        let mut texts = Vec::new();
+        loop {
+            match recv_frame(&mut logs, &mut log_lines) {
+                slipfork_world::InitFrame::Output { line, .. } => texts.push(line),
+                slipfork_world::InitFrame::Reply { error, .. } => {
+                    assert!(error.is_none(), "{error:?}");
+                    break;
+                }
+                _ => {}
+            }
+        }
+        assert!(
+            texts.iter().any(|line| line.contains("booted")),
+            "the stopped pod replay must come from `{}`: {texts:?}",
+            log_path.display()
+        );
+
+        drop(supervisor);
+        let _ = fs::remove_dir_all(&runtime);
+        let _ = fs::remove_dir_all(store.btrfs_mount());
+    }
 }

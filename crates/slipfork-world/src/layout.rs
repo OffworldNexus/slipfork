@@ -1,4 +1,4 @@
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::path::{Path, PathBuf};
 
@@ -13,6 +13,8 @@ pub const IMAGES_DIR: &str = "images";
 pub const WORLDS_DIR: &str = "worlds";
 /// Ephemeral per-pod writable rootfs clones live here, outside `worlds/<world>`.
 pub const PODS_DIR: &str = "pods";
+/// Persistent per-pod capture files live here, so `logs` survives `down`.
+pub const LOGS_DIR: &str = "logs";
 /// Project-relative directory holding project snapshots.
 pub const FORKS_DIR: &str = ".forks";
 
@@ -77,6 +79,50 @@ impl StoreLayout {
     #[must_use]
     pub fn world_pods(&self, world: &WorldName) -> PathBuf {
         self.pods_root().join(world.as_str())
+    }
+
+    /// `<mount>/.slipfork-store/logs`: every persistent pod/image capture file.
+    #[must_use]
+    pub fn logs_root(&self) -> PathBuf {
+        self.store_root.join(LOGS_DIR)
+    }
+
+    /// `<mount>/.slipfork-store/logs/<world>`: one world's capture directory.
+    #[must_use]
+    pub fn world_logs(&self, world: &WorldName) -> PathBuf {
+        self.logs_root().join(world.as_str())
+    }
+
+    /// `<mount>/.slipfork-store/logs/<world>/<id>.log`, the canonical capture file.
+    #[must_use]
+    pub fn pod_log(&self, world: &WorldName, id: &str) -> PathBuf {
+        crate::pod_log::log_path(&self.world_logs(world), id)
+    }
+
+    /// Recovers the store layout and world from a pod rootfs `<store>/pods/<world>/<slot>`.
+    ///
+    /// Pod rootfs clones are created by [`Self::world_pods`], so the init can resolve the world's
+    /// canonical log root from the `PodSpec` it was handed instead of probing the environment.
+    /// The `.slipfork-store` directory name is the discriminator: a tmpfs run-once bundle such as
+    /// `/run/user/1000/slipfork/pods/<world>/<slot>` yields `None`.
+    #[must_use]
+    pub fn from_pod_rootfs(rootfs: &Path) -> Option<(Self, WorldName)> {
+        let world_dir = rootfs.parent()?;
+        let world = WorldName::parse(world_dir.file_name()?.to_str()?).ok()?;
+        let pods_dir = world_dir.parent()?;
+        if pods_dir.file_name()? != OsStr::new(PODS_DIR) {
+            return None;
+        }
+        let store_root = pods_dir.parent()?;
+        if store_root.file_name()? != OsStr::new(STORE_DIR) {
+            return None;
+        }
+        Some((
+            Self {
+                store_root: store_root.to_path_buf(),
+            },
+            world,
+        ))
     }
 
     /// `<mount>/.slipfork-store/worlds/<world>`.

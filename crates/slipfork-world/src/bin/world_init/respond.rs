@@ -192,6 +192,28 @@ pub(crate) fn respond(
             ),
             false,
         ),
+        Request::ExecPty { id, .. } => (
+            failure_frame(
+                id,
+                "exec-pty-requires-socket",
+                &Fault::new(
+                    "a real PTY must use the world control socket",
+                    "send the exec-pty request to `<pods>/control.sock`",
+                ),
+            ),
+            false,
+        ),
+        Request::ExecResize { id, .. } => (
+            failure_frame(
+                id,
+                "exec-resize-requires-socket",
+                &Fault::new(
+                    "PTY resize must use the world control socket",
+                    "send resize frames on the same socket as the exec-pty request",
+                ),
+            ),
+            false,
+        ),
     };
     Ok((reply, shutdown))
 }

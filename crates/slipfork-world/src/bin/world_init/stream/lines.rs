@@ -27,6 +27,20 @@ pub(super) struct TempProcessSpec(PathBuf);
 
 impl TempProcessSpec {
     pub(super) fn write(info: &PodInfo, seq: u64, argv: &[String]) -> Result<Self, Fault> {
+        Self::write_with_terminal(info, seq, argv, false)
+    }
+
+    /// Builds the same identity/env-preserving spec with `"terminal": true` for `ExecPty`.
+    pub(super) fn write_pty(info: &PodInfo, seq: u64, argv: &[String]) -> Result<Self, Fault> {
+        Self::write_with_terminal(info, seq, argv, true)
+    }
+
+    fn write_with_terminal(
+        info: &PodInfo,
+        seq: u64,
+        argv: &[String],
+        terminal: bool,
+    ) -> Result<Self, Fault> {
         let config_path = info.bundle.join("config.json");
         let raw = fs::read(&config_path)
             .map_err(|source| Fault::cause("pod config read for exec", REMEDY_RUNTIME, source))?;
@@ -38,7 +52,7 @@ impl TempProcessSpec {
             .ok_or_else(|| Fault::new("pod config missing `process`", REMEDY_RUNTIME))?;
         process.insert("args".to_owned(), serde_json::json!(argv));
         process.insert("cwd".to_owned(), serde_json::json!(info.workdir));
-        process.insert("terminal".to_owned(), serde_json::Value::Bool(false));
+        process.insert("terminal".to_owned(), serde_json::Value::Bool(terminal));
         let rendered = serde_json::to_vec(&serde_json::Value::Object(std::mem::take(process)))
             .map_err(|source| Fault::cause("exec process encode", REMEDY_RUNTIME, source))?;
         let path = info.bundle.join(format!("exec-{seq}.json"));

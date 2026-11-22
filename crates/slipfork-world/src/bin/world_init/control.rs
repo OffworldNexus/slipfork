@@ -14,7 +14,7 @@ use slipfork_world::control::{self as wire, FrameLines, InitFrame, PROTOCOL_VERS
 
 use crate::fault::failure_frame;
 use crate::pod::{InitWorld, WorldShared, run_once_on_shared};
-use crate::stream::{serve_exec, serve_logs};
+use crate::stream::{PtyRequest, serve_exec, serve_exec_pty, serve_logs};
 use crate::{Fault, REMEDY_PROTOCOL, REMEDY_RUNTIME, respond};
 
 /// Longest a dial may block before the world reports a refused port.
@@ -124,6 +124,29 @@ pub(crate) fn handle(listener: &UnixListener, world: &mut InitWorld) -> Result<b
                 let shared = world.shared();
                 std::thread::spawn(move || {
                     if let Err(fault) = serve_exec(shared, id, pod, argv, stdin, stream, buffered) {
+                        eprintln!("slipfork-world-init: {fault}");
+                    }
+                });
+            }
+            wire::Request::ExecPty {
+                id,
+                pod,
+                argv,
+                cols,
+                rows,
+                ..
+            } => {
+                let shared = world.shared();
+                let request = PtyRequest {
+                    id,
+                    pod,
+                    argv,
+                    cols,
+                    rows,
+                    buffered,
+                };
+                std::thread::spawn(move || {
+                    if let Err(fault) = serve_exec_pty(shared, request, stream) {
                         eprintln!("slipfork-world-init: {fault}");
                     }
                 });

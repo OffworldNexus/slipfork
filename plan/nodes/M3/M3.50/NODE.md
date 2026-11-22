@@ -2,7 +2,7 @@
 id: M3.50
 title: "Implement unified PTY slipfork shell (drop db/redis), DECSTBM fixed-bottom-bar TUI & <1.0s 8-component ~/demo fork on 165.232.86.174"
 kind: epic
-status: ready
+status: active
 priority: 3
 depends_on: [M3.49]
 paths:
@@ -19,11 +19,11 @@ paths:
   - "packaging/**"
   - "scripts/**"
   - "support/**"
-attempts: 0
+attempts: 1
 max_attempts: 3
 escalation: none
 created: "2026-11-22T12:10"
-updated: "2026-11-22T12:10"
+updated: "2026-11-22T12:40"
 ---
 
 # Goal

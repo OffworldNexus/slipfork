@@ -5,7 +5,9 @@
 
 mod exec;
 mod lines;
+mod pty;
 mod tail;
 
 pub(crate) use exec::serve_exec;
+pub(crate) use pty::{PtyRequest, serve_exec_pty};
 pub(crate) use tail::serve_logs;

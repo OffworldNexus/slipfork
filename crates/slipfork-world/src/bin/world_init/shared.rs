@@ -32,6 +32,8 @@ pub(crate) struct WorldShared {
     pub(crate) pods: Mutex<BTreeMap<String, PodInfo>>,
     pub(crate) logs: Mutex<BTreeMap<String, Arc<Mutex<LogSink>>>>,
     pub(crate) pids: Mutex<BTreeMap<String, i32>>,
+    /// Canonical `<store>/logs/<world>` root, recorded once by the first successful pod launch.
+    logs_root: Mutex<Option<PathBuf>>,
     /// Exit statuses reaped by the main loop, retained for a child waiter that races it.
     reaped: Mutex<BTreeMap<i32, i32>>,
     exec_pids: Mutex<Vec<i32>>,
@@ -48,6 +50,7 @@ impl WorldShared {
             pods: Mutex::new(BTreeMap::new()),
             logs: Mutex::new(BTreeMap::new()),
             pids: Mutex::new(BTreeMap::new()),
+            logs_root: Mutex::new(None),
             reaped: Mutex::new(BTreeMap::new()),
             exec_pids: Mutex::new(Vec::new()),
             exec_seq: AtomicU64::new(0),
@@ -68,6 +71,18 @@ impl WorldShared {
 
     pub(crate) fn pods_root(&self) -> &Path {
         &self.pods_root
+    }
+
+    /// The canonical `<store>/logs/<world>` root, available once a pod has launched.
+    pub(crate) fn logs_root(&self) -> Option<PathBuf> {
+        self.logs_root.lock().ok().and_then(|root| root.clone())
+    }
+
+    /// Records the canonical log root from the first successful pod launch.
+    pub(crate) fn set_logs_root(&self, root: PathBuf) {
+        if let Ok(mut slot) = self.logs_root.lock() {
+            slot.get_or_insert(root);
+        }
     }
 
     pub(crate) fn next_exec_seq(&self) -> u64 {

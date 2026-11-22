@@ -241,6 +241,8 @@ fn write_stream(socket: &mut UnixStream, bytes: &[u8]) -> std::io::Result<()> {
 }
 
 /// Replays (and optionally follows) captured pod output.
+///
+/// The init owns the canonical `<store>/logs/<world>` root, so callers pass no filesystem path.
 pub fn logs(
     pods_root: &Path,
     service: Option<&str>,

@@ -2762,3 +2762,31 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-22T12:31 [M3.49] (lead) triad fix pass: log frame restored, 8-component <1s proof + noise/overlap observability, 24-cell frame arithmetic, clamp drop order, exact shell copy, persisten
 - 2026-11-22T12:39 [M3.49] (lead) status ready -> review
 - 2026-11-22T12:39 [M3.49] (lead) status review -> done
+- 2026-11-22T12:40 [M3.50] (lead) status ready -> active
+- 2026-11-22T12:40 [M3.50] (lead) attempt 1/3 started
+- 2026-11-22T12:40 [M3.50] (lead) base beebb56bc0b54eed6cf25942ac3a0fcf302e6305
+- 2026-11-22T12:41 [M3.50.1] (planner) created (task) world_init: real-PTY ExecPty + persistent per-id logs
+- 2026-11-22T12:41 [M3.50.2] (planner) created (task) CLI+daemon: required shell <target>, delete db/redis, logs <image>
+- 2026-11-22T12:41 [M3.50.3] (planner) created (task) 8-component <1.0s fork: no CHECKPOINT, conditional edges, image reuse
+- 2026-11-22T12:41 [M3.50.4] (planner) created (task) DECSTBM bottom bar + ScrollRegionGuard, 1 line per task, zero StepLog
+- 2026-11-22T12:41 [M3.50.5] (planner) created (task) Docs/manpage/CHANGELOG: purge db+redis, document shell <target>/logs/TUI
+- 2026-11-22T12:41 [M3.50.6] (planner) created (task) Rebuild .deb + live 165.232.86.174 proof: real-PTY shell, <1s 8-component fork
+- 2026-11-22T12:42 [M3.50.1] (lead) edited fields
+- 2026-11-22T12:42 [M3.50.2] (lead) edited fields
+- 2026-11-22T12:42 [M3.50.3] (lead) edited fields
+- 2026-11-22T12:42 [M3.50.4] (lead) edited fields
+- 2026-11-22T12:42 [M3.50.5] (lead) edited fields
+- 2026-11-22T12:42 [M3.50.6] (lead) edited fields
+- 2026-11-22T12:42 [M3.50.1] (lead) status ready -> active
+- 2026-11-22T12:42 [M3.50.1] (lead) attempt 1/3 started
+- 2026-11-22T12:42 [M3.50.1] (lead) base beebb56bc0b54eed6cf25942ac3a0fcf302e6305
+- 2026-11-22T12:46 [M3.50.2] (lead) edited fields
+- 2026-11-22T12:46 [M3.50.3] (lead) edited fields
+- 2026-11-22T12:51 [M3.50.1] (lead) edited fields
+- 2026-11-22T12:53 [M3.50.1] (lead) status active -> review
+- 2026-11-22T12:54 [M3.50.3] (lead) edited fields
+- 2026-11-22T12:56 [M3.50.1] (lead) status review -> ready
+- 2026-11-22T12:56 [M3.50.1] (lead) attempt 2/3 started
+- 2026-11-22T12:56 [M3.50.1] (lead) triad fix pass: drop wire logs_root (WorldShared-derived), LIVE_SUITES entry, abort on supervise fault, fail-closed rootfs, log_path single owner, console recv 
+- 2026-11-22T12:56 [M3.50.1] (lead) edited fields
+- 2026-11-22T12:58 [M3.50.1] (lead) status ready -> done

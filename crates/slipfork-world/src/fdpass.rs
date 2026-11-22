@@ -141,13 +141,7 @@ pub fn recv_fd(socket: &UnixStream) -> io::Result<(Vec<u8>, Option<OwnedFd>)> {
     if received < 0 {
         return Err(io::Error::last_os_error());
     }
-    if received == 0 {
-        return Err(io::Error::new(
-            io::ErrorKind::UnexpectedEof,
-            "peer closed before sending a control frame",
-        ));
-    }
-    payload.truncate(received as usize);
+    payload.truncate(received.max(0) as usize);
     let mut received_fds: Vec<OwnedFd> = Vec::new();
     // SAFETY: `message` was populated by `recvmsg`; `CMSG_FIRSTHDR`/`CMSG_NXTHDR` walk only within
     // the `control` buffer bounded by `msg_controllen`, the per-header descriptor count is derived
@@ -179,6 +173,12 @@ pub fn recv_fd(socket: &UnixStream) -> io::Result<(Vec<u8>, Option<OwnedFd>)> {
         ));
     }
     match received_fds.len() {
+        // A zero-length `sendmsg` is a legal descriptor carrier (crun's console socket does
+        // this); only a zero-length message *without* a descriptor is a closed peer.
+        0 if received == 0 => Err(io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            "peer closed before sending a control frame",
+        )),
         0 => Ok((payload, None)),
         1 => Ok((payload, received_fds.pop())),
         extra => Err(io::Error::new(

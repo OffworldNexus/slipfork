@@ -10,9 +10,9 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use slipfork_world::PodSpec;
 use slipfork_world::control::FrameLines;
 use slipfork_world::pod_log::{CHUNK, LogKind, LogSink};
+use slipfork_world::{PodSpec, StoreLayout};
 
 use crate::shared::{PodInfo, WorldShared, exit_code, reap_zombies, wait_child};
 use crate::{Fault, REMEDY_CRUN, REMEDY_POD, REMEDY_RUNTIME, canonical};
@@ -44,7 +44,21 @@ pub(crate) fn launch_on_shared(shared: &WorldShared, pod: &PodSpec) -> Result<i3
             "keep the pod runtime root on a tmpfs owned by this user",
         ));
     }
-    let logs_dir = shared.pods_root().join("logs");
+    // `StoreLayout` names the canonical `<store>/logs/<world>` root once. A rootfs outside
+    // `<store>/pods/<world>/<slot>` is refused so no second naming path can invent a tmpfs capture.
+    let logs_dir = match StoreLayout::from_pod_rootfs(&pod.rootfs) {
+        Some((layout, world)) => layout.world_logs(&world),
+        None => {
+            return Err(Fault::new(
+                format!(
+                    "pod `{}` rootfs `{}` is not a store pod clone",
+                    pod.id,
+                    pod.rootfs.display()
+                ),
+                "launch pods from a `StoreLayout::world_pods` clone",
+            ));
+        }
+    };
     let sink = LogSink::open(&logs_dir, &pod.id)
         .map_err(|source| Fault::cause(action.clone(), REMEDY_RUNTIME, source))?;
     let restarted = shared
@@ -62,6 +76,7 @@ pub(crate) fn launch_on_shared(shared: &WorldShared, pod: &PodSpec) -> Result<i3
             .map_err(|source| Fault::cause(action, REMEDY_RUNTIME, source))?;
     }
     let pid = crun_run(shared, &bundle, &pod.id, Arc::clone(&sink))?;
+    shared.set_logs_root(logs_dir);
     if let Ok(mut logs) = shared.logs.lock() {
         logs.insert(pod.id.clone(), sink);
     }

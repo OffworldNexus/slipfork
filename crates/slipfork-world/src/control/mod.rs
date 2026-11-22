@@ -37,12 +37,23 @@ pub const CONTROL_SOCKET: &str = "control.sock";
 
 /// `<pods>/control.sock`, refused before `bind(2)` when `sun_path` would overflow.
 pub fn control_socket_path(pods_root: &Path) -> Result<PathBuf> {
-    let path = pods_root.join(CONTROL_SOCKET);
+    unix_path(pods_root.join(CONTROL_SOCKET), "control socket")
+}
+
+/// `<pods>/pty-<seq>.sock`: the `--console-socket` path handed to one `crun exec --tty`.
+pub fn console_socket_path(pods_root: &Path, seq: u64) -> Result<PathBuf> {
+    unix_path(
+        pods_root.join(format!("pty-{seq}.sock")),
+        "PTY console socket",
+    )
+}
+
+fn unix_path(path: PathBuf, label: &str) -> Result<PathBuf> {
     // `sockaddr_un.sun_path` is 108 bytes including the trailing NUL; keep a safety margin.
     if path.as_os_str().as_encoded_bytes().len() >= 100 {
         return Err(Error::Protocol {
             message: format!(
-                "control socket `{}` exceeds the AF_UNIX path limit",
+                "{label} `{}` exceeds the AF_UNIX path limit",
                 path.display()
             ),
         });
@@ -273,6 +284,36 @@ pub enum Request {
         /// Base64 payload, or an empty string for EOF.
         data: String,
     },
+    /// Allocate a real kernel PTY inside a live pod and hand its master over `SCM_RIGHTS`.
+    ///
+    /// The init answers with one `sendmsg` carrying payload `pty` plus the `/dev/pts/N` master
+    /// descriptor, then keeps the descriptor open until the exec child exits; the caller owns
+    /// raw terminal I/O on the received descriptor.
+    ExecPty {
+        /// Protocol version.
+        v: u32,
+        /// Request id echoed back in the final reply and matched by [`Request::ExecResize`].
+        id: String,
+        /// Pod id to exec into.
+        pod: String,
+        /// Command and arguments.
+        argv: Vec<String>,
+        /// Initial terminal columns.
+        cols: u16,
+        /// Initial terminal rows.
+        rows: u16,
+    },
+    /// Resize the PTY of a live [`Request::ExecPty`] with `ioctl(TIOCSWINSZ)`.
+    ExecResize {
+        /// Protocol version.
+        v: u32,
+        /// Request id of the owning `ExecPty`.
+        id: String,
+        /// New terminal columns.
+        cols: u16,
+        /// New terminal rows.
+        rows: u16,
+    },
 }
 
 impl Request {
@@ -291,7 +332,9 @@ impl Request {
             | Self::Wait { id, .. }
             | Self::Logs { id, .. }
             | Self::Exec { id, .. }
-            | Self::ExecInput { id, .. } => id,
+            | Self::ExecInput { id, .. }
+            | Self::ExecPty { id, .. }
+            | Self::ExecResize { id, .. } => id,
         }
     }
 }
@@ -313,7 +356,9 @@ pub fn decode_request(line: &str) -> Result<Request> {
         | Request::Wait { v, .. }
         | Request::Logs { v, .. }
         | Request::Exec { v, .. }
-        | Request::ExecInput { v, .. } => *v,
+        | Request::ExecInput { v, .. }
+        | Request::ExecPty { v, .. }
+        | Request::ExecResize { v, .. } => *v,
     };
     check_version(version)?;
     Ok(request)
