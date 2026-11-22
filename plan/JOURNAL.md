@@ -2724,3 +2724,4 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-22T10:22 [M3.46] (lead) status active -> review
 - 2026-11-22T10:25 [M3.46] (lead) verified: make check/docs-check/packages/packages-test=0; rust:alpine rustc 1.100.0; rockylinux:9 dnf install + --version=0 (Recommends btrfs-progs)
 - 2026-11-22T10:25 [M3.46] (lead) status review -> done
+- 2026-11-22T10:36 [M3.47] (conductor) created (task) Fix CI live-test HOME/SLIPFORK_TEST_ROOT Btrfs wiring & container UID 1001 cleanup in build-apk.sh / scripts/*.sh
