@@ -32,6 +32,7 @@ pub mod fdpass;
 mod layout;
 pub mod namespaces;
 mod pod;
+mod pod_env;
 pub mod pod_log;
 mod port;
 #[allow(unsafe_code)]

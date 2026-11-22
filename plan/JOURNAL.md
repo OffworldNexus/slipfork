@@ -3029,3 +3029,6 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-22T21:15 [M3.56] (lead) triad fix pass: red route_table_journey assertion, status/ingress primary-domain parity, PsDomain collapse, caret math, docs
 - 2026-11-22T21:18 [M3.56] (lead) status active -> review
 - 2026-11-22T21:18 [M3.56] (lead) status review -> done
+- 2026-11-22T21:19 [M3.55] (lead) status ready -> active
+- 2026-11-22T21:19 [M3.55] (lead) attempt 1/3 started
+- 2026-11-22T21:19 [M3.55] (lead) base e7facc24113d4e23502af4655e76a7eec850f788

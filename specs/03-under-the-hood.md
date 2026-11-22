@@ -47,6 +47,8 @@ flowchart LR
 !!! info "Epoch-paired stamps & persistent `<store>/logs/<world>/<id>.log`"
     When a world finishes booting, Slipfork writes one `world_epoch` into **both** `<world>/.slipfork-world-stamp.json` and `worlds/<world>.pg.<id>/.slipfork-pg-stamp.json` so `fork` reuses stamps in `0ms` when epochs match. Every image build, setup, hook, resource, and service writes to `<store>/logs/<world>/<id>.log` (retained across failed cold `up` and `down`, truncated only on that component's next build/boot, and removed on `drop`), while `down` deletes only `<runtime_dir>/pods/<world>` and `<store>/pods/<world>/`.
 
+**Pod user baseline.** Every pod runs as the invoking `$UID`/`$GID` (identity-mapped into the world user namespace) with a synthetic two-line `/etc/passwd`. Unprivileged pods get a writable `0755` `/home/slipfork` inside their CoW rootfs and `HOME=/home/slipfork` in `config.json` whenever the merged image/Forkfile env leaves `HOME` unset, empty, or `/root`; a declared non-`/root` `HOME` always wins and uid `0` keeps `/root`. Images such as `python:3.13-slim` and `node:22-slim` therefore need no `ENV HOME` change for `uv`, `pnpm`, `git`, or `bash` to write caches.
+
 ---
 
 ## 2. Native Btrfs-Backed Rust S3 (`< 1ms` Boot, Zero Extra Containers)

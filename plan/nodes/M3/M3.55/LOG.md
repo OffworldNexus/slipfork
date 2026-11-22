@@ -11,3 +11,15 @@ edited fields
 ## 2026-11-22T21:01 [conductor]
 
 edited fields
+
+## 2026-11-22T21:19 [lead]
+
+status ready -> active
+
+## 2026-11-22T21:19 [lead]
+
+attempt 1/3 started
+
+## 2026-11-22T21:19 [lead]
+
+base e7facc24113d4e23502af4655e76a7eec850f788

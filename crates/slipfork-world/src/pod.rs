@@ -14,9 +14,9 @@ use serde_json::json;
 
 use crate::error::{Error, NameKind, Result};
 use crate::layout::validate_name;
+use crate::pod_env::{POD_HOME, materialise_home, merged_env, passwd_contents};
 use crate::secure_file::{ensure_private_dir, touch_private, write_private};
 
-const DEFAULT_PATH: &str = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
 /// OCI ids and hostnames share one lowercase bounded alphabet.
 const MAX_ID: usize = 63;
 
@@ -230,6 +230,11 @@ pub fn write_bundle(spec: &PodSpec, host: &PodHost, dir: &Path) -> Result<PodBun
     if !workdir.is_dir() {
         fs::create_dir_all(&workdir).map_err(|source| Error::io("create", &workdir, source))?;
     }
+    // Unprivileged pods get a real home inside their writable rootfs; without it `HOME` falls
+    // back to `/root` (`0700`, uid 0), so `uv`, `git`, and `pnpm` fail with permission denied.
+    if host.uid != 0 {
+        materialise_home(&rooted(&spec.rootfs, POD_HOME), host.uid, host.gid)?;
+    }
     for bind in &spec.binds {
         let destination = rooted(&spec.rootfs, &bind.destination);
         match &bind.source {
@@ -268,31 +273,6 @@ pub fn write_bundle(spec: &PodSpec, host: &PodHost, dir: &Path) -> Result<PodBun
     })
 }
 
-/// Image env first, the pod's own env last, so an own entry overrides the same key.
-fn merged_env(spec: &PodSpec) -> Vec<String> {
-    let mut ordered: Vec<(String, String)> = Vec::new();
-    let mut upsert = |key: &str, value: &str| {
-        if let Some(slot) = ordered.iter_mut().find(|(existing, _)| existing == key) {
-            slot.1 = value.to_owned();
-        } else {
-            ordered.push((key.to_owned(), value.to_owned()));
-        }
-    };
-    upsert("PATH", DEFAULT_PATH);
-    for pair in &spec.inherited_env {
-        if let Some((key, value)) = pair.split_once('=') {
-            upsert(key, value);
-        }
-    }
-    for entry in &spec.env {
-        upsert(&entry.key, &entry.value);
-    }
-    ordered
-        .into_iter()
-        .map(|(key, value)| format!("{key}={value}"))
-        .collect()
-}
-
 /// Renders the minimal OCI config: world-inherited net/ipc, per-pod pid/mount/uts/user.
 fn oci_config(
     spec: &PodSpec,
@@ -302,7 +282,7 @@ fn oci_config(
     hosts: &Path,
     workdir: &Path,
 ) -> serde_json::Value {
-    let env = merged_env(spec);
+    let env = merged_env(spec, host);
     let mut mounts = vec![
         json!({"destination": "/proc", "type": "proc", "source": "proc"}),
         json!({
@@ -391,11 +371,6 @@ fn oci_config(
         },
         "annotations": {"slipfork.pod": spec.id}
     })
-}
-
-/// `/etc/passwd` must contain `$UID`, or `postgres:18` `initdb` exits `1`.
-fn passwd_contents(uid: u32, gid: u32) -> String {
-    format!("root:x:0:0:root:/root:/sbin/nologin\nslipfork:x:{uid}:{gid}:slipfork:/:/bin/sh\n")
 }
 
 /// `/etc/hosts` maps `<hostname>.localhost`, `localhost`, and the pod's UTS `hostname` locally

@@ -170,7 +170,9 @@ for inspection:
 ## Shells and logs
 
 `slipfork shell <target>` is the only interactive entry point. The target is required, and Slipfork
-picks the program from the declared kind:
+picks the program from the declared kind. Pods run as your own uid/gid with a writable
+`HOME=/home/slipfork` (a declared non-`/root` `HOME` wins), so `uv`, `pnpm`, `git`, and shell
+history work without an image `ENV HOME`:
 
 | Target | Opens |
 | :--- | :--- |
