@@ -21,6 +21,7 @@ mod auth;
 mod env;
 mod open;
 mod pty;
+mod runs;
 mod secret;
 mod streams;
 pub use auth::AuthArgs;

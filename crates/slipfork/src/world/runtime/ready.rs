@@ -97,6 +97,7 @@ impl Staged {
         Ok(StepOutcome {
             state: self.state,
             detail: self.detail,
+            run_id: None,
         })
     }
 }

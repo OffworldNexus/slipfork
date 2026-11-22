@@ -52,6 +52,8 @@ pub struct StepOutcome {
     pub state: BootState,
     /// Short detail appended after the label.
     pub detail: String,
+    /// Minted run id when the step actually executed work; `None` for a cache hit.
+    pub run_id: Option<String>,
 }
 
 /// A step failure carrying the `Forkfile` line of the owning declaration.
@@ -61,6 +63,8 @@ pub struct BootFailure {
     pub message: String,
     /// Concrete next action when the step's `Forkfile` line is not the thing to fix.
     pub remedy: Option<String>,
+    /// Run id of the step's capture, so the failure line can name `slipfork logs -r <id>`.
+    pub run_id: Option<String>,
 }
 
 impl BootFailure {
@@ -70,6 +74,7 @@ impl BootFailure {
         Self {
             message: message.into(),
             remedy: None,
+            run_id: None,
         }
     }
 
@@ -79,6 +84,7 @@ impl BootFailure {
         Self {
             message: message.into(),
             remedy: Some(remedy.into()),
+            run_id: None,
         }
     }
 }
@@ -120,6 +126,8 @@ pub enum BootEvent {
         kind: BootKind,
         /// Bare node name.
         name: String,
+        /// Minted run id; `None` while the step is still running.
+        run_id: Option<String>,
     },
     /// The step finished successfully.
     Finished {
@@ -135,6 +143,8 @@ pub enum BootEvent {
         state: BootState,
         /// Short detail.
         detail: String,
+        /// Id of the step's run capture, when it executed work.
+        run_id: Option<String>,
     },
     /// A conditional step's stamp matched; the executor did not run.
     UpToDate {
@@ -163,6 +173,10 @@ pub enum BootEvent {
         remedy: Option<String>,
         /// Wall time of this node's own work up to the failure.
         elapsed: Duration,
+        /// Id of the step's run capture; the failure line replays it.
+        run_id: Option<String>,
+        /// The command the step ran, when it has one.
+        command: Option<String>,
     },
 }
 
@@ -400,6 +414,7 @@ impl BootScheduler {
             total,
             kind: step.kind,
             name: name.clone(),
+            run_id: None,
         });
         match (*self.execute)(index, step) {
             Ok(done) => {
@@ -415,6 +430,7 @@ impl BootScheduler {
                     elapsed: node_start.elapsed(),
                     state: done.state,
                     detail: done.detail,
+                    run_id: done.run_id,
                 });
                 Ok(())
             }
@@ -427,6 +443,8 @@ impl BootScheduler {
                     message: error.message.clone(),
                     remedy: error.remedy.clone(),
                     elapsed: node_start.elapsed(),
+                    run_id: error.run_id.clone(),
+                    command: step.command.clone(),
                 });
                 Err(error)
             }
@@ -478,6 +496,7 @@ mod tests {
             Ok(StepOutcome {
                 state: BootState::Ready,
                 detail: String::new(),
+                run_id: None,
             })
         });
         let runtime = tokio::runtime::Builder::new_multi_thread()

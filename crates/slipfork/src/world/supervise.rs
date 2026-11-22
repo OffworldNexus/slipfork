@@ -2,7 +2,7 @@
 
 use std::fs;
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::{Arc, Mutex};
 
@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 use slipfork_world::{
     BootEvent, BootFailure, BootScheduler, BootState, BootStep, ResourceKind, StampStore,
     StepOutcome, WorldName, WorldStamp, WorldStampStore, control, is_btrfs_path, plan_epoch,
-    world_plan, write_pg_checkpoints,
+    run_log::RunCapture, world_plan, write_pg_checkpoints,
 };
 
 use crate::commands::Session;
@@ -199,6 +199,7 @@ fn boot_event_json(event: &BootEvent) -> Value {
             total,
             kind,
             name,
+            run_id,
         } => json!({
             "event": "started",
             "step": step + 1,
@@ -206,6 +207,7 @@ fn boot_event_json(event: &BootEvent) -> Value {
             "kind": kind.as_str(),
             "name": name,
             "state": "running",
+            "run_id": run_id,
         }),
         BootEvent::Finished {
             kind,
@@ -213,6 +215,7 @@ fn boot_event_json(event: &BootEvent) -> Value {
             elapsed,
             state,
             detail,
+            run_id,
             ..
         } => json!({
             "event": "finished",
@@ -222,6 +225,7 @@ fn boot_event_json(event: &BootEvent) -> Value {
             "detail": detail,
             "elapsed_ms": elapsed.as_millis(),
             "duration_ms": elapsed.as_millis(),
+            "run_id": run_id,
         }),
         BootEvent::UpToDate {
             kind,
@@ -244,6 +248,8 @@ fn boot_event_json(event: &BootEvent) -> Value {
             message,
             remedy,
             elapsed,
+            run_id,
+            command,
             ..
         } => {
             let mut event = json!({
@@ -255,6 +261,8 @@ fn boot_event_json(event: &BootEvent) -> Value {
                 "message": message,
                 "elapsed_ms": elapsed.as_millis(),
                 "duration_ms": elapsed.as_millis(),
+                "run_id": run_id,
+                "command": command,
             });
             if let Some(remedy) = remedy {
                 event["remedy"] = json!(remedy);
@@ -338,6 +346,39 @@ impl BootSink {
         }
     }
 
+    /// Arms a lazy per-step run capture: the id is minted on the first output line, so a `cached`
+    /// step that executes nothing never earns one.
+    pub(super) fn capture_run(
+        mut self,
+        logs_root: &Path,
+        kind: &str,
+        name: &str,
+        command: &str,
+    ) -> Self {
+        self.log.run = Some(Arc::new(Mutex::new(RunTarget::new(
+            logs_root, kind, name, command,
+        ))));
+        self
+    }
+
+    /// Appends the catalog line and returns the minted id, or `None` when nothing ran.
+    pub(super) fn finish_run(&self, state: &str, duration_ms: u64) -> Option<String> {
+        self.log.run.as_ref().and_then(|run| {
+            run.lock()
+                .ok()
+                .and_then(|mut target| target.finish(state, duration_ms))
+        })
+    }
+
+    /// Drops a no-op capture: no id, no `.log`/`.idx`, no catalog line.
+    pub(super) fn discard_run(&self) {
+        if let Some(run) = &self.log.run
+            && let Ok(mut target) = run.lock()
+        {
+            target.discard();
+        }
+    }
+
     /// Emits one readiness frame pinned to this step.
     pub(super) fn progress(&mut self, message: &str) {
         let _ = writeln!(self.log, "{message}");
@@ -365,6 +406,63 @@ struct EventLog {
     total: usize,
     label: String,
     name: String,
+    run: Option<Arc<Mutex<RunTarget>>>,
+}
+
+/// One step's lazy run capture: begun on the first line, finished with its final state.
+struct RunTarget {
+    logs_root: PathBuf,
+    kind: String,
+    name: String,
+    command: String,
+    capture: Option<RunCapture>,
+    closed: bool,
+}
+
+impl RunTarget {
+    fn new(logs_root: &Path, kind: &str, name: &str, command: &str) -> Self {
+        Self {
+            logs_root: logs_root.to_path_buf(),
+            kind: kind.to_owned(),
+            name: name.to_owned(),
+            command: command.to_owned(),
+            capture: None,
+            closed: false,
+        }
+    }
+
+    fn append(&mut self, text: &str) {
+        if self.closed {
+            return;
+        }
+        if self.capture.is_none() {
+            match RunCapture::begin(&self.logs_root, &self.kind, &self.name, &self.command) {
+                Ok(capture) => self.capture = Some(capture),
+                Err(_) => {
+                    self.closed = true;
+                    return;
+                }
+            }
+        }
+        if let Some(capture) = &mut self.capture {
+            let _ = capture.append(text);
+        }
+    }
+
+    fn finish(&mut self, state: &str, duration_ms: u64) -> Option<String> {
+        self.closed = true;
+        let mut capture = self.capture.take()?;
+        let run_id = capture.run_id().to_owned();
+        let _ = capture.finish(state, duration_ms);
+        Some(run_id)
+    }
+
+    fn discard(&mut self) {
+        self.closed = true;
+        if let Some(capture) = self.capture.take() {
+            capture.discard();
+        }
+    }
 }
 
 impl EventLog {
@@ -382,6 +480,7 @@ impl EventLog {
             total,
             label: label.to_owned(),
             name: name.to_owned(),
+            run: None,
         }
     }
 
@@ -391,6 +490,11 @@ impl EventLog {
         let text = text.trim_end_matches('\r');
         if text.trim().is_empty() {
             return;
+        }
+        if let Some(run) = &self.run
+            && let Ok(mut target) = run.lock()
+        {
+            target.append(text);
         }
         let frame = json!({
             "event": "log",
@@ -602,6 +706,7 @@ mod tests {
                 total: 2,
                 kind: BootKind::Image,
                 name: "base".to_owned(),
+                run_id: None,
             }),
         ];
         let lines: Vec<String> = frames.iter().map(serde_json::Value::to_string).collect();

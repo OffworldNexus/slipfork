@@ -191,6 +191,9 @@ impl WorldRuntime {
 
     /// Executes one DAG node with zero global lock: staging uses narrow collaborator scopes and
     /// [`Staged::await_ready`] polls sockets outside all locks.
+    ///
+    /// Steps that can execute real work arm a lazy run capture; a cache hit discards it, so a
+    /// `cached`/`up to date` row never mints a `#run_id`.
     pub(super) fn execute(
         &self,
         index: usize,
@@ -203,35 +206,78 @@ impl WorldRuntime {
             &step.label,
             &step.node_name(),
         );
-        let mut staged = match step.kind {
+        if matches!(
+            step.kind,
+            BootKind::Image | BootKind::Setup | BootKind::Hook
+        ) {
+            let command = step.command.clone().unwrap_or_else(|| step.subject.clone());
+            log = log.capture_run(
+                &self.layout.world_logs(&self.world),
+                step.kind.as_str(),
+                &step.node_name(),
+                &command,
+            );
+        }
+        let started = std::time::Instant::now();
+        let mut staged = match self.execute_step(step, &mut log) {
+            Ok(staged) => staged,
+            Err(mut error) => {
+                error.run_id = log.finish_run("failed", elapsed_ms(started));
+                let _ = log.flush();
+                return Err(error);
+            }
+        };
+        let _ = log.flush();
+        staged.attach_progress(log.clone());
+        let outcome = staged.await_ready();
+        let duration = elapsed_ms(started);
+        let run_id = match &outcome {
+            // A `cached` step executed zero commands: its capture is removed and no id is shown.
+            Ok(done) if matches!(done.state, BootState::Cached) => {
+                log.discard_run();
+                None
+            }
+            Ok(done) => log.finish_run(done.state.as_str(), duration),
+            Err(_) => log.finish_run("failed", duration),
+        };
+        let _ = log.flush();
+        let mut done = match outcome {
+            Ok(done) => done,
+            Err(mut error) => {
+                error.run_id = run_id;
+                return Err(error);
+            }
+        };
+        done.run_id = run_id;
+        Ok(done)
+    }
+
+    fn execute_step(&self, step: &BootStep, log: &mut BootSink) -> Result<Staged, BootFailure> {
+        match step.kind {
             BootKind::Image => self
                 .images
-                .build(&step.subject, &mut log)
+                .build(&step.subject, log)
                 .map(|(_, state)| Staged {
                     state,
                     detail: state.as_str().to_owned(),
                     ready: Ready::None,
                     progress: None,
                 })
-                .map_err(BootFailure::new)?,
-            BootKind::Resource => resources::start_resource(self, &step.subject, &mut log)
-                .map_err(BootFailure::new)?,
+                .map_err(BootFailure::new),
+            BootKind::Resource => {
+                resources::start_resource(self, &step.subject, log).map_err(BootFailure::new)
+            }
             BootKind::Setup | BootKind::Hook => {
-                let detail = self.run_once(step, &mut log)?;
-                Staged {
+                let detail = self.run_once(step, log)?;
+                Ok(Staged {
                     state: BootState::Ready,
                     detail,
                     ready: Ready::None,
                     progress: None,
-                }
+                })
             }
-            BootKind::Service => self
-                .start_service(step, &mut log)
-                .map_err(BootFailure::new)?,
-        };
-        let _ = log.flush();
-        staged.attach_progress(log);
-        staged.await_ready()
+            BootKind::Service => self.start_service(step, log).map_err(BootFailure::new),
+        }
     }
 
     pub(super) fn pods_dir(&self) -> &Path {
@@ -369,6 +415,10 @@ impl WorldRuntime {
         if code == 0 {
             Ok("ok".to_owned())
         } else {
+            // A command that printed nothing still leaves one real line in its run capture, so a
+            // failed step is never reported against an empty `slipfork logs -r <id>`.
+            let _ = writeln!(log, "`{command}` exited with {code}");
+            let _ = log.flush();
             let mut message = format!("`{command}` exited with {code}");
             for line in tail {
                 message.push_str("\n  ");
@@ -468,4 +518,9 @@ impl WorldRuntime {
         let _ = fs::remove_dir(self.layout.pods_root());
         awaited
     }
+}
+
+/// Step wall time in whole milliseconds, clamped for a pathological clock jump.
+fn elapsed_ms(started: std::time::Instant) -> u64 {
+    u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)
 }

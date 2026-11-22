@@ -77,6 +77,8 @@ fn dispatch(cli: Cli, session: Session) -> ExitCode {
             since,
             until,
             timestamps,
+            run,
+            runs,
         } => session.logs(&LogsArgs {
             follow,
             all,
@@ -84,6 +86,8 @@ fn dispatch(cli: Cli, session: Session) -> ExitCode {
             since_ms: since,
             until_ms: until,
             timestamps,
+            run,
+            runs,
             json,
         }),
         Command::Shell { target } => session.shell(&TargetArgs { target, json }),

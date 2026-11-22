@@ -38,6 +38,7 @@ mod port;
 #[allow(unsafe_code)]
 mod reap;
 mod resources;
+pub mod run_log;
 #[allow(unsafe_code)]
 mod runtime_dir;
 mod secure_file;

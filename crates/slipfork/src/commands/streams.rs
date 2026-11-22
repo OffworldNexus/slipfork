@@ -19,6 +19,8 @@ use crate::daemon::{DaemonClient, DaemonError};
 use crate::ui::Palette;
 use crate::ui::table::{Column, Table};
 
+use super::runs::{RunRow, render_runs};
+
 /// Set by the SIGINT handler so a followed stream exits `0` on Ctrl-C.
 static INTERRUPTED: AtomicBool = AtomicBool::new(false);
 
@@ -41,6 +43,10 @@ pub struct LogsArgs {
     pub until_ms: Option<u64>,
     /// Prefix human lines with a timestamp gutter.
     pub timestamps: bool,
+    /// Replay one recorded step run (`<id>`, `#<id>`, `last`, `failed`).
+    pub run: Option<String>,
+    /// List every recorded step run for this world.
+    pub runs: bool,
     /// Emit one JSON object per line plus a final `{"exit":0}`.
     pub json: bool,
 }
@@ -87,6 +93,12 @@ impl Session {
     /// `slipfork logs [-f] [-a] [service]`.
     pub fn logs(&self, args: &LogsArgs) -> ExitCode {
         install_sigint();
+        if args.runs {
+            return self.logs_runs(args);
+        }
+        if let Some(run) = &args.run {
+            return self.logs_run(args, run);
+        }
         let Some(mut client) = self.existing_daemon(args.json) else {
             return ExitCode::FAILURE;
         };
@@ -109,6 +121,66 @@ impl Session {
                 ExitCode::SUCCESS
             }
             Err(error) => self.exact_fail(&error, "logs", args.json),
+        }
+    }
+
+    /// `slipfork logs --runs`: every recorded step run for this world, newest last.
+    fn logs_runs(&self, args: &LogsArgs) -> ExitCode {
+        let Some(mut client) = self.existing_daemon(args.json) else {
+            return ExitCode::FAILURE;
+        };
+        let params = json!({ "project": self.cwd(), "runs": true });
+        let mut records: Vec<RunRow> = Vec::new();
+        let outcome = client.call_streaming("logs", params, &mut |event| {
+            if event["event"].as_str() == Some("runs")
+                && let Some(rows) = event["rows"].as_array()
+            {
+                records.extend(rows.iter().filter_map(RunRow::from_value));
+            }
+        });
+        match outcome {
+            Ok(_) => {
+                if args.json {
+                    for record in &records {
+                        let line = serde_json::to_string(&record.to_value()).unwrap_or_default();
+                        let _ = emit(&format!("{line}\n"));
+                    }
+                } else if records.is_empty() {
+                    println!("no recorded runs yet — `slipfork up` records one per executed step");
+                } else {
+                    for line in render_runs(&records, self.color()) {
+                        println!("{line}");
+                    }
+                }
+                ExitCode::SUCCESS
+            }
+            Err(error) => self.stream_fail(&error, "logs", args.json),
+        }
+    }
+
+    /// `slipfork logs -r <id>`: replay one recorded step run through the indexed reader.
+    fn logs_run(&self, args: &LogsArgs, run: &str) -> ExitCode {
+        let Some(mut client) = self.existing_daemon(args.json) else {
+            return ExitCode::FAILURE;
+        };
+        let params = json!({
+            "project": self.cwd(),
+            "run": run,
+            "follow": false,
+            "since_ms": args.since_ms,
+            "until_ms": args.until_ms,
+        });
+        let mut renderer = Renderer::replay(self.color(), args.json, args.timestamps);
+        match client.call_streaming("logs", params, &mut |event| renderer.event(event)) {
+            Ok(_) => {
+                renderer.finish(0);
+                ExitCode::SUCCESS
+            }
+            Err(_) if INTERRUPTED.load(Ordering::SeqCst) => {
+                renderer.finish(0);
+                ExitCode::SUCCESS
+            }
+            Err(error) => self.stream_fail(&error, "logs", args.json),
         }
     }
 
@@ -301,6 +373,11 @@ impl Renderer {
         Self::with_gutter(color, json, false, false)
     }
 
+    /// The `logs -r <id>` renderer: one recorded run's lines, no per-pod gutter.
+    fn replay(color: bool, json: bool, timestamps: bool) -> Self {
+        Self::with_gutter(color, json, false, timestamps)
+    }
+
     fn with_gutter(color: bool, json: bool, gutter: bool, timestamps: bool) -> Self {
         Self {
             palette: Palette::new(color),
@@ -347,7 +424,14 @@ impl Renderer {
                 let _ = emit(&format!("{}\n", self.palette.tint(line, "2;36")));
             }
             _ if !self.gutter => {
-                let _ = emit(&format!("{line}\n"));
+                let stamp = if self.timestamps {
+                    ts_ms
+                        .map(|ts| format!("{} ", self.palette.dim(&format_ts(ts))))
+                        .unwrap_or_default()
+                } else {
+                    String::new()
+                };
+                let _ = emit(&format!("{stamp}{line}\n"));
             }
             _ => {
                 let stamp = if self.timestamps {
@@ -585,7 +669,7 @@ fn civil_from_days(days: i64) -> (i64, u32, u32) {
 }
 
 /// UTC `YYYY-MM-DD HH:MM:SS` gutter for `-t`, independent of the host timezone.
-fn format_ts(ts_ms: u64) -> String {
+pub(crate) fn format_ts(ts_ms: u64) -> String {
     let seconds = (ts_ms / 1000) as i64;
     let days = seconds.div_euclid(86_400);
     let time = seconds.rem_euclid(86_400);

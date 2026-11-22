@@ -157,6 +157,12 @@ pub enum Command {
         /// Prefix every line with a human timestamp gutter.
         #[arg(short = 't', long)]
         timestamps: bool,
+        /// Replay one recorded step run (`<id>`, `#<id>`, `last`, or `failed`).
+        #[arg(short = 'r', long = "run", value_name = "RUN", conflicts_with = "runs")]
+        run: Option<String>,
+        /// List every recorded step run for this world.
+        #[arg(long, conflicts_with_all = ["targets", "run", "follow"])]
+        runs: bool,
     },
 
     /// Attach a real PTY: bash/sh, psql, or redis-cli for one declared target.

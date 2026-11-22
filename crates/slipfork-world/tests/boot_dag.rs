@@ -67,6 +67,7 @@ fn done(detail: &str) -> StepOutcome {
     StepOutcome {
         state: BootState::Ready,
         detail: detail.to_owned(),
+        run_id: None,
     }
 }
 

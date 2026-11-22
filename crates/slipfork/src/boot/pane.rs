@@ -639,6 +639,7 @@ mod tests {
                 name: "base",
                 state: "Cached",
                 millis: 120,
+                run_id: None,
                 success: true,
             },
             &widths,

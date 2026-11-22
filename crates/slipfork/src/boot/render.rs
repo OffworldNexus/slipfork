@@ -114,6 +114,8 @@ pub struct Node<'a> {
     pub state: &'a str,
     /// Wall time the node took, rendered by [`elapsed_text`].
     pub millis: u64,
+    /// Minted run id for a step that executed work; `None` for a cache hit.
+    pub run_id: Option<&'a str>,
     /// `false` for an `up-to-date` node, which earns a dim bullet instead of a green check.
     pub success: bool,
 }
@@ -129,6 +131,7 @@ impl<'a> Node<'a> {
             millis: event["duration_ms"]
                 .as_u64()
                 .or_else(|| event["elapsed_ms"].as_u64())?,
+            run_id: event["run_id"].as_str(),
             success: event["event"].as_str() != Some("up-to-date"),
         })
     }
@@ -382,8 +385,17 @@ fn wrap_row(indent: &str, text: &str, width: usize) -> Vec<String> {
 }
 
 /// The one crisp remedy sentence printed after the failed row.
+///
+/// A step with a capture names its exact replay command (`slipfork logs -r <id>`); anything else
+/// falls back to the step's own capture id. The sentence keeps a single leading `✗`, so a failure
+/// block never prints `✗ ✗`.
 #[must_use]
-pub fn failure_sentence(kind: &str, name: &str) -> String {
+pub fn failure_sentence(
+    kind: &str,
+    name: &str,
+    command: Option<&str>,
+    run_id: Option<&str>,
+) -> String {
     let verb = match kind {
         "image" => "build image",
         "hook" => "run hook",
@@ -392,7 +404,15 @@ pub fn failure_sentence(kind: &str, name: &str) -> String {
         "resource" => "start resource",
         _ => "finish step",
     };
-    format!("✗ Failed to {verb} {name} — check logs with: slipfork logs {name}")
+    let subject = match (kind, command) {
+        ("setup" | "hook", Some(command)) => format!(" '{command}' ({name})"),
+        _ => format!(" {name}"),
+    };
+    let hint = match run_id {
+        Some(run_id) => format!("slipfork logs -r {run_id}"),
+        None => format!("slipfork logs {name}"),
+    };
+    format!("✗ Failed to {verb}{subject} — check logs with: {hint}")
 }
 
 /// The world-ready verdict, with the primary URL always bold cyan and underlined.
@@ -452,8 +472,12 @@ pub fn completed_row(node: &Node<'_>, widths: &ColumnWidths, styled: bool) -> St
     } else {
         palette.status(&state)
     };
-    // The run-id slot stays wired for the M3.58 frame and renders empty today; its seven-cell
-    // minimum lives in `BOOT`, so populating it later never moves an earlier column.
+    // The run-id slot reserves seven cells in `BOOT` and shows a dim `#id` only for a step that
+    // really executed; a `cached` row leaves it empty so earlier columns never move.
+    let run_id = node
+        .run_id
+        .map(|id| palette.dim(&format!("#{id}")))
+        .unwrap_or_default();
     boot_table().line(
         widths,
         &[
@@ -462,7 +486,7 @@ pub fn completed_row(node: &Node<'_>, widths: &ColumnWidths, styled: bool) -> St
             palette.label(node.name),
             state,
             palette.dim(&elapsed_text(node.millis)),
-            String::new(),
+            run_id,
         ],
     )
 }
@@ -498,7 +522,7 @@ mod tests {
 
         let mut block = vec![failed_row("image", "frontend", false)];
         block.extend(details.iter().cloned());
-        block.push(failure_sentence("image", "frontend"));
+        block.push(failure_sentence("image", "frontend", None, None));
         for row in &block {
             assert!(
                 row.matches('✗').count() <= 1,
@@ -565,6 +589,7 @@ mod tests {
             name: "pg",
             state: "Ready",
             millis: 420,
+            run_id: Some("b7f2a1"),
             success: true,
         };
         let long = Node {
@@ -572,6 +597,7 @@ mod tests {
             name: "a-very-long-service-name",
             state: "up to date",
             millis: 0,
+            run_id: None,
             success: false,
         };
         let rows = [
@@ -596,18 +622,115 @@ mod tests {
         );
         assert_eq!(rows[0].find("ready"), Some(STATE), "{:?}", rows[0]);
         assert_eq!(rows[1].find("up to date"), Some(STATE), "{:?}", rows[1]);
+        // The duration column is right-aligned, so its final byte lands on `DURATION_END` in every
+        // row — with or without a run id after it.
+        for (row, duration) in [(&rows[0], "420ms"), (&rows[1], "<1ms")] {
+            let end = row.find(duration).expect("duration cell") + duration.len();
+            assert_eq!(end, DURATION_END, "duration right edge: {row:?}");
+        }
+        // Filled slot: exactly `GAP + 7` cells after the duration edge.
         assert_eq!(
-            rows[0].trim_end().len(),
-            DURATION_END,
-            "duration right edge: {:?}",
+            rows[0].find("#b7f2a1"),
+            Some(DURATION_END + 2),
+            "run-id column start: {:?}",
             rows[0]
         );
-        assert_eq!(
-            rows[1].trim_end().len(),
-            DURATION_END,
-            "duration right edge: {:?}",
-            rows[1]
-        );
+        assert_eq!(rows[0].trim_end().len(), DURATION_END + 2 + 7);
+        // Empty slot: the seven-cell column stays reserved in the shared grid; only this row's
+        // trailing padding is trimmed, and no `#` is invented for a cache hit.
+        assert!(!rows[1].contains('#'), "{:?}", rows[1]);
+        assert_eq!(rows[1].trim_end().len(), DURATION_END);
         assert!(!rows[1].contains('\u{1b}'), "plain rows stay colourless");
+
+        // The same grid spans plan and completion: swapping either row's run id moves neither the
+        // kind/name/state starts nor the duration right edge, and both slot forms end identically.
+        let short_hit = completed_row(
+            &Node {
+                run_id: None,
+                ..short
+            },
+            &widths,
+            false,
+        );
+        let long_run = completed_row(
+            &Node {
+                run_id: Some("c91e04"),
+                ..long
+            },
+            &widths,
+            false,
+        );
+        assert_eq!(short_hit.trim_end().len(), DURATION_END);
+        assert!(!short_hit.contains('#'), "{short_hit:?}");
+        assert_eq!(short_hit.find("ready"), Some(STATE), "{short_hit:?}");
+        assert_eq!(long_run.find("up to date"), Some(STATE), "{long_run:?}");
+        assert_eq!(
+            long_run.find("#c91e04"),
+            Some(DURATION_END + 2),
+            "the reserved slot starts where the filled one does: {long_run:?}"
+        );
+        assert_eq!(
+            long_run.trim_end().len(),
+            DURATION_END + 2 + 7,
+            "unfilled and filled slots share one total width"
+        );
+        assert_eq!(
+            long_run.trim_end().len(),
+            rows[0].trim_end().len(),
+            "one six-column grid across plan and completion"
+        );
+    }
+
+    /// A failing setup prints the exact `-r <id>` command, and replaying that id returns the real
+    /// stderr: one glyph on the sentence, never `✗ ✗`.
+    #[test]
+    fn a_failed_setup_names_a_run_id_that_replays_the_real_stderr() {
+        use slipfork_world::pod_log::read_range;
+        use slipfork_world::run_log::{RunCapture, resolve_run, runs_dir};
+
+        let root = tempfile::Builder::new()
+            .prefix("run-id-replay")
+            .tempdir_in("/var/tmp")
+            .expect("disk temp directory");
+        let logs_root = root.path().join("logs").join("demo");
+        let mut capture = RunCapture::begin(&logs_root, "setup", "backend", "uv sync")
+            .expect("begin a real run capture");
+        capture
+            .append("Resolved 12 packages in 3ms")
+            .expect("append stdout");
+        capture
+            .append("error: Failed to resolve `numpy==9`")
+            .expect("append stderr");
+        let run_id = capture.run_id().to_owned();
+        capture.finish("failed", 41).expect("finish the run");
+
+        let sentence = failure_sentence("setup", "backend", Some("uv sync"), Some(&run_id));
+        assert_eq!(
+            sentence,
+            format!(
+                "✗ Failed to run setup 'uv sync' (backend) — check logs with: slipfork logs -r {run_id}"
+            )
+        );
+        assert_eq!(sentence.matches('✗').count(), 1, "{sentence}");
+
+        let resolved = resolve_run(&logs_root, &run_id).expect("resolve the printed id");
+        let mut reader =
+            read_range(&runs_dir(&logs_root), &resolved, None, None).expect("open the run capture");
+        let mut lines = Vec::new();
+        let _ = reader.read_lines(&mut |line| lines.push(line.text.clone()));
+        reader.flush(&mut |line| lines.push(line.text.clone()));
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("Failed to resolve `numpy==9`")),
+            "{lines:?}"
+        );
+
+        let block = [failed_row("setup", "backend", false), sentence].join("\n");
+        assert!(!block.contains("✗ ✗"), "{block}");
+        assert!(
+            !block.contains('\u{1b}'),
+            "NO_COLOR failure blocks stay pure"
+        );
     }
 }

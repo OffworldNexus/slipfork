@@ -401,7 +401,12 @@ impl BootTui {
             self.width,
             self.mode.color(),
         );
-        let sentence = text::failure_sentence(kind, name);
+        let sentence = text::failure_sentence(
+            kind,
+            name,
+            event["command"].as_str(),
+            event["run_id"].as_str(),
+        );
         if self.pane.is_some() {
             if let Some(pane) = &self.pane
                 && let Ok(mut pane) = pane.lock()

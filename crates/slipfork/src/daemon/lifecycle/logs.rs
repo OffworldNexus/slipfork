@@ -15,6 +15,7 @@ use serde_json::{Value, json};
 use slipfork_forkfile::Forkfile;
 use slipfork_world::control::{PROTOCOL_VERSION, Request, StreamClient, StreamFrame};
 use slipfork_world::pod_log::{LogKind, LogMerge, REORDER_MS, now_ms, read_range};
+use slipfork_world::run_log::{self, runs_dir};
 use slipfork_world::{StoreLayout, WorldName};
 
 use super::super::Failure;
@@ -56,6 +57,16 @@ pub(crate) struct LogStream {
     until_ms: Option<u64>,
     /// The id came from the command line, so a missing capture file is an error.
     explicit: bool,
+    /// A recorded-run catalog listing or one run replay, instead of pod captures.
+    runs: Option<RunQuery>,
+}
+
+/// What `logs --runs` / `logs -r <id>` asked for.
+enum RunQuery {
+    /// List every catalog entry (`--runs`).
+    List,
+    /// Replay one run spec (`<id>`, `#<id>`, `last`, `failed`).
+    Replay(String),
 }
 
 impl Core {
@@ -81,6 +92,17 @@ impl Core {
             .unwrap_or(false);
         let since_ms = params.get("since_ms").and_then(Value::as_u64);
         let until_ms = params.get("until_ms").and_then(Value::as_u64);
+        if params.get("runs").and_then(Value::as_bool).unwrap_or(false) {
+            return Ok(LogStream::run_catalog(self.logs_dir(&project)?));
+        }
+        if let Some(spec) = params.get("run").and_then(Value::as_str) {
+            return Ok(LogStream::run_replay(
+                self.logs_dir(&project)?,
+                spec.to_owned(),
+                since_ms,
+                until_ms,
+            ));
+        }
         let document = load_document(&project);
         self.plan_logs(
             &project,
@@ -267,6 +289,7 @@ impl LogStream {
             since_ms,
             until_ms,
             explicit: false,
+            runs: None,
         }
     }
 
@@ -289,6 +312,28 @@ impl LogStream {
             since_ms,
             until_ms,
             explicit,
+            runs: None,
+        }
+    }
+
+    /// A catalog listing of every recorded step run (`logs --runs`).
+    fn run_catalog(logs_dir: PathBuf) -> Self {
+        Self {
+            runs: Some(RunQuery::List),
+            ..Self::captures(logs_dir, Vec::new(), false, false, None, None)
+        }
+    }
+
+    /// A replay plan for one recorded run spec (`logs -r <id>|last|failed`).
+    fn run_replay(
+        logs_dir: PathBuf,
+        spec: String,
+        since_ms: Option<u64>,
+        until_ms: Option<u64>,
+    ) -> Self {
+        Self {
+            runs: Some(RunQuery::Replay(spec)),
+            ..Self::captures(logs_dir, Vec::new(), true, false, since_ms, until_ms)
         }
     }
 
@@ -297,9 +342,97 @@ impl LogStream {
         emit: &mut dyn FnMut(Value) -> bool,
         alive: &mut dyn FnMut() -> bool,
     ) -> Result<Value, Failure> {
-        match &self.pods_dir {
-            Some(pods_dir) => self.stream_pods(pods_dir, emit, alive),
-            None => self.read_captures(emit, alive),
+        match &self.runs {
+            Some(RunQuery::List) => self.list_runs(emit),
+            Some(RunQuery::Replay(spec)) => self.replay_run(spec, emit, alive),
+            None => match &self.pods_dir {
+                Some(pods_dir) => self.stream_pods(pods_dir, emit, alive),
+                None => self.read_captures(emit, alive),
+            },
+        }
+    }
+
+    /// Emits one `runs` frame carrying every catalog entry, newest last.
+    fn list_runs(&self, emit: &mut dyn FnMut(Value) -> bool) -> Result<Value, Failure> {
+        let records = run_log::read_index(&self.logs_dir).map_err(|_| {
+            Failure::new(
+                "run-index",
+                format!(
+                    "✗ cannot read `{}`\n  next: remove the malformed line and retry",
+                    runs_dir(&self.logs_dir).join(run_log::INDEX_FILE).display()
+                ),
+            )
+        })?;
+        let rows: Vec<Value> = records
+            .iter()
+            .map(|record| {
+                json!({
+                    "run_id": record.run_id,
+                    "ts_ms": record.ts_ms,
+                    "kind": record.kind,
+                    "name": record.name,
+                    "command": record.command,
+                    "state": record.state,
+                    "duration_ms": record.duration_ms,
+                })
+            })
+            .collect();
+        emit(json!({ "event": "runs", "rows": rows }));
+        Ok(json!({ "runs": records.len() }))
+    }
+
+    /// Replays one run's framed capture through the indexed window reader.
+    fn replay_run(
+        &self,
+        spec: &str,
+        emit: &mut dyn FnMut(Value) -> bool,
+        alive: &mut dyn FnMut() -> bool,
+    ) -> Result<Value, Failure> {
+        let runs_dir = runs_dir(&self.logs_dir);
+        let run_id = run_log::resolve_run(&self.logs_dir, spec).map_err(|error| {
+            Failure::new(
+                "no-run",
+                format!("✗ {error}\n  next: list recorded runs with `slipfork logs --runs`"),
+            )
+        })?;
+        let mut reader =
+            read_range(&runs_dir, &run_id, self.since_ms, self.until_ms).map_err(|error| {
+                Failure::new("no-run", format!("✗ cannot read run `{run_id}`: {error}"))
+            })?;
+        if !emit(json!({
+            "kind": "roster",
+            "pod": run_id,
+            "stream": "combined",
+            "line": "",
+            "pods": [run_id],
+        })) {
+            return Ok(json!({ "closed": true }));
+        }
+        loop {
+            let mut lines = Vec::new();
+            let _ = reader.read_lines(&mut |line| lines.push(line.clone()));
+            for line in lines {
+                emit(line_event(
+                    &run_id,
+                    kind_name(line.kind),
+                    &line.text,
+                    Some(line.ts_ms),
+                ));
+            }
+            if !self.follow || !alive() {
+                let mut rest = Vec::new();
+                reader.flush(&mut |line| rest.push(line.clone()));
+                for line in rest {
+                    emit(line_event(
+                        &run_id,
+                        kind_name(line.kind),
+                        &line.text,
+                        Some(line.ts_ms),
+                    ));
+                }
+                return Ok(json!({ "closed": false }));
+            }
+            thread::sleep(Duration::from_millis(40));
         }
     }
 

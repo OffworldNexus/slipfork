@@ -126,7 +126,7 @@ flowchart TD
   summary is `Starting <name>…` for one task and `N running (<a>, <b>, …)` for several.
 - **Flow cursor and resize:** finished rows advance through a real 2D VT100 grid, so the prompt returns to the row the shell expects; `SIGWINCH` re-queries `(cols, rows)`, re-applies the region and redraws.
 - **Narrow and short terminals:** below `cols < 80` the bar is omitted, then `· <summary>`; `done/total`, `pct%` and `elapsed` are never sheared. With `rows < 3` the panel rewrites one line with `\r`.
-- **Truthful rows, zero log spam:** all build, setup, hook and pod output goes to `<store>/logs/<world>/<id>.log`, read with `slipfork logs <id>`; a cache hit prints `cached`.
+- **Truthful rows, zero log spam:** all build, setup, hook and pod output goes to `<store>/logs/<world>/<id>.log`, read with `slipfork logs <id>`; a cache hit prints `cached`, and every step that really executes mints a dim `#run_id` in the reserved last column (see §6).
 
 A successful `up` ends at `✓ Ready -> <url>` with no trailing reminder line. A RAII guard clears row `rows` and restores `\x1b[r` on success, error, panic and `SIGINT`; `down` streams one stop row per pod plus `removed run subvolumes`, keeping data subvolumes and logs.
 
@@ -156,12 +156,41 @@ A failed `fork` rolls back atomically: it stops its supervisor and pods and drop
 
 `slipfork logs [-f] [-a] [target]` merges application `service`s by default; `-a` adds images and resources, and naming one target reads `<store>/logs/<world>/<id>.log`, including an `image` build log after a failed cold `up`. `slipfork doctor` leads with `✓ Ready` or `✗ N issue(s)` across its four shipped rows `Storage`, `Containers`, `Daemon` and `Domains`.
 
+### Per-step run ids
+
+Every step that executes work (`image` `built`/`pulled`, `setup`, and every `hook`) mints one 6-character lowercase hex `run_id`, streams that step's stdout and stderr into `<store>/logs/<world>/runs/<run_id>.log` with its `<run_id>.idx` companion, and appends one `{run_id, ts_ms, kind, name, command, state, duration_ms}` line to `runs/index.jsonl`. `runs/last` and `runs/last-failed` point at the newest id. A `cached`/`up to date` step ran zero commands, so it mints no id and writes no run files; long-lived services keep `<store>/logs/<world>/<service>.log`.
+
+The boot row reserves its last seven cells for a dim `#id`:
+
+```text
+✓ image     backend          built      4.1s  #b7f2a1
+✓ setup     backend          ready      812ms
+```
+
+A failure names the exact replay command, one `✗` per line:
+
+```text
+✗ Failed to run setup 'uv sync' (backend) — check logs with: slipfork logs -r c91e04
+```
+
+`slipfork logs -r <id>` accepts `c91e04`, `#c91e04`, `last`, or `failed`, replays the run log cleanly through the indexed reader, and honours `--since`/`--until`/`-t`/`--json` exactly like service logs. `slipfork logs --runs` prints the catalog as a borderless table, so any past id can be found:
+
+```text
+#run_id  kind   step               status  duration  recorded
+#b7f2a1  image  backend            built      4.1s  2026-11-22 23:09:12
+#c91e04  setup  backend uv sync    failed      84ms  2026-11-22 23:10:03
+```
+
+Both render zero `\x1b[` bytes under `NO_COLOR`, a pipe, or `--json`.
+
 | Command | Behaviour |
 | :--- | :--- |
 | `slipfork up [TARGET]` | Boot this directory, a `.forks/<name>` checkout, or a registered world/fork; preflight that `Forkfile` first |
 | `slipfork down [TARGET]` | Stop this directory's world or the named world/fork; remove run subvolumes, keep data and logs |
 | `slipfork restart [TARGET] [-s SERVICE]` | Restart one service, a world/fork, or every service here through the bottom-bar TUI |
 | `slipfork logs [-f] [-a] [-t] [--since <ms>] [--until <ms>] [targets]...` | Services by default; `-a` adds images and resources; several targets merge in timestamp order |
+| `slipfork logs -r <id>\|last\|failed` | Replay one recorded step run (`#<id>` accepted), honouring `--since`/`--until`/`-t`/`--json` |
+| `slipfork logs --runs` | Borderless `#run_id`, kind, step, status, duration, recorded table of every executed step |
 | `slipfork shell <target>` | Required target: PTY bash/sh, `psql`, `redis-cli`; refuses `s3` and unknowns |
 | `slipfork exec [service\|image] -- <cmd>` | Ad-hoc command inside the target, exit code forwarded |
 

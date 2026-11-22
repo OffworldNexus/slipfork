@@ -158,6 +158,7 @@ fn every_boot_row_keeps_one_start_per_role_and_one_right_edge() {
             name: "db",
             state: "running",
             millis: 7_300,
+            run_id: None,
             success: true,
         },
         Node {
@@ -165,6 +166,7 @@ fn every_boot_row_keeps_one_start_per_role_and_one_right_edge() {
             name: "base",
             state: "cached",
             millis: 812,
+            run_id: None,
             success: true,
         },
         Node {
@@ -172,6 +174,7 @@ fn every_boot_row_keeps_one_start_per_role_and_one_right_edge() {
             name: "api",
             state: "running",
             millis: 3,
+            run_id: None,
             success: true,
         },
         Node {
@@ -179,6 +182,7 @@ fn every_boot_row_keeps_one_start_per_role_and_one_right_edge() {
             name: "web",
             state: "starting",
             millis: 12,
+            run_id: None,
             success: true,
         },
         Node {
@@ -186,6 +190,7 @@ fn every_boot_row_keeps_one_start_per_role_and_one_right_edge() {
             name: "cache",
             state: "running",
             millis: 45,
+            run_id: None,
             success: true,
         },
         Node {
@@ -193,6 +198,7 @@ fn every_boot_row_keeps_one_start_per_role_and_one_right_edge() {
             name: "pg",
             state: "running",
             millis: 900,
+            run_id: None,
             success: true,
         },
         Node {
@@ -200,6 +206,7 @@ fn every_boot_row_keeps_one_start_per_role_and_one_right_edge() {
             name: "worker",
             state: "cached",
             millis: 1,
+            run_id: None,
             success: false,
         },
         Node {
@@ -207,6 +214,7 @@ fn every_boot_row_keeps_one_start_per_role_and_one_right_edge() {
             name: long.as_str(),
             state: "running",
             millis: 7_300,
+            run_id: None,
             success: true,
         },
         Node {
@@ -214,6 +222,7 @@ fn every_boot_row_keeps_one_start_per_role_and_one_right_edge() {
             name: "docs",
             state: "up to date",
             millis: 3,
+            run_id: None,
             success: false,
         },
     ];
@@ -277,6 +286,7 @@ fn the_live_boot_pane_renders_exact_rows_and_bars() {
         name: "base",
         state: "Cached",
         millis: 420,
+        run_id: None,
         success: true,
     };
     let widths = plan_widths(&[&node]);
@@ -293,6 +303,7 @@ fn the_live_boot_pane_renders_exact_rows_and_bars() {
 
     let cached = Node {
         state: "Up-to-date",
+        run_id: None,
         success: false,
         ..node
     };
