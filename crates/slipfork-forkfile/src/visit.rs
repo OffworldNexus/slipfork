@@ -12,7 +12,7 @@ use crate::ast::{
 };
 use crate::{Expr, ExprKind};
 
-/// One service declaration with the port and routes that apply to it.
+/// One service declaration with the port, routes, and enclosing image that apply to it.
 #[derive(Debug, Clone)]
 pub struct ServiceDecl<'a> {
     /// Service id.
@@ -21,6 +21,8 @@ pub struct ServiceDecl<'a> {
     pub port: Option<u16>,
     /// Declared routes, in source order.
     pub routes: Vec<&'a Route>,
+    /// The `image <id>` block the service was declared inside.
+    pub image: Option<&'a str>,
 }
 
 /// Which backing resource an id declares.
@@ -45,6 +47,8 @@ pub struct ResourceDecl<'a> {
     pub version: Option<&'a str>,
     /// `cdn <id>` inside an S3 block.
     pub cdn: Option<&'a str>,
+    /// Child `database <id>` names inside a postgres block.
+    pub databases: Vec<&'a str>,
 }
 
 /// One declared runtime variable, classified for the vault without a source re-scan.
@@ -133,12 +137,14 @@ fn top<'a>(
             kind: ResourceDeclKind::Postgres,
             version: postgres_version(&postgres.body.items),
             cdn: None,
+            databases: postgres_databases(&postgres.body.items),
         }),
         TopItem::Redis(redis) => resources.push(ResourceDecl {
             id: &redis.id,
             kind: ResourceDeclKind::Redis,
             version: redis_version(&redis.body.items),
             cdn: None,
+            databases: Vec::new(),
         }),
         TopItem::S3(s3) => {
             domains.push(&s3.bucket);
@@ -149,11 +155,12 @@ fn top<'a>(
                 kind: ResourceDeclKind::S3,
                 version: None,
                 cdn: cdns.first().copied(),
+                databases: Vec::new(),
             });
         }
         TopItem::Image(image) => {
             for item in &image.body.items {
-                image_item(item, services);
+                image_item(item, &image.id, services);
             }
         }
         TopItem::On(on) => top_on(on, services, resources, domains),
@@ -177,14 +184,14 @@ fn top_on<'a>(
     }
 }
 
-fn image_item<'a>(item: &'a ImageItem, services: &mut Vec<ServiceDecl<'a>>) {
+fn image_item<'a>(item: &'a ImageItem, image: &'a str, services: &mut Vec<ServiceDecl<'a>>) {
     match item {
-        ImageItem::Service(service) => services.push(service_decl(service)),
+        ImageItem::Service(service) => services.push(service_decl(service, image)),
         ImageItem::On(on) => match &on.body {
-            OnBody::Inline(inner) => image_item(inner.as_ref(), services),
+            OnBody::Inline(inner) => image_item(inner.as_ref(), image, services),
             OnBody::Block(block) => {
                 for item in &block.items {
-                    image_item(item, services);
+                    image_item(item, image, services);
                 }
             }
         },
@@ -192,7 +199,7 @@ fn image_item<'a>(item: &'a ImageItem, services: &mut Vec<ServiceDecl<'a>>) {
     }
 }
 
-fn service_decl(service: &Service) -> ServiceDecl<'_> {
+fn service_decl<'a>(service: &'a Service, image: &'a str) -> ServiceDecl<'a> {
     let mut port = None;
     let mut routes = Vec::new();
     service_items(&service.body.items, &mut port, &mut routes);
@@ -200,6 +207,7 @@ fn service_decl(service: &Service) -> ServiceDecl<'_> {
         id: &service.id,
         port,
         routes,
+        image: Some(image),
     }
 }
 
@@ -234,6 +242,23 @@ fn postgres_version(items: &[PostgresItem]) -> Option<&str> {
         },
         PostgresItem::Database(_) => None,
     })
+}
+
+fn postgres_databases(items: &[PostgresItem]) -> Vec<&str> {
+    let mut databases = Vec::new();
+    for item in items {
+        match item {
+            PostgresItem::Database(database) => databases.push(database.id.as_str()),
+            PostgresItem::On(on) => match &on.body {
+                OnBody::Inline(inner) => {
+                    databases.extend(postgres_databases(std::slice::from_ref(inner.as_ref())));
+                }
+                OnBody::Block(block) => databases.extend(postgres_databases(&block.items)),
+            },
+            PostgresItem::Version(_) => {}
+        }
+    }
+    databases
 }
 
 fn redis_version(items: &[RedisItem]) -> Option<&str> {
@@ -458,5 +483,24 @@ image app . {
 
     fn slipfork_forkfile_parse(source: &str) -> crate::ast::Forkfile {
         crate::parse(source).expect("the visitor fixture must be a valid Forkfile")
+    }
+
+    #[test]
+    fn services_name_their_enclosing_image_and_postgres_owns_its_databases() {
+        let document = slipfork_forkfile_parse(
+            "# forkfile: 0.1\n\
+             postgres pg { database app-db }\n\
+             image app . {\n\
+             \x20 service api { port 8000 }\n\
+             }\n",
+        );
+        let services = document.services();
+        assert_eq!(services.len(), 1);
+        assert_eq!(services[0].id, "api");
+        assert_eq!(services[0].image, Some("app"));
+        let resources = document.resources();
+        assert_eq!(resources.len(), 1);
+        assert_eq!(resources[0].id, "pg");
+        assert_eq!(resources[0].databases, vec!["app-db"]);
     }
 }

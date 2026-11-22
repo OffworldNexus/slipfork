@@ -86,11 +86,6 @@ fn dispatch(cli: Cli, session: Session) -> ExitCode {
             }
             session.exec(&ExecArgs { target, json, argv })
         }
-        Command::Db { database } => session.db(&TargetArgs {
-            target: database,
-            json,
-        }),
-        Command::Redis { id } => session.redis(&TargetArgs { target: id, json }),
         Command::Env { component, reveal } => session.env(&EnvArgs {
             component,
             reveal,

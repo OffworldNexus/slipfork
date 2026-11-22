@@ -2790,3 +2790,32 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-22T12:56 [M3.50.1] (lead) triad fix pass: drop wire logs_root (WorldShared-derived), LIVE_SUITES entry, abort on supervise fault, fail-closed rootfs, log_path single owner, console recv 
 - 2026-11-22T12:56 [M3.50.1] (lead) edited fields
 - 2026-11-22T12:58 [M3.50.1] (lead) status ready -> done
+- 2026-11-22T12:58 [M3.50.2] (lead) status ready -> active
+- 2026-11-22T12:58 [M3.50.2] (lead) attempt 1/3 started
+- 2026-11-22T12:58 [M3.50.2] (lead) base 184ab17208d0b084fc83008e3dd37456a2522177
+- 2026-11-22T12:58 [M3.50.3] (lead) status ready -> active
+- 2026-11-22T12:58 [M3.50.3] (lead) attempt 1/3 started
+- 2026-11-22T12:58 [M3.50.3] (lead) base 184ab17208d0b084fc83008e3dd37456a2522177
+- 2026-11-22T13:04 [M3.50.2] (lead) status active -> review
+- 2026-11-22T13:04 [M3.50.3] (lead) status active -> review
+- 2026-11-22T13:06 [M3.50.2] (lead) status review -> ready
+- 2026-11-22T13:06 [M3.50.2] (lead) attempt 2/3 started
+- 2026-11-22T13:06 [M3.50.2] (lead) triad fix pass: PTY refusal frames, image->pod via ServiceDecl.image, booting/running shellable filters, logs all-filter + s3 copy, split lifecycle/logs.rs, PTY
+- 2026-11-22T13:06 [M3.50.2] (lead) edited fields
+- 2026-11-22T13:07 [M3.50.3] (lead) status review -> ready
+- 2026-11-22T13:07 [M3.50.3] (lead) attempt 2/3 started
+- 2026-11-22T13:07 [M3.50.3] (lead) triad fix pass: no-sync tokenizer, downstream adjacency, cached state (waiter + metadata-only), up --json schema, failure remedies, ANSI tee strip, adoption via
+- 2026-11-22T13:07 [M3.50.3] (lead) edited fields
+- 2026-11-22T13:07 [M3.50.4] (lead) edited fields
+- 2026-11-22T13:07 [M3.50.4] (lead) OWNER ADDENDUM: (1) ps/status must UNION live crun pods not in the current Forkfile as PsService{orphaned:true} rendered yellow 'orphaned' until collected; (2) 
+- 2026-11-22T13:07 [M3.50.5] (lead) edited fields
+- 2026-11-22T13:07 [M3.50.5] (lead) OWNER ADDENDUM: document the 'orphaned' status state (yellow, next: slipfork up to reconcile) and that repeating slipfork up after a Forkfile edit reconciles st
+- 2026-11-22T13:08 [M3.50.4] (lead) edited fields
+- 2026-11-22T13:13 [M3.50.7] (lead) created (task) Domain-first status tree + always-<bucket>.<world>.localhost S3/CDN local domains (zero ports/ages)
+- 2026-11-22T13:13 [M3.50.6] (lead) edited fields
+- 2026-11-22T13:13 [M3.50.5] (lead) edited fields
+- 2026-11-22T13:13 [M3.50.5] (lead) OWNER ADDENDUM: specs/01+02 must lock the domain-first tree (flat worlds, domains->paths, zero ports/ages) and the always-<bucket>.<world>.localhost S3 domain w
+- 2026-11-22T13:13 [M3.50.7] (lead) edited fields
+- 2026-11-22T13:15 [M3.50.7] (lead) OWNER REFINEMENT (uniform domains): every domain uses the SAME 2-level shape — 'http://<domain>' then '<path> -> <target>  <status>'; ZERO inline S3-only domain
+- 2026-11-22T13:15 [M3.50.5] (lead) OWNER REFINEMENT: specs/02 + docs/cli.md show the uniform domain->path->target shape for ALL domains including S3 buckets (no special-case inline bucket rows).
+- 2026-11-22T13:18 [M3.50.2] (lead) status ready -> done

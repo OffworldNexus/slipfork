@@ -131,10 +131,11 @@ pub enum Command {
         all: bool,
     },
 
-    /// Open `sh -i` inside a service or image pod (no PTY is allocated).
+    /// Attach a real PTY: bash/sh, psql, or redis-cli for one declared target.
     Shell {
-        /// Service or image id.
-        target: Option<String>,
+        /// Service, image, postgres, database, or redis id.
+        #[arg(value_name = "TARGET")]
+        target: String,
     },
 
     /// Run a command inside a pod and forward its exit code.
@@ -144,18 +145,6 @@ pub enum Command {
         /// Command and arguments after `--`.
         #[arg(last = true, value_name = "CMD")]
         argv: Vec<String>,
-    },
-
-    /// Open psql against the world's postgres; piped stdin executes SQL.
-    Db {
-        /// Database id; auto-selected when unambiguous.
-        database: Option<String>,
-    },
-
-    /// Open redis-cli against the world's redis; piped stdin runs commands.
-    Redis {
-        /// Redis resource id; auto-selected when unambiguous.
-        id: Option<String>,
     },
 
     /// Print resolved runtime variables; secrets stay redacted by default.

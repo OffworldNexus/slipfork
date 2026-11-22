@@ -38,6 +38,7 @@ pub(super) fn services(doc: &Forkfile) -> Vec<PsService> {
                     })
                 })
                 .collect(),
+            image: service.image.map(str::to_owned),
         })
         .collect();
     for resource in doc.resources() {
@@ -63,6 +64,7 @@ pub(super) fn services(doc: &Forkfile) -> Vec<PsService> {
             policy,
             pid: None,
             routes: Vec::new(),
+            image: None,
         });
     }
     out

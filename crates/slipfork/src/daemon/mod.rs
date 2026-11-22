@@ -20,7 +20,8 @@ pub use client::{DaemonClient, DaemonError};
 
 use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
+use std::os::fd::AsFd;
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -34,7 +35,7 @@ use frames::{FrameReader, write_frame};
 use lifecycle::core::Core;
 use serde_json::{Value, json};
 use slipfork_vcs::VcsWorkspace;
-use slipfork_world::control::StreamFrame;
+use slipfork_world::control::{FrameLines, InitFrame, StreamFrame};
 
 /// A typed control-plane failure rendered as an `error` frame with a bare message.
 #[derive(Debug, Clone)]
@@ -249,6 +250,17 @@ impl Daemon {
                 }
                 return Ok(());
             }
+            if request.method == "shell" {
+                let outcome = self.handle_shell(&request, &mut reader, &mut writer);
+                match outcome {
+                    Ok(value) => write_frame(&mut writer, &wire::ok(&id, value))?,
+                    Err(failure) => write_frame(
+                        &mut writer,
+                        &wire::error(&id, failure.code, &failure.message),
+                    )?,
+                }
+                continue;
+            }
             if request.method == "logs" {
                 let value = {
                     let probe = writer.try_clone()?;
@@ -397,6 +409,111 @@ impl Daemon {
             "snapshot_ms": prepared.snapshot_ms,
             "checkpoint_ms": prepared.checkpoint_ms,
         })))
+    }
+
+    /// Relays one `shell`: a real PTY master for a terminal, or the `exec` pipe path otherwise.
+    fn handle_shell(
+        &self,
+        request: &wire::Request,
+        reader: &mut FrameReader,
+        writer: &mut UnixStream,
+    ) -> Result<Value, Failure> {
+        let tty = request
+            .params
+            .get("tty")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        if !tty {
+            let params = self.core()?.shell_exec_params(&request.params)?;
+            let exec = wire::Request {
+                v: request.v,
+                id: request.id.clone(),
+                method: "exec".to_owned(),
+                params,
+            };
+            return self.handle_exec(&exec, reader, writer);
+        }
+        let lifecycle::stream::PtyLink { mut socket, master } =
+            self.core()?.open_pty(&request.params)?;
+        slipfork_world::fdpass::send_fd(writer, b"pty", Some(master.as_fd())).map_err(|error| {
+            Failure::new("client-gone", format!("send the PTY descriptor: {error}"))
+        })?;
+        drop(master);
+        let resizes = socket.try_clone().map_err(|error| {
+            Failure::new(
+                "world-unavailable",
+                format!("clone the PTY socket: {error}"),
+            )
+        })?;
+        std::thread::scope(|scope| {
+            let handle = scope.spawn(move || frames::pump_resizes(reader, resizes));
+            let result = (|| -> Result<Value, Failure> {
+                let mut lines = FrameLines::new();
+                loop {
+                    if frames::peer_closed(writer) {
+                        // Dropping `socket` below hangs up on the world; its supervisor sees HUP
+                        // and reaps the whole pod process group.
+                        return Err(Failure::new(
+                            "client-gone",
+                            "the client closed during the PTY relay",
+                        ));
+                    }
+                    let mut pollfd = libc::pollfd {
+                        fd: socket.as_raw_fd(),
+                        events: libc::POLLIN,
+                        revents: 0,
+                    };
+                    // SAFETY: one valid `pollfd` lives across the call; 100ms bounds the wait so
+                    // a vanished client is noticed promptly.
+                    let ready = unsafe { libc::poll(&mut pollfd, 1, 100) };
+                    if ready < 0 {
+                        let error = std::io::Error::last_os_error();
+                        if error.kind() == std::io::ErrorKind::Interrupted {
+                            continue;
+                        }
+                        return Err(Failure::new(
+                            "world-stream",
+                            format!("poll the PTY reply: {error}"),
+                        ));
+                    }
+                    if ready == 0 {
+                        continue;
+                    }
+                    let mut chunk = [0_u8; 4096];
+                    let read = socket.read(&mut chunk).map_err(|error| {
+                        Failure::new("world-stream", format!("read the PTY reply: {error}"))
+                    })?;
+                    if read == 0 {
+                        return Err(Failure::new(
+                            "world-stream",
+                            "the world closed the PTY control socket",
+                        ));
+                    }
+                    lines.extend(&chunk[..read]);
+                    let Some(raw) = lines.next_line() else {
+                        continue;
+                    };
+                    let text = std::str::from_utf8(&raw).map_err(|error| {
+                        Failure::new("world-stream", format!("non-UTF-8 PTY reply: {error}"))
+                    })?;
+                    match slipfork_world::control::decode_init_frame(text.trim()) {
+                        Ok(InitFrame::Reply { ok, error, .. }) => {
+                            let value = lifecycle::stream::finish(ok, error)?;
+                            let code = value.get("exit_code").and_then(Value::as_i64).unwrap_or(-1);
+                            return Ok(json!({ "exit": code }));
+                        }
+                        Ok(_) => {}
+                        Err(error) => {
+                            return Err(Failure::new("world-stream", error.to_string()));
+                        }
+                    }
+                }
+            })();
+            // The terminal is over; end the resize reader so the scope can join.
+            let _ = writer.shutdown(std::net::Shutdown::Read);
+            let _ = handle.join();
+            result
+        })
     }
 
     /// Relays one `exec`: world frames go out as `event`s, client `input` frames go in.

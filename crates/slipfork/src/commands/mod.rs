@@ -21,6 +21,7 @@ use crate::{doctor, status};
 mod auth;
 mod env;
 mod open;
+mod pty;
 mod secret;
 mod streams;
 pub use auth::AuthArgs;

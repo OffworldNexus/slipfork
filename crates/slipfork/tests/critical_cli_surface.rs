@@ -132,8 +132,6 @@ fn help_and_version_are_the_shipped_surface() {
             "logs",
             "shell",
             "exec",
-            "db",
-            "redis",
             "env",
             "secret",
             "open",
@@ -239,13 +237,33 @@ fn host_verbs_ship_help_and_keep_json_clean() {
 
 #[test]
 fn streaming_verbs_ship_help_and_fail_with_next() {
-    for verb in ["logs", "shell", "exec", "db", "redis"] {
+    for verb in ["logs", "shell", "exec"] {
         let help = run(&[verb, "--help"]);
         assert!(help.status.success(), "`{verb} --help` must succeed");
         let text = String::from_utf8_lossy(&help.stdout);
         assert!(text.contains(&format!("slipfork {verb}")), "{text}");
         assert!(!text.contains(ANSI), "piped help must stay plain: {text}");
     }
+    let shell_help = String::from_utf8_lossy(&run(&["shell", "--help"]).stdout).into_owned();
+    assert!(
+        shell_help.contains("<TARGET>"),
+        "`shell` must document its required target: {shell_help}"
+    );
+    // A missing target is a clap usage error: exit 2 with exactly one remedy.
+    let missing = run(&["shell"]);
+    assert_eq!(missing.status.code(), Some(2), "{missing:?}");
+    let stderr = String::from_utf8_lossy(&missing.stderr);
+    assert!(stderr.contains("required arguments"), "{stderr}");
+    assert_eq!(stderr.matches("next:").count(), 1, "{stderr}");
+
+    // `db` and `redis` are gone for good: no aliases, no hidden shims.
+    for retired in ["db", "redis"] {
+        let output = run(&[retired]);
+        assert_eq!(output.status.code(), Some(2), "`{retired}` must not ship");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("unrecognized subcommand"), "{stderr}");
+    }
+
     let exec = run(&["exec", "api"]);
     assert_eq!(exec.status.code(), Some(2));
     let stderr = String::from_utf8_lossy(&exec.stderr);
@@ -254,10 +272,8 @@ fn streaming_verbs_ship_help_and_fail_with_next() {
     let root = scratch("streams");
     for args in [
         &["logs", "--json"][..],
-        &["shell"][..],
+        &["shell", "api"][..],
         &["exec", "api", "--", "true"][..],
-        &["db"][..],
-        &["redis"][..],
     ] {
         let output = run_isolated(args, &root);
         assert_eq!(output.status.code(), Some(1), "{args:?}");

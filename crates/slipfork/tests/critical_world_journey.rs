@@ -9,13 +9,15 @@
 
 use std::cell::RefCell;
 use std::fs;
-use std::io::{Read, Write};
+use std::fs::{File, OpenOptions};
+use std::io::{self, Read, Write};
 use std::net::{TcpListener, TcpStream, ToSocketAddrs};
-use std::os::fd::{AsFd, AsRawFd};
+use std::os::fd::{AsFd, AsRawFd, FromRawFd};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::net::UnixStream;
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use slipfork_world::{
@@ -66,6 +68,10 @@ s3 assets {
   policy public-read
   cdn static-cdn
 }
+postgres pg {
+  database app_db
+}
+redis cache
 "#;
 
 const APP_PY: &str = r#"import os, pathlib
@@ -315,6 +321,242 @@ impl Journey {
             .env("XDG_STATE_HOME", self.run.join("state"))
             .output()
             .expect("the slipfork binary must be runnable")
+    }
+
+    /// Runs one verb with a piped stdin, as a script would.
+    fn slipfork_input(&self, project: &Path, args: &[&str], input: &str) -> Output {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_slipfork"))
+            .args(args)
+            .current_dir(project)
+            .env("NO_COLOR", "1")
+            .env("XDG_RUNTIME_DIR", &self.runtime)
+            .env("XDG_STATE_HOME", self.run.join("state"))
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("the slipfork binary must be runnable");
+        child
+            .stdin
+            .as_mut()
+            .expect("piped stdin")
+            .write_all(input.as_bytes())
+            .expect("write the piped input");
+        drop(child.stdin.take());
+        child.wait_with_output().expect("collect the piped run")
+    }
+
+    /// Spawns `slipfork` on a real kernel PTY owned by the test harness.
+    fn pty(&self, project: &Path, args: &[&str], cols: u16, rows: u16) -> Pty {
+        Pty::spawn(
+            project,
+            &self.runtime,
+            &self.run.join("state"),
+            args,
+            cols,
+            rows,
+        )
+    }
+}
+
+/// A real kernel PTY driven directly by the test harness (never a mock, never `script`).
+struct Pty {
+    master: File,
+    slave: File,
+    child: std::process::Child,
+    seen: String,
+}
+
+impl Pty {
+    fn spawn(
+        project: &Path,
+        runtime: &Path,
+        state: &Path,
+        args: &[&str],
+        cols: u16,
+        rows: u16,
+    ) -> Self {
+        // SAFETY: every call below acts on descriptors this function just created or on the
+        // child's stdio immediately after `fork`.
+        unsafe {
+            let master_fd = libc::posix_openpt(libc::O_RDWR | libc::O_NOCTTY);
+            assert!(
+                master_fd >= 0,
+                "posix_openpt: {}",
+                io::Error::last_os_error()
+            );
+            assert_eq!(libc::grantpt(master_fd), 0, "grantpt");
+            assert_eq!(libc::unlockpt(master_fd), 0, "unlockpt");
+            let name = libc::ptsname(master_fd);
+            assert!(!name.is_null(), "ptsname returned no slave path");
+            let slave_path = std::ffi::CStr::from_ptr(name)
+                .to_string_lossy()
+                .into_owned();
+            let winsize = libc::winsize {
+                ws_row: rows,
+                ws_col: cols,
+                ws_xpixel: 0,
+                ws_ypixel: 0,
+            };
+            assert_eq!(libc::ioctl(master_fd, libc::TIOCSWINSZ, &winsize), 0);
+            let master = File::from_raw_fd(master_fd);
+            master
+                .set_nonblocking(true)
+                .expect("configure the harness PTY master");
+            let slave = OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(&slave_path)
+                .expect("open the harness PTY slave");
+            let mut command = Command::new(env!("CARGO_BIN_EXE_slipfork"));
+            command
+                .args(args)
+                .current_dir(project)
+                .env("NO_COLOR", "1")
+                .env("XDG_RUNTIME_DIR", runtime)
+                .env("XDG_STATE_HOME", state)
+                .stdin(Stdio::from(slave.try_clone().expect("clone the slave")))
+                .stdout(Stdio::from(slave.try_clone().expect("clone the slave")))
+                .stderr(Stdio::from(slave.try_clone().expect("clone the slave")));
+            command.pre_exec(|| {
+                if libc::setsid() < 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                if libc::ioctl(libc::STDIN_FILENO, libc::TIOCSCTTY, 0) < 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                Ok(())
+            });
+            let child = command.spawn().expect("spawn slipfork on the harness PTY");
+            Self {
+                master,
+                slave,
+                child,
+                seen: String::new(),
+            }
+        }
+    }
+
+    fn send(&mut self, text: &str) {
+        let fd = self.master.as_raw_fd();
+        let mut bytes = text.as_bytes();
+        while !bytes.is_empty() {
+            // SAFETY: `bytes` is initialized for its length and `fd` is the live master.
+            let written = unsafe { libc::write(fd, bytes.as_ptr().cast(), bytes.len()) };
+            if written > 0 {
+                bytes = &bytes[written as usize..];
+                continue;
+            }
+            let error = io::Error::last_os_error();
+            assert_eq!(
+                error.kind(),
+                io::ErrorKind::WouldBlock,
+                "write to the harness PTY: {error}"
+            );
+            let mut pollfd = libc::pollfd {
+                fd,
+                events: libc::POLLOUT,
+                revents: 0,
+            };
+            // SAFETY: one valid `pollfd` lives across the call.
+            unsafe { libc::poll(&mut pollfd, 1, 1000) };
+        }
+    }
+
+    fn resize(&mut self, cols: u16, rows: u16) {
+        let winsize = libc::winsize {
+            ws_row: rows,
+            ws_col: cols,
+            ws_xpixel: 0,
+            ws_ypixel: 0,
+        };
+        // SAFETY: `TIOCSWINSZ` only writes the given geometry onto this live PTY pair; the kernel
+        // signals `SIGWINCH` to the terminal's foreground process group.
+        assert_eq!(
+            unsafe { libc::ioctl(self.master.as_raw_fd(), libc::TIOCSWINSZ, &winsize) },
+            0
+        );
+    }
+
+    fn expect(&mut self, needle: &str, timeout: Duration) -> String {
+        let deadline = Instant::now() + timeout;
+        let mut chunk = [0_u8; 4096];
+        while Instant::now() < deadline {
+            match self.master.read(&mut chunk) {
+                Ok(0) => break,
+                Ok(read) => {
+                    self.seen.push_str(&String::from_utf8_lossy(&chunk[..read]));
+                    if self.seen.contains(needle) {
+                        return self.seen.clone();
+                    }
+                }
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(error) => panic!("read the harness PTY: {error}"),
+            }
+        }
+        panic!("the PTY never printed `{needle}`; saw:\n{}", self.seen);
+    }
+
+    /// Drains PTY output until `needle` appears or the bounded window expires.
+    fn wait_for(&mut self, needle: &str, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        let mut chunk = [0_u8; 4096];
+        while Instant::now() < deadline && !self.seen.contains(needle) {
+            match self.master.read(&mut chunk) {
+                Ok(0) => break,
+                Ok(read) => self.seen.push_str(&String::from_utf8_lossy(&chunk[..read])),
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(error) => panic!("read the harness PTY: {error}"),
+            }
+        }
+        self.seen.contains(needle)
+    }
+
+    /// Waits for the child (bounded), restores-drain, and asserts cooked mode came back.
+    fn finish(mut self) -> (i32, String) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let status = loop {
+            if let Some(status) = self.child.try_wait().expect("poll the PTY child") {
+                break status;
+            }
+            if Instant::now() >= deadline {
+                let _ = self.child.kill();
+                let status = self.child.wait().expect("reap the PTY child");
+                panic!(
+                    "the PTY child did not exit within 10s (killed: {status}); saw:\n{}",
+                    self.seen
+                );
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        let deadline = Instant::now() + Duration::from_millis(500);
+        let mut chunk = [0_u8; 4096];
+        while Instant::now() < deadline {
+            match self.master.read(&mut chunk) {
+                Ok(0) => break,
+                Ok(read) => self.seen.push_str(&String::from_utf8_lossy(&chunk[..read])),
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(_) => break,
+            }
+        }
+        // SAFETY: `tcgetattr` only reads termios for the live slave descriptor.
+        let mut termios: libc::termios = unsafe { std::mem::zeroed() };
+        assert_eq!(
+            unsafe { libc::tcgetattr(self.slave.as_raw_fd(), &mut termios) },
+            0,
+            "read the PTY termios"
+        );
+        assert!(
+            termios.c_lflag & libc::ICANON != 0,
+            "cooked mode must be restored on exit"
+        );
+        (status.code().unwrap_or(-1), self.seen)
     }
 }
 
@@ -799,6 +1041,118 @@ fn world_up_restart_down_journey() {
     let missing_err = stderr(&missing);
     assert!(missing_err.contains("not running"), "{missing_err}");
     assert!(missing_err.contains("next:"), "{missing_err}");
+
+    // 1c. One unified `shell`: kind dispatch lives in the daemon, exact refusals on stderr, and a
+    // real PTY with `SIGWINCH` forwarding plus cooked-mode restoration.
+    let sql = journey.slipfork_input(&good, &["shell", "app_db"], "select 1;\n");
+    assert_eq!(
+        sql.status.code(),
+        Some(0),
+        "piped `shell app_db` must succeed: {}",
+        stderr(&sql)
+    );
+    assert!(
+        stdout(&sql).contains('1'),
+        "piped psql must print the row: {}",
+        stdout(&sql)
+    );
+    let cache = journey.slipfork_input(&good, &["shell", "cache"], "ping\n");
+    assert_eq!(
+        cache.status.code(),
+        Some(0),
+        "piped `shell cache` must succeed: {}",
+        stderr(&cache)
+    );
+    assert!(
+        stdout(&cache).contains("PONG"),
+        "piped redis-cli must answer PING: {}",
+        stdout(&cache)
+    );
+
+    let bucket = journey.slipfork(&good, &["shell", "uploads"]);
+    assert_eq!(bucket.status.code(), Some(1));
+    let refused = stderr(&bucket);
+    assert!(
+        refused.contains("✗ 'uploads' is an s3 bucket, not a shell"),
+        "{refused}"
+    );
+    assert!(
+        refused.contains("  next: slipfork shell api, worker, probe, pg, cache"),
+        "the refusal must list every shellable target: {refused}"
+    );
+    assert!(!refused.contains('\u{1b}'), "NO_COLOR refusals stay plain");
+    let unknown = journey.slipfork(&good, &["shell", "apii"]);
+    assert_eq!(unknown.status.code(), Some(1));
+    let refused = stderr(&unknown);
+    assert!(
+        refused.contains("✗ No shellable target 'apii'"),
+        "{refused}"
+    );
+    assert!(refused.contains("  next: slipfork shell api"), "{refused}");
+
+    let mut api = journey.pty(&good, &["shell", "api"], 120, 40);
+    api.expect("(good:api)", Duration::from_secs(20));
+    // The inner shell must be a real pts, with stdin and stdout both terminals.
+    api.send("tty; test -t 0 && test -t 1 && echo TTY-OK\n");
+    api.expect("/dev/pts/", Duration::from_secs(10));
+    api.expect("TTY-OK", Duration::from_secs(10));
+    api.send("stty size\n");
+    api.expect("40 120", Duration::from_secs(10));
+    api.resize(100, 30);
+    // SIGWINCH delivery is racy, so re-ask until the kernel reports the new geometry.
+    let resized = wait_until(
+        || {
+            api.send("stty size\n");
+            api.wait_for("30 100", Duration::from_millis(500))
+        },
+        Duration::from_secs(10),
+    );
+    assert!(
+        resized,
+        "the resized geometry never reached the PTY; saw:\n{}",
+        api.seen
+    );
+    api.send("exit\n");
+    let (code, seen) = api.finish();
+    assert_eq!(code, 0, "`shell api` must exit 0:\n{seen}");
+    assert!(
+        !seen.contains("can't access tty; job control turned off"),
+        "a real PTY must never degrade to `sh`:\n{seen}"
+    );
+
+    let mut pg = journey.pty(&good, &["shell", "pg"], 120, 40);
+    pg.expect("=#", Duration::from_secs(20));
+    pg.send("select 1;\n");
+    pg.expect("(1 row)", Duration::from_secs(10));
+    pg.send("\\q\n");
+    let (code, seen) = pg.finish();
+    assert_eq!(code, 0, "`shell pg` must exit 0:\n{seen}");
+
+    let mut redis = journey.pty(&good, &["shell", "cache"], 120, 40);
+    redis.expect("6379>", Duration::from_secs(20));
+    redis.send("ping\n");
+    redis.expect("PONG", Duration::from_secs(10));
+    redis.send("quit\n");
+    let (code, seen) = redis.finish();
+    assert_eq!(code, 0, "`shell cache` must exit 0:\n{seen}");
+
+    // 1d. Image build logs replay straight from `<store>/logs/<world>/<image>.log`.
+    let image_log = journey.store_root.join("logs").join("good").join("app.log");
+    assert!(
+        wait_until(|| image_log.is_file(), Duration::from_secs(20)),
+        "the image builder must record `{}`",
+        image_log.display()
+    );
+    let image_logs = journey.slipfork(&good, &["logs", "app"]);
+    assert!(
+        image_logs.status.success(),
+        "`logs app` must read the capture file: {}",
+        stderr(&image_logs)
+    );
+    assert!(
+        !stdout(&image_logs).trim().is_empty(),
+        "`logs app` must replay the build output"
+    );
 
     // 2. An image's baked `CMD` runs when the service declares no `run:`.
     let baked = journey.project("baked", BAKED_FORKFILE);

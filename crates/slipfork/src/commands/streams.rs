@@ -1,11 +1,12 @@
-//! `logs`, `shell`, `exec`, `db`, and `redis`: streaming verbs rendered from typed events.
+//! `logs`, `shell`, and `exec`: streaming verbs rendered from typed events.
 //!
 //! The daemon sends `{"kind","pod","stream","line"}` events plus one `roster` event that fixes the
-//! gutter width. This renderer owns dividers, `--json`, and the final `{"exit":n}`. Interactive
-//! verbs pipe stdin as base64 input frames (no TTY allocation), so `psql`, `redis-cli`, and `sh -i`
-//! work over a plain pipe.
+//! gutter width. This renderer owns dividers, `--json`, and the final `{"exit":n}`. A terminal
+//! `shell` receives the world's real `/dev/pts/N` master and relays raw bytes untouched; a pipe
+//! relays stdin as base64 input frames, so `psql`, `redis-cli`, and `sh` work over a plain pipe.
 
 use std::collections::BTreeMap;
+use std::io::IsTerminal;
 use std::os::fd::AsRawFd;
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -34,11 +35,11 @@ pub struct LogsArgs {
     pub json: bool,
 }
 
-/// Parsed `shell`, `db`, and `redis` arguments.
+/// Parsed `shell` arguments.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TargetArgs {
-    /// Explicit service/image/resource id, when given.
-    pub target: Option<String>,
+    /// Required service, image, postgres, database, or redis id.
+    pub target: String,
     /// Emit events and a final `{"exit":n}` instead of human output.
     pub json: bool,
 }
@@ -94,20 +95,97 @@ impl Session {
                 renderer.finish(0);
                 ExitCode::SUCCESS
             }
-            Err(error) => self.stream_fail(&error, "logs", args.json),
+            Err(error) => self.exact_fail(&error, "logs", args.json),
         }
     }
 
-    /// `slipfork shell [service|image]`: `sh -i` over a plain pipe (no TTY is allocated).
+    /// `slipfork shell <target>`: a real PTY on a terminal, a plain pipe otherwise.
+    ///
+    /// The daemon owns kind dispatch: the CLI sends the target id and the daemon builds argv from
+    /// its live roster. A terminal receives the `/dev/pts/N` master and raw bytes pass straight
+    /// through; a pipe relays `exec` stdin as base64 frames.
     pub fn shell(&self, args: &TargetArgs) -> ExitCode {
+        install_sigint();
+        let Some(mut client) = self.existing_daemon(args.json) else {
+            return ExitCode::FAILURE;
+        };
+        let tty = !args.json && self.interactive() && std::io::stdin().is_terminal();
+        if tty {
+            let (cols, rows) = crate::commands::pty::geometry();
+            let params = json!({
+                "project": self.cwd(),
+                "target": args.target,
+                "tty": true,
+                "cols": cols,
+                "rows": rows,
+            });
+            let (id, master) = match client.call_pty("shell", params) {
+                Ok(received) => received,
+                Err(error) => return self.shell_fail(&error, args.json),
+            };
+            if let Err(error) = crate::commands::pty::attach(&mut client, &id, &master) {
+                drop(master);
+                return self.report(
+                    "pty",
+                    &error.to_string(),
+                    "retry `slipfork shell` from a real terminal",
+                    args.json,
+                );
+            }
+            drop(master);
+            return match client.finish_pty(&id, "shell") {
+                Ok(value) => {
+                    let code = value.get("exit").and_then(Value::as_i64).unwrap_or(0);
+                    ExitCode::from(u8::try_from(code.clamp(0, 255)).unwrap_or(1))
+                }
+                Err(error) => self.shell_fail(&error, args.json),
+            };
+        }
         let params = json!({
             "project": self.cwd(),
             "target": args.target,
-            "argv": ["sh", "-i"],
-            "stdin": true,
-            "select": "any",
+            "tty": false,
         });
-        self.exec_like("exec", params, args.json, "shell")
+        let mut renderer = Renderer::exec(self.color(), args.json);
+        let stdin = std::io::stdin();
+        let input_fd = stdin.as_raw_fd();
+        let mut input = stdin.lock();
+        let outcome = client.call_duplex("shell", params, &mut input, input_fd, &mut |event| {
+            renderer.event(event)
+        });
+        match outcome {
+            Ok(value) => {
+                let code = value.get("exit").and_then(Value::as_i64).unwrap_or(0);
+                renderer.finish(code);
+                ExitCode::from(u8::try_from(code.clamp(0, 255)).unwrap_or(1))
+            }
+            Err(_) if INTERRUPTED.load(Ordering::SeqCst) => {
+                renderer.finish(130);
+                ExitCode::from(130)
+            }
+            Err(error) => self.shell_fail(&error, args.json),
+        }
+    }
+
+    /// Renders a daemon shell refusal; a kind refusal is already the exact `1 line + next:` copy.
+    fn shell_fail(&self, error: &DaemonError, json: bool) -> ExitCode {
+        self.exact_fail(error, "shell", json)
+    }
+
+    /// Renders a `shell-refused` payload verbatim and everything else through [`Self::stream_fail`].
+    fn exact_fail(&self, error: &DaemonError, verb: &str, json: bool) -> ExitCode {
+        if json {
+            let _ = emit(&format!(
+                "{}\n",
+                json!({ "error": { "code": error.code, "message": error.message } })
+            ));
+            return ExitCode::FAILURE;
+        }
+        if error.code == "shell-refused" {
+            eprintln!("{}", error.message);
+            return ExitCode::FAILURE;
+        }
+        self.stream_fail(error, verb, false)
     }
 
     /// `slipfork exec [service|image] -- <cmd>`: forwards the child's exit code and stdin.
@@ -120,30 +198,6 @@ impl Session {
             "select": "any",
         });
         self.exec_like("exec", params, args.json, "exec")
-    }
-
-    /// `slipfork db [database]`: `psql` inside the world's postgres pod.
-    pub fn db(&self, args: &TargetArgs) -> ExitCode {
-        let params = json!({
-            "project": self.cwd(),
-            "target": args.target,
-            "argv": ["psql", "-U", "postgres"],
-            "stdin": true,
-            "select": "postgres",
-        });
-        self.exec_like("exec", params, args.json, "db")
-    }
-
-    /// `slipfork redis [id]`: `redis-cli` inside the world's redis pod.
-    pub fn redis(&self, args: &TargetArgs) -> ExitCode {
-        let params = json!({
-            "project": self.cwd(),
-            "target": args.target,
-            "argv": ["redis-cli"],
-            "stdin": true,
-            "select": "redis",
-        });
-        self.exec_like("exec", params, args.json, "redis")
     }
 
     fn exec_like(&self, method: &str, params: Value, json: bool, verb: &str) -> ExitCode {
@@ -225,7 +279,7 @@ impl Renderer {
         Self::with_gutter(color, json, true)
     }
 
-    /// The `exec`/`db`/`redis` renderer: the command's own stdout and stderr, byte for byte.
+    /// The `exec`/`shell` renderer: the command's own stdout and stderr, byte for byte.
     fn exec(color: bool, json: bool) -> Self {
         Self::with_gutter(color, json, false)
     }

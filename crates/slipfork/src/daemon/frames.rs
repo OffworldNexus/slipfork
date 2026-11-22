@@ -7,7 +7,7 @@ use std::io::{self, Read, Write};
 use std::os::fd::OwnedFd;
 use std::os::unix::net::UnixStream;
 
-use slipfork_world::control::StreamInput;
+use slipfork_world::control::{PROTOCOL_VERSION, Request, StreamInput};
 
 use super::wire;
 
@@ -24,6 +24,37 @@ pub(super) fn pump_input(reader: &mut FrameReader, mut input: StreamInput) {
         let data = frame.input.unwrap_or_default();
         if input.send_base64(&data).is_err() || eof {
             break;
+        }
+    }
+}
+
+/// Forwards client `resize` frames to the world PTY (one `ExecResize` per resize).
+pub(super) fn pump_resizes(reader: &mut FrameReader, mut world: UnixStream) {
+    loop {
+        let Ok(Some((payload, _))) = reader.next() else {
+            return;
+        };
+        let Ok(frame) = serde_json::from_slice::<wire::ResizeFrame>(&payload) else {
+            continue;
+        };
+        let Some(resize) = frame.resize else {
+            continue;
+        };
+        let request = Request::ExecResize {
+            v: PROTOCOL_VERSION,
+            id: "daemon-pty".to_owned(),
+            cols: resize.cols,
+            rows: resize.rows,
+        };
+        let Ok(bytes) = slipfork_world::control::encode(&request) else {
+            continue;
+        };
+        if world
+            .write_all(&bytes)
+            .and_then(|()| world.flush())
+            .is_err()
+        {
+            return;
         }
     }
 }

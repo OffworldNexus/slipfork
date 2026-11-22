@@ -74,6 +74,9 @@ pub struct PsService {
     /// Declared ingress routes.
     #[serde(default)]
     pub routes: Vec<PsRoute>,
+    /// Enclosing `image <id>` for a service row.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image: Option<String>,
 }
 
 /// The closed set of `ps` row kinds.

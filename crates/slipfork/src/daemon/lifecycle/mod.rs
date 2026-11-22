@@ -3,6 +3,7 @@
 pub(super) mod core;
 mod down;
 mod fork;
+mod logs;
 mod ps;
 pub(super) mod stream;
 mod up;

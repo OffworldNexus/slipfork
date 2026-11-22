@@ -290,6 +290,7 @@ fn daemon_control_plane_and_status_tree_lifecycle() {
     assert_eq!(by_id("api")["running"], true);
     assert_eq!(by_id("api")["port"], 8000);
     assert_eq!(by_id("api")["routes"][0]["prefix"], "/api");
+    assert_eq!(by_id("api")["image"], "app");
     assert_eq!(by_id("pg")["kind"], "postgres");
     assert_eq!(by_id("pg")["version"], "18");
     assert_eq!(by_id("uploads")["kind"], "s3");
@@ -513,12 +514,17 @@ fn daemon_control_plane_and_status_tree_lifecycle() {
     let bucket_err = String::from_utf8_lossy(&bucket_logs.stderr);
     assert!(!bucket_err.contains('\u{1b}'), "{bucket_err:?}");
     assert!(
-        bucket_err.contains("error: native S3 has no pod logs; use `slipfork status`"),
+        bucket_err.contains("✗ native S3 bucket 'uploads' has no pod logs"),
         "{bucket_err:?}"
     );
     assert!(
-        bucket_err.contains("next: run `slipfork status` to inspect the world"),
+        bucket_err.contains("next: slipfork shell api"),
         "{bucket_err:?}"
+    );
+    assert_eq!(
+        bucket_err.matches("next:").count(),
+        1,
+        "the bucket refusal carries exactly one remedy: {bucket_err:?}"
     );
 
     let all_logs = Command::new(env!("CARGO_BIN_EXE_slipfork"))
@@ -545,7 +551,28 @@ fn daemon_control_plane_and_status_tree_lifecycle() {
         "native S3 has no pod logs, so `logs -a` never targets a bucket: {all_text:?}"
     );
 
+    // A target-less `exec` refuses every running candidate and exits 1 with one remedy.
     let ambiguous = Command::new(env!("CARGO_BIN_EXE_slipfork"))
+        .args(["exec", "--", "true"])
+        .current_dir(&project)
+        .env("XDG_RUNTIME_DIR", &runtime)
+        .env("XDG_STATE_HOME", &state)
+        .env("NO_COLOR", "1")
+        .stdin(Stdio::null())
+        .output()
+        .expect("a target-less exec must run");
+    assert_eq!(ambiguous.status.code(), Some(1), "{ambiguous:?}");
+    let ambiguous_err = String::from_utf8_lossy(&ambiguous.stderr);
+    assert!(
+        ambiguous_err.contains("error: 2 candidates: api, pg"),
+        "{ambiguous_err:?}"
+    );
+    assert!(
+        ambiguous_err.contains("next: pass one of the ids above"),
+        "{ambiguous_err:?}"
+    );
+
+    let missing = Command::new(env!("CARGO_BIN_EXE_slipfork"))
         .arg("shell")
         .current_dir(&project)
         .env("XDG_RUNTIME_DIR", &runtime)
@@ -553,16 +580,17 @@ fn daemon_control_plane_and_status_tree_lifecycle() {
         .env("NO_COLOR", "1")
         .stdin(Stdio::null())
         .output()
-        .expect("ambiguous shell must run");
-    assert_eq!(ambiguous.status.code(), Some(1));
-    let stderr = String::from_utf8_lossy(&ambiguous.stderr);
+        .expect("a target-less shell must run");
+    assert_eq!(missing.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&missing.stderr);
     assert!(
-        stderr.contains("error: 2 candidates: api, pg"),
-        "ambiguity must name the count and ids first: {stderr}"
+        stderr.contains("required arguments"),
+        "a missing target must be a clap usage error: {stderr}"
     );
-    assert!(
-        stderr.contains("next: pass one of the ids above"),
-        "{stderr}"
+    assert_eq!(
+        stderr.matches("next:").count(),
+        1,
+        "a usage error carries exactly one remedy: {stderr}"
     );
 
     // Two concurrent clients get coherent ping/ps replies.

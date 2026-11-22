@@ -52,6 +52,20 @@ pub struct InputFrame {
     pub input: Option<String>,
 }
 
+/// One client `resize` frame for a live PTY `shell`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ResizeFrame {
+    #[serde(default)]
+    pub resize: Option<Resize>,
+}
+
+/// The new geometry carried by a [`ResizeFrame`].
+#[derive(Debug, Clone, Copy, Deserialize)]
+pub struct Resize {
+    pub cols: u16,
+    pub rows: u16,
+}
+
 /// A success frame: `{"v":1,"id":<id>,"ok":<object>}`.
 #[must_use]
 pub fn ok(id: &str, value: Value) -> Vec<u8> {
@@ -84,6 +98,12 @@ pub fn request(id: &str, method: &str, params: Value) -> Vec<u8> {
 #[must_use]
 pub fn input(id: &str, data: &str) -> Vec<u8> {
     frame(json!({ "v": VERSION, "id": id, "input": data }))
+}
+
+/// Encodes one client `resize` frame for a live PTY `shell`.
+#[must_use]
+pub fn resize(id: &str, cols: u16, rows: u16) -> Vec<u8> {
+    frame(json!({ "v": VERSION, "id": id, "resize": { "cols": cols, "rows": rows } }))
 }
 
 fn frame(value: Value) -> Vec<u8> {

@@ -63,22 +63,12 @@ pub const VERBS: &[VerbSpec] = &[
     },
     VerbSpec {
         name: "shell",
-        summary: "Open a shell inside a service or image pod.",
+        summary: "Attach a real PTY: bash/sh, psql, or redis-cli for one target.",
         flags: &["--json"],
     },
     VerbSpec {
         name: "exec",
         summary: "Run a command inside a pod and forward its exit code.",
-        flags: &["--json"],
-    },
-    VerbSpec {
-        name: "db",
-        summary: "Open psql against the world postgres.",
-        flags: &["--json"],
-    },
-    VerbSpec {
-        name: "redis",
-        summary: "Open redis-cli against the world redis.",
         flags: &["--json"],
     },
     VerbSpec {
