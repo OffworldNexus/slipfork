@@ -2844,3 +2844,15 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-22T13:29 [M3.50.8] (lead) edited fields
 - 2026-11-22T13:29 [M3.50.6] (lead) OWNER LOG CASE: prove historical logs replay while DOWN and follow across down->up. Real-PTY steps: up -> down -> logs / logs api / logs --since 5m / logs -a al
 - 2026-11-22T13:35 [M3.50.8] (lead) status active -> done
+- 2026-11-22T13:35 [M3.50.3] (lead) status done -> ready
+- 2026-11-22T13:35 [M3.50.3] (lead) attempt 3/3 started
+- 2026-11-22T13:35 [M3.50.3] (lead) attempt 3: declared postgres database <db> must exist after up (CREATE DATABASE) — critical_world_journey app_db baseline failure
+- 2026-11-22T13:35 [M3.50.9] (lead) status ready -> active
+- 2026-11-22T13:35 [M3.50.9] (lead) attempt 1/3 started
+- 2026-11-22T13:35 [M3.50.9] (lead) base 509913cc5cdceac7c1b997af09e9962f15f9e49e
+- 2026-11-22T13:38 [M3.50.3] (lead) edited fields
+- 2026-11-22T13:39 [M3.50.9] (lead) status active -> ready
+- 2026-11-22T13:39 [M3.50.9] (lead) attempt 2/3 started
+- 2026-11-22T13:39 [M3.50.9] (lead) fix pass: status_surface doctor asserts 3 rows at HEAD — update to the 4 plain-English rows
+- 2026-11-22T13:39 [M3.50.9] (lead) edited fields
+- 2026-11-22T13:39 [M3.50.3] (lead) status ready -> done

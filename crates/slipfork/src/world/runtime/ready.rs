@@ -10,7 +10,9 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use slipfork_world::control::{dial_tcp, list_pods};
-use slipfork_world::{BootFailure, BootState, ServiceHealth, StepOutcome, classify_service};
+use slipfork_world::{
+    BootFailure, BootState, DatabaseBootstrap, ServiceHealth, StepOutcome, classify_service,
+};
 
 use crate::world::supervise::BootSink;
 
@@ -45,6 +47,8 @@ pub(in crate::world) enum Ready {
         socket: PathBuf,
         label: String,
         service: String,
+        /// Declared child databases, reconciled after the socket answers and before release.
+        databases: Option<DatabaseBootstrap>,
     },
     /// A portless worker/probe pod watched briefly for an immediate non-zero crash.
     Portless { pods_dir: PathBuf, service: String },
@@ -86,7 +90,8 @@ impl Staged {
                 socket,
                 label,
                 service,
-            } => wait_unix(&socket, &label, &service, progress)?,
+                databases,
+            } => wait_unix(&socket, &label, &service, databases, progress)?,
             Ready::Portless { pods_dir, service } => wait_portless(&pods_dir, &service)?,
         }
         Ok(StepOutcome {
@@ -126,6 +131,7 @@ fn wait_unix(
     socket: &Path,
     label: &str,
     service: &str,
+    databases: Option<DatabaseBootstrap>,
     mut progress: Option<Progress>,
 ) -> Result<(), BootFailure> {
     let started = Instant::now();
@@ -133,6 +139,13 @@ fn wait_unix(
     let mut reported = 0_u32;
     while Instant::now() < deadline {
         if UnixStream::connect(socket).is_ok() {
+            // The postgres node is only `Done` once every declared `database <db>` exists, and
+            // every `pre-deploy` hook waits on this node, so hooks never see a missing database.
+            if let Some(databases) = databases {
+                databases
+                    .ensure()
+                    .map_err(|fault| BootFailure::with_remedy(fault.to_string(), fault.remedy()))?;
+            }
             return Ok(());
         }
         if let Some(progress) = progress.as_mut() {

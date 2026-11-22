@@ -1159,6 +1159,26 @@ fn world_up_restart_down_journey() {
         "piped psql must print the row: {}",
         stdout(&sql)
     );
+    // The declared `database app_db` must exist as a real database, not merely be reachable
+    // through a fallback connection to the `postgres` default database.
+    let database = journey.slipfork(
+        &good,
+        &[
+            "exec", "pg", "--", "psql", "-d", "app_db", "-tAc", "select 1",
+        ],
+    );
+    assert_eq!(
+        database.status.code(),
+        Some(0),
+        "`psql -d app_db` must succeed after `up`:\nstdout={}\nstderr={}",
+        stdout(&database),
+        stderr(&database)
+    );
+    assert!(
+        stdout(&database).contains('1'),
+        "the declared database must answer a query: {}",
+        stdout(&database)
+    );
     let cache = journey.slipfork_input(&good, &["shell", "cache"], "ping\n");
     assert_eq!(
         cache.status.code(),

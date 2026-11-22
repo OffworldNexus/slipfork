@@ -1,8 +1,10 @@
 //! Golden `postgres:18` `initdb` template and the `< 1ms` per-world `PGDATA` clone.
 
+mod databases;
 mod launcher;
 mod template;
 
+pub use databases::{DatabaseBootstrap, DatabaseFault, DatabaseName};
 pub use launcher::{PostgresClone, PostgresLauncher};
 pub use template::{PostgresTemplate, TemplateState};
 

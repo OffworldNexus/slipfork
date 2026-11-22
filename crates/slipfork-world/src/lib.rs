@@ -79,8 +79,9 @@ pub use pod_log::{CHUNK, DIVIDER_CLOSE, DIVIDER_OPEN, LogKind, LogLine, LogReade
 pub use port::{Dirtiness, ForkPaths, WorldEngine};
 pub use reap::kill_group;
 pub use resources::{
-    ImageFacts, PostgresClone, PostgresLauncher, PostgresTemplate, RedisLauncher, ResourceKind,
-    S3Bucket, S3Credentials, S3Server, TemplateState,
+    DatabaseBootstrap, DatabaseFault, DatabaseName, ImageFacts, PostgresClone, PostgresLauncher,
+    PostgresTemplate, RedisLauncher, ResourceKind, S3Bucket, S3Credentials, S3Server,
+    TemplateState,
 };
 pub use runtime_dir::RuntimePods;
 pub use supervisor::{PodStatus, WorldHost, WorldSupervisor, pod_statuses};

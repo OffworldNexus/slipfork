@@ -51,3 +51,23 @@ edited fields
 ## 2026-11-22T13:28 [lead]
 
 status ready -> done
+
+## 2026-11-22T13:35 [lead]
+
+status done -> ready
+
+## 2026-11-22T13:35 [lead]
+
+attempt 3/3 started
+
+## 2026-11-22T13:35 [lead]
+
+attempt 3: declared postgres database <db> must exist after up (CREATE DATABASE) — critical_world_journey app_db baseline failure
+
+## 2026-11-22T13:38 [lead]
+
+edited fields
+
+## 2026-11-22T13:39 [lead]
+
+status ready -> done

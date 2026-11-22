@@ -13,8 +13,8 @@ use std::time::{Duration, Instant};
 
 use slipfork_forkfile::SecretValue;
 use slipfork_world::{
-    BootState, ImageFacts, PostgresLauncher, PostgresTemplate, RedisLauncher, ResourceKind,
-    ResourceNode, S3BucketSpec, S3Credentials, S3WorldConfig, control,
+    BootState, DatabaseBootstrap, ImageFacts, PostgresLauncher, PostgresTemplate, RedisLauncher,
+    ResourceKind, ResourceNode, S3BucketSpec, S3Credentials, S3WorldConfig, control,
 };
 
 use super::WorldRuntime;
@@ -161,10 +161,15 @@ fn stage_postgres(
         .spec(&node.id, rootfs, &shm, facts)
         .map_err(|error| error.to_string())?;
     runtime.launch_pod(&spec)?;
+    // Every `database <db>` is reconciled after the socket answers and before this node releases
+    // any `pre-deploy` hook; the per-world clone also means `fork` carries the databases.
+    let databases = DatabaseBootstrap::new(runtime.pods_dir(), &node.id, rootfs, &node.databases)
+        .map_err(|error| error.to_string())?;
     Ok(Ready::Unix {
         socket: launcher.socket_path(&node.id),
         label: format!("postgres {}", node.id),
         service: node.id.clone(),
+        databases,
     })
 }
 

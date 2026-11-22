@@ -7,24 +7,23 @@ owner: implementer
 priority: 2
 depends_on: [M3.50.1]
 paths:
-  - "crates/slipfork-forkfile/src/expr.rs"
-  - "crates/slipfork-forkfile/src/eval/**"
   - "crates/slipfork-world/src/resources/**"
   - "crates/slipfork-world/src/boot/**"
-  - "crates/slipfork-world/src/stamp/**"
+  - "crates/slipfork-world/src/lib.rs"
   - "crates/slipfork-world/tests/boot_dag.rs"
   - "crates/slipfork-world/tests/critical_pod_runtime.rs"
   - "crates/slipfork-image/src/**"
   - "crates/slipfork/src/world/**"
   - crates/slipfork/src/daemon/lifecycle/fork.rs
   - crates/slipfork/tests/critical_fork_live.rs
+  - crates/slipfork/tests/critical_world_journey.rs
   - crates/slipfork/tests/fork_nonbtrfs.rs
   - "support/**"
-attempts: 2
+attempts: 3
 max_attempts: 3
 escalation: none
 created: "2026-11-22T12:41"
-updated: "2026-11-22T13:28"
+updated: "2026-11-22T13:39"
 ---
 
 # Goal
