@@ -2,7 +2,7 @@
 id: M3.52
 title: "Flush Postgres shared_buffers via <5ms direct-TCP wire CHECKPOINT before fork syncfs & align specs/03 CDN prose"
 kind: task
-status: ready
+status: done
 owner: implementer
 priority: 3
 depends_on: []
@@ -12,11 +12,11 @@ paths:
   - "specs/03-under-the-hood.md"
   - ARCHITECTURE.md
   - .opencode/LESSONS.md
-attempts: 0
+attempts: 1
 max_attempts: 3
 escalation: none
 created: "2026-11-22T18:27"
-updated: "2026-11-22T18:27"
+updated: "2026-11-22T19:13"
 ---
 
 # Goal

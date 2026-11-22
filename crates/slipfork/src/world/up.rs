@@ -360,7 +360,10 @@ impl Session {
                         "pass a fork name: `slipfork fork <name>`".to_owned()
                     }
                     "no-world" => "run `slipfork up` first".to_owned(),
-                    "checkpoint-failed" => {
+                    "world-booting" => {
+                        "wait for `slipfork up` to finish, then retry `slipfork fork`".to_owned()
+                    }
+                    "pg-checkpoint" => {
                         "run `slipfork logs pg` if PostgreSQL stays unhealthy, then retry `slipfork fork`".to_owned()
                     }
                     "world-running" => {

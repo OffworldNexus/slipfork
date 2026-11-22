@@ -4,8 +4,8 @@
 //! running the shipped eight-component demo (`support/demo`): PostgreSQL, Redis, two S3 buckets
 //! behind one native server, the `backend` image (`api` + `worker`), the `frontend` image behind
 //! `arg VITE_CDN_URL`, and the OCI `mailpit` service. One `fork` must reuse every sealed parent
-//! `image` subvolume (`cached`, no Dockerfile re-evaluation), snapshot every resource clone with
-//! zero pre-fork SQL `CHECKPOINT`, survive live PG/Redis/S3 writes, and keep the 8-pod fork
+//! `image` subvolume (`cached`, no Dockerfile re-evaluation), snapshot every resource clone after
+//! one `<5ms` direct-TCP pre-fork `CHECKPOINT`, survive live PG/Redis/S3 writes, and keep the 8-pod fork
 //! spawn-to-first-`200` median under the H-011 honest droplet ceiling of `1.25s` (one discarded
 //! warm-up + three samples). Every missing host capability FAILS CLOSED.
 
@@ -719,16 +719,27 @@ fn fork_and_drop_a_live_world_without_leaving_snapshots() {
         "OK"
     );
 
-    // Capture immediately before the timed fork, so any pre-fork write cannot mask a SQL checkpoint.
+    // The shipped pre-fork wire CHECKPOINT must visibly advance the parent's checkpointer stats.
+    let checkpoints_before: u64 = lab
+        .exec(
+            &lab.project,
+            "pg",
+            &[
+                "psql",
+                "-U",
+                "postgres",
+                "-d",
+                "postgres",
+                "-tAc",
+                "SELECT num_timed + num_requested FROM pg_stat_checkpointer",
+            ],
+        )
+        .parse()
+        .expect("pg_stat_checkpointer before the fork");
     let pg_clone = lab.store_root.join("worlds/demo.pg.pg");
     let version = pg_clone.join("PG_VERSION");
-    let wal = pg_clone.join("pg_wal");
     let version_mtime = fs::metadata(&version)
         .expect("PG_VERSION")
-        .modified()
-        .expect("mtime");
-    let wal_mtime = fs::metadata(&wal)
-        .expect("pg_wal")
         .modified()
         .expect("mtime");
 
@@ -737,6 +748,26 @@ fn fork_and_drop_a_live_world_without_leaving_snapshots() {
     let fork = lab.run(&["fork", "feat-auth", "--json"]);
     let fork_reply = lab.json(&fork, "fork feat-auth");
     let fork_frames = lab.frames(&fork, "fork feat-auth");
+    let checkpoints_after: u64 = lab
+        .exec(
+            &lab.project,
+            "pg",
+            &[
+                "psql",
+                "-U",
+                "postgres",
+                "-d",
+                "postgres",
+                "-tAc",
+                "SELECT num_timed + num_requested FROM pg_stat_checkpointer",
+            ],
+        )
+        .parse()
+        .expect("pg_stat_checkpointer after the fork");
+    assert!(
+        checkpoints_after > checkpoints_before,
+        "the pre-fork wire CHECKPOINT must run in the parent world ({checkpoints_before} -> {checkpoints_after})"
+    );
     assert_eq!(
         fork_reply["url"], "http://feat-auth--demo.localhost",
         "{fork_reply}"
@@ -934,15 +965,7 @@ fn fork_and_drop_a_live_world_without_leaving_snapshots() {
             .modified()
             .expect("mtime"),
         version_mtime,
-        "fork must never rewrite `PG_VERSION` (zero pre-fork SQL `CHECKPOINT`)"
-    );
-    assert_eq!(
-        fs::metadata(&wal)
-            .expect("pg_wal")
-            .modified()
-            .expect("mtime"),
-        wal_mtime,
-        "fork must never flush `pg_wal` (zero pre-fork SQL `CHECKPOINT`)"
+        "fork must never rewrite `PG_VERSION`"
     );
 
     // Breaking the paired epoch re-runs `pre-deploy` and re-evaluates the `frontend` build arg.

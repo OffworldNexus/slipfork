@@ -5,6 +5,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use crate::control;
 use crate::engine::readiness;
 use crate::error::{Error, Result};
 use crate::layout::{StoreLayout, WorldName};
@@ -12,7 +13,7 @@ use crate::pod::{Bind, BindSource, PodEnv, PodSpec};
 use crate::port::WorldEngine;
 use crate::resources::{ImageFacts, ResourceKind, binary_in};
 
-use super::{DEV_FLAGS, PGDATA, POSTGRES_CANDIDATES, SOCKET_DIR};
+use super::{DEV_FLAGS, PG_USER, PGDATA, POSTGRES_CANDIDATES, PostgresSession, SOCKET_DIR};
 
 /// A `PGDATA` clone plus the snapshot latency that produced it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -110,7 +111,7 @@ impl PostgresLauncher {
                 // stock `psql`/libpq clients resolve `PGHOST` without a `-h` flag.
                 PodEnv::new("PGHOST", "127.0.0.1"),
                 PodEnv::new("PGPORT", "5432"),
-                PodEnv::new("PGUSER", "postgres"),
+                PodEnv::new("PGUSER", PG_USER),
             ],
             binds: vec![
                 Bind {
@@ -140,6 +141,86 @@ impl PostgresLauncher {
             Self::READINESS_INTERVAL,
             Self::READINESS_BUDGET,
         )
+    }
+
+    /// Runs `CHECKPOINT` in every running postgres pod of this world over `control.sock`.
+    ///
+    /// PostgreSQL keeps a freshly committed row in user-space `shared_buffers`/`wal_buffers`, so a
+    /// `syncfs` before a fork cannot see it. This dials `127.0.0.1:5432` through the world's
+    /// `Request::Dial` (`SCM_RIGHTS`) and speaks the v3 wire protocol directly: `< 5ms`, zero
+    /// `crun`/`psql` spawn. A world with no postgres clone is a genuine zero-duration checkpoint; a
+    /// tracked pod that has exited fails closed.
+    ///
+    /// # Errors
+    ///
+    /// Fails closed when the pod inventory cannot be read or a dial/wire exchange fails; a failed
+    /// checkpoint must never silently produce a torn fork.
+    pub fn checkpoint_live(&self, pods_root: &Path) -> Result<Duration> {
+        let root = self.layout.worlds_root();
+        let mut clones = Vec::new();
+        match fs::read_dir(&root) {
+            Ok(entries) => {
+                for entry in entries {
+                    let entry = entry.map_err(|source| Error::io("read", &root, source))?;
+                    if let Some((world, kind, pod)) =
+                        StoreLayout::parse_world_clone(&entry.file_name())
+                        && kind == ResourceKind::Postgres
+                        && world == self.world
+                    {
+                        clones.push(pod);
+                    }
+                }
+            }
+            Err(source) if source.kind() == io::ErrorKind::NotFound => return Ok(Duration::ZERO),
+            Err(source) => return Err(Error::io("read", &root, source)),
+        }
+        if clones.is_empty() {
+            return Ok(Duration::ZERO);
+        }
+        let statuses = control::list_pods(pods_root)
+            .map_err(|error| checkpoint_fault("control.sock", "list pods", &error))?;
+        let mut live = Vec::new();
+        for pod in clones {
+            match statuses.iter().find(|status| status.id == pod) {
+                Some(status) if status.running => live.push(pod),
+                Some(_) => {
+                    return Err(Error::PostgresCheckpoint {
+                        pod,
+                        message: "the pod exited before the fork, so its buffers cannot be flushed"
+                            .to_owned(),
+                    });
+                }
+                // No control row: a clone left by an earlier Forkfile has nothing live to flush.
+                None => {}
+            }
+        }
+        if live.len() > 1 {
+            return Err(Error::PostgresCheckpoint {
+                pod: live.join(", "),
+                message: "more than one postgres pod claims the world's :5432".to_owned(),
+            });
+        }
+        let mut elapsed = Duration::ZERO;
+        for pod in live {
+            let stream = control::dial_tcp(pods_root, Self::PORT)
+                .map_err(|error| checkpoint_fault(&pod, "dial 127.0.0.1:5432", &error))?;
+            elapsed += PostgresSession::new(stream)
+                .checkpoint()
+                .map_err(|error| checkpoint_fault(&pod, "CHECKPOINT", &error))?;
+        }
+        Ok(elapsed)
+    }
+}
+
+/// Wraps a dial/wire refusal with the pod name and the one-line remedy the CLI prints.
+fn checkpoint_fault(pod: &str, stage: &str, error: &Error) -> Error {
+    let detail = error.to_string();
+    Error::PostgresCheckpoint {
+        pod: pod.to_owned(),
+        message: format!(
+            "{stage}: {}",
+            detail.lines().next().unwrap_or("unknown error")
+        ),
     }
 }
 

@@ -34,14 +34,14 @@ Everything lives natively on one Btrfs mount — your checkout (`~/projects/demo
         └── feat-auth--demo.pg.pg/                # Crash-consistent CoW snapshot of live PGDATA + PG stamp
 ```
 
-A project, world, or `PGDATA` clone is one `BTRFS_IOC_SNAP_CREATE_V2` ioctl (`~0.3ms` on local NVMe, single-digit ms on network block storage, `≤50ms` ceiling) — with **zero pre-fork SQL `CHECKPOINT`**.
+A project, world, or `PGDATA` clone is one `BTRFS_IOC_SNAP_CREATE_V2` ioctl (`~0.3ms` on local NVMe, single-digit ms on network block storage, `≤50ms` ceiling) — after a one-off direct-TCP PostgreSQL `CHECKPOINT` (`~1–3ms`, Simple Query over `Request::Dial { port: 5432 }` on `<pods>/control.sock`) and one `syncfs(2)` that commits its page-cache writes into the Btrfs tree.
 
 ```mermaid
 flowchart LR
   Tpl["templates/postgres-18\n(BTRFS_SUBVOL_RDONLY)"] -.->|"up (one CoW ioctl)"| Pg["worlds/demo.pg.pg\n(+ world_epoch)"]
   Proj["~/projects/demo\n(code + deps + .slipfork/)"] ==>|"fork (one CoW ioctl)"| FProj[".forks/feat-auth"]
   World["worlds/demo\n(s3 + redis + .slipfork-world-stamp.json)"] ==>|"fork (one CoW ioctl)"| FWorld["worlds/feat-auth--demo"]
-  Pg ==>|"fork (crash-consistent CoW, zero CHECKPOINT)"| FPg["worlds/feat-auth--demo.pg.pg"]
+  Pg ==>|"fork (CHECKPOINT + syncfs, then CoW)"| FPg["worlds/feat-auth--demo.pg.pg"]
 ```
 
 !!! info "Epoch-paired stamps & persistent `<store>/logs/<world>/<id>.log`"
@@ -56,7 +56,7 @@ Slipfork pulls zero external S3 images and runs zero distributed daemons. Detach
 | Capability | Exact Contract (`resources/s3/{server.rs,object_ops.rs,listing.rs,policy.rs}`) |
 | :--- | :--- |
 | `object_ops.rs` | Payload at `<world>/s3/<bucket>/objects/<key>` and atomic sidecar JSON at `<world>/s3/<bucket>/meta/<key>.json` (`content_type`, quoted `etag`, `content_length`, `last_modified`) — plain files cloned instantly on `fork`. |
-| `server.rs` | `hyper` `1` (`http1`, `server`) on `127.0.0.1:8333` dispatching path-style (`/<bucket>/<key>`) and virtual-host (`<bucket>.s3.localhost`, plus `:80` CDN `<cdn-id>.<world>.localhost`) `PUT`, `GET`, `HEAD`, `DELETE`, `HeadBucket`, and `?list-type=2`. |
+| `server.rs` | `hyper` `1` (`http1`, `server`) on `127.0.0.1:8333` dispatching path-style (`/<bucket>/<key>`) and the ingress-forwarded `Host: <bucket>.<world>.localhost` `PUT`, `GET`, `HEAD`, `DELETE`, `HeadBucket`, and `?list-type=2`; `cdn <id>` adds no local authority and aliases the bucket host. |
 | `listing.rs` | `ListObjectsV2` XML (`prefix`, `delimiter`, `max-keys`, `continuation-token`) sorted lexicographically over Btrfs bucket keys. |
 | `policy.rs` | `BucketPolicy` (`Private` \| `PublicRead`) + `SigV4Verifier` (`hmac = "0.12"` `Mac::verify_slice` + `sha2 = "0.10"`, `SecretValue` from `slipfork-forkfile`, `<sha256-hex>` & `UNSIGNED-PAYLOAD`): `Private` denies anonymous `GET` (`403`); `PublicRead` allows anonymous `GET`/`HEAD` (`200`) and denies anonymous `PUT`/`DELETE`/list (`403`). |
 
@@ -64,9 +64,10 @@ Slipfork pulls zero external S3 images and runs zero distributed daemons. Detach
 
 ## 3. Direct-Exec Databases, Parallel Fork Boot DAG & `< 1.0s` Budget
 
-- **PostgreSQL 18 (`~30–50ms` start, direct `postgres` exec, zero pre-fork `CHECKPOINT`):**
+- **PostgreSQL 18 (`~30–50ms` start, direct `postgres` exec, one `~1–3ms` pre-fork `CHECKPOINT` + `syncfs(2)`):**
   - When `PG_VERSION` already exists in `PGDATA`, `PostgresLauncher` unlinks stale `postmaster.pid`, `postmaster.opts`, and `pg_stat`, mounts `/dev/shm`, and `exec`s the `postgres` binary **directly** by absolute path (never `docker-entrypoint.sh` bash wrappers).
   - Dev flags `-c fsync=off -c synchronous_commit=off -c full_page_writes=off -c wal_level=minimal -c max_wal_senders=0 -c autovacuum=off -c shared_buffers=32MB -c dynamic_shared_memory_type=posix` replay any tail WAL in `< 5ms` while readiness polls `.sock/.s.PGSQL.5432` every **`2ms`**.
+  - Before `fork`, `PostgresLauncher` sends `CHECKPOINT;` as a PostgreSQL v3 Simple Query over `Request::Dial { port: 5432 }` (`SCM_RIGHTS`, no `crun exec`/`psql` spawn) and then one `syncfs(2)` commits the flushed `shared_buffers`/`wal_buffers` page-cache writes into the Btrfs tree, so `INSERT`s committed immediately before `fork` survive.
 - **Redis 7 (`~5–15ms` start, direct `redis-server` exec):** `RedisLauncher` `exec`s `redis-server` directly by absolute path (never `docker-entrypoint.sh`) with `--bind 127.0.0.1 --dir /data --save "" --appendonly yes --appendfsync no` on `<world>/redis/<id>`, polling `:6379` every **`2ms`**.
 - **Parent `image` subvolume reuse (`ImageCache`) & `--no-sync` Python:** On `fork` with a matching `world_epoch`, `ImageCache` adopts the parent world's resolved read-only `image` subvolumes directly from `<world>/.slipfork-world-stamp.json` (`cached`, `~1ms`). Runtime Python commands execute with `UV_NO_SYNC=1` / `uv run --no-sync` or direct `.venv/bin/<prog>` exec so service pods never re-run `uv` lock checks.
 
@@ -86,7 +87,7 @@ flowchart LR
 
 | `slipfork fork <name>` Stage (Full 8-Component Stack) | Target | Hard Ceiling |
 | :--- | :--- | :--- |
-| Parallel Btrfs CoW snapshots (project, world, PG — zero pre-fork `CHECKPOINT`) + git branch switch | `15–40ms` | — |
+| `CHECKPOINT` + `syncfs(2)` on live PG, then parallel Btrfs CoW snapshots (project, world, PG) + git branch switch | `18–45ms` | — |
 | World `unshare` + `slipfork-world-init` + `ConfigureS3` `:8333` + `world_epoch` image/hook reuse (`cached` `~1ms`) | `15–35ms` | — |
 | Parallel `crun` pod boot (direct-exec PG18 `~40ms`, Redis `~10ms`, concurrent `--no-sync` services `2ms` poll) + `:80` swap | `150–350ms` | — |
 | **End-to-end (`Command::spawn` -> all 8 components ready + `http://<fork>--<world>.localhost` `200 OK`)** | **`~0.5–0.8s`** | **`< 1.0s` (`1000ms`)** |

@@ -94,6 +94,8 @@ pub enum Error {
         /// Concrete next action when `Forkfile` line numbers are not the remedy.
         remedy: Option<String>,
     },
+    /// The pre-fork PostgreSQL `CHECKPOINT` over `control.sock` failed.
+    PostgresCheckpoint { pod: String, message: String },
     /// A JSON control/config payload could not be encoded or decoded.
     Json {
         path: PathBuf,
@@ -257,6 +259,10 @@ impl fmt::Display for Error {
             } => write!(
                 f,
                 "`{step}` failed at Forkfile:{line}: {message}\nnext: fix the step and re-run `slipfork up`; the world stays up for inspection"
+            ),
+            Self::PostgresCheckpoint { pod, message } => write!(
+                f,
+                "could not checkpoint postgres pod `{pod}` before the fork: {message}\nnext: run `slipfork logs -a` and retry the fork"
             ),
             Self::Json { path, .. } => write!(
                 f,

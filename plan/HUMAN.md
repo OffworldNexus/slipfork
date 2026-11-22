@@ -104,3 +104,11 @@ Pre-existing live defect outside M3.51 scope, reproducible on 165.232.86.174: cr
 
 **Answer:**
 
+## H-013 [open] [release-gate] (node M3.52)
+
+- asked: 2026-11-22T19:13 by lead
+
+Two pre-existing protected-test regressions block a 100% live gate, both outside M3.52: (1) critical_world_journey's failed-service tail prints only 'Failed to start service ...' with no 'error:' / Forkfile:line / next: (regression from M3.50.4 failure_sentence swallowing the Fault detail); (2) critical_fork_live's mismatched-epoch assertion demands frontend state 'built', but a warm content-addressed image cache returns 'cached' since the CDN arg no longer changes the digest. M3.52 itself is proven: critical_fork_live passed 4/4 rows + pre-fork checkpointer delta + 1.016s median before (2); world_journey passed every earlier assertion after test-path repairs. Also note droplet fork medians oscillate 0.98-2.0s (H-011 host bound).
+
+**Answer:**
+

@@ -16,7 +16,7 @@ flowchart TD
   FF["slipfork-forkfile<br/>AST, SecretValue, BucketPolicy, DnsLabel, fmt, migrate"]
   World["slipfork-world<br/>BtrfsEngine, BootScheduler, WorldStampStore,<br/>PostgresLauncher, RedisLauncher, resources/s3/*"]
   Image["slipfork-image<br/>NativeImageBuilder (OCI + Dockerfile)"]
-  Ingress["slipfork-ingress<br/>httparse HTTP/WS relay + .localhost / CDN router"]
+  Ingress["slipfork-ingress<br/>httparse HTTP/WS relay + .localhost router"]
   Ospp["slipfork-ospp<br/>WsOsppClient + FileSecretVault (P-256 + HPKE)"]
   Vcs["slipfork-vcs<br/>GitWorkspace"]
   Lsp["slipfork-lsp<br/>standalone portable stdio binary"]
@@ -69,7 +69,7 @@ sequenceDiagram
 ```
 
 - **Process-boundary S3 (`resources/s3/{server.rs,object_ops.rs,listing.rs,policy.rs}`):** `__supervise` sends `S3WorldConfig` (carrying `BucketPolicy` and `SecretValue` credentials) in one typed `Request::ConfigureS3` frame over `0600` `control.sock` — never via argv or `/proc` — and `world_init` serves HTTP/1.1 via `hyper` `1` on `:8333` (`hmac = "0.12"` + `sha2 = "0.10"`).
-- **Zero-`CHECKPOINT` CoW fork, direct binary `exec` & parallel service start:** `BtrfsEngine` snapshots project, world, and `worlds/<world>.pg.<id>` subvolumes directly via `BTRFS_IOC_SNAP_CREATE_V2` (`fsync=off`, zero pre-fork SQL `CHECKPOINT`), `PostgresLauncher` and `RedisLauncher` `exec` `postgres` and `redis-server` directly (bypassing `docker-entrypoint.sh`), and when `world_epoch` stamps match, `ImageCache` reuses parent `image` subvolumes (`cached`, `~1ms`) while `--no-sync` services spawn **in parallel** with `pg` and `redis` (gating service spawn behind resource readiness only when a hook is stale or unstamped).
+- **One-`CHECKPOINT` + `syncfs` CoW fork, direct binary `exec` & parallel service start:** `BtrfsEngine` snapshots project, world, and `worlds/<world>.pg.<id>` subvolumes directly via `BTRFS_IOC_SNAP_CREATE_V2` after `fork` sends one `CHECKPOINT;` Simple Query over `Request::Dial { port: 5432 }` (`~1–3ms`, no `crun exec`/`psql`) and one `syncfs(2)` commits PostgreSQL's page-cache writes (`fsync=off`) into the subvolume tree, `PostgresLauncher` and `RedisLauncher` `exec` `postgres` and `redis-server` directly (bypassing `docker-entrypoint.sh`), and when `world_epoch` stamps match, `ImageCache` reuses parent `image` subvolumes (`cached`, `~1ms`) while `--no-sync` services spawn **in parallel** with `pg` and `redis` (gating service spawn behind resource readiness only when a hook is stale or unstamped).
 
 ---
 
@@ -78,7 +78,7 @@ sequenceDiagram
 | Socket (`0600`) | Direction & `SCM_RIGHTS` | Canonical Frames |
 | :--- | :--- | :--- |
 | `<runtime_dir>/daemon.sock` | CLI / `__ingress` → `__daemon`; `SCM_RIGHTS` passes `:80` client fd on `ingress.accept` (`__ingress` → `__daemon`) and `/dev/pts/N` master fd on TTY `shell` (`__daemon` → CLI). | `{"v":1,"id","method","params"}` → streamed `event` frames (`started`, `log`, `finished`, `up-to-date`, `failed`, `ready`, `stopped`) → final `ok` or `error`. |
-| `<pods_dir>/control.sock` | `__supervise` / `__daemon` → PID 1 `world_init`; `SCM_RIGHTS` returns connected world-netns stream fd on `Dial` and `crun exec --tty --console-socket` PTY master fd on `ExecPty` (`world_init` → `__daemon`). | `ConfigureS3`, `Dial { port }` (incl. `:8333` CDN), `List`, `Shutdown`, `ExecPty` (`"terminal": true`), `Exec` (piped), `Logs` (`<store>/logs/<world>/<id>.log`). |
+| `<pods_dir>/control.sock` | `__supervise` / `__daemon` → PID 1 `world_init`; `SCM_RIGHTS` returns connected world-netns stream fd on `Dial` and `crun exec --tty --console-socket` PTY master fd on `ExecPty` (`world_init` → `__daemon`). | `ConfigureS3`, `Dial { port }` (incl. `:8333` S3), `List`, `Shutdown`, `ExecPty` (`"terminal": true`), `Exec` (piped), `Logs` (`<store>/logs/<world>/<id>.log`). |
 
 ```mermaid
 sequenceDiagram
@@ -86,7 +86,7 @@ sequenceDiagram
   participant Ingress as slipfork __ingress (stateless :80)
   participant Daemon as slipfork __daemon (IngressRouter)
   participant Init as slipfork-world-init (PID 1)
-  Browser->>Ingress: GET http://static-cdn.demo.localhost/logo.svg
+  Browser->>Ingress: GET http://assets.demo.localhost/badge.svg
   Ingress->>Daemon: ingress.accept + SCM_RIGHTS client fd (daemon.sock)
   Daemon->>Init: Request::Dial { port: 8333 } (control.sock)
   Init-->>Daemon: SCM_RIGHTS connected 127.0.0.1:8333 fd

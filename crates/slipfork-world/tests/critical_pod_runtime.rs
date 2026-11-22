@@ -312,7 +312,7 @@ fn require_images(engine: &BtrfsEngine, run: &Path) -> Images {
         facts(&pg_sealed),
         facts(&redis_sealed),
     ];
-    let clone_root = run.join("images");
+    let clone_root = run.join(".slipfork-store/pods/probe-images");
     fs::create_dir_all(&clone_root).expect("create image clone root");
     let mut clones = Vec::new();
     let images = Images {
@@ -580,7 +580,7 @@ fn world_pod_lifecycle() {
     }
 
     // 1b. A run-once step streams both pipes and reports the real exit code.
-    let run_once_root = run.join("images/run-once");
+    let run_once_root = run.join(".slipfork-store/pods/probe-images/run-once");
     engine
         .clone_subvolume(&images.toolbox, &run_once_root)
         .expect("clone a rootfs for the run-once probe");
@@ -1255,7 +1255,8 @@ fn world_pod_lifecycle() {
             .expect("destroy image rootfs clone");
     }
     if !images.clones.is_empty() {
-        fs::remove_dir_all(run.join("images")).expect("remove image clone root");
+        fs::remove_dir_all(run.join(".slipfork-store/pods/probe-images"))
+            .expect("remove image clone root");
     }
     let leftovers = subvolumes_under(&run);
     assert!(leftovers.is_empty(), "leaked subvolumes: {leftovers:?}");

@@ -105,7 +105,6 @@ fn stage_postgres(
 ) -> Result<Ready, String> {
     let template = PostgresTemplate::new(runtime.layout.clone());
     let launcher = PostgresLauncher::new(runtime.layout.clone(), runtime.world.clone());
-    runtime.remember_postgres(&node.id, rootfs);
     // `dynamic_shared_memory_type=posix` needs a tmpfs; the world pod root already is one.
     let shm = runtime.pods_dir().join(format!("shm-{}", node.id));
     fs::create_dir_all(&shm).map_err(|error| format!("create `{}`: {error}", shm.display()))?;

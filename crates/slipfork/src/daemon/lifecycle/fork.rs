@@ -1,8 +1,12 @@
 //! `fork` and `drop`: one CoW snapshot of project + world data, a branch switch, and one boot.
 //!
-//! Zero pre-fork SQL `CHECKPOINT`: `specs/02` §4 makes the `PGDATA` clone crash-consistent through
-//! `BTRFS_IOC_SNAP_CREATE_V2` alone (tail WAL replays in `< 5ms` on boot). Btrfs ioctls stay
-//! inside `slipfork_world` and branch topology stays behind the injected `VcsWorkspace` port.
+//! PostgreSQL keeps a just-committed row in user-space `shared_buffers`/`wal_buffers` until a
+//! checkpoint writes it into the kernel page cache, so `syncfs(2)` alone cannot see it. Before
+//! `BtrfsEngine::fork` snapshots anything, the daemon dials `127.0.0.1:5432` through
+//! `<pods>/control.sock` (`SCM_RIGHTS`) and speaks the PostgreSQL v3 wire protocol directly: one
+//! `CHECKPOINT` in `< 5ms` with zero `crun`/`psql` spawn, then the fork's `syncfs` commits that
+//! page cache. Btrfs ioctls stay inside `slipfork_world` and branch topology stays behind the
+//! injected `VcsWorkspace` port.
 
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
@@ -12,8 +16,8 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 use slipfork_vcs::{Dirty, VcsError, VcsWorkspace};
 use slipfork_world::{
-    BtrfsEngine, Dirtiness, Error as WorldError, ForkName, RuntimePods, StoreLayout, WorldEngine,
-    WorldName, is_subvolume_path,
+    BtrfsEngine, Dirtiness, Error as WorldError, ForkName, PostgresLauncher, RuntimePods,
+    StoreLayout, WorldEngine, WorldName, is_subvolume_path,
 };
 
 use super::core::{Core, World};
@@ -27,6 +31,7 @@ pub(crate) struct ForkTarget {
     pub(crate) project: PathBuf,
     pub(crate) world: WorldName,
     pub(crate) store_root: PathBuf,
+    pub(crate) pods_dir: PathBuf,
     pub(crate) requested_name: Option<String>,
     pub(crate) vcs: Arc<dyn VcsWorkspace>,
     pub(crate) started: Instant,
@@ -79,17 +84,28 @@ impl Core {
                 format!("`{}` is not a Btrfs subvolume", project.display()),
             ));
         }
-        let parent = self
-            .worlds
-            .get(&key_of(&project))
-            .map(|entity| entity.name().to_owned())
-            .ok_or_else(|| Failure::new("no-world", "no world is running in this directory"))?;
+        let (parent, pods_dir) = match self.worlds.get(&key_of(&project)) {
+            Some(World::Live { entry, .. }) => (entry.world.clone(), entry.pods_dir.clone()),
+            Some(World::Booting { world, .. }) => {
+                return Err(Failure::new(
+                    "world-booting",
+                    format!("world `{world}` is still starting"),
+                ));
+            }
+            None => {
+                return Err(Failure::new(
+                    "no-world",
+                    "no world is running in this directory",
+                ));
+            }
+        };
         let world = WorldName::parse(&parent)
             .map_err(|error| Failure::new("invalid-world", first_line(&error.to_string())))?;
         Ok(ForkTarget {
             store_root: self.host.store_root_for(&project),
             project,
             world,
+            pods_dir,
             requested_name: param_name(params).map(str::to_owned),
             vcs: Arc::clone(&self.vcs),
             started,
@@ -170,17 +186,31 @@ impl Core {
             project,
             world,
             store_root,
+            pods_dir,
             vcs,
             started,
             ..
         } = target;
-        let engine = BtrfsEngine::new(StoreLayout::at(store_root));
+        let engine = BtrfsEngine::new(StoreLayout::at(store_root.clone()));
         engine
             .ensure_store()
             .map_err(|error| btrfs_failure(&error, &project))?;
         if let Some(forks_dir) = StoreLayout::project_fork(&project, &fork).parent() {
             let _ = std::fs::create_dir_all(forks_dir);
         }
+        // PostgreSQL writes a fresh commit from `shared_buffers`/`wal_buffers` only on checkpoint,
+        // so this `< 5ms` direct-TCP `CHECKPOINT` must land before any `SNAP_CREATE_V2`.
+        PostgresLauncher::new(StoreLayout::at(store_root), world.clone())
+            .checkpoint_live(&pods_dir)
+            .map_err(|error| {
+                Failure::new(
+                    "pg-checkpoint",
+                    format!(
+                        "could not flush postgres buffers before the fork: {}",
+                        first_line(&error.to_string())
+                    ),
+                )
+            })?;
         emit(json!({
             "event": "started", "step": 1, "total": 3, "kind": "fork",
             "label": format!("snapshotting {}", fork.as_str()),

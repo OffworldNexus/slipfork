@@ -98,16 +98,6 @@ HTTPServer(("127.0.0.1", int(os.environ["PORT"])), Handler).serve_forever()
 const WORKER_PY: &str =
     "import time\n\nprint(\"worker ready\", flush=True)\nwhile True:\n    time.sleep(3600)\n";
 
-// A minimal service-only world: it proves log history and following without a backing database.
-const LOGS_FORKFILE: &str = r#"# forkfile: 0.1
-image app . {
-  dockerfile Dockerfile
-  service api {
-    run: @uv run python app.py
-  }
-}
-"#;
-
 const BROKEN_FORKFILE: &str = r#"# forkfile: 0.1
 image app . {
   dockerfile Dockerfile
@@ -311,7 +301,14 @@ impl Journey {
     fn project(&self, name: &str, forkfile: &str) -> PathBuf {
         let dir = self.run.join(name);
         fs::create_dir_all(&dir).expect("create project directory");
-        fs::write(dir.join("Dockerfile"), DOCKERFILE).expect("write Dockerfile");
+        let dockerfile = DOCKERFILE.replace(
+            "WORKDIR /project",
+            &format!(
+                "RUN echo slipfork-build-{}\nWORKDIR /project",
+                std::process::id()
+            ),
+        );
+        fs::write(dir.join("Dockerfile"), dockerfile).expect("write Dockerfile");
         fs::write(dir.join("Forkfile"), forkfile).expect("write Forkfile");
         fs::write(dir.join("pyproject.toml"), PYPROJECT).expect("write pyproject.toml");
         fs::write(dir.join("uv.lock"), UV_LOCK).expect("write uv.lock");
@@ -456,7 +453,8 @@ impl Pty {
 
     fn send(&mut self, text: &str) {
         let fd = self.master.as_raw_fd();
-        let mut bytes = text.as_bytes();
+        let normalized = text.replace('\n', "\r");
+        let mut bytes = normalized.as_bytes();
         while !bytes.is_empty() {
             // SAFETY: `bytes` is initialized for its length and `fd` is the live master.
             let written = unsafe { libc::write(fd, bytes.as_ptr().cast(), bytes.len()) };
@@ -496,6 +494,9 @@ impl Pty {
     }
 
     fn expect(&mut self, needle: &str, timeout: Duration) -> String {
+        if self.seen.contains(needle) {
+            return self.seen.clone();
+        }
         let deadline = Instant::now() + timeout;
         let mut chunk = [0_u8; 4096];
         while Instant::now() < deadline {
@@ -957,19 +958,19 @@ fn world_up_restart_down_journey() {
     );
     let cdn_get = ingress_exchange(
         &journey.runtime,
-        "GET /x HTTP/1.1\r\nHost: static-cdn.good.localhost\r\nConnection: close\r\n\r\n",
+        "GET /x HTTP/1.1\r\nHost: assets.good.localhost\r\nConnection: close\r\n\r\n",
     );
     assert!(
         cdn_get.starts_with("HTTP/1.1 200") && cdn_get.ends_with("cdn"),
-        "public-read CDN must serve anonymous GET 200 on static-cdn.<world>.localhost: {cdn_get}"
+        "public-read bucket must serve anonymous GET 200 on assets.<world>.localhost: {cdn_get}"
     );
     let cdn_put = ingress_exchange(
         &journey.runtime,
-        "PUT /x HTTP/1.1\r\nHost: static-cdn.good.localhost\r\nContent-Length: 4\r\nConnection: close\r\n\r\nnope",
+        "PUT /x HTTP/1.1\r\nHost: assets.good.localhost\r\nContent-Length: 4\r\nConnection: close\r\n\r\nnope",
     );
     assert!(
         cdn_put.starts_with("HTTP/1.1 403"),
-        "public-read CDN must refuse anonymous PUT with 403 on static-cdn.<world>.localhost: {cdn_put}"
+        "public-read bucket must refuse anonymous PUT with 403 on assets.<world>.localhost: {cdn_put}"
     );
 
     // 1b. Captured logs and ad-hoc exec against the real pod. Capture is asynchronous, so poll

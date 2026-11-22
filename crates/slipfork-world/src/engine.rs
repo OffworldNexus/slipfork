@@ -35,9 +35,10 @@ impl BtrfsEngine {
 
     /// Flushes every pending write on the store's filesystem before a CoW snapshot.
     ///
-    /// PostgreSQL runs with `fsync=off`, so a just-created database can still sit in page cache
-    /// when `SNAP_CREATE_V2` clones `PGDATA`. One `syncfs(2)` on a single directory descriptor
-    /// makes the fork crash-consistent without a SQL `CHECKPOINT` and stays well under a second.
+    /// The caller first checkpoints PostgreSQL over `<pods>/control.sock` (a `< 5ms` v3-wire
+    /// `CHECKPOINT`), pushing dirty `shared_buffers`/`wal_buffers` into the kernel page cache.
+    /// This `syncfs(2)` then commits that page cache, so `SNAP_CREATE_V2` clones a crash-consistent
+    /// `PGDATA` even though PostgreSQL runs with `fsync=off`.
     pub fn flush_store(&self) -> Result<()> {
         let anchor = self.store_anchor();
         let dir = Self::open_dir(&anchor)?;

@@ -3,10 +3,12 @@
 mod databases;
 mod launcher;
 mod template;
+mod wire;
 
 pub use databases::{DatabaseBootstrap, DatabaseFault, DatabaseName};
 pub use launcher::{PostgresClone, PostgresLauncher};
 pub use template::{PostgresTemplate, TemplateState};
+pub use wire::PostgresSession;
 
 /// Store subdirectory holding sealed golden templates.
 pub const TEMPLATES_DIR: &str = "templates";
@@ -20,6 +22,10 @@ pub const TEMPLATE_STAMP: &str = "SLIPFORK_TEMPLATE_VERSION";
 pub const PGDATA: &str = "/var/lib/postgresql/data";
 /// Unix-socket directory inside the cloned `PGDATA`; readiness never opens a TCP port.
 pub const SOCKET_DIR: &str = ".sock";
+/// Role the trust-auth pod and the pre-fork wire session log in as.
+pub(super) const PG_USER: &str = "postgres";
+/// Database the pre-fork wire session opens (and the stock `psql` client defaults to).
+pub(super) const PG_DATABASE: &str = "postgres";
 /// Dev-server flags (`specs/03-under-the-hood.md` §3): no fsync, minimal WAL, POSIX shm.
 const DEV_FLAGS: [&str; 18] = [
     "-c",
