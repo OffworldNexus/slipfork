@@ -241,12 +241,6 @@ pub fn stopped_row(world: &str, millis: u64, styled: bool) -> String {
     )
 }
 
-/// The dim hint under a world-ready verdict.
-#[must_use]
-pub fn hint_line(styled: bool) -> String {
-    Palette::new(styled).dim("world keeps running; use `slipfork down` when finished")
-}
-
 /// `✓ image    base cached    420ms` on a pipe, or the styled check, dim 8-cell kind, bold name,
 /// lowercase state, and right-aligned dim duration on a colour terminal.
 #[must_use]

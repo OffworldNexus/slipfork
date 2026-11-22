@@ -162,11 +162,11 @@ impl Core {
             ));
         }
         let pods_dir = pods_dir.expect("a live world has a pod root");
-        let subject = params
+        let service = params
             .get("service")
             .and_then(Value::as_str)
-            .unwrap_or(&world)
-            .to_owned();
+            .map(str::to_owned);
+        let subject = service.clone().unwrap_or_else(|| world.clone());
         let started = Instant::now();
         emit(json!({
             "event": "started", "step": 1, "total": 1, "kind": "restarting",
@@ -175,20 +175,22 @@ impl Core {
         let request = Request::Restart {
             v: PROTOCOL_VERSION,
             id: "daemon-restart".to_owned(),
-            service: params
-                .get("service")
-                .and_then(Value::as_str)
-                .map(str::to_owned),
+            service: service.clone(),
         };
         let reply = world_call(&pods_dir, &request)
             .map_err(|message| Failure::new("restart-failed", message))?;
-        emit(json!({
-            "event": "finished", "step": 1, "total": 1, "kind": "service",
-            "name": subject, "state": "running",
-            "label": format!("Restarted {subject}"), "detail": format!("{} pod(s)", reply["restarted"]),
-            "elapsed_ms": started.elapsed().as_millis() as u64,
-            "duration_ms": started.elapsed().as_millis() as u64,
-        }));
+        // Exactly one finished node, and only for a real `-s` target: an all-services restart is
+        // a world-wide operation, so labelling the world a `service` would fabricate a component.
+        if let Some(service) = &service {
+            emit(json!({
+                "event": "finished", "step": 1, "total": 1, "kind": "service",
+                "name": service, "state": "running",
+                "label": format!("Restarted {service}"),
+                "detail": format!("{} pod(s)", reply["restarted"]),
+                "elapsed_ms": started.elapsed().as_millis() as u64,
+                "duration_ms": started.elapsed().as_millis() as u64,
+            }));
+        }
         self.ingress = None;
         Ok(json!({ "restarted": reply["restarted"], "world": world }))
     }

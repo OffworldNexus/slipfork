@@ -2,7 +2,7 @@
 id: M3.51
 title: "Fix DECSTBM prompt mangling (+ 2D VT100 grid test), atomic fork rollback, positional up/down/restart [name] & stopped .forks/* detection"
 kind: epic
-status: ready
+status: active
 priority: 3
 depends_on: []
 paths:
@@ -19,11 +19,11 @@ paths:
   - "packaging/**"
   - "scripts/**"
   - "support/**"
-attempts: 0
+attempts: 1
 max_attempts: 3
 escalation: none
 created: "2026-11-22T17:21"
-updated: "2026-11-22T17:21"
+updated: "2026-11-22T17:23"
 ---
 
 # Goal

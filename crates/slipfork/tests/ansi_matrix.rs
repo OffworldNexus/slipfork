@@ -6,6 +6,9 @@
 //! also emit one parseable object. A real PTY (`script -qec`) proves colour appears only on an
 //! interactive terminal — and that `--json` stays one plain object even there.
 
+#[path = "support/pty.rs"]
+mod pty;
+
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
@@ -256,7 +259,7 @@ fn every_shipped_verb_is_plain_and_json_is_parseable() {
 }
 
 /// Runs `args` under a real PTY; fails (never passes vacuously) when `script` is unavailable.
-fn pty(root: &Path, args: &[&str], envs: &[(&str, &str)]) -> String {
+fn script_pty(root: &Path, args: &[&str], envs: &[(&str, &str)]) -> String {
     let available = Command::new("script")
         .arg("--version")
         .output()
@@ -292,14 +295,14 @@ fn colour_appears_only_on_a_terminal_that_allows_it() {
     let lab = Lab::new();
     let root = lab.root.as_path();
     for args in [&["--help"][..], &["status"][..], &["ps"][..]] {
-        let text = pty(root, args, &[]);
+        let text = script_pty(root, args, &[]);
         assert!(
             text.contains(ESCAPE),
             "a TTY must get colour for {args:?}: {text:?}"
         );
-        let plain = pty(root, args, &[("NO_COLOR", "1")]);
+        let plain = script_pty(root, args, &[("NO_COLOR", "1")]);
         assert!(!plain.contains(ESCAPE), "NO_COLOR must win for {args:?}");
-        let dumb = pty(root, args, &[("TERM", "dumb")]);
+        let dumb = script_pty(root, args, &[("TERM", "dumb")]);
         assert!(
             !dumb.contains(ESCAPE),
             "TERM=dumb must stay plain for {args:?}"
@@ -307,7 +310,7 @@ fn colour_appears_only_on_a_terminal_that_allows_it() {
     }
 
     // `--json` on a real terminal is still one plain, parseable object.
-    let json = pty(root, &["status", "--json"], &[]);
+    let json = script_pty(root, &["status", "--json"], &[]);
     assert!(
         !json.contains(ESCAPE),
         "`--json` must stay plain on a PTY: {json:?}"
@@ -315,4 +318,117 @@ fn colour_appears_only_on_a_terminal_that_allows_it() {
     let value: Value = serde_json::from_str(json.trim())
         .unwrap_or_else(|error| panic!("`status --json` must emit one object ({error}): {json:?}"));
     assert!(value.is_object(), "{value}");
+}
+
+/// The seeded shell prompt every grid assertion protects.
+const PROMPT: &str = "slipfork@slipfork-dev-vm:~/demo$ slipfork up";
+/// The same line after the user pressed Enter: the cursor starts on the row below the prompt.
+const SEED: &str = "slipfork@slipfork-dev-vm:~/demo$ slipfork up\r\n";
+
+/// `NO_COLOR` is removed so the shipped boot pane (and its `DECSTBM` region) really runs.
+fn tty_command(root: &Path) -> Command {
+    let mut command = command(root);
+    command.env_remove("NO_COLOR").env("TERM", "xterm-256color");
+    command
+}
+
+#[test]
+fn vt_grid_tracks_region_clear_and_save_restore() {
+    let mut screen = pty::Screen::new(6, 20);
+    screen.place(5, 0, "prompt");
+    screen.feed(b"\r\n");
+    assert_eq!(
+        screen.find_row("prompt"),
+        Some(4),
+        "a line feed at the bottom scrolls the full screen: {}",
+        screen.text()
+    );
+    assert_eq!(screen.dsr_requests(), 0);
+
+    screen.feed(b"\x1b[1;5r\x1b[4;1H\r\x1b[2Ktask one\r\n");
+    assert_eq!(screen.row_text(3), "task one");
+    screen.feed("\x1b7\x1b[6;1H\x1b[2K⠋ panel\x1b8".as_bytes());
+    assert_eq!(screen.row_text(5), "⠋ panel");
+    assert_eq!(
+        screen.cursor(),
+        (4, 0),
+        "the panel must not move the flow cursor: {}",
+        screen.text()
+    );
+    assert_eq!(screen.row_text(4), "prompt");
+
+    screen.feed(b"\x1b[6n");
+    assert_eq!(screen.dsr_requests(), 1);
+    assert_eq!(screen.cursor(), (4, 0));
+}
+
+#[test]
+fn vt_grid_prompt_survives_up_restart_down_and_fork() {
+    let lab = Lab::new();
+    let root = lab.root.as_path();
+    std::fs::write(
+        root.join("Forkfile"),
+        "# forkfile: 0.1\nimage box from python:3.13-slim {\n  service api {\n    run: sleep 3600\n  }\n}\n",
+    )
+    .expect("write the grid Forkfile");
+
+    for (args, seed_row) in [
+        (&["up"][..], 39usize),
+        (&["restart"][..], 2),
+        (&["down"][..], 39),
+        (&["fork", "prompt-fork!"][..], 2),
+    ] {
+        let mut command = tty_command(root);
+        command.args(args);
+        let run = pty::run(command, Some((seed_row, SEED)), None);
+        let row = run.screen.find_row(PROMPT).unwrap_or_else(|| {
+            panic!(
+                "`slipfork {args:?}` lost the seeded prompt\nscreen:\n{}\nbytes: {:?}",
+                run.screen.text(),
+                run.output
+            )
+        });
+        assert_eq!(
+            run.screen.row_text(row),
+            PROMPT,
+            "`slipfork {args:?}` mutated the prompt cells: {:?}",
+            run.output
+        );
+        assert!(
+            row <= 38,
+            "`slipfork {args:?}` left the prompt on the panel row: {}",
+            run.screen.text()
+        );
+        if seed_row == 2 {
+            assert_eq!(
+                row,
+                2,
+                "a prompt above the flow cursor must not move: {}",
+                run.screen.text()
+            );
+        }
+        // The anchored pane must really have asked the terminal and applied the region; a pane
+        // that never ran would let the prompt assertions pass with nothing on screen.
+        if args[0] != "down" {
+            assert!(
+                run.screen.dsr_requests() > 0,
+                "`slipfork {args:?}` never probed the cursor: {:?}",
+                run.output
+            );
+            assert!(
+                run.output.contains("\x1b[1;39r"),
+                "`slipfork {args:?}` never installed the DECSTBM region: {:?}",
+                run.output
+            );
+        }
+        // Off-Btrfs with no live world every verb must fail; a success here means the lab stopped
+        // exercising the pane and the whole journey passed vacuously.
+        assert!(
+            !run.status.success(),
+            "`slipfork {args:?}` unexpectedly succeeded; expected a typed failure (off-Btrfs or no \
+             running world):\nscreen:\n{}\nbytes: {:?}",
+            run.screen.text(),
+            run.output
+        );
+    }
 }

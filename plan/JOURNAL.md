@@ -2898,3 +2898,19 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-22T17:21 [M3.50] (conductor) status active -> done
 - 2026-11-22T17:21 [M3.51] (conductor) created (epic) Fix DECSTBM prompt mangling (+ 2D VT100 grid test), atomic fork rollback, positional up/down/restart [name] & stopped .forks/* detection
 - 2026-11-22T17:21 AUTOPILOT on by conductor Executing M3.51: DECSTBM prompt fix + 2D VT100 test, atomic fork rollback, positional up/down/restart [name] & .forks/* detection
+- 2026-11-22T17:23 [M3.51] (lead) status ready -> active
+- 2026-11-22T17:23 [M3.51] (lead) attempt 1/3 started
+- 2026-11-22T17:23 [M3.51] (lead) base b02ae2ef99f87bfe91662ce2469d858505774fa3
+- 2026-11-22T17:24 [M3.51.1] (planner) created (task) DECSTBM flow-cursor prompt fix + nag removal + restart labels + 2D VT100 grid test
+- 2026-11-22T17:24 [M3.51.2] (planner) created (task) Atomic fork rollback: stop supervisors, drop worlds.json entry, purge snapshots on failure
+- 2026-11-22T17:24 [M3.51.3] (planner) created (task) Positional [target] on up/down/restart (delete --world) + honest ps with stopped .forks discovery
+- 2026-11-22T17:24 [M3.51.4] (planner) created (task) Docs/spec/man/changelog/honesty sync for positional targets and honest ps
+- 2026-11-22T17:24 [M3.51.1] (planner) edited fields
+- 2026-11-22T17:25 [M3.51.1] (lead) edited fields
+- 2026-11-22T17:25 [M3.51.1] (lead) status ready -> active
+- 2026-11-22T17:25 [M3.51.1] (lead) attempt 1/3 started
+- 2026-11-22T17:25 [M3.51.1] (lead) base b02ae2ef99f87bfe91662ce2469d858505774fa3
+- 2026-11-22T17:32 [M3.51.1] (lead) status active -> review
+- 2026-11-22T17:35 [M3.51.1] (lead) edited fields
+- 2026-11-22T17:35 [M3.51.1] (lead) status review -> active
+- 2026-11-22T17:37 [M3.51.1] (lead) status active -> done

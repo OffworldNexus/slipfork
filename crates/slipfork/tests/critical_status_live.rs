@@ -10,15 +10,15 @@
 use std::ffi::OsString;
 use std::fs;
 use std::io::{Read, Write};
-use std::os::fd::{AsRawFd, FromRawFd};
 use std::os::unix::ffi::OsStringExt;
 use std::os::unix::net::UnixStream;
-use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
+
+#[path = "support/pty.rs"]
+mod pty;
 
 use slipfork_world::{
     BtrfsEngine, Dirtiness, STORE_DIR, StoreLayout, WorldEngine, WorldName, is_btrfs_path,
@@ -231,6 +231,7 @@ fn wait_until(what: &str, budget: Duration, mut check: impl FnMut() -> bool) {
 struct PtyRun {
     output: String,
     status: std::process::ExitStatus,
+    screen: pty::Screen,
 }
 
 /// Runs `args` under a real `openpty` PTY (120x40 unless resized); `script` is not needed.
@@ -241,30 +242,18 @@ fn run_pty(
     envs: &[(&str, &str)],
     resize: Option<(Duration, u16, u16)>,
 ) -> PtyRun {
-    let mut master = 0;
-    let mut slave = 0;
-    let winsize = libc::winsize {
-        ws_row: 40,
-        ws_col: 120,
-        ws_xpixel: 0,
-        ws_ypixel: 0,
-    };
-    // SAFETY: `openpty` fills both descriptors and reads one valid `winsize`.
-    let allocated = unsafe {
-        libc::openpty(
-            &mut master,
-            &mut slave,
-            std::ptr::null_mut(),
-            std::ptr::null(),
-            &winsize,
-        )
-    };
-    assert_eq!(allocated, 0, "openpty must allocate a real PTY");
-    // SAFETY: the descriptors are freshly owned by this process.
-    let slave = unsafe { fs::File::from_raw_fd(slave) };
-    // SAFETY: `master` is owned here and closed when `File` drops.
-    let master = unsafe { fs::File::from_raw_fd(master) };
-    let master_fd = master.as_raw_fd();
+    run_pty_seeded(project, env, args, envs, resize, None)
+}
+
+/// Like [`run_pty`], but pre-seeds a shell prompt row and answers the pane's `DSR` query.
+fn run_pty_seeded(
+    project: &Path,
+    env: &LabEnv,
+    args: &[&str],
+    envs: &[(&str, &str)],
+    resize: Option<(Duration, u16, u16)>,
+    seed: Option<(usize, &'static str)>,
+) -> PtyRun {
     let mut command = Command::new(binary());
     command
         .args(args)
@@ -272,95 +261,17 @@ fn run_pty(
         .env("XDG_RUNTIME_DIR", &env.runtime)
         .env("XDG_STATE_HOME", &env.state)
         .env_remove("NO_COLOR")
-        .env("TERM", "xterm-256color")
-        .stdin(Stdio::from(slave.try_clone().expect("clone PTY slave")))
-        .stdout(Stdio::from(slave.try_clone().expect("clone PTY slave")))
-        .stderr(Stdio::from(slave));
+        .env("TERM", "xterm-256color");
     for (key, value) in envs {
         command.env(key, value);
     }
-    // SAFETY: the closure only performs `setsid(2)`/`ioctl(TIOCSCTTY)` between `fork` and `exec`.
-    unsafe {
-        command.pre_exec(|| {
-            if libc::setsid() < 0 {
-                return Err(std::io::Error::last_os_error());
-            }
-            if libc::ioctl(0, libc::TIOCSCTTY as _, 0) < 0 {
-                return Err(std::io::Error::last_os_error());
-            }
-            Ok(())
-        });
-    }
-    let mut child = command.spawn().expect("spawn the PTY child");
-    // `Command` still owns the parent's three slave descriptors; until it is dropped the master
-    // never sees EOF, so closing them here is what lets the reader finish.
-    drop(command);
-    let finished = Arc::new(AtomicBool::new(false));
-    let flag = Arc::clone(&finished);
-    let reader = std::thread::spawn(move || {
-        let mut master = master;
-        let mut out = Vec::new();
-        let mut chunk = [0_u8; 8192];
-        loop {
-            let mut poll = libc::pollfd {
-                fd: master.as_raw_fd(),
-                events: libc::POLLIN,
-                revents: 0,
-            };
-            // SAFETY: one valid `pollfd` lives across the call; a 100ms tick bounds the wait so a
-            // finished child can never leave the reader blocked on a held slave descriptor.
-            let ready = unsafe { libc::poll(&mut poll, 1, 100) };
-            if ready < 0 {
-                if std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
-                    continue;
-                }
-                break;
-            }
-            if ready == 0 {
-                if flag.load(Ordering::Relaxed) {
-                    break;
-                }
-                continue;
-            }
-            if poll.revents & (libc::POLLIN | libc::POLLHUP | libc::POLLERR) == 0 {
-                continue;
-            }
-            match master.read(&mut chunk) {
-                Ok(0) => break,
-                Ok(read) => out.extend_from_slice(&chunk[..read]),
-                Err(error)
-                    if matches!(
-                        error.kind(),
-                        std::io::ErrorKind::Interrupted | std::io::ErrorKind::WouldBlock
-                    ) =>
-                {
-                    continue;
-                }
-                Err(_) => break,
-            }
-        }
-        out
-    });
-    if let Some((delay, rows, cols)) = resize {
-        std::thread::sleep(delay);
-        let size = libc::winsize {
-            ws_row: rows,
-            ws_col: cols,
-            ws_xpixel: 0,
-            ws_ypixel: 0,
-        };
-        // SAFETY: the master descriptor stays open until the reader thread finishes.
-        unsafe { libc::ioctl(master_fd, libc::TIOCSWINSZ, &size) };
-    }
-    let status = wait_bounded(&mut child, args);
-    finished.store(true, Ordering::Relaxed);
-    let bytes = reader.join().expect("join the PTY reader");
+    let run = pty::run(command, seed, resize);
     PtyRun {
-        output: String::from_utf8_lossy(&bytes).into_owned(),
-        status,
+        output: run.output,
+        status: run.status,
+        screen: run.screen,
     }
 }
-
 /// Every maximal run of panel cells, so a sheared or multi-width bar cannot pass unnoticed.
 fn bar_runs(text: &str) -> Vec<usize> {
     let mut runs = Vec::new();
@@ -1001,4 +912,75 @@ fn live_boots_once_paints_the_panel_reconciles_orphans_and_replays_logs() {
             ps.status.success() && String::from_utf8_lossy(&ps.stdout).contains("\"worlds\":[]")
         },
     );
+}
+
+/// A user's shell prompt is data: every lifecycle verb must leave every prompt cell untouched.
+const PROMPT: &str = "slipfork@slipfork-dev-vm:~/demo$ slipfork up";
+/// The same line after Enter: the cursor starts on the row below the prompt, as in a real shell.
+const SEED: &str = "slipfork@slipfork-dev-vm:~/demo$ slipfork up\r\n";
+
+fn assert_prompt(run: &PtyRun, args: &[&str], seed_row: usize) {
+    let row = run.screen.find_row(PROMPT).unwrap_or_else(|| {
+        panic!(
+            "`slipfork {args:?}` lost the seeded prompt\nscreen:\n{}\nbytes: {:?}",
+            run.screen.text(),
+            run.output
+        )
+    });
+    assert_eq!(
+        run.screen.row_text(row),
+        PROMPT,
+        "`slipfork {args:?}` mutated the prompt cells\nscreen:\n{}",
+        run.screen.text()
+    );
+    if seed_row == 2 {
+        assert_eq!(
+            row,
+            2,
+            "a prompt above the flow cursor must not move\nscreen:\n{}",
+            run.screen.text()
+        );
+    }
+}
+
+#[test]
+fn live_prompt_is_byte_identical_across_lifecycle_verbs() {
+    let root = test_root();
+    let store_root = mount_store_for(&root);
+    let env = LabEnv::isolated(&root);
+    let suffix = unique_suffix();
+    let project_name = format!("prompt-{suffix}");
+    let world_id = project_name.clone();
+    let project = root.join(&project_name);
+    prepare(&project, &store_root, &world_id, SUITE_FORKFILE);
+    let mut guard = WorldGuard {
+        project: project.clone(),
+        env: env.clone(),
+        store_root,
+        world: world_id.clone(),
+        keep: false,
+    };
+
+    // One daemon, one boot, four verbs: the prompt is seeded on the bottom row and on row 3.
+    for (args, seed_row) in [
+        (&["up"][..], 39usize),
+        (&["restart"][..], 2usize),
+        (&["up"][..], 39),
+        // No fork name: this project is not a git checkout, so `fork` fails after its pane is
+        // live — still real fork bytes, and no half-fork to reap.
+        (&["fork"][..], 2),
+        (&["down"][..], 39),
+    ] {
+        let run = run_pty_seeded(&project, &env, args, &[], None, Some((seed_row, SEED)));
+        if !run.status.success() && args[0] != "fork" {
+            guard.keep = true;
+            panic!(
+                "PTY `slipfork {args:?}` failed\nscreen:\n{}\nbytes: {:?}",
+                run.screen.text(),
+                run.output
+            );
+        }
+        assert_prompt(&run, args, seed_row);
+    }
+    drop(guard);
 }

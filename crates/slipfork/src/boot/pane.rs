@@ -3,6 +3,11 @@
 //!
 //! Every escape is written here only after the composition root resolved [`UiMode::ColorTty`];
 //! this module holds only terminal state and delegates every string to [`super::render`].
+//!
+//! Task rows follow a real flow cursor seeded from the shell prompt's line: the first task lands
+//! one row below the cursor, and a prompt found on the bottom row is scrolled into the region
+//! before anything is cleared. The panel is always painted inside `ESC 7 … ESC 8`, so drawing it
+//! never moves the flow cursor that the next task row depends on.
 
 use std::io::Write;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -81,10 +86,12 @@ pub(super) struct Pane {
     started: Instant,
     frame: usize,
     line_len: usize,
+    /// The row the next task row will be painted on; always inside `1..=rows-1`.
+    flow_row: usize,
 }
 
 impl Pane {
-    pub(super) fn new(title: &str, cols: usize) -> Self {
+    pub(super) fn new(title: &str, cols: usize, prompt_row: Option<usize>) -> Self {
         let (width, rows) = terminal_size();
         let cols = cols.max(width);
         let title = title.to_owned();
@@ -98,8 +105,18 @@ impl Pane {
             started: Instant::now(),
             frame: 0,
             line_len: 0,
+            flow_row: rows.saturating_sub(1),
         };
+        // A missing probe (`None`) or one reporting the panel row cannot rule out a prompt hiding
+        // there, and `install` clears that row; one full-screen scroll while no region is set
+        // keeps the prompt visible. The region scroll in `seed_flow` then frees the margin.
+        if rows >= 3 && prompt_row.is_none_or(|row| row >= rows) {
+            let mut stdout = std::io::stdout().lock();
+            let _ = write!(stdout, "\r\n");
+            let _ = stdout.flush();
+        }
         pane.guard = ScrollRegionGuard::install(rows);
+        pane.seed_flow(prompt_row);
         pane.draw();
         pane
     }
@@ -113,16 +130,25 @@ impl Pane {
         self.cols = cols;
         self.rows = rows;
         self.line_len = 0;
+        if rows >= 3 {
+            self.flow_row = self.flow_row.clamp(1, rows - 1);
+        }
         self.guard = ScrollRegionGuard::install(rows);
+        if self.guard.is_some() {
+            let mut stdout = std::io::stdout().lock();
+            let _ = write!(stdout, "\x1b[{};1H", self.flow_row);
+            let _ = stdout.flush();
+        }
         self.draw();
     }
 
-    /// Prints one completed row above the panel.
+    /// Prints one completed row at the natural flow cursor, one line below the shell prompt.
     pub(super) fn println(&mut self, text: &str) {
         let mut stdout = std::io::stdout().lock();
         if self.guard.is_some() {
-            let _ = write!(stdout, "\x1b[{};1H\x1b[2K", self.rows);
-            let _ = write!(stdout, "\x1b[{};1H{text}\r\n", self.rows - 1);
+            let row = self.flow_row;
+            let _ = write!(stdout, "\x1b[{row};1H\r\x1b[2K{text}\r\n");
+            self.flow_row = (row + 1).min(self.rows - 1);
         } else if self.line_len > 0 {
             let _ = write!(stdout, "\r{}\r", " ".repeat(self.line_len));
             self.line_len = 0;
@@ -131,6 +157,7 @@ impl Pane {
             let _ = writeln!(stdout, "{text}");
         }
         let _ = stdout.flush();
+        drop(stdout);
         self.draw();
     }
 
@@ -146,20 +173,52 @@ impl Pane {
         self.draw();
     }
 
-    /// Clears the panel row and restores the scrolling region; idempotent.
+    /// Clears the panel row, restores the scrolling region, and parks one line under the last row.
     pub(super) fn restore(&mut self) {
-        self.guard = None;
+        let had_region = self.guard.take().is_some();
         let mut stdout = std::io::stdout().lock();
-        if self.rows >= 3 {
-            let _ = write!(
-                stdout,
-                "\x1b[{};1H\x1b[2K\x1b[r\x1b[{};1H",
-                self.rows, self.rows
-            );
+        if had_region {
+            let _ = write!(stdout, "\x1b[{};1H\x1b[2K", self.flow_row);
         } else if self.line_len > 0 {
             let _ = write!(stdout, "\r{}\r", " ".repeat(self.line_len));
             self.line_len = 0;
         }
+        let _ = stdout.flush();
+    }
+
+    /// Seeds the flow cursor from the prompt line and scrolls a bottom prompt out of the way.
+    fn seed_flow(&mut self, prompt_row: Option<usize>) {
+        if self.rows < 3 {
+            return;
+        }
+        let bottom = self.rows - 1;
+        let mut scrolled = false;
+        match prompt_row {
+            // The prompt shares the region's bottom margin (or sat on the panel row, already
+            // scrolled by `new`): a real region scroll pushes it up before any task row writes,
+            // so a task can never overwrite the prompt cells.
+            Some(row) if row >= bottom => {
+                let mut stdout = std::io::stdout().lock();
+                let _ = write!(stdout, "\x1b[{bottom};1H\r\n");
+                let _ = stdout.flush();
+                scrolled = true;
+            }
+            // The probe reports the cursor, already one line below the prompt: no blank gap.
+            Some(row) => self.flow_row = row.min(bottom),
+            None => {
+                // No DSR responder: never assume the last line is blank. Scroll one line at the
+                // region's bottom margin so existing content stays visible above the tasks.
+                let mut stdout = std::io::stdout().lock();
+                let _ = write!(stdout, "\x1b[{bottom};1H\r\n");
+                let _ = stdout.flush();
+                scrolled = true;
+            }
+        }
+        if scrolled {
+            self.flow_row = bottom;
+        }
+        let mut stdout = std::io::stdout().lock();
+        let _ = write!(stdout, "\x1b[{};1H", self.flow_row);
         let _ = stdout.flush();
     }
 
@@ -176,7 +235,8 @@ impl Pane {
         );
         let mut stdout = std::io::stdout().lock();
         if self.guard.is_some() {
-            let _ = write!(stdout, "\x1b[{};1H\x1b[2K{line}\x1b[K", self.rows);
+            // `ESC 7`/`ESC 8` keep the flow cursor untouched while the panel repaints.
+            let _ = write!(stdout, "\x1b7\x1b[{};1H\x1b[2K{line}\x1b[K\x1b8", self.rows);
         } else {
             let visible = console::measure_text_width(&line);
             if visible < self.line_len {

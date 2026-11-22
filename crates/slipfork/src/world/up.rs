@@ -194,8 +194,8 @@ impl Session {
         tui.finish();
         match outcome {
             Ok(reply) => {
+                let world = reply["world"].as_str().unwrap_or_default().to_owned();
                 if json_mode {
-                    let world = reply["world"].as_str().unwrap_or_default();
                     let elapsed_ms = if elapsed_ms == 0 {
                         u64::try_from(began.elapsed().as_millis()).unwrap_or(u64::MAX)
                     } else {
@@ -208,11 +208,14 @@ impl Session {
                         "nodes": nodes,
                     }));
                 }
-                let subject = args
-                    .service
-                    .clone()
-                    .unwrap_or_else(|| reply["world"].as_str().unwrap_or_default().to_owned());
-                tui.line(&format!("✓ Restarted {subject}"));
+                match &args.service {
+                    Some(service) => tui.line(&format!("✓ Restarted {service}")),
+                    None => {
+                        let restarted = reply["restarted"].as_u64().unwrap_or(0);
+                        let plural = if restarted == 1 { "pod" } else { "pods" };
+                        tui.line(&format!("✓ Restarted {world} ({restarted} {plural})"));
+                    }
+                }
                 ExitCode::SUCCESS
             }
             Err(error) => self.lifecycle_failure(

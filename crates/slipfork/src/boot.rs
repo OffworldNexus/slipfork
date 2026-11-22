@@ -15,7 +15,7 @@ mod render;
 
 use std::io::Write;
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
@@ -45,6 +45,82 @@ pub struct BootTui {
     diagnostics: Vec<String>,
 }
 
+/// Asks the real terminal for its cursor row (1-based) with a bounded `DSR` probe.
+///
+/// Raw mode is enabled only around the write, poll, and read of `ESC[6n`, then the exact captured
+/// mode is restored. A pipe, a non-tty, a silent console, or a 60ms timeout yields `None` — the
+/// pane then takes its region-scroll path instead of blocking on a terminal that never answers.
+fn probe_cursor_row() -> Option<usize> {
+    // SAFETY: `isatty(3)` only inspects descriptor flags.
+    let tty =
+        unsafe { libc::isatty(libc::STDIN_FILENO) == 1 && libc::isatty(libc::STDOUT_FILENO) == 1 };
+    if !tty {
+        return None;
+    }
+    let mut captured = std::mem::MaybeUninit::<libc::termios>::uninit();
+    // SAFETY: `tcgetattr` initializes the buffer for a live tty descriptor.
+    if unsafe { libc::tcgetattr(libc::STDIN_FILENO, captured.as_mut_ptr()) } != 0 {
+        return None;
+    }
+    // SAFETY: the call above succeeded and fully initialized the buffer.
+    let original = unsafe { captured.assume_init() };
+    let mut raw = original;
+    // SAFETY: `cfmakeraw` only mutates the local termios copy.
+    unsafe { libc::cfmakeraw(&mut raw) };
+    raw.c_cc[libc::VMIN] = 0;
+    raw.c_cc[libc::VTIME] = 0;
+    // SAFETY: `raw` is a fully initialized termios for this tty descriptor.
+    if unsafe { libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &raw) } != 0 {
+        return None;
+    }
+    let asked = {
+        let mut stdout = std::io::stdout().lock();
+        stdout
+            .write_all(b"\x1b[6n")
+            .and_then(|()| stdout.flush())
+            .is_ok()
+    };
+    let row = if asked { read_cursor_row() } else { None };
+    // SAFETY: restoring the exact termios captured before the probe.
+    unsafe { libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &original) };
+    row
+}
+
+/// Reads `ESC[{row};{col}R` within 60ms; any silence, partial reply, or stray byte yields `None`.
+fn read_cursor_row() -> Option<usize> {
+    let deadline = Instant::now() + Duration::from_millis(60);
+    let mut response = Vec::new();
+    while response.len() < 32 {
+        let left = deadline.saturating_duration_since(Instant::now());
+        let millis = i32::try_from(left.as_millis()).unwrap_or(60).max(1);
+        let mut poll = libc::pollfd {
+            fd: libc::STDIN_FILENO,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        // SAFETY: one valid `pollfd` lives across the call and the wait is capped at 60ms.
+        let ready = unsafe { libc::poll(&mut poll, 1, millis) };
+        if ready <= 0 {
+            return None;
+        }
+        let mut byte = 0_u8;
+        // SAFETY: `byte` is one writable byte on a live tty descriptor.
+        let read =
+            unsafe { libc::read(libc::STDIN_FILENO, std::ptr::from_mut(&mut byte).cast(), 1) };
+        if read != 1 {
+            return None;
+        }
+        response.push(byte);
+        if byte == b'R' {
+            break;
+        }
+    }
+    let text = std::str::from_utf8(&response).ok()?;
+    let body = text.strip_prefix("\x1b[")?.strip_suffix('R')?;
+    let (row, _) = body.split_once(';')?;
+    row.parse().ok()
+}
+
 impl BootTui {
     /// A pane with the anchored progress bar (`up`, `restart`, `fork`).
     #[must_use]
@@ -59,7 +135,11 @@ impl BootTui {
     }
 
     fn new(mode: UiMode, width: usize, title: &str, summary: bool) -> Self {
-        let pane = (summary && mode.color()).then(|| Arc::new(Mutex::new(Pane::new(title, width))));
+        // The only ambient-terminal probe lives here, at the composition root: a bounded 60ms
+        // `DSR` ask so the anchored pane can seed its flow cursor from the shell prompt's row.
+        let live = summary && mode.color();
+        let prompt_row = if live { probe_cursor_row() } else { None };
+        let pane = live.then(|| Arc::new(Mutex::new(Pane::new(title, width, prompt_row))));
         let ascii = (summary && mode.interactive() && !mode.color())
             .then(|| Arc::new(Mutex::new(AsciiLine::new(title, width))));
         let screen = pane
@@ -138,6 +218,10 @@ impl BootTui {
         {
             pane.restore();
         }
+        // Post-finish rows (`✓ Restarted …`, verdicts) must go through plain `println!`: keeping
+        // the live pane would re-enter its region and leave a stale `⠋` row above the shell.
+        self.pane = None;
+        self.ascii = None;
         // The ticker is joined and the pane mutex is free, so one stdout lock now serializes
         // every remaining byte (verdicts and diagnostics) with no other writer alive.
         let mut stdout = std::io::stdout().lock();
@@ -235,15 +319,9 @@ impl BootTui {
         };
         if self.pane.is_some() {
             self.verdict.push(text);
-            if event["fork"].is_null() {
-                self.verdict.push(text::hint_line(color));
-            }
             return;
         }
         self.line(&text);
-        if event["fork"].is_null() {
-            self.line(&text::hint_line(color));
-        }
     }
 
     fn stopped_event(&mut self, event: &Value) {
