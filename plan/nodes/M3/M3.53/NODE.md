@@ -2,7 +2,7 @@
 id: M3.53
 title: "Migrate packaging & distribution to offworld-packaging (stage-dist.py, *.offworld-nexus.app, zero Cloudsmith/Forgejo) & align H-013 live-test assertions"
 kind: epic
-status: ready
+status: done
 priority: 3
 depends_on: []
 paths:
@@ -21,7 +21,7 @@ attempts: 0
 max_attempts: 3
 escalation: none
 created: "2026-11-22T19:17"
-updated: "2026-11-22T19:17"
+updated: "2026-11-22T19:49"
 ---
 
 # Goal
