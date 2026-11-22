@@ -3077,3 +3077,5 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-22T23:36 [M3.58] (lead) GATE PASSED: make check/docs-check/packages/packages-test exit 0; run_id logs + slirp packaging live-proven on 165.232.86.174
 - 2026-11-22T23:36 [M3] (lead) status active -> done
 - 2026-11-22T23:36 [M3] (lead) GATE PASSED: live /home/slipfork/demo runs real uv+FastAPI + pnpm+SvelteKit with fork isolation, run-id logs, parallel teardown and cross-domain ps
+- 2026-11-22T23:37 HUMAN H-015 [release-gate] opened by conductor (node M3)
+- 2026-11-22T23:37 AUTOPILOT off by conductor Awaiting GHA green confirmation & human review/merge of PR #2 into develop
