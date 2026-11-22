@@ -221,8 +221,8 @@ fn the_registry_dispatches_primary_domains_and_forks_over_localhost() {
     ));
 }
 
-/// `s3 uploads` stays private while `s3 assets { policy public-read; cdn static-cdn }` publishes its
-/// CDN authority, and the compiler-owned symbol table hands back the matching `.domain`/`.url` values.
+/// `s3 uploads` stays private while `s3 assets { policy public-read; cdn static-cdn }` serves the
+/// assets bucket domain, and the compiler-owned symbol table resolves the cdn alias to that bucket.
 const MULTI_S3: &str = r#"# forkfile: 0.1
 env common {
   CDN_DOMAIN = static-cdn.domain
@@ -245,7 +245,7 @@ image app . {
 "#;
 
 #[test]
-fn s3_buckets_and_cdn_authorities_rewrite_to_native_s3() {
+fn s3_buckets_own_their_domains_and_the_cdn_aliases_the_bucket() {
     let doc = slipfork_forkfile::parse(MULTI_S3).expect("the multi-S3 Forkfile parses");
     assert!(
         slipfork_forkfile::check(&doc).is_ok(),
@@ -259,11 +259,19 @@ fn s3_buckets_and_cdn_authorities_rewrite_to_native_s3() {
     assert_eq!(private.port, 8333);
     assert_eq!(private.target, "/uploads/notes/a.txt");
 
-    let cdn = table
-        .resolve("static-cdn", "/logo.png")
-        .expect("`cdn static-cdn` mounts its own authority");
-    assert_eq!(cdn.port, 8333);
-    assert_eq!(cdn.target, "/assets/logo.png");
+    let assets = table
+        .resolve("assets", "/logo.png")
+        .expect("`assets` owns its bucket authority");
+    assert_eq!(assets.port, 8333);
+    assert_eq!(assets.target, "/assets/logo.png");
+
+    assert!(
+        matches!(
+            table.resolve("static-cdn", "/logo.png"),
+            Err(RouteError::UnknownPath { .. })
+        ),
+        "a local cdn alias must not register a second authority"
+    );
 
     let primary = table
         .resolve("", "/")
@@ -272,6 +280,6 @@ fn s3_buckets_and_cdn_authorities_rewrite_to_native_s3() {
 
     let env = doc.eval_all_env("demo", &|_, _| None, &|_| None);
     let common = env.get("common").expect("`env common` was visited");
-    assert_eq!(common["CDN_DOMAIN"].0, "static-cdn.demo.localhost");
-    assert_eq!(common["CDN_URL"].0, "http://static-cdn.demo.localhost");
+    assert_eq!(common["CDN_DOMAIN"].0, "assets.demo.localhost");
+    assert_eq!(common["CDN_URL"].0, "http://assets.demo.localhost");
 }

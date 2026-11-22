@@ -223,8 +223,8 @@ fn orphaned_pods_render_yellow_and_serialize() {
     assert!(plain.contains("orphaned"), "{plain}");
     let coloured = status::render(&orphaned, &Options::new(true));
     assert!(
-        coloured.contains("\u{1b}[33morphaned\u{1b}[0m"),
-        "orphaned must be yellow: {coloured}"
+        coloured.contains("\u{1b}[1;33morphaned\u{1b}[0m"),
+        "orphaned must be bold yellow: {coloured}"
     );
     let value = serde_json::to_value(&orphaned).expect("ps reply serializes");
     assert_eq!(value["worlds"][0]["services"][1]["orphaned"], true);
@@ -269,14 +269,14 @@ fn reply(value: Value) -> slipfork::ps::PsReply {
     status::parse(&value).expect("the fabricated payload follows the ps schema")
 }
 
-fn demo_reply(now_ms: u64) -> slipfork::ps::PsReply {
+fn demo_reply() -> slipfork::ps::PsReply {
     reply(json!({
         "worlds": [{
             "project": "/home/me/projects/demo",
             "path": "/home/me/projects/demo",
             "world": "demo",
             "url": "http://demo.localhost",
-            "started_at_ms": now_ms - 12 * 60 * 1_000,
+            "started_at_ms": 1_000_000_000,
             "supervisor_pid": 11,
             "alive": true,
             "booting": false,
@@ -300,7 +300,7 @@ fn demo_reply(now_ms: u64) -> slipfork::ps::PsReply {
                 "world": "feat-auth--demo",
                 "fork": "feat-auth",
                 "url": "http://feat-auth--demo.localhost",
-                "started_at_ms": now_ms - 4 * 60 * 1_000,
+                "started_at_ms": 1_000_000_500,
                 "supervisor_pid": 12,
                 "alive": true,
                 "booting": false,
@@ -315,47 +315,42 @@ fn demo_reply(now_ms: u64) -> slipfork::ps::PsReply {
 
 #[test]
 fn the_tree_contract_holds_for_every_row_shape() {
-    let now = 1_000_000_000;
     let text = status::render(
-        &demo_reply(now),
-        &Options::new(false)
-            .with_now(now)
-            .with_home(Some(PathBuf::from("/home/me"))),
+        &demo_reply(),
+        &Options::new(false).with_home(Some(PathBuf::from("/home/me"))),
     );
+    assert!(text.starts_with("● demo  ~/projects/demo\n"), "{text}");
+    for line in [
+        "  ├─ http://demo.localhost",
+        "  │  ├─ /api  -> api",
+        "  │  └─ /     -> front",
+        "  ├─ http://mail.demo.localhost",
+        "  ├─ http://uploads.demo.localhost",
+        "  │  └─ /     -> uploads  s3 (private)",
+        "  ├─ http://assets.demo.localhost",
+        "  │  └─ /     -> assets   s3 (public-read)",
+        "  └─ support",
+        "     ├─ worker   service",
+        "     ├─ pg       postgres 18",
+        "     └─ cache    redis 7",
+    ] {
+        assert!(text.contains(line), "missing `{line}` in:\n{text}");
+    }
     assert!(
-        text.starts_with("● demo  http://demo.localhost  ~/projects/demo\n"),
+        text.contains("● feat-auth  ~/projects/demo/.forks/feat-auth"),
         "{text}"
     );
-    let row = |id: &str| -> String {
-        text.lines()
-            .find(|line| line.contains(&format!(" {id} ")))
-            .unwrap_or_else(|| panic!("no `{id}` row in:\n{text}"))
-            .split_whitespace()
-            .collect::<Vec<_>>()
-            .join(" ")
-    };
-    assert_eq!(row("api"), "├─ api running :8000 -> /api 12m");
-    assert_eq!(row("worker"), "├─ worker running - 12m");
-    assert_eq!(row("mailpit"), "├─ mailpit running :8025 -> mail.*/ 12m");
-    assert_eq!(row("pg"), "├─ pg postgres 18 :5432 12m");
-    assert_eq!(row("cache"), "├─ cache redis 7 :6379 12m");
-    assert_eq!(row("uploads"), "├─ uploads s3 (private) :8333 12m");
-    assert_eq!(
-        row("assets"),
-        "├─ assets s3 (public-read) -> assets-cdn.* 12m"
-    );
-    assert!(text.contains("  └─ forks"), "{text}");
-    assert!(
-        text.contains("     └─ ● feat-auth  http://feat-auth--demo.localhost  ~/projects/demo/.forks/feat-auth"),
-        "{text}"
-    );
-    assert!(text.contains("12m"), "{text}");
-    assert!(text.contains("4m"), "{text}");
+    assert!(!text.contains("  └─ forks"), "{text}");
+    assert!(!text.contains(":8000"), "{text}");
+    assert!(!text.contains(":8333"), "{text}");
+    assert!(!text.contains("12m"), "{text}");
+    assert!(!text.contains("4m"), "{text}");
+    assert!(!text.contains("assets-cdn"), "{text}");
     assert!(!text.contains(ANSI), "plain renders emit zero ANSI: {text}");
 }
 
 #[test]
-fn crashed_resources_render_red_state_not_a_healthy_descriptor() {
+fn crashed_rows_render_a_bold_red_failed_state() {
     let reply = reply(json!({
         "worlds": [{
             "project": "/home/me/demo", "path": "/home/me/demo", "world": "demo",
@@ -368,11 +363,10 @@ fn crashed_resources_render_red_state_not_a_healthy_descriptor() {
         }]
     }));
     let plain = status::render(&reply, &Options::new(false));
-    assert!(plain.contains("failed"), "{plain}");
-    assert!(!plain.contains("postgres 18"), "{plain}");
-    assert!(!plain.contains("s3 (private)"), "{plain}");
+    assert!(plain.contains("postgres 18  failed"), "{plain}");
+    assert!(plain.contains("s3 (private) failed"), "{plain}");
     let colored = status::render(&reply, &Options::new(true));
-    assert!(colored.contains("\u{1b}[31mfailed\u{1b}[0m"), "{colored}");
+    assert!(colored.contains("\u{1b}[1;31mfailed\u{1b}[0m"), "{colored}");
 }
 
 #[test]
@@ -431,30 +425,23 @@ fn a_forty_character_fork_name_never_shears() {
 }
 
 #[test]
-fn ages_render_as_human_units_and_colour_appears_only_when_allowed() {
-    let now = 10_000_000_000;
-    let world = |name: &str, started: u64| {
-        json!({
-            "project": format!("/home/me/{name}"),
-            "path": format!("/home/me/{name}"),
-            "world": name,
-            "url": format!("http://{name}.localhost"),
-            "started_at_ms": now - started,
-            "supervisor_pid": 1, "alive": true, "booting": false,
-            "services": [{ "id": "api", "kind": "service", "running": true }]
-        })
-    };
-    let reply = reply(json!({ "worlds": [
-        world("a", 4_000),
-        world("b", 12 * 60_000),
-        world("c", 3 * 3_600_000),
-        world("d", 2 * 86_400_000)
-    ]}));
-    let plain = status::render(&reply, &Options::new(false).with_now(now));
-    for age in ["4s", "12m", "3h", "2d"] {
-        assert!(plain.contains(age), "missing {age}: {plain}");
+fn ports_and_ages_stay_in_json_but_never_in_the_human_tree() {
+    let reply = demo_reply();
+    let plain = status::render(
+        &reply,
+        &Options::new(false).with_home(Some("/home/me".into())),
+    );
+    for hidden in [":8000", ":8025", ":8333", ":5432", "12m", "4m"] {
+        assert!(
+            !plain.contains(hidden),
+            "human output leaked `{hidden}`: {plain}"
+        );
     }
-    let colored = status::render(&reply, &Options::new(true).with_now(now));
+    let value = serde_json::to_value(&reply).expect("ps reply serializes");
+    assert_eq!(value["worlds"][0]["started_at_ms"], 1_000_000_000_u64);
+    assert_eq!(value["worlds"][0]["services"][0]["port"], 8000);
+    assert_eq!(value["worlds"][0]["services"][7]["orphaned"], false);
+    let colored = status::render(&reply, &Options::new(true));
     assert!(
         colored.contains(ANSI),
         "a colour render must style: {colored}"

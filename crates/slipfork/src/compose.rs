@@ -120,9 +120,6 @@ pub fn host(args: &[OsString], cwd: &Path, terminal: Terminal) -> Result<HostEnv
             .map(PathBuf::from)
             .or_else(|| config_base.map(|base| base.join(".config")))
             .unwrap_or_else(|| PathBuf::from(format!("/var/tmp/slipfork-config-{uid}"))),
-        now_ms: std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |since| since.as_millis() as u64),
         ingress_uid,
         ingress_user,
         openrc,

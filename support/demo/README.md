@@ -10,7 +10,7 @@ slipfork doctor                               # Host readiness verdict
 curl -s http://demo.localhost/api/status | jq # Parent world API (3 rows)
 slipfork fork my-experiment                   # One clone, < 1.0s boot
 curl -s http://my-experiment--demo.localhost/api/status | jq
-curl -i http://static-cdn.demo.localhost/badge.svg   # 200 OK public-read CDN
+curl -i http://assets.demo.localhost/badge.svg        # 200 OK public-read bucket
 curl -i http://uploads.demo.localhost/audit.json     # 403 Forbidden private bucket
 curl -I http://mail.demo.localhost/                  # 200 OK Mailpit UI
 slipfork logs api                             # Per-service colored logs
@@ -25,7 +25,7 @@ slipfork drop my-experiment                   # Instant teardown + clone cleanup
 | `pg` | PostgreSQL 18 (direct `postgres` exec) | `postgres.url` |
 | `cache` | Redis 7 (direct `redis-server`) | `cache.url` |
 | `uploads` | native S3 bucket, private | `uploads.url` (`403` anonymous) |
-| `assets` | native S3 bucket, `public-read` + CDN | `static-cdn.url` (`200` anonymous) |
+| `assets` | native S3 bucket, `public-read` (`cdn static-cdn` aliases it locally) | `assets.demo.localhost` (`200` anonymous) |
 | `api` | `backend` image service | `:8000`, `main.url/api` |
 | `worker` | `backend` image worker | portless |
 | `front` | `frontend` image service, `arg VITE_CDN_URL` | `:5173`, `main.url/` |

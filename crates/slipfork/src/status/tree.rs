@@ -1,14 +1,18 @@
-//! The tree itself: world headers, service rows, nested forks, and scoped selection.
+//! The flat, domain-first status tree.
+//!
+//! Worlds and forks are always top-level headers; each domain lists its mapped sub-paths, and every
+//! unrouted service, resource, or orphaned pod lands in one trailing `support` group. Ports and
+//! ages stay in `--json` and never reach a human line.
 
 use std::path::Path;
 
 use serde_json::Value;
 
 use crate::ps::{PsReply, PsWorld};
-use crate::ui::paint;
+use crate::ui::Palette;
 
-use super::model::{Options, display_name, display_path, human_age, parse as decode};
-use super::rows::columns;
+use super::model::{Options, display_name, display_path, parse as decode};
+use super::rows::{RoutedRow, SupportRow, WorldRows, project};
 use super::widths::{Widths, pad};
 
 pub use super::model::no_world_line;
@@ -22,19 +26,26 @@ pub fn parse(value: &Value) -> Result<PsReply, String> {
     decode(value)
 }
 
-/// Renders the `ps` reply as the status tree; an empty reply is the dim `○` line.
+/// Renders the `ps` reply as the flat domain tree; an empty reply is the dim `○` line.
 #[must_use]
 pub fn render(reply: &PsReply, options: &Options) -> String {
-    if reply.worlds.is_empty() {
-        return format!("{}\n", paint("○ No worlds running", "2", options.color));
+    let mut worlds = Vec::new();
+    flatten(&reply.worlds, &mut worlds);
+    if worlds.is_empty() {
+        return format!(
+            "{}\n",
+            Palette::new(options.color).dim("○ No worlds running")
+        );
     }
-    let widths = Widths::measure(&reply.worlds);
+    let projected: Vec<WorldRows<'_>> = worlds.iter().map(|world| project(world)).collect();
+    let widths = Widths::measure(&projected);
+    let palette = Palette::new(options.color);
     let mut out = String::new();
-    for (index, world) in reply.worlds.iter().enumerate() {
+    for (index, rows) in projected.iter().enumerate() {
         if index > 0 {
             out.push('\n');
         }
-        render_world(&mut out, world, options, widths, 0, true);
+        render_world(&mut out, rows, options, palette, widths);
     }
     out
 }
@@ -54,6 +65,13 @@ pub fn scope(reply: &PsReply, cwd: &Path) -> PsReply {
     }
 }
 
+fn flatten<'a>(worlds: &'a [PsWorld], out: &mut Vec<&'a PsWorld>) {
+    for world in worlds {
+        out.push(world);
+        flatten(&world.forks, out);
+    }
+}
+
 fn consider<'a>(world: &'a PsWorld, cwd: &Path, best: &mut Option<(usize, &'a PsWorld)>) {
     if cwd.starts_with(&world.path) {
         let score = world.path.as_os_str().len();
@@ -68,101 +86,89 @@ fn consider<'a>(world: &'a PsWorld, cwd: &Path, best: &mut Option<(usize, &'a Ps
 
 fn render_world(
     out: &mut String,
-    world: &PsWorld,
+    rows: &WorldRows<'_>,
     options: &Options,
+    palette: Palette,
     widths: Widths,
-    depth: usize,
-    last_fork: bool,
 ) {
-    if depth > 0 {
-        out.push_str(&" ".repeat(depth * 6 - 1));
-        out.push_str(if last_fork { "└─ " } else { "├─ " });
-    }
-    out.push_str(&paint("●", "32", options.color));
+    let world = rows.world;
+    out.push_str(&palette.tint("●", "32"));
     out.push(' ');
-    out.push_str(display_name(world));
+    out.push_str(&palette.value(display_name(world)));
     out.push_str("  ");
-    out.push_str(&paint(&world.url, "1;36", options.color));
-    out.push_str("  ");
-    out.push_str(&paint(
-        &display_path(&world.path, options.home.as_deref()),
-        "2",
-        options.color,
-    ));
+    out.push_str(&palette.path(&display_path(&world.path, options.home.as_deref())));
     if options.verbose {
-        out.push_str(&paint(
-            &format!("  pid {}", world.supervisor_pid),
-            "2",
-            options.color,
-        ));
+        out.push_str(&palette.dim(&format!("  pid {}", world.supervisor_pid)));
     }
     out.push('\n');
 
-    let indent = " ".repeat(depth * 6 + 2);
-    let forks_follow = !world.forks.is_empty();
-    let started = (world.started_at_ms > 0).then_some(world.started_at_ms);
-    for (index, service) in world.services.iter().enumerate() {
-        let last = !forks_follow && index + 1 == world.services.len();
-        render_service(
-            out,
-            service,
-            world.booting,
-            started,
-            options,
-            widths,
-            &indent,
-            last,
-        );
+    let support = !rows.support.is_empty();
+    let groups = rows.domains.len() + usize::from(support);
+    for (index, domain) in rows.domains.iter().enumerate() {
+        let last = index + 1 == groups;
+        render_domain(out, domain, last, palette, widths);
     }
-    if forks_follow {
-        out.push_str(&format!("{indent}└─ forks\n"));
-        for (index, fork) in world.forks.iter().enumerate() {
-            render_world(
-                out,
-                fork,
-                options,
-                widths,
-                depth + 1,
-                index + 1 == world.forks.len(),
-            );
-        }
+    if support {
+        render_support(out, &rows.support, palette, widths);
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn render_service(
+fn render_domain(
     out: &mut String,
-    service: &crate::ps::PsService,
-    booting: bool,
-    started: Option<u64>,
-    options: &Options,
-    widths: Widths,
-    indent: &str,
+    domain: &super::rows::DomainRows,
     last: bool,
+    palette: Palette,
+    widths: Widths,
 ) {
-    let columns = columns(service, booting);
-    out.push_str(indent);
-    out.push_str(if last { "└─ " } else { "├─ " });
-    out.push_str(&pad(&service.id, widths.name));
-    out.push(' ');
-    let middle = match columns.state {
-        Some(code) => paint(&columns.middle, code, options.color),
-        None => columns.middle.clone(),
-    };
-    out.push_str(&pad(&middle, widths.middle));
-    out.push(' ');
-    out.push_str(&columns.target);
-    if let Some(started) = started {
-        let gap = widths
-            .target
-            .saturating_sub(super::widths::visible_width(&columns.target))
-            + 2;
-        out.push_str(&" ".repeat(gap));
-        out.push_str(&paint(
-            &human_age(started, options.now_ms),
-            "2",
-            options.color,
-        ));
-    }
+    out.push_str("  ");
+    out.push_str(&palette.dim(if last { "└─ " } else { "├─ " }));
+    out.push_str(&palette.url(&format!("http://{}", domain.host)));
     out.push('\n');
+    let branch = if last { "   " } else { "│  " };
+    for (index, row) in domain.rows.iter().enumerate() {
+        out.push_str("  ");
+        out.push_str(&palette.dim(branch));
+        let last_row = index + 1 == domain.rows.len();
+        out.push_str(&palette.dim(if last_row { "└─ " } else { "├─ " }));
+        render_route(out, row, palette, widths);
+    }
+}
+
+fn render_route(out: &mut String, row: &RoutedRow, palette: Palette, widths: Widths) {
+    out.push_str(&pad(&palette.tint(&row.path, "1;33"), widths.path));
+    out.push_str("  ");
+    out.push_str(&palette.dim("->"));
+    out.push(' ');
+    out.push_str(&pad(&palette.value(&row.target), widths.target));
+    out.push_str("  ");
+    if widths.kind > 0 {
+        match &row.kind {
+            Some(kind) => out.push_str(&pad(&palette.kind(kind), widths.kind)),
+            None => out.push_str(&" ".repeat(widths.kind)),
+        }
+        out.push(' ');
+    }
+    out.push_str(&palette.status(row.state.word));
+    out.push('\n');
+}
+
+fn render_support(out: &mut String, rows: &[SupportRow], palette: Palette, widths: Widths) {
+    out.push_str("  ");
+    out.push_str(&palette.dim("└─ "));
+    out.push_str(&palette.dim("support"));
+    out.push('\n');
+    for (index, row) in rows.iter().enumerate() {
+        out.push_str("     ");
+        out.push_str(&palette.dim(if index + 1 == rows.len() {
+            "└─ "
+        } else {
+            "├─ "
+        }));
+        out.push_str(&pad(&row.id, widths.name));
+        out.push_str("   ");
+        out.push_str(&pad(&row.descriptor, widths.descriptor));
+        out.push_str("  ");
+        out.push_str(&palette.status(row.state.word));
+        out.push('\n');
+    }
 }

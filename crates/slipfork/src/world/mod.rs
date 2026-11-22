@@ -47,8 +47,6 @@ pub struct HostEnv {
     pub home: Option<PathBuf>,
     /// `$XDG_CONFIG_HOME` (or `~/.config`), where `daemon install` writes the user unit.
     pub config_dir: PathBuf,
-    /// Milliseconds since the Unix epoch when this process started.
-    pub now_ms: u64,
     /// UID the system `:80` ingress runs as (`SUDO_UID` when installing as root).
     pub ingress_uid: u32,
     /// Passwd name of [`Self::ingress_uid`], resolved once by the composition root.

@@ -180,7 +180,6 @@ impl Session {
             ));
         }
         let options = status::Options::new(self.color())
-            .with_now(self.host.now_ms)
             .with_home(self.host.home.clone())
             .with_verbose(verbose);
         emit(&status::render(&reply, &options))

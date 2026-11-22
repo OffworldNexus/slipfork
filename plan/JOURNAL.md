@@ -2874,3 +2874,12 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-22T15:31 [M3.50.5] (lead) status ready -> done
 - 2026-11-22T15:44 [M3.50.4] (lead) committed product+harness; live consolidated journey still red on lab VM (Forkfile disappears between write and PTY up; manual flow works) -> escalated to exper
 - 2026-11-22T15:44 [M3.50.4] (lead) status ready -> done
+- 2026-11-22T15:45 [M3.50.10] (lead) created (task) Stabilize real-PTY live journey: Forkfile vanishes between write and PTY up on the lab VM
+- 2026-11-22T15:45 [M3.50.10] (lead) status ready -> active
+- 2026-11-22T15:45 [M3.50.10] (lead) attempt 1/3 started
+- 2026-11-22T15:45 [M3.50.10] (lead) base a96d4241c247e95d724a2a78f7f96e71343ea62b
+- 2026-11-22T15:45 [M3.50.7] (lead) edited fields
+- 2026-11-22T15:45 [M3.50.7] (lead) status ready -> active
+- 2026-11-22T15:45 [M3.50.7] (lead) attempt 1/3 started
+- 2026-11-22T15:45 [M3.50.7] (lead) base a96d4241c247e95d724a2a78f7f96e71343ea62b
+- 2026-11-22T15:49 [M3.50.7] (lead) status active -> done

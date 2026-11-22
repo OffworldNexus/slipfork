@@ -138,17 +138,6 @@ pub enum PsDomain {
     Prefix(String),
 }
 
-impl PsDomain {
-    /// The authority label as the status tree prints it (`mail.*`, `static-cdn.*`).
-    #[must_use]
-    pub fn label(&self) -> String {
-        match self {
-            Self::Domain(name) => format!("{name}.*"),
-            Self::Prefix(prefix) => format!("{prefix}.*"),
-        }
-    }
-}
-
 /// The anonymous-read policy of one native S3 bucket, as `ps --json` exposes it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]

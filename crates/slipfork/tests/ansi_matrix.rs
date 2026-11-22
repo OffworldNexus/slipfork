@@ -291,7 +291,7 @@ fn pty(root: &Path, args: &[&str], envs: &[(&str, &str)]) -> String {
 fn colour_appears_only_on_a_terminal_that_allows_it() {
     let lab = Lab::new();
     let root = lab.root.as_path();
-    for args in [&["--help"][..], &["status"][..]] {
+    for args in [&["--help"][..], &["status"][..], &["ps"][..]] {
         let text = pty(root, args, &[]);
         assert!(
             text.contains(ESCAPE),

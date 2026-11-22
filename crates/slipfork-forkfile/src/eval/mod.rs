@@ -431,7 +431,7 @@ fn collect_symbols(
                     policy: s3.policy_at(features.active()),
                 },
             );
-            collect_s3_cdns(&s3.body.items, features, map);
+            collect_s3_cdns(&s3.body.items, features, &s3.bucket, map);
         }
         TopItem::On(on) if features.matches(&on.cond) => match &on.body {
             OnBody::Inline(inner) => collect_symbols(inner, features, saw_domain, map),
@@ -463,18 +463,24 @@ fn collect_pg_dbs(items: &[PostgresItem], features: &FeatureSet, out: &mut Vec<S
 fn collect_s3_cdns(
     items: &[S3Item],
     features: &FeatureSet,
+    bucket: &str,
     map: &mut BTreeMap<String, BoundSymbol>,
 ) {
     for item in items {
         match item {
             S3Item::Cdn(cdn) => {
-                map.insert(cdn.id.clone(), BoundSymbol::Cdn { id: cdn.id.clone() });
+                map.insert(
+                    cdn.id.clone(),
+                    BoundSymbol::Cdn {
+                        bucket: bucket.to_owned(),
+                    },
+                );
             }
             S3Item::On(on) if features.matches(&on.cond) => match &on.body {
                 OnBody::Inline(inner) => {
-                    collect_s3_cdns(std::slice::from_ref(inner.as_ref()), features, map);
+                    collect_s3_cdns(std::slice::from_ref(inner.as_ref()), features, bucket, map);
                 }
-                OnBody::Block(block) => collect_s3_cdns(&block.items, features, map),
+                OnBody::Block(block) => collect_s3_cdns(&block.items, features, bucket, map),
             },
             S3Item::On(_) | S3Item::Policy(_) => {}
         }

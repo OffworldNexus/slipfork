@@ -1,41 +1,43 @@
 //! Dynamic visible column widths, measured after stripping ANSI.
 
-use crate::ps::PsWorld;
+use super::rows::WorldRows;
 
-use super::rows::columns;
-
-/// Column widths shared by every world and nested fork in one render.
+/// Column widths shared by every flattened world in one render.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Widths {
-    /// Service-name column, including its gutter.
-    pub name: usize,
-    /// State/descriptor column.
-    pub middle: usize,
-    /// Port/route column.
+    /// Routed sub-path column.
+    pub path: usize,
+    /// Route target column.
     pub target: usize,
+    /// S3/CDN kind tag column; `0` when no row carries a tag.
+    pub kind: usize,
+    /// Support id column.
+    pub name: usize,
+    /// Support descriptor column.
+    pub descriptor: usize,
 }
 
 impl Widths {
-    /// Measures every row of every world and fork.
+    /// Measures every routed and support row of every world and fork.
     #[must_use]
-    pub fn measure(worlds: &[PsWorld]) -> Self {
+    pub fn measure(worlds: &[WorldRows<'_>]) -> Self {
         let mut widths = Self::default();
         for world in worlds {
-            widths.world(world);
+            for domain in &world.domains {
+                for row in &domain.rows {
+                    widths.path = widths.path.max(visible_width(&row.path));
+                    widths.target = widths.target.max(visible_width(&row.target));
+                    if let Some(kind) = &row.kind {
+                        widths.kind = widths.kind.max(visible_width(kind));
+                    }
+                }
+            }
+            for row in &world.support {
+                widths.name = widths.name.max(visible_width(&row.id));
+                widths.descriptor = widths.descriptor.max(visible_width(&row.descriptor));
+            }
         }
         widths
-    }
-
-    fn world(&mut self, world: &PsWorld) {
-        for service in &world.services {
-            let columns = columns(service, world.booting);
-            self.name = self.name.max(visible_width(&service.id) + 1);
-            self.middle = self.middle.max(visible_width(&columns.middle));
-            self.target = self.target.max(visible_width(&columns.target));
-        }
-        for fork in &world.forks {
-            self.world(fork);
-        }
     }
 }
 

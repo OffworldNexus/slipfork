@@ -100,7 +100,9 @@ impl Palette {
         let code = match state.to_ascii_lowercase().as_str() {
             "running" | "ready" => "32",
             "cached" | "up-to-date" | "up to date" => "36",
-            "built" | "pulled" | "orphaned" => "33",
+            "starting" | "booting" => "33",
+            "built" | "pulled" => "33",
+            "orphaned" => "1;33",
             "failed" | "stopped" => "1;31",
             _ => return state.to_owned(),
         };

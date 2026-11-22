@@ -24,7 +24,7 @@ pub(super) enum BoundSymbol {
         policy: BucketPolicy,
     },
     Cdn {
-        id: String,
+        bucket: String,
     },
     Domain {
         id: String,
@@ -104,9 +104,9 @@ fn eval_property(symbol: &BoundSymbol, prop: &str, world: &str) -> Option<String
             "secret_key" => Some(format!("slipfork-{world}-s3")),
             _ => None,
         },
-        BoundSymbol::Cdn { id } => match prop {
-            "domain" => Some(format!("{id}.{world}.localhost")),
-            "url" => Some(format!("http://{id}.{world}.localhost")),
+        BoundSymbol::Cdn { bucket } => match prop {
+            "domain" => Some(format!("{bucket}.{world}.localhost")),
+            "url" => Some(format!("http://{bucket}.{world}.localhost")),
             _ => None,
         },
         BoundSymbol::Domain { id, primary } => {
