@@ -2744,3 +2744,6 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-22T11:09 [M3.48] (lead) attempt 2/3 started
 - 2026-11-22T11:09 [M3.48] (lead) triad fix pass: chown /cargo, fail-loud unknown container, [setup] streaming, host-path remedies, honest header, glibc banner anchor, workflow comment
 - 2026-11-22T11:13 [M3.48] (lead) status ready -> done
+- 2026-11-22T11:15 [M3] (conductor) status active -> done
+- 2026-11-22T11:15 HUMAN H-010 [release-gate] opened by conductor (node M3)
+- 2026-11-22T11:15 AUTOPILOT off by conductor Awaiting GHA 33/33 green confirmation & human merge of PR #2 into develop

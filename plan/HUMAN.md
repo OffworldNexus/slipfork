@@ -80,3 +80,11 @@ Slipfork 0.1.0 clean-sheet release ready on release/0.1.0 -> develop (PR #2): pu
 
 **Answer:**
 
+## H-010 [open] [release-gate] (node M3)
+
+- asked: 2026-11-22T11:15 by conductor
+
+Slipfork 0.1.0 clean-sheet release ready on release/0.1.0 -> develop (PR #2): pure-Btrfs native OCI/Dockerfile engine, clap + frozen-pane indicatif TUI, native hyper Btrfs S3, ~0.8s full-stack fork, visual Zensical docs, all-distro Linux packaging (glibc<=2.34 .deb/.rpm/Arch/Alpine/portable + install.sh + multi-platform slipfork-lsp), live demo on 165.232.86.174, and full GHA CI + Docs + Packages.
+
+**Answer:**
+
