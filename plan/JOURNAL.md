@@ -2712,3 +2712,5 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-22T09:42 [M3.45.4] (lead) status active -> done
 - 2026-11-22T09:42 [M3.45] (lead) status ready -> done
 - 2026-11-22T09:42 [M3] (lead) status active -> done
+- 2026-11-22T09:43 HUMAN H-009 [release-gate] opened by conductor (node M3)
+- 2026-11-22T09:43 AUTOPILOT off by conductor Slipfork 0.1.0 release gate reached; awaiting human review & merge of PR #2 into develop

@@ -72,3 +72,11 @@ Review & merge Release 0.1.0 PR (https://github.com/OffworldNexus/slipfork/pull/
 
 **Answer:**
 
+## H-009 [open] [release-gate] (node M3)
+
+- asked: 2026-11-22T09:43 by conductor
+
+Slipfork 0.1.0 clean-sheet release ready on release/0.1.0 -> develop (PR #2): pure-Btrfs native OCI/Dockerfile engine, clap + frozen-pane indicatif TUI, native hyper Btrfs S3, ~0.8s full-stack fork, visual Zensical docs, all-distro Linux packaging (.deb/.rpm/Arch/Alpine/portable + install.sh + multi-platform slipfork-lsp), and live demo verified on 165.232.86.174.
+
+**Answer:**
+
