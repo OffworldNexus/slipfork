@@ -115,3 +115,7 @@ status done -> active
 ## 2026-11-22T11:15 [conductor]
 
 status active -> done
+
+## 2026-11-22T12:10 [conductor]
+
+status done -> active

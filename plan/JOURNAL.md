@@ -2747,3 +2747,8 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-22T11:15 [M3] (conductor) status active -> done
 - 2026-11-22T11:15 HUMAN H-010 [release-gate] opened by conductor (node M3)
 - 2026-11-22T11:15 AUTOPILOT off by conductor Awaiting GHA 33/33 green confirmation & human merge of PR #2 into develop
+- 2026-11-22T12:10 HUMAN H-010 closed by conductor
+- 2026-11-22T12:10 [M3] (conductor) status done -> active
+- 2026-11-22T12:10 [M3.49] (conductor) created (task) Update specs/ & ARCHITECTURE.md: unified PTY slipfork shell (drop db/redis), DECSTBM fixed-bottom-bar 1-line-per-task TUI & <1s 8-component fork
+- 2026-11-22T12:10 [M3.50] (conductor) created (epic) Implement unified PTY slipfork shell (drop db/redis), DECSTBM fixed-bottom-bar TUI & <1.0s 8-component ~/demo fork on 165.232.86.174
+- 2026-11-22T12:10 AUTOPILOT on by conductor Implementing unified PTY slipfork shell, DECSTBM fixed-bottom-bar TUI & <1.0s 8-component ~/demo fork

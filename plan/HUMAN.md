@@ -80,7 +80,7 @@ Slipfork 0.1.0 clean-sheet release ready on release/0.1.0 -> develop (PR #2): pu
 
 **Answer:**
 
-## H-010 [open] [release-gate] (node M3)
+## H-010 [closed] [release-gate] (node M3)
 
 - asked: 2026-11-22T11:15 by conductor
 
