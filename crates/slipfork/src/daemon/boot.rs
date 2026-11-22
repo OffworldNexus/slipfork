@@ -88,7 +88,12 @@ impl BootSession {
             let Ok(event) = serde_json::from_str::<Value>(line.trim()) else {
                 continue;
             };
-            emit(event.clone());
+            // `ready` is published, not streamed: a registry write that fails after the world
+            // booted must never let the CLI print `✓` for a fork that is about to be rolled back.
+            let ready = event["event"].as_str() == Some("ready");
+            if !ready {
+                emit(event.clone());
+            }
             match event["event"].as_str().unwrap_or_default() {
                 "ready" => {
                     let Some(pods_dir) = event["pods_dir"].as_str().map(PathBuf::from) else {
@@ -98,14 +103,17 @@ impl BootSession {
                             "the world published no pod directory",
                         ));
                     };
-                    let Some(world) = event["world"].as_str().filter(|world| !world.is_empty())
+                    let Some(world) = event["world"]
+                        .as_str()
+                        .filter(|world| !world.is_empty())
+                        .map(str::to_owned)
                     else {
                         self.fail_boot(daemon)?;
                         return Err(Failure::new("world-state", "the world published no name"));
                     };
                     let entry = RegistryEntry {
                         project: self.project.clone(),
-                        world: world.to_owned(),
+                        world: world.clone(),
                         fork: self.fork.clone(),
                         pods_dir,
                         supervisor_pid: self.child.as_ref().map_or(0, Child::id),
@@ -117,9 +125,12 @@ impl BootSession {
                         Failure::new("supervisor-spawn", "the world supervisor disappeared")
                     })?;
                     daemon.core()?.publish(&self.key, entry, child)?;
+                    // Only a persisted registry entry may announce `✓ Ready` / `{"event":"ready"}`.
+                    let url = event["url"].clone();
+                    emit(event);
                     return Ok(json!({
                         "world": world,
-                        "url": event["url"],
+                        "url": url,
                     }));
                 }
                 "failed" => {
@@ -157,7 +168,7 @@ impl BootSession {
     }
 
     /// Kills the supervisor's whole process group and reaps it, so no pipe outlives the boot.
-    fn stop(&mut self) {
+    pub(super) fn stop(&mut self) {
         if let Some(child) = self.child.as_mut() {
             kill_and_wait(child);
         }

@@ -399,10 +399,10 @@ impl Daemon {
         emit: &mut dyn FnMut(Value),
     ) -> Result<Option<Value>, Failure> {
         let target = self.core()?.inspect_fork(params)?;
-        let (raw_name, fork, checkpoint_ms) = target.prepare_outside_locks()?;
+        let (raw_name, fork, preflight_ms) = target.prepare_outside_locks()?;
         let (mut session, prepared) =
             self.core()?
-                .begin_fork(target, &raw_name, fork, checkpoint_ms, emit)?;
+                .begin_fork(target, &raw_name, fork, preflight_ms, emit)?;
         let fork_name = prepared.fork.clone();
         let mut annotate = |mut event: Value| {
             if event.get("event").and_then(Value::as_str) == Some("ready") {
@@ -411,8 +411,12 @@ impl Daemon {
             emit(event);
         };
         if let Err(failure) = session.run(self, &mut annotate) {
-            // A failed branch switch or boot must not leave a half-fork that blocks a retry.
-            if let Ok(core) = self.core() {
+            // A booting child is only a pid in `stop_world`; reap the session's own child first
+            // so no supervisor outlives the rollback even when the world was never published.
+            session.stop();
+            // A failed boot must not leave a half-fork that blocks a retry: stop its supervisor
+            // and pods, drop the registry entry, then unlink the snapshots.
+            if let Ok(mut core) = self.core() {
                 core.discard_fork(&prepared);
             }
             return Err(failure);
@@ -424,7 +428,7 @@ impl Daemon {
             "url": format!("http://{}.localhost", prepared.world),
             "elapsed_ms": prepared.started.elapsed().as_millis() as u64,
             "snapshot_ms": prepared.snapshot_ms,
-            "checkpoint_ms": prepared.checkpoint_ms,
+            "preflight_ms": prepared.preflight_ms,
         })))
     }
 

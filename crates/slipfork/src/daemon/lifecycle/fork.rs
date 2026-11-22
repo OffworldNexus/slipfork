@@ -41,9 +41,8 @@ pub(crate) struct PreparedFork {
     pub(crate) world: String,
     pub(crate) world_name: WorldName,
     pub(crate) snapshot_ms: u64,
-    /// Pre-fork preparation time (branch/slug resolution). Legacy field name kept until the
-    /// sibling `daemon/mod.rs` slice drops its `checkpoint_ms` reply key; no SQL runs here.
-    pub(crate) checkpoint_ms: u64,
+    /// Pre-fork preparation time (branch/slug resolution). No SQL runs here.
+    pub(crate) preflight_ms: u64,
     pub(crate) started: Instant,
 }
 
@@ -134,9 +133,18 @@ impl Core {
 
     /// Deletes every trace of a fork that never published, so a retry is never blocked.
     ///
-    /// The failed boot's supervisor is already dead when this runs, so its tmpfs pod root (bundles
-    /// plus `crun` container state) is purged before the Btrfs snapshots are unlinked.
-    pub(crate) fn discard_fork(&self, prepared: &PreparedFork) {
+    /// The order is the invariant: `stop_world` shuts the supervisor's control plane down first
+    /// (a `Booting` supervisor is waited on and its `-pgid` group killed, a `Live` one also drains
+    /// its pods), then the registry entry is dropped and persisted, and only then is the tmpfs pod
+    /// root purged and the Btrfs snapshots unlinked. Unlinking a still-running world's store
+    /// would orphan a supervisor whose sockets and pod bundles live under the deleted tree.
+    pub(crate) fn discard_fork(&mut self, prepared: &PreparedFork) {
+        let key = key_of(&prepared.project);
+        // A boot that never registered answers `no-world`; the purge below still has to run.
+        let _ = self.stop_world(&key, Duration::from_secs(10), &mut |_, _| {});
+        self.worlds.remove(&key);
+        self.ingress = None;
+        let _ = self.persist();
         let forked = StoreLayout::fork_world_name(&prepared.world_name, &prepared.fork_name);
         let _ = RuntimePods::purge(&self.host.runtime_dir, &forked);
         let engine = BtrfsEngine::new(StoreLayout::at(self.host.store_root_for(&prepared.parent)));
@@ -218,7 +226,7 @@ impl Core {
                 .to_owned(),
             world_name: world,
             snapshot_ms,
-            checkpoint_ms: preflight_ms,
+            preflight_ms,
             started,
         })
     }

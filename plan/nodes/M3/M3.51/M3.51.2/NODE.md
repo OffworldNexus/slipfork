@@ -2,19 +2,20 @@
 id: M3.51.2
 title: "Atomic fork rollback: stop supervisors, drop worlds.json entry, purge snapshots on failure"
 kind: task
-status: ready
+status: done
 owner: implementer
 priority: 3
 depends_on: []
 paths:
   - crates/slipfork/src/daemon/lifecycle/fork.rs
   - crates/slipfork/src/daemon/mod.rs
+  - crates/slipfork/src/daemon/boot.rs
   - crates/slipfork/tests/critical_fork_live.rs
-attempts: 0
+attempts: 1
 max_attempts: 3
 escalation: none
 created: "2026-11-22T17:24"
-updated: "2026-11-22T17:24"
+updated: "2026-11-22T17:47"
 ---
 
 # Goal

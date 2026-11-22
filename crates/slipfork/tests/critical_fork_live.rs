@@ -15,6 +15,7 @@ use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::os::fd::{AsFd, AsRawFd};
 use std::os::unix::ffi::OsStringExt;
+use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -155,6 +156,74 @@ fn daemons_for(runtime: &Path) -> Vec<u32> {
     found
 }
 
+/// Every process whose argv or environment names `scope`; a leaked supervisor or pod shows up here.
+fn processes_naming(scope: &Path) -> Vec<u32> {
+    use std::os::unix::ffi::OsStrExt;
+    let needle = scope.as_os_str().as_bytes();
+    let mut found = Vec::new();
+    let Ok(entries) = fs::read_dir("/proc") else {
+        return found;
+    };
+    for entry in entries.flatten() {
+        let Some(pid) = entry
+            .file_name()
+            .to_str()
+            .and_then(|name| name.parse::<u32>().ok())
+        else {
+            continue;
+        };
+        if pid == std::process::id() {
+            continue;
+        }
+        let named = ["cmdline", "environ"].iter().any(|file| {
+            fs::read(entry.path().join(file))
+                .is_ok_and(|bytes| bytes.windows(needle.len()).any(|window| window == needle))
+        });
+        if named {
+            found.push(pid);
+        }
+    }
+    found
+}
+
+/// Makes one directory read-only and restores its original mode on drop, so a failed assertion
+/// cannot leave the isolated registry locked for the lab teardown.
+struct UnwritableDir {
+    path: PathBuf,
+    mode: u32,
+}
+
+impl UnwritableDir {
+    fn new(path: &Path) -> Self {
+        let mode = fs::metadata(path)
+            .unwrap_or_else(|error| {
+                fail_closed(&format!(
+                    "stat the isolated registry `{}`: {error}",
+                    path.display()
+                ))
+            })
+            .permissions()
+            .mode()
+            & 0o7777;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o555)).unwrap_or_else(|error| {
+            fail_closed(&format!(
+                "lock the isolated registry `{}`: {error}",
+                path.display()
+            ))
+        });
+        Self {
+            path: path.to_path_buf(),
+            mode,
+        }
+    }
+}
+
+impl Drop for UnwritableDir {
+    fn drop(&mut self) {
+        let _ = fs::set_permissions(&self.path, fs::Permissions::from_mode(self.mode));
+    }
+}
+
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
@@ -233,10 +302,18 @@ struct Lab {
     project: PathBuf,
     runtime: PathBuf,
     store_root: PathBuf,
+    /// Isolated `$XDG_STATE_HOME`: the daemon's `worlds.json`, lock, and log live under it.
+    state_home: PathBuf,
 }
 
 impl Lab {
     fn new() -> Self {
+        // SAFETY: `geteuid` has no preconditions and only reads this process's credentials.
+        assert_ne!(
+            unsafe { libc::geteuid() },
+            0,
+            "the rollback journey must run as the unprivileged slipfork lab user; root bypasses 0o555"
+        );
         let Some(test_root) =
             std::env::var_os("SLIPFORK_TEST_ROOT").filter(|root| !root.is_empty())
         else {
@@ -279,6 +356,8 @@ impl Lab {
             .as_nanos();
         let project = test_root.join(format!("fork-live-{nanos}")).join("demo");
         fs::create_dir_all(&project).expect("create the scratch project");
+        let state_home = project.parent().expect("scratch root").join("state");
+        fs::create_dir_all(state_home.join("slipfork")).expect("create the isolated state dir");
         let support = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../support/demo");
         for relative in demo_files() {
             let target = project.join(relative);
@@ -310,6 +389,7 @@ impl Lab {
             project,
             runtime,
             store_root,
+            state_home,
         }
     }
 
@@ -323,6 +403,7 @@ impl Lab {
             .current_dir(directory)
             .env("NO_COLOR", "1")
             .env("XDG_RUNTIME_DIR", &self.runtime)
+            .env("XDG_STATE_HOME", &self.state_home)
             .env("TERM", "dumb")
             .output()
             .expect("run slipfork")
@@ -482,6 +563,11 @@ impl Lab {
 
 impl Drop for Lab {
     fn drop(&mut self) {
+        // A panicked rollback journey may leave the isolated registry read-only.
+        let _ = fs::set_permissions(
+            self.state_home.join("slipfork"),
+            fs::Permissions::from_mode(0o755),
+        );
         if self.runtime.join("daemon.sock").exists() {
             let _ = self.run(&["drop", "feat-auth", "-f"]);
             let _ = self.run(&["down"]);
@@ -984,6 +1070,163 @@ fn fork_and_drop_a_live_world_without_leaving_snapshots() {
         .arg(&lab.project)
         .args(["branch", "-D", "feat-auth"])
         .status();
+
+    // A fork that reaches `ready` but whose registry `publish()` cannot persist must roll back
+    // atomically. On HEAD this case leaks: `publish()` fails *after* inserting the live entry and
+    // taking the supervisor child, so `BootSession::run` returns the error without stopping it —
+    // the old `discard_fork` then purged the tmpfs pods and unlinked the snapshots under two live
+    // pods. The `/proc` scan below is the assertion that catches that leak.
+    const ROLLBACK_FORKFILE: &str = concat!(
+        "# forkfile: 0.1\n",
+        "domain main\n",
+        "image backend . {\n",
+        "  service api {\n",
+        "    run: sleep 3600\n",
+        "  }\n",
+        "  service worker {\n",
+        "    run: sleep 3600\n",
+        "  }\n",
+        "}\n",
+    );
+    fs::write(lab.project.join("Forkfile"), ROLLBACK_FORKFILE).expect("write the rollback fixture");
+    git_run(&["add", "Forkfile"]);
+    git_run(&["commit", "-q", "-m", "rollback fixture"]);
+    let canonical_parent = fs::canonicalize(&lab.project).expect("canonical parent project");
+    let rollback_project = canonical_parent.join(".forks/rollback");
+    let rollback_world = lab.store_root.join("worlds/rollback--demo");
+    let state_dir = lab.state_home.join("slipfork");
+    // An unwritable registry makes the fork's own `ready` publish fail for real: no mocks.
+    let locked = UnwritableDir::new(&state_dir);
+    let failed = lab.run(&["fork", "rollback", "--json"]);
+    // `--json` reports the daemon failure as a final `{"error": …}` frame on stdout.
+    let transcript = format!(
+        "{}{}",
+        String::from_utf8_lossy(&failed.stdout),
+        String::from_utf8_lossy(&failed.stderr)
+    );
+    assert!(
+        !failed.status.success(),
+        "an unwritable registry must fail the fork: {transcript}"
+    );
+    assert!(
+        transcript.contains("worlds.json"),
+        "the fork must fail writing the registry, not during boot: {transcript}"
+    );
+    assert!(
+        !transcript.contains("exited with"),
+        "the `api`/`worker` services must stay healthy: {transcript}"
+    );
+    // The streamed frames prove both sibling pods were live before the publish failed.
+    let booted: Vec<serde_json::Value> = String::from_utf8_lossy(&failed.stdout)
+        .lines()
+        .filter_map(|line| serde_json::from_str(line.trim()).ok())
+        .collect();
+    for service in ["api", "worker"] {
+        assert!(
+            booted.iter().any(|frame| {
+                frame["event"] == "started"
+                    && frame["kind"] == "service"
+                    && frame["name"] == service
+            }),
+            "`{service}` must already be live when the registry write fails: {booted:?}"
+        );
+    }
+    assert!(
+        !booted.iter().any(|frame| frame["event"] == "ready"),
+        "a rolled-back fork must never announce `ready` to the CLI: {booted:?}"
+    );
+    assert!(
+        !rollback_project.exists(),
+        "the failed fork must remove its project snapshot"
+    );
+    assert!(
+        !is_subvolume_path(&rollback_world).unwrap_or(false) && !rollback_world.exists(),
+        "the failed fork must remove its world snapshot"
+    );
+    let world_leftovers: Vec<String> = fs::read_dir(lab.store_root.join("worlds"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.starts_with("rollback--demo"))
+        .collect();
+    assert!(
+        world_leftovers.is_empty(),
+        "the failed fork must leave no world or `.pg` clone: {world_leftovers:?}"
+    );
+    assert!(
+        !lab.store_root.join("pods/rollback--demo").exists(),
+        "the failed fork must remove its pod rootfs clones"
+    );
+    assert!(
+        !lab.runtime.join("slipfork/pods/rollback--demo").exists(),
+        "the failed fork must remove its tmpfs bundles and stale `crun` state"
+    );
+    assert!(
+        wait_until(
+            || processes_naming(&rollback_project).is_empty(),
+            Duration::from_secs(10)
+        ),
+        "no supervisor or pod may survive a rolled-back fork: {:?}",
+        processes_naming(&rollback_project)
+    );
+    let registry: Vec<serde_json::Value> =
+        serde_json::from_slice(&fs::read(state_dir.join("worlds.json")).expect("worlds.json"))
+            .expect("worlds.json is JSON");
+    assert!(
+        !registry
+            .iter()
+            .any(|entry| entry["project"].as_str() == rollback_project.to_str()),
+        "worlds.json must not retain the failed fork: {registry:?}"
+    );
+    assert!(
+        registry
+            .iter()
+            .any(|entry| entry["project"].as_str() == canonical_parent.to_str()),
+        "rolling back a fork must not drop the live parent world: {registry:?}"
+    );
+    // The daemon's live view must agree: parent present, no rolled-back fork row or nested fork.
+    fn world_rows<'a>(rows: &'a [serde_json::Value], out: &mut Vec<&'a serde_json::Value>) {
+        for row in rows {
+            out.push(row);
+            if let Some(forks) = row["forks"].as_array() {
+                world_rows(forks, out);
+            }
+        }
+    }
+    let status = lab.run(&["status", "--json"]);
+    let status_reply = lab.json(&status, "status after the rollback");
+    let mut rows = Vec::new();
+    world_rows(
+        status_reply["worlds"].as_array().expect("status worlds"),
+        &mut rows,
+    );
+    assert!(
+        rows.iter().any(|row| row["world"] == "demo"),
+        "the daemon must still report the live parent world: {status_reply}"
+    );
+    assert!(
+        !rows
+            .iter()
+            .any(|row| row["world"] == "rollback--demo" || row["fork"] == "rollback"),
+        "the daemon must not report a rolled-back fork: {status_reply}"
+    );
+    std::mem::drop(locked);
+    // With the registry writable again the same name must pass preflight and boot to `ready`.
+    let retry = lab.run(&["fork", "rollback", "--json"]);
+    let retry_stderr = String::from_utf8_lossy(&retry.stderr);
+    assert!(
+        retry.status.success(),
+        "the same fork name must be reusable immediately: {retry_stderr}"
+    );
+    let retried = lab.json(&retry, "retried fork");
+    assert_eq!(retried["world"], "rollback--demo", "{retried}");
+    assert!(
+        is_subvolume_path(&rollback_project).unwrap_or(false),
+        "the retried fork must materialise its project snapshot"
+    );
+    let rollback_drop = lab.run(&["drop", "rollback", "-f", "--json"]);
+    let _ = lab.json(&rollback_drop, "drop rollback");
 
     let down = lab.run(&["down"]);
     assert!(
