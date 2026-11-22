@@ -2,16 +2,16 @@
 id: M3.54
 title: "Fix slipfork ps when root world is down: include running child .forks/* worlds & stopped root/forks in project scope"
 kind: task
-status: ready
+status: active
 owner: implementer
 priority: 3
 depends_on: []
 paths: ["crates/slipfork/**", "specs/02-cli-ux.md", docs/cli.md]
-attempts: 0
+attempts: 1
 max_attempts: 3
 escalation: none
 created: "2026-11-22T20:59"
-updated: "2026-11-22T20:59"
+updated: "2026-11-22T21:00"
 ---
 
 # Goal

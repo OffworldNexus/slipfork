@@ -3007,3 +3007,8 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-22T20:59 AUTOPILOT on by conductor Fixing slipfork ps scope when root world is down while .forks/* are running
 - 2026-11-22T20:59 [M3.55] (conductor) created (task) Upgrade support/demo & live /home/slipfork/demo on 165.232.86.174 to a real Python (uv + FastAPI) & SvelteKit (pnpm) full-stack app
 - 2026-11-22T21:00 [M3.55] (conductor) edited fields
+- 2026-11-22T21:00 [M3.54] (lead) status ready -> active
+- 2026-11-22T21:00 [M3.54] (lead) attempt 1/3 started
+- 2026-11-22T21:00 [M3.54] (lead) base 8cd1e30236d6437d1ae8812080cc026742090449
+- 2026-11-22T21:01 [M3.56] (conductor) created (task) Scorched-earth delete domain <prefix>.* wildcard syntax: require declared domain <id> everywhere (Forkfile, ingress, LSP, editors, specs & docs)
+- 2026-11-22T21:01 [M3.55] (conductor) edited fields

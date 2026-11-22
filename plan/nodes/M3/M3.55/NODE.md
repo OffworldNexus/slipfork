@@ -5,13 +5,13 @@ kind: task
 status: ready
 owner: implementer
 priority: 3
-depends_on: [M3.54]
+depends_on: [M3.54, M3.56]
 paths: ["support/demo/**", "docs/**", README.md, "crates/**"]
 attempts: 0
 max_attempts: 3
 escalation: none
 created: "2026-11-22T20:59"
-updated: "2026-11-22T21:00"
+updated: "2026-11-22T21:01"
 ---
 
 # Goal
