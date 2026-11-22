@@ -79,17 +79,14 @@ $ slipfork doctor
 
 ## On ext4 or XFS? Mount a Btrfs Workspace Image in Your Home Folder
 
-You do not have to repartition your disk. A sparse Btrfs image mounted through the kernel loop driver
+You do not have to repartition your disk. A sparse Btrfs image, mounted by a systemd `.mount` unit,
 gives your projects real subvolumes inside your home folder.
 
 ```console
 $ sudo apt install btrfs-progs          # or: sudo dnf install btrfs-progs / sudo pacman -S btrfs-progs
-$ mkdir -p ~/.local/share ~/projects-btrfs
+$ mkdir -p ~/.local/share ~/projects
 $ truncate -s 64G ~/.local/share/slipfork-btrfs.img
 $ mkfs.btrfs -f ~/.local/share/slipfork-btrfs.img
-$ sudo mount -o loop,user_subvol_rm_allowed,noatime,compress=zstd,discard=async \
-    ~/.local/share/slipfork-btrfs.img ~/projects-btrfs
-$ sudo chown "$USER:$(id -gn)" ~/projects-btrfs
 ```
 
 The image is **sparse**: it reports `64G` but occupies almost nothing on disk until files are
@@ -97,42 +94,66 @@ written. It mounts through the kernel `loop` driver, so there is no `qemu-nbd` d
 supervise.
 
 `discard=async` punches freed blocks back to ext4 or XFS, so dropping a fork returns that space to
-your home filesystem. Point Slipfork at a project under `~/projects-btrfs`, and never run
-`mkfs.btrfs` against an existing disk or partition — the command above targets only the image file
-you just created.
+your home filesystem. Never run `mkfs.btrfs` against an existing disk or partition — the command
+above targets only the image file you just created.
+
+Let `systemd` own the mount, so the image is mounted now and on every boot:
+
+```bash
+UNIT="$(systemd-escape --path --suffix=mount "$HOME/projects")"
+sudo tee "/etc/systemd/system/$UNIT" >/dev/null <<EOF
+[Unit]
+Description=Slipfork Btrfs workspace image
+
+[Mount]
+What=$HOME/.local/share/slipfork-btrfs.img
+Where=$HOME/projects
+Type=btrfs
+Options=loop,user_subvol_rm_allowed,noatime,compress=zstd,discard=async
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+sudo systemctl daemon-reload
+sudo systemctl enable --now "$UNIT"
+sudo chown "$USER:$(id -gn)" "$HOME/projects"
+systemctl status "$UNIT" --no-pager   # mounted now, and on every boot
+```
+
+This beats hand-editing `/etc/fstab`: a wrong entry can block boot, while a `.mount` unit fails in
+isolation with `nofail`-style ordering handled by `systemd`. `systemd` also sets up and tears down the
+loop device for you, and the unit is inspectable with `systemctl status` or `journalctl -u`.
+
+!!! info "If you prefer fstab"
+
+    The equivalent single line, with `nofail` so a missing image never blocks boot:
+
+    ```text
+    /home/<you>/.local/share/slipfork-btrfs.img /home/<you>/projects btrfs loop,user_subvol_rm_allowed,noatime,compress=zstd,discard=async,nofail 0 0
+    ```
 
 ```mermaid
 flowchart LR
-  Img["sparse 64G image\n~/.local/share"] -->|"loop mount"| Mnt["~/projects-btrfs"]
+  Img["sparse 64G image\n~/.local/share"] -->|"systemd .mount"| Mnt["~/projects"]
   Mnt --> Sub["project subvolumes"]
   Sub --> Fork["instant CoW forks"]
 ```
-
-!!! info "Mount it again after a reboot"
-
-    One `/etc/fstab` line keeps the workspace mounted, with `nofail` so a missing image never blocks
-    boot:
-
-    ```text
-    /home/<you>/.local/share/slipfork-btrfs.img /home/<you>/projects-btrfs btrfs loop,user_subvol_rm_allowed,noatime,compress=zstd,discard=async,nofail 0 0
-    ```
-
-    Then run `sudo mount -a` once and confirm with `findmnt ~/projects-btrfs`.
 
 Grow it live when `64G` stops being enough:
 
 ```console
 $ truncate -s 128G ~/.local/share/slipfork-btrfs.img
 $ sudo losetup -c /dev/loopN      # N from `losetup -j ~/.local/share/slipfork-btrfs.img`
-$ sudo btrfs filesystem resize max ~/projects-btrfs
+$ sudo btrfs filesystem resize max ~/projects
 ```
 
 Verify from inside the mount, where `doctor` reports four plain-English rows:
 
 ```console
-$ cd ~/projects-btrfs && slipfork doctor
+$ cd ~/projects && slipfork doctor
 ✓ Ready
-  ✓ Storage     ~/projects-btrfs · on · Btrfs · instant copy-on-write forks ready
+  ✓ Storage     ~/projects · on · Btrfs · instant copy-on-write forks ready
   ✓ Containers  crun 1.20 · rootless container sandboxing enabled
   ✓ Daemon      running · background user service active
   ✓ Domains     http://*.localhost · local domain routing active

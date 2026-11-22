@@ -15,11 +15,11 @@ paths:
   - README.md
   - CHANGELOG.md
   - packaging/man/slipfork.1
-attempts: 2
+attempts: 3
 max_attempts: 3
 escalation: none
 created: "2026-11-22T12:41"
-updated: "2026-11-22T15:12"
+updated: "2026-11-22T15:31"
 ---
 
 # Goal

@@ -2868,3 +2868,7 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-22T15:10 [M3.50.5] (lead) attempt 2/3 started
 - 2026-11-22T15:10 [M3.50.5] (lead) OWNER ADDENDUM: add 'On ext4 or XFS? Mount a Btrfs Workspace Image in Your Home Folder' to docs/install.md + docs/getting-started.md cross-linked from docs/trou
 - 2026-11-22T15:12 [M3.50.5] (lead) status ready -> done
+- 2026-11-22T15:31 [M3.50.5] (lead) status done -> ready
+- 2026-11-22T15:31 [M3.50.5] (lead) attempt 3/3 started
+- 2026-11-22T15:31 [M3.50.5] (lead) OWNER REFINEMENT: make the systemd .mount unit the primary permanent setup (systemd-escape --path --suffix=mount, What/Where/Type=btrfs/Options=loop,... enable 
+- 2026-11-22T15:31 [M3.50.5] (lead) status ready -> done

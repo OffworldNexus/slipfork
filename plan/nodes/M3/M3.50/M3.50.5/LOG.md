@@ -71,3 +71,19 @@ OWNER ADDENDUM: add 'On ext4 or XFS? Mount a Btrfs Workspace Image in Your Home 
 ## 2026-11-22T15:12 [lead]
 
 status ready -> done
+
+## 2026-11-22T15:31 [lead]
+
+status done -> ready
+
+## 2026-11-22T15:31 [lead]
+
+attempt 3/3 started
+
+## 2026-11-22T15:31 [lead]
+
+OWNER REFINEMENT: make the systemd .mount unit the primary permanent setup (systemd-escape --path --suffix=mount, What/Where/Type=btrfs/Options=loop,... enable --now), fstab only as an aside; verify make docs-check
+
+## 2026-11-22T15:31 [lead]
+
+status ready -> done

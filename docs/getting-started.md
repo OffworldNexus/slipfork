@@ -21,7 +21,7 @@ archive under `~/.local`. [Install](install.md) lists every distro and flag.
 
 !!! tip "On ext4 or XFS?"
 
-    Keep your disk layout and still get real subvolumes: [mount a sparse Btrfs workspace image](install.md#on-ext4-or-xfs-mount-a-btrfs-workspace-image-in-your-home-folder) under your home folder, then run `slipfork doctor`.
+    Keep your disk layout and still get real subvolumes: [mount a sparse Btrfs workspace image](install.md#on-ext4-or-xfs-mount-a-btrfs-workspace-image-in-your-home-folder) with a systemd `.mount` unit, then run `slipfork doctor`.
 
 ## 2. Write a Forkfile
 
