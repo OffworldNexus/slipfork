@@ -128,7 +128,7 @@ Slipfork 0.1.0 ready on release/0.1.0 -> develop (PR #2): pure-Btrfs engine, sli
 
 **Answer:**
 
-## H-016 [open] [release-gate] (node M3)
+## H-016 [closed] [release-gate] (node M3)
 
 - asked: 2026-11-22T23:49 by conductor
 
