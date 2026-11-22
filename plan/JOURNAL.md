@@ -2735,3 +2735,4 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-22T10:43 [M3.47] (lead) status active -> review
 - 2026-11-22T10:43 [M3.47] (lead) fix pass 1 applied (Triad MAJORs); re-verifying
 - 2026-11-22T10:46 [M3.47] (lead) status review -> done
+- 2026-11-22T10:57 [M3.48] (conductor) created (task) Build portable glibc<=2.34 gnu bundle in rockylinux:9 & fix Arch pacman -Syu + DisableSandbox in packages.yml
