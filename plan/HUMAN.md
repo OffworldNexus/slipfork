@@ -88,3 +88,11 @@ Slipfork 0.1.0 clean-sheet release ready on release/0.1.0 -> develop (PR #2): pu
 
 **Answer:**
 
+## H-011 [open] [direction-challenge] (node M3.50.6)
+
+- asked: 2026-11-22T16:36 by lead
+
+M3.50 live demo fork median is 1.10s (5 warm samples 1.22/1.10/1.10/1.11/0.98) on the 4-vCPU droplet; ceiling is <1.0s. Root cause is cold concurrent crun container startup for the 8 demo pods (pg step 542-825ms; warm 'slipfork restart pg' is 42ms; PG recovery 0ms; snapshot 145-249ms incl. one syncfs). The fresh-store lab median is 892ms. Options: A) accept 1.10s on this droplet, document the environment bound, keep 892ms lab median as the contract number; B) drop the per-fork syncfs (~100ms) and accept that writes after 'up' are not guaranteed durable in a fork; C) pre-warm crun/containers or provision a faster VM for the acceptance run. Recommendation: A, with B as a follow-up knob.
+
+**Answer:**
+

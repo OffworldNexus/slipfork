@@ -51,3 +51,7 @@ attempt 1/3 started
 ## 2026-11-22T15:58 [lead]
 
 base 3df87cb2d19bf2601b9a53e92ef35e34477751e6; ROOT CAUSE CONFIRMED: unsynced PGDATA at snapshot time (app_db CREATE not durable) -> fork pg panic; host 'sync' before fork makes it pass. Implement a cheap pre-fork syncfs flush instead of SQL CHECKPOINT.
+
+## 2026-11-22T16:36 [lead]
+
+status active -> blocked
