@@ -43,3 +43,23 @@ VM live: world_journey still expects Forkfile line + error:/next:
 ## 2026-11-22T19:37 [lead]
 
 status active -> done
+
+## 2026-11-22T19:43 [lead]
+
+status done -> ready: 4b harness short-circuit: wait_for returns on pre-seen needle
+
+## 2026-11-22T19:43 [lead]
+
+attempt 3/3 started
+
+## 2026-11-22T19:43 [lead]
+
+status ready -> active
+
+## 2026-11-22T19:43 [lead]
+
+root cause: Pty::wait_for short-circuits on pre-seen api ready, never drains post-up bytes
+
+## 2026-11-22T19:44 [lead]
+
+status active -> done

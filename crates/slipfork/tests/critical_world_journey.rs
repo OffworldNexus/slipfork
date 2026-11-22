@@ -534,6 +534,22 @@ impl Pty {
         self.seen.contains(needle)
     }
 
+    /// Reads PTY output for the whole `window`, never short-circuiting on text already in `seen`.
+    fn drain(&mut self, window: Duration) {
+        let deadline = Instant::now() + window;
+        let mut chunk = [0_u8; 4096];
+        while Instant::now() < deadline {
+            match self.master.read(&mut chunk) {
+                Ok(0) => std::thread::sleep(Duration::from_millis(10)),
+                Ok(read) => self.seen.push_str(&String::from_utf8_lossy(&chunk[..read])),
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(error) => panic!("read the harness PTY: {error}"),
+            }
+        }
+    }
+
     /// Waits for the child (bounded), restores-drain, and asserts cooked mode came back.
     fn finish(mut self) -> (i32, String) {
         let deadline = Instant::now() + Duration::from_secs(10);
@@ -1390,7 +1406,7 @@ fn world_up_restart_down_journey() {
     );
     let resumed = wait_until(
         || {
-            let _ = follow.wait_for("api ready", Duration::from_millis(250));
+            follow.drain(Duration::from_millis(250));
             follow.seen.matches("api ready").count() > before_up
         },
         Duration::from_secs(30),

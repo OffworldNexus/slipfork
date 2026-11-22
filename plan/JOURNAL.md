@@ -2987,3 +2987,8 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-22T19:37 [M3.53.3] (lead) status ready -> active
 - 2026-11-22T19:37 [M3.53.3] (lead) VM live: world_journey still expects Forkfile line + error:/next:
 - 2026-11-22T19:37 [M3.53.3] (lead) status active -> done
+- 2026-11-22T19:43 [M3.53.3] (lead) status done -> ready: 4b harness short-circuit: wait_for returns on pre-seen needle
+- 2026-11-22T19:43 [M3.53.3] (lead) attempt 3/3 started
+- 2026-11-22T19:43 [M3.53.3] (lead) status ready -> active
+- 2026-11-22T19:43 [M3.53.3] (lead) root cause: Pty::wait_for short-circuits on pre-seen api ready, never drains post-up bytes
+- 2026-11-22T19:44 [M3.53.3] (lead) status active -> done
