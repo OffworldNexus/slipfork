@@ -11,15 +11,62 @@ use std::process::{Command, Stdio};
 use super::Check;
 use crate::world::HostEnv;
 
-/// The resolved host verdict for the three host requirements.
+/// One styled fragment of a doctor row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Part {
+    /// A filesystem path.
+    Path(String),
+    /// Secondary prose.
+    Dim(String),
+    /// A bold label.
+    Bold(String),
+    /// A primary URL.
+    Url(String),
+    /// A healthy state word.
+    Ok(String),
+    /// A failed state word.
+    Bad(String),
+}
+
+impl Part {
+    /// The plain text this fragment contributes to `--json`.
+    #[must_use]
+    pub fn text(&self) -> &str {
+        match self {
+            Self::Path(text)
+            | Self::Dim(text)
+            | Self::Bold(text)
+            | Self::Url(text)
+            | Self::Ok(text)
+            | Self::Bad(text) => text,
+        }
+    }
+
+    /// The same fragment under the shipped palette.
+    #[must_use]
+    pub fn render(&self, palette: &crate::ui::Palette) -> String {
+        match self {
+            Self::Path(text) => palette.path(text),
+            Self::Dim(text) => palette.dim(text),
+            Self::Bold(text) => palette.label(text),
+            Self::Url(text) => palette.url(text),
+            Self::Ok(text) => palette.status(text),
+            Self::Bad(text) => palette.error(text),
+        }
+    }
+}
+
+/// The resolved host verdict for the four host requirements.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Doctor {
-    /// `Btrfs` row.
-    pub btrfs: Check,
-    /// `Namespaces` row.
-    pub namespaces: Check,
-    /// `Runtime` row.
-    pub runtime: Check,
+    /// `Storage` row.
+    pub storage: Check,
+    /// `Containers` row.
+    pub containers: Check,
+    /// `Daemon` row.
+    pub daemon: Check,
+    /// `Domains` row.
+    pub domains: Check,
 }
 
 impl Doctor {
@@ -27,82 +74,65 @@ impl Doctor {
     #[must_use]
     pub fn probe(host: &HostEnv, cwd: &Path) -> Self {
         Self {
-            btrfs: btrfs(cwd, &host.state_dir),
-            namespaces: namespaces(&host.path),
-            runtime: runtime(host),
+            storage: storage(cwd, &host.state_dir, host.home.as_deref()),
+            containers: containers(host),
+            daemon: daemon(host),
+            domains: domains(host),
         }
     }
 }
 
-fn btrfs(project: &Path, state_dir: &Path) -> Check {
+fn storage(project: &Path, state_dir: &Path, home: Option<&Path>) -> Check {
     let project_is_btrfs = slipfork_world::is_btrfs_path(project).unwrap_or(false);
     let state_is_btrfs = slipfork_world::is_btrfs_path(state_dir).unwrap_or(false);
+    let shown = shorten(project, home);
     if project_is_btrfs || state_is_btrfs {
-        let path = if project_is_btrfs { project } else { state_dir };
-        return Check {
-            name: "Btrfs",
-            ok: true,
-            detail: format!("{} is btrfs (subvolume snapshots enabled)", path.display()),
-            next: None,
-        };
+        return Check::new(
+            "Storage",
+            true,
+            vec![
+                Part::Path(shown),
+                Part::Dim("on".to_owned()),
+                Part::Bold("Btrfs".to_owned()),
+                Part::Dim("instant copy-on-write forks ready".to_owned()),
+            ],
+            None,
+        );
     }
-    Check {
-        name: "Btrfs",
-        ok: false,
-        detail: format!("{} is not on a btrfs filesystem", project.display()),
-        next: Some("move the project onto a btrfs mount and run `slipfork up`".to_owned()),
-    }
+    Check::new(
+        "Storage",
+        false,
+        vec![
+            Part::Path(shown),
+            Part::Dim("not on".to_owned()),
+            Part::Bold("Btrfs".to_owned()),
+            Part::Dim("instant copy-on-write forks are unavailable".to_owned()),
+        ],
+        Some("move the project onto a Btrfs mount and run `slipfork up`".to_owned()),
+    )
 }
 
-fn namespaces(path: &[PathBuf]) -> Check {
-    let maximum = fs::read_to_string("/proc/sys/user/max_user_namespaces")
-        .ok()
-        .and_then(|text| text.trim().parse::<u64>().ok());
-    let unshare = find(path, "unshare").is_some_and(|binary| {
-        let Some(true_binary) = find(path, "true") else {
-            return false;
-        };
-        Command::new(binary)
-            .arg("--user")
-            .arg(true_binary)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .is_ok_and(|status| status.success())
-    });
-    match (maximum, unshare) {
-        (Some(maximum), true) if maximum > 0 => Check {
-            name: "Namespaces",
-            ok: true,
-            detail: "unprivileged user + netns available".to_owned(),
-            next: None,
-        },
-        (Some(maximum), true) => Check {
-            name: "Namespaces",
-            ok: false,
-            detail: format!("user.max_user_namespaces is {maximum}"),
-            next: Some("sudo sysctl -w user.max_user_namespaces=2147483647".to_owned()),
-        },
-        (_, _) => Check {
-            name: "Namespaces",
-            ok: false,
-            detail: "unprivileged user + netns unavailable".to_owned(),
-            next: Some("sudo sysctl -w kernel.unprivileged_userns_clone=1".to_owned()),
-        },
-    }
+/// Whether rootless container sandboxing can start on this host.
+enum Sandbox {
+    /// User namespaces work.
+    Enabled,
+    /// AppArmor denies the user-namespace clone.
+    AppArmor,
+    /// The kernel or sysctl refuses user namespaces.
+    Unavailable,
 }
 
-fn runtime(host: &HostEnv) -> Check {
+fn containers(host: &HostEnv) -> Check {
     let Some(crun) = find(&host.path, "crun") else {
-        return Check {
-            name: "Runtime",
-            ok: false,
-            detail: "crun is not on PATH".to_owned(),
-            next: Some(
-                "install crun (for example `sudo apt-get install crun`) and retry".to_owned(),
-            ),
-        };
+        return Check::new(
+            "Containers",
+            false,
+            vec![
+                Part::Bold("crun not installed".to_owned()),
+                Part::Dim("rootless container sandboxing unavailable".to_owned()),
+            ],
+            Some("install crun (for example `sudo apt-get install crun`) and retry".to_owned()),
+        );
     };
     let version = Command::new(crun)
         .arg("--version")
@@ -119,18 +149,97 @@ fn runtime(host: &HostEnv) -> Check {
                 .filter(|version| !version.is_empty())
         })
         .unwrap_or_else(|| "installed".to_owned());
-    Check {
-        name: "Runtime",
-        ok: true,
-        detail: format!(
-            "crun {version}, :80 .localhost ingress {}",
-            ingress_state(host)
+    let label = format!("crun {version}");
+    match sandbox(&host.path) {
+        Sandbox::Enabled => Check::new(
+            "Containers",
+            true,
+            vec![
+                Part::Bold(label),
+                Part::Dim("rootless container sandboxing enabled".to_owned()),
+            ],
+            None,
         ),
-        next: None,
+        Sandbox::AppArmor => Check::new(
+            "Containers",
+            false,
+            vec![
+                Part::Bold(label),
+                Part::Dim("rootless container sandboxing blocked by AppArmor".to_owned()),
+            ],
+            Some(
+                "sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 and retry"
+                    .to_owned(),
+            ),
+        ),
+        Sandbox::Unavailable => Check::new(
+            "Containers",
+            false,
+            vec![
+                Part::Bold(label),
+                Part::Dim("rootless container sandboxing unavailable".to_owned()),
+            ],
+            Some("sudo sysctl -w user.max_user_namespaces=2147483647 and retry".to_owned()),
+        ),
     }
 }
 
-fn ingress_state(host: &HostEnv) -> &'static str {
+fn sandbox(path: &[PathBuf]) -> Sandbox {
+    let maximum = fs::read_to_string("/proc/sys/user/max_user_namespaces")
+        .ok()
+        .and_then(|text| text.trim().parse::<u64>().ok());
+    let clone = find(path, "unshare").is_some_and(|binary| {
+        let Some(true_binary) = find(path, "true") else {
+            return false;
+        };
+        Command::new(binary)
+            .arg("--user")
+            .arg(true_binary)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success())
+    });
+    if clone && maximum.is_none_or(|maximum| maximum > 0) {
+        return Sandbox::Enabled;
+    }
+    if apparmor_enabled() {
+        Sandbox::AppArmor
+    } else {
+        Sandbox::Unavailable
+    }
+}
+
+fn apparmor_enabled() -> bool {
+    fs::read_to_string("/sys/module/apparmor/parameters/enabled")
+        .is_ok_and(|text| text.trim().eq_ignore_ascii_case("Y"))
+}
+
+fn daemon(host: &HostEnv) -> Check {
+    if host.runtime_dir.join("daemon.sock").is_file() {
+        return Check::new(
+            "Daemon",
+            true,
+            vec![
+                Part::Ok("running".to_owned()),
+                Part::Dim("background user service active".to_owned()),
+            ],
+            None,
+        );
+    }
+    Check::new(
+        "Daemon",
+        false,
+        vec![
+            Part::Bad("not installed".to_owned()),
+            Part::Dim("start it with `slipfork daemon install`".to_owned()),
+        ],
+        Some("run `slipfork daemon install` to start the background service".to_owned()),
+    )
+}
+
+fn domains(host: &HostEnv) -> Check {
     let active = find(&host.path, "systemctl").is_some_and(|systemctl| {
         Command::new(systemctl)
             .args(["is-active", "--quiet", "slipfork-ingress.socket"])
@@ -141,11 +250,45 @@ fn ingress_state(host: &HostEnv) -> &'static str {
             .is_ok_and(|status| status.success())
     });
     if active {
-        "active"
-    } else if crate::install::system_socket_path(&host.install_root).is_file() {
-        "installed but not active"
+        Check::new(
+            "Domains",
+            true,
+            vec![
+                Part::Url("http://*.localhost".to_owned()),
+                Part::Dim("local domain routing active".to_owned()),
+            ],
+            None,
+        )
     } else {
-        "not installed (run `sudo slipfork daemon install --ingress`)"
+        let installed = crate::install::system_socket_path(&host.install_root).is_file();
+        let detail = if installed {
+            "local domain routing inactive"
+        } else {
+            "local domain routing not installed"
+        };
+        Check::new(
+            "Domains",
+            false,
+            vec![
+                Part::Url("http://*.localhost".to_owned()),
+                Part::Dim(detail.to_owned()),
+            ],
+            Some("run `sudo slipfork daemon install` to turn on local domain routing".to_owned()),
+        )
+    }
+}
+
+fn shorten(path: &Path, home: Option<&Path>) -> String {
+    let Some(home) = home else {
+        return path.display().to_string();
+    };
+    let Ok(rest) = path.strip_prefix(home) else {
+        return path.display().to_string();
+    };
+    if rest.as_os_str().is_empty() {
+        "~".to_owned()
+    } else {
+        format!("~/{}", rest.display())
     }
 }
 

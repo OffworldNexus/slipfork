@@ -6,6 +6,7 @@
 use std::ffi::OsString;
 use std::path::PathBuf;
 
+use clap::builder::styling::{AnsiColor, Effects, Styles};
 use clap::{Parser, Subcommand};
 use clap_complete::Shell;
 
@@ -19,6 +20,14 @@ Examples:
   slipfork exec api -- pytest -q
   slipfork daemon install";
 
+/// The one help palette: every verb inherits it from the root `Cli`.
+const STYLES: Styles = Styles::styled()
+    .header(AnsiColor::Cyan.on_default().effects(Effects::BOLD))
+    .usage(AnsiColor::Green.on_default().effects(Effects::BOLD))
+    .literal(AnsiColor::Green.on_default().effects(Effects::BOLD))
+    .placeholder(AnsiColor::Yellow.on_default())
+    .valid(AnsiColor::Cyan.on_default());
+
 /// `slipfork`: copy-on-write Btrfs environments for polyglot apps and AI coding agents.
 #[derive(Debug, Parser)]
 #[command(
@@ -28,6 +37,7 @@ Examples:
     override_usage = "slipfork <command> [options]",
     disable_help_subcommand = true,
     after_help = EXAMPLES,
+    styles = STYLES,
     max_term_width = 100,
 )]
 pub struct Cli {

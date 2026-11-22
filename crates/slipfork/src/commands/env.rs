@@ -6,7 +6,7 @@ use serde_json::{Value, json};
 
 use crate::commands::{Session, emit};
 use crate::daemon::DaemonClient;
-use crate::ui::paint;
+use crate::ui::Palette;
 
 /// Parsed `slipfork env` arguments.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -64,6 +64,7 @@ impl Session {
             }
             return emit(&format!("{}\n", Value::Object(out)));
         }
+        let palette = Palette::new(self.color());
         let multiple = components.len() > 1;
         let mut text = String::new();
         for (component, variables) in components {
@@ -73,18 +74,29 @@ impl Session {
                 .flatten()
                 .map(|(key, info)| (key.as_str(), info))
                 .collect();
-            let width = rows.iter().map(|(key, _)| key.len()).max().unwrap_or(0);
+            let width = rows
+                .iter()
+                .map(|(key, _)| key.chars().count())
+                .max()
+                .unwrap_or(0);
             if multiple {
-                text.push_str(&format!("{}\n", paint(component, "1", self.color())));
+                text.push_str(&format!("{}\n", palette.label(component)));
             }
             for (key, info) in rows {
                 let value = display(info);
                 let shown = if is_secret(info) && info["set"].as_bool() == Some(true) {
-                    paint(&value, "2", self.color())
+                    palette.redacted(&value)
+                } else if value == "<unset>" {
+                    palette.dim(&value)
                 } else {
-                    value
+                    palette.value(&value)
                 };
-                text.push_str(&format!("{key:<width$}  {shown}\n"));
+                let pad = " ".repeat(width.saturating_sub(key.chars().count()));
+                text.push_str(&format!(
+                    "{}{pad} {} {shown}\n",
+                    palette.key(key),
+                    palette.dim("=")
+                ));
             }
         }
         emit(&text)

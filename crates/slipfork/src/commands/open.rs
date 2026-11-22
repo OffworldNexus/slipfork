@@ -5,7 +5,7 @@ use std::process::{Command, ExitCode, Stdio};
 use serde_json::json;
 
 use crate::commands::{Session, emit};
-use crate::ui::paint;
+use crate::ui::Palette;
 
 /// Parsed `slipfork open` arguments.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -40,7 +40,7 @@ impl Session {
                 if !args.json {
                     let mut text = String::new();
                     for candidate in &candidates {
-                        text.push_str(&format!("{}\n", paint(candidate, "1;36", self.color())));
+                        text.push_str(&format!("{}\n", Palette::new(self.color()).url(candidate)));
                     }
                     let _ = emit(&text);
                 }
@@ -64,21 +64,22 @@ impl Session {
         }
         if headless {
             return emit(&format!(
-                "{}\nnext: open it on a machine with a browser\n",
-                paint(&url, "1;36", self.color())
+                "{} {}\nnext: open it on a machine with a browser\n",
+                Palette::new(self.color()).icon_info(),
+                Palette::new(self.color()).url(&url)
             ));
         }
         let Some(opener) = &self.host.opener else {
             return emit(&format!(
                 "{}\nnext: install xdg-open, or open the URL in a browser\n",
-                paint(&url, "1;36", self.color())
+                Palette::new(self.color()).url(&url)
             ));
         };
         match Command::new(opener).arg(&url).stdin(Stdio::null()).status() {
             Ok(status) if status.success() => emit(&format!(
                 "{} Opened {}\n",
-                paint("✓", "32", self.color()),
-                paint(&url, "1;36", self.color())
+                Palette::new(self.color()).icon_ok(),
+                Palette::new(self.color()).url(&url)
             )),
             _ => self.report(
                 "open-failed",

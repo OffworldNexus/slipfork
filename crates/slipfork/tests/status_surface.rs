@@ -500,7 +500,7 @@ fn userns_ok() -> bool {
 }
 
 #[test]
-fn doctor_has_exactly_three_rows_and_fails_closed_on_missing_tools() {
+fn doctor_has_four_plain_rows_and_fails_closed_on_missing_tools() {
     let root = scratch("doctor");
     let injected_path = root.join("bin");
     fs::create_dir_all(&injected_path).expect("create injected PATH");
@@ -513,7 +513,9 @@ fn doctor_has_exactly_three_rows_and_fails_closed_on_missing_tools() {
     }
     let btrfs = slipfork_world::is_btrfs_path(&root).unwrap_or(false)
         || slipfork_world::is_btrfs_path(&root.join("state")).unwrap_or(false);
-    let expected_issues = usize::from(!btrfs) + usize::from(!unshare_available) + 1;
+    // The injected PATH has no crun and no systemctl, the runtime has no daemon socket, and a
+    // non-Btrfs scratch root fails Storage: every row is closed.
+    let expected_issues = 4 - usize::from(btrfs);
     let output = Command::new(env!("CARGO_BIN_EXE_slipfork"))
         .arg("doctor")
         .current_dir(&root)
@@ -525,15 +527,21 @@ fn doctor_has_exactly_three_rows_and_fails_closed_on_missing_tools() {
         .output()
         .expect("doctor must run");
     let stdout = String::from_utf8(output.stdout).expect("doctor is UTF-8");
-    assert_eq!(row_count(&stdout), 3, "{stdout}");
+    assert_eq!(row_count(&stdout), 4, "{stdout}");
     assert_eq!(output.status.code(), Some(1), "{stdout}");
     assert!(
-        stdout.starts_with(&format!("✗ {expected_issues} issue(s)")),
+        stdout.starts_with(&format!("✗ {expected_issues} issue(s) found")),
         "{stdout}"
     );
     assert_eq!(next_count(&stdout), expected_issues, "{stdout}");
-    assert!(stdout.contains("Runtime"), "{stdout}");
-    assert!(stdout.contains("crun is not on PATH"), "{stdout}");
+    for name in ["Storage", "Containers", "Daemon", "Domains"] {
+        assert!(stdout.contains(name), "missing {name}: {stdout}");
+    }
+    assert!(stdout.contains("crun not installed"), "{stdout}");
+    for jargon in ["netns", "ingress", "unprivileged user", ":80"] {
+        assert!(!stdout.contains(jargon), "leaked `{jargon}`: {stdout}");
+    }
+    assert!(!stdout.contains(ANSI), "piped doctor stays plain: {stdout}");
 
     let json = Command::new(env!("CARGO_BIN_EXE_slipfork"))
         .args(["doctor", "--json"])
@@ -546,15 +554,20 @@ fn doctor_has_exactly_three_rows_and_fails_closed_on_missing_tools() {
         .expect("doctor --json must run");
     let parsed: Value = serde_json::from_slice(&json.stdout).expect("doctor --json parses");
     assert_eq!(parsed["ready"], false);
-    assert_eq!(parsed["checks"].as_array().map(Vec::len), Some(3));
+    let checks = parsed["checks"].as_array().expect("checks is an array");
+    assert_eq!(checks.len(), 4);
+    let names: Vec<&str> = checks
+        .iter()
+        .map(|check| check["name"].as_str().expect("check name"))
+        .collect();
+    assert_eq!(names, ["Storage", "Containers", "Daemon", "Domains"]);
     assert!(!String::from_utf8_lossy(&json.stdout).contains(ANSI));
 
-    // With real tools on PATH the same three rows are ready only on a Btrfs host.
+    // With real tools on PATH the four rows stay four and the verdict matches the header.
     let crun_available = Command::new("/usr/bin/crun")
         .arg("--version")
         .output()
         .is_ok_and(|output| output.status.success());
-    let expected_ready = btrfs && crun_available && userns_ok();
     let ready = Command::new(env!("CARGO_BIN_EXE_slipfork"))
         .arg("doctor")
         .current_dir(&root)
@@ -565,14 +578,20 @@ fn doctor_has_exactly_three_rows_and_fails_closed_on_missing_tools() {
         .output()
         .expect("doctor must run");
     let stdout = String::from_utf8(ready.stdout).expect("doctor is UTF-8");
-    assert_eq!(row_count(&stdout), 3, "{stdout}");
+    assert_eq!(row_count(&stdout), 4, "{stdout}");
+    let ready_line = stdout.starts_with("✓ Ready");
     assert_eq!(
         ready.status.code(),
-        Some(if expected_ready { 0 } else { 1 }),
+        Some(if ready_line { 0 } else { 1 }),
         "{stdout}"
     );
-    if expected_ready {
-        assert!(stdout.starts_with("✓ Ready"), "{stdout}");
+    if crun_available && unshare_available && userns_ok() {
+        assert!(
+            stdout.contains("rootless container sandboxing enabled"),
+            "{stdout}"
+        );
+    } else {
+        assert!(stdout.contains("rootless container sandboxing"), "{stdout}");
     }
     let _ = fs::remove_dir_all(&root);
 }

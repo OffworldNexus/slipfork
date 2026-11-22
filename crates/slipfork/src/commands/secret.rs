@@ -7,7 +7,7 @@ use serde_json::{Value, json};
 
 use crate::commands::{Session, emit};
 use crate::daemon::DaemonClient;
-use crate::ui::paint;
+use crate::ui::Palette;
 
 /// Which `secret` subcommand to run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -74,6 +74,7 @@ impl Session {
             }
             return emit(&format!("{}\n", Value::Object(out)));
         }
+        let palette = Palette::new(self.color());
         let multiple = components.len() > 1;
         let mut text = String::new();
         for (component, keys) in components {
@@ -81,22 +82,27 @@ impl Session {
             let width = rows
                 .iter()
                 .filter_map(|entry| entry.get("key").and_then(Value::as_str))
-                .map(str::len)
+                .map(|key| key.chars().count())
                 .max()
                 .unwrap_or(0);
             if multiple {
-                text.push_str(&format!("{}\n", paint(&component, "1", self.color())));
+                text.push_str(&format!("{}\n", palette.label(&component)));
             }
             for entry in rows {
                 let Some(key) = entry.get("key").and_then(Value::as_str) else {
                     continue;
                 };
                 let value = if entry["set"].as_bool() == Some(true) {
-                    paint("[REDACTED]", "2", self.color())
+                    palette.redacted("[REDACTED]")
                 } else {
-                    "<unset>".to_owned()
+                    palette.dim("<unset>")
                 };
-                text.push_str(&format!("{key:<width$}  {value}\n"));
+                let pad = " ".repeat(width.saturating_sub(key.chars().count()));
+                text.push_str(&format!(
+                    "{}{pad} {} {value}\n",
+                    palette.key(key),
+                    palette.dim("=")
+                ));
             }
         }
         if text.is_empty() {
@@ -156,9 +162,11 @@ impl Session {
                 json!({ "component": reply["component"], "key": reply["key"], "set": true })
             ));
         }
+        let palette = Palette::new(self.color());
         emit(&format!(
-            "{} Set {component}.{key}\n",
-            paint("✓", "32", self.color())
+            "{} Set {}\n",
+            palette.icon_ok(),
+            palette.path(&format!("{component}.{key}"))
         ))
     }
 
@@ -186,9 +194,11 @@ impl Session {
                 json!({ "component": reply["component"], "key": reply["key"], "unset": true })
             ));
         }
+        let palette = Palette::new(self.color());
         emit(&format!(
-            "{} Unset {component}.{key}\n",
-            paint("✓", "32", self.color())
+            "{} Unset {}\n",
+            palette.icon_ok(),
+            palette.path(&format!("{component}.{key}"))
         ))
     }
 }

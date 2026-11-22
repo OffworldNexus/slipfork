@@ -1,12 +1,15 @@
 //! Output modes and the one colour layer for the shipped CLI.
 //!
 //! The composition root resolves [`UiMode`] once from the terminal and the environment; every
-//! renderer receives it as a plain value and never asks a second time. `paint` is the single
-//! SGR helper, and [`boot`] is the only live pane the world verbs draw.
+//! renderer receives it as a plain value and never asks a second time. [`Palette`] is the single
+//! role API, `paint` stays the raw SGR primitive, and [`boot`] is the only live pane the world
+//! verbs draw.
 
 mod paint;
+mod palette;
 
 pub use paint::paint;
+pub use palette::Palette;
 
 /// How this invocation renders its result.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -16,12 +16,14 @@ use slipfork_world::pod_log::now_ms;
 
 use crate::commands::{Session, emit};
 use crate::daemon::{DaemonClient, DaemonError};
-use crate::ui::paint;
+use crate::ui::Palette;
 
 /// Set by the SIGINT handler so a followed stream exits `0` on Ctrl-C.
 static INTERRUPTED: AtomicBool = AtomicBool::new(false);
 
-const PALETTE: [&str; 8] = ["36", "35", "33", "32", "34", "96", "95", "31"];
+const PALETTE: [&str; 8] = [
+    "1;36", "1;35", "1;34", "1;33", "1;32", "1;96", "1;95", "1;31",
+];
 
 /// Parsed `slipfork logs` arguments.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -184,11 +186,8 @@ impl Session {
     /// Renders a `shell-refused` payload verbatim and everything else through [`Self::stream_fail`].
     fn exact_fail(&self, error: &DaemonError, verb: &str, json: bool) -> ExitCode {
         if json {
-            let _ = emit(&format!(
-                "{}\n",
-                json!({ "error": { "code": error.code, "message": error.message } })
-            ));
-            return ExitCode::FAILURE;
+            let next = refusal_next(error, verb);
+            return self.report(&error.code, &error.message, &next, true);
         }
         if error.code == "shell-refused" {
             eprintln!("{}", error.message);
@@ -260,22 +259,27 @@ impl Session {
     }
 
     fn stream_fail(&self, error: &DaemonError, verb: &str, json: bool) -> ExitCode {
-        let next = match error.code.as_str() {
-            "ambiguous-target" => {
-                format!("pass one of the ids above, e.g. `slipfork {verb} <id>`")
-            }
-            "no-target" => "run `slipfork up` or pass a service".to_owned(),
-            "no-world" => "run `slipfork up` first".to_owned(),
-            "world-booting" => "wait for `slipfork up` to finish, then retry".to_owned(),
-            _ => "run `slipfork status` to inspect the world".to_owned(),
-        };
+        let next = refusal_next(error, verb);
         self.report(&error.code, &error.message, &next, json)
+    }
+}
+
+/// The one remedy for a typed streaming refusal.
+fn refusal_next(error: &DaemonError, verb: &str) -> String {
+    match error.code.as_str() {
+        "ambiguous-target" => {
+            format!("pass one of the ids above, e.g. `slipfork {verb} <id>`")
+        }
+        "no-target" => "run `slipfork up` or pass a service".to_owned(),
+        "no-world" => "run `slipfork up` first".to_owned(),
+        "world-booting" => "wait for `slipfork up` to finish, then retry".to_owned(),
+        _ => "run `slipfork status` to inspect the world".to_owned(),
     }
 }
 
 /// Renders typed daemon events as gutters, dividers, or NDJSON.
 struct Renderer {
-    color: bool,
+    palette: Palette,
     json: bool,
     /// `logs` prefixes every line with its pod gutter; `exec` stays verbatim like `docker exec`.
     gutter: bool,
@@ -297,7 +301,7 @@ impl Renderer {
 
     fn with_gutter(color: bool, json: bool, gutter: bool, timestamps: bool) -> Self {
         Self {
-            color,
+            palette: Palette::new(color),
             json,
             gutter,
             timestamps,
@@ -338,7 +342,7 @@ impl Renderer {
         match kind {
             "eof" => {}
             "divider" => {
-                let _ = emit(&format!("{}\n", paint(line, "2", self.color)));
+                let _ = emit(&format!("{}\n", self.palette.tint(line, "2;36")));
             }
             _ if !self.gutter => {
                 let _ = emit(&format!("{line}\n"));
@@ -346,15 +350,16 @@ impl Renderer {
             _ => {
                 let stamp = if self.timestamps {
                     ts_ms
-                        .map(|ts| format!("{} ", paint(&format_ts(ts), "2", self.color)))
+                        .map(|ts| format!("{} ", self.palette.dim(&format_ts(ts))))
                         .unwrap_or_default()
                 } else {
                     String::new()
                 };
                 let code = self.color_for(pod);
                 let pad = " ".repeat(self.width.saturating_sub(pod.chars().count()));
-                let gutter = paint(pod, code, self.color);
-                let _ = emit(&format!("{stamp}{gutter}{pad} │ {line}\n"));
+                let gutter = self.palette.tint(pod, code);
+                let divider = self.palette.divider();
+                let _ = emit(&format!("{stamp}{gutter}{pad} {divider} {line}\n"));
             }
         }
     }

@@ -13,8 +13,7 @@ use slipfork_forkfile::Diagnostics;
 
 use crate::compose::Terminal;
 use crate::daemon::{DaemonClient, DaemonError};
-use crate::ui::UiMode;
-use crate::ui::paint;
+use crate::ui::{Palette, UiMode, paint};
 use crate::world::HostEnv;
 use crate::{doctor, status};
 
@@ -253,7 +252,7 @@ impl Session {
             if canonical {
                 return emit(&format!(
                     "{} {label} is formatted\n",
-                    paint("✓", "32", self.color())
+                    Palette::new(self.color()).icon_ok()
                 ));
             }
             let diff = slipfork_forkfile::fmt::render_diff(&source, &formatted, &label);
@@ -264,12 +263,12 @@ impl Session {
         if changed {
             emit(&format!(
                 "{} formatted {label}\n",
-                paint("✓", "32", self.color())
+                Palette::new(self.color()).icon_ok()
             ))
         } else {
             emit(&format!(
                 "{} {label} is already formatted\n",
-                paint("✓", "32", self.color())
+                Palette::new(self.color()).icon_ok()
             ))
         }
     }
@@ -410,8 +409,14 @@ impl Session {
     }
 
     fn fail(&self, message: &str, next: &str) -> ExitCode {
-        eprintln!("error: {message}");
-        eprintln!("next: {next}");
+        let palette = Palette::new(self.color());
+        if palette.color() {
+            eprintln!("{} {}", palette.icon_bad(), palette.value(message));
+            eprintln!("{} {}", palette.kind("next:"), palette.command(next));
+        } else {
+            eprintln!("error: {message}");
+            eprintln!("next: {next}");
+        }
         ExitCode::FAILURE
     }
 

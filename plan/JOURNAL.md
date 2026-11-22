@@ -2856,3 +2856,4 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-22T13:39 [M3.50.9] (lead) fix pass: status_surface doctor asserts 3 rows at HEAD — update to the 4 plain-English rows
 - 2026-11-22T13:39 [M3.50.9] (lead) edited fields
 - 2026-11-22T13:39 [M3.50.3] (lead) status ready -> done
+- 2026-11-22T13:40 [M3.50.9] (lead) status ready -> done

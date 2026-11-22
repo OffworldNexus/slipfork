@@ -10,7 +10,7 @@ use slipfork_ospp::{
 };
 
 use crate::commands::{Session, emit};
-use crate::ui::paint;
+use crate::ui::Palette;
 
 /// Parsed `slipfork auth` arguments.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -81,7 +81,7 @@ impl Session {
                 PairPhase::AwaitingApproval => "awaiting approval",
                 PairPhase::Approved => "approved",
             };
-            eprintln!("{} {label}", paint("→", "1;36", color));
+            eprintln!("{} {label}", Palette::new(color).kind("→"));
         };
         let host = self.host.clone();
         let mut on_handle = |live: &LivePairingUrl| -> Result<(), OsppError> {
@@ -124,10 +124,10 @@ impl Session {
                 }
                 emit(&format!(
                     "{} Paired {}@{} -> {}\nnext: slipfork up\n",
-                    paint("✓", "32", color),
+                    Palette::new(color).icon_ok(),
                     approval.account,
                     approval.machine,
-                    paint(endpoint.as_str(), "1;36", color),
+                    Palette::new(color).url(endpoint.as_str()),
                 ))
             }
             Err(error) => self.ospp_failure(&error, args.json),

@@ -1,7 +1,7 @@
-//! `slipfork doctor`: exactly three host requirements, one verdict.
+//! `slipfork doctor`: four plain-English host rows and one verdict.
 //!
-//! Probing lives in the composition-root adapter ([`probe`]); this module only renders the three
-//! rows, their remedies, and the machine-readable object.
+//! Probing lives in the composition-root adapter ([`probe`]); this module only renders the rows,
+//! their remedies, and the machine-readable object. User copy never names kernel or socket jargon.
 
 pub mod probe;
 
@@ -10,22 +10,43 @@ use std::process::ExitCode;
 use serde_json::json;
 
 use crate::commands::emit;
-use crate::ui::paint;
+use crate::ui::Palette;
 use crate::world::HostEnv;
 
-pub use probe::Doctor;
+pub use probe::{Doctor, Part};
 
 /// One host requirement: whether it passed, what was observed, and its remedy.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Check {
-    /// Stable row name (`Btrfs`, `Namespaces`, `Runtime`).
+    /// Stable plain-English row name (`Storage`, `Containers`, `Daemon`, `Domains`).
     pub name: &'static str,
     /// The probe passed.
     pub ok: bool,
-    /// One line of evidence.
+    /// One plain line of evidence, used verbatim by `--json`.
     pub detail: String,
     /// The exact remedy, only for a failing row.
     pub next: Option<String>,
+    /// The same evidence split into styled roles for a terminal.
+    pub(crate) parts: Vec<Part>,
+}
+
+impl Check {
+    /// Builds a row, deriving the plain `detail` from its styled parts.
+    pub(crate) fn new(
+        name: &'static str,
+        ok: bool,
+        parts: Vec<Part>,
+        next: Option<String>,
+    ) -> Self {
+        let detail = parts.iter().map(Part::text).collect::<Vec<_>>().join(" · ");
+        Self {
+            name,
+            ok,
+            detail,
+            next,
+            parts,
+        }
+    }
 }
 
 /// Renders and prints the doctor verdict; exit 1 when any row fails.
@@ -51,13 +72,14 @@ pub fn run(host: &HostEnv, cwd: &std::path::Path, json: bool, color: bool) -> Ex
         ));
         return if ready { status } else { ExitCode::FAILURE };
     }
+    let palette = Palette::new(color);
     let mut out = String::new();
     if ready {
-        out.push_str(&paint("✓ Ready", "32", color));
+        out.push_str(&palette.tint("✓ Ready", "32;1"));
         out.push('\n');
     } else {
         let failed = doctor.checks().iter().filter(|check| !check.ok).count();
-        out.push_str(&paint(&format!("✗ {failed} issue(s)"), "31", color));
+        out.push_str(&palette.tint(&format!("✗ {failed} issue(s) found"), "31;1"));
         out.push('\n');
     }
     let name_width = doctor
@@ -67,20 +89,30 @@ pub fn run(host: &HostEnv, cwd: &std::path::Path, json: bool, color: bool) -> Ex
         .max()
         .unwrap_or(0)
         + 2;
+    let separator = palette.dim("·");
     for check in doctor.checks() {
         let mark = if check.ok {
-            paint("✓", "32", color)
+            palette.icon_ok()
         } else {
-            paint("✗", "31", color)
+            palette.icon_bad()
         };
+        let detail = check
+            .parts
+            .iter()
+            .map(|part| part.render(&palette))
+            .collect::<Vec<_>>()
+            .join(&format!(" {separator} "));
         out.push_str(&format!(
-            "  {mark} {:<width$}{}\n",
+            "  {mark} {:<width$}{detail}\n",
             check.name,
-            check.detail,
             width = name_width
         ));
         if let Some(next) = &check.next {
-            out.push_str(&format!("     next: {next}\n"));
+            out.push_str(&format!(
+                "     {} {}\n",
+                palette.kind("next:"),
+                palette.command(next)
+            ));
         }
     }
     let status = emit(&out);
@@ -88,15 +120,15 @@ pub fn run(host: &HostEnv, cwd: &std::path::Path, json: bool, color: bool) -> Ex
 }
 
 impl Doctor {
-    /// The three rows in display order.
+    /// The four rows in display order.
     #[must_use]
-    pub fn checks(&self) -> [&Check; 3] {
-        [&self.btrfs, &self.namespaces, &self.runtime]
+    pub fn checks(&self) -> [&Check; 4] {
+        [&self.storage, &self.containers, &self.daemon, &self.domains]
     }
 
     /// Every row passed.
     #[must_use]
     pub fn is_ready(&self) -> bool {
-        self.btrfs.ok && self.namespaces.ok && self.runtime.ok
+        self.storage.ok && self.containers.ok && self.daemon.ok && self.domains.ok
     }
 }
