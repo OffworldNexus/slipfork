@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Builds the one bundle every package is assembled from.
 #
-#   scripts/build-bundle.sh --out target/package-bundle
+#   scripts/build-bundle.sh --out target/package-bundle \
+#       --max-glibc 2_34 --container rockylinux:9 \
+#       --target-dir target/package-gnu-target --cargo-home target/package-cargo-home
 #   scripts/build-bundle.sh --out target/package-bundle-musl \
 #       --target x86_64-unknown-linux-musl --container rust:alpine
 #
@@ -10,6 +12,11 @@
 # completions). Completions are generated from the freshly built binary, so a
 # verb can never ship in `--help` and go missing from bash completion.
 # Every ELF is measured with `check-portable-elf.sh` before the bundle exists.
+#
+# One gnu bundle, compiled on glibc 2.34, so Rocky 9 installs it: the gnu bundle
+# must be linked against 2.34, so callers pass
+# `--container rockylinux:9 --max-glibc 2_34` when their host is newer (the
+# `packages` targets in the Makefile do that automatically).
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -19,16 +26,23 @@ out=""
 target=""
 max_glibc="auto"
 container=""
+cargo_home=""
+target_dir=""
 in_container=0
 
 help() {
     cat <<'USAGE'
 usage: scripts/build-bundle.sh --out <dir> [--target <triple>]
                                [--max-glibc <major>_<minor>|auto] [--container <image>]
+                               [--target-dir <dir>] [--cargo-home <dir>]
   --out         where bin/ and share/slipfork/ are staged
   --target      default: this host's rustc triple; musl targets link dynamically
   --max-glibc   measured ceiling enforced by check-portable-elf.sh
-  --container   build inside this image (the host lacks a musl toolchain)
+  --container   build inside this image (the host lacks a musl toolchain, or its
+                glibc is newer than the floor the packages promise)
+  --target-dir  host cargo target dir, bind-mounted at /target inside the image,
+                so a container build stays out of ./target and reuses its cache
+  --cargo-home  host cargo home, bind-mounted at /cargo inside the image
 USAGE
 }
 
@@ -43,6 +57,8 @@ while [ "$#" -gt 0 ]; do
         --target) [ "$#" -ge 2 ] && [ -n "$2" ] || usage; target=$2; shift 2 ;;
         --max-glibc) [ "$#" -ge 2 ] && [ -n "$2" ] || usage; max_glibc=$2; shift 2 ;;
         --container) [ "$#" -ge 2 ] && [ -n "$2" ] || usage; container=$2; shift 2 ;;
+        --target-dir) [ "$#" -ge 2 ] && [ -n "$2" ] || usage; target_dir=$2; shift 2 ;;
+        --cargo-home) [ "$#" -ge 2 ] && [ -n "$2" ] || usage; cargo_home=$2; shift 2 ;;
         --in-container) in_container=1; shift ;;
         -h | --help) help; exit 0 ;;
         *) echo "error: unknown argument $1; next: run with --help" >&2; exit 2 ;;
@@ -51,21 +67,78 @@ done
 [ -n "$out" ] || usage
 [ -n "$target" ] || target=$(rustc -vV | sed -n 's/^host: //p')
 
+# In-container toolchain bootstrap, by image family. Runs as its own function so
+# `if ! setup_container ...` can turn any failure into one remedy line; its output
+# streams live because a silent 1-2 minute setup is the worst part of a first build.
+setup_container() {
+    case "$1" in
+        *alpine*) apk add --no-cache bash binutils musl-dev gcc ;;
+        *rocky* | *almalinux* | *centos*)
+            # rockylinux:9 already ships `curl-minimal`, so asking dnf for `curl`
+            # conflicts and fails; rustup's installer uses what is there.
+            dnf -y install gcc binutils gzip tar findutils &&
+                curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs |
+                sh -s -- -y --default-toolchain stable --profile minimal &&
+                export PATH="${CARGO_HOME:-$HOME/.cargo}/bin:$PATH" &&
+                cargo --version >/dev/null
+            ;;
+        *)
+            echo "error: no container bootstrap for $1; next: add it to the case in scripts/build-bundle.sh" >&2
+            return 2
+            ;;
+    esac
+}
+
 if [ -n "$container" ] && [ "$in_container" -eq 0 ]; then
     command -v docker >/dev/null 2>&1 ||
         { echo "error: $target needs a container build but docker is missing; next: install docker" >&2; exit 2; }
     mkdir -p "$out"
     out_abs=$(cd "$out" && pwd)
-    exec docker run --rm -e CARGO_TARGET_DIR=/src/target \
-        -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" \
-        -v "$root":/src -v "$out_abs":/out -w /src "$container" sh -c "
-            trap 'chown -R \"\$HOST_UID:\$HOST_GID\" /src/target || echo \"warning: could not restore /src/target ownership; next: sudo chown -R $(id -u):$(id -g) <host target dir>\" >&2; chown -R \"\$HOST_UID:\$HOST_GID\" /out || echo \"warning: could not restore /out ownership; next: sudo chown -R $(id -u):$(id -g) <host out dir>\" >&2' EXIT
-            apk add --no-cache bash binutils musl-dev gcc >/dev/null &&
-            /src/scripts/build-bundle.sh --in-container --out /out --target $target --max-glibc $max_glibc"
+    envs=(-e "HOST_UID=$(id -u)" -e "HOST_GID=$(id -g)" -e "SLIPFORK_CONTAINER_IMAGE=$container")
+    mounts=(-v "$root":/src -v "$out_abs":/out)
+    # `<container path>=<host path>` for every directory the container writes as
+    # root; the in-container EXIT trap hands each one back to the invoking user.
+    # `packaging/man` is regenerated in place from the freshly built binary.
+    chown_dirs="/out=$out_abs /src/packaging/man=$root/packaging/man"
+    if [ -n "$target_dir" ]; then
+        mkdir -p "$target_dir"
+        target_abs=$(cd "$target_dir" && pwd)
+        mounts+=(-v "$target_abs":/target)
+        envs+=(-e CARGO_TARGET_DIR=/target)
+        chown_dirs="/target=$target_abs $chown_dirs"
+    else
+        envs+=(-e CARGO_TARGET_DIR=/src/target)
+        chown_dirs="/src/target=$root/target $chown_dirs"
+    fi
+    if [ -n "$cargo_home" ]; then
+        mkdir -p "$cargo_home"
+        cargo_home_abs=$(cd "$cargo_home" && pwd)
+        mounts+=(-v "$cargo_home_abs":/cargo)
+        envs+=(-e CARGO_HOME=/cargo)
+        chown_dirs="/cargo=$cargo_home_abs $chown_dirs"
+    fi
+    envs+=(-e "SLIPFORK_CHOWN_DIRS=$chown_dirs")
+    # `rust:alpine` ships no bash, and the script is bash: install one first, then
+    # exec so the in-container `EXIT` trap restores ownership of every bind mount.
+    exec docker run --rm "${envs[@]}" "${mounts[@]}" -w /src "$container" \
+        sh -c 'command -v bash >/dev/null || apk add --no-cache bash >/dev/null; exec bash /src/scripts/build-bundle.sh "$@"' \
+        _ --in-container --out /out --target "$target" --max-glibc "$max_glibc"
 fi
 
-if [ "$in_container" -eq 1 ] && command -v apk >/dev/null 2>&1; then
-    apk add --no-cache musl-dev gcc >/dev/null 2>&1 || true
+if [ "$in_container" -eq 1 ]; then
+    image="${SLIPFORK_CONTAINER_IMAGE:-container}"
+    # Restore ownership even when the build fails: a root-owned host cache would
+    # break the next `make packages` with a permission error. Each `SLIPFORK_CHOWN_DIRS`
+    # entry is `<container path>=<host path>`, so the remedy is copy-pasteable.
+    if [ -n "${HOST_UID:-}" ] && [ -n "${HOST_GID:-}" ]; then
+        trap 'rc=$?; for pair in ${SLIPFORK_CHOWN_DIRS:-}; do chown -R "$HOST_UID:$HOST_GID" "${pair%%=*}" 2>/dev/null ||
+            echo "warning: could not restore ${pair#*=} ownership; next: sudo chown -R $HOST_UID:$HOST_GID ${pair#*=}" >&2; done; exit $rc' EXIT
+    fi
+    printf '[setup] %s toolchain\n' "$image"
+    if ! setup_container "$image"; then
+        echo "error: toolchain setup failed in $image; next: docker run --rm -it $image bash" >&2
+        exit 2
+    fi
 fi
 
 rustflags=""
@@ -80,7 +153,7 @@ for pair in slipfork:slipfork slipfork-lsp:slipfork-lsp slipfork-world:slipfork-
     cargo build --release --locked --target "$target" -p "$pkg" --bin "$bin"
 done
 
-bindir="target/$target/release"
+bindir="${CARGO_TARGET_DIR:-target}/$target/release"
 for bin in slipfork slipfork-lsp slipfork-world-init; do
     [ -x "$bindir/$bin" ] || { echo "error: $bindir/$bin was not built; next: run cargo build -p $bin" >&2; exit 1; }
 done

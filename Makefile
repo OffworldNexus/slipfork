@@ -146,6 +146,19 @@ PACKAGES_MUSL_BUNDLE ?= target/package-bundle-musl
 MUSL_TARGET ?= $(shell uname -m)-unknown-linux-musl
 MUSL_IMAGE ?= rust:alpine
 
+# One gnu bundle, compiled on glibc 2.34, so Rocky 9 (glibc 2.34) installs it.
+# A host newer than the floor builds the gnu bundle in `rockylinux:9`; the same
+# `--max-glibc` ceiling is then what the builders stamp into Depends/Requires.
+# `HOST_GLIBC` is empty on a non-glibc host (musl, BSD), which means a host build
+# and no ceiling: set `GNU_CONTAINER=rockylinux:9` explicitly there.
+HOST_GLIBC := $(shell ldd --version 2>/dev/null | sed -n '1s/^ldd .*[^0-9]\([0-9][0-9]*\.[0-9][0-9]*\)$$/\1/p')
+GNU_CONTAINER ?= $(shell v=$(HOST_GLIBC); [ -n "$$v" ] && [ "$$v" != 2.34 ] && [ "$$(printf '2.34\n%s\n' "$$v" | sort -V | tail -n1)" = "$$v" ] && echo rockylinux:9)
+GNU_MAX_GLIBC ?= 2_34
+GNU_TARGET_DIR ?= target/package-gnu-target
+GNU_CARGO_HOME ?= target/package-cargo-home
+GNU_BUNDLE := --max-glibc $(GNU_MAX_GLIBC) \
+	$(if $(strip $(GNU_CONTAINER)),--container $(GNU_CONTAINER) --target-dir $(GNU_TARGET_DIR) --cargo-home $(GNU_CARGO_HOME))
+
 .PHONY: packages packages-test packages-bundle packages-probe
 
 # Every artifact must be non-empty and parse as its own format. A truncated
@@ -160,17 +173,19 @@ packages-probe:
 	printf "artifacts in %s:\n" "$(PACKAGES_OUT)"; ls -1 $(PACKAGES_OUT)
 
 packages-bundle:
-	scripts/build-bundle.sh --out $(PACKAGES_BUNDLE) --max-glibc auto
+	scripts/build-bundle.sh --out $(PACKAGES_BUNDLE) $(GNU_BUNDLE)
 
 # Real host-arch artifacts from one measured bundle. rpm and apk use a container
 # only because this host has neither rpmbuild nor abuild; the musl bundle is
-# compiled in Alpine because the host has no musl toolchain.
+# compiled in Alpine because the host has no musl toolchain. The gnu bundle is
+# compiled on glibc 2.34 (rockylinux:9 when the host is newer), and the builders
+# stamp that ceiling into Depends/Requires.
 packages:
 	rm -f $(PACKAGES_OUT)/PKGBUILD $(PACKAGES_OUT)/.SRCINFO $(PACKAGES_OUT)/slipfork-*-r0.apk
-	scripts/build-bundle.sh --out $(PACKAGES_BUNDLE) --max-glibc auto
-	scripts/build-deb.sh --version $(VERSION) --bundle $(PACKAGES_BUNDLE) --out $(PACKAGES_OUT)
-	scripts/build-rpm.sh --version $(VERSION) --bundle $(PACKAGES_BUNDLE) --out $(PACKAGES_OUT)
-	scripts/build-arch.sh --version $(VERSION) --bundle $(PACKAGES_BUNDLE) --out $(PACKAGES_OUT)
+	scripts/build-bundle.sh --out $(PACKAGES_BUNDLE) $(GNU_BUNDLE)
+	scripts/build-deb.sh --version $(VERSION) --bundle $(PACKAGES_BUNDLE) --max-glibc $(GNU_MAX_GLIBC) --out $(PACKAGES_OUT)
+	scripts/build-rpm.sh --version $(VERSION) --bundle $(PACKAGES_BUNDLE) --max-glibc $(GNU_MAX_GLIBC) --out $(PACKAGES_OUT)
+	scripts/build-arch.sh --version $(VERSION) --bundle $(PACKAGES_BUNDLE) --max-glibc $(GNU_MAX_GLIBC) --out $(PACKAGES_OUT)
 	scripts/build-standalone.sh --bundle $(PACKAGES_BUNDLE) --out $(PACKAGES_OUT)
 	scripts/build-bundle.sh --out $(PACKAGES_MUSL_BUNDLE) --target $(MUSL_TARGET) --max-glibc auto --container $(MUSL_IMAGE)
 	scripts/build-apk.sh --version $(VERSION) --bundle $(PACKAGES_MUSL_BUNDLE) --out $(PACKAGES_OUT)

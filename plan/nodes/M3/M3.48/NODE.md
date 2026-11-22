@@ -2,16 +2,16 @@
 id: M3.48
 title: "Build portable glibc<=2.34 gnu bundle in rockylinux:9 & fix Arch pacman -Syu + DisableSandbox in packages.yml"
 kind: task
-status: ready
+status: done
 owner: implementer
 priority: 3
 depends_on: []
 paths: [Makefile, "scripts/**", ".github/workflows/**", "packaging/**"]
-attempts: 0
+attempts: 2
 max_attempts: 3
 escalation: none
 created: "2026-11-22T10:57"
-updated: "2026-11-22T10:57"
+updated: "2026-11-22T11:13"
 ---
 
 # Goal

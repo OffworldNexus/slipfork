@@ -119,11 +119,10 @@ jobs:
           uv --version
           rpm --version
           rpmbuild --version
-      # `make packages` measures the glibc floor from the shipped ELF, builds the
-      # musl bundle in Alpine, and uses `rockylinux:9` only for `abuild` (Debian
-      # and Ubuntu ship none) and when the host lacks `rpmbuild`.
-      # `packages-probe` refuses an empty, truncated, or malformed artifact
-      # before upload.
+      # `make packages` compiles the gnu bundle in `rockylinux:9` so it is linked
+      # against glibc 2.34 and stamps that ceiling into Depends/Requires; the musl
+      # bundle is built in Alpine. `packages-probe` refuses an empty, truncated,
+      # or malformed artifact before upload.
       - name: make packages
         run: make packages VERSION=${{ needs.plan.outputs.version }} PACKAGES_OUT=dist/packages
       # One checksum file per architecture: `merge-multiple` would otherwise let
@@ -177,15 +176,32 @@ jobs:
             arch: arm64
             runs_on: ubuntu-24.04-arm
             verify: dnf -y -q install /pkg/*.rpm && /usr/bin/slipfork --version && slipfork-lsp --version
+          # `pacman -Sy` is a partial upgrade, which rolling Arch refuses when a
+          # dependency moved; `-Syu` upgrades the whole image first. pacman 7's
+          # `DownloadUser`/Landlock sandbox cannot run inside Docker, so both are
+          # disabled before the transaction.
           - image: archlinux:latest
             arch: amd64
             runs_on: ubuntu-24.04
-            verify: pacman -Sy --noconfirm --needed glibc crun btrfs-progs && pacman -U --noconfirm /pkg/*.pkg.tar.zst && /usr/bin/slipfork --version && slipfork-lsp --version
-          # `archlinux:latest` is amd64-only; the ARM port is the arm64 image.
+            verify: >-
+              sed -i 's/^DownloadUser/#DownloadUser/' /etc/pacman.conf &&
+              (grep -q '^DisableSandbox' /etc/pacman.conf ||
+              sed -i '/^\[options\]/a DisableSandbox' /etc/pacman.conf) &&
+              pacman -Syu --noconfirm --needed glibc crun btrfs-progs &&
+              pacman -U --noconfirm /pkg/*.pkg.tar.zst &&
+              /usr/bin/slipfork --version && slipfork-lsp --version
+          # `archlinux:latest` is amd64-only; the ARM port is the arm64 image and
+          # needs the same sandbox-off prefix.
           - image: menci/archlinuxarm:latest
             arch: arm64
             runs_on: ubuntu-24.04-arm
-            verify: pacman -Sy --noconfirm --needed glibc crun btrfs-progs && pacman -U --noconfirm /pkg/*.pkg.tar.zst && /usr/bin/slipfork --version && slipfork-lsp --version
+            verify: >-
+              sed -i 's/^DownloadUser/#DownloadUser/' /etc/pacman.conf &&
+              (grep -q '^DisableSandbox' /etc/pacman.conf ||
+              sed -i '/^\[options\]/a DisableSandbox' /etc/pacman.conf) &&
+              pacman -Syu --noconfirm --needed glibc crun btrfs-progs &&
+              pacman -U --noconfirm /pkg/*.pkg.tar.zst &&
+              /usr/bin/slipfork --version && slipfork-lsp --version
           - image: alpine:3.21
             arch: amd64
             runs_on: ubuntu-24.04

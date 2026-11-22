@@ -92,12 +92,15 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq zstd rpm dpkg-dev
       # Both bundles, each measured with `check-portable-elf.sh`: the gnu bundle
-      # feeds deb/rpm/pacman, the musl one feeds apk. The musl build happens in
+      # feeds deb/rpm/pacman, the musl one feeds apk. The gnu bundle is compiled
+      # in `rockylinux:9` on glibc 2.34 — the same 2.34 ceiling release artifacts
+      # promise, so a nightly installs on Rocky 9 — and the musl build happens in
       # Alpine because the runner has no musl toolchain.
       - name: Build the two measured bundles
         run: |
           set -euo pipefail
-          scripts/build-bundle.sh --out target/package-bundle --max-glibc auto
+          # The gnu floor (`rockylinux:9`, glibc 2.34) is owned by the Makefile.
+          make packages-bundle PACKAGES_BUNDLE=target/package-bundle
           scripts/build-bundle.sh --out target/package-bundle-musl \
             --target "$(uname -m)-unknown-linux-musl" \
             --max-glibc auto --container rust:alpine

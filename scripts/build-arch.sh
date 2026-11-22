@@ -11,12 +11,13 @@ version=""
 release="1"
 bundle="target/package-bundle"
 arch=""
+max_glibc="auto"
 out="dist/packages"
 
 help() {
     cat <<'USAGE'
 usage: scripts/build-arch.sh --version <ver> [--release <n>] [--bundle <dir>]
-                             [--arch x86_64|aarch64] [--out <dir>]
+                             [--arch x86_64|aarch64] [--max-glibc <m_n>|auto] [--out <dir>]
 USAGE
 }
 
@@ -30,6 +31,7 @@ while [ "$#" -gt 0 ]; do
         --release) [ "$#" -ge 2 ] || usage; release=$2; shift 2 ;;
         --bundle) [ "$#" -ge 2 ] || usage; bundle=$2; shift 2 ;;
         --arch) [ "$#" -ge 2 ] || usage; arch=$2; shift 2 ;;
+        --max-glibc) [ "$#" -ge 2 ] || usage; max_glibc=$2; shift 2 ;;
         --out) [ "$#" -ge 2 ] || usage; out=$2; shift 2 ;;
         -h | --help) help; exit 0 ;;
         *) echo "error: unknown argument $1; next: run with --help" >&2; exit 2 ;;
@@ -44,7 +46,7 @@ case "${arch:-}" in
 esac
 command -v zstd >/dev/null 2>&1 || { echo "error: zstd is missing; next: install zstd" >&2; exit 2; }
 export SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH:-0}
-scripts/check-portable-elf.sh "$bundle"/share/slipfork/lib/* >/dev/null
+scripts/check-portable-elf.sh --max-glibc "$max_glibc" "$bundle"/share/slipfork/lib/* >/dev/null
 
 tmp=$(mktemp -d "${TMPDIR:-/var/tmp}/slipfork-arch.XXXXXX")
 trap 'rm -rf "$tmp"' EXIT INT TERM
