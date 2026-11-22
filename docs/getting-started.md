@@ -16,8 +16,12 @@ archive under `~/.local`. [Install](install.md) lists every distro and flag.
 
 !!! warning "`doctor` must be green first"
 
-    Slipfork needs Btrfs, unprivileged namespaces and `crun`. `slipfork doctor` names the exact
-    remedy for whichever row fails; fix that before the first `slipfork up`.
+    Slipfork needs a Btrfs filesystem, rootless containers and the local user daemon. `slipfork
+    doctor` names the exact remedy for whichever row fails; fix that before the first `slipfork up`.
+
+!!! tip "On ext4 or XFS?"
+
+    Keep your disk layout and still get real subvolumes: [mount a sparse Btrfs workspace image](install.md#on-ext4-or-xfs-mount-a-btrfs-workspace-image-in-your-home-folder) under your home folder, then run `slipfork doctor`.
 
 ## 2. Write a Forkfile
 

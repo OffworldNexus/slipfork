@@ -55,3 +55,19 @@ edited fields
 ## 2026-11-22T13:23 [lead]
 
 status active -> done
+
+## 2026-11-22T15:10 [lead]
+
+status done -> ready
+
+## 2026-11-22T15:10 [lead]
+
+attempt 2/3 started
+
+## 2026-11-22T15:10 [lead]
+
+OWNER ADDENDUM: add 'On ext4 or XFS? Mount a Btrfs Workspace Image in Your Home Folder' to docs/install.md + docs/getting-started.md cross-linked from docs/troubleshooting.md (sparse 64G loopback img, mkfs.btrfs, loop mount opts, fstab, online grow); align docs with the 4-row plain-English doctor + palette; regenerate manpage after M3.50.8/9 flags.
+
+## 2026-11-22T15:12 [lead]
+
+status ready -> done

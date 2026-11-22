@@ -24,7 +24,7 @@ flowchart LR
   D --> W["World namespace"]
   W --> S["service pods (crun)"]
   W --> R["pg · redis · s3"]
-  D --> I["stateless :80 ingress"]
+  D --> I["stateless localhost router"]
   I --> S
 ```
 
@@ -39,18 +39,26 @@ flowchart LR
 | `slipfork down` | Stop pods and delete run subvolumes, keeping data and logs |
 | `slipfork fork [name]` | Snapshot code and world data, boot the fork on its own URL |
 | `slipfork drop <name>` | Stop a fork and delete its snapshots; `-f` discards a dirty checkout |
-| `slipfork logs [-f] [-a] [target]` | Merged service logs; `-a` adds images and resources, or name one target |
+| `slipfork logs [-f] [-a] [-t] [--since <time>] [--until <time>] [targets]...` | Merged service logs; `-a` adds images and resources; several targets merge in time order |
 | `slipfork shell <target>` | Real PTY: `bash`/`sh`, `psql`, or `redis-cli` for one declared target |
 | `slipfork exec [service\|image] -- <cmd>` | Run any command in a pod and forward its exit code |
 | `slipfork env [component]` | Resolved runtime variables, secrets redacted |
 | `slipfork secret list\|set\|unset` | Manage local offline secrets; `set` reads stdin |
 | `slipfork open [service]` | Open the world or route URL in a browser |
 | `slipfork auth [url]` | Pair this machine with a remote `OSPP v1` endpoint |
-| `slipfork doctor` | Check Btrfs, namespaces, and the `crun` + `:80` runtime |
+| `slipfork doctor` | Four plain-English rows: Storage, Containers, Daemon, Domains |
 | `slipfork fmt` | Format a Forkfile; `--check` reports only |
 | `slipfork migrate` | Convert a legacy `snow.yml` into a `Forkfile` |
 | `slipfork completions <shell>` | Print bash, zsh or fish completions |
 | `slipfork daemon install` | Write the per-user unit; `--ingress` adds the system socket |
+
+## Visual hierarchy
+
+Green marks `running` and `ready`; cyan marks `cached` and `up to date`; yellow marks `built`,
+`pulled` and `orphaned`; bold red marks `failed` and `stopped`. URLs are bold cyan and underlined,
+copyable `next:` commands are bold green, and paths and secondary prose stay dim.
+
+Columns size to the longest id, so a long target never shears the tree.
 
 ## What a state means
 
@@ -91,8 +99,8 @@ log, then leaves the world running for inspection:
 
 !!! info "`doctor` leads with a verdict"
 
-    Three rows only: Btrfs, Namespaces, Runtime. A clean host prints `✓ Ready`; otherwise the first
-    line counts issues and each failing row carries its own `next:` command.
+    Four rows only: Storage, Containers, Daemon, Domains. A clean host prints `✓ Ready`; otherwise
+    the first line counts issues and each failing row carries its own `next:` command.
 
 ## Shells and logs
 
@@ -119,8 +127,10 @@ $ slipfork shell uploads
   next: slipfork shell api, pg, cache
 ```
 
-`slipfork logs <image>` reads an image build log, including after a failed cold `up`;
-`slipfork logs -f api` follows a service. `-a` adds image and resource logs to the merged stream.
+`slipfork logs <image>` reads an image build log, including after a failed cold `up`, and
+`slipfork logs -f api worker` follows and merges several targets. `--since 30m` / `--until 2h`
+accept `30s`, `5m`, `2h`, `1d` or RFC 3339, and `-t` adds a timestamp gutter; `--json` lines
+carry `ts_ms`.
 
 ## Terminal hygiene
 

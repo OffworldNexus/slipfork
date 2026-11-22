@@ -11,7 +11,7 @@ $ slipfork up
 ✓ Ready -> http://demo.localhost  (218ms)
 ```
 
-**Semantic palette (interactive colour TTY only):** green `●`/`✓`/`running`; bold cyan URLs; bold default names; red `✗` and `failed`; yellow `orphaned` and ephemeral warnings; dim `•` cache hits, paths and durations.
+**Semantic palette (interactive colour TTY only):** green `●`/`✓`/`running`/`ready`; cyan `cached` and `up to date`; yellow `built`, `pulled` and `orphaned`; bold red `✗`, `failed` and `stopped`; bold cyan underlined URLs; bold green copyable commands; dim paths and prose.
 
 ## 1. `clap` 4.6 derive surface, completions and manpage
 

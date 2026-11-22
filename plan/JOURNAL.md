@@ -2857,3 +2857,14 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-22T13:39 [M3.50.9] (lead) edited fields
 - 2026-11-22T13:39 [M3.50.3] (lead) status ready -> done
 - 2026-11-22T13:40 [M3.50.9] (lead) status ready -> done
+- 2026-11-22T13:40 [M3.50.4] (lead) status ready -> active
+- 2026-11-22T13:40 [M3.50.4] (lead) attempt 1/3 started
+- 2026-11-22T13:40 [M3.50.4] (lead) base bfc68556751ed9900cf08958fc52fd4d0337cf1a
+- 2026-11-22T13:46 [M3.50.4] (lead) status active -> ready
+- 2026-11-22T13:46 [M3.50.4] (lead) attempt 2/3 started
+- 2026-11-22T13:46 [M3.50.4] (lead) fix: narrow-width panel must keep the summary when it fits (status_surface:174); drop workspace indicatif dep
+- 2026-11-22T13:46 [M3.50.4] (lead) edited fields
+- 2026-11-22T15:10 [M3.50.5] (lead) status done -> ready
+- 2026-11-22T15:10 [M3.50.5] (lead) attempt 2/3 started
+- 2026-11-22T15:10 [M3.50.5] (lead) OWNER ADDENDUM: add 'On ext4 or XFS? Mount a Btrfs Workspace Image in Your Home Folder' to docs/install.md + docs/getting-started.md cross-linked from docs/trou
+- 2026-11-22T15:12 [M3.50.5] (lead) status ready -> done

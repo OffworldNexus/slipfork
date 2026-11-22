@@ -5,65 +5,74 @@ remedy that matches the failing row.
 
 ```console
 $ slipfork doctor
-✗ 1 issue(s)
-  ✓ Btrfs       /home is btrfs (subvolume snapshots enabled)
-  ✓ Namespaces  unprivileged user + netns available
-  ✗ Runtime     crun is not on PATH
-     next: install crun (for example `sudo apt-get install crun`) and retry
+✓ Ready
+  ✓ Storage     ~/projects/acme-shop · on · Btrfs · instant copy-on-write forks ready
+  ✓ Containers  crun 1.20 · rootless container sandboxing enabled
+  ✓ Daemon      running · background user service active
+  ✓ Domains     http://*.localhost · local domain routing active
 ```
 
 ```mermaid
 flowchart TD
   E["a command failed"] --> D["slipfork doctor"]
   D -->|"✓ Ready"| M["read the error line and its next: remedy"]
-  D -->|"✗ Btrfs"| B["move the project onto a Btrfs mount"]
-  D -->|"✗ Namespaces"| N["enable unprivileged user namespaces"]
-  D -->|"✗ Runtime"| R["install crun, or install the :80 socket"]
+  D -->|"✗ Storage"| B["move the project onto Btrfs"]
+  D -->|"✗ Containers"| N["install crun, or enable rootless containers"]
+  D -->|"✗ Daemon"| R["slipfork daemon install"]
+  D -->|"✗ Domains"| S["sudo slipfork daemon install"]
 ```
 
-## The three doctor rows
+## The four doctor rows
 
-| Row | Passing detail | Failing message | Remedy |
+| Row | Passing detail | Failing detail | Remedy |
 | :--- | :--- | :--- | :--- |
-| `Btrfs` | `<path> is btrfs (subvolume snapshots enabled)` | `<path> is not on a btrfs filesystem` | Move the project onto a Btrfs mount, then `slipfork up` |
-| `Namespaces` | `unprivileged user + netns available` | `unprivileged user + netns unavailable` | `sudo sysctl -w kernel.unprivileged_userns_clone=1` |
-| `Namespaces` | same | `user.max_user_namespaces is 0` | `sudo sysctl -w user.max_user_namespaces=2147483647` |
-| `Runtime` | `crun <ver>, :80 .localhost ingress active` | `crun is not on PATH` | Install `crun` for your distro, then retry |
+| `Storage` | `<path> · on · Btrfs · instant copy-on-write forks ready` | `<path> · not on · Btrfs · instant copy-on-write forks are unavailable` | Move the project onto a Btrfs mount, then `slipfork up` |
+| `Containers` | `crun <ver> · rootless container sandboxing enabled` | `crun not installed · rootless container sandboxing unavailable` | Install `crun`, then retry |
+| `Containers` | same | `crun <ver> · rootless container sandboxing blocked by AppArmor` | `sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0` |
+| `Containers` | same | `crun <ver> · rootless container sandboxing unavailable` | `sudo sysctl -w user.max_user_namespaces=2147483647` |
+| `Daemon` | `running · background user service active` | `not installed · start it with slipfork daemon install` | `slipfork daemon install` |
+| `Domains` | `http://*.localhost · local domain routing active` | `http://*.localhost · local domain routing inactive` | `sudo slipfork daemon install` |
 
-`doctor` exits non-zero when any row fails, so it is safe inside a setup script.
+`doctor` exits non-zero when any row fails, so it is safe inside a setup script. Its `--json` form
+emits `{ready, checks:[{name, ok, detail, next?}]}` with the same words.
 
-## Host and boot failures
+!!! info "Not on Btrfs yet?"
+
+    You do not need to repartition. Follow
+    [Mount a Btrfs workspace image in your home folder](install.md#on-ext4-or-xfs-mount-a-btrfs-workspace-image-in-your-home-folder),
+    then rerun `slipfork doctor` from inside that mount.
+
+## Storage and container failures
 
 | Symptom | Command |
 | :--- | :--- |
-| `` `/path` is not on Btrfs `` from `slipfork up` | Move the checkout to Btrfs; there is no fallback |
-| `crun is not on PATH` | `sudo apt-get install crun` · `sudo dnf install crun` · `sudo pacman -S crun` · `sudo apk add crun` |
-| `unprivileged user + netns unavailable` | `sudo sysctl -w kernel.unprivileged_userns_clone=1` |
-| Userns still blocked on Ubuntu | `sudo slipfork daemon install --ingress`, then `sudo apparmor_parser -r /etc/apparmor.d/slipfork` |
+| `` `/path` is not on Btrfs `` from `slipfork up` | [Mount a Btrfs workspace image](install.md#on-ext4-or-xfs-mount-a-btrfs-workspace-image-in-your-home-folder) and move the checkout there |
+| `crun not installed` | `sudo apt-get install crun` · `sudo dnf install crun` · `sudo pacman -S crun` · `sudo apk add crun` |
+| Rootless containers blocked by AppArmor | `sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0` |
+| `rootless container sandboxing unavailable` | `sudo sysctl -w user.max_user_namespaces=2147483647` |
 | `Forkfile:<line>` with one `next:` | Fix that line, then `slipfork up` again |
-| Boot says a step failed while the world stays up | `slipfork logs <service>`, then `slipfork restart <service>` |
-| An image build failed | `slipfork logs <image>`, fix the Dockerfile, then `slipfork up` |
+| A build failed | `slipfork logs <image>`, fix the Dockerfile, then `slipfork up` |
 | A row shows `orphaned` after a `Forkfile` edit | `slipfork up` stops undeclared pods and boots the new ones |
 
 !!! warning "Do not run worlds under `sudo`"
 
-    `sudo slipfork daemon install --ingress` is the only privileged step. Running `slipfork up` as
-    root puts the world outside your session and breaks the per-user socket.
+    `sudo slipfork daemon install` is the only privileged step. Running `slipfork up` as root puts
+    the world outside your session and breaks the per-user socket.
 
-## URL and ingress failures
+## Daemon and domain failures
 
 | Symptom | Command |
 | :--- | :--- |
-| `doctor` is green but the URL does not answer | `sudo slipfork daemon install --ingress`, then `systemctl is-active slipfork-ingress.socket` |
-| Runtime row says `installed but not active` | `sudo systemctl enable --now slipfork-ingress.socket` |
-| `Address already in use` on `:80` | `sudo ss -ltnp 'sport = :80'` and stop the other server |
-| `Permission denied` binding `:80` | Bind through the system socket, not a user process |
+| `not installed · start it with slipfork daemon install` | `slipfork daemon install`, then `systemctl --user restart slipfork` |
+| Doctor is green but the URL does not answer | `sudo slipfork daemon install`, then `systemctl is-active slipfork-ingress.socket` |
+| `local domain routing inactive` | `sudo systemctl enable --now slipfork-ingress.socket` |
+| `Address already in use` on port 80 | `sudo ss -ltnp 'sport = :80'` and stop the other server |
+| `Permission denied` binding port 80 | Install the system socket through `sudo slipfork daemon install` |
 | `400` for a non-`.localhost` host | Use `<world>.localhost` or a declared `domain` |
 | `421` for an unknown `.localhost` world | `slipfork status`, then `slipfork up` in that project |
 | `404` inside a known world | Check the `route` prefix and `port` in the `Forkfile` |
 
-Never edit `/etc/hosts` for `.localhost`; the ingress resolves it and the socket forwards to your
-daemon.
+Never edit `/etc/hosts` for `.localhost`; the router resolves it and forwards to your daemon.
 
 ## Daemon and command failures
 
@@ -75,6 +84,8 @@ daemon.
 | `slipfork drop` refuses a dirty fork | `slipfork drop <name> -f` discards the checkout |
 | `slipfork open` prints a URL but no browser | Open that URL on a machine with a browser |
 | `cannot open <url>` | Install `xdg-open`, or open the URL manually |
+| `--since` or `--until` is rejected | Pass `30s`, `5m`, `2h`, `1d`, or RFC 3339; the command exits `2` with one `next:` line |
+| Logs seem to jump or miss lines | Add `-t` to see each line's timestamp, then narrow with `--since` / `--until` |
 
 `slipfork status` reads the daemon, not a cache, so a service it cannot prove is never shown as
 running.
@@ -93,6 +104,6 @@ The full code list, with the frame that produced it, lives in [OSPP v1](ospp.md)
 
 ## Where next
 
-* [Under the hood](under-the-hood.md) — daemon, namespace and ingress layout.
-* [OSPP v1](ospp.md) — pairing, HPKE and sealed dumps.
+* [Under the hood](under-the-hood.md) — daemon, namespace and routing layout.
+* [Install](install.md) — packages, the workspace image and the system socket.
 * [CLI](cli.md) — every verb, `--json` and the terminal contract.
