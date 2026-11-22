@@ -642,7 +642,9 @@ fn fork_and_drop_a_live_world_without_leaving_snapshots() {
     // The fork's own pod must serve the fork's files, and the parent must not see them.
     fs::write(fork_project.join("fork-only.txt"), "fork bytes\n").expect("write the fork marker");
     assert_object(&lab.get("feat-auth--demo.localhost", "/"), "fork-only.txt");
-    // The protected ceiling: `spawn` -> the fork's own first `200 OK` from the ingress.
+    // `specs/03` §3's ceiling is unconditional, and the GHA loop-file lab is the only
+    // runner that executes this suite — a media-dependent relaxation would enforce it
+    // nowhere. Relax only with a recorded measurement plus a spec amendment.
     let wall = started.elapsed();
     assert!(
         wall < Duration::from_secs(1),

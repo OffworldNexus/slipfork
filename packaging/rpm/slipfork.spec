@@ -15,7 +15,8 @@ BuildArch:      %{_slipfork_arch}
 AutoReqProv:    no
 Requires:       glibc >= %{_slipfork_glibc}
 Requires:       crun
-Requires:       btrfs-progs
+# Rocky 9 dropped btrfs-progs from its base repos, so this must not block `dnf install`.
+Recommends:     btrfs-progs
 Source0:        payload.tar.gz
 
 %description

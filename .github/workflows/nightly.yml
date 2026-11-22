@@ -83,11 +83,14 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: nightly-${{ matrix.arch }}
-      - name: Install zstd (the pacman package)
+      # zstd builds the pacman package, `rpm`/`dpkg-deb` assemble the rpm and deb.
+      # `rpmbuild` itself falls back to the `rockylinux:9` container; docker is on
+      # the runner.
+      - name: Install zstd, rpm and dpkg-dev
         run: |
           set -euo pipefail
           sudo apt-get update -qq
-          sudo apt-get install -y -qq zstd
+          sudo apt-get install -y -qq zstd rpm dpkg-dev
       # Both bundles, each measured with `check-portable-elf.sh`: the gnu bundle
       # feeds deb/rpm/pacman, the musl one feeds apk. The musl build happens in
       # Alpine because the runner has no musl toolchain.
@@ -97,7 +100,7 @@ jobs:
           scripts/build-bundle.sh --out target/package-bundle --max-glibc auto
           scripts/build-bundle.sh --out target/package-bundle-musl \
             --target "$(uname -m)-unknown-linux-musl" \
-            --max-glibc auto --container rust:1.100-alpine
+            --max-glibc auto --container rust:alpine
       # `stamp` is the publisher's own rebuild-at-this-version path, so the
       # artifact and the version it is published under come from one command.
       - name: Stamp the deb, pacman and apk packages
@@ -148,7 +151,7 @@ jobs:
     needs: [stamp, build]
     if: >-
       !cancelled() &&
-      github.repository == 'offworld-nexus/slipfork' &&
+      github.repository == 'OffworldNexus/slipfork' &&
       needs.stamp.result == 'success' &&
       needs.build.result == 'success'
     runs-on: ubuntu-24.04
@@ -208,7 +211,7 @@ jobs:
     needs: [publish]
     if: >-
       !cancelled() &&
-      github.repository == 'offworld-nexus/slipfork' &&
+      github.repository == 'OffworldNexus/slipfork' &&
       needs.publish.result == 'success'
     runs-on: ubuntu-24.04
     timeout-minutes: 15

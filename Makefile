@@ -135,7 +135,7 @@ PACKAGES_OUT ?= dist/packages
 PACKAGES_BUNDLE ?= target/package-bundle
 PACKAGES_MUSL_BUNDLE ?= target/package-bundle-musl
 MUSL_TARGET ?= $(shell uname -m)-unknown-linux-musl
-MUSL_IMAGE ?= rust:1.100-alpine
+MUSL_IMAGE ?= rust:alpine
 
 .PHONY: packages packages-test packages-bundle packages-probe
 

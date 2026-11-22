@@ -33,7 +33,7 @@ while [ "$#" -gt 0 ]; do
     esac
 done
 [ -n "$version" ] || usage
-[ -d "$bundle/share/slipfork/lib" ] || { echo "error: $bundle is not a bundle; next: run scripts/build-bundle.sh --out $bundle --target x86_64-unknown-linux-musl --container rust:1.100-alpine" >&2; exit 2; }
+[ -d "$bundle/share/slipfork/lib" ] || { echo "error: $bundle is not a bundle; next: run scripts/build-bundle.sh --out $bundle --target x86_64-unknown-linux-musl --container rust:alpine" >&2; exit 2; }
 report=$(scripts/check-portable-elf.sh --max-glibc auto "$bundle"/share/slipfork/lib/*)
 printf '%s\n' "$report"
 printf '%s\n' "$report" | grep -q 'needed:.*libc.musl-' ||

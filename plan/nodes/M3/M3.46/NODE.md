@@ -2,16 +2,16 @@
 id: M3.46
 title: "Fix GitHub Actions CI Btrfs loop-mount (user_subvol_rm_allowed) & enable packages.yml dry-run matrix on PRs"
 kind: task
-status: ready
+status: done
 owner: implementer
 priority: 3
 depends_on: []
 paths: [".github/workflows/**", Makefile, "packaging/**", "scripts/**", "crates/*/tests/critical_*.rs"]
-attempts: 0
+attempts: 1
 max_attempts: 3
 escalation: none
 created: "2026-11-22T10:16"
-updated: "2026-11-22T10:16"
+updated: "2026-11-22T10:25"
 ---
 
 # Goal

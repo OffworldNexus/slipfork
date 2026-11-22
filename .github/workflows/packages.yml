@@ -9,6 +9,10 @@ name: Packages
 # best effort. `workflow_dispatch` runs the same graph with every publish command
 # printed (`--dry-run`) unless the `publish` input says otherwise.
 #
+# A `pull_request` is a full dry-run rehearsal — both arch package builds, the
+# 6-distro, 12-cell install matrix and the 6-target `slipfork-lsp` matrix — that publishes
+# nothing: the `plan` step keeps `should_publish=false` for any non-tag ref.
+#
 # Every artifact is produced by `make packages` / `make lsp-assets`, so the
 # script that computes a version, floor, or archive name is the only copy of
 # that knowledge. No token is ever echoed.
@@ -16,6 +20,8 @@ name: Packages
 on:
   push:
     tags: ["v*"]
+  pull_request:
+    branches: [develop]
   workflow_dispatch:
     inputs:
       publish:
@@ -99,15 +105,25 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: packages-${{ matrix.arch }}
+      - uses: astral-sh/setup-uv@v5
       - name: Install the host tools `make packages` needs
         run: |
           set -euo pipefail
           sudo apt-get update -qq
-          sudo apt-get install -y -qq zstd rpm
+          sudo apt-get install -y -qq zstd rpm dpkg-dev
+          # Fail here, not mid-build, if a tool the packaging scripts shell out to
+          # is missing.
+          dpkg-deb --version
+          zstd --version
+          docker --version
+          uv --version
+          rpm --version
+          rpmbuild --version
       # `make packages` measures the glibc floor from the shipped ELF, builds the
-      # musl bundle in Alpine, and uses `rockylinux:9` only because the runner
-      # has no `abuild`/`rpmbuild` for the target layout. `packages-probe`
-      # refuses an empty, truncated, or malformed artifact before upload.
+      # musl bundle in Alpine, and uses `rockylinux:9` only for `abuild` (Debian
+      # and Ubuntu ship none) and when the host lacks `rpmbuild`.
+      # `packages-probe` refuses an empty, truncated, or malformed artifact
+      # before upload.
       - name: make packages
         run: make packages VERSION=${{ needs.plan.outputs.version }} PACKAGES_OUT=dist/packages
       # One checksum file per architecture: `merge-multiple` would otherwise let
@@ -251,7 +267,7 @@ jobs:
     needs: [plan, packages, install, lsp]
     if: >-
       !cancelled() &&
-      github.repository == 'offworld-nexus/slipfork' &&
+      github.repository == 'OffworldNexus/slipfork' &&
       needs.plan.result == 'success' &&
       needs.packages.result == 'success' &&
       needs.install.result == 'success' &&

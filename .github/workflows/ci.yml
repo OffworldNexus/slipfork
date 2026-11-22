@@ -89,27 +89,37 @@ jobs:
             sudo --non-interactive sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           fi
       # `make live-test` refuses a non-Btrfs root and a non-tmpfs /dev/shm, so
-      # this step gives it the real thing: an 8 GiB loop file formatted Btrfs and
-      # mounted where the Makefile expects it.
+      # this step gives it the real thing: a 12 GiB loop file formatted Btrfs and
+      # mounted where the Makefile expects it. Three images (`python:3.13-slim`,
+      # `postgres:18`, `redis:7`) pull into it, so ENOSPC must not be the failure.
+      # `user_subvol_rm_allowed` is the whole point: without it the unprivileged
+      # `BTRFS_IOC_SNAP_DESTROY_V2` in `critical_btrfs_live` fails EPERM.
+      # The suites never resolve `*.localhost` over DNS — they bind `127.0.0.1` and
+      # send the `Host:` header (or hand a descriptor to the daemon) — so no
+      # `/etc/hosts` entry is needed. The lab project sets its own local
+      # `git config user.email/user.name`, so runner-wide git identity is not required.
       - name: Mount a loop-backed Btrfs at /mnt/slipfork-live
         run: |
           set -euo pipefail
           image=/mnt/slipfork-live.img
-          sudo truncate -s 8G "$image"
+          sudo truncate -s 12G "$image"
           sudo mkfs.btrfs -f "$image" >/dev/null
           sudo mkdir -p /mnt/slipfork-live
-          sudo mount -o loop "$image" /mnt/slipfork-live
+          sudo mount -o loop,user_subvol_rm_allowed,noatime "$image" /mnt/slipfork-live
           sudo chown "$(id -u):$(id -g)" /mnt/slipfork-live
           stat -f -c 'live root fstype magic: %t' /mnt/slipfork-live
           # The runtime dirs live on tmpfs and the live suites keep pod state
-          # there, so the size is asserted, not just the filesystem type.
-          shm_kb=$(df -Pk /dev/shm | awk 'NR==2 {print $2}')
-          if [ "$shm_kb" -lt 2097152 ]; then
-            sudo mount -t tmpfs -o size=4G tmpfs /dev/shm
-          fi
+          # there, so the type is asserted first: a non-tmpfs is reported by the
+          # actionable line below, never by `mount`'s raw stderr.
           [ "$(stat -f -c %t /dev/shm)" = 1021994 ] || { echo "error: /dev/shm is not tmpfs; next: mount a tmpfs there" >&2; exit 1; }
+          shm_kb=$(df -Pk /dev/shm | awk 'NR==2 {print $2}')
+          # Remount when it is too small: never replace the mount with a fresh
+          # tmpfs, and never shrink one that is already >= 4G.
+          if [ "$shm_kb" -lt 4194304 ]; then
+            sudo mount -o remount,size=4G /dev/shm
+          fi
           shm_gb=$(( $(df -Pk /dev/shm | awk 'NR==2 {print $2}') / 1048576 ))
-          [ "$shm_gb" -ge 2 ] || { echo "error: /dev/shm is ${shm_gb}G, below the 2G the live suites need; next: mount a larger tmpfs" >&2; exit 1; }
+          [ "$shm_gb" -ge 4 ] || { echo "error: /dev/shm is ${shm_gb}G, below the 4G the live suites need; next: sudo mount -o remount,size=4G /dev/shm" >&2; exit 1; }
           stat -f -c 'dev/shm fstype magic: %t' /dev/shm
       - name: Live suites (make live-test)
         run: SLIPFORK_TEST_ROOT=/mnt/slipfork-live make live-test
@@ -117,7 +127,8 @@ jobs:
         if: always()
         run: |
           sudo umount /mnt/slipfork-live || true
-          rm -f /mnt/slipfork-live.img || true
+          # Root created it with `truncate`, so root removes it.
+          sudo rm -f /mnt/slipfork-live.img || true
 
   cross-os:
     name: 'lsp + forkfile (${{ matrix.platform }}/${{ matrix.arch }})'

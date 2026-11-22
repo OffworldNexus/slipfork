@@ -3,7 +3,7 @@
 #
 #   scripts/build-bundle.sh --out target/package-bundle
 #   scripts/build-bundle.sh --out target/package-bundle-musl \
-#       --target x86_64-unknown-linux-musl --container rust:1.100-alpine
+#       --target x86_64-unknown-linux-musl --container rust:alpine
 #
 # The bundle is `bin/` symlinks into `share/slipfork/lib/` plus the static
 # payload the packages install (LICENSE, systemd units, AppArmor, man pages,
@@ -124,7 +124,7 @@ printf '%s\n' "$report"
 case "$target" in
     *-musl*)
         printf '%s\n' "$report" | grep -q 'needed:.*libc.musl-' ||
-            { echo "error: $target produced a bundle with no musl libc; next: build in an Alpine image (--container rust:1.100-alpine)" >&2; exit 1; } ;;
+            { echo "error: $target produced a bundle with no musl libc; next: build in an Alpine image (--container rust:alpine)" >&2; exit 1; } ;;
 esac
 
 out_abs=$(cd "$out" && pwd)
