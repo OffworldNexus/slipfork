@@ -33,6 +33,7 @@ fn declared(name: &str) -> DomainFilter {
 fn ambiguous_and_undeclared_route_tables_fail_closed() {
     let duplicate = IngressTable::new(
         "demo",
+        None,
         Vec::new(),
         [
             IngressRoute::new(80, route(Some("/api"), RouteKind::Preserve)),
@@ -42,6 +43,7 @@ fn ambiguous_and_undeclared_route_tables_fail_closed() {
     assert!(matches!(duplicate, Err(TableError::Duplicate { .. })));
     let ambiguous = IngressTable::new(
         "demo",
+        None,
         Vec::new(),
         [
             IngressRoute::new(80, route(None, RouteKind::Preserve)),
@@ -51,12 +53,14 @@ fn ambiguous_and_undeclared_route_tables_fail_closed() {
     assert!(matches!(ambiguous, Err(TableError::Ambiguous { .. })));
     let zero = IngressTable::new(
         "demo",
+        None,
         Vec::new(),
         [IngressRoute::new(0, route(Some("/"), RouteKind::Preserve))],
     );
     assert!(matches!(zero, Err(TableError::PortZero { .. })));
     let undeclared = IngressTable::new(
         "demo",
+        Some("main"),
         vec!["main".to_owned()],
         [IngressRoute::new(80, domain_route("/", declared("ghost")))],
     );
@@ -66,6 +70,7 @@ fn ambiguous_and_undeclared_route_tables_fail_closed() {
     ));
     let world = IngressTable::new(
         "Demo",
+        None,
         Vec::new(),
         [IngressRoute::new(80, route(None, RouteKind::Preserve))],
     );
@@ -76,6 +81,7 @@ fn ambiguous_and_undeclared_route_tables_fail_closed() {
 fn longest_prefix_wins_and_each_mode_rewrites_as_declared() {
     let table = IngressTable::new(
         "demo",
+        None,
         Vec::new(),
         [
             IngressRoute::new(80, route(Some("/"), RouteKind::Preserve)),
@@ -147,25 +153,18 @@ fn the_registry_dispatches_primary_domains_and_forks_over_localhost() {
     let mut registry = IngressRegistry::new([
         IngressTable::new(
             "demo",
-            vec!["main".to_owned()],
+            Some("main"),
+            vec!["main".to_owned(), "mail".to_owned()],
             [
                 IngressRoute::new(80, route(Some("/api"), RouteKind::Preserve)),
                 IngressRoute::new(81, domain_route("/", declared("main"))),
-                IngressRoute::new(
-                    82,
-                    domain_route(
-                        "/",
-                        DomainFilter::Prefix {
-                            prefix: "mail".to_owned(),
-                            span: Span::at(Position::new(1, 1, 0)),
-                        },
-                    ),
-                ),
+                IngressRoute::new(82, domain_route("/", declared("mail"))),
             ],
         )
         .expect("demo table"),
         IngressTable::new(
             "feat-auth--demo",
+            None,
             Vec::new(),
             [IngressRoute::new(90, route(Some("/"), RouteKind::Preserve))],
         )
@@ -195,8 +194,15 @@ fn the_registry_dispatches_primary_domains_and_forks_over_localhost() {
     );
     assert_eq!(
         registry
+            .route("main.demo.localhost", "/api")
+            .expect("unfiltered routes bind the first declared domain")
+            .port,
+        80
+    );
+    assert_eq!(
+        registry
             .route("mail.demo.localhost", "/")
-            .expect("prefix")
+            .expect("declared mail domain")
             .port,
         82
     );
@@ -216,8 +222,62 @@ fn the_registry_dispatches_primary_domains_and_forks_over_localhost() {
         Err(RouteError::HostOutsideLocalhost { .. })
     ));
     assert!(matches!(
-        registry.insert(IngressTable::new("demo", Vec::new(), Vec::new()).expect("empty table")),
+        registry
+            .insert(IngressTable::new("demo", None, Vec::new(), Vec::new()).expect("empty table")),
         Err(TableError::DuplicateWorld { .. })
+    ));
+}
+
+#[test]
+fn unfiltered_routes_bind_only_the_primary_and_first_declared_domain() {
+    let table = IngressTable::new(
+        "demo",
+        Some("main"),
+        vec![
+            "main".to_owned(),
+            "mail".to_owned(),
+            "assets-cdn".to_owned(),
+        ],
+        [
+            IngressRoute::new(80, route(Some("/api"), RouteKind::Preserve)),
+            IngressRoute::new(81, domain_route("/", declared("mail"))),
+            IngressRoute::new(82, domain_route("/cdn-assets", declared("assets-cdn"))),
+        ],
+    )
+    .expect("the table is routable");
+    assert_eq!(
+        table.resolve("", "/api").expect("primary authority").port,
+        80
+    );
+    assert_eq!(
+        table
+            .resolve("main", "/api")
+            .expect("first declared domain")
+            .port,
+        80
+    );
+    // `mail` declares a catch-all `route /`, so `/api` legitimately resolves to mail's own
+    // upstream — never to the primary `api` service.
+    assert_eq!(
+        table.resolve("mail", "/api").expect("mail catch-all").port,
+        81
+    );
+    assert_eq!(table.resolve("mail", "/").expect("mail root").port, 81);
+    // A later declared domain owns exactly its own routes, so the unfiltered `/api` never leaks.
+    assert!(matches!(
+        table.resolve("assets-cdn", "/api"),
+        Err(RouteError::UnknownPath { .. })
+    ));
+    assert_eq!(
+        table
+            .resolve("assets-cdn", "/cdn-assets/logo.svg")
+            .expect("declared domain route")
+            .port,
+        82
+    );
+    assert!(matches!(
+        table.resolve("main", "/"),
+        Err(RouteError::UnknownPath { .. })
     ));
 }
 

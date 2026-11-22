@@ -17,6 +17,26 @@ pub use error::{RouteError, TableError};
 
 use rules::Entry;
 
+/// The authorities one route owns: `None` is the primary `<world>.localhost`, and `Some(id)` is
+/// `<id>.<world>.localhost`.
+///
+/// An unfiltered route owns the primary authority **and** the first declared app `domain`; a
+/// `route ... domain <id>` owns exactly that domain. The ingress table and the `ps` status tree
+/// both derive hosts through this one helper, so the tree can never advertise a host the proxy
+/// does not serve.
+#[must_use]
+pub fn route_authorities(
+    primary_domain: Option<&str>,
+    domain: Option<&str>,
+) -> Vec<Option<String>> {
+    match domain {
+        Some(name) => vec![Some(name.to_owned())],
+        None => std::iter::once(None)
+            .chain(primary_domain.map(str::to_owned).map(Some))
+            .collect(),
+    }
+}
+
 /// One declared `Forkfile` route paired with the port its service listens on.
 #[derive(Debug, Clone)]
 pub struct IngressRoute {
@@ -57,30 +77,26 @@ pub struct IngressTable {
 impl IngressTable {
     /// Builds the table for one world.
     ///
-    /// A route without a `domain` filter owns the primary `<world>.localhost` authority and every
-    /// declared app domain; `domain <id>` owns exactly that authority; `domain <prefix>.*` owns only
-    /// its subdomain family. Routes are taken verbatim from `slipfork-forkfile`, so the
-    /// `strip-prefix`/`rewrite`/`exact` spelling is never parsed twice.
+    /// A route without a `domain` filter owns the primary `<world>.localhost` authority and the
+    /// first declared app domain; `domain <id>` owns exactly that authority. Routes are taken
+    /// verbatim from `slipfork-forkfile`, so the `strip-prefix`/`rewrite`/`exact` spelling is never
+    /// parsed twice.
     ///
     /// # Errors
     ///
     /// Returns [`TableError`] when the table would be ambiguous or unroutable.
     pub fn new(
         world: impl Into<String>,
+        primary_domain: Option<&str>,
         declared_domains: impl IntoIterator<Item = String>,
         routes: impl IntoIterator<Item = IngressRoute>,
     ) -> Result<Self, TableError> {
-        let world = world.into();
-        if !rules::is_authority_label(&world) {
-            return Err(TableError::InvalidWorld { world });
-        }
-        let declared: BTreeSet<String> = declared_domains.into_iter().collect();
-        Self::from_parts(world, declared.clone(), declared, routes)
+        Self::from_parts(world, primary_domain, declared_domains, routes)
     }
 
     pub(crate) fn from_parts(
         world: impl Into<String>,
-        app_domains: impl IntoIterator<Item = String>,
+        primary_domain: Option<&str>,
         declared_domains: impl IntoIterator<Item = String>,
         routes: impl IntoIterator<Item = IngressRoute>,
     ) -> Result<Self, TableError> {
@@ -88,9 +104,16 @@ impl IngressTable {
         if !rules::is_authority_label(&world) {
             return Err(TableError::InvalidWorld { world });
         }
-        let app: BTreeSet<String> = app_domains.into_iter().collect();
         let declared: BTreeSet<String> = declared_domains.into_iter().collect();
-        let entries = rules::entries_for(&world, &app, &declared, routes)?;
+        if let Some(primary) = primary_domain
+            && !declared.contains(primary)
+        {
+            return Err(TableError::UndeclaredDomain {
+                world,
+                domain: primary.to_owned(),
+            });
+        }
+        let entries = rules::entries_for(&world, primary_domain, &declared, routes)?;
         Ok(Self { world, entries })
     }
 
@@ -141,9 +164,9 @@ impl IngressRegistry {
 
     /// Routes one `Host` header plus request target to a world, authority, port, and target.
     ///
-    /// Authorities are `<world>.localhost`, `<domain>.<world>.localhost`,
-    /// `<prefix>.<world>.localhost`, and `<fork>--<world>.localhost` — the fork form is just the
-    /// world id itself. The longest registered world id wins, so a fork never shadows its parent.
+    /// Authorities are `<world>.localhost`, `<domain>.<world>.localhost`, and
+    /// `<fork>--<world>.localhost` — the fork form is just the world id itself. The longest
+    /// registered world id wins, so a fork never shadows its parent.
     ///
     /// # Errors
     ///

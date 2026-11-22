@@ -65,10 +65,12 @@ on dev {
 }
 
 on mail {
+  domain mail
+
   image mailpit from axllent/mailpit:latest {
 service mailpit {
   port 8025
-  route / domain mail.*
+  route / domain mail
 }
   }
 }

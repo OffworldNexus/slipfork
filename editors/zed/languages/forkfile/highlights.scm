@@ -47,7 +47,6 @@
 (port_reference) @variable.builtin
 (env_reference) @variable.builtin
 (route_path) @string.special
-(domain_prefix) @string.special
 
 [
   "var"

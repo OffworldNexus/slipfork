@@ -9,7 +9,12 @@ use slipfork_forkfile::ast::{DomainFilter, Forkfile, RouteKind, TopItem};
 use slipfork_forkfile::{BucketPolicy, ResourceDeclKind};
 use slipfork_world::ResourceKind;
 
-use crate::ps::{PsBucketPolicy, PsDomain, PsKind, PsRoute, PsRouteMode, PsService};
+use crate::ps::{PsBucketPolicy, PsKind, PsRoute, PsRouteMode, PsService};
+
+/// The first declared app `domain <id>`, which unfiltered routes also answer on.
+pub(super) fn primary_domain(doc: &Forkfile) -> Option<String> {
+    doc.app_domains().first().map(|id| (*id).to_owned())
+}
 
 /// Projects every declared service and backing resource into typed rows.
 pub(super) fn services(doc: &Forkfile) -> Vec<PsService> {
@@ -93,10 +98,9 @@ fn mode(kind: &RouteKind) -> PsRouteMode {
     }
 }
 
-fn domain(filter: &DomainFilter) -> PsDomain {
+fn domain(filter: &DomainFilter) -> String {
     match filter {
-        DomainFilter::Domain { name, .. } => PsDomain::Domain(name.clone()),
-        DomainFilter::Prefix { prefix, .. } => PsDomain::Prefix(prefix.clone()),
+        DomainFilter::Domain { name, .. } => name.clone(),
     }
 }
 

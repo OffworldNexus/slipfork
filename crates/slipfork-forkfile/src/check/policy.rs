@@ -2,7 +2,7 @@
 
 use std::collections::BTreeSet;
 
-use crate::ast::{BucketPolicy, Domain, DomainFilter, Route, S3, S3Item};
+use crate::ast::{BucketPolicy, Domain, S3, S3Item};
 use crate::diag::{Diagnostic, Diagnostics};
 use crate::dns::DnsLabel;
 use crate::expr::{Expr, ExprKind};
@@ -13,13 +13,6 @@ const MAX_ENUMERATED_FEATURES: usize = 12;
 
 pub(super) fn check_domain(domain: &Domain, diags: &mut Diagnostics) {
     check_label(&domain.id, domain.id_span, "domain <id>", false, diags);
-}
-
-pub(super) fn check_route_prefix(route: &Route, diags: &mut Diagnostics) {
-    let Some(DomainFilter::Prefix { prefix, span }) = &route.domain else {
-        return;
-    };
-    check_label(prefix, *span, "route ... domain <prefix>.*", false, diags);
 }
 
 /// Validates a bucket name, every `cdn` id, and the `cdn`/`policy public-read` pairing

@@ -4,7 +4,8 @@
 //! lifecycle word — so an S3 bucket is just a `/` row on its own `<bucket>.<world>.localhost`
 //! domain. Services, resources, and orphaned pods without a route land in `support`.
 
-use crate::ps::{PsBucketPolicy, PsDomain, PsKind, PsService, PsWorld};
+use crate::ps::{PsBucketPolicy, PsKind, PsService, PsWorld};
+use slipfork_ingress::route_authorities;
 
 /// One domain authority and the sub-paths mapped onto it.
 #[derive(Debug, Clone)]
@@ -87,14 +88,19 @@ pub fn project(world: &PsWorld) -> WorldRows<'_> {
             push_row(&mut domains, host, row);
         } else if !service.routes.is_empty() {
             for route in &service.routes {
-                let host = domain_host(&primary, route.domain.as_ref());
-                let row = RoutedRow {
-                    path: route.prefix.clone(),
-                    target: service.id.clone(),
-                    kind: None,
-                    state,
-                };
-                push_row(&mut domains, host, row);
+                for authority in
+                    route_authorities(world.primary_domain.as_deref(), route.domain.as_deref())
+                {
+                    let host = authority
+                        .map_or_else(|| primary.clone(), |name| format!("{name}.{primary}"));
+                    let row = RoutedRow {
+                        path: route.prefix.clone(),
+                        target: service.id.clone(),
+                        kind: None,
+                        state,
+                    };
+                    push_row(&mut domains, host, row);
+                }
             }
         } else {
             support.push(SupportRow {
@@ -108,13 +114,6 @@ pub fn project(world: &PsWorld) -> WorldRows<'_> {
         world,
         domains,
         support,
-    }
-}
-
-fn domain_host(primary: &str, domain: Option<&PsDomain>) -> String {
-    match domain {
-        Some(PsDomain::Domain(name) | PsDomain::Prefix(name)) => format!("{name}.{primary}"),
-        None => primary.to_owned(),
     }
 }
 

@@ -16,15 +16,16 @@ use super::{IngressRoute, IngressTable, TableError};
 impl IngressTable {
     /// Builds a world's table directly from an evaluated `Forkfile` document.
     ///
-    /// Unfiltered service routes serve `<world>.localhost` and every declared app `domain <id>`;
-    /// each S3 bucket authority routes to the native S3 endpoint (`:8333/<bucket>`) unless a
-    /// service explicitly claimed that `domain` filter. A `cdn <id>` never adds an authority.
+    /// Unfiltered service routes serve `<world>.localhost` and the first declared app
+    /// `domain <id>`; each S3 bucket authority routes to the native S3 endpoint
+    /// (`:8333/<bucket>`) unless a service explicitly claimed that `domain` filter. A `cdn <id>`
+    /// never adds an authority.
     ///
     /// # Errors
     ///
     /// Returns [`TableError`] for an ambiguous, duplicate, or undeclared-domain table.
     pub fn from_forkfile(world: impl Into<String>, doc: &Forkfile) -> Result<Self, TableError> {
-        let app_domains = doc.app_domains().into_iter().map(str::to_owned);
+        let primary_domain = doc.app_domains().first().copied();
         // Bucket authorities are declared by the resource, not by a top-level `domain`; the S3
         // routes below own them and must pass the table's declared check.
         let mut declared: BTreeSet<String> = doc.domains().into_iter().map(str::to_owned).collect();
@@ -62,6 +63,6 @@ impl IngressTable {
                 ));
             }
         }
-        Self::from_parts(world, app_domains, declared, routes)
+        Self::from_parts(world, primary_domain, declared, routes)
     }
 }

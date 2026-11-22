@@ -30,6 +30,9 @@ pub struct PsWorld {
     pub fork: Option<String>,
     /// Primary URL, `<world>.localhost`.
     pub url: String,
+    /// First declared app `domain <id>`; unfiltered routes also answer on it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub primary_domain: Option<String>,
     /// Whether this world is live or only a stopped checkout on disk.
     #[serde(default)]
     pub state: PsWorldState,
@@ -67,6 +70,7 @@ impl PsWorld {
             world: world.to_owned(),
             fork: fork.map(str::to_owned),
             url: format!("http://{world}.localhost"),
+            primary_domain: None,
             state: PsWorldState::Stopped,
             started_at_ms: None,
             supervisor_pid: None,
@@ -164,7 +168,7 @@ pub struct PsRoute {
     pub mode: PsRouteMode,
     /// Authority filter, when declared.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub domain: Option<PsDomain>,
+    pub domain: Option<String>,
 }
 
 /// How a route treats its matched path prefix.
@@ -179,16 +183,6 @@ pub enum PsRouteMode {
     Rewrite,
     /// Match the prefix exactly.
     Exact,
-}
-
-/// A `domain <id>` or `domain <prefix>.*` authority filter, mirroring the `Forkfile` AST.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
-pub enum PsDomain {
-    /// One exact declared domain id.
-    Domain(String),
-    /// A subdomain prefix such as `mail`.
-    Prefix(String),
 }
 
 /// The anonymous-read policy of one native S3 bucket, as `ps --json` exposes it.

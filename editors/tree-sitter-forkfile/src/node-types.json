@@ -362,10 +362,6 @@
           {
             "type": "domain_filter",
             "named": true
-          },
-          {
-            "type": "domain_prefix",
-            "named": true
           }
         ]
       }
@@ -1845,10 +1841,6 @@
   {
     "type": "domain",
     "named": false
-  },
-  {
-    "type": "domain_prefix",
-    "named": true
   },
   {
     "type": "env",

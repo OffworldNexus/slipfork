@@ -52,7 +52,7 @@ PAGE = """<!doctype html>
       <div class="card"><div class="label">PostgreSQL 18 Rows</div><div class="val" id="pg-count">-</div></div>
       <div class="card"><div class="label">Redis 7 Visits</div><div class="val" id="redis-visits">-</div></div>
       <div class="card"><div class="label">S3 Private / Public</div><div class="val" id="s3-policy">-</div></div>
-      <div class="card"><div class="label">Mailpit Inbox</div><div class="val"><a id="mail-link" href="http://mail.{world}.localhost" target="_blank">mail.* &rarr;</a></div></div>
+      <div class="card"><div class="label">Mailpit Inbox</div><div class="val"><a id="mail-link" href="http://mail.{world}.localhost" target="_blank">mailpit &rarr;</a></div></div>
     </section>
 
     <h2 style="font-size: 1.05rem; color: #cbd5e1;">Live <code>releases</code> (isolated per Btrfs fork)</h2>

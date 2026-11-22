@@ -98,7 +98,7 @@ hostname exists.
     `cdn <id>` requires an explicit `policy public-read` inside the same `s3`; otherwise the file
     fails at `Forkfile:line:col` with one `next:` remedy.
 
-Any `domain`, `cdn`, bucket, or `route ... domain <prefix>.*` label outside RFC 1123 (`1..=63`,
+Any `domain`, `cdn`, bucket, or `route ... domain <id>` label outside RFC 1123 (`1..=63`,
 lowercase `[a-z0-9-]`, alphanumeric edges; buckets `3..=63` and never IPv4-shaped) fails statically.
 
 ## Runtime `env` and secrets
@@ -127,15 +127,30 @@ A `service` declares one public `port`, exposed as `$port` and injected as `PORT
 
 | Route | Path behaviour | Host filter |
 | :--- | :--- | :--- |
-| `route /api` | `/api/users` -> `/api/users` | every declared domain |
-| `route /api strip-prefix` | `/api/users` -> `/users` | every declared domain |
-| `route /api rewrite /v1` | `/api/users` -> `/v1/users` | every declared domain |
-| `route exact /healthz` | `/healthz` only | every declared domain |
+| `route /api` | `/api/users` -> `/api/users` | primary world domain and the first declared `domain` |
+| `route /api strip-prefix` | `/api/users` -> `/users` | primary world domain and the first declared `domain` |
+| `route /api rewrite /v1` | `/api/users` -> `/v1/users` | primary world domain and the first declared `domain` |
+| `route exact /healthz` | `/healthz` only | primary world domain and the first declared `domain` |
 | `route / domain admin` | `/` | `admin.<world>.localhost` |
-| `route / domain mail.*` | `/` | `mail.<world>.localhost` |
+| `route / domain mail` | `/` | `mail.<world>.localhost` |
 
 `strip-prefix` and `rewrite` are mutually exclusive, and a route naming an undeclared `domain`
-fails statically.
+fails statically. A service gets its own host by declaring `domain <id>` inline or inside
+`on <expr> { … }`:
+
+```forkfile
+# forkfile: 0.1
+
+on mail {
+  domain mail
+  image mailpit from axllent/mailpit:latest {
+    service mailpit {
+      port 8025
+      route / domain mail
+    }
+  }
+}
+```
 
 ```forkfile
 # forkfile: 0.1

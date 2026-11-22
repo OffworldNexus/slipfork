@@ -288,7 +288,7 @@ pub enum RouteKind {
     Exact(String),
 }
 
-/// A route authority filter.
+/// A route authority filter: exactly one declared `domain <id>`.
 #[derive(Debug, Clone)]
 pub enum DomainFilter {
     /// Exact declared domain id.
@@ -298,23 +298,12 @@ pub enum DomainFilter {
         /// The id token span in the `route` declaration.
         span: Span,
     },
-    /// Subdomain prefix such as `mail.` in `mail.*`.
-    Prefix {
-        /// The validated prefix text.
-        prefix: String,
-        /// The prefix token span in the `route` declaration.
-        span: Span,
-    },
 }
 
 impl PartialEq for DomainFilter {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
             (Self::Domain { name: left, .. }, Self::Domain { name: right, .. }) => left == right,
-            (Self::Prefix { prefix: left, .. }, Self::Prefix { prefix: right, .. }) => {
-                left == right
-            }
-            _ => false,
         }
     }
 }

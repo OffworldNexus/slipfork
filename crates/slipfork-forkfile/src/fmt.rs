@@ -299,11 +299,6 @@ fn render_route(renderer: &mut Renderer, route: &Route) {
             line.push_str(" domain ");
             line.push_str(domain);
         }
-        Some(DomainFilter::Prefix { prefix, .. }) => {
-            line.push_str(" domain ");
-            line.push_str(prefix);
-            line.push_str(".*");
-        }
         None => {}
     }
     renderer.line(&line);

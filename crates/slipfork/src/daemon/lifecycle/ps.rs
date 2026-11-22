@@ -209,6 +209,7 @@ pub(super) struct WorldView {
     pub(super) supervisor_pid: u32,
     pub(super) alive: bool,
     pub(super) booting: bool,
+    primary_domain: Option<String>,
     services: Vec<PsService>,
     problem: Option<String>,
 }
@@ -226,6 +227,7 @@ impl WorldView {
         pods: &[PodStatus],
     ) -> Self {
         let (document, problem) = evaluate(project, fork, world);
+        let primary_domain = document.as_ref().and_then(view::primary_domain);
         let mut services = match &document {
             Some(document) => view::services(document),
             None => pods
@@ -277,6 +279,7 @@ impl WorldView {
             supervisor_pid,
             alive,
             booting,
+            primary_domain,
             services,
             problem,
         }
@@ -297,6 +300,7 @@ impl WorldView {
             world: self.world.clone(),
             fork: self.fork.clone(),
             url: format!("http://{}.localhost", self.world),
+            primary_domain: self.primary_domain.clone(),
             state: PsWorldState::Live,
             started_at_ms: (self.started_at_ms > 0).then_some(self.started_at_ms),
             supervisor_pid: Some(self.supervisor_pid),

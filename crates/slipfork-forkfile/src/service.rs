@@ -124,7 +124,7 @@ impl<'a> Parser<'a> {
                     return Err(Diagnostic::new(
                         word_span,
                         format!("unknown route modifier `{other}`"),
-                        "use `<path>`, `strip-prefix`, `rewrite <path>`, `exact <path>`, or `domain <id|prefix.*>`",
+                        "use `<path>`, `strip-prefix`, `rewrite <path>`, `exact <path>`, or `domain <id>`",
                     ));
                 }
             }
@@ -247,19 +247,29 @@ fn duplicate_route_modifier(span: Span) -> Diagnostic {
 }
 
 fn parse_domain_filter(word: &str, span: Span) -> Result<DomainFilter, Diagnostic> {
-    match word.strip_suffix(".*") {
-        Some(prefix) if !prefix.is_empty() => Ok(DomainFilter::Prefix {
-            prefix: prefix.to_string(),
-            span,
-        }),
-        Some(_) => Err(Diagnostic::new(
-            span,
-            "empty domain prefix",
-            "write `domain <id>` or `domain <prefix>.*`",
-        )),
-        None => Ok(DomainFilter::Domain {
-            name: word.to_string(),
-            span,
-        }),
+    if let Some(star) = word.find('*') {
+        let mut start = span.start;
+        start.col += word[..star].chars().count() as u32;
+        start.offset += star;
+        let mut end = start;
+        end.col += 1;
+        end.offset += 1;
+        let span = Span::new(start, end);
+        return Err(match word.strip_suffix(".*") {
+            Some(id) => Diagnostic::new(
+                span,
+                "route domain wildcards are gone",
+                format!("declare 'domain {id}' at top level and write 'route / domain {id}'"),
+            ),
+            None => Diagnostic::new(
+                span,
+                "domain ids are lowercase [a-z0-9-]",
+                "drop the `*` and declare a `domain <id>` of only lowercase [a-z0-9-]",
+            ),
+        });
     }
+    Ok(DomainFilter::Domain {
+        name: word.to_string(),
+        span,
+    })
 }

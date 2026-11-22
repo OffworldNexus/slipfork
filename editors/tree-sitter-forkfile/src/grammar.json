@@ -780,17 +780,8 @@
           "type": "FIELD",
           "name": "filter",
           "content": {
-            "type": "CHOICE",
-            "members": [
-              {
-                "type": "SYMBOL",
-                "name": "domain_filter"
-              },
-              {
-                "type": "SYMBOL",
-                "name": "domain_prefix"
-              }
-            ]
+            "type": "SYMBOL",
+            "name": "domain_filter"
           }
         }
       ]
@@ -798,13 +789,6 @@
     "domain_filter": {
       "type": "SYMBOL",
       "name": "identifier"
-    },
-    "domain_prefix": {
-      "type": "TOKEN",
-      "content": {
-        "type": "PATTERN",
-        "value": "[A-Za-z0-9_-]+\\.\\*"
-      }
     },
     "hook": {
       "type": "SEQ",

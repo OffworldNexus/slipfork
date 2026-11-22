@@ -288,7 +288,7 @@ fn demo_reply() -> slipfork::ps::PsReply {
                   "routes": [{ "prefix": "/", "port": 5173, "mode": "preserve" }] },
                 { "id": "mailpit", "kind": "service", "running": true, "port": 8025,
                   "routes": [{ "prefix": "/", "port": 8025, "mode": "preserve",
-                               "domain": { "kind": "prefix", "value": "mail" } }] },
+                               "domain": "mail" }] },
                 { "id": "pg", "kind": "postgres", "running": true, "port": 5432, "version": "18" },
                 { "id": "cache", "kind": "redis", "running": true, "port": 6379, "version": "7" },
                 { "id": "uploads", "kind": "s3", "running": true, "port": 8333, "policy": "private" },

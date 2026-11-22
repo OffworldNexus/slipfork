@@ -13,5 +13,8 @@ pub mod route;
 
 pub use handoff::{ACCEPT_METHOD, IngressHandoff};
 pub use proxy::{HEADER_CAP, ProxyError, RELAY_CAP, serve_connection};
-pub use route::{IngressRegistry, IngressRoute, IngressTable, RouteError, RouteMatch, TableError};
+pub use route::{
+    IngressRegistry, IngressRoute, IngressTable, RouteError, RouteMatch, TableError,
+    route_authorities,
+};
 pub use slipfork_world::fdpass::{PAYLOAD_CAP, recv_fd, send_fd};

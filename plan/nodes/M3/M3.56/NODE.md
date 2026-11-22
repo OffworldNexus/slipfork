@@ -2,7 +2,7 @@
 id: M3.56
 title: "Scorched-earth delete domain <prefix>.* wildcard syntax: require declared domain <id> everywhere (Forkfile, ingress, LSP, editors, specs & docs)"
 kind: task
-status: ready
+status: done
 owner: implementer
 priority: 3
 depends_on: [M3.54]
@@ -18,11 +18,11 @@ paths:
   - "docs/**"
   - README.md
   - "support/demo/**"
-attempts: 0
+attempts: 2
 max_attempts: 3
 escalation: none
 created: "2026-11-22T21:01"
-updated: "2026-11-22T21:01"
+updated: "2026-11-22T21:18"
 ---
 
 # Goal

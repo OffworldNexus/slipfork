@@ -1,5 +1,5 @@
 ==================
-Argument blocks, prefix domains, boolean expressions, comments
+Argument blocks, declared domains, boolean expressions, comments
 ==================
 
 # forkfile: 0.1
@@ -15,7 +15,7 @@ image app . {
   }
   service worker {
     port 7000
-    route / domain mail.*
+    route / domain mail
     run: echo $env.MODE
   }
 }
@@ -51,7 +51,8 @@ on dev & !staging | preview {
         (route_path)
         (route_modifier
           (domain_clause
-            (domain_prefix))))
+            (domain_filter
+              (identifier)))))
       (hook
         (command
           (command_text)))))
@@ -64,3 +65,23 @@ on dev & !staging | preview {
       (identifier))
     (domain_declaration
       (identifier))))
+
+==================
+Rejected: a route domain wildcard
+==================
+
+# forkfile: 0.1
+
+route / domain mail.*
+
+---
+
+(source_file
+  (header)
+  (ERROR
+    (identifier)
+    (route_path))
+  (domain_declaration
+    (identifier))
+  (ERROR
+    (UNEXPECTED '*')))

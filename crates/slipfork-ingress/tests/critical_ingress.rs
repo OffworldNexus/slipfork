@@ -17,6 +17,10 @@ use slipfork_ingress::{
 const TIMEOUT: Duration = Duration::from_secs(20);
 
 const BASE: &str = r#"# forkfile: 0.1
+domain main
+domain mail
+domain assets-cdn
+
 image backend . {
   service web { port 9006
     route /
@@ -35,7 +39,7 @@ image backend . {
     route /portal domain main
   }
   service mailer { port 9003
-    route / domain mail.*
+    route / domain mail
   }
   service cdn { port 9004
     route /cdn-assets domain assets-cdn
@@ -107,9 +111,13 @@ fn routes(source: &str) -> Vec<IngressRoute> {
 }
 
 fn retarget(routes: Vec<IngressRoute>, port: u16) -> Vec<IngressRoute> {
+    retarget_with(routes, |_| port)
+}
+
+fn retarget_with(routes: Vec<IngressRoute>, port_for: impl Fn(u16) -> u16) -> Vec<IngressRoute> {
     routes
         .into_iter()
-        .map(|route| IngressRoute::new(port, route.route))
+        .map(|route| IngressRoute::new(port_for(route.port), route.route))
         .collect()
 }
 
@@ -117,13 +125,23 @@ fn registry_with_port(port: u16) -> IngressRegistry {
     IngressRegistry::new([
         IngressTable::new(
             "demo",
-            vec!["assets-cdn".to_owned(), "main".to_owned()],
+            Some("main"),
+            vec![
+                "main".to_owned(),
+                "mail".to_owned(),
+                "assets-cdn".to_owned(),
+            ],
             retarget(routes(BASE), port),
         )
         .expect("demo table is routable"),
-        IngressTable::new("feat-auth--demo", Vec::new(), retarget(routes(FORK), port))
-            .expect("fork table is routable"),
-        IngressTable::new("strict", Vec::new(), retarget(routes(STRICT), port))
+        IngressTable::new(
+            "feat-auth--demo",
+            None,
+            Vec::new(),
+            retarget(routes(FORK), port),
+        )
+        .expect("fork table is routable"),
+        IngressTable::new("strict", None, Vec::new(), retarget(routes(STRICT), port))
             .expect("strict table is routable"),
     ])
     .expect("registry is routable")
@@ -131,7 +149,7 @@ fn registry_with_port(port: u16) -> IngressRegistry {
 
 fn single_world(world: &str, port: u16) -> IngressRegistry {
     IngressRegistry::new([
-        IngressTable::new(world, Vec::new(), [catch_all(port)]).expect("table is routable")
+        IngressTable::new(world, None, Vec::new(), [catch_all(port)]).expect("table is routable"),
     ])
     .expect("registry is routable")
 }
@@ -175,6 +193,26 @@ fn echo_upstream_n(count: usize) -> (u16, Receiver<String>, JoinHandle<()>) {
 
 fn echo_upstream() -> (u16, Receiver<String>, JoinHandle<()>) {
     echo_upstream_n(1)
+}
+
+/// A one-shot upstream that answers with its own name, so a journey can name who replied.
+fn echo_upstream_body(body: &'static str) -> (u16, Receiver<String>, JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("upstream binds loopback");
+    let port = listener.local_addr().expect("upstream address").port();
+    let (seen, receiver) = mpsc::channel();
+    let handle = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("upstream accepts");
+        stream.set_read_timeout(Some(TIMEOUT)).expect("timeout");
+        let (head, _body) = read_head(&mut stream);
+        seen.send(request_target(&head)).expect("report target");
+        write!(
+            stream,
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        )
+        .expect("upstream replies");
+    });
+    (port, receiver, handle)
 }
 
 fn connect_client(address: SocketAddr) -> TcpStream {
@@ -363,7 +401,6 @@ fn every_authority_and_route_mode_maps_to_the_expected_upstream_path() {
             "/cdn-assets/logo.svg",
             "/cdn-assets/logo.svg",
         ),
-        ("assets-cdn.demo.localhost", "/assets/x", "/assets/x"),
         ("feat-auth--demo.localhost", "/x", "/x"),
     ];
     for (host, target, expected) in cases {
@@ -387,7 +424,7 @@ fn every_authority_and_route_mode_maps_to_the_expected_upstream_path() {
 
 #[test]
 fn hosts_and_paths_fail_closed_with_distinct_statuses() {
-    let (address, proxy) = spawn_proxy(registry_with_port(1), 3);
+    let (address, proxy) = spawn_proxy(registry_with_port(1), 4);
     let unknown_world = request(address, "nowhere.localhost", "/");
     assert!(
         unknown_world.starts_with("HTTP/1.1 421 Misdirected Request"),
@@ -397,7 +434,61 @@ fn hosts_and_paths_fail_closed_with_distinct_statuses() {
     assert!(unrouted.starts_with("HTTP/1.1 404"), "{unrouted}");
     let foreign = request(address, "example.com", "/");
     assert!(foreign.starts_with("HTTP/1.1 400"), "{foreign}");
+    let leaked = request(address, "assets-cdn.demo.localhost", "/assets/x");
+    assert!(
+        leaked.starts_with("HTTP/1.1 404"),
+        "an unfiltered route must not leak onto a secondary domain: {leaked}"
+    );
     proxy.join().expect("proxy");
+}
+
+#[test]
+fn a_declared_domain_never_falls_through_to_the_primary_upstream() {
+    // The api upstream is bound but never accepted: a real leak would leave a pending connection.
+    let api = TcpListener::bind("127.0.0.1:0").expect("api listener binds");
+    api.set_nonblocking(true).expect("non-blocking probe");
+    let api_port = api.local_addr().expect("api address").port();
+    let (mail_port, mail_seen, mail_upstream) = echo_upstream_body("mailpit");
+    let registry = IngressRegistry::new([IngressTable::new(
+        "demo",
+        Some("main"),
+        vec![
+            "main".to_owned(),
+            "mail".to_owned(),
+            "assets-cdn".to_owned(),
+        ],
+        retarget_with(routes(BASE), |port| {
+            if port == 9003 { mail_port } else { api_port }
+        }),
+    )
+    .expect("demo table is routable")])
+    .expect("registry is routable");
+    let (address, proxy) = spawn_proxy(registry, 2);
+
+    let mail = request(address, "mail.demo.localhost", "/api");
+    assert!(
+        mail.starts_with("HTTP/1.1 200") && mail.ends_with("mailpit"),
+        "mail's own catch-all must answer: {mail}"
+    );
+    assert_eq!(
+        mail_seen
+            .recv_timeout(TIMEOUT)
+            .expect("mailpit saw the request"),
+        "/api"
+    );
+
+    let leaked = request(address, "assets-cdn.demo.localhost", "/api");
+    assert!(
+        leaked.starts_with("HTTP/1.1 404"),
+        "`assets-cdn` declares only `/cdn-assets`: {leaked}"
+    );
+
+    proxy.join().expect("proxy");
+    mail_upstream.join().expect("mailpit upstream");
+    let error = api
+        .accept()
+        .expect_err("no request may ever reach the primary api upstream");
+    assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
 }
 
 #[test]

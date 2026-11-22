@@ -319,6 +319,56 @@ fn internal_ports_and_rewrite_routes_parse() {
 }
 
 #[test]
+fn wildcard_route_domains_are_rejected_with_a_caret_and_declared_remedy() {
+    let source = "# forkfile: 0.1\n\ndomain mail\n\nimage mailpit from axllent/mailpit:latest {\n  service mailpit {\n    port 8025\n    internal_ports [8026]\n    route /healthz exact /healthz\n    route / domain mail.*\n  }\n}\n";
+    let diagnostics = parse(source).expect_err("wildcard route domain");
+    let first = diagnostics.first().expect("one diagnostic");
+    assert_eq!(first.span.line(), 10);
+    assert_eq!(first.span.col(), 25);
+    assert_eq!(first.message, "route domain wildcards are gone");
+    assert_eq!(
+        first.next,
+        "declare 'domain mail' at top level and write 'route / domain mail'"
+    );
+    let rendered = expect_render(source);
+    let lines: Vec<&str> = rendered.lines().collect();
+    assert_eq!(lines[0], "Forkfile:10:25", "{rendered}");
+    let star = source
+        .lines()
+        .nth(9)
+        .expect("the wildcard sits on line 10")
+        .find('*')
+        .expect("the source declares a wildcard");
+    assert_eq!(
+        lines[2].find('^'),
+        Some(star),
+        "the caret must sit under the `*`:\n{rendered}"
+    );
+}
+
+#[test]
+fn a_stray_star_in_a_route_domain_gets_a_lowercase_id_remedy() {
+    let source = "# forkfile: 0.1\n\ndomain mail\n\nimage backend . {\n  service api {\n    port 8000\n    route / domain m*ail\n  }\n}\n";
+    let diagnostics = parse(source).expect_err("stray star");
+    let first = diagnostics.first().expect("one diagnostic");
+    assert_eq!(first.message, "domain ids are lowercase [a-z0-9-]");
+    assert!(
+        !first.next.contains("m*ail"),
+        "the remedy must never invent a wildcard id: {}",
+        first.next
+    );
+    let rendered = expect_render(source);
+    assert!(rendered.starts_with("Forkfile:8:21"), "{rendered}");
+    assert!(
+        rendered
+            .lines()
+            .nth(2)
+            .is_some_and(|line| line.ends_with('^')),
+        "{rendered}"
+    );
+}
+
+#[test]
 fn conflicting_route_modifiers_report_the_second_modifier() {
     let source = "# forkfile: 0.1\n\nimage backend . {\n  service api {\n    port 8000\n    route /api strip-prefix rewrite /v1\n  }\n}\n";
     let diagnostics = parse(source).expect_err("conflicting modifiers");

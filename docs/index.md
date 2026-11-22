@@ -21,8 +21,9 @@ $ slipfork up
 
 !!! info "One URL, cloud-identical routes"
 
-    `http://acme-shop.localhost` is the front door. `route /api` keeps its prefix, `domain mail`
-    answers on `mail.acme-shop.localhost`, and each `s3` bucket on `<bucket>.acme-shop.localhost`.
+    `http://acme-shop.localhost` is the front door. `route /api` keeps its prefix on the primary
+    world domain and the first declared `domain`, a declared `domain mail` answers on
+    `mail.acme-shop.localhost`, and each `s3` bucket on `<bucket>.acme-shop.localhost`.
 
 ## Worlds and forks
 

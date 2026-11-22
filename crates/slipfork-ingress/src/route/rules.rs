@@ -18,13 +18,13 @@ pub(crate) struct Entry {
 
 /// Expand every declared route into one entry per authority it owns.
 ///
-/// A route without a `domain` filter serves the primary `<world>.localhost` authority **and** every
-/// declared app domain (`route /api` answers both `demo.localhost` and `main.demo.localhost`); a
-/// `domain <id>` route owns exactly that authority; a `domain <prefix>.*` route owns only its
-/// subdomain family. Path and target syntax is already validated by the `Forkfile` compiler.
+/// A route without a `domain` filter serves the primary `<world>.localhost` authority **and** the
+/// first declared app domain (`route /api` answers both `demo.localhost` and
+/// `main.demo.localhost`); a `domain <id>` route owns exactly that authority. Path and target
+/// syntax is already validated by the `Forkfile` compiler.
 pub(crate) fn entries_for(
     world: &str,
-    app_domains: &BTreeSet<String>,
+    primary_domain: Option<&str>,
     declared_domains: &BTreeSet<String>,
     routes: impl IntoIterator<Item = IngressRoute>,
 ) -> Result<Vec<Entry>, TableError> {
@@ -41,7 +41,7 @@ pub(crate) fn entries_for(
         }
         let authorities = authorities_for(
             world,
-            app_domains,
+            primary_domain,
             declared_domains,
             declared.domain.as_ref(),
         )?;
@@ -89,17 +89,15 @@ pub(crate) fn resolve(
     })
 }
 
-/// The authorities one route owns.
+/// The authorities one route owns, validated against the declared domain set.
 fn authorities_for(
     world: &str,
-    app_domains: &BTreeSet<String>,
+    primary_domain: Option<&str>,
     declared_domains: &BTreeSet<String>,
     filter: Option<&DomainFilter>,
 ) -> Result<Vec<String>, TableError> {
-    match filter {
-        None => Ok(std::iter::once(String::new())
-            .chain(app_domains.iter().cloned())
-            .collect()),
+    let domain = match filter {
+        None => None,
         Some(DomainFilter::Domain { name, .. }) => {
             if !declared_domains.contains(name) {
                 return Err(TableError::UndeclaredDomain {
@@ -107,10 +105,13 @@ fn authorities_for(
                     domain: name.clone(),
                 });
             }
-            Ok(vec![name.clone()])
+            Some(name.as_str())
         }
-        Some(DomainFilter::Prefix { prefix, .. }) => Ok(vec![prefix.clone()]),
-    }
+    };
+    Ok(super::route_authorities(primary_domain, domain)
+        .into_iter()
+        .map(|authority| authority.unwrap_or_default())
+        .collect())
 }
 
 /// The prefix an entry matches, or the exact path for `exact`.
@@ -274,8 +275,7 @@ fn describe(world: &str, entry: &Entry) -> String {
 /// A world or declared-domain authority label.
 ///
 /// Declared domains such as `assets-cdn` are valid `.localhost` authorities, so authority ids are
-/// deliberately a touch wider than the `domain <prefix>.*` route filters, which stay strict DNS
-/// labels.
+/// deliberately a touch wider than the `domain <id>` route filters, which stay strict DNS labels.
 pub(crate) fn is_authority_label(label: &str) -> bool {
     !label.is_empty()
         && label.len() <= 63

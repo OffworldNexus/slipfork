@@ -29,6 +29,6 @@ slipfork drop my-experiment                   # Instant teardown + clone cleanup
 | `api` | `backend` image service | `:8000`, `main.url/api` |
 | `worker` | `backend` image worker | portless |
 | `front` | `frontend` image service, `arg VITE_CDN_URL` | `:5173`, `main.url/` |
-| `mailpit` | `from axllent/mailpit:latest` | `:8025`, `mail.*` |
+| `mailpit` | `from axllent/mailpit:latest` | `:8025`, `mail.demo.localhost` |
 
 A fork reuses the parent's sealed `image` clones (`cached`, no Dockerfile re-evaluation), snapshots live PG rows, Redis keys, and S3 objects with one Btrfs ioctl, and keeps the parent untouched.

@@ -46,12 +46,12 @@ Line 1 is `# forkfile: 0.1` while Slipfork is pre-`1.0`; any other value fails b
 
 ```mermaid
 flowchart LR
-  Decl["Hostname id\ndomain | cdn | s3 | route domain prefix.*"] --> Check{"RFC 1123 label?\n[a-z0-9-], alnum edges\n1..=63 (s3: 3..=63, non-IPv4)"}
+  Decl["Hostname id\ndomain | cdn | s3 | route domain <id>"] --> Check{"RFC 1123 label?\n[a-z0-9-], alnum edges\n1..=63 (s3: 3..=63, non-IPv4)"}
   Check -->|"yes"| Ok["Valid .localhost / S3 authority"]
   Check -->|"no"| Err["Static Forkfile:line:col error\n+ next: suggested slug"]
 ```
 
-`domain`, `cdn`, `s3` and `route ... domain <prefix>.*` labels are lowercase `[a-z0-9-]` with alphanumeric edges; buckets are `3..=63` and never IPv4-shaped.
+`domain`, `cdn`, `s3` and `route ... domain <id>` labels are lowercase `[a-z0-9-]` with alphanumeric edges; buckets are `3..=63` and never IPv4-shaped.
 
 ## 2. `image <id>` and build-time `arg`
 
@@ -110,14 +110,26 @@ Each HTTP `service` declares one public `port <u16>`, available as `$port` and i
 
 | Route | Path match | Authority |
 | :--- | :--- | :--- |
-| `route /api` | `/api/users` -> `/api/users` | primary world domain and every declared `domain` |
+| `route /api` | `/api/users` -> `/api/users` | primary world domain and the first declared `domain` |
 | `route /api strip-prefix` | `/api/users` -> `/users` | same |
 | `route /api rewrite /v1` | `/api/users` -> `/v1/users` | same |
 | `route exact /healthz` | `/healthz` only | same |
 | `route / domain admin` | `/` | `admin.<world>.localhost` |
-| `route / domain mail.*` | `/` | `mail.<world>.localhost` |
+| `route / domain mail` | `/` | `mail.<world>.localhost` |
 
-`strip-prefix` and `rewrite <path>` are mutually exclusive, and a route naming an undeclared `domain` fails statically.
+`strip-prefix` and `rewrite <path>` are mutually exclusive, and a route naming an undeclared `domain` fails statically. A service that wants its own host declares `domain <id>` inline or inside `on <expr> { … }` and writes `route / domain <id>`:
+
+```forkfile
+on mail {
+  domain mail
+  image mailpit from axllent/mailpit:latest {
+    service mailpit {
+      port 8025
+      route / domain mail
+    }
+  }
+}
+```
 
 ## 7. Services, hooks and `@<tool>` prequels
 

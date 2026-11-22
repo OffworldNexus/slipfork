@@ -1,6 +1,6 @@
 //! Exact human contract of the flat, domain-first status tree.
 //!
-//! The fixture is the full demo surface: two service paths on the primary domain, a `mail.*`
+//! The fixture is the full demo surface: two service paths on the primary domain, a `domain mail`
 //! service domain, two S3 bucket domains, a `support` group, and one flat fork. Every row must
 //! stay aligned, carry no port or age, and style only through the named palette roles.
 
@@ -19,6 +19,7 @@ fn reply() -> slipfork::ps::PsReply {
             "path": "/home/me/demo",
             "world": "demo",
             "url": "http://demo.localhost",
+            "primary_domain": "main",
             "started_at_ms": 1_000_000_000,
             "supervisor_pid": 11,
             "alive": true,
@@ -31,7 +32,7 @@ fn reply() -> slipfork::ps::PsReply {
                   "routes": [{ "prefix": "/", "port": 5173, "mode": "preserve" }] },
                 { "id": "mailpit", "kind": "service", "running": true, "port": 8025,
                   "routes": [{ "prefix": "/", "port": 8025, "mode": "preserve",
-                               "domain": { "kind": "prefix", "value": "mail" } }] },
+                               "domain": "mail" }] },
                 { "id": "pg", "kind": "postgres", "running": true, "port": 5432, "version": "18" },
                 { "id": "cache", "kind": "redis", "running": true, "port": 6379, "version": "7" },
                 { "id": "uploads", "kind": "s3", "running": true, "port": 8333, "policy": "private" },
@@ -68,6 +69,9 @@ fn the_flat_domain_tree_renders_exact_aligned_lines() {
     let expected = concat!(
         "● demo       ~/demo\n",
         "  ├─ http://demo.localhost\n",
+        "  │  ├─ /api  -> api                       running\n",
+        "  │  └─ /     -> front                     running\n",
+        "  ├─ http://main.demo.localhost\n",
         "  │  ├─ /api  -> api                       running\n",
         "  │  └─ /     -> front                     running\n",
         "  ├─ http://mail.demo.localhost\n",
@@ -175,6 +179,8 @@ fn json_keeps_ports_ages_routes_and_orphaned() {
     assert_eq!(world["url"], "http://demo.localhost");
     assert_eq!(world["services"][0]["port"], 8000);
     assert_eq!(world["services"][0]["routes"][0]["prefix"], "/api");
+    assert_eq!(world["primary_domain"], "main");
+    assert_eq!(world["services"][3]["routes"][0]["domain"], "mail");
     assert_eq!(world["services"][7]["orphaned"], false);
     assert_eq!(world["forks"][0]["world"], "feat-auth--demo");
 }

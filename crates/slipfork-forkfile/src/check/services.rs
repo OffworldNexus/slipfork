@@ -137,10 +137,9 @@ fn validate_route(route: &Route, symbols: &SymbolTable, diags: &mut Diagnostics)
         diags.push(Diagnostic::new(
             route.span,
             format!("route domain `{id}` is not a declared `domain`"),
-            format!("add `domain {id}` or filter with `domain {id}.*`"),
+            format!("add `domain {id}` at top level"),
         ));
     }
-    super::policy::check_route_prefix(route, diags);
 }
 fn collect_feature_names(block: &Block<ServiceItem>, out: &mut BTreeSet<String>) {
     for item in &block.items {

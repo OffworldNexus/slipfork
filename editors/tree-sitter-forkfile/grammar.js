@@ -122,12 +122,8 @@ module.exports = grammar({
       seq('exact', field('target', $.route_path)),
       $.domain_clause,
     ),
-    domain_clause: $ => seq(
-      'domain',
-      field('filter', choice($.domain_filter, $.domain_prefix)),
-    ),
+    domain_clause: $ => seq('domain', field('filter', $.domain_filter)),
     domain_filter: $ => $.identifier,
-    domain_prefix: $ => token(/[A-Za-z0-9_-]+\.\*/),
 
     hook: $ => seq(
       field('name', choice('before-start', 'pre-deploy', 'post-deploy', 'failed-deploy', 'run')),
