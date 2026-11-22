@@ -56,7 +56,7 @@ pub fn detect_ui(args: &[OsString]) -> UiMode {
 }
 
 /// Assembles the injected host environment for this invocation.
-pub fn host(args: &[OsString], cwd: &Path) -> Result<HostEnv, String> {
+pub fn host(args: &[OsString], cwd: &Path, terminal: Terminal) -> Result<HostEnv, String> {
     let exe = std::env::current_exe()
         .map_err(|error| format!("cannot locate the slipfork binary: {error}"))?;
     // SAFETY: `geteuid(2)`/`getegid(2)` only read this process's credentials.
@@ -131,6 +131,7 @@ pub fn host(args: &[OsString], cwd: &Path) -> Result<HostEnv, String> {
         display: std::env::var_os("DISPLAY").is_some()
             || std::env::var_os("WAYLAND_DISPLAY").is_some(),
         ssh: std::env::var_os("SSH_CONNECTION").is_some() || std::env::var_os("SSH_TTY").is_some(),
+        color: terminal.mode.color(),
         opener,
         env: std::env::vars().collect(),
     })

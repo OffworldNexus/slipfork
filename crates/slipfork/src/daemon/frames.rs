@@ -7,6 +7,27 @@ use std::io::{self, Read, Write};
 use std::os::fd::OwnedFd;
 use std::os::unix::net::UnixStream;
 
+use slipfork_world::control::StreamInput;
+
+use super::wire;
+
+/// Reads client `input` frames and forwards them to the world's exec stdin.
+pub(super) fn pump_input(reader: &mut FrameReader, mut input: StreamInput) {
+    loop {
+        let Ok(Some((payload, _))) = reader.next() else {
+            break;
+        };
+        let Ok(frame) = serde_json::from_slice::<wire::InputFrame>(&payload) else {
+            continue;
+        };
+        let eof = frame.input.as_deref().is_none_or(str::is_empty);
+        let data = frame.input.unwrap_or_default();
+        if input.send_base64(&data).is_err() || eof {
+            break;
+        }
+    }
+}
+
 /// One request reader that keeps the first descriptor, then reads plain NDJSON lines.
 pub(super) struct FrameReader {
     stream: UnixStream,

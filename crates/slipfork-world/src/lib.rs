@@ -72,7 +72,9 @@ pub use error::{Error, NameKind, Result};
 pub use fdpass::{PAYLOAD_CAP, recv_fd, send_fd};
 pub use layout::{ForkName, PODS_DIR, STORE_DIR, StoreLayout, WorldName};
 pub use namespaces::{NAMESPACE_KINDS, NamespaceIdentity, NamespaceTable};
-pub use pod::{Bind, BindSource, PodBundle, PodEnv, PodFile, PodHost, PodSpec, write_bundle};
+pub use pod::{
+    Bind, BindSource, PodBundle, PodEnv, PodFile, PodHost, PodSpec, is_reusable_pod, write_bundle,
+};
 pub use pod_log::{CHUNK, DIVIDER_CLOSE, DIVIDER_OPEN, LogKind, LogLine, LogReader, LogSink};
 pub use port::{Dirtiness, ForkPaths, WorldEngine};
 pub use reap::kill_group;

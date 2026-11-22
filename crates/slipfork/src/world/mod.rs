@@ -62,6 +62,8 @@ pub struct HostEnv {
     pub display: bool,
     /// `$SSH_CONNECTION` or `$SSH_TTY` is set, so the session is remote.
     pub ssh: bool,
+    /// ANSI styling is allowed for this invocation (`UiMode::color`).
+    pub color: bool,
     /// The first `xdg-open`/`open` on the injected `PATH`, if any.
     pub opener: Option<PathBuf>,
     /// The process environment snapshot, read once by the composition root.

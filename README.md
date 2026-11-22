@@ -12,12 +12,14 @@ $ slipfork up
 ✓ Ready -> http://acme-shop.localhost
 ```
 
-Then branch off the whole world in milliseconds:
+Then branch off the whole world in under a second:
 
 ```console
 $ slipfork fork billing-api
-✓ Forked billing-api (38ms) -> http://billing-api--acme-shop.localhost
+✓ Forked billing-api (0.8s) -> http://billing-api--acme-shop.localhost
 ```
+
+The `0.8s` is the whole fork; `≤50ms` of it is CoW snapshotting and the rest boots the cloned stack.
 
 [Get started](docs/getting-started.md) · [The Forkfile](docs/forkfile.md)
 

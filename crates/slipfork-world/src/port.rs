@@ -67,6 +67,9 @@ pub trait WorldEngine: Send + Sync {
     /// Removes one subvolume, unsealing it first; refuses dirty work without `force`.
     fn destroy(&self, subvolume: &Path, dirtiness: Dirtiness, force: bool) -> Result<()>;
 
+    /// Removes every ephemeral pod rootfs under `<store>/pods/<world>`, then the emptied dirs.
+    fn sweep_pods(&self, pods_dir: &Path) -> Result<()>;
+
     /// Removes both snapshots of a fork; refuses dirty work without `force`.
     fn drop_fork(
         &self,

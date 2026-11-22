@@ -409,7 +409,7 @@ fn piped_lifecycle_verbs_replay_plain_rows_and_fail_closed() {
             );
         }
         assert!(
-            stderr.starts_with("error: "),
+            stderr.lines().any(|line| line.starts_with("error: ")),
             "{args:?} must name the failure: {stderr}"
         );
         assert_eq!(

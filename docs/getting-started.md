@@ -78,9 +78,12 @@ Boot progress replaces each line in place. On the next run the unchanged `uv syn
 
 ```console
 $ slipfork fork billing-api
-✓ Forked billing-api (38ms) -> http://billing-api--acme-shop.localhost
+✓ Forked billing-api (0.8s) -> http://billing-api--acme-shop.localhost
   path  ~/projects/acme-shop/.forks/billing-api
 ```
+
+The `0.8s` is end-to-end; the CoW snapshot itself is `38ms` (`≤50ms` on network block storage) and
+the rest boots the cloned stack.
 
 The fork has its own checkout, PostgreSQL and Redis snapshots, and URL. Dependencies and input-hash
 stamps came along, so nothing installs again. Throw the experiment away when you are done:

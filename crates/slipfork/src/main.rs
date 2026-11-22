@@ -37,7 +37,7 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    let host = match compose::host(args, &cwd) {
+    let host = match compose::host(args, &cwd, terminal) {
         Ok(host) => host,
         Err(error) => {
             eprintln!("error: {error}");

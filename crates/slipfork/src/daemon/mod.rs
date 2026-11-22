@@ -34,7 +34,7 @@ use frames::{FrameReader, write_frame};
 use lifecycle::core::Core;
 use serde_json::{Value, json};
 use slipfork_vcs::VcsWorkspace;
-use slipfork_world::control::{StreamFrame, StreamInput};
+use slipfork_world::control::StreamFrame;
 
 /// A typed control-plane failure rendered as an `error` frame with a bare message.
 #[derive(Debug, Clone)]
@@ -418,7 +418,7 @@ impl Daemon {
             None
         };
         std::thread::scope(|scope| {
-            let handle = pump.map(|input| scope.spawn(move || pump_daemon_input(reader, input)));
+            let handle = pump.map(|input| scope.spawn(move || frames::pump_input(reader, input)));
             let result = (|| -> Result<Value, Failure> {
                 loop {
                     match client.poll() {
@@ -463,23 +463,6 @@ impl Daemon {
         if let Ok(mut core) = self.core.lock() {
             core.stop_all();
             let _ = fs::remove_file(&self.socket);
-        }
-    }
-}
-
-/// Reads client `input` frames and forwards them to the world's exec stdin.
-fn pump_daemon_input(reader: &mut FrameReader, mut input: StreamInput) {
-    loop {
-        let Ok(Some((payload, _))) = reader.next() else {
-            break;
-        };
-        let Ok(frame) = serde_json::from_slice::<wire::InputFrame>(&payload) else {
-            continue;
-        };
-        let eof = frame.input.as_deref().is_none_or(str::is_empty);
-        let data = frame.input.unwrap_or_default();
-        if input.send_base64(&data).is_err() || eof {
-            break;
         }
     }
 }

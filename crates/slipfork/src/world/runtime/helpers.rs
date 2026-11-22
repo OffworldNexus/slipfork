@@ -1,38 +1,11 @@
-//! Pure path/env/resource helpers plus bounded pod sweeping before a world boots.
+//! Pure path/env/resource helpers for the world boot runtime.
 
 use std::collections::BTreeMap;
-use std::fs;
 use std::path::Path;
 
-use slipfork_world::{Bind, BindSource, BtrfsEngine, Dirtiness, PodEnv, WorldEngine};
+use slipfork_world::{Bind, BindSource, PodEnv};
 
 const DEFAULT_PATH: &str = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
-
-/// Clears leftover pod rootfs clones or `ino == 2` snapshot stubs before a world boots.
-pub(super) fn sweep_stale_pods(engine: &BtrfsEngine, pods_dir: &Path) -> Result<(), String> {
-    if !pods_dir.exists() {
-        return Ok(());
-    }
-    let entries = fs::read_dir(pods_dir)
-        .map_err(|error| format!("read `{}`: {error}", pods_dir.display()))?;
-    for entry in entries {
-        let entry = entry.map_err(|error| format!("read `{}`: {error}", pods_dir.display()))?;
-        let path = entry.path();
-        if slipfork_world::is_subvolume_path(&path).unwrap_or(false) {
-            engine
-                .destroy(&path, Dirtiness::Clean, true)
-                .map_err(|error| error.to_string())?;
-        } else if path.is_dir() {
-            fs::remove_dir_all(&path)
-                .map_err(|error| format!("remove `{}`: {error}", path.display()))?;
-        } else {
-            fs::remove_file(&path)
-                .map_err(|error| format!("remove `{}`: {error}", path.display()))?;
-        }
-    }
-    let _ = fs::remove_dir(pods_dir);
-    Ok(())
-}
 
 pub(super) fn project_bind(project: &Path) -> Bind {
     Bind {

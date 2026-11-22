@@ -16,8 +16,8 @@ use std::time::{Duration, Instant};
 
 use sha2::{Digest, Sha256};
 use slipfork_ospp::{
-    DeviceKeySigner, DumpReader, FileDeviceKeyStore, FileSecretVault, OsppClaims, OsppClient,
-    OsppError, OsppTimeouts, PUBLIC_KEY_HEX_LEN, PairPhase, PairingStore, Secret, SecretVault,
+    DumpReader, FileDeviceKeyStore, FileSecretVault, OsppClaims, OsppClient, OsppError,
+    OsppTimeouts, PUBLIC_KEY_HEX_LEN, PairPhase, PairingStore, Secret, SecretVault,
     SoftwareP256Key, SoftwareP256Signer, SubscribeRequest, SubscriptionEnv, SubscriptionKey,
     WsOsppClient, open_dump_stream,
 };

@@ -29,6 +29,15 @@ FENCE_RE = re.compile(r"```[^\n]*\n(.*?)```", re.DOTALL)
 CMD_LINE_RE = re.compile(r"^\s*(?:\$\s+)?slipfork\s+([a-z][a-z0-9_-]*)", re.MULTILINE)
 INLINE_TABLE_CMD_RE = re.compile(r"\|\s*`slipfork\s+([a-z][a-z0-9_-]*)")
 
+# A published fork wall-clock claim may never be faster than the measured `~0.8s` end-to-end
+# journey asserted in `critical_fork_live` (M3.45.2/3); only the `< 1s` ceiling is honest below
+# one second. CoW ioctl latency is a separate 0.3-50ms figure and must be its own sentence.
+FORK_CLAIM_RE = re.compile(
+    r"(?i)(?:slipfork\s+fork|forked\s+[a-z][a-z0-9_-]*)[^.\n]{0,80}?"
+    r"(?<![\d.])(\d+(?:\.\d+)?)\s*(ms|milliseconds?|s|seconds?)\b"
+)
+MEASURED_FORK_MS = 800.0
+
 # Seeded user-facing docs that ship to the dev VM: same Zero-Vaporware rule as published docs.
 SEEDED_DOCS = ("support/demo/README.md",)
 
@@ -153,6 +162,25 @@ def find_vaporware_commands(
     return errors
 
 
+def find_fast_fork_claims(doc_files: list[Path], repo: Path) -> list[str]:
+    """Published fork duration claims below the measured `~0.8s` journey."""
+    errors: list[str] = []
+    for path in doc_files:
+        rel = path.relative_to(repo).as_posix()
+        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            for match in FORK_CLAIM_RE.finditer(line):
+                value = float(match.group(1))
+                unit = match.group(2).lower()
+                claimed_ms = value if unit.startswith(("ms", "milli")) else value * 1000
+                if claimed_ms < MEASURED_FORK_MS:
+                    errors.append(
+                        f"{rel}:{number}: published fork claim '{match.group(0).strip()}' is faster "
+                        f"than the measured ~0.8s end-to-end fork (`< 1s` ceiling); quote per-ioctl "
+                        f"CoW latency (0.3-50ms) only in its own sentence"
+                    )
+    return errors
+
+
 def main() -> int:
     repo = Path(__file__).resolve().parent.parent
     docs_dir = repo / "docs"
@@ -190,6 +218,7 @@ def main() -> int:
     valid = extract_help_subcommands(completed.stdout)
     docs = published_doc_files(repo)
     errors = find_vaporware_commands(docs, valid, repo)
+    errors.extend(find_fast_fork_claims(docs, repo))
     if errors:
         print(
             f"check_docs_honesty: FAILED ({len(errors)} vaporware reference(s)):",

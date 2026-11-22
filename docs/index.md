@@ -38,8 +38,10 @@ flowchart LR
   K --- DBF[("CoW snapshot")]
 ```
 
-`slipfork fork` finishes in under 50 ms because `.venv`, `node_modules`, database pages and bucket
-objects are already on disk. Test a risky migration on the fork; the parent world keeps serving.
+`slipfork fork` finishes in ~0.8s end-to-end (the `< 1s` ceiling). `≤50ms` of that is CoW
+snapshotting (`0.3–50ms` per ioctl: local NVMe versus network block storage); the rest boots the
+cloned stack because `.venv`, `node_modules`, database pages and bucket objects are already on disk.
+Test a risky migration on the fork; the parent world keeps serving.
 
 ## A Forkfile is the whole topology
 

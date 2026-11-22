@@ -29,6 +29,15 @@ pub enum BindSource {
     Bundle(String),
 }
 
+/// Whether a pod rootfs under `<pods>/<world>` is snapshotted with its world on `fork`.
+///
+/// Resource clones (`res-*`) and running services (`svc-*`) carry warm runtime caches; boot and
+/// setup pods are ephemeral and must never travel into a fork.
+#[must_use]
+pub fn is_reusable_pod(id: &str) -> bool {
+    id.starts_with("res-") || id.starts_with("svc-")
+}
+
 /// One bind mount into the pod rootfs.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Bind {

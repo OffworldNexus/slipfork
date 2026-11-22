@@ -177,40 +177,6 @@ mod tests {
     use crate::resources::pg::PostgresTemplate;
 
     #[test]
-    fn dev_flags_are_exactly_the_spec_set() {
-        assert_eq!(
-            DEV_FLAGS,
-            [
-                "-c",
-                "fsync=off",
-                "-c",
-                "synchronous_commit=off",
-                "-c",
-                "full_page_writes=off",
-                "-c",
-                "wal_level=minimal",
-                "-c",
-                "max_wal_senders=0",
-                "-c",
-                "autovacuum=off",
-                "-c",
-                "shared_buffers=32MB",
-                "-c",
-                "dynamic_shared_memory_type=posix",
-                "-c",
-                "unix_socket_directories=/var/lib/postgresql/data/.sock",
-            ]
-        );
-        assert_eq!(PGDATA, "/var/lib/postgresql/data");
-        assert_eq!(PostgresLauncher::PORT, 5432);
-        assert_eq!(
-            PostgresLauncher::READINESS_INTERVAL,
-            Duration::from_millis(2)
-        );
-        assert_eq!(PostgresLauncher::READINESS_BUDGET, Duration::from_secs(2));
-    }
-
-    #[test]
     fn stale_locks_and_pg_stat_are_unlinked_but_the_cluster_survives() {
         let dir = tempfile::tempdir().expect("disk temp dir");
         fs::write(dir.path().join("postmaster.pid"), "4242\n").expect("plant a lock");

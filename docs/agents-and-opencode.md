@@ -62,13 +62,15 @@ When `slipfork` is not on `PATH`, set the plugin's `binary` option to its absolu
 
 ```console
 $ slipfork fork billing-api
-✓ Forked billing-api (38ms) -> http://billing-api--acme-shop.localhost
+✓ Forked billing-api (0.8s) -> http://billing-api--acme-shop.localhost
 $ slipfork status
 ● acme-shop  http://acme-shop.localhost
   └─ forks
      └─ ● billing-api  http://billing-api--acme-shop.localhost
 $ slipfork drop billing-api
 ```
+
+The `0.8s` is end-to-end; `≤50ms` of it is the CoW snapshot.
 
 A fork inherits `.venv`, `node_modules`, input stamps and the live database snapshot, so the first
 command in the new checkout does not install anything. `slipfork drop` stops the fork world before it

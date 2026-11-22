@@ -22,7 +22,7 @@ use tungstenite::http::HeaderValue;
 use tungstenite::http::header::SEC_WEBSOCKET_PROTOCOL;
 use tungstenite::{WebSocket, client, stream::MaybeTlsStream};
 
-use crate::device_key::DeviceKeySigner;
+use crate::device_key::SoftwareP256Signer;
 use crate::endpoint::OsppEndpoint;
 use crate::error::OsppError;
 use crate::model::SubscriptionEnv;
@@ -92,7 +92,7 @@ pub trait OsppClient: Send + Sync {
 /// Production synchronous `OsppClient`.
 pub struct WsOsppClient {
     endpoint: OsppEndpoint,
-    signer: Arc<dyn DeviceKeySigner>,
+    signer: Arc<SoftwareP256Signer>,
     pairing: Option<PathBuf>,
     timeouts: OsppTimeouts,
 }
@@ -102,7 +102,7 @@ impl WsOsppClient {
     /// `<state_dir>/ospp.json` path, and timeouts.
     pub fn new(
         endpoint: OsppEndpoint,
-        signer: Arc<dyn DeviceKeySigner>,
+        signer: Arc<SoftwareP256Signer>,
         pairing: Option<PathBuf>,
         timeouts: OsppTimeouts,
     ) -> Self {

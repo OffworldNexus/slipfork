@@ -1,4 +1,4 @@
-//! P-256 machine authentication keys: the `DeviceKeySigner` port, the
+//! P-256 machine authentication keys: the concrete `SoftwareP256Signer`, the
 //! `0600`-file identity store, and raw `r || s` signatures.
 //!
 //! The machine key authenticates the machine (`auth_response`) and proves
@@ -101,17 +101,6 @@ impl fmt::Debug for SoftwareP256Key {
     }
 }
 
-/// Machine-authentication key port: `public_key_hex()` is the compressed SEC1
-/// 33-byte P-256 public key; `sign()` computes ECDSA P-256 + SHA-256 over the
-/// caller-supplied transcript.
-pub trait DeviceKeySigner: Send + Sync {
-    /// Compressed SEC1 P-256 public key, 66 lowercase hex digits.
-    fn public_key_hex(&self) -> &str;
-
-    /// ECDSA P-256 + SHA-256 over `message`, raw `r || s`.
-    fn sign(&self, message: &[u8]) -> Result<DeviceSignature, OsppError>;
-}
-
 /// `0600` file-backed machine identity: one 64-hex-digit scalar at the
 /// caller-injected path, created exclusively on first use.
 pub struct FileDeviceKeyStore {
@@ -187,7 +176,7 @@ impl FileDeviceKeyStore {
     }
 }
 
-/// In-memory [`DeviceKeySigner`] over a [`SoftwareP256Key`].
+/// In-memory machine key signer over a [`SoftwareP256Key`].
 pub struct SoftwareP256Signer {
     key: SoftwareP256Key,
     public_key_hex: String,
@@ -217,12 +206,14 @@ impl fmt::Debug for SoftwareP256Signer {
     }
 }
 
-impl DeviceKeySigner for SoftwareP256Signer {
-    fn public_key_hex(&self) -> &str {
+impl SoftwareP256Signer {
+    /// Compressed SEC1 P-256 public key, 66 lowercase hex digits.
+    pub fn public_key_hex(&self) -> &str {
         &self.public_key_hex
     }
 
-    fn sign(&self, message: &[u8]) -> Result<DeviceSignature, OsppError> {
+    /// ECDSA P-256 + SHA-256 over `message`, raw `r || s`.
+    pub fn sign(&self, message: &[u8]) -> Result<DeviceSignature, OsppError> {
         Ok(self.key.sign_message(message))
     }
 }

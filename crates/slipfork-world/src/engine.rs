@@ -262,9 +262,7 @@ impl WorldEngine for BtrfsEngine {
             {
                 let entry = entry.map_err(|source| Error::io("read", &parent_pods, source))?;
                 let file_name = entry.file_name();
-                let reusable = file_name
-                    .to_str()
-                    .is_some_and(|name| name.starts_with("res-") || name.starts_with("svc-"));
+                let reusable = file_name.to_str().is_some_and(crate::pod::is_reusable_pod);
                 let source_path = entry.path();
                 if reusable && btrfs::is_subvolume_path(&source_path).unwrap_or(false) {
                     jobs.push((source_path, fork_pods.join(file_name)));
@@ -308,6 +306,10 @@ impl WorldEngine for BtrfsEngine {
 
     fn is_sealed(&self, subvolume: &Path) -> Result<bool> {
         Self::subvolume_flags(subvolume).map(SubvolumeFlags::is_read_only)
+    }
+
+    fn sweep_pods(&self, pods_dir: &Path) -> Result<()> {
+        teardown::sweep_pods_dir(pods_dir)
     }
 
     fn destroy(&self, subvolume: &Path, dirtiness: Dirtiness, force: bool) -> Result<()> {

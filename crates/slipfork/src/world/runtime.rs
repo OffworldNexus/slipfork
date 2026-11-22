@@ -26,7 +26,7 @@ mod images;
 mod ready;
 mod resources;
 
-use helpers::{merge_env, project_bind, service_argv, shell_command, sweep_stale_pods};
+use helpers::{merge_env, project_bind, service_argv, shell_command};
 use images::{BuiltImage, ImageCache};
 use ready::{Ready, Staged};
 
@@ -113,10 +113,11 @@ impl WorldRuntime {
             if let Ok(entries) = fs::read_dir(layout.world_pods(&world)) {
                 for entry in entries.flatten() {
                     let path = entry.path();
-                    let keep =
-                        entry.file_name().to_str().is_some_and(|name| {
-                            name.starts_with("res-") || name.starts_with("svc-")
-                        }) && slipfork_world::is_subvolume_path(&path).unwrap_or(false);
+                    let keep = entry
+                        .file_name()
+                        .to_str()
+                        .is_some_and(slipfork_world::is_reusable_pod)
+                        && slipfork_world::is_subvolume_path(&path).unwrap_or(false);
                     if keep {
                         initial_clones.push(path);
                     } else if slipfork_world::is_subvolume_path(&path).unwrap_or(false) {
@@ -129,9 +130,10 @@ impl WorldRuntime {
                 }
             }
         } else {
-            sweep_stale_pods(&engine, &layout.world_pods(&world))?;
+            engine
+                .sweep_pods(&layout.world_pods(&world))
+                .map_err(|error| error.to_string())?;
         }
-        sweep_stale_pods(&engine, &layout.world(&world).join("pods"))?;
         // The `Forkfile` compiler owns every `arg`/`env` expression; this composition root only
         // supplies the world name and the vault lookup the compiler asks for.
         let vault = FileSecretVault::new(env.state_dir.join("secrets.json"));

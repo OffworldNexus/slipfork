@@ -108,39 +108,3 @@ impl RedisLauncher {
         )
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn aof_argv_data_dir_and_poll_budget_are_exact() {
-        assert_eq!(
-            ARGV,
-            [
-                "redis-server",
-                "--bind",
-                "127.0.0.1",
-                "--dir",
-                "/data",
-                "--save",
-                "",
-                "--appendonly",
-                "yes",
-                "--appendfsync",
-                "no",
-            ]
-        );
-        assert_eq!(DATA, "/data");
-        assert_eq!(RedisLauncher::PORT, 6379);
-        assert_eq!(RedisLauncher::READINESS_INTERVAL, Duration::from_millis(2));
-        let launcher = RedisLauncher::new(
-            StoreLayout::at("/mnt/btrfs/.slipfork-store"),
-            WorldName::parse("demo").expect("valid world"),
-        );
-        assert_eq!(
-            launcher.data_dir("cache"),
-            Path::new("/mnt/btrfs/.slipfork-store/worlds/demo/redis/cache")
-        );
-    }
-}

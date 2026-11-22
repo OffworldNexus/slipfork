@@ -110,7 +110,7 @@ $ slipfork down
 
 ## 4. Sub-Second `slipfork fork` & `slipfork drop`
 
-`slipfork fork [name]` snapshots your project subvolume, world data subvolume, and PG18 `PGDATA` subvolume via Btrfs CoW, verifies matching `world_epoch` stamps (`0` image rebuilds, `0` redundant hooks), and boots the full fork stack in **`< 500ms`** (`< 1.0s` ceiling):
+`slipfork fork [name]` snapshots your project subvolume, world data subvolume, and PG18 `PGDATA` subvolume via Btrfs CoW, verifies matching `world_epoch` stamps (`0` image rebuilds, `0` redundant hooks), and boots the full fork stack in **`~0.8s`** (`< 1.0s` ceiling):
 
 ```text
 ✓ Forked feat-auth (310ms) -> http://feat-auth--demo.localhost

@@ -2705,3 +2705,7 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-22T03:02 [M3.45.3] (lead) attempt 3/3 started
 - 2026-11-22T03:02 [M3.45.3] (lead) attempt 3: fix VM staging (slipfork-owned target, fresh bins), rerun 4 live suites, cleanup, final gates
 - 2026-11-22T03:18 [M3.45.3] (lead) status active -> done
+- 2026-11-22T03:34 [M3.45.4] (lead) created (task) Milestone sign-off fixes: doc honesty, pod.rs split, snapshot provenance, dead sweeps, single-impl signer trait
+- 2026-11-22T03:34 [M3.45.4] (lead) status ready -> active
+- 2026-11-22T03:34 [M3.45.4] (lead) attempt 1/3 started
+- 2026-11-22T03:34 [M3.45.4] (lead) base 3e6336867a970fd60c562892f97327f6e1c8e000

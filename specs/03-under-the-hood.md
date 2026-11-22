@@ -1,6 +1,6 @@
 # 03 — How It Works Under the Hood
 
-Slipfork runs your cloud environment locally in a box; CI is the clutch. It boots full-stack worlds and clones live branches in **`< 500ms`** (`100%` Docker-free) by combining Btrfs subvolumes, a native Rust S3 engine, a golden PG18 template, a reactive `tokio` DAG, and one per-user daemon.
+Slipfork runs your cloud environment locally in a box; CI is the clutch. It boots full-stack worlds and clones live branches in **`~0.8s`** (`< 1.0s` ceiling, `100%` Docker-free) by combining Btrfs subvolumes, a native Rust S3 engine, a golden PG18 template, a reactive `tokio` DAG, and one per-user daemon.
 
 <!-- sample output -->
 ```console
@@ -10,7 +10,7 @@ $ slipfork fork feat-auth
 ✓ Forked feat-auth (<elapsed_ms>) -> http://feat-auth--demo.localhost
 ```
 
-*Sample transcript above; real `< 500ms` target / `< 1.0s` wall-clock ceiling is asserted via `std::time::Instant` in `critical_fork_live`.*
+*Sample transcript above; real `~0.8s` target / `< 1.0s` wall-clock ceiling is asserted via `std::time::Instant` in `critical_fork_live`.*
 
 ---
 
@@ -60,7 +60,7 @@ Slipfork pulls zero external S3 images and runs zero distributed master, Raft, v
 
 ---
 
-## 3. Speed-of-Light Dev Databases, Reactive `tokio` DAG & `< 500ms` Fork Budget
+## 3. Speed-of-Light Dev Databases, Reactive `tokio` DAG & `~0.8s` Fork Budget
 
 - **PostgreSQL 18 (`~30–50ms` start, `0ms` per-world `initdb`):** Built once at `<btrfs_mount>/.slipfork-store/templates/postgres-18` and sealed `BTRFS_SUBVOL_RDONLY`. `PostgresLauncher` clones `PGDATA` in one CoW ioctl (`~0.3ms` local NVMe, single-digit ms on network block storage, `≤50ms` ceiling), unlinks stale `postmaster.pid`, mounts `/dev/shm`, runs `postgres -c fsync=off -c synchronous_commit=off -c full_page_writes=off -c wal_level=minimal -c max_wal_senders=0 -c autovacuum=off -c shared_buffers=32MB -c dynamic_shared_memory_type=posix`, writes `world_epoch` at `CHECKPOINT`, and polls readiness every **`2ms`**.
 - **Redis 7 (`~5–10ms` start, live keys preserved on `fork`):** `RedisLauncher` runs `redis-server --dir /data --save "" --appendonly yes --appendfsync no` on `<world>/redis/<id>` and polls `:6379` every **`2ms`**.
@@ -86,7 +86,7 @@ flowchart LR
 | `CHECKPOINT` + `world_epoch` + parallel Btrfs snapshots (project, world, PG) + branch switch | `25–55ms` | — |
 | World `unshare` + `slipfork-world-init` + `ConfigureS3` `:8333` + epoch-verified stamp hit (`0` rebuilds/hooks) | `15–35ms` | — |
 | Reactive `tokio` pod boot (PG18 `~40ms`, Redis `~8ms`, app services `2ms` poll) + `:80` route swap | `150–300ms` | — |
-| **End-to-end (`Command::spawn` -> `http://<fork>--<world>.localhost` `200 OK`)** | **`< 500ms`** | **`< 1.0s` (`1000ms`)** |
+| **End-to-end (`Command::spawn` -> `http://<fork>--<world>.localhost` `200 OK`)** | **`~0.8s`** | **`< 1.0s` (`1000ms`)** |
 
 ---
 
@@ -121,7 +121,7 @@ Slipfork has **five explicit composition roots** and **zero** ambient probes in 
 
 | Crate | Canonical Cohesive Structs / Modules (`<= 500` LOC each) | Port → Adapter |
 | :--- | :--- | :--- |
-| `slipfork` | `Cli` (`clap` 4.6 + `clap_complete` + `clap_mangen`), `UiMode`, `BootTui`, `TableLayout`, `FileVault`, `DaemonServer` | `SecretVault`, `DaemonControl` |
+| `slipfork` | `Cli` (`clap` 4.6 + `clap_complete` + `clap_mangen`), `UiMode`, `BootTui`, `TableLayout`, `FileVault`, `DaemonServer` | `SecretVault` |
 | `slipfork-forkfile` | `ForkfileCompiler`, `SecretValue` (redacted `Debug`, zeroize-on-drop), `BucketPolicy`, `DnsLabel`, `Formatter`, `SnowMigrator` | — |
 | `slipfork-world` | `BtrfsEngine`, `BootScheduler` (`Handle` + `spawn_blocking`), `WorldStampStore` (`world_epoch`), `PostgresLauncher`, `RedisLauncher`, `resources/s3/{server.rs,object_ops.rs,listing.rs,policy.rs}` (`S3Server`, `S3BucketStore`, `SigV4Verifier`), `WorldSupervisor` | `WorldEngine` → `BtrfsEngine` |
 | `slipfork-image` | `NativeImageBuilder`, `OciRegistryClient`, `DockerfileExecutor` | `BaseImageBuilder` → `NativeImageBuilder` |
@@ -130,4 +130,4 @@ Slipfork has **five explicit composition roots** and **zero** ambient probes in 
 | `slipfork-vcs` | `GitWorkspace` | `VcsWorkspace` → `GitWorkspace` |
 | `slipfork-lsp` | `LspServer` | — |
 
-The canonical port set is strictly `WorldEngine`, `BaseImageBuilder`, `SecretVault`, `DaemonControl`, `OsppClient`, and `VcsWorkspace` — zero single-impl mock traits sit beside them.
+The canonical port set is strictly `WorldEngine`, `BaseImageBuilder`, `SecretVault`, `OsppClient`, and `VcsWorkspace` — zero single-impl mock traits sit beside them. The CLI's `DaemonClient` is a concrete cohesive struct, not a one-adapter trait.

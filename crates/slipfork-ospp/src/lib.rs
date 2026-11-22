@@ -6,7 +6,7 @@
 //!
 //! - [`client::OsppClient`] + [`client::WsOsppClient`]: `pair`, `connect` ->
 //!   `subscribe`/`dump`/`unsubscribe`/`close` over `tungstenite` + `rustls`.
-//! - [`device_key::DeviceKeySigner`] + [`device_key::FileDeviceKeyStore`]: the
+//! - [`device_key::SoftwareP256Signer`] + [`device_key::FileDeviceKeyStore`]: the
 //!   `0600` machine-authentication P-256 identity (auth and pairing only).
 //! - [`keys::SubscriptionKey`]: a per-subscription `hpke-p256` keypair held in
 //!   memory only (`info = "ospp-v1-secret"`, `aad = "<component>:<env_key>"`).
@@ -38,8 +38,8 @@ pub use client::{
     WsOsppSession, open_dump_stream,
 };
 pub use device_key::{
-    DeviceKeySigner, DeviceSignature, FileDeviceKeyStore, PUBLIC_KEY_HEX_LEN, SIGNATURE_BYTES,
-    SIGNATURE_HEX_LEN, SoftwareP256Key, SoftwareP256Signer,
+    DeviceSignature, FileDeviceKeyStore, PUBLIC_KEY_HEX_LEN, SIGNATURE_BYTES, SIGNATURE_HEX_LEN,
+    SoftwareP256Key, SoftwareP256Signer,
 };
 pub use dump::{DumpReader, MAX_DUMP_CHUNK};
 pub use endpoint::{OsppEndpoint, is_loopback_host};

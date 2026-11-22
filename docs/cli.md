@@ -97,9 +97,9 @@ $ NO_COLOR=1 slipfork status
 $ slipfork up --json
 ```
 
-Under `--json`, `up` prints one final object
-`{world, url, elapsed_ms, nodes: [{kind, name, state, duration_ms}]}`; `restart` answers the
-same shape, and `fork` answers `{fork, world, project, url, elapsed_ms, snapshot_ms}`.
+Under `--json`, `up` streams one NDJSON event object per boot node and then one final
+`{world, url, elapsed_ms, nodes: [{kind, name, state, duration_ms}]}` object; `restart` answers the
+same final shape, and `fork` answers `{fork, world, project, url, elapsed_ms, snapshot_ms}`.
 No renderer ever parses human text.
 
 !!! warning "`shell` allocates no TTY"
