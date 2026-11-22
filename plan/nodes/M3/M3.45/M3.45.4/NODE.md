@@ -2,7 +2,7 @@
 id: M3.45.4
 title: "Milestone sign-off fixes: doc honesty, pod.rs split, snapshot provenance, dead sweeps, single-impl signer trait"
 kind: task
-status: active
+status: done
 owner: implementer
 priority: 3
 depends_on: [M3.45.3]
@@ -11,7 +11,7 @@ attempts: 1
 max_attempts: 3
 escalation: none
 created: "2026-11-22T03:34"
-updated: "2026-11-22T03:34"
+updated: "2026-11-22T09:42"
 ---
 
 # Goal

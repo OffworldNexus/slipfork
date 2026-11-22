@@ -2,7 +2,7 @@
 id: M3.45
 title: "Final TESTING_PLAN.md E2E verification, make coverage sweep & live <1s fork + frozen-pane PTY demo gate on 165.232.86.174"
 kind: epic
-status: ready
+status: done
 priority: 3
 depends_on: [M3.44]
 paths:
@@ -26,7 +26,7 @@ attempts: 0
 max_attempts: 3
 escalation: none
 created: "2026-11-21T19:40"
-updated: "2026-11-21T19:40"
+updated: "2026-11-22T09:42"
 ---
 
 # Goal
