@@ -2942,3 +2942,5 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-22T18:18 [M3.51.2] (lead) attempt 2/3 started
 - 2026-11-22T18:18 [M3.51.2] (lead) gate: critical_fork_live expects the retired static-cdn local authority (specs/01 §4 says cdn is cloud-only)
 - 2026-11-22T18:23 [M3.51.2] (lead) status active -> done
+- 2026-11-22T18:25 HUMAN H-012 [release-gate] opened by lead (node M3.51)
+- 2026-11-22T18:25 [M3.51] (lead) status active -> done

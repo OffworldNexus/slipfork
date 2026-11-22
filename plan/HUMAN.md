@@ -96,3 +96,11 @@ M3.50 live demo fork median is 1.10s (5 warm samples 1.22/1.10/1.10/1.11/0.98) o
 
 **Answer:**
 
+## H-012 [open] [release-gate] (node M3.51)
+
+- asked: 2026-11-22T18:25 by lead
+
+Pre-existing live defect outside M3.51 scope, reproducible on 165.232.86.174: critical_fork_live's big journey (spawn->fork benchmark section) sees the parent INSERT row before fork but the fork's app_db has 3 rows instead of 4 (last committed row missing in the fork snapshot) despite the M3.50.6 syncfs call; the extracted M3.51.2 rollback journey passes. Also resolved a spec blind spot in favor of specs/01 §4: 'cdn <id>' is cloud-only, so tests now use assets.<world>.localhost and assert static-cdn.<world>.localhost is 404; specs/03 §server table still mentions CDN virtual-host dispatch and should be reconciled. M3.51 gate itself is green.
+
+**Answer:**
+
