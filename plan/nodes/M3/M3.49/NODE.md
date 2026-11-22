@@ -2,16 +2,16 @@
 id: M3.49
 title: "Update specs/ & ARCHITECTURE.md: unified PTY slipfork shell (drop db/redis), DECSTBM fixed-bottom-bar 1-line-per-task TUI & <1s 8-component fork"
 kind: task
-status: ready
+status: done
 owner: architect
 priority: 3
 depends_on: []
 paths: ["specs/**", TESTING_PLAN.md, ARCHITECTURE.md, .opencode/LESSONS.md]
-attempts: 0
+attempts: 2
 max_attempts: 3
-escalation: none
+escalation: architect
 created: "2026-11-22T12:10"
-updated: "2026-11-22T12:10"
+updated: "2026-11-22T12:39"
 ---
 
 # Goal

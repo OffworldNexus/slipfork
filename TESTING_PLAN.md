@@ -1,6 +1,6 @@
 # The Slipfork Testing Plan
 
-Slipfork runs your cloud environment locally in a box; CI is the clutch. Canonical root copy of [`specs/04-testing-plan.md`](./specs/04-testing-plan.md) (alongside [01 `Forkfile`](./specs/01-forkfile.md), [02 CLI UX](./specs/02-cli-ux.md), [03 Under the Hood](./specs/03-under-the-hood.md), [05 `OSPP v1`](./specs/05-ospp-v1.md), and [06 Distribution & Docs](./specs/06-distribution-and-docs.md)) — proven against real Btrfs subvolumes, `crun`, PostgreSQL 18, Redis 7, native Rust S3, and PTYs.
+Slipfork runs your cloud environment locally in a box; CI is the clutch. Canonical root copy of [`specs/04-testing-plan.md`](./specs/04-testing-plan.md) (alongside [01 `Forkfile`](./specs/01-forkfile.md), [02 CLI UX](./specs/02-cli-ux.md), [03 Under the Hood](./specs/03-under-the-hood.md), [05 `OSPP v1`](./specs/05-ospp-v1.md), and [06 Distribution & Docs](./specs/06-distribution-and-docs.md)) — proven against real Btrfs subvolumes, `crun`, PostgreSQL 18, Redis 7, native Rust S3, and real kernel PTYs.
 
 ```console
 $ tools/do_vm.py sync && tools/do_vm.py test
@@ -9,7 +9,7 @@ $ SLIPFORK_TEST_ROOT=/mnt/slipfork-live make live-test
 
 ```mermaid
 flowchart LR
-  Unit["Algorithm Unit Tests\n(Forkfile AST, RFC 1123, SigV4,\nDAG edges, Merkle stamps)"] --> Lab["7 Btrfs/VM Live Suites + 8 Host Critical Suites\n(Btrfs + crun + PG18 + Redis 7 +\nnative S3 + PTY + <1.0s Instant fork)"]
+  Unit["Algorithm Unit Tests\n(Forkfile AST, RFC 1123, SigV4,\nDAG edges, Merkle stamps)"] --> Lab["7 Btrfs/VM Live Suites + 8 Host Critical Suites\n(Btrfs + crun + PG18 + Redis 7 + native S3 +\nDECSTBM & shell PTY + <1.0s 8-component fork)"]
   Lab --> Pkg["Distro & ELF Release Gate\n(.deb, .rpm, pacman, .apk, install.sh)"]
 ```
 
@@ -27,17 +27,28 @@ flowchart LR
 
 ---
 
-## 2. `clap` CLI, Frozen-Pane PTY TUI & Terminal Hygiene
+## 2. `clap` CLI, `DECSTBM` Bottom-Bar PTY TUI, Real-PTY `shell` & Terminal Hygiene
 
-- **Real PTY frozen-pane capture & `NO_COLOR`/`TERM=dumb` PTY purity (`critical_status_live`, `critical_cli_surface`):** Drive `slipfork up`, `restart`, and `down` inside a real PTY (`script -qec` / `openpty`), asserting the color TTY renders Braille spinners, dimmed 1–3 line rolling `RUN`/hook tails, the 16-cell `[████░░] done/total` bar, and aligned `✓`/`•` popped rows (`8ch + 2sp` kind + `node_start.elapsed()`). Re-run `up` and `restart` in the **same real PTY** with `NO_COLOR=1` and `TERM=dumb`, asserting the plain-ASCII frozen pane (`|/-\` spinner, `[#.]` bar), **`0` `\x1b[` bytes**, and **no SGR**.
-- **Non-TTY replay, `--json` schemas & `clap` completions/manpage (`critical_cli_surface`, `critical_host_verbs`):** On piped non-TTY stdio, assert `→ [i/n]` headers + `✓ <kind> <name> <state>  <dur>` stderr replay with `0` `\x1b[` and `0` `\r` bytes; across the verbs that accept `--json`, assert exact JSON schemas (`up`/`restart` `{world,url,elapsed_ms,nodes}`, `doctor` `{ready,checks}`, structured `{"error":{code,message,next}}` failures) with `0` `\x1b[` bytes, plus non-empty `slipfork completions bash|zsh|fish` and `clap_mangen` `slipfork(1)` output.
-- **Service-only default `logs`, `down`, `exec`/`shell`, `db`/`redis`, and `open` (`critical_world_journey`, `critical_host_verbs`):** Verify `slipfork logs [-f]` streams app `service` pods only by default while `-a`/`--all` (or `slipfork logs pg`) includes resources, `down` streams per-pod stop rows + `removed run subvolumes`, restart dividers survive `restart`, `exec` forwards exit codes, `db`/`redis` attach cleanly, and `open` is SSH/headless-safe.
+- **Real PTY `DECSTBM` scroll-region capture & `NO_COLOR`/`TERM=dumb` PTY purity (`critical_status_live`, `critical_cli_surface`):**
+  - Drive `slipfork up`, `restart`, and `down` inside a real PTY (`openpty` / `script -qec`), asserting `ColorTty` (`rows >= 3`, `cols >= 80`) sets `\x1b[1;{rows-1}r`, pins the 24-cell `[██████████████████░░░░░░]` bar (`filled = round(done / total * 24)`) with consistent `done/total` and `pct%` on row `rows`, omits the bar below `80` cols without shearing counters, and never emits `\x1b[1;1r`/`\x1b[1;2r` when `rows < 3`.
+  - Assert **strictly one** aligned line per task above row `rows` with **zero** `StepLog`/`sealed sha256:`/`dockerfile` debug lines, dim `• image <name> cached` on OCI/Dockerfile cache hits (never `pulled`/`built`), clean `SIGWINCH` redraws, and `ScrollRegionGuard` `\x1b[r` + row-`rows` clear on success and failure (`✗ Failed to build image <id> — check logs with: slipfork logs <id>`).
+  - Re-run in the **same real PTY** with `NO_COLOR=1` and `TERM=dumb`, asserting the `\r`-rewritten plain-ASCII bottom line (`|/-\` spinner, 24-cell `[#.]` bar when `cols >= 80`), **`0` `\x1b[` bytes**, and **no SGR**.
+- **Non-TTY replay, `--json` schemas & `clap` surface (`critical_cli_surface`, `critical_host_verbs`):**
+  - On piped non-TTY stdio, assert `→ [i/n]` headers + `✓ <kind> <name> <state>  <dur>` replay with `0` `\x1b[` and `0` `\r` bytes, exact `--json` schemas (`up`/`restart`, `doctor`, structured `{"error":{code,message,next}}`) with `0` `\x1b[` bytes, and non-empty `completions` + `clap_mangen` `slipfork(1)` output.
+  - In `critical_cli_surface`, assert `Cli::command()` shape and exit-`2` refusals only — explicitly superseding `crates/slipfork/tests/critical_cli_surface.rs:133,136,242,259,260` (`db`/`redis` subcommands and bare `shell` without `<target>`) — while `critical_host_verbs` covers `down` and SSH/headless-safe `open` (zero `shell` duplication).
+- **One cohesive real-PTY `shell <target>`, `logs`, and `exec` journey (`critical_world_journey`):**
+  - Inside one booted world, verify `slipfork shell <service|image>` over a real PTY attaches `/dev/pts/N` via `crun exec --tty --console-socket` + `SCM_RIGHTS` (`tty` exits `0`, zero `can't access tty; job control turned off`, `(<world>:<target>)` prompt, `SIGWINCH` `TIOCSWINSZ` resize, cooked mode restored on exit), `slipfork shell <pg|database>` runs `psql` (TTY and piped `-X -q -v ON_ERROR_STOP=1`), `slipfork shell <redis>` runs `redis-cli` (TTY and piped), and `s3`/unknown targets print exact `1 line + next:` refusals on stderr (`✗ 'uploads' is an s3 bucket, not a shell` / `✗ No shellable target 'apii'`).
+  - In the same journey (plus one failed cold image build), verify `slipfork logs <image>` reads `<store>/logs/<world>/<id>.log` even when no pods are running and survives `down`, bare `slipfork logs` streams app `service`s only (`-a` adds images + resources), and `exec` forwards exit codes.
 
 ---
 
-## 3. Sub-Second `< 1.0s` Full-Stack `slipfork fork` & Coding Agents
+## 3. Sub-Second `< 1.0s` 8-Component `slipfork fork` & Coding Agents
 
-- **Asserted `< 1.0s` `Instant` wall-clock `fork` (`critical_fork_live`):** On the real Btrfs lab host (`165.232.86.174`), boot a parent world with seeded PostgreSQL 18 rows, live Redis 7 AOF keys, native S3 objects, `@uv`/`@pnpm` installs, a `Dockerfile` image, and HTTP routes; wrap the real `Command::spawn` of `slipfork fork feat-auth` through to `200 OK` on `http://feat-auth--demo.localhost` in `std::time::Instant` and **assert** (never merely print) `elapsed < Duration::from_secs(1)` (`< 500ms` target), verifying parent DB rows, Redis keys, and S3 objects are live, matching `world_epoch` stamps skipped `Dockerfile` rebuilds/context walks and `pre-deploy` hooks (`0` re-runs, while mismatched `world_epoch` forces hook re-execution), fork writes stay isolated, and `drop` refuses dirty checkouts without `-f`.
+- **Asserted `< 1.0s` median wall-clock `fork` across all 8 demo components (`critical_fork_live`):**
+  - On `165.232.86.174`, boot the full 8-row demo fixture: **4 resources** (`pg` with seeded rows, `cache` with live Redis 7 AOF keys, private `uploads` S3, `public-read` + CDN `assets` S3) and **4 services** (`api` and `worker` from one `Dockerfile` image, `front` from a second `Dockerfile` image, and one OCI `from <ref>` service), with `@uv`/`@pnpm` installs and a `pre-deploy` migration hook.
+  - Run **1 discarded warm-up fork then 3 timed samples**, wrapping `Command::spawn` of `slipfork fork` until all **8** rows report ready and `http://<fork>--<world>.localhost` answers `200 OK` in `std::time::Instant`; print every sample and **assert** `median < Duration::from_secs(1)` (`~0.5–0.8s` target, never best-of).
+  - Assert direct binary `exec` + zero pre-fork `CHECKPOINT` observables: pod `/proc/<pid>/cmdline` argv[0] is the absolute `postgres` / `redis-server` binary path (no `docker-entrypoint.sh`), and parent `PGDATA` `PG_VERSION` + `pg_wal` mtimes remain unchanged across `fork` snapshot preparation.
+  - Assert parent `image` subvolume reuse (`cached`) and boot-trace `[started_ms, finished_ms]` interval overlap proving a `service` `Started` before `pg` `Ready` when `world_epoch` stamps match (while a mismatched `world_epoch` or stale `pre-deploy` orders `pg` `Ready` → `pre-deploy` → `service` `Started`), plus isolated fork writes and dirty `drop` refusal without `-f`.
 - **Parallel AI coding-agent sessions (`@slipfork/opencode`):** Open concurrent OpenCode worktrees against one repo, verifying `SLIPFORK_WORLD` + `SLIPFORK_URL` export, `_` -> `-` `.localhost` branch slug normalization, and clean fork reaping on session idle.
 
 ---
@@ -46,7 +57,7 @@ flowchart LR
 
 - **Install, `doctor`, packages & `install.sh` (`critical_daemon`, `critical_host_verbs`):** Verify `slipfork daemon install`, `sudo slipfork daemon install --ingress`, 3-row `slipfork doctor` (`✓ Ready` vs `✗ N issue(s)` with per-row `next:`), `.deb`/`.rpm`/`.pkg.tar.zst`/`.apk`/portable archives gated by `scripts/check-portable-elf.sh`, `docs/install.sh`, and `slipfork migrate` (`critical_fmt_migrate`).
 - **`OSPP v1` secrets & offline fallback (`critical_ospp`):** Pair against the `127.0.0.1:0` loopback `OSPP v1` reference server, verify `hpke-p256` `SecretValue` decryption strictly on `tmpfs`, live `env_updated` restarts, sealed DB dumps, and offline `secret(KEY) ?? random_hex(32)` parity with TTY-gated `--reveal`.
-- **Focused algorithm & editor suites (`critical_forkfile`, `critical_fmt_migrate`, `critical_lsp`):** Unit-test `# forkfile: 0.1` parsing, RFC 1123 + `3..=63` S3 bucket validation, `BucketPolicy` checking, `SecretValue` taint rules, DAG deduplication, Merkle + `world_epoch` stamping, SigV4 canonicalization, `slipfork fmt`, `slipfork-lsp`, and the Zed extension.
+- **Focused algorithm & editor suites (`critical_forkfile`, `critical_fmt_migrate`, `critical_lsp`):** Unit-test `# forkfile: 0.1` parsing, RFC 1123 + `3..=63` S3 bucket validation, `BucketPolicy` checking, `SecretValue` taint rules, DAG concurrency edges (parallel stamped vs resource-gated stale hooks), Merkle + `world_epoch` stamping, SigV4 canonicalization, `slipfork fmt`, `slipfork-lsp`, and the Zed extension.
 
 ---
 

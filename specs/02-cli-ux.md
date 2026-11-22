@@ -1,6 +1,6 @@
 # 02 — The CLI UX
 
-Slipfork runs your cloud environment locally in a box; CI is the clutch. Every command follows four rules: **high signal, aligned visual hierarchy, live bottom-anchored progress on interactive terminals, and zero escape noise anywhere else.**
+Slipfork runs your cloud environment locally in a box; CI is the clutch. Every command follows four rules: **high signal, aligned visual hierarchy, an `apt`-style fixed 1-line bottom progress bar on interactive terminals, and zero escape noise anywhere else.**
 
 ```console
 $ slipfork up
@@ -18,16 +18,16 @@ $ slipfork up
 **Semantic ANSI palette (color-capable interactive TTY only):**
 - **Green:** `●` active world dot, `✓` completed node, `running` / `listening` state
 - **Bold cyan:** clickable `http://*.localhost` URLs; **Bold default:** node/world names
-- **Red:** `✗` failed step, `failed` / `crashed` state; **Yellow:** `!` ephemeral/dirty warnings
-- **Dim:** `•` zero-work cache hit, fixed-width node kinds (`8` chars + `2` spaces), paths, ages, rolling log tails, and right-aligned durations (`38ms`)
+- **Red:** `✗` failed step and failure remedy line, `failed` / `crashed` state; **Yellow:** `!` ephemeral/dirty warnings
+- **Dim:** `•` zero-work cache hit, fixed-width node kinds (`8` chars + `2` spaces), paths, ages, and right-aligned durations (`38ms`)
 
 ---
 
 ## 1. `clap` 4.6 Derive Surface, Completions & Manpage
 
-`clap` `4.6` (`derive`) is the **only** argv parser, flag validator, and `--help` / `--version` renderer in `slipfork`. There are zero hand-rolled argv loops, custom verb tables, or hand-templated docs.
+`clap` `4.6` (`derive`) is the **only** argv parser, flag validator, and `--help` / `--version` renderer in `slipfork`. There are zero hand-rolled argv loops, custom verb tables, or legacy command aliases.
 
-- **Single source of truth:** `clap_complete` generates `slipfork completions <bash|zsh|fish>` and `clap_mangen` generates the packaged `slipfork(1)` roff manpage directly from `Cli::command()`, so `--help`, shell completions, and `man slipfork` never drift.
+- **Single source of truth:** `clap_complete` generates `slipfork completions <bash|zsh|fish>` and `clap_mangen` generates the packaged `slipfork(1)` roff manpage directly from `Cli::command()`, so `--help`, completions, and `man slipfork` never drift.
 - **Dynamic column measurement:** Terminal tables and DAG columns measure visible character width via `console::measure_text_width` (after stripping ANSI escapes, `.max()` across rows) — never shearing long service or fork names with hardcoded `{:<16}` widths.
 
 ---
@@ -62,100 +62,98 @@ When nothing is running, `slipfork` prints a dim `○ No worlds running` and exi
 
 ---
 
-## 3. Frozen-Bottom-Pane Live TUI (`up`, `restart`, `fork`) & `down`
+## 3. Fixed-Bottom-Bar Live TUI (`DECSTBM`) & `down`
 
-On an interactive TTY, `up`, `restart`, and `fork` drive an `indicatif::MultiProgress` **frozen bottom pane** while completed DAG nodes pop permanently above it via `MultiProgress::println`:
+On an interactive ANSI TTY (`rows >= 3`), `up`, `restart`, and `fork` establish a **VT100 `DECSTBM` scroll region (`\x1b[1;{rows-1}r`)** in `crates/slipfork/src/boot/` so completed tasks scroll naturally above a fixed 1-line `apt`-style bottom panel on row `rows` (never bouncing height or appearing mid-screen):
 
 ```mermaid
 flowchart TD
-  Scroll["Completed scrollback (MultiProgress::println)\n✓ / • | dim kind (8ch + 2sp) | bold name | state | dim right-aligned node duration"]
-  Spin["Frozen pane — active in-flight parallel nodes\n⠋ Braille spinner + live timer + dimmed 1-3 line rolling RUN/hook tail"]
-  Bar["Frozen pane — anchored 16-cell bottom bar\n[██████████░░░░░░] done/total  Booting demo  elapsed"]
-  Scroll --- Spin --- Bar
+  Region["Scroll region: rows 1..rows-1 (\\x1b[1;{rows-1}r)\nStrictly ONE aligned line per finished task (✓ / • / ✗)\nZero StepLog, sha256, dockerfile, or hook log lines"]
+  Panel["Fixed bottom row: row rows (1-line height, never scrolls)\n⠋ [██████████████████░░░░░░]  9/12  75% · Starting api, worker, front… · 0.4s\nClamped to cols, updated on SIGWINCH, cleared via RAII ScrollRegionGuard"]
+  Region --- Panel
 ```
 
-**Mid-flight interactive TTY frame (parallel build + hook in progress):**
+**Mid-flight interactive TTY frame (`9` finished rows above `9/12  75%`, `filled = round(done / total * 24) = 18`):**
 
 ```text
-✓ resource  uploads   s3 private                1ms
-✓ resource  assets    s3 public-read -> cdn     1ms
-✓ resource  cache     redis 7 ready             8ms
-✓ resource  pg        postgres 18 ready        39ms
-• image     backend   cached                    1ms
-• setup     backend   uv sync (up to date)      0ms
-⠋ image     frontend  building stage dev       1.2s
-  │ [3/5] RUN pnpm fetch --frozen-lockfile
-  │ Progress: resolved 412, reused 410, downloaded 2
-⠹ hook      api       pre-deploy               0.2s
-  │ INFO  [alembic.runtime.migration] Running upgrade -> 9c41a2b0
-[██████████░░░░░░] 6/10  Booting demo  1.2s
+• image     backend   cached                     1ms
+• image     frontend  cached                     1ms
+✓ resource  uploads   s3 private                 1ms
+✓ resource  assets    s3 public-read -> cdn      1ms
+✓ resource  cache     redis 7 ready              8ms
+✓ resource  pg        postgres 18 ready         39ms
+• setup     backend   uv sync (up to date)       0ms
+• setup     frontend  pnpm install (up to date)  0ms
+• hook      api       pre-deploy (up to date)    0ms
+
+⠋ [██████████████████░░░░░░]  9/12  75% · Starting api, worker, front… · 0.4s
 ```
 
-- **Pinned frame geometry:** `done` counts popped rows (`6`), `total` is total DAG nodes (`10`), the kind column is `8` visible chars + `2` trailing spaces (`10` cols after `✓ `/`• `/`⠋ `), and the anchored bar is `16` cells (`[██████████░░░░░░]`). Terminals narrower than `48` columns omit the 16-cell bracket bar and render `6/10  Booting demo  1.2s`.
-- **Opaque-free tails & non-TTY replay:** Active spinners show up to 3 dimmed rolling `RUN`/hook lines clamped via `console::truncate_str` before clearing on `✓ Ready -> http://demo.localhost  (218ms)`. On non-TTY stdout/stderr, the bar is suppressed (`ProgressDrawTarget::hidden()`) and Slipfork streams `→ [i/n] <kind> <name>` phase headers plus one `eprintln!("✓ <kind> <name> <state>  <dur>")` per popped node (`•` when cached/up to date).
-- **Streamed `slipfork down`:** `down` streams each stopped pod and run-subvolume teardown row while keeping persistent Btrfs data subvolumes intact:
+- **24-cell math, `cols < 80` drop order & `rows < 3` guard:** Row `rows` renders `<spinner> [<24-cell bar>]  <done>/<total>  <pct>% · <active summary> · <elapsed>` with `filled = round(done / total * 24)` and `pct = round(done / total * 100)`. Width clamping truncates/drops `· <active summary>` first, omits the 24-cell `[█░]` bar when `cols < 80`, and **never** shears `done/total`, `pct%`, or `elapsed`; when `rows < 3`, `DECSTBM` is a no-op (never emitting `\x1b[1;1r` or `\x1b[1;2r`, using an in-place `\r` line instead).
+- **`SIGWINCH` & RAII `ScrollRegionGuard`:** On `SIGWINCH`, `BootTui` re-queries `(cols, rows)`, re-applies `\x1b[1;{rows-1}r` (`rows >= 3`), and redraws row `rows`. `ScrollRegionGuard` always clears row `rows` and restores `\x1b[r` on success, error, panic unwind, and `SIGINT` before printing `✓ Ready -> http://demo.localhost  (218ms)`.
+- **Strictly 1 line per task & truthful words:** Zero `StepLog`, `[3/11] sealed sha256:...`, `dockerfile ...`, or hook stdout lines ever print to the terminal — all build, setup, hook, and pod output writes strictly to `<store>/logs/<world>/<id>.log` (`slipfork logs <image|service|resource>`). Cached OCI `from <ref>` images and cached `Dockerfile` images print dim `• image     <name>   cached                    1ms` — **never** `pulled` or `built` on a cache hit.
+- **Streamed `slipfork down`:** `down` streams each stopped pod and run-subvolume teardown row (`✓ pod api stopped  40ms`, `✓ removed run subvolumes  312ms`, `✓ Stopped demo (370ms)`) while keeping persistent Btrfs data subvolumes and `<store>/logs/<world>/*.log` intact.
 
-```console
-$ slipfork down
-✓ pod api stopped           40ms
-✓ pod worker stopped        18ms
-✓ removed run subvolumes   312ms
-✓ Stopped demo (370ms)
+!!! info "Crisp 1-sentence failure remedy & inspectable logs"
+    On error, `ScrollRegionGuard` clears row `rows` and restores `\x1b[r`, prints the failed task row, and emits **one** crisp sentence on stderr pointing to `slipfork logs <name>` (which reads `<store>/logs/<world>/<name>.log` even after a failed cold `up`):
+
+```text
+✗ image     backend   failed                    84ms
+✗ Failed to build image backend — check logs with: slipfork logs backend
 ```
-
-!!! info "Failure keeps the world inspectable"
-    If a setup step, hook, or service fails, the frozen pane clears, Slipfork prints `✗ <kind> <name>`, `Forkfile:<line>`, `error: ...`, and **one** `next:` remedy, and keeps surviving pods registered so `slipfork logs` and `slipfork down` work immediately.
 
 ---
 
-## 4. Sub-Second `slipfork fork` & `slipfork drop`
+## 4. Sub-Second `< 1.0s` `slipfork fork` & `slipfork drop`
 
-`slipfork fork [name]` snapshots your project subvolume, world data subvolume, and PG18 `PGDATA` subvolume via Btrfs CoW, verifies matching `world_epoch` stamps (`0` image rebuilds, `0` redundant hooks), and boots the full fork stack in **`~0.8s`** (`< 1.0s` ceiling):
+`slipfork fork [name]` clones your project, world data, and PG18 `PGDATA` subvolumes via Btrfs CoW (zero pre-fork SQL `CHECKPOINT`), reuses parent `image` subvolumes (`cached`, `~1ms`), and boots an 8-component stack in **`< 1.0s`**:
 
 ```text
 ✓ Forked feat-auth (310ms) -> http://feat-auth--demo.localhost
   path  ~/projects/demo/.forks/feat-auth
 ```
 
-When `[name]` is omitted, `fork` derives the normalized slug from the current git branch (creating the branch on the snapshot if needed). `slipfork drop <name>` stops and deletes the fork's snapshots, refusing dirty checkouts without `-f` / `--force` (`next: slipfork drop <name> -f`).
+Omitting `[name]` derives the slug from the current git branch. `slipfork drop <name>` stops and deletes the fork's snapshots and `<store>/logs/<fork>--<world>/`, refusing dirty checkouts without `-f` / `--force` (`next: slipfork drop <name> -f`).
 
 ---
 
-## 5. Daily Developer Commands & `doctor`
+## 5. Unified Real-PTY `slipfork shell <target>`, `logs` & `doctor`
 
-`slipfork logs [-f]` streams **application `service`s only by default**; pass `-a` / `--all` (or an explicit `<resource>` like `slipfork logs pg`) to include backing resources:
+`slipfork shell <target>` is the **only** interactive entry point for every container and data store (no separate database or cache subcommands). `<target>` is **required** (`clap` exits `2` on stderr when omitted) and dispatches by declared `Forkfile` component kind:
+
+| `<target>` Kind | Interactive TTY (`stdin` + `stdout` TTY) | Piped / Non-TTY (`stdin` or `stdout` pipe) |
+| :--- | :--- | :--- |
+| `service` \| `image` (`api`, `backend`) | Real PTY: `/bin/bash` if in rootfs (`(<world>:<target>) \w$ ` prompt), fallback `/bin/sh` | Piped stdio to `/bin/bash` or `/bin/sh` |
+| `postgres` \| `database` (`pg`, `app-db`) | Real PTY: `psql` connected to that database inside the `postgres` container | `psql -X -q -v ON_ERROR_STOP=1` against that database |
+| `redis` (`cache`) | Real PTY: `redis-cli` inside the `redis` container | Piped `redis-cli` inside the `redis` container |
+| `s3` bucket (`uploads`) | Refused on stderr (`1 line + next:` shellable targets, exit `1`) | Same stderr refusal (exit `1`) |
+
+On interactive TTYs, `crun exec --tty --console-socket <sock>` (`"terminal": true` in the `0600` tmpfs spec) sends the `/dev/pts/N` master fd back via `SCM_RIGHTS`, while a `crossterm` `RawModeGuard` restores cooked mode on `Drop` and forwards initial + `SIGWINCH` `(cols, rows)` via `ioctl(TIOCSWINSZ)`. Targeting an `s3` bucket or unknown `<target>` prints `1 line + next:` on **stderr** (exit `1`):
 
 ```text
-api    │ INFO:     Uvicorn running on http://0.0.0.0:8000
-worker │ [2026-11-21 14:21:04] celery@demo ready.
-       ── restarted api (14:22:09) ──
-api    │ INFO:     Application startup complete.
+✗ 'uploads' is an s3 bucket, not a shell
+  next: slipfork shell api, pg, cache
+
+✗ No shellable target 'apii'
+  next: slipfork shell api
 ```
 
-`slipfork doctor` leads with `✓ Ready` or `✗ N issue(s)` across the **only 3 host checks** (`Btrfs`, `Namespaces`, `Runtime`), attaching one `next:` remedy per failing row (AppArmor stays inside `Namespaces`):
+`slipfork logs [-f]` streams app `service`s by default (`-a` adds `image`s + resources, or `<target>` reads `<store>/logs/<world>/<id>.log` for one `image`, `service`, or `resource` across `── restarted <id> ──` dividers). `slipfork doctor` leads with `✓ Ready` or `✗ N issue(s)` across `Btrfs`, `Namespaces`, and `Runtime` with one `next:` per failure:
 
 ```text
 ✓ Ready
   ✓ Btrfs       /home is btrfs (subvolume snapshots enabled)
   ✓ Namespaces  unprivileged user + netns available
   ✓ Runtime     crun 1.20, :80 .localhost ingress active
-
-✗ 2 issue(s)
-  ✓ Btrfs       /home is btrfs (subvolume snapshots enabled)
-  ✗ Namespaces  unprivileged user + netns unavailable
-     next: sudo sysctl -w kernel.unprivileged_userns_clone=1
-  ✗ Runtime     crun is not on PATH
-     next: install crun (for example `sudo apt-get install crun`) and retry
 ```
 
 | Command | Behavior |
 | :--- | :--- |
-| `slipfork logs [-f] [-a\|--all] [target]` | App `service`s only by default; `-a`/`--all` adds resources, or `<target>` selects one pod. Stays attached across `restart`. |
-| `slipfork restart [service]` | Restarts one or all services in place from their existing rootfs with the frozen-pane TUI. |
-| `slipfork down` | Streams per-pod stop rows + `removed run subvolumes` while keeping Btrfs data subvolumes intact. |
+| `slipfork logs [-f] [-a\|--all] [target]` | App `service`s by default; `-a`/`--all` adds `image`s + resources, or `<target>` reads one `image`, `service`, or `resource` log. |
+| `slipfork shell <target>` | Required `<target>`: real-PTY `bash`/`sh` (`service`\|`image`), `psql` (`postgres`\|`database`), `redis-cli` (`redis`); refuses `s3`/unknown on stderr. |
 | `slipfork exec [service\|image] -- <cmd>` | Runs an ad-hoc command (`pytest`, `pnpm test`) inside the target container and forwards stdin + exit code. |
-| `slipfork shell [service\|image]` | Pipes stdio to `sh -i` inside the target container (`user`, `workdir`, runtime `env`; no PTY allocated). |
-| `slipfork db [database]` / `redis [id]` | Opens `psql` (or runs piped SQL) / `redis-cli` against the world's instance; auto-selects when unambiguous. |
+| `slipfork restart [service]` | Restarts one or all services in place from their existing rootfs with the `DECSTBM` bottom-bar TUI. |
+| `slipfork down` | Streams per-pod stop rows + `removed run subvolumes` while keeping Btrfs data subvolumes and `<store>/logs/<world>/` intact. |
 | `slipfork env [--reveal] [component]` | Prints runtime variables (`[REDACTED]` unless `--reveal` on an interactive TTY; refused on pipes). |
 | `slipfork secret list\|set\|unset` | Manages local offline secrets (`set` reads stdin without echo). |
 | `slipfork open [service]` | Opens the port-less `.localhost` world or route URL (SSH/headless-safe). |
@@ -168,5 +166,5 @@ api    │ INFO:     Application startup complete.
 
 ## 6. Terminal Gate Split & `--json` Schemas
 
-- **Split TTY vs color gates:** On an interactive TTY with `NO_COLOR` set or `TERM=dumb`, Slipfork **keeps the frozen bottom pane in plain ASCII** (`|/-\` spinner, `[##########......]` 16-cell bar, zero SGR and zero `\x1b[` bytes). `ProgressDrawTarget::hidden()` activates **only** when stdout/stderr is non-TTY (using the `→ [i/n]` + `eprintln!` replay path, zero `\r` and zero `\x1b[`) or when `--json` is passed.
+- **Four-mode `UiMode` split:** `ColorTty` uses the VT100 `DECSTBM` (`\x1b[1;{rows-1}r`) scroll region + row `rows` panel (`ScrollRegionGuard`, falling back to `\r` when `rows < 3`); `AsciiTty` (TTY with `NO_COLOR` or `TERM=dumb`) redraws one `\r`-rewritten plain-ASCII bottom line (`|/-\` spinner, 24-cell `[#.]` bar when `cols >= 80`, **zero `\x1b[` bytes** and zero SGR); `PlainPipe` (non-TTY) emits `→ [i/n] <kind> <name>` headers + `✓`/`•` rows (`0` `\r` and `0` `\x1b[`); `Json` emits pure JSON (`0` `\x1b[`).
 - **Exact `--json` payloads (on verbs that accept `--json`):** `up` / `restart` → `{world, url, elapsed_ms, nodes:[{kind, name, state, duration_ms}]}`; `down` → `{world, elapsed_ms}`; `fork` → `{fork, project, url, elapsed_ms}`; `drop` → `{dropped, elapsed_ms}`; `doctor` → `{ready, checks:[{name, ok, detail, next?}]}`; `status` / `ps` → `{worlds:[...]}`; `logs` → `{pod, stream, line, kind}` lines + `{"exit":0}`; `env` → `{env:{...}}`; failures → `{"error":{code, message, next}}`. Auto-starting an ephemeral daemon warns on stderr naming `slipfork daemon install` and `sudo slipfork daemon install --ingress`.
