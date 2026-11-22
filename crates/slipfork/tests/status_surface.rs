@@ -11,9 +11,10 @@ use std::process::{Command, Output};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde_json::{Value, json};
-use slipfork::boot::{Node, completed_row, elapsed_text, pane_geometry, status_line};
+use slipfork::boot::{Node, boot_widths, completed_row, elapsed_text, pane_geometry, status_line};
 use slipfork::install::{self, InstallHost, UnitWriter};
 use slipfork::status::{self, Options};
+use slipfork::ui::table::{ColumnWidths, visible_width};
 
 #[test]
 fn mountinfo_unescapes_octal_and_picks_the_longest_containing_mount() {
@@ -104,6 +105,171 @@ fn openrc_install_names_the_injected_user_and_keeps_a_user_edit() {
 
 const ANSI: &str = "\u{1b}[";
 
+/// Measures the six boot columns over the same four leading cells the live plan carries.
+fn plan_widths(nodes: &[&Node<'_>]) -> ColumnWidths {
+    let rows: Vec<Vec<String>> = nodes
+        .iter()
+        .map(|node| {
+            vec![
+                String::new(),
+                node.kind.to_owned(),
+                node.name.to_owned(),
+                node.state.to_lowercase(),
+            ]
+        })
+        .collect();
+    boot_widths(&rows)
+}
+
+/// Removes every `ESC[ … m` sequence, leaving the visible cells.
+fn strip_ansi(text: &str) -> String {
+    let mut out = String::new();
+    let mut chars = text.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '\u{1b}' && chars.peek() == Some(&'[') {
+            chars.next();
+            for ch in chars.by_ref() {
+                if ch.is_ascii_alphabetic() {
+                    break;
+                }
+            }
+        } else {
+            out.push(ch);
+        }
+    }
+    out
+}
+
+/// The visible column index where `needle` starts on one rendered row.
+fn column_start(line: &str, needle: &str) -> usize {
+    let byte = line
+        .find(needle)
+        .unwrap_or_else(|| panic!("`{needle}` missing from `{line}`"));
+    visible_width(&line[..byte])
+}
+
+#[test]
+fn every_boot_row_keeps_one_start_per_role_and_one_right_edge() {
+    let long = format!("service-{}", "x".repeat(20));
+    assert_eq!(long.chars().count(), 28);
+    let nodes = vec![
+        Node {
+            kind: "pg",
+            name: "db",
+            state: "running",
+            millis: 7_300,
+            success: true,
+        },
+        Node {
+            kind: "image",
+            name: "base",
+            state: "cached",
+            millis: 812,
+            success: true,
+        },
+        Node {
+            kind: "service",
+            name: "api",
+            state: "running",
+            millis: 3,
+            success: true,
+        },
+        Node {
+            kind: "service",
+            name: "web",
+            state: "starting",
+            millis: 12,
+            success: true,
+        },
+        Node {
+            kind: "redis",
+            name: "cache",
+            state: "running",
+            millis: 45,
+            success: true,
+        },
+        Node {
+            kind: "postgres",
+            name: "pg",
+            state: "running",
+            millis: 900,
+            success: true,
+        },
+        Node {
+            kind: "service",
+            name: "worker",
+            state: "cached",
+            millis: 1,
+            success: false,
+        },
+        Node {
+            kind: "service",
+            name: long.as_str(),
+            state: "running",
+            millis: 7_300,
+            success: true,
+        },
+        Node {
+            kind: "service",
+            name: "docs",
+            state: "up to date",
+            millis: 3,
+            success: false,
+        },
+    ];
+    let widths = plan_widths(&nodes.iter().collect::<Vec<_>>());
+    let plain: Vec<String> = nodes
+        .iter()
+        .map(|node| completed_row(node, &widths, false))
+        .collect();
+    let styled: Vec<String> = nodes
+        .iter()
+        .map(|node| completed_row(node, &widths, true))
+        .collect();
+
+    for (index, node) in nodes.iter().enumerate() {
+        assert!(
+            !plain[index].contains(ANSI),
+            "row {index} is plain: {:?}",
+            plain[index]
+        );
+        assert!(
+            styled[index].contains(ANSI),
+            "row {index} is styled: {:?}",
+            styled[index]
+        );
+        let visible = strip_ansi(&styled[index]);
+        assert_eq!(
+            visible, plain[index],
+            "row {index} styles without moving a cell"
+        );
+        for line in [&plain[index], &visible] {
+            assert_eq!(
+                column_start(line, node.kind),
+                column_start(&plain[0], "pg"),
+                "kind start drifts on `{line}`"
+            );
+            assert_eq!(
+                column_start(line, node.name),
+                column_start(&plain[1], "base"),
+                "name start drifts on `{line}`"
+            );
+            assert_eq!(
+                column_start(line, node.state),
+                column_start(&plain[1], "cached"),
+                "state start drifts on `{line}`"
+            );
+            assert_eq!(
+                visible_width(line.trim_end()),
+                visible_width(plain[1].trim_end()),
+                "duration right edge drifts on `{line}`"
+            );
+        }
+    }
+    assert!(plain[8].contains("up to date"), "{:?}", plain[8]);
+    assert!(plain[7].contains(&long), "{:?}", plain[7]);
+}
+
 #[test]
 fn the_live_boot_pane_renders_exact_rows_and_bars() {
     let node = Node {
@@ -113,29 +279,31 @@ fn the_live_boot_pane_renders_exact_rows_and_bars() {
         millis: 420,
         success: true,
     };
+    let widths = plan_widths(&[&node]);
     assert_eq!(
-        completed_row(&node, true),
-        "\u{1b}[32m✓\u{1b}[0m \u{1b}[2mimage   \u{1b}[0m  \u{1b}[1mbase\u{1b}[0m \u{1b}[36mcached\u{1b}[0m  \u{1b}[2m  420ms\u{1b}[0m"
+        completed_row(&node, &widths, true),
+        "\u{1b}[32m✓\u{1b}[0m  \u{1b}[2mimage\u{1b}[0m  \u{1b}[1mbase\u{1b}[0m  \u{1b}[36mcached\u{1b}[0m   \u{1b}[2m420ms\u{1b}[0m"
     );
     assert_eq!(
-        completed_row(&node, false),
-        "✓ image     base cached    420ms"
+        completed_row(&node, &widths, false),
+        "✓  image  base  cached   420ms"
     );
-    assert!(!completed_row(&node, false).contains(ANSI));
-    assert!(!completed_row(&node, false).contains('\r'));
+    assert!(!completed_row(&node, &widths, false).contains(ANSI));
+    assert!(!completed_row(&node, &widths, false).contains('\r'));
 
     let cached = Node {
         state: "Up-to-date",
         success: false,
         ..node
     };
+    let widths = plan_widths(&[&cached]);
     assert_eq!(
-        completed_row(&cached, true),
-        "\u{1b}[2m•\u{1b}[0m \u{1b}[2mimage   \u{1b}[0m  \u{1b}[1mbase\u{1b}[0m \u{1b}[36mup-to-date\u{1b}[0m  \u{1b}[2m  420ms\u{1b}[0m"
+        completed_row(&cached, &widths, true),
+        "\u{1b}[2m•\u{1b}[0m  \u{1b}[2mimage\u{1b}[0m  \u{1b}[1mbase\u{1b}[0m  \u{1b}[36mup-to-date\u{1b}[0m   \u{1b}[2m420ms\u{1b}[0m"
     );
     assert_eq!(
-        completed_row(&cached, false),
-        "• image     base up-to-date    420ms"
+        completed_row(&cached, &widths, false),
+        "•  image  base  up-to-date   420ms"
     );
 
     // A malformed frame fails closed instead of inventing `step`/`ready`/`0` fiction.
@@ -320,21 +488,31 @@ fn the_tree_contract_holds_for_every_row_shape() {
         &Options::new(false).with_home(Some(PathBuf::from("/home/me"))),
     );
     assert!(text.starts_with("● demo       ~/projects/demo\n"), "{text}");
-    for line in [
-        "  ├─ http://demo.localhost",
-        "  │  ├─ /api  -> api",
-        "  │  └─ /     -> front",
-        "  ├─ http://mail.demo.localhost",
-        "  ├─ http://uploads.demo.localhost",
-        "  │  └─ /     -> uploads  s3 (private)",
-        "  ├─ http://assets.demo.localhost",
-        "  │  └─ /     -> assets   s3 (public-read)",
-        "  └─ support",
-        "     ├─ worker   service",
-        "     ├─ pg       postgres 18",
-        "     └─ cache    redis 7",
+    for (prefix, state) in [
+        ("  ├─ http://demo.localhost", ""),
+        ("  │  ├─ /api  ->  api", "running"),
+        ("  │  └─ /     ->  front", "running"),
+        ("  ├─ http://mail.demo.localhost", ""),
+        ("  │  └─ /     ->  mailpit", "running"),
+        ("  ├─ http://uploads.demo.localhost", ""),
+        ("  │  └─ /     ->  uploads  s3 (private)", "running"),
+        ("  ├─ http://assets.demo.localhost", ""),
+        ("  │  └─ /     ->  assets   s3 (public-read)", "running"),
+        ("  └─ support", ""),
+        ("     ├─ worker  service", "running"),
+        ("     ├─ pg      postgres 18", "running"),
+        ("     └─ cache   redis 7", "running"),
     ] {
-        assert!(text.contains(line), "missing `{line}` in:\n{text}");
+        let line = text
+            .lines()
+            .find(|line| line.starts_with(prefix))
+            .unwrap_or_else(|| panic!("missing `{prefix}` in:\n{text}"));
+        if !state.is_empty() {
+            assert!(
+                line.trim_end().ends_with(state),
+                "`{prefix}` lost its `{state}` state: `{line}`"
+            );
+        }
     }
     assert!(
         text.contains("● feat-auth  ~/projects/demo/.forks/feat-auth"),
@@ -364,7 +542,7 @@ fn crashed_rows_render_a_bold_red_failed_state() {
     }));
     let plain = status::render(&reply, &Options::new(false));
     assert!(plain.contains("postgres 18  failed"), "{plain}");
-    assert!(plain.contains("s3 (private) failed"), "{plain}");
+    assert!(plain.contains("s3 (private)  failed"), "{plain}");
     let colored = status::render(&reply, &Options::new(true));
     assert!(colored.contains("\u{1b}[1;31mfailed\u{1b}[0m"), "{colored}");
 }

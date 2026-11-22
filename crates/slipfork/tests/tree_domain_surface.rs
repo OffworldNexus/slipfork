@@ -69,25 +69,25 @@ fn the_flat_domain_tree_renders_exact_aligned_lines() {
     let expected = concat!(
         "● demo       ~/demo\n",
         "  ├─ http://demo.localhost\n",
-        "  │  ├─ /api  -> api                       running\n",
-        "  │  └─ /     -> front                     running\n",
+        "  │  ├─ /api  ->  api                        running\n",
+        "  │  └─ /     ->  front                      running\n",
         "  ├─ http://main.demo.localhost\n",
-        "  │  ├─ /api  -> api                       running\n",
-        "  │  └─ /     -> front                     running\n",
+        "  │  ├─ /api  ->  api                        running\n",
+        "  │  └─ /     ->  front                      running\n",
         "  ├─ http://mail.demo.localhost\n",
-        "  │  └─ /     -> mailpit                   running\n",
+        "  │  └─ /     ->  mailpit                    running\n",
         "  ├─ http://uploads.demo.localhost\n",
-        "  │  └─ /     -> uploads  s3 (private)     running\n",
+        "  │  └─ /     ->  uploads  s3 (private)      running\n",
         "  ├─ http://assets.demo.localhost\n",
-        "  │  └─ /     -> assets   s3 (public-read) running\n",
+        "  │  └─ /     ->  assets   s3 (public-read)  running\n",
         "  └─ support\n",
-        "     ├─ worker   service      running\n",
-        "     ├─ pg       postgres 18  running\n",
-        "     └─ cache    redis 7      running\n",
+        "     ├─ worker  service      running\n",
+        "     ├─ pg      postgres 18  running\n",
+        "     └─ cache   redis 7      running\n",
         "\n",
         "● feat-auth  ~/demo/.forks/feat-auth\n",
         "  └─ http://feat-auth--demo.localhost\n",
-        "     └─ /api  -> api                       running\n"
+        "     └─ /api  ->  api                        running\n"
     );
     assert_eq!(plain(), expected);
 }
@@ -163,7 +163,7 @@ fn orphaned_pods_render_bold_yellow_in_support() {
     }))
     .expect("payload parses");
     let text = status::render(&reply, &Options::new(false));
-    assert!(text.contains("beta   service  orphaned"), "{text}");
+    assert!(text.contains("beta  service  orphaned"), "{text}");
     let colored = status::render(&reply, &Options::new(true));
     assert!(
         colored.contains("\u{1b}[1;33morphaned\u{1b}[0m"),

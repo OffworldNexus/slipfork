@@ -20,6 +20,7 @@ use std::time::{Duration, Instant};
 use serde_json::Value;
 
 use crate::ui::UiMode;
+use crate::ui::table::ColumnWidths;
 
 use self::ascii::AsciiLine;
 use self::pane::{Pane, Screen, Ticker};
@@ -44,6 +45,10 @@ pub struct BootTui {
     verdict: Vec<String>,
     /// The one failure sentence, printed to stderr after the region is restored.
     diagnostics: Vec<String>,
+    /// The announced boot plan as raw `[kind, name, state]` cells, one row per started step.
+    plan: Vec<Vec<String>>,
+    /// The precomputed six-column grid shared by every completed row.
+    widths: ColumnWidths,
 }
 
 /// Asks the real terminal for its cursor row (1-based) with a bounded `DSR` probe.
@@ -160,6 +165,8 @@ impl BootTui {
             failed: false,
             verdict: Vec::new(),
             diagnostics: Vec::new(),
+            plan: Vec::new(),
+            widths: text::boot_widths(&[]),
         }
     }
 
@@ -248,6 +255,16 @@ impl BootTui {
         let total = event["total"].as_u64().unwrap_or(0);
         self.total = self.total.max(total as usize).max(step as usize);
         self.current.clone_from(&name);
+        // One plan row carries the same four leading cells `completed_row` renders — the reserved
+        // icon cell, kind, name, and state — so a row printed mid-stream lands in the same grid a
+        // batch render would produce once the state arrives.
+        self.plan.push(vec![
+            String::new(),
+            kind.clone(),
+            name.clone(),
+            String::new(),
+        ]);
+        self.widths = text::boot_widths(&self.plan);
         if let Some(pane) = &self.pane {
             if let Ok(mut pane) = pane.lock() {
                 pane.start(&name, self.total);
@@ -269,7 +286,23 @@ impl BootTui {
             return;
         };
         self.done += 1;
-        let row = completed_row(&node, self.mode.color());
+        let state = node.state.to_lowercase();
+        match self
+            .plan
+            .iter_mut()
+            .rev()
+            .find(|row| row[1].as_str() == node.kind && row[2].as_str() == node.name)
+        {
+            Some(row) => row[3].clone_from(&state),
+            None => self.plan.push(vec![
+                String::new(),
+                node.kind.to_owned(),
+                node.name.to_owned(),
+                state,
+            ]),
+        }
+        self.widths = text::boot_widths(&self.plan);
+        let row = completed_row(&node, &self.widths, self.mode.color());
         if let Some(pane) = &self.pane
             && let Ok(mut pane) = pane.lock()
         {

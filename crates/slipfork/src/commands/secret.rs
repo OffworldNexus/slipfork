@@ -8,6 +8,23 @@ use serde_json::{Value, json};
 use crate::commands::{Session, emit};
 use crate::daemon::DaemonClient;
 use crate::ui::Palette;
+use crate::ui::table::{Column, Table};
+
+/// The three columns of one `secret list`: key, separator, redacted value.
+const SECRET: [Column; 3] = [Column::left(), Column::left(), Column::left()];
+
+fn table() -> Table<'static> {
+    Table::new(&SECRET).gap(" ")
+}
+
+/// The one redacted cell a secret entry ever renders, human or JSON.
+fn shown(entry: &Value) -> &'static str {
+    if entry["set"].as_bool() == Some(true) {
+        "[REDACTED]"
+    } else {
+        "<unset>"
+    }
+}
 
 /// Which `secret` subcommand to run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -62,12 +79,7 @@ impl Session {
                 let mut rows = serde_json::Map::new();
                 for entry in keys.as_array().into_iter().flatten() {
                     if let Some(key) = entry.get("key").and_then(Value::as_str) {
-                        let shown = if entry["set"].as_bool() == Some(true) {
-                            "[REDACTED]"
-                        } else {
-                            "<unset>"
-                        };
-                        rows.insert(key.to_owned(), Value::String(shown.to_owned()));
+                        rows.insert(key.to_owned(), Value::String(shown(entry).to_owned()));
                     }
                 }
                 out.insert(component, Value::Object(rows));
@@ -76,15 +88,23 @@ impl Session {
         }
         let palette = Palette::new(self.color());
         let multiple = components.len() > 1;
+        let table = table();
         let mut text = String::new();
         for (component, keys) in components {
             let rows: Vec<&Value> = keys.as_array().into_iter().flatten().collect();
-            let width = rows
-                .iter()
-                .filter_map(|entry| entry.get("key").and_then(Value::as_str))
-                .map(|key| key.chars().count())
-                .max()
-                .unwrap_or(0);
+            let widths = table.widths(
+                &rows
+                    .iter()
+                    .filter_map(|entry| {
+                        let key = entry.get("key").and_then(Value::as_str)?;
+                        Some(vec![
+                            key.to_owned(),
+                            "=".to_owned(),
+                            shown(entry).to_owned(),
+                        ])
+                    })
+                    .collect::<Vec<_>>(),
+            );
             if multiple {
                 text.push_str(&format!("{}\n", palette.label(&component)));
             }
@@ -93,16 +113,12 @@ impl Session {
                     continue;
                 };
                 let value = if entry["set"].as_bool() == Some(true) {
-                    palette.redacted("[REDACTED]")
+                    palette.redacted(shown(entry))
                 } else {
-                    palette.dim("<unset>")
+                    palette.dim(shown(entry))
                 };
-                let pad = " ".repeat(width.saturating_sub(key.chars().count()));
-                text.push_str(&format!(
-                    "{}{pad} {} {value}\n",
-                    palette.key(key),
-                    palette.dim("=")
-                ));
+                text.push_str(&table.line(&widths, &[palette.key(key), palette.dim("="), value]));
+                text.push('\n');
             }
         }
         if text.is_empty() {
@@ -258,5 +274,31 @@ impl Drop for EchoGuard {
         unsafe {
             libc::tcsetattr(libc::STDIN_FILENO, libc::TCSAFLUSH, &self.saved);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::table;
+
+    #[test]
+    fn secrets_share_one_key_column_and_stay_redacted() {
+        let rows = vec![
+            vec![
+                "DATABASE_URL".to_owned(),
+                "=".to_owned(),
+                "[REDACTED]".to_owned(),
+            ],
+            vec!["API_KEY".to_owned(), "=".to_owned(), "<unset>".to_owned()],
+        ];
+        let widths = table().widths(&rows);
+        let lines: Vec<String> = rows.iter().map(|row| table().line(&widths, row)).collect();
+        assert_eq!(
+            lines,
+            vec!["DATABASE_URL = [REDACTED]", "API_KEY      = <unset>"]
+        );
+        assert!(lines.iter().all(|line| !line.contains('\u{1b}')));
+        assert_eq!(lines[0].find('='), lines[1].find('='), "{lines:?}");
+        assert!(!lines.join("\n").contains("hunter2"));
     }
 }

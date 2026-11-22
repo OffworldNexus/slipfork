@@ -17,6 +17,7 @@ use slipfork_world::pod_log::now_ms;
 use crate::commands::{Session, emit};
 use crate::daemon::{DaemonClient, DaemonError};
 use crate::ui::Palette;
+use crate::ui::table::{Column, Table};
 
 /// Set by the SIGINT handler so a followed stream exits `0` on Ctrl-C.
 static INTERRUPTED: AtomicBool = AtomicBool::new(false);
@@ -357,10 +358,22 @@ impl Renderer {
                     String::new()
                 };
                 let code = self.color_for(pod);
-                let pad = " ".repeat(self.width.saturating_sub(pod.chars().count()));
-                let gutter = self.palette.tint(pod, code);
-                let divider = self.palette.divider();
-                let _ = emit(&format!("{stamp}{gutter}{pad} {divider} {line}\n"));
+                let columns = [
+                    Column::left().at_least(self.width),
+                    Column::left(),
+                    Column::left(),
+                ];
+                let gutter = Table::new(&columns).gap(" ").indent(&stamp);
+                let cells = [
+                    self.palette.tint(pod, code),
+                    self.palette.divider(),
+                    line.to_owned(),
+                ];
+                // Measure the real row, line included: the table engine skips a zero-width column,
+                // and measuring an empty body would silently drop every log line.
+                let widths = gutter.widths(&[cells.to_vec()]);
+                let row = gutter.line(&widths, &cells);
+                let _ = emit(&format!("{row}\n"));
             }
         }
     }

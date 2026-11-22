@@ -7,7 +7,6 @@
 mod model;
 mod rows;
 mod tree;
-pub(crate) mod widths;
 
 pub use model::Options;
 pub use tree::{no_world_line, parse, render, scope};

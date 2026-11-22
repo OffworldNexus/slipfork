@@ -8,8 +8,30 @@ use std::time::Duration;
 
 use serde_json::Value;
 
-use crate::status::widths::visible_width;
 use crate::ui::Palette;
+use crate::ui::table::{Column, ColumnWidths, Table, visible_width};
+
+/// The six fixed boot-row columns: icon, kind, name, state, duration (6), run id (7).
+const BOOT: [Column; 6] = [
+    Column::left().at_least(1),
+    Column::left(),
+    Column::left(),
+    Column::left(),
+    Column::right().at_least(6),
+    Column::left().at_least(7),
+];
+
+/// The one boot row grid: six borderless columns with two-space gaps.
+#[must_use]
+pub fn boot_table() -> Table<'static> {
+    Table::new(&BOOT)
+}
+
+/// Precomputes the six boot columns from a complete known row or plan set.
+#[must_use]
+pub fn boot_widths(rows: &[Vec<String>]) -> ColumnWidths {
+    boot_table().widths(rows)
+}
 
 /// Below this many columns the anchored bar is dropped for the counter/percent/elapsed panel.
 pub const NARROW: usize = 80;
@@ -172,16 +194,31 @@ pub fn header_row(step: u64, total: u64, kind: &str, name: &str) -> String {
     format!("→ [{step}/{total}] {kind} {name}")
 }
 
-/// One failure verdict: `✗ image  backend  failed` with every role from the palette.
+/// One failure verdict: `✗  image     backend  failed` with every role from the palette.
 #[must_use]
 pub fn failed_row(kind: &str, name: &str, styled: bool) -> String {
+    const FAILED: [Column; 4] = [
+        Column::left().at_least(1),
+        Column::left().at_least(8),
+        Column::left(),
+        Column::left(),
+    ];
     let palette = Palette::new(styled);
-    format!(
-        "{} {}  {}  {}",
-        palette.icon_bad(),
-        palette.dim(&format!("{kind:<8}")),
-        palette.label(name),
-        palette.status("failed"),
+    let table = Table::new(&FAILED);
+    let widths = table.widths(&[vec![
+        String::new(),
+        kind.to_owned(),
+        name.to_owned(),
+        "failed".to_owned(),
+    ]]);
+    table.line(
+        &widths,
+        &[
+            palette.icon_bad(),
+            palette.dim(kind),
+            palette.label(name),
+            palette.status("failed"),
+        ],
     )
 }
 
@@ -334,29 +371,38 @@ pub fn stopped_row(world: &str, millis: u64, styled: bool) -> String {
     )
 }
 
-/// `✓ image    base cached    420ms` on a pipe, or the styled check, dim 8-cell kind, bold name,
-/// lowercase state, and right-aligned dim duration on a colour terminal.
+/// `✓  image  base  cached   420ms` on a pipe, or the styled check, dim kind, bold name,
+/// lowercase state, right-aligned dim duration, and the reserved run-id slot on a colour terminal.
+///
+/// `widths` comes from [`boot_widths`] over the complete boot plan, so a row printed while the boot
+/// is still streaming lands in the same grid a batch render would produce.
 #[must_use]
-pub fn completed_row(node: &Node<'_>, styled: bool) -> String {
+pub fn completed_row(node: &Node<'_>, widths: &ColumnWidths, styled: bool) -> String {
     let palette = Palette::new(styled);
     let state = node.state.to_lowercase();
-    let duration = elapsed_text(node.millis);
     let mark = if node.success {
         palette.icon_ok()
     } else {
         palette.dim("•")
     };
-    let mut row = format!(
-        "{mark} {}  {}",
-        palette.dim(&format!("{:<8}", node.kind)),
-        palette.label(node.name),
-    );
-    if !state.is_empty() {
-        row.push(' ');
-        row.push_str(&palette.status(&state));
-    }
-    row.push_str(&format!("  {}", palette.dim(&format!("{duration:>7}"))));
-    row
+    let state = if state.is_empty() {
+        String::new()
+    } else {
+        palette.status(&state)
+    };
+    // The run-id slot stays wired for the M3.58 frame and renders empty today; its seven-cell
+    // minimum lives in `BOOT`, so populating it later never moves an earlier column.
+    boot_table().line(
+        widths,
+        &[
+            mark,
+            palette.dim(node.kind),
+            palette.label(node.name),
+            state,
+            palette.dim(&elapsed_text(node.millis)),
+            String::new(),
+        ],
+    )
 }
 
 /// `18ms`, `1.2s`, or `<1ms`, as the whole CLI spells durations.

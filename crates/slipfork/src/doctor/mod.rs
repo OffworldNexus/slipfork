@@ -11,6 +11,7 @@ use serde_json::json;
 
 use crate::commands::emit;
 use crate::ui::Palette;
+use crate::ui::table::{Column, ColumnWidths, Table};
 use crate::world::HostEnv;
 
 pub use probe::{Doctor, Part};
@@ -82,14 +83,9 @@ pub fn run(host: &HostEnv, cwd: &std::path::Path, json: bool, color: bool) -> Ex
         out.push_str(&palette.tint(&format!("✗ {failed} issue(s) found"), "31;1"));
         out.push('\n');
     }
-    let name_width = doctor
-        .checks()
-        .iter()
-        .map(|check| check.name.chars().count())
-        .max()
-        .unwrap_or(0)
-        + 2;
     let separator = palette.dim("·");
+    let widths = widths(&doctor);
+    let table = Table::new(&CHECK).indent("  ");
     for check in doctor.checks() {
         let mark = if check.ok {
             palette.icon_ok()
@@ -102,11 +98,8 @@ pub fn run(host: &HostEnv, cwd: &std::path::Path, json: bool, color: bool) -> Ex
             .map(|part| part.render(&palette))
             .collect::<Vec<_>>()
             .join(&format!(" {separator} "));
-        out.push_str(&format!(
-            "  {mark} {:<width$}{detail}\n",
-            check.name,
-            width = name_width
-        ));
+        out.push_str(&table.line(&widths, &[mark, check.name.to_owned(), detail]));
+        out.push('\n');
         if let Some(next) = &check.next {
             out.push_str(&format!(
                 "     {} {}\n",
@@ -117,6 +110,19 @@ pub fn run(host: &HostEnv, cwd: &std::path::Path, json: bool, color: bool) -> Ex
     }
     let status = emit(&out);
     if ready { status } else { ExitCode::FAILURE }
+}
+
+/// The three doctor columns: mark, plain-English row name, evidence.
+const CHECK: [Column; 3] = [Column::left().at_least(1), Column::left(), Column::left()];
+
+/// The one borderless grid shared by all four rows.
+fn widths(doctor: &Doctor) -> ColumnWidths {
+    let rows: Vec<Vec<String>> = doctor
+        .checks()
+        .iter()
+        .map(|check| vec![String::new(), check.name.to_owned(), check.detail.clone()])
+        .collect();
+    Table::new(&CHECK).widths(&rows)
 }
 
 impl Doctor {
@@ -130,5 +136,78 @@ impl Doctor {
     #[must_use]
     pub fn is_ready(&self) -> bool {
         self.storage.ok && self.containers.ok && self.daemon.ok && self.domains.ok
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{CHECK, Check, Doctor, Part, widths};
+    use crate::ui::Palette;
+    use crate::ui::table::Table;
+
+    fn doctor() -> Doctor {
+        Doctor {
+            storage: Check::new(
+                "Storage",
+                true,
+                vec![
+                    Part::Bold("Btrfs".to_owned()),
+                    Part::Dim("on ~/demo".to_owned()),
+                ],
+                None,
+            ),
+            containers: Check::new(
+                "Containers",
+                false,
+                vec![
+                    Part::Bold("crun".to_owned()),
+                    Part::Dim("not installed".to_owned()),
+                ],
+                Some("install crun".to_owned()),
+            ),
+            daemon: Check::new(
+                "Daemon",
+                true,
+                vec![Part::Dim("socket present".to_owned())],
+                None,
+            ),
+            domains: Check::new(
+                "Domains",
+                true,
+                vec![Part::Url("http://*.localhost".to_owned())],
+                None,
+            ),
+        }
+    }
+
+    #[test]
+    fn every_check_row_starts_its_evidence_on_one_column() {
+        let doctor = doctor();
+        let palette = Palette::new(false);
+        let widths = widths(&doctor);
+        let table = Table::new(&CHECK).indent("  ");
+        let mut evidence_at = None;
+        for check in doctor.checks() {
+            let mark = if check.ok {
+                palette.icon_ok()
+            } else {
+                palette.icon_bad()
+            };
+            let detail = check
+                .parts
+                .iter()
+                .map(|part| part.render(&palette))
+                .collect::<Vec<_>>()
+                .join(" · ");
+            let row = table.line(&widths, &[mark, check.name.to_owned(), detail.clone()]);
+            assert!(
+                !row.contains('\u{1b}'),
+                "a plain doctor row stays pure: {row:?}"
+            );
+            assert!(row.starts_with("  "), "{row:?}");
+            let at = row.rfind(detail.as_str()).expect("evidence is present");
+            assert_eq!(*evidence_at.get_or_insert(at), at, "one evidence column");
+            assert!(row.contains(check.name), "{row:?}");
+        }
     }
 }

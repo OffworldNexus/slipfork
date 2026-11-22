@@ -7,6 +7,7 @@
 
 mod paint;
 mod palette;
+pub mod table;
 
 pub use paint::paint;
 pub use palette::Palette;

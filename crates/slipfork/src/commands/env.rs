@@ -7,6 +7,14 @@ use serde_json::{Value, json};
 use crate::commands::{Session, emit};
 use crate::daemon::DaemonClient;
 use crate::ui::Palette;
+use crate::ui::table::{Column, Table};
+
+/// The three columns of one `env` listing: key, separator, value.
+const ENV: [Column; 3] = [Column::left(), Column::left(), Column::left()];
+
+fn table() -> Table<'static> {
+    Table::new(&ENV).gap(" ")
+}
 
 /// Parsed `slipfork env` arguments.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -66,6 +74,7 @@ impl Session {
         }
         let palette = Palette::new(self.color());
         let multiple = components.len() > 1;
+        let table = table();
         let mut text = String::new();
         for (component, variables) in components {
             let rows: Vec<(&str, &Value)> = variables
@@ -74,11 +83,12 @@ impl Session {
                 .flatten()
                 .map(|(key, info)| (key.as_str(), info))
                 .collect();
-            let width = rows
-                .iter()
-                .map(|(key, _)| key.chars().count())
-                .max()
-                .unwrap_or(0);
+            let widths = table.widths(
+                &rows
+                    .iter()
+                    .map(|(key, info)| vec![(*key).to_owned(), "=".to_owned(), display(info)])
+                    .collect::<Vec<_>>(),
+            );
             if multiple {
                 text.push_str(&format!("{}\n", palette.label(component)));
             }
@@ -91,12 +101,8 @@ impl Session {
                 } else {
                     palette.value(&value)
                 };
-                let pad = " ".repeat(width.saturating_sub(key.chars().count()));
-                text.push_str(&format!(
-                    "{}{pad} {} {shown}\n",
-                    palette.key(key),
-                    palette.dim("=")
-                ));
+                text.push_str(&table.line(&widths, &[palette.key(key), palette.dim("="), shown]));
+                text.push('\n');
             }
         }
         emit(&text)
@@ -120,4 +126,33 @@ fn display(info: &Value) -> String {
         };
     }
     "<computed>".to_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::table;
+
+    #[test]
+    fn env_key_values_share_one_key_column() {
+        let rows = vec![
+            vec![
+                "API_URL".to_owned(),
+                "=".to_owned(),
+                "http://api.localhost".to_owned(),
+            ],
+            vec!["PORT".to_owned(), "=".to_owned(), "8000".to_owned()],
+        ];
+        let widths = table().widths(&rows);
+        let lines: Vec<String> = rows.iter().map(|row| table().line(&widths, row)).collect();
+        assert_eq!(
+            lines,
+            vec!["API_URL = http://api.localhost", "PORT    = 8000"]
+        );
+        assert!(lines.iter().all(|line| !line.contains('\u{1b}')));
+        assert_eq!(
+            lines[0].find('='),
+            lines[1].find('='),
+            "one separator column: {lines:?}"
+        );
+    }
 }
