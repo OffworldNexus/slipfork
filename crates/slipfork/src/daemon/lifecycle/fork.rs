@@ -13,8 +13,8 @@ use serde_json::{Value, json};
 use slipfork_forkfile::ResourceDeclKind;
 use slipfork_vcs::{Dirty, VcsError, VcsWorkspace};
 use slipfork_world::{
-    BtrfsEngine, Dirtiness, Error as WorldError, ForkName, PostgresLauncher, StoreLayout,
-    WorldEngine, WorldName, is_subvolume_path, pg_checkpoint,
+    BtrfsEngine, Dirtiness, Error as WorldError, ForkName, PostgresLauncher, RuntimePods,
+    StoreLayout, WorldEngine, WorldName, is_subvolume_path, pg_checkpoint,
 };
 
 use super::core::{Core, World};
@@ -134,8 +134,13 @@ impl Core {
         }
     }
 
-    /// Deletes all snapshots of a fork that never published, so a retry is never blocked.
+    /// Deletes every trace of a fork that never published, so a retry is never blocked.
+    ///
+    /// The failed boot's supervisor is already dead when this runs, so its tmpfs pod root (bundles
+    /// plus `crun` container state) is purged before the Btrfs snapshots are unlinked.
     pub(crate) fn discard_fork(&self, prepared: &PreparedFork) {
+        let forked = StoreLayout::fork_world_name(&prepared.world_name, &prepared.fork_name);
+        let _ = RuntimePods::purge(&self.host.runtime_dir, &forked);
         let engine = BtrfsEngine::new(StoreLayout::at(self.host.store_root_for(&prepared.parent)));
         let _ = engine.drop_fork(
             &prepared.parent,

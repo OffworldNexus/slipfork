@@ -23,15 +23,32 @@ impl RuntimePods {
     /// Creates `<runtime_dir>/slipfork/pods/<world>` mode `0700` and fails closed unless the
     /// directory really sits on tmpfs — secrets must never reach persistent disk.
     pub fn prepare(runtime_dir: &Path, world: &WorldName) -> Result<Self> {
-        let root = runtime_dir
-            .join("slipfork")
-            .join("pods")
-            .join(world.as_str());
+        let root = Self::world_root(runtime_dir, world);
         ensure_private_dir(&root)?;
         verify_tmpfs(&root)?;
         fs::set_permissions(&root, fs::Permissions::from_mode(0o700))
             .map_err(|source| Error::io("chmod", &root, source))?;
         Ok(Self { root })
+    }
+
+    /// `<runtime_dir>/slipfork/pods/<world>`: the one place that composes the world's tmpfs root.
+    #[must_use]
+    pub fn world_root(runtime_dir: &Path, world: &WorldName) -> PathBuf {
+        runtime_dir
+            .join("slipfork")
+            .join("pods")
+            .join(world.as_str())
+    }
+
+    /// Removes one world's ephemeral pod root (bundles, `crun` container state, logs) after an
+    /// aborted boot, so the same fork name retries against a clean tmpfs instead of inherited
+    /// `crun` state (`container 'x' already exists`) or half-written bundles.
+    pub fn purge(runtime_dir: &Path, world: &WorldName) -> io::Result<()> {
+        match fs::remove_dir_all(Self::world_root(runtime_dir, world)) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error),
+        }
     }
 
     /// The world's pod root.

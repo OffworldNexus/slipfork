@@ -15,6 +15,10 @@ use slipfork_world::{BootFailure, BootState, ServiceHealth, StepOutcome, classif
 use crate::world::supervise::BootSink;
 
 /// Window during which an immediate crash of a portless service fails `up`.
+///
+/// The ceiling has to outlast interpreter startup (`uv run python …` takes ~200ms before it can
+/// raise), otherwise a service that dies on its first tick is still `running` when the probe gives
+/// up and `up` wrongly reports it ready. The 5ms cadence keeps the settle cheap for healthy pods.
 const PORTLESS_WINDOW: Duration = Duration::from_millis(650);
 
 /// A launched node whose readiness is awaited with no runtime lock held.
@@ -145,7 +149,7 @@ fn wait_unix(
 fn wait_portless(pods_dir: &Path, service: &str) -> Result<(), BootFailure> {
     let deadline = Instant::now() + PORTLESS_WINDOW;
     while Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(10));
+        std::thread::sleep(Duration::from_millis(5));
         if let Ok(statuses) = list_pods(pods_dir)
             && let Some(status) = statuses.iter().find(|status| status.id == service)
             && (!status.running || status.exit_code.is_some())

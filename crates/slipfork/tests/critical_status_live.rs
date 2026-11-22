@@ -151,6 +151,53 @@ fn bar_runs(text: &str) -> Vec<usize> {
     runs
 }
 
+/// The one width every anchored bar draw must occupy.
+const BAR_CELLS: usize = 16;
+
+/// Every anchored summary frame for `title`, normalized to `[<cells>] done/total  title  elapsed`.
+///
+/// Frames are redrawn in place (`\r` already stripped), so one line can hold several; each `[`
+/// that starts a 16-cell bar followed by a counter and the title is one real, complete draw.
+fn bar_frames(text: &str, title: &str) -> Vec<String> {
+    let mut frames = Vec::new();
+    for (open, _) in text.match_indices('[') {
+        let rest = &text[open..];
+        let Some(close) = rest.find(']') else {
+            continue;
+        };
+        let cells = &rest[1..close];
+        if cells.chars().count() != BAR_CELLS
+            || !cells.chars().all(|cell| matches!(cell, '█' | '░'))
+        {
+            continue;
+        }
+        let Some(after) = rest[close + 1..].strip_prefix(' ') else {
+            continue;
+        };
+        let Some((counter, after)) = after.split_once("  ") else {
+            continue;
+        };
+        if !counter.contains('/')
+            || !counter
+                .chars()
+                .all(|character| character.is_ascii_digit() || character == '/')
+        {
+            continue;
+        }
+        let Some(elapsed) = after.strip_prefix(title).and_then(|after| {
+            after
+                .trim_start()
+                .split_whitespace()
+                .next()
+                .filter(|elapsed| elapsed.ends_with('s'))
+        }) else {
+            continue;
+        };
+        frames.push(format!("[{cells}] {counter}  {title}  {elapsed}"));
+    }
+    frames
+}
+
 /// Removes every escape sequence so rows can be asserted exactly as a user reads them.
 ///
 /// A CSI is `ESC [` then parameter/intermediate bytes and only ends on the final byte
@@ -273,6 +320,11 @@ fn live_status_and_ps_show_the_real_world() {
         "every bar draw is exactly 16 cells: {runs:?} in {captured:?}"
     );
     let readable = plain(&captured);
+    let frame = bar_frames(&readable, "Booting status-live-demo");
+    assert!(
+        frame.iter().any(|line| line.starts_with('[')),
+        "the anchored `[████░░] done/total  Booting <world>  <elapsed>` frame must be captured: {frame:?} in {readable}"
+    );
     // The world declares no image, so the finished-row proof names the golden PostgreSQL resource
     // the pane actually drew (`\r` is stripped above, so rows can follow bar remnants on a line).
     assert!(

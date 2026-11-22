@@ -31,3 +31,7 @@ attempt 3/3 started
 ## 2026-11-22T00:35 [lead]
 
 attempt 3 (expert): shard executor locks, persist+gate hook stamps, fork <1s, drop cleanup
+
+## 2026-11-22T02:33 [lead]
+
+status active -> done

@@ -2,7 +2,7 @@
 id: M3.45.2
 title: "Live Btrfs VM gate: .deb, 7 critical suites, <1.0s fork, S3 matrix, frozen-pane PTY"
 kind: task
-status: active
+status: done
 owner: implementer
 priority: 3
 depends_on: [M3.45.1]
@@ -11,7 +11,7 @@ attempts: 3
 max_attempts: 3
 escalation: expert
 created: "2026-11-21T22:40"
-updated: "2026-11-22T00:35"
+updated: "2026-11-22T02:33"
 ---
 
 # Goal

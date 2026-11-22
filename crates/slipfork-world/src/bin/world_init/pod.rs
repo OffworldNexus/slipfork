@@ -31,6 +31,20 @@ pub(crate) struct InitWorld {
 impl InitWorld {
     pub(crate) fn new(crun: PathBuf, pods_root: PathBuf, runtime: Handle) -> Result<Self, Fault> {
         let crun_root = pods_root.join("crun");
+        // A fresh init is a new user/net/ipc/pid namespace, so no `crun` container from an earlier
+        // boot of this world name can still be live; a kernel-killed init leaves its state dir
+        // behind on the shared tmpfs and every relaunch then fails with `container already exists`.
+        match fs::remove_dir_all(&crun_root) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(source) => {
+                return Err(Fault::cause(
+                    "crun state root reset",
+                    REMEDY_RUNTIME,
+                    source,
+                ));
+            }
+        }
         fs::create_dir_all(&crun_root)
             .and_then(|()| fs::set_permissions(&crun_root, fs::Permissions::from_mode(0o700)))
             .map_err(|source| Fault::cause("crun state root setup", REMEDY_RUNTIME, source))?;

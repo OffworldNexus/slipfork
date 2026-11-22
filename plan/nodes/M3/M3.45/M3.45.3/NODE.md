@@ -2,16 +2,24 @@
 id: M3.45.3
 title: "Demo /home/slipfork/demo + feat-auth refresh, probe cleanup & final live proof"
 kind: task
-status: ready
+status: done
 owner: implementer
 priority: 3
 depends_on: [M3.45.2]
-paths: ["crates/**", "tools/**", "docs/**", README.md]
-attempts: 0
+paths:
+  - "crates/**"
+  - "tools/**"
+  - "docs/**"
+  - README.md
+  - "specs/03-under-the-hood.md"
+  - specs/README.md
+  - "specs/01-forkfile.md"
+  - TESTING_PLAN.md
+attempts: 3
 max_attempts: 3
 escalation: none
 created: "2026-11-21T22:40"
-updated: "2026-11-21T22:40"
+updated: "2026-11-22T03:18"
 ---
 
 # Goal

@@ -508,6 +508,13 @@ fn fork_and_drop_a_live_world_without_leaving_snapshots() {
         "seeding the bucket must succeed: {seeded}"
     );
 
+    // A crashed earlier attempt leaves `crun` container state on the world's tmpfs pod root; the
+    // next boot of that world name must reset it, never fail every launch with `already exists`.
+    let stale_crun = lab.runtime.join("slipfork/pods/feat-auth--demo/crun");
+    for pod in ["pg", "cache"] {
+        fs::create_dir_all(stale_crun.join(pod)).expect("seed stale crun container state");
+    }
+
     // Wall clock starts at the `Command::spawn` boundary; the daemon's own `elapsed_ms` is only
     // secondary evidence because the ceiling is `spawn` -> the fork's first `200 OK` (`specs/03` §3).
     let started = std::time::Instant::now();
@@ -822,6 +829,80 @@ fn fork_and_drop_a_live_world_without_leaving_snapshots() {
         String::from_utf8_lossy(&missing.stderr).contains("no fork named"),
         "dropping a fork twice must be typed"
     );
+
+    // A fork that fails after its snapshots must roll back every trace (project snapshot, world
+    // clone, flat resource clones, pod rootfs clones, tmpfs bundles) so the name is reusable.
+    let git = require_tool("git");
+    let parent_branch = String::from_utf8_lossy(
+        &Command::new(&git)
+            .arg("-C")
+            .arg(&lab.project)
+            .args(["rev-parse", "--abbrev-ref", "HEAD"])
+            .output()
+            .expect("read the parent branch")
+            .stdout,
+    )
+    .trim()
+    .to_owned();
+    let git_run = |args: &[&str]| {
+        let status = Command::new(&git)
+            .arg("-C")
+            .arg(&lab.project)
+            .args(args)
+            .status()
+            .expect("run git");
+        assert!(status.success(), "git {args:?} failed");
+    };
+    git_run(&["switch", "-q", "-c", "feat-auth"]);
+    fs::write(lab.project.join("guard.txt"), "committed\n").expect("write the branch guard");
+    git_run(&["add", "guard.txt"]);
+    git_run(&["commit", "-q", "-m", "guard"]);
+    git_run(&["switch", "-q", &parent_branch]);
+    // An untracked file whose path `feat-auth` tracks makes the fork's branch switch refuse.
+    fs::write(lab.project.join("guard.txt"), "untracked\n").expect("write the conflicting file");
+    let refused = lab.run(&["fork", "feat-auth"]);
+    assert!(!refused.status.success(), "the conflicting fork must fail");
+    let stderr = String::from_utf8_lossy(&refused.stderr);
+    assert!(stderr.contains("next:"), "{stderr}");
+    assert!(
+        !lab.fork_project().exists(),
+        "a failed fork must remove its project snapshot: {stderr}"
+    );
+    assert!(
+        !lab.fork_world().exists(),
+        "a failed fork must remove its world clone: {stderr}"
+    );
+    assert!(
+        !lab.store_root.join("pods/feat-auth--demo").exists(),
+        "a failed fork must remove its pod rootfs clones: {stderr}"
+    );
+    assert!(
+        !lab.runtime.join("slipfork/pods/feat-auth--demo").exists(),
+        "a failed fork must remove its tmpfs bundles and stale `crun` state: {stderr}"
+    );
+    fs::remove_file(lab.project.join("guard.txt")).expect("drop the conflicting file");
+    let retry = lab.run(&["fork", "feat-auth", "--json"]);
+    assert!(
+        retry.status.success(),
+        "the same fork name must be reusable immediately: stdout={}\nstderr={}",
+        String::from_utf8_lossy(&retry.stdout),
+        String::from_utf8_lossy(&retry.stderr)
+    );
+    assert!(
+        is_subvolume_path(&lab.fork_project()).unwrap_or(false),
+        "the retried fork must materialise its project snapshot"
+    );
+    let cleanup = lab.run(&["drop", "feat-auth", "-f"]);
+    assert!(
+        cleanup.status.success(),
+        "dropping the retried fork failed: {}",
+        String::from_utf8_lossy(&cleanup.stderr)
+    );
+    let _ = Command::new(&git)
+        .arg("-C")
+        .arg(&lab.project)
+        .args(["branch", "-D", "feat-auth"])
+        .status();
 
     let down = lab.run(&["down"]);
     assert!(

@@ -21,22 +21,24 @@ Everything lives natively on one Btrfs mount — your checkout (`~/projects/demo
 ```text
 <btrfs-mount>/
 ├── home/you/projects/demo/                       # Project subvolume (code + .venv + node_modules + .slipfork/)
-│   └── .forks/feat-auth/                         # <1ms CoW project snapshot
+│   └── .forks/feat-auth/                         # CoW project snapshot (one ioctl)
 └── .slipfork-store/
     ├── images/                                   # Read-only OCI & Dockerfile step subvolumes
     ├── templates/postgres-18/                    # Golden initdb subvolume (sealed BTRFS_SUBVOL_RDONLY)
     └── worlds/
         ├── demo/                                 # World subvolume: s3/ + redis/ + .slipfork-world-stamp.json
         ├── demo.pg.pg/                           # Sibling PGDATA subvolume + .slipfork-pg-stamp.json
-        ├── feat-auth--demo/                      # <1ms CoW snapshot of world subvolume + world stamp
-        └── feat-auth--demo.pg.pg/                # <1ms CoW snapshot of live PGDATA + PG epoch stamp
+        ├── feat-auth--demo/                      # CoW snapshot of world subvolume + world stamp
+        └── feat-auth--demo.pg.pg/                # CoW snapshot of live PGDATA + PG epoch stamp
 ```
+
+A project, world, or `PGDATA` clone is one `BTRFS_IOC_SNAP_CREATE_V2` ioctl: `~0.3ms` on local NVMe, single-digit ms on network block storage, against a documented `≤50ms` ceiling.
 
 ```mermaid
 flowchart LR
-  Tpl["templates/postgres-18\n(BTRFS_SUBVOL_RDONLY)"] -.->|"up (<1ms snap)"| Pg["worlds/demo.pg.pg\n(+ world_epoch)"]
-  Proj["~/projects/demo\n(code + deps + .slipfork/)"] ==>|"fork (<1ms snap)"| FProj[".forks/feat-auth"]
-  World["worlds/demo\n(s3 + redis + .slipfork-world-stamp.json)"] ==>|"fork (<1ms snap)"| FWorld["worlds/feat-auth--demo"]
+  Tpl["templates/postgres-18\n(BTRFS_SUBVOL_RDONLY)"] -.->|"up (one CoW ioctl)"| Pg["worlds/demo.pg.pg\n(+ world_epoch)"]
+  Proj["~/projects/demo\n(code + deps + .slipfork/)"] ==>|"fork (one CoW ioctl)"| FProj[".forks/feat-auth"]
+  World["worlds/demo\n(s3 + redis + .slipfork-world-stamp.json)"] ==>|"fork (one CoW ioctl)"| FWorld["worlds/feat-auth--demo"]
   Pg ==>|"CHECKPOINT + world_epoch + fork"| FPg["worlds/feat-auth--demo.pg.pg"]
 ```
 
@@ -60,9 +62,11 @@ Slipfork pulls zero external S3 images and runs zero distributed master, Raft, v
 
 ## 3. Speed-of-Light Dev Databases, Reactive `tokio` DAG & `< 500ms` Fork Budget
 
-- **PostgreSQL 18 (`~30–50ms` start, `0ms` per-world `initdb`):** Built once at `<btrfs_mount>/.slipfork-store/templates/postgres-18` and sealed `BTRFS_SUBVOL_RDONLY`. `PostgresLauncher` clones `PGDATA` in `< 1ms`, unlinks stale `postmaster.pid`, mounts `/dev/shm`, runs `postgres -c fsync=off -c synchronous_commit=off -c full_page_writes=off -c wal_level=minimal -c max_wal_senders=0 -c autovacuum=off -c shared_buffers=32MB -c dynamic_shared_memory_type=posix`, writes `world_epoch` at `CHECKPOINT`, and polls readiness every **`2ms`**.
+- **PostgreSQL 18 (`~30–50ms` start, `0ms` per-world `initdb`):** Built once at `<btrfs_mount>/.slipfork-store/templates/postgres-18` and sealed `BTRFS_SUBVOL_RDONLY`. `PostgresLauncher` clones `PGDATA` in one CoW ioctl (`~0.3ms` local NVMe, single-digit ms on network block storage, `≤50ms` ceiling), unlinks stale `postmaster.pid`, mounts `/dev/shm`, runs `postgres -c fsync=off -c synchronous_commit=off -c full_page_writes=off -c wal_level=minimal -c max_wal_senders=0 -c autovacuum=off -c shared_buffers=32MB -c dynamic_shared_memory_type=posix`, writes `world_epoch` at `CHECKPOINT`, and polls readiness every **`2ms`**.
 - **Redis 7 (`~5–10ms` start, live keys preserved on `fork`):** `RedisLauncher` runs `redis-server --dir /data --save "" --appendonly yes --appendfsync no` on `<world>/redis/<id>` and polls `:6379` every **`2ms`**.
 - **Single `tokio::Runtime` owner & `spawn_blocking`:** Detached `__supervise` owns the **one** boot `tokio::Runtime` and injects `tokio::runtime::Handle` into `BootScheduler::new` (zero `Runtime::new()` inside `slipfork-world` library code); blocking steps (Btrfs ioctls, `unshare`, `crun` spawn) run via `spawn_blocking` around the injected sync step executor.
+
+A project, world, or `PGDATA` clone is one `BTRFS_IOC_SNAP_CREATE_V2` ioctl: `~0.3ms` on local NVMe, single-digit ms on network block storage, against a documented `≤50ms` ceiling.
 
 ```mermaid
 flowchart LR
@@ -87,6 +91,8 @@ flowchart LR
 ---
 
 ## 4. Daemon `daemon.sock` & World `control.sock` Wire Contracts
+
+A project, world, or `PGDATA` clone is one `BTRFS_IOC_SNAP_CREATE_V2` ioctl: `~0.3ms` on local NVMe, single-digit ms on network block storage, against a documented `≤50ms` ceiling.
 
 ```mermaid
 flowchart LR

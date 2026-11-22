@@ -119,6 +119,9 @@ impl Pane {
             self.started.elapsed(),
             self.width,
         ));
+        // `indicatif` only paints a bar whose ticker advanced: without this tick the anchored
+        // 16-cell bar stays invisible while the spinner bars below it animate.
+        self.summary.tick();
         let limit = render::stream_limit(self.width);
         for run in self.bars.values() {
             run.bar.set_message(render::running_row_with_tail(
