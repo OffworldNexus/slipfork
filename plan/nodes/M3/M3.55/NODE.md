@@ -6,12 +6,12 @@ status: active
 owner: implementer
 priority: 3
 depends_on: [M3.54, M3.56]
-paths: ["support/demo/**", "docs/**", README.md, "crates/**"]
+paths: ["support/demo/**", "docs/**", README.md, "crates/**", "editors/**", "specs/**"]
 attempts: 1
 max_attempts: 3
 escalation: none
 created: "2026-11-22T20:59"
-updated: "2026-11-22T21:19"
+updated: "2026-11-22T21:40"
 ---
 
 # Goal

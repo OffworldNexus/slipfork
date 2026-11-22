@@ -3032,3 +3032,5 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-22T21:19 [M3.55] (lead) status ready -> active
 - 2026-11-22T21:19 [M3.55] (lead) attempt 1/3 started
 - 2026-11-22T21:19 [M3.55] (lead) base e7facc24113d4e23502af4655e76a7eec850f788
+- 2026-11-22T21:40 [M3.55] (conductor) edited fields
+- 2026-11-22T21:44 [M3.57] (conductor) created (task) True & visible parallelism: warm-up stamp reuse (not is_fork-only), parallel pod stop on down & live in-place spinner rows above DECSTBM bar
