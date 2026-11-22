@@ -1320,6 +1320,13 @@ fn world_up_restart_down_journey() {
         1,
         "a failure prints exactly one next:\n{failed_err}"
     );
+    // The shipped remedy is `boot::render::failure_sentence`, one crisp plain line naming the
+    // failing service and the exact `logs` command the user must run.
+    assert!(
+        failed_err.lines().any(|line| line.trim()
+            == "✗ Failed to start service broken — check logs with: slipfork logs broken"),
+        "the failed service must print the exact remedy line:\nstdout={failed_out}\nstderr={failed_err}"
+    );
     assert!(
         broken.join(".slipfork/world.json").is_file(),
         "the world must stay up after a failed service"
@@ -1331,10 +1338,11 @@ fn world_up_restart_down_journey() {
         "the failed world must stay listed by status:\n{listed_text}"
     );
     assert!(
-        listed_text
-            .lines()
-            .any(|line| line.contains("broken") && line.contains("failed")),
-        "the failed service row must render its `failed` state:\n{listed_text}"
+        listed_text.lines().any(|line| {
+            let row = line.trim_end();
+            row.contains("broken") && row.ends_with("failed")
+        }),
+        "the failed service row must render `broken` with `failed` as its last column:\n{listed_text}"
     );
     let down = journey.slipfork(&broken, &["down"]);
     assert!(

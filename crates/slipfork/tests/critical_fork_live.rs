@@ -968,7 +968,8 @@ fn fork_and_drop_a_live_world_without_leaving_snapshots() {
         "fork must never rewrite `PG_VERSION`"
     );
 
-    // Breaking the paired epoch re-runs `pre-deploy` and re-evaluates the `frontend` build arg.
+    // Breaking the paired epoch re-runs `pre-deploy`, and a real `front/Dockerfile` input change
+    // forces the re-evaluated build to miss at least one step instead of reporting `cached`.
     let layout = StoreLayout::at(&lab.store_root);
     let demo = WorldName::parse("demo").expect("valid world");
     let feat = ForkName::parse("feat-auth").expect("valid fork");
@@ -978,6 +979,17 @@ fn fork_and_drop_a_live_world_without_leaving_snapshots() {
         serde_json::from_slice(&fs::read(&pg_stamp).expect("fork PG stamp")).expect("stamp JSON");
     stamp["world_epoch"] = serde_json::Value::String("mismatched".to_owned());
     fs::write(&pg_stamp, serde_json::to_vec(&stamp).expect("encode")).expect("break the epoch");
+    // A stamp-only rewrite leaves every step digest intact, so the engine may legitimately report
+    // `cached`. Append a real `RUN` instruction to the fork's `front/Dockerfile` so one step key
+    // genuinely changes and the build must apply it.
+    let front_dockerfile = fork_project.join("front/Dockerfile");
+    let mut document =
+        fs::read_to_string(&front_dockerfile).expect("read the fork `frontend` Dockerfile");
+    if !document.ends_with('\n') {
+        document.push('\n');
+    }
+    document.push_str("RUN true\n");
+    fs::write(&front_dockerfile, document).expect("change a real `frontend` Dockerfile input");
     let down = lab.run_in(&fork_project, &["down"]);
     assert!(
         down.status.success(),
@@ -990,7 +1002,7 @@ fn fork_and_drop_a_live_world_without_leaving_snapshots() {
         reup_reply["nodes"].as_array().is_some_and(|nodes| nodes
             .iter()
             .any(|node| { node["name"] == "frontend" && node["state"] == "built" })),
-        "a mismatched epoch must re-evaluate `arg VITE_CDN_URL` and rebuild `frontend`: {reup_reply}"
+        "a mismatched epoch plus a changed `front/Dockerfile` must rebuild `frontend`: {reup_reply}"
     );
     assert!(
         reup_reply["nodes"].as_array().is_some_and(|nodes| nodes

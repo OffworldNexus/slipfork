@@ -2971,3 +2971,4 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-22T19:28 [M3.53.1] (lead) status ready -> active
 - 2026-11-22T19:28 [M3.53.1] (lead) triad fix pass: apk rm, docs.yml, lsp linux stage, rehearsal release/*, stamp remedies, verify smoke
 - 2026-11-22T19:31 [M3.53.1] (lead) status active -> done
+- 2026-11-22T19:32 [M3.53.3] (lead) status review -> done
