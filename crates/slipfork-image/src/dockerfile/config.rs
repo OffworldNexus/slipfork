@@ -3,6 +3,7 @@
 use std::collections::BTreeMap;
 
 use sha2::{Digest, Sha256};
+use slipfork_world::ImageFacts;
 
 use crate::digest::hex;
 
@@ -38,7 +39,44 @@ impl Default for ImageConfig {
     }
 }
 
+impl From<&ImageFacts> for ImageConfig {
+    /// Seeds stage metadata from a pulled image's OCI `Env`/`Entrypoint`/`Cmd`.
+    ///
+    /// A later `ENV`, `CMD`, or `ENTRYPOINT` instruction in the stage overwrites the inherited
+    /// value, exactly as Docker layers a child image config over its base.
+    fn from(facts: &ImageFacts) -> Self {
+        let mut config = Self::default();
+        for entry in &facts.env {
+            if let Some((key, value)) = entry.split_once('=') {
+                config.env.insert(key.to_owned(), value.to_owned());
+            }
+        }
+        if !facts.entrypoint.is_empty() {
+            config.entrypoint = Some(Command::Exec(facts.entrypoint.clone()));
+        }
+        if !facts.cmd.is_empty() {
+            config.cmd = Some(Command::Exec(facts.cmd.clone()));
+        }
+        config
+    }
+}
+
 impl ImageConfig {
+    /// Resolves a `WORKDIR` argument against the current directory and stores it.
+    ///
+    /// Relative directories join the inherited `WORKDIR`, so `WORKDIR /app` followed by
+    /// `WORKDIR src` leaves the stage in `/app/src`.
+    #[must_use]
+    pub fn set_workdir(&mut self, directory: &str) -> String {
+        let resolved = if directory.starts_with('/') {
+            directory.to_owned()
+        } else {
+            format!("{}/{}", self.workdir.trim_end_matches('/'), directory)
+        };
+        self.workdir.clone_from(&resolved);
+        resolved
+    }
+
     /// Applies a metadata instruction; returns `false` for filesystem instructions.
     pub fn apply(&mut self, instruction: &Instruction) -> bool {
         match instruction {
@@ -131,5 +169,66 @@ impl ImageConfig {
             hasher.update(entrypoint.render().as_bytes());
         }
         hex(&hasher.finalize())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use slipfork_world::ImageFacts;
+
+    use super::{Command, ImageConfig, Instruction};
+    use crate::dockerfile::{BuildArgs, Variables};
+
+    fn base_facts() -> ImageFacts {
+        ImageFacts {
+            env: vec!["PATH=/usr/bin:/bin".to_owned(), "LANG=C.UTF-8".to_owned()],
+            entrypoint: vec!["/usr/bin/env".to_owned()],
+            cmd: vec![
+                "python".to_owned(),
+                "-m".to_owned(),
+                "app.worker".to_owned(),
+            ],
+        }
+    }
+
+    /// `ENV PATH="/app/.venv/bin:$PATH"` must expand against the base image's real `PATH`, the
+    /// inherited `CMD` must survive until the stage overrides it, and a stage `ENTRYPOINT` must
+    /// replace the inherited one.
+    #[test]
+    fn base_image_facts_seed_env_and_inherited_entrypoint_and_cmd() {
+        let mut config = ImageConfig::from(&base_facts());
+        assert_eq!(
+            config.env.get("PATH").map(String::as_str),
+            Some("/usr/bin:/bin")
+        );
+        assert_eq!(
+            config.exec_argv(),
+            ["/usr/bin/env", "python", "-m", "app.worker"]
+        );
+
+        let variables = Variables::new(&BuildArgs::new(), &config.env);
+        let expanded = variables.expand("/app/.venv/bin:$PATH");
+        assert_eq!(expanded, "/app/.venv/bin:/usr/bin:/bin");
+        config.env.insert("PATH".to_owned(), expanded);
+
+        assert!(!config.exec_argv().is_empty(), "the inherited CMD survives");
+        config.apply(&Instruction::Cmd(Command::Exec(vec!["node".to_owned()])));
+        assert_eq!(config.exec_argv(), ["/usr/bin/env", "node"]);
+
+        let mut overridden = ImageConfig::from(&base_facts());
+        overridden.apply(&Instruction::Entrypoint(Command::Shell(
+            "exec python3".to_owned(),
+        )));
+        assert_eq!(overridden.exec_argv(), ["/bin/sh", "-c", "exec python3"]);
+    }
+
+    /// `WORKDIR` joins relative directories and never resets a later instruction's view of it.
+    #[test]
+    fn workdir_joins_relative_directories() {
+        let mut config = ImageConfig::default();
+        assert_eq!(config.set_workdir("/app"), "/app");
+        assert_eq!(config.workdir, "/app");
+        assert_eq!(config.set_workdir("src"), "/app/src");
+        assert_eq!(config.set_workdir("/opt"), "/opt");
     }
 }

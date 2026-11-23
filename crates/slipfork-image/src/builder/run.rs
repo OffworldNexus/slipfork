@@ -141,17 +141,8 @@ impl<'a> BuildRun<'a> {
             Instruction::Workdir(directory) => {
                 let variables = Variables::new(&self.request.args, &state.config.env);
                 let expanded = variables.expand(directory);
-                let resolved = if expanded.starts_with('/') {
-                    expanded
-                } else {
-                    format!(
-                        "{}/{}",
-                        state.config.workdir.trim_end_matches('/'),
-                        expanded
-                    )
-                };
                 let mut next_config = state.config.clone();
-                next_config.workdir = resolved.clone();
+                let resolved = next_config.set_workdir(&expanded);
                 let (next, hit) = self.builder.filesystem_step(
                     state,
                     &parsed.instruction,
@@ -203,28 +194,31 @@ impl<'a> BuildRun<'a> {
             args,
             self.context_hash,
             &config,
-            |writer| match &from_state {
-                Some(source) => copy::copy_rootfs(
-                    &source.rootfs,
-                    &expanded.sources,
-                    &expanded.dest,
-                    writer,
-                    owner,
-                ),
-                None if is_add => copy::add_context(
-                    self.context,
-                    &expanded.sources,
-                    &expanded.dest,
-                    writer,
-                    owner,
-                ),
-                None => copy::copy_context(
-                    self.context,
-                    &expanded.sources,
-                    &expanded.dest,
-                    writer,
-                    owner,
-                ),
+            |writer| {
+                let destination = copy::Destination::new(writer, &config.workdir);
+                match &from_state {
+                    Some(source) => copy::copy_rootfs(
+                        &source.rootfs,
+                        &expanded.sources,
+                        &expanded.dest,
+                        destination,
+                        owner,
+                    ),
+                    None if is_add => copy::add_context(
+                        self.context,
+                        &expanded.sources,
+                        &expanded.dest,
+                        destination,
+                        owner,
+                    ),
+                    None => copy::copy_context(
+                        self.context,
+                        &expanded.sources,
+                        &expanded.dest,
+                        destination,
+                        owner,
+                    ),
+                }
             },
         )?;
         *state = next;

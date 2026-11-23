@@ -210,9 +210,9 @@ impl NativeImageBuilder {
                 let reference = ImageReference::parse(reference)?;
                 let image = self.puller.pull(&reference)?;
                 Ok(StageState {
-                    rootfs: image.rootfs,
                     key: format!("base-{}", image.digest),
-                    config: ImageConfig::default(),
+                    config: ImageConfig::from(&image.facts),
+                    rootfs: image.rootfs,
                 })
             }
             StageBase::Stage(name) => built
