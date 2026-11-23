@@ -211,25 +211,21 @@ impl Session {
         let palette = Palette::new(self.color());
         // A daemon message may already carry its own `next:` line; that remedy wins, and the
         // renderer still prints exactly one.
-        let mut embedded = None;
+        let (body, embedded) = crate::world::split_remedy(message);
         let mut emitted = false;
-        for line in message.lines() {
-            if let Some(remedy) = line.strip_prefix("next: ") {
-                embedded.get_or_insert(remedy.to_owned());
-            } else if !line.is_empty() {
-                if palette.color() {
-                    if emitted {
-                        eprintln!("{}", palette.value(line));
-                    } else {
-                        eprintln!("{} {}", palette.icon_bad(), palette.value(line));
-                    }
-                } else if emitted {
-                    eprintln!("{line}");
+        for line in body.lines() {
+            if palette.color() {
+                if emitted {
+                    eprintln!("{}", palette.value(line));
                 } else {
-                    eprintln!("error: {line}");
+                    eprintln!("{} {}", palette.icon_bad(), palette.value(line));
                 }
-                emitted = true;
+            } else if emitted {
+                eprintln!("{line}");
+            } else {
+                eprintln!("error: {line}");
             }
+            emitted = true;
         }
         let next = embedded.as_deref().map_or(next, |remedy| remedy);
         if palette.color() {

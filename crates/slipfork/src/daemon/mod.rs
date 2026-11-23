@@ -366,16 +366,17 @@ impl Daemon {
         params: &Value,
         emit: &mut dyn FnMut(Value),
     ) -> Result<Option<Value>, Failure> {
-        // Decide under the daemon lock, then release it: reconcile runs typed world calls that
-        // must never block `ps`/`ping`, exactly like the `logs` stream path.
+        // Decide under the daemon lock, then release it: heal/reconcile run typed world calls
+        // that must never block `ps`/`ping`, exactly like the `logs` stream path.
         let action = self.core()?.up_plan(params)?;
         match action {
-            lifecycle::up::UpAction::Idle(reply) => {
+            lifecycle::up::UpAction::Heal(plan) => {
+                let reply = lifecycle::up::heal(*plan, emit)?;
                 emit(json!({
                     "event": "ready",
                     "url": reply["url"],
                     "world": reply["world"],
-                    "elapsed_ms": 0,
+                    "elapsed_ms": reply["elapsed_ms"],
                 }));
                 Ok(Some(reply))
             }

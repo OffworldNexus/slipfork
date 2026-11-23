@@ -226,15 +226,24 @@ fn fork_world(project: &Path) -> Option<slipfork_world::WorldName> {
     ))
 }
 
-pub(super) fn fail(message: impl std::fmt::Display, next: &str) -> ExitCode {
-    let text = message.to_string();
-    let mut embedded = None;
-    for line in text.lines() {
-        if let Some(remedy) = line.strip_prefix("next: ") {
-            embedded.get_or_insert(remedy.to_owned());
+/// Splits an embedded `next: <remedy>` line out of a daemon message.
+pub(crate) fn split_remedy(message: &str) -> (String, Option<String>) {
+    let mut lines = Vec::new();
+    let mut remedy = None;
+    for line in message.lines() {
+        if let Some(next) = line.strip_prefix("next: ") {
+            remedy.get_or_insert_with(|| next.to_owned());
         } else if !line.is_empty() {
-            eprintln!("error: {line}");
+            lines.push(line);
         }
+    }
+    (lines.join("\n"), remedy)
+}
+
+pub(super) fn fail(message: impl std::fmt::Display, next: &str) -> ExitCode {
+    let (body, embedded) = split_remedy(&message.to_string());
+    for line in body.lines() {
+        eprintln!("error: {line}");
     }
     eprintln!("next: {}", embedded.as_deref().unwrap_or(next));
     ExitCode::FAILURE

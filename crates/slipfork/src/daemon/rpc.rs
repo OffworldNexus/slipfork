@@ -28,11 +28,20 @@ pub(super) fn world_answers(pods_dir: &Path) -> bool {
 
 /// Sends one request to `<pods>/control.sock` and returns its `ok` payload.
 pub(super) fn world_call(pods_dir: &Path, request: &Request) -> Result<Value, String> {
+    world_call_within(pods_dir, request, REPLY_TIMEOUT)
+}
+
+/// Like [`world_call`], but with a caller-bounded reply wait.
+pub(super) fn world_call_within(
+    pods_dir: &Path,
+    request: &Request,
+    timeout: Duration,
+) -> Result<Value, String> {
     let path = control::control_socket_path(pods_dir).map_err(|error| error.to_string())?;
     let mut stream = UnixStream::connect(&path)
         .map_err(|error| format!("connect `{}`: {error}", path.display()))?;
     stream
-        .set_read_timeout(Some(REPLY_TIMEOUT))
+        .set_read_timeout(Some(timeout))
         .map_err(|error| format!("configure `{}`: {error}", path.display()))?;
     let bytes = control::encode(request).map_err(|error| error.to_string())?;
     stream

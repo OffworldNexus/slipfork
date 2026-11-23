@@ -8,29 +8,45 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
-use serde_json::Value;
+use serde_json::{Value, json};
 use slipfork_world::control::{PROTOCOL_VERSION, Request, decode_init_frame, encode};
 
 use super::core::{Core, World};
 use crate::daemon::Failure;
 use crate::daemon::boot::BootSession;
 use crate::daemon::registry::{self, Fingerprint};
-use crate::daemon::rpc::{key_of, pid_alive, world_answers};
+use crate::daemon::rpc::{key_of, pid_alive, world_answers, world_call_within};
+use crate::ps::PsService;
 use crate::world::features::WorldFeatures;
 
 /// Longest a single reconcile control call may block (`List`, `Stop`, `Shutdown`).
 const RECONCILE_CALL: Duration = Duration::from_secs(10);
 /// Longest the old supervisor gets to exit after `Shutdown` before its group is killed.
 const RECONCILE_EXIT: Duration = Duration::from_secs(10);
+const HEAL_INSPECT: Duration = Duration::from_secs(2);
+const HEAL_RESTART: Duration = Duration::from_secs(30);
+const HEAL_SETTLE: Duration = Duration::from_millis(250);
+const HEAL_POLL: Duration = Duration::from_millis(50);
+const HEAL_VERIFY: Duration = Duration::from_millis(1500);
 
 /// What one `up` must do, decided under the daemon lock and executed outside it.
 pub(crate) enum UpAction {
-    /// The live world's `Forkfile` fingerprint still matches: answer `0ms`.
-    Idle(Value),
+    /// The live world's fingerprint still matches: verify/restart its pods outside the lock.
+    Heal(Box<Heal>),
     /// Detached live world that must be stopped before `begin_up` re-applies the plan.
     Reconcile(Box<Reconcile>),
     /// Nothing live; boot normally.
     Boot,
+}
+
+/// An unchanged world detached from [`Core`] so its health check never holds the daemon lock.
+pub(crate) struct Heal {
+    world: String,
+    project: PathBuf,
+    pods_dir: PathBuf,
+    supervisor_pid: u32,
+    started_at_ms: u64,
+    fork: Option<String>,
 }
 
 /// A live world detached from [`Core`] so the world calls run without the daemon lock.
@@ -42,9 +58,7 @@ pub(crate) struct Reconcile {
 }
 
 impl Core {
-    /// Decides one idempotent `up` without performing any blocking world call while the core lock
-    /// is held. An edited `Forkfile` detaches the live world for [`reconcile`], which stops every
-    /// orphan, shuts the world down, and lets `begin_up` re-apply the plan from cache.
+    /// Decides one idempotent `up`: unchanged heals outside the lock; edited reconciles then boots.
     pub(crate) fn up_plan(&mut self, params: &Value) -> Result<UpAction, Failure> {
         let project = PathBuf::from(
             params
@@ -78,10 +92,14 @@ impl Core {
             _ => false,
         };
         if unchanged {
-            return Ok(UpAction::Idle(serde_json::json!({
-                "world": entry.world,
-                "url": format!("http://{}.localhost", entry.world),
-                "elapsed_ms": 0,
+            // The socket answers, but only the canonical `ps` rows prove health: heal outside the lock.
+            return Ok(UpAction::Heal(Box::new(Heal {
+                world: entry.world,
+                project: entry.project,
+                pods_dir: entry.pods_dir,
+                supervisor_pid: entry.supervisor_pid,
+                started_at_ms: entry.started_at_ms,
+                fork: entry.fork,
             })));
         }
         let Some(World::Live { entry, child }) = self.worlds.remove(&key) else {
@@ -99,8 +117,93 @@ impl Core {
     }
 }
 
-/// Stops every live pod the edited `Forkfile` no longer declares, shuts the detached world down,
-/// and reaps it. Runs with **no daemon lock held**, so `ps`/`ping` stay responsive.
+pub(crate) fn heal(plan: Heal, emit: &mut dyn FnMut(Value)) -> Result<Value, Failure> {
+    let started = Instant::now();
+    let mut latest = down_rows(&plan, "daemon-up-health", HEAL_INSPECT)?;
+    if latest.is_empty() {
+        return Ok(ready(&plan.world, 0));
+    }
+    let label = format!("Verifying {}", plan.world);
+    emit(json!({"event":"started","step":1,"total":1,"kind":"world","label":label}));
+    let mut restart_error = None;
+    for row in &latest {
+        let request = Request::Restart {
+            v: PROTOCOL_VERSION,
+            id: format!("daemon-up-restart-{}", row.id),
+            service: Some(row.id.clone()),
+        };
+        if let Err(error) = world_call_within(&plan.pods_dir, &request, HEAL_RESTART) {
+            restart_error
+                .get_or_insert_with(|| error.lines().next().unwrap_or("restart failed").to_owned());
+        }
+    }
+    let deadline = Instant::now() + HEAL_VERIFY;
+    let mut last_error = None;
+    let mut healthy_since = None;
+    while Instant::now() < deadline {
+        match down_rows(&plan, "daemon-up-recheck", HEAL_INSPECT) {
+            Ok(rows) if rows.is_empty() => {
+                let since = *healthy_since.get_or_insert_with(Instant::now);
+                if since.elapsed() >= HEAL_SETTLE {
+                    let ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+                    emit(
+                        json!({"event":"finished","step":1,"total":1,"kind":"world","name":plan.world,"state":"running","label":format!("Recovered {}", plan.world),"detail":"services running","elapsed_ms":ms,"duration_ms":ms}),
+                    );
+                    return Ok(ready(&plan.world, ms));
+                }
+            }
+            Ok(rows) => (latest, healthy_since) = (rows, None),
+            Err(error) => (last_error, healthy_since) = (Some(error.message), None),
+        }
+        std::thread::sleep(HEAL_POLL);
+    }
+    let id = &latest.first().expect("heal keeps the initial down row").id;
+    let detail = restart_error
+        .or(last_error)
+        .and_then(|error| error.lines().next().map(|line| format!(": {line}")))
+        .unwrap_or_default();
+    Err(Failure::new(
+        "world-unhealthy",
+        format!("service `{id}` is not running{detail}\nnext: slipfork logs {id}"),
+    ))
+}
+
+fn ready(world: &str, elapsed_ms: u64) -> Value {
+    json!({ "world": world, "url": format!("http://{world}.localhost"), "elapsed_ms": elapsed_ms })
+}
+
+fn down_rows(plan: &Heal, id: &str, timeout: Duration) -> Result<Vec<PsService>, Failure> {
+    let request = Request::List {
+        v: PROTOCOL_VERSION,
+        id: id.to_owned(),
+    };
+    let reply = world_call_within(&plan.pods_dir, &request, timeout)
+        .map_err(|error| world_failure(&plan.world, &error))?;
+    let pods = slipfork_world::pod_statuses(&reply)
+        .map_err(|error| world_failure(&plan.world, &error.to_string()))?;
+    Ok(super::ps::WorldView::new(
+        &plan.project,
+        &plan.world,
+        plan.fork.as_deref(),
+        plan.started_at_ms,
+        plan.supervisor_pid,
+        true,
+        false,
+        &pods,
+    )
+    .service_rows()
+    .iter()
+    .filter(|row| !row.orphaned && !row.running)
+    .cloned()
+    .collect())
+}
+
+fn world_failure(world: &str, error: &str) -> Failure {
+    let message = format!("cannot inspect `{world}`: {error}\nnext: slipfork logs {world}");
+    Failure::new("world-unhealthy", message)
+}
+
+/// Stops undeclared pods, shuts the detached world down, and reaps it — with no daemon lock held.
 pub(crate) fn reconcile(plan: Reconcile) {
     let declared = declared_ids(&plan.project);
     if let Some(declared) = &declared
@@ -306,9 +409,6 @@ impl Core {
 }
 
 /// The fork name when `project` is the canonical `<parent>/.forks/<fork>` checkout.
-///
-/// `up <fork>` re-boots an existing checkout through [`Core::begin_up`], so the published registry
-/// entry must still carry the fork name for `ps` to nest it under its parent world.
 fn layout_fork(project: &Path) -> Option<String> {
     let forks = project.parent()?;
     if !forks
