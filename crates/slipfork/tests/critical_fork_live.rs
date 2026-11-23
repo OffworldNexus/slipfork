@@ -1238,7 +1238,7 @@ fn failed_fork_publish_rolls_back_without_leaking() {
     const ROLLBACK_FORKFILE: &str = concat!(
         "# forkfile: 0.1\n",
         "domain main\n",
-        "image backend . {\n",
+        "image backend ./api {\n",
         "  service api {\n",
         "    run: sleep 3600\n",
         "  }\n",
