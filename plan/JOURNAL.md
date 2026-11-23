@@ -3236,3 +3236,12 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-23T13:54 [M3.70.2] (lead) sync ok; critical_world_journey 2 passed, critical_status_live 5 passed, critical_fork_live 1 passed/1 failed: rollback fixture uses root Dockerfile; .deb/prod-
 - 2026-11-23T13:54 [M3.70.1] (lead) fixture fixed to image backend ./api; live --no-run compiles; Triad pass otherwise (arch/ux reviewers returned empty, lead self-verified docs+context)
 - 2026-11-23T13:54 [M3.70.1] (lead) status active -> done
+- 2026-11-23T13:54 [M3.70.2] (lead) status ready -> active
+- 2026-11-23T13:54 [M3.70.2] (lead) attempt 2/3 started
+- 2026-11-23T13:54 [M3.70.2] (lead) resume after M3.70.1 fixture fix (b1af31c); rerun all 3 suites then .deb + demo sync + prod-check
+- 2026-11-23T13:55 [M3.69.1] (lead) status done -> ready: semantics fix: disabling a group must drop its implications; explicit disable outranks implication
+- 2026-11-23T13:55 [M3.69.1] (lead) attempt 3/3 started
+- 2026-11-23T13:55 [M3.69.1] (lead) live prod-check: -F -dev leaves mail active via dev=[mail] because disable removed only dev; fix resolution with blacklist semantics
+- 2026-11-23T13:55 [M3.69.1] (lead) status ready -> active
+- 2026-11-23T13:57 [M3.69.1] (lead) semantics fix committed; -dev now drops dev=[mail] implications, explicit enables survive, default members are roots
+- 2026-11-23T13:57 [M3.69.1] (lead) status active -> done

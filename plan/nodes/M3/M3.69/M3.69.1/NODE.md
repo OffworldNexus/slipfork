@@ -11,11 +11,11 @@ paths:
   - "crates/slipfork-lsp/**"
   - "crates/slipfork-world/**"
   - "crates/slipfork-ingress/**"
-attempts: 2
+attempts: 3
 max_attempts: 3
 escalation: none
 created: "2026-11-23T13:09"
-updated: "2026-11-23T13:26"
+updated: "2026-11-23T13:57"
 ---
 
 # Goal

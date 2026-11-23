@@ -39,3 +39,27 @@ status ready -> active
 ## 2026-11-23T13:26 [lead]
 
 status active -> done
+
+## 2026-11-23T13:55 [lead]
+
+status done -> ready: semantics fix: disabling a group must drop its implications; explicit disable outranks implication
+
+## 2026-11-23T13:55 [lead]
+
+attempt 3/3 started
+
+## 2026-11-23T13:55 [lead]
+
+live prod-check: -F -dev leaves mail active via dev=[mail] because disable removed only dev; fix resolution with blacklist semantics
+
+## 2026-11-23T13:55 [lead]
+
+status ready -> active
+
+## 2026-11-23T13:57 [lead]
+
+semantics fix committed; -dev now drops dev=[mail] implications, explicit enables survive, default members are roots
+
+## 2026-11-23T13:57 [lead]
+
+status active -> done
