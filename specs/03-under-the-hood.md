@@ -16,7 +16,9 @@ $ slipfork fork feat-auth
 
 ## 1. Pure Btrfs Layout, `<world>/.slipfork-world-stamp.json` & Persistent Logs
 
-Everything lives natively on one Btrfs mount — your checkout (`~/projects/demo`) is a Btrfs subvolume (converted transparently on first `slipfork up`), and `<btrfs_mount>/.slipfork-store` holds flat sibling subvolumes plus persistent component logs:
+Everything lives natively on one Btrfs mount — your checkout (`~/projects/demo`) works whether it is a Btrfs subvolume or a plain directory, and `<btrfs_mount>/.slipfork-store` holds flat sibling subvolumes plus persistent component logs:
+
+`slipfork up` calls only `ensure_store` and never converts or rewrites your checkout. `slipfork fork` snapshots a subvolume checkout with one CoW ioctl and copies a plain checkout's tree instead, with no adoption or conversion step.
 
 ```text
 <btrfs-mount>/
@@ -39,7 +41,7 @@ A project, world, or `PGDATA` clone is one `BTRFS_IOC_SNAP_CREATE_V2` ioctl (`~0
 ```mermaid
 flowchart LR
   Tpl["templates/postgres-18\n(BTRFS_SUBVOL_RDONLY)"] -.->|"up (one CoW ioctl)"| Pg["worlds/demo.pg.pg\n(+ world_epoch)"]
-  Proj["~/projects/demo\n(code + deps + .slipfork/)"] ==>|"fork (one CoW ioctl)"| FProj[".forks/feat-auth"]
+  Proj["~/projects/demo\n(code + deps + .slipfork/)"] ==>|"fork (one CoW ioctl; plain checkout is copied)"| FProj[".forks/feat-auth"]
   World["worlds/demo\n(s3 + redis + .slipfork-world-stamp.json)"] ==>|"fork (one CoW ioctl)"| FWorld["worlds/feat-auth--demo"]
   Pg ==>|"fork (CHECKPOINT + syncfs, then CoW)"| FPg["worlds/feat-auth--demo.pg.pg"]
 ```
