@@ -402,10 +402,7 @@ jobs:
         env:
           CHANNEL: ${{ needs.version.outputs.channel }}
           VERSION: ${{ needs.version.outputs.version }}
-          HOMEBREW: >-
-            {"formula":"slipfork-lsp","desc":"Language server for Slipfork Forkfiles","license":"custom","bin":["slipfork-lsp"]}
-          SCOOP: >-
-            {"app":"slipfork-lsp","desc":"Language server for Slipfork Forkfiles","license":"custom","bin":["slipfork-lsp.exe"]}
+          # Homebrew and Scoop taps do not exist yet; re-add both flags once they do.
         run: |
           set -euo pipefail
           files=(
@@ -439,8 +436,6 @@ jobs:
             --repository "$GITHUB_REPOSITORY" \
             --run-id "$GITHUB_RUN_ID" \
             --run-number "$GITHUB_RUN_NUMBER" \
-            --homebrew-json "$HOMEBREW" \
-            --scoop-json "$SCOOP" \
             "${files[@]}" "${release[@]}" \
             --dry-run
       - name: Stage the offworld-dist bundle
@@ -448,10 +443,7 @@ jobs:
         env:
           CHANNEL: ${{ needs.version.outputs.channel }}
           VERSION: ${{ needs.version.outputs.version }}
-          HOMEBREW: >-
-            {"formula":"slipfork-lsp","desc":"Language server for Slipfork Forkfiles","license":"custom","bin":["slipfork-lsp"]}
-          SCOOP: >-
-            {"app":"slipfork-lsp","desc":"Language server for Slipfork Forkfiles","license":"custom","bin":["slipfork-lsp.exe"]}
+          # Homebrew and Scoop taps do not exist yet; re-add both flags once they do.
         run: |
           set -euo pipefail
           files=(
@@ -486,8 +478,6 @@ jobs:
             --repository "$GITHUB_REPOSITORY" \
             --run-id "$GITHUB_RUN_ID" \
             --run-number "$GITHUB_RUN_NUMBER" \
-            --homebrew-json "$HOMEBREW" \
-            --scoop-json "$SCOOP" \
             "${files[@]}" "${release[@]}"
       - uses: actions/upload-artifact@v4
         if: needs.version.outputs.should_publish == 'true'
