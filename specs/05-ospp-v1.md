@@ -204,7 +204,7 @@ Every refusal is an `error` frame; handshake, pairing, and auth failures also cl
 | `rejected` | A human rejected the pairing | Browser clicked deny |
 | `already_paired` | Machine key enrolled elsewhere | Re-imaged host or cloned key file |
 | `throttled` | Unauthenticated pairing rate-limited | Repeated `pair_hello` |
-| `unresolved` | An unclaimed `${{ … }}` entry could not resolve | Missing CI variable or resource |
+| `unresolved` | An unclaimed legacy template lookup could not resolve | Missing CI variable or resource |
 | `dump_unavailable` | Requested dump is unavailable | Expired snapshot, wrong resource path |
 | `bad_frame` | Frame, field, or value violated this spec | Unknown type/field, binary frame, bad value shape |
 
@@ -232,21 +232,21 @@ The converter is one-way, deterministic, and parses its own output before writin
 
 An unknown top-level key is refused with its line and the list of valid keys — never silently dropped. A `modes.<mode>.components.<id>.disabled: true` override is refused, because a `Forkfile` cannot delete a declared service for one mode.
 
-### Template rules (`${{ … }}`)
+### Template rules
 
-| Upstream | `Forkfile` |
+A legacy `snow.yml` env template carries lookups written as `secrets::KEY`, `vars::KEY`, `resources::pg_databases.<id>.<prop>`, `resources::redis_clusters.<id>.<prop>`, `resources::s3_buckets.<id>.<prop>`, `domains::<id>` and `components::<id>.<prop>`. Each becomes one `Forkfile` expression:
+
+| Upstream lookup | `Forkfile` |
 | :--- | :--- |
-| `${{ secrets::KEY }}` | `secret(KEY)` |
-| `${{ vars::KEY }}` | `var(KEY)` |
-| `${{ resources::pg_databases.<id>.<prop> }}` | `<id>.<prop>` |
-| `${{ resources::redis_clusters.<id>.<prop> }}` | `<id>.<prop>` |
-| `${{ resources::app.<prop> }}` | `app.<prop>` |
-| `${{ domains::<id> }}` | `<id>.domain` |
-| `${{ components::<id>.<prop> }}` | `<id>.<prop>` |
-| `${{ deployment::<prop> }}` | `deployment.<prop>` |
-| `${{ … ?? default }}` | `… ?? default` |
+| `secrets::KEY` | `secret(KEY)` |
+| `vars::KEY` | `var(KEY)` |
+| `resources::pg_databases.<id>.<prop>` | `<id>.<prop>` |
+| `resources::redis_clusters.<id>.<prop>` | `<id>.<prop>` |
+| `resources::s3_buckets.<id>.<prop>` | `<id>.<prop>` |
+| `domains::<id>` | `<id>.name` (a bare hostname) |
+| `components::<id>.<prop>` | `<id>.<prop>` |
 
-Literal text around an expression becomes a quoted string: `"postgres://${{ resources::pg_databases.main.url }}"` → `"postgres://" + main.url`. Any other namespace, or `!!`, is refused at its exact path.
+Literal text around a lookup becomes `"${...}"` interpolation: a `postgres://` prefix plus `resources::pg_databases.app_db.url` renders `"postgres://${app_db.url}"`. A non-secret default stays a deterministic `??`; random bytes belong to a generator argument (`secret(KEY, random_string(50))`), never `?? random_*`. An unknown lookup is refused at its exact path.
 
 ### Command and cross-reference rules
 

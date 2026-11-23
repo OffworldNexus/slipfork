@@ -37,6 +37,10 @@ done
 [ -f share/slipfork/apparmor/slipfork ] || fail "the AppArmor profile is missing" "copy packaging/apparmor/slipfork into the bundle"
 [ -f share/slipfork/man/slipfork.1.gz ] || fail "the slipfork man page is missing" "gzip packaging/man/*.1 into the bundle"
 [ -f share/slipfork/man/slipfork-lsp.1.gz ] || fail "the slipfork-lsp man page is missing" "gzip packaging/man/*.1 into the bundle"
+for group in ftdetect syntax indent ftplugin; do
+    [ -f "share/slipfork/vim/$group/forkfile.vim" ] ||
+        fail "the Vim $group file is missing" "stage editors/vim/$group/forkfile.vim with scripts/build-bundle.sh"
+done
 for shell in bash zsh fish; do
     [ -s "share/slipfork/completions/slipfork.$shell" ] ||
         fail "the $shell completion is empty or missing" "generate it with slipfork completions $shell"

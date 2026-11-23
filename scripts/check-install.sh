@@ -29,6 +29,7 @@ while [ "$#" -gt 0 ]; do
     esac
 done
 [ -d "$bundle/share/slipfork/lib" ] || { echo "error: $bundle is not a bundle; next: run scripts/build-bundle.sh" >&2; exit 2; }
+[ -f "$bundle/share/slipfork/vim/syntax/forkfile.vim" ] || { echo "error: $bundle is missing the Vim plugin; next: rebuild it with scripts/build-bundle.sh" >&2; exit 2; }
 tmp=$(mktemp -d "${TMPDIR:-/var/tmp}/slipfork-install.XXXXXX")
 trap 'rm -rf "$tmp"' EXIT INT TERM
 [ -n "$prefix" ] || prefix="$tmp/prefix"
@@ -41,4 +42,5 @@ SLIPFORK_ARCHIVE_URL="file://$archive" SLIPFORK_SHA256="$sha" \
     sh docs/install.sh --develop local --prefix "$prefix" --yes >/dev/null
 "$prefix/bin/slipfork" --version || { echo "error: $prefix/bin/slipfork does not run; next: inspect the install prefix" >&2; exit 1; }
 [ -f "$prefix/share/man/man1/slipfork.1.gz" ] || { echo "error: the man page was not installed; next: ship man/ in the archive" >&2; exit 1; }
-echo "ok   install: $prefix/bin/slipfork runs and the man page landed under share/man"
+[ -f "$prefix/share/vim/vimfiles/syntax/forkfile.vim" ] || { echo "error: the Vim syntax file was not installed; next: ship share/vim/vimfiles in the archive" >&2; exit 1; }
+echo "ok   install: $prefix/bin/slipfork runs, and the man page + Vim plugin landed under share"

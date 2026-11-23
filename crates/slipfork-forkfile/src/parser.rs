@@ -23,6 +23,7 @@ pub(crate) fn parse(source: &str) -> Result<Forkfile, Diagnostics> {
 pub(crate) struct Parser<'a> {
     pub(crate) lexer: Lexer<'a>,
     pub(crate) peeked: Option<Token>,
+    pub(crate) pushback: Vec<Token>,
     pub(crate) diags: Diagnostics,
     after_newline: bool,
 }
@@ -32,6 +33,7 @@ impl<'a> Parser<'a> {
         Self {
             lexer: Lexer::new(source),
             peeked: None,
+            pushback: Vec::new(),
             diags: Diagnostics::new(),
             after_newline: false,
         }
@@ -39,9 +41,36 @@ impl<'a> Parser<'a> {
 
     pub(crate) fn fill(&mut self) -> Result<(), Diagnostic> {
         if self.peeked.is_none() {
-            self.peeked = Some(self.lexer.next_token()?);
+            self.peeked = Some(match self.pushback.pop() {
+                Some(token) => token,
+                None => self.lexer.next_token()?,
+            });
         }
         Ok(())
+    }
+
+    /// Tests for `else` across the line breaks that end an inline `on` item,
+    /// restoring every skipped token when the keyword is absent.
+    fn peek_else_across_newlines(&mut self) -> Result<bool, Diagnostic> {
+        self.fill()?;
+        let mut skipped = Vec::new();
+        loop {
+            let token = self.peeked.take().expect("token filled");
+            if matches!(token.kind, TokenKind::Newline) {
+                skipped.push(token);
+                self.fill()?;
+                continue;
+            }
+            if matches!(&token.kind, TokenKind::Ident(name) if name == "else") {
+                self.peeked = Some(token);
+                return Ok(true);
+            }
+            self.pushback.push(token);
+            for newline in skipped.into_iter().rev() {
+                self.pushback.push(newline);
+            }
+            return Ok(false);
+        }
     }
 
     pub(crate) fn current_span(&mut self) -> Result<Span, Diagnostic> {
@@ -388,11 +417,14 @@ impl<'a> Parser<'a> {
     }
 
     /// Parses `else { ... }`, `else: <item>`, or `else on <expr> ...` after an `on` body.
+    ///
+    /// `else` may start on the next line after an inline `on <expr>: <item>`, so the
+    /// separating line breaks are skipped before the keyword is tested.
     fn parse_on_else<I>(
         &mut self,
         item: &mut dyn FnMut(&mut Self) -> Result<I, Diagnostic>,
     ) -> Result<Option<OnElse<I>>, Diagnostic> {
-        if !self.peek_ident_is("else")? {
+        if !self.peek_else_across_newlines()? {
             return Ok(None);
         }
         let span = self.bump()?.span;

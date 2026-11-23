@@ -4,7 +4,9 @@ use std::collections::BTreeMap;
 
 use slipfork_forkfile::{Diagnostic, Forkfile, Span, SymbolTable, check, parse};
 
-use crate::references::{self, EnvRefSite, PolicySite, PropertySite, SymbolRef, ToolSite};
+use crate::references::{
+    self, EnvRefSite, GeneratorSite, PolicySite, PropertySite, SymbolRef, ToolSite,
+};
 use crate::text::TextDocument;
 
 /// Everything the language features need for one document version.
@@ -28,6 +30,8 @@ pub struct Analysis {
     pub policies: Vec<PolicySite>,
     /// Environment references.
     pub env_refs: Vec<EnvRefSite>,
+    /// `random_*` generator calls.
+    pub generators: Vec<GeneratorSite>,
     /// Symbol references.
     pub references: Vec<SymbolRef>,
 }
@@ -70,6 +74,7 @@ impl Analysis {
             tools: collected.tools,
             policies: collected.policies,
             env_refs: collected.env_refs,
+            generators: collected.generators,
             references: collected.references,
         }
     }

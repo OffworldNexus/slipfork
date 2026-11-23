@@ -40,6 +40,10 @@ Two architectures only — `x86_64`/`amd64` and `aarch64`/`arm64` — and every 
 /usr/share/bash-completion/completions/slipfork
 /usr/share/zsh/site-functions/_slipfork
 /usr/share/fish/vendor_completions.d/slipfork.fish
+/usr/share/vim/vimfiles/ftdetect/forkfile.vim
+/usr/share/vim/vimfiles/syntax/forkfile.vim
+/usr/share/vim/vimfiles/indent/forkfile.vim
+/usr/share/vim/vimfiles/ftplugin/forkfile.vim
 ```
 
 | Requirement | Contract |
@@ -85,7 +89,7 @@ The package never enables a root daemon. `slipfork daemon install` writes the **
 | Build | `abuild` in an `alpine:3.21` container, `x86_64` and `aarch64` |
 | Runtime | `crun`, `btrfs-progs`, `libgcc`; the binary is **dynamically** linked musl (a static musl binary cannot `dlopen`) |
 | `:80` ingress | OpenRC service `slipfork-ingress` binds `127.0.0.1:80`; the per-user daemon connects over its Unix socket |
-| Paths | `/usr/bin/slipfork`, `/usr/share/slipfork/**`, `/etc/conf.d/slipfork-ingress` |
+| Paths | `/usr/bin/slipfork`, `/usr/share/slipfork/**`, `/usr/share/vim/vimfiles/**`, `/etc/conf.d/slipfork-ingress` |
 | Verify | `apk add ./slipfork-*.apk`, `rc-service slipfork-ingress start`, boot one world, `slipfork down` |
 
 Install with `slipfork daemon install` for the OpenRC user service, then `sudo slipfork daemon install --ingress` for the system `slipfork-ingress` script that owns `127.0.0.1:80`. Only `openrc` is supported on Alpine; do not ship a systemd unit that silently no-ops.

@@ -22,11 +22,14 @@ s3 assets {
 }
 
 env common {
-  DATABASE_URL         = app_db.url
-  REDIS_URL            = cache.url
-  UPLOADS_URL          = uploads.url
-  ASSETS_CDN_URL       = edge.url
-  SECRET_KEY           = secret(SECRET_KEY) ?? random_hex(32)
+  DATABASE_URL   = app_db.url
+  REDIS_URL      = cache.url
+  UPLOADS_URL    = uploads.url
+  ASSETS_CDN_URL = edge.url
+  PUBLIC_URL     = self.url
+  LOGIN_URL      = "${self.url}/login"
+  COOKIE_DOMAIN  = main.name
+  SECRET_KEY     = secret(SECRET_KEY, random_string(50))
 }
 
 image api . {
@@ -56,6 +59,10 @@ starts, with a `Forkfile:<line>:<col>` caret span naming the token.
 conditional `arg`, swap in a hot-reloading `@`-prefixed `run:`, or add a dev-only tool like `mailpit`.
 Slipfork type-checks every `on` branch at once before booting anything.
 
+`else` closes a guard instead of mirroring it: `on dev { … } else { … }`, `on dev: … else: …`, and
+`else on <expr>` chains. Prefer one `on dev { … } else { … }` over mirroring the condition with its
+negation.
+
 ## `image` scopes
 
 | Form | Meaning |
@@ -83,15 +90,22 @@ Top-level resources and named child resources share one flat, globally unique sy
 | `postgres pg { database app_db }` | PostgreSQL 18 (`version` optional) | `app_db.url`, `.host`, `.port`, `.name`, `.user`, `.password` |
 | `redis cache` | Redis 7 (`version` optional) | `cache.url`, `.host`, `.port` |
 | `s3 uploads` | Private: anonymous `GET` answers `403` | `uploads.url`, `.endpoint`, `.bucket`, `.access_key`, `.secret_key` |
-| <code>s3 assets {<br>  policy public-read<br>  cdn edge<br>}</code> | `public-read` bucket plus a cloud CDN binding | bucket properties + `edge.domain`, `edge.url` |
-| `domain main` | Primary plus extra `<id>.<world>.localhost` | `main.domain`, `main.url` |
+| <code>s3 assets {<br>  policy public-read<br>  cdn edge<br>}</code> | `public-read` bucket plus a cloud CDN binding | bucket properties + the CDN's `.domain` and `.url` |
+| `domain main` | Primary plus extra `<id>.<world>.localhost` | `main.name` (bare hostname) |
 
 A plain `s3` bucket is `policy private` by default: anonymous `GET`/`HEAD` answer `403`.
 
 Every `s3` bucket serves at `http://<bucket>.<world>.localhost`; a fork serves it at
-`http://<bucket>.<fork>--<world>.localhost`. `cdn <id>` is a **cloud** binding only: locally
-`<id>.domain` and `<id>.url` resolve to the bucket's own URL, and no separate `<id>.localhost`
-hostname exists.
+`http://<bucket>.<fork>--<world>.localhost`. `cdn <id>` is a **cloud** binding only: locally its
+`.domain` and `.url` resolve to the bucket's own URL, and no separate `<id>.localhost` hostname
+exists.
+
+!!! tip "A domain is a hostname, not a URL"
+
+    `domain main` exposes `main.name` (`acme-shop.localhost`) and nothing else. A URL always needs a
+    scheme: use `self.url` for the app's primary URL, or `"${self.scheme}://${dom_b.name}"` for
+    another declared domain. Any URL property on a `domain` fails statically, with one `next:`
+    remedy.
 
 !!! warning "`cdn` never silently publicizes a bucket"
 
@@ -111,14 +125,23 @@ lowercase `[a-z0-9-]`, alphanumeric edges; buckets `3..=63` and never IPv4-shape
 domain main
 
 env common {
-  PUBLIC_URL = main.url
-  SECRET_KEY = secret(SECRET_KEY) ?? random_hex(32)
+  PUBLIC_URL = self.url
+  LOGIN_URL = "${self.url}/login"
+  COOKIE_DOMAIN = main.name
+  SECRET_KEY = secret(SECRET_KEY, random_string(50))
+  THIRD_PARTY_API_URL = var(THIRD_PARTY_API_URL) ?? "https://thirdparty.com"
 }
 ```
 
 `var(KEY)` reads non-secret config. `secret(KEY)` resolves the live cloud secret when paired and
-generates an offline one otherwise; `random_hex(n)`, `random_base64(n)`, `random_alnum(n)` and
-`random_uuid()` are the generators. Secret-tainted values print as `[REDACTED]`.
+generates an offline one otherwise; `secret(KEY, <generator>)` and `var(KEY, <generator>)` name the
+generator used while unset. The generators are `random_string(n)`, `random_hex(n)`,
+`random_base64(n)`, and `random_uuid()`.
+
+A generator is valid **only** as that second argument. `??` is a deterministic fallback, so
+`secret(SECRET_KEY, random_string(50))` is right and `secret(SECRET_KEY) ?? random_string(50)` is
+rejected. Double-quoted strings interpolate with `"${<expr>}"`, so compose URLs instead of
+concatenating. Secret-tainted values print as `[REDACTED]`.
 
 ## Services, ports and routes
 

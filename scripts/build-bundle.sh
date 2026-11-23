@@ -166,7 +166,9 @@ esac
 install -d "$out"
 find "$out" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
 install -d "$out/bin" "$out/share/slipfork/lib" "$out/share/slipfork/systemd" \
-    "$out/share/slipfork/apparmor" "$out/share/slipfork/man" "$out/share/slipfork/completions"
+    "$out/share/slipfork/apparmor" "$out/share/slipfork/man" "$out/share/slipfork/completions" \
+    "$out/share/slipfork/vim/ftdetect" "$out/share/slipfork/vim/syntax" \
+    "$out/share/slipfork/vim/indent" "$out/share/slipfork/vim/ftplugin"
 install -m 0755 "$bindir/slipfork" "$bindir/slipfork-lsp" "$bindir/slipfork-world-init" "$out/share/slipfork/lib/"
 for bin in slipfork slipfork-lsp slipfork-world-init; do
     ln -s "../share/slipfork/lib/$bin" "$out/bin/$bin"
@@ -180,6 +182,9 @@ fi
 install -m 0644 packaging/systemd/slipfork.service packaging/systemd/slipfork-ingress.socket \
     packaging/systemd/slipfork-ingress@.service "$out/share/slipfork/systemd/"
 install -m 0644 packaging/apparmor/slipfork "$out/share/slipfork/apparmor/slipfork"
+for group in ftdetect syntax indent ftplugin; do
+    install -m 0644 "editors/vim/$group/forkfile.vim" "$out/share/slipfork/vim/$group/forkfile.vim"
+done
 # Regenerate slipfork(1) from the freshly built clap tree so the shipped page cannot drift.
 "$bindir/slipfork" --manpage >packaging/man/slipfork.1
 for page in packaging/man/*.1; do

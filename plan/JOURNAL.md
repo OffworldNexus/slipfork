@@ -3147,3 +3147,11 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-23T01:34 [M3.65] (lead) triad FAIL: consolidated single fix pass (fmt inline truncation, error propagation, secret-list side effects, eval_all_env deletion, scheme threading, 500-LOC s
 - 2026-11-23T01:39 [M3.65] (lead) attempt 3/3 started
 - 2026-11-23T01:42 [M3.65] (lead) status review -> done
+- 2026-11-23T01:42 [M3.66] (lead) status ready -> active
+- 2026-11-23T01:42 [M3.66] (lead) attempt 1/3 started
+- 2026-11-23T01:42 [M3.66] (lead) base 2b68dcf5ec3d4ca759b3523f38e3621838712d79
+- 2026-11-23T01:54 [M3.66] (lead) status active -> review
+- 2026-11-23T01:56 [M3.66] (lead) edited fields
+- 2026-11-23T01:56 [M3.66] (lead) triad: inline-on + else block parse/fmt fusion (widen to forkfile parser+fmt); vim single-quote interpolation
+- 2026-11-23T02:03 [M3.66] (conductor) edited fields
+- 2026-11-23T02:04 [M3.66] (lead) status review -> done

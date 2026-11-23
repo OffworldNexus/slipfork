@@ -25,7 +25,10 @@ env common {
   REDIS_URL      = cache.url
   UPLOADS_URL    = uploads.url
   ASSETS_CDN_URL = edge.url
-  SECRET_KEY     = secret(SECRET_KEY) ?? random_hex(32)
+  PUBLIC_URL     = self.url
+  LOGIN_URL      = "${self.url}/login"
+  COOKIE_DOMAIN  = main.name
+  SECRET_KEY     = secret(SECRET_KEY, random_string(50))
 }
 
 image api . {
@@ -42,7 +45,7 @@ image api . {
 
 ## 1. Version header and identifiers
 
-Line 1 is `# forkfile: 0.1` while Slipfork is pre-`1.0`; any other value fails before a container starts, with a `Forkfile:<line>:<col>` caret span. Hyphenated ids (`app-db`, `edge`) are valid everywhere, including property access, and every declaration shares one flat, globally unique namespace.
+Line 1 is `# forkfile: 0.1` while Slipfork is pre-`1.0`; any other value fails before a container starts, with a `Forkfile:<line>:<col>` caret span. Hyphenated ids (`app-db`, `edge`) are valid everywhere, including property access, and every declaration shares one flat, globally unique namespace. `self` is reserved and can never be declared: it always means the app's own `self.url` (scheme + host), `self.domain` (bare hostname), and `self.scheme`.
 
 ```mermaid
 flowchart LR
@@ -70,6 +73,10 @@ Each `image` declares a rootfs and encloses the `service`s and hooks that run in
 
 `features` declares named switches; `default` is active for local commands. `on <expr>` accepts `dev`, `!dev`, `dev & mail` and `staging | preview`, switching Dockerfile stages, conditional `arg`s, hot-reloading `run:` commands and dev-only services. Slipfork type-checks every branch before booting anything.
 
+`else` closes a guard instead of mirroring it: `on dev { … } else { … }` for blocks, `on dev: … else: …` for one-line items, and `else on <expr>` to chain a second condition. The plain `else` runs only when neither the `on` condition nor any earlier `else on` matched. Write one `on dev { … } else { … }` rather than mirroring the condition with its negation.
+
+An inline `on <expr>: <item>` may be followed by `else` on the next line, including `else { … }`, `else: <item>`, and `else on <expr> …`. `slipfork fmt` canonicalizes any inline `on` that carries an `else` to the block form `on <expr> { <item> } else …`, so a reparse can never read `else` as a sibling declaration.
+
 ## 4. Resources, S3 hosts and `cdn`
 
 | Declaration | Local behaviour | Typed properties |
@@ -78,12 +85,14 @@ Each `image` declares a rootfs and encloses the `service`s and hooks that run in
 | `redis <id>` | Redis `7` (`version` optional) | `<id>.url`, `.host`, `.port` |
 | `s3 <bucket>` | Private: anonymous `GET`/`HEAD` answer `403` | `<bucket>.url` (secret), `.endpoint`, `.bucket`, `.access_key`, `.secret_key` (secret) |
 | `s3 <bucket> { policy public-read }` | Anonymous `GET`/`HEAD` answer `200`; writes need SigV4 | Bucket properties on `<bucket>` |
-| `s3 <bucket> { policy public-read; cdn <id> }` | Bucket host plus a cloud CDN binding | bucket properties plus `<id>.domain`, `<id>.url` |
-| `domain <id>` | Extra `<id>.<world>.localhost` | `<id>.domain`, `<id>.url` |
+| `s3 <bucket> { policy public-read; cdn <id> }` | Bucket host plus a cloud CDN binding | bucket properties plus the CDN's `.domain` and `.url` |
+| `domain <id>` | Extra `<id>.<world>.localhost` | `<id>.name` (bare hostname; no scheme) |
 
 Every `s3 <bucket>` always serves at `http://<bucket>.<world>.localhost`; a fork serves it at `http://<bucket>.<fork>--<world>.localhost`. No extra hostname is invented for an S3 bucket.
 
-`cdn <id>` inside an `s3` block is a **cloud** binding only. Locally, `<id>.domain` and `<id>.url` resolve to the bucket's own `<bucket>.<world>.localhost` and `http://<bucket>.<world>.localhost`; adding a CDN never adds a separate local `<id>.<world>.localhost` hostname.
+`cdn <id>` inside an `s3` block is a **cloud** binding only. Locally, `cdn <id>`'s `.domain` and `.url` resolve to the bucket's own `<bucket>.<world>.localhost` and `http://<bucket>.<world>.localhost`; adding a CDN never adds a separate local `<id>.<world>.localhost` hostname.
+
+A `domain` is a bare hostname: `<id>.name` is its only property. A URL always carries a scheme, so use `self.url` for the app's primary URL, or `"${self.scheme}://${dom_b.name}"` for another declared domain. Any URL property on a `domain` is rejected statically.
 
 !!! warning "`cdn <id>` requires explicit `policy public-read`"
 
@@ -102,7 +111,11 @@ next: add 'policy public-read' inside 's3 assets' to enable 'cdn edge'
 
 `env` (`env <group>`, `use env <group>`, inline `env { ... }`) is strictly runtime: it reaches services and hooks on an in-memory `tmpfs`, never a `Dockerfile` build.
 
-`var(KEY) ?? "default"` resolves non-secret config. `secret(KEY) ?? random_hex(32)` streams encrypted cloud secrets over `OSPP v1` when paired and persists local fallback secrets offline; `random_base64(n)`, `random_alnum(n)` and `random_uuid()` are the other generators. Secret-tainted values print as `[REDACTED]` and zeroize on drop.
+`var(KEY)` reads non-secret config; `var(KEY, <generator>)` generates a non-secret value the first time the key is unset. `secret(KEY)` resolves the live cloud secret over `OSPP v1` when paired and persists a local fallback otherwise; `secret(KEY, <generator>)` names the generator used while offline. The generators are `random_string(n)` (alphanumeric), `random_hex(n)`, `random_base64(n)` and `random_uuid()`.
+
+A generator is **only** valid as the second argument of `secret`/`var`: token, length and encoding are a secret-material concern, not a config default. `??` takes a deterministic expression, so write `secret(SECRET_KEY, random_string(50))` — never `secret(SECRET_KEY) ?? random_string(50)`, which fails statically. Use `??` for deterministic config such as `var(THIRD_PARTY_API_URL) ?? "https://thirdparty.com"`.
+
+A double-quoted string interpolates with `"${<expr>}"`, so URLs compose without concatenation: `LOGIN_URL = "${self.url}/login"` or `"${self.scheme}://${dom_b.name}/api"`. Secret-tainted values print as `[REDACTED]` and zeroize on drop.
 
 ## 6. Ports, routes and domains
 
@@ -139,12 +152,14 @@ on mail {
   ```forkfile
   service front {
     before-start when changed(package.json, pnpm-lock.yaml) {
-      pnpm install
-      on !dev: pnpm run build
+      on dev {
+        pnpm install
+      } else: pnpm install --frozen-lockfile
     }
     run {
-      on dev: @pnpm exec vite dev --host 0.0.0.0 --port $port
-      on !dev {
+      on dev {
+        @pnpm exec vite dev --host 0.0.0.0 --port $port
+      } else {
         pnpm install
         node build
       }
@@ -152,7 +167,7 @@ on mail {
   }
   ```
 
-  `on <expr>: <cmd>` and `on <expr> { ... }` guard individual lines inside every hook block, nesting to any depth. Each guarded condition is type-checked statically and inactive branches never run, while `on` stays a literal command word unless a complete condition is followed by `:` or `{`.
+  `on <expr>: <cmd>` and `on <expr> { ... }` guard individual lines inside every hook block, nesting to any depth; `else: <cmd>`, `else { ... }` and `else on <expr>` close the guard, on the same or the next line. Each guarded condition is type-checked statically and inactive branches never run, while `on` stays a literal command word unless a complete condition is followed by `:` or `{`.
 - **`before-start when changed(...)`:** hashes inputs against `.slipfork/` stamps, so an unchanged step skips in under 1 ms and the stamps travel into every fork.
 - **`@<tool>` auto-prequels:** `@uv`, `@poetry`, `@pnpm`, `@npm`, `@yarn`, `@bun`, `@composer`, `@bundle`, `@go` and `@cargo` synthesize one deduplicated `(image, lockfile_dir)` install node.
 

@@ -34,6 +34,7 @@
   "cdn"
   "policy"
   "on"
+  "else"
 ] @keyword
 
 (header) @preproc
@@ -51,12 +52,14 @@
 [
   "var"
   "secret"
+  "random_string"
   "random_hex"
   "random_base64"
-  "random_alnum"
   "random_uuid"
 ] @function.builtin
 
+(interpolation "${" @punctuation.special)
+(interpolation "}" @punctuation.special)
 (property property: (identifier) @property)
 (property base: (identifier) @variable)
 (on_command_item "on" @keyword)

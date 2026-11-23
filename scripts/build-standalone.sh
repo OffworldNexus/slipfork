@@ -55,11 +55,14 @@ trap 'rm -rf "$tmp"' EXIT INT TERM
 install -d "$tmp/$name"
 install -m 0755 "$bundle/share/slipfork/lib/slipfork" "$bundle/share/slipfork/lib/slipfork-lsp" \
     "$bundle/share/slipfork/lib/slipfork-world-init" "$tmp/$name/"
-install -d "$tmp/$name/share/man/man1" "$tmp/$name/share/bash-completion/completions" "$tmp/$name/share/zsh/site-functions" "$tmp/$name/share/fish/vendor_completions.d"
+install -d "$tmp/$name/share/man/man1" "$tmp/$name/share/bash-completion/completions" "$tmp/$name/share/zsh/site-functions" "$tmp/$name/share/fish/vendor_completions.d" "$tmp/$name/share/vim/vimfiles/ftdetect" "$tmp/$name/share/vim/vimfiles/syntax" "$tmp/$name/share/vim/vimfiles/indent" "$tmp/$name/share/vim/vimfiles/ftplugin"
 install -m 0644 "$bundle"/share/slipfork/man/*.gz "$tmp/$name/share/man/man1/"
 install -m 0644 "$bundle/share/slipfork/completions/slipfork.bash" "$tmp/$name/share/bash-completion/completions/"
 install -m 0644 "$bundle/share/slipfork/completions/slipfork.zsh" "$tmp/$name/share/zsh/site-functions/_slipfork"
 install -m 0644 "$bundle/share/slipfork/completions/slipfork.fish" "$tmp/$name/share/fish/vendor_completions.d/"
+for group in ftdetect syntax indent ftplugin; do
+    install -m 0644 "$bundle/share/slipfork/vim/$group/forkfile.vim" "$tmp/$name/share/vim/vimfiles/$group/forkfile.vim"
+done
 install -m 0644 "$bundle/share/slipfork/LICENSE" "$tmp/$name/LICENSE"
 ( cd "$tmp/$name" && sha256sum slipfork slipfork-lsp slipfork-world-init LICENSE >SHA256SUMS )
 mkdir -p "$out"

@@ -39,14 +39,14 @@
   ]);
   // Directives and property words inside a block.
   var DIRECTIVE = lookup([
-    "use", "on", "arg", "stage", "dockerfile", "from", "port", "route", "run",
+    "use", "on", "else", "arg", "stage", "dockerfile", "from", "port", "route", "run",
     "internal_ports", "pre-deploy", "post-deploy", "failed-deploy",
     "before-start", "when", "changed", "workdir", "version", "default",
-    "strip-prefix", "rewrite", "exact"
+    "strip-prefix", "rewrite", "exact", "policy"
   ]);
   // Expression builtins.
   var BUILTIN = lookup([
-    "secret", "var", "random_hex", "random_base64", "random_alnum",
+    "secret", "var", "random_string", "random_hex", "random_base64",
     "random_uuid"
   ]);
 
@@ -200,6 +200,13 @@
       }
 
       if (ch === "$") {
+        if (source.charAt(i + 1) === "{") {
+          emit(out, C.operator, "${");
+          i += 2;
+          expectName = false;
+          lastWord = "";
+          continue;
+        }
         var variable = variableAt(source, i);
         if (variable) {
           emit(out, C.variable, variable);

@@ -21,7 +21,7 @@ syn match forkfileHeader /^#\s*forkfile:\s*\S\+/
 " Directives and block keywords (hyphenated ones need explicit alternation) --
 syn match forkfileKeyword /\<\%(features\|default\|image\|from\|dockerfile\|stage\|workdir\|arg\|use\|env\|before-start\|pre-deploy\|post-deploy\|failed-deploy\|run\|when\|changed\|service\|port\|internal_ports\|route\|strip-prefix\|rewrite\|exact\|domain\|postgres\|database\|version\|redis\|s3\|cdn\|policy\|on\|else\)\>/
 
-" Identifiers inside `${{ ... }}` (declared before builtins/properties so the
+" Identifiers inside `"${...}"` (declared before builtins/properties so the
 " more specific groups win at the same start column).
 syn match forkfileIdent /\<\l\w*\>/ contained
 
@@ -43,8 +43,8 @@ syn match forkfilePort /\$port\>/
 " Property after a dot: app_db.url, uploads.endpoint, .name, ... -------------
 syn match forkfileProperty /\.\@<=\h[a-zA-Z0-9_-]*/
 
-" `${{ ... }}` builtins (also used bare, e.g. `secret(KEY) ?? random_hex(32)`).
-syn match forkfileBuiltin /\<\%(var\|secret\|random_hex\|random_base64\|random_alnum\|random_uuid\)\>/
+" `secret(KEY, <generator>)` / `var(KEY, <generator>)` builtins and their generators.
+syn match forkfileBuiltin /\<\%(var\|secret\|random_string\|random_hex\|random_base64\|random_uuid\)\>/
 
 " Expression operators --------------------------------------------------------
 syn match forkfileOperator /??\|[+|&!:=]/
@@ -59,14 +59,14 @@ syn match forkfileBoolean /\<\%(true\|false\)\>/
 syn match forkfileNumber /-\?\<\d\+\>/
 syn match forkfileDelimiter /[][{}]/
 
-" `${{ ... }}` interpolation region (may appear bare or inside a string).
-" `keepend` stops a nested escaped-quote string from swallowing the `}}` and
-" leaking the region onto following lines.
-syn region forkfileInterp start=/\${{/ end=/}}/ keepend contains=forkfileBuiltin,forkfileProperty,forkfileOperator,forkfileString,forkfileNumber,forkfileBoolean,forkfileIdent
+" `"${...}"` interpolation region inside a double-quoted string. `keepend` stops
+" a nested escaped-quote string from swallowing the `}` and leaking the region
+" onto following lines.
+syn region forkfileInterp start=/\${/ end=/}/ keepend contains=forkfileBuiltin,forkfileBase,forkfileProperty,forkfileOperator,forkfileString,forkfileNumber,forkfileBoolean,forkfileIdent
 
-" Strings; interpolation is highlighted inside them.
+" Strings; interpolation is highlighted inside double-quoted strings only.
 syn region forkfileString start=/"/ skip=/\\\\\|\\"/ end=/"/ contains=forkfileInterp
-syn region forkfileString start=/'/ skip=/\\\\\|\\'/ end=/'/ contains=forkfileInterp
+syn region forkfileString start=/'/ skip=/\\\\\|\\'/ end=/'/
 
 hi def link forkfileHeader    PreProc
 hi def link forkfileComment   Comment

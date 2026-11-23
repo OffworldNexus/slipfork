@@ -2,7 +2,8 @@
  * Tree-sitter grammar for `# forkfile: 0.1`.
  *
  * Mirrors `specs/01-forkfile.md`: header, features, image/arg, env/secret,
- * service/port/route/domain, hooks with @tool prequels, and backing resources.
+ * service/port/route/domain, hooks with @tool prequels, `on ... else ...`
+ * guards, `"${...}"` interpolation, and backing resources.
  */
 module.exports = grammar({
   name: 'forkfile',
@@ -11,7 +12,16 @@ module.exports = grammar({
 
   word: $ => $.identifier,
 
-  conflicts: $ => [],
+  conflicts: $ => [
+    [$.on_statement],
+    [$.on_image_item],
+    [$.on_service_item],
+    [$.on_postgres_item],
+    [$.on_redis_item],
+    [$.on_s3_item],
+    [$.on_env_item],
+    [$.on_command_item],
+  ],
 
   rules: {
     source_file: $ => seq($.header, repeat($._declaration)),
@@ -133,18 +143,38 @@ module.exports = grammar({
     change_guard: $ => seq('when', 'changed', '(', commaSep($.path), ')'),
     command_block: $ => seq('{', repeat($._command_item), '}'),
     _command_item: $ => choice($.command, $.on_command_item),
-    on_command_item: $ => seq(
-      // `on` outranks `command_text` so a guard line is never swallowed as a shell line.
-      token(prec(1, 'on')),
-      field('condition', $._expression),
+    on_command_item: $ => choice(
+      prec.dynamic(
+        1,
+        seq(
+          // `on` outranks `command_text` so a guard line is never swallowed as a shell line.
+          token(prec(2, 'on')),
+          field('condition', $._expression),
+          $._on_command_body,
+          $._else_command_item,
+        ),
+      ),
+      seq(
+        token(prec(2, 'on')),
+        field('condition', $._expression),
+        $._on_command_body,
+      ),
+    ),
+    _on_command_body: $ => choice(
+      seq(':', $._command_item),
+      $.command_block,
+    ),
+    _else_command_item: $ => seq(
+      token(prec(2, 'else')),
       choice(
         seq(':', $._command_item),
         $.command_block,
+        $.on_command_item,
       ),
     ),
     command: $ => seq(optional($.tool), $.command_text),
     tool: $ => token(prec(1, /@[A-Za-z_][A-Za-z0-9_-]*/)),
-    command_text: $ => token(prec(0, /[^@#}\n][^\n]*/)),
+    command_text: $ => token(prec(0, /[^ \t@#}\n][^\n]*/)),
 
     domain_declaration: $ => seq('domain', field('id', $.identifier)),
 
@@ -192,6 +222,15 @@ module.exports = grammar({
         seq(':', $._declaration),
         seq('{', repeat($._declaration), '}'),
       ),
+      optional($._else_declaration),
+    ),
+    _else_declaration: $ => seq(
+      'else',
+      choice(
+        seq(':', $._declaration),
+        seq('{', repeat($._declaration), '}'),
+        $.on_statement,
+      ),
     ),
     on_image_item: $ => seq(
       'on',
@@ -199,6 +238,15 @@ module.exports = grammar({
       choice(
         seq(':', $._image_item),
         seq('{', repeat($._image_item), '}'),
+      ),
+      optional($._else_image_item),
+    ),
+    _else_image_item: $ => seq(
+      'else',
+      choice(
+        seq(':', $._image_item),
+        seq('{', repeat($._image_item), '}'),
+        $.on_image_item,
       ),
     ),
     on_service_item: $ => seq(
@@ -208,6 +256,15 @@ module.exports = grammar({
         seq(':', $._service_item),
         seq('{', repeat($._service_item), '}'),
       ),
+      optional($._else_service_item),
+    ),
+    _else_service_item: $ => seq(
+      'else',
+      choice(
+        seq(':', $._service_item),
+        seq('{', repeat($._service_item), '}'),
+        $.on_service_item,
+      ),
     ),
     on_postgres_item: $ => seq(
       'on',
@@ -215,6 +272,15 @@ module.exports = grammar({
       choice(
         seq(':', $._postgres_item),
         seq('{', repeat($._postgres_item), '}'),
+      ),
+      optional($._else_postgres_item),
+    ),
+    _else_postgres_item: $ => seq(
+      'else',
+      choice(
+        seq(':', $._postgres_item),
+        seq('{', repeat($._postgres_item), '}'),
+        $.on_postgres_item,
       ),
     ),
     on_redis_item: $ => seq(
@@ -224,6 +290,15 @@ module.exports = grammar({
         seq(':', $._redis_item),
         seq('{', repeat($._redis_item), '}'),
       ),
+      optional($._else_redis_item),
+    ),
+    _else_redis_item: $ => seq(
+      'else',
+      choice(
+        seq(':', $._redis_item),
+        seq('{', repeat($._redis_item), '}'),
+        $.on_redis_item,
+      ),
     ),
     on_s3_item: $ => seq(
       'on',
@@ -232,6 +307,15 @@ module.exports = grammar({
         seq(':', $._s3_item),
         seq('{', repeat($._s3_item), '}'),
       ),
+      optional($._else_s3_item),
+    ),
+    _else_s3_item: $ => seq(
+      'else',
+      choice(
+        seq(':', $._s3_item),
+        seq('{', repeat($._s3_item), '}'),
+        $.on_s3_item,
+      ),
     ),
     on_env_item: $ => seq(
       'on',
@@ -239,6 +323,15 @@ module.exports = grammar({
       choice(
         seq(':', $._env_item),
         seq('{', repeat($._env_item), '}'),
+      ),
+      optional($._else_env_item),
+    ),
+    _else_env_item: $ => seq(
+      'else',
+      choice(
+        seq(':', $._env_item),
+        seq('{', repeat($._env_item), '}'),
+        $.on_env_item,
       ),
     ),
 
@@ -255,7 +348,16 @@ module.exports = grammar({
       $.binary_expression,
       $.fallback_expression,
     ),
-    string: $ => token(/"[^"\n]*"/),
+    // A double-quoted string: plain text plus `"${<expr>}"` interpolation sites.
+    string: $ => seq(
+      '"',
+      repeat(choice($.string_escape, $.interpolation, $.string_text, $.string_dollar)),
+      '"',
+    ),
+    string_escape: $ => token.immediate(/\\./),
+    string_text: $ => token.immediate(/[^"\\$\n]+/),
+    string_dollar: $ => token.immediate(/\$/),
+    interpolation: $ => seq('${', $._expression, '}'),
     integer: $ => token(/[0-9]+/),
     boolean: $ => choice('true', 'false'),
     port_reference: $ => token('$port'),
@@ -268,15 +370,16 @@ module.exports = grammar({
     call: $ => prec(6, seq(
       field('function', $._call_name),
       '(',
-      optional(choice($.identifier, $.string, $.integer)),
+      optional(seq($._call_argument, repeat(seq(',', $._call_argument)))),
       ')',
     )),
+    _call_argument: $ => choice($.identifier, $.string, $.integer, $.call),
     _call_name: $ => choice(
       'var',
       'secret',
+      'random_string',
       'random_hex',
       'random_base64',
-      'random_alnum',
       'random_uuid',
     ),
     unary_expression: $ => prec(6, seq('!', $._expression)),

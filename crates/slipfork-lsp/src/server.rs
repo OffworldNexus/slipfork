@@ -83,6 +83,7 @@ impl<R: Read, W: Write> Server<R, W> {
             "textDocument/formatting" => self.formatting(id, &params)?,
             "textDocument/definition" => self.definition(id, &params)?,
             "textDocument/hover" => self.hover(id, &params)?,
+            "textDocument/completion" => self.completion(id, &params)?,
             _ => {
                 if id.is_some() {
                     self.reply_error(id, -32601, format!("unknown method `{method}`"))?;
@@ -192,6 +193,18 @@ impl<R: Read, W: Write> Server<R, W> {
         self.reply(id, result)
     }
 
+    fn completion(&mut self, id: Option<Value>, params: &Value) -> io::Result<()> {
+        let position = params.get("position").and_then(Position::from_value);
+        let result = position
+            .and_then(|position| {
+                self.with_document(params, |_, document| {
+                    features::completion(&document.analysis, &document.text, position)
+                })
+            })
+            .unwrap_or(Value::Null);
+        self.reply(id, result)
+    }
+
     fn with_document<T>(
         &self,
         params: &Value,
@@ -245,6 +258,7 @@ fn capabilities() -> Value {
         "documentFormattingProvider": true,
         "definitionProvider": true,
         "hoverProvider": true,
+        "completionProvider": { "triggerCharacters": ["."] },
     })
 }
 

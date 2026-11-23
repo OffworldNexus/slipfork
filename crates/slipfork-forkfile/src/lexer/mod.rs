@@ -80,6 +80,27 @@ impl<'a> Lexer<'a> {
         }
     }
 
+    /// Consumes exactly one keyword (never its trailing `:` or `{`) and returns its span.
+    pub(crate) fn bump_keyword(&mut self, word: &str) -> Span {
+        self.skip_inline_space();
+        let start = self.position();
+        for _ in 0..word.len() {
+            self.bump_char();
+        }
+        Span::new(start, self.position())
+    }
+
+    /// Whether the cursor starts a keyword: `else` may be followed by `:`, `{`, or space.
+    pub(crate) fn starts_keyword(&self, word: &str) -> bool {
+        match self.src[self.pos..].strip_prefix(word) {
+            Some(tail) => tail
+                .chars()
+                .next()
+                .is_none_or(|c| !(c.is_alphanumeric() || c == '_' || c == '-')),
+            None => false,
+        }
+    }
+
     /// Captures the cursor so a speculative parse can be rewound.
     pub(crate) const fn mark(&self) -> (usize, u32, u32) {
         (self.pos, self.line, self.col)

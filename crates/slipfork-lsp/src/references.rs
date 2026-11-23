@@ -1,7 +1,7 @@
 //! Reference sites harvested from the AST for definition and hover.
 
 use slipfork_forkfile::ast::*;
-use slipfork_forkfile::{Command, CommandPart, Expr, ExprKind, Span};
+use slipfork_forkfile::{Command, CommandPart, Expr, ExprKind, InterpPart, Span};
 
 use crate::text::{Range, TextDocument, find_word};
 
@@ -52,6 +52,15 @@ pub struct EnvRefSite {
     pub key: String,
 }
 
+/// A `random_string(50)` / `random_hex(32)` / `random_base64(n)` / `random_uuid()` generator.
+#[derive(Debug, Clone)]
+pub struct GeneratorSite {
+    /// The generator call.
+    pub range: Range,
+    /// The canonical generator name.
+    pub name: &'static str,
+}
+
 #[derive(Debug, Clone, Default)]
 pub(crate) struct Collected {
     pub references: Vec<SymbolRef>,
@@ -59,6 +68,7 @@ pub(crate) struct Collected {
     pub tools: Vec<ToolSite>,
     pub policies: Vec<PolicySite>,
     pub env_refs: Vec<EnvRefSite>,
+    pub generators: Vec<GeneratorSite>,
 }
 
 pub(crate) fn collect(document: &Forkfile, text: &TextDocument) -> Collected {
@@ -228,14 +238,30 @@ fn expression(expr: &Expr, text: &TextDocument, out: &mut Collected) {
                 property: prop.clone(),
             });
         }
-        ExprKind::Var(key) | ExprKind::Secret(key) => {
-            let source = slice(text.text(), expr.span);
-            if let Some(offset) = find_word(source, key) {
-                let start = expr.span.start.offset + offset;
+        ExprKind::Var(key)
+        | ExprKind::Secret(key)
+        | ExprKind::GeneratedVar { key, .. }
+        | ExprKind::GeneratedSecret { key, .. } => {
+            if let Some(start) = find_after(text.text(), expr.span.start.offset, key) {
                 out.env_refs.push(EnvRefSite {
                     range: bytes_range(text, start, key.len()),
                     key: key.clone(),
                 });
+            }
+            if let ExprKind::GeneratedVar { generator, .. }
+            | ExprKind::GeneratedSecret { generator, .. } = &expr.kind
+            {
+                generator_site(generator.kind.call_name(), &expr.span, text, out);
+            }
+        }
+        ExprKind::Random(generator) => {
+            generator_site(generator.kind.call_name(), &expr.span, text, out);
+        }
+        ExprKind::Interpolated(parts) => {
+            for part in parts {
+                if let InterpPart::Expr(inner) = part {
+                    expression(inner, text, out);
+                }
             }
         }
         ExprKind::Not(inner) => expression(inner, text, out),
@@ -276,10 +302,20 @@ fn route_reference(route: &Route, text: &TextDocument, out: &mut Collected) {
     }
 }
 
-fn slice(source: &str, span: Span) -> &str {
-    source
-        .get(span.start.offset..span.end.offset)
-        .unwrap_or_default()
+fn generator_site(name: &'static str, span: &Span, text: &TextDocument, out: &mut Collected) {
+    if let Some(start) = find_after(text.text(), span.start.offset, name) {
+        out.generators.push(GeneratorSite {
+            range: bytes_range(text, start, name.len()),
+            name,
+        });
+    }
+}
+
+/// Finds `word` on identifier boundaries after `from`, never past the end of its line.
+fn find_after(source: &str, from: usize, word: &str) -> Option<usize> {
+    let rest = source.get(from..)?;
+    let end = rest.find('\n').unwrap_or(rest.len());
+    find_word(&rest[..end], word).map(|offset| from + offset)
 }
 
 fn bytes_range(text: &TextDocument, start: usize, len: usize) -> Range {

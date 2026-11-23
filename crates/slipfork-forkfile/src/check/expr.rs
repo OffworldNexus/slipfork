@@ -133,7 +133,7 @@ fn property_taint(
     diags: &mut Diagnostics,
 ) -> bool {
     if base == "self" {
-        if matches!(prop, "url" | "domain" | "scheme") {
+        if crate::facts::self_properties().contains(&prop) {
             return false;
         }
         diags.push(Diagnostic::new(

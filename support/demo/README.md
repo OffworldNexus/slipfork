@@ -68,7 +68,7 @@ Both Dockerfiles are multi-stage and the Forkfile selects the dependency-only st
 no production build is paid on every save.
 
 The `prod` stage still owns `pnpm run build` and `uv sync --no-dev`. A local non-dev boot builds the
-frontend once through the guarded `on !dev: pre-deploy: pnpm run build` hook.
+frontend once through the `else` branch of the Vite dev guard.
 
 ## What a fork carries
 

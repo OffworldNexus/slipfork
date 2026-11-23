@@ -72,7 +72,9 @@ stage="$tmp/payload"
 install -d "$stage/usr/bin" "$stage/usr/share/slipfork/lib" "$stage/usr/share/man/man1" \
     "$stage/usr/lib/systemd/system" "$stage/usr/lib/systemd/user" "$stage/etc/apparmor.d" \
     "$stage/usr/share/bash-completion/completions" "$stage/usr/share/zsh/site-functions" \
-    "$stage/usr/share/fish/vendor_completions.d"
+    "$stage/usr/share/fish/vendor_completions.d" "$stage/usr/share/vim/vimfiles/ftdetect" \
+    "$stage/usr/share/vim/vimfiles/syntax" "$stage/usr/share/vim/vimfiles/indent" \
+    "$stage/usr/share/vim/vimfiles/ftplugin"
 install -m 0755 "$bundle"/share/slipfork/lib/* "$stage/usr/share/slipfork/lib/"
 install -m 0644 "$bundle/share/slipfork/LICENSE" "$stage/usr/share/slipfork/LICENSE"
 for bin in slipfork slipfork-lsp slipfork-world-init; do
@@ -85,6 +87,9 @@ install -m 0644 "$bundle"/share/slipfork/man/*.gz "$stage/usr/share/man/man1/"
 install -m 0644 "$bundle/share/slipfork/completions/slipfork.bash" "$stage/usr/share/bash-completion/completions/slipfork"
 install -m 0644 "$bundle/share/slipfork/completions/slipfork.zsh" "$stage/usr/share/zsh/site-functions/_slipfork"
 install -m 0644 "$bundle/share/slipfork/completions/slipfork.fish" "$stage/usr/share/fish/vendor_completions.d/slipfork.fish"
+for group in ftdetect syntax indent ftplugin; do
+    install -m 0644 "$bundle/share/slipfork/vim/$group/forkfile.vim" "$stage/usr/share/vim/vimfiles/$group/forkfile.vim"
+done
 tar --sort=name --mtime="@$SOURCE_DATE_EPOCH" --owner=0 --group=0 --numeric-owner \
     -czf "$tmp/payload.tar.gz" -C "$stage" .
 
@@ -111,7 +116,9 @@ for expected in \
     /usr/lib/systemd/user/slipfork.service /etc/apparmor.d/slipfork \
     /usr/share/man/man1/slipfork.1.gz /usr/share/man/man1/slipfork-lsp.1.gz \
     /usr/share/bash-completion/completions/slipfork /usr/share/zsh/site-functions/_slipfork \
-    /usr/share/fish/vendor_completions.d/slipfork.fish; do
+    /usr/share/fish/vendor_completions.d/slipfork.fish \
+    /usr/share/vim/vimfiles/ftdetect/forkfile.vim /usr/share/vim/vimfiles/syntax/forkfile.vim \
+    /usr/share/vim/vimfiles/indent/forkfile.vim /usr/share/vim/vimfiles/ftplugin/forkfile.vim; do
     printf '%s\n' "$listing" | grep -qx "$expected" ||
         { echo "error: the rpm is missing $expected; next: fix the %files list in packaging/rpm/slipfork.spec" >&2; exit 1; }
 done

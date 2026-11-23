@@ -226,7 +226,7 @@ impl<'a> Parser<'a> {
                 }
                 Some(_) => {
                     // A line beginning with `else` attaches to the previous block-bodied `on`.
-                    if self.lexer.starts_word("else")
+                    if self.lexer.starts_keyword("else")
                         && let Some(CommandItem::On(on)) = block.items.last_mut()
                         && on.else_body.is_none()
                         && let Some(else_body) = self.parse_command_else()?
@@ -295,14 +295,14 @@ impl<'a> Parser<'a> {
 
     /// Parses `else { ... }`, `else: <command>`, or `else on <expr> ...` after a command guard.
     fn parse_command_else(&mut self) -> Result<Option<OnElse<CommandItem>>, Diagnostic> {
-        self.lexer.skip_inline_space();
-        if !self.lexer.starts_word("else") {
+        self.skip_command_separators();
+        if !self.lexer.starts_keyword("else") {
             return Ok(None);
         }
-        let (_, span) = self.raw_word()?;
+        let span = self.lexer.bump_keyword("else");
         self.lexer.skip_inline_space();
         if self.lexer.starts_word("on") {
-            let _ = self.raw_word()?;
+            let _ = self.lexer.bump_keyword("on");
             let cond = self.parse_expr()?;
             let token = self.bump()?;
             let body = match token.kind {
@@ -353,6 +353,18 @@ impl<'a> Parser<'a> {
         }
         let (raw, span) = self.raw_to_line_end()?;
         Command::parse(&raw, span).map(CommandItem::Command)
+    }
+
+    /// Skips inline space and the line breaks that may separate an `else` from its `on`.
+    fn skip_command_separators(&mut self) {
+        loop {
+            self.lexer.skip_inline_space();
+            if self.lexer.peek_char() == Some('\n') {
+                self.lexer.bump_char();
+            } else {
+                return;
+            }
+        }
     }
 }
 

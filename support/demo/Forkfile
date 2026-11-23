@@ -28,8 +28,11 @@ env common {
   UPLOADS_URL = uploads.url
   ASSETS_BUCKET = "assets"
   UPLOADS_BUCKET = "uploads"
-  PUBLIC_URL = main.url
-  SECRET_KEY = secret(SECRET_KEY) ?? random_hex(32)
+  PUBLIC_URL = self.url
+  LOGIN_URL = "${self.url}/login"
+  COOKIE_DOMAIN = main.name
+  SECRET_KEY = secret(SECRET_KEY, random_string(50))
+  THIRD_PARTY_API_URL = var(THIRD_PARTY_API_URL) ?? "https://thirdparty.com"
   on mail: SMTP_ADDR = "127.0.0.1:1025"
 }
 
@@ -54,11 +57,12 @@ image frontend ./front {
   service front {
     port 4173
     route /
-    run: @pnpm exec node build
-    on !dev: pre-deploy: pnpm run build
     on dev {
       port 5173
       run: @pnpm exec vite dev --host 0.0.0.0 --port $port
+    } else {
+      pre-deploy: pnpm run build
+      run: @pnpm exec node build
     }
   }
 }

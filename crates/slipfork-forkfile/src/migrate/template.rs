@@ -16,9 +16,6 @@ pub(crate) struct Template<'a> {
     pub components: &'a BTreeSet<String>,
 }
 
-/// The `self` properties the app exposes.
-const SELF_PROPERTIES: &[&str] = &["url", "domain", "scheme"];
-
 pub(crate) fn render(
     raw: &str,
     context: &Template<'_>,
@@ -193,7 +190,7 @@ fn resources(
 }
 
 fn self_property(prop: &str, path: &str, span: Span) -> Result<Expr, Diagnostic> {
-    if SELF_PROPERTIES.contains(&prop) {
+    if crate::facts::self_properties().contains(&prop) {
         return Ok(property("self", prop, span));
     }
     Err(Diagnostic::new(

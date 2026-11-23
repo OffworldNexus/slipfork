@@ -114,7 +114,9 @@ fn render_on<I>(renderer: &mut Renderer, on: &On<I>, mut item: impl FnMut(&mut R
     match &on.body {
         OnBody::Inline(node) => {
             let lines = inline_lines(&mut item, node);
-            if lines.len() > 1 || else_multiline(on.else_body.as_ref(), &mut item) {
+            // An inline `on <expr>: <item>` that carries an `else` is canonicalized to the
+            // block form, so the else branch can never be mistaken for a sibling item.
+            if lines.len() > 1 || on.else_body.is_some() {
                 renderer.line(&format!("on {} {{", render_expr(&on.cond)));
                 renderer.indented(|renderer| {
                     for line in &lines {
@@ -124,8 +126,8 @@ fn render_on<I>(renderer: &mut Renderer, on: &On<I>, mut item: impl FnMut(&mut R
                 render_else_after_block(renderer, on.else_body.as_ref(), &mut item);
                 return;
             }
-            let mut line = format!("on {}: {}", render_expr(&on.cond), lines[0]);
-            render_else_inline(renderer, &mut line, on.else_body.as_ref(), &mut item);
+            let line = format!("on {}: {}", render_expr(&on.cond), lines[0]);
+            renderer.line(&line);
         }
         OnBody::Block(block) => {
             renderer.line(&format!("on {} {{", render_expr(&on.cond)));
@@ -144,68 +146,6 @@ fn inline_lines<I>(item: &mut impl FnMut(&mut Renderer, &I), node: &I) -> Vec<St
         .lines()
         .map(str::to_owned)
         .collect::<Vec<_>>()
-}
-
-/// The single-line rendering of an inline item (callers guard on [`inline_lines`] length).
-fn inline<I>(item: &mut impl FnMut(&mut Renderer, &I), node: &I) -> String {
-    inline_lines(item, node)
-        .first()
-        .cloned()
-        .unwrap_or_default()
-}
-
-/// Whether any `else` branch carries an inline item that renders on more than one line.
-fn else_multiline<I>(
-    else_body: Option<&OnElse<I>>,
-    item: &mut impl FnMut(&mut Renderer, &I),
-) -> bool {
-    match else_body {
-        None | Some(OnElse::Body(OnBody::Block(_))) => false,
-        Some(OnElse::Body(OnBody::Inline(node))) => inline_lines(&mut *item, node).len() > 1,
-        Some(OnElse::Chain(on)) => {
-            matches!(&on.body, OnBody::Inline(node) if inline_lines(&mut *item, node).len() > 1)
-                || else_multiline(on.else_body.as_ref(), item)
-        }
-    }
-}
-
-/// Appends ` else: <item>`, ` else { … }`, or ` else on … { … }` to an inline `on` line.
-fn render_else_inline<I>(
-    renderer: &mut Renderer,
-    line: &mut String,
-    else_body: Option<&OnElse<I>>,
-    item: &mut impl FnMut(&mut Renderer, &I),
-) {
-    match else_body {
-        None => renderer.line(line),
-        Some(OnElse::Body(OnBody::Inline(node))) => {
-            line.push_str(" else: ");
-            line.push_str(&inline(&mut *item, node));
-            renderer.line(line);
-        }
-        Some(OnElse::Body(OnBody::Block(block))) => {
-            line.push_str(" else {");
-            renderer.line(line);
-            renderer.indented(|renderer| render_block(renderer, block, &mut *item));
-            renderer.line("}");
-        }
-        Some(OnElse::Chain(on)) => match &on.body {
-            OnBody::Block(block) => {
-                line.push_str(&format!(" else on {} {{", render_expr(&on.cond)));
-                renderer.line(line);
-                renderer.indented(|renderer| render_block(renderer, block, &mut *item));
-                render_else_after_block(renderer, on.else_body.as_ref(), item);
-            }
-            OnBody::Inline(node) => {
-                line.push_str(&format!(
-                    " else on {}: {}",
-                    render_expr(&on.cond),
-                    inline(&mut *item, node)
-                ));
-                render_else_inline(renderer, line, on.else_body.as_ref(), item);
-            }
-        },
-    }
 }
 
 /// Closes a block-bodied `on`, rendering `} else {`, `} else on … {`, or `} else: <item>`.
@@ -242,12 +182,14 @@ fn render_else_after_block<I>(
                 render_else_after_block(renderer, on.else_body.as_ref(), item);
             }
             OnBody::Inline(node) => {
-                let mut line = format!(
-                    "}} else on {}: {}",
-                    render_expr(&on.cond),
-                    inline(&mut *item, node)
-                );
-                render_else_inline(renderer, &mut line, on.else_body.as_ref(), item);
+                let lines = inline_lines(&mut *item, node);
+                renderer.line(&format!("}} else on {} {{", render_expr(&on.cond)));
+                renderer.indented(|renderer| {
+                    for line in &lines {
+                        renderer.line(line);
+                    }
+                });
+                render_else_after_block(renderer, on.else_body.as_ref(), &mut *item);
             }
         },
     }

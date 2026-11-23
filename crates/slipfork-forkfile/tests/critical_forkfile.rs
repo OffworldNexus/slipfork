@@ -618,9 +618,17 @@ fn on_else_selects_the_false_branch_and_formats_canonically() {
     assert_eq!(dev["base"]["VALUE"].0, "dev");
 
     let formatted = slipfork_forkfile::format(&document);
-    assert!(formatted.contains("else: VALUE = \"prod\""), "{formatted}");
+    assert!(
+        formatted.contains("on dev {\n    VALUE = \"dev\"\n  } else: VALUE = \"prod\""),
+        "inline `on` + else must render the canonical block form:\n{formatted}"
+    );
     let reparsed = parse(&formatted).expect("formatted else reparses");
-    assert_eq!(document, reparsed);
+    assert_eq!(eval_env(&reparsed)["base"]["VALUE"].0, "dev");
+    assert_eq!(
+        formatted,
+        slipfork_forkfile::format(&reparsed),
+        "formatted else output must be idempotent"
+    );
 
     let blocked = "# forkfile: 0.1\n\nfeatures {\n  dev\n}\n\nimage backend . {\n  service api {\n    run {\n      on dev {\n        echo dev\n      } else {\n        echo prod\n      }\n    }\n  }\n}\n";
     let document = parse(blocked).expect("block else parses");

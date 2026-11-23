@@ -21,8 +21,8 @@ fixture="$work/forkfile-vim-check.txt"
 script="$work/forkfile-vim-check.vim"
 
 # Deliberately unindented, extension `.txt`, header-only detection on line 1,
-# with `${{ ... }}` (including an escaped-quote form), `} else {`, a property,
-# a tool prefix, `$env.KEY`, and paths that must NOT be route paths.
+# with `"${...}"` interpolation (including an escaped-quote form), a property,
+# `} else {`, a tool prefix, `$env.KEY`, and paths that must NOT be route paths.
 cat >"$fixture" <<'FORKFILE'
 # forkfile: 0.1
 image api . {
@@ -41,8 +41,8 @@ run: @uv run app
 }
 }
 env common {
-URL = ${{ var("host") ?? "y" }}
-T = "${{ var(\"x\") }}"
+URL = "${var(HOST) ?? self.url}"
+T = "${secret(TOKEN)}"
 }
 PG = cache.name
 PORT = $env.PORT
@@ -152,23 +152,24 @@ function! s:Main() abort
   execute 'edit! ' . fnameescape(s:fixture)
   call s:Check(&filetype ==# 'forkfile', 'header detection failed for .txt fixture ("' . &filetype . '")')
 
-  let l:interp = s:FindLine('\${{')
-  call s:Check(l:interp > 0, 'fixture lost its ${{ ... }} line')
+  let l:interp = s:FindLine('\${')
+  call s:Check(l:interp > 0, 'fixture lost its "${...}" line')
   if l:interp > 0
-    call s:Check(s:HasGroup(l:interp, 'forkfileInterp'), '${{ ... }} not highlighted as forkfileInterp')
-    call s:Check(s:HasGroup(l:interp, 'forkfileBuiltin'), 'builtin not highlighted inside ${{ ... }}')
-    call s:Check(s:HasGroup(l:interp, 'forkfileOperator'), 'operator not highlighted inside ${{ ... }}')
-    call s:Check(s:HasGroup(l:interp, 'forkfileString'), 'string not highlighted inside ${{ ... }}')
+    call s:Check(s:HasGroup(l:interp, 'forkfileInterp'), '"${...}" not highlighted as forkfileInterp')
+    call s:Check(s:HasGroup(l:interp, 'forkfileBuiltin'), 'builtin not highlighted inside "${...}"')
+    call s:Check(s:HasGroup(l:interp, 'forkfileOperator'), 'operator not highlighted inside "${...}"')
+    call s:Check(s:HasGroup(l:interp, 'forkfileProperty'), 'property not highlighted inside "${...}"')
+    call s:Check(s:HasGroup(l:interp, 'forkfileBase'), 'self base not highlighted inside "${...}"')
   endif
 
-  " keepend: an escaped-quote string inside `${{ ... }}` must not swallow the
-  " closing `}}` and bleed forkfileInterp onto the next line.
+  " keepend: an interpolation containing a call must not swallow the closing
+  " `}` and bleed forkfileInterp onto the next line.
   let l:t = s:FindLine('^T = ')
-  call s:Check(l:t > 0, 'fixture lost its escaped-quote ${{ ... }} line')
+  call s:Check(l:t > 0, 'fixture lost its "${...}" call line')
   if l:t > 0
-    call s:Check(s:HasGroup(l:t, 'forkfileInterp'), 'escaped-quote ${{ ... }} not highlighted as forkfileInterp')
-    call s:Check(!s:HasGroup(l:t + 1, 'forkfileInterp'), 'forkfileInterp leaked past `}}` onto the next line (missing keepend)')
-    call s:Check(s:HasGroup(l:t + 1, 'forkfileDelimiter'), '`}` after ${{ ... }} lost forkfileDelimiter')
+    call s:Check(s:HasGroup(l:t, 'forkfileInterp'), '"${...}" call not highlighted as forkfileInterp')
+    call s:Check(!s:HasGroup(l:t + 1, 'forkfileInterp'), 'forkfileInterp leaked past `}` onto the next line (missing keepend)')
+    call s:Check(s:HasGroup(l:t + 1, 'forkfileDelimiter'), '`}` after "${...}" lost forkfileDelimiter')
   endif
   let l:portline = s:FindLine('--port \$port')
   call s:Check(l:portline > 0, 'fixture lost its $port line')
@@ -228,8 +229,8 @@ function! s:Main() abort
         \ '  }',
         \ '}',
         \ 'env common {',
-        \ '  URL = ${{ var("host") ?? "y" }}',
-        \ '  T = "${{ var(\"x\") }}"',
+        \ '  URL = "${var(HOST) ?? self.url}"',
+        \ '  T = "${secret(TOKEN)}"',
         \ '}',
         \ 'PG = cache.name',
         \ 'PORT = $env.PORT',

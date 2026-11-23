@@ -39,7 +39,8 @@ s3 uploads
 env common {
   DATABASE_URL = app_db.url
   REDIS_URL    = cache.url
-  SECRET_KEY   = secret(SECRET_KEY) ?? random_hex(32)
+  PUBLIC_URL   = self.url
+  SECRET_KEY   = secret(SECRET_KEY, random_string(50))
 }
 
 image api . {

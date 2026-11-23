@@ -55,7 +55,9 @@ stage="$tmp/payload"
 install -d "$stage/usr/bin" "$stage/usr/share/slipfork/lib" "$stage/usr/share/man/man1" \
     "$stage/etc/init.d" "$stage/etc/conf.d" "$stage/etc/sysctl.d" \
     "$stage/usr/share/bash-completion/completions" "$stage/usr/share/zsh/site-functions" \
-    "$stage/usr/share/fish/vendor_completions.d"
+    "$stage/usr/share/fish/vendor_completions.d" "$stage/usr/share/vim/vimfiles/ftdetect" \
+    "$stage/usr/share/vim/vimfiles/syntax" "$stage/usr/share/vim/vimfiles/indent" \
+    "$stage/usr/share/vim/vimfiles/ftplugin"
 install -m 0755 "$bundle"/share/slipfork/lib/* "$stage/usr/share/slipfork/lib/"
 install -m 0644 "$bundle/share/slipfork/LICENSE" "$stage/usr/share/slipfork/LICENSE"
 for bin in slipfork slipfork-lsp slipfork-world-init; do
@@ -65,6 +67,9 @@ install -m 0644 "$bundle"/share/slipfork/man/*.gz "$stage/usr/share/man/man1/"
 install -m 0644 "$bundle/share/slipfork/completions/slipfork.bash" "$stage/usr/share/bash-completion/completions/slipfork"
 install -m 0644 "$bundle/share/slipfork/completions/slipfork.zsh" "$stage/usr/share/zsh/site-functions/_slipfork"
 install -m 0644 "$bundle/share/slipfork/completions/slipfork.fish" "$stage/usr/share/fish/vendor_completions.d/slipfork.fish"
+for group in ftdetect syntax indent ftplugin; do
+    install -m 0644 "$bundle/share/slipfork/vim/$group/forkfile.vim" "$stage/usr/share/vim/vimfiles/$group/forkfile.vim"
+done
 install -m 0755 packaging/alpine/slipfork-ingress.initd "$stage/etc/init.d/slipfork-ingress"
 install -m 0644 packaging/alpine/slipfork-ingress.confd "$stage/etc/conf.d/slipfork-ingress"
 printf 'net.ipv4.ip_unprivileged_port_start=80\n' >"$stage/etc/sysctl.d/99-slipfork-ingress.conf"
@@ -95,6 +100,8 @@ for expected in \
     usr/share/slipfork/LICENSE usr/share/man/man1/slipfork.1.gz usr/share/man/man1/slipfork-lsp.1.gz \
     usr/share/bash-completion/completions/slipfork usr/share/zsh/site-functions/_slipfork \
     usr/share/fish/vendor_completions.d/slipfork.fish \
+    usr/share/vim/vimfiles/ftdetect/forkfile.vim usr/share/vim/vimfiles/syntax/forkfile.vim \
+    usr/share/vim/vimfiles/indent/forkfile.vim usr/share/vim/vimfiles/ftplugin/forkfile.vim \
     etc/init.d/slipfork-ingress etc/conf.d/slipfork-ingress \
     etc/sysctl.d/99-slipfork-ingress.conf; do
     printf '%s\n' "$listing" | grep -qE "(^|/)$expected\$" ||

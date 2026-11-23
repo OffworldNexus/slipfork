@@ -2,13 +2,14 @@
 id: M3.66
 title: "Sync LSP, Tree-sitter, Zed, Vim, distro packages, support/demo & specs/docs with locked Forkfile 0.1 contract & deploy to VM"
 kind: task
-status: ready
+status: done
 owner: implementer
 priority: 3
 depends_on: [M3.65]
 paths:
+  - "crates/slipfork-forkfile/**"
   - "crates/slipfork-lsp/**"
-  - "crates/slipfork/tests/**"
+  - "crates/slipfork/**"
   - "editors/**"
   - "support/demo/**"
   - "specs/**"
@@ -17,11 +18,11 @@ paths:
   - "packaging/**"
   - README.md
   - TESTING_PLAN.md
-attempts: 0
+attempts: 1
 max_attempts: 3
 escalation: none
 created: "2026-11-23T01:11"
-updated: "2026-11-23T01:21"
+updated: "2026-11-23T02:04"
 ---
 
 # Goal

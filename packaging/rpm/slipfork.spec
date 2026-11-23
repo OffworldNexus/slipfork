@@ -61,3 +61,7 @@ fi
 /usr/share/bash-completion/completions/slipfork
 /usr/share/zsh/site-functions/_slipfork
 /usr/share/fish/vendor_completions.d/slipfork.fish
+/usr/share/vim/vimfiles/ftdetect/forkfile.vim
+/usr/share/vim/vimfiles/syntax/forkfile.vim
+/usr/share/vim/vimfiles/indent/forkfile.vim
+/usr/share/vim/vimfiles/ftplugin/forkfile.vim

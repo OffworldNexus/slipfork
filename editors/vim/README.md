@@ -1,8 +1,8 @@
 # Forkfile for Vim & Neovim
 
 Open a `Forkfile` and it just works: `# forkfile: 0.1` is detected, directives,
-components, `@tool` runners, `$port` and `${{ ... }}` interpolation are
-highlighted, and `{ ... }` blocks indent 2 spaces — no plugins, no LSP required.
+components, `@tool` runners, `$port`, `$env.KEY` and `"${...}"` interpolation
+are highlighted, and `{ ... }` blocks indent 2 spaces — no plugins, no LSP required.
 
 ## Install
 
@@ -36,11 +36,11 @@ image api . {
 }
 ```
 
-`# forkfile: 0.1` is `PreProc`; directives (`image`, `service`, `on`, `env`,
-`else`, …) are `Keyword`; declared component ids are `Type`; dotted properties
+`# forkfile: 0.1` is `PreProc`; directives (`image`, `service`, `on`, `else`,
+`env`, …) are `Keyword`; declared component ids are `Type`; dotted properties
 (`cache.url`, `.password`) and `$env.KEY` references are `Identifier`; `@uv`/
-`@pnpm`/`@cargo` are `Function`; `$port` is `Special`; `${{ var("x") ?? "y" }}`
-highlights builtins, operators and strings.
+`@pnpm`/`@cargo` are `Function`; `$port` is `Special`; `"${self.url}/login"`
+highlights the builtin, operator, and dotted property inside the interpolation.
 
 ## Editing ergonomics
 

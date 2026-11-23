@@ -6,6 +6,7 @@ use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::time::Duration;
 
 use serde_json::{Value, json};
+use slipfork_forkfile::{keywords, self_properties};
 
 const BAD_URI: &str = "file:///lab/Bad.Forkfile";
 const BAD_SOURCE: &str = "# forkfile: 0.1\n\nimage app . {\n  service web {\n    port 8080\n    route /🚀 exact /a rewrite /b\n  }\n}\n";
@@ -13,7 +14,9 @@ const FORMAT_URI: &str = "file:///lab/Format.Forkfile";
 const FORMAT_SOURCE: &str =
     "# forkfile: 0.1\n\nimage app . {\nservice web {\nport 8080\nrun: @uv run main.py\n}\n}\n";
 const HOVER_URI: &str = "file:///lab/Hover.Forkfile";
-const HOVER_SOURCE: &str = "# forkfile: 0.1\ndomain mail\npostgres pg {\n  database db\n}\nimage app . {\n  arg BUILD_DOMAIN = mail.domain\n  env {\n    GREETING = \"hello\"\n    DB_PASSWORD = db.password\n  }\n  service web {\n    port 8080\n    run: @uv run main.py\n    before-start: echo $env.GREETING\n  }\n}\n";
+const HOVER_SOURCE: &str = "# forkfile: 0.1\nfeatures {\n  dev\n}\ndomain mail\npostgres pg {\n  database db\n}\nimage app . {\n  arg BUILD_DOMAIN = mail.name\n  env {\n    GREETING = \"hello\"\n    LOGIN_URL = \"${self.url}/login\"\n    PRIMARY = self.domain\n    SCHEME = self.scheme\n    DB_PASSWORD = db.password\n    SECRET_KEY = secret(SECRET_KEY, random_string(50))\n  }\n  service web {\n    port 8080\n    run: @uv run main.py\n    before-start: echo $env.GREETING\n    on dev {\n      run: @uv run main.py --reload\n    } else {\n      run: @uv run main.py\n    }\n  }\n}\n";
+const DOMAIN_URI: &str = "file:///lab/Domain.Forkfile";
+const DOMAIN_SOURCE: &str = "# forkfile: 0.1\ndomain main\nenv common {\n  URL = main.url\n  SECRET_KEY = secret(SECRET_KEY) ?? random_string(50)\n}\n";
 const POLICY_URI: &str = "file:///lab/Policy.Forkfile";
 const POLICY_SOURCE: &str = "# forkfile: 0.1\n\ns3 uploads\ns3 assets { policy public-read }\n\nenv common {\n  PRIVATE_URL = uploads.url\n  PUBLIC_URL = assets.url\n  SECRET = uploads.secret_key\n}\n";
 
@@ -258,16 +261,95 @@ fn live_stdio_journey_publishes_diagnostics_hover_definition_and_formatting() {
     assert!(contents.contains("Secret-tainted"), "{contents}");
     assert!(contents.contains("database"), "{contents}");
 
+    for (needle, expected) in [
+        ("self.url", "primary URL with a scheme"),
+        ("self.domain", "bare hostname"),
+        ("self.scheme", "http"),
+        ("random_string", "secret generator"),
+    ] {
+        let hover = client.request(
+            "textDocument/hover",
+            json!({
+                "textDocument": { "uri": HOVER_URI },
+                "position": position_of(HOVER_SOURCE, needle, 0),
+            }),
+        );
+        let contents = hover["contents"]["value"]
+            .as_str()
+            .unwrap_or_else(|| panic!("hover for {needle}"));
+        assert!(contents.contains(expected), "{needle}: {contents}");
+    }
+
+    let domain_line = position_of(HOVER_SOURCE, "domain mail", 0)["line"].as_u64();
     let definition = client.request(
         "textDocument/definition",
         json!({
             "textDocument": { "uri": HOVER_URI },
-            "position": position_of(HOVER_SOURCE, "mail.domain", 0),
+            "position": position_of(HOVER_SOURCE, "mail.name", 0),
         }),
     );
     assert_eq!(definition[0]["uri"], json!(HOVER_URI));
-    assert_eq!(definition[0]["range"]["start"]["line"], json!(1));
+    assert_eq!(
+        definition[0]["range"]["start"]["line"].as_u64(),
+        domain_line
+    );
     assert_eq!(definition[0]["range"]["start"]["character"], json!(7));
+
+    let secret_definition = client.request(
+        "textDocument/definition",
+        json!({
+            "textDocument": { "uri": HOVER_URI },
+            "position": position_of(HOVER_SOURCE, "secret(SECRET_KEY", 7),
+        }),
+    );
+    assert_eq!(
+        secret_definition[0]["range"]["start"]["line"].as_u64(),
+        position_of(HOVER_SOURCE, "SECRET_KEY = secret", 0)["line"].as_u64()
+    );
+
+    let self_items = client.request(
+        "textDocument/completion",
+        json!({
+            "textDocument": { "uri": HOVER_URI },
+            "position": position_of(HOVER_SOURCE, "self.domain", 5),
+        }),
+    );
+    let expected_self = self_properties()
+        .iter()
+        .map(|property| (*property).to_owned())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        completion_labels(&self_items),
+        expected_self,
+        "LSP self properties drifted from the compiler facts"
+    );
+
+    let keywords_result = client.request(
+        "textDocument/completion",
+        json!({
+            "textDocument": { "uri": HOVER_URI },
+            "position": { "line": 0, "character": 0 },
+        }),
+    );
+    let mut expected_keywords = keywords()
+        .iter()
+        .map(|keyword| (*keyword).to_owned())
+        .collect::<Vec<_>>();
+    expected_keywords.push("self".to_owned());
+    assert_eq!(
+        completion_labels(&keywords_result),
+        expected_keywords,
+        "LSP keywords drifted from the compiler facts"
+    );
+
+    let domain_items = client.request(
+        "textDocument/completion",
+        json!({
+            "textDocument": { "uri": HOVER_URI },
+            "position": position_of(HOVER_SOURCE, "mail.name", 5),
+        }),
+    );
+    assert_eq!(completion_labels(&domain_items), ["name"]);
 
     let env_definition = client.request(
         "textDocument/definition",
@@ -276,7 +358,39 @@ fn live_stdio_journey_publishes_diagnostics_hover_definition_and_formatting() {
             "position": position_of(HOVER_SOURCE, "$env.GREETING", 5),
         }),
     );
-    assert_eq!(env_definition[0]["range"]["start"]["line"], json!(8));
+    assert_eq!(
+        env_definition[0]["range"]["start"]["line"].as_u64(),
+        position_of(HOVER_SOURCE, "GREETING = ", 0)["line"].as_u64()
+    );
+
+    client.notify(
+        "textDocument/didOpen",
+        json!({
+            "textDocument": { "uri": DOMAIN_URI, "languageId": "forkfile", "version": 1, "text": DOMAIN_SOURCE },
+        }),
+    );
+    let diagnostics = client.notification("textDocument/publishDiagnostics");
+    let messages = diagnostics["diagnostics"]
+        .as_array()
+        .expect("domain diagnostics")
+        .iter()
+        .map(|diagnostic| {
+            diagnostic["message"]
+                .as_str()
+                .unwrap_or_default()
+                .to_owned()
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        messages
+            .iter()
+            .any(|message| message.contains("is not a domain property")),
+        "{messages:?}"
+    );
+    assert!(
+        messages.iter().any(|message| message.contains("generator")),
+        "{messages:?}"
+    );
 
     client.notify(
         "textDocument/didOpen",
@@ -323,6 +437,15 @@ fn live_stdio_journey_publishes_diagnostics_hover_definition_and_formatting() {
     );
 
     client.finish();
+}
+
+fn completion_labels(result: &Value) -> Vec<String> {
+    result["items"]
+        .as_array()
+        .expect("completion items")
+        .iter()
+        .map(|item| item["label"].as_str().expect("completion label").to_owned())
+        .collect()
 }
 
 fn position_of(source: &str, needle: &str, extra: usize) -> Value {

@@ -25,7 +25,7 @@ s3 assets {
 
 env shared {
   DATABASE_URL = "postgres://localhost"
-  TOKEN = secret(DB_TOKEN) ?? random_hex(32)
+  TOKEN = secret(DB_TOKEN, random_hex(32))
 }
 
 image backend . {
@@ -44,7 +44,7 @@ image backend . {
   }
 }
 
-on !dev {
+on staging {
   image tools from alpine:3.20 {
     service shell {
       port 9000
@@ -81,12 +81,12 @@ on !dev {
     (identifier)
     (env_entry
       (identifier)
-      (string))
+      (string
+        (string_text)))
     (env_entry
       (identifier)
-      (fallback_expression
-        (call
-          (identifier))
+      (call
+        (identifier)
         (call
           (integer)))))
   (image
@@ -101,10 +101,12 @@ on !dev {
       (identifier)
       (fallback_expression
         (identifier)
-        (string)))
+        (string
+          (string_text))))
     (arg_item
       (identifier)
-      (string))
+      (string
+        (string_text)))
     (use_env
       (identifier))
     (hook
@@ -135,8 +137,7 @@ on !dev {
         (command
           (command_text)))))
   (on_statement
-    (unary_expression
-      (identifier))
+    (identifier)
     (image
       (identifier)
       (image_source
@@ -158,7 +159,7 @@ Routed properties and inline conditions
 
 image app . {
   env {
-    PUBLIC_DOMAIN = main.domain
+    PUBLIC_DOMAIN = main.name
     CDN_URL = static-cdn.url
     REDIS_URL = cache.url
   }
@@ -249,8 +250,7 @@ image backend . {
       echo one
       on dev {
         echo dev only
-      }
-      on !dev: echo prod only
+      } else: echo prod only
     }
   }
 }
@@ -272,10 +272,7 @@ image backend . {
             (identifier)
             (command_block
               (command
-                (command_text))))
-          (on_command_item
-            (unary_expression
-              (identifier))
+                (command_text)))
             (command
               (command_text))))))))
 
@@ -323,3 +320,129 @@ image backend . {
             (command
               (tool)
               (command_text))))))))
+
+==================
+Else branches, interpolation, and generator arguments
+==================
+
+# forkfile: 0.1
+
+features {
+  dev
+}
+
+image backend . {
+  env {
+    LOGIN_URL = "${self.scheme}://${main.name}/login"
+    SECRET_KEY = secret(SECRET_KEY, random_string(50))
+    TOKEN = var(TOKEN, random_uuid())
+  }
+  service web {
+    port 8000
+    on dev {
+      run: @uv run app --reload
+    } else {
+      run: @uv run app
+    }
+    run {
+      on dev: echo dev
+      else on mail: echo mail
+      else: echo prod
+    }
+  }
+}
+---
+
+(source_file
+  (header)
+  (features
+    (feature_group
+      (identifier)))
+  (image
+    (identifier)
+    (image_source
+      (directory))
+    (env_block
+      (env_entry
+        (identifier)
+        (string
+          (interpolation
+            (property
+              (identifier)
+              (identifier)))
+          (string_text)
+          (interpolation
+            (property
+              (identifier)
+              (identifier)))
+          (string_text)))
+      (env_entry
+        (identifier)
+        (call
+          (identifier)
+          (call
+            (integer))))
+      (env_entry
+        (identifier)
+        (call
+          (identifier)
+          (call))))
+    (service
+      (identifier)
+      (port
+        (integer))
+      (on_service_item
+        (identifier)
+        (hook
+          (command
+            (tool)
+            (command_text)))
+        (hook
+          (command
+            (tool)
+            (command_text))))
+      (hook
+        (command_block
+          (on_command_item
+            (identifier)
+            (command
+              (command_text))
+            (on_command_item
+              (identifier)
+              (command
+                (command_text))
+              (command
+                (command_text)))))))))
+
+==================
+Inline on item promoted by a next-line else
+==================
+
+# forkfile: 0.1
+
+image app . {
+  service web {
+    on dev: run: /bin/echo dev
+    else {
+      run: /bin/echo prod
+    }
+  }
+}
+---
+
+(source_file
+  (header)
+  (image
+    (identifier)
+    (image_source
+      (directory))
+    (service
+      (identifier)
+      (on_service_item
+        (identifier)
+        (hook
+          (command
+            (command_text)))
+        (hook
+          (command
+            (command_text)))))))
