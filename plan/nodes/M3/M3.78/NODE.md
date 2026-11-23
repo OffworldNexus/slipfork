@@ -2,16 +2,16 @@
 id: M3.78
 title: "Stop publishing to non-existent Homebrew/Scoop taps (the rest of 0.1.0 is live)"
 kind: task
-status: ready
+status: done
 owner: implementer
 priority: 3
 depends_on: []
 paths: [.github/workflows/packages.yml]
-attempts: 0
+attempts: 1
 max_attempts: 3
 escalation: none
 created: "2026-11-23T23:51"
-updated: "2026-11-23T23:51"
+updated: "2026-11-23T23:52"
 ---
 
 # Problem
