@@ -3,20 +3,7 @@
 All notable, user-visible changes to Slipfork. The format follows Keep a Changelog, and versions
 follow Semantic Versioning while the `# forkfile: 0.1` format is pre-`1.0`.
 
-## [Unreleased] - 2026-11-22
-
-### Removed
-
-- The `db` and `redis` subcommands are gone. `slipfork shell <target>` is the one interactive entry point:
-  real-PTY `bash`/`sh` for services and images, `psql` for postgres databases, `redis-cli` for
-  redis, and an exact refusal for S3 buckets.
-
-### Fixed
-
-- The `DECSTBM` boot bar advances through a real 2D VT100 grid, so the prompt returns to the row
-  the shell expects and wide glyphs no longer drift the flow cursor.
-- A failed `slipfork fork` rolls back atomically: it stops its supervisor and pods and drops the
-  registry entry before unlinking snapshots, so no half-booted fork survives.
+## [0.1.0] - 2026-11-23
 
 ### Added
 
@@ -24,6 +11,25 @@ follow Semantic Versioning while the `# forkfile: 0.1` format is pre-`1.0`.
   postgres input runs `psql -X -q -v ON_ERROR_STOP=1`.
 - State guidance for `running`, `stopped`, `cached`, `up to date` and `orphaned`, each with one
   `next:` command.
+- The `# forkfile: 0.1` language: `features` and `on` parity, enclosing `image` scopes, build-time
+  `arg`, runtime `env` and `secret()`, `postgres` / `redis` / `s3` resources, `cdn` policies,
+  `service` blocks with `route` rules and lifecycle hooks, and `@<tool>` auto-prequels.
+- `slipfork up`, `down` and `restart` stream boot phases and leave a failed world running for
+  inspection, with one `next:` remedy per failure.
+- `slipfork fork` snapshots the project and world data in under 50 ms and boots the fork on
+  `http://<fork>--<world>.localhost`; `slipfork drop` reaps it and refuses a dirty checkout.
+- `slipfork status` and `ps` render one dynamic-width tree of worlds, domains and nested forks, with
+  `--json` parity.
+- `slipfork doctor` reports the three host requirements — Btrfs, namespaces, `crun` + `:80` ingress
+  — with a `✓ Ready` verdict or one counted remedy per failing row.
+- `slipfork fmt` and `slipfork migrate` format and convert `Forkfile`s; `slipfork completions`
+  prints bash, zsh or fish scripts generated from the same verb table as `--help`.
+- One per-user daemon serves every world behind a stateless `:80` `.localhost` ingress;
+  `slipfork daemon install` writes the user unit and `sudo slipfork daemon install --ingress` adds
+  the system socket and AppArmor profile.
+- Native packages for Debian/Ubuntu (`.deb`), Fedora/RHEL/Rocky/Alma/openSUSE (`.rpm`), Arch
+  (pacman + AUR) and Alpine (`.apk`), plus portable glibc/musl archives and a universal installer.
+- A standalone `slipfork-lsp` language server with releases for Linux, macOS and Windows.
 
 ### Changed
 
@@ -49,34 +55,20 @@ follow Semantic Versioning while the `# forkfile: 0.1` format is pre-`1.0`.
   checkout shows `! checkout missing — …`; an uncompilable `Forkfile` shows
   `! Forkfile invalid: line:col: …` while live pods stay `running`, with no fabricated `orphaned`
   rows.
-
-## [0.1.0] - 2026-11-21
-
-### Added
-
-- The `# forkfile: 0.1` language: `features` and `on` parity, enclosing `image` scopes, build-time
-  `arg`, runtime `env` and `secret()`, `postgres` / `redis` / `s3` resources, `cdn` policies,
-  `service` blocks with `route` rules and lifecycle hooks, and `@<tool>` auto-prequels.
-- `slipfork up`, `down` and `restart` stream boot phases and leave a failed world running for
-  inspection, with one `next:` remedy per failure.
-- `slipfork fork` snapshots the project and world data in under 50 ms and boots the fork on
-  `http://<fork>--<world>.localhost`; `slipfork drop` reaps it and refuses a dirty checkout.
-- `slipfork status` and `ps` render one dynamic-width tree of worlds, domains and nested forks, with
-  `--json` parity.
-- `slipfork logs`, `shell`, `exec`, `env`, `secret`, `open` and `auth` cover the daily loop and the
-  remote `OSPP v1` pairing flow.
-- `slipfork doctor` reports the three host requirements — Btrfs, namespaces, `crun` + `:80` ingress
-  — with a `✓ Ready` verdict or one counted remedy per failing row.
-- `slipfork fmt` and `slipfork migrate` format and convert `Forkfile`s; `slipfork completions`
-  prints bash, zsh or fish scripts generated from the same verb table as `--help`.
-- One per-user daemon serves every world behind a stateless `:80` `.localhost` ingress;
-  `slipfork daemon install` writes the user unit and `sudo slipfork daemon install --ingress` adds
-  the system socket and AppArmor profile.
-- Native packages for Debian/Ubuntu (`.deb`), Fedora/RHEL/Rocky/Alma/openSUSE (`.rpm`), Arch
-  (pacman + AUR) and Alpine (`.apk`), plus portable glibc/musl archives and a universal installer.
-- A standalone `slipfork-lsp` language server with releases for Linux, macOS and Windows.
-
-### Changed
-
 - Terminal styling is TTY-aware: ANSI colours appear only on a real terminal with `NO_COLOR`
   unset and `TERM` not `dumb`; `--json` output carries zero escapes.
+
+### Removed
+
+- `slipfork auth` (OSPP pairing) is not part of 0.1.0 and returns in a later release; local
+  `secret()` values keep working.
+- The `db` and `redis` subcommands are gone. `slipfork shell <target>` is the one interactive entry point:
+  real-PTY `bash`/`sh` for services and images, `psql` for postgres databases, `redis-cli` for
+  redis, and an exact refusal for S3 buckets.
+
+### Fixed
+
+- The `DECSTBM` boot bar advances through a real 2D VT100 grid, so the prompt returns to the row
+  the shell expects and wide glyphs no longer drift the flow cursor.
+- A failed `slipfork fork` rolls back atomically: it stops its supervisor and pods and drops the
+  registry entry before unlinking snapshots, so no half-booted fork survives.

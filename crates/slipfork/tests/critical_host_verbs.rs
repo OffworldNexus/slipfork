@@ -1,11 +1,7 @@
-//! Protected lab journey for the host verbs: `env`, `secret`, `open`, and `auth`.
+//! Protected lab journey for the host verbs: `env`, `secret`, and `open`.
 //!
-//! Real `0600` vault under an injected state directory, a real `slipfork __daemon` socket, real
-//! `/var/tmp` executables, and the real `127.0.0.1:0` OSPP reference server — no mocks anywhere.
-
-#[path = "support/reference_ospp.rs"]
-#[allow(dead_code)]
-mod reference_ospp;
+//! Real `0600` vault under an injected state directory, real `/var/tmp` executables — no mocks
+//! anywhere.
 
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
@@ -16,7 +12,6 @@ use std::process::{Command, Output, Stdio};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use reference_ospp::{ReferenceOsppServer, ReferenceServerConfig};
 use serde_json::Value;
 
 const FORKFILE: &str = "# forkfile: 0.1\n\nenv app {\n    LOG_LEVEL = \"info\"\n    SECRET_KEY = secret(SECRET_KEY)\n}\n";
@@ -275,77 +270,6 @@ fn open_prints_the_url_when_headless_and_runs_a_real_opener_when_displayed() {
         "http://project.localhost"
     );
 }
-
-#[test]
-fn auth_pairs_through_the_loopback_reference_server() {
-    let lab = Lab::new("auth");
-    let server = ReferenceOsppServer::start(ReferenceServerConfig::default());
-    let url = server.endpoint().as_str().to_owned();
-    let mut child = lab
-        .command(&["auth", &url])
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawn auth");
-
-    let deadline = Instant::now() + Duration::from_secs(10);
-    let handle = loop {
-        if let Some(record) = server.state().pairings.first() {
-            break record.handle.clone();
-        }
-        assert!(
-            child.try_wait().expect("poll auth").is_none(),
-            "auth exited before pairing"
-        );
-        assert!(Instant::now() < deadline, "the pairing never started");
-        thread::sleep(Duration::from_millis(20));
-    };
-    server.approve_pairing(&handle);
-    let output = child.wait_with_output().expect("wait for auth");
-    assert!(output.status.success(), "{}", text(&output));
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("alice"), "{stdout}");
-    assert!(stdout.contains("dev-laptop"), "{stdout}");
-    assert!(stdout.contains(&url), "{stdout}");
-    assert!(stdout.contains("next: slipfork up"), "{stdout}");
-    assert_eq!(
-        next_lines(&output),
-        1,
-        "a successful pairing prints exactly one next:\n{}",
-        text(&output)
-    );
-    assert_clean(&output);
-
-    let state = lab.state();
-    let device = state.join("device-key.json");
-    let record = state.join("ospp.json");
-    assert_eq!(mode_of(&device), 0o600);
-    assert_eq!(mode_of(&record), 0o600);
-    let key = fs::read_to_string(&device).expect("device key");
-    let record_body = fs::read_to_string(&record).expect("pairing record");
-    assert!(record_body.contains(&url), "{record_body}");
-    assert!(
-        !record_body.contains(key.trim()),
-        "ospp.json leaked key material"
-    );
-    server.shutdown();
-}
-
-#[test]
-fn auth_without_an_endpoint_fails_with_one_next_line() {
-    let lab = Lab::new("auth-missing");
-    let output = lab.run(&["auth"]);
-    assert!(!output.status.success());
-    assert!(
-        text(&output).contains("this daemon has no OSPP endpoint"),
-        "{}",
-        text(&output)
-    );
-    assert_eq!(next_lines(&output), 1, "{}", text(&output));
-    assert_clean(&output);
-}
-
 const GENERATED: &str = "# forkfile: 0.1\n\nenv app {\n    LOG_LEVEL = \"info\"\n    SECRET_KEY = secret(SECRET_KEY, random_hex(32))\n    TOKEN = var(TOKEN, random_uuid())\n}\n";
 
 #[test]

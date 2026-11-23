@@ -15,7 +15,8 @@ use crate::ui::{Palette, UiMode};
 use crate::world::HostEnv;
 use crate::{doctor, status};
 
-mod auth;
+// `mod auth;` is dormant past 0.1.0: OSPP pairing returns in a later release.
+// mod auth;
 mod env;
 mod exec;
 mod features;
@@ -26,7 +27,7 @@ mod runs;
 mod secret;
 mod streams;
 mod timeparse;
-pub use auth::AuthArgs;
+// pub use auth::AuthArgs;
 pub use env::EnvArgs;
 pub use exec::{ExecArgs, TargetArgs};
 pub use features::FeaturesArgs;

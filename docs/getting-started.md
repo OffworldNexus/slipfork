@@ -54,8 +54,8 @@ image api . {
 }
 ```
 
-`SECRET_KEY` resolves from the paired cloud when you ran `slipfork auth`, or becomes a random local
-value. [The Forkfile](forkfile.md) covers the rest of the language.
+`SECRET_KEY` becomes a random local value in 0.1.0. [The Forkfile](forkfile.md) covers the rest of
+the language.
 
 ## 3. Boot it
 

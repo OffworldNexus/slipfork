@@ -136,7 +136,6 @@ fn help_and_version_are_the_shipped_surface() {
             "features",
             "secret",
             "open",
-            "auth",
             "fmt",
             "migrate",
             "completions",
@@ -241,7 +240,6 @@ fn host_verbs_ship_help_and_keep_json_clean() {
         ("env", &["--reveal", "--json"][..]),
         ("secret", &["list", "set", "unset", "--json"][..]),
         ("open", &["--json"][..]),
-        ("auth", &["--ospp-endpoint", "--json"][..]),
     ] {
         let help = run(&[verb, "--help"]);
         assert!(help.status.success(), "`{verb} --help` must succeed");

@@ -92,15 +92,11 @@ running.
 
 ## Remote pairing
 
-| Symptom | Command |
-| :--- | :--- |
-| No endpoint configured | `slipfork auth wss://ci.acme-shop.example/ospp` |
-| Pairing was rejected | Approve in the browser, then rerun `slipfork auth <url>` |
-| A saved endpoint is stale | `slipfork auth --ospp-endpoint wss://ci.acme-shop.example/ospp` |
-| `already_paired` | Remove the old machine in CI, then pair again |
-| A secret is wrong but pairing worked | `slipfork secret list`, then `slipfork env <component>` |
+0.1.0 has no remote pairing: local `secret()` values do the work, and `slipfork secret list` plus
+`slipfork env <component>` show exactly what this world resolved.
 
-The full code list, with the frame that produced it, lives in [OSPP v1](ospp.md).
+The full OSPP v1 wire contract, with every error code and the frame that produced it, lives in
+[OSPP v1](ospp.md).
 
 ## Where next
 

@@ -53,7 +53,6 @@ flowchart LR
 | `slipfork features [+mail\|-dev\|reset]` | Resolved features and persisted edits for the next boot |
 | `slipfork secret list\|set\|unset` | Manage local offline secrets; `set` reads stdin |
 | `slipfork open [service]` | Open the world or route URL in a browser |
-| `slipfork auth [url]` | Pair this machine with a remote `OSPP v1` endpoint |
 | `slipfork doctor` | Four plain-English rows: Storage, Containers, Daemon, Domains |
 | `slipfork fmt` | Format a Forkfile; `--check` reports only |
 | `slipfork migrate` | Convert a legacy `snow.yml` into a `Forkfile` |

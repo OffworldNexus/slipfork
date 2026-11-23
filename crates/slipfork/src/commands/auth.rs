@@ -1,4 +1,6 @@
 //! `slipfork auth`: pair this machine with one OSPP v1 endpoint through the real client.
+//!
+//! Dormant past 0.1.0: not wired into the CLI; OSPP pairing returns in a later release.
 
 use std::process::{Command, ExitCode};
 use std::sync::Arc;

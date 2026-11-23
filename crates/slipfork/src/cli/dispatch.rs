@@ -10,8 +10,8 @@ use clap::{ColorChoice, CommandFactory, FromArgMatches};
 use serde_json::json;
 
 use crate::commands::{
-    AuthArgs, EnvArgs, ExecArgs, FeaturesArgs, FmtArgs, LogsArgs, MigrateArgs, OpenArgs,
-    SecretArgs, SecretVerb, Session, TargetArgs, emit,
+    EnvArgs, ExecArgs, FeaturesArgs, FmtArgs, LogsArgs, MigrateArgs, OpenArgs, SecretArgs,
+    SecretVerb, Session, TargetArgs, emit,
 };
 use crate::world::{DownArgs, DropArgs, ForkArgs, RestartArgs, SuperviseArgs, UpArgs};
 
@@ -148,11 +148,12 @@ fn dispatch(cli: Cli, session: Session) -> ExitCode {
             session.secret(&SecretArgs { verb, target, json })
         }
         Command::Open { service } => session.open(&OpenArgs { service, json }),
-        Command::Auth { url, ospp_endpoint } => session.auth(&AuthArgs {
-            endpoint: ospp_endpoint,
-            positional: url,
-            json,
-        }),
+        // `slipfork auth` is deferred past 0.1.0; restore this arm with the `verbs` variant.
+        // Command::Auth { url, ospp_endpoint } => session.auth(&AuthArgs {
+        //     endpoint: ospp_endpoint,
+        //     positional: url,
+        //     json,
+        // }),
         Command::Fmt { path, check } => session.fmt(&FmtArgs {
             check,
             json,

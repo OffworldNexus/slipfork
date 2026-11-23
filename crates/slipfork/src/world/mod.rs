@@ -66,6 +66,7 @@ pub struct HostEnv {
     /// Prefix for system paths (`SLIPFORK_INSTALL_ROOT`, `/` by default).
     pub install_root: PathBuf,
     /// Host name from `gethostname(2)`, read once by the composition root.
+    #[allow(dead_code)] // read by the dormant commands/auth.rs
     pub hostname: String,
     /// `$DISPLAY` or `$WAYLAND_DISPLAY` is set, so a browser can be launched.
     pub display: bool,

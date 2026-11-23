@@ -10,6 +10,8 @@ $ slipfork up
 ✓ Ready -> http://acme-shop.localhost   secrets: 6 from OSPP v1
 ```
 
+The `slipfork auth` pairing CLI is deferred past 0.1.0 and returns in a later release; this wire contract is unchanged.
+
 This document is authoritative: frame names, field names, error codes, and byte layouts are exhaustive. Slipfork ships the **client** (`crates/slipfork-ospp`); the server belongs to the provider.
 
 ---
@@ -125,7 +127,7 @@ On approval the client persists one `0600` record, atomically replaced, at `<sta
 { "endpoint": "wss://ci.acme-shop.example/ospp", "account": "alice", "machine": "acme-laptop" }
 ```
 
-`slipfork auth [<endpoint-url>]` resolves its endpoint by precedence: `--ospp-endpoint` > the positional URL > the saved `<state_dir>/ospp.json`. On success it prints the settled pair followed by `next: slipfork up`, and later daemons reconnect from the record while an explicit `--ospp-endpoint` still wins. A pairing attempt against a different URL fails closed.
+`slipfork auth [<endpoint-url>]` resolves its endpoint by precedence: `--ospp-endpoint` > the positional URL > the saved `<state_dir>/ospp.json`. On success it prints the settled pair followed by `next: slipfork up`, and later daemons reconnect from the record while an explicit `--ospp-endpoint` still wins. A pairing attempt against a different URL fails closed. The pairing CLI itself is deferred past 0.1.0 and returns in a later release; the wire contract above is unchanged.
 
 The only test stand-in is the minimal `127.0.0.1:0` loopback reference server described in [04 §1](./04-testing-plan.md#1-testing-philosophy); production always requires `wss://`, with plaintext `ws://` allowed on loopback only.
 

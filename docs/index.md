@@ -12,6 +12,11 @@ hide:
 workers — and serves it from one `.localhost` URL. It runs natively on Btrfs with `crun`, so there is
 no Docker daemon to install and no shared staging box to fight over.
 
+!!! warning "Very experimental release"
+
+    0.1.0 is a very experimental release with breaking changes ahead. Report what breaks in the
+    [issue tracker](https://github.com/OffworldNexus/slipfork/issues).
+
 ```console
 $ curl -fsSL https://offworldnexus.github.io/slipfork/install.sh | sh
 $ slipfork up

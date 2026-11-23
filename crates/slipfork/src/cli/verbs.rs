@@ -259,15 +259,14 @@ pub enum Command {
         service: Option<String>,
     },
 
-    /// Pair this machine with an OSPP v1 endpoint, or reuse the saved record.
-    Auth {
-        /// Endpoint to pair with (default: the saved record).
-        url: Option<String>,
-        /// Endpoint that wins over both the positional URL and the saved record.
-        #[arg(long, value_name = "URL")]
-        ospp_endpoint: Option<String>,
-    },
-
+    // `slipfork auth` is deferred past 0.1.0: OSPP pairing ships in a later release.
+    // Auth {
+    //     /// Endpoint to pair with (default: the saved record).
+    //     url: Option<String>,
+    //     /// Endpoint that wins over both the positional URL and the saved record.
+    //     #[arg(long, value_name = "URL")]
+    //     ospp_endpoint: Option<String>,
+    // },
     /// Format a Forkfile in place, or report with --check.
     Fmt {
         /// Forkfile to format (default: Forkfile).

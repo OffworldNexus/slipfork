@@ -1,18 +1,12 @@
 # OSPP v1
 
-Pair once and your local world receives the same `vars`, secrets and resources CI has — without
-`.env` files, pasted tokens, or a secret written to disk in the clear.
+!!! warning "Pairing ships after 0.1.0"
 
-```console
-$ slipfork auth wss://ci.acme-shop.example/ospp
-✓ Paired alice@acme-laptop -> wss://ci.acme-shop.example/ospp
-next: slipfork up
-$ slipfork up
-✓ Ready -> http://acme-shop.localhost
-```
+    The pairing CLI returns in a later release; the wire contract below is unchanged.
 
-That boot pulled 6 secrets from the paired server, so the world started with the same values CI
-has without a `.env` file on disk.
+This is the OSPP v1 wire contract that OSPP pairing uses once it returns; 0.1.0 ships local
+`secret()` values only. A paired world receives the same `vars`, secrets and resources CI has —
+without `.env` files, pasted tokens, or a secret written to disk in the clear.
 
 Frames are UTF-8 JSON text messages over the `ospp-v1` WebSocket subprotocol, always at version 2.
 The frame set is closed: an unknown type or field is a protocol violation, never ignored, and
@@ -21,8 +15,8 @@ plaintext `ws://` is accepted only on loopback.
 ## One daemon, one identity
 
 The machine key, the pairing record and the decrypted vault are per-user `0600` files under
-`<state_dir>`; the CLI never holds the long-lived key. `slipfork auth` resolves its endpoint by
-precedence: `--ospp-endpoint`, then the positional URL, then the saved record.
+`<state_dir>`; the CLI never holds the long-lived key. A pairing resolves its endpoint by
+precedence: the explicit endpoint, then the positional URL, then the saved record.
 
 ## Authentication and first pairing
 
@@ -139,7 +133,7 @@ socket.
 | `unsupported_encryption` | No shared encryption method | Upgrade to a client with `hpke-p256` |
 | `unauthorized_key` | Key may not act on this project | Pair the account that owns the remote |
 | `unknown_remote` | Verbatim Git remote is unknown | Connect the repository in CI |
-| `bad_proof` | Signature did not verify | Re-run `slipfork auth <url>` |
+| `bad_proof` | Signature did not verify | Re-run the pairing with the endpoint URL |
 | `rejected` | A human rejected the pairing | Approve in the browser, then retry |
 | `already_paired` | Machine key enrolled elsewhere | Remove the old machine, then pair again |
 | `throttled` | Pairing is rate-limited | Wait, then retry |
@@ -155,5 +149,5 @@ socket.
 ## Where next
 
 * [Under the hood](under-the-hood.md) — where the daemon and the `:80` edge sit.
-* [CLI](cli.md) — `auth`, `secret` and the terminal contract.
+* [CLI](cli.md) — `secret` and the terminal contract.
 * [Troubleshooting](troubleshooting.md) — pairing and URL failures with remedies.

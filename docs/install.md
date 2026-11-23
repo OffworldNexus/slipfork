@@ -3,6 +3,9 @@
 One `slipfork` binary on every Linux distribution, plus a standalone `slipfork-lsp` for editors
 anywhere. A fresh machine is one command and one green `slipfork doctor` away from a running world.
 
+0.1.0 is a very experimental release, so expect breakage and
+[report it](https://github.com/OffworldNexus/slipfork/issues).
+
 ```console
 $ curl -fsSL https://offworldnexus.github.io/slipfork/install.sh | sh
 $ slipfork doctor

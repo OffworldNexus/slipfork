@@ -98,11 +98,6 @@ pub const VERBS: &[VerbSpec] = &[
         flags: &["--json"],
     },
     VerbSpec {
-        name: "auth",
-        summary: "Pair this machine with an OSPP v1 endpoint.",
-        flags: &["--ospp-endpoint", "--json"],
-    },
-    VerbSpec {
         name: "fmt",
         summary: "Format a Forkfile in place.",
         flags: &["--check", "--json"],
