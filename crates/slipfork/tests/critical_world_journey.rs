@@ -1266,6 +1266,95 @@ fn world_up_restart_down_journey() {
     let (code, seen) = redis.finish();
     assert_eq!(code, 0, "`shell cache` must exit 0:\n{seen}");
 
+    // `exec` auto-attaches a real kernel PTY on a terminal, while `--no-interactive` keeps the
+    // child on a plain pipe whose stdin hits EOF without hanging the relay.
+    let mut exec_tty = journey.pty(
+        &good,
+        &[
+            "exec",
+            "api",
+            "--",
+            "sh",
+            "-c",
+            "tty; test -t 0 && test -t 1 && echo EXEC-TTY-OK",
+        ],
+        120,
+        40,
+    );
+    exec_tty.expect("/dev/pts/", Duration::from_secs(20));
+    exec_tty.expect("EXEC-TTY-OK", Duration::from_secs(10));
+    let (code, seen) = exec_tty.finish();
+    assert_eq!(code, 0, "`exec` on a real PTY must exit 0:\n{seen}");
+
+    let forwarded = journey
+        .pty(&good, &["exec", "api", "--", "sh", "-c", "exit 7"], 120, 40)
+        .finish();
+    assert_eq!(
+        forwarded.0, 7,
+        "`exec` must forward the child's exit code over a PTY:\n{}",
+        forwarded.1
+    );
+
+    let mut managed = journey.pty(
+        &good,
+        &[
+            "exec",
+            "-i",
+            "api",
+            "--",
+            "sh",
+            "-c",
+            "test -t 0 && echo IN-TTY-OK",
+        ],
+        120,
+        40,
+    );
+    managed.expect("IN-TTY-OK", Duration::from_secs(20));
+    let (code, seen) = managed.finish();
+    assert_eq!(code, 0, "`exec -i` on a PTY must exit 0:\n{seen}");
+
+    let mut exec_pipe = journey.pty(
+        &good,
+        &[
+            "exec",
+            "--no-interactive",
+            "api",
+            "--",
+            "sh",
+            "-c",
+            "test -t 0 && echo IN-TTY; cat; echo CAT-EOF",
+        ],
+        120,
+        40,
+    );
+    exec_pipe.expect("CAT-EOF", Duration::from_secs(20));
+    let (code, seen) = exec_pipe.finish();
+    assert_eq!(code, 0, "`exec --no-interactive` must exit 0:\n{seen}");
+    assert!(
+        !seen.contains("IN-TTY"),
+        "`--no-interactive` must never allocate a PTY:\n{seen}"
+    );
+
+    let no_tty = journey.slipfork_input(&good, &["exec", "-i", "api", "--", "true"], "");
+    assert_eq!(no_tty.status.code(), Some(1));
+    let refused = stderr(&no_tty);
+    assert!(refused.contains("--interactive"), "{refused}");
+    assert_eq!(refused.matches("next:").count(), 1, "{refused}");
+
+    let piped = journey.slipfork_input(&good, &["exec", "api", "--", "cat"], "piped-exec\n");
+    assert_eq!(
+        piped.status.code(),
+        Some(0),
+        "piped `exec` must succeed:\nstdout={}\nstderr={}",
+        stdout(&piped),
+        stderr(&piped)
+    );
+    assert!(
+        stdout(&piped).contains("piped-exec"),
+        "piped stdin must reach the child: {}",
+        stdout(&piped)
+    );
+
     // 1d. Image build logs replay straight from `<store>/logs/<world>/<image>.log`.
     let image_log = journey.store_root.join("logs").join("good").join("app.log");
     assert!(

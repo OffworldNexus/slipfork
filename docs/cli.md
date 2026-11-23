@@ -48,7 +48,7 @@ flowchart LR
 | `slipfork drop <name>` | Stop a fork and delete its snapshots; `-f` discards a dirty checkout |
 | `slipfork logs [-f] [-a] [-t] [--since <time>] [--until <time>] [targets]...` | Merged service logs; `-a` adds images and resources; several targets merge in time order |
 | `slipfork shell <target>` | Real PTY: `bash`/`sh`, `psql`, or `redis-cli` for one declared target |
-| `slipfork exec [service\|image] -- <cmd>` | Run any command in a pod and forward its exit code |
+| `slipfork exec [-i\|--no-interactive] [service\|image] -- <cmd>` | Run any command in a pod with a real PTY on a terminal; exit code forwarded |
 | `slipfork env [component]` | Resolved runtime variables, secrets redacted |
 | `slipfork features [+mail\|-dev\|reset]` | Resolved features and persisted edits for the next boot |
 | `slipfork secret list\|set\|unset` | Manage local offline secrets; `set` reads stdin |
@@ -59,6 +59,15 @@ flowchart LR
 | `slipfork migrate` | Convert a legacy `snow.yml` into a `Forkfile` |
 | `slipfork completions <shell>` | Print bash, zsh or fish completions |
 | `slipfork daemon install` | Write the per-user unit; `--ingress` adds the system socket |
+
+`slipfork exec` allocates a real kernel PTY whenever stdin and stdout are terminals and `--json` is off, so `ipython`, `bash`, and `psql` keep their prompts, colours, and line editing. `-i` requires both terminals and fails closed without them, while `--no-interactive` keeps a plain pipe so prompts see immediate EOF.
+
+The relay forwards the child's own escapes untouched; only Slipfork's own output obeys `NO_COLOR`.
+
+```console
+$ slipfork exec api -- uv run ipython      # interactive REPL on a real PTY
+$ echo piped | slipfork exec api -- cat    # piped stdin still streams
+```
 
 The `fork` rows report two tiers: `snapshot_ms` for the CoW clone (`~150–365ms`, asserted `< 500ms`)
 and `elapsed_ms` for the full 8-component boot (`~5.5s` median, asserted `< 8.0s`). A warm fork

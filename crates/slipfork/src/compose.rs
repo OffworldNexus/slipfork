@@ -18,6 +18,8 @@ pub struct Terminal {
     pub mode: UiMode,
     /// Visible columns for live panes; `80` for every non-interactive invocation.
     pub width: usize,
+    /// Whether stdin is a real terminal, resolved once by the composition root.
+    pub stdin_tty: bool,
 }
 
 /// Resolves the output mode and the terminal width exactly once, so no library module has to
@@ -29,7 +31,11 @@ pub fn terminal(args: &[OsString]) -> Terminal {
     } else {
         80
     };
-    Terminal { mode, width }
+    Terminal {
+        mode,
+        width,
+        stdin_tty: std::io::stdin().is_terminal(),
+    }
 }
 
 /// Resolves the one output mode for this invocation.

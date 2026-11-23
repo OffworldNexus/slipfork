@@ -194,7 +194,17 @@ Both render zero `\x1b[` bytes under `NO_COLOR`, a pipe, or `--json`.
 | `slipfork logs -r <id>\|last\|failed` | Replay one recorded step run (`#<id>` accepted), honouring `--since`/`--until`/`-t`/`--json` |
 | `slipfork logs --runs` | Borderless `#run_id`, kind, step, status, duration, recorded table of every executed step |
 | `slipfork shell <target>` | Required target: PTY bash/sh, `psql`, `redis-cli`; refuses `s3` and unknowns |
-| `slipfork exec [service\|image] -- <cmd>` | Ad-hoc command inside the target, exit code forwarded |
+| `slipfork exec [service\|image] -- <cmd>` | Ad-hoc command inside the target with a real PTY on a terminal; exit code forwarded |
+
+`slipfork exec` allocates a real kernel PTY whenever stdin and stdout are terminals and `--json` is off, so `ipython`, `bash`, `psql`, and coloured progress bars keep their prompts and line editing. `-i` requires both terminals and fails closed without them; `--no-interactive` keeps a plain pipe so prompts see immediate EOF while piped stdin still streams.
+
+The relay forwards the child's own escapes untouched; only Slipfork's own output obeys `NO_COLOR`.
+
+```bash
+slipfork exec api -- uv run ipython            # interactive REPL on a real PTY
+echo 'select 1;' | slipfork exec pg -- psql -tA   # piped stdin still streams
+slipfork exec --no-interactive api -- python3 -c 'import sys; print(sys.stdin.isatty())'  # False
+```
 
 ### Features
 

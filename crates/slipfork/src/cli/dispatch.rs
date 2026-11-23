@@ -101,7 +101,12 @@ fn dispatch(cli: Cli, session: Session) -> ExitCode {
             json,
         }),
         Command::Shell { target } => session.shell(&TargetArgs { target, json }),
-        Command::Exec { target, argv } => {
+        Command::Exec {
+            target,
+            interactive,
+            no_interactive,
+            argv,
+        } => {
             if argv.is_empty() {
                 return usage_error(
                     "`exec` needs `--` before the command, e.g. `slipfork exec api -- pytest -q`",
@@ -109,7 +114,13 @@ fn dispatch(cli: Cli, session: Session) -> ExitCode {
                     json,
                 );
             }
-            session.exec(&ExecArgs { target, json, argv })
+            session.exec(&ExecArgs {
+                target,
+                json,
+                argv,
+                interactive,
+                no_interactive,
+            })
         }
         Command::Env {
             component,

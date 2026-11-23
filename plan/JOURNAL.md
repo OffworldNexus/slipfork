@@ -3334,3 +3334,9 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-23T21:13 [M3] (conductor) status done -> active
 - 2026-11-23T21:13 [M3.74] (conductor) created (task) Add -i/--interactive and --no-interactive (with TTY auto-detection by default) to slipfork exec
 - 2026-11-23T21:13 AUTOPILOT on by conductor Implementing -i/--interactive and --no-interactive with TTY auto-detection on slipfork exec in M3.74
+- 2026-11-23T21:14 [M3.74] (lead) status ready -> active
+- 2026-11-23T21:14 [M3.74] (lead) attempt 1/3 started
+- 2026-11-23T21:14 [M3.74] (lead) base e1248394cade15b0f5501d7569dfc4340cdb6fd0
+- 2026-11-23T21:24 [M3.74] (lead) status active -> review
+- 2026-11-23T21:27 [M3.74] (lead) status review -> done
+- 2026-11-23T21:28 [M3.74] (lead) live 165.232.86.174: glibc2.34 .deb (rockylinux:9) installed, user daemon restarted, demo world up (no sync/reset; numpy+ipython preserved); PTY: 'slipfork exec

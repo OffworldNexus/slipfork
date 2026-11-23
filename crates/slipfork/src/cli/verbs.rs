@@ -212,6 +212,12 @@ pub enum Command {
     Exec {
         /// Service or image id.
         target: Option<String>,
+        /// Demand a real PTY; fails closed without an interactive terminal.
+        #[arg(short = 'i', long, conflicts_with_all = ["no_interactive", "json"])]
+        interactive: bool,
+        /// Keep plain piped stdio even when stdin is a terminal.
+        #[arg(long, conflicts_with = "interactive")]
+        no_interactive: bool,
         /// Command and arguments after --.
         #[arg(last = true, value_name = "CMD")]
         argv: Vec<String>,

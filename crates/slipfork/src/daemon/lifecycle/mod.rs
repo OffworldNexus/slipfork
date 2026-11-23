@@ -6,5 +6,7 @@ mod fork;
 mod logs;
 pub(crate) mod plan;
 mod ps;
+pub(super) mod pty;
 pub(super) mod stream;
+mod streaming;
 pub(super) mod up;

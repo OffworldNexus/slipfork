@@ -2,16 +2,16 @@
 id: M3.74
 title: "Add -i/--interactive and --no-interactive (with TTY auto-detection by default) to slipfork exec"
 kind: task
-status: ready
+status: done
 owner: implementer
 priority: 3
 depends_on: []
 paths: ["crates/slipfork/**", "packaging/man/**", "specs/**", "docs/**", README.md, TESTING_PLAN.md]
-attempts: 0
+attempts: 1
 max_attempts: 3
 escalation: none
 created: "2026-11-23T21:13"
-updated: "2026-11-23T21:13"
+updated: "2026-11-23T21:27"
 ---
 
 # Goal
