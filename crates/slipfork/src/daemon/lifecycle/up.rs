@@ -199,7 +199,7 @@ fn down_rows(plan: &Heal, id: &str, timeout: Duration) -> Result<Vec<PsService>,
 }
 
 fn world_failure(world: &str, error: &str) -> Failure {
-    let message = format!("cannot inspect `{world}`: {error}\nnext: slipfork logs {world}");
+    let message = format!("cannot inspect `{world}`: {error}\nnext: slipfork status");
     Failure::new("world-unhealthy", message)
 }
 
