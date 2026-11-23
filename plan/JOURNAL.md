@@ -3277,3 +3277,7 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-23T15:42 [M3] (conductor) status active -> done
 - 2026-11-23T15:42 HUMAN H-021 [release-gate] opened by conductor (node M3)
 - 2026-11-23T15:42 AUTOPILOT off by conductor Awaiting 38/38 GHA green confirmation & human review/merge of PR #2 into develop
+- 2026-11-23T15:50 HUMAN H-021 closed by conductor
+- 2026-11-23T15:50 [M3] (conductor) status done -> active
+- 2026-11-23T15:50 [M3.71] (conductor) created (task) Fix critical_dockerfile_live:334 crun runtime dir lookup under XDG_RUNTIME_DIR=/dev/shm/sf-live-runtime
+- 2026-11-23T15:50 AUTOPILOT on by conductor Fixing critical_dockerfile_live:334 XDG_RUNTIME_DIR lookup in M3.71
