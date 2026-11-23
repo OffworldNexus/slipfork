@@ -3155,3 +3155,4 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-23T01:56 [M3.66] (lead) triad: inline-on + else block parse/fmt fusion (widen to forkfile parser+fmt); vim single-quote interpolation
 - 2026-11-23T02:03 [M3.66] (conductor) edited fields
 - 2026-11-23T02:04 [M3.66] (lead) status review -> done
+- 2026-11-23T02:18 [M3.67] (conductor) created (task) Fix ps stopped-fork placement & remove duplicate <primary_domain>.<world>.localhost authority
