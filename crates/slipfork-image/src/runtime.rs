@@ -136,6 +136,9 @@ impl CrunStepRuntime {
         fs::write(&config_path, bytes)
             .map_err(|source| Error::io("write", &config_path, source))?;
 
+        // Reclaim any stale container state left behind by an earlier killed/failed build of this
+        // step before `crun run` creates `<crun_root>/sf-<hash>`.
+        self.delete_container(id);
         let outcome = self.spawn_streaming(id, &bundle, log);
         self.cleanup(id, &bundle);
         let status = outcome?;
@@ -207,13 +210,22 @@ impl CrunStepRuntime {
             .map_err(|source| Error::io("wait", &self.host.crun, source))
     }
 
+    fn delete_container(&self, id: &str) {
+        for args in [
+            ["--cgroup-manager=disabled", "kill", "--all", id, "SIGKILL"].as_slice(),
+            ["--cgroup-manager=disabled", "delete", "--force", id].as_slice(),
+        ] {
+            let _ = StdCommand::new(&self.host.crun)
+                .args(args)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
+        }
+    }
+
     fn cleanup(&self, id: &str, bundle: &Path) {
-        let _ = StdCommand::new(&self.host.crun)
-            .args(["--cgroup-manager=disabled", "delete", "--force", id])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
+        self.delete_container(id);
         let _ = fs::remove_dir_all(bundle);
     }
 

@@ -26,6 +26,7 @@ mod helpers;
 mod images;
 mod ready;
 mod resources;
+mod rootfs;
 
 use helpers::{
     ServiceLaunch, merge_env, merge_path, project_binds, shell_command, tool_env, upsert_env,
@@ -96,10 +97,10 @@ impl WorldRuntime {
             .filter(|resource| resource.resource == ResourceKind::Postgres)
             .map(|resource| layout.world_clone(&world, resource.resource, &resource.id))
             .collect();
-        let adopted = stamps
-            .trusted_stamp(plan, pg_clones.iter().map(PathBuf::as_path))
-            .map(|stamp| stamp.images)
-            .unwrap_or_default();
+        let trusted_stamp =
+            stamps.trusted_stamp(plan, &features, pg_clones.iter().map(PathBuf::as_path));
+        let stamp_trusted = trusted_stamp.is_some();
+        let adopted = trusted_stamp.map(|stamp| stamp.images).unwrap_or_default();
         let images = ImageCache::new(
             world_engine,
             &layout,
@@ -136,8 +137,11 @@ impl WorldRuntime {
                 .create_world(&world)
                 .map_err(|error| error.to_string())?;
         }
+        // Pre-snapshotted `svc-*`/`res-*` pod clones come from the parent's sealed images; only a
+        // fork whose `(plan, features)` epoch matches the parent may reuse them. A cross-feature
+        // fork (`-F -dev`, `--no-default-features`) sweeps them and clones its own stage rootfses.
         let mut initial_clones = Vec::new();
-        if is_fork && layout.world_pods(&world).is_dir() {
+        if is_fork && stamp_trusted && layout.world_pods(&world).is_dir() {
             if let Ok(entries) = fs::read_dir(layout.world_pods(&world)) {
                 for entry in entries.flatten() {
                     let path = entry.path();

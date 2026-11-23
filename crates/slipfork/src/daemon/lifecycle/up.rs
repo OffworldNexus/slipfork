@@ -69,7 +69,7 @@ impl Core {
             // A world booted before fingerprints were recorded (or by another binary) still
             // matches when its `Forkfile` predates the boot; otherwise reconcile once.
             (Some(current), None) => {
-                let predates = forkfile_predates(&project, entry.started_at_ms);
+                let predates = inputs_predate(&project, entry.started_at_ms);
                 if predates {
                     let _ = registry::store_fingerprint(&self.state_dir, &project, Some(current));
                 }
@@ -324,7 +324,7 @@ fn layout_fork(project: &Path) -> Option<String> {
 }
 
 /// The compiled `Forkfile`'s stable content digest plus its resolved active features.
-fn fingerprint(project: &Path) -> Option<Fingerprint> {
+pub(super) fn fingerprint(project: &Path) -> Option<Fingerprint> {
     let source = fs::read_to_string(project.join("Forkfile")).ok()?;
     let checked = slipfork_forkfile::compile(&source).ok()?;
     let config = WorldFeatures::load(project).ok()?;
@@ -335,7 +335,7 @@ fn fingerprint(project: &Path) -> Option<Fingerprint> {
         .iter()
         .cloned()
         .collect();
-    let raw = fs::read(WorldFeatures::path(project)).ok()?;
+    let raw = fs::read(WorldFeatures::path(project)).unwrap_or_default();
     let edits: Vec<String> = config.edits.iter().map(ToString::to_string).collect();
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     source.hash(&mut hasher);
@@ -349,12 +349,18 @@ fn fingerprint(project: &Path) -> Option<Fingerprint> {
     })
 }
 
-/// Whether the `Forkfile` was last modified at or before the world became ready.
-fn forkfile_predates(project: &Path, started_at_ms: u64) -> bool {
+/// Whether both `Forkfile` and any `.slipfork/features.json` predate `started_at_ms`.
+fn inputs_predate(project: &Path, started_at_ms: u64) -> bool {
     if started_at_ms == 0 {
         return false;
     }
-    fs::metadata(project.join("Forkfile"))
+    let features_path = WorldFeatures::path(project);
+    file_predates(&project.join("Forkfile"), started_at_ms)
+        && (!features_path.exists() || file_predates(&features_path, started_at_ms))
+}
+
+fn file_predates(path: &Path, started_at_ms: u64) -> bool {
+    fs::metadata(path)
         .and_then(|metadata| metadata.modified())
         .ok()
         .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())

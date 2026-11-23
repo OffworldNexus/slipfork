@@ -137,10 +137,17 @@ impl Core {
                 "no world is running in this directory",
             ));
         }
+        if let Some(request) = &target.features {
+            Self::validate_features(&target.project, request)?;
+        }
         // One plan frame, before the snapshot mutates anything: the fork's own prep rows plus
-        // every world step the fork will boot. The supervisor's own plan is suppressed below.
+        // every world step the fork will boot under its resolved feature override. The
+        // supervisor's own plan is suppressed below.
         let mut rows = plan::fork_rows(raw_name);
-        rows.extend(plan::world_rows(&target.project));
+        rows.extend(plan::world_rows_with(
+            &target.project,
+            target.features.as_ref(),
+        ));
         plan::emit(&rows, rows.len(), emit);
         let request = target.features.clone();
         let prepared = self.snapshot(target, raw_name, fork, preflight_ms, emit)?;
@@ -167,10 +174,12 @@ impl Core {
         }
     }
 
-    /// Applies a fork request's edits over the snapshot's inherited configuration, persists the
-    /// result into the fork checkout, then verifies it resolves.
-    fn apply_features(project: &Path, request: WorldFeatures) -> Result<WorldFeatures, Failure> {
-        let config = WorldFeatures::merged(project, &request).map_err(|error| {
+    /// Validates `request` merged over `<project>/.slipfork/features.json` without mutating disk.
+    fn validate_features(
+        project: &Path,
+        request: &WorldFeatures,
+    ) -> Result<WorldFeatures, Failure> {
+        let config = WorldFeatures::merged(project, request).map_err(|error| {
             Failure::new(
                 "feature",
                 format!("{error}\nnext: {}", WorldFeatures::REMEDY),
@@ -204,6 +213,13 @@ impl Core {
                 ),
             )
         })?;
+        Ok(config)
+    }
+
+    /// Applies a fork request's edits over the snapshot's inherited configuration, verifies it
+    /// resolves against the fork checkout's `Forkfile`, and persists `.slipfork/features.json`.
+    fn apply_features(project: &Path, request: WorldFeatures) -> Result<WorldFeatures, Failure> {
+        let config = Self::validate_features(project, &request)?;
         config.save(project).map_err(|error| {
             Failure::new(
                 "feature",
@@ -227,6 +243,8 @@ impl Core {
         let key = key_of(&prepared.project);
         // A boot that never registered answers `no-world`; the purge below still has to run.
         let _ = self.stop_world(&key, Duration::from_secs(10), &mut |_, _| {});
+        let _ =
+            crate::daemon::registry::store_fingerprint(&self.state_dir, &prepared.project, None);
         self.worlds.remove(&key);
         self.ingress = None;
         let _ = self.persist();
@@ -412,6 +430,7 @@ impl Core {
             "label": "deleted snapshots", "detail": "project + world data",
             "elapsed_ms": elapsed_ms(started),
         }));
+        let _ = crate::daemon::registry::store_fingerprint(&self.state_dir, &fork_project, None);
         self.worlds.remove(&fork_key);
         self.ingress = None;
         self.persist()?;
@@ -551,6 +570,17 @@ mod tests {
                 .expect("read the reset file")
                 .no_default,
             "an explicit reset is persisted too"
+        );
+
+        let checked = slipfork_forkfile::compile(
+            &fs::read_to_string(project.join("Forkfile")).expect("read Forkfile"),
+        )
+        .expect("compile Forkfile");
+        let resolved = WorldFeatures::load_resolved(&project, &checked.document)
+            .expect("resolve persisted fork features");
+        assert!(
+            resolved.active().is_empty(),
+            "persisted `--no-default-features` resolves an empty active set: {resolved:?}"
         );
     }
 }

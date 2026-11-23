@@ -3,6 +3,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+use super::rootfs::{is_file_in_rootfs, shim_exists};
 use slipfork_forkfile::{FeatureSet, direct_bin, no_sync_uv, tool_prefix};
 use slipfork_world::{Bind, BindSource, PodEnv};
 
@@ -126,7 +127,7 @@ impl ServiceLaunch {
         command: &str,
     ) -> Self {
         let (text, trusted_absolute, env) =
-            match resolve_wrapper(project, container_workdir, command) {
+            match resolve_wrapper(project, container_workdir, rootfs, command) {
                 Some(prefix) => {
                     let env = prefix_env(&prefix, path);
                     (format!("{}{}", prefix.program, prefix.rest), true, env)
@@ -159,15 +160,12 @@ fn host_workdir(project: &Path, container_workdir: &str) -> Option<PathBuf> {
 fn resolve_wrapper(
     project: &Path,
     container_workdir: &str,
+    rootfs: &Path,
     command: &str,
 ) -> Option<ResolvedPrefix> {
     let host_dir = host_workdir(project, container_workdir)?;
     let direct = direct_bin(command)?;
-    if !host_dir
-        .join(direct.exec.bin_dir)
-        .join(direct.bin)
-        .is_file()
-    {
+    if !shim_exists(&host_dir.join(direct.exec.bin_dir).join(direct.bin), rootfs) {
         return None;
     }
     Some(ResolvedPrefix {
@@ -244,7 +242,7 @@ fn has_shell_meta(text: &str) -> bool {
 fn resolve_in_rootfs(rootfs: &Path, path: &str, program: &str) -> Option<String> {
     if program.contains('/') {
         let relative = program.trim_start_matches('/');
-        return rootfs.join(relative).is_file().then(|| {
+        return is_file_in_rootfs(rootfs, relative).then(|| {
             if program.starts_with('/') {
                 program.to_owned()
             } else {
@@ -254,7 +252,7 @@ fn resolve_in_rootfs(rootfs: &Path, path: &str, program: &str) -> Option<String>
     }
     for dir in path.split(':').filter(|dir| !dir.is_empty()) {
         let relative = format!("{}/{program}", dir.trim_start_matches('/'));
-        if rootfs.join(&relative).is_file() {
+        if is_file_in_rootfs(rootfs, &relative) {
             return Some(format!("/{relative}"));
         }
     }

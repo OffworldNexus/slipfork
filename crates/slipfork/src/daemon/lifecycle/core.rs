@@ -120,6 +120,8 @@ impl Core {
         entry: RegistryEntry,
         child: Child,
     ) -> Result<(), Failure> {
+        let recorded = super::up::fingerprint(&entry.project);
+        let _ = registry::store_fingerprint(&self.state_dir, &entry.project, recorded.as_ref());
         self.worlds.insert(
             key.to_owned(),
             World::Live {
@@ -132,7 +134,13 @@ impl Core {
     }
 
     pub(crate) fn forget(&mut self, key: &str) {
-        self.worlds.remove(key);
+        if let Some(world) = self.worlds.remove(key) {
+            let project = match world {
+                World::Booting { project, .. } => project,
+                World::Live { entry, .. } => entry.project,
+            };
+            let _ = registry::store_fingerprint(&self.state_dir, &project, None);
+        }
         self.ingress = None;
         let _ = self.persist();
     }

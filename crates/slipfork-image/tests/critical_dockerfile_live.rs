@@ -16,8 +16,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use slipfork_image::{
-    BuildArgs, BuildRequest, Command, Credentials, ImageLayout, NativeImageBuilder, OciPuller,
-    Port, Protocol, RegistryScheme, StepHost, StepLayout,
+    BuildArgs, BuildRequest, Command, Credentials, CrunStepRuntime, ImageConfig, ImageLayout,
+    NativeImageBuilder, OciPuller, Port, Protocol, RegistryScheme, RunSpec, StepHost, StepLayout,
 };
 use slipfork_world::{BtrfsEngine, Dirtiness, StoreLayout, WorldEngine, is_subvolume_path};
 
@@ -268,7 +268,7 @@ fn a_target_stage_never_reaches_a_later_failing_stage() {
         puller,
         steps.clone(),
         arch,
-        StepHost::new(crun, "/etc/resolv.conf", &scratch, uid, gid),
+        StepHost::new(&crun, "/etc/resolv.conf", &scratch, uid, gid),
     );
 
     let base = fixture.reference_text("library/shell");
@@ -316,6 +316,63 @@ fn a_target_stage_never_reaches_a_later_failing_stage() {
         "unexpected error: {error}\nbuild output tail:\n{}",
         output_tail(&prod_log)
     );
+
+    // Rebuilding after a failed/interrupted prod `RUN` must reclaim any stale `sf-<hash>` state in
+    // `crun` instead of failing with `container 'sf-...' already exists`.
+    let mut retry_log = Vec::new();
+    let retry_error = builder.build(&prod_request, &mut retry_log).expect_err(
+        "retrying the failing prod stage still fails on line 4, never `already exists`",
+    );
+    assert!(
+        matches!(
+            retry_error,
+            slipfork_image::Error::StepFailed { line: 4, .. }
+        ) && !retry_error.to_string().contains("already exists"),
+        "unexpected retry error: {retry_error}\nbuild output tail:\n{}",
+        output_tail(&retry_log)
+    );
+    let runtime_user_dir = PathBuf::from(format!("/run/user/{uid}"));
+    if runtime_user_dir.is_dir() {
+        let stale_id = format!("sf-stale-{}", std::process::id());
+        let stale_state = runtime_user_dir.join("crun").join(&stale_id);
+        fs::create_dir_all(&stale_state).expect("plant stale crun container dir");
+        let step_rootfs = run.join("stale-step-rootfs");
+        engine
+            .clone_subvolume(&dev.rootfs, &step_rootfs)
+            .expect("clone writable step rootfs");
+        let step_runtime =
+            CrunStepRuntime::new(StepHost::new(&crun, "/etc/resolv.conf", &scratch, uid, gid));
+        let mut step_log = Vec::new();
+        step_runtime
+            .run(
+                &stale_id,
+                &step_rootfs,
+                &ImageConfig::default(),
+                &RunSpec {
+                    mounts: Vec::new(),
+                    command: Command::Shell("echo reclaimed > /reclaimed.txt".to_owned()),
+                },
+                &[],
+                1,
+                &mut step_log,
+            )
+            .unwrap_or_else(|err| {
+                panic!(
+                    "CrunStepRuntime must evict stale container `{stale_id}` before run: {err}\n{}",
+                    output_tail(&step_log)
+                )
+            });
+        assert_eq!(
+            support::read_text(&step_rootfs.join("reclaimed.txt")),
+            "reclaimed\n"
+        );
+        assert!(
+            !stale_state.exists(),
+            "step cleanup must remove `{}` after completion",
+            stale_state.display()
+        );
+        let _ = engine.destroy(&step_rootfs, Dirtiness::Dirty, true);
+    }
 
     let blobs_before = fixture.blob_requests();
     let unknown = BuildRequest {

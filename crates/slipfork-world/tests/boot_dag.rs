@@ -10,9 +10,10 @@ use std::sync::mpsc::RecvTimeoutError;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use slipfork_forkfile::{FeatureEdit, FeatureSet};
 use slipfork_world::{
     BootEvent, BootFailure, BootGraph, BootKind, BootScheduler, BootState, BootStep, EpochState,
-    EventSink, StampStore, StepExecutor, StepOutcome, StepStamp, WorldPlan, WorldStamp,
+    EventSink, ImageStamp, StampStore, StepExecutor, StepOutcome, StepStamp, WorldPlan, WorldStamp,
     WorldStampStore, plan_epoch, write_pg_checkpoint,
 };
 
@@ -242,13 +243,116 @@ fn epoch_pair_gates_stamp_reuse() {
     let _ = fs::remove_dir_all(&dir);
 }
 
+fn sample_features() -> (FeatureSet, FeatureSet, FeatureSet) {
+    let checked =
+        slipfork_forkfile::compile("# forkfile: 0.1\nfeatures {\n  dev = [mail]\n  mail\n}\n")
+            .expect("compile feature fixture");
+    let dev = checked.document.default_features();
+    let minus_dev = checked
+        .document
+        .resolve_features(false, &[FeatureEdit::Disable("dev".to_owned())])
+        .expect("resolve `-F -dev`");
+    let mail_only = checked
+        .document
+        .resolve_features(true, &[FeatureEdit::Enable("mail".to_owned())])
+        .expect("resolve `--no-default-features -F mail`");
+    (dev, minus_dev, mail_only)
+}
+
 #[test]
 fn plan_epoch_is_stable_for_one_shape_and_changes_with_the_command() {
+    let (dev, minus_dev, mail_only) = sample_features();
     let first = plan(vec![step("a", Vec::new()), step("b", vec![0])]);
-    assert_eq!(plan_epoch(&first), plan_epoch(&first.clone()));
+    assert_eq!(plan_epoch(&first, &dev), plan_epoch(&first.clone(), &dev));
     let mut changed = first.clone();
     changed.steps[0].command = Some("false".to_owned());
-    assert_ne!(plan_epoch(&first), plan_epoch(&changed));
+    assert_ne!(plan_epoch(&first, &dev), plan_epoch(&changed, &dev));
+    assert_ne!(
+        plan_epoch(&first, &dev),
+        plan_epoch(&first, &minus_dev),
+        "`-F -dev` must derive a distinct epoch even when the step list is identical"
+    );
+    assert_ne!(
+        plan_epoch(&first, &minus_dev),
+        plan_epoch(&first, &mail_only),
+        "`--no-default-features -F mail` must derive its own epoch"
+    );
+}
+
+#[test]
+fn trusted_stamp_refuses_to_adopt_parent_dev_images_when_features_differ() {
+    let dir = lab("feature-epoch-gate");
+    let world = dir.join("world");
+    let pg = dir.join("world.pg.pg");
+    fs::create_dir_all(&world).expect("world dir");
+    fs::create_dir_all(&pg).expect("pg dir");
+
+    // Even when a `Forkfile` produces identical `BootStep`s across modes (for instance, only
+    // `on dev: stage dev` and the `/project` bind differ), a fork with `-F -dev` or
+    // `--no-default-features` must never trust or adopt the parent's `dev` image stamp.
+    let source = "# forkfile: 0.1\n\
+                  features {\n  dev\n}\n\
+                  image backend . {\n  on dev: stage dev\n  service api {\n    port 8000\n    route /\n  }\n}\n";
+    let checked = slipfork_forkfile::compile(source).expect("compile stage-gated Forkfile");
+    let dev = checked.document.default_features();
+    let minus_dev = checked
+        .document
+        .resolve_features(false, &[FeatureEdit::Disable("dev".to_owned())])
+        .expect("resolve `-F -dev`");
+    let no_default = checked
+        .document
+        .resolve_features(true, &[])
+        .expect("resolve `--no-default-features`");
+
+    let dev_plan =
+        slipfork_world::world_plan_with(&checked.document, &dir, &dev).expect("plan dev");
+    let prod_plan =
+        slipfork_world::world_plan_with(&checked.document, &dir, &minus_dev).expect("plan prod");
+    assert_eq!(
+        dev_plan.steps, prod_plan.steps,
+        "this fixture intentionally keeps identical steps so only `features` distinguishes modes"
+    );
+
+    let dev_epoch = plan_epoch(&dev_plan, &dev);
+    let mut images = std::collections::BTreeMap::new();
+    images.insert(
+        "backend".to_owned(),
+        ImageStamp {
+            rootfs: "/store/images/steps/dev-stage".to_owned(),
+            env: Vec::new(),
+            argv: Vec::new(),
+            workdir: "/project/api".to_owned(),
+        },
+    );
+    let store = WorldStampStore::new(&world);
+    store
+        .save(&WorldStamp::checkpoint(
+            &dev_plan,
+            dev_epoch.clone(),
+            images,
+        ))
+        .expect("save parent dev stamp");
+    write_pg_checkpoint(&pg, &dev_epoch).expect("save paired pg stamp");
+
+    assert!(
+        store
+            .trusted_stamp(&dev_plan, &dev, [pg.as_path()])
+            .is_some(),
+        "a same-mode `dev` fork still reuses the parent's checkpoint in 0ms"
+    );
+    assert!(
+        store
+            .trusted_stamp(&prod_plan, &minus_dev, [pg.as_path()])
+            .is_none(),
+        "`fork -F -dev` must reject the parent's `dev` checkpoint instead of adopting `/project/api`"
+    );
+    assert!(
+        store
+            .trusted_stamp(&prod_plan, &no_default, [pg.as_path()])
+            .is_none(),
+        "`fork --no-default-features` must also reject the parent's `dev` checkpoint"
+    );
+    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -268,8 +372,9 @@ fn fork_world_stamp_persists_and_gates_before_start_and_pre_deploy_hooks() {
     pre.phase = Some(slipfork_world::HookPhase::PreDeploy);
     pre.command = Some("echo pre".to_owned());
 
+    let (dev, _, _) = sample_features();
     let world_plan = plan(vec![before, pre]);
-    let epoch = plan_epoch(&world_plan);
+    let epoch = plan_epoch(&world_plan, &dev);
     let checkpoint = WorldStamp::checkpoint(&world_plan, epoch, Default::default());
     assert_eq!(checkpoint.before_start.len(), 1);
     assert_eq!(checkpoint.pre_deploy.len(), 1);
@@ -506,8 +611,9 @@ fn current_epoch_services_carry_no_resource_edges_and_skip_the_pre_deploy_barrie
         "the downstream accessor must expose releases, not upstream deps"
     );
 
+    let (dev, _, _) = sample_features();
     let dir = lab("conditional-current");
-    let checkpoint = WorldStamp::checkpoint(&plan, plan_epoch(&plan), Default::default());
+    let checkpoint = WorldStamp::checkpoint(&plan, plan_epoch(&plan, &dev), Default::default());
     let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
     let release_rx = Arc::new(Mutex::new(release_rx));
     let up_to_date = Arc::new(Mutex::new(Vec::new()));

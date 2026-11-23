@@ -77,10 +77,14 @@ fn supervisor_main(project: &Path, world: &str, env: &HostEnv) -> Result<(), Str
         .filter(|resource| resource.resource == ResourceKind::Postgres)
         .map(|resource| layout.world_clone(&world, resource.resource, &resource.id))
         .collect();
-    let epoch = plan_epoch(&plan);
+    let epoch = plan_epoch(&plan, &features);
     let stamp_store = WorldStampStore::new(&world_dir);
     let trusted = stamp_store
-        .trusted_stamp(&plan, pg_clones.iter().map(|clone| clone.as_path()))
+        .trusted_stamp(
+            &plan,
+            &features,
+            pg_clones.iter().map(|clone| clone.as_path()),
+        )
         .is_some();
     // A root world that was `down` and then `up` with an unchanged `Forkfile`, lockfiles, and
     // `PGDATA` carries the same paired checkpoint a fork does, so it reuses the trusted hook path
@@ -570,6 +574,7 @@ mod tests {
     use std::fs;
     use std::path::{Path, PathBuf};
 
+    use slipfork_forkfile::{FeatureEdit, FeatureSet};
     use slipfork_world::{
         BootEvent, BootKind, BootStep, HookPhase, PlanRow, StepStamp, WorldPlan, WorldStamp,
         WorldStampStore, plan_epoch, write_pg_checkpoint,
@@ -608,14 +613,29 @@ mod tests {
         }
     }
 
+    fn fixture_features() -> (FeatureSet, FeatureSet) {
+        let checked = slipfork_forkfile::compile("# forkfile: 0.1\n\nfeatures {\n  dev\n}\n")
+            .expect("compile minimal feature fixture");
+        let dev = checked.document.default_features();
+        let prod = checked
+            .document
+            .resolve_features(false, &[FeatureEdit::Disable("dev".to_owned())])
+            .expect("resolve `-F -dev`");
+        (dev, prod)
+    }
+
     /// Writes a real world checkpoint plus the paired PG sibling `slipfork fork` also copies.
-    fn checkpoint(root: &Path, plan: &WorldPlan) -> (WorldStampStore, PathBuf) {
+    fn checkpoint(
+        root: &Path,
+        plan: &WorldPlan,
+        features: &FeatureSet,
+    ) -> (WorldStampStore, PathBuf) {
         let world_dir = root.join("worlds/demo");
         let pg_clone = root.join("worlds/demo.pg.pg");
         fs::create_dir_all(&world_dir).expect("create the world dir");
         fs::create_dir_all(&pg_clone).expect("create the PG clone");
         let store = WorldStampStore::new(&world_dir);
-        let epoch = plan_epoch(plan);
+        let epoch = plan_epoch(plan, features);
         store
             .save(&WorldStamp::checkpoint(
                 plan,
@@ -627,33 +647,48 @@ mod tests {
         (store, pg_clone)
     }
 
-    /// A warm root world reuses its paired checkpoint; a changed `Forkfile` or lockfile re-runs it.
+    /// A warm root world reuses its paired checkpoint; a changed `Forkfile`, feature set, or
+    /// lockfile re-runs it.
     #[test]
     fn a_paired_world_stamp_skips_pre_deploy_and_any_change_reruns_it() {
         let root = temp("slipfork-warm-stamp");
         let project = root.path().join("demo");
         fs::create_dir_all(project.join(".slipfork")).expect("create .slipfork");
+        let (dev, prod) = fixture_features();
 
         let warm = hook_plan("uv run seed", None);
-        let (store, pg_clone) = checkpoint(root.path(), &warm);
-        let trusted = |plan: &WorldPlan| store.trusted_stamp(plan, [pg_clone.as_path()]).is_some();
+        let (store, pg_clone) = checkpoint(root.path(), &warm, &dev);
+        let trusted = |plan: &WorldPlan, features: &FeatureSet| {
+            store
+                .trusted_stamp(plan, features, [pg_clone.as_path()])
+                .is_some()
+        };
         assert!(
-            trusted(&warm),
-            "an unchanged plan + paired PG stamp is trusted"
+            trusted(&warm, &dev),
+            "an unchanged plan + feature set + paired PG stamp is trusted"
         );
-        let stamps = stamps_for(&project, &store, trusted(&warm));
+        assert!(
+            !trusted(&warm, &prod),
+            "disabling `dev` must invalidate the checkpoint even when step commands match"
+        );
+        let stamps = stamps_for(&project, &store, trusted(&warm, &dev));
         assert!(
             stamps.is_step_current(&warm.steps, 0),
             "a warm `up` must print `hook api:pre-deploy up to date`"
+        );
+        let prod_stamps = stamps_for(&project, &store, trusted(&warm, &prod));
+        assert!(
+            !prod_stamps.is_step_current(&warm.steps, 0),
+            "a `-F -dev` boot must re-run `pre-deploy` instead of trusting a `dev` stamp"
         );
 
         // An edited `Forkfile` changes `world_epoch`, so nothing is trusted and the hook runs.
         let edited = hook_plan("uv run seed --fresh", None);
         assert!(
-            !trusted(&edited),
+            !trusted(&edited, &dev),
             "an edited Forkfile invalidates the checkpoint"
         );
-        let stamps = stamps_for(&project, &store, trusted(&edited));
+        let stamps = stamps_for(&project, &store, trusted(&edited, &dev));
         assert!(
             !stamps.is_step_current(&edited.steps, 0),
             "an edited Forkfile must re-run `pre-deploy`"
@@ -663,10 +698,10 @@ mod tests {
         let lock = project.join(".slipfork").join(LOCK_STAMP);
         fs::write(&lock, "uv.lock@aaa\n").expect("write the lockfile stamp");
         let pinned = hook_plan("uv run seed", Some("uv.lock@aaa"));
-        let (pinned_store, pinned_pg) = checkpoint(root.path(), &pinned);
+        let (pinned_store, pinned_pg) = checkpoint(root.path(), &pinned, &dev);
         let pinned_trusted = |plan: &WorldPlan| {
             pinned_store
-                .trusted_stamp(plan, [pinned_pg.as_path()])
+                .trusted_stamp(plan, &dev, [pinned_pg.as_path()])
                 .is_some()
         };
         assert!(pinned_trusted(&pinned));
@@ -678,8 +713,8 @@ mod tests {
 
         let relocked = hook_plan("uv run seed", Some("uv.lock@bbb"));
         assert_eq!(
-            plan_epoch(&relocked),
-            plan_epoch(&pinned),
+            plan_epoch(&relocked, &dev),
+            plan_epoch(&pinned, &dev),
             "same plan shape, same epoch"
         );
         let stamps = stamps_for(&project, &pinned_store, pinned_trusted(&relocked));

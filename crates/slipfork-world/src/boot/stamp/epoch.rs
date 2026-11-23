@@ -10,6 +10,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+use slipfork_forkfile::FeatureSet;
 use slipfork_forkfile::boot::stamp_of;
 
 use crate::boot::{BootKind, BootStep, HookPhase, WorldPlan};
@@ -260,15 +261,17 @@ impl WorldStampStore {
     }
 
     /// The stamp a fork may reuse: `Some` only when the stored `world_epoch` and every paired
-    /// clone match `plan`'s epoch, so no caller re-derives trust on its own.
+    /// clone match `(plan, features)`'s epoch, so no caller re-derives trust on its own and a
+    /// cross-feature boot (`-F -dev`, `--no-default-features`) never adopts another mode's images.
     #[must_use]
     pub fn trusted_stamp<'a>(
         &self,
         plan: &WorldPlan,
+        features: &FeatureSet,
         clones: impl IntoIterator<Item = &'a Path>,
     ) -> Option<WorldStamp> {
         match self.verify_all(clones) {
-            EpochState::Matched(stored) if stored == plan_epoch(plan) => self.load(),
+            EpochState::Matched(stored) if stored == plan_epoch(plan, features) => self.load(),
             _ => None,
         }
     }
@@ -292,10 +295,18 @@ pub fn write_pg_checkpoints(clones: &[PathBuf], epoch: &str) -> Result<()> {
     Ok(())
 }
 
-/// A stable epoch for one plan shape, so a fork of the same `Forkfile` derives the same epoch.
+/// A stable epoch for one `(plan, features)` pair, so a fork with the same `Forkfile` and active
+/// feature set derives the same epoch while any feature override invalidates inherited stamps.
 #[must_use]
-pub fn plan_epoch(plan: &WorldPlan) -> String {
-    let mut seed = String::new();
+pub fn plan_epoch(plan: &WorldPlan, features: &FeatureSet) -> String {
+    let mut seed = String::from("features|");
+    for (index, name) in features.active().iter().enumerate() {
+        if index > 0 {
+            seed.push(',');
+        }
+        seed.push_str(name);
+    }
+    seed.push('\n');
     for step in &plan.steps {
         seed.push_str(&format!(
             "{}|{}|{}|{}|{:?}\n",
