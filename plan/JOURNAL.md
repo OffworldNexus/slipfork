@@ -3106,3 +3106,19 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-23T00:28 HUMAN H-017 closed by conductor
 - 2026-11-23T00:28 [M3.60] (conductor) status blocked -> ready: Add direct .venv/bin + node_modules/.bin exec fast-paths for @uv/@pnpm & split CoW snapshot (<500ms) vs cold FastAPI+Vite SSR boot (<5s
 - 2026-11-23T00:28 [M3.60] (conductor) edited fields
+- 2026-11-23T00:29 [M3.60] (lead) status ready -> active
+- 2026-11-23T00:29 [M3.60] (lead) attempt 1/3 started
+- 2026-11-23T00:29 [M3.60] (lead) H-017 decision: widen to crates/slipfork/**,specs/**,docs/**; direct-bin @pnpm exec/@uv run launch + honest two-tier perf; base ce9f859b05cfd5781e2cb201da1841de
+- 2026-11-23T00:49 HUMAN H-018 [direction-challenge] opened by lead (node M3.60)
+- 2026-11-23T00:49 [M3.60] (lead) pane.rs restore (1,1) cursor bug folded; H-018 filed for unreachable 5.0s ceiling (clean medians 5.52/5.61)
+- 2026-11-23T00:49 [M3.60] (lead) status active -> blocked
+- 2026-11-23T00:50 HUMAN H-018 closed by conductor
+- 2026-11-23T00:50 [M3.60] (conductor) status blocked -> active: H-018 Option A approved: snapshot_ms < 500ms + zero rebuild/install/pre-deploy + < 8.0s cold FastAPI+SvelteKit Vite first-SSR-200 (saf
+- 2026-11-23T00:54 [M3.61] (conductor) created (task) Add Vim/Neovim Forkfile plugin (editors/vim) & install on 165.232.86.174
+- 2026-11-23T00:54 [M3.62] (conductor) created (task) Support on <expr> ... else ... (else { ... }, else: <item>, else on <expr>) across Forkfile compiler, fmt, LSP, editors, packages, demo & docs
+- 2026-11-23T00:55 [M3.61] (lead) status ready -> active
+- 2026-11-23T00:55 [M3.61] (lead) attempt 1/3 started
+- 2026-11-23T00:55 [M3.61] (lead) base ce9f859b05cfd5781e2cb201da1841dedb15948c
+- 2026-11-23T00:58 [M3.61] (lead) status active -> review
+- 2026-11-23T01:02 [M3.61] (lead) status review -> done
+- 2026-11-23T01:02 [M3.61] (lead) editors/vim plugin green: check.sh 0, VM probe as slipfork ft/syn=forkfile + keepend fix; Triad BLOCKER/MAJOR fixed
