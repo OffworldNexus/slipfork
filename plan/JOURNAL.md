@@ -3310,3 +3310,7 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-23T19:28 [M3] (conductor) status active -> done
 - 2026-11-23T19:28 HUMAN H-023 [release-gate] opened by conductor (node M3)
 - 2026-11-23T19:28 AUTOPILOT off by conductor Awaiting 38/38 GHA green and human merge of PR #2
+- 2026-11-23T20:16 HUMAN H-023 closed by conductor
+- 2026-11-23T20:16 [M3] (conductor) status done -> active
+- 2026-11-23T20:16 [M3.73] (conductor) created (task) Move the slipfork-lsp darwin/aarch64 archive leg to macos-14 (macos-15 arm64 pool cancels queued jobs after 15 min)
+- 2026-11-23T20:16 AUTOPILOT on by conductor Unblocking the macOS arm64 archive leg in M3.73
