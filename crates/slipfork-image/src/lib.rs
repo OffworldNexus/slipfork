@@ -60,6 +60,7 @@ mod copy;
 mod digest;
 mod dockerfile;
 mod error;
+mod fetch;
 mod ignore;
 mod layout;
 mod manifest;

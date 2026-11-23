@@ -391,6 +391,18 @@ fn at_line(err: Error, line: usize, label: &str) -> Error {
             message: format!("could not {action} `{}`: {source}", visible_path(&path)),
             next: "check the build context permissions and free disk space, then retry".to_owned(),
         },
+        Error::Http { url, status } => Error::StepFailed {
+            line,
+            instruction: label.to_owned(),
+            message: format!("`{url}` returned HTTP {status}"),
+            next: "check the URL or the registry reference, then retry".to_owned(),
+        },
+        Error::Transport { url, message } => Error::StepFailed {
+            line,
+            instruction: label.to_owned(),
+            message: format!("could not reach `{url}`: {message}"),
+            next: "check the URL and your network connection, then retry".to_owned(),
+        },
         Error::CrunMissing { path } => Error::StepFailed {
             line,
             instruction: label.to_owned(),

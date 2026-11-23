@@ -10,9 +10,13 @@
 mod support;
 
 use std::fs;
+use std::io::{Read, Write};
+use std::net::TcpListener;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::thread;
 use std::time::Duration;
 
 use slipfork_image::{
@@ -26,6 +30,77 @@ fn output_tail(log: &[u8]) -> String {
     const LIMIT: usize = 4096;
     let start = log.len().saturating_sub(LIMIT);
     String::from_utf8_lossy(&log[start..]).trim().to_owned()
+}
+
+/// The payload the loopback URL server serves to `ADD <url>`.
+const INSTALL_BODY: &[u8] = b"#!/bin/sh\necho added\n";
+
+/// A loopback HTTP server for `ADD <url>`: real sockets, real bytes, no internet.
+struct UrlServer {
+    addr: std::net::SocketAddr,
+    stop: Arc<AtomicBool>,
+    serving: Option<thread::JoinHandle<()>>,
+}
+
+impl UrlServer {
+    fn start(body: &'static [u8]) -> Self {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind the loopback URL server");
+        let addr = listener
+            .local_addr()
+            .expect("read the loopback URL address");
+        listener
+            .set_nonblocking(true)
+            .expect("make the URL listener non-blocking");
+        let stop = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&stop);
+        let serving = thread::spawn(move || {
+            while !flag.load(Ordering::Relaxed) {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        let mut request = Vec::new();
+                        let mut buffer = [0u8; 1024];
+                        while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                            let read = stream.read(&mut buffer).unwrap_or(0);
+                            if read == 0 {
+                                break;
+                            }
+                            request.extend_from_slice(&buffer[..read]);
+                        }
+                        let head = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                            body.len()
+                        );
+                        let _ = stream.write_all(head.as_bytes());
+                        let _ = stream.write_all(body);
+                        let _ = stream.flush();
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+        Self {
+            addr,
+            stop,
+            serving: Some(serving),
+        }
+    }
+
+    /// `http://127.0.0.1:<port><path>`.
+    fn url(&self, path: &str) -> String {
+        format!("http://{}{path}", self.addr)
+    }
+}
+
+impl Drop for UrlServer {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(handle) = self.serving.take() {
+            let _ = handle.join();
+        }
+    }
 }
 
 #[test]
@@ -71,9 +146,14 @@ fn native_dockerfile_multistage_build_lifecycle() {
     fs::write(context.join("secret.env"), "TOKEN=leak\n").expect("write the ignored file");
     fs::write(context.join("debug.log"), "noise\n").expect("write an ignored log");
     fs::write(context.join(".dockerignore"), "secret.env\n*.log\n").expect("write .dockerignore");
+    let url_server = UrlServer::start(INSTALL_BODY);
+    let install_url = url_server.url("/install.sh");
     let dockerfile = context.join("Dockerfile");
-    fs::write(&dockerfile, dockerfile_source(&base, "run-one", uid, gid))
-        .expect("write the Dockerfile");
+    fs::write(
+        &dockerfile,
+        dockerfile_source(&base, &install_url, "run-one", uid, gid),
+    )
+    .expect("write the Dockerfile");
 
     let request = BuildRequest {
         context: context.clone(),
@@ -91,7 +171,7 @@ fn native_dockerfile_multistage_build_lifecycle() {
             )
         });
     assert_eq!(first.cache_hits, 0, "a cold build serves no sealed step");
-    assert_eq!(first.cache_misses, 5, "five filesystem instructions");
+    assert_eq!(first.cache_misses, 6, "six filesystem instructions");
     let cache_file = steps.cache_mount("/root/.cache/x").join("out.txt");
     assert_eq!(support::read_text(&cache_file), "run-one\n");
     let blobs_after_first = fixture.blob_requests();
@@ -101,8 +181,11 @@ fn native_dockerfile_multistage_build_lifecycle() {
     );
 
     // Second build: the cache mount survives, so the RUN appends instead of starting empty.
-    fs::write(&dockerfile, dockerfile_source(&base, "run-two", uid, gid))
-        .expect("rewrite the Dockerfile");
+    fs::write(
+        &dockerfile,
+        dockerfile_source(&base, &install_url, "run-two", uid, gid),
+    )
+    .expect("rewrite the Dockerfile");
     let mut second_log = Vec::new();
     let second = builder
         .build(&request, &mut second_log)
@@ -113,7 +196,7 @@ fn native_dockerfile_multistage_build_lifecycle() {
             )
         });
     assert_eq!(second.cache_misses, 1, "only the changed RUN re-executes");
-    assert_eq!(second.cache_hits, 4, "the final stage steps are reused");
+    assert_eq!(second.cache_hits, 5, "the final stage steps are reused");
     assert_eq!(
         support::read_text(&cache_file),
         "run-one\nrun-two\n",
@@ -131,7 +214,7 @@ fn native_dockerfile_multistage_build_lifecycle() {
             )
         });
     assert_eq!(cached.cache_misses, 0, "an identical rebuild never re-runs");
-    assert_eq!(cached.cache_hits, 5, "every step must hit the sealed cache");
+    assert_eq!(cached.cache_hits, 6, "every step must hit the sealed cache");
     // 2-vCPU CI scheduler jitter on a loop-backed ext4 image can triple wall-clock; 250ms still
     // catches a rebuild that re-executes a step instead of hitting the sealed cache.
     assert!(
@@ -198,6 +281,20 @@ fn native_dockerfile_multistage_build_lifecycle() {
         "`COPY --chown` must apply the numeric owner"
     );
     assert!(rootfs.join("app").is_dir(), "WORKDIR must materialize /app");
+    let install = rootfs.join("opt/data/install.sh");
+    assert_eq!(
+        fs::read(&install).expect("read the ADD url payload"),
+        INSTALL_BODY,
+        "`ADD <url>` must stream the loopback payload"
+    );
+    assert_eq!(
+        fs::metadata(&install)
+            .expect("stat the ADD url payload")
+            .mode()
+            & 0o777,
+        0o644,
+        "`ADD <url>` lands 0644"
+    );
 
     // Every produced step and the final rootfs are sealed read-only subvolumes.
     let mut sealed = 0usize;
@@ -223,7 +320,7 @@ fn native_dockerfile_multistage_build_lifecycle() {
         );
         sealed += 1;
     }
-    assert_eq!(sealed, 6, "five steps plus the second RUN variant");
+    assert_eq!(sealed, 7, "six steps plus the second RUN variant");
     assert!(engine.is_sealed(rootfs).expect("probe the final seal"));
 
     // Cleanup: reaping the worlds keeps the scratch root free of open process groups and
@@ -446,7 +543,7 @@ fn forkfile_compiler_rejects_secret_build_args() {
     assert_eq!(args.get("X"), Some("plain"));
 }
 
-fn dockerfile_source(base: &str, marker: &str, uid: u32, gid: u32) -> String {
+fn dockerfile_source(base: &str, url: &str, marker: &str, uid: u32, gid: u32) -> String {
     format!(
         "FROM {base} AS builder\n\
          RUN --mount=type=cache,target=/root/.cache/x <<EOF\n\
@@ -457,6 +554,7 @@ fn dockerfile_source(base: &str, marker: &str, uid: u32, gid: u32) -> String {
          COPY --from=builder /root/out.txt /app/from-builder.txt\n\
          COPY --chown={uid}:{gid} owned.txt /owned.txt\n\
          COPY . /app\n\
+         ADD {url} /opt/data/\n\
          WORKDIR /app\n\
          ENV APP_MODE=production\n\
          USER {uid}:{gid}\n\

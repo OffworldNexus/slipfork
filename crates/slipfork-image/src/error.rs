@@ -117,9 +117,10 @@ impl fmt::Display for Error {
                 "`{url}` returned HTTP {status}\nnext: {}",
                 http_remedy(*status)
             ),
-            Self::Transport { url, message } => {
-                write!(f, "could not reach `{url}`: {message}")
-            }
+            Self::Transport { url, message } => write!(
+                f,
+                "could not reach `{url}`: {message}\nnext: check the URL and your network connection, then retry"
+            ),
             Self::Json { url, .. } => {
                 write!(f, "`{url}` did not return a manifest or token document")
             }
@@ -196,7 +197,7 @@ impl fmt::Display for Error {
 fn http_remedy(status: u16) -> &'static str {
     match status {
         401 => "add credentials for that registry",
-        404 => "check the repository name and tag",
+        404 => "check the repository, tag, or URL path",
         429 => "retry shortly or authenticate",
         500..=599 => "retry the pull",
         _ => "check the reference and retry",

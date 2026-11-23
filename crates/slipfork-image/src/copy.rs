@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use crate::context::{BuildContext, ContextEntry};
 use crate::dockerfile::Owner;
 use crate::error::{Error, Result};
+use crate::fetch;
 use crate::ignore::SourcePattern;
 use crate::runtime::rooted;
 
@@ -44,6 +45,13 @@ impl<'a> Destination<'a> {
         }
         Ok(path)
     }
+
+    /// Whether `dest` names a directory given the full instruction's source count: a trailing
+    /// slash, more than one source, or an already-existing directory makes every source keep its
+    /// own file name inside `dest`.
+    pub(crate) fn is_directory(&self, dest: &str, source_count: usize) -> Result<bool> {
+        Ok(dest.ends_with('/') || source_count > 1 || self.resolve(dest)?.is_dir())
+    }
 }
 
 /// Applies `COPY` from the build context.
@@ -54,9 +62,17 @@ pub(crate) fn copy_context(
     destination: Destination<'_>,
     owner: Owner,
 ) -> Result<()> {
+    for source in sources {
+        if let Some(scheme) = fetch::scheme(source) {
+            return Err(step_next(
+                format!("`COPY {source}` uses the `{scheme}:` scheme; `COPY` cannot fetch a URL"),
+                "use `ADD` for remote sources, or copy a path from the build context",
+            ));
+        }
+    }
     let sources: Vec<String> = sources.iter().map(|source| normalize(source)).collect();
     let dest_abs = destination.resolve(dest)?;
-    let dest_is_dir = dest.ends_with('/') || sources.len() > 1 || {
+    let dest_is_dir = destination.is_directory(dest, sources.len())? || {
         let single = sources.first().map(String::as_str).unwrap_or(".");
         is_dir(context.entries(), single) || single == "."
     };
@@ -98,7 +114,7 @@ pub(crate) fn copy_rootfs(
 ) -> Result<()> {
     let sources: Vec<String> = sources.iter().map(|source| normalize(source)).collect();
     let dest_abs = destination.resolve(dest)?;
-    let dest_is_dir = dest.ends_with('/') || sources.len() > 1 || {
+    let dest_is_dir = destination.is_directory(dest, sources.len())? || {
         let first = sources.first().map(String::as_str).unwrap_or("/");
         rooted(source_root, first).is_dir()
     };
@@ -126,7 +142,11 @@ pub(crate) fn copy_rootfs(
     Ok(())
 }
 
-/// Applies `ADD`: local copies, with tar archives extracted into the destination.
+/// Applies `ADD`: local copies with tar archives extracted, plus streamed `http(s)://` sources.
+///
+/// Local archives keep their extraction semantics; a URL payload is written verbatim (never
+/// unpacked). A URL layer is cached by instruction text alone — there is no checksum flag yet, so
+/// an unchanged `ADD <url>` line reuses the sealed step even when the remote bytes change.
 pub(crate) fn add_context(
     context: &BuildContext,
     sources: &[String],
@@ -135,11 +155,19 @@ pub(crate) fn add_context(
     owner: Owner,
 ) -> Result<()> {
     let mut plain = Vec::new();
+    let mut urls = Vec::new();
     for source in sources {
-        if source.starts_with("http://") || source.starts_with("https://") {
-            return Err(step(format!(
-                "`ADD {source}` fetches a URL, which the native builder does not support"
-            )));
+        if fetch::is_http(source) {
+            urls.push(source.as_str());
+            continue;
+        }
+        if let Some(scheme) = fetch::scheme(source) {
+            return Err(step_next(
+                format!(
+                    "`ADD {source}` uses the `{scheme}:` scheme, which the native builder cannot fetch"
+                ),
+                "use an `http://` or `https://` URL, or a path inside the build context",
+            ));
         }
         let normalized = normalize(source);
         let path = context.root().join(&normalized);
@@ -159,8 +187,29 @@ pub(crate) fn add_context(
             plain.push(source.clone());
         }
     }
+    let dest_is_dir = destination.is_directory(dest, sources.len())?;
     if !plain.is_empty() {
-        copy_context(context, &plain, dest, destination, owner)?;
+        // A multi-source `ADD` (say one context file plus one URL) must treat `dest` as a
+        // directory for the local copy too, even without a trailing slash.
+        let local_dest = if dest_is_dir && !dest.ends_with('/') {
+            format!("{dest}/")
+        } else {
+            dest.to_owned()
+        };
+        copy_context(context, &plain, &local_dest, destination, owner)?;
+    }
+    if !urls.is_empty() {
+        let dest_abs = destination.resolve(dest)?;
+        for url in urls {
+            let target = if dest_is_dir {
+                fs::create_dir_all(&dest_abs)
+                    .map_err(|source| Error::io("create", &dest_abs, source))?;
+                dest_abs.join(fetch::remote_name(url)?)
+            } else {
+                dest_abs.clone()
+            };
+            fetch::fetch(url, &target, owner)?;
+        }
     }
     Ok(())
 }
@@ -274,21 +323,32 @@ fn open_archive(path: &Path) -> Result<Option<Box<dyn Read>>> {
 }
 
 fn step(message: String) -> Error {
+    step_next(
+        message,
+        "check the source path and the `.dockerignore` rules",
+    )
+}
+
+fn step_next(message: String, next: impl Into<String>) -> Error {
     Error::StepFailed {
         line: 0,
         instruction: "COPY/ADD".to_owned(),
         message,
-        next: "check the source path and the `.dockerignore` rules".to_owned(),
+        next: next.into(),
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
     use std::os::unix::fs::MetadataExt;
     use std::path::PathBuf;
+    use std::thread;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use crate::dockerfile::ImageConfig;
+    use crate::error::Error;
 
     use super::{BuildContext, Destination, Owner, add_context, copy_context, copy_rootfs, fs};
 
@@ -492,6 +552,243 @@ mod tests {
             );
         }
         assert!(!rootfs.join("escape").exists());
+
+        let _ = fs::remove_dir_all(&context_root);
+        let _ = fs::remove_dir_all(&rootfs);
+    }
+
+    /// Serves exactly one HTTP/1.1 response on a loopback ephemeral port, then closes the socket.
+    fn serve_once(status: u16, body: &[u8]) -> (String, thread::JoinHandle<()>) {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind the loopback URL server");
+        let port = listener
+            .local_addr()
+            .expect("read the loopback address")
+            .port();
+        let body = body.to_vec();
+        let handle = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept the loopback request");
+            let mut request = Vec::new();
+            let mut buffer = [0u8; 1024];
+            while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                let read = stream.read(&mut buffer).expect("read the request head");
+                if read == 0 {
+                    break;
+                }
+                request.extend_from_slice(&buffer[..read]);
+            }
+            let head = format!(
+                "HTTP/1.1 {status} slipfork\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            stream
+                .write_all(head.as_bytes())
+                .expect("write the response head");
+            stream.write_all(&body).expect("write the response body");
+            stream.flush().expect("flush the response");
+        });
+        (format!("127.0.0.1:{port}"), handle)
+    }
+
+    /// `ADD <url> /opt/data/` streams the served bytes into the directory as a 0644 file.
+    #[test]
+    fn an_add_url_streams_into_a_directory_destination() {
+        const BODY: &[u8] = b"#!/bin/sh\necho offworld\n";
+        let (addr, server) = serve_once(200, BODY);
+        let (context_root, context) = context(&[]);
+        let rootfs = lab("rootfs-url-dir");
+        let owner = owner(&rootfs);
+
+        add_context(
+            &context,
+            &[format!("http://{addr}/install.sh")],
+            "/opt/data/",
+            Destination::new(&rootfs, "/"),
+            owner,
+        )
+        .expect("ADD http://127.0.0.1/install.sh /opt/data/");
+        server.join().expect("the loopback server exits");
+
+        let written = rootfs.join("opt/data/install.sh");
+        assert_eq!(fs::read(&written).expect("read the served payload"), BODY);
+        assert_eq!(
+            fs::metadata(&written).expect("stat the payload").mode() & 0o777,
+            0o644,
+            "a URL payload lands 0644"
+        );
+
+        let _ = fs::remove_dir_all(&context_root);
+        let _ = fs::remove_dir_all(&rootfs);
+    }
+
+    /// An exact destination writes that path, ignoring the URL's query string.
+    #[test]
+    fn an_add_url_exact_destination_writes_the_named_file() {
+        const BODY: &[u8] = b"spool\n";
+        let (addr, server) = serve_once(200, BODY);
+        let (context_root, context) = context(&[]);
+        let rootfs = lab("rootfs-url-file");
+        let owner = owner(&rootfs);
+
+        add_context(
+            &context,
+            &[format!("http://{addr}/download?raw=1")],
+            "/usr/local/bin/install.sh",
+            Destination::new(&rootfs, "/"),
+            owner,
+        )
+        .expect("ADD url to an exact file path");
+        server.join().expect("the loopback server exits");
+
+        let written = rootfs.join("usr/local/bin/install.sh");
+        assert_eq!(fs::read(&written).expect("read the served payload"), BODY);
+        assert_eq!(
+            fs::metadata(&written).expect("stat the payload").mode() & 0o777,
+            0o644
+        );
+        assert!(
+            !rootfs.join("usr/local/bin/download").exists(),
+            "an exact destination never appends the URL file name"
+        );
+
+        let _ = fs::remove_dir_all(&context_root);
+        let _ = fs::remove_dir_all(&rootfs);
+    }
+
+    /// A non-2xx answer fails closed with the typed HTTP error and leaves no temp file behind.
+    #[test]
+    fn a_non_success_url_fails_closed_and_cleans_its_temp_file() {
+        let (addr, server) = serve_once(404, b"missing\n");
+        let (context_root, context) = context(&[]);
+        let rootfs = lab("rootfs-url-404");
+        let owner = owner(&rootfs);
+
+        let error = add_context(
+            &context,
+            &[format!("http://{addr}/install.sh")],
+            "/opt/data/",
+            Destination::new(&rootfs, "/"),
+            owner,
+        )
+        .expect_err("a 404 must fail closed");
+        server.join().expect("the loopback server exits");
+
+        assert!(
+            matches!(&error, Error::Http { status: 404, .. }),
+            "a non-2xx is the typed HTTP error: {error}"
+        );
+        let leftovers = fs::read_dir(rootfs.join("opt/data"))
+            .expect("the destination directory exists")
+            .count();
+        assert_eq!(leftovers, 0, "a failed fetch removes its temp file");
+
+        let _ = fs::remove_dir_all(&context_root);
+        let _ = fs::remove_dir_all(&rootfs);
+    }
+
+    /// Only `ADD` fetches, and only `http(s)://`; every other scheme fails closed with a remedy.
+    #[test]
+    fn only_add_fetches_http_urls() {
+        let (context_root, context) = context(&[("app.conf", "k=v\n")]);
+        let rootfs = lab("rootfs-url-refuse");
+        let owner = owner(&rootfs);
+        let destination = Destination::new(&rootfs, "/");
+
+        let copy_error = copy_context(
+            &context,
+            &["http://127.0.0.1:9/x".to_owned()],
+            "/opt/",
+            destination,
+            owner,
+        )
+        .expect_err("COPY must never fetch a URL");
+        assert!(
+            copy_error.to_string().contains("use `ADD`"),
+            "COPY points at ADD: {copy_error}"
+        );
+
+        let add_error = add_context(
+            &context,
+            &["ftp://127.0.0.1:9/x".to_owned()],
+            "/opt/",
+            destination,
+            owner,
+        )
+        .expect_err("only http(s) is fetchable");
+        let rendered = add_error.to_string();
+        assert!(
+            rendered.contains("`ftp:`"),
+            "the scheme is named: {rendered}"
+        );
+        assert!(rendered.contains("next:"), "one line plus next: {rendered}");
+
+        let _ = fs::remove_dir_all(&context_root);
+        let _ = fs::remove_dir_all(&rootfs);
+    }
+
+    /// One context file plus one URL into a slash-less `dest` still resolves as a directory, so
+    /// both sources keep their own names instead of the local copy claiming `dest` itself.
+    #[test]
+    fn a_mixed_add_puts_the_local_file_and_the_url_in_one_directory() {
+        const BODY: &[u8] = b"#!/bin/sh\necho served\n";
+        let (addr, server) = serve_once(200, BODY);
+        let (context_root, context) = context(&[("note.txt", "local note\n")]);
+        let rootfs = lab("rootfs-url-mixed");
+        let owner = owner(&rootfs);
+
+        add_context(
+            &context,
+            &["note.txt".to_owned(), format!("http://{addr}/install.sh")],
+            "/opt",
+            Destination::new(&rootfs, "/"),
+            owner,
+        )
+        .expect("ADD a context file and a URL into one directory");
+        server.join().expect("the loopback server exits");
+
+        assert_eq!(
+            fs::read_to_string(rootfs.join("opt/note.txt")).expect("read the local copy"),
+            "local note\n"
+        );
+        assert_eq!(
+            fs::read(rootfs.join("opt/install.sh")).expect("read the served payload"),
+            BODY
+        );
+
+        let _ = fs::remove_dir_all(&context_root);
+        let _ = fs::remove_dir_all(&rootfs);
+    }
+
+    /// A gzipped body is an opaque URL payload: it lands byte-for-byte and is never unpacked.
+    #[test]
+    fn a_gzipped_url_payload_is_written_verbatim_never_extracted() {
+        let raw = b"#!/bin/sh\necho gz\n";
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        encoder.write_all(raw).expect("write the gzip payload");
+        let gz = encoder.finish().expect("finish the gzip payload");
+        let (addr, server) = serve_once(200, &gz);
+        let (context_root, context) = context(&[]);
+        let rootfs = lab("rootfs-url-gzip");
+        let owner = owner(&rootfs);
+
+        add_context(
+            &context,
+            &[format!("http://{addr}/bundle.tar.gz")],
+            "/opt/data/",
+            Destination::new(&rootfs, "/"),
+            owner,
+        )
+        .expect("ADD a gzipped url payload");
+        server.join().expect("the loopback server exits");
+
+        assert_eq!(
+            fs::read(rootfs.join("opt/data/bundle.tar.gz")).expect("read the payload"),
+            gz,
+            "a URL payload is never tar-extracted"
+        );
+        assert!(
+            !rootfs.join("opt/data/bundle.tar").exists(),
+            "no archive is unpacked from a URL"
+        );
 
         let _ = fs::remove_dir_all(&context_root);
         let _ = fs::remove_dir_all(&rootfs);
