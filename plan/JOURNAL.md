@@ -3169,3 +3169,7 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-23T02:34 [M3] (conductor) status active -> done
 - 2026-11-23T02:34 HUMAN H-019 [release-gate] opened by conductor (node M3)
 - 2026-11-23T02:34 AUTOPILOT off by conductor Awaiting 38/38 GHA green confirmation & human review/merge of PR #2 into develop
+- 2026-11-23T02:38 HUMAN H-019 closed by conductor
+- 2026-11-23T02:38 [M3] (conductor) status done -> active
+- 2026-11-23T02:38 [M3.68] (conductor) created (task) Align critical_btrfs_live & critical_pod_runtime SNAP_CREATE_V2 budgets with loop-backed GHA Btrfs commit latency
+- 2026-11-23T02:38 AUTOPILOT on by conductor Aligning SNAP_CREATE_V2 loop-backed GHA Btrfs ceiling in M3.68
