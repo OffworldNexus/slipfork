@@ -3164,3 +3164,5 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-23T02:23 [M3.67] (lead) triad fix pass: stopped-fork block after all worlds, Option<String> authorities + shared route_host, Forkfile::primary_domain, forkfile-spec/doc wording
 - 2026-11-23T02:23 [M3.67] (lead) status review -> ready
 - 2026-11-23T02:26 [M3.67] (lead) edited fields
+- 2026-11-23T02:33 [M3.67] (lead) live 165.232.86.174: deb 0.1.0 (glibc<=2.34) installed, /usr/local/bin copies removed, ingress@ User=1000 via daemon install --ingress, ps = ● demo tree, ● feat
+- 2026-11-23T02:33 [M3.67] (lead) status ready -> done

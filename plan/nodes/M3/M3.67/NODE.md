@@ -2,7 +2,7 @@
 id: M3.67
 title: "Fix ps stopped-fork placement & remove duplicate <primary_domain>.<world>.localhost authority"
 kind: task
-status: ready
+status: done
 owner: implementer
 priority: 3
 depends_on: [M3.66]
@@ -18,7 +18,7 @@ attempts: 1
 max_attempts: 3
 escalation: none
 created: "2026-11-23T02:18"
-updated: "2026-11-23T02:26"
+updated: "2026-11-23T02:33"
 ---
 
 # Goal
