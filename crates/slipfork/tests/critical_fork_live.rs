@@ -15,9 +15,10 @@
 use std::ffi::OsString;
 use std::fs;
 use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::{TcpListener, TcpStream, ToSocketAddrs};
 use std::os::fd::{AsFd, AsRawFd};
 use std::os::unix::ffi::OsStringExt;
+use std::os::unix::fs::MetadataExt;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
@@ -112,6 +113,22 @@ fn require_tool(name: &str) -> PathBuf {
         .map(|directory| directory.join(name))
         .find(|candidate| candidate.is_file())
         .unwrap_or_else(|| fail_closed(&format!("`{name}` is missing; install it and retry")))
+}
+
+fn require_registry_egress() {
+    let address = ("registry-1.docker.io", 443)
+        .to_socket_addrs()
+        .ok()
+        .and_then(|mut addresses| addresses.next());
+    let Some(address) = address else {
+        fail_closed(
+            "docker.io does not resolve.\nnext: connect the host to the network, then retry",
+        );
+    };
+    assert!(
+        TcpStream::connect_timeout(&address, Duration::from_secs(5)).is_ok(),
+        "fail closed: no registry egress to registry-1.docker.io:443.\nnext: connect the host to the network, then retry"
+    );
 }
 
 fn wait_until(mut condition: impl FnMut() -> bool, timeout: Duration) -> bool {
@@ -385,7 +402,13 @@ impl Lab {
             .expect("clock reads after the epoch")
             .as_nanos();
         let project = test_root.join(format!("fork-live-{nanos}")).join("demo");
-        fs::create_dir_all(&project).expect("create the scratch project");
+        // This heavy fixture stays an explicit subvolume: its hundreds of MB of `uv`/`pnpm`
+        // artifacts gate the `<500ms` CoW snapshot, and a copied fork would destroy that gate.
+        fs::create_dir_all(project.parent().expect("scratch root"))
+            .expect("create the scratch root");
+        BtrfsEngine::new(StoreLayout::at(&store_root))
+            .create_subvolume(&project)
+            .expect("create the scratch project subvolume");
         let state_home = project.parent().expect("scratch root").join("state");
         fs::create_dir_all(state_home.join("slipfork")).expect("create the isolated state dir");
         let support = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../support/demo");
@@ -688,9 +711,32 @@ fn fork_and_drop_a_live_world_without_leaving_snapshots() {
     let _guard = LAB_LOCK.lock().unwrap_or_else(|error| error.into_inner());
     let lab = Lab::new();
 
+    // `up` must never convert or replace the checkout it boots.
+    let project_before = fs::metadata(&lab.project).expect("stat the project before `up`");
+
     // Cold boot: the eight shipped components (S3 buckets coalesce into one native server node).
     let up = lab.run(&["up", "--json"]);
     let reply = lab.json(&up, "up");
+    let project_after = fs::metadata(&lab.project).expect("restat the project after `up`");
+    assert_eq!(
+        (project_after.ino(), project_after.dev()),
+        (project_before.ino(), project_before.dev()),
+        "`up` must never replace the checkout directory it boots"
+    );
+    let siblings: Vec<String> = fs::read_dir(lab.project.parent().expect("scratch root"))
+        .expect("read the scratch root")
+        .map(|entry| {
+            entry
+                .expect("read a scratch entry")
+                .file_name()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+    assert!(
+        !siblings.iter().any(|name| name.contains(".slipfork-adopt")),
+        "`up` must never adopt a sibling: {siblings:?}"
+    );
     let rows = reply["nodes"].as_array().expect("up --json nodes");
     let shipped = [
         "pg", "cache", "uploads", "assets", "api", "worker", "front", "mailpit",
@@ -1386,4 +1432,240 @@ fn failed_fork_publish_rolls_back_without_leaking() {
     );
     let rollback_drop = lab.run(&["drop", "rollback", "-f", "--json"]);
     let _ = lab.json(&rollback_drop, "drop rollback");
+}
+
+/// The isolated scratch checkout behind `fork_copies_a_plain_checkout_without_touching_it`.
+struct PlainLab {
+    root: PathBuf,
+    runtime: PathBuf,
+    store_root: PathBuf,
+    project: PathBuf,
+}
+
+const PLAIN_FORKFILE: &str = "# forkfile: 0.1\nimage app from python:3.13-slim {\n  service web {\n    run: python3 -m http.server 8000\n  }\n}\n";
+
+impl PlainLab {
+    fn new() -> Self {
+        let Some(test_root) =
+            std::env::var_os("SLIPFORK_TEST_ROOT").filter(|root| !root.is_empty())
+        else {
+            fail_closed(
+                "SLIPFORK_TEST_ROOT is unset or empty.\nnext: SLIPFORK_TEST_ROOT=/mnt/slipfork-live make live-test",
+            )
+        };
+        let test_root = PathBuf::from(test_root);
+        if let Err(source) = fs::create_dir_all(&test_root) {
+            fail_closed(&format!(
+                "cannot create `{}`: {source}\nnext: sudo chown -R \"$(id -u):$(id -g)\" {}",
+                test_root.display(),
+                test_root.display()
+            ));
+        }
+        assert_eq!(
+            fs_magic(&test_root),
+            BTRFS_SUPER_MAGIC,
+            "fail closed: `{}` is not Btrfs.\nnext: SLIPFORK_TEST_ROOT=/mnt/slipfork-live make live-test",
+            test_root.display()
+        );
+        let Some(runtime) = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from) else {
+            fail_closed("XDG_RUNTIME_DIR is unset.\nnext: export XDG_RUNTIME_DIR=/run/user/<uid>");
+        };
+        assert_eq!(
+            fs_magic(&runtime),
+            TMPFS_MAGIC,
+            "fail closed: `{}` is not tmpfs.\nnext: export XDG_RUNTIME_DIR=/run/user/<uid>",
+            runtime.display()
+        );
+        for tool in ["crun", "unshare", "git"] {
+            let _ = require_tool(tool);
+        }
+        require_registry_egress();
+        let store_root = mount_store_for(&test_root);
+        let world = WorldName::parse("plaindemo").expect("valid world");
+        let _ = BtrfsEngine::new(StoreLayout::at(&store_root)).drop_world(&world);
+        let root = test_root.join(format!("plain-fork-{}", unique_suffix()));
+        let project = root.join("plaindemo");
+        fs::create_dir_all(&project).expect("create the plain checkout");
+        fs::create_dir_all(root.join("state/slipfork")).expect("create the isolated state dir");
+        fs::write(project.join("Forkfile"), PLAIN_FORKFILE).expect("write the plain Forkfile");
+        fs::write(project.join("marker.txt"), "plain checkout\n").expect("write marker.txt");
+        fs::write(project.join("run.sh"), "#!/bin/sh\necho plain\n").expect("write run.sh");
+        fs::set_permissions(project.join("run.sh"), fs::Permissions::from_mode(0o755))
+            .expect("pin run.sh executable");
+        let git = require_tool("git");
+        for args in [
+            &["init", "-q"][..],
+            &["config", "user.email", "test@slipfork.local"][..],
+            &["config", "user.name", "Slipfork Test"][..],
+            &["add", "-A"][..],
+            &["commit", "-q", "-m", "seed"][..],
+            &["branch", "-f", "feat-plain"][..],
+        ] {
+            let status = Command::new(&git)
+                .arg("-C")
+                .arg(&project)
+                .args(args)
+                .status()
+                .expect("run git");
+            assert!(status.success(), "git {args:?} failed");
+        }
+        Self {
+            root,
+            runtime,
+            store_root,
+            project,
+        }
+    }
+
+    fn run(&self, args: &[&str]) -> Output {
+        Command::new(env!("CARGO_BIN_EXE_slipfork"))
+            .args(args)
+            .current_dir(&self.project)
+            .env("NO_COLOR", "1")
+            .env("TERM", "dumb")
+            .env("XDG_RUNTIME_DIR", &self.runtime)
+            .env("XDG_STATE_HOME", self.root.join("state"))
+            .output()
+            .expect("run slipfork")
+    }
+}
+
+impl Drop for PlainLab {
+    fn drop(&mut self) {
+        let _ = self.run(&["down"]);
+        if let Ok(mut stream) = UnixStream::connect(self.runtime.join("daemon.sock")) {
+            let _ = stream.write_all(b"{\"v\":1,\"id\":\"bye\",\"method\":\"shutdown\"}\n");
+            let mut reply = [0_u8; 256];
+            let _ = stream.read(&mut reply);
+        }
+        let _ = wait_until(
+            || daemons_for(&self.runtime).is_empty(),
+            Duration::from_secs(10),
+        );
+        let engine = BtrfsEngine::new(StoreLayout::at(&self.store_root));
+        if let Ok(world) = WorldName::parse("plaindemo") {
+            let _ = engine.drop_world(&world);
+        }
+        let _ = fs::remove_dir_all(&self.root);
+    }
+}
+
+#[test]
+fn fork_copies_a_plain_checkout_without_touching_it() {
+    let _guard = LAB_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let lab = PlainLab::new();
+
+    let up = lab.run(&["up"]);
+    assert!(
+        up.status.success(),
+        "up a plain checkout: {}",
+        String::from_utf8_lossy(&up.stderr)
+    );
+    let up_out = String::from_utf8_lossy(&up.stdout);
+    assert!(
+        up_out.contains("✓ Ready -> http://plaindemo.localhost"),
+        "the plain checkout must boot behind its own URL:\n{up_out}"
+    );
+
+    let project_before = fs::metadata(&lab.project).expect("stat the plain checkout");
+    let marker_before = fs::metadata(lab.project.join("marker.txt")).expect("stat marker.txt");
+    let forkfile_before = fs::metadata(lab.project.join("Forkfile")).expect("stat Forkfile");
+
+    let fork = lab.run(&["fork", "feat-plain", "--json"]);
+    assert!(
+        fork.status.success(),
+        "fork a plain checkout: {}",
+        String::from_utf8_lossy(&fork.stderr)
+    );
+    let reply: serde_json::Value = String::from_utf8_lossy(&fork.stdout)
+        .lines()
+        .rev()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .map(|line| serde_json::from_str(line).expect("fork --json must end with one summary"))
+        .expect("fork --json emitted no summary");
+    let fork_project = lab.project.join(".forks/feat-plain");
+    assert_eq!(
+        Path::new(
+            reply["project"]
+                .as_str()
+                .expect("fork summary must report its project")
+        ),
+        fork_project,
+        "{reply}"
+    );
+    assert!(
+        fork_project.is_dir(),
+        "a plain checkout must be copied into `.forks`: {reply}"
+    );
+    assert!(
+        !is_subvolume_path(&fork_project).unwrap_or(true),
+        "a plain checkout copy is never a subvolume"
+    );
+    assert!(
+        fork_project.join("Forkfile").is_file(),
+        "the copy must carry the Forkfile"
+    );
+    assert_eq!(
+        fs::read_to_string(fork_project.join("marker.txt")).expect("read the copied marker"),
+        "plain checkout\n",
+        "the copy must carry the parent's bytes"
+    );
+    assert_eq!(
+        fs::metadata(fork_project.join("run.sh"))
+            .expect("stat the copied run.sh")
+            .permissions()
+            .mode()
+            & 0o777,
+        0o755,
+        "the copy must preserve executable modes"
+    );
+
+    let project_after = fs::metadata(&lab.project).expect("restat the plain checkout");
+    assert_eq!(
+        (project_after.ino(), project_after.dev()),
+        (project_before.ino(), project_before.dev()),
+        "fork must never replace the parent checkout"
+    );
+    let marker_after = fs::metadata(lab.project.join("marker.txt")).expect("restat marker.txt");
+    assert_eq!(
+        (marker_after.ino(), marker_after.dev()),
+        (marker_before.ino(), marker_before.dev()),
+        "fork must never rewrite `marker.txt`"
+    );
+    let forkfile_after = fs::metadata(lab.project.join("Forkfile")).expect("restat Forkfile");
+    assert_eq!(
+        (forkfile_after.ino(), forkfile_after.dev()),
+        (forkfile_before.ino(), forkfile_before.dev()),
+        "fork must never rewrite `Forkfile`"
+    );
+    assert_eq!(
+        fs::read_to_string(lab.project.join("marker.txt")).expect("reread marker.txt"),
+        "plain checkout\n"
+    );
+    let siblings: Vec<String> = fs::read_dir(lab.project.parent().expect("scratch root"))
+        .expect("read the scratch root")
+        .map(|entry| {
+            entry
+                .expect("read a scratch entry")
+                .file_name()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+    assert!(
+        !siblings.iter().any(|name| name.contains(".slipfork-adopt")),
+        "fork must never adopt a sibling: {siblings:?}"
+    );
+
+    let drop = lab.run(&["drop", "feat-plain", "-f"]);
+    assert!(
+        drop.status.success(),
+        "drop the plain-copied fork: {}",
+        String::from_utf8_lossy(&drop.stderr)
+    );
+    assert!(
+        !fork_project.exists(),
+        "teardown must remove the copied checkout directory"
+    );
 }

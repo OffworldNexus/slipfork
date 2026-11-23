@@ -66,12 +66,7 @@ impl WorldRuntime {
         let is_fork = StoreLayout::parse_fork_world(std::ffi::OsStr::new(world.as_str())).is_some();
         let engine = BtrfsEngine::new(StoreLayout::at(env.store_root_for(project)));
         let layout = engine.layout().clone();
-        if !is_fork || !layout.world(&world).exists() {
-            engine
-                .adopt_project(project)
-                .and_then(|()| engine.ensure_store())
-                .map_err(|error| error.to_string())?;
-        }
+        engine.ensure_store().map_err(|error| error.to_string())?;
         let world_engine: Arc<dyn WorldEngine> = Arc::new(engine.clone());
         let architecture = Architecture::from_oci(env.arch)
             .ok_or_else(|| format!("unsupported host architecture `{}`", env.arch))?;

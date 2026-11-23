@@ -971,10 +971,12 @@ fn a_down_root_still_scopes_running_forks_and_stopped_siblings_from_disk() {
     let root = scratch("scope-down");
     let demo = root.join("demo");
     let forks = demo.join(".forks");
+    // A copied plain checkout is a real fork; a name `ForkName::parse` rejects is ignored.
     for (path, name) in [
         (&demo, "demo"),
         (&forks.join("youpi"), "youpi"),
         (&forks.join("feat-auth"), "feat-auth"),
+        (&forks.join("Junk dir"), "junk"),
     ] {
         fs::create_dir_all(path).expect("create the lab project");
         fs::write(
@@ -1006,8 +1008,8 @@ fn a_down_root_still_scopes_running_forks_and_stopped_siblings_from_disk() {
     }));
     let options = Options::new(false).with_home(Some(root.clone()));
 
-    // The project root shows the stopped root and the live fork, but a plain directory under
-    // `.forks` is not a subvolume checkout and never poses as a phantom stopped fork.
+    // The project root shows the stopped root and the live fork; a copied plain checkout under
+    // `.forks` is a real stopped fork, while an invalid name is never treated as one.
     let scoped = status::scope(&live, &slipfork_world::ProjectScope::resolve(&demo));
     assert_eq!(
         scoped.worlds.len(),
@@ -1022,16 +1024,22 @@ fn a_down_root_still_scopes_running_forks_and_stopped_siblings_from_disk() {
     assert_eq!(scoped.worlds[0].world, "demo");
     assert_eq!(scoped.worlds[0].forks.len(), 1);
     assert_eq!(scoped.worlds[0].forks[0].fork.as_deref(), Some("feat-auth"));
-    assert!(
-        scoped.worlds[0].stopped_forks.is_empty(),
-        "a plain directory is not a fork checkout: {scoped:?}"
+    assert_eq!(
+        scoped.worlds[0].stopped_forks.len(),
+        1,
+        "a copied plain checkout is a stopped fork: {scoped:?}"
     );
+    assert_eq!(scoped.worlds[0].stopped_forks[0].name, "youpi");
     let text = status::render(&scoped, &options);
     assert!(text.contains("○ demo"), "{text}");
     assert!(text.contains("● feat-auth"), "{text}");
     assert!(
-        !text.contains("○ youpi"),
-        "a plain directory must not pose as a stopped fork: {text}"
+        text.contains("○ youpi"),
+        "a plain copied checkout renders as a stopped fork: {text}"
+    );
+    assert!(
+        !text.contains("Junk dir"),
+        "a directory whose name is not a fork must not pose as one: {text}"
     );
     assert_eq!(text.matches("○ demo").count(), 1, "{text}");
     assert_eq!(text.matches("● feat-auth").count(), 1, "{text}");

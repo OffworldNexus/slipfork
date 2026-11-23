@@ -14,7 +14,6 @@
 //! # fn main() -> slipfork_world::Result<()> {
 //! let engine = BtrfsEngine::new(StoreLayout::at(PathBuf::from("/mnt/btrfs/.slipfork-store")));
 //! engine.ensure_store()?;
-//! engine.adopt_project(&PathBuf::from("/mnt/btrfs/projects/demo"))?;
 //! # Ok(())
 //! # }
 //! ```
@@ -24,6 +23,7 @@
 pub mod boot;
 #[allow(unsafe_code)]
 mod btrfs;
+mod checkout;
 pub mod control;
 mod engine;
 mod error;
@@ -64,6 +64,7 @@ pub mod uapi {
         SUBVOL_GETFLAGS, SUBVOL_SETFLAGS, VolArgs, VolArgsV2, request,
     };
 }
+pub use checkout::copy_checkout;
 pub use control::{
     ControlError, FrameLines, InitFrame, OutputKind, PROTOCOL_VERSION, Request, S3BucketSpec,
     S3WorldConfig, Stream, configure_s3, decode_init_frame, decode_request, encode, launch_pod,

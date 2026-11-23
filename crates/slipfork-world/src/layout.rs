@@ -329,19 +329,24 @@ pub fn fork_under(root: &Path, cwd: &Path) -> Option<(PathBuf, ForkName)> {
     path.is_dir().then_some((path, fork))
 }
 
-/// Every `<project>/.forks/<name>` checkout this host proves is a Btrfs subvolume.
+/// Every `<project>/.forks/<name>` checkout present on disk.
 ///
-/// A plain directory under `.forks` is not a Slipfork checkout (every checkout is created as a
-/// subvolume), so it is skipped instead of posing as a phantom stopped fork. A `read_dir`
-/// failure is surfaced to the caller rather than flattened into an empty list.
+/// A fork checkout is either a Btrfs subvolume (a fork of a subvolume checkout) or a plain copied
+/// directory (a fork of a plain checkout), so any existing directory named like a fork is reported
+/// instead of posing as a phantom stopped fork. A missing `.forks` directory is a normal project
+/// with no forks; any other `read_dir` failure is surfaced to the caller.
 ///
 /// # Errors
 ///
-/// Returns the I/O failure from listing `<project>/.forks`.
+/// Returns the I/O failure from listing `<project>/.forks`, except a missing directory, which is
+/// `Ok(Vec::new())`.
 pub fn fork_checkouts(project: &Path) -> Result<Vec<ForkDir>> {
     let forks_dir = project_forks_dir(project);
-    let entries =
-        std::fs::read_dir(&forks_dir).map_err(|source| Error::io("list", &forks_dir, source))?;
+    let entries = match std::fs::read_dir(&forks_dir) {
+        Ok(entries) => entries,
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(source) => return Err(Error::io("list", &forks_dir, source)),
+    };
     let mut forks = Vec::new();
     for entry in entries {
         let entry = entry.map_err(|source| Error::io("list", &forks_dir, source))?;
@@ -353,7 +358,7 @@ pub fn fork_checkouts(project: &Path) -> Result<Vec<ForkDir>> {
             continue;
         };
         let path = entry.path();
-        if !crate::btrfs::is_subvolume_path(&path).unwrap_or(false) {
+        if !path.is_dir() {
             continue;
         }
         forks.push(ForkDir {

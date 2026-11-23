@@ -14,6 +14,7 @@ use std::io::{self, Read, Write};
 use std::net::{TcpListener, TcpStream, ToSocketAddrs};
 use std::os::fd::{AsFd, AsRawFd, FromRawFd};
 use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::MetadataExt;
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -733,6 +734,23 @@ impl Journey {
     }
 }
 
+/// Every entry name directly under `dir`, sorted, minus the journey's isolated `state` dir.
+fn sorted_listing(dir: &Path) -> Vec<String> {
+    let mut names: Vec<String> = fs::read_dir(dir)
+        .expect("read the scratch root")
+        .map(|entry| {
+            entry
+                .expect("read a scratch entry")
+                .file_name()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .filter(|name| name != "state")
+        .collect();
+    names.sort();
+    names
+}
+
 /// The last 80 lines of a project's supervisor log, for a failing `up` panic message.
 fn supervisor_tail(project: &Path) -> String {
     let log = project.join(".slipfork/supervisor.log");
@@ -907,6 +925,19 @@ fn world_up_restart_down_journey() {
     let good = journey.project("good", GOOD_FORKFILE);
     fs::write(good.join("probe.py"), S3_PROBE).expect("write probe.py");
 
+    // The owner's regression: `up` must never convert the checkout into a subvolume, adopt a
+    // sibling, or replace a single inode. Record the identity before the first boot.
+    assert!(
+        !is_subvolume_path(&good).unwrap_or(true),
+        "the fixture must be a plain directory, not a subvolume: {}",
+        good.display()
+    );
+    let parent = good.parent().expect("scratch root").to_path_buf();
+    let project_before = fs::metadata(&good).expect("stat the project");
+    let app_before = fs::metadata(good.join("app.py")).expect("stat app.py");
+    let forkfile_before = fs::metadata(good.join("Forkfile")).expect("stat Forkfile");
+    let listing_before = sorted_listing(&parent);
+
     // 1. First boot: exactly one deduplicated `uv sync`, then hooks and both services.
     let first = journey.slipfork(&good, &["up"]);
     let first_out = stdout(&first);
@@ -915,6 +946,47 @@ fn world_up_restart_down_journey() {
         first.status.success(),
         "{}",
         up_failure("first `up` failed", &good, &first)
+    );
+
+    // `up` is read-only over its own checkout: identical inodes, an unchanged parent listing, no
+    // `.slipfork-adopt` sibling, and still a plain directory (never a subvolume).
+    let project_after = fs::metadata(&good).expect("restat the project after `up`");
+    assert_eq!(
+        (project_after.ino(), project_after.dev()),
+        (project_before.ino(), project_before.dev()),
+        "`up` must never replace the project directory with a subvolume"
+    );
+    let app_after = fs::metadata(good.join("app.py")).expect("restat app.py");
+    assert_eq!(
+        (app_after.ino(), app_after.dev()),
+        (app_before.ino(), app_before.dev()),
+        "`up` must leave `app.py` in place"
+    );
+    let forkfile_after = fs::metadata(good.join("Forkfile")).expect("restat Forkfile");
+    assert_eq!(
+        (forkfile_after.ino(), forkfile_after.dev()),
+        (forkfile_before.ino(), forkfile_before.dev()),
+        "`up` must leave `Forkfile` in place"
+    );
+    assert_eq!(
+        fs::read_to_string(good.join("app.py")).expect("read app.py after `up`"),
+        APP_PY,
+        "`up` must never rewrite the checkout's own files"
+    );
+    assert!(
+        !is_subvolume_path(&good).unwrap_or(true),
+        "`up` must never convert a plain checkout into a subvolume"
+    );
+    let listing_after = sorted_listing(&parent);
+    assert_eq!(
+        listing_after, listing_before,
+        "`up` must not touch the project's parent directory"
+    );
+    assert!(
+        !listing_after
+            .iter()
+            .any(|name| name.contains(".slipfork-adopt")),
+        "`up` must never adopt a sibling: {listing_after:?}"
     );
     assert!(
         first_out.contains("✓ Ready -> http://good.localhost"),
@@ -1637,6 +1709,28 @@ fn world_up_restart_down_journey() {
         );
     }
     assert!(!good.join(".slipfork/world.json").exists());
+    // The whole up/restart/down lifecycle leaves the checkout inode-identical, never a
+    // subvolume, and never adopted into a sibling.
+    let project_final = fs::metadata(&good).expect("stat the project after teardown");
+    assert_eq!(
+        (project_final.ino(), project_final.dev()),
+        (project_before.ino(), project_before.dev()),
+        "`up`/`restart`/`down` must never replace the project directory"
+    );
+    assert!(
+        !is_subvolume_path(&good).unwrap_or(true),
+        "teardown must never convert the checkout into a subvolume"
+    );
+    assert!(
+        !fs::read_dir(&parent)
+            .expect("read the scratch root after teardown")
+            .flatten()
+            .any(|entry| entry
+                .file_name()
+                .to_string_lossy()
+                .contains(".slipfork-adopt")),
+        "no `.slipfork-adopt` sibling may survive teardown"
+    );
     assert!(!broken.join(".slipfork/world.json").exists());
 
     // 6. No per-project `.slipfork-store` exists, and no run subvolume survives in the mount store.

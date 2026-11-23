@@ -1,4 +1,3 @@
-mod convert;
 pub(crate) mod readiness;
 mod teardown;
 
@@ -126,30 +125,6 @@ impl BtrfsEngine {
         let parent = Self::open_dir(&parent)?;
         btrfs::destroy(&parent, path, &name)
     }
-
-    /// Compares Btrfs `fsid` UUIDs rather than `st_dev` (which differs across Btrfs subvolumes).
-    fn require_same_filesystem(&self, project: &Path) -> Result<()> {
-        let anchor = self.store_anchor();
-        let mount = self.layout.btrfs_mount();
-        let project_dir = Self::open_dir(project)?;
-        let anchor_dir = Self::open_dir(&anchor)?;
-        if !btrfs::is_btrfs(&anchor_dir, &anchor)? {
-            return Err(Error::CrossDevice {
-                path: project.to_path_buf(),
-                mount: mount.to_path_buf(),
-            });
-        }
-        let project_fsid = btrfs::fsid(&project_dir, project)?;
-        let anchor_fsid = btrfs::fsid(&anchor_dir, &anchor)?;
-        if project_fsid == anchor_fsid {
-            Ok(())
-        } else {
-            Err(Error::CrossDevice {
-                path: project.to_path_buf(),
-                mount: mount.to_path_buf(),
-            })
-        }
-    }
 }
 
 impl BtrfsEngine {
@@ -209,18 +184,6 @@ impl WorldEngine for BtrfsEngine {
         Ok(())
     }
 
-    fn adopt_project(&self, project: &Path) -> Result<()> {
-        let dir = Self::open_dir(project)?;
-        Self::require_btrfs(&dir, project)?;
-        let already_subvolume = btrfs::is_subvolume(&dir, project)?;
-        drop(dir);
-        if already_subvolume {
-            return Ok(());
-        }
-        self.require_same_filesystem(project)?;
-        convert::convert_in_place(project)
-    }
-
     fn create_world(&self, world: &WorldName) -> Result<PathBuf> {
         self.ensure_store()?;
         let path = self.layout.world(world);
@@ -246,18 +209,19 @@ impl WorldEngine for BtrfsEngine {
         // before any `SNAP_CREATE_V2`: PG runs `fsync=off`, so page-cache-only data would be
         // cloned as a torn `PGDATA` and the fork's postgres would panic on boot.
         self.flush_store()?;
-        // Probe only: the project must already be a converted subvolume.
-        Self::open_subvolume(project)?;
+        // A checkout is snapshotted with `SNAP_CREATE_V2` only when it is itself a subvolume. A
+        // plain directory is never modified: its tree is copied into the fork path afterwards.
+        let project_is_subvolume = btrfs::is_subvolume_path(project)?;
         let forks_dir = layout::project_forks_dir(project);
         fs::create_dir_all(&forks_dir).map_err(|source| Error::io("create", &forks_dir, source))?;
         let project_snapshot = layout::project_fork_path(project, fork);
         let world_source = self.layout.world(world);
         let world_snapshot = self.layout.fork_world(world, fork);
         // Every flat sibling resource clone belongs to the fork too (live PGDATA, AOF, buckets).
-        let mut jobs = vec![
-            (project.to_path_buf(), project_snapshot.clone()),
-            (world_source, world_snapshot.clone()),
-        ];
+        let mut jobs = vec![(world_source, world_snapshot.clone())];
+        if project_is_subvolume {
+            jobs.push((project.to_path_buf(), project_snapshot.clone()));
+        }
         for (kind, pod) in self.world_clones(world)? {
             jobs.push((
                 self.layout.world_clone(world, kind, &pod),
@@ -302,6 +266,26 @@ impl WorldEngine for BtrfsEngine {
                         std::io::Error::other("snapshot failed"),
                     )
                 }));
+        }
+        if !project_is_subvolume {
+            // The stage is hidden from `fork_checkouts` because `ForkName::parse` rejects it, so a
+            // partial copy left by a dead daemon is never advertised as a stopped fork.
+            let stage = forks_dir.join(format!(".partial-{fork}"));
+            let _ = fs::remove_dir_all(&stage);
+            if let Err(error) = crate::checkout::copy_checkout(project, &stage) {
+                for (_, target) in &jobs {
+                    let _ = teardown::destroy_if_present(target);
+                }
+                let _ = fs::remove_dir_all(&stage);
+                return Err(error);
+            }
+            if let Err(source) = fs::rename(&stage, &project_snapshot) {
+                for (_, target) in &jobs {
+                    let _ = teardown::destroy_if_present(target);
+                }
+                let _ = fs::remove_dir_all(&stage);
+                return Err(Error::io("publish", &project_snapshot, source));
+            }
         }
         Ok(ForkPaths {
             project: project_snapshot,
