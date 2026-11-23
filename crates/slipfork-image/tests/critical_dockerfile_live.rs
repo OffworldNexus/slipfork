@@ -333,9 +333,13 @@ fn a_target_stage_never_reaches_a_later_failing_stage() {
     );
     let runtime_user_dir = PathBuf::from(format!("/run/user/{uid}"));
     if runtime_user_dir.is_dir() {
-        let stale_id = format!("sf-stale-{}", std::process::id());
+        let pid = std::process::id();
+        let stale_id = format!("sf-{pid}-0123456789abcdef");
+        let foreign_id = format!("sf-{}-0123456789abcdef", pid.wrapping_add(100_000));
         let stale_state = runtime_user_dir.join("crun").join(&stale_id);
-        fs::create_dir_all(&stale_state).expect("plant stale crun container dir");
+        let foreign_state = runtime_user_dir.join("crun").join(&foreign_id);
+        fs::create_dir_all(&stale_state).expect("plant own stale crun container dir");
+        fs::create_dir_all(&foreign_state).expect("plant concurrent foreign-pid crun dir");
         let step_rootfs = run.join("stale-step-rootfs");
         engine
             .clone_subvolume(&dev.rootfs, &step_rootfs)
@@ -371,6 +375,12 @@ fn a_target_stage_never_reaches_a_later_failing_stage() {
             "step cleanup must remove `{}` after completion",
             stale_state.display()
         );
+        assert!(
+            foreign_state.exists(),
+            "process-scoped cleanup must leave another process's `{}` untouched",
+            foreign_state.display()
+        );
+        let _ = fs::remove_dir_all(&foreign_state);
         let _ = engine.destroy(&step_rootfs, Dirtiness::Dirty, true);
     }
 

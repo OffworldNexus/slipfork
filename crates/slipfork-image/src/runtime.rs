@@ -136,8 +136,9 @@ impl CrunStepRuntime {
         fs::write(&config_path, bytes)
             .map_err(|source| Error::io("write", &config_path, source))?;
 
-        // Reclaim any stale container state left behind by an earlier killed/failed build of this
-        // step before `crun run` creates `<crun_root>/sf-<hash>`.
+        // Reclaim any stale container state left behind by this process on an earlier failed
+        // step before `crun run` creates `<crun_root>/sf-<pid>-<hash>`; other processes' live
+        // builds carry their own pid prefix and are never touched.
         self.delete_container(id);
         let outcome = self.spawn_streaming(id, &bundle, log);
         self.cleanup(id, &bundle);

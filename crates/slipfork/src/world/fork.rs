@@ -89,6 +89,7 @@ impl Session {
                     "world-running" => {
                         "pick another name, or drop the existing fork first".to_owned()
                     }
+                    "forkfile" => "restore the file, then retry `slipfork fork`".to_owned(),
                     "boot-failed" => {
                         "read `.slipfork/supervisor.log`, then run `slipfork up`".to_owned()
                     }

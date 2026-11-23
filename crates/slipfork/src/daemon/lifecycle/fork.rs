@@ -27,6 +27,10 @@ use crate::daemon::boot::BootSession;
 use crate::daemon::rpc::key_of;
 use crate::world::features::WorldFeatures;
 
+/// Announced plan row explaining why a feature-overridden fork rebuilds instead of adopting
+/// the parent's sealed images in 0ms.
+const FEATURE_REBUILD_ROW: (&str, &str) = ("reuse", "rebuilding images (feature set changed)");
+
 /// Validated fork target resolved under a brief `Core` lock so `git` branch discovery runs with
 /// zero daemon locks held.
 pub(crate) struct ForkTarget {
@@ -140,22 +144,26 @@ impl Core {
         if let Some(request) = &target.features {
             Self::validate_features(&target.project, request)?;
         }
-        // One plan frame, before the snapshot mutates anything: the fork's own prep rows plus
-        // every world step the fork will boot under its resolved feature override. The
-        // supervisor's own plan is suppressed below.
-        let mut rows = plan::fork_rows(raw_name);
-        rows.extend(plan::world_rows_with(
-            &target.project,
-            target.features.as_ref(),
-        ));
+        // One plan frame, before the snapshot mutates anything: the fork's own prep rows, an
+        // explicit reuse-declined notice when feature overrides force image rebuilds, plus every
+        // world step the fork will boot under its resolved feature set.
+        let rows = Self::planned_fork_rows(&target.project, raw_name, target.features.as_ref());
         plan::emit(&rows, rows.len(), emit);
         let request = target.features.clone();
         let prepared = self.snapshot(target, raw_name, fork, preflight_ms, emit)?;
-        if let Some(request) = request
-            && let Err(failure) = Self::apply_features(&prepared.project, request)
-        {
-            self.discard_fork(&prepared);
-            return Err(failure);
+        if let Some(request) = request {
+            if let Err(failure) = Self::apply_features(&prepared.project, request) {
+                self.discard_fork(&prepared);
+                return Err(failure);
+            }
+            emit(json!({
+                "event": "up-to-date",
+                "kind": FEATURE_REBUILD_ROW.0,
+                "name": FEATURE_REBUILD_ROW.1,
+                "state": "declined",
+                "elapsed_ms": 0,
+                "duration_ms": 0,
+            }));
         }
         let boot = json!({
             "project": prepared.project.clone(),
@@ -174,6 +182,24 @@ impl Core {
         }
     }
 
+    /// Builds the complete announced row list for one fork, inserting the reuse-declined row
+    /// whenever the request carries feature overrides.
+    fn planned_fork_rows(
+        project: &Path,
+        raw_name: &str,
+        request: Option<&WorldFeatures>,
+    ) -> Vec<plan::PlannedRow> {
+        let mut rows = plan::fork_rows(raw_name);
+        if request.is_some() {
+            rows.push((
+                FEATURE_REBUILD_ROW.0.to_owned(),
+                FEATURE_REBUILD_ROW.1.to_owned(),
+            ));
+        }
+        rows.extend(plan::world_rows_with(project, request));
+        rows
+    }
+
     /// Validates `request` merged over `<project>/.slipfork/features.json` without mutating disk.
     fn validate_features(
         project: &Path,
@@ -186,10 +212,10 @@ impl Core {
             )
         })?;
         let path = project.join("Forkfile");
-        let source = std::fs::read_to_string(&path).map_err(|error| {
+        let source = std::fs::read_to_string(&path).map_err(|_| {
             Failure::new(
-                "feature",
-                format!("cannot read `{}`: {error}", path.display()),
+                "forkfile",
+                "cannot read `Forkfile`\nnext: restore the file, then retry `slipfork fork`",
             )
         })?;
         let checked = slipfork_forkfile::compile(&source).map_err(|diagnostics| {
@@ -581,6 +607,32 @@ mod tests {
         assert!(
             resolved.active().is_empty(),
             "persisted `--no-default-features` resolves an empty active set: {resolved:?}"
+        );
+
+        let inherited_rows = Core::planned_fork_rows(&project, "feat-auth", None);
+        assert!(
+            !inherited_rows
+                .iter()
+                .any(|(kind, _)| kind == super::FEATURE_REBUILD_ROW.0),
+            "a fork without feature overrides keeps the 0ms plan rows: {inherited_rows:?}"
+        );
+        let override_req = WorldFeatures::new(false, vec![FeatureEdit::Disable("dev".to_owned())]);
+        let override_rows = Core::planned_fork_rows(&project, "feat-auth", Some(&override_req));
+        assert!(
+            override_rows.contains(&(
+                super::FEATURE_REBUILD_ROW.0.to_owned(),
+                super::FEATURE_REBUILD_ROW.1.to_owned(),
+            )),
+            "a feature-overridden fork announces why images rebuild: {override_rows:?}"
+        );
+
+        fs::remove_file(project.join("Forkfile")).expect("remove Forkfile");
+        let missing = Core::apply_features(&project, WorldFeatures::new(true, Vec::new()))
+            .expect_err("missing Forkfile must fail closed");
+        assert_eq!(missing.code, "forkfile");
+        assert_eq!(
+            missing.message,
+            "cannot read `Forkfile`\nnext: restore the file, then retry `slipfork fork`"
         );
     }
 }

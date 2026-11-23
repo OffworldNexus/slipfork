@@ -252,7 +252,8 @@ impl<'a> BuildRun<'a> {
         }
         let config = state.config.clone();
         let id = format!(
-            "sf-{}",
+            "sf-{}-{}",
+            std::process::id(),
             &state_key(&instruction, args, self.context_hash, &config, &state.key)[..16]
         );
         let runtime = self.runtime;
