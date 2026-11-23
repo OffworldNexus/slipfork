@@ -3253,3 +3253,16 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-23T14:06 [M3.70.3] (lead) base a08bc288eeb341e92411f52837ec31916a26baea
 - 2026-11-23T14:08 [M3.70.3] (lead) fixed base ImageConfig seeding + Destination(workdir) resolution; 6 unit tests incl base PATH expansion and WORKDIR-relative COPY/--from; clippy+fmt green
 - 2026-11-23T14:08 [M3.70.3] (lead) status active -> done
+- 2026-11-23T14:16 [M3.70.2] (lead) attempt 3: all 3 suites green (2/0, 2/0, 5/0); deb installed 0.1.0 and daemon ExecStart=/usr/share/slipfork/lib/slipfork; demo+feat-auth 200 dev; prod-check wor
+- 2026-11-23T14:21 [M3.70.2] (lead) edited fields
+- 2026-11-23T14:21 ESCALATION #34 -> expert for M3.70.2 by lead: prod-shape runtime defects: image ENV not applied to pods (venv symlink resolution), suspected fork feature/stamp leak, 
+- 2026-11-23T14:21 [M3.70.4] (lead) created (task) Prod-shape runtime: rootfs symlink exec, feature-aware stamp trust & stale crun cleanup
+- 2026-11-23T14:21 [M3.70.2] (lead) status ready -> ready: blocked on M3.70.4 prod-shape runtime defects
+- 2026-11-23T14:21 [M3.70.4] (lead) status ready -> active
+- 2026-11-23T14:21 [M3.70.4] (lead) attempt 1/3 started
+- 2026-11-23T14:21 [M3.70.4] (lead) base c8237bc8d2ce434a9cce8057a99b1ac9990b4b7d; escalated from M3.70.2 after 3 cheap attempts
+- 2026-11-23T14:21 [M3.70.2] (lead) diagnostic: fresh up -F -dev plans 10 rows (no mailpit, dev off) and cwd /app applied; remaining defects = pod PATH resolves /usr/local/bin/python (rootfs symli
+- 2026-11-23T15:23 [M3.70.4] (lead) expert fixed 3 root causes; local workspace green; critical_guard authorized; live: 3 CLI suites + critical_dockerfile_live 3/3 + pod_runtime 1/1, packaged /usr
+- 2026-11-23T15:23 [M3.70.4] (lead) status active -> done
+- 2026-11-23T15:23 [M3.70.2] (lead) PROVEN by M3.70.4 live run on packaged .deb: world_journey 2/2, fork_live 2/2, status_live 5/5, dockerfile_live 3/3; prod-check 10 rows no mailpit, 200 on / and
+- 2026-11-23T15:23 [M3.70.2] (lead) status ready -> done
