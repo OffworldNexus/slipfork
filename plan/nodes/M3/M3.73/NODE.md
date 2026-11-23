@@ -2,12 +2,12 @@
 id: M3.73
 title: "Move the slipfork-lsp darwin/aarch64 archive leg to macos-14 (macos-15 arm64 pool cancels queued jobs after 15 min)"
 kind: task
-status: ready
+status: done
 owner: implementer
 priority: 3
 depends_on: []
 paths: [".github/workflows/**"]
-attempts: 0
+attempts: 1
 max_attempts: 3
 escalation: none
 created: "2026-11-23T20:16"

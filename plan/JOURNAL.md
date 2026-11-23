@@ -3314,3 +3314,8 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-23T20:16 [M3] (conductor) status done -> active
 - 2026-11-23T20:16 [M3.73] (conductor) created (task) Move the slipfork-lsp darwin/aarch64 archive leg to macos-14 (macos-15 arm64 pool cancels queued jobs after 15 min)
 - 2026-11-23T20:16 AUTOPILOT on by conductor Unblocking the macOS arm64 archive leg in M3.73
+- 2026-11-23T20:16 [M3.73] (lead) status ready -> active
+- 2026-11-23T20:16 [M3.73] (lead) attempt 1/3 started
+- 2026-11-23T20:16 [M3.73] (lead) base e29acf9c6c0fca71deaeb947bf5c42964dbc2e64
+- 2026-11-23T20:16 [M3.73] (lead) status active -> review
+- 2026-11-23T20:16 [M3.73] (lead) status review -> done

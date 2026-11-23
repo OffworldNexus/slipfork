@@ -300,10 +300,13 @@ jobs:
             arch: x86_64
             triple: x86_64-apple-darwin
             runs_on: macos-15-intel
+          # CI certifies darwin/aarch64 on macos-15; the shipped archive is built
+          # on macos-14 (same arm64, different pool, lower macOS floor) so one
+          # starved macos-15 pool cannot block release artifacts.
           - platform: darwin
             arch: aarch64
             triple: aarch64-apple-darwin
-            runs_on: macos-15
+            runs_on: macos-14
           - platform: windows
             arch: x86_64
             triple: x86_64-pc-windows-msvc
