@@ -3378,3 +3378,6 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-23T23:52 [M3.78] (lead) base 1a8c42fcbfd466197117f0bb69ac08456407268a
 - 2026-11-23T23:52 [M3.78] (lead) status active -> review
 - 2026-11-23T23:52 [M3.78] (lead) status review -> done
+- 2026-11-24T00:00 [M3] (conductor) status active -> done
+- 2026-11-24T00:00 HUMAN H-026 closed by conductor
+- 2026-11-24T00:00 AUTOPILOT off by conductor 0.1.0 (very experimental) published to stable; M3 gated done
