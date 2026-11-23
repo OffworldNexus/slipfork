@@ -12,8 +12,9 @@ volume, syncs the working tree, builds the product binaries (named by `cargo met
 installs them into `/usr/local/bin`, and runs `slipfork daemon install` (per-user unit) plus
 `slipfork daemon install --ingress` so `slipfork-ingress.socket`
 owns `:80` (the `userns` AppArmor profile and the control-socket handover are rendered by that
-product command only; this harness never writes either). `sync` also stamps the tracked
-`support/demo` template at `/home/slipfork/demo` once when the tree carries it.
+product command only; this harness never writes either). `sync` also refreshes the stamped
+`/home/slipfork/demo` checkout from the tracked `support/demo` template and commits the result
+(`sync <short-rev>`) whenever the tree carries it.
 No host `crun` is installed: the pinned static binary ships inside the `L0` world rootfs.
 
 `up` is idempotent by the tag `slipfork-dev-vm` and never reformats a device that carries a
@@ -34,8 +35,9 @@ keeps it unless `--delete-volume` is given.
   tools/do_vm.py ssh     [--identity PATH ...] [-- <remote command> ...]
   tools/do_vm.py down    [--yes] [--delete-volume]
 
-`sync` is also the install step: it seeds `support/demo` at `/home/slipfork/demo` once when the
-tree carries that template (a tree without it skips the seed), builds the
+`sync` is also the install step: it refreshes `support/demo` at `/home/slipfork/demo` from the
+tracked template and commits `sync <short-rev>` on every run (a tree without that template skips
+the seed), builds the
 product binaries (their names come from `cargo metadata`, in the `debug` profile), installs them
 into `/usr/local/bin`, runs `slipfork daemon install` as the suite user and
 `slipfork daemon install --ingress` as root (with `SUDO_UID` naming the suite user) — the single
@@ -113,8 +115,8 @@ PRODUCT_METADATA = "cargo metadata --format-version 1 --no-deps"
 PROFILE_BIN_PROFILES = ("debug", "release")
 DEMO_TEMPLATE = "support/demo"
 DEMO_STAMP = "slipfork-demo-stamp"
-DEMO_GIT_NAME = "Slipfork Demo"
-DEMO_GIT_EMAIL = "demo@slipfork.invalid"
+DEMO_GIT_NAME = "slipfork"
+DEMO_GIT_EMAIL = "slipfork@localhost"
 LOGIN_BANNER = "/etc/profile.d/slipfork-demo.sh"
 SUITE_HOME = f"{STATE_DIR}/home"
 # One short disk-backed test root on the Btrfs volume: `<state>/ctl/<world>/netns.sock` must fit
@@ -620,16 +622,23 @@ fi
 """
 
 
-def render_demo_seed(config: ProvisionConfig = PROVISION) -> str:
-    """Seed the tracked demo template once, as one Git commit, and never clobber later edits.
+def render_demo_seed(config: ProvisionConfig = PROVISION, rev: str = "local") -> str:
+    """Refresh or seed the demo checkout from the tracked template, as one Git commit.
 
-    A seeded demo carries the stamp file inside its own `.git`, so every later `sync` reports it
-    unchanged and touches nothing. A directory that exists without the stamp is somebody's work:
-    it fails closed and names the path instead of copying over it.
+    A stamped demo is refreshed on every `sync`: its tracked files are replaced with the
+    template's, while ignored state (`.git`, `.slipfork/`, `.venv/`, `node_modules/`, `build/`,
+    `.pnpm-store/`, …) is preserved and never deleted. A directory that exists without the stamp
+    is somebody's work: it fails closed and names the path instead of copying over it. The commit
+    is `sync <rev>` with the pinned author/committer identity, so `git status --porcelain` is
+    empty afterwards.
     """
     git = (
         f"runuser -u {_q(config.remote_user)} -- env HOME={_q(config.remote_home)} "
         "GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 "
+        f"GIT_AUTHOR_NAME={_q(config.demo_git_name)} "
+        f"GIT_AUTHOR_EMAIL={_q(config.demo_git_email)} "
+        f"GIT_COMMITTER_NAME={_q(config.demo_git_name)} "
+        f"GIT_COMMITTER_EMAIL={_q(config.demo_git_email)} "
         f'git -C "$_demo"'
     )
     template = _q(f"{config.remote_tree}/{config.demo_template}")
@@ -637,29 +646,31 @@ def render_demo_seed(config: ProvisionConfig = PROVISION) -> str:
 set -euo pipefail
 _demo={_q(config.remote_demo)}
 _stamp="$_demo/.git/{config.demo_stamp}"
-if [ -f "$_stamp" ]; then
-  echo "demo     unchanged $_demo (seeded once; owner edits are kept)"
-  exit 0
-fi
-if [ -e "$_demo" ]; then
+_template={template}
+if [ -e "$_demo" ] && [ ! -f "$_stamp" ]; then
   echo "slipfork: $_demo exists but carries no $_stamp; move it aside and re-run 'tools/do_vm.py sync'" >&2
   exit 1
 fi
-if [ ! -d {template} ]; then
-  echo "demo     skipped (no tracked template at {template}; author it to seed the demo)"
+if [ ! -d "$_template" ]; then
+  echo "demo     skipped (no tracked template at $_template; author it to seed the demo)"
   exit 0
 fi
-install -d -o {_q(config.remote_user)} -g {_q(config.remote_user)} -m 755 "$_demo"
-cp -a {template}/. "$_demo"/
+if [ ! -f "$_stamp" ]; then
+  install -d -o {_q(config.remote_user)} -g {_q(config.remote_user)} -m 755 "$_demo"
+  {git} init --quiet --initial-branch=main
+fi
+{git} ls-files -z | (cd "$_demo" && xargs -0 -r rm -f --)
+cp -a "$_template"/. "$_demo"/
 chown -R {_q(config.remote_user)}:{_q(config.remote_user)} "$_demo"
-{git} init --quiet --initial-branch=main
 {git} config user.name {_q(config.demo_git_name)}
 {git} config user.email {_q(config.demo_git_email)}
 {git} add --all
-{git} commit --quiet --message 'Slipfork 0.1.0 demo (seeded by tools/do_vm.py sync)'
-printf 'seeded by tools/do_vm.py sync\\n' > "$_stamp"
+if ! {git} diff --cached --quiet; then
+  {git} commit --quiet --message {_q(f"sync {rev}")}
+fi
+printf 'refreshed by tools/do_vm.py sync\\n' > "$_stamp"
 chown {_q(config.remote_user)}:{_q(config.remote_user)} "$_stamp"
-echo "demo     seeded $_demo (one commit; owner edits are kept from now on)"
+echo "demo     synced $_demo (sync {rev})"
 """
 
 
@@ -1647,12 +1658,14 @@ def _step_failed(
     raise HarnessError(f"{step} on {droplet.ip} failed ({result.returncode}): {detail}")
 
 
-def _seed_demo(droplet: Droplet, known_hosts: Path, identity: Identity) -> None:
-    """Seed `/home/slipfork/demo` from the tracked template once (`render_demo_seed`)."""
+def _seed_demo(
+    droplet: Droplet, known_hosts: Path, identity: Identity, rev: str
+) -> None:
+    """Refresh `/home/slipfork/demo` from the tracked template (`render_demo_seed`)."""
     _step_failed(
         "demo seeding",
         _run_remote_script(
-            droplet, known_hosts, identity, "demo-seed", render_demo_seed()
+            droplet, known_hosts, identity, "demo-seed", render_demo_seed(rev=rev)
         ),
         droplet,
         known_hosts,
@@ -2073,6 +2086,12 @@ def _git_files(root: Path, *args: str) -> list[PurePosixPath]:
     return [PurePosixPath(raw) for raw in result.stdout.split("\0") if raw]
 
 
+def _short_rev(root: Path) -> str:
+    """The 7-char local HEAD for the `sync <rev>` demo message (`local` before any commit)."""
+    result = _run(["git", "rev-parse", "--short=7", "HEAD"], cwd=root, check=False)
+    return result.stdout.strip() or "local"
+
+
 def _pruned(paths: list[PurePosixPath]) -> list[PurePosixPath]:
     return [
         path for path in paths if path.parts and path.parts[0] not in EXCLUDED_TOP_LEVEL
@@ -2152,7 +2171,7 @@ def cmd_sync(args: argparse.Namespace) -> int:
             f"install -d -o {REMOTE_USER} -g {REMOTE_USER} -m 700 {SUITE_TEST_ROOT}",
         )
     )
-    _seed_demo(droplet, known_hosts, identity)
+    _seed_demo(droplet, known_hosts, identity, _short_rev(root))
     _build_product(droplet, known_hosts, identity)
     _install_product(droplet, known_hosts, identity)
     print(f"synced {len(sync_paths)} file(s) to {REMOTE_TREE} on {droplet.ip}")

@@ -1055,20 +1055,20 @@ fn fork_and_drop_a_live_world_without_leaving_snapshots() {
     fs::write(&pg_stamp, serde_json::to_vec(&stamp).expect("encode")).expect("break the epoch");
     // A stamp-only rewrite leaves every step digest intact, so the engine may legitimately report
     // `cached`. Insert a run-unique `RUN` instruction inside the `dev` stage the Forkfile actually
-    // selects (`on dev: stage dev`); an EOF `RUN` would only edit the unused `prod` stage, and a
+    // selects (`on dev: stage dev`); an EOF `RUN` would only edit an unused later stage, and a
     // constant instruction would stay `cached` on a second identical run.
     let front_dockerfile = fork_project.join("front/Dockerfile");
     let document =
         fs::read_to_string(&front_dockerfile).expect("read the fork `frontend` Dockerfile");
-    let Some(prod_stage) = document.find("FROM dev AS prod") else {
-        panic!("the demo `frontend` Dockerfile must define `FROM dev AS prod`: {document:?}");
+    let Some(build_stage) = document.find("FROM dev AS build") else {
+        panic!("the demo `frontend` Dockerfile must define `FROM dev AS build`: {document:?}");
     };
-    let mut changed = document[..prod_stage].to_owned();
+    let mut changed = document[..build_stage].to_owned();
     if !changed.ends_with('\n') {
         changed.push('\n');
     }
     changed.push_str(&format!("RUN echo {}\n", unique_suffix()));
-    changed.push_str(&document[prod_stage..]);
+    changed.push_str(&document[build_stage..]);
     fs::write(&front_dockerfile, changed).expect("change a real `frontend` Dockerfile input");
     let down = lab.run_in(&fork_project, &["down"]);
     assert!(

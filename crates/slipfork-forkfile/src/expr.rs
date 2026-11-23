@@ -307,27 +307,6 @@ pub fn tool_prefix(command: &str) -> Option<(&str, &str)> {
     Some((name, rest[end..].trim_start()))
 }
 
-/// Inserts `--no-sync` after the `run` subcommand of an `@uv` command.
-///
-/// The remainder is spliced back byte-for-byte, so `@uv  run\tapp` keeps every separator; an
-/// already-synced command and any non-`uv` tool are returned unchanged.
-#[must_use]
-pub fn no_sync_uv(command: &str) -> String {
-    let Some(("uv", rest)) = tool_prefix(command) else {
-        return command.to_owned();
-    };
-    let tokens: Vec<&str> = rest.split_ascii_whitespace().collect();
-    if tokens.first() != Some(&"run") || tokens.contains(&"--no-sync") {
-        return command.to_owned();
-    }
-    let leading = rest.len() - rest.trim_start().len();
-    let insert = command.len() - rest.len() + leading + "run".len();
-    let mut normalized = command[..insert].to_owned();
-    normalized.push_str(" --no-sync");
-    normalized.push_str(&command[insert..]);
-    normalized
-}
-
 fn advance(start: Position, prefix: &str) -> Position {
     Position::new(
         start.line,
@@ -340,7 +319,7 @@ fn advance(start: Position, prefix: &str) -> Position {
 
 #[cfg(test)]
 mod tests {
-    use super::{no_sync_uv, tool_prefix};
+    use super::tool_prefix;
 
     #[test]
     fn tool_prefix_returns_the_tool_and_verbatim_remainder() {
@@ -349,16 +328,5 @@ mod tests {
         assert_eq!(tool_prefix("@node app.js"), Some(("node", "app.js")));
         assert_eq!(tool_prefix("uv run app"), None);
         assert_eq!(tool_prefix("@"), None);
-    }
-
-    #[test]
-    fn no_sync_uv_preserves_every_separator() {
-        assert_eq!(no_sync_uv("@uv run app"), "@uv run --no-sync app");
-        assert_eq!(no_sync_uv("@uv  run  app"), "@uv  run --no-sync  app");
-        assert_eq!(no_sync_uv("@uv\trun\tapp"), "@uv\trun --no-sync\tapp");
-        assert_eq!(no_sync_uv("  @uv run  app"), "  @uv run --no-sync  app");
-        assert_eq!(no_sync_uv("@uv run --no-sync app"), "@uv run --no-sync app");
-        assert_eq!(no_sync_uv("@uv sync"), "@uv sync");
-        assert_eq!(no_sync_uv("uv run app"), "uv run app");
     }
 }

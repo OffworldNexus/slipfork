@@ -37,7 +37,7 @@ image api . {
   service web {
     port 8000
     route /api
-    run: @uv run uvicorn app.main:app --host 0.0.0.0 --port $port
+    on dev: run: @uv run uvicorn app.main:app --reload --host 0.0.0.0 --port $port
   }
 }
 ```
@@ -175,6 +175,8 @@ on mail {
   `on <expr>: <cmd>` and `on <expr> { ... }` guard individual lines inside every hook block, nesting to any depth; `else: <cmd>`, `else { ... }` and `else on <expr>` close the guard, on the same or the next line. Each guarded condition is type-checked statically and inactive branches never run, while `on` stays a literal command word unless a complete condition is followed by `:` or `{`.
 - **`before-start when changed(...)`:** hashes inputs against `.slipfork/` stamps, so an unchanged step skips in under 1 ms and the stamps travel into every fork.
 - **`@<tool>` auto-prequels:** `@uv`, `@poetry`, `@pnpm`, `@npm`, `@yarn`, `@bun`, `@composer`, `@bundle`, `@go` and `@cargo` synthesize one deduplicated `(image, lockfile_dir)` install node.
+- **`@<tool>` means "sync at boot":** the prequel marker belongs inside `on dev`, because it always synthesizes that deduplicated `uv sync` / `pnpm install` node — including dev dependencies. A hook treats `@<tool>` only as that boot-time prequel marker; the hook runner never rewrites it to a direct binary.
+- **Slipfork never rewrites `uv`:** `uv run` executes verbatim, so it syncs per `uv`'s own rules. A non-`dev` world should write `uv run --no-sync …` explicitly in `run:` and in `before-start`/`pre-deploy`/`post-deploy`/`failed-deploy`; `slipfork exec` is passed through untouched too.
 
 ## 8. Validation and tooling
 

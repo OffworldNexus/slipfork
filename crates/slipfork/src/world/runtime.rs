@@ -28,9 +28,7 @@ mod ready;
 mod resources;
 mod rootfs;
 
-use helpers::{
-    ServiceLaunch, merge_env, merge_path, project_binds, shell_command, tool_env, upsert_env,
-};
+use helpers::{ServiceLaunch, merge_env, merge_path, project_binds, shell_command, upsert_env};
 use images::{BuiltImage, ImageCache};
 use ready::{Ready, Staged};
 
@@ -501,9 +499,6 @@ impl WorldRuntime {
             files: Vec::new(),
         };
         upsert_env(&mut spec.env, launch_env);
-        if let Some(command) = &step.command {
-            upsert_env(&mut spec.env, tool_env(command));
-        }
         self.launch_pod(&spec)?;
         let ready = match port {
             Some(port) => Ready::Service {

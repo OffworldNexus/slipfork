@@ -39,3 +39,23 @@ base c9e0c544eb266a67333885f52e35091dcc054dcf
 ## 2026-11-23T19:11 [conductor]
 
 edited fields
+
+## 2026-11-23T19:12 [lead]
+
+edited fields
+
+## 2026-11-23T19:12 [lead]
+
+edited fields
+
+## 2026-11-23T19:28 [lead]
+
+status active -> review
+
+## 2026-11-23T19:28 [lead]
+
+Triad: arch/tests/ux findings fixed (tool_env UV_NO_SYNC removed; doc snippets; stage fixture). Local: make check + docs-check + test-tools + guard + critical_guard green. Live 165.232.86.174 on packaged 0.1.0 .deb: world_journey 2/2, fork_live 2/2, status_live 5/5; prod-check -F -dev 200 / + /api/status, api=/app/.venv uvicorn CMD, front=node build, worker=uv run --no-sync, no mailpit, 0 /project mounts; drop -f 236ms; demo+feat-auth dev 200, tralala stopped; VM demo status clean.
+
+## 2026-11-23T19:28 [lead]
+
+status review -> done

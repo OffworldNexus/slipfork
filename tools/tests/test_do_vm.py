@@ -477,6 +477,7 @@ def _demo_config(tmp_path: Path, **overrides: str) -> object:
         "Dockerfile": "FROM scratch AS app\n",
         "README.md": "the tracked demo\n",
         "slipfork.toml": 'project = "demo"\n',
+        ".gitignore": ".pnpm-store/\nnode_modules/\n",
     }.items():
         (template / name).write_text(body, encoding="utf-8")
     home = tmp_path / "home"
@@ -1906,15 +1907,16 @@ class HarnessTests(unittest.TestCase):
         assert result.returncode == 2
         assert "skipping :80" not in result.stderr
 
-    def test_demo_seed_copies_once_and_keeps_owner_edits(self):
+    def test_demo_seed_refreshes_the_template_and_commits_cleanly(self):
         tmp_path = self.tmp_path
         config = _demo_config(tmp_path)
         demo = Path(config.remote_demo)
+        template = Path(config.remote_tree) / do_vm_mod.DEMO_TEMPLATE
         bin_dir = _fake_bin(tmp_path)
 
         seeded = _run_step(do_vm_mod.render_demo_seed(config), bin_dir, tmp_path)
         assert seeded.returncode == 0, seeded.stderr
-        assert "seeded" in seeded.stdout
+        assert "synced" in seeded.stdout
         assert (demo / "snow.yml").is_file()
         assert (demo / "slipfork.toml").read_text(
             encoding="utf-8"
@@ -1927,12 +1929,32 @@ class HarnessTests(unittest.TestCase):
             _git_demo(demo, "config", "user.email").strip() == do_vm_mod.DEMO_GIT_EMAIL
         )
         assert _git_demo(demo, "status", "--porcelain") == ""
+        identity = f"{do_vm_mod.DEMO_GIT_NAME} <{do_vm_mod.DEMO_GIT_EMAIL}>"
+        assert _git_demo(
+            demo, "log", "-1", "--format=%an <%ae>%n%cn <%ce>"
+        ).splitlines() == [
+            identity,
+            identity,
+        ]
 
+        # Ignored runtime state survives a refresh and never enters the commit.
+        (demo / ".pnpm-store").mkdir()
+        (demo / ".pnpm-store" / "index.json").write_text("{}", encoding="utf-8")
         (demo / "README.md").write_text("owner edit\n", encoding="utf-8")
+        (template / "README.md").write_text("template v2\n", encoding="utf-8")
+
         again = _run_step(do_vm_mod.render_demo_seed(config), bin_dir, tmp_path)
         assert again.returncode == 0, again.stderr
-        assert "unchanged" in again.stdout
-        assert (demo / "README.md").read_text(encoding="utf-8") == "owner edit\n"
+        assert "synced" in again.stdout
+        assert (demo / "README.md").read_text(encoding="utf-8") == "template v2\n"
+        assert (demo / ".pnpm-store" / "index.json").is_file()
+        assert ".pnpm-store" not in _git_demo(demo, "ls-files")
+        assert _git_demo(demo, "log", "-1", "--format=%s").startswith("sync ")
+        assert _git_demo(demo, "log", "--oneline").count("\n") == 2
+        assert _git_demo(demo, "status", "--porcelain") == ""
+        assert (
+            _git_demo(demo, "config", "user.email").strip() == do_vm_mod.DEMO_GIT_EMAIL
+        )
 
     def test_demo_seed_fails_closed_on_an_unstamped_directory(self):
         tmp_path = self.tmp_path

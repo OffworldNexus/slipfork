@@ -474,17 +474,46 @@ fn production_shape_drops_dev_commands_and_mailpit() {
             .find(|step| step.kind == BootKind::Service && step.subject == id)
             .unwrap_or_else(|| panic!("`{id}` must be a service node"))
     };
-    for id in ["api", "front"] {
-        assert_eq!(
-            service(id).command,
-            None,
-            "`{id}` must run the image's own `CMD` when `dev` is off"
-        );
-    }
+    assert_eq!(
+        service("api").command,
+        None,
+        "`api` runs the image `CMD` in a non-`dev` world"
+    );
+    assert_eq!(
+        service("front").command,
+        None,
+        "`front` runs the image `CMD` in a non-`dev` world"
+    );
     assert_eq!(
         service("worker").command.as_deref(),
-        Some("python -m app.worker"),
-        "`worker` keeps its explicit `else: run:` command"
+        Some("uv run --no-sync python -m app.worker"),
+        "`worker` writes its own `--no-sync` in the production shape"
+    );
+    let backend_setups = plan
+        .steps
+        .iter()
+        .filter(|step| step.kind == BootKind::Setup && step.image.as_deref() == Some("backend"))
+        .count();
+    assert_eq!(
+        backend_setups, 0,
+        "a non-`dev` plan carries zero `uv sync` setup nodes"
+    );
+    assert!(
+        plan.steps.iter().all(|step| !step
+            .command
+            .as_deref()
+            .is_some_and(|command| command.starts_with('@'))),
+        "no production command may carry an `@` prequel marker"
+    );
+    let pre = plan
+        .steps
+        .iter()
+        .find(|step| step.phase == Some(slipfork_world::HookPhase::PreDeploy))
+        .expect("a pre-deploy node");
+    assert_eq!(
+        pre.command.as_deref(),
+        Some("uv run --no-sync python -m app.migrate"),
+        "`pre-deploy` carries the literal `--no-sync` in the production shape"
     );
 }
 
@@ -514,8 +543,8 @@ fn current_epoch_services_carry_no_resource_edges_and_skip_the_pre_deploy_barrie
         .position(|step| step.phase == Some(slipfork_world::HookPhase::PreDeploy))
         .expect("a pre-deploy node");
 
-    // The demo runs both `backend` services through `@uv`, so the compiler emits exactly one
-    // deduplicated `uv sync` setup node per image. Derive its index instead of hardcoding it.
+    // Only `api` carries `@uv` (under `on dev`), so the compiler emits exactly one `uv sync`
+    // setup node for `backend`. Derive its index instead of hardcoding it.
     let setups = |image: &str| -> Vec<usize> {
         (0..plan.steps.len())
             .filter(|&index| {
@@ -528,7 +557,7 @@ fn current_epoch_services_carry_no_resource_edges_and_skip_the_pre_deploy_barrie
     assert_eq!(
         backend_setups.len(),
         1,
-        "`@uv` deduplicates `api` and `worker` into exactly one `uv sync` node"
+        "`api`'s `@uv` yields exactly one `uv sync` node for `backend`"
     );
     let backend_setup = backend_setups[0];
     assert_eq!(

@@ -42,9 +42,11 @@ The same matrix works on a fork with `feat-auth--demo` in place of `demo`, inclu
 | `front` | SvelteKit 2 + Svelte 5 on `pnpm` in `./front` | `demo.localhost/` on `3000` |
 | `mailpit` | `from axllent/mailpit:latest` | `mail.demo.localhost` |
 
-`pre-deploy: uv run python -m app.migrate` (dev) / `python -m app.migrate` (prod) creates the schema,
-seeds two rows and writes `badge.svg` plus a private `audit.json`. The worker handles a heartbeat job
-every 15 seconds, so the activity counter on the page moves on its own.
+`pre-deploy: uv run --no-sync python -m app.migrate` runs in both modes — it creates the schema,
+seeds two rows and writes `badge.svg` plus a private `audit.json`. Slipfork never rewrites `uv`
+flags, so the explicit `--no-sync` (here and on `worker`'s `run:`) is what keeps a production pod
+from syncing or installing. The worker handles a heartbeat job every 15 seconds, so the activity
+counter on the page moves on its own.
 
 ```mermaid
 flowchart LR
@@ -68,8 +70,8 @@ flowchart LR
 `front/src/` re-runs only `uvicorn --reload` / `vite dev`, so no production build is paid on every
 save.
 
-The `prod` stage in `api/Dockerfile` and `front/Dockerfile` owns `uv sync --no-dev`,
-`pnpm run build`, and the `CMD` that serves the result. Drop `dev` to run that production shape —
+`api`'s prod stage runs `uv sync --no-dev`; `front`'s `build` stage runs `pnpm run build`, and each
+prod stage owns only the `CMD` that serves the result. Drop `dev` to run that production shape —
 no `/project` bind, no `mailpit`, and the built images answer on their declared ports:
 
 ```console
@@ -77,8 +79,10 @@ $ slipfork fork prod-check -F -dev
 ✓ Ready -> http://prod-check--demo.localhost
 ```
 
-`/` and `/api/status` come from `node build` and `uvicorn` inside the image, so the Forkfile needs no
-`else` fallback for the frontend.
+`@uv` and `@pnpm` are the "sync at boot" prequel markers, so they only appear under `on dev:`
+(a dev world may sync; a non-`dev` world writes `--no-sync` itself). `/` and `/api/status` come
+from `node build` and `uvicorn` inside the images, so neither `front` nor `api` needs an `else`
+fallback: their `run:` lives only under `on dev` and prod runs the image `CMD`.
 
 ## What a fork carries
 

@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use super::rootfs::{is_file_in_rootfs, shim_exists};
-use slipfork_forkfile::{FeatureSet, direct_bin, no_sync_uv, tool_prefix};
+use slipfork_forkfile::{FeatureSet, direct_bin};
 use slipfork_world::{Bind, BindSource, PodEnv};
 
 const DEFAULT_PATH: &str = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
@@ -76,22 +76,6 @@ pub(super) fn upsert_env(env: &mut Vec<PodEnv>, entries: Vec<PodEnv>) {
     }
 }
 
-/// The `@<tool>` name of a declaration (`None` for a plain shell command).
-pub(super) fn tool(command: &str) -> Option<&str> {
-    tool_prefix(command).map(|(tool, _)| tool)
-}
-
-/// Environment that suppresses a tool's implicit sync step inside a service pod.
-///
-/// The `@`-setup node still owns syncing; a service that merely runs through `@uv` must not
-/// re-check the lockfile on every boot (`specs/03` §3).
-pub(super) fn tool_env(command: &str) -> Vec<PodEnv> {
-    match tool(command) {
-        Some("uv") => vec![PodEnv::new("UV_NO_SYNC", "1")],
-        _ => Vec::new(),
-    }
-}
-
 /// A resolved service launch: the exact argv to exec plus any additive env entries that point
 /// package managers at the project's own shims.
 pub(super) struct ServiceLaunch {
@@ -132,13 +116,7 @@ impl ServiceLaunch {
                     let env = prefix_env(&prefix, path);
                     (format!("{}{}", prefix.program, prefix.rest), true, env)
                 }
-                None => {
-                    let text = match tool(command) {
-                        Some("uv") => shell_command(&no_sync_uv(command)),
-                        _ => shell_command(command),
-                    };
-                    (text, false, Vec::new())
-                }
+                None => (shell_command(command), false, Vec::new()),
             };
         Self {
             argv: exec_argv(rootfs, path, &text, trusted_absolute),
@@ -402,7 +380,7 @@ mod tests {
         );
         assert_eq!(
             launch.argv,
-            ["/bin/sh", "-c", "uv run --no-sync python -m app.worker"]
+            ["/bin/sh", "-c", "uv run python -m app.worker"]
         );
         assert!(launch.env.is_empty());
     }
@@ -419,10 +397,7 @@ mod tests {
             super::DEFAULT_PATH,
             "@uv run -m uvicorn",
         );
-        assert_eq!(
-            flag_first.argv,
-            ["/bin/sh", "-c", "uv run --no-sync -m uvicorn"]
-        );
+        assert_eq!(flag_first.argv, ["/bin/sh", "-c", "uv run -m uvicorn"]);
         let foreign = ServiceLaunch::resolve(
             project.path(),
             "/opt/app",
@@ -432,7 +407,7 @@ mod tests {
         );
         assert_eq!(
             foreign.argv,
-            ["/bin/sh", "-c", "uv run --no-sync uvicorn app.main:app"]
+            ["/bin/sh", "-c", "uv run uvicorn app.main:app"]
         );
     }
 }

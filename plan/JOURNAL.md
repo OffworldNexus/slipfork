@@ -3302,3 +3302,8 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-23T19:04 [M3.72] (lead) attempt 1/3 started
 - 2026-11-23T19:04 [M3.72] (lead) base c9e0c544eb266a67333885f52e35091dcc054dcf
 - 2026-11-23T19:11 [M3.72] (conductor) edited fields
+- 2026-11-23T19:12 [M3.72] (lead) edited fields
+- 2026-11-23T19:12 [M3.72] (lead) edited fields
+- 2026-11-23T19:28 [M3.72] (lead) status active -> review
+- 2026-11-23T19:28 [M3.72] (lead) Triad: arch/tests/ux findings fixed (tool_env UV_NO_SYNC removed; doc snippets; stage fixture). Local: make check + docs-check + test-tools + guard + critical_g
+- 2026-11-23T19:28 [M3.72] (lead) status review -> done

@@ -38,8 +38,8 @@ image api . {
   service web {
     port 8000
     route /api
-    pre-deploy: @uv run alembic upgrade head
-    run: uv run gunicorn app.main:app --bind 0.0.0.0:$port
+    pre-deploy: uv run --no-sync alembic upgrade head
+    on dev: run: @uv run uvicorn app.main:app --reload --host 0.0.0.0 --port $port
   }
 }
 ```
@@ -207,11 +207,10 @@ image backend . {
     port 8000
     internal_ports [8081]
     route exact /healthz
-    before-start when changed(prisma/schema.prisma): @pnpm exec prisma generate
-    pre-deploy: @uv run alembic upgrade head
-    run {
-      uv run python -m app.migrate
-      uv run gunicorn app.main:app -b 0.0.0.0:$port
+    pre-deploy: uv run --no-sync alembic upgrade head
+    on dev {
+      before-start when changed(prisma/schema.prisma): @pnpm exec prisma generate
+      run: @uv run uvicorn app.main:app --reload --host 0.0.0.0 --port $port
     }
   }
 }
@@ -220,7 +219,9 @@ image backend . {
 `before-start when changed(...)` hashes its inputs against `.slipfork/` stamps, so an unchanged step
 skips in under 1 ms and the stamps travel into every fork. An `@`-prefixed tool (`@uv`, `@poetry`,
 `@pnpm`, `@npm`, `@yarn`, `@bun`, `@composer`, `@bundle`, `@go`, `@cargo`) also inserts one
-deduplicated lockfile-watched install node per `(image, lockfile_dir)`.
+deduplicated lockfile-watched install node per `(image, lockfile_dir)` — so a hook treats `@<tool>`
+only as that boot-time prequel marker, never as a direct-binary rewrite. Keep it under `on dev`:
+a `dev` world may sync, while a non-`dev` command writes `uv run --no-sync …` itself.
 
 ```mermaid
 flowchart LR
