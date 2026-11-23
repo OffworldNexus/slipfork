@@ -3371,3 +3371,5 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-23T23:40 [M3.77] (lead) base cea724b9dd35f6bc0f9ab6616ec3868bd070976c
 - 2026-11-23T23:40 [M3.77] (lead) status active -> done
 - 2026-11-23T23:40 [M3.77] (lead) remote-peeled tag check in both push and workflow_dispatch branches; yaml ok, plan ok, guard ok, peeled=87d941df4a3da542559d0f3eeedf4664c3ceec4a
+- 2026-11-23T23:51 [M3] (conductor) status active -> active
+- 2026-11-23T23:51 [M3.78] (conductor) created (task) Stop publishing to non-existent Homebrew/Scoop taps (the rest of 0.1.0 is live)
