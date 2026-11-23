@@ -68,6 +68,11 @@ flowchart LR
 Because `.venv`, `node_modules`, database pages and bucket objects already exist on Btrfs, the fork
 costs a snapshot rather than a rebuild.
 
+`dev` is built in: `slipfork up` bind-mounts your checkout at `/project` for live reload. Drop it for
+the production shape with `-F -dev`, which starts each image's own `CMD` instead. The shipped
+`support/demo` keeps its code in `./api` and `./front`, so `slipfork fork prod-check -F -dev` serves
+the built FastAPI and SvelteKit images with no `/project` bind and no `mailpit`.
+
 | Verb | What it does |
 | :--- | :--- |
 | `slipfork up` | Boot the world and print `✓ Ready -> <url>` |
@@ -76,6 +81,7 @@ costs a snapshot rather than a rebuild.
 | `slipfork status` | One tree of every world and domain, forks included |
 | `slipfork logs -f api` | Stream merged logs with per-service gutters |
 | `slipfork shell pg` | Real PTY `psql`; `shell api` for bash, `shell cache` for redis-cli |
+| `slipfork features +mail` | Show features, or persist `+mail`/`-dev`/`reset` for the next boot |
 | `slipfork down` | Stop the world, keep the data subvolumes |
 
 ## Install

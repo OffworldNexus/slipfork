@@ -1,6 +1,5 @@
 # forkfile: 0.1
 features {
-  default = [dev]
   dev = [mail]
   mail
 }
@@ -36,19 +35,23 @@ env common {
   on mail: SMTP_ADDR = "127.0.0.1:1025"
 }
 
-image backend . {
+image backend ./api {
   use env common
   on dev: stage dev
   service api {
     port 8000
     route /api
-    pre-deploy: uv run python -m app.migrate
     on dev {
+      pre-deploy: uv run python -m app.migrate
       run: @uv run uvicorn app.main:app --reload --host 0.0.0.0 --port $port
-    } else: run: @uv run uvicorn app.main:app --host 0.0.0.0 --port $port
+    } else: pre-deploy: python -m app.migrate
   }
   service worker {
-    run: @uv run python -m app.worker
+    on dev {
+      run: @uv run python -m app.worker
+    } else {
+      run: python -m app.worker
+    }
   }
 }
 
@@ -56,14 +59,11 @@ image frontend ./front {
   use env common
   on dev: stage dev
   service front {
-    port 4173
+    port 3000
     route /
     on dev {
       port 5173
       run: @pnpm exec vite dev --host 0.0.0.0 --port $port
-    } else {
-      pre-deploy: pnpm run build
-      run: @pnpm exec node build
     }
   }
 }

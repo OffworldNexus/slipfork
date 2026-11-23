@@ -50,6 +50,7 @@ flowchart LR
 | `slipfork shell <target>` | Real PTY: `bash`/`sh`, `psql`, or `redis-cli` for one declared target |
 | `slipfork exec [service\|image] -- <cmd>` | Run any command in a pod and forward its exit code |
 | `slipfork env [component]` | Resolved runtime variables, secrets redacted |
+| `slipfork features [+mail\|-dev\|reset]` | Resolved features and persisted edits for the next boot |
 | `slipfork secret list\|set\|unset` | Manage local offline secrets; `set` reads stdin |
 | `slipfork open [service]` | Open the world or route URL in a browser |
 | `slipfork auth [url]` | Pair this machine with a remote `OSPP v1` endpoint |
@@ -62,6 +63,18 @@ flowchart LR
 The `fork` rows report two tiers: `snapshot_ms` for the CoW clone (`~150–365ms`, asserted `< 500ms`)
 and `elapsed_ms` for the full 8-component boot (`~5.5s` median, asserted `< 8.0s`). A warm fork
 prints `cached` images and `up to date` setup/hooks and re-runs nothing.
+
+`dev` is built in, so a normal boot bind-mounts your checkout at `/project` for live reload. Drop it
+for the production shape — no bind, no dev-only services, and each image runs its own `CMD`:
+
+```console
+$ slipfork fork prod-check -F -dev
+✓ Ready -> http://prod-check--acme-shop.localhost
+```
+
+`-F` also accepts comma lists and `+`/`-` edits (`-F mail,dev`, `-F +mail`, `-F -mail`), and
+`--no-default-features` starts from an empty base. `slipfork up` and `fork` persist the result in
+`.slipfork/features.json`; `slipfork env` evaluates without writing.
 
 ## Naming a world, fork or service
 

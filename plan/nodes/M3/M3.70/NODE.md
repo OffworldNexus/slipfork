@@ -1,17 +1,23 @@
 ---
 id: M3.70
 title: "Restructure support/demo into ./api + ./front, use pure Dockerfile CMD in !dev, update specs/docs & verify dev + -F -dev live on VM"
-kind: task
+kind: epic
 status: ready
-owner: implementer
 priority: 3
 depends_on: [M3.69]
-paths: ["support/demo/**", "crates/slipfork/tests/**", "specs/**", "docs/**", README.md, TESTING_PLAN.md]
+paths:
+  - "crates/slipfork/**"
+  - "support/demo/**"
+  - "packaging/man/**"
+  - "specs/**"
+  - "docs/**"
+  - README.md
+  - TESTING_PLAN.md
 attempts: 0
 max_attempts: 3
 escalation: none
 created: "2026-11-23T13:07"
-updated: "2026-11-23T13:07"
+updated: "2026-11-23T13:30"
 ---
 
 # Goal

@@ -6,7 +6,6 @@ Slipfork runs your cloud environment locally in a box; CI is the clutch. One `Fo
 # forkfile: 0.1
 
 features {
-  default = [dev]
   dev = [mail]
   mail
 }
@@ -71,7 +70,11 @@ Each `image` declares a rootfs and encloses the `service`s and hooks that run in
 
 ## 3. `features` and `on <expr>`
 
-`features` declares named switches; `default` is active for local commands. `on <expr>` accepts `dev`, `!dev`, `dev & mail` and `staging | preview`, switching Dockerfile stages, conditional `arg`s, hot-reloading `run:` commands and dev-only services. Slipfork type-checks every branch before booting anything.
+`dev` is built in and active for every local command: it is the switch that bind-mounts the checkout at `/project`. `-F -dev` (or `--no-default-features`) drops it and runs each image's own `ENTRYPOINT`/`CMD` with no `/project` bind.
+
+`features` declares extra switches and groups. The default base is `{dev} ∪ features.default`, and a group implies its members transitively, so `dev = [mail]` turns `mail` on whenever `dev` is on. `-F/--features` edits that set per command (`-F mail`, `-F +mail`, `-F -dev`, `-F dev,mail`), and `slipfork features` persists the same edits to `.slipfork/features.json`.
+
+`on <expr>` accepts `dev`, `!dev`, `dev & mail` and `staging | preview`, switching Dockerfile stages, conditional `arg`s, hot-reloading `run:` commands and dev-only services. Slipfork type-checks every branch before booting anything.
 
 `else` closes a guard instead of mirroring it: `on dev { … } else { … }` for blocks, `on dev: … else: …` for one-line items, and `else on <expr>` to chain a second condition. The plain `else` runs only when neither the `on` condition nor any earlier `else on` matched. Write one `on dev { … } else { … }` rather than mirroring the condition with its negation.
 

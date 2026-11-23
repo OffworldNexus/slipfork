@@ -1,9 +1,0 @@
-.git
-.slipfork
-.forks
-**/.venv/**
-**/node_modules/**
-**/build/**
-**/.svelte-kit/**
-**/__pycache__/**
-**/*.pyc

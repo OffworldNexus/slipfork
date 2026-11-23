@@ -37,14 +37,14 @@ The same matrix works on a fork with `feat-auth--demo` in place of `demo`, inclu
 | `cache` | Redis 7 | `cache.url` |
 | `uploads` | native S3 bucket, private | `uploads.demo.localhost` (`403` anonymous) |
 | `assets` | native S3 bucket, `public-read` | `assets.demo.localhost` (`200` anonymous) |
-| `api` | FastAPI on `uv`, `route /api` | `demo.localhost/api` |
-| `worker` | `uv` background loop, `BRPOP` on Redis | no port, logs only |
-| `front` | SvelteKit 2 + Svelte 5 on `pnpm` | `demo.localhost/` |
+| `api` | FastAPI on `uv` in `./api`, `route /api` | `demo.localhost/api` |
+| `worker` | `uv` background loop in `./api`, `BRPOP` on Redis | no port, logs only |
+| `front` | SvelteKit 2 + Svelte 5 on `pnpm` in `./front` | `demo.localhost/` on `3000` |
 | `mailpit` | `from axllent/mailpit:latest` | `mail.demo.localhost` |
 
-`pre-deploy: @uv run python -m app.migrate` creates the schema, seeds two rows and writes
-`badge.svg` plus a private `audit.json`. The worker handles a heartbeat job every 15 seconds, so the
-activity counter on the page moves on its own.
+`pre-deploy: uv run python -m app.migrate` (dev) / `python -m app.migrate` (prod) creates the schema,
+seeds two rows and writes `badge.svg` plus a private `audit.json`. The worker handles a heartbeat job
+every 15 seconds, so the activity counter on the page moves on its own.
 
 ```mermaid
 flowchart LR
@@ -63,12 +63,22 @@ flowchart LR
 
 ## Dev boots never build
 
-Both Dockerfiles are multi-stage and the Forkfile selects the dependency-only stage with
-`on dev: stage dev`. Editing `app/` or `front/src/` re-runs only `uvicorn --reload` / `vite dev`, so
-no production build is paid on every save.
+`dev` is built in and active, so each image selects its dependency-only stage with
+`on dev: stage dev` and Slipfork bind-mounts this checkout at `/project`. Editing `api/app/` or
+`front/src/` re-runs only `uvicorn --reload` / `vite dev`, so no production build is paid on every
+save.
 
-The `prod` stage still owns `pnpm run build` and `uv sync --no-dev`. A local non-dev boot builds the
-frontend once through the `else` branch of the Vite dev guard.
+The `prod` stage in `api/Dockerfile` and `front/Dockerfile` owns `uv sync --no-dev`,
+`pnpm run build`, and the `CMD` that serves the result. Drop `dev` to run that production shape —
+no `/project` bind, no `mailpit`, and the built images answer on their declared ports:
+
+```console
+$ slipfork fork prod-check -F -dev
+✓ Ready -> http://prod-check--demo.localhost
+```
+
+`/` and `/api/status` come from `node build` and `uvicorn` inside the image, so the Forkfile needs no
+`else` fallback for the frontend.
 
 ## What a fork carries
 
@@ -84,8 +94,8 @@ inherits the parent's dependency stamps, so `uv sync` and `pnpm install` report 
 
 ## Where to look
 
-* `app/` — FastAPI routes, psycopg access, boto3 client, SMTP test, migration and worker.
+* `api/` — FastAPI routes, psycopg access, boto3 client, SMTP test, migration and worker.
 * `front/` — SvelteKit 2 + Svelte 5 UI reading `/api/status` every two seconds.
-* `Forkfile` — resources, `env common`, `@uv` / `@pnpm` prequels, the `mail` feature.
+* `Forkfile` — resources, `env common`, `@uv` / `@pnpm` prequels, the `dev` and `mail` features.
 
 Next: [the Forkfile reference](../../docs/forkfile.md) and [the CLI](../../docs/cli.md).

@@ -3220,3 +3220,8 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-23T13:43 [M3.69.2] (lead) status active -> done
 - 2026-11-23T13:43 [M3.69] (lead) gate: cargo fmt/clippy --workspace + cargo test --workspace green (0 failures); 3 Triad reviewers passed after 1 consolidated fix pass per child
 - 2026-11-23T13:43 [M3.69] (lead) status ready -> done
+- 2026-11-23T13:44 [M3.70.1] (lead) status ready -> active
+- 2026-11-23T13:44 [M3.70.1] (lead) attempt 1/3 started
+- 2026-11-23T13:44 [M3.70.1] (lead) base aa457cbf8587030d03557f7c0335fb6f53f9f084
+- 2026-11-23T13:47 [M3.70.1] (lead) post-pass: found build-context regression (per-image .dockerignore missing after ./api + ./front split); fix dispatched before Triad
+- 2026-11-23T13:47 [M3.70.1] (lead) status active -> review

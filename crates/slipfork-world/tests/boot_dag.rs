@@ -315,15 +315,72 @@ fn fork_world_stamp_persists_and_gates_before_start_and_pre_deploy_hooks() {
 
 /// The shipped eight-component `support/demo` plan, compiled from the real `Forkfile` on disk.
 fn demo_plan() -> WorldPlan {
-    let dir = lab("demo-plan");
+    demo_plan_for("demo-plan", false)
+}
+
+/// The shipped demo's production shape: no built-in `dev`, so no implied `mail` and no `/project` bind.
+fn demo_prod_plan() -> WorldPlan {
+    demo_plan_for("demo-prod-plan", true)
+}
+
+/// Compiles the real `support/demo/Forkfile` and plans it with an empty feature base when `prod`.
+fn demo_plan_for(name: &str, prod: bool) -> WorldPlan {
+    let dir = lab(name);
     let forkfile = dir.join("Forkfile");
     fs::write(&forkfile, include_str!("../../../support/demo/Forkfile"))
         .expect("write the shipped demo Forkfile into the lab");
     let source = fs::read_to_string(&forkfile).expect("read the shipped demo Forkfile");
     let checked = slipfork_forkfile::compile(&source).expect("the shipped demo Forkfile compiles");
-    let plan = slipfork_world::world_plan(&checked.document, &dir).expect("plan the shipped demo");
+    let plan = if prod {
+        let features = checked
+            .document
+            .resolve_features(true, &[])
+            .expect("the empty feature base resolves");
+        slipfork_world::world_plan_with(&checked.document, &dir, &features)
+            .expect("plan the shipped demo production shape")
+    } else {
+        slipfork_world::world_plan(&checked.document, &dir).expect("plan the shipped demo")
+    };
     let _ = fs::remove_dir_all(&dir);
     plan
+}
+
+#[test]
+fn production_shape_drops_dev_commands_and_mailpit() {
+    let plan = demo_prod_plan();
+    let subjects: Vec<&str> = plan
+        .steps
+        .iter()
+        .filter(|step| matches!(step.kind, BootKind::Resource | BootKind::Service))
+        .map(|step| step.subject.as_str())
+        .collect();
+    assert_eq!(
+        subjects,
+        ["pg", "cache", "uploads", "assets", "api", "worker", "front"],
+        "`-F -dev` runs the seven non-mail components only"
+    );
+    assert!(
+        plan.steps.iter().all(|step| step.subject != "mailpit"),
+        "no `mailpit` node may survive `-F -dev`"
+    );
+    let service = |id: &str| {
+        plan.steps
+            .iter()
+            .find(|step| step.kind == BootKind::Service && step.subject == id)
+            .unwrap_or_else(|| panic!("`{id}` must be a service node"))
+    };
+    for id in ["api", "front"] {
+        assert_eq!(
+            service(id).command,
+            None,
+            "`{id}` must run the image's own `CMD` when `dev` is off"
+        );
+    }
+    assert_eq!(
+        service("worker").command.as_deref(),
+        Some("python -m app.worker"),
+        "`worker` keeps its explicit `else: run:` command"
+    );
 }
 
 fn index_of(plan: &WorldPlan, subject: &str) -> usize {

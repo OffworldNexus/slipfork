@@ -52,6 +52,7 @@ flowchart LR
   - Assert direct binary `exec` + zero pre-fork `CHECKPOINT` observables: pod `/proc/<pid>/cmdline` argv[0] is the absolute `postgres` / `redis-server` binary path (no `docker-entrypoint.sh`), and parent `PGDATA` `PG_VERSION` + `pg_wal` mtimes remain unchanged across `fork` snapshot preparation.
   - Assert parent `image` subvolume reuse (`cached`) and boot-trace `[started_ms, finished_ms]` interval overlap proving a `service` `Started` before `pg` `Ready` when `world_epoch` stamps match (while a mismatched `world_epoch` or stale `pre-deploy` orders `pg` `Ready` → `pre-deploy` → `service` `Started`), plus isolated fork writes and dirty `drop` refusal without `-f`.
 - **Parallel AI coding-agent sessions (`@slipfork/opencode`):** Open concurrent OpenCode worktrees against one repo, verifying `SLIPFORK_WORLD` + `SLIPFORK_URL` export, `_` -> `-` `.localhost` branch slug normalization, and clean fork reaping on session idle.
+- **Production-shape `-F -dev` planning (`boot_dag`):** Plan the shipped `support/demo` from the real `Forkfile` with an empty feature base (`--no-default-features`) and assert exactly `pg, cache, uploads, assets, api, worker, front` service/resource nodes, zero `mailpit`, `command: None` on the `api` and `front` service nodes (image `CMD`), and the explicit `python -m app.worker` `else: run:` for `worker`; the live `slipfork fork prod-check -F -dev` 200-on-`/`+`/api/status` proof lives in the M3.70.2 VM evidence.
 
 ---
 

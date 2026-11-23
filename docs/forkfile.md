@@ -7,7 +7,6 @@ and routes. One file expresses local development and production, so your machine
 # forkfile: 0.1
 
 features {
-  default = [dev]
   dev = [mail]
   mail
 }
@@ -54,14 +53,35 @@ starts, with a `Forkfile:<line>:<col>` caret span naming the token.
 
 ## `features` and `on`
 
-`features` declares named switches, and `default` is active for local commands. `on <expr>` accepts
-`dev`, `!dev`, `dev & mail`, and `staging | preview`; it can select a Dockerfile `stage`, add a
-conditional `arg`, swap in a hot-reloading `@`-prefixed `run:`, or add a dev-only tool like `mailpit`.
-Slipfork type-checks every `on` branch at once before booting anything.
+`dev` is built in and active for `up`, `fork` and `env`; it is what bind-mounts your checkout at
+`/project`. Declare only extra switches, and let groups imply their members: `dev = [mail]` turns
+`mail` on whenever `dev` is on. Drop `dev` per command with `-F -dev` or `--no-default-features`.
 
-`else` closes a guard instead of mirroring it: `on dev { … } else { … }`, `on dev: … else: …`, and
-`else on <expr>` chains. Prefer one `on dev { … } else { … }` over mirroring the condition with its
-negation.
+`slipfork features` shows the resolved set and persists edits (`slipfork features +mail`,
+`slipfork features -dev`, `slipfork features reset`) into `.slipfork/features.json` for the next boot.
+
+`on <expr>` accepts `dev`, `!dev`, `dev & mail`, and `staging | preview`; it can select a Dockerfile
+`stage`, add a conditional `arg`, swap in a hot-reloading `@`-prefixed `run:`, or add a dev-only tool
+like `mailpit`. `else` closes a guard instead of mirroring it: `on dev { … } else { … }`,
+`on dev: … else: …`, and `else on <expr>` chains. Slipfork type-checks every `on` branch at once
+before booting anything.
+
+In the production shape (`-F -dev`) a service needs no `else` at all: omit `run:` and Slipfork runs
+the image's own `ENTRYPOINT`/`CMD`, so the Dockerfile stays the single source of truth.
+
+```forkfile
+image frontend ./front {
+  on dev: stage dev
+  service front {
+    port 3000
+    route /
+    on dev {
+      port 5173
+      run: @pnpm exec vite dev --host 0.0.0.0 --port $port
+    }
+  }
+}
+```
 
 ## `image` scopes
 

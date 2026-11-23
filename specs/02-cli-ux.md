@@ -196,6 +196,20 @@ Both render zero `\x1b[` bytes under `NO_COLOR`, a pipe, or `--json`.
 | `slipfork shell <target>` | Required target: PTY bash/sh, `psql`, `redis-cli`; refuses `s3` and unknowns |
 | `slipfork exec [service\|image] -- <cmd>` | Ad-hoc command inside the target, exit code forwarded |
 
+### Features
+
+`dev` is built in and active for every `up`, `fork` and `env`. `slipfork features` prints the resolved set with what each group implies, and persists edits for the next boot.
+
+| Form | Effect |
+| :--- | :--- |
+| `slipfork features` | Resolved features and `IMPLIES`; no write |
+| `slipfork features +mail` / `-dev` | Persist one ordered edit |
+| `slipfork features enable <f>...` / `disable <f>...` / `reset` | Persist named changes; `reset` restores the built-in default |
+
+`up`, `fork` and `env` accept `-F/--features` (`mail`, `+mail`, `-dev`, comma lists) and `--no-default-features` to start from an empty base. `up` and `fork` write the result to `.slipfork/features.json`; `env` evaluates only. A fork inherits its parent's `.slipfork/features.json`, so `slipfork fork prod-check -F -dev` boots the production shape.
+
+With `dev` active Slipfork bind-mounts the live checkout at `/project`, so `uvicorn --reload` and `vite dev` see every save. With `dev` off (`-F -dev` or `--no-default-features`) nothing is bound and Slipfork runs the image's native `ENTRYPOINT`/`CMD` on the declared ports — built assets, no `else` branch required.
+
 ## 7. Terminal gate split and `--json`
 
 - **Modes:** colour TTY uses the `DECSTBM` region and panel; ASCII TTY rewrites one `\r` plain line with zero `\x1b[`; a pipe emits `→ [i/n] kind name` headers plus `✓`/`•` rows; `--json` is pure JSON.
