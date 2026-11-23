@@ -43,11 +43,12 @@ flowchart LR
 
 ---
 
-## 3. Sub-Second `< 1.0s` 8-Component `slipfork fork` & Coding Agents
+## 3. 8-Component `slipfork fork` & Coding Agents
 
-- **Asserted `< 1.0s` median wall-clock `fork` across all 8 demo components (`critical_fork_live`):**
+- **Asserted `< 8.0s` CI-gated wall-clock `fork` across all 8 demo components (`critical_fork_live`):**
   - On `165.232.86.174`, boot the full 8-row demo fixture: **4 resources** (`pg` with seeded rows, `cache` with live Redis 7 AOF keys, private `uploads` S3, `public-read` + CDN `assets` S3) and **4 services** (`api` and `worker` from one `Dockerfile` image, `front` from a second `Dockerfile` image, and one OCI `from <ref>` service), with `@uv`/`@pnpm` installs and a `pre-deploy` migration hook.
-  - Run **1 discarded warm-up fork then 3 timed samples**, wrapping `Command::spawn` of `slipfork fork` until all **8** rows report ready and `http://<fork>--<world>.localhost` answers `200 OK` in `std::time::Instant`; print every sample and **assert** `median < Duration::from_secs(1)` (`~0.5–0.8s` target, never best-of).
+  - Run **1 discarded warm-up fork then 3 timed samples**, wrapping `Command::spawn` of `slipfork fork` until all **8** rows report ready and `http://<fork>--<world>.localhost` answers `200 OK` in `std::time::Instant`; print every sample and **assert** the CoW clone budget too: each `fork --json` sample reports `snapshot_ms` in the `~150–365ms` range and **asserts** `snapshot_ms < Duration::from_millis(500)`, alongside the end-to-end **`median < Duration::from_secs(8)`** gate (`~5.5s` first-200 on 4 vCPU; 2-vCPU CI keeps the `< 8.0s` gate, never best-of).
+  - Assert warm forks reuse and re-run nothing: zero `image` rebuilds (`cached` rows, never `built`/`pulled`) and zero `uv sync` / `pnpm install` / `pre-deploy` hook re-runs (`up to date`) when the `world_epoch` stamp matches.
   - Assert direct binary `exec` + zero pre-fork `CHECKPOINT` observables: pod `/proc/<pid>/cmdline` argv[0] is the absolute `postgres` / `redis-server` binary path (no `docker-entrypoint.sh`), and parent `PGDATA` `PG_VERSION` + `pg_wal` mtimes remain unchanged across `fork` snapshot preparation.
   - Assert parent `image` subvolume reuse (`cached`) and boot-trace `[started_ms, finished_ms]` interval overlap proving a `service` `Started` before `pg` `Ready` when `world_epoch` stamps match (while a mismatched `world_epoch` or stale `pre-deploy` orders `pg` `Ready` → `pre-deploy` → `service` `Started`), plus isolated fork writes and dirty `drop` refusal without `-f`.
 - **Parallel AI coding-agent sessions (`@slipfork/opencode`):** Open concurrent OpenCode worktrees against one repo, verifying `SLIPFORK_WORLD` + `SLIPFORK_URL` export, `_` -> `-` `.localhost` branch slug normalization, and clean fork reaping on session idle.

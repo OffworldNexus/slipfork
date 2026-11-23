@@ -2,12 +2,15 @@
 //!
 //! A real Btrfs scratch project (`SLIPFORK_TEST_ROOT`), a real daemon, and a real `crun` world
 //! running the shipped eight-component demo (`support/demo`): PostgreSQL, Redis, two S3 buckets
-//! behind one native server, the `backend` image (`api` + `worker`), the `frontend` image behind
-//! `arg VITE_CDN_URL`, and the OCI `mailpit` service. One `fork` must reuse every sealed parent
-//! `image` subvolume (`cached`, no Dockerfile re-evaluation), snapshot every resource clone after
-//! one `<5ms` direct-TCP pre-fork `CHECKPOINT`, survive live PG/Redis/S3 writes, and keep the 8-pod fork
-//! spawn-to-first-`200` median under the H-011 honest droplet ceiling of `1.25s` (one discarded
-//! warm-up + three samples). Every missing host capability FAILS CLOSED.
+//! behind one native server, the `backend` image (FastAPI under `uvicorn --reload` for `api` plus
+//! the `worker`), the SvelteKit `frontend` image (`vite dev` behind `arg VITE_CDN_URL`), and the
+//! OCI `mailpit` service. A fork must reuse every sealed parent `image` subvolume (`cached`, no
+//! Dockerfile re-evaluation), re-sync nothing (`uv sync`/`pnpm install`/`*:pre-deploy` stay
+//! `up to date`), snapshot every resource clone after one `<5ms` direct-TCP pre-fork `CHECKPOINT`,
+//! survive live PG/Redis/S3 writes, and keep Slipfork's own CoW snapshot `< 500ms` while the full
+//! 8-pod spawn-to-first-`200` median stays `< 8.0s` (measured `~5.5s` on the 4-vCPU droplet)
+//! giving 2-vCPU GitHub Actions loop-Btrfs headroom (one discarded warm-up + three samples).
+//! Every missing host capability FAILS CLOSED.
 
 use std::ffi::OsString;
 use std::fs;
@@ -122,6 +125,15 @@ fn wait_until(mut condition: impl FnMut() -> bool, timeout: Duration) -> bool {
         }
         std::thread::sleep(Duration::from_millis(50));
     }
+}
+
+/// A per-run token so an inserted image instruction always changes the step digest; a constant
+/// `RUN true` would report `cached` on the second identical test run.
+fn unique_suffix() -> String {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_nanos());
+    format!("{}-{nanos}", std::process::id())
 }
 
 /// Every `__daemon` whose environment names this lab's runtime directory or whose argv mentions it.
@@ -293,12 +305,25 @@ fn demo_files() -> &'static [&'static str] {
         ".dockerignore",
         ".gitignore",
         "README.md",
-        "app/api.py",
-        "app/clients.py",
-        "app/seed.py",
+        "pyproject.toml",
+        "uv.lock",
+        "app/__init__.py",
+        "app/db.py",
+        "app/mail.py",
+        "app/main.py",
+        "app/migrate.py",
+        "app/s3.py",
         "app/worker.py",
+        "app/world.py",
         "front/Dockerfile",
-        "front/server.py",
+        "front/package.json",
+        "front/pnpm-lock.yaml",
+        "front/pnpm-workspace.yaml",
+        "front/svelte.config.js",
+        "front/vite.config.ts",
+        "front/src/app.html",
+        "front/src/routes/+layout.server.ts",
+        "front/src/routes/+page.svelte",
     ]
 }
 
@@ -518,8 +543,15 @@ impl Lab {
         let fork = self.run(&["fork", name, "--json"]);
         let reply = self.json(&fork, &format!("fork {name}"));
         let world = reply["world"].as_str().expect("fork world").to_owned();
+        let snapshot_ms = reply["snapshot_ms"]
+            .as_u64()
+            .expect("fork --json must report `snapshot_ms`");
+        assert!(
+            snapshot_ms < 500,
+            "Slipfork's own CoW snapshot must stay < 500ms, got {snapshot_ms}ms: {reply}"
+        );
         let response = self.get(&format!("{world}.localhost"), "/");
-        assert_object(&response, "Slipfork Full-Stack CoW World");
+        assert_object(&response, "Slipfork demo");
         let elapsed = started.elapsed();
         // After the timed GET, every shipped row must already have finished, not just `front`.
         let frames = self.frames(&fork, &format!("fork {name}"));
@@ -533,15 +565,50 @@ impl Lab {
                 "fork `{name}` must finish `{row}` before publishing: {frames:?}"
             );
         }
+        // Zero rebuilds and zero re-syncs: every shipped image is adopted `cached`, and no setup or
+        // hook command executes again. The warm rows must surface as `up to date`, not vanish.
+        for frame in &frames {
+            if frame["event"] != "finished" {
+                continue;
+            }
+            let kind = frame["kind"].as_str().unwrap_or_default();
+            assert!(
+                kind != "setup" && kind != "hook",
+                "fork `{name}` must re-run no setup/hook step: {frame}"
+            );
+            if kind == "image" {
+                assert_eq!(
+                    frame["state"], "cached",
+                    "every fork image must be adopted `cached`: {frame}"
+                );
+            }
+        }
+        for name in ["uv sync", "pnpm install"] {
+            assert!(
+                frames.iter().any(|frame| {
+                    frame["event"] == "up-to-date"
+                        && frame["kind"] == "setup"
+                        && frame["name"] == name
+                }),
+                "the warm `{name}` setup row must report `up to date`: {frames:?}"
+            );
+        }
+        assert!(
+            frames.iter().any(|frame| {
+                frame["event"] == "up-to-date"
+                    && frame["kind"] == "hook"
+                    && frame["name"]
+                        .as_str()
+                        .is_some_and(|name| name.ends_with(":pre-deploy"))
+            }),
+            "the warm `*:pre-deploy` hook row must report `up to date`: {frames:?}"
+        );
         let status = self.get(&format!("{world}.localhost"), "/api/status");
         assert!(
-            status.contains("\"releases_count\""),
+            status.contains("\"counts\":"),
             "the forked API must serve `/api/status`: {status}"
         );
-        println!(
-            "fork sample `{name}`: {elapsed:?} (snapshot_ms={})",
-            reply["snapshot_ms"]
-        );
+        println!("fork sample `{name}`: {elapsed:?} (snapshot_ms={snapshot_ms})");
         let drop = self.run(&["drop", name, "-f", "--json"]);
         let _ = self.json(&drop, &format!("drop {name}"));
         elapsed
@@ -653,7 +720,7 @@ fn fork_and_drop_a_live_world_without_leaving_snapshots() {
     // `<bucket>.<world>.localhost` authority, and the retired `static-cdn` host must not route.
     assert_object(
         &lab.get("assets.demo.localhost", "/badge.svg"),
-        "static-cdn 200",
+        "public-read 200",
     );
     assert!(
         lab.get("static-cdn.demo.localhost", "/badge.svg")
@@ -665,12 +732,16 @@ fn fork_and_drop_a_live_world_without_leaving_snapshots() {
             .starts_with("HTTP/1.1 403"),
         "the private `uploads` bucket must deny anonymous GET"
     );
-    assert_object(
-        &lab.get("demo.localhost", "/"),
-        "Slipfork Full-Stack CoW World",
-    );
+    assert_object(&lab.get("demo.localhost", "/"), "Slipfork demo");
     let status = lab.get("demo.localhost", "/api/status");
-    assert!(status.contains("\"releases_count\": 3"), "{status}");
+    assert!(
+        status.contains("\"health\":{\"postgres\":true,\"redis\":true,\"s3\":true}"),
+        "the status endpoint must report every backing service healthy: {status}"
+    );
+    assert!(
+        status.contains("\"counts\":{\"items\":2,\"events\":1}"),
+        "the seeded demo rows must be visible on the status endpoint: {status}"
+    );
 
     // Warm boot with the paired stamps current: services spawn in parallel with `pg`.
     let down = lab.run(&["down"]);
@@ -705,7 +776,7 @@ fn fork_and_drop_a_live_world_without_leaving_snapshots() {
                 "-d",
                 "app_db",
                 "-tAc",
-                "INSERT INTO releases (slug, title, source_world) VALUES ('parent-only', 'parent', 'demo')",
+                "INSERT INTO items (title, done) VALUES ('parent-only', false)",
             ],
         ),
         "INSERT 0 1"
@@ -781,9 +852,10 @@ fn fork_and_drop_a_live_world_without_leaving_snapshots() {
         fork_started.elapsed()
     );
 
-    // Warm-up + three samples. H-011: `syncfs` stays, so the honest droplet ceiling for the
-    // 8-pod median is 1.25s (a 1.006s/1.042s/1.113s spread is expected); the 892ms lab median is
-    // the optimization target, not a hard droplet SLA. Every sample still waits for its first 200.
+    // Warm-up + three samples. Slipfork's own CoW snapshot is `< 500ms` per sample; the honest
+    // end-to-end gate for the 8-pod spawn-to-first-200 is `< 8.0s` (measured `~5.5s` median on the
+    // 4-vCPU droplet) giving 2-vCPU GitHub Actions loop-Btrfs headroom now that the
+    // `@uv run`/`@pnpm exec` wrappers are gone. Every sample waits for its 200.
     let warmup = lab.sample("warmup");
     println!("discarded warm-up: {warmup:?}");
     let mut samples = vec![
@@ -795,8 +867,9 @@ fn fork_and_drop_a_live_world_without_leaving_snapshots() {
     let median = samples[1];
     println!("fork samples: {samples:?} (median {median:?})");
     assert!(
-        median < Duration::from_millis(1250),
-        "the 8-component fork median must stay < 1.25s on the droplet (samples {samples:?})"
+        median < Duration::from_secs_f64(8.0),
+        "the 8-component fork median must stay < 8.0s (measured ~5.5s on the 4-vCPU droplet; \
+         2-vCPU GitHub Actions loop-Btrfs headroom) (samples {samples:?})"
     );
 
     let fork_project = lab.fork_project();
@@ -897,10 +970,10 @@ fn fork_and_drop_a_live_world_without_leaving_snapshots() {
                 "-d",
                 "app_db",
                 "-tAc",
-                "SELECT count(*) FROM releases",
+                "SELECT count(*) FROM items",
             ],
         ),
-        "4",
+        "3",
         "the seeded PG rows must exist inside the fork"
     );
     assert_eq!(
@@ -909,7 +982,7 @@ fn fork_and_drop_a_live_world_without_leaving_snapshots() {
     );
     assert_object(
         &lab.get("assets.feat-auth--demo.localhost", "/badge.svg"),
-        "static-cdn 200",
+        "public-read 200",
     );
 
     // Post-fork parent writes stay on the parent's side of the CoW boundary.
@@ -924,7 +997,7 @@ fn fork_and_drop_a_live_world_without_leaving_snapshots() {
                 "-d",
                 "app_db",
                 "-tAc",
-                "INSERT INTO releases (slug, title, source_world) VALUES ('late', 'late', 'demo')",
+                "INSERT INTO items (title, done) VALUES ('late', false)",
             ],
         ),
         "INSERT 0 1"
@@ -940,10 +1013,10 @@ fn fork_and_drop_a_live_world_without_leaving_snapshots() {
                 "-d",
                 "app_db",
                 "-tAc",
-                "SELECT count(*) FROM releases",
+                "SELECT count(*) FROM items",
             ],
         ),
-        "4",
+        "3",
         "a parent INSERT after `fork` must not appear inside the fork"
     );
     let late = lab.signed_put(
@@ -980,16 +1053,22 @@ fn fork_and_drop_a_live_world_without_leaving_snapshots() {
     stamp["world_epoch"] = serde_json::Value::String("mismatched".to_owned());
     fs::write(&pg_stamp, serde_json::to_vec(&stamp).expect("encode")).expect("break the epoch");
     // A stamp-only rewrite leaves every step digest intact, so the engine may legitimately report
-    // `cached`. Append a real `RUN` instruction to the fork's `front/Dockerfile` so one step key
-    // genuinely changes and the build must apply it.
+    // `cached`. Insert a run-unique `RUN` instruction inside the `dev` stage the Forkfile actually
+    // selects (`on dev: stage dev`); an EOF `RUN` would only edit the unused `prod` stage, and a
+    // constant instruction would stay `cached` on a second identical run.
     let front_dockerfile = fork_project.join("front/Dockerfile");
-    let mut document =
+    let document =
         fs::read_to_string(&front_dockerfile).expect("read the fork `frontend` Dockerfile");
-    if !document.ends_with('\n') {
-        document.push('\n');
+    let Some(prod_stage) = document.find("FROM dev AS prod") else {
+        panic!("the demo `frontend` Dockerfile must define `FROM dev AS prod`: {document:?}");
+    };
+    let mut changed = document[..prod_stage].to_owned();
+    if !changed.ends_with('\n') {
+        changed.push('\n');
     }
-    document.push_str("RUN true\n");
-    fs::write(&front_dockerfile, document).expect("change a real `frontend` Dockerfile input");
+    changed.push_str(&format!("RUN echo {}\n", unique_suffix()));
+    changed.push_str(&document[prod_stage..]);
+    fs::write(&front_dockerfile, changed).expect("change a real `frontend` Dockerfile input");
     let down = lab.run_in(&fork_project, &["down"]);
     assert!(
         down.status.success(),

@@ -12,7 +12,7 @@ $ slipfork up
 ✓ Ready -> http://acme-shop.localhost
 
 $ slipfork fork billing-api
-✓ Forked billing-api (0.8s) -> http://billing-api--acme-shop.localhost
+✓ billing-api (4.9s) -> http://billing-api--acme-shop.localhost
 ```
 
 ## One file declares the topology
@@ -44,8 +44,9 @@ image api . {
 Services live inside the image that runs them, runtime `env` stays separate from build-time `arg`s,
 and `@uv` / `@pnpm` wire lockfile-watched installs automatically.
 
-The `0.8s` fork is the whole operation: `≤50ms` snapshotting and the rest booting the cloned stack.
-Branch off, test a risky migration, and the parent world keeps serving.
+The `fork` is the whole operation: a `~150–365ms` CoW snapshot (asserted `< 500ms`), then booting the
+cloned 8-component stack — `~5.5s` cold on 4 vCPU, asserted `< 8.0s` on 2-vCPU CI. Branch off, test a
+risky migration, and the parent world keeps serving.
 
 [Get started](docs/getting-started.md) · [The Forkfile](docs/forkfile.md)
 

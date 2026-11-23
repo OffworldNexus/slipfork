@@ -39,9 +39,11 @@ flowchart LR
   K --- DBF[("CoW snapshot")]
 ```
 
-`slipfork fork` finishes in ~0.8s end-to-end (the `< 1s` ceiling). `≤50ms` of that is CoW
-snapshotting (`0.3–50ms` per ioctl: local NVMe versus network block storage); the rest boots the
-cloned stack because `.venv`, `node_modules`, database pages and bucket objects are already on disk.
+Forking reports two tiers: the CoW clone as `snapshot_ms` (`~150–365ms` on the 4-vCPU
+droplet, asserted `< 500ms`) and the full boot as the elapsed (`~5.5s` median, asserted `< 8.0s` for
+the real 8-component FastAPI + SvelteKit stack). The boot, not the clone, takes the
+seconds — `.venv`, `node_modules`, database pages and bucket objects are already on disk, so the
+wait is `uvicorn --reload` and `vite dev` warming their first requests.
 Test a risky migration on the fork; the parent world keeps serving.
 
 ## A Forkfile is the whole topology

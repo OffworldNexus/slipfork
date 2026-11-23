@@ -27,7 +27,9 @@ mod images;
 mod ready;
 mod resources;
 
-use helpers::{merge_env, project_bind, service_argv, shell_command, tool_env};
+use helpers::{
+    ServiceLaunch, merge_env, merge_path, project_bind, shell_command, tool_env, upsert_env,
+};
 use images::{BuiltImage, ImageCache};
 use ready::{Ready, Staged};
 
@@ -437,11 +439,16 @@ impl WorldRuntime {
             .iter()
             .find(|service| service.id == sigma)
             .and_then(|service| service.port);
+        // Build the merged pod env before resolving the launch so a `Forkfile`/image `PATH` is
+        // the base the shim directory is prepended to — never something we overwrite.
+        let env = self.pod_env_for(&step.subject, step.image.as_deref(), port);
+        let path = merge_path(&env, &built.inherited_env);
+        let mut launch_env = Vec::new();
         let (argv, display) = if let Some(command) = &step.command {
-            (
-                service_argv(&rootfs, &built.inherited_env, command),
-                command.clone(),
-            )
+            let launch =
+                ServiceLaunch::resolve(&self.project, &built.workdir, &rootfs, &path, command);
+            launch_env = launch.env;
+            (launch.argv, command.clone())
         } else if built.argv.is_empty() {
             return Err(format!(
                 "service `{sigma}` declares no `run:` and its image has no `ENTRYPOINT`/`CMD`"
@@ -455,12 +462,13 @@ impl WorldRuntime {
             workdir: built.workdir,
             argv,
             inherited_env: built.inherited_env,
-            env: self.pod_env_for(&step.subject, step.image.as_deref(), port),
+            env,
             binds: vec![project_bind(&self.project)],
             files: Vec::new(),
         };
+        upsert_env(&mut spec.env, launch_env);
         if let Some(command) = &step.command {
-            spec.env.extend(tool_env(command));
+            upsert_env(&mut spec.env, tool_env(command));
         }
         self.launch_pod(&spec)?;
         let ready = match port {

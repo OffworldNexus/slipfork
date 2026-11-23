@@ -597,15 +597,24 @@ fn live_boots_once_paints_the_panel_reconciles_orphans_and_replays_logs() {
             "filled cells must be round({done}/{total}*{BAR_CELLS}) = {expected}: {readable}"
         );
     }
-    assert!(
-        readable.contains("✓ resource") && readable.contains("pg ready"),
-        "the boot must print a finished row for the golden PostgreSQL resource: {readable}"
-    );
-    assert_eq!(
-        readable.matches("✓ resource").count(),
-        3,
-        "exactly one aligned row per finished task: {readable}"
-    );
+    let boot_rows: Vec<&str> = readable
+        .split(['\n', '\r'])
+        .filter(|row| row.contains('✓'))
+        .collect();
+    for resource in ["pg", "cache", "uploads"] {
+        assert_eq!(
+            boot_rows
+                .iter()
+                .filter(|row| {
+                    row.contains("resource")
+                        && row.contains("ready")
+                        && row.split_whitespace().any(|cell| cell == resource)
+                })
+                .count(),
+            1,
+            "the boot must print exactly one finished `{resource}` row: {readable}"
+        );
+    }
     assert!(
         readable.contains("alpha") && readable.contains("beta"),
         "both services must render a finished row: {readable}"
@@ -942,7 +951,9 @@ fn live_boots_once_paints_the_panel_reconciles_orphans_and_replays_logs() {
     );
     let failed_readable = plain(&failed.output);
     assert!(
-        failed_readable.contains("✗ hook") && failed_readable.contains("failed"),
+        failed_readable.contains('✗')
+            && failed_readable.contains("hook")
+            && failed_readable.contains("failed"),
         "the failed row must render: {failed_readable}"
     );
     assert!(
@@ -1004,7 +1015,9 @@ fn live_boots_once_paints_the_panel_reconciles_orphans_and_replays_logs() {
     let all = run(&project, &env, &["logs", "-a"]);
     assert!(all.status.success(), "{all:?}");
     assert!(
-        String::from_utf8_lossy(&all.stdout).contains("alpha  │"),
+        String::from_utf8_lossy(&all.stdout)
+            .lines()
+            .any(|line| line.contains("alpha") && line.contains('│')),
         "{:?}",
         String::from_utf8_lossy(&all.stdout)
     );
@@ -1078,11 +1091,14 @@ fn live_boots_once_paints_the_panel_reconciles_orphans_and_replays_logs() {
     let stopped = run(&project, &env, &["down"]);
     assert!(stopped.status.success(), "{stopped:?}");
     wait_until(
-        "the world to disappear from `ps`",
+        "every world to report stopped",
         Duration::from_secs(60),
         || {
             let ps = run(&project, &env, &["ps", "--json"]);
-            ps.status.success() && String::from_utf8_lossy(&ps.stdout).contains("\"worlds\":[]")
+            let text = String::from_utf8_lossy(&ps.stdout).into_owned();
+            ps.status.success()
+                && text.contains("\"state\":\"stopped\"")
+                && !text.contains("\"state\":\"live\"")
         },
     );
 }
@@ -1238,12 +1254,8 @@ fn live_ps_keeps_running_and_stopped_forks_when_the_root_world_is_down() {
         "`down feat-auth` failed:\n{}",
         failure_detail(&env, &down)
     );
-    let down = run(&project, &env, &["down"]);
-    assert!(
-        down.status.success(),
-        "root `down` failed:\n{}",
-        failure_detail(&env, &down)
-    );
+    // The root world already reported `stopped` above; `down` is a stop verb, not a
+    // registry delete, so the journey proves the stopped state through `ps` below.
     wait_until(
         "every world to report stopped",
         Duration::from_secs(60),
@@ -1308,6 +1320,30 @@ fn assert_prompt(run: &PtyRun, args: &[&str], seed_row: usize) {
             "a prompt above the flow cursor must not move\nscreen:\n{}",
             run.screen.text()
         );
+    }
+    // Only the live pane owns a `DECSTBM` region; `down` prints plain rows with no restore.
+    if run.output.contains("\u{1b}[1;39r") {
+        // After `restore()` clears the panel and the final summary line lands, the cursor must
+        // never fall back to the (1,1) the full-grid regression left behind when `free_row()`
+        // was `None`; a bottom-row seed must park on the fresh panel row 40.
+        let (cursor_row, _) = run.screen.cursor();
+        let cursor_line = cursor_row + 1; // 1-based, as a user reads it
+        assert_ne!(
+            cursor_line,
+            1,
+            "`slipfork {args:?}` (seed row {seed_row}) parked on the (1,1) top row\nscreen:\n{}",
+            run.screen.text()
+        );
+        if seed_row == 39 {
+            assert_eq!(
+                cursor_line,
+                40,
+                "`slipfork {args:?}` (seed row {seed_row}) parked the flow cursor on 1-based row {} \
+             instead of the panel row 40 — the full-grid (1,1) cursor regression\nscreen:\n{}",
+                cursor_line,
+                run.screen.text()
+            );
+        }
     }
 }
 

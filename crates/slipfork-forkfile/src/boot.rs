@@ -12,7 +12,18 @@ use crate::ast::*;
 use crate::eval::FeatureSet;
 use crate::gate::each_enabled;
 
-/// One auto-prequel tool, its install command, and its workspace-root lockfile.
+/// The direct-binary rewrite one tool documents in `specs/03`: the subcommand that precedes the
+/// installed binary and the project-relative directory that holds its shims.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ToolExec {
+    /// The subcommand that precedes the binary (`run` for `uv`, `exec` for node managers).
+    pub subcommand: &'static str,
+    /// Project-relative directory holding the installed shims.
+    pub bin_dir: &'static str,
+}
+
+/// One auto-prequel tool, its install command, its workspace-root lockfile, and the direct-bin
+/// grammar it supports.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PrequelTool {
     /// The `@` tool name (`uv`, `pnpm`, ...).
@@ -21,6 +32,8 @@ pub struct PrequelTool {
     pub install: &'static str,
     /// The lockfile that marks a workspace root.
     pub lockfile: &'static str,
+    /// The direct-bin rewrite this tool supports, if `specs/03` documents one.
+    pub exec: Option<ToolExec>,
 }
 
 /// The complete `@<tool>` table, in diagnostic order.
@@ -29,51 +42,73 @@ pub const PREQUEL_TOOLS: &[PrequelTool] = &[
         name: "uv",
         install: "uv sync",
         lockfile: "uv.lock",
+        exec: Some(ToolExec {
+            subcommand: "run",
+            bin_dir: ".venv/bin",
+        }),
     },
     PrequelTool {
         name: "poetry",
         install: "poetry install",
         lockfile: "poetry.lock",
+        exec: None,
     },
     PrequelTool {
         name: "pnpm",
         install: "pnpm install",
         lockfile: "pnpm-lock.yaml",
+        exec: Some(ToolExec {
+            subcommand: "exec",
+            bin_dir: "node_modules/.bin",
+        }),
     },
     PrequelTool {
         name: "npm",
         install: "npm install",
         lockfile: "package-lock.json",
+        exec: Some(ToolExec {
+            subcommand: "exec",
+            bin_dir: "node_modules/.bin",
+        }),
     },
     PrequelTool {
         name: "yarn",
         install: "yarn install",
         lockfile: "yarn.lock",
+        exec: Some(ToolExec {
+            subcommand: "exec",
+            bin_dir: "node_modules/.bin",
+        }),
     },
     PrequelTool {
         name: "bun",
         install: "bun install",
         lockfile: "bun.lockb",
+        exec: None,
     },
     PrequelTool {
         name: "composer",
         install: "composer install",
         lockfile: "composer.lock",
+        exec: None,
     },
     PrequelTool {
         name: "bundle",
         install: "bundle install",
         lockfile: "Gemfile.lock",
+        exec: None,
     },
     PrequelTool {
         name: "go",
         install: "go mod download",
         lockfile: "go.sum",
+        exec: None,
     },
     PrequelTool {
         name: "cargo",
         install: "cargo fetch",
         lockfile: "Cargo.lock",
+        exec: None,
     },
 ];
 
@@ -83,6 +118,86 @@ impl PrequelTool {
     pub fn lookup(name: &str) -> Option<&'static Self> {
         PREQUEL_TOOLS.iter().find(|tool| tool.name == name)
     }
+}
+
+/// One documented `@<tool> run|exec <bin> …` command split at its installed binary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DirectBin<'a> {
+    /// The owning tool row.
+    pub tool: &'static PrequelTool,
+    /// The direct-bin grammar `self.tool` documents.
+    pub exec: ToolExec,
+    /// The installed binary token, never starting with `-`.
+    pub bin: &'a str,
+    /// Verbatim remainder after the binary token, including its leading separator.
+    pub rest: &'a str,
+}
+
+impl DirectBin<'_> {
+    /// The container path of the installed binary under `workdir`.
+    #[must_use]
+    pub fn program(&self, workdir: &str) -> String {
+        format!("{workdir}/{}/{}", self.exec.bin_dir, self.bin)
+    }
+
+    /// The container directory that holds the installed shims.
+    #[must_use]
+    pub fn bin_dir(&self, workdir: &str) -> String {
+        format!("{workdir}/{}", self.exec.bin_dir)
+    }
+}
+
+/// Splits a documented `@<tool> run|exec <bin> …` command into its installed binary plus the
+/// verbatim remainder.
+///
+/// This is the **only** tokenizer of the direct-bin grammar: callers never re-scan argv for
+/// `run`/`exec`, and tools without a documented `exec` row (`bun`, `poetry`, `cargo`, …) never
+/// match.
+#[must_use]
+pub fn direct_bin(command: &str) -> Option<DirectBin<'_>> {
+    let (name, rest) = crate::expr::tool_prefix(command)?;
+    let tool = PrequelTool::lookup(name)?;
+    let exec = tool.exec?;
+    let (sub_start, sub_end) = nth_token(rest, 0)?;
+    if &rest[sub_start..sub_end] != exec.subcommand {
+        return None;
+    }
+    let (bin_start, bin_end) = nth_token(rest, 1)?;
+    let bin = &rest[bin_start..bin_end];
+    if bin.starts_with('-') {
+        return None;
+    }
+    Some(DirectBin {
+        tool,
+        exec,
+        bin,
+        rest: &rest[bin_end..],
+    })
+}
+
+/// Byte range of the `n`-th whitespace-separated token, used to splice a prefix without
+/// rewriting the remainder.
+fn nth_token(text: &str, n: usize) -> Option<(usize, usize)> {
+    let bytes = text.as_bytes();
+    let mut index = 0;
+    let mut count = 0;
+    while index < bytes.len() {
+        while index < bytes.len() && bytes[index].is_ascii_whitespace() {
+            index += 1;
+        }
+        if index >= bytes.len() {
+            return None;
+        }
+        let start = index;
+        while index < bytes.len() && !bytes[index].is_ascii_whitespace() {
+            index += 1;
+        }
+        if count == n {
+            return Some((start, index));
+        }
+        count += 1;
+    }
+    None
 }
 
 /// One deduplicated setup step in the boot DAG.
@@ -371,7 +486,66 @@ mod tests {
             PrequelTool::lookup("cargo").map(|tool| tool.lockfile),
             Some("Cargo.lock")
         );
+        assert_eq!(
+            PrequelTool::lookup("uv").and_then(|tool| tool.exec),
+            Some(ToolExec {
+                subcommand: "run",
+                bin_dir: ".venv/bin",
+            })
+        );
+        assert_eq!(
+            PrequelTool::lookup("yarn").and_then(|tool| tool.exec),
+            Some(ToolExec {
+                subcommand: "exec",
+                bin_dir: "node_modules/.bin",
+            })
+        );
+        assert!(PrequelTool::lookup("bun").is_some_and(|tool| tool.exec.is_none()));
         assert!(PrequelTool::lookup("python").is_none());
+    }
+
+    #[test]
+    fn direct_bin_is_the_only_tokenizer_for_the_documented_grammar() {
+        let uv = direct_bin("@uv run uvicorn app.main:app --reload").expect("uv run resolves");
+        assert_eq!(uv.tool.name, "uv");
+        assert_eq!(uv.bin, "uvicorn");
+        assert_eq!(uv.rest, " app.main:app --reload");
+        assert_eq!(uv.program("/project"), "/project/.venv/bin/uvicorn");
+        assert_eq!(uv.bin_dir("/project/front"), "/project/front/.venv/bin");
+
+        let pnpm = direct_bin("@pnpm exec vite dev").expect("pnpm exec resolves");
+        assert_eq!(pnpm.bin, "vite");
+        assert_eq!(pnpm.rest, " dev");
+        assert_eq!(
+            pnpm.program("/project/front"),
+            "/project/front/node_modules/.bin/vite"
+        );
+
+        assert_eq!(
+            direct_bin("@npm exec esbuild --bundle"),
+            Some(DirectBin {
+                tool: PrequelTool::lookup("npm").expect("npm row"),
+                exec: ToolExec {
+                    subcommand: "exec",
+                    bin_dir: "node_modules/.bin"
+                },
+                bin: "esbuild",
+                rest: " --bundle",
+            })
+        );
+
+        assert!(
+            direct_bin("@bun exec vite").is_none(),
+            "bun has no documented exec"
+        );
+        assert!(direct_bin("@poetry run pytest").is_none());
+        assert!(
+            direct_bin("@uv run -m uvicorn").is_none(),
+            "flag-first never resolves"
+        );
+        assert!(direct_bin("@uv sync").is_none());
+        assert!(direct_bin("uv run uvicorn").is_none());
+        assert!(direct_bin("@uv").is_none());
     }
 
     #[test]

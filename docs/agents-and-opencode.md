@@ -62,7 +62,7 @@ When `slipfork` is not on `PATH`, set the plugin's `binary` option to its absolu
 
 ```console
 $ slipfork fork billing-api
-✓ Forked billing-api (0.8s) -> http://billing-api--acme-shop.localhost
+✓ billing-api (4.9s) -> http://billing-api--acme-shop.localhost
 $ slipfork status
 ● acme-shop  ~/projects/acme-shop
   http://acme-shop.localhost
@@ -74,7 +74,10 @@ $ slipfork status
 $ slipfork drop billing-api
 ```
 
-The `0.8s` is end-to-end; `≤50ms` of it is the CoW snapshot.
+The two numbers are the two tiers: `snapshot_ms` is the CoW clone (`~250ms` here; `~150–365ms` on
+the 4-vCPU droplet, asserted `< 500ms`) and the elapsed covers the boot. A real 8-component
+`uvicorn --reload` + `vite dev` stack medians `~5.5s` end-to-end (asserted `< 8.0s`) because the
+app's first requests warm up, not because anything is copied.
 
 A fork inherits `.venv`, `node_modules`, input stamps and the live database snapshot, so the first
 command in the new checkout does not install anything. `slipfork drop` stops the fork world before it

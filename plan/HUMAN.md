@@ -144,3 +144,11 @@ M3.60 test alignment is proven green on the VM (critical_world_journey 2/2 in 11
 
 **Answer:**
 
+## H-018 [closed] [direction-challenge] (node M3.60)
+
+- asked: 2026-11-23T00:49 by lead
+
+H-018: 5.0s end-to-end fork ceiling is not reachable with the REAL FastAPI uvicorn --reload + SvelteKit vite dev demo. Direct-bin launch is proven (argv /project/.venv/bin/uvicorn, /project/front/node_modules/.bin/vite; wrapper eliminated) and snapshots are 148-365ms. Clean VM (4-vCPU, demo world stopped): samples 5.241/5.518/6.226 (median 5.518); another clean run 5.412/5.607/5.640 (median 5.607); uvicorn --reload-dir app does not help. Split: fork --json ~3.66s (pg .63-.96, worker .68, mailpit .5, front 2.7, api 3.2-3.5) + first-200 ~1.9s (vite SSR + api). 5.0s will also fail on 2-vCPU CI. Options: A (recommended) set the honest 8-component end-to-end median ceiling to 7.0s for 4-vCPU VM / 2-vCPU CI while keeping the owned SLOs (snapshot_ms <500ms, zero image rebuilds, zero uv sync/pnpm install/pre-deploy re-runs) strict; B open a follow-up to trim the api/front boot tail (prod SvelteKit build or no --reload), which conflicts with keeping the exact dev stack; C revert to toy scripts (rejected). Not weakening the protected test inside M3.60 without this decision.
+
+**Answer:**
+

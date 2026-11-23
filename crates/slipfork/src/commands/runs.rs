@@ -56,6 +56,7 @@ impl RunRow {
             (true, true) => String::new(),
             (true, false) => self.command.clone(),
             (false, true) => self.name.clone(),
+            (false, false) if self.name == self.command => self.name.clone(),
             (false, false) => format!("{} {}", self.name, self.command),
         }
     }
@@ -181,5 +182,34 @@ mod tests {
         assert!(line.contains("\"run_id\":\"b7f2a1\""), "{line}");
         assert!(!line.contains('\u{1b}'), "{line}");
         assert!(!line.contains('\u{7}'), "{line}");
+    }
+
+    /// `@<tool>` setup nodes carry `name == command`; the step renders that pair exactly once.
+    #[test]
+    fn the_step_never_repeats_an_identical_name_and_command() {
+        let mut run = row("b7f2a1", "ready", 41);
+        run.name = "uv sync".to_owned();
+        run.command = "uv sync".to_owned();
+        assert_eq!(run.step(), "uv sync");
+
+        // A differing name and command still render both halves.
+        run.name = "install".to_owned();
+        assert_eq!(run.step(), "install uv sync");
+
+        // One-sided and fully-empty rows keep their existing fallbacks.
+        run.name = String::new();
+        assert_eq!(run.step(), "uv sync");
+        run.command = String::new();
+        assert_eq!(run.step(), "");
+        run.name = "backend".to_owned();
+        assert_eq!(run.step(), "backend");
+
+        // The rendered table itself carries the deduplicated step and zero escapes.
+        run.name = "uv sync".to_owned();
+        run.command = "uv sync".to_owned();
+        let lines = render_runs(&[run], false);
+        assert!(lines[1].contains("uv sync"), "{lines:?}");
+        assert!(!lines[1].contains("uv sync uv sync"), "{lines:?}");
+        assert!(!lines[1].contains('\u{1b}'), "{lines:?}");
     }
 }

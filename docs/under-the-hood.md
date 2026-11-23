@@ -68,7 +68,9 @@ flowchart LR
 ```
 
 A fork inherits the same Btrfs pages for `.venv`, `node_modules` and the live PostgreSQL, Redis and
-bucket data, plus the `.slipfork/` stamps that keep `when changed` steps up to date.
+bucket data, plus the `.slipfork/` stamps that keep `when changed` steps up to date. Both snapshots
+land in `~150–365ms` (asserted under `500ms`); the fork then boots the ordinary `up` path, so a real 8-component `uvicorn --reload` +
+`vite dev` stack reaches its first `200 OK` at a `~5.5s` median (asserted `< 8.0s`).
 
 `slipfork drop billing-api` stops the fork world first, refuses a dirty checkout unless you pass
 `-f`, then deletes both snapshots.

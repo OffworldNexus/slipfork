@@ -1,16 +1,16 @@
 # 03 — How It Works Under the Hood
 
-Slipfork runs your cloud environment locally in a box; CI is the clutch. It boots full-stack worlds and clones live 8-component branches in **`< 1.0s`** (`100%` Docker-free) by combining Btrfs CoW subvolumes, a native Rust S3 engine, direct-exec PG18 and Redis 7 pods, a parallel reactive `tokio` DAG, and one per-user daemon.
+Slipfork runs your cloud environment locally in a box; CI is the clutch. It boots full-stack worlds and clones live 8-component branches on **Btrfs CoW subvolumes** (`100%` Docker-free) — Slipfork's own fork snapshot measures **`~150–365ms`** on the 4-vCPU droplet (asserted **`< 500ms`**), while a full cold start of the real FastAPI (`uvicorn --reload`) + SvelteKit (`vite dev`) demo reaches first `200 OK` at a median **`~5.5s`**, asserted **`< 8.0s`** for 2-vCPU GitHub Actions loop-Btrfs runners.
 
 <!-- sample output -->
 ```console
 $ slipfork up
-✓ Ready -> http://demo.localhost  (<elapsed_ms>)
+✓ Ready -> http://demo.localhost  (4.8s)
 $ slipfork fork feat-auth
-✓ Forked feat-auth (<elapsed_ms>) -> http://feat-auth--demo.localhost
+✓ feat-auth (4.8s) -> http://feat-auth--demo.localhost
 ```
 
-*Sample transcript above; real `< 1.0s` median wall-clock ceiling (1 warm-up + 3 measured samples) on the 8-component stack is asserted via `std::time::Instant` in `critical_fork_live`.*
+*Sample transcript above; the asserted contract is two-tier: `snapshot_ms` `~150–365ms` measured with a `< 500ms` asserted ceiling for the CoW clone, and a median end-to-end cold start `~5.5s` measured with a `< 8.0s` asserted ceiling (1 warm-up + 3 measured samples) on the 4-vCPU dev VM and 2-vCPU CI runners, via `std::time::Instant` in `critical_fork_live`.*
 
 ---
 
@@ -68,7 +68,7 @@ Slipfork pulls zero external S3 images and runs zero distributed daemons. Detach
 
 ---
 
-## 3. Direct-Exec Databases, Parallel Fork Boot DAG & `< 1.0s` Budget
+## 3. Direct-Exec Databases, Parallel Fork Boot DAG & Two-Tier Latency Budget
 
 - **PostgreSQL 18 (`~30–50ms` start, direct `postgres` exec, one `~1–3ms` pre-fork `CHECKPOINT` + `syncfs(2)`):**
   - When `PG_VERSION` already exists in `PGDATA`, `PostgresLauncher` unlinks stale `postmaster.pid`, `postmaster.opts`, and `pg_stat`, mounts `/dev/shm`, and `exec`s the `postgres` binary **directly** by absolute path (never `docker-entrypoint.sh` bash wrappers).
@@ -76,6 +76,7 @@ Slipfork pulls zero external S3 images and runs zero distributed daemons. Detach
   - Before `fork`, `PostgresLauncher` sends `CHECKPOINT;` as a PostgreSQL v3 Simple Query over `Request::Dial { port: 5432 }` (`SCM_RIGHTS`, no `crun exec`/`psql` spawn) and then one `syncfs(2)` commits the flushed `shared_buffers`/`wal_buffers` page-cache writes into the Btrfs tree, so `INSERT`s committed immediately before `fork` survive.
 - **Redis 7 (`~5–15ms` start, direct `redis-server` exec):** `RedisLauncher` `exec`s `redis-server` directly by absolute path (never `docker-entrypoint.sh`) with `--bind 127.0.0.1 --dir /data --save "" --appendonly yes --appendfsync no` on `<world>/redis/<id>`, polling `:6379` every **`2ms`**.
 - **Parent `image` subvolume reuse (`ImageCache`) & `--no-sync` Python:** On `fork` with a matching `world_epoch`, `ImageCache` adopts the parent world's resolved read-only `image` subvolumes directly from `<world>/.slipfork-world-stamp.json` (`cached`, `~1ms`). Runtime Python commands execute with `UV_NO_SYNC=1` / `uv run --no-sync` or direct `.venv/bin/<prog>` exec so service pods never re-run `uv` lock checks.
+- **Direct-bin service launch (`@uv run <bin>` / `@pnpm exec <bin>`):** Once the setup node installed dependencies, the launcher resolves the verb straight to `<workdir>/.venv/bin/<bin>` or `<workdir>/node_modules/.bin/<bin>` and `exec`s it, skipping `uv`/corepack wrapper startup on every pod boot.
 
 ```mermaid
 flowchart LR
@@ -91,12 +92,16 @@ flowchart LR
 1. **Stale or unstamped hook (cold `up`, schema/lockfile edit, or `world_epoch` mismatch):** `@<tool>` setup and `before-start` run after their `image` resolves, `pre-deploy` awaits `image` + `setup`/`before-start` + **all backing `resource`s (`pg`, `redis`, `s3`) ready** before running migrations, and `service` container spawn waits for `pre-deploy` completion.
 2. **Current stamps (`fork` or warm `up` with matching `world_epoch` + input digests):** `setup`, `before-start`, and `pre-deploy` verify stamps immediately upon `image` completion (`0ms` `up to date`, **without** waiting on `pg`/`redis`), and `service` containers spawn **in parallel** alongside `pg` and `redis` startup — while `:80` ingress activation, `✓ Ready`, and `post-deploy` still await **every** `resource` and `service` readiness probe.
 
+!!! note "Where the seconds go"
+    Snapshot, world init and pod spawn stay in the low hundreds of milliseconds; the median is set by `uvicorn --reload` import/transform and `vite dev` first-request SSR inside the app pods. On a warm fork those steps print `cached`/`up to date`, mint no run id, and re-run zero commands.
+
 | `slipfork fork <name>` Stage (Full 8-Component Stack) | Target | Hard Ceiling |
 | :--- | :--- | :--- |
-| `CHECKPOINT` + `syncfs(2)` on live PG, then parallel Btrfs CoW snapshots (project, world, PG) + git branch switch | `18–45ms` | — |
+| `CHECKPOINT` + `syncfs(2)` on live PG, then parallel Btrfs CoW snapshots (project, world, PG) + git branch switch — reported as `snapshot_ms` | `150–365ms` | **`< 500ms`** |
 | World `unshare` + `slipfork-world-init` + `ConfigureS3` `:8333` + `world_epoch` image/hook reuse (`cached` `~1ms`) | `15–35ms` | — |
-| Parallel `crun` pod boot (direct-exec PG18 `~40ms`, Redis `~10ms`, concurrent `--no-sync` services `2ms` poll) + `:80` swap | `150–350ms` | — |
-| **End-to-end (`Command::spawn` -> all 8 components ready + `http://<fork>--<world>.localhost` `200 OK`)** | **`~0.5–0.8s`** | **`< 1.0s` (`1000ms`)** |
+| Parallel `crun` pod boot (direct-exec PG18 `~40ms`, Redis `~10ms`, services spawning concurrently with `2ms` poll) + `:80` swap | `150–350ms` | — |
+| App boot inside the pods: real `uvicorn --reload` import/transform + `vite dev` first-request SSR (external to Slipfork, dominates the total) | `1.5–3.5s` | — |
+| **End-to-end (`Command::spawn` -> all 8 components ready + `http://<fork>--<world>.localhost` `200 OK`)** | **median `~5.5s`** | **`< 8.0s` (`8000ms`)** on 4-vCPU dev VM and 2-vCPU Actions loop-Btrfs |
 
 ---
 

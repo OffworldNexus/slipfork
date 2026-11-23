@@ -50,7 +50,7 @@ image app . {
     S3_SECRET = uploads.secret_key
   }
   pre-deploy: sh -c 'printf pre > order.txt && echo pre-deploy hook ran'
-  post-deploy: sh -c 'for i in $(seq 50); do grep -q svc order.txt && break; sleep 0.1; done; grep -q svc order.txt && printf post >> order.txt'
+  post-deploy: sh -c 'for i in $(seq 50); do grep -q svc order.txt && break; sleep 0.1; done; grep -q svc order.txt && printf post >> order.txt && echo post-deploy hook ran'
   service api {
     port 8000
     route /
@@ -1510,12 +1510,23 @@ fn world_up_restart_down_journey() {
     }
     assert!(
         boot_events.iter().any(|event| {
+            event["kind"] == "hook"
+                && event["name"]
+                    .as_str()
+                    .is_some_and(|name| name.ends_with(":pre-deploy"))
+                && event["state"] == "up to date"
+        }),
+        "an unchanged warm `up --json` must reuse the `pre-deploy` stamp (M3.57):\n{}",
+        stdout(&json_boot)
+    );
+    assert!(
+        boot_events.iter().any(|event| {
             event["event"] == "log"
                 && event["line"]
                     .as_str()
-                    .is_some_and(|line| line.contains("pre-deploy hook ran"))
+                    .is_some_and(|line| line.contains("post-deploy hook ran"))
         }),
-        "the `--json` stream must carry a hook's live output line:\n{}",
+        "the `--json` stream must carry an executing hook's live output line:\n{}",
         stdout(&json_boot)
     );
     let down = journey.slipfork(&good, &["down"]);

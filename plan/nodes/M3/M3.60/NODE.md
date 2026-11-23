@@ -2,16 +2,22 @@
 id: M3.60
 title: "Align critical_world_journey.rs:1511 warm up --json hook assertion with M3.57 warm stamp reuse & verify all 8 live suites"
 kind: task
-status: ready
+status: done
 owner: implementer
 priority: 3
 depends_on: []
-paths: ["crates/slipfork/**", "specs/**", "docs/**"]
-attempts: 0
+paths:
+  - "crates/slipfork-forkfile/**"
+  - "crates/slipfork/**"
+  - "specs/**"
+  - "docs/**"
+  - README.md
+  - TESTING_PLAN.md
+attempts: 1
 max_attempts: 3
 escalation: none
 created: "2026-11-22T23:54"
-updated: "2026-11-23T00:28"
+updated: "2026-11-23T01:20"
 ---
 
 # Goal

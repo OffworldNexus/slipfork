@@ -354,9 +354,10 @@ impl Pane {
         let had_region = self.guard.take().is_some();
         let mut stdout = std::io::stdout().lock();
         if had_region {
-            if let Some(row) = self.tasks.free_row() {
-                let _ = write!(stdout, "\x1b[{row};1H\x1b[2K");
-            }
+            // A full grid has no blank task row left; park on the panel row below the region
+            // instead of leaving the cursor at (1,1) after the `ESC[r` reset.
+            let row = self.tasks.free_row().unwrap_or(self.rows);
+            let _ = write!(stdout, "\x1b[{row};1H\x1b[2K");
         } else if self.line_len > 0 {
             let _ = write!(stdout, "\r{}\r", " ".repeat(self.line_len));
             self.line_len = 0;

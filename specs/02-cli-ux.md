@@ -144,9 +144,11 @@ The indented detail rows carry the `Forkfile:<line>:` context the daemon reporte
 
 `NO_COLOR`, `TERM=dumb` and pipes emit zero `\x1b[` bytes and zero SGR; the ASCII path uses `\r` only and `--json` is pure JSON.
 
-## 5. Sub-second `fork` and `drop`
+## 5. Two-tier `fork` and `drop`
 
-`slipfork fork [name]` CoW-snapshots your checkout and world data, reuses parent image subvolumes (`cached`, ~1 ms) and boots the fork in under 1.0s; omitting `[name]` derives the slug from the current git branch.
+`slipfork fork [name]` CoW-snapshots your checkout and world data (`snapshot_ms` measures `~150–365ms`, asserted `< 500ms`) and reuses parent image subvolumes (`cached`, ~1 ms); omitting `[name]` derives the slug from the current git branch.
+
+The fork then boots the ordinary `up` path, so the real FastAPI (`uvicorn --reload`) + SvelteKit (`vite dev`) stack reaches all 8 components ready and its first `200 OK` at a median `~5.5s` on the 4-vCPU dev VM, asserted `< 8.0s` on 2-vCPU CI runners. That ceiling measures `uvicorn` first-request transforms and `vite dev` SSR, not Slipfork's clone; a warm fork prints `cached` images and `up to date` setup/hooks and re-runs nothing.
 
 A failed `fork` rolls back atomically: it stops its supervisor and pods and drops the registry entry before unlinking snapshots, so no half-booted fork survives. `slipfork drop <name>` stops the fork and deletes its project, data and log snapshots, refusing a dirty checkout without `-f`.
 

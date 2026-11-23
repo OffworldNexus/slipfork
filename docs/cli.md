@@ -59,6 +59,10 @@ flowchart LR
 | `slipfork completions <shell>` | Print bash, zsh or fish completions |
 | `slipfork daemon install` | Write the per-user unit; `--ingress` adds the system socket |
 
+The `fork` rows report two tiers: `snapshot_ms` for the CoW clone (`~150–365ms`, asserted `< 500ms`)
+and `elapsed_ms` for the full 8-component boot (`~5.5s` median, asserted `< 8.0s`). A warm fork
+prints `cached` images and `up to date` setup/hooks and re-runs nothing.
+
 ## Naming a world, fork or service
 
 `up` and `down` take an optional positional target; `restart` takes one target and an optional
@@ -149,7 +153,7 @@ $ slipfork up
 • image     backend   cached                     1ms
 ✓ resource  pg        postgres 18 ready         38ms
 ✓ setup     backend   uv sync (up to date)       0ms
-✓ service   api       running -> /api           42ms
+✓ service   api       running -> /api           1.4s
 ✓ Ready -> http://acme-shop.localhost
 ```
 

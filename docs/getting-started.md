@@ -65,8 +65,8 @@ $ slipfork up
 ✓ resource  cache     redis 7 ready              7ms
 ✓ resource  uploads   s3 (private) ready         1ms
 ✓ setup     api       uv sync (up to date)       0ms
-✓ service   web       running -> /api           42ms
-✓ Ready -> http://acme-shop.localhost  (218ms)
+✓ service   web       running -> /api           1.4s
+✓ Ready -> http://acme-shop.localhost
 ```
 
 Each finished task is one aligned row; all build and hook output goes to the world log. Open the URL,
@@ -84,12 +84,14 @@ longer declared stop and show `orphaned` until reaped, and new services boot.
 
 ```console
 $ slipfork fork billing-api
-✓ Forked billing-api (0.8s) -> http://billing-api--acme-shop.localhost
+✓ billing-api (4.9s) -> http://billing-api--acme-shop.localhost
   path  ~/projects/acme-shop/.forks/billing-api
 ```
 
-The `0.8s` is end-to-end; the CoW snapshot itself is `38ms` (`≤50ms` on network block storage) and
-the rest boots the cloned stack.
+Those are the two tiers: `snapshot_ms` is the CoW clone (`~250ms` here; `~150–365ms` on the
+4-vCPU droplet, asserted `< 500ms`) and the elapsed covers the full boot. On the real 8-component
+FastAPI + SvelteKit stack the boot medians `~5.5s`, asserted `< 8.0s`, set by `uvicorn --reload`
+and `vite dev` first requests rather than by the clone.
 
 The fork has its own checkout, PostgreSQL and Redis snapshots, and URL. Dependencies and input-hash
 stamps came along, so nothing installs again. Throw the experiment away when you are done:
