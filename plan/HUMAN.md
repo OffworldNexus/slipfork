@@ -160,3 +160,11 @@ Slipfork 0.1.0 ready on release/0.1.0 -> develop (PR #2): pure-Btrfs engine, sli
 
 **Answer:**
 
+## H-020 [open] [release-gate] (node M3)
+
+- asked: 2026-11-23T02:41 by conductor
+
+Slipfork 0.1.0 ready on release/0.1.0 -> develop (PR #2): pure-Btrfs engine, slirp4netns egress, DECSTBM + t=0 pre-sized ui::table concurrent spinners, #run_id logs (-r/--runs), on/else + domain.name vs self.{url,domain,scheme} + "${...}" + secret/var(KEY, gen), Tree-sitter/Zed/Vim bundled in all Linux packages, real uv+FastAPI & pnpm+SvelteKit demo live on 165.232.86.174, and offworld-packaging.
+
+**Answer:**
+

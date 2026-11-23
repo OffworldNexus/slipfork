@@ -3179,3 +3179,6 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-23T02:38 [M3.68] (lead) status active -> review
 - 2026-11-23T02:39 [M3.68] (lead) Triad: review-arch pass, review-ux pass, review-tests pass-with-note (budgets are conductor-prescribed spec values; its FIEMAP/shared-extents redesign suggestio
 - 2026-11-23T02:39 [M3.68] (lead) status review -> done
+- 2026-11-23T02:41 [M3] (conductor) status active -> done
+- 2026-11-23T02:41 HUMAN H-020 [release-gate] opened by conductor (node M3)
+- 2026-11-23T02:41 AUTOPILOT off by conductor Awaiting 38/38 GHA green confirmation & human review/merge of PR #2 into develop
