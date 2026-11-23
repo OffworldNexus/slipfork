@@ -3297,3 +3297,8 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-23T19:03 [M3.72] (conductor) status ready -> ready: Widened: bare 'uv run' (hooks, pre-deploy, exec) must also get --no-sync, not just '@uv run'
 - 2026-11-23T19:03 [M3.72] (conductor) status ready -> ready: Widened paths: bare 'uv run' (hooks, pre-deploy, exec) must also get --no-sync
 - 2026-11-23T19:03 [M3.72] (conductor) edited fields
+- 2026-11-23T19:04 [M3.72] (lead) edited fields
+- 2026-11-23T19:04 [M3.72] (lead) status ready -> active
+- 2026-11-23T19:04 [M3.72] (lead) attempt 1/3 started
+- 2026-11-23T19:04 [M3.72] (lead) base c9e0c544eb266a67333885f52e35091dcc054dcf
+- 2026-11-23T19:11 [M3.72] (conductor) edited fields

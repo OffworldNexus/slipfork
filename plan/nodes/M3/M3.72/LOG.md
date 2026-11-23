@@ -19,3 +19,23 @@ status ready -> ready: Widened paths: bare 'uv run' (hooks, pre-deploy, exec) mu
 ## 2026-11-23T19:03 [conductor]
 
 edited fields
+
+## 2026-11-23T19:04 [lead]
+
+edited fields
+
+## 2026-11-23T19:04 [lead]
+
+status ready -> active
+
+## 2026-11-23T19:04 [lead]
+
+attempt 1/3 started
+
+## 2026-11-23T19:04 [lead]
+
+base c9e0c544eb266a67333885f52e35091dcc054dcf
+
+## 2026-11-23T19:11 [conductor]
+
+edited fields

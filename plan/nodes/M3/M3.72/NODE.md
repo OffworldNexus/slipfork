@@ -2,7 +2,7 @@
 id: M3.72
 title: "Collapse demo api/worker onto one 'uv run …' command & make every launched 'uv run' pass --no-sync (never sync/install dev deps in a prod pod)"
 kind: task
-status: ready
+status: active
 owner: implementer
 priority: 3
 depends_on: []
@@ -10,14 +10,15 @@ paths:
   - "support/demo/**"
   - "crates/slipfork-forkfile/**"
   - "crates/slipfork/**"
+  - tools/do_vm.py
   - TESTING_PLAN.md
   - "specs/**"
   - "docs/**"
-attempts: 0
+attempts: 1
 max_attempts: 3
 escalation: none
 created: "2026-11-23T19:02"
-updated: "2026-11-23T19:03"
+updated: "2026-11-23T19:11"
 ---
 
 # Goal
