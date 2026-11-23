@@ -200,3 +200,11 @@ Slipfork 0.1.0 ready on release/0.1.0 -> develop (PR #2): pure-Btrfs engine; bui
 
 **Answer:**
 
+## H-025 [open] [release-gate] (node M3)
+
+- asked: 2026-11-23T21:29 by conductor
+
+Slipfork 0.1.0 ready on release/0.1.0 -> develop (PR #2): pure-Btrfs engine; built-in dev + per-world '-F/--features' + 'slipfork features' (fork-inherited .slipfork/features.json) with dev-only /project bind; TTY auto-detected 'slipfork exec' (-i/--interactive & --no-interactive over real ExecPty); verbatim 'uv run'; on/else, domain.name vs self.{url,domain,scheme}, "${...}", secret/var(KEY, gen); DECSTBM + ui::table; #run_id logs; Tree-sitter/Zed/Vim in every Linux package; ./api + ./front demo live on 165.232.86.174; offworld-packaging.
+
+**Answer:**
+

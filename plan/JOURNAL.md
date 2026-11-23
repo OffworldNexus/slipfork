@@ -3340,3 +3340,6 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-23T21:24 [M3.74] (lead) status active -> review
 - 2026-11-23T21:27 [M3.74] (lead) status review -> done
 - 2026-11-23T21:28 [M3.74] (lead) live 165.232.86.174: glibc2.34 .deb (rockylinux:9) installed, user daemon restarted, demo world up (no sync/reset; numpy+ipython preserved); PTY: 'slipfork exec
+- 2026-11-23T21:29 [M3] (conductor) status active -> done
+- 2026-11-23T21:29 HUMAN H-025 [release-gate] opened by conductor (node M3)
+- 2026-11-23T21:29 AUTOPILOT off by conductor Awaiting 38/38 GHA green confirmation & human review/merge of PR #2 into develop
