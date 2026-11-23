@@ -1,6 +1,6 @@
 ---
 id: M3.72
-title: "Collapse demo api/worker onto one '@uv run …' command for dev and prod (drop the python-vs-uv else branches)"
+title: "Collapse demo api/worker onto one 'uv run …' command & make every launched 'uv run' pass --no-sync (never sync/install dev deps in a prod pod)"
 kind: task
 status: ready
 owner: implementer
@@ -16,7 +16,7 @@ attempts: 0
 max_attempts: 3
 escalation: none
 created: "2026-11-23T19:02"
-updated: "2026-11-23T19:02"
+updated: "2026-11-23T19:03"
 ---
 
 # Goal

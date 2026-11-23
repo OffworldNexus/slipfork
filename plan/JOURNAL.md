@@ -3293,3 +3293,5 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-23T19:02 [M3] (conductor) status done -> active
 - 2026-11-23T19:02 [M3.72] (conductor) created (task) Collapse demo api/worker onto one '@uv run …' command for dev and prod (drop the python-vs-uv else branches)
 - 2026-11-23T19:02 AUTOPILOT on by conductor Collapsing demo api/worker onto @uv run in M3.72
+- 2026-11-23T19:03 [M3.72] (conductor) edited fields
+- 2026-11-23T19:03 [M3.72] (conductor) status ready -> ready: Widened: bare 'uv run' (hooks, pre-deploy, exec) must also get --no-sync, not just '@uv run'
