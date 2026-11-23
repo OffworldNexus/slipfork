@@ -3182,3 +3182,8 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-23T02:41 [M3] (conductor) status active -> done
 - 2026-11-23T02:41 HUMAN H-020 [release-gate] opened by conductor (node M3)
 - 2026-11-23T02:41 AUTOPILOT off by conductor Awaiting 38/38 GHA green confirmation & human review/merge of PR #2 into develop
+- 2026-11-23T13:07 HUMAN H-020 closed by conductor
+- 2026-11-23T13:07 [M3] (conductor) status done -> active
+- 2026-11-23T13:07 [M3.69] (conductor) created (task) Built-in dev feature, per-world CLI features (-F/--features, --no-default-features, slipfork features, fork inheritance) & dev-only /project bind
+- 2026-11-23T13:07 [M3.70] (conductor) created (task) Restructure support/demo into ./api + ./front, use pure Dockerfile CMD in !dev, update specs/docs & verify dev + -F -dev live on VM
+- 2026-11-23T13:07 AUTOPILOT on by conductor Implementing M3.69 + M3.70: built-in dev, per-world CLI features, dev-only /project bind, and ./api + ./front demo
