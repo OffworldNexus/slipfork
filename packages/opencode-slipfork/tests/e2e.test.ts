@@ -174,11 +174,17 @@ test("real CLI journey: refusals, listing, shell exports, and session reaping", 
     { directory: probe.project, type: "root" },
   ]);
 
+  const rawDrop = spawnSync(binary(), ["drop", "feat", "--json"], {
+    cwd: probe.project,
+    env: probe.env,
+    encoding: "utf8",
+  });
+  const decodedDrop = decodeCliFailure(String(rawDrop.stdout));
+  expect(decodedDrop).toBeDefined();
   const dropError = await probe.coordinator
     .removeFork({ directory: forkDirectory(probe.project, "feat"), force: true })
     .then(() => undefined, (reason: Error) => reason);
-  expect(dropError?.message).toContain("is not a Btrfs subvolume");
-  expect(dropError?.message).toContain("retry `slipfork drop`");
+  expect(dropError?.message).toBe(`slipfork drop 'feat' failed: ${decodedDrop}`);
 
   // A created fork (recorded by the coordinator) exports its world and URL verbatim.
   const checkout = probe.coordinator.adoptFork({
