@@ -3166,3 +3166,6 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-23T02:26 [M3.67] (lead) edited fields
 - 2026-11-23T02:33 [M3.67] (lead) live 165.232.86.174: deb 0.1.0 (glibc<=2.34) installed, /usr/local/bin copies removed, ingress@ User=1000 via daemon install --ingress, ps = ● demo tree, ● feat
 - 2026-11-23T02:33 [M3.67] (lead) status ready -> done
+- 2026-11-23T02:34 [M3] (conductor) status active -> done
+- 2026-11-23T02:34 HUMAN H-019 [release-gate] opened by conductor (node M3)
+- 2026-11-23T02:34 AUTOPILOT off by conductor Awaiting 38/38 GHA green confirmation & human review/merge of PR #2 into develop

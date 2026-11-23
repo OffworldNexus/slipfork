@@ -2,7 +2,7 @@
 id: M3
 title: "Clean-Sheet Slipfork 0.1.0: Pure-Btrfs Native Engine, Enclosing Image Forkfile, High-Craft CLI, Visual Zensical Docs & All-Distro Linux Packaging"
 kind: milestone
-status: active
+status: done
 priority: 3
 depends_on: [M2]
 paths: []
@@ -10,7 +10,7 @@ attempts: 0
 max_attempts: 3
 escalation: architect
 created: "2026-11-14T22:03"
-updated: "2026-11-22T23:54"
+updated: "2026-11-23T02:34"
 ---
 
 # Goal
