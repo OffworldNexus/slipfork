@@ -227,4 +227,6 @@ With `dev` active Slipfork bind-mounts the live checkout at `/project`, so `uvic
   before the first `started`; `--json` forwards it verbatim (extra keys are forward-compatible) with
   zero escapes. `down` carries the same frame on its event stream and still answers one final object.
 - **Payloads:** `up`/`restart` → `{world, url, elapsed_ms, nodes:[{kind,name,state,duration_ms}]}`; `down` → `{world, elapsed_ms}`; `fork` → `{fork, world, project, url, elapsed_ms, snapshot_ms}`; `drop` → `{dropped, elapsed_ms}`; `doctor` → `{ready, checks:[{name,ok,detail,next?}]}`; `status`/`ps` → `{worlds:[...]}` including `state` (`live`/`stopped`), `port`, `started_at_ms`, `url`, `routes` (each `{prefix, port, mode, domain?}`), `orphaned` and `stopped_forks` (membership means stopped; stopped rows omit `supervisor_pid`/`started_at_ms`); failures → `{"error":{code,message,next}}`.
-- **Ephemeral daemon:** auto-start warns on stderr and names `slipfork daemon install`.
+- **Ephemeral daemon:** auto-start warns once on stderr; distribution packages installed with
+  `sudo` enable and start the per-user unit and the `:80` socket for the installing user, so the
+  fallback appears only on tarball, headless, or rootless installs.

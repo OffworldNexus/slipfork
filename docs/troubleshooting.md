@@ -18,8 +18,8 @@ flowchart TD
   D -->|"✓ Ready"| M["read the error line and its next: remedy"]
   D -->|"✗ Storage"| B["move the project onto Btrfs"]
   D -->|"✗ Containers"| N["install crun, or enable rootless containers"]
-  D -->|"✗ Daemon"| R["slipfork daemon install"]
-  D -->|"✗ Domains"| S["sudo slipfork daemon install"]
+  D -->|"✗ Daemon"| R["systemctl --user enable --now slipfork.service"]
+  D -->|"✗ Domains"| S["sudo systemctl enable --now slipfork-ingress.socket"]
 ```
 
 ## The four doctor rows
@@ -30,8 +30,8 @@ flowchart TD
 | `Containers` | `crun <ver> · rootless container sandboxing enabled` | `crun not installed · rootless container sandboxing unavailable` | Install `crun`, then retry |
 | `Containers` | same | `crun <ver> · rootless container sandboxing blocked by AppArmor` | `sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0` |
 | `Containers` | same | `crun <ver> · rootless container sandboxing unavailable` | `sudo sysctl -w user.max_user_namespaces=2147483647` |
-| `Daemon` | `running · background user service active` | `not installed · start it with slipfork daemon install` | `slipfork daemon install` |
-| `Domains` | `http://*.localhost · local domain routing active` | `http://*.localhost · local domain routing inactive` | `sudo slipfork daemon install` |
+| `Daemon` | `running · background user service active` | `not running · slipfork up starts it automatically` | `systemctl --user enable --now slipfork.service` |
+| `Domains` | `http://*.localhost · local domain routing active` | `http://*.localhost · local domain routing inactive` | `sudo systemctl enable --now slipfork-ingress.socket` |
 
 `doctor` exits non-zero when any row fails, so it is safe inside a setup script. Its `--json` form
 emits `{ready, checks:[{name, ok, detail, next?}]}` with the same words.
@@ -56,18 +56,19 @@ emits `{ready, checks:[{name, ok, detail, next?}]}` with the same words.
 
 !!! warning "Do not run worlds under `sudo`"
 
-    `sudo slipfork daemon install` is the only privileged step. Running `slipfork up` as root puts
-    the world outside your session and breaks the per-user socket.
+    The package's install hook enables the user service and the system `:80` socket as root.
+    Running `slipfork up` as root puts the world outside your session and breaks the per-user
+    socket.
 
 ## Daemon and domain failures
 
 | Symptom | Command |
 | :--- | :--- |
-| `not installed · start it with slipfork daemon install` | `slipfork daemon install`, then `systemctl --user restart slipfork` |
-| Doctor is green but the URL does not answer | `sudo slipfork daemon install`, then `systemctl is-active slipfork-ingress.socket` |
+| `not running · slipfork up starts it automatically` | `systemctl --user enable --now slipfork.service`, then `systemctl --user restart slipfork` |
+| Doctor is green but the URL does not answer | `sudo systemctl enable --now slipfork-ingress.socket`, then `systemctl is-active slipfork-ingress.socket` |
 | `local domain routing inactive` | `sudo systemctl enable --now slipfork-ingress.socket` |
 | `Address already in use` on port 80 | `sudo ss -ltnp 'sport = :80'` and stop the other server |
-| `Permission denied` binding port 80 | Install the system socket through `sudo slipfork daemon install` |
+| `Permission denied` binding port 80 | `sudo systemctl enable --now slipfork-ingress.socket` |
 | `400` for a non-`.localhost` host | Use `<world>.localhost` or a declared `domain` |
 | `421` for an unknown `.localhost` world | `slipfork status`, then `slipfork up` in that project |
 | `404` inside a known world | Check the `route` prefix and `port` in the `Forkfile` |
@@ -78,7 +79,7 @@ Never edit `/etc/hosts` for `.localhost`; the router resolves it and forwards to
 
 | Symptom | Command |
 | :--- | :--- |
-| `the slipfork daemon did not answer` | `slipfork daemon install`, then `systemctl --user restart slipfork` |
+| `the slipfork daemon did not answer` | `systemctl --user enable --now slipfork.service`, then `systemctl --user restart slipfork` |
 | Daemon keeps exiting | Read `<state_dir>/daemon.log`, then `slipfork doctor` |
 | `several routes match` | `slipfork open <service>` names the one route you want |
 | `slipfork drop` refuses a dirty fork | `slipfork drop <name> -f` discards the checkout |

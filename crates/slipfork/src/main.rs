@@ -10,7 +10,6 @@ mod commands;
 mod compose;
 mod daemon;
 mod doctor;
-mod install;
 mod mounts;
 #[path = "daemon/ps.rs"]
 mod ps;
@@ -79,7 +78,7 @@ fn main() -> ExitCode {
                     eprintln!("error: cannot bind {address}: {error}");
                     if error.kind() == std::io::ErrorKind::PermissionDenied {
                         eprintln!(
-                            "next: sudo slipfork daemon install --ingress  # or set net.ipv4.ip_unprivileged_port_start=0"
+                            "next: sudo systemctl enable --now slipfork-ingress.socket  # or set net.ipv4.ip_unprivileged_port_start=0"
                         );
                     } else {
                         eprintln!(

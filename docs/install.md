@@ -105,29 +105,29 @@ Use `/nightly/$arch` in the `Server` line to follow nightlies.
 Every package declares `crun`, `btrfs-progs`, and `slirp4netns`. The last one is the user-mode NAT
 that gives a world outbound network, so `@uv`, `@pnpm`, and HTTPS reach the internet.
 
-The packages also ship the systemd units (or the OpenRC service on Alpine), and never enable a root
-daemon; that stays your explicit choice.
+Systemd packages ship both units and enable them for the installing user: the install hook reads
+`SUDO_USER` from a normal `sudo` install, turns on lingering, starts `slipfork.service`, and enables
+`slipfork-ingress.socket`. There is no separate ingress command.
 
 ```console
 $ slipfork --version
 $ slipfork doctor
 ✓ Ready
-$ slipfork daemon install                 # per-user unit, no sudo
-$ systemctl --user enable --now slipfork
-$ sudo slipfork daemon install --ingress  # system :80 socket + AppArmor
-$ systemctl enable --now slipfork-ingress.socket
 ```
 
 !!! note "Alpine runs OpenRC"
 
     On Alpine the `:80` ingress is the `slipfork-ingress` OpenRC service, not a systemd socket.
-    `sudo slipfork daemon install --ingress` writes `/etc/conf.d/slipfork-ingress` with the invoking
-    user and grants that user the unprivileged `:80` bind; then enable and start it:
+    The install hook writes `/etc/conf.d/slipfork-ingress` with the installing user and runs
+    `rc-update`/`rc-service` for the ingress only; `slipfork up` starts the daemon.
 
-    ```console
-    $ sudo rc-update add slipfork-ingress default
-    $ sudo rc-service slipfork-ingress start
-    ```
+!!! note "Tarballs and headless hosts"
+
+    When no package hook ran, `docs/install.sh` provisions the user unit and the socket on a
+    systemd host; set `SLIPFORK_INSTALL_NO_SERVICE=1` to skip it. By hand, put the user unit under
+    `~/.config/systemd/user` and run `systemctl --user enable --now slipfork`, then put the socket
+    and template under `/etc/systemd/system` and run
+    `sudo systemctl enable --now slipfork-ingress.socket`.
 
 ## This project's installer (alternative)
 
@@ -259,23 +259,17 @@ A missing `slirp4netns` turns the `Containers` row red with
 
 ## The daemon and the `:80` ingress
 
-Worlds are served by **one per-user daemon**. Install it without `sudo`:
+Worlds are served by **one per-user daemon**. Systemd packages installed with `sudo` enable and
+start it for the installing user, so a package install needs nothing else.
 
-```console
-$ slipfork daemon install
-$ systemctl --user enable --now slipfork
-```
+The `.localhost` edge on `127.0.0.1:80` is a system socket the same hook enables for that user; it
+ships `slipfork-ingress.socket`, its template instance and the AppArmor profile. On a tarball,
+headless, or rootless systemd install, `docs/install.sh` enables both; by hand, place the template
+and socket under `/etc/systemd/system` and run
+`sudo systemctl enable --now slipfork-ingress.socket`.
 
-That writes `~/.config/systemd/user/slipfork.service`; the second line keeps it on at login. The
-`.localhost` edge on `127.0.0.1:80` is the one privileged piece:
-
-```console
-$ sudo slipfork daemon install --ingress
-```
-
-This installs `slipfork-ingress.socket`, its template instance and the AppArmor profile. The socket
-is stateless: it forwards each accepted connection to your daemon, which makes every routing
-decision.
+The socket is stateless: it forwards each accepted connection to your daemon, which makes every
+routing decision.
 
 !!! warning "`slipfork` needs Linux"
 

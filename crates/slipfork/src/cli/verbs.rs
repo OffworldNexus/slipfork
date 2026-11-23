@@ -19,8 +19,7 @@ Examples:
   slipfork up feat-auth
   slipfork restart -s worker
   slipfork logs -f api
-  slipfork exec api -- pytest -q
-  slipfork daemon install";
+  slipfork exec api -- pytest -q";
 
 /// The one help palette: every verb inherits it from the root `Cli`.
 const STYLES: Styles = Styles::styled()
@@ -297,12 +296,6 @@ pub enum Command {
         shell: Shell,
     },
 
-    /// Install the per-user unit (and with sudo the system :80 socket).
-    Daemon {
-        #[command(subcommand)]
-        command: DaemonCommand,
-    },
-
     /// Print this overview, or one verb's help.
     Help {
         /// Verb to describe (default: this overview).
@@ -319,17 +312,6 @@ pub enum Command {
         project: PathBuf,
         #[arg(long = "name", value_name = "NAME")]
         world: String,
-    },
-}
-
-/// `slipfork daemon` subcommands.
-#[derive(Debug, Subcommand)]
-pub enum DaemonCommand {
-    /// Write the per-user daemon unit; --ingress adds the system :80 socket.
-    Install {
-        /// Install the system :80 socket, its template unit, and AppArmor (needs root).
-        #[arg(long)]
-        ingress: bool,
     },
 }
 

@@ -1,0 +1,12 @@
+# The package ships the OpenRC ingress script; this hook points it at the
+# installing user and starts it. Rootless installs with no SUDO_USER stay silent.
+post_install() {
+    if [ -n "${SUDO_USER:-}" ] && [ "${SUDO_USER}" != root ] &&
+        command -v rc-service >/dev/null 2>&1; then
+        printf 'SLIPFORK_INGRESS_USER=%s\n' "${SUDO_USER}" >/etc/conf.d/slipfork-ingress
+        rc-update add slipfork-ingress default >/dev/null 2>&1 || true
+        rc-service slipfork-ingress start >/dev/null 2>&1 || true
+    elif [ -n "${SUDO_USER:-}" ] && [ "${SUDO_USER}" != root ]; then
+        echo "next: loginctl enable-linger ${SUDO_USER} && sudo -iu ${SUDO_USER} systemctl --user enable --now slipfork.service" >&2
+    fi
+}

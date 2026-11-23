@@ -24,9 +24,9 @@ follow Semantic Versioning while the `# forkfile: 0.1` format is pre-`1.0`.
   — with a `✓ Ready` verdict or one counted remedy per failing row.
 - `slipfork fmt` and `slipfork migrate` format and convert `Forkfile`s; `slipfork completions`
   prints bash, zsh or fish scripts generated from the same verb table as `--help`.
-- One per-user daemon serves every world behind a stateless `:80` `.localhost` ingress;
-  `slipfork daemon install` writes the user unit and `sudo slipfork daemon install --ingress` adds
-  the system socket and AppArmor profile.
+- One per-user daemon serves every world behind a stateless `:80` `.localhost` ingress; package
+  install hooks enable and start both the per-user daemon and the system `:80` socket for the
+  installing user, and rootless installs stay silent.
 - Native packages for Debian/Ubuntu (`.deb`), Fedora/RHEL/Rocky/Alma/openSUSE (`.rpm`), Arch
   (pacman + AUR) and Alpine (`.apk`), plus portable glibc/musl archives and a universal installer.
 - A standalone `slipfork-lsp` language server with releases for Linux, macOS and Windows.

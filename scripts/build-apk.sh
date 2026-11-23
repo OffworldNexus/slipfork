@@ -81,6 +81,11 @@ tar --sort=name --mtime="@${SOURCE_DATE_EPOCH:-0}" --owner=0 --group=0 --numeric
     -czf "$work/payload.tar.gz" -C "$work" payload
 sed -e "s|^pkgver=.*|pkgver=$version|" -e "s|^pkgrel=.*|pkgrel=$pkgrel|" \
     packaging/alpine/APKBUILD >"$work/APKBUILD"
+# `install=` in APKBUILD names these files; abuild packages them as .post-install
+# and .pre-deinstall. Alpine runs OpenRC, so the hook writes the ingress conf and
+# starts `slipfork-ingress`; it does not touch systemd.
+install -m 0644 packaging/alpine/slipfork.post-install \
+    packaging/alpine/slipfork.pre-deinstall "$work/"
 docker run --rm -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" \
     -v "$work":/work -w /work alpine:3.21 sh -eu -c '
     trap "chown -R $HOST_UID:$HOST_GID /work || echo \"warning: could not restore /work ownership; next: sudo chown -R $HOST_UID:$HOST_GID <host work dir>\" >&2" EXIT

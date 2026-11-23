@@ -1,6 +1,6 @@
-# The stateless per-connection handoff the socket unit starts.
-# `sudo slipfork daemon install --ingress` rewrites `User=` and
-# `XDG_RUNTIME_DIR=` for the invoking developer before the socket is enabled.
+# The stateless per-connection handoff the socket unit starts. The package's
+# install hook copies this template to /etc/systemd/system and appends `User=`
+# and `XDG_RUNTIME_DIR=` for the installing developer before enabling the socket.
 # Starting this packaged copy as root fails closed in `__ingress`: the daemon
 # socket lives in a user runtime dir this template cannot name.
 [Unit]

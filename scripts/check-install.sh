@@ -38,9 +38,20 @@ archive=$(find "$tmp/archive" -name '*.tar.gz' -type f | head -n 1)
 [ -n "$archive" ] || { echo "error: no archive was produced; next: run scripts/build-standalone.sh by hand" >&2; exit 1; }
 sha=$(sha256sum "$archive" | cut -d' ' -f1)
 
+mkdir -p "$tmp/home/.config"
 SLIPFORK_ARCHIVE_URL="file://$archive" SLIPFORK_SHA256="$sha" \
+    HOME="$tmp/home" XDG_CONFIG_HOME="$tmp/home/.config" SLIPFORK_INSTALL_NO_SERVICE=1 \
     sh docs/install.sh --develop local --prefix "$prefix" --yes >/dev/null
+[ ! -e "$tmp/home/.config/systemd/user/slipfork.service" ] ||
+    { echo "error: SLIPFORK_INSTALL_NO_SERVICE wrote a user unit; next: honor the opt-out in docs/install.sh" >&2; exit 1; }
 "$prefix/bin/slipfork" --version || { echo "error: $prefix/bin/slipfork does not run; next: inspect the install prefix" >&2; exit 1; }
 [ -f "$prefix/share/man/man1/slipfork.1.gz" ] || { echo "error: the man page was not installed; next: ship man/ in the archive" >&2; exit 1; }
 [ -f "$prefix/share/vim/vimfiles/syntax/forkfile.vim" ] || { echo "error: the Vim syntax file was not installed; next: ship share/vim/vimfiles in the archive" >&2; exit 1; }
+sh -n packaging/deb/postinst
+sh -n packaging/deb/prerm
+bash -n packaging/arch/slipfork.install
+sh -n packaging/alpine/slipfork.post-install
+sh -n packaging/alpine/slipfork.pre-deinstall
+sh -n docs/install.sh
 echo "ok   install: $prefix/bin/slipfork runs, and the man page + Vim plugin landed under share"
+echo "ok   hooks: every package install hook parses, and the service opt-out wrote no unit"

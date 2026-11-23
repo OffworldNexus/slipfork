@@ -3381,3 +3381,45 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-24T00:00 [M3] (conductor) status active -> done
 - 2026-11-24T00:00 HUMAN H-026 closed by conductor
 - 2026-11-24T00:00 AUTOPILOT off by conductor 0.1.0 (very experimental) published to stable; M3 gated done
+- 2026-11-24T00:04 [M3] (conductor) status done -> active
+- 2026-11-24T00:04 [M3.79] (conductor) created (task) Install and start the per-user daemon automatically (package install is enough)
+- 2026-11-24T00:04 AUTOPILOT on by conductor M3.79: make the packaged daemon self-install on first use
+- 2026-11-24T00:05 [M3.79] (lead) status ready -> active
+- 2026-11-24T00:05 [M3.79] (lead) attempt 1/3 started
+- 2026-11-24T00:05 [M3.79] (lead) base c77a2b9b (release/0.1.0-fix)
+- 2026-11-24T00:05 [M3.79] (lead) edited fields
+- 2026-11-24T00:06 [M3.79] (lead) edited fields
+- 2026-11-24T00:10 [M3.79] (conductor) edited fields
+- 2026-11-24T00:10 [M3.80] (conductor) created (task) Never touch the user's checkout: drop up-time adopt, copy plain checkouts on fork
+- 2026-11-24T00:10 [M3.80] (conductor) status ready -> active
+- 2026-11-24T00:10 AUTOPILOT on by conductor M3.80: stop up from rewriting the user's checkout
+- 2026-11-24T00:11 [M3.80] (lead) edited fields
+- 2026-11-24T00:11 [M3.80] (lead) edited fields
+- 2026-11-24T00:12 [M3.80] (lead) attempt 1/3 started
+- 2026-11-24T00:12 [M3.80] (lead) base c77a2b941f5f6f6ad539a73cfd82afcc4232433f (release/0.1.0-fix; M3.79 parallel on disjoint files)
+- 2026-11-24T00:14 [M3.81] (conductor) created (task) up must not print Ready when a service is failed (verify health before Idle)
+- 2026-11-24T00:14 [M3.82] (conductor) created (task) Support ADD http(s):// sources in the native Dockerfile builder
+- 2026-11-24T00:14 [M3.81] (conductor) edited fields
+- 2026-11-24T00:14 [M3.81] (conductor) status ready -> active
+- 2026-11-24T00:14 [M3.82] (conductor) status ready -> active
+- 2026-11-24T00:14 [M3.80] (lead) edited fields
+- 2026-11-24T00:14 [M3.82] (lead) attempt 1/3 started
+- 2026-11-24T00:14 [M3.82] (lead) base c77a2b941f5f6f6ad539a73cfd82afcc4232433f
+- 2026-11-24T00:16 [M3.81] (lead) edited fields
+- 2026-11-24T00:16 [M3.81] (lead) status active -> active
+- 2026-11-24T00:16 [M3.81] (lead) attempt 1/3 started
+- 2026-11-24T00:16 [M3.81] (lead) base c77a2b941f5f6f6ad539a73cfd82afcc4232433f
+- 2026-11-24T00:17 [M3.83] (conductor) created (task) One logging manager: persistent run catalog, target resolution, and failure hints
+- 2026-11-24T00:18 [M3.81] (lead) status active -> review
+- 2026-11-24T00:19 [M3.84] (conductor) created (task) Formatter default indent is 4 spaces
+- 2026-11-24T00:19 [M3.84] (conductor) status ready -> active
+- 2026-11-24T00:19 [M3.84] (lead) status active -> active
+- 2026-11-24T00:19 [M3.84] (lead) attempt 1/3 started
+- 2026-11-24T00:19 [M3.84] (lead) base c77a2b941f5f6f6ad539a73cfd82afcc4232433f
+- 2026-11-24T00:19 [M3.81] (lead) edited fields
+- 2026-11-24T00:19 [M3.81] (lead) status review -> active
+- 2026-11-24T00:19 [M3.81] (lead) Triad fix pass 1: Heal variant outside core lock, bounded poll, deterministic test
+- 2026-11-24T00:21 [M3.80] (lead) INCIDENT: a detached 'tools/do_vm.py sync' (local PID 123650/123653/123656/124233) reset the owner's live /home/slipfork/demo (api/pyproject.toml + uv.lock) whi
+- 2026-11-24T00:21 [M3.79] (lead) status active -> review
+- 2026-11-24T00:21 [M3.79] (lead) triad clean after 1 fix pass; live VM: SUDO_USER install -> enabled/active/socket active, up 0 ephemeral lines, HTTP 200; rootless silent, ghost hint=1
+- 2026-11-24T00:21 [M3.79] (lead) status review -> done

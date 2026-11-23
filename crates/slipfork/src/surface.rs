@@ -113,11 +113,6 @@ pub const VERBS: &[VerbSpec] = &[
         flags: &[],
     },
     VerbSpec {
-        name: "daemon",
-        summary: "Install the per-user unit (and with sudo the :80 socket).",
-        flags: &["--ingress", "--json"],
-    },
-    VerbSpec {
         name: "help",
         summary: "Print this overview.",
         flags: &[],

@@ -12,6 +12,10 @@ license=('custom')
 depends=('glibc' 'crun' 'btrfs-progs' 'slirp4netns')
 provides=('slipfork')
 conflicts=('slipfork')
+# The hooks live in slipfork.install (`post_install`/`pre_remove`) so pacman
+# runs them; the package enables the per-user daemon and the `:80` socket for
+# the installing user.
+install=('slipfork.install')
 options=('!strip')
 _asset="slipfork-${pkgver}-1-${CARCH}.pkg.tar.zst"
 source_x86_64=("${_asset}::${url}/releases/download/v${pkgver}/${_asset}")

@@ -24,8 +24,7 @@ use crate::world::HostEnv;
 const HANDOFF_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// The `sysctl` remedy when the kernel refuses a privileged port to this user.
-const PORT_REMEDY: &str =
-    "sudo slipfork daemon install --ingress  # or set net.ipv4.ip_unprivileged_port_start=0";
+const PORT_REMEDY: &str = "sudo systemctl enable --now slipfork-ingress.socket  # or set net.ipv4.ip_unprivileged_port_start=0";
 
 /// The hidden mode invocation shape.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -78,7 +77,7 @@ impl Mode {
 pub fn run(host: &HostEnv, mode: Mode, listener: Option<TcpListener>) -> ExitCode {
     if host.uid == 0 {
         eprintln!("error: the :80 ingress must run as the developer, not root");
-        eprintln!("next: sudo slipfork daemon install --ingress");
+        eprintln!("next: sudo systemctl enable --now slipfork-ingress.socket");
         return ExitCode::FAILURE;
     }
     match mode {

@@ -182,10 +182,6 @@ impl Session {
         doctor::run(&self.host, &self.cwd, json, self.color())
     }
 
-    /// Writes the per-user unit, and with root the system `:80` socket and profile.
-    pub fn daemon_install(&self, ingress: bool, json: bool) -> ExitCode {
-        crate::install::install(&self.host.install_host(), ingress, json, self.color())
-    }
     /// The one refusal for a host verb that never reached the daemon.
     fn daemon_failure(&self, error: &DaemonError, json: bool) -> ExitCode {
         self.report(

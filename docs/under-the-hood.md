@@ -32,8 +32,8 @@ flowchart LR
 
 !!! info "The daemon is the same binary"
 
-    `slipfork daemon install` writes a unit that runs `slipfork` in its daemon mode; there is no
-    separate daemon package or executable.
+    The packaged user unit runs `slipfork` in its daemon mode; there is no separate daemon package
+    or executable.
 
 ## Pure Btrfs, no hybrid layers
 
@@ -139,9 +139,9 @@ Request and response heads are capped at 16 KiB; bodies and WebSocket bytes stre
 
 !!! warning "Nothing listens on `:80` until you install the socket"
 
-    The per-user unit alone serves no `.localhost` URL. Run
-    `sudo slipfork daemon install --ingress` to add `slipfork-ingress.socket`, its template unit and
-    the AppArmor profile; no URL answers until that socket is active.
+    The per-user unit alone serves no `.localhost` URL. The package enables
+    `slipfork-ingress.socket`, its template unit and the AppArmor profile for the installing user;
+    no URL answers until that socket is active.
 
 ## Who owns what
 

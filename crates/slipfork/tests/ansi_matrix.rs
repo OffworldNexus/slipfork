@@ -101,7 +101,6 @@ fn json_probe(verb: &str) -> Option<Vec<&'static str>> {
         "open" => vec!["open", "--json"],
         "fmt" => vec!["fmt", "--check", "--json"],
         "migrate" => vec!["migrate", "--json"],
-        "daemon" => vec!["daemon", "install", "--json"],
         _ => return None,
     })
 }

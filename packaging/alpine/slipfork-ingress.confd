@@ -1,4 +1,4 @@
 # The developer whose per-user daemon receives the accepted :80 connection fd.
-# `sudo slipfork daemon install --ingress` writes the invoking user here; the
+# The package's install hook writes the installing user here; the
 # handoff refuses to run as root, so leaving this empty simply fails closed.
 SLIPFORK_INGRESS_USER=

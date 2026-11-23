@@ -1,11 +1,35 @@
 #!/bin/sh
 set -e
-# The package never enables anything: the per-user daemon is `slipfork daemon
-# install`, and the :80 socket is `sudo slipfork daemon install --ingress`.
+# The package ships both units; this hook enables and starts them for the
+# installing user so the first `slipfork up` finds the daemon. Rootless or
+# container installs (no SUDO_USER) stay silent and green.
 if command -v apparmor_parser >/dev/null 2>&1 && [ -f /etc/apparmor.d/slipfork ]; then
     apparmor_parser -r -W /etc/apparmor.d/slipfork >/dev/null 2>&1 || true
 fi
 if command -v systemctl >/dev/null 2>&1; then
     systemctl --system daemon-reload >/dev/null 2>&1 || true
+fi
+if [ -d /run/systemd/system ] && [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != root ] &&
+    command -v systemctl >/dev/null 2>&1 &&
+    command -v loginctl >/dev/null 2>&1 &&
+    command -v runuser >/dev/null 2>&1 &&
+    uid=$(id -u "$SUDO_USER" 2>/dev/null); then
+    loginctl enable-linger "$SUDO_USER" >/dev/null 2>&1 || true
+    systemctl start "user@$uid.service" >/dev/null 2>&1 || true
+    runuser -u "$SUDO_USER" -- env \
+        XDG_RUNTIME_DIR="/run/user/$uid" \
+        DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$uid/bus" \
+        systemctl --user enable --now slipfork.service >/dev/null 2>&1 || true
+    # The :80 socket runs as this user; render the template for them.
+    if [ -f /usr/lib/systemd/system/slipfork-ingress@.service ]; then
+        install -m 0644 /usr/lib/systemd/system/slipfork-ingress@.service \
+            /etc/systemd/system/slipfork-ingress@.service 2>/dev/null || true
+        printf 'User=%s\nEnvironment=XDG_RUNTIME_DIR=/run/user/%s\n' \
+            "$SUDO_USER" "$uid" >>/etc/systemd/system/slipfork-ingress@.service 2>/dev/null || true
+        systemctl daemon-reload >/dev/null 2>&1 || true
+        systemctl enable --now slipfork-ingress.socket >/dev/null 2>&1 || true
+    fi
+elif [ -d /run/systemd/system ] && [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != root ]; then
+    echo "next: loginctl enable-linger $SUDO_USER && sudo -iu $SUDO_USER systemctl --user enable --now slipfork.service" >&2
 fi
 exit 0

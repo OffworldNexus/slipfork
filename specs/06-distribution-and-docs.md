@@ -56,7 +56,7 @@ Two architectures only — `x86_64`/`amd64` and `aarch64`/`arm64` — and every 
 | `lintian` | Clean — no errors and no warnings that name a real packaging defect |
 | Reproducibility | `SOURCE_DATE_EPOCH` fixes ar-member timestamps; two builds of one commit are byte-identical |
 
-The package never enables a root daemon. `slipfork daemon install` writes the **user** unit, so worlds stay in the developer's session. There is one binary: the per-user unit runs the same `slipfork` binary in its daemon mode, never a separate `slipforkd`. `sudo slipfork daemon install --ingress` is the one privileged step: it installs the system `slipfork-ingress.socket` + template instance and the AppArmor profile, and that instance forwards the accepted connection fd to `daemon.sock` while the daemon does the routing.
+The package enables the **user** unit and the system socket only for the installing `SUDO_USER`, so worlds stay in the developer's session; a rootless or container install prints nothing. There is one binary: the per-user unit runs the same `slipfork` binary in its daemon mode, never a separate `slipforkd`. The install hook renders `slipfork-ingress@.service` with that user, enables `slipfork-ingress.socket` and loads the AppArmor profile; the instance forwards the accepted connection fd to `daemon.sock` while the daemon does the routing.
 
 ---
 
@@ -77,7 +77,7 @@ The package never enables a root daemon. `slipfork daemon install` writes the **
 
 - **Repository package:** `slipfork-<ver>-<rel>-x86_64.pkg.tar.zst` built by `makepkg` from the checked-in `PKGBUILD`; install with `pacman -U`.
 - **AUR:** the same `PKGBUILD` plus a generated `.SRCINFO` and the release `sha256sums`, so `yay -S slipfork-bin` and `paru -S slipfork-bin` work.
-- **Units:** a `slipfork-ingress.socket` + `slipfork-ingress@.service` pair on `127.0.0.1:80`, and a user `slipfork.service` — systemd, exactly as Debian. Install with `slipfork daemon install`, then `sudo slipfork daemon install --ingress` for the socket and AppArmor profile.
+- **Units:** a `slipfork-ingress.socket` + `slipfork-ingress@.service` pair on `127.0.0.1:80`, and a user `slipfork.service` — systemd, exactly as Debian. The package's `.INSTALL` hook enables both for the installing user and loads the AppArmor profile.
 - **Dependencies:** `glibc`, `crun`, `btrfs-progs`; `btrfs-progs` is required because `mkfs`/subvolume flags matter, not just the kernel module.
 
 ---
@@ -92,7 +92,7 @@ The package never enables a root daemon. `slipfork daemon install` writes the **
 | Paths | `/usr/bin/slipfork`, `/usr/share/slipfork/**`, `/usr/share/vim/vimfiles/**`, `/etc/conf.d/slipfork-ingress` |
 | Verify | `apk add ./slipfork-*.apk`, `rc-service slipfork-ingress start`, boot one world, `slipfork down` |
 
-Install with `slipfork daemon install` for the OpenRC user service, then `sudo slipfork daemon install --ingress` for the system `slipfork-ingress` script that owns `127.0.0.1:80`. Only `openrc` is supported on Alpine; do not ship a systemd unit that silently no-ops.
+The package's install hook writes `SLIPFORK_INGRESS_USER=$SUDO_USER`, then runs `rc-update add slipfork-ingress default` and `rc-service slipfork-ingress start` for the system `slipfork-ingress` script that owns `127.0.0.1:80`. Only `openrc` is supported on Alpine; do not ship a systemd unit that silently no-ops.
 
 ---
 

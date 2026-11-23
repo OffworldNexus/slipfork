@@ -76,9 +76,6 @@ Convert a legacy snow.yml manifest into a Forkfile
 \fBslipfork completions\fR
 Print a completion script for bash, zsh, or fish
 .TP
-\fBslipfork daemon\fR
-Install the per\-user unit (and with sudo the system :80 socket)
-.TP
 \fBslipfork help\fR
 Print this overview, or one verb\*(Aqs help
 .TP
@@ -92,6 +89,5 @@ Examples:
   slipfork restart \-s worker
   slipfork logs \-f api
   slipfork exec api \-\- pytest \-q
-  slipfork daemon install
 .SH VERSION
 v0.1.0

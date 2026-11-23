@@ -1,18 +1,15 @@
-//! Lab tests for the pure status renderer, `doctor`, and `daemon install`.
+//! Lab tests for the pure status renderer and `doctor`.
 //!
 //! The renderer journey feeds real `ps` JSON through the public typed renderer; the CLI cases run
-//! the real binary against a daemon-free `/var/tmp` runtime, and `daemon install` writes real files
-//! into injected roots under `/var/tmp`.
+//! the real binary against a daemon-free `/var/tmp` runtime.
 
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde_json::{Value, json};
 use slipfork::boot::{Node, boot_widths, completed_row, elapsed_text, pane_geometry, status_line};
-use slipfork::install::{self, InstallHost, UnitWriter};
 use slipfork::status::{self, Options};
 use slipfork::ui::table::{ColumnWidths, visible_width};
 
@@ -53,54 +50,6 @@ fn mountinfo_unescapes_octal_and_picks_the_longest_containing_mount() {
         PathBuf::from(r"/mnt/my drive\data/.slipfork-store"),
         "octal-unescaped mounts stay matchable"
     );
-}
-
-#[test]
-fn openrc_install_names_the_injected_user_and_keeps_a_user_edit() {
-    let root = scratch("openrc");
-    let host = InstallHost {
-        exe: PathBuf::from("/usr/bin/slipfork"),
-        path: Vec::new(),
-        config_dir: root.join("config"),
-        install_root: root.clone(),
-        uid: 1000,
-        ingress_uid: 1000,
-        ingress_user: "builder".to_owned(),
-        openrc: true,
-    };
-    let writer = UnitWriter::from_host(&host);
-    let planned = writer.plan(true);
-    let conf_d = root.join("etc/conf.d");
-    let (conf_path, conf) = planned
-        .iter()
-        .find(|(path, _)| path.parent().is_some_and(|parent| parent == conf_d))
-        .expect("an OpenRC host plans a conf.d file");
-    assert!(
-        conf.contains("SLIPFORK_INGRESS_USER=builder\n"),
-        "the conf must name the injected user: {conf}"
-    );
-    let service = planned
-        .iter()
-        .find(|(path, _)| path.ends_with(install::SERVICE_UNIT))
-        .map(|(_, contents)| contents)
-        .expect("the ingress service is still planned on an OpenRC host");
-    assert!(service.contains("User=1000\n"), "{service}");
-
-    let written = writer.write_all(true).expect("write the install plan");
-    assert!(written.contains(conf_path), "{written:?}");
-    assert_eq!(
-        fs::read_to_string(conf_path).expect("read the conf"),
-        conf.clone()
-    );
-
-    fs::write(conf_path, "SLIPFORK_INGRESS_USER=alice\n").expect("simulate a user edit");
-    writer.write_all(true).expect("keep the user edit");
-    assert_eq!(
-        fs::read_to_string(conf_path).expect("re-read the kept conf"),
-        "SLIPFORK_INGRESS_USER=alice\n"
-    );
-    assert_eq!(writer.preserved_conf(true), Some(conf_path.clone()));
-    fs::remove_dir_all(&root).expect("remove the scratch directory");
 }
 
 const ANSI: &str = "\u{1b}[";
@@ -778,8 +727,10 @@ fn doctor_has_four_plain_rows_and_fails_closed_on_missing_tools() {
         assert!(stdout.contains(name), "missing {name}: {stdout}");
     }
     assert!(stdout.contains("crun not installed"), "{stdout}");
+    // The unit name is a copy-verbatim remedy; the jargon guard covers the rest.
+    let readable = stdout.replace("slipfork-ingress", "");
     for jargon in ["netns", "ingress", "unprivileged user", ":80"] {
-        assert!(!stdout.contains(jargon), "leaked `{jargon}`: {stdout}");
+        assert!(!readable.contains(jargon), "leaked `{jargon}`: {stdout}");
     }
     assert!(!stdout.contains(ANSI), "piped doctor stays plain: {stdout}");
 
@@ -833,67 +784,6 @@ fn doctor_has_four_plain_rows_and_fails_closed_on_missing_tools() {
     } else {
         assert!(stdout.contains("rootless container sandboxing"), "{stdout}");
     }
-    let _ = fs::remove_dir_all(&root);
-}
-
-#[test]
-fn daemon_install_writes_every_unit_byte_for_byte() {
-    let root = scratch("install");
-    let exe = PathBuf::from(env!("CARGO_BIN_EXE_slipfork"));
-    let writer = UnitWriter {
-        system_root: root.join("etc/systemd/system"),
-        user_root: root.join("config/systemd/user"),
-        config_root: root.join("config"),
-        apparmor_root: root.join("etc/apparmor.d"),
-        conf_d_root: root.join("etc/conf.d"),
-        exe: exe.clone(),
-        ingress_uid: 1000,
-        ingress_user: "builder".to_owned(),
-        openrc: false,
-    };
-    let written = writer.write_all(true).expect("write every unit");
-    assert_eq!(written.len(), 4, "{written:?}");
-    let exe = exe.display().to_string();
-    assert_eq!(
-        fs::read_to_string(writer.user_root.join("slipfork.service")).expect("user unit"),
-        install::USER_UNIT.replace("{exe}", &exe)
-    );
-    assert_eq!(
-        fs::read_to_string(writer.system_root.join(install::SOCKET_UNIT)).expect("socket unit"),
-        install::INGRESS_SOCKET
-    );
-    assert_eq!(
-        fs::read_to_string(writer.system_root.join(install::SERVICE_UNIT)).expect("service unit"),
-        install::INGRESS_SERVICE
-            .replace("{exe}", &exe)
-            .replace("{uid}", "1000")
-    );
-    assert_eq!(
-        fs::read_to_string(writer.apparmor_root.join(install::APPARMOR_FILE)).expect("profile"),
-        install::APPARMOR_PROFILE
-    );
-    for path in &written {
-        let mode = fs::metadata(path)
-            .expect("stat the unit")
-            .permissions()
-            .mode()
-            & 0o777;
-        assert_eq!(mode, 0o644, "{}", path.display());
-    }
-
-    // Without root the CLI must refuse before writing anything.
-    let denied = isolated(&root, &["daemon", "install", "--ingress"]);
-    assert_eq!(denied.status.code(), Some(1));
-    let stderr = String::from_utf8(denied.stderr).expect("errors are UTF-8");
-    assert!(
-        stderr.contains("next: sudo slipfork daemon install --ingress"),
-        "{stderr}"
-    );
-    assert!(
-        !root.join("config/systemd/user/slipfork.service").exists()
-            || root.join("etc/systemd/system").exists(),
-        "root validation must happen before any write"
-    );
     let _ = fs::remove_dir_all(&root);
 }
 

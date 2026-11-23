@@ -3,5 +3,16 @@ set -e
 if [ "$1" = remove ] && command -v systemctl >/dev/null 2>&1; then
     systemctl --system stop slipfork-ingress.socket >/dev/null 2>&1 || true
     systemctl --system disable slipfork-ingress.socket >/dev/null 2>&1 || true
+    rm -f /etc/systemd/system/slipfork-ingress@.service
+    systemctl --system daemon-reload >/dev/null 2>&1 || true
+fi
+# Stop the per-user unit when the removing session names the installing user;
+# linger stays on, so a reinstall finds the same manager.
+if [ "$1" = remove ] && [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != root ] &&
+    command -v runuser >/dev/null 2>&1 && uid=$(id -u "$SUDO_USER" 2>/dev/null); then
+    runuser -u "$SUDO_USER" -- env \
+        XDG_RUNTIME_DIR="/run/user/$uid" \
+        DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$uid/bus" \
+        systemctl --user disable --now slipfork.service >/dev/null 2>&1 || true
 fi
 exit 0

@@ -16,8 +16,10 @@ archive under `~/.local`. [Install](install.md) lists every distro and flag.
 
 !!! warning "`doctor` must be green first"
 
-    Slipfork needs a Btrfs filesystem, rootless containers and the local user daemon. `slipfork
-    doctor` names the exact remedy for whichever row fails; fix that before the first `slipfork up`.
+    Slipfork needs a Btrfs filesystem, rootless containers and the local user daemon. Systemd
+    packages installed with `sudo` start the per-user daemon and the `:80` ingress for you; after a
+    tarball install, `slipfork doctor` names the exact remedy for whichever row fails, so fix that
+    before the first `slipfork up`.
 
 !!! tip "On ext4 or XFS?"
 

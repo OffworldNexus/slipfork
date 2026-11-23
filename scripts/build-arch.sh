@@ -73,6 +73,9 @@ for group in ftdetect syntax indent ftplugin; do
     install -m 0644 "$bundle/share/slipfork/vim/$group/forkfile.vim" "$stage/usr/share/vim/vimfiles/$group/forkfile.vim"
 done
 
+# pacman runs `.INSTALL` after unpacking; it enables the per-user unit.
+install -m 0644 packaging/arch/slipfork.install "$stage/.INSTALL"
+
 size=$(du -sb "$stage" | cut -f1)
 cat >"$stage/.PKGINFO" <<PKGINFO
 pkgname = slipfork
@@ -94,10 +97,10 @@ PKGINFO
 mkdir -p "$out"
 artifact="$out/slipfork-$version-$release-$arch.pkg.tar.zst"
 tar --sort=name --mtime="@$SOURCE_DATE_EPOCH" --owner=0 --group=0 --numeric-owner \
-    -cf - -C "$stage" .PKGINFO usr etc | zstd -q -19 -T0 -f -o "$artifact"
+    -cf - -C "$stage" .PKGINFO .INSTALL usr etc | zstd -q -19 -T0 -f -o "$artifact"
 listing=$(tar --zstd -tf "$artifact")
 for expected in \
-    .PKGINFO usr/bin/slipfork usr/bin/slipfork-lsp usr/bin/slipfork-world-init \
+    .PKGINFO .INSTALL usr/bin/slipfork usr/bin/slipfork-lsp usr/bin/slipfork-world-init \
     usr/lib/systemd/system/slipfork-ingress.socket usr/lib/systemd/system/slipfork-ingress@.service \
     usr/lib/systemd/user/slipfork.service etc/apparmor.d/slipfork \
     usr/share/man/man1/slipfork.1.gz usr/share/man/man1/slipfork-lsp.1.gz \
