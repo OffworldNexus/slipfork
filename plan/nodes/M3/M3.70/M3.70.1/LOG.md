@@ -23,3 +23,27 @@ post-pass: found build-context regression (per-image .dockerignore missing after
 ## 2026-11-23T13:47 [lead]
 
 status active -> review
+
+## 2026-11-23T13:54 [lead]
+
+status review -> ready: live proof found stale root-context rollback fixture (image backend .)
+
+## 2026-11-23T13:54 [lead]
+
+attempt 2/3 started
+
+## 2026-11-23T13:54 [lead]
+
+live VM: critical_fork_live rollback test still built image backend . after ./api move; fixing fixture
+
+## 2026-11-23T13:54 [lead]
+
+status ready -> active
+
+## 2026-11-23T13:54 [lead]
+
+fixture fixed to image backend ./api; live --no-run compiles; Triad pass otherwise (arch/ux reviewers returned empty, lead self-verified docs+context)
+
+## 2026-11-23T13:54 [lead]
+
+status active -> done

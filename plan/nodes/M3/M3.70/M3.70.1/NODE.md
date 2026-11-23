@@ -2,7 +2,7 @@
 id: M3.70.1
 title: "demo ./api + ./front, pure Dockerfile CMD in !dev, specs/docs sync"
 kind: task
-status: review
+status: done
 owner: implementer
 priority: 3
 depends_on: [M3.69]
@@ -14,11 +14,11 @@ paths:
   - README.md
   - "packaging/man/**"
   - TESTING_PLAN.md
-attempts: 1
+attempts: 2
 max_attempts: 3
 escalation: none
 created: "2026-11-23T13:30"
-updated: "2026-11-23T13:47"
+updated: "2026-11-23T13:54"
 ---
 
 # Goal

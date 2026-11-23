@@ -3225,3 +3225,14 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-23T13:44 [M3.70.1] (lead) base aa457cbf8587030d03557f7c0335fb6f53f9f084
 - 2026-11-23T13:47 [M3.70.1] (lead) post-pass: found build-context regression (per-image .dockerignore missing after ./api + ./front split); fix dispatched before Triad
 - 2026-11-23T13:47 [M3.70.1] (lead) status active -> review
+- 2026-11-23T13:50 [M3.70.2] (lead) status ready -> active
+- 2026-11-23T13:50 [M3.70.2] (lead) attempt 1/3 started
+- 2026-11-23T13:50 [M3.70.2] (lead) base a8883ac6e18e67f26c848cdd2c206c14d7908ca2; VM access: ssh -i ~/.cache/slipfork/do-vm/id_ed25519 slipfork@165.232.86.174 (XDG_RUNTIME_DIR=/run/user/1000); do
+- 2026-11-23T13:54 [M3.70.1] (lead) status review -> ready: live proof found stale root-context rollback fixture (image backend .)
+- 2026-11-23T13:54 [M3.70.1] (lead) attempt 2/3 started
+- 2026-11-23T13:54 [M3.70.1] (lead) live VM: critical_fork_live rollback test still built image backend . after ./api move; fixing fixture
+- 2026-11-23T13:54 [M3.70.1] (lead) status ready -> active
+- 2026-11-23T13:54 [M3.70.2] (lead) status active -> ready: blocked on M3.70.1 rollback fixture fix; suites 2/3 green (world_journey 2, status 5)
+- 2026-11-23T13:54 [M3.70.2] (lead) sync ok; critical_world_journey 2 passed, critical_status_live 5 passed, critical_fork_live 1 passed/1 failed: rollback fixture uses root Dockerfile; .deb/prod-
+- 2026-11-23T13:54 [M3.70.1] (lead) fixture fixed to image backend ./api; live --no-run compiles; Triad pass otherwise (arch/ux reviewers returned empty, lead self-verified docs+context)
+- 2026-11-23T13:54 [M3.70.1] (lead) status active -> done
