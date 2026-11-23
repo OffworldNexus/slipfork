@@ -43,8 +43,9 @@ image backend . {
     port 8000
     route /api
     pre-deploy: uv run python -m app.migrate
-    run: @uv run uvicorn app.main:app --host 0.0.0.0 --port $port
-    on dev: run: @uv run uvicorn app.main:app --reload --host 0.0.0.0 --port $port
+    on dev {
+      run: @uv run uvicorn app.main:app --reload --host 0.0.0.0 --port $port
+    } else: run: @uv run uvicorn app.main:app --host 0.0.0.0 --port $port
   }
   service worker {
     run: @uv run python -m app.worker

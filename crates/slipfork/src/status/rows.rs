@@ -5,7 +5,7 @@
 //! domain. Services, resources, and orphaned pods without a route land in `support`.
 
 use crate::ps::{PsBucketPolicy, PsKind, PsService, PsWorld};
-use slipfork_ingress::route_authorities;
+use slipfork_ingress::{route_authorities, route_host};
 
 /// One domain authority and the sub-paths mapped onto it.
 #[derive(Debug, Clone)]
@@ -78,7 +78,7 @@ pub fn project(world: &PsWorld) -> WorldRows<'_> {
     for service in &world.services {
         let state = state(service, world.booting);
         if service.kind == PsKind::S3 {
-            let host = format!("{}.{primary}", service.id);
+            let host = route_host(&primary, Some(service.id.as_str()));
             let row = RoutedRow {
                 path: "/".to_owned(),
                 target: service.id.clone(),
@@ -88,19 +88,16 @@ pub fn project(world: &PsWorld) -> WorldRows<'_> {
             push_row(&mut domains, host, row);
         } else if !service.routes.is_empty() {
             for route in &service.routes {
-                for authority in
-                    route_authorities(world.primary_domain.as_deref(), route.domain.as_deref())
-                {
-                    let host = authority
-                        .map_or_else(|| primary.clone(), |name| format!("{name}.{primary}"));
-                    let row = RoutedRow {
-                        path: route.prefix.clone(),
-                        target: service.id.clone(),
-                        kind: None,
-                        state,
-                    };
-                    push_row(&mut domains, host, row);
-                }
+                let authority =
+                    route_authorities(world.primary_domain.as_deref(), route.domain.as_deref());
+                let host = route_host(&primary, authority.as_deref());
+                let row = RoutedRow {
+                    path: route.prefix.clone(),
+                    target: service.id.clone(),
+                    kind: None,
+                    state,
+                };
+                push_row(&mut domains, host, row);
             }
         } else {
             support.push(SupportRow {

@@ -37,7 +37,10 @@ fn reply() -> slipfork::ps::PsReply {
                 { "id": "cache", "kind": "redis", "running": true, "port": 6379, "version": "7" },
                 { "id": "uploads", "kind": "s3", "running": true, "port": 8333, "policy": "private" },
                 { "id": "assets", "kind": "s3", "running": true, "port": 8333,
-                  "policy": "public-read", "cdn": "assets-cdn" }
+                  "policy": "public-read", "cdn": "assets-cdn" },
+                { "id": "portal", "kind": "service", "running": true, "port": 8000,
+                  "routes": [{ "prefix": "/portal", "port": 8000, "mode": "preserve",
+                               "domain": "main" }] }
             ],
             "forks": [{
                 "project": "/home/me/demo/.forks/feat-auth",
@@ -69,17 +72,15 @@ fn the_flat_domain_tree_renders_exact_aligned_lines() {
     let expected = concat!(
         "● demo       ~/demo\n",
         "  ├─ http://demo.localhost\n",
-        "  │  ├─ /api  ->  api                        running\n",
-        "  │  └─ /     ->  front                      running\n",
-        "  ├─ http://main.demo.localhost\n",
-        "  │  ├─ /api  ->  api                        running\n",
-        "  │  └─ /     ->  front                      running\n",
+        "  │  ├─ /api     ->  api                        running\n",
+        "  │  ├─ /        ->  front                      running\n",
+        "  │  └─ /portal  ->  portal                     running\n",
         "  ├─ http://mail.demo.localhost\n",
-        "  │  └─ /     ->  mailpit                    running\n",
+        "  │  └─ /        ->  mailpit                    running\n",
         "  ├─ http://uploads.demo.localhost\n",
-        "  │  └─ /     ->  uploads  s3 (private)      running\n",
+        "  │  └─ /        ->  uploads  s3 (private)      running\n",
         "  ├─ http://assets.demo.localhost\n",
-        "  │  └─ /     ->  assets   s3 (public-read)  running\n",
+        "  │  └─ /        ->  assets   s3 (public-read)  running\n",
         "  └─ support\n",
         "     ├─ worker  service      running\n",
         "     ├─ pg      postgres 18  running\n",
@@ -87,9 +88,45 @@ fn the_flat_domain_tree_renders_exact_aligned_lines() {
         "\n",
         "● feat-auth  ~/demo/.forks/feat-auth\n",
         "  └─ http://feat-auth--demo.localhost\n",
-        "     └─ /api  ->  api                        running\n"
+        "     └─ /api     ->  api                        running\n"
     );
     assert_eq!(plain(), expected);
+}
+
+#[test]
+fn the_first_declared_domain_is_the_primary_host_not_a_duplicate() {
+    let reply = status::parse(&json!({
+        "worlds": [{
+            "project": "/home/me/demo", "path": "/home/me/demo", "world": "demo",
+            "url": "http://demo.localhost", "primary_domain": "main",
+            "supervisor_pid": 11, "alive": true, "booting": false,
+            "services": [
+                { "id": "api", "kind": "service", "running": true, "port": 8000,
+                  "routes": [{ "prefix": "/api", "port": 8000, "mode": "preserve" }] },
+                { "id": "portal", "kind": "service", "running": true, "port": 8000,
+                  "routes": [{ "prefix": "/portal", "port": 8000, "mode": "preserve",
+                               "domain": "main" }] }
+            ]
+        }]
+    }))
+    .expect("payload parses");
+    let text = status::render(
+        &reply,
+        &Options::new(false).with_home(Some(PathBuf::from("/home/me"))),
+    );
+    assert!(
+        text.lines()
+            .any(|line| line.trim_start().starts_with("└─ http://demo.localhost")),
+        "{text}"
+    );
+    assert!(
+        text.contains("/portal  ->  portal"),
+        "`domain main` lands on the primary host: {text}"
+    );
+    assert!(
+        !text.contains("main.demo.localhost"),
+        "the first declared domain is the primary authority: {text}"
+    );
 }
 
 #[test]

@@ -5,7 +5,7 @@ use std::collections::BTreeSet;
 use slipfork_forkfile::{DomainFilter, Route, RouteKind};
 
 use super::error::{RouteError, TableError};
-use super::{IngressRoute, RouteMatch};
+use super::{IngressRoute, RouteMatch, route_host};
 
 /// One validated route: its authority, its matching prefix, and the mode that rewrites it.
 #[derive(Debug, Clone)]
@@ -18,10 +18,11 @@ pub(crate) struct Entry {
 
 /// Expand every declared route into one entry per authority it owns.
 ///
-/// A route without a `domain` filter serves the primary `<world>.localhost` authority **and** the
-/// first declared app domain (`route /api` answers both `demo.localhost` and
-/// `main.demo.localhost`); a `domain <id>` route owns exactly that authority. Path and target
-/// syntax is already validated by the `Forkfile` compiler.
+/// A route without a `domain` filter serves only the primary `<world>.localhost` authority, and so
+/// does `route ... domain <first>` since the first declared app domain *is* that authority
+/// (`main.name == "<world>.localhost"`); a later `domain <id>` route owns exactly
+/// `<id>.<world>.localhost`. Path and target syntax is already validated by the `Forkfile`
+/// compiler.
 pub(crate) fn entries_for(
     world: &str,
     primary_domain: Option<&str>,
@@ -39,21 +40,18 @@ pub(crate) fn entries_for(
                 world: world.to_owned(),
             });
         }
-        let authorities = authorities_for(
+        let authority = authority_for(
             world,
             primary_domain,
             declared_domains,
             declared.domain.as_ref(),
         )?;
-        let matcher = matcher_for(&declared);
-        for authority in authorities {
-            entries.push(Entry {
-                port,
-                authority,
-                matcher: matcher.clone(),
-                kind: declared.kind.clone(),
-            });
-        }
+        entries.push(Entry {
+            port,
+            authority,
+            matcher: matcher_for(&declared),
+            kind: declared.kind,
+        });
     }
     reject_collisions(world, &entries)?;
     Ok(entries)
@@ -68,6 +66,7 @@ pub(crate) fn resolve(
 ) -> Result<RouteMatch, RouteError> {
     validate_target(target)?;
     let (path, _query) = split_query(target);
+    let primary = format!("{world}.localhost");
     let entry = entries
         .iter()
         .filter(|entry| entry.authority == authority)
@@ -78,7 +77,10 @@ pub(crate) fn resolve(
         .max_by_key(|entry| entry.matcher.len())
         .ok_or_else(|| RouteError::UnknownPath {
             world: world.to_owned(),
-            host: authority_host(world, authority),
+            host: route_host(
+                &primary,
+                Some(authority).filter(|authority| !authority.is_empty()),
+            ),
             path: target.to_owned(),
         })?;
     Ok(RouteMatch {
@@ -89,13 +91,13 @@ pub(crate) fn resolve(
     })
 }
 
-/// The authorities one route owns, validated against the declared domain set.
-fn authorities_for(
+/// The authority one route owns, validated against the declared domain set.
+fn authority_for(
     world: &str,
     primary_domain: Option<&str>,
     declared_domains: &BTreeSet<String>,
     filter: Option<&DomainFilter>,
-) -> Result<Vec<String>, TableError> {
+) -> Result<String, TableError> {
     let domain = match filter {
         None => None,
         Some(DomainFilter::Domain { name, .. }) => {
@@ -108,10 +110,7 @@ fn authorities_for(
             Some(name.as_str())
         }
     };
-    Ok(super::route_authorities(primary_domain, domain)
-        .into_iter()
-        .map(|authority| authority.unwrap_or_default())
-        .collect())
+    Ok(super::route_authorities(primary_domain, domain).unwrap_or_default())
 }
 
 /// The prefix an entry matches, or the exact path for `exact`.
@@ -244,15 +243,6 @@ pub(crate) fn split_query(target: &str) -> (&str, &str) {
     match target.find('?') {
         Some(index) => (&target[..index], &target[index..]),
         None => (target, ""),
-    }
-}
-
-/// Render the authoritative host for error messages.
-fn authority_host(world: &str, authority: &str) -> String {
-    if authority.is_empty() {
-        format!("{world}.localhost")
-    } else {
-        format!("{authority}.{world}.localhost")
     }
 }
 

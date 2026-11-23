@@ -138,6 +138,11 @@ pub fn render(reply: &PsReply, options: &Options) -> String {
         }
         render_world(&mut out, rows, options, palette, &widths);
     }
+    let stopped: Vec<&PsStoppedFork> = projected
+        .iter()
+        .flat_map(|rows| rows.world.stopped_forks.iter())
+        .collect();
+    render_stopped_forks(&mut out, &stopped, options, palette, &widths);
     out
 }
 
@@ -265,17 +270,6 @@ fn render_world(
         out.push_str(&palette.error(&format!("! {problem}")));
         out.push('\n');
     }
-    for fork in &world.stopped_forks {
-        out.push_str(&palette.dim("○ "));
-        let cells = vec![
-            palette.dim(&fork.name),
-            palette.dim(&display_path(&fork.path, options.home.as_deref())),
-            palette.dim("stopped"),
-            String::new(),
-        ];
-        out.push_str(&table.line(&widths.header, &cells));
-        out.push('\n');
-    }
 
     let support = !rows.support.is_empty();
     let groups = rows.domains.len() + usize::from(support);
@@ -285,6 +279,33 @@ fn render_world(
     }
     if support {
         render_support(out, &rows.support, palette, widths);
+    }
+}
+
+/// Every world's stopped `.forks/<name>` checkouts render in one trailing block after all live
+/// world trees, on the shared header grid, so a live fork never renders below a stopped one.
+fn render_stopped_forks(
+    out: &mut String,
+    forks: &[&PsStoppedFork],
+    options: &Options,
+    palette: Palette,
+    widths: &Widths,
+) {
+    if forks.is_empty() {
+        return;
+    }
+    out.push('\n');
+    let table = Table::new(&HEADER);
+    for fork in forks {
+        out.push_str(&palette.dim("○ "));
+        let cells = vec![
+            palette.dim(&fork.name),
+            palette.dim(&display_path(&fork.path, options.home.as_deref())),
+            palette.dim("stopped"),
+            String::new(),
+        ];
+        out.push_str(&table.line(&widths.header, &cells));
+        out.push('\n');
     }
 }
 

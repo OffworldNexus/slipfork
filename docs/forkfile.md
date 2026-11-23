@@ -91,7 +91,7 @@ Top-level resources and named child resources share one flat, globally unique sy
 | `redis cache` | Redis 7 (`version` optional) | `cache.url`, `.host`, `.port` |
 | `s3 uploads` | Private: anonymous `GET` answers `403` | `uploads.url`, `.endpoint`, `.bucket`, `.access_key`, `.secret_key` |
 | <code>s3 assets {<br>  policy public-read<br>  cdn edge<br>}</code> | `public-read` bucket plus a cloud CDN binding | bucket properties + the CDN's `.domain` and `.url` |
-| `domain main` | Primary plus extra `<id>.<world>.localhost` | `main.name` (bare hostname) |
+| `domain main` | Primary host only: `<world>.localhost` | `main.name` (bare hostname) |
 
 A plain `s3` bucket is `policy private` by default: anonymous `GET`/`HEAD` answer `403`.
 
@@ -150,12 +150,16 @@ A `service` declares one public `port`, exposed as `$port` and injected as `PORT
 
 | Route | Path behaviour | Host filter |
 | :--- | :--- | :--- |
-| `route /api` | `/api/users` -> `/api/users` | primary world domain and the first declared `domain` |
-| `route /api strip-prefix` | `/api/users` -> `/users` | primary world domain and the first declared `domain` |
-| `route /api rewrite /v1` | `/api/users` -> `/v1/users` | primary world domain and the first declared `domain` |
-| `route exact /healthz` | `/healthz` only | primary world domain and the first declared `domain` |
+| `route /api` | `/api/users` -> `/api/users` | primary `<world>.localhost` |
+| `route /api strip-prefix` | `/api/users` -> `/users` | primary `<world>.localhost` |
+| `route /api rewrite /v1` | `/api/users` -> `/v1/users` | primary `<world>.localhost` |
+| `route exact /healthz` | `/healthz` only | primary `<world>.localhost` |
 | `route / domain admin` | `/` | `admin.<world>.localhost` |
 | `route / domain mail` | `/` | `mail.<world>.localhost` |
+
+The first declared `domain` **is** the primary host: `<domain>.name` evaluates to
+`<world>.localhost`, so an unfiltered route and `route / domain <first>` both answer on
+`http://<world>.localhost`; later declared domains only add subdomains.
 
 `strip-prefix` and `rewrite` are mutually exclusive, and a route naming an undeclared `domain`
 fails statically. A service gets its own host by declaring `domain <id>` inline or inside

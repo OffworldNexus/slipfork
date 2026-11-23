@@ -603,6 +603,10 @@ fn a_forty_character_fork_name_never_shears() {
                 "url": format!("http://{long}--demo.localhost"),
                 "supervisor_pid": 2, "alive": true, "booting": false,
                 "services": [{ "id": "api", "kind": "service", "running": true, "port": 8000 }]
+            }],
+            "stopped_forks": [{
+                "name": long,
+                "path": format!("/home/me/demo/.forks/{long}")
             }]
         }]
     }));
@@ -611,6 +615,24 @@ fn a_forty_character_fork_name_never_shears() {
         &Options::new(false).with_home(Some("/home/me".into())),
     );
     assert!(text.contains(long), "the full name must survive: {text}");
+    let live = text
+        .lines()
+        .find(|line| line.starts_with("● demo"))
+        .unwrap_or_else(|| panic!("missing the live world header: {text}"));
+    let stopped = text
+        .lines()
+        .find(|line| line.starts_with("○ "))
+        .unwrap_or_else(|| panic!("missing the stopped fork row: {text}"));
+    assert_eq!(
+        column_start(stopped, long),
+        column_start(live, "demo"),
+        "a long stopped fork keeps the world name column: {text}"
+    );
+    assert_eq!(
+        column_start(stopped, &format!("~/demo/.forks/{long}")),
+        column_start(live, "~/demo"),
+        "a long stopped fork keeps the world path column: {text}"
+    );
 }
 
 #[test]
@@ -1002,6 +1024,55 @@ fn stopped_forks_and_honest_problems_render_without_fabrication() {
         !serde_json::to_string(&stopped)
             .expect("serialize")
             .contains('\u{1b}')
+    );
+}
+
+#[test]
+fn a_stopped_fork_renders_after_every_live_world_tree() {
+    let reply = reply(json!({
+        "worlds": [{
+            "project": "/home/me/demo", "path": "/home/me/demo", "world": "demo",
+            "url": "http://demo.localhost", "supervisor_pid": 11, "alive": true,
+            "booting": false,
+            "services": [
+                { "id": "api", "kind": "service", "running": true, "port": 8000,
+                  "routes": [{ "prefix": "/api", "port": 8000, "mode": "preserve" }] },
+                { "id": "worker", "kind": "service", "running": true }
+            ],
+            "forks": [{
+                "project": "/home/me/demo/.forks/feat-auth",
+                "path": "/home/me/demo/.forks/feat-auth",
+                "world": "feat-auth--demo",
+                "fork": "feat-auth",
+                "url": "http://feat-auth--demo.localhost",
+                "supervisor_pid": 12, "alive": true, "booting": false,
+                "services": [{ "id": "api", "kind": "service", "running": true, "port": 8000,
+                               "routes": [{ "prefix": "/api", "port": 8000, "mode": "preserve" }] }]
+            }],
+            "stopped_forks": [{ "name": "tralala", "path": "/home/me/demo/.forks/tralala" }]
+        }]
+    }));
+    let text = status::render(
+        &reply,
+        &Options::new(false).with_home(Some(PathBuf::from("/home/me"))),
+    );
+    let expected = concat!(
+        "● demo       ~/demo\n",
+        "  ├─ http://demo.localhost\n",
+        "  │  └─ /api  ->  api  running\n",
+        "  └─ support\n",
+        "     └─ worker  service  running\n",
+        "\n",
+        "● feat-auth  ~/demo/.forks/feat-auth\n",
+        "  └─ http://feat-auth--demo.localhost\n",
+        "     └─ /api  ->  api  running\n",
+        "\n",
+        "○ tralala    ~/demo/.forks/tralala    stopped\n"
+    );
+    assert_eq!(text, expected);
+    assert!(
+        text.find("● feat-auth").unwrap() < text.find("○ tralala").unwrap(),
+        "a live fork never renders below a stopped one:\n{text}"
     );
 }
 

@@ -187,17 +187,17 @@ fn the_registry_dispatches_primary_domains_and_forks_over_localhost() {
     );
     assert_eq!(
         registry
-            .route("main.demo.localhost", "/")
-            .expect("domain")
+            .route("demo.localhost", "/")
+            .expect("`domain main` lands on the primary authority")
             .port,
         81
     );
-    assert_eq!(
-        registry
-            .route("main.demo.localhost", "/api")
-            .expect("unfiltered routes bind the first declared domain")
-            .port,
-        80
+    assert!(
+        matches!(
+            registry.route("main.demo.localhost", "/"),
+            Err(RouteError::UnknownPath { .. })
+        ),
+        "the first declared domain is the primary authority, never a duplicate host"
     );
     assert_eq!(
         registry
@@ -229,7 +229,7 @@ fn the_registry_dispatches_primary_domains_and_forks_over_localhost() {
 }
 
 #[test]
-fn unfiltered_routes_bind_only_the_primary_and_first_declared_domain() {
+fn unfiltered_routes_bind_only_the_primary_authority() {
     let table = IngressTable::new(
         "demo",
         Some("main"),
@@ -242,6 +242,7 @@ fn unfiltered_routes_bind_only_the_primary_and_first_declared_domain() {
             IngressRoute::new(80, route(Some("/api"), RouteKind::Preserve)),
             IngressRoute::new(81, domain_route("/", declared("mail"))),
             IngressRoute::new(82, domain_route("/cdn-assets", declared("assets-cdn"))),
+            IngressRoute::new(83, domain_route("/", declared("main"))),
         ],
     )
     .expect("the table is routable");
@@ -251,10 +252,17 @@ fn unfiltered_routes_bind_only_the_primary_and_first_declared_domain() {
     );
     assert_eq!(
         table
-            .resolve("main", "/api")
-            .expect("first declared domain")
+            .resolve("", "/")
+            .expect("`domain main` lands on the primary authority")
             .port,
-        80
+        83
+    );
+    assert!(
+        matches!(
+            table.resolve("main", "/api"),
+            Err(RouteError::UnknownPath { .. })
+        ),
+        "the first declared domain is the primary authority, never a duplicate host"
     );
     // `mail` declares a catch-all `route /`, so `/api` legitimately resolves to mail's own
     // upstream — never to the primary `api` service.

@@ -6,12 +6,19 @@ status: ready
 owner: implementer
 priority: 3
 depends_on: [M3.66]
-paths: ["crates/slipfork-ingress/**", "crates/slipfork/**", "support/demo/**", "specs/**", "docs/**"]
-attempts: 0
+paths:
+  - "crates/slipfork-ingress/**"
+  - "crates/slipfork/**"
+  - "crates/slipfork-forkfile/**"
+  - "support/demo/**"
+  - "specs/**"
+  - "docs/**"
+  - TESTING_PLAN.md
+attempts: 1
 max_attempts: 3
 escalation: none
 created: "2026-11-23T02:18"
-updated: "2026-11-23T02:18"
+updated: "2026-11-23T02:26"
 ---
 
 # Goal

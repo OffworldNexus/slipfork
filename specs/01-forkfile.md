@@ -86,13 +86,13 @@ An inline `on <expr>: <item>` may be followed by `else` on the next line, includ
 | `s3 <bucket>` | Private: anonymous `GET`/`HEAD` answer `403` | `<bucket>.url` (secret), `.endpoint`, `.bucket`, `.access_key`, `.secret_key` (secret) |
 | `s3 <bucket> { policy public-read }` | Anonymous `GET`/`HEAD` answer `200`; writes need SigV4 | Bucket properties on `<bucket>` |
 | `s3 <bucket> { policy public-read; cdn <id> }` | Bucket host plus a cloud CDN binding | bucket properties plus the CDN's `.domain` and `.url` |
-| `domain <id>` | Extra `<id>.<world>.localhost` | `<id>.name` (bare hostname; no scheme) |
+| `domain <id>` | Primary `<world>.localhost` when declared first, else extra `<id>.<world>.localhost` | `<id>.name` (bare hostname; no scheme) |
 
 Every `s3 <bucket>` always serves at `http://<bucket>.<world>.localhost`; a fork serves it at `http://<bucket>.<fork>--<world>.localhost`. No extra hostname is invented for an S3 bucket.
 
 `cdn <id>` inside an `s3` block is a **cloud** binding only. Locally, `cdn <id>`'s `.domain` and `.url` resolve to the bucket's own `<bucket>.<world>.localhost` and `http://<bucket>.<world>.localhost`; adding a CDN never adds a separate local `<id>.<world>.localhost` hostname.
 
-A `domain` is a bare hostname: `<id>.name` is its only property. A URL always carries a scheme, so use `self.url` for the app's primary URL, or `"${self.scheme}://${dom_b.name}"` for another declared domain. Any URL property on a `domain` is rejected statically.
+The first declared `domain` is the primary `<world>.localhost`; every later one adds `<id>.<world>.localhost`. A `domain` is a bare hostname: `<id>.name` is its only property. A URL always carries a scheme, so use `self.url` for the app's primary URL, or `"${self.scheme}://${dom_b.name}"` for another declared domain. Any URL property on a `domain` is rejected statically.
 
 !!! warning "`cdn <id>` requires explicit `policy public-read`"
 
@@ -123,12 +123,14 @@ Each HTTP `service` declares one public `port <u16>`, available as `$port` and i
 
 | Route | Path match | Authority |
 | :--- | :--- | :--- |
-| `route /api` | `/api/users` -> `/api/users` | primary world domain and the first declared `domain` |
+| `route /api` | `/api/users` -> `/api/users` | primary `<world>.localhost` |
 | `route /api strip-prefix` | `/api/users` -> `/users` | same |
 | `route /api rewrite /v1` | `/api/users` -> `/v1/users` | same |
 | `route exact /healthz` | `/healthz` only | same |
 | `route / domain admin` | `/` | `admin.<world>.localhost` |
 | `route / domain mail` | `/` | `mail.<world>.localhost` |
+
+The first declared `domain` **is** the primary world domain: `main.name` above evaluates to `<world>.localhost`, so an unfiltered route and `route / domain main` both answer on `http://<world>.localhost`. Later declared domains only add subdomains.
 
 `strip-prefix` and `rewrite <path>` are mutually exclusive, and a route naming an undeclared `domain` fails statically. A service that wants its own host declares `domain <id>` inline or inside `on <expr> { … }` and writes `route / domain <id>`:
 

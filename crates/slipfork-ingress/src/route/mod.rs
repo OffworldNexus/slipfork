@@ -17,23 +17,30 @@ pub use error::{RouteError, TableError};
 
 use rules::Entry;
 
-/// The authorities one route owns: `None` is the primary `<world>.localhost`, and `Some(id)` is
+/// The authority one route owns: `None` is the primary `<world>.localhost`, and `Some(id)` is
 /// `<id>.<world>.localhost`.
 ///
-/// An unfiltered route owns the primary authority **and** the first declared app `domain`; a
-/// `route ... domain <id>` owns exactly that domain. The ingress table and the `ps` status tree
-/// both derive hosts through this one helper, so the tree can never advertise a host the proxy
-/// does not serve.
+/// The first declared app `domain` **is** the primary authority, so it collapses to `None` like an
+/// unfiltered route does: an unfiltered `route /path` and a `route ... domain <first>` both answer
+/// on `<world>.localhost`, never on a duplicate `<first>.<world>.localhost`. Only a later declared
+/// domain owns `<id>.<world>.localhost`. The ingress table and the `ps` status tree both derive
+/// hosts through this one helper, so the tree can never advertise a host the proxy does not serve.
 #[must_use]
-pub fn route_authorities(
-    primary_domain: Option<&str>,
-    domain: Option<&str>,
-) -> Vec<Option<String>> {
+pub fn route_authorities(primary_domain: Option<&str>, domain: Option<&str>) -> Option<String> {
     match domain {
-        Some(name) => vec![Some(name.to_owned())],
-        None => std::iter::once(None)
-            .chain(primary_domain.map(str::to_owned).map(Some))
-            .collect(),
+        None => None,
+        Some(name) if primary_domain == Some(name) => None,
+        Some(name) => Some(name.to_owned()),
+    }
+}
+
+/// The `.localhost` host one authority resolves to: `None` keeps the primary host verbatim
+/// (`<world>.localhost`), while `Some(id)` prefixes it (`<id>.<world>.localhost`).
+#[must_use]
+pub fn route_host(primary_host: &str, authority: Option<&str>) -> String {
+    match authority {
+        None => primary_host.to_owned(),
+        Some(id) => format!("{id}.{primary_host}"),
     }
 }
 
@@ -77,8 +84,9 @@ pub struct IngressTable {
 impl IngressTable {
     /// Builds the table for one world.
     ///
-    /// A route without a `domain` filter owns the primary `<world>.localhost` authority and the
-    /// first declared app domain; `domain <id>` owns exactly that authority. Routes are taken
+    /// A route without a `domain` filter owns the primary `<world>.localhost` authority, and so
+    /// does `domain <first>` because the first declared domain *is* that authority; a later
+    /// `domain <id>` owns exactly `<id>.<world>.localhost`. Routes are taken
     /// verbatim from `slipfork-forkfile`, so the `strip-prefix`/`rewrite`/`exact` spelling is never
     /// parsed twice.
     ///

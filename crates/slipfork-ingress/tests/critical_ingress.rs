@@ -392,9 +392,7 @@ fn every_authority_and_route_mode_maps_to_the_expected_upstream_path() {
         ("demo.localhost", "/files/a/b.css?x=1", "/a/b.css?x=1"),
         ("demo.localhost", "/old/users", "/v1/users"),
         ("demo.localhost", "/anything", "/anything"),
-        ("main.demo.localhost", "/portal?q=1", "/portal?q=1"),
-        ("main.demo.localhost", "/api", "/api"),
-        ("main.demo.localhost", "/everything", "/everything"),
+        ("demo.localhost", "/portal?q=1", "/portal?q=1"),
         ("mail.demo.localhost", "/inbox", "/inbox"),
         (
             "assets-cdn.demo.localhost",
@@ -424,7 +422,7 @@ fn every_authority_and_route_mode_maps_to_the_expected_upstream_path() {
 
 #[test]
 fn hosts_and_paths_fail_closed_with_distinct_statuses() {
-    let (address, proxy) = spawn_proxy(registry_with_port(1), 4);
+    let (address, proxy) = spawn_proxy(registry_with_port(1), 5);
     let unknown_world = request(address, "nowhere.localhost", "/");
     assert!(
         unknown_world.starts_with("HTTP/1.1 421 Misdirected Request"),
@@ -434,6 +432,11 @@ fn hosts_and_paths_fail_closed_with_distinct_statuses() {
     assert!(unrouted.starts_with("HTTP/1.1 404"), "{unrouted}");
     let foreign = request(address, "example.com", "/");
     assert!(foreign.starts_with("HTTP/1.1 400"), "{foreign}");
+    let duplicate = request(address, "main.demo.localhost", "/api");
+    assert!(
+        duplicate.starts_with("HTTP/1.1 404"),
+        "the first declared domain is the primary authority, never a duplicate host: {duplicate}"
+    );
     let leaked = request(address, "assets-cdn.demo.localhost", "/assets/x");
     assert!(
         leaked.starts_with("HTTP/1.1 404"),

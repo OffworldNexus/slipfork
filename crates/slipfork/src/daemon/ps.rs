@@ -30,7 +30,7 @@ pub struct PsWorld {
     pub fork: Option<String>,
     /// Primary URL, `<world>.localhost`.
     pub url: String,
-    /// First declared app `domain <id>`; unfiltered routes also answer on it.
+    /// First declared app `domain <id>`; it **is** the primary `<world>.localhost` authority.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub primary_domain: Option<String>,
     /// Whether this world is live or only a stopped checkout on disk.

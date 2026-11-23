@@ -96,6 +96,12 @@ impl Forkfile {
         out
     }
 
+    /// The first declared app `domain <id>`; it **is** the primary `<world>.localhost` authority.
+    #[must_use]
+    pub fn primary_domain(&self) -> Option<&str> {
+        self.app_domains().first().copied()
+    }
+
     /// Evaluates build-time `arg` bindings for `image_id` in `world`.
     #[must_use]
     pub fn eval_image_args(

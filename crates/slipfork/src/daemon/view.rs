@@ -11,9 +11,9 @@ use slipfork_world::ResourceKind;
 
 use crate::ps::{PsBucketPolicy, PsKind, PsRoute, PsRouteMode, PsService};
 
-/// The first declared app `domain <id>`, which unfiltered routes also answer on.
+/// The first declared app `domain <id>`; it **is** the primary `<world>.localhost` authority.
 pub(super) fn primary_domain(doc: &Forkfile) -> Option<String> {
-    doc.app_domains().first().map(|id| (*id).to_owned())
+    doc.primary_domain().map(str::to_owned)
 }
 
 /// Projects every declared service and backing resource into typed rows.
