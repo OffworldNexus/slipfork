@@ -3295,3 +3295,5 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-23T19:02 AUTOPILOT on by conductor Collapsing demo api/worker onto @uv run in M3.72
 - 2026-11-23T19:03 [M3.72] (conductor) edited fields
 - 2026-11-23T19:03 [M3.72] (conductor) status ready -> ready: Widened: bare 'uv run' (hooks, pre-deploy, exec) must also get --no-sync, not just '@uv run'
+- 2026-11-23T19:03 [M3.72] (conductor) status ready -> ready: Widened paths: bare 'uv run' (hooks, pre-deploy, exec) must also get --no-sync
+- 2026-11-23T19:03 [M3.72] (conductor) edited fields

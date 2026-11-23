@@ -8,10 +8,11 @@ priority: 3
 depends_on: []
 paths:
   - "support/demo/**"
-  - "crates/slipfork-forkfile/tests/**"
-  - "crates/slipfork/tests/**"
+  - "crates/slipfork-forkfile/**"
+  - "crates/slipfork/**"
   - TESTING_PLAN.md
   - "specs/**"
+  - "docs/**"
 attempts: 0
 max_attempts: 3
 escalation: none
