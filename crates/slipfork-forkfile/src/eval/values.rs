@@ -181,17 +181,21 @@ fn pg_prop(db: &str, prop: &str) -> Option<String> {
     }
 }
 
+/// Adds `name` and its declared implications to `active`, never entering a name in `skip`.
+///
+/// Insertion doubles as the cycle guard: a name already present stops the walk.
 pub(super) fn expand_feature(
     name: &str,
     groups: &BTreeMap<String, Vec<String>>,
     active: &mut BTreeSet<String>,
+    skip: &BTreeSet<String>,
 ) {
-    if !active.insert(name.to_owned()) {
+    if skip.contains(name) || !active.insert(name.to_owned()) {
         return;
     }
     if let Some(children) = groups.get(name) {
         for child in children {
-            expand_feature(child, groups, active);
+            expand_feature(child, groups, active, skip);
         }
     }
 }

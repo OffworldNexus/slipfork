@@ -1,6 +1,6 @@
 //! `features`/`on` truth table for the single [`FeatureSet`] gate.
 
-use slipfork_forkfile::{Expr, FeatureEdit, FeatureSet, TopItem, parse};
+use slipfork_forkfile::{Expr, FeatureEdit, FeatureSet, Forkfile, TopItem, parse};
 
 const DECLARED: &str = r#"# forkfile: 0.1
 features {
@@ -155,6 +155,79 @@ fn services_with_filters_on_gated_declarations() {
         .resolve_features(false, &[edit("+mail")])
         .expect("+mail resolves");
     assert_eq!(ids(&mail), ["web", "mailpit"]);
+}
+
+#[test]
+fn disabling_a_group_suppresses_the_features_only_it_implies() {
+    fn service_ids(document: &Forkfile, features: &FeatureSet) -> Vec<String> {
+        document
+            .services_with(features)
+            .iter()
+            .map(|service| service.id.to_owned())
+            .collect()
+    }
+
+    let document = parse(
+        "# forkfile: 0.1\nfeatures {\n  dev = [mail]\n  mail\n}\nimage app . {\n  service web { port 8000 }\n  on mail { service mailpit { port 8025 } }\n}\n",
+    )
+    .expect("parses");
+    let resolve = |no_default: bool, texts: &[&str]| {
+        let edits = texts.iter().map(|text| edit(text)).collect::<Vec<_>>();
+        document
+            .resolve_features(no_default, &edits)
+            .expect("edits resolve")
+    };
+    let names = |features: &FeatureSet| features.active().iter().cloned().collect::<Vec<_>>();
+
+    let defaulted = resolve(false, &[]);
+    assert_eq!(
+        names(&defaulted),
+        ["dev", "mail"],
+        "`dev = [mail]` implies `mail` by default"
+    );
+    assert_eq!(service_ids(&document, &defaulted), ["web", "mailpit"]);
+
+    let prod = resolve(false, &["-dev"]);
+    assert!(
+        names(&prod).is_empty(),
+        "`-dev` also retires the `mail` only it implies"
+    );
+    assert_eq!(
+        service_ids(&document, &prod),
+        ["web"],
+        "mailpit stays off in the prod shape"
+    );
+
+    assert_eq!(names(&resolve(false, &["!mail"])), ["dev"]);
+    assert_eq!(
+        names(&resolve(false, &["+mail", "-dev"])),
+        ["mail"],
+        "an explicit enable outlives the group that implied it"
+    );
+    assert!(
+        names(&resolve(true, &[])).is_empty(),
+        "--no-default-features starts empty"
+    );
+}
+
+#[test]
+fn explicit_default_membership_survives_disabling_dev() {
+    let document = parse("# forkfile: 0.1\nfeatures {\n  default = [mail]\n  dev\n  mail\n}\n")
+        .expect("parses");
+    let resolve = |texts: &[&str]| {
+        let edits = texts.iter().map(|text| edit(text)).collect::<Vec<_>>();
+        document
+            .resolve_features(false, &edits)
+            .expect("edits resolve")
+    };
+    let names = |features: &FeatureSet| features.active().iter().cloned().collect::<Vec<_>>();
+
+    assert_eq!(names(&resolve(&[])), ["dev", "mail"]);
+    assert_eq!(
+        names(&resolve(&["-dev"])),
+        ["mail"],
+        "`default = [mail]` is a root of its own, so `mail` survives `-dev`"
+    );
 }
 
 #[test]

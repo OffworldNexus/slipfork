@@ -147,20 +147,37 @@ impl Forkfile {
         crate::check::feature_index(&self.items.items).0
     }
 
-    /// The default base: built-in `dev` (with its implications) plus `default`'s expansion.
-    fn base_active(&self, groups: &BTreeMap<String, Vec<String>>) -> BTreeSet<String> {
+    /// The replayable roots of the default set: built-in `dev` plus `default`'s declared members.
+    ///
+    /// `default` is a declaration, not a feature: the literal `"default"` name never activates.
+    fn default_roots(groups: &BTreeMap<String, Vec<String>>) -> BTreeSet<String> {
+        let mut roots = BTreeSet::from(["dev".to_owned()]);
+        if let Some(members) = groups.get("default") {
+            roots.extend(members.iter().cloned());
+        }
+        roots
+    }
+
+    /// The transitive closure from `roots`, never entering a blacklisted name.
+    fn closure(
+        roots: &BTreeSet<String>,
+        groups: &BTreeMap<String, Vec<String>>,
+        disabled: &BTreeSet<String>,
+    ) -> BTreeSet<String> {
         let mut active = BTreeSet::new();
-        expand_feature("dev", groups, &mut active);
-        if groups.contains_key("default") {
-            expand_feature("default", groups, &mut active);
+        for root in roots {
+            expand_feature(root, groups, &mut active, disabled);
         }
         active
     }
 
-    /// Resolves the default set (unless `no_default`) and applies `edits` in order.
+    /// Resolves the default set (unless `no_default`) and replays `edits` in order.
     ///
-    /// Enabling a name expands its declared implications transitively; disabling removes that
-    /// name alone. Every name is validated against [`Forkfile::available_features`].
+    /// Enabling a name clears it from the disabled blacklist and adds it as a root; disabling
+    /// removes it from the roots and blacklists it. The active set is then the transitive closure
+    /// from the roots over declared implications, skipping blacklisted names — so `-dev` also
+    /// suppresses `mail` when only `dev = [mail]` reaches it, while `+mail -dev` keeps `mail`.
+    /// Every name is validated against [`Forkfile::available_features`].
     ///
     /// # Errors
     ///
@@ -172,11 +189,12 @@ impl Forkfile {
     ) -> Result<FeatureSet, Diagnostic> {
         let available = self.available_features();
         let groups = self.feature_groups();
-        let mut active = if no_default {
+        let mut roots = if no_default {
             BTreeSet::new()
         } else {
-            self.base_active(&groups)
+            Self::default_roots(&groups)
         };
+        let mut disabled = BTreeSet::new();
         for edit in edits {
             let name = edit.name();
             if !available.contains(name) {
@@ -187,11 +205,14 @@ impl Forkfile {
                 ));
             }
             if edit.enables() {
-                expand_feature(name, &groups, &mut active);
+                disabled.remove(name);
+                roots.insert(name.to_owned());
             } else {
-                active.remove(name);
+                roots.remove(name);
+                disabled.insert(name.to_owned());
             }
         }
+        let active = Self::closure(&roots, &groups, &disabled);
         Ok(FeatureSet { active, available })
     }
 
@@ -199,8 +220,9 @@ impl Forkfile {
     #[must_use]
     pub fn default_features(&self) -> FeatureSet {
         let groups = self.feature_groups();
+        let active = Self::closure(&Self::default_roots(&groups), &groups, &BTreeSet::new());
         FeatureSet {
-            active: self.base_active(&groups),
+            active,
             available: self.available_features(),
         }
     }
