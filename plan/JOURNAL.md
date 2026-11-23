@@ -3272,3 +3272,5 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-23T15:24 [M3.70.4] (lead) status ready -> active
 - 2026-11-23T15:40 [M3.70.4] (lead) triad fix: sf-<pid>-<hash> containers (foreign-PID isolation test), feature-override fork plan notice, forkfile read remedy; local 318 tests, live dockerfile_li
 - 2026-11-23T15:40 [M3.70.4] (lead) status active -> done
+- 2026-11-23T15:41 [M3.70] (lead) gate: make check 0 (318 tests, bun 7 pass/1 skip, zed), make docs-check 0, live 3 CLI suites + dockerfile_live green on 165.232.86.174 with packaged .deb; prod-
+- 2026-11-23T15:41 [M3.70] (lead) status ready -> done
