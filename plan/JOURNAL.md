@@ -3274,3 +3274,6 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-23T15:40 [M3.70.4] (lead) status active -> done
 - 2026-11-23T15:41 [M3.70] (lead) gate: make check 0 (318 tests, bun 7 pass/1 skip, zed), make docs-check 0, live 3 CLI suites + dockerfile_live green on 165.232.86.174 with packaged .deb; prod-
 - 2026-11-23T15:41 [M3.70] (lead) status ready -> done
+- 2026-11-23T15:42 [M3] (conductor) status active -> done
+- 2026-11-23T15:42 HUMAN H-021 [release-gate] opened by conductor (node M3)
+- 2026-11-23T15:42 AUTOPILOT off by conductor Awaiting 38/38 GHA green confirmation & human review/merge of PR #2 into develop
