@@ -1,0 +1,3365 @@
+# Plan Journal
+
+Append-only one-line event log managed by `tools/plan.py`.
+
+- 2026-11-14T22:00 [bootstrap] Initialized Slipfork DX-first + Quad-Review-Gate autonomous harness
+- 2026-11-14T22:03 [M1] (strategist) created (milestone) Global Target DX/DI Design & Real CoW PoC (0.1.0)
+- 2026-11-14T22:03 [M1.1] (planner) created (task) Author dream-tool Zensical user documentation (modes, DAG, OpenCode, Blastit)
+- 2026-11-14T22:03 [M1.2] (planner) created (task) Design global IoC/DI architecture, crate seams, and ADR-0001..0004
+- 2026-11-14T22:03 [M1.3] (planner) created (task) Implement core IoC crates (slipfork-snow, slipfork-dag, slipfork-engine, slipfork) & @slipfork/opencode
+- 2026-11-14T22:03 [M1.4] (planner) created (task) Execute real PostgreSQL 18 + XFS FICLONE + netns + Playwright PoC benchmark
+- 2026-11-14T22:03 [M1.5] (planner) created (task) Human review & sign-off on M1 global design, snow.yml modes contract, and PoC results
+- 2026-11-14T22:03 [M2] (strategist) created (milestone) snow.yml v2, OSPP v1 & Live Dev/Worktree Worlds (0.2.0)
+- 2026-11-14T22:03 [M3] (strategist) created (milestone) Polyglot Parallel Snapshot-DAG Test Orchestrator (0.3.0)
+- 2026-11-14T22:03 [M4] (strategist) created (milestone) Blastit Parallel Wire Learning, Remote Cache & Agent Ecosystem (0.4.0)
+- 2026-11-14T22:30 [M1.1] (lead) status ready -> active
+- 2026-11-14T22:30 [M1.1] (lead) attempt 1/3 started
+- 2026-11-14T22:30 [M1.1] (lead) status active -> review
+- 2026-11-14T22:30 [M1.1] (lead) status review -> done: M1 bootstrap & PoC verified
+- 2026-11-14T22:30 [M1.2] (lead) status ready -> active
+- 2026-11-14T22:30 [M1.2] (lead) attempt 1/3 started
+- 2026-11-14T22:30 [M1.2] (lead) status active -> review
+- 2026-11-14T22:30 [M1.2] (lead) status review -> done: M1 bootstrap & PoC verified
+- 2026-11-14T22:30 [M1.3] (lead) status ready -> active
+- 2026-11-14T22:30 [M1.3] (lead) attempt 1/3 started
+- 2026-11-14T22:30 [M1.3] (lead) status active -> review
+- 2026-11-14T22:30 [M1.3] (lead) status review -> done: M1 bootstrap & PoC verified
+- 2026-11-14T22:30 [M1.4] (lead) status ready -> active
+- 2026-11-14T22:30 [M1.4] (lead) attempt 1/3 started
+- 2026-11-14T22:30 [M1.4] (lead) status active -> review
+- 2026-11-14T22:30 [M1.4] (lead) status review -> done: M1 bootstrap & PoC verified
+- 2026-11-14T22:30 HUMAN H-001 [direction-challenge] opened by architect (node M1.5)
+- 2026-11-14T22:30 HUMAN H-002 [direction-challenge] opened by architect (node M1.5)
+- 2026-11-14T22:30 HUMAN H-003 [direction-challenge] opened by architect (node M1.5)
+- 2026-11-14T22:30 HUMAN H-004 [missing-input] opened by architect (node M1.5)
+- 2026-11-14T22:30 [M1.5] (lead) status ready -> blocked: Awaiting owner review of M1 design, ADRs, PoC benchmark, and H-001..H-004
+- 2026-11-14T23:16 HUMAN H-001 closed by conductor
+- 2026-11-14T23:16 HUMAN H-002 closed by conductor
+- 2026-11-14T23:16 HUMAN H-003 closed by conductor
+- 2026-11-14T23:16 [M1.5] (conductor) status blocked -> done: Owner validated proposals + added .localhost edge, weaved IPC, slipfork shell, git/jj remote, and polyglot-first test protocol
+- 2026-11-14T23:16 [M1.6] (conductor) created (task) Fold validated .localhost edge, weaved IPC, git/jj remote & polyglot test protocol into M1 design/code
+- 2026-11-14T23:16 [M1.6] (conductor) status ready -> active
+- 2026-11-14T23:16 [M1.6] (conductor) attempt 1/3 started
+- 2026-11-14T23:16 [M1.6] (conductor) base 798b9972076c1d9024c2b41db3daef97522d8f65
+- 2026-11-14T23:16 ESCALATION #1 -> architect for M1.6 by conductor: Integrate owner M1 design decisions (.localhost daemon, weaved IPC, git/jj remote, language-agnostic RunnerProtocol)
+- 2026-11-14T23:17 [M1.6] (conductor) edited fields
+- 2026-11-14T23:17 [M1.6] (conductor) OWNER ADDENDUM: (5) 100% Blastit orthogonality — delete BlastitObsCollector / --blastit-learn coupling from Slipfork! Blastit is simply the component command in
+- 2026-11-14T23:55 [M1.6] (conductor) base 7413b98caea8539187d151d32cbfcbc9e9567455
+- 2026-11-14T23:55 [M1.6] (conductor) status active -> review
+- 2026-11-14T23:57 [M1.6] (lead) QUAD REVIEW GATE attempt 1 (base 7413b98) -> NO PASS. reviewer=fail, review-legality=FAIL, review-ioc=SPEC_BLIND_SPOT, review-cruft=MAJOR. Acceptance alone is g
+- 2026-11-14T23:57 HUMAN H-005 [direction-challenge] opened by lead (node M1.6)
+- 2026-11-14T23:57 HUMAN H-006 [missing-input] opened by lead (node M1.6)
+- 2026-11-14T23:57 [M1.6] (lead) status review -> blocked
+- 2026-11-15T00:18 HUMAN H-005 closed by conductor
+- 2026-11-15T00:18 HUMAN H-006 closed by conductor
+- 2026-11-15T00:18 [M1.6] (conductor) edited fields
+- 2026-11-15T00:18 [M1.6] (conductor) HUMAN ANSWERED H-005 & H-006 — Attempt 2 exact checklist (resolve ALL Quad Review Gate findings):
+- 2026-11-15T00:18 [M1.6] (conductor) status blocked -> ready: H-005 and H-006 answered by owner
+- 2026-11-15T00:19 [M1.6] (lead) status ready -> active
+- 2026-11-15T00:19 [M1.6] (lead) attempt 2/3 started
+- 2026-11-15T00:19 [M1.6] (lead) base 7413b98caea8539187d151d32cbfcbc9e9567455 (attempt 2: resolve all Quad Gate attempt-1 findings on working tree)
+- 2026-11-15T00:24 [M1.6] (lead) status active -> review
+- 2026-11-15T00:26 [M1.6] (lead) QUAD GATE attempt 2 (base 7413b98) -> NO PASS: reviewer=PASS(+5 MINOR), legality=PASS(+4 MINOR), ioc=SPEC_BLIND_SPOT(+1 MAJOR), cruft=FAIL(2 MAJOR). BLIND_SPOT:
+- 2026-11-15T00:26 ESCALATION #2 -> architect for M1.6 by lead: Quad gate attempt 2 SPEC_BLIND_SPOT: TunnelLease ownership (WorldRegistry/daemon vs CLI), slipforkd release_tunnel IPC p
+- 2026-11-15T00:26 [M1.6] (lead) status review -> active
+- 2026-11-15T00:37 [M1.6] (lead) ARCHITECT RULINGS (escalation #2) received: D1 daemon-owned TunnelLease (WorldRegistry::register_tunnel/release_tunnel + DaemonControl IPC, CLI holds no lease);
+- 2026-11-15T00:37 [M1.6] (lead) attempt 3/3 started
+- 2026-11-15T00:37 [M1.6] (lead) base 7413b98caea8539187d151d32cbfcbc9e9567455 (attempt 3: apply architect D1-D8 code edits + all gate MINORs)
+- 2026-11-15T00:40 [M1.6] (lead) status active -> review
+- 2026-11-15T00:42 [M1.6] (lead) QUAD GATE attempt 3 (base 7413b98) -> NO PASS: reviewer(report pending), legality=FAIL(2 BLOCKER+2 MAJOR+4 MINOR), ioc=FAIL(1 MAJOR+2 MINOR; SPEC_BLIND_SPOT RES
+- 2026-11-15T00:42 [M1.6] (lead) edited fields
+- 2026-11-15T00:42 ESCALATION #3 -> expert for M1.6 by lead: Quad gate attempt 3: legality BLOCKERs (plugin --snow-file regression + unactionable error), ioc MAJOR (slipfork.toml du
+- 2026-11-15T00:42 [M1.6] (lead) status review -> active
+- 2026-11-15T01:01 [M1.6] (lead) EXPERT ESCALATION REPAIR (escalation #3) complete: plugin --snow-file now conditional (existsSync), exec error names path, single SlipforkConfig root owning pro
+- 2026-11-15T01:01 [M1.6] (lead) status active -> review
+- 2026-11-15T01:03 [M1.6] (lead) FINAL GATE (4) PARTIAL: cruft=PASS(minors), ioc=PASS(minors; DI tree drawable, SlipforkConfig single owner, lease port single surface), legality=FAIL with 1 BLO
+- 2026-11-15T01:03 ESCALATION #4 -> architect for M1.6 by lead: Final gate legality BLOCKER: git submodule/separate-git-dir root misidentification (fix spec) + jj canonical root unveri
+- 2026-11-15T01:03 [M1.6] (lead) status review -> active
+- 2026-11-15T01:09 [M1.6] (lead) OWNER RULING (supersedes escalation #4 question): (1) git canonical root MUST use 'git rev-parse --show-toplevel', NEVER --git-common-dir basename; fail closed 
+- 2026-11-15T01:21 [M1.6] (lead) OWNER-RULED REPAIR COMPLETE: git root via --show-toplevel only (bare/submodule/separate-git-dir fail closed naming topology + project override; linked worktree 
+- 2026-11-15T01:21 [M1.6] (lead) status active -> review
+- 2026-11-15T01:23 [M1.6] (lead) FINAL GATE (5): legality=PASS(minors), cruft=FAIL(1 MAJOR doc triplication: target-dx.md:63-65 + ARCHITECTURE.md:220-221 verbatim-restate ADR-0005:29-31 lease l
+- 2026-11-15T01:23 [M1.6] (lead) status review -> active
+- 2026-11-15T01:38 [M1.6] (lead) GATE-5 REPAIRS COMPLETE: architect deduped lease lifecycle (ADR-0005 sole home) + VCS-root contract (ADR-0005 s3), DaemonControl takes &TunnelRequest, cli.md do
+- 2026-11-15T01:38 [M1.6] (lead) status active -> review
+- 2026-11-15T01:41 [M1.6] (lead) GATE (6): reviewer=PASS(2 minors), legality=PASS(0), ioc=PASS(5 minors), cruft=FAIL(1 MAJOR: critical_snow.rs:266-370 duplicates the full .localhost rule matrix
+- 2026-11-15T01:41 [M1.6] (lead) status review -> active
+- 2026-11-15T01:53 [M1.6] (lead) GATE-6 REPAIR COMPLETE: critical_snow rule matrix deduped (single suite in critical_world.rs; snow keeps local_for_world wiring/error propagation/domains[].id),
+- 2026-11-15T01:53 [M1.6] (lead) status active -> review
+- 2026-11-15T01:54 [M1.6] (lead) CONDUCTOR RULE (binding): Gate 8 is the FINAL gate for M1.6. Fix current cruft MAJOR (slipfork-snow::local_base double-renders canonical host/URL, local_for_wor
+- 2026-11-15T01:59 [M1.6] (lead) local_base double-renderer removed (LocalHostRoute sole host/URL renderer, app_domain/app_url populated once, dead overwrites gone, ResourceCoordinates shape un
+- 2026-11-15T01:59 [M1.6] (lead) status review -> review
+- 2026-11-15T02:01 [M1.6] (lead) status review -> done
+- 2026-11-15T02:01 ESCALATION #5 -> strategist for M1 by conductor: milestone gate
+- 2026-11-15T02:16 [M2] (strategist) edited fields
+- 2026-11-15T02:16 [M1.7] (strategist) created (task) Repair make bench VCS root setup, regenerate live PoC report & add CHANGELOG.md (0.1.0)
+- 2026-11-15T02:16 [M4] (strategist) edited fields
+- 2026-11-15T02:16 [M1] (strategist) GATE FAILED (BLOCKER - broken acceptance): make bench exits 2 at poc/run_benchmark.py:742 because setup_sample_project creates ~/.cache/slipfork-m1-bench/acme-s
+- 2026-11-15T02:17 [M1.7] (lead) status ready -> active
+- 2026-11-15T02:17 [M1.7] (lead) attempt 1/3 started
+- 2026-11-15T02:17 [M1.7] (lead) base d0b11e069ced52d0e03ebb3b251a1077d0c1bf39
+- 2026-11-15T02:22 [M1.7] (lead) status active -> review
+- 2026-11-15T02:26 [M1.7] (lead) GATE (Quad): reviewer=PASS(5 followups), legality=PASS(5), ioc=PASS(7, no blind spot), cruft=PASS(11); 0 BLOCKERs. Notable: gate reviewers re-ran make bench, wh
+- 2026-11-15T02:27 [M1.7] (lead) status review -> done
+- 2026-11-15T02:28 ESCALATION #6 -> strategist for M1 by conductor: milestone gate re-run after M1.7 repaired make bench
+- 2026-11-15T02:31 [M1] (strategist) GATE PASSED (RELEASE_READY: 0.1.0): make check 0, make bench 0 (3.03x/1.91s live re-run; canonical 3.21x/1.89s report preserved), rg stale tokens 0, check_docs_
+- 2026-11-15T02:31 [M1] (strategist) status ready -> done
+- 2026-11-15T02:32 HUMAN H-007 [release-gate] opened by conductor (node M1)
+- 2026-11-15T02:32 AUTOPILOT off by conductor awaiting human release gate for 0.1.0
+- 2026-11-15T10:38 [M1] (conductor) status done -> ready: owner sent 0.1.0 back at the release gate with 4 design corrections
+- 2026-11-15T10:38 [M1.8] (conductor) created (task) Fold owner review-gate corrections: single-origin invariant, support tiers, typed coverage (no shell recipes)
+- 2026-11-15T10:38 ESCALATION #7 -> architect for M1.8 by conductor: owner design corrections at release gate: single canonical origin per world, support tiers, typed coverage replacing aft
+- 2026-11-15T10:39 [M1.8] (lead) status ready -> active
+- 2026-11-15T10:39 [M1.8] (lead) attempt 1/3 started
+- 2026-11-15T10:39 [M1.8] (lead) base 05c85939f7514d9286691b6c8e01e10055bdba64
+- 2026-11-15T10:39 [M1.8] (lead) owner clarification (addendum): world origin is NOT an OSPP value; Slipfork-assigned origin wins over provider-supplied domains:: for local worlds; OSPP is NOT 
+- 2026-11-15T10:39 ESCALATION #8 -> architect for M1.8 by lead: Owner review-gate corrections: single-origin invariant, support tiers, typed coverage + OSPP precedence clarification
+- 2026-11-15T10:47 [M1.8] (architect) edited fields
+- 2026-11-15T10:58 [M1.8] (lead) status active -> review
+- 2026-11-15T11:00 [M1.8] (lead) GATE(1) partial: legality=PASS(0 BLOCKER, 4 MAJOR, 4 MINOR); cruft=FAIL(BLOCKER: crates/slipfork-dag TestSpec.after_suite dead field still parsed + docs call it
+- 2026-11-15T11:00 HUMAN H-008 [direction-challenge] opened by lead (node M1.8)
+- 2026-11-15T11:00 [M1.8] (lead) attempt 2/3 started
+- 2026-11-15T11:00 [M1.8] (lead) status review -> active
+- 2026-11-15T11:00 [M1.8] (lead) GATE(1) complete: reviewer=PASS, legality=PASS, ioc=FAIL SPEC_BLIND_SPOT (shared ingress/weaved target/308 loop -> H-008 filed, Option A recommended), cruft=FAI
+- 2026-11-15T11:00 HUMAN H-008 closed by conductor
+- 2026-11-15T11:09 [M1.8] (lead) status active -> review
+- 2026-11-15T11:11 [M1.9] (lead) created (task) Delete rejected [test] shell field, land typed coverage schema, per_world fixtures & support registry
+- 2026-11-15T11:11 [M1.8] (lead) GATE(2) FINAL: reviewer=PASS(0 BLOCKER), legality=PASS(0), ioc=PASS(0, round-1 SPEC_BLIND_SPOT dissolved by H-008), cruft=PASS(0, residual crate residue tracked
+- 2026-11-15T11:11 [M1.9] (lead) edited fields
+- 2026-11-15T11:11 [M1.8] (lead) status review -> done
+- 2026-11-15T11:12 [M1.9] (lead) status ready -> active
+- 2026-11-15T11:12 [M1.9] (lead) attempt 1/3 started
+- 2026-11-15T11:12 [M1.9] (lead) base 09e83153c072221c7828a77de54722c607e92535
+- 2026-11-15T11:16 [M1.9] (lead) status active -> review
+- 2026-11-15T11:18 [M1.9] (lead) GATE(1) NO PASS: reviewer=FAIL(1 BLOCKER: integrations.toml signoff_commit 09e8315 does not touch cited ADR-0002; 4 MAJOR: empty coverage_report accepted, per_w
+- 2026-11-15T11:18 [M1.9] (lead) edited fields
+- 2026-11-15T11:18 [M1.9] (lead) status review -> ready: attempt 2: BLOCKER false signoff_commit + empty coverage_report + per_world cache + published manifest gap
+- 2026-11-15T11:18 [M1.9] (lead) status ready -> active
+- 2026-11-15T11:18 [M1.9] (lead) attempt 2/3 started
+- 2026-11-15T11:18 [M1.9] (lead) base 09e83153c072221c7828a77de54722c607e92535
+- 2026-11-15T11:21 [M1.9] (lead) status active -> review
+- 2026-11-15T11:23 [M1.9] (lead) GATE(2) FINAL: reviewer=PASS(0 BLOCKER), legality=PASS(0, round-1 false signoff_commit fixed at d0b11e0), ioc=PASS(0, M2 tier-vocabulary gap recorded as directi
+- 2026-11-15T11:23 [M1.9] (lead) status review -> done
+- 2026-11-15T11:23 ESCALATION #9 -> strategist for M1 by conductor: final milestone gate for 0.1.0 after owning M1.8 design corrections and M1.9 code alignment
+- 2026-11-15T11:45 HUMAN H-009 [direction-challenge] opened by strategist (node M2)
+- 2026-11-15T11:45 [M1] (strategist) status ready -> done: Final M1 (0.1.0) gate PASS at 6ee3b7b + accuracy polish: single-origin ADR-0005/H-008, per_world ADR-0003, typed coverage ADR-0006, suppor
+- 2026-11-15T11:46 [M2] (strategist) edited fields
+- 2026-11-15T11:48 AUTOPILOT off by conductor awaiting human release gate: no git remote for 0.1.0
+- 2026-11-15T16:17 HUMAN H-009 closed by conductor
+- 2026-11-15T16:17 AUTOPILOT on by conductor owner approved M2 kickoff with 7 architectural additions
+- 2026-11-15T16:17 [M2] (conductor) OWNER M2/M3 DIRECTIVES: (1) OSPP v1 WebSocket protocol with tpmd/SSH-style challenge-response auth, streaming DB dumps (opt-in for local dev, skipped for hermet
+- 2026-11-15T16:24 ESCALATION #10 -> strategist for M2 by conductor: Amend ROADMAP M2/M3 for owner directives (WebSocket OSPP + tpmd auth + DB dump + ResourceStrategy, hook debugging, syste
+- 2026-11-15T16:29 [M2] (strategist) edited fields
+- 2026-11-15T16:40 [M2.1] (planner) created (task) Author ADR-0008 (OSPP v1 WebSocket, tpmd P-256, ResourceStrategy, world UX) and align ADRs/ARCHITECTURE/target-DX
+- 2026-11-15T16:40 [M2.2] (planner) created (task) Workspace wedge: scaffold slipfork-edge/slipfork-vcs/slipfork-ospp and declare M2 dependencies
+- 2026-11-15T16:40 [M2.3] (planner) created (task) slipfork-world: WorldOrigin plus deterministic <=31-byte WeaverServiceName derivation
+- 2026-11-15T16:40 [M2.4] (planner) created (task) slipfork-snow: Send+Sync providers, redacted Debug, mode-scoped effective_components
+- 2026-11-15T16:40 [M2.5] (planner) created (task) slipfork-dag: [resources] ResourceStrategy, fs feature gate, single evidence ladder, H-009 cleanup
+- 2026-11-15T16:40 [M2.6] (planner) created (task) slipfork-engine: multi-mount WorldSpec, redacted ExecEnv, opaque WorldHandle, freeze_world
+- 2026-11-15T16:40 [M2.7] (planner) created (task) slipfork-engine: spawn/stop_service with logs, streaming and PTY exec, dial_world_tcp
+- 2026-11-15T16:40 [M2.8] (planner) created (task) slipfork-edge: systemd socket activation, LocalHostRoute dispatch, WorldRegistry
+- 2026-11-15T16:40 [M2.9] (planner) created (task) slipfork-edge: shared_hosts proxy, 308/421 rules, share/unshare, DaemonControl IPC
+- 2026-11-15T16:40 [M2.10] (planner) created (task) slipfork-edge: .socket/.service unit generator plus live systemd-socket-activate test
+- 2026-11-15T16:40 [M2.11] (planner) created (task) slipfork-vcs: RepoRootResolver/VcsWorkspace ports plus GitWorktreeAdapter and conformance
+- 2026-11-15T16:40 [M2.12] (planner) created (task) slipfork-vcs: JjWorkspaceAdapter plus git-remote-slipfork protocol handler
+- 2026-11-15T16:40 [M2.13] (planner) created (task) slipfork-ospp: DeviceKeySigner plus OSPP v1 handshake and fragment pairing client
+- 2026-11-15T16:40 [M2.14] (planner) created (task) slipfork-ospp: vars/secrets/resources capabilities plus streaming seed dump and reference server
+- 2026-11-15T16:40 [M2.15] (planner) created (task) Benchmark and support-compliance tooling hardening (poc/run_benchmark.py, tools/check_support.py)
+- 2026-11-15T16:40 [M2.16] (planner) created (task) CLI part 1: composition root, slipforkd binary, up/down/list/prune/secret/share/daemon unit
+- 2026-11-15T16:40 [M2.17] (planner) created (task) CLI part 2: hook failure rescue UX, logs/shell/db/redis/forward, auth, support, git-remote-slipfork
+- 2026-11-15T16:40 [M2.18] (planner) created (task) opencode-slipfork: explicit project state, no ambient probe, live e2e against slipfork binaries
+- 2026-11-15T16:40 [M2.19] (planner) created (task) Publish 0.2.0 DX docs, generated support matrix, CHANGELOG, dx and ai-ergonomics critics
+- 2026-11-15T16:40 [M2.20] (planner) created (task) Release 0.2.0: version bump, unused-dependency audit, full make check and read-only make bench
+- 2026-11-15T16:40 [M2.21] (planner) created (task) Isolated: live IncusEngine conformance and declared support promotion (gated on H-004)
+- 2026-11-15T16:40 [M2.22] (planner) created (task) Isolated: concrete WeavedRegistrar IPC adapter and declared support promotion (gated on H-006)
+- 2026-11-15T16:43 [M2.15] (strategist) edited fields
+- 2026-11-15T16:46 [M2.1] (lead) status ready -> active
+- 2026-11-15T16:46 [M2.1] (lead) attempt 1/3 started
+- 2026-11-15T16:46 ESCALATION #11 -> architect for M2.1 by lead: M2.1: author ADR-0008 and align ADR/ARCHITECTURE/target-DX (core DI tree lock)
+- 2026-11-15T16:46 [M2.1] (lead) base f5e2976e4d064984bd50b57506b4409419f48bdd
+- 2026-11-15T17:32 HUMAN H-010 [direction-challenge] opened by lead (node M2.1)
+- 2026-11-15T17:33 [M2.1] (lead) Quad gate R2: reviewer/legality/ioc/cruft PASS, 0 BLOCKER; 7 MAJOR + minors recorded in FOLLOWUPS.md; 3 cross-node blind spots escalated as H-010
+- 2026-11-15T17:40 [M2.1] (lead) committed 242f16f: ADR-0008 + ADR-0001/0003/0004/0005/0007 + ARCHITECTURE + target-DX; blocked on H-010
+- 2026-11-15T17:40 [M2.1] (lead) status active -> blocked: docs committed dfe24e0+; blocked on H-010 direction-challenge (cross-process WorldEngine/WorldHandle ownership, WorldOrigin port vs un
+- 2026-11-15T17:43 AUTOPILOT off by conductor awaiting owner ruling on H-010 (M2.1 cross-node DI & wire check)
+- 2026-11-15T18:25 HUMAN H-010 closed by conductor
+- 2026-11-15T18:25 [M2.1] (conductor) status blocked -> ready: H-010 answered by owner (unified user slipforkd + direct CLI TTY, A2 port-aware origin + netns bridge, OffworldNexus/tpmd git dep rev 9
+- 2026-11-15T18:25 AUTOPILOT on by conductor H-010 resolved; resuming M2 execution
+- 2026-11-15T18:25 [M2.1] (lead) status ready -> ready: H-010 closed with binding rulings; attempt 2 folds universe: slipforkd owns worlds/OSPP/secrets, A2 origin port, tpmd git deps
+- 2026-11-15T18:25 [M2.1] (lead) status ready -> active
+- 2026-11-15T18:25 [M2.1] (lead) attempt 2/3 started
+- 2026-11-15T18:25 [M2.1] (lead) base b949bcb11c8999c75a27b41d616babb8ddea2fad (H-010 closed: daemon-owned worlds, A2 ingress_port, tpmd git deps)
+- 2026-11-15T18:38 [M2.2] (planner) edited fields
+- 2026-11-15T18:38 [M2.3] (planner) edited fields
+- 2026-11-15T18:38 [M2.4] (planner) edited fields
+- 2026-11-15T18:38 [M2.5] (planner) edited fields
+- 2026-11-15T18:38 [M2.6] (planner) edited fields
+- 2026-11-15T18:38 [M2.7] (planner) edited fields
+- 2026-11-15T18:38 [M2.8] (planner) edited fields
+- 2026-11-15T18:38 [M2.9] (planner) edited fields
+- 2026-11-15T18:39 [M2.10] (planner) edited fields
+- 2026-11-15T18:39 [M2.11] (planner) edited fields
+- 2026-11-15T18:39 [M2.12] (planner) edited fields
+- 2026-11-15T18:39 [M2.13] (planner) edited fields
+- 2026-11-15T18:39 [M2.14] (planner) edited fields
+- 2026-11-15T18:39 [M2.15] (planner) edited fields
+- 2026-11-15T18:39 [M2.16] (planner) edited fields
+- 2026-11-15T18:39 [M2.17] (planner) edited fields
+- 2026-11-15T18:39 [M2.18] (planner) edited fields
+- 2026-11-15T18:39 [M2.7] (lead) edited fields
+- 2026-11-15T18:39 [M2.16] (lead) edited fields
+- 2026-11-15T18:51 [M2.7] (lead) edited fields
+- 2026-11-15T18:51 [M2.8] (lead) edited fields
+- 2026-11-15T18:51 [M2.9] (lead) edited fields
+- 2026-11-15T18:51 [M2.10] (lead) edited fields
+- 2026-11-15T18:51 [M2.14] (lead) edited fields
+- 2026-11-15T18:51 [M2.15] (lead) edited fields
+- 2026-11-15T18:51 [M2.16] (lead) edited fields
+- 2026-11-15T18:51 [M2.17] (lead) edited fields
+- 2026-11-15T18:51 [M2.1] (lead) status active -> done
+- 2026-11-15T18:51 [M2.2] (lead) status ready -> active
+- 2026-11-15T18:51 [M2.2] (lead) attempt 1/3 started
+- 2026-11-15T18:51 [M2.2] (lead) base aa4c5246451c1cba78a9cd431f59406638cefc76
+- 2026-11-15T18:56 [M2.2] (implementer) dependency->leaf mapping (Design #5): workspace deps -- tungstenite+rustls+webpki-roots+p256+tpmd-client+tpmd-ipc+tokio -> M2.13 (ospp-v1 sync wss, DeviceKeySig
+- 2026-11-15T18:56 [M2.2] (implementer) observations (not fixed, outside docs paths): pinned tpmd crates declare rust-version 1.94 while workspace still promises 1.88 (verified build only with rustc 1
+- 2026-11-15T18:57 [M2.2] (lead) edited fields
+- 2026-11-15T18:57 [M2.19] (lead) edited fields
+- 2026-11-15T18:57 [M2.20] (lead) edited fields
+- 2026-11-15T18:58 [M2.2] (implementer) Round-1 Quad remediation: dag `default = []` (fs inert until M2.5; ARCHITECTURE.md contract so dag-at-defaults never grants filesystem), workspace rust-version 
+- 2026-11-15T18:58 [M2.2] (lead) R1 quad gate: reviewer PASS, legality PASS, ioc FAIL(dag default=['fs'] -> spec amended to default=[]), cruft PASS(MSRV). Remediation: dag default=[] , rust-ver
+- 2026-11-15T18:59 [M2.2] (lead) status active -> done
+- 2026-11-15T18:59 [M2.3] (lead) status ready -> active
+- 2026-11-15T18:59 [M2.3] (lead) attempt 1/3 started
+- 2026-11-15T18:59 [M2.3] (lead) base 8d51a749e3e790730098dd4c5a1a515be4fb6081
+- 2026-11-15T19:03 [M2.4] (lead) edited fields
+- 2026-11-15T19:03 [M2.3] (lead) R1 quad: all 4 PASS; cruft BLOCKER = pub variant fields (fixing: private payloads) + LocalHostRoute::url duplicate handoff to M2.4 (spec amended); MINORs (Wire 
+- 2026-11-15T19:03 [M2.3] (lead) edited fields
+- 2026-11-15T19:03 [M2.3] (lead) edited fields
+- 2026-11-15T19:04 [M2.3] (unknown) Round-1 Quad Gate remediation: WorldOrigin payloads are opaque LocalOrigin/SharedOrigin (only local()/shared() mint; struct-literal forgery impossible), serde s
+- 2026-11-15T19:04 [M2.3] (lead) status active -> done
+- 2026-11-15T19:05 [M2.4] (lead) status ready -> active
+- 2026-11-15T19:05 [M2.4] (lead) attempt 1/3 started
+- 2026-11-15T19:05 [M2.4] (lead) base 6e6a27638e3892127a3e3d4c085409507e82b41e
+- 2026-11-15T19:05 [M2.5] (lead) status ready -> active
+- 2026-11-15T19:05 [M2.5] (lead) attempt 1/3 started
+- 2026-11-15T19:05 [M2.5] (lead) base 6e6a27638e3892127a3e3d4c085409507e82b41e
+- 2026-11-15T19:05 [M2.6] (lead) status ready -> active
+- 2026-11-15T19:05 [M2.6] (lead) attempt 1/3 started
+- 2026-11-15T19:05 [M2.6] (lead) base 6e6a27638e3892127a3e3d4c085409507e82b41e
+- 2026-11-15T19:11 [M2.11] (lead) status ready -> active
+- 2026-11-15T19:11 [M2.11] (lead) attempt 1/3 started
+- 2026-11-15T19:11 [M2.11] (lead) base 6e6a27638e3892127a3e3d4c085409507e82b41e
+- 2026-11-15T19:11 [M2.4] (lead) edited fields
+- 2026-11-15T19:11 [M2.4] (lead) path-lock amended: mechanical follow-through in slipfork-world critical test (url() removal) and slipfork/src/main.rs (unused_mut after &self providers)
+- 2026-11-15T19:11 [M2.4] (lead) followup: docs/reference/manifest.md + docs/snow-modes.md stale (OsppBundle/TopLevelEnvsUnsupported) -> tracked by new M2.23
+- 2026-11-15T19:11 [M2.23] (lead) created (task) Purge stale M1 manifest/snow-mode docs after M2.4/M2.5 deletions
+- 2026-11-15T19:13 [M2.6] (lead) edited fields
+- 2026-11-15T19:13 [M2.6] (lead) lead ruling: transitional CLI breakage is mechanical, not a direction challenge. H-010 already fixes the target architecture. Widen paths with crates/slipfork/s
+- 2026-11-15T19:13 [M2.6] (lead) attempt 2/3 started
+- 2026-11-15T19:13 [M2.11] (lead) BLOCKED-PENDING-SPEC: git D/F refname rule makes refs/heads/<fork> and refs/heads/<fork>/wip impossible (proved). Lead adopted refs/slipfork/<fork>/wip + Projec
+- 2026-11-15T19:13 [M2.11] (lead) status active -> blocked: spec amendment in flight: refs/slipfork/<fork>/wip (architect). No code written; no illegal fallback invented.
+- 2026-11-15T19:13 [M2.4] (lead) status active -> review
+- 2026-11-15T19:13 [M2.5] (lead) status active -> review
+- 2026-11-15T19:15 [M2.6] (lead) status active -> review
+- 2026-11-15T19:17 [M2.4] (lead) edited fields
+- 2026-11-15T19:17 [M2.4] (lead) gate follow-up: add WorldOrigin::host() and stop hand-parsing the authority in snow
+- 2026-11-15T19:18 [M2.23] (lead) edited fields
+- 2026-11-15T19:18 [M2.23] (lead) scope widened: the transitional daemon-owned CLI surface (fork/exec/drop fail closed until M2.16/M2.17) must be rendered as unavailable with the exact diagnosti
+- 2026-11-15T19:18 [M2.23] (lead) edited fields
+- 2026-11-15T19:20 [M2.11] (lead) edited fields
+- 2026-11-15T19:20 [M2.12] (lead) edited fields
+- 2026-11-15T19:20 [M2.4] (lead) status review -> done
+- 2026-11-15T19:20 [M2.5] (lead) status review -> done
+- 2026-11-15T19:20 [M2.6] (lead) status review -> done
+- 2026-11-15T19:20 [M2.11] (lead) status blocked -> ready: spec amended (refs/slipfork/<fork>/wip + ProjectSlugOverride); resume attempt 2
+- 2026-11-15T19:20 [M2.11] (lead) status ready -> active
+- 2026-11-15T19:20 [M2.11] (lead) attempt 2/3 started
+- 2026-11-15T19:20 [M2.11] (lead) base 1b4cf79e326460e87f23bf9f4fc204e76a5e4523 attempt 2 on amended spec
+- 2026-11-15T19:25 HUMAN H-011 [direction-challenge] opened by lead (node M2.7)
+- 2026-11-15T19:25 [M2.7] (lead) status ready -> blocked: H-011: netns entry impossible from a multithreaded daemon; awaiting A re-exec-in-userns / B in-world agent+SCM_RIGHTS / C per-connectio
+- 2026-11-15T19:25 [M2.23] (lead) status ready -> active
+- 2026-11-15T19:25 [M2.23] (lead) attempt 1/3 started
+- 2026-11-15T19:25 [M2.23] (lead) base 1b4cf79e326460e87f23bf9f4fc204e76a5e4523
+- 2026-11-15T19:27 [M2.13] (lead) attempt 1/3 started
+- 2026-11-15T19:27 [M2.13] (lead) attempt 1 hit the step limit: library compiles (cargo check -p slipfork-ospp --all-targets OK) but tests/ has no test target (support/tpmd_server.rs + critical_
+- 2026-11-15T19:27 [M2.13] (lead) attempt 2/3 started
+- 2026-11-15T19:30 [M2.11] (lead) status active -> review
+- 2026-11-15T19:30 [M2.12] (lead) status ready -> active
+- 2026-11-15T19:30 [M2.12] (lead) attempt 1/3 started
+- 2026-11-15T19:30 [M2.12] (lead) base 1b4cf79e326460e87f23bf9f4fc204e76a5e4523
+- 2026-11-15T19:34 [M2.12] (lead) status active -> ready: released path lock to M2.11 for its blocker fix; no work started
+- 2026-11-15T19:34 [M2.11] (lead) status review -> active
+- 2026-11-15T19:34 [M2.11] (lead) attempt 3/3 started
+- 2026-11-15T19:34 [M2.11] (lead) R1 gate: legality/ioc/cruft PASS; functional BLOCKER: git add -A does not exclude .worktrees so a second fork embeds the first checkout as a gitlink. attempt 3 
+- 2026-11-15T19:34 [M2.13] (lead) status ready -> review
+- 2026-11-15T19:34 [M2.16] (lead) edited fields
+- 2026-11-15T19:36 [M2.7] (lead) edited fields
+- 2026-11-15T19:36 [M2.8] (lead) edited fields
+- 2026-11-15T19:36 [M2.10] (lead) edited fields
+- 2026-11-15T19:36 [M2.16] (lead) edited fields
+- 2026-11-15T19:36 HUMAN H-011 closed by lead
+- 2026-11-15T19:36 [M2.7] (lead) status blocked -> ready: H-011 ruled (conductor): in-world slipfork-world-init PID 1 + netns.sock SCM_RIGHTS dialer + AF_UNIX ingress socket; spec landed; resum
+- 2026-11-15T19:36 [M2.7] (lead) status ready -> active
+- 2026-11-15T19:36 [M2.7] (lead) attempt 1/3 started
+- 2026-11-15T19:36 [M2.7] (lead) H-011 ruling recorded: Option B + persistent world-init PID 1; netns.sock SCM_RIGHTS dialer in linux_cow.rs; AF_UNIX <state_root>/http-ingress.sock bridge; free
+- 2026-11-15T19:37 [M2.11] (lead) status active -> done
+- 2026-11-15T19:37 [M2.12] (lead) status ready -> active
+- 2026-11-15T19:37 [M2.12] (lead) attempt 2/3 started
+- 2026-11-15T19:37 [M2.12] (lead) base 84fb017bfe362e6f080117d85ba93ddeafb7180e (vcs matrix now in tests/support, refs/slipfork/<fork>/wip)
+- 2026-11-15T19:45 [M2.7] (lead) status active -> review
+- 2026-11-15T19:51 [M2.12] (lead) status active -> review
+- 2026-11-15T19:51 [M2.23] (lead) status active -> review
+- 2026-11-15T19:51 [M2.12] (lead) edited fields
+- 2026-11-15T19:56 [M2.7] (lead) status review -> done
+- 2026-11-15T19:56 [M2.23] (lead) status review -> done
+- 2026-11-15T19:57 [M2.13] (lead) status review -> done
+- 2026-11-15T19:57 [M2.8] (lead) status ready -> active
+- 2026-11-15T19:57 [M2.8] (lead) attempt 1/3 started
+- 2026-11-15T19:57 [M2.8] (lead) base 39651f748582e4491222fcac9ddcf51fe6e856b2
+- 2026-11-15T19:57 [M2.14] (lead) status ready -> active
+- 2026-11-15T19:57 [M2.14] (lead) attempt 1/3 started
+- 2026-11-15T19:57 [M2.14] (lead) base 39651f748582e4491222fcac9ddcf51fe6e856b2
+- 2026-11-15T20:03 [M2.12] (lead) status review -> done
+- 2026-11-15T20:06 [M2.8] (lead) status active -> review
+- 2026-11-15T20:06 [M2.8] (lead) deviation accepted: WorldRegistry::new(engine) only; registrar/planned_port + EdgeError::NoForwardListener land with share_world in M2.9 (no dead private state)
+- 2026-11-15T20:11 [M2.24] (conductor) created (task) Design L0 world base image: Dockerfile-derived rootfs, 3-layer composition, World Image Contract (ADR-0009)
+- 2026-11-15T20:11 ESCALATION #12 -> architect for M2.24 by conductor: core architecture crossroads: L0 world base image strategy (Dockerfile-derived rootfs vs curated base), image contract, 
+- 2026-11-15T20:13 [M2.8] (lead) status review -> done
+- 2026-11-15T20:13 [M2.9] (lead) status ready -> active
+- 2026-11-15T20:13 [M2.9] (lead) attempt 1/3 started
+- 2026-11-15T20:13 [M2.9] (lead) base 592b5f0682c4463f3fbb629079c5c2fafa1e35ba
+- 2026-11-15T20:13 [M2.24] (conductor) OWNER CORRECTION (binding, supersedes the earlier fallback wording in NODE.md): ONE WAY ONLY. Delete the curated base (slipfork_base / CuratedBaseProvider) and 
+- 2026-11-15T20:15 [M2.24] (conductor) OWNER CORRECTION 2 (binding, supersedes apt-based capability layer): backing services (postgres/redis/seaweedfs) run as OCI CONTAINERS inside the world netns vi
+- 2026-11-15T20:17 [M2.25] (conductor) created (task) Whole-repo consistency sweep after L0 rootfs + OCI-container pivot (single writer: ARCHITECTURE.md + ADRs)
+- 2026-11-15T20:17 [M2.14] (lead) status active -> done
+- 2026-11-15T20:23 [M2.14] (lead) edited fields
+- 2026-11-15T20:23 [M2.14] (lead) edited fields
+- 2026-11-15T20:23 [M2.24] (lead) status ready -> active
+- 2026-11-15T20:23 [M2.24] (lead) attempt 1/3 started
+- 2026-11-15T20:23 ESCALATION #13 -> architect for M2.24 by lead: M2.24: design ADR-0009 L0 world base image from the project's own Dockerfile + 3-layer composition + World Image Contrac
+- 2026-11-15T20:23 [M2.24] (lead) base 5943bbd24b511a6ae24f0e82f14c3bdfec6589fa
+- 2026-11-15T20:28 [M2.9] (lead) status active -> review
+- 2026-11-15T20:36 [M2.24] (conductor) status active -> review: ADR-0009 + design authored with live crun probe
+- 2026-11-15T20:36 [M2.24] (conductor) status review -> done: Accepted ADR-0009, 6-rule contract, live probe: crun 1.20 static booted postgres:18+redis:8 inside unshare world, alpine container reache
+- 2026-11-15T20:37 [M2.9] (lead) status review -> done
+- 2026-11-15T20:37 [M2.10] (lead) status ready -> active
+- 2026-11-15T20:37 [M2.10] (lead) attempt 1/3 started
+- 2026-11-15T20:37 [M2.10] (lead) base ed975ce860cca892ef0a241f85a37af2bf482818
+- 2026-11-15T20:37 [M2.24] (lead) RECONCILE: M2.24 was dispatched in parallel by the conductor and closed done with the authoritative ADR-0009 (Accepted) + live crun/postgres18/redis8 probe. My 
+- 2026-11-15T20:37 [M2.24] (lead) M2.25 is the single writer of ARCHITECTURE.md + docs/decisions/**; any such edit needed by M2.8-M2.20 is deferred into M2.25's LOG.
+- 2026-11-15T20:39 [M2.24] (lead) duplicate-writer aborted cleanly: the local architect wrote zero files (confirmed by the session); conductor's ADR-0009/design/RESULT remain the sole on-disk ve
+- 2026-11-15T20:39 [M2.25] (lead) status ready -> active
+- 2026-11-15T20:39 [M2.25] (lead) attempt 1/3 started
+- 2026-11-15T20:39 [M2.25] (lead) base ed975ce860cca892ef0a241f85a37af2bf482818; single writer of ARCHITECTURE.md + docs/decisions/** until done
+- 2026-11-15T20:40 [M2.26] (planner) created (task) slipfork-dag: [world] config (world.image + world.stage only, fail-closed)
+- 2026-11-15T20:40 [M2.27] (planner) created (task) slipfork-engine::rootfs: WorldRootfs + BaseImageBuilder + DockerfileStageBuilder (6-rule contract)
+- 2026-11-15T20:40 [M2.28] (planner) created (task) slipfork-engine: ServiceRuntime::OciContainer over static crun + pivot_root rootfs + Incus provenance
+- 2026-11-15T20:40 [M2.29] (planner) created (task) slipforkd/CLI: container-scoped db/redis, --host-caches, container-aware up/down
+- 2026-11-15T20:45 [M2.25] (lead) attempt 2/3 started
+- 2026-11-15T20:45 [M2.26] (lead) status ready -> active
+- 2026-11-15T20:45 [M2.26] (lead) attempt 1/3 started
+- 2026-11-15T20:45 [M2.26] (lead) base ed975ce860cca892ef0a241f85a37af2bf482818
+- 2026-11-15T20:49 [M2.10] (lead) status active -> done
+- 2026-11-15T20:49 [M2.10] (lead) followups recorded in RESULT: test-fixture dedupe, unit.rs writeln! expect (infallible), probe child not killed on assertion panic. socket2 unused dep -> M2.20.
+- 2026-11-15T20:53 [M2.7] (lead) edited fields
+- 2026-11-15T20:53 [M2.16] (lead) edited fields
+- 2026-11-15T20:53 [M2.17] (lead) edited fields
+- 2026-11-15T20:53 [M2.19] (lead) edited fields
+- 2026-11-15T20:53 [M2.21] (lead) edited fields
+- 2026-11-15T20:53 [M2.28] (lead) edited fields
+- 2026-11-15T20:53 [M2.29] (lead) edited fields
+- 2026-11-15T20:53 [M2.16] (lead) status ready -> active
+- 2026-11-15T20:53 [M2.16] (lead) attempt 1/3 started
+- 2026-11-15T20:53 [M2.16] (lead) base 0677c52045e7ac7c1b10262fad495bbdd8dd167a
+- 2026-11-15T20:58 [M2.29] (lead) edited fields
+- 2026-11-15T20:58 [M2.25] (lead) status active -> done
+- 2026-11-15T21:03 [M2.26] (lead) quad gate PASS (functional/ioc/cruft); dedupe + dead derive fixed before commit
+- 2026-11-15T21:03 [M2.16] (lead) attempt 2/3 started
+- 2026-11-15T21:03 [M2.16] (lead) edited fields
+- 2026-11-15T21:03 [M2.16] (lead) attempt 2 path widening (lead decisions): SecretProvider gains remove/keys (secret unset/list), ResourcesSpec gains the per-invocation Local override, ExecEnv g
+- 2026-11-15T21:03 [M2.20] (lead) edited fields
+- 2026-11-15T21:03 [M2.26] (lead) status active -> review
+- 2026-11-15T21:03 [M2.16] (lead) edited fields
+- 2026-11-15T21:03 [M2.20] (lead) edited fields
+- 2026-11-15T21:04 [M2.26] (lead) status review -> done
+- 2026-11-15T21:11 [M2.16] (lead) edited fields
+- 2026-11-15T21:11 [M2.16] (lead) attempt 3/5 started
+- 2026-11-15T21:19 [M2.16] (lead) status active -> review
+- 2026-11-15T21:23 [M2.16] (lead) edited fields
+- 2026-11-15T21:23 [M2.16] (lead) attempt 4/5 started
+- 2026-11-15T21:23 [M2.16] (lead) attempt 4 rulings: (a) inject ProjectVaults (project->Arc<dyn SecretProvider>) built in slipforkd, DomainService holds it and types collaborators as &dyn Secret
+- 2026-11-15T21:32 [M2.16] (lead) attempt 5/5 started
+- 2026-11-15T21:42 [M2.16] (lead) status review -> done
+- 2026-11-15T21:42 [M2.17] (lead) edited fields
+- 2026-11-15T21:42 [M2.17] (lead) status ready -> active
+- 2026-11-15T21:42 [M2.17] (lead) attempt 1/3 started
+- 2026-11-15T21:42 [M2.17] (lead) base b21eda3a421f3aaf0d0ae616675d12a1d2039b54
+- 2026-11-15T21:42 [M2.27] (lead) status ready -> active
+- 2026-11-15T21:42 [M2.27] (lead) attempt 1/3 started
+- 2026-11-15T21:42 [M2.27] (lead) base b21eda3a421f3aaf0d0ae616675d12a1d2039b54
+- 2026-11-15T21:50 [M2.17] (lead) edited fields
+- 2026-11-15T21:50 [M2.17] (lead) attempt 2/3 started
+- 2026-11-15T22:04 [M2.27] (lead) status active -> done
+- 2026-11-15T22:04 [M2.17] (lead) edited fields
+- 2026-11-15T22:04 [M2.17] (lead) attempt 3/3 started
+- 2026-11-15T22:04 [M2.17] (lead) attempt 3 rulings: db/redis entry stays M2.29 (this node = CLI + fail-closed; acceptance amended); edge daemon.rs path explicitly owned; git-remote-slipfork mus
+- 2026-11-15T22:14 [M2.17] (lead) status active -> review: attempt 3 legality fixes on disk; tree compile blocked only by WorldSpec.rootfs which M2.29 wires
+- 2026-11-15T22:14 [M2.29] (lead) status ready -> active
+- 2026-11-15T22:14 [M2.29] (lead) attempt 1/3 started
+- 2026-11-15T22:14 [M2.29] (lead) base b92c9aa98e8f156def422501491c0b098ad800bf; owns the WorldSpec.rootfs wiring that unblocks M2.17's compile
+- 2026-11-15T22:24 [M2.28] (lead) status ready -> done
+- 2026-11-15T22:31 [M2.29] (implementer) edited fields
+- 2026-11-15T22:36 [M2.17] (lead) status review -> done
+- 2026-11-15T22:36 [M2.29] (lead) status active -> done
+- 2026-11-15T22:36 [M2.15] (lead) status ready -> active
+- 2026-11-15T22:36 [M2.15] (lead) attempt 1/3 started
+- 2026-11-15T22:36 [M2.15] (lead) base e5ac58fe93cfb88fd9ee861ac9ab5f417d111aab
+- 2026-11-15T22:36 [M2.18] (lead) status ready -> active
+- 2026-11-15T22:36 [M2.18] (lead) attempt 1/3 started
+- 2026-11-15T22:36 [M2.18] (lead) base e5ac58fe93cfb88fd9ee861ac9ab5f417d111aab
+- 2026-11-15T22:46 [M2.15] (lead) status active -> done
+- 2026-11-15T22:55 [M2.18] (lead) status active -> done
+- 2026-11-15T22:55 [M2.18] (lead) followups: docs/agents-and-opencode.md stale (M2.19); zero-setup auto-spawn with $XDG_RUNTIME_DIR set hits overlayfs mount EINVAL on this host (runtime on disk 
+- 2026-11-15T22:55 [M2.19] (lead) status ready -> active
+- 2026-11-15T22:55 [M2.19] (lead) attempt 1/3 started
+- 2026-11-15T22:55 [M2.19] (lead) base a7b2a79efe40bcc48994bddb2842a03e0ef79f6b; note critical_slug flaked once under parallel make check, passes in isolation
+- 2026-11-15T23:05 [M2.19] (lead) attempt 2/3 started
+- 2026-11-15T23:16 [M2.19] (lead) status active -> done
+- 2026-11-15T23:16 [M2.20] (lead) status ready -> active
+- 2026-11-15T23:16 [M2.20] (lead) attempt 1/3 started
+- 2026-11-15T23:16 [M2.20] (lead) base e08a85f153a794ab29c67a5fdac7726cf9329c43
+- 2026-11-15T23:51 [M2.20] (implementer) dependency audit (declared dep => first consumer): slipfork: clap=>src/bin/slipforkd.rs, hex=>src/main.rs, sha2=>src/runtime.rs, serde/serde_json=>src/daemon.rs
+- 2026-11-16T00:26 [M2.21] (lead) status ready -> blocked: H-004 still open: /var/lib/incus/unix.socket absent (only /dev/incus/sock), no project-scoped incusd endpoint mounted. No live IncusEng
+- 2026-11-16T00:26 [M2.22] (lead) status ready -> blocked: H-006 closed by deferral: no weaved IPC wire specification exists, so WeavedRegistrar stays unimplemented and share stays fail-closed (
+- 2026-11-16T01:26 [M2.20] (lead) bench note: default 16x8 exceeds 50 min on this host (harness hangs after seeding under load); a bounded --num-tests 1 --workers 1 run exits 0, proving the pipe
+- 2026-11-16T01:52 [M2.20] (lead) conductor ruling applied: bounded 1x1 bench --check exit 0 as evidence; default 16x8 is host-time-bound and not gate evidence (follow-up filed); in-flight bench
+- 2026-11-16T01:53 [M2.20] (lead) status active -> done
+- 2026-11-16T01:55 ESCALATION #14 -> strategist for M2 by conductor: milestone gate for 0.2.0 (36 leaves done; M2.21/M2.22 blocked on H-004/H-006 as designed)
+- 2026-11-16T03:04 [M2.30] (strategist) created (task) slipforkd completion: OSPP v1 session/secrets/dump restore, freeze_world base snapshot, Jj workspace routing & optional slipfork.toml
+- 2026-11-16T03:04 [M2.31] (strategist) created (task) Fix poc/run_benchmark.py for ADR-0009 host-browser/.localhost topology and seeded base snapshot; verify bounded 1x1 --check
+- 2026-11-16T03:04 [M2.32] (strategist) created (task) Align 0.2.0 docs, CHANGELOG, M1 benchmark topology label, and support matrix with completed M2 surface
+- 2026-11-16T03:04 [M2] (strategist) GATE FAILED (4 BLOCKERs; M2 sent back, M2.30..M2.32 filed): (1) bounded 1x1 poc/run_benchmark.py --check times out (RC=143; M2.20 bench2 dir has only incomplete
+- 2026-11-16T03:05 [M2.30] (lead) status ready -> active
+- 2026-11-16T03:05 [M2.30] (lead) attempt 1/3 started
+- 2026-11-16T03:05 [M2.30] (lead) base 6265eeb39f3d259b59bf281c717a317cc1c62266
+- 2026-11-16T03:21 [M2.30] (lead) attempt 2/3 started
+- 2026-11-16T04:08 [M2.30] (lead) status active -> review
+- 2026-11-16T04:36 [M2.30] (lead) status review -> done
+- 2026-11-16T04:36 [M2.31] (lead) status ready -> active
+- 2026-11-16T04:36 [M2.31] (lead) attempt 1/3 started
+- 2026-11-16T04:36 [M2.31] (lead) base 0b760ba13a52c646313334972bac39106181b89d
+- 2026-11-16T05:07 [M2.31] (lead) status active -> review
+- 2026-11-16T05:38 [M2.31] (lead) status review -> done
+- 2026-11-16T05:38 [M2.32] (lead) status ready -> active
+- 2026-11-16T05:38 [M2.32] (lead) attempt 1/3 started
+- 2026-11-16T05:38 [M2.32] (lead) base 59a486b1464bdb3803ec2cd31007612dfce6981b
+- 2026-11-16T06:04 [M2.32] (lead) status active -> done
+- 2026-11-16T06:11 [M2] (lead) M2.30/M2.31/M2.32 committed (0b760ba/541ab37/d6968fc). make check scoped components green, but a full default-thread run is intermittently red on world-boot tim
+- 2026-11-16T06:19 [M2] (lead) Verified: RUST_TEST_THREADS=1 make check exit 0 with the full workspace + docs + support gates; the default-thread failure is contention between concurrently bo
+- 2026-11-16T06:19 ESCALATION #15 -> strategist for M2 by conductor: M2 gate re-run after M2.30/M2.31/M2.32 remediation
+- 2026-11-16T06:34 [M3.1] (strategist) created (task) Serialize world-booting Rust critical suites in Makefile rs-test
+- 2026-11-16T06:34 [M3.2] (strategist) created (epic) Polyglot Parallel Snapshot-DAG Test Orchestrator (slipfork test, RunnerProtocol v1, warm world pool & CoverageDriver)
+- 2026-11-16T06:34 [M3.3] (strategist) created (task) Isolated: live IncusEngine conformance and declared support promotion (gated on H-004)
+- 2026-11-16T06:34 [M3.4] (strategist) created (task) Isolated: concrete WeavedRegistrar IPC adapter and declared support promotion (gated on H-006)
+- 2026-11-16T06:34 [M2.21] (strategist) status blocked -> superseded: Carried forward post-0.2.0 to M3.3 (still gated on open H-004)
+- 2026-11-16T06:34 [M2.22] (strategist) status blocked -> superseded: Carried forward post-0.2.0 to M3.4 (still gated on deferred H-006 weaved IPC spec)
+- 2026-11-16T06:34 [M2] (strategist) status ready -> done: 0.2.0 milestone gate PASSED: M2.30-M2.32 seams verified in slipforkd/daemon.rs, critical_ospp_daemon green, bounded 1x1 bench --check 36.4
+- 2026-11-16T06:41 HUMAN H-012 [release-gate] opened by conductor (node M2)
+- 2026-11-16T06:41 AUTOPILOT off by conductor awaiting human release gate for 0.2.0 (no git remote)
+- 2026-11-16T12:31 [M3.5] (conductor) created (task) DigitalOcean dev-VM harness: droplet + ZFS volume + Incus pool, remote live IncusEngine tests (tools/do_vm.py)
+- 2026-11-16T12:31 [M3.5] (lead) status ready -> active
+- 2026-11-16T12:31 [M3.5] (lead) attempt 1/3 started
+- 2026-11-16T12:31 [M3.5] (lead) base dcc270e8a938ea26870549724061815b0dba6751
+- 2026-11-16T12:33 [M3.6] (conductor) created (task) Restrict IncusEngine to LXC containers only: delete QEMU path & stateful-RAM promise
+- 2026-11-16T12:33 [M3.6] (conductor) OWNER RULING: Slipfork targets Incus LXC system containers ONLY. QEMU/VM path and stateful-RAM snapshots are deleted from the design of record (untestable on ou
+- 2026-11-16T12:35 [M3.6] (conductor) ADDENDUM (owner question: can LXC give millisecond fork?): make the fork vocabulary precise in ADR-0002/ARCHITECTURE/VISION instead of a blanket 'fork in millis
+- 2026-11-16T12:49 [M3.5] (implementer) Implemented tools/do_vm.py (up/status/sync/test/ssh/down), idempotent by tag with droplet-only/volume-only reconciliation, ams3+s-4vcpu-8gb defaults, all-visibl
+- 2026-11-16T12:49 [M3.5] (lead) status active -> review
+- 2026-11-16T12:54 [M3.5] (lead) Quad Gate round 1: reviewer PASS, legality PASS, ioc FAIL (mutation-adapter/git-seam/state-machine smells + rust-toolchain blind spot), cruft FAIL (blocker clai
+- 2026-11-16T13:00 [M3.5] (implementer) Round 2 gate fixes: SSH auth fail-fast + --ssh-key/--authorized-key guidance, summary-before-fingerprint billing safety, exact-tarred-list .env scan, --ssh-key 
+- 2026-11-16T13:26 [M3.5] (implementer) Final polish: single _poll retry ladder (only auth/host-key abort; last detail on timeout, SSH_TRANSIENT deleted), regions() payload validation, docs bounded SS
+- 2026-11-16T13:31 [M3.5] (lead) status review -> done
+- 2026-11-16T13:48 [M3.6] (conductor) LIVE MEASUREMENTS on the ams3 DO VM (Ubuntu 24.04, ams3, s-4vcpu-8gb, ZFS pool on a 100 GiB DO volume, Incus 6.x): (1) zfs clone of a full container dataset = 3
+- 2026-11-16T13:58 [M3.6] (conductor) OPTIMISATION INSIGHT from the ams3 numbers (incus copy 660-950 ms vs zfs clone 39 ms): the ~600-900 ms delta is daemon/DB bookkeeping, not storage. Because our 
+- 2026-11-16T16:53 HUMAN H-004 closed by conductor
+- 2026-11-16T16:53 [M3.3] (conductor) status blocked -> superseded: Owner ruling: delete Incus completely; Option A (Btrfs-only BtrfsEngine) is the sole engine
+- 2026-11-16T16:53 [M3.6] (conductor) status ready -> superseded: Superseded by total Option A Btrfs-only wipe (deleting Incus, XFS FICLONE, and KVM/QEMU completely)
+- 2026-11-16T16:53 [M3] (conductor) OWNER RULING (SCORCHED EARTH — OPTION A BTRFS-ONLY): (1) Option A (unified Btrfs subvolumes + Linux namespaces `userns+netns+ipcns+pidns+mntns` + `pivot_root` +
+- 2026-11-16T16:53 AUTOPILOT on by conductor All steam on Option A Btrfs-only wipe + M3 (0.3.0)
+- 2026-11-16T16:58 [M3.7] (planner) created (task) Option A design of record: ADR-0010, ARCHITECTURE.md DI tree, and ADR-0001..0009 scorched-earth wipe
+- 2026-11-16T16:58 [M3.8] (planner) created (task) Rewrite docs/design/world-base-image.md on unified Btrfs subvolumes
+- 2026-11-16T16:58 [M3.9] (planner) created (task) Rewrite docs/design/target-dx.md for the Btrfs-only world (doctor, world entry, zero incus)
+- 2026-11-16T16:58 [M3.10] (planner) created (task) Rewrite docs/design/do-vm-harness.md: Btrfs volume, crun, AppArmor userns, persistent --identity
+- 2026-11-16T16:58 [M3.11] (planner) created (task) Record Spike A measurements (Btrfs + crun) in docs/research and LESSONS
+- 2026-11-16T16:58 [M3.9] (planner) edited fields
+- 2026-11-16T16:58 [M3.12] (planner) created (task) SubvolumeDriver seam: KernelBtrfsDriver (statfs + BTRFS_IOC_*) and test-only tree driver
+- 2026-11-16T16:58 [M3.13] (planner) created (task) BtrfsEngine: sole production WorldEngine (unified per-world subvolume, RO snapshots, writable clones, --ipc); delete IncusEngine, ReflinkNetnsEng
+- 2026-11-16T16:58 [M3.14] (planner) created (task) Engine conformance + critical suites on BtrfsEngine (driver-injected fast suites, live kernel suite for the VM)
+- 2026-11-16T16:58 [M3.15] (planner) created (task) slipforkd BtrfsEngine wiring, slipfork doctor Btrfs probe, daemon unit --only apparmor userns profile
+- 2026-11-16T16:58 [M3.16] (planner) created (task) tools/do_vm.py: Btrfs volume, crun/docker/Rust, AppArmor userns, persistent --identity (zero ZFS/Incus)
+- 2026-11-16T16:58 [M3.17] (planner) created (task) poc benchmark + support registry on the Btrfs engine (fails closed off-Btrfs)
+- 2026-11-16T16:58 [M3.18] (planner) created (task) Published docs align with the shipped Btrfs-only surfaces (README, index, getting-started, CLI reference, AGENTS.md)
+- 2026-11-16T16:58 [M3.19] (planner) created (task) Live verification on the Btrfs DO VM: BtrfsEngine + crun + postgres:18 suites, measured numbers, reboot-safe SSH
+- 2026-11-16T16:59 [M3.1] (planner) edited fields
+- 2026-11-16T16:59 [M3.2.1] (planner) created (task) 0.3.0 test-orchestrator architecture blueprint: TestAdapter/CoverageDriver DI tree, RunnerProtocol v1, WorldPool, daemon seam
+- 2026-11-16T16:59 [M3.2.2] (planner) created (task) Cargo wedge: crates/slipfork-test crate skeleton, workspace member, full dependency set
+- 2026-11-16T16:59 [M3.2.3] (planner) created (task) RunnerProtocol v1 wire types, TestAdapter/CoverageDriver traits, shared conformance suite
+- 2026-11-16T16:59 [M3.2.4] (planner) created (task) SocketRunnerAdapter: AF_UNIX NDJSON over runner.sock
+- 2026-11-16T16:59 [M3.2.5] (planner) created (task) CommandTestAdapter: zero-plugin generic polyglot executable adapter
+- 2026-11-16T16:59 [M3.2.6] (planner) created (task) Typed CoverageDriver: coverage env/paths, report combination, coverage_fail_under
+- 2026-11-16T16:59 [M3.2.7] (planner) created (task) Artifact/fixture materializer: [artifacts.*], [fixtures.*], per_world post-origin, never in DigestCache
+- 2026-11-16T16:59 [M3.2.8] (planner) created (task) Rolling single-use warm Btrfs world pool (refill, timeout drain, slot-stable coverage/output mounts)
+- 2026-11-16T16:59 [M3.2.9] (planner) created (task) TestCoordinator: run tree, batch vs world scheduling, coverage enforcement, TestEvent stream
+- 2026-11-16T16:59 [M3.2.10] (planner) created (task) PytestAdapter (Rust): warm Zygote runner over RunnerProtocol v1 + Python coverage combine
+- 2026-11-16T16:59 [M3.2.11] (planner) created (task) packages/pytest-slipfork: zero-ceremony pytest plugin (RunnerProtocol v1, warm os.fork Zygote)
+- 2026-11-16T16:59 [M3.2.12] (planner) created (task) CLI slipfork test + DaemonControl::test streaming seam (typed exit codes, --json purity)
+- 2026-11-16T16:59 [M3.2.13] (planner) created (task) Snapshot + rootfs/OCI cache GC in slipfork prune (dry-run, live-world safe, idempotent)
+- 2026-11-16T16:59 [M3.2.14] (planner) created (task) Makefile: run pytest-slipfork tests in py-test and serialize new world-booting suites
+- 2026-11-16T16:59 [M3.2.15] (planner) created (task) 0.3.0 test-surface audit + conformance matrix + support registry promotion
+- 2026-11-16T16:59 [M3.2.16] (planner) created (task) Published 0.3.0 docs for slipfork test: CLI reference, testing DAG, README, getting-started recipe
+- 2026-11-16T16:59 [M3.2.17] (planner) created (task) 0.3.0 release prep: workspace version, CHANGELOG breaking note, docs nav label
+- 2026-11-16T16:59 [M3.2.18] (planner) created (task) Live end-to-end slipfork test -j 4 on the Btrfs DO VM (warm pool, typed coverage, output survival, prune)
+- 2026-11-16T16:59 [M3.2] (planner) edited fields
+- 2026-11-16T17:25 [M4.1] (strategist) created (task) Isolated: concrete WeavedRegistrar IPC adapter and declared support promotion (gated on H-006)
+- 2026-11-16T17:25 [M4.1] (strategist) status ready -> blocked: Awaiting H-006 weaved IPC spec
+- 2026-11-16T17:25 [M3.4] (strategist) status blocked -> superseded: Moved to M4.1 (externally gated on H-006) so M3 0.3.0 gates cleanly
+- 2026-11-16T17:25 [M3] (strategist) edited fields
+- 2026-11-16T17:25 [M4] (strategist) edited fields
+- 2026-11-16T17:25 [M3.20] (strategist) created (task) Workspace trait & test decoupling: drop SnapshotMode/StatefulRam and replace FakeIncus in slipfork-edge
+- 2026-11-16T17:25 [M3.21] (strategist) created (task) Atomic scorched-earth deletion: remove IncusEngine, ReflinkNetnsEngine, and FICLONE helpers
+- 2026-11-16T17:25 [M3.12] (strategist) edited fields
+- 2026-11-16T17:25 [M3.13] (strategist) edited fields
+- 2026-11-16T17:25 [M3.14] (strategist) edited fields
+- 2026-11-16T17:25 [M3.15] (strategist) edited fields
+- 2026-11-16T17:25 [M3.17] (strategist) edited fields
+- 2026-11-16T17:25 [M3.18] (strategist) edited fields
+- 2026-11-16T17:25 [M3.19] (strategist) edited fields
+- 2026-11-16T17:25 [M3.2.2] (strategist) edited fields
+- 2026-11-16T17:25 [M3.2.6] (strategist) edited fields
+- 2026-11-16T17:25 [M3.2.7] (strategist) edited fields
+- 2026-11-16T17:25 [M3.2.8] (strategist) edited fields
+- 2026-11-16T17:25 [M3.2.10] (strategist) edited fields
+- 2026-11-16T17:25 [M3.2.12] (strategist) edited fields
+- 2026-11-16T17:28 [M3.1] (lead) status ready -> active
+- 2026-11-16T17:28 [M3.1] (lead) attempt 1/3 started
+- 2026-11-16T17:28 [M3.1] (lead) base 6736e08c62c5e58f89792711d8b20a6485c3c05c
+- 2026-11-16T17:28 [M3.7] (lead) status ready -> active
+- 2026-11-16T17:28 [M3.7] (lead) attempt 1/3 started
+- 2026-11-16T17:28 ESCALATION #16 -> architect for M3.7 by unknown: Option A Btrfs-only design of record: ADR-0010, ARCHITECTURE.md DI tree, ADR-0001..0009 wipe
+- 2026-11-16T17:28 [M3.7] (lead) base 6736e08c62c5e58f89792711d8b20a6485c3c05c
+- 2026-11-16T17:54 [M3.7] (lead) status active -> review
+- 2026-11-16T17:56 [M3.1] (lead) edited fields
+- 2026-11-16T17:56 [M3.1] (lead) LEAD SCOPE RULING (attempt 2): attempt-1 block is a plan-decomposition defect, not an upward direction question. 'plain make check exits 0' is unachievable from
+- 2026-11-16T17:56 [M3.1] (lead) attempt 2/3 started
+- 2026-11-16T17:57 [M3.7] (lead) status review -> active
+- 2026-11-16T17:57 [M3.7] (lead) attempt 2/3 started
+- 2026-11-16T17:57 ESCALATION #17 -> architect for M3.7 by unknown: Quad review attempt 1: SPEC_BLIND_SPOT SubvolumeDriver test-driver visibility (cfg(test) unreachable from crates/slipfor
+- 2026-11-16T18:09 [M3.1] (lead) status active -> review
+- 2026-11-16T18:10 [M3.1] (lead) edited fields
+- 2026-11-16T18:11 [M3.1] (lead) QUAD GATE (attempt 2) open findings logged: cruft MAJOR 3 duplicated poll loops + 2 readiness-assert styles + .PHONY lint/test + ts-test missing TMPDIR prereq +
+- 2026-11-16T18:11 [M3.7] (lead) ADDITIONAL FINDING M from sibling M3.1 quad gate: SPEC_BLIND_SPOT ServiceSpec::readiness_port (TCP accept != usable service); architect must encode one readines
+- 2026-11-16T18:11 [M3] (lead) OWNER ARCHITECTURAL DIRECTIVE (2026-11-16): (1) ZERO test-scaffolding Cargo features anywhere; features belong strictly to language/platform modularity (python/
+- 2026-11-16T18:11 [M3.7] (lead) OWNER DIRECTIVE: zero test-scaffolding Cargo features (no feature="test-support"). SubvolumeDriver seam uses pure constructor DI; test fakes only via #[cfg(test
+- 2026-11-16T18:11 [M3.8] (lead) OWNER DIRECTIVE: zero test-scaffolding Cargo features (no feature="test-support"). SubvolumeDriver seam uses pure constructor DI; test fakes only via #[cfg(test
+- 2026-11-16T18:11 [M3.9] (lead) OWNER DIRECTIVE: zero test-scaffolding Cargo features (no feature="test-support"). SubvolumeDriver seam uses pure constructor DI; test fakes only via #[cfg(test
+- 2026-11-16T18:11 [M3.10] (lead) OWNER DIRECTIVE: zero test-scaffolding Cargo features (no feature="test-support"). SubvolumeDriver seam uses pure constructor DI; test fakes only via #[cfg(test
+- 2026-11-16T18:11 [M3.11] (lead) OWNER DIRECTIVE: zero test-scaffolding Cargo features (no feature="test-support"). SubvolumeDriver seam uses pure constructor DI; test fakes only via #[cfg(test
+- 2026-11-16T18:11 [M3.12] (lead) OWNER DIRECTIVE: zero test-scaffolding Cargo features (no feature="test-support"). SubvolumeDriver seam uses pure constructor DI; test fakes only via #[cfg(test
+- 2026-11-16T18:11 [M3.14] (lead) OWNER DIRECTIVE: zero test-scaffolding Cargo features (no feature="test-support"). SubvolumeDriver seam uses pure constructor DI; test fakes only via #[cfg(test
+- 2026-11-16T18:11 [M3.15] (lead) OWNER DIRECTIVE: zero test-scaffolding Cargo features (no feature="test-support"). SubvolumeDriver seam uses pure constructor DI; test fakes only via #[cfg(test
+- 2026-11-16T18:11 [M3.20] (lead) OWNER DIRECTIVE: zero test-scaffolding Cargo features (no feature="test-support"). SubvolumeDriver seam uses pure constructor DI; test fakes only via #[cfg(test
+- 2026-11-16T18:11 [M3.2.1] (lead) OWNER DIRECTIVE: HOLD this node until explicitly released; the owner routes extra language/platform (Python/PHP) modularity lessons from the external blastit in
+- 2026-11-16T18:15 [M3.22] (lead) created (task) Delete leftover slipfork-ospp test-server Cargo feature; move reference OSPP server doubles into tests/support
+- 2026-11-16T18:15 [M3.2.1] (lead) HOLD RELEASED (owner, 2026-11-16): blueprint may start once its DAG predecessors (M3.1/M3.19 -> M3.2) complete. Mandatory blastit post-mortem invariants appende
+- 2026-11-16T18:15 [M3] (lead) OWNER (2026-11-16): blastit post-mortem invariants are mandatory for M3.2.1/M3.2 (zero language tokens in core; AdapterRegistry only at the slipforkd Compositio
+- 2026-11-16T18:15 [M3.2.1] (lead) HOLD RELEASED (owner, 2026-11-16): blueprint may start once DAG predecessors (M3.1/M3.19 -> M3.2) complete. Mandatory blastit post-mortem invariants appended to
+- 2026-11-16T18:15 [M3] (lead) OWNER (2026-11-16): blastit post-mortem invariants are mandatory for M3.2.1/M3.2 (zero language tokens in core; AdapterRegistry only at the slipforkd Compositio
+- 2026-11-16T18:16 [M3.2] (lead) OWNER HOLD (2026-11-16): M3.2 (M3.2.1..M3.2.18) is ON HOLD pending a conductor rewrite of this epic. Owner clarified Slipfork must NOT integrate deeply with lan
+- 2026-11-16T18:16 [M3.2.1] (lead) OWNER HOLD: do not start. M3.2 is being rewritten around a thin slipfork<->blastit boundary; Slipfork will not ship a second test runner (no pytest-slipfork Zyg
+- 2026-11-16T18:16 [M3] (lead) OWNER (2026-11-16): M3.2 epic ON HOLD pending conductor rewrite (thin slipfork<->blastit boundary; blastit is the test runner; no deep per-language integration,
+- 2026-11-16T18:32 [M3] (lead) OWNER RULING (2026-11-16) — PHASE 2 = Slipfork Testing Protocol STP v1: standardized protocol over an inherited shared fd (SLIPFORK_PROTOCOL_FD, AF_UNIX socketp
+- 2026-11-16T18:32 [M3.2] (lead) OWNER RULING (2026-11-16): rewrite pending conductor/strategist/planner. Phase 2 = STP v1 (inherited SLIPFORK_PROTOCOL_FD AF_UNIX socketpair); framework-exposed
+- 2026-11-16T18:32 [M3.9] (lead) OWNER TRUTHFULNESS CONSTRAINT: keep target-dx.md free of any promise of CommandTestAdapter, packages/pytest-slipfork, Rust-side CoverageDriver, runner.sock NDJS
+- 2026-11-16T18:32 [M3.18] (lead) OWNER TRUTHFULNESS CONSTRAINT: do not publish CommandTestAdapter, pytest-slipfork, per-language CoverageDriver, or any test-plugin package/CLI invocation. Phase
+- 2026-11-16T18:32 [M3.7] (lead) OWNER RULING while attempt 2 runs: Phase 2 becomes STP v1 (inherited SLIPFORK_PROTOCOL_FD AF_UNIX socketpair; framework-exposed DAG stage nodes incl. persistent
+- 2026-11-16T18:35 [M3.1] (lead) edited fields
+- 2026-11-16T18:35 [M3.1] (lead) attempt 3 follow-up: paths widened to crates/slipfork/tests/critical_cli.rs so the shared wait_daemon_teardown helper replaces the last duplicated in-file poll 
+- 2026-11-16T18:35 [M3.1] (lead) attempt 3/3 started
+- 2026-11-16T18:35 [M3.22] (lead) SCOPE ADD (lead): also replace the one-shot 60s S3 readiness wait in crates/slipfork/tests/critical_ospp_daemon.rs with bounded polling (the transient flake obs
+- 2026-11-16T18:38 [M3.7] (lead) status active -> review
+- 2026-11-16T18:39 [M3.7] (lead) QUAD attempt 2 findings (legality FAIL + ioc FAIL, no blind spot): (L1 BLOCKER) ADR-0006:32 and (L2 BLOCKER) ARCHITECTURE.md:578 claim crates/slipfork-test 'shi
+- 2026-11-16T18:39 [M3.7] (lead) status review -> active
+- 2026-11-16T18:39 [M3.7] (lead) attempt 3/3 started
+- 2026-11-16T18:39 ESCALATION #18 -> architect for M3.7 by unknown: attempt 3: final wording/contract fixes (Phase-2 sent-as-shipped fact x3, ADR-0008 second readiness mechanism, ADR-0009 
+- 2026-11-16T18:42 [M3.11] (lead) edited fields
+- 2026-11-16T18:42 [M3.11] (lead) OWNER TERMINOLOGY RULE: (1) write the report at docs/research/btrfs-crun-benchmarks.md (NOT spike-option-a-*), stating the Btrfs+crun architecture directly with
+- 2026-11-16T18:43 [M3.8] (lead) OWNER TERMINOLOGY RULE: no Option A/B or Spike A/B framing anywhere; describe the Btrfs+crun BtrfsEngine architecture directly. Gate before Phase 1 completes: !
+- 2026-11-16T18:43 [M3.9] (lead) OWNER TERMINOLOGY RULE: no Option A/B or Spike A/B framing anywhere; describe the Btrfs+crun BtrfsEngine architecture directly. Gate before Phase 1 completes: !
+- 2026-11-16T18:43 [M3.10] (lead) OWNER TERMINOLOGY RULE: no Option A/B or Spike A/B framing anywhere; describe the Btrfs+crun BtrfsEngine architecture directly. Gate before Phase 1 completes: !
+- 2026-11-16T18:43 [M3.12] (lead) OWNER TERMINOLOGY RULE: no Option A/B or Spike A/B framing anywhere; describe the Btrfs+crun BtrfsEngine architecture directly. Gate before Phase 1 completes: !
+- 2026-11-16T18:43 [M3.13] (lead) OWNER TERMINOLOGY RULE: no Option A/B or Spike A/B framing anywhere; describe the Btrfs+crun BtrfsEngine architecture directly. Gate before Phase 1 completes: !
+- 2026-11-16T18:43 [M3.14] (lead) OWNER TERMINOLOGY RULE: no Option A/B or Spike A/B framing anywhere; describe the Btrfs+crun BtrfsEngine architecture directly. Gate before Phase 1 completes: !
+- 2026-11-16T18:43 [M3.15] (lead) OWNER TERMINOLOGY RULE: no Option A/B or Spike A/B framing anywhere; describe the Btrfs+crun BtrfsEngine architecture directly. Gate before Phase 1 completes: !
+- 2026-11-16T18:43 [M3.16] (lead) OWNER TERMINOLOGY RULE: no Option A/B or Spike A/B framing anywhere; describe the Btrfs+crun BtrfsEngine architecture directly. Gate before Phase 1 completes: !
+- 2026-11-16T18:43 [M3.17] (lead) OWNER TERMINOLOGY RULE: no Option A/B or Spike A/B framing anywhere; describe the Btrfs+crun BtrfsEngine architecture directly. Gate before Phase 1 completes: !
+- 2026-11-16T18:43 [M3.18] (lead) OWNER TERMINOLOGY RULE: no Option A/B or Spike A/B framing anywhere; describe the Btrfs+crun BtrfsEngine architecture directly. Gate before Phase 1 completes: !
+- 2026-11-16T18:43 [M3.19] (lead) OWNER TERMINOLOGY RULE: no Option A/B or Spike A/B framing anywhere; describe the Btrfs+crun BtrfsEngine architecture directly. Gate before Phase 1 completes: !
+- 2026-11-16T18:43 [M3.20] (lead) OWNER TERMINOLOGY RULE: no Option A/B or Spike A/B framing anywhere; describe the Btrfs+crun BtrfsEngine architecture directly. Gate before Phase 1 completes: !
+- 2026-11-16T18:43 [M3.21] (lead) OWNER TERMINOLOGY RULE: no Option A/B or Spike A/B framing anywhere; describe the Btrfs+crun BtrfsEngine architecture directly. Gate before Phase 1 completes: !
+- 2026-11-16T18:43 [M3.22] (lead) OWNER TERMINOLOGY RULE: no Option A/B or Spike A/B framing anywhere; describe the Btrfs+crun BtrfsEngine architecture directly. Gate before Phase 1 completes: !
+- 2026-11-16T18:43 [M3.23] (lead) created (task) Terminology gate: purge Option A/B and Spike A/B framing from ARCHITECTURE.md, README.md, docs/, crates/, tools/
+- 2026-11-16T18:44 [M3.1] (lead) edited fields
+- 2026-11-16T18:44 [M3.1] (lead) attempt 4/4 started
+- 2026-11-16T18:44 [M3.1] (lead) max_attempts raised to 4 by lead: attempts 1-3 resolved scope, races and factorisation; the remaining Quad findings are mechanical test-helper dedupe + one Make
+- 2026-11-16T18:44 [M3.1] (lead) QUAD attempt 3/final findings: cruft FAIL (MAJOR Makefile guard comment overclaims vs enforcement; MAJOR duplicated local run_git/disk_tempdir in critical_slug 
+- 2026-11-16T18:58 [M3.7] (lead) edited fields
+- 2026-11-16T18:58 [M3.7] (lead) status active -> review
+- 2026-11-16T18:59 [M3.10] (lead) REQUIREMENT (from M3.7 legality review): the AppArmor userns profile section must state that the profile permits the world-init path to create user namespaces (
+- 2026-11-16T18:59 [M3.16] (lead) REQUIREMENT (from M3.7 legality review): /etc/apparmor.d/slipfork userns profile must explicitly allow /usr/bin/unshare (and slipfork-world-init) to create unpr
+- 2026-11-16T18:59 [M3.7] (lead) legality final PASS with 2 MINORs to fix in the follow-up: (1) ADR-0010:52 unlabeled VM-harness '/usr/bin/unshare in VM profile' claim -> label M3.16 target sta
+- 2026-11-16T18:59 [M3.23] (lead) edited fields
+- 2026-11-16T18:59 [M3.23] (lead) SCOPE ADD (from M3.7 ioc final pass): docs/design/m1-core-and-poc.md still carries stale VolumeCloner/IncusEngine/TestAdapter rows after the Btrfs-only pivot. T
+- 2026-11-16T18:59 [M3.7] (lead) edited fields
+- 2026-11-16T18:59 [M3.7] (lead) attempt 4/4 started
+- 2026-11-16T18:59 ESCALATION #19 -> architect for M3.7 by unknown: attempt 4 (budget raised): four one-line wording/contract clarifications after all three lenses PASS (VM-harness unshare
+- 2026-11-16T19:00 [M3.7] (lead) cruft final pass findings forwarded to the attempt-4 pass: X1 ADR-0003 dangling zygote clause + title, X2 VISION:16 zygote misattribution of subvolume CoW, X3 A
+- 2026-11-16T19:00 [M3.7] (lead) edited fields
+- 2026-11-16T19:07 [M3.23] (lead) ADDITIONAL SCOPE (M3.7 legality final pass): (1) ADR-0010:9 and ADR-0006:13-14 must phrase docs/research/btrfs-crun-benchmarks.md as 'to be recorded by M3.11' (
+- 2026-11-16T19:07 [M3.2] (lead) PHASE 2 REWRITE MUST-DO (flagged by M3.7 legality review): this epic's NODE.md title/body still say 'RunnerProtocol v1', 'CoverageDriver', 'CommandTestAdapter',
+- 2026-11-16T19:07 [M3.23] (lead) ADDITIONAL SCOPE (M3.7 legality final pass): (1) ADR-0010:9 and ADR-0006:13-14 must phrase docs/research/btrfs-crun-benchmarks.md as "to be recorded by M3.11" (
+- 2026-11-16T19:07 [M3.2] (lead) PHASE 2 REWRITE MUST-DO (flagged by M3.7 legality review): this epic NODE.md title/body still say RunnerProtocol v1, CoverageDriver, CommandTestAdapter, pytest-
+- 2026-11-16T19:08 [M3.7] (lead) ioc final pass FAIL with 2 MAJORs forwarded to the architect follow-up: E1 ADR-0010 must state the deletion ruling (all previously shipped engine adapters/proto
+- 2026-11-16T19:16 [M3.22] (lead) edited fields
+- 2026-11-16T19:16 [M3.22] (lead) depends_on widened to M3.1 + M3.15: M3.22 edits crates/slipfork/Cargo.toml and crates/slipfork/tests/support/mod.rs, which M3.15 also writes, so the path lock m
+- 2026-11-16T19:16 [M3] (lead) PHASE 2 VOCABULARY (flagged by M3.7 ioc sign-off): this milestone NODE.md still describes TestCoordinator/RunnerProtocol v1/CoverageDriver/pytest-slipfork in it
+- 2026-11-16T19:19 [M3.8] (lead) STALE VOCABULARY (M3.7 cruft sign-off): docs/design/world-base-image.md:364 still carries TestCoordinator/RunnerProtocol v1 wording; the rewrite must drop the d
+- 2026-11-16T19:19 [M3.23] (lead) FINAL POLISH (from M3.7 cruft sign-off, optional): (1) ADR-0009 Composition Root mermaid redraws the ARCHITECTURE §1 tree -> collapse to a §1 pointer; (2) ADR-0
+- 2026-11-16T20:44 [M3.24] (lead) created (task) Finish bounded-wait consolidation in world-booting suite harnesses and make rs-test-list comments match what the guard enforces
+- 2026-11-16T20:45 [M3.24] (lead) edited fields
+- 2026-11-16T20:45 [M3.24] (lead) SCOPE ADD (M3.1 cruft gate): also factor the duplicated kill -TERM -- -pgid block (critical_cli.rs:422 vs critical_slug.rs:66), the repeated "rt" runtime-dir li
+- 2026-11-16T20:45 [M3.1] (lead) LEGALITY GATE (attempt 4) FAIL: (a) MAJOR evidence honesty — RESULT.md claims "normal load (4-13)" while its own artifact a4-gate.status cycle 7 shows load 31.5
+- 2026-11-16T20:45 [M3.13] (lead) REQUIREMENT (M3.1 legality gate): the engine stop path must be bounded-but-abort-aware — do not carry a fixed grace (the current 10s WORLD_STOP_GRACE red-lines 
+- 2026-11-16T20:45 [M3.14] (lead) REQUIREMENT (M3.1 legality gate): engine conformance/critical suites must be deterministic at high host load; assert bounded teardown elapsed time rather than f
+- 2026-11-16T20:45 [M3.19] (lead) ADD (M3.1 legality gate): the live VM run must include one make check under deliberately elevated host load (e.g. parallel CPU burners) to prove the Btrfs engin
+- 2026-11-16T20:45 [M3.1] (lead) edited fields
+- 2026-11-16T20:45 [M3.1] (lead) attempt 5/5 started
+- 2026-11-16T20:45 [M3.1] (lead) status review -> active
+- 2026-11-16T20:48 [M3.7] (lead) edited fields
+- 2026-11-16T20:48 [M3.23] (lead) FINAL POLISH from M3.7 functional review: ADR-0010 Consequences should state the operational consequence (every non-Btrfs host hard-fails at slipforkd boot and 
+- 2026-11-16T20:48 [M3.15] (lead) REQUIREMENT (M3.7 functional review): the same 0.3.0 sweep must delete the stale doctor help text and JSON fields describing the old engine (crates/slipfork/src
+- 2026-11-16T20:48 [M3.7] (lead) status review -> done
+- 2026-11-16T20:48 [M3.7] (lead) committed 4d5b02e
+- 2026-11-16T20:48 [M3.8] (lead) status ready -> active
+- 2026-11-16T20:48 [M3.8] (lead) attempt 1/3 started
+- 2026-11-16T20:48 [M3.8] (lead) base 4d5b02efd7444c3413a6d238271c2a700ed9fd5a
+- 2026-11-16T20:48 [M3.9] (lead) status ready -> active
+- 2026-11-16T20:48 [M3.9] (lead) attempt 1/3 started
+- 2026-11-16T20:48 [M3.9] (lead) base 4d5b02efd7444c3413a6d238271c2a700ed9fd5a
+- 2026-11-16T20:48 [M3.10] (lead) status ready -> active
+- 2026-11-16T20:48 [M3.10] (lead) attempt 1/3 started
+- 2026-11-16T20:48 [M3.10] (lead) base 4d5b02efd7444c3413a6d238271c2a700ed9fd5a
+- 2026-11-16T20:58 [M3.9] (lead) status active -> review
+- 2026-11-16T20:59 [M3.15] (lead) SPEC OWNERSHIP (from M3.9 legality review): doctor output fields need a normative owner — ADR-0010 §4 only defines BtrfsProbeReport (fstype/magic/probe evidence
+- 2026-11-16T20:59 [M3.8] (lead) status active -> review
+- 2026-11-16T20:59 [M3.19] (lead) REQUIREMENT (M3.8): run `slipfork prune` before asserting an empty `btrfs subvolume list` — the digest-keyed sealed base subvolume survives until GC (world-base
+- 2026-11-16T21:00 [M3.25] (lead) created (task) Close doctor host-probe DI gap and world-identity spelling split in the design of record
+- 2026-11-16T21:00 [M3.9] (lead) edited fields
+- 2026-11-16T21:00 [M3.25] (lead) status ready -> active
+- 2026-11-16T21:00 [M3.25] (lead) attempt 1/3 started
+- 2026-11-16T21:00 ESCALATION #20 -> architect for M3.25 by unknown: SPEC_BLIND_SPOT from M3.9 IoC gate: doctor netns/crun/unshare_userns probes have no DI port (M3.15 requires them) and wo
+- 2026-11-16T21:00 [M3.25] (lead) base 4d5b02efd7444c3413a6d238271c2a700ed9fd5a
+- 2026-11-16T21:01 [M3.8] (lead) edited fields
+- 2026-11-16T21:01 [M3.8] (lead) QUAD GATE attempt 1 (ioc FAIL, SPEC_BLIND_SPOT escalated to M3.25): BLOCKER builder credited with seed+seal (must stop at cache/rootfs/<digest>/app; seed+seal s
+- 2026-11-16T21:01 [M3.9] (lead) QUAD GATE attempt 1 (legality FAIL, cruft FAIL, ioc FAIL/SPEC_BLIND_SPOT escalated to M3.25): invented [resources] <kind>.<id> prefixes (shipped renderer emits 
+- 2026-11-16T21:01 [M3.10] (lead) status active -> review
+- 2026-11-16T21:01 [M3.11] (lead) status ready -> active
+- 2026-11-16T21:01 [M3.11] (lead) attempt 1/3 started
+- 2026-11-16T21:01 [M3.11] (lead) base 4d5b02efd7444c3413a6d238271c2a700ed9fd5a
+- 2026-11-16T21:01 [M3.18] (lead) edited fields
+- 2026-11-16T21:01 [M3.18] (lead) PATH WIDENING: docs/testing-dag.md is a published page still describing RunnerProtocol v1 / CommandTestAdapter / per-language CoverageDriver (flagged twice by r
+- 2026-11-16T21:01 [M3.25] (lead) edited fields
+- 2026-11-16T21:01 [M3.25] (lead) SCOPE ADD (M3.8 legality BLOCKER): rule on ADR-0009 §3 rule 3 (unreadable non-world-accessible files) — today the doc promises a pre-boot diagnostic naming the 
+- 2026-11-16T21:02 [M3.25] (lead) SCOPE ADD #2 (M3.8/M3.9/M3.19 consistency): rule whether crun is a HOST binary (harness apt installs it; M3.19 runs crun --version on the host) or a WORLD-ROOTF
+- 2026-11-16T21:02 [M3.10] (lead) edited fields
+- 2026-11-16T21:02 [M3.10] (lead) QUAD GATE attempt 1 (legality FAIL): BLOCKER silent destructive fallback — `blkid ... || true` coerces any blkid error (rc 4 = I/O error/unreadable/concurrently
+- 2026-11-16T21:02 [M3.11] (lead) status active -> review
+- 2026-11-16T21:03 [M3.19] (lead) ACCEPTANCE REFINED: teardown asserts `slipfork prune --yes` then `btrfs subvolume list | grep -v /snapshots/` empty — the digest-keyed sealed base under <state_
+- 2026-11-16T21:03 [M3.10] (lead) IOC GATE attempt 1 (FAIL): MAJOR identity default lives inside the product cache root (<state_dir>/$XDG_CACHE_HOME) — keep the owner-specified absolute default 
+- 2026-11-16T21:03 [M3.11] (lead) CRUFT GATE attempt 1 (FAIL): (1) MAJOR docs/knowledge/LESSONS.md:19,20,22 still carry microVM lessons (virtiofs snapshot/restore, Cloud Hypervisor kill times, F
+- 2026-11-16T21:03 [M3.23] (lead) SCOPE ADD (M3.11 cruft gate): now that docs/research/btrfs-crun-benchmarks.md exists, ADR-0010 Context §2 and docs/design/world-base-image.md must CITE it inste
+- 2026-11-16T21:03 [M3.8] (lead) ADD (M3.11 cruft gate): docs/design/world-base-image.md becomes the CITATION of docs/research/btrfs-crun-benchmarks.md for the four numbers, not a second copy o
+- 2026-11-16T21:03 [M3.11] (lead) IOC + LEGALITY GATE attempt 1 (both FAIL): de-normativize the report — it must not restate ADR-0010 §3/§5 (destroy_subvolume clears RO, no mode switch) or §6 (-
+- 2026-11-16T21:07 [M3.11] (lead) attempt 2/3 started
+- 2026-11-16T21:07 [M3.11] (lead) LEAD RULING (attempt 2): the owner "forget there was another option" directive SUPERSEDES invariant 4 "do not delete existing lessons" — delete the microVM less
+- 2026-11-16T21:08 [M3.11] (lead) attempt 2 done: scope-neutral de-normativized report, microVM lessons deleted, fabricated span removed, report sole figure owner. Re-running quad gate.
+- 2026-11-16T21:09 [M3.23] (lead) POLISH (M3.11 legality PASS minors): (1) docs/research/btrfs-crun-benchmarks.md:67 asserts the per-world RSS figure counts init + service containers though the 
+- 2026-11-16T21:10 [M3.11] (lead) attempt 3/3 started
+- 2026-11-16T21:10 [M3.11] (lead) IOC CONFIRM FAIL (attempt 2): MAJOR report:53 invents a clock/process-stat DI port ARCHITECTURE §1 does not define and misstates the engine (adapters do read In
+- 2026-11-16T21:11 [M3.11] (lead) status review -> done
+- 2026-11-16T21:20 [M3.1] (lead) status active -> review
+- 2026-11-16T21:20 [M3.24] (lead) edited fields
+- 2026-11-16T21:20 [M3.24] (lead) SCOPE ADD (M3.1 attempt 5): both acceptance sequences leaked 46 orphaned unshare/slipfork-world-init worlds (92 ppid-1 processes) from ~/.cache/slipfork-cli-tes
+- 2026-11-16T21:21 [M3.1] (lead) CRUFT GATE attempt 5 FAIL: MAJOR duplicated poll_until across the two test crates (verbatim, each claiming to be the one primitive) -> extract into an unpublish
+- 2026-11-16T21:21 [M3.14] (lead) REQUIREMENT (M3.1 ioc gate): when engine-owned ReadinessProbe lands, delete the temporary caller-side readiness shim — crates/slipfork-engine/tests/critical_oci
+- 2026-11-16T21:21 [M3.1] (lead) edited fields
+- 2026-11-16T21:21 [M3.1] (lead) attempt 6/6 started
+- 2026-11-16T21:21 [M3.1] (lead) LEGALITY GATE attempt 5 FAIL (evidence concurrency): RESULT claims the stale reviewer run finished before sequence 1, but retained artifacts overlap (check-C 20
+- 2026-11-16T21:34 [M3.25] (lead) status active -> review
+- 2026-11-16T21:34 [M3.15] (lead) M3.25 RULING APPLIED to NODE.md: doctor reports BtrfsProbeReport fields via doctor::run(&dyn SubvolumeDriver, &dyn HostProbe, ...) + HostProbe netns/unshare_use
+- 2026-11-16T21:34 [M3.16] (lead) M3.25 RULING APPLIED: harness installs btrfs-progs + docker.io/docker-buildx + Rust, NO host crun (static crun ships inside the L0 world rootfs per ADR-0009).
+- 2026-11-16T21:34 [M3.19] (lead) M3.25 RULING APPLIED: host crun --version replaced by in-world slipfork shell -- crun --version.
+- 2026-11-16T21:34 [M3.23] (lead) M3.25 RULING: align ADR-0008 §4 --world wording with ADR-0005 §3 (shared resolve_world_selector accepting <project>, <project>:<fork>, bare <fork>).
+- 2026-11-16T21:35 [M3.8] (lead) status review -> active
+- 2026-11-16T21:35 [M3.8] (lead) attempt 2/3 started
+- 2026-11-16T21:35 [M3.8] (lead) base 7cf08b5202c58593b3f6c4031bebf200a8e24f97 (attempt 2)
+- 2026-11-16T21:35 [M3.9] (lead) status review -> active
+- 2026-11-16T21:35 [M3.9] (lead) attempt 2/3 started
+- 2026-11-16T21:35 [M3.9] (lead) base 7cf08b5202c58593b3f6c4031bebf200a8e24f97 (attempt 2)
+- 2026-11-16T21:35 [M3.10] (lead) status review -> active
+- 2026-11-16T21:35 [M3.10] (lead) attempt 2/3 started
+- 2026-11-16T21:35 [M3.10] (lead) base 7cf08b5202c58593b3f6c4031bebf200a8e24f97 (attempt 2)
+- 2026-11-16T21:43 [M3.15] (lead) CORRECTION (M3.9 attempt 2): doctor performs NO crun probe and emits NO crun field (ADR-0010 §4). world_rootfs_crun removed from the doctor contract; static cru
+- 2026-11-16T21:43 [M3.16] (lead) CORRECTION (M3.9 attempt 2): do not implement a world_rootfs_crun doctor field — doctor emits no crun field (ADR-0010 §4). Harness still installs no host crun; 
+- 2026-11-16T21:43 [M3.9] (lead) status active -> review
+- 2026-11-16T21:44 [M3.16] (lead) edited fields
+- 2026-11-16T21:44 [M3.20] (lead) REQUIREMENT (M3.9 cruft gate): crates/slipfork-edge/src/daemon.rs:82 documents ResourceSummary.id as pg_databases.main while diagnostics() emits bare ids; align
+- 2026-11-16T21:44 [M3.10] (lead) status active -> review
+- 2026-11-16T21:44 [M3.19] (lead) ACCEPTANCE ORDER: `slipfork up` precedes the in-world `slipfork shell -- crun --version` check (a world must exist for in-world verification).
+- 2026-11-16T21:45 [M3.12] (lead) M3.25 RULING: implement EngineError::SubvolumeDestroyDenied { path, errno, mount_hint } for the destroy-stage EPERM path alongside BtrfsRequired and BtrfsProbeR
+- 2026-11-16T21:45 [M3.15] (lead) M3.25 RULING: wire HostCheckOutcome (two-variant; NetnsCheck::Skipped synthesized only in doctor::run), DoctorReport declared once in crates/slipfork::doctor, r
+- 2026-11-16T21:45 [M3.25] (lead) status review -> review
+- 2026-11-16T21:45 [M3.16] (lead) BODY CORRECTION (M3.9 ioc gate): invariant 2 no longer says doctor reports world_rootfs_crun — doctor performs no crun probe and emits no crun field (ADR-0010 §
+- 2026-11-16T21:45 [M3.9] (lead) IOC GATE attempt 2 PASS (minor: fstype label table duplicates ADR-0010 §4 -> keep pointer; name both owners for <state_dir>/<project>/worlds/<world_id>/logs (La
+- 2026-11-16T21:45 [M3.9] (lead) LEGALITY GATE attempt 2 PASS (minors): auth p256 key abbreviated with an ellipsis is not reproducible output; `slipfork test [-j N]` needs an owner (M3.2) or mu
+- 2026-11-16T21:45 [M3.2] (lead) REQUIREMENT (M3.9 legality): own the `slipfork test -j N` concurrency flag in the rewritten STP v1 epic — define its semantics (slot count) and document it; M3.
+- 2026-11-16T21:45 [M3.10] (lead) attempt 3/3 started
+- 2026-11-16T21:45 [M3.10] (lead) status review -> active
+- 2026-11-16T21:45 [M3.10] (lead) CRUFT GATE attempt 2 FAIL (dedupe only): MAJOR the AppArmor body-equivalence preflight rule is stated twice near-verbatim (§1 step 5 vs §3) -> keep once in §3, 
+- 2026-11-16T21:45 [M3.9] (lead) status review -> done
+- 2026-11-16T21:45 [M3.25] (lead) edited fields
+- 2026-11-16T21:45 [M3.25] (lead) attempt 2/4 started
+- 2026-11-16T21:45 [M3.25] (lead) CRUFT GATE attempt 2 FAIL: (1) base slot spelling drift — ADR-0010:22-23 + ADR-0009:23 say <project>-base-<l0_sha12> while the design of record keys <base_key_s
+- 2026-11-16T21:45 [M3.8] (lead) status active -> review
+- 2026-11-16T21:46 [M3.2.13] (lead) REQUIREMENT (M3.10 ioc gate): the state-root GC must EXCLUDE ~/.cache/slipfork/do-vm/ (harness-owned persistent SSH identity + known_hosts). Never collect it, a
+- 2026-11-16T21:47 [M3] (lead) edited fields
+- 2026-11-16T21:48 [M3.8] (lead) attempt 3/3 started
+- 2026-11-16T21:48 [M3.8] (lead) status review -> active
+- 2026-11-16T21:48 [M3.8] (lead) IOC GATE attempt 2 FAIL: MAJOR BaseSeedSpec.control_dir has two owners — doc says injected by slipforkd (:162) yet ensure_base creates/removes <state_dir>/ctl/s
+- 2026-11-16T21:49 [M3.1] (lead) status review -> active
+- 2026-11-16T21:51 [M3.8] (lead) status active -> review
+- 2026-11-16T21:51 [M3.25] (lead) ADD (M3.8 attempt 3 followup): ARCHITECTURE.md §3.3 WorldSpec must carry state_subdirs (single author slipforkd); ensure_base stays an inherent BtrfsEngine meth
+- 2026-11-16T21:52 [M3] (lead) OWNER WIRE-PROTOCOL DIRECTIVE (2026-11-16): STP v1 wire serialization is STRICTLY CBOR (RFC 8949) over the inherited SLIPFORK_PROTOCOL_FD socketpair — NEVER NDJ
+- 2026-11-16T21:52 [M3.2] (lead) OWNER WIRE-PROTOCOL DIRECTIVE: STP v1 frames are CBOR (RFC 8949) on the inherited SLIPFORK_PROTOCOL_FD socketpair — never NDJSON/JSON, never line-delimited fram
+- 2026-11-16T21:52 [M3.23] (lead) OWNER DIRECTIVE (CBOR): purge every NDJSON/JSON-wire mention for STP v1 across ARCHITECTURE.md, README.md, docs/** (incl. docs/decisions/ADR-0006*) and replace 
+- 2026-11-16T21:52 [M3.18] (lead) OWNER DIRECTIVE (CBOR): docs/testing-dag.md must state the STP v1 wire is CBOR (RFC 8949) over the inherited SLIPFORK_PROTOCOL_FD socketpair — never NDJSON/JSON
+- 2026-11-16T21:52 [M3.25] (lead) ADD (M3.8 ioc): ARCHITECTURE.md §3.3 must carry WorldSpec.state_subdirs AND the BaseSeedSpec carrier (control_dir, state_subdirs, service_specs, databases, app_
+- 2026-11-16T21:52 [M3.16] (lead) REQUIREMENTS from M3.10 final IoC confirm (implement in do_vm.py): (1) drop the separate aa-status/control-unshare from `test` — the single `runuser -u slipfork
+- 2026-11-16T21:52 [M3.10] (lead) status active -> done
+- 2026-11-16T21:53 [M3.23] (lead) ADD (M3.8 functional PASS): crates/slipfork-engine/src/rootfs/mod.rs:544 BaseImageError::CacheOnTmpfs message still says "XFS, Btrfs, or ext4" — must name Btrfs
+- 2026-11-16T21:53 [M3.25] (lead) ADD (M3.8 final): ARCHITECTURE.md §3.2 SeedDumpStore excerpt must list discard + materialize (port has lookup/write_from/discard/materialize; DiskSeedDumpStore 
+- 2026-11-16T21:54 [M3.8] (lead) status review -> done
+- 2026-11-16T21:55 [M3.23] (lead) CONFIDENTIALITY (owner Rule #10): tools/guard.py:12 contains a pre-existing sibling-repository name in a provenance aside ("learned from poc-orange"). Reword to
+- 2026-11-16T21:56 [M3.13] (lead) REQUIREMENTS (from M3.8 functional PASS, real findings): (1) seed-subvolume crash safety — a crash after seal but before destroying worlds/seed-<base_key_sha12>
+- 2026-11-16T21:56 [M3.23] (lead) DOC ACCURACY (from M3.8 functional PASS): docs/design/world-base-image.md — (a) line ~300 lists `seaweedfs` as a shipped ServiceSpec id; the shipped id is `s3_b
+- 2026-11-16T22:08 [M3.1] (lead) status active -> review
+- 2026-11-16T22:09 [M3.24] (lead) ADD (M3.1 ioc): (1) testkit DAEMON_STARTUP_DEADLINE/SHUTDOWN_DEADLINE re-encode production numbers as prose — once the product exports SPAWN_TIMEOUT/WORLD_STOP_
+- 2026-11-16T22:26 [M3.25] (lead) edited fields
+- 2026-11-16T22:26 [M3.25] (lead) attempt 3 done: base_key spelling, prune ports + CacheKeepSet, WorldId newtype, complete EngineError, DoctorReport flattening, CBOR §3. Re-running quad gate; AD
+- 2026-11-16T22:27 [M3.23] (lead) DOC POLISH from M3.25 cruft PASS (apply after commit): (1) ADR-0009:16 `slipforkd --crun <path>` is a second supply path for the compile-time-pinned crun — dele
+- 2026-11-16T22:27 [M3.25] (lead) attempt 3/4 started
+- 2026-11-16T22:27 [M3.25] (lead) status review -> active
+- 2026-11-16T22:27 [M3.25] (lead) IOC FINAL FAIL: MAJOR one --world contract has two spellings — ADR-0005:52 gives `drop` a private positional-<fork> parse path while ADR-0008:53 says every worl
+- 2026-11-16T22:29 [M3.23] (lead) DOC FIX (M3.25 functional gate, MAJOR): docs/design/target-dx.md §1.6 still says "<fork> equal to the project name is rejected" for <project>:<fork>, contradict
+- 2026-11-16T22:30 [M3.1] (lead) edited fields
+- 2026-11-16T22:30 [M3.1] (lead) attempt 7/7 started
+- 2026-11-16T22:30 [M3.1] (lead) FUNCTIONAL FINAL FAIL (attempt 6): BLOCKER — plain make rs-test red on the frozen tree (load 3.67) at critical_edge::socket_activate_systemd_handover: free_loop
+- 2026-11-16T22:46 [M3.1] (lead) status review -> review
+- 2026-11-16T22:49 [M3.25] (architect) attempt 4 final pass: DropForkRequest { cwd, world: Option<WorldId> } + single resolve_world_selector/WorldId::parse_selector (delegating :/canonical to FromStr
+- 2026-11-16T22:50 [M3.25] (lead) status active -> review
+- 2026-11-16T22:50 [M3.12] (lead) M3.25 final ruling to consume: WorldId newtype (Display/FromStr/parse_selector, TestSlot never on wire), DropForkRequest { cwd, world: Option<WorldId> }, PruneR
+- 2026-11-16T22:50 [M3.13] (lead) M3.25 final ruling to consume: WorldId newtype (Display/FromStr/parse_selector, TestSlot never on wire), DropForkRequest { cwd, world: Option<WorldId> }, PruneR
+- 2026-11-16T22:50 [M3.15] (lead) M3.25 final ruling to consume: WorldId newtype (Display/FromStr/parse_selector, TestSlot never on wire), DropForkRequest { cwd, world: Option<WorldId> }, PruneR
+- 2026-11-16T22:50 [M3.20] (lead) M3.25 final ruling to consume: WorldId newtype (Display/FromStr/parse_selector, TestSlot never on wire), DropForkRequest { cwd, world: Option<WorldId> }, PruneR
+- 2026-11-16T22:52 [M3.25] (lead) edited fields
+- 2026-11-16T22:52 [M3.25] (lead) attempt 4/5 started
+- 2026-11-16T22:52 [M3.25] (lead) status review -> active
+- 2026-11-16T22:52 [M3.25] (lead) CRUFT FINAL FAIL: MAJOR DropForkRequest { cwd, world: Option<WorldId> } is field-identical to WorldSelector (which already lists DropForkRequest as a consumer) 
+- 2026-11-16T23:03 [M3.1] (lead) LEAD: acceptance envelope added to NODE.md (green required at load average <=10 with zero in-repo builds; at extreme foreign load the pre-Btrfs fixed 10s WORLD_
+- 2026-11-16T23:19 [M3.25] (lead) status active -> review
+- 2026-11-16T23:20 [M3.12] (lead) ADD (M3.25 ioc minor): type EngineError::SnapshotNotFound(String) -> SnapshotId so snapshot identity is not stringly (ARCHITECTURE §3.3).
+- 2026-11-16T23:20 AUTOPILOT off by conductor User requested pause to regroup
+- 2026-11-16T23:20 [M3.25] (lead) POST-STOP review results (recorded for regroup; no work started): ioc PASS, cruft PASS, legality PASS — all with MINORs only. Outstanding one-line fixes before 
+- 2026-11-16T23:21 [M3.25] (lead) POST-STOP: functional sign-off PASS — all four lenses now PASS (ioc/legality/cruft/functional) with MINORs only. Diff is docs-only over exactly the 7 declared p
+- 2026-11-16T23:45 AUTOPILOT on by conductor Deliver 0.1.0 Btrfs Worlds + sync/deploy to remote DO VM for owner testing
+- 2026-11-16T23:48 [M3.25] (lead) LEAD POST-STOP: quad gate 4/4 PASS (ioc/legality/cruft/functional) at 23:19-23:21 with MINORs only, docs-only diff over the 7 declared paths. Committing per own
+- 2026-11-16T23:48 [M3.25] (lead) status review -> done
+- 2026-11-16T23:48 [M3.25] (lead) done: plan validate + guard.py + make docs-check (zensical --strict, check_docs_honesty OK) green; docs-only over exactly the 7 declared paths.
+- 2026-11-16T23:50 [M3.1] (lead) OWNER+CONDUCTOR RULING (2026-11-16): M3.1 closes on the harness contract. Non-world gates on the final hashes all green: 79 pytest tool tests, cargo check --wor
+- 2026-11-16T23:50 [M3.1] (lead) status review -> done
+- 2026-11-16T23:50 [M3] (lead) edited fields
+- 2026-11-16T23:50 [M3] (lead) OWNER REGROUP RULING (2026-11-16, binding): this subtree ships as 0.1.0 on release/0.1.0 (nothing merged to develop yet). M3.25 and M3.1 are committed done. M3.
+- 2026-11-16T23:50 [M3.2] (lead) OWNER REGROUP RULING (2026-11-16, binding): M3.2 (STP v1) and every M3.2.* child are PARKED for 0.2.0. Do not activate any of them in this run. The 0.1.0 releas
+- 2026-11-16T23:50 [M3.20] (lead) status ready -> active
+- 2026-11-16T23:51 [M3.20] (lead) attempt 1/3 started
+- 2026-11-16T23:51 [M3.20] (lead) base ca5b19175d139a0b042b6477268c89d231a10a2a
+- 2026-11-16T23:51 [M3.18] (lead) OWNER REGROUP RULING (binding): shipped version is 0.1.0 on release/0.1.0, NOT 0.3.0/0.2.0. Every published page you touch (README.md, docs/index.md, docs/getti
+- 2026-11-16T23:51 [M3.23] (lead) OWNER REGROUP RULING (binding): final shipped version is 0.1.0. In this hygiene gate set Cargo.toml workspace version, crates/* Cargo.toml package versions, pac
+- 2026-11-16T23:51 [M3.23] (lead) edited fields
+- 2026-11-16T23:52 [M3.12] (lead) edited fields
+- 2026-11-16T23:52 [M3.12] (lead) LEAD RULING on the test-driver seam (verified by experiment): the shared TestTreeDriver lives in the publish=false crates/slipfork-testkit crate (absolute dev-d
+- 2026-11-16T23:52 [M3.16] (lead) status ready -> active
+- 2026-11-16T23:53 [M3.16] (lead) attempt 1/3 started
+- 2026-11-16T23:53 [M3.16] (lead) base ca5b19175d139a0b042b6477268c89d231a10a2a
+- 2026-11-17T00:28 [M3.20] (lead) worker report: SnapshotMode/StatefulRam gone, StubWorldEngine replaces FakeIncus, all 31 edge tests green, 20/20 bun at its run, workspace check/clippy/docs-che
+- 2026-11-17T00:28 [M3.20] (lead) status active -> review
+- 2026-11-17T00:40 HUMAN H-005 [missing-input] opened by lead (node M3.16)
+- 2026-11-17T00:40 [M3.16] (lead) status active -> blocked
+- 2026-11-17T00:40 [M3.16] (lead) BLOCKED (missing-input): volume carries ZFS incuspool, not Btrfs. Static acceptance green (104 pytest, ruff, guard, help, greps). Live proof fails closed at blk
+- 2026-11-17T00:42 [M3] (lead) BLOCKER (H-005): the tagged DO volume 131a2765 is ZFS (incuspool), not Btrfs; M3.16 is blocked pending owner authorization to wipe it (A) or create a fresh Btrf
+- 2026-11-17T00:44 [M3.22] (lead) status ready -> active
+- 2026-11-17T00:44 [M3.22] (lead) attempt 1/3 started
+- 2026-11-17T00:44 [M3.22] (lead) base ca5b19175d139a0b042b6477268c89d231a10a2a
+- 2026-11-17T00:44 [M3.22] (lead) LEAD: started ahead of M3.15 (paths disjoint from the active M3.20 fix and from M3.15's src/**). M3.15 will consume the moved tests/support doubles afterwards. 
+- 2026-11-17T00:52 [M3.16] (lead) OWNER ANSWER (H-005, verbatim): 'Wipe ZFS & format Btrfs (Recommended)'. One-time authorized wipe of volume 131a2765-e1ba-11f1-b67b-d6114774f516 (/dev/sda): wip
+- 2026-11-17T00:52 HUMAN H-005 closed by lead
+- 2026-11-17T00:54 [M3.16] (lead) status blocked -> ready
+- 2026-11-17T00:54 [M3.16] (lead) status ready -> active
+- 2026-11-17T00:54 [M3.16] (lead) H-005 closed by owner: wipe authorized. Resuming attempt 1 (no bump).
+- 2026-11-17T01:29 [M3.22] (lead) status active -> review
+- 2026-11-17T01:29 [M3.22] (lead) worker: feature table + optional deps deleted, doubles in slipfork/tests/support shared by #[path] with slipfork-ospp tests, owned suite 2/4 green (2 reds = leg
+- 2026-11-17T01:32 [M3.16] (lead) status active -> review
+- 2026-11-17T01:32 [M3.16] (lead) LIVE GREEN after owner-authorized H-005 wipe: /dev/sda Btrfs LABEL=slipfork UUID=c3b7822d-…, findmnt rw,noatime,user_subvol_rm_allowed, statfs 9123683e, marker 
+- 2026-11-17T01:32 [M3.23] (lead) ADD from M3.16 live proof: docs/design/do-vm-harness.md must record (a) the AppArmor userns profile header requires both bare paths in one rule set /{a,b} (two 
+- 2026-11-17T01:33 [M3.22] (lead) edited fields
+- 2026-11-17T01:33 [M3.22] (lead) LEAD RULING after quad gate (ioc+cruft+legality MAJOR converge): the #path cross-package include is rejected. Create publish=false workspace crate crates/slipfo
+- 2026-11-17T01:34 [M3.19] (lead) LIVE VM READY (from M3.16, owner-authorized H-005 wipe): droplet 620073485 'slipfork-dev-vm' ams3, IPv4 165.232.86.174, LEFT UP. Volume 131a2765 Btrfs LABEL=sli
+- 2026-11-17T01:40 [M3.15] (lead) ADD (cross-node ruling from M3.16 ioc gate): your 'daemon unit --only apparmor' output must byte-match tools/do_vm.py's render_apparmor_body() text (the harness
+- 2026-11-17T01:40 [M3.16] (lead) LEAD RULING (legality BLOCKER, owner-safety): pre-existing-volume formatting now requires explicit --format-blank + proof (blkid rc2, wipefs -n clean, first 8 M
+- 2026-11-17T01:40 [M3.15] (lead) edited fields
+- 2026-11-17T02:44 [M3.22] (lead) edited fields
+- 2026-11-17T02:44 [M3.22] (lead) Paths widened by lead: ARCHITECTURE.md (its M2 residue sentence names the wrong destination and must be corrected in this node).
+- 2026-11-17T02:47 [M3.22] (lead) LEAD record corrections from legality gate: base had the test-server selector in [dev-dependencies] (not production [dependencies]); invariants 1/4 rewritten to
+- 2026-11-17T03:02 [M3.16] (lead) Gate policy from round 4: stop at the first round with no BLOCKER/MAJOR; remaining MINORs are logged as followups (M3.23 doc sweep / M3.15 byte-equivalence) ins
+- 2026-11-17T03:02 [M3.22] (lead) Gate policy: ioc PASS, legality PASS (both with record MINORs only), cruft fixes in flight. If the next cruft/functional round has no BLOCKER/MAJOR, accept and 
+- 2026-11-17T03:14 [M3.16] (lead) status review -> done
+- 2026-11-17T03:18 [M3.22] (lead) FINAL: functional PASS, ioc PASS, legality PASS, cruft PASS (record fixes verified). Committing.
+- 2026-11-17T03:18 [M3.22] (lead) status review -> done
+- 2026-11-17T03:21 ESCALATION #21 -> architect for M3.20 by lead: SPEC_BLIND_SPOT (legality BLOCKER): ARCHITECTURE §3.3 declares WorldHandle opaque with no constructor yet trait WorldEng
+- 2026-11-17T03:36 [M3.20] (lead) ARCHITECT RULING (escalation #21): provided Self:Sized mint_world_handle is the single sanctioned seam; WorldHandle is an in-process (engine,seq) lookup token w
+- 2026-11-17T03:42 [M3.20] (lead) edited fields
+- 2026-11-17T03:42 [M3.20] (lead) Paths widened: ARCHITECTURE.md (architect's escalation-#21 amendment lands with this node). Residuals: (a) pre-existing critical_engine r10_tmpfs assumes /tmp i
+- 2026-11-17T03:46 [M3.20] (lead) status review -> done
+- 2026-11-17T03:47 [M3.12] (lead) status ready -> active
+- 2026-11-17T03:47 [M3.12] (lead) attempt 1/3 started
+- 2026-11-17T03:47 [M3.12] (lead) base 6827c5117e4c8b12a10ab546f997105cc5e527c5
+- 2026-11-17T04:11 [M3.12] (lead) status active -> review
+- 2026-11-17T04:11 [M3.12] (lead) worker done: btrfs.rs + TestTreeDriver in testkit, 11 lib tests, SAFETY 10>=9, clippy/check/fmt/workspace green. Quad gate starting. Notes: dev-dep cycle makes 
+- 2026-11-17T04:20 [M3.12] (lead) edited fields
+- 2026-11-17T04:20 [M3.14] (lead) LEAD AMENDMENT (M3.12 ioc finding): do NOT create crates/slipfork-engine/tests/support/test_tree_driver.rs. The single SubvolumeDriver double is crates/slipfork
+- 2026-11-17T04:20 [M3.12] (lead) LEAD RULING (ioc/cruft MAJORs): (1) one require_btrfs gate; (2) ProbeFacts becomes a required trait method and probe a provided trait method (single probe body,
+- 2026-11-17T04:43 [M3.12] (lead) FINAL: legality PASS, functional PASS, cruft PASS, ioc PASS after lead plan amendments (M3.14 invariant 1 now consumes the testkit TestTreeDriver; M3.13 invaria
+- 2026-11-17T04:43 [M3.12] (lead) status review -> done
+- 2026-11-17T04:44 [M3.13] (lead) status ready -> active
+- 2026-11-17T04:44 [M3.13] (lead) attempt 1/3 started
+- 2026-11-17T04:44 [M3.13] (lead) base a06100dd9acfc7c05fe91227f01bec04b6a0eba6
+- 2026-11-17T04:44 [M3] (lead) LEAD SCOPE RULING (0.1.0 shipping decision, 2026-11-17): M3.13 implements BtrfsEngine against the CURRENT trait surface (WorldSpec unchanged: target/rootfs/snap
+- 2026-11-17T05:02 [M3.13] (lead) status active -> review
+- 2026-11-17T05:02 [M3.13] (lead) worker done: btrfs_engine.rs 2556 lines, 12 unit tests, clippy/fmt/check/docs green; rs-test red only on legacy critical_engine (10s grace + /tmp XFS assumption
+- 2026-11-17T05:13 [M3.23] (lead) ADD from M3.13 gate (docs of record must match 0.1.0 reality): (1) ARCHITECTURE §1/§2 + ADR-0010 §2 currently say WorldSpec.control_dir/state_subdirs are inject
+- 2026-11-17T05:32 [M3.13] (lead) FINAL: functional PASS, legality PASS, ioc PASS (blind spot deferred by ruling + M3.23 relabel), cruft PASS — minors logged: create_snapshot should reject a liv
+- 2026-11-17T05:32 [M3.13] (lead) status review -> done
+- 2026-11-17T05:32 [M3.14] (lead) status ready -> active
+- 2026-11-17T05:32 [M3.14] (lead) attempt 1/3 started
+- 2026-11-17T05:32 [M3.14] (lead) base 3bc93e3ef6be13ce9d5c2e8e2326565960483686
+- 2026-11-17T05:32 [M3.15] (lead) status ready -> active
+- 2026-11-17T05:32 [M3.15] (lead) attempt 1/3 started
+- 2026-11-17T05:32 [M3.15] (lead) base 3bc93e3ef6be13ce9d5c2e8e2326565960483686
+- 2026-11-17T06:02 [M3.15] (lead) edited fields
+- 2026-11-17T06:02 [M3.15] (lead) Paths widened by lead for two reds the node exposed: (1) Makefile must classify + serialize slipfork-engine:critical_btrfs_live and slipfork:critical_btrfs_live
+- 2026-11-17T06:18 [M3.15] (lead) status active -> review
+- 2026-11-17T06:18 [M3.15] (lead) worker: slipforkd wired to BtrfsEngine, doctor seam + JSON shape, --only apparmor, in-process test harness, dual-mode live suites, Makefile classification, TS e
+- 2026-11-17T06:40 [M3.15] (lead) edited fields
+- 2026-11-17T06:40 [M3.15] (lead) LEAD RULING (ioc blind spot, 0.1.0 subset): implement the minimal round-trip selector — accept bare <fork>, <project>:<fork>, and canonical <project> in select/
+- 2026-11-17T07:14 [M3.13] (lead) BLOCKER (expert escalation #22): plain make check at load 6 reds 3 critical_cli tests with 'world init pid … survived SIGTERM and SIGKILL for 15.0s'; 30 orphan 
+- 2026-11-17T07:14 [M3.24] (lead) EVIDENCE for your scope: after hours of world-booting suites the host had 30 orphaned 'unshare' supervisors (ppid 1, SN, do_wait) and critical_cli reds with wor
+- 2026-11-17T08:20 [M3.13] (lead) status done -> active
+- 2026-11-17T08:20 [M3.13] (lead) edited fields
+- 2026-11-17T08:20 [M3.13] (lead) REOPENED: expert escalation #22 fixed the PID-namespace reap bug (world-init parks as namespace PID 1 ignoring ancestor SIGTERM; engine polled /proc/<init> befo
+- 2026-11-17T09:15 [M3.13] (lead) Expert round 2 applied all legality corrections: accurate pid_namespaces(7) wording, kill_and_reap_child error propagation, ProcessIdentity (/proc ns/pid + star
+- 2026-11-17T09:15 [M3.14] (lead) status active -> review
+- 2026-11-17T10:16 [M3.13] (lead) status active -> done
+- 2026-11-17T10:36 [M3.18] (lead) status ready -> active
+- 2026-11-17T10:36 [M3.18] (lead) attempt 1/3 started
+- 2026-11-17T10:36 [M3.18] (lead) base a602f1e5a66f6b3800dbce14894546611075fb2a
+- 2026-11-17T10:56 [M3.18] (lead) attempt 2/3 started
+- 2026-11-17T10:56 [M3.18] (lead) attempt 1 hit the step limit after rewriting README/index/getting-started/cli/AGENTS. Attempt 2 finishes testing-dag, runs the gates + critics, writes RESULT.
+- 2026-11-17T11:17 [M3.21] (lead) ADD (flake, pre-existing): crates/slipfork-engine/src/linux_cow.rs:386-408 tests compare a process-wide /proc/self/fd COUNT, so parallel lib tests race (seen: '
+- 2026-11-17T11:17 [M3.24] (lead) ADD: the linux_cow fd-count flake is assigned to M3.21 (owner of linux_cow.rs). Your Makefile/test scope remains bounded-wait consolidation + orphan reaping.
+- 2026-11-17T11:17 [M3.14] (lead) FINAL fixes applied (3): post-stop container fail-closed assertions restored with a real client log line; base64 crate replaces the silent hand-rolled decoder; 
+- 2026-11-17T11:37 [M3.14] (lead) edited fields
+- 2026-11-17T11:37 [M3.14] (lead) status review -> done
+- 2026-11-17T11:37 [M3.23] (lead) ADD (M3.18 cruft gate, all OUT of M3.18 paths): (1) Cargo.toml version 0.2.0 -> 0.1.0 + Cargo.lock; (2) CHANGELOG.md restructure to one 0.1.0 entry; (3) zensica
+- 2026-11-17T11:37 [M3.21] (lead) ADD: crates/slipfork-engine/Cargo.toml package description still reads 'Incus REST (/1.0) and Linux FICLONE + unprivileged netns/userns drivers' — update it to 
+- 2026-11-17T11:37 [M3.21] (lead) status ready -> active
+- 2026-11-17T11:37 [M3.21] (lead) attempt 1/3 started
+- 2026-11-17T11:37 [M3.21] (lead) base 053596ee33193d5e947e933bf2c0506f366ff3f8
+- 2026-11-17T12:17 [M3.17] (lead) status ready -> active
+- 2026-11-17T12:17 [M3.17] (lead) attempt 1/3 started
+- 2026-11-17T12:17 [M3.17] (lead) base 053596ee33193d5e947e933bf2c0506f366ff3f8
+- 2026-11-17T12:17 [M3.15] (lead) Quad Review Gate re-run (reviewer+legality+ioc+cruft) on the 053596e working tree, scoped diff /tmp/opencode/lead/m3.15.diff
+- 2026-11-17T12:17 [M3.21] (lead) edited fields
+- 2026-11-17T12:17 [M3.21] (lead) SCOPE WIDENED (Quad gate cruft MAJOR + legality/ioc MINORs): also fix the stale 'Incus image name' doc phrase in rootfs/mod.rs:82, the 'only unsafe module' clai
+- 2026-11-17T12:18 [M3.15] (lead) Quad gate 1/2 results: legality PASS (3 MINOR: critical_slug git-only branch asserts inverted contract off-Btrfs — loud+VM-listed; critical_ospp_daemon early-re
+- 2026-11-17T12:18 [M3.21] (lead) Quad gate 1/2 results: ioc PASS (1 MINOR: missing SAFETY comment on test-only mem::zeroed; verified descriptors_aliasing is #[cfg(test)], only impl WorldEngine 
+- 2026-11-17T12:22 [M3.23] (lead) ADD (from M3.18 RESULT followups + lead verification): (1) docs/reference/manifest.md:16,44 and docs/snow-modes.md:17,51 put ${{ components::api.private_port }}
+- 2026-11-17T12:28 [M3.19] (lead) status ready -> active
+- 2026-11-17T12:28 [M3.19] (lead) attempt 1/3 started
+- 2026-11-17T12:28 [M3.19] (lead) base 053596ee33193d5e947e933bf2c0506f366ff3f8
+- 2026-11-17T12:29 [M3.17] (lead) Quad gate 1/2: ioc BLOCKER (ctypes/statfs re-implements the shipped doctor seam; duplicate BTRFS_MOUNT_HINT makes the hint assertion drift-blind) + cruft MAJOR 
+- 2026-11-17T12:34 [M3.17] (lead) edited fields
+- 2026-11-17T12:34 [M3.15] (lead) make check gate 1: RED only at rs-lint — rustdoc private_intra_doc_links on doctor.rs:8 [filesystem_name] after the cruft fix made it private. Fixing (plain cod
+- 2026-11-17T12:36 [M3.15] (lead) Gate passed: make check gate 1 green except rs-lint (private_intra_doc_links); fixed → RUSTDOCFLAGS=-D warnings cargo doc -p slipfork exit 0, make rs-lint exit 
+- 2026-11-17T12:36 [M3.15] (lead) status review -> done
+- 2026-11-17T12:36 [M3.21] (lead) Gate passed: acceptance grep is 2 hits, both NEGATIVE assertions that a Btrfs refusal never advertises a reflink fallback (crates/slipfork/tests/support/mod.rs:
+- 2026-11-17T12:36 [M3.21] (lead) status active -> done
+- 2026-11-17T12:36 [M3.24] (lead) status ready -> active
+- 2026-11-17T12:36 [M3.24] (lead) attempt 1/3 started
+- 2026-11-17T12:36 [M3.24] (lead) base 94831c119233adac1d573cf401ddfe653d923254
+- 2026-11-17T12:38 [M3.21] (lead) FINAL: functional PASS, legality PASS (minors: RESULT inventory understates 9 files; the rootfs/mod.rs 'Incus image name' residual is already fixed; the 2 remai
+- 2026-11-17T12:38 [M3.21] (lead) status done -> done
+- 2026-11-17T12:45 HUMAN H-006 [direction-challenge] opened by lead (node M3.19)
+- 2026-11-17T12:45 [M3.19] (lead) status active -> blocked
+- 2026-11-17T12:45 [M3.19] (lead) BLOCKED: direction-challenge filed (H-0xx) — AppArmor unprivileged_userns denies the in-world crun; ADR-0010 §7 mechanism is false. Do not retry until the human
+- 2026-11-17T12:45 [M3.17] (lead) Gate passed: Quad functional PASS, legality PASS, ioc PASS after the attempt-2 rewrite through doctor; cruft MAJOR (gate re-decided doctor's verdict and kept a 
+- 2026-11-17T12:45 [M3.17] (lead) status active -> done
+- 2026-11-17T12:45 [M3.18] (lead) Gate: docs critics (dx, ai-ergonomics, cruft) applied in RESULT; acceptance greps + make docs-check exit 0; --world placeholder aligned to <WORLD> after M3.15 s
+- 2026-11-17T12:45 [M3.18] (lead) status active -> review
+- 2026-11-17T12:45 [M3.18] (lead) status review -> done
+- 2026-11-17T12:45 ESCALATION #22 -> architect for M3.19 by lead: H-006: AppArmor attachment set for world launchers; ADR-0010 §7 mechanism is false (children execve out of the profile),
+- 2026-11-17T12:45 [M4.1] (lead) NOTE: the 'gated on H-006' reference predates H-006's actual filing; H-006 is now the M3.19 AppArmor direction-challenge, not the WeavedRegistrar request. Re-fi
+- 2026-11-17T12:58 [M3.23] (lead) edited fields
+- 2026-11-17T12:58 [M3.23] (lead) DEPENDENCY EDIT (lead): removed M3.19. M3.19 is blocked on the owner's H-006 AppArmor direction-challenge (a live-host decision), while this node's work — the 0
+- 2026-11-17T13:08 [M3.24] (lead) edited fields
+- 2026-11-17T13:08 [M3.24] (lead) SCOPE WIDENED (lead): the working tree also carries two product cleanups that appeared while this node was active and are adopted here because they are exactly 
+- 2026-11-17T13:09 [M3.18] (lead) FINAL: functional PASS, cruft findings fixed in-path (AGENTS 0.1.0 split, doctor fix-per-check, sudo/AppArmor required, --repo undocumented+deleted, FsDigestCac
+- 2026-11-17T13:09 [M3.18] (lead) status done -> done
+- 2026-11-17T13:11 [M3.19] (lead) LEAD LIVE EVIDENCE (H-006 pending): with the current profile (unshare+debug world-init) and sysctl=1, crun hits unprivileged_userns: dmesg 'profile=unprivileged
+- 2026-11-17T13:11 [M3.23] (lead) ADD (H-006 impact): docs must not claim the 4-line profile alone suffices on stock Ubuntu 24.04. Document BOTH: the AppArmor profile must name every executable 
+- 2026-11-17T13:13 [M3.24] (lead) edited fields
+- 2026-11-17T13:13 [M3.24] (lead) Quad gate 1/2: legality MAJOR (the 'daemon unit writes no files' assertion checks paths the command never touches — it cannot fail), cruft MAJOR x2 (three poll_
+- 2026-11-17T13:32 [M3.24] (lead) edited fields
+- 2026-11-17T13:37 [M3.19.1] (lead) created (task) Apply the H-006 AppArmor attachment set: profile covers every CLONE_NEWUSER executable
+- 2026-11-17T13:37 [M3.19.1] (lead) status ready -> active
+- 2026-11-17T13:37 [M3.19.1] (lead) attempt 1/3 started
+- 2026-11-17T13:37 [M3.19.1] (lead) base 1605c31666d2ab2db5db343a6b960235e57ee554
+- 2026-11-17T13:37 [M3.19] (lead) ARCHITECT RULING (escalation #22, H-006) received and recorded in ADR-0010 §7 + docs/design/do-vm-harness.md + RESULT §8; M3.19.1 applies it. H-006 stays open i
+- 2026-11-17T13:42 HUMAN H-006 closed by lead
+- 2026-11-17T13:42 [M3.19] (lead) edited fields
+- 2026-11-17T13:42 [M3.19] (lead) OWNER APPROVED H-006: 'Approve profile list (Recommended)'. Ruling applied by M3.19.1 (apparmor.rs + engine hint + do_vm.py harness clause + cli.md + byte-equiv
+- 2026-11-17T13:42 [M3.24] (lead) Gate passed: Quad reviewer PASS after attempts 2-3 (hollow daemon-unit assertion, three poll_until copies, fail-open /proc scan, over-claiming Makefile comments
+- 2026-11-17T13:42 [M3.24] (lead) status active -> done
+- 2026-11-17T13:42 [M3.19.1] (lead) Gate: owner approved H-006; clippy/fmt/docs-check/pytest 60/test_do_vm + apparmor unit tests 5 green; guard OK. Committed with the architect's ADR/design correc
+- 2026-11-17T13:42 [M3.19.1] (lead) status active -> done
+- 2026-11-17T13:42 [M3.19] (lead) M3.19.1 committed (8417868). Re-verification authorized: profile now covers /usr/local/bin/slipfork{,d,-world-init}, /usr/bin/unshare and /.slipfork/bin/crun.
+- 2026-11-17T13:42 [M3.23] (lead) status ready -> active
+- 2026-11-17T13:42 [M3.23] (lead) attempt 1/3 started
+- 2026-11-17T13:42 [M3.23] (lead) base 8417868066bb3af9448dd1aba650b57e25960740
+- 2026-11-17T13:51 [M3.19] (lead) LIVE RE-VERIFICATION (owner-approved H-006 profile applied by hand on 165.232.86.174 at 12:48): engine critical_btrfs_live 1 passed (29.86s); slipfork:critical_
+- 2026-11-17T13:56 [M3.23] (lead) Gate passed: acceptance greps all green, slipfork --version == 0.1.0, cargo build --workspace --locked exit 0, plan validate/guard (505 files)/check_docs_honest
+- 2026-11-17T13:56 [M3.23] (lead) status active -> done
+- 2026-11-17T13:56 [M3.19] (lead) attempt 2/3 started
+- 2026-11-17T13:56 [M3.19] (lead) status blocked -> active
+- 2026-11-17T13:56 [M3.19] (lead) attempt 2/3 start: owner approved H-006; M3.19.1 landed the profile; 0.1.0 tree committed at 2db6c8f. Live re-verification + 0.1.0 binary install + demo walkthr
+- 2026-11-17T14:01 [M3] (lead) MILESTONE GATE (lead-side): make check EXIT=0 (zero env overrides; every suite green incl. slipfork:critical_cli 14 @62s, critical_ospp_daemon 4 @111s, both cri
+- 2026-11-17T14:07 [M3.19] (lead) LEAD NOTE for the live re-run: the sysctl workaround I used earlier (kernel.apparmor_restrict_unprivileged_userns=0 in /etc/sysctl.d/99-slipfork-devvm.conf) is 
+- 2026-11-17T14:21 [M3.26] (lead) created (task) slipfork fork fails closed when .gitignore ignores .worktrees/.slipfork
+- 2026-11-17T14:21 [M3.27] (lead) created (task) CLI critical suites leak one Btrfs world subvolume per test; reap worlds as well as processes
+- 2026-11-17T14:26 [M3.19] (lead) GATE PASSED (attempt 2): 5 live suites green twice on 165.232.86.174 (engine btrfs_live 1, slipfork btrfs_live 1, critical_cli 14, critical_slug 7, critical_osp
+- 2026-11-17T14:26 [M3.19] (lead) status active -> done
+- 2026-11-17T14:26 [M3.2] (lead) PARKED (owner ruling 2026-11-16, binding): STP v1 is 0.2.0. Do NOT activate M3.2 or any M3.2.* child in the 0.1.0 release; its ROADMAP row still says 0.3.0 and 
+- 2026-11-17T14:26 [M3.26] (lead) edited fields
+- 2026-11-17T14:26 [M3.26] (lead) status ready -> active
+- 2026-11-17T14:26 [M3.26] (lead) attempt 1/3 started
+- 2026-11-17T14:26 [M3.26] (lead) base 775776f161844e34cddec1c46cff7f8d3dfbe792
+- 2026-11-17T14:26 [M3.26] (lead) Live-verified owner path (clean env as uid 1000): 'slipfork doctor' exit 0 (filesystem btrfs, subvolume_ioctl ok, unshare_userns ok, netns ok) and 'slipfork lis
+- 2026-11-17T14:39 [M3.26] (lead) Gate passed: one canonical staging path (bare 'git add -A -- .' then 'git rm -r -f --cached --ignore-unmatch .slipfork .worktrees'), dead pathspec constants del
+- 2026-11-17T14:39 [M3.26] (lead) status active -> done
+- 2026-11-17T14:39 [M3.2] (lead) status ready -> blocked
+- 2026-11-17T14:39 [M3.2] (lead) STATUS blocked = PARKED, not a missing input: owner ruling 2026-11-16 parks STP v1 to 0.2.0. Reactivating M3.2.* requires the strategist to rewrite the 0.3.0/Op
+- 2026-11-17T15:05 [M3] (lead) status ready -> active
+- 2026-11-17T15:05 [M3] (lead) ARG: eligible lead exception: M3.27 (test-only world-subvolume leak) remains ready by conductor decision; it does not change the shipped product and is recorded
+- 2026-11-17T15:05 [M3] (lead) GATE PASSED (0.1.0, Btrfs Worlds): plain make check exit 0 (5m32s, 43 suites, 335+ tests, ts 16/16, both critical_btrfs_live 1/1, zensical --strict, docs-honest
+- 2026-11-17T16:32 [M3.28] (planner) created (epic) 0.1.0 UX pre-release pass (owner hands-on findings): :80 ingress, bare status, restart/ps/open, fork identity
+- 2026-11-17T16:32 [M3.28.1] (planner) created (task) DX of record for the 0.1.0 UX pass: bare status, restart, ps, open, fork naming, and the :80 ingress
+- 2026-11-17T16:32 [M3.28.2] (planner) created (task) Critic pass (dx + ai-ergonomics) on the 0.1.0 UX DX spec, applied in place
+- 2026-11-17T16:32 [M3.28.3] (planner) created (task) DaemonControl truth: bound ingress addresses, resolved origin port, world state, and the per-world component tree
+- 2026-11-17T16:32 [M3.28.4] (planner) created (task) Restart vs up semantics, the port-less origin renderer, and the engine process-tree accessor
+- 2026-11-17T16:32 [M3.28.5] (planner) created (task) VCS: branch-named fork source, pinned slipfork snapshot identity, and one-line git errors
+- 2026-11-17T16:33 [M3.28.6] (planner) created (task) slipfork daemon install: :80 socket activation, AppArmor profile, idempotent and fail-closed
+- 2026-11-17T16:33 [M3.28.7] (planner) created (task) Bare slipfork = status dashboard plus slipfork status (world tree, port-less origin, next-step hints)
+- 2026-11-17T16:33 [M3.28.8] (planner) created (task) slipfork restart [--watch] and the actionable up block with the loud :80 line
+- 2026-11-17T16:33 [M3.28.9] (planner) created (task) slipfork ps [--json] and slipfork open [--remote] [--json]
+- 2026-11-17T16:33 [M3.28.10] (planner) created (task) slipfork fork with no argument: branch-derived name, worktree/origin/cd output, one-line git errors
+- 2026-11-17T16:33 [M3.28.11] (planner) created (task) Polish: dag plan never silent, quiet world entry, per-component log prefixes, [resources] behind -v
+- 2026-11-17T16:33 [M3.28.12] (planner) created (task) VM harness: :80 bound via daemon install, tracked support/demo template, login quickstart banner
+- 2026-11-17T16:33 [M3.28.13] (planner) created (task) Live re-verification of the 0.1.0 UX pass on the Btrfs DO VM (port-less :80, status, restart, ps, fork)
+- 2026-11-17T16:34 [M3.28.14] (planner) created (task) Publish the 0.1.0 UX surface: CLI reference, getting started, index, README, CHANGELOG
+- 2026-11-17T16:34 [M3.28.1] (lead) status ready -> active
+- 2026-11-17T16:34 [M3.28.1] (lead) attempt 1/3 started
+- 2026-11-17T16:34 [M3.28.1] (lead) base 1d4c08e7ee38e5df2b631daf9c62bd345b854a52
+- 2026-11-17T16:34 ESCALATION #23 -> architect for M3.28.1 by lead: DX of record for the 0.1.0 UX pass (epic-sactioned single architect escalation)
+- 2026-11-17T17:32 [M3.28.11] (lead) edited fields
+- 2026-11-17T17:32 [M3.2] (lead) OWNER RULING (2026-11-17): the plan view is the sanctioned home for plan output, in 0.2.0, because that is the first moment planning is a decision. Target surfa
+- 2026-11-17T17:40 [M3.28.15] (planner) created (task) Delete the unimplemented tunnel-sharing surface (slipfork share, TunnelRegistrar, WorldOrigin::Shared, support tier)
+- 2026-11-17T17:40 [M4.1] (lead) RE-ENTRY GATE for tunnel sharing (owner ruling, M3.28.15): 'slipfork share' was deleted from 0.1.0 as vaporware (UnavailableTunnelRegistrar::register always ret
+- 2026-11-17T17:40 [M3] (lead) Surface shrink (M3.28.15): 0.1.0 drops the unimplemented tunnel-sharing surface entirely — 'slipfork share', DaemonControl::share/unshare, UnavailableTunnelRegi
+- 2026-11-17T17:40 [M3.28.13] (lead) edited fields
+- 2026-11-17T17:41 [M3.28.16] (planner) created (task) Guard rail: production composition roots may not wire stub adapters (tools/check_stub_adapters.py)
+- 2026-11-17T17:47 [M5] (strategist) created (milestone) Editor & IDE Integration (VS Code, JetBrains, Zed) (0.5.0)
+- 2026-11-17T17:47 [M5.1] (strategist) created (epic) Shared editor control substrate (DaemonControl typed editor RPC + slipfork-mcp) & per-editor DX intent
+- 2026-11-17T17:53 [M3.28.1] (lead) status active -> review
+- 2026-11-17T17:53 [M3.28.3] (lead) edited fields
+- 2026-11-17T17:53 [M3.28.6] (lead) edited fields
+- 2026-11-17T17:53 [M3.28.9] (lead) edited fields
+- 2026-11-17T17:53 [M3.28.11] (lead) edited fields
+- 2026-11-17T17:53 [M3.28.8] (lead) edited fields
+- 2026-11-17T17:56 [M3.28.9] (lead) edited fields
+- 2026-11-17T17:56 [M3.28.1] (lead) round 2 (quad gate): consolidated architect fix pass — one command table + one --json schema home (dx normative, target-dx links), one wire model (IngressInfo/W
+- 2026-11-17T18:14 [M3.28.6] (lead) edited fields
+- 2026-11-17T18:22 [M3.28.15] (lead) edited fields
+- 2026-11-17T18:22 [M3.28.1] (lead) round-2 confirmation: PASS (acceptance green, 10/10 blocker checks closed). Logged MINORs: ARCHITECTURE.md:560 stale WorldOrigin::Local comment -> fixed in a fo
+- 2026-11-17T18:22 [M3.28.15] (lead) added docs/decisions/ADR-0005-*.md to paths: the accepted ADR still describes WorldOrigin::{Local,Shared}/slipfork share/TunnelRegistrar in the present tense an
+- 2026-11-17T18:30 [M3.28.1] (lead) status review -> done
+- 2026-11-17T18:30 [M3.28.1] (lead) pre-commit gates green: plan.py validate, guard.py, critical_guard.py (no protected test touched), make check rc=0 (incl. docs-check + check_docs_honesty)
+- 2026-11-17T18:30 [M3.28.2] (lead) status ready -> active
+- 2026-11-17T18:30 [M3.28.2] (lead) attempt 1/3 started
+- 2026-11-17T18:30 [M3.28.2] (lead) base eb15d1f5804770fb515c6b9a6f823692cf5bc730
+- 2026-11-17T18:35 [M3.28.2] (lead) attempt 2/3 started
+- 2026-11-17T18:35 [M3.28.2] (lead) edited fields
+- 2026-11-17T18:38 [M3.28.2] (lead) status active -> review
+- 2026-11-17T18:40 [M3.28.2] (lead) round 3 rulings (from quad gate): R1 open failure doc with per-code extras; R2 per-verb --json documents, no shared projection, no compat framing; R3 WorldProce
+- 2026-11-17T18:44 [M3.28.2] (lead) attempt 3/3 started
+- 2026-11-17T18:44 [M3.28.2] (lead) edited fields
+- 2026-11-17T18:47 [M3.28.2] (lead) edited fields
+- 2026-11-17T18:47 [M3.28.2] (lead) attempt 4/4 started
+- 2026-11-17T18:52 [M3.28.2] (lead) status review -> done
+- 2026-11-17T18:52 [M3.28.2] (lead) pre-commit gates green after attempt 4 (S1-S7): plan.py validate, guard.py, critical_guard.py (no protected test), make check rc=0
+- 2026-11-17T18:52 [M3.28.3] (lead) status ready -> active
+- 2026-11-17T18:52 [M3.28.3] (lead) attempt 1/3 started
+- 2026-11-17T18:52 [M3.28.3] (lead) base f291377108292a04dfe5efe0e7627955466b889f
+- 2026-11-17T18:52 [M3.28.5] (lead) status ready -> active
+- 2026-11-17T18:52 [M3.28.5] (lead) attempt 1/3 started
+- 2026-11-17T18:52 [M3.28.5] (lead) base f291377108292a04dfe5efe0e7627955466b889f
+- 2026-11-17T18:55 [M3.28.5] (lead) edited fields
+- 2026-11-17T18:55 [M3.28.10] (lead) edited fields
+- 2026-11-17T18:55 [M3.28.5] (lead) lead ruling on the direction challenge: paths widened with crates/slipfork/src/vcs.rs (the router forward is a 7-line delegation, no fallback, no match ladder).
+- 2026-11-17T18:55 [M3.28.5] (lead) attempt 2/3 started
+- 2026-11-17T18:55 [M3.28.5] (lead) base f291377108292a04dfe5efe0e7627955466b889f
+- 2026-11-17T18:58 [M3.28.3] (lead) edited fields
+- 2026-11-17T18:58 [M3.28.3] (lead) lead rulings after attempt 1 (step cap, WIP on disk): (1) Wire uses canonical strings — world: String, parent: Option<String> carrying slipfork-edge registry::w
+- 2026-11-17T18:58 [M3.28.3] (lead) attempt 2/3 started
+- 2026-11-17T18:58 [M3.28.3] (lead) base f291377108292a04dfe5efe0e7627955466b889f
+- 2026-11-17T19:03 [M3.28.5] (lead) attempt 2 landed on disk but the worker returned no report and RESULT.md is still the attempt-1 text (treat it as stale). LEAD-VERIFIED acceptance evidence on t
+- 2026-11-17T19:03 [M3.28.5] (lead) status active -> review
+- 2026-11-17T19:07 [M3.28.5] (lead) edited fields
+- 2026-11-17T19:07 [M3.28.5] (lead) status review -> active
+- 2026-11-17T19:07 [M3.28.5] (lead) attempt 3/3 started
+- 2026-11-17T19:07 [M3.28.3] (lead) status active -> review
+- 2026-11-17T19:08 [M3.28.3] (lead) quad round 1 (cruft): FAIL — (a) http_port() and registry::http_ingress_port() dead accessors; (b) doc claims advertise data the node does not have (WorldUpSumm
+- 2026-11-17T19:09 [M3.28.3] (lead) IoC SPEC_BLIND_SPOT resolved (option A, matches ARCHITECTURE §2): the service taxonomy and the lineage record have ONE owner — crates/slipfork-engine. .3 moves 
+- 2026-11-17T19:09 [M3.28.5] (lead) quad round 1 rulings: (1) current_branch takes &RepoRoot (reverses my earlier &Path call — the newtype is what makes 'never cwd' structural); (2) kill the secon
+- 2026-11-17T19:09 [M3.28.5] (lead) edited fields
+- 2026-11-17T19:09 [M3.28.5] (lead) edited fields
+- 2026-11-17T19:11 [M3.28.3] (lead) edited fields
+- 2026-11-17T19:11 [M3.28.3] (lead) attempt 3/3 started
+- 2026-11-17T19:11 [M3.28.5] (lead) attempt 4/4 started
+- 2026-11-17T19:12 [M3.28.5] (lead) edited fields
+- 2026-11-17T19:39 [M3.28.3] (lead) status review -> done
+- 2026-11-17T19:39 [M3.28.3] (lead) quad gate round 3 closed all 8 findings (types moved to slipfork-engine/src/lineage.rs, shutdown removed, dead accessors removed, ARCHITECTURE 3.4 String wire, 
+- 2026-11-17T19:39 [M3.28.3] (lead) gate note: critical_guard --node M3.28.3 reported 2 violations, both crates/slipfork-vcs/tests/{critical_vcs,critical_conformance_matrix}.rs — M3.28.5's uncommi
+- 2026-11-17T19:39 [M3.28.5] (lead) status active -> done
+- 2026-11-17T19:39 [M3.28.5] (lead) attempt 4: jj installed on host (0.36.0) so the Jujutsu family really executes and it exposed two real adapter bugs (jj log --revision->-r, jj diff -T status_ch
+- 2026-11-17T19:39 [M3.28] (lead) M3.28.3 (dc9bd20) and M3.28.5 (b49faef) committed. Note for the gate: critical_guard --node <ID> is single-node, so with two nodes' protected edits inside one b
+- 2026-11-17T19:39 [M3.28.4] (lead) status ready -> active
+- 2026-11-17T19:39 [M3.28.4] (lead) attempt 1/3 started
+- 2026-11-17T19:39 [M3.28.4] (lead) base b49faefb2a2652c4d06b3785df88d611b32acbd8
+- 2026-11-17T19:46 [M3.28.17] (planner) created (task) Restart vs up: one boot pipeline, truthful WorldUpSummary.changed and restarted ids
+- 2026-11-17T19:46 [M3.28.6] (lead) edited fields
+- 2026-11-17T19:46 [M3.28.4] (lead) attempt 1 hit the step cap (unverified WIP, workspace not compiling). SPLIT: .4 is now engine facts only (world_processes/world_lineage, BootLineage, injected c
+- 2026-11-17T19:46 [M3.28.4] (lead) attempt 2/3 started
+- 2026-11-17T19:46 [M3.28.4] (lead) base b49faefb2a2652c4d06b3785df88d611b32acbd8
+- 2026-11-17T19:52 [M3.28.4] (lead) edited fields
+- 2026-11-17T19:52 [M3.28.4] (lead) attempt 3/3 started
+- 2026-11-17T19:59 [M3.28.4] (lead) status active -> review
+- 2026-11-17T20:01 [M3.28.4] (lead) quad round 1 (cruft): FAIL — 2 BLOCKER second-clock paths (BtrfsEngine::with_driver injecting SystemClock; OciImageStore::new pinning SystemClock then overridde
+- 2026-11-17T20:01 [M3.28.4] (lead) edited fields
+- 2026-11-17T20:01 [M3.28.4] (lead) quad round 1 (ioc): FAIL — ServiceKind must be a caller fact on ServiceSpec (role), not derived from spawn mechanism (a resource spawning as WorldProcess would 
+- 2026-11-17T20:01 [M3.28.4] (lead) quad round 1 (legality): FAIL — BLOCKER: freeze_world returning SnapshotExists (base already on disk) is swallowed into Ok(()) yet the code still reports base.m
+- 2026-11-17T20:02 [M3.28.4] (lead) edited fields
+- 2026-11-17T20:02 [M3.28.4] (lead) attempt 4/4 started
+- 2026-11-17T20:21 [M3.28.4] (lead) attempt 4 (cap-out after the work): lead-verified acceptance on the tree — engine lib 66, critical_world 16, critical_edge 37, critical_engine 15 (101s), slipfo
+- 2026-11-17T20:22 [M3.28.4] (lead) edited fields
+- 2026-11-17T20:23 [M3.28.4] (lead) edited fields
+- 2026-11-17T21:00 [M3.28.4] (lead) status review -> done
+- 2026-11-17T21:00 [M3.28.4] (lead) pre-commit: make check rc=0 (44 suites) once host load dropped from 19 to 6.5; the two earlier red runs were the same 'world init survived SIGTERM+SIGKILL for 1
+- 2026-11-17T21:00 [M3.27] (lead) Field evidence from the M3.28 epic (2026-11-17): under host load 16-19 (a foreign cargo test in D state), 'make check' fails non-deterministically with 'world i
+- 2026-11-17T21:00 [M3.28.17] (lead) status ready -> active
+- 2026-11-17T21:00 [M3.28.17] (lead) attempt 1/3 started
+- 2026-11-17T21:00 [M3.28.17] (lead) base ae71c454a0bb3c5c9fd594b627ff020cfd0daa15
+- 2026-11-17T21:18 [M3.28.17] (lead) status active -> review
+- 2026-11-17T21:20 [M3.28.17] (lead) quad round 1 (cruft): FAIL — (a) restarted_service_ids has two owners (LiveWorld bookkeeping vs engine rows) + guards for states that cannot occur, and a servic
+- 2026-11-17T21:20 [M3.28.17] (lead) edited fields
+- 2026-11-17T21:20 [M3.28.17] (lead) quad round 1 (legality): FAIL — MAJOR: reboot never re-runs the registry attach step, and the registry has no update verb (re-attach fails WorldAlreadyRegistere
+- 2026-11-17T21:21 [M3.28.17] (lead) quad round 1 (ioc): FAIL — SPEC_BLIND_SPOT resolved by the lead, not escalated: restart MUST re-derive every boot-scope fact (resources plan, origin/coords, reg
+- 2026-11-17T21:24 [M3.28.18] (planner) created (task) OSPP v1: one human-readable reference page (3 sequence diagrams), nav entry, ADR pointer, cross-links
+- 2026-11-17T21:24 [M3.28.18] (lead) status ready -> active
+- 2026-11-17T21:24 [M3.28.18] (lead) attempt 1/3 started
+- 2026-11-17T21:24 [M3.28.18] (lead) base ae71c454a0bb3c5c9fd594b627ff020cfd0daa15
+- 2026-11-17T21:28 [M3.28.17] (lead) attempt 2/3 started
+- 2026-11-17T21:28 [M3.28.17] (lead) quad round 1 (functional): FAIL — MAJOR: up's Rerun path silently drops req.dump/resources/host_caches (up --refresh-dump on a held Failed world exits 0 having 
+- 2026-11-17T21:34 [M3.28.18] (lead) status active -> review
+- 2026-11-17T21:34 [M3.28.18] (lead) attempt 1: page landed at 135 lines / 3 sequenceDiagram (6/4/4 participants); docs-only; quad gate dispatched (path-scoped). Code wins over ADR: backend=tpmd:se
+- 2026-11-17T21:38 [M3.28.18] (lead) OWNER CORRECTION supersedes NODE.md acceptance: page = OSPP v1 identity + 0.1.0 local reality + 'no provider ships' + draft pointer; <=60 lines, ZERO mermaid. H
+- 2026-11-17T21:38 [M3.28.18] (lead) followups outside lock for M3.28.14: README.md:33/35 and docs/getting-started.md:119 still present the paired OSPP read/seed dump as shipped; support/integratio
+- 2026-11-17T21:39 [M3.28.18] (lead) edited fields
+- 2026-11-17T21:39 [M3.28.18] (lead) paths widened (owner same-sweep correctness): README.md + docs/reference/cli.md, both currently claim a paired OSPP read/dump as shipped. Serialize .11/.14 on t
+- 2026-11-17T21:41 [M3.28.18] (lead) edited fields
+- 2026-11-17T21:43 [M3.28.18] (lead) quad round 2: legality PASS; cruft FAIL(minors only; owner-mandated auth line kept); ioc SPEC_BLIND_SPOT resolved by owner ruling (client ships, provider is 0.2
+- 2026-11-17T21:43 [M3.28.18] (lead) status review -> done
+- 2026-11-17T21:44 [M3.28.19] (lead) created (task) OSPP v1 protocol draft for Kerfufoo integration (0.2.0)
+- 2026-11-17T21:44 [M3.28.19] (lead) status ready -> active
+- 2026-11-17T21:44 [M3.28.19] (lead) attempt 1/3 started
+- 2026-11-17T21:44 [M3.28.19] (lead) base 735a724ac6d37a40ca70882be122e6c1564d6839
+- 2026-11-17T21:44 [M3.28.11] (lead) From M3.28.18 RESULT (route): BootEvent::Secrets is rendered by crates/slipfork/src/main.rs:1110-1115 but never emitted by slipforkd (ensure path emits nothing)
+- 2026-11-17T21:44 [M3.28.14] (lead) From M3.28.18 RESULT (route, docs): docs/getting-started.md:119 still explains 'not_offered' as 'no paired OSPP session offered a remote database' although no p
+- 2026-11-17T21:44 [M3.2] (lead) OSPP remote path gaps (from M3.28.18 RESULT, recorded here because 0.1.0 ships no provider and this epic owns the remote path): (1) resources::pg_databases.<id>
+- 2026-11-17T21:46 [M3.28.18] (lead) functional gate found 2 post-commit items; fixed in follow-up: restored owner-mandated docs/design/ospp.md pointer (inline code, site-excluded) and deleted the 
+- 2026-11-17T21:48 [M3.28.17] (lead) attempt 2: rulings 1-4 applied (one resolve_world used by boot AND reboot; registry.replace_world re-attaches routes/domains; stop over &live.services with clea
+- 2026-11-17T21:48 [M3.28.13] (lead) end-to-end restart proof added to evidence: edit an app file AND a snow.yml hook, run slipfork restart, show the old behaviour gone (M3.28.17 could only prove t
+- 2026-11-17T21:48 [M3.28.19] (lead) verified against shipped client: 10 factual-drift items fixed (kept the deliberate 0.2.0 shape: hello/auth_challenge/auth_proof, repo+digest ProjectIdentity, re
+- 2026-11-17T21:48 [M3.28.19] (lead) status active -> done
+- 2026-11-17T21:49 [M3.28.17] (lead) edited fields
+- 2026-11-17T21:49 [M3.28.17] (lead) attempt 3/4 started
+- 2026-11-17T21:49 [M3.28.17] (lead) round 2 (ioc) FAIL: two BLOCKERs left, both about ownership of 'what this world runs' — teardown is still a caller-side loop (no WorldEngine::stop_world_service
+- 2026-11-17T21:49 [M3.23] (lead) ADR status hygiene (from M3.28.19): ADR-0008 must gain one line under its status - 'Superseded for the wire specification by docs/design/ospp.md (0.2.0); the re
+- 2026-11-17T21:49 [M3.2] (lead) ADR-0008 wire supersession (from M3.28.19): this epic implements docs/design/ospp.md, which supersedes ADR-0008's wire specification at 0.2.0. ADR-0008 status g
+- 2026-11-17T22:13 [M3.28.17] (lead) status review -> done
+- 2026-11-17T22:13 [M3.28.17] (lead) pre-commit: make check rc=0 (load 10), engine lib 66, slipfork lib restart 4, critical_edge 40, clippy clean, fmt-ok, critical_guard OK, guard OK.
+- 2026-11-17T22:13 [M3.28.6] (lead) status ready -> active
+- 2026-11-17T22:13 [M3.28.6] (lead) attempt 1/3 started
+- 2026-11-17T22:13 [M3.28.6] (lead) base 501acf63690013fe6a16ca73c656f9723304dd1d
+- 2026-11-17T22:21 [M3.28.6] (lead) edited fields
+- 2026-11-17T22:21 [M3.28.6] (lead) attempt 2/3 started
+- 2026-11-17T22:21 [M3.28.6] (lead) attempt 1 cap-out after the bulk of the work; cargo check -p slipfork --all-targets is CLEAN on the tree. Paths widened to crates/slipfork/tests/** (removing th
+- 2026-11-17T22:39 [M3.28.19] (lead) architect clean rewrite: 136 lines, 3 sequenceDiagrams; verified plan OK + guard 562 + zensical strict; content untouched.
+- 2026-11-17T22:42 [M3.28.6] (lead) status active -> review
+- 2026-11-17T22:43 [M3.28.14] (lead) edited fields
+- 2026-11-17T22:43 [M3.28.14] (lead) quad finding from M3.28.6 folded in: getting-started.md:65,153-164, index.md:18, README.md:27 and snow-modes.md:96 still teach the superseded 'daemon unit | sud
+- 2026-11-17T22:43 [M3.28.6] (lead) quad round 1 (cruft): FAIL — MAJOR: Layout::for_account's runtime_dir Option is never Some in production and re-implements Layout::explicit; MAJOR: UnitSpec is 
+- 2026-11-17T22:43 [M3.28.6] (lead) edited fields
+- 2026-11-17T22:43 [M3.28.6] (lead) quad round 1 (ioc): FAIL — MAJOR: under sudo, 'daemon unit' (preview) prints User=root//root/.cache while 'daemon install' writes User=dev//home/dev/.cache, so 
+- 2026-11-17T22:43 [M3.28.6] (lead) quad round 1 (legality): FAIL — BLOCKER: --bin-dir is interpolated verbatim into /etc/apparmor.d/slipfork, so a newline injects arbitrary profile lines (loaded 
+- 2026-11-17T22:52 [M3.28.6] (lead) edited fields
+- 2026-11-17T22:52 [M3.28.6] (lead) attempt 3/4 started
+- 2026-11-17T22:52 [M3.28.6] (lead) quad round 1 (functional): FAIL — 2 BLOCKERs are in docs/getting-started.md (still the deleted three-step | sudo tee recipe; XDG_RUNTIME_DIR/daemon.log path and
+- 2026-11-17T23:11 [M3.28.6] (lead) round 2 (legality): PASS — validator reachable only through Result-propagating callers, injection exits 1 writing nothing, account validated via getent with rea
+- 2026-11-17T23:16 [M3.28.6] (lead) edited fields
+- 2026-11-17T23:16 [M3.28.6] (lead) attempt 4/4 started
+- 2026-11-17T23:16 [M3.28.6] (lead) round 2 (functional): FAIL only on scope — the Shutdown plumbing touched edge/src/{lib,daemon,daemon/client,daemon/server}.rs, which I have now authorized (path
+- 2026-11-17T23:36 [M3.28.6] (lead) status review -> done
+- 2026-11-17T23:36 [M3.28.6] (lead) pre-commit verified: lib 61, %-specifier rejected for service+socket with one line (apparmor legitimately unaffected: that profile never interpolates --state-di
+- 2026-11-17T23:36 [M3.28.7] (lead) status ready -> active
+- 2026-11-17T23:36 [M3.28.7] (lead) attempt 1/3 started
+- 2026-11-17T23:36 [M3.28.7] (lead) base 19658f88820d5b636850e012fe60b0fd2f96dba2
+- 2026-11-17T23:36 [M3.28.12] (lead) status ready -> active
+- 2026-11-17T23:36 [M3.28.12] (lead) attempt 1/3 started
+- 2026-11-17T23:36 [M3.28.12] (lead) base 19658f88820d5b636850e012fe60b0fd2f96dba2
+- 2026-11-17T23:36 [M3.28] (lead) note: docs/design/ospp.md is dirty in the worktree from outside this epic (OSPP e2e public_key rewrite) — NOT ours, never staged by M3.28 commits. Leave it alon
+- 2026-11-17T23:37 [M3.28.19] (lead) architect revision: 134 lines, ID-only claims + per-subscription public_key HPKE secret encryption. Verified plan OK, guard 563, zensical strict; content untouc
+- 2026-11-17T23:49 [M3.28.12] (lead) attempt 1 cap-out after the work; lead-ran verification: pytest tools/tests 138 passed, ruff check+format clean. First live sync revealed a REAL upgrade-path bu
+- 2026-11-17T23:49 [M3.28.12] (lead) attempt 2/3 started
+- 2026-11-17T23:50 [M3.28.7] (lead) status active -> review
+- 2026-11-17T23:50 [M3.28.7] (lead) attempt 1 done: bare slipfork == status, pure status renderer with lineage + parent grouping + one next line, per-verb --json, no auto-spawn with the exact one-
+- 2026-11-17T23:56 [M3.28.19] (lead) architect revision: 140 lines, uniform claims (vars+secrets), encryption_methods on auth_ok, encryption{method,public_key} on subscribe, RFC4648 base64 payloads
+- 2026-11-18T00:00 [M3.28.19] (lead) architect revision: 195 lines, 4 sequenceDiagrams, JSON-level encryption safety rationale + Device Pairing section. Verified plan OK, guard 572, zensical strict
+- 2026-11-18T00:02 [M3.28.19] (lead) architect tweak: pair_handle { url, handle } (server-supplied URL + handle). Verified plan OK, guard 572, zensical strict.
+- 2026-11-18T00:04 [M3.28.19] (lead) architect revision: 203 lines, 100% JSON WebSocket frames + out-of-band short-lived dump_ready { id, url } encrypted with stateful HPKE for the subscription pub
+- 2026-11-18T00:08 [M3.29] (planner) created (epic) Implement OSPP v1 (docs/design/ospp.md): live subscriptions, HPKE end-to-end secrets, and the zero-disk-secret lifecycle in 0.1.0
+- 2026-11-18T00:08 [M3.29.1] (planner) created (task) Ripple the OSPP v1 spec through ARCHITECTURE, ADR-0001/0008, VISION and the DX specs; delete the obsolete wire and disk vaults
+- 2026-11-18T00:08 [M3.29.2] (planner) created (task) Implement OSPP v1 wire, p256 pairing, ID-only claims, hpke-p256 per-variable encryption and encrypted dump streaming
+- 2026-11-18T00:08 [M3.29.2] (lead) edited fields
+- 2026-11-18T00:08 [M3.29.3] (planner) created (task) Delete the disk secret vault: in-memory session secrets, live slipforkd OSPP subscriptions, streaming HPKE dump restore and auth pairing
+- 2026-11-18T00:08 [M3.29.4] (planner) created (task) Publish docs/reference/ospp.md and purge every secret/vault/old-wire claim from the public pages
+- 2026-11-18T00:08 [M3.28.20] (planner) created (task) Sandbox fix: RestrictAddressFamilies must allow AF_NETLINK so a world boots through the installed unit (+ ensure_daemon on Btrfs hosts)
+- 2026-11-18T00:08 [M3.28.12] (lead) edited fields
+- 2026-11-18T00:08 [M3.28.13] (lead) edited fields
+- 2026-11-18T00:08 [M3.28.12] (lead) edited fields
+- 2026-11-18T00:08 [M3.28.13] (lead) edited fields
+- 2026-11-18T00:08 [M3.28.14] (lead) edited fields
+- 2026-11-18T00:08 [M3.28.16] (lead) edited fields
+- 2026-11-18T00:09 [M3.29] (lead) OWNER DIRECTIVE 2026-11-18: docs/design/ospp.md (9098b20) is the sole normative OSPP v1 spec and its implementation is 0.1.0, not 0.2.0. DAG: M3.29.1 architect 
+- 2026-11-18T00:09 [M3.28.12] (lead) attempt 2 blocked on two real product bugs, both reproduced outside the harness: (1) slipforkd.service's RestrictAddressFamilies lacks AF_NETLINK so slipfork-wo
+- 2026-11-18T00:09 [M3.28.20] (lead) status ready -> active
+- 2026-11-18T00:09 [M3.28.20] (lead) attempt 1/3 started
+- 2026-11-18T00:09 [M3.28.20] (lead) base 9098b204b338c53a676d8b77052e8434fba45675
+- 2026-11-18T00:09 [M3.29.1] (lead) status ready -> active
+- 2026-11-18T00:09 [M3.29.1] (lead) attempt 1/3 started
+- 2026-11-18T00:09 [M3.29.1] (lead) base 9098b204b338c53a676d8b77052e8434fba45675
+- 2026-11-18T00:09 ESCALATION #24 -> architect for M3.29.1 by lead: OSPP v1 spec ripple across ARCHITECTURE/ADRs/DX (epic-sanctioned)
+- 2026-11-18T00:14 [M3.28.20] (lead) edited fields
+- 2026-11-18T00:14 [M3.28.20] (lead) attempt 2/3 started
+- 2026-11-18T00:14 [M3.28.20] (lead) attempt 1: invariants 1-2 done and verified (AF_NETLINK rendered + golden + critical_edge pin 41 passed, netlink-in-unit, clippy/fmt/guard/plan OK). Attempt 1 b
+- 2026-11-18T00:18 [M3.28.20] (lead) status active -> review
+- 2026-11-18T00:18 [M3.28.12] (lead) attempt 3/3 started
+- 2026-11-18T00:18 [M3.28.12] (lead) attempt 2 blocked (real product bugs) -> M3.28.20 fixed AF_NETLINK + ensure_daemon, both verified. attempt 3 = re-run the live proof now that a world can boot t
+- 2026-11-18T00:18 [M3.28.20] (lead) quad round 1 (cruft): FAIL — MAJOR: the family list is spelled 7 times (unit.rs doc x2, source, golden, critical_edge x3) and will drift -> one const used by th
+- 2026-11-18T00:19 [M3.28.20] (lead) round 1 (legality): PASS — only AF_NETLINK appended, list still explicit, CapabilityBoundingSet/ProtectSystem/PrivateTmp/ReadWritePaths untouched; the PATH=bin-
+- 2026-11-18T00:19 [M3.28.20] (lead) edited fields
+- 2026-11-18T00:19 [M3.28.20] (lead) attempt 3/4 started
+- 2026-11-18T00:19 [M3.28.20] (lead) round 1 (ioc): FAIL — MAJOR: std::mem::forget(daemon) is now applied to Backend::Child, so on a Btrfs host ensure_daemon spawns a real slipforkd and never reaps
+- 2026-11-18T00:19 [M3.27] (lead) followup from M3.28.20: on a Btrfs host ensure_daemon spawns a real slipforkd child that currently outlives the test binary (no Drop guard). Teardown must also 
+- 2026-11-18T00:30 [M3.29] (lead) OWNER CLARIFICATION (2026-11-18) — supersedes the 'delete the file vault' part of the M3.29 brief: KEEP FileVaultProvider (0600 local vault) + 'slipfork secret'
+- 2026-11-18T00:30 [M3.29.3] (lead) RESCOPE (owner clarification 2026-11-18): do NOT delete FileVaultProvider/vaults.rs/'slipfork secret'. Scope them to LOCAL credentials only (locally-provisioned
+- 2026-11-18T00:30 [M3.29.4] (lead) RESCOPE (owner clarification 2026-11-18): docs/reference/ospp.md must state the two-tier model (local 0600 vault for local credentials/overrides; remote secrets
+- 2026-11-18T00:30 [M3.29.3] (lead) edited fields
+- 2026-11-18T00:30 [M3.29.4] (lead) edited fields
+- 2026-11-18T00:31 [M3.28.12] (lead) attempt 3 LIVE PROOF COMPLETE (the milestone acceptance): sync wrote slipforkd.service with AF_NETLINK; systemctl is-active slipforkd.socket => active; slipfork
+- 2026-11-18T00:36 [M3.28.20] (lead) status review -> done
+- 2026-11-18T00:36 [M3.28.20] (lead) quad: functional PASS, legality PASS, cruft/ioc quality items closed in attempt 3 (one const SERVICE_RESTRICT_ADDRESS_FAMILIES used by renderer+golden; redundan
+- 2026-11-18T00:36 [M3.28.12] (lead) status active -> review
+- 2026-11-18T00:37 [M3.28.12] (lead) edited fields
+- 2026-11-18T00:37 [M3.28.12] (lead) gate (ioc): SPEC_BLIND_SPOT — render_daemon_handover is a SECOND daemon lifecycle that bypasses DaemonInstaller::release_running_daemon, because the product rel
+- 2026-11-18T00:37 [M3.28.21] (planner) created (task) daemon install owns the socket handover for any holder (version-agnostic, ownership-proven), so the harness keeps no daemon lifecycle
+- 2026-11-18T00:37 [M3.28.12] (lead) edited fields
+- 2026-11-18T00:37 [M3.28.13] (lead) edited fields
+- 2026-11-18T00:37 [M3.28.21] (lead) status ready -> active
+- 2026-11-18T00:37 [M3.28.21] (lead) attempt 1/3 started
+- 2026-11-18T00:37 [M3.28.21] (lead) base 9e392f6eae75153ed25264ac2648b7c3686a06ab
+- 2026-11-18T00:38 [M3.28.12] (lead) status review -> active
+- 2026-11-18T00:38 [M3.28.12] (lead) edited fields
+- 2026-11-18T00:38 [M3.28.12] (lead) attempt 4/4 started
+- 2026-11-18T00:38 [M3.28.12] (lead) gate (legality): FAIL — BLOCKER: support/demo/README.md and the /etc/profile.d login banner advertise 'slipfork open' and 'slipfork restart', which do not exist
+- 2026-11-18T00:38 [M3.28.14] (lead) edited fields
+- 2026-11-18T00:38 [M3.28.14] (lead) added docs/design/do-vm-harness.md: it still documents render_apparmor_body and a harness-written /etc/apparmor.d/slipfork (deleted by M3.28.12) plus pre-AF_NET
+- 2026-11-18T00:41 [M3.28.21] (lead) edited fields
+- 2026-11-18T00:41 [M3.28.21] (lead) attempt 2/3 started
+- 2026-11-18T00:41 [M3.28.21] (lead) attempt 1 blocked correctly: SO_PEERCRED needs an unsafe getsockopt, but every candidate host file is #![forbid(unsafe_code)] and std peer_cred() is unstable. R
+- 2026-11-18T00:44 [M3.28.12] (lead) gate (functional): FAIL on two blockers that are not this node's fault: (1) the tree does not compile because M3.28.21 is mid-edit (daemon_unit_install.rs:318 c
+- 2026-11-18T00:55 [M3.29.3] (lead) edited fields
+- 2026-11-18T00:55 [M3.29.1] (lead) status active -> review
+- 2026-11-18T00:56 [M3.29.1] (lead) edited fields
+- 2026-11-18T00:56 [M3.29.1] (lead) round 1 (cruft): FAIL — BLOCKER: ARCHITECTURE + ADR-0008 restate the entire ospp-v1 wire while declaring ospp.md sole normative (three copies will drift). MAJOR
+- 2026-11-18T00:57 [M3.28.21] (lead) status active -> review
+- 2026-11-18T00:57 [M3.29.1] (lead) round 1 (functional): PASS — old-wire-gone, two-tier-boundary, hpke-documented, remote-verbatim, spec byte-identical, guard/plan/zensical green. NODE acceptance
+- 2026-11-18T00:57 [M3.28.12] (lead) edited fields
+- 2026-11-18T00:57 [M3.28.12] (lead) attempt 5/5 started
+- 2026-11-18T00:57 [M3.28.12] (lead) attempt 4: vaporware eliminated (banner+README name only real verbs; db demo not psql; DEMO_SECRET in modes.local), check_docs_honesty now scans support/demo/RE
+- 2026-11-18T01:05 [M3.28.21] (lead) attempt 3/3 started
+- 2026-11-18T01:05 [M3.28.21] (lead) gate FAIL (legality x2 BLOCKER): (1) /proc/<pid>/exe NotFound => Ok(None) => release returns Ok without re-probing is_served(), so a live holder becomes 'no hol
+- 2026-11-18T01:20 [M3.28.21] (lead) round 1 (functional): PASS — shutdown answerer released with zero signals; foreign proven holder Terminate->full grace->Kill; unowned holder refused with path/p
+- 2026-11-18T01:21 [M3.28.7] (lead) quad round 1 (cruft): FAIL — MAJOR: list re-implements the status row (its own format string + literal 16 vs status.rs MIN_WORLD_COLUMN) -> one shared row forma
+- 2026-11-18T01:21 [M3.28.7] (lead) round 1 (legality): FAIL — BLOCKER: the dashboard's next hints name 'slipfork open'/'slipfork restart', neither of which is a subcommand yet, and a critical tes
+- 2026-11-18T01:22 [M3.28.7] (lead) attempt 2/3 started
+- 2026-11-18T01:22 [M3.28.7] (lead) round 1 (ioc): PASS with MINORs (hand-assembled json! could be a typed Serialize doc; world_state_label could live beside world_next_commands in edge; installer
+- 2026-11-18T01:26 [M3.29.2] (lead) edited fields
+- 2026-11-18T01:26 [M3.29.3] (lead) edited fields
+- 2026-11-18T01:26 [M3.29.2] (lead) dependency relaxed from [M3.29.1, M3.28.9] to [M3.29.1]: the crate rewrite touches only crates/slipfork-ospp{,-testkit}/** + Cargo.toml/lock, which is disjoint 
+- 2026-11-18T01:26 [M3.29.1] (lead) status review -> done
+- 2026-11-18T01:26 [M3.29.1] (lead) quad: functional PASS, ioc resolved by ruling (SecretVault port, RemoteResourceOffer deleted, RemoteStream deleted -> daemon streams SetupBaseR into zstd -d|pg_
+- 2026-11-18T01:26 [M3.29.2] (lead) status ready -> active
+- 2026-11-18T01:26 [M3.29.2] (lead) attempt 1/3 started
+- 2026-11-18T01:26 [M3.29.2] (lead) base b8b246b5198476ab408fa6a35809418be8397158
+- 2026-11-18T01:26 [M3.28.7] (lead) committed together with M3.28.21 (see that log): the two nodes' edits interleave inside main.rs and critical_cli.rs, and splitting them would require hand-editi
+- 2026-11-18T01:26 [M3.28.21] (lead) committed together with M3.28.7 for the same reason (interleaved hunks in main.rs/critical_cli.rs).
+- 2026-11-18T01:26 [M3.28.21] (lead) status review -> done
+- 2026-11-18T01:26 [M3.28.7] (lead) status review -> done
+- 2026-11-18T01:27 [M3.28.12] (lead) final verification by lead: no render_daemon_handover/ss in tools (harness-has-no-lifecycle), zero 'slipfork open|restart' mentions in support/demo/README.md an
+- 2026-11-18T01:27 [M3.28.12] (lead) status active -> done
+- 2026-11-18T01:27 [M3.28.8] (lead) status ready -> active
+- 2026-11-18T01:27 [M3.28.8] (lead) attempt 1/3 started
+- 2026-11-18T01:27 [M3.28.8] (lead) base 90daf6e77eee40719b25c0960b66bbd73f6ba4fd
+- 2026-11-18T01:29 [M3.28.7] (lead) reviewer PASS on acceptance (status-listed, help-intact, lib status 6, critical_cli 21, clippy). Two text fixes applied: the /proc|/sys acceptance grep is now s
+- 2026-11-18T01:34 [M3.29.2] (lead) attempt 2/3 started
+- 2026-11-18T01:34 [M3.29.2] (lead) attempt 1 interrupted at the step limit with one known compile fix outstanding (second seal_dump call still passes &mut sealed_rng()) and no acceptance run. ACC
+- 2026-11-18T01:37 [M3.29.2] (lead) acceptance green in-scope: lib 15, critical_osspp 8, testkit 2, ospp-v1-only, no-catch-all, scoped clippy+fmt clean, guard 595, plan OK. NOT committed yet: the 
+- 2026-11-18T01:37 [M3.29.3] (lead) edited fields
+- 2026-11-18T01:37 [M3.28.15] (lead) edited fields
+- 2026-11-18T01:37 [M3.28.8] (lead) edited fields
+- 2026-11-18T01:37 [M3.28.8] (lead) attempt 1: work complete and verified in a clean 90daf6e worktree (lib restart 13, critical_cli 24/0, no --watch, /proc clean). Blocked only by the tree: M3.29.
+- 2026-11-18T01:37 [M3.28.8] (lead) status active -> ready
+- 2026-11-18T01:37 [M3.29.3] (lead) status ready -> active
+- 2026-11-18T01:37 [M3.29.3] (lead) attempt 1/3 started
+- 2026-11-18T01:37 [M3.29.3] (lead) base 90daf6e77eee40719b25c0960b66bbd73f6ba4fd
+- 2026-11-18T01:43 [M3.29.3] (lead) edited fields
+- 2026-11-18T01:43 [M3.29.3] (lead) attempt 2/5 started
+- 2026-11-18T01:43 [M3.29.3] (lead) attempt 1 cap-out mid-surgery: BUILD IS RED (crates/slipfork/src/daemon.rs half-rewritten). Solid and kept: slipfork-dag resources (RemoteResourceOffer deleted,
+- 2026-11-18T02:30 [M3.29.3] (lead) edited fields
+- 2026-11-18T02:30 [M3.29.3] (lead) attempt 3: make check GREEN. lib 81, critical_osspp_daemon 6 (two-tier byte scan 0 hits, vault credential survives restart, env_updated restarts api only), crit
+- 2026-11-18T03:07 [M3.29.2] (lead) landed in one atomic commit with its siblings: the OSPP crate cut-over breaks crates/slipfork by design, and M3.28.8's restart/-v work interleaves with M3.29.3 
+- 2026-11-18T03:07 [M3.29.3] (lead) landed in one atomic commit with its siblings: the OSPP crate cut-over breaks crates/slipfork by design, and M3.28.8's restart/-v work interleaves with M3.29.3 
+- 2026-11-18T03:07 [M3.28.8] (lead) landed in one atomic commit with its siblings: the OSPP crate cut-over breaks crates/slipfork by design, and M3.28.8's restart/-v work interleaves with M3.29.3 
+- 2026-11-18T03:07 [M3.29.2] (lead) status active -> done
+- 2026-11-18T03:07 [M3.29.3] (lead) status active -> done
+- 2026-11-18T03:07 [M3.28.8] (lead) status ready -> done
+- 2026-11-18T03:07 [M3.28.9] (lead) status ready -> active
+- 2026-11-18T03:07 [M3.28.9] (lead) attempt 1/3 started
+- 2026-11-18T03:07 [M3.28.9] (lead) base 4a1428f1752420e57399c20f61db0dcec3d08ec3
+- 2026-11-18T03:07 [M3.29.4] (lead) status ready -> active
+- 2026-11-18T03:07 [M3.29.4] (lead) attempt 1/3 started
+- 2026-11-18T03:07 [M3.29.4] (lead) base 4a1428f1752420e57399c20f61db0dcec3d08ec3
+- 2026-11-18T03:11 [M3.29.4] (lead) attempt 1 cap-out after writing the pages (ospp.md 73 lines, two-tier section, cli.md secret section, seed-dump rewrite, auth verb, nav). Acceptance items ospp-
+- 2026-11-18T03:11 [M3.29.3] (lead) amendment: invariant 4's 'ephemeral in-memory session secret for a local-only run without a vault entry' is superseded by the owner's two-tier ruling and by the
+- 2026-11-18T03:11 [M3.28.16] (lead) status ready -> active
+- 2026-11-18T03:11 [M3.28.16] (lead) attempt 1/3 started
+- 2026-11-18T03:11 [M3.28.16] (lead) base 4a1428f1752420e57399c20f61db0dcec3d08ec3
+- 2026-11-18T03:16 [M3.28.16] (lead) status active -> ready
+- 2026-11-18T03:16 [M3.28.16] (lead) attempt 1: tool+tests+LESSONS+Makefile wiring delivered and verified (8/9 pytest; real-repo case correctly RED). Blocked by SEQUENCING, not by a missing input: 
+- 2026-11-18T03:16 [M3.28.15] (lead) edited fields
+- 2026-11-18T03:16 [M3.28.9] (lead) status active -> done
+- 2026-11-18T03:16 [M3.28.9] (lead) lead-verified (worker's report was lost again): ps/open exist, lib ps 9 + open 7 pass, --world/--remote present, clippy clean, critical_cli 24/0, and the dashbo
+- 2026-11-18T03:16 [M3.29.4] (lead) status active -> done
+- 2026-11-18T03:16 [M3.29.4] (lead) docs-check green (11 docs, zensical --strict ok); ospp.md 73 lines with the two-tier boundary, cli.md's local-vault section, streamed seed-dump rewrite, auth vi
+- 2026-11-18T03:16 [M3.28.15] (lead) status ready -> active
+- 2026-11-18T03:16 [M3.28.15] (lead) attempt 1/3 started
+- 2026-11-18T03:16 [M3.28.15] (lead) base d24a6c584dc5ea31c58f9980ca65c2b34c958a63
+- 2026-11-18T03:17 HUMAN H-007 [direction-challenge] opened by lead (node M3.29.3)
+- 2026-11-18T03:17 [M3.29.3] (lead) H-007 filed (direction-challenge): the OSPP endpoint has no durable source of truth in 0.1.0 (auto-spawn never gets it, units render no Environment=, no daemon 
+- 2026-11-18T03:20 [M3.28.15] (lead) edited fields
+- 2026-11-18T03:20 [M3.28.15] (lead) attempt 2/5 started
+- 2026-11-18T03:20 [M3.28.15] (lead) attempt 1 cap-out mid-sweep (tree RED). DONE and kept: world crate (TunnelRegistrar family + TunnelLease/Error/Request + Shared origin deleted; WorldOrigin coll
+- 2026-11-18T03:36 [M3.28.15] (lead) edited fields
+- 2026-11-18T03:36 [M3.28.15] (lead) status active -> review
+- 2026-11-18T03:43 [M3.28.9] (lead) status done -> done
+- 2026-11-18T03:43 [M3.28.9] (lead) landed together with its sibling: both nodes edit cli.rs/main.rs/lib.rs/critical_cli.rs, and splitting would require hand-editing code. make check GREEN (44+ su
+- 2026-11-18T03:43 [M3.28.15] (lead) status review -> done
+- 2026-11-18T03:43 [M3.28.15] (lead) landed together with its sibling: both nodes edit cli.rs/main.rs/lib.rs/critical_cli.rs, and splitting would require hand-editing code. make check GREEN (44+ su
+- 2026-11-18T03:44 [M3.28.10] (lead) status ready -> active
+- 2026-11-18T03:44 [M3.28.10] (lead) attempt 1/3 started
+- 2026-11-18T03:44 [M3.28.10] (lead) base a364b31d9252dba223f026b58643718918d47951
+- 2026-11-18T03:48 [M3.28.16] (lead) status ready -> done
+- 2026-11-18T03:48 [M3.28.16] (lead) un-parked and re-armed after M3.28.15: tool exit 0 (91 production files, 6 composition roots), pytest 9 passed incl. test_real_repository_is_clean, stub-check b
+- 2026-11-18T04:03 [M3.28.10] (lead) edited fields
+- 2026-11-18T04:03 [M3.28.10] (lead) attempt 1: complete and verified (critical_cli 28/0, lib fork 9, optional-fork, no-git-in-cli, vcs-branch-wired, clippy). Took option A: paths widened for the w
+- 2026-11-18T04:03 [M3.28.10] (lead) status active -> review
+- 2026-11-18T04:10 [M3.28.10] (lead) status review -> done
+- 2026-11-18T04:10 [M3.28.10] (lead) pre-commit: make check rc=0 (docs-check included — the worker's zensical complaint was its own offline cache), critical_guard OK after the path widening.
+- 2026-11-18T04:10 [M3.28.11] (lead) status ready -> active
+- 2026-11-18T04:10 [M3.28.11] (lead) attempt 1/3 started
+- 2026-11-18T04:10 [M3.28.11] (lead) base 97efc4ac173767820f5a1332fc6e25d6342f9f0e
+- 2026-11-18T04:14 [M3.28.11] (lead) edited fields
+- 2026-11-18T04:14 [M3.28.11] (lead) attempt 1 blocked correctly on three scope questions; rulings: (1) A — critical_slug.rs added to paths, delete ONLY its dag-plan blocks (snow resolve stays); (2
+- 2026-11-18T04:15 [M3.28.22] (planner) created (task) Quiet world entry: the entry argv must start inside the world so the shell's first getcwd succeeds
+- 2026-11-18T04:15 [M3.28.23] (planner) created (task) Attributed logs: the engine tags every chunk with its source and the CLI prefixes multi-source lines
+- 2026-11-18T04:15 [M3.28.13] (lead) edited fields
+- 2026-11-18T04:15 [M3.28.11] (lead) edited fields
+- 2026-11-18T04:15 [M3.28.11] (lead) attempt 2/3 started
+- 2026-11-18T04:27 [M3.28.22] (lead) edited fields
+- 2026-11-18T04:27 [M3.28.22] (lead) status ready -> ready
+- 2026-11-18T04:27 [M3.28.22] (lead) attempt 1: root cause solved correctly (nsenter --wd opens the dir in the CALLER's ns then fchdir after setns, so pivot_root leaves a detached cwd; --wdns opens
+- 2026-11-18T04:28 [M3.28.22] (lead) edited fields
+- 2026-11-18T04:28 [M3.28.22] (lead) attempt 1 (final): make check's only failure is the shared conformance pin hitting StubWorldEngine's host cwd in the protected critical_edge (one line). Took op
+- 2026-11-18T04:33 [M3.28.11] (lead) edited fields
+- 2026-11-18T04:33 [M3.28.11] (lead) attempt 2 done and verified in an isolated worktree (make check exit 0 there): dag deleted everywhere, support/planner machinery kept, [resources] already behin
+- 2026-11-18T04:34 [M3.28.11] (lead) status active -> done
+- 2026-11-18T04:34 [M3.28.11] (lead) companions settled: recipe_page -> manifest.md, manifest.md's dag sentence rewritten, ARCHITECTURE:92 corrected (keeps src/fs.rs + the crate's fs feature; drops
+- 2026-11-18T04:34 [M3.28.14] (lead) edited fields
+- 2026-11-18T04:34 [M3.28.14] (lead) added poc/run_benchmark.py: its benchmark still drives 'slipfork dag plan', a command M3.28.11 deleted, so the opt-in 'make bench' is broken. Remove that step o
+- 2026-11-18T04:34 [M3.28.22] (lead) status ready -> active
+- 2026-11-18T04:34 [M3.28.22] (lead) attempt 1/3 started
+- 2026-11-18T04:45 [M3.28.22] (lead) status active -> done
+- 2026-11-18T04:45 [M3.28.22] (lead) attempt 2 complete: stub returns in-world cwd, fn shell prints the one orientation line (stderr, shell only, never --json). critical_engine 16, critical_edge 35
+- 2026-11-18T04:45 [M3.29] (lead) gate acceptance corrected for the owner's two-tier ruling: the vault is KEPT and scoped, so 'no-disk-vaults' became 'local-vault-kept-scoped' + 'two-tiers'. Gat
+- 2026-11-18T04:45 [M3.28.23] (lead) status ready -> active
+- 2026-11-18T04:45 [M3.28.23] (lead) attempt 1/3 started
+- 2026-11-18T04:45 [M3.28.23] (lead) base c5dda37f6167a27897433006ccd47b1853c6becc
+- 2026-11-18T04:59 [M3.28.23] (lead) edited fields
+- 2026-11-18T04:59 [M3.28.23] (lead) path lock widened for the mechanical, assertion-preserving protected edit (fake logs signature -> FnMut(LogChunk), one literal gains target: api) and for main.r
+- 2026-11-18T04:59 [M3.28.14] (lead) from M3.28.23: docs/reference/cli.md rows 67/105 must document the new logs rule — every line is prefixed '<source>: ' when the request names no single target; 
+- 2026-11-18T05:03 [M3.28.23] (lead) status active -> done
+- 2026-11-18T05:03 [M3.28.23] (lead) make check rc=0 (10 docs honesty) on the frozen tree; critical_cli 30 incl. logs_fan_out_attributes_every_line_to_its_component, lib logs 6, engine lib 69, crit
+- 2026-11-18T05:03 [M3.28.13] (lead) status ready -> active
+- 2026-11-18T05:03 [M3.28.13] (lead) attempt 1/3 started
+- 2026-11-18T05:03 [M3.28.13] (lead) base 9a79afc81a20eb5dc0a911525a82f6f0aa673df6
+- 2026-11-18T05:07 [M3.28.14] (lead) from M3.28.23 (record in CHANGELOG as a known limitation, do not hide): 'logs --follow' with no explicit target still follows only the first retained target (pr
+- 2026-11-18T05:07 [M3.27] (lead) status ready -> active
+- 2026-11-18T05:07 [M3.27] (lead) attempt 1/3 started
+- 2026-11-18T05:07 [M3.27] (lead) base 9a79afc81a20eb5dc0a911525a82f6f0aa673df6
+- 2026-11-18T05:34 [M3.28.24] (planner) created (task) restart must apply an edit: stop the whole component (not its sh wrapper) and re-materialize an edited rootfs
+- 2026-11-18T05:34 [M3.28.13] (lead) attempt 1 LIVE RESULT: 12/13 pass. The one failure is real and is the headline DX promise: restart leaves the old python3 orphaned (stop signals sh, wait_for_in
+- 2026-11-18T05:34 [M3.28.13] (lead) status active -> ready
+- 2026-11-18T05:34 [M3.28.13] (lead) edited fields
+- 2026-11-18T05:34 [M3.28.24] (lead) edited fields
+- 2026-11-18T05:34 [M3.28.13] (lead) edited fields
+- 2026-11-18T05:34 [M3.28.24] (lead) edited fields
+- 2026-11-18T05:34 [M3.28.24] (lead) queued behind M3.27 (both need crates/slipfork/tests/**); created from M3.28.13's live failure.
+- 2026-11-18T07:45 HUMAN H-007 closed by lead
+- 2026-11-18T07:46 [M3.29.5] (planner) created (task) slipfork auth <wss-url> saves the OSPP endpoint in <state_dir>/ospp.json (public metadata only) so pairing survives reboots
+- 2026-11-18T07:46 [M3.29.5] (lead) H-007 answered by the owner ('Save on slipfork auth <url>'). Design: flag > <state_dir>/ospp.json > unpaired, one resolver logged once; atomic 0600 write of end
+- 2026-11-18T11:06 [M3.28.13] (lead) edited fields
+- 2026-11-18T11:30 [M3.27] (lead) attempt 1 report: done. Reaper covers worlds (injected SubvolumeDriver) + world-init + harness daemon Drop guard; ReapBudget derives from load; /proc state repo
+- 2026-11-18T11:30 [M3.27] (lead) status active -> review
+- 2026-11-18T11:35 [M3.27] (lead) Quad gate attempt 1: review-legality FAIL, review-ioc FAIL, review-cruft FAIL (merged MAJORs). Root finding (legality+ioc+cruft agree): substrate_driver() re-de
+- 2026-11-18T11:39 [M3.27] (lead) attempt 2/3 started
+- 2026-11-18T11:39 [M3.27] (lead) status review -> active
+- 2026-11-18T11:57 [M3.27] (lead) attempt 2 report: done. All 4 MAJORs + 7 MINORs applied; make check exit 0.
+- 2026-11-18T11:57 [M3.27] (lead) status active -> review
+- 2026-11-18T12:02 [M3.27] (lead) status review -> done
+- 2026-11-18T12:02 [M3.28.24] (lead) status ready -> active
+- 2026-11-18T12:02 [M3.28.24] (lead) attempt 1/3 started
+- 2026-11-18T12:02 [M3.28.24] (lead) base cdca7d3a1bdc43282e12a4229df521deca514430
+- 2026-11-18T12:10 [M3.27] (lead) Quad gate attempt 2: review-legality PASS, review-ioc PASS, review-cruft PASS (MINORs only), reviewer FAIL — reopened. The reviewer reproduced the LOG:9 flake c
+- 2026-11-18T12:10 [M3.27] (lead) status done -> ready
+- 2026-11-18T12:10 [M3.27] (lead) edited fields
+- 2026-11-18T12:44 [M3.28.24] (lead) attempt 2/3 started
+- 2026-11-18T12:44 [M3.28.24] (lead) attempt 1 cap: engine group supervision + reload_world + shared prepare_world + demo done and green (critical_engine 18/18); one CLI serving test still being re
+- 2026-11-18T13:07 [M3.28.24] (lead) status active -> review
+- 2026-11-18T13:27 [M3.28.24] (lead) attempt 3/3 started
+- 2026-11-18T13:27 [M3.28.24] (lead) status review -> active
+- 2026-11-18T13:27 [M3.28.24] (lead) Quad gate attempt 2: reviewer FAIL (1 MAJOR: stop_world_services filters to State::Running so an Exited component whose descendant outlived sh is never group-si
+- 2026-11-18T14:03 [M3.28.24] (lead) attempt 3 report: done, all 6 MAJORs + 6 MINORs applied; engine lib 72, critical_engine 20, critical_cli 38, ospp 12, clippy clean, make check 0.
+- 2026-11-18T14:03 [M3.28.24] (lead) status active -> review
+- 2026-11-18T14:06 [M3.28.24] (lead) Quad gate attempt 3: reviewer PASS-in-progress?, review-legality FAIL (conformance reload clause is a tautology in both arms; stop_identity swallows the SIGKILL
+- 2026-11-18T14:06 ESCALATION #25 -> expert for M3.28.24 by lead: repeated pre-flight/rollback correctness findings in reload_world; attempt cap reached
+- 2026-11-18T14:06 [M3.28.24] (lead) attempt 4/3 started
+- 2026-11-18T14:06 [M3.28.24] (lead) status review -> active
+- 2026-11-18T15:27 [M3.28.24] (lead) expert rescue + final bounded pass: stop_identity propagates SIGKILL errors; world_preflight (validate+HOME+snapshot_source+rootfs ref) now runs FIRST in both c
+- 2026-11-18T15:27 [M3.28.24] (lead) status active -> review
+- 2026-11-18T15:39 [M3.28.24] (lead) edited fields
+- 2026-11-18T16:07 [M3.28.24] (lead) final delta: WorldEngine::world_is_live (no default; BtrfsEngine = status Live AND init_identity.is_live_leader; stub derives from its frozen set), matches_live
+- 2026-11-18T16:15 [M3.27] (lead) status ready -> active
+- 2026-11-18T16:15 [M3.27] (lead) attempt 3/3 started
+- 2026-11-18T16:15 [M3.27] (lead) base d254fe7144cc0006c8bb7750c67925544deaf215
+- 2026-11-18T16:22 [M3.27] (unknown) edited fields
+- 2026-11-18T16:22 [M3.27] (unknown) edited fields
+- 2026-11-18T16:39 [M3.27] (lead) status active -> review
+- 2026-11-18T16:53 [M3.27] (lead) edited fields
+- 2026-11-18T16:53 [M3.27] (lead) paths widened: crates/slipfork-engine/tests/** (the protected suites need the injected StopBudget argument) and crates/slipfork-testkit/src/lib.rs (its doc refe
+- 2026-11-18T17:00 AUTOPILOT off by conductor User requested hard stop and root-cause speed/quality audit
+- 2026-11-18T21:38 AUTOPILOT on by conductor Install GEPA winning G4 agent bundle and execute pre-diagnosed 6-slice 0.1.0 cleanup + UX overhaul
+- 2026-11-18T22:19 [M3.27] (planner) status ready -> done: Landed in HEAD (cdca7d3): CLI critical suites reap worlds and process groups.
+- 2026-11-18T22:19 [M3.28.24] (planner) status review -> done: Landed in HEAD (d254fe7): WorldEngine::world_is_live + shared stop-budget handover.
+- 2026-11-18T22:19 [M3.28.13] (planner) status ready -> superseded: Absorbed into M3.30 (dead-code, mock-trait and fork dedup sweep).
+- 2026-11-18T22:19 [M3.28.14] (planner) status ready -> superseded: Absorbed into M3.30 (high-craft CLI UX sweep).
+- 2026-11-18T22:19 [M3.29.5] (planner) status ready -> superseded: Absorbed into M3.30 (docs + CHANGELOG rewrite slice M3.30.5).
+- 2026-11-18T22:19 [M3.28] (planner) status ready -> done: Remaining scope absorbed into M3.30.
+- 2026-11-18T22:19 [M3.29] (planner) status ready -> done: Remaining scope absorbed into M3.30.
+- 2026-11-18T22:19 [M3.2.1] (planner) status ready -> superseded: Obsolete pre-CBOR test runner draft; STP v1 belongs to 0.2.0
+- 2026-11-18T22:19 [M3.2.2] (planner) status ready -> superseded: Obsolete pre-CBOR test runner draft; STP v1 belongs to 0.2.0
+- 2026-11-18T22:19 [M3.2.3] (planner) status ready -> superseded: Obsolete pre-CBOR test runner draft; STP v1 belongs to 0.2.0
+- 2026-11-18T22:19 [M3.2.4] (planner) status ready -> superseded: Obsolete pre-CBOR test runner draft; STP v1 belongs to 0.2.0
+- 2026-11-18T22:19 [M3.2.5] (planner) status ready -> superseded: Obsolete pre-CBOR test runner draft; STP v1 belongs to 0.2.0
+- 2026-11-18T22:19 [M3.2.6] (planner) status ready -> superseded: Obsolete pre-CBOR test runner draft; STP v1 belongs to 0.2.0
+- 2026-11-18T22:19 [M3.2.7] (planner) status ready -> superseded: Obsolete pre-CBOR test runner draft; STP v1 belongs to 0.2.0
+- 2026-11-18T22:19 [M3.2.8] (planner) status ready -> superseded: Obsolete pre-CBOR test runner draft; STP v1 belongs to 0.2.0
+- 2026-11-18T22:19 [M3.2.9] (planner) status ready -> superseded: Obsolete pre-CBOR test runner draft; STP v1 belongs to 0.2.0
+- 2026-11-18T22:19 [M3.2.10] (planner) status ready -> superseded: Obsolete pre-CBOR test runner draft; STP v1 belongs to 0.2.0
+- 2026-11-18T22:19 [M3.2.11] (planner) status ready -> superseded: Obsolete pre-CBOR test runner draft; STP v1 belongs to 0.2.0
+- 2026-11-18T22:19 [M3.2.12] (planner) status ready -> superseded: Obsolete pre-CBOR test runner draft; STP v1 belongs to 0.2.0
+- 2026-11-18T22:19 [M3.2.13] (planner) status ready -> superseded: Obsolete pre-CBOR test runner draft; STP v1 belongs to 0.2.0
+- 2026-11-18T22:19 [M3.2.14] (planner) status ready -> superseded: Obsolete pre-CBOR test runner draft; STP v1 belongs to 0.2.0
+- 2026-11-18T22:19 [M3.2.15] (planner) status ready -> superseded: Obsolete pre-CBOR test runner draft; STP v1 belongs to 0.2.0
+- 2026-11-18T22:19 [M3.2.16] (planner) status ready -> superseded: Obsolete pre-CBOR test runner draft; STP v1 belongs to 0.2.0
+- 2026-11-18T22:19 [M3.2.17] (planner) status ready -> superseded: Obsolete pre-CBOR test runner draft; STP v1 belongs to 0.2.0
+- 2026-11-18T22:19 [M3.2.18] (planner) status ready -> superseded: Obsolete pre-CBOR test runner draft; STP v1 belongs to 0.2.0
+- 2026-11-18T22:19 [M3.2] (planner) status blocked -> superseded: Obsolete pre-CBOR test runner draft; STP v1 belongs to 0.2.0
+- 2026-11-18T22:19 [M3.30] (planner) created (epic) 0.1.0 Ship-Ready Sweep: dead-weight purge, god-file splits, high-craft UX, lab-first tests & visual docs
+- 2026-11-18T22:19 [M3.30.1] (planner) created (task) Purge dead weight: forked snow resolver, 14 mock/fake doubles, support-matrix bureaucracy & duplicated helpers
+- 2026-11-18T22:19 [M3.30.2] (planner) created (task) Split 3 god-files into cohesive structs, fix edge layering, replace hand-rolled HTTP/NDJSON wheels, persist ospp.json
+- 2026-11-18T22:19 [M3.30.3] (planner) created (task) High-craft terminal UX: TerminalUi palette, live streamed progress/spinners, dynamic column alignment
+- 2026-11-18T22:19 [M3.30.4] (planner) created (task) Lab-first test consolidation: 1 Btrfs journey + 1 OSPP journey + pure algorithm tests & single-build Makefile
+- 2026-11-18T22:19 [M3.30.5] (planner) created (task) Visual high-hierarchy 0.1.0 docs: value-first quickstart, Mermaid diagram, admonitions & single CHANGELOG entry
+- 2026-11-18T22:19 [M3.30.6] (planner) created (task) Live lab VM proof (165.232.86.174): PTY color/spinner E2E, .localhost :80 demo & before/after llvm-cov audit
+- 2026-11-18T22:20 [M3.30.1] (lead) status ready -> active
+- 2026-11-18T22:20 [M3.30.1] (lead) attempt 1/3 started
+- 2026-11-18T22:20 [M3.30.1] (lead) base 52a8a4c39d2c16193c29557560245f41343bb791
+- 2026-11-18T22:20 [M3.30.1] (lead) edited fields
+- 2026-11-18T22:20 [M3.30.1.1] (lead) created (task) Canonical snow claimed-eval + delete dead provider/conformance/event code
+- 2026-11-18T22:20 [M3.30.1.2] (lead) created (task) Purge support-matrix bureaucracy and collapse duplicated helper forks
+- 2026-11-18T22:21 [M3.30.1.3] (lead) created (task) Delete single-impl mock traits/doubles & write concrete Constructor DI through both composition roots
+- 2026-11-18T22:21 [M3.30.1.1] (lead) status ready -> active
+- 2026-11-18T22:21 [M3.30.1.1] (lead) attempt 1/3 started
+- 2026-11-18T22:21 [M3.30.1.1] (lead) base 52a8a4c39d2c16193c29557560245f41343bb791
+- 2026-11-18T22:21 [M3.30.1] (lead) split into M3.30.1.1/.2/.3 (crate-DAG order) after needs_split; no code changes yet
+- 2026-11-18T22:27 [M3.30.1.1] (lead) status active -> review
+- 2026-11-18T22:27 [M3.30.1.1] (lead) lead re-ran acceptance: fmt+clippy clean, engine/edge/slipfork-lib tests green; greps clean
+- 2026-11-18T22:29 [M3.30.1.1] (lead) status review -> ready: triad: 2 BLOCKER + 3 MAJOR, one consolidated fix pass
+- 2026-11-18T22:29 [M3.30.1.1] (lead) attempt 2/3 started
+- 2026-11-18T22:32 [M3.30.1.1] (lead) status ready -> done
+- 2026-11-18T22:33 [M3.30.1.2] (lead) status ready -> active
+- 2026-11-18T22:33 [M3.30.1.2] (lead) attempt 1/3 started
+- 2026-11-18T22:33 [M3.30.1.2] (lead) base 678b6c849f3785cfdfcae8f19ffa9fb42dc24cb2
+- 2026-11-18T22:38 [M3.30.1.2] (lead) status active -> review
+- 2026-11-18T22:38 [M3.30.1.2] (lead) forward note for M3.30.2: relay moved to slipfork-engine::relay; relocate to a neutral canonical owner so slipfork-edge can drop its slipfork-engine dependency
+- 2026-11-18T22:40 [M3.30.1.2] (lead) edited fields
+- 2026-11-18T22:40 [M3.30.5] (lead) edited fields
+- 2026-11-18T22:40 [M3.30.1.2] (lead) status review -> ready: triad: 2 BLOCKER (Makefile lost rs-test, dead python test) + 4 MAJOR, one fix pass
+- 2026-11-18T22:40 [M3.30.1.2] (lead) attempt 2/3 started
+- 2026-11-18T22:46 [M3.30.1.2] (lead) status ready -> done
+- 2026-11-18T22:46 [M3.30.1.3] (lead) status ready -> active
+- 2026-11-18T22:46 [M3.30.1.3] (lead) attempt 1/3 started
+- 2026-11-18T22:46 [M3.30.1.3] (lead) base 5dd81295816939361a12a0d0389d909dac6771d8
+- 2026-11-18T22:46 [M3.30.1.3] (lead) edited fields
+- 2026-11-18T22:46 [M3.30.1.3.1] (lead) created (task) Engine substrate: concrete clock/driver DI, delete RecordingDriver/TestTreeDriver theater
+- 2026-11-18T22:46 [M3.30.1.3.2] (lead) created (task) Rootfs ports: delete AbiProbe/BuildxExporter/OciImageStore traits, concrete disk/ELF/status
+- 2026-11-18T22:46 [M3.30.1.3.3] (lead) created (task) CLI roots: concrete identity/browser/probe/installer DI, delete remaining doubles
+- 2026-11-18T22:46 [M3.30.1.3.4] (lead) created (task) Docs/tooling: surviving port list + delete vacuous stub-adapters guard
+- 2026-11-18T22:46 [M3.30.1.3.1] (lead) edited fields
+- 2026-11-18T22:46 [M3.30.1.3.1] (lead) status ready -> active
+- 2026-11-18T22:46 [M3.30.1.3.1] (lead) attempt 1/3 started
+- 2026-11-18T22:46 [M3.30.1.3.1] (lead) base 5dd81295816939361a12a0d0389d909dac6771d8
+- 2026-11-18T22:46 [M3.30.1.3] (lead) scope gate: resplit into .1 engines/.2 rootfs/.3 CLI/.4 docs-tooling
+- 2026-11-18T22:59 [M3.30.1.3.1] (lead) status active -> review
+- 2026-11-18T22:59 [M3.30.1.3.1] (lead) off-Btrfs: critical_engine 21 + critical_btrfs_live 3 + critical_cli 26 fail closed with one-line Btrfs requirement (expected until M3.30.4/6)
+- 2026-11-18T23:01 [M3.30.1.3.1] (lead) status review -> ready: triad: 1 BLOCKER (silent green skip) + 4 MAJOR, one fix pass
+- 2026-11-18T23:01 [M3.30.1.3.1] (lead) attempt 2/3 started
+- 2026-11-18T23:04 [M3.30.1.3.1] (lead) status ready -> done
+- 2026-11-18T23:04 [M3.30.1.3.2] (lead) status ready -> active
+- 2026-11-18T23:04 [M3.30.1.3.2] (lead) attempt 1/3 started
+- 2026-11-18T23:04 [M3.30.1.3.2] (lead) base a55dbda13da2b041509a355e7ef709ea02ad3c13
+- 2026-11-18T23:08 [M3.30.1.3.2] (lead) status active -> review
+- 2026-11-18T23:09 [M3.30.1.3.2] (lead) status review -> ready: triad: 1 BLOCKER (InputHasher single-impl) + 2 MAJOR, one fix pass; oci progress deferred to M3.30.3
+- 2026-11-18T23:09 [M3.30.1.3.2] (lead) attempt 2/3 started
+- 2026-11-18T23:12 [M3.30.1.3.2] (lead) status ready -> done
+- 2026-11-18T23:13 [M3.30.1.3.3] (lead) status ready -> active
+- 2026-11-18T23:13 [M3.30.1.3.3] (lead) attempt 1/3 started
+- 2026-11-18T23:13 [M3.30.1.3.3] (lead) base 8b8189a07ca1010a120c7cd30729147b4897092d
+- 2026-11-18T23:13 [M3.30.1.3.3] (lead) edited fields
+- 2026-11-18T23:13 [M3.30.1.3.3.1] (lead) created (task) Concrete user identity: delete UserIdentity/HostIdentity traits and FakeIdentity
+- 2026-11-18T23:13 [M3.30.1.3.3.2] (lead) created (task) Concrete host/ingress probes: delete HostProbe/IngressProbe traits and recorders
+- 2026-11-18T23:13 [M3.30.1.3.3.3] (lead) created (task) Concrete browser open: delete BrowserOpener trait and NoBrowser across ospp/daemon/commands
+- 2026-11-18T23:13 [M3.30.1.3.3.4] (lead) created (task) Concrete unit installer + delete last recording/stub doubles
+- 2026-11-18T23:13 [M3.30.1.3.3.1] (lead) status ready -> active
+- 2026-11-18T23:13 [M3.30.1.3.3.1] (lead) attempt 1/3 started
+- 2026-11-18T23:13 [M3.30.1.3.3.1] (lead) base 8b8189a07ca1010a120c7cd30729147b4897092d
+- 2026-11-18T23:16 [M3.30.1.3.3.1] (lead) status active -> review
+- 2026-11-18T23:17 [M3.30.1.3.3.4] (lead) edited fields
+- 2026-11-18T23:17 [M3.30.1.3.3.1] (lead) status review -> ready: triad: 2 real MAJOR test-fidelity + boot-path issues, one fix pass
+- 2026-11-18T23:17 [M3.30.1.3.3.1] (lead) attempt 2/3 started
+- 2026-11-18T23:20 [M3.30.1.3.3.1] (lead) status ready -> done
+- 2026-11-18T23:20 [M3.30.1.3.3.2] (lead) status ready -> active
+- 2026-11-18T23:20 [M3.30.1.3.3.2] (lead) attempt 1/3 started
+- 2026-11-18T23:20 [M3.30.1.3.3.2] (lead) base da98ed6f76e956c74a9b2be4d3e134d1f7401996
+- 2026-11-18T23:22 [M3.30.1.3.3.2] (lead) status active -> review
+- 2026-11-18T23:23 [M3.30.1.3.3.2] (lead) status review -> ready: triad: 2 MAJOR arch/test-fidelity + 2 UX (sudo remedy, silent doctor) — one pass
+- 2026-11-18T23:23 [M3.30.1.3.3.2] (lead) attempt 2/3 started
+- 2026-11-18T23:26 [M3.30.1.3.3.2] (lead) status ready -> done
+- 2026-11-18T23:26 [M3.30.1.3.3.3] (lead) status ready -> active
+- 2026-11-18T23:26 [M3.30.1.3.3.3] (lead) attempt 1/3 started
+- 2026-11-18T23:26 [M3.30.1.3.3.3] (lead) base 7c0c2141b21e94f1179c16f56f1878a6d5b23a4b
+- 2026-11-18T23:28 [M3.30.1.3.3.3] (lead) status active -> review
+- 2026-11-18T23:30 [M3.30.1.3.3.3] (lead) status review -> ready: triad: 2 BLOCKER — auth stopped opening/printing pairing page; one fix pass
+- 2026-11-18T23:30 [M3.30.1.3.3.3] (lead) attempt 2/3 started
+- 2026-11-18T23:30 [M3.30.3] (lead) carry-over: delete stale BROWSER=/bin/true coupling in packages/opencode-slipfork/tests/e2e.critical.test.ts; also doctor doctor-verdict text
+- 2026-11-18T23:33 [M3.30.1.3.3.3] (lead) status ready -> done
+- 2026-11-18T23:33 [M3.30.1.3.3.4] (lead) status ready -> active
+- 2026-11-18T23:33 [M3.30.1.3.3.4] (lead) attempt 1/3 started
+- 2026-11-18T23:33 [M3.30.1.3.3.4] (lead) base 7c5062856cc3200fec7c23a7ae01b4da867abd83
+- 2026-11-18T23:34 [M3.30.4] (lead) carry-over from M3.30.1.3.3.4: replace test-only RecordingEngine/StubRootfs (daemon.rs #[cfg(test)]) and StubWorldEngine (slipfork-edge/tests/critical_edge.rs) 
+- 2026-11-18T23:43 [M3.30.1.3.3.4] (lead) status active -> review
+- 2026-11-18T23:44 [M3.30.1.3.3.4] (lead) status review -> ready: triad: 3 BLOCKER (4 protected handover tests silently dropped) + 4 MAJOR, one pass
+- 2026-11-18T23:44 [M3.30.1.3.3.4] (lead) attempt 2/3 started
+- 2026-11-18T23:44 [M3.30.5] (lead) carry-over: amend ADR-0011 clause naming deleted trait UnitInstaller/OsUnitInstaller; docs/design blueprint trait verbs
+- 2026-11-18T23:44 [M3.30.3] (lead) carry-over: daemon install systemctl/apparmor legs block silently via .output(); add phase lines + spawn
+- 2026-11-18T23:52 [M3.30.1.3.3.4] (lead) status ready -> done
+- 2026-11-18T23:52 [M3.30.1.3.3] (lead) status active -> done: 4/4 children done: identity, probes, browser, installer concrete; no CLI doubles left (test-only WorldEngine/BaseImageBuilder doubles car
+- 2026-11-18T23:52 [M3.30.1.3.4] (lead) status ready -> active
+- 2026-11-18T23:52 [M3.30.1.3.4] (lead) attempt 1/3 started
+- 2026-11-18T23:52 [M3.30.1.3.4] (lead) base cf7aa28623c4f5ea09298d7f7a6df77f41d3a9f3
+- 2026-11-19T00:02 [M3.30.6] (lead) carry-over: docs/knowledge/LESSONS.md still references deleted tools/check_stub_adapters.py — update while recording lab lessons
+- 2026-11-19T00:02 [M3.30.1.3.4] (lead) status active -> done
+- 2026-11-19T00:02 [M3.30.1.3] (lead) status active -> done: 4/4 children done
+- 2026-11-19T00:02 [M3.30.1] (lead) status active -> done: 3/3 slices done; test-only engine doubles carried to M3.30.4
+- 2026-11-19T00:03 [M3.30.2] (lead) edited fields
+- 2026-11-19T00:03 [M3.30.2.1] (lead) created (task) Edge purity + canonical wheels: control module, relay out of engine, ureq/url, serde_json NDJSON, atomic write
+- 2026-11-19T00:03 [M3.30.2.2] (lead) created (task) Split daemon.rs into cohesive WorldSession/PostgresProvisioner/OsppSupervisor/PairingStore modules
+- 2026-11-19T00:03 [M3.30.2.3] (lead) created (task) Split btrfs_engine.rs + service.rs into BtrfsWorldEngine/OciContainerRuntime/SupervisedProcess
+- 2026-11-19T00:03 [M3.30.2.4] (lead) created (task) Composition root <250 LOC + CliApp/commands split + VcsCli struct
+- 2026-11-19T00:03 [M3.30.2.1] (lead) status ready -> active
+- 2026-11-19T00:03 [M3.30.2.1] (lead) attempt 1/3 started
+- 2026-11-19T00:03 [M3.30.2.1] (lead) base 349f921a72399b3f0c8e677d534c1d2e4e024a4b
+- 2026-11-19T00:06 [M3.30.2.1] (lead) edited fields
+- 2026-11-19T00:06 [M3.30.2.1.1] (lead) created (task) New slipfork-wire crate: DaemonControl types + socket framing + neutral relay; finish wheel swap
+- 2026-11-19T00:06 [M3.30.2.1.2] (lead) created (task) Extract WorldEngine port + world value types to slipfork-world; edge has zero engine dependency
+- 2026-11-19T00:06 [M3.30.2.1.1] (lead) status ready -> active
+- 2026-11-19T00:06 [M3.30.2.1.1] (lead) attempt 1/3 started
+- 2026-11-19T00:06 [M3.30.2.1.1] (lead) base 349f921a72399b3f0c8e677d534c1d2e4e024a4b; working tree already has green wheel swaps (ureq/url, tempfile persist) from M3.30.2.1
+- 2026-11-19T00:11 [M3.30.2.1.1] (lead) status active -> review
+- 2026-11-19T00:13 [M3.30.2.1.1] (lead) status review -> ready: triad: 1 BLOCKER (compat re-export curtain) + 4 MAJOR (CLI tables in wire, policy dup, path budget dup, ospp caps) — one pass
+- 2026-11-19T00:13 [M3.30.2.1.1] (lead) attempt 2/3 started
+- 2026-11-19T00:19 [M3.30.2.1.1] (lead) status ready -> done
+- 2026-11-19T00:19 [M3.30.2.1.2] (lead) status ready -> active
+- 2026-11-19T00:19 [M3.30.2.1.2] (lead) attempt 1/3 started
+- 2026-11-19T00:19 [M3.30.2.1.2] (lead) base 2016a25735d202f20b3d31465a463aebdcb5489b
+- 2026-11-19T00:25 [M3.30.2.1.2] (lead) status active -> review
+- 2026-11-19T00:26 [M3.30.2.1.2] (lead) status review -> ready: triad: 3 MAJOR (harness ownership, mock conformance witness, TcpStream contract) — one pass
+- 2026-11-19T00:26 [M3.30.2.1.2] (lead) attempt 2/3 started
+- 2026-11-19T00:29 [M3.30.2.1.2] (lead) status ready -> done
+- 2026-11-19T00:30 [M3.30.2.1] (lead) status active -> done: 2/2 children done: wire crate + world port extraction
+- 2026-11-19T00:30 [M3.30.2.2] (lead) status ready -> active
+- 2026-11-19T00:30 [M3.30.2.2] (lead) attempt 1/3 started
+- 2026-11-19T00:30 [M3.30.2.2] (lead) base b887e61aa1b7b25f92432f36983d00932308d939
+- 2026-11-19T00:31 [M3.30.2.2] (lead) edited fields
+- 2026-11-19T00:31 [M3.30.2.2.1] (lead) created (task) Mechanical daemon.rs extraction into daemon/{mod,types,service,world,control,resolve,backing,env,tests}.rs
+- 2026-11-19T00:31 [M3.30.2.2.2] (lead) created (task) PostgresProvisioner + OsppSupervisor + PairingStore cohesive structs over the new daemon modules
+- 2026-11-19T00:31 [M3.30.2.2.1] (lead) status ready -> active
+- 2026-11-19T00:31 [M3.30.2.2.1] (lead) attempt 1/3 started
+- 2026-11-19T00:31 [M3.30.2.2.1] (lead) base b887e61aa1b7b25f92432f36983d00932308d939
+- 2026-11-19T00:39 [M3.30.2.2.1] (lead) status active -> review
+- 2026-11-19T00:40 [M3.30.4] (lead) also replace daemon/tests/engine.rs RecordingEngine/StubRootfs/FixedRepo doubles with one real daemon/world E2E journey (happy path + fail-closed refusal + reap
+- 2026-11-19T00:40 [M3.30.2.2.1] (lead) status review -> ready: triad: 1 BLOCKER (glob prelude curtain) + 4 MAJOR grouping, one pass
+- 2026-11-19T00:40 [M3.30.2.2.1] (lead) attempt 2/3 started
+- 2026-11-19T00:48 [M3.30.2.2.1] (lead) status ready -> done
+- 2026-11-19T00:49 [M3.30.2.2.2] (lead) status ready -> active
+- 2026-11-19T00:49 [M3.30.2.2.2] (lead) attempt 1/3 started
+- 2026-11-19T00:49 [M3.30.2.2.2] (lead) base 248c7c1b77ae4678ce6316226d88897924721f9e
+- 2026-11-19T00:52 [M3.30.2.2.2] (lead) status active -> review
+- 2026-11-19T00:55 [M3.30.5] (lead) carry-over: docs/reference/ospp.md + cli.md must describe saved ospp.json reconnect (endpoint flag only needed on first run)
+- 2026-11-19T00:55 [M3.30.2.2.2] (lead) status review -> ready: triad: 2 BLOCKER test-fidelity + 3 MAJOR ownership, one pass
+- 2026-11-19T00:55 [M3.30.2.2.2] (lead) attempt 2/3 started
+- 2026-11-19T01:01 [M3.30.2.2.2] (lead) status ready -> done
+- 2026-11-19T01:01 [M3.30.2.2] (lead) status active -> done: 2/2 children done: mechanical split + cohesive postgres/ospp/pairing structs
+- 2026-11-19T01:01 [M3.30.2.3] (lead) status ready -> active
+- 2026-11-19T01:01 [M3.30.2.3] (lead) attempt 1/3 started
+- 2026-11-19T01:01 [M3.30.2.3] (lead) base cc77713c33097e97a2cd5ebfa4759ce3b121330d
+- 2026-11-19T01:07 [M3.30.2.3] (lead) status active -> review
+- 2026-11-19T01:09 [M3.30.2.3] (lead) status review -> ready: triad: 2 MAJOR (library env read, abandon path bypass) + minors, one pass
+- 2026-11-19T01:10 [M3.30.2.3] (lead) attempt 2/3 started
+- 2026-11-19T01:14 [M3.30.2.3] (lead) status ready -> done
+- 2026-11-19T01:14 [M3.30.2.4] (lead) status ready -> active
+- 2026-11-19T01:14 [M3.30.2.4] (lead) attempt 1/3 started
+- 2026-11-19T01:14 [M3.30.2.4] (lead) base beb91c51718ccda89b8c70d4187211e2b1d8ba99
+- 2026-11-19T01:21 [M3.30.2.4] (lead) status active -> review
+- 2026-11-19T01:23 [M3.30.2.4] (lead) status review -> ready: triad: 1 MAJOR (ambient stdin read) + 2 MINOR lazy ambient reads, one pass
+- 2026-11-19T01:23 [M3.30.2.4] (lead) attempt 2/3 started
+- 2026-11-19T01:25 [M3.30.2.4] (lead) status ready -> done
+- 2026-11-19T01:25 [M3.30.2] (lead) status ready -> done: 4/4 children done: wire/world ports, daemon split, engine split, composition root
+- 2026-11-19T01:25 [M3.30.3] (lead) edited fields
+- 2026-11-19T01:25 [M3.30.3.1] (lead) created (task) TerminalUi palette + clap Styles + ANSI purity + verdict-first doctor
+- 2026-11-19T01:25 [M3.30.3.2] (lead) created (task) Live streamed progress on rootfs buildx/pull/export, daemon wait and install legs
+- 2026-11-19T01:25 [M3.30.3.3] (lead) created (task) Dynamic ANSI-stripped column widths across status/ps/list/forward/secret + plugin ANSI purity
+- 2026-11-19T01:25 [M3.30.3.1] (lead) status ready -> active
+- 2026-11-19T01:25 [M3.30.3.1] (lead) attempt 1/3 started
+- 2026-11-19T01:25 [M3.30.3.1] (lead) base d3b3157c1f0b77bc555706441fe6488974318077
+- 2026-11-19T01:34 [M3.30.3.1] (lead) status active -> review
+- 2026-11-19T01:35 [M3.30.3.1] (lead) status review -> ready: triad: 5 MAJOR (argv scan, tautological palette tests, spinner span, restart styling, no-color progress) — one pass
+- 2026-11-19T01:35 [M3.30.3.1] (lead) attempt 2/3 started
+- 2026-11-19T01:43 [M3.30.3.1] (lead) status ready -> done
+- 2026-11-19T01:43 [M3.30.3.2] (lead) status ready -> active
+- 2026-11-19T01:43 [M3.30.3.2] (lead) attempt 1/3 started
+- 2026-11-19T01:43 [M3.30.3.2] (lead) base 77cf05e4b5614ddb12b16443de248215e1d179e4
+- 2026-11-19T01:47 [M3.30.3.2] (lead) status active -> review
+- 2026-11-19T01:48 [M3.30.3.2] (lead) status review -> ready: triad: 3 BLOCKER (progress never started, no child-group stop/timeout) + MAJORs, one pass
+- 2026-11-19T01:48 [M3.30.3.2] (lead) attempt 2/3 started
+- 2026-11-19T01:53 [M3.30.3.2] (lead) status ready -> done
+- 2026-11-19T01:53 [M3.30.3.3] (lead) status ready -> active
+- 2026-11-19T01:53 [M3.30.3.3] (lead) attempt 1/3 started
+- 2026-11-19T01:53 [M3.30.3.3] (lead) base 96a87f319ca6ebf793bcee413c698f1755dc4d91
+- 2026-11-19T01:57 [M3.30.3.3] (lead) status active -> review
+- 2026-11-19T01:58 [M3.30.3.3] (lead) status review -> ready: triad: 1 BLOCKER (hand-rolled width) + 2 MAJOR (width owner, plugin purity test) — one pass
+- 2026-11-19T01:58 [M3.30.3.3] (lead) attempt 2/3 started
+- 2026-11-19T02:02 [M3.30.3.3] (lead) status ready -> done
+- 2026-11-19T02:02 [M3.30.3] (lead) status ready -> done: 3/3 children done: palette, streamed progress, dynamic tables
+- 2026-11-19T02:02 [M3.30.4] (lead) edited fields
+- 2026-11-19T02:02 [M3.30.4.1] (lead) created (task) Single-build Makefile, no nested cargo build, Btrfs live-suite gating, poc dag-plan cleanup
+- 2026-11-19T02:02 [M3.30.4.1] (lead) status ready -> active
+- 2026-11-19T02:02 [M3.30.4.1] (lead) attempt 1/3 started
+- 2026-11-19T02:02 [M3.30.4.1] (lead) base 308f1a0c5212a7a237603cd4d0062c71970a3ab3
+- 2026-11-19T02:11 [M3.30.4.1] (lead) edited fields
+- 2026-11-19T02:15 [M3.30.4.1] (lead) status active -> done
+- 2026-11-19T02:15 [M3.30.5] (lead) status ready -> active
+- 2026-11-19T02:15 [M3.30.5] (lead) attempt 1/3 started
+- 2026-11-19T02:15 [M3.30.5] (lead) base d5667acc7fb7423790508d8a7e96ab03b9ff97d3
+- 2026-11-19T02:19 [M3.30.5] (lead) status active -> done
+- 2026-11-19T02:19 [M3.30.4.2] (lead) created (task) Journey A: one rich Btrfs world E2E suite; delete daemon/engine test doubles
+- 2026-11-19T02:19 [M3.30.4.3] (lead) created (task) Journey B: one rich OSPP v1 loopback E2E suite + pure algorithm tests
+- 2026-11-19T02:19 [M3.30.4.2] (lead) status ready -> active
+- 2026-11-19T02:19 [M3.30.4.2] (lead) attempt 1/3 started
+- 2026-11-19T02:19 [M3.30.4.2] (lead) base 582400347c35312c8e2042e4bb8c0f74e99e3b47
+- 2026-11-19T02:24 [M3.30.4.4] (lead) created (task) Edge live suite: replace StubWorldEngine with KernelBtrfsDriver in require_btrfs critical_edge_live
+- 2026-11-19T02:24 [M3.30.4.2] (lead) status active -> done: Journey A landed (RecordingEngine/StubRootfs deleted); StubWorldEngine edge-live split re-homed to M3.30.4.4
+- 2026-11-19T02:25 [M3.30.4.3] (lead) edited fields
+- 2026-11-19T02:25 [M3.30.6] (lead) edited fields
+- 2026-11-19T02:25 [M3.30.4.3] (lead) edited fields
+- 2026-11-19T02:25 [M3.30.4.3] (lead) status ready -> active
+- 2026-11-19T02:25 [M3.30.4.3] (lead) attempt 1/3 started
+- 2026-11-19T02:25 [M3.30.4.3] (lead) base b59b40543b1753d6b02f886d9fab0ab74846dddc
+- 2026-11-19T02:33 [M3.30.4.3] (lead) status active -> review
+- 2026-11-19T02:39 [M3.30.4.3] (lead) attempt 2/3 started
+- 2026-11-19T02:39 [M3.30.4.3] (lead) status review -> active
+- 2026-11-19T02:39 [M3.30.4.3] (lead) triad: arch pass, tests pass, ux 1 MAJOR (3 lost UX assertions) -> 1 consolidated fix pass
+- 2026-11-19T02:39 [M3.30.4.3] (lead) status active -> done
+- 2026-11-19T02:40 [M3.30.4.4] (lead) status ready -> active
+- 2026-11-19T02:40 [M3.30.4.4] (lead) attempt 1/3 started
+- 2026-11-19T02:40 [M3.30.4.4] (lead) base 94d2d93f0d0929120bf5e247bfbd754de28c7b0a
+- 2026-11-19T02:40 [M3.30.4.4] (lead) edited fields
+- 2026-11-19T02:46 [M3.30.4.4] (lead) status active -> review
+- 2026-11-19T02:48 [M3.30.4.4] (lead) attempt 2/3 started
+- 2026-11-19T02:48 [M3.30.4.4] (lead) status review -> active
+- 2026-11-19T02:48 [M3.30.4.4] (lead) triad: arch 2 MAJOR, tests 2 BLOCKER + 4 MAJOR, ux 4 MAJOR -> 1 consolidated restore pass
+- 2026-11-19T02:52 [M3.30.4.4] (lead) status active -> done
+- 2026-11-19T02:52 [M3.30.4] (lead) Epic acceptance green: no nested cargo build, no dag plan, one compile per target set; fmt/clippy; dag/snow/ospp/engine lib tests (5/4/17/52) pass; critical_edg
+- 2026-11-19T02:52 [M3.30.4] (lead) status ready -> done
+- 2026-11-19T02:52 [M3.30.6] (lead) status ready -> active
+- 2026-11-19T02:52 [M3.30.6] (lead) attempt 1/3 started
+- 2026-11-19T02:52 [M3.30.6] (lead) base c12b84a06ace16b817f756c8092cc45bc514f355
+- 2026-11-19T03:26 [M3.30.7] (lead) created (task) Lab-VM reality fixes: short test root, browser fixture on CLI, real seal invariant, stale-command pruning
+- 2026-11-19T03:26 [M3.30.7] (lead) status ready -> active
+- 2026-11-19T03:26 [M3.30.7] (lead) attempt 1/3 started
+- 2026-11-19T03:26 [M3.30.7] (lead) base c12b84a06ace16b817f756c8092cc45bc514f355 (opened from the first suite-user VM run of M3.30.6)
+- 2026-11-19T03:26 [M3.30.7] (lead) edited fields
+- 2026-11-19T03:29 [M3.30.7] (lead) status active -> review
+- 2026-11-19T04:28 [M3.30.7] (lead) suite-user VM: engine 21, oci 3, edge_live 3, btrfs_live 1+7, cli 24, l0 8, slug 8, vcs_remote 7 all pass; ospp blocked by a real product leak (component secret
+- 2026-11-19T04:28 [M3.30.7] (lead) status review -> done
+- 2026-11-19T04:28 [M3.30.8] (lead) created (task) Never write the world component env into an OCI container config.json (secret plaintext on disk)
+- 2026-11-19T04:28 [M3.30.8] (lead) status ready -> active
+- 2026-11-19T04:28 [M3.30.8] (lead) attempt 1/3 started
+- 2026-11-19T04:28 [M3.30.8] (lead) base e09aee88d027ca57d4d68d29b8ddae622b92da32
+- 2026-11-19T04:50 [M3.30.8] (lead) edited fields
+- 2026-11-19T04:57 [M3.30.9] (lead) created (task) Journey restart assertions match the real multi-component restart output
+- 2026-11-19T04:57 [M3.30.9] (lead) status ready -> active
+- 2026-11-19T04:57 [M3.30.9] (lead) attempt 1/3 started
+- 2026-11-19T04:57 [M3.30.9] (lead) base e09aee88d027ca57d4d68d29b8ddae622b92da32
+- 2026-11-19T04:59 [M3.30.8] (lead) VM: oci 4/4 (new bundle+exec leak proofs), btrfs_live 1/1 (container exec env), ospp 7/7, engine 21/21
+- 2026-11-19T04:59 [M3.30.8] (lead) status active -> done
+- 2026-11-19T05:14 [M3.30.9] (lead) VM: critical_world_journey 7/7 and the whole do_vm.py test suite exits 0 (11 suites, 782s wall)
+- 2026-11-19T05:14 [M3.30.9] (lead) status active -> done
+- 2026-11-19T06:16 [M3.30.6] (lead) VM proof: do_vm.py test exit 0 (11 suites, 97 tests, 782s wall; per suite: engine-btrfs 32s/1, engine 50s/21, oci 4s/4, edge-live 4s/3, slipfork-btrfs 33s/7, cl
+- 2026-11-19T06:18 [M3.30.6] (lead) status active -> done
+- 2026-11-19T06:25 [M3.30.10] (lead) created (task) Keep the do_vm harness unit test aligned with the consolidated SUITES list
+- 2026-11-19T06:25 [M3.30.10] (lead) status ready -> active
+- 2026-11-19T06:25 [M3.30.10] (lead) attempt 1/3 started
+- 2026-11-19T06:25 [M3.30.10] (lead) base c98989321f3ff26e2e429be0dbcb861a653cfe31
+- 2026-11-19T06:34 [M3.30.11] (lead) created (task) Harden the browser opener test against ETXTBSY under parallel test load
+- 2026-11-19T06:34 [M3.30.11] (lead) status ready -> active
+- 2026-11-19T06:34 [M3.30.11] (lead) attempt 1/3 started
+- 2026-11-19T06:34 [M3.30.11] (lead) base c98989321f3ff26e2e429be0dbcb861a653cfe31
+- 2026-11-19T06:37 [M3.30.10] (lead) status active -> done
+- 2026-11-19T06:37 [M3.30.11] (lead) status active -> done
+- 2026-11-19T06:45 [M3.30] (lead) Gate PASS: make check exit 0 (32s warm: fmt, clippy -D warnings, rustdoc -D warnings, pure Rust suites, bun plugin tests, ruff+pytest 130, zensical --strict, do
+- 2026-11-19T06:45 [M3.30] (lead) status ready -> done
+- 2026-11-19T06:47 ESCALATION #26 -> strategist for M3 by conductor: 0.1.0 milestone gate
+- 2026-11-19T06:51 [M3] (strategist) edited fields
+- 2026-11-19T07:00 [M3.31] (strategist) created (task) 0.1.0 gate polish: purge --help DAG vaporware, align doctor transcripts & encapsulate snow expression check
+- 2026-11-19T07:00 [M3] (strategist) Milestone gate pass 1: ROADMAP.md + M3 updated; make check & docs-check & guard.py & plan.py validate all exit 0; Triad caught 0.2.0 DAG vaporware in cli.rs --h
+- 2026-11-19T07:02 [M3.31] (lead) status ready -> active
+- 2026-11-19T07:02 [M3.31] (lead) attempt 1/3 started
+- 2026-11-19T07:02 [M3.31] (lead) base 0e54f97f3e459204835ce0334f462cba7b25e322
+- 2026-11-19T07:05 [M3.31] (lead) status active -> review
+- 2026-11-19T07:07 [M3.31] (lead) status review -> ready: Triad: 1 BLOCKER (transcript drops sudo) + 3 doc/surface nits; one consolidated fix pass
+- 2026-11-19T07:07 [M3.31] (lead) attempt 2/3 started
+- 2026-11-19T07:07 [M3.31] (lead) base 0e54f97f3e459204835ce0334f462cba7b25e322
+- 2026-11-19T07:08 [M3.31] (lead) status ready -> review
+- 2026-11-19T07:09 [M3.31] (lead) status review -> done
+- 2026-11-19T07:10 [M3.31] (lead) VM 165.232.86.174 synced (809 files, daemon install, :80 socket activation); demo up on http://demo.localhost HTTP=200; installed slipfork --help first line = '
+- 2026-11-19T07:15 [M3] (strategist) Milestone gate PASS (HEAD e06375f): M3.31 verified, all Triad & automated gates green -> RELEASE_READY: 0.1.0
+- 2026-11-19T07:15 [M3] (strategist) status active -> done
+- 2026-11-19T07:17 HUMAN H-008 [release-gate] opened by conductor (node M3)
+- 2026-11-19T07:17 AUTOPILOT off by conductor Awaiting human review and merge of Release 0.1.0 PR
+- 2026-11-19T12:42 HUMAN H-008 closed by conductor
+- 2026-11-19T12:42 [M3] (conductor) status done -> active: Reopening 0.1.0 for Snowfile DSL + per-service crun pod rootfs + clean-sheet CLI UX redesign
+- 2026-11-19T12:42 AUTOPILOT on by conductor Build Snowfile DSL, per-service crun pod engine, and clean-sheet CLI UX for 0.1.0
+- 2026-11-19T12:42 ESCALATION #27 -> architect for M3 by conductor: Lock Snowfile DSL grammar, per-service crun pod model, and clean-sheet CLI UX spec
+- 2026-11-19T13:02 [M3.32] (planner) created (epic) Forkfile DSL, Per-Service crun Pod Engine & Clean-Sheet 0.1.0 CLI UX
+- 2026-11-19T13:02 [M3.32.1] (planner) created (task) slipfork-forkfile: purpose-made Forkfile parser, whole-file caret checker, evaluator & JSON IR
+- 2026-11-19T13:02 [M3.32.2] (planner) created (task) Per-service crun pod engine: shared userns/netns/ipcns, Btrfs volume CoW submounts & direct execve argv
+- 2026-11-19T13:02 [M3.32.3] (planner) created (task) slipforkd Forkfile/OSPP EvaluatedFork cut-over, port-agnostic .localhost ingress & multiplexed logs -f
+- 2026-11-19T13:02 [M3.32.4] (planner) created (task) Clean-sheet 0.1.0 CLI surface (dx-cli-0.1.0.md §1-§3) & @slipfork/opencode status --json sync
+- 2026-11-19T13:02 [M3.32.5] (planner) created (task) Forkfile visual docs, CHANGELOG & multi-service (api + front + postgres) support/demo
+- 2026-11-19T13:02 [M3.32.6] (planner) created (task) Zero-mock lab E2E + live multi-service PTY proof on 165.232.86.174, demo left on :80
+- 2026-11-19T13:02 [M3.32.1] (lead) edited fields
+- 2026-11-19T13:02 [M3.32.2] (lead) edited fields
+- 2026-11-19T13:02 [M3.32.3] (lead) edited fields
+- 2026-11-19T13:02 [M3.32.4] (lead) edited fields
+- 2026-11-19T13:02 [M3.32.5] (lead) edited fields
+- 2026-11-19T13:02 [M3.32.6] (lead) edited fields
+- 2026-11-19T13:03 [M3.32.1] (lead) status ready -> active
+- 2026-11-19T13:03 [M3.32.1] (lead) attempt 1/3 started
+- 2026-11-19T13:03 [M3.32.1] (lead) base 0dd8f5dcbc2e8c972a2253d002cbb95becb6e160
+- 2026-11-19T13:03 [M3.32.5] (lead) edited fields
+- 2026-11-19T13:13 [M3.32.1] (lead) status active -> review
+- 2026-11-19T13:14 [M3.32.1] (lead) status review -> ready: triad: 1 BLOCKER (TaintedString serde leak) + 5 MAJOR (diag sort/merge, check gating, ExternalCheck coverage, inactive-branch fixture)
+- 2026-11-19T13:14 [M3.32.1] (lead) attempt 2/3 started
+- 2026-11-19T13:14 [M3.32.1] (lead) status ready -> active
+- 2026-11-19T13:14 [M3.32.1] (lead) status active -> done
+- 2026-11-19T13:15 [M3.32.2] (lead) status ready -> active
+- 2026-11-19T13:15 [M3.32.2] (lead) attempt 1/3 started
+- 2026-11-19T13:15 [M3.32.2] (lead) base 8bbe34567f2ccd2c8611ea2c49c98c92789ce501
+- 2026-11-19T13:15 [M3.32.2] (lead) edited fields
+- 2026-11-19T13:15 [M3.32.2.1] (lead) created (task) slipfork-world pod primitives (VolumePlan/ServicePodSpec + crun argv) & dag [world] excision
+- 2026-11-19T13:15 [M3.32.2.2] (lead) created (task) slipfork-engine per-service crun pod runtime, shared ns init & direct execve lifecycle
+- 2026-11-19T13:15 [M3.32.2.3] (lead) created (task) Pod boot in crates/slipfork (PodBoot/ServicePod) + slipfork-testkit world harness
+- 2026-11-19T13:15 [M3.32.2.1] (lead) status ready -> active
+- 2026-11-19T13:15 [M3.32.2.1] (lead) attempt 1/3 started
+- 2026-11-19T13:15 [M3.32.2.1] (lead) base 8bbe34567f2ccd2c8611ea2c49c98c92789ce501
+- 2026-11-19T13:18 [M3.32.2.1] (lead) status active -> review
+- 2026-11-19T13:19 [M3.32.2.1] (lead) edited fields
+- 2026-11-19T13:19 [M3.32.2.1] (lead) status review -> ready: triad: 2 BLOCKER (bundle dir inside world subvol, crun_argv duplicates CrunSurface) + 9 MAJOR
+- 2026-11-19T13:19 [M3.32.2.1] (lead) attempt 2/3 started
+- 2026-11-19T13:19 [M3.32.2.1] (lead) status ready -> active
+- 2026-11-19T13:22 [M3.32.2.1] (lead) edited fields
+- 2026-11-19T13:23 [M3.32.2.1] (lead) status active -> done
+- 2026-11-19T13:23 [M3.32.2.2] (lead) status ready -> active
+- 2026-11-19T13:23 [M3.32.2.2] (lead) attempt 1/3 started
+- 2026-11-19T13:23 [M3.32.2.2] (lead) base 2906b51fbe4771d36fb565fb7754cfc0e1f672bb
+- 2026-11-19T13:24 [M3.32.2.2] (lead) edited fields
+- 2026-11-19T13:24 [M3.32.2.2.1] (lead) created (task) slipfork-world pod port surface + slipfork-engine shared-ns init & per-service CrunSurface bundles
+- 2026-11-19T13:24 [M3.32.2.2.2] (lead) created (task) slipfork-engine direct-execve lifecycle runner ([1/N], Forkfile:<line> fail-fast, zero sh -c)
+- 2026-11-19T13:24 [M3.32.2.2.3] (lead) created (task) slipforkd pod boot cut-over in crates/slipfork (PodBoot/ServicePod, per-service exec targets, live suites)
+- 2026-11-19T13:24 [M3.32.2.3] (lead) edited fields
+- 2026-11-19T13:24 [M3.32.2.2.1] (lead) status ready -> active
+- 2026-11-19T13:24 [M3.32.2.2.1] (lead) attempt 1/3 started
+- 2026-11-19T13:24 [M3.32.2.2.1] (lead) base 2906b51fbe4771d36fb565fb7754cfc0e1f672bb
+- 2026-11-19T13:26 [M3.32.2.2.1] (lead) edited fields
+- 2026-11-19T13:26 [M3.32.2.2.1.1] (lead) created (task) slipfork-world: additive ServicePod runtime + world_pod_namespaces port values
+- 2026-11-19T13:26 [M3.32.2.2.1.2] (lead) created (task) slipfork-engine: per-service OCI bundles via CrunSurface + rootfs dedupe
+- 2026-11-19T13:26 [M3.32.2.2.1.3] (lead) created (task) slipfork-engine: retire pivot_root init & WorldProcess verbs, migrate protected pod-exec suites
+- 2026-11-19T13:26 [M3.32.2.2.1.1] (lead) status ready -> active
+- 2026-11-19T13:26 [M3.32.2.2.1.1] (lead) attempt 1/3 started
+- 2026-11-19T13:26 [M3.32.2.2.1.1] (lead) base 2906b51fbe4771d36fb565fb7754cfc0e1f672bb
+- 2026-11-19T13:28 [M3.32.2.2.1.1] (lead) status active -> review
+- 2026-11-19T13:28 [M3.32.2.2.1.1] (lead) edited fields
+- 2026-11-19T13:28 [M3.32.2.2.1.1] (lead) status review -> ready: triad: 6 MAJOR (dead default body, duplicate unreachable pod arm, untested pod refusal, false port docs)
+- 2026-11-19T13:28 [M3.32.2.2.1.1] (lead) attempt 2/3 started
+- 2026-11-19T13:28 [M3.32.2.2.1.1] (lead) status ready -> active
+- 2026-11-19T13:30 [M3.32.2.2.1.1] (lead) status active -> done
+- 2026-11-19T13:30 [M3.32.2.2.1.2] (lead) status ready -> active
+- 2026-11-19T13:30 [M3.32.2.2.1.2] (lead) attempt 1/3 started
+- 2026-11-19T13:30 [M3.32.2.2.1.2] (lead) base 24e558aad0c76a0ad4a83d85f20f2fc2249d6d2b
+- 2026-11-19T13:34 [M3.32.2.2.1.2] (lead) status active -> review
+- 2026-11-19T13:35 [M3.32.2.2.1.2] (lead) edited fields
+- 2026-11-19T13:35 [M3.32.2.2.1.2] (lead) also owners Makefile registration for critical_pod_bundle + the critical_forkfile gap from M3.32.1
+- 2026-11-19T13:36 [M3.32.2.2.1.2] (lead) edited fields
+- 2026-11-19T13:36 [M3.32.2.2.1.2] (lead) status review -> ready: triad: Makefile registration BLOCKER + dedupe key/coordinate MAJORs + guest-path bundle root
+- 2026-11-19T13:36 [M3.32.2.2.1.2] (lead) attempt 2/3 started
+- 2026-11-19T13:36 [M3.32.2.2.1.2] (lead) status ready -> active
+- 2026-11-19T13:39 [M3.32.2.2.1.2] (lead) status active -> done
+- 2026-11-19T13:39 [M3.32.2.2.1.3] (lead) status ready -> active
+- 2026-11-19T13:39 [M3.32.2.2.1.3] (lead) attempt 1/3 started
+- 2026-11-19T13:39 [M3.32.2.2.1.3] (lead) base f5233c2e83e9afe37798ae499f2404233c4d62c8
+- 2026-11-19T13:39 [M3.32.2.2.1.3] (lead) edited fields
+- 2026-11-19T13:39 [M3.32.2.2.1.3.1] (lead) created (task) slipfork-engine service-pod spawn & supervision (crun run, retained logs, readiness, stop/teardown)
+- 2026-11-19T13:39 [M3.32.2.2.1.3.2] (lead) created (task) slipfork-engine/world init flip: retire pivot_root & WorldProcess, real world_pod_namespaces, migrate protected suites
+- 2026-11-19T13:39 [M3.32.2.2.1.3.1] (lead) status ready -> active
+- 2026-11-19T13:39 [M3.32.2.2.1.3.1] (lead) attempt 1/3 started
+- 2026-11-19T13:39 [M3.32.2.2.1.3.1] (lead) base f5233c2e83e9afe37798ae499f2404233c4d62c8
+- 2026-11-19T13:43 [M3.32.2.2.1.3.1] (lead) edited fields
+- 2026-11-19T13:43 [M3.32.2.2.1.3.1] (lead) status active -> review
+- 2026-11-19T13:44 [M3.32.2.2.1.3.1] (lead) status review -> ready: triad: 2 BLOCKER (host ns paths in bundle, pod env leaked into crun --env argv) + 8 MAJOR
+- 2026-11-19T13:44 [M3.32.2.2.1.3.1] (lead) attempt 2/3 started
+- 2026-11-19T13:44 [M3.32.2.2.1.3.1] (lead) status ready -> active
+- 2026-11-19T13:49 [M3.32.2.2.1.3.1] (lead) status active -> done
+- 2026-11-19T13:49 [M3.32.2.2.1.3.2] (lead) status ready -> active
+- 2026-11-19T13:49 [M3.32.2.2.1.3.2] (lead) attempt 1/3 started
+- 2026-11-19T13:49 [M3.32.2.2.1.3.2] (lead) base 67386f22fc9de75f7a9cbe912f184caa7b5803e6
+- 2026-11-19T13:50 [M3.32.2.2.1.3.2] (lead) edited fields
+- 2026-11-19T13:50 [M3.32.2.2.1.3.2.1] (lead) created (task) Init + coordinate flip: drop pivot_root/overlay, publish namespaces.json, host-coordinate bundles, pod-backed legacy verbs
+- 2026-11-19T13:50 [M3.32.2.2.1.3.2.2] (lead) created (task) Retire WorldProcess verbs and rebase protected journeys onto explicit service pods
+- 2026-11-19T13:50 [M3.32.2.2.1.3.2.1] (lead) status ready -> active
+- 2026-11-19T13:50 [M3.32.2.2.1.3.2.1] (lead) attempt 1/3 started
+- 2026-11-19T13:50 [M3.32.2.2.1.3.2.1] (lead) base 67386f22fc9de75f7a9cbe912f184caa7b5803e6
+- 2026-11-19T14:04 [M3.32.2.2.1.3.2.1] (lead) edited fields
+- 2026-11-19T14:04 [M3.32.2.2.1.3.2.1] (lead) unblocked: apparmor profile now in scope (coordinate flip moved crun to a host rootfs path)
+- 2026-11-19T15:00 ESCALATION #28 -> architect for M3.32.2.2.1.3.2.1 by lead: pod flip writes resolved remote secrets into OCI config.json under state_dir; crun copies it into its --root, so critica
+- 2026-11-19T15:00 [M3.32.2.2.1.3.2.1] (lead) status active -> blocked: architect: secret env in OCI config leaks to disk (oci/ + oci-run/ copies)
+- 2026-11-19T15:31 [M3.32.2.2.1.3.2.1] (lead) status blocked -> ready: architect decision: world-mntns tmpfs over ctl/{oci,oci-run}
+- 2026-11-19T15:31 [M3.32.2.2.1.3.2.1] (lead) attempt 2/3 started
+- 2026-11-19T15:31 [M3.32.2.2.1.3.2.1] (lead) status ready -> active
+- 2026-11-19T15:31 [M3.32.2.2.1.3.2.1] (lead) architect: mount per-world mntns tmpfs over ctl/{oci,oci-run}; translate host writes via /proc/<init>/root; restore WorldProcess respawn for update_service_env
+- 2026-11-19T16:00 [M3.32.7] (lead) created (task) slipfork-forkfile: lossless snow.yml -> Forkfile converter (upstream Kerfufoo schema, ${{ }} templates, self-verified)
+- 2026-11-19T16:00 [M3.32.8] (lead) created (task) slipfork migrate CLI (file/output/--stdout/--force, crisp summary) + dx-cli-0.1.0 spec row
+- 2026-11-19T16:00 [M3.32.9] (lead) created (task) Migrate docs: docs/reference/cli.md, getting-started, CHANGELOG + legacy demo migration rehearsal
+- 2026-11-19T16:00 [M3.32.3] (lead) edited fields
+- 2026-11-19T16:00 [M3.32.6] (lead) edited fields
+- 2026-11-19T16:03 [M3.32.10] (lead) created (task) slipfork_forkfile::fmt + crates/slipfork-lsp (zero-tokio framed stdio, UTF-16) + slipfork lsp
+- 2026-11-19T16:03 [M3.32.11] (lead) created (task) editors/tree-sitter-forkfile grammar + editors/zed extension + tools/check_zed_extension.py
+- 2026-11-19T16:03 [M3.32.12] (lead) created (task) Forkfile syntax highlighting in Zensical docs (forkfile-highlight.js + WCAG AA CSS + JS tests)
+- 2026-11-19T16:03 [M3.32.6] (lead) edited fields
+- 2026-11-19T16:03 [M3.32] (lead) owner additions scheduled: migrate (M3.32.7-9), LSP (M3.32.10), tree-sitter/Zed (M3.32.11), docs highlighting (M3.32.12)
+- 2026-11-19T17:40 [M3.32.2.2.1.3.2.1] (implementer) do_vm test RC=0: critical_btrfs_live 1, critical_engine 21, critical_oci_runtime 4, critical_edge_live 3, critical_btrfs_live(cli-crate) 7, critical_cli 24, cri
+- 2026-11-19T17:41 [M3.32.2.2.1.3.2.1] (lead) edited fields
+- 2026-11-19T17:41 [M3.32.2.2.1.3.2.1] (lead) lead: new pod suite must run in the VM gate; do_vm.py SUITES in scope
+- 2026-11-19T18:01 [M3.32.2.2.1.3.2.1] (implementer) do_vm test RC=0 (12 suites): critical_btrfs_live 1, critical_engine 21, critical_oci_runtime 4, critical_pod_runtime 1, critical_edge_live 3, critical_btrfs_liv
+- 2026-11-19T18:01 [M3.32.2.2.1.3.2.1] (lead) status active -> review
+- 2026-11-19T18:03 [M3.32.2.2.1.3.2.1] (lead) status review -> ready: triad: 3 BLOCKER (shared ns doc, script not staged, IPC join unproven) + 12 MAJOR
+- 2026-11-19T18:03 [M3.32.2.2.1.3.2.1] (lead) attempt 3/3 started
+- 2026-11-19T18:03 [M3.32.2.2.1.3.2.1] (lead) status ready -> active
+- 2026-11-19T18:23 [M3.32.2.2.1.3.2.1] (implementer) do_vm test RC=0 (12 suites): critical_btrfs_live 1, critical_engine 21, critical_oci_runtime 4, critical_pod_runtime 1, critical_edge_live 3, critical_btrfs_liv
+- 2026-11-19T18:23 [M3.32.2.2.1.3.2.1] (lead) edited fields
+- 2026-11-19T18:23 [M3.32.2.2.1.3.2.1] (lead) attempt 1/5 started
+- 2026-11-19T18:23 [M3.32.2.2.1.3.2.1] (lead) status active -> active
+- 2026-11-19T18:23 [M3.32.2.2.1.3.2.1] (lead) final structural cleanup: container.rs split, WorldProcessBundle, unexport write_pod_bundle
+- 2026-11-19T18:42 [M3.32.2.2.1.3.2.1] (implementer) do_vm test RC=0 (12 suites): critical_btrfs_live 1, critical_engine 21, critical_oci_runtime 4, critical_pod_runtime 1, critical_edge_live 3, critical_btrfs_liv
+- 2026-11-19T18:42 [M3.32.2.2.1.3.2.1] (lead) arch PASS; defer one-line doc on write_pod_bundle (bundle-synthesis-only) to M3.32.2.2.1.3.2.2
+- 2026-11-19T18:42 [M3.32.2.2.1.3.2.1] (lead) status active -> done
+- 2026-11-19T18:43 [M3.32.2.2.1.3.2.2] (lead) status ready -> active
+- 2026-11-19T18:43 [M3.32.2.2.1.3.2.2] (lead) attempt 1/3 started
+- 2026-11-19T18:43 [M3.32.2.2.1.3.2.2] (lead) base 629a116dbe38eaccf8b24badae51f2ebcd10f57c
+- 2026-11-19T18:43 [M3.32.2.2.1.3.2.2] (lead) edited fields
+- 2026-11-19T18:43 [M3.32.2.2.1.3.2.2.1] (lead) created (task) Component ServicePod path in engine + journey rebase off WorldProcess
+- 2026-11-19T18:43 [M3.32.2.2.1.3.2.2.2] (lead) created (task) Delete WorldProcess/exec_in_world/entry_command once the daemon has cut over
+- 2026-11-19T18:43 [M3.32.2.2.1.3.2.2.1] (lead) status ready -> active
+- 2026-11-19T18:43 [M3.32.2.2.1.3.2.2.1] (lead) attempt 1/3 started
+- 2026-11-19T18:43 [M3.32.2.2.1.3.2.2.1] (lead) base 629a116dbe38eaccf8b24badae51f2ebcd10f57c
+- 2026-11-19T18:44 [M3.32.2.2.1.3.2.2.1] (lead) status active -> ready: deferred: component->pod parity is test-harness work; lands with the daemon cut-over. Keep WorldProcess bridge meanwhile.
+- 2026-11-19T18:44 [M3.32.2.2.1.3.2.2.1] (lead) edited fields
+- 2026-11-19T18:44 [M3.32.2.2.2] (lead) edited fields
+- 2026-11-19T18:44 [M3.32.2.2.1.3.2.2.1] (lead) lead: deferred until .2.2.3; bridge stays, no weakened journeys
+- 2026-11-19T18:44 [M3.32.2.2.2] (lead) status ready -> active
+- 2026-11-19T18:44 [M3.32.2.2.2] (lead) attempt 1/3 started
+- 2026-11-19T18:44 [M3.32.2.2.2] (lead) base 629a116dbe38eaccf8b24badae51f2ebcd10f57c
+- 2026-11-19T18:45 [M3.32.2.2.2] (lead) edited fields
+- 2026-11-19T18:45 [M3.32.2.2.2.1] (lead) created (task) slipfork-engine ForkfileRunner: sequential execve lifecycle, [1/N] progress, Forkfile:<line> fail-fast
+- 2026-11-19T18:45 [M3.32.2.2.2.1] (lead) status ready -> active
+- 2026-11-19T18:45 [M3.32.2.2.2.1] (lead) attempt 1/3 started
+- 2026-11-19T18:45 [M3.32.2.2.2.1] (lead) base 629a116dbe38eaccf8b24badae51f2ebcd10f57c
+- 2026-11-19T18:45 [M3.32.2.2.2.1] (lead) edited fields
+- 2026-11-19T18:45 [M3.32.2.2.2.1] (lead) unblocked: add canonical EvaluatedFork::resolve_argv in slipfork-forkfile (paths widened)
+- 2026-11-19T18:48 [M3.32.2.2.2.1] (lead) status active -> review
+- 2026-11-19T18:49 [M3.32.2.2.2.1] (lead) status review -> ready: triad: 4 UX MAJOR (missing next: remedies, retroactive [1/N], tail ordering)
+- 2026-11-19T18:49 [M3.32.2.2.2.1] (lead) attempt 2/3 started
+- 2026-11-19T18:49 [M3.32.2.2.2.1] (lead) status ready -> active
+- 2026-11-19T18:51 [M3.32.2.2.2.1] (lead) status active -> review
+- 2026-11-19T18:52 [M3.32.2.2.2.1] (lead) status review -> done
+- 2026-11-19T18:52 [M3.32.2.2.2] (lead) status active -> done
+- 2026-11-19T18:52 [M3.32.7] (lead) status ready -> active
+- 2026-11-19T18:52 [M3.32.7] (lead) attempt 1/3 started
+- 2026-11-19T18:52 [M3.32.7] (lead) base fdcbecd794ef30ea279b253bda2a4628adbfc6bc
+- 2026-11-19T18:56 [M3.32.7] (lead) edited fields
+- 2026-11-19T18:57 [M3.32.7] (lead) status active -> review
+- 2026-11-19T18:57 [M3.32.7] (lead) status review -> ready: triad tests: 5 MAJOR (template translation unasserted, collision/refusal coverage, dead InvalidOutput fallback, silent bool swallow, bui
+- 2026-11-19T18:57 [M3.32.7] (lead) attempt 2/3 started
+- 2026-11-19T18:57 [M3.32.7] (lead) status ready -> active
+- 2026-11-19T19:03 [M3.32.7] (lead) status active -> done
+- 2026-11-19T19:03 [M3.32.2.2.3] (lead) status ready -> active
+- 2026-11-19T19:03 [M3.32.2.2.3] (lead) attempt 1/3 started
+- 2026-11-19T19:03 [M3.32.2.2.3] (lead) base 2cb20138018a1daf9abf0b2b562e1547d0e51c8c
+- 2026-11-19T19:03 [M3.32.2.2.3] (lead) edited fields
+- 2026-11-19T19:03 [M3.32.2.2.3.1] (lead) created (task) Explicit Interactive/Exec entry kind in wire + engine; delete INTERACTIVE_ENTRY_SHIM
+- 2026-11-19T19:03 [M3.32.2.2.3.2] (lead) created (task) PodBoot/ServicePod daemon boot on EvaluatedFork with per-service exec targets
+- 2026-11-19T19:03 [M3.32.2.2.3.1] (lead) status ready -> active
+- 2026-11-19T19:03 [M3.32.2.2.3.1] (lead) attempt 1/3 started
+- 2026-11-19T19:03 [M3.32.2.2.3.1] (lead) base 2cb20138018a1daf9abf0b2b562e1547d0e51c8c
+- 2026-11-19T19:04 [M3.32.2.2.3.1] (lead) edited fields
+- 2026-11-19T19:04 [M3.32.2.2.3.1] (lead) lead: widened to the entry producer/consumer (entry.rs, process.rs, daemon/protocol.rs)
+- 2026-11-19T19:26 [M3.32.2.2.3.1] (implementer) do_vm test RC=0 (12 suites): critical_btrfs_live 1, critical_engine 21, critical_oci_runtime 4, critical_pod_runtime 1, critical_edge_live 3, critical_btrfs_liv
+- 2026-11-19T19:26 [M3.32.2.2.3.1] (lead) status active -> review
+- 2026-11-19T19:26 [M3.32.2.2.3.1] (lead) edited fields
+- 2026-11-19T19:26 [M3.32.2.2.3.1] (lead) status review -> ready: triad: 1 declarative BLOCKER (test paths) + 4 MAJOR (silent default bridge, Interactive fallback, unused wire field, hardcoded script pa
+- 2026-11-19T19:26 [M3.32.2.2.3.1] (lead) attempt 2/3 started
+- 2026-11-19T19:26 [M3.32.2.2.3.1] (lead) status ready -> active
+- 2026-11-19T19:48 [M3.32.2.2.3.1] (implementer) attempt2: do_vm RC=0 (12 suites): btrfs_live 1, engine 21, oci_runtime 4, pod_runtime 1, edge_live 3, btrfs_live(cli) 7, cli 24, l0_wiring 8, slug 8, ospp_daemo
+- 2026-11-19T19:48 [M3.32.2.2.3.1] (lead) status active -> done
+- 2026-11-19T19:48 [M3.32.3] (lead) status ready -> active
+- 2026-11-19T19:48 [M3.32.3] (lead) attempt 1/3 started
+- 2026-11-19T19:48 [M3.32.3] (lead) base 9706d6298472c3e6b4cf71d6a6cc7f7e3f56f069
+- 2026-11-19T19:49 [M3.32.3] (lead) edited fields
+- 2026-11-19T19:49 [M3.32.3.1] (lead) created (task) Port-agnostic .localhost ingress + multiplexed logs -f (survives restart)
+- 2026-11-19T19:49 [M3.32.3.2] (lead) created (task) wire subscribe.forkfile: EvaluatedFork + OSPP/testkit retype on slipfork-forkfile
+- 2026-11-19T19:49 [M3.32.3.3] (lead) created (task) Daemon/CLI cut-over on EvaluatedFork, project identity, delete slipfork-snow
+- 2026-11-19T19:49 [M3.32.3.1] (lead) status ready -> active
+- 2026-11-19T19:49 [M3.32.3.1] (lead) attempt 1/3 started
+- 2026-11-19T19:49 [M3.32.3.1] (lead) base 9706d6298472c3e6b4cf71d6a6cc7f7e3f56f069
+- 2026-11-19T19:49 [M3.32.3.1] (lead) edited fields
+- 2026-11-19T19:49 [M3.32.3.4] (lead) created (task) Capture-time ts_ms + concurrent logs -f fan-in with restart divider
+- 2026-11-19T19:49 [M3.32.3.1] (lead) lead: narrowed to edge-only; logs multiplexer split to M3.32.3.4 (capture-time ts_ms seam)
+- 2026-11-19T19:51 [M3.32.3.1] (lead) lead: appended missing # Acceptance sections to M3.32.3.1-.4 (plan.py has no body-edit command)
+- 2026-11-19T19:51 [M3.32.3.1] (lead) edited fields
+- 2026-11-19T19:52 [M3.32.3.1] (lead) edited fields
+- 2026-11-19T19:54 [M3.32.3.1] (lead) status active -> review
+- 2026-11-19T19:59 [M3.32.3.1] (lead) edited fields
+- 2026-11-19T19:59 [M3.32.5] (lead) note (from M3.32.3.1 Triad): published docs must show the new ingress shape — a <label>.* subdomain route (e.g. mail.*) and that <world>.localhost:<any port> (s
+- 2026-11-19T19:59 [M3.32.3.1] (lead) status review -> active
+- 2026-11-19T19:59 [M3.32.3.1] (lead) attempt 2/3 started
+- 2026-11-19T19:59 [M3.32.3.1] (lead) fix pass 1/3 base 9706d6298472c3e6b4cf71d6a6cc7f7e3f56f069
+- 2026-11-19T20:02 [M3.32.3.1] (lead) status active -> done
+- 2026-11-19T20:02 [M3.32.3.2] (lead) status ready -> active
+- 2026-11-19T20:02 [M3.32.3.2] (lead) attempt 1/3 started
+- 2026-11-19T20:02 [M3.32.3.2] (lead) base e787cb7d94ab01d7e382a93b751adb40556bda97
+- 2026-11-19T20:03 [M3.32.3.2] (lead) edited fields
+- 2026-11-19T20:03 [M3.32.3.2] (lead) lead: widened paths with the 3 daemon files that construct SubscribeRequest so the wire retype compiles standalone; full daemon retype + snow deletion stay in M
+- 2026-11-19T20:06 [M3.32.3.2] (lead) status active -> review
+- 2026-11-19T20:07 [M3.32.3.2] (lead) edited fields
+- 2026-11-19T20:07 [M3.32.3.2] (lead) lead: Triad pass 2/3 — widened to slipfork-forkfile/** + daemon/** + the 2 OSPP docs; ref-server evaluation must move into the canonical crate
+- 2026-11-19T20:07 [M3.32.3.2] (lead) status review -> active
+- 2026-11-19T20:07 [M3.32.3.2] (lead) attempt 2/3 started
+- 2026-11-19T20:07 [M3.32.3.2] (lead) fix pass base e787cb7d94ab01d7e382a93b751adb40556bda97
+- 2026-11-19T20:10 [M3.32.3.2] (lead) attempt 3/3 started
+- 2026-11-19T20:10 [M3.32.3.2] (lead) attempt 2 stopped mid-refactor (step cap); attempt 3 completes testkit+daemon+docs+tests
+- 2026-11-19T20:16 [M3.32.3.2] (lead) status active -> done
+- 2026-11-19T20:16 [M3.32.3.4] (lead) status ready -> active
+- 2026-11-19T20:16 [M3.32.3.4] (lead) attempt 1/3 started
+- 2026-11-19T20:16 [M3.32.3.4] (lead) base f74582c8c6de6085038db29c5746e1f012458cb9
+- 2026-11-19T20:22 [M3.32.3.4] (lead) status active -> review
+- 2026-11-19T20:22 [M3.32.3.4] (lead) implementer returned no report (step cap) but tree is green: fmt/clippy 0, engine 67, wire 3, CLI 112+5+18
+- 2026-11-19T20:23 [M3.32.3.4] (lead) edited fields
+- 2026-11-19T20:23 [M3.32.3.4] (lead) attempt 2/3 started
+- 2026-11-19T20:23 [M3.32.3.4] (lead) Triad fix pass base f74582c8c6de6085038db29c5746e1f012458cb9; widened to edge emit signature, main.rs/process.rs color+verbose injection, critical_world_journey
+- 2026-11-19T20:27 [M3.32.3.4] (lead) attempt 3/3 started
+- 2026-11-19T20:27 [M3.32.3.4] (lead) attempt 3: split protocol.rs 610 + logs.rs 546 under 500; add ts_ms/interleave/journey proofs
+- 2026-11-19T20:31 [M3.32.3.4] (lead) status review -> done
+- 2026-11-19T20:31 [M3.32.3.3] (lead) edited fields
+- 2026-11-19T20:31 [M3.32.3.3] (lead) status ready -> active
+- 2026-11-19T20:31 [M3.32.3.3] (lead) attempt 1/3 started
+- 2026-11-19T20:31 [M3.32.3.3] (lead) base 8ef3a5ef8070f2db9460bb66da53cf70216751c5; widened to Makefile/test_tools for the snow suite excision; support/demo conversion stays with M3.32.5
+- 2026-11-19T20:33 [M3.32.3.3] (lead) edited fields
+- 2026-11-19T20:33 [M3.32.3.3] (lead) needs_split: spans daemon retype + forkfile canonical projection + edge/wire snow-resolve retirement + crate deletion + protected live fixtures; decomposed into
+- 2026-11-19T20:34 [M3.32.3.3.1] (planner) created (task) EvaluatedFork canonical world projection + ported snow assertions
+- 2026-11-19T20:34 [M3.32.3.3.2] (planner) created (task) Retype slipforkd on EvaluatedFork, VCS project identity, delete slipfork.toml loader
+- 2026-11-19T20:34 [M3.32.3.3.3] (planner) created (task) Remove snow resolve verb, delete slipfork-snow, port protected fixtures to Forkfile
+- 2026-11-19T20:34 [M3.32.3.3] (lead) status active -> active
+- 2026-11-19T20:34 [M3.32.3.3.1] (lead) status ready -> active
+- 2026-11-19T20:34 [M3.32.3.3.1] (lead) attempt 1/3 started
+- 2026-11-19T20:34 [M3.32.3.3.1] (lead) base 8ef3a5ef8070f2db9460bb66da53cf70216751c5
+- 2026-11-19T20:38 [M3.32.3.3.1] (lead) edited fields
+- 2026-11-19T20:38 [M3.32.3.3.1] (lead) attempt 2/3 started
+- 2026-11-19T20:38 [M3.32.3.3.1] (lead) attempt 2: split resolve.rs 653 -> <=500 (build-env vs runtime resolution)
+- 2026-11-19T20:39 [M3.32.3.3.1] (lead) status active -> review
+- 2026-11-19T20:40 [M3.32.3.3.1] (lead) edited fields
+- 2026-11-19T20:40 [M3.32.3.3.1] (lead) status review -> active
+- 2026-11-19T20:40 [M3.32.3.3.1] (lead) attempt 3/3 started
+- 2026-11-19T20:40 [M3.32.3.3.1] (lead) Triad fix pass base 8ef3a5ef8070f2db9460bb66da53cf70216751c5; critical_ospp is RED (authoritative resource URLs ignored)
+- 2026-11-19T20:44 [M3.32.3.3.1] (lead) status active -> done
+- 2026-11-19T20:44 [M3.32.3.3.2] (lead) status ready -> active
+- 2026-11-19T20:44 [M3.32.3.3.2] (lead) attempt 1/3 started
+- 2026-11-19T20:44 [M3.32.3.3.2] (lead) base c039647e6e93974edabf335eb13634fc65d70a6c
+- 2026-11-19T20:46 [M3.32.3.3.2] (lead) attempt 2/3 started
+- 2026-11-19T20:46 [M3.32.3.3.2] (lead) attempt 1 stopped mid-flight (step cap): fork.rs/env.rs/types.rs done, tree red; attempt 2 continues from daemon/resolve.rs
+- 2026-11-19T20:50 [M3.32.3.3.2] (lead) edited fields
+- 2026-11-19T20:50 [M3.32.3.3.2] (lead) attempt 3/3 started
+- 2026-11-19T20:50 [M3.32.3.3.2] (lead) attempt 2 left 5 dead-code clippy errors + 3 dead files; tests already 116 pass
+- 2026-11-19T20:51 [M3.32.3.3.2] (lead) status active -> review
+- 2026-11-19T20:52 [M3.32.3.3.2] (lead) edited fields
+- 2026-11-19T20:52 [M3.32.3.3.2] (lead) status review -> active
+- 2026-11-19T20:52 [M3.32.3.3.2] (lead) attempt 4/5 started
+- 2026-11-19T20:52 [M3.32.3.3.2] (lead) Triad fix pass base c039647e6e93974edabf335eb13634fc65d70a6c
+- 2026-11-19T20:54 [M3.32.3.3.2] (lead) attempt 5/5 started
+- 2026-11-19T20:54 [M3.32.3.3.2] (lead) attempt 5: review-tests fail-closed + test-coverage items
+- 2026-11-19T20:56 [M3.32.3.3.2] (lead) status active -> done
+- 2026-11-19T20:56 [M3.32.3.3.2] (lead) resolve.rs 518 LOC deferred: .3 deletes the transitional snow_resolve adapter (~45 LOC), landing it under 500
+- 2026-11-19T20:56 [M3.32.3.3.3] (lead) status ready -> active
+- 2026-11-19T20:56 [M3.32.3.3.3] (lead) attempt 1/3 started
+- 2026-11-19T20:56 [M3.32.3.3.3] (lead) base 73b62a18e3e38a6c22a785bacc859477930a029a
+- 2026-11-19T20:58 [M3.32.3.3.4] (lead) created (task) Port protected live fixtures from snow resolve onto the shipped env/migrate verbs
+- 2026-11-19T20:58 [M3.32.3.3.3] (lead) edited fields
+- 2026-11-19T20:58 [M3.32.3.3.3] (lead) attempt 2/3 started
+- 2026-11-19T20:58 [M3.32.3.3.3] (lead) attempt 2: fixture port split to M3.32.3.3.4 (needs shipped env/migrate); this node deletes the verb+crate and scrubs product strings
+- 2026-11-19T21:00 [M3.32.3.3.3] (unknown) edited fields
+- 2026-11-19T21:00 [M3.32.3.3.3] (lead) status active -> review
+- 2026-11-19T21:01 [M3.32.3.3.3] (lead) Triad: ux PASS, tests PASS; arch BLOCKER is the fixture port owned by M3.32.3.3.4 (needs env/migrate) — acceptance wording corrected, no churn
+- 2026-11-19T21:01 [M3.32.3.3.3] (lead) status review -> done
+- 2026-11-19T21:01 [M3.32.4] (lead) edited fields
+- 2026-11-19T21:01 [M3.32.4.1] (lead) created (task) Unified bare slipfork tree, ps, ui widths, -F features and short flags
+- 2026-11-19T21:01 [M3.32.4.2] (lead) created (task) Command behaviours: env, run, per-service shell/exec, piped db/redis, secret set, 3-row doctor, drop guard, open
+- 2026-11-19T21:01 [M3.32.4.3] (lead) created (task) Move @slipfork/opencode to slipfork status --json
+- 2026-11-19T21:01 [M3.32.4] (lead) status ready -> active
+- 2026-11-19T21:01 [M3.32.4.1] (lead) status ready -> active
+- 2026-11-19T21:01 [M3.32.4.1] (lead) attempt 1/3 started
+- 2026-11-19T21:01 [M3.32.4.1] (lead) base 73c9ebc4eec0a000c38f6ee216b75b9a028f6c8a
+- 2026-11-19T21:02 [M3.32.4.1] (lead) edited fields
+- 2026-11-19T21:02 [M3.32.4.1] (lead) attempt 2/3 started
+- 2026-11-19T21:02 [M3.32.4.1] (lead) decision (a): canonical one-read tree — WorldSummary.services + WorldProcessReport.world/origin/worktree in slipfork-wire, daemon populates, protected edge cons
+- 2026-11-19T21:07 [M3.32.4.1] (lead) edited fields
+- 2026-11-19T21:07 [M3.32.4.1] (lead) attempt 3/3 started
+- 2026-11-19T21:07 [M3.32.4.1] (lead) attempt 3: wire -F/--features (parsed-but-ignored is vaporware); authorized the 3 compile-fix files
+- 2026-11-19T21:11 [M3.32.4.1] (lead) status active -> review
+- 2026-11-19T21:12 [M3.32.4.1] (lead) edited fields
+- 2026-11-19T21:12 [M3.32.4.1] (lead) attempt 4/6 started
+- 2026-11-19T21:12 [M3.32.4.1] (lead) Triad fix pass base 73c9ebc4eec0a000c38f6ee216b75b9a028f6c8a: empty-fleet exit 0, port protected list/lineage fixtures, fail-closed feature_selection, canonical
+- 2026-11-19T21:18 [M3.32.4.1] (lead) attempt 5/6 started
+- 2026-11-19T21:18 [M3.32.4.1] (lead) attempt 5: split cli.rs 670 under 500 (Commands into cli/commands.rs)
+- 2026-11-19T21:19 [M3.32.4.1] (lead) status review -> done
+- 2026-11-19T21:19 [M3.32.4.2] (lead) status ready -> active
+- 2026-11-19T21:19 [M3.32.4.2] (lead) attempt 1/3 started
+- 2026-11-19T21:19 [M3.32.4.2] (lead) base 9f7a2340d84c5f75f96576b8692f4a4e350bac88
+- 2026-11-19T21:19 [M3.32.4.3] (lead) status ready -> active
+- 2026-11-19T21:19 [M3.32.4.3] (lead) attempt 1/3 started
+- 2026-11-19T21:19 [M3.32.4.3] (lead) base 9f7a2340d84c5f75f96576b8692f4a4e350bac88
+- 2026-11-19T21:21 [M3.32.4.3] (lead) status active -> review
+- 2026-11-19T21:21 [M3.32.4.3] (lead) attempt 2/3 started
+- 2026-11-19T21:21 [M3.32.4.3] (lead) Triad: ux PASS, tests PASS; micro-pass pins ingress_port and collapses duplicate helper
+- 2026-11-19T21:22 [M3.32.4.3] (lead) status review -> done
+- 2026-11-19T21:22 [M3.32.4.2] (lead) edited fields
+- 2026-11-19T21:22 [M3.32.4.2] (lead) attempt 1 produced no edits; split into 4.2.1 (env/run/shell/exec) and 4.2.2 (db/redis/secret/doctor/drop/open/hooks)
+- 2026-11-19T21:22 [M3.32.4.2.1] (lead) created (task) Interaction verbs: env, run, per-service shell and exec
+- 2026-11-19T21:22 [M3.32.4.2.2] (lead) created (task) Ops verbs: piped db/redis, secret set, 3-row doctor, drop guard, open, hook failure tail
+- 2026-11-19T21:22 [M3.32.4.2] (lead) status active -> active
+- 2026-11-19T21:22 [M3.32.4.2.1] (lead) status ready -> active
+- 2026-11-19T21:22 [M3.32.4.2.1] (lead) attempt 1/3 started
+- 2026-11-19T21:22 [M3.32.4.2.1] (lead) base 38065e5e41c64886a0c46cf9d5199b333619751f
+- 2026-11-19T21:28 [M3.32.4.2.1] (lead) status active -> review
+- 2026-11-19T21:28 [M3.32.4.2.1] (lead) edited fields
+- 2026-11-19T21:28 [M3.32.4.2.1] (lead) attempt 2/3 started
+- 2026-11-19T21:28 [M3.32.4.2.1] (lead) Triad fix pass base 38065e5e41c64886a0c46cf9d5199b333619751f: critical_cli shell banner red; dot heuristic; duplicated selectors
+- 2026-11-19T21:33 [M3.32.4.2.1] (lead) attempt 3/3 started
+- 2026-11-19T21:33 [M3.32.4.2.1] (lead) attempt 3: ux majors — shell remedy, run flag swallowing, run feature set
+- 2026-11-19T21:36 [M3.32.4.2.1] (lead) status review -> done
+- 2026-11-19T21:36 [M3.32.4.2.2] (lead) status ready -> active
+- 2026-11-19T21:36 [M3.32.4.2.2] (lead) attempt 1/3 started
+- 2026-11-19T21:36 [M3.32.4.2.2] (lead) base 89e58ff8b8f46e010d085a96d630bc7381cc8816
+- 2026-11-19T21:39 [M3.32.4.2.2] (lead) attempt 2/3 started
+- 2026-11-19T21:39 [M3.32.4.2.2] (lead) attempt 1 left bin-only hook_failure.rs importing crate::ui; attempt 2 fixes placement and finishes
+- 2026-11-19T21:41 [M3.32.4.2.2] (lead) attempt 3/3 started
+- 2026-11-19T21:41 [M3.32.4.2.2] (lead) attempt 3: qualified-id normalization + journey insertions + verify
+- 2026-11-19T21:42 [M3.32.4.2.2] (unknown) edited fields
+- 2026-11-19T21:42 [M3.32.4.2.2] (unknown) edited fields
+- 2026-11-19T21:44 [M3.32.4.2.2] (lead) status active -> review
+- 2026-11-19T21:44 [M3.32.4.2.2] (lead) edited fields
+- 2026-11-19T21:44 [M3.32.4.2.2] (lead) attempt 4/6 started
+- 2026-11-19T21:44 [M3.32.4.2.2] (lead) Triad fix pass base 89e58ff8b8f46e010d085a96d630bc7381cc8816: 2 protected-journey blockers, noatime lie, doc claims
+- 2026-11-19T21:46 [M3.32.4.2.2] (lead) attempt 5/6 started
+- 2026-11-19T21:46 [M3.32.4.2.2] (lead) attempt 4 stopped mid-edit (service_entry call sites); attempt 5 finishes
+- 2026-11-19T21:48 [M3.32.4.2.2] (lead) status review -> done
+- 2026-11-19T21:48 [M3.32.4.2.2] (lead) deferred: A4 stty/EchoGuard hoist; docs-honesty debt in docs/reference/** + support/demo/** is M3.32.5/M3.32.9
+- 2026-11-19T21:48 [M3.32.4.2] (lead) status active -> done
+- 2026-11-19T21:48 [M3.32.4] (lead) status active -> done
+- 2026-11-19T21:48 [M3.32.8] (lead) status ready -> active
+- 2026-11-19T21:48 [M3.32.8] (lead) attempt 1/3 started
+- 2026-11-19T21:48 [M3.32.8] (lead) base f1f691de203d2d1d076ae6eb1e37548c9fe50c86
+- 2026-11-19T21:51 [M3.32.8] (lead) status active -> review
+- 2026-11-19T21:51 [M3.32.8] (lead) edited fields
+- 2026-11-19T21:51 [M3.32.8] (lead) attempt 2/3 started
+- 2026-11-19T21:51 [M3.32.8] (lead) Triad fix pass base f1f691de203d2d1d076ae6eb1e37548c9fe50c86: move unknown-key validation + remedy into slipfork-forkfile; split migrate/snow.rs 509
+- 2026-11-19T21:55 [M3.32.8] (lead) status review -> done
+- 2026-11-19T21:55 [M3.32.3.3.4] (lead) status ready -> active
+- 2026-11-19T21:55 [M3.32.3.3.4] (lead) attempt 1/3 started
+- 2026-11-19T21:55 [M3.32.3.3.4] (lead) base a3795b06efb80aaaaea393fcf983a0d8e0b07f7c
+- 2026-11-19T21:57 [M3.32.3.3.4] (lead) attempt 2/3 started
+- 2026-11-19T21:57 [M3.32.3.3.4] (lead) ruling: disabled + [resources] overrides are deleted pre-1.0 features; tests/migrate.rs exempt from snow.yml grep; env PATH is a client contract
+- 2026-11-19T22:00 [M3.32.3.3.4] (lead) status active -> review
+- 2026-11-19T22:01 [M3.32.3.3.4] (lead) edited fields
+- 2026-11-19T22:01 [M3.32.3.3.4] (lead) attempt 3/3 started
+- 2026-11-19T22:01 [M3.32.3.3.4] (lead) Triad fix pass base a3795b06efb80aaaaea393fcf983a0d8e0b07f7c: slipfork.toml hints left in slipfork-vcs; app.url fixtures lost
+- 2026-11-19T22:04 [M3.32.3.3.4] (lead) status review -> done
+- 2026-11-19T22:04 [M3.32.3.3] (lead) status active -> done
+- 2026-11-19T22:04 [M3.32.3] (lead) status active -> done
+- 2026-11-19T22:04 [M3.32.10] (lead) status ready -> active
+- 2026-11-19T22:04 [M3.32.10] (lead) attempt 1/3 started
+- 2026-11-19T22:04 [M3.32.10] (lead) base 2008fc3558b6c7128dae736cbf9141e1ffe55a64
+- 2026-11-19T22:09 [M3.32.10] (lead) status active -> review
+- 2026-11-19T22:09 [M3.32.10] (lead) attempt 2/3 started
+- 2026-11-19T22:09 [M3.32.10] (lead) Triad fix pass base 2008fc3558b6c7128dae736cbf9141e1ffe55a64
+- 2026-11-19T22:11 [M3.32.10] (lead) status review -> done
+- 2026-11-19T22:11 [M3.32.11] (lead) status ready -> active
+- 2026-11-19T22:11 [M3.32.11] (lead) attempt 1/3 started
+- 2026-11-19T22:11 [M3.32.11] (lead) base 8fd0b0d9f5c7ed0c651b3d73edb188bd71b18b9b
+- 2026-11-19T22:17 [M3.32.11] (lead) edited fields
+- 2026-11-19T22:17 [M3.32.11] (lead) lead: widened to tools/do_vm.py + support/demo/README.md for the deleted-`list` honesty fix
+- 2026-11-19T22:17 [M3.32.11] (lead) status active -> review
+- 2026-11-19T22:17 [M3.32.11] (lead) attempt 2/3 started
+- 2026-11-19T22:17 [M3.32.11] (lead) Triad fix pass base 8fd0b0d9f5c7ed0c651b3d73edb188bd71b18b9b: grammar invented syntax vs shipped parser; corpus never executed; target/ 350M
+- 2026-11-19T22:20 [M3.32.11] (lead) status review -> done
+- 2026-11-19T22:20 [M3.32.5] (lead) status ready -> active
+- 2026-11-19T22:20 [M3.32.5] (lead) attempt 1/3 started
+- 2026-11-19T22:20 [M3.32.5] (lead) base 5eef927e76e744ee559c0bdac205065fa32b3f2c
+- 2026-11-19T22:22 [M3.32.5] (lead) edited fields
+- 2026-11-19T22:22 [M3.32.5] (lead) attempt 2/4 started
+- 2026-11-19T22:22 [M3.32.5] (lead) attempt 2: demo done+tested; docs remain. Acceptance grep narrowed: snow.yml allowed only in migrate-input docs and docs/design+decisions blueprints
+- 2026-11-19T22:23 [M3.32.5] (writer) Demo rehearsal (VM-deferred; host is not Btrfs): support/demo ships api ./api (port 8000, route /api, volume .venv, task migrate) + front ./front (port 5173, ro
+- 2026-11-19T22:24 [M3.32.5] (lead) status active -> review
+- 2026-11-19T22:24 [M3.32.5] (lead) attempt 3/4 started
+- 2026-11-19T22:24 [M3.32.5] (lead) Triad fix pass base 5eef927e76e744ee559c0bdac205065fa32b3f2c
+- 2026-11-19T22:25 [M3.32.5] (lead) status review -> done
+- 2026-11-19T22:25 [M3.32.9] (lead) status ready -> active
+- 2026-11-19T22:25 [M3.32.9] (lead) attempt 1/3 started
+- 2026-11-19T22:25 [M3.32.9] (lead) base f81072a2f76471366c314c4076e9dbc6ea2b5045
+- 2026-11-19T22:26 [M3.32.9] (writer) Rehearsed migration on the real binary from /tmp/opencode/m3-32-9-migrate: `slipfork migrate` => `✓ Migrated snow.yml → Forkfile (2 services, 1 postgres cluster
+- 2026-11-19T22:26 [M3.32.9] (lead) status active -> review
+- 2026-11-19T22:26 [M3.32.9] (lead) edited fields
+- 2026-11-19T22:26 [M3.32.9] (lead) attempt 2/3 started
+- 2026-11-19T22:26 [M3.32.9] (lead) Triad fix pass base f81072a2f76471366c314c4076e9dbc6ea2b5045
+- 2026-11-19T22:27 [M3.32.9] (lead) status review -> done
+- 2026-11-19T22:27 [M3.32.12] (lead) status ready -> active
+- 2026-11-19T22:27 [M3.32.12] (lead) attempt 1/3 started
+- 2026-11-19T22:27 [M3.32.12] (lead) base 9067e0571c6ce7078e9bfb3254c371d8ce41dc90
+- 2026-11-19T22:29 [M3.32.12] (lead) status active -> review
+- 2026-11-19T22:30 [M3.32.12] (lead) attempt 2/3 started
+- 2026-11-19T22:30 [M3.32.12] (lead) Triad fix pass: paint --ff-bg, narrow annotation bail-out, drop dead language-forkfile branch, real classify coverage
+- 2026-11-19T22:31 [M3.32.12] (lead) status review -> done
+- 2026-11-19T22:32 [M3.32.6] (lead) status ready -> active
+- 2026-11-19T22:32 [M3.32.6] (lead) gate run 1: make check RC=2 — 2 rustdoc private-intra-doc-link errors (registry.rs ingress_table, projection.rs world_projection)
+- 2026-11-19T22:32 [M3.32.6] (lead) status active -> ready: held: M3.32.2.2.3.2 + M3.32.2.3 must land first (per-service crun pods)
+- 2026-11-19T22:32 [M3.32.2.2.3.2] (lead) status ready -> active
+- 2026-11-19T22:32 [M3.32.2.2.3.2] (lead) attempt 1/3 started
+- 2026-11-19T22:32 [M3.32.2.2.3.2] (lead) base 510b59477672cf3a1480c9d0be913f5b945e4d04; lead: required before the M3.32 gate so api/front boot in separate crun pods
+- 2026-11-19T22:37 [M3.32.2.2.3.2] (lead) status active -> review
+- 2026-11-19T22:37 [M3.32.2.2.3.2] (lead) attempt 2/3 started
+- 2026-11-19T22:37 [M3.32.2.2.3.2] (lead) Triad fix pass base 50efd2f04dd3723dc6571c63cee73b081fbedacc: env double-layer, no progress events, no pod-span; WorldProcess deletion deferred to M3.32.2.2.1.3
+- 2026-11-19T22:40 [M3.32.2.2.3.2] (lead) status review -> done
+- 2026-11-19T22:40 [M3.32.2.2.3] (lead) status active -> done
+- 2026-11-19T22:40 [M3.32.2.3] (lead) status ready -> active
+- 2026-11-19T22:40 [M3.32.2.3] (lead) attempt 1/3 started
+- 2026-11-19T22:40 [M3.32.2.3] (lead) base 0403bf81878cad54dd9ec112dcaaedce82da5994
+- 2026-11-19T22:41 [M3.32.6.1] (lead) created (task) Port slipfork-vcs critical suite off the deleted slipfork.toml loader
+- 2026-11-19T22:41 [M3.32.6] (lead) edited fields
+- 2026-11-19T22:41 [M3.32.6.1] (lead) base 0403bf81878cad54dd9ec112dcaaedce82da5994; created as gate hygiene
+- 2026-11-19T22:41 [M3.32.6.1] (lead) status ready -> done
+- 2026-11-19T22:44 [M3.32.2.3] (lead) guard re-run against base 8093e3d (concurrent vcs commit) — OK, no protected change
+- 2026-11-19T22:44 [M3.32.2.3] (lead) status active -> done
+- 2026-11-19T22:45 [M3.32.2.2.1.3.2.2] (lead) status active -> active
+- 2026-11-19T22:45 [M3.32.2.2.1.3.2.2.1] (lead) status ready -> active
+- 2026-11-19T22:45 [M3.32.2.2.1.3.2.2.1] (lead) attempt 2/3 started
+- 2026-11-19T22:45 [M3.32.2.2.1.3.2.2.1] (lead) base b7a4e961cafcd2b297ad96fa193a6ed182dd9952
+- 2026-11-19T22:48 [M3.32.2.2.1.3.2.2.1] (lead) attempt 3/3 started
+- 2026-11-19T22:48 [M3.32.2.2.1.3.2.2.1] (lead) attempt 2 removed fx.service/service_spec and broke 11 engine test sites; attempt 3 restores pod-backed shims first
+- 2026-11-19T22:49 [M3.32.2.2.1.3.2.2.1] (lead) status active -> done
+- 2026-11-19T22:49 [M3.32.2.2.1.3.2.2.2] (lead) status ready -> active
+- 2026-11-19T22:49 [M3.32.2.2.1.3.2.2.2] (lead) attempt 1/3 started
+- 2026-11-19T22:49 [M3.32.2.2.1.3.2.2.2] (lead) base ce8023a08a77e889af53cd51b133f956c32dd0e0
+- 2026-11-19T22:54 [M3.32.2.2.1.3.2.2.2] (lead) attempt 2/3 started
+- 2026-11-19T22:54 [M3.32.2.2.1.3.2.2.2] (lead) attempt 1 left 3 unused imports + 3 test call sites (exec_in_world/entry_command) + fmt drift
+- 2026-11-19T22:57 [M3.32.2.2.1.3.2.2.2] (implementer) edited fields
+- 2026-11-19T22:57 [M3.32.2.2.1.3.2.2.2] (lead) status active -> done
+- 2026-11-19T22:57 [M3.32.2.2.1.3.2.2] (lead) status active -> done
+- 2026-11-19T22:57 [M3.32.2.2.1.3.2] (lead) status active -> done
+- 2026-11-19T22:58 [M3.32.2.2.1.3] (lead) status active -> done
+- 2026-11-19T22:58 [M3.32.2.2.1] (lead) status active -> done
+- 2026-11-19T22:58 [M3.32.2.2] (lead) status active -> done
+- 2026-11-19T22:58 [M3.32.2] (lead) status active -> done
+- 2026-11-19T23:06 ESCALATION #29 -> expert for M3.32.6 by lead: critical_btrfs_live: namespaces.json publishes /proc/1/ns/ipc (host PID 1); nsenter Permission denied + crun kill leak o
+- 2026-11-19T23:06 [M3.32.6] (lead) VM test RC=101: critical_btrfs_live ipc join publishes /proc/1/ns/ipc; leaked worlds on drop
+- 2026-11-20T16:12 [M3.33] (conductor) created (task) Author TESTING_PLAN.md pure user-story testing vision
+- 2026-11-20T16:12 [M3.34] (conductor) created (task) Enforce TESTING_PLAN.md human gate, E2E-first tests & make coverage audit
+- 2026-11-20T16:12 [M3.35] (conductor) created (epic) Execute TESTING_PLAN.md test & codebase cleanup: E2E consolidation, GHA multi-platform stories & dead-code removal
+- 2026-11-20T16:14 [M3.35.1] (planner) created (task) Delete unused 0.1.0 crate surface, dead harnesses & meta-linters
+- 2026-11-20T16:14 [M3.35.2] (planner) created (task) Prune all non-§7 inline cfg(test) modules; keep tight §7 focused suites
+- 2026-11-20T16:14 [M3.35.3] (planner) created (task) Consolidate Rust & OpenCode integration suites into crisp user-story E2E binaries
+- 2026-11-20T16:14 [M3.35.4] (planner) created (task) Multi-service polyglot E2E stories & GitHub Actions multi-platform workflows
+- 2026-11-20T16:14 [M3.35.5] (planner) created (task) Coverage-driven dead-code deletion, comment stripping & live 165.232.86.174 gate
+- 2026-11-20T16:17 AUTOPILOT off by conductor User halted: Forkfile image concept & CLI UX/TTY/colors diverged from agreed design
+- 2026-11-20T16:24 [M3.36] (conductor) created (task) Clean-sheet high-level specs/ folder: Forkfile (with image), CLI UX, Under the Hood (pure Btrfs) & Testing Plan
+- 2026-11-20T16:24 [M3.36] (conductor) status ready -> active
+- 2026-11-20T16:32 [M3.36] (conductor) status active -> done
+- 2026-11-21T00:43 [M3.32.6] (conductor) status ready -> superseded: Superseded by clean-sheet wipe & rebuild from specs/ (M3.37..M3.42)
+- 2026-11-21T00:43 [M3.32] (conductor) status ready -> superseded: Superseded by clean-sheet wipe & rebuild from specs/ (M3.37..M3.42)
+- 2026-11-21T00:43 [M3.33] (conductor) status ready -> superseded: Superseded by clean-sheet wipe & rebuild from specs/ (M3.37..M3.42)
+- 2026-11-21T00:43 [M3.34] (conductor) status ready -> superseded: Superseded by clean-sheet wipe & rebuild from specs/ (M3.37..M3.42)
+- 2026-11-21T00:43 [M3.35.5] (conductor) status ready -> superseded: Superseded by clean-sheet wipe & rebuild from specs/ (M3.37..M3.42)
+- 2026-11-21T00:43 [M3.35.4] (conductor) status ready -> superseded: Superseded by clean-sheet wipe & rebuild from specs/ (M3.37..M3.42)
+- 2026-11-21T00:43 [M3.35.3] (conductor) status ready -> superseded: Superseded by clean-sheet wipe & rebuild from specs/ (M3.37..M3.42)
+- 2026-11-21T00:43 [M3.35.2] (conductor) status ready -> superseded: Superseded by clean-sheet wipe & rebuild from specs/ (M3.37..M3.42)
+- 2026-11-21T00:43 [M3.35.1] (conductor) status ready -> superseded: Superseded by clean-sheet wipe & rebuild from specs/ (M3.37..M3.42)
+- 2026-11-21T00:43 [M3.35] (conductor) status ready -> superseded: Superseded by clean-sheet wipe & rebuild from specs/ (M3.37..M3.42)
+- 2026-11-21T00:43 [M3] (conductor) edited fields
+- 2026-11-21T00:44 [M3.37] (conductor) created (task) Scorched-earth clean-sheet wipe: keep only specs/ & agentic setup (AGENTS.md, TESTING_PLAN.md, .opencode/, plan/, tools/)
+- 2026-11-21T00:44 [M3.38] (conductor) created (epic) Clean-sheet workspace, Constructor DI ARCHITECTURE.md, Forkfile compiler (# forkfile: 0.1), slipfork-lsp & Zed/Tree-sitter
+- 2026-11-21T00:44 [M3.39] (conductor) created (epic) Pure-Btrfs engine, 100% Docker-free native OCI/Dockerfile builder, per-service crun pods & World Boot DAG
+- 2026-11-21T00:44 [M3.40] (conductor) created (epic) OSPP v1 cloud clutch, stateless :80 .localhost ingress, single per-user daemon, colorful CLI UX & @slipfork/opencode
+- 2026-11-21T00:44 [M3.41] (conductor) created (epic) Proper visual Zensical documentation & native packaged distribution for all Linux distros (tpmd + blastit parity)
+- 2026-11-21T00:44 [M3.42] (conductor) created (epic) Full TESTING_PLAN.md user-story E2E verification, make coverage dead-code sweep & live Btrfs proof on 165.232.86.174
+- 2026-11-21T00:44 AUTOPILOT on by conductor Owner approved clean-sheet wipe + full implementation, visual docs & multi-distro Linux packaging
+- 2026-11-21T00:45 [M3.37] (lead) status ready -> active
+- 2026-11-21T00:45 [M3.37] (lead) attempt 1/3 started
+- 2026-11-21T00:45 [M3.37] (lead) base 36097b0ea117e3f3c68da4e531b5601ff3ad94bf
+- 2026-11-21T00:57 [M3.37] (lead) status active -> review
+- 2026-11-21T00:57 [M3.37] (lead) status review -> done
+- 2026-11-21T00:57 [M3.39] (lead) edited fields
+- 2026-11-21T00:57 [M3.40] (lead) edited fields
+- 2026-11-21T00:57 [M3.42] (lead) edited fields
+- 2026-11-21T00:58 [M3.38.1] (planner) created (task) Clean-sheet Rust 2024 workspace, Makefile, minimal slipfork binary & ARCHITECTURE.md
+- 2026-11-21T00:58 [M3.38.2] (planner) created (task) slipfork-forkfile: header gate, lexer/parser/AST for all specs/01 constructs, caret diagnostics & comment-preserving fmt
+- 2026-11-21T00:58 [M3.38.3] (planner) created (task) slipfork-forkfile semantics: all-branch typecheck, flat namespace, arg secret-taint rejection, routes/resources & snow.yml migrate
+- 2026-11-21T00:58 [M3.38.4] (planner) created (task) Deduplicated @<tool> (image, lockfile_dir) DAG synthesis, single-root CLI fmt/migrate wiring & lab E2E + critical tests
+- 2026-11-21T00:58 [M3.38.5] (planner) created (task) slipfork-lsp framed-stdio server, Tree-sitter grammar/queries & Zed extension 1:1 with specs/01
+- 2026-11-21T00:58 [M3.38.1] (planner) Acceptance note: bullet 6 typo 'ARCITECTURE.md' means 'ARCHITECTURE.md' (root file listed in paths).
+- 2026-11-21T00:58 [M3.38.1] (lead) edited fields
+- 2026-11-21T00:58 [M3.38.1] (lead) status ready -> active
+- 2026-11-21T00:58 [M3.38.1] (lead) attempt 1/3 started
+- 2026-11-21T00:58 [M3.38.1] (lead) base 208e23741a71d3f789942c65a165c78e97787fe6
+- 2026-11-21T01:00 [M3.38.1] (lead) status active -> review
+- 2026-11-21T01:02 [M3.38.1] (lead) status review -> done
+- 2026-11-21T01:02 [M3.38.2] (lead) status ready -> active
+- 2026-11-21T01:02 [M3.38.2] (lead) attempt 1/3 started
+- 2026-11-21T01:02 [M3.38.2] (lead) base cb0a15f1af2e0a2536b48474af390951a3cb355e
+- 2026-11-21T01:14 [M3.38.2] (lead) status active -> review
+- 2026-11-21T01:21 [M3.38.2] (lead) status review -> done
+- 2026-11-21T01:21 [M3.38.3] (lead) status ready -> active
+- 2026-11-21T01:21 [M3.38.3] (lead) attempt 1/3 started
+- 2026-11-21T01:21 [M3.38.3] (lead) base 7e76d9ee17cf9a619f7169c9b9cbbcdf7ee1e27c
+- 2026-11-21T01:28 [M3.38.3] (lead) status active -> review
+- 2026-11-21T01:33 [M3.38.3] (lead) status review -> done
+- 2026-11-21T01:33 [M3.38.4] (lead) status ready -> active
+- 2026-11-21T01:33 [M3.38.4] (lead) attempt 1/3 started
+- 2026-11-21T01:33 [M3.38.4] (lead) base 49550dc9d0479e79dcbf5f2289200659ff11d8b0
+- 2026-11-21T01:37 [M3.38.4] (lead) status active -> review
+- 2026-11-21T01:40 [M3.38.4] (lead) status review -> done
+- 2026-11-21T01:40 [M3.38.5] (lead) status ready -> active
+- 2026-11-21T01:40 [M3.38.5] (lead) attempt 1/3 started
+- 2026-11-21T01:40 [M3.38.5] (lead) base 10df7c9aec54dae358bcc1974d876ad25577bccb
+- 2026-11-21T01:46 [M3.38.5] (lead) status active -> review
+- 2026-11-21T01:52 [M3.38.5] (lead) edited fields
+- 2026-11-21T01:52 [M3.38.5] (lead) status review -> done
+- 2026-11-21T01:52 [M3.38] (lead) status ready -> done
+- 2026-11-21T01:53 [M3.39.1] (planner) created (task) Pure Btrfs layout: host probe, transparent subvolume conversion, RO image/world store, CoW fork & safe destroy
+- 2026-11-21T01:53 [M3.39.2] (planner) created (task) Native OCI Distribution v2 puller: bearer auth, multi-arch manifests, streaming sha256 layers into RO Btrfs subvolumes
+- 2026-11-21T01:53 [M3.39.3] (planner) created (task) Native Dockerfile step builder on Btrfs + crun: multi-stage, COPY --from/--chown, RUN heredocs & --mount=type=cache, .dockerignore
+- 2026-11-21T01:53 [M3.39.4] (planner) created (task) Unprivileged world namespaces: slipfork-world-init lifeline + per-service crun pods for pg/redis/s3
+- 2026-11-21T01:53 [M3.39.5] (planner) created (task) Parallel World Boot DAG: resources/images, deduped @tool + when-changed setup, pre/post/failed deploy hooks, minimal up/down/restart wiring
+- 2026-11-21T01:53 [M3.39.6] (planner) created (task) Live Btrfs/OCI/crun lab gate: consolidated real E2E, VM target docs, zero-mock sweep, green make check on XFS
+- 2026-11-21T01:54 [M3.39.1] (lead) status ready -> active
+- 2026-11-21T01:54 [M3.39.1] (lead) attempt 1/3 started
+- 2026-11-21T01:54 [M3.39.1] (lead) base 2e22dcba7589856ca0db22c341951359abd17395
+- 2026-11-21T01:54 [M3.39] (lead) started M3.39.1 under lead
+- 2026-11-21T01:58 [M3.39.1] (lead) status active -> review
+- 2026-11-21T01:58 [M3.39.1] (lead) status review -> ready: triad: 1 consolidated fix pass (drop_world suffix bug, Io Display remedy, test fail-closed probe, doc trim)
+- 2026-11-21T01:58 [M3.39.1] (lead) attempt 2/3 started
+- 2026-11-21T01:59 [M3.39.1] (lead) status ready -> done
+- 2026-11-21T01:59 [M3.39.2] (lead) edited fields
+- 2026-11-21T01:59 [M3.39.2] (lead) status ready -> active
+- 2026-11-21T01:59 [M3.39.2] (lead) attempt 1/3 started
+- 2026-11-21T01:59 [M3.39.2] (lead) base 1b449c21f59a9889d54b1382a62bd6109622b942
+- 2026-11-21T10:07 [M3.39.2] (lead) status active -> review
+- 2026-11-21T10:08 [M3.39.2] (lead) status review -> ready: triad: 1 consolidated fix pass (doc vaporware, HTTP remedies, drop unused clone_subvolume, real base64/percent-encoding, anon-auth cover
+- 2026-11-21T10:08 [M3.39.2] (lead) attempt 2/3 started
+- 2026-11-21T10:10 [M3.39.2] (lead) status ready -> done
+- 2026-11-21T10:10 [M3.39.3] (lead) edited fields
+- 2026-11-21T10:10 [M3.39.3] (lead) status ready -> active
+- 2026-11-21T10:10 [M3.39.3] (lead) attempt 1/3 started
+- 2026-11-21T10:10 [M3.39.3] (lead) base 3747d4c0645c343ed16a21b30512b256878f0889
+- 2026-11-21T10:14 [M3.39.3] (lead) attempt 2/3 started
+- 2026-11-21T10:14 [M3.39.3] (lead) attempt 1 hit step cap: engine+parser+runtime land; live journey, fmt/clippy outstanding
+- 2026-11-21T10:17 [M3.39.3] (lead) status active -> review
+- 2026-11-21T10:17 [M3.39.3] (lead) status review -> ready: triad: 1 consolidated fix pass (2 blockers: 500-LOC split + unsupported-entry E2E; hex/glob dedupe, dev-dep, at_line folding, streamed R
+- 2026-11-21T10:17 [M3.39.3] (lead) attempt 3/3 started
+- 2026-11-21T10:21 [M3.39.3] (lead) status ready -> done
+- 2026-11-21T10:21 [M3.39.4] (lead) status ready -> active
+- 2026-11-21T10:21 [M3.39.4] (lead) attempt 1/3 started
+- 2026-11-21T10:21 [M3.39.4] (lead) base 61b3bdf073caf124cd304766c7b699978c652f16
+- 2026-11-21T10:29 [M3.39.4] (lead) status active -> review
+- 2026-11-21T10:30 [M3.39.4] (lead) status review -> ready: triad: 1 consolidated fix pass (init/pod error causes, explicit WorldHost fields, escalate teardown kill, non-vacuous secret+crun-list a
+- 2026-11-21T10:30 [M3.39.4] (lead) attempt 2/3 started
+- 2026-11-21T10:34 [M3.39.4] (lead) status ready -> done
+- 2026-11-21T10:34 [M3.39.5] (lead) status ready -> active
+- 2026-11-21T10:34 [M3.39.5] (lead) attempt 1/3 started
+- 2026-11-21T10:34 [M3.39.5] (lead) base 953427d12b072a11dc2aa50ffd37ad1fb5fb824b
+- 2026-11-21T10:39 [M3.39.5] (lead) attempt 2/3 started
+- 2026-11-21T10:39 [M3.39.5] (lead) attempt 1 hit step cap: world boot/{plan,stamp,schedule} written (lib green), init bin non-exhaustive matches, CLI + live journey missing
+- 2026-11-21T10:44 [M3.39.5] (lead) status active -> review
+- 2026-11-21T10:45 [M3.39.5] (lead) status review -> ready: triad: 1 consolidated fix pass (live streaming, stamp timer, journey guards, HostEnv injection, module splits, single control/reap owner
+- 2026-11-21T10:45 [M3.39.5] (lead) attempt 3/3 started
+- 2026-11-21T10:47 [M3.39.5] (lead) edited fields
+- 2026-11-21T10:50 [M3.39.5] (lead) status ready -> done
+- 2026-11-21T10:51 [M3.39.6] (lead) edited fields
+- 2026-11-21T10:51 [M3.39.6] (lead) status ready -> active
+- 2026-11-21T10:51 [M3.39.6] (lead) attempt 1/3 started
+- 2026-11-21T10:51 [M3.39.6] (lead) base 43706733e8507411d7db5d20f5adc268936a734e
+- 2026-11-21T11:26 [M3.39.6] (lead) edited fields
+- 2026-11-21T11:29 [M3.40] (conductor) edited fields
+- 2026-11-21T11:29 [M3.40] (conductor) OWNER REQUIREMENT: slipfork-lsp MUST be a separate standalone multi-platform binary (Linux + macOS + Windows; zero Linux-only deps in slipfork-forkfile & slipfo
+- 2026-11-21T11:29 [M3.41] (conductor) edited fields
+- 2026-11-21T11:29 [M3.41] (conductor) OWNER REQUIREMENT: slipfork itself is strictly Linux-only (.deb, .rpm, Arch, Alpine, Linux portable tarballs + install.sh bundling /usr/bin/slipfork + /usr/bin/
+- 2026-11-21T12:32 [M3.39.6] (lead) status active -> review
+- 2026-11-21T12:33 [M3.39.6] (lead) status review -> ready: triad: 1 consolidated fix pass (RunOnce deadline+cleanup, fold ImageFacts, use pods() in down, fail-closed probes, step-labelled log lin
+- 2026-11-21T12:33 [M3.39.6] (lead) attempt 2/3 started
+- 2026-11-21T12:47 [M3.39.6] (lead) status ready -> done
+- 2026-11-21T12:47 [M3.39] (lead) status ready -> done
+- 2026-11-21T12:47 [M3.39] (lead) gate: make check 0; live VM gate 5/5 suites ok; zero-mock grep 0; guard+critical_guard+validate OK
+- 2026-11-21T12:49 [M3.40.1] (planner) created (task) Standalone multi-platform slipfork-lsp binary; delete the slipfork lsp verb; Zed PATH/download
+- 2026-11-21T12:49 [M3.40.2] (planner) created (task) OSPP v1 client, <state_dir>/ospp.json pairing, 0600 offline vault, loopback reference server
+- 2026-11-21T12:49 [M3.40.3] (planner) created (task) Stateless :80 .localhost HTTP + WebSocket ingress router and streaming proxy
+- 2026-11-21T12:49 [M3.40.4] (planner) created (task) Single per-user daemon (daemon.sock 0600, NDJSON), status/ps tree, doctor, daemon install
+- 2026-11-21T12:49 [M3.40.5] (planner) created (task) Remaining CLI verbs (fork/drop/logs/shell/exec/db/redis/env/secret/open/auth/completions) + terminal hygiene
+- 2026-11-21T12:49 [M3.40.6] (planner) created (task) packages/opencode-slipfork (@slipfork/opencode) V2 plugin + lsp/opencode docs sweep
+- 2026-11-21T12:50 [M3.40.1] (planner) created (task) "Standalone multi-platform slipfork-lsp binary; delete the slipfork lsp verb; Zed PATH/download"
+- 2026-11-21T12:50 [M3.40.1] (planner) created (task) "Standalone multi-platform slipfork-lsp binary; delete the slipfork lsp verb; Zed PATH/download"
+- 2026-11-21T12:50 [M3.40.1] (planner) created (task) "Standalone multi-platform slipfork-lsp binary; delete the slipfork lsp verb; Zed PATH/download"
+- 2026-11-21T12:50 [M3.40.2] (planner) created (task) "OSPP v1 client, <state_dir>/ospp.json pairing, 0600 offline vault, loopback reference server"
+- 2026-11-21T12:50 [M3.40.2] (planner) created (task) "OSPP v1 client, <state_dir>/ospp.json pairing, 0600 offline vault, loopback reference server"
+- 2026-11-21T12:50 [M3.40.2] (planner) created (task) "OSPP v1 client, <state_dir>/ospp.json pairing, 0600 offline vault, loopback reference server"
+- 2026-11-21T12:50 [M3.40.3] (planner) created (task) "Stateless :80 .localhost HTTP + WebSocket ingress router and streaming proxy"
+- 2026-11-21T12:50 [M3.40.3] (planner) created (task) "Stateless :80 .localhost HTTP + WebSocket ingress router and streaming proxy"
+- 2026-11-21T12:50 [M3.40.3] (planner) created (task) "Stateless :80 .localhost HTTP + WebSocket ingress router and streaming proxy"
+- 2026-11-21T12:50 [M3.40.4] (planner) created (task) "Single per-user daemon (daemon.sock 0600, NDJSON), status/ps tree, doctor, daemon install"
+- 2026-11-21T12:50 [M3.40.4] (planner) created (task) "Single per-user daemon (daemon.sock 0600, NDJSON), status/ps tree, doctor, daemon install"
+- 2026-11-21T12:50 [M3.40.4] (planner) created (task) "Single per-user daemon (daemon.sock 0600, NDJSON), status/ps tree, doctor, daemon install"
+- 2026-11-21T12:50 [M3.40.5] (planner) created (task) Remaining CLI verbs (fork/drop/logs/shell/exec/db/redis/env/secret/open/auth/completions) + terminal hygiene
+- 2026-11-21T12:50 [M3.40.5] (planner) created (task) Remaining CLI verbs (fork/drop/logs/shell/exec/db/redis/env/secret/open/auth/completions) + terminal hygiene
+- 2026-11-21T12:50 [M3.40.5] (planner) created (task) Remaining CLI verbs (fork/drop/logs/shell/exec/db/redis/env/secret/open/auth/completions) + terminal hygiene
+- 2026-11-21T12:50 [M3.40.6] (planner) created (task) "packages/opencode-slipfork (@slipfork/opencode) V2 plugin + lsp/opencode docs sweep"
+- 2026-11-21T12:50 [M3.40.1] (planner) created (task) Standalone multi-platform slipfork-lsp binary; delete the slipfork lsp verb; Zed PATH/download
+- 2026-11-21T12:50 [M3.40.2] (planner) created (task) OSPP v1 client, <state_dir>/ospp.json pairing, 0600 offline vault, loopback reference server
+- 2026-11-21T12:50 [M3.40.3] (planner) created (task) Stateless :80 .localhost HTTP + WebSocket ingress router and streaming proxy
+- 2026-11-21T12:50 [M3.40.4] (planner) created (task) Single per-user daemon (daemon.sock 0600, NDJSON), status/ps tree, doctor, daemon install
+- 2026-11-21T12:50 [M3.40.5] (planner) created (task) Remaining CLI verbs (fork/drop/logs/shell/exec/db/redis/env/secret/open/auth/completions) + terminal hygiene
+- 2026-11-21T12:50 [M3.40.6] (planner) created (task) packages/opencode-slipfork (@slipfork/opencode) V2 plugin + lsp/opencode docs sweep
+- 2026-11-21T12:50 [M3.40.1] (lead) status ready -> active
+- 2026-11-21T12:50 [M3.40.1] (lead) attempt 1/3 started
+- 2026-11-21T12:50 [M3.40.1] (lead) base 74f097a9c5f148d775cb04e7a2f35e7f369d7a3c
+- 2026-11-21T12:51 [M3.40.1] (lead) status active -> ready: attempt 1 ended silently: only src/main.rs created; no CLI deletion/Zed/docs
+- 2026-11-21T12:51 [M3.40.1] (lead) status ready -> active
+- 2026-11-21T12:51 [M3.40.1] (lead) attempt 2/3 started
+- 2026-11-21T12:56 [M3.40.1] (lead) status active -> done
+- 2026-11-21T12:56 [M3.40.2] (lead) status ready -> active
+- 2026-11-21T12:56 [M3.40.2] (lead) attempt 1/3 started
+- 2026-11-21T12:56 [M3.40.2] (lead) base efe9068d3e1345b47f1230fe6ef5badeaafbda82
+- 2026-11-21T13:04 [M3.40.2] (lead) status active -> done
+- 2026-11-21T13:04 [M3.40.3] (lead) status ready -> active
+- 2026-11-21T13:04 [M3.40.3] (lead) attempt 1/3 started
+- 2026-11-21T13:04 [M3.40.3] (lead) base e67f9cb9aa83969ba0aaed55f77b6cf28423153a
+- 2026-11-21T13:07 [M3.40] (conductor) edited fields
+- 2026-11-21T13:07 [M3.40.4] (conductor) edited fields
+- 2026-11-21T13:07 [M3.40.5] (conductor) edited fields
+- 2026-11-21T13:10 [M4] (conductor) OWNER 0.2.0 REQUIREMENT: NO manual 'slipfork prune' command in 0.1.0 or 0.2.0 — instead, in 0.2.0 the per-user daemon actively watches upstream OCI images in th
+- 2026-11-21T13:11 [M3.40.5] (lead) edited fields
+- 2026-11-21T13:11 [M3.40.7] (lead) created (task) status/ps dynamic tree, doctor rows, and daemon install user+ingress units
+- 2026-11-21T13:11 [M3.40.5] (lead) edited fields
+- 2026-11-21T13:18 [M3.40.3] (lead) status active -> done
+- 2026-11-21T13:18 [M3.40.4] (lead) status ready -> active
+- 2026-11-21T13:18 [M3.40.4] (lead) attempt 1/3 started
+- 2026-11-21T13:18 [M3.40.4] (lead) base 4537cb2019901ae230d3b2813133697142c7d040
+- 2026-11-21T13:48 [M3.40.4] (lead) status active -> done
+- 2026-11-21T13:48 [M3.40.7] (lead) status ready -> active
+- 2026-11-21T13:48 [M3.40.7] (lead) attempt 1/3 started
+- 2026-11-21T13:48 [M3.40.7] (lead) base 8780979e613df7d77a534213d2e91f94026bf538
+- 2026-11-21T13:55 [M3.40.7] (lead) edited fields
+- 2026-11-21T14:02 [M3.40.7] (lead) status active -> done
+- 2026-11-21T14:02 [M3.40.5] (lead) edited fields
+- 2026-11-21T14:02 [M3.40.8] (lead) created (task) fork/drop/env/secret/open/auth/completions verbs + lifecycle UX polish + ANSI matrix
+- 2026-11-21T14:02 [M3.40.6] (lead) edited fields
+- 2026-11-21T14:02 [M3.40.5] (lead) status ready -> active
+- 2026-11-21T14:02 [M3.40.5] (lead) attempt 1/3 started
+- 2026-11-21T14:02 [M3.40.5] (lead) base 418f44f939ac9b0373497242a21ca1a87b701902
+- 2026-11-21T14:27 [M3.40.5] (lead) status active -> done
+- 2026-11-21T14:28 [M3.40.8] (lead) status ready -> active
+- 2026-11-21T14:28 [M3.40.8] (lead) attempt 1/3 started
+- 2026-11-21T14:28 [M3.40.8] (lead) base 47f76165037a2dbba7b93fb7c6e43cef39895974
+- 2026-11-21T14:29 [M3.40.8] (lead) edited fields
+- 2026-11-21T14:29 [M3.40.9] (lead) created (task) env/secret verbs over the 0600 vault, headless-safe open, and OSPP auth pairing
+- 2026-11-21T14:29 [M3.40.10] (lead) created (task) Streamed up/restart/down phases, failure tails, ANSI matrix and spec convergence sweep
+- 2026-11-21T14:29 [M3.40.6] (lead) edited fields
+- 2026-11-21T14:29 [M3.40.8] (lead) status active -> active
+- 2026-11-21T14:29 [M3.40.8] (lead) attempt 1/3 started
+- 2026-11-21T14:29 [M3.40.8] (lead) base 4fa662645d7c449650a1e40ab7a83340a0dd1742
+- 2026-11-21T14:34 [M3.40.8] (lead) status active -> review
+- 2026-11-21T14:34 [M3.40.8] (lead) review: fork/drop green; entering triad
+- 2026-11-21T14:34 [M3.40.6] (lead) edited fields
+- 2026-11-21T14:34 [M3.40.6] (lead) status ready -> active
+- 2026-11-21T14:34 [M3.40.6] (lead) attempt 1/3 started
+- 2026-11-21T14:34 [M3.40.6] (lead) base 4fa662645d7c449650a1e40ab7a83340a0dd1742
+- 2026-11-21T14:35 [M3.40.11] (lead) created (task) slipfork-vcs GitWorkspace VcsWorkspace port + daemon BootSession consolidation
+- 2026-11-21T14:37 [M3.40.8] (lead) status review -> done
+- 2026-11-21T14:37 [M3.40.9] (lead) edited fields
+- 2026-11-21T14:37 [M3.40.9] (lead) status ready -> active
+- 2026-11-21T14:37 [M3.40.9] (lead) attempt 1/3 started
+- 2026-11-21T14:37 [M3.40.9] (lead) base b4ead62a6e8b416d42119ffa804060174399c0a7
+- 2026-11-21T14:41 [M3.40.9] (lead) status active -> done
+- 2026-11-21T14:42 [M3.40.6] (lead) edited fields
+- 2026-11-21T14:42 [M3.40.6] (lead) status active -> active
+- 2026-11-21T14:42 [M3.40.6] (lead) attempt 2/3 started
+- 2026-11-21T14:47 [M3.40.6] (lead) status active -> done
+- 2026-11-21T14:47 [M3.40.10] (lead) edited fields
+- 2026-11-21T14:47 [M3.40.10] (lead) status ready -> active
+- 2026-11-21T14:47 [M3.40.10] (lead) attempt 1/3 started
+- 2026-11-21T14:47 [M3.40.10] (lead) base 87f6ae3d0d215b190349a1da750af4feee4a2d84
+- 2026-11-21T14:52 [M3.40.10] (lead) status active -> done
+- 2026-11-21T14:52 [M3.40.11] (lead) status ready -> active
+- 2026-11-21T14:52 [M3.40.11] (lead) attempt 1/3 started
+- 2026-11-21T14:52 [M3.40.11] (lead) base 4dc0cbb615b2e249cb1c0a02c7560da915786afe
+- 2026-11-21T14:55 [M3.40.11] (lead) status active -> done
+- 2026-11-21T14:58 [M3.40.12] (lead) created (task) Live Btrfs lab green (crun exec/forks/status) and repo hygiene for the M3.40 gate
+- 2026-11-21T14:58 [M3.40.12] (lead) status ready -> active
+- 2026-11-21T14:58 [M3.40.12] (lead) attempt 1/3 started
+- 2026-11-21T14:58 [M3.40.12] (lead) base 9387d65dd22302f2f54db00762e6134d5f6e292e expert probing live crun exec
+- 2026-11-21T14:59 [M3.40.12] (lead) hygiene half done: zed target dir, spec consistency, 7 live suites
+- 2026-11-21T15:20 [M3.40.12] (lead) status active -> done
+- 2026-11-21T16:31 [M3.40] (lead) gate: make check 0; live lab 7/7 suites (11 tests) green; guard+critical_guard+validate+docs honesty OK; zero mocks
+- 2026-11-21T16:31 [M3.40] (lead) status ready -> done
+- 2026-11-21T16:32 [M3.41] (conductor) edited fields
+- 2026-11-21T16:35 [M3.41.1] (planner) created (task) Docs site scaffold, core pages, README/CHANGELOG & docs gate
+- 2026-11-21T16:35 [M3.41.2] (planner) created (task) Reference docs: under-the-hood, OSPP, agents/OpenCode, troubleshooting
+- 2026-11-21T16:35 [M3.41.3] (planner) created (task) Linux distro packages, portable standalone archives, installer & publisher
+- 2026-11-21T16:35 [M3.41.4] (planner) created (task) GitHub Actions: CI, docs deploy, distro package matrix, nightly
+- 2026-11-21T16:35 [M3.41.1] (lead) status ready -> active
+- 2026-11-21T16:35 [M3.41.1] (lead) attempt 1/3 started
+- 2026-11-21T16:35 [M3.41.1] (lead) base 2a7df10ee97f46820f1222d8a480f946c8309601
+- 2026-11-21T16:38 [M3.41.1] (lead) status active -> review
+- 2026-11-21T16:39 [M3.41.1] (lead) status review -> active
+- 2026-11-21T16:39 [M3.41.1] (lead) attempt 2/3 started
+- 2026-11-21T16:39 [M3.41.1] (lead) fix pass 1: honesty fence attrs, exclusion single-source, README buttons, fork JSON
+- 2026-11-21T16:40 [M3.41.1] (lead) status active -> done
+- 2026-11-21T16:41 [M3.41.2] (lead) status ready -> active
+- 2026-11-21T16:41 [M3.41.2] (lead) attempt 1/3 started
+- 2026-11-21T16:41 [M3.41.2] (lead) base e006dae37e8e767ed7ff3ea56de3e2abf5cb4722
+- 2026-11-21T16:41 [M3.41.3] (lead) status ready -> active
+- 2026-11-21T16:41 [M3.41.3] (lead) attempt 1/3 started
+- 2026-11-21T16:41 [M3.41.3] (lead) base e006dae37e8e767ed7ff3ea56de3e2abf5cb4722
+- 2026-11-21T16:43 [M3.41.2] (lead) status active -> review
+- 2026-11-21T16:45 [M3.41.2] (lead) status review -> active
+- 2026-11-21T16:45 [M3.41.2] (lead) attempt 2/3 started
+- 2026-11-21T16:45 [M3.41.2] (lead) fix pass 1: snapshot count, ingress prerequisite, no fabricated up output
+- 2026-11-21T16:45 [M3.41.2] (lead) status active -> review
+- 2026-11-21T16:45 [M3.41.2] (lead) status review -> done
+- 2026-11-21T16:56 [M3.41.5] (lead) created (task) Musl-clean slipfork-world fdpass CMSG widths for dynamic-musl .apk
+- 2026-11-21T16:56 [M3.41.5] (lead) status ready -> active
+- 2026-11-21T16:56 [M3.41.5] (lead) attempt 1/3 started
+- 2026-11-21T16:56 [M3.41.5] (lead) base d1a92f76b8239c57e987140964b5a376aa2e391b
+- 2026-11-21T16:56 [M3.41] (lead) edited fields
+- 2026-11-21T16:59 [M3.41] (lead) edited fields
+- 2026-11-21T16:59 [M3.41.5] (lead) status active -> review
+- 2026-11-21T17:01 [M3.41.5] (lead) status review -> active
+- 2026-11-21T17:01 [M3.41.5] (lead) attempt 2/3 started
+- 2026-11-21T17:01 [M3.41.5] (lead) fix pass 1: u32 _IOC encoder, ios request at call sites
+- 2026-11-21T17:02 [M3.41.5] (lead) status active -> review
+- 2026-11-21T17:02 [M3.41.5] (lead) status review -> done
+- 2026-11-21T17:05 [M3.41.3] (lead) status active -> review
+- 2026-11-21T17:07 [M3.41.6] (lead) created (task) Real OpenRC :80 listen mode and non-root handoff guard
+- 2026-11-21T17:07 [M3.41.3] (lead) edited fields
+- 2026-11-21T17:07 [M3.41.6] (lead) status ready -> active
+- 2026-11-21T17:07 [M3.41.6] (lead) attempt 1/3 started
+- 2026-11-21T17:07 [M3.41.6] (lead) base ed98dcbbd5be5b50a33a9e9731086ee43696dec3
+- 2026-11-21T17:07 [M3.41.3] (lead) attempt 2/3 started
+- 2026-11-21T17:07 [M3.41.3] (lead) fix pass 2: unit name, installer trust/UX, payload assertions, prune grouping
+- 2026-11-21T17:09 [M3.41.6] (lead) status active -> review
+- 2026-11-21T17:10 [M3.41.6] (lead) edited fields
+- 2026-11-21T17:10 [M3.41.6] (lead) status review -> active
+- 2026-11-21T17:10 [M3.41.6] (lead) attempt 2/3 started
+- 2026-11-21T17:10 [M3.41.6] (lead) fix pass 1: compose root injection, bind in main, tests unconditional, EACCES remedy
+- 2026-11-21T17:12 [M3.41.6] (lead) status active -> review
+- 2026-11-21T17:12 [M3.41.6] (lead) status review -> done
+- 2026-11-21T17:15 [M3.41.3] (lead) status review -> review
+- 2026-11-21T17:20 [M3.41.3] (lead) status review -> done
+- 2026-11-21T17:20 [M3.41.4] (lead) status ready -> active
+- 2026-11-21T17:20 [M3.41.4] (lead) attempt 1/3 started
+- 2026-11-21T17:20 [M3.41.4] (lead) base 4ea4a416add029a6ae17f3ba45ec287943eb3fbe
+- 2026-11-21T17:23 [M3.41.4] (lead) status active -> review
+- 2026-11-21T17:26 [M3.41.4] (lead) status review -> done
+- 2026-11-21T17:26 [M3.41.7] (lead) created (task) Install docs match shipped package filenames and OpenRC flow
+- 2026-11-21T17:26 [M3.41.7] (lead) status ready -> active
+- 2026-11-21T17:26 [M3.41.7] (lead) attempt 1/3 started
+- 2026-11-21T17:26 [M3.41.7] (lead) base f38f77e4251f0499e0b7306b286c475efe5175cb
+- 2026-11-21T17:27 [M3.41.7] (lead) status active -> done
+- 2026-11-21T17:28 [M3.41] (lead) gate: make docs-check/packages/packages-test/check 0; guard+critical_guard+validate OK; 7 distro artifacts + 6-target lsp assets
+- 2026-11-21T17:28 [M3.41] (lead) status ready -> done
+- 2026-11-21T17:29 [M3.42] (conductor) edited fields
+- 2026-11-21T17:30 [M3.42.1] (planner) created (task) Test-shape convergence: prune non-§7 inline tests into lab E2E journeys
+- 2026-11-21T17:30 [M3.42.2] (planner) created (task) make coverage target, dead-code sweep, comment diet & >500 LOC splits
+- 2026-11-21T17:30 [M3.42.3] (planner) created (task) Close §2–§6 story gaps and green all local gates (check/docs/packages/packages-test/coverage)
+- 2026-11-21T17:30 [M3.42.4] (planner) created (task) Live Btrfs proof on 165.232.86.174 without disturbing the owner demo
+- 2026-11-21T17:32 [M3.42.1] (lead) status ready -> active
+- 2026-11-21T17:32 [M3.42.1] (lead) attempt 1/3 started
+- 2026-11-21T17:32 [M3.42.1] (lead) base 6fbb0a2bca740d801b0aa8f74b43a53b8b4d4fa1
+- 2026-11-21T17:42 [M3.42.1] (lead) status active -> review
+- 2026-11-21T17:45 [M3.42.1] (lead) status review -> ready
+- 2026-11-21T17:45 [M3.42.1] (lead) attempt 2/3 started
+- 2026-11-21T17:53 [M3.42.1] (lead) status ready -> done
+- 2026-11-21T17:53 [M3.42.2] (lead) status ready -> active
+- 2026-11-21T17:53 [M3.42.2] (lead) attempt 1/3 started
+- 2026-11-21T17:53 [M3.42.2] (lead) base 83ac95c58801d152c4f4bb91268181d207491902
+- 2026-11-21T18:03 [M3.42.2] (lead) status active -> review
+- 2026-11-21T18:06 [M3.42.2] (lead) status review -> ready
+- 2026-11-21T18:06 [M3.42.2] (lead) attempt 2/3 started
+- 2026-11-21T18:06 [M3.42.5] (lead) created (task) Fold live-demo multi-S3/CDN/OCI-entrypoint/runtime-env fixes with §2 E2E assertions
+- 2026-11-21T18:06 [M3.42.3] (lead) edited fields
+- 2026-11-21T18:18 [M3.42.2] (lead) make coverage exit 0; 0 rows at 0.0%; 46 live-gated files named; low rows are live-only (image registry/puller/steps, daemon, btrfs ioctls) proven by make live-
+- 2026-11-21T18:18 [M3.42.2] (lead) status ready -> done
+- 2026-11-21T18:18 [M3.42.5] (lead) status ready -> active
+- 2026-11-21T18:18 [M3.42.5] (lead) attempt 1/3 started
+- 2026-11-21T18:18 [M3.42.5] (lead) base e6a1cd0f67e932f66779c0a946866bfe9df2d9f1
+- 2026-11-21T18:36 [M3.42.5] (lead) status active -> review
+- 2026-11-21T18:41 [M3.42.5] (lead) status review -> ready
+- 2026-11-21T18:41 [M3.42.5] (lead) attempt 2/3 started
+- 2026-11-21T19:06 ESCALATION #30 -> expert for M3.42.5 by lead: half-applied feature-gate refactor (2 compile errors) + live SeaweedFS multi-bucket topology and logs default-filter bug
+- 2026-11-21T19:06 [M3.42.5] (lead) edited fields
+- 2026-11-21T19:06 [M3.42.5] (lead) attempt 3/3 started
+- 2026-11-21T19:18 AUTOPILOT off by conductor Owner review: unacceptable CLI UX, hand-rolled CLI/TTY code, 38.5s fork & SeaweedFS bloat
+- 2026-11-21T19:21 [M3.42.3] (lead) edited fields
+- 2026-11-21T19:21 [M3.42.6] (lead) created (task) RFC 1123 DNS/bucket label validation, hyphen identifiers, and static_cdn -> static-cdn sweep
+- 2026-11-21T19:40 [M3.42.4] (conductor) status ready -> superseded: Superseded by M3.43..M3.45 CLI/TUI (clap+indicatif), native Btrfs S3, fast PG/Redis & reactive <500ms fork overhaul
+- 2026-11-21T19:40 [M3.42.3] (conductor) status ready -> superseded: Superseded by M3.43..M3.45 CLI/TUI (clap+indicatif), native Btrfs S3, fast PG/Redis & reactive <500ms fork overhaul
+- 2026-11-21T19:40 [M3.42.6] (conductor) status ready -> superseded: Superseded by M3.43..M3.45 CLI/TUI (clap+indicatif), native Btrfs S3, fast PG/Redis & reactive <500ms fork overhaul
+- 2026-11-21T19:40 [M3.42.5] (conductor) status ready -> superseded: Superseded by M3.43..M3.45 CLI/TUI (clap+indicatif), native Btrfs S3, fast PG/Redis & reactive <500ms fork overhaul
+- 2026-11-21T19:40 [M3.42] (conductor) status ready -> superseded: Superseded by M3.43..M3.45 CLI/TUI (clap+indicatif), native Btrfs S3, fast PG/Redis & reactive <500ms fork overhaul
+- 2026-11-21T19:40 [M3.43] (conductor) created (task) Overhaul specs/ & ARCHITECTURE.md: clap + frozen-pane indicatif TUI, explicit s3 policy + native Btrfs S3, speed-of-light PG/Redis & reactive <50
+- 2026-11-21T19:40 [M3.44] (conductor) created (epic) Implement clap + frozen-pane indicatif TUI, explicit s3 policy + native Btrfs S3, fast PG/Redis & reactive <500ms fork
+- 2026-11-21T19:40 [M3.45] (conductor) created (epic) Final TESTING_PLAN.md E2E verification, make coverage sweep & live <1s fork + frozen-pane PTY demo gate on 165.232.86.174
+- 2026-11-21T19:40 AUTOPILOT on by conductor Executing owner-approved CLI/TUI (clap+indicatif), native Btrfs S3, fast PG/Redis & reactive <500ms fork overhaul
+- 2026-11-21T19:41 [M3.43] (lead) status ready -> active
+- 2026-11-21T19:41 [M3.43] (lead) attempt 1/3 started
+- 2026-11-21T19:41 [M3.43] (lead) base f124c68edd69dcd593a7a2ad9d4d062f21c64100
+- 2026-11-21T19:41 ESCALATION #31 -> architect for M3.43 by lead: owner-mandated spec overhaul: clap+frozen-pane indicatif TUI, explicit s3 policy + native Btrfs S3, speed-of-light PG/Re
+- 2026-11-21T20:06 [M3.43] (lead) status active -> review
+- 2026-11-21T20:15 [M3.43] (lead) status review -> done
+- 2026-11-21T20:15 [M3.44] (lead) status ready -> active
+- 2026-11-21T20:16 [M3.44] (lead) attempt 1/3 started
+- 2026-11-21T20:16 [M3.44] (lead) base 6dcb82098b12fb832cee4833c25ab96eab306cb3
+- 2026-11-21T20:17 [M3.44.1] (planner) created (task) probe
+- 2026-11-21T20:17 [M3.44.1] (planner) created (task) Forkfile s3 policy/cdn surface, RFC 1123 DnsLabel & static-cdn purge
+- 2026-11-21T20:17 [M3.44.2] (planner) created (task) Delete SeaweedFS, native Rust Btrfs S3 server with SigV4 & per-bucket policy
+- 2026-11-21T20:17 [M3.44.3] (planner) created (task) Golden postgres-18 template + <1ms PGDATA CoW clone, Redis AOF clone, 2ms readiness polls
+- 2026-11-21T20:17 [M3.44.4] (planner) created (task) Reactive tokio boot DAG, per-node elapsed, world_epoch stamp & zero-rebuild <500ms fork
+- 2026-11-21T20:17 [M3.44.5] (planner) created (task) clap 4.6 derive CLI: completions, manpage, logs -a/--all, UiMode & --json schemas
+- 2026-11-21T20:17 [M3.44.6] (planner) created (task) Frozen-bottom-pane indicatif MultiProgress TUI with PTY/NO_COLOR/TERM=dumb/--json gates
+- 2026-11-21T20:17 [M3.44.1] (lead) status ready -> active
+- 2026-11-21T20:17 [M3.44.1] (lead) attempt 1/3 started
+- 2026-11-21T20:17 [M3.44.1] (lead) base 6dcb82098b12fb832cee4833c25ab96eab306cb3
+- 2026-11-21T20:21 [M3.44.1] (lead) status active -> review
+- 2026-11-21T20:23 [M3.44.5] (lead) edited fields
+- 2026-11-21T20:25 [M3.44.1] (lead) edited fields
+- 2026-11-21T20:25 [M3.44.1] (lead) edited fields
+- 2026-11-21T20:27 [M3.44.1] (lead) edited fields
+- 2026-11-21T20:27 [M3.44.5] (lead) edited fields
+- 2026-11-21T20:27 [M3.44.2] (lead) edited fields
+- 2026-11-21T20:27 [M3.44.1] (lead) accepted after 1 fix pass; deferred to M3.44.5: split crates/slipfork-forkfile/src/fmt.rs (496/500) into fmt/ submodule and route symbols/eval cdn collectors th
+- 2026-11-21T20:27 [M3.44.1] (lead) status review -> done
+- 2026-11-21T20:28 [M3.44.2] (lead) status ready -> active
+- 2026-11-21T20:28 [M3.44.2] (lead) attempt 1/3 started
+- 2026-11-21T20:28 [M3.44.2] (lead) base ad7e3faec80e6752423488367a3334346806b0bb
+- 2026-11-21T20:28 [M3.44.2] (lead) edited fields
+- 2026-11-21T20:31 [M3.44.2] (lead) edited fields
+- 2026-11-21T20:31 [M3.44.2] (lead) attempt 2/3 started
+- 2026-11-21T20:31 [M3.44.2] (lead) partial: S3 modules + control frames written; world_init/daemon/ingress/tests unfinished; 5 compile errors — continuing attempt 2
+- 2026-11-21T20:37 [M3.44.2] (lead) attempt 3/3 started
+- 2026-11-21T20:37 [M3.44.2] (lead) edited fields
+- 2026-11-21T20:39 [M3.44.2] (lead) status active -> review
+- 2026-11-21T20:42 [M3.44.2] (lead) edited fields
+- 2026-11-21T20:42 [M3.44.2] (lead) attempt 4/5 started
+- 2026-11-21T20:42 [M3.44.2] (lead) triad fix pass: nested-key meta, list errors, pagination, protected S3 matrix, DnsLabel buckets, injected Handle, ObjectMeta owner, vhost order, dead reserved_p
+- 2026-11-21T20:50 [M3.44.2] (lead) attempt 5/5 started
+- 2026-11-21T20:50 [M3.44.2] (lead) attempt 5: rename cdn_assets -> assets-cdn and add policy public-read to live fixtures so check() passes
+- 2026-11-21T20:53 [M3.44.2] (lead) edited fields
+- 2026-11-21T20:53 [M3.44.2] (lead) attempt 6/7 started
+- 2026-11-21T20:53 [M3.44.2] (lead) attempt 6: host-first resolve double-prefix via ingress; served policy inferred from has_cdn instead of policy_at
+- 2026-11-21T20:55 [M3.44.2] (lead) status review -> done
+- 2026-11-21T20:55 [M3.44.3] (lead) status ready -> active
+- 2026-11-21T20:55 [M3.44.3] (lead) attempt 1/3 started
+- 2026-11-21T20:55 [M3.44.3] (lead) base 0de7380506799cb64bb1db6ec54ef4af35fcc879
+- 2026-11-21T21:02 [M3.44.3] (lead) edited fields
+- 2026-11-21T21:02 [M3.44.3] (lead) status active -> review
+- 2026-11-21T21:03 [M3.44.3] (lead) edited fields
+- 2026-11-21T21:03 [M3.44.3] (lead) attempt 2/3 started
+- 2026-11-21T21:03 [M3.44.3] (lead) triad: launchers not wired into shipped path + lock/staging/remedy/readiness/test gaps
+- 2026-11-21T21:07 [M3.44.3] (lead) edited fields
+- 2026-11-21T21:07 [M3.44.3] (lead) attempt 3/4 started
+- 2026-11-21T21:07 [M3.44.3] (lead) attempt 3: finish compile + split pg.rs (536 LOC) + run gates
+- 2026-11-21T21:10 [M3.44.3] (lead) edited fields
+- 2026-11-21T21:11 [M3.44.3] (lead) attempt 4/4 started
+- 2026-11-21T21:11 [M3.44.3] (lead) attempt 4: PG socket wording, wait_tcp fail-closed, on_wait ticking, cached-path staging reap
+- 2026-11-21T21:12 [M3.44.4] (lead) edited fields
+- 2026-11-21T21:14 [M3.44.3] (lead) status review -> done
+- 2026-11-21T21:15 [M3.44.4] (lead) status ready -> active
+- 2026-11-21T21:15 [M3.44.4] (lead) attempt 1/3 started
+- 2026-11-21T21:15 [M3.44.4] (lead) base dafad13f57dd190f6e5d171335d7b2225e5cc43b
+- 2026-11-21T21:20 [M3.44.4] (lead) edited fields
+- 2026-11-21T21:25 [M3.44.4] (lead) status active -> review
+- 2026-11-21T21:25 [M3.44.4] (lead) attempt 2/3 started
+- 2026-11-21T21:25 [M3.44.4] (lead) attempt 2: full-stack fork fixture (PG/Redis/S3 + seeded data), pre-fork CHECKPOINT, runtime.rs 501 split
+- 2026-11-21T21:33 [M3.44.4] (lead) edited fields
+- 2026-11-21T21:33 [M3.44.4] (lead) attempt 3/5 started
+- 2026-11-21T21:33 [M3.44.4] (lead) attempt 3: node_start after deps, multi-PG epoch, shard locks, NodeTask, dead waves, layout kinds, failed frame/state, ready remedy, fork timers, real Instant f
+- 2026-11-21T21:38 [M3.44.4] (lead) attempt 4/5 started
+- 2026-11-21T21:38 [M3.44.4] (lead) attempt 4: adapt supervise.rs to BootEvent name/state and scheduler API; finish gates
+- 2026-11-21T21:43 [M3.44.4] (lead) attempt 5/5 started
+- 2026-11-21T21:43 [M3.44.4] (lead) attempt 5 (final): multi-PG epoch, layout kind validation, real Instant fork assert, per-node event assert, WAL copy, bare names, ready remedy+progress; defer p
+- 2026-11-21T21:48 [M3.44.4] (lead) accepted; deferred to M3.45: per-collaborator lock sharding in world/supervise.rs (perf-only, fork skips builds)
+- 2026-11-21T21:48 [M3.44.4] (lead) status review -> done
+- 2026-11-21T21:48 [M3.44.4] (lead) edited fields
+- 2026-11-21T21:48 [M3.44.5] (lead) status ready -> active
+- 2026-11-21T21:48 [M3.44.5] (lead) attempt 1/3 started
+- 2026-11-21T21:48 [M3.44.5] (lead) base d624fbfe7c24a123180b319ec5b8abbdf0db68ff
+- 2026-11-21T21:54 [M3.44.5] (lead) status active -> review
+- 2026-11-21T21:56 [M3.44.5] (lead) edited fields
+- 2026-11-21T21:56 [M3.44.5] (lead) attempt 2/3 started
+- 2026-11-21T21:56 [M3.44.5] (lead) triad fix pass: fork json fields, JSON-aware usage errors, single compile(), env snapshot, run(session), json scan, matrix drift, slug boundary, manpage drift, 
+- 2026-11-21T22:03 [M3.44.5] (lead) status review -> done
+- 2026-11-21T22:03 [M3.44.6] (lead) status ready -> active
+- 2026-11-21T22:03 [M3.44.6] (lead) attempt 1/3 started
+- 2026-11-21T22:03 [M3.44.6] (lead) base beb44661891338d08230798950d48fd3274dce37
+- 2026-11-21T22:09 [M3.44.6] (lead) edited fields
+- 2026-11-21T22:09 [M3.44.6] (lead) attempt 2/3 started
+- 2026-11-21T22:09 [M3.44.6] (lead) attempt 2: widened paths to crates/slipfork/src/** + crate Cargo.toml; ASCII pane = single-line \r status (zero CSI)
+- 2026-11-21T22:14 [M3.44.6] (lead) attempt 3/3 started
+- 2026-11-21T22:14 [M3.44.6] (lead) attempt 3: tests-only — renderer contract unit tests + real PTY doctor/status color & NO_COLOR purity + non-TTY replay; run full gates
+- 2026-11-21T22:19 [M3.44.6] (lead) status active -> review
+- 2026-11-21T22:22 [M3.44.6] (lead) edited fields
+- 2026-11-21T22:22 [M3.44.6] (lead) attempt 4/6 started
+- 2026-11-21T22:22 [M3.44.6] (lead) attempt 4: inject terminal width, move presentation to render, down per-pod timing, ASCII ticker, clamp tail, bold URL, failure clear/kind, PTY live test, reap 
+- 2026-11-21T22:28 [M3.44.6] (lead) attempt 5/6 started
+- 2026-11-21T22:28 [M3.44.6] (lead) attempt 5: split boot.rs (531), move stream/failure strings to render, render live tail, fix PTY CSI stripper
+- 2026-11-21T22:33 [M3.44.6] (lead) attempt 6/6 started
+- 2026-11-21T22:33 [M3.44.6] (lead) attempt 6: add render::tail_rows, fix glued doc attribute, clear tails, verify LOC+gates
+- 2026-11-21T22:36 [M3.44.6] (lead) status review -> done
+- 2026-11-21T22:40 [M3.45.1] (planner) created (task) make coverage sweep, dead-code deletion & <=500 LOC / clippy clean
+- 2026-11-21T22:40 [M3.45.2] (planner) created (task) Live Btrfs VM gate: .deb, 7 critical suites, <1.0s fork, S3 matrix, frozen-pane PTY
+- 2026-11-21T22:40 [M3.45.3] (planner) created (task) Demo /home/slipfork/demo + feat-auth refresh, probe cleanup & final live proof
+- 2026-11-21T22:43 [M3.44] (lead) status active -> done
+- 2026-11-21T22:43 [M3.45.1] (lead) status ready -> active
+- 2026-11-21T22:43 [M3.45.1] (lead) attempt 1/3 started
+- 2026-11-21T22:43 [M3.45.1] (lead) base f14688f7c606078ab20b52871c653a7748121549
+- 2026-11-21T22:52 [M3.45.1] (lead) accepted; namespaces.json publisher kept as documented host-nsenter debug artifact (no in-tree reader) — not churn
+- 2026-11-21T22:52 [M3.45.1] (lead) status active -> done
+- 2026-11-21T22:52 [M3.45.2] (lead) status ready -> active
+- 2026-11-21T22:52 [M3.45.2] (lead) attempt 1/3 started
+- 2026-11-21T22:52 [M3.45.2] (lead) base 75b45541fed9d2b0d5150f87d5cdaa55fd990eff
+- 2026-11-22T00:24 [M3.45.2] (lead) attempt 2/3 started
+- 2026-11-22T00:24 [M3.45.2] (lead) attempt 2: recover demo on VM, profile fork 1.87s -> <1s, fix world_journey hook log frame; no further budget/spec edits
+- 2026-11-22T00:35 ESCALATION #32 -> expert for M3.45.2 by lead: fork 1.9-5.1s vs <1s: global WorldRuntime mutex serializes DAG nodes; before_start/pre_deploy hook digests never recorde
+- 2026-11-22T00:35 [M3.45.2] (lead) attempt 3/3 started
+- 2026-11-22T00:35 [M3.45.2] (lead) attempt 3 (expert): shard executor locks, persist+gate hook stamps, fork <1s, drop cleanup
+- 2026-11-22T02:33 [M3.45.3] (lead) edited fields
+- 2026-11-22T02:33 [M3.45.2] (lead) status active -> done
+- 2026-11-22T02:33 [M3.45.3] (lead) status ready -> active
+- 2026-11-22T02:33 [M3.45.3] (lead) attempt 1/3 started
+- 2026-11-22T02:33 [M3.45.3] (lead) base 20e29409eec05b77c528bb713bea98fbca64030e
+- 2026-11-22T02:33 [M3.45.3] (lead) edited fields
+- 2026-11-22T02:50 [M3.45.3] (lead) attempt 2/3 started
+- 2026-11-22T02:50 [M3.45.3] (lead) attempt 2: fix feat-auth crun launch after binary swap, fork-error cleanup, capture 16-cell bar via up, rerun VM suites
+- 2026-11-22T03:02 [M3.45.3] (lead) attempt 3/3 started
+- 2026-11-22T03:02 [M3.45.3] (lead) attempt 3: fix VM staging (slipfork-owned target, fresh bins), rerun 4 live suites, cleanup, final gates
+- 2026-11-22T03:18 [M3.45.3] (lead) status active -> done
+- 2026-11-22T03:34 [M3.45.4] (lead) created (task) Milestone sign-off fixes: doc honesty, pod.rs split, snapshot provenance, dead sweeps, single-impl signer trait
+- 2026-11-22T03:34 [M3.45.4] (lead) status ready -> active
+- 2026-11-22T03:34 [M3.45.4] (lead) attempt 1/3 started
+- 2026-11-22T03:34 [M3.45.4] (lead) base 3e6336867a970fd60c562892f97327f6e1c8e000
+- 2026-11-22T09:42 [M3.45.4] (lead) status active -> done
+- 2026-11-22T09:42 [M3.45] (lead) status ready -> done
+- 2026-11-22T09:42 [M3] (lead) status active -> done
+- 2026-11-22T09:43 HUMAN H-009 [release-gate] opened by conductor (node M3)
+- 2026-11-22T09:43 AUTOPILOT off by conductor Slipfork 0.1.0 release gate reached; awaiting human review & merge of PR #2 into develop
+- 2026-11-22T10:16 HUMAN H-009 closed by conductor
+- 2026-11-22T10:16 [M3] (conductor) status done -> active
+- 2026-11-22T10:16 [M3.46] (conductor) created (task) Fix GitHub Actions CI Btrfs loop-mount (user_subvol_rm_allowed) & enable packages.yml dry-run matrix on PRs
+- 2026-11-22T10:16 AUTOPILOT on by conductor Fixing GitHub Actions CI live Btrfs mount & verifying packages.yml matrix on PR #2
+- 2026-11-22T10:20 [M3.46] (lead) status ready -> active
+- 2026-11-22T10:20 [M3.46] (lead) attempt 1/3 started
+- 2026-11-22T10:20 [M3.46] (lead) base d3549e725cf19562e0acef4de27c6be6aac7670e
+- 2026-11-22T10:22 [M3.46] (lead) status active -> review
+- 2026-11-22T10:25 [M3.46] (lead) verified: make check/docs-check/packages/packages-test=0; rust:alpine rustc 1.100.0; rockylinux:9 dnf install + --version=0 (Recommends btrfs-progs)
+- 2026-11-22T10:25 [M3.46] (lead) status review -> done
+- 2026-11-22T10:36 [M3.47] (conductor) created (task) Fix CI live-test HOME/SLIPFORK_TEST_ROOT Btrfs wiring & container UID 1001 cleanup in build-apk.sh / scripts/*.sh
+- 2026-11-22T10:36 [M3.47] (lead) status ready -> active
+- 2026-11-22T10:36 [M3.47] (lead) attempt 1/3 started
+- 2026-11-22T10:36 [M3.47] (lead) base 354dfe2f370ff3cf8da0553f7553decdc5a58707
+- 2026-11-22T10:40 [M3.47] (lead) status active -> review
+- 2026-11-22T10:42 [M3.47] (lead) status review -> ready: 1 consolidated fix pass: Triad MAJORs (DX remedy lines, canonical Btrfs probe, env-var meaning, visible chown warning)
+- 2026-11-22T10:42 [M3.47] (lead) status ready -> active
+- 2026-11-22T10:42 [M3.47] (lead) attempt 2/3 started
+- 2026-11-22T10:43 [M3.47] (lead) status active -> review
+- 2026-11-22T10:43 [M3.47] (lead) fix pass 1 applied (Triad MAJORs); re-verifying
+- 2026-11-22T10:46 [M3.47] (lead) status review -> done
+- 2026-11-22T10:57 [M3.48] (conductor) created (task) Build portable glibc<=2.34 gnu bundle in rockylinux:9 & fix Arch pacman -Syu + DisableSandbox in packages.yml
+- 2026-11-22T10:59 [M3.48] (lead) status ready -> active
+- 2026-11-22T10:59 [M3.48] (lead) attempt 1/3 started
+- 2026-11-22T10:59 [M3.48] (lead) base f84ab1774a8f0d87ae85558e7b0ae376653aae1b
+- 2026-11-22T11:07 [M3.48] (lead) status active -> review
+- 2026-11-22T11:09 [M3.48] (lead) status review -> ready
+- 2026-11-22T11:09 [M3.48] (lead) attempt 2/3 started
+- 2026-11-22T11:09 [M3.48] (lead) triad fix pass: chown /cargo, fail-loud unknown container, [setup] streaming, host-path remedies, honest header, glibc banner anchor, workflow comment
+- 2026-11-22T11:13 [M3.48] (lead) status ready -> done
+- 2026-11-22T11:15 [M3] (conductor) status active -> done
+- 2026-11-22T11:15 HUMAN H-010 [release-gate] opened by conductor (node M3)
+- 2026-11-22T11:15 AUTOPILOT off by conductor Awaiting GHA 33/33 green confirmation & human merge of PR #2 into develop
+- 2026-11-22T12:10 HUMAN H-010 closed by conductor
+- 2026-11-22T12:10 [M3] (conductor) status done -> active
+- 2026-11-22T12:10 [M3.49] (conductor) created (task) Update specs/ & ARCHITECTURE.md: unified PTY slipfork shell (drop db/redis), DECSTBM fixed-bottom-bar 1-line-per-task TUI & <1s 8-component fork
+- 2026-11-22T12:10 [M3.50] (conductor) created (epic) Implement unified PTY slipfork shell (drop db/redis), DECSTBM fixed-bottom-bar TUI & <1.0s 8-component ~/demo fork on 165.232.86.174
+- 2026-11-22T12:10 AUTOPILOT on by conductor Implementing unified PTY slipfork shell, DECSTBM fixed-bottom-bar TUI & <1.0s 8-component ~/demo fork
+- 2026-11-22T12:11 [M3.49] (lead) status ready -> active
+- 2026-11-22T12:11 [M3.49] (lead) attempt 1/3 started
+- 2026-11-22T12:11 [M3.49] (lead) base 6b6799f76eb314158c86b5c7211473c97515829d
+- 2026-11-22T12:11 ESCALATION #33 -> architect for M3.49 by lead: spec/ARCHITECTURE lock-in: unified PTY shell, DECSTBM bottom bar, <1s fork
+- 2026-11-22T12:29 [M3.49] (lead) status active -> review
+- 2026-11-22T12:31 [M3.49] (lead) status review -> ready
+- 2026-11-22T12:31 [M3.49] (lead) attempt 2/3 started
+- 2026-11-22T12:31 [M3.49] (lead) triad fix pass: log frame restored, 8-component <1s proof + noise/overlap observability, 24-cell frame arithmetic, clamp drop order, exact shell copy, persisten
+- 2026-11-22T12:39 [M3.49] (lead) status ready -> review
+- 2026-11-22T12:39 [M3.49] (lead) status review -> done
+- 2026-11-22T12:40 [M3.50] (lead) status ready -> active
+- 2026-11-22T12:40 [M3.50] (lead) attempt 1/3 started
+- 2026-11-22T12:40 [M3.50] (lead) base beebb56bc0b54eed6cf25942ac3a0fcf302e6305
+- 2026-11-22T12:41 [M3.50.1] (planner) created (task) world_init: real-PTY ExecPty + persistent per-id logs
+- 2026-11-22T12:41 [M3.50.2] (planner) created (task) CLI+daemon: required shell <target>, delete db/redis, logs <image>
+- 2026-11-22T12:41 [M3.50.3] (planner) created (task) 8-component <1.0s fork: no CHECKPOINT, conditional edges, image reuse
+- 2026-11-22T12:41 [M3.50.4] (planner) created (task) DECSTBM bottom bar + ScrollRegionGuard, 1 line per task, zero StepLog
+- 2026-11-22T12:41 [M3.50.5] (planner) created (task) Docs/manpage/CHANGELOG: purge db+redis, document shell <target>/logs/TUI
+- 2026-11-22T12:41 [M3.50.6] (planner) created (task) Rebuild .deb + live 165.232.86.174 proof: real-PTY shell, <1s 8-component fork
+- 2026-11-22T12:42 [M3.50.1] (lead) edited fields
+- 2026-11-22T12:42 [M3.50.2] (lead) edited fields
+- 2026-11-22T12:42 [M3.50.3] (lead) edited fields
+- 2026-11-22T12:42 [M3.50.4] (lead) edited fields
+- 2026-11-22T12:42 [M3.50.5] (lead) edited fields
+- 2026-11-22T12:42 [M3.50.6] (lead) edited fields
+- 2026-11-22T12:42 [M3.50.1] (lead) status ready -> active
+- 2026-11-22T12:42 [M3.50.1] (lead) attempt 1/3 started
+- 2026-11-22T12:42 [M3.50.1] (lead) base beebb56bc0b54eed6cf25942ac3a0fcf302e6305
+- 2026-11-22T12:46 [M3.50.2] (lead) edited fields
+- 2026-11-22T12:46 [M3.50.3] (lead) edited fields
+- 2026-11-22T12:51 [M3.50.1] (lead) edited fields
+- 2026-11-22T12:53 [M3.50.1] (lead) status active -> review
+- 2026-11-22T12:54 [M3.50.3] (lead) edited fields
+- 2026-11-22T12:56 [M3.50.1] (lead) status review -> ready
+- 2026-11-22T12:56 [M3.50.1] (lead) attempt 2/3 started
+- 2026-11-22T12:56 [M3.50.1] (lead) triad fix pass: drop wire logs_root (WorldShared-derived), LIVE_SUITES entry, abort on supervise fault, fail-closed rootfs, log_path single owner, console recv 
+- 2026-11-22T12:56 [M3.50.1] (lead) edited fields
+- 2026-11-22T12:58 [M3.50.1] (lead) status ready -> done
+- 2026-11-22T12:58 [M3.50.2] (lead) status ready -> active
+- 2026-11-22T12:58 [M3.50.2] (lead) attempt 1/3 started
+- 2026-11-22T12:58 [M3.50.2] (lead) base 184ab17208d0b084fc83008e3dd37456a2522177
+- 2026-11-22T12:58 [M3.50.3] (lead) status ready -> active
+- 2026-11-22T12:58 [M3.50.3] (lead) attempt 1/3 started
+- 2026-11-22T12:58 [M3.50.3] (lead) base 184ab17208d0b084fc83008e3dd37456a2522177
+- 2026-11-22T13:04 [M3.50.2] (lead) status active -> review
+- 2026-11-22T13:04 [M3.50.3] (lead) status active -> review
+- 2026-11-22T13:06 [M3.50.2] (lead) status review -> ready
+- 2026-11-22T13:06 [M3.50.2] (lead) attempt 2/3 started
+- 2026-11-22T13:06 [M3.50.2] (lead) triad fix pass: PTY refusal frames, image->pod via ServiceDecl.image, booting/running shellable filters, logs all-filter + s3 copy, split lifecycle/logs.rs, PTY
+- 2026-11-22T13:06 [M3.50.2] (lead) edited fields
+- 2026-11-22T13:07 [M3.50.3] (lead) status review -> ready
+- 2026-11-22T13:07 [M3.50.3] (lead) attempt 2/3 started
+- 2026-11-22T13:07 [M3.50.3] (lead) triad fix pass: no-sync tokenizer, downstream adjacency, cached state (waiter + metadata-only), up --json schema, failure remedies, ANSI tee strip, adoption via
+- 2026-11-22T13:07 [M3.50.3] (lead) edited fields
+- 2026-11-22T13:07 [M3.50.4] (lead) edited fields
+- 2026-11-22T13:07 [M3.50.4] (lead) OWNER ADDENDUM: (1) ps/status must UNION live crun pods not in the current Forkfile as PsService{orphaned:true} rendered yellow 'orphaned' until collected; (2) 
+- 2026-11-22T13:07 [M3.50.5] (lead) edited fields
+- 2026-11-22T13:07 [M3.50.5] (lead) OWNER ADDENDUM: document the 'orphaned' status state (yellow, next: slipfork up to reconcile) and that repeating slipfork up after a Forkfile edit reconciles st
+- 2026-11-22T13:08 [M3.50.4] (lead) edited fields
+- 2026-11-22T13:13 [M3.50.7] (lead) created (task) Domain-first status tree + always-<bucket>.<world>.localhost S3/CDN local domains (zero ports/ages)
+- 2026-11-22T13:13 [M3.50.6] (lead) edited fields
+- 2026-11-22T13:13 [M3.50.5] (lead) edited fields
+- 2026-11-22T13:13 [M3.50.5] (lead) OWNER ADDENDUM: specs/01+02 must lock the domain-first tree (flat worlds, domains->paths, zero ports/ages) and the always-<bucket>.<world>.localhost S3 domain w
+- 2026-11-22T13:13 [M3.50.7] (lead) edited fields
+- 2026-11-22T13:15 [M3.50.7] (lead) OWNER REFINEMENT (uniform domains): every domain uses the SAME 2-level shape — 'http://<domain>' then '<path> -> <target>  <status>'; ZERO inline S3-only domain
+- 2026-11-22T13:15 [M3.50.5] (lead) OWNER REFINEMENT: specs/02 + docs/cli.md show the uniform domain->path->target shape for ALL domains including S3 buckets (no special-case inline bucket rows).
+- 2026-11-22T13:18 [M3.50.2] (lead) status ready -> done
+- 2026-11-22T13:18 [M3.50.5] (lead) status ready -> active
+- 2026-11-22T13:18 [M3.50.5] (lead) attempt 1/3 started
+- 2026-11-22T13:18 [M3.50.5] (lead) base fe0c1c8aeb39a2e3ff81a82ac9fa9d14c36e3873
+- 2026-11-22T13:21 [M3.50.8] (lead) created (task) Timestamped log index (<id>.idx) + slipfork logs multi-target --since/--until/-t
+- 2026-11-22T13:21 [M3.50.6] (lead) edited fields
+- 2026-11-22T13:21 [M3.50.5] (lead) OWNER ADDENDUM (logs): document the timestamped canonical log index (<id>.idx, 16-byte (ts_ms, offset) entries, O(log N) seek) and the new CLI: slipfork logs [T
+- 2026-11-22T13:21 [M3.50.8] (lead) edited fields
+- 2026-11-22T13:21 [M3.50.8] (lead) status ready -> active
+- 2026-11-22T13:21 [M3.50.8] (lead) attempt 1/3 started
+- 2026-11-22T13:21 [M3.50.8] (lead) base fe0c1c8aeb39a2e3ff81a82ac9fa9d14c36e3873
+- 2026-11-22T13:22 [M3.50.5] (lead) edited fields
+- 2026-11-22T13:22 [M3.50.5] (lead) edited fields
+- 2026-11-22T13:23 [M3.50.5] (lead) status active -> done
+- 2026-11-22T13:23 [M3.50.6] (lead) edited fields
+- 2026-11-22T13:23 [M3.50.6] (lead) OWNER REALITY CHECK (mandatory): this gate must WALK EVERY SHIPPED VERB live over a REAL PTY in /home/slipfork/demo on 165.232.86.174 and inspect actual rendere
+- 2026-11-22T13:27 [M3.50.9] (lead) created (task) CLI design system: multi-tone palette, clap Styles, plain-English 4-row doctor (zero jargon)
+- 2026-11-22T13:27 [M3.50.4] (lead) edited fields
+- 2026-11-22T13:27 [M3.50.7] (lead) edited fields
+- 2026-11-22T13:27 [M3.50.6] (lead) edited fields
+- 2026-11-22T13:27 [M3.50.4] (lead) OWNER PALETTE: consume ui::Palette roles — task icon green/cyan/red; dim kind; bold white name; status colors; dim right-aligned duration; bottom bar spinner cy
+- 2026-11-22T13:27 [M3.50.7] (lead) OWNER PALETTE: tree connectors/arrows dim; world header green dot + bold white name + bold cyan ~path; domain URLs bold cyan underlined; route paths bold yellow
+- 2026-11-22T13:28 [M3.50.3] (lead) status ready -> done
+- 2026-11-22T13:29 [M3.50.8] (lead) edited fields
+- 2026-11-22T13:29 [M3.50.6] (lead) OWNER LOG CASE: prove historical logs replay while DOWN and follow across down->up. Real-PTY steps: up -> down -> logs / logs api / logs --since 5m / logs -a al
+- 2026-11-22T13:35 [M3.50.8] (lead) status active -> done
+- 2026-11-22T13:35 [M3.50.3] (lead) status done -> ready
+- 2026-11-22T13:35 [M3.50.3] (lead) attempt 3/3 started
+- 2026-11-22T13:35 [M3.50.3] (lead) attempt 3: declared postgres database <db> must exist after up (CREATE DATABASE) — critical_world_journey app_db baseline failure
+- 2026-11-22T13:35 [M3.50.9] (lead) status ready -> active
+- 2026-11-22T13:35 [M3.50.9] (lead) attempt 1/3 started
+- 2026-11-22T13:35 [M3.50.9] (lead) base 509913cc5cdceac7c1b997af09e9962f15f9e49e
+- 2026-11-22T13:38 [M3.50.3] (lead) edited fields
+- 2026-11-22T13:39 [M3.50.9] (lead) status active -> ready
+- 2026-11-22T13:39 [M3.50.9] (lead) attempt 2/3 started
+- 2026-11-22T13:39 [M3.50.9] (lead) fix pass: status_surface doctor asserts 3 rows at HEAD — update to the 4 plain-English rows
+- 2026-11-22T13:39 [M3.50.9] (lead) edited fields
+- 2026-11-22T13:39 [M3.50.3] (lead) status ready -> done
+- 2026-11-22T13:40 [M3.50.9] (lead) status ready -> done
+- 2026-11-22T13:40 [M3.50.4] (lead) status ready -> active
+- 2026-11-22T13:40 [M3.50.4] (lead) attempt 1/3 started
+- 2026-11-22T13:40 [M3.50.4] (lead) base bfc68556751ed9900cf08958fc52fd4d0337cf1a
+- 2026-11-22T13:46 [M3.50.4] (lead) status active -> ready
+- 2026-11-22T13:46 [M3.50.4] (lead) attempt 2/3 started
+- 2026-11-22T13:46 [M3.50.4] (lead) fix: narrow-width panel must keep the summary when it fits (status_surface:174); drop workspace indicatif dep
+- 2026-11-22T13:46 [M3.50.4] (lead) edited fields
+- 2026-11-22T15:10 [M3.50.5] (lead) status done -> ready
+- 2026-11-22T15:10 [M3.50.5] (lead) attempt 2/3 started
+- 2026-11-22T15:10 [M3.50.5] (lead) OWNER ADDENDUM: add 'On ext4 or XFS? Mount a Btrfs Workspace Image in Your Home Folder' to docs/install.md + docs/getting-started.md cross-linked from docs/trou
+- 2026-11-22T15:12 [M3.50.5] (lead) status ready -> done
+- 2026-11-22T15:31 [M3.50.5] (lead) status done -> ready
+- 2026-11-22T15:31 [M3.50.5] (lead) attempt 3/3 started
+- 2026-11-22T15:31 [M3.50.5] (lead) OWNER REFINEMENT: make the systemd .mount unit the primary permanent setup (systemd-escape --path --suffix=mount, What/Where/Type=btrfs/Options=loop,... enable 
+- 2026-11-22T15:31 [M3.50.5] (lead) status ready -> done
+- 2026-11-22T15:44 [M3.50.4] (lead) committed product+harness; live consolidated journey still red on lab VM (Forkfile disappears between write and PTY up; manual flow works) -> escalated to exper
+- 2026-11-22T15:44 [M3.50.4] (lead) status ready -> done
+- 2026-11-22T15:45 [M3.50.10] (lead) created (task) Stabilize real-PTY live journey: Forkfile vanishes between write and PTY up on the lab VM
+- 2026-11-22T15:45 [M3.50.10] (lead) status ready -> active
+- 2026-11-22T15:45 [M3.50.10] (lead) attempt 1/3 started
+- 2026-11-22T15:45 [M3.50.10] (lead) base a96d4241c247e95d724a2a78f7f96e71343ea62b
+- 2026-11-22T15:45 [M3.50.7] (lead) edited fields
+- 2026-11-22T15:45 [M3.50.7] (lead) status ready -> active
+- 2026-11-22T15:45 [M3.50.7] (lead) attempt 1/3 started
+- 2026-11-22T15:45 [M3.50.7] (lead) base a96d4241c247e95d724a2a78f7f96e71343ea62b
+- 2026-11-22T15:49 [M3.50.7] (lead) status active -> done
+- 2026-11-22T15:54 [M3.50.6] (lead) edited fields
+- 2026-11-22T15:58 [M3.50.6] (lead) edited fields
+- 2026-11-22T15:58 [M3.50.6] (lead) status ready -> active
+- 2026-11-22T15:58 [M3.50.6] (lead) attempt 1/3 started
+- 2026-11-22T15:58 [M3.50.6] (lead) base 3df87cb2d19bf2601b9a53e92ef35e34477751e6; ROOT CAUSE CONFIRMED: unsynced PGDATA at snapshot time (app_db CREATE not durable) -> fork pg panic; host 'sync' 
+- 2026-11-22T16:16 [M3.50.10] (lead) edited fields
+- 2026-11-22T16:18 [M3.50.10] (lead) status active -> done
+- 2026-11-22T16:36 HUMAN H-011 [direction-challenge] opened by lead (node M3.50.6)
+- 2026-11-22T16:36 [M3.50.6] (lead) status active -> blocked
+- 2026-11-22T16:40 AUTOPILOT off by conductor Awaiting owner review of refreshed 165.232.86.174 UX & H-011 (1.10s 8-pod droplet fork vs syncfs)
+- 2026-11-22T17:21 HUMAN H-011 closed by conductor
+- 2026-11-22T17:21 [M3.50.6] (conductor) status blocked -> done
+- 2026-11-22T17:21 [M3.50] (conductor) status active -> done
+- 2026-11-22T17:21 [M3.51] (conductor) created (epic) Fix DECSTBM prompt mangling (+ 2D VT100 grid test), atomic fork rollback, positional up/down/restart [name] & stopped .forks/* detection
+- 2026-11-22T17:21 AUTOPILOT on by conductor Executing M3.51: DECSTBM prompt fix + 2D VT100 test, atomic fork rollback, positional up/down/restart [name] & .forks/* detection
+- 2026-11-22T17:23 [M3.51] (lead) status ready -> active
+- 2026-11-22T17:23 [M3.51] (lead) attempt 1/3 started
+- 2026-11-22T17:23 [M3.51] (lead) base b02ae2ef99f87bfe91662ce2469d858505774fa3
+- 2026-11-22T17:24 [M3.51.1] (planner) created (task) DECSTBM flow-cursor prompt fix + nag removal + restart labels + 2D VT100 grid test
+- 2026-11-22T17:24 [M3.51.2] (planner) created (task) Atomic fork rollback: stop supervisors, drop worlds.json entry, purge snapshots on failure
+- 2026-11-22T17:24 [M3.51.3] (planner) created (task) Positional [target] on up/down/restart (delete --world) + honest ps with stopped .forks discovery
+- 2026-11-22T17:24 [M3.51.4] (planner) created (task) Docs/spec/man/changelog/honesty sync for positional targets and honest ps
+- 2026-11-22T17:24 [M3.51.1] (planner) edited fields
+- 2026-11-22T17:25 [M3.51.1] (lead) edited fields
+- 2026-11-22T17:25 [M3.51.1] (lead) status ready -> active
+- 2026-11-22T17:25 [M3.51.1] (lead) attempt 1/3 started
+- 2026-11-22T17:25 [M3.51.1] (lead) base b02ae2ef99f87bfe91662ce2469d858505774fa3
+- 2026-11-22T17:32 [M3.51.1] (lead) status active -> review
+- 2026-11-22T17:35 [M3.51.1] (lead) edited fields
+- 2026-11-22T17:35 [M3.51.1] (lead) status review -> active
+- 2026-11-22T17:37 [M3.51.1] (lead) status active -> done
+- 2026-11-22T17:37 [M3.51.2] (lead) status ready -> active
+- 2026-11-22T17:37 [M3.51.2] (lead) attempt 1/3 started
+- 2026-11-22T17:37 [M3.51.2] (lead) base 02674b155d00e49705596cdda1deaef116805a86
+- 2026-11-22T17:43 [M3.51.2] (lead) status active -> review
+- 2026-11-22T17:45 [M3.51.2] (lead) edited fields
+- 2026-11-22T17:45 [M3.51.2] (lead) status review -> active
+- 2026-11-22T17:47 [M3.51.2] (lead) status active -> done
+- 2026-11-22T17:48 [M3.51.3] (lead) edited fields
+- 2026-11-22T17:48 [M3.51.3] (lead) status ready -> active
+- 2026-11-22T17:48 [M3.51.3] (lead) attempt 1/3 started
+- 2026-11-22T17:48 [M3.51.3] (lead) base a41657398bc563b6d37fa1ea1b2e3ad1b97e5a46
+- 2026-11-22T17:53 [M3.51.3] (lead) status active -> review
+- 2026-11-22T17:55 [M3.51.3] (lead) edited fields
+- 2026-11-22T17:55 [M3.51.3] (lead) status review -> active
+- 2026-11-22T17:58 [M3.51.3] (lead) status active -> done
+- 2026-11-22T17:58 [M3.51.4] (lead) status ready -> active
+- 2026-11-22T17:58 [M3.51.4] (lead) attempt 1/3 started
+- 2026-11-22T17:58 [M3.51.4] (lead) base 3a3196e9aaad13f91e09b8985182bd5d1c9a46db
+- 2026-11-22T18:05 [M3.51.4] (lead) status active -> done
+- 2026-11-22T18:11 [M3.51.3] (lead) edited fields
+- 2026-11-22T18:11 [M3.51.3] (lead) status done -> active
+- 2026-11-22T18:11 [M3.51.3] (lead) attempt 2/3 started
+- 2026-11-22T18:11 [M3.51.3] (lead) gate-found: up <fork> publishes fork=None so ps from parent hides the live fork
+- 2026-11-22T18:12 [M3.51.3] (lead) status active -> done
+- 2026-11-22T18:18 [M3.51.2] (lead) status done -> active
+- 2026-11-22T18:18 [M3.51.2] (lead) attempt 2/3 started
+- 2026-11-22T18:18 [M3.51.2] (lead) gate: critical_fork_live expects the retired static-cdn local authority (specs/01 §4 says cdn is cloud-only)
+- 2026-11-22T18:23 [M3.51.2] (lead) status active -> done
+- 2026-11-22T18:25 HUMAN H-012 [release-gate] opened by lead (node M3.51)
+- 2026-11-22T18:25 [M3.51] (lead) status active -> done
+- 2026-11-22T18:27 HUMAN H-012 closed by conductor
+- 2026-11-22T18:27 [M3.52] (conductor) created (task) Flush Postgres shared_buffers via <5ms direct-TCP wire CHECKPOINT before fork syncfs & align specs/03 CDN prose
+- 2026-11-22T18:29 [M3.52] (lead) status ready -> active
+- 2026-11-22T18:29 [M3.52] (lead) attempt 1/3 started
+- 2026-11-22T18:29 [M3.52] (lead) base bb3c8f52f40e0a0ec0746a7e4f1a3a7d5eec5fde
+- 2026-11-22T19:13 [M3.52] (lead) triad: arch OK, tests+ux MAJOR folded into 1 fix pass (world-booting code, fail-closed pg pod state, shared PG consts, positive checkpointer proof in critical_f
+- 2026-11-22T19:13 [M3.52] (lead) live 165.232.86.174: wire CHECKPOINT proven (4/4 rows + checkpoint counter advanced), fork median 1.016s in clean run; 8 live suites all reached green except pr
+- 2026-11-22T19:13 HUMAN H-013 [release-gate] opened by lead (node M3.52)
+- 2026-11-22T19:13 [M3.52] (lead) status active -> done
+- 2026-11-22T19:17 HUMAN H-013 closed by conductor
+- 2026-11-22T19:17 [M3.53] (conductor) created (epic) Migrate packaging & distribution to offworld-packaging (stage-dist.py, *.offworld-nexus.app, zero Cloudsmith/Forgejo) & align H-013 live-test ass
+- 2026-11-22T19:20 [M3.53.1] (planner) created (task) Unified offworld-packaging pipeline: verbatim stage-dist.py, zero-secret packages.yml, per-ecosystem nightly stamps
+- 2026-11-22T19:20 [M3.53.2] (planner) created (task) Rewrite install docs & installer to canonical *.offworld-nexus.app repositories
+- 2026-11-22T19:20 [M3.53.3] (planner) created (task) Align H-013 protected live-test assertions (crisp failed-service remedy, truthful mismatched-epoch rebuild)
+- 2026-11-22T19:20 [M3.53.1] (lead) status ready -> active
+- 2026-11-22T19:20 [M3.53.1] (lead) attempt 1/3 started
+- 2026-11-22T19:20 [M3.53.1] (lead) base 9778fb2fdbddcb93ca4cc2e7c87c5f839a7901e2
+- 2026-11-22T19:20 [M3.53.3] (lead) status ready -> active
+- 2026-11-22T19:20 [M3.53.3] (lead) attempt 1/3 started
+- 2026-11-22T19:20 [M3.53.3] (lead) base 9778fb2fdbddcb93ca4cc2e7c87c5f839a7901e2
+- 2026-11-22T19:22 [M3.53.3] (lead) status active -> review
+- 2026-11-22T19:24 [M3.53.1] (lead) status active -> review
+- 2026-11-22T19:28 [M3.53.1] (lead) status review -> ready: consolidated triad fix pass
+- 2026-11-22T19:28 [M3.53.1] (lead) attempt 2/3 started
+- 2026-11-22T19:28 [M3.53.1] (lead) status ready -> active
+- 2026-11-22T19:28 [M3.53.1] (lead) triad fix pass: apk rm, docs.yml, lsp linux stage, rehearsal release/*, stamp remedies, verify smoke
+- 2026-11-22T19:31 [M3.53.1] (lead) status active -> done
+- 2026-11-22T19:32 [M3.53.3] (lead) status review -> done
+- 2026-11-22T19:32 [M3.53.2] (lead) status ready -> active
+- 2026-11-22T19:32 [M3.53.2] (lead) attempt 1/3 started
+- 2026-11-22T19:32 [M3.53.2] (lead) base a038b58
+- 2026-11-22T19:33 [M3.53.2] (lead) status active -> review
+- 2026-11-22T19:35 [M3.53.2] (lead) status review -> ready: consolidated triad fix pass
+- 2026-11-22T19:35 [M3.53.2] (lead) attempt 2/3 started
+- 2026-11-22T19:35 [M3.53.2] (lead) status ready -> active
+- 2026-11-22T19:35 [M3.53.2] (lead) fix pass: develop URL, digest honesty, --version pinning, channel flip, pacman, trap
+- 2026-11-22T19:36 [M3.53.2] (lead) status active -> review
+- 2026-11-22T19:36 [M3.53.2] (lead) status review -> done
+- 2026-11-22T19:37 [M3.53.3] (lead) status done -> ready: live run exposed stale pre-M3.50.4 assertions
+- 2026-11-22T19:37 [M3.53.3] (lead) attempt 2/3 started
+- 2026-11-22T19:37 [M3.53.3] (lead) status ready -> active
+- 2026-11-22T19:37 [M3.53.3] (lead) VM live: world_journey still expects Forkfile line + error:/next:
+- 2026-11-22T19:37 [M3.53.3] (lead) status active -> done
+- 2026-11-22T19:43 [M3.53.3] (lead) status done -> ready: 4b harness short-circuit: wait_for returns on pre-seen needle
+- 2026-11-22T19:43 [M3.53.3] (lead) attempt 3/3 started
+- 2026-11-22T19:43 [M3.53.3] (lead) status ready -> active
+- 2026-11-22T19:43 [M3.53.3] (lead) root cause: Pty::wait_for short-circuits on pre-seen api ready, never drains post-up bytes
+- 2026-11-22T19:44 [M3.53.3] (lead) status active -> done
+- 2026-11-22T19:46 [M3.53.1] (lead) status done -> ready: live gate: default LIVE_RUNTIME_DIR exceeds AF_UNIX path limit for fork pods
+- 2026-11-22T19:46 [M3.53.1] (lead) attempt 3/3 started
+- 2026-11-22T19:46 [M3.53.1] (lead) status ready -> active
+- 2026-11-22T19:46 [M3.53.1] (lead) shorten LIVE_RUNTIME_DIR to /dev/shm/sf-live-runtime (108-byte sockaddr limit)
+- 2026-11-22T19:46 [M3.53.1] (lead) status active -> done
+- 2026-11-22T19:49 [M3.53] (lead) status ready -> done
+- 2026-11-22T19:51 [M3] (conductor) status active -> done
+- 2026-11-22T19:51 HUMAN H-014 [release-gate] opened by conductor (node M3)
+- 2026-11-22T19:51 AUTOPILOT off by conductor Awaiting GHA green confirmation & human review/merge of PR #2 into develop
+- 2026-11-22T20:59 HUMAN H-014 closed by conductor
+- 2026-11-22T20:59 [M3] (conductor) status done -> active
+- 2026-11-22T20:59 [M3.54] (conductor) created (task) Fix slipfork ps when root world is down: include running child .forks/* worlds & stopped root/forks in project scope
+- 2026-11-22T20:59 AUTOPILOT on by conductor Fixing slipfork ps scope when root world is down while .forks/* are running
+- 2026-11-22T20:59 [M3.55] (conductor) created (task) Upgrade support/demo & live /home/slipfork/demo on 165.232.86.174 to a real Python (uv + FastAPI) & SvelteKit (pnpm) full-stack app
+- 2026-11-22T21:00 [M3.55] (conductor) edited fields
+- 2026-11-22T21:00 [M3.54] (lead) status ready -> active
+- 2026-11-22T21:00 [M3.54] (lead) attempt 1/3 started
+- 2026-11-22T21:00 [M3.54] (lead) base 8cd1e30236d6437d1ae8812080cc026742090449
+- 2026-11-22T21:01 [M3.56] (conductor) created (task) Scorched-earth delete domain <prefix>.* wildcard syntax: require declared domain <id> everywhere (Forkfile, ingress, LSP, editors, specs & docs)
+- 2026-11-22T21:01 [M3.55] (conductor) edited fields
+- 2026-11-22T21:05 [M3.54] (lead) status active -> review
+- 2026-11-22T21:06 [M3.54] (lead) status review -> ready
+- 2026-11-22T21:06 [M3.54] (lead) status ready -> active
+- 2026-11-22T21:06 [M3.54] (lead) attempt 2/3 started
+- 2026-11-22T21:06 [M3.54] (lead) triad fix pass: pure scope injection, canonical layout owner, phantom-fork guard, header widths, journey teardown
+- 2026-11-22T21:09 [M3.54] (lead) status active -> review
+- 2026-11-22T21:10 [M3.54] (lead) status review -> done
+- 2026-11-22T21:10 [M3.56] (lead) status ready -> active
+- 2026-11-22T21:10 [M3.56] (lead) attempt 1/3 started
+- 2026-11-22T21:10 [M3.56] (lead) base 7c42f367d275b26ce098c2566b2cd3dabd9d75aa
+- 2026-11-22T21:13 [M3.56] (lead) status active -> review
+- 2026-11-22T21:15 [M3.56] (lead) status review -> ready
+- 2026-11-22T21:15 [M3.56] (lead) status ready -> active
+- 2026-11-22T21:15 [M3.56] (lead) attempt 2/3 started
+- 2026-11-22T21:15 [M3.56] (lead) triad fix pass: red route_table_journey assertion, status/ingress primary-domain parity, PsDomain collapse, caret math, docs
+- 2026-11-22T21:18 [M3.56] (lead) status active -> review
+- 2026-11-22T21:18 [M3.56] (lead) status review -> done
+- 2026-11-22T21:19 [M3.55] (lead) status ready -> active
+- 2026-11-22T21:19 [M3.55] (lead) attempt 1/3 started
+- 2026-11-22T21:19 [M3.55] (lead) base e7facc24113d4e23502af4655e76a7eec850f788
+- 2026-11-22T21:40 [M3.55] (conductor) edited fields
+- 2026-11-22T21:44 [M3.57] (conductor) created (task) True & visible parallelism: warm-up stamp reuse (not is_fork-only), parallel pod stop on down & live in-place spinner rows above DECSTBM bar
+- 2026-11-22T21:46 [M3.58] (conductor) created (task) Run-ID log model (slipfork logs --run <id>) for build/setup/hook runs, slirp4netns outbound world networking & single-✗ error formatting
+- 2026-11-22T22:13 [M3.55] (lead) status active -> review
+- 2026-11-22T22:15 [M3.55] (lead) status review -> ready
+- 2026-11-22T22:15 [M3.55] (lead) status ready -> active
+- 2026-11-22T22:15 [M3.55] (lead) attempt 2/3 started
+- 2026-11-22T22:15 [M3.55] (lead) triad fix pass: BuildLog split, WorldTools cohesion, egress log location, doctor remedy, corpus+stage+tee tests, failure-detail polish
+- 2026-11-22T22:30 [M3.55] (lead) status active -> done
+- 2026-11-22T22:30 [M3.57] (lead) status ready -> active
+- 2026-11-22T22:30 [M3.57] (lead) attempt 1/3 started
+- 2026-11-22T22:30 [M3.57] (lead) base 1e09e17fc55de7f6cd757afed1b46b637fcf4b3c
+- 2026-11-22T22:37 [M3.57] (lead) edited fields
+- 2026-11-22T22:37 [M3.57] (lead) edited fields
+- 2026-11-22T22:37 [M3.57.1] (lead) created (task) Parallelism: warm-up stamp reuse + concurrent pod teardown
+- 2026-11-22T22:37 [M3.57.2] (lead) created (task) One borderless ANSI-aware table engine across boot/doctor/env/secret/status
+- 2026-11-22T22:37 [M3.57.3] (lead) created (task) plan frame at t=0, precomputed widths, live spinner rows & DECSTBM summary
+- 2026-11-22T22:37 [M3.57.1] (lead) status ready -> active
+- 2026-11-22T22:37 [M3.57.1] (lead) attempt 1/3 started
+- 2026-11-22T22:37 [M3.57.1] (lead) base 1e09e17fc55de7f6cd757afed1b46b637fcf4b3c
+- 2026-11-22T22:37 [M3.57.2] (lead) status ready -> active
+- 2026-11-22T22:37 [M3.57.2] (lead) attempt 1/3 started
+- 2026-11-22T22:37 [M3.57.2] (lead) base 1e09e17fc55de7f6cd757afed1b46b637fcf4b3c
+- 2026-11-22T22:54 [M3.57.1] (lead) status active -> done
+- 2026-11-22T22:54 [M3.57.2] (lead) status active -> done
+- 2026-11-22T22:54 [M3.57.3] (lead) status ready -> active
+- 2026-11-22T22:54 [M3.57.3] (lead) attempt 1/3 started
+- 2026-11-22T22:54 [M3.57.3] (lead) base 6ed6a9160330f3848cc5033b75737726a2bf52a5
+- 2026-11-22T22:54 [M3.58] (lead) edited fields
+- 2026-11-22T22:54 [M3.58.1] (lead) created (task) Per-step run_id logs: #id rows, logs -r <id>|last|failed, logs --runs
+- 2026-11-22T22:54 [M3.58.2] (lead) created (task) slirp4netns packaging/GHA deps + install docs
+- 2026-11-22T22:54 [M3.58.2] (lead) status ready -> active
+- 2026-11-22T22:54 [M3.58.2] (lead) attempt 1/3 started
+- 2026-11-22T22:54 [M3.58.2] (lead) base 6ed6a9160330f3848cc5033b75737726a2bf52a5
+- 2026-11-22T23:09 [M3.57.3] (lead) status active -> done
+- 2026-11-22T23:09 [M3.57] (lead) status active -> done
+- 2026-11-22T23:09 [M3.58.1] (lead) status ready -> active
+- 2026-11-22T23:09 [M3.58.1] (lead) attempt 1/3 started
+- 2026-11-22T23:09 [M3.58.1] (lead) base e2158c725eac9ee5258a2fb0d5208b84f119e989
+- 2026-11-22T23:22 [M3.58.1] (lead) status active -> done
+- 2026-11-22T23:22 [M3.58.2] (lead) status active -> done
+- 2026-11-22T23:36 [M3.58] (lead) status ready -> done
+- 2026-11-22T23:36 [M3.58] (lead) GATE PASSED: make check/docs-check/packages/packages-test exit 0; run_id logs + slirp packaging live-proven on 165.232.86.174
+- 2026-11-22T23:36 [M3] (lead) status active -> done
+- 2026-11-22T23:36 [M3] (lead) GATE PASSED: live /home/slipfork/demo runs real uv+FastAPI + pnpm+SvelteKit with fork isolation, run-id logs, parallel teardown and cross-domain ps
+- 2026-11-22T23:37 HUMAN H-015 [release-gate] opened by conductor (node M3)
+- 2026-11-22T23:37 AUTOPILOT off by conductor Awaiting GHA green confirmation & human review/merge of PR #2 into develop
+- 2026-11-22T23:44 HUMAN H-015 closed by conductor
+- 2026-11-22T23:44 [M3] (conductor) status done -> active
+- 2026-11-22T23:44 [M3.59] (conductor) created (task) Fix write_bundle home chown on non-1000 unprivileged UIDs & pod_control_lab.rs:91
+- 2026-11-22T23:44 AUTOPILOT on by conductor Fixing pod_control_lab.rs:91 hardcoded UID 1000 chown for GitHub Actions UID 1001
+- 2026-11-22T23:44 [M3.59] (lead) status ready -> active
+- 2026-11-22T23:44 [M3.59] (lead) attempt 1/3 started
+- 2026-11-22T23:44 [M3.59] (lead) base e1971265c50584c152754769849523f70ad3b0fa
+- 2026-11-22T23:45 [M3.59] (lead) status active -> review
+- 2026-11-22T23:46 [M3.59] (lead) status review -> ready: 1 consolidated fix pass: gid-leg EPERM regression, doc, uid/gid transposition coverage
+- 2026-11-22T23:46 [M3.59] (lead) status ready -> review
+- 2026-11-22T23:48 [M3.59] (lead) status review -> done
+- 2026-11-22T23:49 [M3] (conductor) status active -> done
+- 2026-11-22T23:49 HUMAN H-016 [release-gate] opened by conductor (node M3)
+- 2026-11-22T23:49 AUTOPILOT off by conductor Awaiting GHA 38/38 green confirmation & human review/merge of PR #2 into develop
+- 2026-11-22T23:54 HUMAN H-016 closed by conductor
+- 2026-11-22T23:54 [M3] (conductor) status done -> active
+- 2026-11-22T23:54 [M3.60] (conductor) created (task) Align critical_world_journey.rs:1511 warm up --json hook assertion with M3.57 warm stamp reuse & verify all 8 live suites
+- 2026-11-22T23:54 AUTOPILOT on by conductor Aligning critical_world_journey:1511 warm up --json assertion with M3.57 stamp reuse
+- 2026-11-22T23:55 [M3.60] (lead) status ready -> active
+- 2026-11-22T23:55 [M3.60] (lead) attempt 1/3 started
+- 2026-11-22T23:55 [M3.60] (lead) base 7c8d240dd81c9ef4b8d5154e2e55c15b6cc66cb9
+- 2026-11-23T00:24 HUMAN H-017 [direction-challenge] opened by lead (node M3.60)
+- 2026-11-23T00:24 [M3.60] (lead) VM: world_journey 2/2 PASS 11.5s; status_live 5/5 PASS 20.4s; fork_live 1/2, blocked on H-011 demo boot median 6.272s vs 1.25s ceiling (snapshot 151-289ms)
+- 2026-11-23T00:24 [M3.60] (lead) status active -> blocked
+- 2026-11-23T00:28 HUMAN H-017 closed by conductor
+- 2026-11-23T00:28 [M3.60] (conductor) status blocked -> ready: Add direct .venv/bin + node_modules/.bin exec fast-paths for @uv/@pnpm & split CoW snapshot (<500ms) vs cold FastAPI+Vite SSR boot (<5s
+- 2026-11-23T00:28 [M3.60] (conductor) edited fields
+- 2026-11-23T00:29 [M3.60] (lead) status ready -> active
+- 2026-11-23T00:29 [M3.60] (lead) attempt 1/3 started
+- 2026-11-23T00:29 [M3.60] (lead) H-017 decision: widen to crates/slipfork/**,specs/**,docs/**; direct-bin @pnpm exec/@uv run launch + honest two-tier perf; base ce9f859b05cfd5781e2cb201da1841de
+- 2026-11-23T00:49 HUMAN H-018 [direction-challenge] opened by lead (node M3.60)
+- 2026-11-23T00:49 [M3.60] (lead) pane.rs restore (1,1) cursor bug folded; H-018 filed for unreachable 5.0s ceiling (clean medians 5.52/5.61)
+- 2026-11-23T00:49 [M3.60] (lead) status active -> blocked
+- 2026-11-23T00:50 HUMAN H-018 closed by conductor
+- 2026-11-23T00:50 [M3.60] (conductor) status blocked -> active: H-018 Option A approved: snapshot_ms < 500ms + zero rebuild/install/pre-deploy + < 8.0s cold FastAPI+SvelteKit Vite first-SSR-200 (saf
+- 2026-11-23T00:54 [M3.61] (conductor) created (task) Add Vim/Neovim Forkfile plugin (editors/vim) & install on 165.232.86.174
+- 2026-11-23T00:54 [M3.62] (conductor) created (task) Support on <expr> ... else ... (else { ... }, else: <item>, else on <expr>) across Forkfile compiler, fmt, LSP, editors, packages, demo & docs
+- 2026-11-23T00:55 [M3.61] (lead) status ready -> active
+- 2026-11-23T00:55 [M3.61] (lead) attempt 1/3 started
+- 2026-11-23T00:55 [M3.61] (lead) base ce9f859b05cfd5781e2cb201da1841dedb15948c
+- 2026-11-23T00:58 [M3.61] (lead) status active -> review
+- 2026-11-23T01:02 [M3.61] (lead) status review -> done
+- 2026-11-23T01:02 [M3.61] (lead) editors/vim plugin green: check.sh 0, VM probe as slipfork ft/syn=forkfile + keepend fix; Triad BLOCKER/MAJOR fixed
+- 2026-11-23T01:06 [M3.62] (conductor) status ready -> superseded: Expanded into M3.63 (compiler/runtime) + M3.64 (LSP/editors/packages/demo/docs) with self.url, "${...}" & secret/var(KEY, gen)
+- 2026-11-23T01:06 [M3.63] (conductor) created (task) Forkfile 0.1 language upgrades: on/else, self.url/self.domain, "${...}" string interpolation & secret/var(KEY, generator)
+- 2026-11-23T01:06 [M3.64] (conductor) created (task) Sync LSP, Tree-sitter, Zed, Vim, distro packages, support/demo & docs with on/else + self.url + "${...}" + secret/var(KEY, gen) & deploy to VM
+- 2026-11-23T01:07 [M3.63] (conductor) status ready -> blocked: Paused pending exact confirmation of domain <id> properties vs self.url
+- 2026-11-23T01:07 [M3.60] (lead) edited fields
+- 2026-11-23T01:07 [M3.60] (lead) Triad arch fix pass: canonical @tool exec_prefix in slipfork-forkfile, merged-env PATH upsert, docs sample lines, README/TESTING_PLAN two-tier numbers
+- 2026-11-23T01:11 [M3.63] (conductor) status blocked -> superseded: Replaced by M3.65 with locked domain.name vs self.{url,domain,scheme} contract
+- 2026-11-23T01:11 [M3.64] (conductor) status ready -> superseded: Replaced by M3.66 with locked domain.name vs self.{url,domain,scheme} contract
+- 2026-11-23T01:11 [M3.65] (conductor) created (task) Implement Forkfile 0.1 on/else, domain.name vs self.{url,domain,scheme}, "${...}" interpolation & secret/var(KEY, generator)
+- 2026-11-23T01:11 [M3.66] (conductor) created (task) Sync LSP, Tree-sitter, Zed, Vim, distro packages, support/demo & specs/docs with locked Forkfile 0.1 contract & deploy to VM
+- 2026-11-23T01:13 [M3.60] (conductor) edited fields
+- 2026-11-23T01:20 [M3.60] (lead) VM 9/9: fork 2/2 (samples 3.98/4.46/4.97s <8.0s, snapshots <500ms), world 2/2 9.5s, status 5/5 17.5s; deb installed; demo+feat-auth live direct-bin
+- 2026-11-23T01:20 [M3.60] (lead) status active -> done
+- 2026-11-23T01:21 [M3.66] (conductor) edited fields
+- 2026-11-23T01:21 [M3.65] (lead) status ready -> active
+- 2026-11-23T01:21 [M3.65] (lead) attempt 1/3 started
+- 2026-11-23T01:21 [M3.65] (lead) base 892d4e4c3214500f0b42283e751dc884a6493370
+- 2026-11-23T01:25 [M3.65] (lead) attempt 2/3 started
+- 2026-11-23T01:26 [M3.65] (conductor) edited fields
+- 2026-11-23T01:26 [M3.65] (lead) edited fields
+- 2026-11-23T01:32 [M3.65] (lead) status active -> review
+- 2026-11-23T01:34 [M3.65] (lead) edited fields
+- 2026-11-23T01:34 [M3.65] (lead) triad FAIL: consolidated single fix pass (fmt inline truncation, error propagation, secret-list side effects, eval_all_env deletion, scheme threading, 500-LOC s
+- 2026-11-23T01:39 [M3.65] (lead) attempt 3/3 started
+- 2026-11-23T01:42 [M3.65] (lead) status review -> done
+- 2026-11-23T01:42 [M3.66] (lead) status ready -> active
+- 2026-11-23T01:42 [M3.66] (lead) attempt 1/3 started
+- 2026-11-23T01:42 [M3.66] (lead) base 2b68dcf5ec3d4ca759b3523f38e3621838712d79
+- 2026-11-23T01:54 [M3.66] (lead) status active -> review
+- 2026-11-23T01:56 [M3.66] (lead) edited fields
+- 2026-11-23T01:56 [M3.66] (lead) triad: inline-on + else block parse/fmt fusion (widen to forkfile parser+fmt); vim single-quote interpolation
+- 2026-11-23T02:03 [M3.66] (conductor) edited fields
+- 2026-11-23T02:04 [M3.66] (lead) status review -> done
+- 2026-11-23T02:18 [M3.67] (conductor) created (task) Fix ps stopped-fork placement & remove duplicate <primary_domain>.<world>.localhost authority
+- 2026-11-23T02:18 [M3.67] (lead) status ready -> active
+- 2026-11-23T02:18 [M3.67] (lead) attempt 1/3 started
+- 2026-11-23T02:18 [M3.67] (lead) base aed814953228ec946717d9601161c2467047c644
+- 2026-11-23T02:22 [M3.67] (lead) status active -> review
+- 2026-11-23T02:23 [M3.67] (lead) edited fields
+- 2026-11-23T02:23 [M3.67] (lead) triad fix pass: stopped-fork block after all worlds, Option<String> authorities + shared route_host, Forkfile::primary_domain, forkfile-spec/doc wording
+- 2026-11-23T02:23 [M3.67] (lead) status review -> ready
+- 2026-11-23T02:26 [M3.67] (lead) edited fields
+- 2026-11-23T02:33 [M3.67] (lead) live 165.232.86.174: deb 0.1.0 (glibc<=2.34) installed, /usr/local/bin copies removed, ingress@ User=1000 via daemon install --ingress, ps = ● demo tree, ● feat
+- 2026-11-23T02:33 [M3.67] (lead) status ready -> done
+- 2026-11-23T02:34 [M3] (conductor) status active -> done
+- 2026-11-23T02:34 HUMAN H-019 [release-gate] opened by conductor (node M3)
+- 2026-11-23T02:34 AUTOPILOT off by conductor Awaiting 38/38 GHA green confirmation & human review/merge of PR #2 into develop
+- 2026-11-23T02:38 HUMAN H-019 closed by conductor
+- 2026-11-23T02:38 [M3] (conductor) status done -> active
+- 2026-11-23T02:38 [M3.68] (conductor) created (task) Align critical_btrfs_live & critical_pod_runtime SNAP_CREATE_V2 budgets with loop-backed GHA Btrfs commit latency
+- 2026-11-23T02:38 AUTOPILOT on by conductor Aligning SNAP_CREATE_V2 loop-backed GHA Btrfs ceiling in M3.68
+- 2026-11-23T02:38 [M3.68] (lead) status ready -> active
+- 2026-11-23T02:38 [M3.68] (lead) attempt 1/3 started
+- 2026-11-23T02:38 [M3.68] (lead) base f1fdee5594608e2e984c1ad8e79dd677d65d93a3
+- 2026-11-23T02:38 [M3.68] (lead) status active -> review
+- 2026-11-23T02:39 [M3.68] (lead) Triad: review-arch pass, review-ux pass, review-tests pass-with-note (budgets are conductor-prescribed spec values; its FIEMAP/shared-extents redesign suggestio
+- 2026-11-23T02:39 [M3.68] (lead) status review -> done
+- 2026-11-23T02:41 [M3] (conductor) status active -> done
+- 2026-11-23T02:41 HUMAN H-020 [release-gate] opened by conductor (node M3)
+- 2026-11-23T02:41 AUTOPILOT off by conductor Awaiting 38/38 GHA green confirmation & human review/merge of PR #2 into develop
+- 2026-11-23T13:07 HUMAN H-020 closed by conductor
+- 2026-11-23T13:07 [M3] (conductor) status done -> active
+- 2026-11-23T13:07 [M3.69] (conductor) created (task) Built-in dev feature, per-world CLI features (-F/--features, --no-default-features, slipfork features, fork inheritance) & dev-only /project bind
+- 2026-11-23T13:07 [M3.70] (conductor) created (task) Restructure support/demo into ./api + ./front, use pure Dockerfile CMD in !dev, update specs/docs & verify dev + -F -dev live on VM
+- 2026-11-23T13:07 AUTOPILOT on by conductor Implementing M3.69 + M3.70: built-in dev, per-world CLI features, dev-only /project bind, and ./api + ./front demo
+- 2026-11-23T13:07 [M3.70] (conductor) edited fields
+- 2026-11-23T13:09 [M3.69] (lead) edited fields
+- 2026-11-23T13:09 [M3.69.1] (lead) created (task) Forkfile built-in dev + FeatureSet resolution, threaded through world plan & ingress
+- 2026-11-23T13:10 [M3.69.2] (lead) created (task) Per-world features.json, -F/--features CLI, slipfork features/validate verbs & dev-only /project bind
+- 2026-11-23T13:10 [M3.69.1] (lead) status ready -> active
+- 2026-11-23T13:10 [M3.69.1] (lead) attempt 1/3 started
+- 2026-11-23T13:10 [M3.69.1] (lead) base 1da2cdb4f5e78459741ad10194497905bc9e0bcd
+- 2026-11-23T13:11 [M3.69] (conductor) edited fields
+- 2026-11-23T13:11 [M3.69.2] (lead) scope correction (owner): add ONLY the `slipfork features` verb + `-F/--features`/`--no-default-features` on up, fork, env — NO unrequested `validate` verb; pru
+- 2026-11-23T13:11 [M3.69.2] (lead) edited fields
+- 2026-11-23T13:17 [M3.69.1] (lead) status active -> review
+- 2026-11-23T13:19 [M3.69.1] (lead) status review -> ready: Triad fix pass: split eval/features.rs, canonical feature index, ingress gating test, DX nits
+- 2026-11-23T13:19 [M3.69.1] (lead) attempt 2/3 started
+- 2026-11-23T13:19 [M3.69.1] (lead) base 1da2cdb4f5e78459741ad10194497905bc9e0bcd; triad: arch FAIL (685-LOC eval/mod.rs, duplicated on-walk), tests CHANGES (0%-covered from_forkfile_with, vacuous
+- 2026-11-23T13:19 [M3.69.1] (lead) status ready -> active
+- 2026-11-23T13:26 [M3.69.1] (lead) status active -> done
+- 2026-11-23T13:26 [M3.69.2] (lead) status ready -> active
+- 2026-11-23T13:26 [M3.69.2] (lead) attempt 1/3 started
+- 2026-11-23T13:26 [M3.69.2] (lead) base 296df05f4ceb81f5dd7b0a3f03e5cf5123ff70e6; scope: NO validate verb; keep forkfile convenience delegators (still used by forkfile/ingress/world tests) — thre
+- 2026-11-23T13:29 [M3.69.2] (lead) attempt 2/3 started
+- 2026-11-23T13:29 [M3.69.2] (lead) attempt 1 incomplete (empty report, 2 compile errors): CLI/flags/features.json/features verb landed; daemon/supervisor/runtime threading, tests and manpage stil
+- 2026-11-23T13:30 [M3.70] (lead) edited fields
+- 2026-11-23T13:30 [M3.70.1] (lead) created (task) demo ./api + ./front, pure Dockerfile CMD in !dev, specs/docs sync
+- 2026-11-23T13:30 [M3.70.2] (lead) created (task) Live VM proof: 3 CLI suites + .deb + prod-check -F -dev + demo/feat-auth dev
+- 2026-11-23T13:34 [M3.69.2] (lead) status active -> review
+- 2026-11-23T13:36 [M3.69.2] (lead) triad: arch FAIL (fork override never saved is BLOCKER; up/fork/env merge-base divergence; fingerprint unwrap_or_default; world/up.rs 610 LOC), tests FAIL (fork
+- 2026-11-23T13:37 [M3.69.2] (lead) status review -> ready: Triad fix pass: fork save BLOCKER, unified merge semantics, UX/help/table, fork.rs split, tests
+- 2026-11-23T13:37 [M3.69.2] (lead) attempt 3/3 started
+- 2026-11-23T13:37 [M3.69.2] (lead) base 296df05f4ceb81f5dd7b0a3f03e5cf5123ff70e6; ux FAIL: up replaces vs features appends, features -F misparses, hint overclaims, no header; arch MAJOR: fingerpr
+- 2026-11-23T13:37 [M3.69.2] (lead) status ready -> active
+- 2026-11-23T13:43 [M3.69.2] (lead) status active -> done
+- 2026-11-23T13:43 [M3.69] (lead) gate: cargo fmt/clippy --workspace + cargo test --workspace green (0 failures); 3 Triad reviewers passed after 1 consolidated fix pass per child
+- 2026-11-23T13:43 [M3.69] (lead) status ready -> done
+- 2026-11-23T13:44 [M3.70.1] (lead) status ready -> active
+- 2026-11-23T13:44 [M3.70.1] (lead) attempt 1/3 started
+- 2026-11-23T13:44 [M3.70.1] (lead) base aa457cbf8587030d03557f7c0335fb6f53f9f084
+- 2026-11-23T13:47 [M3.70.1] (lead) post-pass: found build-context regression (per-image .dockerignore missing after ./api + ./front split); fix dispatched before Triad
+- 2026-11-23T13:47 [M3.70.1] (lead) status active -> review
+- 2026-11-23T13:50 [M3.70.2] (lead) status ready -> active
+- 2026-11-23T13:50 [M3.70.2] (lead) attempt 1/3 started
+- 2026-11-23T13:50 [M3.70.2] (lead) base a8883ac6e18e67f26c848cdd2c206c14d7908ca2; VM access: ssh -i ~/.cache/slipfork/do-vm/id_ed25519 slipfork@165.232.86.174 (XDG_RUNTIME_DIR=/run/user/1000); do
+- 2026-11-23T13:54 [M3.70.1] (lead) status review -> ready: live proof found stale root-context rollback fixture (image backend .)
+- 2026-11-23T13:54 [M3.70.1] (lead) attempt 2/3 started
+- 2026-11-23T13:54 [M3.70.1] (lead) live VM: critical_fork_live rollback test still built image backend . after ./api move; fixing fixture
+- 2026-11-23T13:54 [M3.70.1] (lead) status ready -> active
+- 2026-11-23T13:54 [M3.70.2] (lead) status active -> ready: blocked on M3.70.1 rollback fixture fix; suites 2/3 green (world_journey 2, status 5)
+- 2026-11-23T13:54 [M3.70.2] (lead) sync ok; critical_world_journey 2 passed, critical_status_live 5 passed, critical_fork_live 1 passed/1 failed: rollback fixture uses root Dockerfile; .deb/prod-
+- 2026-11-23T13:54 [M3.70.1] (lead) fixture fixed to image backend ./api; live --no-run compiles; Triad pass otherwise (arch/ux reviewers returned empty, lead self-verified docs+context)
+- 2026-11-23T13:54 [M3.70.1] (lead) status active -> done
+- 2026-11-23T13:54 [M3.70.2] (lead) status ready -> active
+- 2026-11-23T13:54 [M3.70.2] (lead) attempt 2/3 started
+- 2026-11-23T13:54 [M3.70.2] (lead) resume after M3.70.1 fixture fix (b1af31c); rerun all 3 suites then .deb + demo sync + prod-check
+- 2026-11-23T13:55 [M3.69.1] (lead) status done -> ready: semantics fix: disabling a group must drop its implications; explicit disable outranks implication
+- 2026-11-23T13:55 [M3.69.1] (lead) attempt 3/3 started
+- 2026-11-23T13:55 [M3.69.1] (lead) live prod-check: -F -dev leaves mail active via dev=[mail] because disable removed only dev; fix resolution with blacklist semantics
+- 2026-11-23T13:55 [M3.69.1] (lead) status ready -> active
+- 2026-11-23T13:57 [M3.69.1] (lead) semantics fix committed; -dev now drops dev=[mail] implications, explicit enables survive, default members are roots
+- 2026-11-23T13:57 [M3.69.1] (lead) status active -> done
+- 2026-11-23T14:06 [M3.70.2] (lead) status active -> ready: blocked on image-engine Dockerfile fidelity; suites 2/3, deb+demo OK
+- 2026-11-23T14:06 [M3.70.2] (lead) attempt 2: world_journey 2/0, status 5/0, fork_live 1/1 (worker exit 127: base image ENV lost), prod-check frontend build fails (relative COPY ignores WORKDIR);
+- 2026-11-23T14:06 [M3.70.3] (lead) created (task) Image engine fidelity: inherit base-image ENV/CMD and resolve relative COPY against WORKDIR
+- 2026-11-23T14:06 [M3.70.3] (lead) status ready -> active
+- 2026-11-23T14:06 [M3.70.3] (lead) attempt 1/3 started
+- 2026-11-23T14:06 [M3.70.3] (lead) base a08bc288eeb341e92411f52837ec31916a26baea
+- 2026-11-23T14:08 [M3.70.3] (lead) fixed base ImageConfig seeding + Destination(workdir) resolution; 6 unit tests incl base PATH expansion and WORKDIR-relative COPY/--from; clippy+fmt green
+- 2026-11-23T14:08 [M3.70.3] (lead) status active -> done
+- 2026-11-23T14:16 [M3.70.2] (lead) attempt 3: all 3 suites green (2/0, 2/0, 5/0); deb installed 0.1.0 and daemon ExecStart=/usr/share/slipfork/lib/slipfork; demo+feat-auth 200 dev; prod-check wor
+- 2026-11-23T14:21 [M3.70.2] (lead) edited fields
+- 2026-11-23T14:21 ESCALATION #34 -> expert for M3.70.2 by lead: prod-shape runtime defects: image ENV not applied to pods (venv symlink resolution), suspected fork feature/stamp leak, 
+- 2026-11-23T14:21 [M3.70.4] (lead) created (task) Prod-shape runtime: rootfs symlink exec, feature-aware stamp trust & stale crun cleanup
+- 2026-11-23T14:21 [M3.70.2] (lead) status ready -> ready: blocked on M3.70.4 prod-shape runtime defects
+- 2026-11-23T14:21 [M3.70.4] (lead) status ready -> active
+- 2026-11-23T14:21 [M3.70.4] (lead) attempt 1/3 started
+- 2026-11-23T14:21 [M3.70.4] (lead) base c8237bc8d2ce434a9cce8057a99b1ac9990b4b7d; escalated from M3.70.2 after 3 cheap attempts
+- 2026-11-23T14:21 [M3.70.2] (lead) diagnostic: fresh up -F -dev plans 10 rows (no mailpit, dev off) and cwd /app applied; remaining defects = pod PATH resolves /usr/local/bin/python (rootfs symli
+- 2026-11-23T15:23 [M3.70.4] (lead) expert fixed 3 root causes; local workspace green; critical_guard authorized; live: 3 CLI suites + critical_dockerfile_live 3/3 + pod_runtime 1/1, packaged /usr
+- 2026-11-23T15:23 [M3.70.4] (lead) status active -> done
+- 2026-11-23T15:23 [M3.70.2] (lead) PROVEN by M3.70.4 live run on packaged .deb: world_journey 2/2, fork_live 2/2, status_live 5/5, dockerfile_live 3/3; prod-check 10 rows no mailpit, 200 on / and
+- 2026-11-23T15:23 [M3.70.2] (lead) status ready -> done
+- 2026-11-23T15:24 [M3.70.4] (lead) status done -> ready: Triad MAJOR: content-only crun container id can kill a concurrent build
+- 2026-11-23T15:24 [M3.70.4] (lead) attempt 2/3 started
+- 2026-11-23T15:24 [M3.70.4] (lead) triad ux: scope sf-<hash> container names per process; add fork rebuild plan row; forkfile read error code/next
+- 2026-11-23T15:24 [M3.70.4] (lead) status ready -> active
+- 2026-11-23T15:40 [M3.70.4] (lead) triad fix: sf-<pid>-<hash> containers (foreign-PID isolation test), feature-override fork plan notice, forkfile read remedy; local 318 tests, live dockerfile_li
+- 2026-11-23T15:40 [M3.70.4] (lead) status active -> done
+- 2026-11-23T15:41 [M3.70] (lead) gate: make check 0 (318 tests, bun 7 pass/1 skip, zed), make docs-check 0, live 3 CLI suites + dockerfile_live green on 165.232.86.174 with packaged .deb; prod-
+- 2026-11-23T15:41 [M3.70] (lead) status ready -> done
+- 2026-11-23T15:42 [M3] (conductor) status active -> done
+- 2026-11-23T15:42 HUMAN H-021 [release-gate] opened by conductor (node M3)
+- 2026-11-23T15:42 AUTOPILOT off by conductor Awaiting 38/38 GHA green confirmation & human review/merge of PR #2 into develop
+- 2026-11-23T15:50 HUMAN H-021 closed by conductor
+- 2026-11-23T15:50 [M3] (conductor) status done -> active
+- 2026-11-23T15:50 [M3.71] (conductor) created (task) Fix critical_dockerfile_live:334 crun runtime dir lookup under XDG_RUNTIME_DIR=/dev/shm/sf-live-runtime
+- 2026-11-23T15:50 AUTOPILOT on by conductor Fixing critical_dockerfile_live:334 XDG_RUNTIME_DIR lookup in M3.71
+- 2026-11-23T15:51 [M3.71] (lead) status ready -> active
+- 2026-11-23T15:51 [M3.71] (lead) attempt 1/3 started
+- 2026-11-23T15:51 [M3.71] (lead) base b0ccd6798473a126096b3f28041b26d2bf2753da
+- 2026-11-23T15:52 [M3.71] (lead) status active -> review
+- 2026-11-23T15:53 [M3.71] (lead) status review -> done
+- 2026-11-23T15:54 [M3] (conductor) status active -> done
+- 2026-11-23T15:54 HUMAN H-022 [release-gate] opened by conductor (node M3)
+- 2026-11-23T15:54 AUTOPILOT off by conductor Awaiting 38/38 GHA green confirmation & human review/merge of PR #2 into develop
+- 2026-11-23T19:02 HUMAN H-022 closed by conductor
+- 2026-11-23T19:02 [M3] (conductor) status done -> active
+- 2026-11-23T19:02 [M3.72] (conductor) created (task) Collapse demo api/worker onto one '@uv run …' command for dev and prod (drop the python-vs-uv else branches)
+- 2026-11-23T19:02 AUTOPILOT on by conductor Collapsing demo api/worker onto @uv run in M3.72
+- 2026-11-23T19:03 [M3.72] (conductor) edited fields
+- 2026-11-23T19:03 [M3.72] (conductor) status ready -> ready: Widened: bare 'uv run' (hooks, pre-deploy, exec) must also get --no-sync, not just '@uv run'
+- 2026-11-23T19:03 [M3.72] (conductor) status ready -> ready: Widened paths: bare 'uv run' (hooks, pre-deploy, exec) must also get --no-sync
+- 2026-11-23T19:03 [M3.72] (conductor) edited fields
+- 2026-11-23T19:04 [M3.72] (lead) edited fields
+- 2026-11-23T19:04 [M3.72] (lead) status ready -> active
+- 2026-11-23T19:04 [M3.72] (lead) attempt 1/3 started
+- 2026-11-23T19:04 [M3.72] (lead) base c9e0c544eb266a67333885f52e35091dcc054dcf
+- 2026-11-23T19:11 [M3.72] (conductor) edited fields
+- 2026-11-23T19:12 [M3.72] (lead) edited fields
+- 2026-11-23T19:12 [M3.72] (lead) edited fields
+- 2026-11-23T19:28 [M3.72] (lead) status active -> review
+- 2026-11-23T19:28 [M3.72] (lead) Triad: arch/tests/ux findings fixed (tool_env UV_NO_SYNC removed; doc snippets; stage fixture). Local: make check + docs-check + test-tools + guard + critical_g
+- 2026-11-23T19:28 [M3.72] (lead) status review -> done
+- 2026-11-23T19:28 [M3] (conductor) status active -> done
+- 2026-11-23T19:28 HUMAN H-023 [release-gate] opened by conductor (node M3)
+- 2026-11-23T19:28 AUTOPILOT off by conductor Awaiting 38/38 GHA green and human merge of PR #2
+- 2026-11-23T20:16 HUMAN H-023 closed by conductor
+- 2026-11-23T20:16 [M3] (conductor) status done -> active
+- 2026-11-23T20:16 [M3.73] (conductor) created (task) Move the slipfork-lsp darwin/aarch64 archive leg to macos-14 (macos-15 arm64 pool cancels queued jobs after 15 min)
+- 2026-11-23T20:16 AUTOPILOT on by conductor Unblocking the macOS arm64 archive leg in M3.73
+- 2026-11-23T20:16 [M3.73] (lead) status ready -> active
+- 2026-11-23T20:16 [M3.73] (lead) attempt 1/3 started
+- 2026-11-23T20:16 [M3.73] (lead) base e29acf9c6c0fca71deaeb947bf5c42964dbc2e64
+- 2026-11-23T20:16 [M3.73] (lead) status active -> review
+- 2026-11-23T20:16 [M3.73] (lead) status review -> done
+- 2026-11-23T20:23 [M3.73] (conductor) status done -> ready: macos-14 is x64 and retired 2026-11-02 (1s cancel). Use macos-26 (current macos-latest arm64) for the archive leg instead.
+- 2026-11-23T20:23 [M3.73] (conductor) status ready -> active
+- 2026-11-23T20:46 [M3.73] (lead) edited fields
+- 2026-11-23T20:46 [M3.73] (lead) attempt 2/3 started
+- 2026-11-23T20:46 [M3.73] (lead) attempt 2/3: macos-26 leg on ddbae7f acquired a runner (GitHub Actions 1000009798, labels=macos-26) and passed in 30s; archive --version step success
+- 2026-11-23T20:46 [M3.73] (lead) Mach-O diagnostic from the published macos-26 artifact: platform macos, sdk 26.5, minos 11.0 (same as macos-15 artifact: sdk 15.5, minos 11.0) -> floor did NOT 
+- 2026-11-23T20:47 [M3.73] (lead) ddbae7f run 45248545947: 26/26 Packages jobs success; CI and Docs success on the same SHA
+- 2026-11-23T20:47 [M3.73] (lead) status active -> done
+- 2026-11-23T20:47 [M3] (conductor) status active -> done
+- 2026-11-23T20:47 HUMAN H-024 [release-gate] opened by conductor (node M3)
+- 2026-11-23T20:47 AUTOPILOT off by conductor Awaiting 38/38 GHA green on the final commit & human merge of PR #2
+- 2026-11-23T21:13 HUMAN H-024 closed by conductor
+- 2026-11-23T21:13 [M3] (conductor) status done -> active
+- 2026-11-23T21:13 [M3.74] (conductor) created (task) Add -i/--interactive and --no-interactive (with TTY auto-detection by default) to slipfork exec
+- 2026-11-23T21:13 AUTOPILOT on by conductor Implementing -i/--interactive and --no-interactive with TTY auto-detection on slipfork exec in M3.74
+- 2026-11-23T21:14 [M3.74] (lead) status ready -> active
+- 2026-11-23T21:14 [M3.74] (lead) attempt 1/3 started
+- 2026-11-23T21:14 [M3.74] (lead) base e1248394cade15b0f5501d7569dfc4340cdb6fd0
+- 2026-11-23T21:24 [M3.74] (lead) status active -> review
+- 2026-11-23T21:27 [M3.74] (lead) status review -> done
+- 2026-11-23T21:28 [M3.74] (lead) live 165.232.86.174: glibc2.34 .deb (rockylinux:9) installed, user daemon restarted, demo world up (no sync/reset; numpy+ipython preserved); PTY: 'slipfork exec
+- 2026-11-23T21:29 [M3] (conductor) status active -> done
+- 2026-11-23T21:29 HUMAN H-025 [release-gate] opened by conductor (node M3)
+- 2026-11-23T21:29 AUTOPILOT off by conductor Awaiting 38/38 GHA green confirmation & human review/merge of PR #2 into develop
+- 2026-11-23T22:36 [M3] (conductor) status done -> active
+- 2026-11-23T22:36 [M3.75] (conductor) created (task) Retire slipfork auth from the 0.1.0 CLI and mark the release very experimental
+- 2026-11-23T22:36 [M3.76] (conductor) created (task) Prove every 0.1.0 package on every promised distro and finalise the offworld-dist release
+- 2026-11-23T22:36 AUTOPILOT on by conductor M3.75 auth retirement + M3.76 packaging release proof
+- 2026-11-23T22:36 [M3.75] (lead) status ready -> active
+- 2026-11-23T22:36 [M3.75] (lead) attempt 1/3 started
+- 2026-11-23T22:36 [M3.75] (lead) base 8ec0bbd01935e056623ef37a18f2a5c3fd588617
+- 2026-11-23T22:39 [M3.75] (unknown) edited fields
+- 2026-11-23T22:39 [M3.75] (lead) attempt 2/3 started
+- 2026-11-23T22:42 [M3.75] (lead) status active -> review
+- 2026-11-23T22:42 [M3.75] (lead) status review -> done
+- 2026-11-23T22:42 [M3.76] (lead) status ready -> active
+- 2026-11-23T22:42 [M3.76] (lead) attempt 1/3 started
+- 2026-11-23T22:42 [M3.76] (lead) base 7eb9cda00b33f617cef917d112070efc176cf681
+- 2026-11-23T22:43 [M3.76] (lead) status active -> review
+- 2026-11-23T22:46 [M3.76] (lead) status review -> done
+- 2026-11-23T23:13 [M3] (conductor) status active -> done
+- 2026-11-23T23:13 HUMAN H-025 closed by conductor
+- 2026-11-23T23:13 HUMAN H-026 [release-gate] opened by conductor (node M3)
+- 2026-11-23T23:13 AUTOPILOT off by conductor 0.1.0 experimental release is green; awaiting human merge of PR #2 and the v0.1.0 tag

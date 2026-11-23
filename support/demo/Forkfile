@@ -1,0 +1,73 @@
+# forkfile: 0.1
+features {
+  dev = [mail]
+  mail
+}
+
+domain main
+
+postgres pg {
+  database app_db
+}
+
+redis cache
+
+s3 uploads
+
+s3 assets {
+  policy public-read
+}
+
+env common {
+  DATABASE_URL = app_db.url
+  REDIS_URL = cache.url
+  S3_ENDPOINT = uploads.endpoint
+  S3_ACCESS_KEY = uploads.access_key
+  S3_SECRET_KEY = uploads.secret_key
+  UPLOADS_URL = uploads.url
+  ASSETS_BUCKET = "assets"
+  UPLOADS_BUCKET = "uploads"
+  PUBLIC_URL = self.url
+  LOGIN_URL = "${self.url}/login"
+  COOKIE_DOMAIN = main.name
+  SECRET_KEY = secret(SECRET_KEY, random_string(50))
+  THIRD_PARTY_API_URL = var(THIRD_PARTY_API_URL) ?? "https://thirdparty.com"
+  on mail: SMTP_ADDR = "127.0.0.1:1025"
+}
+
+image backend ./api {
+  use env common
+  on dev: stage dev
+  service api {
+    port 8000
+    route /api
+    pre-deploy: uv run --no-sync python -m app.migrate
+    on dev: run: @uv run uvicorn app.main:app --reload --host 0.0.0.0 --port $port
+  }
+  service worker {
+    run: uv run --no-sync python -m app.worker
+  }
+}
+
+image frontend ./front {
+  use env common
+  on dev: stage dev
+  service front {
+    port 3000
+    route /
+    on dev {
+      port 5173
+      run: @pnpm exec vite dev --host 0.0.0.0 --port $port
+    }
+  }
+}
+
+on mail {
+  domain mail
+  image mailpit from axllent/mailpit:latest {
+    service mailpit {
+      port 8025
+      route / domain mail
+    }
+  }
+}

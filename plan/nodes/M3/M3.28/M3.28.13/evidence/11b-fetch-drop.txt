@@ -1,0 +1,32 @@
+$ git remote add slipfork slipfork://feat-ux
+REMOTE_ADD_EXIT=0
+slipfork	slipfork://feat-ux (fetch)
+slipfork	slipfork://feat-ux (push)
+$ git fetch slipfork feat-ux
+From slipfork://feat-ux
+ * branch            feat-ux    -> FETCH_HEAD
+ * [new branch]      feat-ux    -> slipfork/feat-ux
+FETCH_BRANCH_EXIT=0
+$ git fetch slipfork '+refs/slipfork/feat-ux/wip:refs/slipfork/feat-ux/wip'
+FETCH_WIP_EXIT=0
+$ git rev-parse refs/slipfork/feat-ux/wip
+c37f83d0d5adbc8e250f450b977e4b9054dce039
+REV_PARSE_EXIT=0
+$ git log --oneline -1 refs/slipfork/feat-ux/wip
+c37f83d slipfork: fork snapshot
+LOG_EXIT=0
+$ slipfork drop feat-ux
+[drop] fork world and worktree removed
+DROP_EXIT=0
+$ slipfork list
+WORLD            STATE     ORIGIN                                   WORKTREE
+demo             running   http://demo.localhost                    /home/slipfork/demo
+LIST_EXIT=0
+$ git branch --list feat-ux; git worktree list
+BRANCH_LIST_EXIT=0
+/home/slipfork/demo  9a95661 [feat/ux]
+$ ls .worktrees
+WORKTREES_LS_EXIT=0
+EXIT=0
+SCRIPT_EXIT=0
+OUTER_EXIT=0

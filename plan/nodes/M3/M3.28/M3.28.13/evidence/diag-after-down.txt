@@ -1,0 +1,3 @@
+63968 bash -lc pgrep -af "app/server.py" || echo "no api process"; echo "EXIT=$?"
+EXIT=0
+OUTER_EXIT=0

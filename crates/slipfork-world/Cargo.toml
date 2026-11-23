@@ -1,0 +1,51 @@
+[package]
+name = "slipfork-world"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[features]
+# Live Btrfs/crun suite: it needs a real Btrfs scratch root and real namespace-capable host.
+live = []
+
+[dependencies]
+base64.workspace = true
+hmac.workspace = true
+http-body-util.workspace = true
+hyper.workspace = true
+hyper-util.workspace = true
+libc.workspace = true
+md-5.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+slipfork-forkfile = { path = "../slipfork-forkfile" }
+subtle.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+hex.workspace = true
+hmac.workspace = true
+libc.workspace = true
+# Dev-only cycle (`slipfork-image` depends on this crate) so the live gate can pull its own
+# image rootfs instead of demanding operator-exported paths.
+slipfork-forkfile = { path = "../slipfork-forkfile" }
+slipfork-image = { path = "../slipfork-image" }
+serde_json.workspace = true
+sha2.workspace = true
+tempfile.workspace = true
+tokio.workspace = true
+
+[[bin]]
+name = "slipfork-world-init"
+path = "src/bin/world_init/main.rs"
+
+[[test]]
+name = "critical_btrfs_live"
+path = "tests/critical_btrfs_live.rs"
+required-features = ["live"]
+
+[[test]]
+name = "critical_pod_runtime"
+path = "tests/critical_pod_runtime.rs"
+required-features = ["live"]

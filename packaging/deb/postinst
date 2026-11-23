@@ -1,0 +1,11 @@
+#!/bin/sh
+set -e
+# The package never enables anything: the per-user daemon is `slipfork daemon
+# install`, and the :80 socket is `sudo slipfork daemon install --ingress`.
+if command -v apparmor_parser >/dev/null 2>&1 && [ -f /etc/apparmor.d/slipfork ]; then
+    apparmor_parser -r -W /etc/apparmor.d/slipfork >/dev/null 2>&1 || true
+fi
+if command -v systemctl >/dev/null 2>&1; then
+    systemctl --system daemon-reload >/dev/null 2>&1 || true
+fi
+exit 0

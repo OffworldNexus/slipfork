@@ -1,0 +1,9 @@
+state     running
+lineage   rootfs 71e00bc47fe4 cached · postgres:18 cached · seed - - · base 4570132bffb8 reused
+KIND             ID                STATE    PID    PORT  UPTIME
+component        api               exited   -      -     -
+backing_service  pg_clusters.psql  running  64754  5432  3s
+  64541   64474 S    python3 /app/server.py
+  64754   62455 S    nsenter --target=64474 --user --preserve-credentials --mount --net --ipc --pid --wdns=/ -- /.slipfork/bin/crun --cgroup-manager=disabled --root /.slipfork/run run -b /.slipfork/oci/sf8-pg_clusters_psql sf8-pg_clusters_psql
+EXIT=0
+OUTER_EXIT=0

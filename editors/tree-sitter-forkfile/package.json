@@ -1,0 +1,16 @@
+{
+  "name": "tree-sitter-forkfile",
+  "version": "0.1.0",
+  "description": "Tree-sitter grammar for the Slipfork Forkfile language",
+  "license": "MIT",
+  "keywords": ["tree-sitter", "forkfile", "slipfork"],
+  "tree-sitter": [
+    {
+      "scope": "source.forkfile",
+      "file-types": ["Forkfile", "forkfile"],
+      "highlights": "queries/highlights.scm",
+      "locals": "queries/locals.scm",
+      "injection-regex": "^(Forkfile|forkfile)$"
+    }
+  ]
+}

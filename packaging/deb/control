@@ -1,0 +1,12 @@
+Package: slipfork
+Version: @VERSION@
+Section: devel
+Priority: optional
+Architecture: @ARCH@
+Depends: @DEPENDS@
+Maintainer: Offworld Nexus <hello@offworld.nexus>
+Homepage: https://github.com/OffworldNexus/slipfork
+Description: Copy-on-write Btrfs development environments, Docker-free
+ Slipfork builds and runs a project's images, databases, caches, and workers
+ from one Forkfile on native Btrfs subvolumes and crun, behind one .localhost
+ domain. Forks clone code, dependencies, and live data in milliseconds.

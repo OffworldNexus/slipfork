@@ -1,0 +1,448 @@
+==================
+Full document
+==================
+
+# forkfile: 0.1
+
+features {
+  default = [dev, mail]
+  staging
+}
+
+domain main
+
+postgres db {
+  version 18
+  database analytics
+}
+
+redis cache
+
+s3 assets {
+  policy public-read
+  cdn static-cdn
+}
+
+env shared {
+  DATABASE_URL = "postgres://localhost"
+  TOKEN = secret(DB_TOKEN, random_hex(32))
+}
+
+image backend . {
+  dockerfile Dockerfile
+  workdir app
+  arg BUILD_MODE = dev ?? "release"
+  arg VERSION = "1.0"
+  use env shared
+  before-start when changed(package.json): @pnpm install
+  service web {
+    port 8080
+    internal_ports [8081, 8082]
+    route /api strip-prefix domain main
+    run: @pnpm dev --port $port
+    pre-deploy: echo $env.DATABASE_URL
+  }
+}
+
+on staging {
+  image tools from alpine:3.20 {
+    service shell {
+      port 9000
+      route exact /healthz
+    }
+  }
+}
+---
+
+(source_file
+  (header)
+  (features
+    (feature_group
+      (identifier)
+      (identifier))
+    (feature_group
+      (identifier)))
+  (domain_declaration
+    (identifier))
+  (postgres
+    (identifier)
+    (version_declaration
+      (integer))
+    (database_declaration
+      (identifier)))
+  (redis
+    (identifier))
+  (s3
+    (identifier)
+    (policy_declaration)
+    (cdn_declaration
+      (identifier)))
+  (env
+    (identifier)
+    (env_entry
+      (identifier)
+      (string
+        (string_text)))
+    (env_entry
+      (identifier)
+      (call
+        (identifier)
+        (call
+          (integer)))))
+  (image
+    (identifier)
+    (image_source
+      (directory))
+    (dockerfile
+      (path))
+    (workdir
+      (path))
+    (arg_item
+      (identifier)
+      (fallback_expression
+        (identifier)
+        (string
+          (string_text))))
+    (arg_item
+      (identifier)
+      (string
+        (string_text)))
+    (use_env
+      (identifier))
+    (hook
+      (change_guard
+        (path))
+      (command
+        (tool)
+        (command_text)))
+    (service
+      (identifier)
+      (port
+        (integer))
+      (internal_ports
+        (integer)
+        (integer))
+      (route
+        (route_path)
+        (route_modifier)
+        (route_modifier
+          (domain_clause
+            (domain_filter
+              (identifier)))))
+      (hook
+        (command
+          (tool)
+          (command_text)))
+      (hook
+        (command
+          (command_text)))))
+  (on_statement
+    (identifier)
+    (image
+      (identifier)
+      (image_source
+        (image_from
+          (image_reference)))
+      (service
+        (identifier)
+        (port
+          (integer))
+        (route
+          (route_modifier
+            (route_path)))))))
+
+==================
+Routed properties and inline conditions
+==================
+
+# forkfile: 0.1
+
+image app . {
+  env {
+    PUBLIC_DOMAIN = main.name
+    CDN_URL = static-cdn.url
+    REDIS_URL = cache.url
+  }
+  service api {
+    port 3000
+    route / rewrite /v1 domain main
+    on dev: run: @uv run fastapi dev
+  }
+}
+---
+
+(source_file
+  (header)
+  (image
+    (identifier)
+    (image_source
+      (directory))
+    (env_block
+      (env_entry
+        (identifier)
+        (property
+          (identifier)
+          (identifier)))
+      (env_entry
+        (identifier)
+        (property
+          (identifier)
+          (identifier)))
+      (env_entry
+        (identifier)
+        (property
+          (identifier)
+          (identifier))))
+    (service
+      (identifier)
+      (port
+        (integer))
+      (route
+        (route_path)
+        (route_modifier
+          (route_path))
+        (route_modifier
+          (domain_clause
+            (domain_filter
+              (identifier)))))
+      (on_service_item
+        (identifier)
+        (hook
+          (command
+            (tool)
+            (command_text)))))))
+
+==================
+S3 bucket policies
+==================
+
+# forkfile: 0.1
+
+s3 b { policy private }
+
+s3 assets {
+  on dev {
+    policy public-read
+  }
+}
+---
+
+(source_file
+  (header)
+  (s3
+    (identifier)
+    (policy_declaration))
+  (s3
+    (identifier)
+    (on_s3_item
+      (identifier)
+      (policy_declaration))))
+
+==================
+Nested on guards inside a command block
+==================
+
+# forkfile: 0.1
+
+image backend . {
+  service web {
+    run {
+      echo one
+      on dev {
+        echo dev only
+      } else: echo prod only
+    }
+  }
+}
+---
+
+(source_file
+  (header)
+  (image
+    (identifier)
+    (image_source
+      (directory))
+    (service
+      (identifier)
+      (hook
+        (command_block
+          (command
+            (command_text))
+          (on_command_item
+            (identifier)
+            (command_block
+              (command
+                (command_text)))
+            (command
+              (command_text))))))))
+
+==================
+Change-guarded hook with a command block
+==================
+
+# forkfile: 0.1
+
+features {
+  dev
+}
+
+image backend . {
+  service web {
+    before-start when changed(package.json, pnpm-lock.yaml) {
+      @pnpm install
+      on dev: @pnpm install --frozen-lockfile
+    }
+  }
+}
+---
+
+(source_file
+  (header)
+  (features
+    (feature_group
+      (identifier)))
+  (image
+    (identifier)
+    (image_source
+      (directory))
+    (service
+      (identifier)
+      (hook
+        (change_guard
+          (path)
+          (path))
+        (command_block
+          (command
+            (tool)
+            (command_text))
+          (on_command_item
+            (identifier)
+            (command
+              (tool)
+              (command_text))))))))
+
+==================
+Else branches, interpolation, and generator arguments
+==================
+
+# forkfile: 0.1
+
+features {
+  dev
+}
+
+image backend . {
+  env {
+    LOGIN_URL = "${self.scheme}://${main.name}/login"
+    SECRET_KEY = secret(SECRET_KEY, random_string(50))
+    TOKEN = var(TOKEN, random_uuid())
+  }
+  service web {
+    port 8000
+    on dev {
+      run: @uv run app --reload
+    } else {
+      run: @uv run app
+    }
+    run {
+      on dev: echo dev
+      else on mail: echo mail
+      else: echo prod
+    }
+  }
+}
+---
+
+(source_file
+  (header)
+  (features
+    (feature_group
+      (identifier)))
+  (image
+    (identifier)
+    (image_source
+      (directory))
+    (env_block
+      (env_entry
+        (identifier)
+        (string
+          (interpolation
+            (property
+              (identifier)
+              (identifier)))
+          (string_text)
+          (interpolation
+            (property
+              (identifier)
+              (identifier)))
+          (string_text)))
+      (env_entry
+        (identifier)
+        (call
+          (identifier)
+          (call
+            (integer))))
+      (env_entry
+        (identifier)
+        (call
+          (identifier)
+          (call))))
+    (service
+      (identifier)
+      (port
+        (integer))
+      (on_service_item
+        (identifier)
+        (hook
+          (command
+            (tool)
+            (command_text)))
+        (hook
+          (command
+            (tool)
+            (command_text))))
+      (hook
+        (command_block
+          (on_command_item
+            (identifier)
+            (command
+              (command_text))
+            (on_command_item
+              (identifier)
+              (command
+                (command_text))
+              (command
+                (command_text)))))))))
+
+==================
+Inline on item promoted by a next-line else
+==================
+
+# forkfile: 0.1
+
+image app . {
+  service web {
+    on dev: run: /bin/echo dev
+    else {
+      run: /bin/echo prod
+    }
+  }
+}
+---
+
+(source_file
+  (header)
+  (image
+    (identifier)
+    (image_source
+      (directory))
+    (service
+      (identifier)
+      (on_service_item
+        (identifier)
+        (hook
+          (command
+            (command_text)))
+        (hook
+          (command
+            (command_text)))))))

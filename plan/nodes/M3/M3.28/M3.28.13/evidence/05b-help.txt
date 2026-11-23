@@ -1,0 +1,49 @@
+Instant CoW dev worlds & parallel test DAG orchestrator
+
+Usage: slipfork [OPTIONS] [COMMAND]
+
+Commands:
+  status   Show the daemon ingress plus every world's tree, lineage, and next steps
+  doctor   Probe the Btrfs substrate, the live subvolume ioctl round-trip, and unprivileged namespaces
+  snow     Validate and resolve `snow.yml` modes & `!!` auto-generated secrets
+  up       Boot the world selected by `--world` (or `cwd`) through `slipforkd`
+  down     Stop a world's services while keeping its worktree (idempotent)
+  restart  Re-run a held world in place: stop its components + services, then run the same boot pipeline as `up` (`0.1.0` has no `--watch`; re-run this command after an edit)
+  ps       Show one world's state, lineage, and every supervised component / `crun` service row
+  open     Open the selected world's origin in the desktop browser, or print the SSH recipe
+  fork     Create `.worktrees/<fork>` plus its CoW world through `slipforkd`
+  drop     Destroy a fork world and remove its `.worktrees/<fork>` checkout
+  list     List worlds with state, worktree path, and exactly one origin URL
+  prune    Preview (default) or reap worlds whose checkout directory is gone
+  secret   Manage the project's local `0600` vault secrets through `slipforkd`
+  daemon   Daemon administration
+  exec     Run a command non-interactively inside a world (daemon-resolved environment)
+  shell    Enter a world interactively with native terminal stdio (requires a TTY)
+  logs     Read or follow retained component and hook logs from `slipforkd`
+  hook     Hook administration
+  db       Open `psql` inside the world's running PostgreSQL service container (requires a TTY)
+  redis    Open `redis-cli` inside the world's running Redis service container (requires a TTY)
+  forward  Bind daemon-owned `127.0.0.1:0` listeners bridged into a world (held until Ctrl-C)
+  auth     Pair this machine with the daemon's OSPP endpoint
+  support  Report verified integration tiers and their required evidence (`ADR-0007`)
+  help     Print this message or the help of the given subcommand(s)
+
+Options:
+      --json
+          Emit machine-readable JSON on stdout
+
+  -v, --verbose
+          Add per-node lineage and `[resources]` detail to human output (ignored under `--json`)
+
+      --state-dir <STATE_DIR>
+          Explicit CoW state directory (defaults to `$XDG_CACHE_HOME/slipfork` or `~/.cache/slipfork`).
+          
+          The client's control socket is always `<state_dir>/run/daemon.sock`; there is no `--runtime-dir` override outside `slipforkd` itself (`ADR-0011` §2).
+
+  -h, --help
+          Print help (see a summary with '-h')
+
+  -V, --version
+          Print version
+EXIT=0
+OUTER_EXIT=0

@@ -1,0 +1,23 @@
+{
+  "grammars": [
+    {
+      "name": "forkfile",
+      "camelcase": "Forkfile",
+      "scope": "source.forkfile",
+      "path": ".",
+      "file-types": ["Forkfile", "forkfile"],
+      "highlights": "queries/highlights.scm",
+      "locals": "queries/locals.scm"
+    }
+  ],
+  "metadata": {
+    "version": "0.1.0",
+    "license": "MIT",
+    "description": "Tree-sitter grammar for the Slipfork Forkfile language",
+    "authors": [
+      {
+        "name": "Slipfork contributors"
+      }
+    ]
+  }
+}

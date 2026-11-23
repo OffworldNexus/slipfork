@@ -1,0 +1,7 @@
+error: unrecognized subcommand 'dag'
+
+Usage: slipfork [OPTIONS] [COMMAND]
+
+For more information, try '--help'.
+EXIT=2
+OUTER_EXIT=0

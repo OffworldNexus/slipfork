@@ -1,25 +1,26 @@
 ---
-name: DX-First (Dream Tool Documentation Before Code)
-description: MANDATORY for every planner, doc-writer, designer, architect, reviewer, critic, lead, and strategist in Slipfork. Everything stems from Developer Experience: write and critique the lean user-facing dream-tool documentation BEFORE internal design or code.
+name: DX-First (High-Craft CLI & Visual User Documentation)
+description: MANDATORY for planner, writer, implementer, architect, review-ux, lead, and strategist. Everything stems from Developer Experience: problem-first specs/ and visual docs, rich ANSI/spinner CLI ergonomics, and zero published vaporware.
 ---
 
-# DX-First: Write the Dream Tool First, Then Build It
+# DX-First: High-Craft CLI & Visual Documentation
 
-Slipfork exists to make spinning up dev environments, forking agent worktrees, and running heavy polyglot test suites feel **instantaneous and invisible**. If adopting Slipfork requires rewriting tests, fixing root-owned files, juggling `.env` files, or teaching an LLM custom shell syntax, we failed.
+Slipfork exists to make spinning up polyglot dev environments, forking agent worktrees, and running isolated stacks feel **instantaneous and invisible**. Every extra CLI flag, sheared table column, silent 10-second freeze, manual `.env` dance, or wall of lawyer prose is a defect.
 
-## 1. Docs Before Design, Design Before Code
+## 1. Specs Before Code — Zero Published Vaporware
 
-Before writing internal Rust/TypeScript code for any feature, hypervisor backend, or language test adapter:
+1. **Draft Target UX in `specs/` First:**
+   - `specs/01-forkfile.md`, `specs/02-cli-ux.md`, and `specs/03-under-the-hood.md` are the contract. Never publish CLI commands, flags, or integrations in `README.md` or `docs/` that do not exist and run in the compiled `slipfork` binary (`uv run --no-project tools/check_docs_honesty.py` enforces this mechanically once `docs/` exists).
+   - Promote target UX into published `README.md` / `docs/` **only** alongside the real working implementation.
+2. **Problem-First Framing & Visual Hierarchy (`writer` + `review-ux`):**
+   - Open user pages with clear user value (*"Slipfork runs your cloud environment locally in a box; CI is the clutch"*) and a working copy-pasteable `Forkfile` + CLI snippet in the first 25 lines — never lead with `$XDG_DATA_HOME`, `0600` file modes, Btrfs ioctls, or `"Mental model"` headers.
+   - Include Mermaid workflow/`sequenceDiagram` diagrams, Zensical `!!! info` / `!!! warning` admonitions, narrow scannable tables, and `<= 2`-sentence paragraphs (`<= 280` chars).
+   - Ban internal `ADR-*` / `M3.*` plan citations, bit-width lawyer tables, legacy dual syntaxes, and client names.
+   - Packaging docs must show the same copy-pasteable verify command for `.deb`, `.rpm`, pacman, and APK installs, with systemd unit enablement.
 
-1. **Write the lean user-facing documentation FIRST (`docs/`):**
-   - **Local developer machine (`slipfork up`):** One `snow.yml` manifest -> instant shared-UID environment where Postgres, Redis, S3, and app components run with the developer's exact `$UID:$GID` on the shared source tree. Zero `root:root` files, zero `.env` drift, and auto-generated local secrets (`!! random_string(50)`).
-   - **Parallel tests (`slipfork test`):** One command builds frontend/static artifacts once (cached orthogonally by Merkle hash), materializes the fixture snapshot DAG (`migrate -> seed_*`), and runs every heavy browser/BDD/transactional test in its own millisecond CoW clone on canonical ports.
-   - **AI coding agents (`@slipfork/opencode`):** Creating a worktree (`worktree.create`) implicitly forks the running dev world in milliseconds, and standard `shell` commands route automatically to the right CoW world based on `cwd` — **zero custom tool names or flags for the LLM to remember**.
-2. **Critique with fresh eyes** (`critic` with `dx` and `ai-ergonomics` lenses). Every extra CLI flag, second config file, manual `chmod`, or wall of kernel prose is a defect.
-3. **Only after DX acceptance**, write the upward IoC/DI technical design (`docs/design/<slug>.md`) and implement the code so documented snippets work verbatim.
+## 2. High-Craft Terminal & CLI UX (`implementer` + `review-ux`)
 
-## 2. Ruthless Documentation Leanness
-
-- **Lead with the 10-line working example.** Put Incus REST internals, `FICLONE` ioctls, CRIU mechanics, and Linux namespace flags in `ARCHITECTURE.md` — never at the top of user guides.
-- **One canonical way per task.** Never document two syntaxes or a "legacy mode".
-- **Scannable structure:** Short sentences, active voice, crisp comparison tables, ≤ 160 lines per user page, verified with `uvx --offline zensical build --strict`.
+- **Dynamic Column Widths:** Measure visible widths after stripping ANSI escapes (`.max()`) — never shear world/worktree IDs with fixed `{:<16}`/`{:<24}`.
+- **Semantic ANSI Hierarchy & Purity:** Bold/cyan primary URLs, green `running`, red `failed`, dimmed 12-char digests; emit **zero** `\x1b[` escapes under `NO_COLOR`, non-TTY, or `--json`.
+- **Live Progress on `> 200ms` Operations:** Use `spawn()` with `[step/total]` phase headers, spinners, and elapsed time — never freeze the terminal in silent `sleep` poll loops, `pull -q`, or blocking `.output()`.
+- **Sharp Defaults & Remedies:** Format errors as `1 line + next:` remedy, put `doctor`'s `✓ Ready` / `✗ N issue(s)` verdict first, omit `:80` on port-80 URLs, warn on stderr when running ephemerally (user unit `slipfork daemon install`; `sudo slipfork daemon install --ingress` for the system `:80` socket + AppArmor), and gate `[resources]` plumbing behind `-v`.

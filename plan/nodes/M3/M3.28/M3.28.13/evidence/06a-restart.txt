@@ -1,0 +1,11 @@
+7:  GET /    -> hello + host + world + debug + secret_len (never the secret itself)
+76:                    "hello": "world-M3.28.13",
+[ready]     api (internal :8000 in world netns)
+[restarted] api, pg_clusters.psql
+world     demo (running, changed)
+app       http://demo.localhost
+worktree  /home/slipfork/demo
+next      slipfork open | slipfork db | slipfork logs | slipfork restart | slipfork down
+lineage   rootfs 01a4b324b7cb rebuilt 7.4s · postgres:18 cached · seed - - · base 4570132bffb8 reused
+EXIT=0
+OUTER_EXIT=0

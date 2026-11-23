@@ -1,0 +1,97 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH slipfork 1  "slipfork 0.1.0" 
+.SH NAME
+slipfork \- Copy\-on\-write Btrfs environments for polyglot apps and AI coding agents.
+.SH SYNOPSIS
+\fBslipfork\fR [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-\-json\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] [\fIsubcommands\fR]
+.SH DESCRIPTION
+Copy\-on\-write Btrfs environments for polyglot apps and AI coding agents.
+.SH OPTIONS
+.TP
+\fB\-v\fR, \fB\-\-verbose\fR
+Add supervisor lineage and resource detail to status rows
+.TP
+\fB\-\-json\fR
+Emit machine\-readable JSON with zero ANSI
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help
+.TP
+\fB\-V\fR, \fB\-\-version\fR
+Print version
+.SH SUBCOMMANDS
+.TP
+\fBslipfork status\fR
+Show every running world as one tree; bare slipfork is this verb
+.TP
+\fBslipfork ps\fR
+Show only the world or fork rooted in this directory
+.TP
+\fBslipfork doctor\fR
+Check Btrfs, namespaces, and the crun + :80 runtime
+.TP
+\fBslipfork up\fR
+Boot from ./Forkfile, or the world/fork named by TARGET
+.TP
+\fBslipfork down\fR
+Stop this directory\*(Aqs world, or the named world/fork, and every pod in it
+.TP
+\fBslipfork restart\fR
+Restart a service, world, or fork; \-s always means a service
+.TP
+\fBslipfork fork\fR
+Snapshot the project and world data, then boot the fork on its own URL
+.TP
+\fBslipfork drop\fR
+Stop a fork and delete its project and world\-data snapshots
+.TP
+\fBslipfork logs\fR
+Stream merged stdout and stderr with a colored gutter per service
+.TP
+\fBslipfork shell\fR
+Attach a real PTY: bash/sh, psql, or redis\-cli for one declared target
+.TP
+\fBslipfork exec\fR
+Run a command inside a pod and forward its exit code
+.TP
+\fBslipfork env\fR
+Print resolved runtime variables; secrets stay redacted by default
+.TP
+\fBslipfork features\fR
+Show this world\*(Aqs features, or persist +mail/\-dev/reset edits
+.TP
+\fBslipfork secret\fR
+List, override, or remove local offline secrets for this world
+.TP
+\fBslipfork open\fR
+Open the world or service URL in your browser, printing it when headless
+.TP
+\fBslipfork fmt\fR
+Format a Forkfile in place, or report with \-\-check
+.TP
+\fBslipfork migrate\fR
+Convert a legacy snow.yml manifest into a Forkfile
+.TP
+\fBslipfork completions\fR
+Print a completion script for bash, zsh, or fish
+.TP
+\fBslipfork daemon\fR
+Install the per\-user unit (and with sudo the system :80 socket)
+.TP
+\fBslipfork help\fR
+Print this overview, or one verb\*(Aqs help
+.TP
+\fBslipfork version\fR
+Print the version
+.SH EXTRA
+Examples:
+  slipfork
+  slipfork up
+  slipfork up feat\-auth
+  slipfork restart \-s worker
+  slipfork logs \-f api
+  slipfork exec api \-\- pytest \-q
+  slipfork daemon install
+.SH VERSION
+v0.1.0

@@ -1,0 +1,13 @@
+[package]
+name = "slipfork-ingress"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+httparse.workspace = true
+libc.workspace = true
+serde_json.workspace = true
+slipfork-forkfile = { path = "../slipfork-forkfile" }
+slipfork-world = { path = "../slipfork-world" }
+thiserror.workspace = true

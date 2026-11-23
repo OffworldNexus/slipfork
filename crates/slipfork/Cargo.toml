@@ -1,0 +1,58 @@
+[package]
+name = "slipfork"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Copy-on-write Btrfs environments for polyglot apps and AI coding agents"
+
+[[bin]]
+name = "slipfork"
+path = "src/main.rs"
+
+[features]
+# Live Btrfs/crun/registry journey: fails closed on hosts without the full lab.
+live = []
+
+[[test]]
+name = "critical_world_journey"
+path = "tests/critical_world_journey.rs"
+required-features = ["live"]
+
+[[test]]
+name = "critical_status_live"
+path = "tests/critical_status_live.rs"
+required-features = ["live"]
+
+[[test]]
+name = "critical_fork_live"
+path = "tests/critical_fork_live.rs"
+required-features = ["live"]
+
+[dependencies]
+base64.workspace = true
+clap.workspace = true
+getrandom.workspace = true
+hex.workspace = true
+clap_complete.workspace = true
+clap_mangen.workspace = true
+console.workspace = true
+crossterm.workspace = true
+libc.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+slipfork-forkfile = { path = "../slipfork-forkfile" }
+slipfork-image = { path = "../slipfork-image" }
+slipfork-ingress = { path = "../slipfork-ingress" }
+slipfork-ospp = { path = "../slipfork-ospp" }
+slipfork-vcs = { path = "../slipfork-vcs" }
+slipfork-world = { path = "../slipfork-world" }
+tokio.workspace = true
+
+[dev-dependencies]
+hmac.workspace = true
+hpke.workspace = true
+libc.workspace = true
+p256.workspace = true
+sha2.workspace = true
+tempfile.workspace = true
+tungstenite.workspace = true

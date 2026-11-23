@@ -1,0 +1,790 @@
+uv run --no-project tools/plan.py validate
+plan OK
+uv run --no-project tools/guard.py
+guard: OK (657 file(s) checked)
+uv run --no-project tools/check_stub_adapters.py --check all
+check_stub_adapters: OK (92 production file(s), 6 composition root(s))
+uvx --offline ruff check tools poc
+All checks passed!
+uvx --offline ruff format --check tools poc
+15 files already formatted
+uv run --no-project --with pytest pytest -q tools/tests
+........................................................................ [ 48%]
+........................................................................ [ 96%]
+......                                                                   [100%]
+150 passed in 13.52s
+uv run --no-project tools/check_support.py --check
+check_support: OK (10 integration(s); all evidence pointers verified and docs/support-matrix.md in sync)
+bun test packages/opencode-slipfork/tests
+bun test v1.4.4 (38afee6c8)
+
+packages/opencode-slipfork/tests/e2e.critical.test.ts:
+non-Btrfs state dir: the full opencode-slipfork world flow runs on the Btrfs VM
+
+ 16 pass
+ 0 fail
+ 99 expect() calls
+Ran 16 tests across 3 files. [666.00ms]
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets -- -D warnings
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.14s
+RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.11s
+   Generated /home/remy/offworld-nexus/slipfork/target/doc/slipfork/index.html and 12 other files
+cargo test --workspace --lib --bins
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.09s
+     Running unittests src/lib.rs (target/debug/build/slipfork/3ca86d053618d265/out/slipfork-3ca86d053618d265)
+
+running 105 tests
+test apparmor::tests::no_file_or_mount_rules_are_rendered ... ok
+test apparmor::tests::every_bin_dir_is_one_flat_alternative_in_the_single_brace_expression ... ok
+test apparmor::tests::the_profile_is_exactly_four_lines_with_the_userns_rule ... ok
+test apparmor::tests::every_rendered_attachment_has_no_double_slash ... ok
+test apparmor::tests::one_brace_expression_names_every_clone_newuser_executable ... ok
+test apparmor::tests::the_root_bin_dir_renders_a_bare_bin_clause_without_a_double_slash ... ok
+test apparmor::tests::unsafe_bin_dirs_fail_closed_before_any_profile_is_rendered ... ok
+test browser::tests::an_explicit_browser_program_is_a_launch_capability_even_without_a_display ... ok
+test browser::tests::a_desktop_session_without_browser_uses_xdg_open ... ok
+test browser::tests::a_headless_host_refuses_to_launch_and_names_the_remote_recipe ... ok
+test cli::tests::fork_help_shows_the_fork_slot_as_optional ... ok
+test cli::tests::bare_invocation_and_status_share_one_command ... ok
+test cli::tests::fork_takes_an_optional_name_and_drop_still_requires_one ... ok
+test cli::tests::daemon_bin_dir_is_repeatable_for_unit_and_install ... ok
+test cli::tests::the_deleted_dag_subcommand_is_gone ... ok
+test daemon::tests::a_rerun_refuses_a_policy_only_a_fresh_boot_can_produce ... ok
+test cli::tests::the_deleted_snap_subcommand_is_gone ... ok
+test daemon::tests::hook_ids_round_trip_every_phase ... ok
+test cli::tests::dump_flags_are_mutually_exclusive ... ok
+test daemon::tests::postgres_readiness_gate_drives_the_injected_clock_and_sleeper ... ok
+test cli::tests::world_selectors_are_flags_never_positional_forks ... ok
+test cli::tests::ps_and_open_select_a_world_and_open_has_a_remote_recipe ... ok
+test daemon::tests::readiness_detail_prefers_stderr_and_falls_back_to_stdout ... ok
+test daemon::tests::restart_rescues_a_failed_world_and_reruns_a_running_one ... ok
+test daemon::tests::restart_on_a_never_booted_world_fails_closed_naming_up ... ok
+test daemon::tests::tail_lines_keeps_the_requested_tail ... ok
+test daemon::tests::up_boots_an_absent_world_and_rescues_a_failed_one_in_place ... ok
+test daemon::tests::restarted_ids_are_the_engine_rows_this_run_brought_to_running ... ok
+test daemon::tests::secret_keys_reject_separators_and_control_characters ... ok
+test daemon::tests::up_twice_on_a_running_world_confirms_without_touching_it ... ok
+test daemon_unit_install::tests::a_changed_service_unit_restarts_the_already_installed_service ... ok
+test daemon_unit_install::tests::a_holder_that_answers_shutdown_is_released_without_a_signal ... ok
+test daemon_unit_install::tests::a_foreign_holder_owned_by_slipforkd_is_terminated_after_the_grace ... ok
+test daemon_unit_install::tests::a_runtime_dir_without_a_holder_performs_no_signal ... ok
+test daemon_unit_install::tests::a_probe_that_cannot_name_the_holder_still_refuses_a_live_socket ... ok
+test cli::tests::the_client_has_no_runtime_dir_override ... ok
+test daemon_unit_install::tests::an_unowned_holder_is_refused_in_one_line_without_a_signal ... ok
+test daemon_unit_install::tests::every_effect_failure_says_a_re_run_converges ... ok
+test daemon_unit_install::tests::non_root_fails_closed_before_touching_the_installer ... ok
+test daemon_unit_install::tests::identical_bytes_are_not_rewritten_and_enable_still_runs ... ok
+test daemon_unit_install::tests::first_run_writes_the_exact_daemon_unit_bytes_and_enables_once ... ok
+test cli::tests::restart_has_a_world_selector_and_no_watcher ... ok
+test daemon_unit_install::tests::sudo_user_becomes_the_installed_account ... ok
+test daemon_unit_install::tests::root_without_a_valid_sudo_user_fails_closed ... ok
+test cli::tests::prune_flags_are_mutually_exclusive ... ok
+test daemon_unit_install::tests::the_first_run_transcript_matches_the_design ... ok
+test daemon_unit_install::tests::the_invoking_clients_xdg_cache_home_pins_the_installed_state_dir ... ok
+test doctor::tests::filesystem_names_cover_the_documented_codes ... ok
+test doctor::tests::btrfs_host_passes_with_an_empty_fix_list ... ok
+test doctor::tests::failed_ioctl_json_carries_the_errno_and_mount_hint ... ok
+test doctor::tests::failed_checks_without_a_hint_still_produce_a_fix ... ok
+test doctor::tests::every_ingress_state_has_its_design_text_and_typed_json ... ok
+test doctor::tests::fixes_are_emitted_btrfs_then_userns_then_netns ... ok
+test layout::tests::defaults_follow_xdg_then_home_and_keep_runtime_on_disk ... ok
+test layout::tests::explicit_state_wins_and_runtime_is_always_its_run_directory ... ok
+test doctor::tests::json_projection_uses_the_adr_field_names ... ok
+test doctor::tests::ingress_is_advisory_and_rendered_once_before_fixes ... ok
+test daemon_unit_install::tests::a_real_listener_that_is_not_slipforkd_is_never_proven ... ok
+test doctor::tests::non_btrfs_reports_the_mount_hint_and_creates_nothing ... ok
+test layout::tests::only_the_daemon_explicit_constructor_overrides_the_runtime_directory ... ok
+test layout::tests::vaults_are_keyed_by_canonical_project_slug ... ok
+test layout::tests::relative_xdg_values_are_not_trusted ... ok
+test doctor::tests::netns_is_skipped_only_when_user_namespaces_fail ... ok
+test logs::tests::logs_one_named_source_writes_raw_bytes_unchanged ... ok
+test logs::tests::logs_a_line_split_across_chunks_is_prefixed_exactly_once ... ok
+test layout::tests::for_account_derives_both_roots_from_the_target_accounts_home ... ok
+test logs::tests::logs_routes_stderr_lines_to_stderr_with_the_same_prefix ... ok
+test logs::tests::logs_json_mode_is_the_unchanged_ndjson_document_per_chunk ... ok
+test logs::tests::logs_flushes_a_trailing_partial_line_at_eof ... ok
+test logs::tests::logs_two_sources_prefix_every_line_with_its_own_source ... ok
+test open::tests::a_bare_fork_that_names_two_worlds_fails_closed_with_both_ids ... ok
+test open::tests::open_resolves_the_calling_checkout_and_exact_and_bare_ids ... ok
+test open::tests::human_blocks_and_json_are_the_documented_shapes ... ok
+test open::tests::the_remote_recipe_uses_the_real_ingress_port_and_the_constant_8080 ... ok
+test open::tests::the_remote_recipe_host_header_round_trips_through_local_host_route ... ok
+test project::tests::missing_config_means_no_override ... ok
+test ps::tests::ps_json_without_rows_never_invents_a_world_id ... ok
+test ps::tests::ps_prints_a_dash_for_every_unrecorded_fact_and_never_a_zero ... ok
+test ps::tests::ps_json_carries_every_key_and_preserves_null ... ok
+test project::tests::project_key_is_read_through_slipfork_config ... ok
+test project::tests::invalid_config_fails_closed ... ok
+test ps::tests::ps_renders_a_failed_world_with_no_rows_as_its_header_only ... ok
+test ps::tests::ps_renders_the_state_lineage_header_then_one_row_per_component_and_backing_service ... ok
+test restart::tests::fork_adds_cd_and_qualifies_every_next_command ... ok
+test restart::tests::the_shared_lineage_renderer_keeps_the_verbose_table_vocabulary ... ok
+test restart::tests::up_block_is_the_documented_order_with_one_compact_lineage_line ... ok
+test restart::tests::restart_names_the_daemons_restarted_ids_or_the_honest_no_op ... ok
+test restart::tests::up_of_a_running_world_says_unchanged_and_names_restart ... ok
+test restart::tests::json_is_the_daemon_summary_plus_ok_and_nothing_else ... ok
+test restart::tests::verbose_adds_resources_and_the_per_node_table_without_inventing_a_fact ... ok
+test status::tests::status_lineage_prints_short_digests_and_a_dash_for_an_unknown_fact ... ok
+test status::tests::status_renders_zero_worlds_as_one_line_plus_the_up_command ... ok
+test status::tests::status_json_carries_every_key_and_no_human_text ... ok
+test user::tests::resolves_a_non_template_account_name ... ok
+test user::tests::resolves_the_kernel_node_name_without_ambient_hostname ... ok
+test status::tests::status_renders_the_canonical_world_then_its_indented_forks ... ok
+test status::tests::status_renders_port_less_origins_at_80_and_one_hint_on_any_other_port ... ok
+test user::tests::lookup_returns_the_invoking_accounts_home_and_identity ... ok
+test vcs::tests::only_a_dot_jj_directory_selects_the_jujutsu_backend ... ok
+test status::tests::status_next_hints_only_name_verbs_the_binary_implements ... ok
+test user::tests::root_and_template_and_unknown_accounts_fail_closed ... ok
+test vaults::tests::local_vars_are_enumerated_for_claims_without_exposing_values ... ok
+test daemon::tests::restart_applies_an_edited_snow_file_and_a_second_up_touches_nothing ... ok
+test vcs::tests::the_branch_probe_routes_exactly_like_workspace_creation ... ok
+test vaults::tests::mutable_and_read_capabilities_share_the_project_vault ... ok
+
+test result: ok. 105 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running unittests src/bin/git-remote-slipfork.rs (target/debug/build/slipfork/7dd51e0929a0cd20/out/git_remote_slipfork-7dd51e0929a0cd20)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/main.rs (target/debug/build/slipfork/c7233f420fed8e96/out/slipfork-c7233f420fed8e96)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/slipforkd.rs (target/debug/build/slipfork/58f97e7a833fdd70/out/slipforkd-58f97e7a833fdd70)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/debug/build/slipfork-dag/4cde3e6e3ded06c1/out/slipfork_dag-4cde3e6e3ded06c1)
+
+running 5 tests
+test resources::tests::a_paired_session_selects_the_remote_seed ... ok
+test resources::tests::a_remote_strategy_fails_closed_without_a_session ... ok
+test resources::tests::declared_ids_join_the_plan_with_mode_defaults ... ok
+test resources::tests::forced_strategy_wins_over_configured_remote_overrides ... ok
+test world::tests::non_table_world_fails_closed ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/debug/build/slipfork-edge/ee4a9ac0514f121f/out/slipfork_edge-ee4a9ac0514f121f)
+
+running 4 tests
+test unit::tests::activation_order_lists_ingress_then_forward ... ok
+test unit::tests::non_utf8_paths_are_refused ... ok
+test unit::tests::paths_needing_quotes_are_quoted ... ok
+test unit::tests::percent_specifiers_in_unit_paths_are_refused ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/debug/build/slipfork-engine/2ab2c4698abe4736/out/slipfork_engine-2ab2c4698abe4736)
+
+running 69 tests
+test btrfs::tests::btrfs_magic_and_mount_hint_are_the_documented_constants ... ok
+test btrfs::tests::destroy_eperm_maps_to_subvolume_destroy_denied ... ok
+test btrfs::tests::error_display_carries_the_mount_remediation ... ok
+test btrfs::tests::invalid_subvolume_names_are_rejected_before_any_filesystem_access ... ok
+test btrfs::tests::ensure_supported_agrees_with_probe_on_this_host ... ok
+test btrfs::tests::ioctl_requests_match_the_linux_header_encoding ... ok
+test btrfs::tests::ioctl_errnos_map_to_typed_ioctl_errors ... ok
+test btrfs::tests::non_absolute_probe_paths_are_rejected_without_touching_the_cwd ... ok
+test btrfs::tests::require_btrfs_accepts_only_the_btrfs_super_magic ... ok
+test btrfs::tests::nearest_existing_ancestor_walks_up_to_the_first_existing_directory ... ok
+test btrfs::tests::kernel_probe_reports_the_host_contract_without_leaving_residue ... ok
+test btrfs::tests::subvolume_names_must_be_relative_components ... ok
+test btrfs_engine::tests::a_managed_subvolume_source_is_sealed_without_copying ... ok
+test btrfs_engine::tests::a_rootfs_outside_the_content_addressed_cache_is_refused ... ok
+test btrfs_engine::tests::a_plain_snapshot_source_is_imported_into_one_sealed_subvolume ... ok
+test btrfs_engine::tests::clone_world_refuses_an_unknown_snapshot_before_creating_a_subvolume ... ok
+test btrfs_engine::tests::a_world_directory_that_is_not_a_subvolume_is_refused_as_a_snapshot_source ... ok
+test btrfs_engine::tests::a_snapshot_subvolume_source_is_sealed_without_copying ... ok
+test btrfs_engine::tests::construction_fails_closed_off_btrfs_before_creating_anything ... ok
+test btrfs_engine::tests::an_unmanaged_directory_under_snapshots_is_refused_as_a_source ... ok
+test btrfs_engine::tests::layout_is_one_subvolume_with_a_disjoint_control_directory ... ok
+test btrfs_engine::tests::relative_paths_are_rejected_without_touching_the_cwd ... ok
+test btrfs_engine::tests::freeze_stops_every_service_before_sealing_the_subvolume ... ok
+test btrfs_engine::tests::reap_world_init_closes_stdin_lifeline_without_stalling_on_sigterm_immune_init ... ok
+test btrfs_engine::tests::the_world_init_and_every_namespace_entry_gain_a_private_ipc_namespace ... ok
+test btrfs_engine::tests::service_spec_validation_rejects_empty_argv_before_spawning ... ok
+test btrfs_engine::tests::world_ids_skip_names_a_previous_daemon_left_behind ... ok
+test btrfs_engine::tests::sealing_an_existing_snapshot_id_fails_closed ... ok
+test btrfs_engine::tests::world_lineage_records_each_world_own_boot_facts ... ok
+test env::tests::iter_matches_the_single_child_environment_materialization ... ok
+test linux_cow::tests::a_peer_pid_of_zero_or_less_is_refused ... ok
+test btrfs_engine::tests::world_state_categories_are_plain_directories_inside_the_subvolume ... ok
+test linux_cow::tests::a_pidfd_signals_exactly_the_pinned_process ... ok
+test linux_cow::tests::peer_pid_reports_the_pid_at_the_other_end ... ok
+test linux_cow::tests::recv_fd_accepts_exactly_one_descriptor ... ok
+test linux_cow::tests::recv_fd_rejects_extra_descriptors_without_leaking_them ... ok
+test oci::tests::overlaps_and_escaping_container_paths_are_rejected ... ok
+test oci::tests::config_declares_identity_mappings_and_no_network_namespace ... ok
+test rootfs::abi::tests::glibc_symbol_scan_takes_the_highest_minor ... ok
+test rootfs::abi::tests::host_cache_mismatch_follows_the_abi_rules ... ok
+test rootfs::abi::tests::musl_version_scan_normalizes_to_major_minor ... ok
+test rootfs::builder::tests::dockerfile_relative_path_prefers_the_context_relative_form ... ok
+test rootfs::builder::tests::scratch_dockerfile_appends_one_target_stage ... ok
+test rootfs::buildx::tests::args_export_only_the_slipfork_world_target ... ok
+test rootfs::buildx::tests::build_envs_never_reach_argv ... ok
+test rootfs::cache::tests::mountinfo_escapes_decode ... ok
+test rootfs::cache::tests::tmpfs_detection_uses_the_longest_prefix ... ok
+test rootfs::contract::tests::healthcheck_ports_finds_url_and_loopback_ports ... ok
+test rootfs::contract::tests::supported_distro_table ... ok
+test rootfs::dockerfile::tests::env_and_argv_forms ... ok
+test rootfs::dockerfile::tests::parses_named_stages_and_continuations ... ok
+test rootfs::dockerfile::tests::target_selection_fails_closed ... ok
+test rootfs::input::tests::dockerignore_honors_negation_and_directory_patterns ... ok
+test rootfs::input::tests::glob_segments ... ok
+test rootfs::pin::tests::pin_name_carries_the_sha256_prefix ... ok
+test rootfs::pin::tests::unknown_architectures_fail_closed ... ok
+test rootfs::tests::digest_hashes_secret_env_values_without_storing_them ... ok
+test rootfs::tests::digest_is_stable_and_hex_shaped ... ok
+test rootfs::tests::digest_rejects_non_hex ... ok
+test rootfs::tests::error_stays_small_enough_for_result ... ok
+test tests::the_userns_hint_names_every_clone_newuser_executable_and_the_reload ... ok
+test tests::the_userns_hint_renders_a_bare_clause_for_the_root_bin_dir ... ok
+test service::tests::poisoned_log_still_serves_captured_output_and_reports_the_diagnostic ... ok
+test btrfs_engine::tests::a_failed_teardown_is_retryable_and_never_leaks_the_world ... ok
+test btrfs_engine::tests::a_failed_service_stop_keeps_the_service_running_so_a_retried_teardown_reaps_it ... ok
+test btrfs_engine::tests::destroy_stops_services_reaps_the_init_drops_the_control_dir_then_the_subvolume ... ok
+test btrfs_engine::tests::world_processes_keeps_stopped_rows_and_stamps_uptime_from_the_injected_clock ... ok
+test btrfs_engine::tests::dropping_the_engine_reaps_live_world_launchers_and_services ... ok
+test btrfs_engine::tests::reap_world_init_escalates_to_sigkill_and_reaps_launcher_when_init_ignores_eof_and_sigterm ... ok
+
+test result: ok. 69 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.02s
+
+     Running unittests src/bin/slipfork-world-init.rs (target/debug/build/slipfork-engine/17ec58fbc7c6dcf8/out/slipfork_world_init-17ec58fbc7c6dcf8)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/debug/build/slipfork-ospp/c182df33b7e14c8b/out/slipfork_ospp-c182df33b7e14c8b)
+
+running 15 tests
+test client::tests::device_signature_hex_is_fixed_width ... ok
+test client::tests::plaintext_dump_urls_are_loopback_only ... ok
+test endpoint::tests::rejects_plaintext_off_loopback ... ok
+test endpoint::tests::accepts_wss_and_loopback_ws ... ok
+test keys::tests::secret_aad_binds_component_and_key ... ok
+test model::tests::claims_serialize_ids_only_and_omit_empty_namespaces ... ok
+test pairing::tests::pairing_url_appends_the_handle_to_the_fragment ... ok
+test pairing::tests::altcha_solver_fails_closed_on_an_unsolvable_challenge ... ok
+test pairing::tests::altcha_solver_finds_the_number_and_preserves_the_payload ... ok
+test pairing::tests::pairing_url_rejects_a_query_handle_or_bad_fragment ... ok
+test wire::tests::environment_values_reject_extra_keys ... ok
+test wire::tests::hello_round_trips_to_the_spec_shape ... ok
+test wire::tests::transcripts_are_golden_bytes ... ok
+test wire::tests::unknown_frames_and_fields_fail_closed ... ok
+test keys::tests::subscription_key_is_deterministic_from_a_scalar ... ok
+
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running unittests src/lib.rs (target/debug/build/slipfork-ospp-testkit/a138ae80ac76f8d8/out/slipfork_ospp_testkit-a138ae80ac76f8d8)
+
+running 2 tests
+test reference_server::tests::unclaimed_secrets_contaminate_and_claim_nothing ... ok
+test reference_server::tests::claimed_expressions_survive_byte_verbatim ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/debug/build/slipfork-snow/34f1ab04960e53ba/out/slipfork_snow-34f1ab04960e53ba)
+
+running 4 tests
+test provider::tests::layered_removal_only_touches_the_local_write_sink ... ok
+test provider::tests::memory_provider_removes_and_lists_only_secret_keys ... ok
+test provider::tests::the_read_contract_does_not_require_mutation_capabilities ... ok
+test provider::tests::file_vault_removes_and_lists_through_the_atomic_writer ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+     Running unittests src/lib.rs (target/debug/build/slipfork-testkit/508724473b98ca5c/out/slipfork_testkit-508724473b98ca5c)
+
+running 15 tests
+test btrfs::tests::destroying_an_unknown_subvolume_fails_closed ... ok
+test btrfs::tests::driver_destroy_denied_by_the_mount_maps_to_subvolume_destroy_denied ... ok
+test btrfs::tests::btrfs_driver_probe_runs_the_scratch_round_trip_and_leaves_no_residue ... ok
+test btrfs::tests::a_second_driver_instance_lists_and_destroys_what_the_first_created ... ok
+test btrfs::tests::ensure_supported_is_magic_only_and_ignores_the_scratch_round_trip ... ok
+test btrfs::tests::non_btrfs_driver_fails_closed_from_list_children ... ok
+test btrfs::tests::non_btrfs_driver_reports_its_emulated_fstype_and_touches_no_subvolume ... ok
+test tests::explicit_interval_form_is_the_same_bounded_wait ... ok
+test btrfs::tests::probe_rejects_a_relative_path ... ok
+test btrfs::tests::list_children_returns_only_subvolume_roots_sorted ... ok
+test btrfs::tests::probe_records_the_raw_errno_of_a_failing_scratch_round_trip ... ok
+test tests::returns_the_last_probe_error_once_the_bound_has_passed ... ok
+test btrfs::tests::read_only_snapshot_is_cleared_before_destroy ... ok
+test btrfs::tests::writable_clone_of_a_read_only_snapshot_is_writable ... ok
+test tests::returns_as_soon_as_the_probe_succeeds ... ok
+
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+
+     Running unittests src/lib.rs (target/debug/build/slipfork-vcs/e8603a8d44964667/out/slipfork_vcs-e8603a8d44964667)
+
+running 14 tests
+test jj::tests::diff_entries_map_added_paths_to_untracked_and_others_to_tracked ... ok
+test jj::tests::refs_project_the_fork_branch_and_the_snapshot_ref ... ok
+test jj::tests::local_bookmarks_yield_one_branch_or_none_or_a_fail_closed_error ... ok
+test jj::tests::unknown_diff_status_fails_closed ... ok
+test ports::tests::sanitisation_maps_a_branch_name_to_one_dns_label ... ok
+test ports::tests::sanitisation_leaves_the_label_grammar_to_slipfork_world ... ok
+test ports::tests::sanitisation_rejects_a_branch_that_leaves_no_label ... ok
+test tool_command::tests::fail_closed_spawn_maps_a_missing_binary_to_tool_missing ... ok
+test jj::tests::diff_parsing_truncates_at_the_port_limit ... ok
+test tool_command::tests::identity_globals_use_each_tool_own_syntax ... ok
+test tool_command::tests::missing_jj_hint_names_the_project_override ... ok
+test tool_command::tests::spawn_errors_that_are_not_not_found_surface_the_command ... ok
+test tool_command::tests::subcommand_labels_skip_global_flags_and_operands ... ok
+test tool_command::tests::failures_are_one_line_naming_the_subcommand_and_the_last_stderr_line ... ok
+
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/debug/build/slipfork-world/b2eeeaeb582193db/out/slipfork_world-b2eeeaeb582193db)
+
+running 1 test
+test tests::truncated_weaver_join_omits_the_separator_for_an_empty_prefix ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+cargo test --workspace --doc
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.08s
+   Doc-tests slipfork
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests slipfork_dag
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests slipfork_edge
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests slipfork_engine
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests slipfork_ospp
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests slipfork_ospp_testkit
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests slipfork_snow
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests slipfork_testkit
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests slipfork_vcs
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests slipfork_world
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+cargo test -p slipfork-dag --test critical_dag
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.20s
+     Running tests/critical_dag.rs (target/debug/build/slipfork-dag/916db87dad98764b/out/critical_dag-916db87dad98764b)
+
+running 11 tests
+test project_override_must_be_a_validated_project_slug ... ok
+test rejects_unknown_parent_and_cycles_closed ... ok
+test resources_defaults_are_mode_aware_hermetic_and_overrideable ... ok
+test resources_schema_rejects_unknown_keys_modes_and_empty_overrides ... ok
+test per_world_fixtures_are_never_served_from_the_shared_digest_cache ... ok
+test slipfork_toml_root_schema_owns_project_and_typed_test_coverage_without_invalidating_dag ... ok
+test per_world_fixtures_are_typed_and_cannot_parent_origin_independent_nodes ... ok
+test resources_single_resolve_enforces_remote_and_refresh_dump_policy ... ok
+test typed_test_coverage_is_single_way_and_fail_closed ... ok
+test unknown_slipfork_toml_fields_fail_closed ... ok
+test r9_orthogonal_invalidation_front_edit_never_invalidates_db_snapshots_and_vice_versa ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+cargo test -p slipfork-dag --test critical_support
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.04s
+     Running tests/critical_support.rs (target/debug/build/slipfork-dag/fed8af617c89b87f/out/critical_support-fed8af617c89b87f)
+
+running 4 tests
+test evidence_field_strings_are_the_single_display_and_json_source ... ok
+test embedded_registry_resolves_every_present_evidence_pointer ... ok
+test validate_rejects_overclaiming_entries_empty_pointers_and_duplicate_ids ... ok
+test embedded_registry_parses_with_unique_ids_and_ordered_tiers ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+cargo test -p slipfork-dag --test critical_world_config
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.05s
+     Running tests/critical_world_config.rs (target/debug/build/slipfork-dag/ce5727c570d768bc/out/critical_world_config-ce5727c570d768bc)
+
+running 13 tests
+test no_buildable_image_fails_closed_with_the_images_snippet ... ok
+test both_world_keys_resolve_together ... ok
+test empty_world_values_fail_closed ... ok
+test non_string_world_values_fail_closed ... ok
+test undeclared_world_image_fails_closed ... ok
+test unknown_world_keys_fail_closed ... ok
+test unknown_world_stage_fails_closed ... ok
+test unnamed_final_stage_without_world_stage_fails_closed ... ok
+test schema_accepts_only_world_image_and_world_stage ... ok
+test world_image_selects_among_multiple_build_images ... ok
+test single_build_image_needs_zero_world_config ... ok
+test two_build_images_without_world_image_fail_closed ... ok
+test world_stage_targets_a_named_dockerfile_stage ... ok
+
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+cargo test -p slipfork-edge --test critical_edge
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.05s
+     Running tests/critical_edge.rs (target/debug/build/slipfork-edge/a930428522c6ecf8/out/critical_edge-a930428522c6ecf8)
+
+running 35 tests
+test activation_probe_child ... ok
+test clone_world_refuses_an_unrecorded_snapshot ... ok
+test activation_descriptor_order_splits_forward_listener ... ok
+test activation_listen_mode_without_forward_port ... ok
+test daemon_control_reports_world_processes_over_the_socket ... ok
+test ingress_info_round_trips_port_80_and_ephemeral_binds ... ok
+test fail_closed_no_listener_at_all ... ok
+test proxy_preserves_host_and_forwarded_headers ... ok
+test registry_attach_rejects_duplicates_and_resolves_prefixes ... ok
+test registry_mints_one_origin_per_world ... ok
+test registry_rejects_invalid_ingress_tables ... ok
+test registry_replace_world_swaps_routes_without_touching_the_handle ... ok
+test fail_closed_non_socket_descriptor ... ok
+test fail_closed_zero_descriptors ... ok
+test fail_closed_pid_mismatch_never_falls_back ... ok
+test stub_world_engine_passes_the_shared_conformance_matrix ... ok
+test unit_golden_renders_byte_exactly ... ok
+test unit_service_sandbox_allows_the_netlink_family_world_init_needs ... ok
+test proxy_streams_body_larger_than_buffer ... ok
+test unit_validate_rejects_invalid_specs ... ok
+test unix_ingress_sock_refuses_live_socket ... ok
+test unix_ingress_sock_replaces_stale_file ... ok
+test unix_ingress_sock_is_0600_and_serves_identical_404 ... ok
+test routing_skeleton_rejects_unknown_methods_and_oversized_heads ... ok
+test world_next_commands_follow_the_one_state_table ... ok
+test world_process_reports_are_world_scoped_and_keep_stopped_rows ... ok
+test world_summary_parent_and_lineage_survive_serde ... ok
+test world_up_summary_carries_the_documented_fields_and_joins_restarted_ids ... ok
+test daemon_control_round_trip_and_frame_cap ... ok
+test activation_single_listener_handover ... ok
+test socket_activate_systemd_handover ... ok
+test unit_privileged_80_is_allowed_and_renders ... ok
+test daemon_control_forward_lifetime_closes_host_listener ... ok
+test websocket_pipe_survives_fragmentation ... ok
+test websocket_pipe_survives_an_idle_gap_longer_than_the_relay_timeout ... ok
+
+test result: ok. 35 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.53s
+
+cargo test -p slipfork-engine --test critical_rootfs_contract
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.03s
+     Running tests/critical_rootfs_contract.rs (target/debug/build/slipfork-engine/7ac30c72316f5b3f/out/critical_rootfs_contract-7ac30c72316f5b3f)
+
+running 13 tests
+test rule_1_unknown_stage_lists_the_declared_stages ... ok
+test rule_1_unnamed_final_stage_reports_the_exact_diagnostic ... ok
+test rule_2_missing_os_release_and_shell_fails_closed ... ok
+test fake_base_image_builder_passes_the_shared_conformance_suite ... ok
+test rule_3_root_only_entrypoint_reports_uid_gid_and_fix ... ok
+test rule_4_baked_host_workdir_fails_closed ... ok
+test rule_4_baked_origin_env_fails_closed ... ok
+test rule_2_unsupported_distro_names_the_supported_table ... ok
+test rule_6_expose_port_mismatch_fails_closed ... ok
+test rule_6_healthcheck_port_is_validated_too ... ok
+test runtime_binaries_missing_from_the_extracted_stage_fail_closed ... ok
+test rule_5_backing_service_inside_the_app_stage_fails_closed ... ok
+test scratch_files_never_land_in_the_worktree ... ok
+
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+cargo test -p slipfork-ospp --test critical_ospp
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.10s
+     Running tests/critical_ospp.rs (target/debug/build/slipfork-ospp/bfe3fab9c28371e5/out/critical_ospp-bfe3fab9c28371e5)
+
+running 8 tests
+test pairing_rejection_is_a_typed_error_frame ... ok
+test hpke_round_trip_pinning_rejects_a_wrong_aad ... ok
+test bad_signature_fails_closed_with_bad_proof ... ok
+test pairing_appends_the_server_url_fragment_and_reaches_pair_approved ... ok
+test handshake_and_subscribe_resolve_id_only_claims ... ok
+test unsubscribe_releases_the_subscription ... ok
+test pushed_env_updated_is_decrypted_in_memory_and_delivered ... ok
+test dump_stream_restores_and_a_truncated_tail_fails_closed ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.36s
+
+cargo test -p slipfork-snow --test critical_snow
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.04s
+     Running tests/critical_snow.rs (target/debug/build/slipfork-snow/2f8bd73ae8e1de1e/out/critical_snow-2f8bd73ae8e1de1e)
+
+running 12 tests
+test coordinates_and_s3_debug_redact_every_secret ... ok
+test layered_provider_reads_primary_then_fallback_and_writes_primary_only ... ok
+test providers_are_send_sync_and_usable_through_shared_references ... ok
+test r6_r7_rejects_non_secret_ensure_and_collects_all_missing_keys_at_once ... ok
+test local_for_world_and_for_world_coordinates_hold ... ok
+test top_level_forbidden_keys_name_only_the_key_and_never_their_values ... ok
+test whole_mode_resolution_skips_disabled_component_env_groups ... ok
+test file_vault_recovers_from_a_crashed_writer_temp_file ... ok
+test mode_component_add_remove_override_resolves_through_one_path ... ok
+test secret_provider_conformance_holds_for_memory_and_file_vault ... ok
+test r2_r4_r5_r8_modes_all_merge_write_once_secret_and_redaction ... ok
+test file_vault_ensure_secret_is_a_compare_and_set_under_contention ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+cargo test -p slipfork-vcs --test critical_vcs
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.03s
+     Running tests/critical_vcs.rs (target/debug/build/slipfork-vcs/299b5b9c776ddc13/out/critical_vcs-299b5b9c776ddc13)
+
+running 26 tests
+test fail_closed_child_probe_without_git_on_path ... ok
+test fail_closed_missing_git_binary_is_reported ... ok
+test git_current_branch_reports_none_when_detached ... ok
+test jj_absent_child_probe_reports_tool_missing ... ok
+test jj_absent_fails_closed_with_the_project_override_hint ... ok
+test remote_helper_capabilities_are_byte_exact ... ok
+test remote_helper_fetch_batch_verifies_the_advertised_ids ... ok
+test fail_closed_repository_and_override_errors_are_actionable ... ok
+test remote_helper_list_advertises_base_and_wip_refs ... ok
+test remote_helper_list_for_push_advertises_the_same_refs ... ok
+test remote_helper_option_responses_follow_the_documented_vocabulary ... ok
+test remote_helper_push_is_refused_for_every_ref ... ok
+test remote_helper_rejects_oversized_frames ... ok
+test remote_helper_unknown_verb_answers_unsupported_and_keeps_serving ... ok
+test dirty_fork_snapshot_reproduces_modified_deleted_untracked_view ... ok
+test changes_truncates_large_dirty_views_at_the_port_limit ... ok
+test fork_from_linked_worktree_snapshots_that_worktree ... ok
+test index_untouched_by_dirty_fork_snapshot ... ok
+test vcs_failures_render_as_one_line ... ok
+test remote_helper_git_fetch_round_trip_from_a_scratch_repository ... ok
+test fail_closed_fork_creation_refuses_existing_artifacts ... ok
+test repo_root_resolves_linked_worktrees_to_the_main_checkout ... ok
+test fork_succeeds_when_gitignore_ignores_the_state_directories ... ok
+test sanitised_branch_forks_once_and_a_second_identical_fork_fails_closed ... ok
+test snapshot_commit_carries_the_pinned_slipfork_identity ... ok
+test repo_root_fails_closed_for_bare_submodule_and_separate_git_dir ... ok
+
+test result: ok. 26 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.15s
+
+cargo test -p slipfork-vcs --test critical_conformance_matrix
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.03s
+     Running tests/critical_conformance_matrix.rs (target/debug/build/slipfork-vcs/23a8e808f1a9d00d/out/critical_conformance_matrix-23a8e808f1a9d00d)
+
+running 2 tests
+test git_conformance_matrix_satisfies_shared_suite ... ok
+test jj_conformance_matrix_satisfies_shared_suite ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.26s
+
+cargo test -p slipfork-world --test critical_world
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.03s
+     Running tests/critical_world.rs (target/debug/build/slipfork-world/5f0b69bc053661dc/out/critical_world-5f0b69bc053661dc)
+
+running 14 tests
+test invalid_project_slugs_fail_closed ... ok
+test admin_admin_collision_and_fork_domain_collisions_fail_closed ... ok
+test ipv6_port_corrupted_foreign_and_malformed_hosts_are_rejected_cleanly ... ok
+test test_slot_namespace_is_reserved_and_cannot_be_a_user_fork_or_domain ... ok
+test one_two_three_label_routes_parse_and_format_round_trip ... ok
+test weaver_service_name_is_deterministic_but_not_idempotent ... ok
+test weaver_service_name_is_verbatim_up_to_the_31_byte_boundary ... ok
+test weaver_service_name_rejects_invalid_charset_and_length ... ok
+test weaver_collision_suffix_shaped_labels_are_hashed_not_used_verbatim ... ok
+test weaver_service_name_truncation_strips_dashes_and_never_joins_bad_dashes ... ok
+test world_origin_local_never_renders_port_zero ... ok
+test world_origin_local_rejects_named_snow_domain_routes ... ok
+test world_origin_local_omits_port_80_and_renders_other_ports ... ok
+test world_origin_serializes_its_url_and_deserializes_fail_closed ... ok
+
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+cargo test -p slipfork-engine --test critical_rootfs_live -- --test-threads=1
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.04s
+     Running tests/critical_rootfs_live.rs (target/debug/build/slipfork-engine/7efed1411c3527d6/out/critical_rootfs_live-7efed1411c3527d6)
+
+running 2 tests
+test live_buildx_export_validates_and_caches_the_world_stage ... ok
+test missing_docker_fails_closed_with_the_actionable_diagnostic ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.36s
+
+cargo test -p slipfork-engine --test critical_engine -- --test-threads=1
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.03s
+     Running tests/critical_engine.rs (target/debug/build/slipfork-engine/71f8c4d843a24a02/out/critical_engine-71f8c4d843a24a02)
+
+running 16 tests
+test a_rootfs_outside_the_content_addressed_cache_is_refused_before_a_subvolume_exists ... ok
+test dial_world_tcp_reaches_in_world_listener_via_netns_sock_scm_rights ... ok
+test entry_and_exec_start_on_the_in_world_directory_mapped_from_the_host_path ... ok
+test entry_command_enters_the_persistent_init_pid_with_native_stdio ... ok
+test freeze_lineage_seals_once_and_sibling_clones_stay_isolated ... ok
+test in_netns_bridge_port_80_reaches_host_ingress_and_dials_back_into_the_world ... ok
+test multi_mount_repo_rw_and_readonly_artifact_volume_are_real_bind_mounts ... ok
+test one_writable_subvolume_per_world_with_ro_snapshot_lineage_and_host_ownership ... ok
+test persistent_init_pid_stays_stable_across_calls_and_is_reaped_on_destroy ... ok
+test r10_a_non_btrfs_state_dir_fails_closed_without_a_silent_fallback ... ok
+test r10_r11_btrfs_conformance_cow_isolation_uid_and_parallel_same_port ... ok
+test readiness_timeout_stops_the_supervisor_and_releases_the_service_id ... ok
+test redacted_exec_env_and_opaque_world_handles ... ok
+test service_logs_survive_idempotent_stop_and_freeze_seals_only_after_stop ... ok
+test two_worlds_isolate_the_same_port_and_dial_independently ... ok
+test world_init_fails_closed_when_the_helper_is_missing ... ok
+
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 23.66s
+
+cargo test -p slipfork-engine --test critical_oci_runtime -- --test-threads=1
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.03s
+     Running tests/critical_oci_runtime.rs (target/debug/build/slipfork-engine/dfb48d9024f129cc/out/critical_oci_runtime-dfb48d9024f129cc)
+
+running 3 tests
+test container_requests_fail_closed_before_crun_is_executed ... ok
+test readonly_mounts_are_typed_visible_and_collision_free ... ok
+test service_handles_and_logs_are_typed_and_never_fabricated ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.42s
+
+cargo test -p slipfork-engine --test critical_btrfs_live -- --test-threads=1
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.04s
+     Running tests/critical_btrfs_live.rs (target/debug/build/slipfork-engine/286986b1957dcdcd/out/critical_btrfs_live-286986b1957dcdcd)
+
+running 1 test
+test btrfs_kernel_ro_snapshot_two_clones_same_port_services_and_ipc_isolation ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+cargo test -p slipfork --test critical_slug -- --test-threads=1
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.07s
+     Running tests/critical_slug.rs (target/debug/build/slipfork/034a3cf5aeee7e7c/out/critical_slug-034a3cf5aeee7e7c)
+
+running 6 tests
+test git_submodule_bare_and_separate_git_dir_fail_closed_with_actionable_override_hints ... ok
+test invalid_project_label_fails_closed_until_rescued_by_valid_slipfork_toml_override ... ok
+test jj_workspace_uses_the_shared_git_resolver_and_never_shells_out_to_jj ... ok
+test missing_snow_file_names_the_unreadable_path ... ok
+test non_vcs_directory_fails_closed_and_corrupt_git_surfaces_real_git_stderr ... ok
+test worktree_resolves_to_canonical_repo_slug_and_honors_only_vcs_root_slipfork_toml ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.94s
+
+cargo test -p slipfork --test critical_vcs_remote -- --test-threads=1
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.07s
+     Running tests/critical_vcs_remote.rs (target/debug/build/slipfork/4d469b0c840c0139/out/critical_vcs_remote-4d469b0c840c0139)
+
+running 1 test
+test git_fetch_lists_and_fetches_fork_and_wip_refs_through_the_real_binary ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.70s
+
+cargo test -p slipfork --test critical_cli -- --test-threads=1
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.08s
+     Running tests/critical_cli.rs (target/debug/build/slipfork/9de35afe36439ef3/out/critical_cli-9de35afe36439ef3)
+
+running 30 tests
+test a_branch_fork_name_that_collides_with_a_project_or_a_domain_fails_closed ... ok
+test a_branch_named_fork_that_already_exists_fails_closed_naming_up ... ok
+test auth_prints_the_server_supplied_fragment_url_and_never_echoes_a_secret ... ok
+test bare_slipfork_and_status_render_one_dashboard_and_json_stays_pure ... ok
+test daemon_install_bytes_equal_a_real_daemon_unit_preview ... ok
+test daemon_unit_apparmor_lists_every_bin_dir_in_one_four_line_profile ... ok
+test daemon_unit_refuses_an_apparmor_injecting_bin_dir_without_writing ... ok
+test daemon_unit_renders_the_resolved_user_and_never_a_template_specifier ... ok
+test db_redis_exec_resolve_container_entries_and_require_a_tty ... ok
+test doctor_json_carries_the_typed_ingress_document ... ok
+test fork_help_marks_the_name_optional_while_drop_still_requires_one ... ok
+test forward_bridge_streams_a_real_request_and_closes_on_disconnect ... ok
+test home_unset_fails_closed_before_any_mutation ... ok
+test hook_failure_keeps_the_world_and_prints_the_full_diagnostic ... ok
+test interactive_shell_prints_one_orientation_line_and_json_never_does ... ok
+test logs_fan_out_attributes_every_line_to_its_component ... ok
+test logs_follow_streams_new_component_output ... ok
+test one_url_per_world_holds_for_canonical_and_fork ... ok
+test read_verbs_never_spawn_a_daemon_and_fail_closed_in_one_line ... ok
+test rescue_commands_re_run_and_inspect_the_failed_world ... ok
+test restart_applies_an_edited_snow_file_and_names_what_came_back ... ok
+test restart_refuses_a_never_booted_world_and_rescues_a_failed_one ... ok
+test restart_reports_no_change_when_the_pipeline_starts_nothing ... ok
+test secret_set_refuses_an_existing_double_bang_key_and_never_echoes_values ... ok
+test status_with_zero_worlds_prints_one_line_plus_up ... ok
+test support_json_lists_required_evidence_for_every_integration ... ok
+test up_down_lifecycle_is_idempotent_and_one_url_per_world ... ok
+test zero_argument_fork_derives_the_branch_name_and_prints_worktree_and_cd ... ok
+test zero_argument_fork_fails_closed_without_a_branch_or_from_inside_a_fork ... ok
+test zero_setup_auto_spawn_serves_up_without_a_prestarted_daemon ... ok
+
+test result: ok. 30 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 113.28s
+
+cargo test -p slipfork --test critical_l0_wiring -- --test-threads=1
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.08s
+     Running tests/critical_l0_wiring.rs (target/debug/build/slipfork/15a1f7f1a45b57fe/out/critical_l0_wiring-15a1f7f1a45b57fe)
+
+running 4 tests
+test container_backed_world_boots_and_redis_targets_the_container ... ok
+test host_caches_pass_on_a_matching_glibc_world ... ok
+test host_caches_refuses_on_the_measured_abi_mismatch ... ok
+test redis_entry_fails_closed_with_service_not_running_after_the_container_stops ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 31.70s
+
+cargo test -p slipfork --test critical_ospp_daemon -- --test-threads=1
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.18s
+     Running tests/critical_ospp_daemon.rs (target/debug/build/slipfork/d569686132f7de73/out/critical_ospp_daemon-d569686132f7de73)
+
+running 6 tests
+test dot_jj_repository_routes_to_jujutsu_and_never_falls_back_to_git ... ok
+test optional_slipfork_toml_boots_and_malformed_config_fails_closed ... ok
+test pushed_env_update_restarts_only_the_affected_component ... ok
+test remote_secrets_never_reach_disk_and_claimed_vars_resolve_from_the_local_vault ... ok
+test sealed_dump_restores_into_postgres_without_a_plaintext_file ... ok
+test unpaired_remote_strategy_and_refresh_dump_fail_closed ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 87.87s
+
+cargo test -p slipfork --test critical_btrfs_live -- --test-threads=1
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.17s
+     Running tests/critical_btrfs_live.rs (target/debug/build/slipfork/e2f446f22c4868d7/out/critical_btrfs_live-e2f446f22c4868d7)
+
+running 1 test
+test production_slipforkd_is_btrfs_only_and_boots_a_real_world_on_btrfs ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s
+
+uvx --offline zensical build --strict
+Build started
+No issues found
+Build finished in 0.18s
+uv run --no-project tools/check_docs_honesty.py
+check_docs_honesty: OK (10 doc(s) match real CLI subcommands: published pages plus support/demo/README.md)
+EXIT=0

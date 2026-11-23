@@ -1,0 +1,23 @@
+[package]
+name = "slipfork-ospp"
+description = "Slipfork-owned OSPP v1 client: closed frames, P-256 machine auth, hpke-p256 secrets, sealed dump streaming, pairing state, and the 0600 offline vault"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+base64.workspace = true
+getrandom.workspace = true
+hex.workspace = true
+hpke.workspace = true
+p256.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+tungstenite.workspace = true
+ureq.workspace = true
+url.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

@@ -1,0 +1,12 @@
+$ systemctl cat slipforkd.service slipforkd.socket | grep -i tpmd
+UNIT_TPMD_GREP_EXIT=1
+$ systemctl cat slipforkd.service slipforkd.socket | grep -iE "dag|share"
+UNIT_DAG_SHARE_GREP_EXIT=1
+$ command -v slipfork-tpmd
+no slipfork-tpmd on PATH
+$ grep -c tpmd /etc/apparmor.d/slipfork
+0
+APPARMOR_TPMD_GREP_EXIT=1
+EXIT=0
+SCRIPT_EXIT=0
+OUTER_EXIT=0

@@ -1,5 +1,6 @@
 # Rust & build outputs
 /target/
+/editors/zed/target/
 /dist/
 /site/
 
@@ -14,7 +15,7 @@
 **/node_modules/
 /mutants*/
 
-# Secrets (never commit real .env files; commit .env.example or snow.yml)
+# Secrets (never commit real .env files; commit .env.example or a Forkfile)
 .env
 .env.*
 !.env.example
@@ -23,4 +24,5 @@
 *.swp
 *~
 .DS_Store
-/poc/.bench-scratch/
+scripts/__pycache__/
+scripts/tests/__pycache__/

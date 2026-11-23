@@ -1,0 +1,10 @@
+76:                    "hello": "world-M3.28.13-r2",
+[ready]     api (internal :8000 in world netns)
+[restarted] api, pg_clusters.psql
+world     demo (running, changed)
+app       http://demo.localhost
+worktree  /home/slipfork/demo
+next      slipfork open | slipfork db | slipfork logs | slipfork restart | slipfork down
+lineage   rootfs 71e00bc47fe4 cached · postgres:18 cached · seed - - · base 4570132bffb8 reused
+RESTART_EXIT=0
+OUTER_EXIT=0

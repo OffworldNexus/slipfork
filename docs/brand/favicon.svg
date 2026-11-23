@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">
+  <title>Slipfork</title>
+  <rect width="64" height="64" rx="14" fill="#f6eed8"/>
+  <svg x="3" y="3" width="58" height="58" viewBox="236 37 320 320">
+    <defs><clipPath id="neck-cut"><rect x="240" y="100" width="320" height="183"/></clipPath></defs>
+    <g clip-path="url(#neck-cut)">
+      <path id="body" fill="#2d4066" d="M254 292 L254 250 C254 222 263 196 278 175 C296 151 325 113 392 112 C425 112 448 121 462 132 L470 145 L484 180 L488 212 C480 240 480 262 487 282 L500 300 L700 500 L600 545 L520 586 L420 580 L330 545 L281 495 L245 440 L232 330 Z"/>
+      <path id="throat" fill="#a83e29" d="M345 292 L345 283 C351 251 370 222 425 206 L445 201 L497 190 L500 206 L496 212 C486 228 483 245 485 256 C487 268 490 278 495 290 Z"/>
+      <path id="forehead" fill="#a83e29" d="M412 166 C409 160 409 155 412 150 C418 142 428 137 442 134 C450 132 460 132 465 133 C480 145 491 162 495 182 L497 190 L455 198 L430 175 Z"/>
+      <path id="eye-mask" fill="#141317" d="M338 183 C362 172 385 162 405 161 C428 161 448 172 457 193 L462 200 L425 206 C395 199 365 191 338 183 Z"/>
+      <path id="bill-lower" fill="#291f33" d="M424 206 L440 198 L530 191 L539 195 C528 202 512 208 495 211 C470 211 445 209 424 206 Z"/>
+      <path id="bill" fill="#4e494a" d="M423 205.5 L494 180 C512 182 528 187 539 195 Z"/>
+      <circle id="eye-ring" cx="392" cy="182" r="22" fill="#4e494a"/>
+      <circle id="eye" cx="392" cy="182" r="17" fill="#141317"/>
+      <circle id="eye-glint" cx="387" cy="176" r="5" fill="#f8f0dd"/>
+    </g>
+  </svg>
+</svg>

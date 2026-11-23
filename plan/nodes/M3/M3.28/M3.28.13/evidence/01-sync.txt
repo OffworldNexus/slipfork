@@ -1,0 +1,4 @@
+demo     unchanged /home/slipfork/demo (seeded once; owner edits are kept)
+unchanged slipforkd.socket, slipforkd.service, /etc/apparmor.d/slipfork; enabled
+synced 607 file(s) to /home/slipfork/slipfork on 165.232.86.174
+EXIT=0

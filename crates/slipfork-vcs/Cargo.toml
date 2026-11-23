@@ -1,0 +1,10 @@
+[package]
+name = "slipfork-vcs"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+
+[dev-dependencies]
+tempfile.workspace = true

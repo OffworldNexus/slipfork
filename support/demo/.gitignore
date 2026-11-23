@@ -1,0 +1,9 @@
+.slipfork/
+.forks/
+.venv/
+__pycache__/
+*.pyc
+node_modules/
+build/
+.svelte-kit/
+.pnpm-store/

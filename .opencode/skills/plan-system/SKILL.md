@@ -18,13 +18,13 @@ uv run --no-project tools/plan.py next --limit 15
 uv run --no-project tools/plan.py show M1.1 --log --result
 uv run --no-project tools/plan.py stuck
 
-# Create & manage nodes
+# Create & manage nodes (pass inline --body or heredoc via --body-file -; never write scratch /tmp files)
 uv run --no-project tools/plan.py --agent planner new M1 \
-  --title "Implement slipfork-snow modes & !! generator" \
+  --title "Implement Forkfile modes & !! generator" \
   --kind task --owner implementer \
   --depends "M1.1" \
-  --paths "crates/slipfork-snow/**" \
-  --body-file /tmp/opencode/node-body.md
+  --paths "crates/slipfork-forkfile/**" \
+  --body $'# Goal\n...\n\n# Context\n...\n\n# Acceptance\n- cargo test -p slipfork-forkfile'
 
 # Transition status (active checks path-overlap locks automatically!)
 uv run --no-project tools/plan.py --agent lead set M1.2 active

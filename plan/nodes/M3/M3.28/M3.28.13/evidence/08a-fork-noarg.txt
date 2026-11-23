@@ -1,0 +1,50 @@
+$ git branch --show-current
+feat-vm
+$ git config --global user.email
+remy.sanchez@niji.fr
+GLOBAL_EMAIL_EXIT=0
+$ git config --global user.name
+Rémy Sanchez
+GLOBAL_NAME_EXIT=0
+$ git config --local user.email
+demo@slipfork.invalid
+LOCAL_EMAIL_EXIT=0
+--- remove every identity source for one run (restored at the end) ---
+$ git config --global user.email
+GLOBAL_EMAIL_EXIT=1
+$ git config --local user.email
+LOCAL_EMAIL_EXIT=1
+--- put the checkout on a feature branch (feat/ux -> fork feat-ux) ---
+M	app/server.py
+Switched to branch 'main'
+Deleted branch feat-vm (was 9a95661).
+Switched to a new branch 'feat/ux'
+$ git config --global user.email
+GLOBAL_EMAIL_EXIT=1
+$ slipfork fork
+[ready]     api (internal :8000 in world netns)
+world     demo:feat-ux (running, changed)
+app       http://feat-ux.demo.localhost
+worktree  /home/slipfork/demo/.worktrees/feat-ux
+cd        cd /home/slipfork/demo/.worktrees/feat-ux
+next      slipfork open --world demo:feat-ux | slipfork db --world demo:feat-ux | slipfork logs --world demo:feat-ux | slipfork restart --world demo:feat-ux | slipfork down --world demo:feat-ux
+lineage   rootfs 479f73c1a7b0 cached · postgres:18 cached · seed - - · base 4570132bffb8 reused
+FORK_EXIT=0
+--- fork checkout facts ---
+feat-ux
+BRANCH_EXIT=0
+9a95661
+HEAD_EXIT=0
+ M app/server.py
+STATUS_EXIT=0
+$ slipfork list
+WORLD            STATE     ORIGIN                                   WORKTREE
+demo             running   http://demo.localhost                    /home/slipfork/demo
+demo:feat-ux     running   http://feat-ux.demo.localhost            /home/slipfork/demo/.worktrees/feat-ux
+--- restore the owner's git identity ---
+$ git config --global user.email
+remy.sanchez@niji.fr
+GLOBAL_EMAIL_EXIT=0
+EXIT=0
+SCRIPT_EXIT=0
+OUTER_EXIT=0

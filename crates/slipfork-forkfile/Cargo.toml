@@ -1,0 +1,9 @@
+[package]
+name = "slipfork-forkfile"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_yaml_ng.workspace = true

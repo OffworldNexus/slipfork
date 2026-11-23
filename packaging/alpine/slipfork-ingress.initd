@@ -1,0 +1,22 @@
+#!/sbin/openrc-run
+# The system :80 ingress: the same per-connection handoff the systemd socket
+# unit performs, without socket activation. `sudo slipfork daemon install
+# --ingress` installs this script on Alpine.
+description="Slipfork .localhost :80 ingress"
+command="/usr/bin/slipfork"
+command_args="__ingress --listen 127.0.0.1:80"
+command_background="yes"
+pidfile="/run/${RC_SVCNAME}.pid"
+command_user="${SLIPFORK_INGRESS_USER:-}"
+capabilities="^cap_net_bind_service"
+
+depend() {
+	need net
+	after firewall
+}
+
+start_pre() {
+	checkpath --directory --mode 0755 /run
+	# Bind :80 as the non-root ingress user; runs as root before command_user.
+	sysctl -qw net.ipv4.ip_unprivileged_port_start=80
+}

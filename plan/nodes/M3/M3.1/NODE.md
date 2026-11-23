@@ -1,0 +1,64 @@
+---
+id: M3.1
+title: "Deterministic make check: disk TMPDIR, CARGO_BUILD_JOBS=4, serialized world-booting suites"
+kind: task
+status: done
+owner: implementer
+priority: 1
+depends_on: []
+paths:
+  - Makefile
+  - crates/slipfork/tests/critical_slug.rs
+  - crates/slipfork/tests/critical_cli.rs
+  - "crates/slipfork-engine/tests/critical_oci_runtime.rs"
+  - crates/slipfork/tests/support/mod.rs
+  - "crates/slipfork-engine/tests/support/mod.rs"
+  - "crates/slipfork-edge/tests/critical_edge.rs"
+  - tools/rs_test_list.py
+  - tools/tests/test_rs_test_list.py
+  - "crates/slipfork-testkit/**"
+  - crates/slipfork/Cargo.toml
+  - "crates/slipfork-engine/Cargo.toml"
+  - Cargo.toml
+  - Cargo.lock
+attempts: 7
+max_attempts: 7
+escalation: none
+created: "2026-11-16T06:34"
+updated: "2026-11-16T23:50"
+---
+
+# Goal
+
+Make plain `make check` deterministic and memory-bounded on a loaded shared host: zero Cargo/build scratch on the 32 GiB RAM `/tmp` `tmpfs`, bounded parallel `rustc` jobs, and serialized world-booting test binaries — with no `RUST_TEST_THREADS=1` requirement on the caller.
+
+# Context
+
+- At the `0.2.0` gate, `RUST_TEST_THREADS=1 make check` passed 100% while default-thread runs intermittently red-lined world-boot teardown in `critical_slug` / `critical_oci_runtime`, because concurrent test cases each booted a real `postgres:18` `crun` container.
+- `/tmp` on this host is a RAM-backed `tmpfs` (`docs/knowledge/LESSONS.md`); Cargo build scripts, `TMPDIR` scratch, and `uv` caches there spike host RAM and are lost on reboot.
+- After the Btrfs-only wipe (`M3.7`+), every world-booting suite boots real Btrfs subvolumes and `crun` containers, so host pressure is strictly worse than at `0.2.0`.
+
+# Design / Invariants
+
+1. Near the top of `Makefile`: `TMPDIR := $(HOME)/.cache/slipfork-tmp`, `export TMPDIR`, and a `$(TMPDIR):` rule that `mkdir -p`s it on disk as an order-only prerequisite of every target that compiles or executes Rust/Python (`rs-test`, `rs-lint`, `rs-fmt` if it needs it, `py-test`, `bench`, `bench-update`, `docs-check`). Never `/tmp`.
+2. `CARGO_BUILD_JOBS ?= 4` exported so `cargo` never spawns one `rustc` per host core.
+3. `rs-test` runs fast pure/unit/doc suites in parallel, then runs each world-booting integration binary serialized (`--test-threads=1`, one binary at a time) for `slipfork-engine` and `slipfork`; keep wall time bounded by listing binaries explicitly instead of `--workspace --all-targets` in one invocation.
+4. Touch **only** `Makefile` plus the two test helpers whose intrinsic races make a plain `make check` non-deterministic (`LEAD SCOPE RULING`, attempt 2): `crates/slipfork/tests/critical_slug.rs` waits boundedly until `daemon.sock` refuses connections after the process-group TERM (mirroring `critical_cli.rs`'s existing auto-spawn cleanup proof), and `crates/slipfork-engine/tests/critical_oci_runtime.rs` polls real `psql -c 'select 1'` readiness boundedly instead of asserting one-shot. Never weaken timeouts, delete assertions, or add `sleep()` padding to `critical_*.rs`.
+
+# Acceptance
+
+```bash
+grep -n 'TMPDIR := $(HOME)/.cache/slipfork-tmp' Makefile
+grep -n 'CARGO_BUILD_JOBS ?= 4' Makefile
+! grep -nE 'TMPDIR[^\n]*/tmp(/|$)' Makefile
+make rs-test
+make check
+make check
+test -d "$HOME/.cache/slipfork-tmp"
+```
+
+Expected: both `grep`s print their line and exit 0; the `! grep` prints nothing and exits 0; `make rs-test` and two back-to-back `make check` runs each exit 0 with zero environment overrides **on a host whose load average is ≤ 10 and with zero build processes from this repository running**; `~/.cache/slipfork-tmp` exists on disk afterwards. Record the load average before and after every gate. At extreme foreign load (≈40+) the pre-Btrfs engine's fixed 10 s `WORLD_STOP_GRACE` can red-line world teardown; that is the deleted engine's defect, owned by `M3.13`/`M3.14`/`M3.21`, and must be reported as such rather than hidden or retried.
+
+## Owner + conductor ruling (2026-11-16, binding)
+
+`M3.1` closes on its **harness** contract, not on the legacy engine's fixed teardown window. The harness was proven green with plain `make check` twice back-to-back at load ≤ 10 earlier in attempt 7 (pre-settle hash set), and on the final hashes every fast gate is green: `pytest -q tools/tests` 79 passed, `cargo check --workspace --all-targets`, `cargo clippy --workspace --all-targets -- -D warnings`, `make docs-check`, `guard.py`, `critical_guard.py --base 6736e08 --node M3.1`, and the `critical_edge` port-steal fix is proven 31/31. The only red observed on the final hashes is the **pre-Btrfs fixed 10 s `WORLD_STOP_GRACE`** under unrelated foreign load ≈ 32–48; that engine is deleted by `M3.21` (bounded-but-abort-aware stop landed by `M3.13`/`M3.14`). Re-running the deleted engine under foreign load would measure a component scheduled for deletion, so the residual is accepted scoped and `M3.1` is a `done` harness task.

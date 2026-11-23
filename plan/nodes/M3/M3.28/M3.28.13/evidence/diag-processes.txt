@@ -1,0 +1,25 @@
+slipfork   37492       1  0 Nov17 ?        00:00:00 /home/slipfork/slipfork/target/debug/slipforkd --state-dir /var/lib/slipfork/home/.cache/slipfork-cli-tests/slug-ZwQJp0/slipfork --runtime-dir /var/lib/slipfork/home/.cache/slipfork-cli-tests/slug-ZwQJp0/slipfork/run --listen 127.0.0.1:0 --world-init /home/slipfork/slipfork/target/debug/slipfork-world-init --crun /var/lib/slipfork/home/.cache/slipfork/test-runtime/crun-1.20-x86_64-ff8407185ec4.bin
+slipfork   37504       1  0 Nov17 ?        00:00:00 /home/slipfork/slipfork/target/debug/slipforkd --state-dir /var/lib/slipfork/home/.cache/slipfork-cli-tests/slug-1FXkG1/slipfork --runtime-dir /var/lib/slipfork/home/.cache/slipfork-cli-tests/slug-1FXkG1/slipfork/run --listen 127.0.0.1:0 --world-init /home/slipfork/slipfork/target/debug/slipfork-world-init --crun /var/lib/slipfork/home/.cache/slipfork/test-runtime/crun-1.20-x86_64-ff8407185ec4.bin
+slipfork   37621       1  0 Nov17 ?        00:00:00 /home/slipfork/slipfork/target/debug/slipforkd --state-dir /var/lib/slipfork/home/.cache/slipfork-cli-tests/slug-XcMCYn/slipfork --runtime-dir /var/lib/slipfork/home/.cache/slipfork-cli-tests/slug-XcMCYn/slipfork/run --listen 127.0.0.1:0 --world-init /home/slipfork/slipfork/target/debug/slipfork-world-init --crun /var/lib/slipfork/home/.cache/slipfork/test-runtime/crun-1.20-x86_64-ff8407185ec4.bin
+slipfork   37677       1  0 Nov17 ?        00:00:00 /home/slipfork/slipfork/target/debug/slipforkd --state-dir /var/lib/slipfork/home/.cache/slipfork-cli-tests/slug-tGNEO2/slipfork --runtime-dir /var/lib/slipfork/home/.cache/slipfork-cli-tests/slug-tGNEO2/slipfork/run --listen 127.0.0.1:0 --world-init /home/slipfork/slipfork/target/debug/slipfork-world-init --crun /var/lib/slipfork/home/.cache/slipfork/test-runtime/crun-1.20-x86_64-ff8407185ec4.bin
+slipfork   37708       1  0 Nov17 ?        00:00:00 /home/slipfork/slipfork/target/debug/slipforkd --state-dir /var/lib/slipfork/home/.cache/slipfork-cli-tests/slug-P6jX6A/slipfork --runtime-dir /var/lib/slipfork/home/.cache/slipfork-cli-tests/slug-P6jX6A/slipfork/run --listen 127.0.0.1:0 --world-init /home/slipfork/slipfork/target/debug/slipfork-world-init --crun /var/lib/slipfork/home/.cache/slipfork/test-runtime/crun-1.20-x86_64-ff8407185ec4.bin
+slipfork   37721       1  0 Nov17 ?        00:00:00 /home/slipfork/slipfork/target/debug/slipforkd --state-dir /var/lib/slipfork/home/.cache/slipfork-cli-tests/slug-2UCTtQ/slipfork --runtime-dir /var/lib/slipfork/home/.cache/slipfork-cli-tests/slug-2UCTtQ/slipfork/run --listen 127.0.0.1:0 --world-init /home/slipfork/slipfork/target/debug/slipfork-world-init --crun /var/lib/slipfork/home/.cache/slipfork/test-runtime/crun-1.20-x86_64-ff8407185ec4.bin
+slipfork   37778       1  0 Nov17 ?        00:00:00 /home/slipfork/slipfork/target/debug/slipforkd --state-dir /var/lib/slipfork/home/.cache/slipfork-cli-tests/slug-6162sB/slipfork --runtime-dir /var/lib/slipfork/home/.cache/slipfork-cli-tests/slug-6162sB/slipfork/run --listen 127.0.0.1:0 --world-init /home/slipfork/slipfork/target/debug/slipfork-world-init --crun /var/lib/slipfork/home/.cache/slipfork/test-runtime/crun-1.20-x86_64-ff8407185ec4.bin
+slipfork   62912   62849  1 04:06 ?        00:00:00 python3 /app/server.py
+slipfork   63370   62455  0 04:07 ?        00:00:00 nsenter --target=62849 --user --preserve-credentials --mount --net --ipc --pid --wdns=/ -- /.slipfork/bin/crun --cgroup-manager=disabled --root /.slipfork/run run -b /.slipfork/oci/sf8-pg_clusters_psql sf8-pg_clusters_psql
+slipfork   63375   63370  0 04:07 ?        00:00:00 /.slipfork/bin/crun --cgroup-manager=disabled --root /.slipfork/run run -b /.slipfork/oci/sf8-pg_clusters_psql sf8-pg_clusters_psql
+--- netns
+--- world dirs
+total 0
+drwxr-xr-x 1 slipfork slipfork 176 Nov 18 04:06 .
+drwx------ 1 slipfork slipfork 154 Nov 18 04:05 ..
+drwxr-xr-x 1 slipfork slipfork  22 Nov 17 23:19 canonical-1
+drwxr-xr-x 1 slipfork slipfork  22 Nov 17 23:19 canonical-2
+drwxr-xr-x 1 slipfork slipfork  22 Nov 17 23:27 canonical-3
+drwxr-xr-x 1 slipfork slipfork  22 Nov 17 23:47 canonical-4
+drwxr-xr-x 1 slipfork slipfork  22 Nov 17 23:48 canonical-5
+drwxr-xr-x 1 slipfork slipfork  22 Nov 17 16:35 canonical-6
+drwxr-xr-x 1 slipfork slipfork  22 Nov 17 23:56 canonical-7
+drwxr-xr-x 1 slipfork slipfork  22 Nov 18 04:06 canonical-8
+EXIT=0
+OUTER_EXIT=0

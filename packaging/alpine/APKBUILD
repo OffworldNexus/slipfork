@@ -1,0 +1,29 @@
+# Maintainer: Offworld Nexus <hello@offworld.nexus>
+# Built by scripts/build-apk.sh inside alpine:3.21 from the musl bundle; the
+# payload is a dynamically linked musl binary (a static one cannot dlopen).
+pkgname=slipfork
+pkgver=0.1.0
+pkgrel=0
+pkgdesc="Copy-on-write Btrfs development environments, Docker-free"
+url="https://github.com/OffworldNexus/slipfork"
+arch="x86_64 aarch64"
+license="custom"
+depends="crun btrfs-progs slirp4netns libgcc"
+makedepends=""
+install=""
+subpackages=""
+options="!check"
+source=""
+builddir="$srcdir"
+sha512sums=""
+
+build() {
+	# The bundle is staged by scripts/build-apk.sh next to this APKBUILD; it is not
+	# downloaded, so abuild needs no remote checksum.
+	tar -xzf "$startdir"/payload.tar.gz -C "$srcdir"
+}
+
+package() {
+	mkdir -p "$pkgdir"
+	cp -a "$srcdir"/payload/. "$pkgdir"/
+}

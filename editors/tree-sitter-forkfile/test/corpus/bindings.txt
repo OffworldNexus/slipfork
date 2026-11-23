@@ -1,0 +1,87 @@
+==================
+Argument blocks, declared domains, boolean expressions, comments
+==================
+
+# forkfile: 0.1
+
+# a comment-only line stays attached
+
+domain mail
+
+image app . {
+  arg {
+    COMMIT_SHA = deployment.commit_sha
+    MODE = dev
+  }
+  service worker {
+    port 7000
+    route / domain mail
+    run: echo $env.MODE
+  }
+}
+
+on dev & !staging | preview {
+  domain preview
+}
+---
+
+(source_file
+  (header)
+  (comment)
+  (domain_declaration
+    (identifier))
+  (image
+    (identifier)
+    (image_source
+      (directory))
+    (arg_item
+      (arg_entry
+        (identifier)
+        (property
+          (identifier)
+          (identifier)))
+      (arg_entry
+        (identifier)
+        (identifier)))
+    (service
+      (identifier)
+      (port
+        (integer))
+      (route
+        (route_path)
+        (route_modifier
+          (domain_clause
+            (domain_filter
+              (identifier)))))
+      (hook
+        (command
+          (command_text)))))
+  (on_statement
+    (binary_expression
+      (binary_expression
+        (identifier)
+        (unary_expression
+          (identifier)))
+      (identifier))
+    (domain_declaration
+      (identifier))))
+
+==================
+Rejected: a route domain wildcard
+==================
+
+# forkfile: 0.1
+
+route / domain mail.*
+
+---
+
+(source_file
+  (header)
+  (ERROR
+    (identifier)
+    (route_path))
+  (domain_declaration
+    (identifier))
+  (ERROR
+    (UNEXPECTED '*')))

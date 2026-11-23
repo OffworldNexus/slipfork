@@ -1,0 +1,7 @@
+$ ssh -N -L 8080:127.0.0.1:80 slipfork@165.232.86.174   # droplet IP stands in for the printed slipfork-dev-vm hostname
+$ curl -fsS -o /dev/null -w '%{http_code}\n' -H 'Host: demo.localhost:8080' http://127.0.0.1:8080/
+200
+EXIT=0
+$ curl -fsS -H 'Host: demo.localhost:8080' http://127.0.0.1:8080/
+{"debug": true, "hello": "world-M3.28.13-r2", "host": "slipfork-dev-vm", "secret_len": 32, "world": "demo"}
+EXIT=0

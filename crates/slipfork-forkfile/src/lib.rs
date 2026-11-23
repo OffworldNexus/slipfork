@@ -1,0 +1,89 @@
+//! The `Forkfile` language front end: lexer, parser, AST, caret diagnostics,
+//! comment-preserving canonical formatting, whole-file static semantics, and
+//! deterministic legacy `snow.yml` migration.
+
+/// Implements span-insensitive structural equality for an AST struct.
+///
+/// Spans are source metadata; two nodes are equal when their syntax matches.
+macro_rules! ast_eq {
+    ($type:ident { $($field:ident),+ $(,)? }) => {
+        impl PartialEq for $type {
+            fn eq(&self, other: &Self) -> bool {
+                true $(&& self.$field == other.$field)+
+            }
+        }
+    };
+}
+
+pub mod ast;
+pub mod boot;
+pub mod check;
+mod decls;
+pub mod diag;
+mod diff;
+pub mod dns;
+mod eval;
+mod expr;
+mod expr_parse;
+pub mod facts;
+pub mod fmt;
+mod gate;
+mod image;
+mod lexer;
+pub mod migrate;
+mod parser;
+mod resources;
+mod secret;
+mod service;
+mod span;
+mod token;
+mod visit;
+
+pub use ast::*;
+pub use boot::{
+    BootPlan, DirectBin, PrequelTool, SetupNode, ToolExec, boot_plan, boot_plan_with, direct_bin,
+};
+pub use check::{CheckedForkfile, Symbol, SymbolKind, SymbolTable, check};
+pub use diag::{Diagnostic, Diagnostics};
+pub use dns::{DnsError, DnsLabel};
+pub use eval::{FeatureEdit, FeatureSet, Resolvers};
+pub use expr::*;
+pub use facts::{keywords, self_properties};
+pub use fmt::FormatCheck;
+pub use gate::{GatedItem, each_enabled};
+pub use migrate::migrate;
+pub use secret::SecretValue;
+pub use span::{Position, Span};
+pub use visit::{EnvBinding, ResourceDecl, ResourceDeclKind, ServiceDecl};
+
+/// Parses a `Forkfile`, returning every diagnostic when it is invalid.
+pub fn parse(source: &str) -> Result<Forkfile, Diagnostics> {
+    parser::parse(source)
+}
+
+/// The one load path for a `Forkfile`: parse, then run whole-file static semantics.
+///
+/// Every caller (`up`, `fmt`, the daemon, the supervisor, and `open`) must use this so a document
+/// can never pass one load path and fail another.
+pub fn compile(source: &str) -> Result<CheckedForkfile, Diagnostics> {
+    let document = parse(source)?;
+    check(&document).map_err(|(_, diagnostics)| diagnostics)
+}
+
+/// Renders a parsed document canonically.
+#[must_use]
+pub fn format(doc: &Forkfile) -> String {
+    fmt::format(doc)
+}
+
+/// Parses and renders a source document, returning the canonical text plus a
+/// line diff (empty when the source is already canonical).
+pub fn format_check(source: &str) -> Result<FormatCheck, Diagnostics> {
+    let document = parse(source)?;
+    let formatted = fmt::format(&document);
+    let diff = diff::line_diff(source, &formatted, "Forkfile");
+    Ok(FormatCheck { formatted, diff })
+}
+
+#[cfg(test)]
+mod tests;

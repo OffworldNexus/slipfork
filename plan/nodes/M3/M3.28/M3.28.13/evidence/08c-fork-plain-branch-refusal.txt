@@ -1,0 +1,23 @@
+$ slipfork up
+[ready]     api (internal :8000 in world netns)
+world     demo (running, changed)
+app       http://demo.localhost
+worktree  /home/slipfork/demo
+next      slipfork open | slipfork db | slipfork logs | slipfork restart | slipfork down
+lineage   rootfs 479f73c1a7b0 cached · postgres:18 cached · seed - - · base 4570132bffb8 reused
+UP_EXIT=0
+$ git checkout -b feat-vm
+BRANCH_ADD_EXIT=0
+$ slipfork fork
+Switched to a new branch 'feat-vm'
+slipfork: fork 'feat-vm' already exists (refs/heads/feat-vm, refs/slipfork/feat-vm/wip, or .worktrees/feat-vm); refusing to overwrite it
+FORK_EXIT=1
+$ git checkout feat/ux && git branch -D feat-vm
+M	app/server.py
+Switched to branch 'feat/ux'
+CHECKOUT_BACK_EXIT=0
+Deleted branch feat-vm (was 9a95661).
+BRANCH_DELETE_EXIT=0
+EXIT=0
+SCRIPT_EXIT=0
+OUTER_EXIT=0

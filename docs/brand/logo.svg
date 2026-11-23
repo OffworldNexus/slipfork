@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="440" height="268" viewBox="250 108 294 179">
+  <title>Slipfork — barn swallow head logo</title>
+  <style>
+    /* The site loads this file as an &lt;img&gt;, so page CSS cannot reach into it and
+       the light scheme is answered here. The paper cutout below is the one a
+       dark header needs; on a light header it would vanish, so a light scheme
+       draws the ink instead. Same two colours as `mascot-head-ink.svg` /
+       `mascot-head-paper.svg`. */
+    @media (prefers-color-scheme: light) {
+      #head-cutout { fill: #141317; }
+    }
+  </style>
+  <path id="head-cutout" fill="#f8f0dd" fill-rule="evenodd" d="M254 283 L254 250 C254 222 263 196 278 175 C296 151 325 113 392 112 C425 112 448 121 463 132.5 C480 145 491 162 494 180 C512 182 528 187 539 195 C528 202 512 208 495 211 L496 212 C486 228 483 245 485 256 C486.6 265.6 488.84 273.92 492.23 283 Z M338 183 C350.92 177.08 363.56 171.44 375.59 167.35 A22 22 0 0 1 399.84 161.44 C401.58 161.23 403.3 161.08 405 161 C428 161 448 172 457 193 L424 205.5 C417.22 203.98 410.39 202.38 403.56 200.72 A22 22 0 0 1 372.86 192.85 C360.91 189.64 349.2 186.32 338 183 Z M392 176 A5 5 0 1 0 382 176 A5 5 0 1 0 392 176 Z"/>
+</svg>

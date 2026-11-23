@@ -1,0 +1,65 @@
+{
+  "changed": false,
+  "lineage": {
+    "base": {
+      "key": "4570132bffb8d480614da23adf1ad1bbe56ab5bf5512b93386dacfcb71497107",
+      "millis": null
+    },
+    "rootfs": {
+      "cache": "miss",
+      "digest": "01a4b324b7cb62b5a537be65b3765b1ed99ec7bcf5f9b77736e2e1b543ea93b6",
+      "millis": 7406
+    },
+    "seed": null,
+    "services": [
+      {
+        "cache": "hit",
+        "id": "postgres:18",
+        "millis": null
+      }
+    ]
+  },
+  "next": [
+    "slipfork open",
+    "slipfork db",
+    "slipfork logs",
+    "slipfork restart",
+    "slipfork down"
+  ],
+  "ok": true,
+  "origin": "http://demo.localhost",
+  "resources": [
+    {
+      "id": "demo",
+      "reason": "no_remote_session",
+      "resolved": "local",
+      "strategy": "prefer_remote"
+    }
+  ],
+  "restarted": [],
+  "services": [
+    {
+      "id": "api",
+      "kind": "component",
+      "pid": null,
+      "port": null,
+      "state": "exited",
+      "uptime_secs": null,
+      "world": "demo"
+    },
+    {
+      "id": "pg_clusters.psql",
+      "kind": "backing_service",
+      "pid": 63370,
+      "port": 5432,
+      "state": "running",
+      "uptime_secs": 6,
+      "world": "demo"
+    }
+  ],
+  "state": "running",
+  "worktree": "/home/slipfork/demo",
+  "world": "demo"
+}
+EXIT=0
+OUTER_EXIT=0

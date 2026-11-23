@@ -1,0 +1,76 @@
+---
+id: M2.16
+title: "CLI part 1: slipforkd daemon composition root, auto-spawn thin client, up/down/fork/drop/list/prune/secret/share/daemon unit"
+kind: task
+status: done
+owner: implementer
+priority: 3
+depends_on: [M2.4, M2.5, M2.7, M2.10, M2.12, M2.14]
+paths:
+  - "crates/slipfork/**"
+  - "crates/slipfork-snow/src/provider.rs"
+  - "crates/slipfork-dag/src/resources.rs"
+  - "crates/slipfork-engine/src/env.rs"
+  - "crates/slipfork-edge/src/daemon.rs"
+  - "crates/slipfork-edge/src/daemon/**"
+  - docs/index.md
+  - "docs/getting-started.md"
+  - docs/reference/cli.md
+  - "docs/agents-and-opencode.md"
+  - README.md
+attempts: 5
+max_attempts: 5
+escalation: none
+created: "2026-11-15T16:40"
+updated: "2026-11-15T21:42"
+---
+
+<!-- splice: replace everything after the frontmatter of plan/nodes/M2/M2.16/NODE.md with this file. Frontmatter untouched (no `depends_on`/`paths` change). Source of truth: ADR-0009 §2–§3 + ARCHITECTURE.md §3.3/§3.4 (`M2.25`). -->
+
+# Goal
+
+Wire the unified `slipforkd` daemon Composition Root (`H-010` #1, `H-011`) and ship thin-client CLI part 1 (`up`, `down`, `fork`, `drop`, `list`, `prune`, `secret set/unset/list`, `share [--stop]`, `daemon unit`, plus zero-setup `slipforkd` auto-spawn and deletion of M1's `snap` subcommand).
+
+# Context
+
+- `M2.8` to `M2.10` shipped the edge daemon (`<state_dir>/http-ingress.sock` + TCP HTTP ingress), routing, proxying, `WorldRegistry`, `DaemonControl`, and unit renderer as a library; `M2.6`/`M2.7` shipped the engine contract (`slipfork-world-init` PID 1 + `netns.sock` dialer + `LocalIngressBridge`; there is no engine `current_username` helper — the CLI's `UserIdentity` port owns account lookup); `M2.3` to `M2.5` shipped the domain types. Nothing yet assembles them.
+- `ADR-0008` and `H-010` #1 fix `slipforkd` as the single stateful Rust Composition Root: every stateful adapter is constructed there and injected as a trait object, while `slipfork` is a thin client over `<runtime_dir>/daemon.sock` (`0600`).
+- Per closed-by-deferral `H-006`, the tunnel registrar injected by `slipforkd` is `UnavailableTunnelRegistrar` (`share` fails closed while `share --stop` is an idempotent no-op, `ADR-0005` §2).
+- `list` must print exactly one URL per world (`H-008`): the `WorldOrigin` assigned before materialization is the single source of that URL.
+- **Scope boundary vs `ADR-0009`:** this node starts only `ServiceRuntime::WorldProcess` components and sees `WorldSpec` without a populated `rootfs` (the field lands in `M2.28`, the `BaseImageBuilder`/`DockerfileStageBuilder` wiring, `--host-caches`, and container-scoped `db`/`redis` land in `M2.29`, which depends on `M2.28` and `M2.17`). Do **not** add a buildx invocation, a `crun` call, or a second `WorldSpec` constructor here.
+
+# Design / Invariants
+
+1. **Unified `slipforkd` Composition Root & Explicit Paths (`H-010` #1, `H-011` #4, `ADR-0008` §4–§5):** `slipforkd --state-dir <path> --runtime-dir <path>` (`crates/slipfork`) is the **sole stateful Rust Composition Root** and never guesses `$XDG_RUNTIME_DIR` or `current_dir()`: it wires `FileVaultProvider` (`0600`) / `LayeredSecretProvider`, `ReflinkNetnsEngine` (locating sibling `slipfork-world-init` deterministically), persistent `OsppClient` (`resource_offer()`) + `FallbackDeviceKeySigner<TpmdDeviceKeySigner, SoftwareP256Signer>` + `DiskSeedDumpStore`, `ResourcePlan::resolve`, `ProjectSlugOverride` (implemented once over `slipfork_dag::SlipforkConfig`) -> `RepoRootResolver` + `VcsWorkspaceFactory`, `WorldRegistry` (`mint_origin`, `attach_world`, `release_world`, `share_world`, `unshare_world` + `IngressRoute` prefix table), and `UnavailableTunnelRegistrar`, serving HTTP/WS ingress (`LISTEN_FDS` or `--listen <addr>` + optional `--forward-port <port>`, **plus** `0600` `<state_dir>/http-ingress.sock`) and `DaemonControl` on `<runtime_dir>/daemon.sock` (`0600`). `M2.29` adds `BaseImageBuilder` (`DockerfileStageBuilder`) to this same constructor graph — it is injected here, never constructed inside an engine.
+2. **Thin `slipfork` client, `UserIdentity` & zero-setup auto-spawn:** `slipfork` holds **no** `WorldEngine`, `SecretProvider`, or `TunnelLease`; it parses `clap` args, checks `HOME` fail-closed before any side effect, resolves `state_dir`/`runtime_dir` and the developer's OS account name once through a tiny `UserIdentity` port implemented by the CLI composition root as an `id -un` OS-account adapter (never ambient `$USER`/`$LOGNAME`), connects to `<runtime_dir>/daemon.sock` via `DaemonControlClient`, and **auto-spawns** `slipforkd --listen 127.0.0.1:0 --state-dir <path> --runtime-dir <path>` in the background when `<runtime_dir>/daemon.sock` is absent so `slipfork up` and CI/e2e work zero-setup without systemd. Delete M1's `snap` subcommand.
+3. **`slipfork up` & `fork` (`--world <fork>`, typed `cwd`):** Uniform `--world <fork>` selector everywhere (zero positional `[<fork>]` on `up`/`down`/`share`), passing explicit `cwd: PathBuf` in `UpRequest`/`ForkRequest`/`WorldSelector`. `slipforkd` resolves repo root from `req.cwd` + `effective_components(mode)` + `OsppClient::resource_offer()` -> `ResourcePlan::resolve` (`--no-dump | --refresh-dump`, `--resources local`), mints `WorldOrigin` via `WorldRegistry::mint_origin` before materialization, sets `WorldSpec.local_ingress = Some(LocalIngressBridge { port: http_ingress_port, host_ingress_sock: state_dir.join("http-ingress.sock") })` when `Local` (`H-011` #4 Variant a), attaches the world via `WorldRegistry::attach_world`, streams hooks live over `<runtime_dir>/daemon.sock` (preserving failed worlds), awaits readiness, and returns **exactly one** `origin` URL (`http://<host>` on `:80`, `http://<host>:<port>` otherwise) plus `[resources]` diagnostics. Components are started as `ServiceRuntime::WorldProcess` specs; `M2.29` adds `ServiceRuntime::OciContainer` backing services from the same `ResourcePlan` without changing this request path.
+4. **`list [--json]`:** One line per world, one URL per world (`docs/design/target-dx.md` §1.5 JSON schema).
+5. **`down [--world <fork>]` / `drop <fork>` / `prune [--dry-run | --yes]`:** `down` (`WorldRegistry::release_world`) stops world services idempotently while keeping `.worktrees/<fork>`; `drop` destroys the fork world and worktree; `prune` previews (`--dry-run`) or reaps orphaned worlds/snapshots and (`M2.29`) unreferenced `cache/{rootfs,oci}` digests.
+6. **`secret set [--force] <KEY>` / `unset <KEY>` / `list`:** Routes over `DaemonControl::secret_*`; refuses overwriting an existing key unless `--force` is passed; never echoes or logs secret values.
+7. **`share [--stop] [--world <fork>]` (`ADR-0005` §2):** `DaemonControl::share` (`WorldRegistry::share_world`) fails closed (`EdgeError::NoForwardListener` when no forward listener is bound, or `EdgeError::TunnelUnavailable` via `UnavailableTunnelRegistrar`), while `DaemonControl::unshare` (`WorldRegistry::unshare_world`) on an unshared world is an idempotent success no-op returning `WorldOrigin::Local`.
+8. **`daemon unit [--only socket|service] [--forward-port <u16>]`:** Resolves `UnitSpec.user` from `UserIdentity` (`User=<developer-user>`, never a `%` template specifier), sets `ExecStart=<executable> --state-dir <state_dir> --runtime-dir <runtime_dir>`, and renders non-template units purely to `stdout` via `UnitSpec` (`M2.10`) with zero filesystem writes.
+9. **`HOME` unset** is a fail-closed precondition checked before any mutation or network call, with a one-line actionable message. Exit codes: `0` success, `1` runtime error, `2` usage error.
+
+# Acceptance
+
+```bash
+# 1. Workspace helper + CLI/daemon binaries build and expose help without side effects.
+cargo build -p slipfork-engine --bins -p slipfork --bins
+cargo run -q -p slipfork --bin slipfork -- --help > /dev/null
+cargo run -q -p slipfork --bin slipforkd -- --help > /dev/null
+
+# 2. Lifecycle, one-URL-per-world, HOME-unset, and share/unshare asymmetry paths.
+cargo test -p slipfork --all-targets
+cargo test -p slipfork --test critical_cli -- --nocapture up_down
+cargo test -p slipfork --test critical_cli -- --nocapture one_url_per_world
+cargo test -p slipfork --test critical_cli -- --nocapture home_unset
+cargo test -p slipfork --test critical_cli -- --nocapture share_blocked
+
+# 3. Units render explicit developer user (never % specifiers), registry and secrets behave.
+cargo run -q -p slipfork --bin slipfork -- daemon unit --only socket | rg -c "ListenStream="
+! (cargo run -q -p slipfork --bin slipfork -- daemon unit --only service | rg -q 'User=%|^User=$')
+cargo clippy -p slipfork --all-targets -- -D warnings
+make check
+```
+
+All commands exit `0`. Adversarial assertions required: `up` with `HOME` unset mutates nothing, `list` emits exactly one URL per world (asserted by line count), a second `down` is idempotent, `secret set` on an existing `!!` key is refused, `share` exits non-zero while `share --stop` on a local world exits `0`, and `daemon unit --only service` emits the resolved username rather than any `%` specifier.
