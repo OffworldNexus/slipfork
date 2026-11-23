@@ -132,9 +132,11 @@ fn native_dockerfile_multistage_build_lifecycle() {
         });
     assert_eq!(cached.cache_misses, 0, "an identical rebuild never re-runs");
     assert_eq!(cached.cache_hits, 5, "every step must hit the sealed cache");
+    // 2-vCPU CI scheduler jitter on a loop-backed ext4 image can triple wall-clock; 250ms still
+    // catches a rebuild that re-executes a step instead of hitting the sealed cache.
     assert!(
-        cached.build_time < Duration::from_millis(100),
-        "a sealed-cache rebuild must take < 100ms, took {:?}",
+        cached.build_time < Duration::from_millis(250),
+        "a sealed-cache rebuild must take < 250ms, took {:?}",
         cached.build_time
     );
     assert_eq!(

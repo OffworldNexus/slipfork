@@ -837,12 +837,12 @@ fn world_pod_lifecycle() {
         run.join(".slipfork-store/worlds/probe-a.pg.m339pg"),
         "PGDATA must be a flat sibling of the world, never nested inside it"
     );
-    // One `SNAP_CREATE_V2` ioctl commits one Btrfs transaction: measured 8.6–27.2ms against this
-    // volume (network-attached block storage), ~0.3ms on local NVMe. The ceiling guards against
-    // added user-space work (a second ioctl, a copy, a syncfs), not block-device commit latency.
+    // One `SNAP_CREATE_V2` ioctl: ~0.3ms local NVMe, 8.6–27.2ms raw cloud volume, 60–110ms on
+    // loop-backed CI Btrfs. The ceiling catches added user-space work (a second ioctl, a copy, a
+    // syncfs) or an `initdb` re-run (> 1s), never block-device commit latency.
     assert!(
-        pgdata.elapsed < Duration::from_millis(50),
-        "PGDATA clone took {:?}, budget 50ms (one kernel snapshot ioctl)",
+        pgdata.elapsed < Duration::from_millis(250),
+        "PGDATA clone took {:?}, budget 250ms (one kernel snapshot ioctl)",
         pgdata.elapsed
     );
     assert!(

@@ -2,16 +2,16 @@
 id: M3.68
 title: "Align critical_btrfs_live & critical_pod_runtime SNAP_CREATE_V2 budgets with loop-backed GHA Btrfs commit latency"
 kind: task
-status: ready
+status: done
 owner: implementer
 priority: 3
 depends_on: []
 paths: ["crates/slipfork-world/tests/**", "crates/slipfork-image/tests/**"]
-attempts: 0
+attempts: 1
 max_attempts: 3
 escalation: none
 created: "2026-11-23T02:38"
-updated: "2026-11-23T02:38"
+updated: "2026-11-23T02:39"
 ---
 
 # Goal
