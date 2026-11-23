@@ -3327,3 +3327,6 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-23T20:46 [M3.73] (lead) Mach-O diagnostic from the published macos-26 artifact: platform macos, sdk 26.5, minos 11.0 (same as macos-15 artifact: sdk 15.5, minos 11.0) -> floor did NOT 
 - 2026-11-23T20:47 [M3.73] (lead) ddbae7f run 45248545947: 26/26 Packages jobs success; CI and Docs success on the same SHA
 - 2026-11-23T20:47 [M3.73] (lead) status active -> done
+- 2026-11-23T20:47 [M3] (conductor) status active -> done
+- 2026-11-23T20:47 HUMAN H-024 [release-gate] opened by conductor (node M3)
+- 2026-11-23T20:47 AUTOPILOT off by conductor Awaiting 38/38 GHA green on the final commit & human merge of PR #2
