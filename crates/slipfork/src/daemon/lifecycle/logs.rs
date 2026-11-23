@@ -24,6 +24,7 @@ use super::core::{Core, World};
 use super::stream::{SHELLABLE, load_document, project_param, world_rows};
 use crate::daemon::registry::RegistryEntry;
 use crate::ps::PsKind;
+use crate::world::features::WorldFeatures;
 
 /// Kinds bare `slipfork logs` merges by default (application services only).
 const SERVICES: &[PsKind] = &[PsKind::Service];
@@ -211,7 +212,7 @@ impl Core {
         let (ids, explicit) = if targets.is_empty() {
             let mut ids = capture_ids(&dir);
             if !all {
-                let services = service_ids(document);
+                let services = service_ids(project, document)?;
                 ids.retain(|id| services.contains(id));
             }
             (ids, false)
@@ -623,16 +624,17 @@ fn unknown_target(id: &str) -> Failure {
     )
 }
 
-fn service_ids(document: Option<&Forkfile>) -> Vec<String> {
-    document
-        .map(|document| {
-            document
-                .services()
-                .into_iter()
-                .map(|service| service.id.to_owned())
-                .collect()
-        })
-        .unwrap_or_default()
+fn service_ids(project: &Path, document: Option<&Forkfile>) -> Result<Vec<String>, Failure> {
+    let Some(document) = document else {
+        return Ok(Vec::new());
+    };
+    let features = WorldFeatures::load_resolved(project, document)
+        .map_err(|error| Failure::new("feature", error))?;
+    Ok(document
+        .services_with(&features)
+        .into_iter()
+        .map(|service| service.id.to_owned())
+        .collect())
 }
 
 /// Every `<id>.log` stem in one world's capture directory, sorted.

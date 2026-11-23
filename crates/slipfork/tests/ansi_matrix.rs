@@ -96,6 +96,7 @@ fn json_probe(verb: &str) -> Option<Vec<&'static str>> {
         "db" => vec!["db", "--json"],
         "redis" => vec!["redis", "--json"],
         "env" => vec!["env", "--json"],
+        "features" => vec!["features", "--json"],
         "secret" => vec!["secret", "list", "--json"],
         "open" => vec!["open", "--json"],
         "auth" => vec!["auth", "--json"],

@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use slipfork_forkfile::{direct_bin, no_sync_uv, tool_prefix};
+use slipfork_forkfile::{FeatureSet, direct_bin, no_sync_uv, tool_prefix};
 use slipfork_world::{Bind, BindSource, PodEnv};
 
 const DEFAULT_PATH: &str = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
@@ -13,6 +13,15 @@ pub(super) fn project_bind(project: &Path) -> Bind {
         source: BindSource::Host(project.to_path_buf()),
         destination: "/project".to_owned(),
         read_only: false,
+    }
+}
+
+/// The `/project` bind a pod gets: only a `dev` world sees the live checkout.
+pub(super) fn project_binds(features: &FeatureSet, project: &Path) -> Vec<Bind> {
+    if features.contains("dev") {
+        vec![project_bind(project)]
+    } else {
+        Vec::new()
     }
 }
 
@@ -258,8 +267,30 @@ mod tests {
 
     use tempfile::TempDir;
 
-    use super::ServiceLaunch;
+    use super::{ServiceLaunch, project_binds};
     use slipfork_world::PodEnv;
+
+    /// `/project` is a dev-only bind: dropping `dev` leaves pods on the built rootfs alone.
+    #[test]
+    fn only_a_dev_world_binds_the_live_project() {
+        let source = "# forkfile: 0.1\n\nimage base from python:3.13-slim {\n  service api {\n    run: sleep 3600\n  }\n}\n";
+        let checked = slipfork_forkfile::compile(source).expect("compile the fixture");
+        let dev = checked.document.default_features();
+        assert!(dev.contains("dev"));
+        let binds = project_binds(&dev, std::path::Path::new("/var/tmp/demo"));
+        assert_eq!(binds.len(), 1);
+        assert_eq!(binds[0].destination, "/project");
+
+        let bare = checked
+            .document
+            .resolve_features(true, &[])
+            .expect("resolve an empty base");
+        assert!(!bare.contains("dev"));
+        assert!(
+            project_binds(&bare, std::path::Path::new("/var/tmp/demo")).is_empty(),
+            "a non-dev world must not see the live checkout"
+        );
+    }
 
     fn touch(root: &TempDir, relative: &str) {
         let path = root.path().join(relative);

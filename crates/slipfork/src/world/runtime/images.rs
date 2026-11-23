@@ -8,6 +8,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex};
 
+use slipfork_forkfile::FeatureSet;
 use slipfork_forkfile::ast::Forkfile;
 use slipfork_image::{
     Architecture, BuildArgs, BuildRequest, Credentials, ImageLayout, ImageReference,
@@ -85,6 +86,7 @@ pub(super) struct ImageCache {
     project: PathBuf,
     doc: Forkfile,
     scheme: String,
+    features: FeatureSet,
     puller: OciPuller,
     builder: NativeImageBuilder,
     images: Vec<ImageNode>,
@@ -111,6 +113,7 @@ impl ImageCache {
         agent: &str,
         host: StepHost,
         scheme: &str,
+        features: FeatureSet,
     ) -> Self {
         let credentials = Credentials::Anonymous;
         let images_root = layout.images_root();
@@ -159,6 +162,7 @@ impl ImageCache {
         Self {
             world,
             scheme: scheme.to_owned(),
+            features,
             project: project.to_path_buf(),
             doc: doc.clone(),
             puller,
@@ -266,17 +270,19 @@ impl ImageCache {
                     .unwrap_or_else(|| PathBuf::from("Dockerfile")),
             );
             let mut args = BuildArgs::new();
-            for (key, value) in self
-                .doc
-                .eval_image_args(self.world.as_str(), &self.scheme, image)
-            {
+            for (key, value) in self.doc.eval_image_args_with(
+                self.world.as_str(),
+                &self.scheme,
+                image,
+                &self.features,
+            ) {
                 args.declare(key, value);
             }
             let request = BuildRequest {
                 context,
                 dockerfile,
                 args,
-                target: self.doc.eval_image_stage(image),
+                target: self.doc.eval_image_stage_with(image, &self.features),
             };
             let mut tee = BuildLog::new(log, &self.logs_root, image);
             let report = match self.builder.build(&request, &mut tee) {
@@ -484,6 +490,7 @@ mod tests {
                 1000,
             ),
             "http",
+            doc.default_features(),
         );
         let mut sink = BootSink::for_step(
             Arc::new(Mutex::new(Emitter::closed())),

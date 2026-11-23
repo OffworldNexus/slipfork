@@ -10,8 +10,8 @@ use clap::{ColorChoice, CommandFactory, FromArgMatches};
 use serde_json::json;
 
 use crate::commands::{
-    AuthArgs, EnvArgs, ExecArgs, FmtArgs, LogsArgs, MigrateArgs, OpenArgs, SecretArgs, SecretVerb,
-    Session, TargetArgs, emit,
+    AuthArgs, EnvArgs, ExecArgs, FeaturesArgs, FmtArgs, LogsArgs, MigrateArgs, OpenArgs,
+    SecretArgs, SecretVerb, Session, TargetArgs, emit,
 };
 use crate::world::{DownArgs, DropArgs, ForkArgs, RestartArgs, SuperviseArgs, UpArgs};
 
@@ -61,14 +61,24 @@ fn dispatch(cli: Cli, session: Session) -> ExitCode {
         Command::Status => session.status(json, verbose),
         Command::Ps => session.ps(json, verbose),
         Command::Doctor => session.doctor(json),
-        Command::Up { target } => session.up(&UpArgs { json, target }),
+        Command::Up { target, features } => session.up(&UpArgs {
+            json,
+            target,
+            features: features.features,
+            no_default_features: features.no_default_features,
+        }),
         Command::Down { target } => session.down(&DownArgs { json, target }),
         Command::Restart { target, service } => session.restart(&RestartArgs {
             target,
             service,
             json,
         }),
-        Command::Fork { name } => session.fork(&ForkArgs { name, json }),
+        Command::Fork { name, features } => session.fork(&ForkArgs {
+            name,
+            json,
+            features: features.features,
+            no_default_features: features.no_default_features,
+        }),
         Command::Drop { name, force } => session.drop(&DropArgs { name, force, json }),
         Command::Logs {
             targets,
@@ -101,9 +111,21 @@ fn dispatch(cli: Cli, session: Session) -> ExitCode {
             }
             session.exec(&ExecArgs { target, json, argv })
         }
-        Command::Env { component, reveal } => session.env(&EnvArgs {
+        Command::Env {
             component,
             reveal,
+            features,
+        } => session.env(&EnvArgs {
+            component,
+            reveal,
+            json,
+            features: features.features,
+            no_default_features: features.no_default_features,
+        }),
+        Command::Features { changes, features } => session.features(&FeaturesArgs {
+            changes,
+            features: features.features,
+            no_default_features: features.no_default_features,
             json,
         }),
         Command::Secret { command } => {

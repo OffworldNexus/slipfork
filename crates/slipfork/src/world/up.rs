@@ -4,7 +4,6 @@
 //! This module only sends the request, feeds the typed `event` frames into [`BootTui`], and prints
 //! exactly one `next:` remedy (or one `specs/02` JSON object under `--json`).
 
-use std::fs;
 use std::process::ExitCode;
 use std::time::Instant;
 
@@ -12,14 +11,51 @@ use serde_json::{Value, json};
 use slipfork_forkfile::Diagnostics;
 
 use crate::boot::BootTui;
-use crate::boot::elapsed_text;
 use crate::commands::{Session, emit};
 use crate::daemon::{DaemonClient, DaemonError};
-use crate::ui::paint;
 
-use super::{DownArgs, DropArgs, ForkArgs, RestartArgs, Targets, UpArgs, fail};
+use super::features::WorldFeatures;
+use super::{DownArgs, RestartArgs, Targets, UpArgs, fail};
 
 impl Session {
+    /// Reads, compiles, and verifies `<project>/Forkfile` with `request` merged over the persisted
+    /// `.slipfork/features.json`; the returned configuration is exactly what a boot will read.
+    ///
+    /// Persistence belongs to the caller: `up`/`fork` save, `env` evaluates only.
+    pub(super) fn project_features(
+        &self,
+        project: &std::path::Path,
+        request: &WorldFeatures,
+        json: bool,
+    ) -> Result<WorldFeatures, ExitCode> {
+        let path = project.join("Forkfile");
+        let source = match std::fs::read_to_string(&path) {
+            Ok(source) => source,
+            Err(error) => {
+                return Err(self.report(
+                    "forkfile",
+                    &format!("cannot read `{}`: {error}", path.display()),
+                    "create a `Forkfile` in this directory, then run `slipfork up`",
+                    json,
+                ));
+            }
+        };
+        let checked = match slipfork_forkfile::compile(&source) {
+            Ok(checked) => checked,
+            Err(diagnostics) => return Err(self.forkfile_failure(&diagnostics, json)),
+        };
+        let config = match WorldFeatures::merged(project, request) {
+            Ok(config) => config,
+            Err(error) => {
+                return Err(self.report("feature", &error, WorldFeatures::REMEDY, json));
+            }
+        };
+        if let Err(diagnostic) = config.resolve(&checked.document) {
+            return Err(self.feature_failure(&diagnostic, json));
+        }
+        Ok(config)
+    }
+
     /// Boots the world through the daemon and renders every boot node until ready.
     pub fn up(&self, args: &UpArgs) -> ExitCode {
         let local = Targets::new(self.cwd(), &crate::ps::PsReply::default())
@@ -61,22 +97,24 @@ impl Session {
             }
         };
         let project = resolved.project;
-        let source = match fs::read_to_string(project.join("Forkfile")) {
-            Ok(source) => source,
-            Err(error) => {
-                return self.lifecycle_failure(
-                    &DaemonError {
-                        code: "forkfile".to_owned(),
-                        message: format!("cannot read Forkfile: {error}"),
-                    },
-                    "create a `Forkfile` in this directory, then run `slipfork up`",
-                    args.json,
-                    false,
-                );
-            }
+        let request = WorldFeatures::new(args.no_default_features, args.features.clone());
+        let typed = !args.features.is_empty() || args.no_default_features;
+        let features = match self.project_features(&project, &request, args.json) {
+            Ok(features) => features,
+            Err(code) => return code,
         };
-        if let Err(diagnostics) = slipfork_forkfile::compile(&source) {
-            return self.forkfile_failure(&diagnostics, args.json);
+        // A typed `-F`/`--no-default-features` becomes the world's persisted configuration; the
+        // daemon and supervisor re-read it, so no feature payload crosses the socket.
+        if typed && let Err(error) = features.save(&project) {
+            return self.report(
+                "io",
+                &format!(
+                    "cannot save `{}`: {error}",
+                    WorldFeatures::path(&project).display()
+                ),
+                "check that the project's `.slipfork` directory is writable",
+                args.json,
+            );
         }
         let mut client = match client {
             Some(client) => client,
@@ -311,131 +349,6 @@ impl Session {
         }
     }
 
-    /// Forks the running world into its own CoW snapshots and boots it behind its own URL.
-    pub fn fork(&self, args: &ForkArgs) -> ExitCode {
-        let mut client = match DaemonClient::connect(self.host()) {
-            Ok(client) => client,
-            Err(error) => {
-                return self.lifecycle_failure(&error, "run `slipfork up` first", args.json, false);
-            }
-        };
-        let mut tui = BootTui::boot(
-            self.ui(),
-            self.terminal().width,
-            &format!("Forking {}", args.name.as_deref().unwrap_or("fork")),
-        );
-        let outcome = client.call_streaming(
-            "fork",
-            json!({ "project": self.cwd(), "name": args.name }),
-            &mut |event| {
-                if args.json {
-                    let _ = emit_json(event);
-                }
-                tui.observe(event);
-            },
-        );
-        match outcome {
-            Ok(reply) => {
-                if args.json {
-                    tui.finish();
-                    return emit_json(&json!({
-                        "fork": reply["fork"],
-                        "world": reply["world"],
-                        "project": reply["project"],
-                        "url": reply["url"],
-                        "elapsed_ms": reply["elapsed_ms"],
-                        "snapshot_ms": reply["snapshot_ms"],
-                    }));
-                }
-                tui.finish();
-                ExitCode::SUCCESS
-            }
-            Err(error) => {
-                tui.finish();
-                let next = match error.code.as_str() {
-                    "not-btrfs" => {
-                        "move the project onto a btrfs mount, then retry `slipfork fork`".to_owned()
-                    }
-                    "git-branch" | "git-missing" | "invalid-fork" => {
-                        "pass a fork name: `slipfork fork <name>`".to_owned()
-                    }
-                    "no-world" => "run `slipfork up` first".to_owned(),
-                    "world-booting" => {
-                        "wait for `slipfork up` to finish, then retry `slipfork fork`".to_owned()
-                    }
-                    "pg-checkpoint" => {
-                        "run `slipfork logs pg` if PostgreSQL stays unhealthy, then retry `slipfork fork`".to_owned()
-                    }
-                    "world-running" => {
-                        "pick another name, or drop the existing fork first".to_owned()
-                    }
-                    "boot-failed" => {
-                        "read `.slipfork/supervisor.log`, then run `slipfork up`".to_owned()
-                    }
-                    _ => "run `slipfork status` to inspect the world".to_owned(),
-                };
-                self.lifecycle_failure(&error, &next, args.json, tui.failed())
-            }
-        }
-    }
-
-    /// Stops a fork and deletes both of its snapshots.
-    pub fn drop(&self, args: &DropArgs) -> ExitCode {
-        let mut client = match DaemonClient::connect(self.host()) {
-            Ok(client) => client,
-            Err(error) => {
-                return self.lifecycle_failure(
-                    &error,
-                    "run `slipfork status` to inspect the world",
-                    args.json,
-                    false,
-                );
-            }
-        };
-        let mut tui = BootTui::rows(
-            self.ui(),
-            self.terminal().width,
-            &format!("Dropping {}", args.name),
-        );
-        let outcome = client.call_streaming(
-            "drop",
-            json!({ "project": self.cwd(), "name": args.name, "force": args.force }),
-            &mut |event| tui.observe(event),
-        );
-        match outcome {
-            Ok(reply) => {
-                let elapsed = reply["elapsed_ms"].as_u64().unwrap_or(0);
-                if args.json {
-                    tui.finish();
-                    return emit_json(
-                        &json!({ "dropped": reply["dropped"], "elapsed_ms": elapsed }),
-                    );
-                }
-                let color = self.color();
-                tui.line(&format!(
-                    "{} Dropped {} {}",
-                    paint("✓", "32", color),
-                    paint(&args.name, "1", color),
-                    paint(&format!("({})", elapsed_text(elapsed)), "2", color)
-                ));
-                tui.finish();
-                ExitCode::SUCCESS
-            }
-            Err(error) => {
-                tui.finish();
-                let next = match error.code.as_str() {
-                    "dirty-fork" => format!("slipfork drop {} -f", args.name),
-                    "not-btrfs" => {
-                        "move the project onto a btrfs mount, then retry `slipfork drop`".to_owned()
-                    }
-                    "no-fork" => "run `slipfork ps` to list this world's forks".to_owned(),
-                    _ => "run `slipfork status` to inspect the world".to_owned(),
-                };
-                self.lifecycle_failure(&error, &next, args.json, tui.failed())
-            }
-        }
-    }
-
     /// The one refusal for an unresolvable positional target.
     fn target_failure(&self, error: &super::TargetError, json_mode: bool) -> ExitCode {
         self.lifecycle_failure(
@@ -450,7 +363,7 @@ impl Session {
     }
 
     /// Renders the first compiler diagnostic as `Forkfile:line:col`, plus its one `next:`.
-    fn forkfile_failure(&self, diagnostics: &Diagnostics, json_mode: bool) -> ExitCode {
+    pub(super) fn forkfile_failure(&self, diagnostics: &Diagnostics, json_mode: bool) -> ExitCode {
         let first = diagnostics.first();
         let message = first.map_or_else(
             || "invalid Forkfile".to_owned(),
@@ -534,6 +447,6 @@ fn boot_node(event: &Value) -> Option<Value> {
 }
 
 /// Emits one already-built JSON object with zero ANSI.
-fn emit_json(value: &Value) -> ExitCode {
+pub(super) fn emit_json(value: &Value) -> ExitCode {
     emit(&format!("{value}\n"))
 }

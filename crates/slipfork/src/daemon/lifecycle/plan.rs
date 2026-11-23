@@ -8,7 +8,9 @@ use std::fs;
 use std::path::Path;
 
 use serde_json::{Value, json};
-use slipfork_world::world_plan;
+use slipfork_world::world_plan_with;
+
+use crate::world::features::WorldFeatures;
 
 /// One planned row: `(kind, name)` exactly as the later frames spell them.
 pub(crate) type PlannedRow = (String, String);
@@ -21,7 +23,10 @@ pub(crate) fn world_rows(project: &Path) -> Vec<PlannedRow> {
     let Ok(checked) = slipfork_forkfile::compile(&source) else {
         return Vec::new();
     };
-    let Ok(plan) = world_plan(&checked.document, project) else {
+    let Ok(features) = WorldFeatures::load_resolved(project, &checked.document) else {
+        return Vec::new();
+    };
+    let Ok(plan) = world_plan_with(&checked.document, project, &features) else {
         return Vec::new();
     };
     plan.steps

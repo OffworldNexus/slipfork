@@ -6,20 +6,20 @@
 use std::collections::BTreeSet;
 
 use slipfork_forkfile::ast::{DomainFilter, Forkfile, RouteKind, TopItem};
-use slipfork_forkfile::{BucketPolicy, ResourceDeclKind};
+use slipfork_forkfile::{BucketPolicy, FeatureSet, ResourceDeclKind};
 use slipfork_world::ResourceKind;
 
 use crate::ps::{PsBucketPolicy, PsKind, PsRoute, PsRouteMode, PsService};
 
 /// The first declared app `domain <id>`; it **is** the primary `<world>.localhost` authority.
-pub(super) fn primary_domain(doc: &Forkfile) -> Option<String> {
-    doc.primary_domain().map(str::to_owned)
+pub(super) fn primary_domain(doc: &Forkfile, features: &FeatureSet) -> Option<String> {
+    doc.primary_domain_with(features).map(str::to_owned)
 }
 
 /// Projects every declared service and backing resource into typed rows.
-pub(super) fn services(doc: &Forkfile) -> Vec<PsService> {
+pub(super) fn services(doc: &Forkfile, features: &FeatureSet) -> Vec<PsService> {
     let mut out: Vec<PsService> = doc
-        .services()
+        .services_with(features)
         .into_iter()
         .map(|service| PsService {
             id: service.id.to_owned(),
@@ -47,7 +47,7 @@ pub(super) fn services(doc: &Forkfile) -> Vec<PsService> {
             image: service.image.map(str::to_owned),
         })
         .collect();
-    for resource in doc.resources() {
+    for resource in doc.resources_with(features) {
         let policy = match resource.kind {
             ResourceDeclKind::S3 => Some(PsBucketPolicy::from(bucket_policy(doc, resource.id))),
             ResourceDeclKind::Postgres | ResourceDeclKind::Redis => None,

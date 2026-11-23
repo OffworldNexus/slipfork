@@ -16,7 +16,7 @@ use crate::daemon::Failure;
 use crate::daemon::boot::BootSession;
 use crate::daemon::registry::{self, Fingerprint};
 use crate::daemon::rpc::{key_of, pid_alive, world_answers};
-use crate::daemon::view;
+use crate::world::features::WorldFeatures;
 
 /// Longest a single reconcile control call may block (`List`, `Stop`, `Shutdown`).
 const RECONCILE_CALL: Duration = Duration::from_secs(10);
@@ -136,10 +136,13 @@ fn declared_ids(project: &Path) -> Option<Vec<String>> {
     let document = fs::read_to_string(project.join("Forkfile"))
         .ok()
         .and_then(|source| slipfork_forkfile::compile(&source).ok())?;
+    let features = WorldFeatures::load_resolved(project, &document.document).ok()?;
     Some(
-        view::services(&document.document)
+        document
+            .document
+            .services_with(&features)
             .into_iter()
-            .map(|service| service.id)
+            .map(|service| service.id.to_owned())
             .collect(),
     )
 }
@@ -320,19 +323,25 @@ fn layout_fork(project: &Path) -> Option<String> {
         .map(|fork| fork.as_str().to_owned())
 }
 
-/// The compiled `Forkfile`'s stable content digest plus its sorted active features.
+/// The compiled `Forkfile`'s stable content digest plus its resolved active features.
 fn fingerprint(project: &Path) -> Option<Fingerprint> {
     let source = fs::read_to_string(project.join("Forkfile")).ok()?;
     let checked = slipfork_forkfile::compile(&source).ok()?;
-    let features: Vec<String> = checked
-        .document
-        .active_features()
+    let config = WorldFeatures::load(project).ok()?;
+    let features: Vec<String> = config
+        .resolve(&checked.document)
+        .ok()?
         .active()
         .iter()
         .cloned()
         .collect();
+    let raw = fs::read(WorldFeatures::path(project)).ok()?;
+    let edits: Vec<String> = config.edits.iter().map(ToString::to_string).collect();
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     source.hash(&mut hasher);
+    raw.hash(&mut hasher);
+    config.no_default.hash(&mut hasher);
+    edits.hash(&mut hasher);
     features.hash(&mut hasher);
     Some(Fingerprint {
         digest: format!("{:016x}", hasher.finish()),

@@ -133,6 +133,7 @@ fn help_and_version_are_the_shipped_surface() {
             "shell",
             "exec",
             "env",
+            "features",
             "secret",
             "open",
             "auth",
@@ -152,6 +153,24 @@ fn help_and_version_are_the_shipped_surface() {
     );
     assert!(help.contains("Examples:\n  slipfork\n"), "{help}");
     assert!(!help.contains(ANSI), "piped output must stay plain");
+
+    // The one feature flag spelling the matrix documents on every verb that boots or evaluates.
+    for verb in ["up", "fork", "env"] {
+        let verb_help = run(&[verb, "--help"]);
+        assert!(verb_help.status.success(), "`{verb} --help` must succeed");
+        let text = String::from_utf8(verb_help.stdout).expect("help is UTF-8");
+        assert!(text.contains("-F, --features"), "{verb}: {text}");
+        assert!(text.contains("--no-default-features"), "{verb}: {text}");
+    }
+    let features_help = run(&["features", "--help"]);
+    assert!(
+        features_help.status.success(),
+        "`features --help` must succeed"
+    );
+    assert!(
+        String::from_utf8_lossy(&features_help.stdout).contains("slipfork features"),
+        "the new verb must document its own usage"
+    );
 
     // One table drives the help rows and all three scripts, so every verb appears in each.
     for shell in ["bash", "zsh", "fish"] {

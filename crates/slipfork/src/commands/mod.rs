@@ -19,6 +19,7 @@ use crate::{doctor, status};
 
 mod auth;
 mod env;
+mod features;
 mod open;
 mod pty;
 mod runs;
@@ -26,6 +27,7 @@ mod secret;
 mod streams;
 pub use auth::AuthArgs;
 pub use env::EnvArgs;
+pub use features::FeaturesArgs;
 pub use open::OpenArgs;
 pub use secret::{SecretArgs, SecretVerb};
 pub use streams::{ExecArgs, LogsArgs, TargetArgs, parse_since, parse_until};
@@ -405,6 +407,7 @@ impl Session {
             "unknown-secret" => "run `slipfork secret list` to see declared keys",
             "no-secret" => "run `slipfork secret list` to see stored keys",
             "vault" => "make the state directory writable",
+            "feature" => crate::world::features::WorldFeatures::REMEDY,
             _ => "run `slipfork status` to inspect the daemon",
         };
         self.report(&error.code, &error.message, next, json)
@@ -412,11 +415,32 @@ impl Session {
 
     fn fail(&self, message: &str, next: &str) -> ExitCode {
         let palette = Palette::new(self.color());
+        // A daemon message may already carry its own `next:` line; that remedy wins, and the
+        // renderer still prints exactly one.
+        let mut embedded = None;
+        let mut emitted = false;
+        for line in message.lines() {
+            if let Some(remedy) = line.strip_prefix("next: ") {
+                embedded.get_or_insert(remedy.to_owned());
+            } else if !line.is_empty() {
+                if palette.color() {
+                    if emitted {
+                        eprintln!("{}", palette.value(line));
+                    } else {
+                        eprintln!("{} {}", palette.icon_bad(), palette.value(line));
+                    }
+                } else if emitted {
+                    eprintln!("{line}");
+                } else {
+                    eprintln!("error: {line}");
+                }
+                emitted = true;
+            }
+        }
+        let next = embedded.as_deref().map_or(next, |remedy| remedy);
         if palette.color() {
-            eprintln!("{} {}", palette.icon_bad(), palette.value(message));
             eprintln!("{} {}", palette.kind("next:"), palette.command(next));
         } else {
-            eprintln!("error: {message}");
             eprintln!("next: {next}");
         }
         ExitCode::FAILURE
@@ -432,6 +456,24 @@ impl Session {
             return ExitCode::FAILURE;
         }
         self.fail(message, next)
+    }
+
+    /// Renders one feature diagnostic as `Forkfile:<line>: <message>`, plus its single `next:`.
+    pub(crate) fn feature_failure(
+        &self,
+        diagnostic: &slipfork_forkfile::Diagnostic,
+        json: bool,
+    ) -> ExitCode {
+        self.report(
+            "feature",
+            &format!(
+                "Forkfile:{}: {}",
+                diagnostic.span.line(),
+                diagnostic.message
+            ),
+            &diagnostic.next,
+            json,
+        )
     }
 
     /// The `fmt`/`migrate` failure renderer: the same nested error object plus a `details` map.

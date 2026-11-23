@@ -25,6 +25,7 @@ use super::plan;
 use crate::daemon::Failure;
 use crate::daemon::boot::BootSession;
 use crate::daemon::rpc::key_of;
+use crate::world::features::WorldFeatures;
 
 /// Validated fork target resolved under a brief `Core` lock so `git` branch discovery runs with
 /// zero daemon locks held.
@@ -36,6 +37,8 @@ pub(crate) struct ForkTarget {
     pub(crate) requested_name: Option<String>,
     pub(crate) vcs: Arc<dyn VcsWorkspace>,
     pub(crate) started: Instant,
+    /// Feature override typed on the `fork` request; `None` inherits the snapshot's file.
+    pub(crate) features: Option<WorldFeatures>,
 }
 
 /// One project snapshot that is ready to boot as its own world.
@@ -102,6 +105,8 @@ impl Core {
         };
         let world = WorldName::parse(&parent)
             .map_err(|error| Failure::new("invalid-world", first_line(&error.to_string())))?;
+        let features =
+            WorldFeatures::from_params(params).map_err(|error| Failure::new("feature", error))?;
         Ok(ForkTarget {
             store_root: self.host.store_root_for(&project),
             project,
@@ -110,6 +115,7 @@ impl Core {
             requested_name: param_name(params).map(str::to_owned),
             vcs: Arc::clone(&self.vcs),
             started,
+            features,
         })
     }
 
@@ -136,7 +142,14 @@ impl Core {
         let mut rows = plan::fork_rows(raw_name);
         rows.extend(plan::world_rows(&target.project));
         plan::emit(&rows, rows.len(), emit);
+        let request = target.features.clone();
         let prepared = self.snapshot(target, raw_name, fork, preflight_ms, emit)?;
+        if let Some(request) = request
+            && let Err(failure) = Self::apply_features(&prepared.project, request)
+        {
+            self.discard_fork(&prepared);
+            return Err(failure);
+        }
         let boot = json!({
             "project": prepared.project.clone(),
             "world": prepared.world.clone(),
@@ -152,6 +165,55 @@ impl Core {
                 Err(failure)
             }
         }
+    }
+
+    /// Applies a fork request's edits over the snapshot's inherited configuration, persists the
+    /// result into the fork checkout, then verifies it resolves.
+    fn apply_features(project: &Path, request: WorldFeatures) -> Result<WorldFeatures, Failure> {
+        let config = WorldFeatures::merged(project, &request).map_err(|error| {
+            Failure::new(
+                "feature",
+                format!("{error}\nnext: {}", WorldFeatures::REMEDY),
+            )
+        })?;
+        let path = project.join("Forkfile");
+        let source = std::fs::read_to_string(&path).map_err(|error| {
+            Failure::new(
+                "feature",
+                format!("cannot read `{}`: {error}", path.display()),
+            )
+        })?;
+        let checked = slipfork_forkfile::compile(&source).map_err(|diagnostics| {
+            Failure::new(
+                "feature",
+                diagnostics
+                    .first()
+                    .map_or("invalid Forkfile".to_owned(), |item| {
+                        format!("Forkfile:{}: {}", item.span.line(), item.message)
+                    }),
+            )
+        })?;
+        config.resolve(&checked.document).map_err(|diagnostic| {
+            Failure::new(
+                "feature",
+                format!(
+                    "Forkfile:{}: {}\nnext: {}",
+                    diagnostic.span.line(),
+                    diagnostic.message,
+                    diagnostic.next
+                ),
+            )
+        })?;
+        config.save(project).map_err(|error| {
+            Failure::new(
+                "feature",
+                format!(
+                    "cannot save `{}`: {error}\nnext: check that the fork's `.slipfork` directory is writable",
+                    WorldFeatures::path(project).display()
+                ),
+            )
+        })?;
+        Ok(config)
     }
 
     /// Deletes every trace of a fork that never published, so a retry is never blocked.
@@ -427,4 +489,68 @@ fn vcs_failure(error: &VcsError) -> Failure {
 
 fn first_line(text: &str) -> String {
     text.lines().next().unwrap_or("fork failed").to_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use slipfork_forkfile::FeatureEdit;
+
+    use super::Core;
+    use crate::world::features::WorldFeatures;
+
+    fn temp(prefix: &str) -> tempfile::TempDir {
+        tempfile::Builder::new()
+            .prefix(prefix)
+            .tempdir_in("/var/tmp")
+            .expect("create a disk temp directory")
+    }
+
+    /// A fork boots from the snapshot's inherited file; the request's edits must be persisted
+    /// into the fork checkout, not merely validated in memory.
+    #[test]
+    fn apply_features_persists_the_merged_edits_into_the_fork_checkout() {
+        let root = temp("slipfork-fork-features");
+        let project = root.path().join("feat-auth");
+        fs::create_dir_all(project.join(".slipfork")).expect("create the fork checkout");
+        fs::write(
+            project.join("Forkfile"),
+            "# forkfile: 0.1\n\nfeatures {\n  dev\n  mail\n}\n",
+        )
+        .expect("write the fork's Forkfile");
+        WorldFeatures::new(false, vec![FeatureEdit::Enable("mail".to_owned())])
+            .save(&project)
+            .expect("write the inherited features file");
+
+        let request = WorldFeatures::new(false, vec![FeatureEdit::Disable("dev".to_owned())]);
+        let applied = Core::apply_features(&project, request).expect("apply the fork's features");
+        let persisted = WorldFeatures::load(&project).expect("read the persisted file");
+        assert_eq!(persisted, applied);
+        assert!(
+            persisted
+                .edits
+                .contains(&FeatureEdit::Enable("mail".to_owned())),
+            "the inherited edit survives: {persisted:?}"
+        );
+        assert!(
+            persisted
+                .edits
+                .contains(&FeatureEdit::Disable("dev".to_owned()))
+        );
+        let text = fs::read_to_string(WorldFeatures::path(&project)).expect("features.json");
+        assert!(text.contains("\"+mail\""), "{text}");
+        assert!(text.contains("\"-dev\""), "{text}");
+
+        let reset = WorldFeatures::new(true, Vec::new());
+        let applied = Core::apply_features(&project, reset).expect("reset the base");
+        assert!(applied.no_default);
+        assert!(applied.edits.is_empty(), "{applied:?}");
+        assert!(
+            WorldFeatures::load(&project)
+                .expect("read the reset file")
+                .no_default,
+            "an explicit reset is persisted too"
+        );
+    }
 }

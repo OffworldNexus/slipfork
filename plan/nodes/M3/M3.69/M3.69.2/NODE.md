@@ -2,16 +2,16 @@
 id: M3.69.2
 title: "Per-world features.json, -F/--features CLI, slipfork features verb & dev-only /project bind"
 kind: task
-status: ready
+status: done
 owner: implementer
 priority: 3
 depends_on: [M3.69.1]
 paths: ["crates/slipfork/**", "packaging/man/**"]
-attempts: 0
+attempts: 3
 max_attempts: 3
 escalation: none
 created: "2026-11-23T13:10"
-updated: "2026-11-23T13:11"
+updated: "2026-11-23T13:43"
 ---
 
 # Goal

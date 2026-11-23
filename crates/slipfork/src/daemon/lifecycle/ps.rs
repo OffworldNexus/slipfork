@@ -226,17 +226,32 @@ impl WorldView {
         booting: bool,
         pods: &[PodStatus],
     ) -> Self {
-        let (document, problem) = evaluate(project, fork, world);
-        let primary_domain = document.as_ref().and_then(view::primary_domain);
-        let mut services = match &document {
-            Some(document) => view::services(document),
-            None => pods
+        let (document, mut problem) = evaluate(project, fork, world);
+        let features = match &document {
+            Some(document) => {
+                match crate::world::features::WorldFeatures::load_resolved(project, document) {
+                    Ok(features) => Some(features),
+                    Err(error) => {
+                        problem = Some(error);
+                        None
+                    }
+                }
+            }
+            None => None,
+        };
+        let primary_domain = document
+            .as_ref()
+            .zip(features.as_ref())
+            .and_then(|(document, features)| view::primary_domain(document, features));
+        let mut services = match (&document, &features) {
+            (Some(document), Some(features)) => view::services(document, features),
+            _ => pods
                 .iter()
                 .filter(|pod| pod.running && alive)
                 .map(live_service)
                 .collect(),
         };
-        if document.is_some() {
+        if features.is_some() {
             let declared: Vec<String> = services.iter().map(|service| service.id.clone()).collect();
             for service in &mut services {
                 if let Some(pod) = pods.iter().find(|pod| pod.id == service.id) {

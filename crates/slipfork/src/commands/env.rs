@@ -3,6 +3,7 @@
 use std::process::ExitCode;
 
 use serde_json::{Value, json};
+use slipfork_forkfile::FeatureEdit;
 
 use crate::commands::{Session, emit};
 use crate::daemon::DaemonClient;
@@ -25,6 +26,10 @@ pub struct EnvArgs {
     pub reveal: bool,
     /// Emit `{component: {key: value}}` with zero ANSI.
     pub json: bool,
+    /// Feature overrides typed on this invocation; never persisted by `env`.
+    pub features: Vec<FeatureEdit>,
+    /// Evaluate from an empty feature base instead of the persisted configuration.
+    pub no_default_features: bool,
 }
 
 impl Session {
@@ -49,6 +54,18 @@ impl Session {
             "component": args.component,
             "reveal": reveal,
         });
+        // An `env` override is evaluated non-destructively: the daemon never writes the file.
+        let params = if args.features.is_empty() && !args.no_default_features {
+            params
+        } else {
+            json!({
+                "project": self.cwd,
+                "component": args.component,
+                "reveal": reveal,
+                "features": args.features,
+                "no_default_features": args.no_default_features,
+            })
+        };
         let reply = match client.call_streaming("env", params, &mut |_| {}) {
             Ok(reply) => reply,
             Err(error) => return self.env_failure(&error, args.json),

@@ -34,7 +34,7 @@ pub const VERBS: &[VerbSpec] = &[
     VerbSpec {
         name: "up",
         summary: "Boot from ./Forkfile, or the world/fork named by TARGET.",
-        flags: &["--json"],
+        flags: &["-F", "--features", "--no-default-features", "--json"],
     },
     VerbSpec {
         name: "down",
@@ -49,7 +49,7 @@ pub const VERBS: &[VerbSpec] = &[
     VerbSpec {
         name: "fork",
         summary: "Snapshot the world and boot the fork on its own URL.",
-        flags: &["--json"],
+        flags: &["-F", "--features", "--no-default-features", "--json"],
     },
     VerbSpec {
         name: "drop",
@@ -74,7 +74,18 @@ pub const VERBS: &[VerbSpec] = &[
     VerbSpec {
         name: "env",
         summary: "Print resolved runtime variables.",
-        flags: &["--reveal", "--json"],
+        flags: &[
+            "--reveal",
+            "-F",
+            "--features",
+            "--no-default-features",
+            "--json",
+        ],
+    },
+    VerbSpec {
+        name: "features",
+        summary: "Show this world's features, or persist +mail/-dev/reset edits.",
+        flags: &["-F", "--features", "--no-default-features", "--json"],
     },
     VerbSpec {
         name: "secret",

@@ -222,7 +222,24 @@ impl Core {
                 );
                 continue;
             };
-            match IngressTable::from_forkfile(entry.world.clone(), &checked.document) {
+            let features = match crate::world::features::WorldFeatures::load_resolved(
+                &entry.project,
+                &checked.document,
+            ) {
+                Ok(features) => features,
+                Err(error) => {
+                    eprintln!(
+                        "slipfork daemon: skipped ingress for `{}`: {error}",
+                        entry.world
+                    );
+                    continue;
+                }
+            };
+            match IngressTable::from_forkfile_with(
+                entry.world.clone(),
+                &checked.document,
+                &features,
+            ) {
                 Ok(table) => {
                     pods.insert(entry.world.clone(), entry.pods_dir.clone());
                     tables.push(table);

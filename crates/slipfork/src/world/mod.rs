@@ -5,6 +5,8 @@
 //! `BootEvent`s back over its stdout, then waits for the world init to exit. The init owns the one
 //! `<pods>/control.sock` plane that `down`/`restart` speak to through a typed client.
 
+pub(crate) mod features;
+mod fork;
 mod runtime;
 mod supervise;
 mod target;
@@ -18,6 +20,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use serde::{Deserialize, Serialize};
+use slipfork_forkfile::FeatureEdit;
 
 /// Ambient host state, resolved exactly once in `main.rs` and injected everywhere below.
 ///
@@ -124,13 +127,17 @@ impl HostEnv {
     }
 }
 
-/// Parsed `slipfork up [target]` arguments.
+/// Parsed `slipfork up [target] [-F ...] [--no-default-features]` arguments.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UpArgs {
     /// Emit the supervisor's typed events as NDJSON.
     pub json: bool,
     /// World, fork, or `.forks/<name>` to boot; `None` means this directory.
     pub target: Option<String>,
+    /// Feature edits typed on this invocation; empty means "use the persisted file".
+    pub features: Vec<FeatureEdit>,
+    /// Start from an empty base instead of the built-in `dev` default.
+    pub no_default_features: bool,
 }
 
 /// Parsed `slipfork down [target]` arguments.
@@ -160,6 +167,10 @@ pub struct ForkArgs {
     pub name: Option<String>,
     /// Emit `{"fork","world","project","url","elapsed_ms","snapshot_ms"}` instead of the summary.
     pub json: bool,
+    /// Feature edits to apply on top of the fork's inherited `.slipfork/features.json`.
+    pub features: Vec<FeatureEdit>,
+    /// Start the fork from an empty feature base instead of the inherited configuration.
+    pub no_default_features: bool,
 }
 
 /// Parsed `slipfork drop <name> [-f]` arguments.

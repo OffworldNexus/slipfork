@@ -434,3 +434,147 @@ fn generated_secrets_and_vars_persist_across_restarts_and_fail_closed() {
     assert!(rendered.contains("writable"), "{rendered}");
     assert!(!rendered.contains(ANSI), "{rendered}");
 }
+
+#[test]
+fn features_persist_and_env_overrides_stay_non_destructive() {
+    let lab = Lab::new("features");
+    fs::write(
+        lab.project.join("Forkfile"),
+        "# forkfile: 0.1\n\nfeatures {\n  dev\n  mail\n  ui = [mail]\n  default = [dev]\n}\n\nenv app {\n    LOG_LEVEL = \"info\"\n    on dev: DEV_ONLY = \"1\"\n}\n",
+    )
+    .expect("write a Forkfile with a dev-gated variable");
+    let path = lab.project.join(".slipfork/features.json");
+
+    let listed = lab.run(&["features"]);
+    assert!(listed.status.success(), "{}", text(&listed));
+    let table = text(&listed);
+    for header in ["FEATURE", "STATE", "IMPLIES"] {
+        assert!(table.contains(header), "{header} missing: {table}");
+    }
+    assert!(
+        table.contains("-> mail"),
+        "implications render as arrows: {table}"
+    );
+    assert!(
+        !table.contains("next:"),
+        "a listing with no change carries no remedy: {table}"
+    );
+    assert_clean(&listed);
+
+    let json = lab.run(&["features", "--json"]);
+    assert!(json.status.success(), "{}", text(&json));
+    assert_clean(&json);
+    let value: Value = serde_json::from_slice(&json.stdout).expect("json features");
+    let active: Vec<&str> = value["active"]
+        .as_array()
+        .expect("active list")
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    assert!(active.contains(&"dev"), "{active:?}");
+    assert!(!active.contains(&"mail"), "{active:?}");
+    assert!(!active.contains(&"ui"), "{active:?}");
+
+    // A dev-gated variable is present by default and omitted only when `dev` is off.
+    let env = lab.run(&["env", "--json"]);
+    assert!(env.status.success(), "{}", text(&env));
+    assert_clean(&env);
+    let value: Value = serde_json::from_slice(&env.stdout).expect("json env");
+    assert_eq!(value["app"]["DEV_ONLY"], "1");
+    assert_eq!(value["app"]["LOG_LEVEL"], "info");
+    assert!(!path.exists(), "`env` never writes the features file");
+
+    let without_dev = lab.run(&["env", "-F", "-dev", "--json"]);
+    assert!(without_dev.status.success(), "{}", text(&without_dev));
+    assert_clean(&without_dev);
+    let value: Value = serde_json::from_slice(&without_dev.stdout).expect("json env");
+    assert!(value["app"]["DEV_ONLY"].is_null(), "{value}");
+    assert_eq!(value["app"]["LOG_LEVEL"], "info");
+    assert!(!path.exists(), "`env -F` must stay non-destructive");
+
+    // `-F` belongs to the verb's own flag set, so it merges with CHANGES.
+    let flagged = lab.run(&["features", "-F", "mail"]);
+    assert!(flagged.status.success(), "{}", text(&flagged));
+    let persisted = fs::read_to_string(&path).expect("features.json");
+    assert!(persisted.contains("\"+mail\""), "{persisted}");
+    let json = lab.run(&["features", "--json"]);
+    let value: Value = serde_json::from_slice(&json.stdout).expect("json features");
+    let active: Vec<&str> = value["active"]
+        .as_array()
+        .expect("active list")
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    assert!(active.contains(&"mail"), "{active:?}");
+    assert!(active.contains(&"dev"), "{active:?}");
+
+    // The bare `+mail -dev` spelling persists edits and always points at the next boot.
+    let bare = lab.run(&["features", "+mail", "-dev"]);
+    assert!(bare.status.success(), "{}", text(&bare));
+    let rendered = text(&bare);
+    assert!(rendered.contains("apply these features"), "{rendered}");
+    assert_eq!(next_lines(&bare), 1, "{rendered}");
+    let persisted = fs::read_to_string(&path).expect("features.json is written");
+    assert!(persisted.contains("\"+mail\""), "{persisted}");
+    assert!(persisted.contains("\"-dev\""), "{persisted}");
+
+    let json = lab.run(&["features", "--json"]);
+    let value: Value = serde_json::from_slice(&json.stdout).expect("json features");
+    let active: Vec<&str> = value["active"]
+        .as_array()
+        .expect("active list")
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    assert!(!active.contains(&"dev"), "{active:?}");
+    assert!(active.contains(&"mail"), "{active:?}");
+
+    // A flag that slips past clap is refused instead of becoming a feature name.
+    let slipped = lab.run(&["features", "--mail"]);
+    assert!(!slipped.status.success(), "{}", text(&slipped));
+    let rendered = text(&slipped);
+    assert!(rendered.contains("-F belongs to"), "{rendered}");
+    assert_eq!(next_lines(&slipped), 1, "{rendered}");
+    assert_clean(&slipped);
+
+    let unknown = lab.run(&["features", "enable", "nope"]);
+    assert!(!unknown.status.success());
+    let message = text(&unknown);
+    assert!(message.contains("unknown feature"), "{message}");
+    assert_eq!(next_lines(&unknown), 1, "{message}");
+    assert_clean(&unknown);
+
+    // `reset` restores the default; a second reset is a no-op with no hint.
+    let reset = lab.run(&["features", "reset"]);
+    assert!(reset.status.success(), "{}", text(&reset));
+    assert_eq!(next_lines(&reset), 1, "{}", text(&reset));
+    let again = lab.run(&["features", "reset"]);
+    assert!(again.status.success(), "{}", text(&again));
+    assert_eq!(
+        next_lines(&again),
+        0,
+        "an already-default reset reports nothing: {}",
+        text(&again)
+    );
+    let json = lab.run(&["features", "--json"]);
+    let value: Value = serde_json::from_slice(&json.stdout).expect("json features");
+    assert_eq!(value["no_default"], false);
+    let active: Vec<&str> = value["active"]
+        .as_array()
+        .expect("active list")
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    assert!(active.contains(&"dev"), "{active:?}");
+
+    // A corrupt file fails closed with exactly one remedy from every reader.
+    fs::write(&path, "not json").expect("corrupt the features file");
+    for args in [&["features"][..], &["env"][..], &["up"][..]] {
+        let broken = lab.run(args);
+        let rendered = text(&broken);
+        assert!(!broken.status.success(), "{args:?}: {rendered}");
+        assert!(rendered.contains("fix or delete"), "{args:?}: {rendered}");
+        assert_eq!(next_lines(&broken), 1, "{args:?}: {rendered}");
+        assert_clean(&broken);
+    }
+}

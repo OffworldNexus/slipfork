@@ -9,6 +9,7 @@ use std::path::PathBuf;
 use clap::builder::styling::{AnsiColor, Effects, Styles};
 use clap::{Parser, Subcommand};
 use clap_complete::Shell;
+use slipfork_forkfile::FeatureEdit;
 
 /// The overview footer: the four copy-pasteable invocations worth memorising.
 pub const EXAMPLES: &str = "\
@@ -84,6 +85,32 @@ impl Cli {
     }
 }
 
+/// `-F, --features` plus `--no-default-features`, shared by `up`, `fork`, and `env`.
+#[derive(Debug, Clone, Default, clap::Args)]
+pub struct FeatureArgs {
+    /// Feature edits: `mail` or `+mail` enables, `-mail` / `!mail` disables.
+    ///
+    /// Accepts comma lists: `-F dev,mail`.
+    #[arg(
+        short = 'F',
+        long,
+        value_name = "FEATURES",
+        value_delimiter = ',',
+        allow_hyphen_values = true,
+        value_parser = parse_feature_edit
+    )]
+    pub features: Vec<FeatureEdit>,
+
+    /// Start from an empty feature base instead of the built-in `dev` default.
+    #[arg(long)]
+    pub no_default_features: bool,
+}
+
+/// Parses one `-F` value through the `Forkfile` compiler's canonical edit grammar.
+fn parse_feature_edit(text: &str) -> Result<FeatureEdit, String> {
+    text.parse()
+}
+
 /// Every shipped verb, in help order.
 #[derive(Debug, Subcommand)]
 pub enum Command {
@@ -97,10 +124,16 @@ pub enum Command {
     Doctor,
 
     /// Boot from ./Forkfile, or the world/fork named by TARGET.
+    ///
+    /// Feature flags persist to this world's `.slipfork/features.json` for the next boot; `env`
+    /// evaluates them only. `dev` mounts the live checkout at /project; off runs the image's own
+    /// ENTRYPOINT/CMD.
     Up {
         /// World, fork, or .forks/<name> to boot (default: this directory).
         #[arg(value_name = "TARGET")]
         target: Option<String>,
+        #[command(flatten)]
+        features: FeatureArgs,
     },
 
     /// Stop this directory's world, or the named world/fork, and every pod in it.
@@ -122,10 +155,13 @@ pub enum Command {
 
     /// Snapshot the project and world data, then boot the fork on its own URL.
     ///
-    /// --json emits {"fork","world","project","url","elapsed_ms","snapshot_ms"}.
+    /// Feature flags persist for the fork's own world, merged over the file inherited from the
+    /// snapshot. --json emits {"fork","world","project","url","elapsed_ms","snapshot_ms"}.
     Fork {
         /// Fork and branch name (default: the checkout's git branch).
         name: Option<String>,
+        #[command(flatten)]
+        features: FeatureArgs,
     },
 
     /// Stop a fork and delete its project and world-data snapshots.
@@ -182,12 +218,27 @@ pub enum Command {
     },
 
     /// Print resolved runtime variables; secrets stay redacted by default.
+    ///
+    /// Feature flags evaluate only and never write `.slipfork/features.json`.
     Env {
         /// Only this component's variables (default: every component).
         component: Option<String>,
         /// Show real secret values; requires an interactive terminal.
         #[arg(long)]
         reveal: bool,
+        #[command(flatten)]
+        features: FeatureArgs,
+    },
+
+    /// Show this world's features, or persist +mail/-dev/reset edits.
+    ///
+    /// Flags merge with CHANGES; `features reset` restores the built-in default.
+    Features {
+        /// `reset`, `enable <f>...`, `disable <f>...`, or `+mail`/`-dev`/bare `mail`.
+        #[arg(value_name = "CHANGES", allow_hyphen_values = true)]
+        changes: Vec<String>,
+        #[command(flatten)]
+        features: FeatureArgs,
     },
 
     /// List, override, or remove local offline secrets for this world.

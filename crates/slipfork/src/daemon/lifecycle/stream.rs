@@ -252,10 +252,16 @@ impl Core {
             };
         }
         let document = load_document(project);
+        let features = match document.as_ref() {
+            Some(document) => Some(
+                crate::world::features::WorldFeatures::load_resolved(project, document)
+                    .map_err(|error| Failure::new("feature", error))?,
+            ),
+            None => None,
+        };
         // A declared `database <db>` resolves to its owning postgres resource pod.
-        if let Some(owner) = document
-            .as_ref()
-            .and_then(|document| database_owner(document, target))
+        if let Some((document, features)) = document.as_ref().zip(features.as_ref())
+            && let Some(owner) = database_owner(document, features, target)
         {
             let running = worlds.iter().any(|world| {
                 world
@@ -407,9 +413,13 @@ pub(super) fn load_document(project: &Path) -> Option<Forkfile> {
 }
 
 /// The postgres resource whose `database <id>` child is `target`, when any.
-fn database_owner(document: &Forkfile, target: &str) -> Option<String> {
+fn database_owner(
+    document: &Forkfile,
+    features: &slipfork_forkfile::FeatureSet,
+    target: &str,
+) -> Option<String> {
     document
-        .resources()
+        .resources_with(features)
         .into_iter()
         .find(|resource| {
             resource.kind == ResourceDeclKind::Postgres && resource.databases.contains(&target)

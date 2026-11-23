@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use slipfork_forkfile::ast::Forkfile;
+use slipfork_forkfile::{FeatureSet, ast::Forkfile};
 use slipfork_image::{Architecture, StepHost};
 use slipfork_ospp::FileSecretVault;
 use slipfork_world::{
@@ -28,7 +28,7 @@ mod ready;
 mod resources;
 
 use helpers::{
-    ServiceLaunch, merge_env, merge_path, project_bind, shell_command, tool_env, upsert_env,
+    ServiceLaunch, merge_env, merge_path, project_binds, shell_command, tool_env, upsert_env,
 };
 use images::{BuiltImage, ImageCache};
 use ready::{Ready, Staged};
@@ -38,6 +38,7 @@ pub(super) struct WorldRuntime {
     layout: StoreLayout,
     world: WorldName,
     project: PathBuf,
+    features: FeatureSet,
     resolved_env: BTreeMap<String, BTreeMap<String, (String, bool)>>,
     supervisor: Mutex<WorldSupervisor>,
     pods_dir: PathBuf,
@@ -58,6 +59,7 @@ impl WorldRuntime {
         world: WorldName,
         doc: &Forkfile,
         plan: &WorldPlan,
+        features: FeatureSet,
         env: &HostEnv,
         emitter: Arc<Mutex<Emitter>>,
     ) -> Result<Self, String> {
@@ -110,6 +112,7 @@ impl WorldRuntime {
             &agent,
             step_host,
             scheme,
+            features.clone(),
         );
         let host = WorldHost::new(
             WorldTools {
@@ -183,13 +186,14 @@ impl WorldRuntime {
                     None
                 })
             };
-            let resolved = doc.eval_all_env_with(
+            let resolved = doc.eval_all_env_with_features(
                 world.as_str(),
                 scheme,
                 &slipfork_forkfile::Resolvers {
                     secret: &secret,
                     var: &var,
                 },
+                &features,
             );
             if let Some(error) = failure.into_inner() {
                 return Err(format!("{}; next: {}", error.message, error.next));
@@ -201,6 +205,7 @@ impl WorldRuntime {
             layout,
             world,
             project: project.to_path_buf(),
+            features,
             resolved_env,
             supervisor: Mutex::new(supervisor),
             pods_dir,
@@ -423,7 +428,7 @@ impl WorldRuntime {
             ],
             inherited_env: built.inherited_env,
             env: self.pod_env_for(&step.subject, step.image.as_deref(), None),
-            binds: vec![project_bind(&self.project)],
+            binds: project_binds(&self.features, &self.project),
             files: Vec::new(),
         };
         // Setup and hook pods run to completion over `control.sock` with their pipes attached, so
@@ -488,7 +493,7 @@ impl WorldRuntime {
             argv,
             inherited_env: built.inherited_env,
             env,
-            binds: vec![project_bind(&self.project)],
+            binds: project_binds(&self.features, &self.project),
             files: Vec::new(),
         };
         upsert_env(&mut spec.env, launch_env);

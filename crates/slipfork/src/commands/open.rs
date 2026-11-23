@@ -26,13 +26,8 @@ impl Session {
         // No argument selects the world root (`/`), so a multi-route Forkfile never refuses `open`.
         let candidates = match route_candidates(&self.cwd, &base, args.service.as_deref()) {
             Ok(candidates) => candidates,
-            Err(message) => {
-                return self.report(
-                    "forkfile",
-                    &message,
-                    "create a Forkfile in this directory, then run `slipfork up`",
-                    args.json,
-                );
+            Err((code, message, next)) => {
+                return self.report(code, &message, &next, args.json);
             }
         };
         let url = if args.service.is_some() {
@@ -96,21 +91,45 @@ fn route_candidates(
     cwd: &std::path::Path,
     base: &str,
     service: Option<&str>,
-) -> Result<Vec<String>, String> {
+) -> Result<Vec<String>, (&'static str, String, String)> {
     let path = cwd.join("Forkfile");
-    let source = std::fs::read_to_string(&path)
-        .map_err(|error| format!("cannot read `{}`: {error}", path.display()))?;
-    let checked = slipfork_forkfile::compile(&source).map_err(|diagnostics| {
-        diagnostics.first().map_or_else(
-            || "invalid Forkfile".to_owned(),
-            |item| format!("Forkfile:{}: {}", item.span.line(), item.message),
+    let source = std::fs::read_to_string(&path).map_err(|error| {
+        (
+            "forkfile",
+            format!("cannot read `{}`: {error}", path.display()),
+            "create a Forkfile in this directory, then run `slipfork up`".to_owned(),
         )
     })?;
-    let declared = checked.document.services();
+    let checked = slipfork_forkfile::compile(&source).map_err(|diagnostics| {
+        (
+            "forkfile",
+            diagnostics.first().map_or_else(
+                || "invalid Forkfile".to_owned(),
+                |item| format!("Forkfile:{}: {}", item.span.line(), item.message),
+            ),
+            diagnostics
+                .first()
+                .map_or("fix the Forkfile", |item| item.next.as_str())
+                .to_owned(),
+        )
+    })?;
+    let features = crate::world::features::WorldFeatures::load_resolved(cwd, &checked.document)
+        .map_err(|error| {
+            (
+                "feature",
+                error,
+                crate::world::features::WorldFeatures::REMEDY.to_owned(),
+            )
+        })?;
+    let declared = checked.document.services_with(&features);
     if let Some(name) = service
         && !declared.iter().any(|declared| declared.id == name)
     {
-        return Err(format!("`{name}` is not a service in this Forkfile"));
+        return Err((
+            "no-target",
+            format!("`{name}` is not a service in this Forkfile"),
+            "run `slipfork ps` to list this world's services".to_owned(),
+        ));
     }
     let mut urls: Vec<String> = Vec::new();
     for declared in &declared {

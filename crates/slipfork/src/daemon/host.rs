@@ -13,6 +13,7 @@ use slipfork_forkfile::EnvBinding;
 use slipfork_ospp::{FileSecretVault, Secret, SecretVault};
 
 use super::Failure;
+use crate::world::features::WorldFeatures;
 
 /// `<state_dir>/secrets.json`.
 fn vault_path(state_dir: &Path) -> PathBuf {
@@ -32,7 +33,8 @@ pub(super) fn env(
     let wanted = params.get("component").and_then(Value::as_str);
     let reveal = params.get("reveal").and_then(Value::as_bool) == Some(true);
     let document = document(&project)?;
-    let components = document.env_bindings();
+    let features = features_of(&project, params, &document)?;
+    let components = document.env_bindings_with(&features);
     let vault = FileSecretVault::new(vault_path(state_dir));
     let vars = FileSecretVault::new(state_dir.join("vars.json"));
     let resolver = crate::secrets::EnvironmentResolver::new(&vault, &vars, process_env);
@@ -55,13 +57,14 @@ pub(super) fn env(
                 None
             })
         };
-        let evaluated = document.eval_all_env_with(
+        let evaluated = document.eval_all_env_with_features(
             &world,
             scheme,
             &slipfork_forkfile::Resolvers {
                 secret: &secret,
                 var: &var,
             },
+            &features,
         );
         if let Some(error) = failure.into_inner() {
             return Err(Failure::new("vault", error.message));
@@ -116,7 +119,8 @@ pub(super) fn secret_list(state_dir: &Path, params: &Value) -> Result<Option<Val
     let project = project_of(params)?;
     let wanted = params.get("component").and_then(Value::as_str);
     let document = document(&project)?;
-    let components = document.env_bindings();
+    let features = features_of(&project, params, &document)?;
+    let components = document.env_bindings_with(&features);
     let vault = FileSecretVault::new(vault_path(state_dir));
     let mut reply = serde_json::Map::new();
     for (component, declared) in components {
@@ -152,7 +156,8 @@ pub(super) fn secret_set(state_dir: &Path, params: &Value) -> Result<Option<Valu
         .ok_or_else(|| Failure::new("bad-params", "`value` is required"))?;
     let project = project_of(params)?;
     let document = document(&project)?;
-    let components = document.env_bindings();
+    let features = features_of(&project, params, &document)?;
+    let components = document.env_bindings_with(&features);
     let declared = components.get(&component).ok_or_else(|| {
         Failure::new(
             "unknown-component",
@@ -186,7 +191,8 @@ pub(super) fn secret_unset(state_dir: &Path, params: &Value) -> Result<Option<Va
     let (component, key) = path_of(params)?;
     let project = project_of(params)?;
     let document = document(&project)?;
-    let components = document.env_bindings();
+    let features = features_of(&project, params, &document)?;
+    let components = document.env_bindings_with(&features);
     let Some(declared) = components.get(&component) else {
         return Err(Failure::new(
             "unknown-component",
@@ -260,6 +266,34 @@ fn inferred_world(project: &Path) -> String {
     crate::world::world_name(project, None)
         .map(|name| name.as_str().to_owned())
         .unwrap_or_else(|_| "world".to_owned())
+}
+
+/// The world's features: the request merged over the persisted file (evaluate-only for `env`).
+fn features_of(
+    project: &Path,
+    params: &Value,
+    document: &slipfork_forkfile::Forkfile,
+) -> Result<slipfork_forkfile::FeatureSet, Failure> {
+    let request = WorldFeatures::from_params(params)
+        .map_err(|error| Failure::new("feature", format!("{error}\nnext: pass `-F <feature>`")))?
+        .unwrap_or_default();
+    let config = WorldFeatures::merged(project, &request).map_err(|error| {
+        Failure::new(
+            "feature",
+            format!("{error}\nnext: {}", WorldFeatures::REMEDY),
+        )
+    })?;
+    config.resolve(document).map_err(|diagnostic| {
+        Failure::new(
+            "feature",
+            format!(
+                "Forkfile:{}: {}\nnext: {}",
+                diagnostic.span.line(),
+                diagnostic.message,
+                diagnostic.next
+            ),
+        )
+    })
 }
 
 fn document(project: &Path) -> Result<slipfork_forkfile::Forkfile, Failure> {

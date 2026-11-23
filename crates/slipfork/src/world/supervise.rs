@@ -10,10 +10,11 @@ use serde_json::{Value, json};
 use slipfork_world::{
     BootEvent, BootFailure, BootScheduler, BootState, BootStep, ResourceKind, StampStore,
     StepOutcome, WorldName, WorldStamp, WorldStampStore, control, is_btrfs_path, plan_epoch,
-    run_log::RunCapture, world_plan, write_pg_checkpoints,
+    run_log::RunCapture, world_plan_with, write_pg_checkpoints,
 };
 
 use crate::commands::Session;
+use crate::world::features::WorldFeatures;
 
 use super::{HostEnv, SuperviseArgs, WorldState, fail, runtime::WorldRuntime, state_path};
 
@@ -48,13 +49,16 @@ fn supervisor_main(project: &Path, world: &str, env: &HostEnv) -> Result<(), Str
             project.display()
         ));
     }
-    let plan = world_plan(&doc, project).map_err(|error| error.to_string())?;
+    let features = WorldFeatures::load_resolved(project, &doc)
+        .map_err(|error| format!("{error}\nnext: {}", WorldFeatures::REMEDY))?;
+    let plan = world_plan_with(&doc, project, &features).map_err(|error| error.to_string())?;
     let emitter = Arc::new(Mutex::new(Emitter { open: true }));
     let runtime = Arc::new(WorldRuntime::new(
         project,
         world.clone(),
         &doc,
         &plan,
+        features.clone(),
         env,
         Arc::clone(&emitter),
     )?);

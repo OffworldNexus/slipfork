@@ -3203,3 +3203,18 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-23T13:19 [M3.69.1] (lead) base 1da2cdb4f5e78459741ad10194497905bc9e0bcd; triad: arch FAIL (685-LOC eval/mod.rs, duplicated on-walk), tests CHANGES (0%-covered from_forkfile_with, vacuous
 - 2026-11-23T13:19 [M3.69.1] (lead) status ready -> active
 - 2026-11-23T13:26 [M3.69.1] (lead) status active -> done
+- 2026-11-23T13:26 [M3.69.2] (lead) status ready -> active
+- 2026-11-23T13:26 [M3.69.2] (lead) attempt 1/3 started
+- 2026-11-23T13:26 [M3.69.2] (lead) base 296df05f4ceb81f5dd7b0a3f03e5cf5123ff70e6; scope: NO validate verb; keep forkfile convenience delegators (still used by forkfile/ingress/world tests) — thre
+- 2026-11-23T13:29 [M3.69.2] (lead) attempt 2/3 started
+- 2026-11-23T13:29 [M3.69.2] (lead) attempt 1 incomplete (empty report, 2 compile errors): CLI/flags/features.json/features verb landed; daemon/supervisor/runtime threading, tests and manpage stil
+- 2026-11-23T13:30 [M3.70] (lead) edited fields
+- 2026-11-23T13:30 [M3.70.1] (lead) created (task) demo ./api + ./front, pure Dockerfile CMD in !dev, specs/docs sync
+- 2026-11-23T13:30 [M3.70.2] (lead) created (task) Live VM proof: 3 CLI suites + .deb + prod-check -F -dev + demo/feat-auth dev
+- 2026-11-23T13:34 [M3.69.2] (lead) status active -> review
+- 2026-11-23T13:36 [M3.69.2] (lead) triad: arch FAIL (fork override never saved is BLOCKER; up/fork/env merge-base divergence; fingerprint unwrap_or_default; world/up.rs 610 LOC), tests FAIL (fork
+- 2026-11-23T13:37 [M3.69.2] (lead) status review -> ready: Triad fix pass: fork save BLOCKER, unified merge semantics, UX/help/table, fork.rs split, tests
+- 2026-11-23T13:37 [M3.69.2] (lead) attempt 3/3 started
+- 2026-11-23T13:37 [M3.69.2] (lead) base 296df05f4ceb81f5dd7b0a3f03e5cf5123ff70e6; ux FAIL: up replaces vs features appends, features -F misparses, hint overclaims, no header; arch MAJOR: fingerpr
+- 2026-11-23T13:37 [M3.69.2] (lead) status ready -> active
+- 2026-11-23T13:43 [M3.69.2] (lead) status active -> done
