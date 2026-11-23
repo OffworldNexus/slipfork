@@ -1,0 +1,30 @@
+schema = 1
+slug = "slipfork"
+name = "slipfork"
+tagline = "Small bird. Whole flock."
+description = "Slipfork turns one Forkfile into your whole stack — container images, PostgreSQL, Redis, S3 buckets and background workers — behind one .localhost URL. It runs natively on Btrfs with crun, so there is no Docker daemon and no shared staging box."
+category = "Developer tools"
+status = "incubating"
+order = 20
+license = "custom"
+
+[links]
+repository = "https://github.com/OffworldNexus/slipfork"
+documentation = "https://offworldnexus.github.io/slipfork/"
+
+[brand]
+logo = "docs/brand/logo.svg"
+primary = "#2d4066"
+accent = "#a83e29"
+background = "#f6eed8"
+background_dark = "#141320"
+
+[[packages]]
+name = "slipfork"
+summary = "The CLI, daemon and ingress, with the world-init helper, systemd units and shell completions."
+formats = ["deb", "rpm", "apk", "arch", "tarball"]
+
+[[packages]]
+name = "slipfork-lsp"
+summary = "The standalone Forkfile language server, shipped for Linux, macOS and Windows and wired into editors."
+formats = ["tarball", "macos", "windows", "homebrew", "scoop"]

@@ -4,6 +4,8 @@ hide:
   - toc
 ---
 
+![A barn swallow in flat poster colours](brand/mascot.svg){ align=right width=220 }
+
 # Your cloud environment, locally in a box
 
 **Slipfork turns one `Forkfile` into your whole stack** — images, PostgreSQL, Redis, S3 buckets and

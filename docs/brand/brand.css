@@ -1,0 +1,87 @@
+/*
+ * slipfork brand colours — the barn swallow palette.
+ *
+ * Tokens: docs/brand/mascot-artwork.md#palette (hex + OKLCH, contrast ratios).
+ * For Zensical / Material for MkDocs: add this file to `extra_css` and set
+ * `primary: custom` and `accent: custom` on both palette entries, with
+ * `scheme: default` (light) and `scheme: slate` (dark).
+ */
+
+:root {
+  /* Mascot colours: identical in both schemes. */
+  --slipfork-ink: #141317;          /* eye and fine eye line */
+  --slipfork-indigo: #2d4066;       /* crown, nape, back, outer wing */
+  --slipfork-indigo-mid: #2a2b52;   /* wing inner band */
+  --slipfork-indigo-deep: #291f33;  /* collar, tail, lower mandible */
+  --slipfork-rust: #a83e29;         /* forehead, throat, rump */
+  --slipfork-cream: #f2e2bf;        /* breast and belly */
+  --slipfork-paper: #f8f0dd;        /* tail spots, eye glint */
+  --slipfork-bill: #4e494a;         /* upper mandible, eye ring, legs, feet */
+  --slipfork-branch: #9f5a2f;
+}
+
+/* Light scheme. */
+:root,
+[data-md-color-scheme="default"] {
+  --slipfork-background: #f6eed8;
+  --slipfork-surface: #fffbf1;
+  --slipfork-ui-ink: #16151b;
+  --slipfork-muted: #5b5a66;
+  --slipfork-primary: #2d4066;
+  --slipfork-primary-ink: #ffffff;
+  --slipfork-accent: #a83e29;
+  --slipfork-accent-ink: #ffffff;
+}
+
+/* Dark scheme. */
+[data-md-color-scheme="slate"] {
+  --slipfork-background: #141320;
+  --slipfork-surface: #1d1c2b;
+  --slipfork-ui-ink: #f4efe3;
+  --slipfork-muted: #a9a7bc;
+  --slipfork-primary: #2d4066;
+  --slipfork-primary-ink: #f4efe3;
+  --slipfork-accent: #e89a6e;
+  --slipfork-accent-ink: #1b0f09;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-md-color-scheme]) {
+    --slipfork-background: #141320;
+    --slipfork-surface: #1d1c2b;
+    --slipfork-ui-ink: #f4efe3;
+    --slipfork-muted: #a9a7bc;
+    --slipfork-primary: #2d4066;
+    --slipfork-primary-ink: #f4efe3;
+    --slipfork-accent: #e89a6e;
+    --slipfork-accent-ink: #1b0f09;
+  }
+}
+
+/* Theme mapping (Material-style variables). */
+[data-md-color-scheme="default"],
+[data-md-color-scheme="slate"] {
+  --md-primary-fg-color: var(--slipfork-primary);
+  --md-primary-fg-color--light: var(--slipfork-indigo-mid);
+  --md-primary-fg-color--dark: #1b2a47;
+  --md-primary-bg-color: var(--slipfork-primary-ink);
+  --md-primary-bg-color--light: color-mix(in oklch, var(--slipfork-primary-ink) 70%, transparent);
+
+  --md-accent-fg-color: var(--slipfork-accent);
+  --md-accent-fg-color--transparent: color-mix(in oklch, var(--slipfork-accent) 10%, transparent);
+  --md-accent-bg-color: var(--slipfork-accent-ink);
+  --md-accent-bg-color--light: color-mix(in oklch, var(--slipfork-accent-ink) 70%, transparent);
+
+  --md-default-bg-color: var(--slipfork-background);
+  --md-default-fg-color: var(--slipfork-ui-ink);
+  --md-default-fg-color--light: var(--slipfork-muted);
+  --md-default-fg-color--lighter: color-mix(in oklch, var(--slipfork-muted) 55%, transparent);
+  --md-default-fg-color--lightest: color-mix(in oklch, var(--slipfork-muted) 18%, transparent);
+
+  --md-code-bg-color: var(--slipfork-surface);
+  --md-code-fg-color: var(--slipfork-ui-ink);
+  --md-typeset-color: var(--slipfork-ui-ink);
+  --md-typeset-a-color: var(--slipfork-accent);
+  --md-footer-bg-color: var(--slipfork-primary);
+  --md-footer-fg-color: var(--slipfork-primary-ink);
+}

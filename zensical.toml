@@ -29,7 +29,7 @@ nav = [
   { "Troubleshooting" = "troubleshooting.md" },
 ]
 
-extra_css = ["stylesheets/extra.css"]
+extra_css = ["brand/brand.css", "stylesheets/extra.css"]
 
 # One classic script, no build step: it colours a `forkfile` fence and nothing
 # else. It loads after the theme bundle, including pages `navigation.instant`
@@ -45,10 +45,17 @@ exclude_docs = """
 /research/
 /knowledge/
 /testing/
+/brand/mascot-artwork.md
+/brand/check_seams.py
+/brand/mascot-compare.png
+/brand/mascot-reference.png
+/brand/mascot-side-by-side.png
 """
 
 [project.theme]
 language = "en"
+logo = "brand/logo.svg"
+favicon = "brand/favicon.svg"
 features = [
   "announce.dismiss",
   "content.action.edit",
@@ -77,26 +84,28 @@ features = [
 edit = "material/pencil"
 view = "material/eye"
 
+# The barn swallow palette lives in `docs/brand/brand.css`; `custom` hands
+# primary and accent to it in every scheme.
 [[project.theme.palette]]
 media = "(prefers-color-scheme)"
-primary = "teal"
-accent = "cyan"
+primary = "custom"
+accent = "custom"
 toggle.icon = "lucide/sun-moon"
 toggle.name = "Switch to light mode"
 
 [[project.theme.palette]]
 media = "(prefers-color-scheme: light)"
 scheme = "default"
-primary = "teal"
-accent = "cyan"
+primary = "custom"
+accent = "custom"
 toggle.icon = "lucide/sun"
 toggle.name = "Switch to dark mode"
 
 [[project.theme.palette]]
 media = "(prefers-color-scheme: dark)"
 scheme = "slate"
-primary = "teal"
-accent = "cyan"
+primary = "custom"
+accent = "custom"
 toggle.icon = "lucide/moon"
 toggle.name = "Switch to system preference"
 

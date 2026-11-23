@@ -1,4 +1,12 @@
-# Slipfork
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset=".github/brand/header-dark.svg">
+  <source media="(prefers-color-scheme: light)" srcset=".github/brand/header-light.svg">
+  <img src=".github/brand/header-light.svg" alt="slipfork — Small bird. Whole flock." width="960">
+</picture>
+
+<p align="center">
+  <a href="https://offworldnexus.github.io/slipfork/">Documentation</a> · <a href="ARCHITECTURE.md">Architecture</a>
+</p>
 
 **Your cloud environment locally in a box; CI is the clutch.**
 
