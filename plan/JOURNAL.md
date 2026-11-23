@@ -3135,3 +3135,4 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-23T01:13 [M3.60] (conductor) edited fields
 - 2026-11-23T01:20 [M3.60] (lead) VM 9/9: fork 2/2 (samples 3.98/4.46/4.97s <8.0s, snapshots <500ms), world 2/2 9.5s, status 5/5 17.5s; deb installed; demo+feat-auth live direct-bin
 - 2026-11-23T01:20 [M3.60] (lead) status active -> done
+- 2026-11-23T01:21 [M3.66] (conductor) edited fields
