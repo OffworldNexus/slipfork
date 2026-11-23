@@ -21,7 +21,7 @@
 
 ## Next actionable (top 12)
 
-- gate: M3.69 Built-in dev feature, per-world CLI features (-F/--features, --no-default-features, slipfork features, fork inheritance) & dev-only /project bind-mount
+- execute: M3.70.1 demo ./api + ./front, pure Dockerfile CMD in !dev, specs/docs sync
 
 ## Stuck / attention
 
@@ -29,8 +29,6 @@
 
 ## Recent journal
 
-- 2026-11-23T13:26 [M3.69.2] (lead) status ready -> active
-- 2026-11-23T13:26 [M3.69.2] (lead) attempt 1/3 started
 - 2026-11-23T13:26 [M3.69.2] (lead) base 296df05f4ceb81f5dd7b0a3f03e5cf5123ff70e6; scope: NO validate verb; keep forkfile convenience delegators (still used by forkfile/ingress/world tests) — thre
 - 2026-11-23T13:29 [M3.69.2] (lead) attempt 2/3 started
 - 2026-11-23T13:29 [M3.69.2] (lead) attempt 1 incomplete (empty report, 2 compile errors): CLI/flags/features.json/features verb landed; daemon/supervisor/runtime threading, tests and manpage stil
@@ -44,3 +42,5 @@
 - 2026-11-23T13:37 [M3.69.2] (lead) base 296df05f4ceb81f5dd7b0a3f03e5cf5123ff70e6; ux FAIL: up replaces vs features appends, features -F misparses, hint overclaims, no header; arch MAJOR: fingerpr
 - 2026-11-23T13:37 [M3.69.2] (lead) status ready -> active
 - 2026-11-23T13:43 [M3.69.2] (lead) status active -> done
+- 2026-11-23T13:43 [M3.69] (lead) gate: cargo fmt/clippy --workspace + cargo test --workspace green (0 failures); 3 Triad reviewers passed after 1 consolidated fix pass per child
+- 2026-11-23T13:43 [M3.69] (lead) status ready -> done

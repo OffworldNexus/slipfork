@@ -3218,3 +3218,5 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-23T13:37 [M3.69.2] (lead) base 296df05f4ceb81f5dd7b0a3f03e5cf5123ff70e6; ux FAIL: up replaces vs features appends, features -F misparses, hint overclaims, no header; arch MAJOR: fingerpr
 - 2026-11-23T13:37 [M3.69.2] (lead) status ready -> active
 - 2026-11-23T13:43 [M3.69.2] (lead) status active -> done
+- 2026-11-23T13:43 [M3.69] (lead) gate: cargo fmt/clippy --workspace + cargo test --workspace green (0 failures); 3 Triad reviewers passed after 1 consolidated fix pass per child
+- 2026-11-23T13:43 [M3.69] (lead) status ready -> done

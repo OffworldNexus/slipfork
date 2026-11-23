@@ -2,7 +2,7 @@
 id: M3.69
 title: "Built-in dev feature, per-world CLI features (-F/--features, --no-default-features, slipfork features, fork inheritance) & dev-only /project bind-mount"
 kind: epic
-status: ready
+status: done
 priority: 3
 depends_on: []
 paths:
@@ -16,7 +16,7 @@ attempts: 0
 max_attempts: 3
 escalation: none
 created: "2026-11-23T13:07"
-updated: "2026-11-23T13:11"
+updated: "2026-11-23T13:43"
 ---
 
 # Goal
