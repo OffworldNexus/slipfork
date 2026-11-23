@@ -200,11 +200,19 @@ Slipfork 0.1.0 ready on release/0.1.0 -> develop (PR #2): pure-Btrfs engine; bui
 
 **Answer:**
 
-## H-025 [open] [release-gate] (node M3)
+## H-025 [closed] [release-gate] (node M3)
 
 - asked: 2026-11-23T21:29 by conductor
 
 Slipfork 0.1.0 ready on release/0.1.0 -> develop (PR #2): pure-Btrfs engine; built-in dev + per-world '-F/--features' + 'slipfork features' (fork-inherited .slipfork/features.json) with dev-only /project bind; TTY auto-detected 'slipfork exec' (-i/--interactive & --no-interactive over real ExecPty); verbatim 'uv run'; on/else, domain.name vs self.{url,domain,scheme}, "${...}", secret/var(KEY, gen); DECSTBM + ui::table; #run_id logs; Tree-sitter/Zed/Vim in every Linux package; ./api + ./front demo live on 165.232.86.174; offworld-packaging.
+
+**Answer:**
+
+## H-026 [open] [release-gate] (node M3)
+
+- asked: 2026-11-23T23:13 by conductor
+
+Slipfork 0.1.0 (VERY EXPERIMENTAL) is green on release/0.1.0 @ 58bf25d — PR #2 into develop. 39/39 checks pass (Docs 2/2, CI 11/11 incl. loop-Btrfs live, Packages 25/26+stage, 17 install-verify legs on amd64+arm64: debian 12/13, ubuntu 22.04/24.04, rocky 9, fedora 41, alpine 3.21, arch, openSUSE Tumbleweed via zypper). Packages: deb, rpm, apk, pacman, glibc+musl tarballs; slipfork-lsp for linux/darwin/windows x x86_64/aarch64 with Homebrew+Scoop taps; glibc 2.34 floor; stage-dist.py byte-identical to the offworld-packaging skill and its dry-run manifest is in the stage log. .offworld/project.toml = experimental and validates. 'slipfork auth' is commented out for 0.1.0 (commands/auth.rs kept dormant; removed from docs/man/tests); OSPP wire spec stays in specs/. GitHub Pages is now ENABLED (build_type=workflow) so merge to develop deploys https://offworldnexus.github.io/slipfork/ and refreshes the offworld-nexus.app entry. HUMAN STEP: merge PR #2, then on develop: git tag -a --cleanup=verbatim v0.1.0 -m 'slipfork 0.1.0 (very experimental)' && git push origin v0.1.0 — that triggers the stable Packages run; confirm the 'offworld-pkg / publish (stable)' check and the packages on apt/rpm/apk/arch/dl.offworld-nexus.app.
 
 **Answer:**
 
