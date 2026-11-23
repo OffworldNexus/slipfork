@@ -331,7 +331,11 @@ fn a_target_stage_never_reaches_a_later_failing_stage() {
         "unexpected retry error: {retry_error}\nbuild output tail:\n{}",
         output_tail(&retry_log)
     );
-    let runtime_user_dir = PathBuf::from(format!("/run/user/{uid}"));
+    // `crun` roots its state at `$XDG_RUNTIME_DIR/crun`, falling back to `/run/user/{uid}` only
+    // when the variable is unset, so the planted state must follow the same resolution.
+    let runtime_user_dir = std::env::var_os("XDG_RUNTIME_DIR")
+        .filter(|dir| !dir.is_empty())
+        .map_or_else(|| PathBuf::from(format!("/run/user/{uid}")), PathBuf::from);
     if runtime_user_dir.is_dir() {
         let pid = std::process::id();
         let stale_id = format!("sf-{pid}-0123456789abcdef");
@@ -366,6 +370,11 @@ fn a_target_stage_never_reaches_a_later_failing_stage() {
                     output_tail(&step_log)
                 )
             });
+        assert!(
+            runtime_user_dir.join("crun").is_dir(),
+            "crun must root its state at `{}`",
+            runtime_user_dir.join("crun").display()
+        );
         assert_eq!(
             support::read_text(&step_rootfs.join("reclaimed.txt")),
             "reclaimed\n"
@@ -382,6 +391,11 @@ fn a_target_stage_never_reaches_a_later_failing_stage() {
         );
         let _ = fs::remove_dir_all(&foreign_state);
         let _ = engine.destroy(&step_rootfs, Dirtiness::Dirty, true);
+    } else {
+        panic!(
+            "fail closed: crun runtime root `{}` is missing, so stale-state reclamation was never asserted.\nnext: run `make live-test` (it creates XDG_RUNTIME_DIR on tmpfs)",
+            runtime_user_dir.display()
+        );
     }
 
     let blobs_before = fixture.blob_requests();

@@ -2,16 +2,16 @@
 id: M3.71
 title: "Fix critical_dockerfile_live:334 crun runtime dir lookup under XDG_RUNTIME_DIR=/dev/shm/sf-live-runtime"
 kind: task
-status: ready
+status: done
 owner: implementer
 priority: 3
 depends_on: []
 paths: ["crates/slipfork-image/tests/**"]
-attempts: 0
+attempts: 1
 max_attempts: 3
 escalation: none
 created: "2026-11-23T15:50"
-updated: "2026-11-23T15:50"
+updated: "2026-11-23T15:53"
 ---
 
 # Goal
