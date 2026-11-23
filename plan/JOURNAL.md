@@ -3343,3 +3343,19 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-23T21:29 [M3] (conductor) status active -> done
 - 2026-11-23T21:29 HUMAN H-025 [release-gate] opened by conductor (node M3)
 - 2026-11-23T21:29 AUTOPILOT off by conductor Awaiting 38/38 GHA green confirmation & human review/merge of PR #2 into develop
+- 2026-11-23T22:36 [M3] (conductor) status done -> active
+- 2026-11-23T22:36 [M3.75] (conductor) created (task) Retire slipfork auth from the 0.1.0 CLI and mark the release very experimental
+- 2026-11-23T22:36 [M3.76] (conductor) created (task) Prove every 0.1.0 package on every promised distro and finalise the offworld-dist release
+- 2026-11-23T22:36 AUTOPILOT on by conductor M3.75 auth retirement + M3.76 packaging release proof
+- 2026-11-23T22:36 [M3.75] (lead) status ready -> active
+- 2026-11-23T22:36 [M3.75] (lead) attempt 1/3 started
+- 2026-11-23T22:36 [M3.75] (lead) base 8ec0bbd01935e056623ef37a18f2a5c3fd588617
+- 2026-11-23T22:39 [M3.75] (unknown) edited fields
+- 2026-11-23T22:39 [M3.75] (lead) attempt 2/3 started
+- 2026-11-23T22:42 [M3.75] (lead) status active -> review
+- 2026-11-23T22:42 [M3.75] (lead) status review -> done
+- 2026-11-23T22:42 [M3.76] (lead) status ready -> active
+- 2026-11-23T22:42 [M3.76] (lead) attempt 1/3 started
+- 2026-11-23T22:42 [M3.76] (lead) base 7eb9cda00b33f617cef917d112070efc176cf681
+- 2026-11-23T22:43 [M3.76] (lead) status active -> review
+- 2026-11-23T22:46 [M3.76] (lead) status review -> done

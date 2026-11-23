@@ -223,6 +223,8 @@ jobs:
           - { image: "menci/archlinuxarm:latest", arch: arm64, runs_on: ubuntu-24.04-arm }
           - { image: "alpine:3.21", arch: amd64, runs_on: ubuntu-24.04 }
           - { image: "alpine:3.21", arch: arm64, runs_on: ubuntu-24.04-arm }
+          # The zypper path `docs/install.md` promises, on openSUSE's rolling image.
+          - { image: "opensuse/tumbleweed", arch: amd64, runs_on: ubuntu-24.04 }
     steps:
       - uses: actions/checkout@v4
       # Only this architecture's artifacts: the other arch's package has the
@@ -269,6 +271,13 @@ jobs:
                 grep -q "^DisableSandbox" /etc/pacman.conf || sed -i "/^\[options\]/a DisableSandbox" /etc/pacman.conf
                 pacman -Syu --noconfirm --needed glibc crun btrfs-progs slirp4netns
                 pacman -U --noconfirm /pkg/*.pkg.tar.zst
+                /usr/bin/slipfork --version
+                slipfork-lsp --version
+                /usr/bin/slipfork --help | grep -q "^  up "'
+              ;;
+            opensuse/*)
+              docker run --rm -v "$PWD/dist/packages:/pkg:ro" "${{ matrix.image }}" sh -eu -c '
+                zypper --non-interactive --gpg-auto-import-keys install --allow-unsigned-rpm /pkg/*.rpm
                 /usr/bin/slipfork --version
                 slipfork-lsp --version
                 /usr/bin/slipfork --help | grep -q "^  up "'

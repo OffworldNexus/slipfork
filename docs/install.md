@@ -7,12 +7,22 @@ anywhere. A fresh machine is one command and one green `slipfork doctor` away fr
 [report it](https://github.com/OffworldNexus/slipfork/issues).
 
 ```console
-$ curl -fsSL https://offworldnexus.github.io/slipfork/install.sh | sh
+$ curl -fsSL https://offworld-nexus.app/install.sh | sudo sh
+$ sudo apt install slipfork          # or: dnf / zypper / apk / pacman
 $ slipfork doctor
 ✓ Ready
 $ slipfork up
 ✓ Ready -> http://acme-shop.localhost
 ```
+
+The installer detects your distribution, adds the signed Offworld Nexus repository and key, and
+hands the install to your own package manager; `--dry-run` prints every change, `--uninstall`
+reverts them, and `| sudo sh -s -- --channel nightly` follows nightlies.
+
+!!! info "What the installer trusts"
+
+    `apt`, `dnf`, `zypper`, `pacman` and `apk` verify package signatures and never disable that
+    verification. The script only adds the repository and its key; your package manager performs the install.
 
 ```mermaid
 flowchart LR
@@ -24,35 +34,7 @@ flowchart LR
   Doctor --> Up["slipfork up"]
 ```
 
-## One command, every distro
-
-The installer prefers your package manager and falls back to the signed tarball. Upgrades then come
-from the same repository, so `install.sh` is a one-time command.
-
-| Flag | Effect |
-| :--- | :--- |
-| `--version <ver>` | Install exactly this release |
-| `--nightly` | Use the nightly channel; re-run without it for releases |
-| `--user` | No root: tarball under `~/.local` |
-| `--prefix <dir>` | No root: tarball under a directory you own |
-| `--develop [ref]` | Use the CI archive named by `SLIPFORK_ARCHIVE_URL`; unsigned, so a digest is mandatory |
-| `-y`, `--yes` | Do not ask for confirmation |
-| `-h`, `--help` | Print the flags |
-
-Pass flags through the pipe with `sh -s --`:
-
-```console
-$ curl -fsSL https://offworldnexus.github.io/slipfork/install.sh | sh -s -- --user
-```
-
-!!! info "What the installer trusts"
-
-    `apt`, `dnf`, `zypper`, `pacman` and `apk` verify package signatures and never disable that
-    verification, while the default tarball origin is HTTPS with its published `.sha256` checked
-    when present. An overridden origin (`--develop` or `SLIPFORK_ARCHIVE_URL`) requires
-    `SLIPFORK_SHA256`, and any digest mismatch aborts before unpacking.
-
-## Native packages
+## Manual per-distro steps
 
 Five hosts serve every channel: `apt.`, `rpm.`, `apk.` and `arch.offworld-nexus.app` for package
 managers, and `dl.offworld-nexus.app` for tarballs and editor builds. Pick your distro and paste the
@@ -146,6 +128,38 @@ $ systemctl enable --now slipfork-ingress.socket
     $ sudo rc-update add slipfork-ingress default
     $ sudo rc-service slipfork-ingress start
     ```
+
+## This project's installer (alternative)
+
+This repository's own [`install.sh`](https://offworldnexus.github.io/slipfork/install.sh) is the
+alternative when you cannot use `sudo`: `--user` unpacks under `~/.local` with no root and the musl
+build is included. `--nightly` follows nightlies, and `--version` pins a release through your
+package manager; on the tarball path pin an archive with `SLIPFORK_ARCHIVE_URL` and `SLIPFORK_SHA256`.
+
+It prefers your package manager and falls back to the signed tarball, so upgrades come from the same
+repository and `install.sh` stays a one-time command.
+
+| Flag | Effect |
+| :--- | :--- |
+| `--version <ver>` | Install exactly this release |
+| `--nightly` | Use the nightly channel; re-run without it for releases |
+| `--user` | No root: tarball under `~/.local` |
+| `--prefix <dir>` | No root: tarball under a directory you own |
+| `--develop [ref]` | Use the CI archive named by `SLIPFORK_ARCHIVE_URL`; unsigned, so a digest is mandatory |
+| `-y`, `--yes` | Do not ask for confirmation |
+| `-h`, `--help` | Print the flags |
+
+Pass flags through the pipe with `sh -s --`:
+
+```console
+$ curl -fsSL https://offworldnexus.github.io/slipfork/install.sh | sh -s -- --user
+```
+
+!!! info "What the installer trusts"
+
+    The default tarball origin is HTTPS with its published `.sha256` checked when present. An
+    overridden origin (`--develop` or `SLIPFORK_ARCHIVE_URL`) requires `SLIPFORK_SHA256`, and any
+    digest mismatch aborts before unpacking.
 
 ## Portable tarballs
 
