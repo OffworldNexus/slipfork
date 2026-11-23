@@ -3330,3 +3330,7 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-23T20:47 [M3] (conductor) status active -> done
 - 2026-11-23T20:47 HUMAN H-024 [release-gate] opened by conductor (node M3)
 - 2026-11-23T20:47 AUTOPILOT off by conductor Awaiting 38/38 GHA green on the final commit & human merge of PR #2
+- 2026-11-23T21:13 HUMAN H-024 closed by conductor
+- 2026-11-23T21:13 [M3] (conductor) status done -> active
+- 2026-11-23T21:13 [M3.74] (conductor) created (task) Add -i/--interactive and --no-interactive (with TTY auto-detection by default) to slipfork exec
+- 2026-11-23T21:13 AUTOPILOT on by conductor Implementing -i/--interactive and --no-interactive with TTY auto-detection on slipfork exec in M3.74

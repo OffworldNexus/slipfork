@@ -192,7 +192,7 @@ Slipfork 0.1.0 ready on release/0.1.0 -> develop (PR #2): pure-Btrfs engine; bui
 
 **Answer:**
 
-## H-024 [open] [release-gate] (node M3)
+## H-024 [closed] [release-gate] (node M3)
 
 - asked: 2026-11-23T20:47 by conductor
 
