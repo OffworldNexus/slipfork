@@ -23,3 +23,27 @@ expert fixed 3 root causes; local workspace green; critical_guard authorized; li
 ## 2026-11-23T15:23 [lead]
 
 status active -> done
+
+## 2026-11-23T15:24 [lead]
+
+status done -> ready: Triad MAJOR: content-only crun container id can kill a concurrent build
+
+## 2026-11-23T15:24 [lead]
+
+attempt 2/3 started
+
+## 2026-11-23T15:24 [lead]
+
+triad ux: scope sf-<hash> container names per process; add fork rebuild plan row; forkfile read error code/next
+
+## 2026-11-23T15:24 [lead]
+
+status ready -> active
+
+## 2026-11-23T15:40 [lead]
+
+triad fix: sf-<pid>-<hash> containers (foreign-PID isolation test), feature-override fork plan notice, forkfile read remedy; local 318 tests, live dockerfile_live 3/3
+
+## 2026-11-23T15:40 [lead]
+
+status active -> done

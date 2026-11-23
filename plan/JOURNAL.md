@@ -3266,3 +3266,9 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-23T15:23 [M3.70.4] (lead) status active -> done
 - 2026-11-23T15:23 [M3.70.2] (lead) PROVEN by M3.70.4 live run on packaged .deb: world_journey 2/2, fork_live 2/2, status_live 5/5, dockerfile_live 3/3; prod-check 10 rows no mailpit, 200 on / and
 - 2026-11-23T15:23 [M3.70.2] (lead) status ready -> done
+- 2026-11-23T15:24 [M3.70.4] (lead) status done -> ready: Triad MAJOR: content-only crun container id can kill a concurrent build
+- 2026-11-23T15:24 [M3.70.4] (lead) attempt 2/3 started
+- 2026-11-23T15:24 [M3.70.4] (lead) triad ux: scope sf-<hash> container names per process; add fork rebuild plan row; forkfile read error code/next
+- 2026-11-23T15:24 [M3.70.4] (lead) status ready -> active
+- 2026-11-23T15:40 [M3.70.4] (lead) triad fix: sf-<pid>-<hash> containers (foreign-PID isolation test), feature-override fork plan notice, forkfile read remedy; local 318 tests, live dockerfile_li
+- 2026-11-23T15:40 [M3.70.4] (lead) status active -> done

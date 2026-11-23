@@ -7,11 +7,11 @@ owner: expert
 priority: 3
 depends_on: []
 paths: ["crates/slipfork/**", "crates/slipfork-world/**", "crates/slipfork-image/**"]
-attempts: 1
+attempts: 2
 max_attempts: 3
 escalation: none
 created: "2026-11-23T14:21"
-updated: "2026-11-23T15:23"
+updated: "2026-11-23T15:40"
 ---
 
 # Goal
