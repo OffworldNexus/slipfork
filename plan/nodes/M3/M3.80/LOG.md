@@ -35,3 +35,11 @@ INCIDENT: a detached 'tools/do_vm.py sync' (local PID 123650/123653/123656/12423
 ## 2026-11-24T00:22 [lead]
 
 edited fields
+
+## 2026-11-24T00:31 [lead]
+
+a609205: live on 165.232.86.174 (scratch /home/slipfork/plaincheck, isolated XDG_RUNTIME_DIR=/dev/shm/m380-rt, XDG_STATE_HOME=/var/tmp/m380-state, target/debug binary; NEVER do_vm sync, ~/demo untouched): up project_ino 232348->232348, marker_ino unchanged, adopt_siblings=0, same shell still lists .git/.slipfork/Forkfile/marker.txt/run.sh; fork feat-plain copied a plain tree (files+755, parent ino unchanged) with snapshot_ms=82; drop removed it. Live suites on /mnt/slipfork-live: critical_btrfs_live 1/1, critical_world_journey 2/2, critical_fork_live 3/3 (incl. new fork_copies_a_plain_checkout_without_touching_it). make check: my crates/tests green; full-workspace gate fails only in crates/slipfork-lsp/tests/critical_lsp.rs due to M3.84 ff0a209 4-space formatter (passes at c77a2b9, fails at HEAD) - routed to M3.84. Also note specs/03 still says up converts the checkout (arch finding; specs owned by M3.79/M3.81) - follow-up needed.
+
+## 2026-11-24T00:31 [lead]
+
+status active -> done

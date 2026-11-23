@@ -2,7 +2,7 @@
 id: M3.80
 title: "Never touch the user's checkout: drop up-time adopt, copy plain checkouts on fork"
 kind: task
-status: active
+status: done
 owner: implementer
 priority: 3
 depends_on: []
@@ -20,7 +20,7 @@ attempts: 1
 max_attempts: 3
 escalation: none
 created: "2026-11-24T00:10"
-updated: "2026-11-24T00:22"
+updated: "2026-11-24T00:31"
 ---
 
 # Problem
