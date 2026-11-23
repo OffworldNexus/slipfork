@@ -2,16 +2,16 @@
 id: M3.77
 title: "Fix the annotated-tag check: actions/checkout rewrites the local tag ref to the commit"
 kind: task
-status: ready
+status: done
 owner: implementer
 priority: 3
 depends_on: []
 paths: [.github/workflows/packages.yml]
-attempts: 0
+attempts: 1
 max_attempts: 3
 escalation: none
 created: "2026-11-23T23:39"
-updated: "2026-11-23T23:39"
+updated: "2026-11-23T23:40"
 ---
 
 # Problem

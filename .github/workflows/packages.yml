@@ -83,7 +83,10 @@ jobs:
               channel=stable
               [ "$REF_NAME" = "v$base" ] ||
                 { echo "::error::tag $REF_NAME does not match the workspace version v$base"; exit 1; }
-              [ "$(git cat-file -t "$REF_NAME" 2>/dev/null || true)" = tag ] ||
+              # actions/checkout force-updates the local tag ref to the commit, so the local
+              # ref is always lightweight. Ask the remote for the peeled entry instead: it
+              # exists only for annotated tags.
+              [ -n "$(git ls-remote origin "refs/tags/$REF_NAME^{}")" ] ||
                 { echo "::error::$REF_NAME is a lightweight tag; next: git tag -a --cleanup=verbatim $REF_NAME"; exit 1; }
               publish=true
               ;;
@@ -99,7 +102,10 @@ jobs:
                   channel=stable
                   [ "$REF_NAME" = "v$base" ] ||
                     { echo "::error::tag $REF_NAME does not match the workspace version v$base"; exit 1; }
-                  [ "$(git cat-file -t "$REF_NAME" 2>/dev/null || true)" = tag ] ||
+                  # actions/checkout force-updates the local tag ref to the commit, so the local
+                  # ref is always lightweight. Ask the remote for the peeled entry instead: it
+                  # exists only for annotated tags.
+                  [ -n "$(git ls-remote origin "refs/tags/$REF_NAME^{}")" ] ||
                     { echo "::error::$REF_NAME is a lightweight tag; next: git tag -a --cleanup=verbatim $REF_NAME"; exit 1; }
                 else
                   [ "$REF" = refs/heads/develop ] ||
