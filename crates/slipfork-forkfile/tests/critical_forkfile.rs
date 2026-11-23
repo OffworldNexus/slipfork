@@ -685,10 +685,11 @@ fn chained_else_on_picks_the_first_true_branch_and_formats_canonically() {
 
 #[test]
 fn no_else_branch_is_selected_when_the_condition_is_false() {
-    let source = "# forkfile: 0.1\n\nfeatures {\n  dev\n}\n\nenv base {\n  X = \"1\"\n  on dev: Y = \"2\"\n}\n";
+    let source = "# forkfile: 0.1\n\nfeatures {\n  dev\n  prod\n}\n\nenv base {\n  X = \"1\"\n  on prod: Y = \"2\"\n}\n";
     let document = parse(source).expect("parses");
     let env = eval_env(&document);
-    assert!(!env["base"].contains_key("Y"));
+    assert!(!env["base"].contains_key("Y"), "`prod` is off by default");
+    assert_eq!(env["base"]["X"].0, "1");
 }
 
 #[test]

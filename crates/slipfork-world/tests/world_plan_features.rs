@@ -1,18 +1,20 @@
-//! Proves `world_plan` only sees declarations the active feature set enables.
+//! Proves `world_plan`/`world_plan_with` only see declarations the active feature set enables.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use slipfork_world::{WorldPlan, world_plan};
+use slipfork_forkfile::FeatureSet;
+use slipfork_world::{WorldPlan, world_plan, world_plan_with};
 
-const WITH_DEV: &str = r#"# forkfile: 0.1
+const WITH_MAIL: &str = r#"# forkfile: 0.1
 features {
   dev
-  default = [dev]
+  mail
+  default = [dev, mail]
 }
 image app . {
   dockerfile Dockerfile
-  on dev {
+  on mail {
     service guarded {
       run: sh -c true
     }
@@ -23,10 +25,28 @@ image app . {
 }
 "#;
 
-const WITHOUT_DEV: &str = r#"# forkfile: 0.1
+const WITHOUT_MAIL: &str = r#"# forkfile: 0.1
 features {
   dev
-  default = []
+  mail
+  default = [dev]
+}
+image app . {
+  dockerfile Dockerfile
+  on mail {
+    service guarded {
+      run: sh -c true
+    }
+  }
+  service always {
+    run: sh -c true
+  }
+}
+"#;
+
+const DEV_GATE: &str = r#"# forkfile: 0.1
+features {
+  dev
 }
 image app . {
   dockerfile Dockerfile
@@ -57,6 +77,17 @@ fn plan(name: &str, source: &str) -> WorldPlan {
     world_plan(&document, &dir).expect("the world plan builds")
 }
 
+fn plan_with(name: &str, source: &str, no_default: bool) -> WorldPlan {
+    let dir = lab_dir(name);
+    fs::write(dir.join("Dockerfile"), "FROM scratch\n").expect("write Dockerfile");
+    let document = slipfork_forkfile::parse(source).expect("the feature fixture parses");
+    slipfork_forkfile::check(&document).expect("the feature fixture validates");
+    let features: FeatureSet = document
+        .resolve_features(no_default, &[])
+        .expect("the feature fixture resolves");
+    world_plan_with(&document, &dir, &features).expect("the world plan builds")
+}
+
 fn service_ids(plan: &WorldPlan) -> Vec<&str> {
     plan.services
         .iter()
@@ -65,19 +96,32 @@ fn service_ids(plan: &WorldPlan) -> Vec<&str> {
 }
 
 #[test]
-fn on_dev_services_appear_only_when_dev_is_active() {
-    let enabled = plan("enabled", WITH_DEV);
+fn on_mail_services_appear_only_when_mail_is_active() {
+    let enabled = plan("enabled", WITH_MAIL);
     assert_eq!(
         service_ids(&enabled),
         ["guarded", "always"],
-        "`on dev` expands when `default = [dev]`"
+        "`on mail` expands when `mail` is in default"
     );
 
-    let disabled = plan("disabled", WITHOUT_DEV);
+    let disabled = plan("disabled", WITHOUT_MAIL);
     assert_eq!(
         service_ids(&disabled),
         ["always"],
-        "`on dev` stays out when the active set is empty"
+        "`on mail` stays out while mail is inactive"
+    );
+}
+
+#[test]
+fn no_default_features_drops_the_built_in_dev_gate() {
+    let defaulted = plan("dev-default", DEV_GATE);
+    assert_eq!(service_ids(&defaulted), ["guarded", "always"]);
+
+    let bare = plan_with("dev-bare", DEV_GATE, true);
+    assert_eq!(
+        service_ids(&bare),
+        ["always"],
+        "`--no-default-features` turns the built-in `dev` gate off"
     );
 }
 

@@ -1,17 +1,22 @@
 ---
 id: M3.69
 title: "Built-in dev feature, per-world CLI features (-F/--features, --no-default-features, slipfork features, fork inheritance) & dev-only /project bind-mount"
-kind: task
+kind: epic
 status: ready
-owner: implementer
 priority: 3
 depends_on: []
-paths: ["crates/slipfork-forkfile/**", "crates/slipfork-lsp/**", "crates/slipfork/**"]
+paths:
+  - "crates/slipfork-forkfile/**"
+  - "crates/slipfork-world/**"
+  - "crates/slipfork-ingress/**"
+  - "crates/slipfork-lsp/**"
+  - "crates/slipfork/**"
+  - "packaging/man/**"
 attempts: 0
 max_attempts: 3
 escalation: none
 created: "2026-11-23T13:07"
-updated: "2026-11-23T13:07"
+updated: "2026-11-23T13:11"
 ---
 
 # Goal

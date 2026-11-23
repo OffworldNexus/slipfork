@@ -3187,3 +3187,19 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-23T13:07 [M3.69] (conductor) created (task) Built-in dev feature, per-world CLI features (-F/--features, --no-default-features, slipfork features, fork inheritance) & dev-only /project bind
 - 2026-11-23T13:07 [M3.70] (conductor) created (task) Restructure support/demo into ./api + ./front, use pure Dockerfile CMD in !dev, update specs/docs & verify dev + -F -dev live on VM
 - 2026-11-23T13:07 AUTOPILOT on by conductor Implementing M3.69 + M3.70: built-in dev, per-world CLI features, dev-only /project bind, and ./api + ./front demo
+- 2026-11-23T13:07 [M3.70] (conductor) edited fields
+- 2026-11-23T13:09 [M3.69] (lead) edited fields
+- 2026-11-23T13:09 [M3.69.1] (lead) created (task) Forkfile built-in dev + FeatureSet resolution, threaded through world plan & ingress
+- 2026-11-23T13:10 [M3.69.2] (lead) created (task) Per-world features.json, -F/--features CLI, slipfork features/validate verbs & dev-only /project bind
+- 2026-11-23T13:10 [M3.69.1] (lead) status ready -> active
+- 2026-11-23T13:10 [M3.69.1] (lead) attempt 1/3 started
+- 2026-11-23T13:10 [M3.69.1] (lead) base 1da2cdb4f5e78459741ad10194497905bc9e0bcd
+- 2026-11-23T13:11 [M3.69] (conductor) edited fields
+- 2026-11-23T13:11 [M3.69.2] (lead) scope correction (owner): add ONLY the `slipfork features` verb + `-F/--features`/`--no-default-features` on up, fork, env — NO unrequested `validate` verb; pru
+- 2026-11-23T13:11 [M3.69.2] (lead) edited fields
+- 2026-11-23T13:17 [M3.69.1] (lead) status active -> review
+- 2026-11-23T13:19 [M3.69.1] (lead) status review -> ready: Triad fix pass: split eval/features.rs, canonical feature index, ingress gating test, DX nits
+- 2026-11-23T13:19 [M3.69.1] (lead) attempt 2/3 started
+- 2026-11-23T13:19 [M3.69.1] (lead) base 1da2cdb4f5e78459741ad10194497905bc9e0bcd; triad: arch FAIL (685-LOC eval/mod.rs, duplicated on-walk), tests CHANGES (0%-covered from_forkfile_with, vacuous
+- 2026-11-23T13:19 [M3.69.1] (lead) status ready -> active
+- 2026-11-23T13:26 [M3.69.1] (lead) status active -> done

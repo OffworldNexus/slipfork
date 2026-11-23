@@ -9,11 +9,14 @@ use slipfork_forkfile::ast::*;
 use slipfork_forkfile::boot::SetupNode;
 use slipfork_forkfile::{CommandPart, FeatureSet, each_enabled};
 use std::path::{Path, PathBuf};
-/// Builds the world boot plan from a checked `Forkfile` and its project root.
-pub fn world_plan(doc: &Forkfile, root: &Path) -> crate::Result<WorldPlan> {
-    let features = doc.active_features();
+/// Builds the world boot plan from a checked `Forkfile` and its project root under `features`.
+pub fn world_plan_with(
+    doc: &Forkfile,
+    root: &Path,
+    features: &FeatureSet,
+) -> crate::Result<WorldPlan> {
     let mut builder = PlanBuilder {
-        features: &features,
+        features,
         error: None,
         root,
         images: Vec::new(),
@@ -21,14 +24,20 @@ pub fn world_plan(doc: &Forkfile, root: &Path) -> crate::Result<WorldPlan> {
         services: Vec::new(),
         hooks: Vec::new(),
     };
-    each_enabled(&doc.items.items, &features, &mut |item| {
+    each_enabled(&doc.items.items, features, &mut |item| {
         builder.top(item);
     });
     builder.finish(doc)
 }
+
+/// Builds the world boot plan under default features.
+pub fn world_plan(doc: &Forkfile, root: &Path) -> crate::Result<WorldPlan> {
+    world_plan_with(doc, root, &doc.default_features())
+}
 /// Declarations collected by [`PlanBuilder`], handed to [`graph::finish`].
 pub(super) struct Parts<'a> {
     pub(super) root: &'a Path,
+    pub(super) features: &'a FeatureSet,
     pub(super) images: Vec<ImageNode>,
     pub(super) resources: Vec<ResourceNode>,
     pub(super) services: Vec<ServiceNode>,
@@ -187,6 +196,7 @@ impl PlanBuilder<'_> {
             doc,
             Parts {
                 root: self.root,
+                features: self.features,
                 images: self.images,
                 resources: self.resources,
                 services: self.services,

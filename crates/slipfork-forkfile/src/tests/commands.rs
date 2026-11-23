@@ -128,7 +128,10 @@ fn only_active_command_branches_reach_the_boot_plan() {
 
     let flipped = parse(&DEV_SOURCE.replace("default = [dev]", "default = [prod]"))
         .expect("flipped features parse");
-    let prod = flipped.active_features();
+    let prod = flipped
+        .resolve_features(true, &[FeatureEdit::Enable("prod".into())])
+        .expect("`prod` alone resolves");
+    assert!(!prod.contains("dev"), "no-default-features turns `dev` off");
     assert_eq!(
         texts(run_hook(&flipped), &prod),
         ["pnpm install", "node build"]

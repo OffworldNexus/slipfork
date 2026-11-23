@@ -1,7 +1,7 @@
 //! Lab journey over the ingress route table: real `Forkfile` route rules resolved against
 //! origin-form request targets and `.localhost` authorities, with every refusal branch pinned.
 
-use slipfork_forkfile::{DomainFilter, Position, Route, RouteKind, Span};
+use slipfork_forkfile::{DomainFilter, FeatureEdit, Position, Route, RouteKind, Span};
 use slipfork_ingress::{IngressRegistry, IngressRoute, IngressTable, RouteError, TableError};
 
 fn route(path: Option<&str>, kind: RouteKind) -> Route {
@@ -359,4 +359,53 @@ fn s3_buckets_own_their_domains_and_the_cdn_aliases_the_bucket() {
     let common = env.get("common").expect("`env common` was visited");
     assert_eq!(common["CDN_DOMAIN"].0, "assets.demo.localhost");
     assert_eq!(common["CDN_URL"].0, "http://assets.demo.localhost");
+}
+
+#[test]
+fn mail_gated_services_stay_out_until_the_feature_is_resolved_in() {
+    const GATED: &str = r#"# forkfile: 0.1
+features {
+  mail
+}
+
+image app . {
+  dockerfile Dockerfile
+  service web {
+    port 8000
+    route /
+  }
+  on mail {
+    service mailpit {
+      port 8025
+      route /mail
+    }
+  }
+}
+"#;
+    let doc = slipfork_forkfile::parse(GATED).expect("the gated Forkfile parses");
+    let defaulted = IngressTable::from_forkfile("demo", &doc).expect("the default table builds");
+    let before = defaulted
+        .resolve("", "/mail")
+        .expect("web's `/` route still serves");
+    assert_eq!(
+        before.port, 8000,
+        "`on mail` keeps `mailpit` out of the table while mail is off"
+    );
+
+    let mail = doc
+        .resolve_features(
+            false,
+            &["+mail"
+                .parse::<FeatureEdit>()
+                .expect("a valid feature edit")],
+        )
+        .expect("+mail resolves");
+    let gated =
+        IngressTable::from_forkfile_with("demo", &doc, &mail).expect("the mail table builds");
+    let mailpit = gated.resolve("", "/mail").expect("mailpit serves /mail");
+    assert_eq!(mailpit.port, 8025);
+    assert_eq!(
+        gated.resolve("", "/").expect("web still serves /").port,
+        8000
+    );
 }

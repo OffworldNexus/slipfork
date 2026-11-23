@@ -40,11 +40,13 @@ mod token;
 mod visit;
 
 pub use ast::*;
-pub use boot::{BootPlan, DirectBin, PrequelTool, SetupNode, ToolExec, boot_plan, direct_bin};
+pub use boot::{
+    BootPlan, DirectBin, PrequelTool, SetupNode, ToolExec, boot_plan, boot_plan_with, direct_bin,
+};
 pub use check::{CheckedForkfile, Symbol, SymbolKind, SymbolTable, check};
 pub use diag::{Diagnostic, Diagnostics};
 pub use dns::{DnsError, DnsLabel};
-pub use eval::{FeatureSet, Resolvers};
+pub use eval::{FeatureEdit, FeatureSet, Resolvers};
 pub use expr::*;
 pub use facts::{keywords, self_properties};
 pub use fmt::FormatCheck;

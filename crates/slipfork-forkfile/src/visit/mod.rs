@@ -2,14 +2,17 @@
 //! and every runtime variable a component declares.
 //!
 //! Every consumer that needs the declared surface walks these visitors instead of re-implementing
-//! the `on <expr> { ... }` recursion. The walk is AST-only and never reads source text.
+//! the `on <expr> { ... }` recursion. The walk is AST-only and never reads source text; the
+//! `*_with` variants gate every declaration through one [`FeatureSet`].
 
 use std::collections::BTreeMap;
 
 use crate::ast::{
-    EnvItem, Forkfile, ImageItem, On, OnBody, PostgresItem, RedisItem, Route, S3Item, Service,
-    ServiceItem, TopItem,
+    EnvItem, Forkfile, ImageItem, PostgresItem, RedisItem, Route, S3Item, Service, ServiceItem,
+    TopItem,
 };
+use crate::eval::FeatureSet;
+use crate::gate::each_enabled;
 use crate::{Expr, ExprKind};
 
 /// One service declaration with the port, routes, and enclosing image that apply to it.
@@ -73,140 +76,146 @@ impl EnvBinding<'_> {
 }
 
 impl Forkfile {
-    /// Every service declaration, with `on` blocks flattened.
+    /// Every service declaration enabled by `features`, with `on` blocks resolved.
     #[must_use]
-    pub fn services(&self) -> Vec<ServiceDecl<'_>> {
+    pub fn services_with(&self, features: &FeatureSet) -> Vec<ServiceDecl<'_>> {
         let mut services = Vec::new();
-        let mut resources = Vec::new();
-        let mut domains = Vec::new();
-        for item in &self.items.items {
-            top(item, &mut services, &mut resources, &mut domains);
-        }
+        each_enabled(&self.items.items, features, &mut |item| {
+            if let TopItem::Image(image) = item {
+                each_enabled(&image.body.items, features, &mut |item| {
+                    if let ImageItem::Service(service) = item {
+                        services.push(service_decl(service, &image.id, features));
+                    }
+                });
+            }
+        });
         services
     }
 
-    /// Every backing resource, with `on` blocks flattened.
+    /// Every service declaration, with `on` blocks flattened under default features.
     #[must_use]
-    pub fn resources(&self) -> Vec<ResourceDecl<'_>> {
-        let mut services = Vec::new();
+    pub fn services(&self) -> Vec<ServiceDecl<'_>> {
+        self.services_with(&self.default_features())
+    }
+
+    /// Every backing resource enabled by `features`, with `on` blocks resolved.
+    #[must_use]
+    pub fn resources_with(&self, features: &FeatureSet) -> Vec<ResourceDecl<'_>> {
         let mut resources = Vec::new();
-        let mut domains = Vec::new();
-        for item in &self.items.items {
-            top(item, &mut services, &mut resources, &mut domains);
-        }
+        each_enabled(&self.items.items, features, &mut |item| match item {
+            TopItem::Postgres(postgres) => resources.push(ResourceDecl {
+                id: &postgres.id,
+                kind: ResourceDeclKind::Postgres,
+                version: postgres_version(&postgres.body.items, features),
+                cdn: None,
+                databases: postgres_databases(&postgres.body.items, features),
+            }),
+            TopItem::Redis(redis) => resources.push(ResourceDecl {
+                id: &redis.id,
+                kind: ResourceDeclKind::Redis,
+                version: redis_version(&redis.body.items, features),
+                cdn: None,
+                databases: Vec::new(),
+            }),
+            TopItem::S3(s3) => {
+                let mut cdns: Vec<&str> = Vec::new();
+                s3_cdns(&s3.body.items, features, &mut cdns);
+                resources.push(ResourceDecl {
+                    id: &s3.bucket,
+                    kind: ResourceDeclKind::S3,
+                    version: None,
+                    cdn: cdns.first().copied(),
+                    databases: Vec::new(),
+                });
+            }
+            _ => {}
+        });
         resources
     }
 
-    /// Every declared authority: `domain <id>`, `s3 <bucket>`, and `cdn <id>`.
+    /// Every backing resource, with `on` blocks flattened under default features.
     #[must_use]
-    pub fn domains(&self) -> Vec<&str> {
-        let mut services = Vec::new();
-        let mut resources = Vec::new();
-        let mut domains = Vec::new();
-        for item in &self.items.items {
-            top(item, &mut services, &mut resources, &mut domains);
-        }
+    pub fn resources(&self) -> Vec<ResourceDecl<'_>> {
+        self.resources_with(&self.default_features())
+    }
+
+    /// Every authority enabled by `features`: `domain <id>`, `s3 <bucket>`, and `cdn <id>`.
+    #[must_use]
+    pub fn domains_with(&self, features: &FeatureSet) -> Vec<&str> {
+        let mut domains: Vec<&str> = Vec::new();
+        each_enabled(&self.items.items, features, &mut |item| match item {
+            TopItem::Domain(domain) => domains.push(&domain.id),
+            TopItem::S3(s3) => {
+                domains.push(&s3.bucket);
+                s3_domains(&s3.body.items, features, &mut domains);
+            }
+            _ => {}
+        });
         domains
     }
 
-    /// Every runtime variable per component.
+    /// Every declared authority under default features.
+    #[must_use]
+    pub fn domains(&self) -> Vec<&str> {
+        self.domains_with(&self.default_features())
+    }
+
+    /// Every runtime variable per component enabled by `features`.
     ///
     /// A component is a top-level `env <group>` (keyed by group id), an image, or a service that
     /// inherits its image's inline `env { … }` blocks and `use env <group>` groups. Nested `on`
-    /// blocks are flattened at every level.
+    /// blocks are resolved at every level.
     #[must_use]
-    pub fn env_bindings(&self) -> BTreeMap<String, BTreeMap<String, EnvBinding<'_>>> {
+    pub fn env_bindings_with(
+        &self,
+        features: &FeatureSet,
+    ) -> BTreeMap<String, BTreeMap<String, EnvBinding<'_>>> {
         let mut groups: BTreeMap<String, BTreeMap<String, EnvBinding<'_>>> = BTreeMap::new();
-        for item in &self.items.items {
-            env_groups(item, &mut groups);
-        }
+        each_enabled(&self.items.items, features, &mut |item| {
+            if let TopItem::Env(env) = item {
+                let entry = groups.entry(env.group.clone()).or_default();
+                env_items(&env.entries.items, features, entry);
+            }
+        });
         let mut components = groups.clone();
-        for item in &self.items.items {
-            env_images(item, &groups, &mut components);
-        }
-        components
-    }
-}
-
-fn top<'a>(
-    item: &'a TopItem,
-    services: &mut Vec<ServiceDecl<'a>>,
-    resources: &mut Vec<ResourceDecl<'a>>,
-    domains: &mut Vec<&'a str>,
-) {
-    match item {
-        TopItem::Domain(domain) => domains.push(&domain.id),
-        TopItem::Postgres(postgres) => resources.push(ResourceDecl {
-            id: &postgres.id,
-            kind: ResourceDeclKind::Postgres,
-            version: postgres_version(&postgres.body.items),
-            cdn: None,
-            databases: postgres_databases(&postgres.body.items),
-        }),
-        TopItem::Redis(redis) => resources.push(ResourceDecl {
-            id: &redis.id,
-            kind: ResourceDeclKind::Redis,
-            version: redis_version(&redis.body.items),
-            cdn: None,
-            databases: Vec::new(),
-        }),
-        TopItem::S3(s3) => {
-            domains.push(&s3.bucket);
-            let mut cdns = Vec::new();
-            s3_cdns(&s3.body.items, domains, &mut cdns);
-            resources.push(ResourceDecl {
-                id: &s3.bucket,
-                kind: ResourceDeclKind::S3,
-                version: None,
-                cdn: cdns.first().copied(),
-                databases: Vec::new(),
-            });
-        }
-        TopItem::Image(image) => {
-            for item in &image.body.items {
-                image_item(item, &image.id, services);
-            }
-        }
-        TopItem::On(on) => top_on(on, services, resources, domains),
-        _ => {}
-    }
-}
-
-fn top_on<'a>(
-    on: &'a On<TopItem>,
-    services: &mut Vec<ServiceDecl<'a>>,
-    resources: &mut Vec<ResourceDecl<'a>>,
-    domains: &mut Vec<&'a str>,
-) {
-    on.for_each_branch(&mut |body| match body {
-        OnBody::Inline(inner) => top(inner.as_ref(), services, resources, domains),
-        OnBody::Block(block) => {
-            for item in &block.items {
-                top(item, services, resources, domains);
-            }
-        }
-    });
-}
-
-fn image_item<'a>(item: &'a ImageItem, image: &'a str, services: &mut Vec<ServiceDecl<'a>>) {
-    match item {
-        ImageItem::Service(service) => services.push(service_decl(service, image)),
-        ImageItem::On(on) => on.for_each_branch(&mut |body| match body {
-            OnBody::Inline(inner) => image_item(inner.as_ref(), image, services),
-            OnBody::Block(block) => {
-                for item in &block.items {
-                    image_item(item, image, services);
+        each_enabled(&self.items.items, features, &mut |item| {
+            if let TopItem::Image(image) = item {
+                let mut bindings = BTreeMap::new();
+                image_env(&image.body.items, features, &groups, &mut bindings);
+                components.insert(image.id.clone(), bindings.clone());
+                let mut services = Vec::new();
+                each_enabled(&image.body.items, features, &mut |item| {
+                    if let ImageItem::Service(service) = item {
+                        services.push(service.id.clone());
+                    }
+                });
+                for id in services {
+                    components.insert(id, bindings.clone());
                 }
             }
-        }),
-        _ => {}
+        });
+        components
+    }
+
+    /// Every runtime variable per component under default features.
+    #[must_use]
+    pub fn env_bindings(&self) -> BTreeMap<String, BTreeMap<String, EnvBinding<'_>>> {
+        self.env_bindings_with(&self.default_features())
     }
 }
 
-fn service_decl<'a>(service: &'a Service, image: &'a str) -> ServiceDecl<'a> {
+fn service_decl<'a>(
+    service: &'a Service,
+    image: &'a str,
+    features: &FeatureSet,
+) -> ServiceDecl<'a> {
     let mut port = None;
     let mut routes = Vec::new();
-    service_items(&service.body.items, &mut port, &mut routes);
+    each_enabled(&service.body.items, features, &mut |item| match item {
+        ServiceItem::Port(value) => port = Some(*value),
+        ServiceItem::Route(route) => routes.push(route),
+        _ => {}
+    });
     ServiceDecl {
         id: &service.id,
         port,
@@ -215,227 +224,88 @@ fn service_decl<'a>(service: &'a Service, image: &'a str) -> ServiceDecl<'a> {
     }
 }
 
-fn service_items<'a>(
-    items: &'a [ServiceItem],
-    port: &mut Option<u16>,
-    routes: &mut Vec<&'a Route>,
-) {
-    for item in items {
-        match item {
-            ServiceItem::Port(value) => *port = Some(*value),
-            ServiceItem::Route(route) => routes.push(route),
-            ServiceItem::On(on) => service_on(on, port, routes),
-            _ => {}
+fn postgres_version<'a>(items: &'a [PostgresItem], features: &FeatureSet) -> Option<&'a str> {
+    let mut version = None;
+    each_enabled(items, features, &mut |item| {
+        if let PostgresItem::Version(found) = item {
+            version = Some(found.as_str());
         }
-    }
-}
-
-fn service_on<'a>(on: &'a On<ServiceItem>, port: &mut Option<u16>, routes: &mut Vec<&'a Route>) {
-    on.for_each_branch(&mut |body| match body {
-        OnBody::Inline(inner) => service_items(std::slice::from_ref(inner.as_ref()), port, routes),
-        OnBody::Block(block) => service_items(&block.items, port, routes),
     });
+    version
 }
 
-fn postgres_version(items: &[PostgresItem]) -> Option<&str> {
-    for item in items {
-        match item {
-            PostgresItem::Version(version) => return Some(version.as_str()),
-            PostgresItem::On(on) => {
-                let mut found = None;
-                on.for_each_branch(&mut |body| {
-                    if found.is_none() {
-                        found = match body {
-                            OnBody::Inline(inner) => {
-                                postgres_version(std::slice::from_ref(inner.as_ref()))
-                            }
-                            OnBody::Block(block) => postgres_version(&block.items),
-                        };
-                    }
-                });
-                if found.is_some() {
-                    return found;
-                }
-            }
-            PostgresItem::Database(_) => {}
-        }
-    }
-    None
-}
-
-fn postgres_databases(items: &[PostgresItem]) -> Vec<&str> {
+fn postgres_databases<'a>(items: &'a [PostgresItem], features: &FeatureSet) -> Vec<&'a str> {
     let mut databases = Vec::new();
-    for item in items {
-        match item {
-            PostgresItem::Database(database) => databases.push(database.id.as_str()),
-            PostgresItem::On(on) => on.for_each_branch(&mut |body| match body {
-                OnBody::Inline(inner) => {
-                    databases.extend(postgres_databases(std::slice::from_ref(inner.as_ref())));
-                }
-                OnBody::Block(block) => databases.extend(postgres_databases(&block.items)),
-            }),
-            PostgresItem::Version(_) => {}
+    each_enabled(items, features, &mut |item| {
+        if let PostgresItem::Database(database) = item {
+            databases.push(database.id.as_str());
         }
-    }
+    });
     databases
 }
 
-fn redis_version(items: &[RedisItem]) -> Option<&str> {
-    for item in items {
-        match item {
-            RedisItem::Version(version) => return Some(version.as_str()),
-            RedisItem::On(on) => {
-                let mut found = None;
-                on.for_each_branch(&mut |body| {
-                    if found.is_none() {
-                        found = match body {
-                            OnBody::Inline(inner) => {
-                                redis_version(std::slice::from_ref(inner.as_ref()))
-                            }
-                            OnBody::Block(block) => redis_version(&block.items),
-                        };
-                    }
-                });
-                if found.is_some() {
-                    return found;
-                }
-            }
+fn redis_version<'a>(items: &'a [RedisItem], features: &FeatureSet) -> Option<&'a str> {
+    let mut version = None;
+    each_enabled(items, features, &mut |item| {
+        if let RedisItem::Version(found) = item {
+            version = Some(found.as_str());
         }
-    }
-    None
+    });
+    version
 }
 
-fn s3_cdns<'a>(items: &'a [S3Item], domains: &mut Vec<&'a str>, cdns: &mut Vec<&'a str>) {
-    for item in items {
-        match item {
-            S3Item::Cdn(cdn) => {
-                domains.push(&cdn.id);
-                cdns.push(&cdn.id);
-            }
-            S3Item::On(on) => on.for_each_branch(&mut |body| match body {
-                OnBody::Inline(inner) => {
-                    s3_cdns(std::slice::from_ref(inner.as_ref()), domains, cdns);
-                }
-                OnBody::Block(block) => s3_cdns(&block.items, domains, cdns),
-            }),
-            S3Item::Policy(_) => {}
+fn s3_domains<'a>(items: &'a [S3Item], features: &FeatureSet, domains: &mut Vec<&'a str>) {
+    each_enabled(items, features, &mut |item| {
+        if let S3Item::Cdn(cdn) = item {
+            domains.push(&cdn.id);
         }
-    }
+    });
 }
 
-fn env_groups<'a>(
-    item: &'a TopItem,
-    groups: &mut BTreeMap<String, BTreeMap<String, EnvBinding<'a>>>,
-) {
-    match item {
-        TopItem::Env(env) => {
-            let entry = groups.entry(env.group.clone()).or_default();
-            env_items(&env.entries.items, entry);
+fn s3_cdns<'a>(items: &'a [S3Item], features: &FeatureSet, cdns: &mut Vec<&'a str>) {
+    each_enabled(items, features, &mut |item| {
+        if let S3Item::Cdn(cdn) = item {
+            cdns.push(&cdn.id);
         }
-        TopItem::On(on) => on.for_each_branch(&mut |body| match body {
-            OnBody::Inline(inner) => env_groups(inner, groups),
-            OnBody::Block(block) => {
-                for item in &block.items {
-                    env_groups(item, groups);
-                }
-            }
-        }),
-        _ => {}
-    }
-}
-
-fn env_images<'a>(
-    item: &'a TopItem,
-    groups: &BTreeMap<String, BTreeMap<String, EnvBinding<'a>>>,
-    components: &mut BTreeMap<String, BTreeMap<String, EnvBinding<'a>>>,
-) {
-    match item {
-        TopItem::Image(image) => {
-            let mut bindings = BTreeMap::new();
-            image_env(&image.body.items, groups, &mut bindings);
-            components.insert(image.id.clone(), bindings.clone());
-            image_services(&image.body.items, &bindings, components);
-        }
-        TopItem::On(on) => on.for_each_branch(&mut |body| match body {
-            OnBody::Inline(inner) => env_images(inner, groups, components),
-            OnBody::Block(block) => {
-                for item in &block.items {
-                    env_images(item, groups, components);
-                }
-            }
-        }),
-        _ => {}
-    }
+    });
 }
 
 fn image_env<'a>(
     items: &'a [ImageItem],
+    features: &FeatureSet,
     groups: &BTreeMap<String, BTreeMap<String, EnvBinding<'a>>>,
     bindings: &mut BTreeMap<String, EnvBinding<'a>>,
 ) {
-    for item in items {
-        match item {
-            ImageItem::Env(block) => env_items(&block.entries.items, bindings),
-            ImageItem::UseEnv(group) => {
-                if let Some(inherited) = groups.get(group) {
-                    bindings.extend(inherited.clone());
-                }
+    each_enabled(items, features, &mut |item| match item {
+        ImageItem::Env(block) => env_items(&block.entries.items, features, bindings),
+        ImageItem::UseEnv(group) => {
+            if let Some(inherited) = groups.get(group) {
+                bindings.extend(inherited.clone());
             }
-            ImageItem::On(on) => on.for_each_branch(&mut |body| match body {
-                OnBody::Inline(inner) => {
-                    image_env(std::slice::from_ref(inner.as_ref()), groups, bindings);
-                }
-                OnBody::Block(block) => image_env(&block.items, groups, bindings),
-            }),
-            _ => {}
         }
-    }
+        _ => {}
+    });
 }
 
-fn image_services<'a>(
-    items: &'a [ImageItem],
-    bindings: &BTreeMap<String, EnvBinding<'a>>,
-    components: &mut BTreeMap<String, BTreeMap<String, EnvBinding<'a>>>,
+fn env_items<'a>(
+    items: &'a [EnvItem],
+    features: &FeatureSet,
+    bindings: &mut BTreeMap<String, EnvBinding<'a>>,
 ) {
-    for item in items {
-        match item {
-            ImageItem::Service(service) => {
-                components.insert(service.id.clone(), bindings.clone());
-            }
-            ImageItem::On(on) => on.for_each_branch(&mut |body| match body {
-                OnBody::Inline(inner) => {
-                    image_services(std::slice::from_ref(inner.as_ref()), bindings, components);
-                }
-                OnBody::Block(block) => image_services(&block.items, bindings, components),
-            }),
-            _ => {}
+    each_enabled(items, features, &mut |item| {
+        if let EnvItem::Entry(entry) = item {
+            let (secret, secret_generator) = secret_ref(&entry.value);
+            bindings.insert(
+                entry.key.clone(),
+                EnvBinding {
+                    secret,
+                    secret_generator,
+                    var_generator: var_generator(&entry.value),
+                    literal: literal(&entry.value),
+                },
+            );
         }
-    }
-}
-
-fn env_items<'a>(items: &'a [EnvItem], bindings: &mut BTreeMap<String, EnvBinding<'a>>) {
-    for item in items {
-        match item {
-            EnvItem::Entry(entry) => {
-                let (secret, secret_generator) = secret_ref(&entry.value);
-                bindings.insert(
-                    entry.key.clone(),
-                    EnvBinding {
-                        secret,
-                        secret_generator,
-                        var_generator: var_generator(&entry.value),
-                        literal: literal(&entry.value),
-                    },
-                );
-            }
-            EnvItem::On(on) => on.for_each_branch(&mut |body| match body {
-                OnBody::Inline(inner) => {
-                    env_items(std::slice::from_ref(inner.as_ref()), bindings);
-                }
-                OnBody::Block(block) => env_items(&block.items, bindings),
-            }),
-        }
-    }
+    });
 }
 
 /// The first `secret(...)` reachable through fallbacks, concatenation, or interpolation.

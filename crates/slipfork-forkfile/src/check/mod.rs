@@ -6,7 +6,7 @@ mod policy;
 mod services;
 mod symbols;
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use crate::ast::*;
 use crate::boot::{PREQUEL_TOOLS, PrequelTool};
@@ -23,7 +23,7 @@ pub struct CheckedForkfile {
     pub document: Box<Forkfile>,
     /// The flat symbol table, ready for evaluation by later stages.
     pub symbols: SymbolTable,
-    /// Every declared feature name.
+    /// Every available feature name: built-in `dev` plus declared groups and features.
     pub features: BTreeSet<String>,
     /// Runtime `env` keys, including their declaration spans.
     pub env_keys: BTreeMap<String, Span>,
@@ -38,7 +38,7 @@ pub struct CheckedForkfile {
 // The checked tree is deliberately returned on failure; boxing it would only move the allocation.
 #[allow(clippy::result_large_err)]
 pub fn check(doc: &Forkfile) -> Result<CheckedForkfile, (CheckedForkfile, Diagnostics)> {
-    let features = declared_features(&doc.items.items);
+    let features = available_features(&doc.items.items);
     let mut env_keys = BTreeMap::new();
     let mut arg_keys = BTreeMap::new();
     collect_bindings(&doc.items.items, &mut env_keys, &mut arg_keys);
@@ -145,28 +145,38 @@ fn collect_env_bindings(items: &[EnvItem], env_keys: &mut BTreeMap<String, Span>
     }
 }
 
-fn declared_features(items: &[TopItem]) -> BTreeSet<String> {
-    let mut features = BTreeSet::new();
-    for item in items {
-        match item {
-            TopItem::Features(block) => {
-                for group in &block.groups.items {
-                    features.insert(group.name.clone());
-                    if let Some(list) = &group.features {
-                        features.extend(list.iter().cloned());
+/// Every feature name a document accepts: built-in `dev` plus declared groups and features.
+pub(crate) fn available_features(items: &[TopItem]) -> BTreeSet<String> {
+    let (groups, _) = feature_index(items);
+    let mut features = groups.values().flatten().cloned().collect::<BTreeSet<_>>();
+    features.extend(groups.into_keys());
+    features.insert("dev".to_owned());
+    features
+}
+
+/// The one owner of the whole-file feature walk: groups + implications, plus their span.
+pub(crate) fn feature_index(items: &[TopItem]) -> (BTreeMap<String, Vec<String>>, Option<Span>) {
+    let (mut groups, mut span) = (BTreeMap::new(), None);
+    let mut queue = VecDeque::from([items]);
+    while let Some(items) = queue.pop_front() {
+        for item in items {
+            match item {
+                TopItem::Features(block) => {
+                    span.get_or_insert(block.span);
+                    for group in &block.groups.items {
+                        let implied = group.features.clone().unwrap_or_default();
+                        groups.insert(group.name.clone(), implied);
                     }
                 }
+                TopItem::On(on) => on.for_each_branch(&mut |body| match body {
+                    OnBody::Inline(inner) => queue.push_back(std::slice::from_ref(inner.as_ref())),
+                    OnBody::Block(block) => queue.push_back(&block.items),
+                }),
+                _ => {}
             }
-            TopItem::On(on) => on.for_each_branch(&mut |body| match body {
-                OnBody::Inline(inner) => {
-                    features.extend(declared_features(std::slice::from_ref(inner.as_ref())));
-                }
-                OnBody::Block(block) => features.extend(declared_features(&block.items)),
-            }),
-            _ => {}
         }
     }
-    features
+    (groups, span)
 }
 
 fn collect_env_names(items: &[TopItem], out: &mut BTreeSet<String>) {
@@ -439,6 +449,13 @@ impl Checker {
 mod tests {
     use super::*;
     use crate::parse;
+
+    #[test]
+    fn dev_is_a_built_in_feature_without_a_features_block() {
+        let source = "# forkfile: 0.1\n\non dev: domain main\non !dev: domain other\n";
+        let checked = check(&parse(source).expect("parses")).expect("`dev` is always available");
+        assert!(checked.features.contains("dev"));
+    }
 
     #[test]
     fn every_on_branch_reports_taint_at_its_own_span() {

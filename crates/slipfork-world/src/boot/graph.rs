@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, VecDeque};
 
 use slipfork_forkfile::ast::Forkfile;
-use slipfork_forkfile::boot::boot_plan;
+use slipfork_forkfile::boot::boot_plan_with;
 
 use super::plan::{Parts, image_of, lookup};
 use super::stamp::{StepStamp, stamp_key};
@@ -57,7 +57,7 @@ pub(super) fn finish(doc: &Forkfile, mut parts: Parts<'_>) -> Result<WorldPlan> 
         resource_steps.push(parts.steps.len() - 1);
     }
 
-    for node in boot_plan(doc, parts.root).nodes {
+    for node in boot_plan_with(doc, parts.root, parts.features).nodes {
         let image_idx = image_of(&parts.images, &image_steps, &node.image);
         let (phase, subject, line) = match lookup(&parts.hooks, &node) {
             Some((HookPhase::FailedDeploy, owner, image, line)) => {

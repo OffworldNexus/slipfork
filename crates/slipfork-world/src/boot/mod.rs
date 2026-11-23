@@ -10,7 +10,7 @@ mod schedule;
 mod stamp;
 
 pub use graph::BootGraph;
-pub use plan::world_plan;
+pub use plan::{world_plan, world_plan_with};
 pub use schedule::{
     BootEvent, BootFailure, BootScheduler, BootState, EventSink, PlanRow, ServiceHealth,
     StepExecutor, StepOutcome, classify_service,

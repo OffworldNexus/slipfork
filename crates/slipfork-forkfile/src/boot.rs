@@ -258,17 +258,16 @@ impl BootPlan {
     }
 }
 
-/// Synthesizes the deduplicated `@<tool>` / `when changed(...)` setup nodes.
+/// Synthesizes the deduplicated `@<tool>` / `when changed(...)` setup nodes under `features`.
 #[must_use]
-pub fn boot_plan(doc: &Forkfile, root: &Path) -> BootPlan {
-    let features = doc.active_features();
+pub fn boot_plan_with(doc: &Forkfile, root: &Path, features: &FeatureSet) -> BootPlan {
     let mut planner = Planner {
         root,
-        features: &features,
+        features,
         seen: BTreeSet::new(),
         nodes: Vec::new(),
     };
-    each_enabled(&doc.items.items, &features, &mut |item| {
+    each_enabled(&doc.items.items, features, &mut |item| {
         if let TopItem::Image(image) = item {
             planner.image(image);
         }
@@ -276,6 +275,12 @@ pub fn boot_plan(doc: &Forkfile, root: &Path) -> BootPlan {
     BootPlan {
         nodes: planner.nodes,
     }
+}
+
+/// Synthesizes the deduplicated `@<tool>` / `when changed(...)` setup nodes under default features.
+#[must_use]
+pub fn boot_plan(doc: &Forkfile, root: &Path) -> BootPlan {
+    boot_plan_with(doc, root, &doc.default_features())
 }
 
 /// Hashes input paths and their contents with a stable FNV-1a 64 mix.

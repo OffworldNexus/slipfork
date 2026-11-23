@@ -50,7 +50,7 @@ pub use boot::{
     EventSink, FailedHook, HookPhase, ImageNode, ImageStamp, PG_STAMP_FILE, PlanRow, ResourceNode,
     ServiceHealth, ServiceNode, StampStore, StepExecutor, StepOutcome, StepStamp, WORLD_STAMP_FILE,
     WorldPlan, WorldStamp, WorldStampStore, classify_service, epoch_for, plan_epoch, step_digest,
-    world_plan, write_pg_checkpoint, write_pg_checkpoints,
+    world_plan, world_plan_with, write_pg_checkpoint, write_pg_checkpoints,
 };
 pub use btrfs::{is_btrfs_path, is_subvolume_path};
 

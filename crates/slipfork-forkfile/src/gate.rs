@@ -9,7 +9,7 @@ use crate::ast::{
 };
 use crate::eval::FeatureSet;
 use crate::expr::Command;
-use crate::resources::{PostgresItem, S3Item};
+use crate::resources::{PostgresItem, RedisItem, S3Item};
 
 /// An AST item enum that can be guarded by an `on <expr>` node.
 pub trait GatedItem: Sized {
@@ -38,6 +38,7 @@ gated_items!(
     EnvItem,
     ServiceItem,
     PostgresItem,
+    RedisItem,
     S3Item,
     CommandItem
 );

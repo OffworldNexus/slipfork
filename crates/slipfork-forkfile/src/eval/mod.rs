@@ -1,16 +1,19 @@
 //! Feature-aware runtime evaluation for `arg`, `env`, `stage`, and app domains.
 //!
 //! Pure AST evaluation: the caller injects the world name, the scheme, and secret/var resolvers;
-//! this module never reads `std::env` or touches the filesystem.
+//! this module never reads `std::env` or touches the filesystem. Feature resolution itself lives in
+//! [`features`].
 
 mod env;
+mod features;
 mod values;
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
-use self::values::expand_feature;
+pub use features::{FeatureEdit, FeatureSet};
+
 use crate::ast::{ActiveBody, Forkfile, Image, ImageItem, On, PostgresItem, S3Item, TopItem};
-use crate::expr::{Expr, ExprKind, GeneratorSpec};
+use crate::expr::{Expr, GeneratorSpec};
 use values::{BoundSymbol, eval_expr, is_tainted};
 
 /// A component-scoped `secret(key, generator)` resolver.
@@ -27,96 +30,56 @@ pub struct Resolvers<'a> {
     pub var: &'a VarResolver<'a>,
 }
 
-/// Active feature set (`declared == false` when the `Forkfile` has no `features` block).
-#[derive(Debug, Clone)]
-pub struct FeatureSet {
-    declared: bool,
-    active: BTreeSet<String>,
-}
-
-impl FeatureSet {
-    /// The active feature names.
-    #[must_use]
-    pub fn active(&self) -> &BTreeSet<String> {
-        &self.active
-    }
-
-    /// Evaluates an `on <cond>` expression; when no `features` block exists, bare features pass.
-    #[must_use]
-    pub fn matches(&self, cond: &Expr) -> bool {
-        match &cond.kind {
-            ExprKind::Bool(value) => *value,
-            ExprKind::Feature(name) => !self.declared || self.active.contains(name),
-            ExprKind::Not(inner) => !self.matches(inner),
-            ExprKind::And(left, right) => self.matches(left) && self.matches(right),
-            ExprKind::Or(left, right) => self.matches(left) || self.matches(right),
-            _ => false,
-        }
-    }
-}
-
 /// The body an `on` node selects under `features`.
-pub(super) fn active<'a, I>(on: &'a On<I>, features: &FeatureSet) -> Option<ActiveBody<'a, I>> {
+fn active<'a, I>(on: &'a On<I>, features: &FeatureSet) -> Option<ActiveBody<'a, I>> {
     let mut matches = |expr: &Expr| features.matches(expr);
     on.active_body(&mut matches)
 }
 
 impl Forkfile {
-    /// Expands `default` and its transitive feature groups.
+    /// Declared top-level app `domain <id>` names enabled by `features`.
     #[must_use]
-    pub fn active_features(&self) -> FeatureSet {
-        let mut groups: BTreeMap<String, Vec<String>> = BTreeMap::new();
-        let mut declared = false;
+    pub fn app_domains_with(&self, features: &FeatureSet) -> Vec<&str> {
+        let mut out = Vec::new();
         for item in &self.items.items {
-            if let TopItem::Features(features) = item {
-                declared = true;
-                for group in &features.groups.items {
-                    groups.insert(
-                        group.name.clone(),
-                        group.features.clone().unwrap_or_default(),
-                    );
-                }
-            }
+            collect_app_domains(item, features, &mut out);
         }
-        let mut active = BTreeSet::new();
-        if groups.contains_key("default") {
-            expand_feature("default", &groups, &mut active);
-        }
-        FeatureSet { declared, active }
+        out
     }
 
     /// Declared top-level app `domain <id>` names active under default features.
     #[must_use]
     pub fn app_domains(&self) -> Vec<&str> {
-        let features = self.active_features();
-        let mut out = Vec::new();
-        for item in &self.items.items {
-            collect_app_domains(item, &features, &mut out);
-        }
-        out
+        self.app_domains_with(&self.default_features())
     }
 
-    /// The first declared app `domain <id>`; it **is** the primary `<world>.localhost` authority.
+    /// The first declared app `domain <id>` enabled by `features`; it **is** the primary authority.
+    #[must_use]
+    pub fn primary_domain_with(&self, features: &FeatureSet) -> Option<&str> {
+        self.app_domains_with(features).first().copied()
+    }
+
+    /// The first app `domain <id>`; it **is** the primary `<world>.localhost` authority.
     #[must_use]
     pub fn primary_domain(&self) -> Option<&str> {
-        self.app_domains().first().copied()
+        self.primary_domain_with(&self.default_features())
     }
 
-    /// Evaluates build-time `arg` bindings for `image_id` in `world`.
+    /// Evaluates build-time `arg` bindings for `image_id` in `world` under `features`.
     #[must_use]
-    pub fn eval_image_args(
+    pub fn eval_image_args_with(
         &self,
         world: &str,
         scheme: &str,
         image_id: &str,
+        features: &FeatureSet,
     ) -> BTreeMap<String, String> {
-        let features = self.active_features();
-        let symbols = self.bound_symbols(&features);
+        let symbols = self.bound_symbols(features);
         let mut args = BTreeMap::new();
-        if let Some(image) = find_image(&self.items.items, image_id, &features) {
+        if let Some(image) = find_image(&self.items.items, image_id, features) {
             collect_image_args(
                 &image.body.items,
-                &features,
+                features,
                 &symbols,
                 world,
                 scheme,
@@ -126,29 +89,45 @@ impl Forkfile {
         args
     }
 
-    /// Evaluates target `stage <name>` for `image_id`, when active.
+    /// Evaluates build-time `arg` bindings for `image_id` in `world` under default features.
     #[must_use]
-    pub fn eval_image_stage(&self, image_id: &str) -> Option<String> {
-        let features = self.active_features();
-        let image = find_image(&self.items.items, image_id, &features)?;
+    pub fn eval_image_args(
+        &self,
+        world: &str,
+        scheme: &str,
+        image_id: &str,
+    ) -> BTreeMap<String, String> {
+        self.eval_image_args_with(world, scheme, image_id, &self.default_features())
+    }
+
+    /// Evaluates target `stage <name>` for `image_id` under `features`, when active.
+    #[must_use]
+    pub fn eval_image_stage_with(&self, image_id: &str, features: &FeatureSet) -> Option<String> {
+        let image = find_image(&self.items.items, image_id, features)?;
         let mut stage = None;
-        collect_image_stage(&image.body.items, &features, &mut stage);
+        collect_image_stage(&image.body.items, features, &mut stage);
         stage
     }
 
-    /// Evaluates every runtime `env` variable for every component (`group`, `image`, `service`).
+    /// Evaluates target `stage <name>` for `image_id` under default features, when active.
     #[must_use]
-    pub fn eval_all_env_with(
+    pub fn eval_image_stage(&self, image_id: &str) -> Option<String> {
+        self.eval_image_stage_with(image_id, &self.default_features())
+    }
+
+    /// Evaluates every runtime `env` variable for every component under `features`.
+    #[must_use]
+    pub fn eval_all_env_with_features(
         &self,
         world: &str,
         scheme: &str,
         resolvers: &Resolvers<'_>,
+        features: &FeatureSet,
     ) -> BTreeMap<String, BTreeMap<String, (String, bool)>> {
-        let features = self.active_features();
-        let symbols = self.bound_symbols(&features);
+        let symbols = self.bound_symbols(features);
         let mut raw_groups: BTreeMap<String, Vec<(String, Expr)>> = BTreeMap::new();
         for item in &self.items.items {
-            env::collect_env_groups(item, &features, &mut raw_groups);
+            env::collect_env_groups(item, features, &mut raw_groups);
         }
         let mut out: BTreeMap<String, BTreeMap<String, (String, bool)>> = BTreeMap::new();
         for (group, entries) in &raw_groups {
@@ -167,7 +146,7 @@ impl Forkfile {
         }
         env::collect_components(
             &self.items.items,
-            &features,
+            features,
             &symbols,
             &raw_groups,
             world,
@@ -176,6 +155,17 @@ impl Forkfile {
             &mut out,
         );
         out
+    }
+
+    /// Evaluates every runtime `env` variable for every component under default features.
+    #[must_use]
+    pub fn eval_all_env_with(
+        &self,
+        world: &str,
+        scheme: &str,
+        resolvers: &Resolvers<'_>,
+    ) -> BTreeMap<String, BTreeMap<String, (String, bool)>> {
+        self.eval_all_env_with_features(world, scheme, resolvers, &self.default_features())
     }
 
     fn bound_symbols(&self, features: &FeatureSet) -> BTreeMap<String, BoundSymbol> {
