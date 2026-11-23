@@ -3245,3 +3245,11 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-23T13:55 [M3.69.1] (lead) status ready -> active
 - 2026-11-23T13:57 [M3.69.1] (lead) semantics fix committed; -dev now drops dev=[mail] implications, explicit enables survive, default members are roots
 - 2026-11-23T13:57 [M3.69.1] (lead) status active -> done
+- 2026-11-23T14:06 [M3.70.2] (lead) status active -> ready: blocked on image-engine Dockerfile fidelity; suites 2/3, deb+demo OK
+- 2026-11-23T14:06 [M3.70.2] (lead) attempt 2: world_journey 2/0, status 5/0, fork_live 1/1 (worker exit 127: base image ENV lost), prod-check frontend build fails (relative COPY ignores WORKDIR);
+- 2026-11-23T14:06 [M3.70.3] (lead) created (task) Image engine fidelity: inherit base-image ENV/CMD and resolve relative COPY against WORKDIR
+- 2026-11-23T14:06 [M3.70.3] (lead) status ready -> active
+- 2026-11-23T14:06 [M3.70.3] (lead) attempt 1/3 started
+- 2026-11-23T14:06 [M3.70.3] (lead) base a08bc288eeb341e92411f52837ec31916a26baea
+- 2026-11-23T14:08 [M3.70.3] (lead) fixed base ImageConfig seeding + Destination(workdir) resolution; 6 unit tests incl base PATH expansion and WORKDIR-relative COPY/--from; clippy+fmt green
+- 2026-11-23T14:08 [M3.70.3] (lead) status active -> done
