@@ -129,7 +129,7 @@ function! s:Main() abort
   call s:Check(&filetype ==# 'forkfile', 'filetype of ' . s:name . ' is "' . &filetype . '", want forkfile')
   call s:Check(&syntax ==# 'forkfile', 'syntax of ' . s:name . ' is "' . &syntax . '", want forkfile')
   call s:Check(&commentstring ==# '# %s', 'commentstring is "' . &commentstring . '", want "# %s"')
-  call s:Check(&shiftwidth == 2 && &expandtab, 'indent options are not 2-space expandtab')
+  call s:Check(&shiftwidth == 4 && &expandtab, 'indent options are not 4-space expandtab')
   call s:Check(s:HasGroup(1, 'forkfileHeader'), 'version header not highlighted as forkfileHeader')
 
   let l:img = s:FindLine('^\s*image\s')
@@ -143,10 +143,10 @@ function! s:Main() abort
   call s:Expect(s:FindLine('\$port\>'), '$port reference', 'forkfilePort')
   call s:Expect(s:FindLine('\h\.\h'), 'dotted property', 'forkfileProperty')
 
-  " `gg=G` must be a no-op: the shipped Forkfile is already 2-space canonical.
+  " `gg=G` must be a no-op: the shipped Forkfile is already 4-space canonical.
   let l:before = getline(1, '$')
   normal! gg=G
-  call s:Check(getline(1, '$') ==# l:before, s:name . ' is not 2-space canonical (gg=G changed it)')
+  call s:Check(getline(1, '$') ==# l:before, s:name . ' is not 4-space canonical (gg=G changed it)')
   setlocal nomodified
 
   execute 'edit! ' . fnameescape(s:fixture)
@@ -214,23 +214,23 @@ function! s:Main() abort
   let l:want = [
         \ '# forkfile: 0.1',
         \ 'image api . {',
-        \ '  service web {',
-        \ '    port 8000',
-        \ '    route /api',
-        \ '    route /',
-        \ '    workdir /app',
-        \ '    run: /bin/sh',
-        \ '    run: @uv run app --port $port',
-        \ '    on dev {',
-        \ '      run: @uv run app --reload',
-        \ '    } else {',
-        \ '      run: @uv run app',
+        \ '    service web {',
+        \ '        port 8000',
+        \ '        route /api',
+        \ '        route /',
+        \ '        workdir /app',
+        \ '        run: /bin/sh',
+        \ '        run: @uv run app --port $port',
+        \ '        on dev {',
+        \ '            run: @uv run app --reload',
+        \ '        } else {',
+        \ '            run: @uv run app',
+        \ '        }',
         \ '    }',
-        \ '  }',
         \ '}',
         \ 'env common {',
-        \ '  URL = "${var(HOST) ?? self.url}"',
-        \ '  T = "${secret(TOKEN)}"',
+        \ '    URL = "${var(HOST) ?? self.url}"',
+        \ '    T = "${secret(TOKEN)}"',
         \ '}',
         \ 'PG = cache.name',
         \ 'PORT = $env.PORT',

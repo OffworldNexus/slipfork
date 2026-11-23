@@ -6,7 +6,6 @@ schema_version = 1
 authors = ["Slipfork contributors"]
 repository = "https://github.com/OffworldNexus/slipfork"
 languages = ["languages/forkfile"]
-language_servers = ["slipfork-lsp"]
 
 [grammars.forkfile]
 repository = "file://../tree-sitter-forkfile"

@@ -15,7 +15,7 @@ impl Renderer {
 
     pub(super) fn line(&mut self, text: &str) {
         for _ in 0..self.indent {
-            self.out.push_str("  ");
+            self.out.push_str("    ");
         }
         self.out.push_str(text);
         self.out.push('\n');
